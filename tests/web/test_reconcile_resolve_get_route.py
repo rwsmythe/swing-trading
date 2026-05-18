@@ -303,6 +303,41 @@ def test_get_returns_503_on_db_locked_during_get_discrepancy(
 
 
 # ---------------------------------------------------------------------------
+# 9. Codex R3 Major #1 — sqlite3.connect() itself raises OperationalError
+#    BEFORE the existing pre-flight try/except wrapping is entered.
+#    Routes to db_unavailable 503 (NOT bubbled 500).
+# ---------------------------------------------------------------------------
+
+
+def test_get_returns_503_on_db_locked_during_connect(
+    seeded_db: tuple[Config, Path],
+) -> None:
+    """Codex R3 Major #1: ``sqlite3.connect(cfg.paths.db_path)`` itself
+    can raise ``sqlite3.OperationalError`` (e.g. "unable to open database
+    file") BEFORE the existing inner try/except wraps the count_* helpers
+    and ``get_discrepancy``. The route MUST catch this and render the
+    canonical ``db_unavailable`` 503 template instead of bubbling 500.
+    """
+    cfg, cfg_path = seeded_db
+    discrepancy_id = _seed_discrepancy(cfg.paths.db_path)
+    app = create_app(cfg, cfg_path)
+
+    def fake_connect(*args, **kwargs):
+        raise sqlite3.OperationalError("unable to open database file")
+
+    with patch(
+        "swing.web.routes.reconcile.sqlite3.connect",
+        side_effect=fake_connect,
+    ):
+        with TestClient(app) as client:
+            r = client.get(
+                f"/reconcile/discrepancy/{discrepancy_id}/resolve",
+            )
+    assert r.status_code == 503, r.text[:300]
+    assert 'data-error-kind="db_unavailable"' in r.text
+
+
+# ---------------------------------------------------------------------------
 # 7. Route registration — defense-in-depth per Phase 6 I3 lesson
 # ---------------------------------------------------------------------------
 

@@ -137,7 +137,28 @@ def reconcile_discrepancy_resolve_form(
     # bundle B Codex R1 Critical #1 inheritance + Sub-bundle 2 T-2.1
     # SchwabStatus route precedent.
     cfg = apply_overrides(request.app.state.cfg)
-    conn = sqlite3.connect(cfg.paths.db_path)
+    # Codex R3 Major #1 — sqlite3.connect() itself can raise
+    # OperationalError (e.g. "unable to open database file") BEFORE the
+    # inner try/except wraps any reads. Catch and route to the canonical
+    # db_unavailable 503 template instead of bubbling 500. Do NOT add a
+    # finally: conn.close() here -- conn was never created if connect
+    # raised. The existing inner try/finally handles close on success.
+    try:
+        conn = sqlite3.connect(cfg.paths.db_path)
+    except sqlite3.OperationalError as exc:
+        log.warning("sqlite3.OperationalError (connect): %s", exc)
+        return _render_error(
+            request,
+            status_code=503,
+            error_kind="db_unavailable",
+            error_message=(
+                "Database temporarily unavailable; retry the resolution."
+            ),
+            discrepancy_id=discrepancy_id,
+            unresolved_count=0,
+            recent_multi_leg_count=0,
+            banner_resolve_link=None,
+        )
     try:
         try:
             unresolved_count = count_unresolved_material(conn)
@@ -291,14 +312,63 @@ def _render_form_with_error(
             banner_resolve_link=None,
         )
     except ValueError as exc:
-        log.warning("ValueError (re-render builder, terminal race): %s", exc)
+        # Codex R3 Minor #1 — branch on builder ValueError message. The
+        # builder raises ValueError for 3 distinct causes (per
+        # swing/web/view_models/reconcile.py:build_reconcile_discrepancy_resolve_vm):
+        #   - "discrepancy not found"
+        #         -> 404 not_found (row vanished; rare DELETE between
+        #           pre-flight and re-render)
+        #   - "is not pending_ambiguity_resolution; got resolution=..."
+        #         -> 409 already_resolved (terminal-state race; routine)
+        #   - "has no ambiguity_kind; cannot render Tier-2 resolve form"
+        #         OR any other ValueError text
+        #         -> 500 service_error (invariant violation; schema-CHECK
+        #           normally forbids; defense-in-depth)
+        # Pre-R3 mapping flattened all 3 to 409; misreports vanished as
+        # already-resolved and hides invariant errors as routine races.
+        msg = str(exc)
+        log.warning("ValueError (re-render builder): %s", msg)
+        if "not found" in msg:
+            return _render_error(
+                request,
+                status_code=404,
+                error_kind="not_found",
+                error_message=(
+                    f"No reconciliation discrepancy exists with id "
+                    f"{discrepancy_id}."
+                ),
+                discrepancy_id=discrepancy_id,
+                unresolved_count=0,
+                recent_multi_leg_count=0,
+                banner_resolve_link=None,
+            )
+        if (
+            "is not pending_ambiguity_resolution" in msg
+            or "is no longer in pending_ambiguity_resolution" in msg
+        ):
+            return _render_error(
+                request,
+                status_code=409,
+                error_kind="already_resolved",
+                error_message=(
+                    f"Discrepancy {discrepancy_id} is no longer in "
+                    f"pending_ambiguity_resolution state."
+                ),
+                discrepancy_id=discrepancy_id,
+                unresolved_count=0,
+                recent_multi_leg_count=0,
+                banner_resolve_link=None,
+            )
+        # Defense-in-depth — invariant violations (NULL ambiguity_kind,
+        # or any other unforeseen ValueError text) route to
+        # service_error 500 with a redacted error_message (the exc text
+        # is logged but not surfaced to the operator).
         return _render_error(
             request,
-            status_code=409,
-            error_kind="already_resolved",
+            status_code=500,
+            error_kind="service_error",
             error_message=(
-                f"Discrepancy {discrepancy_id} is no longer in "
-                f"pending_ambiguity_resolution state."
+                "Internal error while re-rendering the resolution form."
             ),
             discrepancy_id=discrepancy_id,
             unresolved_count=0,
@@ -394,7 +464,28 @@ async def reconcile_discrepancy_resolve_post(  # noqa: PLR0911, PLR0912, PLR0915
         form.get("ambiguity_kind_at_render") or ""
     )
 
-    conn = sqlite3.connect(cfg.paths.db_path)
+    # Codex R3 Major #1 — sqlite3.connect() itself can raise
+    # OperationalError (e.g. "unable to open database file") BEFORE the
+    # inner try/except wraps any reads. Catch and route to the canonical
+    # db_unavailable 503 template instead of bubbling 500. Do NOT add a
+    # finally: conn.close() here -- conn was never created if connect
+    # raised. The existing inner try/finally handles close on success.
+    try:
+        conn = sqlite3.connect(cfg.paths.db_path)
+    except sqlite3.OperationalError as exc:
+        log.warning("sqlite3.OperationalError (connect): %s", exc)
+        return _render_error(
+            request,
+            status_code=503,
+            error_kind="db_unavailable",
+            error_message=(
+                "Database temporarily unavailable; retry the resolution."
+            ),
+            discrepancy_id=discrepancy_id,
+            unresolved_count=0,
+            recent_multi_leg_count=0,
+            banner_resolve_link=None,
+        )
     try:
         try:
             unresolved_count = count_unresolved_material(conn)

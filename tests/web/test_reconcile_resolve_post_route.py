@@ -634,3 +634,132 @@ def test_post_value_error_concurrent_race_503_on_db_lock_during_reread(
         f"body={r.text[:300]}"
     )
     assert 'data-error-kind="db_unavailable"' in r.text, r.text[:400]
+
+
+# ---------------------------------------------------------------------------
+# 13. Codex R3 Major #1 -- sqlite3.connect() itself raises OperationalError
+#     BEFORE the existing pre-flight try/except wrapping is entered.
+#     Routes to db_unavailable 503 (NOT bubbled 500).
+# ---------------------------------------------------------------------------
+
+
+def test_post_returns_503_on_db_locked_during_connect(
+    seeded_db: tuple[Config, Path],
+) -> None:
+    """Codex R3 Major #1: sqlite3.connect(cfg.paths.db_path) itself
+    can raise sqlite3.OperationalError (e.g. "unable to open database
+    file") BEFORE the existing inner try/except wraps the count_* helpers
+    and get_discrepancy. The POST route MUST catch this and render the
+    canonical db_unavailable 503 template instead of bubbling 500.
+    """
+    cfg, cfg_path = seeded_db
+    disc_id = _seed_discrepancy(cfg.paths.db_path)
+    app = create_app(cfg, cfg_path)
+
+    def fake_connect(*args, **kwargs):
+        raise sqlite3.OperationalError("unable to open database file")
+
+    with patch(
+        "swing.web.routes.reconcile.sqlite3.connect",
+        side_effect=fake_connect,
+    ):
+        with TestClient(app) as client:
+            r = client.post(
+                f"/reconcile/discrepancy/{disc_id}/resolve",
+                data={
+                    "choice_code": "keep_journal_as_is",
+                    "resolution_reason": "connect-time OperationalError",
+                    "ambiguity_kind_at_render": "multi_partial_vs_consolidated",
+                },
+                headers={"HX-Request": "true"},
+            )
+    assert r.status_code == 503, r.text[:300]
+    assert 'data-error-kind="db_unavailable"' in r.text
+
+
+# ---------------------------------------------------------------------------
+# 14. Codex R3 Minor #1 -- builder ValueError classification.
+#     Builder raises ValueError for 3 distinct causes per
+#     swing/web/view_models/reconcile.py:build_reconcile_discrepancy_resolve_vm:
+#       - "discrepancy not found"           -> 404 not_found
+#       - "is not pending_ambiguity_..."   -> 409 already_resolved
+#       - "has no ambiguity_kind" / other  -> 500 service_error
+#     The R2 fix mapped ALL ValueError to 409 uniformly; R3 branches on the
+#     exception message to disambiguate.
+# ---------------------------------------------------------------------------
+
+
+def test_post_rerender_returns_404_when_builder_raises_value_error_for_not_found(
+    seeded_db: tuple[Config, Path],
+) -> None:
+    """Codex R3 Minor #1: builder raises ValueError('discrepancy not found')
+    when the row vanished (rare; DELETE between pre-flight and re-render).
+    Mapping to 409 already_resolved misreports a vanished row. The
+    handler MUST classify on message and return 404 not_found.
+    """
+    cfg, cfg_path = seeded_db
+    disc_id = _seed_discrepancy(cfg.paths.db_path)
+    app = create_app(cfg, cfg_path)
+
+    def fake_builder(*args, **kwargs):
+        raise ValueError("discrepancy not found")
+
+    with patch(
+        "swing.web.routes.reconcile.build_reconcile_discrepancy_resolve_vm",
+        side_effect=fake_builder,
+    ):
+        with TestClient(app) as client:
+            r = client.post(
+                f"/reconcile/discrepancy/{disc_id}/resolve",
+                data={
+                    "choice_code": "",
+                    "resolution_reason": "builder ValueError not-found branch",
+                    "ambiguity_kind_at_render": "multi_partial_vs_consolidated",
+                },
+                headers={"HX-Request": "true"},
+            )
+    assert r.status_code == 404, (
+        f"expected 404 (builder ValueError 'not found'); got "
+        f"{r.status_code}; body={r.text[:300]}"
+    )
+    assert 'data-error-kind="not_found"' in r.text, r.text[:400]
+
+
+def test_post_rerender_returns_500_when_builder_raises_value_error_for_invariant_violation(
+    seeded_db: tuple[Config, Path],
+) -> None:
+    """Codex R3 Minor #1: builder raises ValueError('discrepancy has no
+    ambiguity_kind; cannot render Tier-2 resolve form') for an invariant
+    violation (schema-CHECK should normally forbid). Mapping to 409 hides
+    the invariant error as a routine race. The handler MUST classify on
+    message and return 500 service_error.
+    """
+    cfg, cfg_path = seeded_db
+    disc_id = _seed_discrepancy(cfg.paths.db_path)
+    app = create_app(cfg, cfg_path)
+
+    def fake_builder(*args, **kwargs):
+        raise ValueError(
+            "discrepancy has no ambiguity_kind; cannot render Tier-2 "
+            "resolve form",
+        )
+
+    with patch(
+        "swing.web.routes.reconcile.build_reconcile_discrepancy_resolve_vm",
+        side_effect=fake_builder,
+    ):
+        with TestClient(app) as client:
+            r = client.post(
+                f"/reconcile/discrepancy/{disc_id}/resolve",
+                data={
+                    "choice_code": "",
+                    "resolution_reason": "builder ValueError invariant branch",
+                    "ambiguity_kind_at_render": "multi_partial_vs_consolidated",
+                },
+                headers={"HX-Request": "true"},
+            )
+    assert r.status_code == 500, (
+        f"expected 500 (builder ValueError invariant violation); got "
+        f"{r.status_code}; body={r.text[:300]}"
+    )
+    assert 'data-error-kind="service_error"' in r.text, r.text[:400]
