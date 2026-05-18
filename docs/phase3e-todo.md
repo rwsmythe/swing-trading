@@ -6,6 +6,84 @@
 
 ---
 
+## 2026-05-18 Queued post-Phase-12.5-#3 / pre-Phase-13 cleanup items (operator-added 2026-05-18 post-Phase-12.5-#3-writing-plans-merge)
+
+Two cleanup items operator queued for post-Phase-12.5-#3 closure, BEFORE Phase 13 commissioning. Both are bounded scope; neither is in Phase 12.5 #3 plan (intentionally separated to keep Phase 12.5 #3 scope narrow).
+
+### Item Q1: Open reconciliation discrepancy walkthrough — investigate suspected Schwab API response parser bug
+
+**Posture:** Orchestrator-paired walkthrough first; investigation dispatch second IF walkthrough surfaces a real bug.
+
+**Trigger:** Operator suspects the Schwab API response parser may have a bug surfaced by the pattern of open discrepancies currently pending (54+55+56+57 + any newer Pass-1 `unmatched_open_fill` re-emissions from runs #67/#68). Operator wants to step through each open discrepancy with orchestrator, examine the source `schwab_api_calls.response_body_json` (or raw response if logged elsewhere) vs the journal-side fill row vs the emitted discrepancy shape, and identify whether the parser is misreading a Schwab response field.
+
+**Scope (walkthrough)**:
+- Read each open `reconciliation_discrepancies` row (resolution='unresolved' OR resolution='pending_ambiguity_resolution' OR resolution NULL).
+- For each: surface the linked `schwab_api_calls` row's audit metadata + the journal-side fill row (`fills` table) + the discrepancy's `expected_value_json` + `actual_value_json` envelope.
+- Compare against operator's actual TOS / Schwab broker-statement reality (operator brings broker-statement evidence to the walkthrough).
+- Identify pattern: random / per-fill / per-order-shape / per-discrepancy-type / parser-specific.
+
+**Scope (investigation dispatch — IF walkthrough surfaces bug)**:
+- Investigation-first dispatch shape (precedent: 3e.12 tos-import diagnostic at `a9541d2`; post-Phase-12 Sub-bundle 1.5 diagnostic at `a7c1016`).
+- Diagnostic script bypasses `_audited_get_account_orders` audit wrapper to capture pre-parser raw shape (precedent: `scripts/diagnose_schwab_executionlegs.py` at Sub-bundle 1.5).
+- Operator-paired diagnostic run against production (recovery sequence + redacted output).
+- Fix dispatch after root cause identified.
+- Expected dispatch shape: 2-4 Codex rounds; gate 3-5 surfaces; schema likely v19 unchanged.
+
+**Cross-references:**
+- CLAUDE.md gotcha "Synthetic-fixture-vs-production-emitter shape drift" (Phase 12 Sub-sub-bundle C.D gate finding family).
+- CLAUDE.md gotcha "Pass-2-tier-1-FORBIDDEN + Pass-1-tier-1 — V2-RESOLVED for Pass-1; Pass-2 STAYS tier-2-always".
+- Post-Phase-12 Sub-bundle 1.5 diagnostic precedent (4 placeholder shapes identified + 5 real FILLED LIMIT orders).
+- Phase 12.5 #1 ship verified architectural fix HOLDS positive sense (production run #15 ZERO false-positive Pass-1; but Pass-2 still tier-2-always per OQ-F V2-deferred).
+
+**Decision-pending at walkthrough time**:
+- Whether suspected bug is real (vs operator-perceived pattern that's actually correct).
+- Whether fix is V1 dispatch OR V2-deferred (depends on severity + workaround availability).
+- Whether parser fix sequencing should go BEFORE or AFTER Phase 12.5 #3 close.
+
+**Status**: QUEUED; orchestrator-paired walkthrough on operator's signal.
+
+### Item Q2: Discrepancy resolution page — render journal/Schwab value comparison as table (presentation-only)
+
+**Posture:** Small executing-plans-shape dispatch (or inline-fix if simple enough; orchestrator chooses at commission time).
+
+**Trigger:** Phase 12.5 #2 shipped `/reconcile/discrepancy/{id}/resolve` form page with pre-resolution context section ABOVE choice menu. Current rendering uses list format for the journal-side vs Schwab-side value comparison. Operator wants this rendered as a TABLE (2 columns: journal-side | Schwab-side; rows per compared field). Believes this is presentation-only — VM data is already structured; only the template (and possibly the VM dataclass field shape) needs adjustment.
+
+**Scope:**
+- MODIFY `swing/web/templates/reconcile_discrepancy_resolve.html.j2` — replace list rendering of pre-resolution context with `<table>` (2-column journal-side | Schwab-side; ARIA-compliant; ASCII-only per F20 LOCK from Phase 12.5 #2).
+- MAYBE MODIFY `swing/web/view_models/reconcile.py` — if VM's `pre_resolution_context_pairs` field shape needs restructuring from `list[tuple[str, str]]` to `list[tuple[str, Any, Any]]` (field-label + journal-value + Schwab-value) for cleaner template rendering. Spec §5.2 ReconcilePreResolutionContext field shape (15 fields per Phase 12.5 #2 A3 amendment) — verify whether existing shape suits table rendering.
+- Per-discrepancy-type render helpers may need touch-up (10 helpers in `reconcile.py` per Phase 12.5 #2 plan).
+- NEW discriminating tests asserting `<table>` element + `<th>` headers (Journal | Schwab) + correct row count per discrepancy type.
+
+**Out of scope:**
+- Behavioral changes — POST handler + service-layer untouched.
+- Schema changes (v19 LOCK).
+- CLI parity (CLI uses different output format; not affected).
+
+**Operator-locks (anticipated; operator confirms at commission)**:
+- Per-discrepancy-type table column headers (Journal | Schwab vs ours / theirs / etc.) — operator-decision at commission.
+- Whether VM field-shape changes (suggesting yes for clarity) OR template-only restructure (jinja extracts fields by name) — operator decides based on dispatch-author proposal.
+
+**Expected dispatch shape:**
+- 1-3 tasks (template rewrite + VM field reshape + tests).
+- 1-2 Codex rounds.
+- 2-3 surface operator-witnessed gate (S1 inline pytest + ruff; S2 visual verification of `/reconcile/discrepancy/{id}/resolve` page renders table; S3 visual verification across the 10 per-type render helpers).
+- Schema v19 unchanged.
+
+**Cross-references:**
+- Phase 12.5 #2 plan A3 amendment (15-field ReconcilePreResolutionContext drift).
+- Phase 12.5 #2 spec §5.2 + spec §6.
+
+**Status**: QUEUED; commission timing operator-paced.
+
+### Sequencing relative to Phase 12.5 #3 + Phase 13
+
+- **Phase 12.5 #3 executing-plans** — dispatched (UNBLOCKED post operator approval); brief at `docs/phase12-5-bundle-3-project-hygiene-executing-plans-dispatch-brief.md`.
+- **Item Q1 walkthrough** — orchestrator-paired; operator commissions on signal. May or may not lead to investigation dispatch.
+- **Item Q2** — small executing-plans dispatch; operator commissions on signal.
+- **Phase 13** — gated on Phase 12.5 closure (Phase 12.5 #3 + Q1 + Q2). Phase 13 scope LOCKED at `docs/phase13-scope-brainstorm.md` §0.5.
+
+---
+
 ## 2026-05-18 Phase 12.5 #3 writing-plans SHIPPED at `fb27be2` — project-hygiene maintenance pass plan; 6 Codex rounds NO_NEW_CRITICAL_MAJOR; ZERO ACCEPT-WITH-RATIONALE on Majors; ZERO Co-Authored-By footer drift; orchestrator-side QA review PASS-CLEAN; schema v19 UNCHANGED; executing-plans dispatch UNBLOCKED
 
 **Integration-merge at `fb27be2`** (branch `phase12-5-bundle-3-project-hygiene-writing-plans` via `--no-ff`; 1 task-branch commit at `63f1943` combined plan-write + return-report). 6 Codex rounds NO_NEW_CRITICAL_MAJOR convergent monotonic-Major taper (R1 0C/4M/4m → R2 0C/3M/3m → R3 0C/3M/2m → R4 0C/1M/2m → R5 0C/1M/2m → R6 0C/0M/1m; operator-override past default MAX_ROUNDS=5 at R6 per Phase 12.5 #1+#2 brainstorm precedent). ZERO Critical findings entire chain. ZERO ACCEPT-WITH-RATIONALE on Major findings (all 12 cumulative Major resolved with code-content fixes). 2 Minor accepted as advisory (line count overshoot 1101 vs 400-700 brief target + section letter drift collapsed-gate precedent). ZERO Co-Authored-By footer drift (~165+ project-cumulative streak preserved).
