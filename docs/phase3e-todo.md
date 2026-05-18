@@ -86,12 +86,62 @@ Two cleanup items operator queued for post-Phase-12.5-#3 closure, BEFORE Phase 1
 
 **Status**: QUEUED; commission timing operator-paced.
 
+### Item Q3: Skipped-test inventory audit — investigate + prune (orchestrator-driven; in spirit of Phase 12.5 #3 T-3.5 failing-test triage)
+
+**Posture:** Orchestrator-driven investigation at Phase 12.5 #3 executing-plans return time. NOT a separate dispatch unless triage surfaces work that warrants one.
+
+**Trigger:** Operator-added 2026-05-18 — Phase 12.5 #3 audits the 3 pre-existing Phase 8 walkthrough FAILING tests (T-3.5 bucket triage); in the same spirit, the SKIPPED-test inventory deserves audit. Skipped tests carry an implicit "deferred-work" cost that compounds over time; some skips become stale (the original blocker resolved but the skip decorator was never removed); some skips mask deferred-but-still-pending work; some are legitimate operator-only fixtures.
+
+**Baseline at brief drafting time (2026-05-18 fresh pytest run on main HEAD `9407dad`)**: **5 skipped** (4847 fast pass + 3 pre-existing phase8 walkthrough failures + 5 skipped + 1 known enumerated):
+- `tests/evaluation/patterns/test_flag_classifier_integration.py:21` "No labeled fixtures committed yet (Task 7.3 operator-only)" — legitimate-deferred per operator commit posture.
+- 4 OTHERS not yet enumerated at brief time; investigation surfaces the full roster.
+
+**Skipped-count growth scenario**: if Phase 12.5 #3 T-3.5 lands **Bucket C** (skip-pattern with operator approval), skip count grows from 5 → 8 (3 Phase 8 walkthrough tests added). The Bucket C disposition is itself a deliberate skip; this Q3 audit covers it identically (legitimate-deferred per operator approval; standalone-dispatch entry banked).
+
+**Scope (orchestrator-driven; ~10-30 min):**
+1. **Enumerate every currently-skipped test**: `python -m pytest -m "not slow" -rs -q -n 0 2>&1 | grep -E "^SKIPPED"` to get the full roster with skip reasons.
+2. **For each skip**, surface:
+   - File:line + test name + skip decorator (`@pytest.mark.skip(reason=...)` vs `@pytest.mark.skipif(...)` vs runtime `pytest.skip(...)`).
+   - Skip rationale text (verbatim).
+   - Date the skip was introduced (`git log -p --diff-filter=A -- <file> | grep -B5 "pytest.mark.skip"` or similar; approximate via blame).
+   - Cross-bundle pin status if applicable (e.g., Phase 10 T-A.7 + T-E.3 cross-bundle pin pattern — un-skip happens at later sub-bundle; verify the un-skip already landed).
+3. **Classify per skip** as one of:
+   - **Legitimate-deferred** (e.g., operator-only labeled fixtures pending; cross-bundle pin awaiting later sub-bundle that hasn't landed yet; slow-marked test requiring live API access).
+   - **Stale** (the original blocker has resolved but the skip decorator was never removed; un-skip + verify-passes is the action).
+   - **Prunable** (the test itself is no longer needed; the surface it exercised was removed/refactored; DELETE the test).
+   - **Bucket-C-style** (Phase 12.5 #3 T-3.5 disposition; legitimate-deferred per operator approval + standalone-dispatch entry banked).
+4. **Propose per-skip disposition** + operator-paired decision per skip.
+
+**Operator-locks (anticipated; operator confirms at audit time)**:
+- Whether any reclassification + per-skip action lands inline (small orchestrator-driven commit) OR requires a separate dispatch (if e.g. multiple un-skips reveal real test failures requiring fixes).
+- Whether the audit-summary doc itself is durably tracked (e.g., new `docs/skipped-test-inventory-2026-05-18.md` companion to T-3.4's V2.1 §VII.F amendment inventory pattern) OR ephemeral (banked inline in this phase3e-todo entry).
+
+**Likely outcomes (per audit pattern history)**:
+- 1-2 legitimate-deferred (operator-only fixtures + cross-bundle pin awaiting later phase).
+- 1-3 stale (project moved past the original blocker; un-skip + verify-passes).
+- 0-1 prunable (rare; tests rarely become unnecessary).
+- 0-3 Bucket-C-style if Phase 12.5 #3 T-3.5 lands Bucket C.
+
+**Out of scope:**
+- Auditing FAILING tests beyond the 3 Phase 12.5 #3 T-3.5 targets (Phase 12.5 #3 owns that).
+- Adding NEW tests to cover gaps revealed by un-skipping.
+- Test-runtime profiling beyond skip-resolution work.
+
+**Status**: QUEUED at executing-plans return time. Orchestrator-driven; no implementer dispatch unless triage surfaces work warranting one.
+
+**Cross-references:**
+- Phase 12.5 #3 T-3.5 failing-test triage (same spirit; complementary discipline).
+- Phase 10 T-A.7 + T-E.3 cross-bundle pin un-skip pattern (precedent for legitimate-deferred → un-skip at later sub-bundle).
+- Phase 12.5 #2 cross-bundle pin (1 of the 5 baseline skipped; un-skipped during writing-plans but may or may not have landed via executing-plans merge — audit verifies).
+- `feedback_orchestrator_qa_implementer_product.md` (orchestrator QA discipline; Q3 is QA-adjacent triage).
+
 ### Sequencing relative to Phase 12.5 #3 + Phase 13
 
 - **Phase 12.5 #3 executing-plans** — dispatched (UNBLOCKED post operator approval); brief at `docs/phase12-5-bundle-3-project-hygiene-executing-plans-dispatch-brief.md`.
+- **Item Q3 skipped-test audit** — orchestrator-driven at Phase 12.5 #3 executing-plans RETURN time (before merge); part of post-return QA + triage window.
 - **Item Q1 walkthrough** — orchestrator-paired; operator commissions on signal. May or may not lead to investigation dispatch.
 - **Item Q2** — small executing-plans dispatch; operator commissions on signal.
-- **Phase 13** — gated on Phase 12.5 closure (Phase 12.5 #3 + Q1 + Q2). Phase 13 scope LOCKED at `docs/phase13-scope-brainstorm.md` §0.5.
+- **Phase 13** — gated on Phase 12.5 closure (Phase 12.5 #3 + Q1 + Q2 + Q3). Phase 13 scope LOCKED at `docs/phase13-scope-brainstorm.md` §0.5.
 
 ---
 
