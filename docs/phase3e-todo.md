@@ -937,7 +937,11 @@ Discrepancies 39/40/41 from pipeline #63 (run_id=10) are LITERALLY IDENTICAL to 
 
 ---
 
-## 2026-05-15 Pipeline run on empty finviz inbox should auto-trigger `_step_finviz_fetch` (operator-reported during Phase 12 Sub-bundle A S5 gate)
+## 2026-05-15 Pipeline run on empty finviz inbox should auto-trigger `_step_finviz_fetch` — **SHIPPED 2026-05-18 at `7a84942`** (3rd gate-blocker occurrence closed; 3 Codex rounds NO_NEW_CRITICAL_MAJOR; ZERO ACCEPT-WITH-RATIONALE; ZERO Co-Authored-By footer drift; +6 fast tests; ruff/schema unchanged)
+
+**SHIPPED 2026-05-18** at integration merge `7a84942` (branch `phase12-5-finviz-inbox-auto-fetch-fix`; 5 commits = 1 task-impl + 3 Codex-fix + 1 return-report). Fix at `swing/pipeline/runner.py:525-602` splits the combined catch — `NoFilesError` triggers ONE inline `_step_finviz_fetch` attempt + retry `select_csv`; `AmbiguousInboxError` stays fail-fast. Site 2 (line 638) gated on `not finviz_fetched_inline` to prevent double-fire (would persist 2 `finviz_api_calls` audit rows per run). 2 new private helpers: `_read_finviz_call_max_id_snapshot` (causal anchor) + `_read_latest_finviz_call_diagnostic` (scoped read of audit row inserted by THIS call). Combined error message now surfaces the real Finviz cause (missing token / auth / rate-limit / schema parity) instead of redundant "No CSV files" twice. Operator-witnessed 2-surface gate PASS: S1 4581 fast + ruff 18; S2 pipeline #67 complete from empty inbox in 45s (F5 audit-row contract verified — 1 finviz_api_calls row, no double-fire). 3 forward-binding lessons banked (audit-row contract tests require lower-level monkeypatch; `_read_latest_*` helpers in multi-surface code must scope by PK snapshot; USERPROFILE/HOME read-side pollution symmetric to existing write-side gotcha).
+
+### Original entry (2026-05-15; pre-dispatch; superseded by SHIPPED outcome above)
 
 **Symptom (operator-surfaced 2026-05-15 during Phase 12 Sub-bundle A S5 gate):** `swing pipeline run` against an empty `data/finviz-inbox/` (folder exists but contains no CSV — common in fresh worktrees per yesterday's #3 fix that auto-creates the dir but doesn't populate it) errors with `No CSV files in <dir>` + state=failed. Should instead invoke the Finviz Elite API fetch path (`_step_finviz_fetch` semantics) to auto-populate the inbox + then proceed.
 
@@ -956,7 +960,11 @@ Discrepancies 39/40/41 from pipeline #63 (run_id=10) are LITERALLY IDENTICAL to 
 
 ---
 
-## 2026-05-15 Pipeline run errors out on missing `data/finviz-inbox/` folder (operator-reported)
+## 2026-05-15 Pipeline run errors out on missing `data/finviz-inbox/` folder — **SHIPPED 2026-05-15 at `6ea94f7`** (missing-FOLDER case closed; companion empty-FOLDER case shipped 2026-05-18 at `7a84942` — see entry above)
+
+**SHIPPED 2026-05-15** at commit `6ea94f7` (mkdir bootstrap in `_step_finviz_fetch` + mirrored in `run_pipeline_internal:510` per Codex R1 Major-2 fix family). Closed the missing-FOLDER case (`data/finviz-inbox/` directory absent). The companion empty-FOLDER case (`data/finviz-inbox/` exists but contains no CSV) shipped 2026-05-18 at `7a84942` (see entry above).
+
+### Original entry (2026-05-15; pre-fix; superseded by SHIPPED outcome above)
 
 **Symptom (operator-surfaced 2026-05-15 during Sub-bundle D operator-witnessed gate):** `swing pipeline run` errors out with "no csv found" when `data/finviz-inbox/` directory does not exist on the operator's filesystem.
 
