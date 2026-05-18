@@ -585,13 +585,17 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
                 fetch_status, fetch_err = _read_latest_finviz_call_diagnostic(
                     cfg, after_call_id=pre_call_max_id,
                 )
-                # Codex R2 Minor #2 defense: cap the embedded error to
-                # 512 chars to bound combined-message size. The audit
-                # row itself already truncates at 1024; this cap
-                # bounds re-embedding without altering the source-of-
-                # truth audit row.
-                if fetch_err and len(fetch_err) > 512:
-                    fetch_err = fetch_err[:512] + "..."
+                # Codex R2 Minor #2 + R3 Minor #2 defenses: cap the
+                # embedded error to 512 chars to bound combined-message
+                # size, and collapse embedded newlines/carriage-returns
+                # to single spaces so the combined message stays on one
+                # log line (operator scan-ability). The source-of-truth
+                # audit row itself already truncates at 1024 + is
+                # untouched.
+                if fetch_err:
+                    fetch_err = fetch_err.replace("\r", " ").replace("\n", " ")
+                    if len(fetch_err) > 512:
+                        fetch_err = fetch_err[:512] + "..."
                 fetch_detail = (
                     f" [auto-fetch audit: status={fetch_status!r}"
                     + (f", error={fetch_err}" if fetch_err else "")
