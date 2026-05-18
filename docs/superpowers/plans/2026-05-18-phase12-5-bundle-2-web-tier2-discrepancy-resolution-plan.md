@@ -96,7 +96,7 @@
 ### Task T-2.2 — `ReconcileDiscrepancyResolveVM` + sub-VMs + per-discrepancy-type render helpers
 
 **Files:**
-- Modify: `swing/web/view_models/reconcile.py` — add three frozen dataclasses (`ReconcilePreResolutionContext`, `ReconcileChoiceFormItem`, `ReconcileDiscrepancyResolveVM`) + 11 per-discrepancy-type render helpers + generic fallback.
+- Modify: `swing/web/view_models/reconcile.py` — add three frozen dataclasses (`ReconcilePreResolutionContext`, `ReconcileChoiceFormItem`, `ReconcileDiscrepancyResolveVM`) + 10 per-discrepancy-type render helpers + generic fallback.
 - Test: `tests/web/test_reconcile_resolve_vm.py` (NEW) — VM construction tests + per-type render helper tests.
 
 **Acceptance:**
@@ -175,7 +175,7 @@
   8. Calls `fetch_first_pending_ambiguity_resolve_link_path(conn)` (T-2.9; resolves to None until that task lands — see T-2.9 note for the ordering rationale; until T-2.9 ships the builder MAY pass `None` directly so this T-2.3 commit ships green).
   9. Computes `session_date = action_session_for_run(datetime.now()).isoformat()`.
   10. Returns the assembled VM with `form_action=f"/reconcile/discrepancy/{discrepancy_id}/resolve"`.
-- The builder does NOT call `apply_overrides` (route owns cfg-cascade per §F11).
+- The builder does NOT call `apply_overrides` (route owns cfg-cascade per F14).
 - The builder does NOT open a transaction; it is read-only on `conn`.
 
 **Tests added (~8):**
@@ -223,7 +223,7 @@
 
 - `test_resolve_template_extends_base_layout` — assert the rendered HTML contains the `data-banner=` discriminator from `base.html.j2` (the dashboard banner DOM).
 - `test_resolve_template_renders_pre_resolution_context_for_entry_price_mismatch` — assert `data-pre-context="true"` substring + `Journal entry price` + `Schwab entry price` + the `:.2f` rendered numeric.
-- `test_resolve_template_renders_hx_headers_attribute_verbatim` — exact-substring `hx-headers='{"HX-Request": "true"}'` (F4 LOCK; Phase 5 R1 M1 regression pin).
+- `test_resolve_template_renders_hx_headers_attribute_semantically` — parse rendered HTML via the test's BeautifulSoup helper (or `html.parser` stdlib equivalent) + extract the `hx-headers` attribute on the form element + assert `json.loads(value) == {"HX-Request": "true"}` (Codex R1 m#4 fix: semantic equality is robust against harmless Jinja/HTML quote normalization; the prior exact-substring approach would have flaked on `&quot;` HTML-entity encoding). Complement: keep an additional `test_resolve_template_renders_hx_headers_attribute_present` substring assertion `'hx-headers='` (presence only; no quote-style coupling) to catch the regression where the attribute is silently dropped. F4 LOCK; Phase 5 R1 M1 regression pin.
 - `test_resolve_template_renders_ambiguity_kind_at_render_hidden_input` — assert `<input type="hidden" name="ambiguity_kind_at_render" value="multi_partial_vs_consolidated">` substring (F8 hidden-anchor regression pin).
 - `test_resolve_template_renders_custom_value_textarea_always` — even when no choice currently selected, the textarea is in the DOM (JS-disabled fallback; F9).
 - `test_resolve_template_ascii_only_codepoints` — iterate rendered HTML; assert `max(ord(c) for c in body) < 128` (F12).
@@ -246,14 +246,14 @@
 - New `router = APIRouter()` at module level (matches Phase 12 Sub-bundle B precedent at `swing/web/routes/schwab.py:68`).
 - `@router.get("/reconcile/discrepancy/{discrepancy_id}/resolve", response_class=HTMLResponse)` decorator on `def reconcile_discrepancy_resolve_form(request: Request, discrepancy_id: int) -> Response`.
 - Handler flow per spec §4.1:
-  1. `cfg = apply_overrides(request.app.state.cfg)` (Phase 12 Sub-bundle B Codex R1 Critical #1 inheritance at every web entry; F11 LOCK).
+  1. `cfg = apply_overrides(request.app.state.cfg)` (Phase 12 Sub-bundle B Codex R1 Critical #1 inheritance at every web entry; F14 LOCK).
   2. `conn = sqlite3.connect(cfg.paths.db_path)` followed by `try: ... finally: conn.close()` (Codex R3 M#3 LOCK — connection closure guaranteed on ALL paths including 404 / 409 early-returns).
   3. `disc = get_discrepancy(conn, discrepancy_id)`. None → render `reconcile_discrepancy_resolve_error.html.j2` with `error_kind='not_found'` + status_code=404.
   4. `disc.resolution != 'pending_ambiguity_resolution' OR disc.ambiguity_kind is None` → error template with `error_kind='already_resolved'` + status_code=409 + echo `disc.resolution`, `disc.resolved_by`, `disc.created_at`.
   5. `vm = build_reconcile_discrepancy_resolve_vm(conn, discrepancy_id)`.
   6. Return `request.app.state.templates.TemplateResponse(request, "reconcile_discrepancy_resolve.html.j2", {"vm": vm})`.
 - ZERO Schwab API calls. ZERO DB writes. ZERO transaction openings.
-- Error-template VM construction (T-2.10 lands the error template + its VM): use a NEW `ReconcileDiscrepancyErrorVM` dataclass with the 8 base-layout fields + `error_kind` + `error_message` + `discrepancy_id`. T-2.5 instantiates this minimally; T-2.10 lands the full template + the styled message + the link back to `/dashboard`.
+- **Error-template VM + template stub lands at T-2.5 (per Codex R1 M#1 task-ordering fix; ensures T-2.5 ships green).** T-2.5 acceptance covers BOTH (a) the GET handler AND (b) a MINIMAL stub of `swing/web/templates/reconcile_discrepancy_resolve_error.html.j2` (handles `error_kind in {'not_found', 'already_resolved'}` only) PLUS the `ReconcileDiscrepancyErrorVM` dataclass in `swing/web/view_models/reconcile.py` (full 8-base-layout-field + `error_kind` + `error_message` + `discrepancy_id` + `disc_resolution` + `disc_resolved_by` + `disc_created_at` shape; the 3 disc_* fields are Optional and unused by the 2 stub branches). T-2.10 then EXPANDS the template to add the 3 remaining branches (`anchor_mismatch` / `service_error` / `db_unavailable`) — used by T-2.6's 400/409/500/503 paths. This stub-then-expand pattern parallels Phase 12 Sub-bundle B's `swing/web/templates/schwab_setup_error.html.j2` precedent (initial stub + later widening).
 
 **Tests added (~7):**
 
@@ -262,7 +262,7 @@
 - `test_get_returns_409_for_terminal_resolution` — seed `resolution='operator_resolved_ambiguity'`; assert 409 + body cites the terminal resolution value.
 - `test_get_returns_409_for_null_ambiguity_kind` — seed `pending_ambiguity_resolution` but `ambiguity_kind=NULL` (defensive — shouldn't normally happen); assert 409.
 - `test_get_closes_db_connection_on_404_path` — patch `sqlite3.connect` to return a `Mock`; assert `conn.close()` called even on early-return 404 (F13).
-- `test_get_calls_apply_overrides` — patch `apply_overrides` and assert it was called with `request.app.state.cfg` (F11 regression pin).
+- `test_get_calls_apply_overrides` — patch `apply_overrides` and assert it was called with `request.app.state.cfg` (F14 regression pin).
 - `test_get_route_registered_on_app_routes` — `assert any(r.path == "/reconcile/discrepancy/{discrepancy_id}/resolve" and r.methods == {"GET"} for r in app.routes)` (defense-in-depth; Phase 6 I3 lesson family).
 
 **Commit message stem:** `feat(web): add GET /reconcile/discrepancy/{id}/resolve route handler (Phase 12.5 #2 T-2.5)`
@@ -303,7 +303,7 @@
         - N < 1 → 400 + re-render "Pick index must be >= 1".
         - `parsed_count = _parse_parametric_pick_count(disc.resolution_reason)`; `N > parsed_count` → 400 + re-render "Choice 'pick_schwab_record_{N}' is out of range; Schwab returned {parsed_count} candidates within the match window. Valid range: pick_schwab_record_1 .. pick_schwab_record_{parsed_count}.".
         - Parametric picks always require `custom_value_raw` (F10 LOCK; mirrors CLI `cli.py:2538`). Missing → 400 + re-render with shape-hint `'{"price": X.XX, "quantity": Q, "fill_datetime": "..."}'`.
-     h. No-match branch: `choice_code` neither in `static_codes` nor a valid parametric pick → 400 + re-render with `valid_choices=sorted(static_codes)` echoed.
+     h. No-match branch: `choice_code` neither in `static_codes` nor a valid parametric pick → 400 + re-render with `valid_choices` echoed. When `disc.ambiguity_kind == 'multi_match_within_window'`, `valid_choices = sorted(static_codes) + [f'pick_schwab_record_{i+1}' for i in range(_parse_parametric_pick_count(disc.resolution_reason))]` so the error text presents the full operator-visible menu (Codex R1 m#3 fix; mirrors the form-render menu that surfaced these codes in the GET response). When ambiguity_kind is NOT multi_match_within_window, `valid_choices = sorted(static_codes)` only.
      i. `custom_value_raw is not None` AND `len(custom_value_raw.strip()) > 0`: parse via `json.loads`; `JSONDecodeError` → 400 + re-render citing `exc.msg` + preserving operator's typed value byte-for-byte.
   5. Service call:
      ```python
@@ -325,14 +325,14 @@
      - `applied_by_override` + `correction_action_override` are NOT passed (default-None preserves manual-operator legacy shape per F3 LOCK).
   6. Service-exception catch-ladder per spec §4.2 step 5 verbatim (each maps to a distinct HTTP response):
      - `CallerHeldTransactionError` → 500 (developer-bug class; should not fire — defense-in-depth).
-     - `InvalidOverrideComboError` → 500 (developer-bug class; should not fire — web passes only `resolved_by_override='operator_web'` which is unrelated to the auto-redirect triple per F5).
+     - `InvalidOverrideComboError` → 500 (developer-bug class; should not fire — web passes only `resolved_by_override='operator_web'` which is unrelated to the auto-redirect triple per F17).
      - `ValidatorRejectedError` → 400 + re-render with validator's rejection text in error band.
      - `AlreadySupersededError` → 409 + error template (defense-in-depth for race against tier-3 override of earlier chain entry).
-     - `ValueError` (terminal-state from inner; payload-shape rejection from handler) → 400 + re-render citing `str(exc)`.
+     - `ValueError` → **split disposition** (Codex R1 M#2 fix; spec §8.2 race semantics): catch the `ValueError` from `apply_tier2_resolution`, then **re-read** the discrepancy via `get_discrepancy(conn, discrepancy_id)`. If the re-read shows `disc.resolution != 'pending_ambiguity_resolution'` (i.e., a concurrent writer landed between the route's pre-flight check and the service call — the inner's "verify precondition" raised `ValueError` because the discrepancy concurrently moved to a terminal state), respond with **409 + error template** (`error_kind='already_resolved'`) — NOT 400 + re-render (re-rendering would loop the operator through a builder that asserts `resolution='pending_ambiguity_resolution'` precondition + raise). Otherwise (re-read still shows pending; the `ValueError` originated from handler payload-shape rejection or unknown handler), respond with **400 + re-render** citing `str(exc)`. Discriminating test pattern: plant a concurrent-resolve race via two TestClient threads (or simulate via a `monkeypatch.setattr(apply_tier2_resolution, ...)` that mutates the discrepancy + re-raises `ValueError`); assert the 409 branch fires + the operator sees a clean explanation rather than an internal-error loop.
      - `sqlite3.OperationalError` (DB locked) → 503 + error template + retry hint.
      - Bare `Exception` → 500 + error template + redacted excerpt + `log.warning(type(exc).__name__)`.
   7. Success path:
-     - `correction_id = result.correction_id` (non-None on manual tier-2 paths; sandbox short-circuit applies ONLY to auto-redirect per F1 — web V1 never triggers).
+     - `correction_id = result.correction_id` (non-None on manual tier-2 paths; sandbox short-circuit applies ONLY to auto-redirect per F16 — web V1 never triggers).
      - HTMX submit (request carries `HX-Request: true` header — guaranteed under OriginGuard strict-mode because the form template carries `hx-headers`): `Response(status_code=204, headers={"HX-Redirect": f"/dashboard?reconcile_resolved={correction_id}"})`.
      - Non-HTMX submit (only reachable under OriginGuard non-strict): `RedirectResponse(url=f"/dashboard?reconcile_resolved={correction_id}", status_code=303)` per Phase 12 Sub-bundle B `swing/web/routes/schwab.py:451` byte-for-byte mirror.
 - The handler does NOT open its own transaction (F7 LOCK; service-layer owns BEGIN IMMEDIATE / COMMIT / ROLLBACK per Phase 8 R3-R4 + CLAUDE.md `Service-layer with conn:` gotcha).
@@ -347,6 +347,7 @@
 - `test_post_returns_400_on_pick_schwab_record_out_of_range` — seeded `multi_match_within_window` with `resolution_reason="Schwab returned 3 ..."`; submit `choice_code=pick_schwab_record_5`; assert 400 + body cites "out of range" + `Valid range: pick_schwab_record_1 .. pick_schwab_record_3`.
 - `test_post_returns_400_on_malformed_custom_value_json` — submit `custom_value='{invalid'`; assert 400 + body cites `json.loads` error + `prior_custom_value_raw` preserved byte-for-byte in re-render.
 - `test_post_returns_400_when_validator_rejected_error_raised` — patch `apply_tier2_resolution` to raise `ValidatorRejectedError("price must be > 0")`; assert 400 + body cites rejection text.
+- `test_post_value_error_concurrent_race_returns_409_not_400` — NEW (Codex R1 M#2 acceptance pin): patch `apply_tier2_resolution` to (a) mutate `disc.resolution` to `'operator_resolved_ambiguity'` via direct UPDATE, then (b) raise `ValueError("discrepancy is no longer pending")`. Submit POST; assert response is **409 + error template** (NOT 400 + re-render). Asserts the re-read disambiguation logic in branch 14b is wired correctly.
 
 **Commit message stem:** `feat(web): add POST /reconcile/discrepancy/{id}/resolve route handler (Phase 12.5 #2 T-2.6)`
 
@@ -484,12 +485,12 @@
 
 ---
 
-### Task T-2.10 — Error path templates (404/409/400/500/503)
+### Task T-2.10 — Error path template EXPANSION (anchor_mismatch / service_error / db_unavailable branches)
 
 **Files:**
-- Create: `swing/web/templates/reconcile_discrepancy_resolve_error.html.j2` (NEW; single template parameterized by `vm.error_kind` rendering all 5 error variants per spec §8.1).
-- Modify: `swing/web/view_models/reconcile.py` — add `ReconcileDiscrepancyErrorVM` dataclass + builder.
-- Modify: `swing/web/routes/reconcile.py` — wire the error VM into each error-path branch (T-2.5 + T-2.6 use the placeholder VM constructed inline; T-2.10 centralizes via the new VM + template).
+- Modify: `swing/web/templates/reconcile_discrepancy_resolve_error.html.j2` — T-2.5 landed the stub with 2 branches (`not_found` + `already_resolved`); T-2.10 EXPANDS to the full 5-branch shape per spec §8.1.
+- Modify: `swing/web/view_models/reconcile.py` — `ReconcileDiscrepancyErrorVM` already defined at T-2.5; T-2.10 only widens the template's branch coverage (no new dataclass; no signature change).
+- Modify: `swing/web/routes/reconcile.py` — T-2.6 lands the route-side wiring for the 3 new branches; T-2.10 verifies template-side coverage. (T-2.6 already lands the route-side calls to `_render_error(error_kind='anchor_mismatch'|'service_error'|'db_unavailable', ...)` per its acceptance criterion #6; T-2.10's scope is template-branch addition.)
 - Test: `tests/web/test_reconcile_resolve_error_paths.py` (NEW).
 
 **Acceptance:**
@@ -580,7 +581,7 @@
 - Schema v19.
 
 **Expected post-ship baseline (per §K projection):**
-- ~4790 fast tests pass (4712 + ~78 new).
+- ~4793 fast tests pass (4712 + ~81 new).
 - 3 pre-existing phase8 failures unchanged.
 - 5 skipped + 0 NEW skips (no `@pytest.mark.skip` planned for any T-2.X test).
 - 2 slow E2E tests PASS (T-2.11 adds one).
@@ -849,7 +850,7 @@ with sqlite3.connect(db_path) as conn:
 
 ### §G.2 T-2.6 narrative (POST handler — full error catch-ladder)
 
-T-2.6 is the most complex single task. The handler has **16 distinct response branches** (per spec §8.1):
+T-2.6 is the most complex single task. The handler has **18 distinct response branches** (per spec §8.1; branch 14 splits into 14a/14b per Codex R1 M#2 fix — `ValueError` post-service requires re-read to disambiguate concurrent-resolve race vs handler-payload rejection):
 
 1. 200 success (HTMX) → 204 + HX-Redirect
 2. 200 success (non-HTMX) → 303 RedirectResponse
@@ -864,12 +865,13 @@ T-2.6 is the most complex single task. The handler has **16 distinct response br
 11. 400 missing `ambiguity_kind_at_render` anchor
 12. 409 `ambiguity_kind_at_render` mismatch
 13. 400 `ValidatorRejectedError`
-14. 400 `ValueError` from service (handler payload-shape rejection)
+14a. 400 `ValueError` from service after re-read confirms discrepancy still pending (handler payload-shape rejection / unknown handler)
+14b. 409 `ValueError` from service after re-read shows discrepancy concurrently moved to terminal state (concurrent-resolve race; Codex R1 M#2 fix)
 15. 409 `AlreadySupersededError` (defense-in-depth)
 16. 500 `CallerHeldTransactionError` / `InvalidOverrideComboError` / bare `Exception`
 17. 503 `sqlite3.OperationalError`
 
-T-2.6's test suite covers branches 1, 3, 6, 11/12, 7/14, 9, 13 explicitly (8 tests per §A); branches 2, 4, 5, 8, 10, 15, 16, 17 covered by additional parametrize entries OR centralized in the T-2.10 error-template test suite.
+T-2.6's test suite covers branches 1, 3, 6, 11/12, 7/14a, 9, 13 explicitly (8 tests per §A) PLUS a NEW dedicated test for branch 14b — `test_post_value_error_concurrent_race_returns_409_not_400` (planted via mock or two-TestClient-thread setup; Codex R1 M#2 acceptance pin); branches 2, 4, 5, 8, 10, 15, 16, 17 covered by additional parametrize entries OR centralized in the T-2.10 error-template test suite.
 
 **Field-discipline contract per spec §6 + Phase 8 R2-R4 LOCK**: the form submits FOUR named values. Three are operator-supplied (`choice_code`, `custom_value`, `resolution_reason`); one is server-stamped state-anchor (`ambiguity_kind_at_render` — set in the form-render by the template; verified at POST). The handler also server-stamps `resolved_by_override='operator_web'` at handler entry (per F2 LOCK; NOT operator-supplied; NOT a hidden form input). The `discrepancy_id` flows through the URL path parameter. `form_action` is server-rendered into the template. Nothing else.
 
@@ -888,7 +890,7 @@ ruff check swing/ --statistics
 python -m pytest -m slow tests/integration/test_phase12_5_bundle_2_web_tier2_happy_path.py -v
 ```
 
-**Acceptance:** ~4790 fast tests green (4712 baseline + ~78 new); 3 pre-existing phase8 failures unchanged; 5 skipped unchanged; ruff 18 E501 unchanged; 1 slow E2E PASS.
+**Acceptance:** ~4793 fast tests green (4712 baseline + ~78 new); 3 pre-existing phase8 failures unchanged; 5 skipped unchanged; ruff 18 E501 unchanged; 1 slow E2E PASS.
 
 ### §H.2 S2 — Banner-link navigation
 
@@ -978,21 +980,21 @@ Codex chain rounds MAY surface additional candidates.
 | T-2.3 | ~80 | ~100 | 8 | 0 |
 | T-2.4 | ~150 (template) | ~80 | 6 | 0 |
 | T-2.5 | ~120 | ~90 | 7 | 0 |
-| T-2.6 | ~180 | ~130 | 8 | 0 |
+| T-2.6 | ~185 | ~135 | 9 | 0 |
 | T-2.7 | ~40 (field decls + post_init) | ~70 | 10 | 0 |
 | T-2.8 | ~15 (template diff) | ~80 | 8 | 0 |
 | T-2.9 | ~80 (helper + retrofit) | ~120 | 6 + N (per-route) | 0 |
 | T-2.10 | ~80 (template + VM) | ~70 | 6 | 0 |
 | T-2.11 | ~10 (cycle-checklist + CLAUDE.md) | ~200 (3 test files) | 5 | 1 |
-| **Totals** | **~965 production LOC** | **~1140 test LOC** | **~80 fast tests** | **1 slow** |
+| **Totals** | **~970 production LOC** | **~1145 test LOC** | **~81 fast tests** | **1 slow** |
 
-**Net fast-test delta**: +80 (4712 baseline → ~4790 post-merge).
+**Net fast-test delta**: +81 (4712 baseline → ~4793 post-merge).
 **Net production LOC delta**: ~+965.
 **Net test LOC delta**: ~+1140.
 **Schema delta**: ZERO (F1 LOCK).
 **Ruff delta**: 18 E501 baseline preserved (Phase 12.5 #3 clears).
 
-Spec §12 projected ~+45-75 fast tests; plan refinement lands at +80 (matches the overshoot precedent across Phase 9 / 10 / 12 dispatches). Slightly above the spec's upper band; matches the brief's `~+80 fast tests + 1 slow E2E + ~+450 LOC` projection. Production LOC is ~+515 above brief projection because the retrofit footprint (T-2.7 + T-2.9 across ~30 files) is mechanical but additive across the row count.
+Spec §12 projected ~+45-75 fast tests; plan refinement lands at +81 (matches the overshoot precedent across Phase 9 / 10 / 12 dispatches; +1 from Codex R1 M#2 ValueError-race regression pin). Slightly above the spec's upper band; matches the brief's `~+80 fast tests + 1 slow E2E + ~+450 LOC` projection within rounding. Production LOC is ~+520 above brief projection because the retrofit footprint (T-2.7 + T-2.9 across ~30 files) is mechanical but additive across the row count.
 
 ---
 
@@ -1009,7 +1011,7 @@ Spec §12 projected ~+45-75 fast tests; plan refinement lands at +80 (matches th
 
 **Skill:** copowers:executing-plans (wraps superpowers:subagent-driven-development + adversarial Codex review).
 
-**Scope:** single sub-bundle ship; 11 tasks T-2.1..T-2.11; ~+80 fast tests + 1 slow E2E + ~+965 LOC; schema v19 UNCHANGED.
+**Scope:** single sub-bundle ship; 11 tasks T-2.1..T-2.11; ~+81 fast tests + 1 slow E2E + ~+965 LOC; schema v19 UNCHANGED.
 
 **Worktree:** branch `phase12-5-bundle-2-web-tier2-executing-plans` (matches cleanup-script regex). Worktree dir `.worktrees/phase12-5-bundle-2-web-tier2-executing-plans/`.
 
@@ -1074,4 +1076,4 @@ NEW writing-plans-surfaced lessons (populated post-Codex if any):
 
 ---
 
-*End of plan. Phase 12.5 #2 executing-plans target: 1 GET + 1 POST route + 1 VM module + 2 templates + base-layout retrofit across 13 VMs + Pass B population across 21 sites. Schema v19 UNCHANGED. ~+80 fast tests + 1 slow E2E + ~+965 LOC. 3-5 Codex rounds projected.*
+*End of plan. Phase 12.5 #2 executing-plans target: 1 GET + 1 POST route + 1 VM module + 2 templates + base-layout retrofit across 13 VMs + Pass B population across 21 sites. Schema v19 UNCHANGED. ~+81 fast tests + 1 slow E2E + ~+965 LOC. 3-5 Codex rounds projected.*
