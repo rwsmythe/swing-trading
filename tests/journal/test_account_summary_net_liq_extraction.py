@@ -9,8 +9,10 @@ Coverage:
   - Missing Net Liquidating Value row returns None.
   - Numeric format variants: with/without thousand separator;
     parenthetical negative; unquoted dollar form.
-  - Verified against all 4 real-world fixture exports at
-    ``thinkorswim/2026-*-AccountStatement.csv``.
+  - Verified against all 4 sanitized real-world fixture exports at
+    ``tests/fixtures/tos/schwab-real-world-2026-*.csv`` (Phase 9 Sub-bundle
+    E sanitization preserves Net Liquidating Value section; Phase 12.5 #3
+    Q3 disposition switched from gitignored ``thinkorswim/`` originals).
 """
 from __future__ import annotations
 
@@ -26,19 +28,25 @@ from swing.journal.tos_import import extract_account_summary_net_liq
 # ============================================================================
 
 
-THINKORSWIM_DIR = Path(__file__).parents[2] / "thinkorswim"
+# Sanitized fixtures at tests/fixtures/tos/schwab-real-world-<date>.csv
+# (account number 27097300SCHW -> <account> per Phase 9 Sub-bundle E ship;
+# Net Liquidating Value section untouched by sanitization).
+# Phase 12.5 #3 Q3 disposition (2026-05-18): switched from gitignored
+# thinkorswim/ originals to tracked sanitized fixtures so these 4 cases
+# run in CI / fresh checkouts.
+FIXTURE_DIR = Path(__file__).parents[2] / "tests" / "fixtures" / "tos"
 
 
 @pytest.mark.parametrize("filename, expected", [
-    ("2026-04-15-AccountStatement.csv", 1300.00),
-    ("2026-04-30-AccountStatement.csv", 1396.35),
-    ("2026-05-08-AccountStatement.csv", 1420.60),
-    ("2026-05-12-AccountStatement.csv", 2015.01),
+    ("schwab-real-world-2026-04-15.csv", 1300.00),
+    ("schwab-real-world-2026-04-30.csv", 1396.35),
+    ("schwab-real-world-2026-05-08.csv", 1420.60),
+    ("schwab-real-world-2026-05-12.csv", 2015.01),
 ])
 def test_extracts_net_liq_from_real_world_export(
     filename: str, expected: float,
 ) -> None:
-    path = THINKORSWIM_DIR / filename
+    path = FIXTURE_DIR / filename
     if not path.exists():
         pytest.skip(f"{filename} not present in this checkout")
     text = path.read_text(encoding="utf-8", errors="replace")
