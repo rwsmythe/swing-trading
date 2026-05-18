@@ -89,6 +89,34 @@ class AlreadySupersededError(Exception):
     """
 
 
+class InvalidOverrideComboError(ValueError):
+    """Phase 12.5 #1 spec §7.3.1.a + §7.4 — developer-bug signal raised
+    when the auto-redirect override kwargs to :func:`apply_tier2_resolution`
+    (and its inner) are mismatched.
+
+    NOT a data fall-back — pivot loop MUST NOT catch this + must
+    propagate (F21 invariant). Subclass of :class:`ValueError` so existing
+    generic ``ValueError`` catches still see it, but exception-specificity
+    ordering MUST place ``except InvalidOverrideComboError: raise`` BEFORE
+    any generic ``ValueError`` catch.
+    """
+
+
+class _SandboxAutoRedirectShortCircuit(Exception):  # noqa: N818 — spec-locked sentinel name; see docstring
+    """Phase 12.5 #1 T-1.6 + spec §7.6.1 — sandbox short-circuit sentinel
+    raised by :func:`_apply_tier2_resolution_inner` when the auto-redirect
+    override triple is present AND ``environment == 'sandbox'``.
+
+    Intentionally NOT a :class:`ValueError` subclass so the pivot loop's
+    ``except (ValidatorRejectedError, ValueError)`` fallback at the
+    tier-1 / multi-leg auto-redirect branch does NOT absorb it (the
+    pivot loop dispatches its own dedicated catch that rolls back the
+    SAVEPOINT + increments the sandbox-skipped counter; the §7.5
+    fresh-savepoint pending-ambiguity fallback MUST NOT fire on the
+    sandbox path because the stamp was rolled back).
+    """
+
+
 # ---------------------------------------------------------------------------
 # Return shape
 # ---------------------------------------------------------------------------
@@ -142,6 +170,20 @@ _AFFECTED_TABLE_FILLS = "fills"
 _AFFECTED_TABLE_TRADES = "trades"
 _AFFECTED_TABLE_CASH = "cash_movements"
 _AFFECTED_TABLE_SNAPSHOTS = "account_equity_snapshots"
+
+
+# Phase 12.5 #1 spec §7.3.1.a R5 M1 LOCK: the ONLY ``choice_code`` valid
+# with the auto-redirect override triple. Multi-leg auto-redirect synthesizes
+# a ``split_into_partials`` recipe; any other choice with the auto triple
+# is a developer bug (caught by :func:`_validate_override_combo`).
+_AUTO_REDIRECT_SANCTIONED_CHOICE_CODE: str = "split_into_partials"
+
+
+# Phase 12.5 #1 spec §7.3.1.a — the single literal ``resolved_by`` value
+# used by the auto-redirect path. Per F7 invariant, ``resolved_by`` remains
+# free TEXT (no closed enum) — operator-set values pass through unchecked;
+# only this exact literal triggers the hybrid-row invariant checks.
+_AUTO_REDIRECT_RESOLVED_BY: str = "auto_tier1_multi_leg"
 
 
 def _utc_now_iso_ms() -> str:
@@ -207,6 +249,82 @@ def apply_tier1_correction(
         raise
 
 
+def _validate_override_combo(
+    *,
+    choice_code: str,
+    applied_by_override: str | None,
+    correction_action_override: str | None,
+    resolved_by_override: str | None,
+) -> None:
+    """Phase 12.5 #1 spec §7.3.1.a — validate the auto-redirect override
+    triple satisfies the hybrid-row invariant.
+
+    Three invariants enforced:
+
+    1. ``applied_by_override == 'auto'`` OR
+       ``correction_action_override == 'auto_applied'`` requires
+       ``resolved_by_override == 'auto_tier1_multi_leg'``.
+    2. ``resolved_by_override == 'auto_tier1_multi_leg'`` requires
+       ``applied_by_override == 'auto'`` AND
+       ``correction_action_override == 'auto_applied'``.
+    3. ``resolved_by_override == 'auto_tier1_multi_leg'`` requires
+       ``choice_code == _AUTO_REDIRECT_SANCTIONED_CHOICE_CODE`` (i.e.,
+       ``'split_into_partials'``) per spec §7.3.1.a R5 M1 LOCK.
+
+    Returns ``None`` on all-None (legacy default) — F3 invariant.
+    Raises :class:`InvalidOverrideComboError` (subclass of ``ValueError``)
+    on any violation. Error messages cite all 4 input values for forensic
+    clarity.
+    """
+    # Fast path: legacy default (all overrides None) — F3 LOCK.
+    if (
+        applied_by_override is None
+        and correction_action_override is None
+        and resolved_by_override is None
+    ):
+        return
+
+    auto_applied_by = applied_by_override == "auto"
+    auto_correction_action = correction_action_override == "auto_applied"
+    auto_resolved_by = resolved_by_override == _AUTO_REDIRECT_RESOLVED_BY
+
+    # Invariant 1: any "auto applied" signal requires the full auto-redirect
+    # resolved_by literal.
+    if (auto_applied_by or auto_correction_action) and not auto_resolved_by:
+        raise InvalidOverrideComboError(
+            f"auto-applied override requires resolved_by_override="
+            f"{_AUTO_REDIRECT_RESOLVED_BY!r}; got "
+            f"choice_code={choice_code!r}, "
+            f"applied_by_override={applied_by_override!r}, "
+            f"correction_action_override={correction_action_override!r}, "
+            f"resolved_by_override={resolved_by_override!r}"
+        )
+
+    # Invariant 2: auto_tier1_multi_leg resolved_by requires the full
+    # auto applied_by + correction_action pair.
+    if auto_resolved_by and not (auto_applied_by and auto_correction_action):
+        raise InvalidOverrideComboError(
+            f"resolved_by_override={_AUTO_REDIRECT_RESOLVED_BY!r} requires "
+            f"applied_by_override='auto' AND "
+            f"correction_action_override='auto_applied'; got "
+            f"choice_code={choice_code!r}, "
+            f"applied_by_override={applied_by_override!r}, "
+            f"correction_action_override={correction_action_override!r}, "
+            f"resolved_by_override={resolved_by_override!r}"
+        )
+
+    # Invariant 3: auto-redirect triple ONLY valid under split_into_partials.
+    if auto_resolved_by and choice_code != _AUTO_REDIRECT_SANCTIONED_CHOICE_CODE:
+        raise InvalidOverrideComboError(
+            f"auto-redirect triple is only valid under choice_code="
+            f"{_AUTO_REDIRECT_SANCTIONED_CHOICE_CODE!r}; got "
+            f"choice_code={choice_code!r}, "
+            f"applied_by_override={applied_by_override!r}, "
+            f"correction_action_override={correction_action_override!r}, "
+            f"resolved_by_override={resolved_by_override!r}"
+        )
+
+
 def apply_tier2_resolution(
     conn: sqlite3.Connection,
     *,
@@ -216,11 +334,32 @@ def apply_tier2_resolution(
     operator_reason: str,
     risk_policy_id: int | None = None,
     schwab_api_call_id: int | None = None,
+    applied_by_override: str | None = None,
+    correction_action_override: str | None = None,
+    resolved_by_override: str | None = None,
+    environment: str = "production",
 ) -> CorrectionResult:
     """Spec §5.6 — operator-resolved tier-2 ambiguity.
 
     Owns ``BEGIN IMMEDIATE`` / ``COMMIT`` / ``ROLLBACK``. Rejects
     caller-held tx.
+
+    Phase 12.5 #1 T-1.4 — the three ``*_override`` kwargs (all default
+    ``None``) parameterize the audit-row + parent-discrepancy
+    ``applied_by`` / ``correction_action`` / ``resolved_by`` columns for
+    the multi-leg auto-redirect dispatch path. Pre-existing call sites
+    that omit the overrides preserve byte-for-byte legacy shape per F3
+    invariant. The hybrid-row invariant is validated up-front in
+    :func:`_validate_override_combo` (called from
+    :func:`_apply_tier2_resolution_inner` step 0).
+
+    Phase 12.5 #1 T-1.6 — the ``environment`` kwarg (default
+    ``'production'``) threads through to the inner. When the auto-redirect
+    triple is present (``applied_by_override == 'auto'``) AND
+    ``environment == 'sandbox'``, the inner short-circuits with
+    :class:`_SandboxAutoRedirectShortCircuit` per spec §7.6.1 LOCK.
+    Manual operator paths under sandbox proceed normally — operators may
+    test the manual choice menu in sandbox.
     """
     if conn.in_transaction:
         raise CallerHeldTransactionError(
@@ -238,6 +377,10 @@ def apply_tier2_resolution(
             operator_reason=operator_reason,
             risk_policy_id=risk_policy_id,
             schwab_api_call_id=schwab_api_call_id,
+            applied_by_override=applied_by_override,
+            correction_action_override=correction_action_override,
+            resolved_by_override=resolved_by_override,
+            environment=environment,
         )
         conn.commit()
         return result
@@ -546,24 +689,102 @@ def _apply_tier2_resolution_inner(
     operator_reason: str,
     risk_policy_id: int | None = None,
     schwab_api_call_id: int | None = None,
+    applied_by_override: str | None = None,
+    correction_action_override: str | None = None,
+    resolved_by_override: str | None = None,
+    environment: str = "production",
 ) -> CorrectionResult:
     """T-C.3 — spec §5.6 per-(kind, choice_code) dispatch. Caller owns tx.
 
-    Step 1: SELECT discrepancy. Unknown → raise. Terminal resolution →
-            idempotent return.
-    Step 2: Verify resolution == 'pending_ambiguity_resolution'; else
-            raise ValueError.
-    Step 3: Look up handler by (ambiguity_kind, choice_code) — with
-            parametric-prefix dispatch for pick_schwab_record_<N>.
-    Step 4: Dispatch to handler. Each handler validates its payload +
-            executes its mutation (or no-mutation audit) + INSERTs the
-            correction row + UPDATEs discrepancy resolution + emits
-            trade_events when applicable.
+    Phase 12.5 #1 T-1.4 introduces three ``*_override`` kwargs (all
+    default ``None``) for the multi-leg auto-redirect dispatch path. The
+    inner-fn step layout reserves room for T-1.6's sandbox short-circuit
+    (between step 2.5 and step 3 below); T-1.4 ONLY adds steps 0 / 1.5 /
+    2.5 — pure validation that fires before any handler dispatch.
+
+    Step 0 (NEW T-1.4): :func:`_validate_override_combo` — fires BEFORE
+            any DB I/O. Pure validation of the override-kwarg shape.
+    Step 1 (existing): SELECT discrepancy. Unknown → raise.
+    Step 1.5 (NEW T-1.4): post-SELECT secondary invariant —
+            ``resolved_by_override == 'auto_tier1_multi_leg'`` requires
+            ``disc.ambiguity_kind == 'multi_partial_vs_consolidated'``
+            (spec §7.3.1.a R5 M1 LOCK; no other ambiguity_kind supports
+            the auto-redirect path V1).
+    Step 2 (existing): terminal-state idempotent return.
+    Step 2.5 (NEW T-1.4): shape-aware terminal-state guard per spec
+            §7.3.1.a R6 M1 LOCK — auto-redirect overrides against a
+            terminal-state discrepancy whose chain head was NOT
+            auto-resolved (``disc.resolved_by != 'auto_tier1_multi_leg'``)
+            raise to prevent overwriting an operator decision.
+    Step 2.6 (NEW T-1.6): sandbox short-circuit per spec §7.6.1 LOCK —
+            when ``applied_by_override == 'auto'`` AND
+            ``environment == 'sandbox'``, log a warning + raise
+            :class:`_SandboxAutoRedirectShortCircuit`. Manual operator
+            paths under sandbox proceed normally. Fires AFTER step 0
+            (developer-bug guard still fires) AND AFTER step 1
+            (SELECT-first idempotency contract honored per C.C lesson
+            #3) but BEFORE handler dispatch.
+    Step 3 (existing): verify resolution == 'pending_ambiguity_resolution'.
+    Step 4 (existing): look up + dispatch handler by
+            (ambiguity_kind, choice_code).
     """
+    # Step 0 — fire override-shape validation BEFORE any DB I/O.
+    _validate_override_combo(
+        choice_code=choice_code,
+        applied_by_override=applied_by_override,
+        correction_action_override=correction_action_override,
+        resolved_by_override=resolved_by_override,
+    )
+
+    # Step 1 — SELECT discrepancy.
     disc = _select_discrepancy(conn, discrepancy_id)
 
+    # Step 1.5 — post-SELECT secondary invariant: the auto-redirect path is
+    # only valid against multi_partial_vs_consolidated discrepancies.
+    if (
+        resolved_by_override == _AUTO_REDIRECT_RESOLVED_BY
+        and disc.ambiguity_kind != "multi_partial_vs_consolidated"
+    ):
+        raise InvalidOverrideComboError(
+            f"auto-redirect triple requires ambiguity_kind="
+            f"'multi_partial_vs_consolidated'; discrepancy_id="
+            f"{discrepancy_id} has ambiguity_kind={disc.ambiguity_kind!r}"
+        )
+
+    # Step 2 — terminal-state idempotent return.
     if disc.resolution in _TERMINAL_RESOLUTIONS:
+        # Step 2.5 — shape-aware idempotency: prevent auto-redirect from
+        # silently no-op'ing against a manually-resolved chain head.
+        if resolved_by_override == _AUTO_REDIRECT_RESOLVED_BY:
+            existing_resolved_by = _read_discrepancy_resolved_by(
+                conn, discrepancy_id,
+            )
+            if existing_resolved_by != _AUTO_REDIRECT_RESOLVED_BY:
+                raise InvalidOverrideComboError(
+                    f"discrepancy_id={discrepancy_id} is already in "
+                    f"terminal state {disc.resolution!r} with "
+                    f"resolved_by={existing_resolved_by!r} (manual "
+                    f"operator decision); cannot re-resolve via "
+                    f"auto-redirect override"
+                )
         return _idempotent_result_for(conn, discrepancy_id)
+
+    # Step 2.6 (NEW T-1.6) — sandbox short-circuit per spec §7.6.1 LOCK.
+    # Gated on the auto-redirect path (``applied_by_override == 'auto'``):
+    # manual operator paths under sandbox proceed to the handler so
+    # operators can test the menu choices in a sandbox environment.
+    # Fires BEFORE the resolution precondition check + handler dispatch
+    # (the sandbox is read-only for auto-redirect; the pivot loop catches
+    # the sentinel + rolls back the immediately-preceding
+    # ``_stamp_pending_ambiguity_inner`` stamp within its SAVEPOINT).
+    if applied_by_override == "auto" and environment == "sandbox":
+        logger.warning(
+            "_apply_tier2_resolution_inner auto-redirect short-circuited "
+            "under sandbox environment for discrepancy_id=%d; no domain "
+            "writes",
+            discrepancy_id,
+        )
+        raise _SandboxAutoRedirectShortCircuit(discrepancy_id)
 
     if disc.resolution != "pending_ambiguity_resolution":
         raise ValueError(
@@ -596,6 +817,9 @@ def _apply_tier2_resolution_inner(
         operator_reason=operator_reason,
         risk_policy_id=risk_policy_id,
         schwab_api_call_id=schwab_api_call_id,
+        applied_by_override=applied_by_override,
+        correction_action_override=correction_action_override,
+        resolved_by_override=resolved_by_override,
     )
 
 
@@ -857,6 +1081,27 @@ def _select_discrepancy(
         ambiguity_kind=row[8],
         expected_value_json=row[9],
     )
+
+
+def _read_discrepancy_resolved_by(
+    conn: sqlite3.Connection, discrepancy_id: int,
+) -> str | None:
+    """Phase 12.5 #1 T-1.4 — narrow helper for the shape-aware terminal-
+    state idempotency guard. Returns the discrepancy row's current
+    ``resolved_by`` value (free TEXT; may be ``NULL`` for legacy rows).
+
+    Kept separate from :func:`_select_discrepancy` to avoid widening the
+    :class:`_DiscrepancyInfo` dataclass — ``resolved_by`` is consulted
+    only by the auto-redirect override path.
+    """
+    row = conn.execute(
+        "SELECT resolved_by FROM reconciliation_discrepancies "
+        "WHERE discrepancy_id = ?",
+        (discrepancy_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return row[0]
 
 
 def _idempotent_result_for(
@@ -1221,8 +1466,17 @@ def _build_tier2_correction(
     schwab_api_call_id: int | None,
     correction_set_id: int | None,
     source_canonical_value_json: str | None = None,
+    applied_by: str = "operator",
 ) -> ReconciliationCorrection:
-    """Construct a ReconciliationCorrection row for the tier-2 audit emit."""
+    """Construct a ReconciliationCorrection row for the tier-2 audit emit.
+
+    Phase 12.5 #1 T-1.4 — ``correction_action`` and ``applied_by`` are
+    parameterized so multi-leg auto-redirect handlers can write the
+    hybrid (auto_applied / auto) shape per F15 invariant. The legacy
+    default for ``applied_by`` is ``'operator'`` (matches pre-T-1.4
+    behavior byte-for-byte); ``correction_action`` was already a required
+    parameter so no default change applies there.
+    """
     return ReconciliationCorrection(
         correction_id=0,  # ignored at INSERT
         discrepancy_id=disc.discrepancy_id,
@@ -1236,7 +1490,7 @@ def _build_tier2_correction(
         applied_value_json=applied_value_json,
         operator_truth_value_json=None,
         applied_at=_utc_now_iso_ms(),
-        applied_by="operator",
+        applied_by=applied_by,
         correction_set_id=correction_set_id,
         superseded_by_correction_id=None,
         risk_policy_id_at_correction=risk_policy_id,
@@ -1252,7 +1506,13 @@ def _flip_discrepancy_to_resolved_ambiguity(
     *,
     discrepancy_id: int,
     resolution_reason: str,
+    resolved_by: str = "operator",
 ) -> None:
+    """Phase 12.5 #1 T-1.4 — ``resolved_by`` parameterized for the
+    multi-leg auto-redirect path (callers pass
+    ``'auto_tier1_multi_leg'``). Legacy default ``'operator'`` preserves
+    byte-for-byte pre-T-1.4 behavior.
+    """
     conn.execute(
         "UPDATE reconciliation_discrepancies SET "
         "resolution = ?, resolution_reason = ?, "
@@ -1260,7 +1520,7 @@ def _flip_discrepancy_to_resolved_ambiguity(
         "WHERE discrepancy_id = ?",
         (
             "operator_resolved_ambiguity", resolution_reason,
-            _utc_now_iso_ms(), "operator", discrepancy_id,
+            _utc_now_iso_ms(), resolved_by, discrepancy_id,
         ),
     )
 
@@ -1274,6 +1534,9 @@ def _handle_no_mutation_audit(
     risk_policy_id: int | None,
     schwab_api_call_id: int | None,
     correction_reason_suffix: str | None = None,
+    applied_by_override: str | None = None,
+    correction_action_override: str | None = None,
+    resolved_by_override: str | None = None,
 ) -> CorrectionResult:
     """Shared implementation for the no-journal-mutation choices.
 
@@ -1281,6 +1544,11 @@ def _handle_no_mutation_audit(
     (the V1 audit-only family per spec §6.2.1 + Codex R1 Critical #1).
     The audit row carries applied_value_json == pre_correction_value_json
     bytewise — the canonical no-mutation marker.
+
+    Phase 12.5 #1 T-1.4 — accepts override kwargs for hybrid-row shape
+    parity with the auto-redirect path (though no-mutation handlers are
+    not the auto-redirect-sanctioned choice, the threading keeps the
+    handler signature uniform across the family per F22).
     """
     affected_table, affected_row_id = _resolve_affected_target(disc)
     field_name = disc.field_name
@@ -1309,7 +1577,11 @@ def _handle_no_mutation_audit(
 
     correction = _build_tier2_correction(
         disc=disc,
-        correction_action="operator_resolved_ambiguity",
+        correction_action=(
+            correction_action_override
+            if correction_action_override is not None
+            else "operator_resolved_ambiguity"
+        ),
         correction_choice=choice_code,
         affected_table=affected_table,
         affected_row_id=affected_row_id,
@@ -1320,12 +1592,22 @@ def _handle_no_mutation_audit(
         risk_policy_id=risk_policy_id,
         schwab_api_call_id=schwab_api_call_id,
         correction_set_id=None,
+        applied_by=(
+            applied_by_override
+            if applied_by_override is not None
+            else "operator"
+        ),
     )
     correction_id = insert_correction(conn, correction)
     _flip_discrepancy_to_resolved_ambiguity(
         conn,
         discrepancy_id=disc.discrepancy_id,
         resolution_reason=full_reason,
+        resolved_by=(
+            resolved_by_override
+            if resolved_by_override is not None
+            else "operator"
+        ),
     )
     return CorrectionResult(
         correction_id=correction_id,
@@ -1333,7 +1615,11 @@ def _handle_no_mutation_audit(
         affected_row_id=affected_row_id,
         field_name=field_name,
         applied_value_json=pre_json,
-        correction_action="operator_resolved_ambiguity",
+        correction_action=(
+            correction_action_override
+            if correction_action_override is not None
+            else "operator_resolved_ambiguity"
+        ),
         notes="no journal mutation (audit-only)",
     )
 
@@ -1348,6 +1634,9 @@ def _handle_single_field_correction(
     risk_policy_id: int | None,
     schwab_api_call_id: int | None,
     revalidate: bool = True,
+    applied_by_override: str | None = None,
+    correction_action_override: str | None = None,
+    resolved_by_override: str | None = None,
 ) -> CorrectionResult:
     """Shared implementation for single-field UPDATE handlers.
 
@@ -1358,6 +1647,9 @@ def _handle_single_field_correction(
     ``correction_target[field_name]``. Validates via the chain when
     ``revalidate=True``; raises ValueError("validator rejected ...")
     on rejection.
+
+    Phase 12.5 #1 T-1.4 — accepts override kwargs for hybrid-row shape
+    parity (F22).
     """
     affected_table, affected_row_id = _resolve_affected_target(disc)
     field_name = next(iter(correction_target.keys()))
@@ -1389,9 +1681,20 @@ def _handle_single_field_correction(
     applied_json = json.dumps(
         {field_name: target_value}, sort_keys=True, default=str,
     )
+    effective_correction_action = (
+        correction_action_override
+        if correction_action_override is not None
+        else "operator_resolved_ambiguity"
+    )
+    effective_applied_by = (
+        applied_by_override if applied_by_override is not None else "operator"
+    )
+    effective_resolved_by = (
+        resolved_by_override if resolved_by_override is not None else "operator"
+    )
     correction = _build_tier2_correction(
         disc=disc,
-        correction_action="operator_resolved_ambiguity",
+        correction_action=effective_correction_action,
         correction_choice=choice_code,
         affected_table=affected_table,
         affected_row_id=affected_row_id,
@@ -1403,6 +1706,7 @@ def _handle_single_field_correction(
         risk_policy_id=risk_policy_id,
         schwab_api_call_id=schwab_api_call_id,
         correction_set_id=None,
+        applied_by=effective_applied_by,
     )
     correction_id = insert_correction(conn, correction)
 
@@ -1410,6 +1714,7 @@ def _handle_single_field_correction(
         conn,
         discrepancy_id=disc.discrepancy_id,
         resolution_reason=operator_reason,
+        resolved_by=effective_resolved_by,
     )
 
     if affected_table == _AFFECTED_TABLE_FILLS:
@@ -1435,7 +1740,7 @@ def _handle_single_field_correction(
         affected_row_id=affected_row_id,
         field_name=field_name,
         applied_value_json=applied_json,
-        correction_action="operator_resolved_ambiguity",
+        correction_action=effective_correction_action,
         notes=None,
     )
 
@@ -1449,6 +1754,9 @@ def _handle_multi_field_correction(
     operator_reason: str,
     risk_policy_id: int | None,
     schwab_api_call_id: int | None,
+    applied_by_override: str | None = None,
+    correction_action_override: str | None = None,
+    resolved_by_override: str | None = None,
 ) -> CorrectionResult:
     """Multi-column UPDATE handler — used by operator_truth /
     pick_schwab_record_<N> when the operator's payload carries multiple
@@ -1459,6 +1767,9 @@ def _handle_multi_field_correction(
     full merged dict + ``field_name`` is the canonical 'price' anchor
     when present (else first key) for forward-compat with single-field
     queries.
+
+    Phase 12.5 #1 T-1.4 — accepts override kwargs for hybrid-row shape
+    parity (F22).
     """
     affected_table, affected_row_id = _resolve_affected_target(disc)
 
@@ -1499,9 +1810,20 @@ def _handle_multi_field_correction(
         else next(iter(correction_target.keys()))
     )
 
+    effective_correction_action = (
+        correction_action_override
+        if correction_action_override is not None
+        else "operator_resolved_ambiguity"
+    )
+    effective_applied_by = (
+        applied_by_override if applied_by_override is not None else "operator"
+    )
+    effective_resolved_by = (
+        resolved_by_override if resolved_by_override is not None else "operator"
+    )
     correction = _build_tier2_correction(
         disc=disc,
-        correction_action="operator_resolved_ambiguity",
+        correction_action=effective_correction_action,
         correction_choice=choice_code,
         affected_table=affected_table,
         affected_row_id=affected_row_id,
@@ -1513,6 +1835,7 @@ def _handle_multi_field_correction(
         risk_policy_id=risk_policy_id,
         schwab_api_call_id=schwab_api_call_id,
         correction_set_id=None,
+        applied_by=effective_applied_by,
     )
     correction_id = insert_correction(conn, correction)
 
@@ -1520,6 +1843,7 @@ def _handle_multi_field_correction(
         conn,
         discrepancy_id=disc.discrepancy_id,
         resolution_reason=operator_reason,
+        resolved_by=effective_resolved_by,
     )
 
     if affected_table == _AFFECTED_TABLE_FILLS:
@@ -1545,7 +1869,7 @@ def _handle_multi_field_correction(
         affected_row_id=affected_row_id,
         field_name=canonical_field,
         applied_value_json=applied_json,
-        correction_action="operator_resolved_ambiguity",
+        correction_action=effective_correction_action,
         notes=None,
     )
 
@@ -1558,18 +1882,25 @@ def _handle_multi_field_correction(
 def _handle_keep_journal_as_is(
     conn, *, disc, choice_code, operator_custom_payload,
     operator_reason, risk_policy_id, schwab_api_call_id,
+    applied_by_override=None, correction_action_override=None,
+    resolved_by_override=None,
 ):
     return _handle_no_mutation_audit(
         conn, disc=disc, choice_code=choice_code,
         operator_reason=operator_reason,
         risk_policy_id=risk_policy_id,
         schwab_api_call_id=schwab_api_call_id,
+        applied_by_override=applied_by_override,
+        correction_action_override=correction_action_override,
+        resolved_by_override=resolved_by_override,
     )
 
 
 def _handle_consolidate_using_operator_vwap(
     conn, *, disc, choice_code, operator_custom_payload,
     operator_reason, risk_policy_id, schwab_api_call_id,
+    applied_by_override=None, correction_action_override=None,
+    resolved_by_override=None,
 ):
     payload = _require_custom_value(operator_custom_payload, choice_code)
     if not isinstance(payload, Mapping) or "price" not in payload:
@@ -1583,12 +1914,17 @@ def _handle_consolidate_using_operator_vwap(
         operator_reason=operator_reason,
         risk_policy_id=risk_policy_id,
         schwab_api_call_id=schwab_api_call_id,
+        applied_by_override=applied_by_override,
+        correction_action_override=correction_action_override,
+        resolved_by_override=resolved_by_override,
     )
 
 
 def _handle_split_into_partials(
     conn, *, disc, choice_code, operator_custom_payload,
     operator_reason, risk_policy_id, schwab_api_call_id,
+    applied_by_override=None, correction_action_override=None,
+    resolved_by_override=None,
 ):
     """spec §6.2.1 split_into_partials — DELETE consolidated fill, INSERT
     N partial fills, write N+1 correction rows under one correction_set_id.
@@ -1596,6 +1932,12 @@ def _handle_split_into_partials(
     Per spec §3.1.1 anchor-self-reference pattern: anchor (delete) row's
     correction_set_id = its own correction_id; the N insert rows share
     that correction_set_id.
+
+    Phase 12.5 #1 T-1.4 — when the auto-redirect override triple is
+    threaded in, ALL N+1 correction rows + the parent discrepancy carry
+    the hybrid (auto_applied / auto / auto_tier1_multi_leg) shape per
+    F15 invariant. Legacy default (no overrides) preserves byte-for-byte
+    operator-shape behavior per F3.
     """
     payload = _require_custom_value(operator_custom_payload, choice_code)
     if not isinstance(payload, Sequence) or isinstance(payload, (str, bytes)):
@@ -1674,6 +2016,7 @@ def _handle_split_into_partials(
         "price": orig_row[5],
     }
     trade_id = int(orig_row[1])
+    original_action = str(orig_row[3])
     orig_quantity = float(orig_row[4])
 
     partials_qty_sum = sum(p["qty"] for p in parsed_partials)
@@ -1690,6 +2033,20 @@ def _handle_split_into_partials(
 
     pre_json = json.dumps(original_payload, sort_keys=True, default=str)
 
+    # T-1.4 — compute effective override values ONCE; applied uniformly
+    # to ALL N+1 correction rows + the parent discrepancy flip per F15.
+    effective_correction_action = (
+        correction_action_override
+        if correction_action_override is not None
+        else "operator_resolved_ambiguity"
+    )
+    effective_applied_by = (
+        applied_by_override if applied_by_override is not None else "operator"
+    )
+    effective_resolved_by = (
+        resolved_by_override if resolved_by_override is not None else "operator"
+    )
+
     # Step 1: DELETE the consolidated fill + recompute aggregates ONCE.
     conn.execute("DELETE FROM fills WHERE fill_id = ?", (original_fill_id,))
     _recompute_aggregates(conn, trade_id)
@@ -1697,7 +2054,7 @@ def _handle_split_into_partials(
     # Step 2: INSERT anchor (deletion-sentinel) correction row.
     anchor_correction = _build_tier2_correction(
         disc=disc,
-        correction_action="operator_resolved_ambiguity",
+        correction_action=effective_correction_action,
         correction_choice=choice_code,
         affected_table=_AFFECTED_TABLE_FILLS,
         affected_row_id=original_fill_id,
@@ -1711,6 +2068,7 @@ def _handle_split_into_partials(
         risk_policy_id=risk_policy_id,
         schwab_api_call_id=schwab_api_call_id,
         correction_set_id=None,  # set in step 2.5 (self-reference)
+        applied_by=effective_applied_by,
     )
     anchor_id = insert_correction(conn, anchor_correction)
     # Step 2.5: UPDATE anchor's correction_set_id to itself.
@@ -1731,7 +2089,14 @@ def _handle_split_into_partials(
             fill_id=None,
             trade_id=trade_id,
             fill_datetime=partial["fill_datetime"],
-            action="entry",
+            # Codex R2 Critical #1 fix — PRESERVE the original fill's
+            # action (entry / exit / trim / stop) so close-fill
+            # discrepancies (parent ``action='exit'``) do NOT silently
+            # convert their N partials to ``'entry'`` rows. The
+            # classifier's ``_classify_unmatched_fill_shared`` is shared
+            # between ``unmatched_open_fill`` AND ``unmatched_close_fill``
+            # per Sub-bundle C.B; both branches reach this handler.
+            action=original_action,
             quantity=partial["qty"],
             price=partial["price"],
             reason=None,
@@ -1741,7 +2106,7 @@ def _handle_split_into_partials(
             reconciliation_status="reconciled_discrepancy_resolved",
             tos_match_id=None,
         )
-        # Suppress the per-fill 'entry' trade_event — the correction
+        # Suppress the per-fill action trade_event — the correction
         # event is emitted separately below as
         # 'reconciliation_auto_correct' (single audit-event-per-
         # corrected-row).
@@ -1763,7 +2128,10 @@ def _handle_split_into_partials(
                 "fill_id": new_fid,
                 "trade_id": trade_id,
                 "fill_datetime": partial["fill_datetime"],
-                "action": "entry",
+                # Codex R2 Critical #1 fix — mirror the original fill's
+                # action in the audit-row payload as well (see fix at
+                # the partial-fill construction above).
+                "action": original_action,
                 "quantity": partial["qty"],
                 "price": partial["price"],
             },
@@ -1771,7 +2139,7 @@ def _handle_split_into_partials(
         )
         sub_correction = _build_tier2_correction(
             disc=disc,
-            correction_action="operator_resolved_ambiguity",
+            correction_action=effective_correction_action,
             correction_choice=choice_code,
             affected_table=_AFFECTED_TABLE_FILLS,
             affected_row_id=new_fid,
@@ -1785,6 +2153,7 @@ def _handle_split_into_partials(
             risk_policy_id=risk_policy_id,
             schwab_api_call_id=schwab_api_call_id,
             correction_set_id=anchor_id,
+            applied_by=effective_applied_by,
         )
         sub_id = insert_correction(conn, sub_correction)
 
@@ -1805,6 +2174,7 @@ def _handle_split_into_partials(
         conn,
         discrepancy_id=disc.discrepancy_id,
         resolution_reason=operator_reason,
+        resolved_by=effective_resolved_by,
     )
 
     return CorrectionResult(
@@ -1813,7 +2183,7 @@ def _handle_split_into_partials(
         affected_row_id=original_fill_id,
         field_name="__delete__",
         applied_value_json=anchor_correction.applied_value_json,
-        correction_action="operator_resolved_ambiguity",
+        correction_action=effective_correction_action,
         notes=f"split into {len(inserted_fill_ids)} partial fills",
     )
 
@@ -1821,6 +2191,8 @@ def _handle_split_into_partials(
 def _handle_custom_audit_only(
     conn, *, disc, choice_code, operator_custom_payload,
     operator_reason, risk_policy_id, schwab_api_call_id,
+    applied_by_override=None, correction_action_override=None,
+    resolved_by_override=None,
 ):
     """V1 LOCK (Codex R2 Major #5): the ``custom`` choice is audit-only;
     no journal mutation regardless of payload shape. Spec §6.2.1
@@ -1842,36 +2214,51 @@ def _handle_custom_audit_only(
         risk_policy_id=risk_policy_id,
         schwab_api_call_id=schwab_api_call_id,
         correction_reason_suffix=suffix,
+        applied_by_override=applied_by_override,
+        correction_action_override=correction_action_override,
+        resolved_by_override=resolved_by_override,
     )
 
 
 def _handle_mark_unmatched(
     conn, *, disc, choice_code, operator_custom_payload,
     operator_reason, risk_policy_id, schwab_api_call_id,
+    applied_by_override=None, correction_action_override=None,
+    resolved_by_override=None,
 ):
     return _handle_no_mutation_audit(
         conn, disc=disc, choice_code=choice_code,
         operator_reason=operator_reason,
         risk_policy_id=risk_policy_id,
         schwab_api_call_id=schwab_api_call_id,
+        applied_by_override=applied_by_override,
+        correction_action_override=correction_action_override,
+        resolved_by_override=resolved_by_override,
     )
 
 
 def _handle_acknowledge(
     conn, *, disc, choice_code, operator_custom_payload,
     operator_reason, risk_policy_id, schwab_api_call_id,
+    applied_by_override=None, correction_action_override=None,
+    resolved_by_override=None,
 ):
     return _handle_no_mutation_audit(
         conn, disc=disc, choice_code=choice_code,
         operator_reason=operator_reason,
         risk_policy_id=risk_policy_id,
         schwab_api_call_id=schwab_api_call_id,
+        applied_by_override=applied_by_override,
+        correction_action_override=correction_action_override,
+        resolved_by_override=resolved_by_override,
     )
 
 
 def _handle_operator_truth(
     conn, *, disc, choice_code, operator_custom_payload,
     operator_reason, risk_policy_id, schwab_api_call_id,
+    applied_by_override=None, correction_action_override=None,
+    resolved_by_override=None,
 ):
     payload = _require_custom_value(operator_custom_payload, choice_code)
     if not isinstance(payload, Mapping):
@@ -1885,12 +2272,17 @@ def _handle_operator_truth(
         operator_reason=operator_reason,
         risk_policy_id=risk_policy_id,
         schwab_api_call_id=schwab_api_call_id,
+        applied_by_override=applied_by_override,
+        correction_action_override=correction_action_override,
+        resolved_by_override=resolved_by_override,
     )
 
 
 def _handle_operator_alternative(
     conn, *, disc, choice_code, operator_custom_payload,
     operator_reason, risk_policy_id, schwab_api_call_id,
+    applied_by_override=None, correction_action_override=None,
+    resolved_by_override=None,
 ):
     payload = _require_custom_value(operator_custom_payload, choice_code)
     if not isinstance(payload, Mapping):
@@ -1904,12 +2296,17 @@ def _handle_operator_alternative(
         operator_reason=operator_reason,
         risk_policy_id=risk_policy_id,
         schwab_api_call_id=schwab_api_call_id,
+        applied_by_override=applied_by_override,
+        correction_action_override=correction_action_override,
+        resolved_by_override=resolved_by_override,
     )
 
 
 def _handle_pick_schwab_record_n(
     conn, *, disc, choice_code, operator_custom_payload,
     operator_reason, risk_policy_id, schwab_api_call_id,
+    applied_by_override=None, correction_action_override=None,
+    resolved_by_override=None,
 ):
     """Parametric handler — dispatched via prefix-match in _resolve_handler_key.
 
@@ -1944,6 +2341,9 @@ def _handle_pick_schwab_record_n(
         operator_reason=operator_reason,
         risk_policy_id=risk_policy_id,
         schwab_api_call_id=schwab_api_call_id,
+        applied_by_override=applied_by_override,
+        correction_action_override=correction_action_override,
+        resolved_by_override=resolved_by_override,
     )
 
 

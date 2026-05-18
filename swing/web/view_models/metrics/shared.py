@@ -45,6 +45,16 @@ class BaseLayoutVM:
     price_source_degraded_until: str | None = None
     ohlcv_source_degraded: bool = False
     unresolved_material_discrepancies_count: int = 0
+    # Phase 12.5 #1 Task T-1.8 — banner counter for tier-1 multi-leg
+    # auto-redirects on the latest completed reconciliation_run. Populated
+    # from :func:`swing.metrics.discrepancies.count_recent_multi_leg_auto_corrections`
+    # at every base-layout-mounted VM's builder site so the T-1.9 banner
+    # block in ``base.html.j2`` reads ``vm.recent_multi_leg_auto_correction_count``
+    # without ``UndefinedError`` (CLAUDE.md "base.html.j2 is shared" gotcha).
+    # Default 0 keeps the banner suppressed when no recent multi-leg
+    # auto-redirects exist OR when constructed in tests outside the
+    # populating builder path.
+    recent_multi_leg_auto_correction_count: int = 0
 
     def __post_init__(self) -> None:
         # Per plan §A.6 watch: lock asserts session_date is non-empty so
@@ -59,6 +69,11 @@ class BaseLayoutVM:
             raise ValueError(
                 "BaseLayoutVM.unresolved_material_discrepancies_count must be >= 0; "
                 f"got {self.unresolved_material_discrepancies_count!r}"
+            )
+        if self.recent_multi_leg_auto_correction_count < 0:
+            raise ValueError(
+                "BaseLayoutVM.recent_multi_leg_auto_correction_count must be >= 0; "
+                f"got {self.recent_multi_leg_auto_correction_count!r}"
             )
 
 

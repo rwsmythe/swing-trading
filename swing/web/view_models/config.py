@@ -48,6 +48,8 @@ class ConfigPageVM:
     risk_policy_divergence: dict | None = None
     # Phase 10 Sub-bundle E T-E.3 — unresolved-material discrepancy banner.
     unresolved_material_discrepancies_count: int = 0
+    # Phase 12.5 #1 T-1.8 — multi-leg auto-redirect advisory banner counter.
+    recent_multi_leg_auto_correction_count: int = 0
 
 
 def _current_value(cfg: Config, spec: FieldSpec) -> Any:
@@ -105,8 +107,12 @@ def build_config_vm(
         ))
     divergence: dict | None = None
     unresolved_count = 0
+    recent_multi_leg_count = 0
     if conn is not None:
-        from swing.metrics.discrepancies import count_unresolved_material
+        from swing.metrics.discrepancies import (
+            count_recent_multi_leg_auto_corrections,
+            count_unresolved_material,
+        )
         from swing.trades.risk_policy import check_and_reconcile_toml_divergence
         try:
             # silent=True per Codex R2 Minor #1 — per-render probe must NOT
@@ -124,10 +130,17 @@ def build_config_vm(
             unresolved_count = count_unresolved_material(conn)
         except Exception:
             unresolved_count = 0
+        try:
+            recent_multi_leg_count = count_recent_multi_leg_auto_corrections(
+                conn,
+            )
+        except Exception:
+            recent_multi_leg_count = 0
     return ConfigPageVM(
         rows=rows,
         saved=saved,
         session_date=date.today().isoformat(),
         risk_policy_divergence=divergence,
         unresolved_material_discrepancies_count=unresolved_count,
+        recent_multi_leg_auto_correction_count=recent_multi_leg_count,
     )

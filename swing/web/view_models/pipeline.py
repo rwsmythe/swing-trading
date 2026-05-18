@@ -23,10 +23,15 @@ class PipelineVM:
     ohlcv_source_degraded: bool = False              # NEW (Phase 3d §3.4)
     # Phase 10 Sub-bundle E T-E.3 — unresolved-material discrepancy banner.
     unresolved_material_discrepancies_count: int = 0
+    # Phase 12.5 #1 T-1.8 — multi-leg auto-redirect advisory banner counter.
+    recent_multi_leg_auto_correction_count: int = 0
 
 
 def build_pipeline(*, cfg: Config, limit: int = 10, ohlcv_degraded: bool = False) -> PipelineVM:
-    from swing.metrics.discrepancies import count_unresolved_material
+    from swing.metrics.discrepancies import (
+        count_recent_multi_leg_auto_corrections,
+        count_unresolved_material,
+    )
 
     conn = connect(cfg.paths.db_path)
     try:
@@ -35,6 +40,7 @@ def build_pipeline(*, cfg: Config, limit: int = 10, ohlcv_degraded: bool = False
             active = find_active_run(conn)
             stale = active if (active is not None and is_stale_eligible(active, cfg)) else None
             unresolved = count_unresolved_material(conn)
+            recent_multi_leg = count_recent_multi_leg_auto_corrections(conn)
     finally:
         conn.close()
     return PipelineVM(
@@ -43,4 +49,5 @@ def build_pipeline(*, cfg: Config, limit: int = 10, ohlcv_degraded: bool = False
         stale_run=stale,
         ohlcv_source_degraded=ohlcv_degraded,            # NEW (Phase 3d §3.4)
         unresolved_material_discrepancies_count=unresolved,
+        recent_multi_leg_auto_correction_count=recent_multi_leg,
     )

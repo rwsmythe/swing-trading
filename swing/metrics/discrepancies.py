@@ -24,6 +24,7 @@ candidate banked at return report §7.
 from __future__ import annotations
 
 import sqlite3
+from typing import Literal
 
 from swing.data.models import ReconciliationDiscrepancy
 from swing.data.repos.reconciliation import (
@@ -79,3 +80,59 @@ def list_unresolved_material_for_trade(
         (int(trade_id),),
     ).fetchall()
     return [_row_to_discrepancy(r) for r in rows]
+
+
+def count_recent_multi_leg_auto_corrections(
+    conn: sqlite3.Connection,
+    *,
+    window: Literal["most_recent_run"] = "most_recent_run",
+) -> int:
+    """Count distinct discrepancies in the latest completed reconciliation_run
+    that were resolved via multi-leg tier-1 auto-redirect.
+
+    Per spec §8.2 + plan §F invariant F18 (COUNT(DISTINCT) LOGICAL semantic):
+    a single multi-leg auto-redirect emits N+1 correction rows (1 anchor
+    deletion + N partial inserts per
+    ``_handle_split_into_partials``), all carrying the same
+    ``discrepancy_id``. A naive ``COUNT(*)`` on
+    ``reconciliation_corrections`` would inflate by N+1; we count
+    ``COUNT(DISTINCT rd.discrepancy_id)`` to surface LOGICAL multi-leg
+    auto-redirects (one count per discrepancy).
+
+    The ``window`` parameter is locked to ``Literal['most_recent_run']``
+    in V1 per spec §8.4 (banner-clears semantic — the banner advisory
+    surfaces what happened on the latest run and clears when the next
+    run lands without any multi-leg redirects). V2 widens to additional
+    values (banked spec §14 + plan §Z #1+#2 — e.g.
+    ``'past_n_runs'`` / ``'past_n_days'`` for trend charts). The current
+    implementation ignores the parameter beyond type-narrowing.
+
+    Phase 10 lesson #26 (deterministic-tiebreaker): the latest-completed-run
+    SELECT uses ``ORDER BY finished_ts DESC, run_id DESC`` so two runs
+    with identical ``finished_ts`` resolve deterministically to the
+    higher ``run_id``.
+
+    Read-only; opens no transaction. Returns 0 when no completed runs
+    exist or the latest completed run has zero multi-leg auto-redirects.
+    """
+    # Step 1: locate the latest completed reconciliation_run.
+    row = conn.execute(
+        "SELECT run_id FROM reconciliation_runs "
+        "WHERE state = 'completed' "
+        "ORDER BY finished_ts DESC, run_id DESC LIMIT 1"
+    ).fetchone()
+    if row is None:
+        return 0
+    latest_run_id = row[0]
+    # Step 2: COUNT(DISTINCT discrepancy_id) for that run where the
+    # underlying discrepancy carries the multi-leg-auto-redirect sentinel.
+    count_row = conn.execute(
+        "SELECT COUNT(DISTINCT rd.discrepancy_id) "
+        "FROM reconciliation_corrections rc "
+        "JOIN reconciliation_discrepancies rd "
+        "  ON rc.discrepancy_id = rd.discrepancy_id "
+        "WHERE rc.reconciliation_run_id = ? "
+        "  AND rd.resolved_by = ?",
+        (latest_run_id, "auto_tier1_multi_leg"),
+    ).fetchone()
+    return int(count_row[0]) if count_row else 0

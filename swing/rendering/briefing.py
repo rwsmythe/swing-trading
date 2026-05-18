@@ -78,6 +78,16 @@ class BriefingInputs:
     #     in the last 7 days with ``correction_action = 'auto_applied'``.
     reconciliation_pending_count: int = 0
     reconciliation_tier1_recent_count: int = 0
+    # Phase 12.5 #1 T-1.11 — DISTINCT-discrepancy count of multi-leg
+    # tier-1 auto-redirects applied on the LATEST completed reconciliation
+    # run (banner-clears semantic per spec §8.4 + §11.2). Threaded from
+    # ``swing.metrics.discrepancies.count_recent_multi_leg_auto_corrections``
+    # at the runner's ``_step_export`` site. Briefing.md renders a
+    # F22-locked verbatim line "- Multi-leg auto-redirects applied this
+    # run: K" inside the "Reconciliation status" section WHEN K > 0.
+    # Default 0 preserves back-compat with existing call sites (none,
+    # all 0).
+    reconciliation_tier1_multi_leg_redirected_count: int = 0
 
 
 def _sizing_implication(status: str) -> str:
@@ -267,5 +277,8 @@ def build_briefing_view_model(inputs: BriefingInputs) -> BriefingViewModel:
         reconciliation_pending_count=inputs.reconciliation_pending_count,
         reconciliation_tier1_recent_count=(
             inputs.reconciliation_tier1_recent_count
+        ),
+        reconciliation_tier1_multi_leg_redirected_count=(
+            inputs.reconciliation_tier1_multi_leg_redirected_count
         ),
     )

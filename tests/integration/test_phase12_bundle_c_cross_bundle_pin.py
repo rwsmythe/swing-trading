@@ -54,7 +54,8 @@ def test_classifier_module_exists_and_returns_classification_result() -> None:
     """
     assert callable(classify_discrepancy)
     assert ClassificationResult is not None
-    # Pin the 5-field dataclass shape per plan §C.1 acceptance #2.
+    # Pin the 6-field dataclass shape per plan §C.1 acceptance #2;
+    # `auto_redirect_recipe` added by Phase 12.5 #1 T-1.2 per spec §5.1 LOCK.
     field_names = {f.name for f in ClassificationResult.__dataclass_fields__.values()}
     assert field_names == {
         "tier",
@@ -62,6 +63,7 @@ def test_classifier_module_exists_and_returns_classification_result() -> None:
         "correction_target",
         "correction_reason",
         "candidate_choices",
+        "auto_redirect_recipe",
     }
 
     # Behavior pin: spec §10.1 CVGI 41 walkthrough end-to-end.
@@ -98,6 +100,9 @@ def test_classifier_module_exists_and_returns_classification_result() -> None:
     assert result.correction_target == {"price": 5.30}
     assert result.correction_reason  # non-empty
     assert result.candidate_choices is None
+    # Phase 12.5 #1 T-1.2: tier-1 non-multi-leg emits MUST default to None
+    # per spec §5.1 LOCK (recipe-field discipline preserves existing paths).
+    assert result.auto_redirect_recipe is None
 
 
 @pytest.fixture

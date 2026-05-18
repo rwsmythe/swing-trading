@@ -22,7 +22,10 @@ from datetime import datetime
 from swing.config import Config
 from swing.data.db import connect
 from swing.evaluation.dates import action_session_for_run, last_completed_session
-from swing.metrics.discrepancies import count_unresolved_material
+from swing.metrics.discrepancies import (
+    count_recent_multi_leg_auto_corrections,
+    count_unresolved_material,
+)
 from swing.metrics.funnel import (
     IdentificationFunnelResult,
     compute_identification_funnel,
@@ -66,6 +69,7 @@ def build_identification_funnel_vm(
     assert conn is not None
     try:
         unresolved = count_unresolved_material(conn)
+        recent_multi_leg = count_recent_multi_leg_auto_corrections(conn)
         result = compute_identification_funnel(
             conn, asof_date=last_completed_session(datetime.now()),
         )
@@ -75,5 +79,6 @@ def build_identification_funnel_vm(
     return IdentificationFunnelVM(
         session_date=action_session_for_run(datetime.now()).isoformat(),
         unresolved_material_discrepancies_count=unresolved,
+        recent_multi_leg_auto_correction_count=recent_multi_leg,
         result=result,
     )

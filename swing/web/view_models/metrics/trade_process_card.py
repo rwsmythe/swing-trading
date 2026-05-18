@@ -28,7 +28,10 @@ from swing.config import Config
 from swing.data.db import connect
 from swing.evaluation.dates import action_session_for_run
 from swing.metrics.cohort import count_per_cohort
-from swing.metrics.discrepancies import count_unresolved_material
+from swing.metrics.discrepancies import (
+    count_recent_multi_leg_auto_corrections,
+    count_unresolved_material,
+)
 from swing.metrics.process import (
     TradeProcessMetricsResult,
     compute_trade_process_metrics,
@@ -133,6 +136,7 @@ def build_trade_process_card_vm(
     try:
         cohort_counts = count_per_cohort(conn)
         unresolved = count_unresolved_material(conn)
+        recent_multi_leg = count_recent_multi_leg_auto_corrections(conn)
 
         # Order: hypothesis_registry order then any orphan labels. The
         # count_per_cohort helper iterates registry rows by id, then
@@ -182,6 +186,7 @@ def build_trade_process_card_vm(
     return TradeProcessCardVM(
         session_date=action_session_for_run(datetime.now()).isoformat(),
         unresolved_material_discrepancies_count=unresolved,
+        recent_multi_leg_auto_correction_count=recent_multi_leg,
         cohort_tabs=tuple(tabs),
         active_cohort_key=active_key,
     )

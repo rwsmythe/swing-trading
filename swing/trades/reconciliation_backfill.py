@@ -132,8 +132,16 @@ class BackfillOutcome:
     # ``outcome`` is one of:
     #   'projection_tier1' / 'projection_tier2' / 'projection_pass_2'
     #       (dry-run mode; no journal mutation)
+    #   'projection_auto_redirect'       (dry-run, Pass-2 reclassified to
+    #                                     multi-leg auto-redirect; Phase
+    #                                     12.5 #1 T-1.5.B)
     #   'tier1_applied'                  (--apply, tier-1 auto-corrected)
     #   'tier1_skipped_sandbox'          (--apply, env='sandbox' short-circuit)
+    #   'tier1_multi_leg_auto_redirected' (--apply, Pass-2 reclassified to
+    #                                     multi-leg auto-redirect + dispatched
+    #                                     via apply_tier2_resolution with
+    #                                     auto-redirect overrides; Phase
+    #                                     12.5 #1 T-1.5.B)
     #   'tier2_stamped'                  (--apply, tier-2 stamp via service)
     #   'tier2_skipped_sandbox'          (--apply, env='sandbox' Pass-2
     #                                     short-circuit — discrepancy left
@@ -205,6 +213,24 @@ class BackfillSummary:
     # surface what completed BEFORE the abort.
     aborted_mid_iteration: bool = False
     abort_reason: str | None = None
+    # Phase 12.5 #1 T-1.5.B — multi-leg auto-redirect counters per spec
+    # §7.2 + plan §A T-1.5.B. The backfill ``_handle_pass_2`` is the
+    # OPERATIONAL firing site (per F20: the initial pivot CANNOT emit
+    # the recipe today; backfill's ``_orders_to_classifier_payload``
+    # builds the rich list-shape source_payload from freshly-fetched
+    # Schwab orders WITH execution-grain data).
+    tier1_multi_leg_auto_redirected: int = 0
+    projection_auto_redirect: int = 0
+    # Codex R2 Major #1 fix — removed the dedicated sandbox-skip counter
+    # for the multi-leg auto-redirect branch. The corresponding pre-check
+    # in ``_handle_pass_2`` was unreachable under real production flow
+    # because ``_pass_2_dispatch`` short-circuits sandbox BEFORE
+    # classification (per §9.7 LOCK) and returns ``reclassification=None``
+    # — the auto-redirect branch never fires under sandbox. The real
+    # sandbox outcome for a Pass-2 discrepancy is ``tier2_skipped_sandbox``
+    # (see line ~1029). T-1.6's inner-fn short-circuit in
+    # ``apply_tier2_resolution`` + pivot-loop sentinel remain as defensive
+    # future-proofing per F20 + spec §7.6 LOCK.
     per_discrepancy_outcomes: list[BackfillOutcome] = field(default_factory=list)
 
 
@@ -454,8 +480,26 @@ def _orders_to_classifier_payload(
         # Defensive: tolerate either dataclass-instance or pre-converted
         # dict (for cassette/replay flexibility).
         if isinstance(o, dict):
-            out.append(o)
+            # F24 LOCK (Codex R1 Major #4): every output dict MUST carry
+            # an ``executions`` key so the dict-branch + non-dict-branch
+            # outputs converge on shape contract. Cassette/replay
+            # fixtures pre-Phase-12.5 #1 do NOT include ``executions``
+            # keys; normalize to ``None`` (data-unavailable sentinel)
+            # when absent; pass through verbatim when present.
+            if "executions" not in o:
+                out.append({**o, "executions": None})
+            else:
+                out.append(o)
             continue
+        # Phase 12.5 #1 T-1.3 — tri-valued execution-grain emit
+        # (None / [] / [legs...]) so the classifier's multi-leg
+        # auto-redirect path (T-1.1 predicate) consumes leg-grain data
+        # via ``so.get('executions')`` from each source_payload entry.
+        # Leg dataclass-instances are flattened to plain dicts with the
+        # 4 plan-prescribed keys (leg_id / price / quantity / time);
+        # ``mismarked_quantity`` + ``instrument_id`` are NOT surfaced
+        # at this seam — they're not consumed by the classifier (F25:
+        # no SchwabExecutionLeg references leak out of this function).
         out.append({
             "order_id": getattr(o, "order_id", None),
             "status": getattr(o, "status", None),
@@ -465,6 +509,19 @@ def _orders_to_classifier_payload(
             "quantity": getattr(o, "quantity", None),
             "order_type": getattr(o, "order_type", None),
             "price": getattr(o, "price", None),
+            "executions": (
+                [
+                    {
+                        "leg_id": leg.leg_id,
+                        "price": leg.price,
+                        "quantity": leg.quantity,
+                        "time": leg.time,
+                    }
+                    for leg in (o.executions or [])
+                ]
+                if getattr(o, "executions", None) is not None
+                else None
+            ),
         })
     return out
 
@@ -493,6 +550,7 @@ def _format_pass_2_line(
     call_id: int | None,
     tier: int | None,
     ambiguity_kind: str | None,
+    outcome: str | None = None,
 ) -> str:
     """Render the per-discrepancy Pass-2 printout line per plan §E.8 #9.
 
@@ -504,8 +562,32 @@ def _format_pass_2_line(
     ``swing journal discrepancy resolve-ambiguity --schwab-api-call-id``
     (T-D.3-wired flag) for forward-linkage of correction rows to the
     Pass-2 audit row (`reconciliation_corrections.schwab_api_call_id`).
+
+    Phase 12.5 #1 T-1.5 — when ``outcome == 'tier1_multi_leg_auto_redirected'``
+    (or ``'projection_auto_redirect'``), annotate ``tier=1`` + the
+    ambiguity_kind with the ``(auto-redirected)`` suffix for operator
+    forensic transparency. Both the apply-mode and the dry-run-projection
+    rows surface as tier-1 in the printout (the auto-redirect path resolves
+    a tier-2 discrepancy with a tier-1-equivalent execution-grain payload
+    + auto attribution, so operators read it as "tier-1-by-auto-redirect").
+    ASCII-only per F12 / CLAUDE.md cp1252 gotcha.
     """
     tk = ticker or "-"
+    if outcome in {
+        "tier1_multi_leg_auto_redirected",
+        "projection_auto_redirect",
+    }:
+        annotated_tier_str = "tier-1 (auto-redirected)"
+        annotated_kind = (
+            f"{ambiguity_kind} (auto-redirected)"
+            if ambiguity_kind
+            else "multi_partial_vs_consolidated (auto-redirected)"
+        )
+        return (
+            f"disc {discrepancy_id} {tk} ({discrepancy_type}): "
+            f"Pass 2 -> call_id={call_id}; {annotated_tier_str}; "
+            f"ambiguity_kind={annotated_kind!r}"
+        )
     tier_str = f"tier-{tier}" if tier is not None else "tier-?"
     return (
         f"disc {discrepancy_id} {tk} ({discrepancy_type}): "
@@ -637,9 +719,32 @@ def _handle_pass_2(
 
     The Pass-2-tier-1-FORBIDDEN LOCK is enforced STRUCTURALLY at the
     C.B sub-classifier — this helper trusts the reclassification result.
+
+    Phase 12.5 #1 T-1.5.B — when the C.B sub-classifier emits an
+    ``auto_redirect_recipe`` (multi-leg execution-grain Pass-2
+    reclassification per spec §7.2), this helper short-circuits the
+    legacy tier-2 stamp path + dispatches via
+    :func:`apply_tier2_resolution` with the auto-redirect overrides.
+    Returns one of two outcomes on the auto-redirect branch:
+    ``'projection_auto_redirect'`` (dry-run) /
+    ``'tier1_multi_leg_auto_redirected'`` (apply, production).
+    The §7.5 fallback fires when ``apply_tier2_resolution`` raises
+    ``ValidatorRejectedError`` / ``ValueError`` post-stamp (e.g., qty-
+    tolerance trip): the stamp persists + the outcome is
+    ``'tier2_stamped'`` with a reason citing the auto-redirect decline.
+
+    Sandbox + apply-mode on a Pass-2 discrepancy short-circuits inside
+    ``_pass_2_dispatch`` (returns ``reclassification=None``) and falls
+    through to the legacy ``tier2_skipped_sandbox`` path; the auto-
+    redirect branch is therefore unreachable under sandbox by design
+    (Codex R2 Major #1).
     """
     from swing.trades.reconciliation_auto_correct import (
         CallerHeldTransactionError,
+        InvalidOverrideComboError,
+        ValidatorRejectedError,
+        _validate_override_combo,
+        apply_tier2_resolution,
         stamp_pending_ambiguity,
     )
 
@@ -669,6 +774,205 @@ def _handle_pass_2(
         # they do NOT increment the failure counter.
         ambiguity_kind = "unsupported"
         reason = failure_reason
+
+    # Phase 12.5 #1 T-1.5.B — multi-leg auto-redirect dispatch.
+    # Recognized when the C.B sub-classifier emits a recipe on the
+    # Pass-2 reclassification (multi-leg execution-grain shape).
+    # OPERATIONAL firing site per F20 (the initial pivot at
+    # ``schwab_reconciliation._pivot_classify_and_dispatch_for_run``
+    # cannot emit the recipe today because Pass-1 source_payload is
+    # the persisted ``{"matched": null}`` sentinel).
+    if (
+        reclassification is not None
+        and reclassification.auto_redirect_recipe is not None
+    ):
+        recipe = reclassification.auto_redirect_recipe
+
+        # Defense-in-depth: validate override combo BEFORE any mutation
+        # (matches T-1.4 service-layer guard at apply_tier2_resolution
+        # entry). InvalidOverrideComboError MUST propagate per F21.
+        _validate_override_combo(
+            choice_code=recipe["choice_code"],
+            applied_by_override=recipe["applied_by_override"],
+            correction_action_override=recipe[
+                "correction_action_override"
+            ],
+            resolved_by_override=recipe["resolved_by"],
+        )
+
+        # Per-discrepancy Pass-2 printout — annotated with the auto-
+        # redirect outcome label for operator forensic transparency.
+        # Use the projection-mode label when dry-run; the apply-mode
+        # label otherwise (both annotate tier-1 + auto-redirected).
+        annotation_outcome = (
+            "projection_auto_redirect" if dry_run
+            else "tier1_multi_leg_auto_redirected"
+        )
+        print(
+            _format_pass_2_line(
+                discrepancy_id=disc_id,
+                ticker=disc.ticker,
+                discrepancy_type=disc.discrepancy_type,
+                call_id=call_id,
+                tier=1,
+                ambiguity_kind=ambiguity_kind,
+                outcome=annotation_outcome,
+            ),
+        )
+
+        if dry_run:
+            # Dry-run: project the auto-redirect outcome without mutating.
+            return BackfillOutcome(
+                discrepancy_id=disc_id,
+                ticker=disc.ticker,
+                discrepancy_type=disc.discrepancy_type,
+                tier=1,
+                outcome="projection_auto_redirect",
+                ambiguity_kind="multi_partial_vs_consolidated",
+                correction_id=None,
+                pass_2_call_id=call_id,
+                reason=(
+                    f"would auto-redirect via split_into_partials: "
+                    f"{reclassification.correction_reason}"
+                ),
+                projection_outcome_label=(
+                    "multi-leg auto-redirect (projected)"
+                ),
+                projection_action_needed=(
+                    "--apply will dispatch via apply_tier2_resolution"
+                    "(applied_by_override='auto', ...)"
+                ),
+            )
+
+        # Codex R2 Major #1 fix — removed unreachable sandbox pre-check
+        # from this branch. ``_pass_2_dispatch`` short-circuits sandbox
+        # at line ~630 BEFORE classification per §9.7 LOCK; that path
+        # returns ``reclassification=None`` so this auto-redirect branch
+        # is never entered under real production flow. Defensive sandbox
+        # short-circuiting persists at T-1.6's inner-fn level + the
+        # pivot-loop sentinel per F20 / spec §7.6 LOCK.
+
+        # --apply, production: 2-step own-tx sequence per spec §7.2.
+        # Codex R3 Major #4 fix — per-service-write pipeline-exclusion
+        # recheck (matches existing patterns at lines 745-751 + 966-974
+        # + 1033-1036). Recheck BEFORE EACH own-tx mutation.
+        _check_pipeline_not_running(conn, partial_summary=partial_summary)
+        stamp_succeeded = False
+        try:
+            # Step 1: stamp pending_ambiguity_resolution via PUBLIC
+            # own-tx helper. apply_tier2_resolution's inner reads this
+            # state to gate the handler dispatch.
+            stamp_pending_ambiguity(
+                conn,
+                discrepancy_id=disc_id,
+                ambiguity_kind="multi_partial_vs_consolidated",
+                resolution_reason=reclassification.correction_reason,
+                allow_pending_update=allow_pending_update,
+            )
+            stamp_succeeded = True
+        except InvalidOverrideComboError:
+            raise  # Developer-bug propagates per F21
+        except CallerHeldTransactionError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — stamp failure path
+            # Codex R3 Major #3 fix — stamp failure is NOT a §7.5
+            # fallback case (the §7.5 fresh-savepoint pattern presumes
+            # stamp succeeded inside a rolled-back outer SAVEPOINT;
+            # backfill uses own-tx so no SAVEPOINT exists). Stamp
+            # failure routes to existing 'errored' outcome path.
+            logger.warning(
+                "backfill auto-redirect stamp_pending_ambiguity failed "
+                "on discrepancy %s: %s: %s",
+                disc_id, type(exc).__name__, exc,
+            )
+            return BackfillOutcome(
+                discrepancy_id=disc_id,
+                ticker=disc.ticker,
+                discrepancy_type=disc.discrepancy_type,
+                tier=1,
+                outcome="errored",
+                ambiguity_kind="multi_partial_vs_consolidated",
+                pass_2_call_id=call_id,
+                reason=(
+                    f"auto-redirect stamp failed: "
+                    f"{type(exc).__name__}: {exc}"
+                ),
+                projection_outcome_label="auto-redirect errored",
+                projection_action_needed="investigate manually",
+            )
+
+        # Codex R3 Major #4 fix — second pipeline-not-running check
+        # between stamp + apply closes the in-row race window per the
+        # existing per-service-write recheck pattern.
+        _check_pipeline_not_running(conn, partial_summary=partial_summary)
+        try:
+            # Step 2: dispatch via PUBLIC apply_tier2_resolution own-tx
+            # with overrides. T-1.6's environment kwarg threading lands
+            # here; sandbox short-circuit at the inner is defensive
+            # belt-and-suspenders (this branch already short-circuited
+            # above for sandbox). schwab_api_call_id=call_id preserves
+            # audit linkage from the Pass-2 refetch audit row.
+            result = apply_tier2_resolution(
+                conn,
+                discrepancy_id=disc_id,
+                choice_code=recipe["choice_code"],
+                operator_custom_payload=recipe["payload"],
+                operator_reason=(
+                    f"multi-leg auto-redirect: "
+                    f"{reclassification.correction_reason}"
+                ),
+                applied_by_override=recipe["applied_by_override"],
+                correction_action_override=recipe[
+                    "correction_action_override"
+                ],
+                resolved_by_override=recipe["resolved_by"],
+                schwab_api_call_id=call_id,
+                environment=environment,
+            )
+            return BackfillOutcome(
+                discrepancy_id=disc_id,
+                ticker=disc.ticker,
+                discrepancy_type=disc.discrepancy_type,
+                tier=1,
+                outcome="tier1_multi_leg_auto_redirected",
+                ambiguity_kind="multi_partial_vs_consolidated",
+                correction_id=result.correction_id,
+                pass_2_call_id=call_id,
+                reason=(
+                    f"auto-redirected: {reclassification.correction_reason}"
+                ),
+                projection_outcome_label="multi-leg auto-redirected",
+                projection_action_needed="(none)",
+            )
+        except InvalidOverrideComboError:
+            raise  # Developer-bug propagates per F21
+        except CallerHeldTransactionError:
+            raise
+        except (ValidatorRejectedError, ValueError) as exc:
+            # Per spec §7.5 fallback: stamp_succeeded is True at this
+            # point; apply_tier2_resolution own-tx rollback unwinds the
+            # apply attempt; discrepancy stays in
+            # pending_ambiguity_resolution (set by step 1). Return
+            # tier2_stamped outcome with note citing the fallback.
+            assert stamp_succeeded, (
+                "step 2 catch unreachable without step 1 success"
+            )
+            return BackfillOutcome(
+                discrepancy_id=disc_id,
+                ticker=disc.ticker,
+                discrepancy_type=disc.discrepancy_type,
+                tier=2,
+                outcome="tier2_stamped",
+                ambiguity_kind="multi_partial_vs_consolidated",
+                pass_2_call_id=call_id,
+                reason=f"auto-redirect declined post-stamp: {exc}",
+                projection_outcome_label=(
+                    "tier-2 stamped (auto-redirect declined)"
+                ),
+                projection_action_needed=(
+                    "operator resolution via `swing journal discrepancy`"
+                ),
+            )
 
     # Per-discrepancy Pass-2 printout (plan §E.8 #9). Operator copies
     # call_id from this line to use --schwab-api-call-id on resolve.
@@ -1208,6 +1512,11 @@ def run_backfill(
             summary.projection_tier2 += 1
         elif outcome.outcome == "projection_pass_2":
             summary.projection_pass_2 += 1
+        # Phase 12.5 #1 T-1.5.B — multi-leg auto-redirect counters.
+        elif outcome.outcome == "tier1_multi_leg_auto_redirected":
+            summary.tier1_multi_leg_auto_redirected += 1
+        elif outcome.outcome == "projection_auto_redirect":
+            summary.projection_auto_redirect += 1
         # T-D.8 — Pass-2 re-fetch failure-mode counter (orthogonal to
         # the canonical ``outcome`` enum; transported via the
         # ``reason`` substring per spec §8.4 + plan §E.8 #6 LOCK).
@@ -1392,6 +1701,22 @@ def format_summary_block(summary: BackfillSummary) -> str:
             f"below reflect rows processed BEFORE the abort. ***\n"
         )
 
+    # Phase 12.5 #1 T-1.5.B — multi-leg auto-redirect counters.
+    # Each line emits ONLY when its counter > 0 (matches existing
+    # per-counter suppression pattern at projection_unavailable_line).
+    # ASCII-only per F12 / CLAUDE.md cp1252 gotcha.
+    multi_leg_lines = ""
+    if summary.tier1_multi_leg_auto_redirected:
+        multi_leg_lines += (
+            f"  Multi-leg auto-redirects applied: "
+            f"{summary.tier1_multi_leg_auto_redirected}\n"
+        )
+    if summary.projection_auto_redirect:
+        multi_leg_lines += (
+            f"  Multi-leg auto-redirects (dry-run projection): "
+            f"{summary.projection_auto_redirect}\n"
+        )
+
     return (
         "\nBackfill summary:\n"
         + abort_banner
@@ -1399,6 +1724,7 @@ def format_summary_block(summary: BackfillSummary) -> str:
         + f"  Tier 2 stamped: {summary.tier2_stamped}\n"
         + f"    (of which Pass 2 re-fetch failed: {summary.pass_2_failed})\n"
         + projection_unavailable_line
+        + multi_leg_lines
         + f"  Errored: {summary.tier_errored}\n"
         + f"  Skipped (already resolved): {summary.skipped_already_resolved}\n"
         + "  Skipped (Pass-2-failed; use --retry-pass-2-failures to retry): "

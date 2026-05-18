@@ -62,6 +62,16 @@ class ClassificationResult:
     correction_target: dict[str, Any] | None
     correction_reason: str
     candidate_choices: list[dict[str, Any]] | None = None
+    # Phase 12.5 #1 T-1.2 — multi-leg auto-redirect recipe (spec §6.1).
+    # Populated ONLY by ``_classify_unmatched_fill_shared`` on the multi-leg
+    # auto-redirect path; every other emit path leaves this at ``None`` via
+    # the dataclass default. The recipe is consumed by the pivot loop (T-1.5)
+    # to dispatch through ``apply_tier2_resolution(choice_code='split_into_partials',
+    # resolved_by='auto_tier1_multi_leg', ...)`` per spec §2.3 + §6.5 LOCK.
+    # MUST BE THE LAST FIELD (F23 / L-W4): preserves positional construction
+    # at all pre-existing call sites and pins dataclass field order for
+    # downstream consumers.
+    auto_redirect_recipe: Mapping[str, Any] | None = None
 
 
 # Callable contract: ``(correction_target) -> (passes, rejection_reason_or_None)``.
@@ -105,6 +115,219 @@ _EXECUTION_AUDIT_KEYS: frozenset[str] = frozenset({
     "execution_legs", "schwab_order_id", "schwab_order_price",
 })
 _SHAPE_C_EXPECTED_KEYS: frozenset[str] = frozenset({"price"}) | _EXECUTION_AUDIT_KEYS
+
+
+# ---------------------------------------------------------------------------
+# Phase 12.5 #1 T-1.1 — multi-leg auto-redirect predicate + recipe synthesizer
+# ---------------------------------------------------------------------------
+#
+# Operator-locked tolerances per spec §4.4 + §15.B #1 + #2 (2026-05-17):
+# - price tolerance: $0.01 absolute (NO ``max(...)`` proportional override).
+# - quantity tolerance at predicate: 1e-9 (stricter than the
+#   ``apply_tier2_resolution`` handler's 1e-6; predicate-stricter asymmetry
+#   is safe — handler accepts everything the predicate would have).
+#
+# Predicate + synthesizer are PURE (no DB, no API, no logging). T-1.11 adds
+# the ONE documented canary ``logger.warning`` for empty-executions cases;
+# DO NOT add logging here.
+#
+# Classifier-boundary contract (F25 / L-W6): predicate consumes
+# ``Mapping``-shaped candidates ONLY — plain dicts with ``executions`` value
+# of ``list[Mapping]`` carrying ``leg_id`` / ``price`` / ``quantity`` /
+# ``time`` keys. ``SchwabExecutionLeg`` dataclass → dict conversion is
+# T-1.3's responsibility at ``_orders_to_classifier_payload``.
+
+_MULTI_LEG_PRICE_TOLERANCE: float = 0.01   # absolute $0.01; NO max(...) override path
+_MULTI_LEG_QTY_TOLERANCE: float = 1e-9     # predicate-stricter than handler's 1e-6
+
+
+def _multi_leg_auto_redirect_predicate(
+    *,
+    candidates: list[Mapping[str, Any]],
+    journal_qty: float,
+    journal_price: float,
+    price_tolerance: float = _MULTI_LEG_PRICE_TOLERANCE,
+    ticker: str | None = None,
+) -> tuple[bool, str | None]:
+    """Decide whether classifier may auto-redirect this candidate set to
+    ``split_into_partials`` tier-1.
+
+    Spec §4.3 — ALL 6 sub-conditions must hold:
+
+      1. Every candidate carries a non-empty ``executions`` list.
+      2. ``sum(len(c.executions) for c in candidates) >= 2``.
+      3. Each leg's ``price`` and ``quantity`` is a real numeric value
+         (not ``bool``), finite, and strictly positive.
+      4. ``sum(leg.quantity)`` matches ``journal_qty`` within
+         ``_MULTI_LEG_QTY_TOLERANCE`` (1e-9).
+      5. ``abs(VWAP - journal_price) <= price_tolerance``. VWAP =
+         ``sum(price*qty) / sum(qty)``.
+      6. Per-leg consistency: ``abs(leg.price - VWAP) <= price_tolerance``
+         for every leg.
+
+    Sub-condition 3 executes BEFORE 4/5/6 so NaN/inf/bool inputs cannot
+    poison the arithmetic.
+
+    Returns ``(True, None)`` when ALL hold; otherwise ``(False, reason)``
+    where ``reason`` cites the failing sub-condition + relevant numeric
+    values for forensic transparency (spec §5.4).
+
+    ``ticker`` (Phase 12.5 #1 T-1.11; default ``None`` preserves T-1.1
+    test fixtures + internal call signature back-compat): when supplied,
+    threads through to the empty-executions canary ``logger.warning``
+    surfaced by the sub-condition 1 decline path. The canary fires ONLY
+    when at least one candidate's ``executions`` value is exactly ``[]``
+    (empty list — Schwab emitted an empty executionLegs container).
+    The ``None`` case does NOT fire the canary (it's the typed-missing
+    family already handled by Sub-bundle 1.5 + the
+    ``execution_unavailable=true`` sentinel path). Decline-reason text
+    returned is UNCHANGED — the canary is observability-only (spec §12.3
+    + plan §A T-1.11).
+
+    PURE function except for the ONE documented canary warning above:
+    no DB, no API, no other logging.
+    """
+    # Sub-condition 1: every candidate has a non-empty executions list.
+    for cand in candidates:
+        executions = cand.get("executions")
+        if executions is None or len(executions) == 0:
+            order_id = cand.get("order_id", "<unknown>")
+            # T-1.11 canary: empty-list family ONLY (NOT the None family).
+            # Plan §A T-1.11 / spec §12.3 — emit observability-only WARN
+            # BEFORE returning the decline; reason text is unchanged.
+            if executions is not None and len(executions) == 0:
+                logger.warning(
+                    "multi-leg predicate declined for ticker=%s order_id=%s: "
+                    "executions list is empty (canary)",
+                    ticker,
+                    order_id,
+                )
+            return (
+                False,
+                f"sub-condition 1: candidate order_id={order_id} has no execution legs",
+            )
+
+    # Flatten all legs in input order for sub-conditions 2-6.
+    all_legs: list[Mapping[str, Any]] = []
+    for cand in candidates:
+        for leg in cand["executions"]:
+            all_legs.append(leg)
+
+    # Sub-condition 2: total leg count >= 2.
+    if len(all_legs) < 2:
+        return (
+            False,
+            f"sub-condition 2: insufficient total leg count {len(all_legs)}; need at least 2",
+        )
+
+    # Sub-condition 3: per-leg numeric/finite/positive (BEFORE arithmetic).
+    for i, leg in enumerate(all_legs, start=1):
+        price = leg.get("price")
+        qty = leg.get("quantity")
+        if isinstance(price, bool) or isinstance(qty, bool):
+            return (
+                False,
+                f"sub-condition 3: leg #{i} price={price!r} or "
+                f"quantity={qty!r} is not numeric (bool rejected)",
+            )
+        if not isinstance(price, (int, float)) or not isinstance(qty, (int, float)):
+            return (
+                False,
+                f"sub-condition 3: leg #{i} price={price!r} or "
+                f"quantity={qty!r} is not numeric",
+            )
+        if not (math.isfinite(float(price)) and math.isfinite(float(qty))):
+            return (
+                False,
+                f"sub-condition 3: leg #{i} price={price!r} or "
+                f"quantity={qty!r} is not finite",
+            )
+        if float(price) <= 0.0 or float(qty) <= 0.0:
+            return (
+                False,
+                f"sub-condition 3: leg #{i} price={price!r} or "
+                f"quantity={qty!r} is not positive",
+            )
+
+    # Sub-condition 4: qty-sum matches journal_qty within tolerance.
+    total_qty = sum(float(leg["quantity"]) for leg in all_legs)
+    if abs(total_qty - float(journal_qty)) > _MULTI_LEG_QTY_TOLERANCE:
+        return (
+            False,
+            f"sub-condition 4: execution leg qty sum {total_qty} does not "
+            f"match journal_qty {journal_qty} within tolerance "
+            f"{_MULTI_LEG_QTY_TOLERANCE}",
+        )
+
+    # Sub-condition 5: VWAP vs journal_price within tolerance.
+    vwap = sum(float(leg["price"]) * float(leg["quantity"]) for leg in all_legs) / total_qty
+    vwap_journal_delta = abs(vwap - float(journal_price))
+    if vwap_journal_delta > price_tolerance:
+        return (
+            False,
+            f"sub-condition 5: VWAP {vwap:.6f} vs journal_price "
+            f"{journal_price:.6f} delta {vwap_journal_delta:.6f} exceeds "
+            f"tolerance {price_tolerance}",
+        )
+
+    # Sub-condition 6: per-leg consistency vs VWAP. Cite the WORST outlier
+    # (max abs-delta) for forensic transparency per spec §5.4 — a uniform
+    # tolerance can fail multiple legs symmetrically; the operator wants
+    # the outlier identified, not the first-walked failure.
+    worst_idx: int | None = None
+    worst_price: float = 0.0
+    worst_delta: float = 0.0
+    for i, leg in enumerate(all_legs, start=1):
+        leg_price = float(leg["price"])
+        leg_delta = abs(leg_price - vwap)
+        if leg_delta > price_tolerance and leg_delta > worst_delta:
+            worst_idx = i
+            worst_price = leg_price
+            worst_delta = leg_delta
+    if worst_idx is not None:
+        return (
+            False,
+            f"sub-condition 6: leg #{worst_idx} price {worst_price} vs VWAP "
+            f"{vwap:.6f} delta {worst_delta:.6f} exceeds tolerance "
+            f"{price_tolerance}",
+        )
+
+    return (True, None)
+
+
+def _synthesize_split_into_partials_recipe(
+    candidates: list[Mapping[str, Any]],
+) -> Mapping[str, Any]:
+    """Build the ``auto_redirect_recipe`` dict per spec §6.1.
+
+    PRE-CONDITION: caller MUST have invoked
+    :func:`_multi_leg_auto_redirect_predicate` first and received
+    ``(True, None)``. This synthesizer is unsafe on declined inputs — it
+    does NOT re-validate numeric types / empty executions / qty sums.
+
+    Payload iteration order is the concatenation of
+    ``candidates[i].executions[j]`` preserving input order.
+
+    PURE function: no DB / API / logging.
+    """
+    payload: list[dict[str, Any]] = []
+    for cand in candidates:
+        executions = cand.get("executions") or []
+        for leg in executions:
+            payload.append(
+                {
+                    "qty": float(leg["quantity"]),
+                    "price": float(leg["price"]),
+                    "fill_datetime": str(leg["time"]),
+                }
+            )
+    return {
+        "choice_code": "split_into_partials",
+        "resolved_by": "auto_tier1_multi_leg",
+        "applied_by_override": "auto",
+        "correction_action_override": "auto_applied",
+        "payload": payload,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -860,20 +1083,71 @@ def _classify_unmatched_fill_shared(
                 candidate_choices=_candidate_choices_schwab_returned_no_match(),
             )
         if n == 1:
+            # Phase 12.5 #1 T-1.2 — n=1 RECLASSIFICATION path per spec §6.5.
+            # When the single candidate carries multi-leg ``executions`` AND
+            # the predicate fires (per-leg consistency, qty sum + VWAP match
+            # journal), RECLASSIFY ambiguity_kind to
+            # ``multi_partial_vs_consolidated`` so the schema cross-column
+            # CHECK pair (operator_resolved_ambiguity ↔
+            # multi_partial_vs_consolidated) holds AND route the auto-redirect
+            # through the existing
+            # ``_TIER2_HANDLERS[('multi_partial_vs_consolidated',
+            # 'split_into_partials')]`` registry entry (NO new handler key).
+            single = source_payload[0]
+            executions = single.get("executions") if isinstance(single, Mapping) else None
+            recipe: Mapping[str, Any] | None = None
+            predicate_reason: str | None = None
+            reclassified_kind: str = "unknown_schwab_subtype"
+            if (
+                journal_row is not None
+                and journal_row.get("price") is not None
+                and journal_row.get("quantity") is not None
+                and isinstance(executions, list)
+                and len(executions) >= 2
+            ):
+                try:
+                    journal_qty_f = float(journal_row["quantity"])
+                    journal_price_f = float(journal_row["price"])
+                except (TypeError, ValueError):
+                    journal_qty_f = None  # type: ignore[assignment]
+                    journal_price_f = None  # type: ignore[assignment]
+                if journal_qty_f is not None and journal_price_f is not None:
+                    fired, predicate_reason = _multi_leg_auto_redirect_predicate(
+                        candidates=[single],
+                        journal_qty=journal_qty_f,
+                        journal_price=journal_price_f,
+                        ticker=discrepancy.ticker,
+                    )
+                    if fired:
+                        recipe = _synthesize_split_into_partials_recipe([single])
+                        reclassified_kind = "multi_partial_vs_consolidated"
+            reason_text = (
+                f"unmatched_{direction}_fill on "
+                f"(ticker={ticker!r}, fill_id={fill_id}): Schwab "
+                f"returned a single order at order-grain; V1 mapper "
+                f"does not expose per-execution fill detail "
+                f"(Pass-2-tier-1-FORBIDDEN per §8.4); operator "
+                f"dispositions via acknowledge (keep journal as-is) "
+                f"or operator_truth (supplies execution price)"
+            )
+            if recipe is None and predicate_reason is not None:
+                reason_text = (
+                    f"{reason_text} (multi-leg auto-redirect: declined "
+                    f"({predicate_reason}))"
+                )
+            # When reclassified to multi_partial_vs_consolidated, swap the
+            # candidate_choices menu to match the new ambiguity_kind.
+            if reclassified_kind == "multi_partial_vs_consolidated":
+                choices = _candidate_choices_multi_partial_vs_consolidated()
+            else:
+                choices = _candidate_choices_unknown_schwab_subtype()
             return ClassificationResult(
                 tier=2,
-                ambiguity_kind="unknown_schwab_subtype",
+                ambiguity_kind=reclassified_kind,
                 correction_target=None,
-                correction_reason=(
-                    f"unmatched_{direction}_fill on "
-                    f"(ticker={ticker!r}, fill_id={fill_id}): Schwab "
-                    f"returned a single order at order-grain; V1 mapper "
-                    f"does not expose per-execution fill detail "
-                    f"(Pass-2-tier-1-FORBIDDEN per §8.4); operator "
-                    f"dispositions via acknowledge (keep journal as-is) "
-                    f"or operator_truth (supplies execution price)"
-                ),
-                candidate_choices=_candidate_choices_unknown_schwab_subtype(),
+                correction_reason=reason_text,
+                candidate_choices=choices,
+                auto_redirect_recipe=recipe,
             )
         # n >= 2: compare sum(quantity) vs journal quantity.
         try:
@@ -896,27 +1170,69 @@ def _classify_unmatched_fill_shared(
             and journal_qty is not None
             and abs(schwab_qty_sum - journal_qty) < 1e-9
         ):
+            # Phase 12.5 #1 T-1.2 — multi-leg auto-redirect predicate.
+            # When the candidate set carries multi-leg ``executions`` AND
+            # the predicate fires, synthesize the split_into_partials recipe;
+            # callers (pivot loop T-1.5) route through
+            # ``apply_tier2_resolution(choice_code='split_into_partials',
+            # resolved_by='auto_tier1_multi_leg', ...)`` per spec §2.3.
+            # When the predicate declines, append the decline reason to the
+            # correction_reason for forensic transparency.
+            journal_price = (
+                journal_row.get("price") if journal_row is not None else None
+            )
+            recipe_mp: Mapping[str, Any] | None = None
+            predicate_reason_mp: str | None = None
+            if (
+                journal_row is not None
+                and journal_price is not None
+                and isinstance(source_payload, list)
+            ):
+                try:
+                    journal_price_f = float(journal_price)
+                except (TypeError, ValueError):
+                    journal_price_f = None  # type: ignore[assignment]
+                if journal_price_f is not None:
+                    fired_mp, predicate_reason_mp = _multi_leg_auto_redirect_predicate(
+                        candidates=source_payload,
+                        journal_qty=float(journal_qty),
+                        journal_price=journal_price_f,
+                        ticker=discrepancy.ticker,
+                    )
+                    if fired_mp:
+                        recipe_mp = _synthesize_split_into_partials_recipe(
+                            source_payload
+                        )
+            base_reason_mp = (
+                f"unmatched_{direction}_fill on "
+                f"(ticker={ticker!r}, fill_id={fill_id}): journal "
+                f"consolidated qty={journal_qty}; Schwab returns "
+                f"{n} separate orders summing to qty={schwab_qty_sum}; "
+                f"V1 mapper exposes order-level price only (per §8.4 "
+                f"Pass-2-tier-1-FORBIDDEN lock) — operator must "
+                f"consult broker execution statement and choose "
+                f"keep_journal_as_is (no mutation) OR "
+                f"consolidate_using_operator_vwap (requires "
+                f"--custom-value with operator-computed VWAP) OR "
+                f"split_into_partials (requires --custom-value with "
+                f"execution-level partial payload)."
+            )
+            if recipe_mp is None and predicate_reason_mp is not None:
+                reason_mp = (
+                    f"{base_reason_mp} (multi-leg auto-redirect: declined "
+                    f"({predicate_reason_mp}))"
+                )
+            else:
+                reason_mp = base_reason_mp
             return ClassificationResult(
                 tier=2,
                 ambiguity_kind="multi_partial_vs_consolidated",
                 correction_target=None,
-                correction_reason=(
-                    f"unmatched_{direction}_fill on "
-                    f"(ticker={ticker!r}, fill_id={fill_id}): journal "
-                    f"consolidated qty={journal_qty}; Schwab returns "
-                    f"{n} separate orders summing to qty={schwab_qty_sum}; "
-                    f"V1 mapper exposes order-level price only (per §8.4 "
-                    f"Pass-2-tier-1-FORBIDDEN lock) — operator must "
-                    f"consult broker execution statement and choose "
-                    f"keep_journal_as_is (no mutation) OR "
-                    f"consolidate_using_operator_vwap (requires "
-                    f"--custom-value with operator-computed VWAP) OR "
-                    f"split_into_partials (requires --custom-value with "
-                    f"execution-level partial payload)."
-                ),
+                correction_reason=reason_mp,
                 candidate_choices=(
                     _candidate_choices_multi_partial_vs_consolidated()
                 ),
+                auto_redirect_recipe=recipe_mp,
             )
         return ClassificationResult(
             tier=2,

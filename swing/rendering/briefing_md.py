@@ -85,15 +85,30 @@ def render_briefing_md(vm: BriefingViewModel) -> str:
         parts.append("_No open positions to manage._\n")
 
     # Phase 12 Sub-bundle C T-C.9 — Reconciliation status section per
-    # spec §7.5. Emit ONLY when EITHER counter is > 0 (avoid noise on
-    # clean runs); the operator's daily/weekly cadence card reads from
-    # the dashboard banner; this briefing section is a written summary
-    # that pairs the actionable count with the CLI command lines so
-    # operator can copy/paste from the briefing into their terminal.
+    # spec §7.5. Emit ONLY when ANY of the three counters is > 0 (avoid
+    # noise on clean runs); the operator's daily/weekly cadence card
+    # reads from the dashboard banner; this briefing section is a written
+    # summary that pairs the actionable count with the CLI command lines
+    # so operator can copy/paste from the briefing into their terminal.
+    #
+    # Phase 12.5 #1 T-1.11 — widen predicate to include the multi-leg
+    # auto-redirect counter; add the F22-locked line "- Multi-leg
+    # auto-redirects applied this run: K" IMMEDIATELY BEFORE the tier-1
+    # auto-corrected line WHEN K > 0 (line itself omitted when K == 0).
+    # F22 wording is BINDING: "applied this run" verbatim — do NOT
+    # paraphrase to "(last 7 days)" or "(this run)" (spec §11.2).
     pending = vm.reconciliation_pending_count
     tier1_recent = vm.reconciliation_tier1_recent_count
-    if pending > 0 or tier1_recent > 0:
+    tier1_multi_leg_redirected = (
+        vm.reconciliation_tier1_multi_leg_redirected_count
+    )
+    if pending > 0 or tier1_recent > 0 or tier1_multi_leg_redirected > 0:
         parts.append("## Reconciliation status")
+        if tier1_multi_leg_redirected > 0:
+            parts.append(
+                f"- Multi-leg auto-redirects applied this run: "
+                f"{tier1_multi_leg_redirected}"
+            )
         parts.append(f"- Tier-1 auto-corrected (last 7 days): {tier1_recent}")
         parts.append(f"- Tier-2 pending operator review: {pending}")
         parts.append("")

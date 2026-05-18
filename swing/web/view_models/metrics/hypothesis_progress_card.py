@@ -32,7 +32,10 @@ from swing.data.repos.hypothesis_status_history import (
 )
 from swing.evaluation.dates import action_session_for_run
 from swing.metrics.cohort import list_closed_trades_for_cohort
-from swing.metrics.discrepancies import count_unresolved_material
+from swing.metrics.discrepancies import (
+    count_recent_multi_leg_auto_corrections,
+    count_unresolved_material,
+)
 from swing.metrics.policy import (
     get_trade_policy_id_stamp,
     read_at_trade_time_policy,
@@ -408,6 +411,7 @@ def build_hypothesis_progress_card_vm(
     assert conn is not None
     try:
         unresolved = count_unresolved_material(conn)
+        recent_multi_leg = count_recent_multi_leg_auto_corrections(conn)
         rows = conn.execute(
             "SELECT id, name, statement, target_sample_size, "
             "decision_criteria, status, consecutive_loss_tripwire, "
@@ -421,5 +425,6 @@ def build_hypothesis_progress_card_vm(
     return HypothesisProgressCardVM(
         session_date=action_session_for_run(datetime.now()).isoformat(),
         unresolved_material_discrepancies_count=unresolved,
+        recent_multi_leg_auto_correction_count=recent_multi_leg,
         cohorts=cohorts,
     )

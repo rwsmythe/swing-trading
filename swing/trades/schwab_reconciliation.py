@@ -56,9 +56,13 @@ from swing.trades.reconciliation import (
     MATERIAL_BY_TYPE,
 )
 from swing.trades.reconciliation_auto_correct import (
+    InvalidOverrideComboError,
     ValidatorRejectedError,
     _apply_tier1_correction_inner,
+    _apply_tier2_resolution_inner,
+    _SandboxAutoRedirectShortCircuit,
     _stamp_pending_ambiguity_inner,
+    _validate_override_combo,
 )
 from swing.trades.reconciliation_classifier import classify_discrepancy
 from swing.trades.reconciliation_validators import default_validator_chain
@@ -427,11 +431,18 @@ def _pivot_classify_and_dispatch_for_run(
     """Spec §7.1 LOCKED pivot — savepoint-per-discrepancy classify +
     dispatch. Called inside the outer reconciliation_run transaction
     AFTER all emitters have landed; the function NEVER raises out
-    (graceful-degradation per spec §7.4).
+    (graceful-degradation per spec §7.4), EXCEPT for
+    :class:`InvalidOverrideComboError` (developer-bug signal per Phase
+    12.5 #1 spec §7.4 R4 M2 LOCK + plan §F invariant F16 + F21) which
+    propagates out so the overall reconciliation_run fails-fast at
+    integration time rather than being hidden inside
+    ``tier_errored_count`` graceful-degradation.
     """
     counters.setdefault("tier1_applied_count", 0)
     counters.setdefault("tier2_pending_count", 0)
     counters.setdefault("tier_errored_count", 0)
+    counters.setdefault("tier1_multi_leg_auto_redirected_count", 0)
+    counters.setdefault("sandbox_auto_redirect_skipped_count", 0)
 
     # Read the newly-emitted discrepancies for this run.
     discrepancies = repo.list_discrepancies_for_run(conn, run_id=run_id)
@@ -514,6 +525,127 @@ def _pivot_classify_and_dispatch_for_run(
                             "%d: %s", disc.discrepancy_id, fb_exc,
                         )
                         counters["tier_errored_count"] += 1
+            elif (
+                classification.tier == 2
+                and classification.auto_redirect_recipe is not None
+            ):
+                # Phase 12.5 #1 T-1.5 — multi-leg auto-redirect path.
+                # Defensive future-proofing per F20: the initial pivot
+                # cannot currently emit the recipe (source_payload reads
+                # the persisted ``{"matched": null}`` sentinel for
+                # ``unmatched_*_fill`` discrepancies; the classifier
+                # treats that as the no-payload sentinel), so this branch
+                # is a guard for any future emit-shape widening AND a
+                # symmetry mirror of the backfill operational firing site
+                # at ``reconciliation_backfill._handle_pass_2`` (where
+                # ``_orders_to_classifier_payload`` builds the rich
+                # list-shape source_payload from freshly-fetched Schwab
+                # orders WITH execution-grain data).
+                recipe = classification.auto_redirect_recipe
+                try:
+                    # Defense-in-depth: validate override combo BEFORE
+                    # any mutation. Mirrors the T-1.4 service-layer
+                    # guard. InvalidOverrideComboError MUST propagate
+                    # per F21 (handled by the outer catch ladder below).
+                    _validate_override_combo(
+                        choice_code=recipe["choice_code"],
+                        applied_by_override=recipe["applied_by_override"],
+                        correction_action_override=recipe[
+                            "correction_action_override"
+                        ],
+                        resolved_by_override=recipe["resolved_by"],
+                    )
+                    _stamp_pending_ambiguity_inner(
+                        conn,
+                        discrepancy_id=disc.discrepancy_id,
+                        ambiguity_kind=classification.ambiguity_kind
+                        or "multi_partial_vs_consolidated",
+                        resolution_reason=classification.correction_reason,
+                    )
+                    _apply_tier2_resolution_inner(
+                        conn,
+                        discrepancy_id=disc.discrepancy_id,
+                        choice_code=recipe["choice_code"],
+                        operator_custom_payload=recipe["payload"],
+                        operator_reason=(
+                            f"multi-leg auto-redirect: "
+                            f"{classification.correction_reason}"
+                        ),
+                        applied_by_override=recipe["applied_by_override"],
+                        correction_action_override=recipe[
+                            "correction_action_override"
+                        ],
+                        resolved_by_override=recipe["resolved_by"],
+                        risk_policy_id=None,
+                        schwab_api_call_id=schwab_api_call_id,
+                        environment=environment or "production",
+                    )
+                    conn.execute(f"RELEASE SAVEPOINT {sp_name}")
+                    counters["tier1_multi_leg_auto_redirected_count"] += 1
+                except _SandboxAutoRedirectShortCircuit:
+                    # T-1.6 sandbox short-circuit. ROLLBACK TO unwinds
+                    # the immediately-preceding stamp + RELEASE clears
+                    # the savepoint. Discrepancy state returns to
+                    # 'unresolved'.
+                    with contextlib.suppress(sqlite3.Error):
+                        conn.execute(f"ROLLBACK TO SAVEPOINT {sp_name}")
+                        conn.execute(f"RELEASE SAVEPOINT {sp_name}")
+                    counters["sandbox_auto_redirect_skipped_count"] += 1
+                    log.warning(
+                        "auto-redirect short-circuited under sandbox "
+                        "for discrepancy %d",
+                        disc.discrepancy_id,
+                    )
+                except InvalidOverrideComboError:
+                    # Developer-bug per F21 + spec §7.4 R4 M2 LOCK:
+                    # clean savepoint + re-raise out of the per-disc
+                    # try-block so the outer catch ladder propagates
+                    # (the outer ``except InvalidOverrideComboError``
+                    # added below MUST come BEFORE the generic
+                    # ``except Exception``).
+                    with contextlib.suppress(sqlite3.Error):
+                        conn.execute(f"ROLLBACK TO SAVEPOINT {sp_name}")
+                        conn.execute(f"RELEASE SAVEPOINT {sp_name}")
+                    raise
+                except (ValidatorRejectedError, ValueError) as e:
+                    # Spec §7.5 fallback: roll back the auto-redirect
+                    # attempt + fresh-savepoint stamp
+                    # pending_ambiguity_resolution for manual operator
+                    # review. NOTE: InvalidOverrideComboError is a
+                    # ValueError subclass — the earlier
+                    # ``except InvalidOverrideComboError`` catch above
+                    # guarantees it never reaches this catch.
+                    with contextlib.suppress(sqlite3.Error):
+                        conn.execute(f"ROLLBACK TO SAVEPOINT {sp_name}")
+                        conn.execute(f"RELEASE SAVEPOINT {sp_name}")
+                    fb_sp = (
+                        f"correction_fallback_sp_{disc.discrepancy_id}"
+                    )
+                    conn.execute(f"SAVEPOINT {fb_sp}")
+                    try:
+                        _stamp_pending_ambiguity_inner(
+                            conn,
+                            discrepancy_id=disc.discrepancy_id,
+                            ambiguity_kind="multi_partial_vs_consolidated",
+                            resolution_reason=(
+                                f"multi-leg auto-redirect declined "
+                                f"post-classifier: {e}"
+                            ),
+                        )
+                        conn.execute(f"RELEASE SAVEPOINT {fb_sp}")
+                        counters["tier2_pending_count"] += 1
+                    except Exception as fb_exc:  # noqa: BLE001
+                        with contextlib.suppress(sqlite3.Error):
+                            conn.execute(
+                                f"ROLLBACK TO SAVEPOINT {fb_sp}"
+                            )
+                            conn.execute(f"RELEASE SAVEPOINT {fb_sp}")
+                        log.warning(
+                            "auto-redirect §7.5 fallback stamp failed "
+                            "for discrepancy %d: %s",
+                            disc.discrepancy_id, fb_exc,
+                        )
+                        counters["tier_errored_count"] += 1
             else:
                 # Tier-2 — stamp pending_ambiguity_resolution via the
                 # canonical service helper inside the active savepoint.
@@ -526,6 +658,17 @@ def _pivot_classify_and_dispatch_for_run(
                 )
                 conn.execute(f"RELEASE SAVEPOINT {sp_name}")
                 counters["tier2_pending_count"] += 1
+        except InvalidOverrideComboError:
+            # Phase 12.5 #1 spec §7.4 R4 M2 LOCK + F21 — developer-bug
+            # propagates out of the pivot loop. SAVEPOINT cleanup was
+            # already performed by the per-disc auto-redirect catch
+            # above before re-raise; defense-in-depth here in case the
+            # exception was raised outside that try-block (e.g., from
+            # _validate_override_combo at the dispatcher seam).
+            with contextlib.suppress(sqlite3.Error):
+                conn.execute(f"ROLLBACK TO SAVEPOINT {sp_name}")
+                conn.execute(f"RELEASE SAVEPOINT {sp_name}")
+            raise
         except Exception as e:  # noqa: BLE001 — graceful degradation
             with contextlib.suppress(sqlite3.Error):
                 conn.execute(f"ROLLBACK TO SAVEPOINT {sp_name}")
