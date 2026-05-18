@@ -2062,8 +2062,19 @@ def discrepancy_group() -> None:
     "--trade-id", type=int, default=None, help="Filter to a specific trade.",
 )
 @click.option("--limit", type=int, default=50, help="Max rows to show.")
+@click.option(
+    "--resolved-by",
+    type=str,
+    default=None,
+    help=(
+        "Filter to a specific resolved_by value (e.g., "
+        "'auto_tier1_multi_leg' for multi-leg auto-corrections)."
+    ),
+)
 @click.pass_context
-def discrepancy_list_cmd(ctx, unresolved, material, trade_id, limit):
+def discrepancy_list_cmd(
+    ctx, unresolved, material, trade_id, limit, resolved_by,
+):
     """List reconciliation discrepancies with optional filters."""
     from swing.data.db import connect
 
@@ -2079,6 +2090,9 @@ def discrepancy_list_cmd(ctx, unresolved, material, trade_id, limit):
         if trade_id is not None:
             where.append("trade_id = ?")
             params.append(trade_id)
+        if resolved_by is not None:
+            where.append("resolved_by = ?")
+            params.append(resolved_by)
         sql = (
             "SELECT discrepancy_id, run_id, discrepancy_type, trade_id, "
             "ticker, field_name, material_to_review, resolution, delta_text "
