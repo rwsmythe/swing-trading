@@ -2241,6 +2241,7 @@ def discrepancy_show_ambiguity_cmd(ctx, discrepancy_id):
     (V1 source per plan §E.2 acceptance criterion #4; no dedicated
     ``candidate_choices_json`` column — banked V2 candidate §I.13).
     """
+    import json
     import re
 
     from swing.data.db import connect
@@ -2248,6 +2249,10 @@ def discrepancy_show_ambiguity_cmd(ctx, discrepancy_id):
     from swing.trades.reconciliation_ambiguity_choices import (
         ChoiceMenuItem,
         get_choice_menu,
+    )
+    from swing.trades.reconciliation_render import (
+        build_compared_pairs,
+        render_journal_schwab_comparison_table_ascii,
     )
 
     cfg = ctx.obj["config"]
@@ -2276,6 +2281,30 @@ def discrepancy_show_ambiguity_cmd(ctx, discrepancy_id):
     click.echo(f"ambiguity_kind: {d.ambiguity_kind}")
     click.echo(f"reason:         {d.resolution_reason}")
     click.echo(f"created_at:     {d.created_at}")
+
+    # ----------------------------------------------------------------
+    # Journal vs Schwab comparison table (T-Q2.4; brief §A.4).
+    # Render the shared compared-pairs table after the disc detail header
+    # and before the choice menu.  ASCII-only via cp1252-safe renderer.
+    # Defensive JSON parsing matches the web VM's _render_pre_resolution_context
+    # graceful-degradation contract: silently skip the table on parse failure.
+    # ----------------------------------------------------------------
+    try:
+        _exp = json.loads(d.expected_value_json) if d.expected_value_json else {}
+        _act = json.loads(d.actual_value_json) if d.actual_value_json else {}
+    except (json.JSONDecodeError, TypeError):
+        _exp = {}
+        _act = {}
+    if isinstance(_exp, dict) and isinstance(_act, dict):
+        try:
+            _pairs = build_compared_pairs(d.discrepancy_type, _exp, _act)
+        except (KeyError, ValueError, TypeError):
+            _pairs = None
+        if _pairs:
+            click.echo("")
+            click.echo(
+                render_journal_schwab_comparison_table_ascii(list(_pairs))
+            )
 
     # --- Choice menu per spec §6.2.1. ---
     click.echo("")
