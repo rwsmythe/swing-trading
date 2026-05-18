@@ -542,6 +542,12 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
                 "Finviz inbox empty; attempting inline auto-fetch via "
                 "_step_finviz_fetch (one attempt; no exponential retry)"
             )
+            # Codex R1 Major #3: mark the active step BEFORE the inline
+            # _step_finviz_fetch call so ``swing pipeline status`` /
+            # stale-run diagnosis attributes the API call to the correct
+            # step. The site-2 ``lease.step("finviz_fetch")`` at L638 still
+            # fires (lease-step tracking is the same UPDATE; idempotent).
+            lease.step("finviz_fetch")
             try:
                 _step_finviz_fetch(cfg=cfg, lease=lease)
                 finviz_fetched_inline = True
@@ -561,9 +567,24 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
             try:
                 csv_path = select_csv(cfg.paths.finviz_inbox_dir)
             except (NoFilesError, AmbiguousInboxError) as exc_retry:
+                # Codex R1 Major #1: _step_finviz_fetch does NOT raise for
+                # expected Finviz API failures (missing token, auth, rate
+                # limit, schema parity) — _finviz_fetch_core returns
+                # status='error' + the audit row is inserted but the
+                # function returns normally. Surface that audit row's
+                # error_message in the combined report so the operator sees
+                # the real "why" rather than a redundant "No CSV files".
+                fetch_status, fetch_err = _read_latest_finviz_call_diagnostic(cfg)
+                fetch_detail = (
+                    f" [auto-fetch audit: status={fetch_status!r}"
+                    + (f", error={fetch_err}" if fetch_err else "")
+                    + "]"
+                    if fetch_status is not None
+                    else ""
+                )
                 msg = (
                     f"inbox empty + auto-fetch did not produce a CSV: "
-                    f"{exc_retry} (initial: {exc_initial})"
+                    f"{exc_retry} (initial: {exc_initial}){fetch_detail}"
                 )
                 log.error("Finviz inbox auto-fetch: %s", msg)
                 lease.release(state="failed", error_message=msg)
@@ -2103,6 +2124,42 @@ def _finviz_promote_shadow(shadow_path: Path, canonical_path: Path) -> None:
     """Atomic rename shadow → canonical."""
     import os
     os.replace(shadow_path, canonical_path)
+
+
+def _read_latest_finviz_call_diagnostic(
+    cfg,
+) -> tuple[str | None, str | None]:
+    """Read the most-recent ``finviz_api_calls`` row as a (status, error_message) pair.
+
+    Phase 12.5 finviz-inbox-auto-fetch-fix Codex R1 Major #1 helper:
+    ``_step_finviz_fetch`` does NOT raise for expected Finviz API failures
+    (missing token, auth, rate limit, schema parity) — ``_finviz_fetch_core``
+    returns ``status='error'`` and the audit row is inserted, but the
+    function returns normally. To enrich the combined-error message in the
+    retry-failed path with the real "why", surface that just-written audit
+    row's status + error_message. Defensive: if the read fails for any
+    reason (DB locked, table missing, no rows yet) → return ``(None, None)``
+    so the combined-error report continues to fail-fast with the existing
+    minimal-information message rather than masking the original failure
+    with a diagnostic-read error.
+    """
+    from swing.data.db import connect as _connect
+    from swing.data.repos.finviz_api_calls import list_recent_calls
+    try:
+        conn = _connect(cfg.paths.db_path)
+        try:
+            recent = list_recent_calls(conn, limit=1)
+        finally:
+            conn.close()
+    except Exception as exc:  # pragma: no cover — defensive read-side guard
+        log.warning(
+            "Finviz audit-row diagnostic read failed (continuing): %s", exc,
+        )
+        return (None, None)
+    if not recent:
+        return (None, None)
+    row = recent[0]
+    return (row.status, row.error_message)
 
 
 def _finviz_cleanup_stale_shadows(inbox_dir: Path) -> None:

@@ -248,3 +248,194 @@ def test_ambiguous_inbox_still_fails_fast_without_auto_fetch_invocation(
         f"AmbiguousInboxError must NOT route through auto-fetch retry; "
         f"got {invocation_count['n']} invocations"
     )
+
+
+def test_empty_inbox_inline_auto_fetch_writes_exactly_one_audit_row(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Brief §0.3 contract #5 pin: exactly 1 finviz_api_calls audit row when inline fires.
+
+    Codex R1 Major #2 fix: the earlier tests monkeypatch
+    ``_step_finviz_fetch`` ENTIRELY which bypasses the real audit-row
+    insertion path. This test instead monkeypatches the lower-level
+    ``_finviz_fetch_core`` to return a synthetic OK result dict so the
+    REAL ``_step_finviz_fetch`` body runs end-to-end (including the
+    lease-fenced audit-row insert at ``runner.py:2196`` and the file
+    shadow-write + promote dance). Discriminating signals: (a) auto-fetch
+    pathway emits EXACTLY ONE ``finviz_api_calls`` row + (b) row's
+    ``status='ok'`` + (c) site-2 body skipped so no SECOND row is
+    written for the same pipeline run.
+
+    A pre-fix regression where the double-fire-skip is removed at site 2
+    would surface 2 rows; a regression where ``_step_finviz_fetch``
+    drops the audit insert would surface 0 rows.
+    """
+    cfg = _setup_world(tmp_path)
+    csv_text = _CANONICAL_FINVIZ_HEADER + _CANONICAL_FINVIZ_ROW
+
+    # Synthetic ``_finviz_fetch_core`` result mirroring the OK-path shape
+    # from ``swing/pipeline/runner.py:2123-2129`` (real return dict keys).
+    import platform as _platform
+    session_today = action_session_for_run(datetime.now())
+    fmt = "%#d" if _platform.system() == "Windows" else "%-d"
+    target_csv = cfg.paths.finviz_inbox_dir / (
+        f"finviz{session_today.strftime(f'{fmt}%b%Y')}.csv"
+    )
+
+    def fake_finviz_fetch_core(cfg_in):
+        return {
+            "status": "ok",
+            "csv_text": csv_text,
+            "csv_path": target_csv,
+            "row_count": 1,
+            "response_time_ms": 5,
+            "signature_hash": "deadbeef" * 8,  # 64-char hex
+            "rate_limit_remaining": 100,
+            "error_message": None,
+        }
+
+    monkeypatch.setattr(
+        "swing.pipeline.runner._finviz_fetch_core",
+        fake_finviz_fetch_core,
+    )
+
+    result = run_pipeline(cfg=cfg, trigger="manual")
+
+    # Read post-run finviz_api_calls table directly via fresh connection.
+    import sqlite3
+    conn = sqlite3.connect(str(cfg.paths.db_path))
+    try:
+        rows = conn.execute(
+            "SELECT call_id, status, error_message, signature_hash "
+            "FROM finviz_api_calls ORDER BY call_id ASC"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    # Discriminating signal #1 (THE KEY ONE): exactly 1 audit row written.
+    # A site-2 double-fire regression would surface 2; a missing-insert
+    # regression would surface 0.
+    assert len(rows) == 1, (
+        f"brief §0.3 contract #5: expected EXACTLY 1 finviz_api_calls audit row "
+        f"per pipeline run when inline auto-fetch fires; got {len(rows)} rows: "
+        f"{rows}"
+    )
+
+    # Discriminating signal #2: the single row reflects the OK result.
+    _call_id, status, error_message, signature_hash = rows[0]
+    assert status == "ok", (
+        f"expected status='ok' from synthetic _finviz_fetch_core; "
+        f"got status={status!r} error_message={error_message!r}"
+    )
+    assert signature_hash == "deadbeef" * 8, (
+        f"expected signature_hash to roundtrip from synthetic result; "
+        f"got {signature_hash!r}"
+    )
+
+    # Discriminating signal #3: pipeline did NOT fail on empty-inbox cause.
+    msg = (result.error_message or "").lower()
+    assert "no csv files" not in msg, (
+        f"empty-inbox cause should be cleared by auto-fetch; "
+        f"got state={result.state!r} error_message={result.error_message!r}"
+    )
+
+    # Discriminating signal #4: target CSV is present post-run (real shadow-
+    # write + promote dance ran via _step_finviz_fetch).
+    assert target_csv.exists(), (
+        f"_step_finviz_fetch shadow-write + promote should have created "
+        f"{target_csv}; not found"
+    )
+
+
+def test_empty_inbox_silent_fetch_error_surfaces_audit_detail_in_combined_message(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Brief Codex R1 Major #1 pin: silent ``_finviz_fetch_core`` status='error' surfaces in combined report.
+
+    The COMMON real-world failure mode (operator missing Finviz token,
+    auth failure, rate limit, schema parity) does NOT raise from
+    ``_step_finviz_fetch`` — ``_finviz_fetch_core`` returns
+    ``status='error'`` + an audit row is inserted + the function returns
+    normally. Without R1 M#1's diagnostic enrichment, the retry-NoFilesError
+    combined message would carry only a redundant "No CSV files in <dir>
+    (initial: No CSV files in <dir>)" — the operator sees the same
+    "no CSV files" twice and no hint about WHY the auto-fetch produced
+    no CSV.
+
+    With R1 M#1 fix: ``_read_latest_finviz_call_diagnostic`` reads the
+    just-inserted audit row + the combined message embeds
+    ``[auto-fetch audit: status='error', error=<the real cause>]``.
+
+    Discriminating signal: simulate the missing-token error path; assert
+    the combined error_message contains BOTH the canonical audit detail
+    substring ('auto-fetch audit:') AND the real-cause substring
+    (e.g. ``FinvizConfigMissingError`` text).
+    """
+    cfg = _setup_world(tmp_path)
+
+    target_csv = cfg.paths.finviz_inbox_dir / _today_finviz_csv_name()
+
+    def fake_finviz_fetch_core_silent_error(cfg_in):
+        # Mirrors the missing-token return shape from
+        # ``swing/pipeline/runner.py:2098-2103`` verbatim — _step_finviz_fetch
+        # body runs normally + inserts an audit row with status='error' +
+        # returns silently (does NOT raise).
+        return {
+            "status": "error",
+            "csv_text": None,
+            "csv_path": target_csv,
+            "row_count": None,
+            "response_time_ms": 0,
+            "signature_hash": None,
+            "rate_limit_remaining": None,
+            "error_message": "FinvizConfigMissingError: token is missing",
+        }
+
+    monkeypatch.setattr(
+        "swing.pipeline.runner._finviz_fetch_core",
+        fake_finviz_fetch_core_silent_error,
+    )
+
+    result = run_pipeline(cfg=cfg, trigger="manual")
+
+    # state=failed because retry select_csv still raises NoFilesError
+    # (no CSV was written; the fake returned status='error').
+    assert result.state == "failed", (
+        f"expected state='failed' on silent _finviz_fetch_core error; "
+        f"got state={result.state!r} error_message={result.error_message!r}"
+    )
+
+    msg = result.error_message or ""
+    msg_lower = msg.lower()
+
+    # Discriminating signal #1: canonical diagnostic-enrichment marker
+    # present (proves _read_latest_finviz_call_diagnostic ran + retrieved
+    # the audit row).
+    assert "auto-fetch audit:" in msg_lower, (
+        f"R1 M#1 diagnostic enrichment should embed 'auto-fetch audit:' "
+        f"marker referencing the just-written audit row; got: {msg!r}"
+    )
+
+    # Discriminating signal #2: the real underlying cause from
+    # _finviz_fetch_core's error_message bubbles through to the operator
+    # via the audit-row read (NOT redundant 'No CSV files' twice).
+    assert "finvizconfigmissingerror" in msg_lower, (
+        f"R1 M#1 diagnostic enrichment should include the audit row's "
+        f"underlying error_message; got: {msg!r}"
+    )
+
+    # Discriminating signal #3: status='error' from the audit row is
+    # surfaced (operator can grep the message for the audit status).
+    assert "status='error'" in msg or "status=error" in msg, (
+        f"R1 M#1 diagnostic enrichment should include the audit row's "
+        f"status; got: {msg!r}"
+    )
+
+    # Discriminating signal #4: initial NoFilesError cause is STILL
+    # preserved in the combined message (brief §0.3 contract #2).
+    assert "no csv files" in msg_lower, (
+        f"combined error_message should still preserve the initial "
+        f"NoFilesError cause substring; got: {msg!r}"
+    )
