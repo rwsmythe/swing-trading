@@ -51,7 +51,7 @@
 
 **Scope intent:** the brainstorm consumed 6 Codex rounds with ZERO Critical findings + 1 ACCEPT-WITH-RATIONALE banked → the spec is exhaustively locked. The plan's job is **to operationalize the locked design**, NOT to re-derive it. Codex review on this plan should converge in 3-5 rounds because most architectural decisions are spec-locked + 12 operator decisions are pre-baked.
 
-**Cross-bundle position:** Phase 12.5 #2 is bracketed by Phase 12.5 #1 (SHIPPED 2026-05-18 at `6109261` — multi-leg tier-1 auto-redirect; supplies `BaseLayoutVM.recent_multi_leg_auto_correction_count` retrofit precedent) and Phase 12.5 #3 (project-hygiene maintenance pass — separate dispatch). Phase 12 Sub-sub-bundles C.A → C.D shipped the auto-correct reconciliation architecture; this plan is a pure read-only consumer of `apply_tier2_resolution`, `get_choice_menu`, and `get_discrepancy`.
+**Cross-bundle position:** Phase 12.5 #2 is bracketed by Phase 12.5 #1 (SHIPPED 2026-05-18 at `6109261` — multi-leg tier-1 auto-redirect; supplies `BaseLayoutVM.recent_multi_leg_auto_correction_count` retrofit precedent) and Phase 12.5 #3 (project-hygiene maintenance pass — separate dispatch). Phase 12 Sub-sub-bundles C.A → C.D shipped the auto-correct reconciliation architecture; this plan introduces NO service-layer changes and consumes the existing `apply_tier2_resolution` / `get_choice_menu` / `get_discrepancy` public APIs (web POST does mutate journal + audit state via `apply_tier2_resolution`'s normal write path — "consumer of existing service API" rather than "read-only"; Codex R3 m#4 phrasing fix).
 
 ---
 
@@ -253,7 +253,7 @@
   5. `vm = build_reconcile_discrepancy_resolve_vm(conn, discrepancy_id)`.
   6. Return `request.app.state.templates.TemplateResponse(request, "reconcile_discrepancy_resolve.html.j2", {"vm": vm})`.
 - ZERO Schwab API calls. ZERO DB writes. ZERO transaction openings.
-- **Error-template VM + template stub lands at T-2.5 (per Codex R1 M#1 task-ordering fix; ensures T-2.5 ships green).** T-2.5 acceptance covers BOTH (a) the GET handler AND (b) a MINIMAL stub of `swing/web/templates/reconcile_discrepancy_resolve_error.html.j2` (handles `error_kind in {'not_found', 'already_resolved'}` only) PLUS the `ReconcileDiscrepancyErrorVM` dataclass in `swing/web/view_models/reconcile.py` (full 8-base-layout-field + `error_kind` + `error_message` + `discrepancy_id` + `disc_resolution` + `disc_resolved_by` + `disc_created_at` shape; the 3 disc_* fields are Optional and unused by the 2 stub branches). T-2.10 then EXPANDS the template to add the 3 remaining branches (`anchor_mismatch` / `service_error` / `db_unavailable`) — used by T-2.6's 400/409/500/503 paths. This stub-then-expand pattern parallels Phase 12 Sub-bundle B's `swing/web/templates/schwab_setup_error.html.j2` precedent (initial stub + later widening).
+- **Error-template VM + template stub lands at T-2.5 (per Codex R1 M#1 task-ordering fix; ensures T-2.5 ships green).** T-2.5 acceptance covers BOTH (a) the GET handler AND (b) a MINIMAL stub of `swing/web/templates/reconcile_discrepancy_resolve_error.html.j2` (handles `error_kind in {'not_found', 'already_resolved'}` only) PLUS the `ReconcileDiscrepancyErrorVM` dataclass in `swing/web/view_models/reconcile.py` (full 8-base-layout-field + `error_kind` + `error_message` + `discrepancy_id` + `disc_resolution` + `disc_resolved_by` + `disc_created_at` shape; the 3 disc_* fields are Optional and unused by the 2 stub branches). T-2.6 then EXTENDS the template to add the 3 remaining branches (`anchor_mismatch` / `service_error` / `db_unavailable`) at the same commit as the route-side wiring (per Codex R2 M#1 ordering fix); T-2.10 is POLISH ONLY (no new template branches). This stub-then-extend pattern parallels Phase 12 Sub-bundle B's `swing/web/templates/schwab_setup_error.html.j2` precedent (initial stub + later widening).
 
 **Tests added (~7):**
 
@@ -490,7 +490,7 @@
 
 **Files:**
 - Modify: `swing/web/templates/reconcile_discrepancy_resolve_error.html.j2` — T-2.5 stubbed 2 branches (`not_found` + `already_resolved`); T-2.6 added the 3 remaining branches (`anchor_mismatch` / `service_error` / `db_unavailable`) at the route-handler commit (per Codex R2 M#1 ordering fix). T-2.10 POLISHES the template: shared error-page footer with CLI-parity hint substring, link-back-to-/dashboard styling consistency, accessibility attributes (`role="alert"`, `aria-live="polite"` on the error band), per-branch test-discriminator `data-error-kind="{{ vm.error_kind }}"` attribute stability check. NO new branches; NO new VM fields.
-- Modify: `swing/web/view_models/reconcile.py` — `ReconcileDiscrepancyErrorVM` already defined at T-2.5 + consumed by T-2.5 + T-2.6 with full field shape. T-2.10 makes no signature changes; only adds docstrings + dataclass `__post_init__` validation tightening (reject empty `error_message` when `error_kind != 'not_found'`).
+- Modify: `swing/web/view_models/reconcile.py` — `ReconcileDiscrepancyErrorVM` already defined at T-2.5 + consumed by T-2.5 + T-2.6 with full field shape. T-2.10 makes NO signature changes + NO validator additions (Codex R3 M#1 fix: late `__post_init__` tightening would risk breaking T-2.5/T-2.6 already-green paths whose call sites do not contract for a non-empty `error_message` on every error_kind; if validation tightening is desired V2, the contract must land in the SAME task as every `_render_error` call site is audited for non-empty supply). T-2.10 limits its VM-side scope to: docstring expansion + module-level constants for the 5 error_kind literals (`_ERROR_KIND_NOT_FOUND = 'not_found'` etc.) to prevent string-typo drift at call sites.
 - Modify: `swing/web/routes/reconcile.py` — NOT TOUCHED at T-2.10 (T-2.6 owns the route-side wiring for all 5 error_kinds).
 - Test: `tests/web/test_reconcile_resolve_error_paths.py` (NEW).
 
@@ -606,11 +606,11 @@ New-Item -ItemType File c:\Users\rwsmy\swing-trading\.copowers-subagent-active
 
 | File | Lines | Tasks | Touched-by-task description |
 |---|---|---|---|
-| `swing/web/view_models/reconcile.py` | NEW (~360 LOC projected) | T-2.1, T-2.2, T-2.3, T-2.10 | NEW module. Holds `_parse_parametric_pick_count`, 3 frozen dataclasses (VM + sub-VMs), 11 per-type render helpers + generic fallback, `build_reconcile_discrepancy_resolve_vm`, `ReconcileDiscrepancyErrorVM`. |
-| `swing/web/routes/reconcile.py` | NEW (~280 LOC projected) | T-2.5, T-2.6, T-2.10 | NEW module. Holds GET + POST handlers + per-callsite db_path-shape helpers + error-path renderers. |
+| `swing/web/view_models/reconcile.py` | NEW (~360 LOC projected) | T-2.1, T-2.2, T-2.3, T-2.5, T-2.10 | NEW module. Holds `_parse_parametric_pick_count`, 3 frozen dataclasses (VM + sub-VMs), 10 per-type render helpers + generic fallback, `build_reconcile_discrepancy_resolve_vm`, `ReconcileDiscrepancyErrorVM` (added at T-2.5; docstring + `__post_init__` polish at T-2.10). |
+| `swing/web/routes/reconcile.py` | NEW (~280 LOC projected) | T-2.5, T-2.6 | NEW module. Holds GET + POST handlers + per-callsite db_path-shape helpers + error-path renderers. T-2.10 does NOT touch (route-side wiring complete at T-2.6). |
 | `swing/web/app.py` | MODIFY +2 LOC | T-2.5 | `from swing.web.routes.reconcile import router as reconcile_router` + `app.include_router(reconcile_router)` after the existing schwab router include. |
 | `swing/web/templates/reconcile_discrepancy_resolve.html.j2` | NEW (~150 LOC) | T-2.4 | Pre-resolution context section + form + 12-line inline `<script>`. |
-| `swing/web/templates/reconcile_discrepancy_resolve_error.html.j2` | NEW (~80 LOC) | T-2.10 | 5-branch error template. |
+| `swing/web/templates/reconcile_discrepancy_resolve_error.html.j2` | NEW (~80 LOC) | T-2.5 (stub: not_found + already_resolved), T-2.6 (extend: anchor_mismatch + service_error + db_unavailable), T-2.10 (polish: a11y attrs + footer consistency) | 5-branch error template; stub-then-extend pattern (Codex R1 M#1 + R2 M#1 ordering fix). |
 | `swing/web/templates/base.html.j2` | MODIFY ~10 LOC | T-2.8 | Wrap banner count text in `<a href>` link when `vm.banner_resolve_link` truthy. |
 | `swing/web/view_models/metrics/shared.py:BaseLayoutVM` | MODIFY +1 field +1 validation | T-2.7 | `banner_resolve_link: str | None = None`. |
 | `swing/web/view_models/dashboard.py` | MODIFY +1 field (line 354 anchor) | T-2.7 | DashboardVM standalone-field retrofit. |
@@ -947,7 +947,7 @@ SELECT applied_by, correction_action FROM reconciliation_corrections WHERE discr
 
 ---
 
-## §I Cross-bundle pins (single-bundle dispatch; pure read-only consumer)
+## §I Cross-bundle pins (single-bundle dispatch; consumer of existing service API)
 
 Phase 12.5 #2 is a CONSUMER of:
 
