@@ -542,6 +542,12 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
                 "Finviz inbox empty; attempting inline auto-fetch via "
                 "_step_finviz_fetch (one attempt; no exponential retry)"
             )
+            # Codex R2 Major #1: snapshot MAX(call_id) BEFORE the inline
+            # _step_finviz_fetch call so the follow-up diagnostic read
+            # (in the retry-failed path) is causally scoped to rows
+            # inserted by THIS call — eliminates the R1 "latest globally"
+            # misattribution risk under multi-surface concurrency.
+            pre_call_max_id = _read_finviz_call_max_id_snapshot(cfg)
             # Codex R1 Major #3: mark the active step BEFORE the inline
             # _step_finviz_fetch call so ``swing pipeline status`` /
             # stale-run diagnosis attributes the API call to the correct
@@ -567,14 +573,25 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
             try:
                 csv_path = select_csv(cfg.paths.finviz_inbox_dir)
             except (NoFilesError, AmbiguousInboxError) as exc_retry:
-                # Codex R1 Major #1: _step_finviz_fetch does NOT raise for
-                # expected Finviz API failures (missing token, auth, rate
-                # limit, schema parity) — _finviz_fetch_core returns
-                # status='error' + the audit row is inserted but the
-                # function returns normally. Surface that audit row's
-                # error_message in the combined report so the operator sees
-                # the real "why" rather than a redundant "No CSV files".
-                fetch_status, fetch_err = _read_latest_finviz_call_diagnostic(cfg)
+                # Codex R1 Major #1 + R2 Major #1: _step_finviz_fetch does
+                # NOT raise for expected Finviz API failures (missing token,
+                # auth, rate limit, schema parity) — _finviz_fetch_core
+                # returns status='error' + the audit row is inserted but
+                # the function returns normally. Surface that audit row's
+                # status + error_message in the combined report so the
+                # operator sees the real "why" rather than a redundant
+                # "No CSV files". The diagnostic read is causally scoped
+                # via the pre-call_id snapshot (R2 M#1).
+                fetch_status, fetch_err = _read_latest_finviz_call_diagnostic(
+                    cfg, after_call_id=pre_call_max_id,
+                )
+                # Codex R2 Minor #2 defense: cap the embedded error to
+                # 512 chars to bound combined-message size. The audit
+                # row itself already truncates at 1024; this cap
+                # bounds re-embedding without altering the source-of-
+                # truth audit row.
+                if fetch_err and len(fetch_err) > 512:
+                    fetch_err = fetch_err[:512] + "..."
                 fetch_detail = (
                     f" [auto-fetch audit: status={fetch_status!r}"
                     + (f", error={fetch_err}" if fetch_err else "")
@@ -2126,29 +2143,74 @@ def _finviz_promote_shadow(shadow_path: Path, canonical_path: Path) -> None:
     os.replace(shadow_path, canonical_path)
 
 
-def _read_latest_finviz_call_diagnostic(
-    cfg,
-) -> tuple[str | None, str | None]:
-    """Read the most-recent ``finviz_api_calls`` row as a (status, error_message) pair.
+def _read_finviz_call_max_id_snapshot(cfg) -> int | None:
+    """Snapshot ``MAX(call_id)`` for causal scoping of diagnostic enrichment.
 
-    Phase 12.5 finviz-inbox-auto-fetch-fix Codex R1 Major #1 helper:
-    ``_step_finviz_fetch`` does NOT raise for expected Finviz API failures
-    (missing token, auth, rate limit, schema parity) — ``_finviz_fetch_core``
-    returns ``status='error'`` and the audit row is inserted, but the
-    function returns normally. To enrich the combined-error message in the
-    retry-failed path with the real "why", surface that just-written audit
-    row's status + error_message. Defensive: if the read fails for any
-    reason (DB locked, table missing, no rows yet) → return ``(None, None)``
-    so the combined-error report continues to fail-fast with the existing
-    minimal-information message rather than masking the original failure
-    with a diagnostic-read error.
+    Phase 12.5 finviz-inbox-auto-fetch-fix Codex R2 Major #1 helper:
+    capture BEFORE invoking the inline ``_step_finviz_fetch`` so the
+    follow-up diagnostic read can scope its query to ``WHERE call_id >
+    <snapshot>`` — guaranteeing the read returns ONLY rows inserted by
+    THIS call (not a prior unrelated row from a CLI surface, not a
+    misattributed concurrent insert, not a future-dated test row).
+    Returns ``0`` if the table is currently empty (any subsequent insert
+    will have ``call_id >= 1`` per SQLite ``INTEGER PRIMARY KEY
+    AUTOINCREMENT`` semantics). Returns ``None`` only when the read
+    itself fails (DB locked, table missing) — the diagnostic enrichment
+    then no-ops rather than risk a false-confidence misattribution.
     """
     from swing.data.db import connect as _connect
-    from swing.data.repos.finviz_api_calls import list_recent_calls
     try:
         conn = _connect(cfg.paths.db_path)
         try:
-            recent = list_recent_calls(conn, limit=1)
+            row = conn.execute(
+                "SELECT MAX(call_id) FROM finviz_api_calls"
+            ).fetchone()
+        finally:
+            conn.close()
+    except Exception as exc:  # pragma: no cover — defensive read-side guard
+        log.warning(
+            "Finviz call_id snapshot read failed (continuing): %s", exc,
+        )
+        return None
+    return int(row[0]) if row and row[0] is not None else 0
+
+
+def _read_latest_finviz_call_diagnostic(
+    cfg, *, after_call_id: int | None,
+) -> tuple[str | None, str | None]:
+    """Read the FIRST ``finviz_api_calls`` row inserted after ``after_call_id``.
+
+    Phase 12.5 finviz-inbox-auto-fetch-fix Codex R1 Major #1 +
+    R2 Major #1 helper: ``_step_finviz_fetch`` does NOT raise for
+    expected Finviz API failures (missing token, auth, rate limit,
+    schema parity) — ``_finviz_fetch_core`` returns ``status='error'``
+    and the audit row is inserted, but the function returns normally.
+    To enrich the combined-error message in the retry-failed path with
+    the real "why", surface THAT just-written audit row's status +
+    error_message. The R2 ``after_call_id`` scoping causally ties the
+    read to this pipeline's audit row insert — eliminates the prior
+    R1 "latest globally" misattribution risk under multi-surface
+    concurrency.
+
+    When ``after_call_id is None`` (snapshot read failed) → return
+    ``(None, None)`` and skip diagnostic enrichment rather than
+    risk misattributing a prior row. Defensive: any other read
+    failure also returns ``(None, None)`` so the combined-error
+    report continues to fail-fast with the existing minimal-
+    information message rather than masking the original failure
+    with a diagnostic-read error.
+    """
+    if after_call_id is None:
+        return (None, None)
+    from swing.data.db import connect as _connect
+    try:
+        conn = _connect(cfg.paths.db_path)
+        try:
+            row = conn.execute(
+                "SELECT status, error_message FROM finviz_api_calls "
+                "WHERE call_id > ? ORDER BY call_id ASC LIMIT 1",
+                (after_call_id,),
+            ).fetchone()
         finally:
             conn.close()
     except Exception as exc:  # pragma: no cover — defensive read-side guard
@@ -2156,10 +2218,9 @@ def _read_latest_finviz_call_diagnostic(
             "Finviz audit-row diagnostic read failed (continuing): %s", exc,
         )
         return (None, None)
-    if not recent:
+    if row is None:
         return (None, None)
-    row = recent[0]
-    return (row.status, row.error_message)
+    return (row[0], row[1])
 
 
 def _finviz_cleanup_stale_shadows(inbox_dir: Path) -> None:

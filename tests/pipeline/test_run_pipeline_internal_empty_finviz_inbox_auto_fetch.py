@@ -439,3 +439,129 @@ def test_empty_inbox_silent_fetch_error_surfaces_audit_detail_in_combined_messag
         f"combined error_message should still preserve the initial "
         f"NoFilesError cause substring; got: {msg!r}"
     )
+
+
+def test_empty_inbox_diagnostic_is_causally_scoped_to_this_pipeline_call(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Brief Codex R2 Major #1 pin: diagnostic read scoped to THIS call, not "latest globally".
+
+    Plant a PRIOR ``finviz_api_calls`` row (status='ok' from some prior
+    surface invocation) BEFORE invoking the pipeline. The R1 code
+    (before R2 fix) would have used ``list_recent_calls(limit=1)`` and
+    surfaced THE PRIOR ROW's status='ok' + error=None — a false
+    confidence "auto-fetch succeeded" report when the actual inline
+    fetch silently failed. With R2 M#1 ``after_call_id`` scoping, the
+    diagnostic correctly surfaces the FRESH row inserted by this
+    pipeline's inline ``_step_finviz_fetch`` (status='error' + the real
+    underlying cause).
+
+    Discriminating signal: the combined error message must contain the
+    FRESH-row marker ('FinvizSchemaParityError' from this run's
+    monkeypatched fake) AND must NOT contain any 'auto-fetch audit:
+    status=\\'ok\\'' substring (the prior row's status). A regression
+    that drops the ``after_call_id`` scoping would surface
+    ``status='ok'`` from the planted prior row.
+    """
+    import sqlite3
+
+    cfg = _setup_world(tmp_path)
+    target_csv = cfg.paths.finviz_inbox_dir / _today_finviz_csv_name()
+
+    # Plant a PRIOR successful audit row (call_id=1; from a hypothetical
+    # earlier surface invocation). Its status='ok' would be surfaced by
+    # the R1 unscoped "latest globally" read, which is the false-
+    # attribution bug R2 M#1 fixes.
+    conn = sqlite3.connect(str(cfg.paths.db_path))
+    try:
+        conn.execute(
+            "INSERT INTO finviz_api_calls "
+            "(ts, screen_query, status, row_count, response_time_ms, "
+            " rate_limit_remaining, signature_hash, error_message) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "2026-01-01T00:00:00", "v=152", "ok", 100, 50,
+                100, "deadbeef" * 8, None,
+            ),
+        )
+        conn.commit()
+        # Confirm the prior row exists + capture its call_id (expected 1).
+        prior_row = conn.execute(
+            "SELECT call_id, status FROM finviz_api_calls"
+        ).fetchall()
+        assert len(prior_row) == 1, f"setup error: expected 1 prior row; got {prior_row!r}"
+        assert prior_row[0][1] == "ok", (
+            f"setup error: prior row should be status='ok'; got {prior_row[0]!r}"
+        )
+    finally:
+        conn.close()
+
+    def fake_finviz_fetch_core_silent_schema_error(cfg_in):
+        # Different distinguishable error than the prior gotcha test's
+        # ConfigMissingError so the assertion is unambiguous.
+        return {
+            "status": "error",
+            "csv_text": None,
+            "csv_path": target_csv,
+            "row_count": None,
+            "response_time_ms": 12,
+            "signature_hash": None,
+            "rate_limit_remaining": None,
+            "error_message": "FinvizSchemaParityError: expected 13 cols, got 12",
+        }
+
+    monkeypatch.setattr(
+        "swing.pipeline.runner._finviz_fetch_core",
+        fake_finviz_fetch_core_silent_schema_error,
+    )
+
+    result = run_pipeline(cfg=cfg, trigger="manual")
+
+    assert result.state == "failed", (
+        f"expected state='failed'; got state={result.state!r} "
+        f"error_message={result.error_message!r}"
+    )
+
+    msg = result.error_message or ""
+
+    # Discriminating signal #1 (THE KEY ONE): diagnostic surfaces THIS
+    # pipeline's row, not the prior row.
+    assert "FinvizSchemaParityError" in msg, (
+        f"R2 M#1 causal-scoping: diagnostic should surface THIS "
+        f"pipeline's audit row (status='error', FinvizSchemaParityError); "
+        f"got: {msg!r}"
+    )
+
+    # Discriminating signal #2: prior row's status='ok' must NOT appear.
+    # Match the canonical diagnostic-marker shape literally — the R1
+    # code without scoping would have emitted
+    # ``[auto-fetch audit: status='ok', ...]``.
+    assert "status='ok'" not in msg, (
+        f"R2 M#1 causal-scoping: prior-row status='ok' must NOT appear "
+        f"in the diagnostic enrichment (would indicate the diagnostic "
+        f"is reading the latest-globally row instead of THIS call's); "
+        f"got: {msg!r}"
+    )
+
+    # Discriminating signal #3: status='error' (this call's row) IS
+    # in the diagnostic.
+    assert "status='error'" in msg, (
+        f"R2 M#1 causal-scoping: this call's status='error' should be "
+        f"in the diagnostic; got: {msg!r}"
+    )
+
+    # Discriminating signal #4: the row count post-run is 2 (prior + this).
+    conn = sqlite3.connect(str(cfg.paths.db_path))
+    try:
+        post = conn.execute(
+            "SELECT call_id, status, error_message FROM finviz_api_calls "
+            "ORDER BY call_id ASC"
+        ).fetchall()
+    finally:
+        conn.close()
+    assert len(post) == 2, (
+        f"expected 2 rows post-run (prior + inline auto-fetch); got {post!r}"
+    )
+    assert post[0][1] == "ok", f"prior row drift: {post[0]!r}"
+    assert post[1][1] == "error", f"new row should be 'error': {post[1]!r}"
