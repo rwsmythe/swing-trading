@@ -101,9 +101,9 @@
 
 **Acceptance:**
 
-- `ReconcileDiscrepancyResolveVM` is a `@dataclass(frozen=True)` with the 19 fields enumerated in spec §5.1 verbatim:
+- `ReconcileDiscrepancyResolveVM` is a `@dataclass(frozen=True)` with the **18 fields** enumerated in spec §5.1 verbatim:
   - 8 BaseLayoutVM-shaped fields: `session_date`, `stale_banner`, `price_source_degraded`, `price_source_degraded_until`, `ohlcv_source_degraded`, `unresolved_material_discrepancies_count`, `recent_multi_leg_auto_correction_count`, `banner_resolve_link`. Declared as standalone fields (NOT inherited via `BaseLayoutVM`) to match the existing non-metrics-package convention documented at `swing/web/view_models/schwab.py:29-37`.
-  - 11 page-specific fields: `discrepancy_id`, `form_action`, `pre_resolution_context`, `choices`, `prior_choice_code`, `prior_custom_value_raw`, `prior_resolution_reason`, `prior_ambiguity_kind_at_render`, `error_band_message`, `error_band_field_hint`. Each typed per spec §5.1.
+  - 10 page-specific fields: `discrepancy_id`, `form_action`, `pre_resolution_context`, `choices`, `prior_choice_code`, `prior_custom_value_raw`, `prior_resolution_reason`, `prior_ambiguity_kind_at_render`, `error_band_message`, `error_band_field_hint`. Each typed per spec §5.1.
 - `ReconcilePreResolutionContext` is a `@dataclass(frozen=True)` with the 14 fields per spec §5.2.
 - `ReconcileChoiceFormItem` is a `@dataclass(frozen=True)` with the 6 fields per spec §5.3 (`code`, `description`, `requires_custom_value`, `recommended`, `expected_payload_shape_description`, `is_parametric_pick`).
 - All three dataclasses have `__post_init__` validation:
@@ -112,7 +112,7 @@
   - `banner_resolve_link` is `None` OR non-empty string starting with `/` (defensive).
   - `discrepancy_id > 0`.
   - `form_action` matches `f"/reconcile/discrepancy/{discrepancy_id}/resolve"` byte-for-byte (server-derived; prevents form-action drift).
-- 11 per-discrepancy-type render helpers as PRIVATE module-level functions `_render_pre_resolution_context_<discrepancy_type>(disc, expected, actual) -> ReconcilePreResolutionContext` covering every row of spec §7.1's table:
+- **10 per-discrepancy-type render helpers** as PRIVATE module-level functions `_render_pre_resolution_context_<discrepancy_type>(disc, expected, actual) -> ReconcilePreResolutionContext` covering every discrepancy_type enumerated across spec §7.1's table (9 rows; row 7 groups `unmatched_open_fill` + `unmatched_close_fill` under a shared specification, but the plan implements them as separate helpers for type-safety + per-side label clarity — `journal_side_label='Journal fill'` is identical but the per-side semantics around the `actual['matched']` payload differ between open + close in the audit shape):
   - `entry_price_mismatch`, `close_price_mismatch`, `stop_mismatch`, `position_qty_mismatch`, `cash_movement_mismatch`, `snapshot_mismatch`, `unmatched_open_fill`, `unmatched_close_fill`, `equity_delta`, `sector_tamper`.
   - Each helper is PURE; consumes `disc` (the `ReconciliationDiscrepancy` dataclass) + the parsed `expected_value_json` dict + the parsed `actual_value_json` dict (parsed by the calling dispatch function; helpers do NOT re-parse JSON).
   - Numeric fields render with `:.2f` formatting (spec §7.1 + Phase 12 Sub-sub-bundle C.B Codex M#3 LOCK precedent).
@@ -421,9 +421,8 @@
   </aside>
   {% endif %}
   ```
-- The `banner-glyph` SPAN previously used `"⚠"` (U+26A0); F12 LOCK requires ASCII-only; substitute with `"!"` (the literal exclamation mark) per Phase 12 Sub-sub-bundle C.D gate-fix #1 + #3 inheritance.
-  - **WAIT — verify before changing**: the existing template already carries `⚠`; F12 BANS new non-ASCII but the operator-witnessed gate for Phase 10 + 12 already accepted this glyph. **The implementer MUST NOT change this glyph at T-2.8**; the F12 LOCK applies to NEW template text. Keeping the existing glyph preserves the no-regression posture. Discriminating test asserts the BANNER LINK text + CLI-hint text + the new `<a>` markup are ASCII-only; the pre-existing `<span class="banner-glyph">⚠</span>` is exempted (pinned by character-class allowlist in the test).
-- ALL OTHER new template text (the `data-banner-resolve-link="true"` attribute + the `<a href=` markup + any new substrings) MUST be ASCII-only.
+- **Pre-existing `⚠` (U+26A0) banner-glyph is PRESERVED.** F12 ASCII-only LOCK applies to NEW substrings landing in this task (the `data-banner-resolve-link="true"` attribute + the `<a href=...>` markup + any new wrapper text). The operator-witnessed gate for Phase 10 T-E.3 + Phase 12.5 #1 T-1.9 already accepted the existing `⚠` glyph in the banner-glyph span; touching it would be an out-of-scope regression. Discriminating test asserts NEW substrings are ASCII-only; the `<span class="banner-glyph">⚠</span>` literal is character-class-allowlisted (U+26A0 exempted explicitly).
+- ALL OTHER new template text (the `data-banner-resolve-link="true"` attribute + the `<a href=` markup + any new wrapper substrings) MUST be ASCII-only.
 - The retrofit completeness audit test:
   - Runs Pass A grep at test time: `subprocess.check_output(["rg", "-l", "unresolved_material_discrepancies_count\\s*:\\s*int\\s*=", "swing/web/view_models/"])` → list of files.
   - For each file, imports the module + iterates `inspect.getmembers(module, inspect.isclass)` filtering for dataclasses with the `unresolved_material_discrepancies_count` field.
@@ -803,7 +802,8 @@ The Pass B retrofit touches 21 call sites across 12 files (per §C.5 grep). Two 
 
 **Pattern A (conn-shape — 20 sites)**: the route or builder function opens `conn = sqlite3.connect(...)` directly (or accepts a `conn` argument from its caller) + calls `count_unresolved_material(conn)` on the open connection. T-2.9 acceptance: at each such site, add an adjacent call `banner_resolve_link = fetch_first_pending_ambiguity_resolve_link_path(conn)` then thread `banner_resolve_link=banner_resolve_link` into the VM constructor.
 
-Worked example for `swing/web/view_models/dashboard.py:909`:
+Worked example for `swing/web/view_models/dashboard.py:909` (preserving the EXISTING `with sqlite3.connect(db_path) as conn:` context-manager idiom at the surrounding site; T-2.9 only adds the adjacent helper call + the new VM kwarg pair — NOT a connection-management rewrite):
+
 ```python
 # BEFORE:
 with sqlite3.connect(db_path) as conn:
@@ -829,6 +829,8 @@ with sqlite3.connect(db_path) as conn:
         # other fields
     )
 ```
+
+**Note on T-2.5 / T-2.6 vs T-2.9 connection-management asymmetry.** T-2.5 + T-2.6 (the NEW `/reconcile/discrepancy/{id}/resolve` route handlers) use **explicit `try: ... finally: conn.close()`** rather than `with sqlite3.connect(...) as conn:` per spec §4.1 Codex R3 M#3 LOCK + spec §4.2 LOCK. The rationale: spec §4 explicitly requires connection closure on ALL early-return branches (404 / 409 / 400) where a `with` block would still close correctly but the spec author chose the explicit `try/finally` form to make the closure-guarantee discriminating-test-easy (mock `sqlite3.connect`, assert `conn.close()` invoked exactly once even on early-return). T-2.9 retrofit at pre-existing callsites does NOT rewrite the existing `with` blocks (would be out-of-scope churn). The two patterns coexist; both are correct.
 
 **Pattern B (db_path-shape — 1 site at `swing/web/routes/schwab.py:92`)**: a module-level helper `_fetch_unresolved_material_count(db_path) -> int` opens a short-lived connection internally. T-2.9 acceptance: add a SIBLING helper `_fetch_banner_resolve_link(db_path) -> str | None` adjacent to it (mirrors the Phase 12.5 #1 T-1.8 sibling helper `_fetch_recent_multi_leg_auto_correction_count`); thread the result through the same VM-constructor call sites (the schwab GET + POST + status handlers each call _fetch_unresolved_material_count today and gain a parallel call to _fetch_banner_resolve_link).
 
@@ -959,11 +961,11 @@ No cross-bundle pins SKIP unskipped (T-2.x has no `@pytest.mark.skip` decorators
 
 ## §J V2.1 §VII.F amendment candidates banked during planning (scaffold)
 
-Empty at plan-drafting time. Codex chain rounds MAY surface candidates. Expected outcome: ZERO new amendments (the spec already enumerated 13 V2 candidates at §15 + the brainstorm chain absorbed all wording divergences).
+Codex chain rounds MAY surface additional candidates.
 
 | # | Candidate | Source | Disposition |
 |---|---|---|---|
-| (none) | — | — | scaffold for Codex chain |
+| J1 | Spec §5.4 builder signature adds `prior_ambiguity_kind_at_render: str = ''` kwarg (between `prior_resolution_reason` and `error_band_message`) to match the spec §5.1 VM field `prior_ambiguity_kind_at_render`. The spec §5.4 signature as written omits this kwarg even though the corresponding VM field exists for error re-render shape preservation per spec §6 + §11.9 hidden-anchor tamper/drift walkthrough. | Pre-Codex review 2026-05-18 (plan-vs-spec delta); plan T-2.3 keeps the kwarg per VM-field requirement | Banked for V2.1 §VII.F amendment; spec §5.4 signature should be amended to enumerate the kwarg explicitly. Plan T-2.3 acceptance documents the addition + rationale. Codex chain may ratify by either path (amend spec OR drop builder kwarg + reconstruct from session). |
 
 ---
 
