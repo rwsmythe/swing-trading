@@ -139,12 +139,32 @@ def reconcile_discrepancy_resolve_form(
     cfg = apply_overrides(request.app.state.cfg)
     conn = sqlite3.connect(cfg.paths.db_path)
     try:
-        unresolved_count = count_unresolved_material(conn)
-        recent_multi_leg_count = count_recent_multi_leg_auto_corrections(conn)
-        banner_resolve_link = (
-            fetch_first_pending_ambiguity_resolve_link_path(conn)
-        )
-        disc = get_discrepancy(conn, discrepancy_id)
+        try:
+            unresolved_count = count_unresolved_material(conn)
+            recent_multi_leg_count = count_recent_multi_leg_auto_corrections(
+                conn,
+            )
+            banner_resolve_link = (
+                fetch_first_pending_ambiguity_resolve_link_path(conn)
+            )
+            disc = get_discrepancy(conn, discrepancy_id)
+        except sqlite3.OperationalError as exc:
+            # Codex R1 Major #2 — pre-flight OperationalError (DB locked /
+            # busy during count_* helpers or get_discrepancy) routes to the
+            # canonical db_unavailable 503 template instead of bubbling 500.
+            log.warning("sqlite3.OperationalError (pre-flight): %s", exc)
+            return _render_error(
+                request,
+                status_code=503,
+                error_kind="db_unavailable",
+                error_message=(
+                    "Database is busy; please retry in a moment."
+                ),
+                discrepancy_id=discrepancy_id,
+                unresolved_count=0,
+                recent_multi_leg_count=0,
+                banner_resolve_link=None,
+            )
         if disc is None:
             return _render_error(
                 request,
@@ -179,7 +199,24 @@ def reconcile_discrepancy_resolve_form(
                 recent_multi_leg_count=recent_multi_leg_count,
                 banner_resolve_link=banner_resolve_link,
             )
-        vm = build_reconcile_discrepancy_resolve_vm(conn, discrepancy_id)
+        try:
+            vm = build_reconcile_discrepancy_resolve_vm(conn, discrepancy_id)
+        except sqlite3.OperationalError as exc:
+            # Codex R1 Major #2 — VM builder is also a read-side surface
+            # consuming ``conn``; cover its OperationalError too.
+            log.warning("sqlite3.OperationalError (builder): %s", exc)
+            return _render_error(
+                request,
+                status_code=503,
+                error_kind="db_unavailable",
+                error_message=(
+                    "Database is busy; please retry in a moment."
+                ),
+                discrepancy_id=discrepancy_id,
+                unresolved_count=unresolved_count,
+                recent_multi_leg_count=recent_multi_leg_count,
+                banner_resolve_link=banner_resolve_link,
+            )
     finally:
         conn.close()
     return request.app.state.templates.TemplateResponse(
@@ -316,14 +353,34 @@ async def reconcile_discrepancy_resolve_post(  # noqa: PLR0911, PLR0912, PLR0915
 
     conn = sqlite3.connect(cfg.paths.db_path)
     try:
-        unresolved_count = count_unresolved_material(conn)
-        recent_multi_leg_count = count_recent_multi_leg_auto_corrections(conn)
-        banner_resolve_link = (
-            fetch_first_pending_ambiguity_resolve_link_path(conn)
-        )
+        try:
+            unresolved_count = count_unresolved_material(conn)
+            recent_multi_leg_count = count_recent_multi_leg_auto_corrections(
+                conn,
+            )
+            banner_resolve_link = (
+                fetch_first_pending_ambiguity_resolve_link_path(conn)
+            )
 
-        # Step 4a — discrepancy existence
-        disc = get_discrepancy(conn, discrepancy_id)
+            # Step 4a — discrepancy existence
+            disc = get_discrepancy(conn, discrepancy_id)
+        except sqlite3.OperationalError as exc:
+            # Codex R1 Major #2 — pre-flight OperationalError (DB locked /
+            # busy during count_* helpers or get_discrepancy) routes to the
+            # canonical db_unavailable 503 template instead of bubbling 500.
+            log.warning("sqlite3.OperationalError (pre-flight): %s", exc)
+            return _render_error(
+                request,
+                status_code=503,
+                error_kind="db_unavailable",
+                error_message=(
+                    "Database is busy; please retry in a moment."
+                ),
+                discrepancy_id=discrepancy_id,
+                unresolved_count=0,
+                recent_multi_leg_count=0,
+                banner_resolve_link=None,
+            )
         if disc is None:
             return _render_error(
                 request,

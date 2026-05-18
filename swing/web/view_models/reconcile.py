@@ -548,8 +548,12 @@ def _render_pre_resolution_context(
 
     - Falls back to generic renderer when the type is unknown.
     - Catches ``json.JSONDecodeError`` + ``TypeError`` on JSON parse.
-    - Catches ``KeyError`` from per-type helpers (missing-key on the
-      expected/actual payload path) and falls back.
+    - Catches ``(KeyError, ValueError, TypeError)`` from per-type helpers
+      (Codex R1 Major #1 — JSON-valid but type-invalid payloads such as
+      ``{"price": "N/A"}`` or ``{"price": {}}`` raise from inside
+      ``float(...)``; dispatch must degrade to the generic fallback rather
+      than 500). KeyError covers missing-key on the expected/actual payload
+      path.
 
     All graceful-degradation paths set ``parse_warning`` to a short
     explanatory reason; the happy path leaves it ``None``.
@@ -589,6 +593,18 @@ def _render_pre_resolution_context(
         return _render_generic_fallback(
             disc,
             parse_warning=f"missing key in payload: {exc}",
+        )
+    except (ValueError, TypeError) as exc:
+        # Codex R1 Major #1 — JSON-valid but type-invalid payload triggered
+        # a raise from inside the helper (typically ``float(...)`` on a
+        # non-numeric string or non-scalar value). Degrade to the generic
+        # fallback rather than 500.
+        return _render_generic_fallback(
+            disc,
+            parse_warning=(
+                f"per-type helper raised {type(exc).__name__} on field "
+                f"shape; rendered via generic fallback: {exc}"
+            ),
         )
 
 

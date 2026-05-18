@@ -303,6 +303,71 @@ def test_reconcile_pre_resolution_context_generic_fallback_on_missing_key() -> N
     assert ctx.parse_warning is not None
 
 
+def test_dispatch_falls_back_on_value_error_in_helper() -> None:
+    """Codex R1 Major #1: type-invalid payload (e.g. ``{"price": "N/A"}``)
+    flows into the per-type helper which then raises ``ValueError`` from
+    ``float("N/A")``. Dispatch MUST catch ValueError + degrade to the
+    generic fallback (set ``parse_warning``) — NOT propagate the
+    ValueError up + bubble as 500.
+    """
+    disc = _make_discrepancy(
+        discrepancy_type="entry_price_mismatch",
+        expected_value_json='{"price": "N/A"}',
+        actual_value_json='{"price": 5.23}',
+    )
+    # Must not raise ValueError.
+    ctx = _render_pre_resolution_context(disc)
+    assert ctx.parse_warning is not None
+
+
+def test_dispatch_falls_back_on_type_error_in_helper() -> None:
+    """Codex R1 Major #1: type-invalid payload where ``expected['price']``
+    is a dict (e.g. ``{"price": {}}``). Per-type helper raises ``TypeError``
+    from ``float({})``. Dispatch MUST catch TypeError + degrade.
+    """
+    disc = _make_discrepancy(
+        discrepancy_type="entry_price_mismatch",
+        expected_value_json='{"price": {}}',
+        actual_value_json='{"price": 5.23}',
+    )
+    # Must not raise TypeError.
+    ctx = _render_pre_resolution_context(disc)
+    assert ctx.parse_warning is not None
+
+
+def test_dispatch_falls_back_on_null_price_value() -> None:
+    """Codex R1 Major #1: payload contains an explicit ``null`` price.
+    ``expected['price']`` resolves to Python None; the helper's
+    ``_format_price(None)`` returns '-' (graceful), BUT ``_signed_delta``
+    also handles None gracefully.
+
+    The discriminating shape: pair a null journal price with an actual
+    schwab dict that triggers a per-type helper raise via float(None) on
+    a path the helper does NOT defensively short-circuit. For
+    entry_price_mismatch, ``journal_price = expected["price"]`` is None,
+    which short-circuits both _format_price + _signed_delta. So we use a
+    different shape: position_qty_mismatch which calls _format_qty on
+    None — but that's also defensive.
+
+    Safest discriminating signal: assert that null payload does NOT raise
+    AND parse_warning EITHER (a) stays None (the helper handles None) OR
+    (b) becomes set (dispatch caught + fell back). Either disposition is
+    acceptable — the BINDING behavior under Codex R1 M#1 is that NO
+    exception propagates up.
+    """
+    disc = _make_discrepancy(
+        discrepancy_type="entry_price_mismatch",
+        expected_value_json='{"price": null}',
+        actual_value_json='{"price": 5.23}',
+    )
+    # Must not raise.
+    ctx = _render_pre_resolution_context(disc)
+    # Either graceful None-handling (no warning) or fallback (warning set);
+    # the binding contract is "no propagation". A ValueError-on-float-None
+    # path would propagate without the (ValueError, TypeError) catch.
+    assert ctx is not None
+
+
 # ---------------------------------------------------------------------------
 # ReconcileChoiceFormItem tests.
 # ---------------------------------------------------------------------------

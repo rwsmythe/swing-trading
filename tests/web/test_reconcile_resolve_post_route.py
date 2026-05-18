@@ -433,3 +433,46 @@ def test_post_value_error_concurrent_race_returns_409_not_400(
         f"body={r.text[:300]}"
     )
     assert 'data-error-kind="already_resolved"' in r.text, r.text[:400]
+
+
+# ---------------------------------------------------------------------------
+# 10. Codex R1 Major #2 — sqlite3.OperationalError during pre-flight reads
+#     routes to db_unavailable 503 (NOT bubbled 500). Mirrors the GET
+#     route test_get_returns_503_on_db_locked_during_get_discrepancy
+#     coverage for the POST handler.
+# ---------------------------------------------------------------------------
+
+
+def test_post_returns_503_on_db_locked_during_get_discrepancy(
+    seeded_db: tuple[Config, Path],
+) -> None:
+    """Codex R1 Major #2: existing OperationalError catch wrapped only the
+    ``apply_tier2_resolution`` service call. If a pre-flight read
+    (``get_discrepancy`` or any of the count_* helpers) raises
+    ``sqlite3.OperationalError("database is locked")``, the POST handler
+    MUST render the ``db_unavailable`` 503 error template instead of
+    bubbling a 500.
+    """
+    cfg, cfg_path = seeded_db
+    disc_id = _seed_discrepancy(cfg.paths.db_path)
+    app = create_app(cfg, cfg_path)
+
+    def fake_get_discrepancy(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    with patch(
+        "swing.web.routes.reconcile.get_discrepancy",
+        side_effect=fake_get_discrepancy,
+    ):
+        with TestClient(app) as client:
+            r = client.post(
+                f"/reconcile/discrepancy/{disc_id}/resolve",
+                data={
+                    "choice_code": "keep_journal_as_is",
+                    "resolution_reason": "OperationalError pre-flight scope",
+                    "ambiguity_kind_at_render": "multi_partial_vs_consolidated",
+                },
+                headers={"HX-Request": "true"},
+            )
+    assert r.status_code == 503, r.text[:300]
+    assert 'data-error-kind="db_unavailable"' in r.text
