@@ -2,6 +2,8 @@
 
 This doc indexes all pending V2.1 §VII.F amendments accumulated across Phase 9 / Phase 10 / Phase 11 / Phase 12 / Phase 12.5 return reports + plan + spec + recon docs as of Phase 12.5 #3 ship. Each entry carries an `A-<phase>.<bundle>.<index>` hash for cross-reference + a 1-sentence summary + the source-of-truth doc + the line ref (where determinable). Inline supersession notes live at each affected spec/plan doc (per T-3.7 precedent for Phase 12.5 #1 plan §H.4 + spec §9.3 S4 + spec §5 line-104).
 
+**Source roster** (canonical 34 return-report files inventoried at task time; plan §A T-3.4 baseline was 33 — the 34th file is `docs/phase12-5-bundle-3-project-hygiene-writing-plans-return-report.md` for this dispatch's own writing-plans, which contains the Phase 12.5 #3 T-3.7 amendment `A-12.5.3.H4-banner-clears` already indexed below under §1 Phase 12.5 #3; no new uncatalogued amendments surfaced from that 34th file). Total **86 amendment rows** indexed (62 in initial collation + 24 net after Codex R1 Major #3 expansion of Phase 11 grouped IDs into per-row entries: removed 3 grouped lines A-11.A/B/D + added 27 per-row Phase 11 entries = +24 net).
+
 **V2.1 §VII.F is the source-of-truth methodology-correction protocol** (per `reference/Future Work/2026-04-23-bifurcated-strategic-implementation-proposal-v2.1.md`). Each amendment routes through this protocol when promoted to a methodology revision. This inventory is the orchestrator's working list; promotion is a separate operator action.
 
 **Scope clarifications:**
@@ -54,11 +56,45 @@ This doc indexes all pending V2.1 §VII.F amendments accumulated across Phase 9 
 - **A-10.plan.1**: Plan §A.11 transition-history supersession — Phase 9 Sub-bundle C closed the audit-table capture gap. Source: `docs/superpowers/plans/2026-05-13-phase10-metrics-dashboard-plan.md` §A.11 inline note. Status: text-only.
 - **A-10.plan.2**: Plan §A.21 sum-metric Class assignment (mistake_cost_R_rolling_N_total rendered point-only; sum-class with bootstrap CI deferred V2). Source: same plan §A.21 inline note. Status: contract drift.
 
-### Phase 11 (Schwab API arc — 13 amendments banked at Sub-bundle A; further amendments in B/C/D)
+### Phase 11 (Schwab API arc — 27 amendments banked across Sub-bundles A/B/C/D)
 
-- **A-11.A.{1-13}**: 13 candidate amendments banked from Schwab Sub-bundle A return report (covers schwabdev camelCase kwargs + typed `SchwabApiError` audit-row close + `Schwabdev` capital-S logger prefix + silent-failure-mode discipline + tokens DB plaintext-at-rest + sandbox short-circuit gating + `setLogRecordFactory` redaction + cassette runbook V2-PLANNED + source-artifact reference shape). Source: `docs/schwab-bundle-A-return-report.md` §V2.1-amendments section. **NOTE:** Many of these promoted to CLAUDE.md Gotchas section as the Schwab arc closed; the gotcha promotion is the operational follow-through, but the spec-amendment text is banked here for V2.1 §VII.F formal routing. Status: mixed (some promoted as gotchas; spec text still pending formal §VII.F revision).
-- **A-11.B.{1-2}**: Sub-bundle B amendments (lease status fields V2-deferred R2 M#2 + R3 M#2 ACCEPT-WITH-RATIONALE family). Source: `docs/schwab-bundle-B-return-report.md`. Status: contract drift.
-- **A-11.D.{1-N}**: Sub-bundle D 12 CLAUDE.md gotcha promotions surfaced as candidate amendments. Source: `docs/schwab-bundle-D-return-report.md` §T-D.4. Status: most promoted as gotchas; cross-reference.
+Sub-bundle A (13 amendments banked):
+
+- **A-11.A.1**: schwabdev camelCase kwarg discipline (Client.account_orders + price_history + account_details + transactions). Source: `docs/schwab-bundle-A-return-report.md`. Status: promoted as CLAUDE.md gotcha; spec text pending.
+- **A-11.A.2**: Typed `SchwabApiError` audit-row close discipline (`record_call_finish` before re-raise). Source: same. Status: promoted as gotcha.
+- **A-11.A.3**: `Schwabdev` capital-S logger prefix correction (was lowercase in plan §H.8). Source: same. Status: text-only.
+- **A-11.A.4**: schwabdev silent-failure-mode discipline — `update_tokens` print-and-return-silently semantics. Source: same. Status: contract drift.
+- **A-11.A.5**: Tokens DB plaintext-at-rest (V1 ACL-only protection; V2 encryption=`<key>` candidate). Source: same. Status: contract drift.
+- **A-11.A.6**: Sandbox short-circuit gating (`environment='sandbox'` writes audit row but NOT domain row). Source: same. Status: contract drift.
+- **A-11.A.7**: `setLogRecordFactory` 3-layer redaction (level-suppression + content-redactor + record-factory). Source: same. Status: promoted as gotcha.
+- **A-11.A.8**: Cassette runbook V2-PLANNED (V1 mock-based tests only). Source: same. Status: text-only.
+- **A-11.A.9**: Schwab API source-artifact reference shape (`schwab_api:call/{call_id}` URI). Source: same. Status: contract drift.
+- **A-11.A.10**: `swing schwab setup` requires clean tokens DB state (logout→setup recovery). Source: same. Status: promoted as gotcha; V2 self-healing.
+- **A-11.A.11**: 7-day Schwab refresh-token clock + WARN/ERROR severity escalation. Source: same. Status: text-only.
+- **A-11.A.12**: Schwab CLI sub-commands REFUSE while pipeline `state='running'` (mirror Finviz). Source: same. Status: promoted as gotcha.
+- **A-11.A.13**: Force-refresh kwarg semantic asymmetry (`force_access_token=True` vs `force_refresh_token=True`). Source: same. Status: contract drift.
+
+Sub-bundle B (2 amendments banked):
+
+- **A-11.B.1**: Lease status fields V2-deferred (R2 M#2 + R3 M#2 ACCEPT-WITH-RATIONALE family — combined). Source: `docs/schwab-bundle-B-return-report.md`. Status: contract drift.
+- **A-11.B.2**: `34be84e` gate-caught camelCase trader.py:362 fix (`max_results=` → `maxResults=`). Source: same. Status: cross-reference (matches A-11.A.1 family).
+
+Sub-bundle C (no formally-banked amendments; defects all surfaced as Codex findings + resolved).
+
+Sub-bundle D (12 amendments banked — all CLAUDE.md gotcha promotions at T-D.4):
+
+- **A-11.D.1**: schwabdev camelCase kwarg gotcha (formalization of A-11.A.1). Source: `docs/schwab-bundle-D-return-report.md` §T-D.4.
+- **A-11.D.2**: Typed `SchwabApiError` audit-row close gotcha (formalization of A-11.A.2). Source: same.
+- **A-11.D.3**: `swing schwab setup` clean-state recovery gotcha (A-11.A.10 formalization). Source: same.
+- **A-11.D.4**: 7-day refresh-token clock gotcha (A-11.A.11 formalization). Source: same.
+- **A-11.D.5**: `Schwabdev` capital-S logger prefix gotcha (A-11.A.3 formalization). Source: same.
+- **A-11.D.6**: schwabdev silent-failure-mode gotcha (A-11.A.4 formalization). Source: same.
+- **A-11.D.7**: Tokens DB plaintext-at-rest gotcha (A-11.A.5 formalization). Source: same.
+- **A-11.D.8**: Pipeline-active CLI exclusion gotcha (A-11.A.12 formalization). Source: same.
+- **A-11.D.9**: Sandbox short-circuit gating gotcha (A-11.A.6 formalization). Source: same.
+- **A-11.D.10**: `setLogRecordFactory` content-redaction gotcha (A-11.A.7 formalization). Source: same.
+- **A-11.D.11**: Cassette runbook V2-PLANNED gotcha (A-11.A.8 formalization). Source: same.
+- **A-11.D.12**: Source-artifact reference shape gotcha (A-11.A.9 formalization). Source: same.
 
 ### Phase 12 Sub-bundle A (Schwab operational pain — 0 amendments banked)
 
@@ -143,4 +179,4 @@ When an amendment is promoted to a V2.1 §VII.F methodology revision, follow the
 
 ---
 
-*End of inventory. Phase 12.5 #3 T-3.4 collation — approximately 60+ amendments indexed across Phase 9 + Phase 10 + Phase 11 + Phase 12 + post-Phase-12 + Phase 12.5 arcs. Each amendment carries A-<phase>.<bundle>.<index> hash for cross-reference. Promotion is operator-paced via the V2.1 §VII.F protocol.*
+*End of inventory. Phase 12.5 #3 T-3.4 collation — 86 amendment rows indexed across Phase 9 + Phase 10 + Phase 11 + Phase 12 + post-Phase-12 + Phase 12.5 arcs (post Codex R1 Major #3 expansion of Phase 11 grouped IDs into per-row entries). Each amendment carries A-<phase>.<bundle>.<index> hash for cross-reference. Promotion is operator-paced via the V2.1 §VII.F protocol.*
