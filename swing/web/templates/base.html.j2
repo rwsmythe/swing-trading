@@ -97,12 +97,19 @@
          data-banner="unresolved-material-discrepancies"
          data-count="{{ vm.unresolved_material_discrepancies_count }}">
     <span class="banner-glyph" aria-hidden="true">⚠</span>
-    <strong>{{ vm.unresolved_material_discrepancies_count }} unresolved material reconciliation
-      {% if vm.unresolved_material_discrepancies_count == 1 -%}
-      discrepancy
+    <strong>
+      {%- if vm.banner_resolve_link %}
+      <a href="{{ vm.banner_resolve_link }}" data-banner-resolve-link="true">{{ vm.unresolved_material_discrepancies_count }} unresolved material reconciliation
+        {%- if vm.unresolved_material_discrepancies_count == 1 %} discrepancy
+        {%- else %} discrepancies
+        {%- endif %}.</a>
       {%- else -%}
-      discrepancies
-      {%- endif %}.</strong>
+      {{ vm.unresolved_material_discrepancies_count }} unresolved material reconciliation
+      {%- if vm.unresolved_material_discrepancies_count == 1 %} discrepancy
+      {%- else %} discrepancies
+      {%- endif %}.
+      {%- endif %}
+    </strong>
     Resolve via <code>swing journal discrepancy</code> CLI.
   </aside>
   {% endif %}
