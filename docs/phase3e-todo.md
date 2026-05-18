@@ -42,36 +42,47 @@ Two cleanup items operator queued for post-Phase-12.5-#3 closure, BEFORE Phase 1
 
 **Status**: QUEUED; orchestrator-paired walkthrough on operator's signal.
 
-### Item Q2: Discrepancy resolution page — render journal/Schwab value comparison as table (presentation-only)
+### Item Q2: Discrepancy resolution — render journal/Schwab value comparison as table on BOTH web AND CLI (presentation-only)
+
+**Scope amended 2026-05-18 (operator)**: CLI parity is IN SCOPE — `swing journal discrepancy show-ambiguity` (and any other discrepancy CLI surfaces that emit the comparison) MUST output a similar table for operator-readability purposes.
 
 **Posture:** Small executing-plans-shape dispatch (or inline-fix if simple enough; orchestrator chooses at commission time).
 
-**Trigger:** Phase 12.5 #2 shipped `/reconcile/discrepancy/{id}/resolve` form page with pre-resolution context section ABOVE choice menu. Current rendering uses list format for the journal-side vs Schwab-side value comparison. Operator wants this rendered as a TABLE (2 columns: journal-side | Schwab-side; rows per compared field). Believes this is presentation-only — VM data is already structured; only the template (and possibly the VM dataclass field shape) needs adjustment.
+**Trigger:** Phase 12.5 #2 shipped `/reconcile/discrepancy/{id}/resolve` form page with pre-resolution context section ABOVE choice menu. Current rendering uses list format for the journal-side vs Schwab-side value comparison on BOTH web AND CLI (`swing journal discrepancy show-ambiguity <id>` emits list-shape output). Operator wants this rendered as a TABLE on both surfaces (2 columns: journal-side | Schwab-side; rows per compared field) — VM data is already structured; only the rendering paths need adjustment + possibly a shared helper.
 
-**Scope:**
+**Scope (web)**:
 - MODIFY `swing/web/templates/reconcile_discrepancy_resolve.html.j2` — replace list rendering of pre-resolution context with `<table>` (2-column journal-side | Schwab-side; ARIA-compliant; ASCII-only per F20 LOCK from Phase 12.5 #2).
-- MAYBE MODIFY `swing/web/view_models/reconcile.py` — if VM's `pre_resolution_context_pairs` field shape needs restructuring from `list[tuple[str, str]]` to `list[tuple[str, Any, Any]]` (field-label + journal-value + Schwab-value) for cleaner template rendering. Spec §5.2 ReconcilePreResolutionContext field shape (15 fields per Phase 12.5 #2 A3 amendment) — verify whether existing shape suits table rendering.
+- MAYBE MODIFY `swing/web/view_models/reconcile.py` — if `pre_resolution_context_pairs` field shape needs restructuring from `list[tuple[str, str]]` to `list[tuple[str, Any, Any]]` (field-label + journal-value + Schwab-value) for cleaner table rendering. Spec §5.2 ReconcilePreResolutionContext (15 fields per Phase 12.5 #2 A3 amendment) — verify existing shape suits table rendering.
 - Per-discrepancy-type render helpers may need touch-up (10 helpers in `reconcile.py` per Phase 12.5 #2 plan).
-- NEW discriminating tests asserting `<table>` element + `<th>` headers (Journal | Schwab) + correct row count per discrepancy type.
+- NEW discriminating tests asserting `<table>` element + `<th>` headers + correct row count per discrepancy type.
+
+**Scope (CLI)**:
+- MODIFY `swing/cli.py` (or wherever the discrepancy CLI subcommands render the comparison; the C.D-shipped surfaces include `discrepancy show-ambiguity` + possibly `discrepancy show` + `discrepancy show-correction`). Locate via `grep -n "def show_ambiguity\|def show_discrepancy\|def show_correction" swing/cli.py`.
+- Replace list output (likely `click.echo()` lines) with an ASCII-only tabular renderer. **BINDING per CLAUDE.md cp1252 stdout gotcha**: table-drawing characters MUST be plain ASCII (`+`, `-`, `|`) — do NOT use Unicode box-drawing characters (`┌`, `─`, `│`, `┐`, etc.) since they crash on Windows PowerShell cp1252 stdout. Optional: lightweight 2-line border using `|` and `-`. NO third-party dependencies (no `rich`, no `tabulate`) — render inline.
+- Shared rendering helper between CLI + web preferred IF VM field-shape restructure lands (e.g., a `render_journal_schwab_comparison_table_ascii(pairs)` helper that returns a plain-text table; web template wraps the same pairs in HTML `<table>`). This is operator-decision at commission time vs duplication.
+- NEW discriminating tests asserting CLI output contains tabular pattern (e.g., `|` column separator + per-row content correctness) + subprocess test capturing stdout through PowerShell to validate cp1252 encoding doesn't crash (per CLAUDE.md "Discriminating-test gap" note on subprocess vs capsys).
 
 **Out of scope:**
-- Behavioral changes — POST handler + service-layer untouched.
+- Behavioral changes — POST handler + service-layer + classifier untouched.
 - Schema changes (v19 LOCK).
-- CLI parity (CLI uses different output format; not affected).
+- Adding new discrepancy types or comparison fields.
 
 **Operator-locks (anticipated; operator confirms at commission)**:
-- Per-discrepancy-type table column headers (Journal | Schwab vs ours / theirs / etc.) — operator-decision at commission.
-- Whether VM field-shape changes (suggesting yes for clarity) OR template-only restructure (jinja extracts fields by name) — operator decides based on dispatch-author proposal.
+- Per-discrepancy-type table column headers (Journal | Schwab vs Ours | Theirs vs etc.) — operator-decision at commission. Suggested default: "Journal" | "Schwab".
+- Whether VM field-shape changes (suggesting yes for clarity + cleaner CLI/web shared helper) OR template/CLI render-only restructure (extract fields by name from existing shape) — operator decides based on dispatch-author proposal.
+- Whether CLI shared helper lives in `swing/web/view_models/reconcile.py` (web has it; CLI imports) OR a NEW neutral location (e.g., `swing/trades/reconciliation_render.py`) — operator decides.
 
 **Expected dispatch shape:**
-- 1-3 tasks (template rewrite + VM field reshape + tests).
+- 2-4 tasks (web template rewrite + CLI render rewrite + shared helper + tests).
 - 1-2 Codex rounds.
-- 2-3 surface operator-witnessed gate (S1 inline pytest + ruff; S2 visual verification of `/reconcile/discrepancy/{id}/resolve` page renders table; S3 visual verification across the 10 per-type render helpers).
+- **3-4 surface operator-witnessed gate**: S1 inline pytest + ruff; S2 visual verification of `/reconcile/discrepancy/{id}/resolve` page renders table on browser; S3 visual verification across the 10 per-type render helpers (web); S4 CLI table rendering verified on PowerShell terminal (`python -m swing.cli journal discrepancy show-ambiguity <id>` against real production discrepancy) — operator confirms readability + ZERO cp1252 crash.
 - Schema v19 unchanged.
 
 **Cross-references:**
 - Phase 12.5 #2 plan A3 amendment (15-field ReconcilePreResolutionContext drift).
 - Phase 12.5 #2 spec §5.2 + spec §6.
+- CLAUDE.md gotcha "Windows PowerShell stdout defaults to cp1252" — ASCII-only table-drawing constraint.
+- Phase 12 Sub-bundle C.D ship — `swing journal discrepancy {list-pending-ambiguities, show-ambiguity, resolve-ambiguity, override-correction}` CLI subcommands (and post-Phase-12 Sub-bundle 1 added `show-correction`).
 
 **Status**: QUEUED; commission timing operator-paced.
 
