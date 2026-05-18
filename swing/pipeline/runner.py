@@ -522,12 +522,54 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
                 state="failed",
                 error_message=f"finviz inbox mkdir: {exc}",
             )
+        # Phase 12.5 finviz-inbox-auto-fetch-fix: split the catch so an empty
+        # inbox (NoFilesError) triggers ONE inline auto-fetch attempt via
+        # ``_step_finviz_fetch`` BEFORE bailing — fresh worktrees always start
+        # empty and previously crashed here before site-2's pipeline-step ever
+        # ran. AmbiguousInboxError stays fail-fast (operator manual-override
+        # misconfiguration; auto-fetch wouldn't help). Site-2 honors the
+        # ``finviz_fetched_inline`` flag to avoid a double-fire on the same
+        # run (which would write 2 ``finviz_api_calls`` audit rows).
+        finviz_fetched_inline = False
         try:
             csv_path = select_csv(cfg.paths.finviz_inbox_dir)
-        except (NoFilesError, AmbiguousInboxError) as exc:
+        except AmbiguousInboxError as exc:
             log.error("Finviz inbox: %s", exc)
             lease.release(state="failed", error_message=str(exc))
             return RunResult(run_id=lease.run_id, state="failed", error_message=str(exc))
+        except NoFilesError as exc_initial:
+            log.info(
+                "Finviz inbox empty; attempting inline auto-fetch via "
+                "_step_finviz_fetch (one attempt; no exponential retry)"
+            )
+            try:
+                _step_finviz_fetch(cfg=cfg, lease=lease)
+                finviz_fetched_inline = True
+            except LeaseRevokedError:
+                raise
+            except Exception as exc_fetch:
+                msg = (
+                    f"inbox empty + auto-fetch failed: "
+                    f"{type(exc_fetch).__name__}: {exc_fetch} "
+                    f"(initial: {exc_initial})"
+                )
+                log.error("Finviz inbox auto-fetch: %s", msg)
+                lease.release(state="failed", error_message=msg)
+                return RunResult(
+                    run_id=lease.run_id, state="failed", error_message=msg,
+                )
+            try:
+                csv_path = select_csv(cfg.paths.finviz_inbox_dir)
+            except (NoFilesError, AmbiguousInboxError) as exc_retry:
+                msg = (
+                    f"inbox empty + auto-fetch did not produce a CSV: "
+                    f"{exc_retry} (initial: {exc_initial})"
+                )
+                log.error("Finviz inbox auto-fetch: %s", msg)
+                lease.release(state="failed", error_message=msg)
+                return RunResult(
+                    run_id=lease.run_id, state="failed", error_message=msg,
+                )
 
         val = validate_csv(csv_path)
         if not val.is_valid:
@@ -594,15 +636,27 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
                 lease.status(weather_status="failed")
 
             lease.step("finviz_fetch")
-            try:
-                _step_finviz_fetch(cfg=cfg, lease=lease)
-            except LeaseRevokedError:
-                raise
-            except Exception as exc:
-                # _step_finviz_fetch is itself error-tolerant; this catches
-                # programming errors only (KeyError, etc.). Pipeline must
-                # not abort here either — preserve fallback semantics.
-                log.warning("finviz_fetch programming error (continuing): %s", exc)
+            # Phase 12.5 finviz-inbox-auto-fetch-fix: ``finviz_fetched_inline``
+            # is True iff site-1's NoFilesError-retry path ran
+            # ``_step_finviz_fetch`` already. Skip the body here to avoid
+            # double-firing (would persist 2 ``finviz_api_calls`` audit rows
+            # for one pipeline run). ``lease.step("finviz_fetch")`` still
+            # fires above for defense-in-depth lease tracking.
+            if finviz_fetched_inline:
+                log.info(
+                    "finviz_fetch step skipped (already ran inline "
+                    "pre-select_csv on empty inbox)"
+                )
+            else:
+                try:
+                    _step_finviz_fetch(cfg=cfg, lease=lease)
+                except LeaseRevokedError:
+                    raise
+                except Exception as exc:
+                    # _step_finviz_fetch is itself error-tolerant; this catches
+                    # programming errors only (KeyError, etc.). Pipeline must
+                    # not abort here either — preserve fallback semantics.
+                    log.warning("finviz_fetch programming error (continuing): %s", exc)
 
             # Phase 11 Sub-bundle C T-C.6 — construct + install market-data
             # ladder hooks for pipeline-internal use. Pipeline cannot prompt
