@@ -147,6 +147,7 @@ def _multi_leg_auto_redirect_predicate(
     journal_qty: float,
     journal_price: float,
     price_tolerance: float = _MULTI_LEG_PRICE_TOLERANCE,
+    ticker: str | None = None,
 ) -> tuple[bool, str | None]:
     """Decide whether classifier may auto-redirect this candidate set to
     ``split_into_partials`` tier-1.
@@ -171,13 +172,36 @@ def _multi_leg_auto_redirect_predicate(
     where ``reason`` cites the failing sub-condition + relevant numeric
     values for forensic transparency (spec §5.4).
 
-    PURE function: no DB / API / logging.
+    ``ticker`` (Phase 12.5 #1 T-1.11; default ``None`` preserves T-1.1
+    test fixtures + internal call signature back-compat): when supplied,
+    threads through to the empty-executions canary ``logger.warning``
+    surfaced by the sub-condition 1 decline path. The canary fires ONLY
+    when at least one candidate's ``executions`` value is exactly ``[]``
+    (empty list — Schwab emitted an empty executionLegs container).
+    The ``None`` case does NOT fire the canary (it's the typed-missing
+    family already handled by Sub-bundle 1.5 + the
+    ``execution_unavailable=true`` sentinel path). Decline-reason text
+    returned is UNCHANGED — the canary is observability-only (spec §12.3
+    + plan §A T-1.11).
+
+    PURE function except for the ONE documented canary warning above:
+    no DB, no API, no other logging.
     """
     # Sub-condition 1: every candidate has a non-empty executions list.
     for cand in candidates:
         executions = cand.get("executions")
         if executions is None or len(executions) == 0:
             order_id = cand.get("order_id", "<unknown>")
+            # T-1.11 canary: empty-list family ONLY (NOT the None family).
+            # Plan §A T-1.11 / spec §12.3 — emit observability-only WARN
+            # BEFORE returning the decline; reason text is unchanged.
+            if executions is not None and len(executions) == 0:
+                logger.warning(
+                    "multi-leg predicate declined for ticker=%s order_id=%s: "
+                    "executions list is empty (canary)",
+                    ticker,
+                    order_id,
+                )
             return (
                 False,
                 f"sub-condition 1: candidate order_id={order_id} has no execution legs",
@@ -1092,6 +1116,7 @@ def _classify_unmatched_fill_shared(
                         candidates=[single],
                         journal_qty=journal_qty_f,
                         journal_price=journal_price_f,
+                        ticker=discrepancy.ticker,
                     )
                     if fired:
                         recipe = _synthesize_split_into_partials_recipe([single])
@@ -1172,6 +1197,7 @@ def _classify_unmatched_fill_shared(
                         candidates=source_payload,
                         journal_qty=float(journal_qty),
                         journal_price=journal_price_f,
+                        ticker=discrepancy.ticker,
                     )
                     if fired_mp:
                         recipe_mp = _synthesize_split_into_partials_recipe(

@@ -145,3 +145,10 @@ class BriefingViewModel:
     # field is > 0 (avoid noise on clean runs per spec §7.5).
     reconciliation_pending_count: int = 0
     reconciliation_tier1_recent_count: int = 0
+    # Phase 12.5 #1 T-1.11 — multi-leg tier-1 auto-redirect counter
+    # (latest completed reconciliation run, DISTINCT-discrepancy semantic
+    # per F18; banner-clears semantic per spec §8.4 + §11.2). Briefing.md
+    # renders a verbatim F22 line "- Multi-leg auto-redirects applied
+    # this run: K" WHEN K > 0. Default 0 preserves back-compat with
+    # existing call sites.
+    reconciliation_tier1_multi_leg_redirected_count: int = 0

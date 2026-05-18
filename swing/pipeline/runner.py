@@ -47,6 +47,7 @@ from swing.integrations.schwab.auth import (
 from swing.integrations.schwab.client import (
     SchwabConfigMissingError,
 )
+from swing.metrics.discrepancies import count_recent_multi_leg_auto_corrections
 from swing.pipeline.finviz_schema import reject_csv, validate_csv
 from swing.pipeline.finviz_select import AmbiguousInboxError, NoFilesError, select_csv
 from swing.pipeline.heartbeat import Heartbeat
@@ -1684,6 +1685,14 @@ def _step_export(*, cfg, lease: Lease, eval_run_id: int, action_session,
             "AND applied_at >= ?",
             (cutoff_iso,),
         ).fetchone()[0])
+        # Phase 12.5 #1 T-1.11 — multi-leg tier-1 auto-redirect counter.
+        # DISTINCT-discrepancy semantic (F18) + banner-clears semantic
+        # (only the LATEST completed reconciliation_run; spec §8.4 +
+        # §11.2). Returns 0 when no completed runs exist or the latest
+        # completed run has zero multi-leg auto-redirects.
+        reconciliation_tier1_multi_leg_redirected_count = (
+            count_recent_multi_leg_auto_corrections(conn)
+        )
     finally:
         conn.close()
 
@@ -1771,6 +1780,9 @@ def _step_export(*, cfg, lease: Lease, eval_run_id: int, action_session,
         ),
         reconciliation_pending_count=reconciliation_pending_count,
         reconciliation_tier1_recent_count=reconciliation_tier1_recent_count,
+        reconciliation_tier1_multi_leg_redirected_count=(
+            reconciliation_tier1_multi_leg_redirected_count
+        ),
     )
     vm = build_briefing_view_model(inputs)
 
