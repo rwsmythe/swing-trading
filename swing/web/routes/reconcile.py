@@ -238,6 +238,24 @@ def reconcile_discrepancy_resolve_form(
                 recent_multi_leg_count=recent_multi_leg_count,
                 banner_resolve_link=banner_resolve_link,
             )
+        except ValueError as exc:
+            # Codex R4 Major #1 — pre-flight ``get_discrepancy`` succeeded
+            # (404 / 409 branches above did NOT fire), but the builder
+            # performs its OWN second ``get_discrepancy()`` call. Between
+            # the two reads a concurrent writer may DELETE the row OR flip
+            # ``resolution`` to a terminal state OR (defensively) NULL
+            # ``ambiguity_kind``. The builder raises ValueError with one
+            # of 3 distinct messages; route via the shared helper that
+            # ``_render_form_with_error`` also uses (mirrors R3 Minor #1
+            # disposition so GET + POST re-render share one dispatch).
+            return _classify_builder_value_error(
+                request,
+                exc,
+                discrepancy_id,
+                unresolved_count=unresolved_count,
+                recent_multi_leg_count=recent_multi_leg_count,
+                banner_resolve_link=banner_resolve_link,
+            )
     finally:
         conn.close()
     return request.app.state.templates.TemplateResponse(
@@ -256,6 +274,78 @@ _PARAMETRIC_PICK_PREFIX = "pick_schwab_record_"
 _PARAMETRIC_PICK_PAYLOAD_SHAPE = (
     '{"price": X.XX, "quantity": Q, "fill_datetime": "..."}'
 )
+
+
+def _classify_builder_value_error(
+    request: Request,
+    exc: ValueError,
+    discrepancy_id: int,
+    *,
+    unresolved_count: int,
+    recent_multi_leg_count: int,
+    banner_resolve_link: str | None,
+) -> Response:
+    """Codex R3 Minor #1 + R4 Major #1 — shared dispatch for the 3 distinct
+    ``ValueError`` messages raised by ``build_reconcile_discrepancy_resolve_vm``
+    (per ``swing/web/view_models/reconcile.py``):
+
+      - ``"discrepancy not found"`` -> 404 ``not_found`` (row vanished;
+        rare DELETE between pre-flight and re-render / second builder read)
+      - ``"is not pending_ambiguity_resolution; got resolution=..."``
+        OR ``"is no longer in pending_ambiguity_resolution"``
+        -> 409 ``already_resolved`` (terminal-state race; routine)
+      - ``"has no ambiguity_kind; ..."`` OR any other ValueError text
+        -> 500 ``service_error`` (invariant violation; schema-CHECK normally
+        forbids; defense-in-depth; redacted operator-facing message)
+
+    Used by both the GET handler (R4 fix) and ``_render_form_with_error``
+    (R3 fix) so the dispatch table stays in ONE place.
+    """
+    msg = str(exc)
+    log.warning("ValueError (builder): %s", msg)
+    if "not found" in msg:
+        return _render_error(
+            request,
+            status_code=404,
+            error_kind="not_found",
+            error_message=(
+                f"No reconciliation discrepancy exists with id "
+                f"{discrepancy_id}."
+            ),
+            discrepancy_id=discrepancy_id,
+            unresolved_count=unresolved_count,
+            recent_multi_leg_count=recent_multi_leg_count,
+            banner_resolve_link=banner_resolve_link,
+        )
+    if (
+        "is not pending_ambiguity_resolution" in msg
+        or "is no longer in pending_ambiguity_resolution" in msg
+    ):
+        return _render_error(
+            request,
+            status_code=409,
+            error_kind="already_resolved",
+            error_message=(
+                f"Discrepancy {discrepancy_id} is no longer in "
+                f"pending_ambiguity_resolution state."
+            ),
+            discrepancy_id=discrepancy_id,
+            unresolved_count=unresolved_count,
+            recent_multi_leg_count=recent_multi_leg_count,
+            banner_resolve_link=banner_resolve_link,
+        )
+    return _render_error(
+        request,
+        status_code=500,
+        error_kind="service_error",
+        error_message=(
+            "Internal error while rendering the resolution form."
+        ),
+        discrepancy_id=discrepancy_id,
+        unresolved_count=unresolved_count,
+        recent_multi_leg_count=recent_multi_leg_count,
+        banner_resolve_link=banner_resolve_link,
+    )
 
 
 def _render_form_with_error(
@@ -312,65 +402,14 @@ def _render_form_with_error(
             banner_resolve_link=None,
         )
     except ValueError as exc:
-        # Codex R3 Minor #1 — branch on builder ValueError message. The
-        # builder raises ValueError for 3 distinct causes (per
-        # swing/web/view_models/reconcile.py:build_reconcile_discrepancy_resolve_vm):
-        #   - "discrepancy not found"
-        #         -> 404 not_found (row vanished; rare DELETE between
-        #           pre-flight and re-render)
-        #   - "is not pending_ambiguity_resolution; got resolution=..."
-        #         -> 409 already_resolved (terminal-state race; routine)
-        #   - "has no ambiguity_kind; cannot render Tier-2 resolve form"
-        #         OR any other ValueError text
-        #         -> 500 service_error (invariant violation; schema-CHECK
-        #           normally forbids; defense-in-depth)
-        # Pre-R3 mapping flattened all 3 to 409; misreports vanished as
-        # already-resolved and hides invariant errors as routine races.
-        msg = str(exc)
-        log.warning("ValueError (re-render builder): %s", msg)
-        if "not found" in msg:
-            return _render_error(
-                request,
-                status_code=404,
-                error_kind="not_found",
-                error_message=(
-                    f"No reconciliation discrepancy exists with id "
-                    f"{discrepancy_id}."
-                ),
-                discrepancy_id=discrepancy_id,
-                unresolved_count=0,
-                recent_multi_leg_count=0,
-                banner_resolve_link=None,
-            )
-        if (
-            "is not pending_ambiguity_resolution" in msg
-            or "is no longer in pending_ambiguity_resolution" in msg
-        ):
-            return _render_error(
-                request,
-                status_code=409,
-                error_kind="already_resolved",
-                error_message=(
-                    f"Discrepancy {discrepancy_id} is no longer in "
-                    f"pending_ambiguity_resolution state."
-                ),
-                discrepancy_id=discrepancy_id,
-                unresolved_count=0,
-                recent_multi_leg_count=0,
-                banner_resolve_link=None,
-            )
-        # Defense-in-depth — invariant violations (NULL ambiguity_kind,
-        # or any other unforeseen ValueError text) route to
-        # service_error 500 with a redacted error_message (the exc text
-        # is logged but not surfaced to the operator).
-        return _render_error(
+        # Codex R3 Minor #1 + R4 Major #1 — delegate to the shared
+        # ``_classify_builder_value_error`` helper so GET + POST re-render
+        # share the same 3-case dispatch (not found / terminal state /
+        # invariant violation). See helper docstring for details.
+        return _classify_builder_value_error(
             request,
-            status_code=500,
-            error_kind="service_error",
-            error_message=(
-                "Internal error while re-rendering the resolution form."
-            ),
-            discrepancy_id=discrepancy_id,
+            exc,
+            discrepancy_id,
             unresolved_count=0,
             recent_multi_leg_count=0,
             banner_resolve_link=None,

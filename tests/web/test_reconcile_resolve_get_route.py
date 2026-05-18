@@ -338,6 +338,110 @@ def test_get_returns_503_on_db_locked_during_connect(
 
 
 # ---------------------------------------------------------------------------
+# 10. Codex R4 Major #1 — builder ValueError classification at the GET
+#     handler. The pre-flight check uses get_discrepancy(), but the builder
+#     performs its OWN second get_discrepancy() call. Between the pre-flight
+#     and the builder call a concurrent writer may DELETE the row OR flip
+#     resolution to terminal-state OR (defensively) NULL ambiguity_kind. The
+#     builder raises ValueError with one of 3 distinct messages; classify and
+#     route to 404 / 409 / 500 respectively (mirrors the R3 Minor #1 fix in
+#     _render_form_with_error so GET + POST re-render share the same dispatch).
+# ---------------------------------------------------------------------------
+
+
+def test_get_returns_404_when_builder_raises_value_error_for_not_found(
+    seeded_db: tuple[Config, Path],
+) -> None:
+    """Codex R4 Major #1 — pre-flight succeeds (pending discrepancy seeded);
+    builder raises ``ValueError('discrepancy not found')`` because a
+    concurrent writer DELETE-d the row between the route's first
+    ``get_discrepancy()`` and the builder's internal second
+    ``get_discrepancy()``. Route MUST render 404 + ``not_found`` template
+    (not bubble 500).
+    """
+    cfg, cfg_path = seeded_db
+    discrepancy_id = _seed_discrepancy(cfg.paths.db_path)
+    app = create_app(cfg, cfg_path)
+
+    def fake_builder(*args, **kwargs):
+        raise ValueError("discrepancy not found")
+
+    with patch(
+        "swing.web.routes.reconcile.build_reconcile_discrepancy_resolve_vm",
+        side_effect=fake_builder,
+    ):
+        with TestClient(app) as client:
+            r = client.get(
+                f"/reconcile/discrepancy/{discrepancy_id}/resolve",
+            )
+    assert r.status_code == 404, r.text[:300]
+    assert 'data-error-kind="not_found"' in r.text
+
+
+def test_get_returns_409_when_builder_raises_value_error_for_terminal_state(
+    seeded_db: tuple[Config, Path],
+) -> None:
+    """Codex R4 Major #1 — pre-flight succeeds (pending discrepancy seeded);
+    builder raises ``ValueError('discrepancy is not pending_ambiguity_resolution;
+    got resolution=operator_resolved_ambiguity')`` because a concurrent writer
+    flipped the row to terminal state. Route MUST render 409 +
+    ``already_resolved`` template (not bubble 500).
+    """
+    cfg, cfg_path = seeded_db
+    discrepancy_id = _seed_discrepancy(cfg.paths.db_path)
+    app = create_app(cfg, cfg_path)
+
+    def fake_builder(*args, **kwargs):
+        raise ValueError(
+            "discrepancy is not pending_ambiguity_resolution; "
+            "got resolution=operator_resolved_ambiguity"
+        )
+
+    with patch(
+        "swing.web.routes.reconcile.build_reconcile_discrepancy_resolve_vm",
+        side_effect=fake_builder,
+    ):
+        with TestClient(app) as client:
+            r = client.get(
+                f"/reconcile/discrepancy/{discrepancy_id}/resolve",
+            )
+    assert r.status_code == 409, r.text[:300]
+    assert 'data-error-kind="already_resolved"' in r.text
+
+
+def test_get_returns_500_when_builder_raises_value_error_for_invariant_violation(
+    seeded_db: tuple[Config, Path],
+) -> None:
+    """Codex R4 Major #1 — pre-flight succeeds; builder raises
+    ``ValueError('discrepancy has no ambiguity_kind; cannot render Tier-2
+    resolve form')`` (schema-CHECK normally forbids; defense-in-depth for
+    any other unforeseen ValueError text from the builder). Route MUST
+    render 500 + ``service_error`` template with redacted message (the
+    exc text is logged but not surfaced to the operator).
+    """
+    cfg, cfg_path = seeded_db
+    discrepancy_id = _seed_discrepancy(cfg.paths.db_path)
+    app = create_app(cfg, cfg_path)
+
+    def fake_builder(*args, **kwargs):
+        raise ValueError(
+            "discrepancy has no ambiguity_kind; cannot render Tier-2 "
+            "resolve form"
+        )
+
+    with patch(
+        "swing.web.routes.reconcile.build_reconcile_discrepancy_resolve_vm",
+        side_effect=fake_builder,
+    ):
+        with TestClient(app) as client:
+            r = client.get(
+                f"/reconcile/discrepancy/{discrepancy_id}/resolve",
+            )
+    assert r.status_code == 500, r.text[:300]
+    assert 'data-error-kind="service_error"' in r.text
+
+
+# ---------------------------------------------------------------------------
 # 7. Route registration — defense-in-depth per Phase 6 I3 lesson
 # ---------------------------------------------------------------------------
 
