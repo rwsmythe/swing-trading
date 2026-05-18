@@ -476,3 +476,161 @@ def test_post_returns_503_on_db_locked_during_get_discrepancy(
             )
     assert r.status_code == 503, r.text[:300]
     assert 'data-error-kind="db_unavailable"' in r.text
+
+
+# ---------------------------------------------------------------------------
+# 11. Codex R2 Major #1 — _render_form_with_error builder OperationalError
+#     during re-render path must route to db_unavailable 503 (NOT bubble
+#     500). The 400 re-render fires when POST validation fails (e.g., empty
+#     choice_code); the builder reads count_unresolved_material + the
+#     discrepancy via get_discrepancy + executes Pass A/B reads. If the DB
+#     is locked at the moment of re-render, the builder raises
+#     sqlite3.OperationalError that the existing pre-flight/service
+#     catches miss (their try blocks already exited).
+# ---------------------------------------------------------------------------
+
+
+def test_post_rerender_returns_503_on_db_locked_during_builder(
+    seeded_db: tuple[Config, Path],
+) -> None:
+    """Codex R2 Major #1: re-render path through ``_render_form_with_error``
+    invokes ``build_reconcile_discrepancy_resolve_vm`` which performs
+    its own DB reads. If the DB is locked at the moment of re-render
+    (after the pre-flight checks succeeded), the builder raises
+    ``sqlite3.OperationalError`` outside the existing OperationalError
+    catch ladder (which only wraps the pre-flight reads + the
+    ``apply_tier2_resolution`` service call).
+
+    The handler MUST catch the OperationalError emitted by the builder
+    and render the canonical ``db_unavailable`` 503 template.
+    """
+    cfg, cfg_path = seeded_db
+    disc_id = _seed_discrepancy(cfg.paths.db_path)
+    app = create_app(cfg, cfg_path)
+
+    def fake_builder(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    # Trigger the 400 re-render path via empty choice_code. The handler
+    # passes the pre-flight checks (existence + state + anchor) then hits
+    # the choice_code == '' branch -> _render_form_with_error -> builder
+    # -> OperationalError.
+    with patch(
+        "swing.web.routes.reconcile.build_reconcile_discrepancy_resolve_vm",
+        side_effect=fake_builder,
+    ):
+        with TestClient(app) as client:
+            r = client.post(
+                f"/reconcile/discrepancy/{disc_id}/resolve",
+                data={
+                    "choice_code": "",
+                    "resolution_reason": "builder OperationalError",
+                    "ambiguity_kind_at_render": "multi_partial_vs_consolidated",
+                },
+                headers={"HX-Request": "true"},
+            )
+    assert r.status_code == 503, (
+        f"expected 503 (builder OperationalError); got {r.status_code}; "
+        f"body={r.text[:300]}"
+    )
+    assert 'data-error-kind="db_unavailable"' in r.text, r.text[:400]
+
+
+def test_post_rerender_returns_409_when_builder_raises_value_error(
+    seeded_db: tuple[Config, Path],
+) -> None:
+    """Codex R2 Major #1 sibling: ``_render_form_with_error`` invokes the
+    builder which defensively asserts ``disc.resolution ==
+    'pending_ambiguity_resolution'``. If a concurrent writer flipped the
+    discrepancy to terminal state between the pre-flight read and the
+    re-render, the builder raises ``ValueError``. The handler MUST treat
+    that as already_resolved 409 (matching the pre-flight 409 disposition)
+    instead of bubbling 500.
+    """
+    cfg, cfg_path = seeded_db
+    disc_id = _seed_discrepancy(cfg.paths.db_path)
+    app = create_app(cfg, cfg_path)
+
+    def fake_builder(*args, **kwargs):
+        raise ValueError(
+            f"discrepancy {disc_id} is no longer in "
+            "pending_ambiguity_resolution state"
+        )
+
+    with patch(
+        "swing.web.routes.reconcile.build_reconcile_discrepancy_resolve_vm",
+        side_effect=fake_builder,
+    ):
+        with TestClient(app) as client:
+            r = client.post(
+                f"/reconcile/discrepancy/{disc_id}/resolve",
+                data={
+                    "choice_code": "",
+                    "resolution_reason": "builder ValueError race",
+                    "ambiguity_kind_at_render": "multi_partial_vs_consolidated",
+                },
+                headers={"HX-Request": "true"},
+            )
+    assert r.status_code == 409, (
+        f"expected 409 (builder ValueError -> terminal-state race); got "
+        f"{r.status_code}; body={r.text[:300]}"
+    )
+    assert 'data-error-kind="already_resolved"' in r.text, r.text[:400]
+
+
+# ---------------------------------------------------------------------------
+# 12. Codex R2 Major #2 — sibling-except OperationalError cascade. The
+#     R1 LOCK introduced _reread_discrepancy_resolution() inside the
+#     except ValueError block; if that fresh-connect read itself raises
+#     OperationalError, Python's exception-handling rules do NOT cascade
+#     to the sibling except sqlite3.OperationalError clause on the same
+#     try block. Wrap the re-read in its own try/except.
+# ---------------------------------------------------------------------------
+
+
+def test_post_value_error_concurrent_race_503_on_db_lock_during_reread(
+    seeded_db: tuple[Config, Path],
+) -> None:
+    """Codex R2 Major #2: the L-W2 race-fix re-read inside ``except
+    ValueError`` opens a FRESH ``sqlite3.connect`` to bypass the route's
+    own connection snapshot. If that fresh DB itself is locked, the
+    re-read raises ``sqlite3.OperationalError`` which does NOT cascade
+    through the sibling ``except sqlite3.OperationalError:`` on the same
+    try block. The handler MUST wrap the re-read in its own try/except
+    and route to db_unavailable 503.
+
+    Discriminator: assert 503 + db_unavailable (NOT 500, NOT 409
+    already_resolved, NOT 400 re-render).
+    """
+    cfg, cfg_path = seeded_db
+    disc_id = _seed_discrepancy(cfg.paths.db_path)
+    app = create_app(cfg, cfg_path)
+
+    def raise_value_error(*args, **kwargs):
+        raise ValueError("service-layer ValueError")
+
+    def fake_reread(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    with patch(
+        "swing.web.routes.reconcile.apply_tier2_resolution",
+        side_effect=raise_value_error,
+    ), patch(
+        "swing.web.routes.reconcile._reread_discrepancy_resolution",
+        side_effect=fake_reread,
+    ):
+        with TestClient(app) as client:
+            r = client.post(
+                f"/reconcile/discrepancy/{disc_id}/resolve",
+                data={
+                    "choice_code": "keep_journal_as_is",
+                    "resolution_reason": "race reread OperationalError cascade",
+                    "ambiguity_kind_at_render": "multi_partial_vs_consolidated",
+                },
+                headers={"HX-Request": "true"},
+            )
+    assert r.status_code == 503, (
+        f"expected 503 (re-read OperationalError); got {r.status_code}; "
+        f"body={r.text[:300]}"
+    )
+    assert 'data-error-kind="db_unavailable"' in r.text, r.text[:400]

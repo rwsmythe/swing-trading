@@ -251,17 +251,60 @@ def _render_form_with_error(
 ) -> Response:
     """Re-render ``reconcile_discrepancy_resolve.html.j2`` at status 400
     with the operator's prior submission preserved + an error band
-    explaining the rejection."""
-    vm = build_reconcile_discrepancy_resolve_vm(
-        conn,
-        discrepancy_id,
-        prior_choice_code=prior_choice_code,
-        prior_custom_value_raw=prior_custom_value_raw,
-        prior_resolution_reason=prior_resolution_reason,
-        prior_ambiguity_kind_at_render=prior_ambiguity_kind_at_render,
-        error_band_message=error_band_message,
-        error_band_field_hint=error_band_field_hint,
-    )
+    explaining the rejection.
+
+    Codex R2 Major #1 — the VM builder performs its own DB reads (counts +
+    discrepancy lookup + Pass A/B). Wrap the build in try/except:
+
+    - ``sqlite3.OperationalError`` (DB locked during re-render reads) ->
+      503 + ``db_unavailable`` error template (matches pre-flight +
+      service-call OperationalError disposition).
+    - ``ValueError`` (concurrent writer flipped the discrepancy to
+      terminal state between the pre-flight check and the re-render;
+      builder's ``resolution == 'pending_ambiguity_resolution'``
+      precondition raises) -> 409 + ``already_resolved`` error template
+      (matches the pre-flight 409 disposition + the L-W2 race fix).
+    """
+    try:
+        vm = build_reconcile_discrepancy_resolve_vm(
+            conn,
+            discrepancy_id,
+            prior_choice_code=prior_choice_code,
+            prior_custom_value_raw=prior_custom_value_raw,
+            prior_resolution_reason=prior_resolution_reason,
+            prior_ambiguity_kind_at_render=prior_ambiguity_kind_at_render,
+            error_band_message=error_band_message,
+            error_band_field_hint=error_band_field_hint,
+        )
+    except sqlite3.OperationalError as exc:
+        log.warning("sqlite3.OperationalError (re-render builder): %s", exc)
+        return _render_error(
+            request,
+            status_code=503,
+            error_kind="db_unavailable",
+            error_message=(
+                "Database is busy; please retry in a moment."
+            ),
+            discrepancy_id=discrepancy_id,
+            unresolved_count=0,
+            recent_multi_leg_count=0,
+            banner_resolve_link=None,
+        )
+    except ValueError as exc:
+        log.warning("ValueError (re-render builder, terminal race): %s", exc)
+        return _render_error(
+            request,
+            status_code=409,
+            error_kind="already_resolved",
+            error_message=(
+                f"Discrepancy {discrepancy_id} is no longer in "
+                f"pending_ambiguity_resolution state."
+            ),
+            discrepancy_id=discrepancy_id,
+            unresolved_count=0,
+            recent_multi_leg_count=0,
+            banner_resolve_link=None,
+        )
     return request.app.state.templates.TemplateResponse(
         request,
         "reconcile_discrepancy_resolve.html.j2",
@@ -708,9 +751,36 @@ async def reconcile_discrepancy_resolve_post(  # noqa: PLR0911, PLR0912, PLR0915
             # Plan §J J2 + L-W2 LOCK — re-read on a FRESH connection so a
             # concurrent writer's COMMIT is visible. Same conn would carry
             # a snapshot that misses the race-winner's mutation.
-            post_race = _reread_discrepancy_resolution(
-                str(cfg.paths.db_path), discrepancy_id,
-            )
+            #
+            # Codex R2 Major #2 — Python exception handling does NOT
+            # cascade through SIBLING except clauses; an
+            # ``sqlite3.OperationalError`` raised inside this ``except
+            # ValueError`` block does NOT get caught by the
+            # ``except sqlite3.OperationalError`` clause below on the same
+            # try block. Wrap the re-read in its own try/except so a
+            # locked-DB on the fresh re-read also routes to the canonical
+            # db_unavailable 503 template instead of bubbling 500.
+            try:
+                post_race = _reread_discrepancy_resolution(
+                    str(cfg.paths.db_path), discrepancy_id,
+                )
+            except sqlite3.OperationalError as inner_exc:
+                log.warning(
+                    "sqlite3.OperationalError (race re-read): %s",
+                    inner_exc,
+                )
+                return _render_error(
+                    request,
+                    status_code=503,
+                    error_kind="db_unavailable",
+                    error_message=(
+                        "Database is busy; please retry in a moment."
+                    ),
+                    discrepancy_id=discrepancy_id,
+                    unresolved_count=unresolved_count,
+                    recent_multi_leg_count=recent_multi_leg_count,
+                    banner_resolve_link=banner_resolve_link,
+                )
             if (
                 post_race is not None
                 and post_race != "pending_ambiguity_resolution"
