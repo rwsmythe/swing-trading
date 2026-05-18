@@ -102,7 +102,7 @@ class InvalidOverrideComboError(ValueError):
     """
 
 
-class _SandboxAutoRedirectShortCircuit(Exception):
+class _SandboxAutoRedirectShortCircuit(Exception):  # noqa: N818 — spec-locked sentinel name; see docstring
     """Phase 12.5 #1 T-1.6 + spec §7.6.1 — sandbox short-circuit sentinel
     raised by :func:`_apply_tier2_resolution_inner` when the auto-redirect
     override triple is present AND ``environment == 'sandbox'``.
