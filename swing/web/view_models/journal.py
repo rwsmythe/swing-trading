@@ -109,6 +109,8 @@ class JournalVM:
     ohlcv_source_degraded: bool = False              # NEW (Phase 3d §3.4)
     # Phase 10 Sub-bundle E T-E.3 — unresolved-material discrepancy banner.
     unresolved_material_discrepancies_count: int = 0
+    # Phase 12.5 #1 T-1.8 — multi-leg auto-redirect advisory banner counter.
+    recent_multi_leg_auto_correction_count: int = 0
 
 
 def build_journal(*, cfg: Config, period: str = "month") -> JournalVM:
@@ -116,7 +118,10 @@ def build_journal(*, cfg: Config, period: str = "month") -> JournalVM:
         raise ValueError(
             f"unknown period {period!r}; allowed: {sorted(_ALLOWED_PERIODS)}"
         )
-    from swing.metrics.discrepancies import count_unresolved_material
+    from swing.metrics.discrepancies import (
+        count_recent_multi_leg_auto_corrections,
+        count_unresolved_material,
+    )
 
     today = date.today()
     conn = connect(cfg.paths.db_path)
@@ -129,6 +134,8 @@ def build_journal(*, cfg: Config, period: str = "month") -> JournalVM:
             exits = _list_all_exitshape_via_fills(conn)
             weather = list_weather_runs(conn)
             unresolved = count_unresolved_material(conn)
+            # Phase 12.5 #1 T-1.8 — multi-leg auto-redirect banner counter.
+            recent_multi_leg = count_recent_multi_leg_auto_corrections(conn)
     finally:
         conn.close()
     # Filter trades to the selected period.
@@ -142,4 +149,5 @@ def build_journal(*, cfg: Config, period: str = "month") -> JournalVM:
         trades=list(filtered),
         session_date=today.isoformat(),
         unresolved_material_discrepancies_count=unresolved,
+        recent_multi_leg_auto_correction_count=recent_multi_leg,
     )

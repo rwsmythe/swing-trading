@@ -75,6 +75,8 @@ class SchwabSetupVM:
     price_source_degraded_until: str | None = None
     ohlcv_source_degraded: bool = False
     unresolved_material_discrepancies_count: int = 0
+    # Phase 12.5 #1 T-1.8 — multi-leg auto-redirect advisory banner counter.
+    recent_multi_leg_auto_correction_count: int = 0
 
     # Setup-specific fields.
     environment: str = "production"
@@ -100,6 +102,11 @@ class SchwabSetupVM:
             raise ValueError(
                 "SchwabSetupVM.unresolved_material_discrepancies_count must "
                 f">= 0; got {self.unresolved_material_discrepancies_count!r}",
+            )
+        if self.recent_multi_leg_auto_correction_count < 0:
+            raise ValueError(
+                "SchwabSetupVM.recent_multi_leg_auto_correction_count must "
+                f">= 0; got {self.recent_multi_leg_auto_correction_count!r}",
             )
 
 
@@ -220,6 +227,8 @@ class SchwabStatusVM:
     price_source_degraded_until: str | None = None
     ohlcv_source_degraded: bool = False
     unresolved_material_discrepancies_count: int = 0
+    # Phase 12.5 #1 T-1.8 — multi-leg auto-redirect advisory banner counter.
+    recent_multi_leg_auto_correction_count: int = 0
 
     def __post_init__(self) -> None:
         if not self.session_date:
@@ -253,6 +262,12 @@ class SchwabStatusVM:
                 "SchwabStatusVM.unresolved_material_discrepancies_count "
                 "must be >= 0; got "
                 f"{self.unresolved_material_discrepancies_count!r}",
+            )
+        if self.recent_multi_leg_auto_correction_count < 0:
+            raise ValueError(
+                "SchwabStatusVM.recent_multi_leg_auto_correction_count "
+                "must be >= 0; got "
+                f"{self.recent_multi_leg_auto_correction_count!r}",
             )
         if not isinstance(self.recent_calls, list):
             raise TypeError(
@@ -316,6 +331,7 @@ def build_schwab_status_vm(
     db_path,
     session_date: str,
     unresolved_count: int,
+    recent_multi_leg_count: int = 0,
     now=None,
 ):
     """Compose SchwabStatusVM by consulting the same data the CLI does.
@@ -335,6 +351,12 @@ def build_schwab_status_vm(
             isoformat()`` string (per CLAUDE.md base-layout VM gotcha).
         unresolved_count: pre-fetched count of unresolved-material
             reconciliation discrepancies (Phase 10 T-E.3 retrofit).
+        recent_multi_leg_count: pre-fetched count of tier-1 multi-leg
+            auto-redirects on the latest reconciliation_run (Phase 12.5
+            #1 T-1.8 retrofit). Defaults to 0 so legacy callers (tests,
+            CLI-side helpers) remain green; production route at
+            ``swing/web/routes/schwab.py`` populates via
+            :func:`swing.metrics.discrepancies.count_recent_multi_leg_auto_corrections`.
         now: optional ``datetime.datetime`` for the time-anchored
             computations (severity thresholds + days-remaining); defaults
             to ``datetime.now(UTC)``. Tests inject a frozen-time value to
@@ -513,6 +535,7 @@ def build_schwab_status_vm(
         last_failure_at=last_failure_at,
         degraded_banner_active=degraded_banner_active,
         unresolved_material_discrepancies_count=unresolved_count,
+        recent_multi_leg_auto_correction_count=recent_multi_leg_count,
     )
 
 
@@ -533,6 +556,8 @@ class SchwabSetupErrorVM:
     price_source_degraded_until: str | None = None
     ohlcv_source_degraded: bool = False
     unresolved_material_discrepancies_count: int = 0
+    # Phase 12.5 #1 T-1.8 — multi-leg auto-redirect advisory banner counter.
+    recent_multi_leg_auto_correction_count: int = 0
 
     def __post_init__(self) -> None:
         if not self.session_date:

@@ -22,3 +22,7 @@ class PageErrorVM:
     # the helper result. Per the cross-bundle pin's regression test the
     # FIELD NAME is the binding artifact.
     unresolved_material_discrepancies_count: int = 0
+    # Phase 12.5 #1 T-1.8 — multi-leg auto-redirect advisory banner counter.
+    # Same default-0 contract as the sibling banner: error pages keep the
+    # advisory suppressed unless an error handler explicitly populates it.
+    recent_multi_leg_auto_correction_count: int = 0

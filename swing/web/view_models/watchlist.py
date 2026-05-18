@@ -42,6 +42,8 @@ class WatchlistVM:
     ohlcv_source_degraded: bool = False              # NEW (Phase 3d §3.4)
     # Phase 10 Sub-bundle E T-E.3 — unresolved-material discrepancy banner.
     unresolved_material_discrepancies_count: int = 0
+    # Phase 12.5 #1 T-1.8 — multi-leg auto-redirect advisory banner counter.
+    recent_multi_leg_auto_correction_count: int = 0
     # Spec §3.5 (Phase 4 Task 4.2): SIBLING to flag_tags. {ticker: 'flag (0.78)'}
     # for chart-scope tickers with detected flag patterns. Default empty dict so
     # VMs constructed without classifications (tests, fixtures, code paths
@@ -87,7 +89,10 @@ class WatchlistExpandedVM:
 
 
 def build_watchlist(*, cfg: Config, cache: PriceCache, executor) -> WatchlistVM:
-    from swing.metrics.discrepancies import count_unresolved_material
+    from swing.metrics.discrepancies import (
+        count_recent_multi_leg_auto_corrections,
+        count_unresolved_material,
+    )
 
     now = datetime.now()
     conn = connect(cfg.paths.db_path)
@@ -123,6 +128,7 @@ def build_watchlist(*, cfg: Config, cache: PriceCache, executor) -> WatchlistVM:
             else:
                 classifications = {}
             unresolved = count_unresolved_material(conn)
+            recent_multi_leg = count_recent_multi_leg_auto_corrections(conn)
     finally:
         conn.close()
     by_ticker = {c.ticker: c for c in candidates}
@@ -152,6 +158,7 @@ def build_watchlist(*, cfg: Config, cache: PriceCache, executor) -> WatchlistVM:
         ),
         pattern_tags=pattern_tags,
         unresolved_material_discrepancies_count=unresolved,
+        recent_multi_leg_auto_correction_count=recent_multi_leg,
     )
 
 

@@ -14,7 +14,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from swing.evaluation.dates import action_session_for_run
-from swing.metrics.discrepancies import count_unresolved_material
+from swing.metrics.discrepancies import (
+    count_recent_multi_leg_auto_corrections,
+    count_unresolved_material,
+)
 from swing.web.view_models.metrics.shared import BaseLayoutVM
 
 
@@ -92,5 +95,8 @@ def build_metrics_index_vm(conn: sqlite3.Connection) -> MetricsIndexVM:
     return MetricsIndexVM(
         session_date=action_session_for_run(datetime.now()).isoformat(),
         unresolved_material_discrepancies_count=count_unresolved_material(conn),
+        recent_multi_leg_auto_correction_count=(
+            count_recent_multi_leg_auto_corrections(conn)
+        ),
         surfaces=_SURFACES,
     )
