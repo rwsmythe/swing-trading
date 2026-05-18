@@ -6,6 +6,27 @@
 
 ---
 
+## 2026-05-18 Phase 12.5 #2 writing-plans SHIPPED at `9220dac` — 5 Codex rounds + R5 confirmation NO_NEW_CRITICAL_MAJOR; ZERO ACCEPT-WITH-RATIONALE; ZERO Co-Authored-By footer drift; 1082-line plan; 11-task single-sub-bundle decomposition; 12 operator-locks + 21 invariants F1-F21 + 8+5 forward-binding lessons; schema v19 UNCHANGED; executing-plans dispatch UNBLOCKED
+
+**Writing-plans-merge at `9220dac`** (branch `phase12-5-bundle-2-web-tier2-writing-plans` via `--no-ff`; 7 commits = 1 draft + 1 pre-Codex-review-fix + 4 Codex-fix + 1 return-report). 5 Codex rounds + 1 R5 confirmation NO_NEW_CRITICAL_MAJOR convergent monotonic-Major taper (pre-Codex 0C/3M/2m → R1 0C/3M/4m → R2 0C/2M/3m → R3 0C/1M/4m → R4 0C/0M/4m → R5 0C/0M/0m). ZERO Critical findings entire chain. ZERO ACCEPT-WITH-RATIONALE (all 6 Major + 15 Minor resolved with code-content fixes). ZERO Co-Authored-By footer drift across 7 commits (~147+ project-cumulative streak preserved).
+
+**Pre-Codex orchestrator-side review (NEW C.C lesson #6 — BINDING) absorbed 3M+2m before R1** — validated again across Phase 12 C.C+C.D + Sub-bundle 1 + Phase 12.5 #1 brainstorm + writing-plans + Phase 12.5 #2 brainstorm precedent.
+
+**Highest-value Codex catches:**
+- **R1 M#1** task-ordering would break T-2.5/T-2.6 green-ship contract — fixed via stub-then-extend reorder (T-2.5 stubs 2 error-template branches; T-2.6 extends 3 more inline; T-2.10 polish-only). Each task ships green standalone.
+- **R1 M#2** POST-service `ValueError` uniformly mapped to 400 + re-render would have looped operator through internal-error state on concurrent-resolve race — Branch 14 split into 14a (400 if re-read confirms pending) + 14b (409 if re-read shows terminal state). New discriminating test pinned via separate-connection + commit semantics. +1 fast test from projection.
+- **R2 M#2** spec sections out of sync with R1+R2 plan fixes — banked J2 + J3 amendments with explicit "Plan supersedes spec" notes so executing-plans implementer treats plan as binding without spec rewrite.
+
+**Key plan elements**: 1082-line plan at `docs/superpowers/plans/2026-05-18-phase12-5-bundle-2-web-tier2-discrepancy-resolution-plan.md`. 11 tasks T-2.1..T-2.11 single-sub-bundle decomposition (1 GET + 1 POST route + 1 VM module + 2 templates + 13-VM standalone-field retrofit + 21-callsite Pass B retrofit). 12 operator-locks verbatim-encoded at §D (4 spec §2 + 8 §16 ACCEPTED at brainstorm defaults). 21 invariants F1-F21 at §F. Schema v19 UNCHANGED (F1 LOCK). 3 V2.1 §VII.F amendments banked at §J (J1 builder kwarg + J2 ValueError 14a/14b split + J3 parametric valid_choices). 13 V2 candidates mirrored from spec §15 at §Z. 6-surface operator-witnessed gate at §H verbatim per LOCK §1.2 #12.
+
+**Refined projection** post-Codex chain: ~+81 fast tests (+1 race regression from R1 M#2) + 1 slow E2E + ~+970 production LOC + ~+1145 test LOC. Ruff 18 E501 baseline preserved. Baseline 4712 fast → projected ~4793 post-executing-plans-merge.
+
+**5 NEW writing-plans-surfaced forward-binding lessons L-W1..L-W5** (8 inherited from brainstorm + 5 new = 13 total for executing-plans): L-W1 stub-then-extend ordering for shared templates; L-W2 service ValueError requires re-read disambiguation in concurrent-write callers; L-W3 F# cross-reference accuracy audit at sealing time; L-W4 spec-out-of-sync requires explicit "Plan supersedes" notes + §J amendment banking; L-W5 late VM-validator additions risk breaking already-green callers.
+
+**Executing-plans dispatch UNBLOCKED.**
+
+### Predecessor (2026-05-18 AM; brainstorm)
+
 ## 2026-05-18 Phase 12.5 #2 brainstorm SHIPPED at `ac6eb88` — Web Tier-2 discrepancy-resolution surface design; 6 Codex rounds NO_NEW_CRITICAL_MAJOR; 1 ACCEPT-WITH-RATIONALE banked (R1 M#4 surface attribution literal naming — schema v19 UNCHANGED; brief §2.7 conjecture corrected); 721-line spec; 8 §16 operator-decision items ALL accepted at brainstorm defaults; writing-plans dispatch UNBLOCKED
 
 **Brainstorm-merge at `ac6eb88`** (branch `phase12-5-bundle-2-web-tier2-brainstorm` via `--no-ff`; 3 commits = 1 draft + 1 Codex-R1-R6-fix-bundle + 1 return-report). 6 Codex rounds convergent monotonic-Major taper (R1 0C/5M/3m → R2 0C/3M/2m → R3 0C/3M/2m → R4 0C/1M/3m → R5 0C/1M/2m → R6 0C/0M/2m); operator-override past default MAX_ROUNDS=5 invoked at R6 per Phase 12.5 #1 brainstorm + Phase 10 writing-plans precedent given clean convergent shape. ZERO Critical findings entire chain. ZERO Co-Authored-By footer drift across 3 commits.
