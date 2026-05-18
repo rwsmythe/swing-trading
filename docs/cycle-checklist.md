@@ -303,6 +303,13 @@ mismatches that could be a partial fill OR a missed split) land in
    Pass-2 dry-run output (see §9.ter) emitted a `call_id=<N>` line for the
    discrepancy to chain the audit row.
 
+4. **Web alternative:** click the dashboard banner link to open the resolve
+   form for the oldest pending-ambiguity row; pick a choice from the menu;
+   type a reason; submit. The CLI `swing journal discrepancy resolve-ambiguity`
+   remains available for power-user / scripted flows. Web-resolved rows are
+   distinguishable from CLI-resolved rows via
+   `reconciliation_discrepancies.resolved_by` (`operator_web` vs `operator`).
+
 ### 9.ter One-time backfill (first run after Phase 12 Sub-bundle C ships)
 
 The backfill CLI replays the auto-correct + tier-2 classifier across every
