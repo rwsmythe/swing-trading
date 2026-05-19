@@ -369,6 +369,10 @@ def fetch_window_via_ladder(
     conn: sqlite3.Connection,
     surface: str,
     pipeline_run_id: int | None = None,
+    period_type: str | None = None,
+    period: int | None = None,
+    frequency_type: str | None = None,
+    frequency: int | None = None,
 ) -> tuple[SchwabPriceHistoryWindow, str]:
     """Window-fetch ladder: Schwab → yfinance fallback.
 
@@ -389,6 +393,18 @@ def fetch_window_via_ladder(
     wrapper's audit row carries ``error_message='empty bars (transient)'``.
     Parquet write at T-C.2 is unchanged (empty-write guard provides
     defense-in-depth).
+
+    **Phase 13 T1.SB0 gate-fix (T-GF2): period/frequency kwarg forwarding.**
+    When the caller wants daily bars (chart-step / detector / archive use
+    cases), it MUST pass ``period_type="year", period=5,
+    frequency_type="daily", frequency=1`` (or equivalent month/daily combo)
+    — otherwise schwabdev defaults to ``periodType=day, period=10,
+    frequencyType=minute, frequency=1``, returning ~3000 1-minute intraday
+    candles instead of daily bars (recon at
+    ``docs/phase13-t1-sb0-gate-fix-recon.md`` §2.B). When all four are
+    ``None`` (legacy contract), Schwab applies its server-side defaults —
+    preserved for backward compatibility with any caller that genuinely
+    wants the default intraday minute-bar behavior.
 
     Raises:
         TypeError / ValueError on invalid ticker input.
@@ -418,6 +434,10 @@ def fetch_window_via_ladder(
             schwab_client,
             conn,
             ticker,
+            period_type=period_type,
+            period=period,
+            frequency_type=frequency_type,
+            frequency=frequency,
             start_dt=start,
             end_dt=end,
             surface=surface,
