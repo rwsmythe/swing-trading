@@ -102,7 +102,12 @@ NEW top-level module:
 
 ```
 swing/patterns/
-  __init__.py              # public re-exports (CandidateWindow, Swing, VCPEvidence, ...)
+  __init__.py              # T2.SB1: re-exports DETECTOR_PATTERN_CLASSES ONLY (per §A.14 LOCK).
+                           # Later tasks (T2.SB2 + T2.SB3 + T2.SB4 + T2.SB5) extend re-exports
+                           # for CandidateWindow / Swing / VCPEvidence / FlatBaseEvidence / etc.
+                           # as their modules land. Per Codex R3 Minor #3 closure: T-A.1.1
+                           # __init__ MUST NOT preemptively reference symbols whose modules
+                           # don't exist yet.
   foundation.py            # T2.SB2 — smoothing + extrema + zigzag + variable-window generator + volume primitives
   vcp.py                   # T2.SB3 — VCP detector
   flat_base.py             # T2.SB3 — flat base detector
@@ -1047,7 +1052,7 @@ git commit -m "feat(phase13): T1.SB0 closer — per-cache locking + chart-bytes 
 - Modify: `swing/data/db.py` (`EXPECTED_SCHEMA_VERSION = 20`).
 - Modify: `swing/data/models.py` (NEW dataclasses + Fill widening + ReviewLog widening).
 - Create: `swing/data/repos/pattern_exemplars.py`, `swing/data/repos/pattern_evaluations.py`, `swing/data/repos/chart_renders.py`, `swing/data/repos/watchlist_close_track.py`.
-- Create: `swing/patterns/__init__.py` (DETECTOR_PATTERN_CLASSES constant + enum constants).
+- Create: `swing/patterns/__init__.py` (re-exports `DETECTOR_PATTERN_CLASSES` ONLY from `swing.data.models` per §A.14 constant-placement LOCK; primary constant definitions live in `swing/data/models.py` per Codex R2 Major #1 + R3 Minor #1 closure).
 - Create: `swing/patterns/labeling.py` (subagent dispatch + selective Codex).
 - Create: `.claude/agents/pattern-labeler.md` (Claude Code project-local subagent definition).
 - Create: `scripts/record_pattern_labeler_cassettes.py`, `scripts/record_codex_mcp_pattern_review_cassettes.py`.
@@ -1124,7 +1129,7 @@ git commit -m "feat(phase13): v20 migration — phase13 charts patterns autofill
 #### Task T-A.1.1b — NEW repo CRUD modules (consumer-side foundation; lands AFTER T-A.1.1 commit)
 
 **Files:**
-- Create: `swing/data/repos/pattern_exemplars.py`, `swing/data/repos/pattern_evaluations.py`, `swing/data/repos/chart_renders.py`, `swing/data/repos/watchlist_close_track.py` (minimum CRUD per §B.4 #8 — `insert_*`, `get_*_by_id`, `list_*`).
+- Create: `swing/data/repos/pattern_exemplars.py`, `swing/data/repos/pattern_evaluations.py`, `swing/data/repos/chart_renders.py`, `swing/data/repos/watchlist_close_track.py` (minimum CRUD per §B.4 #10 — `insert_*`, `get_*_by_id`, `list_*`; per Codex R3 Minor #2 renumbering closure).
 - Create: `tests/data/test_repos_pattern_exemplars.py`, `test_repos_pattern_evaluations.py`, `test_repos_chart_renders.py`, `test_repos_watchlist_close_track.py`.
 
 - [ ] **Step 1: Write 4×3 = 12 failing tests** — each repo: (a) insert_row roundtrips through SQL; (b) get_by_id returns inserted row; (c) list_* paginates correctly. All use caller-tx contract (consumed in outer `with conn:` block per Phase 8 forward-binding lesson #4).
@@ -1175,7 +1180,7 @@ git commit -m "feat(phase13): pattern-labeler Claude Code subagent definition (T
 - Create: `swing/patterns/labeling.py`.
 - Create: `tests/patterns/test_labeling.py`.
 
-- [ ] **Step 1: Write 4 failing tests** covering `fire_claude_silver_label(window, pattern_class)` + `fire_codex_review_for_silver_row(exemplar_id, phase)` + T2.SB1 phase 15% random + T2.SB3+/SB4 high-stakes clause + disagreement-chain parent_exemplar_id linkage.
+- [ ] **Step 1: Write 5 failing tests** covering `fire_claude_silver_label(window, pattern_class)` + `fire_codex_review_for_silver_row(exemplar_id, phase)` + T2.SB1 phase 15% random + T2.SB3+/SB4 high-stakes clause + disagreement-chain parent_exemplar_id linkage + (new per Codex R3 Major #1 closure) `test_fire_claude_silver_label_honors_PHASE13_TEST_MOCK_SUBAGENT_env_gate` — when `os.environ.get('PHASE13_TEST_MOCK_SUBAGENT') == '1'`, function returns a fixture-stub silver row WITHOUT dispatching `Agent(subagent_type='pattern-labeler', ...)`. Gate enables T-D.7 hermetic subprocess cp1252 validation.
 
 - [ ] **Step 2: Implement** both functions per §D.6 phased policy. T2.SB1 phase: `random.random() < 0.15` only. T2.SB3+/SB4 phase: random 15% OR high-stakes clause OR low-confidence-high-geometric inverse. Codex disagreement INSERTs new codex_silver row with parent_exemplar_id linkage.
 
@@ -2389,28 +2394,62 @@ def auto_clear_on_position_open(conn, ticker: str) -> bool:
 
 - [ ] **Step 1: Write Phase 13 cumulative E2E test** seeding: full pipeline run with pattern detection → operator labels exemplars → flags watchlist ticker → opens position → confirms auto-clear → reviews trade → closes Phase 13 arc.
 
-- [ ] **Step 2: Write subprocess cp1252 validation tests** (per Codex R1 Minor #3 + R2 Minor #1 closure):
+- [ ] **Step 2: Write hermetic subprocess cp1252 validation tests** (per Codex R1 Minor #3 + R2 Minor #1 + R3 Major #1 closure — tests MUST be hermetic + side-effect-free):
+
+**Strategy**: invoke `--help` flag for each new Phase 13 CLI command to exercise the click output rendering path WITHOUT dispatching subagents / hitting credentials / writing to operator DB. Combined with mock-subagent + tmp-dir isolated runs for deeper coverage. Click `--help` invocation renders the command's docstring + option descriptions through the same `click.echo()` path that runtime output uses — sufficient to surface cp1252 unsafe glyphs in any Phase 13 CLI surface text.
 
 ```python
-def test_swing_patterns_label_exemplars_cp1252_safe_via_subprocess():
-    # Subprocess invocation forces OS-level encoder path (capfd captures via Python-level pipes
-    # that bypass the Windows encoder per Phase 12 C.D gate-fix #3).
-    import subprocess
+import os
+import subprocess
+import sys
+
+import pytest
+
+
+@pytest.fixture
+def isolated_env(tmp_path, monkeypatch):
+    """Hermetic env: tmp HOME/USERPROFILE/SWING_DATA_DIR + cp1252 forcing per Codex R3 Major #1."""
+    monkeypatch.setenv('HOME', str(tmp_path))
+    monkeypatch.setenv('USERPROFILE', str(tmp_path))
+    monkeypatch.setenv('SWING_DATA_DIR', str(tmp_path / 'swing-data'))
+    monkeypatch.setenv('PYTHONIOENCODING', 'cp1252')
+    return {**os.environ, 'HOME': str(tmp_path), 'USERPROFILE': str(tmp_path),
+            'SWING_DATA_DIR': str(tmp_path / 'swing-data'), 'PYTHONIOENCODING': 'cp1252'}
+
+
+def test_swing_patterns_label_exemplars_help_cp1252_safe(isolated_env):
+    # --help exercises click output rendering WITHOUT dispatching subagent / hitting credentials.
     result = subprocess.run(
-        ['python', '-m', 'swing.cli', 'patterns', 'label-exemplars',
+        [sys.executable, '-m', 'swing.cli', 'patterns', 'label-exemplars', '--help'],
+        capture_output=True, text=False, env=isolated_env,
+    )
+    assert result.returncode == 0
+    assert b'UnicodeEncodeError' not in result.stderr
+    assert b'UnicodeEncodeError' not in result.stdout
+
+
+def test_swing_watchlist_flag_help_cp1252_safe(isolated_env): ...  # same shape; --help only
+def test_swing_watchlist_unflag_help_cp1252_safe(isolated_env): ...  # same shape
+
+
+def test_swing_patterns_label_exemplars_dispatch_mocked_subagent_cp1252_safe(isolated_env, monkeypatch):
+    # Deeper coverage: mock fire_claude_silver_label to short-circuit without dispatching
+    # real subagent; tmp SWING_DATA_DIR isolates DB writes; invoke actual command path.
+    monkeypatch.setenv('PHASE13_TEST_MOCK_SUBAGENT', '1')  # gate added in swing/patterns/labeling.py
+    result = subprocess.run(
+        [sys.executable, '-m', 'swing.cli', 'patterns', 'label-exemplars',
          '--ticker', 'AAPL', '--start', '2026-04-15', '--end', '2026-05-15',
          '--pattern-class', 'vcp'],
-        capture_output=True, text=False,
-        env={**os.environ, 'PYTHONIOENCODING': 'cp1252'},
+        capture_output=True, text=False, env=isolated_env,
     )
     assert b'UnicodeEncodeError' not in result.stderr
     assert b'UnicodeEncodeError' not in result.stdout
 
-def test_swing_watchlist_flag_cp1252_safe_via_subprocess(): ...
-def test_swing_watchlist_unflag_cp1252_safe_via_subprocess(): ...
+
+def test_swing_watchlist_flag_with_mocked_db_cp1252_safe(isolated_env): ...
 ```
 
-Per §A.8 + Phase 12 C.D gate-fix #1 + #3: pytest `capfd` bypasses the OS-level encoder; subprocess invocation forces the actual production path operators encounter on Windows.
+Per §A.8 + Phase 12 C.D gate-fix #1 + #3: pytest `capfd` bypasses the OS-level encoder; subprocess invocation forces the actual production path. Per Codex R3 Major #1 closure: tests MUST be hermetic — tmp HOME / USERPROFILE / SWING_DATA_DIR + `PHASE13_TEST_MOCK_SUBAGENT=1` gate to short-circuit subagent dispatch. T-A.1.3 introduces the `PHASE13_TEST_MOCK_SUBAGENT` env gate in `swing/patterns/labeling.py:fire_claude_silver_label` — when set, returns a fixture-stub silver row without dispatching `Agent(subagent_type='pattern-labeler', ...)`. T-A.1.3 step 1 test (e) added: `test_fire_claude_silver_label_honors_PHASE13_TEST_MOCK_SUBAGENT_env_gate`.
 
 - [ ] **Step 3: Run full fast-test suite + ruff sweep.**
 
