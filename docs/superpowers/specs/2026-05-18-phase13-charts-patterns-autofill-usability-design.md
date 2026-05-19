@@ -187,9 +187,10 @@ Library of curated + AI-labeled + organic-trade-history pattern instances. Ancho
 | `timeframe` | TEXT NOT NULL | CHECK in (`daily`, `weekly`) |
 | `start_date` | TEXT NOT NULL | ISO date; window left edge |
 | `end_date` | TEXT NOT NULL | ISO date; window right edge |
-| `pattern_class` | TEXT NOT NULL | CHECK enum: 5 V1 patterns (`vcp`, `flat_base`, `cup_with_handle`, `high_tight_flag`, `double_bottom_w`) **PLUS `none`** (operator-rejected exemplar where the candidate window was reviewed and deemed to contain NO pattern — closes Codex R1 M#5 reject-path semantics). v21+ adds sell-side patterns when Phase 14 ships. |
-| `proposed_pattern_class` | TEXT NULL | CHECK enum same as `pattern_class` excluding `none`; populated when `label_source IN ('claude_silver', 'codex_silver', 'organic_trade_history')` to record the detector/labeler proposal that operator accepted/rejected/relabeled. `NULL` for `curated_gold` / `synthetic` / `perturbation` rows. |
-| `label_source` | TEXT NOT NULL | CHECK enum: `curated_gold` / `claude_silver` / `codex_silver` / `organic_trade_history` / `operator_rejected` / `synthetic` / `perturbation` (per v2 brief §8 5-source taxonomy + NEW `operator_rejected` per Codex R1 M#5 reject-path semantics). |
+| `proposed_pattern_class` | TEXT NOT NULL | CHECK enum: 5 V1 detector classes (`vcp`, `flat_base`, `cup_with_handle`, `high_tight_flag`, `double_bottom_w`). **THE DETECTOR CLASS ATTEMPTED** for this exemplar — required on every row regardless of label_source. v21+ adds sell-side patterns. (Renamed from `pattern_class` per Codex R2 M#4 — keeps detector-class semantic clean on `pattern_evaluations` + `chart_renders` which use `pattern_class` for the EVALUATED class.) |
+| `final_decision` | TEXT NOT NULL | CHECK enum: `curated_confirmed` / `silver_confirmed` / `silver_watch` / `silver_rejected` / `silver_relabeled` / `organic_confirmed` / `synthetic_generated` / `perturbation_generated` (per v2 brief §9.3 6-decision-type enum projected onto label-source taxonomy). The operator/labeler decision shape. |
+| `final_pattern_class` | TEXT NULL | CHECK enum: 5 V1 detector classes; NULL when `final_decision IN ('silver_rejected', 'silver_watch', 'curated_confirmed', 'silver_confirmed', 'organic_confirmed', 'synthetic_generated', 'perturbation_generated')` (i.e., proposed_pattern_class is the final class — populated null avoids redundancy); populated with the relabeled class when `final_decision='silver_relabeled'`. Cross-column CHECK: `(final_decision = 'silver_relabeled' AND final_pattern_class IS NOT NULL AND final_pattern_class != proposed_pattern_class) OR (final_decision != 'silver_relabeled' AND final_pattern_class IS NULL)` schema-defended. |
+| `label_source` | TEXT NOT NULL | CHECK enum: `curated_gold` / `claude_silver` / `codex_silver` / `organic_trade_history` / `synthetic` / `perturbation` (per v2 brief §8 5-source taxonomy). NOTE: `operator_rejected` is no longer in this enum — rejection is encoded via `final_decision='silver_rejected'` (closes Codex R2 M#3 + M#4 reject-path leak; proposed_pattern_class is preserved for audit). |
 | `ai_labeler_version` | TEXT NULL | dispatch SHA for Claude Code subagent / Codex; `NULL` for gold/organic/synthetic |
 | `gold_validated_at` | TEXT NULL | ISO timestamp when operator promoted silver → gold |
 | `codex_reviewed` | INTEGER NOT NULL DEFAULT 0 | boolean — did Codex 2nd reviewer fire (per L9 SELECTIVE policy) |
@@ -201,9 +202,15 @@ Library of curated + AI-labeled + organic-trade-history pattern instances. Ancho
 | `created_at` | TEXT NOT NULL | server-stamped ISO timestamp |
 | `created_by` | TEXT NOT NULL | CHECK in (`operator`, `claude_dispatch`, `codex_dispatch`, `synthetic_generator`); ASCII-only |
 
-Indexes: `(pattern_class, label_source)` for cohort surfaces; `(ticker, start_date)` for ticker-history lookups.
+Indexes: `(proposed_pattern_class, label_source)` for cohort surfaces; `(ticker, start_date)` for ticker-history lookups.
 
-**Cross-column CHECK invariant** (per Phase 12 C.A schema-defended cross-column CHECK precedent): `(label_source = 'operator_rejected' AND pattern_class = 'none') OR (label_source != 'operator_rejected' AND pattern_class != 'none')` — rejected rows MUST carry `pattern_class='none'` + non-rejected rows MUST carry one of the 5 positive patterns. Schema-defended; mirror Python-side validator at landing per Phase 12 C.A schema-CHECK + Python-constant + dataclass-validator paired discipline.
+**Cross-column CHECK invariants** (per Phase 12 C.A schema-defended cross-column CHECK precedent):
+- `(final_decision = 'silver_relabeled' AND final_pattern_class IS NOT NULL AND final_pattern_class != proposed_pattern_class) OR (final_decision != 'silver_relabeled' AND final_pattern_class IS NULL)` — closes Codex R2 M#4 reject-vs-detector-class leak via column separation.
+- `(final_decision = 'silver_rejected' AND label_source IN ('claude_silver', 'codex_silver')) OR final_decision != 'silver_rejected'` — only AI-labeled silver-tier exemplars can carry the `silver_rejected` decision (operator-rejection of an AI proposal); curated/organic/synthetic rows cannot be "rejected" because they're not propositional.
+
+Schema-defended; mirror Python-side validator at landing per Phase 12 C.A schema-CHECK + Python-constant + dataclass-validator paired discipline.
+
+**Semantic split (closes Codex R2 M#3 + M#4)**: `pattern_exemplars` uses `proposed_pattern_class` + `final_decision` + `final_pattern_class` (the THREE-COLUMN labeling shape) — NOT a single `pattern_class` enum with a `none` sentinel value. `pattern_evaluations` + `chart_renders` retain a clean `pattern_class` enum (5 detector classes only; no `none`) because they emit detector-grain verdicts (the pattern being evaluated is always one of the 5; whether the verdict is "confirmed" or "low geometric score" is encoded in the geometric_score numeric, NOT a label-style enum). The proposed-vs-final labeling semantic is exclusively a `pattern_exemplars` concern.
 
 ### §3.2 New table — `chart_renders` (Theme 1 cache; full sketch — closes Codex R1 M#2 §3 omission)
 
@@ -225,9 +232,9 @@ Per §4.4 LOCK (Theme 1 cache architecture). Inserted here in §3 schema delta t
 
 - `CREATE UNIQUE INDEX idx_chart_renders_run_bound ON chart_renders(ticker, surface, pipeline_run_id) WHERE pipeline_run_id IS NOT NULL AND surface != 'theme2_annotated'`.
 - `CREATE UNIQUE INDEX idx_chart_renders_position_detail ON chart_renders(ticker, surface) WHERE pipeline_run_id IS NULL AND surface = 'position_detail'`.
-- `CREATE UNIQUE INDEX idx_chart_renders_theme2_annotated ON chart_renders(ticker, surface, pipeline_run_id, pattern_class) WHERE surface = 'theme2_annotated'`.
+- `CREATE UNIQUE INDEX idx_chart_renders_theme2_annotated ON chart_renders(ticker, surface, pipeline_run_id, pattern_class) WHERE surface = 'theme2_annotated' AND pipeline_run_id IS NOT NULL` (closes Codex R2 M#5 — partial-index predicate now ALSO requires `pipeline_run_id IS NOT NULL`; combined with the CHECK below ensures duplicate NULL-pipeline_run_id `theme2_annotated` rows cannot exist).
 
-These three partial indexes collectively enforce one cache row per legitimate cache key per surface class without colliding on NULL semantics. Cross-column CHECK enforces: `(surface = 'theme2_annotated' AND pattern_class IS NOT NULL) OR (surface != 'theme2_annotated' AND pattern_class IS NULL)` schema-defended.
+These three partial indexes collectively enforce one cache row per legitimate cache key per surface class without colliding on NULL semantics. Cross-column CHECK enforces: `(surface = 'theme2_annotated' AND pattern_class IS NOT NULL AND pipeline_run_id IS NOT NULL) OR (surface != 'theme2_annotated' AND pattern_class IS NULL)` schema-defended (closes Codex R2 M#5 — CHECK now ALSO requires `pipeline_run_id IS NOT NULL` for the `theme2_annotated` surface; rejects rows that would slip past the partial-index predicate).
 
 **Landing**: in v20 migration alongside `pattern_exemplars` + `pattern_evaluations` (§3.4 LOCK).
 
@@ -333,21 +340,11 @@ Audience: operator daily decision-making across watchlist + hyp-rec + active pos
 
 ### §4.4 Cache architecture LOCK — `chart_renders` cache table
 
-**LOCK**: NEW table `chart_renders` (Theme 1 cache):
+**Schema sketch is the canonical §3.2 LOCK** (per Codex R2 M#1 — replaced the prior duplicate competing-text formulation here with a cross-reference + uniqueness invariant restatement to keep §3 and §4 consistent):
 
-| Column | Type | Notes |
-|---|---|---|
-| `id` | INTEGER PK | |
-| `ticker` | TEXT NOT NULL | |
-| `surface` | TEXT NOT NULL | CHECK enum: `watchlist_row` / `hyprec_detail` / `position_detail` / `market_weather` / `theme2_annotated` |
-| `pipeline_run_id` | INTEGER NULL | FK to `pipeline_runs(id)`; `NULL` for non-run-bound surfaces (e.g., position_detail rendered on-demand after a fill) |
-| `pattern_class` | TEXT NULL | Only populated for `surface='theme2_annotated'`; CHECK enum same as `pattern_evaluations.pattern_class` |
-| `chart_svg_bytes` | BLOB NOT NULL | inline SVG bytes |
-| `source_data_hash` | TEXT NOT NULL | SHA256 of input OHLCV slice + pattern_evaluation row (if theme2_annotated) — staleness invalidation key |
-| `rendered_at` | TEXT NOT NULL | server-stamped ISO timestamp |
-| `data_asof_date` | TEXT NOT NULL | session date of input OHLCV (last completed session) |
-
-Unique index `(ticker, surface, pipeline_run_id, pattern_class)` (NULL handling per SQLite NULL-distinct semantics).
+- See §3.2 for the canonical column list + types + CHECK semantics.
+- See §3.2 for the 3-partial-unique-index discipline (`idx_chart_renders_run_bound` / `idx_chart_renders_position_detail` / `idx_chart_renders_theme2_annotated`) that closes the SQLite NULL-distinct semantics defect.
+- See §3.2 for the cross-column CHECK invariant ensuring `(surface = 'theme2_annotated' AND pattern_class IS NOT NULL AND pipeline_run_id IS NOT NULL) OR (surface != 'theme2_annotated' AND pattern_class IS NULL)`.
 
 **Staleness rules**:
 - Charts bound to `pipeline_run_id` are regenerated only when a new run completes (`pipeline_runs.state='complete'`).
@@ -695,17 +692,22 @@ Per v2 brief §8.2 "AI-assisted labeling at scale." DEV-TIME ONLY per L1 (Claude
 **T2.SB1 ships** + **operator paired mid-dispatch pause for exemplar bootstrap** + **operator signals resume** + **T2.SB2+ continues with detector builds consuming the corpus**. Pattern mirrors post-Phase-12 Sub-bundle 1 cassette session precedent (operator-paired execution; resumption pattern). Per §9 OQ-6.
 
 **Pipeline**:
-1. Operator selects historical universe (e.g., tickers × 2-year history).
-2. T2.SB1 runs the candidate-window generator (foundation primitive §5.1.3) against the historical universe.
-3. For each candidate window, T2.SB1 dispatches a Claude Code subagent (`Agent` tool with custom subagent_type defined in the worktree) with:
-   - The candidate window OHLCV slice serialized as compact JSON.
+1. Operator selects historical universe (e.g., tickers × 2-year history) AND supplies (ticker, start_date, end_date) seed windows for the labeling pass — per §5.1.3 T2.SB1 bootstrap window LOCK, T2.SB1 ships the manual-seed mechanism via the NEW `swing patterns label-exemplars` CLI subcommand (closes Codex R2 M#7 — T2.SB1 does NOT invoke the full algorithmic candidate-window generator; that lands at T2.SB2 as a refinement).
+2. For each operator-supplied (ticker, start_date, end_date) seed window, T2.SB1 dispatches a Claude Code subagent (`Agent` tool with custom subagent_type defined in the worktree) with:
+   - The seed window OHLCV slice serialized as compact JSON.
    - The 5 V1 pattern definitions verbatim.
    - The structural-evidence schema for each pattern.
-   - Instructions to emit `{pattern_class | none, confidence_high_medium_low, structural_evidence_json}`.
-4. Claude Code subagent returns silver label. Persisted to `pattern_exemplars` with `label_source='claude_silver'` + `ai_labeler_version=<dispatch_sha>` + `gold_validated_at=NULL` + `codex_reviewed=0`.
-5. **Selective Codex 2nd reviewer** (per L9 + §9 OQ-5): for 10-20% spot-check tier + high-stakes individual labels where Claude silver confidence diverges from rule-tier evidence (operationalized below), T2.SB1 dispatches Codex via MCP with the same input; persists `codex_reviewed=1` + `codex_agreement=<bool>` + a separate row with `label_source='codex_silver'` if Codex disagreed.
-6. **Operator spot-check 10-20%**: operator reviews `claude_silver` rows + promotes accurate ones to `label_source='curated_gold'` + `gold_validated_at=<now>` via a NEW `/patterns/exemplars` web surface OR CLI subcommand (per §9 OQ-6).
-7. Operator signals resume; T2.SB2+ detector builds consume the resulting corpus.
+   - Instructions to emit `{proposed_pattern_class | "no_pattern_detected", confidence_high_medium_low, structural_evidence_json}`.
+3. Claude Code subagent returns silver label. Persisted to `pattern_exemplars` with:
+   - `label_source='claude_silver'` + `ai_labeler_version=<dispatch_sha>`.
+   - `proposed_pattern_class=<subagent_proposal>` (one of the 5 detector classes).
+   - `final_decision='silver_confirmed'` (default; operator overrides at step 5 below).
+   - `final_pattern_class=NULL` (default).
+   - `gold_validated_at=NULL` + `codex_reviewed=0`.
+   - If the subagent emitted `no_pattern_detected`, the row is persisted with `proposed_pattern_class='vcp'` (sentinel; refined at writing-plans) + `final_decision='silver_rejected'` (closes Codex R2 M#3 — proposed_pattern_class is preserved for audit; final_decision encodes rejection per Codex R2 M#3+M#4 LOCK).
+4. **Selective Codex 2nd reviewer** (per L9 + §9 OQ-5): for 10-20% spot-check tier + high-stakes individual labels where Claude silver confidence diverges from rule-tier evidence (operationalized below), T2.SB1 dispatches Codex via MCP with the same input; persists `codex_reviewed=1` + `codex_agreement=<bool>` + a separate row with `label_source='codex_silver'` if Codex disagreed.
+5. **Operator spot-check 10-20%**: operator reviews `claude_silver` rows + (a) promotes accurate ones to `label_source='curated_gold'` + `final_decision='curated_confirmed'` + `gold_validated_at=<now>`; (b) flips wrong-class proposals to `final_decision='silver_relabeled'` + `final_pattern_class=<corrected_class>`; (c) flips false-positive proposals to `final_decision='silver_rejected'`; (d) flags watch-not-yet-tradeable as `final_decision='silver_watch'`. Surfaced via a NEW `/patterns/exemplars` web surface OR CLI subcommand (per §9 OQ-6).
+6. Operator signals resume; T2.SB2+ detector builds consume the resulting corpus.
 
 **Codex SELECTIVE policy operationalization** (§9 OQ-5):
 - **Sample selection method**: random 15% sample of `claude_silver` rows per pattern class.
@@ -743,7 +745,7 @@ Per v2 brief §9.2 evidence-to-show-reviewer + §9.3 reviewer decision types + �
 - `pattern_present_outside_window` — real pattern + system framed it wrong (operator notes correct window).
 - `multiple_overlapping_patterns` — more than one valid pattern in window (operator notes additional patterns).
 
-**Form action**: POST writes to `pattern_exemplars` with `label_source='organic_trade_history'` (if `decision IN ('confirm', 'watch')`) OR `label_source='operator_rejected'` (if `decision='reject'`) + `gold_validated_at=<now>`.
+**Form action**: POST writes to `pattern_exemplars` with `label_source='organic_trade_history'` + `proposed_pattern_class=<the detector's class>` + `final_decision` mapped from operator decision per the new label_source enum (closes Codex R2 M#3 + M#4 reject-path leak): `confirm` -> `final_decision='organic_confirmed'`; `watch` -> `final_decision='silver_watch'` (route through silver since operator-decision is propositional); `reject` -> `final_decision='silver_rejected'`; `relabel` -> `final_decision='silver_relabeled'` + `final_pattern_class=<operator-corrected-class>`; `pattern_present_outside_window` and `multiple_overlapping_patterns` route through a separate window-shift / multi-exemplar emit per v2 brief §9.3. `gold_validated_at=<now>` for all branches except `silver_rejected` which retains gold_validated_at=NULL.
 
 **Active learning prioritization helper** (per v2 brief §9.4): NEW `/patterns/queue` route showing top-K candidates prioritized by:
 1. Borderline geometric scores (`abs(geometric_score - 0.5) < 0.1`).
@@ -1023,7 +1025,7 @@ One concurrent point: T2.SB1 + T3.SB1; rest serial. Estimated wall-clock per sco
 | SB | Scope | Cross-bundle deps | Test delta | Schema delta |
 |---|---|---|---|---|
 | **T1.SB0** | OhlcvCache wiring into `_step_charts`; shape reconciliation; per-cache locking | NONE (first in sequence) | +20-40 fast | NONE |
-| **T2.SB1** | Dev-time labeling infra; Claude Code subagent + selective Codex; operator-paired exemplar bootstrap pause | T1.SB0 | +50-90 fast + ~30-80 silver-tier exemplars persisted manually by operator | v20 migration lands here (or v20 lands at T2.SB2 — operator-pre-writing-plans triage; see OQ-2 alternative) |
+| **T2.SB1** | Dev-time labeling infra; Claude Code subagent + selective Codex; operator-paired exemplar bootstrap pause | T1.SB0 | +50-90 fast + ~30-80 silver-tier exemplars persisted manually by operator | v20 migration lands as T2.SB1 task 1 per `T-V20.PRELIM` Option E (closes Codex R2 M#2 — Option C T-V20.PRELIM-at-both-branches fragility); T3.SB1 branches off T2.SB1's first-commit SHA for concurrent dispatch. See §9 OQ-12 for full enumeration. |
 | **T3.SB1** | Entry auto-fill via Schwab Trader API at form render; `fill_origin` + audit columns | T1.SB0 (concurrent with T2.SB1) | +40-70 fast + 1 slow E2E | v20 (concurrent with T2.SB1) — `fills` widening |
 | **T2.SB2** | Foundation primitives: smoothing + extrema + zigzag + candidate-window generator | T1.SB0 + T2.SB1 (exemplar corpus for parameter tuning) | +60-100 fast | NONE (consumer-side over v20) |
 | **T2.SB3** | Rule-based detectors batch 1: VCP + flat base + cup-with-handle | T2.SB2 | +90-150 fast + 1 slow E2E | NONE (writes to `pattern_evaluations` from v20) |
@@ -1047,7 +1049,15 @@ Two valid options for landing the v20 migration:
 | **A** | v20 lands at **T2.SB1** (first sub-bundle that adds tables: `pattern_exemplars`) | Atomic; all schema in first Theme 2 sub-bundle | T3.SB1 (concurrent) can't write `fills.fill_origin` until v20 lands — risk of merge ordering |
 | **B** | v20 lands at **T2.SB1 OR T3.SB1, whichever ships first** + the other inherits | Either path works | Operator-pre-writing-plans decision required |
 
-**Brainstorm recommendation (revised post-Codex R1 M#6 + R1 m#3 fixes)**: **Option C** (NEW) — v20 migration lands as a **MICRO-PRELIMINARY landing step T-V20.PRELIM at the head of T2.SB1** AND **head of T3.SB1** (whichever ships first): both sub-bundles dispatch with a binding invariant that the FIRST commit on each branch is the v20 migration (only). The first sub-bundle to merge wins the race; the second sub-bundle's preliminary migration commit becomes a no-op rebase merge (migration already at v20). Alternative: Option A retained as fallback — v20 lands at T2.SB1 + T3.SB1 design has dual-schema toleration (gracefully handles pre-v20 state by skipping `fill_origin` writes; flags as advisory until merge). Operator-pre-writing-plans decision at §9 OQ-12 (NEW; closes R1 m#3 cross-reference drift).
+**Brainstorm recommendation (revised post-Codex R2 M#2 — Option C T-V20.PRELIM fragility correction)**: **Option E** (NEW; recommended) — v20 migration lands as **T2.SB1 task 1** (the first task of T2.SB1's writing-plans decomposition; sole content of the first commit on the T2.SB1 branch). **T3.SB1's worktree branches OFF T2.SB1's first-commit SHA, NOT off `main`**, so T3.SB1 has the v20 migration as a base. The two sub-bundles remain CONCURRENT in implementer-dispatch terms (parallel sessions on the bulk of work after the migration commit). **Merge ordering** locks: T2.SB1 merges to `main` first; T3.SB1 merges second (via merge-commit picking up T2.SB1 + T3.SB1 work atomically). This preserves the operator-locked concurrency LOCK at scope-brainstorm §0.5.2 while closing the duplicate-write-set conflict at the migration file. Operator-pre-writing-plans decision at §9 OQ-12.
+
+Alternative options for OQ-12 triage:
+- **Option A**: v20 lands at T2.SB1 (any task position); T3.SB1 must merge AFTER T2.SB1 with NO branching off T2.SB1 — requires T3.SB1 to wait for the merge. Reduces concurrency: T3.SB1 effectively starts after T2.SB1's merge lands.
+- **Option B**: Dual-schema toleration — T3.SB1 writes `fill_origin` conditionally based on `schema_version`. Dead code paths after v20 ship; not recommended.
+- **Option C (REJECTED per R2 M#2)**: T-V20.PRELIM at head of both branches — duplicate migration files create merge conflicts; not a clean no-op rebase.
+- **Option D**: NEW standalone sub-bundle T-V20 inserted between T1.SB0 and the T2.SB1∥T3.SB1 fork — breaks scope-brainstorm §0.5.2 11-sub-bundle LOCK; out-of-scope without re-litigation.
+
+Brainstorm-recommended: **Option E**. Operator-pre-writing-plans confirms.
 
 ### §8.4 Cross-bundle pin discipline
 
@@ -1059,7 +1069,7 @@ Per Phase 10 T-A.7 + T-E.3 + Phase 12 C.A T-A.7 + Phase 12.5 #2 cross-bundle-pin
 
 ---
 
-## §9 Open questions OQ-1..OQ-10 with recommendations
+## §9 Open questions OQ-1..OQ-12 with recommendations
 
 ### OQ-1 — Sub-bundle count drift (10 vs 11)
 
@@ -1087,7 +1097,7 @@ ALSO: should `pattern_class` CHECK enum reserve sell-side values for Phase 14 (e
 
 **Question**: V1 LOCK is DTW with Sakoe-Chiba band per §5.7. SBD + feature-vector distance deferred to V2. Confirm DTW LOCK?
 
-**Brainstorm recommendation**: DTW LOCK with Sakoe-Chiba band, window=0.1 × series length. **Disposition**: BINDING V1; SBD as V2 fallback if DTW performance fails in production (>30s/run for full universe).
+**Brainstorm recommendation**: DTW LOCK with Sakoe-Chiba band, window=0.1 × series length. **Disposition**: BINDING V1; SBD as V2 fallback if the §5.7 pytest-benchmark gate fails (120s/run ceiling on operator's hardware; revised post-Codex R1 M#10 from prior >30s informal threshold — now harmonized with §5.7 LOCK per Codex R2 M#6).
 
 ### OQ-5 — Codex SELECTIVE policy definition
 
@@ -1159,18 +1169,6 @@ ALSO: should `pattern_class` CHECK enum reserve sell-side values for Phase 14 (e
 
 **Disposition**: BINDING brainstorm-lock; operator-pre-writing-plans confirms.
 
-### OQ-12 — v20 migration landing timing (closes Codex R1 m#3 cross-reference drift)
-
-**Question**: v20 migration introduces tables consumed concurrently by T2.SB1 (`pattern_exemplars` + `pattern_evaluations` + `chart_renders` + `watchlist_close_track_flags`) and T3.SB1 (`fills.fill_origin` enum widening). The scope-brainstorm §0.5.2 locks T2.SB1 + T3.SB1 as CONCURRENT. Options for v20 landing timing:
-
-- **Option A**: v20 lands at T2.SB1 head; T3.SB1 must merge AFTER T2.SB1; concurrent dispatch but serial merge.
-- **Option B**: v20 lands at T2.SB1 head; T3.SB1 designed for dual-schema toleration (gracefully skips `fill_origin` writes pre-v20; flags as advisory until merge).
-- **Option C (NEW; brainstorm-recommended)**: v20 migration is its own MICRO-PRELIMINARY landing step `T-V20.PRELIM` placed at the head of BOTH T2.SB1 + T3.SB1 branches; the first sub-bundle to merge wins the race; the second branch's preliminary migration becomes a no-op rebase merge.
-
-**Brainstorm recommendation**: Option C. Rationale: cleanest semantics; no dual-schema toleration code complexity; aligns with the "atomic-landing" discipline at Phase 12 C.A T-A.1 LOCK. Option A requires explicit dispatch-merge-ordering discipline operator drives; Option B introduces dead code paths.
-
-**Disposition**: BINDING brainstorm-lock; operator-pre-writing-plans confirms.
-
 ### OQ-11 — T2.SB1 pattern-labeler subagent definition location
 
 **Question**: T2.SB1 ships a Claude Code subagent for AI-assisted labeling per v2 brief §8.2. Definition file location options: (a) `.claude/agents/pattern-labeler.md` (project-local subagent per Claude Code standard); (b) `agents/pattern-labeler.md` at repo root; (c) NEW `swing-trading` plugin namespace under `.claude/plugins/cache/local/` mirroring copowers plugin precedent.
@@ -1178,6 +1176,16 @@ ALSO: should `pattern_class` CHECK enum reserve sell-side values for Phase 14 (e
 **Brainstorm recommendation**: (a) `.claude/agents/pattern-labeler.md` — matches Claude Code's standard project-local subagent convention + avoids introducing plugin scaffolding for one subagent. The subagent is consumed via `Agent(subagent_type='pattern-labeler', ...)` from T2.SB1 implementation code.
 
 **Disposition**: BRAINSTORM-recommendation; operator-pre-writing-plans confirms. **Surfaced 2026-05-18 pre-Codex orchestrator-side review** as a banked OQ not previously enumerated.
+
+### OQ-12 — v20 migration landing timing (closes Codex R1 m#3 cross-reference drift; ordering reflects ordered enumeration per Codex R2 m#1)
+
+**Question**: v20 migration introduces tables consumed concurrently by T2.SB1 (`pattern_exemplars` + `pattern_evaluations` + `chart_renders` + `watchlist_close_track_flags`) and T3.SB1 (`fills.fill_origin` enum widening). The scope-brainstorm §0.5.2 locks T2.SB1 + T3.SB1 as CONCURRENT.
+
+**Brainstorm recommendation (revised post-Codex R2 M#2)**: **Option E** — v20 lands as T2.SB1 task 1; T3.SB1 branches OFF T2.SB1's first-commit SHA (NOT off main); concurrent dispatch on bulk of work; merge ordering: T2.SB1 merges first; T3.SB1 second. Closes the duplicate-write-set conflict at the migration file that Option C (T-V20.PRELIM at head of both) would have created.
+
+See §8.3 above for full enumeration of Options A/B/C/D/E with trade-offs.
+
+**Disposition**: BINDING brainstorm-lock; operator-pre-writing-plans confirms.
 
 ---
 
@@ -1222,13 +1230,13 @@ Each walkthrough exercises rule-criteria evaluation + composite scoring + struct
 
 **Candidate window**: anchor 2026-04-01; range $10.50-$11.80 (12.4% width) over 47 days (~6.7 weeks).
 
-**Criteria evaluation**:
+**Criteria evaluation** (rewritten post-Codex R2 M#1 to use §10.6 LOCK semantics inline):
 - #1 stage_2 ✓
-- #2 prior uptrend 14% within ±2% tolerance of 20% (operator-pre-writing-plans confirms tolerance bands); decision: REJECT (no tolerance for #2; strict >= 20%). Pattern → 0.0 geometric score.
+- #2 prior uptrend 14% vs bound `>= 20%` with tolerance band ±2% (per §10.6 LOCK): the relaxed threshold is `>= 18%`. Operator's hypothetical 14% < 18% → FAILS by 4 percentage points (well outside the tolerance band). Pattern → REJECT; geometric_score = 0.0.
 
-**Alternative pass scenario** (illustrating the rule): if prior uptrend was 22% (over 5+ weeks) → ✓; range slope < 0.005/week ✓; ATR 2.1% / mid_range 11.15 = 0.019 < 0.025 ✓; duration 47 days > 35 ✓; pivot $11.78 / range_top $11.80 = 0.998 in [0.99, 1.01] ✓ → 1.0 geometric score.
+**Alternative pass scenario** (illustrating the rule): if prior uptrend was 22% (over 5+ weeks; >= 18% tolerance-relaxed threshold) → ✓; range slope < 0.005/week ✓; ATR 2.1% / mid_range 11.15 = 0.019 < 0.025 ✓; duration 47 days > 35 ✓; pivot $11.78 / range_top $11.80 = 0.998 in [0.99, 1.01] ✓ → 1.0 geometric score.
 
-**Discriminating point**: criterion #2 hard-gates; without ±2% tolerance latitude, even narrow misses reject.
+**Discriminating point**: criterion #2 hard-gates with ±2% tolerance band; 14% (4 points below relaxed 18% threshold) rejects; 22% (4 points above relaxed 18%) passes.
 
 ### §10.3 Cup-with-handle — hypothetical $XYZ candidate
 
@@ -1243,7 +1251,7 @@ Each walkthrough exercises rule-criteria evaluation + composite scoring + struct
 - #6 handle_low $18 > cup_midpoint ($17) ✓
 - #7 pivot $19.55 / cup_right_edge $19.50 = 1.0026 in [0.99, 1.01] ✓
 - #8 handle_avg_volume / cup_avg_volume = 0.80 <= 0.85 ✓
-- **Rounded-vs-V**: cup midpoint 2025-12-30 has 5-day window lows around $14.10; cup_bottom_price × 1.02 = $14.28; window min $14.10 < $14.28 → ROUNDED ✓
+- **Rounded-vs-V** (rewritten post-Codex R2 M#1 to use §10.7 LOCK semantics): window centered on `cup_bottom_date=2025-12-15` ±10 days = `[2025-12-05, 2025-12-25]`. Operator confirms 6 bars in this window have `low <= cup_bottom_price × 1.02 = $14.28`; 6 >= 5 → ROUNDED ✓ (V-shape rejection threshold is <= 2 bars; marginal zone is 3-4 bars).
 
 **Geometric score**: 8/8 → 1.0. Composite with template-match: 1.0 × 0.6 + (template-match score) × 0.4.
 
@@ -1255,12 +1263,11 @@ Each walkthrough exercises rule-criteria evaluation + composite scoring + struct
 - #1 stage_2 ✓
 - #2 pole_pct 120% >= 90%; pole_duration 35 days in [28, 56] ✓
 - #3 consolidation_pullback 18% <= 25%; consolidation_duration 25 days in [21, 35] ✓
-- #4 consolidation_width 15.6% — within ±tolerance of 15%; operator-pre-writing-plans confirms tolerance band; with ±1% tolerance: 15.6% > 16% rejects; with ±0.5% tolerance: 15.6% > 15.5% rejects. Discriminating: HTF tolerance band MATTERS. Brainstorm-default: ±1% tolerance per dispatch brief; 15.6% > 16% → REJECT.
-- (continuing if tolerance allows)
-- #5 volume drop 40% / cap @ 35% (= 65%); 0.60 / 1.0 = 0.60 <= 0.65 ✓
-- #6 pivot at consolidation_top $10.40 ✓
+- #4 consolidation_width 15.6% vs bound `<= 15%` with tolerance NONE per §5.5 LOCK (rewritten post-Codex R2 M#1 to use §10.6 LOCK semantics inline): the bound is STRICT; 15.6% > 15% → FAILS. Pattern → REJECT; geometric_score = 0.0.
 
-**Discriminating point**: HTF criterion #4 width tolerance band has direct operational implications; orchestrator-pre-writing-plans confirms ±1% vs ±2%.
+**Alternative pass scenario** (illustrating the rule): if consolidation_width was 14.8% (`<= 15%` strict) → ✓; #5 volume drop 40% (consolidation_avg 0.60 of pole_avg <= 0.65 cap) → ✓; #6 pivot at consolidation_top $10.40 ✓ → all 6 criteria pass; geometric_score = 1.0.
+
+**Discriminating point**: HTF criterion #4 width is a STRICT bound (NONE tolerance). Any width > 15% rejects; orchestrator-pre-writing-plans may revisit the tolerance band at writing-plans time, but the brainstorm LOCK keeps it strict per the §10.6 LOCK semantics.
 
 ### §10.5 Double-bottom-W — hypothetical $UVWX recovery
 
