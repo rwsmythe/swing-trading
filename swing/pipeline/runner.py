@@ -713,31 +713,22 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
             # 'pipeline'` audit rows; sandbox short-circuit lives in the
             # ladder layer per T-C.3 LOCK.
             #
-            # Codex R1 Major #5 DISPOSITION (ACCEPT-WITH-RATIONALE V1):
-            # `_ohlcv_cache` is intentionally not wired into `_step_charts`
-            # in V1. `_step_charts` consumes OHLCV via
-            # `fetcher.get(ticker, ...)` → `swing/pipeline/ohlcv.py:fetch_daily_bars`
-            # → `swing/data/ohlcv_archive.py:read_or_fetch_archive` (legacy
-            # `{TICKER}.parquet` path). Post-M#3 ladder fixes, Schwab-sourced
-            # bars are persisted to `{TICKER}.schwab_api.parquet` (Shape A),
-            # but `read_or_fetch_archive` reads the legacy path exclusively.
-            # Explicit wiring of `_ohlcv_cache` into `_step_charts` requires:
-            #   (a) a sweeping refactor of fetcher.get's weekly-refresh +
-            #       archive_history_days semantics to align with the ladder's
-            #       window semantics;
-            #   (b) reconciling the in-memory shape (capitalized columns +
-            #       DatetimeIndex from `to_dataframe()`) against the legacy
-            #       fetcher's identical-but-archive-managed shape;
-            #   (c) per-cache locking + lifecycle semantics for the
-            #       OhlcvCache that today is single-threaded per request.
-            # Deferred to V2. The OhlcvCache is constructed (and exercised
-            # by unit tests via direct invocation) so V2 wiring is a
-            # one-line addition. Leading-underscore variable `_ohlcv_cache`
-            # documents the intentional non-consumption.
+            # Phase 13 T1.SB0 (plan §G.0) — closes the Phase 11 Sub-bundle C
+            # R1 M#5 ACCEPT-WITH-RATIONALE V1 deferral by wiring `ohlcv_cache`
+            # into `_step_charts`. When `_install_pipeline_marketdata_caches`
+            # returns `None` (no Schwab client), a ladder-less `OhlcvCache`
+            # is constructed here so `_step_charts` has a uniform consumer
+            # surface; the ladder-less cache falls through to
+            # `read_or_fetch_archive` directly (identical shape to the
+            # legacy `PriceFetcher.get` path — verified by the T-T1.SB0.2
+            # shape-parity test).
             schwab_client = _construct_pipeline_schwab_client(cfg)
-            price_cache, _ohlcv_cache = _install_pipeline_marketdata_caches(
+            price_cache, ohlcv_cache = _install_pipeline_marketdata_caches(
                 cfg, schwab_client, pipeline_run_id=lease.run_id,
             )
+            if ohlcv_cache is None:
+                from swing.web.ohlcv_cache import OhlcvCache
+                ohlcv_cache = OhlcvCache(cfg)
 
             lease.step("evaluate")
             try:
@@ -873,7 +864,8 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
             try:
                 chart_paths = _step_charts(
                     cfg=cfg, lease=lease, eval_run_id=eval_run_id,
-                    data_asof=lease_data_asof(cfg, lease), fetcher=fetcher,
+                    data_asof=lease_data_asof(cfg, lease),
+                    ohlcv_cache=ohlcv_cache,
                 )
                 lease.status(charts_status="ok")
             except LeaseRevokedError:
@@ -1202,8 +1194,14 @@ def _step_recommendations(*, cfg, eval_run_id: int,
 
 
 def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data_asof: str,
-                  fetcher: PriceFetcher) -> dict[str, Path]:
+                  ohlcv_cache) -> dict[str, Path]:
     """Render charts for A+ + top-N near-trigger watchlist via staging.
+
+    Phase 13 T1.SB0 (plan §G.0): consumes OHLCV via
+    ``ohlcv_cache.get_or_fetch(ticker=..., window_days=200)`` — closes the
+    Phase 11 Sub-bundle C R1 M#5 ACCEPT-WITH-RATIONALE V1 deferral. Caller
+    is the runner's outer step loop; tests pass a duck-typed stub exposing
+    ``get_or_fetch`` (NOT the legacy ``PriceFetcher.get``).
 
     Writes go through `promote_staging`, which re-reads pipeline_runs in-line
     and raises `LeaseRevokedError` if the lease has been force-cleared before the
@@ -1320,7 +1318,11 @@ def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data_asof: str,
     classifier_errors = 0
     for ticker, pivot, stop, _source in targets:
         try:
-            ohlcv = fetcher.get(ticker, lookback_days=200, as_of_date=None)
+            # Phase 13 T1.SB0 (plan §G.0): consume OHLCV via OhlcvCache.
+            # ``get_or_fetch`` matches ``PriceFetcher.get``'s shape + raise-
+            # on-empty contract (recon §1 + §3), so the except clause
+            # preserves the existing ``fetcher_failed`` semantic.
+            ohlcv = ohlcv_cache.get_or_fetch(ticker=ticker, window_days=200)
         except Exception:
             with lease.fenced_write() as conn:
                 update_chart_target_status(
