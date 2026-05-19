@@ -303,13 +303,11 @@ def _install_pipeline_marketdata_caches(
     Returns:
         ``(price_cache, ohlcv_cache)`` — both ``None`` when no client.
 
-    Note V1 scope: while both PriceCache + OhlcvCache are constructed when a
-    schwab_client is present, only the PriceCache is actually consumed by the
-    pipeline runner's existing callsites (open-trade-ticker warm in
-    ``_step_evaluate``). OhlcvCache is built so that V2 wiring of the
-    pipeline's OHLCV path through the ladder is a one-line addition. The
-    OhlcvCache's ladder hook is exercised by unit tests via direct invocation
-    of the returned cache instance.
+    Consumer surfaces (post-Phase-13 T1.SB0): PriceCache is consumed by
+    ``_step_evaluate`` (open-trade-ticker warm); OhlcvCache is consumed by
+    ``_step_charts`` via ``ohlcv_cache.get_or_fetch(...)`` for chart-target
+    OHLCV (closes the Phase 11 Sub-bundle C R1 M#5 V1 deferral). Both caches
+    share the same ``schwab_client`` via captured closures.
     """
     if schwab_client is None:
         return None, None

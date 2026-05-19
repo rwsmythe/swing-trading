@@ -21,10 +21,19 @@ import hashlib
 from pathlib import Path
 
 import pandas as pd
-import pytest
 
 from swing.config import load
 from tests.cli.test_cli_eval import _minimal_config
+
+# mplfinance is required for this gate to be honest. The plan's T-T1.SB0.4
+# acceptance criterion ("chart bytes parity passes") is unconditional; a
+# silent ImportError-skip would mask the assertion in barebones environments
+# and the Codex R1 Major #3 flag (2026-05-18) caught the bypass. Import at
+# module load — failure here surfaces as a clear collection error, not a
+# silent skip. The project's `[dev,web]` install profile per CLAUDE.md
+# Quick Start ("pip install -e .[dev,web]") includes mplfinance via the
+# `charts` / `web` extras.
+import mplfinance  # noqa: F401
 
 
 def _make_cfg(tmp_path: Path):
@@ -61,12 +70,12 @@ def test_chart_bytes_match_between_ohlcv_cache_and_legacy_price_fetcher(
     fixture archive.
 
     Wiring property: the data fetch path changed; the chart output did NOT.
-    """
-    try:
-        import mplfinance  # noqa: F401
-    except ImportError:
-        pytest.skip("mplfinance not installed — chart-bytes parity test deferred")
 
+    mplfinance imported at module level — silent skip on missing dep would
+    mask the acceptance assertion (Codex R1 Major #3 fix 2026-05-18). The
+    `[dev,web]` install profile per CLAUDE.md Quick Start includes the
+    dependency.
+    """
     from swing.prices import PriceFetcher
     from swing.rendering.charts import render_chart
     from swing.web.ohlcv_cache import OhlcvCache
