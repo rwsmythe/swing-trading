@@ -8,6 +8,79 @@
 
 ---
 
+## 2026-05-18 Phase 13 T1.SB0 SHIPPED at `418bcc8` — OhlcvCache → `_step_charts` wiring (4-task sub-bundle); closes Phase 11 Sub-bundle C R1 M#5 V1 deferral; 5 Codex rounds NO_NEW_CRITICAL_MAJOR; 2 ACCEPT-WITH-RATIONALE banks both TECHNICALLY SOUND; C.C lesson #6 11th cumulative validation CLEAN (0 pre-Codex findings); ZERO Co-Authored-By footer drift; T2.SB1 ∥ T3.SB1 concurrent dispatch UNBLOCKED pending S2+S3 operator-paired gate
+
+**Integration-merge at `418bcc8`** (branch `phase13-t1-sb0-ohlcv-charts-wiring` via `--no-ff`; 9 implementer commits = 1 recon (T-T1.SB0.1) + 3 task-impl (T-T1.SB0.2 + T-T1.SB0.3 + T-T1.SB0.4) + 4 Codex-fix bundles (R1+R2+R3+R4) + 1 return report).
+
+**Codex chain shape (convergent monotonic Major taper)**: R1 0C/3M/1m → R2 0C/1M/0m → R3 0C/1M/1m → R4 0C/0M/1m → R5 0C/0M/0m NO_NEW_CRITICAL_MAJOR. ZERO Critical findings entire chain.
+
+**Streaks preserved**:
+- ZERO Co-Authored-By footer trailer drift across all 9 commits (~203+ project-cumulative streak preserved; verified via `%(trailers:key=Co-Authored-By)` extraction returning 0 matches).
+- C.C lesson #6 11th cumulative validation: **CLEAN — 0 pre-Codex findings absorbed** (pattern is durably effective; implementer's recon §9 pre-emptions correctly anticipated reviewer concerns; matches Phase 12.5 #3 + Phase 13 brainstorm + Phase 13 writing-plans precedent of pre-Codex catching less as project discipline matures).
+- Schema v19 UNCHANGED (per L6; consumer-side wiring only; v20 lands at T2.SB1 task T-A.1.1 migration-only commit per OQ-12 Option E).
+- Baseline `4925 → 4935 fast` (+10 within +20-40 plan §K projection envelope; slightly conservative because Codex-driven discriminating-test plants went into existing test files (3 modified) + 5 new test files).
+- Ruff 0 E501 on `swing/` preserved.
+
+**2 ACCEPT-WITH-RATIONALE banks — both TECHNICALLY SOUND per orchestrator-side QA review** (first ACCEPTs in Phase 13 arc but match Phase 12.5 Q2 sound-ACCEPT precedent — not blind absorption; legitimate scope-clarification + V2 deferral banking):
+
+1. **R1 M#1 OHLCV scope = open-trade only**: the CLAUDE.md gotcha text is scoped verbatim to `build_dashboard` SMA-advisory surface (text references `build_dashboard` + trail-MA/exit-below-MA advisories + watchlist union prohibition). Pipeline `_step_charts` is NOT in the gotcha's scope; `_step_charts` has always fetched OHLCV for ALL chart targets (A+ + open + watchlist top-N) — that's the existing chart-rendering contract. T1.SB0 wires the same scope through OhlcvCache.get_or_fetch instead of legacy fetcher.get; scope unchanged. Under no-Schwab env, fallback `OhlcvCache(cfg)` is identical to legacy `read_or_fetch_archive` path. **ACCEPT banked legitimately**.
+
+2. **R1 M#2 breaker non-participation (V2-A bank)**: chart-step never had a sliding-window breaker pre-Phase-13 (legacy `PriceFetcher.get` is direct archive read with no breaker semantics). T1.SB0 maintains parity with that pre-existing semantic. Bundle-path breaker (dashboard SMA-advisory traffic) unchanged + preserved. Per-ticker `except Exception` clause at `swing/pipeline/runner.py:1326` absorbs failures with `chart_status='fetcher_failed'`. V2-A bank carries forward for breaker participation if operator surfaces meaningful Schwab/yfinance outage modes not well-handled by per-ticker fallback. Dispatch brief watch item #7 "Sliding-window breaker preservation" wording was orchestrator-side ambiguous (preserve what? breaker for chart-step or bundle-path?); implementer correctly interpreted preserve-as-pre-Phase-13. **ACCEPT banked legitimately**.
+
+**Codex R3 fix bundle (`bfcc2b6`) closed 2 latent defects in cache infrastructure** (both forward-binding for downstream cache work):
+- `_yf_window_fallback` truncated to 60 rows under Schwab-fallback (would cap chart window depth); fixed to call `read_or_fetch_archive` directly returning full archive; discriminating test planted.
+- Cached DataFrame was reference-returned creating consumer-mutation poisoning across consumers within TTL; fixed with defensive copy on BOTH store AND read; discriminating test planted.
+
+**Plan deliverable**: 4 production-touched files + 5 NEW test files + recon doc + return report. Net delta: +154 prod LOC (runner.py +20 / ohlcv_cache.py +134 / pyproject.toml +8) + +1018 test LOC. Schema v19 UNCHANGED.
+
+**Key shipped artifacts**:
+- `swing/pipeline/runner.py` — `_step_charts` signature change (`fetcher` → `ohlcv_cache`); legacy `fetcher.get` calls replaced with `ohlcv_cache.get_or_fetch`.
+- `swing/web/ohlcv_cache.py` — new `get_or_fetch(*, ticker, window_days)` public method; defensive copy on store+read; per-cache locking via `threading.RLock`; `_yf_window_fallback` calls `read_or_fetch_archive` directly returning full archive.
+- `pyproject.toml` — `mplfinance>=0.12` added to `[project.optional-dependencies].dev` for chart-bytes parity gate honesty (R2 fix).
+- `docs/phase13-t1-sb0-recon.md` (355 lines; recon doc with V1/V2 scope decisions + per-cache-locking discipline + shape semantics).
+- 5 new test files: shape parity / wiring discriminating / concurrent-fetch no-race / chart-bytes parity / yf-window-fallback full-archive.
+- 1 cross-bundle pin planted at `tests/pipeline/test_ohlcv_cache_concurrent_fetch_no_race.py:203` (un-skips at T2.SB2 + T2.SB3 + T3.SB3 consumers per plan §H.3).
+
+**Operator-witnessed gate**:
+- **S1 (inline pytest + ruff)**: **PASS** via implementer (4935 fast pass + 0 ruff E501).
+- **S2 (operator-paired `python -m swing.cli pipeline run` against production)**: **PENDING** — orchestrator drives post-merge; cassette-mode acceptable for CI; live-mode under operator-paired session.
+- **S3 (chart output visual parity against pre-Phase-13 baseline)**: **PENDING** — orchestrator drives post-merge. **STRONG algorithmic substitute**: `tests/pipeline/test_chart_bytes_parity_through_ohlcv_cache.py::test_chart_bytes_match_between_ohlcv_cache_and_legacy_price_fetcher` PASSES asserting byte-identical PNG output between OhlcvCache + legacy paths.
+
+S2 + S3 require operator-paired session (production data + visual chart comparison). Merge proceeds first per Phase 12.5 Q2 precedent (merge first; operator-paired gate post-merge); algorithmic chart-bytes parity test provides strong evidence the wiring is correct under both no-Schwab + with-Schwab production environments.
+
+**7 forward-binding lessons banked at return report §"Forward-binding lessons" for downstream sub-bundles**:
+1. Plan-template parameter-name drift (writing-plans dispatches should verify signatures via `inspect.signature` or grep — paraphrase from memory drifts).
+2. Plan-template hardcoded literals drift (window_days=180 vs actual lookback_days=200; should reference project constant OR grep-verify against actual callsite).
+3. **Backward-looking vs forward-looking session-anchor inequality** (`>` strict for backward-looking; `>=` for forward-looking). **CLAUDE.md gotcha promoted in this housekeeping commit**.
+4. **Hook fallback window-completeness** — shared-infrastructure cache hooks return FULL archive; consumers slice. **CLAUDE.md gotcha promoted in this housekeeping commit**.
+5. Mutable DataFrame in cache = corruption risk across consumers within TTL — defensive-copy discipline at every new cache layer.
+6. Module-level binding vs source-module binding — monkeypatch at consumer namespace not source.
+7. C.C lesson #6 pre-Codex review pattern: 11th cumulative validation CLEAN — pattern is DURABLE; continue applying at every executing-plans dispatch.
+
+**Capture-needs for next sub-bundle dispatch (T2.SB1 ∥ T3.SB1 concurrent per OQ-12 Option E)**:
+- T2.SB1's first-commit SHA needed by T3.SB1 worktree branch-base coordination (T3.SB1 worktree branches OFF T2.SB1's first commit, typically the v20 migration-only commit at T-A.1.1 per plan §G.1).
+- Schema v20 migration lands at T2.SB1 task T-A.1.1 (atomic per plan §B.4; backup-gate `pre_version == 19` strict equality form per Phase 9 Sub-bundle A precedent).
+- OhlcvCache.get_or_fetch surface stable, ready for T2.SB2 + T2.SB3 + T3.SB3 consumers.
+- Defensive-copy contract: `get_or_fetch` returns a defensive copy; detector consumers can mutate freely without poisoning cache.
+
+**V2 banks**:
+- V2-A: breaker participation for the bars path (R1 M#2 ACCEPT defer).
+- V2-B: per-key in-flight dedup (recon §4.B).
+- V2-C: async `get_or_fetch` variant via executor for batch chart rendering at scale (recon §4.B).
+
+**Post-merge housekeeping in this commit**:
+- CLAUDE.md line 3 "Current state" refresh (1,318 → 1,878 chars; under 2,000 threshold per size-check discipline).
+- **CLAUDE.md gotchas: ADD 2 new entries** (session-anchor inequality discipline by anchor direction + hook fallback window-completeness for shared cache infrastructure).
+- phase3e-todo.md new top entry (this entry).
+- orchestrator-context.md current-state pointer refresh (Phase 13 writing-plans SHIPPED state demoted to Prior state).
+- **orchestrator-context.md size-check trigger fired** (Prior state count was 10 AT cap; T1.SB0 housekeeping demote would bring count to 11; archived oldest Prior state container (line 148, 2026-05-17 PM pre-executing-plans; ~163 lines) to `docs/orchestrator-context-archive.md`).
+
+**T2.SB1 ∥ T3.SB1 concurrent dispatch UNBLOCKED** pending S2 + S3 operator-paired gate PASS post-merge.
+
+Worktree husk at `.worktrees/phase13-t1-sb0-ohlcv-charts-wiring/` matches cleanup-script regex `phase\d+[-_]` — operator-paced cleanup pass post-merge.
+
+### Predecessor (2026-05-18 PM; writing-plans)
+
 ## 2026-05-18 Phase 13 WRITING-PLANS SHIPPED at `08ce852` — 2810-line plan; 11 sub-bundles + 71 tasks; 5 Codex rounds NO_NEW_CRITICAL_MAJOR; ZERO ACCEPT-WITH-RATIONALE; C.C lesson #6 BINDING 10th cumulative validation (pre-Codex caught OQ-7 brief vs spec drift); ZERO Co-Authored-By footer drift; orchestrator-side QA review PASS-CLEAN; T1.SB0 executing-plans dispatch UNBLOCKED
 
 **Integration-merge at `08ce852`** (branch `phase13-writing-plans` via `--no-ff`; 7 implementer commits = 1 initial draft (2711 lines) + 1 pre-Codex orchestrator-side review-fix (1 Critical absorbed: OQ-7 spec >> brief reconciliation) + 4 Codex-fix bundles (R1+R2+R3+R4) + 1 return report).
