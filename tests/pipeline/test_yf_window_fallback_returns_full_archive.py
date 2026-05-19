@@ -104,7 +104,13 @@ def test_yf_window_fallback_returns_full_archive_not_60_row_truncation(
     # patching at the source ensures the closure picks up the stub).
     # Stub falls through to yfinance fallback so we exercise the fix path.
     def _stub_ladder(ticker, *, start, end, cfg, schwab_client,
-                    yfinance_fallback_fn, conn, surface, pipeline_run_id):
+                    yfinance_fallback_fn, conn, surface, pipeline_run_id,
+                    **_extra_kwargs):
+        # Phase 13 T1.SB0 gate-fix (T-GF2): _bars_hook now passes
+        # period_type/period/frequency_type/frequency kwargs to request
+        # daily bars; stub absorbs them via **_extra_kwargs since they
+        # don't affect this fallback-path test (we exercise the
+        # yfinance_fallback_fn handoff regardless of frequency).
         window = yfinance_fallback_fn(ticker, start, end)
         return (window, "yfinance")
 
