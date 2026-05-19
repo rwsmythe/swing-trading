@@ -545,6 +545,106 @@ def test_window_bars_file_rejects_bar_missing_required_keys(
     assert "missing required" in combined or "OHLCV" in combined
 
 
+# Codex R2 M#1 closure: missing structural_evidence_json key in the
+# silver-response file must produce a clean ClickException, NOT a raw
+# traceback escaping the __post_init__ ValueError.
+def test_persist_missing_structural_evidence_key_clickexception(
+    runner_env, tmp_path: Path,
+) -> None:
+    silver = {
+        "evaluation": "confirmed",
+        "confidence": "high",
+        # structural_evidence_json INTENTIONALLY OMITTED
+        "geometric_evidence_narrative": "Test.",
+    }
+    silver_path = tmp_path / "missing_key.json"
+    silver_path.write_text(json.dumps(silver), encoding="utf-8")
+
+    runner, cfg_path, _ = runner_env
+    r = runner.invoke(main, [
+        "--config", str(cfg_path),
+        "patterns", "label-exemplars",
+        "--ticker", "ABC",
+        "--start", "2024-01-01",
+        "--end", "2024-02-01",
+        "--pattern-class", "vcp",
+        "--silver-response-file", str(silver_path),
+    ])
+    assert r.exit_code != 0
+    combined = (r.output or "") + str(r.exception or "")
+    assert "shape invalid" in combined
+    assert "structural_evidence_json" in combined
+    # MUST NOT see a raw traceback / unhandled ValueError.
+    assert "Traceback" not in combined
+
+
+# Codex R2 M#1 defense-in-depth: ValueError raised by SilverLabelResponse
+# __post_init__ (e.g. for None or non-dict-decoding string) is caught and
+# translated to ClickException.
+def test_persist_dataclass_postinit_value_error_is_clickexception(
+    runner_env, tmp_path: Path,
+) -> None:
+    silver = {
+        "evaluation": "confirmed",
+        "confidence": "high",
+        "structural_evidence_json": None,  # __post_init__ raises ValueError
+        "geometric_evidence_narrative": "Test.",
+    }
+    silver_path = tmp_path / "none_evidence.json"
+    silver_path.write_text(json.dumps(silver), encoding="utf-8")
+
+    runner, cfg_path, _ = runner_env
+    r = runner.invoke(main, [
+        "--config", str(cfg_path),
+        "patterns", "label-exemplars",
+        "--ticker", "ABC",
+        "--start", "2024-01-01",
+        "--end", "2024-02-01",
+        "--pattern-class", "vcp",
+        "--silver-response-file", str(silver_path),
+    ])
+    assert r.exit_code != 0
+    combined = (r.output or "") + str(r.exception or "")
+    assert "shape invalid" in combined
+    assert "Traceback" not in combined
+
+
+# Codex R2 Minor #2 closure: malformed JSON in --window-bars-file must
+# produce a clean ClickException, NOT a raw JSONDecodeError traceback.
+def test_window_bars_file_malformed_json_clickexception(
+    runner_env, tmp_path: Path,
+) -> None:
+    bars_path = tmp_path / "malformed.json"
+    bars_path.write_text("{not valid json", encoding="utf-8")
+    runner, cfg_path, _ = runner_env
+    r = runner.invoke(main, [
+        "--config", str(cfg_path),
+        "patterns", "label-exemplars",
+        "--ticker", "ABC",
+        "--start", "2024-01-01",
+        "--end", "2024-02-01",
+        "--pattern-class", "vcp",
+        "--window-bars-file", str(bars_path),
+    ])
+    assert r.exit_code != 0
+    combined = (r.output or "") + str(r.exception or "")
+    assert "not valid JSON" in combined
+    assert "Traceback" not in combined
+
+
+# Codex R2 Minor #1 closure: --window-bars-file help text now describes
+# the auto-fetch behavior on emit path (not the stale "placeholder" wording).
+def test_window_bars_file_help_text_describes_autofetch(runner_env) -> None:
+    runner, cfg_path, _ = runner_env
+    r = runner.invoke(main, [
+        "--config", str(cfg_path),
+        "patterns", "label-exemplars", "--help",
+    ])
+    assert r.exit_code == 0
+    assert "auto-fetches" in r.output or "auto-fetch" in r.output
+    assert "placeholder bars list" not in r.output
+
+
 def test_label_exemplars_payload_window_bars_file_overrides_autofetch(
     runner_env, monkeypatch, tmp_path: Path,
 ) -> None:

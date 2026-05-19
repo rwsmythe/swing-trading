@@ -3709,9 +3709,17 @@ def _load_bars_for_labeling_emit(
     )
 
     if window_bars_file is not None:
-        raw = _json.loads(
-            _Path(window_bars_file).read_text(encoding="utf-8")
-        )
+        # Codex R2 Minor #2 closure: catch malformed JSON at the file
+        # boundary so the operator sees a clean ClickException instead of
+        # a raw json.JSONDecodeError traceback.
+        try:
+            raw = _json.loads(
+                _Path(window_bars_file).read_text(encoding="utf-8")
+            )
+        except _json.JSONDecodeError as exc:
+            raise click.ClickException(
+                f"--window-bars-file content is not valid JSON: {exc}."
+            ) from exc
         if not isinstance(raw, list):
             raise click.ClickException(
                 "--window-bars-file content must be a JSON array of bar "
@@ -3785,9 +3793,13 @@ def _load_bars_for_labeling_emit(
 @click.option(
     "--window-bars-file", "window_bars_file",
     type=click.Path(exists=True, dir_okay=False), default=None,
-    help="Optional path to JSON file with the window's OHLCV bars. "
-         "When omitted, the CLI emits a placeholder bars list and "
-         "expects the operator to supply real bars in the response file.",
+    help="Optional path to JSON file with the window's OHLCV bars "
+         "(list of dicts with keys date / open / high / low / close / "
+         "volume). When omitted on the emit-payload path, the CLI "
+         "auto-fetches daily bars via yfinance for the requested "
+         "(ticker, start, end). When supplied, this override pins the "
+         "bars (fixture-pinned reproducibility) and yfinance is NOT "
+         "called. Ignored on the persist path (--silver-response-file).",
 )
 @click.pass_context
 def label_exemplars_cmd(
@@ -3913,7 +3925,18 @@ def label_exemplars_cmd(
     # serialized JSON string for direct sqlite3 binding. Accept both shapes
     # (dict from real subagent + pre-serialized JSON dict string from
     # existing test fixtures); reject anything else with a clear error.
-    raw_evidence = response_raw.get("structural_evidence_json")
+    # Codex R2 M#1 closure: explicit key-presence check so a missing
+    # structural_evidence_json key surfaces as a clean shape-invalid error
+    # rather than escaping through _SilverLabelResponse.__post_init__'s
+    # ValueError (which the except clause widening below ALSO catches as
+    # defense-in-depth).
+    if "structural_evidence_json" not in response_raw:
+        raise click.ClickException(
+            "silver-response-file shape invalid: missing required key "
+            "'structural_evidence_json' per .claude/agents/"
+            "pattern-labeler.md output contract."
+        )
+    raw_evidence = response_raw["structural_evidence_json"]
     if isinstance(raw_evidence, dict):
         raw_evidence = _json.dumps(raw_evidence, sort_keys=True)
     elif isinstance(raw_evidence, str):
@@ -3954,7 +3977,9 @@ def label_exemplars_cmd(
                 response_raw["geometric_evidence_narrative"]
             ),
         )
-    except (KeyError, TypeError) as exc:
+    except (KeyError, TypeError, ValueError) as exc:
+        # Codex R2 M#1 closure: ValueError added so __post_init__
+        # validation failures surface as ClickException (vs raw traceback).
         raise click.ClickException(
             f"silver-response-file shape invalid: {exc}; expected keys "
             "'evaluation', 'confidence', 'structural_evidence_json', "
