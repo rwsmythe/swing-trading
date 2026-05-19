@@ -81,8 +81,21 @@ def test_yf_window_fallback_returns_full_archive_not_60_row_truncation(
     monkeypatch.setattr(
         "swing.pipeline.runner.read_or_fetch_archive", _stub_read_or_fetch_archive,
     )
+    # Patch the binding the runner's `_yf_window_fallback` actually consults
+    # (Codex R4 Minor #1 fix 2026-05-18). Pre-fix the patch targeted the
+    # source module `swing.evaluation.dates`, but the runner imports
+    # `last_completed_session` at module load (line 36) — so its captured
+    # binding lives at `swing.pipeline.runner.last_completed_session`.
+    # Patching the source module did not affect the runner's binding;
+    # the test happened to pass incidentally because the wall-clock-driven
+    # fallback returned enough history anyway. Patching at the runner-
+    # local binding makes the test deterministic + actually exercises
+    # the intended end-date pin.
     monkeypatch.setattr(
-        "swing.evaluation.dates.last_completed_session", _stub_session,
+        "swing.pipeline.runner.last_completed_session", _stub_session,
+    )
+    monkeypatch.setattr(
+        "swing.web.ohlcv_cache.last_completed_session", _stub_session,
     )
 
     # Patch fetch_window_via_ladder at its source module (the runner does a
