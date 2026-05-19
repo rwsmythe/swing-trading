@@ -225,7 +225,7 @@ Two cleanup items operator queued for post-Phase-12.5-#3 closure, BEFORE Phase 1
 - `swing/recommendations/hyp_recs.py` — relation-to-hyp-rec decision point.
 - Phase 13 Theme 4 usability triage scope at `docs/phase13-scope-brainstorm.md` §0.5 (potential fold-in candidate).
 
-**Status**: QUEUED; operator-decision-pending at commission. Phasing: defer to operator (fold into Phase 13 Theme 4 OR standalone post-Phase-12.5 dispatch).
+**Status**: ✅ **FOLDED INTO PHASE 13 THEME 4** (operator-decided 2026-05-18 post-Q2-gate-PASS). Q4 scope amended into `docs/phase13-brainstorm-dispatch-brief.md` §2.4 with the 7 architectural-decision items (schema; UI; persistence; visual; filtering; relation-to-hyp-rec; audit) surfaced for brainstorm Codex chain to propose + operator confirmation at brainstorm-output. Q4 absorbed into T4.SB closer sub-bundle. Phase 13 brainstorm Codex chain expected to add 1-2 rounds vs pre-amendment baseline. Estimated additional scope: ~+15-30 fast tests + likely schema work (column on `candidates` OR new `watchlist_close_track_flags` table; v20 → v21 OR fold into v20). No longer a separate dispatch.
 
 ### Sequencing relative to Phase 12.5 #3 + Phase 13
 
@@ -233,7 +233,7 @@ Two cleanup items operator queued for post-Phase-12.5-#3 closure, BEFORE Phase 1
 - **Item Q3 skipped-test audit** — ✅ CLOSED 2026-05-18 at `416865f` (Option A: 4 skips → 4 PASS via sanitized-fixture redirect; baseline shifted 4850/5 → 4854/1).
 - **Item Q1 walkthrough** — ✅ CLOSED 2026-05-18 (NOT a parser bug; window-mismatch architectural; cfg-bumped lookback_days 7→30; 7 dispositions correction_ids 20-26; NEW V2 candidate banked for dynamic-lookback).
 - **Item Q2** — ✅ SHIPPED 2026-05-18 at `e45a64f`; operator-witnessed S2-S4 gate ALL PASS 2026-05-18 (planted disc#61 walkthrough; web HTML + CLI ASCII + round-trip consistency all verified; planted row reverted).
-- **Item Q4** — operator close-tracking flag for watchlist symbols; FEATURE not cleanup; backlog-banked 2026-05-18; phasing-decision-pending (Phase 13 Theme 4 fold-in vs standalone post-Phase-12.5 dispatch). NOT gating Phase 13.
+- **Item Q4** — ✅ FOLDED INTO PHASE 13 THEME 4 (operator-decided 2026-05-18 post-Q2-gate-PASS). Brainstorm scope amended in `docs/phase13-brainstorm-dispatch-brief.md` §2.4 with 7 architectural decisions surfaced for Codex chain to propose + operator confirmation.
 - **Phase 13** — **🚀 FULLY UNBLOCKED** (Phase 12.5 #3 ✅ + Q3 ✅ + Q1 ✅ + Q2 ✅ + Q2 gate ✅). **Phase 12.5 arc CLOSED 2026-05-18 with Q2 S2-S4 gate PASS.** Q4 is NOT a gate item (operator-decided phasing at commission). Phase 13 scope LOCKED at `docs/phase13-scope-brainstorm.md` §0.5; brainstorm dispatch brief ready at `docs/phase13-brainstorm-dispatch-brief.md`.
 
 ---
