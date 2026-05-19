@@ -128,7 +128,7 @@ class OhlcvCache:
         """
         self._ladder_bars_fetcher = fetcher
 
-    def get_or_fetch(self, *, ticker: str, window_days: int = 180) -> "pd.DataFrame":
+    def get_or_fetch(self, *, ticker: str, window_days: int = 180) -> pd.DataFrame:
         """Return daily bars for ``ticker`` over a calendar-day lookback window.
 
         Phase 13 T1.SB0 (plan §G.0): closes the Phase 11 Sub-bundle C R1 M#5
@@ -187,7 +187,7 @@ class OhlcvCache:
 
     def _fetch_bars_window(
         self, *, ticker: str, window_days: int,
-    ) -> "pd.DataFrame | None":
+    ) -> pd.DataFrame | None:
         """Internal: fetch a calendar-day window of daily bars; returns
         ``DataFrame`` or ``None``. Caller maps ``None → ValueError`` so the
         public ``get_or_fetch`` matches ``PriceFetcher.get``'s raise-on-empty
