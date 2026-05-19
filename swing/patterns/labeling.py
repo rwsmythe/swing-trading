@@ -246,11 +246,9 @@ def should_fire_codex(
             return True
         if geometric_score is None or silver_confidence is None:
             return False
-        if silver_confidence == "high" and geometric_score < 0.5:
-            return True
-        if silver_confidence == "low" and geometric_score >= 0.8:
-            return True
-        return False
+        high_stakes_a = silver_confidence == "high" and geometric_score < 0.5
+        high_stakes_b = silver_confidence == "low" and geometric_score >= 0.8
+        return high_stakes_a or high_stakes_b
     raise ValueError(
         f"phase must be 't2_sb1' or 't2_sb3_or_later', got {phase!r}"
     )
