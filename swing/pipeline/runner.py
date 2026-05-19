@@ -385,6 +385,23 @@ def _install_pipeline_marketdata_caches(
         # (bars_df_or_none, provider). Window-ladder returns
         # (window_or_bars, provider_tag); we pass through verbatim since
         # both sides accept a pandas-DataFrame-or-None shape.
+        #
+        # Phase 13 T1.SB0 gate-fix (T-GF2.2): pass EXPLICIT daily-bar
+        # period/frequency kwargs. Without them, schwabdev defaults to
+        # periodType=day, period=10, frequencyType=minute, frequency=1 -
+        # returning ~3000 1-minute intraday candles per ticker instead of
+        # daily bars (Schwab API table at
+        # `reference/schwabdev/api-calls.md:425-435`). The intraday output
+        # contaminates the chart-step render with duplicate-DatetimeIndex
+        # timestamps + per-minute volume scale + 00:00 x-axis labels - the
+        # operator-witnessed S3 regression 2026-05-18 PM (CVGI). Recon at
+        # `docs/phase13-t1-sb0-gate-fix-recon.md` section 2. Selected
+        # daily-window tuple `(year, 5, daily, 1)` matches
+        # `cfg.archive.archive_history_days` ~ 1260 trading days ~ 5y. The
+        # CLI verify path at `swing/cli_schwab.py:1100-1111` uses
+        # `(month, 1, daily, 1)` - both are valid daily-bar specs; the
+        # year/5 choice maximizes archive coverage in one call so the
+        # Shape A parquet's first write captures full history.
         conn = connect(cfg.paths.db_path)
         try:
             window, provider_tag = fetch_window_via_ladder(
@@ -396,6 +413,10 @@ def _install_pipeline_marketdata_caches(
                 conn=conn,
                 surface="pipeline",
                 pipeline_run_id=pipeline_run_id,
+                period_type="year",
+                period=5,
+                frequency_type="daily",
+                frequency=1,
             )
         finally:
             conn.close()
