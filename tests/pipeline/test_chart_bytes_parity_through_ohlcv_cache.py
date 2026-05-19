@@ -30,9 +30,9 @@ from tests.cli.test_cli_eval import _minimal_config
 # silent ImportError-skip would mask the assertion in barebones environments
 # and the Codex R1 Major #3 flag (2026-05-18) caught the bypass. Import at
 # module load — failure here surfaces as a clear collection error, not a
-# silent skip. The project's `[dev,web]` install profile per CLAUDE.md
-# Quick Start ("pip install -e .[dev,web]") includes mplfinance via the
-# `charts` / `web` extras.
+# silent skip. mplfinance is now part of the `dev` extra (Codex R2 Major #1
+# fix 2026-05-18) so the documented `pip install -e ".[dev,web]"` profile
+# at CLAUDE.md Quick Start satisfies this test's gate.
 import mplfinance  # noqa: F401
 
 
