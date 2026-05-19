@@ -4,7 +4,7 @@
 
 **Goal:** Implement the Phase 13 4-theme architectural arc per spec `docs/superpowers/specs/2026-05-18-phase13-charts-patterns-autofill-usability-design.md` (1483 lines; 7 Codex rounds; ZERO ACCEPT-WITH-RATIONALE) — Theme 1 chart rendering deepening + Theme 2 pattern recognition deepening (HEADLINE) + Theme 3 auto-fill across entries/exits/reviews + Theme 4 usability triage with Q4 close-tracking flag fold-in — across 11 sub-bundles landing schema v19 → v20 single migration via OQ-12 Option E (T2.SB1 task 1 = migration-only commit; T3.SB1 worktree branches off T2.SB1's first-commit SHA).
 
-**Architecture:** Three new top-level modules — `swing/patterns/` (foundation primitives + 5 detector modules + template matching + composite scoring + closed-loop helpers; mirrors `swing/metrics/` placement precedent), `swing/web/view_models/patterns/` (Theme 2 + Theme 1 annotated VMs), `swing/web/routes/patterns.py` (closed-loop review + queue + label-management surfaces). Theme 1 SVG-inline chart rendering via `swing/web/charts.py` + new `chart_renders` cache table. Theme 3 reuses Phase 11/12 Schwab integration (`construct_authenticated_client` 4-arg + `resolve_credentials_env_or_prompt(allow_prompt=False)` + `apply_overrides(cfg)`). Theme 4 Q4 watchlist-row badge + `swing/trades/watchlist_close_track.py` service with reject-caller-held-tx contract. v20 single migration introduces 3 NEW tables (`pattern_exemplars` + `pattern_evaluations` + `chart_renders` + `watchlist_close_track_flags` + `watchlist_close_track_flag_events` — 5 tables total) + 6 column additions (`fills.fill_origin` + `fills.schwab_source_value_json` + `fills.operator_corrected_value_json` + `fills.auto_fill_audit_at` + `review_log.auto_populated_field_keys_json` + widening `schwab_api_calls.surface` CHECK).
+**Architecture:** Three new top-level modules — `swing/patterns/` (foundation primitives + 5 detector modules + template matching + composite scoring + closed-loop helpers; mirrors `swing/metrics/` placement precedent), `swing/web/view_models/patterns/` (Theme 2 + Theme 1 annotated VMs), `swing/web/routes/patterns.py` (closed-loop review + queue + label-management surfaces). Theme 1 SVG-inline chart rendering via `swing/web/charts.py` + new `chart_renders` cache table. Theme 3 reuses Phase 11/12 Schwab integration (`construct_authenticated_client` 4-arg + `resolve_credentials_env_or_prompt(allow_prompt=False)` + `apply_overrides(cfg)`). Theme 4 Q4 watchlist-row badge + `swing/trades/watchlist_close_track.py` service with reject-caller-held-tx contract. v20 single migration introduces 5 NEW tables (`pattern_exemplars` + `pattern_evaluations` + `chart_renders` + `watchlist_close_track_flags` + `watchlist_close_track_flag_events`) + 6 column additions (`fills.fill_origin` + `fills.schwab_source_value_json` + `fills.operator_corrected_value_json` + `fills.auto_fill_audit_at` + `review_log.auto_populated_field_keys_json` + widening `schwab_api_calls.surface` CHECK).
 
 **Tech Stack:** Python 3.11+ / FastAPI / Starlette 1.0 / Jinja2 / HTMX 2.x / SQLite 3 (schema v20) / pytest / ruff / matplotlib SVG-inline (Phase 10 §A.10 LOCK precedent inherited; NO mathtext) / pytest-benchmark (T2.SB5 DTW gate) / NumPy + pandas (foundation primitives) / Claude Code subagent dispatch (`Agent(subagent_type='pattern-labeler', ...)`) for dev-time labeling at T2.SB1 / Codex MCP for selective 2nd-review per L9 + OQ-5. NO scipy / NO scikit-learn / NO image-CV / NO ML re-ranker (per §1.4 LOCK).
 
@@ -23,9 +23,9 @@
 - **Post-Phase-12 Sub-bundle 1 precedent**: `docs/superpowers/plans/2026-05-17-schwab-mapper-execution-grain-widening-plan.md` (1215 lines; cassette-session + operator-paired pause precedent for OQ-6 inheritance).
 - **Phase 12.5 #1/#2/#3 precedents**: 1230 + 1082 + 1101 lines respectively; convergent-shape worktree-isolation + locks-and-invariants encoding patterns.
 
-### §0.2 12 OQ-confirmed dispositions (verbatim from operator-pre-writing-plans triage 2026-05-18 PM)
+### §0.2 12 OQ-confirmed dispositions (operator-pre-writing-plans triage 2026-05-18 PM)
 
-All 12 OQs confirmed at brainstorm-recommended dispositions per `docs/phase13-writing-plans-dispatch-brief.md` §1.3:
+All 12 OQs confirmed at brainstorm-recommended dispositions per `docs/phase13-writing-plans-dispatch-brief.md` §1.3 + spec §3.4 + §6.4 reconciliations (per OQ-7 footnote below; Codex R1 Minor #1 closure: heading paraphrases the dispositions; plan reconciles spec >> brief in cases of drift; brief amendment recommended at integration triage):
 
 | OQ | Topic | Confirmed disposition (BINDING) | Plan locus |
 |---|---|---|---|
@@ -766,13 +766,15 @@ PARTIAL UNIQUE INDEX `idx_wclf_active_ticker ON watchlist_close_track_flags(tick
 
 Per D-Q4.3 BINDING: Persistent until operator clears OR auto-clear on operator opens a position in that ticker. NO auto-expire by date.
 
-**Auto-clear transactional discipline** (per §A.12 + spec §7.2 D-Q4.3 LOCK):
+**Auto-clear transactional discipline** (per §A.12 + spec §7.2 D-Q4.3 LOCK; sandbox short-circuit explicitly DOES NOT apply per Codex R1 Major #2 closure — Q4 close-tracking flag is a pure-Python local-DB service with NO Schwab API dependency):
 
 - Fires inside the SAME transaction that INSERTs the `trades` row.
 - Service function: `swing/trades/watchlist_close_track.py:auto_clear_on_position_open(conn, ticker)` — caller-tx contract (consumed from inside the trade-entry service's outer `with conn:` block).
 - Public companion: `swing/trades/watchlist_close_track.py:clear_flag(conn, ticker, *, source: Literal['web', 'cli'], reason: str | None = None)` — reject-caller-held-tx contract; owns BEGIN IMMEDIATE / COMMIT / ROLLBACK.
-- Sandbox short-circuit: inner function checks `cfg.integrations.schwab.environment == 'sandbox'` and returns no-op (NOT outer; per Phase 12 C.C lesson #2).
 - Audit-row append-only: emits `watchlist_close_track_flag_events` row with `event_type='clear'`; parent `watchlist_close_track_flags` row gets `cleared_at` + `cleared_reason='auto_cleared_on_position_open'` UPDATE (NOT DELETE).
+- SELECT-first idempotency: no-op if no active flag exists for ticker (per Phase 12 C.C lesson #3).
+
+**Sandbox short-circuit explicitly N/A for Q4** (per Codex R1 Major #2 closure): the inherited §A.12 transactional discipline LIST cites sandbox short-circuit in inner function as a pattern for Schwab-API-coupled services (per Phase 12 C.C lesson #2). Q4 close-tracking flag has NO Schwab dependency — it consumes only local SQLite. The §A.12 pattern is followed for `reject-caller-held-tx` + `BEGIN IMMEDIATE` + `SELECT-first idempotency` + `audit-row append-only`, but sandbox short-circuit is OMITTED by design. Discriminating tests at T-D.1 do NOT include a sandbox short-circuit assertion (per design omission).
 
 ### §F.5 Q4 audit trail LOCK (per spec §7.2 D-Q4.7)
 
@@ -1053,14 +1055,15 @@ git commit -m "feat(phase13): T1.SB0 closer — per-cache locking + chart-bytes 
 
 #### Task T-A.1.1 — v20 migration atomic landing (MIGRATION-ONLY COMMIT per OQ-12 Option E)
 
-**Files:**
+**Files** (strict migration-only scope per OQ-12 Option E + Codex R1 Major #1 closure — repo CRUD moves to T-A.1.1b):
 - Create: `swing/data/migrations/0020_phase13_charts_patterns_autofill_usability.sql`.
 - Modify: `swing/data/db.py` (single-line `EXPECTED_SCHEMA_VERSION = 20`).
-- Modify: `swing/data/models.py` (add NEW dataclasses per §B.4 #5; widen Fill + ReviewLog per §B.4 #6-#7).
+- Modify: `swing/data/models.py` (add NEW dataclasses per §B.4 #5; widen Fill + ReviewLog per §B.4 #6-#7 with `__post_init__` validators).
 - Create: `swing/patterns/__init__.py` (DETECTOR_PATTERN_CLASSES + label/decision/etc constants per §B.4 #3).
 - Modify: `swing/integrations/schwab/audit_service.py` (widen `_SCHWAB_API_SURFACE_VALUES` per §B.4 #4).
-- Create: `swing/data/repos/pattern_exemplars.py`, `pattern_evaluations.py`, `chart_renders.py`, `watchlist_close_track.py` (minimum CRUD per §B.4 #8).
 - Create: `tests/data/test_v20_migration.py`.
+
+**NOT in T-A.1.1 scope** (per OQ-12 Option E strict migration-only boundary; lands at T-A.1.1b): NEW repo modules `swing/data/repos/pattern_exemplars.py`, `pattern_evaluations.py`, `chart_renders.py`, `watchlist_close_track.py`. Rationale: T3.SB1 worktree branches from T-A.1.1's commit SHA + needs ONLY the schema landing + Python constants + dataclass validators to satisfy schema-version-20 prerequisite (T-B.1.1); does NOT need NEW repo CRUD modules (those serve consumer-side Phase 13 sub-bundles, not Theme 3 auto-fill which extends EXISTING `fills.py` repo).
 
 - [ ] **Step 1: Write 6 discriminating tests per §B.4 #9 atomic-landing roster**
 
@@ -1083,7 +1086,7 @@ def test_v20_fill_origin_backfill_to_operator_typed(): ...
 
 - [ ] **Step 6: Add 5 NEW dataclasses + widen Fill + widen ReviewLog** with `__post_init__` validators enforcing all 7 cross-column invariants per §A.14.
 
-- [ ] **Step 7: Write minimum repo CRUD** for each new table per §B.4 #8 (caller-tx contract; no INSERT OR REPLACE).
+- [ ] **Step 7: Widen `_SCHWAB_API_SURFACE_VALUES`** in `swing/integrations/schwab/audit_service.py` to include `'trade_entry'` + `'trade_exit'`.
 
 - [ ] **Step 8: Run tests; verify all 6 PASS.**
 
@@ -1099,8 +1102,8 @@ git commit -m "feat(phase13): v20 migration — phase13 charts patterns autofill
 - ALL 6 discriminating tests pass.
 - Migration is atomic (single commit; NO Python-then-validator split).
 - `EXPECTED_SCHEMA_VERSION == 20`.
-- All 8 Python constants + 5 NEW dataclasses + 2 widenings present.
-- 4 new repo modules with CRUD ship.
+- All 8 Python constants + 5 NEW dataclasses + 2 widenings + 1 audit-service widening present.
+- **NO NEW repo modules** (deferred to T-A.1.1b).
 - First-commit SHA recorded for T3.SB1 branch base.
 
 **Watch items:**
@@ -1112,6 +1115,33 @@ git commit -m "feat(phase13): v20 migration — phase13 charts patterns autofill
 - `test_schema_version_v20_invariant` (un-skips at T3.SB1 merge).
 - `test_pattern_exemplars_schema_shape_invariant` (un-skips at T2.SB3 + T2.SB5).
 - `test_fill_origin_enum_complete_after_v20` (un-skips at T3.SB2).
+
+#### Task T-A.1.1b — NEW repo CRUD modules (consumer-side foundation; lands AFTER T-A.1.1 commit)
+
+**Files:**
+- Create: `swing/data/repos/pattern_exemplars.py`, `swing/data/repos/pattern_evaluations.py`, `swing/data/repos/chart_renders.py`, `swing/data/repos/watchlist_close_track.py` (minimum CRUD per §B.4 #8 — `insert_*`, `get_*_by_id`, `list_*`).
+- Create: `tests/data/test_repos_pattern_exemplars.py`, `test_repos_pattern_evaluations.py`, `test_repos_chart_renders.py`, `test_repos_watchlist_close_track.py`.
+
+- [ ] **Step 1: Write 4×3 = 12 failing tests** — each repo: (a) insert_row roundtrips through SQL; (b) get_by_id returns inserted row; (c) list_* paginates correctly. All use caller-tx contract (consumed in outer `with conn:` block per Phase 8 forward-binding lesson #4).
+
+- [ ] **Step 2: Implement minimum CRUD per repo**. NO INSERT OR REPLACE (§A.15). SELECT-then-UPDATE-or-INSERT for upserts.
+
+- [ ] **Step 3: Run tests; verify PASS.**
+
+- [ ] **Step 4: Commit**
+
+```bash
+git commit -m "feat(phase13): NEW repo CRUD modules — pattern_exemplars + pattern_evaluations + chart_renders + watchlist_close_track (T-A.1.1b)"
+```
+
+**Acceptance criteria:**
+- 4 new repo modules with insert / get_by_id / list operations.
+- 12 discriminating tests pass.
+- Caller-tx contract (NO `conn.commit()` in repo functions per Phase 9 Sub-bundle A lesson family).
+- NO INSERT OR REPLACE.
+
+**Cross-bundle pin plants:**
+- `test_repo_caller_tx_contract_invariant` (un-skips at T2.SB6 + T4.SB Q4 service when used).
 
 #### Task T-A.1.2 — Claude Code subagent `.claude/agents/pattern-labeler.md`
 
@@ -1221,7 +1251,7 @@ git commit -m "feat(phase13): swing patterns label-exemplars CLI subcommand (T-A
 - Modify: `swing/web/app.py` (register patterns router).
 - Create: `tests/web/test_routes/test_patterns_exemplars.py`.
 
-- [ ] **Step 1: Write 6 failing tests**: (a) GET lists silver rows; (b) POST action promote_to_gold flips row; (c) POST action reject; (d) POST action relabel with corrected_class form field; (e) POST action watch; (f) VM extends BaseLayoutVM + populates banner fields.
+- [ ] **Step 1: Write 7 failing tests** (banner field population explicit per Codex R1 Major #3 closure): (a) GET lists silver rows; (b) POST action promote_to_gold flips row; (c) POST action reject; (d) POST action relabel with corrected_class form field; (e) POST action watch; (f) `PatternExemplarsVM` extends `BaseLayoutVM`; (g) **`PatternExemplarsVM` populates `unresolved_material_discrepancies_count` + `banner_resolve_link` + `recent_multi_leg_auto_correction_count`** per forward-binding lesson #12.
 
 - [ ] **Step 2: Implement skeleton + GET/POST handlers**. POST response: `204 No Content` + `HX-Redirect: /patterns/exemplars` per forward-binding lesson #11. Embedded form: `hx-headers='{"HX-Request": "true"}'` per Phase 5 R1 M1.
 
@@ -1337,7 +1367,7 @@ git commit -m "docs(phase13): T3.SB1 recon + v20 prerequisite test (T-B.1.1)"
 - Create: `swing/trades/entry_auto_fill.py`.
 - Create: `tests/trades/test_entry_auto_fill.py`.
 
-- [ ] **Step 1: Write 4 failing tests**: (a) matching Schwab BUY fill returns AutoFillResult with populated values + `fill_origin='schwab_auto'`; (b) empty Schwab response → empty result + `fill_origin='operator_typed'`; (c) sandbox short-circuits; (d) DEGRADED short-circuits with advisory.
+- [ ] **Step 1: Write 6 failing tests** (Schwab 4-step trace explicit per Codex R1 Major #5 closure): (a) matching Schwab BUY fill returns AutoFillResult with populated values + `fill_origin='schwab_auto'`; (b) empty Schwab response → empty result + `fill_origin='operator_typed'`; (c) sandbox short-circuits; (d) DEGRADED short-circuits with advisory; (e) **trace test**: `resolve_entry_auto_fill` invokes `resolve_credentials_env_or_prompt(cfg, environment, allow_prompt=False)` (mock-verified; `allow_prompt=False` BINDING per CLAUDE.md gotcha to prevent stdin-blocking inside HTTP handler); (f) **trace test**: `resolve_entry_auto_fill` invokes `construct_authenticated_client(cfg, environment, client_id, client_secret)` with 4-arg signature per post-Phase-12 Sub-bundle 1 + forward-binding lesson #10.
 
 - [ ] **Step 2: Implement** `EntryAutoFillResult` frozen dataclass + `resolve_entry_auto_fill(*, ticker, cfg, conn)` function per §A.11 4-step Schwab discipline + §E.1 fill_origin state transitions + spec §6.1 empty-state handling.
 
@@ -1362,7 +1392,7 @@ git commit -m "feat(phase13): swing/trades/entry_auto_fill.py — Schwab fetch +
 - Modify: `swing/web/templates/trades/entry_form.html.j2`.
 - Create: `tests/web/test_routes/test_entry_form_auto_fill.py`.
 
-- [ ] **Step 1: Write 5 failing tests**: (a) auto-fill populated when Schwab returns BUY fill; (b) advisory when no match; (c) sandbox short-circuits; (d) hidden audit anchors present (`schwab_source_value_json` + `auto_fill_audit_at`); (e) VM extends BaseLayoutVM.
+- [ ] **Step 1: Write 6 failing tests** (banner field population explicit per Codex R1 Major #3 closure): (a) auto-fill populated when Schwab returns BUY fill; (b) advisory when no match; (c) sandbox short-circuits; (d) hidden audit anchors present (`schwab_source_value_json` + `auto_fill_audit_at`); (e) `EntryFormVM` extends `BaseLayoutVM`; (f) **`EntryFormVM` populates `unresolved_material_discrepancies_count` + `banner_resolve_link` + `recent_multi_leg_auto_correction_count`** per forward-binding lesson #12.
 
 - [ ] **Step 2: Modify entry_form handler** — call `apply_overrides(cfg)` + `resolve_entry_auto_fill(...)` + `build_entry_form_vm(auto_fill=auto_fill)`. Return TemplateResponse.
 
@@ -1713,7 +1743,7 @@ git commit -m "test(phase13): T3.SB1 closer — entry auto-fill E2E + ruff sweep
 - Create: `swing/trades/exit_auto_fill.py`.
 - Create: `tests/trades/test_exit_auto_fill.py`.
 
-- [ ] **Step 1: Write 5 failing tests**: (a) matching Schwab SELL fill returns AutoFillResult with populated values + `fill_origin='schwab_auto'`; (b) empty Schwab response → empty result + `fill_origin='operator_typed'`; (c) sandbox short-circuits per §A.11; (d) DEGRADED short-circuits with advisory per §A.11; (e) **multi-partial-exit handling** — if Schwab returns multiple SELL fills since `entry_date`, returns list of `ExitAutoFillCandidate` for operator selection (per spec §6.2).
+- [ ] **Step 1: Write 7 failing tests** (Schwab 4-step trace explicit per Codex R1 Major #5 closure): (a) matching Schwab SELL fill returns AutoFillResult with populated values + `fill_origin='schwab_auto'`; (b) empty Schwab response → empty result + `fill_origin='operator_typed'`; (c) sandbox short-circuits per §A.11; (d) DEGRADED short-circuits with advisory per §A.11; (e) **multi-partial-exit handling** — if Schwab returns multiple SELL fills since `entry_date`, returns list of `ExitAutoFillCandidate` for operator selection (per spec §6.2); (f) **trace test**: `resolve_exit_auto_fill` invokes `resolve_credentials_env_or_prompt(allow_prompt=False)` (mock-verified); (g) **trace test**: invokes `construct_authenticated_client` with 4-arg signature.
 
 - [ ] **Step 2: Implement** `ExitAutoFillResult` frozen dataclass + `resolve_exit_auto_fill(*, trade_id: int, ticker: str, entry_date: str, cfg, conn) -> ExitAutoFillResult` function per §A.11 4-step Schwab discipline. Query Schwab `account_orders(account_hash, maxResults=...)` for SELL fills matching ticker since `entry_date`. Resolve via `_compute_execution_price(SchwabOrderResponse)` + `_resolve_match_quantity(SchwabOrderResponse)` per post-Phase-12 Sub-bundle 1 mapper at `swing/trades/schwab_reconciliation.py:99/174`. Multi-partial: return `candidates: list[ExitAutoFillCandidate]` (each with date / price / quantity / signature_hash); operator picks one OR enters consolidated value at form submit.
 
@@ -1738,7 +1768,7 @@ git commit -m "test(phase13): T3.SB1 closer — entry auto-fill E2E + ruff sweep
 - Modify: `swing/web/templates/trades/exit_form.html.j2`.
 - Create: `tests/web/test_routes/test_exit_form_auto_fill.py`.
 
-- [ ] **Step 1: Write 6 failing tests**: (a) auto-fill populated when Schwab returns SELL fill; (b) advisory when no match; (c) sandbox short-circuits; (d) hidden audit anchors (`schwab_source_value_json` + `auto_fill_audit_at`) present; (e) **multi-partial-exit list rendering** — when multiple SELL fills returned, template renders each as a selectable candidate (radio button OR distinct form section per candidate); (f) ExitFormVM extends BaseLayoutVM per §A.3.
+- [ ] **Step 1: Write 7 failing tests** (banner field population explicit per Codex R1 Major #3 closure): (a) auto-fill populated when Schwab returns SELL fill; (b) advisory when no match; (c) sandbox short-circuits; (d) hidden audit anchors (`schwab_source_value_json` + `auto_fill_audit_at`) present; (e) **multi-partial-exit list rendering** — when multiple SELL fills returned, template renders each as a selectable candidate (radio button OR distinct form section per candidate); (f) `ExitFormVM` extends `BaseLayoutVM` per §A.3; (g) **`ExitFormVM` populates `unresolved_material_discrepancies_count` + `banner_resolve_link` + `recent_multi_leg_auto_correction_count`** per forward-binding lesson #12.
 
 - [ ] **Step 2: Modify exit_form handler** — call `apply_overrides(cfg)` + `resolve_exit_auto_fill(...)` + `build_exit_form_vm(trade_id, auto_fill=auto_fill)`. Return TemplateResponse.
 
@@ -2036,7 +2066,7 @@ def test_dtw_full_pipeline_completes_within_120s_on_baseline_hardware(benchmark,
 
 #### Task T-B.3.3 — `review_form_page` handler + ReviewFormVM extension
 
-- [ ] **Step 1: Write 6 failing tests**: (a) form renders with priors populated as DEFAULT input values; (b) MFE/MAE auto-populated; (c) hidden `auto_populated_field_keys_json` field present; (d) sessionanchor `last_completed_session(now())` aligned; (e) VM extends BaseLayoutVM; (f) form renders gracefully at zero priors.
+- [ ] **Step 1: Write 7 failing tests** (banner field population explicit per Codex R1 Major #3 closure): (a) form renders with priors populated as DEFAULT input values; (b) MFE/MAE auto-populated; (c) hidden `auto_populated_field_keys_json` field present; (d) session-anchor `last_completed_session(now())` aligned; (e) `ReviewFormVM` extends `BaseLayoutVM`; (f) form renders gracefully at zero priors; (g) **`ReviewFormVM` populates `unresolved_material_discrepancies_count` + `banner_resolve_link` + `recent_multi_leg_auto_correction_count`** per forward-binding lesson #12.
 - [ ] **Step 2: Modify** `review_form_page` to invoke priors helpers + MFE/MAE helper; populate ReviewFormVM fields.
 - [ ] **Step 3: Extend ReviewFormVM** + render template with default values.
 - [ ] **Step 4: Run tests; verify PASS.**
@@ -2154,19 +2184,20 @@ def test_dtw_full_pipeline_completes_within_120s_on_baseline_hardware(benchmark,
 
 #### Task T-A.6.4 — `/patterns/queue` active-learning prioritization
 
-- [ ] **Step 1: Write 5 failing tests**: (a) `prioritize_candidates(conn, top_k=20)` returns candidates ordered by priority per spec §5.10 4-criterion ranking; (b) borderline geometric_score (|score - 0.5| < 0.1) included; (c) rule/template disagreement included; (d) underrepresented regimes; (e) failed-rule near-misses.
+- [ ] **Step 1: Write 6 failing tests**: (a) `prioritize_candidates(conn, top_k=20)` returns candidates ordered by priority per spec §5.10 4-criterion ranking; (b) borderline geometric_score (|score - 0.5| < 0.1) included; (c) rule/template disagreement included; (d) underrepresented regimes; (e) failed-rule near-misses; (f) **`PatternQueueVM` extends `BaseLayoutVM` + populates `unresolved_material_discrepancies_count` + `banner_resolve_link` + `recent_multi_leg_auto_correction_count`** (per Codex R1 Major #3 closure + forward-binding lesson #12).
 - [ ] **Step 2: Implement** `swing/patterns/active_learning.py:prioritize_candidates` + queue VM + template.
 - [ ] **Step 3: Run tests; verify PASS.**
 - [ ] **Step 4: Commit** — `feat(phase13): /patterns/queue active-learning prioritization (T-A.6.4)`.
 
 #### Task T-A.6.5 — `/metrics/pattern-outcomes` 9th metric tile per OQ-10
 
-- [ ] **Step 1: Write 6 failing tests** per Phase 10 metrics architecture:
+- [ ] **Step 1: Write 7 failing tests** per Phase 10 metrics architecture (+ explicit base-layout banner field population per Codex R1 Major #3 closure):
   - `test_metrics_pattern_outcomes_renders_per_pattern_class_outcome_distribution`.
   - `test_metrics_pattern_outcomes_honesty_wilson_ci_at_n_geq_5`.
   - `test_metrics_pattern_outcomes_suppressed_at_n_lt_5_per_phase10_5_1`.
   - `test_metrics_pattern_outcomes_renders_x_triggered_y_reached_1R_z_hit_stop`.
   - `test_metrics_pattern_outcomes_vm_extends_base_layout_vm`.
+  - `test_metrics_pattern_outcomes_vm_populates_banner_fields` (unresolved_material_discrepancies_count + banner_resolve_link + recent_multi_leg_auto_correction_count — per forward-binding lesson #12).
   - `test_metrics_pattern_outcomes_composes_with_phase10_cohort_architecture`.
 
 - [ ] **Step 2: Implement** route + VM consuming Phase 10 `swing/metrics/cohort.py` + `honesty.py` + Phase 10 `BaseLayoutVM`. Compose with `pattern_evaluations` join to `trades.candidate_id` for outcome computation.
@@ -2177,7 +2208,15 @@ def test_dtw_full_pipeline_completes_within_120s_on_baseline_hardware(benchmark,
 
 #### Task T-A.6.6 — Theme 1 chart surface integration + dashboard market weather
 
-- [ ] **Step 1: Write 5 failing tests**: (a) DashboardVM populates `dashboard_weather_chart_svg_bytes`; (b) watchlist row VM includes inline thumbnail SVG bytes per ticker; (c) hyp-rec detail VM includes 800x500 SVG; (d) position detail VM includes 800x500 SVG with fill markers; (e) `POST /dashboard/weather-chart/refresh` invalidates cache + regenerates.
+- [ ] **Step 1: Write 8 failing tests** (HTMX trinity coverage added per Codex R1 Major #4 closure):
+  - (a) DashboardVM populates `dashboard_weather_chart_svg_bytes`.
+  - (b) watchlist row VM includes inline thumbnail SVG bytes per ticker.
+  - (c) hyp-rec detail VM includes 800x500 SVG.
+  - (d) position detail VM includes 800x500 SVG with fill markers.
+  - (e) `POST /dashboard/weather-chart/refresh` invalidates cache + regenerates.
+  - (f) `POST /dashboard/weather-chart/refresh` form carries `hx-headers='{"HX-Request": "true"}'` propagation under OriginGuard strict-mode (Phase 5 R1 M1 forward-binding lesson #11).
+  - (g) `POST /dashboard/weather-chart/refresh` success-path returns `204` + `HX-Redirect: /dashboard` (NOT 303 swap-target per Phase 5 R1 M2).
+  - (h) HX-Redirect target `/dashboard` is registered in app routes (assert via `any(r.path == '/dashboard' for r in app.routes)`; per Phase 6 I3 lesson + forward-binding lesson #11).
 
 - [ ] **Step 2: Modify** DashboardVM + WatchlistVM + RecommendationsVM (hyp-rec) + TradesVM (position detail) to populate chart SVG bytes from `chart_renders` cache. Extend dashboard template to render market weather at TOP per §C.3.
 
@@ -2226,7 +2265,7 @@ def test_dtw_full_pipeline_completes_within_120s_on_baseline_hardware(benchmark,
 
 #### Task T-D.1 — `swing/trades/watchlist_close_track.py` service per §F.4 transactional discipline
 
-- [ ] **Step 1: Write 8+ failing tests** per §A.12 transactional discipline:
+- [ ] **Step 1: Write 8 failing tests** per §A.12 transactional discipline (sandbox short-circuit OMITTED per §F.4 LOCK + Codex R1 Major #2 — Q4 has no Schwab dependency):
   - `test_set_flag_owns_begin_immediate_rejects_caller_held_tx`.
   - `test_set_flag_emits_audit_row_with_event_type_set`.
   - `test_set_flag_re_flagging_cleared_ticker_inserts_new_row_no_unique_collision` (per Codex R1 M#9 closure).
@@ -2234,7 +2273,6 @@ def test_dtw_full_pipeline_completes_within_120s_on_baseline_hardware(benchmark,
   - `test_clear_flag_with_source_cli_emits_audit_row`.
   - `test_auto_clear_on_position_open_caller_tx_contract` (caller-tx; consumed in trade entry outer with conn block per §F.4).
   - `test_auto_clear_on_position_open_audit_row_with_cleared_reason_auto_cleared_on_position_open`.
-  - `test_sandbox_short_circuit_lives_in_inner_function_not_outer` (per Phase 12 C.C lesson #2).
   - `test_select_first_idempotency_no_op_on_already_cleared_flag` (per Phase 12 C.C lesson #3).
   - `test_audit_trail_append_only_no_update_in_place` (per Phase 12 C.A `reconciliation_corrections` precedent).
 
