@@ -433,6 +433,115 @@ def test_c_dict_anchor_missing_keys_with_claim_rejects_with_400(
         assert resp_partial.status_code == 400, resp_partial.text
 
 
+def test_c_anchor_with_nan_price_with_claim_rejects_with_400(
+    seeded_db, monkeypatch,
+):
+    """Codex R3 Major #1 fix — entry_price=NaN slips past the
+    ``abs(NaN - X) > 1e-9`` comparison (NaN comparisons all return False);
+    the value-validation guard rejects it explicitly with 400.
+
+    Closes the "junk values silently persist as schwab_auto" failure mode.
+    """
+    cfg, cfg_path = seeded_db
+    _patch_price_cache_with_snapshot(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    # NaN is not legal JSON per spec; httpx/json may reject. Use a
+    # string-shaped NaN via direct construction. Actually we need to
+    # send the value as JSON-encoded; Python's json.dumps refuses to
+    # encode NaN by default. We use the JSON literal "NaN" which
+    # Python's json.loads ACCEPTS as float('nan').
+    nan_anchor = (
+        '{"entry_date": "2026-05-19", "entry_price": NaN, "shares": 100}'
+    )
+    with TestClient(app) as client:
+        resp = _post_entry(
+            client,
+            schwab_source_value_json=nan_anchor,
+            auto_fill_audit_at="2026-05-19T14:30:00.000000+00:00",
+            fill_origin_at_form_render="schwab_auto",
+        )
+    assert resp.status_code == 400, resp.text
+    assert "invalid values" in resp.text.lower()
+
+
+def test_c_anchor_with_non_int_shares_with_claim_rejects_with_400(
+    seeded_db, monkeypatch,
+):
+    """Codex R3 Major #1 fix — shares must be integer; a float-valued
+    shares slips through key-presence check but should reject."""
+    cfg, cfg_path = seeded_db
+    _patch_price_cache_with_snapshot(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    bad_anchor = json.dumps(
+        {"entry_date": "2026-05-19", "entry_price": 150.0, "shares": 100.5},
+    )
+    with TestClient(app) as client:
+        resp = _post_entry(
+            client,
+            schwab_source_value_json=bad_anchor,
+            auto_fill_audit_at="2026-05-19T14:30:00.000000+00:00",
+            fill_origin_at_form_render="schwab_auto",
+        )
+    assert resp.status_code == 400, resp.text
+    assert "invalid values" in resp.text.lower()
+
+
+def test_c_anchor_with_bad_entry_date_with_claim_rejects_with_400(
+    seeded_db, monkeypatch,
+):
+    """Codex R3 Major #1 fix — entry_date='not-a-date' rejects."""
+    cfg, cfg_path = seeded_db
+    _patch_price_cache_with_snapshot(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    bad_anchor = json.dumps(
+        {"entry_date": "not-a-date", "entry_price": 150.0, "shares": 100},
+    )
+    with TestClient(app) as client:
+        resp = _post_entry(
+            client,
+            schwab_source_value_json=bad_anchor,
+            auto_fill_audit_at="2026-05-19T14:30:00.000000+00:00",
+            fill_origin_at_form_render="schwab_auto",
+        )
+    assert resp.status_code == 400, resp.text
+
+
+def test_c_whitespace_padded_claim_normalized_to_auto_fill(
+    seeded_db, monkeypatch,
+):
+    """Codex R3 Minor #1 fix — `fill_origin_at_form_render='  schwab_auto  '`
+    is normalized via .strip() so the consistency check + re-render
+    preservation consult the same canonical value.
+
+    Without normalization, the claim would slip past the auto-fill check
+    OR be treated as auto-fill but not restored as populated on retry.
+    """
+    cfg, cfg_path = seeded_db
+    _patch_price_cache_with_snapshot(monkeypatch)
+    anchor = _make_anchor(
+        entry_date="2026-05-19", entry_price=150.25, shares=100,
+    )
+    audit_at = "2026-05-19T14:30:00.000000+00:00"
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = _post_entry(
+            client,
+            schwab_source_value_json=anchor,
+            auto_fill_audit_at=audit_at,
+            fill_origin_at_form_render="  schwab_auto  ",  # whitespace
+        )
+    assert resp.status_code == 200, resp.text
+    conn = connect(cfg.paths.db_path)
+    try:
+        row = conn.execute(
+            "SELECT fill_origin FROM fills "
+            "WHERE action='entry' ORDER BY fill_id DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row[0] == "schwab_auto"
+
+
 def test_c_empty_anchor_with_claim_rejects_with_400(seeded_db, monkeypatch):
     """Codex R1 Major #1 + #2 fix — POST with EMPTY
     schwab_source_value_json AND fill_origin_at_form_render='schwab_auto'

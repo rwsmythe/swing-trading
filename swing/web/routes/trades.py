@@ -866,7 +866,14 @@ def entry_post(
     # error so the operator re-renders. The legacy / bare-cURL backward-
     # compat path (no anchor, no claim) still flows through as
     # operator_typed.
-    claimed_auto_fill = fill_origin_at_form_render.strip() in (
+    # Codex R3 Minor #1 fix — normalize ``fill_origin_at_form_render``
+    # via ``.strip()`` ONCE here so the same canonical value is consulted
+    # by both the consistency-check predicate (``claimed_auto_fill``) and
+    # the re-render preservation kwargs (`submitted_*`). Without this,
+    # whitespace-padded input could be treated as auto-fill for validation
+    # purposes but not restored as populated on retry.
+    fill_origin_at_form_render = fill_origin_at_form_render.strip()
+    claimed_auto_fill = fill_origin_at_form_render in (
         "schwab_auto", "schwab_auto_then_operator_corrected",
     )
     if schwab_source_value_json.strip():
@@ -880,28 +887,40 @@ def entry_post(
         # branch below and silently persists as ``operator_typed`` despite
         # the claim, re-opening the "claim present but provenance erased"
         # failure mode the R1 Major #1 fix was meant to close.
-        if (
-            (anchor_envelope is None
-             or not isinstance(anchor_envelope, dict))
-            and claimed_auto_fill
-        ):
+        # Codex R3 Major #2 fix — when rejecting due to tampered/invalid
+        # anchor, pass empty submitted_* kwargs (instead of the raw
+        # rejected anchor) so the recovery form receives a FRESH
+        # auto-fill anchor from build_entry_form_vm. Without this, the
+        # 400 response re-emits the same invalid anchor + the operator
+        # gets trapped in repeated 400s on every retry.
+        def _reject_anchor(error_message: str):
             return _rerender_entry_form_with_error(
                 request=request, templates=templates, cfg=cfg,
                 cache=cache, executor=executor,
                 ticker=ticker, entry_date=entry_date,
                 entry_price=entry_price, shares=shares,
                 initial_stop=initial_stop, rationale=rationale, notes=notes,
-                error_message=(
-                    "Trade entry rejected: fill_origin_at_form_render="
-                    f"{fill_origin_at_form_render!r} claims auto-fill "
-                    "provenance but schwab_source_value_json is malformed, "
-                    "unparseable, or not a JSON object. Re-render the form "
-                    "to recover."
-                ),
+                error_message=error_message,
                 origin=origin_coerced,
-                submitted_schwab_source_value_json=schwab_source_value_json,
-                submitted_auto_fill_audit_at=auto_fill_audit_at,
-                submitted_fill_origin_at_form_render=fill_origin_at_form_render,
+                # Anchor was rejected as invalid — DON'T preserve it.
+                # Leaving these None tells _rerender_entry_form_with_error
+                # to use the rebuilt VM's fresh auto-fill anchor.
+                submitted_schwab_source_value_json=None,
+                submitted_auto_fill_audit_at=None,
+                submitted_fill_origin_at_form_render=None,
+            )
+
+        if (
+            (anchor_envelope is None
+             or not isinstance(anchor_envelope, dict))
+            and claimed_auto_fill
+        ):
+            return _reject_anchor(
+                "Trade entry rejected: fill_origin_at_form_render="
+                f"{fill_origin_at_form_render!r} claims auto-fill "
+                "provenance but schwab_source_value_json is malformed, "
+                "unparseable, or not a JSON object. The form has been "
+                "regenerated with a fresh Schwab fetch; please re-submit."
             )
         # Codex R2 Major #2 fix — when the anchor IS a dict but lacks one
         # of the 3 required keys (entry_date, entry_price, shares) AND
@@ -917,24 +936,53 @@ def entry_post(
                 for k in ("entry_date", "entry_price", "shares")
             )
         ):
-            return _rerender_entry_form_with_error(
-                request=request, templates=templates, cfg=cfg,
-                cache=cache, executor=executor,
-                ticker=ticker, entry_date=entry_date,
-                entry_price=entry_price, shares=shares,
-                initial_stop=initial_stop, rationale=rationale, notes=notes,
-                error_message=(
+            return _reject_anchor(
+                "Trade entry rejected: fill_origin_at_form_render="
+                f"{fill_origin_at_form_render!r} claims auto-fill "
+                "provenance but schwab_source_value_json is missing "
+                "one or more required keys (entry_date, entry_price, "
+                "shares). The form has been regenerated; please re-submit."
+            )
+        # Codex R3 Major #1 fix — value-validation for the 3 required
+        # keys when ``claimed_auto_fill``. Without this guard, an
+        # ``entry_price=NaN`` slips past the ``abs(... - ...) > 1e-9``
+        # comparison (NaN comparisons all return False), persisting the
+        # junk source JSON as ``schwab_auto``; an ``entry_date='foo'``
+        # would persist as junk; a non-int ``shares`` would coerce
+        # noisily. Validate value shapes here BEFORE the transition
+        # logic at L957 onward.
+        if isinstance(anchor_envelope, dict) and claimed_auto_fill:
+            import math as _math
+            v_entry_date = anchor_envelope.get("entry_date")
+            v_entry_price = anchor_envelope.get("entry_price")
+            v_shares = anchor_envelope.get("shares")
+            entry_date_ok = (
+                isinstance(v_entry_date, str)
+                and len(v_entry_date) == 10
+                and v_entry_date[4] == "-"
+                and v_entry_date[7] == "-"
+                and v_entry_date[:4].isdigit()
+                and v_entry_date[5:7].isdigit()
+                and v_entry_date[8:].isdigit()
+            )
+            entry_price_ok = (
+                isinstance(v_entry_price, (int, float))
+                and not isinstance(v_entry_price, bool)
+                and _math.isfinite(float(v_entry_price))
+            )
+            shares_ok = (
+                isinstance(v_shares, int) and not isinstance(v_shares, bool)
+            )
+            if not (entry_date_ok and entry_price_ok and shares_ok):
+                return _reject_anchor(
                     "Trade entry rejected: fill_origin_at_form_render="
                     f"{fill_origin_at_form_render!r} claims auto-fill "
-                    "provenance but schwab_source_value_json is missing "
-                    "one or more required keys (entry_date, entry_price, "
-                    "shares). Re-render the form to recover."
-                ),
-                origin=origin_coerced,
-                submitted_schwab_source_value_json=schwab_source_value_json,
-                submitted_auto_fill_audit_at=auto_fill_audit_at,
-                submitted_fill_origin_at_form_render=fill_origin_at_form_render,
-            )
+                    "provenance but schwab_source_value_json contains "
+                    "invalid values (entry_date must be ISO YYYY-MM-DD; "
+                    "entry_price must be finite numeric; shares must be "
+                    "an integer). The form has been regenerated; please "
+                    "re-submit."
+                )
         if isinstance(anchor_envelope, dict):
             # The form-render anchor exists; default to schwab_auto unless
             # operator edited any of the 3 auto-populated fields.
