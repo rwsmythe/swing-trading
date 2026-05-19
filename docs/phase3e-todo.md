@@ -8,6 +8,91 @@
 
 ---
 
+## 2026-05-19 Phase 13 T1.SB0 gate-fix SHIPPED at `d772f23` — closes Schwab `price_history` minute-default footgun discovered at S3 visual gate; brief hypothesis EMPIRICALLY FALSIFIED at T-GF1 recon against operator's real CVGI archive; root cause at Schwab ladder layer NOT `read_or_fetch_archive`; 3 Codex rounds NO_NEW_CRITICAL_MAJOR with ZERO Critical + ZERO Major entire chain; 6 minors all wording-precision V2-bank doc clarifications (4 resolved + 2 banked V2-F); +4 fast tests = 4935→4939; T1.SB0's 2 banked ACCEPTs preserved untouched; C.C lesson #6 12th cumulative validation CLEAN; ZERO Co-Authored-By footer drift across 6 gate-fix commits; S3 PASS post-merge via operator-paired session; auto-recovery of contaminated `*.schwab_api.parquet` proceeds on next Schwab daily fetch; T2.SB1 ∥ T3.SB1 concurrent dispatch UNBLOCKED with dispatch briefs already committed at `4a52f3a`
+
+**Integration-merge at `d772f23`** (branch `phase13-t1-sb0-gate-fix` via `--no-ff`; 6 implementer commits = 1 recon (T-GF1 at `d440578`) + 2 task-impl (T-GF2.1 at `69da867` + T-GF2.2/T-GF3 at `6f5615d`) + 2 Codex-fix doc clarifications (R1 recovery-posture clarification at `b329cf8` + R2 wording precision at `5fb3d58`) + 1 return report (`2dea0a9`)).
+
+**Codex chain shape (ZERO Critical + ZERO Major entire chain)**: R1 0C/0M/2m (#1 recovery-posture wording → FIX `b329cf8`; #2 T-GF3 doesn't pin write_window cleanup → ACCEPTED V1-scope) → R2 0C/0M/2m (#1 yfinance-fallback persistence-path wording → FIX `5fb3d58`; #2 V2-F multi-signal heuristic → FIX `5fb3d58`) → R3 0C/0M/2m (#1 row/date-count ratio caveat for collapsed remnants → BANKED in V2-F; #2 audit-history feasibility caveat → BANKED in V2-F). Final verdict: **NO_NEW_CRITICAL_MAJOR R1 + R2 + R3 all clean**. **ZERO Critical + ZERO Major findings entire 3-round Codex chain** — brief §2.5 "ZERO ACCEPT-WITH-RATIONALE preferred" target met; all 6 minor findings were wording-precision nits on recon doc's recovery posture (§4.C) and V2-F bank (§4.D) — both V1-out-of-scope concerns. The actual production fix (T-GF2.1 + T-GF2.2) and discriminating regression test (T-GF3) emerged from Codex review WITHOUT a single Critical or Major finding.
+
+**Brief hypothesis EMPIRICALLY FALSIFIED at T-GF1** (recon §1). Brief §1.2 hypothesis (`read_or_fetch_archive` weekly-refresh / `archive_history_days` semantic divergence) FALSIFIED by side-by-side inspection of operator's actual CVGI archive files at `~/swing-data/prices-cache/`: legacy `CVGI.parquet` had **1260 unique daily bars correctly fresh** + ending 2026-05-18; Shape A `CVGI.schwab_api.parquet` had **2780 rows × only 10 unique dates** (~278 minute-bars per date). The legacy `read_or_fetch_archive` was functioning correctly; the regression was downstream of it. Brief §1.2 "implementer VERIFIES + may revise" allowance was load-bearing — had implementer skipped T-GF1 + jumped to fix-shape A/B/C from brief, the fix would have landed on WRONG code path and the regression would persist.
+
+**Real root cause at Schwab ladder layer** (recon §2):
+- `swing/integrations/schwab/marketdata_ladder.py:417-426` — `fetch_window_via_ladder` invoked `get_price_history(client, conn, ticker, start_dt=None, end_dt=None, ...)` WITHOUT period/frequency kwargs.
+- `swing/integrations/schwab/marketdata.py:329-405` — `get_price_history` forwards all-None to schwabdev.
+- `reference/schwabdev/api-calls.md:425-435` — Schwab API server-side defaults to `(periodType=day, period=10, frequencyType=minute, frequency=1)` when kwargs unspecified — returns 10 days of 1-minute intraday candles.
+- `swing/integrations/schwab/mappers.py:817-828` — mapper bucketizes each per-minute candle via `.date().isoformat()` → ~278 bars per date.
+- `swing/data/ohlcv_archive.py:281-369` — `write_window`'s `drop_duplicates(subset=["asof_date"], keep="last")` silently overwrites daily Shape A archive content with last-minute-of-day intraday bar.
+- `swing/cli_schwab.py:1100-1111` — CLI verify path ALREADY explicitly passes `period_type='month', period=1, frequency_type='daily', frequency=1` — proving architectural intent IS daily bars; `_bars_hook` callsite simply forgot to mirror.
+
+**Fix shape D applied** (revises brief §1.3 A/B/C alternatives per §1.2 implementer-VERIFIES + may revise allowance):
+1. `swing/integrations/schwab/marketdata_ladder.py` — extend `fetch_window_via_ladder` signature with `period_type` / `period` / `frequency_type` / `frequency` kwargs (default `None`; backward-compatible); forward verbatim to `get_price_history`.
+2. `swing/pipeline/runner.py:_bars_hook` — pass `period_type="year", period=5, frequency_type="daily", frequency=1` ("5 years of daily bars" matching `cfg.archive.archive_history_days ≈ 1260 trading days`).
+3. `tests/pipeline/test_yf_window_fallback_returns_full_archive.py` — absorb new kwargs via `**_extra_kwargs` (additive-stub backward compat).
+4. `swing/web/ohlcv_cache.py` / `swing/data/ohlcv_archive.py` / `swing/integrations/schwab/marketdata.py:get_price_history` — UNCHANGED.
+
+**T1.SB0 banked ACCEPTs preserved untouched** per §6 watch item #3:
+- R1 M#1 OHLCV scope-clarification (CLAUDE.md gotcha scoped to dashboard) — UNCHANGED. Fix touches `_bars_hook` only; chart-target composition at `_step_charts` unchanged.
+- R1 M#2 V2-A breaker non-participation — UNCHANGED + V2-A bank still valid. Fix does NOT add breaker participation to the bars path.
+
+**CLAUDE.md gotchas honored**:
+- "Hook fallback window-completeness" (NEW per T1.SB0 housekeeping `dc0cfea`) — preserved. Hook returns full Schwab/yfinance archive; consumer (cache) slices to `window_days=200` unchanged.
+- "Session-anchor inequality discipline" (NEW per T1.SB0 housekeeping `dc0cfea`) — preserved. `_fetch_bars_window` strict-`>` predicate for backward-looking `last_completed_session(now())` anchor untouched.
+
+**Streaks preserved**:
+- ZERO Co-Authored-By footer trailer drift across all 6 gate-fix commits (~211+ project-cumulative streak preserved; verified via `%(trailers:key=Co-Authored-By)` extraction returning 0 matches).
+- C.C lesson #6 12th cumulative validation: **CLEAN — 0 pre-Codex findings absorbed; 1 advisory docstring nit no-fix** (pattern continues durably effective; matches Phase 12.5 + Phase 13 T1.SB0 precedent).
+- Schema v19 UNCHANGED (gate-fix consumer-side wiring only).
+- Baseline `4935 → 4939 fast` (+4; within brief §7 +1-3 envelope plus 1 additional discriminating test).
+- Ruff 0 E501 on `swing/` preserved.
+
+**Operator's contaminated `CVGI.schwab_api.parquet` auto-recovers** (recon §4.C; Codex R1 Minor #1 clarification at `b329cf8`): on next pipeline run's first successful Schwab daily fetch, `write_window`'s `drop_duplicates(subset=["asof_date"], keep="last")` causes fresh daily bars to win the 10 overlapping dates + appends ~1250 prior dates. **Recovery conditioning**: auto-cleanup REQUIRES a successful Schwab daily fetch — if Schwab is degraded for an extended period and the ladder falls back to yfinance, the contaminated `*.schwab_api.parquet` remains on disk in its minute-frequency shape until Schwab recovers. **`_bars_hook`'s return-to-cache path is UNAFFECTED** in this scenario (returns yfinance-fallback DataFrame directly to OhlcvCache; chart-step renders correctly). Operators may proactively delete contaminated `*.schwab_api.parquet` for forced re-fetch.
+
+**S2 + S3 operator-paired gate PASS** post-merge via operator-paired session (chart rendering verified visually; no operator manual cleanup of `CVGI.schwab_api.parquet` required prior to gate; auto-recovery confirmed working). **T2.SB1 ∥ T3.SB1 concurrent dispatch UNBLOCKED** with dispatch briefs already committed at `4a52f3a` (T2.SB1 = 267 lines; T3.SB1 = 258 lines branches off T2.SB1's T-A.1.1 first-commit SHA per OQ-12 Option E).
+
+**NEW T-GF3 regression test** at `tests/pipeline/test_bars_hook_requests_daily_frequency.py` (2 tests; closes byte-parity test's blind spot which exercised bare `read_or_fetch_archive` branch ONLY):
+- `test_bars_hook_invokes_ladder_with_daily_period_frequency_kwargs` — T-GF2.2 spy on `fetch_window_via_ladder`; asserts recorded kwargs `period_type='year', period=5, frequency_type='daily', frequency=1`. FAILS pre-fix; PASSES post-fix.
+- `test_bars_hook_production_path_returns_daily_shaped_frame_no_duplicate_dates` — T-GF3 end-to-end: shape-aware stub returns daily Schwab window IF `frequency_type='daily'`, else intraday; asserts `bars_df.index.is_unique`. FAILS pre-fix; PASSES post-fix.
+
+**NEW T-GF2.1 contract test** at `tests/integrations/test_schwab_window_ladder_daily_kwargs.py` (2 tests pinning `fetch_window_via_ladder` kwarg forwarding contract).
+
+**2 new CLAUDE.md gotchas added in this housekeeping commit** (per recon §7 banked CAPTURE-NEED + return report §"Capture-needs" #1 + #2; operator decision 2026-05-18 PM):
+1. **Schwab `price_history` minute-default footgun** — `client.price_history(symbol)` with no `periodType` / `frequencyType` kwargs defaults to 10 days of 1-MINUTE intraday bars (NOT daily); Schwab API consumers MUST explicitly pass `(year, N, daily, 1)` or `(month, N, daily, 1)`; mapper bucketizes per-minute candles into duplicate `asof_date` values; `write_window` merge `keep='last'` silently overwrites daily content. Forward-binding for T3.SB1 + T3.SB2 entry/exit auto-fill paths.
+2. **Byte-parity test as algorithmic substitute for operator-visual gate is INSUFFICIENT when test fixtures bypass production data-derivation paths** — chart-bytes byte-parity test was cited as "STRONG algorithmic substitute" during T1.SB0 pre-merge QA but missed the regression because BOTH test paths consumed IDENTICAL stub fixtures via `monkeypatch.setattr("swing.web.ohlcv_cache.read_or_fetch_archive", _stub_read)` — exercising bare `read_or_fetch_archive` branch ONLY; ladder path never invoked; test asserts "identical inputs → identical outputs" but regression is in HOW INPUTS ARE DERIVED. Same gotcha family as synthetic-fixture-vs-production-emitter shape drift (Phase 12 C.D + Phase 12.5 #2 + Phase 12.5 Q2) but with fetch-semantics drift instead of envelope-shape drift. NEVER characterize an algorithmic substitute as "STRONG" for visual gates without verifying it exercises production data-derivation path.
+
+**V2 banks (forward-binding from gate-fix; orchestrator carries forward into V2 candidate roster)**:
+- **V2-D (NEW): Defensive kwarg validation at `get_price_history`** — raise on `(start_dt=None, end_dt=None, period_type=None, period=None)` combination since it triggers Schwab's minute-default footgun. Skipped in V1 to keep gate-fix surgical.
+- **V2-E (NEW): Mapper-side duplicate-`asof_date` rejection** — `map_price_history_to_window` could raise `SchwabSchemaParityError` when it observes >1 candle for same `asof_date` (signaling "caller forgot daily kwarg"). Defense-in-depth.
+- **V2-F (NEW): Shape A archive backfill cleanup** — operator-paced cleanup utility for contaminated Shape A archives beyond conditional auto-recovery. Multi-signal heuristic (duplicate `asof_date` rows / row-count vs unique-date-count ratio anomalies / volume-scale per-row vs nearby legacy `.parquet` values / optional audit `schwab_api_calls` history for `endpoint='marketdata.pricehistory'` calls that omitted period/frequency kwargs). Operator-friendly UX for sustained-Schwab-outage scenarios. Codex R2 + R3 refined the multi-signal heuristic across the V2-F bank doc clarifications.
+
+**V2 banks (NEW; surfaced 2026-05-19 at S2 post-gate-fix from operator-paired session)**:
+- **PL fallback diagnostic logging** — `fetch_window_via_ladder: unexpected error from T-C.1 wrapper for PL; falling back to yfinance` is generic; needs Schwab response code + body excerpt for diagnosability. Operator-paced; could fold into Theme 4 usability triage at T4.SB.
+
+**V2 banks (preserved from T1.SB0; carried forward)**:
+- V2-A: breaker participation for the bars path (R1 M#2 ACCEPT defer).
+- V2-B: per-key in-flight dedup (recon §4.B).
+- V2-C: async `get_or_fetch` variant via executor for batch chart rendering at scale (recon §4.B).
+
+**6 forward-binding lessons banked at return report §"Forward-binding lessons" for downstream sub-bundles**:
+1. **Brief hypothesis verification discipline pays off.** When brief offers "implementer VERIFIES + may revise" allowance, FIRST diagnostic task MUST do real-archive inspection / shape-comparison, NOT fix-shape selection from the brief's pre-vetted options.
+2. **Schwab `price_history` minute-default footgun** — CLAUDE.md gotcha promoted in this housekeeping commit.
+3. **Byte-parity test as algorithmic substitute INSUFFICIENT when fixtures bypass production data-derivation** — CLAUDE.md gotcha promoted in this housekeeping commit.
+4. **Pre-Codex orchestrator-side review = 12th cumulative validation, durably effective** (C.C lesson #6 CARRY). Pattern is DURABLE; continue applying.
+5. **Brief-vs-implementation hypothesis divergence is a feature, not a bug, when "implementer VERIFIES" is in scope.** Brief STRUCTURE held; only the hypothesis turned out to be wrong. Future briefs SHOULD include articulated hypotheses + fix-shape options + verify-and-revise allowance.
+6. **`grep <function>(` audit is reusable for any "single-callsite fix" verification.** Closing the ladder-side bug at the single callsite + extending wrapper additively was sufficient. Pattern: any "wrapper-extension + single-callsite fix" should include the grep audit as explicit pre-Codex watch item.
+
+**Post-merge housekeeping in this commit**:
+- CLAUDE.md line 3 "Current state" refresh (1,919 chars; under 2,000 threshold per size-check discipline).
+- **CLAUDE.md gotchas: ADD 2 new entries** (Schwab minute-default footgun + byte-parity-test-algorithmic-substitute insufficiency).
+- phase3e-todo.md new top entry (this entry).
+- orchestrator-context.md current-state pointer refresh (Phase 13 T1.SB0 SHIPPED state demoted to Prior state).
+- **orchestrator-context.md size-check trigger fired** (Prior state count was 10 AT cap; T1.SB0 gate-fix housekeeping demote brought count to 11; archived oldest Prior state container at original line 140 region "pre-Phase-12.5-#2-brainstorm" / Phase 12.5 #1 executing-plans SHIPPED to `docs/orchestrator-context-archive.md`).
+
+**T2.SB1 ∥ T3.SB1 concurrent dispatch UNBLOCKED** with dispatch briefs already committed at `4a52f3a`. T3.SB1 worktree branches off T2.SB1's T-A.1.1 first-commit SHA per OQ-12 Option E. Merge ordering T2.SB1 first; T3.SB1 second.
+
+Worktree husk at `.worktrees/phase13-t1-sb0-gate-fix/` matches cleanup-script regex `phase\d+[-_]` — operator-paced cleanup pass post-merge.
+
+### Predecessor (2026-05-18 PM; T1.SB0 SHIPPED)
+
 ## 2026-05-18 Phase 13 T1.SB0 SHIPPED at `418bcc8` — OhlcvCache → `_step_charts` wiring (4-task sub-bundle); closes Phase 11 Sub-bundle C R1 M#5 V1 deferral; 5 Codex rounds NO_NEW_CRITICAL_MAJOR; 2 ACCEPT-WITH-RATIONALE banks both TECHNICALLY SOUND; C.C lesson #6 11th cumulative validation CLEAN (0 pre-Codex findings); ZERO Co-Authored-By footer drift; T2.SB1 ∥ T3.SB1 concurrent dispatch UNBLOCKED pending S2+S3 operator-paired gate
 
 **Integration-merge at `418bcc8`** (branch `phase13-t1-sb0-ohlcv-charts-wiring` via `--no-ff`; 9 implementer commits = 1 recon (T-T1.SB0.1) + 3 task-impl (T-T1.SB0.2 + T-T1.SB0.3 + T-T1.SB0.4) + 4 Codex-fix bundles (R1+R2+R3+R4) + 1 return report).
