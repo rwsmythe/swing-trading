@@ -21,8 +21,7 @@ from swing.web.view_models.reconcile import (
 )
 
 _UNMATCHED_FILL_EXPECTED = (
-    '{"quantity": 100, "price": 5.30,'
-    ' "fill_datetime": "2026-05-15T14:30:00Z"}'
+    '{"action": "entry", "price": 5.30, "qty": 100.0}'
 )
 
 
@@ -227,9 +226,8 @@ def test_reconcile_pre_resolution_context_renders_unmatched_open_fill_n_eq_3() -
     ctx = _render_pre_resolution_context(disc)
     assert ctx.discrepancy_type == "unmatched_open_fill"
     assert ctx.journal_side_label == "Journal fill"
-    assert "100" in ctx.journal_side_value
-    assert "5.30" in ctx.journal_side_value
-    assert "2026-05-15" in ctx.journal_side_value
+    assert ctx.journal_side_value == "100.0 @ 5.30 (entry)"
+    assert ctx.parse_warning is None
     assert ctx.schwab_side_label == "Schwab match"
     assert ctx.schwab_side_value == "3 candidates within window"
     assert ctx.delta_label == "Schwab record count"
@@ -691,3 +689,100 @@ def test_compared_pairs_is_tuple_not_list() -> None:
     assert isinstance(ctx.compared_pairs, tuple), (
         f"expected tuple, got {type(ctx.compared_pairs)}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Codex R2 Major #1: unmatched_*_fill production envelope shape fix.
+# Discriminating tests for the corrected qty/price/action key contract.
+# ---------------------------------------------------------------------------
+
+
+def test_unmatched_open_fill_uses_production_emitter_shape_qty_price_action() -> None:
+    """Production envelope (qty/price/action) succeeds with structured output.
+
+    Verifies Codex R2 Major #1 fix: _render_unmatched_fill_shared must read
+    'qty' and optionally 'action' from the expected envelope, matching the
+    production emitter at schwab_reconciliation.py:935-944.
+    """
+    disc = _make_discrepancy(
+        discrepancy_type="unmatched_open_fill",
+        field_name="fill_match",
+        expected_value_json='{"action": "entry", "price": 5.30, "qty": 100.0}',
+        actual_value_json='{"matched": null}',
+        resolution_reason=None,
+        ambiguity_kind="multi_match_within_window",
+    )
+    ctx = _render_pre_resolution_context(disc)
+    assert ctx.parse_warning is None, (
+        f"Expected no parse_warning but got: {ctx.parse_warning!r}"
+    )
+    assert ctx.journal_side_value == "100.0 @ 5.30 (entry)"
+    assert ctx.schwab_side_value == "(none)"
+    assert ctx.delta_value == "0"
+
+
+def test_unmatched_open_fill_handles_missing_action_key_gracefully() -> None:
+    """action key is optional; when absent, journal value has no suffix.
+
+    Covers the execution_unavailable actual envelope (no action in expected
+    is still valid if emitter omits it).
+    """
+    disc = _make_discrepancy(
+        discrepancy_type="unmatched_open_fill",
+        field_name="fill_match",
+        expected_value_json='{"price": 5.30, "qty": 100.0}',
+        actual_value_json='{"matched": null}',
+        resolution_reason=None,
+        ambiguity_kind="multi_match_within_window",
+    )
+    ctx = _render_pre_resolution_context(disc)
+    assert ctx.parse_warning is None
+    assert ctx.journal_side_value == "100.0 @ 5.30"
+
+
+def test_unmatched_open_fill_with_old_synthetic_shape_falls_back_to_generic() -> None:
+    """Old synthetic shape (quantity/fill_datetime keys) triggers generic fallback.
+
+    Pins the new contract: the old test-fixture shape is explicitly WRONG
+    for production data.  The generic fallback is the correct behaviour when
+    old-shaped data is encountered, not silent mis-rendering.
+    """
+    disc = _make_discrepancy(
+        discrepancy_type="unmatched_open_fill",
+        field_name="fill_match",
+        expected_value_json=(
+            '{"quantity": 100, "price": 5.30, "fill_datetime": "2026-05-17"}'
+        ),
+        actual_value_json='{"matched": null}',
+        resolution_reason=None,
+        ambiguity_kind="multi_match_within_window",
+    )
+    ctx = _render_pre_resolution_context(disc)
+    assert ctx.parse_warning is not None
+    assert "missing key in payload" in ctx.parse_warning
+    assert "qty" in ctx.parse_warning
+
+
+def test_unmatched_open_fill_execution_unavailable_actual_still_renders() -> None:
+    """Second actual envelope shape (execution_unavailable sentinel) is handled.
+
+    The actual_value_json for Path B (OQ-A execution_unavailable) carries
+    extra keys alongside 'matched': null.  The renderer only reads
+    _parse_parametric_pick_count from resolution_reason; actual envelope
+    contents do not affect structured output.
+    """
+    disc = _make_discrepancy(
+        discrepancy_type="unmatched_open_fill",
+        field_name="fill_match",
+        expected_value_json='{"action": "entry", "price": 12.70, "qty": 50.0}',
+        actual_value_json=(
+            '{"execution_unavailable": true, "matched": null,'
+            ' "schwab_order_id": "abc123", "schwab_order_price": 12.75}'
+        ),
+        resolution_reason=None,
+        ambiguity_kind="unsupported",
+    )
+    ctx = _render_pre_resolution_context(disc)
+    assert ctx.parse_warning is None
+    assert ctx.journal_side_value == "50.0 @ 12.70 (entry)"
+    assert ctx.schwab_side_value == "(none)"

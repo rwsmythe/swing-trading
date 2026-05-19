@@ -442,16 +442,26 @@ def _render_unmatched_fill_shared(
 ) -> ReconcilePreResolutionContext:
     """Shared renderer for unmatched_open_fill + unmatched_close_fill.
 
-    Per spec §7.1: journal side renders ``{quantity} @ {price:.2f} on
-    {fill_datetime}`` from the expected envelope; Schwab side renders
-    ``(none)`` when ``actual['matched'] is None`` AND
+    Journal side renders ``{qty} @ {price:.2f}`` (plus `` ({action})`` when
+    the ``action`` key is present) from the expected envelope.  Keys are
+    ``qty`` / ``price`` / ``action`` per the production emitter at
+    ``swing/trades/schwab_reconciliation.py:935-944`` (and ``:973-985``).
+
+    Schwab side renders ``(none)`` when
     ``_parse_parametric_pick_count(resolution_reason) == 0``, else
-    ``{N} candidates within window``. Delta is the record count N.
+    ``{N} candidates within window``.  Delta is the record count N.
+
+    Note: the earlier spec §7.1 draft incorrectly listed ``quantity`` and
+    ``fill_datetime`` as envelope keys.  The production emitter never writes
+    those keys.  V2.1 amendment candidate banked (Codex R2 Major #1 fix).
     """
-    quantity = expected["quantity"]
+    qty = expected["qty"]
     price = expected["price"]
-    fill_datetime = expected["fill_datetime"]
-    journal_value = f"{quantity} @ {float(price):.2f} on {fill_datetime}"
+    action = expected.get("action", "")
+    journal_value = (
+        f"{qty} @ {float(price):.2f}"
+        + (f" ({action})" if action else "")
+    )
     n = _parse_parametric_pick_count(disc.resolution_reason)
     schwab_value = f"{n} candidates within window" if n > 0 else "(none)"
     return ReconcilePreResolutionContext(
