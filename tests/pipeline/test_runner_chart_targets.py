@@ -211,6 +211,19 @@ def test_step_charts_records_fetcher_failed(tmp_path: Path, monkeypatch):
         return _ohlcv()
 
     monkeypatch.setattr("swing.prices.PriceFetcher.get", selective_fetcher)
+
+    # Phase 13 T1.SB0: `_step_charts` consumes OHLCV via
+    # `OhlcvCache.get_or_fetch` (NOT `PriceFetcher.get`). Mirror the
+    # selective-raise behavior on the new chart-OHLCV path so this test's
+    # AAPL chart fetch still raises while non-AAPL still resolves.
+    def selective_cache_fetch(self, *, ticker, window_days):
+        if window_days == 200 and ticker == "AAPL":
+            raise RuntimeError("simulated yfinance outage for chart fetch")
+        return _ohlcv()
+
+    monkeypatch.setattr(
+        "swing.web.ohlcv_cache.OhlcvCache.get_or_fetch", selective_cache_fetch,
+    )
     monkeypatch.setattr(
         "swing.pipeline.runner.render_chart",
         lambda *, ticker, ohlcv, pivot, stop, output_path, pattern_overlay=None: (
@@ -518,10 +531,15 @@ def _make_step_charts_ctx(
     finally:
         conn.close()
 
-    # Build a stub PriceFetcher returning ample bars for any ticker so
-    # _step_charts doesn't fetcher_fail before reaching the classifier.
+    # Build a stub for any ticker so _step_charts doesn't fetcher_fail before
+    # reaching the classifier. Phase 13 T1.SB0: _step_charts now consumes
+    # OHLCV via ``ohlcv_cache.get_or_fetch``; the stub exposes that surface
+    # alongside the legacy ``.get`` for any pre-Phase-13 callers.
     class _StubFetcher:
         def get(self, ticker, lookback_days, *, as_of_date=None):
+            return _ohlcv()
+
+        def get_or_fetch(self, *, ticker, window_days):
             return _ohlcv()
 
     # Compute the data-eligible watchlist + flag_tags so test #8 can recompute
@@ -608,7 +626,7 @@ def test_step_charts_emits_three_tier_targets_with_correct_sources(
     _stub_render(monkeypatch)
     _step_charts(
         cfg=ctx.cfg, lease=ctx.lease, eval_run_id=ctx.eval_run_id,
-        data_asof=ctx.data_asof, fetcher=ctx.fetcher,
+        data_asof=ctx.data_asof, ohlcv_cache=ctx.fetcher,
     )
 
     rows = _query_targets(ctx.db_path, ctx.lease.run_id)
@@ -636,7 +654,7 @@ def test_step_charts_dedup_precedence_aplus_wins_over_open_position(
     _stub_render(monkeypatch)
     _step_charts(
         cfg=ctx.cfg, lease=ctx.lease, eval_run_id=ctx.eval_run_id,
-        data_asof=ctx.data_asof, fetcher=ctx.fetcher,
+        data_asof=ctx.data_asof, ohlcv_cache=ctx.fetcher,
     )
     rows = [r for r in _query_targets(ctx.db_path, ctx.lease.run_id)
             if r[1] == "MMMM"]
@@ -662,7 +680,7 @@ def test_step_charts_dedup_precedence_open_position_wins_over_tag_aware(
     _stub_render(monkeypatch)
     _step_charts(
         cfg=ctx.cfg, lease=ctx.lease, eval_run_id=ctx.eval_run_id,
-        data_asof=ctx.data_asof, fetcher=ctx.fetcher,
+        data_asof=ctx.data_asof, ohlcv_cache=ctx.fetcher,
     )
     rows = [r for r in _query_targets(ctx.db_path, ctx.lease.run_id)
             if r[1] == "MMMM"]
@@ -688,7 +706,7 @@ def test_step_charts_dedup_ticker_in_all_three_tiers_records_aplus(
     _stub_render(monkeypatch)
     _step_charts(
         cfg=ctx.cfg, lease=ctx.lease, eval_run_id=ctx.eval_run_id,
-        data_asof=ctx.data_asof, fetcher=ctx.fetcher,
+        data_asof=ctx.data_asof, ohlcv_cache=ctx.fetcher,
     )
     rows = [r for r in _query_targets(ctx.db_path, ctx.lease.run_id)
             if r[1] == "MMMM"]
@@ -714,7 +732,7 @@ def test_step_charts_canonicalizes_ticker_case_before_dedup(
     _stub_render(monkeypatch)
     _step_charts(
         cfg=ctx.cfg, lease=ctx.lease, eval_run_id=ctx.eval_run_id,
-        data_asof=ctx.data_asof, fetcher=ctx.fetcher,
+        data_asof=ctx.data_asof, ohlcv_cache=ctx.fetcher,
     )
     rows = _query_targets(ctx.db_path, ctx.lease.run_id)
     assert len(rows) == 1, f"expected ONE row after canonical dedup, got {rows}"
@@ -748,7 +766,7 @@ def test_step_charts_open_position_pivot_from_trades_entry_price(
     _stub_render(monkeypatch, recorder=captured)
     _step_charts(
         cfg=ctx.cfg, lease=ctx.lease, eval_run_id=ctx.eval_run_id,
-        data_asof=ctx.data_asof, fetcher=ctx.fetcher,
+        data_asof=ctx.data_asof, ohlcv_cache=ctx.fetcher,
     )
     mmmm_calls = [c for c in captured if c[0] == "MMMM"]
     assert len(mmmm_calls) == 1, f"expected ONE render for MMMM, got {mmmm_calls}"
@@ -785,7 +803,7 @@ def test_step_charts_tag_aware_filter_intersection_limit(
     _stub_render(monkeypatch)
     _step_charts(
         cfg=ctx.cfg, lease=ctx.lease, eval_run_id=ctx.eval_run_id,
-        data_asof=ctx.data_asof, fetcher=ctx.fetcher,
+        data_asof=ctx.data_asof, ohlcv_cache=ctx.fetcher,
     )
     tickers = {
         ticker for (_id, ticker, source) in
@@ -1002,7 +1020,7 @@ def test_step_charts_tag_aware_uses_shared_sort_key(
     _stub_render(monkeypatch)
     _step_charts(
         cfg=ctx.cfg, lease=ctx.lease, eval_run_id=ctx.eval_run_id,
-        data_asof=ctx.data_asof, fetcher=ctx.fetcher,
+        data_asof=ctx.data_asof, ohlcv_cache=ctx.fetcher,
     )
 
     # Actual order via `ORDER BY id` (insertion order = sort order).

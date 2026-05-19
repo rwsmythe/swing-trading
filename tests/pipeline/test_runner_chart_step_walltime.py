@@ -103,8 +103,17 @@ def _seed_watchlist_row(
 
 
 class _StubFetcher:
-    """Returns ample bars for any ticker so _step_charts doesn't fetcher_fail."""
+    """Returns ample bars for any ticker so _step_charts doesn't fetcher_fail.
+
+    Phase 13 T1.SB0 wiring: _step_charts now consumes OHLCV via
+    ``ohlcv_cache.get_or_fetch(ticker=..., window_days=...)``. Stub exposes
+    that surface; legacy ``.get(ticker, lookback_days, ...)`` retained for
+    any caller still passing this through ``fetcher=`` (none in production).
+    """
     def get(self, ticker, lookback_days, *, as_of_date=None):
+        return _ohlcv()
+
+    def get_or_fetch(self, *, ticker, window_days):
         return _ohlcv()
 
 
@@ -191,7 +200,7 @@ def test_step_charts_logs_warning_when_walltime_above_soft_budget(
     with caplog.at_level(logging.WARNING, logger="swing.pipeline.runner"):
         _step_charts(
             cfg=cfg, lease=lease, eval_run_id=eval_run_id,
-            data_asof=data_asof, fetcher=fetcher,
+            data_asof=data_asof, ohlcv_cache=fetcher,
         )
 
     warn_records = [
@@ -228,7 +237,7 @@ def test_step_charts_logs_error_when_walltime_above_hard_budget(
     with caplog.at_level(logging.WARNING, logger="swing.pipeline.runner"):
         _step_charts(
             cfg=cfg, lease=lease, eval_run_id=eval_run_id,
-            data_asof=data_asof, fetcher=fetcher,
+            data_asof=data_asof, ohlcv_cache=fetcher,
         )
 
     error_records = [
@@ -275,7 +284,7 @@ def test_step_charts_no_log_when_walltime_under_soft_budget(
     with caplog.at_level(logging.WARNING, logger="swing.pipeline.runner"):
         _step_charts(
             cfg=cfg, lease=lease, eval_run_id=eval_run_id,
-            data_asof=data_asof, fetcher=fetcher,
+            data_asof=data_asof, ohlcv_cache=fetcher,
         )
 
     budget_records = [
@@ -310,7 +319,7 @@ def test_step_charts_pipeline_runs_charts_status_unchanged_on_overrun(
     with caplog.at_level(logging.WARNING, logger="swing.pipeline.runner"):
         _step_charts(
             cfg=cfg, lease=lease, eval_run_id=eval_run_id,
-            data_asof=data_asof, fetcher=fetcher,
+            data_asof=data_asof, ohlcv_cache=fetcher,
         )
 
     conn = sqlite3.connect(cfg.paths.db_path)

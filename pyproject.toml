@@ -27,6 +27,13 @@ dev = [
     "pytest-recording>=0.13",
     "pytest-xdist>=3.5.0",
     "ruff>=0.5",
+    # Phase 13 T1.SB0 (Codex R2 Major #1 fix 2026-05-18): chart-bytes parity
+    # test at `tests/pipeline/test_chart_bytes_parity_through_ohlcv_cache.py`
+    # imports mplfinance at module load. Including in `dev` makes the
+    # documented `pip install -e ".[dev,web]"` profile sufficient for the
+    # T-T1.SB0.4 acceptance gate. `charts` extra remains as the operator-
+    # facing runtime opt-in for `swing pipeline run` chart rendering.
+    "mplfinance>=0.12",
 ]
 charts = ["mplfinance>=0.12"]
 web = [

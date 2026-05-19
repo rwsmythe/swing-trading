@@ -151,6 +151,12 @@ def test_step_charts_happy_path_persists_classification_row(
         "swing.prices.PriceFetcher.get",
         lambda self, ticker, lookback_days, *, as_of_date=None: bars,
     )
+    # Phase 13 T1.SB0: chart step consumes OHLCV via
+    # OhlcvCache.get_or_fetch (not PriceFetcher.get).
+    monkeypatch.setattr(
+        "swing.web.ohlcv_cache.OhlcvCache.get_or_fetch",
+        lambda self, *, ticker, window_days: bars,
+    )
     monkeypatch.setattr("swing.pipeline.runner.render_chart", _stub_render)
 
     captured: list[tuple[pd.DataFrame, object]] = []
