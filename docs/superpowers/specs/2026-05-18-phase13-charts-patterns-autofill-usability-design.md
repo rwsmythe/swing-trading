@@ -324,6 +324,8 @@ Unique index `(ticker, surface, pipeline_run_id, pattern_class)` (NULL handling 
 - `position_detail` charts (NULL `pipeline_run_id`) are regenerated on `fills` change events OR when `data_asof_date < last_completed_session(now())`.
 - Operator-facing manual refresh: web button on each surface that bypasses the cache for one render cycle (no schema change; just a route param).
 
+**Session-anchor read/write mismatch discipline LOCK** (per dispatch brief §5 watch item 15 + CLAUDE.md gotcha family): both writes AND reads of `data_asof_date` MUST use the SAME session-anchor function. WRITES at chart-render time stamp `data_asof_date = last_completed_session(now())` (backward-looking; the session whose bars are the most recent COMPLETED bars in the OHLCV substrate). READS at staleness-check time MUST also use `last_completed_session(now())` (backward-looking) — NOT `action_session_for_run(now())` (forward-looking; which is the NEXT session being prepped + would diverge on weekends/holidays/evenings/pre-market). Discriminating round-trip test pattern (per Phase 8 `cfacbc5` precedent in CLAUDE.md gotcha "Session-anchor read/write mismatch silently invisibles UI display"): render a chart at a known session anchor, then immediately query the cache via the staleness predicate, assert HIT (no false-MISS due to read/write anchor mismatch).
+
 **Why a separate table, not OhlcvCache extension**: chart rendering is a write-through cache backed by deterministic pure-function rendering over OHLCV data; OhlcvCache is the input substrate. Coupling them risks the cache+executor race gotcha (Phase 11 lesson: workers must not write to shared state when request thread cancels on deadline miss). Charts have N orders of magnitude more "rows" (one per ticker × surface × run) than OhlcvCache's input substrate. See §9 OQ-2 for the alternatives (file-based cache, OhlcvCache extension).
 
 **Performance + quota budget**:
@@ -671,9 +673,9 @@ Per v2 brief §8.2 "AI-assisted labeling at scale." DEV-TIME ONLY per L1 (Claude
 - **Plus high-stakes individual labels**: Claude silver confidence == 'high' AND rule-tier geometric_score < 0.5 (rule/silver disagreement); OR Claude silver confidence == 'low' AND rule-tier geometric_score >= 0.8 (rule/silver disagreement other direction).
 
 **Subagent + cassette infrastructure**:
-- NEW `agents/<plugin-namespace>/pattern-labeler.md` agent definition (Claude Code subagent type) consumed via `Agent(subagent_type='pattern-labeler', ...)`.
-- NEW `tests/integrations/cassettes/pattern_labeler/` for VCR-recorded subagent traffic. Per L9 + post-Phase-12 forward-binding lesson #2: `before_record_request` + `before_record_response` sanitization filters.
-- NEW `scripts/record_pattern_labeler_cassettes.py` standalone recording script per post-Phase-12 lesson #3.
+- NEW Claude Code subagent type consumed via `Agent(subagent_type='pattern-labeler', ...)`. **Subagent definition location is operator-pre-writing-plans-decision** (banked as additional OQ; see §9 OQ-11 below): three candidate locations are (a) `.claude/agents/pattern-labeler.md` (project-local subagent per Claude Code conventions); (b) `agents/pattern-labeler.md` at repo root (if a project-wide agent collection emerges); (c) a NEW `swing-trading` plugin namespace under `.claude/plugins/cache/local/` mirroring the copowers plugin precedent. Brainstorm-recommendation: (a) `.claude/agents/pattern-labeler.md` — matches Claude Code's standard project-local subagent convention + avoids introducing a plugin scaffolding for one subagent.
+- NEW `tests/integrations/cassettes/pattern_labeler/` for VCR-recorded subagent traffic. Per L9 + post-Phase-12 forward-binding lesson #2: `before_record_request` (URI/path sanitization) + `before_record_response` (body sanitization) filters BOTH installed.
+- NEW `scripts/record_pattern_labeler_cassettes.py` standalone recording script per post-Phase-12 lesson #3 (standalone recording script OVER `@pytest.mark.vcr(record_mode='new_episodes')` when cassettes must exist before consumer test code).
 
 **ASCII-only on labeler prompts + outputs** — Windows cp1252 stdout safety (operator may surface dispatch transcripts).
 
@@ -681,7 +683,7 @@ Per v2 brief §8.2 "AI-assisted labeling at scale." DEV-TIME ONLY per L1 (Claude
 
 Per v2 brief §9.2 evidence-to-show-reviewer + §9.3 reviewer decision types + §9.4 active learning prioritization.
 
-**Surface scope**: NEW `/patterns/{candidate_id}/review` web route (per §9 OQ-10 LOCK).
+**Surface scope**: NEW `/patterns/{candidate_id}/review` web route AND NEW `/metrics/pattern-outcomes` tile (per §9 OQ-10 LOCK). The `/metrics/pattern-outcomes` tile **composes with** (does NOT replace) Phase 10 metrics architecture: reuses `swing/metrics/` module pattern (parallel to `swing/metrics/cohort.py`); reuses Phase 10 Sub-bundle A `honesty.py` confidence-floor + Wilson-CI badge helpers; reuses Phase 10 Sub-bundle A `BaseLayoutVM` mixin so the new `PatternOutcomesVM` populates `unresolved_material_discrepancies_count` + `banner_resolve_link` automatically; reuses Phase 10 §A.18 discrepancies helper. Per dispatch brief §5 watch item 8: the surface is ADDITIVE on top of the shipped 8 Phase 10 metric tiles + 1 umbrella `/metrics` navigator, not a replacement.
 
 **Page content** (8-item v2 brief §9.2 checklist verbatim):
 
@@ -741,6 +743,7 @@ Absorbs original Phase 12.5 #2 (fill auto-population at trade-entry) per L10. Th
 
 **Architecture**:
 - **Form-render-time fetch**: `GET /trades/entry/form` route handler calls Schwab Trader API `account_orders` + `account_details` for recent fills matching the entered ticker.
+- **Schwab client construction discipline (BINDING per dispatch brief §5 watch item 10 + post-Phase-12 Sub-bundle 1 lesson)**: every Schwab API consumer surface in T3.SB1 MUST resolve credentials via `resolve_credentials_env_or_prompt(cfg, environment, allow_prompt=False)` (the `allow_prompt=False` form prevents form-render-time stdin prompts that would block the HTTP handler) BEFORE invoking `construct_authenticated_client(client_id, client_secret, environment, tokens_db_path)` (the 4-arg signature shipped at post-Phase-12 Sub-bundle 1). `apply_overrides(cfg)` is called at handler entry to consume the cfg-cascade per Phase 12 Sub-bundle B discipline. Sandbox short-circuit + DEGRADED-state degraded path inherit per Phase 11 Sub-bundle D.
 - **Field pre-population**:
   - `entry_date` — auto-populated from most recent BUY fill matching ticker (within 7-day lookback window per cfg).
   - `entry_price` — auto-populated from `_compute_execution_price(SchwabOrderResponse)` per post-Phase-12 Sub-bundle 1 mapper (single-leg → leg price; multi-leg → VWAP).
@@ -763,7 +766,7 @@ Absorbs original Phase 12.5 #2 (fill auto-population at trade-entry) per L10. Th
 
 **Scope**: trade exit form (the existing `/trades/{id}/exit` route) pre-populates exit fill fields from Schwab Trader API at form-render time. Currently operator-types-from-memory (per dispatch brief §2.3).
 
-**Architecture mirrors T3.SB1**:
+**Architecture mirrors T3.SB1** (including the `resolve_credentials_env_or_prompt(allow_prompt=False)` + `construct_authenticated_client` 4-arg signature + `apply_overrides(cfg)` discipline at every entry point):
 - `exit_date` auto-populated from most recent SELL fill matching ticker (within 7-day lookback window).
 - `exit_price` auto-populated from execution-grain price via post-Phase-12 Sub-bundle 1 mapper.
 - `closed_shares` auto-populated from execution-grain quantity.
@@ -865,7 +868,7 @@ This brainstorm-implementer is dispatched in work-without-stopping mode + cannot
 |---|---|---|---|
 | **D-Q4.1** | Schema: NEW column on `candidates` OR NEW table `watchlist_close_track_flags` | **NEW table** `watchlist_close_track_flags` (Option B) | (1) Ticker is the primary key; not bound to `candidates.id` (which rotates per evaluation run + has lifecycle bound to pipeline runs). Flag must persist ACROSS pipeline runs (false-negative guard). NEW table with `ticker TEXT NOT NULL UNIQUE` + lifecycle metadata. (2) `candidates` rotation churn means an additive column there gets effectively-reset every pipeline run — wrong semantic. (3) Operator-visible CRUD surface (set/unset) is much simpler with own table. |
 | **D-Q4.2** | Setting / unsetting UI: web vs CLI vs both | **Web BOTH operator-toggle + CLI for scripting** | (1) Web UI: small toggle button on watchlist row (top-right of row; star icon or pin icon). Click sets flag; click again clears. (2) CLI: `swing watchlist flag <ticker> --close-track` + `swing watchlist unflag <ticker>` for scripting / operator-paired sessions. Both surfaces persist to same table. |
-| **D-Q4.3** | Persistence semantics: per-session / per-run / persistent-until-cleared / auto-expire / auto-clear-on-position-open | **Persistent until operator clears OR auto-clear on operator opens a position in that ticker** | (1) Persistent matches operator intent ("persisting across pipeline runs even if the watchlist algorithm decides the symbol no longer meets criteria"). (2) Auto-clear on position open: when `trades` row inserts with the flagged ticker, flag is auto-cleared (close-tracking served its purpose). (3) NO auto-expire by date — operator decides cleanup cadence. (4) V2 candidate: optional auto-expire after N days configurable per-flag. |
+| **D-Q4.3** | Persistence semantics: per-session / per-run / persistent-until-cleared / auto-expire / auto-clear-on-position-open | **Persistent until operator clears OR auto-clear on operator opens a position in that ticker** (with transactional discipline locked per below) | (1) Persistent matches operator intent ("persisting across pipeline runs even if the watchlist algorithm decides the symbol no longer meets criteria"). (2) Auto-clear on position open: when `trades` row inserts with the flagged ticker, flag is auto-cleared (close-tracking served its purpose). **Auto-clear transactional discipline LOCK** (per Phase 8 + 12 C.C lesson #2 + #3 inheritance): the auto-clear fires inside the SAME transaction that INSERTs the `trades` row; service-function pattern is reject-caller-held-tx at the outer + `BEGIN IMMEDIATE` discipline uniform-regardless-of-environment + sandbox short-circuit lives in the inner function (NOT outer) + audit-row append-only (per `reconciliation_corrections` Phase 12 C.A precedent — `watchlist_close_track_flag_events` gets a new `event_type='clear'` row; the parent `watchlist_close_track_flags` row gets `cleared_at` + `cleared_reason='auto_cleared_on_position_open'` UPDATE not DELETE). (3) NO auto-expire by date — operator decides cleanup cadence. (4) V2 candidate: optional auto-expire after N days configurable per-flag. |
 | **D-Q4.4** | Visual rendering: badge / separate section / row background | **Badge on watchlist row** (small `[FLAGGED]` ASCII marker OR pin emoji `[*]` ASCII swap for cp1252 safety) **+ rendering priority within existing watchlist sort** | (1) ASCII-only per Windows cp1252 stdout safety (CLAUDE.md gotcha). (2) Badge inline on the row maintains current watchlist layout. (3) Sort priority: flagged rows appear FIRST in the watchlist surface regardless of pipeline algorithm's sort order — this is the false-negative-guard mechanism (flagged rows can't be dropped from view). (4) V2 candidate: separate "Actively tracked" section above main watchlist. |
 | **D-Q4.5** | Filtering interaction: false-negative guard mechanic | **Flagged tickers UNION'D with pipeline algorithm output on the watchlist surface** | (1) `watchlist` view-model query is `UNION(pipeline_algorithm_output, flagged_tickers_not_in_algorithm_output)`. (2) Sort order: flagged-first, then pipeline algorithm order. (3) Visual differentiation: flagged-but-not-in-algorithm gets a sub-badge "(operator-flagged; algo dropped)" so operator knows the algorithm + operator disagree. |
 | **D-Q4.6** | Relation to hyp-rec: do flagged symbols get hyp-rec treatment? | **NO — watchlist-surface-only** | (1) Hyp-rec is the algorithm's high-conviction surface; operator-flagged is a SEPARATE surface ("operator-tracked"). (2) Conflating them dilutes hyp-rec's semantic. (3) V2 candidate: "elevated to hyp-rec" toggle if operator wants algorithm-flag fusion. |
@@ -1114,6 +1117,14 @@ ALSO: should `pattern_class` CHECK enum reserve sell-side values for Phase 14 (e
 
 **Disposition**: BINDING brainstorm-lock; operator-pre-writing-plans confirms.
 
+### OQ-11 — T2.SB1 pattern-labeler subagent definition location
+
+**Question**: T2.SB1 ships a Claude Code subagent for AI-assisted labeling per v2 brief §8.2. Definition file location options: (a) `.claude/agents/pattern-labeler.md` (project-local subagent per Claude Code standard); (b) `agents/pattern-labeler.md` at repo root; (c) NEW `swing-trading` plugin namespace under `.claude/plugins/cache/local/` mirroring copowers plugin precedent.
+
+**Brainstorm recommendation**: (a) `.claude/agents/pattern-labeler.md` — matches Claude Code's standard project-local subagent convention + avoids introducing plugin scaffolding for one subagent. The subagent is consumed via `Agent(subagent_type='pattern-labeler', ...)` from T2.SB1 implementation code.
+
+**Disposition**: BRAINSTORM-recommendation; operator-pre-writing-plans confirms. **Surfaced 2026-05-18 pre-Codex orchestrator-side review** as a banked OQ not previously enumerated.
+
 ---
 
 ## §10 Discriminating examples — 5-pattern end-to-end walkthroughs
@@ -1223,12 +1234,12 @@ Phase 13 inherits ~60 cumulative forward-binding lessons from Phase 11 + 12 + 12
 2. **Migration backup-gate strict equality form** (`pre_version == 19`, NOT `<=`) — Phase 12 C.A.
 3. **No `INSERT OR REPLACE` on audit-trail tables** — pattern_exemplars + pattern_evaluations + watchlist_close_track_flags inherit SELECT-then-UPDATE-or-INSERT discipline.
 4. **`executescript()` implicit COMMIT** — v20 migration uses explicit `BEGIN`+`executescript`+`COMMIT` in `_apply_migration` per existing discipline.
-5. **`apply_overrides(cfg)` discipline** at every new Schwab entry point (Phase 12 Sub-bundle B + post-Phase-12 Sub-bundle 1). T3.SB1 + T3.SB2 emit new Schwab consumer surfaces.
+5. **`apply_overrides(cfg)` + `resolve_credentials_env_or_prompt(cfg, environment, allow_prompt=False)` + `construct_authenticated_client` 4-arg signature discipline** at every new Schwab entry point (Phase 12 Sub-bundle B `apply_overrides` discipline + post-Phase-12 Sub-bundle 1 `construct_authenticated_client` 4-arg signature). T3.SB1 + T3.SB2 emit new Schwab consumer surfaces. The `allow_prompt=False` form is REQUIRED for any HTTP handler entry point (form-render time) to prevent blocking stdin prompts.
 6. **Cassette infrastructure URI/path + body sanitization** (post-Phase-12 forward-binding lesson #2). T2.SB1 dev-time labeling cassettes + T3.SB1 entry auto-fill cassettes inherit.
 7. **Standalone recording scripts** (post-Phase-12 lesson #3). T2.SB1 labeler-cassette recording script + T3.SB1+SB2 Schwab-fetch cassette extension.
 8. **HTMX gotcha trinity**: HX-Request propagation on embedded forms + HX-Redirect-vs-303-swap + HX-Redirect-target-unrouted. T3.SB1/SB2/SB3 forms + T2.SB6 review form + T4.SB Q4 toggle inherit.
 9. **Base-layout VM banner pin** (Phase 10 T-E.3 + Phase 12.5 #2 13-VM standalone retrofit). New VMs introduced in Theme 1 + Theme 2 + Theme 3 + Theme 4 MUST populate `unresolved_material_discrepancies_count` + `banner_resolve_link`.
-10. **Session-anchor read/write mismatch family**: forward-looking `action_session_for_run` vs backward-looking `last_completed_session`. T1.SB0 cache staleness check + T2.SB6 closed-loop surface + T3.SB3 review auto-fill MFE/MAE candle anchor + T4.SB Q4 flag persistence all inherit.
+10. **Session-anchor read/write mismatch family**: forward-looking `action_session_for_run` vs backward-looking `last_completed_session`. T1.SB0 cache staleness check + Theme 1 `chart_renders` cache invalidation per §4.4 LOCK + T2.SB6 closed-loop surface + T3.SB3 review auto-fill MFE/MAE candle anchor + T4.SB Q4 flag persistence all inherit. Discriminating round-trip test pattern per Phase 8 `cfacbc5` precedent (CLAUDE.md gotcha "Session-anchor read/write mismatch silently invisibles UI display"): write a row, immediately read via the UI/read predicate, assert visibility flips correctly.
 11. **OhlcvCache writes from in-deadline futures only** (Phase 11 lesson). T1.SB0 verifies discipline preserved.
 12. **External-API empty-result transient handling** (Phase 11 lesson). T3.SB1 + T3.SB2 Schwab Trader API empty response handling.
 13. **Synthetic-fixture-vs-production-emitter shape drift** (Phase 12 C.D family + Phase 12.5 Q2). T2.SB1 + T3.SB1 + T3.SB2 + T3.SB3 + T4.SB tests use real-shape fixtures, not invented synthetic shapes.
