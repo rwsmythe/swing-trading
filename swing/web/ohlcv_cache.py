@@ -20,10 +20,17 @@ import time
 from collections.abc import Callable, Sequence
 from concurrent.futures import Executor, Future, wait
 from dataclasses import dataclass
-from typing import Any
+from datetime import datetime as _dt
+from datetime import timedelta
+from typing import TYPE_CHECKING, Any
 
 from swing.config import Config
+from swing.data.ohlcv_archive import read_or_fetch_archive
+from swing.evaluation.dates import last_completed_session
 from swing.pipeline import ohlcv as ohlcv_mod
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 log = logging.getLogger(__name__)
 
@@ -94,6 +101,13 @@ class OhlcvCache:
         self._ladder_bars_fetcher: (
             Callable[[str], tuple[Any, str]] | None
         ) = None
+        # Phase 13 T1.SB0 (plan §G.0): separate store for the DataFrame-returning
+        # `get_or_fetch` surface. Keyed by `(ticker_upper, window_days)`; values
+        # are `(DataFrame, fetched_at_monotonic)`. Separate lock from `self._lock`
+        # so chart-bars traffic does not contend with dashboard bundle traffic
+        # (recon §4.B).
+        self._bars_lock = threading.Lock()
+        self._bars_store: dict[tuple[str, int], tuple[Any, float]] = {}
 
     def set_ladder_bars_fetcher(
         self,
@@ -113,6 +127,123 @@ class OhlcvCache:
         (used by existing OhlcvCache tests that don't exercise the ladder).
         """
         self._ladder_bars_fetcher = fetcher
+
+    def get_or_fetch(self, *, ticker: str, window_days: int = 180) -> "pd.DataFrame":
+        """Return daily bars for ``ticker`` over a calendar-day lookback window.
+
+        Phase 13 T1.SB0 (plan §G.0): closes the Phase 11 Sub-bundle C R1 M#5
+        ACCEPT-WITH-RATIONALE V1 deferral by exposing a DataFrame-returning
+        surface for ``_step_charts`` + downstream Theme 2 detectors (T2.SB2,
+        T2.SB3) + T3.SB3 review auto-fill.
+
+        Shape contract: ``pd.DataFrame`` indexed by date (``DatetimeIndex``) with
+        capitalized columns ``Open / High / Low / Close / Volume``. Matches
+        ``PriceFetcher.get``'s shape (recon §3 parity table).
+
+        Window semantics: ``window_days`` is a calendar-day lookback ending at
+        ``last_completed_session(now())`` — backward-looking, NOT forward-looking
+        (CLAUDE.md session-anchor read/write mismatch family). Matches the
+        legacy ``_step_charts`` line-1323 callsite contract.
+
+        Caching: TTL-keyed by ``(ticker.upper(), window_days)`` in
+        ``self._bars_store`` (separate from the bundle ``self._store`` so
+        dashboard bundle traffic + chart bars traffic do not contend on lock
+        acquisition). TTL inherited from ``cfg.web.ohlcv_cache_ttl_seconds``.
+
+        Routing: when ``set_ladder_bars_fetcher`` is installed, the ladder hook
+        is invoked + its DataFrame sliced to the calendar-day window. Otherwise
+        ``read_or_fetch_archive`` is consulted directly + sliced. Either path
+        inherits the ``read_or_fetch_archive`` shape (capitalized OHLCV +
+        DatetimeIndex). Sandbox short-circuit lives inside the ladder; this
+        method is env-agnostic.
+
+        Empty-result semantics: raises ``ValueError("No data for {ticker}")`` —
+        matches ``PriceFetcher.get``'s raise-on-empty contract so the
+        ``_step_charts`` line 1322-1330 ``except Exception`` clause produces
+        ``chart_status='fetcher_failed'`` unchanged.
+
+        Concurrency: synchronous + thread-safe under ``self._bars_lock``. The
+        lock is NOT held during the fetch call (prevents serialization through
+        the lock + I/O). Two threads racing on the same ``(ticker, window_days)``
+        each fetch independently + each write; last-writer-wins. Both fetches
+        see the same archive-source so values are identical; no data corruption.
+        Per-key in-flight dedup is a V2 candidate (recon §4.B).
+        """
+        ticker_upper = ticker.upper()
+        key = (ticker_upper, int(window_days))
+        now = time.monotonic()
+        with self._bars_lock:
+            hit = self._bars_store.get(key)
+            if hit is not None and (now - hit[1]) <= self._ttl:
+                return hit[0]
+        bars = self._fetch_bars_window(
+            ticker=ticker_upper, window_days=int(window_days),
+        )
+        if bars is None or bars.empty:
+            raise ValueError(f"No data for {ticker_upper}")
+        with self._bars_lock:
+            self._bars_store[key] = (bars, time.monotonic())
+        return bars
+
+    def _fetch_bars_window(
+        self, *, ticker: str, window_days: int,
+    ) -> "pd.DataFrame | None":
+        """Internal: fetch a calendar-day window of daily bars; returns
+        ``DataFrame`` or ``None``. Caller maps ``None → ValueError`` so the
+        public ``get_or_fetch`` matches ``PriceFetcher.get``'s raise-on-empty
+        contract.
+
+        Mirrors ``swing.prices.PriceFetcher.get`` semantics — ``end`` anchors at
+        ``last_completed_session(now())`` (backward-looking, matches the
+        CLAUDE.md session-anchor gotcha family), and the slice cuts on
+        calendar-day cutoff. Belt-and-suspenders in-progress-bar strip mirrors
+        ``swing.pipeline.ohlcv.fetch_daily_bars`` (CLAUDE.md yfinance gotcha).
+        """
+        end = last_completed_session(_dt.now())
+        cutoff = end - timedelta(days=window_days)
+
+        if self._ladder_bars_fetcher is not None:
+            try:
+                result = self._ladder_bars_fetcher(ticker)
+            except Exception as exc:  # noqa: BLE001 — safety boundary
+                log.warning(
+                    "ohlcv ladder bars fetch raised for %s: %s", ticker, exc,
+                )
+                return None
+            if result is None:
+                return None
+            bars = result[0] if isinstance(result, tuple) else result
+            if bars is None or bars.empty:
+                return None
+        else:
+            bars = read_or_fetch_archive(
+                ticker,
+                end_date=end,
+                cache_dir=self._cfg.paths.prices_cache_dir,
+                archive_history_days=self._cfg.archive.archive_history_days,
+            )
+            if bars is None or bars.empty:
+                return None
+
+        # Belt-and-suspenders in-progress bar strip (CLAUDE.md yfinance gotcha).
+        # Inequality matters: `end` here is `last_completed_session(now())`
+        # (backward-looking), so the archive's last legitimate bar can equal
+        # `end`. Only strict-greater (a stray partial bar past the last
+        # completed session) is partial-data. Using `>=` would over-strip on
+        # every read. Distinct from `fetch_daily_bars` which anchors on
+        # `action_session_for_run(now())` (forward-looking) and correctly uses
+        # `>=`. Preserves shape parity with `PriceFetcher.get` (which performs
+        # no strip; archive helper handles partial-bar avoidance).
+        if bars.index[-1].date() > end:
+            bars = bars.iloc[:-1]
+        if bars.empty:
+            return None
+        sliced = bars.loc[
+            (bars.index.date >= cutoff) & (bars.index.date <= end)
+        ]
+        if sliced.empty:
+            return None
+        return sliced
 
     # ---------- public API ----------
 
