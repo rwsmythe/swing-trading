@@ -16,11 +16,52 @@
 <tr id="entry-form-{{ vm.ticker }}">
   <td colspan="{{ 9 if vm.origin == 'hyp-recs' else 8 }}">
     {% if error_message %}<div class="banner banner-degraded" role="alert">{{ error_message }}</div>{% endif %}
+    {#- Phase 13 T3.SB1 — Schwab entry auto-fill advisory + display-only
+        audit metadata (spec §6.1 + plan §G.2 T-B.1.3). The banner renders
+        when auto_fill_advisory_text is set (sandbox / degraded / error /
+        empty kinds — all use this surface to inform the operator).
+        Populated kind has advisory_text=None — operator sees pre-filled
+        inputs with no banner. -#}
+    {% if vm.auto_fill_advisory_text %}
+    <div class="banner banner-info" role="status">
+      <strong>Schwab auto-fill:</strong> {{ vm.auto_fill_advisory_text }}
+    </div>
+    {% endif %}
+    {% if vm.auto_fill_kind == 'populated' %}
+    <div class="auto-fill-audit">
+      <label>Auto-fill source:</label>
+      <span class="muted">{{ vm.auto_fill_fill_origin }}
+        (Schwab Trader API; recorded at <time>{{ vm.auto_fill_audit_at }}</time>)
+      </span>
+    </div>
+    {% endif %}
     <form hx-post="/trades/entry"
           hx-target="closest tr" hx-swap="outerHTML"
           hx-headers='{"HX-Request": "true"}'>
       <input type="hidden" name="ticker" value="{{ vm.ticker }}">
       <input type="hidden" name="origin" value="{{ vm.origin }}">
+      {#- Phase 13 T3.SB1 — auto-fill hidden anchors (T-B.1.3).
+          ``schwab_source_value_json`` carries the SERVER-STAMPED original
+          auto-populated values as a JSON envelope; the POST handler
+          compares submitted entry_date/entry_price/shares against this
+          to detect operator edits + flip fill_origin to
+          'schwab_auto_then_operator_corrected'. Per CLAUDE.md gotcha
+          "For any V1 single-operator form with hidden audit fields,
+          default to SERVER-STAMPING at handler entry" — the GET handler
+          server-stamps these; the operator sees them as display-only
+          metadata above. The hidden inputs carry the values to POST
+          (transport requirement; without them POST cannot detect edits).
+          Per Phase 9 Sub-bundle D R3 Critical #1, these hidden anchors
+          MUST round-trip through the soft-warn confirm ``form_values``
+          dict (T-B.1.5 handles). -#}
+      {% if vm.auto_fill_schwab_source_value_json %}
+      <input type="hidden" name="schwab_source_value_json"
+             value="{{ vm.auto_fill_schwab_source_value_json }}">
+      <input type="hidden" name="auto_fill_audit_at"
+             value="{{ vm.auto_fill_audit_at }}">
+      <input type="hidden" name="fill_origin_at_form_render"
+             value="{{ vm.auto_fill_fill_origin }}">
+      {% endif %}
 
       {#- §1 Position basics -#}
       <fieldset class="entry-section entry-section-position-basics">
