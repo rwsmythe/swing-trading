@@ -3929,6 +3929,15 @@ def label_exemplars_cmd(
         raise click.ClickException(
             f"--silver-response-file content is not valid JSON: {exc}."
         ) from exc
+    # Codex R4 Minor #1 closure: top-level JSON must be an object (dict).
+    # A top-level JSON string / array / scalar would otherwise raise raw
+    # TypeError on the response_raw["structural_evidence_json"] indexing
+    # below, escaping the clean shape-invalid path.
+    if not isinstance(response_raw, dict):
+        raise click.ClickException(
+            "silver-response-file shape invalid: top-level JSON must be "
+            f"an object (dict); got {type(response_raw).__name__}."
+        )
     # T-A.1.5b Defect 1 + Codex R1 M#3 fix — dict-or-str coercion at
     # structural_evidence_json with JSON-object validation when the input
     # is already a string.
@@ -4007,20 +4016,34 @@ def label_exemplars_cmd(
         return response
 
     try:
-        exemplar_id = _fire_claude_silver_label(
-            conn,
-            ticker=ticker,
-            timeframe=timeframe,
-            start_date=start_date,
-            end_date=end_date,
-            pattern_class=pattern_class,
-            window_payload=window_payload,
-            rule_criteria=rule_criteria,
-            structural_evidence_schema=structural_evidence_schema,
-            ai_labeler_version=ai_labeler_version,
-            dispatch_subagent=_dispatch_from_file,
-            now_fn=lambda: _datetime.now(_UTC).isoformat(),
-        )
+        try:
+            exemplar_id = _fire_claude_silver_label(
+                conn,
+                ticker=ticker,
+                timeframe=timeframe,
+                start_date=start_date,
+                end_date=end_date,
+                pattern_class=pattern_class,
+                window_payload=window_payload,
+                rule_criteria=rule_criteria,
+                structural_evidence_schema=structural_evidence_schema,
+                ai_labeler_version=ai_labeler_version,
+                dispatch_subagent=_dispatch_from_file,
+                now_fn=lambda: _datetime.now(_UTC).isoformat(),
+            )
+        except ValueError as exc:
+            # Codex R4 M#1 closure: service-layer ValueErrors (most notably
+            # _map_silver_evaluation_to_decision rejecting
+            # `relabel:<same_class_as_proposed>` per spec section 3.1
+            # invariant #1) surface as a clean shape-invalid ClickException
+            # rather than a raw traceback. The dataclass __post_init__
+            # cannot detect the same-class collision because it doesn't
+            # know the proposed pattern_class context; the service layer
+            # owns that check.
+            raise click.ClickException(
+                "silver-response-file shape invalid: "
+                f"{exc}"
+            ) from exc
     finally:
         conn.close()
 

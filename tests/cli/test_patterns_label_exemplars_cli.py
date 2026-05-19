@@ -729,6 +729,62 @@ def test_persist_rejects_invalid_confidence_value(
     assert "Traceback" not in combined
 
 
+# Codex R4 M#1 closure: relabel target == proposed_pattern_class is rejected
+# by the service layer (_map_silver_evaluation_to_decision per spec section
+# 3.1 invariant #1); CLI translates the ValueError to clean ClickException.
+def test_persist_rejects_relabel_to_same_class(
+    runner_env, tmp_path: Path,
+) -> None:
+    silver = {
+        "evaluation": "relabel:vcp",  # same as --pattern-class below
+        "confidence": "high",
+        "structural_evidence_json": {"pivot_price": 25.0},
+        "geometric_evidence_narrative": "Test.",
+    }
+    silver_path = tmp_path / "relabel_same.json"
+    silver_path.write_text(json.dumps(silver), encoding="utf-8")
+
+    runner, cfg_path, _ = runner_env
+    r = runner.invoke(main, [
+        "--config", str(cfg_path),
+        "patterns", "label-exemplars",
+        "--ticker", "ABC",
+        "--start", "2024-01-01",
+        "--end", "2024-02-01",
+        "--pattern-class", "vcp",
+        "--silver-response-file", str(silver_path),
+    ])
+    assert r.exit_code != 0
+    combined = (r.output or "") + str(r.exception or "")
+    assert "shape invalid" in combined
+    assert "Traceback" not in combined
+
+
+# Codex R4 Minor #1 closure: top-level non-dict JSON in
+# --silver-response-file must produce a clean ClickException.
+def test_persist_rejects_top_level_non_dict_json(
+    runner_env, tmp_path: Path,
+) -> None:
+    silver_path = tmp_path / "top_level_array.json"
+    # Top-level JSON ARRAY - structurally valid JSON but not an object.
+    silver_path.write_text(json.dumps([1, 2, 3]), encoding="utf-8")
+
+    runner, cfg_path, _ = runner_env
+    r = runner.invoke(main, [
+        "--config", str(cfg_path),
+        "patterns", "label-exemplars",
+        "--ticker", "ABC",
+        "--start", "2024-01-01",
+        "--end", "2024-02-01",
+        "--pattern-class", "vcp",
+        "--silver-response-file", str(silver_path),
+    ])
+    assert r.exit_code != 0
+    combined = (r.output or "") + str(r.exception or "")
+    assert "top-level JSON must be" in combined or "shape invalid" in combined
+    assert "Traceback" not in combined
+
+
 # Codex R3 M#1 closure: invalid relabel target surfaces as clean ClickException.
 def test_persist_rejects_relabel_with_unknown_target_class(
     runner_env, tmp_path: Path,
