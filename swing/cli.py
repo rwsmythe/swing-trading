@@ -3846,7 +3846,7 @@ def label_exemplars_cmd(
     cfg = ctx.obj["config"]
     conn = _connect(cfg.paths.db_path)
 
-    def _dispatch_from_file(**_kwargs: object) -> "_SilverLabelResponse":
+    def _dispatch_from_file(**_kwargs: object) -> _SilverLabelResponse:
         return response
 
     try:
