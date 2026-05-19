@@ -8,7 +8,78 @@
 
 ---
 
-## 2026-05-18 Phase 13 BRAINSTORM SHIPPED at `b5e62c5` — 4-theme architectural arc (charts + pattern recognition + auto-fill + usability) + Q4 fold-in; 1483-line spec; 7 Codex rounds NO_NEW_CRITICAL_MAJOR; ZERO ACCEPT-WITH-RATIONALE; ZERO Co-Authored-By footer drift; orchestrator-side QA review PASS-CLEAN; writing-plans dispatch UNBLOCKED pending orchestrator-pre-writing-plans operator-paired triage of 12 OQs + §7.1 usability-list elicitation
+## 2026-05-18 Phase 13 WRITING-PLANS SHIPPED at `08ce852` — 2810-line plan; 11 sub-bundles + 71 tasks; 5 Codex rounds NO_NEW_CRITICAL_MAJOR; ZERO ACCEPT-WITH-RATIONALE; C.C lesson #6 BINDING 10th cumulative validation (pre-Codex caught OQ-7 brief vs spec drift); ZERO Co-Authored-By footer drift; orchestrator-side QA review PASS-CLEAN; T1.SB0 executing-plans dispatch UNBLOCKED
+
+**Integration-merge at `08ce852`** (branch `phase13-writing-plans` via `--no-ff`; 7 implementer commits = 1 initial draft (2711 lines) + 1 pre-Codex orchestrator-side review-fix (1 Critical absorbed: OQ-7 spec >> brief reconciliation) + 4 Codex-fix bundles (R1+R2+R3+R4) + 1 return report).
+
+**Codex chain shape (convergent non-strictly-monotonic Major taper)**: R1 0C/5M/3m → R2 0C/3M/4m → R3 0C/1M/3m → R4 0C/2M/2m → R5 0C/0M/0m NO_NEW_CRITICAL_MAJOR. R3→R4 rebound from 1M to 2M because R3 fix-bundle introduced a `PHASE13_TEST_MOCK_SUBAGENT` env gate that itself surfaced as a production-data-integrity footgun; R4 collapsed by removing the gate entirely (subprocess tests are `--help`-only). Convergent shape overall.
+
+**Streaks preserved**:
+- ZERO Critical findings entire Codex chain (pre-Codex Critical absorbed at C.C lesson #6 review; not a Codex chain finding).
+- **ZERO ACCEPT-WITH-RATIONALE banked across all 11 Major + 12 Minor findings** — cleanest writing-plans chain in Phase 12.5/13 arcs; continues streak with Phase 12.5 #1+#2+#3 brainstorms + Phase 13 brainstorm all ZERO banks (cumulative arc ZERO ACCEPT-WITH-RATIONALE).
+- **ZERO Co-Authored-By footer trailer drift across all 7 commits** (verified via `%(trailers:key=Co-Authored-By)` extraction returning 0 matches; ~194+ project-cumulative streak preserved).
+- Schema v19 UNCHANGED (writing-plans is doc-only; v20 lands at T-A.1.1 migration-only commit per OQ-12 Option E).
+- Baseline `4924 fast / 0 ruff E501 / schema v19` UNCHANGED.
+
+**Pre-Codex orchestrator-side review (C.C lesson #6 BINDING 10th cumulative validation)** absorbed 1 Critical at `25ac9bd`: OQ-7 `fill_origin` enum + backfill values diverged between dispatch brief §1.3 (orchestrator-side paraphrase: `migration_backfill` / `import_csv` with backfill target `migration_backfill`) and spec §3.4 + §6.4 authoritative (`tos_import` / `imported_legacy` with backfill target `operator_typed`). Plan reconciles spec >> brief; brief is historical-artifact (dispatch one-shot; spec authoritative). **This was an orchestrator-side defect introduced during OQ-7 walkthrough** (paraphrase substitution rather than verbatim spec citation); C.C lesson #6 BINDING pre-Codex review caught + reconciled cleanly before reaching Codex chain. Future writing-plans dispatch briefs paraphrasing OQ dispositions should cite spec §X line numbers verbatim.
+
+**Plan deliverable**: 2810-line plan at `docs/superpowers/plans/2026-05-18-phase13-charts-patterns-autofill-usability-plan.md` covering 11 sub-bundles + 71 tasks.
+
+**Key locked-shape elements**:
+
+- **§A 20 general architectural decisions** (sub-bundle decomposition + module placement + view-model placement + route placement + OhlcvCache wiring + Codex SELECTIVE policy + pattern labeler subagent + ASCII-only + matplotlib + cassette infrastructure + Schwab integration + transactional discipline + session-anchor predicate + schema-CHECK + Python-constant + dataclass-validator paired discipline + NO INSERT OR REPLACE + empty-cohort rendering + operator-witnessed gates + discrepancies helper hand-off + pre-Codex orchestrator-side review BINDING + test fixture USERPROFILE+HOME monkeypatch).
+
+- **§A.14 Constant-placement LOCK** (Codex R2 M#1 closure): ALL v20 enum constants live in `swing/data/models.py` (file exists pre-Phase-13 + houses dataclass `__post_init__` validators). `swing/patterns/__init__.py` re-exports `DETECTOR_PATTERN_CLASSES` for namespace convenience. `swing/web/charts.py` (T2.SB6) + `swing/trades/watchlist_close_track.py` (T4.SB) IMPORT from `swing/data/models.py` — they do NOT redefine constants. 11-row table maps every CHECK construct to primary location + re-export + validator. Preserves Phase 12 C.A T-A.2 paired atomic landing without forcing T-A.1.1 to create modules from later sub-bundles.
+
+- **§B v20 migration mechanics (OQ-12 Option E)**: T-A.1.1 = migration-only commit on T2.SB1 worktree branch (SQL + EXPECTED_SCHEMA_VERSION bump + Python constants + dataclass validators + Schwab audit-service widening; 10-item v20 atomic-landing roster). T-A.1.1b = NEW repo CRUD modules land separately AFTER T-A.1.1 (per Codex R1 M#1 + R2 M#2 closure preserving migration-only boundary). T3.SB1 worktree branches off T-A.1.1's first-commit SHA (NOT T-A.1.1b's) explicitly. Merge ordering T2.SB1 first then T3.SB1. Cross-bundle pin `test_schema_version_v20_invariant` planted at T-A.1.1 + un-skipped at T3.SB1 merge.
+
+- **§B.6 v20 escalation rule**: "This plan introduces ZERO additional schema beyond spec §3" (forward-binding lesson #17 BINDING; per writing-plans dispatch brief §5 W17).
+
+- **§C-F Theme 1/2/3/4 architectural decisions**: matplotlib SVG inline + `chart_renders` cache + 5 V1 detector specs (VCP + flat_base + cup_with_handle + high_tight_flag + double_bottom_w) + DTW Sakoe-Chiba with 120s benchmark gate + composite scoring 0.60×geometric + 0.40×template + closed-loop surface at T2.SB6 + drift logging baseline at `pattern_evaluations.feature_distribution_log_json` + Theme 3 entry/exit/review auto-fill with `construct_authenticated_client` 4-arg signature + Theme 4 Q4 close-tracking flag with 7 architectural sub-decisions D-Q4.1..D-Q4.7.
+
+- **§G per-sub-bundle task decomposition** (71 tasks across 11 sub-bundles):
+
+| Sub-bundle | Task count | Test delta projection (fast) | Test delta (slow) | LOC projection (prod + test) |
+|---|---|---|---|---|
+| T1.SB0 | 4 | +20-40 | 0 | +50-100 prod / +200-350 test |
+| T2.SB1 | 9 | +50-90 | 0 (cassette-mode) | +500-800 prod / +600-900 test |
+| T3.SB1 | 6 | +40-70 | +1 (Schwab E2E) | +200-300 prod / +300-500 test |
+| T2.SB2 | 6 | +60-100 | 0 | +400-600 prod / +500-800 test |
+| T2.SB3 | 9 | +90-150 | +1 (operator-fixture detector) | +800-1200 prod / +1000-1500 test |
+| T3.SB2 | 5 | +40-70 | +1 (Schwab E2E) | +200-300 prod / +300-500 test |
+| T2.SB4 | 7 | +70-120 | 0 | +500-800 prod / +700-1100 test |
+| T2.SB5 | 6 | +60-100 | +1 (pytest-benchmark) | +400-600 prod / +500-800 test |
+| T3.SB3 | 5 | +50-90 | 0 | +200-400 prod / +400-700 test |
+| T2.SB6 | 7 | +70-120 | +1 (full closed-loop E2E) | +700-1100 prod / +900-1400 test |
+| T4.SB | 7 | +40-70 | 0 | +250-400 prod / +400-700 test |
+| **Cumulative** | **71 tasks** | **+590-1020 fast** | **+4 slow E2E** | **+4200-6600 prod LOC / +5800-9250 test LOC** |
+
+- **§H.3 Cross-bundle pin schedule**: 11 pins enumerated (`test_ohlcv_cache_get_or_fetch_invariant` through `test_v20_atomic_landing_python_constants_validators_paired`) with planted-at + un-skipped-at + verifies columns.
+
+- **§L 30 forward-binding lessons** for executing-plans dispatches (20 inherited from spec §11 + 10 Phase-13-specific surfaced during writing-plans authoring).
+
+**Three highest-leverage plan decisions** (per return report §"Three highest-leverage plan decisions"):
+1. **T-A.1.1 + T-A.1.1b split** (Codex R1 M#1 + R2 M#2) — preserves OQ-12 Option E migration-only boundary; T3.SB1 branches off T-A.1.1's SHA.
+2. **Constant-placement LOCK at §A.14** (Codex R2 M#1) — all v20 enum constants in `swing/data/models.py`; later modules IMPORT not REDEFINE; closes Phase 12 C.A T-A.2 paired atomic landing.
+3. **Hermetic subprocess cp1252 validation** (Codex R3 M#1 + R4 M#1+M#2) — subprocess tests `--help`-only; R4 caught `PHASE13_TEST_MOCK_SUBAGENT` env-gate as production-data-integrity footgun; deeper coverage via in-process monkeypatch.
+
+**Orchestrator-side QA review PASS-CLEAN** across all coverage dimensions:
+- §6 done criteria 14/14 met (spec at expected path + 5 Codex rounds NO_NEW_CRITICAL_MAJOR + section structure mirrors Phase 10 plan format + 11-sub-bundle decomposition with per-task acceptance criteria + v20 OQ-12 Option E migration encoded at §B + §G T-A.1.1 + 12 OQ dispositions cross-referenced + 5 cross-column CHECK invariants schema-defended at §A.14 + DETECTOR_PATTERN_CLASSES enum LOCK + T2.SB1 mid-dispatch pause at T-A.1.7 + T4.SB Q4-only + forward-binding lessons inherited + cross-bundle pin discipline at §H.3 + landing+fixes split + return report).
+- §5 18 watch items all honored (most notably W2 OQ-12 Option E + W3 DETECTOR_PATTERN_CLASSES + W4 paired-atomic-landing + W11 T-A.1.1 migration-only + W17 plan-author schema escalation explicit at §B.6).
+- 11 cross-bundle pins enumerated at §H.3 (verified directly).
+
+**11-sub-bundle executing-plans dispatch loop UNBLOCKED** per §H.1 dispatch sequence:
+
+```
+T1.SB0 → T2.SB1 ∥ T3.SB1 (concurrent off T2.SB1's first-commit SHA per OQ-12 Option E)
+       → T2.SB2 → T2.SB3 → T3.SB2 → T2.SB4 → T2.SB5 → T3.SB3 → T2.SB6 → T4.SB → CLOSED
+```
+
+**Next dispatch**: T1.SB0 (OhlcvCache → `_step_charts` wiring; 4 tasks; +20-40 fast tests; releases Phase 11 Sub-bundle C R1 M#5 V1 deferral).
+
+Worktree husk at `.worktrees/phase13-writing-plans/` matches cleanup-script regex `phase\d+[-_]` — operator-paced cleanup pass post-merge.
+
+### Predecessor (2026-05-18 PM; brainstorm)
 
 **Integration-merge at `b5e62c5`** (branch `phase13-brainstorm` via `--no-ff`; 10 implementer commits = 1 initial draft (1343 lines) + 1 pre-Codex orchestrator-side review-fix (5 LOCK-divergences absorbed pre-chain; C.C lesson #6 BINDING validated 9th cumulative time) + 7 Codex-fix bundles + 1 return report).
 
