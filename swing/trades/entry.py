@@ -154,6 +154,14 @@ class EntryRequest:
     catalyst: str | None = None
     catalyst_other_description: str | None = None
     manual_entry_confidence: str | None = None  # 'high'|'normal'|'low'
+    # Phase 13 T3.SB1 T-B.1.4 — entry auto-fill audit columns persisted on the
+    # fills row (per spec §6.1 + §6.4 + plan §G.2 T-B.1.4). All defaults None /
+    # 'operator_typed' so legacy callers (CLI tests, bare cURL, pre-Phase-13
+    # call sites) keep working unchanged.
+    fill_origin: str = "operator_typed"
+    schwab_source_value_json: str | None = None
+    operator_corrected_value_json: str | None = None
+    auto_fill_audit_at: str | None = None
 
 
 @dataclass(frozen=True)
@@ -378,6 +386,17 @@ def record_entry(
                     quantity=float(req.shares),
                     price=req.entry_price,
                     manual_entry_confidence=req.manual_entry_confidence,
+                    # Phase 13 T3.SB1 T-B.1.4 — auto-fill provenance audit
+                    # columns. Per spec §6.4 + plan §G.2 T-B.1.4. Defaults
+                    # on the dataclass preserve backward-compat: when
+                    # EntryRequest is built without these fields (CLI tests
+                    # / bare cURL), Fill defaults to operator_typed + None.
+                    fill_origin=req.fill_origin,
+                    schwab_source_value_json=req.schwab_source_value_json,
+                    operator_corrected_value_json=(
+                        req.operator_corrected_value_json
+                    ),
+                    auto_fill_audit_at=req.auto_fill_audit_at,
                 ),
                 event_ts=req.event_ts,
                 rationale=req.rationale,

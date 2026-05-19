@@ -434,6 +434,19 @@ def entry_post(
     catalyst: str | None = Form(None),
     catalyst_other_description: str | None = Form(None),
     manual_entry_confidence: str | None = Form(None),
+    # Phase 13 T3.SB1 T-B.1.4 — auto-fill hidden audit anchors emitted by
+    # the form-render path (T-B.1.3 template additions). Default ""/None
+    # so legacy callers (CLI tests, bare cURL, pre-Phase-13 form submits)
+    # keep working — the POST handler infers fill_origin='operator_typed'
+    # when these are absent. Per CLAUDE.md gotcha "Form-render hidden
+    # anchors driving POST-time validation MUST round-trip through
+    # soft-warn confirm form_values dict" + Phase 9 Sub-bundle D R3
+    # Critical #1 LOCK: these 3 anchors MUST also be added to the
+    # soft-warn confirm form_values dict below (T-B.1.4 +5.5 watch
+    # item 9 BINDING).
+    schwab_source_value_json: str = Form(""),
+    auto_fill_audit_at: str = Form(""),
+    fill_origin_at_form_render: str = Form(""),
 ):
     cfg = apply_overrides(request.app.state.cfg)
     cache = request.app.state.price_cache
@@ -747,6 +760,75 @@ def entry_post(
     ]
     emo_json: str | None = _json.dumps(emo_clean) if emo_clean else None
 
+    # Phase 13 T3.SB1 T-B.1.4 — fill_origin transition resolution.
+    # Compare submitted entry_date / entry_price / shares against the
+    # form-render anchor (``schwab_source_value_json`` JSON envelope).
+    # Three outcomes:
+    #   - No anchor (empty/missing JSON) → operator_typed; all audit
+    #     columns NULL.
+    #   - Anchor matches submitted values exactly → schwab_auto.
+    #   - Anchor differs from submitted values (operator edited any of
+    #     the 3 fields) → schwab_auto_then_operator_corrected;
+    #     ``operator_corrected_value_json`` carries the submitted values.
+    # Per spec §6.1 + §6.4 + plan §G.2 T-B.1.4 + brief §5 watch item 10.
+    resolved_fill_origin = "operator_typed"
+    resolved_schwab_source_value_json: str | None = None
+    resolved_operator_corrected_value_json: str | None = None
+    resolved_auto_fill_audit_at: str | None = None
+    if schwab_source_value_json.strip():
+        try:
+            anchor_envelope = _json.loads(schwab_source_value_json)
+        except (ValueError, TypeError):
+            anchor_envelope = None
+        if isinstance(anchor_envelope, dict):
+            # The form-render anchor exists; default to schwab_auto unless
+            # operator edited any of the 3 auto-populated fields.
+            anchor_entry_date = anchor_envelope.get("entry_date")
+            anchor_entry_price = anchor_envelope.get("entry_price")
+            anchor_shares = anchor_envelope.get("shares")
+            # Compare entry_price as float (tolerant of 150 vs 150.0 vs
+            # "150.00" form-text drift); shares as int (form Field(int)
+            # already coerced); entry_date as exact str (ISO YYYY-MM-DD).
+            try:
+                anchor_price_float = (
+                    float(anchor_entry_price)
+                    if anchor_entry_price is not None else None
+                )
+            except (TypeError, ValueError):
+                anchor_price_float = None
+            try:
+                anchor_shares_int = (
+                    int(anchor_shares) if anchor_shares is not None else None
+                )
+            except (TypeError, ValueError):
+                anchor_shares_int = None
+            entry_date_diff = anchor_entry_date != entry_date
+            price_diff = (
+                anchor_price_float is None
+                or abs(anchor_price_float - entry_price) > 1e-9
+            )
+            shares_diff = (
+                anchor_shares_int is None or anchor_shares_int != shares
+            )
+            if entry_date_diff or price_diff or shares_diff:
+                resolved_fill_origin = "schwab_auto_then_operator_corrected"
+                # Stamp the submitted values so future reads can compare.
+                resolved_operator_corrected_value_json = _json.dumps(
+                    {
+                        "entry_date": entry_date,
+                        "entry_price": entry_price,
+                        "shares": shares,
+                    },
+                    sort_keys=True,
+                )
+            else:
+                resolved_fill_origin = "schwab_auto"
+            resolved_schwab_source_value_json = schwab_source_value_json
+            # ``auto_fill_audit_at`` is a separate hidden input alongside
+            # the JSON envelope (per T-B.1.3 template emission). Use the
+            # submitted value verbatim; fall back to None on empty/missing.
+            resolved_auto_fill_audit_at = auto_fill_audit_at or None
+
     req = EntryRequest(
         ticker=ticker.upper(),
         entry_date=entry_date,
@@ -787,6 +869,14 @@ def entry_post(
         event_handling=event_handling or None,
         event_type=event_type or None,
         event_date=event_date or None,
+        # Phase 13 T3.SB1 T-B.1.4 — auto-fill audit columns persisted on
+        # the fills row by ``record_entry`` → ``insert_fill_with_event``.
+        fill_origin=resolved_fill_origin,
+        schwab_source_value_json=resolved_schwab_source_value_json,
+        operator_corrected_value_json=(
+            resolved_operator_corrected_value_json
+        ),
+        auto_fill_audit_at=resolved_auto_fill_audit_at,
         gap_risk_present=gap_risk_present,
         gap_risk_handling=gap_risk_handling or None,
         emotional_state_pre_trade=emo_json,
@@ -1000,6 +1090,21 @@ def entry_post(
                 "catalyst": catalyst or "",
                 "catalyst_other_description": (
                     catalyst_other_description or ""
+                ),
+                # Phase 13 T3.SB1 T-B.1.4 — auto-fill hidden anchors MUST
+                # round-trip through the soft-warn confirm fragment per
+                # CLAUDE.md gotcha "Form-render hidden anchors driving
+                # POST-time validation MUST round-trip through soft-warn
+                # confirm form_values dict" + Phase 9 Sub-bundle D R3
+                # Critical #1 LOCK + dispatch brief §5 watch item 9.
+                # Without this, a tampered force=true resubmit would
+                # silently drop the anchors → fill_origin defaults to
+                # 'operator_typed' on the persisted fill row even when
+                # the original submit was 'schwab_auto'.
+                "schwab_source_value_json": schwab_source_value_json or "",
+                "auto_fill_audit_at": auto_fill_audit_at or "",
+                "fill_origin_at_form_render": (
+                    fill_origin_at_form_render or ""
                 ),
                 "open_count": actual_open,
                 "soft_warn": cfg.position_limits.soft_warn_open,
