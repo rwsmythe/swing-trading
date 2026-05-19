@@ -11,14 +11,16 @@
 ## §0 Status at session start
 
 - **Worktree:** `.worktrees/phase13-t2-sb1-dev-time-labeling-infra/` (THIS directory; you are here).
-- **Branch:** `phase13-t2-sb1-dev-time-labeling-infra` (HEAD `8cbb1a5` = T-A.1.6 SHIPPED post pre-pause cleanup).
-- **Schema:** v20 (migrated via T-A.1.1).
-- **Baseline:** 5013 fast tests passing / 6 skipped / ruff 0 errors / ZERO Co-Authored-By footer drift across all 10 worktree commits.
+- **Branch:** `phase13-t2-sb1-dev-time-labeling-infra` (HEAD after T-A.1.5b hotfix close = the latest commit on this branch; previously `caa628f` = labeling briefing committed).
+- **Schema:** v20 (UNCHANGED through T-A.1.5b hotfix).
+- **Baseline:** 5013 fast tests on entry to T-A.1.5b; the hotfix adds ~30 fast tests across the three defect closures (final count surfaced in the T-A.1.5b return report).
 - **Subagent available:** `.claude/agents/pattern-labeler.md` (project-local; loaded automatically by this session since session-start postdates commit `9c7a5c1`).
-- **CLI surface:** `swing patterns label-exemplars` subcommand registered (T-A.1.5).
+- **CLI surface:** `swing patterns label-exemplars` subcommand registered (T-A.1.5) + T-A.1.5b hotfix landed three defect closures (see §1 below): (1) dict-or-string silver_response coercion; (2) spec section 5.2-5.6 rule_criteria + structural_evidence_schema inlined into dispatch payload; (3) bars auto-fetched via yfinance windowed download at the CLI emit path.
 - **Web surface:** `/patterns/exemplars` GET + `/patterns/exemplars/{id}/action` POST (T-A.1.6); start web app via `python -m swing.cli web`.
 
 The implementer session paused at T-A.1.7 per spec §5.9 step 5 + plan §G.1 T-A.1.7 BINDING. This session is the operator-paired counterpart. The implementer awaits your operator's resume signal with an exemplar-count summary (N silver / M gold per class).
+
+**T-A.1.5b hotfix history**: the FIRST T-A.1.7 dispatch (2026-05-19 SNAP 2020-07-01 -> 2020-09-30 vcp) ABORTED at first persist due to three production defects + one workflow-scaffolding gap. T-A.1.5b shipped the surgical hotfix closing all four issues. This redispatched session inherits the post-fix CLI behavior; the legacy manual-enrichment workaround is no longer needed.
 
 ---
 
@@ -54,18 +56,23 @@ For each candidate window, execute these 3 steps interactively with the operator
 python -m swing.cli patterns label-exemplars \
     --ticker <T> --start <YYYY-MM-DD> --end <YYYY-MM-DD> \
     --pattern-class <vcp|flat_base|cup_with_handle|high_tight_flag|double_bottom_w> \
-    [--timeframe daily|weekly]
+    [--timeframe daily]
+    [--window-bars-file <path>]
 ```
 
 The CLI prints a JSON dispatch payload to stdout. The payload includes:
 
 - `ticker` + `timeframe` + `start_date` + `end_date`
-- `window_ohlcv_json` — compact OHLCV bars
-- `pattern_class` — the SPECIFIC class being evaluated
-- `rule_criteria` — per spec §5.2–§5.6 rule criteria for `pattern_class`
-- `structural_evidence_schema` — dataclass shape the subagent must produce
+- `window_payload.bars` — daily OHLCV bars **auto-fetched via yfinance** for the requested (ticker, start, end) tuple (T-A.1.5b Defect 3 Option B closure). Each bar carries keys `date`, `open`, `high`, `low`, `close`, `volume`. If the operator wants to pin a specific bars file (fixture-pinned reproducibility), supply `--window-bars-file <path>` and the auto-fetch is skipped.
+- `pattern_class` — the SPECIFIC class being evaluated.
+- `rule_criteria` — spec section 5.2-5.6 rule criteria inlined for the requested `pattern_class` (T-A.1.5b Defect 2 closure). 6-8 criteria per class with `name` / `description` / `lock` / `tolerance` columns; cup_with_handle additionally carries the supplementary `rounded_vs_v_test` method. Source-of-truth at `swing/patterns/spec_static.py`.
+- `structural_evidence_schema` — dataclass shape the subagent must produce (e.g. `VCPEvidence` with nested `Contraction`; `FlatBaseEvidence`; `CupWithHandleEvidence`; `HighTightFlagEvidence`; `DoubleBottomWEvidence`).
 
 Capture this payload (copy to clipboard or redirect to file: `... > payload.json`).
+
+**Timeframe note**: V1 auto-fetch supports `daily` only. For `weekly` (or any other timeframe), supply pre-built bars via `--window-bars-file` - the CLI's auto-fetch helper raises a clear error if `--timeframe=weekly` is combined with the no-file path. Weekly resampling at the CLI is a V2 candidate (banked).
+
+**Historical-window note**: yfinance windowed downloads handle arbitrary historical date ranges (no 5-year archive bound). The operator's pre-T-A.1.5b workaround at `tmp/phase13-labeling/SNAP_2020-07-01_2020-09-30_enriched_dispatch.json` is no longer needed; the CLI's auto-fetch covers historical windows directly.
 
 ### Step B — Dispatch the pattern-labeler subagent (Agent tool)
 
@@ -228,13 +235,18 @@ The orchestrator will then resume the implementer session for T-A.1.8 closer + p
 
 ## §8 Subagent invocation example
 
-Once the dispatch payload is emitted by Step A:
+Once the dispatch payload is emitted by Step A (the payload now carries fully-populated `bars`, `rule_criteria`, and `structural_evidence_schema` per T-A.1.5b hotfix Defects 2 + 3 Option B):
 
 ```python
 # Pseudocode for what the operator-paired session does:
 # (Claude Code session has Agent tool available with subagent_type="pattern-labeler"
 # automatically registered from .claude/agents/pattern-labeler.md.)
 
+# Step A emits a single JSON dispatch payload with:
+#   - window_payload.bars (auto-fetched daily bars)
+#   - rule_criteria (spec section 5.2-5.6 criteria for the requested class)
+#   - structural_evidence_schema (the evidence dataclass shape)
+#   - pattern_class + ai_labeler_version
 dispatch_payload = """<the JSON output from Step A's CLI invocation, verbatim>"""
 
 # Invoke via Agent tool:
@@ -244,7 +256,16 @@ response = Agent(
     prompt=dispatch_payload,
 )
 
-# response is a single JSON object with the 4 keys; save to file:
+# response is a single JSON object with EXACTLY 4 keys:
+#   - evaluation: 'confirmed' | 'watch' | 'rejected' | 'relabel:<other_class>'
+#   - confidence: 'high' | 'medium' | 'low'
+#   - structural_evidence_json: <DICT matching structural_evidence_schema>
+#   - geometric_evidence_narrative: ASCII-only one-paragraph string
+#
+# T-A.1.5b Defect 1 closure: the CLI now accepts structural_evidence_json
+# as EITHER a JSON dict (the subagent's documented contract) OR a
+# pre-serialized JSON string (existing test fixtures). Either shape
+# round-trips intact through pattern_exemplars.structural_evidence_json.
 with open("silver_1.json", "w") as f:
     f.write(response)
 
