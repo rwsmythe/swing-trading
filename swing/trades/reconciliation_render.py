@@ -277,6 +277,15 @@ def _pairs_cash_movement_mismatch(
     return [("amount", expected["amount"], actual.get("amount"))]
 
 
+# NOTE (Codex R3 minor #1, banked as V2.1 amendment candidate): The
+# `snapshot_mismatch` extractor below and its sibling `_pairs_sector_tamper`
+# are SPECULATIVE - no production emitter currently writes either type
+# (verified 2026-05-18; see Q2 return report section 5). Envelope shape
+# here mirrors the Phase 12.5 #2 web-spec extractor pattern but is NOT
+# production-verified. When a future dispatch lands the producer, reconcile
+# shape against the emitter (same pattern as the equity_delta /
+# stop_mismatch / position_qty_mismatch / unmatched_*_fill drift fixes
+# shipped earlier in this dispatch).
 def _pairs_snapshot_mismatch(
     expected: dict[str, Any],
     actual: dict[str, Any],
