@@ -367,6 +367,72 @@ def test_c_malformed_anchor_without_claim_falls_back(seeded_db, monkeypatch):
     assert row[0] == "operator_typed"
 
 
+def test_c_non_dict_json_anchor_with_claim_rejects_with_400(
+    seeded_db, monkeypatch,
+):
+    """Codex R2 Major #1 fix — POST with VALID JSON BUT non-dict root
+    (e.g., ``[]`` or ``"x"``) AND fill_origin_at_form_render='schwab_auto'
+    is internally inconsistent → 400 reject. Closes the "claim present
+    but provenance erased" failure mode that R1 Major #1 fix would have
+    missed since list/string parses cleanly via _json.loads.
+    """
+    cfg, cfg_path = seeded_db
+    _patch_price_cache_with_snapshot(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        # List root (valid JSON, but not a dict).
+        resp_list = _post_entry(
+            client,
+            schwab_source_value_json="[]",
+            auto_fill_audit_at="2026-05-19T14:30:00.000000+00:00",
+            fill_origin_at_form_render="schwab_auto",
+        )
+        assert resp_list.status_code == 400, resp_list.text
+        # String root (also valid JSON, not a dict).
+        resp_str = _post_entry(
+            client,
+            schwab_source_value_json='"sentinel"',
+            auto_fill_audit_at="2026-05-19T14:30:00.000000+00:00",
+            fill_origin_at_form_render="schwab_auto_then_operator_corrected",
+        )
+        assert resp_str.status_code == 400, resp_str.text
+
+
+def test_c_dict_anchor_missing_keys_with_claim_rejects_with_400(
+    seeded_db, monkeypatch,
+):
+    """Codex R2 Major #2 fix — dict anchor missing one or more of
+    {entry_date, entry_price, shares} AND claim='schwab_auto' → 400.
+
+    Without this guard, the partial envelope would classify the row as
+    schwab_auto_then_operator_corrected (since missing == diff) and
+    persist the junk source JSON.
+    """
+    cfg, cfg_path = seeded_db
+    _patch_price_cache_with_snapshot(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        # Empty dict.
+        resp_empty = _post_entry(
+            client,
+            schwab_source_value_json="{}",
+            auto_fill_audit_at="2026-05-19T14:30:00.000000+00:00",
+            fill_origin_at_form_render="schwab_auto",
+        )
+        assert resp_empty.status_code == 400, resp_empty.text
+        assert "missing one or more required keys" in resp_empty.text.lower()
+        # Partial envelope (missing 'shares').
+        resp_partial = _post_entry(
+            client,
+            schwab_source_value_json=json.dumps(
+                {"entry_date": "2026-05-19", "entry_price": 150.25},
+            ),
+            auto_fill_audit_at="2026-05-19T14:30:00.000000+00:00",
+            fill_origin_at_form_render="schwab_auto",
+        )
+        assert resp_partial.status_code == 400, resp_partial.text
+
+
 def test_c_empty_anchor_with_claim_rejects_with_400(seeded_db, monkeypatch):
     """Codex R1 Major #1 + #2 fix — POST with EMPTY
     schwab_source_value_json AND fill_origin_at_form_render='schwab_auto'

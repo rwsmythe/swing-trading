@@ -273,6 +273,32 @@ def _rerender_entry_form_with_error(
         # build_entry_form_vm-driven fresh Schwab fetch from substituting
         # a different anchor mid-flight.
         if submitted_schwab_source_value_json is not None:
+            # Codex R2 Minor #1 fix — when restoring a submitted populated
+            # anchor on retry, also restore ``auto_fill_kind='populated'``
+            # AND clear ``auto_fill_advisory_text``. Otherwise the freshly-
+            # rebuilt VM's stale kind/advisory (from the new Schwab fetch
+            # that may have returned 'empty' / 'degraded') leaks into the
+            # rendered banner, showing "no match" while the hidden anchor
+            # still claims auto-fill — confusing the operator.
+            submitted_claim = (
+                submitted_fill_origin_at_form_render or "operator_typed"
+            )
+            preserved_kind = (
+                "populated"
+                if (
+                    submitted_schwab_source_value_json
+                    and submitted_claim in (
+                        "schwab_auto",
+                        "schwab_auto_then_operator_corrected",
+                    )
+                )
+                else vm.auto_fill_kind
+            )
+            preserved_advisory = (
+                None
+                if preserved_kind == "populated"
+                else vm.auto_fill_advisory_text
+            )
             vm = dc_replace(
                 vm,
                 auto_fill_schwab_source_value_json=(
@@ -281,10 +307,9 @@ def _rerender_entry_form_with_error(
                 auto_fill_audit_at=(
                     submitted_auto_fill_audit_at or None
                 ),
-                auto_fill_fill_origin=(
-                    submitted_fill_origin_at_form_render
-                    or "operator_typed"
-                ),
+                auto_fill_fill_origin=submitted_claim,
+                auto_fill_kind=preserved_kind,
+                auto_fill_advisory_text=preserved_advisory,
             )
         return templates.TemplateResponse(
             request, "partials/trade_entry_form.html.j2",
@@ -503,6 +528,9 @@ def entry_post(
             entry_price=entry_price, shares=shares, initial_stop=initial_stop,
             rationale=rationale, notes=notes, error_message=rationale_error,
             origin=origin_coerced,
+            submitted_schwab_source_value_json=schwab_source_value_json,
+            submitted_auto_fill_audit_at=auto_fill_audit_at,
+            submitted_fill_origin_at_form_render=fill_origin_at_form_render,
         )
 
     # Bug 2 (2026-04-25): validate stop < entry at the request boundary so
@@ -536,6 +564,9 @@ def entry_post(
                 f"stop={initial_stop}"
             ),
             origin=origin_coerced,
+            submitted_schwab_source_value_json=schwab_source_value_json,
+            submitted_auto_fill_audit_at=auto_fill_audit_at,
+            submitted_fill_origin_at_form_render=fill_origin_at_form_render,
         )
 
     # Phase 5 spec §3.6 — resolve the operator override.
@@ -573,6 +604,9 @@ def entry_post(
                 "pipeline run. (V1 cached-only; manual fallback deferred to V2.)"
             ),
             origin=origin_coerced,
+            submitted_schwab_source_value_json=schwab_source_value_json,
+            submitted_auto_fill_audit_at=auto_fill_audit_at,
+            submitted_fill_origin_at_form_render=fill_origin_at_form_render,
         )
 
     # Codex R1 Major 1 (Phase 7 Sub-C) — schema-layer guards that used to
@@ -596,6 +630,9 @@ def entry_post(
                 f"got {cp_algo_value!r}."
             ),
             origin=origin_coerced,
+            submitted_schwab_source_value_json=schwab_source_value_json,
+            submitted_auto_fill_audit_at=auto_fill_audit_at,
+            submitted_fill_origin_at_form_render=fill_origin_at_form_render,
         )
     if cp_anchor_value is not None:
         from swing.data.repos.pattern_classifications import get_classification
@@ -837,8 +874,17 @@ def entry_post(
             anchor_envelope = _json.loads(schwab_source_value_json)
         except (ValueError, TypeError):
             anchor_envelope = None
-        if anchor_envelope is None and claimed_auto_fill:
-            # Tampered: claim of schwab_auto with malformed anchor.
+        # Codex R2 Major #1 fix — reject non-dict JSON (e.g., ``[]``, ``"x"``)
+        # when the claim is auto-fill. Without this guard, a valid-JSON
+        # non-dict slips past the ``isinstance(anchor_envelope, dict)``
+        # branch below and silently persists as ``operator_typed`` despite
+        # the claim, re-opening the "claim present but provenance erased"
+        # failure mode the R1 Major #1 fix was meant to close.
+        if (
+            (anchor_envelope is None
+             or not isinstance(anchor_envelope, dict))
+            and claimed_auto_fill
+        ):
             return _rerender_entry_form_with_error(
                 request=request, templates=templates, cfg=cfg,
                 cache=cache, executor=executor,
@@ -848,8 +894,41 @@ def entry_post(
                 error_message=(
                     "Trade entry rejected: fill_origin_at_form_render="
                     f"{fill_origin_at_form_render!r} claims auto-fill "
-                    "provenance but schwab_source_value_json is malformed "
-                    "or unparseable. Re-render the form to recover."
+                    "provenance but schwab_source_value_json is malformed, "
+                    "unparseable, or not a JSON object. Re-render the form "
+                    "to recover."
+                ),
+                origin=origin_coerced,
+                submitted_schwab_source_value_json=schwab_source_value_json,
+                submitted_auto_fill_audit_at=auto_fill_audit_at,
+                submitted_fill_origin_at_form_render=fill_origin_at_form_render,
+            )
+        # Codex R2 Major #2 fix — when the anchor IS a dict but lacks one
+        # of the 3 required keys (entry_date, entry_price, shares) AND
+        # the operator claims auto-fill, reject. Without this guard, an
+        # empty-dict ``{}`` or a partial envelope classifies the row as
+        # ``schwab_auto_then_operator_corrected`` (every missing key
+        # counts as an edit) and persists the junk source JSON.
+        if (
+            isinstance(anchor_envelope, dict)
+            and claimed_auto_fill
+            and not all(
+                k in anchor_envelope
+                for k in ("entry_date", "entry_price", "shares")
+            )
+        ):
+            return _rerender_entry_form_with_error(
+                request=request, templates=templates, cfg=cfg,
+                cache=cache, executor=executor,
+                ticker=ticker, entry_date=entry_date,
+                entry_price=entry_price, shares=shares,
+                initial_stop=initial_stop, rationale=rationale, notes=notes,
+                error_message=(
+                    "Trade entry rejected: fill_origin_at_form_render="
+                    f"{fill_origin_at_form_render!r} claims auto-fill "
+                    "provenance but schwab_source_value_json is missing "
+                    "one or more required keys (entry_date, entry_price, "
+                    "shares). Re-render the form to recover."
                 ),
                 origin=origin_coerced,
                 submitted_schwab_source_value_json=schwab_source_value_json,
@@ -922,6 +1001,9 @@ def entry_post(
                 "Re-render the form to recover."
             ),
             origin=origin_coerced,
+            submitted_schwab_source_value_json=schwab_source_value_json,
+            submitted_auto_fill_audit_at=auto_fill_audit_at,
+            submitted_fill_origin_at_form_render=fill_origin_at_form_render,
         )
 
     req = EntryRequest(
@@ -1055,12 +1137,39 @@ def entry_post(
                     # them back into the form (force=true retry replays
                     # the same anchor instead of substituting a fresh
                     # Schwab fetch's result).
+                    # Codex R2 Minor #1 fix — also restore kind +
+                    # clear advisory text when the submitted claim is
+                    # populated, so the banner doesn't drift to "no
+                    # match" while the hidden anchor still claims
+                    # auto-fill.
                     auto_fill_schwab_source_value_json=(
                         schwab_source_value_json or None
                     ),
                     auto_fill_audit_at=auto_fill_audit_at or None,
                     auto_fill_fill_origin=(
                         fill_origin_at_form_render or "operator_typed"
+                    ),
+                    auto_fill_kind=(
+                        "populated"
+                        if (
+                            schwab_source_value_json
+                            and fill_origin_at_form_render in (
+                                "schwab_auto",
+                                "schwab_auto_then_operator_corrected",
+                            )
+                        )
+                        else vm.auto_fill_kind
+                    ),
+                    auto_fill_advisory_text=(
+                        None
+                        if (
+                            schwab_source_value_json
+                            and fill_origin_at_form_render in (
+                                "schwab_auto",
+                                "schwab_auto_then_operator_corrected",
+                            )
+                        )
+                        else vm.auto_fill_advisory_text
                     ),
                 )
                 return templates.TemplateResponse(
@@ -1243,17 +1352,40 @@ def entry_post(
                     input_shares=shares,
                     rationale=rationale,
                     notes=notes or "",
-                    # Phase 13 T3.SB1 Codex R1 Major #3 fix — preserve
-                    # the submitted auto-fill anchors on the duplicate-
-                    # position re-render path so the operator's
-                    # original anchor isn't overwritten by a fresh
-                    # Schwab fetch.
+                    # Phase 13 T3.SB1 Codex R1 Major #3 + R2 Minor #1
+                    # fix — preserve the submitted auto-fill anchors AND
+                    # restore kind/advisory on the duplicate-position
+                    # re-render path so the operator's original anchor +
+                    # banner state isn't overwritten by a fresh Schwab
+                    # fetch's stale advisory.
                     auto_fill_schwab_source_value_json=(
                         schwab_source_value_json or None
                     ),
                     auto_fill_audit_at=auto_fill_audit_at or None,
                     auto_fill_fill_origin=(
                         fill_origin_at_form_render or "operator_typed"
+                    ),
+                    auto_fill_kind=(
+                        "populated"
+                        if (
+                            schwab_source_value_json
+                            and fill_origin_at_form_render in (
+                                "schwab_auto",
+                                "schwab_auto_then_operator_corrected",
+                            )
+                        )
+                        else vm.auto_fill_kind
+                    ),
+                    auto_fill_advisory_text=(
+                        None
+                        if (
+                            schwab_source_value_json
+                            and fill_origin_at_form_render in (
+                                "schwab_auto",
+                                "schwab_auto_then_operator_corrected",
+                            )
+                        )
+                        else vm.auto_fill_advisory_text
                     ),
                 )
                 return templates.TemplateResponse(
