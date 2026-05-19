@@ -337,6 +337,10 @@ _VALID_EXEMPLAR_KWARGS = {
     "label_source": "curated_gold",
     "structural_evidence_json": "{}",
     "geometric_score_json": "{}",
+    # Per spec §3.1 invariant #5: curated_gold requires labeler_evidence_json
+    # non-NULL (preserves silver-tier audit trail through gold-promotion;
+    # Codex R6 M#1 closure).
+    "labeler_evidence_json": "{}",
     "created_at": "2024-02-02T00:00:00.000",
     "created_by": "operator",
 }

@@ -1820,6 +1820,12 @@ class PatternExemplar:
             )
 
         # Cross-column invariant #5: labeler_evidence_json source coherence.
+        # Mirrors schema CHECK exactly: labeler_ev NOT NULL <-> label_source in
+        # (claude_silver, codex_silver, curated_gold); labeler_ev NULL <->
+        # label_source in (closed_loop_review, organic_trade_history,
+        # synthetic, perturbation). curated_gold requires labeler_ev NOT NULL
+        # per Codex R6 M#1 closure (preserves silver-tier audit trail through
+        # gold-promotion at T2.SB1 pre-detector-backfill).
         _labeler_ev_allowed_sources = (
             "claude_silver",
             "codex_silver",
@@ -1832,10 +1838,7 @@ class PatternExemplar:
                     f"NULL when label_source={self.label_source!r}"
                 )
         else:
-            if self.label_source in (
-                "claude_silver",
-                "codex_silver",
-            ):
+            if self.label_source in _labeler_ev_allowed_sources:
                 raise ValueError(
                     "invariant #5 violated: labeler_evidence_json must be "
                     f"non-NULL when label_source={self.label_source!r}"
