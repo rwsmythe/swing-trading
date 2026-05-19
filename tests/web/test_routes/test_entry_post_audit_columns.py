@@ -305,9 +305,16 @@ def test_c_empty_anchor_string_persists_operator_typed(seeded_db, monkeypatch):
     assert row[3] is None
 
 
-def test_c_malformed_anchor_falls_back_to_operator_typed(seeded_db, monkeypatch):
-    """POST with malformed schwab_source_value_json (not valid JSON) →
-    fill_origin='operator_typed' (defensive — don't crash on garbage).
+def test_c_malformed_anchor_with_claim_rejects_with_400(seeded_db, monkeypatch):
+    """Codex R1 Major #1 + #2 fix — POST with malformed
+    schwab_source_value_json AND fill_origin_at_form_render='schwab_auto'
+    is internally inconsistent (tampered or stale) → 400 reject with
+    descriptive error.
+
+    The legacy backward-compat path (no claim, no anchor) still flows
+    through as operator_typed (covered by
+    ``test_c_no_anchor_persists_operator_typed`` +
+    ``test_c_empty_anchor_string_persists_operator_typed`` above).
     """
     cfg, cfg_path = seeded_db
     _patch_price_cache_with_snapshot(monkeypatch)
@@ -317,19 +324,66 @@ def test_c_malformed_anchor_falls_back_to_operator_typed(seeded_db, monkeypatch)
             client,
             schwab_source_value_json="not a json envelope",  # malformed
             auto_fill_audit_at="2026-05-19T14:30:00.000000+00:00",
-            fill_origin_at_form_render="schwab_auto",
+            fill_origin_at_form_render="schwab_auto",  # claim
+        )
+    assert resp.status_code == 400, resp.text
+    assert "malformed" in resp.text.lower() or "unparseable" in resp.text.lower()
+    # NO fill row should have been written (POST rejected pre-record_entry).
+    conn = connect(cfg.paths.db_path)
+    try:
+        n = conn.execute(
+            "SELECT COUNT(*) FROM fills WHERE action='entry'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert n == 0
+
+
+def test_c_malformed_anchor_without_claim_falls_back(seeded_db, monkeypatch):
+    """Codex R1 Major #1 + #2 fix carve-out — POST with malformed
+    schwab_source_value_json BUT fill_origin_at_form_render empty
+    (legacy / no claim) → operator_typed (no 400). Preserves backward
+    compat for the bare-cURL / pre-Phase-13 path.
+    """
+    cfg, cfg_path = seeded_db
+    _patch_price_cache_with_snapshot(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = _post_entry(
+            client,
+            schwab_source_value_json="not a json envelope",  # malformed
+            auto_fill_audit_at="2026-05-19T14:30:00.000000+00:00",
+            fill_origin_at_form_render="",  # NO claim
         )
     assert resp.status_code == 200, resp.text
-
     conn = connect(cfg.paths.db_path)
     try:
         row = conn.execute(
             "SELECT fill_origin FROM fills "
-                    "WHERE action='entry' ORDER BY fill_id DESC LIMIT 1"
+            "WHERE action='entry' ORDER BY fill_id DESC LIMIT 1"
         ).fetchone()
     finally:
         conn.close()
     assert row[0] == "operator_typed"
+
+
+def test_c_empty_anchor_with_claim_rejects_with_400(seeded_db, monkeypatch):
+    """Codex R1 Major #1 + #2 fix — POST with EMPTY
+    schwab_source_value_json AND fill_origin_at_form_render='schwab_auto'
+    is internally inconsistent → 400 reject.
+    """
+    cfg, cfg_path = seeded_db
+    _patch_price_cache_with_snapshot(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = _post_entry(
+            client,
+            schwab_source_value_json="",  # empty
+            auto_fill_audit_at="",
+            fill_origin_at_form_render="schwab_auto",  # claim
+        )
+    assert resp.status_code == 400, resp.text
+    assert "empty" in resp.text.lower()
 
 
 # ============================================================================
