@@ -126,6 +126,17 @@ def test_label_exemplars_emits_payload_when_no_response_file(
     assert payload["window_payload"]["timeframe"] == "daily"
     assert payload["window_payload"]["start_date"] == "2024-01-01"
     assert payload["window_payload"]["end_date"] == "2024-02-01"
+    # T-A.1.5b Defect 2: dispatch payload carries non-placeholder
+    # spec-section-5.2-through-5.6 rule_criteria + structural_evidence_schema.
+    rc = payload["rule_criteria"]
+    assert rc["pattern_class"] == "flat_base"
+    assert rc["spec_section"] == "section 5.3"
+    assert isinstance(rc["criteria"], list) and len(rc["criteria"]) >= 2
+    assert "placeholder" not in json.dumps(rc).lower()
+    schema = payload["structural_evidence_schema"]
+    assert schema["pattern_class"] == "flat_base"
+    assert schema["spec_section"] == "section 5.3"
+    assert "placeholder" not in json.dumps(schema).lower()
 
 
 _NON_ASCII_PATTERN = re.compile(r"[^\x00-\x7F]")

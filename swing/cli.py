@@ -3767,6 +3767,12 @@ def label_exemplars_cmd(
     from swing.patterns.labeling import (
         fire_claude_silver_label as _fire_claude_silver_label,
     )
+    from swing.patterns.spec_static import (
+        get_rule_criteria as _get_rule_criteria,
+    )
+    from swing.patterns.spec_static import (
+        get_structural_evidence_schema as _get_evidence_schema,
+    )
 
     if pattern_class not in _DPC:
         raise click.BadParameter(
@@ -3777,6 +3783,7 @@ def label_exemplars_cmd(
 
     # Build window payload. V1: bars optional (placeholder if absent); the
     # operator-paired session at T-A.1.7 wires real OhlcvCache fetch.
+    # (T-A.1.5b Defect 3 lands the auto-fetch wiring next.)
     if window_bars_file is not None:
         bars = _json.loads(
             Path(window_bars_file).read_text(encoding="utf-8")
@@ -3791,23 +3798,13 @@ def label_exemplars_cmd(
         "bars": bars,
     }
 
-    # Rule criteria + structural_evidence_schema land at T2.SB3+/SB4
-    # detector builds. V1 emits placeholders so the dispatch payload is
-    # well-formed.
-    rule_criteria: dict = {
-        "pattern_class": pattern_class,
-        "note": (
-            "Rule criteria placeholder; populated by T2.SB3+/SB4 "
-            "detector modules per spec sections 5.2 through 5.6."
-        ),
-    }
-    structural_evidence_schema: dict = {
-        "pattern_class": pattern_class,
-        "note": (
-            "Structural evidence schema placeholder; populated by "
-            "T2.SB3+/SB4 detector modules."
-        ),
-    }
+    # T-A.1.5b Defect 2: inline spec section 5.2 through 5.6 rule_criteria
+    # + structural_evidence_schema for the requested pattern_class. Static
+    # source-of-truth at swing/patterns/spec_static.py (V1 PATCH scope
+    # only; T2.SB3+/SB4 detectors MAY rebase onto compute-derived defaults
+    # when they land).
+    rule_criteria: dict = _get_rule_criteria(pattern_class)
+    structural_evidence_schema: dict = _get_evidence_schema(pattern_class)
 
     # Without --silver-response-file: emit ONLY the payload JSON (operator
     # handoff guidance is documented in --help; CLI stdout stays parseable).
