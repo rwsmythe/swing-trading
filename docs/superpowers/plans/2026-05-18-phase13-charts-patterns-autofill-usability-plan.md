@@ -243,22 +243,24 @@ Discriminating round-trip test pattern (per Phase 8 `cfacbc5` precedent CLAUDE.m
 
 Per Phase 12 C.A T-A.2 LOCK + spec §3.5 audit roster: every CHECK enum + cross-column CHECK invariant in v20 MUST land in the SAME task as its Python-side mirror constants + dataclass `__post_init__` validators. v20 atomic-landing roster per spec §3.5:
 
-| CHECK construct | Python constant | Dataclass validator |
-|---|---|---|
-| `DETECTOR_PATTERN_CLASSES` (5 values) referenced by 4 columns per §3.0 | `swing/patterns/__init__.py:DETECTOR_PATTERN_CLASSES` tuple | `PatternExemplar` / `PatternEvaluation` / `ChartRender` `__post_init__` |
-| `pattern_exemplars.label_source` (7 values) | `swing/patterns/__init__.py:_LABEL_SOURCE_VALUES` | `PatternExemplar.__post_init__` |
-| `pattern_exemplars.final_decision` (5 values) | `swing/patterns/__init__.py:_FINAL_DECISION_VALUES` | `PatternExemplar.__post_init__` |
-| 5 numbered cross-column CHECK invariants on `pattern_exemplars` (per spec §3.1 invariants #1-#5) | mirror predicates in `PatternExemplar.__post_init__` | same |
-| `fills.fill_origin` (5 values) | `swing/data/models.py:_FILL_ORIGIN_VALUES` | `Fill.__post_init__` |
-| `schwab_api_calls.surface` widening (+`trade_entry`, +`trade_exit`) | `swing/integrations/schwab/audit_service.py:_SCHWAB_API_SURFACE_VALUES` | service-call entry validator |
-| `chart_renders.surface` (5 values) | `swing/web/charts.py:_CHART_SURFACE_VALUES` | `ChartRender.__post_init__` |
-| `chart_renders` cross-column CHECK per §3.2 | mirror predicate in `ChartRender.__post_init__` | same |
-| `watchlist_close_track_flags.flagged_by_surface` (2 values) | `swing/trades/watchlist_close_track.py:_FLAG_SURFACE_VALUES` | `WatchlistCloseTrackFlag.__post_init__` |
-| `watchlist_close_track_flags.cleared_reason` (2 values when non-NULL) | `swing/trades/watchlist_close_track.py:_FLAG_CLEARED_REASON_VALUES` | same |
-| `watchlist_close_track_flag_events.event_type` (2 values) | `swing/trades/watchlist_close_track.py:_FLAG_EVENT_TYPE_VALUES` | `WatchlistCloseTrackFlagEvent.__post_init__` |
-| `watchlist_close_track_flag_events.surface` (2 values) | SAME `_FLAG_SURFACE_VALUES` | same |
+**Constant placement LOCK (per Codex R2 Major #1 closure)**: ALL v20 enum constants live in modules that EXIST at T-A.1.1 commit time. Specifically: schema-bound enums live in `swing/data/models.py` (where the dataclasses live; file already exists pre-Phase-13). The `swing/patterns/__init__.py` (NEW at T-A.1.1) re-exports the pattern-class enum for namespace convenience. `swing/web/charts.py` (lands at T2.SB6) + `swing/trades/watchlist_close_track.py` (lands at T4.SB) MUST NOT carry primary constant definitions — they IMPORT from `swing/data/models.py`. This preserves atomic landing per Phase 12 C.A T-A.2 LOCK without requiring T-A.1.1 to create modules that haven't been designed yet.
 
-All land in T2.SB1 task 1 (migration-only commit per OQ-12 Option E). NO migration-then-Python-then-validator split across multiple commits; the discipline IS atomic.
+| CHECK construct | Python constant (primary location) | Re-export | Dataclass validator |
+|---|---|---|---|
+| `DETECTOR_PATTERN_CLASSES` (5 values) referenced by 4 columns per §3.0 | `swing/data/models.py:DETECTOR_PATTERN_CLASSES` | `swing/patterns/__init__.py` re-exports | `PatternExemplar` / `PatternEvaluation` / `ChartRender` `__post_init__` |
+| `pattern_exemplars.label_source` (7 values) | `swing/data/models.py:_LABEL_SOURCE_VALUES` | — | `PatternExemplar.__post_init__` |
+| `pattern_exemplars.final_decision` (5 values) | `swing/data/models.py:_FINAL_DECISION_VALUES` | — | `PatternExemplar.__post_init__` |
+| 5 numbered cross-column CHECK invariants on `pattern_exemplars` (per spec §3.1 invariants #1-#5) | mirror predicates in `PatternExemplar.__post_init__` | — | same |
+| `fills.fill_origin` (5 values) | `swing/data/models.py:_FILL_ORIGIN_VALUES` | — | `Fill.__post_init__` |
+| `schwab_api_calls.surface` widening (+`trade_entry`, +`trade_exit`) | `swing/integrations/schwab/audit_service.py:_SCHWAB_API_SURFACE_VALUES` (file already exists; widen in place) | — | service-call entry validator |
+| `chart_renders.surface` (5 values) | `swing/data/models.py:_CHART_SURFACE_VALUES` | `swing/web/charts.py` imports at T2.SB6 | `ChartRender.__post_init__` |
+| `chart_renders` cross-column CHECK per §3.2 | mirror predicate in `ChartRender.__post_init__` | — | same |
+| `watchlist_close_track_flags.flagged_by_surface` (2 values) | `swing/data/models.py:_FLAG_SURFACE_VALUES` | `swing/trades/watchlist_close_track.py` imports at T4.SB | `WatchlistCloseTrackFlag.__post_init__` |
+| `watchlist_close_track_flags.cleared_reason` (2 values when non-NULL) | `swing/data/models.py:_FLAG_CLEARED_REASON_VALUES` | same | same |
+| `watchlist_close_track_flag_events.event_type` (2 values) | `swing/data/models.py:_FLAG_EVENT_TYPE_VALUES` | same | `WatchlistCloseTrackFlagEvent.__post_init__` |
+| `watchlist_close_track_flag_events.surface` (2 values) | SAME `_FLAG_SURFACE_VALUES` (reused) | same | same |
+
+All constants land in T-A.1.1 (migration-only commit per OQ-12 Option E + Codex R2 Major #1 closure). NO migration-then-Python-then-validator split across multiple commits; the discipline IS atomic. Later-landing modules (`swing/web/charts.py` at T2.SB6; `swing/trades/watchlist_close_track.py` at T4.SB) IMPORT from `swing/data/models.py` — they do NOT redefine constants.
 
 ### §A.15 No `INSERT OR REPLACE` on audit-trail tables (forward-binding lesson #3)
 
@@ -343,22 +345,25 @@ Per OQ-12 BINDING:
 
 ### §B.4 v20 atomic-landing roster verbatim
 
-Per spec §3.5 + §A.14 above, the v20 migration commit (T-A.1.1) lands ALL of the following IN ONE COMMIT:
+Per spec §3.5 + §A.14 above, the v20 migration commit (T-A.1.1) lands the following IN ONE COMMIT (NEW repo modules deferred to T-A.1.1b per Codex R1 Major #1 + R2 Major #2 closure):
 
 1. Migration SQL file (5 new tables + 6 column adds + 1 CHECK widening + 4 FK declarations + 4 partial unique indexes + cross-column CHECKs).
 2. Schema version bump `EXPECTED_SCHEMA_VERSION = 20`.
-3. NEW Python constants: `DETECTOR_PATTERN_CLASSES`, `_LABEL_SOURCE_VALUES`, `_FINAL_DECISION_VALUES`, `_FILL_ORIGIN_VALUES`, `_CHART_SURFACE_VALUES`, `_FLAG_SURFACE_VALUES`, `_FLAG_CLEARED_REASON_VALUES`, `_FLAG_EVENT_TYPE_VALUES`.
-4. WIDENED Python constant: `_SCHWAB_API_SURFACE_VALUES` (+ `trade_entry` + `trade_exit`).
-5. NEW dataclass models: `PatternExemplar`, `PatternEvaluation`, `ChartRender`, `WatchlistCloseTrackFlag`, `WatchlistCloseTrackFlagEvent` (in `swing/data/models.py`).
-6. WIDENED dataclass: `Fill` gains `fill_origin` + `schwab_source_value_json` + `operator_corrected_value_json` + `auto_fill_audit_at` fields + `__post_init__` validator extension.
-7. WIDENED dataclass: `ReviewLog` gains `auto_populated_field_keys_json` field.
-8. NEW repo modules: `swing/data/repos/pattern_exemplars.py`, `swing/data/repos/pattern_evaluations.py`, `swing/data/repos/chart_renders.py`, `swing/data/repos/watchlist_close_track.py` — each with minimum CRUD (`insert_*`, `get_*_by_id`, `list_*`).
-9. Discriminating test fixtures + 5 atomic-landing tests:
+3. NEW Python constants in `swing/data/models.py` (per §A.14 constant placement LOCK): `DETECTOR_PATTERN_CLASSES`, `_LABEL_SOURCE_VALUES`, `_FINAL_DECISION_VALUES`, `_FILL_ORIGIN_VALUES`, `_CHART_SURFACE_VALUES`, `_FLAG_SURFACE_VALUES`, `_FLAG_CLEARED_REASON_VALUES`, `_FLAG_EVENT_TYPE_VALUES`.
+4. NEW namespace re-export module `swing/patterns/__init__.py` re-exports `DETECTOR_PATTERN_CLASSES` from `swing.data.models`.
+5. WIDENED Python constant: `_SCHWAB_API_SURFACE_VALUES` in `swing/integrations/schwab/audit_service.py` (file already exists; widen in place to include `'trade_entry'` + `'trade_exit'`).
+6. NEW dataclass models in `swing/data/models.py`: `PatternExemplar`, `PatternEvaluation`, `ChartRender`, `WatchlistCloseTrackFlag`, `WatchlistCloseTrackFlagEvent` — each with `__post_init__` validators enforcing schema CHECK + cross-column invariants.
+7. WIDENED dataclass: `Fill` gains `fill_origin` + `schwab_source_value_json` + `operator_corrected_value_json` + `auto_fill_audit_at` fields + `__post_init__` validator extension.
+8. WIDENED dataclass: `ReviewLog` gains `auto_populated_field_keys_json` field.
+9. Discriminating test fixtures + 6 atomic-landing tests:
    - `test_v20_migration_lands_all_tables`: connect post-migration; assert all 5 new tables present + correct columns + indexes.
    - `test_v20_schema_python_constant_parity`: assert each Python constant matches the SQL CHECK enum verbatim (Phase 12 C.A T-A.2 family).
    - `test_v20_dataclass_validator_parity`: instantiate each new dataclass with all 7 cross-column invariant violation cases; assert each raises `ValueError`.
    - `test_v20_migration_backup_gate_fires_at_v19`: invoke `_apply_migration` with `pre_version=19, target_version=20`; assert backup file written.
-   - `test_v20_migration_backup_gate_does_not_fire_at_v18`: invoke with `pre_version=18`; assert NO backup file (migration runner refuses multi-version jumps — must be sequential).
+   - `test_v20_migration_backup_gate_does_not_fire_at_v18`: invoke with `pre_version=18`; assert NO backup file.
+   - `test_v20_fill_origin_backfill_to_operator_typed`: seed 10 fills pre-migration; apply v20; assert all 10 fills.fill_origin='operator_typed'.
+
+10. NEW repo modules land at T-A.1.1b (per Codex R1 Major #1 + R2 Major #2 closure): `swing/data/repos/pattern_exemplars.py`, `swing/data/repos/pattern_evaluations.py`, `swing/data/repos/chart_renders.py`, `swing/data/repos/watchlist_close_track.py` — each with minimum CRUD (`insert_*`, `get_*_by_id`, `list_*`). T3.SB1 worktree branches off T-A.1.1's commit SHA (NOT T-A.1.1b's); T-A.1.1b commit lands AFTER T-A.1.1 on the T2.SB1 branch.
 
 ### §B.5 fill_origin backfill discipline (OQ-7 V1 simple)
 
@@ -1031,7 +1036,7 @@ git commit -m "feat(phase13): T1.SB0 closer — per-cache locking + chart-bytes 
 **Cross-bundle pin plants (per §H):**
 - `test_ohlcv_cache_get_or_fetch_invariant` — un-skips at T2.SB2 + T2.SB3 + T3.SB3 (consumers).
 
-### §G.1 Sub-bundle T2.SB1 — Dev-time labeling infrastructure (8 tasks; migration task 1 per OQ-12 Option E)
+### §G.1 Sub-bundle T2.SB1 — Dev-time labeling infrastructure (9 tasks; migration task 1 + NEW repo CRUD task 1b per OQ-12 Option E + Codex R1 Major #1 split)
 
 **Goal:** Land v20 migration (atomic per §B.4); ship dev-time labeling infrastructure (Claude Code subagent + selective Codex 2nd-reviewer); operator-paired mid-dispatch exemplar bootstrap pause per OQ-6.
 
@@ -1058,9 +1063,9 @@ git commit -m "feat(phase13): T1.SB0 closer — per-cache locking + chart-bytes 
 **Files** (strict migration-only scope per OQ-12 Option E + Codex R1 Major #1 closure — repo CRUD moves to T-A.1.1b):
 - Create: `swing/data/migrations/0020_phase13_charts_patterns_autofill_usability.sql`.
 - Modify: `swing/data/db.py` (single-line `EXPECTED_SCHEMA_VERSION = 20`).
-- Modify: `swing/data/models.py` (add NEW dataclasses per §B.4 #5; widen Fill + ReviewLog per §B.4 #6-#7 with `__post_init__` validators).
-- Create: `swing/patterns/__init__.py` (DETECTOR_PATTERN_CLASSES + label/decision/etc constants per §B.4 #3).
-- Modify: `swing/integrations/schwab/audit_service.py` (widen `_SCHWAB_API_SURFACE_VALUES` per §B.4 #4).
+- Modify: `swing/data/models.py` (add NEW dataclasses per §B.4 #6; widen Fill + ReviewLog per §B.4 #7-#8 with `__post_init__` validators; add all 8 v20 enum constants per §A.14 constant placement LOCK).
+- Create: `swing/patterns/__init__.py` (re-exports `DETECTOR_PATTERN_CLASSES` from `swing.data.models` for namespace convenience per §A.14).
+- Modify: `swing/integrations/schwab/audit_service.py` (widen `_SCHWAB_API_SURFACE_VALUES` per §B.4 #5).
 - Create: `tests/data/test_v20_migration.py`.
 
 **NOT in T-A.1.1 scope** (per OQ-12 Option E strict migration-only boundary; lands at T-A.1.1b): NEW repo modules `swing/data/repos/pattern_exemplars.py`, `pattern_evaluations.py`, `chart_renders.py`, `watchlist_close_track.py`. Rationale: T3.SB1 worktree branches from T-A.1.1's commit SHA + needs ONLY the schema landing + Python constants + dataclass validators to satisfy schema-version-20 prerequisite (T-B.1.1); does NOT need NEW repo CRUD modules (those serve consumer-side Phase 13 sub-bundles, not Theme 3 auto-fill which extends EXISTING `fills.py` repo).
@@ -1082,9 +1087,9 @@ def test_v20_fill_origin_backfill_to_operator_typed(): ...
 
 - [ ] **Step 4: Bump `EXPECTED_SCHEMA_VERSION` 19 → 20** at `swing/data/db.py:31`.
 
-- [ ] **Step 5: Add 8 Python constants in `swing/patterns/__init__.py`** per §A.14 + §B.4 #3.
+- [ ] **Step 5: Add 8 Python constants in `swing/data/models.py`** per §A.14 constant-placement LOCK; add `swing/patterns/__init__.py` re-export of `DETECTOR_PATTERN_CLASSES` for namespace convenience.
 
-- [ ] **Step 6: Add 5 NEW dataclasses + widen Fill + widen ReviewLog** with `__post_init__` validators enforcing all 7 cross-column invariants per §A.14.
+- [ ] **Step 6: Add 5 NEW dataclasses + widen Fill + widen ReviewLog** in `swing/data/models.py` with `__post_init__` validators enforcing all 7 cross-column invariants per §A.14.
 
 - [ ] **Step 7: Widen `_SCHWAB_API_SURFACE_VALUES`** in `swing/integrations/schwab/audit_service.py` to include `'trade_entry'` + `'trade_exit'`.
 
@@ -1380,7 +1385,7 @@ git commit -m "feat(phase13): swing/trades/entry_auto_fill.py — Schwab fetch +
 ```
 
 **Acceptance criteria:**
-- 4 discriminating tests pass.
+- 6 discriminating tests pass (matching fill / no fills / sandbox / degraded / resolve_credentials trace / construct_authenticated_client trace).
 - Schwab discipline 4-step chain followed.
 - `allow_prompt=False` REQUIRED (forward-binding lesson #10 + CLAUDE.md gotcha "form-render-time prompts would block HTTP handler").
 
@@ -1752,7 +1757,7 @@ git commit -m "test(phase13): T3.SB1 closer — entry auto-fill E2E + ruff sweep
 - [ ] **Step 4: Commit** — `feat(phase13): swing/trades/exit_auto_fill.py — Schwab fetch + value resolution (T-B.2.1)`.
 
 **Acceptance criteria:**
-- 5 discriminating tests pass (matching fill / no fills / sandbox / degraded / multi-partial list).
+- 7 discriminating tests pass (matching fill / no fills / sandbox / degraded / multi-partial list / resolve_credentials trace / construct_authenticated_client trace).
 - Schwab discipline 4-step chain followed (apply_overrides + resolve_credentials with `allow_prompt=False` + construct_authenticated_client + sandbox/DEGRADED handling).
 - Multi-partial returns list of candidates for operator selection.
 
@@ -1781,7 +1786,7 @@ git commit -m "test(phase13): T3.SB1 closer — entry auto-fill E2E + ruff sweep
 - [ ] **Step 6: Commit** — `feat(phase13): /trades/{id}/exit/form auto-fill integration (T-B.2.2)`.
 
 **Acceptance criteria:**
-- 6 discriminating tests pass.
+- 7 discriminating tests pass.
 - HTMX gotcha trinity preserved (HX-Request propagation + HX-Redirect-vs-303-swap + HX-Redirect-target-unrouted).
 - VM extends BaseLayoutVM.
 - Multi-partial list renders correctly.
@@ -2170,6 +2175,7 @@ def test_dtw_full_pipeline_completes_within_120s_on_baseline_hardware(benchmark,
   - `test_post_patterns_review_decision_pattern_present_outside_window_emits_window_shift_row`.
   - `test_post_patterns_review_decision_multiple_overlapping_patterns_emits_multi_exemplar_rows`.
   - `test_patterns_review_vm_extends_base_layout_vm`.
+  - `test_patterns_review_vm_populates_banner_fields` (per Codex R2 Major #3 closure: `unresolved_material_discrepancies_count` + `banner_resolve_link` + `recent_multi_leg_auto_correction_count` per forward-binding lesson #12).
 
 - [ ] **Step 2: Implement** route handlers + PatternReviewFormVM extending BaseLayoutVM + Jinja template + integration with charts.py annotated renderer.
 
@@ -2265,7 +2271,7 @@ def test_dtw_full_pipeline_completes_within_120s_on_baseline_hardware(benchmark,
 
 #### Task T-D.1 — `swing/trades/watchlist_close_track.py` service per §F.4 transactional discipline
 
-- [ ] **Step 1: Write 8 failing tests** per §A.12 transactional discipline (sandbox short-circuit OMITTED per §F.4 LOCK + Codex R1 Major #2 — Q4 has no Schwab dependency):
+- [ ] **Step 1: Write 9 failing tests** per §A.12 transactional discipline (sandbox short-circuit OMITTED per §F.4 LOCK + Codex R1 Major #2 — Q4 has no Schwab dependency):
   - `test_set_flag_owns_begin_immediate_rejects_caller_held_tx`.
   - `test_set_flag_emits_audit_row_with_event_type_set`.
   - `test_set_flag_re_flagging_cleared_ticker_inserts_new_row_no_unique_collision` (per Codex R1 M#9 closure).
@@ -2375,13 +2381,40 @@ def auto_clear_on_position_open(conn, ticker: str) -> bool:
 
 - [ ] **Step 4: Commit** — `test(phase13): Q4 session-anchor + base-layout banner alignment (T-D.6)`.
 
-#### Task T-D.7 — T4.SB closer — integration E2E + ruff sweep + Phase 13 close
+#### Task T-D.7 — T4.SB closer — integration E2E + cp1252 subprocess validation + ruff sweep + Phase 13 close
+
+**Files:**
+- Create: `tests/integration/test_phase13_cumulative_e2e.py`.
+- Create: `tests/cli/test_phase13_cli_cp1252_subprocess.py` (Codex R1 Minor #3 + R2 Minor #1 closure — consolidates §A.8 subprocess + stderr-encoding validation across cumulative Phase 13 CLI surface).
 
 - [ ] **Step 1: Write Phase 13 cumulative E2E test** seeding: full pipeline run with pattern detection → operator labels exemplars → flags watchlist ticker → opens position → confirms auto-clear → reviews trade → closes Phase 13 arc.
 
-- [ ] **Step 2: Run full fast-test suite + ruff sweep.**
+- [ ] **Step 2: Write subprocess cp1252 validation tests** (per Codex R1 Minor #3 + R2 Minor #1 closure):
 
-- [ ] **Step 3: Commit** — `test(phase13): T4.SB closer + Phase 13 cumulative E2E + ruff (T-D.7)`.
+```python
+def test_swing_patterns_label_exemplars_cp1252_safe_via_subprocess():
+    # Subprocess invocation forces OS-level encoder path (capfd captures via Python-level pipes
+    # that bypass the Windows encoder per Phase 12 C.D gate-fix #3).
+    import subprocess
+    result = subprocess.run(
+        ['python', '-m', 'swing.cli', 'patterns', 'label-exemplars',
+         '--ticker', 'AAPL', '--start', '2026-04-15', '--end', '2026-05-15',
+         '--pattern-class', 'vcp'],
+        capture_output=True, text=False,
+        env={**os.environ, 'PYTHONIOENCODING': 'cp1252'},
+    )
+    assert b'UnicodeEncodeError' not in result.stderr
+    assert b'UnicodeEncodeError' not in result.stdout
+
+def test_swing_watchlist_flag_cp1252_safe_via_subprocess(): ...
+def test_swing_watchlist_unflag_cp1252_safe_via_subprocess(): ...
+```
+
+Per §A.8 + Phase 12 C.D gate-fix #1 + #3: pytest `capfd` bypasses the OS-level encoder; subprocess invocation forces the actual production path operators encounter on Windows.
+
+- [ ] **Step 3: Run full fast-test suite + ruff sweep.**
+
+- [ ] **Step 4: Commit** — `test(phase13): T4.SB closer + Phase 13 cumulative E2E + cp1252 subprocess validation + ruff (T-D.7)`.
 
 **Operator-witnessed gate (T4.SB):**
 - S1 (inline): pytest + ruff.
@@ -2408,7 +2441,7 @@ T1.SB0 ────────────────────────�
     │
     ▼
 T2.SB1 ╳══════════════════════════════ T3.SB1 (concurrent off T2.SB1's first-commit SHA per OQ-12 Option E)
-    │       (T2.SB1: 8 tasks)            (T3.SB1: 6 tasks)
+    │       (T2.SB1: 9 tasks)            (T3.SB1: 6 tasks)
     │       (operator-paired pause)
     │
     ▼
@@ -2442,7 +2475,7 @@ T4.SB ────────────────────────�
 Phase 13 CLOSED
 ```
 
-Total: **11 sub-bundles, 70 tasks**.
+Total: **11 sub-bundles, 71 tasks** (T-A.1.1b added per Codex R1 Major #1 + R2 Major #2 split).
 
 One concurrent dispatch point: T2.SB1 ∥ T3.SB1 (per OQ-12 Option E). All other transitions are serial.
 
@@ -2615,7 +2648,7 @@ Phase 13 PRESERVES all ~60 cumulative forward-binding lessons inherited per spec
 | SB | Task count | Test delta (fast) | Test delta (slow) | Production LOC | Test LOC |
 |---|---|---|---|---|---|
 | T1.SB0 | 4 | +20-40 | 0 | +50-100 | +200-350 |
-| T2.SB1 | 8 | +50-90 | +0 (cassette-mode) | +500-800 | +600-900 |
+| T2.SB1 | 9 | +50-90 | +0 (cassette-mode) | +500-800 | +600-900 |
 | T3.SB1 | 6 | +40-70 | +1 (Schwab E2E) | +200-300 | +300-500 |
 | T2.SB2 | 6 | +60-100 | 0 | +400-600 | +500-800 |
 | T2.SB3 | 9 | +90-150 | +1 (operator-fixture detector) | +800-1200 | +1000-1500 |
@@ -2625,7 +2658,7 @@ Phase 13 PRESERVES all ~60 cumulative forward-binding lessons inherited per spec
 | T3.SB3 | 5 | +50-90 | 0 | +200-400 | +400-700 |
 | T2.SB6 | 7 | +70-120 | +1 (full closed-loop E2E) | +700-1100 | +900-1400 |
 | T4.SB | 7 | +40-70 | 0 | +250-400 | +400-700 |
-| **Cumulative** | **70 tasks** | **+590-1020 fast** | **+4 slow E2E** | **+4200-6600 prod LOC** | **+5800-9250 test LOC** |
+| **Cumulative** | **71 tasks** | **+590-1020 fast** | **+4 slow E2E** | **+4200-6600 prod LOC** | **+5800-9250 test LOC** |
 
 ### §K.2 Cumulative baseline + Phase 13 close projection
 
