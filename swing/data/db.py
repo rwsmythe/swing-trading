@@ -28,7 +28,15 @@ from pathlib import Path
 #   superseded_by_correction_id + ALTER schwab_api_calls ADD linked_correction_id +
 #   trade_events rebuild (widen event_type CHECK 6→7 to add
 #   'reconciliation_auto_correct'). Atomic BEGIN/COMMIT discipline preserved.
-EXPECTED_SCHEMA_VERSION = 19
+# phase 13 t2.sb1 charts patterns autofill usability (migration 0020):
+#   5 new tables (pattern_exemplars + chart_renders + pattern_evaluations +
+#   watchlist_close_track_flags + watchlist_close_track_flag_events) +
+#   schwab_api_calls rebuild (widen surface CHECK 2 -> 4: add 'trade_entry' +
+#   'trade_exit') + fills widening (4 ALTER ADDs: fill_origin DEFAULT
+#   'operator_typed' + 3 audit JSON cols) + review_log widening
+#   (auto_populated_field_keys_json). Atomic BEGIN/COMMIT discipline
+#   preserved. OQ-12 Option E migration-only commit boundary.
+EXPECTED_SCHEMA_VERSION = 20
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 # Phase 7 backup gate (spec §12.1): when migrating to schema_version >= 14,
@@ -88,6 +96,18 @@ PHASE12_BUNDLE_C_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
         "account_equity_snapshots",
         "schwab_api_calls",
     }
+)
+
+# Phase 13 T2.SB1 backup gate (spec §3.5 + plan §B.1): when migrating from
+# v19 -> v20+, snapshot the live v19 DB. Adds reconciliation_corrections
+# (introduced in migration 0019) to the post-Phase-12-Sub-bundle-C baseline.
+# Derived deterministically from PHASE12 set so provenance stays auditable.
+# Filename pattern: ``swing-pre-phase13-migration-<ISO>.db`` per plan §B.1 +
+# CLAUDE.md migration-runner backup-gate strict-equality gotcha
+# (``pre_version == 19`` STRICT EQUALITY, NOT ``<=``).
+PHASE13_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
+    PHASE12_BUNDLE_C_PRE_MIGRATION_EXPECTED_TABLES
+    | {"reconciliation_corrections"}
 )
 
 
@@ -423,6 +443,31 @@ def _create_pre_phase12_bundle_c_migration_backup(
     return backup_path
 
 
+def _create_pre_phase13_migration_backup(
+    src_path: Path, *, dest_dir: Path,
+) -> Path:
+    """Phase 13 T2.SB1 mirror with phase13 filename prefix.
+
+    Per plan §B.1 + spec §3.5: backup file pattern
+    ``swing-pre-phase13-migration-<ISO>.db``. SQLite-native
+    Connection.backup() is the only acceptable snapshot mechanism (consistent
+    under live writers).
+    """
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    backup_path = dest_dir / f"swing-pre-phase13-migration-{timestamp}.db"
+    src_conn = sqlite3.connect(src_path)
+    try:
+        dest_conn = sqlite3.connect(backup_path)
+        try:
+            src_conn.backup(dest_conn)
+        finally:
+            dest_conn.close()
+    finally:
+        src_conn.close()
+    return backup_path
+
+
 def _phase8_backup_gate(
     conn: sqlite3.Connection,
     *,
@@ -586,6 +631,52 @@ def _phase12_bundle_c_backup_gate(
         ) from exc
 
 
+def _phase13_backup_gate(
+    conn: sqlite3.Connection,
+    *,
+    current_version: int,
+    target_version: int,
+    backup_dir: Path | None,
+) -> None:
+    """Phase 13 T2.SB1 backup-before-migrate gate (plan §B.1 + spec §3.5).
+
+    Fires only when ``current_version == 19 AND target_version >= 20`` —
+    i.e., a real production v19 DB about to receive Phase 13's migration
+    0020. STRICT EQUALITY on pre_version per CLAUDE.md gotcha "Migration
+    runner backup-gate equality form: pre_version == (target - 1) strict
+    equality, NOT pre_version <= (target - 1)". Multi-step migration walks
+    from pre-v19 baselines bypass this gate by design (matches Phase 9 /
+    Phase 12 C.A precedent).
+
+    Filename: ``swing-pre-phase13-migration-<ISO>.db`` (NOT
+    phase7/8/9/12-bundle-c prefix).
+    """
+    if target_version < 20 or current_version != 19:
+        return
+    src_path = _resolve_main_db_path(conn)
+    if src_path is None:
+        raise MigrationBackupRequiredException(
+            "pre-Phase-13 backup gate requires a file-backed source DB; "
+            "in-memory connections cannot be snapshotted."
+        )
+    if backup_dir is None:
+        backup_dir = src_path.parent
+    try:
+        backup_path = _create_pre_phase13_migration_backup(
+            src_path, dest_dir=backup_dir,
+        )
+        _verify_backup_integrity(
+            backup_path,
+            expected_tables=PHASE13_PRE_MIGRATION_EXPECTED_TABLES,
+        )
+    except MigrationBackupRequiredException:
+        raise
+    except (OSError, sqlite3.Error) as exc:
+        raise MigrationBackupRequiredException(
+            f"pre-Phase-13 backup failed: {exc}"
+        ) from exc
+
+
 def run_migrations(
     conn: sqlite3.Connection,
     *,
@@ -629,6 +720,12 @@ def run_migrations(
         backup_dir=backup_dir,
     )
     _phase12_bundle_c_backup_gate(
+        conn,
+        current_version=current,
+        target_version=target_version,
+        backup_dir=backup_dir,
+    )
+    _phase13_backup_gate(
         conn,
         current_version=current,
         target_version=target_version,

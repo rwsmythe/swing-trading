@@ -34,6 +34,24 @@ import sqlite3
 
 from swing.data.repos import schwab_api_calls as repo
 
+# Phase 13 T2.SB1 (migration 0020) — surface CHECK widening per spec §3.4 +
+# §6.4 + plan §A.14 paired-atomic-landing LOCK. Schema CHECK on
+# ``schwab_api_calls.surface`` in migration 0020 mirrors these 4 values
+# (per CLAUDE.md gotcha "Schema-CHECK + Python-constant + dataclass-
+# validator MUST land in the same task for atomic consistency").
+#
+# Pre-Phase-13 callsites at ``swing/pipeline/runner.py:_step_schwab_*`` +
+# ``swing/cli_schwab.py`` + ``swing/web/routes/trades.py`` +
+# ``swing/web/routes/schwab.py`` are unaffected (continue passing 'pipeline'
+# / 'cli'). Phase 13 T3.SB1 entry auto-fill + T3.SB2 exit auto-fill paths
+# emit audit rows with 'trade_entry' / 'trade_exit'.
+_SCHWAB_API_SURFACE_VALUES: tuple[str, ...] = (
+    "pipeline",
+    "cli",
+    "trade_entry",
+    "trade_exit",
+)
+
 
 class CallerHeldTransactionError(RuntimeError):
     """Raised when a caller invokes a Schwab audit service function while
@@ -72,6 +90,15 @@ def record_call_start(
             "with conn:' + 'in_transaction auto-detect outer transaction "
             "guards re-introduce the very race the explicit lock was meant "
             "to close'."
+        )
+
+    # Phase 13 T2.SB1 (migration 0020) — Python-side surface enum validation
+    # mirroring schema CHECK widening per plan §A.14 paired-atomic-landing
+    # LOCK. Mirrors the migration 0020 CHECK on ``schwab_api_calls.surface``.
+    if surface not in _SCHWAB_API_SURFACE_VALUES:
+        raise ValueError(
+            "surface must be one of "
+            f"{_SCHWAB_API_SURFACE_VALUES}, got {surface!r}"
         )
 
     conn.execute("BEGIN IMMEDIATE")
