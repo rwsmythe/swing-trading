@@ -135,15 +135,17 @@ Option B (modify `get_price_history` defaults from `None` to daily) was consider
 
 ### §4.C Operator's corrupted CVGI.schwab_api.parquet — recovery posture
 
-The operator's `~/swing-data/prices-cache/CVGI.schwab_api.parquet` (2780 rows × 10 unique dates) is contaminated with minute-frequency data from prior runs. Post-fix, the next pipeline run will:
+The operator's `~/swing-data/prices-cache/CVGI.schwab_api.parquet` (2780 rows × 10 unique dates) is contaminated with minute-frequency data from prior runs. Post-fix, on the next pipeline run's FIRST SUCCESSFUL Schwab daily fetch for each affected ticker:
 
 1. Invoke `_bars_hook` → `fetch_window_via_ladder` with daily kwargs → `get_price_history` requests ~5y of daily bars.
 2. Mapper produces `OhlcvBar` instances with unique daily `asof_date`s.
 3. `write_window` merges the new daily bars with the existing minute-bar Shape A archive via `drop_duplicates(subset=["asof_date"], keep="last")`. The **NEW daily bars win** on conflict for the 10 overlapping dates; daily bars for the other ~1250 dates are appended. **Post-fix Shape A archive will be ~1260 unique daily rows** (no operator intervention required).
 
-Alternative recovery (if operator wants to clean up immediately, OPTIONAL): delete `~/swing-data/prices-cache/CVGI.schwab_api.parquet` (and any other `*.schwab_api.parquet` file with similar contamination); next pipeline run reconstitutes from scratch. The legacy `*.parquet` files are unaffected (always daily-bar from yfinance).
+**Recovery conditioning** (per Codex R1 Minor #1): the auto-cleanup REQUIRES a successful Schwab daily fetch. If Schwab is degraded for an extended period and the ladder falls back to yfinance for several runs, the contaminated `CVGI.schwab_api.parquet` remains on disk in its minute-frequency shape until Schwab recovers. **`_bars_hook`'s return-to-cache path is UNAFFECTED** in this scenario — the hook returns the yfinance-fallback DataFrame directly to the OhlcvCache, so the chart-step renders correctly off the fallback bars without consulting Shape A. The contamination only matters for the FUTURE `resolve_ohlcv_window` reader (which honors `_SOURCE_PRECEDENCE_MARKET_DATA = {schwab_api: 0, yfinance: 1}` — Schwab wins on conflict). Until the contaminated rows are overwritten, any Shape A consumer that consults `resolve_ohlcv_window` for the 10 contaminated dates would see Schwab's stale minute-frequency last-of-day bars rather than yfinance's daily bars.
 
-No discriminating cleanup is required for the fix to work end-to-end on the operator's system. Recovery is automatic via the next pipeline run's `write_window` merge.
+Operators may proactively clean up by deleting `~/swing-data/prices-cache/CVGI.schwab_api.parquet` (and any other `*.schwab_api.parquet` file with similar contamination); next pipeline run reconstitutes from scratch via either the Schwab daily-kwargs path or the yfinance-fallback persistence path. The legacy `*.parquet` files are unaffected (always daily-bar from yfinance).
+
+No discriminating cleanup is required for the fix to close the OPERATOR-WITNESSED S3 chart-render regression — `_bars_hook` returns fresh daily data to the cache regardless of the on-disk Shape A state. Post-S3-PASS housekeeping may choose to surface a V2-F (per §4.D) cleanup helper if operators report Shape A contamination from sustained Schwab outages.
 
 ### §4.D Banked V2 candidates (NOT in V1 gate-fix scope)
 
