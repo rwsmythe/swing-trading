@@ -3658,5 +3658,221 @@ def account_snapshot_cmd(
         )
 
 
+# ============================================================================
+# Phase 13 T2.SB1 — `swing patterns` group (T-A.1.5)
+#
+# `swing patterns label-exemplars` dispatches the pattern-labeler subagent
+# for one (window, pattern_class) seed tuple per spec §5.9 step 1. V1 is
+# operator-paired per OQ-6: WITHOUT --silver-response-file the CLI emits
+# the dispatch payload + guidance; WITH --silver-response-file the CLI
+# persists the parsed response as a silver-tier exemplar.
+#
+# Pattern-class choice constrained to DETECTOR_PATTERN_CLASSES via
+# explicit validation (per plan §G.1 T-A.1.5 Step 2). ASCII-only output
+# per §A.8 + CLAUDE.md Windows cp1252 stdout gotcha.
+# ============================================================================
+
+
+@main.group("patterns")
+def patterns_group() -> None:
+    """Phase 13 Theme 2 — pattern labeling + closed-loop review surfaces."""
+
+
+@patterns_group.command("label-exemplars")
+@click.option("--ticker", required=True, type=str)
+@click.option(
+    "--start", "start_date", required=True, type=str,
+    help="ISO date YYYY-MM-DD; window left edge.",
+)
+@click.option(
+    "--end", "end_date", required=True, type=str,
+    help="ISO date YYYY-MM-DD; window right edge.",
+)
+@click.option(
+    "--pattern-class", "pattern_class", required=True, type=str,
+    help="Detector class (one of: vcp, flat_base, cup_with_handle, "
+         "high_tight_flag, double_bottom_w).",
+)
+@click.option(
+    "--timeframe", "timeframe", default="daily",
+    type=click.Choice(("daily", "weekly")),
+    show_default=True,
+)
+@click.option(
+    "--ai-labeler-version", "ai_labeler_version",
+    default="claude-code-pattern-labeler-v1", type=str,
+    show_default=True,
+)
+@click.option(
+    "--silver-response-file", "silver_response_file",
+    type=click.Path(exists=True, dir_okay=False), default=None,
+    help="Path to JSON file with the pattern-labeler subagent's response. "
+         "When provided, the CLI persists the parsed response to "
+         "pattern_exemplars. When omitted, the CLI emits the dispatch "
+         "payload to stdout (operator-paired workflow per OQ-6).",
+)
+@click.option(
+    "--window-bars-file", "window_bars_file",
+    type=click.Path(exists=True, dir_okay=False), default=None,
+    help="Optional path to JSON file with the window's OHLCV bars. "
+         "When omitted, the CLI emits a placeholder bars list and "
+         "expects the operator to supply real bars in the response file.",
+)
+@click.pass_context
+def label_exemplars_cmd(
+    ctx: click.Context,
+    *,
+    ticker: str,
+    start_date: str,
+    end_date: str,
+    pattern_class: str,
+    timeframe: str,
+    ai_labeler_version: str,
+    silver_response_file: str | None,
+    window_bars_file: str | None,
+) -> None:
+    """Dispatch the pattern-labeler subagent for one (window, pattern_class).
+
+    V1 operator-paired workflow (per OQ-6 + spec section 5.9 step 1):
+
+    \b
+    Step A (emit payload):
+      swing patterns label-exemplars --ticker ABC --start 2024-01-01 \\
+          --end 2024-02-01 --pattern-class vcp
+      => writes dispatch payload JSON to stdout for operator handoff.
+
+    \b
+    Step B (operator dispatches in Claude Code session, captures response):
+      Inside a paired Claude Code session, the operator invokes the
+      pattern-labeler subagent with the payload + saves the response to a
+      JSON file (e.g. silver.json).
+
+    \b
+    Step C (persist):
+      swing patterns label-exemplars --ticker ABC --start 2024-01-01 \\
+          --end 2024-02-01 --pattern-class vcp \\
+          --silver-response-file silver.json
+      => parses silver.json + persists one row to pattern_exemplars with
+         label_source=claude_silver.
+    """
+    import json as _json
+    from datetime import UTC as _UTC
+    from datetime import datetime as _datetime
+
+    from swing.data.db import connect as _connect
+    from swing.data.models import DETECTOR_PATTERN_CLASSES as _DPC
+    from swing.patterns.labeling import (
+        SilverLabelResponse as _SilverLabelResponse,
+    )
+    from swing.patterns.labeling import (
+        fire_claude_silver_label as _fire_claude_silver_label,
+    )
+
+    if pattern_class not in _DPC:
+        raise click.BadParameter(
+            f"pattern-class must be one of {list(_DPC)}, got "
+            f"{pattern_class!r}",
+            param_hint="--pattern-class",
+        )
+
+    # Build window payload. V1: bars optional (placeholder if absent); the
+    # operator-paired session at T-A.1.7 wires real OhlcvCache fetch.
+    if window_bars_file is not None:
+        bars = _json.loads(
+            Path(window_bars_file).read_text(encoding="utf-8")
+        )
+    else:
+        bars = []  # placeholder
+    window_payload = {
+        "ticker": ticker,
+        "timeframe": timeframe,
+        "start_date": start_date,
+        "end_date": end_date,
+        "bars": bars,
+    }
+
+    # Rule criteria + structural_evidence_schema land at T2.SB3+/SB4
+    # detector builds. V1 emits placeholders so the dispatch payload is
+    # well-formed.
+    rule_criteria: dict = {
+        "pattern_class": pattern_class,
+        "note": (
+            "Rule criteria placeholder; populated by T2.SB3+/SB4 "
+            "detector modules per spec sections 5.2 through 5.6."
+        ),
+    }
+    structural_evidence_schema: dict = {
+        "pattern_class": pattern_class,
+        "note": (
+            "Structural evidence schema placeholder; populated by "
+            "T2.SB3+/SB4 detector modules."
+        ),
+    }
+
+    # Without --silver-response-file: emit ONLY the payload JSON (operator
+    # handoff guidance is documented in --help; CLI stdout stays parseable).
+    if silver_response_file is None:
+        payload = {
+            "window_payload": window_payload,
+            "pattern_class": pattern_class,
+            "rule_criteria": rule_criteria,
+            "structural_evidence_schema": structural_evidence_schema,
+            "ai_labeler_version": ai_labeler_version,
+        }
+        click.echo(_json.dumps(payload, sort_keys=True, indent=2))
+        return
+
+    # With --silver-response-file: parse + persist.
+    response_raw = _json.loads(
+        Path(silver_response_file).read_text(encoding="utf-8")
+    )
+    try:
+        response = _SilverLabelResponse(
+            evaluation=response_raw["evaluation"],
+            confidence=response_raw["confidence"],
+            structural_evidence_json=response_raw["structural_evidence_json"],
+            geometric_evidence_narrative=(
+                response_raw["geometric_evidence_narrative"]
+            ),
+        )
+    except (KeyError, TypeError) as exc:
+        raise click.ClickException(
+            f"silver-response-file shape invalid: {exc}; expected keys "
+            "'evaluation', 'confidence', 'structural_evidence_json', "
+            "'geometric_evidence_narrative' per .claude/agents/"
+            "pattern-labeler.md output contract."
+        ) from exc
+
+    cfg = ctx.obj["config"]
+    conn = _connect(cfg.paths.db_path)
+
+    def _dispatch_from_file(**_kwargs: object) -> "_SilverLabelResponse":
+        return response
+
+    try:
+        exemplar_id = _fire_claude_silver_label(
+            conn,
+            ticker=ticker,
+            timeframe=timeframe,
+            start_date=start_date,
+            end_date=end_date,
+            pattern_class=pattern_class,
+            window_payload=window_payload,
+            rule_criteria=rule_criteria,
+            structural_evidence_schema=structural_evidence_schema,
+            ai_labeler_version=ai_labeler_version,
+            dispatch_subagent=_dispatch_from_file,
+            now_fn=lambda: _datetime.now(_UTC).isoformat(),
+        )
+    finally:
+        conn.close()
+
+    click.echo(
+        f"silver exemplar persisted: id={exemplar_id} ticker={ticker} "
+        f"pattern_class={pattern_class} final_decision="
+        f"{response.evaluation}"
+    )
+
+
 if __name__ == "__main__":  # pragma: no cover
     main()
