@@ -39,7 +39,7 @@ The dispatch brief §2 names the output path `docs/superpowers/specs/2026-05-17-
 3. **§3** — schema v19 → v20 sketch + v21 candidates flagged per theme.
 4. **§4–§7** — Theme 1 / Theme 2 / Theme 3 / Theme 4 architecture (one section per theme).
 5. **§8** — sub-bundle decomposition refinement (11 sub-bundles per scope-brainstorm §0.5.2 LOCK).
-6. **§9** — OQ-1..OQ-10 + Q4 sub-decisions D-Q4.1..D-Q4.7 (the orchestrator-pre-writing-plans lock surface).
+6. **§9** — OQ-1..OQ-12 + Q4 sub-decisions D-Q4.1..D-Q4.7 (the orchestrator-pre-writing-plans lock surface; OQ-11 added in pre-Codex review; OQ-12 added in Codex R1 fix bundle).
 7. **§10** — five-pattern discriminating-example walkthroughs (rule criteria + composite scoring + structural evidence).
 8. **§11..§15** — forward-binding lessons, risks, V2 candidates, out-of-scope reaffirmation, references.
 
@@ -187,8 +187,9 @@ Library of curated + AI-labeled + organic-trade-history pattern instances. Ancho
 | `timeframe` | TEXT NOT NULL | CHECK in (`daily`, `weekly`) |
 | `start_date` | TEXT NOT NULL | ISO date; window left edge |
 | `end_date` | TEXT NOT NULL | ISO date; window right edge |
-| `pattern_class` | TEXT NOT NULL | CHECK enum: 5 V1 patterns (`vcp`, `flat_base`, `cup_with_handle`, `high_tight_flag`, `double_bottom_w`). v21+ adds sell-side patterns when Phase 14 ships. |
-| `label_source` | TEXT NOT NULL | CHECK enum: `curated_gold` / `claude_silver` / `codex_silver` / `organic_trade_history` / `synthetic` / `perturbation` (per v2 brief §8 5-source taxonomy) |
+| `pattern_class` | TEXT NOT NULL | CHECK enum: 5 V1 patterns (`vcp`, `flat_base`, `cup_with_handle`, `high_tight_flag`, `double_bottom_w`) **PLUS `none`** (operator-rejected exemplar where the candidate window was reviewed and deemed to contain NO pattern — closes Codex R1 M#5 reject-path semantics). v21+ adds sell-side patterns when Phase 14 ships. |
+| `proposed_pattern_class` | TEXT NULL | CHECK enum same as `pattern_class` excluding `none`; populated when `label_source IN ('claude_silver', 'codex_silver', 'organic_trade_history')` to record the detector/labeler proposal that operator accepted/rejected/relabeled. `NULL` for `curated_gold` / `synthetic` / `perturbation` rows. |
+| `label_source` | TEXT NOT NULL | CHECK enum: `curated_gold` / `claude_silver` / `codex_silver` / `organic_trade_history` / `operator_rejected` / `synthetic` / `perturbation` (per v2 brief §8 5-source taxonomy + NEW `operator_rejected` per Codex R1 M#5 reject-path semantics). |
 | `ai_labeler_version` | TEXT NULL | dispatch SHA for Claude Code subagent / Codex; `NULL` for gold/organic/synthetic |
 | `gold_validated_at` | TEXT NULL | ISO timestamp when operator promoted silver → gold |
 | `codex_reviewed` | INTEGER NOT NULL DEFAULT 0 | boolean — did Codex 2nd reviewer fire (per L9 SELECTIVE policy) |
@@ -202,7 +203,35 @@ Library of curated + AI-labeled + organic-trade-history pattern instances. Ancho
 
 Indexes: `(pattern_class, label_source)` for cohort surfaces; `(ticker, start_date)` for ticker-history lookups.
 
-### §3.2 New table — `pattern_evaluations` (Theme 2 detector run output cache)
+**Cross-column CHECK invariant** (per Phase 12 C.A schema-defended cross-column CHECK precedent): `(label_source = 'operator_rejected' AND pattern_class = 'none') OR (label_source != 'operator_rejected' AND pattern_class != 'none')` — rejected rows MUST carry `pattern_class='none'` + non-rejected rows MUST carry one of the 5 positive patterns. Schema-defended; mirror Python-side validator at landing per Phase 12 C.A schema-CHECK + Python-constant + dataclass-validator paired discipline.
+
+### §3.2 New table — `chart_renders` (Theme 1 cache; full sketch — closes Codex R1 M#2 §3 omission)
+
+Per §4.4 LOCK (Theme 1 cache architecture). Inserted here in §3 schema delta to close R1 M#2 omission. Detail discussion remains at §4.4; this section enumerates the schema shape canonically.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | INTEGER PK | autoincrement |
+| `ticker` | TEXT NOT NULL | |
+| `surface` | TEXT NOT NULL | CHECK enum: `watchlist_row` / `hyprec_detail` / `position_detail` / `market_weather` / `theme2_annotated` |
+| `pipeline_run_id` | INTEGER NULL | FK to `pipeline_runs(id)` `ON DELETE CASCADE`; `NULL` for non-run-bound surfaces (`position_detail` rendered on-demand after a fill) |
+| `pattern_class` | TEXT NULL | CHECK enum same as `pattern_exemplars.pattern_class`; populated ONLY for `surface='theme2_annotated'` (NULL for all other surfaces by design) |
+| `chart_svg_bytes` | BLOB NOT NULL | inline SVG bytes |
+| `source_data_hash` | TEXT NOT NULL | SHA256 of input OHLCV slice + pattern_evaluation row (if theme2_annotated) — staleness invalidation key |
+| `rendered_at` | TEXT NOT NULL | server-stamped ISO timestamp |
+| `data_asof_date` | TEXT NOT NULL | session date of input OHLCV (last completed session); per session-anchor LOCK at §4.4 |
+
+**Indexes (uniqueness LOCK — closes Codex R1 M#3 SQLite NULL-distinct semantics defect)**: Per SQLite NULL-distinct semantics, a unique index over columns including NULL allows duplicate rows where the NULL fields participate. Use **partial unique indexes per surface class** to enforce one-row-per-cache-key:
+
+- `CREATE UNIQUE INDEX idx_chart_renders_run_bound ON chart_renders(ticker, surface, pipeline_run_id) WHERE pipeline_run_id IS NOT NULL AND surface != 'theme2_annotated'`.
+- `CREATE UNIQUE INDEX idx_chart_renders_position_detail ON chart_renders(ticker, surface) WHERE pipeline_run_id IS NULL AND surface = 'position_detail'`.
+- `CREATE UNIQUE INDEX idx_chart_renders_theme2_annotated ON chart_renders(ticker, surface, pipeline_run_id, pattern_class) WHERE surface = 'theme2_annotated'`.
+
+These three partial indexes collectively enforce one cache row per legitimate cache key per surface class without colliding on NULL semantics. Cross-column CHECK enforces: `(surface = 'theme2_annotated' AND pattern_class IS NOT NULL) OR (surface != 'theme2_annotated' AND pattern_class IS NULL)` schema-defended.
+
+**Landing**: in v20 migration alongside `pattern_exemplars` + `pattern_evaluations` (§3.4 LOCK).
+
+### §3.3 New table — `pattern_evaluations` (Theme 2 detector run output cache)
 
 Per-`(pipeline_run_id, ticker, pattern_class)` detector verdict with full structural evidence. Bound to `pipeline_runs.id` (per `pipeline_pattern_classifications` shape precedent at migration 0009). ~14-16 columns expected:
 
@@ -226,7 +255,7 @@ Per-`(pipeline_run_id, ticker, pattern_class)` detector verdict with full struct
 
 Unique index `(pipeline_run_id, ticker, pattern_class)` — one verdict per pattern per ticker per run.
 
-### §3.3 Schema widening — existing tables
+### §3.4 Schema widening — existing tables
 
 | Table | Change | Notes |
 |---|---|---|
@@ -237,23 +266,24 @@ Unique index `(pipeline_run_id, ticker, pattern_class)` — one verdict per patt
 | `schwab_api_calls.surface` | widen CHECK enum to include `trade_entry` and `trade_exit` | Theme 3 entry/exit auto-fill emits new audit rows with these surfaces |
 | `candidates` OR new column on a Theme-4 close-tracking table | Q4 close-tracking flag schema — see §7.2 below | Operator-pre-writing-plans-decision at §10 D-Q4.1 |
 
-### §3.4 Migration mechanics LOCK
+### §3.5 Migration mechanics LOCK
 
 - **Migration file**: `0020_phase13_charts_patterns_autofill_usability.sql` (single file per L6 single-migration LOCK).
 - **Backup-gate**: `pre_version == 19` strict equality form (per CLAUDE.md gotcha "Migration runner backup-gate equality form: strict equality, NOT `<=`").
 - **Schema-CHECK + Python-constant + dataclass-validator paired discipline**: every new CHECK enum (`pattern_class` / `label_source` / `fill_origin` / widened `surface`) MUST land in the SAME task as its Python-side mirror constants + dataclass `__post_init__` validators (per CLAUDE.md gotcha lesson from Phase 12 C.A T-A.2).
 - **No `INSERT OR REPLACE`** on `pattern_exemplars` or `pattern_evaluations` — both tables have audit-trail intent; use SELECT-then-UPDATE-or-INSERT pattern per CLAUDE.md gotcha.
-- **Foreign keys**: pattern_evaluations.pipeline_run_id → pipeline_runs(id) `ON DELETE CASCADE` (one verdict ties to one run); pattern_exemplars has NO FK (curated/silver/synthetic exemplars don't need to follow pipeline-run lifecycle).
+- **Foreign keys**: `pattern_evaluations.pipeline_run_id` → `pipeline_runs(id)` `ON DELETE CASCADE` (one verdict ties to one run); `pattern_exemplars` has NO FK (curated/silver/synthetic exemplars don't need to follow pipeline-run lifecycle); `chart_renders.pipeline_run_id` → `pipeline_runs(id)` `ON DELETE CASCADE` when non-NULL; `watchlist_close_track_flag_events.flag_id` → `watchlist_close_track_flags(id)` `ON DELETE CASCADE`.
 
-### §3.5 v21+ candidates flagged per theme
+### §3.6 v21+ candidates flagged per theme
 
 | Theme | v21+ candidate | Rationale |
 |---|---|---|
 | Theme 2 | Sell-side patterns added to `pattern_class` CHECK enum | Phase 14 |
 | Theme 2 | `pattern_exemplars` widened with `embedding_json` for ML re-ranker | Phase 6 gated per v2 brief §16 (deferred) |
 | Theme 3 | `review_log.fields_auto_populated_count INTEGER` + `auto_fill_disagreement_count INTEGER` aggregate columns | V2 — derived from `auto_populated_field_keys_json` query-time; promote to first-class column when query frequency justifies |
-| Theme 4 | `watchlist_close_track_flags` table separate from `candidates` widening | Operator-pre-writing-plans-decision at §10 D-Q4.1; if option B chosen v20 → v21 split |
 | Phase 13.5 | `feature_drift_baseline` table reading from `pattern_evaluations.feature_distribution_log_json` | Phase 13.5 monitoring side |
+
+(Codex R1 m#2 fix: removed stale `watchlist_close_track_flags v21+ candidate` entry — D-Q4.1 LOCK confirms Q4 schema folds into v20 with active-flag partial unique index per Codex R1 M#9 resolution.)
 
 ---
 
@@ -439,6 +469,8 @@ class CandidateWindow:
 ```
 
 **Per-pipeline-run scope**: candidate-window generation runs ONCE per pipeline run AFTER trend-template filter + RS-rank filter (i.e., AFTER `_step_evaluate`). Output candidate set is consumed by every detector in T2.SB3+T2.SB4.
+
+**T2.SB1 cross-bundle bootstrap window LOCK (closes Codex R1 M#4 T2.SB1↔T2.SB2 dependency inversion)**: T2.SB1 labeling pipeline (per §5.9 below) needs SOME candidate-window input for the AI-assisted labeling pass to operate against. The full variable-window candidate generator ships at T2.SB2 — but T2.SB1 ships a MINIMUM-VIABLE candidate-window seed mechanism via operator-supplied date ranges: operator selects historical (ticker, start_date, end_date) tuples directly (via a NEW `swing patterns label-exemplars --ticker <T> --start <D> --end <D>` CLI subcommand OR similar) + AI-labeling pipeline operates on those operator-curated windows. The full algorithmic candidate-window generator at T2.SB2 is then a REFINEMENT that closes the loop (auto-generate windows + label them); T2.SB1 bootstrap accepts the manual-window path. This preserves the operator-locked dispatch sequence (T2.SB1 → T2.SB2) at scope-brainstorm §0.5.2 without requiring out-of-order dispatch.
 
 #### §5.1.4 Volume profile primitives
 
@@ -629,7 +661,14 @@ class TemplateMatchHit:
 
 **Composition with rule-based detector** (per §5.8 composite scoring): rule-tier geometric score + template-match score → composite via weighted sum.
 
-**Performance budget**: DTW is O(n²) — for ~30-day daily candidate windows × ~30-day exemplar windows, ~900 cells per pair. With 200 exemplars × 50 active candidates = 10,000 pair-computations per run = ~10 seconds CPU time. Acceptable for batch-mode EOD pipeline.
+**Performance budget (revised post-Codex R1 M#10)**: DTW is O(n²) — for ~30-day daily candidate windows × ~30-day exemplar windows, ~900 cells per pair. The production-scale projection must use v2 brief §6.1 universe-pipeline output (200-500 names post-trend-template-filter) NOT my prior 50-name underestimate. **Realistic projection**: 250-name candidate universe × 5 patterns × ~50 exemplars per pattern (after per-pattern filtering — see pruning LOCK below) = 62,500 DTW pair-computations per run = ~60-100 seconds CPU time per pipeline run. Borderline for batch-mode EOD pipeline. **Pruning LOCK (BINDING for T2.SB5 writing-plans)**:
+
+1. **Per-pattern exemplar filtering**: DTW comparisons are scoped to `same pattern_class` — VCP candidate compares ONLY against VCP exemplars, not against flat-base/CWH/HTF/DBW exemplars. Reduces comparisons by factor of 5.
+2. **Geometric-score pre-gate**: DTW only fires for candidates with `geometric_score >= 0.4` (rule-tier minimum signal); ZERO-rule-confidence candidates skip the expensive DTW pass. Reduces active candidate pool 30-50%.
+3. **Max windows per ticker**: at most 3 candidate windows per ticker per pattern per pipeline run (top-3 by zigzag-anchor strength). Prevents pathological tickers with many marginal anchors from blowing up the budget.
+4. **Exemplar corpus subsampling**: when `pattern_exemplars` for a given pattern_class exceeds 100 rows, T2.SB5 subsamples 50 highest-quality_grade exemplars for DTW comparison. Full-corpus comparison is a writing-plans-decision V2 option.
+
+**Benchmark gate at T2.SB5 dispatch**: writing-plans includes a `pytest-benchmark` discriminating test asserting that the full DTW pass completes within 120 seconds on operator's hardware (~3GHz CPU baseline). If the benchmark fails, T2.SB5 either tightens the pruning OR adopts SBD (per OQ-4 V2 fallback).
 
 ### §5.8 Composite scoring (T2.SB5)
 
@@ -850,6 +889,8 @@ This brainstorm-implementer is dispatched in work-without-stopping mode + cannot
 2. An elicitation template (per §7.3 below) that the orchestrator drives at the operator-pre-writing-plans review.
 3. A sizing framework (per §7.4 below) that the orchestrator applies at elicitation time.
 
+**T4.SB scope LOCK at brainstorm time (closes Codex R1 M#1 scope-weakening defect)**: T4.SB ships **Q4 close-tracking flag (per §7.2 D-Q4.1..D-Q4.7) as the MINIMUM BINDING scope**. The operator usability list elicitation produces a SPEC §7 AMENDMENT before writing-plans dispatch; the writing-plans dispatch consumes BOTH the Q4 scope (already brainstorm-locked) AND the elicited usability list. If the operator usability list is empty (operator confirms NO additional items), T4.SB ships Q4-only without scope loss. If the operator usability list adds N items, T4.SB scope expands by those N items + writing-plans phase decomposes the extended scope into per-task acceptance criteria. **L11 is preserved**: the operator-elicited list IS captured into the spec BEFORE writing-plans dispatch (just not at this implementer-dispatch time); the dispatch-brief §8 fallback ("operator did not provide the list at dispatch time, prompt at brainstorm session start") is operationalized as orchestrator-pre-writing-plans elicitation per the project's established §15.B-style operator-decision-pending pattern.
+
 **Orchestrator-pre-writing-plans action item**: prompt operator to draft the usability list verbatim; this spec §7 is amended in-place pre-writing-plans dispatch with the verbatim list.
 
 ### §7.2 Q4 close-tracking flag (operator-elicited; PTEN canonical use case)
@@ -879,12 +920,13 @@ This brainstorm-implementer is dispatched in work-without-stopping mode + cannot
 | Table | Column | Type | Notes |
 |---|---|---|---|
 | `watchlist_close_track_flags` | `id` | INTEGER PK | |
-| | `ticker` | TEXT NOT NULL UNIQUE | uniqueness enforces "one flag per ticker at a time" |
+| | `ticker` | TEXT NOT NULL | uniqueness via PARTIAL UNIQUE INDEX (active-flag only); see "Indexes" row below — closes Codex R1 M#9 re-flag-same-ticker defect |
 | | `flagged_at` | TEXT NOT NULL | server-stamped ISO timestamp |
 | | `flagged_by_surface` | TEXT NOT NULL | CHECK enum: `web` / `cli` |
 | | `reason_text` | TEXT NULL | operator-optional |
 | | `cleared_at` | TEXT NULL | NULL if currently active; ISO timestamp when operator cleared OR auto-cleared on position-open |
 | | `cleared_reason` | TEXT NULL | CHECK enum when non-NULL: `operator_cleared` / `auto_cleared_on_position_open` |
+| (indexes) | `CREATE UNIQUE INDEX idx_wclf_active_ticker ON watchlist_close_track_flags(ticker) WHERE cleared_at IS NULL` | | **Partial unique index on ACTIVE flags only** (closes Codex R1 M#9). Allows historical cleared-flag rows to persist as audit history while enforcing one ACTIVE flag per ticker. Re-flagging a previously-cleared ticker INSERTs a new row (new lifecycle episode) without UNIQUE collision. |
 | `watchlist_close_track_flag_events` | (audit table per D-Q4.7) | | append-only row per set/clear event |
 | | `id` | INTEGER PK | |
 | | `flag_id` | INTEGER NOT NULL | FK to `watchlist_close_track_flags(id)` |
@@ -1005,7 +1047,7 @@ Two valid options for landing the v20 migration:
 | **A** | v20 lands at **T2.SB1** (first sub-bundle that adds tables: `pattern_exemplars`) | Atomic; all schema in first Theme 2 sub-bundle | T3.SB1 (concurrent) can't write `fills.fill_origin` until v20 lands — risk of merge ordering |
 | **B** | v20 lands at **T2.SB1 OR T3.SB1, whichever ships first** + the other inherits | Either path works | Operator-pre-writing-plans decision required |
 
-**Brainstorm recommendation**: **Option A** — v20 lands at T2.SB1 because pattern_exemplars table is the most novel schema element + benefits from first-mover (no other sub-bundle blocks on its shape). T3.SB1 sequenced AFTER T2.SB1's merge or designed to gracefully handle pre-v20 OR post-v20 state. See §9 OQ-2 alternative.
+**Brainstorm recommendation (revised post-Codex R1 M#6 + R1 m#3 fixes)**: **Option C** (NEW) — v20 migration lands as a **MICRO-PRELIMINARY landing step T-V20.PRELIM at the head of T2.SB1** AND **head of T3.SB1** (whichever ships first): both sub-bundles dispatch with a binding invariant that the FIRST commit on each branch is the v20 migration (only). The first sub-bundle to merge wins the race; the second sub-bundle's preliminary migration commit becomes a no-op rebase merge (migration already at v20). Alternative: Option A retained as fallback — v20 lands at T2.SB1 + T3.SB1 design has dual-schema toleration (gracefully handles pre-v20 state by skipping `fill_origin` writes; flags as advisory until merge). Operator-pre-writing-plans decision at §9 OQ-12 (NEW; closes R1 m#3 cross-reference drift).
 
 ### §8.4 Cross-bundle pin discipline
 
@@ -1117,6 +1159,18 @@ ALSO: should `pattern_class` CHECK enum reserve sell-side values for Phase 14 (e
 
 **Disposition**: BINDING brainstorm-lock; operator-pre-writing-plans confirms.
 
+### OQ-12 — v20 migration landing timing (closes Codex R1 m#3 cross-reference drift)
+
+**Question**: v20 migration introduces tables consumed concurrently by T2.SB1 (`pattern_exemplars` + `pattern_evaluations` + `chart_renders` + `watchlist_close_track_flags`) and T3.SB1 (`fills.fill_origin` enum widening). The scope-brainstorm §0.5.2 locks T2.SB1 + T3.SB1 as CONCURRENT. Options for v20 landing timing:
+
+- **Option A**: v20 lands at T2.SB1 head; T3.SB1 must merge AFTER T2.SB1; concurrent dispatch but serial merge.
+- **Option B**: v20 lands at T2.SB1 head; T3.SB1 designed for dual-schema toleration (gracefully skips `fill_origin` writes pre-v20; flags as advisory until merge).
+- **Option C (NEW; brainstorm-recommended)**: v20 migration is its own MICRO-PRELIMINARY landing step `T-V20.PRELIM` placed at the head of BOTH T2.SB1 + T3.SB1 branches; the first sub-bundle to merge wins the race; the second branch's preliminary migration becomes a no-op rebase merge.
+
+**Brainstorm recommendation**: Option C. Rationale: cleanest semantics; no dual-schema toleration code complexity; aligns with the "atomic-landing" discipline at Phase 12 C.A T-A.1 LOCK. Option A requires explicit dispatch-merge-ordering discipline operator drives; Option B introduces dead code paths.
+
+**Disposition**: BINDING brainstorm-lock; operator-pre-writing-plans confirms.
+
 ### OQ-11 — T2.SB1 pattern-labeler subagent definition location
 
 **Question**: T2.SB1 ships a Claude Code subagent for AI-assisted labeling per v2 brief §8.2. Definition file location options: (a) `.claude/agents/pattern-labeler.md` (project-local subagent per Claude Code standard); (b) `agents/pattern-labeler.md` at repo root; (c) NEW `swing-trading` plugin namespace under `.claude/plugins/cache/local/` mirroring copowers plugin precedent.
@@ -1223,6 +1277,33 @@ Each walkthrough exercises rule-criteria evaluation + composite scoring + struct
 - #8 undercut bonus +0.10 → geometric_score 1.10 (capped at 1.0 in composite).
 
 **Composite score**: min(1.0, 0.60 × 1.10 + 0.40 × template_match_score) — discriminating: 5-pattern V1 needs bonus-clip handling in composite formula.
+
+### §10.6 Tolerance-semantics + composite-scoring uniformity LOCK (closes Codex R1 M#7 + M#8)
+
+The per-pattern criteria tables (§5.2-§5.6) and the worked examples (§10.1-§10.5) must use uniform tolerance semantics. **Brainstorm-locked semantics** (BINDING for writing-plans):
+
+- **"Tolerance band ±X%"** in a criterion table means the criterion PASSES if `actual_value` falls within `[bound - X%, bound + X%]`. The criterion FAILS if outside this range. The band is symmetric.
+- **"NONE — hard gate"** means the criterion uses STRICT inequalities with NO tolerance; failure rejects the pattern.
+- **"NONE — these are bounds, not point thresholds"** means the criterion uses RANGE checks (e.g., depth in [10%, 35%]); failure-on-out-of-range; ZERO tolerance.
+
+**Errata corrections from R1 M#7 worked-example arithmetic**:
+
+- **§10.2 Flat base worked example errata**: criterion #2 has tolerance band ±2% on the `prior_uptrend_pct >= 20%` bound. Operator's hypothetical 14% prior_uptrend FAILS (14% < 20% - 2% = 18%; 4-6 percentage points outside the tolerance band). Worked example previously stated REJECT correctly but with confusing tolerance language; clarified verbatim above. The alternative-pass scenario at §10.2 uses 22% which is >= 18% so PASSES the relaxed threshold.
+- **§10.4 High-tight flag worked example errata**: criterion #4 (consolidation_width) tolerance LOCKED at NONE; the criterion bound is 15% upper limit. With NO tolerance, 15.6% > 15% rejects. Previous worked-example mid-text ("with ±1% tolerance: 15.6% > 16% rejects") confused the bound (16%) with the tolerance-relaxed threshold; the actual NO-tolerance evaluation correctly REJECTs at 15.6% > 15%. The final disposition (REJECT) is correct.
+
+### §10.7 Cup curvature definition LOCK (closes Codex R1 M#8 incoherent rounded-vs-V test)
+
+The §5.4 cup-with-handle "rounded-vs-V test" must be DEFINED around the **cup_bottom_date** (the price extremum), NOT around the temporal midpoint between cup_start and cup_bottom. The previous formulation conflated TWO different points.
+
+**Brainstorm-locked rounded-vs-V test**: centered on `cup_bottom_date` with a ±10-day window:
+
+- Compute `window_lows = bars where bar_date in [cup_bottom_date - 10 days, cup_bottom_date + 10 days]`.
+- Compute `bars_within_2pct_of_bottom = bars in window_lows where bar.low <= cup_bottom_price × 1.02`.
+- **Rounded test**: `len(bars_within_2pct_of_bottom) >= 5` (at least 5 bars within 2% of bottom indicates the trough is stretched out, not a V).
+- **V-shape rejection**: `len(bars_within_2pct_of_bottom) <= 2` rejects the candidate as V-shaped.
+- **Marginal zone**: 3-4 bars within 2% is operator-review-flagged (composite score penalty 0.10).
+
+**Worked example errata at §10.3**: previously stated `cup_midpoint_date = 2025-12-30` but `cup_bottom_date = 2025-12-15` — these are 15 days apart. Under the LOCKED definition, the 21-day window centered on `cup_bottom_date=2025-12-15` is `2025-12-05` to `2025-12-25`. Operator confirms 5+ bars in this window have low <= $14.00 × 1.02 = $14.28 → ROUNDED ✓. The §10.3 example is structurally sound; only the midpoint date confusion was the defect (now corrected via this LOCK).
 
 ---
 
@@ -1351,4 +1432,4 @@ Per dispatch brief §3 + §1.6 + scope-brainstorm §0.5.4. Phase 13 does NOT:
 
 ---
 
-*End of Phase 13 design spec. 4-theme architectural arc (Charts + Pattern Recognition + Auto-fill + Usability + Q4 fold-in). 11 sub-bundles per scope-brainstorm §0.5.2 LOCK. 10 open questions OQ-1..OQ-10 with brainstorm-recommendations for orchestrator-pre-writing-plans confirmation. 7 Q4 sub-decisions D-Q4.1..D-Q4.7 with recommendations. Schema v19 → v20 single migration. Phase 13.5 (drift monitoring) + Phase 14 (sell-side + ML re-ranker gated) banked. Writing-plans dispatch UNBLOCKED pending operator-pre-writing-plans triage of §9 OQs + §7.3 usability-list elicitation.*
+*End of Phase 13 design spec. 4-theme architectural arc (Charts + Pattern Recognition + Auto-fill + Usability + Q4 fold-in). 11 sub-bundles per scope-brainstorm §0.5.2 LOCK. 12 open questions OQ-1..OQ-12 with brainstorm-recommendations for orchestrator-pre-writing-plans confirmation (OQ-11 added pre-Codex; OQ-12 added Codex R1 fix bundle for v20 landing timing). 7 Q4 sub-decisions D-Q4.1..D-Q4.7 with recommendations. Schema v19 → v20 single migration. Phase 13.5 (drift monitoring) + Phase 14 (sell-side + ML re-ranker gated) banked. Writing-plans dispatch UNBLOCKED pending operator-pre-writing-plans triage of §9 OQs + §7.3 usability-list elicitation.*
