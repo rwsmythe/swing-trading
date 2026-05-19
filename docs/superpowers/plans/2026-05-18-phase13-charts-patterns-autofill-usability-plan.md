@@ -1180,7 +1180,7 @@ git commit -m "feat(phase13): pattern-labeler Claude Code subagent definition (T
 - Create: `swing/patterns/labeling.py`.
 - Create: `tests/patterns/test_labeling.py`.
 
-- [ ] **Step 1: Write 5 failing tests** covering `fire_claude_silver_label(window, pattern_class)` + `fire_codex_review_for_silver_row(exemplar_id, phase)` + T2.SB1 phase 15% random + T2.SB3+/SB4 high-stakes clause + disagreement-chain parent_exemplar_id linkage + (new per Codex R3 Major #1 closure) `test_fire_claude_silver_label_honors_PHASE13_TEST_MOCK_SUBAGENT_env_gate` — when `os.environ.get('PHASE13_TEST_MOCK_SUBAGENT') == '1'`, function returns a fixture-stub silver row WITHOUT dispatching `Agent(subagent_type='pattern-labeler', ...)`. Gate enables T-D.7 hermetic subprocess cp1252 validation.
+- [ ] **Step 1: Write 4 failing tests** covering `fire_claude_silver_label(window, pattern_class)` + `fire_codex_review_for_silver_row(exemplar_id, phase)` + T2.SB1 phase 15% random + T2.SB3+/SB4 high-stakes clause + disagreement-chain parent_exemplar_id linkage. (Per Codex R4 Major #1 closure: `PHASE13_TEST_MOCK_SUBAGENT` env gate REMOVED — production data-integrity footgun risk. Mock injection happens via in-process pytest `monkeypatch` only, never via production-recognized env var.)
 
 - [ ] **Step 2: Implement** both functions per §D.6 phased policy. T2.SB1 phase: `random.random() < 0.15` only. T2.SB3+/SB4 phase: random 15% OR high-stakes clause OR low-confidence-high-geometric inverse. Codex disagreement INSERTs new codex_silver row with parent_exemplar_id linkage.
 
@@ -2394,9 +2394,11 @@ def auto_clear_on_position_open(conn, ticker: str) -> bool:
 
 - [ ] **Step 1: Write Phase 13 cumulative E2E test** seeding: full pipeline run with pattern detection → operator labels exemplars → flags watchlist ticker → opens position → confirms auto-clear → reviews trade → closes Phase 13 arc.
 
-- [ ] **Step 2: Write hermetic subprocess cp1252 validation tests** (per Codex R1 Minor #3 + R2 Minor #1 + R3 Major #1 closure — tests MUST be hermetic + side-effect-free):
+- [ ] **Step 2: Write hermetic subprocess cp1252 validation tests** (per Codex R1 Minor #3 + R2 Minor #1 + R3 Major #1 + R4 Major #1 + #2 closure — `--help`-only at subprocess level; deeper coverage via in-process pytest with monkeypatched subagent + capfd):
 
-**Strategy**: invoke `--help` flag for each new Phase 13 CLI command to exercise the click output rendering path WITHOUT dispatching subagents / hitting credentials / writing to operator DB. Combined with mock-subagent + tmp-dir isolated runs for deeper coverage. Click `--help` invocation renders the command's docstring + option descriptions through the same `click.echo()` path that runtime output uses — sufficient to surface cp1252 unsafe glyphs in any Phase 13 CLI surface text.
+**Strategy**: subprocess tests invoke `--help` flag ONLY. Click `--help` exercises the command's docstring + option descriptions through the same `click.echo()` path that runtime output uses — sufficient to surface cp1252-unsafe glyphs in CLI surface text. NO subagent dispatch, NO DB writes, NO credentials. Deeper coverage (actual runtime output during label/flag operations) happens via in-process pytest with monkeypatched subagent + `capfd` — those tests live in T-A.1.5 + T-D.3 already.
+
+Per Codex R4 Major #1 closure: NO `PHASE13_TEST_MOCK_SUBAGENT` env gate (production data-integrity footgun; env vars can leak into operator shells; would silently fabricate silver rows in real CLI runs). Mock injection happens via in-process pytest `monkeypatch` only — never via production-recognized env var.
 
 ```python
 import os
@@ -2428,28 +2430,13 @@ def test_swing_patterns_label_exemplars_help_cp1252_safe(isolated_env):
     assert b'UnicodeEncodeError' not in result.stdout
 
 
+def test_swing_patterns_help_cp1252_safe(isolated_env): ...  # group-level help
 def test_swing_watchlist_flag_help_cp1252_safe(isolated_env): ...  # same shape; --help only
 def test_swing_watchlist_unflag_help_cp1252_safe(isolated_env): ...  # same shape
-
-
-def test_swing_patterns_label_exemplars_dispatch_mocked_subagent_cp1252_safe(isolated_env, monkeypatch):
-    # Deeper coverage: mock fire_claude_silver_label to short-circuit without dispatching
-    # real subagent; tmp SWING_DATA_DIR isolates DB writes; invoke actual command path.
-    monkeypatch.setenv('PHASE13_TEST_MOCK_SUBAGENT', '1')  # gate added in swing/patterns/labeling.py
-    result = subprocess.run(
-        [sys.executable, '-m', 'swing.cli', 'patterns', 'label-exemplars',
-         '--ticker', 'AAPL', '--start', '2026-04-15', '--end', '2026-05-15',
-         '--pattern-class', 'vcp'],
-        capture_output=True, text=False, env=isolated_env,
-    )
-    assert b'UnicodeEncodeError' not in result.stderr
-    assert b'UnicodeEncodeError' not in result.stdout
-
-
-def test_swing_watchlist_flag_with_mocked_db_cp1252_safe(isolated_env): ...
+def test_swing_watchlist_help_cp1252_safe(isolated_env): ...  # group-level help
 ```
 
-Per §A.8 + Phase 12 C.D gate-fix #1 + #3: pytest `capfd` bypasses the OS-level encoder; subprocess invocation forces the actual production path. Per Codex R3 Major #1 closure: tests MUST be hermetic — tmp HOME / USERPROFILE / SWING_DATA_DIR + `PHASE13_TEST_MOCK_SUBAGENT=1` gate to short-circuit subagent dispatch. T-A.1.3 introduces the `PHASE13_TEST_MOCK_SUBAGENT` env gate in `swing/patterns/labeling.py:fire_claude_silver_label` — when set, returns a fixture-stub silver row without dispatching `Agent(subagent_type='pattern-labeler', ...)`. T-A.1.3 step 1 test (e) added: `test_fire_claude_silver_label_honors_PHASE13_TEST_MOCK_SUBAGENT_env_gate`.
+Per §A.8 + Phase 12 C.D gate-fix #1 + #3: pytest `capfd` bypasses the OS-level encoder; subprocess invocation forces the actual production path. Per Codex R4 Major #1 closure: subprocess tests are `--help`-only — NO production env gate; NO actual subagent dispatch. Deeper runtime cp1252 coverage (when fire_claude_silver_label / clear_flag / set_flag actually run) is covered by in-process pytest tests at T-A.1.5 + T-D.3 with monkeypatched subagent + capfd — those tests catch what they catch (Python-level pipe), but the subprocess --help tests catch the static-string CLI surface violations which is the typical cp1252 gotcha emit path.
 
 - [ ] **Step 3: Run full fast-test suite + ruff sweep.**
 
@@ -2808,7 +2795,7 @@ The executing-plans dispatch for each sub-bundle consumes this plan as substrate
 - [ ] §D Theme 2 architectural decisions encoded.
 - [ ] §E Theme 3 architectural decisions encoded.
 - [ ] §F Theme 4 architectural decisions encoded.
-- [ ] §G per-sub-bundle task decomposition (11 sub-bundles, 70 tasks) with per-task acceptance criteria + discriminating test patterns.
+- [ ] §G per-sub-bundle task decomposition (11 sub-bundles, 71 tasks per Codex R2 Major #2 split) with per-task acceptance criteria + discriminating test patterns.
 - [ ] §H cross-bundle dependencies + un-skip pin schedule encoded.
 - [ ] §I 18 watch items + discriminating examples encoded.
 - [ ] §J V2.1 §VII.F amendment candidates banked (7 WP-N items + 22 V2 candidates inherited from spec §13).
@@ -2820,4 +2807,4 @@ The executing-plans dispatch for each sub-bundle consumes this plan as substrate
 
 ---
 
-*End of Phase 13 writing-plans plan. 11 sub-bundles + 70 tasks + v20 single migration via OQ-12 Option E + 12 OQ dispositions BINDING-encoded + Pre-Codex orchestrator-side review BINDING. Expected 3-5 Codex rounds + convergent shape. ZERO ACCEPT-WITH-RATIONALE preferred (continuing Phase 12.5 #1+#2+#3 + Phase 13 brainstorm clean-record streak). NO Co-Authored-By footer (~187+ cumulative ZERO-drift streak preserved).*
+*End of Phase 13 writing-plans plan. 11 sub-bundles + 71 tasks (T-A.1.1b added per Codex R1 Major #1 + R2 Major #2 split) + v20 single migration via OQ-12 Option E + 12 OQ dispositions BINDING-encoded + Pre-Codex orchestrator-side review BINDING. Expected 3-5 Codex rounds + convergent shape. ZERO ACCEPT-WITH-RATIONALE preferred (continuing Phase 12.5 #1+#2+#3 + Phase 13 brainstorm clean-record streak). NO Co-Authored-By footer (~187+ cumulative ZERO-drift streak preserved).*
