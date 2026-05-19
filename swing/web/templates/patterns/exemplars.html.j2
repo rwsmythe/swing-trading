@@ -1,0 +1,144 @@
+{% extends "base.html.j2" %}
+{% block title %}Pattern exemplars — Swing Trading{% endblock %}
+{% block content %}
+<section class="patterns-exemplars">
+  <h1>Pattern exemplars</h1>
+  <p class="muted">
+    Phase 13 T2.SB1 operator spot-check surface for pattern-labeler
+    silver-tier outputs. Promote silver rows to gold OR flip
+    final_decision per spec section 5.9 step 5. ASCII-only rendering
+    per Windows cp1252 stdout safety.
+  </p>
+
+  {% if vm.empty_advisory %}
+  <aside class="banner banner-info"
+         data-banner="patterns-exemplars-empty">
+    {{ vm.empty_advisory }}
+  </aside>
+  {% endif %}
+
+  <p class="muted">
+    Total exemplars: {{ vm.total_count }} (silver: {{ vm.silver_rows|length }};
+    gold: {{ vm.gold_rows|length }}; other: {{ vm.other_rows|length }}).
+  </p>
+
+  {% if vm.silver_rows %}
+  <h2>Silver tier (awaiting operator review)</h2>
+  <table class="patterns-exemplars-table"
+         data-section="silver-rows">
+    <thead>
+      <tr>
+        <th>id</th>
+        <th>ticker</th>
+        <th>timeframe</th>
+        <th>window</th>
+        <th>proposed class</th>
+        <th>final decision</th>
+        <th>label source</th>
+        <th>codex reviewed</th>
+        <th>actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in vm.silver_rows %}
+      <tr data-exemplar-id="{{ row.id }}">
+        <td>{{ row.id }}</td>
+        <td>{{ row.ticker }}</td>
+        <td>{{ row.timeframe }}</td>
+        <td class="muted">{{ row.start_date }} to {{ row.end_date }}</td>
+        <td>{{ row.proposed_pattern_class }}</td>
+        <td>{{ row.final_decision }}</td>
+        <td>{{ row.label_source }}</td>
+        <td>{{ row.codex_reviewed }}</td>
+        <td>
+          {# Promote to gold #}
+          <form method="post"
+                action="/patterns/exemplars/{{ row.id }}/action"
+                hx-post="/patterns/exemplars/{{ row.id }}/action"
+                hx-headers='{"HX-Request": "true"}'
+                style="display: inline-block;">
+            <input type="hidden" name="action" value="promote_to_gold">
+            <button type="submit" data-action="promote_to_gold">
+              Promote to gold
+            </button>
+          </form>
+
+          {# Watch #}
+          <form method="post"
+                action="/patterns/exemplars/{{ row.id }}/action"
+                hx-post="/patterns/exemplars/{{ row.id }}/action"
+                hx-headers='{"HX-Request": "true"}'
+                style="display: inline-block;">
+            <input type="hidden" name="action" value="watch">
+            <button type="submit" data-action="watch">Watch</button>
+          </form>
+
+          {# Reject #}
+          <form method="post"
+                action="/patterns/exemplars/{{ row.id }}/action"
+                hx-post="/patterns/exemplars/{{ row.id }}/action"
+                hx-headers='{"HX-Request": "true"}'
+                style="display: inline-block;">
+            <input type="hidden" name="action" value="reject">
+            <button type="submit" data-action="reject">Reject</button>
+          </form>
+
+          {# Relabel: requires corrected_pattern_class. #}
+          <form method="post"
+                action="/patterns/exemplars/{{ row.id }}/action"
+                hx-post="/patterns/exemplars/{{ row.id }}/action"
+                hx-headers='{"HX-Request": "true"}'
+                style="display: inline-block;">
+            <input type="hidden" name="action" value="relabel">
+            <select name="corrected_pattern_class" required>
+              <option value="">(pick relabel class)</option>
+              <option value="vcp">vcp</option>
+              <option value="flat_base">flat_base</option>
+              <option value="cup_with_handle">cup_with_handle</option>
+              <option value="high_tight_flag">high_tight_flag</option>
+              <option value="double_bottom_w">double_bottom_w</option>
+            </select>
+            <button type="submit" data-action="relabel">Relabel</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  {% if vm.gold_rows %}
+  <h2>Gold tier (operator-validated)</h2>
+  <table class="patterns-exemplars-table"
+         data-section="gold-rows">
+    <thead>
+      <tr>
+        <th>id</th>
+        <th>ticker</th>
+        <th>window</th>
+        <th>class</th>
+        <th>gold validated at</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in vm.gold_rows %}
+      <tr data-exemplar-id="{{ row.id }}">
+        <td>{{ row.id }}</td>
+        <td>{{ row.ticker }}</td>
+        <td class="muted">{{ row.start_date }} to {{ row.end_date }}</td>
+        <td>{{ row.proposed_pattern_class }}</td>
+        <td>{{ row.gold_validated_at or "" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  {% if vm.other_rows %}
+  <h2>Other (synthetic / perturbation / closed-loop / organic)</h2>
+  <p class="muted">
+    {{ vm.other_rows|length }} row(s) outside the silver/gold tiers.
+  </p>
+  {% endif %}
+</section>
+{% endblock %}
