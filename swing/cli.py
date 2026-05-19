@@ -2300,11 +2300,14 @@ def discrepancy_show_ambiguity_cmd(ctx, discrepancy_id):
             _pairs = build_compared_pairs(d.discrepancy_type, _exp, _act)
         except (KeyError, ValueError, TypeError):
             _pairs = None
-        if _pairs:
+        if _pairs is not None:
             click.echo("")
-            click.echo(
-                render_journal_schwab_comparison_table_ascii(list(_pairs))
-            )
+            if len(_pairs) > 0:
+                click.echo(
+                    render_journal_schwab_comparison_table_ascii(list(_pairs))
+                )
+            else:
+                click.echo("(no comparison data)")
 
     # --- Choice menu per spec §6.2.1. ---
     click.echo("")

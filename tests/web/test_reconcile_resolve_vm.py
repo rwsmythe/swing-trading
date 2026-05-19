@@ -494,31 +494,67 @@ def test_close_price_mismatch_populates_compared_pairs() -> None:
 
 
 def test_stop_mismatch_populates_compared_pairs() -> None:
-    """stop_mismatch render helper sets compared_pairs with 'stop price'."""
+    """stop_mismatch render helper sets compared_pairs using production emitter shape.
+
+    Production emitter (schwab_reconciliation.py:837,840) uses ASYMMETRIC keys:
+      expected_value_json = {"current_stop": <journal_stop>}
+      actual_value_json   = {"stop_price":   <schwab_stop>}
+    """
     disc = _make_discrepancy(
         discrepancy_type="stop_mismatch",
-        field_name="stop_price",
-        expected_value_json='{"stop_price": 4.50}',
+        field_name="current_stop",
+        expected_value_json='{"current_stop": 4.50}',
         actual_value_json='{"stop_price": 4.55}',
     )
     ctx = _render_pre_resolution_context(disc)
     assert ctx.compared_pairs is not None
     labels = [t[0] for t in ctx.compared_pairs]
-    assert "stop price" in labels
+    assert "stop" in labels
+    idx = labels.index("stop")
+    assert ctx.compared_pairs[idx][1] == 4.50   # journal stop from current_stop
+    assert ctx.compared_pairs[idx][2] == 4.55   # Schwab stop from stop_price
+
+
+def test_stop_mismatch_journal_side_value_matches_current_stop_key() -> None:
+    """journal_side_value in the pre-resolution context reads expected['current_stop'].
+
+    Discriminating: a discrepancy with expected_value_json using 'current_stop'
+    must render the correct dollar value; 'stop_price' key on the expected side
+    must raise KeyError (wrong shape caught immediately).
+    """
+    disc = _make_discrepancy(
+        discrepancy_type="stop_mismatch",
+        field_name="current_stop",
+        expected_value_json='{"current_stop": 9.75}',
+        actual_value_json='{"stop_price": 10.00}',
+    )
+    ctx = _render_pre_resolution_context(disc)
+    # journal_side_value reads expected["current_stop"] -> "$9.75"
+    assert "9.75" in ctx.journal_side_value
+    # schwab_side_value reads actual["stop_price"] -> "$10.00"
+    assert "10.00" in ctx.schwab_side_value
 
 
 def test_position_qty_mismatch_populates_compared_pairs() -> None:
-    """position_qty_mismatch render helper sets compared_pairs with 'position quantity'."""
+    """position_qty_mismatch render helper sets compared_pairs using production emitter shape.
+
+    Production emitter (schwab_reconciliation.py:870,873) uses "qty" for BOTH sides:
+      expected_value_json = {"qty": <journal_qty>}
+      actual_value_json   = {"qty": <schwab_qty>}
+    """
     disc = _make_discrepancy(
         discrepancy_type="position_qty_mismatch",
-        field_name="quantity",
-        expected_value_json='{"quantity": 100}',
-        actual_value_json='{"quantity": 90}',
+        field_name="qty",
+        expected_value_json='{"qty": 100}',
+        actual_value_json='{"qty": 90}',
     )
     ctx = _render_pre_resolution_context(disc)
     assert ctx.compared_pairs is not None
     labels = [t[0] for t in ctx.compared_pairs]
     assert "position quantity" in labels
+    idx = labels.index("position quantity")
+    assert ctx.compared_pairs[idx][1] == 100   # journal qty
+    assert ctx.compared_pairs[idx][2] == 90    # Schwab qty
 
 
 def test_cash_movement_mismatch_populates_compared_pairs() -> None:
@@ -638,11 +674,16 @@ def test_generic_fallback_compared_pairs_is_none() -> None:
 
 
 def test_compared_pairs_is_tuple_not_list() -> None:
-    """compared_pairs must be a tuple (frozen-dataclass hashability contract)."""
+    """compared_pairs must be a tuple (frozen-dataclass hashability contract).
+
+    Uses production emitter shape for stop_mismatch (asymmetric keys):
+      expected_value_json = {"current_stop": <journal>}
+      actual_value_json   = {"stop_price":   <schwab>}
+    """
     disc = _make_discrepancy(
         discrepancy_type="stop_mismatch",
-        field_name="stop_price",
-        expected_value_json='{"stop_price": 4.50}',
+        field_name="current_stop",
+        expected_value_json='{"current_stop": 4.50}',
         actual_value_json='{"stop_price": 4.55}',
     )
     ctx = _render_pre_resolution_context(disc)

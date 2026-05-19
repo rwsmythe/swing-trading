@@ -343,7 +343,13 @@ def _render_pre_resolution_context_stop_mismatch(
     expected: dict[str, Any],
     actual: dict[str, Any],
 ) -> ReconcilePreResolutionContext:
-    journal_stop = expected["stop_price"]
+    # Production emitter (schwab_reconciliation.py:837,840) uses ASYMMETRIC keys:
+    #   expected_value_json = {"current_stop": <journal_stop>}
+    #   actual_value_json   = {"stop_price":   <schwab_stop>}
+    # The journal side is keyed "current_stop" (the trades.current_stop column);
+    # the Schwab side is keyed "stop_price" (the trigger price from the broker).
+    # Do NOT "fix" this asymmetry — it reflects the actual emitter shape.
+    journal_stop = expected["current_stop"]
     schwab_stop = actual.get("stop_price")
     return ReconcilePreResolutionContext(
         **_base_context_kwargs(disc),
@@ -361,8 +367,11 @@ def _render_pre_resolution_context_position_qty_mismatch(
     expected: dict[str, Any],
     actual: dict[str, Any],
 ) -> ReconcilePreResolutionContext:
-    journal_qty = expected["quantity"]
-    schwab_qty = actual.get("quantity")
+    # Production emitter (schwab_reconciliation.py:870,873) uses "qty" for BOTH sides:
+    #   expected_value_json = {"qty": <journal_qty>}
+    #   actual_value_json   = {"qty": <schwab_qty>}
+    journal_qty = expected["qty"]
+    schwab_qty = actual.get("qty")
     return ReconcilePreResolutionContext(
         **_base_context_kwargs(disc),
         journal_side_label="Journal quantity",

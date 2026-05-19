@@ -331,14 +331,24 @@ def test_template_omits_table_when_compared_pairs_is_none():
     assert 'class="reconcile-comparison-table"' not in html
 
 
-def test_template_omits_table_when_compared_pairs_is_empty_tuple():
-    """An empty tuple is falsy in Python/Jinja; the table must not appear.
-    (The builder never returns empty tuple; this pins the template's branch
-    behaviour as a defense-in-depth invariant.)"""
+def test_template_renders_placeholder_for_empty_tuple_compared_pairs():
+    """When compared_pairs is an empty tuple (not None), the template renders
+    the '(no comparison data)' placeholder instead of hiding the comparison
+    section entirely.
+
+    None = 'no tabular support' (outer block hidden).
+    () = 'tabular-capable but no data' (placeholder rendered).
+
+    The builder currently never returns empty tuple, but this test pins
+    the template branch as a defense-in-depth invariant (Codex R1 Major #3).
+    """
     ctx = _make_pre_context_with_pairs(())
     vm = _make_vm(pre_context=ctx)
     html = _render(vm)
+    # Table must NOT appear (no rows to show).
     assert 'class="reconcile-comparison-table"' not in html
+    # Placeholder MUST appear (tabular-capable type, empty data).
+    assert "(no comparison data)" in html
 
 
 def test_table_renders_none_value_as_dash():

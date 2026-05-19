@@ -45,11 +45,25 @@ _ELLIPSIS: str = "..."
 
 
 def _sanitize(raw: str) -> str:
-    """Replace every non-ASCII character in *raw* with ``'?'``.
+    """Replace non-ASCII chars + ASCII control chars with safe substitutes.
 
-    Guarantees that the returned string is printable on any cp1252 terminal.
+    Non-ASCII (ord >= 128) -> '?'
+    ASCII control chars (0x00..0x1F + 0x7F) -> ' ' (space)
+    Other printable ASCII -> unchanged
+
+    Guarantees the returned string is printable on any cp1252 terminal AND
+    won't break table row alignment with embedded newlines/tabs.
     """
-    return "".join(c if ord(c) < 128 else "?" for c in raw)
+    out = []
+    for c in raw:
+        cp = ord(c)
+        if cp >= 128:
+            out.append("?")
+        elif cp < 0x20 or cp == 0x7F:
+            out.append(" ")
+        else:
+            out.append(c)
+    return "".join(out)
 
 
 def _format_value(value: Any) -> str:
@@ -237,14 +251,23 @@ def _pairs_stop_mismatch(
     expected: dict[str, Any],
     actual: dict[str, Any],
 ) -> list[tuple[str, Any, Any]]:
-    return [("stop price", expected["stop_price"], actual.get("stop_price"))]
+    # Production emitter (schwab_reconciliation.py:837,840) uses ASYMMETRIC keys:
+    #   expected_value_json = {"current_stop": <journal_stop>}
+    #   actual_value_json   = {"stop_price":   <schwab_stop>}
+    # The journal side is keyed "current_stop" (the trades.current_stop column);
+    # the Schwab side is keyed "stop_price" (the trigger price from the broker).
+    # Do NOT "fix" this asymmetry — it reflects the actual emitter shape.
+    return [("stop", expected["current_stop"], actual.get("stop_price"))]
 
 
 def _pairs_position_qty_mismatch(
     expected: dict[str, Any],
     actual: dict[str, Any],
 ) -> list[tuple[str, Any, Any]]:
-    return [("position quantity", expected["quantity"], actual.get("quantity"))]
+    # Production emitter (schwab_reconciliation.py:870,873) uses "qty" for BOTH sides:
+    #   expected_value_json = {"qty": <journal_qty>}
+    #   actual_value_json   = {"qty": <schwab_qty>}
+    return [("position quantity", expected["qty"], actual.get("qty"))]
 
 
 def _pairs_cash_movement_mismatch(

@@ -391,9 +391,12 @@ def test_show_ambiguity_renders_ascii_table_for_tabular_discrepancy(
             conn, run_id,
             ticker="CVGI",
             discrepancy_type="stop_mismatch",
-            field_name="stop_price",
+            field_name="current_stop",
             ambiguity_kind="unsupported",
-            expected_value_json='{"stop_price": 5.30}',
+            # Production emitter shape (schwab_reconciliation.py:837,840):
+            #   expected_value_json = {"current_stop": <journal>}  (asymmetric)
+            #   actual_value_json   = {"stop_price":   <schwab>}
+            expected_value_json='{"current_stop": 5.30}',
             actual_value_json='{"stop_price": 5.50}',
         )
         conn.commit()
@@ -551,9 +554,12 @@ def test_show_ambiguity_output_is_ascii_only(
             conn, run_id,
             ticker="VSAT",
             discrepancy_type="stop_mismatch",
-            field_name="stop_price",
+            field_name="current_stop",
             ambiguity_kind="unsupported",
-            expected_value_json='{"stop_price": 12.75}',
+            # Production emitter shape (schwab_reconciliation.py:837,840):
+            #   expected_value_json = {"current_stop": <journal>}
+            #   actual_value_json   = {"stop_price":   <schwab>}
+            expected_value_json='{"current_stop": 12.75}',
             actual_value_json='{"stop_price": 12.50}',
         )
         conn.commit()
@@ -593,15 +599,33 @@ def test_show_ambiguity_subprocess_cp1252_safety(
     requires a DB-populated environment) while still passing the output
     through the real cp1252 encoder on Windows.
 
-    Rationale for script-eval over full subprocess:
-    - Full subprocess requires copying conftest fixtures + env-var wiring
-      to a tmp project directory, adding significant test complexity.
-    - Script-eval produces the identical stdout encoding failure mode:
-      ``print()`` calls the OS encoder just as ``click.echo()`` does.
-    - The cp1252 safety invariant is already guaranteed by the renderer's
-      internal ASCII-only assertion (``assert all(ord(c) < 128 ...)``),
-      so the subprocess test's primary purpose is to confirm no UnicodeEncodeError
-      propagates from the print() call on Windows.
+    Rationale for script-eval over full end-to-end CLI subprocess
+    (Codex R1 Major #4 acceptance rationale — ACCEPTED WITH RATIONALE;
+    V2.1 §VII.F amendment banked for brief §A.4):
+
+    (a) The renderer's ``_sanitize`` function + internal ASCII-only assertion
+        ``assert all(ord(c) < 128 ...)`` guarantee the output string is
+        printable-ASCII before it reaches ``click.echo``.  Any non-ASCII byte
+        can only originate from the renderer itself — not from Click's argument
+        parsing or DB access layers.
+    (b) ``click.echo(ascii_string)`` is a thin wrapper calling
+        ``sys.stdout.write(ascii_string)`` + ``sys.stdout.flush()``.  When the
+        rendered string is already ASCII-only, ``click.echo`` cannot introduce
+        non-ASCII bytes.
+    (c) The script-eval path uses ``print(table)`` which calls the same
+        ``sys.stdout.write`` path as ``click.echo``, exercising the same OS
+        encoder (cp1252 on Windows when PYTHONIOENCODING is unset).
+    (d) Full end-to-end CLI testing with a seeded tmp DB would require ~150 LOC
+        of fixture plumbing (DB schema creation, fixture seeding, env-var
+        wiring, CLI runner subprocess invocation) for marginal additional
+        coverage — the failure mode we are guarding against (CLAUDE.md cp1252
+        gotcha: non-ASCII byte at stdout write time) IS captured by the
+        script-eval form.
+
+    The brief §A.4 acceptance criterion 6 explicitly notes "operator-accepted
+    SKIP-with-rationale if cross-platform constraints intervene"; we go one
+    step further by shipping a discriminating test that exercises the encoder
+    path end-to-end through the process stdout.
     """
     import os
     import subprocess
@@ -609,12 +633,15 @@ def test_show_ambiguity_subprocess_cp1252_safety(
 
     # Build a small self-contained script that exercises the renderer directly.
     # Uses pairs that exercise the full _format_value path (float formatting).
+    # Uses the production emitter shape for stop_mismatch (asymmetric keys):
+    #   expected_value_json = {"current_stop": <journal>}
+    #   actual_value_json   = {"stop_price":   <schwab>}
     script = (
         "from swing.trades.reconciliation_render import ("
         "render_journal_schwab_comparison_table_ascii, build_compared_pairs"
         "); "
         "pairs = build_compared_pairs('stop_mismatch', "
-        "{'stop_price': 5.30}, {'stop_price': 5.50}); "
+        "{'current_stop': 5.30}, {'stop_price': 5.50}); "
         "table = render_journal_schwab_comparison_table_ascii(list(pairs)); "
         "print(table)"
     )
@@ -639,4 +666,87 @@ def test_show_ambiguity_subprocess_cp1252_safety(
     assert b"|" in proc.stdout, (
         f"Expected '|' table separator in subprocess stdout; got:\n"
         f"{proc.stdout.decode('utf-8', errors='replace')}"
+    )
+
+
+# ===========================================================================
+# T-Q2.4 Major #3 — None vs empty-list semantics for build_compared_pairs.
+# ===========================================================================
+
+
+def test_cli_renders_placeholder_for_empty_tuple_compared_pairs(
+    monkeypatch,
+) -> None:
+    """Codex R1 Major #3 — CLI distinguishes None (hidden) from empty list
+    (placeholder rendered).
+
+    The builder ``build_compared_pairs`` currently NEVER returns an empty
+    list — it always returns None (for unmatched/unknown types) or a non-empty
+    list (for known types).  This test uses ``monkeypatch`` to mock the builder
+    returning ``[]`` and asserts the CLI renders '(no comparison data)' instead
+    of silently omitting the section.
+
+    Discriminating:
+    - '(no comparison data)' appears in output.
+    - Table separator '-+-' does NOT appear (no table rows).
+    - CLI does not crash (exit_code == 0).
+    """
+    from unittest.mock import patch
+
+    # Use CliRunner's mix_stderr=False to isolate stdout.
+    from click.testing import CliRunner as _CliRunner
+    import tempfile
+    import pathlib
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        project = tmp_path / "project"
+        project.mkdir()
+        home = tmp_path / "home"
+        home.mkdir()
+        from tests.cli.test_cli_eval import _minimal_config
+        cfg = _minimal_config(project, home)
+        runner = _CliRunner()
+        r = runner.invoke(main, ["--config", str(cfg), "db-migrate"])
+        assert r.exit_code == 0, r.output
+        db_path = home / "swing-data" / "swing.db"
+        conn = sqlite3.connect(str(db_path))
+        try:
+            run_id = _seed_reconciliation_run(conn)
+            # Plant a tabular discrepancy type (entry_price_mismatch).
+            did = _plant_disc_with_json(
+                conn, run_id,
+                ticker="DHC",
+                discrepancy_type="entry_price_mismatch",
+                field_name="price",
+                ambiguity_kind="unsupported",
+                expected_value_json='{"price": 5.30}',
+                actual_value_json='{"price": 5.23}',
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        # Mock build_compared_pairs to return empty list (simulates the empty
+        # case that the builder itself never produces — pure boundary test).
+        # The function is lazily imported inside the CLI handler from
+        # swing.trades.reconciliation_render; patch the source module so the
+        # lazy import re-binds to the mock.
+        with patch(
+            "swing.trades.reconciliation_render.build_compared_pairs",
+            return_value=[],
+        ):
+            r = runner.invoke(main, [
+                "--config", str(cfg),
+                "journal", "discrepancy", "show-ambiguity", str(did),
+            ])
+
+    assert r.exit_code == 0, r.output
+    # Placeholder text MUST appear (empty list, not None).
+    assert "(no comparison data)" in r.output, (
+        f"Expected '(no comparison data)' in output; got:\n{r.output}"
+    )
+    # Table separator must NOT appear (no rows to render).
+    assert "-+-" not in r.output, (
+        f"Table separator '-+-' should be absent for empty list; output:\n{r.output}"
     )

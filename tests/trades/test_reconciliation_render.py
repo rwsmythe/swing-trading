@@ -7,6 +7,7 @@ All tests verify the ASCII-only invariant and pure-function discipline.
 from __future__ import annotations
 
 from swing.trades.reconciliation_render import (
+    _sanitize,
     render_journal_schwab_comparison_table_ascii,
 )
 
@@ -17,6 +18,40 @@ from swing.trades.reconciliation_render import (
 def _ascii_only(s: str) -> bool:
     """Return True iff every character in s has ordinal < 128."""
     return all(ord(c) < 128 for c in s)
+
+
+# ---------------------------------------------------------------------------
+# Test 0 — _sanitize control-char handling (Codex R1 Minor #1)
+# ---------------------------------------------------------------------------
+
+
+def test_sanitize_replaces_control_chars() -> None:
+    """_sanitize replaces ASCII control chars (< 0x20 + 0x7F) with space,
+    non-ASCII (>= 128) with '?', and leaves printable ASCII unchanged.
+
+    Discriminating: a string with embedded newline + tab + DEL + non-ASCII
+    must produce only printable ASCII (no ord < 0x20, no ord == 0x7F,
+    no ord >= 128) in the sanitized output.
+    """
+    # Input with control chars that would corrupt table alignment.
+    raw = "a\nb\tc\x7fd\xe9"  # LF, TAB, DEL, e-with-acute
+    result = _sanitize(raw)
+    # All output chars must be printable ASCII.
+    for i, c in enumerate(result):
+        assert ord(c) < 128, f"Non-ASCII at position {i}: ord={ord(c)}"
+        assert ord(c) >= 0x20, f"Control char at position {i}: ord={ord(c)}"
+    # Control chars replaced with space; non-ASCII replaced with '?'.
+    assert result == "a b c d?"
+    # Verify via full render — embedded newline in a pair label must not
+    # break row alignment.
+    table = render_journal_schwab_comparison_table_ascii(
+        pairs=[("a\nb", 1.0, 2.0)]
+    )
+    assert _ascii_only(table)
+    # No literal newlines inside a cell (the embedded '\n' becomes a space).
+    lines = table.splitlines()
+    # Exactly 3 lines: header, rule, data row.
+    assert len(lines) == 3, f"Expected 3 lines; got {len(lines)}: {lines}"
 
 
 # ---------------------------------------------------------------------------
@@ -384,35 +419,58 @@ class TestBuildComparedPairsClosePriceMismatch:
 
 
 class TestBuildComparedPairsStopMismatch:
-    """Happy path for stop_mismatch."""
+    """Happy path for stop_mismatch.
 
-    def test_stop_price_pair(self) -> None:
+    Production emitter (schwab_reconciliation.py:837,840) uses ASYMMETRIC keys:
+      expected_value_json = {"current_stop": <journal_stop>}
+      actual_value_json   = {"stop_price":   <schwab_stop>}
+    """
+
+    def test_stop_pair_uses_production_emitter_shape(self) -> None:
+        """Journal side reads expected["current_stop"]; Schwab side reads actual["stop_price"]."""
         pairs = build_compared_pairs(
             "stop_mismatch",
-            {"stop_price": 10.00},
+            {"current_stop": 10.00},
             {"stop_price": 9.90},
         )
         assert pairs is not None
         labels = [p[0] for p in pairs]
-        assert "stop price" in labels
-        idx = labels.index("stop price")
+        assert "stop" in labels
+        idx = labels.index("stop")
         assert pairs[idx][1] == 10.00
         assert pairs[idx][2] == 9.90
 
-    def test_missing_required_stop_price_raises(self) -> None:
+    def test_schwab_stop_absent_yields_none(self) -> None:
+        """Schwab side uses .get() — absent stop_price yields None."""
+        pairs = build_compared_pairs(
+            "stop_mismatch",
+            {"current_stop": 10.00},
+            {},
+        )
+        assert pairs is not None
+        assert pairs[0][2] is None
+
+    def test_missing_required_current_stop_raises(self) -> None:
+        """Empty expected dict -> KeyError on 'current_stop'."""
         import pytest
         with pytest.raises(KeyError):
             build_compared_pairs("stop_mismatch", {}, {})
 
 
 class TestBuildComparedPairsPositionQtyMismatch:
-    """Happy path for position_qty_mismatch."""
+    """Happy path for position_qty_mismatch.
 
-    def test_quantity_pair(self) -> None:
+    Production emitter (schwab_reconciliation.py:870,873) uses "qty" for BOTH sides:
+      expected_value_json = {"qty": <journal_qty>}
+      actual_value_json   = {"qty": <schwab_qty>}
+    """
+
+    def test_quantity_pair_uses_production_emitter_shape(self) -> None:
+        """Both sides read the 'qty' key (NOT 'quantity')."""
         pairs = build_compared_pairs(
             "position_qty_mismatch",
-            {"quantity": 100},
-            {"quantity": 90},
+            {"qty": 100},
+            {"qty": 90},
         )
         assert pairs is not None
         labels = [p[0] for p in pairs]
@@ -420,6 +478,22 @@ class TestBuildComparedPairsPositionQtyMismatch:
         idx = labels.index("position quantity")
         assert pairs[idx][1] == 100
         assert pairs[idx][2] == 90
+
+    def test_schwab_qty_absent_yields_none(self) -> None:
+        """Schwab side uses .get() — absent qty yields None."""
+        pairs = build_compared_pairs(
+            "position_qty_mismatch",
+            {"qty": 100},
+            {},
+        )
+        assert pairs is not None
+        assert pairs[0][2] is None
+
+    def test_missing_required_qty_raises(self) -> None:
+        """Empty expected dict -> KeyError on 'qty'."""
+        import pytest
+        with pytest.raises(KeyError):
+            build_compared_pairs("position_qty_mismatch", {}, {})
 
 
 class TestBuildComparedPairsCashMovementMismatch:
@@ -546,7 +620,7 @@ class TestBuildComparedPairsGracefulDegradation:
     def test_returns_list_not_none_for_known_types(self) -> None:
         result = build_compared_pairs(
             "stop_mismatch",
-            {"stop_price": 10.0},
+            {"current_stop": 10.0},
             {"stop_price": 9.9},
         )
         assert result is not None
