@@ -956,15 +956,17 @@ def entry_post(
             v_entry_date = anchor_envelope.get("entry_date")
             v_entry_price = anchor_envelope.get("entry_price")
             v_shares = anchor_envelope.get("shares")
-            entry_date_ok = (
-                isinstance(v_entry_date, str)
-                and len(v_entry_date) == 10
-                and v_entry_date[4] == "-"
-                and v_entry_date[7] == "-"
-                and v_entry_date[:4].isdigit()
-                and v_entry_date[5:7].isdigit()
-                and v_entry_date[8:].isdigit()
-            )
+            # Codex R4 Minor #1 fix — tighten date validation to calendar
+            # validity (rejects 2026-99-99 etc.). ``date.fromisoformat``
+            # raises ValueError on invalid date strings; tolerate by
+            # catching to set the flag False.
+            from datetime import date as _date_cls
+            entry_date_ok = isinstance(v_entry_date, str)
+            if entry_date_ok:
+                try:
+                    _date_cls.fromisoformat(v_entry_date)
+                except (TypeError, ValueError):
+                    entry_date_ok = False
             entry_price_ok = (
                 isinstance(v_entry_price, (int, float))
                 and not isinstance(v_entry_price, bool)
@@ -983,7 +985,16 @@ def entry_post(
                     "an integer). The form has been regenerated; please "
                     "re-submit."
                 )
-        if isinstance(anchor_envelope, dict):
+        # Codex R4 Major #1 fix — require ``claimed_auto_fill`` to be true
+        # before any non-operator_typed fill_origin stamping. Without this
+        # gate, an attacker can submit a valid-JSON anchor with EMPTY
+        # ``fill_origin_at_form_render`` and have it persist as
+        # 'schwab_auto' (the JSON envelope present + claim absent is
+        # internally inconsistent + the previous code path would have
+        # stamped Schwab provenance anyway). With the gate, the
+        # provenance-stamping branch only fires when BOTH halves of the
+        # consistency check agree.
+        if isinstance(anchor_envelope, dict) and claimed_auto_fill:
             # The form-render anchor exists; default to schwab_auto unless
             # operator edited any of the 3 auto-populated fields.
             anchor_entry_date = anchor_envelope.get("entry_date")

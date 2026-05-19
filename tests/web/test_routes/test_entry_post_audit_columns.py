@@ -433,6 +433,72 @@ def test_c_dict_anchor_missing_keys_with_claim_rejects_with_400(
         assert resp_partial.status_code == 400, resp_partial.text
 
 
+def test_c_valid_anchor_without_claim_persists_operator_typed(
+    seeded_db, monkeypatch,
+):
+    """Codex R4 Major #1 fix — a valid-JSON anchor WITHOUT
+    ``fill_origin_at_form_render`` claim is internally inconsistent
+    (the form-render path emits both together OR neither). The POST
+    handler does NOT stamp Schwab provenance when the claim is absent;
+    the row persists as ``operator_typed`` and the audit columns stay
+    NULL.
+
+    Without this gate, an attacker could submit `schwab_source_value_json`
+    with matching values + empty `fill_origin_at_form_render` and persist
+    `fill_origin='schwab_auto'` (audit forgery).
+    """
+    cfg, cfg_path = seeded_db
+    _patch_price_cache_with_snapshot(monkeypatch)
+    anchor = _make_anchor(
+        entry_date="2026-05-19", entry_price=150.25, shares=100,
+    )
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = _post_entry(
+            client,
+            schwab_source_value_json=anchor,
+            auto_fill_audit_at="2026-05-19T14:30:00.000000+00:00",
+            fill_origin_at_form_render="",  # empty claim!
+        )
+    assert resp.status_code == 200, resp.text
+    conn = connect(cfg.paths.db_path)
+    try:
+        row = conn.execute(
+            "SELECT fill_origin, schwab_source_value_json, auto_fill_audit_at "
+            "FROM fills WHERE action='entry' "
+            "ORDER BY fill_id DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row[0] == "operator_typed", (
+        "Valid anchor without claim must NOT stamp Schwab provenance "
+        "(Codex R4 Major #1 anti-forgery gate)"
+    )
+    assert row[1] is None
+    assert row[2] is None
+
+
+def test_c_anchor_with_calendar_invalid_date_with_claim_rejects(
+    seeded_db, monkeypatch,
+):
+    """Codex R4 Minor #1 fix — `2026-99-99` passes shape-only validation
+    but fails `date.fromisoformat`. Tighter validation rejects it."""
+    cfg, cfg_path = seeded_db
+    _patch_price_cache_with_snapshot(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    bad_anchor = json.dumps(
+        {"entry_date": "2026-99-99", "entry_price": 150.0, "shares": 100},
+    )
+    with TestClient(app) as client:
+        resp = _post_entry(
+            client,
+            schwab_source_value_json=bad_anchor,
+            auto_fill_audit_at="2026-05-19T14:30:00.000000+00:00",
+            fill_origin_at_form_render="schwab_auto",
+        )
+    assert resp.status_code == 400, resp.text
+
+
 def test_c_anchor_with_nan_price_with_claim_rejects_with_400(
     seeded_db, monkeypatch,
 ):
@@ -683,11 +749,14 @@ def test_fill_origin_enum_all_three_new_values_persistable_via_route(
     app = create_app(cfg, cfg_path)
     seen: list[str] = []
     with TestClient(app) as client:
-        # 1) schwab_auto — unchanged values.
+        # 1) schwab_auto — unchanged values + claim present.
+        # Codex R4 Major #1: fill_origin_at_form_render='schwab_auto' is
+        # now REQUIRED for any non-operator_typed transition.
         resp1 = _post_entry(
             client,
             schwab_source_value_json=anchor,
             auto_fill_audit_at=audit_at,
+            fill_origin_at_form_render="schwab_auto",
         )
         assert resp1.status_code == 200, resp1.text
         conn = connect(cfg.paths.db_path)
@@ -705,11 +774,12 @@ def test_fill_origin_enum_all_three_new_values_persistable_via_route(
         finally:
             conn.close()
 
-        # 2) schwab_auto_then_operator_corrected — edited price.
+        # 2) schwab_auto_then_operator_corrected — edited price + claim.
         resp2 = _post_entry(
             client, entry_price="151.00",
             schwab_source_value_json=anchor,
             auto_fill_audit_at=audit_at,
+            fill_origin_at_form_render="schwab_auto",
         )
         assert resp2.status_code == 200, resp2.text
         conn = connect(cfg.paths.db_path)
