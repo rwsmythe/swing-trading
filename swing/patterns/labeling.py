@@ -54,6 +54,57 @@ class LabelingDispatchError(RuntimeError):
     """
 
 
+_VALID_SILVER_EVALUATIONS_NON_RELABEL: frozenset[str] = frozenset(
+    ("confirmed", "watch", "rejected")
+)
+_VALID_SILVER_CONFIDENCES: frozenset[str] = frozenset(
+    ("high", "medium", "low")
+)
+
+
+def _validate_silver_evaluation(value: object) -> None:
+    """Codex R3 M#1 closure - runtime validate the evaluation field per
+    the .claude/agents/pattern-labeler.md contract:
+    'confirmed' | 'watch' | 'rejected' | 'relabel:<other_class>'.
+    """
+    if not isinstance(value, str):
+        raise ValueError(
+            "SilverLabelResponse.evaluation must be a str; got "
+            f"{type(value).__name__}"
+        )
+    if value in _VALID_SILVER_EVALUATIONS_NON_RELABEL:
+        return
+    if value.startswith("relabel:"):
+        target = value.split(":", 1)[1]
+        if target not in DETECTOR_PATTERN_CLASSES:
+            raise ValueError(
+                "SilverLabelResponse.evaluation 'relabel:<other>' "
+                f"target {target!r} must be one of "
+                f"{sorted(DETECTOR_PATTERN_CLASSES)}"
+            )
+        return
+    raise ValueError(
+        "SilverLabelResponse.evaluation must be one of "
+        f"{sorted(_VALID_SILVER_EVALUATIONS_NON_RELABEL)} "
+        "OR 'relabel:<other_class>'; got "
+        f"{value!r}"
+    )
+
+
+def _validate_silver_confidence(value: object) -> None:
+    """Codex R3 M#1 closure - runtime validate the confidence field.
+
+    The Literal['high','medium','low'] type hint is not runtime-enforced;
+    without this validator, an invalid value would persist garbage into
+    labeler_evidence_json.
+    """
+    if value not in _VALID_SILVER_CONFIDENCES:
+        raise ValueError(
+            "SilverLabelResponse.confidence must be one of "
+            f"{sorted(_VALID_SILVER_CONFIDENCES)}; got {value!r}"
+        )
+
+
 def _coerce_dict_to_canonical_json_str(
     field_name: str, value: object,
 ) -> str | None:
@@ -106,6 +157,13 @@ class SilverLabelResponse:
     geometric_evidence_narrative: str  # ASCII-only narrative
 
     def __post_init__(self) -> None:
+        # Codex R3 M#1 closure: runtime-validate evaluation + confidence
+        # (typed hints don't enforce at runtime; an invalid value would
+        # surface later inside _map_silver_evaluation_to_decision as a
+        # raw ValueError or persist as garbage inside labeler_evidence_json).
+        _validate_silver_evaluation(self.evaluation)
+        _validate_silver_confidence(self.confidence)
+
         coerced = _coerce_dict_to_canonical_json_str(
             "structural_evidence_json", self.structural_evidence_json,
         )

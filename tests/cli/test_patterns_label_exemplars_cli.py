@@ -645,6 +645,120 @@ def test_window_bars_file_help_text_describes_autofetch(runner_env) -> None:
     assert "placeholder bars list" not in r.output
 
 
+# Codex R3 Minor #1 closure: malformed JSON in --silver-response-file
+# surfaces as a clean ClickException (no raw JSONDecodeError traceback).
+def test_persist_malformed_json_silver_response_clickexception(
+    runner_env, tmp_path: Path,
+) -> None:
+    silver_path = tmp_path / "malformed_silver.json"
+    silver_path.write_text("{not valid json at all", encoding="utf-8")
+    runner, cfg_path, _ = runner_env
+    r = runner.invoke(main, [
+        "--config", str(cfg_path),
+        "patterns", "label-exemplars",
+        "--ticker", "ABC",
+        "--start", "2024-01-01",
+        "--end", "2024-02-01",
+        "--pattern-class", "vcp",
+        "--silver-response-file", str(silver_path),
+    ])
+    assert r.exit_code != 0
+    combined = (r.output or "") + str(r.exception or "")
+    assert "not valid JSON" in combined
+    assert "Traceback" not in combined
+
+
+# Codex R3 M#1 closure: invalid evaluation surfaces as clean ClickException
+# via SilverLabelResponse __post_init__ -> CLI except (ValueError) widening.
+def test_persist_rejects_invalid_evaluation_value(
+    runner_env, tmp_path: Path,
+) -> None:
+    silver = {
+        "evaluation": "bogus_not_in_contract",
+        "confidence": "high",
+        "structural_evidence_json": {"pivot_price": 25.0},
+        "geometric_evidence_narrative": "Test.",
+    }
+    silver_path = tmp_path / "bad_eval.json"
+    silver_path.write_text(json.dumps(silver), encoding="utf-8")
+
+    runner, cfg_path, _ = runner_env
+    r = runner.invoke(main, [
+        "--config", str(cfg_path),
+        "patterns", "label-exemplars",
+        "--ticker", "ABC",
+        "--start", "2024-01-01",
+        "--end", "2024-02-01",
+        "--pattern-class", "vcp",
+        "--silver-response-file", str(silver_path),
+    ])
+    assert r.exit_code != 0
+    combined = (r.output or "") + str(r.exception or "")
+    assert "shape invalid" in combined
+    assert "evaluation" in combined
+    assert "Traceback" not in combined
+
+
+# Codex R3 M#1 closure: invalid confidence surfaces as clean ClickException.
+def test_persist_rejects_invalid_confidence_value(
+    runner_env, tmp_path: Path,
+) -> None:
+    silver = {
+        "evaluation": "confirmed",
+        "confidence": "ultra-high",  # invalid; must be high/medium/low
+        "structural_evidence_json": {"pivot_price": 25.0},
+        "geometric_evidence_narrative": "Test.",
+    }
+    silver_path = tmp_path / "bad_conf.json"
+    silver_path.write_text(json.dumps(silver), encoding="utf-8")
+
+    runner, cfg_path, _ = runner_env
+    r = runner.invoke(main, [
+        "--config", str(cfg_path),
+        "patterns", "label-exemplars",
+        "--ticker", "ABC",
+        "--start", "2024-01-01",
+        "--end", "2024-02-01",
+        "--pattern-class", "vcp",
+        "--silver-response-file", str(silver_path),
+    ])
+    assert r.exit_code != 0
+    combined = (r.output or "") + str(r.exception or "")
+    assert "shape invalid" in combined
+    assert "confidence" in combined
+    assert "Traceback" not in combined
+
+
+# Codex R3 M#1 closure: invalid relabel target surfaces as clean ClickException.
+def test_persist_rejects_relabel_with_unknown_target_class(
+    runner_env, tmp_path: Path,
+) -> None:
+    silver = {
+        "evaluation": "relabel:bogus_class",
+        "confidence": "high",
+        "structural_evidence_json": {"pivot_price": 25.0},
+        "geometric_evidence_narrative": "Test.",
+    }
+    silver_path = tmp_path / "bad_relabel.json"
+    silver_path.write_text(json.dumps(silver), encoding="utf-8")
+
+    runner, cfg_path, _ = runner_env
+    r = runner.invoke(main, [
+        "--config", str(cfg_path),
+        "patterns", "label-exemplars",
+        "--ticker", "ABC",
+        "--start", "2024-01-01",
+        "--end", "2024-02-01",
+        "--pattern-class", "vcp",
+        "--silver-response-file", str(silver_path),
+    ])
+    assert r.exit_code != 0
+    combined = (r.output or "") + str(r.exception or "")
+    assert "shape invalid" in combined
+    assert "relabel" in combined or "bogus_class" in combined
+    assert "Traceback" not in combined
+
+
 def test_label_exemplars_payload_window_bars_file_overrides_autofetch(
     runner_env, monkeypatch, tmp_path: Path,
 ) -> None:

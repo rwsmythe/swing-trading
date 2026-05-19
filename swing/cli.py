@@ -3795,11 +3795,16 @@ def _load_bars_for_labeling_emit(
     type=click.Path(exists=True, dir_okay=False), default=None,
     help="Optional path to JSON file with the window's OHLCV bars "
          "(list of dicts with keys date / open / high / low / close / "
-         "volume). When omitted on the emit-payload path, the CLI "
-         "auto-fetches daily bars via yfinance for the requested "
-         "(ticker, start, end). When supplied, this override pins the "
-         "bars (fixture-pinned reproducibility) and yfinance is NOT "
-         "called. Ignored on the persist path (--silver-response-file).",
+         "volume). Consumed ONLY on the emit-payload path (i.e. when "
+         "--silver-response-file is NOT set). When supplied on that "
+         "path, the override pins the bars (fixture-pinned "
+         "reproducibility) and yfinance is NOT called; when omitted on "
+         "that path, the CLI auto-fetches daily bars via yfinance for "
+         "the requested (ticker, start, end). The persist path "
+         "(--silver-response-file) does not consume bars; if you pass "
+         "--window-bars-file together with --silver-response-file, the "
+         "file is only checked for existence by click and otherwise "
+         "ignored.",
 )
 @click.pass_context
 def label_exemplars_cmd(
@@ -3913,9 +3918,17 @@ def label_exemplars_cmd(
         "bars": [],
     }
 
-    response_raw = _json.loads(
-        Path(silver_response_file).read_text(encoding="utf-8")
-    )
+    # Codex R3 Minor #1 closure: malformed JSON in --silver-response-file
+    # now surfaces as a clean ClickException (matches the --window-bars-file
+    # treatment under Codex R2 Minor #2).
+    try:
+        response_raw = _json.loads(
+            Path(silver_response_file).read_text(encoding="utf-8")
+        )
+    except _json.JSONDecodeError as exc:
+        raise click.ClickException(
+            f"--silver-response-file content is not valid JSON: {exc}."
+        ) from exc
     # T-A.1.5b Defect 1 + Codex R1 M#3 fix — dict-or-str coercion at
     # structural_evidence_json with JSON-object validation when the input
     # is already a string.
