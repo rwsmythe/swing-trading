@@ -15,6 +15,7 @@ from swing.config import Config
 from swing.data.backup import do_backup, prune_old_backups, should_backup
 from swing.data.db import connect
 from swing.data.models import Candidate, EvaluationRun
+from swing.data.ohlcv_archive import read_or_fetch_archive
 from swing.data.repos.candidates import insert_candidates, insert_evaluation_run
 from swing.data.repos.cash import list_cash
 from swing.data.repos.pattern_classifications import insert_classification
@@ -358,21 +359,25 @@ def _install_pipeline_marketdata_caches(
     def _yf_window_fallback(ticker: str, start, end):
         # Window-ladder yfinance fallback. The ladder expects a window-
         # shaped object; the cache's bars fetcher contract returns the
-        # bars frame + provider. We satisfy both by returning the same
-        # object the legacy ohlcv worker would have built — a pandas
-        # DataFrame via the project's archive helper.
-        from swing.pipeline import ohlcv as ohlcv_mod
-        bars = ohlcv_mod.fetch_daily_bars(
+        # bars frame + provider.
+        #
+        # Phase 13 T1.SB0 (Codex R3 Major #1 fix 2026-05-18): return FULL
+        # archive history via `read_or_fetch_archive` directly, NOT
+        # `fetch_daily_bars(n_bars=60)`. Pre-fix the 60-row truncation
+        # silently capped the chart-step bars-worker window at 60 rows
+        # — `OhlcvCache.get_or_fetch._fetch_bars_window` slices to
+        # `window_days=200` (calendar) AFTER the hook, so it could not
+        # recover history past the 60-bar cap. Bundle worker (60-bar
+        # SMA50 requirement) is unaffected: it tails the full history
+        # internally via `compute_smas` rolling. Bars worker now gets
+        # ~1260 business days (`archive_history_days` default), more
+        # than sufficient for any V1 chart-window requirement.
+        bars = read_or_fetch_archive(
             ticker,
-            n_bars=60,
+            end_date=last_completed_session(_dt.now()),
             cache_dir=cfg.paths.prices_cache_dir,
             archive_history_days=cfg.archive.archive_history_days,
         )
-        # Ladder window fallback returns a window-shaped object — the
-        # cache worker also expects a bars-shaped object. The cache's
-        # `set_ladder_bars_fetcher` wraps this hook so the cache receives
-        # (bars, provider); we return the bars directly here + the
-        # outer `_bars_hook` re-packs into the cache's expected shape.
         return bars
 
     def _bars_hook(ticker: str):

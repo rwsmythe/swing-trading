@@ -175,14 +175,24 @@ class OhlcvCache:
         with self._bars_lock:
             hit = self._bars_store.get(key)
             if hit is not None and (now - hit[1]) <= self._ttl:
-                return hit[0]
+                # Defensive copy on read (Codex R3 Minor #1 fix 2026-05-18):
+                # ``get_or_fetch`` is substrate for downstream detector +
+                # auto-fill consumers. Returning the stored frame by
+                # reference would let one consumer mutating columns/rows
+                # corrupt the cache value observed by later consumers
+                # within the TTL window. Copy-on-read is the cheapest
+                # safety net; copy-on-write at store-time is also defended
+                # below for the same reason.
+                return hit[0].copy()
         bars = self._fetch_bars_window(
             ticker=ticker_upper, window_days=int(window_days),
         )
         if bars is None or bars.empty:
             raise ValueError(f"No data for {ticker_upper}")
         with self._bars_lock:
-            self._bars_store[key] = (bars, time.monotonic())
+            # Store a copy so a caller mutating their returned frame after
+            # this call cannot reach back into the cached value.
+            self._bars_store[key] = (bars.copy(), time.monotonic())
         return bars
 
     def _fetch_bars_window(

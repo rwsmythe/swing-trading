@@ -213,6 +213,54 @@ def test_ohlcv_cache_get_or_fetch_raises_value_error_on_empty_archive(
         cache.get_or_fetch(ticker="DELISTED", window_days=180)
 
 
+def test_ohlcv_cache_get_or_fetch_returns_defensive_copy(
+    tmp_path: Path, monkeypatch,
+):
+    """Codex R3 Minor #1 fix (2026-05-18): the cached DataFrame is mutable;
+    returning it by reference would let one consumer corrupt the value
+    observed by later consumers within the TTL window.
+
+    Discriminator: mutate the returned frame; a second call within TTL
+    must return an UNCORRUPTED frame matching the original fixture.
+    """
+    from swing.web.ohlcv_cache import OhlcvCache
+
+    cfg = _make_cfg(tmp_path)
+    end = pd.Timestamp("2026-04-30")
+    fixture_df = _fixture_daily_bars(end=end, n_rows=300)
+
+    def _stub(ticker, *, end_date, cache_dir, archive_history_days):
+        return fixture_df.loc[fixture_df.index.date <= end_date].copy()
+
+    def _stub_session(now_dt):
+        return end.date()
+
+    monkeypatch.setattr(
+        "swing.web.ohlcv_cache.read_or_fetch_archive", _stub, raising=False,
+    )
+    monkeypatch.setattr(
+        "swing.web.ohlcv_cache.last_completed_session", _stub_session,
+        raising=False,
+    )
+
+    cache = OhlcvCache(cfg=cfg)
+    df1 = cache.get_or_fetch(ticker="AAPL", window_days=180)
+    original_first_close = float(df1["Close"].iloc[0])
+
+    # Mutate the returned frame in place (simulates a misbehaving consumer).
+    df1.loc[df1.index[0], "Close"] = -999.0
+
+    # Second call within TTL — MUST return uncorrupted value.
+    df2 = cache.get_or_fetch(ticker="AAPL", window_days=180)
+    assert float(df2["Close"].iloc[0]) == original_first_close, (
+        "cache corruption — consumer mutation of df1 reached cached value"
+    )
+    # And df1 and df2 must NOT be the same object (defensive copy returned).
+    assert df1 is not df2, (
+        "cache returned same object reference — copy-on-read failed"
+    )
+
+
 def test_ohlcv_cache_get_or_fetch_caches_within_ttl(tmp_path: Path, monkeypatch):
     """Cache discipline (T-T1.SB0.2 acceptance + Phase 11 forward-binding lesson):
     second call within TTL returns the cached DataFrame WITHOUT re-invoking
