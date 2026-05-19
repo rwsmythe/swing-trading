@@ -8,6 +8,66 @@
 
 ---
 
+## 2026-05-18 Phase 13 BRAINSTORM SHIPPED at `b5e62c5` — 4-theme architectural arc (charts + pattern recognition + auto-fill + usability) + Q4 fold-in; 1483-line spec; 7 Codex rounds NO_NEW_CRITICAL_MAJOR; ZERO ACCEPT-WITH-RATIONALE; ZERO Co-Authored-By footer drift; orchestrator-side QA review PASS-CLEAN; writing-plans dispatch UNBLOCKED pending orchestrator-pre-writing-plans operator-paired triage of 12 OQs + §7.1 usability-list elicitation
+
+**Integration-merge at `b5e62c5`** (branch `phase13-brainstorm` via `--no-ff`; 10 implementer commits = 1 initial draft (1343 lines) + 1 pre-Codex orchestrator-side review-fix (5 LOCK-divergences absorbed pre-chain; C.C lesson #6 BINDING validated 9th cumulative time) + 7 Codex-fix bundles + 1 return report).
+
+**Codex chain shape (convergent non-strictly-monotonic Major taper)**: R1 0C/10M/3m → R2 0C/7M/2m → R3 0C/5M/2m → R4 0C/3M/2m → R5 0C/2M/2m → R6 0C/2M/2m → R7 0C/0M/1m advisory. R5+R6 plateau at 2M before R7 closes; convergent shape overall. Operator-override past MAX_ROUNDS=5 invoked at R6+R7 per project precedent (Phase 10 writing-plans + Phase 12.5 #1+#2 brainstorm + post-Phase-12 writing-plans).
+
+**Streaks preserved**:
+- ZERO Critical findings entire chain.
+- ZERO ACCEPT-WITH-RATIONALE banked across all 32 Major + 14 Minor findings — cleanest brainstorm chain in Phase 12.5/13 arcs (continues streak with Phase 12.5 #1+#2+#3 brainstorms all 0 banks).
+- ZERO Co-Authored-By footer drift across all 10 commits (~185+ project-cumulative streak preserved).
+- Schema v19 UNCHANGED (brainstorm is doc-only spec; v20 lands at T2.SB1 task 1 per §8.3 Option E LOCK).
+- Baseline `4924 fast / 0 ruff E501 / schema v19` UNCHANGED.
+
+**Spec deliverable**: 1483-line spec at `docs/superpowers/specs/2026-05-18-phase13-charts-patterns-autofill-usability-design.md` covering 4-theme architectural arc + Q4 fold-in.
+
+**Key locked-shape elements**:
+
+- **§1 11 operator-locked binding decisions L1-L11** captured verbatim with rationale (Q4 amendment absorbed into L11).
+- **§3 v19→v20 schema delta**:
+  - §3.0 `DETECTOR_PATTERN_CLASSES` enum LOCK (5 V1 values: `vcp` / `flat_base` / `cup_with_handle` / `high_tight_flag` / `double_bottom_w`); referenced by 4 columns across 3 new tables.
+  - §3.1 NEW `pattern_exemplars` 3-column refactor (`proposed_pattern_class` + `final_decision` + `final_pattern_class`) with 5 numbered cross-column CHECK invariants schema-defending the matrix (relabel-vs-non-relabel coherence + source-vs-decision matrix + parent_exemplar_id linkage + geometric_score_json nullability + labeler_evidence_json source coherence).
+  - §3.2 NEW `chart_renders` cache table.
+  - §3.3 NEW `pattern_evaluations` detector run output cache.
+  - §3.4 widenings: `fills.fill_origin` (Theme 3) + `schwab_api_calls.surface` enum.
+  - §3.5 migration mechanics LOCK (backup-gate `pre_version == 19`).
+- **§4 Theme 1**: T1.SB0 prerequisite OhlcvCache→_step_charts wiring (releases Phase 11 Sub-bundle C R1 M#5 V1 deferral) + 5 chart surfaces + matplotlib SVG inline LOCK (per Phase 10 §A.10 precedent avoiding mathtext gotcha) + `chart_renders` cache + market weather mini-chart + Theme 2 annotated chart deliverable at T2.SB6.
+- **§5 Theme 2 HEADLINE**: foundation primitives (EMA smoothing + zigzag adaptive-threshold extrema + variable-window candidate generator) + 5 detector specs §5.2-§5.6 with rule-based geometric criteria + tolerance bands per criterion + composite scoring 0.60×geometric + 0.40×template + DTW Sakoe-Chiba template matching (window=0.1×series length) + dev-time labeling infra at T2.SB1 (Claude Code subagent + selective Codex 15%-random + high-stakes-disagreement) + closed-loop surface T2.SB6 + drift logging baseline substrate per L5 (LOGGING only; monitoring SPLIT to Phase 13.5).
+- **§6 Theme 3**: T3.SB1 entry auto-fill (Schwab Trader API at form render; `fill_origin` + audit columns) + T3.SB2 exit auto-fill + T3.SB3 review auto-fill (priors + MFE/MAE from OhlcvCache via T1.SB0) + `fill_origin` enum widening.
+- **§7 Theme 4**: operator-elicited usability list DEFERRED to orchestrator-pre-writing-plans operator-paired elicitation per §8 fallback with structured §7.3 5-field template (Issue title + Surface + Frequency + Severity + Operator framing + Proposed resolution) + Q4 §7.2 7 architectural sub-decisions D-Q4.1..D-Q4.7 with brainstorm-default recommendations (NEW table `watchlist_close_track_flags` + Web + CLI both + persistent-until-cleared-or-position-open + badge inline + UNION'd with pipeline output + watchlist-surface-only + per-flag-event audit row); PTEN canonical use case verbatim; v20-folds-in LOCK preserving L6 single-migration discipline; PARTIAL UNIQUE INDEX on active flags only closes Codex R1 M#9 re-flag-same-ticker defect.
+- **§8 11-sub-bundle decomposition refinement** (per scope-brainstorm §0.5.2 LOCK; +1 vs dispatch brief §1.5):
+  - T1.SB0 → T2.SB1 ∥ T3.SB1 → T2.SB2 → T2.SB3 → T3.SB2 → T2.SB4 → T2.SB5 → T3.SB3 → T2.SB6 → T4.SB.
+  - §8.3 Option E v20 migration landing (T2.SB1 task 1 + T3.SB1 branches off T2.SB1's first-commit SHA preserves operator-locked concurrency at scope-brainstorm §0.5.2; closes duplicate-write-set conflict Option C would have created; 5 options A/B/C/D/E enumerated; Option E recommended BINDING).
+  - §8.4 cross-bundle pin discipline.
+  - Cumulative test delta projection: +590-1020 fast tests + 4 slow E2E across Phase 13 arc; Phase 13 close projection ~5500-5940 fast.
+- **§9 12 OQs with brainstorm-recommendations** (OQ-1..OQ-12; OQ-11 + OQ-12 added beyond projected 10 for substantive coordination needs): sub-bundle count drift / chart rendering tech / pattern_class enum scope / template matching distance / Codex SELECTIVE policy / exemplar bootstrap workflow / fill_origin enum + backfill / MFE/MAE candle-data source / drift logging shape / closed-loop surface route location / pattern-labeler subagent definition location / v20 migration landing timing.
+- **§10 5-pattern discriminating walkthroughs**: §10.1 VCP CVGI + §10.2 Flat base YOU + §10.3 Cup-with-handle XYZ + §10.4 High-tight flag WXYZ + §10.5 Double-bottom-W UVWX + §10.6 tolerance-semantics uniformity LOCK + §10.7 cup curvature definition LOCK (centered on cup_bottom_date ±10 days).
+
+**Three highest-leverage design decisions** (per return report §3):
+1. **pattern_exemplars 3-column labeling refactor** (R2 M#4 / R3 M#2 / R4 M#1 cascade) closes single-pattern_class-enum-with-`none`-sentinel pollution that would have leaked into pattern_evaluations + chart_renders downstream cohort queries.
+2. **T1.SB0 OhlcvCache→_step_charts wiring as Phase 13 prerequisite Sub-bundle** releases Phase 11 Sub-bundle C R1 M#5 ACCEPT-WITH-RATIONALE V1 deferral; enables Theme 2 detector cache substrate without yfinance dependency.
+3. **Option E v20 migration landing** preserves operator-locked T2.SB1/T3.SB1 concurrency while closing duplicate-write-set conflict (Option C explicitly REJECTED at Codex R2 M#2).
+
+**Defense-in-depth catches at §1.2**: 2 factual errors in dispatch brief surfaced (`candidates.pattern_class` column does NOT exist per migration 0001..0019 grep; `fill_origin` not on `fills` schema) — routed through OQ-3 + Theme 3 schema sketch rather than silently absorbed.
+
+**Orchestrator-side QA review PASS-CLEAN** across all coverage dimensions:
+- §6 done criteria all met (spec at expected path; 7 Codex rounds NO_NEW_CRITICAL_MAJOR; section-numbered format; all 5 patterns walked end-to-end; 12 OQs with dispositions; 11-sub-bundle decomposition; Theme 4 list deferred with structured template).
+- §5 watch items all honored (11 §1.1 LOCKS preserved; v2 brief §1 introspection HARD constraint enforced; sell-side + ML re-ranker + drift monitoring scope-banking respected; `construct_authenticated_client` 4-arg discipline cited; HTMX gotcha trinity + base-layout VM banner pin called out).
+- Scope-banking integrity intact (L1 no run-time AI; L3 sell-side Phase 14; L4 ML re-ranker indefinitely deferred; L5 drift monitoring Phase 13.5).
+- Q4 7 sub-decisions all present with brainstorm-defaults + rationale.
+- 5 cross-column CHECK invariants on pattern_exemplars all numbered + schema-defended.
+- Option E v20 migration timing recommended over A/B/C/D/REJECTED.
+- §10.6 + §10.7 tolerance + cup curvature LOCKs preserved.
+- ZERO Co-Authored-By footer drift verified via grep on all 10 commits.
+
+**Writing-plans dispatch UNBLOCKED post orchestrator-pre-writing-plans operator-paired triage of 12 OQs + §7.1 usability-list elicitation per §7.3 5-field structured template.**
+
+Worktree husk at `.worktrees/phase13-brainstorm/` matches cleanup-script regex `phase\d+[-_]` — operator-paced cleanup pass post-merge.
+
+---
+
 ## 2026-05-18 Phase 12.5 #3 (Project Hygiene Maintenance Pass) SHIPPED at `b436067` — CLOSES Phase 12.5 arc; 3 Codex rounds NO_NEW_CRITICAL_MAJOR; ZERO ACCEPT-WITH-RATIONALE on Majors; ZERO Co-Authored-By footer drift; orchestrator-side QA review PASS-CLEAN across 13 watch items + Q3 skipped-test audit completed; T-3.5 Bucket A landed (3 Phase 8 tests promoted to PASSING); Ruff 18 E501 → 0; schema v19 UNCHANGED; 4847 → 4850 fast pass
 
 **Integration-merge at `b436067`** (branch `phase12-5-bundle-3-project-hygiene-executing-plans` via `--no-ff`; 11 task-branch commits = 7 task-impl (T-3.1..T-3.7) + 3 Codex-fix (R1+R2+R3) + 1 return-report). 3 Codex rounds NO_NEW_CRITICAL_MAJOR convergent monotonic-Major taper (R1 0C/5M/2m → R2 0C/2M/1m → R3 0C/0M/1m). ZERO Critical findings entire chain. ZERO ACCEPT-WITH-RATIONALE on Major findings (all 7 cumulative Major resolved with code-content fixes). ZERO Co-Authored-By footer drift across all 11 commits (~165+ project-cumulative streak preserved).

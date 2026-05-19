@@ -491,3 +491,9 @@ swing rs-universe --help
 - **A+** — `aplus` bucket — strongest setup, actionable today
 - **watch** — on watchlist but not actionable yet
 - **near_trigger** — within the asymmetric window of a pivot breakout (see `[near_trigger]` in `swing.config.toml`)
+
+---
+
+## Cross-reference: orchestrator-side housekeeping (NOT operator-cadence)
+
+The checklist above covers your daily / weekly / monthly trading routine. Claude Code orchestrator/dev workflow disciplines — post-merge housekeeping commits, CLAUDE.md status-line size-check trigger, archive-split cadence, retention rules for `docs/phase3e-todo.md` + `docs/orchestrator-context.md` + `docs/CLAUDE.md-archive.md` — live at [`docs/orchestrator-context.md`](docs/orchestrator-context.md) §"Maintenance: retention discipline". Those fire during Claude Code dev sessions; they do not appear in your trading routine and you do not need to track them yourself. The orchestrator self-checks at housekeeping-commit time (per the size-check trigger added 2026-05-18 PM).
