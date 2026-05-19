@@ -287,3 +287,95 @@ def test_label_exemplars_accepts_dict_shaped_structural_evidence_json(
     )
     # Round-trip integrity: json.loads(persisted) == original dict.
     assert json.loads(persisted_evidence_str) == expected_evidence_dict
+
+
+# T-A.1.5b Defect 3 (Option B) — auto-fetch bars at CLI emit path.
+
+def test_label_exemplars_payload_autofetches_bars_via_yfinance(
+    runner_env, monkeypatch,
+) -> None:
+    """Defect 3 Option B happy-path: emit-payload mode invokes the
+    yfinance windowed download helper + populates bars in the dispatch
+    payload (NOT the V1 empty placeholder list).
+    """
+    from swing.patterns import labeling_bars
+
+    captured = {"n": 0}
+
+    def fake_download(ticker, **kwargs):
+        captured["n"] += 1
+        captured["ticker"] = ticker
+        import pandas as pd
+        df = pd.DataFrame({
+            "Open": [10.0, 10.5],
+            "High": [11.0, 11.5],
+            "Low": [9.5, 10.0],
+            "Close": [10.5, 11.2],
+            "Volume": [100000, 120000],
+        }, index=pd.DatetimeIndex(["2024-01-02", "2024-01-03"]))
+        return df
+
+    monkeypatch.setattr(labeling_bars.yf, "download", fake_download)
+
+    runner, cfg_path, _ = runner_env
+    r = runner.invoke(main, [
+        "--config", str(cfg_path),
+        "patterns", "label-exemplars",
+        "--ticker", "ABC",
+        "--start", "2024-01-02",
+        "--end", "2024-01-03",
+        "--pattern-class", "vcp",
+    ])
+    assert r.exit_code == 0, r.output
+    assert captured["n"] == 1
+    assert captured["ticker"] == "ABC"
+
+    payload = json.loads(r.output)
+    bars = payload["window_payload"]["bars"]
+    assert len(bars) == 2
+    assert bars[0]["date"] == "2024-01-02"
+    assert bars[0]["close"] == 10.5
+    assert bars[1]["close"] == 11.2
+
+
+def test_label_exemplars_payload_window_bars_file_overrides_autofetch(
+    runner_env, monkeypatch, tmp_path: Path,
+) -> None:
+    """When --window-bars-file is supplied, the helper auto-fetch path
+    MUST NOT be invoked; operator-supplied bars take precedence (fixture-
+    pinned reproducibility per T-A.1.5b brief section 1.3 Option B).
+    """
+    from swing.patterns import labeling_bars
+
+    fetch_called = {"n": 0}
+
+    def fake_download(*args, **kwargs):
+        fetch_called["n"] += 1
+        return None
+
+    monkeypatch.setattr(labeling_bars.yf, "download", fake_download)
+
+    pinned_bars = [
+        {"date": "2020-07-01", "open": 23.65, "high": 24.225,
+         "low": 23.585, "close": 23.72, "volume": 21733800},
+    ]
+    bars_path = tmp_path / "pinned_bars.json"
+    bars_path.write_text(json.dumps(pinned_bars), encoding="utf-8")
+
+    runner, cfg_path, _ = runner_env
+    r = runner.invoke(main, [
+        "--config", str(cfg_path),
+        "patterns", "label-exemplars",
+        "--ticker", "SNAP",
+        "--start", "2020-07-01",
+        "--end", "2020-07-01",
+        "--pattern-class", "vcp",
+        "--window-bars-file", str(bars_path),
+    ])
+    assert r.exit_code == 0, r.output
+    assert fetch_called["n"] == 0, (
+        "yfinance.download MUST NOT be called when --window-bars-file is set"
+    )
+
+    payload = json.loads(r.output)
+    assert payload["window_payload"]["bars"] == pinned_bars

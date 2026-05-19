@@ -3767,6 +3767,9 @@ def label_exemplars_cmd(
     from swing.patterns.labeling import (
         fire_claude_silver_label as _fire_claude_silver_label,
     )
+    from swing.patterns.labeling_bars import (
+        autofetch_bars_for_labeling as _autofetch_bars_for_labeling,
+    )
     from swing.patterns.spec_static import (
         get_rule_criteria as _get_rule_criteria,
     )
@@ -3781,15 +3784,22 @@ def label_exemplars_cmd(
             param_hint="--pattern-class",
         )
 
-    # Build window payload. V1: bars optional (placeholder if absent); the
-    # operator-paired session at T-A.1.7 wires real OhlcvCache fetch.
-    # (T-A.1.5b Defect 3 lands the auto-fetch wiring next.)
+    # T-A.1.5b Defect 3 (Option B): operator may pin bars via
+    # --window-bars-file (fixture-pinned reproducibility); otherwise the
+    # CLI auto-fetches the window's daily bars via yfinance windowed
+    # download (NOT the Schwab API path - sandbox-safe by construction
+    # per swing/patterns/labeling_bars.py docstring).
     if window_bars_file is not None:
         bars = _json.loads(
             Path(window_bars_file).read_text(encoding="utf-8")
         )
     else:
-        bars = []  # placeholder
+        bars = _autofetch_bars_for_labeling(
+            ticker=ticker,
+            start_date=start_date,
+            end_date=end_date,
+            timeframe=timeframe,
+        )
     window_payload = {
         "ticker": ticker,
         "timeframe": timeframe,
