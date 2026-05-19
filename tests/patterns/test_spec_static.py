@@ -291,6 +291,56 @@ def test_vcp_schema_has_contraction_nested_shape() -> None:
     assert set(contraction.keys()) == expected
 
 
+def test_schemas_for_flat_cup_htf_dbw_omit_extrapolated_stage_and_criteria_pass(
+) -> None:
+    """Codex R1 M#5 closure - spec sections 5.3 through 5.6 enumerate
+    abbreviated structural evidence field lists that DO NOT include
+    `stage` or `criteria_pass`. Section 5.2 (VCP) DOES include both
+    explicitly. Schemas must mirror spec verbatim per class.
+    """
+    for cls in ("flat_base", "cup_with_handle", "high_tight_flag",
+                "double_bottom_w"):
+        schema = get_structural_evidence_schema(cls)
+        assert "stage" not in schema["fields"], (
+            f"{cls!r} schema must not extrapolate `stage` beyond spec "
+            f"section {schema['spec_section']} (spec lists only the "
+            "abbreviated structural fields)"
+        )
+        assert "criteria_pass" not in schema["fields"], (
+            f"{cls!r} schema must not extrapolate `criteria_pass` "
+            f"beyond spec section {schema['spec_section']}"
+        )
+    # VCP DOES include both per spec section 5.2 VCPEvidence dataclass.
+    vcp_schema = get_structural_evidence_schema("vcp")
+    assert "stage" in vcp_schema["fields"]
+    assert "criteria_pass" in vcp_schema["fields"]
+
+
+def test_get_rule_criteria_returns_deep_copy() -> None:
+    """Codex R1 Minor #2 closure - module-level data must not be poisoned
+    by caller mutation.
+    """
+    first = get_rule_criteria("vcp")
+    first["criteria"][0]["lock"] = "MUTATED"
+    second = get_rule_criteria("vcp")
+    assert second["criteria"][0]["lock"] != "MUTATED", (
+        "get_rule_criteria leaked module state to caller mutation"
+    )
+
+
+def test_get_structural_evidence_schema_returns_deep_copy() -> None:
+    """Codex R1 Minor #2 closure - module-level data must not be poisoned
+    by caller mutation.
+    """
+    first = get_structural_evidence_schema("vcp")
+    first["fields"]["stage"] = "MUTATED"
+    second = get_structural_evidence_schema("vcp")
+    assert second["fields"]["stage"] != "MUTATED", (
+        "get_structural_evidence_schema leaked module state to caller "
+        "mutation"
+    )
+
+
 def test_all_spec_static_strings_are_ascii() -> None:
     """Per CLAUDE.md Windows cp1252 stdout gotcha: rule_criteria + schema
     flow through click.echo(json.dumps(...)) at the CLI payload-emit path

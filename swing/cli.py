@@ -3678,6 +3678,77 @@ def patterns_group() -> None:
     """Phase 13 Theme 2 — pattern labeling + closed-loop review surfaces."""
 
 
+_LABELING_BAR_REQUIRED_KEYS = frozenset(
+    ("date", "open", "high", "low", "close", "volume")
+)
+
+
+def _load_bars_for_labeling_emit(
+    *,
+    window_bars_file: str | None,
+    ticker: str,
+    start_date: str,
+    end_date: str,
+    timeframe: str,
+) -> list[dict[str, object]]:
+    """Resolve the emit-payload bars list.
+
+    Codex R1 M#1 + M#2 + M#6 closure:
+      - operator override via --window-bars-file takes precedence + is
+        shape-validated (list of dicts with the canonical OHLCV keys);
+      - otherwise yfinance windowed auto-fetch via labeling_bars helper;
+      - empty yfinance response raises a ClickException with operator
+        guidance pointing at --window-bars-file (V1: silently emitting
+        bars=[] would hand an unusable dispatch payload to the subagent).
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    from swing.patterns.labeling_bars import (
+        autofetch_bars_for_labeling as _autofetch,
+    )
+
+    if window_bars_file is not None:
+        raw = _json.loads(
+            _Path(window_bars_file).read_text(encoding="utf-8")
+        )
+        if not isinstance(raw, list):
+            raise click.ClickException(
+                "--window-bars-file content must be a JSON array of bar "
+                f"objects; got top-level {type(raw).__name__}."
+            )
+        for idx, bar in enumerate(raw):
+            if not isinstance(bar, dict):
+                raise click.ClickException(
+                    f"--window-bars-file bar #{idx} is "
+                    f"{type(bar).__name__}; expected a JSON object with "
+                    "keys date/open/high/low/close/volume."
+                )
+            missing = _LABELING_BAR_REQUIRED_KEYS - set(bar.keys())
+            if missing:
+                raise click.ClickException(
+                    f"--window-bars-file bar #{idx} missing required "
+                    f"OHLCV keys: {sorted(missing)}."
+                )
+        return raw
+
+    bars = _autofetch(
+        ticker=ticker,
+        start_date=start_date,
+        end_date=end_date,
+        timeframe=timeframe,
+    )
+    if not bars:
+        raise click.ClickException(
+            "yfinance auto-fetch returned no bars for "
+            f"{ticker} {start_date}..{end_date} (timeframe={timeframe}). "
+            "Possible causes: delisted ticker, transient empty upstream, "
+            "rate-limit, or invalid window. Re-run with "
+            "--window-bars-file <path> to supply pre-built bars."
+        )
+    return bars
+
+
 @patterns_group.command("label-exemplars")
 @click.option("--ticker", required=True, type=str)
 @click.option(
@@ -3767,9 +3838,6 @@ def label_exemplars_cmd(
     from swing.patterns.labeling import (
         fire_claude_silver_label as _fire_claude_silver_label,
     )
-    from swing.patterns.labeling_bars import (
-        autofetch_bars_for_labeling as _autofetch_bars_for_labeling,
-    )
     from swing.patterns.spec_static import (
         get_rule_criteria as _get_rule_criteria,
     )
@@ -3784,30 +3852,6 @@ def label_exemplars_cmd(
             param_hint="--pattern-class",
         )
 
-    # T-A.1.5b Defect 3 (Option B): operator may pin bars via
-    # --window-bars-file (fixture-pinned reproducibility); otherwise the
-    # CLI auto-fetches the window's daily bars via yfinance windowed
-    # download (NOT the Schwab API path - sandbox-safe by construction
-    # per swing/patterns/labeling_bars.py docstring).
-    if window_bars_file is not None:
-        bars = _json.loads(
-            Path(window_bars_file).read_text(encoding="utf-8")
-        )
-    else:
-        bars = _autofetch_bars_for_labeling(
-            ticker=ticker,
-            start_date=start_date,
-            end_date=end_date,
-            timeframe=timeframe,
-        )
-    window_payload = {
-        "ticker": ticker,
-        "timeframe": timeframe,
-        "start_date": start_date,
-        "end_date": end_date,
-        "bars": bars,
-    }
-
     # T-A.1.5b Defect 2: inline spec section 5.2 through 5.6 rule_criteria
     # + structural_evidence_schema for the requested pattern_class. Static
     # source-of-truth at swing/patterns/spec_static.py (V1 PATCH scope
@@ -3816,9 +3860,26 @@ def label_exemplars_cmd(
     rule_criteria: dict = _get_rule_criteria(pattern_class)
     structural_evidence_schema: dict = _get_evidence_schema(pattern_class)
 
-    # Without --silver-response-file: emit ONLY the payload JSON (operator
-    # handoff guidance is documented in --help; CLI stdout stays parseable).
+    # T-A.1.5b Defect 3 (Option B) + Codex R1 M#1 fix: bars auto-fetched
+    # ONLY in emit-payload mode. The persist-mode (--silver-response-file)
+    # branch does not need bars - the subagent has already labeled - and
+    # auto-fetching there would leak an unmocked yfinance call into the
+    # persist path (which can fail offline and pollute the test surface).
     if silver_response_file is None:
+        bars = _load_bars_for_labeling_emit(
+            window_bars_file=window_bars_file,
+            ticker=ticker,
+            start_date=start_date,
+            end_date=end_date,
+            timeframe=timeframe,
+        )
+        window_payload = {
+            "ticker": ticker,
+            "timeframe": timeframe,
+            "start_date": start_date,
+            "end_date": end_date,
+            "bars": bars,
+        }
         payload = {
             "window_payload": window_payload,
             "pattern_class": pattern_class,
@@ -3829,25 +3890,60 @@ def label_exemplars_cmd(
         click.echo(_json.dumps(payload, sort_keys=True, indent=2))
         return
 
-    # With --silver-response-file: parse + persist.
+    # With --silver-response-file: parse + persist. No bars needed - the
+    # subagent has already labeled the window; the persist path stores
+    # ONLY the label rows in pattern_exemplars.
+    window_payload = {
+        "ticker": ticker,
+        "timeframe": timeframe,
+        "start_date": start_date,
+        "end_date": end_date,
+        "bars": [],
+    }
+
     response_raw = _json.loads(
         Path(silver_response_file).read_text(encoding="utf-8")
     )
-    # T-A.1.5b Defect 1 — dict-or-str coercion at structural_evidence_json.
+    # T-A.1.5b Defect 1 + Codex R1 M#3 fix — dict-or-str coercion at
+    # structural_evidence_json with JSON-object validation when the input
+    # is already a string.
+    #
     # The pattern-labeler subagent's documented output contract emits this
     # field as a JSON OBJECT (dict); _SilverLabelResponse stores it as a
     # serialized JSON string for direct sqlite3 binding. Accept both shapes
-    # (dict from real subagent + pre-serialized string from existing test
-    # fixtures); reject anything else with a clear error.
+    # (dict from real subagent + pre-serialized JSON dict string from
+    # existing test fixtures); reject anything else with a clear error.
     raw_evidence = response_raw.get("structural_evidence_json")
     if isinstance(raw_evidence, dict):
         raw_evidence = _json.dumps(raw_evidence, sort_keys=True)
-    elif raw_evidence is not None and not isinstance(raw_evidence, str):
+    elif isinstance(raw_evidence, str):
+        # Verify the string parses as a JSON OBJECT (not a top-level
+        # array / scalar / malformed JSON). Codex R1 M#3 closure: bad
+        # strings must NOT silently persist as garbage that fails
+        # downstream as a vague DB error.
+        try:
+            decoded = _json.loads(raw_evidence)
+        except _json.JSONDecodeError as exc:
+            raise click.ClickException(
+                "silver-response-file shape invalid: "
+                "structural_evidence_json string is not valid JSON: "
+                f"{exc}."
+            ) from exc
+        if not isinstance(decoded, dict):
+            raise click.ClickException(
+                "silver-response-file shape invalid: "
+                "structural_evidence_json string must decode to a JSON "
+                "object (dict); got "
+                f"{type(decoded).__name__}."
+            )
+        # Re-serialize canonically (sort_keys) for byte-stable persistence.
+        raw_evidence = _json.dumps(decoded, sort_keys=True)
+    elif raw_evidence is not None:
         raise click.ClickException(
             "silver-response-file shape invalid: "
             "structural_evidence_json must be a JSON object (per the "
             ".claude/agents/pattern-labeler.md contract) OR a pre-serialized "
-            f"JSON string; got {type(raw_evidence).__name__}."
+            f"JSON object string; got {type(raw_evidence).__name__}."
         )
     try:
         response = _SilverLabelResponse(

@@ -103,9 +103,21 @@ def test_label_exemplars_rejects_invalid_pattern_class(runner_env) -> None:
 
 
 def test_label_exemplars_emits_payload_when_no_response_file(
-    runner_env,
+    runner_env, monkeypatch,
 ) -> None:
     """Without --silver-response-file: CLI emits dispatch payload JSON."""
+    # Post-T-A.1.5b R1 M#1+M#2: emit mode requires non-empty bars; mock
+    # yfinance so the unit test does not require network.
+    from swing.patterns import labeling_bars
+    import pandas as pd
+    monkeypatch.setattr(
+        labeling_bars.yf, "download",
+        lambda *a, **k: pd.DataFrame(
+            {"Open": [10.0], "High": [11.0], "Low": [9.5],
+             "Close": [10.5], "Volume": [100000]},
+            index=pd.DatetimeIndex(["2024-01-02"]),
+        ),
+    )
     runner, cfg_path, _ = runner_env
 
     r = runner.invoke(main, [
@@ -142,12 +154,26 @@ def test_label_exemplars_emits_payload_when_no_response_file(
 _NON_ASCII_PATTERN = re.compile(r"[^\x00-\x7F]")
 
 
-def test_label_exemplars_output_is_ascii_only(runner_env, tmp_path: Path) -> None:
+def test_label_exemplars_output_is_ascii_only(
+    runner_env, monkeypatch, tmp_path: Path,
+) -> None:
     """Per §A.8 + CLAUDE.md Windows cp1252 stdout gotcha: ALL CLI output
     paths emit ASCII-only characters.
 
     Covers both --emit-payload mode + --silver-response-file persist mode.
     """
+    # Post-T-A.1.5b R1 M#1+M#2: emit mode requires non-empty bars; mock
+    # yfinance so the test stays hermetic.
+    from swing.patterns import labeling_bars
+    import pandas as pd
+    monkeypatch.setattr(
+        labeling_bars.yf, "download",
+        lambda *a, **k: pd.DataFrame(
+            {"Open": [10.0], "High": [11.0], "Low": [9.5],
+             "Close": [10.5], "Volume": [100000]},
+            index=pd.DatetimeIndex(["2024-01-02"]),
+        ),
+    )
     runner, cfg_path, _ = runner_env
 
     # Mode 1: payload-emit.
@@ -336,6 +362,187 @@ def test_label_exemplars_payload_autofetches_bars_via_yfinance(
     assert bars[0]["date"] == "2024-01-02"
     assert bars[0]["close"] == 10.5
     assert bars[1]["close"] == 11.2
+
+
+# Codex R1 M#1 closure: persist mode (--silver-response-file) MUST NOT
+# trigger yfinance auto-fetch. The persist path stores ONLY the label;
+# the bars list is not needed.
+def test_persist_mode_does_not_autofetch_bars(
+    runner_env, monkeypatch, tmp_path: Path,
+) -> None:
+    from swing.patterns import labeling_bars
+
+    yf_called = {"n": 0}
+
+    def fake_download(*args, **kwargs):
+        yf_called["n"] += 1
+        return None
+
+    monkeypatch.setattr(labeling_bars.yf, "download", fake_download)
+
+    silver = {
+        "evaluation": "confirmed",
+        "confidence": "medium",
+        "structural_evidence_json": {"pivot_price": 25.0},
+        "geometric_evidence_narrative": "Test narrative.",
+    }
+    silver_path = tmp_path / "silver_persist.json"
+    silver_path.write_text(json.dumps(silver), encoding="utf-8")
+
+    runner, cfg_path, _ = runner_env
+    r = runner.invoke(main, [
+        "--config", str(cfg_path),
+        "patterns", "label-exemplars",
+        "--ticker", "ABC",
+        "--start", "2024-01-01",
+        "--end", "2024-02-01",
+        "--pattern-class", "vcp",
+        "--silver-response-file", str(silver_path),
+    ])
+    assert r.exit_code == 0, r.output
+    assert yf_called["n"] == 0, (
+        "yfinance.download MUST NOT be called in persist mode "
+        "(Codex R1 M#1)"
+    )
+
+
+# Codex R1 M#2 closure: empty yfinance response raises ClickException
+# with operator hint to use --window-bars-file. Silently emitting
+# bars=[] hands an unusable dispatch payload to the subagent.
+def test_emit_payload_empty_yfinance_raises_with_file_override_hint(
+    runner_env, monkeypatch,
+) -> None:
+    from swing.patterns import labeling_bars
+    import pandas as pd
+
+    monkeypatch.setattr(
+        labeling_bars.yf, "download",
+        lambda *a, **k: pd.DataFrame(),
+    )
+
+    runner, cfg_path, _ = runner_env
+    r = runner.invoke(main, [
+        "--config", str(cfg_path),
+        "patterns", "label-exemplars",
+        "--ticker", "DELISTED",
+        "--start", "2024-01-01",
+        "--end", "2024-02-01",
+        "--pattern-class", "vcp",
+    ])
+    assert r.exit_code != 0
+    combined = (r.output or "") + str(r.exception or "")
+    assert "no bars" in combined.lower()
+    assert "--window-bars-file" in combined
+
+
+# Codex R1 M#3 closure: malformed JSON string at structural_evidence_json
+# must be rejected with a clear error (not silently persisted).
+def test_persist_rejects_malformed_json_string_evidence(
+    runner_env, tmp_path: Path,
+) -> None:
+    silver = {
+        "evaluation": "confirmed",
+        "confidence": "medium",
+        "structural_evidence_json": "not valid json at all {[",
+        "geometric_evidence_narrative": "Narrative.",
+    }
+    silver_path = tmp_path / "malformed_evidence.json"
+    silver_path.write_text(json.dumps(silver), encoding="utf-8")
+
+    runner, cfg_path, _ = runner_env
+    r = runner.invoke(main, [
+        "--config", str(cfg_path),
+        "patterns", "label-exemplars",
+        "--ticker", "ABC",
+        "--start", "2024-01-01",
+        "--end", "2024-02-01",
+        "--pattern-class", "vcp",
+        "--silver-response-file", str(silver_path),
+    ])
+    assert r.exit_code != 0
+    combined = (r.output or "") + str(r.exception or "")
+    assert "not valid JSON" in combined or "shape invalid" in combined
+
+
+# Codex R1 M#3 closure: non-dict JSON value (e.g. a JSON array string) at
+# structural_evidence_json must be rejected.
+def test_persist_rejects_json_array_string_evidence(
+    runner_env, tmp_path: Path,
+) -> None:
+    silver = {
+        "evaluation": "confirmed",
+        "confidence": "medium",
+        "structural_evidence_json": "[1, 2, 3]",
+        "geometric_evidence_narrative": "Narrative.",
+    }
+    silver_path = tmp_path / "array_evidence.json"
+    silver_path.write_text(json.dumps(silver), encoding="utf-8")
+
+    runner, cfg_path, _ = runner_env
+    r = runner.invoke(main, [
+        "--config", str(cfg_path),
+        "patterns", "label-exemplars",
+        "--ticker", "ABC",
+        "--start", "2024-01-01",
+        "--end", "2024-02-01",
+        "--pattern-class", "vcp",
+        "--silver-response-file", str(silver_path),
+    ])
+    assert r.exit_code != 0
+    combined = (r.output or "") + str(r.exception or "")
+    assert "decode to a JSON object" in combined or (
+        "shape invalid" in combined
+    )
+
+
+# Codex R1 M#6 closure: --window-bars-file content must be a list of dicts
+# with the canonical OHLCV keys. Bad shapes must raise ClickException.
+def test_window_bars_file_rejects_non_list_top_level(
+    runner_env, tmp_path: Path,
+) -> None:
+    bars_path = tmp_path / "bad_bars.json"
+    bars_path.write_text(
+        json.dumps({"not": "a list"}), encoding="utf-8",
+    )
+    runner, cfg_path, _ = runner_env
+    r = runner.invoke(main, [
+        "--config", str(cfg_path),
+        "patterns", "label-exemplars",
+        "--ticker", "ABC",
+        "--start", "2024-01-01",
+        "--end", "2024-02-01",
+        "--pattern-class", "vcp",
+        "--window-bars-file", str(bars_path),
+    ])
+    assert r.exit_code != 0
+    combined = (r.output or "") + str(r.exception or "")
+    assert "JSON array" in combined or "top-level" in combined
+
+
+def test_window_bars_file_rejects_bar_missing_required_keys(
+    runner_env, tmp_path: Path,
+) -> None:
+    bars_path = tmp_path / "incomplete_bar.json"
+    bars_path.write_text(
+        json.dumps([
+            {"date": "2024-01-02", "open": 10.0, "high": 11.0}
+            # missing low/close/volume
+        ]),
+        encoding="utf-8",
+    )
+    runner, cfg_path, _ = runner_env
+    r = runner.invoke(main, [
+        "--config", str(cfg_path),
+        "patterns", "label-exemplars",
+        "--ticker", "ABC",
+        "--start", "2024-01-01",
+        "--end", "2024-02-01",
+        "--pattern-class", "vcp",
+        "--window-bars-file", str(bars_path),
+    ])
+    assert r.exit_code != 0
+    combined = (r.output or "") + str(r.exception or "")
+    assert "missing required" in combined or "OHLCV" in combined
 
 
 def test_label_exemplars_payload_window_bars_file_overrides_autofetch(

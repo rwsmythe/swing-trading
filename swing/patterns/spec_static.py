@@ -23,6 +23,7 @@ ASCII-only on every string per CLAUDE.md Windows cp1252 stdout gotcha
 """
 from __future__ import annotations
 
+import copy
 from typing import Any
 
 from swing.data.models import DETECTOR_PATTERN_CLASSES
@@ -473,33 +474,45 @@ _RULE_CRITERIA_BY_CLASS: dict[str, dict[str, Any]] = {
 # from spec sections 5.2 through 5.6, serialized as JSON-friendly dicts).
 # ---------------------------------------------------------------------------
 
+#
+# T-A.1.5b Codex R1 M#5 closure: schemas mirror the VERBATIM field lists
+# enumerated in spec sections 5.3 through 5.6. The spec section 5.2
+# VCPEvidence dataclass is the only class that explicitly lists `stage`
+# and `criteria_pass`; section 5.3-5.6 use abbreviated `/ ... /` field
+# enumerations and DO NOT enumerate `stage` or `criteria_pass`. We mirror
+# the spec literally per class; the spec section 5.6 criterion #1 lock
+# does reference `current_stage` + `recent_stage` but the structural
+# evidence dataclass for DBW per spec section 5.6 only enumerates
+# `trough_1_*` / `center_peak_*` / `trough_2_*` / `undercut` / `pivot_*`
+# / `geometric_score`.
+#
 _STRUCTURAL_EVIDENCE_SCHEMA_BY_CLASS: dict[str, dict[str, Any]] = {
     "vcp": {
         "pattern_class": "vcp",
         "spec_section": "section 5.2",
         "evidence_dataclass": "VCPEvidence",
         "fields": {
-            "stage": "str (e.g. 'stage_2', 'stipulated_by_operator')",
-            "prior_uptrend_pct": "float (or null if stipulated)",
-            "prior_uptrend_weeks": "int (or null if stipulated)",
-            "base_start_date": "str (ISO date)",
-            "base_end_date": "str (ISO date)",
-            "contractions": "list of Contraction objects (see nested shape)",
+            "stage": "Literal['stage_2', ...]",
+            "prior_uptrend_pct": "float",
+            "prior_uptrend_weeks": "int",
+            "base_start_date": "date (ISO YYYY-MM-DD)",
+            "base_end_date": "date (ISO YYYY-MM-DD)",
+            "contractions": "tuple[Contraction, ...] (see nested shape)",
             "pivot_price": "float",
             "base_top_price": "float",
             "pivot_within_top_pct": "float",
             "volume_decline_passes": "bool",
-            "breakout_observed": "bool (optional criterion #8)",
+            "breakout_observed": "bool (optional criterion)",
             "breakout_volume_ratio": (
-                "float or null (populated if breakout_observed)"
+                "float | None (populated if breakout_observed)"
             ),
-            "criteria_pass": "dict (per-criterion granular pass/fail)",
+            "criteria_pass": "dict[str, bool] (per-criterion granular)",
             "geometric_score": "float in [0.0, 1.0]",
         },
         "nested_shapes": {
             "Contraction": {
-                "start_date": "str (ISO date)",
-                "end_date": "str (ISO date)",
+                "start_date": "date (ISO YYYY-MM-DD)",
+                "end_date": "date (ISO YYYY-MM-DD)",
                 "peak_price": "float",
                 "trough_price": "float",
                 "depth_pct": "float",
@@ -513,14 +526,12 @@ _STRUCTURAL_EVIDENCE_SCHEMA_BY_CLASS: dict[str, dict[str, Any]] = {
         "spec_section": "section 5.3",
         "evidence_dataclass": "FlatBaseEvidence",
         "fields": {
-            "stage": "str",
             "range_top": "float",
             "range_bottom": "float",
             "regression_slope_pct_per_week": "float",
             "mean_atr_pct": "float",
             "duration_days": "int",
             "pivot_price": "float",
-            "criteria_pass": "dict",
             "geometric_score": "float in [0.0, 1.0]",
         },
     },
@@ -529,17 +540,16 @@ _STRUCTURAL_EVIDENCE_SCHEMA_BY_CLASS: dict[str, dict[str, Any]] = {
         "spec_section": "section 5.4",
         "evidence_dataclass": "CupWithHandleEvidence",
         "fields": {
-            "stage": "str",
-            "cup_left_edge_date": "str (ISO date)",
+            "cup_left_edge_date": "date (ISO YYYY-MM-DD)",
             "cup_left_edge_price": "float",
-            "cup_bottom_date": "str (ISO date)",
+            "cup_bottom_date": "date (ISO YYYY-MM-DD)",
             "cup_bottom_price": "float",
-            "cup_right_edge_date": "str (ISO date)",
+            "cup_right_edge_date": "date (ISO YYYY-MM-DD)",
             "cup_right_edge_price": "float",
             "cup_duration_days": "int",
             "cup_depth_pct": "float",
-            "handle_start_date": "str (ISO date)",
-            "handle_end_date": "str (ISO date)",
+            "handle_start_date": "date (ISO YYYY-MM-DD)",
+            "handle_end_date": "date (ISO YYYY-MM-DD)",
             "handle_low_price": "float",
             "handle_depth_pct": "float",
             "handle_duration_days": "int",
@@ -547,7 +557,6 @@ _STRUCTURAL_EVIDENCE_SCHEMA_BY_CLASS: dict[str, dict[str, Any]] = {
             "cup_avg_volume": "float",
             "pivot_price": "float",
             "is_rounded": "bool (per rounded-vs-V test in spec section 5.4)",
-            "criteria_pass": "dict",
             "geometric_score": "float in [0.0, 1.0]",
         },
     },
@@ -556,16 +565,15 @@ _STRUCTURAL_EVIDENCE_SCHEMA_BY_CLASS: dict[str, dict[str, Any]] = {
         "spec_section": "section 5.5",
         "evidence_dataclass": "HighTightFlagEvidence",
         "fields": {
-            "stage": "str",
-            "pole_start_date": "str (ISO date)",
+            "pole_start_date": "date (ISO YYYY-MM-DD)",
             "pole_start_price": "float",
-            "pole_end_date": "str (ISO date)",
+            "pole_end_date": "date (ISO YYYY-MM-DD)",
             "pole_end_price": "float",
             "pole_pct": "float",
             "pole_duration_days": "int",
             "pole_avg_volume": "float",
-            "consolidation_start_date": "str (ISO date)",
-            "consolidation_end_date": "str (ISO date)",
+            "consolidation_start_date": "date (ISO YYYY-MM-DD)",
+            "consolidation_end_date": "date (ISO YYYY-MM-DD)",
             "consolidation_top_price": "float",
             "consolidation_bottom_price": "float",
             "consolidation_pullback_pct": "float",
@@ -573,7 +581,6 @@ _STRUCTURAL_EVIDENCE_SCHEMA_BY_CLASS: dict[str, dict[str, Any]] = {
             "consolidation_duration_days": "int",
             "consolidation_avg_volume": "float",
             "pivot_price": "float",
-            "criteria_pass": "dict",
             "geometric_score": "float in [0.0, 1.0]",
         },
     },
@@ -582,21 +589,18 @@ _STRUCTURAL_EVIDENCE_SCHEMA_BY_CLASS: dict[str, dict[str, Any]] = {
         "spec_section": "section 5.6",
         "evidence_dataclass": "DoubleBottomWEvidence",
         "fields": {
-            "stage": "str",
-            "recent_stage": "str (e.g. 'stage_4' if coming out of Stage 4)",
-            "trough_1_date": "str (ISO date)",
+            "trough_1_date": "date (ISO YYYY-MM-DD)",
             "trough_1_price": "float",
             "trough_1_drawdown_pct": "float",
             "trough_1_avg_volume": "float",
-            "center_peak_date": "str (ISO date)",
+            "center_peak_date": "date (ISO YYYY-MM-DD)",
             "center_peak_price": "float",
             "center_peak_retracement_pct": "float",
-            "trough_2_date": "str (ISO date)",
+            "trough_2_date": "date (ISO YYYY-MM-DD)",
             "trough_2_price": "float",
             "trough_2_avg_volume": "float",
             "undercut": "bool (true if trough_2 < trough_1)",
             "pivot_price": "float",
-            "criteria_pass": "dict",
             "geometric_score": (
                 "float in [0.0, 1.0] (+0.10 if undercut bonus applied, "
                 "capped at 1.0)"
@@ -614,6 +618,9 @@ def get_rule_criteria(pattern_class: str) -> dict[str, Any]:
     tolerance}), `composite_scoring_note`, and (for cup_with_handle) the
     `rounded_vs_v_test` supplementary method.
 
+    Returns a deep copy so caller mutations do NOT poison subsequent
+    dispatch payloads in-process (Codex R1 Minor #2 closure).
+
     Raises ValueError on an unknown pattern_class - the CLI separately
     validates pattern_class against DETECTOR_PATTERN_CLASSES, so reaching
     this raise indicates a callsite bug.
@@ -623,7 +630,7 @@ def get_rule_criteria(pattern_class: str) -> dict[str, Any]:
             "pattern_class must be one of "
             f"{DETECTOR_PATTERN_CLASSES}, got {pattern_class!r}"
         )
-    return _RULE_CRITERIA_BY_CLASS[pattern_class]
+    return copy.deepcopy(_RULE_CRITERIA_BY_CLASS[pattern_class])
 
 
 def get_structural_evidence_schema(pattern_class: str) -> dict[str, Any]:
@@ -634,6 +641,9 @@ def get_structural_evidence_schema(pattern_class: str) -> dict[str, Any]:
     through 5.6), `fields` (dict of field-name -> type/semantics string),
     and (for vcp) `nested_shapes` for the Contraction sub-dataclass.
 
+    Returns a deep copy so caller mutations do NOT poison subsequent
+    dispatch payloads in-process (Codex R1 Minor #2 closure).
+
     Raises ValueError on an unknown pattern_class.
     """
     if pattern_class not in DETECTOR_PATTERN_CLASSES:
@@ -641,7 +651,7 @@ def get_structural_evidence_schema(pattern_class: str) -> dict[str, Any]:
             "pattern_class must be one of "
             f"{DETECTOR_PATTERN_CLASSES}, got {pattern_class!r}"
         )
-    return _STRUCTURAL_EVIDENCE_SCHEMA_BY_CLASS[pattern_class]
+    return copy.deepcopy(_STRUCTURAL_EVIDENCE_SCHEMA_BY_CLASS[pattern_class])
 
 
 __all__ = [

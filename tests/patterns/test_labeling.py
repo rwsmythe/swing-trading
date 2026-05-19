@@ -415,3 +415,86 @@ def test_codex_skipped_when_random_above_threshold_returns_none(
     assert parent is not None
     assert parent.codex_reviewed == 0
     assert parent.codex_agreement is None
+
+
+# T-A.1.5b Codex R1 M#4 closure: defense-in-depth dict-or-string coercion
+# at dataclass construction time.
+
+def test_silver_label_response_coerces_dict_at_construction() -> None:
+    """Dataclass accepts a dict at structural_evidence_json + coerces to
+    canonical sorted-key JSON string. Defense-in-depth for the same
+    failure mode that surfaced at T-A.1.7 abort (sqlite3.ProgrammingError
+    binding `type 'dict' is not supported`).
+    """
+    response = SilverLabelResponse(
+        evaluation="confirmed",
+        confidence="high",
+        structural_evidence_json={"pivot_price": 25.0, "stage": "stage_2"},
+        geometric_evidence_narrative="Test narrative.",
+    )
+    assert isinstance(response.structural_evidence_json, str)
+    assert json.loads(response.structural_evidence_json) == {
+        "pivot_price": 25.0, "stage": "stage_2",
+    }
+
+
+def test_silver_label_response_validates_json_object_string() -> None:
+    """Pre-serialized JSON OBJECT string accepted + canonicalized."""
+    response = SilverLabelResponse(
+        evaluation="confirmed",
+        confidence="high",
+        structural_evidence_json=json.dumps({"a": 1, "b": 2}),
+        geometric_evidence_narrative="Test.",
+    )
+    # Canonical form: sorted keys.
+    assert response.structural_evidence_json == '{"a": 1, "b": 2}'
+
+
+def test_silver_label_response_rejects_malformed_json_string() -> None:
+    import pytest
+    with pytest.raises(ValueError, match="not valid JSON"):
+        SilverLabelResponse(
+            evaluation="confirmed",
+            confidence="high",
+            structural_evidence_json="not valid json {[",
+            geometric_evidence_narrative="Test.",
+        )
+
+
+def test_silver_label_response_rejects_non_object_json_string() -> None:
+    import pytest
+    with pytest.raises(ValueError, match="must decode to a JSON object"):
+        SilverLabelResponse(
+            evaluation="confirmed",
+            confidence="high",
+            structural_evidence_json="[1, 2, 3]",
+            geometric_evidence_narrative="Test.",
+        )
+
+
+def test_codex_review_response_coerces_dict_alternative_fields() -> None:
+    """alternative_structural_evidence_json + alternative_labeler_evidence_json
+    accept dict + coerce to canonical JSON string at construction time.
+    """
+    response = CodexReviewResponse(
+        agreed=False,
+        alternative_evaluation="rejected",
+        alternative_confidence="high",
+        alternative_structural_evidence_json={"reason": "criterion 5 failed"},
+        alternative_labeler_evidence_json={"original_score": 0.4},
+    )
+    assert isinstance(response.alternative_structural_evidence_json, str)
+    assert json.loads(response.alternative_structural_evidence_json) == {
+        "reason": "criterion 5 failed",
+    }
+    assert isinstance(response.alternative_labeler_evidence_json, str)
+    assert json.loads(response.alternative_labeler_evidence_json) == {
+        "original_score": 0.4,
+    }
+
+
+def test_codex_review_response_agree_path_no_alternative_fields_ok() -> None:
+    """agreed=True path with None alternative fields constructs cleanly."""
+    response = CodexReviewResponse(agreed=True)
+    assert response.alternative_structural_evidence_json is None
+    assert response.alternative_labeler_evidence_json is None

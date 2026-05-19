@@ -54,6 +54,39 @@ class LabelingDispatchError(RuntimeError):
     """
 
 
+def _coerce_dict_to_canonical_json_str(
+    field_name: str, value: object,
+) -> str | None:
+    """T-A.1.5b Codex R1 M#4 closure - defense-in-depth coercion at
+    dataclass construction time.
+
+    Accept dict (subagent's documented contract) OR a JSON-object string
+    (existing test fixtures pre-serialized via json.dumps({...})). Reject
+    anything else. None passes through (for nullable fields).
+    """
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return json.dumps(value, sort_keys=True)
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"{field_name} string is not valid JSON: {exc}"
+            ) from exc
+        if not isinstance(decoded, dict):
+            raise ValueError(
+                f"{field_name} string must decode to a JSON object "
+                f"(dict); got {type(decoded).__name__}"
+            )
+        return json.dumps(decoded, sort_keys=True)
+    raise TypeError(
+        f"{field_name} must be a JSON object (dict) OR a pre-serialized "
+        f"JSON object string OR None; got {type(value).__name__}"
+    )
+
+
 @dataclass(frozen=True)
 class SilverLabelResponse:
     """Parsed pattern-labeler subagent response per `.claude/agents/
@@ -61,11 +94,29 @@ class SilverLabelResponse:
 
     The dispatch callable returns one of these (post-JSON-parse). The
     labeling glue maps it to a ``PatternExemplar`` insert.
+
+    T-A.1.5b Codex R1 M#4 closure: ``structural_evidence_json`` accepts
+    either a dict (subagent contract) OR a pre-serialized JSON object
+    string (existing test fixtures) at construction time; ``__post_init__``
+    coerces to canonical sorted-key JSON string for direct sqlite3 binding.
     """
     evaluation: str  # 'confirmed' | 'watch' | 'rejected' | 'relabel:<other_class>'
     confidence: Literal["high", "medium", "low"]
-    structural_evidence_json: str  # serialized JSON dict
+    structural_evidence_json: str  # serialized JSON dict; dict accepted + coerced
     geometric_evidence_narrative: str  # ASCII-only narrative
+
+    def __post_init__(self) -> None:
+        coerced = _coerce_dict_to_canonical_json_str(
+            "structural_evidence_json", self.structural_evidence_json,
+        )
+        if coerced is None:
+            raise ValueError(
+                "SilverLabelResponse.structural_evidence_json must not "
+                "be None (the subagent contract requires evidence even "
+                "for rejected outcomes per .claude/agents/"
+                "pattern-labeler.md output contract)"
+            )
+        object.__setattr__(self, "structural_evidence_json", coerced)
 
 
 @dataclass(frozen=True)
@@ -79,12 +130,31 @@ class CodexReviewResponse:
     flips to 1 + ``codex_agreement`` to 0, AND a SECOND row is INSERTed
     with ``label_source='codex_silver'`` + ``parent_exemplar_id``
     pointing to the parent (per spec §5.9 step 4 + Codex R4 M#3 closure).
+
+    T-A.1.5b Codex R1 M#4 closure: ``alternative_structural_evidence_json``
+    and ``alternative_labeler_evidence_json`` accept dict OR pre-serialized
+    JSON object string at construction time + coerce to canonical JSON
+    string. Defense-in-depth for any future Codex-review CLI surface that
+    parses a JSON file (mirrors the SilverLabelResponse pattern); current
+    in-process Codex dispatch path is unaffected.
     """
     agreed: bool
     alternative_evaluation: str | None = None  # required when agreed=False
     alternative_confidence: str | None = None
     alternative_structural_evidence_json: str | None = None
     alternative_labeler_evidence_json: str | None = None
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "alternative_structural_evidence_json",
+            "alternative_labeler_evidence_json",
+        ):
+            current = getattr(self, field_name)
+            coerced = _coerce_dict_to_canonical_json_str(
+                field_name, current,
+            )
+            if coerced != current:
+                object.__setattr__(self, field_name, coerced)
 
 
 def _default_now_iso() -> str:
