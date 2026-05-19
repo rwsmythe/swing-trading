@@ -39,7 +39,7 @@ import json
 import re
 import sqlite3
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
 
@@ -52,6 +52,7 @@ from swing.metrics.discrepancies import (
     fetch_first_pending_ambiguity_resolve_link_path,
 )
 from swing.trades.reconciliation_ambiguity_choices import get_choice_menu
+from swing.trades.reconciliation_render import build_compared_pairs
 
 
 def _parse_parametric_pick_count(resolution_reason: str | None) -> int:
@@ -126,6 +127,12 @@ class ReconcilePreResolutionContext:
     The 15th field ``parse_warning`` is None on the happy path; non-None
     indicates the generic fallback fired (unknown discrepancy_type, malformed
     JSON, or per-type helper raised KeyError).
+
+    The 16th field ``compared_pairs`` is populated by ``build_compared_pairs``
+    from ``swing.trades.reconciliation_render`` (T-Q2.2 Part B). Each tuple
+    is ``(label, journal_value, schwab_value)`` with raw (non-formatted)
+    values for tabular rendering. None when no per-type tabular comparison is
+    meaningful (unmatched fills, unknown type, generic fallback).
     """
 
     discrepancy_type: str
@@ -143,6 +150,7 @@ class ReconcilePreResolutionContext:
     created_at: str
     run_id: int
     parse_warning: str | None = None
+    compared_pairs: tuple[tuple[str, Any, Any], ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -335,7 +343,13 @@ def _render_pre_resolution_context_stop_mismatch(
     expected: dict[str, Any],
     actual: dict[str, Any],
 ) -> ReconcilePreResolutionContext:
-    journal_stop = expected["stop_price"]
+    # Production emitter (schwab_reconciliation.py:837,840) uses ASYMMETRIC keys:
+    #   expected_value_json = {"current_stop": <journal_stop>}
+    #   actual_value_json   = {"stop_price":   <schwab_stop>}
+    # The journal side is keyed "current_stop" (the trades.current_stop column);
+    # the Schwab side is keyed "stop_price" (the trigger price from the broker).
+    # Do NOT "fix" this asymmetry — it reflects the actual emitter shape.
+    journal_stop = expected["current_stop"]
     schwab_stop = actual.get("stop_price")
     return ReconcilePreResolutionContext(
         **_base_context_kwargs(disc),
@@ -353,8 +367,11 @@ def _render_pre_resolution_context_position_qty_mismatch(
     expected: dict[str, Any],
     actual: dict[str, Any],
 ) -> ReconcilePreResolutionContext:
-    journal_qty = expected["quantity"]
-    schwab_qty = actual.get("quantity")
+    # Production emitter (schwab_reconciliation.py:870,873) uses "qty" for BOTH sides:
+    #   expected_value_json = {"qty": <journal_qty>}
+    #   actual_value_json   = {"qty": <schwab_qty>}
+    journal_qty = expected["qty"]
+    schwab_qty = actual.get("qty")
     return ReconcilePreResolutionContext(
         **_base_context_kwargs(disc),
         journal_side_label="Journal quantity",
@@ -425,16 +442,26 @@ def _render_unmatched_fill_shared(
 ) -> ReconcilePreResolutionContext:
     """Shared renderer for unmatched_open_fill + unmatched_close_fill.
 
-    Per spec §7.1: journal side renders ``{quantity} @ {price:.2f} on
-    {fill_datetime}`` from the expected envelope; Schwab side renders
-    ``(none)`` when ``actual['matched'] is None`` AND
+    Journal side renders ``{qty} @ {price:.2f}`` (plus `` ({action})`` when
+    the ``action`` key is present) from the expected envelope.  Keys are
+    ``qty`` / ``price`` / ``action`` per the production emitter at
+    ``swing/trades/schwab_reconciliation.py:935-944`` (and ``:973-985``).
+
+    Schwab side renders ``(none)`` when
     ``_parse_parametric_pick_count(resolution_reason) == 0``, else
-    ``{N} candidates within window``. Delta is the record count N.
+    ``{N} candidates within window``.  Delta is the record count N.
+
+    Note: the earlier spec §7.1 draft incorrectly listed ``quantity`` and
+    ``fill_datetime`` as envelope keys.  The production emitter never writes
+    those keys.  V2.1 amendment candidate banked (Codex R2 Major #1 fix).
     """
-    quantity = expected["quantity"]
+    qty = expected["qty"]
     price = expected["price"]
-    fill_datetime = expected["fill_datetime"]
-    journal_value = f"{quantity} @ {float(price):.2f} on {fill_datetime}"
+    action = expected.get("action", "")
+    journal_value = (
+        f"{qty} @ {float(price):.2f}"
+        + (f" ({action})" if action else "")
+    )
     n = _parse_parametric_pick_count(disc.resolution_reason)
     schwab_value = f"{n} candidates within window" if n > 0 else "(none)"
     return ReconcilePreResolutionContext(
@@ -453,11 +480,22 @@ def _render_pre_resolution_context_equity_delta(
     expected: dict[str, Any],
     actual: dict[str, Any],
 ) -> ReconcilePreResolutionContext:
-    """Per spec §7.1: equity_delta carries journal/source/delta in the
-    expected envelope only; actual envelope is unused for this type."""
-    journal_nlv = expected["journal"]
-    schwab_nlv = expected["source"]
-    delta = expected["delta"]
+    """equity_delta production emitter shape (reconciliation.py:453-457 and
+    schwab_reconciliation.py:1119-1122):
+
+      expected_value_json = {"equity_dollars": journal_equity}
+      actual_value_json   = {"equity_dollars": source_nlv}
+
+    The earlier spec §7.1 draft incorrectly documented both values in the
+    expected envelope ("journal" / "source" / "delta"); the actual emitters
+    write equity_dollars in BOTH envelopes.  Delta is derived from the
+    persisted disc.delta_text column, not from the JSON envelope.
+
+    V2.1 amendment candidate: Phase 12.5 #2 spec §7.1 equity_delta description
+    should be updated to cite the correct production emitter shape.
+    """
+    journal_nlv = expected["equity_dollars"]
+    schwab_nlv = actual.get("equity_dollars")
     return ReconcilePreResolutionContext(
         **_base_context_kwargs(disc),
         journal_side_label="Journal NLV",
@@ -465,7 +503,7 @@ def _render_pre_resolution_context_equity_delta(
         schwab_side_label="Schwab NLV",
         schwab_side_value=_format_price(schwab_nlv),
         delta_label="Equity delta",
-        delta_value=_format_price(delta),
+        delta_value=_signed_delta(schwab_nlv, journal_nlv),
     )
 
 
@@ -588,7 +626,7 @@ def _render_pre_resolution_context(
             parse_warning="json envelope is not a JSON object",
         )
     try:
-        return helper(disc, expected, actual)
+        ctx = helper(disc, expected, actual)
     except KeyError as exc:
         return _render_generic_fallback(
             disc,
@@ -606,6 +644,14 @@ def _render_pre_resolution_context(
                 f"shape; rendered via generic fallback: {exc}"
             ),
         )
+    # T-Q2.2 Part B: inject compared_pairs from reconciliation_render helper.
+    # build_compared_pairs returns None for unmatched fill types + unknown
+    # types. Convert list -> tuple for frozen-dataclass hashability contract.
+    raw_pairs = build_compared_pairs(disc.discrepancy_type, expected, actual)
+    pairs: tuple[tuple[str, Any, Any], ...] | None = (
+        tuple(tuple(p) for p in raw_pairs) if raw_pairs is not None else None  # type: ignore[misc]
+    )
+    return replace(ctx, compared_pairs=pairs)
 
 
 # ---------------------------------------------------------------------------

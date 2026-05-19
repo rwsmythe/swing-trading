@@ -21,8 +21,7 @@ from swing.web.view_models.reconcile import (
 )
 
 _UNMATCHED_FILL_EXPECTED = (
-    '{"quantity": 100, "price": 5.30,'
-    ' "fill_datetime": "2026-05-15T14:30:00Z"}'
+    '{"action": "entry", "price": 5.30, "qty": 100.0}'
 )
 
 
@@ -227,9 +226,8 @@ def test_reconcile_pre_resolution_context_renders_unmatched_open_fill_n_eq_3() -
     ctx = _render_pre_resolution_context(disc)
     assert ctx.discrepancy_type == "unmatched_open_fill"
     assert ctx.journal_side_label == "Journal fill"
-    assert "100" in ctx.journal_side_value
-    assert "5.30" in ctx.journal_side_value
-    assert "2026-05-15" in ctx.journal_side_value
+    assert ctx.journal_side_value == "100.0 @ 5.30 (entry)"
+    assert ctx.parse_warning is None
     assert ctx.schwab_side_label == "Schwab match"
     assert ctx.schwab_side_value == "3 candidates within window"
     assert ctx.delta_label == "Schwab record count"
@@ -398,3 +396,393 @@ def test_reconcile_choice_form_item_is_parametric_pick_false_for_static_codes() 
         is_parametric_pick=False,
     )
     assert item.is_parametric_pick is False
+
+
+# ---------------------------------------------------------------------------
+# T-Q2.2 Part B: compared_pairs field on ReconcilePreResolutionContext.
+# ---------------------------------------------------------------------------
+
+
+def test_dataclass_has_compared_pairs_field() -> None:
+    """ReconcilePreResolutionContext must expose exactly 16 dataclass fields
+    (the 15 original fields plus ``compared_pairs``)."""
+    fields = ReconcilePreResolutionContext.__dataclass_fields__
+    assert "compared_pairs" in fields, (
+        "T-Q2.2 Part B: compared_pairs field is missing from "
+        "ReconcilePreResolutionContext"
+    )
+    assert len(fields) == 16, (
+        f"Expected 16 dataclass fields, got {len(fields)}: {list(fields)}"
+    )
+
+
+def test_compared_pairs_defaults_to_none_when_omitted() -> None:
+    """The helper ``_make_pre_resolution_context`` (15-arg form) must still
+    work after adding the 16th field with a default of None."""
+    ctx = _make_pre_resolution_context()
+    assert ctx.compared_pairs is None
+
+
+def test_entry_price_mismatch_populates_compared_pairs() -> None:
+    """entry_price_mismatch render helper sets compared_pairs with at least
+    one tuple whose label is 'entry price'."""
+    disc = _make_discrepancy(
+        discrepancy_type="entry_price_mismatch",
+        expected_value_json='{"price": 5.30}',
+        actual_value_json='{"price": 5.23}',
+    )
+    ctx = _render_pre_resolution_context(disc)
+    assert ctx.compared_pairs is not None
+    labels = [t[0] for t in ctx.compared_pairs]
+    assert "entry price" in labels
+
+
+def test_entry_price_mismatch_compared_pairs_values() -> None:
+    """entry_price_mismatch: first pair carries journal=5.30, schwab=5.23."""
+    disc = _make_discrepancy(
+        discrepancy_type="entry_price_mismatch",
+        expected_value_json='{"price": 5.30}',
+        actual_value_json='{"price": 5.23}',
+    )
+    ctx = _render_pre_resolution_context(disc)
+    assert ctx.compared_pairs is not None
+    first = ctx.compared_pairs[0]
+    assert first[0] == "entry price"
+    assert first[1] == pytest.approx(5.30)
+    assert first[2] == pytest.approx(5.23)
+
+
+def test_entry_price_mismatch_includes_quantity_when_present() -> None:
+    """Optional quantity pair is included when both sides carry quantity."""
+    disc = _make_discrepancy(
+        discrepancy_type="entry_price_mismatch",
+        expected_value_json='{"price": 5.30, "quantity": 100}',
+        actual_value_json='{"price": 5.23, "quantity": 100}',
+    )
+    ctx = _render_pre_resolution_context(disc)
+    assert ctx.compared_pairs is not None
+    labels = [t[0] for t in ctx.compared_pairs]
+    assert "quantity" in labels
+
+
+def test_entry_price_mismatch_omits_quantity_when_absent() -> None:
+    """Optional quantity pair is omitted when neither side carries quantity."""
+    disc = _make_discrepancy(
+        discrepancy_type="entry_price_mismatch",
+        expected_value_json='{"price": 5.30}',
+        actual_value_json='{"price": 5.23}',
+    )
+    ctx = _render_pre_resolution_context(disc)
+    assert ctx.compared_pairs is not None
+    labels = [t[0] for t in ctx.compared_pairs]
+    assert "quantity" not in labels
+
+
+def test_close_price_mismatch_populates_compared_pairs() -> None:
+    """close_price_mismatch render helper sets compared_pairs with 'close price'."""
+    disc = _make_discrepancy(
+        discrepancy_type="close_price_mismatch",
+        expected_value_json='{"price": 12.70}',
+        actual_value_json='{"price": 12.75}',
+    )
+    ctx = _render_pre_resolution_context(disc)
+    assert ctx.compared_pairs is not None
+    labels = [t[0] for t in ctx.compared_pairs]
+    assert "close price" in labels
+
+
+def test_stop_mismatch_populates_compared_pairs() -> None:
+    """stop_mismatch render helper sets compared_pairs using production emitter shape.
+
+    Production emitter (schwab_reconciliation.py:837,840) uses ASYMMETRIC keys:
+      expected_value_json = {"current_stop": <journal_stop>}
+      actual_value_json   = {"stop_price":   <schwab_stop>}
+    """
+    disc = _make_discrepancy(
+        discrepancy_type="stop_mismatch",
+        field_name="current_stop",
+        expected_value_json='{"current_stop": 4.50}',
+        actual_value_json='{"stop_price": 4.55}',
+    )
+    ctx = _render_pre_resolution_context(disc)
+    assert ctx.compared_pairs is not None
+    labels = [t[0] for t in ctx.compared_pairs]
+    assert "stop" in labels
+    idx = labels.index("stop")
+    assert ctx.compared_pairs[idx][1] == 4.50   # journal stop from current_stop
+    assert ctx.compared_pairs[idx][2] == 4.55   # Schwab stop from stop_price
+
+
+def test_stop_mismatch_journal_side_value_matches_current_stop_key() -> None:
+    """journal_side_value in the pre-resolution context reads expected['current_stop'].
+
+    Discriminating: a discrepancy with expected_value_json using 'current_stop'
+    must render the correct dollar value; 'stop_price' key on the expected side
+    must raise KeyError (wrong shape caught immediately).
+    """
+    disc = _make_discrepancy(
+        discrepancy_type="stop_mismatch",
+        field_name="current_stop",
+        expected_value_json='{"current_stop": 9.75}',
+        actual_value_json='{"stop_price": 10.00}',
+    )
+    ctx = _render_pre_resolution_context(disc)
+    # journal_side_value reads expected["current_stop"] -> "$9.75"
+    assert "9.75" in ctx.journal_side_value
+    # schwab_side_value reads actual["stop_price"] -> "$10.00"
+    assert "10.00" in ctx.schwab_side_value
+
+
+def test_position_qty_mismatch_populates_compared_pairs() -> None:
+    """position_qty_mismatch render helper sets compared_pairs using production emitter shape.
+
+    Production emitter (schwab_reconciliation.py:870,873) uses "qty" for BOTH sides:
+      expected_value_json = {"qty": <journal_qty>}
+      actual_value_json   = {"qty": <schwab_qty>}
+    """
+    disc = _make_discrepancy(
+        discrepancy_type="position_qty_mismatch",
+        field_name="qty",
+        expected_value_json='{"qty": 100}',
+        actual_value_json='{"qty": 90}',
+    )
+    ctx = _render_pre_resolution_context(disc)
+    assert ctx.compared_pairs is not None
+    labels = [t[0] for t in ctx.compared_pairs]
+    assert "position quantity" in labels
+    idx = labels.index("position quantity")
+    assert ctx.compared_pairs[idx][1] == 100   # journal qty
+    assert ctx.compared_pairs[idx][2] == 90    # Schwab qty
+
+
+def test_cash_movement_mismatch_populates_compared_pairs() -> None:
+    """cash_movement_mismatch render helper sets compared_pairs with 'amount'."""
+    disc = _make_discrepancy(
+        discrepancy_type="cash_movement_mismatch",
+        field_name="amount",
+        expected_value_json='{"amount": 100.0}',
+        actual_value_json='{"amount": 99.5}',
+        cash_movement_id=1,
+        fill_id=None,
+    )
+    ctx = _render_pre_resolution_context(disc)
+    assert ctx.compared_pairs is not None
+    labels = [t[0] for t in ctx.compared_pairs]
+    assert "amount" in labels
+
+
+def test_snapshot_mismatch_populates_compared_pairs() -> None:
+    """snapshot_mismatch render helper sets compared_pairs with 'equity dollars'."""
+    disc = _make_discrepancy(
+        discrepancy_type="snapshot_mismatch",
+        field_name="equity_dollars",
+        expected_value_json='{"equity_dollars": 2000.00}',
+        actual_value_json='{"equity_dollars": 1980.00}',
+        fill_id=None,
+    )
+    ctx = _render_pre_resolution_context(disc)
+    assert ctx.compared_pairs is not None
+    labels = [t[0] for t in ctx.compared_pairs]
+    assert "equity dollars" in labels
+
+
+def test_equity_delta_compared_pairs_uses_production_emitter_shape() -> None:
+    """equity_delta: compared_pairs uses the correct production emitter shape.
+
+    Production emitters (reconciliation.py:453-457 and
+    schwab_reconciliation.py:1119-1122) write:
+      expected_value_json = {"equity_dollars": journal_equity}
+      actual_value_json   = {"equity_dollars": source_nlv}
+
+    Earlier fixture used {"journal": ..., "source": ..., "delta": ...} in the
+    expected envelope only; that was synthetic-fixture-vs-production-emitter
+    shape drift (CLAUDE.md gotcha).  This test pins the correct emitter shape.
+    """
+    disc = _make_discrepancy(
+        discrepancy_type="equity_delta",
+        field_name="equity_dollars",
+        expected_value_json='{"equity_dollars": 2000.00}',
+        actual_value_json='{"equity_dollars": 2034.78}',
+        fill_id=None,
+    )
+    ctx = _render_pre_resolution_context(disc)
+    assert ctx.compared_pairs is not None
+    assert len(ctx.compared_pairs) == 1
+    label, journal_val, source_val = ctx.compared_pairs[0]
+    assert label == "equity dollars"
+    assert journal_val == pytest.approx(2000.00)
+    assert source_val == pytest.approx(2034.78)
+
+
+def test_sector_tamper_populates_compared_pairs() -> None:
+    """sector_tamper render helper sets compared_pairs with 'sector' and 'industry'."""
+    disc = _make_discrepancy(
+        discrepancy_type="sector_tamper",
+        field_name="sector",
+        expected_value_json=(
+            '{"sector": "Technology", "industry": "Software"}'
+        ),
+        actual_value_json=(
+            '{"sector": "Healthcare", "industry": "Biotech"}'
+        ),
+        fill_id=None,
+    )
+    ctx = _render_pre_resolution_context(disc)
+    assert ctx.compared_pairs is not None
+    labels = [t[0] for t in ctx.compared_pairs]
+    assert "sector" in labels
+    assert "industry" in labels
+
+
+def test_unmatched_open_fill_compared_pairs_is_none() -> None:
+    """unmatched_open_fill: compared_pairs must be None (no tabular comparison)."""
+    disc = _make_discrepancy(
+        discrepancy_type="unmatched_open_fill",
+        field_name="fill_match",
+        expected_value_json=_UNMATCHED_FILL_EXPECTED,
+        actual_value_json='{"matched": null}',
+    )
+    ctx = _render_pre_resolution_context(disc)
+    assert ctx.compared_pairs is None
+
+
+def test_unmatched_close_fill_compared_pairs_is_none() -> None:
+    """unmatched_close_fill: compared_pairs must be None (no tabular comparison)."""
+    disc = _make_discrepancy(
+        discrepancy_type="unmatched_close_fill",
+        field_name="fill_match",
+        expected_value_json=_UNMATCHED_FILL_EXPECTED,
+        actual_value_json='{"matched": null}',
+    )
+    ctx = _render_pre_resolution_context(disc)
+    assert ctx.compared_pairs is None
+
+
+def test_generic_fallback_compared_pairs_is_none() -> None:
+    """Unknown discrepancy_type falls back to generic helper which sets
+    compared_pairs=None (no type-specific comparison available)."""
+    disc = _make_discrepancy(
+        discrepancy_type="entry_price_mismatch",
+        expected_value_json='{"price": 5.30}',
+        actual_value_json='{"price": 5.23}',
+    )
+    object.__setattr__(disc, "discrepancy_type", "completely_unknown_type")
+    ctx = _render_pre_resolution_context(disc)
+    assert ctx.compared_pairs is None
+
+
+def test_compared_pairs_is_tuple_not_list() -> None:
+    """compared_pairs must be a tuple (frozen-dataclass hashability contract).
+
+    Uses production emitter shape for stop_mismatch (asymmetric keys):
+      expected_value_json = {"current_stop": <journal>}
+      actual_value_json   = {"stop_price":   <schwab>}
+    """
+    disc = _make_discrepancy(
+        discrepancy_type="stop_mismatch",
+        field_name="current_stop",
+        expected_value_json='{"current_stop": 4.50}',
+        actual_value_json='{"stop_price": 4.55}',
+    )
+    ctx = _render_pre_resolution_context(disc)
+    assert ctx.compared_pairs is not None
+    assert isinstance(ctx.compared_pairs, tuple), (
+        f"expected tuple, got {type(ctx.compared_pairs)}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Codex R2 Major #1: unmatched_*_fill production envelope shape fix.
+# Discriminating tests for the corrected qty/price/action key contract.
+# ---------------------------------------------------------------------------
+
+
+def test_unmatched_open_fill_uses_production_emitter_shape_qty_price_action() -> None:
+    """Production envelope (qty/price/action) succeeds with structured output.
+
+    Verifies Codex R2 Major #1 fix: _render_unmatched_fill_shared must read
+    'qty' and optionally 'action' from the expected envelope, matching the
+    production emitter at schwab_reconciliation.py:935-944.
+    """
+    disc = _make_discrepancy(
+        discrepancy_type="unmatched_open_fill",
+        field_name="fill_match",
+        expected_value_json='{"action": "entry", "price": 5.30, "qty": 100.0}',
+        actual_value_json='{"matched": null}',
+        resolution_reason=None,
+        ambiguity_kind="multi_match_within_window",
+    )
+    ctx = _render_pre_resolution_context(disc)
+    assert ctx.parse_warning is None, (
+        f"Expected no parse_warning but got: {ctx.parse_warning!r}"
+    )
+    assert ctx.journal_side_value == "100.0 @ 5.30 (entry)"
+    assert ctx.schwab_side_value == "(none)"
+    assert ctx.delta_value == "0"
+
+
+def test_unmatched_open_fill_handles_missing_action_key_gracefully() -> None:
+    """action key is optional; when absent, journal value has no suffix.
+
+    Covers the execution_unavailable actual envelope (no action in expected
+    is still valid if emitter omits it).
+    """
+    disc = _make_discrepancy(
+        discrepancy_type="unmatched_open_fill",
+        field_name="fill_match",
+        expected_value_json='{"price": 5.30, "qty": 100.0}',
+        actual_value_json='{"matched": null}',
+        resolution_reason=None,
+        ambiguity_kind="multi_match_within_window",
+    )
+    ctx = _render_pre_resolution_context(disc)
+    assert ctx.parse_warning is None
+    assert ctx.journal_side_value == "100.0 @ 5.30"
+
+
+def test_unmatched_open_fill_with_old_synthetic_shape_falls_back_to_generic() -> None:
+    """Old synthetic shape (quantity/fill_datetime keys) triggers generic fallback.
+
+    Pins the new contract: the old test-fixture shape is explicitly WRONG
+    for production data.  The generic fallback is the correct behaviour when
+    old-shaped data is encountered, not silent mis-rendering.
+    """
+    disc = _make_discrepancy(
+        discrepancy_type="unmatched_open_fill",
+        field_name="fill_match",
+        expected_value_json=(
+            '{"quantity": 100, "price": 5.30, "fill_datetime": "2026-05-17"}'
+        ),
+        actual_value_json='{"matched": null}',
+        resolution_reason=None,
+        ambiguity_kind="multi_match_within_window",
+    )
+    ctx = _render_pre_resolution_context(disc)
+    assert ctx.parse_warning is not None
+    assert "missing key in payload" in ctx.parse_warning
+    assert "qty" in ctx.parse_warning
+
+
+def test_unmatched_open_fill_execution_unavailable_actual_still_renders() -> None:
+    """Second actual envelope shape (execution_unavailable sentinel) is handled.
+
+    The actual_value_json for Path B (OQ-A execution_unavailable) carries
+    extra keys alongside 'matched': null.  The renderer only reads
+    _parse_parametric_pick_count from resolution_reason; actual envelope
+    contents do not affect structured output.
+    """
+    disc = _make_discrepancy(
+        discrepancy_type="unmatched_open_fill",
+        field_name="fill_match",
+        expected_value_json='{"action": "entry", "price": 12.70, "qty": 50.0}',
+        actual_value_json=(
+            '{"execution_unavailable": true, "matched": null,'
+            ' "schwab_order_id": "abc123", "schwab_order_price": 12.75}'
+        ),
+        resolution_reason=None,
+        ambiguity_kind="unsupported",
+    )
+    ctx = _render_pre_resolution_context(disc)
+    assert ctx.parse_warning is None
+    assert ctx.journal_side_value == "50.0 @ 12.70 (entry)"
+    assert ctx.schwab_side_value == "(none)"

@@ -260,3 +260,124 @@ def test_resolve_template_ascii_only_codepoints():
         f"Non-ASCII codepoints in reconcile_discrepancy_resolve.html.j2 "
         f"outside the allowlist: {offenders[:8]}..."
     )
+
+
+# ---------------------------------------------------------------------------
+# T-Q2.3 Tests — compared_pairs HTML table rendering (task T-Q2.3).
+# ---------------------------------------------------------------------------
+
+
+def _make_pre_context_with_pairs(
+    pairs: tuple[tuple[str, object, object], ...] | None,
+) -> ReconcilePreResolutionContext:
+    """Return a ReconcilePreResolutionContext with the given compared_pairs."""
+    base = _make_pre_resolution_context()
+    # dataclasses.replace is not imported here; use the constructor directly.
+    return ReconcilePreResolutionContext(
+        discrepancy_type=base.discrepancy_type,
+        ambiguity_kind=base.ambiguity_kind,
+        ticker=base.ticker,
+        field_name=base.field_name,
+        journal_side_label=base.journal_side_label,
+        journal_side_value=base.journal_side_value,
+        schwab_side_label=base.schwab_side_label,
+        schwab_side_value=base.schwab_side_value,
+        delta_label=base.delta_label,
+        delta_value=base.delta_value,
+        classifier_resolution_reason=base.classifier_resolution_reason,
+        material=base.material,
+        created_at=base.created_at,
+        run_id=base.run_id,
+        parse_warning=base.parse_warning,
+        compared_pairs=pairs,
+    )
+
+
+def test_template_renders_compared_pairs_as_html_table():
+    """When compared_pairs is non-empty, the template emits an ARIA-labelled
+    <table class="reconcile-comparison-table"> with the expected headers and
+    row data, placed inside the pre-resolution-context section."""
+    pairs: tuple[tuple[str, object, object], ...] = (
+        ("Entry price", 5.30, 5.2244),
+        ("Fill date", "2026-05-14", "2026-05-14"),
+    )
+    ctx = _make_pre_context_with_pairs(pairs)
+    vm = _make_vm(pre_context=ctx)
+    html = _render(vm)
+
+    assert 'class="reconcile-comparison-table"' in html
+    assert '<th>Field</th>' in html
+    assert '<th>Journal</th>' in html
+    assert '<th>Schwab</th>' in html
+    # Row labels present.
+    assert "Entry price" in html
+    assert "Fill date" in html
+    # Numeric values rendered as-is (raw float str).
+    assert "5.3" in html  # Python str(5.30) -> "5.3"
+    assert "5.2244" in html
+    # ARIA label includes discrepancy_type.
+    assert (
+        'aria-label="Journal vs Schwab comparison for entry_price_mismatch"'
+        in html
+    )
+
+
+def test_template_omits_table_when_compared_pairs_is_none():
+    """When compared_pairs is None (e.g. unmatched fill type), no table is
+    emitted — the class selector must be absent from the response."""
+    ctx = _make_pre_context_with_pairs(None)
+    vm = _make_vm(pre_context=ctx)
+    html = _render(vm)
+    assert 'class="reconcile-comparison-table"' not in html
+
+
+def test_template_renders_placeholder_for_empty_tuple_compared_pairs():
+    """When compared_pairs is an empty tuple (not None), the template renders
+    the '(no comparison data)' placeholder instead of hiding the comparison
+    section entirely.
+
+    None = 'no tabular support' (outer block hidden).
+    () = 'tabular-capable but no data' (placeholder rendered).
+
+    The builder currently never returns empty tuple, but this test pins
+    the template branch as a defense-in-depth invariant (Codex R1 Major #3).
+    """
+    ctx = _make_pre_context_with_pairs(())
+    vm = _make_vm(pre_context=ctx)
+    html = _render(vm)
+    # Table must NOT appear (no rows to show).
+    assert 'class="reconcile-comparison-table"' not in html
+    # Placeholder MUST appear (tabular-capable type, empty data).
+    assert "(no comparison data)" in html
+
+
+def test_table_renders_none_value_as_dash():
+    """A None journal or Schwab value in a pair is rendered as the literal
+    dash character '-' (matching the ASCII renderer's convention)."""
+    pairs: tuple[tuple[str, object, object], ...] = (
+        ("Fill quantity", 100, None),
+    )
+    ctx = _make_pre_context_with_pairs(pairs)
+    vm = _make_vm(pre_context=ctx)
+    html = _render(vm)
+    assert 'class="reconcile-comparison-table"' in html
+    assert "<td>-</td>" in html
+
+
+def test_table_rendered_before_dl_context_pairs():
+    """The comparison <table> block must appear at an earlier byte offset
+    than the existing <dl class="context-pairs"> block so the operator sees
+    the tabular comparison above the single-side detail list."""
+    pairs: tuple[tuple[str, object, object], ...] = (
+        ("Entry price", 5.30, 5.2244),
+    )
+    ctx = _make_pre_context_with_pairs(pairs)
+    vm = _make_vm(pre_context=ctx)
+    html = _render(vm)
+    table_idx = html.index('class="reconcile-comparison-table"')
+    dl_idx = html.index('class="context-pairs"')
+    assert table_idx < dl_idx, (
+        "Expected <table class='reconcile-comparison-table'> to appear before "
+        f"<dl class='context-pairs'> but table offset={table_idx} "
+        f">= dl offset={dl_idx}"
+    )

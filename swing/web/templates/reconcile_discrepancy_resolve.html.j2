@@ -7,6 +7,27 @@
   {# Pre-resolution context block (spec section 1.4 LOCK D4). #}
   <section class="pre-resolution-context" data-pre-context="true">
     <h2>Pre-resolution context</h2>
+    {% if vm.pre_resolution_context.compared_pairs is not none %}
+      {% if vm.pre_resolution_context.compared_pairs|length > 0 %}
+    <table class="reconcile-comparison-table"
+           aria-label="Journal vs Schwab comparison for {{ vm.pre_resolution_context.discrepancy_type }}">
+      <thead>
+        <tr><th>Field</th><th>Journal</th><th>Schwab</th></tr>
+      </thead>
+      <tbody>
+        {% for label, journal, schwab in vm.pre_resolution_context.compared_pairs %}
+        <tr>
+          <td>{{ label }}</td>
+          <td>{{ journal if journal is not none else "-" }}</td>
+          <td>{{ schwab if schwab is not none else "-" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+      {% else %}
+    <p class="reconcile-comparison-empty muted">(no comparison data)</p>
+      {% endif %}
+    {% endif %}
     <dl class="context-pairs">
       <dt>Discrepancy type</dt><dd>{{ vm.pre_resolution_context.discrepancy_type }}</dd>
       <dt>Ambiguity kind</dt><dd>{{ vm.pre_resolution_context.ambiguity_kind }}</dd>
