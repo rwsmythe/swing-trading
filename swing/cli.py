@@ -3826,11 +3826,27 @@ def label_exemplars_cmd(
     response_raw = _json.loads(
         Path(silver_response_file).read_text(encoding="utf-8")
     )
+    # T-A.1.5b Defect 1 — dict-or-str coercion at structural_evidence_json.
+    # The pattern-labeler subagent's documented output contract emits this
+    # field as a JSON OBJECT (dict); _SilverLabelResponse stores it as a
+    # serialized JSON string for direct sqlite3 binding. Accept both shapes
+    # (dict from real subagent + pre-serialized string from existing test
+    # fixtures); reject anything else with a clear error.
+    raw_evidence = response_raw.get("structural_evidence_json")
+    if isinstance(raw_evidence, dict):
+        raw_evidence = _json.dumps(raw_evidence, sort_keys=True)
+    elif raw_evidence is not None and not isinstance(raw_evidence, str):
+        raise click.ClickException(
+            "silver-response-file shape invalid: "
+            "structural_evidence_json must be a JSON object (per the "
+            ".claude/agents/pattern-labeler.md contract) OR a pre-serialized "
+            f"JSON string; got {type(raw_evidence).__name__}."
+        )
     try:
         response = _SilverLabelResponse(
             evaluation=response_raw["evaluation"],
             confidence=response_raw["confidence"],
-            structural_evidence_json=response_raw["structural_evidence_json"],
+            structural_evidence_json=raw_evidence,
             geometric_evidence_narrative=(
                 response_raw["geometric_evidence_narrative"]
             ),

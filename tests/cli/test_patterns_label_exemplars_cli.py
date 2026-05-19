@@ -203,3 +203,76 @@ def test_label_exemplars_rejects_malformed_silver_response_file(
     assert r.exit_code != 0
     output_combined = (r.output or "") + str(r.exception or "")
     assert "silver-response-file shape invalid" in output_combined
+
+
+# T-A.1.5b Defect 1 — CLI dict-or-str coercion at structural_evidence_json.
+#
+# Provenance: fixture copied (verbatim) from the aborted T-A.1.7 paired-session
+# at tmp/phase13-labeling/silver_1_SNAP_vcp.json. The subagent's documented
+# output contract per .claude/agents/pattern-labeler.md emits
+# `structural_evidence_json` as a JSON OBJECT (dict). Pre-T-A.1.5b CLI passed
+# the dict directly into _SilverLabelResponse(structural_evidence_json=<dict>),
+# the downstream repo INSERT then raised
+# `sqlite3.ProgrammingError: type 'dict' is not supported` at the operator's
+# first persist on 2026-05-19.
+def test_label_exemplars_accepts_dict_shaped_structural_evidence_json(
+    runner_env, tmp_path: Path,
+) -> None:
+    """Defect 1 discriminating test — REAL-shape (dict) silver response from
+    tmp/phase13-labeling/silver_1_SNAP_vcp.json must persist + round-trip
+    through json.loads() to the EXACT original dict.
+
+    Pre-fix: structural_evidence_json comes through as a Python dict; the
+    sqlite3 INSERT raises ProgrammingError 'type dict is not supported'.
+    Post-fix: CLI coerces dict -> json.dumps(...) before constructing
+    _SilverLabelResponse; persist succeeds; row's structural_evidence_json
+    column is the serialized dict, which json.loads() restores intact.
+    """
+    runner, cfg_path, db_path = runner_env
+
+    fixture_path = (
+        Path(__file__).parent.parent / "fixtures" / "pattern_labeler"
+        / "silver_response_vcp_dict_shape.json"
+    )
+    silver_response_raw = json.loads(fixture_path.read_text(encoding="utf-8"))
+    # Verify the fixture itself carries a DICT (not a string) at
+    # structural_evidence_json — guards against the fixture drifting back to
+    # the old json.dumps({...}) shape.
+    assert isinstance(silver_response_raw["structural_evidence_json"], dict), (
+        "fixture must carry a dict at structural_evidence_json to be a "
+        "discriminating test of the T-A.1.5b Defect 1 fix"
+    )
+    expected_evidence_dict = silver_response_raw["structural_evidence_json"]
+
+    silver_path = tmp_path / "silver_dict_shape.json"
+    silver_path.write_text(json.dumps(silver_response_raw), encoding="utf-8")
+
+    r = runner.invoke(main, [
+        "--config", str(cfg_path),
+        "patterns", "label-exemplars",
+        "--ticker", "SNAP",
+        "--start", "2020-07-01",
+        "--end", "2020-09-30",
+        "--pattern-class", "vcp",
+        "--silver-response-file", str(silver_path),
+    ])
+    assert r.exit_code == 0, (
+        f"persist failed (likely sqlite3.ProgrammingError pre-fix): "
+        f"output={r.output!r} exception={r.exception!r}"
+    )
+    assert "silver exemplar persisted" in r.output
+
+    conn = sqlite3.connect(db_path)
+    rows = conn.execute(
+        "SELECT structural_evidence_json FROM pattern_exemplars "
+        "WHERE ticker = 'SNAP' AND proposed_pattern_class = 'vcp'"
+    ).fetchall()
+    conn.close()
+    assert len(rows) == 1, f"expected exactly one persisted row, got {rows}"
+    persisted_evidence_str = rows[0][0]
+    assert isinstance(persisted_evidence_str, str), (
+        "persisted structural_evidence_json must be TEXT (serialized JSON), "
+        "NOT a binary blob or NULL"
+    )
+    # Round-trip integrity: json.loads(persisted) == original dict.
+    assert json.loads(persisted_evidence_str) == expected_evidence_dict
