@@ -89,6 +89,10 @@ Two cleanup items operator queued for post-Phase-12.5-#3 closure, BEFORE Phase 1
 
 ### Item Q2: Discrepancy resolution — render journal/Schwab value comparison as table on BOTH web AND CLI (presentation-only)
 
+**Status**: ✅ **SHIPPED 2026-05-18 at `e45a64f`** (integration merge of `phase12-5-q2-discrepancy-tabularize` via `--no-ff`; 10 task-branch commits = 4 task-impl T-Q2.1..T-Q2.4 + 1 pre-Codex review-fix + 1 Codex R1 + 1 Codex R2 + 1 R3 advisory + 1 return-report; 3 Codex rounds NO_NEW_CRITICAL_MAJOR; 2 ACCEPT-WITH-RATIONALE banked on Majors — FIRST in Phase 12.5 arc; both technically sound per orchestrator-side QA review; +70 fast tests 4854→4924; ruff 0 E501 preserved; schema v19 UNCHANGED; brief-as-plan dispatch shape demonstrated). **4 distinct pre-existing Phase 12.5 #2 envelope-shape drift bugs SURFACED + RESOLVED IN-TREE** (equity_delta + stop_mismatch + position_qty_mismatch + unmatched_*_fill; same CLAUDE.md `synthetic-fixture-vs-production-emitter shape drift` gotcha family). NEW production surfaces: `swing/trades/reconciliation_render.py` (neutral pure-function module with ASCII helper + `build_compared_pairs` builder + ASCII-only invariant assert) + `swing/web/view_models/reconcile.py:compared_pairs` field + `swing/web/templates/reconcile_discrepancy_resolve.html.j2` HTML `<table>` + `swing/cli.py:show_ambiguity` ASCII table integration. 6 V2.1 §VII.F amendments + 5 NEW forward-binding lessons banked. Operator-witnessed S2-S4 gate UNBLOCKED post-merge (planted-discrepancy walkthrough required since production at ZERO open Tier-2 pending-ambiguity post-Q1).
+
+### Original scope (pre-ship; preserved for historical context)
+
 **Scope amended 2026-05-18 (operator)**: CLI parity is IN SCOPE — `swing journal discrepancy show-ambiguity` (and any other discrepancy CLI surfaces that emit the comparison) MUST output a similar table for operator-readability purposes.
 
 **Posture:** Small executing-plans-shape dispatch (or inline-fix if simple enough; orchestrator chooses at commission time).
@@ -228,9 +232,9 @@ Two cleanup items operator queued for post-Phase-12.5-#3 closure, BEFORE Phase 1
 - **Phase 12.5 #3 executing-plans** — ✅ SHIPPED 2026-05-18 at `b436067` + S1-S4 operator-paired post-merge gate ALL PASS.
 - **Item Q3 skipped-test audit** — ✅ CLOSED 2026-05-18 at `416865f` (Option A: 4 skips → 4 PASS via sanitized-fixture redirect; baseline shifted 4850/5 → 4854/1).
 - **Item Q1 walkthrough** — ✅ CLOSED 2026-05-18 (NOT a parser bug; window-mismatch architectural; cfg-bumped lookback_days 7→30; 7 dispositions correction_ids 20-26; NEW V2 candidate banked for dynamic-lookback).
-- **Item Q2** — dispatched 2026-05-18 at `50cf1b5`; tabularize web + CLI comparison rendering; brief plays plan-role; operator commissions implementer on signal.
+- **Item Q2** — ✅ SHIPPED 2026-05-18 at `e45a64f`; tabularize web + CLI comparison rendering; brief-as-plan dispatch shape; 2 ACCEPT-WITH-RATIONALE banked + 4 envelope-shape drift bugs surfaced+resolved in-tree; +70 fast tests; operator-witnessed S2-S4 gate UNBLOCKED post-merge.
 - **Item Q4** — operator close-tracking flag for watchlist symbols; FEATURE not cleanup; backlog-banked 2026-05-18; phasing-decision-pending (Phase 13 Theme 4 fold-in vs standalone post-Phase-12.5 dispatch). NOT gating Phase 13.
-- **Phase 13** — gated on Phase 12.5 closure (Phase 12.5 #3 ✅ + Q3 ✅ + Q1 ✅ + Q2). Q4 is NOT a gate item (operator-decided phasing at commission). Phase 13 scope LOCKED at `docs/phase13-scope-brainstorm.md` §0.5.
+- **Phase 13** — gated on Phase 12.5 closure (Phase 12.5 #3 ✅ + Q3 ✅ + Q1 ✅ + Q2 ✅). **Phase 12.5 arc CLOSES with Q2 ship.** Q4 is NOT a gate item (operator-decided phasing at commission). Phase 13 dispatch UNBLOCKED pending operator-witnessed Q2 S2-S4 gate. Phase 13 scope LOCKED at `docs/phase13-scope-brainstorm.md` §0.5.
 
 ---
 
