@@ -28,6 +28,10 @@ import pandas as pd
 # Allowed values for Literal fields (LOCK L4: Literal not runtime-enforced;
 # validate explicitly in __post_init__ per CLAUDE.md gotcha).
 _SWING_DIRECTIONS: frozenset[str] = frozenset({"up", "down"})
+_CANDIDATE_TIMEFRAMES: frozenset[str] = frozenset({"daily", "weekly"})
+_ANCHOR_SEARCH_METHODS: frozenset[str] = frozenset(
+    {"zigzag_pivot", "ma_crossover", "high_low_breakout"}
+)
 
 # ============================================================================
 # Section 5.1.1 - Smoothing primitives (T-A.2.1)
@@ -296,3 +300,165 @@ def extract_zigzag_swings(
                 extremum_price = price
 
     return swings
+
+
+# ============================================================================
+# Section 5.1.3 - Variable-window candidate generator (T-A.2.3)
+# ============================================================================
+
+
+@dataclass(frozen=True)
+class CandidateWindow:
+    """One candidate base-window for downstream pattern detectors.
+
+    Per spec section 5.1.3 lines 496-504: frozen dataclass with 6 fields.
+
+    LOCK L4: ``timeframe`` Literal is not runtime-enforced; ``__post_init__``
+    validates against ``_CANDIDATE_TIMEFRAMES``.
+    """
+
+    ticker: str
+    timeframe: Literal["daily", "weekly"]
+    start_date: date
+    end_date: date
+    anchor_date: date
+    anchor_reason: str
+
+    def __post_init__(self) -> None:
+        if self.timeframe not in _CANDIDATE_TIMEFRAMES:
+            raise ValueError(
+                f"CandidateWindow.timeframe must be one of "
+                f"{sorted(_CANDIDATE_TIMEFRAMES)}, got {self.timeframe!r}"
+            )
+
+
+def _ts_to_date(ts: object) -> date:
+    """Coerce a pandas Timestamp (or date) to a stdlib ``date``."""
+    if hasattr(ts, "date"):
+        return ts.date()  # type: ignore[no-any-return]
+    return ts  # type: ignore[return-value]
+
+
+def generate_candidate_windows(
+    bars: pd.DataFrame,
+    anchor_search_method: Literal[
+        "zigzag_pivot", "ma_crossover", "high_low_breakout"
+    ],
+    *,
+    ticker: str,
+    timeframe: Literal["daily", "weekly"] = "daily",
+) -> list[CandidateWindow]:
+    """Generate candidate base-window anchor points for pattern detectors.
+
+    Per spec section 5.1.3 LOCK lines 487-508. Three anchor modes:
+
+    - ``zigzag_pivot``: invokes ``extract_zigzag_swings`` with
+      ``initial_threshold_pct=3.0`` and emits one window per down-swing
+      endpoint (anchor_date = the down-swing's end_date).
+    - ``ma_crossover``: detects MA50 crossing ABOVE MA150 (today's
+      MA50 > MA150 AND yesterday's MA50 <= MA150); emits one window per
+      crossover bar.
+    - ``high_low_breakout``: detects close exceeding the prior 50-bar
+      High maximum; emits one window per breach bar.
+
+    Each emitted window spans from ``anchor_date`` to the last bar in
+    ``bars``. V1 LOCK: multi-anchor mode (combining methods in one call)
+    is V2-deferred per plan section G.3 T-A.2.3.
+
+    Signature widening: the spec sketch omits ``ticker`` + ``timeframe``
+    parameters but the dataclass requires them; this is a faithful
+    bridge per spec section D.2.
+    """
+    if anchor_search_method not in _ANCHOR_SEARCH_METHODS:
+        raise ValueError(
+            f"anchor_search_method must be one of "
+            f"{sorted(_ANCHOR_SEARCH_METHODS)}, got {anchor_search_method!r}"
+        )
+    if timeframe not in _CANDIDATE_TIMEFRAMES:
+        raise ValueError(
+            f"timeframe must be one of {sorted(_CANDIDATE_TIMEFRAMES)}, "
+            f"got {timeframe!r}"
+        )
+    if bars is None or len(bars) == 0:
+        return []
+
+    last_bar_date = _ts_to_date(bars.index[-1])
+    windows: list[CandidateWindow] = []
+
+    if anchor_search_method == "zigzag_pivot":
+        swings = extract_zigzag_swings(
+            bars, initial_threshold_pct=3.0, monotonic_narrow=False
+        )
+        for i, sw in enumerate(swings):
+            if sw.direction != "down":
+                continue
+            if sw.depth_pct < 0.03:
+                # Re-uses 3% extract threshold per docstring; defense-in-depth.
+                continue
+            windows.append(
+                CandidateWindow(
+                    ticker=ticker,
+                    timeframe=timeframe,
+                    start_date=sw.end_date,
+                    end_date=last_bar_date,
+                    anchor_date=sw.end_date,
+                    anchor_reason=f"zigzag_pivot:swing_{i}_down",
+                )
+            )
+        return windows
+
+    if anchor_search_method == "ma_crossover":
+        closes = bars["Close"].astype(float)
+        ma50 = closes.rolling(50).mean()
+        ma150 = closes.rolling(150).mean()
+        for i in range(1, len(bars)):
+            today_50 = ma50.iloc[i]
+            today_150 = ma150.iloc[i]
+            prev_50 = ma50.iloc[i - 1]
+            prev_150 = ma150.iloc[i - 1]
+            # Skip until both MAs are defined on today and yesterday.
+            if (
+                pd.isna(today_50)
+                or pd.isna(today_150)
+                or pd.isna(prev_50)
+                or pd.isna(prev_150)
+            ):
+                continue
+            if today_50 > today_150 and prev_50 <= prev_150:
+                anchor_dt = _ts_to_date(bars.index[i])
+                windows.append(
+                    CandidateWindow(
+                        ticker=ticker,
+                        timeframe=timeframe,
+                        start_date=anchor_dt,
+                        end_date=last_bar_date,
+                        anchor_date=anchor_dt,
+                        anchor_reason=(
+                            f"ma_crossover:50_above_150_at_"
+                            f"{anchor_dt.isoformat()}"
+                        ),
+                    )
+                )
+        return windows
+
+    # anchor_search_method == "high_low_breakout"
+    highs = bars["High"].astype(float).to_numpy()
+    closes_arr = bars["Close"].astype(float).to_numpy()
+    n = len(bars)
+    for i in range(50, n):
+        prior_high_max = float(np.max(highs[i - 50 : i]))
+        if closes_arr[i] > prior_high_max:
+            anchor_dt = _ts_to_date(bars.index[i])
+            windows.append(
+                CandidateWindow(
+                    ticker=ticker,
+                    timeframe=timeframe,
+                    start_date=anchor_dt,
+                    end_date=last_bar_date,
+                    anchor_date=anchor_dt,
+                    anchor_reason=(
+                        f"high_low_breakout:50d_high_at_{anchor_dt.isoformat()}"
+                    ),
+                )
+            )
+    return windows
