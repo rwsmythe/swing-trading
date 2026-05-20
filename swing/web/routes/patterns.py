@@ -160,14 +160,49 @@ def _apply_action(
         # Per spec §3.1 invariant #5: curated_gold requires labeler_evidence_json
         # non-NULL; silver rows already have it set (per `fire_claude_silver_label`
         # which always populates), so the UPDATE preserves the constraint.
+        #
+        # T-A.1.8 Deficiency 2 closure: PRESERVE the operator's relabel
+        # intent through gold promotion by ABSORBING final_pattern_class
+        # into proposed_pattern_class atomically. Pre-fix the UPDATE
+        # unconditionally stamped final_pattern_class=NULL, blocking the
+        # operator workflow `relabel:<class>` -> `promote_to_gold` (the
+        # relabel target was clobbered + the row landed in gold under
+        # the original proposed_pattern_class instead of the corrected
+        # class).
+        #
+        # The dispatch brief proposed "preserve final_pattern_class as-is"
+        # but Invariant #1 of pattern_exemplars (schema v20 migration
+        # 0020_phase13... line 109) precludes (final_decision='confirmed'
+        # AND final_pattern_class IS NOT NULL). The semantic-equivalent
+        # schema-compatible fix is to COALESCE the relabel target into
+        # proposed_pattern_class + null out final_pattern_class: the
+        # operator's class choice survives + Invariant #1 holds (no schema
+        # migration required, §B.6 escalation rule preserved). The
+        # operator's audit trail of the relabel transition is preserved
+        # at T2.SB6's append-only revision-history surface (V1 LOCK in
+        # this function's docstring).
         conn.execute(
             "UPDATE pattern_exemplars SET label_source = 'curated_gold', "
             "final_decision = 'confirmed', gold_validated_at = ?, "
+            "proposed_pattern_class = "
+            "  COALESCE(final_pattern_class, proposed_pattern_class), "
             "final_pattern_class = NULL "
             "WHERE id = ?",
             (now_iso, exemplar_id),
         )
         return
+
+    # T-A.1.8 cross-audit (Deficiency 2 follow-on): the `reject` + `watch`
+    # handlers ALSO stamp final_pattern_class=NULL. This is INTENTIONALLY
+    # NOT analogous to the promote_to_gold bug: the operator's semantic
+    # intent on reject/watch IS to revert the row to an unclassified state
+    # (rejected means "this isn't a pattern of any known type"; watch means
+    # "no decision yet; keep observing"). The pre-existing tests
+    # (test_post_action_reject_flips_final_decision +
+    # test_post_action_watch_flips_final_decision) lock this contract.
+    # T2.SB6's append-only revision history surface (per V1 LOCK in this
+    # function's docstring) preserves audit trail across action transitions
+    # without requiring final_pattern_class to carry that history forward.
 
     if action == "reject":
         conn.execute(

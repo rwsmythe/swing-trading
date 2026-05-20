@@ -162,6 +162,130 @@ def test_post_action_promote_to_gold_flips_label_source(
 
 
 # ---------------------------------------------------------------------------
+# T-A.1.8 Deficiency 2 fix: relabel-then-promote-to-gold preserves the
+# operator's relabel (final_pattern_class STAYS non-NULL through the gold
+# promotion). The previous SQL unconditionally stamped
+# final_pattern_class = NULL on promote-to-gold, blocking operator workflow
+# where they first relabel a silver row + then promote it to gold under
+# the corrected class.
+# ---------------------------------------------------------------------------
+
+
+def test_relabel_then_promote_to_gold_preserves_operator_relabel_intent(
+    seeded_db_with_exemplars,
+):
+    """Plant relabeled row (proposed='vcp', final_pattern_class='flat_base');
+    promote to gold; assert the operator's relabel target SURVIVES gold
+    promotion (proposed_pattern_class absorbs the relabel target;
+    final_pattern_class NULL to satisfy Invariant #1).
+
+    Deficiency 2 closure: the operator's intent is "promote this row to
+    gold under the corrected class", which the pre-fix UPDATE blocked by
+    unconditionally stamping final_pattern_class=NULL while leaving
+    proposed_pattern_class at the original (now-rejected) class. The
+    schema-faithful fix COALESCEs the relabel target into
+    proposed_pattern_class + nulls final_pattern_class, satisfying both
+    operator intent + Invariant #1 of pattern_exemplars schema.
+    """
+    cfg, cfg_path = seeded_db_with_exemplars
+    app = create_app(cfg, cfg_path)
+
+    conn = connect(cfg.paths.db_path)
+    # Pick the VCP-proposed silver row + relabel it via the SQL UPDATE
+    # path the relabel handler uses (single-tx; mirrors the route handler).
+    silver_id = [
+        e for e in exemplars_repo.list_exemplars(conn)
+        if e.label_source == "claude_silver"
+        and e.proposed_pattern_class == "vcp"
+    ][0].id
+    with conn:
+        conn.execute(
+            "UPDATE pattern_exemplars SET final_decision = 'relabeled', "
+            "final_pattern_class = 'flat_base' WHERE id = ?",
+            (silver_id,),
+        )
+    pre = exemplars_repo.get_exemplar_by_id(conn, silver_id)
+    conn.close()
+    assert pre is not None
+    assert pre.proposed_pattern_class == "vcp"
+    assert pre.final_pattern_class == "flat_base"
+    assert pre.final_decision == "relabeled"
+
+    with TestClient(app) as client:
+        r = client.post(
+            f"/patterns/exemplars/{silver_id}/action",
+            data={"action": "promote_to_gold"},
+            headers={"HX-Request": "true"},
+        )
+    assert r.status_code == 204
+
+    conn = connect(cfg.paths.db_path)
+    persisted = exemplars_repo.get_exemplar_by_id(conn, silver_id)
+    conn.close()
+    assert persisted is not None
+    assert persisted.label_source == "curated_gold"
+    assert persisted.final_decision == "confirmed"
+    assert persisted.gold_validated_at is not None
+    # Deficiency 2 closure: relabel target absorbed into proposed +
+    # final_pattern_class nulled to satisfy Invariant #1.
+    assert persisted.proposed_pattern_class == "flat_base", (
+        "Deficiency 2 regression: relabel target 'flat_base' was NOT "
+        "absorbed into proposed_pattern_class at gold promotion; "
+        "operator's corrected class lost."
+    )
+    assert persisted.final_pattern_class is None, (
+        "Deficiency 2 fix violated Invariant #1: final_pattern_class MUST "
+        "be NULL when final_decision != 'relabeled'."
+    )
+
+
+def test_unmodified_silver_then_promote_to_gold_preserves_proposed_class(
+    seeded_db_with_exemplars,
+):
+    """Plant unmodified silver row (final_pattern_class=NULL,
+    proposed='vcp'); promote to gold; assert proposed_pattern_class
+    STAYS 'vcp' + final_pattern_class STAYS NULL. Confirms the COALESCE
+    branch doesn't accidentally clobber proposed_pattern_class when there's
+    no relabel to absorb.
+    """
+    cfg, cfg_path = seeded_db_with_exemplars
+    app = create_app(cfg, cfg_path)
+
+    conn = connect(cfg.paths.db_path)
+    silver = [
+        e for e in exemplars_repo.list_exemplars(conn)
+        if e.label_source == "claude_silver"
+        and e.proposed_pattern_class == "vcp"
+        and e.final_pattern_class is None
+    ][0]
+    silver_id = silver.id
+    conn.close()
+
+    with TestClient(app) as client:
+        r = client.post(
+            f"/patterns/exemplars/{silver_id}/action",
+            data={"action": "promote_to_gold"},
+            headers={"HX-Request": "true"},
+        )
+    assert r.status_code == 204
+
+    conn = connect(cfg.paths.db_path)
+    persisted = exemplars_repo.get_exemplar_by_id(conn, silver_id)
+    conn.close()
+    assert persisted is not None
+    assert persisted.label_source == "curated_gold"
+    assert persisted.final_decision == "confirmed"
+    assert persisted.proposed_pattern_class == "vcp", (
+        "Unmodified silver promotion must not perturb proposed_pattern_class "
+        "(the operator confirmed the proposed class; no relabel to absorb)."
+    )
+    assert persisted.final_pattern_class is None, (
+        "Unmodified silver promotion should keep final_pattern_class=NULL "
+        "(no relabel; Invariant #1 satisfied)."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Test (c): POST action reject.
 # ---------------------------------------------------------------------------
 
