@@ -18,6 +18,7 @@ T-A.2.1 ships smoothing primitives. Later tasks extend in-place.
 """
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import dataclass
 from datetime import date
 from typing import Literal
@@ -552,3 +553,62 @@ def breakout_volume_ratio(
     if baseline_mean == 0.0:
         return 0.0
     return breakout_vol / baseline_mean
+
+
+# ============================================================================
+# Section 5.1.5 - Trend template state surface (T-A.2.5)
+# ============================================================================
+
+
+# Number of Minervini Trend Template (TT1..TT8) checks required for Stage 2.
+_TREND_TEMPLATE_REQUIRED_PASS_COUNT = 8
+
+_StageLabel = Literal["stage_1", "stage_2", "stage_3", "stage_4", "undefined"]
+
+
+def current_stage(
+    conn: sqlite3.Connection,
+    ticker: str,
+    asof_date: date,
+) -> _StageLabel:
+    """Thin read-only wrapper over the shipped Phase 4 evaluation surface.
+
+    Per spec section 5.1.5 LOCK lines 521-528. V1 wrapper semantics:
+    Stage 2 = all 8 trend_template (TT1..TT8) criteria checks pass for
+    the most-recent ``(ticker, action_session_date <= asof_date)``
+    candidate row. Otherwise -> ``'undefined'``. Full Weinstein 4-stage
+    labeling (Stage 1 / 3 / 4 differentiation) is V2-deferred per
+    spec line 523 ("thin wrapper").
+
+    LOCK L2 ZERO DB writes is preserved: this function executes only
+    SELECT statements; no INSERT / UPDATE / DELETE / SAVEPOINT.
+    """
+    asof_iso = asof_date.isoformat()
+    row = conn.execute(
+        """
+        SELECT c.id
+        FROM candidates c
+        JOIN evaluation_runs er ON c.evaluation_run_id = er.id
+        WHERE c.ticker = ?
+          AND er.action_session_date <= ?
+        ORDER BY er.action_session_date DESC, er.id DESC
+        LIMIT 1
+        """,
+        (ticker, asof_iso),
+    ).fetchone()
+    if row is None:
+        return "undefined"
+    candidate_id = int(row[0])
+    pass_count_row = conn.execute(
+        """
+        SELECT COUNT(*) FROM candidate_criteria
+        WHERE candidate_id = ?
+          AND layer = 'trend_template'
+          AND result = 'pass'
+        """,
+        (candidate_id,),
+    ).fetchone()
+    pass_count = int(pass_count_row[0]) if pass_count_row is not None else 0
+    if pass_count == _TREND_TEMPLATE_REQUIRED_PASS_COUNT:
+        return "stage_2"
+    return "undefined"
