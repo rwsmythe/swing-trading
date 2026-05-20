@@ -4245,16 +4245,24 @@ def review_silver_with_codex_cmd(
         # .random() draw is well below the threshold. This still exercises
         # should_fire_codex inside fire_codex_review_for_silver_row end-to-
         # end (T-1.8.1 acceptance criterion #1).
-        forced_rng = _random.Random(0)
-        # Probe + invariant guard: the Mersenne Twister seed=0 first draw
-        # is ~0.84 (>= 0.15). To guarantee fire, override the seed loop
-        # until the first draw lands below the threshold. Pre-computed:
-        # seed=7 first draw = 0.0731 (< 0.15).
-        for candidate in range(10_000):
-            probe = _random.Random(candidate).random()
-            if probe < _CODEX_PROB:
-                forced_rng = _random.Random(candidate)
-                break
+        #
+        # Pre-computed: random.Random(1).random() == 0.13436424411240122,
+        # comfortably below CODEX_RANDOM_SAMPLE_PROBABILITY (0.15) for the
+        # T2.SB1 phase. The defensive invariant assertion guards against a
+        # future CPython-stdlib Mersenne Twister regression that would
+        # silently break the gate (Python promises stable PRNG output for
+        # a given seed, but the assertion makes the regression LOUD).
+        forced_rng = _random.Random(1)
+        _probe_rng = _random.Random(1)
+        _probe = _probe_rng.random()
+        if _probe >= _CODEX_PROB:
+            raise click.ClickException(
+                "internal invariant violated: random.Random(7).random() = "
+                f"{_probe:.6f} >= CODEX_RANDOM_SAMPLE_PROBABILITY = "
+                f"{_CODEX_PROB:.6f}; PRNG-output regression in CPython "
+                "stdlib. Persist path cannot guarantee should_fire_codex "
+                "fire decision; halting."
+            )
 
         try:
             codex_id = _fire_codex(
