@@ -237,6 +237,62 @@ def test_relabel_then_promote_to_gold_preserves_operator_relabel_intent(
         "Deficiency 2 fix violated Invariant #1: final_pattern_class MUST "
         "be NULL when final_decision != 'relabeled'."
     )
+    # Codex R1 Major #2 closure: the original proposed class ('vcp') MUST
+    # be preserved in labeler_evidence_json so downstream confusion-matrix
+    # analysis + cohort segmentation retain the original-proposal signal.
+    # The COALESCE rewrite into proposed_pattern_class would otherwise
+    # destroy the transition trail silently.
+    import json as _json
+    evidence = _json.loads(persisted.labeler_evidence_json)
+    assert evidence["gold_promotion_original_proposed_pattern_class"] == (
+        "vcp"
+    ), (
+        "Codex R1 Major #2 regression: relabel-then-promote-to-gold MUST "
+        "preserve the original proposed class ('vcp') in "
+        "labeler_evidence_json before the COALESCE rewrite clobbers "
+        "proposed_pattern_class. Downstream confusion analysis loses the "
+        "vcp -> flat_base transition signal otherwise."
+    )
+    assert evidence["gold_promotion_corrected_pattern_class"] == "flat_base"
+    assert "gold_promotion_at" in evidence
+
+
+def test_unmodified_silver_then_promote_to_gold_byte_stable_labeler_evidence(
+    seeded_db_with_exemplars,
+):
+    """Unmodified-silver path MUST leave labeler_evidence_json BYTE-STABLE
+    (no spurious gold_promotion_* keys injected). Defends against a
+    regression where the audit-trail-preserving branch fires for rows
+    where there's no relabel transition to record.
+    """
+    cfg, cfg_path = seeded_db_with_exemplars
+    app = create_app(cfg, cfg_path)
+
+    conn = connect(cfg.paths.db_path)
+    silver = [
+        e for e in exemplars_repo.list_exemplars(conn)
+        if e.label_source == "claude_silver"
+        and e.final_pattern_class is None
+    ][0]
+    silver_id = silver.id
+    pre_evidence = silver.labeler_evidence_json
+    conn.close()
+
+    with TestClient(app) as client:
+        r = client.post(
+            f"/patterns/exemplars/{silver_id}/action",
+            data={"action": "promote_to_gold"},
+            headers={"HX-Request": "true"},
+        )
+    assert r.status_code == 204
+
+    conn = connect(cfg.paths.db_path)
+    persisted = exemplars_repo.get_exemplar_by_id(conn, silver_id)
+    conn.close()
+    assert persisted.labeler_evidence_json == pre_evidence, (
+        "Unmodified-silver promote_to_gold must not inject "
+        "gold_promotion_* keys (no relabel transition to record)."
+    )
 
 
 def test_unmodified_silver_then_promote_to_gold_preserves_proposed_class(

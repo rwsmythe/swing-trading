@@ -203,6 +203,17 @@ class CodexReviewResponse:
     alternative_labeler_evidence_json: str | None = None
 
     def __post_init__(self) -> None:
+        # T-A.1.8 Codex R1 Major #1 closure (defense-in-depth, mirrors
+        # T-A.1.5b R3 M#1 family for Literal[...] runtime-validation):
+        # `agreed: bool` type hint is NOT runtime-enforced; without this
+        # check a caller passing `agreed='false'` (truthy non-empty
+        # string) would record a disagreement as agreement + the
+        # service-layer disagreement-chain INSERT would be skipped.
+        if not isinstance(self.agreed, bool):
+            raise ValueError(
+                "CodexReviewResponse.agreed must be a bool; got "
+                f"{type(self.agreed).__name__} value={self.agreed!r}"
+            )
         for field_name in (
             "alternative_structural_evidence_json",
             "alternative_labeler_evidence_json",

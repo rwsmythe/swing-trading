@@ -500,6 +500,19 @@ def test_codex_review_response_agree_path_no_alternative_fields_ok() -> None:
     assert response.alternative_labeler_evidence_json is None
 
 
+def test_codex_review_response_rejects_non_bool_agreed() -> None:
+    """Codex R1 Major #1 closure (defense-in-depth at dataclass level):
+    the `agreed: bool` type hint is NOT runtime-enforced. Without
+    __post_init__ validation, a caller passing `agreed='false'` (truthy
+    non-empty string) would record a disagreement as agreement. Mirrors
+    T-A.1.5b R3 M#1 Literal[...] runtime-validation pattern.
+    """
+    import pytest
+    for bogus in ("false", "true", 0, 1, None, [True]):
+        with pytest.raises(ValueError, match="agreed must be a bool"):
+            CodexReviewResponse(agreed=bogus)  # type: ignore[arg-type]
+
+
 # ============================================================================
 # T-A.1.8 — large-N statistical test for random-15% sampling correctness.
 #

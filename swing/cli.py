@@ -4213,9 +4213,27 @@ def review_silver_with_codex_cmd(
                 "codex-response-file shape invalid: missing required key "
                 "'agreed' per CodexReviewResponse contract."
             )
+        # Codex R1 Major #1 closure: strict bool validation at CLI
+        # boundary. Loose `bool(response_raw["agreed"])` would silently
+        # treat JSON like `{"agreed": "false"}` as True (because the
+        # non-empty string "false" is truthy), recording a disagreement
+        # as agreement + skipping the codex_silver row insertion. JSON
+        # has a real bool type — reject anything else explicitly with a
+        # routing-hint error. Defense-in-depth: __post_init__ in
+        # CodexReviewResponse also runtime-validates per the same lesson
+        # family (T-A.1.5b R3 M#1 Literal[...] not runtime-enforced).
+        if not isinstance(response_raw["agreed"], bool):
+            raise click.ClickException(
+                "codex-response-file shape invalid: 'agreed' must be a "
+                "JSON boolean (true/false); got "
+                f"{type(response_raw['agreed']).__name__} "
+                f"value={response_raw['agreed']!r}. Common mistake: "
+                'quoting the value (e.g. {"agreed": "false"}) — drop '
+                "the quotes."
+            )
         try:
             codex_response = _CodexReviewResponse(
-                agreed=bool(response_raw["agreed"]),
+                agreed=response_raw["agreed"],
                 alternative_evaluation=response_raw.get(
                     "alternative_evaluation",
                 ),
@@ -4257,7 +4275,7 @@ def review_silver_with_codex_cmd(
         _probe = _probe_rng.random()
         if _probe >= _CODEX_PROB:
             raise click.ClickException(
-                "internal invariant violated: random.Random(7).random() = "
+                "internal invariant violated: random.Random(1).random() = "
                 f"{_probe:.6f} >= CODEX_RANDOM_SAMPLE_PROBABILITY = "
                 f"{_CODEX_PROB:.6f}; PRNG-output regression in CPython "
                 "stdlib. Persist path cannot guarantee should_fire_codex "

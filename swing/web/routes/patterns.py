@@ -22,6 +22,7 @@ the writers for ``pattern_exemplars.created_at`` which is server-stamped).
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import UTC, datetime
 from typing import Literal
@@ -142,9 +143,12 @@ def _apply_action(
     ``final_decision`` value is lost on this UPDATE (V1 LOCK — closed-loop
     review surface at T2.SB6 introduces append-only revision history).
     """
-    # Read current row state.
+    # Read current row state (incl. labeler_evidence_json +
+    # final_pattern_class for the promote_to_gold audit-trail branch
+    # added at T-A.1.8 Codex R1 Major #2 closure).
     row = conn.execute(
-        "SELECT id, label_source, proposed_pattern_class, final_decision "
+        "SELECT id, label_source, proposed_pattern_class, final_decision, "
+        "final_pattern_class, labeler_evidence_json "
         "FROM pattern_exemplars WHERE id = ?",
         (exemplar_id,),
     ).fetchone()
@@ -153,7 +157,14 @@ def _apply_action(
             status_code=404,
             detail=f"exemplar {exemplar_id} not found",
         )
-    _, label_source, proposed_pattern_class, _ = row
+    (
+        _,
+        label_source,
+        proposed_pattern_class,
+        _,
+        current_final_pattern_class,
+        current_labeler_evidence_json,
+    ) = row
 
     if action == "promote_to_gold":
         # Silver -> Gold promotion: flip label_source + stamp validated_at.
@@ -165,28 +176,84 @@ def _apply_action(
         # intent through gold promotion by ABSORBING final_pattern_class
         # into proposed_pattern_class atomically. Pre-fix the UPDATE
         # unconditionally stamped final_pattern_class=NULL, blocking the
-        # operator workflow `relabel:<class>` -> `promote_to_gold` (the
-        # relabel target was clobbered + the row landed in gold under
-        # the original proposed_pattern_class instead of the corrected
-        # class).
+        # operator workflow `relabel:<class>` -> `promote_to_gold`.
         #
         # The dispatch brief proposed "preserve final_pattern_class as-is"
         # but Invariant #1 of pattern_exemplars (schema v20 migration
         # 0020_phase13... line 109) precludes (final_decision='confirmed'
         # AND final_pattern_class IS NOT NULL). The semantic-equivalent
-        # schema-compatible fix is to COALESCE the relabel target into
-        # proposed_pattern_class + null out final_pattern_class: the
-        # operator's class choice survives + Invariant #1 holds (no schema
-        # migration required, §B.6 escalation rule preserved). The
-        # operator's audit trail of the relabel transition is preserved
-        # at T2.SB6's append-only revision-history surface (V1 LOCK in
-        # this function's docstring).
+        # schema-compatible fix COALESCEs the relabel target into
+        # proposed_pattern_class + nulls final_pattern_class (Invariant #1
+        # holds, §B.6 escalation rule preserved).
+        #
+        # T-A.1.8 Codex R1 Major #2 closure: the COALESCE rewrite would
+        # otherwise destroy the original proposed_pattern_class history
+        # (e.g., for a vcp -> flat_base relabel-then-promote the row no
+        # longer records the original proposal was 'vcp'). PRESERVE the
+        # transition trail in labeler_evidence_json under
+        # `gold_promotion_*` keys BEFORE the UPDATE so downstream confusion
+        # analysis + cohort segmentation retain the original-proposal
+        # signal. This is performed only when final_pattern_class IS NOT
+        # NULL (the relabel-then-promote path); unmodified-silver-promote
+        # leaves labeler_evidence_json byte-stable.
+        if current_final_pattern_class is not None:
+            try:
+                evidence_dict = (
+                    json.loads(current_labeler_evidence_json)
+                    if current_labeler_evidence_json
+                    else {}
+                )
+            except json.JSONDecodeError:
+                # Defensive: if labeler_evidence_json is corrupt, do NOT
+                # destroy history silently; surface a server-side 500 so
+                # the operator can investigate via direct DB inspection.
+                raise HTTPException(
+                    status_code=500,
+                    detail=(
+                        f"exemplar {exemplar_id} labeler_evidence_json "
+                        "is not valid JSON; cannot preserve gold-promotion "
+                        "audit trail. Investigate via direct DB inspection."
+                    ),
+                ) from None
+            if not isinstance(evidence_dict, dict):
+                raise HTTPException(
+                    status_code=500,
+                    detail=(
+                        f"exemplar {exemplar_id} labeler_evidence_json "
+                        f"decoded to {type(evidence_dict).__name__}, not "
+                        "an object; cannot preserve gold-promotion audit "
+                        "trail."
+                    ),
+                )
+            evidence_dict["gold_promotion_original_proposed_pattern_class"] = (
+                proposed_pattern_class
+            )
+            evidence_dict["gold_promotion_corrected_pattern_class"] = (
+                current_final_pattern_class
+            )
+            evidence_dict["gold_promotion_at"] = now_iso
+            new_evidence_json = json.dumps(evidence_dict, sort_keys=True)
+            conn.execute(
+                "UPDATE pattern_exemplars SET label_source = 'curated_gold', "
+                "final_decision = 'confirmed', gold_validated_at = ?, "
+                "labeler_evidence_json = ?, "
+                "proposed_pattern_class = ?, "
+                "final_pattern_class = NULL "
+                "WHERE id = ?",
+                (
+                    now_iso,
+                    new_evidence_json,
+                    current_final_pattern_class,
+                    exemplar_id,
+                ),
+            )
+            return
+        # Unmodified-silver-promote: byte-stable labeler_evidence_json +
+        # proposed_pattern_class UNCHANGED. Single UPDATE keeps the row
+        # untouched outside the canonical promotion fields.
         conn.execute(
             "UPDATE pattern_exemplars SET label_source = 'curated_gold', "
-            "final_decision = 'confirmed', gold_validated_at = ?, "
-            "proposed_pattern_class = "
-            "  COALESCE(final_pattern_class, proposed_pattern_class), "
-            "final_pattern_class = NULL "
+            "final_decision = 'confirmed', gold_validated_at = ? "
             "WHERE id = ?",
             (now_iso, exemplar_id),
         )

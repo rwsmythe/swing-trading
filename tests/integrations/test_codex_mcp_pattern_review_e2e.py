@@ -125,6 +125,84 @@ def test_committed_codex_mcp_cassettes_have_zero_sentinel_leaks() -> None:
 
 
 # ============================================================================
+# Codex R1 Major #3 closure: actually exercise the codex_mcp_vcr_config()
+# filter chain (before_record_request + before_record_response) against
+# synthetic content shaped like what the V2 real-MCP-HTTP recording will
+# emit. The V1 cassettes themselves are synthetic playback (because the
+# copowers Codex MCP server is a harness tool NOT HTTP-callable from
+# pytest), so the cassettes don't go THROUGH the filter chain at
+# record-time the way a real VCR cassette would. This test pre-empts the
+# regression where a future contributor records a real-MCP-HTTP cassette
+# without the filter chain attached: it asserts the filters WOULD have
+# caught the sentinels the recording-time pipeline relies on.
+# ============================================================================
+
+
+def test_codex_mcp_vcr_filter_chain_redacts_planted_sentinels() -> None:
+    """Construct a synthetic request + response carrying every sentinel
+    shape the audit script scans for; run them through
+    `codex_mcp_vcr_config()`'s before_record_request +
+    before_record_response filters; assert ALL sentinels are redacted in
+    the output. This proves the V1 filter chain at
+    tests/integrations/_cassette_sanitization.py would catch leaks the
+    audit script also enforces — defense-in-depth across two failure
+    surfaces (record-time scrub + commit-time audit).
+    """
+    from types import SimpleNamespace
+
+    from tests.integrations._cassette_sanitization import (
+        codex_mcp_vcr_config,
+    )
+
+    cfg = codex_mcp_vcr_config()
+    before_record_request = cfg["before_record_request"]
+    before_record_response = cfg["before_record_response"]
+
+    # Construct synthetic sentinels mirroring the audit patterns.
+    sentinel_api_key = "sk-proj-deadbeefcafebabe1234567890abcdef1234567890"
+    sentinel_hex = "f" * 40
+    sentinel_chatcmpl = "chatcmpl-XYZsensitive_id_string"
+    sentinel_session = "sess_01ABCdeadbeef_sensitive"
+
+    # before_record_request: scrub a URI containing a long hex token.
+    request = SimpleNamespace(
+        uri=f"https://api.openai.com/v1/chat/completions?token={sentinel_hex}",
+    )
+    sanitized_request = before_record_request(request)
+    assert sentinel_hex not in sanitized_request.uri, (
+        f"before_record_request failed to scrub 32+ hex token from URI; "
+        f"got {sanitized_request.uri!r}"
+    )
+
+    # before_record_response: scrub api_key + session_id + chatcmpl id +
+    # heuristic 32+ hex / 24+ base64 tokens from response body.
+    response_body = (
+        '{"id": "' + sentinel_chatcmpl + '", '
+        '"api_key": "' + sentinel_api_key + '", '
+        '"session_id": "' + sentinel_session + '", '
+        '"random_token": "' + sentinel_hex + '"}'
+    )
+    response = {"body": {"string": response_body}}
+    sanitized_response = before_record_response(response)
+    raw = sanitized_response["body"]["string"]
+    for sentinel_label, sentinel_value in [
+        ("openai-api-key", sentinel_api_key),
+        ("hex-token", sentinel_hex),
+        ("chatcmpl-id", sentinel_chatcmpl),
+        ("session-id", sentinel_session),
+    ]:
+        assert sentinel_value not in raw, (
+            f"before_record_response failed to scrub {sentinel_label} "
+            f"sentinel from response body; raw={raw!r}"
+        )
+    # Positive assertion: the canonical REDACTED placeholders fired.
+    assert "<REDACTED>" in raw or "<REDACTED_chatcmpl_id>" in raw, (
+        "before_record_response did not insert any <REDACTED> placeholder; "
+        "filter chain may have silently no-op'd. raw={raw!r}"
+    )
+
+
+# ============================================================================
 # E2E: silver -> 15% Codex sample -> disagreement -> codex_silver row.
 # ============================================================================
 

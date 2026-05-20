@@ -363,6 +363,44 @@ def test_persist_mode_rejects_shape_invalid_codex_response_file(
     assert "shape invalid" in out.lower() or "must be" in out.lower()
 
 
+def test_persist_mode_rejects_non_bool_agreed_field(
+    runner_env, tmp_path: Path,
+) -> None:
+    """Codex R1 Major #1 closure: `agreed` MUST be a JSON boolean.
+    Quoted-string `"false"` would otherwise be coerced to True via
+    `bool("false")` -> a disagreement silently recorded as agreement +
+    no codex_silver row inserted. The CLI rejects with a routing-hint
+    error pointing at the common quoting mistake.
+    """
+    runner, cfg_path, _ = runner_env
+    parent_id = _plant_claude_silver_row(runner, cfg_path, tmp_path)
+
+    for bogus_agreed in ("false", "true", 0, 1, None):
+        codex_path = tmp_path / "codex.json"
+        codex_path.write_text(
+            json.dumps({"agreed": bogus_agreed,
+                        "alternative_evaluation": "rejected"}),
+            encoding="utf-8",
+        )
+        r = runner.invoke(main, [
+            "--config", str(cfg_path),
+            "patterns", "review-silver-with-codex",
+            "--exemplar-id", str(parent_id),
+            "--codex-response-file", str(codex_path),
+        ])
+        assert r.exit_code != 0, (
+            f"agreed={bogus_agreed!r} ({type(bogus_agreed).__name__}) "
+            f"must be rejected; got exit 0 output={r.output!r}"
+        )
+        out = (r.output or "") + str(r.exception or "")
+        assert "agreed" in out.lower() and (
+            "boolean" in out.lower() or "bool" in out.lower()
+        ), (
+            f"agreed={bogus_agreed!r}: rejection message must cite "
+            f"'agreed' + 'boolean'/'bool'; got {out!r}"
+        )
+
+
 def test_persist_mode_rejects_disagreement_without_alternatives(
     runner_env, tmp_path: Path,
 ) -> None:
