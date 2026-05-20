@@ -138,3 +138,32 @@ def test_candidate_window_dataclass_shape_frozen_with_six_fields() -> None:
             anchor_date=date(2026, 1, 5),
             anchor_reason="zigzag_pivot:swing_3_down",
         )
+
+
+# ---------------------------------------------------------------------------
+# Fix #6 (code-quality follow-up) — _ts_to_date raises on bad input.
+# ---------------------------------------------------------------------------
+
+
+def test_generate_candidate_windows_raises_typeerror_on_non_timestamp_index() -> None:
+    """``generate_candidate_windows`` raises TypeError via ``_ts_to_date``
+    when bars carries an integer index (no ``.date()`` method, not a
+    ``datetime.date`` instance).
+    """
+    closes = [100.0] * 60
+    bars = pd.DataFrame(
+        {
+            "Close": closes,
+            "High": closes,
+            "Low": closes,
+            "Volume": [1_000_000] * len(closes),
+        },
+        index=pd.RangeIndex(len(closes)),  # integer index, NOT timestamps
+    )
+    with pytest.raises(TypeError, match=r"_ts_to_date:.*expected"):
+        generate_candidate_windows(
+            bars,
+            anchor_search_method="high_low_breakout",
+            ticker="TEST",
+            timeframe="daily",
+        )

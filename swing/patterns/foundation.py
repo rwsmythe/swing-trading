@@ -21,7 +21,7 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass
 from datetime import date
-from typing import Literal
+from typing import Any, Literal
 
 import numpy as np
 import pandas as pd
@@ -33,6 +33,12 @@ _CANDIDATE_TIMEFRAMES: frozenset[str] = frozenset({"daily", "weekly"})
 _ANCHOR_SEARCH_METHODS: frozenset[str] = frozenset(
     {"zigzag_pivot", "ma_crossover", "high_low_breakout"}
 )
+
+# Floor for ``monotonic_narrow`` threshold decay (in fraction-as-percentage
+# units; 0.5 means 0.5%). Tighter would have the zigzag detect every bar's
+# noise as a swing; looser would over-truncate VCP-style sub-1% final
+# contractions. See Fix #4 (code-quality follow-up T-A.2.1-T-A.2.5).
+_MONOTONIC_NARROW_MIN_THRESHOLD_PCT: float = 0.5
 
 # ============================================================================
 # Section 5.1.1 - Smoothing primitives (T-A.2.1)
@@ -53,6 +59,11 @@ def smooth_ema(prices: np.ndarray, window: int) -> np.ndarray:
     arr = np.asarray(prices, dtype=float)
     if arr.ndim != 1:
         raise ValueError(f"prices must be 1-D, got shape {arr.shape}")
+    if arr.shape[0] > 0 and not np.all(np.isfinite(arr)):
+        raise ValueError(
+            "smooth_ema: prices contain NaN; caller must drop or impute "
+            "before invoking"
+        )
     n = arr.shape[0]
     if n == 0:
         return arr.copy()
@@ -83,17 +94,23 @@ def smooth_kernel_regression(prices: np.ndarray, bandwidth: float) -> np.ndarray
     arr = np.asarray(prices, dtype=float)
     if arr.ndim != 1:
         raise ValueError(f"prices must be 1-D, got shape {arr.shape}")
+    if arr.shape[0] > 0 and not np.all(np.isfinite(arr)):
+        raise ValueError(
+            "smooth_kernel_regression: prices contain NaN; caller must drop "
+            "or impute before invoking"
+        )
     n = arr.shape[0]
     if n == 0:
         return arr.copy()
+    # Fix #2 (code-quality follow-up): vectorize the prior O(n^2) Python loop.
+    # The (n, n) pairwise-difference matrix is the canonical NumPy-vectorized
+    # Nadaraya-Watson Gaussian-kernel implementation; identical algorithm,
+    # no Python-level iteration. Memory cost is O(n^2) floats which is
+    # acceptable at V1 typical n <= a few thousand bars.
     idx = np.arange(n, dtype=float)
-    out = np.empty(n, dtype=float)
-    for i in range(n):
-        diffs = (i - idx) / bandwidth
-        weights = np.exp(-0.5 * diffs * diffs)
-        total = float(np.sum(weights))
-        out[i] = float(np.sum(weights * arr)) / total
-    return out
+    diffs = (idx[:, None] - idx[None, :]) / bandwidth
+    weights = np.exp(-0.5 * diffs * diffs)
+    return (weights @ arr) / weights.sum(axis=1)
 
 
 # ============================================================================
@@ -195,7 +212,22 @@ def extract_zigzag_swings(
         )
     if bars is None or len(bars) < 2:
         return []
-    closes = bars["Close"].astype(float).to_numpy()
+    # Fix #8 (code-quality follow-up): require monotonic-increasing index.
+    if not bars.index.is_monotonic_increasing:
+        raise ValueError(
+            "extract_zigzag_swings: bars.index must be monotonic-increasing "
+            "(sorted); caller must sort before invoking"
+        )
+    # Fix #1 (code-quality follow-up): raise on NaN in Close; detectors
+    # downstream consume real archives that may have holiday-adjacent gaps,
+    # silent propagation would yield degraded zigzag output.
+    close_series = bars["Close"].astype(float)
+    if not np.all(np.isfinite(close_series.to_numpy())):
+        raise ValueError(
+            "extract_zigzag_swings: bars['Close'] contains NaN; caller "
+            "must drop or impute before invoking"
+        )
+    closes = close_series.to_numpy()
     timestamps = bars.index
     n = len(closes)
 
@@ -273,7 +305,13 @@ def extract_zigzag_swings(
                 # Close the up-swing from pivot to extremum.
                 _emit_swing(pivot_idx, extremum_idx, "up")
                 if monotonic_narrow:
-                    threshold_pct *= 0.75
+                    # Fix #4 (code-quality follow-up): floor the decay so the
+                    # threshold cannot approach zero on long alternating
+                    # synthetic-noise inputs (would yield unbounded swings).
+                    threshold_pct = max(
+                        threshold_pct * 0.75,
+                        _MONOTONIC_NARROW_MIN_THRESHOLD_PCT,
+                    )
                 # Start a new down-swing from extremum.
                 pivot_idx = extremum_idx
                 pivot_price = extremum_price
@@ -293,7 +331,13 @@ def extract_zigzag_swings(
             if counter >= _threshold_fraction():
                 _emit_swing(pivot_idx, extremum_idx, "down")
                 if monotonic_narrow:
-                    threshold_pct *= 0.75
+                    # Fix #4 (code-quality follow-up): floor the decay so the
+                    # threshold cannot approach zero on long alternating
+                    # synthetic-noise inputs (would yield unbounded swings).
+                    threshold_pct = max(
+                        threshold_pct * 0.75,
+                        _MONOTONIC_NARROW_MIN_THRESHOLD_PCT,
+                    )
                 pivot_idx = extremum_idx
                 pivot_price = extremum_price
                 current_direction = "up"
@@ -333,11 +377,22 @@ class CandidateWindow:
             )
 
 
-def _ts_to_date(ts: object) -> date:
-    """Coerce a pandas Timestamp (or date) to a stdlib ``date``."""
-    if hasattr(ts, "date"):
-        return ts.date()  # type: ignore[no-any-return]
-    return ts  # type: ignore[return-value]
+def _ts_to_date(ts: Any) -> date:
+    """Coerce a pandas Timestamp (or stdlib ``date``) to a stdlib ``date``.
+
+    Fix #6 (code-quality follow-up): previously silently returned ``ts``
+    unchanged via ``# type: ignore`` when no ``.date()`` attribute. Now
+    raises ``TypeError`` so non-Timestamp/date inputs surface immediately
+    rather than poisoning downstream date arithmetic.
+    """
+    if hasattr(ts, "date") and callable(ts.date):
+        return ts.date()
+    if isinstance(ts, date):
+        return ts
+    raise TypeError(
+        f"_ts_to_date: expected pd.Timestamp or datetime.date, "
+        f"got {type(ts).__name__}"
+    )
 
 
 def generate_candidate_windows(
@@ -382,6 +437,28 @@ def generate_candidate_windows(
         )
     if bars is None or len(bars) == 0:
         return []
+    # Fix #8 (code-quality follow-up): require monotonic-increasing index.
+    if not bars.index.is_monotonic_increasing:
+        raise ValueError(
+            "generate_candidate_windows: bars.index must be monotonic-"
+            "increasing (sorted); caller must sort before invoking"
+        )
+    # Fix #1 (code-quality follow-up): raise on NaN in columns each mode
+    # reads. Close is read by zigzag_pivot + ma_crossover; High is read by
+    # high_low_breakout. Check both to keep the entry-point simple.
+    close_arr = bars["Close"].astype(float).to_numpy()
+    if not np.all(np.isfinite(close_arr)):
+        raise ValueError(
+            "generate_candidate_windows: bars['Close'] contains NaN; caller "
+            "must drop or impute before invoking"
+        )
+    if anchor_search_method == "high_low_breakout":
+        high_arr = bars["High"].astype(float).to_numpy()
+        if not np.all(np.isfinite(high_arr)):
+            raise ValueError(
+                "generate_candidate_windows: bars['High'] contains NaN; "
+                "caller must drop or impute before invoking"
+            )
 
     last_bar_date = _ts_to_date(bars.index[-1])
     windows: list[CandidateWindow] = []
@@ -502,11 +579,32 @@ def volume_trend_through_swings(
     out: list[VolumeSegment] = []
     if bars is None or len(bars) == 0:
         return out
+    # Fix #8 (code-quality follow-up): require monotonic-increasing index.
+    if not bars.index.is_monotonic_increasing:
+        raise ValueError(
+            "volume_trend_through_swings: bars.index must be monotonic-"
+            "increasing (sorted); caller must sort before invoking"
+        )
+    # Fix #1 (code-quality follow-up): raise on NaN in Volume; downstream
+    # detectors compute volume ratios + averages so silent propagation would
+    # produce NaN-poisoned outputs.
+    volume_arr = bars["Volume"].astype(float).to_numpy()
+    if not np.all(np.isfinite(volume_arr)):
+        raise ValueError(
+            "volume_trend_through_swings: bars['Volume'] contains NaN; "
+            "caller must drop or impute before invoking"
+        )
+    # Fix #8(b) (code-quality follow-up): normalize index timestamps to
+    # date-level so swing date-range comparisons work for intraday-timestamped
+    # bars (e.g., ``2025-01-15 16:00:00``). Without normalization, the
+    # ``.loc[date:date]`` inclusive slice misses bars whose timestamp carries
+    # a time-of-day component.
+    index_dates = bars.index.normalize()
     for i, sw in enumerate(swings):
-        # pandas .loc accepts date / Timestamp; cast for clarity.
-        s = pd.Timestamp(sw.start_date)
-        e = pd.Timestamp(sw.end_date)
-        sub = bars.loc[s:e, "Volume"]
+        sd = pd.Timestamp(sw.start_date).normalize()
+        ed = pd.Timestamp(sw.end_date).normalize()
+        mask = (index_dates >= sd) & (index_dates <= ed)
+        sub = bars.loc[mask, "Volume"]
         avg = float(sub.mean()) if len(sub) > 0 else 0.0
         out.append(
             VolumeSegment(
@@ -539,16 +637,35 @@ def breakout_volume_ratio(
         return 0.0
     if baseline_days < 1:
         raise ValueError(f"baseline_days must be >= 1, got {baseline_days}")
+    # Fix #8 (code-quality follow-up): require monotonic-increasing index.
+    if not bars.index.is_monotonic_increasing:
+        raise ValueError(
+            "breakout_volume_ratio: bars.index must be monotonic-increasing "
+            "(sorted); caller must sort before invoking"
+        )
     breakout_ts = pd.Timestamp(breakout_date)
     # Volume on the breakout bar (raises KeyError if missing - by design).
     if breakout_ts not in bars.index:
         raise KeyError(f"breakout_date {breakout_date} not in bars index")
-    breakout_vol = float(bars.loc[breakout_ts, "Volume"])
+    # Fix #1 (code-quality follow-up): raise on NaN in Volume baseline window
+    # OR breakout-day Volume; silent propagation would yield NaN ratios.
+    breakout_vol_raw = bars.loc[breakout_ts, "Volume"]
+    if not np.isfinite(float(breakout_vol_raw)):
+        raise ValueError(
+            "breakout_volume_ratio: bars['Volume'] contains NaN at "
+            "breakout_date; caller must drop or impute before invoking"
+        )
+    breakout_vol = float(breakout_vol_raw)
     # Baseline = the baseline_days bars STRICTLY BEFORE the breakout.
     prior = bars.loc[bars.index < breakout_ts, "Volume"]
     if len(prior) == 0:
         return 0.0
     baseline_window = prior.iloc[-baseline_days:]
+    if not np.all(np.isfinite(baseline_window.astype(float).to_numpy())):
+        raise ValueError(
+            "breakout_volume_ratio: bars['Volume'] contains NaN in baseline "
+            "window; caller must drop or impute before invoking"
+        )
     baseline_mean = float(baseline_window.mean())
     if baseline_mean == 0.0:
         return 0.0

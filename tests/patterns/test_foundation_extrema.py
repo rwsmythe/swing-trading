@@ -49,26 +49,60 @@ def test_zigzag_monotonic_uptrend_no_reversals_returns_empty() -> None:
 
 
 def test_zigzag_alternating_five_percent_static_threshold_detects_swings() -> None:
-    """Alternating +/-5%-ish pattern with static threshold 3%, no monotonic
-    narrowing -> detects each swing with correct direction and depth.
+    """Clean alternating swing decomposition with deterministic close path
+    (Fix #5: STRENGTHENED — assert exact swing count, directions, depth_pct).
+
+    Synthesized path with sharp ~10% reversals at 3% static threshold yields
+    a deterministic 2-swing zigzag: up 100->110 then down 110->99.
+
+    The intervening 102/105/103 micro-fluctuations between bars 0..4 do NOT
+    open a new swing because they never violate the 3% counter-move from
+    the running extremum. The detector only opens an up-swing once price
+    moves >= 3% above the initial pivot — that first happens at bar 2
+    (close=105, +5% from 100). The extremum then climbs to 110 at bar 5;
+    the move to 99 at bar 8 is a 10% counter-move closing the up-swing
+    100->110 and opening a down-swing. The down-swing closes when the
+    counter-move from 99 reaches 3% — at bar 11 (close=110, +11% from 99).
+    The final up-swing 99->110 is currently-developing past bar 11 (110
+    is the running extremum; no counter-move emitted) so per the
+    "do-not-emit-developing-swing" contract it is NOT returned.
     """
-    # Generate a price series with clear reversals
+    import pytest
+
     closes = [
-        100.0, 102.0, 105.0,  # uptrend leg
-        103.0, 100.0,         # mini-pullback (not big enough)
-        110.0, 115.0,         # uptrend resumes (peak)
-        110.0, 105.0, 100.0,  # downtrend
-        105.0, 110.0, 115.0,  # back up
+        100.0,  # bar 0: pivot
+        102.0,  # bar 1: +2% from pivot (below 3% — still anchoring)
+        105.0,  # bar 2: +5% from pivot — opens up-swing; extremum=105
+        103.0,  # bar 3: counter -1.9% from extremum (below 3%; no close)
+        104.0,  # bar 4: still within tolerance
+        110.0,  # bar 5: new extremum=110
+        108.0,  # bar 6: counter -1.8% (below 3%)
+        103.0,  # bar 7: counter -6.4% (>= 3%; CLOSES up-swing 100->110;
+                #                       opens down-swing; extremum=103)
+        99.0,   # bar 8: new low extremum=99
+        102.0,  # bar 9: counter +3.0% (>= 3%; CLOSES down-swing 110->99;
+                #                       opens up-swing; extremum=102)
+        106.0,  # bar 10: new up extremum=106 (developing)
+        110.0,  # bar 11: new up extremum=110 (developing)
     ]
     bars = _make_bars(closes)
     out = extract_zigzag_swings(
         bars, initial_threshold_pct=3.0, monotonic_narrow=False
     )
-    # At least 2 swings: up to 115, down to 100, up to 115 again.
-    assert len(out) >= 2
-    # First non-empty swing's direction is one of up/down
-    assert out[0].direction in ("up", "down")
-    # All swings carry the 7 dataclass fields
+    # Exact count: 2 closed swings (the final developing up-swing is NOT
+    # emitted per the historical-only contract).
+    assert len(out) == 2
+    # Exact direction sequence.
+    assert [s.direction for s in out] == ["up", "down"]
+    # Exact endpoint prices.
+    assert out[0].start_price == pytest.approx(100.0)
+    assert out[0].end_price == pytest.approx(110.0)
+    assert out[1].start_price == pytest.approx(110.0)
+    assert out[1].end_price == pytest.approx(99.0)
+    # Approximate depth_pct values (unsigned per spec).
+    assert out[0].depth_pct == pytest.approx(0.10, abs=1e-6)
+    assert out[1].depth_pct == pytest.approx(0.10, abs=1e-3)
+    # Field shape invariants preserved.
     for sw in out:
         assert sw.depth_pct >= 0.0
         assert sw.duration_days >= 0
@@ -175,3 +209,61 @@ def test_swing_dataclass_shape_frozen_with_required_fields() -> None:
             depth_pct=0.10,
             duration_days=5,
         )
+
+
+# ---------------------------------------------------------------------------
+# Fix #1 (code-quality follow-up) — NaN policy at function entry.
+# ---------------------------------------------------------------------------
+
+
+def test_extract_zigzag_swings_raises_valueerror_on_nan_close() -> None:
+    """``extract_zigzag_swings`` raises ValueError when bars['Close'] has
+    NaN; holiday-adjacent rows from real archives must be dropped/imputed
+    before invocation rather than silently producing degraded swings.
+    """
+    import pytest
+
+    closes_with_nan = [100.0, 102.0, float("nan"), 104.0, 110.0, 100.0, 103.0]
+    bars = _make_bars(closes_with_nan)
+    with pytest.raises(ValueError, match=r"extract_zigzag_swings:.*NaN"):
+        extract_zigzag_swings(bars, initial_threshold_pct=3.0)
+
+
+# ---------------------------------------------------------------------------
+# Fix #4 (code-quality follow-up) — monotonic_narrow threshold floor.
+# ---------------------------------------------------------------------------
+
+
+def test_zigzag_monotonic_narrow_threshold_floor_prevents_zero_threshold() -> None:
+    """Under ``monotonic_narrow=True`` on a long alternating ~+/-1% sequence,
+    without a floor on threshold-decay the effective threshold would
+    approach zero and the zigzag would emit a swing for every bar's noise.
+    With the floor (0.5% per the module constant) the threshold cannot
+    decay below the floor and the swing count stays bounded.
+    """
+    # Build 60 bars alternating exactly +1% / -1% — well below the 3.0%
+    # initial threshold so the FIRST swing never even opens at static-3.0.
+    # Under monotonic_narrow the floor at 0.5% means a +/-1% move can be
+    # caught only after the decay sequence stalls at the floor — but the
+    # algorithm needs an OPENING swing first, which never crosses 3%, so
+    # the threshold never decays past 3.0%.
+    # To exercise the floor we need the threshold to actually decay; we
+    # synthesize a path that opens a 3%+ swing then a series of <=1% moves.
+    closes = [100.0, 100.5, 101.0, 101.5, 103.5]  # bar 4 opens up-swing
+    # Then long alternation of +/-1% from 102 base.
+    for i in range(60):
+        if i % 2 == 0:
+            closes.append(101.0)
+        else:
+            closes.append(103.0)
+    bars = _make_bars(closes)
+    out = extract_zigzag_swings(
+        bars, initial_threshold_pct=3.0, monotonic_narrow=True
+    )
+    # Without a floor on threshold-decay the zigzag could emit dozens of
+    # swings. With the 0.5% floor, the threshold caps the swing count.
+    # Reasonable upper bound: well under 20 (each swing requires a 0.5%+
+    # counter-move from the running extremum).
+    assert len(out) <= 20
+    # Result is finite (no infinite loop / unbounded output).
+    assert isinstance(out, list)

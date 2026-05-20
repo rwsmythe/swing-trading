@@ -69,3 +69,26 @@ def test_smooth_kernel_regression_constant_input_returns_constant_output() -> No
     prices = np.full(40, 75.0, dtype=float)
     out = smooth_kernel_regression(prices, bandwidth=5.0)
     np.testing.assert_allclose(out, prices, rtol=1e-12, atol=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# Fix #1 (code-quality follow-up) — NaN policy at function entry.
+# ---------------------------------------------------------------------------
+
+
+def test_smooth_ema_raises_valueerror_on_nan_input() -> None:
+    """``smooth_ema`` raises ValueError when input contains NaN; silent
+    propagation would yield NaN-poisoned downstream smoothed series.
+    """
+    prices = np.array([100.0, 101.0, np.nan, 103.0, 104.0], dtype=float)
+    with pytest.raises(ValueError, match=r"smooth_ema:.*NaN"):
+        smooth_ema(prices, window=3)
+
+
+def test_smooth_kernel_regression_raises_valueerror_on_nan_input() -> None:
+    """``smooth_kernel_regression`` raises ValueError when input contains
+    NaN; defense-in-depth before the vectorized weighted-sum runs.
+    """
+    prices = np.array([50.0, 51.0, 52.0, np.nan, 54.0], dtype=float)
+    with pytest.raises(ValueError, match=r"smooth_kernel_regression:.*NaN"):
+        smooth_kernel_regression(prices, bandwidth=2.0)
