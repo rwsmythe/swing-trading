@@ -8,6 +8,51 @@
 
 ---
 
+## 2026-05-20 PM Phase 13 T2.SB2 (foundation primitives) + T-PT9 (Phase-9 calendar-drift test fixture fix) BOTH SHIPPED at `c15633d` — 11-commit batched dispatch; 2 Codex rounds NO_NEW_CRITICAL_MAJOR at R2; 3 TECHNICALLY SOUND ACCEPT-WITH-RATIONALE banks (all flagged for T2.SB3 spec amendments); 17th cumulative C.C lesson #6 BANKED CLEAN; +35 fast tests (5149 → 5184 net); 0 failures (2 previously-failing Phase-9 calendar-drift tests now PASS via T-PT9); cross-bundle pin planted at `tests/patterns/test_foundation_integration.py:231` for T2.SB3+T2.SB4 detector consumption; ZERO Co-Authored-By footer drift across 11 commits (~249+ cumulative streak preserved); `is_back_recorded` LOCK L3 UNTOUCHED — empirical recon FALSIFIED the prior orchestrator boundary-semantic hypothesis
+
+**Integration-merge at `c15633d`** (branch `phase13-t2-sb2-foundation-primitives` via `--no-ff`; 11 implementer commits = 5 task-impl T-A.2.1 → T-A.2.5 (smoothing at `83f6d13` + zigzag at `20ad818` + candidate windows at `66f8db9` + volume at `384bbf2` + current_stage at `9eeedf2`) + 1 code-quality follow-up at `c46170c` + 1 T-PT9 fix at `ce091a6` + 1 closer T-A.2.6 at `2f79207` + 2 Codex-fix bundles (R1 at `cb3119d` + R2 at `6392e0c`) + 1 return report at `63a66de`). Operator-paired S2 gate PASS at `c15633d` post-merge (orchestrator-driven REPL smoke against real CVGI bars; all 5 primitives produce finite outputs + plausible swing/volume sequences + `monotonic_narrow=True` mode demonstrably differs from `False` on real noisy data).
+
+**Codex chain shape**: pre-Codex CLEAN (17th cumulative validation; APPROVED_FOR_CODEX verdict) → R1 0C/5M/5m (3 Majors RESOLVED + 3 Majors ACCEPT-WITH-RATIONALE + 5 Minors mixed) → R2 0C/0M/4m **NO_NEW_CRITICAL_MAJOR** (4 Minors closed inline at `6392e0c`). Final verdict: **NO_NEW_CRITICAL_MAJOR at R2** (within MIN..MAX rounds band). **3 TECHNICALLY SOUND ACCEPT-WITH-RATIONALE banks (all V2-bankable spec amendments)**:
+- **R1 M#1** `current_stage(conn, ticker, asof_date)` signature widening — DB-backed wrapper requires `conn` per Phase 4 evaluation surface read; spec §5.1.5 line 526 API sketch omits it. Spec amendment flagged for T2.SB3 brainstorming.
+- **R1 M#2** `generate_candidate_windows(..., *, ticker, timeframe)` keyword-only widening — `CandidateWindow` dataclass requires both per spec lines 498-499; spec §5.1.3 line 494 API sketch omits. Spec amendment flagged for T2.SB3.
+- **R1 M#4** `current_stage 'undefined'` collapses 4 conditions — V1 LOCK per spec line 523 "thin wrapper"; V2 can distinguish.
+
+**T-PT9 (Phase-9 calendar-drift fix) — recon-first VERIFIED orchestrator hypothesis**:
+- Brief §1.2 hypothesis (calendar-drift, NOT `is_back_recorded` boundary semantic): CONFIRMED at implementer Step 1 recon. Today 2026-05-20 minus hardcoded `"2026-05-12"` = 8 days > 7-day threshold; `is_back_recorded` strict-`>` IS correct as written.
+- Fix scope: 2 test files (`tests/integration/test_phase9_full_happy_path.py:291` + `tests/integration/test_phase9_end_to_end.py:401,753`) replace hardcoded date with `(date.today() - timedelta(days=2)).isoformat()` dynamic anchor.
+- NEW calendar-drift-proof regression test at `tests/integration/test_phase9_end_to_end.py:729` (`test_account_snapshot_today_minus_2_days_is_not_back_recorded`) — calendar-drift-proof via `date.today()` arithmetic; passes regardless of wall-clock run day.
+- `swing/trades/account_equity_snapshots.py:49-63` `is_back_recorded` function UNTOUCHED per LOCK L3.
+- Same lesson family as L-E2 banked at Phase 12.5 #3 T-3.5 ("time-dependent fixture calendar-buffer ≥7d"); no NEW CLAUDE.md gotcha needed (existing L-E2 covers).
+
+**Pure-function discipline preserved** (`swing/patterns/foundation.py` LOCK L2): all 4 DB-token occurrences are in `current_stage` wrapper (lines 746/763/778) — all READS via SELECT on Phase 4 evaluation surface; ZERO writes; ZERO global state; ZERO side-effects.
+
+**3 frozen dataclasses with `__post_init__` Literal[...] frozenset validation** preserved (honoring cumulative CLAUDE.md gotcha "`Literal[...]` not runtime-enforced" forward-binding from T-A.1.5b R3 M#1): `Swing` (`_SWING_DIRECTIONS`) + `CandidateWindow` (`_CANDIDATE_TIMEFRAMES`) + `VolumeSegment` (`_ANCHOR_SEARCH_METHODS` indirect at function entry).
+
+**Cross-bundle pin planted**: `test_foundation_primitives_consumed_by_detectors_invariant` at `tests/patterns/test_foundation_integration.py:231-256` per plan §H.3 line 2617 + brief §4.1 #8. Un-skip schedule: T2.SB3 (VCP + flat_base + cup_with_handle detector dispatch) + T2.SB4 (high_tight_flag + double_bottom_w). Test body raises `pytest.fail` so accidental un-skip without implementing detector wiring fails loudly.
+
+**7 forward-binding lessons banked for T2.SB3 inheritance** (per return report §4):
+1. **Vectorize EMA + ma_crossover hot-paths** — Codex R1 Important #3 + #7 deferred. EMA via `pandas.Series.ewm(span=window, adjust=False).mean()`; ma_crossover via boolean mask. Both O(n) algorithmically but current Python loops will dominate detector wall-clock at T2.SB3 scale.
+2. **Per-mode `anchor_date` contract** — `generate_candidate_windows` emits 3 modes with DIFFERENT anchor_date semantics: `zigzag_pivot` = inferred base START; `ma_crossover` = trigger event date (NOT base start); `high_low_breakout` = breakout confirmation bar (NOT base start). T2.SB3 detectors consuming non-zigzag_pivot modes MUST perform their own backward-slicing from anchor_date to assemble base context.
+3. **Shared NaN sanitizer** at `swing/patterns/_sanitize.py` (or extend an existing helper) — yfinance/Schwab archives carry NaN holiday-adjacent rows; foundation primitives reject NaN at entry; T2.SB3 ships a shared sanitizer to drop NaN bars before invoking primitives.
+4. **Realistic OHLC fixtures** — some foundation unit tests use H==L==Close shortcuts; T2.SB3 detector tests MUST use realistic OHLC fixtures with H > Close > L divergence + Volume > 0. T-A.1.7 silver corpus at `data/phase13-t2-sb1-corpus/pattern_exemplars_dump.jsonl` supplies real-shape fixtures.
+5. **Spec amendment for `current_stage` + `generate_candidate_windows` signatures** — Codex R1 Major #1 + #2 ACCEPT. T2.SB3 brainstorming proposes spec amendments to §5.1.3 + §5.1.5 to acknowledge implementer-faithful widened signatures.
+6. **Cross-bundle pin un-skip discipline** — T2.SB3 dispatch brief checklist MUST cite the pin + un-skip step (remove `@pytest.mark.skip` decorator; add detector module imports; assert call-args).
+7. **`VolumeSegment.swing_index` provisional** — Codex R1 Minor #5. Field is implementer-added (not spec-defined); T2.SB3 confirms whether detector evidence-trail needs it or it should be stripped.
+
+**1 NEW V2 candidate banked** (per operator-orchestrator scope conversation 2026-05-20 PM post-merge):
+- **`swing data fetch <ticker> --period <p> --window-days <n>` convenience CLI** — wraps `OhlcvCache.get_or_fetch(conn, ticker, window_days=n)` for ad-hoc operator data access. Centralizes the source-routing decision (Schwab production ladder → yfinance fallback under sandbox/degraded) at the cache layer; one-off REPL/script work doesn't bypass production-routing via direct `yfinance.Ticker().history()` calls. Banked from S2 gate retrospective where the orchestrator-driven smoke script took the yfinance-direct shortcut; future ad-hoc smokes should route through the ladder. Operator-paced; standalone V2 dispatch when prioritized.
+
+**Streaks preserved**:
+- ZERO Co-Authored-By footer trailer drift across all 11 commits (~249+ project-cumulative; verified via `%(trailers:key=Co-Authored-By)` extraction returning 0 matches).
+- C.C lesson #6 17th cumulative validation: CLEAN (pre-Codex orchestrator-side review APPROVED_FOR_CODEX before Codex MCP invocation).
+- Schema v20 UNCHANGED (T2.SB2 + T-PT9 are pure-logic + test-only; no migration work).
+- Baseline 5149 → 5184 fast (+35 net; +60 new tests minus 2-previously-failing-now-passing minus net delta from fix iterations).
+- Ruff 0 E501 preserved.
+
+**`is_back_recorded` gotcha framing REVISION (carried in this housekeeping commit)**: the CLAUDE.md line-3 mention of "2 pre-existing Phase-9 TZ-drift failures banked" added at `2746bbb` HEAD is REMOVED (now CLOSED via T-PT9). The mis-framing of root cause as `is_back_recorded` UTC-vs-HST boundary inequality is RETRACTED — the function is correct as written; root cause was test-fixture calendar-drift only. No NEW CLAUDE.md gotcha added (existing L-E2 banked at Phase 12.5 #3 T-3.5 covers the lesson family).
+
+---
+
 ## 2026-05-20 Phase 13 T3.SB1 SHIPPED at `48c6bc6` — entry auto-fill via Schwab Trader API at trade-entry form-render time; fill_origin enum widened from 2 → 5 values; hidden audit anchors with 4-tier rejection ladder + `claimed_auto_fill` anti-forgery gate; 5 Codex rounds NO_NEW_CRITICAL_MAJOR at R5 with 4 TECHNICALLY SOUND ACCEPT-WITH-RATIONALE banks; 14th cumulative C.C lesson #6 BANKED CLEAN; +67 fast tests (4939 → 5006 on branch; final on-main post-T2.SB1-merge 5149 with cross-bundle pin un-skip); +2 slow Schwab E2E tests; ZERO Co-Authored-By footer drift across 10 commits; T3.SB1 branched off T2.SB1's T-A.1.1 commit `4cfd5f2` per OQ-12 Option E (verified at `tests/data/test_phase13_t3_sb1_prerequisite.py:test_t_a_1_1_sha_is_branch_base`)
 
 **Integration-merge at `48c6bc6`** (branch `phase13-t3-sb1-entry-auto-fill` via `--no-ff`; 10 implementer commits = 1 recon+prerequisite test (T-B.1.1 at `2f987a9`) + 5 task-impl (T-B.1.2 service module + T-B.1.3 form-render integration + T-B.1.4 entry_post audit columns + T-B.1.5 slow E2E + T-B.1.6 closer at `9f77871` / `e86658b` / `b8de30e` / `cf16cea` / `d20d801`) + 4 Codex-fix bundles (R1 + R2 + R3 + R4 at `1908d7f` / `a966a57` / `1ad24a1` / `ea067f7`)).
@@ -106,12 +151,6 @@
 - `tests/web/test_routes/test_metrics.py` (extend with audit regression tests)
 
 **Pre-empt forward-binding**: Phase 13's T2.SB6 plan §G.9 T-A.6.5 already mandates `PatternOutcomesVM` extends `BaseLayoutVM` + populates banner pin fields + composes with Phase 10 cohort architecture; this audit MAY surface as a forward-binding watch item for T2.SB6 that propagates to all existing metric tiles.
-
----
-
-## 2026-05-20 Phase-9 TZ-drift followup TODO (NEW; not yet dispatched)
-
-**`is_back_recorded` UTC-vs-HST date-boundary fix** at `swing/trades/account_equity_snapshots.py:49-63`. The `> 7` strict inequality fails on the exact 7-day-boundary day. Two pre-existing test failures confirmed NOT introduced by T2.SB1 or T3.SB1 (verified via `git diff 6383cfa..phase13-t2-sb1-dev-time-labeling-infra/HEAD -- <affected files>` returning empty): `test_phase9_full_happy_path_across_all_sub_bundles` + `test_phase9_bundle_c_e2e_account_snapshot_and_hypothesis_audit`. One-line fix: change `> 7` to `>= 7` OR make threshold timezone-aware (more invasive). Operator decision needed: dispatch standalone OR batch with T2.SB2. Banked from T-A.1.8 return report §"Test count pre/post" verification.
 
 ---
 
