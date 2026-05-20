@@ -7,6 +7,7 @@ import os
 import sqlite3
 import time
 from dataclasses import dataclass
+from datetime import UTC
 from datetime import date as _date
 from datetime import datetime as _dt
 from pathlib import Path
@@ -816,6 +817,24 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
                 log.warning("recommendations failed: %s", exc)
                 lease.status(recommendations_status="failed")
 
+            # Phase 13 T2.SB3 (plan section G.4 T-A.3.6) — pattern detect step.
+            # Recon at docs/phase13-t2-sb3-recon.md section 2 binds the
+            # insertion point: AFTER _step_recommendations + BEFORE the
+            # Schwab snapshot block. Best-effort failure shape mirrors
+            # _step_watchlist / _step_recommendations / _step_charts.
+            lease.step("pattern_detect")
+            try:
+                _step_pattern_detect(
+                    cfg=cfg,
+                    lease=lease,
+                    eval_run_id=eval_run_id,
+                    ohlcv_cache=ohlcv_cache,
+                )
+            except LeaseRevokedError:
+                raise
+            except Exception as exc:
+                log.warning("pattern_detect failed: %s", exc)
+
             # Phase 11 Sub-bundle B (T-B.3 + T-B.4 + Codex R1 M#1 + R2 M#1 +
             # R3 M#1 + M#2 fix) — Schwab snapshot + orders pipeline steps
             # per plan §H.4.3 ordering: AFTER _step_recommendations, BEFORE
@@ -1215,6 +1234,293 @@ def _step_recommendations(*, cfg, eval_run_id: int,
     with lease.fenced_write() as conn:
         for r in recs:
             upsert_recommendation(conn, r)
+
+
+# ---------------------------------------------------------------------------
+# Phase 13 T2.SB3 (plan section G.4 T-A.3.6) — pattern detect step
+# ---------------------------------------------------------------------------
+
+# 3 V1 detectors run in deterministic order per recon section 3
+# (vcp -> flat_base -> cup_with_handle). Wired as a tuple so iteration
+# order is stable across runs (recon section 3 forbids `set` iteration).
+def _pattern_detect_registry():
+    """Return [(detector_callable, pattern_class, version_str), ...].
+
+    Imported lazily to keep runner module import cheap when pattern
+    detection is skipped (zero candidates / cfg-disabled future flag).
+    """
+    from swing.patterns.cup_with_handle import (
+        DETECTOR_VERSION as CUP_VERSION,
+    )
+    from swing.patterns.cup_with_handle import detect_cup_with_handle
+    from swing.patterns.flat_base import (
+        DETECTOR_VERSION as FLAT_VERSION,
+    )
+    from swing.patterns.flat_base import detect_flat_base
+    from swing.patterns.vcp import DETECTOR_VERSION as VCP_VERSION
+    from swing.patterns.vcp import detect_vcp
+
+    return (
+        (detect_vcp, "vcp", VCP_VERSION),
+        (detect_flat_base, "flat_base", FLAT_VERSION),
+        (detect_cup_with_handle, "cup_with_handle", CUP_VERSION),
+    )
+
+
+def _step_pattern_detect(
+    *,
+    cfg,
+    lease: Lease,
+    eval_run_id: int,
+    ohlcv_cache,
+) -> None:
+    """Run 3 V1 geometric detectors over the Stage-2-filtered candidate pool.
+
+    Per recon section 1-9 (docs/phase13-t2-sb3-recon.md):
+    - Pool predicate: candidates.bucket == 'aplus' (Stage-2 + RS-rank-filtered).
+    - Per-ticker: fetch bars via `ohlcv_cache.get_or_fetch`; generate
+      candidate windows (zigzag_pivot mode); run all 3 detectors on each
+      window's evidence-emit; write one `pattern_evaluations` row per
+      (pipeline_run_id, ticker, pattern_class) tuple.
+    - SELECT-then-INSERT idempotency (LOCK L3 forbids INSERT OR REPLACE).
+    - pipeline_run_id := lease.run_id (NOT eval_run_id) per recon section 8.
+    - NO sandbox gating (recon section 6): pattern_evaluations is an
+      internal-derivation surface; bars-source ladder already handles sandbox.
+    - Per-detector failures are isolated + logged WARNING; the step
+      continues (recon section 4.4).
+    """
+    import dataclasses
+    import json as _json
+    from datetime import datetime as _dt_inner
+
+    from swing.data.models import PatternEvaluation
+    from swing.data.repos.candidates import fetch_candidates_for_run
+    from swing.data.repos.pattern_evaluations import insert_evaluation
+    from swing.patterns.drift_logging import capture_feature_distribution
+    from swing.patterns.foundation import generate_candidate_windows
+
+    pipeline_run_id = lease.run_id
+
+    # Read phase (no fence -- idempotent SELECT).
+    read_conn = connect(cfg.paths.db_path) if cfg is not None else None
+    try:
+        if read_conn is not None:
+            candidates = fetch_candidates_for_run(read_conn, eval_run_id)
+        else:
+            # Test-stub path: pull candidates through the lease's connection
+            # (single-connection in-memory test fixtures don't have a cfg).
+            with lease.fenced_write() as _read_via_lease:
+                candidates = fetch_candidates_for_run(
+                    _read_via_lease, eval_run_id
+                )
+    finally:
+        if read_conn is not None:
+            read_conn.close()
+
+    # Pool predicate: Stage-2-filtered + RS-rank-filtered candidates =
+    # aplus bucket (mirrors _step_recommendations line 1211).
+    aplus_tickers: list[str] = [
+        c.ticker for c in candidates if c.bucket == "aplus"
+    ]
+
+    if not aplus_tickers:
+        log.info(
+            "pattern_detect: no candidate windows -- zero aplus tickers; "
+            "skipping (no writes)"
+        )
+        return
+
+    detectors = _pattern_detect_registry()
+    asof_today = _dt_inner.now(UTC).date()
+    rows_written = 0
+    rows_skipped_idempotent = 0
+
+    # Universe context for FeatureDistributionLog (per spec section D.7).
+    universe_context: dict = {
+        "universe_size": len(aplus_tickers),
+        "stage_2_pass_rate": 1.0,  # aplus bucket implies Stage 2 pass.
+        "rs_rank_distribution": {},
+        "verdict_counts_per_pattern_class": {},
+        "smoothing_params": {},
+        "extrema_density_per_session": 0.0,
+        "composite_scores": [],
+    }
+
+    # Write phase (lease-fenced; recon section 4.1).
+    with lease.fenced_write() as conn:
+        for ticker in aplus_tickers:
+            # Fetch bars (per-ticker failure: log + continue).
+            try:
+                bars = ohlcv_cache.get_or_fetch(ticker=ticker, window_days=400)
+            except Exception as exc:
+                log.warning(
+                    "pattern_detect: bars fetch failed for %s "
+                    "(continuing): %s",
+                    ticker,
+                    exc,
+                )
+                continue
+
+            # Generate candidate windows (zigzag_pivot anchor mode for V1;
+            # detectors backward-slice for non-zigzag modes per recon
+            # section 5).
+            try:
+                windows = generate_candidate_windows(
+                    bars,
+                    "zigzag_pivot",
+                    ticker=ticker,
+                    timeframe="daily",
+                )
+            except Exception as exc:
+                log.warning(
+                    "pattern_detect: generate_candidate_windows failed "
+                    "for %s (continuing): %s",
+                    ticker,
+                    exc,
+                )
+                continue
+
+            if not windows:
+                log.info(
+                    "pattern_detect: no candidate windows generated for "
+                    "%s; skipping",
+                    ticker,
+                )
+                continue
+
+            # V1: use the LAST (most-recent-anchor) window per ticker so
+            # we emit one verdict per (ticker, pattern_class) tuple,
+            # honoring the unique-index constraint. The candidate
+            # generator may emit multiple historical anchors but the
+            # PER-pipeline-run verdict is the most-recent. V2 may
+            # multi-anchor + UPDATE-in-place.
+            window = windows[-1]
+
+            for detector_fn, pattern_class, version_str in detectors:
+                # Idempotency check: skip if a row already exists for this
+                # (pipeline_run_id, ticker, pattern_class) tuple. Recon
+                # section 4.2 -- LOCK L3 forbids INSERT OR REPLACE.
+                existing = conn.execute(
+                    "SELECT id FROM pattern_evaluations "
+                    "WHERE pipeline_run_id = ? AND ticker = ? "
+                    "AND pattern_class = ? LIMIT 1",
+                    (pipeline_run_id, ticker, pattern_class),
+                ).fetchone()
+                if existing is not None:
+                    log.info(
+                        "pattern_detect: row exists for (%d, %s, %s); "
+                        "skipping idempotent re-invocation",
+                        pipeline_run_id,
+                        ticker,
+                        pattern_class,
+                    )
+                    rows_skipped_idempotent += 1
+                    continue
+
+                # Per-detector failure isolation (recon section 4.4).
+                try:
+                    evidence = detector_fn(
+                        bars,
+                        window,
+                        conn=conn,
+                        ticker=ticker,
+                        asof_date=asof_today,
+                    )
+                except Exception as exc:
+                    log.warning(
+                        "pattern_detect: %s detector failed for %s "
+                        "(continuing): %s: %s",
+                        pattern_class,
+                        ticker,
+                        type(exc).__name__,
+                        str(exc)[:200],
+                    )
+                    continue
+
+                # Drift-log capture (T-A.3.5 surface).
+                try:
+                    fdl = capture_feature_distribution(
+                        pattern_class, evidence, universe_context
+                    )
+                    fdl_json = _json.dumps(
+                        dataclasses.asdict(fdl), default=str
+                    )
+                except Exception as exc:
+                    log.warning(
+                        "pattern_detect: drift-log capture failed for "
+                        "(%s, %s) (continuing): %s",
+                        ticker,
+                        pattern_class,
+                        exc,
+                    )
+                    continue
+
+                # Evidence serialization (15-col row shape per recon
+                # section 8).
+                try:
+                    evidence_json = _json.dumps(
+                        dataclasses.asdict(evidence), default=str
+                    )
+                except Exception as exc:
+                    log.warning(
+                        "pattern_detect: evidence serialization failed "
+                        "for (%s, %s) (continuing): %s",
+                        ticker,
+                        pattern_class,
+                        exc,
+                    )
+                    continue
+
+                geometric_score = float(
+                    getattr(evidence, "geometric_score", 0.0)
+                )
+                criteria_pass = getattr(evidence, "criteria_pass", {})
+                try:
+                    geometric_score_json = _json.dumps(criteria_pass)
+                except Exception:
+                    geometric_score_json = "{}"
+
+                # T2.SB3: composite_score = geometric_score (template
+                # matching lands at T2.SB5 -- recon section 8).
+                composite_score = geometric_score
+
+                row = PatternEvaluation(
+                    id=None,
+                    pipeline_run_id=pipeline_run_id,
+                    ticker=ticker,
+                    pattern_class=pattern_class,
+                    detector_version=version_str,
+                    geometric_score=geometric_score,
+                    geometric_score_json=geometric_score_json,
+                    composite_score=composite_score,
+                    structural_evidence_json=evidence_json,
+                    feature_distribution_log_json=fdl_json,
+                    window_start_date=window.start_date.isoformat(),
+                    window_end_date=window.end_date.isoformat(),
+                    created_at=_dt_inner.now(UTC).isoformat(),
+                    template_match_score=None,
+                    template_match_nearest_exemplar_ids_json=None,
+                )
+                try:
+                    insert_evaluation(conn, row)
+                    rows_written += 1
+                except Exception as exc:
+                    log.warning(
+                        "pattern_detect: INSERT failed for (%s, %s) "
+                        "(continuing): %s",
+                        ticker,
+                        pattern_class,
+                        exc,
+                    )
+                    continue
+
+    log.info(
+        "pattern_detect: wrote %d pattern_evaluations rows across %d "
+        "aplus tickers (%d skipped idempotent)",
+        rows_written,
+        len(aplus_tickers),
+        rows_skipped_idempotent,
+    )
 
 
 def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data_asof: str,
