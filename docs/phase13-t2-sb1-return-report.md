@@ -1,6 +1,6 @@
 # Phase 13 T2.SB1 — Final Return Report
 
-**Status: PRE-CODEX**. This report captures the implementer-side state at the close of T-A.1.8 BEFORE the adversarial Codex review rounds. The final NO_NEW_CRITICAL_MAJOR verdict + Codex round chain is appended at §"Codex review history" once those rounds complete.
+**Status: POST-CODEX — NO_NEW_CRITICAL_MAJOR at R2; R3 CLEAN (verification round).** This report captures the implementer-side state at the close of T-A.1.8 AFTER all 3 adversarial Codex rounds + the pre-Codex orchestrator-side review (16th cumulative C.C lesson #6 validation BANKED CLEAN).
 
 **SUPERSEDES** the interim return report at `3c925a28cde98cd731a26d51a59fd54aa695c522` (`docs/phase13-t2-sb1-interim-return-report.md`). The interim captured the T-A.1.1-only state when 8 remaining tasks were deferred to follow-on dispatches. This FINAL report enumerates the full T2.SB1 commit chain through closure.
 
@@ -44,15 +44,30 @@ f799eec  feat(phase13): T-A.1.8 — random-15% Codex 2nd-reviewer dispatch wirin
 1c99262  test(phase13): T-A.1.8 — cassette-mode E2E silver to Codex disagreement to codex_silver row insertion
 8c650b6  fix(phase13): T-A.1.8 — relabel-then-promote-to-gold preserves final_pattern_class (Deficiency 2)
 85cb6fa  fix(phase13): T-A.1.8 — flat_base + high_tight_flag structural_evidence_schema sub-window fields (Deficiency 3)
-[this report] test(phase13): T-A.1.8 closer — full-suite verification + ruff sweep + final return report
+79a3816  test(phase13): T-A.1.8 closer — full-suite verification + ruff sweep + final return report
+7d5c4c1  fix(phase13): T-A.1.8 pre-Codex — simplify forced-fire RNG probe loop (pre-Codex Minor 2 closure from C.C lesson #6 16th cumulative validation)
+8066a74  fix(phase13): T-A.1.8 — Codex R1 fix bundle (3 Major + 2 Minor closures)
+211bdae  fix(phase13): T-A.1.8 — Codex R2 polish bundle (2 Minor closures — Bearer-token coverage + f-string)
+[final report commit] docs(phase13): T-A.1.8 return report — post-Codex chain finalization
 ```
 
 **T-A.1.1 SHA `4cfd5f2` cited prominently** for T3.SB1 coordination — T3.SB1 worktree branches off this commit per OQ-12 Option E + remains awaiting T2.SB1 merge.
 
 ## Codex review history
 
-- **Pre-Codex orchestrator-side review (C.C lesson #6 BINDING; 16th cumulative validation expected)**: pending; orchestrator dispatches a focused reviewer subagent with §3 LOCKs + §4 19 watch items + §5 done criteria from the closer brief as anchors; deviation list expected <=300 words. The 15× precedent CLEAN streak (through T-A.1.5b) is the prior-art baseline.
-- **R1 .. RN**: pending; expected 2-3 rounds to NO_NEW_CRITICAL_MAJOR per the closer brief scope envelope (~120-200 LOC production + ~250-400 LOC test). Final verdict appended here on closure.
+- **Pre-Codex orchestrator-side review (C.C lesson #6 BINDING; 16th cumulative validation)**: **BANKED CLEAN** — orchestrator dispatched a focused reviewer subagent with §3 LOCKs + §4 19 watch items + §5 done criteria from the closer brief as anchors. Verdict: PRE-CODEX CLEAN with 2 Minor observations (not deviations — banked as Codex talking points). Minor 1: Deficiency 2 fix is a semantic pivot, well-documented (already absorbed in §"Brief deviation banked"). Minor 2: forced-fire RNG probe loop was brute-force; simplified inline at commit `7d5c4c1` before invoking adversarial-critic (saved a Codex round). 16th cumulative C.C lesson #6 validation banks the project's 16× CLEAN streak.
+- **R1** (Codex via `mcp__plugin_copowers_codex__codex`; threadId `019e4448-80bb-7d73-a1d7-d415c05123eb`): 0 Critical + 3 Major + 2 Minor. ALL closed inline at commit `8066a74`:
+  - **Major #1** (RESOLVED): `bool(response_raw["agreed"])` at CLI silently coerces truthy non-bool (e.g., `"false"` string → True). Fixed: strict `isinstance(..., bool)` check at CLI boundary + `CodexReviewResponse.__post_init__` runtime-validate (defense-in-depth per T-A.1.5b R3 M#1 Literal[...] family). 2 new tests cover both surfaces.
+  - **Major #2** (RESOLVED): relabel-to-gold COALESCE pivot destroys original `proposed_pattern_class` audit trail (e.g., vcp → flat_base promotion forgets the row was originally proposed as vcp). Fixed: SELECT-then-branched-UPDATE in caller's `with conn:` block (no TOCTOU); relabel-present branch captures `gold_promotion_original_proposed_pattern_class` + `gold_promotion_corrected_pattern_class` + `gold_promotion_at` into `labeler_evidence_json` BEFORE the COALESCE clobbers `proposed_pattern_class`. Defensive 500 path on corrupt `labeler_evidence_json`. Byte-stable assertion test added for unmodified-silver-promote.
+  - **Major #3** (RESOLVED): cassette E2E test only ran the sentinel-leak audit; the `codex_mcp_vcr_config()` filter chain (`before_record_request` + `before_record_response`) was never actually exercised. Fixed: new test `test_codex_mcp_vcr_filter_chain_redacts_planted_sentinels` constructs synthetic request+response carrying every sentinel shape the audit script scans for + runs them through the filter chain + asserts ALL sentinels redacted. Pre-empts the V2 regression where a contributor records a real-MCP-HTTP cassette without the filter chain attached.
+  - **Minor #1** (RESOLVED): forced-fire error message text said `Random(7)` but code uses `Random(1)`. Fixed: message updated.
+  - **Minor #2** (ACCEPTED with rationale): return report's "pending" review-status language is intentional pre-Codex state; updated to POST-CODEX in this same final-report commit.
+- **R2** (Codex via `mcp__plugin_copowers_codex__codex-reply`): **0 Critical + 0 Major + 2 Minor → verdict NO_NEW_CRITICAL_MAJOR.** Both Minors closed inline at commit `211bdae`:
+  - **Minor #1** (RESOLVED): R2 filter-chain test missed Bearer-token sentinel coverage (audit script's `Bearer\s+...` shape). Fixed: added `sentinel_bearer_token` + `"authorization": "Bearer <token>"` field + bearer-token in the scrub-assertion loop.
+  - **Minor #2** (RESOLVED): positive-assertion error message string missing `f` prefix; `raw={raw!r}` would print literally. Fixed: added `f` prefix.
+- **R3** (Codex via `mcp__plugin_copowers_codex__codex-reply`): **0 Critical + 0 Major + 0 Minor → verdict NO_NEW_CRITICAL_MAJOR.** Verification round confirms ZERO new findings; chain terminates.
+
+**Final verdict: NO_NEW_CRITICAL_MAJOR at R2; R3 CLEAN.** ZERO Critical entire T-A.1.8 chain. 3 Codex rounds total (R1 surface 3 Major + 2 Minor; R2 surface 2 Minor; R3 CLEAN); all findings closed inline; ZERO ACCEPT-WITH-RATIONALE on technical findings (Minor #2 R1 was a workflow-timing accept, NOT a technical accept).
 
 ## T-A.1.7 corpus disposition (carried forward verbatim)
 
@@ -102,11 +117,13 @@ f799eec  feat(phase13): T-A.1.8 — random-15% Codex 2nd-reviewer dispatch wirin
 | Post T-A.1.1 (worktree HEAD `4cfd5f2`) | 4949 | — | 7 | interim report |
 | Post T-A.1.5b (worktree HEAD `b461f03`) | 5068 | — | 6 | T-A.1.5b return report |
 | Post T-A.1.7 (worktree HEAD `bd0775f`) | 5068 | — | 6 | corpus docs-only |
-| **Post T-A.1.8 (worktree HEAD `85cb6fa`)** | **5088** | **2** | **6** | this report |
+| Post T-A.1.8 task commits (worktree HEAD `85cb6fa`) | 5088 | 2 | 6 | T-A.1.8 task commit chain |
+| Post Codex R1 fix bundle (worktree HEAD `8066a74`) | 5092 | 3 | 6 | adds bool-validation tests (2) + audit-trail keys assertion (1) + filter-chain regression test (1) + byte-stable evidence test (1) |
+| **Post Codex R3 CLEAN (worktree HEAD `211bdae`)** | **5092** | **3** | **6** | final |
 
-**T-A.1.8 delta**: +20 fast (5068 → 5088) + 2 slow (cassette-mode E2E + SNAP variance discriminator).
+**T-A.1.8 delta**: +24 fast (5068 → 5092) + 3 slow (cassette-mode E2E + SNAP variance discriminator + filter-chain regression).
 
-**Cumulative T2.SB1 delta from main baseline**: +149 fast tests (4939 → 5088) + 2 slow.
+**Cumulative T2.SB1 delta from main baseline**: +153 fast tests (4939 → 5092) + 3 slow.
 
 **Ruff sweep**: 0 errors on `swing/` (E501 + every other rule).
 
@@ -163,10 +180,11 @@ The following are surfaced for the post-merge housekeeping commit absorbing all 
 
 ## Streaks preserved
 
-- ZERO `Co-Authored-By` footer trailer drift (project-cumulative ~234+ commits and counting).
-- C.C lesson #6 pre-Codex orchestrator-side review (15× CLEAN through T-A.1.5b; 16th expected at this dispatch).
-- ZERO Critical findings across T2.SB1 commit chain (T-A.1.5b: ZERO; all prior tasks: ZERO; T-A.1.8 pre-Codex: pending Codex chain).
+- **ZERO `Co-Authored-By` footer trailer drift** (project-cumulative ~239+ commits — verified `git log 6383cfa..HEAD --pretty=%B | grep -c "Co-Authored-By"` returns 0 across all 36 T2.SB1 commits).
+- **C.C lesson #6 pre-Codex orchestrator-side review**: **16× CLEAN** (T-A.1.8 bank confirmed; 15× precedent through T-A.1.5b held).
+- **ZERO Critical findings** across the full T2.SB1 commit chain (T-A.1.1 through T-A.1.8 closer including 3 Codex rounds: R1 surface 3 Major + 2 Minor; R2 surface 0 Critical/Major + 2 Minor → NO_NEW_CRITICAL_MAJOR; R3 CLEAN).
+- **NO_NEW_CRITICAL_MAJOR achieved at R2** (per Codex MCP review chain on threadId `019e4448-80bb-7d73-a1d7-d415c05123eb`); R3 confirmation round added defense-in-depth.
 
 ---
 
-*End of report. PRE-CODEX state at worktree HEAD `85cb6fa` (will advance to a final-report-commit SHA once T-1.8.5 closes). Awaiting orchestrator-side pre-Codex review + Codex chain to NO_NEW_CRITICAL_MAJOR.*
+*End of report. POST-CODEX state at worktree HEAD `211bdae` (final-report commit advances HEAD to this report's commit SHA). Ready for orchestrator merge per OQ-12 Option E: T2.SB1 merges to main FIRST; T3.SB1 (sibling worktree, already SHIPPED) merges SECOND. Post-merge housekeeping commit absorbs all banked CLAUDE.md gotcha candidates from T3.SB1 + T-A.1.5b + T-A.1.8 + size-check trigger evaluation.*
