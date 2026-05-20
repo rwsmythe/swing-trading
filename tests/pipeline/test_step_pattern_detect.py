@@ -467,6 +467,294 @@ def test_step_pattern_detect_feature_distribution_histogram_populated_with_run_s
         )
 
 
+class _SpyConn:
+    """Wraps a sqlite3 connection and records calls to ``execute`` so
+    tests can assert when BEGIN IMMEDIATE was issued.
+
+    Codex R2 Major #1: ``_step_pattern_detect`` must NOT hold the
+    write transaction across OHLCV fetches / window generation /
+    detector invocations. The fix is to delay ``lease.fenced_write()``
+    (which issues BEGIN IMMEDIATE) until the INSERT phase only.
+    """
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+        self.executed: list[str] = []
+        self.begin_immediate_at: list[int] = []  # index into executed
+        # Track which call-index the first detector invocation happened on.
+        self.detector_invocation_index_first: int | None = None
+
+    def execute(self, sql, *args, **kwargs):
+        self.executed.append(sql)
+        if "BEGIN IMMEDIATE" in sql.upper():
+            self.begin_immediate_at.append(len(self.executed) - 1)
+        return self._conn.execute(sql, *args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
+class _SpyLease:
+    """Like _StubLease but every entry into fenced_write issues a real
+    BEGIN IMMEDIATE on the underlying spy conn (mirroring the production
+    Lease semantics)."""
+
+    def __init__(self, spy_conn: _SpyConn, run_id: int):
+        self._conn = spy_conn
+        self.run_id = run_id
+
+    def fenced_write(self):
+        @contextmanager
+        def _cm():
+            # Production lease.fenced_write() issues BEGIN IMMEDIATE on entry.
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                yield self._conn
+                self._conn._conn.commit()
+            except Exception:
+                self._conn._conn.rollback()
+                raise
+
+        return _cm()
+
+
+def test_step_pattern_detect_pass_1_runs_outside_write_transaction(
+    seeded_env,
+) -> None:
+    """Codex R2 Major #1 - the lock-duration regression.
+
+    Pass 1 (read candidates, fetch bars, generate windows, invoke
+    detectors) MUST run BEFORE the write transaction (BEGIN IMMEDIATE)
+    is opened. Only Pass 2 (idempotency-check + INSERTs) runs inside
+    BEGIN IMMEDIATE.
+
+    Pre-fix: ``with lease.fenced_write() as conn:`` wrapped the entire
+    flow (candidates read + bars fetch + detector loop + INSERTs). This
+    held the lock for ~seconds per ticker.
+
+    Post-fix: Pass 1 runs without a write transaction. BEGIN IMMEDIATE
+    is issued exactly ONCE, right before the INSERT loop.
+
+    Discriminating predicate: the call to ``ohlcv_cache.get_or_fetch``
+    happens BEFORE the first BEGIN IMMEDIATE on the conn.
+    """
+    conn = seeded_env["conn"]
+    spy_conn = _SpyConn(conn)
+    spy_lease = _SpyLease(spy_conn, run_id=seeded_env["pipeline_run_id"])
+    _seed_aplus_candidate(conn, seeded_env["eval_run_id"], ticker="ABC")
+    conn.commit()
+
+    # Spy on ohlcv_cache.get_or_fetch to record when (in executed-call
+    # sequence) the fetch happens.
+    bars_fetched_at: list[int] = []
+    bars_df = seeded_env["bars"]
+
+    class _RecordingCache:
+        def get_or_fetch(self, *, ticker: str, window_days: int = 200):
+            bars_fetched_at.append(len(spy_conn.executed))
+            return bars_df
+
+    _step_pattern_detect(
+        cfg=None,
+        lease=spy_lease,
+        eval_run_id=seeded_env["eval_run_id"],
+        ohlcv_cache=_RecordingCache(),
+    )
+
+    # Discriminating assertion #1: bars were fetched at least once.
+    assert bars_fetched_at, (
+        "ohlcv_cache.get_or_fetch was never invoked"
+    )
+    # Discriminating assertion #2: the FIRST bars-fetch happened BEFORE
+    # the FIRST BEGIN IMMEDIATE on the conn.
+    assert spy_conn.begin_immediate_at, (
+        f"No BEGIN IMMEDIATE issued; executed={spy_conn.executed!r}"
+    )
+    first_fetch = bars_fetched_at[0]
+    first_begin = spy_conn.begin_immediate_at[0]
+    assert first_fetch < first_begin, (
+        f"OHLCV fetch happened at exec-call #{first_fetch} but "
+        f"BEGIN IMMEDIATE issued at exec-call #{first_begin}; "
+        f"Pass 1 must run BEFORE the write transaction. "
+        f"executed={spy_conn.executed!r}"
+    )
+    # Discriminating assertion #3: BEGIN IMMEDIATE issued at most ONCE
+    # (Pass 2 has one transaction; no extras).
+    assert len(spy_conn.begin_immediate_at) == 1, (
+        f"BEGIN IMMEDIATE issued {len(spy_conn.begin_immediate_at)} "
+        f"times; expected exactly 1 (Pass 2 only). "
+        f"executed={spy_conn.executed!r}"
+    )
+
+
+def test_step_pattern_detect_partial_retry_includes_existing_rows_in_histogram(
+    seeded_env,
+) -> None:
+    """Codex R2 Major #2 - on retry after partial prior writes, the
+    histogram persisted in NEW rows MUST include the composite_scores
+    of PRE-EXISTING rows for the same pipeline_run_id.
+
+    Pre-fix: existing rows skipped via SELECT-then-INSERT idempotency
+    were NOT loaded into ``universe_context['composite_scores']``. New
+    rows' histograms reflected only the newly-emitted scores, not the
+    full universe.
+
+    Post-fix (Option B): SELECT existing pattern_evaluations rows for
+    the pipeline_run_id at step entry; seed
+    ``universe_context['composite_scores']`` with their composite_scores.
+    Pass 1 + Pass 2 append new scores onto the seed.
+
+    Discriminating predicate: pre-seed N=2 existing rows with
+    composite_score=0.5; invoke step (which produces 3 new rows because
+    only 1 ticker x 3 detectors gets emitted, and at least 1 of those 3
+    is for a NEW (ticker, pattern_class) tuple not pre-seeded); assert
+    the histogram bin counts on the NEW rows sum to N + M.
+    """
+    conn = seeded_env["conn"]
+    pipeline_run_id = seeded_env["pipeline_run_id"]
+    # Pre-seed 2 existing pattern_evaluations rows with composite_score=0.5
+    # for the same pipeline_run_id but DIFFERENT tickers (so the
+    # idempotency-check does NOT skip them when the step runs for ABC).
+    for ticker in ("PRE1", "PRE2"):
+        conn.execute(
+            """
+            INSERT INTO pattern_evaluations
+                (pipeline_run_id, ticker, pattern_class, detector_version,
+                 geometric_score, geometric_score_json, composite_score,
+                 structural_evidence_json, feature_distribution_log_json,
+                 window_start_date, window_end_date, created_at)
+            VALUES (?, ?, 'vcp', 'vcp_v1.0',
+                    0.5, '{}', 0.5, '{}', '{}',
+                    '2026-05-01', '2026-05-15', '2026-05-20T18:00:00')
+            """,
+            (pipeline_run_id, ticker),
+        )
+    conn.commit()
+    _seed_aplus_candidate(conn, seeded_env["eval_run_id"], ticker="ABC")
+    conn.commit()
+
+    _step_pattern_detect(
+        cfg=None,
+        lease=seeded_env["lease"],
+        eval_run_id=seeded_env["eval_run_id"],
+        ohlcv_cache=seeded_env["cache"],
+    )
+
+    # ABC produced 3 new rows (1 ticker x 3 detectors). Plus the 2
+    # pre-seeded rows. Total expected = 5.
+    rows = conn.execute(
+        "SELECT ticker, pattern_class, feature_distribution_log_json "
+        "FROM pattern_evaluations WHERE pipeline_run_id = ? "
+        "AND ticker = ? ORDER BY pattern_class",
+        (pipeline_run_id, "ABC"),
+    ).fetchall()
+    assert len(rows) == 3, (
+        f"expected 3 new ABC rows; got {len(rows)}"
+    )
+    for ticker, pattern_class, fdl_json in rows:
+        fdl = json.loads(fdl_json)
+        bins = fdl["composite_score_histogram_bins"]
+        assert isinstance(bins, list) and len(bins) == 10
+        total = sum(bins)
+        # Total scores in histogram = pre-existing (2 rows @ 0.5) + new
+        # (3 rows from the ABC detectors). Expected = 5.
+        assert total == 5, (
+            f"row ({ticker}, {pattern_class}): histogram bins sum to "
+            f"{total}; expected 5 (2 pre-existing + 3 new). "
+            f"bins={bins}"
+        )
+
+
+def test_step_pattern_detect_aborts_on_missing_eval_run_action_session_date(
+    seeded_env, caplog,
+) -> None:
+    """Codex R2 Major #3 - the wall-clock fallback in
+    ``_resolve_eval_run_action_session_date`` reintroduces the
+    future-stage leak under exactly the metadata-failure path the
+    Major #2 fix was meant to harden.
+
+    Pre-fix: when the eval_run row is missing or the
+    action_session_date is null/malformed, the helper falls back to
+    ``datetime.now(UTC).date()`` (wall-clock) and emits a WARNING but
+    keeps going.
+
+    Post-fix: REMOVE the wall-clock fallback. Raise an exception
+    (e.g. ``EvalRunResolutionError``); the best-effort wrapper at
+    ``runner.py:819-834`` catches it -> WARNING log -> SKIP pattern
+    detection for this run (no rows written).
+
+    Discriminating predicate: pattern detect invoked with an
+    eval_run_id that does NOT exist in evaluation_runs MUST result in
+    (a) NO pattern_evaluations rows written; (b) a WARNING log; (c) no
+    silent fallback to today's wall-clock date.
+    """
+    conn = seeded_env["conn"]
+    # Use a bogus eval_run_id; the helper should fail to resolve it.
+    bogus_eval_run_id = 99_999_999
+    # Seed a candidate against the bogus eval_run_id so the step at
+    # least gets PAST the "no candidates" early-return. We INSERT raw
+    # rather than calling _seed_aplus_candidate, because that helper
+    # requires the eval_run row to exist (FK). Instead, mimic the
+    # earlier-seeded eval_run path: seed candidates for the seeded
+    # eval_run_id, then invoke step with the bogus id (the candidates
+    # SELECT will return [] under FK semantics, so the step would
+    # short-circuit on zero candidates). To force the failure path
+    # AFTER candidate-load, seed candidates against the bogus id by
+    # disabling FK checks. SQLite by default has FKs OFF; ensure_schema
+    # may have enabled them.
+    conn.execute("PRAGMA foreign_keys = OFF")
+    cand = Candidate(
+        ticker="ABC",
+        bucket="aplus",
+        close=15.0,
+        pivot=15.1,
+        initial_stop=13.5,
+        adr_pct=2.5,
+        tight_streak=3,
+        pullback_pct=5.0,
+        prior_trend_pct=40.0,
+        rs_rank=85,
+        rs_return_12w_vs_spy=12.0,
+        rs_method="universe",
+        pattern_tag=None,
+        notes=None,
+        criteria=tuple(),
+    )
+    insert_candidates(conn, bogus_eval_run_id, [cand])
+    conn.commit()
+    caplog.set_level(logging.WARNING, logger="swing.pipeline.runner")
+
+    # Best-effort wrapper at runner.py:819-834 catches the exception;
+    # mirror that here so the test asserts the contract end-to-end.
+    from swing.pipeline.runner import EvalRunResolutionError
+
+    raised: Exception | None = None
+    try:
+        _step_pattern_detect(
+            cfg=None,
+            lease=seeded_env["lease"],
+            eval_run_id=bogus_eval_run_id,
+            ohlcv_cache=seeded_env["cache"],
+        )
+    except EvalRunResolutionError as exc:  # noqa: BLE001 (intentional)
+        raised = exc
+
+    # The function MUST raise the typed error (the best-effort wrapper
+    # in runner.py:819-834 catches it).
+    assert raised is not None, (
+        "expected EvalRunResolutionError to be raised when eval_run "
+        "row is missing"
+    )
+    # No pattern_evaluations rows written.
+    row_count = conn.execute(
+        "SELECT COUNT(*) FROM pattern_evaluations"
+    ).fetchone()[0]
+    assert row_count == 0, (
+        f"expected zero pattern_evaluations rows on missing eval_run; "
+        f"got {row_count}"
+    )
+
+
 def test_step_pattern_detect_idempotent_re_invocation(seeded_env) -> None:
     """Re-invoking the step with the same (pipeline_run_id, eval_run_id)
     MUST NOT raise IntegrityError + row count MUST stay the same.

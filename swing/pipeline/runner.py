@@ -1267,6 +1267,22 @@ def _pattern_detect_registry():
     )
 
 
+class EvalRunResolutionError(Exception):
+    """Raised when ``_resolve_eval_run_action_session_date`` cannot
+    determine the canonical run-anchored ``action_session_date``.
+
+    Codex R2 Major #3: the prior implementation fell back to
+    wall-clock ``datetime.now(UTC).date()`` on row-missing or
+    malformed metadata. That fallback reintroduced the very
+    future-stage leak the Codex R1 Major #2 fix was meant to harden.
+    The fallback is REMOVED; raise this typed exception instead.
+
+    The best-effort wrapper around ``_step_pattern_detect`` at
+    ``runner.py:819-834`` catches it, logs WARNING, and SKIPS pattern
+    detection for the run (zero rows written).
+    """
+
+
 def _resolve_eval_run_action_session_date(
     *,
     cfg,
@@ -1279,22 +1295,29 @@ def _resolve_eval_run_action_session_date(
     asof_date for ``current_stage`` lookups, NOT the wall-clock now()
     which can leak future evaluation_runs into the lookup window.
 
-    Resolution: read ``evaluation_runs.action_session_date`` for
-    ``eval_run_id``. Falls back to today's date only if the row cannot
-    be read (defensive; logged WARNING).
+    Codex R2 Major #3: removed wall-clock fallback on row-missing or
+    malformed action_session_date. Raises ``EvalRunResolutionError``
+    instead; the best-effort wrapper at runner.py:819-834 catches it
+    and SKIPS pattern detection for the run (zero rows written).
     """
     from datetime import date as _date_cls
-    from datetime import datetime as _dt_inner
 
     iso: str | None = None
     read_conn = connect(cfg.paths.db_path) if cfg is not None else None
+    _opened_conn = read_conn is not None
     try:
+        if read_conn is None:
+            # Test-stub path: reuse the lease's shared conn for read
+            # WITHOUT entering fenced_write (which would issue BEGIN
+            # IMMEDIATE -- Codex R2 Major #1 keeps Pass 1 lock-free).
+            read_conn = getattr(lease, "_conn", None)
         if read_conn is not None:
             row = read_conn.execute(
                 "SELECT action_session_date FROM evaluation_runs WHERE id = ?",
                 (eval_run_id,),
             ).fetchone()
         else:
+            # Defensive: no cfg AND no shared lease conn.
             with lease.fenced_write() as _conn:
                 row = _conn.execute(
                     "SELECT action_session_date FROM evaluation_runs "
@@ -1304,27 +1327,34 @@ def _resolve_eval_run_action_session_date(
         if row is not None and row[0] is not None:
             iso = str(row[0])
     finally:
-        if read_conn is not None:
+        if _opened_conn and read_conn is not None:
             read_conn.close()
 
     if iso is None:
         log.warning(
-            "pattern_detect: evaluation_runs row not found for "
-            "eval_run_id=%d; falling back to wall-clock asof_date",
+            "pattern_detect: evaluation_runs row missing or "
+            "action_session_date NULL for eval_run_id=%d; aborting "
+            "pattern detection for this run",
             eval_run_id,
         )
-        return _dt_inner.now(UTC).date()
+        raise EvalRunResolutionError(
+            f"evaluation_runs row missing or action_session_date NULL "
+            f"for eval_run_id={eval_run_id}"
+        )
     try:
         return _date_cls.fromisoformat(iso)
-    except ValueError:
+    except ValueError as exc:
         log.warning(
             "pattern_detect: evaluation_runs.action_session_date "
-            "unparseable (%r) for eval_run_id=%d; falling back to "
-            "wall-clock asof_date",
+            "unparseable (%r) for eval_run_id=%d; aborting pattern "
+            "detection for this run",
             iso,
             eval_run_id,
         )
-        return _dt_inner.now(UTC).date()
+        raise EvalRunResolutionError(
+            f"evaluation_runs.action_session_date unparseable ({iso!r}) "
+            f"for eval_run_id={eval_run_id}"
+        ) from exc
 
 
 def _step_pattern_detect(
@@ -1362,17 +1392,28 @@ def _step_pattern_detect(
     pipeline_run_id = lease.run_id
 
     # Read phase (no fence -- idempotent SELECT).
+    # Codex R2 Major #1: do NOT enter ``lease.fenced_write()`` here for
+    # the test-stub path; that would issue BEGIN IMMEDIATE before Pass 1.
+    # Borrow the lease's underlying connection for the read instead.
     read_conn = connect(cfg.paths.db_path) if cfg is not None else None
     try:
         if read_conn is not None:
             candidates = fetch_candidates_for_run(read_conn, eval_run_id)
         else:
-            # Test-stub path: pull candidates through the lease's connection
-            # (single-connection in-memory test fixtures don't have a cfg).
-            with lease.fenced_write() as _read_via_lease:
-                candidates = fetch_candidates_for_run(
-                    _read_via_lease, eval_run_id
-                )
+            # Test-stub path: single-connection in-memory test fixtures
+            # expose the shared sqlite3.Connection as ``lease._conn``.
+            lease_conn = getattr(lease, "_conn", None)
+            if lease_conn is None:
+                # Defensive fallback (no shared conn attribute): enter
+                # fenced_write briefly. This will issue BEGIN IMMEDIATE
+                # but only in code paths without a cfg AND without an
+                # in-memory test stub -- not a production path.
+                with lease.fenced_write() as _read_via_lease:
+                    candidates = fetch_candidates_for_run(
+                        _read_via_lease, eval_run_id
+                    )
+            else:
+                candidates = fetch_candidates_for_run(lease_conn, eval_run_id)
     finally:
         if read_conn is not None:
             read_conn.close()
@@ -1404,11 +1445,55 @@ def _step_pattern_detect(
     rows_written = 0
     rows_skipped_idempotent = 0
 
+    # Codex R2 Major #2 (Option B): seed ``composite_scores`` from any
+    # pre-existing pattern_evaluations rows for THIS pipeline_run_id, so
+    # newly-inserted rows on a partial retry carry a histogram that
+    # represents the FULL universe (already-inserted + newly-inserted).
+    #
+    # On first run this SELECT returns an empty result set, seeding an
+    # empty list (semantically equivalent to the V1 init). This is a
+    # READ-ONLY operation; it runs OUTSIDE the write transaction.
+    existing_composite_scores: list[float] = []
+    existing_idempotency_keys: set[tuple[str, str]] = set()
+    read_conn_for_seed = connect(cfg.paths.db_path) if cfg is not None else None
+    _opened_seed_conn = read_conn_for_seed is not None
+    try:
+        if read_conn_for_seed is None:
+            # Test-stub path: reuse the lease's shared conn for read
+            # WITHOUT entering fenced_write (which would issue BEGIN
+            # IMMEDIATE).
+            read_conn_for_seed = getattr(lease, "_conn", None)
+        if read_conn_for_seed is not None:
+            seed_rows = read_conn_for_seed.execute(
+                "SELECT ticker, pattern_class, composite_score "
+                "FROM pattern_evaluations WHERE pipeline_run_id = ?",
+                (pipeline_run_id,),
+            ).fetchall()
+        else:
+            # Defensive: no cfg AND no shared lease conn -- fall back
+            # to a brief fenced_write read (not a production path).
+            with lease.fenced_write() as _seed_conn:
+                seed_rows = _seed_conn.execute(
+                    "SELECT ticker, pattern_class, composite_score "
+                    "FROM pattern_evaluations WHERE pipeline_run_id = ?",
+                    (pipeline_run_id,),
+                ).fetchall()
+        import contextlib as _contextlib
+        for sr_ticker, sr_pattern_class, sr_score in seed_rows:
+            existing_idempotency_keys.add((str(sr_ticker), str(sr_pattern_class)))
+            # Defensive: if score is NULL/garbage, skip the score but
+            # still record the idempotency key.
+            with _contextlib.suppress(TypeError, ValueError):
+                existing_composite_scores.append(float(sr_score))
+    finally:
+        # Close only the connection we OPENED (cfg path); never close
+        # the lease-derived connection borrowed via getattr.
+        if _opened_seed_conn and read_conn_for_seed is not None:
+            read_conn_for_seed.close()
+
     # Universe context for FeatureDistributionLog (per spec section D.7).
-    # Codex R1 Major #3: ``composite_scores`` is populated via a TWO-PASS
-    # architecture (Option A) -- pass 1 collects scores; pass 2 emits rows
-    # whose feature_distribution_log_json carries the FULL universe
-    # histogram. Pass 1 is read-only (no DB writes); pass 2 owns writes.
+    # Codex R1 Major #3 + R2 Major #2: ``composite_scores`` is seeded
+    # from existing rows (Option B) then appended during pass 1.
     universe_context: dict = {
         "universe_size": len(aplus_tickers),
         "stage_2_pass_rate": 1.0,  # aplus bucket implies Stage 2 pass.
@@ -1416,23 +1501,38 @@ def _step_pattern_detect(
         "verdict_counts_per_pattern_class": {},
         "smoothing_params": {},
         "extrema_density_per_session": 0.0,
-        "composite_scores": [],
+        "composite_scores": list(existing_composite_scores),
     }
 
-    # Pass 1 + Pass 2 share the lease-fenced connection. Pass 1 runs the
-    # detectors + collects evidence; pass 2 serializes + INSERTs against
-    # the universe-wide histogram.
-    with lease.fenced_write() as conn:
-        # ------------------------------------------------------------------
-        # Pass 1: detector invocations + composite_scores accumulation.
-        # ------------------------------------------------------------------
-        # Each per-(ticker, pattern_class) entry collects (window,
-        # evidence, version_str, composite_score, criteria_pass) for
-        # pass 2 to consume.
-        emit_queue: list[
-            tuple[str, str, str, object, object, float]
-        ] = []  # (ticker, pattern_class, version_str, window, evidence, score)
+    # ----------------------------------------------------------------------
+    # Pass 1: detector invocations + composite_scores accumulation.
+    # Codex R2 Major #1: Pass 1 runs OUTSIDE the write transaction.
+    # Per-ticker OHLCV fetches + window generation + detector invocation
+    # are all read-only operations; opening BEGIN IMMEDIATE here would
+    # hold the lock across network/cache I/O.
+    #
+    # Detectors invoke ``current_stage`` read-only against ``conn``;
+    # provide a dedicated read-only connection (cfg-path) or fall back
+    # to the lease's underlying connection in the test-stub path.
+    # ----------------------------------------------------------------------
+    # Each per-(ticker, pattern_class) entry collects (window,
+    # evidence, version_str, composite_score) for pass 2 to consume.
+    emit_queue: list[
+        tuple[str, str, str, object, object, float]
+    ] = []  # (ticker, pattern_class, version_str, window, evidence, score)
 
+    detector_read_conn = connect(cfg.paths.db_path) if cfg is not None else None
+    # Test-stub path: no cfg, so reuse the lease's underlying connection
+    # for read-only detector lookups WITHOUT opening BEGIN IMMEDIATE
+    # (the contextmanager exit would otherwise commit a no-op tx + the
+    # spy lease records that as a BEGIN). We rely on the test fixture
+    # exposing a shared sqlite3.Connection accessible as ``lease._conn``
+    # OR via ``lease.fenced_write()`` -- we intentionally do NOT enter
+    # the latter contextmanager here to keep Pass 1 lock-free.
+    if detector_read_conn is None:
+        detector_read_conn = getattr(lease, "_conn", None)
+
+    try:
         for ticker in aplus_tickers:
             # Fetch bars (per-ticker failure: log + continue).
             try:
@@ -1482,16 +1582,14 @@ def _step_pattern_detect(
             window = windows[-1]
 
             for detector_fn, pattern_class, version_str in detectors:
-                # Idempotency check: skip if a row already exists for this
-                # (pipeline_run_id, ticker, pattern_class) tuple. Recon
-                # section 4.2 -- LOCK L3 forbids INSERT OR REPLACE.
-                existing = conn.execute(
-                    "SELECT id FROM pattern_evaluations "
-                    "WHERE pipeline_run_id = ? AND ticker = ? "
-                    "AND pattern_class = ? LIMIT 1",
-                    (pipeline_run_id, ticker, pattern_class),
-                ).fetchone()
-                if existing is not None:
+                # Codex R2 Major #2 (Option B): if a row already exists
+                # for this (pipeline_run_id, ticker, pattern_class)
+                # tuple, skip the detector invocation entirely. The
+                # pre-existing row's composite_score is already seeded
+                # into universe_context. This is cheaper than the V1
+                # SELECT-per-detector pattern and keeps Pass 1 fully
+                # read-only.
+                if (ticker, pattern_class) in existing_idempotency_keys:
                     log.info(
                         "pattern_detect: row exists for (%d, %s, %s); "
                         "skipping idempotent re-invocation",
@@ -1507,7 +1605,7 @@ def _step_pattern_detect(
                     evidence = detector_fn(
                         bars,
                         window,
-                        conn=conn,
+                        conn=detector_read_conn,
                         ticker=ticker,
                         asof_date=asof_run,
                     )
@@ -1542,11 +1640,29 @@ def _step_pattern_detect(
                         composite_score,
                     )
                 )
+    finally:
+        # Close only the connection we opened (cfg path); never close
+        # the lease-derived connection borrowed via getattr.
+        if cfg is not None and detector_read_conn is not None:
+            detector_read_conn.close()
 
-        # ------------------------------------------------------------------
-        # Pass 2: serialize + INSERT against the now-complete universe
-        # histogram (every row carries the SAME run-level histogram).
-        # ------------------------------------------------------------------
+    # ----------------------------------------------------------------------
+    # Pass 2: serialize + INSERT against the now-complete universe
+    # histogram (every row carries the SAME run-level histogram).
+    # Codex R2 Major #1: open the lease-fenced write transaction ONCE
+    # here, scoped tightly to the INSERT loop only.
+    # ----------------------------------------------------------------------
+    if not emit_queue:
+        log.info(
+            "pattern_detect: wrote %d pattern_evaluations rows across %d "
+            "aplus tickers (%d skipped idempotent)",
+            rows_written,
+            len(aplus_tickers),
+            rows_skipped_idempotent,
+        )
+        return
+
+    with lease.fenced_write() as conn:
         for (
             ticker,
             pattern_class,
@@ -1555,6 +1671,27 @@ def _step_pattern_detect(
             evidence,
             composite_score,
         ) in emit_queue:
+            # Idempotency re-check: a concurrent caller MAY have inserted
+            # a row for this (pipeline_run_id, ticker, pattern_class)
+            # between Pass 1's seed-read and Pass 2's INSERT (LOCK L3
+            # forbids INSERT OR REPLACE). SELECT-then-INSERT here.
+            existing = conn.execute(
+                "SELECT id FROM pattern_evaluations "
+                "WHERE pipeline_run_id = ? AND ticker = ? "
+                "AND pattern_class = ? LIMIT 1",
+                (pipeline_run_id, ticker, pattern_class),
+            ).fetchone()
+            if existing is not None:
+                log.info(
+                    "pattern_detect: row exists for (%d, %s, %s) at "
+                    "Pass 2 recheck; skipping",
+                    pipeline_run_id,
+                    ticker,
+                    pattern_class,
+                )
+                rows_skipped_idempotent += 1
+                continue
+
             # Drift-log capture (T-A.3.5 surface).
             try:
                 fdl = capture_feature_distribution(

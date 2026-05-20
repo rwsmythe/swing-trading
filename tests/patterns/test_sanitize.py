@@ -73,3 +73,33 @@ def test_sanitize_bars_accepts_complete_finite_frame() -> None:
     bars = _bars_full()
     out = sanitize_bars(bars)
     assert out is bars
+
+
+def test_sanitize_bars_error_message_matches_required_columns() -> None:
+    """Codex R2 Minor #1 - the error message must enumerate the actual
+    ``_REQUIRED_COLUMNS`` set, NOT a misleading wider set.
+
+    Pre-fix: the message said "Open, High, Low, Close, Volume" but
+    ``_REQUIRED_COLUMNS`` excludes Open (no consumer reads it in V1).
+    Post-fix: the message lists exactly High, Low, Close, Volume.
+
+    Discriminating predicate: error message MUST NOT mention "Open" as
+    a required column.
+    """
+    bars = _bars_full().drop(columns=["High"])
+    with pytest.raises(ValueError) as exc_info:
+        sanitize_bars(bars)
+    msg = str(exc_info.value)
+    # The message names the required set: High, Low, Close, Volume.
+    assert "High" in msg
+    assert "Low" in msg
+    assert "Close" in msg
+    assert "Volume" in msg
+    # And MUST NOT advertise Open as required (Open is optional in V1).
+    # The substring "Open" must not appear as part of the "required"
+    # column list. Use a tight predicate: the literal "Open" token must
+    # not appear in the message.
+    assert "Open" not in msg, (
+        f"error message advertises 'Open' as required, but "
+        f"_REQUIRED_COLUMNS excludes it: {msg!r}"
+    )

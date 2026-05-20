@@ -47,9 +47,14 @@ def sanitize_bars(bars: pd.DataFrame) -> pd.DataFrame:
         raise ValueError("sanitize_bars: bars must not be None")
     missing = [col for col in _REQUIRED_COLUMNS if col not in bars.columns]
     if missing:
+        # Codex R2 Minor #1: error message must enumerate the actual
+        # ``_REQUIRED_COLUMNS`` set. The prior message advertised Open
+        # as required, but ``_REQUIRED_COLUMNS`` excludes Open (no V1
+        # detector consumes ``bars['Open']``).
+        required_list = ", ".join(_REQUIRED_COLUMNS)
         raise ValueError(
-            "sanitize_bars requires columns: Open, High, Low, Close, "
-            f"Volume; missing: {missing}"
+            f"sanitize_bars requires columns: {required_list}; "
+            f"missing: {missing}"
         )
     for col in _OHLCV_COLUMNS:
         if col not in bars.columns:
