@@ -21,6 +21,7 @@ T-B.8 file note).
 from __future__ import annotations
 
 import sqlite3
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -393,12 +394,18 @@ def test_phase9_bundle_c_e2e_account_snapshot_and_hypothesis_audit(
     assert r.exit_code == 0, r.output
     db_path = home / "swing-data" / "swing.db"
 
+    # Dynamic anchor (today - 2 days) keeps snapshot inside the
+    # is_back_recorded 7-day window regardless of wall-clock date.
+    # CLAUDE.md gotcha: time-dependent fixture calendar buffer (hardcoded
+    # "2026-05-12" drifted past 7-day threshold once today >= 2026-05-20).
+    snapshot_date_str = (date.today() - timedelta(days=2)).isoformat()
+
     # ----- §1: account snapshot CLI happy path --------------------------
     r1 = runner.invoke(main, [
         "--config", str(cfg_path),
         "account", "snapshot",
         "--equity", "1300",
-        "--date", "2026-05-12",
+        "--date", snapshot_date_str,
         "--notes", "Bundle C E2E S2",
     ])
     assert r1.exit_code == 0, r1.output
@@ -410,9 +417,9 @@ def test_phase9_bundle_c_e2e_account_snapshot_and_hypothesis_audit(
         row = conn.execute(
             "SELECT snapshot_date, equity_dollars, source, notes "
             "FROM account_equity_snapshots WHERE snapshot_date = ?",
-            ("2026-05-12",),
+            (snapshot_date_str,),
         ).fetchone()
-        assert row == ("2026-05-12", 1300.0, "manual", "Bundle C E2E S2")
+        assert row == (snapshot_date_str, 1300.0, "manual", "Bundle C E2E S2")
     finally:
         conn.close()
 
@@ -432,7 +439,7 @@ def test_phase9_bundle_c_e2e_account_snapshot_and_hypothesis_audit(
     try:
         insert_snapshot(
             conn,
-            snapshot_date="2026-05-12",
+            snapshot_date=snapshot_date_str,
             equity_dollars=1301.0,
             source="tos_csv",
             source_artifact_path="/tmp/probe.csv",
@@ -442,7 +449,7 @@ def test_phase9_bundle_c_e2e_account_snapshot_and_hypothesis_audit(
         )
         insert_snapshot(
             conn,
-            snapshot_date="2026-05-12",
+            snapshot_date=snapshot_date_str,
             equity_dollars=1302.5,
             source="schwab_api",
             source_artifact_path=None,
@@ -452,7 +459,7 @@ def test_phase9_bundle_c_e2e_account_snapshot_and_hypothesis_audit(
         )
         conn.commit()
         result = get_latest_snapshot_on_or_before(
-            conn, asof_date="2026-05-12", with_provenance=True,
+            conn, asof_date=snapshot_date_str, with_provenance=True,
         )
         assert result is not None
         winner, suppressed = result
@@ -716,4 +723,44 @@ def test_phase9_bundle_d_e2e_sector_tamper_audit_surfaces_in_cli_list(
     assert "sector_tamper" not in r_mat.output, (
         f"sector_tamper should be filtered out by --material (V1 "
         f"advisory, material=0). Output: {r_mat.output!r}"
+    )
+
+
+def test_account_snapshot_today_minus_2_days_is_not_back_recorded(
+    tmp_path, monkeypatch
+):
+    """Calendar-drift-proof regression: snapshot dated today-2 must NOT
+    fire 'back-recorded' regardless of what wall-clock day the test runs.
+
+    Pins the dynamic-anchor pattern that closes the 2026-05-20 Phase-9
+    test fixture calendar-drift issue. is_back_recorded uses strict > 7d;
+    today - 2 = 2 days back, well inside the 7-day window.
+    """
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    (tmp_path / "home").mkdir()
+    project = tmp_path / "project"
+    project.mkdir()
+    home = tmp_path / "home"
+    cfg_path = _minimal_config(project, home)
+    runner = CliRunner()
+    r = runner.invoke(main, ["--config", str(cfg_path), "db-migrate"])
+    assert r.exit_code == 0, r.output
+
+    # Dynamic anchor: 2 days before today (5-day safety margin before
+    # the 7-day back-recorded threshold; absorbs weekend/DST/wall-clock
+    # drift without test flakiness).
+    snapshot_date_str = (date.today() - timedelta(days=2)).isoformat()
+
+    r_snap = runner.invoke(main, [
+        "--config", str(cfg_path),
+        "account", "snapshot",
+        "--equity", "1300",
+        "--date", snapshot_date_str,
+        "--notes", "Calendar-drift regression",
+    ])
+    assert r_snap.exit_code == 0, r_snap.output
+    assert "back-recorded" not in r_snap.output, (
+        f"snapshot dated today-2 days ({snapshot_date_str}) must NOT "
+        f"fire back-recorded; output was: {r_snap.output!r}"
     )
