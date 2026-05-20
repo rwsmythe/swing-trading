@@ -228,29 +228,71 @@ def test_foundation_primitives_end_to_end_chain(conn: sqlite3.Connection) -> Non
     )
 
 
-@pytest.mark.skip(
-    reason=(
-        "Cross-bundle pin per plan H.3 line 2617 + brief 4.1 #8. "
-        "Verifies T2.SB3 (VCP / flat_base / cup_with_handle detectors) + "
-        "T2.SB4 (high_tight_flag / double_bottom_W detectors) consume "
-        "foundation primitives at the locked signatures. Un-skips when "
-        "T2.SB3 + T2.SB4 detector modules land; pin to specific consumer "
-        "module SHAs at un-skip time. "
-        "Un-skip instructions: (1) remove @pytest.mark.skip decorator; "
-        "(2) add imports for swing.patterns.vcp, swing.patterns.flat_base, "
-        "swing.patterns.cup_with_handle (T2.SB3), then later for "
-        "swing.patterns.high_tight_flag, swing.patterns.double_bottom_w "
-        "(T2.SB4); (3) for each detector, assert it imports the expected "
-        "primitives via inspect.getsource or function-attribute checks, "
-        "OR exercise the detector against a fixture and verify foundation "
-        "primitives are called (via mock-patch + call-args verification)."
-    )
-)
 def test_foundation_primitives_consumed_by_detectors_invariant() -> None:
-    """Cross-bundle pin: when T2.SB3 + T2.SB4 land, this test imports
-    the 5 V1 detectors and asserts each consumes foundation primitives
-    at the locked signature.
+    """Cross-bundle pin: T2.SB3 detectors (VCP / flat_base /
+    cup_with_handle) MUST consume foundation primitives at the locked
+    signatures. Un-skipped at T-A.3.9 (T2.SB3 closer) per plan H.3 row 6.
 
-    See decorator reason for un-skip instructions.
+    Verifies via ``inspect.getsource`` on each detector module that the
+    expected foundation primitives are imported + referenced. T2.SB4
+    detectors (high_tight_flag / double_bottom_W) will extend this pin
+    when they ship; for now T2.SB3 is sufficient to PASS the invariant.
     """
-    pytest.fail("Cross-bundle pin: T2.SB3 / T2.SB4 detectors not yet shipped.")
+    import inspect
+
+    from swing.patterns import cup_with_handle, flat_base, vcp
+
+    # T2.SB3 detectors: each MUST reference the foundation primitives
+    # that the spec invariant requires they consume.
+    # Per spec sections 5.2 / 5.3 / 5.4 + recon section 7: VCP +
+    # flat_base + cup_with_handle all consume CandidateWindow inputs,
+    # extract_zigzag_swings for swing extraction, and current_stage for
+    # the Phase-4 evaluation surface read. VCP additionally consumes
+    # volume_trend_through_swings.
+    expected_primitives_per_detector = {
+        "vcp": (
+            vcp,
+            (
+                "CandidateWindow",
+                "current_stage",
+                "extract_zigzag_swings",
+                "volume_trend_through_swings",
+                "adaptive_initial_threshold_pct",
+            ),
+        ),
+        "flat_base": (
+            flat_base,
+            (
+                "CandidateWindow",
+                "current_stage",
+                "extract_zigzag_swings",
+                "adaptive_initial_threshold_pct",
+            ),
+        ),
+        "cup_with_handle": (
+            cup_with_handle,
+            (
+                "CandidateWindow",
+                "current_stage",
+                "extract_zigzag_swings",
+                "adaptive_initial_threshold_pct",
+            ),
+        ),
+    }
+
+    for detector_name, (module, expected_primitives) in (
+        expected_primitives_per_detector.items()
+    ):
+        source = inspect.getsource(module)
+        for primitive in expected_primitives:
+            assert primitive in source, (
+                f"detector {detector_name!r} does not reference foundation "
+                f"primitive {primitive!r} (cross-bundle pin invariant)"
+            )
+
+        # Verify the import statement specifically pulls from
+        # swing.patterns.foundation (not a re-export elsewhere).
+        assert "from swing.patterns.foundation import" in source, (
+            f"detector {detector_name!r} does not import from "
+            f"swing.patterns.foundation (cross-bundle pin invariant)"
+        )
