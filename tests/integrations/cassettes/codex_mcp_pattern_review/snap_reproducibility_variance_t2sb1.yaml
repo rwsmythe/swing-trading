@@ -1,0 +1,62 @@
+# Phase 13 T2.SB1 T-A.1.8 - SNAP reproducibility variance cassette.
+#
+# Captures the operator's observation from T-A.1.7 paired session:
+# "SNAP same window dispatched twice yielded different swing-detection
+# (T3 9.10% vs 4.10%) and opposite labels (rejected vs watch)."
+#
+# The cassette encodes TWO synthetic Codex responses for the SAME window
+# but with the silver labels coming in opposite shapes. The
+# discriminating test asserts that should_fire_codex flags BOTH
+# silvers + that BOTH codex_silver child rows are persisted with
+# independent parent_exemplar_id linkage.
+#
+# Pattern banked as forward-binding lesson #7 in the T-A.1.8 return
+# report: SNAP reproducibility variance demonstrates the value of Codex
+# 2nd-review even at the random-15% sampling tier — when the subagent's
+# non-determinism is the source of label variance, a 2nd-reviewer catches
+# the disagreement instead of silently persisting one of N possible
+# labels as ground truth.
+
+interactions:
+  # Pass 1: claude_silver labeled 'rejected' (T3 9.10% swing detected).
+  # Codex disagrees + says 'watch' (visually a setup-in-progress).
+  - description: "SNAP window pass 1 - claude says rejected; Codex says watch"
+    silver_label:
+      evaluation: rejected
+      confidence: medium
+      labeler_evidence_narrative: "T3 contraction 9.10% violates VCP monotonicity"
+      structural_evidence_json:
+        contractions_observed: 3
+        contraction_depths_pct: [12.5, 7.1, 9.1]
+        monotonic_check: failed
+    codex_review_response:
+      agreed: false
+      alternative_evaluation: watch
+      alternative_confidence: medium
+      alternative_structural_evidence_json:
+        reason: "T3 9.10% within +/- 0.5% tolerance band per spec section 5.2 criterion 3"
+        reproducibility_note: "swing-detection algorithm has known variance on borderline T3"
+      alternative_labeler_evidence_json:
+        codex_geometric_score_estimate: 0.55
+        codex_reviewer_version: synthetic-cassette-v1
+  # Pass 2: claude_silver labeled 'watch' (T3 4.10% swing detected).
+  # Codex disagrees + says 'confirmed' (cleaner VCP than pass 1 thought).
+  - description: "SNAP window pass 2 - claude says watch; Codex says confirmed"
+    silver_label:
+      evaluation: watch
+      confidence: medium
+      labeler_evidence_narrative: "T3 contraction 4.10% borderline VCP pattern"
+      structural_evidence_json:
+        contractions_observed: 3
+        contraction_depths_pct: [12.5, 7.1, 4.1]
+        monotonic_check: passed
+    codex_review_response:
+      agreed: false
+      alternative_evaluation: confirmed
+      alternative_confidence: high
+      alternative_structural_evidence_json:
+        reason: "All 8 VCP criteria pass with margin; monotonic + tight + volume-declining"
+        reproducibility_note: "swing-detection algorithm pass-2 read was the cleaner trace"
+      alternative_labeler_evidence_json:
+        codex_geometric_score_estimate: 0.82
+        codex_reviewer_version: synthetic-cassette-v1

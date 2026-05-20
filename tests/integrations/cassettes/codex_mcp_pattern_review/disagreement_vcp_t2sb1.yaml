@@ -1,0 +1,60 @@
+# Phase 13 T2.SB1 T-A.1.8 - synthetic cassette for Codex disagreement E2E.
+#
+# V1 LIMITATION (per scripts/record_codex_mcp_pattern_review_cassettes.py
+# docstring): the copowers Codex MCP server is a Claude Code HARNESS tool
+# (mcp__plugin_copowers_codex__codex) which is NOT Python-HTTP-callable
+# from inside pytest. V1 cassettes are therefore SYNTHETIC playback
+# fixtures rather than real VCR-recorded HTTP traffic.
+#
+# V2 hardening per plan section H.4 + post-Phase-12 forward-binding lesson #3:
+# when the MCP server's HTTP transport is reachable from a pytest harness
+# (or a CLI wrapper that mediates the call), this cassette will be
+# re-recorded as real HTTP traffic with the sanitization filter chain at
+# tests/integrations/_cassette_sanitization.py applied via
+# `codex_mcp_vcr_config()` (filter_headers + before_record_request +
+# before_record_response).
+#
+# Sentinel-leak audit (scripts/record_codex_mcp_pattern_review_cassettes.py
+# --audit-sentinels) MUST pass against this committed cassette:
+#   - NO openai-api-key shape (sk-...)
+#   - NO Bearer-token shape
+#   - NO 32+ hex-char token shape
+#   - NO chatcmpl-* completion id
+#
+# Cassette domain: vcp pattern; claude_silver evaluated 'confirmed'; Codex
+# disagrees + emits 'rejected' alternative with criterion-5 reason.
+
+interaction:
+  description: |
+    Synthetic playback: Codex 2nd-reviewer disagrees with a claude_silver
+    'confirmed' VCP exemplar. Cassette captures the alternative response
+    shape per CodexReviewResponse dataclass contract.
+  request:
+    method: POST
+    uri: "harness://codex/review/pattern_exemplars"
+    headers:
+      content-type: application/json
+    body:
+      claude_silver_final_decision: confirmed
+      claude_silver_confidence: high
+      proposed_pattern_class: vcp
+      ticker_codename: SYNTHETIC_TICKER_A
+      timeframe: daily
+      window_start_date: "2024-01-01"
+      window_end_date: "2024-02-01"
+  response:
+    status: 200
+    headers:
+      content-type: application/json
+    body:
+      agreed: false
+      alternative_evaluation: rejected
+      alternative_confidence: high
+      alternative_structural_evidence_json:
+        reason: "VCP criterion 5 (volume-decline) failed; T3 avg volume above T2"
+        contractions_observed: 3
+        monotonic_depth_check: passed
+        volume_decline_check: failed
+      alternative_labeler_evidence_json:
+        codex_geometric_score_estimate: 0.42
+        codex_reviewer_version: synthetic-cassette-v1
