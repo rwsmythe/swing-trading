@@ -736,6 +736,75 @@ def test_cwh_structural_evidence_dataclass_shape() -> None:
         )
 
 
+def test_cwh_does_not_leak_bars_beyond_candidate_window_end_date() -> None:
+    """Codex R1 Major #1 - detector MUST clip bars to candidate_window.end_date
+    BEFORE structural detection.
+
+    Construct the standard XYZ fixture (whose legitimate cup_bottom lies
+    at index 114 = 2025-12-24, legitimate cup_right_edge at index 159 =
+    2026-02-07). Then APPEND a future bar with an even-lower Low that
+    would be chosen as cup_bottom if not clipped.
+
+    The candidate_window.end_date is set to the LEGITIMATE pivot bar
+    (index 172 = 2026-02-20). The planted future bar at +1 day is
+    OUTSIDE the window.
+
+    Pre-fix: ``_identify_cup_anchors`` walks ``bars.index >= left_ts``
+    (no upper bound until 238-day cap), so the future bar with the
+    lowest Low (4.50) WOULD be argmin->cup_bottom -- a leak.
+
+    Post-fix: bars are clipped to ``bars.index <= window.end_date``
+    BEFORE structural detection so the legitimate cup_bottom_date
+    (2025-12-24) wins.
+    """
+    bars = _bars_passing_all_criteria_xyz()
+    window_end_offset = len(bars) - 1   # pivot at idx 172 (2026-02-20)
+    legitimate_cup_bottom_date = bars.index[114].date()  # 2025-12-24
+    window = CandidateWindow(
+        ticker="XYZ",
+        timeframe="daily",
+        start_date=bars.index[70].date(),
+        end_date=bars.index[window_end_offset].date(),
+        anchor_date=bars.index[70].date(),
+        anchor_reason="zigzag_pivot:test_anchor",
+    )
+    # Append a FUTURE bar 1 day after the window end with an even-lower
+    # Low than the legitimate cup_bottom (price 14.00).
+    future_ts = bars.index[-1] + pd.Timedelta(days=1)
+    future_row = pd.DataFrame(
+        {
+            "Open": [5.0],
+            "High": [5.05],
+            "Low": [4.50],   # well below legitimate cup_bottom @ 14.00
+            "Close": [5.0],
+            "Volume": [1_000_000.0],
+        },
+        index=pd.DatetimeIndex([future_ts]),
+    )
+    bars_with_future = pd.concat([bars, future_row])
+    conn = _stage_2_conn()
+    evidence = detect_cup_with_handle(
+        bars_with_future,
+        window,
+        conn=conn,
+        ticker="XYZ",
+        asof_date=bars_with_future.index[-1].date(),
+    )
+    # Hard predicate: cup_bottom_date MUST be at the legitimate location,
+    # NOT at the planted future bar. A leak would produce
+    # cup_bottom_date == future_ts.date() (or any date > window.end_date).
+    assert evidence.cup_bottom_date == legitimate_cup_bottom_date, (
+        f"cup_bottom_date {evidence.cup_bottom_date} leaked from the "
+        f"future bar at {future_ts.date()}; expected legitimate "
+        f"{legitimate_cup_bottom_date}"
+    )
+    # Loose invariant: nothing structural lands past window.end_date.
+    assert evidence.cup_bottom_date <= window.end_date
+    assert evidence.cup_right_edge_date <= window.end_date
+    if evidence.handle_end_date is not None:
+        assert evidence.handle_end_date <= window.end_date
+
+
 def test_cwh_detector_writes_zero_db_rows() -> None:
     """LOCK L2: detect_cup_with_handle MUST NOT write to the DB. The
     conn is read-only for ``current_stage``.

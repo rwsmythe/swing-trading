@@ -1267,6 +1267,66 @@ def _pattern_detect_registry():
     )
 
 
+def _resolve_eval_run_action_session_date(
+    *,
+    cfg,
+    lease: Lease,
+    eval_run_id: int,
+):
+    """Return the eval_run's ``action_session_date`` (as ``datetime.date``).
+
+    Codex R1 Major #2: detectors require a canonical run-anchored
+    asof_date for ``current_stage`` lookups, NOT the wall-clock now()
+    which can leak future evaluation_runs into the lookup window.
+
+    Resolution: read ``evaluation_runs.action_session_date`` for
+    ``eval_run_id``. Falls back to today's date only if the row cannot
+    be read (defensive; logged WARNING).
+    """
+    from datetime import date as _date_cls
+    from datetime import datetime as _dt_inner
+
+    iso: str | None = None
+    read_conn = connect(cfg.paths.db_path) if cfg is not None else None
+    try:
+        if read_conn is not None:
+            row = read_conn.execute(
+                "SELECT action_session_date FROM evaluation_runs WHERE id = ?",
+                (eval_run_id,),
+            ).fetchone()
+        else:
+            with lease.fenced_write() as _conn:
+                row = _conn.execute(
+                    "SELECT action_session_date FROM evaluation_runs "
+                    "WHERE id = ?",
+                    (eval_run_id,),
+                ).fetchone()
+        if row is not None and row[0] is not None:
+            iso = str(row[0])
+    finally:
+        if read_conn is not None:
+            read_conn.close()
+
+    if iso is None:
+        log.warning(
+            "pattern_detect: evaluation_runs row not found for "
+            "eval_run_id=%d; falling back to wall-clock asof_date",
+            eval_run_id,
+        )
+        return _dt_inner.now(UTC).date()
+    try:
+        return _date_cls.fromisoformat(iso)
+    except ValueError:
+        log.warning(
+            "pattern_detect: evaluation_runs.action_session_date "
+            "unparseable (%r) for eval_run_id=%d; falling back to "
+            "wall-clock asof_date",
+            iso,
+            eval_run_id,
+        )
+        return _dt_inner.now(UTC).date()
+
+
 def _step_pattern_detect(
     *,
     cfg,
@@ -1331,11 +1391,24 @@ def _step_pattern_detect(
         return
 
     detectors = _pattern_detect_registry()
-    asof_today = _dt_inner.now(UTC).date()
+
+    # Codex R1 Major #2: derive asof_date from the eval_run's OWN
+    # action_session_date (the run's canonical session anchor), NOT the
+    # wall-clock now(). The wall-clock could leak FUTURE evaluation_runs
+    # rows into ``current_stage`` lookups (e.g. operator backfilling an
+    # earlier run while a later run already exists in the DB).
+    asof_run = _resolve_eval_run_action_session_date(
+        cfg=cfg, lease=lease, eval_run_id=eval_run_id
+    )
+
     rows_written = 0
     rows_skipped_idempotent = 0
 
     # Universe context for FeatureDistributionLog (per spec section D.7).
+    # Codex R1 Major #3: ``composite_scores`` is populated via a TWO-PASS
+    # architecture (Option A) -- pass 1 collects scores; pass 2 emits rows
+    # whose feature_distribution_log_json carries the FULL universe
+    # histogram. Pass 1 is read-only (no DB writes); pass 2 owns writes.
     universe_context: dict = {
         "universe_size": len(aplus_tickers),
         "stage_2_pass_rate": 1.0,  # aplus bucket implies Stage 2 pass.
@@ -1346,8 +1419,20 @@ def _step_pattern_detect(
         "composite_scores": [],
     }
 
-    # Write phase (lease-fenced; recon section 4.1).
+    # Pass 1 + Pass 2 share the lease-fenced connection. Pass 1 runs the
+    # detectors + collects evidence; pass 2 serializes + INSERTs against
+    # the universe-wide histogram.
     with lease.fenced_write() as conn:
+        # ------------------------------------------------------------------
+        # Pass 1: detector invocations + composite_scores accumulation.
+        # ------------------------------------------------------------------
+        # Each per-(ticker, pattern_class) entry collects (window,
+        # evidence, version_str, composite_score, criteria_pass) for
+        # pass 2 to consume.
+        emit_queue: list[
+            tuple[str, str, str, object, object, float]
+        ] = []  # (ticker, pattern_class, version_str, window, evidence, score)
+
         for ticker in aplus_tickers:
             # Fetch bars (per-ticker failure: log + continue).
             try:
@@ -1424,7 +1509,7 @@ def _step_pattern_detect(
                         window,
                         conn=conn,
                         ticker=ticker,
-                        asof_date=asof_today,
+                        asof_date=asof_run,
                     )
                 except Exception as exc:
                     log.warning(
@@ -1437,82 +1522,108 @@ def _step_pattern_detect(
                     )
                     continue
 
-                # Drift-log capture (T-A.3.5 surface).
-                try:
-                    fdl = capture_feature_distribution(
-                        pattern_class, evidence, universe_context
-                    )
-                    fdl_json = _json.dumps(
-                        dataclasses.asdict(fdl), default=str
-                    )
-                except Exception as exc:
-                    log.warning(
-                        "pattern_detect: drift-log capture failed for "
-                        "(%s, %s) (continuing): %s",
-                        ticker,
-                        pattern_class,
-                        exc,
-                    )
-                    continue
-
-                # Evidence serialization (15-col row shape per recon
-                # section 8).
-                try:
-                    evidence_json = _json.dumps(
-                        dataclasses.asdict(evidence), default=str
-                    )
-                except Exception as exc:
-                    log.warning(
-                        "pattern_detect: evidence serialization failed "
-                        "for (%s, %s) (continuing): %s",
-                        ticker,
-                        pattern_class,
-                        exc,
-                    )
-                    continue
-
                 geometric_score = float(
                     getattr(evidence, "geometric_score", 0.0)
                 )
-                criteria_pass = getattr(evidence, "criteria_pass", {})
-                try:
-                    geometric_score_json = _json.dumps(criteria_pass)
-                except Exception:
-                    geometric_score_json = "{}"
-
                 # T2.SB3: composite_score = geometric_score (template
                 # matching lands at T2.SB5 -- recon section 8).
                 composite_score = geometric_score
 
-                row = PatternEvaluation(
-                    id=None,
-                    pipeline_run_id=pipeline_run_id,
-                    ticker=ticker,
-                    pattern_class=pattern_class,
-                    detector_version=version_str,
-                    geometric_score=geometric_score,
-                    geometric_score_json=geometric_score_json,
-                    composite_score=composite_score,
-                    structural_evidence_json=evidence_json,
-                    feature_distribution_log_json=fdl_json,
-                    window_start_date=window.start_date.isoformat(),
-                    window_end_date=window.end_date.isoformat(),
-                    created_at=_dt_inner.now(UTC).isoformat(),
-                    template_match_score=None,
-                    template_match_nearest_exemplar_ids_json=None,
-                )
-                try:
-                    insert_evaluation(conn, row)
-                    rows_written += 1
-                except Exception as exc:
-                    log.warning(
-                        "pattern_detect: INSERT failed for (%s, %s) "
-                        "(continuing): %s",
+                # Accumulate composite_scores for the run-level histogram.
+                universe_context["composite_scores"].append(composite_score)
+
+                emit_queue.append(
+                    (
                         ticker,
                         pattern_class,
-                        exc,
+                        version_str,
+                        window,
+                        evidence,
+                        composite_score,
                     )
-                    continue
+                )
+
+        # ------------------------------------------------------------------
+        # Pass 2: serialize + INSERT against the now-complete universe
+        # histogram (every row carries the SAME run-level histogram).
+        # ------------------------------------------------------------------
+        for (
+            ticker,
+            pattern_class,
+            version_str,
+            window,
+            evidence,
+            composite_score,
+        ) in emit_queue:
+            # Drift-log capture (T-A.3.5 surface).
+            try:
+                fdl = capture_feature_distribution(
+                    pattern_class, evidence, universe_context
+                )
+                fdl_json = _json.dumps(
+                    dataclasses.asdict(fdl), default=str
+                )
+            except Exception as exc:
+                log.warning(
+                    "pattern_detect: drift-log capture failed for "
+                    "(%s, %s) (continuing): %s",
+                    ticker,
+                    pattern_class,
+                    exc,
+                )
+                continue
+
+            # Evidence serialization (15-col row shape per recon
+            # section 8).
+            try:
+                evidence_json = _json.dumps(
+                    dataclasses.asdict(evidence), default=str
+                )
+            except Exception as exc:
+                log.warning(
+                    "pattern_detect: evidence serialization failed "
+                    "for (%s, %s) (continuing): %s",
+                    ticker,
+                    pattern_class,
+                    exc,
+                )
+                continue
+
+            criteria_pass = getattr(evidence, "criteria_pass", {})
+            try:
+                geometric_score_json = _json.dumps(criteria_pass)
+            except Exception:
+                geometric_score_json = "{}"
+
+            row = PatternEvaluation(
+                id=None,
+                pipeline_run_id=pipeline_run_id,
+                ticker=ticker,
+                pattern_class=pattern_class,
+                detector_version=version_str,
+                geometric_score=float(composite_score),
+                geometric_score_json=geometric_score_json,
+                composite_score=composite_score,
+                structural_evidence_json=evidence_json,
+                feature_distribution_log_json=fdl_json,
+                window_start_date=window.start_date.isoformat(),
+                window_end_date=window.end_date.isoformat(),
+                created_at=_dt_inner.now(UTC).isoformat(),
+                template_match_score=None,
+                template_match_nearest_exemplar_ids_json=None,
+            )
+            try:
+                insert_evaluation(conn, row)
+                rows_written += 1
+            except Exception as exc:
+                log.warning(
+                    "pattern_detect: INSERT failed for (%s, %s) "
+                    "(continuing): %s",
+                    ticker,
+                    pattern_class,
+                    exc,
+                )
+                continue
 
     log.info(
         "pattern_detect: wrote %d pattern_evaluations rows across %d "

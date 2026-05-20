@@ -20,23 +20,37 @@ import pandas as pd
 
 _OHLCV_COLUMNS: tuple[str, ...] = ("Open", "High", "Low", "Close", "Volume")
 
+# Required-presence subset per detectors' foundation-primitive consumer
+# list (recon Section 7.1 / 7.2 / 7.3). The detectors invoke smoothing /
+# extrema / volume primitives that read High, Low, Close, Volume; Open
+# is optional (no consumer reads it in V1).
+_REQUIRED_COLUMNS: tuple[str, ...] = ("High", "Low", "Close", "Volume")
+
 
 def sanitize_bars(bars: pd.DataFrame) -> pd.DataFrame:
-    """Validate OHLCV bars for NaN and return the (unchanged) frame.
+    """Validate OHLCV bars for presence + NaN and return the frame.
 
-    The detectors share one entry-point contract: bars MUST NOT contain
-    NaN in any present OHLCV column. This helper raises ``ValueError``
-    with a precise error string if any present OHLCV column carries
-    non-finite values; otherwise it returns ``bars`` unchanged.
+    The detectors share one entry-point contract:
+      (a) ``High``, ``Low``, ``Close``, ``Volume`` MUST all be present.
+      (b) Every present OHLCV column MUST NOT contain NaN or other
+          non-finite values.
 
-    Only columns actually present on the input frame are checked; absent
-    columns are silently skipped (some primitives need only ``Close``,
-    others need ``Volume``). Per detectors' foundation-primitive consumer
-    list (recon Section 7.1 / 7.2 / 7.3), at minimum ``Close``, ``High``,
-    ``Low``, and ``Volume`` MUST be present and finite for V1.
+    Raises ``ValueError`` with a precise error string when either
+    contract is violated; otherwise returns ``bars`` unchanged.
+
+    Codex R1 Minor #1: the original docstring said the columns "MUST be
+    present" but the implementation silently skipped missing columns,
+    pushing the failure downstream as a less-intentional ``KeyError``
+    inside the detector. Validate at entry instead.
     """
     if bars is None:
         raise ValueError("sanitize_bars: bars must not be None")
+    missing = [col for col in _REQUIRED_COLUMNS if col not in bars.columns]
+    if missing:
+        raise ValueError(
+            "sanitize_bars requires columns: Open, High, Low, Close, "
+            f"Volume; missing: {missing}"
+        )
     for col in _OHLCV_COLUMNS:
         if col not in bars.columns:
             continue

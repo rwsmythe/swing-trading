@@ -903,6 +903,16 @@ def retroactive_codex_evaluation_against_corpus(
                     "geometric_score_recompute must return a float-coercible "
                     f"value; got error: {exc}"
                 ) from exc
+            # Codex R1 Minor #2: enforce the documented [0.0, 1.0] +
+            # finite contract at the callsite. Without enforcement NaN
+            # or out-of-range recompute values could silently affect
+            # high-stakes selection.
+            import math as _math
+            if not _math.isfinite(score) or not (0.0 <= score <= 1.0):
+                raise ValueError(
+                    f"geometric_score_recompute returned {score!r}; "
+                    f"must be finite and in [0.0, 1.0]"
+                )
         else:
             score = corpus_score
 

@@ -620,6 +620,16 @@ def detect_cup_with_handle(
         rounded-vs-V verdict).
     """
     sanitize_bars(bars)
+    # Codex R1 Major #1: clip bars to candidate_window.end_date BEFORE any
+    # structural detection (cup anchors, handle, pivot, rounded-vs-V). The
+    # downstream helpers (_identify_cup_anchors, _identify_handle,
+    # _is_rounded_cup) scan ``bars.index >= left_ts`` / ``bars.index >
+    # right_ts`` without their own upper bound; without this clip the
+    # detector can identify cup bottom / right edge / handle / pivot
+    # using bars AFTER the operator-supplied historical window. Operator-
+    # supplied historical windows MUST NOT consume future data.
+    end_ts = pd.Timestamp(candidate_window.end_date)
+    bars = bars.loc[bars.index <= end_ts]
     if len(bars) < 20:
         return _build_zero_evidence(
             stage="undefined",

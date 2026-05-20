@@ -414,6 +414,78 @@ def test_retroactive_geometric_score_recompute_overrides_corpus(
 
 
 # ============================================================================
+# Codex R1 Minor #2: recompute callable must enforce finite + [0.0, 1.0].
+# ============================================================================
+
+
+def test_retroactive_recompute_rejects_nan_or_out_of_range(
+    conn: sqlite3.Connection,
+) -> None:
+    """Codex R1 Minor #2 - ``geometric_score_recompute`` documented to
+    return a float in [0, 1] but the helper did not enforce it. A NaN or
+    out-of-range value can silently affect high-stakes selection.
+
+    Post-fix: the helper raises ValueError mentioning the offending
+    value when recompute returns NaN OR a value outside [0.0, 1.0]; an
+    in-range value (e.g. 0.5) proceeds normally.
+    """
+    import math
+
+    _plant_claude_silver_row(
+        conn, ticker="REC",
+        confidence="high",
+        geometric_score=0.95,
+    )
+
+    def codex_dispatch(**kwargs: object) -> CodexReviewResponse:
+        return CodexReviewResponse(agreed=True)
+
+    # NaN -> ValueError mentioning the value.
+    with pytest.raises(ValueError, match="finite"):
+        retroactive_codex_evaluation_against_corpus(
+            conn,
+            phase="t2_sb3_or_later",
+            ai_labeler_version="codex-retro-v1",
+            codex_dispatch=codex_dispatch,
+            rng=_SeededRng([0.99]),
+            geometric_score_recompute=lambda _row: math.nan,
+        )
+
+    # Out-of-range (1.5) -> ValueError mentioning the [0.0, 1.0] bound.
+    with pytest.raises(ValueError, match=r"\[0\.0, 1\.0\]"):
+        retroactive_codex_evaluation_against_corpus(
+            conn,
+            phase="t2_sb3_or_later",
+            ai_labeler_version="codex-retro-v1",
+            codex_dispatch=codex_dispatch,
+            rng=_SeededRng([0.99]),
+            geometric_score_recompute=lambda _row: 1.5,
+        )
+
+    # Out-of-range (-0.1) also rejected.
+    with pytest.raises(ValueError, match=r"\[0\.0, 1\.0\]"):
+        retroactive_codex_evaluation_against_corpus(
+            conn,
+            phase="t2_sb3_or_later",
+            ai_labeler_version="codex-retro-v1",
+            codex_dispatch=codex_dispatch,
+            rng=_SeededRng([0.99]),
+            geometric_score_recompute=lambda _row: -0.1,
+        )
+
+    # In-range value (0.5) MUST NOT raise.
+    selections = retroactive_codex_evaluation_against_corpus(
+        conn,
+        phase="t2_sb3_or_later",
+        ai_labeler_version="codex-retro-v1",
+        codex_dispatch=codex_dispatch,
+        rng=_SeededRng([0.99]),
+        geometric_score_recompute=lambda _row: 0.5,
+    )
+    assert isinstance(selections, list)
+
+
+# ============================================================================
 # Test 5: T-A.1.7 corpus parsing - real-corpus dump opens + iterates.
 # ============================================================================
 

@@ -346,6 +346,127 @@ def test_step_pattern_detect_zero_candidates_succeeds_without_writes(
     ), f"Expected zero-candidate INFO log; got: {info_msgs}"
 
 
+def test_step_pattern_detect_uses_eval_run_action_session_date_not_wall_clock(
+    seeded_env, monkeypatch,
+) -> None:
+    """Codex R1 Major #2 - asof_date passed to detectors MUST be the
+    eval_run's ``action_session_date`` (the run's OWN session date), NOT
+    the wall-clock ``datetime.now()``.
+
+    Pre-fix: ``_step_pattern_detect`` computed
+    ``asof_today = _dt_inner.now(UTC).date()`` and passed that to every
+    detector invocation. If the DB had a LATER ``evaluation_runs`` row
+    (e.g. operator backfilling an earlier run), ``current_stage`` would
+    select the latest row with ``action_session_date <= asof_today``
+    yielding a FUTURE Stage-2 verdict for the earlier run's emit.
+
+    Post-fix: derive ``asof_date`` from the eval_run row's
+    ``action_session_date`` itself; this remains the eval_run's anchor
+    even when run wall-clock-late.
+    """
+    conn = seeded_env["conn"]
+    # Insert a SECOND eval_run that is EARLIER than the seeded eval_run's
+    # 2026-05-20 anchor (and earlier than today's wall-clock). Backfill
+    # the aplus candidate against THAT earlier run; the step is then
+    # invoked with the EARLIER eval_run_id. Pre-fix: detectors would
+    # receive today's wall-clock date (2026-05-20) -- NOT the earlier
+    # run's 2026-01-15. Post-fix: the eval_run's own action_session_date
+    # is the anchor.
+    early_eval_run_id = insert_evaluation_run(
+        conn,
+        EvaluationRun(
+            id=None,
+            run_ts="2026-01-15T18:00:00",
+            data_asof_date="2026-01-14",
+            action_session_date="2026-01-15",
+            finviz_csv_path=None,
+            tickers_evaluated=1,
+            aplus_count=1,
+            watch_count=0,
+            skip_count=0,
+            excluded_count=0,
+            error_count=0,
+        ),
+    )
+    conn.commit()
+    _seed_aplus_candidate(conn, early_eval_run_id)
+
+    # Capture every (kwargs['asof_date']) passed to detector callables.
+    seen_asof_dates: list[date] = []
+    import swing.patterns.vcp as _vcp_mod
+    real_detect_vcp = _vcp_mod.detect_vcp
+
+    def _spy_detect_vcp(bars, window, *, conn=None, ticker=None, asof_date=None):
+        seen_asof_dates.append(asof_date)
+        return real_detect_vcp(
+            bars, window, conn=conn, ticker=ticker, asof_date=asof_date
+        )
+
+    monkeypatch.setattr(_vcp_mod, "detect_vcp", _spy_detect_vcp)
+    # The _pattern_detect_registry imports detect_vcp at call-time; patch
+    # the runner-side binding too.
+    import swing.pipeline.runner as _runner_mod
+    if hasattr(_runner_mod, "detect_vcp"):
+        monkeypatch.setattr(_runner_mod, "detect_vcp", _spy_detect_vcp)
+
+    _step_pattern_detect(
+        cfg=None,
+        lease=seeded_env["lease"],
+        eval_run_id=early_eval_run_id,
+        ohlcv_cache=seeded_env["cache"],
+    )
+
+    # asof_date MUST equal the EARLY eval_run's action_session_date
+    # (2026-01-15), NOT a wall-clock date (today / 2026-05-20 / etc.).
+    expected_asof = date(2026, 1, 15)
+    assert seen_asof_dates, "detector never invoked"
+    for d in seen_asof_dates:
+        assert d == expected_asof, (
+            f"detector received asof_date={d!r}; expected eval_run's "
+            f"action_session_date={expected_asof}"
+        )
+
+
+def test_step_pattern_detect_feature_distribution_histogram_populated_with_run_scores(
+    seeded_env,
+) -> None:
+    """Codex R1 Major #3 - feature_distribution_log_json on each row MUST
+    carry a histogram derived from the run's actual composite_scores.
+
+    Pre-fix: ``universe_context['composite_scores']`` was initialized
+    empty + never populated; the histogram persisted on every row was
+    all-zeros + ALWAYS misleading.
+
+    Post-fix (Option A two-pass): first pass collects all
+    (ticker, pattern_class, geometric_score) tuples; second pass writes
+    rows carrying the FULL universe histogram. Every row's histogram
+    bin counts sum to the number of detector invocations (NOT zero).
+    """
+    _seed_aplus_candidate(seeded_env["conn"], seeded_env["eval_run_id"])
+    _step_pattern_detect(
+        cfg=None,
+        lease=seeded_env["lease"],
+        eval_run_id=seeded_env["eval_run_id"],
+        ohlcv_cache=seeded_env["cache"],
+    )
+    rows = seeded_env["conn"].execute(
+        "SELECT feature_distribution_log_json FROM pattern_evaluations "
+        "WHERE ticker = ? ORDER BY pattern_class",
+        ("ABC",),
+    ).fetchall()
+    assert len(rows) == 3
+    for (fdl_json,) in rows:
+        fdl = json.loads(fdl_json)
+        bins = fdl["composite_score_histogram_bins"]
+        assert isinstance(bins, list) and len(bins) == 10
+        total = sum(bins)
+        # 1 ticker x 3 detectors -> 3 composite_scores collected.
+        assert total == 3, (
+            f"expected histogram bin counts to sum to 3 (1 ticker x 3 "
+            f"detectors); got {total}: {bins}"
+        )
+
+
 def test_step_pattern_detect_idempotent_re_invocation(seeded_env) -> None:
     """Re-invoking the step with the same (pipeline_run_id, eval_run_id)
     MUST NOT raise IntegrityError + row count MUST stay the same.
