@@ -267,3 +267,38 @@ def test_zigzag_monotonic_narrow_threshold_floor_prevents_zero_threshold() -> No
     assert len(out) <= 20
     # Result is finite (no infinite loop / unbounded output).
     assert isinstance(out, list)
+
+
+# ---------------------------------------------------------------------------
+# Codex R1 Minor #3 - adaptive_initial_threshold_pct NaN-rejection policy.
+# ---------------------------------------------------------------------------
+
+
+def test_adaptive_initial_threshold_pct_raises_on_nan_close() -> None:
+    """``adaptive_initial_threshold_pct`` rejects NaN in the 5-bar ATR
+    tail (Close column) with ValueError matching the existing primitives'
+    convention. Closes Codex R1 Minor #3.
+
+    The function reads only the last 5 bars (the ATR-5d tail) so the NaN
+    must land within indices [-5:] to exercise the check.
+    """
+    import numpy as np
+    import pytest
+
+    # 8-bar input with NaN at index -3 (within the 5-bar tail).
+    closes = [100.0, 101.0, 102.0, 103.0, 104.0, float("nan"), 106.0, 107.0]
+    bars = _make_bars(closes)
+    with pytest.raises(
+        ValueError, match=r"adaptive_initial_threshold_pct.*NaN"
+    ):
+        adaptive_initial_threshold_pct(bars)
+    # Defense-in-depth: also reject when High contains NaN in the 5-bar tail.
+    bars_with_high_nan = _make_bars(
+        [100.0, 101.0, 102.0, 103.0, 104.0, 105.0, 106.0, 107.0]
+    )
+    bars_with_high_nan = bars_with_high_nan.copy()
+    bars_with_high_nan.loc[bars_with_high_nan.index[-2], "High"] = np.nan
+    with pytest.raises(
+        ValueError, match=r"adaptive_initial_threshold_pct.*NaN"
+    ):
+        adaptive_initial_threshold_pct(bars_with_high_nan)

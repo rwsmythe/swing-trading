@@ -160,7 +160,18 @@ def adaptive_initial_threshold_pct(bars: pd.DataFrame) -> float:
         return 3.0
     if len(bars) < 5:
         return 3.0
+    # Codex R1 Minor #3: apply the same NaN-rejection policy as the other
+    # foundation primitives. The 5-bar tail (the only segment read for the
+    # ATR computation) MUST be NaN-free; defer drop/impute to the caller
+    # so silent NaN propagation does not yield a degraded ATR estimate.
     tail = bars.iloc[-5:]
+    for col in ("Close", "High", "Low"):
+        arr = tail[col].astype(float).to_numpy()
+        if not np.all(np.isfinite(arr)):
+            raise ValueError(
+                f"adaptive_initial_threshold_pct: bars[{col!r}] contains "
+                f"NaN; caller must drop or impute before invoking"
+            )
     closes = tail["Close"].astype(float).to_numpy()
     highs = tail["High"].astype(float).to_numpy()
     lows = tail["Low"].astype(float).to_numpy()
@@ -360,6 +371,22 @@ class CandidateWindow:
 
     LOCK L4: ``timeframe`` Literal is not runtime-enforced; ``__post_init__``
     validates against ``_CANDIDATE_TIMEFRAMES``.
+
+    Field semantics (V1, per Codex R1 Major #3):
+
+    - ``start_date`` / ``end_date`` — window left/right edges (inclusive).
+    - ``anchor_date`` — the anchor event date; *per-mode-dependent semantic*.
+      See ``generate_candidate_windows`` docstring for the full per-mode
+      table. Briefly: ``zigzag_pivot`` mode's ``anchor_date`` is the
+      inferred base START (matching the spec section 5.1.3 line 502
+      abstraction); ``ma_crossover`` and ``high_low_breakout`` modes'
+      ``anchor_date`` is the TRIGGER EVENT bar (the start of a Stage-2
+      uptrend or the breakout confirmation bar respectively, NOT a base
+      start). Downstream T2.SB3+ detectors consuming non-zigzag windows
+      MUST perform mode-aware backward-slicing from ``anchor_date`` to
+      reconstruct base context.
+    - ``anchor_reason`` — evidence-trail string. Format:
+      ``'<mode>:<descriptor>'``.
     """
 
     ticker: str
@@ -424,6 +451,37 @@ def generate_candidate_windows(
     Signature widening: the spec sketch omits ``ticker`` + ``timeframe``
     parameters but the dataclass requires them; this is a faithful
     bridge per spec section D.2.
+
+    Per-mode ``anchor_date`` semantic (V1, per Codex R1 Major #3):
+
+    - ``zigzag_pivot``: ``anchor_date`` = down-swing endpoint = inferred
+      base START. ``start_date == anchor_date``; the forward window runs
+      from the candidate base start to the last available bar. Matches
+      the spec section 5.1.3 line 502 "candidate base start" abstraction.
+    - ``ma_crossover``: ``anchor_date`` = MA50/MA150 crossover bar =
+      TRIGGER EVENT (the start of a Stage 2 uptrend, NOT a base start).
+      ``start_date == anchor_date``; the forward window runs from the
+      crossover bar to the last available bar.
+    - ``high_low_breakout``: ``anchor_date`` = breakout confirmation bar
+      = TRIGGER EVENT (the END of an upstream base, NOT a base start).
+      ``start_date == anchor_date``; the forward window runs from the
+      breakout bar to the last available bar.
+
+    V1 LOCK: ``anchor_date`` semantic VARIES across modes. For
+    ``ma_crossover`` and ``high_low_breakout``, ``anchor_date`` represents
+    the TRIGGER EVENT, not the spec section 5.1.3 line 502 "candidate
+    base start" abstraction. Downstream T2.SB3 detectors (VCP / flat_base
+    / cup_with_handle) consuming ``ma_crossover`` or ``high_low_breakout``
+    windows MUST perform their own backward-slicing from ``anchor_date``
+    to assemble the base context (e.g., subtract a 60-day lookback or
+    run ``extract_zigzag_swings`` backward from ``anchor_date``).
+    ``zigzag_pivot`` mode correctly matches the spec abstraction without
+    backward-slicing.
+
+    V2 candidate (banked): align all three modes by emitting separate
+    ``start_date`` (inferred base start) and ``anchor_date`` (trigger
+    event) fields with per-mode backward-slicing policies; would let
+    detectors consume any mode's output without mode-specific logic.
     """
     if anchor_search_method not in _ANCHOR_SEARCH_METHODS:
         raise ValueError(
@@ -708,7 +766,7 @@ def current_stage(
         JOIN evaluation_runs er ON c.evaluation_run_id = er.id
         WHERE c.ticker = ?
           AND er.action_session_date <= ?
-        ORDER BY er.action_session_date DESC, er.id DESC
+        ORDER BY er.action_session_date DESC, er.run_ts DESC, er.id DESC
         LIMIT 1
         """,
         (ticker, asof_iso),
