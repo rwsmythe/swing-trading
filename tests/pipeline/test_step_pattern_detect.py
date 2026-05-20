@@ -665,6 +665,212 @@ def test_step_pattern_detect_partial_retry_includes_existing_rows_in_histogram(
         )
 
 
+class _ConcurrentInsertLease:
+    """Stub Lease that simulates a concurrent INSERT between the step's
+    seed-read (at step entry) and Pass 2's recheck (inside
+    ``fenced_write``).
+
+    Codex R3 Major #1: After the step's seed-read populates
+    ``universe_context['composite_scores']`` + ``existing_idempotency_keys``,
+    another caller MAY have inserted a row for a NEW (ticker, pattern_class)
+    tuple BEFORE Pass 2 begins. The Pass 2 recheck SELECT will find that
+    row + skip the INSERT (idempotent), but unless the recheck ALSO amends
+    ``universe_context['composite_scores']``, subsequent INSERTs in the
+    SAME emit_queue carry a STALE histogram missing that concurrent row's
+    score.
+
+    This lease injects the concurrent INSERT inside ``fenced_write()`` ON
+    ENTRY (before yielding the connection to the step's Pass 2 loop) so
+    the recheck SELECT will hit the row.
+    """
+
+    def __init__(
+        self,
+        conn: sqlite3.Connection,
+        run_id: int,
+        concurrent_inserts: list[tuple[str, str, float]],
+    ) -> None:
+        # concurrent_inserts: list of (ticker, pattern_class, composite_score)
+        # to insert when the step enters fenced_write() for Pass 2.
+        self._conn = conn
+        self.run_id = run_id
+        self._concurrent_inserts = concurrent_inserts
+        self._injected = False
+
+    def fenced_write(self):
+        @contextmanager
+        def _cm():
+            # Inject the concurrent row ONCE, on first fenced_write() entry.
+            # Mirrors a real concurrent caller landing a row between the
+            # step's seed-read (which happens OUTSIDE fenced_write in the
+            # test-stub cfg=None path) + Pass 2's recheck.
+            if not self._injected:
+                for ticker, pattern_class, score in self._concurrent_inserts:
+                    self._conn.execute(
+                        """
+                        INSERT INTO pattern_evaluations
+                            (pipeline_run_id, ticker, pattern_class,
+                             detector_version, geometric_score,
+                             geometric_score_json, composite_score,
+                             structural_evidence_json,
+                             feature_distribution_log_json,
+                             window_start_date, window_end_date, created_at)
+                        VALUES (?, ?, ?, 'concurrent_v1.0',
+                                ?, '{}', ?, '{}', '{}',
+                                '2026-05-01', '2026-05-15',
+                                '2026-05-20T18:00:00')
+                        """,
+                        (
+                            self.run_id,
+                            ticker,
+                            pattern_class,
+                            score,
+                            score,
+                        ),
+                    )
+                self._conn.commit()
+                self._injected = True
+            yield self._conn
+
+        return _cm()
+
+
+def test_step_pattern_detect_pass_2_concurrent_insert_amends_histogram(
+    seeded_env,
+) -> None:
+    """Codex R3 Major #1 - Pass-2 concurrency recheck must amend the
+    histogram universe_context when it finds a concurrent-insert row.
+
+    Pre-fix: the seed-read at step entry populates
+    ``universe_context['composite_scores']`` from EXISTING
+    pattern_evaluations rows for the pipeline_run_id. If another caller
+    inserts a row AFTER the seed-read but BEFORE Pass 2's recheck, the
+    Pass 2 recheck SELECT hits + idempotent-skips that row, but its
+    composite_score is NEVER added to ``universe_context``. Subsequent
+    INSERTs in the SAME emit_queue serialize histograms from STALE
+    context (missing the concurrent score).
+
+    Post-fix: when Pass 2's idempotency recheck finds an existing row
+    (concurrent insert between seed-read + recheck), READ that row's
+    ``composite_score`` + APPEND to
+    ``universe_context['composite_scores']`` BEFORE serializing
+    histograms for any remaining rows.
+
+    Discriminating predicate:
+      - Pre-seed NO existing rows (seed-read at step entry returns empty;
+        existing_composite_scores=[], existing_idempotency_keys=set()).
+      - The lease injects a concurrent INSERT for (CONCUR, vcp) with
+        composite_score=0.99 INSIDE ``fenced_write()`` on first entry
+        (i.e. simulating the concurrent caller landing the row AFTER
+        the step's seed-read + BEFORE Pass 2's recheck loop runs).
+      - Pass 1 produces emit_queue = 3 rows for ABC (vcp, flat_base,
+        cup_with_handle). The CONCUR row's (ticker, pattern_class) is
+        DIFFERENT, so Pass 1's idempotency-skip does NOT fire (and
+        cannot fire -- seed was empty when Pass 1 ran).
+      - Pass 2 enters fenced_write() -> injection plants the CONCUR row
+        -> recheck for ABC rows does NOT find them (CONCUR is a
+        DIFFERENT ticker), so all 3 ABC rows INSERT.
+      - But the emit_queue does NOT include CONCUR (Pass 1 only ran on
+        ABC). The pre-fix code never amends universe_context with the
+        concurrent CONCUR row's score.
+      - Post-fix: the FIRST Pass-2-recheck SELECT inside fenced_write
+        observes CONCUR's row (when checking for ANY of the emit_queue
+        tuples that may already exist) -- but only if we ALSO add the
+        amend-on-recheck-hit code path AND broaden the recheck to scan
+        for ANY pre-existing rows not in existing_composite_scores OR
+        we explicitly scan for newly-present rows at Pass 2 entry.
+
+    Implementation choice: the fix amends ``composite_scores`` whenever
+    Pass 2's per-tuple recheck SELECT HITS (i.e. the tuple was inserted
+    by a concurrent caller between seed-read + recheck). To trigger
+    that code path with a discriminating shape, the concurrent INSERT
+    must land at a (ticker, pattern_class) tuple that IS in emit_queue.
+
+    Revised setup:
+      - Pre-seed an emit_queue tuple in the table BEFORE Pass 2's
+        recheck SELECT fires for it; the recheck hits, the post-fix
+        code amends universe_context with that row's score, and ALL
+        SUBSEQUENT emit_queue rows' histograms reflect the amend.
+      - We use the lease's fenced_write hook to inject the concurrent
+        row for (ABC, vcp) with composite_score=0.99 ON ENTRY (after
+        the step's seed-read confirmed empty seed) -- Pass 1 already
+        appended ABC vcp to emit_queue (seed was empty), so the
+        recheck SELECT for ABC vcp now HITS the injected row.
+      - 2 remaining emit_queue rows (ABC flat_base + ABC cup_with_handle)
+        INSERT. Their histograms must reflect the 0.99 from the
+        concurrent ABC vcp row PLUS the Pass-1-emitted scores for ABC
+        flat_base + ABC cup_with_handle.
+    """
+    conn = seeded_env["conn"]
+    pipeline_run_id = seeded_env["pipeline_run_id"]
+    _seed_aplus_candidate(conn, seeded_env["eval_run_id"], ticker="ABC")
+    conn.commit()
+
+    # Replace the seeded_env lease with a concurrent-insert lease that
+    # plants (ABC, vcp) with composite_score=0.99 when the step enters
+    # fenced_write for Pass 2. The pre-existing _StubLease seeded the
+    # _conn attribute correctly; we just need to swap in the concurrent
+    # behavior.
+    lease = _ConcurrentInsertLease(
+        conn,
+        run_id=pipeline_run_id,
+        concurrent_inserts=[("ABC", "vcp", 0.99)],
+    )
+
+    _step_pattern_detect(
+        cfg=None,
+        lease=lease,
+        eval_run_id=seeded_env["eval_run_id"],
+        ohlcv_cache=seeded_env["cache"],
+    )
+
+    # Inspect the histograms written for ABC's flat_base + cup_with_handle.
+    # The (ABC, vcp) row is the concurrent-injected one (composite_score=0.99,
+    # detector_version='concurrent_v1.0'), and the recheck-hit path
+    # idempotent-skips it. The 2 OTHER rows MUST carry a histogram that
+    # includes 0.99 from the concurrent vcp row PLUS each of their own
+    # Pass-1-emitted scores.
+    rows = conn.execute(
+        "SELECT ticker, pattern_class, composite_score, detector_version, "
+        "feature_distribution_log_json FROM pattern_evaluations "
+        "WHERE pipeline_run_id = ? AND ticker = 'ABC' "
+        "ORDER BY pattern_class",
+        (pipeline_run_id,),
+    ).fetchall()
+    # All 3 (ABC, *) rows present (vcp concurrent + flat_base + cup_with_handle).
+    assert len(rows) == 3, (
+        f"expected 3 ABC rows total; got {len(rows)}: {rows}"
+    )
+
+    # Find the 2 step-emitted rows (NOT the concurrent vcp).
+    step_emitted_rows = [
+        r for r in rows if r[3] != "concurrent_v1.0"
+    ]
+    assert len(step_emitted_rows) == 2, (
+        f"expected 2 step-emitted rows (flat_base + cup_with_handle); "
+        f"got {len(step_emitted_rows)}: {step_emitted_rows}"
+    )
+
+    # Each step-emitted row's histogram MUST include the 0.99 from the
+    # concurrent (ABC, vcp) row. Pre-fix: histogram excludes 0.99 ->
+    # bin counts sum to 3 (Pass 1 emitted 3 scores). Post-fix: histogram
+    # includes 0.99 from the recheck-hit amend -> bin counts sum to 4
+    # (3 Pass-1 + 1 concurrent-amend).
+    for ticker, pattern_class, _score, _dv, fdl_json in step_emitted_rows:
+        fdl = json.loads(fdl_json)
+        bins = fdl["composite_score_histogram_bins"]
+        assert isinstance(bins, list) and len(bins) == 10
+        total = sum(bins)
+        assert total == 4, (
+            f"row ({ticker}, {pattern_class}): histogram bins sum to "
+            f"{total}; expected 4 (3 Pass-1-emitted + 1 concurrent-amend "
+            f"from the recheck-hit path). bins={bins}. "
+            f"Pre-fix: total == 3 (missing the concurrent 0.99 score). "
+            f"Post-fix: total == 4 (concurrent 0.99 amended into "
+            f"universe_context['composite_scores'] at Pass-2 recheck hit)."
+        )
+
+
 def test_step_pattern_detect_aborts_on_missing_eval_run_action_session_date(
     seeded_env, caplog,
 ) -> None:

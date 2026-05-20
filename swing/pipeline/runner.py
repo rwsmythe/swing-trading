@@ -1378,6 +1378,21 @@ def _step_pattern_detect(
       internal-derivation surface; bars-source ladder already handles sandbox.
     - Per-detector failures are isolated + logged WARNING; the step
       continues (recon section 4.4).
+
+    Connection contract (Codex R3 Minor #1 ACCEPT-WITH-RATIONALE):
+    The production caller ALWAYS passes a non-None ``cfg`` -- the
+    cfg-path branches open dedicated read-only connections via
+    ``connect(cfg.paths.db_path)``. The ``cfg is None`` test-stub path
+    reuses the lease's shared ``_conn`` attribute (set by
+    ``_StubLease``) for read-only SELECTs WITHOUT entering
+    ``lease.fenced_write()`` (which would needlessly issue BEGIN
+    IMMEDIATE). The defensive ``fenced_write`` fallback at
+    eval-run resolution + candidate read + histogram-seed read fires
+    ONLY when (a) cfg is None AND (b) lease has no ``_conn`` attribute
+    -- a path that NO production caller AND NO current test fixture
+    exercises. This is a defense-in-depth fallback; if a future test
+    fixture lands here, the BEGIN IMMEDIATE around a read is a tiny
+    correctness-preserving overhead, not a functional defect.
     """
     import dataclasses
     import json as _json
@@ -1675,8 +1690,16 @@ def _step_pattern_detect(
             # a row for this (pipeline_run_id, ticker, pattern_class)
             # between Pass 1's seed-read and Pass 2's INSERT (LOCK L3
             # forbids INSERT OR REPLACE). SELECT-then-INSERT here.
+            #
+            # Codex R3 Major #1: when the recheck HITS (a concurrent
+            # insert landed between seed-read + recheck), AMEND
+            # ``universe_context['composite_scores']`` with the
+            # concurrent row's composite_score BEFORE serializing
+            # histograms for any REMAINING rows in the emit_queue --
+            # otherwise subsequent INSERTs carry a STALE histogram
+            # missing the concurrent row's score.
             existing = conn.execute(
-                "SELECT id FROM pattern_evaluations "
+                "SELECT id, composite_score FROM pattern_evaluations "
                 "WHERE pipeline_run_id = ? AND ticker = ? "
                 "AND pattern_class = ? LIMIT 1",
                 (pipeline_run_id, ticker, pattern_class),
@@ -1690,6 +1713,15 @@ def _step_pattern_detect(
                     pattern_class,
                 )
                 rows_skipped_idempotent += 1
+                # Amend universe_context with the concurrent row's score
+                # (defensive: handle NULL/garbage composite_score).
+                _concurrent_score = existing[1] if len(existing) > 1 else None
+                if _concurrent_score is not None:
+                    import contextlib as _contextlib2
+                    with _contextlib2.suppress(TypeError, ValueError):
+                        universe_context["composite_scores"].append(
+                            float(_concurrent_score)
+                        )
                 continue
 
             # Drift-log capture (T-A.3.5 surface).
