@@ -163,6 +163,9 @@ def test_codex_mcp_vcr_filter_chain_redacts_planted_sentinels() -> None:
     sentinel_hex = "f" * 40
     sentinel_chatcmpl = "chatcmpl-XYZsensitive_id_string"
     sentinel_session = "sess_01ABCdeadbeef_sensitive"
+    sentinel_bearer_token = (
+        "deadbeefcafebabe1234567890abcdefdeadbeef"
+    )  # 40 chars; matches audit's `Bearer\s+[A-Za-z0-9_.-]{20,}` pattern.
 
     # before_record_request: scrub a URI containing a long hex token.
     request = SimpleNamespace(
@@ -175,11 +178,16 @@ def test_codex_mcp_vcr_filter_chain_redacts_planted_sentinels() -> None:
     )
 
     # before_record_response: scrub api_key + session_id + chatcmpl id +
-    # heuristic 32+ hex / 24+ base64 tokens from response body.
+    # bearer-token + heuristic 32+ hex / 24+ base64 tokens from response
+    # body. R2 Minor #1 closure: Bearer-token sentinel coverage added so
+    # the filter-chain regression test matches the audit script's
+    # sentinel-pattern coverage (scripts/record_codex_mcp_pattern_review_
+    # cassettes.py _SENTINEL_PATTERNS includes the `Bearer\s+...` shape).
     response_body = (
         '{"id": "' + sentinel_chatcmpl + '", '
         '"api_key": "' + sentinel_api_key + '", '
         '"session_id": "' + sentinel_session + '", '
+        '"authorization": "Bearer ' + sentinel_bearer_token + '", '
         '"random_token": "' + sentinel_hex + '"}'
     )
     response = {"body": {"string": response_body}}
@@ -190,15 +198,18 @@ def test_codex_mcp_vcr_filter_chain_redacts_planted_sentinels() -> None:
         ("hex-token", sentinel_hex),
         ("chatcmpl-id", sentinel_chatcmpl),
         ("session-id", sentinel_session),
+        ("bearer-token", sentinel_bearer_token),
     ]:
         assert sentinel_value not in raw, (
             f"before_record_response failed to scrub {sentinel_label} "
             f"sentinel from response body; raw={raw!r}"
         )
     # Positive assertion: the canonical REDACTED placeholders fired.
+    # R2 Minor #2 closure: missing `f` prefix would print literal
+    # `raw={raw!r}` to a future debugger; corrected to f-string.
     assert "<REDACTED>" in raw or "<REDACTED_chatcmpl_id>" in raw, (
-        "before_record_response did not insert any <REDACTED> placeholder; "
-        "filter chain may have silently no-op'd. raw={raw!r}"
+        f"before_record_response did not insert any <REDACTED> "
+        f"placeholder; filter chain may have silently no-op'd. raw={raw!r}"
     )
 
 
