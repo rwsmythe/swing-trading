@@ -2106,7 +2106,7 @@ def test_dtw_full_pipeline_completes_within_120s_on_baseline_hardware(benchmark,
 
 ---
 
-### §G.9 Sub-bundle T2.SB6 — Closed-loop surface + Theme 1 annotated charts (7 tasks)
+### §G.9 Sub-bundle T2.SB6 — Closed-loop surface + Theme 1 annotated charts + T-A.1.6 Deficiency 1 fold-in (8 tasks)
 
 **Goal:** Ship `/patterns/{candidate_id}/review` review form + `/patterns/queue` active-learning + `/metrics/pattern-outcomes` 9th metric tile + Theme 2 annotated chart deliverable + Theme 1 chart surfaces (watchlist row + hyp-rec detail + position detail + market weather) consuming `chart_renders` cache.
 
@@ -2237,9 +2237,55 @@ def test_dtw_full_pipeline_completes_within_120s_on_baseline_hardware(benchmark,
 
 - [ ] **Step 5: Commit** — `feat(phase13): Theme 1 chart surfaces + dashboard market weather (T-A.6.6)`.
 
+#### Task T-A.6.6b — `/patterns/exemplars` enhanced rendering (T-A.1.6 Deficiency 1 fold-in)
+
+**Source:** Deficiency 1 was banked at T-A.1.8 closer brief §1.2 + carried forward in T2.SB1 SHIPPED phase3e-todo entry §"4 V2 candidates banked." Operator decision 2026-05-20 (post-T2.SB1+T3.SB1 SHIPPED housekeeping at `2746bbb`): fold into T2.SB6 closed-loop surface rather than dispatch as standalone web-refinement.
+
+**Scope:** Enhance the EXISTING `/patterns/exemplars` page (shipped at T-A.1.6 in T2.SB1) with three rendering surfaces previously deferred:
+1. **Chart per exemplar** — daily-bar SVG covering the exemplar's labeled window with pattern boundaries overlaid (consumes `swing/web/charts.py:render_theme2_annotated_svg` from T-A.6.1; SAME renderer already used at T-A.6.3 review form).
+2. **Per-criterion table** — tabular rendering of `labeler_evidence_json.rule_criteria` evaluations per spec §5.2-§5.6 criteria (one row per criterion with PASS/FAIL + evidence value + threshold + tolerance).
+3. **Narrative text** — `labeler_evidence_json.narrative` rendered as paragraph text below chart + table.
+
+**Reuse posture:** consume `swing/web/charts.py` + `chart_renders` cache infrastructure landed at T-A.6.1 + T-A.6.2. NO new chart renderer code. NO new schema. Strictly a VM + template enhancement consuming existing infrastructure.
+
+**Files in scope:**
+- Modify: `swing/web/routes/patterns.py` — extend `/patterns/exemplars` route handler to populate chart + criteria + narrative per exemplar.
+- Modify: `swing/web/view_models/patterns/exemplars.py` — extend VM with per-exemplar `chart_svg_bytes: bytes | None` + `criterion_rows: tuple[CriterionRow, ...]` + `narrative_text: str | None` fields. NEW `CriterionRow` frozen dataclass with fields `(name: str, status: Literal['pass', 'fail'], evidence_value: str, threshold: str, tolerance: str | None)` per spec §D.2 patterns; `__post_init__` Literal[...] frozenset validation.
+- Modify: `swing/web/templates/patterns/exemplars.html.j2` — render chart `<img>` (SVG inline) + criteria `<table>` + narrative `<p>` per exemplar.
+
+**Tests to add at `tests/web/test_routes/test_patterns_exemplars.py`** (extend existing test file):
+- [ ] **Step 1: Write 8 failing tests**:
+  - `test_get_patterns_exemplars_renders_chart_svg_per_exemplar` — assert one `<img>` or inline `<svg>` per exemplar row.
+  - `test_get_patterns_exemplars_chart_consumed_from_chart_renders_cache_when_available` — pre-populate cache row; assert no live-render fire.
+  - `test_get_patterns_exemplars_chart_invokes_render_theme2_annotated_svg_when_cache_miss` — assert renderer invoked once per cache miss (mock + assert_called_once).
+  - `test_get_patterns_exemplars_renders_per_criterion_table_from_labeler_evidence_json` — plant labeler_evidence_json with 3-criterion rule_criteria; assert 3 table rows.
+  - `test_get_patterns_exemplars_criterion_row_status_pass_or_fail_per_evaluation` — assert PASS/FAIL Literal validation; invalid status raises ValueError in VM construction.
+  - `test_get_patterns_exemplars_renders_narrative_text_from_labeler_evidence_json` — assert narrative rendered as paragraph text.
+  - `test_get_patterns_exemplars_handles_missing_chart_renders_gracefully` — exemplar with no chart_renders row + no labeled-window bars available → renders placeholder, NOT 500.
+  - `test_get_patterns_exemplars_handles_malformed_labeler_evidence_json_gracefully` — labeler_evidence_json missing rule_criteria OR missing narrative → renders without table/narrative section, NOT 500.
+
+- [ ] **Step 2: Implement** VM enhancement + template extension + route handler population. Reuse `swing/web/charts.py:render_theme2_annotated_svg` from T-A.6.1; reuse `get_cached_chart_svg` from T-A.6.2.
+
+- [ ] **Step 3: Run tests; verify PASS.**
+
+- [ ] **Step 4: Commit** — `feat(phase13): /patterns/exemplars chart + criteria + narrative (T-A.6.6b; Deficiency 1 fold-in)`.
+
+**Watch items:**
+- `CriterionRow.status: Literal['pass', 'fail']` MUST have `__post_init__` frozenset validation (CLAUDE.md gotcha "`Literal[...]` not runtime-enforced" inherited from T-A.1.5b R3 M#1).
+- `ExemplarsVM` already populates base-layout banner fields per T-A.1.6 ship; preserve.
+- Reuse existing renderer; do NOT duplicate matplotlib code.
+- ASCII-only on narrative text rendering (template should NOT introduce `→` / `§` / em-dash via Jinja literals).
+- `swing/web/charts.py:render_theme2_annotated_svg` is the SAME renderer used at T-A.6.3 review form — verify consistency (same chart shape; same boundary annotations).
+
+**Acceptance criteria:**
+- 8 new tests PASS.
+- Existing T-A.1.6 tests at `tests/web/test_routes/test_patterns_exemplars.py` still PASS (no regression).
+- Page renders gracefully under both cache-hit and cache-miss paths.
+- Operator-visual verification at S4b: chart visible per exemplar; criteria table populated; narrative paragraph present.
+
 #### Task T-A.6.7 — T2.SB6 closer — integration E2E + ruff sweep
 
-- [ ] **Step 1: Write fast E2E test** seeding full happy path: pipeline run → pattern_evaluations rows → chart_renders cache → /patterns/queue lists → /patterns/{id}/review renders + POST persists → /metrics/pattern-outcomes renders cohort outcome distributions.
+- [ ] **Step 1: Write fast E2E test** seeding full happy path: pipeline run → pattern_evaluations rows → chart_renders cache → /patterns/queue lists → /patterns/{id}/review renders + POST persists → /metrics/pattern-outcomes renders cohort outcome distributions → /patterns/exemplars renders chart + criteria + narrative (T-A.6.6b coverage).
 
 - [ ] **Step 2: Run full fast-test suite + ruff sweep.**
 
@@ -2250,6 +2296,7 @@ def test_dtw_full_pipeline_completes_within_120s_on_baseline_hardware(benchmark,
 - S2 (browser): `/dashboard` → confirm market weather chart at top.
 - S3 (browser): `/patterns/queue` → confirm active-learning prioritization.
 - S4 (browser): `/patterns/{id}/review` for a real candidate → confirm 8-item checklist renders + decision form submits.
+- S4b (browser): `/patterns/exemplars` → confirm chart + per-criterion table + narrative rendered per exemplar (T-A.6.6b Deficiency 1 fold-in).
 - S5 (browser): `/metrics/pattern-outcomes` → confirm per-pattern-class outcome distributions.
 - S6 (browser): hyp-rec detail page → confirm annotated chart renders with pattern boundaries.
 - S7 (browser): position detail page → confirm fill markers + current stop line.
@@ -2492,7 +2539,7 @@ T2.SB5 ────────────────────────�
 T3.SB3 ────────────────────────────────────── (5 tasks; review auto-fill — consumes OhlcvCache patterns)
     │
     ▼
-T2.SB6 ────────────────────────────────────── (7 tasks; closed-loop surface + Theme 1 annotated charts)
+T2.SB6 ────────────────────────────────────── (8 tasks; closed-loop surface + Theme 1 annotated charts + T-A.1.6 Deficiency 1 fold-in)
     │
     ▼
 T4.SB ────────────────────────────────────── (7 tasks; usability triage + Q4)
@@ -2501,7 +2548,7 @@ T4.SB ────────────────────────�
 Phase 13 CLOSED
 ```
 
-Total: **11 sub-bundles, 71 tasks** (T-A.1.1b added per Codex R1 Major #1 + R2 Major #2 split).
+Total: **11 sub-bundles, 72 tasks** (T-A.1.1b added per Codex R1 Major #1 + R2 Major #2 split; T-A.6.6b added per operator decision 2026-05-20 folding T-A.1.6 Deficiency 1 into T2.SB6).
 
 One concurrent dispatch point: T2.SB1 ∥ T3.SB1 (per OQ-12 Option E). All other transitions are serial.
 
