@@ -5,6 +5,98 @@ import re
 from dataclasses import dataclass
 from datetime import date
 
+# ============================================================================
+# Phase 13 v20 — schema enum constants (per plan §A.14 constant placement LOCK).
+#
+# ALL v20 schema CHECK enums live HERE (single source of truth). Later-landing
+# modules (`swing/patterns/__init__.py`, `swing/web/charts.py`,
+# `swing/trades/watchlist_close_track.py`) IMPORT these constants — they do
+# NOT redefine. Mirrors schema CHECK enums in migration
+# `swing/data/migrations/0020_phase13_charts_patterns_autofill_usability.sql`.
+#
+# Schema-CHECK + Python-constant + dataclass-validator paired discipline
+# (Phase 12 C.A T-A.2 LOCK): every CHECK enum mirrors here + every NEW
+# dataclass `__post_init__` validates against the constant + every cross-
+# column CHECK invariant mirrors as a Python-side predicate.
+# ============================================================================
+
+# 5 detector pattern classes (spec §3.0 DETECTOR_PATTERN_CLASSES LOCK).
+# Referenced by pattern_exemplars.proposed_pattern_class +
+# pattern_exemplars.final_pattern_class + pattern_evaluations.pattern_class +
+# chart_renders.pattern_class. Re-exported from `swing/patterns/__init__.py`
+# for namespace convenience.
+DETECTOR_PATTERN_CLASSES: tuple[str, ...] = (
+    "vcp",
+    "flat_base",
+    "cup_with_handle",
+    "high_tight_flag",
+    "double_bottom_w",
+)
+
+# pattern_exemplars.label_source enum (7 values per spec §3.1).
+_LABEL_SOURCE_VALUES: tuple[str, ...] = (
+    "curated_gold",
+    "claude_silver",
+    "codex_silver",
+    "closed_loop_review",
+    "organic_trade_history",
+    "synthetic",
+    "perturbation",
+)
+
+# pattern_exemplars.final_decision enum (5 values; source-neutral per
+# Codex R3 M#2 closure).
+_FINAL_DECISION_VALUES: tuple[str, ...] = (
+    "confirmed",
+    "watch",
+    "rejected",
+    "relabeled",
+    "generated",
+)
+
+# pattern_exemplars.created_by enum (4 values per spec §3.1).
+_PATTERN_EXEMPLAR_CREATED_BY_VALUES: tuple[str, ...] = (
+    "operator",
+    "claude_dispatch",
+    "codex_dispatch",
+    "synthetic_generator",
+)
+
+# fills.fill_origin enum (5 values per spec §3.4 + OQ-7 V1).
+_FILL_ORIGIN_VALUES: tuple[str, ...] = (
+    "operator_typed",
+    "schwab_auto",
+    "schwab_auto_then_operator_corrected",
+    "tos_import",
+    "imported_legacy",
+)
+
+# chart_renders.surface enum (5 values per spec §3.2).
+_CHART_SURFACE_VALUES: tuple[str, ...] = (
+    "watchlist_row",
+    "hyprec_detail",
+    "position_detail",
+    "market_weather",
+    "theme2_annotated",
+)
+
+# watchlist_close_track_flags.flagged_by_surface +
+# watchlist_close_track_flag_events.surface enum (2 values; reused per
+# spec §7.2 D-Q4.7).
+_FLAG_SURFACE_VALUES: tuple[str, ...] = ("web", "cli")
+
+# watchlist_close_track_flags.cleared_reason enum (2 values when non-NULL).
+_FLAG_CLEARED_REASON_VALUES: tuple[str, ...] = (
+    "operator_cleared",
+    "auto_cleared_on_position_open",
+)
+
+# watchlist_close_track_flag_events.event_type enum (2 values).
+_FLAG_EVENT_TYPE_VALUES: tuple[str, ...] = ("set", "clear")
+
+# Timeframe enum used by pattern_exemplars.
+_TIMEFRAME_VALUES: tuple[str, ...] = ("daily", "weekly")
+
 
 @dataclass(frozen=True)
 class CriterionResult:
@@ -147,6 +239,18 @@ class Fill:
     (action='exit'). Future entries/trims/stops also write here. The 4-action
     enum is enforced by SQL CHECK; fee/reason/rule_based/manual_entry_confidence
     are nullable.
+
+    Phase 13 T2.SB1 (migration 0020) widening — Theme 3 auto-fill provenance
+    per spec §3.4 + §6.4 + plan §A.14 paired-atomic-landing LOCK. Four new
+    NULLABLE-or-DEFAULTED fields:
+      - ``fill_origin``: CHECK enum (5 values per ``_FILL_ORIGIN_VALUES``);
+        defaults ``'operator_typed'`` (matches schema DEFAULT for backfilled
+        existing rows per OQ-7 V1).
+      - ``schwab_source_value_json``: original auto-populated values when
+        Schwab Trader API was the source; preserved through operator edits.
+      - ``operator_corrected_value_json``: operator-edited values when an
+        auto-populated field was edited before submit.
+      - ``auto_fill_audit_at``: ISO timestamp of auto-fill capture.
     """
     fill_id: int | None
     trade_id: int
@@ -160,6 +264,21 @@ class Fill:
     manual_entry_confidence: str | None = None  # 'high'|'normal'|'low'
     reconciliation_status: str = "unreconciled"
     tos_match_id: str | None = None
+    # Phase 13 T2.SB1 (migration 0020) — Theme 3 auto-fill provenance.
+    fill_origin: str = "operator_typed"
+    schwab_source_value_json: str | None = None
+    operator_corrected_value_json: str | None = None
+    auto_fill_audit_at: str | None = None
+
+    def __post_init__(self) -> None:
+        # Phase 13 v20 paired-atomic-landing validator (per plan §A.14 LOCK +
+        # CLAUDE.md "Schema-CHECK + Python-constant + dataclass-validator
+        # MUST land in the same task" gotcha).
+        if self.fill_origin not in _FILL_ORIGIN_VALUES:
+            raise ValueError(
+                "fill_origin must be one of "
+                f"{_FILL_ORIGIN_VALUES}, got {self.fill_origin!r}"
+            )
 
 
 # Exit dataclass DELETED in Phase 7 Sub-C C.14. Data lives in Fill (migration
@@ -388,6 +507,10 @@ class ReviewLog:
     # (rare; tier-3 operator override path). NULL when no correction has
     # been applied. Per migration 0019.
     superseded_by_correction_id: int | None = None
+    # Phase 13 T2.SB1 (migration 0020) — Theme 3 review auto-fill audit per
+    # spec §3.4 + §6.3. JSON array of field keys auto-populated at form-
+    # render time (vs operator-typed). NULL for pre-Phase-13 rows.
+    auto_populated_field_keys_json: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1503,3 +1626,376 @@ class SchwabApiCall:
                 raise ValueError(
                     f"{fname} must be None or positive int, got {fval!r}"
                 )
+
+
+# ============================================================================
+# Phase 13 T2.SB1 (migration 0020) — NEW dataclasses (5)
+#
+# Each dataclass mirrors a v20 table with `__post_init__` validators
+# enforcing both column-level CHECKs and cross-column CHECK invariants per
+# plan §A.14 + spec §3 LOCK.
+#
+# Dataclass roster:
+#   1. PatternExemplar       (spec §3.1; 19 cols + 5 cross-column invariants)
+#   2. PatternEvaluation     (spec §3.3; 15 cols + 1 unique index per run)
+#   3. ChartRender           (spec §3.2; 9 cols + cross-column invariant)
+#   4. WatchlistCloseTrackFlag         (spec §7.2; 7 cols + cleared coherence)
+#   5. WatchlistCloseTrackFlagEvent    (spec §7.2; 6 cols audit trail)
+# ============================================================================
+
+
+@dataclass(frozen=True)
+class PatternExemplar:
+    """One row of ``pattern_exemplars`` (migration 0020; spec §3.1).
+
+    Theme 2 labeling library. ALL detector-class columns reference the canonical
+    ``DETECTOR_PATTERN_CLASSES`` enum (spec §3.0 LOCK). 5 numbered cross-column
+    CHECK invariants enforced in BOTH schema and ``__post_init__`` per plan
+    §A.14 paired-atomic-landing LOCK.
+    """
+    id: int | None
+    ticker: str
+    timeframe: str  # 'daily' | 'weekly'
+    start_date: str  # ISO date
+    end_date: str  # ISO date
+    proposed_pattern_class: str  # one of DETECTOR_PATTERN_CLASSES
+    final_decision: str  # one of _FINAL_DECISION_VALUES
+    label_source: str  # one of _LABEL_SOURCE_VALUES
+    structural_evidence_json: str  # NOT NULL per schema
+    created_at: str
+    created_by: str  # one of _PATTERN_EXEMPLAR_CREATED_BY_VALUES
+    final_pattern_class: str | None = None
+    ai_labeler_version: str | None = None
+    gold_validated_at: str | None = None
+    codex_reviewed: int = 0  # 0 | 1
+    codex_agreement: int | None = None  # 0 | 1 | None
+    geometric_score_json: str | None = None
+    labeler_evidence_json: str | None = None
+    quality_grade: int | None = None  # 1..5
+    notes: str | None = None
+    parent_exemplar_id: int | None = None
+
+    def __post_init__(self) -> None:
+        # Per-field CHECK enum validators.
+        if self.timeframe not in _TIMEFRAME_VALUES:
+            raise ValueError(
+                f"timeframe must be one of {_TIMEFRAME_VALUES}, "
+                f"got {self.timeframe!r}"
+            )
+        if self.proposed_pattern_class not in DETECTOR_PATTERN_CLASSES:
+            raise ValueError(
+                "proposed_pattern_class must be one of "
+                f"{DETECTOR_PATTERN_CLASSES}, "
+                f"got {self.proposed_pattern_class!r}"
+            )
+        if (
+            self.final_pattern_class is not None
+            and self.final_pattern_class not in DETECTOR_PATTERN_CLASSES
+        ):
+            raise ValueError(
+                "final_pattern_class must be None or one of "
+                f"{DETECTOR_PATTERN_CLASSES}, "
+                f"got {self.final_pattern_class!r}"
+            )
+        if self.final_decision not in _FINAL_DECISION_VALUES:
+            raise ValueError(
+                "final_decision must be one of "
+                f"{_FINAL_DECISION_VALUES}, got {self.final_decision!r}"
+            )
+        if self.label_source not in _LABEL_SOURCE_VALUES:
+            raise ValueError(
+                "label_source must be one of "
+                f"{_LABEL_SOURCE_VALUES}, got {self.label_source!r}"
+            )
+        if self.created_by not in _PATTERN_EXEMPLAR_CREATED_BY_VALUES:
+            raise ValueError(
+                "created_by must be one of "
+                f"{_PATTERN_EXEMPLAR_CREATED_BY_VALUES}, "
+                f"got {self.created_by!r}"
+            )
+        if self.codex_reviewed not in (0, 1):
+            raise ValueError(
+                f"codex_reviewed must be 0 or 1, got {self.codex_reviewed!r}"
+            )
+        if self.codex_agreement is not None and self.codex_agreement not in (0, 1):
+            raise ValueError(
+                "codex_agreement must be None, 0, or 1, "
+                f"got {self.codex_agreement!r}"
+            )
+        if self.quality_grade is not None and (
+            not isinstance(self.quality_grade, int)
+            or isinstance(self.quality_grade, bool)
+            or not (1 <= self.quality_grade <= 5)
+        ):
+            raise ValueError(
+                "quality_grade must be None or int in [1, 5], "
+                f"got {self.quality_grade!r}"
+            )
+
+        # Cross-column invariant #1: relabel-vs-non-relabel coherence.
+        if self.final_decision == "relabeled":
+            if (
+                self.final_pattern_class is None
+                or self.final_pattern_class == self.proposed_pattern_class
+            ):
+                raise ValueError(
+                    "invariant #1 violated: final_decision='relabeled' "
+                    "requires final_pattern_class non-NULL AND distinct "
+                    "from proposed_pattern_class"
+                )
+        else:
+            if self.final_pattern_class is not None:
+                raise ValueError(
+                    "invariant #1 violated: final_pattern_class must be "
+                    f"NULL when final_decision={self.final_decision!r}"
+                )
+
+        # Cross-column invariant #2: source-vs-decision matrix.
+        _silver_review_sources = (
+            "claude_silver",
+            "codex_silver",
+            "closed_loop_review",
+            "organic_trade_history",
+        )
+        _generated_sources = ("synthetic", "perturbation")
+        _decision_sources_for_review = (
+            "confirmed",
+            "watch",
+            "rejected",
+            "relabeled",
+        )
+        valid_source_decision = (
+            (self.label_source == "curated_gold"
+                and self.final_decision == "confirmed")
+            or (self.label_source in _silver_review_sources
+                and self.final_decision in _decision_sources_for_review)
+            or (self.label_source in _generated_sources
+                and self.final_decision == "generated")
+        )
+        if not valid_source_decision:
+            raise ValueError(
+                "invariant #2 violated: (label_source, final_decision) = "
+                f"({self.label_source!r}, {self.final_decision!r}) is not "
+                "in the allowed source-vs-decision matrix per spec §3.1"
+            )
+
+        # Cross-column invariant #3: parent_exemplar_id linkage.
+        if self.label_source == "codex_silver":
+            if self.parent_exemplar_id is None:
+                raise ValueError(
+                    "invariant #3 violated: label_source='codex_silver' "
+                    "requires parent_exemplar_id non-NULL"
+                )
+        else:
+            if self.parent_exemplar_id is not None:
+                raise ValueError(
+                    "invariant #3 violated: parent_exemplar_id must be "
+                    f"NULL when label_source={self.label_source!r}"
+                )
+
+        # Cross-column invariant #4: geometric_score_json nullability.
+        gs_null = self.geometric_score_json is None
+        labeler_ev_present = self.labeler_evidence_json is not None
+        valid_gs = (
+            (gs_null
+                and (self.label_source in ("claude_silver", "codex_silver")
+                     or (self.label_source == "curated_gold"
+                         and labeler_ev_present)))
+            or (not gs_null
+                and self.label_source in (
+                    "curated_gold",
+                    "closed_loop_review",
+                    "organic_trade_history",
+                    "synthetic",
+                    "perturbation",
+                ))
+        )
+        if not valid_gs:
+            raise ValueError(
+                "invariant #4 violated: (label_source, "
+                "geometric_score_json IS NULL, labeler_evidence_json IS "
+                f"NOT NULL) = ({self.label_source!r}, {gs_null!r}, "
+                f"{labeler_ev_present!r}) is not in the allowed matrix "
+                "per spec §3.1 invariant #4"
+            )
+
+        # Cross-column invariant #5: labeler_evidence_json source coherence.
+        # Mirrors schema CHECK exactly: labeler_ev NOT NULL <-> label_source in
+        # (claude_silver, codex_silver, curated_gold); labeler_ev NULL <->
+        # label_source in (closed_loop_review, organic_trade_history,
+        # synthetic, perturbation). curated_gold requires labeler_ev NOT NULL
+        # per Codex R6 M#1 closure (preserves silver-tier audit trail through
+        # gold-promotion at T2.SB1 pre-detector-backfill).
+        _labeler_ev_allowed_sources = (
+            "claude_silver",
+            "codex_silver",
+            "curated_gold",
+        )
+        if labeler_ev_present:
+            if self.label_source not in _labeler_ev_allowed_sources:
+                raise ValueError(
+                    "invariant #5 violated: labeler_evidence_json must be "
+                    f"NULL when label_source={self.label_source!r}"
+                )
+        else:
+            if self.label_source in _labeler_ev_allowed_sources:
+                raise ValueError(
+                    "invariant #5 violated: labeler_evidence_json must be "
+                    f"non-NULL when label_source={self.label_source!r}"
+                )
+
+
+@dataclass(frozen=True)
+class PatternEvaluation:
+    """One row of ``pattern_evaluations`` (migration 0020; spec §3.3).
+
+    Per-(pipeline_run_id, ticker, pattern_class) detector verdict with full
+    structural evidence. ``pattern_class`` references DETECTOR_PATTERN_CLASSES
+    (spec §3.0). One verdict per pattern per ticker per run (unique index).
+    """
+    id: int | None
+    pipeline_run_id: int
+    ticker: str
+    pattern_class: str  # one of DETECTOR_PATTERN_CLASSES
+    detector_version: str
+    geometric_score: float
+    geometric_score_json: str
+    composite_score: float
+    structural_evidence_json: str
+    feature_distribution_log_json: str
+    window_start_date: str
+    window_end_date: str
+    created_at: str
+    template_match_score: float | None = None
+    template_match_nearest_exemplar_ids_json: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.pattern_class not in DETECTOR_PATTERN_CLASSES:
+            raise ValueError(
+                "pattern_class must be one of "
+                f"{DETECTOR_PATTERN_CLASSES}, got {self.pattern_class!r}"
+            )
+
+
+@dataclass(frozen=True)
+class ChartRender:
+    """One row of ``chart_renders`` (migration 0020; spec §3.2).
+
+    Theme 1 chart cache; ``surface`` references _CHART_SURFACE_VALUES.
+    Cross-column CHECK: ``surface='theme2_annotated'`` requires both
+    ``pattern_class`` AND ``pipeline_run_id`` non-NULL; all other surfaces
+    require ``pattern_class`` NULL (mirrors schema CHECK + closes Codex R2
+    M#5 SQLite NULL-distinct defense).
+    """
+    id: int | None
+    ticker: str
+    surface: str  # one of _CHART_SURFACE_VALUES
+    chart_svg_bytes: bytes
+    source_data_hash: str
+    rendered_at: str
+    data_asof_date: str
+    pipeline_run_id: int | None = None
+    pattern_class: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.surface not in _CHART_SURFACE_VALUES:
+            raise ValueError(
+                "surface must be one of "
+                f"{_CHART_SURFACE_VALUES}, got {self.surface!r}"
+            )
+        if (
+            self.pattern_class is not None
+            and self.pattern_class not in DETECTOR_PATTERN_CLASSES
+        ):
+            raise ValueError(
+                "pattern_class must be None or one of "
+                f"{DETECTOR_PATTERN_CLASSES}, got {self.pattern_class!r}"
+            )
+
+        # Cross-column CHECK per spec §3.2.
+        if self.surface == "theme2_annotated":
+            if self.pattern_class is None or self.pipeline_run_id is None:
+                raise ValueError(
+                    "chart_renders cross-column CHECK violated: "
+                    "surface='theme2_annotated' requires both pattern_class "
+                    "AND pipeline_run_id non-NULL"
+                )
+        else:
+            if self.pattern_class is not None:
+                raise ValueError(
+                    "chart_renders cross-column CHECK violated: "
+                    f"pattern_class must be NULL when surface={self.surface!r}"
+                )
+
+
+@dataclass(frozen=True)
+class WatchlistCloseTrackFlag:
+    """One row of ``watchlist_close_track_flags`` (migration 0020; spec §7.2).
+
+    Theme 4 Q4 close-tracking flag (D-Q4.1 + D-Q4.7). Active-flag uniqueness
+    is enforced via partial unique index ``idx_wclf_active_ticker`` on
+    ``ticker WHERE cleared_at IS NULL`` (Codex R1 M#9 closure: re-flagging
+    a previously-cleared ticker INSERTs a new lifecycle row).
+
+    Cross-column CHECK: cleared_at IS NULL iff cleared_reason IS NULL.
+    """
+    id: int | None
+    ticker: str
+    flagged_at: str  # ISO timestamp
+    flagged_by_surface: str  # one of _FLAG_SURFACE_VALUES
+    reason_text: str | None = None
+    cleared_at: str | None = None
+    cleared_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.flagged_by_surface not in _FLAG_SURFACE_VALUES:
+            raise ValueError(
+                "flagged_by_surface must be one of "
+                f"{_FLAG_SURFACE_VALUES}, got {self.flagged_by_surface!r}"
+            )
+        if (
+            self.cleared_reason is not None
+            and self.cleared_reason not in _FLAG_CLEARED_REASON_VALUES
+        ):
+            raise ValueError(
+                "cleared_reason must be None or one of "
+                f"{_FLAG_CLEARED_REASON_VALUES}, "
+                f"got {self.cleared_reason!r}"
+            )
+
+        # Cross-column CHECK: cleared_at IS NULL iff cleared_reason IS NULL.
+        if (self.cleared_at is None) != (self.cleared_reason is None):
+            raise ValueError(
+                "watchlist_close_track_flags cross-column CHECK violated: "
+                "cleared_at IS NULL iff cleared_reason IS NULL "
+                f"(got cleared_at={self.cleared_at!r}, "
+                f"cleared_reason={self.cleared_reason!r})"
+            )
+
+
+@dataclass(frozen=True)
+class WatchlistCloseTrackFlagEvent:
+    """One row of ``watchlist_close_track_flag_events`` (migration 0020;
+    spec §7.2 D-Q4.7).
+
+    Append-only per-event audit. ``event_type`` ∈ {'set', 'clear'};
+    ``surface`` ∈ {'web', 'cli'} (reuses _FLAG_SURFACE_VALUES).
+    """
+    id: int | None
+    flag_id: int
+    event_type: str  # one of _FLAG_EVENT_TYPE_VALUES
+    event_at: str
+    surface: str  # one of _FLAG_SURFACE_VALUES
+    reason_text: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.event_type not in _FLAG_EVENT_TYPE_VALUES:
+            raise ValueError(
+                "event_type must be one of "
+                f"{_FLAG_EVENT_TYPE_VALUES}, got {self.event_type!r}"
+            )
+        if self.surface not in _FLAG_SURFACE_VALUES:
+            raise ValueError(
+                "surface must be one of "
+                f"{_FLAG_SURFACE_VALUES}, got {self.surface!r}"
+            )

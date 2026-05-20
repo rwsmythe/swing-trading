@@ -130,6 +130,7 @@ def test_rebuild_preserves_existing_discrepancy_rows(tmp_path: Path) -> None:
         post_version = conn.execute(
             "SELECT version FROM schema_version"
         ).fetchone()[0]
+        # Test pins post-apply-0019 state (NOT post-walk-to-HEAD); stays at 19.
         assert post_version == 19
 
         # Same columns, same values (column-by-column equality).

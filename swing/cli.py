@@ -3658,5 +3658,728 @@ def account_snapshot_cmd(
         )
 
 
+# ============================================================================
+# Phase 13 T2.SB1 — `swing patterns` group (T-A.1.5)
+#
+# `swing patterns label-exemplars` dispatches the pattern-labeler subagent
+# for one (window, pattern_class) seed tuple per spec §5.9 step 1. V1 is
+# operator-paired per OQ-6: WITHOUT --silver-response-file the CLI emits
+# the dispatch payload + guidance; WITH --silver-response-file the CLI
+# persists the parsed response as a silver-tier exemplar.
+#
+# Pattern-class choice constrained to DETECTOR_PATTERN_CLASSES via
+# explicit validation (per plan §G.1 T-A.1.5 Step 2). ASCII-only output
+# per §A.8 + CLAUDE.md Windows cp1252 stdout gotcha.
+# ============================================================================
+
+
+@main.group("patterns")
+def patterns_group() -> None:
+    """Phase 13 Theme 2 — pattern labeling + closed-loop review surfaces."""
+
+
+_LABELING_BAR_REQUIRED_KEYS = frozenset(
+    ("date", "open", "high", "low", "close", "volume")
+)
+
+
+def _load_bars_for_labeling_emit(
+    *,
+    window_bars_file: str | None,
+    ticker: str,
+    start_date: str,
+    end_date: str,
+    timeframe: str,
+) -> list[dict[str, object]]:
+    """Resolve the emit-payload bars list.
+
+    Codex R1 M#1 + M#2 + M#6 closure:
+      - operator override via --window-bars-file takes precedence + is
+        shape-validated (list of dicts with the canonical OHLCV keys);
+      - otherwise yfinance windowed auto-fetch via labeling_bars helper;
+      - empty yfinance response raises a ClickException with operator
+        guidance pointing at --window-bars-file (V1: silently emitting
+        bars=[] would hand an unusable dispatch payload to the subagent).
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    from swing.patterns.labeling_bars import (
+        autofetch_bars_for_labeling as _autofetch,
+    )
+
+    if window_bars_file is not None:
+        # Codex R2 Minor #2 closure: catch malformed JSON at the file
+        # boundary so the operator sees a clean ClickException instead of
+        # a raw json.JSONDecodeError traceback.
+        try:
+            raw = _json.loads(
+                _Path(window_bars_file).read_text(encoding="utf-8")
+            )
+        except _json.JSONDecodeError as exc:
+            raise click.ClickException(
+                f"--window-bars-file content is not valid JSON: {exc}."
+            ) from exc
+        if not isinstance(raw, list):
+            raise click.ClickException(
+                "--window-bars-file content must be a JSON array of bar "
+                f"objects; got top-level {type(raw).__name__}."
+            )
+        for idx, bar in enumerate(raw):
+            if not isinstance(bar, dict):
+                raise click.ClickException(
+                    f"--window-bars-file bar #{idx} is "
+                    f"{type(bar).__name__}; expected a JSON object with "
+                    "keys date/open/high/low/close/volume."
+                )
+            missing = _LABELING_BAR_REQUIRED_KEYS - set(bar.keys())
+            if missing:
+                raise click.ClickException(
+                    f"--window-bars-file bar #{idx} missing required "
+                    f"OHLCV keys: {sorted(missing)}."
+                )
+        return raw
+
+    bars = _autofetch(
+        ticker=ticker,
+        start_date=start_date,
+        end_date=end_date,
+        timeframe=timeframe,
+    )
+    if not bars:
+        raise click.ClickException(
+            "yfinance auto-fetch returned no bars for "
+            f"{ticker} {start_date}..{end_date} (timeframe={timeframe}). "
+            "Possible causes: delisted ticker, transient empty upstream, "
+            "rate-limit, or invalid window. Re-run with "
+            "--window-bars-file <path> to supply pre-built bars."
+        )
+    return bars
+
+
+@patterns_group.command("label-exemplars")
+@click.option("--ticker", required=True, type=str)
+@click.option(
+    "--start", "start_date", required=True, type=str,
+    help="ISO date YYYY-MM-DD; window left edge.",
+)
+@click.option(
+    "--end", "end_date", required=True, type=str,
+    help="ISO date YYYY-MM-DD; window right edge.",
+)
+@click.option(
+    "--pattern-class", "pattern_class", required=True, type=str,
+    help="Detector class (one of: vcp, flat_base, cup_with_handle, "
+         "high_tight_flag, double_bottom_w).",
+)
+@click.option(
+    "--timeframe", "timeframe", default="daily",
+    type=click.Choice(("daily", "weekly")),
+    show_default=True,
+)
+@click.option(
+    "--ai-labeler-version", "ai_labeler_version",
+    default="claude-code-pattern-labeler-v1", type=str,
+    show_default=True,
+)
+@click.option(
+    "--silver-response-file", "silver_response_file",
+    type=click.Path(exists=True, dir_okay=False), default=None,
+    help="Path to JSON file with the pattern-labeler subagent's response. "
+         "When provided, the CLI persists the parsed response to "
+         "pattern_exemplars. When omitted, the CLI emits the dispatch "
+         "payload to stdout (operator-paired workflow per OQ-6).",
+)
+@click.option(
+    "--window-bars-file", "window_bars_file",
+    type=click.Path(exists=True, dir_okay=False), default=None,
+    help="Optional path to JSON file with the window's OHLCV bars "
+         "(list of dicts with keys date / open / high / low / close / "
+         "volume). Consumed ONLY on the emit-payload path (i.e. when "
+         "--silver-response-file is NOT set). When supplied on that "
+         "path, the override pins the bars (fixture-pinned "
+         "reproducibility) and yfinance is NOT called; when omitted on "
+         "that path, the CLI auto-fetches daily bars via yfinance for "
+         "the requested (ticker, start, end). The persist path "
+         "(--silver-response-file) does not consume bars; if you pass "
+         "--window-bars-file together with --silver-response-file, the "
+         "file is only checked for existence by click and otherwise "
+         "ignored.",
+)
+@click.pass_context
+def label_exemplars_cmd(
+    ctx: click.Context,
+    *,
+    ticker: str,
+    start_date: str,
+    end_date: str,
+    pattern_class: str,
+    timeframe: str,
+    ai_labeler_version: str,
+    silver_response_file: str | None,
+    window_bars_file: str | None,
+) -> None:
+    """Dispatch the pattern-labeler subagent for one (window, pattern_class).
+
+    V1 operator-paired workflow (per OQ-6 + spec section 5.9 step 1):
+
+    \b
+    Step A (emit payload):
+      swing patterns label-exemplars --ticker ABC --start 2024-01-01 \\
+          --end 2024-02-01 --pattern-class vcp
+      => writes dispatch payload JSON to stdout for operator handoff.
+
+    \b
+    Step B (operator dispatches in Claude Code session, captures response):
+      Inside a paired Claude Code session, the operator invokes the
+      pattern-labeler subagent with the payload + saves the response to a
+      JSON file (e.g. silver.json).
+
+    \b
+    Step C (persist):
+      swing patterns label-exemplars --ticker ABC --start 2024-01-01 \\
+          --end 2024-02-01 --pattern-class vcp \\
+          --silver-response-file silver.json
+      => parses silver.json + persists one row to pattern_exemplars with
+         label_source=claude_silver.
+    """
+    import json as _json
+    from datetime import UTC as _UTC
+    from datetime import datetime as _datetime
+
+    from swing.data.db import connect as _connect
+    from swing.data.models import DETECTOR_PATTERN_CLASSES as _DPC
+    from swing.patterns.labeling import (
+        SilverLabelResponse as _SilverLabelResponse,
+    )
+    from swing.patterns.labeling import (
+        fire_claude_silver_label as _fire_claude_silver_label,
+    )
+    from swing.patterns.spec_static import (
+        get_rule_criteria as _get_rule_criteria,
+    )
+    from swing.patterns.spec_static import (
+        get_structural_evidence_schema as _get_evidence_schema,
+    )
+
+    if pattern_class not in _DPC:
+        raise click.BadParameter(
+            f"pattern-class must be one of {list(_DPC)}, got "
+            f"{pattern_class!r}",
+            param_hint="--pattern-class",
+        )
+
+    # T-A.1.5b Defect 2: inline spec section 5.2 through 5.6 rule_criteria
+    # + structural_evidence_schema for the requested pattern_class. Static
+    # source-of-truth at swing/patterns/spec_static.py (V1 PATCH scope
+    # only; T2.SB3+/SB4 detectors MAY rebase onto compute-derived defaults
+    # when they land).
+    rule_criteria: dict = _get_rule_criteria(pattern_class)
+    structural_evidence_schema: dict = _get_evidence_schema(pattern_class)
+
+    # T-A.1.5b Defect 3 (Option B) + Codex R1 M#1 fix: bars auto-fetched
+    # ONLY in emit-payload mode. The persist-mode (--silver-response-file)
+    # branch does not need bars - the subagent has already labeled - and
+    # auto-fetching there would leak an unmocked yfinance call into the
+    # persist path (which can fail offline and pollute the test surface).
+    if silver_response_file is None:
+        bars = _load_bars_for_labeling_emit(
+            window_bars_file=window_bars_file,
+            ticker=ticker,
+            start_date=start_date,
+            end_date=end_date,
+            timeframe=timeframe,
+        )
+        window_payload = {
+            "ticker": ticker,
+            "timeframe": timeframe,
+            "start_date": start_date,
+            "end_date": end_date,
+            "bars": bars,
+        }
+        payload = {
+            "window_payload": window_payload,
+            "pattern_class": pattern_class,
+            "rule_criteria": rule_criteria,
+            "structural_evidence_schema": structural_evidence_schema,
+            "ai_labeler_version": ai_labeler_version,
+        }
+        click.echo(_json.dumps(payload, sort_keys=True, indent=2))
+        return
+
+    # With --silver-response-file: parse + persist. No bars needed - the
+    # subagent has already labeled the window; the persist path stores
+    # ONLY the label rows in pattern_exemplars.
+    window_payload = {
+        "ticker": ticker,
+        "timeframe": timeframe,
+        "start_date": start_date,
+        "end_date": end_date,
+        "bars": [],
+    }
+
+    # Codex R3 Minor #1 closure: malformed JSON in --silver-response-file
+    # now surfaces as a clean ClickException (matches the --window-bars-file
+    # treatment under Codex R2 Minor #2).
+    try:
+        response_raw = _json.loads(
+            Path(silver_response_file).read_text(encoding="utf-8")
+        )
+    except _json.JSONDecodeError as exc:
+        raise click.ClickException(
+            f"--silver-response-file content is not valid JSON: {exc}."
+        ) from exc
+    # Codex R4 Minor #1 closure: top-level JSON must be an object (dict).
+    # A top-level JSON string / array / scalar would otherwise raise raw
+    # TypeError on the response_raw["structural_evidence_json"] indexing
+    # below, escaping the clean shape-invalid path.
+    if not isinstance(response_raw, dict):
+        raise click.ClickException(
+            "silver-response-file shape invalid: top-level JSON must be "
+            f"an object (dict); got {type(response_raw).__name__}."
+        )
+    # T-A.1.5b Defect 1 + Codex R1 M#3 fix — dict-or-str coercion at
+    # structural_evidence_json with JSON-object validation when the input
+    # is already a string.
+    #
+    # The pattern-labeler subagent's documented output contract emits this
+    # field as a JSON OBJECT (dict); _SilverLabelResponse stores it as a
+    # serialized JSON string for direct sqlite3 binding. Accept both shapes
+    # (dict from real subagent + pre-serialized JSON dict string from
+    # existing test fixtures); reject anything else with a clear error.
+    # Codex R2 M#1 closure: explicit key-presence check so a missing
+    # structural_evidence_json key surfaces as a clean shape-invalid error
+    # rather than escaping through _SilverLabelResponse.__post_init__'s
+    # ValueError (which the except clause widening below ALSO catches as
+    # defense-in-depth).
+    if "structural_evidence_json" not in response_raw:
+        raise click.ClickException(
+            "silver-response-file shape invalid: missing required key "
+            "'structural_evidence_json' per .claude/agents/"
+            "pattern-labeler.md output contract."
+        )
+    raw_evidence = response_raw["structural_evidence_json"]
+    if isinstance(raw_evidence, dict):
+        raw_evidence = _json.dumps(raw_evidence, sort_keys=True)
+    elif isinstance(raw_evidence, str):
+        # Verify the string parses as a JSON OBJECT (not a top-level
+        # array / scalar / malformed JSON). Codex R1 M#3 closure: bad
+        # strings must NOT silently persist as garbage that fails
+        # downstream as a vague DB error.
+        try:
+            decoded = _json.loads(raw_evidence)
+        except _json.JSONDecodeError as exc:
+            raise click.ClickException(
+                "silver-response-file shape invalid: "
+                "structural_evidence_json string is not valid JSON: "
+                f"{exc}."
+            ) from exc
+        if not isinstance(decoded, dict):
+            raise click.ClickException(
+                "silver-response-file shape invalid: "
+                "structural_evidence_json string must decode to a JSON "
+                "object (dict); got "
+                f"{type(decoded).__name__}."
+            )
+        # Re-serialize canonically (sort_keys) for byte-stable persistence.
+        raw_evidence = _json.dumps(decoded, sort_keys=True)
+    elif raw_evidence is not None:
+        raise click.ClickException(
+            "silver-response-file shape invalid: "
+            "structural_evidence_json must be a JSON object (per the "
+            ".claude/agents/pattern-labeler.md contract) OR a pre-serialized "
+            f"JSON object string; got {type(raw_evidence).__name__}."
+        )
+    try:
+        response = _SilverLabelResponse(
+            evaluation=response_raw["evaluation"],
+            confidence=response_raw["confidence"],
+            structural_evidence_json=raw_evidence,
+            geometric_evidence_narrative=(
+                response_raw["geometric_evidence_narrative"]
+            ),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        # Codex R2 M#1 closure: ValueError added so __post_init__
+        # validation failures surface as ClickException (vs raw traceback).
+        raise click.ClickException(
+            f"silver-response-file shape invalid: {exc}; expected keys "
+            "'evaluation', 'confidence', 'structural_evidence_json', "
+            "'geometric_evidence_narrative' per .claude/agents/"
+            "pattern-labeler.md output contract."
+        ) from exc
+
+    cfg = ctx.obj["config"]
+    conn = _connect(cfg.paths.db_path)
+
+    def _dispatch_from_file(**_kwargs: object) -> _SilverLabelResponse:
+        return response
+
+    try:
+        try:
+            exemplar_id = _fire_claude_silver_label(
+                conn,
+                ticker=ticker,
+                timeframe=timeframe,
+                start_date=start_date,
+                end_date=end_date,
+                pattern_class=pattern_class,
+                window_payload=window_payload,
+                rule_criteria=rule_criteria,
+                structural_evidence_schema=structural_evidence_schema,
+                ai_labeler_version=ai_labeler_version,
+                dispatch_subagent=_dispatch_from_file,
+                now_fn=lambda: _datetime.now(_UTC).isoformat(),
+            )
+        except ValueError as exc:
+            # Codex R4 M#1 closure: service-layer ValueErrors (most notably
+            # _map_silver_evaluation_to_decision rejecting
+            # `relabel:<same_class_as_proposed>` per spec section 3.1
+            # invariant #1) surface as a clean shape-invalid ClickException
+            # rather than a raw traceback. The dataclass __post_init__
+            # cannot detect the same-class collision because it doesn't
+            # know the proposed pattern_class context; the service layer
+            # owns that check.
+            raise click.ClickException(
+                "silver-response-file shape invalid: "
+                f"{exc}"
+            ) from exc
+    finally:
+        conn.close()
+
+    click.echo(
+        f"silver exemplar persisted: id={exemplar_id} ticker={ticker} "
+        f"pattern_class={pattern_class} final_decision="
+        f"{response.evaluation}"
+    )
+
+
+# ============================================================================
+# T-A.1.8 — `swing patterns review-silver-with-codex` CLI subcommand
+#
+# Per closer dispatch brief T-1.8.1 + spec section 5.9 step 4 + OQ-5 phased
+# rollout: random-15% Codex 2nd-reviewer dispatch wiring for the V1 phase
+# (HARD-CODED phase='t2_sb1' per L9 LOCK — NO high-stakes disagreement
+# clause activation; T2.SB3+/SB4 retroactively enables that path).
+#
+# Operator-paired V1 workflow (mirrors `label-exemplars` shape per OQ-6):
+#   Step A (emit/sample):
+#     swing patterns review-silver-with-codex --exemplar-id 5 --seed 42
+#       => emits dispatch payload JSON if random-15% sample fires;
+#          emits skip-note + exit 0 if sample does NOT fire.
+#   Step B (operator dispatches Codex via paired session; saves response).
+#   Step C (persist):
+#     swing patterns review-silver-with-codex --exemplar-id 5 \
+#         --codex-response-file codex.json
+#       => bypasses policy gate (operator's response collection IS the
+#          dispatch decision) via forced-fire rng so the existing
+#          service-layer fire_codex_review_for_silver_row is exercised
+#          end-to-end (per T-1.8.1 acceptance criterion #1).
+#
+# ASCII-only output per CLAUDE.md Windows cp1252 stdout gotcha.
+# ============================================================================
+
+
+@patterns_group.command("review-silver-with-codex")
+@click.option(
+    "--exemplar-id", "exemplar_id", required=True, type=int,
+    help="pattern_exemplars.id of the claude_silver parent row to review.",
+)
+@click.option(
+    "--seed", "seed", type=int, default=None,
+    help="Optional integer seed for the random-15% sampling RNG. When "
+         "omitted in emit mode, the sampling uses an unseeded random.Random "
+         "(production); when supplied, the decision is deterministic "
+         "(operator-paired pairing of emit + persist invocations). The "
+         "persist path (--codex-response-file) IGNORES --seed because the "
+         "operator's response collection IS the dispatch decision.",
+)
+@click.option(
+    "--codex-response-file", "codex_response_file",
+    type=click.Path(exists=True, dir_okay=False), default=None,
+    help="Path to JSON file with the Codex 2nd-reviewer response per the "
+         "CodexReviewResponse contract (keys: agreed, alternative_evaluation, "
+         "alternative_confidence, alternative_structural_evidence_json, "
+         "alternative_labeler_evidence_json). When provided, the CLI parses "
+         "the response + invokes fire_codex_review_for_silver_row with a "
+         "forced-fire RNG (bypassing the random-15% sampling gate because "
+         "the operator's response collection IS the dispatch decision). When "
+         "omitted, the CLI emits the dispatch payload to stdout (emit mode).",
+)
+@click.option(
+    "--ai-labeler-version", "ai_labeler_version",
+    default="gpt-5-codex-dispatch", type=str, show_default=True,
+)
+@click.pass_context
+def review_silver_with_codex_cmd(
+    ctx: click.Context,
+    *,
+    exemplar_id: int,
+    seed: int | None,
+    codex_response_file: str | None,
+    ai_labeler_version: str,
+) -> None:
+    """Dispatch + persist Codex 2nd-reviewer for one claude_silver exemplar.
+
+    \b
+    V1 phase HARD-CODES phase='t2_sb1' per L9 LOCK (random-15% sampling
+    ONLY; high-stakes disagreement clause activates at T2.SB3+/SB4
+    retroactively per spec section A.6 + OQ-5).
+
+    \b
+    Step A (emit/sample): no --codex-response-file => sample + maybe emit
+    payload. Exit 0 either way (skip is not an error).
+
+    \b
+    Step C (persist): with --codex-response-file => parse + invoke
+    fire_codex_review_for_silver_row; persist codex_silver row on
+    disagreement; flip parent codex_reviewed + codex_agreement either way.
+    """
+    import json as _json
+    import random as _random
+    from pathlib import Path as _Path
+
+    from swing.data.db import connect as _connect
+    from swing.data.repos import pattern_exemplars as _exemplars_repo
+    from swing.patterns.labeling import (
+        CODEX_RANDOM_SAMPLE_PROBABILITY as _CODEX_PROB,
+    )
+    from swing.patterns.labeling import (
+        CodexReviewResponse as _CodexReviewResponse,
+    )
+    from swing.patterns.labeling import (
+        fire_codex_review_for_silver_row as _fire_codex,
+    )
+    from swing.patterns.labeling import (
+        should_fire_codex as _should_fire,
+    )
+    from swing.patterns.spec_static import (
+        get_rule_criteria as _get_rule_criteria,
+    )
+    from swing.patterns.spec_static import (
+        get_structural_evidence_schema as _get_evidence_schema,
+    )
+
+    cfg = ctx.obj["config"]
+    conn = _connect(cfg.paths.db_path)
+    try:
+        parent = _exemplars_repo.get_exemplar_by_id(conn, exemplar_id)
+        if parent is None:
+            raise click.ClickException(
+                f"exemplar {exemplar_id} not found in pattern_exemplars."
+            )
+        # L9 LOCK + service-layer invariant: codex review fires ONLY on
+        # claude_silver rows. The fire_codex_review_for_silver_row helper
+        # itself rejects non-claude_silver inputs; we duplicate the check
+        # here so the emit-mode path also short-circuits with a clean
+        # ClickException + routing hint.
+        if parent.label_source != "claude_silver":
+            raise click.ClickException(
+                f"exemplar {exemplar_id} has label_source="
+                f"{parent.label_source!r}; Codex 2nd-review fires ONLY on "
+                f"claude_silver rows. (curated_gold rows are operator-"
+                f"validated terminal; codex_silver rows are themselves "
+                f"disagreement-chain children and are not re-reviewed.)"
+            )
+
+        if codex_response_file is None:
+            _emit_or_skip_payload(
+                parent=parent,
+                exemplar_id=exemplar_id,
+                seed=seed,
+                random_sample_probability=_CODEX_PROB,
+                should_fire=_should_fire,
+                get_rule_criteria=_get_rule_criteria,
+                get_evidence_schema=_get_evidence_schema,
+            )
+            return
+
+        # Persist mode: parse response + invoke fire_codex_review_for_silver_row.
+        try:
+            response_raw = _json.loads(
+                _Path(codex_response_file).read_text(encoding="utf-8")
+            )
+        except _json.JSONDecodeError as exc:
+            raise click.ClickException(
+                f"--codex-response-file content is not valid JSON: {exc}."
+            ) from exc
+        if not isinstance(response_raw, dict):
+            raise click.ClickException(
+                "codex-response-file shape invalid: top-level JSON must be "
+                f"an object (dict); got {type(response_raw).__name__}."
+            )
+        if "agreed" not in response_raw:
+            raise click.ClickException(
+                "codex-response-file shape invalid: missing required key "
+                "'agreed' per CodexReviewResponse contract."
+            )
+        # Codex R1 Major #1 closure: strict bool validation at CLI
+        # boundary. Loose `bool(response_raw["agreed"])` would silently
+        # treat JSON like `{"agreed": "false"}` as True (because the
+        # non-empty string "false" is truthy), recording a disagreement
+        # as agreement + skipping the codex_silver row insertion. JSON
+        # has a real bool type — reject anything else explicitly with a
+        # routing-hint error. Defense-in-depth: __post_init__ in
+        # CodexReviewResponse also runtime-validates per the same lesson
+        # family (T-A.1.5b R3 M#1 Literal[...] not runtime-enforced).
+        if not isinstance(response_raw["agreed"], bool):
+            raise click.ClickException(
+                "codex-response-file shape invalid: 'agreed' must be a "
+                "JSON boolean (true/false); got "
+                f"{type(response_raw['agreed']).__name__} "
+                f"value={response_raw['agreed']!r}. Common mistake: "
+                'quoting the value (e.g. {"agreed": "false"}) — drop '
+                "the quotes."
+            )
+        try:
+            codex_response = _CodexReviewResponse(
+                agreed=response_raw["agreed"],
+                alternative_evaluation=response_raw.get(
+                    "alternative_evaluation",
+                ),
+                alternative_confidence=response_raw.get(
+                    "alternative_confidence",
+                ),
+                alternative_structural_evidence_json=response_raw.get(
+                    "alternative_structural_evidence_json",
+                ),
+                alternative_labeler_evidence_json=response_raw.get(
+                    "alternative_labeler_evidence_json",
+                ),
+            )
+        except (TypeError, ValueError) as exc:
+            raise click.ClickException(
+                f"codex-response-file shape invalid: {exc}"
+            ) from exc
+
+        def _dispatch_from_file(
+            **_kwargs: object,
+        ) -> _CodexReviewResponse:
+            return codex_response
+
+        # Forced-fire RNG: the operator's response collection IS the
+        # dispatch decision; bypass the random-15% sampling gate at the
+        # service layer by feeding a deterministic Random whose first
+        # .random() draw is well below the threshold. This still exercises
+        # should_fire_codex inside fire_codex_review_for_silver_row end-to-
+        # end (T-1.8.1 acceptance criterion #1).
+        #
+        # Pre-computed: random.Random(1).random() == 0.13436424411240122,
+        # comfortably below CODEX_RANDOM_SAMPLE_PROBABILITY (0.15) for the
+        # T2.SB1 phase. The defensive invariant assertion guards against a
+        # future CPython-stdlib Mersenne Twister regression that would
+        # silently break the gate (Python promises stable PRNG output for
+        # a given seed, but the assertion makes the regression LOUD).
+        forced_rng = _random.Random(1)
+        _probe_rng = _random.Random(1)
+        _probe = _probe_rng.random()
+        if _probe >= _CODEX_PROB:
+            raise click.ClickException(
+                "internal invariant violated: random.Random(1).random() = "
+                f"{_probe:.6f} >= CODEX_RANDOM_SAMPLE_PROBABILITY = "
+                f"{_CODEX_PROB:.6f}; PRNG-output regression in CPython "
+                "stdlib. Persist path cannot guarantee should_fire_codex "
+                "fire decision; halting."
+            )
+
+        try:
+            codex_id = _fire_codex(
+                conn,
+                exemplar_id=exemplar_id,
+                phase="t2_sb1",
+                silver_confidence=None,
+                geometric_score=None,
+                ai_labeler_version=ai_labeler_version,
+                codex_dispatch=_dispatch_from_file,
+                rng=forced_rng,
+            )
+        except ValueError as exc:
+            # Service-layer ValueError (e.g., CodexReviewResponse.agreed=
+            # False but missing alternative_evaluation) -> clean
+            # ClickException per T-A.1.5b R4 M#1 forward-binding lesson.
+            raise click.ClickException(
+                f"codex-response-file shape invalid: {exc}"
+            ) from exc
+
+        if codex_response.agreed:
+            click.echo(
+                f"codex agreement recorded: exemplar_id={exemplar_id} "
+                f"codex_agreement=1 (no new row inserted)"
+            )
+        else:
+            click.echo(
+                f"codex_silver row persisted: id={codex_id} "
+                f"parent_exemplar_id={exemplar_id} final_decision="
+                f"{codex_response.alternative_evaluation}"
+            )
+    finally:
+        conn.close()
+
+
+def _emit_or_skip_payload(
+    *,
+    parent: object,
+    exemplar_id: int,
+    seed: int | None,
+    random_sample_probability: float,
+    should_fire: object,
+    get_rule_criteria: object,
+    get_evidence_schema: object,
+) -> None:
+    """Emit dispatch payload OR skip-note per random-15% sampling decision.
+
+    Pure stdout side-effect; no DB writes. Helper extracted so the persist
+    path can stay tight + the emit-vs-skip branch is independently testable.
+    """
+    import json as _json
+    import random as _random
+
+    rng = _random.Random(seed) if seed is not None else _random.Random()
+    fire = should_fire(phase="t2_sb1", rng=rng)
+    if not fire:
+        click.echo(
+            f"[skip] exemplar {exemplar_id} not selected by random-"
+            f"{int(random_sample_probability * 100)}% sample"
+            + (f" (seed={seed})" if seed is not None else "")
+            + ". No Codex dispatch fired."
+        )
+        return
+
+    # Fire: emit dispatch payload JSON to stdout for operator-paired Codex
+    # dispatch handoff (mirrors label-exemplars emit-payload contract).
+    rule_criteria = get_rule_criteria(parent.proposed_pattern_class)
+    structural_evidence_schema = get_evidence_schema(
+        parent.proposed_pattern_class,
+    )
+    payload = {
+        "parent_exemplar_id": exemplar_id,
+        "parent_label_source": parent.label_source,
+        "proposed_pattern_class": parent.proposed_pattern_class,
+        "ticker": parent.ticker,
+        "timeframe": parent.timeframe,
+        "start_date": parent.start_date,
+        "end_date": parent.end_date,
+        "claude_silver_evaluation": parent.final_decision,
+        "claude_silver_final_pattern_class": parent.final_pattern_class,
+        "claude_silver_structural_evidence_json": (
+            parent.structural_evidence_json
+        ),
+        "claude_silver_labeler_evidence_json": (
+            parent.labeler_evidence_json
+        ),
+        "rule_criteria": rule_criteria,
+        "structural_evidence_schema": structural_evidence_schema,
+        "operator_guidance": (
+            "Dispatch the copowers Codex MCP server with the claude silver "
+            "label above + the rule_criteria + structural_evidence_schema. "
+            "Capture the Codex response JSON per the CodexReviewResponse "
+            "contract (agreed: bool; alternative_evaluation; "
+            "alternative_confidence; alternative_structural_evidence_json) "
+            "+ rerun this CLI with --codex-response-file <path> to persist."
+        ),
+    }
+    click.echo(_json.dumps(payload, sort_keys=True, indent=2))
+
+
 if __name__ == "__main__":  # pragma: no cover
     main()

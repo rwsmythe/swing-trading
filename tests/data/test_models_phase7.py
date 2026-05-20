@@ -32,12 +32,21 @@ def test_trade_dataclass_drops_status_adds_state():
 
 
 def test_fill_dataclass_shape():
-    """Fill mirrors fills schema (12 fields)."""
+    """Fill mirrors fills schema (16 fields post-Phase-13 T2.SB1 widening).
+
+    Phase 13 T2.SB1 (migration 0020) added 4 Theme 3 auto-fill provenance
+    fields: ``fill_origin`` + ``schwab_source_value_json`` +
+    ``operator_corrected_value_json`` + ``auto_fill_audit_at`` per spec
+    §3.4 + §6.4 + plan §A.14 paired-atomic-landing LOCK.
+    """
     field_names = {f.name for f in fields(Fill)}
     expected = {
         "fill_id", "trade_id", "fill_datetime", "action", "quantity", "price",
         "reason", "rule_based", "fees", "manual_entry_confidence",
         "reconciliation_status", "tos_match_id",
+        # Phase 13 T2.SB1 widening:
+        "fill_origin", "schwab_source_value_json",
+        "operator_corrected_value_json", "auto_fill_audit_at",
     }
     assert field_names == expected
 

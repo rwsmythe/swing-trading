@@ -31,8 +31,14 @@ reference/images/
 .copowers-session-*.json
 .copowers-subagent-active
 
-# Claude Code session artifacts
-.claude/
+# Claude Code session artifacts (ignored by default; specific project-local
+# subagent definitions ARE tracked via the negation rules below per Phase 13
+# spec §A.7 + OQ-11 — "Definition file is COMMITTED to repo (not gitignored)
+# so labeling sessions are reproducible").
+.claude/*
+!.claude/agents/
+.claude/agents/*
+!.claude/agents/*.md
 
 # Pipeline outputs (regenerated each run; not tracked)
 exports/

@@ -1,0 +1,58 @@
+{
+  "evaluation": "rejected",
+  "confidence": "medium",
+  "structural_evidence_json": {
+    "contractions": [
+      {
+        "start_date": "2020-07-08",
+        "end_date": "2020-08-03",
+        "peak_price": 26.76,
+        "trough_price": 20.61,
+        "depth_pct": 0.2298,
+        "duration_days": 26,
+        "avg_volume": 27086376.0
+      },
+      {
+        "start_date": "2020-08-04",
+        "end_date": "2020-08-24",
+        "peak_price": 22.50,
+        "trough_price": 20.68,
+        "depth_pct": 0.0809,
+        "duration_days": 20,
+        "avg_volume": 15561747.0
+      },
+      {
+        "start_date": "2020-09-02",
+        "end_date": "2020-09-04",
+        "peak_price": 23.58,
+        "trough_price": 21.435,
+        "depth_pct": 0.0910,
+        "duration_days": 2,
+        "avg_volume": 31375000.0
+      }
+    ],
+    "pivot_price": 26.76,
+    "base_top_price": 26.76,
+    "base_start_date": "2020-07-08",
+    "base_end_date": "2020-09-30",
+    "pivot_within_top_pct": 0.0,
+    "prior_uptrend_pct": null,
+    "prior_uptrend_weeks": null,
+    "stage": "stipulated_by_operator",
+    "breakout_observed": false,
+    "breakout_volume_ratio": null,
+    "volume_decline_passes": false,
+    "geometric_score": 0.36,
+    "criteria_pass": {
+      "stage_2_uptrend": true,
+      "prior_uptrend_leg": true,
+      "contractions_monotonic": false,
+      "contraction_depth_bounds": true,
+      "volume_decline_through_contractions": false,
+      "base_duration": true,
+      "pivot_at_base_top": true,
+      "breakout_volume_optional": false
+    }
+  },
+  "geometric_evidence_narrative": "Window shows three swing contractions off the 26.76 peak on 2020-07-09: T1 dropped 22.98 percent to 20.61 by 2020-08-03, T2 retraced 8.09 percent from 22.50 to 20.68 by 2020-08-24, and T3 pulled back 9.10 percent from 23.58 to 21.435 by 2020-09-04. Monotonic-contraction HARD GATE FAILS because T3 depth 9.10 percent is GREATER than T2 depth 8.09 percent (VCP requires strictly tightening contractions). Volume also fails to decline through the sequence: T3 average volume of about 31.4M exceeds T2's 15.6M by roughly 100 percent, well outside the plus or minus 10 percent tolerance. Base duration of 84 calendar days from 2020-07-08 to 2020-09-30 sits at the upper bound of the 21 to 84 day window, and price closed the window at 26.11 still 2.4 percent below the 26.76 pivot with no breakout volume confirmation. Because the monotonic-tightening HARD GATE fails, the window does not qualify as a VCP regardless of the otherwise passing depth bounds and base duration."
+}

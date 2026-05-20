@@ -332,6 +332,11 @@ def create_app(cfg: Config, cfg_path: Path | None = None) -> FastAPI:
     from swing.web.routes import (
         metrics as metrics_route,
     )
+
+    # Phase 13 T2.SB1 T-A.1.6 — `/patterns/*` group.
+    from swing.web.routes import (
+        patterns as patterns_route,
+    )
     from swing.web.routes import (
         pipeline as pipeline_route,
     )
@@ -361,5 +366,6 @@ def create_app(cfg: Config, cfg_path: Path | None = None) -> FastAPI:
     app.include_router(account_route.router)
     app.include_router(schwab_route.router)
     app.include_router(reconcile_route.router)
+    app.include_router(patterns_route.router)
 
     return app
