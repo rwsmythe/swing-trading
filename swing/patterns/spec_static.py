@@ -526,6 +526,18 @@ _STRUCTURAL_EVIDENCE_SCHEMA_BY_CLASS: dict[str, dict[str, Any]] = {
         "spec_section": "section 5.3",
         "evidence_dataclass": "FlatBaseEvidence",
         "fields": {
+            # T-A.1.8 Deficiency 3 closure: spec section 5.3's
+            # FlatBaseEvidence abbreviated enumeration omits sub-window
+            # dates explicitly, but criterion #6's lock string
+            # `(base_end - base_start).days >= 35` REQUIRES the subagent
+            # to record the base boundaries. Mirror VCP's
+            # base_start_date / base_end_date convention so the subagent
+            # has structured slots for the consolidation window inside a
+            # possibly-larger fetched bars window (operator T-A.1.7 paired
+            # session: TGT 2020-05-01..2020-08-31 corpus row only cleared
+            # by manually scoping the labeling window tight to the base).
+            "base_start_date": "date (ISO YYYY-MM-DD)",
+            "base_end_date": "date (ISO YYYY-MM-DD)",
             "range_top": "float",
             "range_bottom": "float",
             "regression_slope_pct_per_week": "float",

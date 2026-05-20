@@ -316,6 +316,118 @@ def test_schemas_for_flat_cup_htf_dbw_omit_extrapolated_stage_and_criteria_pass(
     assert "criteria_pass" in vcp_schema["fields"]
 
 
+# ============================================================================
+# T-A.1.8 Deficiency 3 — sub-window date fields per V1 class.
+#
+# Per closer brief T-1.8.4 + operator T-A.1.7 resume signal: each class's
+# structural_evidence_schema MUST enumerate enough sub-window date fields
+# for the pattern-labeler subagent to scope shape identification to the
+# actual base/pole/cup/trough region within a possibly-larger fetched
+# window. Pre-fix flat_base omitted base_start_date + base_end_date even
+# though the lock string at rule_criteria[5]['lock'] references
+# `(base_end - base_start).days`. Audit across all 5 classes:
+#   - vcp:             base_start_date + base_end_date          ✓ (pre-fix)
+#   - flat_base:       base_start_date + base_end_date          ✗ -> FIX
+#   - cup_with_handle: cup_left_edge_date / cup_bottom_date /
+#                      cup_right_edge_date / handle_start_date /
+#                      handle_end_date                          ✓ (pre-fix)
+#   - high_tight_flag: pole_start_date / pole_end_date /
+#                      consolidation_start_date /
+#                      consolidation_end_date                   ✓ (pre-fix;
+#       operator's "flag_start_date / flag_end_date" terminology is a
+#       misnomer — spec section 5.5 names the sub-window `consolidation_*`
+#       NOT `flag_*` per criterion 3 + 4 lock strings; existing schema
+#       satisfies the contract.)
+#   - double_bottom_w: trough_1_date / center_peak_date /
+#                      trough_2_date                            ✓ (pre-fix)
+# ============================================================================
+
+
+@pytest.mark.parametrize(
+    "pattern_class,required_sub_window_fields",
+    [
+        ("vcp", {"base_start_date", "base_end_date"}),
+        ("flat_base", {"base_start_date", "base_end_date"}),
+        (
+            "cup_with_handle",
+            {
+                "cup_left_edge_date", "cup_bottom_date",
+                "cup_right_edge_date",
+                "handle_start_date", "handle_end_date",
+            },
+        ),
+        (
+            "high_tight_flag",
+            {
+                "pole_start_date", "pole_end_date",
+                "consolidation_start_date", "consolidation_end_date",
+            },
+        ),
+        (
+            "double_bottom_w",
+            {"trough_1_date", "center_peak_date", "trough_2_date"},
+        ),
+    ],
+)
+def test_structural_evidence_schema_carries_sub_window_dates_per_class(
+    pattern_class: str,
+    required_sub_window_fields: set[str],
+) -> None:
+    """Per Deficiency 3: each V1 class's structural_evidence_schema MUST
+    enumerate enough date-typed sub-window fields for the subagent to
+    scope shape identification within a possibly-larger fetched window.
+
+    The rule_criteria locks for these classes reference sub-window dates
+    (e.g., flat_base criterion 6: `(base_end - base_start).days >= 35`);
+    if the schema doesn't expose the date fields, the subagent has no
+    structured slot to record them + must inline-compute the window
+    boundaries from the bars list.
+    """
+    schema = get_structural_evidence_schema(pattern_class)
+    actual_fields = set(schema["fields"].keys())
+    missing = required_sub_window_fields - actual_fields
+    assert not missing, (
+        f"{pattern_class!r} structural_evidence_schema missing sub-window "
+        f"date fields: {missing}. Spec section "
+        f"{schema['spec_section']} criteria lock strings reference these "
+        f"date boundaries; the subagent needs structured slots to record "
+        f"them."
+    )
+    # Each sub-window field MUST be typed as a date string for downstream
+    # rule-detector consumption (T2.SB3+/SB4) - guard against type drift
+    # to float / int that would silently break sub-window math.
+    for field in required_sub_window_fields:
+        type_hint = schema["fields"][field]
+        assert "date" in type_hint.lower() and "iso" in type_hint.lower(), (
+            f"{pattern_class!r} field {field!r} type hint {type_hint!r} "
+            f"missing 'date' + 'ISO' markers; expected "
+            f"'date (ISO YYYY-MM-DD)' shape per VCP schema convention."
+        )
+
+
+def test_high_tight_flag_consolidation_naming_matches_spec_5_5_not_flag_naming(
+) -> None:
+    """Spec section 5.5 names the sub-window between pole + breakout as
+    'consolidation' (criterion #3 + #4 lock strings + structural evidence
+    enumeration). The operator's T-A.1.7 resume note referenced
+    'flag_start_date / flag_end_date' which is a colloquial misnomer. This
+    test pins the schema to the spec's authoritative naming + guards
+    against a future contributor renaming consolidation_* to flag_* (which
+    would silently break the lock-string-vs-schema field mapping).
+    """
+    schema = get_structural_evidence_schema("high_tight_flag")
+    fields = schema["fields"]
+    assert "consolidation_start_date" in fields
+    assert "consolidation_end_date" in fields
+    # Defense-in-depth: assert flag_start_date / flag_end_date are NOT in
+    # the schema (so a rename would fail the test immediately).
+    assert "flag_start_date" not in fields, (
+        "HTF schema must use 'consolidation_*' naming per spec section 5.5; "
+        "operator's 'flag_*' terminology is a misnomer."
+    )
+    assert "flag_end_date" not in fields
+
+
 def test_get_rule_criteria_returns_deep_copy() -> None:
     """Codex R1 Minor #2 closure - module-level data must not be poisoned
     by caller mutation.
