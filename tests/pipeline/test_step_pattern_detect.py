@@ -738,68 +738,41 @@ class _ConcurrentInsertLease:
 def test_step_pattern_detect_pass_2_concurrent_insert_amends_histogram(
     seeded_env,
 ) -> None:
-    """Codex R3 Major #1 - Pass-2 concurrency recheck must amend the
-    histogram universe_context when it finds a concurrent-insert row.
+    """Codex R3 Major #1 (assertion UPDATED at Codex R4) - Pass-2 histogram
+    reflects the FINAL persisted set, never a queued-but-not-persisted score.
 
-    Pre-fix: the seed-read at step entry populates
-    ``universe_context['composite_scores']`` from EXISTING
-    pattern_evaluations rows for the pipeline_run_id. If another caller
-    inserts a row AFTER the seed-read but BEFORE Pass 2's recheck, the
-    Pass 2 recheck SELECT hits + idempotent-skips that row, but its
-    composite_score is NEVER added to ``universe_context``. Subsequent
-    INSERTs in the SAME emit_queue serialize histograms from STALE
-    context (missing the concurrent score).
+    Codex R4 architectural correction: the R3 fix (per-recheck-hit amend +
+    KEEP the queued score in universe_context) over-counted -- the queued
+    score for the concurrent-skipped tuple was a phantom that never landed
+    in the table, yet it polluted the histogram. The R4 fix restructures
+    Pass 2 to: (a) RE-READ canonical existing rows inside fenced_write;
+    (b) RECONCILE emit_queue against that re-read set, dropping any tuple
+    whose (ticker, pattern_class) is already persisted; (c) BUILD final
+    universe = existing_scores + surviving_queued_scores; (d) SERIALIZE +
+    INSERT each surviving row against that SAME final universe.
 
-    Post-fix: when Pass 2's idempotency recheck finds an existing row
-    (concurrent insert between seed-read + recheck), READ that row's
-    ``composite_score`` + APPEND to
-    ``universe_context['composite_scores']`` BEFORE serializing
-    histograms for any remaining rows.
+    Invariant: ``universe_context['composite_scores']`` represents the
+    FINAL set of persisted rows for this pipeline_run_id (existing + this
+    step's new inserts). NO Pass-1-staged-but-skipped score ever enters
+    the histogram.
 
-    Discriminating predicate:
-      - Pre-seed NO existing rows (seed-read at step entry returns empty;
-        existing_composite_scores=[], existing_idempotency_keys=set()).
-      - The lease injects a concurrent INSERT for (CONCUR, vcp) with
-        composite_score=0.99 INSIDE ``fenced_write()`` on first entry
-        (i.e. simulating the concurrent caller landing the row AFTER
-        the step's seed-read + BEFORE Pass 2's recheck loop runs).
+    Discriminating predicate (post-R4):
+      - Pre-seed NO existing rows.
+      - The lease injects a concurrent INSERT for (ABC, vcp) with
+        composite_score=0.99 INSIDE ``fenced_write()`` on first entry.
       - Pass 1 produces emit_queue = 3 rows for ABC (vcp, flat_base,
-        cup_with_handle). The CONCUR row's (ticker, pattern_class) is
-        DIFFERENT, so Pass 1's idempotency-skip does NOT fire (and
-        cannot fire -- seed was empty when Pass 1 ran).
-      - Pass 2 enters fenced_write() -> injection plants the CONCUR row
-        -> recheck for ABC rows does NOT find them (CONCUR is a
-        DIFFERENT ticker), so all 3 ABC rows INSERT.
-      - But the emit_queue does NOT include CONCUR (Pass 1 only ran on
-        ABC). The pre-fix code never amends universe_context with the
-        concurrent CONCUR row's score.
-      - Post-fix: the FIRST Pass-2-recheck SELECT inside fenced_write
-        observes CONCUR's row (when checking for ANY of the emit_queue
-        tuples that may already exist) -- but only if we ALSO add the
-        amend-on-recheck-hit code path AND broaden the recheck to scan
-        for ANY pre-existing rows not in existing_composite_scores OR
-        we explicitly scan for newly-present rows at Pass 2 entry.
+        cup_with_handle) with Pass-1-emitted composite_scores.
+      - Pass 2 enters fenced_write() -> injection plants (ABC, vcp, 0.99)
+        -> re-read finds it -> reconcile drops (ABC, vcp) from emit list
+        -> final universe = [0.99 (existing)] + [score_flatbase,
+        score_cwh (surviving queued)] = 3 entries.
+      - 2 surviving rows INSERT with the SAME 3-entry universe. The
+        Pass-1-queued (ABC, vcp) score is DROPPED (it was a phantom).
 
-    Implementation choice: the fix amends ``composite_scores`` whenever
-    Pass 2's per-tuple recheck SELECT HITS (i.e. the tuple was inserted
-    by a concurrent caller between seed-read + recheck). To trigger
-    that code path with a discriminating shape, the concurrent INSERT
-    must land at a (ticker, pattern_class) tuple that IS in emit_queue.
-
-    Revised setup:
-      - Pre-seed an emit_queue tuple in the table BEFORE Pass 2's
-        recheck SELECT fires for it; the recheck hits, the post-fix
-        code amends universe_context with that row's score, and ALL
-        SUBSEQUENT emit_queue rows' histograms reflect the amend.
-      - We use the lease's fenced_write hook to inject the concurrent
-        row for (ABC, vcp) with composite_score=0.99 ON ENTRY (after
-        the step's seed-read confirmed empty seed) -- Pass 1 already
-        appended ABC vcp to emit_queue (seed was empty), so the
-        recheck SELECT for ABC vcp now HITS the injected row.
-      - 2 remaining emit_queue rows (ABC flat_base + ABC cup_with_handle)
-        INSERT. Their histograms must reflect the 0.99 from the
-        concurrent ABC vcp row PLUS the Pass-1-emitted scores for ABC
-        flat_base + ABC cup_with_handle.
+    Pre-R4 expectation (over-count): histogram bins sum to 4 (3 Pass-1
+    + 1 concurrent-amend, including the phantom queued vcp score).
+    Post-R4 expectation (correct): histogram bins sum to 3 (final
+    universe = 1 existing + 2 surviving = 3 persisted rows).
     """
     conn = seeded_env["conn"]
     pipeline_run_id = seeded_env["pipeline_run_id"]
@@ -828,8 +801,7 @@ def test_step_pattern_detect_pass_2_concurrent_insert_amends_histogram(
     # The (ABC, vcp) row is the concurrent-injected one (composite_score=0.99,
     # detector_version='concurrent_v1.0'), and the recheck-hit path
     # idempotent-skips it. The 2 OTHER rows MUST carry a histogram that
-    # includes 0.99 from the concurrent vcp row PLUS each of their own
-    # Pass-1-emitted scores.
+    # reflects the FINAL persisted set (3 rows: 1 existing + 2 surviving).
     rows = conn.execute(
         "SELECT ticker, pattern_class, composite_score, detector_version, "
         "feature_distribution_log_json FROM pattern_evaluations "
@@ -851,23 +823,228 @@ def test_step_pattern_detect_pass_2_concurrent_insert_amends_histogram(
         f"got {len(step_emitted_rows)}: {step_emitted_rows}"
     )
 
-    # Each step-emitted row's histogram MUST include the 0.99 from the
-    # concurrent (ABC, vcp) row. Pre-fix: histogram excludes 0.99 ->
-    # bin counts sum to 3 (Pass 1 emitted 3 scores). Post-fix: histogram
-    # includes 0.99 from the recheck-hit amend -> bin counts sum to 4
-    # (3 Pass-1 + 1 concurrent-amend).
+    # Each step-emitted row's histogram MUST reflect the FINAL persisted
+    # set (3 rows total): the concurrent 0.99 + the 2 surviving queued
+    # scores. The Pass-1-queued vcp score is DROPPED (would have been
+    # double-counted under R3 semantics).
     for ticker, pattern_class, _score, _dv, fdl_json in step_emitted_rows:
         fdl = json.loads(fdl_json)
         bins = fdl["composite_score_histogram_bins"]
         assert isinstance(bins, list) and len(bins) == 10
         total = sum(bins)
-        assert total == 4, (
+        assert total == 3, (
             f"row ({ticker}, {pattern_class}): histogram bins sum to "
-            f"{total}; expected 4 (3 Pass-1-emitted + 1 concurrent-amend "
-            f"from the recheck-hit path). bins={bins}. "
-            f"Pre-fix: total == 3 (missing the concurrent 0.99 score). "
-            f"Post-fix: total == 4 (concurrent 0.99 amended into "
-            f"universe_context['composite_scores'] at Pass-2 recheck hit)."
+            f"{total}; expected 3 (1 existing concurrent + 2 surviving "
+            f"queued inserts). bins={bins}. "
+            f"Pre-R4 over-count: total == 4 (R3 kept the phantom "
+            f"Pass-1-queued vcp score AND added the concurrent score). "
+            f"Post-R4: total == 3 (reconcile drops the phantom; "
+            f"universe reflects ONLY persisted rows)."
+        )
+
+
+def test_step_pattern_detect_pass_2_does_not_overcount_concurrent_skipped_queued_score(
+    seeded_env,
+) -> None:
+    """Codex R4 Major #1 - Pass-2 final-universe semantics: NO queued
+    score for a concurrent-skipped tuple may appear in the histogram.
+
+    Pre-R4 (R3 semantics): Pass 1 appends EVERY queued detector score to
+    ``universe_context['composite_scores']`` BEFORE any insert. When Pass
+    2 finds a concurrent-existing row, R3 added that row's score AND
+    KEPT the Pass-1-staged queued score in the histogram -> the queued
+    score (which is NOT persisted) phantoms a phantom entry. Net effect:
+    histogram sums OVER the count of actual persisted rows.
+
+    Post-R4: Pass 2 RE-READS canonical existing rows; RECONCILES emit
+    list (drops any queued tuple whose (ticker, pattern_class) is in the
+    re-read set); BUILDS final universe = existing_scores + surviving
+    queued scores ONLY. The Pass-1-queued vcp score is dropped because
+    its tuple now exists in the persisted set (via the concurrent
+    insert).
+
+    Discriminating predicate:
+      - Pre-seed NO existing rows.
+      - Concurrent INSERT injects (ABC, vcp, composite_score=0.9) inside
+        fenced_write before Pass 2's loop.
+      - Pass 1 produces 3 queued tuples (ABC vcp, ABC flat_base, ABC
+        cup_with_handle).
+      - Post-R4: reconcile drops (ABC, vcp) from emit list -> final
+        universe = [0.9 (existing concurrent)] + [score_flatbase,
+        score_cwh (2 surviving queued)] = 3 entries.
+      - Final persisted rows: 1 (vcp concurrent) + 2 (flat_base + cwh
+        surviving inserts) = 3 rows.
+      - Each surviving row's histogram MUST sum to 3 (the FINAL
+        persisted count), NOT 4 (which would include the phantom
+        Pass-1-queued vcp score).
+
+    Pre-fix (R3) FAIL: total == 4 (over-count by 1 = the phantom queued
+      vcp score that never landed in the table).
+    Post-fix (R4) PASS: total == 3 (queued vcp score reconciled away;
+      universe reflects ONLY persisted rows).
+    """
+    conn = seeded_env["conn"]
+    pipeline_run_id = seeded_env["pipeline_run_id"]
+    _seed_aplus_candidate(conn, seeded_env["eval_run_id"], ticker="ABC")
+    conn.commit()
+
+    lease = _ConcurrentInsertLease(
+        conn,
+        run_id=pipeline_run_id,
+        concurrent_inserts=[("ABC", "vcp", 0.9)],
+    )
+
+    _step_pattern_detect(
+        cfg=None,
+        lease=lease,
+        eval_run_id=seeded_env["eval_run_id"],
+        ohlcv_cache=seeded_env["cache"],
+    )
+
+    rows = conn.execute(
+        "SELECT ticker, pattern_class, composite_score, detector_version, "
+        "feature_distribution_log_json FROM pattern_evaluations "
+        "WHERE pipeline_run_id = ? AND ticker = 'ABC' "
+        "ORDER BY pattern_class",
+        (pipeline_run_id,),
+    ).fetchall()
+    # Final persisted: vcp (concurrent) + flat_base + cup_with_handle = 3.
+    assert len(rows) == 3, (
+        f"expected 3 ABC rows total; got {len(rows)}: {rows}"
+    )
+
+    # Find the 2 step-emitted rows (NOT the concurrent vcp).
+    step_emitted_rows = [r for r in rows if r[3] != "concurrent_v1.0"]
+    assert len(step_emitted_rows) == 2, (
+        f"expected 2 step-emitted rows; got {len(step_emitted_rows)}"
+    )
+
+    # Each surviving row's histogram MUST sum to 3 (FINAL persisted set
+    # count), AND bin 9 (containing 0.9) MUST be populated by the
+    # concurrent existing row.
+    for ticker, pattern_class, _score, _dv, fdl_json in step_emitted_rows:
+        fdl = json.loads(fdl_json)
+        bins = fdl["composite_score_histogram_bins"]
+        assert isinstance(bins, list) and len(bins) == 10
+        total = sum(bins)
+        assert total == 3, (
+            f"row ({ticker}, {pattern_class}): histogram bins sum to "
+            f"{total}; expected 3 (FINAL persisted set = 1 concurrent "
+            f"existing + 2 surviving queued inserts). "
+            f"Pre-R4 (R3 semantics): total == 4 (over-count: phantom "
+            f"Pass-1-queued vcp score never persisted but kept in "
+            f"universe). bins={bins}"
+        )
+        # The 0.9 score MUST land in bin 9 (containing [0.9, 1.0]).
+        assert bins[9] >= 1, (
+            f"row ({ticker}, {pattern_class}): bin 9 (containing 0.9) "
+            f"is empty; concurrent existing row's composite_score=0.9 "
+            f"missing from histogram universe. bins={bins}"
+        )
+
+
+def test_step_pattern_detect_pass_2_amendment_not_order_dependent(
+    seeded_env,
+) -> None:
+    """Codex R4 Major #2 - Pass-2 amendment must not be order-dependent.
+
+    Pre-R4 (R3 semantics): the amend-on-recheck-hit code path only fires
+    when the recheck loop REACHES the conflicting tuple. Any rows
+    SERIALIZED EARLIER in emit_queue see a STALE histogram that OMITS
+    the concurrent row's score. The R3 test happened to use a vcp
+    concurrent conflict (FIRST in detector order), so the order
+    dependence was not exposed -- but if the concurrent row lands on
+    cup_with_handle (LAST in detector order), then ALL rows serialized
+    before it carry a stale histogram.
+
+    Post-R4: Pass 2 builds final universe ONCE (after re-read +
+    reconcile) and ALL surviving rows serialize against that SAME
+    universe. NO order dependence in serialization.
+
+    Discriminating predicate:
+      - Pre-seed NO existing rows.
+      - Concurrent INSERT injects (ABC, cup_with_handle, 0.95) inside
+        fenced_write before Pass 2's loop. cup_with_handle is LAST in
+        the detector registry order (vcp, flat_base, cup_with_handle).
+      - Pass 1 produces 3 queued tuples (ABC vcp, ABC flat_base, ABC
+        cup_with_handle).
+      - Post-R4: reconcile drops (ABC, cup_with_handle); final universe
+        = [0.95 (existing)] + [score_vcp, score_flatbase (2 surviving)]
+        = 3 entries.
+      - BOTH surviving rows (vcp + flat_base) see the SAME 3-entry
+        universe with bin 9 (containing 0.95) populated.
+
+    Pre-fix (R3) FAIL: vcp is FIRST in emit_queue, so its histogram is
+      serialized BEFORE the cup_with_handle recheck-hit fires. The vcp
+      row's histogram is STALE -- excludes the concurrent 0.95.
+      bins[9] for the vcp row == 0 (no 0.95).
+    Post-fix (R4) PASS: both vcp + flat_base histograms contain 0.95
+      via bin 9 (the final universe was built before any insert).
+    """
+    conn = seeded_env["conn"]
+    pipeline_run_id = seeded_env["pipeline_run_id"]
+    _seed_aplus_candidate(conn, seeded_env["eval_run_id"], ticker="ABC")
+    conn.commit()
+
+    # Concurrent insert lands on the LAST detector in the registry order.
+    lease = _ConcurrentInsertLease(
+        conn,
+        run_id=pipeline_run_id,
+        concurrent_inserts=[("ABC", "cup_with_handle", 0.95)],
+    )
+
+    _step_pattern_detect(
+        cfg=None,
+        lease=lease,
+        eval_run_id=seeded_env["eval_run_id"],
+        ohlcv_cache=seeded_env["cache"],
+    )
+
+    rows = conn.execute(
+        "SELECT ticker, pattern_class, composite_score, detector_version, "
+        "feature_distribution_log_json FROM pattern_evaluations "
+        "WHERE pipeline_run_id = ? AND ticker = 'ABC' "
+        "ORDER BY pattern_class",
+        (pipeline_run_id,),
+    ).fetchall()
+    # Final persisted: cup_with_handle (concurrent) + vcp + flat_base = 3.
+    assert len(rows) == 3, (
+        f"expected 3 ABC rows total; got {len(rows)}: {rows}"
+    )
+
+    # Two step-emitted rows (vcp + flat_base); cup_with_handle is the
+    # concurrent-injected one.
+    step_emitted_rows = [r for r in rows if r[3] != "concurrent_v1.0"]
+    assert len(step_emitted_rows) == 2, (
+        f"expected 2 step-emitted rows (vcp + flat_base); got "
+        f"{len(step_emitted_rows)}: {step_emitted_rows}"
+    )
+
+    # BOTH step-emitted rows' histograms MUST contain bin 9 (containing
+    # the concurrent 0.95). Pre-R4: the FIRST-serialized row (vcp) has
+    # bins[9] == 0 because cup_with_handle's recheck-hit had not yet
+    # fired when vcp was serialized.
+    for ticker, pattern_class, _score, _dv, fdl_json in step_emitted_rows:
+        fdl = json.loads(fdl_json)
+        bins = fdl["composite_score_histogram_bins"]
+        assert isinstance(bins, list) and len(bins) == 10
+        total = sum(bins)
+        assert total == 3, (
+            f"row ({ticker}, {pattern_class}): histogram bins sum to "
+            f"{total}; expected 3 (FINAL persisted set). "
+            f"Pre-R4: rows serialized BEFORE the cup_with_handle "
+            f"recheck-hit have stale histograms (total == 2 for vcp; "
+            f"total == 3 for flat_base after the amend fires). "
+            f"bins={bins}"
+        )
+        assert bins[9] >= 1, (
+            f"row ({ticker}, {pattern_class}): bin 9 (containing 0.95) "
+            f"is empty -- the concurrent cup_with_handle row's score "
+            f"is missing from this row's histogram universe. "
+            f"This is the ORDER-DEPENDENT bug (R3 amend-on-hit only "
+            f"fires when loop REACHES the conflicting tuple, but "
+            f"{pattern_class} was serialized BEFORE cup_with_handle). "
+            f"bins={bins}"
         )
 
 

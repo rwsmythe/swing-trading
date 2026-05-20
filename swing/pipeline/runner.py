@@ -1642,9 +1642,12 @@ def _step_pattern_detect(
                 # matching lands at T2.SB5 -- recon section 8).
                 composite_score = geometric_score
 
-                # Accumulate composite_scores for the run-level histogram.
-                universe_context["composite_scores"].append(composite_score)
-
+                # Codex R4 Major #1: do NOT append Pass-1 scores to
+                # universe_context here. The histogram universe is built
+                # once in Pass 2 (after re-read + reconcile) so that
+                # concurrent-skipped queued scores never phantom into
+                # the histogram. The Pass-1 append was the root cause
+                # of the over-count + order-dependent histograms.
                 emit_queue.append(
                     (
                         ticker,
@@ -1678,6 +1681,78 @@ def _step_pattern_detect(
         return
 
     with lease.fenced_write() as conn:
+        # Codex R4 Major #1 + #2: Pass-2 final-universe semantics +
+        # reconciliation-before-serialize. The prior R3 fix (per-recheck-hit
+        # amend) had two architectural defects:
+        #   (a) over-count: every queued detector score was already in
+        #       ``universe_context['composite_scores']`` from Pass 1
+        #       (line 1646), so when a concurrent row caused the recheck
+        #       to skip the queued INSERT, the queued score remained in
+        #       the histogram as a PHANTOM (counted but never persisted).
+        #   (b) order dependence: per-tuple amend only fired when the
+        #       loop REACHED the conflicting tuple; rows serialized
+        #       EARLIER in emit_queue carried a STALE histogram that
+        #       omitted the late-discovered concurrent row's score.
+        #
+        # Fix: RE-READ canonical existing rows ONCE inside the fenced
+        # write; RECONCILE emit_queue against the re-read set (drop any
+        # tuple already persisted); BUILD final universe = existing
+        # scores + surviving queued scores; SERIALIZE + INSERT every
+        # surviving row against this SAME final universe. The invariant
+        # is that ``universe_context['composite_scores']`` represents
+        # the FINAL persisted set for this pipeline_run_id -- never a
+        # queued-but-not-persisted phantom.
+        canonical_existing = conn.execute(
+            "SELECT ticker, pattern_class, composite_score "
+            "FROM pattern_evaluations WHERE pipeline_run_id = ?",
+            (pipeline_run_id,),
+        ).fetchall()
+        existing_keys: set[tuple[str, str]] = set()
+        canonical_existing_scores: list[float] = []
+        import contextlib as _contextlib3
+        for _row in canonical_existing:
+            existing_keys.add((str(_row[0]), str(_row[1])))
+            with _contextlib3.suppress(TypeError, ValueError):
+                _val = _row[2]
+                if _val is not None:
+                    _f = float(_val)
+                    # Skip non-finite (NaN/inf) defensively -- the
+                    # histogram bucketer enforces [0.0, 1.0] anyway and
+                    # NaN would raise there.
+                    if _f == _f and _f not in (float("inf"), float("-inf")):
+                        canonical_existing_scores.append(_f)
+
+        # Reconcile emit_queue against canonical existing: any queued
+        # tuple already present is DROPPED (its concurrent persisted
+        # row's score, not the queued score, counts toward universe).
+        final_emit_list: list[
+            tuple[str, str, str, object, object, float]
+        ] = []
+        for tup in emit_queue:
+            tup_ticker = tup[0]
+            tup_pattern_class = tup[1]
+            if (tup_ticker, tup_pattern_class) in existing_keys:
+                log.info(
+                    "pattern_detect: row exists for (%d, %s, %s) at "
+                    "Pass 2 reconcile; skipping (queued score dropped "
+                    "from universe)",
+                    pipeline_run_id,
+                    tup_ticker,
+                    tup_pattern_class,
+                )
+                rows_skipped_idempotent += 1
+                continue
+            final_emit_list.append(tup)
+
+        # Build the FINAL universe ONCE: existing persisted scores plus
+        # the surviving queued scores. Every serialized row sees this
+        # SAME universe (no order dependence).
+        final_universe_scores: list[float] = list(canonical_existing_scores)
+        for tup in final_emit_list:
+            with _contextlib3.suppress(TypeError, ValueError):
+                final_universe_scores.append(float(tup[5]))
+        universe_context["composite_scores"] = final_universe_scores
+
         for (
             ticker,
             pattern_class,
@@ -1685,45 +1760,7 @@ def _step_pattern_detect(
             window,
             evidence,
             composite_score,
-        ) in emit_queue:
-            # Idempotency re-check: a concurrent caller MAY have inserted
-            # a row for this (pipeline_run_id, ticker, pattern_class)
-            # between Pass 1's seed-read and Pass 2's INSERT (LOCK L3
-            # forbids INSERT OR REPLACE). SELECT-then-INSERT here.
-            #
-            # Codex R3 Major #1: when the recheck HITS (a concurrent
-            # insert landed between seed-read + recheck), AMEND
-            # ``universe_context['composite_scores']`` with the
-            # concurrent row's composite_score BEFORE serializing
-            # histograms for any REMAINING rows in the emit_queue --
-            # otherwise subsequent INSERTs carry a STALE histogram
-            # missing the concurrent row's score.
-            existing = conn.execute(
-                "SELECT id, composite_score FROM pattern_evaluations "
-                "WHERE pipeline_run_id = ? AND ticker = ? "
-                "AND pattern_class = ? LIMIT 1",
-                (pipeline_run_id, ticker, pattern_class),
-            ).fetchone()
-            if existing is not None:
-                log.info(
-                    "pattern_detect: row exists for (%d, %s, %s) at "
-                    "Pass 2 recheck; skipping",
-                    pipeline_run_id,
-                    ticker,
-                    pattern_class,
-                )
-                rows_skipped_idempotent += 1
-                # Amend universe_context with the concurrent row's score
-                # (defensive: handle NULL/garbage composite_score).
-                _concurrent_score = existing[1] if len(existing) > 1 else None
-                if _concurrent_score is not None:
-                    import contextlib as _contextlib2
-                    with _contextlib2.suppress(TypeError, ValueError):
-                        universe_context["composite_scores"].append(
-                            float(_concurrent_score)
-                        )
-                continue
-
+        ) in final_emit_list:
             # Drift-log capture (T-A.3.5 surface).
             try:
                 fdl = capture_feature_distribution(
