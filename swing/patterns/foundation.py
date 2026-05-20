@@ -462,3 +462,93 @@ def generate_candidate_windows(
                 )
             )
     return windows
+
+
+# ============================================================================
+# Section 5.1.4 - Volume profile primitives (T-A.2.4)
+# ============================================================================
+
+
+@dataclass(frozen=True)
+class VolumeSegment:
+    """Volume profile of one swing window, for downstream pattern detectors.
+
+    Spec section 5.1.4 does not explicitly define this dataclass shape
+    (the brief notes ``avg_volume`` as the minimum-required field per
+    section line 542 reference). The shape below mirrors the
+    ``Contraction`` dataclass at spec lines 568-577: start/end dates,
+    avg_volume, plus a ``swing_index`` evidence-trail field for the
+    consumer to correlate back to the input swings list.
+    """
+
+    start_date: date
+    end_date: date
+    avg_volume: float
+    swing_index: int
+
+
+def volume_trend_through_swings(
+    bars: pd.DataFrame,
+    swings: list[Swing],
+) -> list[VolumeSegment]:
+    """For each swing, compute the mean Volume across the swing's
+    inclusive date range and return one VolumeSegment per swing.
+
+    Per spec section 5.1.4: ``bars.loc[swing.start_date:swing.end_date,
+    'Volume'].mean()`` (pandas .loc on Timestamp index is inclusive of
+    both endpoints).
+    """
+    out: list[VolumeSegment] = []
+    if bars is None or len(bars) == 0:
+        return out
+    for i, sw in enumerate(swings):
+        # pandas .loc accepts date / Timestamp; cast for clarity.
+        s = pd.Timestamp(sw.start_date)
+        e = pd.Timestamp(sw.end_date)
+        sub = bars.loc[s:e, "Volume"]
+        avg = float(sub.mean()) if len(sub) > 0 else 0.0
+        out.append(
+            VolumeSegment(
+                start_date=sw.start_date,
+                end_date=sw.end_date,
+                avg_volume=avg,
+                swing_index=i,
+            )
+        )
+    return out
+
+
+def breakout_volume_ratio(
+    bars: pd.DataFrame,
+    breakout_date: date,
+    baseline_days: int = 50,
+) -> float:
+    """Ratio of ``breakout_date`` volume vs the prior ``baseline_days``
+    mean volume.
+
+    Per spec section 5.1.4: the baseline window is the ``baseline_days``
+    bars STRICTLY BEFORE ``breakout_date`` (NOT including breakout_date
+    itself). Returns ``volume[breakout_date] / mean(baseline)``.
+
+    EDGE CASE (dispatch brief section 4.1 #6): if the baseline mean is
+    zero (extremely thin trading), return ``0.0``; do NOT raise
+    ZeroDivisionError; do NOT return NaN.
+    """
+    if bars is None or len(bars) == 0:
+        return 0.0
+    if baseline_days < 1:
+        raise ValueError(f"baseline_days must be >= 1, got {baseline_days}")
+    breakout_ts = pd.Timestamp(breakout_date)
+    # Volume on the breakout bar (raises KeyError if missing - by design).
+    if breakout_ts not in bars.index:
+        raise KeyError(f"breakout_date {breakout_date} not in bars index")
+    breakout_vol = float(bars.loc[breakout_ts, "Volume"])
+    # Baseline = the baseline_days bars STRICTLY BEFORE the breakout.
+    prior = bars.loc[bars.index < breakout_ts, "Volume"]
+    if len(prior) == 0:
+        return 0.0
+    baseline_window = prior.iloc[-baseline_days:]
+    baseline_mean = float(baseline_window.mean())
+    if baseline_mean == 0.0:
+        return 0.0
+    return breakout_vol / baseline_mean
