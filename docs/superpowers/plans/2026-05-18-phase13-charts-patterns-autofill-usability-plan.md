@@ -2306,7 +2306,7 @@ def test_dtw_full_pipeline_completes_within_120s_on_baseline_hardware(benchmark,
 
 ---
 
-### §G.10 Sub-bundle T4.SB — Usability triage + Q4 close-tracking flag (7 tasks)
+### §G.10 Sub-bundle T4.SB — Usability triage + Q4 close-tracking flag + metrics-dashboard hooked-up audit (8 tasks)
 
 **Goal:** Ship Q4 close-tracking flag per spec §7.2 D-Q4.1..D-Q4.7. T4.SB ships Q4 ONLY per §F.1 LOCK + operator-pre-writing-plans elicitation (no additional usability items confirmed empty at 2026-05-18 PM).
 
@@ -2433,6 +2433,48 @@ def auto_clear_on_position_open(conn, ticker: str) -> bool:
 
 - [ ] **Step 4: Commit** — `test(phase13): Q4 session-anchor + base-layout banner alignment (T-D.6)`.
 
+#### Task T-D.6b — Metrics dashboard hooked-up audit + hypothesis-progress card bug fix (operator-surfaced 2026-05-20)
+
+**Source:** Operator-witnessed bug 2026-05-20 — on `/metrics` dashboard the **hypothesis-progress card** shows "Sub-A+ VCP-Not-Formed" at **0/5**, but the main `/dashboard` page reports the same hypothesis at **5/5**. Discrepancy = metrics-page card NOT hooked up to the same DB query (or filter predicate) as the canonical dashboard surface. Per operator: "Probably worth a review of ALL of the metrics to ensure they are correctly hooked up to the DB." Folded into T4.SB usability triage per operator decision 2026-05-20 (banked from `docs/phase3e-todo.md` "2026-05-20 Metrics dashboard hooked-up audit TODO" section).
+
+**Scope** (recon-first; 3-prong):
+
+1. **Specific bug fix**: trace hypothesis-progress card's metrics-page query path at `swing/web/routes/metrics.py` + `swing/web/view_models/metrics/` + `swing/metrics/` consumer; identify divergence from `/dashboard`'s canonical hypothesis surface (likely candidates: session-anchor predicate drift / bucket-status filter drift / stale `evaluation_run_id` join / different table joined entirely).
+2. **Audit ALL metric tiles on `/metrics`**: enumerate every metric surface (8 V1 tiles + 9th `/metrics/pattern-outcomes` landing at T-A.6.5 in T2.SB6 per OQ-10); for each, locate the DB query, compare against the canonical equivalent on `/dashboard` / CLI / briefing.md; document divergences. Findings table at recon doc enumerates: per-tile query + canonical-source query + match/divergence status + root cause if diverged.
+3. **Per-metric round-trip regression tests**: for EVERY divergence identified, plant a discriminating regression test asserting metric-tile count equals canonical-source count for known-good fixture state (mirrors Phase 8 `cfacbc5` round-trip pattern that closed session-anchor read/write mismatches; same gotcha family).
+
+**Files in scope** (pre-recon best guess; implementer VERIFIES + may revise at recon time per T1.SB0 gate-fix + T-PT9 precedent):
+- Modify: `swing/web/routes/metrics.py` — fix divergent queries.
+- Modify: `swing/web/view_models/metrics/*.py` — fix divergent VM assembly.
+- Modify: `swing/metrics/*.py` — fix consumer layer if root cause lives there.
+- Read-only: `swing/web/view_models/dashboard.py` — canonical comparator for hypothesis-progress.
+- Modify: `tests/web/test_routes/test_metrics.py` — add audit regression tests (per-metric).
+- Create: `docs/phase13-t4-sb-metrics-audit-recon.md` — recon doc enumerating per-tile findings table.
+
+**Tasks**:
+
+- [ ] **Step 1 — Recon**: enumerate every metric tile rendered on `/metrics`. For each tile, identify: (a) underlying DB query OR consumer-layer call; (b) canonical-source equivalent on `/dashboard` OR CLI OR briefing.md; (c) match or divergence; (d) if diverged, hypothesized root cause. Write findings to `docs/phase13-t4-sb-metrics-audit-recon.md` as a markdown table.
+- [ ] **Step 2 — Verify hypothesis-progress bug**: reproduce the specific bug (Sub-A+ VCP-Not-Formed 0/5 vs 5/5) against production-shape fixture data; confirm root cause from recon; document.
+- [ ] **Step 3 — Write failing regression tests**: per divergence identified at Step 1, plant a discriminating test in `tests/web/test_routes/test_metrics.py` asserting metric-tile count equals canonical-source count for a known-good fixture. Tests MUST FAIL pre-fix; MUST PASS post-fix.
+- [ ] **Step 4 — Implement fix(es)**: for each divergence, apply minimal-scope fix at the divergence point (typically VM-layer or route-layer; AVOID modifying canonical-source query unless recon proves canonical is itself buggy).
+- [ ] **Step 5 — Run tests; verify PASS**: all new regression tests + existing test suite.
+- [ ] **Step 6 — Commit**: one commit per divergence-fix-and-test pair OR a single closure commit if all divergences trace to one root cause. Final commit subject: `fix(phase13): metrics-dashboard hooked-up audit + hypothesis-progress card divergence closure (T-D.6b)`.
+
+**Watch items:**
+- **Recon-first verification** — operator's bug observation hypothesizes one specific divergence (hypothesis-progress 0/5 vs 5/5); recon may surface other divergences across the 8 V1 metric tiles. Do NOT silently widen scope; document all findings; flag any divergence that requires NON-trivial fix scope (>50 LOC OR cross-module refactor) for operator escalation.
+- **Session-anchor read/write mismatch family** — recurring CLAUDE.md gotcha (weather + Phase 8 daily-mgmt badge + Phase 13 T1.SB0 in-progress-bar inequality + recent Phase-9 calendar-drift). 4th cumulative instance candidate if metrics-page divergence traces here. Recon should explicitly check for this pattern at each diverged tile.
+- **Synthetic-fixture-vs-production-emitter shape drift** — recurring 4-instance CLAUDE.md gotcha. If metrics-tile tests pass against synthetic fixtures but real-DB-shape diverges, this is a 5th instance.
+- **`BaseLayoutVM` banner pin discipline** — every metrics VM extends `BaseLayoutVM` per Phase 13 forward-binding lesson #12 + Codex R1 Major #3/#4 across multiple sub-bundles. Audit MAY surface metric VMs that haven't been retrofitted (regression bait).
+- **Forward-binding from T2.SB6**: `/metrics/pattern-outcomes` 9th tile lands at T-A.6.5; T-D.6b audit MUST include this tile in the per-tile findings table (it's a Phase 13 deliverable; ZERO tolerance for it diverging from canonical source at T4.SB closer).
+- **Phase 10 cohort architecture** — `/metrics/pattern-outcomes` composes with Phase 10 `swing/metrics/cohort.py` + `honesty.py`; audit should confirm cohort filters propagate consistently across all metric tiles that share the cohort infrastructure.
+- **ASCII-only on any new diagnostic output** — recon doc + audit findings table MUST be ASCII; no `→` / `§` / em-dash glyphs (CLAUDE.md gotcha cp1252 Windows stdout).
+
+**Acceptance criteria:**
+- Hypothesis-progress card Sub-A+ VCP-Not-Formed renders count matching `/dashboard` for the same canonical query state.
+- ALL identified metric-tile divergences have discriminating regression tests asserting tile-count equals canonical-source count.
+- Recon doc at `docs/phase13-t4-sb-metrics-audit-recon.md` enumerates per-tile findings with: query path + canonical comparator + match/divergence status + root cause if diverged + fix shape if applicable.
+- ZERO open metric-tile divergences post-merge (or each remaining banked as explicit V2 candidate with operator-escalation note).
+
 #### Task T-D.7 — T4.SB closer — integration E2E + cp1252 subprocess validation + ruff sweep + Phase 13 close
 
 **Files:**
@@ -2492,6 +2534,7 @@ Per §A.8 + Phase 12 C.D gate-fix #1 + #3: pytest `capfd` bypasses the OS-level 
 **Operator-witnessed gate (T4.SB):**
 - S1 (inline): pytest + ruff.
 - S2 (web): operator clicks flag toggle on PTEN watchlist row; confirms `[*]` badge appears.
+- S2b (web/metrics): operator visits `/metrics`; confirms hypothesis-progress card Sub-A+ VCP-Not-Formed renders count matching `/dashboard`; spot-checks remaining metric tiles for visible-vs-canonical alignment per T-D.6b audit findings.
 - S3 (web): operator unflags; confirms badge gone + sort-priority returns to algorithm order.
 - S4 (CLI): operator runs `swing watchlist flag PTEN --close-track --reason "post-pivot breakout"`; confirms flag set.
 - S5 (auto-clear): operator opens position on flagged ticker; confirms flag auto-cleared; audit row present.
@@ -2542,13 +2585,13 @@ T3.SB3 ────────────────────────�
 T2.SB6 ────────────────────────────────────── (8 tasks; closed-loop surface + Theme 1 annotated charts + T-A.1.6 Deficiency 1 fold-in)
     │
     ▼
-T4.SB ────────────────────────────────────── (7 tasks; usability triage + Q4)
+T4.SB ────────────────────────────────────── (8 tasks; usability triage + Q4 + metrics-dashboard hooked-up audit)
     │
     ▼
 Phase 13 CLOSED
 ```
 
-Total: **11 sub-bundles, 72 tasks** (T-A.1.1b added per Codex R1 Major #1 + R2 Major #2 split; T-A.6.6b added per operator decision 2026-05-20 folding T-A.1.6 Deficiency 1 into T2.SB6).
+Total: **11 sub-bundles, 73 tasks** (T-A.1.1b added per Codex R1 Major #1 + R2 Major #2 split; T-A.6.6b added per operator decision 2026-05-20 folding T-A.1.6 Deficiency 1 into T2.SB6; T-D.6b added per operator decision 2026-05-20 folding metrics-dashboard hooked-up audit + hypothesis-progress card bug into T4.SB).
 
 One concurrent dispatch point: T2.SB1 ∥ T3.SB1 (per OQ-12 Option E). All other transitions are serial.
 

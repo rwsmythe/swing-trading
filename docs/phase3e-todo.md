@@ -82,18 +82,20 @@
 
 ---
 
-## 2026-05-20 Metrics dashboard hooked-up audit TODO (NEW; not yet dispatched)
+## 2026-05-20 Metrics dashboard hooked-up audit TODO — FOLDED INTO T4.SB as NEW task T-D.6b (operator decision 2026-05-20)
 
-**Bug surfaced 2026-05-20** (operator-witnessed at metrics dashboard inspection): On `/metrics` dashboard the **hypothesis-progress card** shows "Sub-A+ VCP-Not-Formed" at **0/5**, but the main `/dashboard` page reports the same hypothesis at **5/5**. Discrepancy = metrics-page card is NOT hooked up to the same DB query (or filter predicate) as the dashboard's hypothesis surface — the metrics-page query returns 0 where the dashboard query returns 5.
+**Disposition:** Operator decision 2026-05-20 (same day as bug surfacing): FOLDED INTO T4.SB usability triage closer as NEW task T-D.6b (plan §G.10 amended; T4.SB task count 7 → 8; closer S2b gate added; dispatch sequence diagram + total task count 72 → 73 updated). T4.SB chosen over standalone or T2.SB6 fold-in because (a) T4.SB is the explicit "usability triage + audit" closer per Theme 4; (b) metrics-page bug fits the audit pattern; (c) T2.SB6 already absorbs Deficiency 1 fold-in + 9th metric tile landing — minimal cross-bundle scope creep; (d) T4.SB's per-tile audit covers the 9th tile from T2.SB6 in the same sweep.
 
-**Scope of investigation + fix dispatch** (operator-paced; recon-first):
+**Bug surfaced 2026-05-20** (operator-witnessed at metrics dashboard inspection; preserved verbatim for T-D.6b implementer recon): On `/metrics` dashboard the **hypothesis-progress card** shows "Sub-A+ VCP-Not-Formed" at **0/5**, but the main `/dashboard` page reports the same hypothesis at **5/5**. Discrepancy = metrics-page card is NOT hooked up to the same DB query (or filter predicate) as the dashboard's hypothesis surface — the metrics-page query returns 0 where the dashboard query returns 5.
+
+**Scope of investigation + fix dispatch** (operator-paced; recon-first; ABSORBED INTO T-D.6b task spec at plan §G.10):
 1. **Specific bug fix**: trace the hypothesis-progress card's query path at `swing/web/routes/metrics.py` + `swing/web/view_models/metrics/` + `swing/metrics/` consumer; identify why the count diverges from `/dashboard`'s. Likely candidates: (a) different session-anchor predicate (forward-looking `action_session_for_run` vs backward-looking `last_completed_session`); (b) different `bucket`/`status` filter; (c) different join key (e.g., joining via stale `evaluation_run_id` vs latest); (d) joining `pattern_evaluations` instead of the canonical hypothesis-status source. Compare line-by-line with the dashboard's hypothesis VM query.
 2. **Audit ALL metric tiles on `/metrics`**: enumerate every metric surface (8 existing + 9th planned at T2.SB6 `/metrics/pattern-outcomes` per OQ-10); for each, locate the DB query, compare against the canonical equivalent on dashboard/CLI; document any divergences. Per operator: "Probably worth a review of all of the metrics to ensure they are correctly hooked up to the DB."
 3. **Add discriminating regression tests**: per-metric round-trip integration test asserting metric tile count equals canonical-source count for known-good fixture state (mirrors the Phase 8 `cfacbc5` round-trip test pattern that closes session-anchor read/write mismatches; same family as the existing CLAUDE.md gotcha "Session-anchor read/write mismatch").
 
 **Forward-binding lesson family hypothesis** (pre-recon): session-anchor read/write mismatch family — recurring across weather lookup + Phase 8 daily-mgmt badge + Phase 13 T1.SB0 in-progress-bar inequality. Metrics-page query may consume a different session anchor or stale `evaluation_run_id` / `pipeline_run_id` than the dashboard surface. Implementer recon will VERIFY before fixing.
 
-**Operator decision pending**: dispatch standalone investigation + fix OR batch with T4.SB usability triage closer OR batch with T2.SB6 closed-loop surface (which already adds the 9th metric tile per OQ-10 + audits Phase 10 metrics architecture). Standalone has lowest scope; T4.SB fold-in maximizes related usability concerns; T2.SB6 fold-in benefits from already touching metrics infrastructure.
+**Operator decision RESOLVED 2026-05-20**: batch with T4.SB usability triage closer as NEW task T-D.6b. Closes the open operator-decision item from the bug-surfacing moment same day. T-D.6b task spec at plan §G.10 contains the full implementer-facing recon-first + 6-step workflow + watch items + acceptance criteria. No standalone dispatch needed.
 
 **Files likely in scope** (pre-recon best guess; implementer VERIFIES):
 - `swing/web/routes/metrics.py`
