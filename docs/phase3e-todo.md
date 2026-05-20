@@ -82,6 +82,31 @@
 
 ---
 
+## 2026-05-20 Metrics dashboard hooked-up audit TODO (NEW; not yet dispatched)
+
+**Bug surfaced 2026-05-20** (operator-witnessed at metrics dashboard inspection): On `/metrics` dashboard the **hypothesis-progress card** shows "Sub-A+ VCP-Not-Formed" at **0/5**, but the main `/dashboard` page reports the same hypothesis at **5/5**. Discrepancy = metrics-page card is NOT hooked up to the same DB query (or filter predicate) as the dashboard's hypothesis surface — the metrics-page query returns 0 where the dashboard query returns 5.
+
+**Scope of investigation + fix dispatch** (operator-paced; recon-first):
+1. **Specific bug fix**: trace the hypothesis-progress card's query path at `swing/web/routes/metrics.py` + `swing/web/view_models/metrics/` + `swing/metrics/` consumer; identify why the count diverges from `/dashboard`'s. Likely candidates: (a) different session-anchor predicate (forward-looking `action_session_for_run` vs backward-looking `last_completed_session`); (b) different `bucket`/`status` filter; (c) different join key (e.g., joining via stale `evaluation_run_id` vs latest); (d) joining `pattern_evaluations` instead of the canonical hypothesis-status source. Compare line-by-line with the dashboard's hypothesis VM query.
+2. **Audit ALL metric tiles on `/metrics`**: enumerate every metric surface (8 existing + 9th planned at T2.SB6 `/metrics/pattern-outcomes` per OQ-10); for each, locate the DB query, compare against the canonical equivalent on dashboard/CLI; document any divergences. Per operator: "Probably worth a review of all of the metrics to ensure they are correctly hooked up to the DB."
+3. **Add discriminating regression tests**: per-metric round-trip integration test asserting metric tile count equals canonical-source count for known-good fixture state (mirrors the Phase 8 `cfacbc5` round-trip test pattern that closes session-anchor read/write mismatches; same family as the existing CLAUDE.md gotcha "Session-anchor read/write mismatch").
+
+**Forward-binding lesson family hypothesis** (pre-recon): session-anchor read/write mismatch family — recurring across weather lookup + Phase 8 daily-mgmt badge + Phase 13 T1.SB0 in-progress-bar inequality. Metrics-page query may consume a different session anchor or stale `evaluation_run_id` / `pipeline_run_id` than the dashboard surface. Implementer recon will VERIFY before fixing.
+
+**Operator decision pending**: dispatch standalone investigation + fix OR batch with T4.SB usability triage closer OR batch with T2.SB6 closed-loop surface (which already adds the 9th metric tile per OQ-10 + audits Phase 10 metrics architecture). Standalone has lowest scope; T4.SB fold-in maximizes related usability concerns; T2.SB6 fold-in benefits from already touching metrics infrastructure.
+
+**Files likely in scope** (pre-recon best guess; implementer VERIFIES):
+- `swing/web/routes/metrics.py`
+- `swing/web/view_models/metrics/*.py` (including the `hypothesis_progress.py` VM if one exists OR the metric tile assembly point)
+- `swing/web/templates/metrics/*.html.j2`
+- `swing/metrics/*.py` (consumer layer)
+- `swing/web/view_models/dashboard.py` (canonical comparator)
+- `tests/web/test_routes/test_metrics.py` (extend with audit regression tests)
+
+**Pre-empt forward-binding**: Phase 13's T2.SB6 plan §G.9 T-A.6.5 already mandates `PatternOutcomesVM` extends `BaseLayoutVM` + populates banner pin fields + composes with Phase 10 cohort architecture; this audit MAY surface as a forward-binding watch item for T2.SB6 that propagates to all existing metric tiles.
+
+---
+
 ## 2026-05-20 Phase-9 TZ-drift followup TODO (NEW; not yet dispatched)
 
 **`is_back_recorded` UTC-vs-HST date-boundary fix** at `swing/trades/account_equity_snapshots.py:49-63`. The `> 7` strict inequality fails on the exact 7-day-boundary day. Two pre-existing test failures confirmed NOT introduced by T2.SB1 or T3.SB1 (verified via `git diff 6383cfa..phase13-t2-sb1-dev-time-labeling-infra/HEAD -- <affected files>` returning empty): `test_phase9_full_happy_path_across_all_sub_bundles` + `test_phase9_bundle_c_e2e_account_snapshot_and_hypothesis_audit`. One-line fix: change `> 7` to `>= 7` OR make threshold timezone-aware (more invasive). Operator decision needed: dispatch standalone OR batch with T2.SB2. Banked from T-A.1.8 return report §"Test count pre/post" verification.
