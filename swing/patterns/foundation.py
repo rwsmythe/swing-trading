@@ -170,7 +170,8 @@ def adaptive_initial_threshold_pct(bars: pd.DataFrame) -> float:
         if not np.all(np.isfinite(arr)):
             raise ValueError(
                 f"adaptive_initial_threshold_pct: bars[{col!r}] contains "
-                f"NaN; caller must drop or impute before invoking"
+                f"NaN or non-finite values; caller must drop or impute "
+                f"before invoking"
             )
     closes = tail["Close"].astype(float).to_numpy()
     highs = tail["High"].astype(float).to_numpy()
@@ -374,8 +375,8 @@ class CandidateWindow:
 
     Field semantics (V1, per Codex R1 Major #3):
 
-    - ``start_date`` / ``end_date`` — window left/right edges (inclusive).
-    - ``anchor_date`` — the anchor event date; *per-mode-dependent semantic*.
+    - ``start_date`` / ``end_date`` - window left/right edges (inclusive).
+    - ``anchor_date`` - the anchor event date; *per-mode-dependent semantic*.
       See ``generate_candidate_windows`` docstring for the full per-mode
       table. Briefly: ``zigzag_pivot`` mode's ``anchor_date`` is the
       inferred base START (matching the spec section 5.1.3 line 502
@@ -385,7 +386,7 @@ class CandidateWindow:
       start). Downstream T2.SB3+ detectors consuming non-zigzag windows
       MUST perform mode-aware backward-slicing from ``anchor_date`` to
       reconstruct base context.
-    - ``anchor_reason`` — evidence-trail string. Format:
+    - ``anchor_reason`` - evidence-trail string. Format:
       ``'<mode>:<descriptor>'``.
     """
 

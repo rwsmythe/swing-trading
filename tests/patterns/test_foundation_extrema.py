@@ -8,7 +8,9 @@ from __future__ import annotations
 import dataclasses
 from datetime import date, timedelta
 
+import numpy as np
 import pandas as pd
+import pytest
 
 from swing.patterns.foundation import (
     Swing,
@@ -274,31 +276,35 @@ def test_zigzag_monotonic_narrow_threshold_floor_prevents_zero_threshold() -> No
 # ---------------------------------------------------------------------------
 
 
-def test_adaptive_initial_threshold_pct_raises_on_nan_close() -> None:
-    """``adaptive_initial_threshold_pct`` rejects NaN in the 5-bar ATR
-    tail (Close column) with ValueError matching the existing primitives'
-    convention. Closes Codex R1 Minor #3.
+@pytest.mark.parametrize("nan_column", ["Close", "High", "Low"])
+def test_adaptive_initial_threshold_pct_raises_on_nan_in_required_column(
+    nan_column: str,
+) -> None:
+    """Codex R1 Minor #3 + R2 Minor #3: ``adaptive_initial_threshold_pct``
+    must reject NaN in any of Close/High/Low (the 3 columns it reads)
+    consistently with the rest of the primitives' NaN policy.
 
     The function reads only the last 5 bars (the ATR-5d tail) so the NaN
     must land within indices [-5:] to exercise the check.
     """
-    import numpy as np
-    import pytest
-
-    # 8-bar input with NaN at index -3 (within the 5-bar tail).
-    closes = [100.0, 101.0, 102.0, 103.0, 104.0, float("nan"), 106.0, 107.0]
-    bars = _make_bars(closes)
+    idx = pd.date_range("2025-01-02", periods=10, freq="B")
+    base_close = np.full(10, 100.0)
+    base_high = np.full(10, 101.0)
+    base_low = np.full(10, 99.0)
+    columns = {
+        "Open": base_close,
+        "High": base_high,
+        "Low": base_low,
+        "Close": base_close,
+        "Volume": np.full(10, 1_000_000),
+    }
+    # Inject NaN in the tail (last 5 bars - the window
+    # adaptive_initial_threshold_pct reads).
+    columns[nan_column] = columns[nan_column].copy()
+    columns[nan_column][7] = np.nan  # tail bar
+    bars = pd.DataFrame(columns, index=idx)
     with pytest.raises(
-        ValueError, match=r"adaptive_initial_threshold_pct.*NaN"
+        ValueError,
+        match=rf"adaptive_initial_threshold_pct.*{nan_column}",
     ):
         adaptive_initial_threshold_pct(bars)
-    # Defense-in-depth: also reject when High contains NaN in the 5-bar tail.
-    bars_with_high_nan = _make_bars(
-        [100.0, 101.0, 102.0, 103.0, 104.0, 105.0, 106.0, 107.0]
-    )
-    bars_with_high_nan = bars_with_high_nan.copy()
-    bars_with_high_nan.loc[bars_with_high_nan.index[-2], "High"] = np.nan
-    with pytest.raises(
-        ValueError, match=r"adaptive_initial_threshold_pct.*NaN"
-    ):
-        adaptive_initial_threshold_pct(bars_with_high_nan)
