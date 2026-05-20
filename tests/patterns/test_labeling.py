@@ -498,3 +498,80 @@ def test_codex_review_response_agree_path_no_alternative_fields_ok() -> None:
     response = CodexReviewResponse(agreed=True)
     assert response.alternative_structural_evidence_json is None
     assert response.alternative_labeler_evidence_json is None
+
+
+# ============================================================================
+# T-A.1.8 — large-N statistical test for random-15% sampling correctness.
+#
+# Per closer brief T-1.8.1 acceptance criteria: "Random-15% sampling
+# correctness verified via discriminating test (large-N sample assertion;
+# e.g., over 1000 mocked invocations, 12-18% fire rate)."
+# ============================================================================
+
+
+def test_should_fire_codex_t2_sb1_large_n_firing_rate_within_12_to_18_pct() -> None:
+    """Over N=10_000 invocations with a seeded ``random.Random``, the firing
+    rate sits within [12%, 18%] (target 15%, ±3pp tolerance band).
+
+    Sample-mean tolerance derivation: Bernoulli(p=0.15) variance per draw =
+    0.15*0.85 = 0.1275; SE over N=10_000 = sqrt(0.1275/10_000) ≈ 0.00357.
+    A ±3pp band is ~8.4 SE — vastly outside any plausible CLT tail. Seed
+    pinned for determinism per ``superpowers:test-driven-development``.
+    """
+    rng = random.Random(424242)
+    fires = sum(
+        1 for _ in range(10_000)
+        if should_fire_codex(phase="t2_sb1", rng=rng)
+    )
+    rate = fires / 10_000
+    assert 0.12 <= rate <= 0.18, (
+        f"random-15% sampling rate {rate:.4f} drifted outside [0.12, 0.18] "
+        f"band — investigate CODEX_RANDOM_SAMPLE_PROBABILITY drift OR rng "
+        f"determinism regression."
+    )
+
+
+def test_should_fire_codex_t2_sb1_unseeded_rate_close_to_15_pct() -> None:
+    """Without seeding (production-shape), N=20_000 invocations cluster near
+    15% (looser ±2pp band; statistical noise expected over 20k draws).
+
+    Defends against the regression where ``rng or random.Random()``
+    accidentally collapses to a Random(0) — e.g., a future refactor that
+    passes ``rng=random.Random(0)`` as default would still satisfy the
+    seeded test above but FAIL this unseeded variant if the new fixed seed
+    happened to bias the sample.
+    """
+    fires = sum(
+        1 for _ in range(20_000)
+        if should_fire_codex(phase="t2_sb1")
+    )
+    rate = fires / 20_000
+    assert 0.13 <= rate <= 0.17, (
+        f"unseeded random-15% sampling rate {rate:.4f} drifted outside "
+        f"[0.13, 0.17] band — investigate hard-coded-seed regression."
+    )
+
+
+def test_should_fire_codex_t2_sb1_does_not_invoke_high_stakes_clause() -> None:
+    """L9 LOCK preserved: T2.SB1 phase ignores silver_confidence +
+    geometric_score parameters entirely. Probing the disagreement-A boundary
+    (silver_confidence='high' AND geometric_score=0.3) with a forced
+    above-threshold rng MUST NOT fire under phase='t2_sb1'.
+    """
+    rng = _SeededRng([0.99, 0.95, 0.85, 0.50, 0.151])
+    for _ in range(len(rng._values)):
+        assert should_fire_codex(
+            phase="t2_sb1",
+            silver_confidence="high",
+            geometric_score=0.3,
+            rng=rng,
+        ) is False
+    # Same probes under t2_sb3_or_later DO fire (sanity: verify the test
+    # would catch a phase mix-up).
+    rng_sb3 = _SeededRng([0.99])
+    assert should_fire_codex(
+        phase="t2_sb3_or_later",
+        silver_confidence="high",
+        geometric_score=0.3,
+        rng=rng_sb3,
+    ) is True

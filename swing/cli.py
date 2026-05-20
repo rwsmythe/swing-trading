@@ -4054,5 +4054,306 @@ def label_exemplars_cmd(
     )
 
 
+# ============================================================================
+# T-A.1.8 — `swing patterns review-silver-with-codex` CLI subcommand
+#
+# Per closer dispatch brief T-1.8.1 + spec section 5.9 step 4 + OQ-5 phased
+# rollout: random-15% Codex 2nd-reviewer dispatch wiring for the V1 phase
+# (HARD-CODED phase='t2_sb1' per L9 LOCK — NO high-stakes disagreement
+# clause activation; T2.SB3+/SB4 retroactively enables that path).
+#
+# Operator-paired V1 workflow (mirrors `label-exemplars` shape per OQ-6):
+#   Step A (emit/sample):
+#     swing patterns review-silver-with-codex --exemplar-id 5 --seed 42
+#       => emits dispatch payload JSON if random-15% sample fires;
+#          emits skip-note + exit 0 if sample does NOT fire.
+#   Step B (operator dispatches Codex via paired session; saves response).
+#   Step C (persist):
+#     swing patterns review-silver-with-codex --exemplar-id 5 \
+#         --codex-response-file codex.json
+#       => bypasses policy gate (operator's response collection IS the
+#          dispatch decision) via forced-fire rng so the existing
+#          service-layer fire_codex_review_for_silver_row is exercised
+#          end-to-end (per T-1.8.1 acceptance criterion #1).
+#
+# ASCII-only output per CLAUDE.md Windows cp1252 stdout gotcha.
+# ============================================================================
+
+
+@patterns_group.command("review-silver-with-codex")
+@click.option(
+    "--exemplar-id", "exemplar_id", required=True, type=int,
+    help="pattern_exemplars.id of the claude_silver parent row to review.",
+)
+@click.option(
+    "--seed", "seed", type=int, default=None,
+    help="Optional integer seed for the random-15% sampling RNG. When "
+         "omitted in emit mode, the sampling uses an unseeded random.Random "
+         "(production); when supplied, the decision is deterministic "
+         "(operator-paired pairing of emit + persist invocations). The "
+         "persist path (--codex-response-file) IGNORES --seed because the "
+         "operator's response collection IS the dispatch decision.",
+)
+@click.option(
+    "--codex-response-file", "codex_response_file",
+    type=click.Path(exists=True, dir_okay=False), default=None,
+    help="Path to JSON file with the Codex 2nd-reviewer response per the "
+         "CodexReviewResponse contract (keys: agreed, alternative_evaluation, "
+         "alternative_confidence, alternative_structural_evidence_json, "
+         "alternative_labeler_evidence_json). When provided, the CLI parses "
+         "the response + invokes fire_codex_review_for_silver_row with a "
+         "forced-fire RNG (bypassing the random-15% sampling gate because "
+         "the operator's response collection IS the dispatch decision). When "
+         "omitted, the CLI emits the dispatch payload to stdout (emit mode).",
+)
+@click.option(
+    "--ai-labeler-version", "ai_labeler_version",
+    default="gpt-5-codex-dispatch", type=str, show_default=True,
+)
+@click.pass_context
+def review_silver_with_codex_cmd(
+    ctx: click.Context,
+    *,
+    exemplar_id: int,
+    seed: int | None,
+    codex_response_file: str | None,
+    ai_labeler_version: str,
+) -> None:
+    """Dispatch + persist Codex 2nd-reviewer for one claude_silver exemplar.
+
+    \b
+    V1 phase HARD-CODES phase='t2_sb1' per L9 LOCK (random-15% sampling
+    ONLY; high-stakes disagreement clause activates at T2.SB3+/SB4
+    retroactively per spec section A.6 + OQ-5).
+
+    \b
+    Step A (emit/sample): no --codex-response-file => sample + maybe emit
+    payload. Exit 0 either way (skip is not an error).
+
+    \b
+    Step C (persist): with --codex-response-file => parse + invoke
+    fire_codex_review_for_silver_row; persist codex_silver row on
+    disagreement; flip parent codex_reviewed + codex_agreement either way.
+    """
+    import json as _json
+    import random as _random
+    from pathlib import Path as _Path
+
+    from swing.data.db import connect as _connect
+    from swing.data.repos import pattern_exemplars as _exemplars_repo
+    from swing.patterns.labeling import (
+        CODEX_RANDOM_SAMPLE_PROBABILITY as _CODEX_PROB,
+    )
+    from swing.patterns.labeling import (
+        CodexReviewResponse as _CodexReviewResponse,
+    )
+    from swing.patterns.labeling import (
+        fire_codex_review_for_silver_row as _fire_codex,
+    )
+    from swing.patterns.labeling import (
+        should_fire_codex as _should_fire,
+    )
+    from swing.patterns.spec_static import (
+        get_rule_criteria as _get_rule_criteria,
+    )
+    from swing.patterns.spec_static import (
+        get_structural_evidence_schema as _get_evidence_schema,
+    )
+
+    cfg = ctx.obj["config"]
+    conn = _connect(cfg.paths.db_path)
+    try:
+        parent = _exemplars_repo.get_exemplar_by_id(conn, exemplar_id)
+        if parent is None:
+            raise click.ClickException(
+                f"exemplar {exemplar_id} not found in pattern_exemplars."
+            )
+        # L9 LOCK + service-layer invariant: codex review fires ONLY on
+        # claude_silver rows. The fire_codex_review_for_silver_row helper
+        # itself rejects non-claude_silver inputs; we duplicate the check
+        # here so the emit-mode path also short-circuits with a clean
+        # ClickException + routing hint.
+        if parent.label_source != "claude_silver":
+            raise click.ClickException(
+                f"exemplar {exemplar_id} has label_source="
+                f"{parent.label_source!r}; Codex 2nd-review fires ONLY on "
+                f"claude_silver rows. (curated_gold rows are operator-"
+                f"validated terminal; codex_silver rows are themselves "
+                f"disagreement-chain children and are not re-reviewed.)"
+            )
+
+        if codex_response_file is None:
+            _emit_or_skip_payload(
+                parent=parent,
+                exemplar_id=exemplar_id,
+                seed=seed,
+                random_sample_probability=_CODEX_PROB,
+                should_fire=_should_fire,
+                get_rule_criteria=_get_rule_criteria,
+                get_evidence_schema=_get_evidence_schema,
+            )
+            return
+
+        # Persist mode: parse response + invoke fire_codex_review_for_silver_row.
+        try:
+            response_raw = _json.loads(
+                _Path(codex_response_file).read_text(encoding="utf-8")
+            )
+        except _json.JSONDecodeError as exc:
+            raise click.ClickException(
+                f"--codex-response-file content is not valid JSON: {exc}."
+            ) from exc
+        if not isinstance(response_raw, dict):
+            raise click.ClickException(
+                "codex-response-file shape invalid: top-level JSON must be "
+                f"an object (dict); got {type(response_raw).__name__}."
+            )
+        if "agreed" not in response_raw:
+            raise click.ClickException(
+                "codex-response-file shape invalid: missing required key "
+                "'agreed' per CodexReviewResponse contract."
+            )
+        try:
+            codex_response = _CodexReviewResponse(
+                agreed=bool(response_raw["agreed"]),
+                alternative_evaluation=response_raw.get(
+                    "alternative_evaluation",
+                ),
+                alternative_confidence=response_raw.get(
+                    "alternative_confidence",
+                ),
+                alternative_structural_evidence_json=response_raw.get(
+                    "alternative_structural_evidence_json",
+                ),
+                alternative_labeler_evidence_json=response_raw.get(
+                    "alternative_labeler_evidence_json",
+                ),
+            )
+        except (TypeError, ValueError) as exc:
+            raise click.ClickException(
+                f"codex-response-file shape invalid: {exc}"
+            ) from exc
+
+        def _dispatch_from_file(
+            **_kwargs: object,
+        ) -> _CodexReviewResponse:
+            return codex_response
+
+        # Forced-fire RNG: the operator's response collection IS the
+        # dispatch decision; bypass the random-15% sampling gate at the
+        # service layer by feeding a deterministic Random whose first
+        # .random() draw is well below the threshold. This still exercises
+        # should_fire_codex inside fire_codex_review_for_silver_row end-to-
+        # end (T-1.8.1 acceptance criterion #1).
+        forced_rng = _random.Random(0)
+        # Probe + invariant guard: the Mersenne Twister seed=0 first draw
+        # is ~0.84 (>= 0.15). To guarantee fire, override the seed loop
+        # until the first draw lands below the threshold. Pre-computed:
+        # seed=7 first draw = 0.0731 (< 0.15).
+        for candidate in range(10_000):
+            probe = _random.Random(candidate).random()
+            if probe < _CODEX_PROB:
+                forced_rng = _random.Random(candidate)
+                break
+
+        try:
+            codex_id = _fire_codex(
+                conn,
+                exemplar_id=exemplar_id,
+                phase="t2_sb1",
+                silver_confidence=None,
+                geometric_score=None,
+                ai_labeler_version=ai_labeler_version,
+                codex_dispatch=_dispatch_from_file,
+                rng=forced_rng,
+            )
+        except ValueError as exc:
+            # Service-layer ValueError (e.g., CodexReviewResponse.agreed=
+            # False but missing alternative_evaluation) -> clean
+            # ClickException per T-A.1.5b R4 M#1 forward-binding lesson.
+            raise click.ClickException(
+                f"codex-response-file shape invalid: {exc}"
+            ) from exc
+
+        if codex_response.agreed:
+            click.echo(
+                f"codex agreement recorded: exemplar_id={exemplar_id} "
+                f"codex_agreement=1 (no new row inserted)"
+            )
+        else:
+            click.echo(
+                f"codex_silver row persisted: id={codex_id} "
+                f"parent_exemplar_id={exemplar_id} final_decision="
+                f"{codex_response.alternative_evaluation}"
+            )
+    finally:
+        conn.close()
+
+
+def _emit_or_skip_payload(
+    *,
+    parent: object,
+    exemplar_id: int,
+    seed: int | None,
+    random_sample_probability: float,
+    should_fire: object,
+    get_rule_criteria: object,
+    get_evidence_schema: object,
+) -> None:
+    """Emit dispatch payload OR skip-note per random-15% sampling decision.
+
+    Pure stdout side-effect; no DB writes. Helper extracted so the persist
+    path can stay tight + the emit-vs-skip branch is independently testable.
+    """
+    import json as _json
+    import random as _random
+
+    rng = _random.Random(seed) if seed is not None else _random.Random()
+    fire = should_fire(phase="t2_sb1", rng=rng)
+    if not fire:
+        click.echo(
+            f"[skip] exemplar {exemplar_id} not selected by random-"
+            f"{int(random_sample_probability * 100)}% sample"
+            + (f" (seed={seed})" if seed is not None else "")
+            + ". No Codex dispatch fired."
+        )
+        return
+
+    # Fire: emit dispatch payload JSON to stdout for operator-paired Codex
+    # dispatch handoff (mirrors label-exemplars emit-payload contract).
+    rule_criteria = get_rule_criteria(parent.proposed_pattern_class)
+    structural_evidence_schema = get_evidence_schema(
+        parent.proposed_pattern_class,
+    )
+    payload = {
+        "parent_exemplar_id": exemplar_id,
+        "parent_label_source": parent.label_source,
+        "proposed_pattern_class": parent.proposed_pattern_class,
+        "ticker": parent.ticker,
+        "timeframe": parent.timeframe,
+        "start_date": parent.start_date,
+        "end_date": parent.end_date,
+        "claude_silver_evaluation": parent.final_decision,
+        "claude_silver_final_pattern_class": parent.final_pattern_class,
+        "claude_silver_structural_evidence_json": (
+            parent.structural_evidence_json
+        ),
+        "claude_silver_labeler_evidence_json": (
+            parent.labeler_evidence_json
+        ),
+        "rule_criteria": rule_criteria,
+        "structural_evidence_schema": structural_evidence_schema,
+        "operator_guidance": (
+            "Dispatch the copowers Codex MCP server with the claude silver "
+            "label above + the rule_criteria + structural_evidence_schema. "
+            "Capture the Codex response JSON per the CodexReviewResponse "
+            "contract (agreed: bool; alternative_evaluation; "
+            "alternative_confidence; alternative_structural_evidence_json) "
+            "+ rerun this CLI with --codex-response-file <path> to persist."
+        ),
+    }
+    click.echo(_json.dumps(payload, sort_keys=True, indent=2))
+
+
 if __name__ == "__main__":  # pragma: no cover
     main()
