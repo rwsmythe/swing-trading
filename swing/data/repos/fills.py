@@ -32,21 +32,61 @@ def insert_fill_with_event(
     (record_exit, etc.) keep the default (True) since their fills are the
     only event-emitters in their atomic flow.
     """
-    cur = conn.execute(
-        """
-        INSERT INTO fills
-            (trade_id, fill_datetime, action, quantity, price, reason,
-             rule_based, fees, manual_entry_confidence,
-             reconciliation_status, tos_match_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            fill.trade_id, fill.fill_datetime, fill.action, fill.quantity,
-            fill.price, fill.reason, fill.rule_based, fill.fees,
-            fill.manual_entry_confidence, fill.reconciliation_status,
-            fill.tos_match_id,
-        ),
-    )
+    # Phase 13 T2.SB1 (migration 0020) + T-B.1.4 — auto-fill provenance
+    # audit columns. Per spec §6.4 + plan §G.2 T-B.1.4 + CLAUDE.md
+    # "Schema-CHECK + Python-constant + dataclass-validator paired"
+    # gotcha — the Fill dataclass __post_init__ validates fill_origin
+    # against ``_FILL_ORIGIN_VALUES`` BEFORE this INSERT fires, so a
+    # tampered value is rejected up-stack.
+    #
+    # Schema-version compatibility: pre-v20 fixtures (tests using
+    # ``run_migrations(target_version<20)``) lack the 4 new fills
+    # columns. Detect via ``PRAGMA table_info`` and emit the legacy
+    # 11-column INSERT path so existing pre-v20 fixtures keep working.
+    # The schema CHECK on fill_origin is only present at v20+, so the
+    # legacy path simply omits the columns + the DB schema defaults
+    # them (NULL for the 3 JSON cols; no DEFAULT for fill_origin on
+    # pre-v20 schemas — it doesn't exist as a column).
+    cols = {
+        r[1] for r in conn.execute("PRAGMA table_info(fills)").fetchall()
+    }
+    if "fill_origin" in cols:
+        cur = conn.execute(
+            """
+            INSERT INTO fills
+                (trade_id, fill_datetime, action, quantity, price, reason,
+                 rule_based, fees, manual_entry_confidence,
+                 reconciliation_status, tos_match_id,
+                 fill_origin, schwab_source_value_json,
+                 operator_corrected_value_json, auto_fill_audit_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                fill.trade_id, fill.fill_datetime, fill.action,
+                fill.quantity, fill.price, fill.reason, fill.rule_based,
+                fill.fees, fill.manual_entry_confidence,
+                fill.reconciliation_status, fill.tos_match_id,
+                fill.fill_origin, fill.schwab_source_value_json,
+                fill.operator_corrected_value_json,
+                fill.auto_fill_audit_at,
+            ),
+        )
+    else:
+        cur = conn.execute(
+            """
+            INSERT INTO fills
+                (trade_id, fill_datetime, action, quantity, price, reason,
+                 rule_based, fees, manual_entry_confidence,
+                 reconciliation_status, tos_match_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                fill.trade_id, fill.fill_datetime, fill.action,
+                fill.quantity, fill.price, fill.reason, fill.rule_based,
+                fill.fees, fill.manual_entry_confidence,
+                fill.reconciliation_status, fill.tos_match_id,
+            ),
+        )
     fill_id = int(cur.lastrowid)
 
     _recompute_aggregates(conn, fill.trade_id)

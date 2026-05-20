@@ -229,6 +229,17 @@ def _rerender_entry_form_with_error(
     ticker: str, entry_date: str, entry_price: float, shares: int,
     initial_stop: float, rationale: str, notes: str | None,
     error_message: str, origin: str = "watchlist",
+    # Phase 13 T3.SB1 Codex R1 Major #3 fix — preserve the submitted
+    # auto-fill anchors across validation error re-renders. Without
+    # these, ``build_entry_form_vm`` below fires a FRESH Schwab Trader
+    # API call on every validation retry — bleeding the lookback
+    # window + drifting the anchor away from the operator's original
+    # submission + potentially overwriting a tampered anchor with a
+    # genuine one on retry. Defaults None preserve backward compat for
+    # callers without auto-fill semantics.
+    submitted_schwab_source_value_json: str | None = None,
+    submitted_auto_fill_audit_at: str | None = None,
+    submitted_fill_origin_at_form_render: str | None = None,
 ) -> HTMLResponse:
     """T4: re-render trade_entry_form with preserved values + banner at 400.
 
@@ -255,6 +266,51 @@ def _rerender_entry_form_with_error(
             rationale=rationale,
             notes=notes or "",
         )
+        # Phase 13 T3.SB1 Codex R1 Major #3 fix — overwrite the freshly-
+        # rebuilt auto-fill anchors with the SUBMITTED values, so the
+        # operator's force=true / retry submit replays the same anchor
+        # the original validation-failed POST carried. This prevents the
+        # build_entry_form_vm-driven fresh Schwab fetch from substituting
+        # a different anchor mid-flight.
+        if submitted_schwab_source_value_json is not None:
+            # Codex R2 Minor #1 fix — when restoring a submitted populated
+            # anchor on retry, also restore ``auto_fill_kind='populated'``
+            # AND clear ``auto_fill_advisory_text``. Otherwise the freshly-
+            # rebuilt VM's stale kind/advisory (from the new Schwab fetch
+            # that may have returned 'empty' / 'degraded') leaks into the
+            # rendered banner, showing "no match" while the hidden anchor
+            # still claims auto-fill — confusing the operator.
+            submitted_claim = (
+                submitted_fill_origin_at_form_render or "operator_typed"
+            )
+            preserved_kind = (
+                "populated"
+                if (
+                    submitted_schwab_source_value_json
+                    and submitted_claim in (
+                        "schwab_auto",
+                        "schwab_auto_then_operator_corrected",
+                    )
+                )
+                else vm.auto_fill_kind
+            )
+            preserved_advisory = (
+                None
+                if preserved_kind == "populated"
+                else vm.auto_fill_advisory_text
+            )
+            vm = dc_replace(
+                vm,
+                auto_fill_schwab_source_value_json=(
+                    submitted_schwab_source_value_json or None
+                ),
+                auto_fill_audit_at=(
+                    submitted_auto_fill_audit_at or None
+                ),
+                auto_fill_fill_origin=submitted_claim,
+                auto_fill_kind=preserved_kind,
+                auto_fill_advisory_text=preserved_advisory,
+            )
         return templates.TemplateResponse(
             request, "partials/trade_entry_form.html.j2",
             {"vm": vm, "error_message": error_message},
@@ -434,6 +490,19 @@ def entry_post(
     catalyst: str | None = Form(None),
     catalyst_other_description: str | None = Form(None),
     manual_entry_confidence: str | None = Form(None),
+    # Phase 13 T3.SB1 T-B.1.4 — auto-fill hidden audit anchors emitted by
+    # the form-render path (T-B.1.3 template additions). Default ""/None
+    # so legacy callers (CLI tests, bare cURL, pre-Phase-13 form submits)
+    # keep working — the POST handler infers fill_origin='operator_typed'
+    # when these are absent. Per CLAUDE.md gotcha "Form-render hidden
+    # anchors driving POST-time validation MUST round-trip through
+    # soft-warn confirm form_values dict" + Phase 9 Sub-bundle D R3
+    # Critical #1 LOCK: these 3 anchors MUST also be added to the
+    # soft-warn confirm form_values dict below (T-B.1.4 +5.5 watch
+    # item 9 BINDING).
+    schwab_source_value_json: str = Form(""),
+    auto_fill_audit_at: str = Form(""),
+    fill_origin_at_form_render: str = Form(""),
 ):
     cfg = apply_overrides(request.app.state.cfg)
     cache = request.app.state.price_cache
@@ -459,6 +528,9 @@ def entry_post(
             entry_price=entry_price, shares=shares, initial_stop=initial_stop,
             rationale=rationale, notes=notes, error_message=rationale_error,
             origin=origin_coerced,
+            submitted_schwab_source_value_json=schwab_source_value_json,
+            submitted_auto_fill_audit_at=auto_fill_audit_at,
+            submitted_fill_origin_at_form_render=fill_origin_at_form_render,
         )
 
     # Bug 2 (2026-04-25): validate stop < entry at the request boundary so
@@ -492,6 +564,9 @@ def entry_post(
                 f"stop={initial_stop}"
             ),
             origin=origin_coerced,
+            submitted_schwab_source_value_json=schwab_source_value_json,
+            submitted_auto_fill_audit_at=auto_fill_audit_at,
+            submitted_fill_origin_at_form_render=fill_origin_at_form_render,
         )
 
     # Phase 5 spec §3.6 — resolve the operator override.
@@ -529,6 +604,9 @@ def entry_post(
                 "pipeline run. (V1 cached-only; manual fallback deferred to V2.)"
             ),
             origin=origin_coerced,
+            submitted_schwab_source_value_json=schwab_source_value_json,
+            submitted_auto_fill_audit_at=auto_fill_audit_at,
+            submitted_fill_origin_at_form_render=fill_origin_at_form_render,
         )
 
     # Codex R1 Major 1 (Phase 7 Sub-C) — schema-layer guards that used to
@@ -552,6 +630,9 @@ def entry_post(
                 f"got {cp_algo_value!r}."
             ),
             origin=origin_coerced,
+            submitted_schwab_source_value_json=schwab_source_value_json,
+            submitted_auto_fill_audit_at=auto_fill_audit_at,
+            submitted_fill_origin_at_form_render=fill_origin_at_form_render,
         )
     if cp_anchor_value is not None:
         from swing.data.repos.pattern_classifications import get_classification
@@ -595,6 +676,9 @@ def entry_post(
                     "pipeline_runs row."
                 ),
                 origin=origin_coerced,
+                submitted_schwab_source_value_json=schwab_source_value_json,
+                submitted_auto_fill_audit_at=auto_fill_audit_at,
+                submitted_fill_origin_at_form_render=fill_origin_at_form_render,
             )
         if _cls_row is None:
             return _rerender_entry_form_with_error(
@@ -609,6 +693,9 @@ def entry_post(
                     f"pipeline_runs.id={cp_anchor_value}"
                 ),
                 origin=origin_coerced,
+                submitted_schwab_source_value_json=schwab_source_value_json,
+                submitted_auto_fill_audit_at=auto_fill_audit_at,
+                submitted_fill_origin_at_form_render=fill_origin_at_form_render,
             )
 
     # Phase 9 Sub-bundle D Task D.1 + D.2 — sector/industry tamper
@@ -675,6 +762,9 @@ def entry_post(
                     "the form to bind a current anchor."
                 ),
                 origin=origin_coerced,
+                submitted_schwab_source_value_json=schwab_source_value_json,
+                submitted_auto_fill_audit_at=auto_fill_audit_at,
+                submitted_fill_origin_at_form_render=fill_origin_at_form_render,
             )
         cached_sector = _cand_row[0] or ""
         cached_industry = _cand_row[1] or ""
@@ -733,6 +823,9 @@ def entry_post(
                     f"candidate; audit row recorded for review."
                 ),
                 origin=origin_coerced,
+                submitted_schwab_source_value_json=schwab_source_value_json,
+                submitted_auto_fill_audit_at=auto_fill_audit_at,
+                submitted_fill_origin_at_form_render=fill_origin_at_form_render,
             )
 
     # Phase 7 Sub-C C.3 — emotional_state_pre_trade JSON-encoding.
@@ -746,6 +839,231 @@ def entry_post(
         s for s in (emotional_state_pre_trade or []) if s and s.strip()
     ]
     emo_json: str | None = _json.dumps(emo_clean) if emo_clean else None
+
+    # Phase 13 T3.SB1 T-B.1.4 — fill_origin transition resolution.
+    # Compare submitted entry_date / entry_price / shares against the
+    # form-render anchor (``schwab_source_value_json`` JSON envelope).
+    # Three outcomes:
+    #   - No anchor (empty/missing JSON) → operator_typed; all audit
+    #     columns NULL.
+    #   - Anchor matches submitted values exactly → schwab_auto.
+    #   - Anchor differs from submitted values (operator edited any of
+    #     the 3 fields) → schwab_auto_then_operator_corrected;
+    #     ``operator_corrected_value_json`` carries the submitted values.
+    # Per spec §6.1 + §6.4 + plan §G.2 T-B.1.4 + brief §5 watch item 10.
+    resolved_fill_origin = "operator_typed"
+    resolved_schwab_source_value_json: str | None = None
+    resolved_operator_corrected_value_json: str | None = None
+    resolved_auto_fill_audit_at: str | None = None
+    # Codex R1 Major #1 + #2 fix — consistency check across the 3 hidden
+    # anchors (schwab_source_value_json + auto_fill_audit_at +
+    # fill_origin_at_form_render). When the operator claims
+    # fill_origin_at_form_render='schwab_auto' (or
+    # 'schwab_auto_then_operator_corrected') but the anchor JSON envelope
+    # is missing / empty / malformed, the POST is internally inconsistent
+    # — either a tampered submit OR a stale form (operator submitted the
+    # page after server-side state evicted). Reject with 400 + descriptive
+    # error so the operator re-renders. The legacy / bare-cURL backward-
+    # compat path (no anchor, no claim) still flows through as
+    # operator_typed.
+    # Codex R3 Minor #1 fix — normalize ``fill_origin_at_form_render``
+    # via ``.strip()`` ONCE here so the same canonical value is consulted
+    # by both the consistency-check predicate (``claimed_auto_fill``) and
+    # the re-render preservation kwargs (`submitted_*`). Without this,
+    # whitespace-padded input could be treated as auto-fill for validation
+    # purposes but not restored as populated on retry.
+    fill_origin_at_form_render = fill_origin_at_form_render.strip()
+    claimed_auto_fill = fill_origin_at_form_render in (
+        "schwab_auto", "schwab_auto_then_operator_corrected",
+    )
+    if schwab_source_value_json.strip():
+        try:
+            anchor_envelope = _json.loads(schwab_source_value_json)
+        except (ValueError, TypeError):
+            anchor_envelope = None
+        # Codex R2 Major #1 fix — reject non-dict JSON (e.g., ``[]``, ``"x"``)
+        # when the claim is auto-fill. Without this guard, a valid-JSON
+        # non-dict slips past the ``isinstance(anchor_envelope, dict)``
+        # branch below and silently persists as ``operator_typed`` despite
+        # the claim, re-opening the "claim present but provenance erased"
+        # failure mode the R1 Major #1 fix was meant to close.
+        # Codex R3 Major #2 fix — when rejecting due to tampered/invalid
+        # anchor, pass empty submitted_* kwargs (instead of the raw
+        # rejected anchor) so the recovery form receives a FRESH
+        # auto-fill anchor from build_entry_form_vm. Without this, the
+        # 400 response re-emits the same invalid anchor + the operator
+        # gets trapped in repeated 400s on every retry.
+        def _reject_anchor(error_message: str):
+            return _rerender_entry_form_with_error(
+                request=request, templates=templates, cfg=cfg,
+                cache=cache, executor=executor,
+                ticker=ticker, entry_date=entry_date,
+                entry_price=entry_price, shares=shares,
+                initial_stop=initial_stop, rationale=rationale, notes=notes,
+                error_message=error_message,
+                origin=origin_coerced,
+                # Anchor was rejected as invalid — DON'T preserve it.
+                # Leaving these None tells _rerender_entry_form_with_error
+                # to use the rebuilt VM's fresh auto-fill anchor.
+                submitted_schwab_source_value_json=None,
+                submitted_auto_fill_audit_at=None,
+                submitted_fill_origin_at_form_render=None,
+            )
+
+        if (
+            (anchor_envelope is None
+             or not isinstance(anchor_envelope, dict))
+            and claimed_auto_fill
+        ):
+            return _reject_anchor(
+                "Trade entry rejected: fill_origin_at_form_render="
+                f"{fill_origin_at_form_render!r} claims auto-fill "
+                "provenance but schwab_source_value_json is malformed, "
+                "unparseable, or not a JSON object. The form has been "
+                "regenerated with a fresh Schwab fetch; please re-submit."
+            )
+        # Codex R2 Major #2 fix — when the anchor IS a dict but lacks one
+        # of the 3 required keys (entry_date, entry_price, shares) AND
+        # the operator claims auto-fill, reject. Without this guard, an
+        # empty-dict ``{}`` or a partial envelope classifies the row as
+        # ``schwab_auto_then_operator_corrected`` (every missing key
+        # counts as an edit) and persists the junk source JSON.
+        if (
+            isinstance(anchor_envelope, dict)
+            and claimed_auto_fill
+            and not all(
+                k in anchor_envelope
+                for k in ("entry_date", "entry_price", "shares")
+            )
+        ):
+            return _reject_anchor(
+                "Trade entry rejected: fill_origin_at_form_render="
+                f"{fill_origin_at_form_render!r} claims auto-fill "
+                "provenance but schwab_source_value_json is missing "
+                "one or more required keys (entry_date, entry_price, "
+                "shares). The form has been regenerated; please re-submit."
+            )
+        # Codex R3 Major #1 fix — value-validation for the 3 required
+        # keys when ``claimed_auto_fill``. Without this guard, an
+        # ``entry_price=NaN`` slips past the ``abs(... - ...) > 1e-9``
+        # comparison (NaN comparisons all return False), persisting the
+        # junk source JSON as ``schwab_auto``; an ``entry_date='foo'``
+        # would persist as junk; a non-int ``shares`` would coerce
+        # noisily. Validate value shapes here BEFORE the transition
+        # logic at L957 onward.
+        if isinstance(anchor_envelope, dict) and claimed_auto_fill:
+            import math as _math
+            v_entry_date = anchor_envelope.get("entry_date")
+            v_entry_price = anchor_envelope.get("entry_price")
+            v_shares = anchor_envelope.get("shares")
+            # Codex R4 Minor #1 fix — tighten date validation to calendar
+            # validity (rejects 2026-99-99 etc.). ``date.fromisoformat``
+            # raises ValueError on invalid date strings; tolerate by
+            # catching to set the flag False.
+            from datetime import date as _date_cls
+            entry_date_ok = isinstance(v_entry_date, str)
+            if entry_date_ok:
+                try:
+                    _date_cls.fromisoformat(v_entry_date)
+                except (TypeError, ValueError):
+                    entry_date_ok = False
+            entry_price_ok = (
+                isinstance(v_entry_price, (int, float))
+                and not isinstance(v_entry_price, bool)
+                and _math.isfinite(float(v_entry_price))
+            )
+            shares_ok = (
+                isinstance(v_shares, int) and not isinstance(v_shares, bool)
+            )
+            if not (entry_date_ok and entry_price_ok and shares_ok):
+                return _reject_anchor(
+                    "Trade entry rejected: fill_origin_at_form_render="
+                    f"{fill_origin_at_form_render!r} claims auto-fill "
+                    "provenance but schwab_source_value_json contains "
+                    "invalid values (entry_date must be ISO YYYY-MM-DD; "
+                    "entry_price must be finite numeric; shares must be "
+                    "an integer). The form has been regenerated; please "
+                    "re-submit."
+                )
+        # Codex R4 Major #1 fix — require ``claimed_auto_fill`` to be true
+        # before any non-operator_typed fill_origin stamping. Without this
+        # gate, an attacker can submit a valid-JSON anchor with EMPTY
+        # ``fill_origin_at_form_render`` and have it persist as
+        # 'schwab_auto' (the JSON envelope present + claim absent is
+        # internally inconsistent + the previous code path would have
+        # stamped Schwab provenance anyway). With the gate, the
+        # provenance-stamping branch only fires when BOTH halves of the
+        # consistency check agree.
+        if isinstance(anchor_envelope, dict) and claimed_auto_fill:
+            # The form-render anchor exists; default to schwab_auto unless
+            # operator edited any of the 3 auto-populated fields.
+            anchor_entry_date = anchor_envelope.get("entry_date")
+            anchor_entry_price = anchor_envelope.get("entry_price")
+            anchor_shares = anchor_envelope.get("shares")
+            # Compare entry_price as float (tolerant of 150 vs 150.0 vs
+            # "150.00" form-text drift); shares as int (form Field(int)
+            # already coerced); entry_date as exact str (ISO YYYY-MM-DD).
+            try:
+                anchor_price_float = (
+                    float(anchor_entry_price)
+                    if anchor_entry_price is not None else None
+                )
+            except (TypeError, ValueError):
+                anchor_price_float = None
+            try:
+                anchor_shares_int = (
+                    int(anchor_shares) if anchor_shares is not None else None
+                )
+            except (TypeError, ValueError):
+                anchor_shares_int = None
+            entry_date_diff = anchor_entry_date != entry_date
+            price_diff = (
+                anchor_price_float is None
+                or abs(anchor_price_float - entry_price) > 1e-9
+            )
+            shares_diff = (
+                anchor_shares_int is None or anchor_shares_int != shares
+            )
+            if entry_date_diff or price_diff or shares_diff:
+                resolved_fill_origin = "schwab_auto_then_operator_corrected"
+                # Stamp the submitted values so future reads can compare.
+                resolved_operator_corrected_value_json = _json.dumps(
+                    {
+                        "entry_date": entry_date,
+                        "entry_price": entry_price,
+                        "shares": shares,
+                    },
+                    sort_keys=True,
+                )
+            else:
+                resolved_fill_origin = "schwab_auto"
+            resolved_schwab_source_value_json = schwab_source_value_json
+            # ``auto_fill_audit_at`` is a separate hidden input alongside
+            # the JSON envelope (per T-B.1.3 template emission). Use the
+            # submitted value verbatim; fall back to None on empty/missing.
+            resolved_auto_fill_audit_at = auto_fill_audit_at or None
+    elif claimed_auto_fill:
+        # Codex R1 Major #1 + #2 fix — claim of schwab_auto with EMPTY
+        # anchor (operator stripped the JSON envelope but kept the
+        # claim). Reject with 400 (cannot trust the claim without the
+        # anchor). Same UX as the malformed-JSON branch above.
+        return _rerender_entry_form_with_error(
+            request=request, templates=templates, cfg=cfg,
+            cache=cache, executor=executor,
+            ticker=ticker, entry_date=entry_date,
+            entry_price=entry_price, shares=shares,
+            initial_stop=initial_stop, rationale=rationale, notes=notes,
+            error_message=(
+                "Trade entry rejected: fill_origin_at_form_render="
+                f"{fill_origin_at_form_render!r} claims auto-fill "
+                "provenance but schwab_source_value_json is empty. "
+                "Re-render the form to recover."
+            ),
+            origin=origin_coerced,
+            submitted_schwab_source_value_json=schwab_source_value_json,
+            submitted_auto_fill_audit_at=auto_fill_audit_at,
+            submitted_fill_origin_at_form_render=fill_origin_at_form_render,
+        )
 
     req = EntryRequest(
         ticker=ticker.upper(),
@@ -787,6 +1105,14 @@ def entry_post(
         event_handling=event_handling or None,
         event_type=event_type or None,
         event_date=event_date or None,
+        # Phase 13 T3.SB1 T-B.1.4 — auto-fill audit columns persisted on
+        # the fills row by ``record_entry`` → ``insert_fill_with_event``.
+        fill_origin=resolved_fill_origin,
+        schwab_source_value_json=resolved_schwab_source_value_json,
+        operator_corrected_value_json=(
+            resolved_operator_corrected_value_json
+        ),
+        auto_fill_audit_at=resolved_auto_fill_audit_at,
         gap_risk_present=gap_risk_present,
         gap_risk_handling=gap_risk_handling or None,
         emotional_state_pre_trade=emo_json,
@@ -864,6 +1190,46 @@ def entry_post(
                         catalyst_other_description or ""
                     ),
                     missing_fields=frozenset(exc.missing_fields),
+                    # Phase 13 T3.SB1 Codex R1 Major #3 fix — preserve
+                    # the submitted auto-fill anchors so the
+                    # MissingPreTradeFieldsException re-render carries
+                    # them back into the form (force=true retry replays
+                    # the same anchor instead of substituting a fresh
+                    # Schwab fetch's result).
+                    # Codex R2 Minor #1 fix — also restore kind +
+                    # clear advisory text when the submitted claim is
+                    # populated, so the banner doesn't drift to "no
+                    # match" while the hidden anchor still claims
+                    # auto-fill.
+                    auto_fill_schwab_source_value_json=(
+                        schwab_source_value_json or None
+                    ),
+                    auto_fill_audit_at=auto_fill_audit_at or None,
+                    auto_fill_fill_origin=(
+                        fill_origin_at_form_render or "operator_typed"
+                    ),
+                    auto_fill_kind=(
+                        "populated"
+                        if (
+                            schwab_source_value_json
+                            and fill_origin_at_form_render in (
+                                "schwab_auto",
+                                "schwab_auto_then_operator_corrected",
+                            )
+                        )
+                        else vm.auto_fill_kind
+                    ),
+                    auto_fill_advisory_text=(
+                        None
+                        if (
+                            schwab_source_value_json
+                            and fill_origin_at_form_render in (
+                                "schwab_auto",
+                                "schwab_auto_then_operator_corrected",
+                            )
+                        )
+                        else vm.auto_fill_advisory_text
+                    ),
                 )
                 return templates.TemplateResponse(
                     request, "partials/trade_entry_form.html.j2",
@@ -1001,6 +1367,21 @@ def entry_post(
                 "catalyst_other_description": (
                     catalyst_other_description or ""
                 ),
+                # Phase 13 T3.SB1 T-B.1.4 — auto-fill hidden anchors MUST
+                # round-trip through the soft-warn confirm fragment per
+                # CLAUDE.md gotcha "Form-render hidden anchors driving
+                # POST-time validation MUST round-trip through soft-warn
+                # confirm form_values dict" + Phase 9 Sub-bundle D R3
+                # Critical #1 LOCK + dispatch brief §5 watch item 9.
+                # Without this, a tampered force=true resubmit would
+                # silently drop the anchors → fill_origin defaults to
+                # 'operator_typed' on the persisted fill row even when
+                # the original submit was 'schwab_auto'.
+                "schwab_source_value_json": schwab_source_value_json or "",
+                "auto_fill_audit_at": auto_fill_audit_at or "",
+                "fill_origin_at_form_render": (
+                    fill_origin_at_form_render or ""
+                ),
                 "open_count": actual_open,
                 "soft_warn": cfg.position_limits.soft_warn_open,
                 "hard_cap": cfg.position_limits.hard_cap_open,
@@ -1030,6 +1411,41 @@ def entry_post(
                     input_shares=shares,
                     rationale=rationale,
                     notes=notes or "",
+                    # Phase 13 T3.SB1 Codex R1 Major #3 + R2 Minor #1
+                    # fix — preserve the submitted auto-fill anchors AND
+                    # restore kind/advisory on the duplicate-position
+                    # re-render path so the operator's original anchor +
+                    # banner state isn't overwritten by a fresh Schwab
+                    # fetch's stale advisory.
+                    auto_fill_schwab_source_value_json=(
+                        schwab_source_value_json or None
+                    ),
+                    auto_fill_audit_at=auto_fill_audit_at or None,
+                    auto_fill_fill_origin=(
+                        fill_origin_at_form_render or "operator_typed"
+                    ),
+                    auto_fill_kind=(
+                        "populated"
+                        if (
+                            schwab_source_value_json
+                            and fill_origin_at_form_render in (
+                                "schwab_auto",
+                                "schwab_auto_then_operator_corrected",
+                            )
+                        )
+                        else vm.auto_fill_kind
+                    ),
+                    auto_fill_advisory_text=(
+                        None
+                        if (
+                            schwab_source_value_json
+                            and fill_origin_at_form_render in (
+                                "schwab_auto",
+                                "schwab_auto_then_operator_corrected",
+                            )
+                        )
+                        else vm.auto_fill_advisory_text
+                    ),
                 )
                 return templates.TemplateResponse(
                     request, "partials/trade_entry_form.html.j2",
@@ -1074,6 +1490,9 @@ def entry_post(
                     "contact a developer if the form was not manually altered."
                 ),
                 origin=origin_coerced,
+                submitted_schwab_source_value_json=schwab_source_value_json,
+                submitted_auto_fill_audit_at=auto_fill_audit_at,
+                submitted_fill_origin_at_form_render=fill_origin_at_form_render,
             )
         except sqlite3.IntegrityError as exc:
             # Codex R1 Major 1 — tampered hidden-form-field POST that slips
@@ -1122,6 +1541,9 @@ def entry_post(
                     "contact a developer if the form was not manually altered."
                 ),
                 origin=origin_coerced,
+                submitted_schwab_source_value_json=schwab_source_value_json,
+                submitted_auto_fill_audit_at=auto_fill_audit_at,
+                submitted_fill_origin_at_form_render=fill_origin_at_form_render,
             )
     finally:
         conn.close()

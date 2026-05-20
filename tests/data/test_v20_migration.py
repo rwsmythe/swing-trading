@@ -814,17 +814,14 @@ def test_v20_schwab_api_calls_widening_preserves_rows_and_indexes(
 # ============================================================================
 
 
-@pytest.mark.skip(
-    reason=(
-        "Cross-bundle pin per plan §H.3 / §1.5 — un-skip at T3.SB1 merge "
-        "(verifies T3.SB1 worktree branches off T-A.1.1's commit SHA + "
-        "schema_version=20 invariant holds)."
-    )
-)
 def test_schema_version_v20_invariant(tmp_path: Path) -> None:
-    """Cross-bundle pin: schema_version=20 invariant survives T3.SB1 merge.
+    """Cross-bundle pin (un-skipped at T3.SB1 T-B.1.1 per plan §H.3): the
+    schema_version=20 invariant survives T3.SB1 merge.
 
-    Un-skip at T3.SB1 merge per plan §H.3 cross-bundle pin schedule.
+    Re-skipping this test would silently disable the cross-bundle guard.
+    T3.SB1's prerequisite test at
+    ``tests/data/test_phase13_t3_sb1_prerequisite.py`` covers the same
+    invariant from a different angle (branch-base SHA + new column shape).
     """
     db_path = tmp_path / "pin_v20.db"
     conn = ensure_schema(db_path)

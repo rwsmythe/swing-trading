@@ -322,6 +322,42 @@ class TradeEntryFormVM:
     # template never renders an error class on a clean form. The template
     # tests `{% if 'thesis' in vm.missing_fields %}` per input.
     missing_fields: frozenset[str] = frozenset()
+    # Phase 13 T3.SB1 — entry auto-fill via Schwab Trader API at form
+    # render (spec §6.1 + plan §G.2 T-B.1.3). The 5 auto_fill_* fields
+    # carry the resolution result from
+    # ``swing.trades.entry_auto_fill.resolve_entry_auto_fill``. When the
+    # resolution is short-circuited (sandbox / DEGRADED / no account_hash /
+    # credentials missing / Schwab error) OR yields no candidates, all
+    # auto_fill_* fields stay None except ``auto_fill_advisory_text`` and
+    # ``auto_fill_fill_origin``. The template gates display + hidden-input
+    # emission on ``vm.auto_fill_schwab_source_value_json is not none``.
+    #
+    # ``fill_origin`` here is the form-render-time stamp (always
+    # 'schwab_auto' on populated, 'operator_typed' otherwise). The POST
+    # handler (T-B.1.4) re-derives the persisted ``fill_origin`` by
+    # comparing the submitted entry_date / entry_price / shares against
+    # the ``auto_fill_schwab_source_value_json`` anchor.
+    auto_fill_kind: str = "operator_typed"
+    auto_fill_fill_origin: str = "operator_typed"
+    auto_fill_entry_date: str | None = None
+    auto_fill_entry_price: float | None = None
+    auto_fill_shares: int | None = None
+    auto_fill_advisory_text: str | None = None
+    auto_fill_schwab_source_value_json: str | None = None
+    auto_fill_audit_at: str | None = None
+    # Phase 13 T3.SB1 dispatch brief §5 watch item 7 + plan §G.2 T-B.1.3
+    # forward-binding lesson #12 — base-layout VM banner pin (defense-in-
+    # depth for any future full-page render path that extends
+    # ``base.html.j2``; the current /trades/entry/form route returns a
+    # row-partial fragment that does NOT extend the base layout, so the
+    # banner-pin fields are not currently rendered — but the VM populates
+    # them anyway so future plumbing changes don't trip the CLAUDE.md
+    # "base.html.j2 is shared — new vm.foo field requires adding to
+    # EVERY base-layout VM" gotcha). Defaults match the BaseLayoutVM
+    # canonical values.
+    unresolved_material_discrepancies_count: int = 0
+    recent_multi_leg_auto_correction_count: int = 0
+    banner_resolve_link: str | None = None
 
 
 def build_entry_form_vm(
@@ -344,6 +380,11 @@ def build_entry_form_vm(
     ticker = ticker.upper()
     cls = None
     pipeline_finished_at: str | None = None
+    # Phase 13 T3.SB1 — banner-pin counters (read inside `with conn:` block
+    # below; defaults preserved if discrepancies-helper not yet plumbed).
+    unresolved_material_count: int = 0
+    recent_multi_leg_count: int = 0
+    banner_resolve_link: str | None = None
     conn = connect(cfg.paths.db_path)
     try:
         with conn:
@@ -427,6 +468,31 @@ def build_entry_form_vm(
                 conn, ticker=ticker,
                 starting_equity=cfg.account.starting_equity,
             )
+            # Phase 13 T3.SB1 dispatch brief §5 watch item 7 — banner-pin
+            # counters mirror DashboardVM. Helper module already exists at
+            # swing.metrics.discrepancies (Phase 10 + Phase 12.5 #1 + #2).
+            from swing.metrics.discrepancies import (
+                count_recent_multi_leg_auto_corrections,
+                count_unresolved_material,
+                fetch_first_pending_ambiguity_resolve_link_path,
+            )
+            unresolved_material_count = count_unresolved_material(conn)
+            recent_multi_leg_count = count_recent_multi_leg_auto_corrections(
+                conn,
+            )
+            banner_resolve_link = (
+                fetch_first_pending_ambiguity_resolve_link_path(conn)
+            )
+        # `with conn:` block has exited (autocommit released); call the
+        # auto-fill resolver on the same conn since
+        # ``resolve_entry_auto_fill`` invokes
+        # ``audit_service.record_call_start`` which requires
+        # ``conn.in_transaction == False`` (per CLAUDE.md
+        # "in_transaction auto-detect" + "Service-layer with conn:" gotchas).
+        from swing.trades.entry_auto_fill import resolve_entry_auto_fill
+        auto_fill = resolve_entry_auto_fill(
+            ticker=ticker, cfg=cfg, conn=conn,
+        )
     finally:
         conn.close()
 
@@ -479,6 +545,21 @@ def build_entry_form_vm(
     watchlist_entry_target = wl_entry.entry_target if wl_entry else None
     watchlist_initial_stop = wl_entry.initial_stop_target if wl_entry else None
 
+    # Phase 13 T3.SB1 — Schwab auto-fill OVERRIDES the live-price /
+    # watchlist fallback chain when the resolver returns a populated
+    # result (spec §6.1 + plan §G.2 T-B.1.3). The operator sees the
+    # auto-populated values in the input fields; manual edits are
+    # detected at POST and flip fill_origin to
+    # 'schwab_auto_then_operator_corrected' (T-B.1.4).
+    auto_fill_entry_date_default = date.today().isoformat()
+    if auto_fill.kind == "populated":
+        # Defensive: auto_fill.entry_price + shares + entry_date are
+        # non-None by EntryAutoFillResult __post_init__ contract.
+        entry_price = float(auto_fill.entry_price)  # type: ignore[arg-type]
+        auto_fill_entry_date_default = (
+            auto_fill.entry_date or auto_fill_entry_date_default
+        )
+
     # Sizing hint at current (entry, stop).
     equity = current_equity(
         starting_equity=cfg.account.starting_equity,
@@ -497,6 +578,11 @@ def build_entry_form_vm(
         suggested_shares = 0
         risk_dollars = 0.0
         risk_pct = 0.0
+    # Phase 13 T3.SB1 — Schwab shares overrides sizing-derived
+    # suggested_shares so the input pre-population matches the actual
+    # fill. Cast safely: auto_fill.shares is int|None.
+    if auto_fill.kind == "populated" and auto_fill.shares is not None:
+        suggested_shares = int(auto_fill.shares)
 
     # Spec §3.6: only ``pattern in ('flag', 'none')`` rows count as
     # "evaluated"; classifier-error rows (pattern=NULL) and missing
@@ -515,7 +601,7 @@ def build_entry_form_vm(
 
     return TradeEntryFormVM(
         ticker=ticker,
-        entry_date=date.today().isoformat(),
+        entry_date=auto_fill_entry_date_default,
         entry_price=entry_price,
         initial_stop=initial_stop,
         watchlist_entry_target=watchlist_entry_target,
@@ -540,6 +626,21 @@ def build_entry_form_vm(
             pipeline_finished_at if coerced_origin == "hyp-recs" else None
         ),
         hypothesis_label=resolved_hypothesis_label,
+        # Phase 13 T3.SB1 — Schwab auto-fill fields (T-B.1.3).
+        auto_fill_kind=auto_fill.kind,
+        auto_fill_fill_origin=auto_fill.fill_origin,
+        auto_fill_entry_date=auto_fill.entry_date,
+        auto_fill_entry_price=auto_fill.entry_price,
+        auto_fill_shares=auto_fill.shares,
+        auto_fill_advisory_text=auto_fill.advisory_text,
+        auto_fill_schwab_source_value_json=(
+            auto_fill.schwab_source_value_json
+        ),
+        auto_fill_audit_at=auto_fill.auto_fill_audit_at,
+        # Phase 13 T3.SB1 dispatch brief §5 watch item 7 — banner-pin fields.
+        unresolved_material_discrepancies_count=unresolved_material_count,
+        recent_multi_leg_auto_correction_count=recent_multi_leg_count,
+        banner_resolve_link=banner_resolve_link,
     )
 
 
