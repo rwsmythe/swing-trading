@@ -21,7 +21,7 @@ across all four prior Phase 9 sub-bundles' surfaces in one connection:
 """
 from __future__ import annotations
 
-from datetime import datetime as _dt
+from datetime import date, datetime as _dt, timedelta
 from pathlib import Path
 
 import pytest
@@ -284,7 +284,11 @@ def test_phase9_full_happy_path_across_all_sub_bundles(
     # =========================================================================
     # §4: record an account snapshot via CLI (today's session).
     # =========================================================================
-    snapshot_date = "2026-05-12"
+    # Dynamic anchor (today - 2 days) keeps the snapshot inside the
+    # is_back_recorded 7-day window regardless of wall-clock date. The
+    # hardcoded "2026-05-12" used previously drifted past the threshold
+    # 2026-05-20 (CLAUDE.md gotcha: time-dependent fixture calendar buffer).
+    snapshot_date = (date.today() - timedelta(days=2)).isoformat()
     r_snap = runner.invoke(main, [
         "--config", str(cfg_path),
         "account", "snapshot",
