@@ -765,3 +765,202 @@ def test_htf_pole_peak_excludes_intra_consolidation_swing_within_21d_gap() -> No
         f"got gap_days={gap_days} pole_peak_date={evidence.pole_peak_date} "
         f"anchor_date={anchor_dt}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Codex R2 Major #1 -- bounded pole-peak search window.
+#
+# R1 M3 selected ``max(end_price)`` over all UP-swing endpoints in
+# ``bars <= anchor_date`` with only a 21-day minimum gap from anchor.
+# An older historical peak in the fetched window (e.g., a prior bull
+# cycle high years before the current setup) would win over a recent
+# valid HTF pole, corrupting the consolidation slice.
+#
+# R2 M#1 fix (Option A: bounded latest-valid):
+#   - Earliest plausible pole peak: ``anchor - 91 days`` (pole_duration
+#     max 56 + consolidation_duration max 35).
+#   - Latest plausible pole peak: ``anchor - 21 days``
+#     (consolidation_duration min 21).
+#   - Among UP-swing endpoints in that bounded window, prefer the
+#     LATEST one satisfying pole_pct >= 0.85 + pole_duration in
+#     [28, 56].
+#   - If none satisfies, return None (the detector then emits zero
+#     evidence; an old historical peak does NOT poison the
+#     consolidation slice).
+# ---------------------------------------------------------------------------
+
+
+def test_htf_pole_peak_bounded_search_ignores_old_historical_peak() -> None:
+    """Codex R2 Major #1: an old historical peak (e.g., 2 years before
+    the anchor) MUST NOT win over a recent valid HTF pole within the
+    bounded search window.
+
+    Fixture:
+      [0..40]: historical bull cycle (peak ~$50 mid-segment;
+        segment ends at $1) -- the swing-HIGH at $50 sits ~140+ days
+        before anchor, well outside the bounded window
+        ``[anchor-91, anchor-21]``.
+      [40..100]: long flat decline at $1 -> $1.50 (filler).
+      [100..134]: recent valid HTF pole $5 -> $11 over 35 days
+        (120% gain; pole_duration in [28, 56], pole_pct >> 0.85).
+      [134..158]: 25-day consolidation at ~$10.
+
+    Anchor: bars[-1] with ma_crossover reason (TRIGGER EVENT).
+    Pre-R2 algorithm (max(end_price)): picks $50 historical peak ->
+      consolidation slice becomes years-long -> criterion #3 duration
+      fails -> geometric_score=0 for WRONG reason (the genuine recent
+      pole was never evaluated).
+    Post-R2 algorithm (bounded latest-valid): $50 historical peak is
+      OUTSIDE the bounded window (anchor - 91 days .. anchor - 21
+      days); detector picks the recent $11 pole peak.
+    """
+    # Fixture design constraints:
+    #   - Recent pole peak must be within bounded window
+    #     [anchor-91, anchor-21].
+    #   - _identify_pole_start uses a 70-day lookback from the pole
+    #     peak; for the helper to cleanly isolate the pole's up-swing,
+    #     the 70-day window must NOT contain unrelated larger swings.
+    #     -> Insert a pre-pole flat segment of >= 5 days at the start
+    #     of the lookback window so the pole_start can be cleanly
+    #     identified as the most-recent swing-LOW.
+    #   - The historical $50 peak must sit OUTSIDE the bounded window
+    #     (i.e., > 91 days before anchor) AND outside the 70-day
+    #     lookback from the recent pole peak (i.e., > ~95 days before
+    #     anchor).
+    #
+    # Bar layout (anchor at idx 169 = bars[-1]):
+    #   [0..29]: historical bull cycle peak $5 -> $50 over 30 bars
+    #     (peak at idx ~29; well outside both bounded + lookback).
+    #   [29..58]: decline $50 -> $5 over 30 bars (still > 95 days
+    #     before anchor at 145 bars; outside lookback).
+    #   [58..103]: long flat at $5 (45 bars; the bars in this range
+    #     between anchor-95 and anchor-60 are part of the recent
+    #     pole's 70-day lookback but contain no swings).
+    #   [103..138]: recent valid HTF pole $5 -> $11 over 35 days.
+    #   [138..162]: 25-day consolidation around $10.
+    # A small dip $5 -> $3 -> $5 in the middle of the pre-pole flat
+    # introduces a fresh swing-LOW that the zigzag treats as the pole
+    # start (instead of reaching back to the historical decline's $5).
+    segments: list[tuple[float, float, int]] = [
+        # Historical bull cycle peak ~$50.
+        (5.00, 50.00, 30),
+        # Decline $50 -> $5.
+        (50.00, 5.00, 30),
+        # Mid-flat dip to $3 + return to $5 -- creates a fresh
+        # swing-LOW at the dip bottom (~10 days deep).
+        (5.00, 3.00, 10),
+        (3.00, 5.00, 10),
+        # Recent valid HTF pole: $5 -> $11 over 35 days.
+        (5.00, 11.00, 35),
+        # 25-day consolidation around $10.
+        (11.00, 9.80, 5),
+        (9.80, 10.20, 4),
+        (10.20, 9.80, 4),
+        (9.80, 10.20, 4),
+        (10.20, 9.80, 4),
+        (9.80, 10.20, 4),
+    ]
+    # Total bars: 5 + 5 + 90 + 5 + 30 + 5 + 4 + 4 + 4 + 4 + 4 = 160.
+    n_total = sum(seg[2] for seg in segments)
+    # Volumes don't matter for the pole-peak selection algorithm; flat
+    # 1M everywhere is fine.
+    volumes = [1_000_000.0] * n_total
+    bars = _bars_from_segments(
+        segments,
+        start=date(2025, 1, 1),  # historical era is well before 2026
+        noise_pct=0.005,
+        volumes_per_bar=volumes,
+    )
+    anchor_dt = bars.index[-1].date()
+    window = CandidateWindow(
+        ticker="WXYZ",
+        timeframe="daily",
+        start_date=anchor_dt,
+        end_date=anchor_dt,
+        anchor_date=anchor_dt,
+        anchor_reason="ma_crossover:test_r2_bounded_search",
+    )
+    conn = _stage_2_conn()
+    evidence = detect_high_tight_flag(
+        bars, window, conn=conn, ticker="WXYZ",
+        asof_date=anchor_dt,
+    )
+    # Pole peak MUST be the RECENT $11 peak (not the historical $50).
+    assert evidence.pole_peak_price < 15.0, (
+        f"Expected pole_peak_price near 11 (the recent valid HTF pole "
+        f"peak); got {evidence.pole_peak_price}. Pre-R2 picked the "
+        f"old historical $50 peak from 2 years before the anchor."
+    )
+    # Pole peak date MUST be within the bounded window [anchor-91, anchor-21].
+    anchor_ts = pd.Timestamp(anchor_dt)
+    pole_peak_ts = pd.Timestamp(evidence.pole_peak_date)
+    gap_days = (anchor_ts - pole_peak_ts).days
+    assert 21 <= gap_days <= 91, (
+        f"Expected pole_peak gap from anchor in [21, 91] days "
+        f"(bounded window per R2 M#1 fix); got gap_days={gap_days}"
+    )
+
+
+def test_htf_pole_peak_bounded_rejects_historical_when_no_recent() -> None:
+    """Codex R2 Major #1: when the only candidate UP-swing in the
+    bounded window comes from a years-old peak whose end_date falls
+    OUTSIDE the bounded window, the detector MUST return None (no
+    pole peak) -- NOT return the old historical peak.
+
+    Fixture: a single historical peak ($5 -> $30 -> $1) followed by a
+    long flat decline + a small consolidation at the anchor. There is
+    NO recent valid HTF pole. The historical peak is outside the
+    bounded window.
+
+    Pre-R2 max(end_price): would return the historical peak's end_date
+      anyway (no bounded window check) -> wrong pole peak.
+    Post-R2 bounded-window: no candidate UP-swing endpoint falls
+      within [anchor - 91, anchor - 21]; detector returns None; HTF
+      detector emits zero evidence with criterion_2 False.
+    """
+    segments: list[tuple[float, float, int]] = [
+        # Historical bull cycle: $5 -> $30 -> $1 over 40 bars.
+        (5.00, 30.00, 20),
+        (30.00, 1.00, 20),
+        # Very long flat trough at ~$1.50 (95 bars).
+        (1.00, 1.50, 95),
+        # Tiny anchor-region flat (no pole structure).
+        (1.50, 1.50, 5),
+    ]
+    n_total = sum(seg[2] for seg in segments)
+    volumes = [1_000_000.0] * n_total
+    bars = _bars_from_segments(
+        segments,
+        start=date(2026, 1, 1),
+        noise_pct=0.005,
+        volumes_per_bar=volumes,
+    )
+    anchor_dt = bars.index[-1].date()
+    window = CandidateWindow(
+        ticker="WXYZ",
+        timeframe="daily",
+        start_date=anchor_dt,
+        end_date=anchor_dt,
+        anchor_date=anchor_dt,
+        anchor_reason="ma_crossover:test_r2_no_recent_pole",
+    )
+    conn = _stage_2_conn()
+    evidence = detect_high_tight_flag(
+        bars, window, conn=conn, ticker="WXYZ",
+        asof_date=anchor_dt,
+    )
+    # No valid pole within the bounded window -> zero-evidence emit.
+    # The detector should NOT have picked the historical $30 peak.
+    # geometric_score must be 0.0; criterion_2 (pole) must be False.
+    assert evidence.geometric_score == 0.0, (
+        f"Expected geometric_score == 0.0 (no valid pole within "
+        f"bounded window); got {evidence.geometric_score}. Pre-R2 "
+        f"max(end_price) would have returned the historical $30 "
+        f"peak as pole_peak_date."
+    )
+    # Historical peak price MUST NOT have been adopted.
+    assert evidence.pole_peak_price < 20.0, (
+        f"Expected pole_peak_price < 20 (the historical $30 peak "
+        f"must NOT be selected post-R2); got "
+        f"{evidence.pole_peak_price}"
+    )

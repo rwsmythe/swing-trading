@@ -246,17 +246,36 @@ def _backward_slice_pole_peak(
     walks BACK from the anchor to find the prior SWING-HIGH that
     qualifies as the POLE PEAK (NOT merely the most-recent swing-HIGH).
 
-    **Codex R1 Major #3 fix**: the previous implementation returned the
-    first UP-swing endpoint walking in reverse. In real-world HTF data
-    the 3-5 week post-pole consolidation may contain minor swing-highs
-    near the pivot; those are NOT the pole peak (an intra-consolidation
-    high). The previous algorithm would shorten consolidation duration
-    + corrupt pullback/width metrics. Replaced with: select the
-    HIGHEST swing-HIGH end_price in the backward window, gated by
-    occurring at least one full consolidation-window back from the
-    anchor (so the candidate peak has post-peak consolidation room).
-    Tie-breaker: prefer the EARLIER peak (more conservative pole
-    identification).
+    **Codex R1 Major #3**: do not return the first UP-swing walking in
+    reverse -- an intra-consolidation minor swing-high (within 21 days
+    of the anchor) is NOT the pole peak; the algorithm enforces a
+    minimum gap from anchor for post-peak consolidation room.
+
+    **Codex R2 Major #1 fix (Option A: bounded latest-valid)**: the R1
+    fix selected ``max(end_price)`` over all UP-swing endpoints in
+    ``bars <= anchor_date``, but an older historical peak in the
+    fetched window (e.g., a prior bull cycle high years before the
+    current setup) would win over a recent valid HTF pole, corrupting
+    the consolidation slice and the criterion #3 duration check.
+    Replaced with a BOUNDED-WINDOW + LATEST-VALID algorithm matching
+    spec section 5.5:
+
+      - Earliest plausible pole peak: ``anchor_date - 91 days``
+        (pole_duration max 56 + consolidation_duration max 35).
+      - Latest plausible pole peak: ``anchor_date - 21 days``
+        (consolidation_duration min 21).
+      - Among UP-swing endpoints in that bounded window, prefer the
+        LATEST one satisfying:
+          * pole_pct >= 0.85 (relaxed bound; spec section 5.5
+            criterion #2 + tolerance), evaluated against the
+            prior-swing-LOW pole start; AND
+          * pole_duration_days in [28, 56] STRICT.
+      - If no candidate satisfies both pole-side checks, return None
+        (the HTF detector then emits zero evidence; an old historical
+        peak does NOT poison the consolidation slice).
+
+    Tie-breaker: latest-wins is the operator-facing semantic of "the
+    pole most recently formed before the trigger".
 
     Returns None if no suitable prior swing-HIGH is found.
 
@@ -272,31 +291,65 @@ def _backward_slice_pole_peak(
     swings = extract_zigzag_swings(
         sub, initial_threshold_pct=threshold, monotonic_narrow=False
     )
-    # Gather all UP-swing endpoints (candidate pole peaks).
-    # Filter to swings whose endpoint is at least the consolidation
-    # window's minimum duration back from the anchor (so there is room
-    # for post-peak consolidation). The consolidation window's lower
-    # bound is _CONSOLIDATION_DURATION_DAYS_RANGE[0] (21 days).
+    # Bounded pole-peak search window (R2 Major #1 fix):
+    #   earliest = anchor - (pole_duration_max + consolidation_duration_max)
+    #            = anchor - (56 + 35) = anchor - 91 days
+    #   latest   = anchor - consolidation_duration_min = anchor - 21 days
+    pole_duration_max = _POLE_DURATION_DAYS_RANGE[1]
     consolidation_min_days = _CONSOLIDATION_DURATION_DAYS_RANGE[0]
-    min_gap_from_anchor = pd.Timedelta(days=consolidation_min_days)
-    candidates: list[tuple[float, date]] = []
+    consolidation_max_days = _CONSOLIDATION_DURATION_DAYS_RANGE[1]
+    earliest_peak_ts = anchor_ts - pd.Timedelta(
+        days=pole_duration_max + consolidation_max_days
+    )
+    latest_peak_ts = anchor_ts - pd.Timedelta(days=consolidation_min_days)
+
+    # Gather UP-swing endpoints inside the bounded window.
+    bounded: list[tuple[date, float]] = []
     for sw in swings:
         if sw.direction != "up":
             continue
         sw_end_ts = pd.Timestamp(sw.end_date)
-        # Skip intra-consolidation peaks: those within
-        # consolidation_min_days of the anchor have insufficient
-        # post-peak consolidation room.
-        if (anchor_ts - sw_end_ts) < min_gap_from_anchor:
+        if sw_end_ts < earliest_peak_ts or sw_end_ts > latest_peak_ts:
             continue
-        candidates.append((float(sw.end_price), sw.end_date))
-    if not candidates:
+        bounded.append((sw.end_date, float(sw.end_price)))
+    if not bounded:
         return None
-    # Select the HIGHEST end_price (the genuine pole peak).
-    # Tie-breaker on equal price: prefer the EARLIER peak (more
-    # conservative pole identification; matches Codex M#3 brief).
-    best_price = max(p for p, _ in candidates)
-    best_date = min(d for p, d in candidates if p == best_price)
+
+    # Evaluate each candidate against pole_pct + pole_duration; pick
+    # LATEST valid. (We prefer latest -- the operator-facing semantic of
+    # "the pole most recently formed before the trigger".)
+    relaxed_pct = _POLE_PCT_BOUND - _POLE_PCT_TOLERANCE
+    pole_duration_lo, pole_duration_hi = _POLE_DURATION_DAYS_RANGE
+    best_date: date | None = None
+    best_peak_ts: pd.Timestamp | None = None
+    # Reuse the bars slice to obtain the pole peak price (High at the
+    # endpoint bar; mirrors detect_high_tight_flag step 1 logic).
+    for cand_date, cand_swing_price in sorted(bounded, key=lambda x: x[0]):
+        cand_ts = pd.Timestamp(cand_date)
+        # Peak price: prefer bar High at the endpoint date when present;
+        # else the swing endpoint price (defensive parity).
+        peak_price = (
+            float(bars.loc[cand_ts, "High"])
+            if cand_ts in bars.index
+            else cand_swing_price
+        )
+        # Identify pole_start to evaluate pole_pct + duration.
+        pole_start = _identify_pole_start(bars, cand_date)
+        if pole_start is None:
+            continue
+        pole_start_date, pole_start_price = pole_start
+        if pole_start_price <= 0:
+            continue
+        cand_pole_pct = (peak_price - pole_start_price) / pole_start_price
+        cand_duration = (cand_date - pole_start_date).days
+        if cand_pole_pct < relaxed_pct:
+            continue
+        if not (pole_duration_lo <= cand_duration <= pole_duration_hi):
+            continue
+        # Candidate satisfies pole-side. Prefer LATEST.
+        if best_peak_ts is None or cand_ts > best_peak_ts:
+            best_date = cand_date
+            best_peak_ts = cand_ts
     return best_date
 
 

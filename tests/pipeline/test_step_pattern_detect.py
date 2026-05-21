@@ -1239,3 +1239,237 @@ def test_step_pattern_detect_idempotent_re_invocation(seeded_env) -> None:
     # T-A.4.3: 5 detectors x 1 ticker -> 5 rows; idempotent re-invocation
     # leaves the count unchanged.
     assert count_after_first == count_after_second == 5
+
+
+# ---------------------------------------------------------------------------
+# Codex R2 Critical #1 -- DBW geometric_score=1.10 composite-layer clamp.
+#
+# Spec section 5.8 line 718 + section 10.5 line 1325: DBW evidence
+# geometric_score may reach 1.10 (base 1.0 + undercut bonus 0.10). The
+# COMPOSITE formula at section 5.8 line 712 wraps with min(1.0, ...).
+# Pre-fix: pipeline composite_score = geometric_score (LOCK pre-T2.SB5;
+# template_match_score None); a DBW evidence score of 1.10 propagated
+# verbatim to composite_score and downstream drift_logging
+# _composite_score_histogram (section 5.11 LOCK [0.0, 1.0]) raised
+# ValueError that aborted the entire Pass-2 emit loop for the run.
+# Post-fix: pipeline applies composite_score = min(1.0, geometric_score)
+# so the EVIDENCE score stays at 1.10 in structural_evidence_json but
+# the COMPOSITE clamps to 1.0.
+# ---------------------------------------------------------------------------
+
+
+def _build_synthetic_dbw_evidence(geometric_score: float):
+    """Construct a DoubleBottomWEvidence with the requested geometric_score.
+
+    Helper for the R2 Critical #1 discriminating tests. The score may
+    reach 1.10 at the evidence layer per spec section 5.8 line 718 +
+    section 10.5 line 1325 (undercut bonus); construction validates the
+    dataclass __post_init__ contract.
+    """
+    from swing.patterns.double_bottom_w import DoubleBottomWEvidence
+
+    return DoubleBottomWEvidence(
+        stage="stage_2",
+        recent_stage="undefined",
+        trough_1_date=date(2026, 1, 5),
+        trough_1_price=10.0,
+        trough_1_drawdown_pct=0.20,
+        trough_1_avg_volume=1_000_000.0,
+        center_peak_date=date(2026, 1, 15),
+        center_peak_price=12.0,
+        center_peak_retracement_pct=0.50,
+        trough_2_date=date(2026, 1, 25),
+        trough_2_price=9.5,
+        trough_2_avg_volume=1_200_000.0,
+        undercut=True,
+        trough_1_to_center_duration_days=10,
+        center_to_trough_2_duration_days=10,
+        pivot_price=12.1,
+        criteria_pass={f"criterion_{i}": True for i in range(1, 9)},
+        geometric_score=geometric_score,
+    )
+
+
+
+
+def test_step_pattern_detect_dbw_evidence_1_10_clamps_composite_to_1_0(
+    seeded_env, monkeypatch,
+) -> None:
+    """Codex R2 Critical #1: DBW evidence geometric_score=1.10 (undercut
+    bonus per spec section 5.8 line 718 + section 10.5 line 1325) MUST
+    clamp composite_score to 1.0 at the pipeline composite-derivation
+    step. The evidence score MUST remain 1.10 in
+    structural_evidence_json (the EVIDENCE layer preserves the bonus;
+    the COMPOSITE layer caps).
+
+    Discriminating predicate:
+      - Monkeypatch the DBW detector to return evidence with
+        geometric_score=1.10 (a fully-passing W with undercut bonus).
+      - Run _step_pattern_detect.
+      - Assert pattern_evaluations row for double_bottom_w has
+        composite_score == 1.0 (NOT 1.10).
+      - Assert structural_evidence_json carries
+        ``geometric_score: 1.10`` verbatim.
+
+    Pre-fix: composite_score = geometric_score = 1.10 -> downstream
+    drift_logging _composite_score_histogram raises ValueError ->
+    Pass-2 emit loop catches + continues, skipping the insert (and ALL
+    other queued inserts for this run since the histogram is shared
+    universe-context state). The DBW row would NEVER persist; this
+    test would fail because the row would be absent.
+    Post-fix: composite_score = min(1.0, 1.10) = 1.0; histogram accepts;
+    insert succeeds; row persists with evidence score 1.10 preserved.
+    """
+    _seed_aplus_candidate(seeded_env["conn"], seeded_env["eval_run_id"])
+
+    # Override the DBW detector to return our synthetic 1.10 evidence.
+    fake_dbw_evidence = _build_synthetic_dbw_evidence(geometric_score=1.10)
+
+    def _fake_dbw_detector(*args, **kwargs):
+        return fake_dbw_evidence
+
+    # Monkeypatch _pattern_detect_registry to substitute the DBW slot.
+    from swing.pipeline import runner as _runner_mod
+
+    original_registry = _runner_mod._pattern_detect_registry
+
+    def _patched_registry():
+        tuples = original_registry()
+        out = []
+        for det_fn, pat_class, version in tuples:
+            if pat_class == "double_bottom_w":
+                out.append((_fake_dbw_detector, pat_class, version))
+            else:
+                out.append((det_fn, pat_class, version))
+        return tuple(out)
+
+    monkeypatch.setattr(
+        _runner_mod, "_pattern_detect_registry", _patched_registry
+    )
+
+    _step_pattern_detect(
+        cfg=None,
+        lease=seeded_env["lease"],
+        eval_run_id=seeded_env["eval_run_id"],
+        ohlcv_cache=seeded_env["cache"],
+    )
+
+    # Verify DBW row persisted with composite clamped + evidence preserved.
+    row = seeded_env["conn"].execute(
+        "SELECT composite_score, structural_evidence_json "
+        "FROM pattern_evaluations "
+        "WHERE pipeline_run_id = ? AND ticker = ? AND pattern_class = ?",
+        (
+            seeded_env["pipeline_run_id"],
+            "ABC",
+            "double_bottom_w",
+        ),
+    ).fetchone()
+    assert row is not None, (
+        "expected DBW pattern_evaluations row to persist; got None. "
+        "Pre-fix symptom: composite_score=1.10 hits "
+        "drift_logging._composite_score_histogram which raises "
+        "ValueError; the Pass-2 emit loop catches + continues, "
+        "skipping the insert."
+    )
+    composite_score, se_json = row
+    # Composite MUST be clamped to 1.0 (NOT 1.10).
+    assert composite_score == pytest.approx(1.0), (
+        f"expected composite_score clamped to 1.0 (Codex R2 Critical "
+        f"#1 fix); got {composite_score}. Pre-fix would have written "
+        f"1.10 -- but the pre-fix drift_logging.ValueError prevented "
+        f"the insert from happening at all."
+    )
+    # Evidence score MUST remain 1.10 in structural_evidence_json.
+    se = json.loads(se_json)
+    assert se.get("geometric_score") == pytest.approx(1.10), (
+        f"expected structural_evidence_json.geometric_score == 1.10 "
+        f"(evidence layer preserves the undercut bonus per spec "
+        f"section 5.8 line 718); got {se.get('geometric_score')!r}"
+    )
+
+
+def test_step_pattern_detect_dbw_1_10_does_not_abort_other_rows(
+    seeded_env, monkeypatch,
+) -> None:
+    """Codex R2 Critical #1 multi-row regression: a single DBW row
+    with geometric_score=1.10 MUST NOT suppress drift_logging emit for
+    the OTHER 4 detector rows in the same run.
+
+    Pre-fix symptom: drift_logging._composite_score_histogram is built
+    from universe_context["composite_scores"] which carries the queued
+    1.10 score; any call to capture_feature_distribution for any row
+    raises ValueError; the Pass-2 emit loop catches + continues,
+    skipping the insert. Effect: ONE all-pass DBW undercut row would
+    silently drop the OTHER 4 detector rows from the run.
+
+    Post-fix: composite_score = min(1.0, 1.10) = 1.0 at queue time;
+    histogram accepts; all 5 rows persist.
+    """
+    _seed_aplus_candidate(seeded_env["conn"], seeded_env["eval_run_id"])
+
+    # DBW returns 1.10 (the poisoning row); the other 4 detectors run
+    # against the synthetic bars normally (most will geometric_score=0
+    # on mild-uptrend fixture, which is fine -- we just need them to
+    # emit a row in [0.0, 1.0]).
+    fake_dbw = _build_synthetic_dbw_evidence(geometric_score=1.10)
+
+    from swing.pipeline import runner as _runner_mod
+
+    original_registry = _runner_mod._pattern_detect_registry
+
+    def _patched_registry():
+        tuples = original_registry()
+        out = []
+        for det_fn, pat_class, version in tuples:
+            if pat_class == "double_bottom_w":
+                out.append((lambda *a, **k: fake_dbw, pat_class, version))
+            else:
+                out.append((det_fn, pat_class, version))
+        return tuple(out)
+
+    monkeypatch.setattr(
+        _runner_mod, "_pattern_detect_registry", _patched_registry
+    )
+
+    _step_pattern_detect(
+        cfg=None,
+        lease=seeded_env["lease"],
+        eval_run_id=seeded_env["eval_run_id"],
+        ohlcv_cache=seeded_env["cache"],
+    )
+
+    # ALL 5 detector rows MUST persist; the DBW 1.10 row MUST NOT
+    # suppress the other 4.
+    rows = seeded_env["conn"].execute(
+        "SELECT pattern_class, composite_score "
+        "FROM pattern_evaluations "
+        "WHERE pipeline_run_id = ? AND ticker = ? "
+        "ORDER BY pattern_class",
+        (seeded_env["pipeline_run_id"], "ABC"),
+    ).fetchall()
+    classes_persisted = [r[0] for r in rows]
+    assert classes_persisted == sorted(DETECTOR_PATTERN_CLASSES), (
+        f"expected all 5 detector rows to persist; got "
+        f"{classes_persisted}. Pre-fix symptom: ONE DBW row with "
+        f"geometric_score=1.10 poisons drift_logging via "
+        f"composite_score = geometric_score path; "
+        f"_composite_score_histogram raises ValueError; Pass-2 emit "
+        f"loop catches + continues, dropping the row's insert. ALL "
+        f"rows are affected because the histogram universe is "
+        f"SHARED across the run."
+    )
+    # DBW row's composite is clamped to 1.0.
+    by_class = dict(rows)
+    assert by_class["double_bottom_w"] == pytest.approx(1.0)
+    # All other detectors' composite scores MUST be in [0.0, 1.0] (the
+    # real detectors return zero or low scores on the mild-uptrend
+    # fixture; no clamp needed).
+    for pat_class, comp_score in rows:
+        if pat_class == "double_bottom_w":
+            continue
+        assert 0.0 <= comp_score <= 1.0, (
+            f"{pat_class}: composite_score {comp_score} outside "
+            f"[0.0, 1.0] (non-DBW detectors don't get the undercut "
+            f"bonus)"
+        )

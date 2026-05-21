@@ -614,8 +614,14 @@ _STRUCTURAL_EVIDENCE_SCHEMA_BY_CLASS: dict[str, dict[str, Any]] = {
             "undercut": "bool (true if trough_2 < trough_1)",
             "pivot_price": "float",
             "geometric_score": (
-                "float in [0.0, 1.0] (+0.10 if undercut bonus applied, "
-                "capped at 1.0)"
+                "float in [0.0, 1.10] at evidence layer (base in [0.0, "
+                "1.0] + undercut bonus +0.10 per spec section 5.6 #8 "
+                "LOCK + section 10.5 line 1325; spec section 5.8 line "
+                "718). The COMPOSITE layer (60% geometric + 40% "
+                "template) applies its own min(1.0, ...) cap "
+                "downstream; the pipeline clamps composite_score to "
+                "1.0 even when DBW evidence geometric_score == 1.10 "
+                "(closes Codex R2 Critical #1)."
             ),
         },
     },

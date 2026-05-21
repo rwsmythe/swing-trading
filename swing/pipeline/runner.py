@@ -1661,9 +1661,20 @@ def _step_pattern_detect(
                 geometric_score = float(
                     getattr(evidence, "geometric_score", 0.0)
                 )
-                # T2.SB3: composite_score = geometric_score (template
-                # matching lands at T2.SB5 -- recon section 8).
-                composite_score = geometric_score
+                # T2.SB3 + T2.SB4 R2 Critical #1: composite_score =
+                # min(1.0, geometric_score) (template_match_score is
+                # None pre-T2.SB5 LOCK per spec section 5.8 line 720;
+                # the composite formula at line 712 wraps with
+                # min(1.0, ...)). DBW evidence geometric_score may
+                # reach 1.10 per spec section 5.8 line 718 + section
+                # 10.5 line 1325 (undercut bonus); the EVIDENCE score
+                # stays at 1.10 in structural_evidence_json but the
+                # COMPOSITE caps at 1.0 -- otherwise downstream
+                # drift_logging._composite_score_histogram (section
+                # 5.11 LOCK [0.0, 1.0]) raises ValueError that aborts
+                # the entire Pass-2 emit loop for the run. Recon
+                # section 8.
+                composite_score = min(1.0, geometric_score)
 
                 # Codex R4 Major #1: do NOT append Pass-1 scores to
                 # universe_context here. The histogram universe is built

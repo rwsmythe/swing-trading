@@ -440,24 +440,47 @@ def test_phase13_t2_sb4_detectors_e2e_fast(tmp_path: Path) -> None:
         assert isinstance(fdl["composite_score_histogram_bins"], list)
         assert "smoothing_params" in fdl
         assert "universe_size" in fdl
-        # composite_score == geometric_score (T2.SB3 LOCK; template
-        # match arrives at T2.SB5).
-        assert comp == pytest.approx(geom), (
-            f"composite_score {comp} != geometric_score {geom} for "
-            f"({ticker}, {pat_class}); T2.SB3 LOCK requires equality "
-            f"until template matching lands at T2.SB5"
-        )
+        # composite_score == min(1.0, geometric_score) (T2.SB3 LOCK +
+        # T2.SB4 Codex R2 Critical #1 clamp). Pre-T2.SB5 the composite
+        # formula reduces to composite = min(1.0, geometric) since
+        # template_match_score is None. DBW evidence may carry
+        # geometric_score in [0.0, 1.10] (undercut bonus per spec
+        # section 5.8 line 718 + section 10.5 line 1325); other 4
+        # detectors carry geometric_score in [0.0, 1.0]. The composite
+        # always clamps to [0.0, 1.0] -- otherwise
+        # drift_logging._composite_score_histogram rejects the value
+        # and aborts the entire Pass-2 emit loop for the run.
+        if pat_class == "double_bottom_w":
+            # DBW: evidence in [0.0, 1.10]; composite = min(1.0, geom).
+            assert 0.0 <= geom <= 1.10, (
+                f"DBW geometric_score {geom} outside [0.0, 1.10] "
+                f"evidence-layer LOCK band for "
+                f"({ticker}, {pat_class}); see spec section 5.8 line "
+                f"718 + section 10.5 line 1325"
+            )
+            assert comp == pytest.approx(min(1.0, geom)), (
+                f"DBW composite_score {comp} != min(1.0, {geom}) for "
+                f"({ticker}, {pat_class}); Codex R2 Critical #1 "
+                f"requires composite-layer clamp to [0.0, 1.0]"
+            )
+        else:
+            # Other 4 detectors: evidence in [0.0, 1.0]; composite = geom.
+            assert 0.0 <= geom <= 1.0, (
+                f"geometric_score {geom} outside [0.0, 1.0] LOCK band "
+                f"for ({ticker}, {pat_class})"
+            )
+            assert comp == pytest.approx(geom), (
+                f"composite_score {comp} != geometric_score {geom} "
+                f"for ({ticker}, {pat_class}); T2.SB3 LOCK requires "
+                f"equality (geometric_score already <= 1.0 for "
+                f"non-DBW detectors) until template matching lands "
+                f"at T2.SB5"
+            )
         # template_match_score is None until T2.SB5 lands template
         # matching.
         assert tm_score is None, (
             f"template_match_score expected None pre-T2.SB5; got "
             f"{tm_score!r} for ({ticker}, {pat_class})"
-        )
-        # geometric_score in [0.0, 1.0] per spec section 5.2 + dataclass
-        # __post_init__ invariant.
-        assert 0.0 <= geom <= 1.0, (
-            f"geometric_score {geom} outside [0.0, 1.0] LOCK band for "
-            f"({ticker}, {pat_class})"
         )
 
     # Assertion 5: schema version v20 (T-A.1.1 baseline; T2.SB4 does
