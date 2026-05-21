@@ -24,6 +24,7 @@ from swing.recommendations.sizing import compute_shares
 from swing.trades.entry import entry_rationale_options
 from swing.trades.equity import current_equity
 from swing.trades.exit import ExitReason
+from swing.trades.review import ReviewPriors
 from swing.trades.stop_adjust import stop_adjust_rationale_options
 from swing.web.chart_scope import latest_completed_pipeline_run
 from swing.web.price_cache import PriceCache
@@ -971,6 +972,24 @@ class ReviewVM:
     # resolve form. None when no pending-ambiguity row exists.
     banner_resolve_link: str | None = None
 
+    # Phase 13 T3.SB3 (T-B.3.3) — Review auto-fill priors + MFE/MAE per
+    # spec §6.3 + plan §E.4 + §E.3 LOCK. All values are operator-editable
+    # DEFAULTS surfaced on the form-render path; the audit array tracks
+    # which keys were server-populated so the POST handler can persist
+    # ``review_log.auto_populated_field_keys_json`` faithfully.
+    priors: ReviewPriors = field(
+        default_factory=lambda: ReviewPriors(
+            mistake_tag_candidates=(),
+            process_grade_baseline=None,
+            lesson_learned_candidates=(),
+        ),
+    )
+    mfe_pct: float = 0.0
+    mae_pct: float = 0.0
+    # Server-stamped at handler entry; operator cannot tamper (Phase 8
+    # R2-R5 family forward-binding lesson + L10 LOCK).
+    auto_populated_field_keys_json: str | None = None
+
     def __post_init__(self) -> None:
         if self.banner_resolve_link is not None:
             if not isinstance(self.banner_resolve_link, str):
@@ -989,10 +1008,24 @@ class ReviewVM:
                 )
 
 
-def build_review_vm(*, trade_id: int, cfg: Config) -> ReviewVM | None:
+def build_review_vm(
+    *, trade_id: int, cfg: Config, ohlcv_cache: Any = None,
+) -> ReviewVM | None:
     """Build the review-page VM. Returns None if trade not found, not closed,
     or already reviewed (V1 single-review-per-trade per brief §3.2).
+
+    Phase 13 T3.SB3 (T-B.3.3): plumb priors + MFE/MAE auto-fill per spec
+    §6.3. ``ohlcv_cache`` is the optional ``OhlcvCache.get_or_fetch``-
+    capable substrate (request.app.state.ohlcv_cache at the web boundary;
+    None when called from tests / CLI paths). MFE/MAE source-ladder per
+    spec §E.3 LOCK: Phase 8 ``daily_management_records`` FIRST; OhlcvCache
+    FALLBACK. Server-stamps ``auto_populated_field_keys_json`` honoring
+    Phase 8 R2-R5 server-stamping family + L10 LOCK — operator cannot
+    tamper with the audit envelope.
     """
+    from datetime import datetime as _dt
+
+    from swing.evaluation.dates import last_completed_session
     from swing.metrics.discrepancies import (
         count_recent_multi_leg_auto_corrections,
         count_unresolved_material,
@@ -1004,7 +1037,9 @@ def build_review_vm(*, trade_id: int, cfg: Config) -> ReviewVM | None:
         compute_actual_realized_R_effective,
         compute_lucky_violation_R,
         compute_mistake_cost_R,
+        get_priors_for_ticker,
     )
+    from swing.trades.review_auto_fill import compute_mfe_mae_from_ohlcv_cache
 
     conn = connect(cfg.paths.db_path)
     try:
@@ -1033,10 +1068,41 @@ def build_review_vm(*, trade_id: int, cfg: Config) -> ReviewVM | None:
             banner_resolve_link = (
                 fetch_first_pending_ambiguity_resolve_link_path(conn)
             )
+            # T-B.3.3: priors + MFE/MAE source-ladder reads. Stays inside the
+            # same outer ``with conn:`` so all reads happen against a single
+            # connection / snapshot.
+            priors = get_priors_for_ticker(conn, trade.ticker)
+            mfe_pct, mae_pct = compute_mfe_mae_from_ohlcv_cache(
+                conn, trade, ohlcv_cache,
+            )
     finally:
         conn.close()
     exits = tuple(_fill_to_exit_like(f, trade) for f in non_entry_fills)
     actual_r = compute_actual_realized_R_effective(trade, list(exits))
+
+    # T-B.3.3: server-stamp the audit envelope at handler entry. Each key
+    # is included iff its auto-fill source produced a non-empty / non-
+    # trivial value. Operator-typed fields stay attributable (omitted from
+    # the array → POST handler persists ``operator_typed`` for those keys
+    # by exclusion).
+    auto_keys: list[str] = []
+    if priors.mistake_tag_candidates:
+        auto_keys.append("mistake_tags")
+    if priors.process_grade_baseline is not None:
+        auto_keys.append("process_grade_baseline")
+    if priors.lesson_learned_candidates:
+        auto_keys.append("lesson_learned")
+    if mfe_pct != 0.0:
+        auto_keys.append("mfe_pct")
+    if mae_pct != 0.0:
+        auto_keys.append("mae_pct")
+    auto_populated_field_keys_json = json.dumps(auto_keys)
+
+    # T-B.3.3 step 1 (d): session-anchor alignment via
+    # ``last_completed_session(now())`` (CLAUDE.md session-anchor read/
+    # write mismatch gotcha family — backward-looking anchor matches the
+    # period-helpers' read predicate at T-B.3.4).
+    session_date = last_completed_session(_dt.now()).isoformat()
 
     # Phase 10 T-B.7 elective (per electives amendment §2): derive per-trade
     # mistake_cost_R + lucky_violation_R via Phase 6 helpers. Both surface
@@ -1072,6 +1138,11 @@ def build_review_vm(*, trade_id: int, cfg: Config) -> ReviewVM | None:
         unresolved_material_discrepancies_count=unresolved_material_count,
         recent_multi_leg_auto_correction_count=recent_multi_leg_count,
         banner_resolve_link=banner_resolve_link,
+        session_date=session_date,
+        priors=priors,
+        mfe_pct=mfe_pct,
+        mae_pct=mae_pct,
+        auto_populated_field_keys_json=auto_populated_field_keys_json,
     )
 
 

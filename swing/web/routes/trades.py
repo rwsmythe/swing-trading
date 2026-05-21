@@ -2383,7 +2383,10 @@ def review_form_page(request: Request, trade_id: int):
     cfg = apply_overrides(request.app.state.cfg)
     templates = request.app.state.templates
     from swing.web.view_models.trades import build_review_vm
-    vm = build_review_vm(trade_id=trade_id, cfg=cfg)
+    vm = build_review_vm(
+        trade_id=trade_id, cfg=cfg,
+        ohlcv_cache=request.app.state.ohlcv_cache,
+    )
     if vm is None:
         raise HTTPException(
             status_code=404,
