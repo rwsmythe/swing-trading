@@ -220,9 +220,14 @@ def _build_exemplar_render(
     G.9 T-A.6.6b acceptance #3 "renderer invoked once per cache miss"):
     if a ``bars_fetcher`` callable is injected by the route handler,
     fetch bars for the exemplar window + invoke
-    ``render_theme2_annotated_svg`` once + write the result back to the
-    cache via ``refresh_chart_render`` so subsequent operator visits
-    serve from the cache.
+    ``render_theme2_annotated_svg`` once + surface the live bytes to
+    the caller. The cache is NOT written back from this path (the
+    canonical chart_renders cache key requires a pipeline_run_id anchor
+    per spec section C.2 + ChartRender invariant; the exemplar has no
+    such anchor). The pipeline's per-run chart-render step is the
+    canonical cache write path; live renders here are read-through-only
+    so a transient empty render bytes cannot blank a known-good cache
+    row (F6 lesson preserved by structural impossibility).
 
     Per L17 LOCK: NO duplicate matplotlib code; renderer reuse via the
     substrate is the contract. ``bars_fetcher`` signature: callable
@@ -282,14 +287,13 @@ def _build_exemplar_render(
                     bars=bars,
                     pattern_evaluation=synth_pe,
                 )
-                # Note: NOT writing to chart_renders cache here because
-                # the canonical cache row requires a pipeline_run_id
-                # anchor (per spec section C.2 + ChartRender invariant).
-                # The exemplar's chart fills the operator's request from
-                # live data, but the cache stays unwritten — the
-                # pipeline's per-run chart-render step is the cache
-                # write path. V2 candidate: pipeline-run-agnostic
-                # exemplar cache key shape.
+                # Cache NOT written back per docstring contract above —
+                # the canonical chart_renders cache key requires a
+                # pipeline_run_id anchor (spec section C.2 + ChartRender
+                # invariant). Live bytes serve the operator's request;
+                # the pipeline's per-run chart-render step is the
+                # canonical cache write path. V2 candidate banked:
+                # pipeline-run-agnostic exemplar cache key shape.
                 cached_svg = live_svg
                 del refresh_chart_render, ChartRender  # noqa
             except Exception:  # noqa: BLE001 - degraded fallback
