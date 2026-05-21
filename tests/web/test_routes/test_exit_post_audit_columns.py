@@ -1420,3 +1420,232 @@ def test_h_r3m1_regression_default_radio_manual_edit_top_level_unchanged(
         "R3 M#1 regression: default-radio + edited-away keeps top-level "
         f"at default order_id; got {persisted.get('schwab_order_id')!r}"
     )
+
+
+# ============================================================================
+# Codex R4 Major #1 — None-order_id authoritative selected — top-level
+# ``schwab_order_id`` must be REMOVED (not silently left at form-render
+# default) so dedupe falls through to (date, price, qty) tuple matching.
+# ============================================================================
+
+
+def test_h_r4m1_authoritative_selected_with_none_order_id_pops_top_level(
+    seeded_db, monkeypatch,
+):
+    """Codex R4 Major #1 — authoritative selected candidate has order_id=None
+    (e.g., MARKET fill without broker order_id).
+
+    Operator picks the non-default (None-order_id) candidate via radio +
+    manually edits visible inputs to match it. Post-fix: top-level
+    ``schwab_order_id`` is REMOVED from the persisted envelope (not left at
+    the form-render default 'ord-2' which was never persisted).
+    fill_origin = ``schwab_auto`` (no edits vs authoritative). VM-side
+    dedupe will then see no usable order_id and correctly fall through to
+    (date, price, qty) tuple fallback (R2 M#4 behavior).
+
+    Discriminating: pre-fix the rewrite at routes/trades.py:2077 only fired
+    when ``auth_top_order_id`` was a truthy string, so top-level stayed
+    at 'ord-2' (the default's order_id), causing dedupe to exclude the
+    WRONG order_id + the (date, price, qty) fallback not to fire because
+    VM's "order_id_found" flag was True (for the wrong order).
+    """
+    cfg, cfg_path = seeded_db
+    trade_id = _seed_open_trade(cfg, "NVDA")
+    _patch_price_cache(monkeypatch)
+    candidates_map = {
+        "sig-cand-0": {
+            "date": "2026-05-15", "price": 110.00, "quantity": 3,
+            "order_id": None,  # MARKET fill — no broker order_id
+        },
+        "sig-cand-1": {
+            "date": "2026-05-19", "price": 120.50, "quantity": 3,
+            "order_id": "ord-2",
+        },
+    }
+    envelope = _make_anchor(
+        # Form-render default — most-recent candidate's values + order_id.
+        exit_date="2026-05-19", exit_price=120.50, closed_shares=3,
+        schwab_order_id="ord-2", candidate_count=2,
+        candidates_map=candidates_map,
+    )
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = _post_exit(
+            client, trade_id,
+            # Operator manually edited visible inputs to match c0 (MARKET).
+            exit_date="2026-05-15", exit_price="110.00", shares="3",
+            schwab_source_value_json=envelope,
+            auto_fill_audit_at="2026-05-19T14:30:00.000000+00:00",
+            fill_origin_at_form_render="schwab_auto",
+            candidate_index="0",  # operator picked None-order_id c0
+            candidate_signature_hash_0="sig-cand-0",
+            candidate_order_id_0="",  # form emits empty for None
+            candidate_signature_hash_1="sig-cand-1",
+            candidate_order_id_1="ord-2",
+        )
+    assert resp.status_code == 200, resp.text
+    conn = connect(cfg.paths.db_path)
+    try:
+        row = conn.execute(
+            "SELECT fill_origin, schwab_source_value_json "
+            "FROM fills WHERE action != 'entry' "
+            "ORDER BY fill_id DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row[0] == "schwab_auto", (
+        "visible inputs match authoritative c0; fill_origin stays "
+        "schwab_auto"
+    )
+    persisted = json.loads(row[1])
+    assert persisted["selected_candidate_signature_hash"] == "sig-cand-0"
+    # CRITICAL R4 M#1 ASSERTION: top-level schwab_order_id is REMOVED
+    # (None or absent), NOT left at the form-render default ('ord-2').
+    # VM-side dedupe will then fall through to (date, price, qty) tuple
+    # matching per R2 M#4 fallback semantics.
+    assert "schwab_order_id" not in persisted or persisted.get("schwab_order_id") is None, (
+        "Codex R4 M#1: top-level schwab_order_id must be REMOVED when "
+        "authoritative selected candidate has order_id=None (not left at "
+        f"form-render default); got {persisted.get('schwab_order_id')!r}"
+    )
+    # selected_candidate_order_id should also be None (per R2 M#2 fix).
+    assert persisted.get("selected_candidate_order_id") is None
+
+
+# ============================================================================
+# Codex R4 Major #2 — price comparison must use template-rendering precision
+# (2 decimals) NOT 1e-9 epsilon, so execution-grain prices like 120.505 do
+# not falsely flip to operator_corrected when operator submits the rendered
+# 2-decimal value 120.50 (= what the form displayed).
+# ============================================================================
+
+
+def test_h_r4m2_execution_grain_price_template_round_trip_stays_schwab_auto(
+    seeded_db, monkeypatch,
+):
+    """Codex R4 Major #2 — authoritative candidate price is 120.505 (e.g.
+    multi-leg VWAP fill).
+
+    Template renders this via ``%.2f`` as ``120.50``. Operator submits
+    the rendered value ``120.50`` (no real edit). Post-fix:
+    ``price_diff = False`` (2-decimal rounding match) →
+    ``fill_origin = schwab_auto``.
+
+    Discriminating: pre-fix ``abs(120.505 - 120.50) = 0.005 > 1e-9`` →
+    pre-fix flips to ``schwab_auto_then_operator_corrected`` even though
+    the operator made NO actual edit.
+
+    Note on Python banker's rounding: ``round(120.505, 2) == 120.5`` (not
+    120.51) due to IEEE 754 representation of 120.505 (actually slightly
+    less than 120.505). The operator's ``120.50`` rounds to ``120.5``,
+    matching the authoritative. The R3 M#1 top-level order_id rewrite
+    fires since this is the schwab_auto branch.
+    """
+    cfg, cfg_path = seeded_db
+    trade_id = _seed_open_trade(cfg, "NVDA")
+    _patch_price_cache(monkeypatch)
+    candidates_map = {
+        "sig-cand-0": {
+            "date": "2026-05-19", "price": 120.505,  # execution-grain VWAP
+            "quantity": 3, "order_id": "ord-vwap",
+        },
+    }
+    envelope = _make_anchor(
+        exit_date="2026-05-19", exit_price=120.505, closed_shares=3,
+        schwab_order_id="ord-vwap", candidate_count=1,
+        candidates_map=candidates_map,
+    )
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = _post_exit(
+            client, trade_id,
+            # Operator submits the template-rendered 2-decimal value.
+            exit_date="2026-05-19", exit_price="120.50", shares="3",
+            schwab_source_value_json=envelope,
+            auto_fill_audit_at="2026-05-19T14:30:00.000000+00:00",
+            fill_origin_at_form_render="schwab_auto",
+            candidate_index="0",
+            candidate_signature_hash_0="sig-cand-0",
+            candidate_order_id_0="ord-vwap",
+        )
+    assert resp.status_code == 200, resp.text
+    conn = connect(cfg.paths.db_path)
+    try:
+        row = conn.execute(
+            "SELECT fill_origin, schwab_source_value_json, price "
+            "FROM fills WHERE action != 'entry' "
+            "ORDER BY fill_id DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    # CRITICAL R4 M#2 ASSERTION: 2-decimal round-trip stays schwab_auto.
+    assert row[0] == "schwab_auto", (
+        "Codex R4 M#2: template-rendered 2-decimal value matches "
+        "authoritative 3-decimal value within 2-decimal rounding; "
+        f"fill_origin must be schwab_auto, got {row[0]!r}"
+    )
+    persisted = json.loads(row[1])
+    # R3 M#1 top-level order_id rewrite fires since this is schwab_auto.
+    assert persisted["schwab_order_id"] == "ord-vwap"
+    # Operator's submitted (rendered) value is persisted (fills.price).
+    assert float(row[2]) == 120.50
+
+
+def test_h_r4m2_real_operator_edit_at_1_cent_flips_to_corrected(
+    seeded_db, monkeypatch,
+):
+    """Codex R4 Major #2 — operator makes a REAL edit (120.99 vs 120.50).
+
+    Different 2-decimal rounded values → ``price_diff = True`` →
+    ``fill_origin = schwab_auto_then_operator_corrected``. The fix does
+    NOT regress the case where the operator genuinely edited the price.
+
+    Discriminating: post-fix this asserts True correctly; the test
+    confirms a real edit is still detected after switching from epsilon
+    to 2-decimal rounding.
+    """
+    cfg, cfg_path = seeded_db
+    trade_id = _seed_open_trade(cfg, "NVDA")
+    _patch_price_cache(monkeypatch)
+    candidates_map = {
+        "sig-cand-0": {
+            "date": "2026-05-19", "price": 120.50,
+            "quantity": 3, "order_id": "ord-real",
+        },
+    }
+    envelope = _make_anchor(
+        exit_date="2026-05-19", exit_price=120.50, closed_shares=3,
+        schwab_order_id="ord-real", candidate_count=1,
+        candidates_map=candidates_map,
+    )
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = _post_exit(
+            client, trade_id,
+            # Real edit: 120.99 vs authoritative 120.50.
+            exit_date="2026-05-19", exit_price="120.99", shares="3",
+            schwab_source_value_json=envelope,
+            auto_fill_audit_at="2026-05-19T14:30:00.000000+00:00",
+            fill_origin_at_form_render="schwab_auto",
+            candidate_index="0",
+            candidate_signature_hash_0="sig-cand-0",
+            candidate_order_id_0="ord-real",
+        )
+    assert resp.status_code == 200, resp.text
+    conn = connect(cfg.paths.db_path)
+    try:
+        row = conn.execute(
+            "SELECT fill_origin, operator_corrected_value_json "
+            "FROM fills WHERE action != 'entry' "
+            "ORDER BY fill_id DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    # CRITICAL R4 M#2 ASSERTION: real edit (different 2-decimal rounds)
+    # still correctly flips to operator_corrected.
+    assert row[0] == "schwab_auto_then_operator_corrected", (
+        "Codex R4 M#2 regression: real operator edit (120.99 vs 120.50) "
+        f"must flip fill_origin to operator_corrected; got {row[0]!r}"
+    )
+    corrected = json.loads(row[1])
+    assert corrected["exit_price"] == 120.99

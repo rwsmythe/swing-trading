@@ -1975,9 +1975,23 @@ async def exit_post(
             except (TypeError, ValueError):
                 cmp_shares_int = None
             exit_date_diff = cmp_date != exit_date
+            # Codex R4 Major #2 fix — price comparison must match the
+            # template's rendering precision. The form renders
+            # ``exit_price`` via ``{{ '%.2f' | format(vm.exit_price) }}``
+            # (``swing/web/templates/partials/trade_exit_form.html.j2``
+            # line 102), so authoritative candidate prices with 3+ decimal
+            # precision (e.g. VWAP across multi-leg execution-grain fills:
+            # 120.505) are TRUNCATED-via-banker's-rounding to 2 decimals
+            # before the operator sees them. Submitting the rendered
+            # 2-decimal value back used to flip ``fill_origin`` to
+            # ``schwab_auto_then_operator_corrected`` against a 1e-9
+            # epsilon, even though the operator made NO actual edit
+            # (0.005 > 1e-9). Compare at the template's rendering
+            # precision (2 decimals) instead — ``round(_, 2) != round(_, 2)``
+            # exactly matches what the form can render.
             price_diff = (
                 cmp_price_float is None
-                or abs(cmp_price_float - exit_price) > 1e-9
+                or round(cmp_price_float, 2) != round(exit_price, 2)
             )
             shares_diff = (
                 cmp_shares_int is None or cmp_shares_int != shares
@@ -2078,9 +2092,30 @@ async def exit_post(
                     resolved_fill_origin == "schwab_auto"
                     and authoritative_selected is not None
                 ):
+                    # Codex R4 Major #1 fix — when the authoritative
+                    # selected candidate's ``order_id`` is None (e.g.,
+                    # MARKET fills without a broker order_id, or mapper
+                    # edge cases), the pre-R4 R3 M#1 rewrite SILENTLY
+                    # SKIPPED, leaving top-level ``schwab_order_id`` at the
+                    # form-render default (most-recent candidate's
+                    # order_id). The future-fetch dedupe path in
+                    # ``view_models/trades.py`` then read the wrong
+                    # order_id (the default which was never persisted) and
+                    # ``order_id_found=True`` (just for the wrong order),
+                    # preventing the fallback (date, price, qty) tuple
+                    # match from firing — letting the operator re-record
+                    # the same fill as a duplicate.
+                    #
+                    # Fix: pop top-level ``schwab_order_id`` when the
+                    # authoritative selected has no usable order_id. The
+                    # VM-side dedupe will see no usable order_id for this
+                    # fill and correctly fall through to the (date, price,
+                    # qty) tuple fallback (R2 M#4 behavior).
                     auth_top_order_id = authoritative_selected.get("order_id")
                     if isinstance(auth_top_order_id, str) and auth_top_order_id:
                         extended["schwab_order_id"] = auth_top_order_id
+                    else:
+                        extended.pop("schwab_order_id", None)
             resolved_schwab_source_value_json = _json.dumps(
                 extended, sort_keys=True,
             )
