@@ -1096,7 +1096,14 @@ def build_review_vm(
         auto_keys.append("mfe_pct")
     if mae_pct != 0.0:
         auto_keys.append("mae_pct")
-    auto_populated_field_keys_json = json.dumps(auto_keys)
+    # Pre-Codex review MAJOR #1: emit None on empty so the ``... or None``
+    # gotcha-defense at any downstream POST persistence (or future v21
+    # trades-level audit column) doesn't accidentally persist the string
+    # "[]" (truthy) instead of NULL. Mirrors the cadence-path discipline
+    # in build_cadence_complete_vm.
+    auto_populated_field_keys_json: str | None = (
+        json.dumps(auto_keys) if auto_keys else None
+    )
 
     # T-B.3.3 step 1 (d): session-anchor alignment via
     # ``last_completed_session(now())`` (CLAUDE.md session-anchor read/

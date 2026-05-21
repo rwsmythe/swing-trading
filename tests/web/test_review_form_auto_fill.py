@@ -264,10 +264,11 @@ def test_build_review_vm_auto_populated_field_keys_json_excludes_empty_fields(
 
     vm = build_review_vm(trade_id=trade_id, cfg=cfg, ohlcv_cache=cache)
     assert vm is not None
-    assert vm.auto_populated_field_keys_json is not None
-    decoded = json.loads(vm.auto_populated_field_keys_json)
-    # Zero-priors + zero-cache-data → empty audit array.
-    assert decoded == []
+    # Pre-Codex MAJOR #1 fix: empty audit array surfaces as None (not the
+    # string "[]") so the ``... or None`` gotcha-defense at any
+    # downstream POST persistence doesn't accidentally persist a truthy
+    # placeholder. Mirrors the cadence-path discipline.
+    assert vm.auto_populated_field_keys_json is None
 
 
 # --- (d) Session-anchor last_completed_session(now()) aligned ---

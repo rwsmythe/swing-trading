@@ -31,10 +31,11 @@ from __future__ import annotations
 import logging
 import math
 import sqlite3
-from datetime import date
+from datetime import date, datetime
 from typing import Any, Protocol
 
 from swing.data.models import Trade
+from swing.evaluation.dates import last_completed_session
 
 log = logging.getLogger(__name__)
 
@@ -139,8 +140,11 @@ def _ohlcv_mfe_mae(
     # buffer (so the OhlcvCache returns enough history). The cache's hook-
     # fallback discipline (T1.SB0 R3 M#1 — "shared-infrastructure cache
     # hooks return FULL archive; consumers slice") means we ask for a
-    # generous window and slice locally to the entry_date.
-    today = date.today()
+    # generous window and slice locally to the entry_date. Pre-Codex
+    # MINOR #3 fix: use ``last_completed_session(now())`` rather than
+    # ``date.today()`` for consistency with the OhlcvCache window anchor
+    # (CLAUDE.md session-anchor read/write mismatch family discipline).
+    today = last_completed_session(datetime.now())
     days_since_entry = max(1, (today - entry_dt).days + 30)
 
     try:
