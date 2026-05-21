@@ -1,10 +1,18 @@
-"""Phase 13 T2.SB3 T-A.3.6 — `_step_pattern_detect` integration tests.
+"""Phase 13 T2.SB3 T-A.3.6 + T2.SB4 T-A.4.3 — `_step_pattern_detect` integration tests.
 
-Per plan section G.4 T-A.3.6 Step 1: 4 discriminating tests covering
-(a) step invokes 3 detectors against candidate windows; (b) emits 1
-pattern_evaluations row per (ticker, pattern_class) tuple;
-(c) emits feature_distribution_log_json on each row; (d) zero
-candidate windows -> step succeeds without writes.
+Per plan section G.4 T-A.3.6 Step 1 (T2.SB3 origin) + T2.SB4 T-A.4.3
+extension: discriminating tests covering (a) step invokes ALL 5 detectors
+(vcp, flat_base, cup_with_handle, high_tight_flag, double_bottom_w)
+against candidate windows; (b) emits 1 pattern_evaluations row per
+(ticker, pattern_class) tuple; (c) emits feature_distribution_log_json
+on each row; (d) zero candidate windows -> step succeeds without writes.
+
+T-A.4.3 contract change (3->5 detectors): existing TDD assertions
+hard-coded the 3-detector universe (vcp + flat_base + cup_with_handle).
+The data-driven `_pattern_detect_registry()` helper at runner.py:1246
+now returns 5 tuples (T-A.4.3 adds high_tight_flag + double_bottom_w).
+Tests updated accordingly; per-detector signature parity (kwargs:
+conn, ticker, asof_date) confirmed before extension landing.
 
 Recon at docs/phase13-t2-sb3-recon.md sections 1-9 binds the
 integration contract:
@@ -30,12 +38,12 @@ import pandas as pd
 import pytest
 
 from swing.data.db import ensure_schema
-from swing.data.models import Candidate, EvaluationRun
+from swing.data.models import DETECTOR_PATTERN_CLASSES, Candidate, EvaluationRun
 from swing.data.repos.candidates import (
     insert_candidates,
     insert_evaluation_run,
 )
-from swing.pipeline.runner import _step_pattern_detect
+from swing.pipeline.runner import _pattern_detect_registry, _step_pattern_detect
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -211,13 +219,19 @@ def seeded_env(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
-def test_step_pattern_detect_invokes_3_detectors_against_candidate_windows(
+def test_step_pattern_detect_invokes_all_5_detectors_per_candidate_window(
     seeded_env,
 ) -> None:
-    """Step invokes all 3 detectors (vcp, flat_base, cup_with_handle).
+    """T-A.4.3: step invokes ALL 5 detectors (vcp, flat_base,
+    cup_with_handle, high_tight_flag, double_bottom_w).
+
+    Pre-T-A.4.3 (3-detector contract): assertion was ``classes ==
+    ["cup_with_handle", "flat_base", "vcp"]``. Post-T-A.4.3 (5-detector
+    contract): assertion is the lexicographically-sorted 5-tuple
+    derived from ``DETECTOR_PATTERN_CLASSES`` (with HTF + DBW added).
 
     Discriminating predicate: AFTER step, pattern_evaluations contains
-    rows for all 3 detector pattern_classes for ticker ABC. The
+    rows for all 5 detector pattern_classes for ticker ABC. The
     geometric_score may be 0.0 (most synthetic bars won't pass all
     criteria) but the detector code path MUST have executed + persisted
     an evidence row per class.
@@ -238,14 +252,60 @@ def test_step_pattern_detect_invokes_3_detectors_against_candidate_windows(
         (seeded_env["pipeline_run_id"], "ABC"),
     ).fetchall()
     classes = [r[0] for r in rows]
-    assert classes == ["cup_with_handle", "flat_base", "vcp"]
+    # Lexicographic sort of the 5 detector pattern_classes:
+    # cup_with_handle, double_bottom_w, flat_base, high_tight_flag, vcp
+    assert classes == sorted(DETECTOR_PATTERN_CLASSES)
+    assert len(classes) == 5
+
+
+def test_step_pattern_detect_registry_returns_5_detectors() -> None:
+    """T-A.4.3 unit test on the `_pattern_detect_registry()` helper.
+
+    Asserts: (a) tuple has exactly 5 entries; (b) class_names are
+    the canonical 5 ``DETECTOR_PATTERN_CLASSES`` (any order); (c) every
+    callable is the actual detector function (smoke-tests imports);
+    (d) every version_str is a non-empty string matching the
+    ``<class>@v<ver>`` convention.
+    """
+    registry = _pattern_detect_registry()
+    assert isinstance(registry, tuple)
+    assert len(registry) == 5, (
+        f"_pattern_detect_registry() must return exactly 5 detectors "
+        f"(T-A.4.3 contract); got {len(registry)}: "
+        f"{[t[1] for t in registry]}"
+    )
+
+    class_names = [t[1] for t in registry]
+    # All 5 canonical pattern_classes are present (any order).
+    assert set(class_names) == set(DETECTOR_PATTERN_CLASSES), (
+        f"registry class_names = {class_names}; expected "
+        f"{set(DETECTOR_PATTERN_CLASSES)}"
+    )
+
+    # Every callable is importable + callable.
+    for detector_fn, pattern_class, version_str in registry:
+        assert callable(detector_fn), (
+            f"detector for {pattern_class!r} is not callable: {detector_fn!r}"
+        )
+        # Function name matches the convention `detect_<pattern_class>`.
+        assert detector_fn.__name__ == f"detect_{pattern_class}", (
+            f"detector name {detector_fn.__name__!r} != "
+            f"detect_{pattern_class!r}"
+        )
+        # Version string is the `<class>@v<ver>` convention.
+        assert isinstance(version_str, str) and version_str.startswith(
+            f"{pattern_class}@v"
+        ), (
+            f"version_str for {pattern_class!r} = {version_str!r}; "
+            f"expected to start with {pattern_class!r}@v"
+        )
 
 
 def test_step_pattern_detect_emits_one_row_per_ticker_pattern_class(
     seeded_env,
 ) -> None:
-    """For N aplus tickers, write exactly 3N pattern_evaluations rows
-    (3 detectors x 1 verdict per (ticker, pattern_class)).
+    """For N aplus tickers, write exactly 5N pattern_evaluations rows
+    (T-A.4.3: 5 detectors x 1 verdict per (ticker, pattern_class)).
 
     Also pins the pool predicate: an 'excluded' bucket candidate MUST
     NOT contribute rows.
@@ -271,8 +331,8 @@ def test_step_pattern_detect_emits_one_row_per_ticker_pattern_class(
         "SELECT COUNT(*) FROM pattern_evaluations WHERE ticker = ?",
         ("XYZ",),
     ).fetchone()[0]
-    # 3 detectors x 1 ticker = 3 rows for ABC; 0 for excluded XYZ.
-    assert rows_abc == 3
+    # T-A.4.3: 5 detectors x 1 ticker = 5 rows for ABC; 0 for excluded XYZ.
+    assert rows_abc == 5
     assert rows_xyz == 0
 
 
@@ -298,7 +358,8 @@ def test_step_pattern_detect_emits_feature_distribution_log_json(
         "FROM pattern_evaluations WHERE ticker = ? ORDER BY pattern_class",
         ("ABC",),
     ).fetchall()
-    assert len(rows) == 3
+    # T-A.4.3: 5 detectors emit 5 rows per ticker.
+    assert len(rows) == 5
     for pattern_class, fdl_json in rows:
         assert fdl_json is not None and fdl_json != ""
         fdl = json.loads(fdl_json)
@@ -454,16 +515,17 @@ def test_step_pattern_detect_feature_distribution_histogram_populated_with_run_s
         "WHERE ticker = ? ORDER BY pattern_class",
         ("ABC",),
     ).fetchall()
-    assert len(rows) == 3
+    # T-A.4.3: 5 detectors emit 5 rows; histogram spans all 5 scores.
+    assert len(rows) == 5
     for (fdl_json,) in rows:
         fdl = json.loads(fdl_json)
         bins = fdl["composite_score_histogram_bins"]
         assert isinstance(bins, list) and len(bins) == 10
         total = sum(bins)
-        # 1 ticker x 3 detectors -> 3 composite_scores collected.
-        assert total == 3, (
-            f"expected histogram bin counts to sum to 3 (1 ticker x 3 "
-            f"detectors); got {total}: {bins}"
+        # 1 ticker x 5 detectors -> 5 composite_scores collected.
+        assert total == 5, (
+            f"expected histogram bin counts to sum to 5 (1 ticker x 5 "
+            f"detectors per T-A.4.3); got {total}: {bins}"
         )
 
 
@@ -605,10 +667,11 @@ def test_step_pattern_detect_partial_retry_includes_existing_rows_in_histogram(
     Pass 1 + Pass 2 append new scores onto the seed.
 
     Discriminating predicate: pre-seed N=2 existing rows with
-    composite_score=0.5; invoke step (which produces 3 new rows because
-    only 1 ticker x 3 detectors gets emitted, and at least 1 of those 3
-    is for a NEW (ticker, pattern_class) tuple not pre-seeded); assert
-    the histogram bin counts on the NEW rows sum to N + M.
+    composite_score=0.5; invoke step (T-A.4.3: 1 ticker x 5 detectors
+    produces 5 new rows for NEW (ticker, pattern_class) tuples not
+    pre-seeded since the pre-seeded rows are for tickers PRE1/PRE2 not
+    ABC); assert the histogram bin counts on the NEW rows sum to
+    N + M = 2 + 5 = 7.
     """
     conn = seeded_env["conn"]
     pipeline_run_id = seeded_env["pipeline_run_id"]
@@ -640,16 +703,17 @@ def test_step_pattern_detect_partial_retry_includes_existing_rows_in_histogram(
         ohlcv_cache=seeded_env["cache"],
     )
 
-    # ABC produced 3 new rows (1 ticker x 3 detectors). Plus the 2
-    # pre-seeded rows. Total expected = 5.
+    # ABC produced 5 new rows (1 ticker x 5 detectors per T-A.4.3).
+    # Plus the 2 pre-seeded rows for PRE1/PRE2. Total expected = 7.
     rows = conn.execute(
         "SELECT ticker, pattern_class, feature_distribution_log_json "
         "FROM pattern_evaluations WHERE pipeline_run_id = ? "
         "AND ticker = ? ORDER BY pattern_class",
         (pipeline_run_id, "ABC"),
     ).fetchall()
-    assert len(rows) == 3, (
-        f"expected 3 new ABC rows; got {len(rows)}"
+    assert len(rows) == 5, (
+        f"expected 5 new ABC rows (T-A.4.3 5-detector contract); "
+        f"got {len(rows)}"
     )
     for ticker, pattern_class, fdl_json in rows:
         fdl = json.loads(fdl_json)
@@ -657,10 +721,10 @@ def test_step_pattern_detect_partial_retry_includes_existing_rows_in_histogram(
         assert isinstance(bins, list) and len(bins) == 10
         total = sum(bins)
         # Total scores in histogram = pre-existing (2 rows @ 0.5) + new
-        # (3 rows from the ABC detectors). Expected = 5.
-        assert total == 5, (
+        # (5 rows from the ABC detectors per T-A.4.3). Expected = 7.
+        assert total == 7, (
             f"row ({ticker}, {pattern_class}): histogram bins sum to "
-            f"{total}; expected 5 (2 pre-existing + 3 new). "
+            f"{total}; expected 7 (2 pre-existing + 5 new T-A.4.3). "
             f"bins={bins}"
         )
 
@@ -756,23 +820,24 @@ def test_step_pattern_detect_pass_2_concurrent_insert_amends_histogram(
     step's new inserts). NO Pass-1-staged-but-skipped score ever enters
     the histogram.
 
-    Discriminating predicate (post-R4):
+    Discriminating predicate (post-R4 + T-A.4.3 5-detector contract):
       - Pre-seed NO existing rows.
       - The lease injects a concurrent INSERT for (ABC, vcp) with
         composite_score=0.99 INSIDE ``fenced_write()`` on first entry.
-      - Pass 1 produces emit_queue = 3 rows for ABC (vcp, flat_base,
-        cup_with_handle) with Pass-1-emitted composite_scores.
+      - Pass 1 produces emit_queue = 5 rows for ABC (vcp, flat_base,
+        cup_with_handle, high_tight_flag, double_bottom_w) with
+        Pass-1-emitted composite_scores.
       - Pass 2 enters fenced_write() -> injection plants (ABC, vcp, 0.99)
         -> re-read finds it -> reconcile drops (ABC, vcp) from emit list
-        -> final universe = [0.99 (existing)] + [score_flatbase,
-        score_cwh (surviving queued)] = 3 entries.
-      - 2 surviving rows INSERT with the SAME 3-entry universe. The
+        -> final universe = [0.99 (existing)] + [4 surviving queued
+        scores] = 5 entries.
+      - 4 surviving rows INSERT with the SAME 5-entry universe. The
         Pass-1-queued (ABC, vcp) score is DROPPED (it was a phantom).
 
-    Pre-R4 expectation (over-count): histogram bins sum to 4 (3 Pass-1
+    Pre-R4 expectation (over-count): histogram bins sum to 6 (5 Pass-1
     + 1 concurrent-amend, including the phantom queued vcp score).
-    Post-R4 expectation (correct): histogram bins sum to 3 (final
-    universe = 1 existing + 2 surviving = 3 persisted rows).
+    Post-R4 expectation (correct): histogram bins sum to 5 (final
+    universe = 1 existing + 4 surviving = 5 persisted rows).
     """
     conn = seeded_env["conn"]
     pipeline_run_id = seeded_env["pipeline_run_id"]
@@ -797,11 +862,12 @@ def test_step_pattern_detect_pass_2_concurrent_insert_amends_histogram(
         ohlcv_cache=seeded_env["cache"],
     )
 
-    # Inspect the histograms written for ABC's flat_base + cup_with_handle.
+    # Inspect the histograms written for ABC's 4 surviving detectors
+    # (flat_base, cup_with_handle, high_tight_flag, double_bottom_w).
     # The (ABC, vcp) row is the concurrent-injected one (composite_score=0.99,
     # detector_version='concurrent_v1.0'), and the recheck-hit path
-    # idempotent-skips it. The 2 OTHER rows MUST carry a histogram that
-    # reflects the FINAL persisted set (3 rows: 1 existing + 2 surviving).
+    # idempotent-skips it. The 4 OTHER rows MUST carry a histogram that
+    # reflects the FINAL persisted set (5 rows: 1 existing + 4 surviving).
     rows = conn.execute(
         "SELECT ticker, pattern_class, composite_score, detector_version, "
         "feature_distribution_log_json FROM pattern_evaluations "
@@ -809,22 +875,23 @@ def test_step_pattern_detect_pass_2_concurrent_insert_amends_histogram(
         "ORDER BY pattern_class",
         (pipeline_run_id,),
     ).fetchall()
-    # All 3 (ABC, *) rows present (vcp concurrent + flat_base + cup_with_handle).
-    assert len(rows) == 3, (
-        f"expected 3 ABC rows total; got {len(rows)}: {rows}"
+    # T-A.4.3: All 5 (ABC, *) rows present (vcp concurrent + 4 step-emitted).
+    assert len(rows) == 5, (
+        f"expected 5 ABC rows total (T-A.4.3); got {len(rows)}: {rows}"
     )
 
-    # Find the 2 step-emitted rows (NOT the concurrent vcp).
+    # Find the 4 step-emitted rows (NOT the concurrent vcp).
     step_emitted_rows = [
         r for r in rows if r[3] != "concurrent_v1.0"
     ]
-    assert len(step_emitted_rows) == 2, (
-        f"expected 2 step-emitted rows (flat_base + cup_with_handle); "
+    assert len(step_emitted_rows) == 4, (
+        f"expected 4 step-emitted rows (flat_base + cup_with_handle + "
+        f"high_tight_flag + double_bottom_w per T-A.4.3); "
         f"got {len(step_emitted_rows)}: {step_emitted_rows}"
     )
 
     # Each step-emitted row's histogram MUST reflect the FINAL persisted
-    # set (3 rows total): the concurrent 0.99 + the 2 surviving queued
+    # set (5 rows total): the concurrent 0.99 + the 4 surviving queued
     # scores. The Pass-1-queued vcp score is DROPPED (would have been
     # double-counted under R3 semantics).
     for ticker, pattern_class, _score, _dv, fdl_json in step_emitted_rows:
@@ -832,13 +899,13 @@ def test_step_pattern_detect_pass_2_concurrent_insert_amends_histogram(
         bins = fdl["composite_score_histogram_bins"]
         assert isinstance(bins, list) and len(bins) == 10
         total = sum(bins)
-        assert total == 3, (
+        assert total == 5, (
             f"row ({ticker}, {pattern_class}): histogram bins sum to "
-            f"{total}; expected 3 (1 existing concurrent + 2 surviving "
-            f"queued inserts). bins={bins}. "
-            f"Pre-R4 over-count: total == 4 (R3 kept the phantom "
+            f"{total}; expected 5 (1 existing concurrent + 4 surviving "
+            f"queued inserts per T-A.4.3). bins={bins}. "
+            f"Pre-R4 over-count: total == 6 (R3 kept the phantom "
             f"Pass-1-queued vcp score AND added the concurrent score). "
-            f"Post-R4: total == 3 (reconcile drops the phantom; "
+            f"Post-R4: total == 5 (reconcile drops the phantom; "
             f"universe reflects ONLY persisted rows)."
         )
 
@@ -863,24 +930,24 @@ def test_step_pattern_detect_pass_2_does_not_overcount_concurrent_skipped_queued
     its tuple now exists in the persisted set (via the concurrent
     insert).
 
-    Discriminating predicate:
+    Discriminating predicate (T-A.4.3 5-detector contract):
       - Pre-seed NO existing rows.
       - Concurrent INSERT injects (ABC, vcp, composite_score=0.9) inside
         fenced_write before Pass 2's loop.
-      - Pass 1 produces 3 queued tuples (ABC vcp, ABC flat_base, ABC
-        cup_with_handle).
+      - Pass 1 produces 5 queued tuples (ABC vcp, ABC flat_base, ABC
+        cup_with_handle, ABC high_tight_flag, ABC double_bottom_w).
       - Post-R4: reconcile drops (ABC, vcp) from emit list -> final
-        universe = [0.9 (existing concurrent)] + [score_flatbase,
-        score_cwh (2 surviving queued)] = 3 entries.
-      - Final persisted rows: 1 (vcp concurrent) + 2 (flat_base + cwh
-        surviving inserts) = 3 rows.
-      - Each surviving row's histogram MUST sum to 3 (the FINAL
-        persisted count), NOT 4 (which would include the phantom
+        universe = [0.9 (existing concurrent)] + [4 surviving queued
+        scores] = 5 entries.
+      - Final persisted rows: 1 (vcp concurrent) + 4 (4 surviving
+        inserts) = 5 rows per T-A.4.3.
+      - Each surviving row's histogram MUST sum to 5 (the FINAL
+        persisted count), NOT 6 (which would include the phantom
         Pass-1-queued vcp score).
 
-    Pre-fix (R3) FAIL: total == 4 (over-count by 1 = the phantom queued
+    Pre-fix (R3) FAIL: total == 6 (over-count by 1 = the phantom queued
       vcp score that never landed in the table).
-    Post-fix (R4) PASS: total == 3 (queued vcp score reconciled away;
+    Post-fix (R4) PASS: total == 5 (queued vcp score reconciled away;
       universe reflects ONLY persisted rows).
     """
     conn = seeded_env["conn"]
@@ -908,30 +975,31 @@ def test_step_pattern_detect_pass_2_does_not_overcount_concurrent_skipped_queued
         "ORDER BY pattern_class",
         (pipeline_run_id,),
     ).fetchall()
-    # Final persisted: vcp (concurrent) + flat_base + cup_with_handle = 3.
-    assert len(rows) == 3, (
-        f"expected 3 ABC rows total; got {len(rows)}: {rows}"
+    # T-A.4.3: Final persisted = vcp (concurrent) + 4 surviving = 5.
+    assert len(rows) == 5, (
+        f"expected 5 ABC rows total (T-A.4.3); got {len(rows)}: {rows}"
     )
 
-    # Find the 2 step-emitted rows (NOT the concurrent vcp).
+    # Find the 4 step-emitted rows (NOT the concurrent vcp).
     step_emitted_rows = [r for r in rows if r[3] != "concurrent_v1.0"]
-    assert len(step_emitted_rows) == 2, (
-        f"expected 2 step-emitted rows; got {len(step_emitted_rows)}"
+    assert len(step_emitted_rows) == 4, (
+        f"expected 4 step-emitted rows (T-A.4.3 5 detectors - 1 "
+        f"concurrent vcp); got {len(step_emitted_rows)}"
     )
 
-    # Each surviving row's histogram MUST sum to 3 (FINAL persisted set
-    # count), AND bin 9 (containing 0.9) MUST be populated by the
-    # concurrent existing row.
+    # Each surviving row's histogram MUST sum to 5 (FINAL persisted set
+    # count per T-A.4.3), AND bin 9 (containing 0.9) MUST be populated
+    # by the concurrent existing row.
     for ticker, pattern_class, _score, _dv, fdl_json in step_emitted_rows:
         fdl = json.loads(fdl_json)
         bins = fdl["composite_score_histogram_bins"]
         assert isinstance(bins, list) and len(bins) == 10
         total = sum(bins)
-        assert total == 3, (
+        assert total == 5, (
             f"row ({ticker}, {pattern_class}): histogram bins sum to "
-            f"{total}; expected 3 (FINAL persisted set = 1 concurrent "
-            f"existing + 2 surviving queued inserts). "
-            f"Pre-R4 (R3 semantics): total == 4 (over-count: phantom "
+            f"{total}; expected 5 (FINAL persisted set = 1 concurrent "
+            f"existing + 4 surviving queued inserts per T-A.4.3). "
+            f"Pre-R4 (R3 semantics): total == 6 (over-count: phantom "
             f"Pass-1-queued vcp score never persisted but kept in "
             f"universe). bins={bins}"
         )
@@ -961,25 +1029,25 @@ def test_step_pattern_detect_pass_2_amendment_not_order_dependent(
     reconcile) and ALL surviving rows serialize against that SAME
     universe. NO order dependence in serialization.
 
-    Discriminating predicate:
+    Discriminating predicate (T-A.4.3 5-detector contract):
       - Pre-seed NO existing rows.
       - Concurrent INSERT injects (ABC, cup_with_handle, 0.95) inside
-        fenced_write before Pass 2's loop. cup_with_handle is LAST in
-        the detector registry order (vcp, flat_base, cup_with_handle).
-      - Pass 1 produces 3 queued tuples (ABC vcp, ABC flat_base, ABC
-        cup_with_handle).
+        fenced_write before Pass 2's loop. cup_with_handle is the THIRD
+        in the detector registry order (vcp, flat_base, cup_with_handle,
+        high_tight_flag, double_bottom_w).
+      - Pass 1 produces 5 queued tuples (ABC vcp, ABC flat_base, ABC
+        cup_with_handle, ABC high_tight_flag, ABC double_bottom_w).
       - Post-R4: reconcile drops (ABC, cup_with_handle); final universe
-        = [0.95 (existing)] + [score_vcp, score_flatbase (2 surviving)]
-        = 3 entries.
-      - BOTH surviving rows (vcp + flat_base) see the SAME 3-entry
-        universe with bin 9 (containing 0.95) populated.
+        = [0.95 (existing)] + [4 surviving queued scores] = 5 entries.
+      - ALL 4 surviving rows see the SAME 5-entry universe with bin 9
+        (containing 0.95) populated.
 
     Pre-fix (R3) FAIL: vcp is FIRST in emit_queue, so its histogram is
       serialized BEFORE the cup_with_handle recheck-hit fires. The vcp
       row's histogram is STALE -- excludes the concurrent 0.95.
       bins[9] for the vcp row == 0 (no 0.95).
-    Post-fix (R4) PASS: both vcp + flat_base histograms contain 0.95
-      via bin 9 (the final universe was built before any insert).
+    Post-fix (R4) PASS: all 4 surviving histograms contain 0.95 via
+      bin 9 (the final universe was built before any insert).
     """
     conn = seeded_env["conn"]
     pipeline_run_id = seeded_env["pipeline_run_id"]
@@ -1007,34 +1075,35 @@ def test_step_pattern_detect_pass_2_amendment_not_order_dependent(
         "ORDER BY pattern_class",
         (pipeline_run_id,),
     ).fetchall()
-    # Final persisted: cup_with_handle (concurrent) + vcp + flat_base = 3.
-    assert len(rows) == 3, (
-        f"expected 3 ABC rows total; got {len(rows)}: {rows}"
+    # T-A.4.3: Final persisted = cup_with_handle (concurrent) +
+    # 4 surviving step-emitted = 5.
+    assert len(rows) == 5, (
+        f"expected 5 ABC rows total (T-A.4.3); got {len(rows)}: {rows}"
     )
 
-    # Two step-emitted rows (vcp + flat_base); cup_with_handle is the
-    # concurrent-injected one.
+    # 4 step-emitted rows (vcp + flat_base + high_tight_flag +
+    # double_bottom_w); cup_with_handle is the concurrent-injected one.
     step_emitted_rows = [r for r in rows if r[3] != "concurrent_v1.0"]
-    assert len(step_emitted_rows) == 2, (
-        f"expected 2 step-emitted rows (vcp + flat_base); got "
+    assert len(step_emitted_rows) == 4, (
+        f"expected 4 step-emitted rows (T-A.4.3 5 detectors - 1 "
+        f"concurrent cup_with_handle); got "
         f"{len(step_emitted_rows)}: {step_emitted_rows}"
     )
 
-    # BOTH step-emitted rows' histograms MUST contain bin 9 (containing
-    # the concurrent 0.95). Pre-R4: the FIRST-serialized row (vcp) has
-    # bins[9] == 0 because cup_with_handle's recheck-hit had not yet
-    # fired when vcp was serialized.
+    # ALL 4 step-emitted rows' histograms MUST contain bin 9 (containing
+    # the concurrent 0.95). Pre-R4: rows serialized BEFORE the
+    # cup_with_handle recheck-hit have bins[9] == 0 because that
+    # recheck-hit had not yet fired.
     for ticker, pattern_class, _score, _dv, fdl_json in step_emitted_rows:
         fdl = json.loads(fdl_json)
         bins = fdl["composite_score_histogram_bins"]
         assert isinstance(bins, list) and len(bins) == 10
         total = sum(bins)
-        assert total == 3, (
+        assert total == 5, (
             f"row ({ticker}, {pattern_class}): histogram bins sum to "
-            f"{total}; expected 3 (FINAL persisted set). "
+            f"{total}; expected 5 (FINAL persisted set per T-A.4.3). "
             f"Pre-R4: rows serialized BEFORE the cup_with_handle "
-            f"recheck-hit have stale histograms (total == 2 for vcp; "
-            f"total == 3 for flat_base after the amend fires). "
+            f"recheck-hit have stale histograms. "
             f"bins={bins}"
         )
         assert bins[9] >= 1, (
@@ -1167,4 +1236,6 @@ def test_step_pattern_detect_idempotent_re_invocation(seeded_env) -> None:
     count_after_second = seeded_env["conn"].execute(
         "SELECT COUNT(*) FROM pattern_evaluations"
     ).fetchone()[0]
-    assert count_after_first == count_after_second == 3
+    # T-A.4.3: 5 detectors x 1 ticker -> 5 rows; idempotent re-invocation
+    # leaves the count unchanged.
+    assert count_after_first == count_after_second == 5
