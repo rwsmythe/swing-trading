@@ -323,3 +323,96 @@ def test_refresh_chart_render_caller_tx_rollback_undoes_both_delete_and_insert(
     rows = repo.list_chart_renders(conn, ticker="ROLL")
     assert len(rows) == 1
     assert rows[0].chart_svg_bytes == b"<svg pre/>"
+
+
+# ---------------------------------------------------------------------------
+# Codex Round 1 fix-bundle 1: ChartRender.__post_init__ validator regression
+# tests (CRITICAL #1 cache key shape + MAJOR #2 non-empty chart_svg_bytes).
+# ---------------------------------------------------------------------------
+
+
+def test_chart_render_rejects_run_bound_surface_with_null_pipeline_run_id() -> None:
+    """Per plan §C.2: run-bound surfaces (watchlist_row, hyprec_detail,
+    market_weather) require non-NULL ``pipeline_run_id``. The pre-fix
+    substrate accepted NULL silently; rows would be invisible to the
+    canonical cache reader. Closes Codex R1 CRITICAL #1.
+    """
+    from swing.data.models import ChartRender
+
+    for surface in ("watchlist_row", "hyprec_detail", "market_weather"):
+        with pytest.raises(ValueError, match="pipeline_run_id"):
+            ChartRender(
+                id=None, ticker="ABC", surface=surface,
+                chart_svg_bytes=b"<svg/>",
+                source_data_hash="x", rendered_at="2024-01-01T00:00:00",
+                data_asof_date="2024-01-01", pipeline_run_id=None,
+                pattern_class=None,
+            )
+
+
+def test_chart_render_rejects_position_detail_surface_with_non_null_pipeline_run_id() -> None:
+    """Per plan §C.2: position_detail keys on ``(ticker, surface)`` with
+    ``pipeline_run_id IS NULL``; a non-NULL run id breaks the cache key
+    contract. Closes Codex R1 CRITICAL #1 (second branch).
+    """
+    from swing.data.models import ChartRender
+
+    with pytest.raises(ValueError, match="pipeline_run_id"):
+        ChartRender(
+            id=None, ticker="ABC", surface="position_detail",
+            chart_svg_bytes=b"<svg/>",
+            source_data_hash="x", rendered_at="2024-01-01T00:00:00",
+            data_asof_date="2024-01-01", pipeline_run_id=42,
+            pattern_class=None,
+        )
+
+
+def test_chart_render_rejects_empty_chart_svg_bytes() -> None:
+    """Per CLAUDE.md F6 lesson (external-API empty-result must be transient
+    when write-through-caching): an empty SVG must NOT replace existing
+    cache content. Closes Codex R1 MAJOR #2 at the construction barrier so
+    ``refresh_chart_render`` cannot DELETE the existing row before the
+    empty-bytes guard fires.
+    """
+    from swing.data.models import ChartRender
+
+    with pytest.raises(ValueError, match="chart_svg_bytes"):
+        ChartRender(
+            id=None, ticker="ABC", surface="watchlist_row",
+            chart_svg_bytes=b"",
+            source_data_hash="x", rendered_at="2024-01-01T00:00:00",
+            data_asof_date="2024-01-01", pipeline_run_id=1,
+            pattern_class=None,
+        )
+
+
+def test_refresh_chart_render_empty_svg_does_not_blank_existing_cache(
+    conn: sqlite3.Connection, pipeline_run_id: int,
+) -> None:
+    """End-to-end F6 defense: a transient empty-bytes refresh attempt is
+    rejected at ``ChartRender`` construction time, so the existing cache
+    row is preserved. Distinguishes pre-fix (DELETE fires; cache blanks)
+    from post-fix (construction raises; cache preserved).
+    """
+    from swing.data.models import ChartRender
+
+    good = _make_chart(
+        pipeline_run_id, ticker="GOOD", surface="watchlist_row",
+        chart_svg_bytes=b"<svg good/>",
+    )
+    with conn:
+        repo.insert_chart_render(conn, good)
+
+    with pytest.raises(ValueError, match="chart_svg_bytes"):
+        ChartRender(
+            id=None, ticker="GOOD", surface="watchlist_row",
+            chart_svg_bytes=b"",
+            source_data_hash="x", rendered_at="2024-01-02T00:00:00",
+            data_asof_date="2024-01-02", pipeline_run_id=pipeline_run_id,
+            pattern_class=None,
+        )
+
+    # Existing row preserved verbatim — DELETE did not fire.
+    rows = repo.list_chart_renders(conn, ticker="GOOD")
+    assert len(rows) == 1
+    assert rows[0].chart_svg_bytes == b"<svg good/>"
