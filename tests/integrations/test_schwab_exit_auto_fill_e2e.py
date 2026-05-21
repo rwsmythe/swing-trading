@@ -38,7 +38,6 @@ from __future__ import annotations
 
 import copy
 import json
-import sqlite3
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -385,18 +384,18 @@ def test_exit_form_e2e_via_limit_sell_cassette_emits_schwab_audit_row(
     # ------------------------------------------------------------------
     conn = connect(cfg.paths.db_path)
     try:
-        row = conn.execute(
+        rows = conn.execute(
             "SELECT surface, endpoint, status, environment, signature_hash, "
             "pipeline_run_id FROM schwab_api_calls "
-            "ORDER BY call_id DESC LIMIT 1"
-        ).fetchone()
+            "ORDER BY call_id ASC"
+        ).fetchall()
     finally:
         conn.close()
-    assert row is not None, (
-        "schwab_api_calls audit row should be emitted by "
-        "trader.get_account_orders for the exit auto-fill path"
+    assert len(rows) == 1, (
+        f"single-fill form-render must emit exactly 1 audit row "
+        f"(single trader.get_account_orders fetch); got {len(rows)}: {rows!r}"
     )
-    surface, endpoint, status, env, sig_hash, pipeline_run_id = row
+    surface, endpoint, status, env, sig_hash, pipeline_run_id = rows[0]
     assert surface == "trade_exit", (
         f"BINDING: surface MUST be 'trade_exit' at exit auto-fill path; "
         f"got {surface!r}"
@@ -743,8 +742,7 @@ def test_exit_form_e2e_multi_partial_via_cassette_renders_candidate_list(
 
 
 # ----------------------------------------------------------------------
-# Path / sqlite3 import guards (silence ruff F401 if subsequent edits
+# Path import guard (silence ruff F401 if subsequent edits
 # remove explicit usage).
 # ----------------------------------------------------------------------
 _ = Path
-_ = sqlite3
