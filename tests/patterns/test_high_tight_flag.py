@@ -612,3 +612,156 @@ def test_htf_stage_2_gate_fails_without_conn_returns_zero_score() -> None:
     evidence = detect_high_tight_flag(bars, window)
     assert evidence.criteria_pass["criterion_1"] is False
     assert evidence.geometric_score == 0.0
+
+
+def test_htf_pole_peak_selects_highest_swing_high_not_intra_consolidation_peak() -> None:
+    """Codex R1 Major #3: in a real HTF pattern the 3-5 week post-pole
+    consolidation may contain minor swing-highs near the pivot; those
+    are NOT the pole peak. Pre-fix, _backward_slice_pole_peak walked
+    swings in reverse + returned the FIRST UP-swing endpoint
+    encountered, which would pick an intra-consolidation peak when the
+    consolidation ends with one. Post-fix, the algorithm selects the
+    HIGHEST swing-HIGH end_price subject to occurring at least one
+    consolidation-window-min (21 days) back from the anchor; an
+    intra-consolidation minor swing-high (only ~10-15 days back from
+    the anchor) is excluded.
+
+    Fixture: pole $5 -> $11 over 35 days (120% gain) + 25-day
+    consolidation with a minor intra-consolidation swing-high around
+    $10.20 (well below the pole peak $11). When the candidate window
+    is anchored at the consolidation END with ma_crossover reason
+    (TRIGGER EVENT), the detector backward-slices to find the pole
+    peak. Pre-fix: would return the intra-consolidation $10.20 peak
+    (or similar minor swing-high). Post-fix: returns the genuine pole
+    peak $11.
+    """
+    # Layout: 10 filler at ~5 + 35 pole 5->11 + 25 consolidation with
+    # minor swing-highs.
+    segments: list[tuple[float, float, int]] = [
+        (5.00, 5.00, 10),                  # 0..9 filler
+        (5.00, 11.00, 35),                 # 10..44 pole 5->11
+    ]
+    # Consolidation: descend to 9.80, climb to minor swing-high 10.20,
+    # back to 9.80, climb to minor swing-high 10.20, descend to 9.80,
+    # final climb to 10.20 (pivot near top). Each leg ~4-5 days for
+    # ~25 total. The intra-consolidation minor swing-highs are
+    # 10.20 < pole peak 11.00.
+    consol_segments: list[tuple[float, float, int]] = [
+        (11.00, 9.80, 5),                  # 45..49 descend off pole
+        (9.80, 10.20, 4),                  # 50..53 minor up
+        (10.20, 9.80, 4),                  # 54..57 minor down
+        (9.80, 10.20, 4),                  # 58..61 minor up
+        (10.20, 9.80, 4),                  # 62..65 minor down
+        (9.80, 10.20, 4),                  # 66..69 final climb to pivot
+    ]
+    segments.extend(consol_segments)
+    n_total = 10 + 35 + 25
+    # Volume: 1M filler, 2M pole, 1M consol -> ratio 0.5 well below 0.65 cap.
+    volumes = (
+        [1_000_000.0] * 10
+        + [2_000_000.0] * 35
+        + [1_000_000.0] * 25
+    )
+    assert len(volumes) == n_total
+    bars = _bars_from_segments(
+        segments,
+        start=date(2026, 1, 5),
+        noise_pct=0.005,
+        volumes_per_bar=volumes,
+    )
+    # Anchor at the last bar with ma_crossover reason (TRIGGER EVENT
+    # semantic; the detector backward-slices for the pole peak).
+    anchor_dt = bars.index[-1].date()
+    window = CandidateWindow(
+        ticker="WXYZ",
+        timeframe="daily",
+        start_date=anchor_dt,
+        end_date=anchor_dt,
+        anchor_date=anchor_dt,
+        anchor_reason="ma_crossover:test_pole_peak_selection",
+    )
+    conn = _stage_2_conn()
+    evidence = detect_high_tight_flag(
+        bars, window, conn=conn, ticker="WXYZ",
+        asof_date=anchor_dt,
+    )
+    # Pole peak should be in the pole-end region (around bar idx 44,
+    # date 2026-02-18) with price near 11.00 -- NOT an intra-
+    # consolidation $10.20 swing-high.
+    pole_peak_idx_expected_min = 40   # generous window for pole-end peak
+    pole_peak_idx_expected_max = 49   # exclude any consolidation idx >= 50
+    pole_peak_ts = pd.Timestamp(evidence.pole_peak_date)
+    pole_peak_idx = bars.index.get_loc(pole_peak_ts)
+    assert pole_peak_idx_expected_min <= pole_peak_idx <= pole_peak_idx_expected_max, (
+        f"Expected pole_peak_idx in [{pole_peak_idx_expected_min}, "
+        f"{pole_peak_idx_expected_max}] (pole-end region); got "
+        f"pole_peak_idx={pole_peak_idx} pole_peak_date={evidence.pole_peak_date} "
+        f"pole_peak_price={evidence.pole_peak_price}"
+    )
+    # Pole peak price should be near the genuine pole peak $11.00,
+    # NOT the intra-consolidation $10.20.
+    assert evidence.pole_peak_price >= 10.8, (
+        f"Expected pole_peak_price >= 10.8 (genuine $11 pole peak); "
+        f"got {evidence.pole_peak_price} -- likely picked up an intra-"
+        f"consolidation minor swing-high"
+    )
+
+
+def test_htf_pole_peak_excludes_intra_consolidation_swing_within_21d_gap() -> None:
+    """Codex R1 Major #3 gating rule: candidate pole peaks must occur
+    at LEAST _CONSOLIDATION_DURATION_DAYS_RANGE[0] (21 days) back from
+    the anchor; intra-consolidation swing-highs within that gap are
+    EXCLUDED. This pins the gap rule explicitly.
+
+    Fixture: same pole + consolidation construction but with the
+    consolidation truncated so the most-recent swing-high is within
+    21 days of the anchor. The detector must REJECT that recent
+    swing-high (its date is too close to the anchor) and SELECT the
+    earlier pole-end peak.
+    """
+    segments: list[tuple[float, float, int]] = [
+        (5.00, 5.00, 10),
+        (5.00, 11.00, 35),
+        # Short consolidation: 25 bars with last bar at consol top.
+        (11.00, 9.80, 5),
+        (9.80, 10.30, 4),
+        (10.30, 9.80, 4),
+        (9.80, 10.30, 4),
+        (10.30, 9.80, 4),
+        (9.80, 10.30, 4),  # final bar at minor high near anchor
+    ]
+    volumes = (
+        [1_000_000.0] * 10
+        + [2_000_000.0] * 35
+        + [1_000_000.0] * 25
+    )
+    bars = _bars_from_segments(
+        segments,
+        start=date(2026, 1, 5),
+        noise_pct=0.005,
+        volumes_per_bar=volumes,
+    )
+    anchor_dt = bars.index[-1].date()
+    window = CandidateWindow(
+        ticker="WXYZ",
+        timeframe="daily",
+        start_date=anchor_dt,
+        end_date=anchor_dt,
+        anchor_date=anchor_dt,
+        anchor_reason="high_low_breakout:test_gap_rule",
+    )
+    conn = _stage_2_conn()
+    evidence = detect_high_tight_flag(
+        bars, window, conn=conn, ticker="WXYZ",
+        asof_date=anchor_dt,
+    )
+    # Pole peak must NOT be a bar within the last 21 calendar days of
+    # the anchor (intra-consolidation swing-high excluded).
+    anchor_ts = pd.Timestamp(anchor_dt)
+    pole_peak_ts = pd.Timestamp(evidence.pole_peak_date)
+    gap_days = (anchor_ts - pole_peak_ts).days
+    assert gap_days >= 21, (
+        f"Expected pole_peak at least 21 days before anchor; "
+        f"got gap_days={gap_days} pole_peak_date={evidence.pole_peak_date} "
+        f"anchor_date={anchor_dt}"
+    )

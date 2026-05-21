@@ -127,6 +127,17 @@ class HighTightFlagEvidence:
     pole_duration_days: int
     pole_avg_volume: float
     # Consolidation evidence (criteria #3, #4, #5) -- L8: consolidation_* naming.
+    # Unit note (per Codex R1 Minor #2; closes a spec-mixed-unit ambiguity):
+    # ``consolidation_width_pct`` is stored in PERCENT units (e.g., ``15.0``
+    # for 15%), matching section 10.4 worked-example arithmetic and other
+    # evidence-dataclass conventions in this codebase (VCP depth_pct,
+    # flat_base flat_pct, etc.). Spec section 5.5 criterion #4 LOCK shape
+    # ``<= 0.15`` is in FRACTION units; the equivalent percent-units
+    # comparison is ``<= 15.0`` (15.6 percent rejects; 14.8 percent passes
+    # per section 10.4 errata). ``consolidation_pullback_pct`` is in
+    # FRACTION units (e.g., ``0.25`` for 25%) since the spec criterion #3
+    # LOCK bound (``<= 0.25``) is fraction-shaped and the
+    # _CONSOLIDATION_PULLBACK_BOUND constant is 0.25.
     consolidation_start_date: date
     consolidation_end_date: date
     consolidation_top_price: float
@@ -232,8 +243,20 @@ def _backward_slice_pole_peak(
     Per dispatch brief anchor_date contract: HTF uses swing-HIGH (pole
     peak). For ``ma_crossover`` / ``high_low_breakout`` candidate windows
     the anchor_date is a TRIGGER EVENT (not the pole peak). This helper
-    walks BACK from the anchor to find the most-recent prior SWING-HIGH.
-    That swing-HIGH is the inferred pole peak.
+    walks BACK from the anchor to find the prior SWING-HIGH that
+    qualifies as the POLE PEAK (NOT merely the most-recent swing-HIGH).
+
+    **Codex R1 Major #3 fix**: the previous implementation returned the
+    first UP-swing endpoint walking in reverse. In real-world HTF data
+    the 3-5 week post-pole consolidation may contain minor swing-highs
+    near the pivot; those are NOT the pole peak (an intra-consolidation
+    high). The previous algorithm would shorten consolidation duration
+    + corrupt pullback/width metrics. Replaced with: select the
+    HIGHEST swing-HIGH end_price in the backward window, gated by
+    occurring at least one full consolidation-window back from the
+    anchor (so the candidate peak has post-peak consolidation room).
+    Tie-breaker: prefer the EARLIER peak (more conservative pole
+    identification).
 
     Returns None if no suitable prior swing-HIGH is found.
 
@@ -249,12 +272,32 @@ def _backward_slice_pole_peak(
     swings = extract_zigzag_swings(
         sub, initial_threshold_pct=threshold, monotonic_narrow=False
     )
-    # Walk backward; first UP-swing's endpoint preceding the anchor is
-    # the most-recent swing-HIGH (the pole peak).
-    for sw in reversed(swings):
-        if sw.direction == "up":
-            return sw.end_date
-    return None
+    # Gather all UP-swing endpoints (candidate pole peaks).
+    # Filter to swings whose endpoint is at least the consolidation
+    # window's minimum duration back from the anchor (so there is room
+    # for post-peak consolidation). The consolidation window's lower
+    # bound is _CONSOLIDATION_DURATION_DAYS_RANGE[0] (21 days).
+    consolidation_min_days = _CONSOLIDATION_DURATION_DAYS_RANGE[0]
+    min_gap_from_anchor = pd.Timedelta(days=consolidation_min_days)
+    candidates: list[tuple[float, date]] = []
+    for sw in swings:
+        if sw.direction != "up":
+            continue
+        sw_end_ts = pd.Timestamp(sw.end_date)
+        # Skip intra-consolidation peaks: those within
+        # consolidation_min_days of the anchor have insufficient
+        # post-peak consolidation room.
+        if (anchor_ts - sw_end_ts) < min_gap_from_anchor:
+            continue
+        candidates.append((float(sw.end_price), sw.end_date))
+    if not candidates:
+        return None
+    # Select the HIGHEST end_price (the genuine pole peak).
+    # Tie-breaker on equal price: prefer the EARLIER peak (more
+    # conservative pole identification; matches Codex M#3 brief).
+    best_price = max(p for p, _ in candidates)
+    best_date = min(d for p, d in candidates if p == best_price)
+    return best_date
 
 
 def _identify_pole_start(

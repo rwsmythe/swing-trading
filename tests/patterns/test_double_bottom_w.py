@@ -2,13 +2,15 @@
 
 Per dispatch brief Step 1 + plan section G.6 T-A.4.2: 12+ failing tests
 covering spec section 5.6 (8 criteria + criterion #8 undercut bonus) +
-section 10.5 worked example ($UVWX recovery; geometric_score cap at 1.0
-with undercut bonus) + section 10.6 tolerance semantics.
+section 10.5 worked example ($UVWX recovery; evidence geometric_score
+reaches 1.10 with undercut bonus per section 5.8 evidence-vs-composite
+cap distinction) + section 10.6 tolerance semantics.
 
 LOCKs honored:
 - L1: verbatim spec section 5.6 criteria + tolerance values + section
-  10.5 worked example + section 10.6 LOCK (criterion #1 + #5 STRICT
-  NONE; criterion #8 LOCK +0.10 with cap at 1.0).
+  10.5 worked example + section 5.8 evidence-vs-composite cap
+  distinction (evidence reaches 1.10; composite caps at 1.0) + section
+  10.6 LOCK (criterion #1 + #5 STRICT NONE; criterion #8 LOCK +0.10).
 - L2: ZERO DB writes inside detector (current_stage is read-only).
 - L7: frozen dataclass with __post_init__ runtime validation against
   explicit frozensets.
@@ -167,10 +169,19 @@ def _candidate_window_at_end(
     bars: pd.DataFrame,
     *,
     ticker: str = "UVWX",
-    reason_prefix: str = "zigzag_pivot",
+    reason_prefix: str = "ma_crossover",
 ) -> CandidateWindow:
     """Build a CandidateWindow whose anchor_date is the last bar
-    (the pivot at center_peak height after trough_2 recovery)."""
+    (the pivot at center_peak height after trough_2 recovery).
+
+    Default reason_prefix is ``ma_crossover`` (TRIGGER EVENT semantic):
+    the last bar IS the trigger event, not the inferred base START.
+    For DBW the inferred base START is trough_1 (the first W trough);
+    ``zigzag_pivot`` mode anchor_date MUST align with trough_1 per
+    foundation.py:458-461 + Codex R1 Major #2 (DBW backward-slice
+    enforces alignment for zigzag_pivot mode). Tests that want zigzag
+    semantics use :func:`_candidate_window_at_trough_1_zigzag` below.
+    """
     anchor_dt = bars.index[-1].date()
     return CandidateWindow(
         ticker=ticker,
@@ -179,6 +190,30 @@ def _candidate_window_at_end(
         end_date=anchor_dt,
         anchor_date=anchor_dt,
         anchor_reason=f"{reason_prefix}:test_anchor",
+    )
+
+
+def _candidate_window_at_trough_1_zigzag(
+    bars: pd.DataFrame,
+    trough_1_date: date,
+    *,
+    ticker: str = "UVWX",
+) -> CandidateWindow:
+    """Build a zigzag_pivot CandidateWindow with anchor_date == trough_1.
+
+    Per spec + foundation.py:458-461 zigzag_pivot mode anchor_date IS the
+    inferred base START. For DBW the base start is trough_1 (the first
+    W trough). DBW backward-slice enforces alignment between the sliced
+    trough_1 and candidate_window.anchor_date in zigzag_pivot mode
+    (+/- 1 calendar day tolerance per Codex R1 Major #2 fix).
+    """
+    return CandidateWindow(
+        ticker=ticker,
+        timeframe="daily",
+        start_date=trough_1_date,
+        end_date=bars.index[-1].date(),
+        anchor_date=trough_1_date,
+        anchor_reason="zigzag_pivot:test_anchor",
     )
 
 
@@ -226,9 +261,17 @@ def _stage_2_conn(ticker: str = "UVWX") -> sqlite3.Connection:
 # ---------------------------------------------------------------------------
 
 
-def test_dbw_passes_all_criteria_with_undercut_geometric_score_capped_1_0() -> None:
-    """Per spec section 10.5 worked example: $UVWX 8/8 criteria pass +
-    undercut bonus +0.10 -> geometric_score CAPPED AT 1.0 (NOT 1.10).
+def test_dbw_passes_all_criteria_with_undercut_geometric_score_equals_1_10() -> None:
+    """Per spec section 10.5 line 1325 worked example + section 5.8 line
+    718 evidence-vs-composite cap distinction: $UVWX 8/8 criteria pass +
+    undercut bonus +0.10 -> EVIDENCE geometric_score == 1.10 (NOT 1.0).
+    The composite formula (60% geometric + 40% template) applies its own
+    ``min(1.0, ...)`` cap downstream per section 5.8; the detector emits
+    the un-clipped 1.10 at the evidence layer.
+
+    Closes Codex R1 Major #1 — the initial dispatch brief was wrong about
+    capping evidence at 1.0; per spec section 5.8 + section 10.5 the
+    evidence layer caps at 1.10 and composite layer caps at 1.0.
     """
     bars = _bars_uvwx_dbw()
     window = _candidate_window_at_end(bars)
@@ -260,8 +303,9 @@ def test_dbw_passes_all_criteria_with_undercut_geometric_score_capped_1_0() -> N
         )
     # Undercut is true -> bonus applied.
     assert evidence.undercut is True
-    # Section 10.5 LOCK: geometric_score capped at 1.0 (NOT 1.10).
-    assert evidence.geometric_score == pytest.approx(1.0)
+    # Section 10.5 LOCK: evidence geometric_score == 1.10 (NOT capped at
+    # 1.0). The composite layer caps; evidence layer does not.
+    assert evidence.geometric_score == pytest.approx(1.10)
 
 
 def test_dbw_undercut_increments_geometric_score_by_0_10() -> None:
@@ -297,7 +341,7 @@ def test_dbw_undercut_increments_geometric_score_by_0_10() -> None:
 def test_dbw_no_undercut_geometric_score_at_1_0_without_bonus() -> None:
     """Per spec section 5.6 criterion #8 LOCK: no undercut -> NO bonus.
 
-    Engineering: trough_2 == trough_1 (no undercut; within ±5% bound).
+    Engineering: trough_2 == trough_1 (no undercut; within +/-5% bound).
     All criteria pass; geometric_score == 1.0 (no bonus added).
     """
     bars = _bars_uvwx_dbw(trough_2=20.00)  # equal to trough_1
@@ -321,7 +365,9 @@ def test_dbw_no_undercut_geometric_score_at_1_0_without_bonus() -> None:
         assert evidence.criteria_pass[k] is True, (
             f"Expected {k} pass; got criteria_pass={evidence.criteria_pass}"
         )
-    # Base score = 1.0; no bonus -> still 1.0 (capped anyway).
+    # Base score = 1.0; no undercut -> no bonus added -> evidence
+    # geometric_score == 1.0 (well below the 1.10 evidence cap per spec
+    # section 5.8 evidence-vs-composite distinction).
     assert evidence.geometric_score == pytest.approx(1.0)
 
 
@@ -632,3 +678,135 @@ def test_dbw_stage_2_gate_fails_without_conn_returns_zero_score() -> None:
     evidence = detect_double_bottom_w(bars, window)
     assert evidence.criteria_pass["criterion_1"] is False
     assert evidence.geometric_score == 0.0
+
+
+def test_dbw_zigzag_pivot_anchor_aligned_with_trough_1_detects_w() -> None:
+    """Codex R1 Major #2 (positive case): for zigzag_pivot mode the
+    candidate_window.anchor_date IS the inferred base START (per
+    foundation.py:458-461 + spec section 5.1.3 line 502). For DBW the
+    base start is trough_1 (the first W trough). With anchor_date ==
+    trough_1_date and reason_prefix='zigzag_pivot', the detector finds
+    the W and emits all-criteria-pass evidence.
+
+    This test pins the canonical correct usage of the zigzag_pivot
+    contract for DBW. Discriminating test below
+    (test_dbw_zigzag_pivot_anchor_misaligned_with_trough_1_rejects)
+    plants the WRONG anchor under the same reason_prefix and asserts
+    rejection.
+    """
+    bars = _bars_uvwx_dbw()
+    trough_1_date = date(2026, 1, 24)  # from _bars_uvwx_dbw layout
+    window = _candidate_window_at_trough_1_zigzag(bars, trough_1_date)
+    conn = _stage_2_conn()
+    evidence = detect_double_bottom_w(
+        bars, window, conn=conn, ticker="UVWX",
+        asof_date=bars.index[-1].date(),
+    )
+    assert evidence.trough_1_date == trough_1_date
+    # All 6 mandatory criteria pass + undercut bonus -> evidence 1.10.
+    assert evidence.geometric_score == pytest.approx(1.10)
+
+
+def test_dbw_zigzag_pivot_anchor_misaligned_with_trough_1_rejects() -> None:
+    """Codex R1 Major #2 (discriminating case): when the candidate
+    window's reason_prefix is 'zigzag_pivot' but the anchor_date does
+    NOT align with the bars-derived trough_1_date (more than +/- 1
+    calendar day away), the detector rejects the candidate W and
+    returns zero-evidence. Without the alignment check the detector
+    would have happily scored the W structure in the same bars against
+    a window anchored elsewhere.
+
+    Layout: $UVWX bars have trough_1 at 2026-01-24. We plant the
+    anchor at 2026-02-10 (~17 days off; the center_peak vicinity).
+    Pre-fix behavior: detector ignores anchor_date and finds the W ->
+    geometric_score 1.10 (wrong). Post-fix behavior:
+    _backward_slice_dbw_structure enforces anchor alignment -> returns
+    None -> _build_zero_evidence with criterion_1=True only ->
+    geometric_score 0.0.
+    """
+    bars = _bars_uvwx_dbw()
+    # Misaligned anchor: 2026-02-10 is in the center_peak vicinity
+    # (center_peak at 2026-02-13); 17 calendar days from trough_1.
+    misaligned_anchor = date(2026, 2, 10)
+    window = CandidateWindow(
+        ticker="UVWX",
+        timeframe="daily",
+        start_date=misaligned_anchor,
+        end_date=bars.index[-1].date(),
+        anchor_date=misaligned_anchor,
+        anchor_reason="zigzag_pivot:misaligned_test_anchor",
+    )
+    conn = _stage_2_conn()
+    evidence = detect_double_bottom_w(
+        bars, window, conn=conn, ticker="UVWX",
+        asof_date=bars.index[-1].date(),
+    )
+    # Backward-slice returns None due to alignment mismatch ->
+    # _build_zero_evidence path; criterion_1 is True (Stage 2 passed)
+    # but no W landmarks -> geometric_score 0.0.
+    assert evidence.criteria_pass["criterion_1"] is True
+    # All structural criteria fail because no W found.
+    assert evidence.criteria_pass["criterion_2"] is False
+    assert evidence.criteria_pass["criterion_4"] is False
+    assert evidence.geometric_score == 0.0
+
+
+def test_dbw_zigzag_pivot_anchor_within_1day_tolerance_detects_w() -> None:
+    """Codex R1 Major #2 tolerance band: +/- 1 calendar day tolerance is
+    granted for off-by-one numerical edge cases at zigzag pivot
+    identification. Anchor 1 day off from trough_1 STILL passes the
+    alignment check.
+    """
+    bars = _bars_uvwx_dbw()
+    # trough_1 detected at 2026-01-24; plant anchor at 2026-01-25
+    # (1 day later -> within +/- 1 tolerance).
+    one_day_off_anchor = date(2026, 1, 25)
+    window = CandidateWindow(
+        ticker="UVWX",
+        timeframe="daily",
+        start_date=one_day_off_anchor,
+        end_date=bars.index[-1].date(),
+        anchor_date=one_day_off_anchor,
+        anchor_reason="zigzag_pivot:within_tolerance_anchor",
+    )
+    conn = _stage_2_conn()
+    evidence = detect_double_bottom_w(
+        bars, window, conn=conn, ticker="UVWX",
+        asof_date=bars.index[-1].date(),
+    )
+    assert evidence.trough_1_date == date(2026, 1, 24)
+    # Within tolerance -> W is found + all criteria pass.
+    assert evidence.geometric_score == pytest.approx(1.10)
+
+
+def test_dbw_non_zigzag_mode_skips_anchor_alignment_check() -> None:
+    """Codex R1 Major #2 mode-aware enforcement: for non-zigzag_pivot
+    modes (ma_crossover, high_low_breakout) the anchor_date is a
+    TRIGGER EVENT (not a base start) per foundation.py:462-469. The
+    alignment check MUST be skipped; the detector backward-slices freely
+    from end_date.
+
+    This test pins the asymmetry: same misaligned anchor that the
+    zigzag_pivot test rejects is ACCEPTED under ma_crossover reason
+    because the alignment contract only applies to zigzag_pivot.
+    """
+    bars = _bars_uvwx_dbw()
+    # Same anchor as the misaligned-zigzag test but with ma_crossover
+    # reason -> alignment skipped -> W is found.
+    anchor_dt = date(2026, 2, 10)
+    window = CandidateWindow(
+        ticker="UVWX",
+        timeframe="daily",
+        start_date=anchor_dt,
+        end_date=bars.index[-1].date(),
+        anchor_date=anchor_dt,
+        anchor_reason="ma_crossover:test_anchor",
+    )
+    conn = _stage_2_conn()
+    evidence = detect_double_bottom_w(
+        bars, window, conn=conn, ticker="UVWX",
+        asof_date=bars.index[-1].date(),
+    )
+    # Backward-slice from end_date succeeds; W found; criteria pass.
+    assert evidence.trough_1_date == date(2026, 1, 24)
+    assert evidence.geometric_score == pytest.approx(1.10)

@@ -9,8 +9,15 @@ evidence (two troughs + center peak + undercut flag + pivot).
 LOCKs (per dispatch brief and plan G.6 LOCKs):
 - L1: spec section 5.6 8 criteria + section 10.5 worked example +
   section 10.6 LOCK (criterion #1 + #5 STRICT NONE tolerance;
-  criterion #8 LOCK undercut bonus +0.10 capped at 1.0) verbatim;
-  do NOT paraphrase. Section 10.5: geometric_score = min(base + 0.10, 1.0).
+  criterion #8 LOCK undercut bonus +0.10) verbatim; do NOT paraphrase.
+  **Evidence-vs-composite cap distinction** (spec section 5.8 line 718
+  + section 10.5 line 1325): the DBW evidence ``geometric_score`` may
+  reach 1.10 (base 1.0 + undercut bonus 0.10) capped at 1.10. The
+  COMPOSITE formula (60% geometric + 40% template) applies its own
+  ``min(1.0, ...)`` cap downstream. The detector emits 1.10 at the
+  evidence layer; the composite layer caps. Section 10.5 worked
+  example: "undercut bonus +0.10 -> geometric_score 1.10 (capped at
+  1.0 in composite)".
 - L2: ZERO DB writes inside this module (``current_stage`` is the only
   DB call; SELECT-only).
 - L5: ASCII-only output paths.
@@ -34,15 +41,21 @@ Tolerance bands per spec section 5.6 + section 10.6 LOCK (BINDING):
   +/- 0.5% -> relaxed [0.985, 1.015].
 - criterion #7 (trough_2_avg_volume / trough_1_avg_volume in [1.0, 2.0]):
   OPTIONAL; evidence-only; does NOT increment geometric_score.
-- criterion #8 LOCK: undercut bonus +0.10 added to geometric_score;
-  capped at 1.0 via min(base + bonus, 1.0).
+- criterion #8 LOCK: undercut bonus +0.10 added to evidence
+  geometric_score; cap at 1.10 at the evidence layer (composite layer
+  applies its own min(1.0, ...) cap downstream per spec section 5.8).
 
 Anchor_date contract: DBW uses swing-LOW (trough_1 anchor). Different
-from HTF (swing-HIGH for pole peak). The detector backward-slices the
-zigzag swings to identify trough_2 (most-recent swing-LOW preceding the
-candidate_window.end_date), then center_peak (preceding swing-HIGH),
-then trough_1 (preceding swing-LOW). The detector implements its OWN
-backward-slice helper distinct from HTF's swing-HIGH walk-back.
+from HTF (swing-HIGH for pole peak). For ``zigzag_pivot`` mode
+candidates, the ``candidate_window.anchor_date`` IS the inferred base
+START (a down-swing endpoint per foundation.py:458-461 - the inferred
+base start); for DBW this is interpreted as ``trough_1_date`` (the
+first trough of the W). The detector enforces alignment between the
+backward-sliced trough_1 and the candidate_window.anchor_date for
+zigzag_pivot mode (within +/- 1 calendar day of tolerance) to defend
+against scoring a later W against bars clipped to an earlier anchor.
+For ``ma_crossover`` / ``high_low_breakout`` modes (TRIGGER EVENT
+anchors), the detector backward-slices freely from end_date.
 """
 from __future__ import annotations
 
@@ -76,7 +89,12 @@ _PIVOT_RATIO_RANGE: tuple[float, float] = (0.99, 1.01)
 _PIVOT_TOLERANCE_FRAC: float = 0.005              # 0.5% -> [0.985, 1.015]
 _VOLUME_RATIO_RANGE: tuple[float, float] = (1.0, 2.0)  # OPTIONAL criterion #7
 _UNDERCUT_BONUS: float = 0.10                     # LOCK +0.10
-_SCORE_CAP: float = 1.0                           # LOCK cap at 1.0
+# Spec section 5.8 line 718 + section 10.5 line 1325: the EVIDENCE-layer
+# geometric_score caps at 1.10 (base 1.0 + undercut bonus 0.10). The
+# COMPOSITE layer (60% geometric + 40% template) applies its own
+# min(1.0, ...) cap downstream. Naming preserves the evidence-vs-composite
+# distinction explicitly (renamed from _SCORE_CAP per Codex R1 Major #1).
+_EVIDENCE_SCORE_CAP: float = 1.10
 
 # Allowed Literal values (L7 LOCK: validate in __post_init__).
 _STAGE_VALUES: frozenset[str] = frozenset(
@@ -150,10 +168,13 @@ class DoubleBottomWEvidence:
                 f"DoubleBottomWEvidence.recent_stage must be one of "
                 f"{sorted(_RECENT_STAGE_VALUES)}, got {self.recent_stage!r}"
             )
-        if not (0.0 <= self.geometric_score <= 1.0):
+        # Spec section 5.8 line 718 + section 10.5 line 1325: evidence-
+        # layer geometric_score caps at 1.10 (base 1.0 + undercut bonus
+        # 0.10). Composite layer applies min(1.0, ...) downstream.
+        if not (0.0 <= self.geometric_score <= _EVIDENCE_SCORE_CAP):
             raise ValueError(
                 f"DoubleBottomWEvidence.geometric_score must be in "
-                f"[0.0, 1.0], got {self.geometric_score}"
+                f"[0.0, {_EVIDENCE_SCORE_CAP}], got {self.geometric_score}"
             )
         if set(self.criteria_pass.keys()) != _CRITERION_KEYS:
             raise ValueError(
@@ -225,16 +246,27 @@ def _build_zero_evidence(
     )
 
 
+# Anchor-alignment tolerance for zigzag_pivot mode (Codex R1 Major #2).
+# When candidate_window.anchor_reason starts with "zigzag_pivot", the
+# detector enforces ``abs(trough_1_date - candidate_window.anchor_date)
+# <= _ZIGZAG_ANCHOR_ALIGN_TOLERANCE_DAYS``. The +/- 1 calendar day
+# tolerance defends against off-by-one numerical edge cases at zigzag
+# pivot identification without admitting an entire alternate W
+# structure anchored elsewhere.
+_ZIGZAG_ANCHOR_ALIGN_TOLERANCE_DAYS: int = 1
+
+
 def _backward_slice_dbw_structure(
-    bars: pd.DataFrame, window_end_date: date
+    bars: pd.DataFrame,
+    candidate_window: CandidateWindow,
 ) -> tuple[date, float, date, float, date, float, date, float] | None:
     """Backward-slice to locate (prior_peak, trough_1, center_peak, trough_2).
 
     DBW uses swing-LOW anchor for trough_1 (distinct from HTF swing-HIGH
     for pole peak). Algorithm: extract zigzag swings over bars; walk the
     swings in REVERSE order to find the most-recent (down-up-down-up)
-    sequence ending at or before window_end_date. The structural
-    landmarks are:
+    sequence ending at or before ``candidate_window.end_date``. The
+    structural landmarks are:
 
       prior_peak (UP-swing end before trough_1)
         -> trough_1 (DOWN-swing end == prior_peak's down-swing partner)
@@ -248,6 +280,22 @@ def _backward_slice_dbw_structure(
       ..., UP_to_prior_peak, DOWN_to_trough_1, UP_to_center_peak,
            DOWN_to_trough_2, [UP_to_pivot_or_in_progress]
 
+    Anchor contract (Codex R1 Major #2): when
+    ``candidate_window.anchor_reason`` starts with ``"zigzag_pivot"``,
+    the anchor_date is the inferred base START (per foundation.py:458-461
+    + spec section 5.1.3 line 502). For DBW the inferred base start is
+    interpreted as ``trough_1_date`` (the first W trough). This helper
+    rejects candidate (prior_peak, trough_1, ...) tuples whose
+    ``trough_1_date`` does not align with ``candidate_window.anchor_date``
+    within ``_ZIGZAG_ANCHOR_ALIGN_TOLERANCE_DAYS`` calendar days; this
+    defends against a window anchored at trough_A scoring a later W
+    structure anchored at trough_B that happens to fit in the same
+    clipped bars.
+
+    For other modes (``ma_crossover``, ``high_low_breakout``) the
+    anchor_date is a TRIGGER EVENT (not a base start); no alignment is
+    enforced.
+
     Returns the 4 landmarks as
     ``(prior_peak_date, prior_peak_price, trough_1_date, trough_1_price,
        center_peak_date, center_peak_price, trough_2_date, trough_2_price)``
@@ -255,6 +303,10 @@ def _backward_slice_dbw_structure(
     """
     if len(bars) < 10:
         return None
+    window_end_date = candidate_window.end_date
+    anchor_reason = candidate_window.anchor_reason or ""
+    enforce_anchor_alignment = anchor_reason.startswith("zigzag_pivot")
+    anchor_date = candidate_window.anchor_date
     threshold = adaptive_initial_threshold_pct(bars)
     swings = extract_zigzag_swings(
         bars, initial_threshold_pct=threshold, monotonic_narrow=False
@@ -262,53 +314,59 @@ def _backward_slice_dbw_structure(
     if len(swings) < 4:
         return None
     # Walk the swings list in reverse looking for a tail subsequence
-    # matching: UP_prior_peak -> DOWN_trough_1 -> UP_center_peak -> DOWN_trough_2.
-    # We scan from the end; if the very last swing is UP (in-progress
-    # post-trough_2 recovery), skip it and look at the preceding 4.
+    # matching: UP_prior_peak -> DOWN_trough_1 -> UP_center_peak ->
+    # DOWN_trough_2. We scan from the end; if the very last swing is UP
+    # (in-progress post-trough_2 recovery), skip it and look at the
+    # preceding 4. Iterate ALL possible tail positions (not just the two
+    # most recent) so an earlier W structure can be matched when the
+    # zigzag_pivot anchor_date is on an earlier trough_1.
     n = len(swings)
-    # Try with the most-recent swing as trough_2 down-swing first; if it
-    # is an UP swing (recovery in progress), skip it.
-    for tail_idx in (n - 1, n - 2):
-        if tail_idx < 3:
-            continue
+    for tail_idx in range(n - 1, 2, -1):
         s_trough_2 = swings[tail_idx]
         s_center_peak = swings[tail_idx - 1]
         s_trough_1 = swings[tail_idx - 2]
         s_prior_peak = swings[tail_idx - 3]
-        if (
+        if not (
             s_trough_2.direction == "down"
             and s_center_peak.direction == "up"
             and s_trough_1.direction == "down"
             and s_prior_peak.direction == "up"
         ):
-            # All four landmarks identified.
-            prior_peak_date = s_prior_peak.end_date
-            prior_peak_price = float(s_prior_peak.end_price)
-            trough_1_date = s_trough_1.end_date
-            trough_1_price = float(s_trough_1.end_price)
-            center_peak_date = s_center_peak.end_date
-            center_peak_price = float(s_center_peak.end_price)
-            trough_2_date = s_trough_2.end_date
-            trough_2_price = float(s_trough_2.end_price)
-            # Validate ordering + on/before window_end_date.
-            if not (
-                prior_peak_date
-                <= trough_1_date
-                <= center_peak_date
-                <= trough_2_date
-                <= window_end_date
-            ):
+            continue
+        # All four landmarks identified.
+        prior_peak_date = s_prior_peak.end_date
+        prior_peak_price = float(s_prior_peak.end_price)
+        trough_1_date = s_trough_1.end_date
+        trough_1_price = float(s_trough_1.end_price)
+        center_peak_date = s_center_peak.end_date
+        center_peak_price = float(s_center_peak.end_price)
+        trough_2_date = s_trough_2.end_date
+        trough_2_price = float(s_trough_2.end_price)
+        # Validate ordering + on/before window_end_date.
+        if not (
+            prior_peak_date
+            <= trough_1_date
+            <= center_peak_date
+            <= trough_2_date
+            <= window_end_date
+        ):
+            continue
+        # Codex R1 Major #2: enforce trough_1 alignment with the
+        # candidate_window.anchor_date for zigzag_pivot mode.
+        if enforce_anchor_alignment:
+            delta_days = abs((trough_1_date - anchor_date).days)
+            if delta_days > _ZIGZAG_ANCHOR_ALIGN_TOLERANCE_DAYS:
                 continue
-            return (
-                prior_peak_date,
-                prior_peak_price,
-                trough_1_date,
-                trough_1_price,
-                center_peak_date,
-                center_peak_price,
-                trough_2_date,
-                trough_2_price,
-            )
+        return (
+            prior_peak_date,
+            prior_peak_price,
+            trough_1_date,
+            trough_1_price,
+            center_peak_date,
+            center_peak_price,
+            trough_2_date,
+            trough_2_price,
+        )
     return None
 
 
@@ -340,7 +398,7 @@ def _check_trough_2_band(
     relaxed = _TROUGH_2_BAND_PCT + _TROUGH_2_BAND_TOLERANCE
     diff_pct = abs(trough_2 - trough_1) / trough_1
     undercut = trough_2 < trough_1 and (trough_1 - trough_2) / trough_1 > 0.0
-    # Symmetric ±band OR undercut by <= relaxed.
+    # Symmetric +/-band OR undercut by <= relaxed.
     if undercut:
         undercut_mag = (trough_1 - trough_2) / trough_1
         passes = undercut_mag <= relaxed
@@ -389,7 +447,7 @@ def _check_volume_rises_into_trough_2(
 def _compute_volume_avg_around(
     bars: pd.DataFrame, anchor_date: date, *, half_window_days: int = 3
 ) -> float:
-    """Mean Volume over a ±half_window_days slice around anchor_date.
+    """Mean Volume over a +/-half_window_days slice around anchor_date.
 
     Used to compute trough-region volume averages without depending on
     an explicit start/end (the troughs are point landmarks). Returns
@@ -478,7 +536,10 @@ def detect_double_bottom_w(
         )
 
     # Step 2: backward-slice to identify the DBW structural landmarks.
-    sliced = _backward_slice_dbw_structure(bars, candidate_window.end_date)
+    # Codex R1 Major #2: for zigzag_pivot mode, the helper enforces
+    # trough_1 alignment with candidate_window.anchor_date (within
+    # +/- 1 day tolerance).
+    sliced = _backward_slice_dbw_structure(bars, candidate_window)
     if sliced is None:
         return _build_zero_evidence(
             stage=stage,
@@ -554,12 +615,16 @@ def detect_double_bottom_w(
         "criterion_8": c8_pass,
     }
 
-    # Step 10: geometric_score per spec section 10.5 + section 5.6 #8 LOCK.
+    # Step 10: geometric_score per spec section 10.5 + section 5.6 #8 LOCK
+    # + section 5.8 evidence-vs-composite cap distinction.
     # Base score = fraction of MANDATORY criteria passed (criteria #1..#6).
     # Criterion #7 is OPTIONAL evidence-only (does NOT increment score).
     # Criterion #8 (undercut) contributes via the bonus, NOT the base.
     # Bonus = +0.10 if undercut else 0.
-    # Final = min(base + bonus, 1.0).
+    # Final = min(base + bonus, _EVIDENCE_SCORE_CAP) where the evidence
+    # cap is 1.10 (spec section 5.8 line 718 + section 10.5 line 1325).
+    # The composite layer (60% geometric + 40% template) applies its own
+    # min(1.0, ...) downstream.
     if not c1_pass:
         geometric_score = 0.0
     else:
@@ -574,7 +639,7 @@ def detect_double_bottom_w(
         passed = sum(1 for k in mandatory_keys if criteria_pass[k])
         base = passed / len(mandatory_keys)
         bonus = _UNDERCUT_BONUS if undercut else 0.0
-        geometric_score = min(base + bonus, _SCORE_CAP)
+        geometric_score = min(base + bonus, _EVIDENCE_SCORE_CAP)
 
     # V1 current_stage returns only stage_2/undefined; recent_stage stays
     # 'undefined' until V2 widens current_stage to true 4-stage labeling.
