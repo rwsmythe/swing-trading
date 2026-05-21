@@ -1,6 +1,32 @@
 {#- swing/web/templates/dashboard.html.j2 -#}
 {% extends "base.html.j2" %}
 {% block content %}
+  {# Phase 13 T2.SB6b T-A.6.6 - market weather mini-chart at TOP per
+     spec section 4.5 + plan section C.3 LOCK. Renders the cached
+     chart_renders bytes inline; placeholder when no recent pipeline
+     run wrote one. The on-demand refresh button issues
+     POST /dashboard/weather-chart/refresh (HTMX 3-surface). #}
+  <section id="dashboard-market-weather" data-section="market-weather">
+    {% if vm.dashboard_weather_chart_svg_bytes %}
+      <div class="market-weather-chart">
+        {{ vm.dashboard_weather_chart_svg_bytes.decode('utf-8')|safe }}
+      </div>
+    {% else %}
+      <p class="muted" data-state="no-weather-chart">
+        Market weather chart not yet available. Run the pipeline to
+        populate the chart_renders cache.
+      </p>
+    {% endif %}
+    <form method="post"
+          action="/dashboard/weather-chart/refresh"
+          hx-post="/dashboard/weather-chart/refresh"
+          hx-headers='{"HX-Request": "true"}'
+          class="market-weather-refresh-form">
+      <button type="submit" data-action="weather-chart-refresh">
+        Refresh weather chart
+      </button>
+    </form>
+  </section>
   {% include "partials/needs_review_badge.html.j2" %}
   <div id="status-strip">
     {% include "partials/status_strip.html.j2" %}
