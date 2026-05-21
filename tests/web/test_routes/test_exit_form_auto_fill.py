@@ -23,6 +23,7 @@ step 1 + dispatch brief §5 watch items + FORWARD-BINDING WATCH ITEM:
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Any
 
@@ -176,6 +177,17 @@ def test_a_populated_auto_fill_renders_values_and_hidden_anchor(
     # Display-only audit metadata visible (server-stamped, not <input>).
     assert "Auto-fill source:" in body
     assert "schwab_auto" in body
+
+    # Negative defense-in-depth: single-fill case (candidates length 1)
+    # must NOT render the multi-partial radio fieldset nor emit per-
+    # candidate hidden inputs. Guards against a regression in the
+    # template's `{% if vm.auto_fill_candidates|length > 1 %}` gate.
+    assert 'type="radio"' not in body, (
+        "single-fill case must not render radio fieldset"
+    )
+    assert 'candidate_signature_hash_' not in body, (
+        "single-fill case must not emit per-candidate hidden inputs"
+    )
 
 
 # ============================================================================
@@ -372,9 +384,45 @@ def test_e_multi_partial_renders_candidate_list_with_per_candidate_hidden_inputs
     assert "115.50" in body
     assert "120.00" in body
 
+    # Tightened per-candidate radio co-location: every candidate index
+    # i in {0, 1, 2} must appear inside a single <input> tag carrying
+    # type="radio" AND name="candidate_index" AND value="<i>" — i.e. the
+    # three attributes are co-located on the same radio element, not
+    # merely all present somewhere in the body. Guards against a
+    # regression that splits the radio group across multiple element
+    # types or renames the group.
+    for i in (0, 1, 2):
+        radio_pattern = (
+            r'<input\b[^>]*\btype="radio"[^>]*\bname="candidate_index"'
+            r'[^>]*\bvalue="' + str(i) + r'"'
+            r'|<input\b[^>]*\bvalue="' + str(i) + r'"'
+            r'[^>]*\bname="candidate_index"[^>]*\btype="radio"'
+            r'|<input\b[^>]*\bname="candidate_index"[^>]*\bvalue="'
+            + str(i) + r'"[^>]*\btype="radio"'
+            r'|<input\b[^>]*\btype="radio"[^>]*\bvalue="' + str(i) + r'"'
+            r'[^>]*\bname="candidate_index"'
+        )
+        assert re.search(radio_pattern, body), (
+            f"radio for candidate index {i} must co-locate "
+            f'type="radio" + name="candidate_index" + value="{i}" '
+            "on the same <input> element"
+        )
+
     # Default selection: most-recent candidate (index 2) is pre-checked.
-    # Look for the checked attribute alongside index 2's value.
-    assert 'value="2"' in body and 'checked' in body
+    # Tightened from substring-coincidence (`'value="2"' in body and
+    # 'checked' in body`) to a regex requiring `value="2"` and
+    # `checked` to co-locate on the same element (either order, since
+    # Jinja attribute order may shift). The prior assertion passed
+    # even if an unrelated element carried value="2" while a totally
+    # different element was checked.
+    checked_default_pattern = (
+        r'\bvalue="2"[^>]*\bchecked\b'
+        r'|\bchecked\b[^>]*\bvalue="2"'
+    )
+    assert re.search(checked_default_pattern, body), (
+        'default selection: candidate index 2 must carry value="2" + '
+        "checked on the same element"
+    )
 
 
 # ============================================================================
