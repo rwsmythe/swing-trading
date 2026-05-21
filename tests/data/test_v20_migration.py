@@ -904,13 +904,6 @@ def test_v20_atomic_landing_python_constants_validators_paired() -> None:
     assert _SCHWAB_API_SURFACE_VALUES
 
 
-@pytest.mark.skip(
-    reason=(
-        "Cross-bundle pin per plan §G.1 T-A.1.1 — un-skip at T3.SB2 merge "
-        "(verifies fill_origin enum fully populated through T3.SB1 + T3.SB2 "
-        "entry/exit auto-fill paths)."
-    )
-)
 def test_fill_origin_enum_complete_after_v20(tmp_path: Path) -> None:
     """Cross-bundle pin: fill_origin enum coverage post-Phase-13 entry+exit.
 
