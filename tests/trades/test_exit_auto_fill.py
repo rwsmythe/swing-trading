@@ -724,6 +724,76 @@ def test_lookback_starts_at_entry_date(
     assert call["to_dt"] == fake_now
 
 
+def test_existing_fill_order_ids_excludes_already_recorded_fills(
+    conn, fake_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders,
+):
+    """Codex R1 Major #4 — already-recorded fills excluded from candidates.
+
+    Plant 2 SELL orders from Schwab (ABC123 + DEF456). Pass
+    ``existing_fill_order_ids={'ABC123'}`` to the resolver to simulate
+    a partial_exited trade with an already-recorded SELL fill whose
+    schwab_source_value_json envelope referenced order_id='ABC123'.
+
+    Pre-fix: candidates list has length 2 (both orders surfaced; operator
+    could pick ABC123 and create a duplicate fill row).
+    Post-fix: candidates list has length 1 (only DEF456 — the new fill).
+    """
+    order_abc = _make_sell_order(
+        ticker="AAPL", order_id="ABC123", price=150.0, quantity=50,
+        enter_time="2026-05-17T14:30:00.000Z",
+        instruction="SELL_TO_CLOSE",
+    )
+    order_def = _make_sell_order(
+        ticker="AAPL", order_id="DEF456", price=155.0, quantity=50,
+        enter_time="2026-05-19T14:30:00.000Z",
+        instruction="SELL_TO_CLOSE",
+    )
+    patch_get_orders.state["orders"] = [order_abc, order_def]
+    cfg = _make_cfg(environment="production")
+
+    # WITHOUT exclusion: both candidates surface.
+    result_all = resolve_exit_auto_fill(
+        trade_id=42, ticker="AAPL", entry_date="2026-05-15",
+        cfg=cfg, conn=conn, now=fake_now,
+    )
+    assert result_all.kind == "populated"
+    assert result_all.candidates is not None
+    assert len(result_all.candidates) == 2
+
+    # WITH exclusion: only DEF456 (the new one) surfaces.
+    result_filtered = resolve_exit_auto_fill(
+        trade_id=42, ticker="AAPL", entry_date="2026-05-15",
+        cfg=cfg, conn=conn, now=fake_now,
+        existing_fill_order_ids={"ABC123"},
+    )
+    assert result_filtered.kind == "populated"
+    assert result_filtered.candidates is not None
+    assert len(result_filtered.candidates) == 1
+    assert result_filtered.candidates[0].order_id == "DEF456"
+
+
+def test_existing_fill_order_ids_all_excluded_returns_empty(
+    conn, fake_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders,
+):
+    """Codex R1 Major #4 — when ALL Schwab fills are already-recorded,
+    candidate list collapses to empty (no new fills to surface)."""
+    order_abc = _make_sell_order(
+        ticker="AAPL", order_id="ABC123", price=150.0, quantity=50,
+        enter_time="2026-05-17T14:30:00.000Z",
+        instruction="SELL_TO_CLOSE",
+    )
+    patch_get_orders.state["orders"] = [order_abc]
+    cfg = _make_cfg(environment="production")
+    result = resolve_exit_auto_fill(
+        trade_id=42, ticker="AAPL", entry_date="2026-05-15",
+        cfg=cfg, conn=conn, now=fake_now,
+        existing_fill_order_ids={"ABC123"},
+    )
+    assert result.kind == "empty"
+
+
 def test_exit_auto_fill_result_populated_requires_fill_origin_schwab_auto():
     """ExitAutoFillResult __post_init__: populated kind requires
     fill_origin='schwab_auto' (Literal validation per L6 + CLAUDE.md

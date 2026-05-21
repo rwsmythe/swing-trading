@@ -746,6 +746,43 @@ def build_exit_form_vm(
         # ``conn.in_transaction == False`` (per CLAUDE.md
         # "in_transaction auto-detect" + "Service-layer with conn:"
         # gotchas).
+        #
+        # Codex R1 Major #4 fix — collect schwab_order_id from any
+        # already-recorded non-entry fills on this trade so the resolver
+        # excludes already-persisted Schwab fills from the candidate
+        # list (prevents operator double-recording the same Schwab
+        # fill on a partial_exited trade with multiple sells).
+        #
+        # ``schwab_order_id`` is NOT a first-class column on fills; it
+        # lives inside ``schwab_source_value_json`` (the audit envelope
+        # written by exit_post when fill_origin in {'schwab_auto',
+        # 'schwab_auto_then_operator_corrected'}). Parse it here. The
+        # envelope shape carries either:
+        #   - top-level ``schwab_order_id`` (single-fill case + default
+        #     candidate path), OR
+        #   - ``selected_candidate_order_id`` (multi-partial case, added
+        #     by exit_post when the operator selected a candidate).
+        # Both are checked; absent fields are tolerated silently
+        # (fill_origin='operator_typed' fills have no envelope).
+        existing_fill_order_ids: set[str] = set()
+        existing_envelopes_cur = conn.execute(
+            "SELECT schwab_source_value_json FROM fills "
+            "WHERE trade_id = ? AND action != 'entry' "
+            "AND schwab_source_value_json IS NOT NULL",
+            (trade_id,),
+        )
+        for (env_json,) in existing_envelopes_cur.fetchall():
+            try:
+                env = json.loads(env_json) if env_json else None
+            except (ValueError, TypeError):
+                env = None
+            if not isinstance(env, dict):
+                continue
+            for key in ("schwab_order_id", "selected_candidate_order_id"):
+                v = env.get(key)
+                if isinstance(v, str) and v:
+                    existing_fill_order_ids.add(v)
+
         from swing.trades.exit_auto_fill import resolve_exit_auto_fill
         auto_fill = resolve_exit_auto_fill(
             trade_id=trade_id,
@@ -753,6 +790,9 @@ def build_exit_form_vm(
             entry_date=trade.entry_date,
             cfg=cfg,
             conn=conn,
+            existing_fill_order_ids=(
+                existing_fill_order_ids if existing_fill_order_ids else None
+            ),
         )
     finally:
         conn.close()

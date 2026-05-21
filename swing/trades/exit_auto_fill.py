@@ -303,6 +303,7 @@ def resolve_exit_auto_fill(
     cfg: Any,
     conn: Any,
     now: datetime | None = None,
+    existing_fill_order_ids: set[str] | None = None,
 ) -> ExitAutoFillResult:
     """Resolve form-render-time exit auto-fill via Schwab Trader API.
 
@@ -319,6 +320,17 @@ def resolve_exit_auto_fill(
             audit-row writes).
         now: server-stamped 'now' for the lookback upper bound + audit_at;
             defaults to ``datetime.now(UTC)``.
+        existing_fill_order_ids: optional set of Schwab order_ids that
+            have ALREADY been persisted as fills for this trade (for
+            partial_exited trades with one or more recorded SELL fills).
+            Codex R1 Major #4 fix — without this exclusion, a partial-
+            exited trade's auto-fill resolver would re-surface
+            already-recorded SELL fills as candidates, letting the
+            operator inadvertently double-record a fill. When supplied,
+            candidates whose ``order_id`` is in the set are filtered out
+            BEFORE the candidates list is built. Default ``None`` =
+            no exclusion (backwards-compat for entry-side parity tests
+            + the empty-set degenerate case).
 
     Returns:
         ``ExitAutoFillResult`` — see dataclass docstring for the 5 kinds.
@@ -489,13 +501,27 @@ def resolve_exit_auto_fill(
 
     # ----------------------------------------------------------------------
     # Candidate selection — production-shape filter (SELL-side mirror).
+    # Codex R1 Major #4 fix — when ``existing_fill_order_ids`` is
+    # supplied (partial_exited trade with one or more recorded SELL
+    # fills), filter out orders whose ``order_id`` is already a recorded
+    # fill. Without this exclusion, operator could pick a candidate
+    # corresponding to an already-persisted fill, creating a duplicate.
     # ----------------------------------------------------------------------
+    excluded_ids: set[str] = (
+        existing_fill_order_ids
+        if isinstance(existing_fill_order_ids, set)
+        else set()
+    )
     matches = [
         o for o in orders
         if (
             getattr(o, "instrument_symbol", "") == ticker
             and getattr(o, "instruction", "") in _SELL_INSTRUCTIONS
             and _is_execution_bearing_candidate(o)
+            and (
+                not excluded_ids
+                or getattr(o, "order_id", None) not in excluded_ids
+            )
         )
     ]
     if not matches:

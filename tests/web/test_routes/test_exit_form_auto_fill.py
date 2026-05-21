@@ -73,6 +73,7 @@ def _patch_auto_fill(
         cfg: Any,
         conn: Any,
         now: Any = None,
+        existing_fill_order_ids: Any = None,
     ) -> ExitAutoFillResult:
         calls.append({
             "trade_id": trade_id,
@@ -81,6 +82,7 @@ def _patch_auto_fill(
             "cfg": cfg,
             "conn": conn,
             "now": now,
+            "existing_fill_order_ids": existing_fill_order_ids,
         })
         return result
 
@@ -553,6 +555,125 @@ def test_auto_fill_resolver_called_with_trade_anchors(
     assert calls[0]["trade_id"] == trade_id
     assert calls[0]["ticker"] == "NVDA"
     assert calls[0]["entry_date"] == "2026-04-15"
+
+
+# ============================================================================
+# Codex R1 Major #4 — already-recorded fills excluded from candidates.
+# ============================================================================
+
+
+def test_major4_existing_fills_order_ids_passed_to_resolver(
+    seeded_db, monkeypatch,
+):
+    """Codex R1 Major #4 — VM builder collects schwab_order_id from any
+    already-recorded non-entry fills' schwab_source_value_json envelopes
+    and passes them as ``existing_fill_order_ids`` to the resolver.
+
+    Pre-fix: the resolver was called WITHOUT the existing-id set; a
+    partial_exited trade with one or more recorded SELL fills would
+    re-surface those fills as candidates, letting the operator
+    double-record.
+    Post-fix: VM builder extracts schwab_order_id from both top-level
+    (``schwab_order_id``) and multi-partial (``selected_candidate_order_id``)
+    envelope keys; resolver is called with the union set.
+    """
+    import json as _json
+
+    cfg, cfg_path = seeded_db
+    trade_id = _seed_open_trade(cfg, "NVDA")
+    _patch_price_cache(monkeypatch)
+
+    # Plant 2 recorded exit fills with schwab_source_value_json envelopes
+    # — one carries the top-level ``schwab_order_id`` key, one carries
+    # the multi-partial ``selected_candidate_order_id`` key — covering
+    # both envelope shapes the resolver-exclusion path must handle.
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            env_topkey = _json.dumps({
+                "exit_date": "2026-05-15", "exit_price": 110.0,
+                "closed_shares": 3, "schwab_order_id": "ORDER-TOPKEY-1",
+                "schwab_instrument_symbol": "NVDA",
+            })
+            env_selected = _json.dumps({
+                "exit_date": "2026-05-17", "exit_price": 115.0,
+                "closed_shares": 3,
+                "selected_candidate_order_id": "ORDER-SELECTED-2",
+                "schwab_instrument_symbol": "NVDA",
+            })
+            for fill_dt, qty, price, env in (
+                ("2026-05-15T15:30:00", 3, 110.0, env_topkey),
+                ("2026-05-17T15:30:00", 3, 115.0, env_selected),
+            ):
+                conn.execute(
+                    "INSERT INTO fills "
+                    "(trade_id, fill_datetime, action, quantity, price, "
+                    "reason, rule_based, fees, manual_entry_confidence, "
+                    "reconciliation_status, tos_match_id, "
+                    "fill_origin, schwab_source_value_json, "
+                    "operator_corrected_value_json, auto_fill_audit_at) "
+                    "VALUES (?, ?, 'trim', ?, ?, 'manual', 0, 0.0, NULL, "
+                    "'unreconciled', NULL, 'schwab_auto', ?, NULL, "
+                    "'2026-05-19T14:30:00.000000+00:00')",
+                    (trade_id, fill_dt, qty, price, env),
+                )
+    finally:
+        conn.close()
+
+    calls = _patch_auto_fill(
+        monkeypatch,
+        ExitAutoFillResult(
+            kind="empty", fill_origin="operator_typed",
+            advisory_text="no matches",
+            auto_fill_audit_at="2026-05-19T14:30:00.000000+00:00",
+        ),
+    )
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = client.get(
+            f"/trades/{trade_id}/exit/form",
+            headers={"HX-Request": "true"},
+        )
+    assert resp.status_code == 200, resp.text
+    assert len(calls) == 1
+    excluded = calls[0]["existing_fill_order_ids"]
+    assert excluded is not None, (
+        "Major #4: resolver must receive a non-None exclusion set when "
+        "trade has recorded fills with schwab provenance envelopes"
+    )
+    assert isinstance(excluded, set)
+    assert excluded == {"ORDER-TOPKEY-1", "ORDER-SELECTED-2"}, (
+        f"both envelope shapes (top-level + selected-candidate) must "
+        f"contribute order_ids; got {excluded!r}"
+    )
+
+
+def test_major4_no_existing_fills_passes_none(seeded_db, monkeypatch):
+    """Codex R1 Major #4 — when there are NO already-recorded non-entry
+    fills with envelopes, resolver is called with
+    ``existing_fill_order_ids=None`` (backwards-compat with the entry-
+    side parity test pattern + the empty-set degenerate case).
+    """
+    cfg, cfg_path = seeded_db
+    trade_id = _seed_open_trade(cfg, "NVDA")
+    _patch_price_cache(monkeypatch)
+    calls = _patch_auto_fill(
+        monkeypatch,
+        ExitAutoFillResult(
+            kind="empty", fill_origin="operator_typed",
+            advisory_text="no matches",
+            auto_fill_audit_at="2026-05-19T14:30:00.000000+00:00",
+        ),
+    )
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = client.get(
+            f"/trades/{trade_id}/exit/form",
+            headers={"HX-Request": "true"},
+        )
+    assert resp.status_code == 200, resp.text
+    assert len(calls) == 1
+    assert calls[0]["existing_fill_order_ids"] is None
 
 
 # ============================================================================
