@@ -32,7 +32,9 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from swing.patterns.cup_with_handle import CupWithHandleEvidence
+from swing.patterns.double_bottom_w import DoubleBottomWEvidence
 from swing.patterns.flat_base import FlatBaseEvidence
+from swing.patterns.high_tight_flag import HighTightFlagEvidence
 from swing.patterns.vcp import VCPEvidence
 
 # ---------------------------------------------------------------------------
@@ -207,6 +209,24 @@ def _extract_contraction_depths(evidence: Any) -> list[float] | None:
     return None
 
 
+def _extract_center_trough_retracement(evidence: Any) -> float | None:
+    """DBW-specific: return center-peak retracement normalized to [0.0, 1.0].
+
+    Per spec section 5.6 criterion #3: center_peak_retracement_pct is
+    the percentage that the center peak retraces between trough_1 and
+    the prior swing-high. The drift-log surface normalizes this to a
+    [0.0, 1.0] float (divide by 100.0) so it aligns with the other
+    distribution surfaces in FeatureDistributionLog (composite_score
+    histogram bins; stage_2_pass_rate).
+
+    Returns None for non-DBW detectors so the FeatureDistributionLog
+    field is consistently shaped (Optional[float]).
+    """
+    if isinstance(evidence, DoubleBottomWEvidence):
+        return float(evidence.center_peak_retracement_pct) / 100.0
+    return None
+
+
 def _extract_volume_aggregates(evidence: Any) -> dict[str, float]:
     """Per-detector volume aggregate summary.
 
@@ -215,9 +235,15 @@ def _extract_volume_aggregates(evidence: Any) -> dict[str, float]:
     - FlatBase: mean_atr_pct (proxy for volume-aware tightness; flat-base
       has no dedicated volume column).
     - CupWithHandle: handle_volume_vs_cup_volume_pct.
+    - HighTightFlag (T2.SB4): consolidation_avg_volume_to_pole_ratio
+      (section 5.5 criterion #5) + raw consolidation_avg_volume.
+      Defensive guard against zero pole_avg_volume.
+    - DoubleBottomW (T2.SB4): trough_2_avg_volume_to_trough_1_ratio
+      (section 5.6 criterion #7) + undercut_bonus_applied flag
+      (section 5.6 criterion #8: 0.10 if undercut else 0.0).
+      Defensive guard against zero trough_1_avg_volume.
 
-    Returns an empty dict for unknown detector evidence shapes (T2.SB4
-    will extend this when HTF + DBW evidence dataclasses land).
+    Returns an empty dict for unknown detector evidence shapes.
     """
     if isinstance(evidence, VCPEvidence):
         return {
@@ -238,6 +264,34 @@ def _extract_volume_aggregates(evidence: Any) -> dict[str, float]:
                 evidence.handle_volume_vs_cup_volume_pct
             ),
         }
+    if isinstance(evidence, HighTightFlagEvidence):
+        pole_avg_volume = float(evidence.pole_avg_volume)
+        consolidation_avg_volume = float(evidence.consolidation_avg_volume)
+        # Defensive guard: zero pole_avg_volume would divide-by-zero.
+        # Emit ratio of 0.0 in that pathological case so the drift-log
+        # distribution stays shape-stable.
+        ratio = (
+            consolidation_avg_volume / pole_avg_volume
+            if pole_avg_volume > 0.0
+            else 0.0
+        )
+        return {
+            "consolidation_avg_volume_to_pole_ratio": ratio,
+            "consolidation_avg_volume": consolidation_avg_volume,
+        }
+    if isinstance(evidence, DoubleBottomWEvidence):
+        trough_1_avg_volume = float(evidence.trough_1_avg_volume)
+        trough_2_avg_volume = float(evidence.trough_2_avg_volume)
+        # Defensive guard: zero trough_1_avg_volume would divide-by-zero.
+        ratio = (
+            trough_2_avg_volume / trough_1_avg_volume
+            if trough_1_avg_volume > 0.0
+            else 0.0
+        )
+        return {
+            "trough_2_avg_volume_to_trough_1_ratio": ratio,
+            "undercut_bonus_applied": 0.10 if evidence.undercut else 0.0,
+        }
     return {}
 
 
@@ -248,7 +302,13 @@ def _extract_volume_aggregates(evidence: Any) -> dict[str, float]:
 
 def capture_feature_distribution(
     detector_class: str,
-    evidence: VCPEvidence | FlatBaseEvidence | CupWithHandleEvidence,
+    evidence: (
+        VCPEvidence
+        | FlatBaseEvidence
+        | CupWithHandleEvidence
+        | HighTightFlagEvidence
+        | DoubleBottomWEvidence
+    ),
     universe_context: dict[str, Any],
 ) -> FeatureDistributionLog:
     """Capture a per-detector-run FeatureDistributionLog.
@@ -291,9 +351,9 @@ def capture_feature_distribution(
     histogram = _composite_score_histogram(list(composite_scores))
 
     # Per-detector feature extraction (VCP-specific contraction_depths;
-    # DBW-specific center_trough_retracement is None until T2.SB4).
+    # DBW-specific center_trough_retracement populated at T2.SB4).
     contraction_depths = _extract_contraction_depths(evidence)
-    center_trough_retracement = None  # T2.SB4 will populate for DBW.
+    center_trough_retracement = _extract_center_trough_retracement(evidence)
 
     # Volume aggregates: prefer universe_context override; else derive
     # from evidence shape.

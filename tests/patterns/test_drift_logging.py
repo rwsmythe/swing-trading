@@ -25,12 +25,14 @@ from datetime import date
 import pytest
 
 from swing.patterns.cup_with_handle import CupWithHandleEvidence
+from swing.patterns.double_bottom_w import DoubleBottomWEvidence
 from swing.patterns.drift_logging import (
     _DETECTOR_CLASS_VALUES,
     FeatureDistributionLog,
     capture_feature_distribution,
 )
 from swing.patterns.flat_base import FlatBaseEvidence
+from swing.patterns.high_tight_flag import HighTightFlagEvidence
 from swing.patterns.vcp import Contraction, VCPEvidence
 
 # ---------------------------------------------------------------------------
@@ -141,6 +143,69 @@ def _build_cup_with_handle_evidence() -> CupWithHandleEvidence:
         rounded_cup_bars_in_marginal_zone=0,
         criteria_pass=full_flags,
         geometric_score=0.82,
+    )
+
+
+def _build_high_tight_flag_evidence() -> HighTightFlagEvidence:
+    """Construct a synthetic HighTightFlagEvidence for drift-log capture tests.
+
+    Field shape mirrors the spec section 5.5 ``HighTightFlagEvidence``;
+    values are not load-bearing on detector semantics, only on the
+    drift-log extraction path (volume_aggregates ratio).
+    """
+    full_flags = {f"criterion_{i}": True for i in range(1, 7)}
+    return HighTightFlagEvidence(
+        stage="stage_2",
+        pole_start_date=date(2026, 1, 5),
+        pole_start_price=10.0,
+        pole_peak_date=date(2026, 2, 20),
+        pole_peak_price=20.0,
+        pole_pct=1.0,
+        pole_duration_days=46,
+        pole_avg_volume=2_000_000.0,
+        consolidation_start_date=date(2026, 2, 21),
+        consolidation_end_date=date(2026, 3, 25),
+        consolidation_top_price=20.0,
+        consolidation_bottom_price=17.0,
+        consolidation_pullback_pct=15.0,
+        consolidation_width_pct=12.0,
+        consolidation_duration_days=32,
+        consolidation_avg_volume=1_000_000.0,
+        pivot_price=20.0,
+        pivot_within_top_pct=100.0,
+        criteria_pass=full_flags,
+        geometric_score=0.85,
+    )
+
+
+def _build_double_bottom_w_evidence(undercut: bool = True) -> DoubleBottomWEvidence:
+    """Construct a synthetic DoubleBottomWEvidence for drift-log capture tests.
+
+    Field shape mirrors the spec section 5.6 ``DoubleBottomWEvidence``;
+    values are not load-bearing on detector semantics, only on the
+    drift-log extraction path (center_trough_retracement +
+    volume_aggregates ratio + undercut bonus).
+    """
+    full_flags = {f"criterion_{i}": True for i in range(1, 9)}
+    return DoubleBottomWEvidence(
+        stage="stage_2",
+        recent_stage="stage_4",
+        trough_1_date=date(2026, 1, 15),
+        trough_1_price=80.0,
+        trough_1_drawdown_pct=20.0,
+        trough_1_avg_volume=1_500_000.0,
+        center_peak_date=date(2026, 2, 10),
+        center_peak_price=92.0,
+        center_peak_retracement_pct=60.0,
+        trough_2_date=date(2026, 3, 5),
+        trough_2_price=79.5,
+        trough_2_avg_volume=900_000.0,
+        undercut=undercut,
+        trough_1_to_center_duration_days=26,
+        center_to_trough_2_duration_days=23,
+        pivot_price=92.0,
+        criteria_pass=full_flags,
+        geometric_score=0.78,
     )
 
 
@@ -419,3 +484,120 @@ def test_composite_score_histogram_bin_count_matches_5_11_spec() -> None:
         universe_context=universe_context4,
     )
     assert log4.composite_score_histogram_bins == [0] * 10
+
+
+# ---------------------------------------------------------------------------
+# Test (e) [T2.SB4 T-A.4.4]: HTF volume_aggregates emitted
+# ---------------------------------------------------------------------------
+
+
+def test_capture_feature_distribution_emits_htf_volume_aggregates() -> None:
+    """capture_feature_distribution emits HTF per-detector volume aggregates.
+
+    Per plan section G.6 T-A.4.4 Step 1: HighTightFlagEvidence drift-log
+    extraction populates volume_aggregates dict with the section 5.5
+    criterion #5 ratio (consolidation_avg_volume / pole_avg_volume) +
+    the raw consolidation_avg_volume for reference. center_trough_*
+    field stays None (DBW-specific); contraction_depths stays None
+    (VCP-specific).
+
+    Discriminating fixture: evidence carries consolidation_avg_volume
+    1_000_000 / pole_avg_volume 2_000_000 -> ratio 0.5; remove the
+    universe_context volume_aggregates override so the evidence-derived
+    path is exercised.
+    """
+    evidence = _build_high_tight_flag_evidence()
+    universe_context = _build_universe_context()
+    # Strip the override so _extract_volume_aggregates(evidence) fires.
+    universe_context.pop("volume_aggregates")
+
+    log = capture_feature_distribution(
+        detector_class="high_tight_flag",
+        evidence=evidence,
+        universe_context=universe_context,
+    )
+
+    assert log.detector_class == "high_tight_flag"
+    # HTF section 5.5 criterion #5 surface.
+    assert "consolidation_avg_volume_to_pole_ratio" in log.volume_aggregates
+    assert log.volume_aggregates["consolidation_avg_volume_to_pole_ratio"] == pytest.approx(0.5)
+    assert "consolidation_avg_volume" in log.volume_aggregates
+    assert log.volume_aggregates["consolidation_avg_volume"] == pytest.approx(1_000_000.0)
+    # DBW-specific field stays None for HTF.
+    assert log.center_trough_retracement is None
+    # VCP-specific field stays None for HTF.
+    assert log.contraction_depths is None
+
+
+# ---------------------------------------------------------------------------
+# Test (f) [T2.SB4 T-A.4.4]: DBW center_trough_retracement + undercut bonus
+# ---------------------------------------------------------------------------
+
+
+def test_capture_feature_distribution_emits_dbw_retracement_and_undercut() -> None:
+    """capture_feature_distribution emits DBW center_trough_retracement + undercut bonus.
+
+    Per plan section G.6 T-A.4.4 Step 1: DoubleBottomWEvidence drift-log
+    extraction populates (a) center_trough_retracement from
+    evidence.center_peak_retracement_pct / 100.0 (normalized to
+    [0.0, 1.0]); (b) volume_aggregates dict with section 5.6 criterion
+    #7 ratio (trough_2_avg_volume / trough_1_avg_volume) + criterion
+    #8 undercut_bonus_applied flag. contraction_depths stays None
+    (VCP-specific).
+
+    Discriminating fixture: evidence carries center_peak_retracement_pct
+    60.0 -> 0.6; trough_2_avg_volume 900_000 / trough_1_avg_volume
+    1_500_000 -> ratio 0.6; undercut=True -> bonus 0.10.
+    """
+    evidence = _build_double_bottom_w_evidence(undercut=True)
+    universe_context = _build_universe_context()
+    universe_context.pop("volume_aggregates")
+
+    log = capture_feature_distribution(
+        detector_class="double_bottom_w",
+        evidence=evidence,
+        universe_context=universe_context,
+    )
+
+    assert log.detector_class == "double_bottom_w"
+    # DBW center_trough_retracement normalized from
+    # center_peak_retracement_pct (60.0) to [0.0, 1.0] -> 0.6.
+    assert log.center_trough_retracement is not None
+    assert log.center_trough_retracement == pytest.approx(0.6)
+    assert 0.0 <= log.center_trough_retracement <= 1.0
+    # DBW section 5.6 criterion #7 surface.
+    assert "trough_2_avg_volume_to_trough_1_ratio" in log.volume_aggregates
+    assert log.volume_aggregates["trough_2_avg_volume_to_trough_1_ratio"] == pytest.approx(0.6)
+    # DBW section 5.6 criterion #8 undercut signal.
+    assert "undercut_bonus_applied" in log.volume_aggregates
+    assert log.volume_aggregates["undercut_bonus_applied"] == pytest.approx(0.10)
+    # VCP-specific field stays None for DBW.
+    assert log.contraction_depths is None
+
+
+# ---------------------------------------------------------------------------
+# Test (g) [T2.SB4 T-A.4.4]: DBW no-undercut -> zero bonus
+# ---------------------------------------------------------------------------
+
+
+def test_capture_feature_distribution_dbw_no_undercut_bonus_zero() -> None:
+    """DBW evidence with undercut=False emits undercut_bonus_applied == 0.0.
+
+    Per plan section G.6 T-A.4.4 optional 3rd test: the undercut_bonus
+    is a 0.10/0.0 flag mirroring section 5.6 criterion #8 firing. A
+    DBW evidence with undercut=False MUST surface 0.0 (NOT absent /
+    NOT None) so the drift-log distribution stays shape-stable across
+    DBW runs.
+    """
+    evidence = _build_double_bottom_w_evidence(undercut=False)
+    universe_context = _build_universe_context()
+    universe_context.pop("volume_aggregates")
+
+    log = capture_feature_distribution(
+        detector_class="double_bottom_w",
+        evidence=evidence,
+        universe_context=universe_context,
+    )
+
+    assert "undercut_bonus_applied" in log.volume_aggregates
+    assert log.volume_aggregates["undercut_bonus_applied"] == pytest.approx(0.0)
