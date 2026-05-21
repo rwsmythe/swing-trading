@@ -524,9 +524,21 @@ def _call_endpoint(
     and therefore mutually-exclusive with pipeline-initiated
     ``_step_schwab_orders`` callsites.
     """
-    if surface not in ("pipeline", "cli"):
+    # Phase 13 hotfix (2026-05-20 post-T3.SB2 merge): use the canonical
+    # ``audit_service._SCHWAB_API_SURFACE_VALUES`` 4-tuple (mirrors the v20
+    # schema CHECK widening at T-A.1.1 that added 'trade_entry'/'trade_exit'
+    # for T3.SB1+T3.SB2 auto-fill paths). Previously hardcoded
+    # ("pipeline","cli") rejected the new surfaces before record_call_start
+    # could fire — silently short-circuiting both T3.SB1 entry auto-fill +
+    # T3.SB2 exit auto-fill to advisory-only in production. Per CLAUDE.md
+    # gotcha "Schema-coverage Python constant is NOT necessarily the manual-
+    # input allowlist — when widening a CHECK enum, audit every existing
+    # Python-side surface that validates against the constant."
+    if surface not in audit_service._SCHWAB_API_SURFACE_VALUES:
         raise SchwabApiError(
-            0, f"_call_endpoint: surface must be 'pipeline'|'cli'; got {surface!r}"
+            0,
+            f"_call_endpoint: surface must be one of "
+            f"{audit_service._SCHWAB_API_SURFACE_VALUES}; got {surface!r}"
         )
     if environment not in ("sandbox", "production"):
         raise SchwabApiError(

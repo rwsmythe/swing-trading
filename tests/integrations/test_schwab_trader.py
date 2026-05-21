@@ -28,10 +28,9 @@ brief §2.
 """
 from __future__ import annotations
 
-import json
 import logging
 import sqlite3
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -58,7 +57,6 @@ from swing.integrations.schwab.trader import (
     get_account_transactions,
     get_accounts_linked,
 )
-
 
 # ============================================================================
 # Fixtures
@@ -491,13 +489,84 @@ def test_14_schwabdev_raises_unexpected_exception_audit_records_error(v18_conn):
 
 
 def test_15_invalid_surface_raises_api_error(v18_conn):
-    """Surface MUST be 'pipeline' or 'cli'; defensive guard at wrapper entry."""
+    """Surface MUST be in the canonical _SCHWAB_API_SURFACE_VALUES tuple;
+    defensive guard at wrapper entry. Post-Phase-13 hotfix the allowed set
+    is ('pipeline','cli','trade_entry','trade_exit') — 'bogus' still rejected.
+    """
     client = MagicMock()
     with pytest.raises(SchwabApiError):
         get_accounts_linked(
             client, v18_conn,
             surface="bogus", environment="production",  # invalid surface
         )
+
+
+# ============================================================================
+# Tests 19 + 20 — Phase 13 hotfix (2026-05-20 post-T3.SB2 merge):
+# ``_call_endpoint`` Python-side surface guard MUST mirror the canonical
+# ``audit_service._SCHWAB_API_SURFACE_VALUES`` 4-tuple (and therefore the v20
+# schema CHECK widening at T-A.1.1) — otherwise T3.SB1 entry auto-fill +
+# T3.SB2 exit auto-fill paths silently short-circuit in production
+# (SchwabApiError raised BEFORE record_call_start so no audit row written).
+#
+# Pre-fix arithmetic (line 527 pre-hotfix):
+#   ``if "trade_entry" not in ("pipeline", "cli")`` → True → raises
+#   ``SchwabApiError(0, "_call_endpoint: surface must be 'pipeline'|'cli';
+#   got 'trade_entry'")`` → test FAILS on uncaught SchwabApiError.
+#
+# Post-fix arithmetic (line 527 post-hotfix):
+#   ``if "trade_entry" not in audit_service._SCHWAB_API_SURFACE_VALUES``
+#   (= ('pipeline','cli','trade_entry','trade_exit')) → False → proceeds →
+#   ``record_call_start`` fires → mock client returns empty list → mapper
+#   succeeds → ``record_call_finish(status='success')`` → audit row written
+#   with ``surface='trade_entry'``.
+#
+# Discriminating: pre-fix tests fail with uncaught exception; post-fix audit
+# row has the expected surface value. Per CLAUDE.md gotcha "Schema-coverage
+# Python constant is NOT necessarily the manual-input allowlist — when
+# widening a CHECK enum, audit every existing Python-side surface that
+# validates against the constant" (T-A.1.5b R3 M#1 banked).
+# ============================================================================
+
+
+def test_19_call_endpoint_accepts_surface_trade_entry(v18_conn):
+    """Phase 13 hotfix — surface='trade_entry' (T3.SB1 path) MUST pass guard."""
+    client = MagicMock()
+    client.account_orders.return_value = _mock_response([])
+
+    orders = get_account_orders(
+        client, v18_conn,
+        account_hash="abc...64charhash",
+        from_entered_time=datetime(2026, 5, 7, tzinfo=UTC),
+        to_entered_time=datetime(2026, 5, 14, tzinfo=UTC),
+        surface="trade_entry", environment="production",
+    )
+    assert orders == []
+    call_id = _latest_call_id(v18_conn)
+    assert call_id is not None
+    row = _audit_row(v18_conn, call_id)
+    assert row[9] == "trade_entry"  # surface column
+    assert row[7] == "success"  # status column
+
+
+def test_20_call_endpoint_accepts_surface_trade_exit(v18_conn):
+    """Phase 13 hotfix — surface='trade_exit' (T3.SB2 path) MUST pass guard."""
+    client = MagicMock()
+    client.account_orders.return_value = _mock_response([])
+
+    orders = get_account_orders(
+        client, v18_conn,
+        account_hash="abc...64charhash",
+        from_entered_time=datetime(2026, 5, 7, tzinfo=UTC),
+        to_entered_time=datetime(2026, 5, 14, tzinfo=UTC),
+        surface="trade_exit", environment="production",
+    )
+    assert orders == []
+    call_id = _latest_call_id(v18_conn)
+    assert call_id is not None
+    row = _audit_row(v18_conn, call_id)
+    assert row[9] == "trade_exit"  # surface column
+    assert row[7] == "success"  # status column
 
 
 # ============================================================================

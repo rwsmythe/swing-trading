@@ -1440,6 +1440,16 @@ _SCHWAB_VALID_STATUSES = frozenset({
     "auth_failed", "rate_limited", "concurrent_refresh",
 })
 
+# Phase 13 hotfix (2026-05-20 post-T3.SB2 merge): mirrors
+# ``audit_service._SCHWAB_API_SURFACE_VALUES`` + the v20 schema CHECK on
+# ``schwab_api_calls.surface``. Module-level for ruff N806 compliance.
+# V2 candidate: hoist into a shared schema-constants module so
+# ``audit_service.py`` imports from here (avoids the current duplication
+# between models.py and audit_service.py).
+_SCHWAB_API_SURFACE_VALUES = (
+    "pipeline", "cli", "trade_entry", "trade_exit",
+)
+
 _SCHWAB_SIGNATURE_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -1501,9 +1511,16 @@ class SchwabApiCall:
                 f"status must be in {sorted(_SCHWAB_VALID_STATUSES)}, "
                 f"got {self.status!r}"
             )
-        if self.surface not in ("pipeline", "cli"):
+        # Phase 13 hotfix (2026-05-20 post-T3.SB2 merge): widened to mirror
+        # module-level ``_SCHWAB_API_SURFACE_VALUES`` + the v20 schema CHECK
+        # widening at T-A.1.1 ('trade_entry'/'trade_exit' for T3.SB1+T3.SB2
+        # auto-fill paths). Defensive — ``SchwabApiCallRecord`` has no callers
+        # in ``swing/`` source today, so this validator is dead-code drift
+        # defense rather than an active blocker.
+        if self.surface not in _SCHWAB_API_SURFACE_VALUES:
             raise ValueError(
-                f"surface must be 'pipeline' or 'cli', got {self.surface!r}"
+                f"surface must be one of {_SCHWAB_API_SURFACE_VALUES}, "
+                f"got {self.surface!r}"
             )
         if self.environment not in ("sandbox", "production"):
             raise ValueError(

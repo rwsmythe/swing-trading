@@ -450,11 +450,19 @@ def _call_endpoint(
     The audit-success-fire happens ONLY after step 9 succeeds + after step 10's
     finish_hook (if any) computed its disposition (M#3 family).
     """
-    if surface not in ("pipeline", "cli"):
+    # Phase 13 hotfix (2026-05-20 post-T3.SB2 merge): use the canonical
+    # ``audit_service._SCHWAB_API_SURFACE_VALUES`` 4-tuple (mirrors the v20
+    # schema CHECK widening at T-A.1.1 that added 'trade_entry'/'trade_exit').
+    # Inert today (T3.SB1/T3.SB2 consume only Trader API, not Market Data),
+    # but defensive parity with trader._call_endpoint keeps the two surface
+    # guards in lock-step for future review/charts paths that may consume
+    # marketdata with the new surfaces. Per CLAUDE.md gotcha "Schema-coverage
+    # Python constant is NOT necessarily the manual-input allowlist".
+    if surface not in audit_service._SCHWAB_API_SURFACE_VALUES:
         raise SchwabApiError(
             0,
-            f"_call_endpoint: surface must be 'pipeline'|'cli'; "
-            f"got {surface!r}"
+            f"_call_endpoint: surface must be one of "
+            f"{audit_service._SCHWAB_API_SURFACE_VALUES}; got {surface!r}"
         )
     if environment not in ("sandbox", "production"):
         raise SchwabApiError(
