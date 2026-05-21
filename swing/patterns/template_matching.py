@@ -384,14 +384,28 @@ def match_forward(
     if not bundles_by_id:
         return []
 
-    # Normalize candidate ONCE.
-    candidate_norm = _min_max_normalize(candidate_close_prices)
+    # Normalize candidate ONCE. Per-call defensive: a candidate close
+    # series with NaN/inf would raise from ``_min_max_normalize``; surface
+    # as "no match" rather than poisoning the entire forward call (the
+    # pipeline caller treats a raised exception as
+    # ``template_match_score=None`` for the row but we want isolation
+    # at the candidate level only).
+    try:
+        candidate_norm = _min_max_normalize(candidate_close_prices)
+    except ValueError:
+        return []
     if candidate_norm.size == 0:
         return []
 
     hits: list[TemplateMatchHit] = []
     for eid, bundle in bundles_by_id.items():
-        ex_norm = _min_max_normalize(bundle.close_prices)
+        # Per-exemplar defensive: a single NaN/inf in one exemplar's
+        # close-price series MUST NOT suppress hits from the other
+        # exemplars in the cohort. Skip the bad exemplar; continue.
+        try:
+            ex_norm = _min_max_normalize(bundle.close_prices)
+        except ValueError:
+            continue
         if ex_norm.size == 0:
             continue
         d = _dtw_distance(
@@ -454,7 +468,12 @@ def match_reverse(
         raise ValueError(f"top_k must be >= 1, got {top_k}")
     if not candidate_corpus:
         return []
-    exemplar_norm = _min_max_normalize(exemplar_close_prices)
+    # Per-call defensive: bad exemplar close series -> surface as "no
+    # match"; do not raise out of the function.
+    try:
+        exemplar_norm = _min_max_normalize(exemplar_close_prices)
+    except ValueError:
+        return []
     if exemplar_norm.size == 0:
         return []
     hits: list[TemplateMatchHit] = []
@@ -466,7 +485,13 @@ def match_reverse(
         cclose = getattr(cand, "close_prices", None)
         if cid is None or cclose is None:
             continue
-        c_norm = _min_max_normalize(np.asarray(cclose, dtype=float))
+        # Per-candidate defensive: a single NaN/inf in one candidate
+        # MUST NOT suppress hits from the other candidates in the
+        # corpus.
+        try:
+            c_norm = _min_max_normalize(np.asarray(cclose, dtype=float))
+        except ValueError:
+            continue
         if c_norm.size == 0:
             continue
         d = _dtw_distance(

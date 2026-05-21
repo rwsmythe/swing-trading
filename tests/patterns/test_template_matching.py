@@ -475,6 +475,45 @@ class TestMatchForward:
         }
         assert all(h.exemplar_id in survivors for h in hits)
 
+    def test_match_forward_isolates_bad_exemplar_from_cohort(self) -> None:
+        """Codex R1 Minor #1: one NaN exemplar must NOT suppress all hits.
+
+        Discriminating per `feedback_regression_test_arithmetic`:
+        - Pre-fix: ``_min_max_normalize`` raises on the NaN-bearing
+          exemplar; the exception propagates out of ``match_forward``;
+          the pipeline caller's broad try/except buries the failure +
+          stamps ``template_match_score=None`` for the row even though
+          valid same-class exemplars exist in the cohort.
+        - Post-fix: per-exemplar try/except catches the ValueError from
+          ``_min_max_normalize``; the bad exemplar is skipped + the
+          remaining valid exemplars contribute hits to the cohort.
+        """
+        candidate = np.array([1.0, 2.0, 3.0, 4.0, 5.0], dtype=float)
+        # Bad exemplar: NaN in close_prices (slips past
+        # ``TemplateMatchExemplar.__post_init__`` which only checks
+        # type + ndim, NOT finiteness).
+        bad_bundle = _bundle(
+            exemplar_id=1,
+            pattern_class="vcp",
+            close_prices=np.array([1.0, np.nan, 3.0, 4.0, 5.0]),
+        )
+        good_bundle = _bundle(
+            exemplar_id=2,
+            pattern_class="vcp",
+            close_prices=np.array([1.0, 2.0, 3.0, 4.0, 5.0]),
+        )
+        hits = match_forward(
+            candidate_close_prices=candidate,
+            candidate_pattern_class="vcp",
+            candidate_ticker="AAA",
+            exemplar_corpus=[bad_bundle, good_bundle],
+            top_k=3,
+        )
+        # The good exemplar is the only survivor; bad exemplar skipped.
+        assert len(hits) == 1
+        assert hits[0].exemplar_id == 2
+        assert hits[0].similarity_score == pytest.approx(1.0, abs=1e-9)
+
     def test_dtw_pure_python_no_scipy_dependency(self) -> None:
         """The template_matching module MUST NOT import scipy.
 
