@@ -84,8 +84,25 @@ def _make_anchor(
     closed_shares: int = 10,
     schwab_order_id: str | None = "order-xyz",
     candidate_count: int = 1,
+    candidates_map: dict[str, dict[str, Any]] | None = None,
 ) -> str:
-    """Production-shape envelope mirroring resolve_exit_auto_fill output."""
+    """Production-shape envelope mirroring resolve_exit_auto_fill output.
+
+    Codex R1 Critical #1 + Major #1 fix — ``candidates_map`` is now part
+    of the server-stamped envelope. When None, defaults to a single-fill
+    map keyed by ``sig-cand-0`` so the POST handler's authoritative
+    lookup path is exercised. Tests that need a multi-candidate map pass
+    one explicitly.
+    """
+    if candidates_map is None:
+        candidates_map = {
+            "sig-cand-0": {
+                "date": exit_date,
+                "price": exit_price,
+                "quantity": closed_shares,
+                "order_id": schwab_order_id,
+            },
+        }
     return json.dumps(
         {
             "exit_date": exit_date,
@@ -94,6 +111,7 @@ def _make_anchor(
             "schwab_order_id": schwab_order_id,
             "schwab_instrument_symbol": "NVDA",
             "candidate_count": candidate_count,
+            "candidates_map": candidates_map,
         },
         sort_keys=True,
     )
@@ -203,7 +221,7 @@ def test_b_edited_price_flips_to_then_operator_corrected(
             schwab_source_value_json=anchor,
             auto_fill_audit_at="2026-05-19T14:30:00.000000+00:00",
             fill_origin_at_form_render="schwab_auto",
-            candidate_signature_hash_0="sig-0",
+            candidate_signature_hash_0="sig-cand-0",
             candidate_order_id_0="order-xyz",
             candidate_index="0",
         )
@@ -302,7 +320,7 @@ def test_d_post_does_not_emit_new_schwab_api_call_audit_row(
             schwab_source_value_json=anchor,
             auto_fill_audit_at=audit_at,
             fill_origin_at_form_render="schwab_auto",
-            candidate_signature_hash_0="sig-0",
+            candidate_signature_hash_0="sig-cand-0",
             candidate_order_id_0="order-xyz",
             candidate_index="0",
         )
@@ -504,7 +522,7 @@ def test_f_empty_audit_at_form_field_persists_null_not_empty_string(
             schwab_source_value_json=anchor,
             auto_fill_audit_at="",  # empty -> NULL via `or None`
             fill_origin_at_form_render="schwab_auto",
-            candidate_signature_hash_0="sig-0",
+            candidate_signature_hash_0="sig-cand-0",
             candidate_order_id_0="order-xyz",
             candidate_index="0",
         )
@@ -620,6 +638,360 @@ def test_g_multi_partial_selects_non_default_candidate_and_preserves_others(
     # Persisted exit fill carries c1's values (rounded to fill-row precision).
     assert float(row[4]) == 115.50
     assert float(row[3]) == 4.0
+
+
+def test_h_critical1_unedited_default_radio_picks_authoritative_default(
+    seeded_db, monkeypatch,
+):
+    """Codex R1 Critical #1 + Major #1 — default radio selection.
+
+    With 3 candidates and the operator leaving the default radio selection
+    (index 2 = most-recent), visible inputs MATCH the envelope's default
+    chosen candidate's values (the form pre-populates exit_date/exit_price/
+    shares from the most-recent candidate). The authoritative lookup via
+    candidates_map[sig-cand-2] returns matching values; fill_origin =
+    schwab_auto.
+
+    Discriminating: this exercises the candidates_map authoritative path
+    on the default-selection scenario. Pre-fix the comparison was against
+    the envelope's top-level exit_date/exit_price/closed_shares (which
+    are the most-recent candidate's values — same outcome). Post-fix
+    we route through candidates_map[sig-cand-2] and expect the same
+    schwab_auto outcome to confirm we didn't break the unedited path.
+    """
+    cfg, cfg_path = seeded_db
+    trade_id = _seed_open_trade(cfg, "NVDA")
+    _patch_price_cache(monkeypatch)
+    candidates_map = {
+        "sig-cand-0": {
+            "date": "2026-05-15", "price": 110.00, "quantity": 3,
+            "order_id": "ord-0",
+        },
+        "sig-cand-1": {
+            "date": "2026-05-17", "price": 115.50, "quantity": 4,
+            "order_id": "ord-1",
+        },
+        "sig-cand-2": {
+            "date": "2026-05-19", "price": 120.50, "quantity": 3,
+            "order_id": "ord-2",
+        },
+    }
+    envelope = _make_anchor(
+        exit_date="2026-05-19", exit_price=120.50, closed_shares=3,
+        schwab_order_id="ord-2", candidate_count=3,
+        candidates_map=candidates_map,
+    )
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = _post_exit(
+            client, trade_id,
+            exit_date="2026-05-19", exit_price="120.50", shares="3",
+            schwab_source_value_json=envelope,
+            auto_fill_audit_at="2026-05-19T14:30:00.000000+00:00",
+            fill_origin_at_form_render="schwab_auto",
+            candidate_index="2",
+            candidate_signature_hash_0="sig-cand-0",
+            candidate_order_id_0="ord-0",
+            candidate_signature_hash_1="sig-cand-1",
+            candidate_order_id_1="ord-1",
+            candidate_signature_hash_2="sig-cand-2",
+            candidate_order_id_2="ord-2",
+        )
+    assert resp.status_code == 200, resp.text
+    conn = connect(cfg.paths.db_path)
+    try:
+        row = conn.execute(
+            "SELECT fill_origin, schwab_source_value_json "
+            "FROM fills WHERE action != 'entry' "
+            "ORDER BY fill_id DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row[0] == "schwab_auto"
+    persisted = json.loads(row[1])
+    assert persisted["selected_candidate_signature_hash"] == "sig-cand-2"
+
+
+def test_h_critical1_non_default_radio_without_visible_edits_flips_corrected(
+    seeded_db, monkeypatch,
+):
+    """Codex R1 Critical #1 — operator picks OLDER candidate (index 0)
+    without editing visible inputs.
+
+    The template's radio inputs do NOT rebind visible inputs client-side,
+    so the operator's submitted exit_date/exit_price/shares are STILL the
+    default candidate's values (index 2 = most-recent). The authoritative
+    lookup via candidates_map[sig-cand-0] returns the OLDER candidate's
+    values; the visible inputs DIFFER from authoritative; fill_origin =
+    schwab_auto_then_operator_corrected. The persisted fill row carries
+    the visible-input values (most-recent default's values, since
+    operator did not edit) — semantically honest given the lack of
+    client-side rebind. Envelope records the operator's actual
+    selected_candidate_signature_hash for audit.
+
+    Pre-fix: the comparison was against the envelope's top-level default
+    (most-recent), which MATCHES submitted visible inputs, so fill_origin
+    would have stayed schwab_auto + the radio selection was semantically
+    meaningless. Post-fix: comparison routes through the AUTHORITATIVE
+    selected candidate; the delta flips fill_origin and the audit trail
+    reflects reality.
+    """
+    cfg, cfg_path = seeded_db
+    trade_id = _seed_open_trade(cfg, "NVDA")
+    _patch_price_cache(monkeypatch)
+    candidates_map = {
+        "sig-cand-0": {
+            "date": "2026-05-15", "price": 110.00, "quantity": 3,
+            "order_id": "ord-0",
+        },
+        "sig-cand-1": {
+            "date": "2026-05-17", "price": 115.50, "quantity": 4,
+            "order_id": "ord-1",
+        },
+        "sig-cand-2": {
+            "date": "2026-05-19", "price": 120.50, "quantity": 3,
+            "order_id": "ord-2",
+        },
+    }
+    envelope = _make_anchor(
+        exit_date="2026-05-19", exit_price=120.50, closed_shares=3,
+        schwab_order_id="ord-2", candidate_count=3,
+        candidates_map=candidates_map,
+    )
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = _post_exit(
+            client, trade_id,
+            # Visible inputs still carry the DEFAULT (most-recent) values
+            # — because the template's radio doesn't rebind them client-
+            # side. The operator picked an OLDER candidate via radio.
+            exit_date="2026-05-19", exit_price="120.50", shares="3",
+            schwab_source_value_json=envelope,
+            auto_fill_audit_at="2026-05-19T14:30:00.000000+00:00",
+            fill_origin_at_form_render="schwab_auto",
+            candidate_index="0",  # operator picked OLDER c0 via radio
+            candidate_signature_hash_0="sig-cand-0",
+            candidate_order_id_0="ord-0",
+            candidate_signature_hash_1="sig-cand-1",
+            candidate_order_id_1="ord-1",
+            candidate_signature_hash_2="sig-cand-2",
+            candidate_order_id_2="ord-2",
+        )
+    assert resp.status_code == 200, resp.text
+    conn = connect(cfg.paths.db_path)
+    try:
+        row = conn.execute(
+            "SELECT fill_origin, schwab_source_value_json, "
+            "operator_corrected_value_json, quantity, price, fill_datetime "
+            "FROM fills WHERE action != 'entry' "
+            "ORDER BY fill_id DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    # Post-fix: authoritative lookup vs visible inputs differs → flip.
+    assert row[0] == "schwab_auto_then_operator_corrected", (
+        "operator's non-default radio selection without visible-input "
+        "edits MUST flip fill_origin (visible inputs reflect the default "
+        "candidate, not the operator's selected one)"
+    )
+    persisted = json.loads(row[1])
+    assert persisted["selected_candidate_signature_hash"] == "sig-cand-0"
+    others = persisted["other_candidate_signature_hashes"]
+    assert sorted(others) == sorted(["sig-cand-1", "sig-cand-2"]), (
+        "non-selected candidates' hashes preserved for audit"
+    )
+    # Operator-corrected envelope carries the visible-input values that
+    # were actually persisted (the default candidate's values, NOT c0's).
+    corrected = json.loads(row[2])
+    assert corrected["exit_price"] == 120.50
+    assert corrected["closed_shares"] == 3
+    # Persisted fill row carries the visible-input values.
+    assert float(row[4]) == 120.50
+    assert float(row[3]) == 3.0
+
+
+def test_h_critical1_non_default_radio_with_matching_edits_stays_schwab_auto(
+    seeded_db, monkeypatch,
+):
+    """Codex R1 Critical #1 — operator picks MIDDLE candidate (index 1)
+    AND manually edits visible inputs to match c1's values.
+
+    Authoritative lookup via candidates_map[sig-cand-1] returns the
+    middle candidate's values; visible inputs MATCH; fill_origin =
+    schwab_auto. Persisted fill row carries c1's values; envelope
+    records selected_candidate_signature_hash = sig-cand-1.
+    """
+    cfg, cfg_path = seeded_db
+    trade_id = _seed_open_trade(cfg, "NVDA")
+    _patch_price_cache(monkeypatch)
+    candidates_map = {
+        "sig-cand-0": {
+            "date": "2026-05-15", "price": 110.00, "quantity": 3,
+            "order_id": "ord-0",
+        },
+        "sig-cand-1": {
+            "date": "2026-05-17", "price": 115.50, "quantity": 4,
+            "order_id": "ord-1",
+        },
+        "sig-cand-2": {
+            "date": "2026-05-19", "price": 120.50, "quantity": 3,
+            "order_id": "ord-2",
+        },
+    }
+    envelope = _make_anchor(
+        exit_date="2026-05-19", exit_price=120.50, closed_shares=3,
+        schwab_order_id="ord-2", candidate_count=3,
+        candidates_map=candidates_map,
+    )
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = _post_exit(
+            client, trade_id,
+            # Operator manually edited visible inputs to match c1.
+            exit_date="2026-05-17", exit_price="115.50", shares="4",
+            schwab_source_value_json=envelope,
+            auto_fill_audit_at="2026-05-19T14:30:00.000000+00:00",
+            fill_origin_at_form_render="schwab_auto",
+            candidate_index="1",
+            candidate_signature_hash_0="sig-cand-0",
+            candidate_order_id_0="ord-0",
+            candidate_signature_hash_1="sig-cand-1",
+            candidate_order_id_1="ord-1",
+            candidate_signature_hash_2="sig-cand-2",
+            candidate_order_id_2="ord-2",
+        )
+    assert resp.status_code == 200, resp.text
+    conn = connect(cfg.paths.db_path)
+    try:
+        row = conn.execute(
+            "SELECT fill_origin, schwab_source_value_json, quantity, price "
+            "FROM fills WHERE action != 'entry' "
+            "ORDER BY fill_id DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row[0] == "schwab_auto", (
+        "visible inputs match authoritative c1; fill_origin stays "
+        "schwab_auto"
+    )
+    persisted = json.loads(row[1])
+    assert persisted["selected_candidate_signature_hash"] == "sig-cand-1"
+    assert float(row[3]) == 115.50
+    assert float(row[2]) == 4.0
+
+
+def test_h_major1_tampered_sig_hash_not_in_candidates_map_rejects(
+    seeded_db, monkeypatch,
+):
+    """Codex R1 Major #1 — tampered POST with a candidate_signature_hash
+    that does NOT appear in the server-stamped candidates_map MUST be
+    rejected with 400.
+
+    Pre-fix: the POST handler trusted whatever signature_hash the client
+    submitted, allowing a malicious operator to forge an arbitrary
+    selected_candidate_signature_hash with no server-side verification.
+    Post-fix: candidates_map (server-stamped) is the authoritative truth
+    source; tampered hashes never appear in it and the gate rejects.
+    """
+    cfg, cfg_path = seeded_db
+    trade_id = _seed_open_trade(cfg, "NVDA")
+    _patch_price_cache(monkeypatch)
+    candidates_map = {
+        "sig-cand-0": {
+            "date": "2026-05-15", "price": 110.00, "quantity": 3,
+            "order_id": "ord-0",
+        },
+        "sig-cand-1": {
+            "date": "2026-05-17", "price": 115.50, "quantity": 4,
+            "order_id": "ord-1",
+        },
+        "sig-cand-2": {
+            "date": "2026-05-19", "price": 120.50, "quantity": 3,
+            "order_id": "ord-2",
+        },
+    }
+    envelope = _make_anchor(
+        exit_date="2026-05-19", exit_price=120.50, closed_shares=3,
+        schwab_order_id="ord-2", candidate_count=3,
+        candidates_map=candidates_map,
+    )
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = _post_exit(
+            client, trade_id,
+            exit_date="2026-05-19", exit_price="120.50", shares="3",
+            schwab_source_value_json=envelope,
+            auto_fill_audit_at="2026-05-19T14:30:00.000000+00:00",
+            fill_origin_at_form_render="schwab_auto",
+            candidate_index="0",
+            # Forged hash — NOT in candidates_map.
+            candidate_signature_hash_0="fake_hash_not_in_envelope",
+            candidate_order_id_0="ord-0",
+            candidate_signature_hash_1="sig-cand-1",
+            candidate_order_id_1="ord-1",
+            candidate_signature_hash_2="sig-cand-2",
+            candidate_order_id_2="ord-2",
+        )
+    assert resp.status_code == 400, resp.text
+    # The rejected hash may appear in the human-readable error message
+    # (descriptive), but MUST NOT round-trip back into the recovery form
+    # as a hidden input (anchor-clear discipline). Assert no hidden input
+    # ``name="candidate_signature_hash_..."`` carries the tampered value.
+    assert (
+        'value="fake_hash_not_in_envelope"' not in resp.text
+    ), (
+        "Recovery form must NOT replay the tampered hash as a hidden "
+        "input (anchor-clear discipline)"
+    )
+    conn = connect(cfg.paths.db_path)
+    try:
+        n = conn.execute(
+            "SELECT COUNT(*) FROM fills WHERE action != 'entry'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert n == 0, "no fill should be written on tamper rejection"
+
+
+def test_h_critical1_single_fill_regression_unedited_stays_schwab_auto(
+    seeded_db, monkeypatch,
+):
+    """Codex R1 Critical #1 — single-fill regression (candidates_map has
+    1 entry). Operator submits unchanged values; fill_origin stays
+    schwab_auto. Ensures the fix did not regress the canonical
+    single-fill happy path.
+    """
+    cfg, cfg_path = seeded_db
+    trade_id = _seed_open_trade(cfg, "NVDA")
+    _patch_price_cache(monkeypatch)
+    envelope = _make_anchor(
+        exit_date="2026-05-19", exit_price=120.50, closed_shares=10,
+        schwab_order_id="order-xyz", candidate_count=1,
+        # Default candidates_map = {sig-cand-0: ...}
+    )
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = _post_exit(
+            client, trade_id,
+            schwab_source_value_json=envelope,
+            auto_fill_audit_at="2026-05-19T14:30:00.000000+00:00",
+            fill_origin_at_form_render="schwab_auto",
+            candidate_signature_hash_0="sig-cand-0",
+            candidate_order_id_0="order-xyz",
+            candidate_index="0",
+        )
+    assert resp.status_code == 200, resp.text
+    conn = connect(cfg.paths.db_path)
+    try:
+        row = conn.execute(
+            "SELECT fill_origin, operator_corrected_value_json "
+            "FROM fills WHERE action != 'entry' "
+            "ORDER BY fill_id DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row[0] == "schwab_auto", "single-fill unchanged → schwab_auto"
+    assert row[1] is None
 
 
 def test_g_multi_partial_invalid_candidate_index_rejects_with_400(

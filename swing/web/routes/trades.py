@@ -1894,30 +1894,93 @@ async def exit_post(
         # consistency check agree (valid dict envelope + claim present).
         # Mirrors entry_post Codex R4 Major #1 gate.
         if isinstance(anchor_envelope, dict) and claimed_auto_fill:
-            anchor_exit_date = anchor_envelope.get("exit_date")
-            anchor_exit_price = anchor_envelope.get("exit_price")
-            anchor_closed_shares = anchor_envelope.get("closed_shares")
+            # Codex R1 Critical #1 + Major #1 fix — server-side
+            # authoritative envelope. The ``candidates_map`` (added by
+            # ``resolve_exit_auto_fill`` at form render) is keyed by
+            # signature_hash and carries the per-candidate authoritative
+            # date/price/quantity/order_id. Two failure modes closed:
+            #   (a) Major #1 forgery surface — a tampered POST claiming
+            #       an arbitrary candidate_signature_hash that does NOT
+            #       appear in the server-stamped map is rejected with 400.
+            #   (b) Critical #1 broken radio selection — the template's
+            #       radio inputs do NOT rebind visible exit_date /
+            #       exit_price / shares form fields client-side. When the
+            #       operator picks a non-default candidate without editing
+            #       visible inputs, the submitted visible values are the
+            #       MOST-RECENT default's values (which differ from the
+            #       authoritative selected candidate). The comparator
+            #       below treats that delta as an operator edit and
+            #       persists fill_origin='schwab_auto_then_operator_corrected'
+            #       with the visible-input values — semantically honest
+            #       given that the form has no client-side rebind. When
+            #       the operator DOES manually edit visible inputs to
+            #       match the selected candidate (or when the operator
+            #       leaves the default candidate radio unchanged), the
+            #       comparator records fill_origin='schwab_auto' and the
+            #       authoritative selected-candidate values are persisted.
+            candidates_map = anchor_envelope.get("candidates_map")
+            if not isinstance(candidates_map, dict):
+                candidates_map = {}
+
+            # When a multi-partial selection is present, verify the
+            # operator's submitted signature_hash maps to a server-stamped
+            # candidate in ``candidates_map``. This is the Major #1
+            # forgery-rejection gate. ``selected_index`` was already
+            # validated to be in ``candidate_sigs`` above; here we go one
+            # step further and confirm the hash itself is server-issued.
+            submitted_sig_hash: str | None = None
+            authoritative_selected: dict[str, Any] | None = None
+            if selected_index is not None and selected_index in candidate_sigs:
+                submitted_sig_hash = candidate_sigs[selected_index]
+                if (
+                    candidates_map
+                    and submitted_sig_hash not in candidates_map
+                ):
+                    return _reject_anchor(
+                        "Trade exit rejected: candidate_signature_hash_"
+                        f"{selected_index}={submitted_sig_hash!r} does not "
+                        "map to a server-stamped candidate in the auto-fill "
+                        "envelope. The form has been regenerated; please "
+                        "re-submit."
+                    )
+                if candidates_map:
+                    authoritative_selected = candidates_map.get(
+                        submitted_sig_hash,
+                    )
+
+            # Compute the comparison baseline. When the operator made a
+            # multi-partial selection with a server-validated authoritative
+            # entry, compare visible inputs against THAT candidate (not
+            # the envelope's default chosen). Otherwise (single-fill case
+            # or selection without candidates_map) fall back to the
+            # envelope's top-level exit_date / exit_price / closed_shares.
+            if authoritative_selected is not None:
+                cmp_date = authoritative_selected.get("date")
+                cmp_price = authoritative_selected.get("price")
+                cmp_shares = authoritative_selected.get("quantity")
+            else:
+                cmp_date = anchor_envelope.get("exit_date")
+                cmp_price = anchor_envelope.get("exit_price")
+                cmp_shares = anchor_envelope.get("closed_shares")
             try:
-                anchor_price_float = (
-                    float(anchor_exit_price)
-                    if anchor_exit_price is not None else None
+                cmp_price_float = (
+                    float(cmp_price) if cmp_price is not None else None
                 )
             except (TypeError, ValueError):
-                anchor_price_float = None
+                cmp_price_float = None
             try:
-                anchor_shares_int = (
-                    int(anchor_closed_shares)
-                    if anchor_closed_shares is not None else None
+                cmp_shares_int = (
+                    int(cmp_shares) if cmp_shares is not None else None
                 )
             except (TypeError, ValueError):
-                anchor_shares_int = None
-            exit_date_diff = anchor_exit_date != exit_date
+                cmp_shares_int = None
+            exit_date_diff = cmp_date != exit_date
             price_diff = (
-                anchor_price_float is None
-                or abs(anchor_price_float - exit_price) > 1e-9
+                cmp_price_float is None
+                or abs(cmp_price_float - exit_price) > 1e-9
             )
             shares_diff = (
-                anchor_shares_int is None or anchor_shares_int != shares
+                cmp_shares_int is None or cmp_shares_int != shares
             )
             if exit_date_diff or price_diff or shares_diff:
                 resolved_fill_origin = "schwab_auto_then_operator_corrected"

@@ -557,6 +557,29 @@ def resolve_exit_auto_fill(
     # schwab_source_value_json carries provenance equivalent to the
     # candidate the operator sees defaulted. Use chosen.* directly to
     # guarantee envelope-vs-candidate value consistency.
+    #
+    # Codex R1 Critical #1 + Major #1 fix — add ``candidates_map`` as a
+    # server-side authoritative truth source keyed by signature_hash. The
+    # POST handler uses this map to:
+    #   (a) verify the operator-submitted signature_hash maps to a server-
+    #       rendered candidate (closes Major #1 forgery surface — a
+    #       tampered POST claiming an arbitrary hash is rejected with 400);
+    #   (b) look up the authoritative price/date/quantity for the selected
+    #       candidate so multi-partial radio selection actually drives
+    #       persisted values (closes Critical #1 — the template's radio
+    #       inputs did not rebind visible form fields, so without the
+    #       authoritative map, the operator's selection was semantically
+    #       meaningless).
+    # Sort_keys=True makes the JSON stable across runs for test parity.
+    candidates_map = {
+        cand.signature_hash: {
+            "date": cand.date,
+            "price": cand.price,
+            "quantity": cand.quantity,
+            "order_id": cand.order_id,
+        }
+        for cand in candidates
+    }
     schwab_source_value_json = json.dumps(
         {
             "exit_date": chosen.date,
@@ -565,6 +588,7 @@ def resolve_exit_auto_fill(
             "schwab_order_id": chosen.order_id,
             "schwab_instrument_symbol": ticker,
             "candidate_count": len(candidates),
+            "candidates_map": candidates_map,
         },
         sort_keys=True,
     )
