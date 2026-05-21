@@ -7,6 +7,7 @@ import os
 import sqlite3
 import time
 from dataclasses import dataclass
+from datetime import UTC
 from datetime import date as _date
 from datetime import datetime as _dt
 from pathlib import Path
@@ -816,6 +817,24 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
                 log.warning("recommendations failed: %s", exc)
                 lease.status(recommendations_status="failed")
 
+            # Phase 13 T2.SB3 (plan section G.4 T-A.3.6) — pattern detect step.
+            # Recon at docs/phase13-t2-sb3-recon.md section 2 binds the
+            # insertion point: AFTER _step_recommendations + BEFORE the
+            # Schwab snapshot block. Best-effort failure shape mirrors
+            # _step_watchlist / _step_recommendations / _step_charts.
+            lease.step("pattern_detect")
+            try:
+                _step_pattern_detect(
+                    cfg=cfg,
+                    lease=lease,
+                    eval_run_id=eval_run_id,
+                    ohlcv_cache=ohlcv_cache,
+                )
+            except LeaseRevokedError:
+                raise
+            except Exception as exc:
+                log.warning("pattern_detect failed: %s", exc)
+
             # Phase 11 Sub-bundle B (T-B.3 + T-B.4 + Codex R1 M#1 + R2 M#1 +
             # R3 M#1 + M#2 fix) — Schwab snapshot + orders pipeline steps
             # per plan §H.4.3 ordering: AFTER _step_recommendations, BEFORE
@@ -1215,6 +1234,610 @@ def _step_recommendations(*, cfg, eval_run_id: int,
     with lease.fenced_write() as conn:
         for r in recs:
             upsert_recommendation(conn, r)
+
+
+# ---------------------------------------------------------------------------
+# Phase 13 T2.SB3 (plan section G.4 T-A.3.6) — pattern detect step
+# ---------------------------------------------------------------------------
+
+# 3 V1 detectors run in deterministic order per recon section 3
+# (vcp -> flat_base -> cup_with_handle). Wired as a tuple so iteration
+# order is stable across runs (recon section 3 forbids `set` iteration).
+def _pattern_detect_registry():
+    """Return [(detector_callable, pattern_class, version_str), ...].
+
+    Imported lazily to keep runner module import cheap when pattern
+    detection is skipped (zero candidates / cfg-disabled future flag).
+    """
+    from swing.patterns.cup_with_handle import (
+        DETECTOR_VERSION as CUP_VERSION,
+    )
+    from swing.patterns.cup_with_handle import detect_cup_with_handle
+    from swing.patterns.flat_base import (
+        DETECTOR_VERSION as FLAT_VERSION,
+    )
+    from swing.patterns.flat_base import detect_flat_base
+    from swing.patterns.vcp import DETECTOR_VERSION as VCP_VERSION
+    from swing.patterns.vcp import detect_vcp
+
+    return (
+        (detect_vcp, "vcp", VCP_VERSION),
+        (detect_flat_base, "flat_base", FLAT_VERSION),
+        (detect_cup_with_handle, "cup_with_handle", CUP_VERSION),
+    )
+
+
+class EvalRunResolutionError(Exception):
+    """Raised when ``_resolve_eval_run_action_session_date`` cannot
+    determine the canonical run-anchored ``action_session_date``.
+
+    Codex R2 Major #3: the prior implementation fell back to
+    wall-clock ``datetime.now(UTC).date()`` on row-missing or
+    malformed metadata. That fallback reintroduced the very
+    future-stage leak the Codex R1 Major #2 fix was meant to harden.
+    The fallback is REMOVED; raise this typed exception instead.
+
+    The best-effort wrapper around ``_step_pattern_detect`` at
+    ``runner.py:819-834`` catches it, logs WARNING, and SKIPS pattern
+    detection for the run (zero rows written).
+    """
+
+
+def _resolve_eval_run_action_session_date(
+    *,
+    cfg,
+    lease: Lease,
+    eval_run_id: int,
+):
+    """Return the eval_run's ``action_session_date`` (as ``datetime.date``).
+
+    Codex R1 Major #2: detectors require a canonical run-anchored
+    asof_date for ``current_stage`` lookups, NOT the wall-clock now()
+    which can leak future evaluation_runs into the lookup window.
+
+    Codex R2 Major #3: removed wall-clock fallback on row-missing or
+    malformed action_session_date. Raises ``EvalRunResolutionError``
+    instead; the best-effort wrapper at runner.py:819-834 catches it
+    and SKIPS pattern detection for the run (zero rows written).
+    """
+    from datetime import date as _date_cls
+
+    iso: str | None = None
+    read_conn = connect(cfg.paths.db_path) if cfg is not None else None
+    _opened_conn = read_conn is not None
+    try:
+        if read_conn is None:
+            # Test-stub path: reuse the lease's shared conn for read
+            # WITHOUT entering fenced_write (which would issue BEGIN
+            # IMMEDIATE -- Codex R2 Major #1 keeps Pass 1 lock-free).
+            read_conn = getattr(lease, "_conn", None)
+        if read_conn is not None:
+            row = read_conn.execute(
+                "SELECT action_session_date FROM evaluation_runs WHERE id = ?",
+                (eval_run_id,),
+            ).fetchone()
+        else:
+            # Defensive: no cfg AND no shared lease conn.
+            with lease.fenced_write() as _conn:
+                row = _conn.execute(
+                    "SELECT action_session_date FROM evaluation_runs "
+                    "WHERE id = ?",
+                    (eval_run_id,),
+                ).fetchone()
+        if row is not None and row[0] is not None:
+            iso = str(row[0])
+    finally:
+        if _opened_conn and read_conn is not None:
+            read_conn.close()
+
+    if iso is None:
+        log.warning(
+            "pattern_detect: evaluation_runs row missing or "
+            "action_session_date NULL for eval_run_id=%d; aborting "
+            "pattern detection for this run",
+            eval_run_id,
+        )
+        raise EvalRunResolutionError(
+            f"evaluation_runs row missing or action_session_date NULL "
+            f"for eval_run_id={eval_run_id}"
+        )
+    try:
+        return _date_cls.fromisoformat(iso)
+    except ValueError as exc:
+        log.warning(
+            "pattern_detect: evaluation_runs.action_session_date "
+            "unparseable (%r) for eval_run_id=%d; aborting pattern "
+            "detection for this run",
+            iso,
+            eval_run_id,
+        )
+        raise EvalRunResolutionError(
+            f"evaluation_runs.action_session_date unparseable ({iso!r}) "
+            f"for eval_run_id={eval_run_id}"
+        ) from exc
+
+
+def _step_pattern_detect(
+    *,
+    cfg,
+    lease: Lease,
+    eval_run_id: int,
+    ohlcv_cache,
+) -> None:
+    """Run 3 V1 geometric detectors over the Stage-2-filtered candidate pool.
+
+    Per recon section 1-9 (docs/phase13-t2-sb3-recon.md):
+    - Pool predicate: candidates.bucket == 'aplus' (Stage-2 + RS-rank-filtered).
+    - Per-ticker: fetch bars via `ohlcv_cache.get_or_fetch`; generate
+      candidate windows (zigzag_pivot mode); run all 3 detectors on each
+      window's evidence-emit; write one `pattern_evaluations` row per
+      (pipeline_run_id, ticker, pattern_class) tuple.
+    - SELECT-then-INSERT idempotency (LOCK L3 forbids INSERT OR REPLACE).
+    - pipeline_run_id := lease.run_id (NOT eval_run_id) per recon section 8.
+    - NO sandbox gating (recon section 6): pattern_evaluations is an
+      internal-derivation surface; bars-source ladder already handles sandbox.
+    - Per-detector failures are isolated + logged WARNING; the step
+      continues (recon section 4.4).
+
+    Connection contract (Codex R3 Minor #1 ACCEPT-WITH-RATIONALE):
+    The production caller ALWAYS passes a non-None ``cfg`` -- the
+    cfg-path branches open dedicated read-only connections via
+    ``connect(cfg.paths.db_path)``. The ``cfg is None`` test-stub path
+    reuses the lease's shared ``_conn`` attribute (set by
+    ``_StubLease``) for read-only SELECTs WITHOUT entering
+    ``lease.fenced_write()`` (which would needlessly issue BEGIN
+    IMMEDIATE). The defensive ``fenced_write`` fallback at
+    eval-run resolution + candidate read + histogram-seed read fires
+    ONLY when (a) cfg is None AND (b) lease has no ``_conn`` attribute
+    -- a path that NO production caller AND NO current test fixture
+    exercises. This is a defense-in-depth fallback; if a future test
+    fixture lands here, the BEGIN IMMEDIATE around a read is a tiny
+    correctness-preserving overhead, not a functional defect.
+    """
+    import dataclasses
+    import json as _json
+    from datetime import datetime as _dt_inner
+
+    from swing.data.models import PatternEvaluation
+    from swing.data.repos.candidates import fetch_candidates_for_run
+    from swing.data.repos.pattern_evaluations import insert_evaluation
+    from swing.patterns.drift_logging import capture_feature_distribution
+    from swing.patterns.foundation import generate_candidate_windows
+
+    pipeline_run_id = lease.run_id
+
+    # Read phase (no fence -- idempotent SELECT).
+    # Codex R2 Major #1: do NOT enter ``lease.fenced_write()`` here for
+    # the test-stub path; that would issue BEGIN IMMEDIATE before Pass 1.
+    # Borrow the lease's underlying connection for the read instead.
+    read_conn = connect(cfg.paths.db_path) if cfg is not None else None
+    try:
+        if read_conn is not None:
+            candidates = fetch_candidates_for_run(read_conn, eval_run_id)
+        else:
+            # Test-stub path: single-connection in-memory test fixtures
+            # expose the shared sqlite3.Connection as ``lease._conn``.
+            lease_conn = getattr(lease, "_conn", None)
+            if lease_conn is None:
+                # Defensive fallback (no shared conn attribute): enter
+                # fenced_write briefly. This will issue BEGIN IMMEDIATE
+                # but only in code paths without a cfg AND without an
+                # in-memory test stub -- not a production path.
+                with lease.fenced_write() as _read_via_lease:
+                    candidates = fetch_candidates_for_run(
+                        _read_via_lease, eval_run_id
+                    )
+            else:
+                candidates = fetch_candidates_for_run(lease_conn, eval_run_id)
+    finally:
+        if read_conn is not None:
+            read_conn.close()
+
+    # Pool predicate: Stage-2-filtered + RS-rank-filtered candidates =
+    # aplus bucket (mirrors _step_recommendations line 1211).
+    aplus_tickers: list[str] = [
+        c.ticker for c in candidates if c.bucket == "aplus"
+    ]
+
+    if not aplus_tickers:
+        log.info(
+            "pattern_detect: no candidate windows -- zero aplus tickers; "
+            "skipping (no writes)"
+        )
+        return
+
+    detectors = _pattern_detect_registry()
+
+    # Codex R1 Major #2: derive asof_date from the eval_run's OWN
+    # action_session_date (the run's canonical session anchor), NOT the
+    # wall-clock now(). The wall-clock could leak FUTURE evaluation_runs
+    # rows into ``current_stage`` lookups (e.g. operator backfilling an
+    # earlier run while a later run already exists in the DB).
+    asof_run = _resolve_eval_run_action_session_date(
+        cfg=cfg, lease=lease, eval_run_id=eval_run_id
+    )
+
+    rows_written = 0
+    rows_skipped_idempotent = 0
+
+    # Codex R2 Major #2 (Option B): seed ``composite_scores`` from any
+    # pre-existing pattern_evaluations rows for THIS pipeline_run_id, so
+    # newly-inserted rows on a partial retry carry a histogram that
+    # represents the FULL universe (already-inserted + newly-inserted).
+    #
+    # On first run this SELECT returns an empty result set, seeding an
+    # empty list (semantically equivalent to the V1 init). This is a
+    # READ-ONLY operation; it runs OUTSIDE the write transaction.
+    existing_composite_scores: list[float] = []
+    existing_idempotency_keys: set[tuple[str, str]] = set()
+    read_conn_for_seed = connect(cfg.paths.db_path) if cfg is not None else None
+    _opened_seed_conn = read_conn_for_seed is not None
+    try:
+        if read_conn_for_seed is None:
+            # Test-stub path: reuse the lease's shared conn for read
+            # WITHOUT entering fenced_write (which would issue BEGIN
+            # IMMEDIATE).
+            read_conn_for_seed = getattr(lease, "_conn", None)
+        if read_conn_for_seed is not None:
+            seed_rows = read_conn_for_seed.execute(
+                "SELECT ticker, pattern_class, composite_score "
+                "FROM pattern_evaluations WHERE pipeline_run_id = ?",
+                (pipeline_run_id,),
+            ).fetchall()
+        else:
+            # Defensive: no cfg AND no shared lease conn -- fall back
+            # to a brief fenced_write read (not a production path).
+            with lease.fenced_write() as _seed_conn:
+                seed_rows = _seed_conn.execute(
+                    "SELECT ticker, pattern_class, composite_score "
+                    "FROM pattern_evaluations WHERE pipeline_run_id = ?",
+                    (pipeline_run_id,),
+                ).fetchall()
+        import contextlib as _contextlib
+        for sr_ticker, sr_pattern_class, sr_score in seed_rows:
+            existing_idempotency_keys.add((str(sr_ticker), str(sr_pattern_class)))
+            # Defensive: if score is NULL/garbage, skip the score but
+            # still record the idempotency key.
+            with _contextlib.suppress(TypeError, ValueError):
+                existing_composite_scores.append(float(sr_score))
+    finally:
+        # Close only the connection we OPENED (cfg path); never close
+        # the lease-derived connection borrowed via getattr.
+        if _opened_seed_conn and read_conn_for_seed is not None:
+            read_conn_for_seed.close()
+
+    # Universe context for FeatureDistributionLog (per spec section D.7).
+    # Codex R1 Major #3 + R2 Major #2: ``composite_scores`` is seeded
+    # from existing rows (Option B) then appended during pass 1.
+    universe_context: dict = {
+        "universe_size": len(aplus_tickers),
+        "stage_2_pass_rate": 1.0,  # aplus bucket implies Stage 2 pass.
+        "rs_rank_distribution": {},
+        "verdict_counts_per_pattern_class": {},
+        "smoothing_params": {},
+        "extrema_density_per_session": 0.0,
+        "composite_scores": list(existing_composite_scores),
+    }
+
+    # ----------------------------------------------------------------------
+    # Pass 1: detector invocations + composite_scores accumulation.
+    # Codex R2 Major #1: Pass 1 runs OUTSIDE the write transaction.
+    # Per-ticker OHLCV fetches + window generation + detector invocation
+    # are all read-only operations; opening BEGIN IMMEDIATE here would
+    # hold the lock across network/cache I/O.
+    #
+    # Detectors invoke ``current_stage`` read-only against ``conn``;
+    # provide a dedicated read-only connection (cfg-path) or fall back
+    # to the lease's underlying connection in the test-stub path.
+    # ----------------------------------------------------------------------
+    # Each per-(ticker, pattern_class) entry collects (window,
+    # evidence, version_str, composite_score) for pass 2 to consume.
+    emit_queue: list[
+        tuple[str, str, str, object, object, float]
+    ] = []  # (ticker, pattern_class, version_str, window, evidence, score)
+
+    detector_read_conn = connect(cfg.paths.db_path) if cfg is not None else None
+    # Test-stub path: no cfg, so reuse the lease's underlying connection
+    # for read-only detector lookups WITHOUT opening BEGIN IMMEDIATE
+    # (the contextmanager exit would otherwise commit a no-op tx + the
+    # spy lease records that as a BEGIN). We rely on the test fixture
+    # exposing a shared sqlite3.Connection accessible as ``lease._conn``
+    # OR via ``lease.fenced_write()`` -- we intentionally do NOT enter
+    # the latter contextmanager here to keep Pass 1 lock-free.
+    if detector_read_conn is None:
+        detector_read_conn = getattr(lease, "_conn", None)
+
+    try:
+        for ticker in aplus_tickers:
+            # Fetch bars (per-ticker failure: log + continue).
+            try:
+                bars = ohlcv_cache.get_or_fetch(ticker=ticker, window_days=400)
+            except Exception as exc:
+                log.warning(
+                    "pattern_detect: bars fetch failed for %s "
+                    "(continuing): %s",
+                    ticker,
+                    exc,
+                )
+                continue
+
+            # Generate candidate windows (zigzag_pivot anchor mode for V1;
+            # detectors backward-slice for non-zigzag modes per recon
+            # section 5).
+            try:
+                windows = generate_candidate_windows(
+                    bars,
+                    "zigzag_pivot",
+                    ticker=ticker,
+                    timeframe="daily",
+                )
+            except Exception as exc:
+                log.warning(
+                    "pattern_detect: generate_candidate_windows failed "
+                    "for %s (continuing): %s",
+                    ticker,
+                    exc,
+                )
+                continue
+
+            if not windows:
+                log.info(
+                    "pattern_detect: no candidate windows generated for "
+                    "%s; skipping",
+                    ticker,
+                )
+                continue
+
+            # V1: use the LAST (most-recent-anchor) window per ticker so
+            # we emit one verdict per (ticker, pattern_class) tuple,
+            # honoring the unique-index constraint. The candidate
+            # generator may emit multiple historical anchors but the
+            # PER-pipeline-run verdict is the most-recent. V2 may
+            # multi-anchor + UPDATE-in-place.
+            window = windows[-1]
+
+            for detector_fn, pattern_class, version_str in detectors:
+                # Codex R2 Major #2 (Option B): if a row already exists
+                # for this (pipeline_run_id, ticker, pattern_class)
+                # tuple, skip the detector invocation entirely. The
+                # pre-existing row's composite_score is already seeded
+                # into universe_context. This is cheaper than the V1
+                # SELECT-per-detector pattern and keeps Pass 1 fully
+                # read-only.
+                if (ticker, pattern_class) in existing_idempotency_keys:
+                    log.info(
+                        "pattern_detect: row exists for (%d, %s, %s); "
+                        "skipping idempotent re-invocation",
+                        pipeline_run_id,
+                        ticker,
+                        pattern_class,
+                    )
+                    rows_skipped_idempotent += 1
+                    continue
+
+                # Per-detector failure isolation (recon section 4.4).
+                try:
+                    evidence = detector_fn(
+                        bars,
+                        window,
+                        conn=detector_read_conn,
+                        ticker=ticker,
+                        asof_date=asof_run,
+                    )
+                except Exception as exc:
+                    log.warning(
+                        "pattern_detect: %s detector failed for %s "
+                        "(continuing): %s: %s",
+                        pattern_class,
+                        ticker,
+                        type(exc).__name__,
+                        str(exc)[:200],
+                    )
+                    continue
+
+                geometric_score = float(
+                    getattr(evidence, "geometric_score", 0.0)
+                )
+                # T2.SB3: composite_score = geometric_score (template
+                # matching lands at T2.SB5 -- recon section 8).
+                composite_score = geometric_score
+
+                # Codex R4 Major #1: do NOT append Pass-1 scores to
+                # universe_context here. The histogram universe is built
+                # once in Pass 2 (after re-read + reconcile) so that
+                # concurrent-skipped queued scores never phantom into
+                # the histogram. The Pass-1 append was the root cause
+                # of the over-count + order-dependent histograms.
+                emit_queue.append(
+                    (
+                        ticker,
+                        pattern_class,
+                        version_str,
+                        window,
+                        evidence,
+                        composite_score,
+                    )
+                )
+    finally:
+        # Close only the connection we opened (cfg path); never close
+        # the lease-derived connection borrowed via getattr.
+        if cfg is not None and detector_read_conn is not None:
+            detector_read_conn.close()
+
+    # ----------------------------------------------------------------------
+    # Pass 2: serialize + INSERT against the now-complete universe
+    # histogram (every row carries the SAME run-level histogram).
+    # Codex R2 Major #1: open the lease-fenced write transaction ONCE
+    # here, scoped tightly to the INSERT loop only.
+    # ----------------------------------------------------------------------
+    if not emit_queue:
+        log.info(
+            "pattern_detect: wrote %d pattern_evaluations rows across %d "
+            "aplus tickers (%d skipped idempotent)",
+            rows_written,
+            len(aplus_tickers),
+            rows_skipped_idempotent,
+        )
+        return
+
+    with lease.fenced_write() as conn:
+        # Codex R4 Major #1 + #2: Pass-2 final-universe semantics +
+        # reconciliation-before-serialize. The prior R3 fix (per-recheck-hit
+        # amend) had two architectural defects:
+        #   (a) over-count: every queued detector score was already in
+        #       ``universe_context['composite_scores']`` from Pass 1
+        #       (line 1646), so when a concurrent row caused the recheck
+        #       to skip the queued INSERT, the queued score remained in
+        #       the histogram as a PHANTOM (counted but never persisted).
+        #   (b) order dependence: per-tuple amend only fired when the
+        #       loop REACHED the conflicting tuple; rows serialized
+        #       EARLIER in emit_queue carried a STALE histogram that
+        #       omitted the late-discovered concurrent row's score.
+        #
+        # Fix: RE-READ canonical existing rows ONCE inside the fenced
+        # write; RECONCILE emit_queue against the re-read set (drop any
+        # tuple already persisted); BUILD final universe = existing
+        # scores + surviving queued scores; SERIALIZE + INSERT every
+        # surviving row against this SAME final universe. The invariant
+        # is that ``universe_context['composite_scores']`` represents
+        # the FINAL persisted set for this pipeline_run_id -- never a
+        # queued-but-not-persisted phantom.
+        canonical_existing = conn.execute(
+            "SELECT ticker, pattern_class, composite_score "
+            "FROM pattern_evaluations WHERE pipeline_run_id = ?",
+            (pipeline_run_id,),
+        ).fetchall()
+        existing_keys: set[tuple[str, str]] = set()
+        canonical_existing_scores: list[float] = []
+        import contextlib as _contextlib3
+        for _row in canonical_existing:
+            existing_keys.add((str(_row[0]), str(_row[1])))
+            with _contextlib3.suppress(TypeError, ValueError):
+                _val = _row[2]
+                if _val is not None:
+                    _f = float(_val)
+                    # Skip non-finite (NaN/inf) defensively -- the
+                    # histogram bucketer enforces [0.0, 1.0] anyway and
+                    # NaN would raise there.
+                    if _f == _f and _f not in (float("inf"), float("-inf")):
+                        canonical_existing_scores.append(_f)
+
+        # Reconcile emit_queue against canonical existing: any queued
+        # tuple already present is DROPPED (its concurrent persisted
+        # row's score, not the queued score, counts toward universe).
+        final_emit_list: list[
+            tuple[str, str, str, object, object, float]
+        ] = []
+        for tup in emit_queue:
+            tup_ticker = tup[0]
+            tup_pattern_class = tup[1]
+            if (tup_ticker, tup_pattern_class) in existing_keys:
+                log.info(
+                    "pattern_detect: row exists for (%d, %s, %s) at "
+                    "Pass 2 reconcile; skipping (queued score dropped "
+                    "from universe)",
+                    pipeline_run_id,
+                    tup_ticker,
+                    tup_pattern_class,
+                )
+                rows_skipped_idempotent += 1
+                continue
+            final_emit_list.append(tup)
+
+        # Build the FINAL universe ONCE: existing persisted scores plus
+        # the surviving queued scores. Every serialized row sees this
+        # SAME universe (no order dependence).
+        final_universe_scores: list[float] = list(canonical_existing_scores)
+        for tup in final_emit_list:
+            with _contextlib3.suppress(TypeError, ValueError):
+                final_universe_scores.append(float(tup[5]))
+        universe_context["composite_scores"] = final_universe_scores
+
+        for (
+            ticker,
+            pattern_class,
+            version_str,
+            window,
+            evidence,
+            composite_score,
+        ) in final_emit_list:
+            # Drift-log capture (T-A.3.5 surface).
+            try:
+                fdl = capture_feature_distribution(
+                    pattern_class, evidence, universe_context
+                )
+                fdl_json = _json.dumps(
+                    dataclasses.asdict(fdl), default=str
+                )
+            except Exception as exc:
+                log.warning(
+                    "pattern_detect: drift-log capture failed for "
+                    "(%s, %s) (continuing): %s",
+                    ticker,
+                    pattern_class,
+                    exc,
+                )
+                continue
+
+            # Evidence serialization (15-col row shape per recon
+            # section 8).
+            try:
+                evidence_json = _json.dumps(
+                    dataclasses.asdict(evidence), default=str
+                )
+            except Exception as exc:
+                log.warning(
+                    "pattern_detect: evidence serialization failed "
+                    "for (%s, %s) (continuing): %s",
+                    ticker,
+                    pattern_class,
+                    exc,
+                )
+                continue
+
+            criteria_pass = getattr(evidence, "criteria_pass", {})
+            try:
+                geometric_score_json = _json.dumps(criteria_pass)
+            except Exception:
+                geometric_score_json = "{}"
+
+            row = PatternEvaluation(
+                id=None,
+                pipeline_run_id=pipeline_run_id,
+                ticker=ticker,
+                pattern_class=pattern_class,
+                detector_version=version_str,
+                geometric_score=float(composite_score),
+                geometric_score_json=geometric_score_json,
+                composite_score=composite_score,
+                structural_evidence_json=evidence_json,
+                feature_distribution_log_json=fdl_json,
+                window_start_date=window.start_date.isoformat(),
+                window_end_date=window.end_date.isoformat(),
+                created_at=_dt_inner.now(UTC).isoformat(),
+                template_match_score=None,
+                template_match_nearest_exemplar_ids_json=None,
+            )
+            try:
+                insert_evaluation(conn, row)
+                rows_written += 1
+            except Exception as exc:
+                log.warning(
+                    "pattern_detect: INSERT failed for (%s, %s) "
+                    "(continuing): %s",
+                    ticker,
+                    pattern_class,
+                    exc,
+                )
+                continue
+
+    log.info(
+        "pattern_detect: wrote %d pattern_evaluations rows across %d "
+        "aplus tickers (%d skipped idempotent)",
+        rows_written,
+        len(aplus_tickers),
+        rows_skipped_idempotent,
+    )
 
 
 def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data_asof: str,

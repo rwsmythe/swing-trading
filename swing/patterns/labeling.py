@@ -29,9 +29,10 @@ from __future__ import annotations
 import json
 import random
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Literal
 
 from swing.data.models import DETECTOR_PATTERN_CLASSES, PatternExemplar
@@ -517,12 +518,479 @@ def fire_codex_review_for_silver_row(
         return exemplars_repo.insert_exemplar(conn, codex_exemplar)
 
 
+# ============================================================================
+# retroactive_codex_evaluation_against_corpus (T-A.3.7)
+# ============================================================================
+#
+# Per spec section 5.9 step 4 lines 749-751 (binding contract):
+#
+#   "At T2.SB3+/SB4 (rule detectors shipped at T2.SB3 + T2.SB4): random 15%
+#    sample CONTINUES PLUS the high-stakes individual labels - Claude silver
+#    confidence == 'high' AND rule-tier `geometric_score < 0.5` (rule/silver
+#    disagreement A direction); OR Claude silver confidence == 'low' AND
+#    rule-tier `geometric_score >= 0.8` (rule/silver disagreement B
+#    direction). The full SELECTIVE policy ACTIVATES retroactively against
+#    the T2.SB1 corpus when T2.SB3+/SB4 evaluators have access to recompute
+#    `geometric_score` against the existing exemplars."
+#
+# V1 architectural disposition (per implementer recon at T-A.3.7):
+#   - The T-A.1.7 corpus dump at
+#     ``data/phase13-t2-sb1-corpus/pattern_exemplars_dump.jsonl`` carries
+#     ``structural_evidence_json.geometric_score`` for every Claude silver
+#     row (Claude labeler emits the score per the 8-criteria pass table per
+#     pattern class). The corpus does NOT carry OHLCV bars, so a V1
+#     in-process detector re-invocation would require a yfinance fetch per
+#     row (network-bound; non-deterministic test surface).
+#   - V1 helper therefore reads geometric_score from each row's
+#     ``structural_evidence_json`` as the default rule-tier score input to
+#     the high-stakes predicate. An optional ``geometric_score_recompute``
+#     callable is exposed for the operator-paired session at T-A.3.7+ to
+#     wire actual detector invocation when bars are fetched (yfinance via
+#     ``swing.patterns.labeling_bars.autofetch_bars_for_labeling`` + the 3
+#     V1 detectors at ``swing/patterns/{vcp,flat_base,cup_with_handle}.py``);
+#     when supplied, the callable's return value OVERRIDES the corpus
+#     score for the predicate evaluation.
+#
+# LOCKs (per dispatch brief section 6 + plan G.4):
+#   - L2: function does NOT write directly. Per-row firing delegates to
+#     ``fire_codex_review_for_silver_row`` (existing labeling.py write
+#     path); transaction discipline is owned there.
+#   - L7: ``RetroactiveCodexSelection`` is a frozen dataclass with
+#     ``__post_init__`` runtime validation against an explicit allowed-
+#     value frozenset (CLAUDE.md gotcha "Literal[...] type hints are NOT
+#     runtime-enforced").
+#   - CLAUDE.md gotcha "SELECT-first idempotency MUST precede payload
+#     validation" (Phase 12 C.C R1 Major #2): each candidate's
+#     ``codex_reviewed`` flag is read BEFORE the random-sample roll OR
+#     high-stakes predicate evaluation - if already reviewed, the row is
+#     reported as ``already_reviewed`` + skipped.
+#
+# ASCII-only (Windows cp1252 stdout safety; CLAUDE.md gotcha).
+
+
+_RETROACTIVE_SELECTION_REASONS: frozenset[str] = frozenset(
+    (
+        "random_sample",
+        "high_stakes_a",
+        "high_stakes_b",
+        "not_selected",
+        "already_reviewed",
+        "missing_score",
+    )
+)
+
+
+@dataclass(frozen=True)
+class RetroactiveCodexSelection:
+    """Per-row diagnostic record from
+    ``retroactive_codex_evaluation_against_corpus``.
+
+    Returned for EVERY claude_silver row scanned (not just fired rows) so
+    the caller (operator-paired session OR future automation) can log the
+    full triage table + cross-reference against the corpus dump.
+
+    Fields:
+      - ``exemplar_id``: ``pattern_exemplars.id`` for the candidate.
+      - ``ticker``: candidate ticker (for log readability).
+      - ``confidence``: Claude silver confidence ('high' / 'medium' /
+        'low'); None when the labeler_evidence_json was malformed +
+        the row was skipped.
+      - ``geometric_score``: the score used for predicate evaluation
+        (either the recomputed value when ``geometric_score_recompute``
+        was supplied, OR the corpus structural_evidence_json value);
+        None when the corpus row carried no embedded score AND no
+        recompute callable was supplied.
+      - ``fired``: True if Codex dispatch was invoked for this row.
+      - ``reason``: one of the values in
+        ``_RETROACTIVE_SELECTION_REASONS``; ``__post_init__``-validated.
+      - ``codex_row_id``: when ``fired`` AND Codex DISAGREED, the new
+        codex_silver row's id; None otherwise (including agreement case).
+    """
+    exemplar_id: int
+    ticker: str
+    confidence: str | None
+    geometric_score: float | None
+    fired: bool
+    reason: str
+    codex_row_id: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.reason not in _RETROACTIVE_SELECTION_REASONS:
+            raise ValueError(
+                "RetroactiveCodexSelection.reason must be one of "
+                f"{sorted(_RETROACTIVE_SELECTION_REASONS)}; got "
+                f"{self.reason!r}"
+            )
+
+
+def _extract_corpus_row_fields(
+    row: dict[str, Any] | PatternExemplar,
+) -> tuple[int, str, str | None, float | None, str | None, int]:
+    """Pull the fields needed for retroactive evaluation out of a row.
+
+    Returns (exemplar_id, ticker, confidence, geometric_score,
+    label_source, codex_reviewed). ``label_source`` is returned so the
+    caller can filter claude_silver-only without re-reading.
+    """
+    if isinstance(row, PatternExemplar):
+        labeler = row.labeler_evidence_json
+        structural = row.structural_evidence_json
+        exemplar_id = row.id
+        ticker = row.ticker
+        label_source = row.label_source
+        codex_reviewed = row.codex_reviewed
+    else:
+        labeler = row.get("labeler_evidence_json")
+        structural = row.get("structural_evidence_json")
+        exemplar_id = row["id"]
+        ticker = row["ticker"]
+        label_source = row.get("label_source")
+        codex_reviewed = int(row.get("codex_reviewed", 0))
+
+    confidence: str | None = None
+    if labeler:
+        try:
+            decoded = json.loads(labeler) if isinstance(labeler, str) else labeler
+            if isinstance(decoded, dict):
+                conf_value = decoded.get("confidence")
+                if isinstance(conf_value, str):
+                    confidence = conf_value
+        except json.JSONDecodeError:
+            confidence = None
+
+    geometric_score: float | None = None
+    if structural:
+        try:
+            decoded_s = (
+                json.loads(structural) if isinstance(structural, str)
+                else structural
+            )
+            if isinstance(decoded_s, dict):
+                score_value = decoded_s.get("geometric_score")
+                if isinstance(score_value, (int, float)):
+                    geometric_score = float(score_value)
+        except json.JSONDecodeError:
+            geometric_score = None
+
+    if exemplar_id is None:
+        raise ValueError(
+            "retroactive_codex_evaluation: row carries id=None; corpus "
+            "rows MUST have a stable integer id"
+        )
+
+    return (
+        int(exemplar_id),
+        str(ticker),
+        confidence,
+        geometric_score,
+        label_source if isinstance(label_source, str) else None,
+        int(codex_reviewed),
+    )
+
+
+def _iter_corpus_rows(
+    conn: sqlite3.Connection,
+    corpus_path: Path | None,
+) -> Iterable[dict[str, Any] | PatternExemplar]:
+    """Source claude_silver rows from corpus JSONL dump OR DB.
+
+    When ``corpus_path`` is supplied + exists, parse JSONL line-by-line
+    + yield each row dict. Otherwise yield PatternExemplar rows from the
+    DB filtered to ``label_source='claude_silver'`` (deterministic id
+    order via list_exemplars' ORDER BY id ASC).
+    """
+    if corpus_path is not None:
+        with corpus_path.open("r", encoding="utf-8") as fh:
+            for line_no, raw in enumerate(fh, start=1):
+                stripped = raw.strip()
+                if not stripped:
+                    continue
+                try:
+                    yield json.loads(stripped)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(
+                        f"retroactive_codex_evaluation: corpus_path "
+                        f"{corpus_path} line {line_no} is not valid JSON: "
+                        f"{exc}"
+                    ) from exc
+        return
+
+    # DB-sourced path: claude_silver rows only.
+    yield from exemplars_repo.list_exemplars(
+        conn, label_source="claude_silver",
+    )
+
+
+def _classify_retroactive_selection(
+    *,
+    phase: SelectivePhase,
+    confidence: str | None,
+    geometric_score: float | None,
+    rng: random.Random,
+) -> str:
+    """Per spec section 5.9 step 4: emit the selection reason for one
+    claude_silver row given its (confidence, geometric_score).
+
+    Returns one of: 'random_sample' / 'high_stakes_a' / 'high_stakes_b'
+    / 'not_selected' / 'missing_score'.
+
+    Random roll is consumed UNCONDITIONALLY per row (consistent with
+    ``should_fire_codex`` semantics) so deterministic tests can pin the
+    rng sequence to exact row positions. High-stakes clauses are checked
+    only AFTER the random clause to give 'random_sample' precedence in
+    reason reporting when both would fire.
+    """
+    random_fires = rng.random() < CODEX_RANDOM_SAMPLE_PROBABILITY
+    if phase == "t2_sb1":
+        return "random_sample" if random_fires else "not_selected"
+    if phase != "t2_sb3_or_later":
+        raise ValueError(
+            f"phase must be 't2_sb1' or 't2_sb3_or_later', got {phase!r}"
+        )
+
+    if random_fires:
+        return "random_sample"
+
+    if geometric_score is None or confidence is None:
+        return "missing_score" if geometric_score is None else "not_selected"
+
+    if confidence == "high" and geometric_score < 0.5:
+        return "high_stakes_a"
+    if confidence == "low" and geometric_score >= 0.8:
+        return "high_stakes_b"
+    return "not_selected"
+
+
+def retroactive_codex_evaluation_against_corpus(
+    conn: sqlite3.Connection,
+    *,
+    phase: SelectivePhase = "t2_sb3_or_later",
+    ai_labeler_version: str,
+    codex_dispatch: Callable[..., CodexReviewResponse],
+    rng: random.Random | None = None,
+    corpus_path: Path | None = None,
+    geometric_score_recompute: (
+        Callable[[PatternExemplar | dict[str, Any]], float] | None
+    ) = None,
+    now_fn: Callable[[], str] = _default_now_iso,
+) -> list[RetroactiveCodexSelection]:
+    """Apply spec section 5.9 step 4 retroactively to existing
+    claude_silver exemplars.
+
+    For each claude_silver candidate:
+      1. SELECT-first idempotency check: if ``codex_reviewed = 1``
+         already, emit ``already_reviewed`` + skip (no Codex fire, no DB
+         write).
+      2. Extract ``confidence`` (from labeler_evidence_json) + the
+         rule-tier ``geometric_score`` (either via
+         ``geometric_score_recompute(exemplar)`` when supplied OR from
+         the corpus row's ``structural_evidence_json.geometric_score``
+         as the V1 fallback).
+      3. Apply the phased selection predicate per
+         ``_classify_retroactive_selection``: random 15% sample OR
+         high-stakes A (high confidence + low score) OR high-stakes B
+         (low confidence + high score).
+      4. When selected, call ``fire_codex_review_for_silver_row`` against
+         the corresponding DB row (the corpus dump is the SOURCE of
+         exemplar_id; the DB row's transactional update lives in the
+         existing labeling.py write path).
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        DB connection; used for SELECT-first idempotency reads via
+        ``exemplars_repo.get_exemplar_by_id`` + transactional writes via
+        ``fire_codex_review_for_silver_row``. Caller MUST NOT hold an
+        open transaction (per Phase 8 transactional discipline lesson
+        family).
+    phase : SelectivePhase
+        ``'t2_sb1'`` (random only) OR ``'t2_sb3_or_later'`` (random +
+        high-stakes clauses). Default is the T2.SB3+ phase since this
+        helper EXISTS for the retroactive activation at T2.SB3+.
+    ai_labeler_version : str
+        Stamped on any inserted codex_silver disagreement-chain row.
+    codex_dispatch : Callable
+        Codex MCP dispatch callable; required (no production default).
+    rng : random.Random | None
+        Source for the random 15% roll. None -> ``random.SystemRandom()``.
+    corpus_path : Path | None
+        If supplied, source claude_silver rows from this JSONL dump
+        (each line a row dict matching ``pattern_exemplars``' field
+        set, e.g. the shape at
+        ``data/phase13-t2-sb1-corpus/pattern_exemplars_dump.jsonl``).
+        When None, source rows directly from the DB (via
+        ``list_exemplars(label_source='claude_silver')``).
+    geometric_score_recompute : Callable | None
+        Optional per-row recomputer; when supplied, its return value
+        OVERRIDES the corpus row's embedded geometric_score for the
+        predicate evaluation. The callable receives the corpus row
+        (PatternExemplar OR dict; whichever shape the iterator
+        produced) and must return a float in [0, 1] (V1 unenforced).
+    now_fn : Callable
+        Injectable now() for deterministic created_at stamping in the
+        disagreement-chain write path.
+
+    Returns
+    -------
+    list[RetroactiveCodexSelection]
+        One row per claude_silver candidate scanned; reason field
+        distinguishes fired (random_sample / high_stakes_a /
+        high_stakes_b) from skipped (not_selected / already_reviewed
+        / missing_score). When ``fired`` AND Codex DISAGREED,
+        ``codex_row_id`` carries the new codex_silver row's id.
+
+    Raises
+    ------
+    ValueError
+        On invalid phase, malformed corpus row (missing id), unparseable
+        corpus JSONL line.
+    LabelingDispatchError
+        If ``codex_dispatch`` raises an upstream LabelingDispatchError
+        (e.g., misconfigured Codex MCP).
+    """
+    rng_actual = rng if rng is not None else random.SystemRandom()
+
+    selections: list[RetroactiveCodexSelection] = []
+
+    for raw_row in _iter_corpus_rows(conn, corpus_path):
+        (
+            exemplar_id,
+            ticker,
+            confidence,
+            corpus_score,
+            label_source,
+            codex_reviewed_corpus,
+        ) = _extract_corpus_row_fields(raw_row)
+
+        # When corpus_path is supplied, the corpus row may carry any
+        # label_source - filter to claude_silver only here.
+        if label_source is not None and label_source != "claude_silver":
+            continue
+
+        # SELECT-first idempotency: ALWAYS consult the DB for the
+        # canonical codex_reviewed flag (the corpus JSONL is a
+        # point-in-time snapshot - the DB may have been updated since).
+        # If the row doesn't exist in the DB at all (corpus_path mode
+        # against an empty DB OR a row-id mismatch), the corpus flag
+        # is the fallback.
+        db_row = exemplars_repo.get_exemplar_by_id(conn, exemplar_id)
+        if db_row is not None:
+            already_reviewed = bool(db_row.codex_reviewed)
+        else:
+            already_reviewed = bool(codex_reviewed_corpus)
+
+        if already_reviewed:
+            selections.append(
+                RetroactiveCodexSelection(
+                    exemplar_id=exemplar_id,
+                    ticker=ticker,
+                    confidence=confidence,
+                    geometric_score=corpus_score,
+                    fired=False,
+                    reason="already_reviewed",
+                )
+            )
+            continue
+
+        # Resolve the geometric_score for predicate evaluation. The
+        # recompute callable wins when supplied; otherwise use the
+        # corpus row's embedded score.
+        if geometric_score_recompute is not None:
+            try:
+                score = float(geometric_score_recompute(raw_row))
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    "geometric_score_recompute must return a float-coercible "
+                    f"value; got error: {exc}"
+                ) from exc
+            # Codex R1 Minor #2: enforce the documented [0.0, 1.0] +
+            # finite contract at the callsite. Without enforcement NaN
+            # or out-of-range recompute values could silently affect
+            # high-stakes selection.
+            import math as _math
+            if not _math.isfinite(score) or not (0.0 <= score <= 1.0):
+                raise ValueError(
+                    f"geometric_score_recompute returned {score!r}; "
+                    f"must be finite and in [0.0, 1.0]"
+                )
+        else:
+            score = corpus_score
+
+        reason = _classify_retroactive_selection(
+            phase=phase,
+            confidence=confidence,
+            geometric_score=score,
+            rng=rng_actual,
+        )
+
+        if reason in ("not_selected", "missing_score"):
+            selections.append(
+                RetroactiveCodexSelection(
+                    exemplar_id=exemplar_id,
+                    ticker=ticker,
+                    confidence=confidence,
+                    geometric_score=score,
+                    fired=False,
+                    reason=reason,
+                )
+            )
+            continue
+
+        # Fire Codex via the existing labeling.py write path.
+        # IMPORTANT: ``fire_codex_review_for_silver_row`` consumes its
+        # own rng for the random roll - to prevent double-counting we
+        # pass a Random subclass that always returns 0.0 (forcing fire)
+        # since the retroactive helper has already decided to fire by
+        # this point.
+        forced_rng = _AlwaysFireRng()
+        codex_row_id = fire_codex_review_for_silver_row(
+            conn,
+            exemplar_id=exemplar_id,
+            phase="t2_sb1",  # neutralize high-stakes re-eval in callee
+            silver_confidence=None,
+            geometric_score=None,
+            ai_labeler_version=ai_labeler_version,
+            codex_dispatch=codex_dispatch,
+            rng=forced_rng,
+            now_fn=now_fn,
+        )
+
+        selections.append(
+            RetroactiveCodexSelection(
+                exemplar_id=exemplar_id,
+                ticker=ticker,
+                confidence=confidence,
+                geometric_score=score,
+                fired=True,
+                reason=reason,
+                codex_row_id=codex_row_id,
+            )
+        )
+
+    return selections
+
+
+class _AlwaysFireRng(random.Random):
+    """Internal RNG subclass that always returns 0.0 from ``random()`` so
+    ``should_fire_codex`` evaluates ``0.0 < 0.15`` -> True unconditionally.
+
+    Used by ``retroactive_codex_evaluation_against_corpus`` to force
+    ``fire_codex_review_for_silver_row`` to fire when the retroactive
+    helper has already made the selection decision.
+    """
+
+    def random(self) -> float:  # type: ignore[override]
+        return 0.0
+
+
 __all__ = [
     "CODEX_RANDOM_SAMPLE_PROBABILITY",
     "CodexReviewResponse",
     "LabelingDispatchError",
+    "RetroactiveCodexSelection",
     "SilverLabelResponse",
     "fire_claude_silver_label",
     "fire_codex_review_for_silver_row",
+    "retroactive_codex_evaluation_against_corpus",
     "should_fire_codex",
 ]
