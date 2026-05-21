@@ -36,6 +36,7 @@ Marked slow because the test exercises (a) cassette load + YAML parse,
 """
 from __future__ import annotations
 
+import copy
 import json
 import sqlite3
 from datetime import datetime
@@ -458,6 +459,287 @@ def test_exit_form_e2e_sandbox_does_not_emit_audit_row(
     assert n == 0, (
         "sandbox short-circuit must NOT emit schwab_api_calls audit row"
     )
+
+
+# ----------------------------------------------------------------------
+# Multi-partial-exit helper — deep-copy + mutate a raw FILLED LIMIT SELL
+# order dict to synthesize a SECOND partial fill for the SAME ticker.
+# Both raw dicts are then routed through the real production mapper
+# ``map_orders_to_fill_candidates`` so the resulting SchwabOrderResponse
+# objects carry production-shape ``executions[]`` (closes the
+# synthetic-fixture-vs-production-emitter shape drift gotcha family).
+# ----------------------------------------------------------------------
+
+
+def _mutate_to_earlier_partial(
+    raw_order: dict[str, Any],
+    *,
+    new_order_id: int,
+    new_price: float,
+    new_quantity: float,
+    new_entered_time: str,
+    new_close_time: str,
+    new_exec_time: str,
+) -> dict[str, Any]:
+    """Deep-copy ``raw_order`` + mutate fields to represent an EARLIER
+    partial-exit fill for the SAME ticker. Preserves all envelope shape
+    (orderLegCollection / orderActivityCollection / executionLegs) so the
+    production mapper consumes it identically to the original."""
+    out = copy.deepcopy(raw_order)
+    out["orderId"] = new_order_id
+    out["quantity"] = float(new_quantity)
+    out["filledQuantity"] = float(new_quantity)
+    out["remainingQuantity"] = 0.0
+    out["price"] = float(new_price)
+    out["enteredTime"] = new_entered_time
+    out["closeTime"] = new_close_time
+    # Leg quantity mirrors the order quantity for single-leg SELL fills.
+    legs = out.get("orderLegCollection") or []
+    if legs and isinstance(legs[0], dict):
+        legs[0]["quantity"] = float(new_quantity)
+    # Execution-grain leg carries the per-fill price + qty + time; mapper
+    # consumes these for the auto-fill candidate values.
+    activities = out.get("orderActivityCollection") or []
+    if activities and isinstance(activities[0], dict):
+        act0 = activities[0]
+        act0["quantity"] = float(new_quantity)
+        act0["orderRemainingQuantity"] = 0.0
+        exec_legs = act0.get("executionLegs") or []
+        if exec_legs and isinstance(exec_legs[0], dict):
+            exec_legs[0]["quantity"] = float(new_quantity)
+            exec_legs[0]["price"] = float(new_price)
+            exec_legs[0]["time"] = new_exec_time
+    return out
+
+
+# ----------------------------------------------------------------------
+# E2E multi-partial — closes plan §G.5 line 1841 binding acceptance
+# criterion: "cassette covers both single-fill + multi-partial response
+# variants". Multi-partial-exit = MULTIPLE SELL orders for the SAME
+# ticker since entry_date (operator scaled out over time via multiple
+# separate sells; per spec §6.2 paragraph 2). The form renders a
+# fieldset of radios so the operator can pick which fill drives form
+# values; default-selected radio is the LAST (most-recent) candidate.
+# ----------------------------------------------------------------------
+
+
+def test_exit_form_e2e_multi_partial_via_cassette_renders_candidate_list(
+    seeded_db, monkeypatch,
+):
+    """E2E multi-partial-exit: load the operator-recorded LIMIT SELL
+    cassette; extract the first FILLED SELL via the production mapper;
+    deep-copy + mutate the raw dict to synthesize a SECOND earlier
+    partial fill for the SAME ticker; map BOTH raw dicts through the real
+    production ``map_orders_to_fill_candidates`` mapper; stub
+    ``trader.get_account_orders`` to return both mapped objects; invoke
+    GET /trades/{id}/exit/form; assert the form renders WITH the
+    multi-partial candidate fieldset (radios + per-candidate hidden
+    signature_hash + order_id inputs) + the LAST (most-recent) candidate
+    is the default-checked radio + audit row lands with
+    surface='trade_exit'."""
+    # ------------------------------------------------------------------
+    # Cassette extraction — production-shape via real mapper.
+    # ------------------------------------------------------------------
+    raw_orders = _load_cassette_orders(_CASSETTE_PATH)
+    raw_sell = _first_filled_sell_with_legs(raw_orders)
+    if raw_sell is None:
+        pytest.skip(
+            "cassette contains no FILLED LIMIT SELL with executionLegs[]; "
+            "re-record via scripts/record_schwab_cassettes.py"
+        )
+
+    # Synthesize an EARLIER partial fill for the SAME ticker by deep-copy
+    # + mutate. Mapper-coherence (orderLegCollection qty == order qty ==
+    # executionLegs qty) is preserved by the helper. The earlier fill
+    # uses a DISTINCT orderId + price + quantity + earlier enteredTime so
+    # post-mapping sort-by-enter_time orders [earlier_partial, original_sell].
+    raw_sell_order_id = int(raw_sell.get("orderId", 0))
+    raw_sell_qty = float(raw_sell.get("quantity", 0.0))
+    raw_sell_price = float(raw_sell.get("price", 0.0))
+    raw_sell_entered = str(raw_sell.get("enteredTime", ""))
+    # Earlier date relative to the original cassette fill; 4 days prior
+    # is well inside the lookback (entry seeded 2026-04-01).
+    earlier_partial = _mutate_to_earlier_partial(
+        raw_sell,
+        new_order_id=raw_sell_order_id + 1,
+        new_price=raw_sell_price - 0.50,
+        new_quantity=max(raw_sell_qty - 1.0, 1.0),
+        new_entered_time="2026-05-10T17:14:53+0000",
+        new_close_time="2026-05-10T17:14:54+0000",
+        new_exec_time="2026-05-10T17:14:54+0000",
+    )
+
+    # Map BOTH raw dicts together through the production mapper so the
+    # resulting SchwabOrderResponse objects carry real executions[].
+    mapped = map_orders_to_fill_candidates([earlier_partial, raw_sell])
+    assert len(mapped) == 2, (
+        f"mapper produced {len(mapped)} fills from 2 raw orders; expected 2"
+    )
+    for so in mapped:
+        assert so.executions is not None and len(so.executions) >= 1, (
+            "each mapped SchwabOrderResponse must carry executions[] for "
+            "the multi-partial E2E to exercise the execution-grain price path"
+        )
+
+    # Both fills must share the SAME ticker (multi-partial-exit semantics
+    # per spec §6.2 paragraph 2). The cassette's chosen SELL drives the
+    # ticker; the mutated copy inherits via deep-copy.
+    cassette_ticker = mapped[0].instrument_symbol
+    assert mapped[1].instrument_symbol == cassette_ticker, (
+        f"deep-copy must preserve ticker; got {mapped[0].instrument_symbol!r} "
+        f"vs {mapped[1].instrument_symbol!r}"
+    )
+
+    # The trade fixture's initial_shares must accommodate the SUM of
+    # both partial-exit quantities (so the trade was scaled into across
+    # multiple sells without exceeding the remaining-shares cap).
+    earlier_qty = int(mapped[0].executions[0].quantity)
+    original_qty = int(mapped[1].executions[0].quantity)
+    total_qty = earlier_qty + original_qty
+
+    # ------------------------------------------------------------------
+    # Trade seeding — entry well before both cassette fills.
+    # ------------------------------------------------------------------
+    cfg, cfg_path = seeded_db
+    trade_id = _seed_open_trade_for_ticker(
+        cfg,
+        ticker=cassette_ticker,
+        entry_date="2026-04-01",
+        entry_price=100.0,
+        initial_shares=total_qty,
+    )
+
+    _patch_price_cache(monkeypatch)
+    _patch_cfg_for_production_schwab(monkeypatch)
+    # Stub trader.get_account_orders to return BOTH mapped fills.
+    _patch_full_schwab_stack(monkeypatch, orders=list(mapped))
+
+    # ------------------------------------------------------------------
+    # Drive the exit_form route.
+    # ------------------------------------------------------------------
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = client.get(f"/trades/{trade_id}/exit/form")
+    assert resp.status_code == 200, resp.text
+    body = resp.text
+
+    # ------------------------------------------------------------------
+    # Multi-partial candidate fieldset asserted (>= 2 radios per template
+    # at swing/web/templates/partials/trade_exit_form.html.j2 lines 66-83).
+    # ------------------------------------------------------------------
+    assert 'name="candidate_index"' in body, (
+        "multi-partial fieldset must emit candidate_index radio group; "
+        f"body excerpt: {body[:1000]!r}..."
+    )
+    # Per-candidate radio inputs (one per fill).
+    assert 'type="radio"' in body, (
+        "multi-partial fieldset must render <input type='radio'> nodes"
+    )
+    assert 'value="0"' in body, (
+        "first candidate radio must carry value='0' (loop.index0)"
+    )
+    assert 'value="1"' in body, (
+        "second candidate radio must carry value='1' (loop.index0)"
+    )
+
+    # Per-candidate hidden signature_hash inputs (BINDING — round-trip
+    # provenance per template lines 77-78).
+    assert 'name="candidate_signature_hash_0"' in body, (
+        "first candidate must have hidden signature_hash input"
+    )
+    assert 'name="candidate_signature_hash_1"' in body, (
+        "second candidate must have hidden signature_hash input"
+    )
+
+    # Per-candidate hidden order_id inputs (BINDING — round-trip
+    # provenance per template lines 79-80).
+    assert 'name="candidate_order_id_0"' in body, (
+        "first candidate must have hidden order_id input"
+    )
+    assert 'name="candidate_order_id_1"' in body, (
+        "second candidate must have hidden order_id input"
+    )
+
+    # ------------------------------------------------------------------
+    # Default-checked radio is the LAST (most-recent) candidate per
+    # template `{% if loop.last %}checked{% endif %}` on line 73 + per
+    # resolve_exit_auto_fill's `chosen = candidates[-1]` at
+    # swing/trades/exit_auto_fill.py:549.
+    # ------------------------------------------------------------------
+    # The default-checked radio is the LAST one (value="1" in this 2-fill
+    # case). Assert the value="1" radio carries `checked` AND the
+    # value="0" radio does NOT. We assert by locating the radio nodes.
+    import re
+    radio_pattern = re.compile(
+        r'<input\s+type="radio"\s+name="candidate_index"\s+value="(\d+)"([^>]*)>',
+        re.IGNORECASE,
+    )
+    matches_re = radio_pattern.findall(body)
+    assert len(matches_re) == 2, (
+        f"expected exactly 2 candidate_index radios; got {len(matches_re)}: "
+        f"{matches_re!r}"
+    )
+    radio_state = {value: attrs for value, attrs in matches_re}
+    assert "checked" not in radio_state["0"], (
+        f"first (oldest) radio must NOT be default-checked; attrs={radio_state['0']!r}"
+    )
+    assert "checked" in radio_state["1"], (
+        f"LAST (most-recent) radio MUST be default-checked per template "
+        f"`{{% if loop.last %}}checked{{% endif %}}`; attrs={radio_state['1']!r}"
+    )
+
+    # ------------------------------------------------------------------
+    # Default form values (exit_date / exit_price / shares) reflect the
+    # CHOSEN (last) candidate = the original cassette fill.
+    # ------------------------------------------------------------------
+    chosen_price = float(mapped[1].executions[0].price)
+    expected_price_str = f"{chosen_price:.2f}"
+    assert f'value="{expected_price_str}"' in body, (
+        f"expected formatted chosen price {expected_price_str!r} in form body; "
+        f"got body excerpt: {body[:800]!r}..."
+    )
+
+    # Hidden auto-fill anchors present (form-render path stamped them).
+    assert 'name="schwab_source_value_json"' in body
+    assert 'name="auto_fill_audit_at"' in body
+    assert 'name="fill_origin_at_form_render"' in body
+
+    # ------------------------------------------------------------------
+    # Audit row contract — single Schwab fetch emits ONE schwab_api_calls
+    # row at surface='trade_exit'. Multi-partial does NOT change this
+    # (one trader.get_account_orders call covers all fills for ticker).
+    # ------------------------------------------------------------------
+    conn = connect(cfg.paths.db_path)
+    try:
+        rows = conn.execute(
+            "SELECT surface, endpoint, status, environment, signature_hash, "
+            "pipeline_run_id FROM schwab_api_calls ORDER BY call_id ASC"
+        ).fetchall()
+    finally:
+        conn.close()
+    assert len(rows) == 1, (
+        f"multi-partial form-render must emit exactly 1 audit row "
+        f"(single trader.get_account_orders fetch); got {len(rows)}: {rows!r}"
+    )
+    surface, endpoint, status, env, sig_hash, pipeline_run_id = rows[0]
+    assert surface == "trade_exit", (
+        f"BINDING: surface MUST be 'trade_exit' at exit auto-fill path; "
+        f"got {surface!r}"
+    )
+    assert endpoint == "accounts.orders.list"
+    assert status == "success"
+    assert env == "production"
+    assert sig_hash is not None and sig_hash.strip(), (
+        "signature_hash MUST be populated for drift detection"
+    )
+    assert pipeline_run_id is None, (
+        "form-render fetch is NOT pipeline-bound"
+    )
+
+    # Sanity: silence ruff F841 on derived qty locals + reference the
+    # cassette-originating order_id var to acknowledge the deep-copy
+    # produced a distinct fill identity.
+    _ = (earlier_qty, original_qty, raw_sell_entered, raw_sell_order_id)
 
 
 # ----------------------------------------------------------------------
