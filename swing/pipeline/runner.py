@@ -1240,9 +1240,18 @@ def _step_recommendations(*, cfg, eval_run_id: int,
 # Phase 13 T2.SB3 (plan section G.4 T-A.3.6) — pattern detect step
 # ---------------------------------------------------------------------------
 
-# 3 V1 detectors run in deterministic order per recon section 3
-# (vcp -> flat_base -> cup_with_handle). Wired as a tuple so iteration
-# order is stable across runs (recon section 3 forbids `set` iteration).
+# 5 V1 detectors run in deterministic order per recon section 3
+# (vcp -> flat_base -> cup_with_handle -> high_tight_flag ->
+# double_bottom_w). Wired as a tuple so iteration order is stable
+# across runs (recon section 3 forbids `set` iteration).
+#
+# T2.SB3 (T-A.3.6) landed the first 3 detectors; T2.SB4 (T-A.4.3)
+# extends the registry to 5 by adding HTF + DBW. Data-driven extension
+# via the registry tuple alone -- the consumer loop at
+# `_step_pattern_detect` (line ~1599) iterates `detectors` generically
+# (no per-detector if/elif branches). All 5 detectors share the same
+# kwargs contract: `(bars, candidate_window, *, conn, ticker, asof_date)`
+# returning a frozen `*Evidence` dataclass.
 def _pattern_detect_registry():
     """Return [(detector_callable, pattern_class, version_str), ...].
 
@@ -1253,10 +1262,18 @@ def _pattern_detect_registry():
         DETECTOR_VERSION as CUP_VERSION,
     )
     from swing.patterns.cup_with_handle import detect_cup_with_handle
+    from swing.patterns.double_bottom_w import (
+        DETECTOR_VERSION as DBW_VERSION,
+    )
+    from swing.patterns.double_bottom_w import detect_double_bottom_w
     from swing.patterns.flat_base import (
         DETECTOR_VERSION as FLAT_VERSION,
     )
     from swing.patterns.flat_base import detect_flat_base
+    from swing.patterns.high_tight_flag import (
+        DETECTOR_VERSION as HTF_VERSION,
+    )
+    from swing.patterns.high_tight_flag import detect_high_tight_flag
     from swing.patterns.vcp import DETECTOR_VERSION as VCP_VERSION
     from swing.patterns.vcp import detect_vcp
 
@@ -1264,6 +1281,8 @@ def _pattern_detect_registry():
         (detect_vcp, "vcp", VCP_VERSION),
         (detect_flat_base, "flat_base", FLAT_VERSION),
         (detect_cup_with_handle, "cup_with_handle", CUP_VERSION),
+        (detect_high_tight_flag, "high_tight_flag", HTF_VERSION),
+        (detect_double_bottom_w, "double_bottom_w", DBW_VERSION),
     )
 
 
@@ -1364,14 +1383,18 @@ def _step_pattern_detect(
     eval_run_id: int,
     ohlcv_cache,
 ) -> None:
-    """Run 3 V1 geometric detectors over the Stage-2-filtered candidate pool.
+    """Run 5 V1 geometric detectors over the Stage-2-filtered candidate pool.
 
-    Per recon section 1-9 (docs/phase13-t2-sb3-recon.md):
+    Per recon section 1-9 (docs/phase13-t2-sb3-recon.md) + T2.SB4
+    T-A.4.3 extension:
     - Pool predicate: candidates.bucket == 'aplus' (Stage-2 + RS-rank-filtered).
     - Per-ticker: fetch bars via `ohlcv_cache.get_or_fetch`; generate
-      candidate windows (zigzag_pivot mode); run all 3 detectors on each
+      candidate windows (zigzag_pivot mode); run all 5 detectors on each
       window's evidence-emit; write one `pattern_evaluations` row per
-      (pipeline_run_id, ticker, pattern_class) tuple.
+      (pipeline_run_id, ticker, pattern_class) tuple. T2.SB3 shipped
+      the first 3 detectors (vcp, flat_base, cup_with_handle); T2.SB4
+      T-A.4.3 added high_tight_flag + double_bottom_w via a single
+      registry tuple extension (no consumer-loop change).
     - SELECT-then-INSERT idempotency (LOCK L3 forbids INSERT OR REPLACE).
     - pipeline_run_id := lease.run_id (NOT eval_run_id) per recon section 8.
     - NO sandbox gating (recon section 6): pattern_evaluations is an
@@ -1638,9 +1661,20 @@ def _step_pattern_detect(
                 geometric_score = float(
                     getattr(evidence, "geometric_score", 0.0)
                 )
-                # T2.SB3: composite_score = geometric_score (template
-                # matching lands at T2.SB5 -- recon section 8).
-                composite_score = geometric_score
+                # T2.SB3 + T2.SB4 R2 Critical #1: composite_score =
+                # min(1.0, geometric_score) (template_match_score is
+                # None pre-T2.SB5 LOCK per spec section 5.8 line 720;
+                # the composite formula at line 712 wraps with
+                # min(1.0, ...)). DBW evidence geometric_score may
+                # reach 1.10 per spec section 5.8 line 718 + section
+                # 10.5 line 1325 (undercut bonus); the EVIDENCE score
+                # stays at 1.10 in structural_evidence_json but the
+                # COMPOSITE caps at 1.0 -- otherwise downstream
+                # drift_logging._composite_score_histogram (section
+                # 5.11 LOCK [0.0, 1.0]) raises ValueError that aborts
+                # the entire Pass-2 emit loop for the run. Recon
+                # section 8.
+                composite_score = min(1.0, geometric_score)
 
                 # Codex R4 Major #1: do NOT append Pass-1 scores to
                 # universe_context here. The histogram universe is built
@@ -1801,15 +1835,29 @@ def _step_pattern_detect(
             except Exception:
                 geometric_score_json = "{}"
 
+            # Codex R3 Major #1: persist RAW evidence geometric_score
+            # (rule-tier value, may reach 1.10 for DBW per spec section
+            # 5.8 line 718 + section 10.5 line 1325 undercut bonus). The
+            # composite_score column carries the min(1.0, ...) wrapped
+            # value per spec section 5.8 line 712 composite formula.
+            # `pattern_evaluations.geometric_score` has no CHECK
+            # constraint (migration 0020 line 240 declares `REAL NOT
+            # NULL` only) so the column can carry 1.10 directly --
+            # Option C in the R3 dispatch brief. Pre-R3 bug:
+            # geometric_score=float(composite_score) used the CLAMPED
+            # composite as the column value, losing the DBW rule-tier
+            # evidence; only structural_evidence_json kept the 1.10.
             row = PatternEvaluation(
                 id=None,
                 pipeline_run_id=pipeline_run_id,
                 ticker=ticker,
                 pattern_class=pattern_class,
                 detector_version=version_str,
-                geometric_score=float(composite_score),
+                geometric_score=float(
+                    getattr(evidence, "geometric_score", composite_score)
+                ),
                 geometric_score_json=geometric_score_json,
-                composite_score=composite_score,
+                composite_score=float(composite_score),
                 structural_evidence_json=evidence_json,
                 feature_distribution_log_json=fdl_json,
                 window_start_date=window.start_date.isoformat(),

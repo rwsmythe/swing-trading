@@ -229,26 +229,53 @@ def test_foundation_primitives_end_to_end_chain(conn: sqlite3.Connection) -> Non
 
 
 def test_foundation_primitives_consumed_by_detectors_invariant() -> None:
-    """Cross-bundle pin: T2.SB3 detectors (VCP / flat_base /
-    cup_with_handle) MUST consume foundation primitives at the locked
-    signatures. Un-skipped at T-A.3.9 (T2.SB3 closer) per plan H.3 row 6.
+    """Cross-bundle pin: T2.SB3 + T2.SB4 detectors (VCP / flat_base /
+    cup_with_handle / high_tight_flag / double_bottom_w) MUST consume
+    foundation primitives at the locked signatures. First un-skipped at
+    T-A.3.9 (T2.SB3 closer) per plan H.3 row 5 (3-detector body);
+    extended at T-A.4.7 (T2.SB4 closer) to cover the 2 new T2.SB4
+    detectors (high_tight_flag + double_bottom_w) per dispatch brief
+    section 1 + section 4.3 #17 + plan H.3 row 5.
 
     Verifies via ``inspect.getsource`` on each detector module that the
-    expected foundation primitives are imported + referenced. T2.SB4
-    detectors (high_tight_flag / double_bottom_W) will extend this pin
-    when they ship; for now T2.SB3 is sufficient to PASS the invariant.
+    expected foundation primitives are imported + referenced.
+
+    Per detector imports (verified against actual module source at
+    T-A.4.7 closer; HTF / DBW import only 4 primitives - neither uses
+    ``volume_trend_through_swings``, both compute their own
+    pole/consolidation or trough-window volume aggregates inline):
+    - vcp: CandidateWindow, current_stage, extract_zigzag_swings,
+      volume_trend_through_swings, adaptive_initial_threshold_pct
+    - flat_base: CandidateWindow, current_stage, extract_zigzag_swings,
+      adaptive_initial_threshold_pct
+    - cup_with_handle: CandidateWindow, current_stage,
+      extract_zigzag_swings, adaptive_initial_threshold_pct
+    - high_tight_flag: CandidateWindow, current_stage,
+      extract_zigzag_swings, adaptive_initial_threshold_pct
+    - double_bottom_w: CandidateWindow, current_stage,
+      extract_zigzag_swings, adaptive_initial_threshold_pct
     """
     import inspect
 
-    from swing.patterns import cup_with_handle, flat_base, vcp
+    from swing.patterns import (
+        cup_with_handle,
+        double_bottom_w,
+        flat_base,
+        high_tight_flag,
+        vcp,
+    )
 
-    # T2.SB3 detectors: each MUST reference the foundation primitives
-    # that the spec invariant requires they consume.
-    # Per spec sections 5.2 / 5.3 / 5.4 + recon section 7: VCP +
-    # flat_base + cup_with_handle all consume CandidateWindow inputs,
-    # extract_zigzag_swings for swing extraction, and current_stage for
-    # the Phase-4 evaluation surface read. VCP additionally consumes
-    # volume_trend_through_swings.
+    # 5 V1 detectors: each MUST reference the foundation primitives that
+    # the spec invariant requires they consume. Per spec sections 5.2 /
+    # 5.3 / 5.4 / 5.5 / 5.6 + recon section 7: all 5 consume
+    # CandidateWindow inputs, extract_zigzag_swings for swing extraction,
+    # current_stage for the Phase-4 evaluation surface read, and
+    # adaptive_initial_threshold_pct for zigzag threshold seeding. VCP
+    # additionally consumes volume_trend_through_swings; the other 4
+    # compute their own per-segment volume aggregates inline (no shared
+    # primitive). Asserting falsely that HTF / DBW import
+    # volume_trend_through_swings would create a brittle invariant the
+    # detectors do not satisfy.
     expected_primitives_per_detector = {
         "vcp": (
             vcp,
@@ -271,6 +298,24 @@ def test_foundation_primitives_consumed_by_detectors_invariant() -> None:
         ),
         "cup_with_handle": (
             cup_with_handle,
+            (
+                "CandidateWindow",
+                "current_stage",
+                "extract_zigzag_swings",
+                "adaptive_initial_threshold_pct",
+            ),
+        ),
+        "high_tight_flag": (
+            high_tight_flag,
+            (
+                "CandidateWindow",
+                "current_stage",
+                "extract_zigzag_swings",
+                "adaptive_initial_threshold_pct",
+            ),
+        ),
+        "double_bottom_w": (
+            double_bottom_w,
             (
                 "CandidateWindow",
                 "current_stage",

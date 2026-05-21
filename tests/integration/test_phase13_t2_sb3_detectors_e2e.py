@@ -312,17 +312,19 @@ def test_phase13_t2_sb3_detectors_e2e_fast(tmp_path: Path) -> None:
         ohlcv_cache=cache,
     )
 
-    # Assertion 1: 9 rows (3 tickers x 3 detector classes).
+    # Assertion 1: 15 rows (3 tickers x 5 detector classes per T2.SB4
+    # T-A.4.3; T2.SB3 originally shipped 3 detectors -> 9 rows).
     row_count = conn.execute(
         "SELECT COUNT(*) FROM pattern_evaluations WHERE pipeline_run_id = ?",
         (pipeline_run_id,),
     ).fetchone()[0]
-    assert row_count == 9, (
-        f"Expected 9 pattern_evaluations rows (3 tickers x 3 detectors); "
-        f"got {row_count}"
+    assert row_count == 15, (
+        f"Expected 15 pattern_evaluations rows (3 tickers x 5 detectors "
+        f"per T-A.4.3); got {row_count}"
     )
 
-    # Assertion 2: every row's pattern_class is one of the 3 expected.
+    # Assertion 2: every row's pattern_class is one of the 5 expected
+    # (T-A.4.3 added high_tight_flag + double_bottom_w).
     pattern_classes_present = {
         r[0] for r in conn.execute(
             "SELECT DISTINCT pattern_class FROM pattern_evaluations "
@@ -330,7 +332,13 @@ def test_phase13_t2_sb3_detectors_e2e_fast(tmp_path: Path) -> None:
             (pipeline_run_id,),
         ).fetchall()
     }
-    assert pattern_classes_present == {"vcp", "flat_base", "cup_with_handle"}
+    assert pattern_classes_present == {
+        "vcp",
+        "flat_base",
+        "cup_with_handle",
+        "high_tight_flag",
+        "double_bottom_w",
+    }
 
     # Assertion 3: every row has parseable feature_distribution_log_json
     # AND composite_score == geometric_score (T2.SB3 LOCK).
@@ -341,7 +349,7 @@ def test_phase13_t2_sb3_detectors_e2e_fast(tmp_path: Path) -> None:
         "ORDER BY ticker, pattern_class",
         (pipeline_run_id,),
     ).fetchall()
-    assert len(rows) == 9
+    assert len(rows) == 15
     for ticker, pat_class, geom, comp, fdl_json, tm_score in rows:
         assert fdl_json is not None and fdl_json != "", (
             f"feature_distribution_log_json empty for ({ticker}, {pat_class})"

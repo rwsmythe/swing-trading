@@ -463,8 +463,13 @@ _RULE_CRITERIA_BY_CLASS: dict[str, dict[str, Any]] = {
         "spec_section": "section 5.6",
         "criteria": _DOUBLE_BOTTOM_W_CRITERIA,
         "composite_scoring_note": (
-            "Weighted sum of criteria pass/fail; trough_2 undercut adds "
-            "+0.10 bonus capping at 1.0 via min(1.0, ...)."
+            "Evidence-tier geometric_score caps at 1.10 (rule-tier "
+            "criteria pass-fraction up to 1.0 plus criterion #8 trough_2 "
+            "undercut bonus +0.10 per spec section 10.5 line 1325 LOCK). "
+            "Composite-tier score per spec section 5.8 line 712 wraps "
+            "with min(1.0, ...) so composite is always in [0.0, 1.0]; "
+            "this is the layer separation enforced by Codex R1 M1 + R2 "
+            "Critical #1 + R3 Major #1."
         ),
     },
 }
@@ -614,8 +619,14 @@ _STRUCTURAL_EVIDENCE_SCHEMA_BY_CLASS: dict[str, dict[str, Any]] = {
             "undercut": "bool (true if trough_2 < trough_1)",
             "pivot_price": "float",
             "geometric_score": (
-                "float in [0.0, 1.0] (+0.10 if undercut bonus applied, "
-                "capped at 1.0)"
+                "float in [0.0, 1.10] at evidence layer (base in [0.0, "
+                "1.0] + undercut bonus +0.10 per spec section 5.6 #8 "
+                "LOCK + section 10.5 line 1325; spec section 5.8 line "
+                "718). The COMPOSITE layer (60% geometric + 40% "
+                "template) applies its own min(1.0, ...) cap "
+                "downstream; the pipeline clamps composite_score to "
+                "1.0 even when DBW evidence geometric_score == 1.10 "
+                "(closes Codex R2 Critical #1)."
             ),
         },
     },
