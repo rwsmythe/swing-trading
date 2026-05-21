@@ -26,6 +26,10 @@ dev = [
     "pytest-cov>=5",
     "pytest-recording>=0.13",
     "pytest-xdist>=3.5.0",
+    # Phase 13 T2.SB5 T-A.5.5: pytest-benchmark drives the 120s/run DTW
+    # template matching slow gate per spec section 5.7 line 706 + OQ-4.
+    # Test-only dependency (no production use).
+    "pytest-benchmark>=4",
     "ruff>=0.5",
     # Phase 13 T1.SB0 (Codex R2 Major #1 fix 2026-05-18): chart-bytes parity
     # test at `tests/pipeline/test_chart_bytes_parity_through_ohlcv_cache.py`
