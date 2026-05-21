@@ -2,10 +2,13 @@
       hx-post="/reviews/{{ vm.review.review_id }}/complete"
       hx-headers='{"HX-Request": "true"}'>
 
-  {# Phase 13 T3.SB3 (T-B.3.4) — server-stamped audit envelope; operator
-     cannot tamper (Phase 8 R2-R5 server-stamping family + L10 LOCK). #}
-  <input type="hidden" name="auto_populated_field_keys_json"
-         value="{{ vm.auto_populated_field_keys_json or '' }}">
+  {# Phase 13 T3.SB3 (T-B.3.4 + Codex R1 MAJOR #2 fix) — the audit
+     envelope is SERVER-RECOMPUTED at POST time from the canonical
+     period helpers (NOT trusted from a hidden form input). Submitting
+     a hidden field here would create a tampering surface (Phase 8
+     R2-R5 server-stamping gotcha family). The VM still surfaces
+     vm.auto_populated_field_keys_json for operator-visible audit
+     transparency; the value is intentionally NOT submitted on POST. #}
 
   {% if vm.period_mistake_tag_aggregate %}
   <fieldset class="period-review-auto-fill-mistakes"

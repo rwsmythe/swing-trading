@@ -359,3 +359,58 @@ def test_complete_review_atomic_audit_envelope_defaults_to_none() -> None:
     assert (
         sig.parameters["auto_populated_field_keys_json"].default is None
     )
+
+
+# --- Codex R1 MAJOR #1: read-path mapping for the v20 column ---
+
+
+def test_get_review_log_round_trips_auto_populated_field_keys_json(
+    db: sqlite3.Connection,
+) -> None:
+    """``_row_to_review_log`` must map the v20 ``auto_populated_field_keys_json``
+    column. Without the map, ``get()`` returns ``None`` for the field
+    even after a successful persist (Codex R1 MAJOR #1)."""
+    from swing.data.repos.review_log import complete_review_atomic, get
+
+    review_id = _seed_review_log(
+        db, period_start="2026-05-04", period_end="2026-05-08",
+        completed_date=None,
+    )
+    db.commit()
+
+    envelope = json.dumps(["primary_lesson", "cohort_health_summary"])
+    complete_review_atomic(
+        db, review_id=review_id,
+        completed_date="2026-05-08",
+        duration_minutes=30,
+        primary_lesson="lesson",
+        next_period_focus="focus",
+        auto_populated_field_keys_json=envelope,
+    )
+    fetched = get(db, review_id)
+    assert fetched is not None
+    assert fetched.auto_populated_field_keys_json == envelope
+
+
+def test_get_review_log_round_trips_none_audit_envelope(
+    db: sqlite3.Connection,
+) -> None:
+    """Symmetric NULL case — ``get()`` reads back ``None`` faithfully when
+    no envelope was persisted."""
+    from swing.data.repos.review_log import complete_review_atomic, get
+
+    review_id = _seed_review_log(
+        db, period_start="2026-05-04", period_end="2026-05-08",
+        completed_date=None,
+    )
+    db.commit()
+    complete_review_atomic(
+        db, review_id=review_id,
+        completed_date="2026-05-08",
+        duration_minutes=30,
+        primary_lesson="lesson",
+        next_period_focus="focus",
+    )
+    fetched = get(db, review_id)
+    assert fetched is not None
+    assert fetched.auto_populated_field_keys_json is None

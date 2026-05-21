@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
@@ -2570,13 +2570,30 @@ def cadence_complete_post(
     duration_minutes: int = Form(...),
     primary_lesson: str = Form(...),
     next_period_focus: str = Form(...),
-    auto_populated_field_keys_json: str | None = Form(None),
 ):
+    """Phase 13 T3.SB3 (T-B.3.4) — persist period review.
+
+    Audit envelope ``auto_populated_field_keys_json`` is SERVER-RECOMPUTED
+    at POST time from the review's period (NOT trusted from a hidden form
+    input). This honors the Phase 8 R2-R5 server-stamping family + L10
+    LOCK + CLAUDE.md hidden-audit-field-as-tampering-surface gotcha:
+    accepting the value from the form would let an operator submit a
+    fabricated envelope. Recomputing from the canonical period helpers at
+    POST time matches what was actually shown at form-render time (the
+    GET-side build_cadence_complete_vm uses the same helpers); any
+    GET→POST drift surfaces in the audit row faithfully.
+    """
+    import json as _json
     from datetime import date as _date
 
     from fastapi.responses import Response
 
     from swing.data.repos.review_log import complete_review_atomic, get
+    from swing.trades.review import (
+        get_period_cohort_health_deltas,
+        get_period_lessons_summary,
+        get_period_mistake_tag_aggregate,
+    )
     cfg = apply_overrides(request.app.state.cfg)
     conn = connect(cfg.paths.db_path)
     try:
@@ -2588,19 +2605,45 @@ def cadence_complete_post(
                 status_code=409,
                 detail="Review already completed",
             )
-        # Phase 13 T3.SB3 (T-B.3.4): persist the server-stamped audit
-        # envelope. ``... or None`` per Phase 6 deviation #3 CLAUDE.md
-        # gotcha — empty string must persist as NULL (nullable JSON
-        # column).
+        # Server-recompute the audit envelope from the canonical period
+        # helpers. Mirrors build_cadence_complete_vm's GET-side logic so
+        # the persisted envelope reflects what the operator actually saw.
+        ps = _date.fromisoformat(review.period_start)
+        pe = _date.fromisoformat(review.period_end)
+        period_length_days = (pe - ps).days + 1
+        prior_pe = ps - timedelta(days=1)
+        prior_ps = prior_pe - timedelta(days=period_length_days - 1)
+        period_lessons = get_period_lessons_summary(
+            conn, period_start=ps, period_end=pe,
+        )
+        period_mistake_agg = get_period_mistake_tag_aggregate(
+            conn, period_start=ps, period_end=pe,
+        )
+        period_cohort_deltas = get_period_cohort_health_deltas(
+            conn,
+            current_period_start=ps,
+            current_period_end=pe,
+            prior_period_start=prior_ps,
+            prior_period_end=prior_pe,
+        )
+        recomputed_keys: list[str] = []
+        if period_lessons:
+            recomputed_keys.append("primary_lesson")
+        if period_mistake_agg:
+            recomputed_keys.append("most_common_mistake_tags")
+        if period_cohort_deltas:
+            recomputed_keys.append("cohort_health_summary")
+        audit_envelope = _json.dumps(recomputed_keys) if recomputed_keys else None
+        # ``... or None`` per Phase 6 deviation #3 CLAUDE.md gotcha —
+        # nullable JSON column rejects empty string under future
+        # validation; persist NULL when no auto-fill keys produced.
         complete_review_atomic(
             conn, review_id=review_id,
             completed_date=_date.today().isoformat(),
             duration_minutes=duration_minutes,
             primary_lesson=primary_lesson,
             next_period_focus=next_period_focus,
-            auto_populated_field_keys_json=(
-                auto_populated_field_keys_json or None
-            ),
+            auto_populated_field_keys_json=audit_envelope or None,
         )
     finally:
         conn.close()
