@@ -13,8 +13,10 @@ parameterized inputs.
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 import unicodedata
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -281,6 +283,268 @@ def compute_monthly_period(now: datetime) -> tuple[date, date]:
     last_of_prior = first_of_this_month - timedelta(days=1)
     first_of_prior = last_of_prior.replace(day=1)
     return first_of_prior, last_of_prior
+
+
+# ---- Phase 13 T3.SB3 — Review priors (per spec §E.4) ----
+
+# §E.4 LOCK: default N = 5 recent reviews for the same ticker.
+REVIEW_PRIORS_DEFAULT_N: int = 5
+
+
+@dataclass(frozen=True)
+class ReviewPriors:
+    """Per-ticker prior-review aggregates surfaced to the review form (§E.4).
+
+    Fields:
+      * ``mistake_tag_candidates``: union of mistake_tags across recent N
+        reviewed trades for the ticker (tuple-of-str for frozen-dataclass
+        immutability).
+      * ``process_grade_baseline``: mean of recent N process_grade values
+        under the numeric encoding A=4..F=0; ``None`` when no prior review
+        carries a recognizable grade.
+      * ``lesson_learned_candidates``: most-recent-first list of distinct
+        non-empty ``lesson_learned`` entries from recent N reviews.
+
+    ``Literal[...]`` is NOT runtime-enforced (T-A.1.5b R3 M#1 gotcha); the
+    ``__post_init__`` guard rejects out-of-range ``process_grade_baseline``
+    + non-tuple candidate fields to keep data-integrity contracts honest at
+    the construction boundary.
+    """
+    mistake_tag_candidates: tuple[str, ...]
+    process_grade_baseline: float | None
+    lesson_learned_candidates: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.mistake_tag_candidates, tuple):
+            raise TypeError(
+                "ReviewPriors.mistake_tag_candidates must be tuple[str, ...]; "
+                f"got {type(self.mistake_tag_candidates).__name__}"
+            )
+        if not isinstance(self.lesson_learned_candidates, tuple):
+            raise TypeError(
+                "ReviewPriors.lesson_learned_candidates must be tuple[str, "
+                "...]; got "
+                f"{type(self.lesson_learned_candidates).__name__}"
+            )
+        if self.process_grade_baseline is not None:
+            if not isinstance(self.process_grade_baseline, (int, float)):
+                raise TypeError(
+                    "ReviewPriors.process_grade_baseline must be float | "
+                    f"None; got {type(self.process_grade_baseline).__name__}"
+                )
+            if not (0.0 <= float(self.process_grade_baseline) <= 4.0):
+                raise ValueError(
+                    "ReviewPriors.process_grade_baseline must lie in "
+                    f"[0.0, 4.0]; got {self.process_grade_baseline!r}"
+                )
+
+
+def get_priors_for_ticker(
+    conn: sqlite3.Connection,
+    ticker: str,
+    n: int = REVIEW_PRIORS_DEFAULT_N,
+) -> ReviewPriors:
+    """Return per-ticker review priors over the most-recent N reviewed
+    trades (§E.4 LOCK; default N=5).
+
+    Reads from the ``trades`` table where ``state='reviewed'`` AND
+    ``reviewed_at IS NOT NULL`` for the supplied ticker, ordered most-
+    recent-first by ``reviewed_at``.
+
+    Graceful at n=0 / no priors per spec §A.16: returns an empty
+    ``ReviewPriors`` (empty tuples + ``None`` baseline) without raising.
+
+    Per the spec §6.3 surface contract: each field is operator-editable in
+    the review form; this helper supplies only the DEFAULT input values.
+    """
+    if not ticker or not isinstance(ticker, str):
+        raise ValueError(
+            f"get_priors_for_ticker requires a non-empty ticker; got {ticker!r}"
+        )
+    if not isinstance(n, int) or n < 0:
+        raise ValueError(
+            f"get_priors_for_ticker n must be a non-negative int; got {n!r}"
+        )
+    if n == 0:
+        return ReviewPriors(
+            mistake_tag_candidates=(),
+            process_grade_baseline=None,
+            lesson_learned_candidates=(),
+        )
+
+    rows = conn.execute(
+        "SELECT mistake_tags, process_grade, lesson_learned "
+        "FROM trades "
+        "WHERE ticker = ? AND state = 'reviewed' AND reviewed_at IS NOT NULL "
+        "ORDER BY reviewed_at DESC "
+        "LIMIT ?",
+        (ticker, n),
+    ).fetchall()
+
+    mistake_tag_set: set[str] = set()
+    grade_values: list[float] = []
+    lessons_ordered: list[str] = []
+    seen_lessons: set[str] = set()
+    for row in rows:
+        mistake_tags_json, process_grade, lesson_learned = row[0], row[1], row[2]
+        if mistake_tags_json:
+            try:
+                parsed = json.loads(mistake_tags_json)
+            except (json.JSONDecodeError, TypeError):
+                parsed = None
+            if isinstance(parsed, list):
+                # Per-row failure isolation (T2.SB5 R1 M#1 forward-binding
+                # lesson #2): a single malformed tag must not poison the
+                # rest of the cohort.
+                for tag in parsed:
+                    if isinstance(tag, str) and tag:
+                        mistake_tag_set.add(tag)
+        if isinstance(process_grade, str):
+            grade = STAGE_GRADE_NUMERIC.get(process_grade)
+            if grade is not None:
+                grade_values.append(float(grade))
+        if isinstance(lesson_learned, str):
+            lesson = lesson_learned.strip()
+            if lesson and lesson not in seen_lessons:
+                lessons_ordered.append(lesson)
+                seen_lessons.add(lesson)
+
+    if grade_values:
+        baseline: float | None = sum(grade_values) / len(grade_values)
+    else:
+        baseline = None
+
+    return ReviewPriors(
+        mistake_tag_candidates=tuple(sorted(mistake_tag_set)),
+        process_grade_baseline=baseline,
+        lesson_learned_candidates=tuple(lessons_ordered),
+    )
+
+
+# ---- Phase 13 T3.SB3 — Period review helpers (per spec §E.5) ----
+
+
+def get_period_lessons_summary(
+    conn: sqlite3.Connection,
+    *,
+    period_start: date,
+    period_end: date,
+) -> str:
+    """Return concatenated ``primary_lesson`` text from completed reviews
+    in the period [period_start, period_end] (inclusive) per §E.5 LOCK.
+
+    Empty string when no completed review with non-empty primary_lesson
+    exists in the window. Each lesson is prefixed with the review's
+    ``completed_date`` for operator readability.
+    """
+    rows = conn.execute(
+        "SELECT completed_date, primary_lesson FROM review_log "
+        "WHERE completed_date IS NOT NULL "
+        "  AND completed_date BETWEEN ? AND ? "
+        "  AND primary_lesson IS NOT NULL "
+        "  AND TRIM(primary_lesson) <> '' "
+        "ORDER BY completed_date ASC",
+        (period_start.isoformat(), period_end.isoformat()),
+    ).fetchall()
+    parts: list[str] = []
+    for row in rows:
+        completed_date, primary_lesson = row[0], row[1]
+        if isinstance(primary_lesson, str) and primary_lesson.strip():
+            parts.append(f"[{completed_date}] {primary_lesson.strip()}")
+    return "\n\n".join(parts)
+
+
+def get_period_mistake_tag_aggregate(
+    conn: sqlite3.Connection,
+    *,
+    period_start: date,
+    period_end: date,
+) -> dict[str, int]:
+    """Return ``{tag: count}`` aggregate over reviewed trades whose
+    ``reviewed_at`` falls in the period [period_start, period_end] per
+    §E.5 LOCK.
+
+    ``reviewed_at`` is an ISO-8601 timestamp string; the SQL window
+    compares against ``DATE(reviewed_at)`` so timezone-naive timestamps
+    fall correctly on the date boundary.
+    """
+    rows = conn.execute(
+        "SELECT mistake_tags FROM trades "
+        "WHERE state = 'reviewed' "
+        "  AND reviewed_at IS NOT NULL "
+        "  AND DATE(reviewed_at) BETWEEN ? AND ? "
+        "  AND mistake_tags IS NOT NULL",
+        (period_start.isoformat(), period_end.isoformat()),
+    ).fetchall()
+    agg: dict[str, int] = {}
+    for row in rows:
+        raw = row[0]
+        if not raw:
+            continue
+        # Per-row failure isolation (T2.SB5 R1 M#1 forward-binding
+        # lesson #2): skip malformed JSON; do not poison the aggregate.
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(parsed, list):
+            continue
+        for tag in parsed:
+            if isinstance(tag, str) and tag:
+                agg[tag] = agg.get(tag, 0) + 1
+    return agg
+
+
+def get_period_cohort_health_deltas(
+    conn: sqlite3.Connection,
+    *,
+    current_period_start: date,
+    current_period_end: date,
+    prior_period_start: date,
+    prior_period_end: date,
+) -> dict[str, float]:
+    """Return ``{cohort: delta}`` where delta is the change in mean
+    ``realized_R_if_plan_followed`` for the cohort (sector grouping) from
+    the prior period to the current period.
+
+    Per §E.5 LOCK signature: takes 4 date params (current + prior period
+    boundaries). Each cohort key is a trade's ``sector`` (or
+    ``"(unsectored)"`` for the empty-string sentinel). A cohort surfaces
+    if it has at least one reviewed trade in EITHER window. Trades with
+    ``realized_R_if_plan_followed IS NULL`` are excluded from the mean.
+
+    Surfacing as the starter "deltas vs prior period" text in the period
+    review section per spec §6.3.
+    """
+    def _means(p_start: date, p_end: date) -> dict[str, float]:
+        rows = conn.execute(
+            "SELECT sector, AVG(realized_R_if_plan_followed) AS avg_r "
+            "FROM trades "
+            "WHERE state = 'reviewed' "
+            "  AND reviewed_at IS NOT NULL "
+            "  AND DATE(reviewed_at) BETWEEN ? AND ? "
+            "  AND realized_R_if_plan_followed IS NOT NULL "
+            "GROUP BY sector",
+            (p_start.isoformat(), p_end.isoformat()),
+        ).fetchall()
+        out: dict[str, float] = {}
+        for row in rows:
+            sector_raw, avg_r = row[0], row[1]
+            if avg_r is None:
+                continue
+            cohort = sector_raw if sector_raw else "(unsectored)"
+            out[cohort] = float(avg_r)
+        return out
+
+    current_means = _means(current_period_start, current_period_end)
+    prior_means = _means(prior_period_start, prior_period_end)
+
+    deltas: dict[str, float] = {}
+    for cohort in set(current_means) | set(prior_means):
+        deltas[cohort] = (
+            current_means.get(cohort, 0.0) - prior_means.get(cohort, 0.0)
+        )
+    return deltas
 
 
 def complete_trade_review(

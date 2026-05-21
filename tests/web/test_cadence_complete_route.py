@@ -130,6 +130,57 @@ def test_post_cadence_complete_returns_204_with_hx_redirect(
     assert r.headers.get("HX-Redirect") == "/"
 
 
+def test_post_cadence_complete_ignores_tampered_audit_envelope(
+    test_app_with_pending_daily,
+):
+    """Phase 13 T3.SB3 Codex R1 MAJOR #2 — the audit envelope is server-
+    recomputed at POST time from the canonical period helpers, NOT
+    trusted from a hidden form input. A tampered POST that submits a
+    fabricated envelope MUST be ignored; the persisted column reflects
+    what the helpers actually find for the review's period.
+
+    For this fixture (a daily review with no prior reviews + no reviewed
+    trades + no realized R), all 3 period helpers return empty output →
+    the persisted envelope is NULL regardless of what the operator
+    submits.
+    """
+    from swing.config import load
+    from swing.data.db import connect
+
+    with TestClient(test_app_with_pending_daily) as client:
+        r = client.post(
+            "/reviews/1/complete",
+            data={
+                "duration_minutes": "12",
+                "primary_lesson": "Inaugural.",
+                "next_period_focus": "Same setup.",
+                # Tampered hidden field — MUST NOT be persisted.
+                "auto_populated_field_keys_json": (
+                    '["primary_lesson","cohort_health_summary"]'
+                ),
+            },
+            headers={"HX-Request": "true"},
+            follow_redirects=False,
+        )
+    assert r.status_code == 204
+    # Verify the persisted envelope is NULL (server recomputed empty for
+    # this fixture), NOT the operator's fabricated value.
+    cfg = load(Path("swing.config.toml"))
+    db_path = test_app_with_pending_daily.state.cfg.paths.db_path
+    conn = connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT auto_populated_field_keys_json FROM review_log "
+            "WHERE review_id = 1",
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row[0] is None, (
+        "tampered audit envelope should be ignored; got "
+        f"{row[0]!r}"
+    )
+
+
 def test_get_cadence_complete_404_for_unknown_review(test_app_with_pending_daily):
     with TestClient(test_app_with_pending_daily) as client:
         r = client.get("/reviews/9999/complete")

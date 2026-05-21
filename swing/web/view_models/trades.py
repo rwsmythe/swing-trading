@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Literal
 
 from swing.config import Config
@@ -24,6 +24,7 @@ from swing.recommendations.sizing import compute_shares
 from swing.trades.entry import entry_rationale_options
 from swing.trades.equity import current_equity
 from swing.trades.exit import ExitReason
+from swing.trades.review import ReviewPriors
 from swing.trades.stop_adjust import stop_adjust_rationale_options
 from swing.web.chart_scope import latest_completed_pipeline_run
 from swing.web.price_cache import PriceCache
@@ -971,6 +972,24 @@ class ReviewVM:
     # resolve form. None when no pending-ambiguity row exists.
     banner_resolve_link: str | None = None
 
+    # Phase 13 T3.SB3 (T-B.3.3) — Review auto-fill priors + MFE/MAE per
+    # spec §6.3 + plan §E.4 + §E.3 LOCK. All values are operator-editable
+    # DEFAULTS surfaced on the form-render path; the audit array tracks
+    # which keys were server-populated so the POST handler can persist
+    # ``review_log.auto_populated_field_keys_json`` faithfully.
+    priors: ReviewPriors = field(
+        default_factory=lambda: ReviewPriors(
+            mistake_tag_candidates=(),
+            process_grade_baseline=None,
+            lesson_learned_candidates=(),
+        ),
+    )
+    mfe_pct: float = 0.0
+    mae_pct: float = 0.0
+    # Server-stamped at handler entry; operator cannot tamper (Phase 8
+    # R2-R5 family forward-binding lesson + L10 LOCK).
+    auto_populated_field_keys_json: str | None = None
+
     def __post_init__(self) -> None:
         if self.banner_resolve_link is not None:
             if not isinstance(self.banner_resolve_link, str):
@@ -989,10 +1008,24 @@ class ReviewVM:
                 )
 
 
-def build_review_vm(*, trade_id: int, cfg: Config) -> ReviewVM | None:
+def build_review_vm(
+    *, trade_id: int, cfg: Config, ohlcv_cache: Any = None,
+) -> ReviewVM | None:
     """Build the review-page VM. Returns None if trade not found, not closed,
     or already reviewed (V1 single-review-per-trade per brief §3.2).
+
+    Phase 13 T3.SB3 (T-B.3.3): plumb priors + MFE/MAE auto-fill per spec
+    §6.3. ``ohlcv_cache`` is the optional ``OhlcvCache.get_or_fetch``-
+    capable substrate (request.app.state.ohlcv_cache at the web boundary;
+    None when called from tests / CLI paths). MFE/MAE source-ladder per
+    spec §E.3 LOCK: Phase 8 ``daily_management_records`` FIRST; OhlcvCache
+    FALLBACK. Server-stamps ``auto_populated_field_keys_json`` honoring
+    Phase 8 R2-R5 server-stamping family + L10 LOCK — operator cannot
+    tamper with the audit envelope.
     """
+    from datetime import datetime as _dt
+
+    from swing.evaluation.dates import last_completed_session
     from swing.metrics.discrepancies import (
         count_recent_multi_leg_auto_corrections,
         count_unresolved_material,
@@ -1004,7 +1037,9 @@ def build_review_vm(*, trade_id: int, cfg: Config) -> ReviewVM | None:
         compute_actual_realized_R_effective,
         compute_lucky_violation_R,
         compute_mistake_cost_R,
+        get_priors_for_ticker,
     )
+    from swing.trades.review_auto_fill import compute_mfe_mae_from_ohlcv_cache
 
     conn = connect(cfg.paths.db_path)
     try:
@@ -1033,10 +1068,48 @@ def build_review_vm(*, trade_id: int, cfg: Config) -> ReviewVM | None:
             banner_resolve_link = (
                 fetch_first_pending_ambiguity_resolve_link_path(conn)
             )
+            # T-B.3.3: priors + MFE/MAE source-ladder reads. Stays inside the
+            # same outer ``with conn:`` so all reads happen against a single
+            # connection / snapshot.
+            priors = get_priors_for_ticker(conn, trade.ticker)
+            mfe_pct, mae_pct = compute_mfe_mae_from_ohlcv_cache(
+                conn, trade, ohlcv_cache,
+            )
     finally:
         conn.close()
     exits = tuple(_fill_to_exit_like(f, trade) for f in non_entry_fills)
     actual_r = compute_actual_realized_R_effective(trade, list(exits))
+
+    # T-B.3.3: server-stamp the audit envelope at handler entry. Each key
+    # is included iff its auto-fill source produced a non-empty / non-
+    # trivial value. Operator-typed fields stay attributable (omitted from
+    # the array → POST handler persists ``operator_typed`` for those keys
+    # by exclusion).
+    auto_keys: list[str] = []
+    if priors.mistake_tag_candidates:
+        auto_keys.append("mistake_tags")
+    if priors.process_grade_baseline is not None:
+        auto_keys.append("process_grade_baseline")
+    if priors.lesson_learned_candidates:
+        auto_keys.append("lesson_learned")
+    if mfe_pct != 0.0:
+        auto_keys.append("mfe_pct")
+    if mae_pct != 0.0:
+        auto_keys.append("mae_pct")
+    # Pre-Codex review MAJOR #1: emit None on empty so the ``... or None``
+    # gotcha-defense at any downstream POST persistence (or future v21
+    # trades-level audit column) doesn't accidentally persist the string
+    # "[]" (truthy) instead of NULL. Mirrors the cadence-path discipline
+    # in build_cadence_complete_vm.
+    auto_populated_field_keys_json: str | None = (
+        json.dumps(auto_keys) if auto_keys else None
+    )
+
+    # T-B.3.3 step 1 (d): session-anchor alignment via
+    # ``last_completed_session(now())`` (CLAUDE.md session-anchor read/
+    # write mismatch gotcha family — backward-looking anchor matches the
+    # period-helpers' read predicate at T-B.3.4).
+    session_date = last_completed_session(_dt.now()).isoformat()
 
     # Phase 10 T-B.7 elective (per electives amendment §2): derive per-trade
     # mistake_cost_R + lucky_violation_R via Phase 6 helpers. Both surface
@@ -1072,6 +1145,11 @@ def build_review_vm(*, trade_id: int, cfg: Config) -> ReviewVM | None:
         unresolved_material_discrepancies_count=unresolved_material_count,
         recent_multi_leg_auto_correction_count=recent_multi_leg_count,
         banner_resolve_link=banner_resolve_link,
+        session_date=session_date,
+        priors=priors,
+        mfe_pct=mfe_pct,
+        mae_pct=mae_pct,
+        auto_populated_field_keys_json=auto_populated_field_keys_json,
     )
 
 
@@ -1097,6 +1175,18 @@ class CadenceCompleteVM:
     # Phase 12.5 #2 T-2.7 — banner link to FIRST pending-ambiguity discrepancy
     # resolve form. None when no pending-ambiguity row exists.
     banner_resolve_link: str | None = None
+
+    # Phase 13 T3.SB3 (T-B.3.4) — period review auto-fill per spec §E.5
+    # LOCK. All values are operator-editable starter text surfaced on the
+    # form-render path; the audit envelope tracks which keys were server-
+    # populated so the POST handler can persist
+    # ``review_log.auto_populated_field_keys_json`` faithfully.
+    period_lessons_summary: str = ""
+    period_mistake_tag_aggregate: dict[str, int] = field(default_factory=dict)
+    period_cohort_health_deltas: dict[str, float] = field(default_factory=dict)
+    # Server-stamped at handler entry; operator cannot tamper (Phase 8
+    # R2-R5 family forward-binding lesson + L10 LOCK).
+    auto_populated_field_keys_json: str | None = None
 
     def __post_init__(self) -> None:
         if self.banner_resolve_link is not None:
@@ -1226,8 +1316,50 @@ def build_cadence_complete_vm(*, review_id: int, cfg: Config) -> CadenceComplete
         banner_resolve_link = (
             fetch_first_pending_ambiguity_resolve_link_path(conn)
         )
+
+        # Phase 13 T3.SB3 (T-B.3.4): invoke the §E.5 period helpers to
+        # surface starter section text. Prior-period boundaries derived
+        # from the review's period span: same-length window immediately
+        # preceding the current period.
+        from swing.trades.review import (
+            get_period_cohort_health_deltas,
+            get_period_lessons_summary,
+            get_period_mistake_tag_aggregate,
+        )
+
+        period_lessons = get_period_lessons_summary(
+            conn, period_start=ps, period_end=pe,
+        )
+        period_mistake_agg = get_period_mistake_tag_aggregate(
+            conn, period_start=ps, period_end=pe,
+        )
+        period_length_days = (pe - ps).days + 1
+        prior_pe = ps - timedelta(days=1)
+        prior_ps = prior_pe - timedelta(days=period_length_days - 1)
+        period_cohort_deltas = get_period_cohort_health_deltas(
+            conn,
+            current_period_start=ps,
+            current_period_end=pe,
+            prior_period_start=prior_ps,
+            prior_period_end=prior_pe,
+        )
     finally:
         conn.close()
+
+    # T-B.3.4: server-stamp the audit envelope based on which period
+    # helpers produced non-empty output. Operator-typed sections stay
+    # attributable (excluded from the JSON array).
+    auto_keys: list[str] = []
+    if period_lessons:
+        auto_keys.append("primary_lesson")
+    if period_mistake_agg:
+        auto_keys.append("most_common_mistake_tags")
+    if period_cohort_deltas:
+        auto_keys.append("cohort_health_summary")
+    auto_populated_field_keys_json: str | None = (
+        json.dumps(auto_keys) if auto_keys else None
+    )
+
     return CadenceCompleteVM(
         review=review,
         n_closed_trades_in_period=n,
@@ -1235,6 +1367,10 @@ def build_cadence_complete_vm(*, review_id: int, cfg: Config) -> CadenceComplete
         unresolved_material_discrepancies_count=unresolved_material_count,
         recent_multi_leg_auto_correction_count=recent_multi_leg_count,
         banner_resolve_link=banner_resolve_link,
+        period_lessons_summary=period_lessons,
+        period_mistake_tag_aggregate=period_mistake_agg,
+        period_cohort_health_deltas=period_cohort_deltas,
+        auto_populated_field_keys_json=auto_populated_field_keys_json,
     )
 
 

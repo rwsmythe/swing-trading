@@ -9,6 +9,60 @@
       hx-post="/trades/{{ vm.trade.id }}/review"
       hx-headers='{"HX-Request": "true"}'>
 
+  {# Phase 13 T3.SB3 (T-B.3.3) — server-stamped audit envelope; operator
+     cannot tamper (Phase 8 R2-R5 server-stamping family + L10 LOCK). #}
+  <input type="hidden" name="auto_populated_field_keys_json"
+         value="{{ vm.auto_populated_field_keys_json or '' }}">
+
+  {% if vm.mfe_pct != 0.0 or vm.mae_pct != 0.0 %}
+  <fieldset class="review-auto-fill-mfe-mae" data-role="t-b-3-3-mfe-mae">
+    <legend>MFE / MAE since entry (auto-filled from candles)</legend>
+    <dl class="mfe-mae-pair">
+      <dt>MFE (max favorable excursion)</dt>
+      <dd data-field="mfe_pct">{{ "%.2f"|format(vm.mfe_pct * 100) }}%</dd>
+      <dt>MAE (max adverse excursion)</dt>
+      <dd data-field="mae_pct">{{ "%.2f"|format(vm.mae_pct * 100) }}%</dd>
+    </dl>
+    <p class="muted">
+      Computed against entry price ${{ "%.2f"|format(vm.trade.entry_price) }}
+      from Phase 8 daily-management coverage (if present) else OhlcvCache
+      daily bars. Display only — operator counterfactuals below remain
+      manual.
+    </p>
+  </fieldset>
+  {% endif %}
+
+  {% if vm.priors.process_grade_baseline is not none
+        or vm.priors.lesson_learned_candidates
+        or vm.priors.mistake_tag_candidates %}
+  <fieldset class="review-auto-fill-priors" data-role="t-b-3-3-priors">
+    <legend>Priors from recent same-ticker reviews</legend>
+    {% if vm.priors.process_grade_baseline is not none %}
+    <p data-field="process_grade_baseline">
+      Process-grade baseline (mean of recent N grades, A=4..F=0):
+      <strong>{{ "%.2f"|format(vm.priors.process_grade_baseline) }}</strong>
+    </p>
+    {% endif %}
+    {% if vm.priors.lesson_learned_candidates %}
+    <details data-field="lesson_learned_candidates">
+      <summary>
+        Lesson-learned candidates (most-recent-first;
+        {{ vm.priors.lesson_learned_candidates|length }})
+      </summary>
+      <ol>
+        {% for lesson in vm.priors.lesson_learned_candidates %}
+          <li>{{ lesson }}</li>
+        {% endfor %}
+      </ol>
+    </details>
+    {% endif %}
+    <p class="muted">
+      Suggestions only — operator chooses fresh values below. Source:
+      same-ticker reviewed trades, ordered most-recent-first.
+    </p>
+  </fieldset>
+  {% endif %}
+
   <fieldset>
     <legend>Stage grades</legend>
     {% for stage in ["entry", "management", "exit"] %}
@@ -41,7 +95,10 @@
       <p><strong>{{ category|capitalize }}</strong></p>
       {% for tag in tags %}
         <label>
-          <input type="checkbox" name="mistake_tags" value="{{ tag }}">
+          {# T-B.3.3: pre-check tags surfaced by priors as DEFAULT values
+             (§E.4 LOCK; operator-editable). #}
+          <input type="checkbox" name="mistake_tags" value="{{ tag }}"
+                 {% if tag in vm.priors.mistake_tag_candidates %}checked{% endif %}>
           {{ tag }}
         </label>
       {% endfor %}
@@ -69,7 +126,9 @@
 
   <fieldset>
     <legend>Lesson learned (required)</legend>
-    <textarea name="lesson_learned" rows="4" required></textarea>
+    {# T-B.3.3: pre-fill textarea with the most-recent prior lesson as a
+       DEFAULT value (§E.4 LOCK; operator-editable). #}
+    <textarea name="lesson_learned" rows="4" required>{%- if vm.priors.lesson_learned_candidates -%}{{ vm.priors.lesson_learned_candidates[0] }}{%- endif -%}</textarea>
   </fieldset>
 
   <button type="submit">Submit review</button>

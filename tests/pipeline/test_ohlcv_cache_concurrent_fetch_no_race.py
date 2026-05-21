@@ -200,9 +200,6 @@ def test_ohlcv_cache_concurrent_same_ticker_yields_consistent_frame(
 # -- Cross-bundle pin (per plan H.3 + brief 1.4) -------------------------
 
 
-@pytest.mark.skip(
-    reason="cross-bundle pin - un-skips at T2.SB2 + T2.SB3 + T3.SB3 per plan H.3",
-)
 def test_ohlcv_cache_get_or_fetch_invariant(tmp_path: Path):
     """Phase 13 T1.SB0 cross-bundle pin (per plan H.3 + brief 1.4).
 
@@ -211,10 +208,11 @@ def test_ohlcv_cache_get_or_fetch_invariant(tmp_path: Path):
     T2.SB3 (detector batch 1), and T3.SB3 (review auto-fill MFE/MAE candle-
     data source per OQ-8 BINDING).
 
-    Un-skip at each consumer landing to verify the surface still satisfies
-    the consumer's expectations. If this test starts failing at consumer
-    land-time, EITHER the cache surface drifted OR the consumer's
-    expectations diverged from the documented contract.
+    Un-skipped at T3.SB3 closer per plan H.3 row 1 — the surface satisfies
+    the T3.SB3 review auto-fill consumer (compute_mfe_mae_from_ohlcv_cache
+    in swing.trades.review_auto_fill). If this test starts failing at a
+    future consumer land-time, EITHER the cache surface drifted OR the
+    consumer's expectations diverged from the documented contract.
 
     ASCII-only skip-reason + section header text per CLAUDE.md cp1252
     stdout gotcha (pytest renders skip-reason via stdout which may not be
@@ -222,6 +220,9 @@ def test_ohlcv_cache_get_or_fetch_invariant(tmp_path: Path):
     """
     import inspect
 
+    import pandas as pd
+
+    from swing.config import load
     from swing.web.ohlcv_cache import OhlcvCache
 
     # Surface MUST exist + MUST be callable.
@@ -236,10 +237,38 @@ def test_ohlcv_cache_get_or_fetch_invariant(tmp_path: Path):
     assert params["ticker"].kind == inspect.Parameter.KEYWORD_ONLY
     assert params["window_days"].kind == inspect.Parameter.KEYWORD_ONLY
 
-    # Behavioral surface (a single round-trip in cassette-mode would land
-    # at consumer un-skip time; left commented for the un-skip implementer
-    # to materialize against their consumer's fixture).
-    # cfg = ...; cache = OhlcvCache(cfg)
-    # df = cache.get_or_fetch(ticker='AAPL', window_days=180)
-    # assert list(df.columns) == ['Open', 'High', 'Low', 'Close', 'Volume']
-    # assert isinstance(df.index, pd.DatetimeIndex)
+    # Behavioral surface materialized at T3.SB3 un-skip per plan H.3 row 1
+    # — exercise the ladder-bars-fetcher injection point so the test runs
+    # offline (no yfinance / Schwab network call). Verifies that the
+    # public ``get_or_fetch`` surface returns a DatetimeIndex DataFrame
+    # with capitalized OHLCV columns when fed daily bars via the ladder
+    # hook (matches the T1.SB0 R3 M#1 "shared-infrastructure cache hooks
+    # return FULL archive; consumers slice" discipline).
+    cfg = load(Path("swing.config.toml"))
+    cache = OhlcvCache(cfg)
+
+    sample_bars = pd.DataFrame(
+        [
+            ["2026-04-01", 10.0, 11.0, 9.5, 10.5, 1000],
+            ["2026-04-02", 10.5, 11.5, 10.0, 11.0, 1500],
+            ["2026-04-03", 11.0, 12.0, 10.8, 11.8, 2000],
+        ],
+        columns=["date", "Open", "High", "Low", "Close", "Volume"],
+    )
+    sample_bars["date"] = pd.to_datetime(sample_bars["date"])
+    sample_bars = sample_bars.set_index("date")
+
+    def _stub_fetcher(ticker: str) -> tuple[pd.DataFrame, str]:
+        return sample_bars, "yfinance"
+
+    cache.set_ladder_bars_fetcher(_stub_fetcher)
+    try:
+        df = cache.get_or_fetch(ticker="AAPL", window_days=200)
+    finally:
+        cache.set_ladder_bars_fetcher(None)
+    # Shape contract: capitalized OHLCV columns + DatetimeIndex (matches
+    # PriceFetcher.get's shape — recon §3 parity table). T3.SB3
+    # ``compute_mfe_mae_from_ohlcv_cache`` depends on both.
+    assert isinstance(df.index, pd.DatetimeIndex)
+    for col in ("Open", "High", "Low", "Close", "Volume"):
+        assert col in df.columns, f"missing column {col!r} in df"

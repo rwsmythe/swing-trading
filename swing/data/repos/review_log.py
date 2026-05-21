@@ -165,6 +165,7 @@ def complete_review_atomic(
     duration_minutes: int,
     primary_lesson: str,
     next_period_focus: str,
+    auto_populated_field_keys_json: str | None = None,
 ) -> None:
     """Mark review complete + freeze all aggregates atomically.
 
@@ -268,6 +269,12 @@ def complete_review_atomic(
         # active policy_id at completion time (spec §3.1.1). NULL when no
         # active policy exists (operator manually flipped seed inactive);
         # legal per spec §9.4 backwards-compatibility contract.
+        # Phase 13 T3.SB3 (T-B.3.4): server-stamped audit envelope of
+        # which form fields were auto-populated at form-render time.
+        # ``... or None`` per Phase 6 deviation #3 CLAUDE.md gotcha — the
+        # column is nullable; submitting an empty form field must persist
+        # NULL (not empty string).
+        audit_value = auto_populated_field_keys_json or None
         conn.execute(
             """
             UPDATE review_log SET
@@ -285,6 +292,7 @@ def complete_review_atomic(
                 avg_loss_R = ?,
                 profit_factor = ?,
                 max_drawdown_R = ?,
+                auto_populated_field_keys_json = ?,
                 risk_policy_id_at_review_completion = (
                     SELECT policy_id FROM risk_policy WHERE is_active = 1
                 )
@@ -295,7 +303,9 @@ def complete_review_atomic(
                 primary_lesson, next_period_focus,
                 total_cost, total_lucky,
                 net_R, expectancy_R, win_rate, avg_win, avg_loss,
-                profit_factor, max_dd, review_id,
+                profit_factor, max_dd,
+                audit_value,
+                review_id,
             ),
         )
         conn.execute("COMMIT")
@@ -446,7 +456,9 @@ def _row_to_review_log(row: tuple) -> ReviewLog:  # type: ignore[type-arg]
     ALTER ADD COLUMN ``risk_policy_id_at_review_completion`` (row 21 — NOT
     consumed by the dataclass V1; stays at SQL layer only), then migration
     0019 ALTER ADD COLUMN ``superseded_by_correction_id`` (row 22 — NEW
-    dataclass field at Phase 12 Sub-bundle C T-A.6).
+    dataclass field at Phase 12 Sub-bundle C T-A.6), then migration 0020
+    ALTER ADD COLUMN ``auto_populated_field_keys_json`` (row 23 — NEW
+    dataclass field at Phase 13 T3.SB3).
     """
     skipped_raw = row[6]
     return ReviewLog(
@@ -475,4 +487,11 @@ def _row_to_review_log(row: tuple) -> ReviewLog:  # type: ignore[type-arg]
         # 0017) — intentionally not consumed by the dataclass V1.
         # Phase 12 Sub-bundle C T-A.6: superseded_by_correction_id at row[22].
         superseded_by_correction_id=row[22],
+        # Phase 13 T3.SB3 (Codex R1 MAJOR #1): auto_populated_field_keys_json
+        # at row[23]. Persisted by complete_review_atomic; the read-path
+        # map was lagging the widened dataclass field at Codex R1 catch.
+        # No row-length fallback — schema v20 is enforced by the migration
+        # runner; a pre-v20 row at this site signals a real drift that
+        # should fail fast (Codex R2 MINOR follow-up).
+        auto_populated_field_keys_json=row[23],
     )
