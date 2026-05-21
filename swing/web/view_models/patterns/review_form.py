@@ -153,11 +153,11 @@ def _parse_geometric_score_breakdown(
         if result not in ("pass", "fail", "marginal", "unknown"):
             result = "unknown"
         score_val = item.get("score")
-        score: float | None
-        if isinstance(score_val, (int, float)):
-            score = float(score_val)
-        else:
-            score = None
+        score: float | None = (
+            float(score_val)
+            if isinstance(score_val, (int, float))
+            else None
+        )
         note_val = item.get("note")
         note = note_val if isinstance(note_val, str) and note_val else None
         rows.append(CriterionBreakdownRow(

@@ -243,6 +243,7 @@ def metrics_pattern_outcomes(request: Request):
     Per plan A.9 + I.6 LOCK: pure server-rendered HTML.
     """
     from datetime import datetime
+
     from swing.evaluation.dates import action_session_for_run
     db_path = request.app.state.cfg.paths.db_path
     conn = sqlite3.connect(db_path)
