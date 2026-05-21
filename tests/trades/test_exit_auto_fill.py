@@ -540,6 +540,55 @@ def test_buy_fills_filtered_out(
     )
 
 
+def test_sell_to_open_filtered_out(
+    conn, fake_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders,
+):
+    """Codex R1 Major #6 — SELL_TO_OPEN is a short-OPENING instruction
+    (entering a short position), NOT a close of a long position. Exit
+    auto-fill MUST NOT surface it as a candidate fill for a long-position
+    exit. Pre-fix: ``_SELL_INSTRUCTIONS`` included SELL_TO_OPEN +
+    SELL_SHORT; this test would have returned 'populated'. Post-fix: only
+    {SELL, SELL_TO_CLOSE} are recognised; SELL_TO_OPEN yields 'empty'.
+    """
+    sto_order = _make_sell_order(
+        ticker="AAPL", instruction="SELL_TO_OPEN",
+        enter_time="2026-05-19T14:30:00.000Z",
+    )
+    patch_get_orders.state["orders"] = [sto_order]
+    cfg = _make_cfg(environment="production")
+    result = resolve_exit_auto_fill(
+        trade_id=42, ticker="AAPL", entry_date="2026-05-15",
+        cfg=cfg, conn=conn, now=fake_now,
+    )
+    assert result.kind == "empty", (
+        "SELL_TO_OPEN is short-opening, NOT a long-exit; must be filtered"
+    )
+
+
+def test_sell_short_filtered_out(
+    conn, fake_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders,
+):
+    """Codex R1 Major #6 — SELL_SHORT is a short-OPENING instruction;
+    must NOT surface as a candidate fill for a long-position exit.
+    Companion to test_sell_to_open_filtered_out.
+    """
+    ss_order = _make_sell_order(
+        ticker="AAPL", instruction="SELL_SHORT",
+        enter_time="2026-05-19T14:30:00.000Z",
+    )
+    patch_get_orders.state["orders"] = [ss_order]
+    cfg = _make_cfg(environment="production")
+    result = resolve_exit_auto_fill(
+        trade_id=42, ticker="AAPL", entry_date="2026-05-15",
+        cfg=cfg, conn=conn, now=fake_now,
+    )
+    assert result.kind == "empty", (
+        "SELL_SHORT is short-opening, NOT a long-exit; must be filtered"
+    )
+
+
 def test_wrong_ticker_filtered_out(
     conn, fake_now, patch_live_state, patch_credentials,
     patch_client_factory, patch_get_orders,

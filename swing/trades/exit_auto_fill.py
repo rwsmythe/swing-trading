@@ -97,12 +97,17 @@ log = logging.getLogger(__name__)
 DEFAULT_LOOKBACK_DAYS: int = 7
 
 
-# SELL-side instructions that signal a closing fill on the exit side.
-# Mirrors swing/integrations/schwab/models.py _SCHWAB_ORDER_INSTRUCTIONS
-# SELL family. Symmetric counterpart of the BUY family consumed at T3.SB1
-# entry auto-fill.
+# SELL-side instructions that signal a CLOSING fill on the exit side.
+# Codex R1 Major #6 fix — restricted to {SELL, SELL_TO_CLOSE} only.
+# ``SELL_TO_OPEN`` and ``SELL_SHORT`` are short-OPENING instructions
+# (entering a short position) — NOT closes of a long position. Including
+# them on the exit form would surface unrelated short-entry orders as
+# candidate fills for a long-position exit, which is semantically wrong.
+# The companion BUY-side mirror at T3.SB1 entry auto-fill uses ``BUY``
+# and ``BUY_TO_OPEN`` (long-opening); the symmetric closing pair is
+# ``SELL`` and ``SELL_TO_CLOSE``.
 _SELL_INSTRUCTIONS: frozenset[str] = frozenset({
-    "SELL", "SELL_TO_CLOSE", "SELL_TO_OPEN", "SELL_SHORT",
+    "SELL", "SELL_TO_CLOSE",
 })
 
 
