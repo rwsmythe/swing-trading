@@ -241,7 +241,7 @@ def test_foundation_primitives_consumed_by_detectors_invariant() -> None:
     expected foundation primitives are imported + referenced.
 
     Per detector imports (verified against actual module source at
-    T-A.4.7 closer; HTF / DBW import only 4 primitives — neither uses
+    T-A.4.7 closer; HTF / DBW import only 4 primitives - neither uses
     ``volume_trend_through_swings``, both compute their own
     pole/consolidation or trough-window volume aggregates inline):
     - vcp: CandidateWindow, current_stage, extract_zigzag_swings,
