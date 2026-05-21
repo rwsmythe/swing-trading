@@ -1944,6 +1944,42 @@ class ChartRender:
                     f"pattern_class must be NULL when surface={self.surface!r}"
                 )
 
+        # Plan §C.2 cache key shape contract (per Codex R1 CRITICAL #1):
+        # run-bound surfaces require non-NULL pipeline_run_id; position_detail
+        # requires NULL pipeline_run_id. The schema's cross-column CHECK
+        # does NOT enforce this — only the partial unique indexes do, and
+        # they only constrain UNIQUENESS, not existence. Rows outside this
+        # contract are invisible to the canonical cache reader.
+        if self.surface == "position_detail":
+            if self.pipeline_run_id is not None:
+                raise ValueError(
+                    "chart_renders cache key shape violated: "
+                    "surface='position_detail' requires pipeline_run_id IS "
+                    f"NULL per plan §C.2, got {self.pipeline_run_id!r}"
+                )
+        elif (
+            self.surface != "theme2_annotated"
+            and self.pipeline_run_id is None
+        ):
+            # Run-bound: watchlist_row / hyprec_detail / market_weather.
+            raise ValueError(
+                "chart_renders cache key shape violated: "
+                f"surface={self.surface!r} (run-bound) requires "
+                "pipeline_run_id non-NULL per plan §C.2"
+            )
+
+        # CLAUDE.md F6 lesson (external-API empty-result must be transient
+        # when write-through-caching; per Codex R1 MAJOR #2): empty
+        # chart_svg_bytes must NOT pass construction — otherwise
+        # refresh_chart_render's DELETE-then-INSERT would blank a
+        # previously-good cache row when an upstream renderer returns empty
+        # for a transient reason (matplotlib hiccup; pre-data-flow init).
+        if not self.chart_svg_bytes:
+            raise ValueError(
+                "chart_renders chart_svg_bytes must be non-empty per "
+                "CLAUDE.md F6 lesson (transient empty must not blank cache)"
+            )
+
 
 @dataclass(frozen=True)
 class WatchlistCloseTrackFlag:
