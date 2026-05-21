@@ -30,7 +30,6 @@ from swing.web.charts import (
     render_watchlist_thumbnail_svg,
 )
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -313,6 +312,69 @@ def test_charts_market_weather_rejects_non_ascii_trend_state():
         render_market_weather_svg(
             bars=bars, trend_template_state="Stáge 2",
         )
+
+
+# ---------------------------------------------------------------------------
+# Codex R1 MAJOR #3 — plan §C.5 lines 449 + 452 BINDING: watchlist + market
+# weather mini-charts MUST render volume bars (per spec §4.2 inventory).
+# ---------------------------------------------------------------------------
+
+
+def _capture_ax_bar_calls(monkeypatch):
+    """Return a list that collects every Axes.bar call's data-point count.
+
+    Used to discriminate "volume bars rendered" vs "no volume axis at all"
+    without depending on SVG-byte regex (matplotlib's bar() emits a
+    variable number of <path> elements depending on data length).
+    """
+    import matplotlib.axes
+    calls: list[int] = []
+    real_bar = matplotlib.axes.Axes.bar
+
+    def spy_bar(self, x, height, *args, **kwargs):
+        try:
+            calls.append(len(list(x)))
+        except TypeError:
+            calls.append(-1)
+        return real_bar(self, x, height, *args, **kwargs)
+
+    monkeypatch.setattr(matplotlib.axes.Axes, "bar", spy_bar)
+    return calls
+
+
+def test_render_watchlist_thumbnail_svg_renders_volume_bars_per_spec_c5(
+    monkeypatch,
+):
+    """Per plan §C.5 line 449: watchlist row chart renders 'volume bars'.
+    Pre-fix: renderer plotted close + MAs only on a single axes; no bar()
+    call. Closes Codex R1 MAJOR #3 (first surface).
+    """
+    bars = _make_bars(90)
+    calls = _capture_ax_bar_calls(monkeypatch)
+    out = render_watchlist_thumbnail_svg(
+        ticker="ABC", bars=bars, ma_lines=[50, 200],
+    )
+    assert isinstance(out, bytes)
+    assert b"</svg>" in out
+    assert calls, "volume bars must render (no ax.bar invoked)"
+    assert max(calls) == 90, "volume bar count must match input bars"
+
+
+def test_render_market_weather_svg_renders_volume_bars_per_spec_c5(monkeypatch):
+    """Per plan §C.5 line 452: market weather mini-chart renders volume
+    bars. Pre-fix: renderer plotted close + MAs + badge text only on a
+    single axes; no bar() call. Closes Codex R1 MAJOR #3 (second surface).
+    """
+    bars = _make_bars(90)
+    calls = _capture_ax_bar_calls(monkeypatch)
+    out = render_market_weather_svg(
+        bars=bars, trend_template_state="Stage 2",
+    )
+    assert isinstance(out, bytes)
+    assert calls, "volume bars must render (no ax.bar invoked)"
+    assert max(calls) == 90, "volume bar count must match input bars"
+    # Trend badge still rendered post-volume-axis-split.
+    assert b"trend: Stage 2" in out
 
 
 def test_charts_suptitle_uses_parse_math_false():

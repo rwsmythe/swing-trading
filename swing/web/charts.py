@@ -180,26 +180,41 @@ def _volume_series(bars: pd.DataFrame) -> pd.Series:
 def render_watchlist_thumbnail_svg(
     *, ticker: str, bars: pd.DataFrame, ma_lines: list[int]
 ) -> bytes:
-    """Per spec §C.5 + plan §G.9 T-A.6.1: 200x100 thumbnail with MA lines.
+    """Per spec §C.5 line 449 + plan §G.9 T-A.6.1: 200x100 thumbnail with
+    MA lines + volume bars.
 
     No title text on a 200x100 thumbnail (too small to read); we omit the
-    title entirely rather than risk mathtext leakage.
+    title entirely rather than risk mathtext leakage. Volume bars render
+    in a slim lower sub-axes per the spec inventory volume requirement.
     """
     _assert_ticker_safe(ticker)
     close = _close_series(bars)
-    fig, ax = plt.subplots(figsize=_figsize_inches(_WATCHLIST_THUMBNAIL_SIZE_PX))
-    ax.plot(range(len(close)), close.values, color="#1f77b4", linewidth=0.8)
+    volume = _volume_series(bars)
+    fig, (ax_price, ax_vol) = plt.subplots(
+        nrows=2, ncols=1,
+        figsize=_figsize_inches(_WATCHLIST_THUMBNAIL_SIZE_PX),
+        gridspec_kw={"height_ratios": [3, 1]},
+        sharex=True,
+    )
+    ax_price.plot(range(len(close)), close.values,
+                  color="#1f77b4", linewidth=0.8)
     for window in ma_lines:
         if window <= 0 or window > len(close):
             continue
         sma = close.rolling(window).mean()
-        ax.plot(range(len(sma)), sma.values, linewidth=0.6, alpha=0.7)
-    ax.set_xticks([])
-    ax.set_yticks([])
-    ax.text(
-        0.02, 0.92, ticker, transform=ax.transAxes,
+        ax_price.plot(range(len(sma)), sma.values, linewidth=0.6, alpha=0.7)
+    ax_price.set_xticks([])
+    ax_price.set_yticks([])
+    ax_price.text(
+        0.02, 0.92, ticker, transform=ax_price.transAxes,
         fontsize=8, color="#333", fontweight="bold",
     )
+    # Volume bars per plan §C.5 line 449.
+    if len(volume) > 0:
+        ax_vol.bar(range(len(volume)), volume.values,
+                   color="#888", width=1.0)
+    ax_vol.set_xticks([])
+    ax_vol.set_yticks([])
     return _svg_bytes_from_fig(fig)
 
 
@@ -317,20 +332,36 @@ def render_position_detail_svg(
 def render_market_weather_svg(
     *, bars: pd.DataFrame, trend_template_state: str,
 ) -> bytes:
+    """Per spec §C.5 line 452: market weather mini-chart with MA50 + MA200
+    + volume bars + trend-template state badge.
+    """
     _assert_ascii_only(trend_template_state, field="trend_template_state")
     close = _close_series(bars)
-    fig, ax = plt.subplots(figsize=_figsize_inches(_MARKET_WEATHER_SIZE_PX))
-    ax.plot(range(len(close)), close.values, color="#1f77b4", linewidth=0.8)
+    volume = _volume_series(bars)
+    fig, (ax_price, ax_vol) = plt.subplots(
+        nrows=2, ncols=1,
+        figsize=_figsize_inches(_MARKET_WEATHER_SIZE_PX),
+        gridspec_kw={"height_ratios": [3, 1]},
+        sharex=True,
+    )
+    ax_price.plot(range(len(close)), close.values,
+                  color="#1f77b4", linewidth=0.8)
     for window, color in ((50, "#ff7f0e"), (200, "#d62728")):
         if window <= len(close):
             sma = close.rolling(window).mean()
-            ax.plot(range(len(sma)), sma.values, color=color,
-                    linewidth=0.6, alpha=0.8)
-    ax.set_xticks([])
-    ax.text(
-        0.02, 0.88, f"trend: {trend_template_state}", transform=ax.transAxes,
+            ax_price.plot(range(len(sma)), sma.values, color=color,
+                          linewidth=0.6, alpha=0.8)
+    ax_price.set_xticks([])
+    ax_price.text(
+        0.02, 0.88, f"trend: {trend_template_state}",
+        transform=ax_price.transAxes,
         fontsize=9, color="#222", fontweight="bold",
     )
+    # Volume bars per plan §C.5 line 452.
+    if len(volume) > 0:
+        ax_vol.bar(range(len(volume)), volume.values,
+                   color="#888", width=1.0)
+    ax_vol.set_xticks([])
     _set_suptitle_no_math(fig, "Market weather (SP500 daily)")
     return _svg_bytes_from_fig(fig)
 
