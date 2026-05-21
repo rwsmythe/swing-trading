@@ -2039,6 +2039,48 @@ async def exit_post(
                 # single-fill case). Wrapping audit history is the V1
                 # contract per the dispatch brief.
                 extended["other_candidate_signature_hashes"] = others
+                # Codex R3 Major #1 fix — rewrite top-level
+                # ``schwab_order_id`` to reflect the SCHWAB ORDER WHOSE
+                # VALUES WERE ACTUALLY PERSISTED.
+                #
+                # The form-render envelope's top-level ``schwab_order_id``
+                # is the DEFAULT (most-recent) candidate's order_id (per
+                # ``resolve_exit_auto_fill`` at
+                # ``swing/trades/exit_auto_fill.py``). When the operator
+                # picks a NON-DEFAULT candidate via radio AND manually
+                # edits visible inputs to match the picked candidate's
+                # values, ``resolved_fill_origin == 'schwab_auto'`` AND
+                # the persisted fill row carries the SELECTED candidate's
+                # values — but pre-fix the top-level ``schwab_order_id``
+                # still pointed at the form-render default.
+                #
+                # The future-fetch dedupe path in
+                # ``swing/web/view_models/trades.py`` (per Codex R2 M#3
+                # fix) reads top-level ``schwab_order_id`` to exclude
+                # already-recorded fills. Pre-fix this excluded the WRONG
+                # order_id (the default which was never persisted) and
+                # FAILED to exclude the SELECTED order_id (which WAS
+                # persisted), letting the operator re-record the same
+                # Schwab order as a duplicate fill.
+                #
+                # Fix scope: ONLY rewrite when ``fill_origin ==
+                # 'schwab_auto'`` AND ``authoritative_selected is not
+                # None``. The ``schwab_auto_then_operator_corrected``
+                # branch keeps the existing top-level top-level order_id —
+                # the operator either (a) over-rode the default with
+                # custom values, or (b) picked a non-default candidate
+                # without rebinding visible inputs (so the default's
+                # values were persisted). In both sub-cases the persisted
+                # values trace back to the default's "source" candidate,
+                # which the existing top-level order_id correctly
+                # represents.
+                if (
+                    resolved_fill_origin == "schwab_auto"
+                    and authoritative_selected is not None
+                ):
+                    auth_top_order_id = authoritative_selected.get("order_id")
+                    if isinstance(auth_top_order_id, str) and auth_top_order_id:
+                        extended["schwab_order_id"] = auth_top_order_id
             resolved_schwab_source_value_json = _json.dumps(
                 extended, sort_keys=True,
             )

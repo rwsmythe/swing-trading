@@ -1120,3 +1120,303 @@ def test_h_major2_authoritative_selected_candidate_order_id_from_envelope(
         f"client-submitted candidate_order_id_0; got {persisted!r}"
     )
     assert persisted["selected_candidate_signature_hash"] == "sig-cand-0"
+
+
+# ============================================================================
+# Codex R3 Major #1 — top-level schwab_order_id rewrite on authoritative
+# non-default selection (when visible inputs match the picked candidate).
+# ============================================================================
+
+
+def test_h_r3m1_non_default_radio_matching_edits_rewrites_top_level_order_id(
+    seeded_db, monkeypatch,
+):
+    """Codex R3 Major #1 — operator picks OLDER candidate via radio AND
+    manually edits visible inputs to MATCH the older candidate's values.
+
+    Post-fix: top-level ``schwab_order_id`` in the persisted envelope MUST
+    be rewritten to the SELECTED candidate's order_id (the one whose
+    values were actually persisted), NOT left as the form-render default
+    (most-recent candidate's order_id).
+
+    Discriminating: pre-fix top-level ``schwab_order_id`` stays at the
+    form-render default ('ord-2'). The future-fetch dedupe path in
+    ``view_models/trades.py`` reads top-level ``schwab_order_id`` — so the
+    pre-fix envelope excludes 'ord-2' (which was never persisted as a fill)
+    and does NOT exclude 'ord-0' (the actually-persisted Schwab order),
+    allowing operator to re-record 'ord-0' as a duplicate fill.
+
+    Post-fix: top-level ``schwab_order_id`` == 'ord-0'; dedupe correctly
+    excludes the actually-persisted order_id.
+    """
+    cfg, cfg_path = seeded_db
+    trade_id = _seed_open_trade(cfg, "NVDA")
+    _patch_price_cache(monkeypatch)
+    candidates_map = {
+        "sig-cand-0": {
+            "date": "2026-05-15", "price": 110.00, "quantity": 3,
+            "order_id": "ord-0",
+        },
+        "sig-cand-1": {
+            "date": "2026-05-17", "price": 115.50, "quantity": 4,
+            "order_id": "ord-1",
+        },
+        "sig-cand-2": {
+            "date": "2026-05-19", "price": 120.50, "quantity": 3,
+            "order_id": "ord-2",
+        },
+    }
+    envelope = _make_anchor(
+        # Form-render default — most-recent candidate's values + order_id.
+        exit_date="2026-05-19", exit_price=120.50, closed_shares=3,
+        schwab_order_id="ord-2", candidate_count=3,
+        candidates_map=candidates_map,
+    )
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = _post_exit(
+            client, trade_id,
+            # Operator manually edited visible inputs to match c0 (OLDER).
+            exit_date="2026-05-15", exit_price="110.00", shares="3",
+            schwab_source_value_json=envelope,
+            auto_fill_audit_at="2026-05-19T14:30:00.000000+00:00",
+            fill_origin_at_form_render="schwab_auto",
+            candidate_index="0",  # operator picked OLDER c0 via radio
+            candidate_signature_hash_0="sig-cand-0",
+            candidate_order_id_0="ord-0",
+            candidate_signature_hash_1="sig-cand-1",
+            candidate_order_id_1="ord-1",
+            candidate_signature_hash_2="sig-cand-2",
+            candidate_order_id_2="ord-2",
+        )
+    assert resp.status_code == 200, resp.text
+    conn = connect(cfg.paths.db_path)
+    try:
+        row = conn.execute(
+            "SELECT fill_origin, schwab_source_value_json "
+            "FROM fills WHERE action != 'entry' "
+            "ORDER BY fill_id DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row[0] == "schwab_auto", (
+        "visible inputs match authoritative c0; fill_origin stays "
+        "schwab_auto"
+    )
+    persisted = json.loads(row[1])
+    assert persisted["selected_candidate_signature_hash"] == "sig-cand-0"
+    # CRITICAL R3 M#1 ASSERTION: top-level schwab_order_id MUST be
+    # rewritten to the SELECTED candidate's order_id ('ord-0'), NOT
+    # left as the form-render default ('ord-2'). Future-fetch dedupe
+    # reads top-level schwab_order_id to exclude already-recorded fills.
+    assert persisted["schwab_order_id"] == "ord-0", (
+        "Codex R3 M#1: top-level schwab_order_id must be rewritten to the "
+        "SELECTED candidate's order_id (the one whose values were "
+        f"actually persisted); got {persisted.get('schwab_order_id')!r}"
+    )
+
+
+def test_h_r3m1_regression_default_radio_no_edit_top_level_unchanged(
+    seeded_db, monkeypatch,
+):
+    """Codex R3 M#1 regression — default radio selection (most-recent
+    candidate) with no operator edits. Top-level ``schwab_order_id`` MUST
+    equal the default candidate's order_id (which is also the form-render
+    default). Validates that the fix does NOT regress the canonical happy
+    path.
+    """
+    cfg, cfg_path = seeded_db
+    trade_id = _seed_open_trade(cfg, "NVDA")
+    _patch_price_cache(monkeypatch)
+    candidates_map = {
+        "sig-cand-0": {
+            "date": "2026-05-15", "price": 110.00, "quantity": 3,
+            "order_id": "ord-0",
+        },
+        "sig-cand-1": {
+            "date": "2026-05-19", "price": 120.50, "quantity": 3,
+            "order_id": "ord-1",
+        },
+    }
+    envelope = _make_anchor(
+        exit_date="2026-05-19", exit_price=120.50, closed_shares=3,
+        schwab_order_id="ord-1", candidate_count=2,
+        candidates_map=candidates_map,
+    )
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = _post_exit(
+            client, trade_id,
+            exit_date="2026-05-19", exit_price="120.50", shares="3",
+            schwab_source_value_json=envelope,
+            auto_fill_audit_at="2026-05-19T14:30:00.000000+00:00",
+            fill_origin_at_form_render="schwab_auto",
+            candidate_index="1",  # default most-recent
+            candidate_signature_hash_0="sig-cand-0",
+            candidate_order_id_0="ord-0",
+            candidate_signature_hash_1="sig-cand-1",
+            candidate_order_id_1="ord-1",
+        )
+    assert resp.status_code == 200, resp.text
+    conn = connect(cfg.paths.db_path)
+    try:
+        row = conn.execute(
+            "SELECT fill_origin, schwab_source_value_json "
+            "FROM fills WHERE action != 'entry' "
+            "ORDER BY fill_id DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row[0] == "schwab_auto"
+    persisted = json.loads(row[1])
+    # Default candidate's order_id matches form-render default → top-level
+    # stays at 'ord-1' (both pre-fix + post-fix agree on default path).
+    assert persisted["schwab_order_id"] == "ord-1", (
+        "default-radio + no-edit: top-level schwab_order_id == default; "
+        f"got {persisted.get('schwab_order_id')!r}"
+    )
+    assert persisted["selected_candidate_signature_hash"] == "sig-cand-1"
+
+
+def test_h_r3m1_regression_non_default_radio_no_edit_top_level_unchanged(
+    seeded_db, monkeypatch,
+):
+    """Codex R3 M#1 regression — operator picks NON-DEFAULT candidate via
+    radio but submits the DEFAULT's visible values (no client-side rebind).
+
+    Pre-+post-fix behavior MUST agree: fill_origin flips to
+    ``schwab_auto_then_operator_corrected`` (visible inputs ≠ authoritative
+    selected); top-level ``schwab_order_id`` stays at form-render default
+    ('ord-2'). The brief's matrix specifies that for the corrected branch,
+    top-level reflects "what Schwab proposed" (the default), which IS the
+    values actually persisted (since visible = default values).
+
+    Mirrors test_h_critical1_non_default_radio_without_visible_edits_flips_corrected
+    + adds top-level schwab_order_id assertion.
+    """
+    cfg, cfg_path = seeded_db
+    trade_id = _seed_open_trade(cfg, "NVDA")
+    _patch_price_cache(monkeypatch)
+    candidates_map = {
+        "sig-cand-0": {
+            "date": "2026-05-15", "price": 110.00, "quantity": 3,
+            "order_id": "ord-0",
+        },
+        "sig-cand-1": {
+            "date": "2026-05-17", "price": 115.50, "quantity": 4,
+            "order_id": "ord-1",
+        },
+        "sig-cand-2": {
+            "date": "2026-05-19", "price": 120.50, "quantity": 3,
+            "order_id": "ord-2",
+        },
+    }
+    envelope = _make_anchor(
+        exit_date="2026-05-19", exit_price=120.50, closed_shares=3,
+        schwab_order_id="ord-2", candidate_count=3,
+        candidates_map=candidates_map,
+    )
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = _post_exit(
+            client, trade_id,
+            # Visible inputs still carry the DEFAULT values.
+            exit_date="2026-05-19", exit_price="120.50", shares="3",
+            schwab_source_value_json=envelope,
+            auto_fill_audit_at="2026-05-19T14:30:00.000000+00:00",
+            fill_origin_at_form_render="schwab_auto",
+            candidate_index="0",  # operator picked OLDER c0 via radio
+            candidate_signature_hash_0="sig-cand-0",
+            candidate_order_id_0="ord-0",
+            candidate_signature_hash_1="sig-cand-1",
+            candidate_order_id_1="ord-1",
+            candidate_signature_hash_2="sig-cand-2",
+            candidate_order_id_2="ord-2",
+        )
+    assert resp.status_code == 200, resp.text
+    conn = connect(cfg.paths.db_path)
+    try:
+        row = conn.execute(
+            "SELECT fill_origin, schwab_source_value_json "
+            "FROM fills WHERE action != 'entry' "
+            "ORDER BY fill_id DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row[0] == "schwab_auto_then_operator_corrected"
+    persisted = json.loads(row[1])
+    # Top-level stays default (R3 M#1 fix does NOT rewrite on
+    # operator-corrected branch — the persisted values match the default's,
+    # so "default was the source" remains semantically true).
+    assert persisted["schwab_order_id"] == "ord-2", (
+        "R3 M#1 regression: operator-corrected branch keeps top-level "
+        "schwab_order_id at form-render default; got "
+        f"{persisted.get('schwab_order_id')!r}"
+    )
+    assert persisted["selected_candidate_signature_hash"] == "sig-cand-0"
+
+
+def test_h_r3m1_regression_default_radio_manual_edit_top_level_unchanged(
+    seeded_db, monkeypatch,
+):
+    """Codex R3 M#1 regression — operator leaves DEFAULT radio selected
+    but manually edits visible inputs to custom values (matching no
+    candidate).
+
+    Visible inputs DIFFER from authoritative default → fill_origin =
+    ``schwab_auto_then_operator_corrected``. Top-level ``schwab_order_id``
+    stays at the form-render default's order_id (the default IS the
+    'source' the operator started from before overriding).
+    """
+    cfg, cfg_path = seeded_db
+    trade_id = _seed_open_trade(cfg, "NVDA")
+    _patch_price_cache(monkeypatch)
+    candidates_map = {
+        "sig-cand-0": {
+            "date": "2026-05-15", "price": 110.00, "quantity": 3,
+            "order_id": "ord-0",
+        },
+        "sig-cand-1": {
+            "date": "2026-05-19", "price": 120.50, "quantity": 3,
+            "order_id": "ord-1",
+        },
+    }
+    envelope = _make_anchor(
+        exit_date="2026-05-19", exit_price=120.50, closed_shares=3,
+        schwab_order_id="ord-1", candidate_count=2,
+        candidates_map=candidates_map,
+    )
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = _post_exit(
+            client, trade_id,
+            # Operator manually edited visible inputs to custom values
+            # matching NO candidate (different price).
+            exit_date="2026-05-19", exit_price="121.25", shares="3",
+            schwab_source_value_json=envelope,
+            auto_fill_audit_at="2026-05-19T14:30:00.000000+00:00",
+            fill_origin_at_form_render="schwab_auto",
+            candidate_index="1",  # default
+            candidate_signature_hash_0="sig-cand-0",
+            candidate_order_id_0="ord-0",
+            candidate_signature_hash_1="sig-cand-1",
+            candidate_order_id_1="ord-1",
+        )
+    assert resp.status_code == 200, resp.text
+    conn = connect(cfg.paths.db_path)
+    try:
+        row = conn.execute(
+            "SELECT fill_origin, schwab_source_value_json "
+            "FROM fills WHERE action != 'entry' "
+            "ORDER BY fill_id DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row[0] == "schwab_auto_then_operator_corrected"
+    persisted = json.loads(row[1])
+    # Top-level stays at default order_id — operator over-rode the
+    # default's price, but the "source" was still the default candidate.
+    assert persisted["schwab_order_id"] == "ord-1", (
+        "R3 M#1 regression: default-radio + edited-away keeps top-level "
+        f"at default order_id; got {persisted.get('schwab_order_id')!r}"
+    )
