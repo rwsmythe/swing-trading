@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from typing import Literal
+from typing import Any, Literal
 
 from swing.config import Config
 from swing.data.db import connect
@@ -651,11 +651,67 @@ class TradeExitFormVM:
     exit_price: float
     remaining_shares: int
     reasons: tuple[str, ...]
+    # Phase 13 T3.SB2 T-B.2.2 — exit auto-fill via Schwab Trader API at
+    # form render (spec §6.2 + plan §G.5). SELL-side mirror of
+    # TradeEntryFormVM's auto_fill_* fields. The 8 auto_fill_* fields
+    # carry the resolution result from
+    # ``swing.trades.exit_auto_fill.resolve_exit_auto_fill``. When the
+    # resolution is short-circuited (sandbox / DEGRADED / no account_hash /
+    # credentials missing / Schwab error) OR yields no candidates, all
+    # auto_fill_* fields stay None except ``auto_fill_advisory_text`` +
+    # ``auto_fill_fill_origin``. The template gates display + hidden-input
+    # emission on ``vm.auto_fill_schwab_source_value_json is not none``.
+    #
+    # ``fill_origin`` here is the form-render-time stamp (always
+    # 'schwab_auto' on populated, 'operator_typed' otherwise). The POST
+    # handler (T-B.2.3) re-derives the persisted ``fill_origin`` by
+    # comparing the submitted exit_date / exit_price / shares against the
+    # ``auto_fill_schwab_source_value_json`` anchor (and, for multi-
+    # partial, the operator-selected candidate's per-candidate hidden
+    # inputs).
+    #
+    # Multi-partial-exit handling: ``auto_fill_candidates`` carries the
+    # full per-fill list (length >= 1 when populated; None otherwise).
+    # The template renders radio buttons for selection when length >= 2;
+    # the single-fill case renders pre-populated inputs directly (no
+    # radio). Per-candidate ``signature_hash`` + ``order_id`` are emitted
+    # as hidden inputs ``candidate_signature_hash_<i>`` +
+    # ``candidate_order_id_<i>`` so POST handler can verify operator's
+    # selected candidate index maps to a server-rendered candidate
+    # (FORWARD-BINDING WATCH ITEM for T-B.2.3).
+    auto_fill_kind: str = "operator_typed"
+    auto_fill_fill_origin: str = "operator_typed"
+    auto_fill_exit_date: str | None = None
+    auto_fill_exit_price: float | None = None
+    auto_fill_closed_shares: int | None = None
+    auto_fill_candidates: tuple[Any, ...] | None = None
+    auto_fill_advisory_text: str | None = None
+    auto_fill_schwab_source_value_json: str | None = None
+    auto_fill_audit_at: str | None = None
+    # Phase 13 T3.SB2 dispatch brief §5 watch item — base-layout VM banner
+    # pin (defense-in-depth for any future full-page render path that
+    # extends ``base.html.j2``; the current /trades/{id}/exit/form route
+    # returns a row-partial fragment that does NOT extend the base
+    # layout, so the banner-pin fields are not currently rendered — but
+    # the VM populates them anyway so future plumbing changes don't trip
+    # the CLAUDE.md "base.html.j2 is shared — new vm.foo field requires
+    # adding to EVERY base-layout VM" gotcha). Defaults match
+    # BaseLayoutVM canonical values + mirror TradeEntryFormVM precedent
+    # (forward-binding lesson #12; field-duplication convention per
+    # Codex R1 Major #4 ACCEPT on T3.SB1).
+    unresolved_material_discrepancies_count: int = 0
+    recent_multi_leg_auto_correction_count: int = 0
+    banner_resolve_link: str | None = None
 
 
 def build_exit_form_vm(
     *, trade_id: int, cfg: Config, cache: PriceCache, executor,
 ) -> TradeExitFormVM | None:
+    # Phase 13 T3.SB2 T-B.2.2 — banner-pin counters mirror DashboardVM
+    # via swing.metrics.discrepancies helpers (Phase 10 + Phase 12.5).
+    unresolved_material_count: int = 0
+    recent_multi_leg_count: int = 0
+    banner_resolve_link: str | None = None
     conn = connect(cfg.paths.db_path)
     try:
         with conn:
@@ -668,6 +724,36 @@ def build_exit_form_vm(
             # so the canonical entry-fill (Sub-A T6 backfill) does not count
             # against the remaining-shares math.
             fills = list_fills_for_trade(conn, trade_id)
+            # Phase 13 T3.SB2 — banner-pin counters (read inside `with conn:`
+            # block; defaults preserved if discrepancies-helper not yet
+            # plumbed). Mirrors build_entry_form_vm precedent.
+            from swing.metrics.discrepancies import (
+                count_recent_multi_leg_auto_corrections,
+                count_unresolved_material,
+                fetch_first_pending_ambiguity_resolve_link_path,
+            )
+            unresolved_material_count = count_unresolved_material(conn)
+            recent_multi_leg_count = count_recent_multi_leg_auto_corrections(
+                conn,
+            )
+            banner_resolve_link = (
+                fetch_first_pending_ambiguity_resolve_link_path(conn)
+            )
+        # `with conn:` block has exited (autocommit released); call the
+        # auto-fill resolver on the same conn since
+        # ``resolve_exit_auto_fill`` invokes
+        # ``audit_service.record_call_start`` which requires
+        # ``conn.in_transaction == False`` (per CLAUDE.md
+        # "in_transaction auto-detect" + "Service-layer with conn:"
+        # gotchas).
+        from swing.trades.exit_auto_fill import resolve_exit_auto_fill
+        auto_fill = resolve_exit_auto_fill(
+            trade_id=trade_id,
+            ticker=trade.ticker,
+            entry_date=trade.entry_date,
+            cfg=cfg,
+            conn=conn,
+        )
     finally:
         conn.close()
     non_entry_fills = [f for f in fills if f.action != "entry"]
@@ -681,12 +767,44 @@ def build_exit_form_vm(
     snap = prices.get(trade.ticker)
     exit_price = snap.price if snap else trade.entry_price  # conservative fallback
 
+    # Phase 13 T3.SB2 — Schwab auto-fill OVERRIDES the live-price fallback
+    # when the resolver returns a populated result (spec §6.2 + plan
+    # §G.5). The operator sees auto-populated values in the input fields;
+    # manual edits are detected at POST and flip fill_origin to
+    # 'schwab_auto_then_operator_corrected' (T-B.2.3).
+    exit_date_default = date.today().isoformat()
+    if auto_fill.kind == "populated":
+        # Defensive: auto_fill.exit_price + closed_shares + exit_date are
+        # non-None by ExitAutoFillResult __post_init__ contract.
+        exit_price = float(auto_fill.exit_price)  # type: ignore[arg-type]
+        exit_date_default = auto_fill.exit_date or exit_date_default
+
+    candidates_tuple: tuple[Any, ...] | None = (
+        tuple(auto_fill.candidates) if auto_fill.candidates else None
+    )
+
     return TradeExitFormVM(
         trade=trade,
-        exit_date=date.today().isoformat(),
+        exit_date=exit_date_default,
         exit_price=exit_price,
         remaining_shares=remaining,
         reasons=tuple(r.value for r in ExitReason),
+        # Phase 13 T3.SB2 — Schwab auto-fill fields (T-B.2.2).
+        auto_fill_kind=auto_fill.kind,
+        auto_fill_fill_origin=auto_fill.fill_origin,
+        auto_fill_exit_date=auto_fill.exit_date,
+        auto_fill_exit_price=auto_fill.exit_price,
+        auto_fill_closed_shares=auto_fill.closed_shares,
+        auto_fill_candidates=candidates_tuple,
+        auto_fill_advisory_text=auto_fill.advisory_text,
+        auto_fill_schwab_source_value_json=(
+            auto_fill.schwab_source_value_json
+        ),
+        auto_fill_audit_at=auto_fill.auto_fill_audit_at,
+        # Phase 13 T3.SB2 — banner-pin fields.
+        unresolved_material_discrepancies_count=unresolved_material_count,
+        recent_multi_leg_auto_correction_count=recent_multi_leg_count,
+        banner_resolve_link=banner_resolve_link,
     )
 
 

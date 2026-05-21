@@ -1,14 +1,88 @@
 {#- Trade exit form — swaps into an open-position row.
-    Expects: vm (TradeExitFormVM), error_message (optional str) -#}
+    Expects: vm (TradeExitFormVM), error_message (optional str)
+
+    Phase 13 T3.SB2 T-B.2.2 — Schwab exit auto-fill integration.
+    SELL-side mirror of trade_entry_form.html.j2's auto-fill section.
+    Multi-partial-exit handling: when >= 2 candidates returned, render a
+    radio-button group so operator can pick which fill drives the form
+    values; single-fill case renders pre-populated inputs directly.
+-#}
 <tr id="exit-form-{{ vm.trade.id }}">
   <td colspan="8">
     {% if error_message %}<div class="banner banner-degraded" role="alert">{{ error_message }}</div>{% endif %}
+    {#- Phase 13 T3.SB2 — Schwab exit auto-fill advisory + display-only
+        audit metadata (spec §6.2 + plan §G.5 T-B.2.2). Banner renders
+        when auto_fill_advisory_text is set (sandbox / degraded / error /
+        empty kinds — all use this surface to inform the operator).
+        Populated kind has advisory_text=None — operator sees pre-filled
+        inputs (or radio list for multi-partial) with no banner. -#}
+    {% if vm.auto_fill_advisory_text %}
+    <div class="banner banner-info" role="status">
+      <strong>Schwab auto-fill:</strong> {{ vm.auto_fill_advisory_text }}
+    </div>
+    {% endif %}
+    {% if vm.auto_fill_kind == 'populated' %}
+    <div class="auto-fill-audit">
+      <label>Auto-fill source:</label>
+      <span class="muted">{{ vm.auto_fill_fill_origin }}
+        (Schwab Trader API; recorded at <time>{{ vm.auto_fill_audit_at }}</time>)
+      </span>
+    </div>
+    {% endif %}
     <form hx-post="/trades/{{ vm.trade.id }}/exit"
           hx-target="closest tr" hx-swap="outerHTML"
           hx-headers='{"HX-Request": "true"}'>
+      {#- Phase 13 T3.SB2 — auto-fill hidden anchors (T-B.2.2).
+          ``schwab_source_value_json`` carries the SERVER-STAMPED original
+          auto-populated values as a JSON envelope; the POST handler
+          (T-B.2.3) compares submitted exit_date/exit_price/shares
+          against this to detect operator edits + flip fill_origin to
+          'schwab_auto_then_operator_corrected'. Per CLAUDE.md gotcha
+          "For any V1 single-operator form with hidden audit fields,
+          default to SERVER-STAMPING at handler entry" — the GET handler
+          server-stamps these; the operator sees them as display-only
+          metadata above. The hidden inputs carry the values to POST
+          (transport requirement; without them POST cannot detect edits).
+      -#}
+      {% if vm.auto_fill_schwab_source_value_json %}
+      <input type="hidden" name="schwab_source_value_json"
+             value="{{ vm.auto_fill_schwab_source_value_json }}">
+      <input type="hidden" name="auto_fill_audit_at"
+             value="{{ vm.auto_fill_audit_at }}">
+      <input type="hidden" name="fill_origin_at_form_render"
+             value="{{ vm.auto_fill_fill_origin }}">
+      {% endif %}
+
       <div><label>Trade</label>
-        <span>#{{ vm.trade.id }} {{ vm.trade.ticker }} —
+        <span>#{{ vm.trade.id }} {{ vm.trade.ticker }} &mdash;
               {{ vm.remaining_shares }} sh remaining, stop ${{ '%.2f' | format(vm.trade.current_stop) }}</span></div>
+
+      {#- Multi-partial-exit candidate list (length >= 2): operator
+          selects which fill drives the form values via radio buttons.
+          Per-candidate hidden inputs (candidate_signature_hash_<i> +
+          candidate_order_id_<i>) round-trip provenance so POST handler
+          (T-B.2.3) can verify operator's selected candidate index maps
+          to a server-rendered candidate (FORWARD-BINDING WATCH ITEM). -#}
+      {% if vm.auto_fill_candidates and vm.auto_fill_candidates|length > 1 %}
+      <fieldset class="auto-fill-candidates">
+        <legend>Select fill (Schwab returned {{ vm.auto_fill_candidates|length }} partial exits)</legend>
+        {% for cand in vm.auto_fill_candidates %}
+        <div class="auto-fill-candidate">
+          <label>
+            <input type="radio" name="candidate_index" value="{{ loop.index0 }}"
+                   {% if loop.last %}checked{% endif %}>
+            {{ cand.date }} &mdash; {{ '%.2f' | format(cand.price) }} &times; {{ cand.quantity }} sh
+            {% if cand.order_id %}<span class="muted">(order {{ cand.order_id }})</span>{% endif %}
+          </label>
+          <input type="hidden" name="candidate_signature_hash_{{ loop.index0 }}"
+                 value="{{ cand.signature_hash }}">
+          <input type="hidden" name="candidate_order_id_{{ loop.index0 }}"
+                 value="{{ cand.order_id or '' }}">
+        </div>
+        {% endfor %}
+      </fieldset>
+      {% endif %}
+
       <div><label>Exit date</label>
         <input type="date" name="exit_date" value="{{ vm.exit_date }}" required></div>
       <div><label>Exit price</label>
@@ -16,7 +90,8 @@
                value="{{ '%.2f' | format(vm.exit_price) }}" required></div>
       <div><label>Shares</label>
         <input type="number" step="1" min="1" max="{{ vm.remaining_shares }}"
-               name="shares" value="{{ vm.remaining_shares }}" required></div>
+               name="shares"
+               value="{{ vm.auto_fill_closed_shares if vm.auto_fill_kind == 'populated' and vm.auto_fill_closed_shares else vm.remaining_shares }}" required></div>
       <div><label>Reason &#9733;</label>
         <select name="reason" required>
           {% for reason in vm.reasons %}
