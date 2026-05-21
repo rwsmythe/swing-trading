@@ -22,6 +22,74 @@
     gold: {{ vm.gold_rows|length }}; other: {{ vm.other_rows|length }}).
   </p>
 
+  {# Phase 13 T2.SB6b T-A.6.6b Deficiency 1 fold-in: per-exemplar enhanced
+     rendering (chart + criteria table + narrative) below each row's
+     action surface. Iterated separately so the silver + gold tables
+     stay byte-stable for existing T-A.1.6 tests. #}
+  {% if vm.exemplar_renders %}
+  <section class="patterns-exemplars-enhanced"
+           data-section="exemplar-renders">
+    <h2>Per-exemplar evidence (chart + criteria + narrative)</h2>
+    {% for ex_id, render in vm.exemplar_renders|dictsort %}
+    <article class="exemplar-render"
+             data-exemplar-id="{{ ex_id }}"
+             data-pattern-class="{{ render.exemplar.proposed_pattern_class }}">
+      <h3>
+        Exemplar {{ ex_id }} - {{ render.exemplar.ticker }}
+        ({{ render.exemplar.proposed_pattern_class }})
+      </h3>
+      <div class="exemplar-chart">
+        {% if render.chart_svg_bytes %}
+          {{ render.chart_svg_bytes.decode('utf-8')|safe }}
+        {% else %}
+          <p class="muted" data-state="no-chart">
+            Chart not yet cached. Run the pipeline to populate
+            chart_renders for this exemplar.
+          </p>
+        {% endif %}
+      </div>
+      {% if render.criterion_rows %}
+      <table class="exemplar-criterion-rows" data-section="criteria">
+        <thead>
+          <tr>
+            <th>criterion</th>
+            <th>status</th>
+            <th>evidence</th>
+            <th>threshold</th>
+            <th>tolerance</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in render.criterion_rows %}
+          <tr data-criterion="{{ row.name }}">
+            <td>{{ row.name }}</td>
+            <td>{{ row.status }}</td>
+            <td>{{ row.evidence_value }}</td>
+            <td>{{ row.threshold }}</td>
+            <td>{{ row.tolerance or "" }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <p class="muted" data-state="no-criteria">
+        (no rule_criteria payload available)
+      </p>
+      {% endif %}
+      {% if render.narrative_text %}
+      <p class="exemplar-narrative" data-section="narrative">
+        {{ render.narrative_text }}
+      </p>
+      {% else %}
+      <p class="muted" data-state="no-narrative">
+        (no narrative payload available)
+      </p>
+      {% endif %}
+    </article>
+    {% endfor %}
+  </section>
+  {% endif %}
+
   {% if vm.silver_rows %}
   <h2>Silver tier (awaiting operator review)</h2>
   <table class="patterns-exemplars-table"
