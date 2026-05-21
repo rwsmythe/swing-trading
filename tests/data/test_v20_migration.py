@@ -830,17 +830,14 @@ def test_schema_version_v20_invariant(tmp_path: Path) -> None:
     conn.close()
 
 
-@pytest.mark.skip(
-    reason=(
-        "Cross-bundle pin per plan §H.3 / §1.5 — un-skip at T2.SB3 + T2.SB5 "
-        "(verifies pattern_exemplars schema shape unchanged once detectors "
-        "+ template matching consume the table)."
-    )
-)
 def test_pattern_exemplars_schema_shape_invariant(tmp_path: Path) -> None:
     """Cross-bundle pin: pattern_exemplars column set unchanged.
 
-    Un-skip at T2.SB3 + T2.SB5 per plan §H.3.
+    Un-skipped at Phase 13 T2.SB5 T-A.5.6 closer per plan §H.3 row 7
+    (T2.SB3 closer lag closed here). Verifies that T2.SB3 + T2.SB4
+    detector emits + T2.SB5 template matching consume the v20
+    pattern_exemplars table without schema drift (CHECK constraints +
+    column set both pinned).
     """
     db_path = tmp_path / "pin_pe_shape.db"
     conn = ensure_schema(db_path)
@@ -877,6 +874,90 @@ def test_pattern_exemplars_schema_shape_invariant(tmp_path: Path) -> None:
         f"pattern_exemplars schema shape drift: extra={sorted(cols - expected)} "
         f"missing={sorted(expected - cols)}"
     )
+    conn.close()
+
+
+def test_pattern_evaluations_template_match_score_persistable(
+    tmp_path: Path,
+) -> None:
+    """Cross-bundle pin: pattern_evaluations.template_match_score round-trip.
+
+    Planted + un-skipped at Phase 13 T2.SB5 T-A.5.6 closer per plan §H.3
+    row 8 (test did not exist on main HEAD pre-T2.SB5; T2.SB5 plants
+    the body since the column-population logic lands here).
+
+    Verifies (a) pattern_evaluations.template_match_score accepts NULL
+    (pre-T2.SB5 fallback path + post-T2.SB5 empty-exemplar-corpus path)
+    and (b) accepts a float in [0.0, 1.0] via INSERT/SELECT round-trip
+    with exact-equality-within-epsilon assertion.
+    """
+    import sqlite3
+
+    from swing.data.db import ensure_schema
+
+    db_path = tmp_path / "pin_pe_tm_score.db"
+    conn = ensure_schema(db_path)
+    # Seed a pipeline_run + evaluation_run so the FK requires can be
+    # satisfied. Use direct INSERTs to keep this test free of any
+    # higher-level evaluator/runner coupling.
+    conn.execute(
+        "INSERT INTO pipeline_runs (started_ts, trigger, data_asof_date, "
+        "action_session_date, state, lease_token) VALUES "
+        "(?, 'manual', ?, ?, 'running', ?)",
+        ("2026-05-21T18:00:00", "2026-05-20", "2026-05-21", "pin-tok"),
+    )
+    pipeline_run_id = conn.execute(
+        "SELECT id FROM pipeline_runs WHERE lease_token = 'pin-tok'"
+    ).fetchone()[0]
+    conn.commit()
+
+    # (a) Accept NULL template_match_score (pre-T2.SB5 + empty-corpus path).
+    conn.execute(
+        "INSERT INTO pattern_evaluations "
+        "(pipeline_run_id, ticker, pattern_class, detector_version, "
+        "geometric_score, geometric_score_json, composite_score, "
+        "structural_evidence_json, feature_distribution_log_json, "
+        "window_start_date, window_end_date, created_at, "
+        "template_match_score, template_match_nearest_exemplar_ids_json) "
+        "VALUES (?, 'NULL_PATH', 'vcp', 'vcp@v0.0.test', "
+        "0.50, '{}', 0.50, '{}', '{}', "
+        "'2026-05-01', '2026-05-20', '2026-05-21T18:00:00', NULL, NULL)",
+        (pipeline_run_id,),
+    )
+
+    # (b) Accept a float in [0.0, 1.0] via round-trip with exact-equality
+    # within float epsilon.
+    expected_score = 0.6789012345
+    conn.execute(
+        "INSERT INTO pattern_evaluations "
+        "(pipeline_run_id, ticker, pattern_class, detector_version, "
+        "geometric_score, geometric_score_json, composite_score, "
+        "structural_evidence_json, feature_distribution_log_json, "
+        "window_start_date, window_end_date, created_at, "
+        "template_match_score, template_match_nearest_exemplar_ids_json) "
+        "VALUES (?, 'FLOAT_PATH', 'vcp', 'vcp@v0.0.test', "
+        "0.75, '{}', 0.71, '{}', '{}', "
+        "'2026-05-01', '2026-05-20', '2026-05-21T18:00:00', ?, ?)",
+        (pipeline_run_id, expected_score, '[1, 2, 3]'),
+    )
+    conn.commit()
+
+    # Round-trip NULL.
+    null_row = conn.execute(
+        "SELECT template_match_score, template_match_nearest_exemplar_ids_json "
+        "FROM pattern_evaluations WHERE ticker = 'NULL_PATH'"
+    ).fetchone()
+    assert null_row[0] is None
+    assert null_row[1] is None
+
+    # Round-trip float in [0, 1] - exact equality within float epsilon.
+    float_row = conn.execute(
+        "SELECT template_match_score, template_match_nearest_exemplar_ids_json "
+        "FROM pattern_evaluations WHERE ticker = 'FLOAT_PATH'"
+    ).fetchone()
+    assert float_row[0] is not None
+    assert abs(float(float_row[0]) - expected_score) < 1e-9
+    assert float_row[1] == '[1, 2, 3]'
     conn.close()
 
 
