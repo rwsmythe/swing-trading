@@ -131,3 +131,119 @@ def list_chart_renders(
         tuple(params),
     ).fetchall()
     return [_row_to_chart_render(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Phase 13 T2.SB6 T-A.6.2 — cache-consumer helpers (spec §C.2 LOCK).
+# ---------------------------------------------------------------------------
+
+
+def get_cached_chart_svg(
+    conn: sqlite3.Connection,
+    *,
+    ticker: str,
+    surface: str,
+    pipeline_run_id: int | None = None,
+    pattern_class: str | None = None,
+    min_data_asof_date: str | None = None,
+) -> bytes | None:
+    """Return the cached SVG bytes for the canonical chart cache key, or None.
+
+    Per spec §C.2 cache key shape LOCK:
+      - Run-bound surfaces (``watchlist_row``, ``hyprec_detail``,
+        ``market_weather``): key on ``(ticker, surface, pipeline_run_id)``.
+      - ``position_detail`` surface: key on ``(ticker, surface)`` with
+        ``pipeline_run_id IS NULL``.
+      - ``theme2_annotated`` surface: key on
+        ``(ticker, surface, pipeline_run_id, pattern_class)``.
+
+    Per spec §A.13 session-anchor read/write predicate alignment LOCK:
+    ``min_data_asof_date`` is the staleness predicate; pass
+    ``last_completed_session(now()).isoformat()`` (backward-looking; same
+    function the writer uses) so the read returns rows whose
+    ``data_asof_date >= min_data_asof_date``. If ``min_data_asof_date`` is
+    None, no staleness filter applies (return the most-recent row
+    regardless of asof). Discriminating round-trip test pattern lives at
+    ``tests/data/test_chart_renders_repo.py`` (Phase 8 ``cfacbc5``
+    precedent).
+    """
+    where_clauses = ["ticker = ?", "surface = ?"]
+    params: list[object] = [ticker, surface]
+
+    if pipeline_run_id is None:
+        where_clauses.append("pipeline_run_id IS NULL")
+    else:
+        where_clauses.append("pipeline_run_id = ?")
+        params.append(pipeline_run_id)
+
+    if pattern_class is None:
+        where_clauses.append("pattern_class IS NULL")
+    else:
+        where_clauses.append("pattern_class = ?")
+        params.append(pattern_class)
+
+    if min_data_asof_date is not None:
+        where_clauses.append("data_asof_date >= ?")
+        params.append(min_data_asof_date)
+
+    sql = (
+        "SELECT chart_svg_bytes FROM chart_renders WHERE "
+        + " AND ".join(where_clauses)
+        + " ORDER BY id DESC LIMIT 1"
+    )
+    row = conn.execute(sql, tuple(params)).fetchone()
+    if row is None:
+        return None
+    return bytes(row[0]) if row[0] is not None else None
+
+
+def refresh_chart_render(
+    conn: sqlite3.Connection, chart_render: ChartRender,
+) -> int:
+    """DELETE-then-INSERT atomic refresh of one cache row.
+
+    Per §A.15 LOCK (no ``INSERT OR REPLACE`` on audit-trail tables) +
+    §C.2 cache invalidation pattern (atomic DELETE-then-INSERT wrapped in
+    caller's ``BEGIN IMMEDIATE``).
+
+    Caller-tx contract: the function does NOT call ``conn.commit()``; the
+    caller is responsible for transaction discipline (typically
+    ``BEGIN IMMEDIATE`` + ``COMMIT`` / ``ROLLBACK``).
+
+    The DELETE key shape mirrors the partial unique indexes:
+      - ``theme2_annotated``:
+        ``(ticker, surface, pipeline_run_id, pattern_class)``.
+      - run-bound non-theme2: ``(ticker, surface, pipeline_run_id)`` with
+        ``pipeline_run_id IS NOT NULL`` predicate.
+      - ``position_detail``: ``(ticker, surface)`` with
+        ``pipeline_run_id IS NULL`` predicate.
+    """
+    if chart_render.surface == "theme2_annotated":
+        conn.execute(
+            "DELETE FROM chart_renders WHERE ticker = ? AND surface = ? "
+            "AND pipeline_run_id = ? AND pattern_class = ?",
+            (
+                chart_render.ticker,
+                chart_render.surface,
+                chart_render.pipeline_run_id,
+                chart_render.pattern_class,
+            ),
+        )
+    elif chart_render.surface == "position_detail":
+        conn.execute(
+            "DELETE FROM chart_renders WHERE ticker = ? AND surface = ? "
+            "AND pipeline_run_id IS NULL",
+            (chart_render.ticker, chart_render.surface),
+        )
+    else:
+        # Run-bound: watchlist_row / hyprec_detail / market_weather.
+        conn.execute(
+            "DELETE FROM chart_renders WHERE ticker = ? AND surface = ? "
+            "AND pipeline_run_id = ?",
+            (
+                chart_render.ticker,
+                chart_render.surface,
+                chart_render.pipeline_run_id,
+            ),
+        )
+    return insert_chart_render(conn, chart_render)
