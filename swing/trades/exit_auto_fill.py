@@ -304,6 +304,7 @@ def resolve_exit_auto_fill(
     conn: Any,
     now: datetime | None = None,
     existing_fill_order_ids: set[str] | None = None,
+    existing_fill_value_tuples: set[tuple[str, float, int]] | None = None,
 ) -> ExitAutoFillResult:
     """Resolve form-render-time exit auto-fill via Schwab Trader API.
 
@@ -331,6 +332,21 @@ def resolve_exit_auto_fill(
             BEFORE the candidates list is built. Default ``None`` =
             no exclusion (backwards-compat for entry-side parity tests
             + the empty-set degenerate case).
+        existing_fill_value_tuples: optional fallback dedupe set for
+            fills that lack a parseable ``schwab_order_id`` in their
+            envelope — covers pre-v20 fills, ``operator_typed`` fills,
+            ``tos_import`` fills, ``imported_legacy`` fills, AND
+            envelopes whose only order-id key is
+            ``selected_candidate_order_id`` (which the M3 fix excludes
+            from order-id dedupe because the actually-persisted values
+            came from the DEFAULT candidate, not the selected one).
+            Codex R2 Major #4 fix — without this fallback, those fills
+            would not dedupe and the operator could double-record.
+            Each tuple is ``(date_str, round(price, 2), int(quantity))``;
+            candidates whose ``(date, round(price, 2), quantity)`` tuple
+            matches an entry are filtered out. Tolerance: 2-decimal
+            price rounding handles float drift; date is string-exact;
+            quantity is int-exact. Default ``None`` = no fallback.
 
     Returns:
         ``ExitAutoFillResult`` — see dataclass docstring for the 5 kinds.
@@ -512,18 +528,46 @@ def resolve_exit_auto_fill(
         if isinstance(existing_fill_order_ids, set)
         else set()
     )
-    matches = [
-        o for o in orders
-        if (
-            getattr(o, "instrument_symbol", "") == ticker
-            and getattr(o, "instruction", "") in _SELL_INSTRUCTIONS
-            and _is_execution_bearing_candidate(o)
-            and (
-                not excluded_ids
-                or getattr(o, "order_id", None) not in excluded_ids
-            )
-        )
-    ]
+    excluded_value_tuples: set[tuple[str, float, int]] = (
+        existing_fill_value_tuples
+        if isinstance(existing_fill_value_tuples, set)
+        else set()
+    )
+
+    def _candidate_value_tuple(o: Any) -> tuple[str, float, int] | None:
+        """Return (date_str, round(price, 2), int(qty)) or None if any
+        execution-grain field cannot be resolved. Matches the dedupe-
+        tuple shape the VM constructs from existing fills."""
+        p = _compute_execution_price(o)
+        if p is None:
+            return None
+        q = _resolve_match_quantity(o)
+        if q is None or q <= 0:
+            return None
+        d = _extract_iso_date(getattr(o, "enter_time", ""))
+        if not d:
+            return None
+        try:
+            return (d, round(float(p), 2), int(q))
+        except (TypeError, ValueError):
+            return None
+
+    def _passes_filters(o: Any) -> bool:
+        if getattr(o, "instrument_symbol", "") != ticker:
+            return False
+        if getattr(o, "instruction", "") not in _SELL_INSTRUCTIONS:
+            return False
+        if not _is_execution_bearing_candidate(o):
+            return False
+        if excluded_ids and getattr(o, "order_id", None) in excluded_ids:
+            return False
+        if excluded_value_tuples:
+            vt = _candidate_value_tuple(o)
+            if vt is not None and vt in excluded_value_tuples:
+                return False
+        return True
+
+    matches = [o for o in orders if _passes_filters(o)]
     if not matches:
         return ExitAutoFillResult(
             kind="empty",

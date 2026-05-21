@@ -2010,9 +2010,27 @@ async def exit_post(
                 extended["selected_candidate_signature_hash"] = (
                     candidate_sigs[selected_index]
                 )
-                extended["selected_candidate_order_id"] = (
-                    candidate_orders.get(selected_index, "") or None
-                )
+                # Codex R2 Major #2 fix — persist authoritative ``order_id``
+                # from the server-stamped ``candidates_map`` envelope, NOT
+                # the client-submitted ``candidate_order_id_<i>`` hidden
+                # input. A tampered POST could submit a valid
+                # signature_hash but a forged candidate_order_id_<i>; the
+                # envelope's authoritative entry has already been
+                # validated by the M1 hash-membership check above. Falls
+                # back to the client-submitted value only when
+                # candidates_map is empty (legacy envelopes lacking the
+                # map — pre-Critical-#1-fix envelopes; covered by R2 M4
+                # legacy-fill fallback territory).
+                if authoritative_selected is not None:
+                    auth_order_id = authoritative_selected.get("order_id")
+                    extended["selected_candidate_order_id"] = (
+                        auth_order_id if isinstance(auth_order_id, str)
+                        and auth_order_id else None
+                    )
+                else:
+                    extended["selected_candidate_order_id"] = (
+                        candidate_orders.get(selected_index, "") or None
+                    )
                 others = sorted(
                     sig for idx, sig in candidate_sigs.items()
                     if idx != selected_index

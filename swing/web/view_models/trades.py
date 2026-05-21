@@ -756,32 +756,70 @@ def build_exit_form_vm(
         # ``schwab_order_id`` is NOT a first-class column on fills; it
         # lives inside ``schwab_source_value_json`` (the audit envelope
         # written by exit_post when fill_origin in {'schwab_auto',
-        # 'schwab_auto_then_operator_corrected'}). Parse it here. The
-        # envelope shape carries either:
-        #   - top-level ``schwab_order_id`` (single-fill case + default
-        #     candidate path), OR
-        #   - ``selected_candidate_order_id`` (multi-partial case, added
-        #     by exit_post when the operator selected a candidate).
-        # Both are checked; absent fields are tolerated silently
-        # (fill_origin='operator_typed' fills have no envelope).
+        # 'schwab_auto_then_operator_corrected'}). Parse it here.
+        #
+        # Codex R2 Major #3 fix — dedupe ONLY on ``schwab_order_id``
+        # (envelope's pre-existing field that reflects which Schwab
+        # order's values were ACTUALLY persisted), NOT on
+        # ``selected_candidate_order_id`` (envelope's audit field for
+        # "which candidate the operator picked at form-render"). The
+        # non-default-radio-no-edit case persists the DEFAULT candidate's
+        # values (envelope.schwab_order_id = default), while
+        # envelope.selected_candidate_order_id = the picked candidate's
+        # order — but only the DEFAULT was actually recorded as a fill.
+        # Excluding both would over-dedupe the picked-but-unrecorded
+        # candidate from future fetches.
+        #
+        # Codex R2 Major #4 fix — fallback dedupe by
+        # (date, round(price, 2), quantity) tuple for fills lacking a
+        # parseable ``schwab_order_id`` (pre-v20 / tos_import /
+        # imported_legacy / operator_typed fills with no envelope, OR
+        # envelopes missing the key). Tolerance: price compared with
+        # round(_, 2); date string-exact; quantity int-exact.
         existing_fill_order_ids: set[str] = set()
+        existing_fill_value_tuples: set[tuple[str, float, int]] = set()
         existing_envelopes_cur = conn.execute(
-            "SELECT schwab_source_value_json FROM fills "
-            "WHERE trade_id = ? AND action != 'entry' "
-            "AND schwab_source_value_json IS NOT NULL",
+            "SELECT schwab_source_value_json, fill_datetime, price, "
+            "quantity FROM fills WHERE trade_id = ? AND action != 'entry'",
             (trade_id,),
         )
-        for (env_json,) in existing_envelopes_cur.fetchall():
+        for env_json, fill_dt, fill_price, fill_qty in (
+            existing_envelopes_cur.fetchall()
+        ):
             try:
                 env = json.loads(env_json) if env_json else None
             except (ValueError, TypeError):
                 env = None
-            if not isinstance(env, dict):
-                continue
-            for key in ("schwab_order_id", "selected_candidate_order_id"):
-                v = env.get(key)
+            order_id_found = False
+            if isinstance(env, dict):
+                v = env.get("schwab_order_id")
                 if isinstance(v, str) and v:
                     existing_fill_order_ids.add(v)
+                    order_id_found = True
+            # Fallback dedupe tuple — populated for ALL non-entry fills
+            # whose envelope did not surface an order_id. This covers
+            # pre-v20 fills (no schwab_source_value_json), operator_typed
+            # fills (no envelope), tos_import / imported_legacy fills
+            # (no envelope), AND envelopes carrying only
+            # selected_candidate_order_id (per M3 — the actually-persisted
+            # values are the visible-input values, NOT a Schwab order's).
+            if not order_id_found:
+                try:
+                    fill_date = (
+                        str(fill_dt).split("T", 1)[0]
+                        if fill_dt is not None else None
+                    )
+                    if fill_date and fill_price is not None and fill_qty is not None:
+                        existing_fill_value_tuples.add(
+                            (
+                                fill_date,
+                                round(float(fill_price), 2),
+                                int(fill_qty),
+                            )
+                        )
+                except (TypeError, ValueError):
+                    # Defensive: skip fills with non-parseable values.
+                    continue
 
         from swing.trades.exit_auto_fill import resolve_exit_auto_fill
         auto_fill = resolve_exit_auto_fill(
@@ -792,6 +830,10 @@ def build_exit_form_vm(
             conn=conn,
             existing_fill_order_ids=(
                 existing_fill_order_ids if existing_fill_order_ids else None
+            ),
+            existing_fill_value_tuples=(
+                existing_fill_value_tuples
+                if existing_fill_value_tuples else None
             ),
         )
     finally:

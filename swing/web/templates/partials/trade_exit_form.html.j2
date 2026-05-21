@@ -66,6 +66,18 @@
       {% if vm.auto_fill_candidates and vm.auto_fill_candidates|length > 1 %}
       <fieldset class="auto-fill-candidates">
         <legend>Select fill (Schwab returned {{ vm.auto_fill_candidates|length }} partial exits)</legend>
+        {#- Codex R2 Minor #1 — operator-instruction text. The template's
+            radio inputs do NOT rebind visible Exit date / Exit price /
+            Shares inputs client-side, so selecting a non-default fill
+            without editing the visible inputs persists the DEFAULT
+            candidate's values (with audit-trail noting which candidate
+            the operator picked). This message tells the operator to
+            manually edit the visible inputs when they pick a non-
+            default fill. -#}
+        <p class="muted small">
+          Selecting a different fill does NOT update the visible Exit date / Exit price / Shares
+          inputs below. To match a non-default candidate, manually edit the inputs.
+        </p>
         {% for cand in vm.auto_fill_candidates %}
         <div class="auto-fill-candidate">
           <label>

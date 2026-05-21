@@ -1038,3 +1038,85 @@ def test_g_multi_partial_invalid_candidate_index_rejects_with_400(
             candidate_order_id_0="ord-0",
         )
         assert resp_bad.status_code == 400, resp_bad.text
+
+
+# ============================================================================
+# Codex R2 Major #2 — authoritative selected_candidate_order_id from
+# server-stamped candidates_map (NOT client-submitted candidate_order_id_<i>).
+# ============================================================================
+
+
+def test_h_major2_authoritative_selected_candidate_order_id_from_envelope(
+    seeded_db, monkeypatch,
+):
+    """Codex R2 Major #2 — when the operator submits a valid
+    candidate_signature_hash that maps to a server-stamped candidates_map
+    entry, the persisted ``selected_candidate_order_id`` MUST come from
+    the authoritative envelope's ``order_id`` field — NOT from the
+    client-submitted ``candidate_order_id_<i>`` hidden input.
+
+    Threat: a tampered POST could submit a valid signature_hash AND a
+    forged candidate_order_id_<i>; without this fix, the persisted
+    envelope's ``selected_candidate_order_id`` would carry the forged
+    value, poisoning the VM-dedupe field (M3) so future exit forms would
+    incorrectly skip the real Schwab order (or surface a phantom one).
+
+    Scenario: 2 candidates with order_ids A + B. Submit valid
+    signature_hash for cand_0 (order A) but a forged
+    candidate_order_id_0='FAKE_FORGED_ID'. Authoritative envelope's
+    selected_candidate_order_id must = 'A'.
+    """
+    cfg, cfg_path = seeded_db
+    trade_id = _seed_open_trade(cfg, "NVDA")
+    _patch_price_cache(monkeypatch)
+    candidates_map = {
+        "sig-cand-0": {
+            "date": "2026-05-15", "price": 110.00, "quantity": 3,
+            "order_id": "REAL-ORDER-A",
+        },
+        "sig-cand-1": {
+            "date": "2026-05-19", "price": 120.50, "quantity": 3,
+            "order_id": "REAL-ORDER-B",
+        },
+    }
+    envelope = _make_anchor(
+        exit_date="2026-05-19", exit_price=120.50, closed_shares=3,
+        schwab_order_id="REAL-ORDER-B", candidate_count=2,
+        candidates_map=candidates_map,
+    )
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = _post_exit(
+            client, trade_id,
+            # Visible inputs match the DEFAULT (most-recent) candidate's
+            # values; operator picked cand_0 via radio.
+            exit_date="2026-05-19", exit_price="120.50", shares="3",
+            schwab_source_value_json=envelope,
+            auto_fill_audit_at="2026-05-19T14:30:00.000000+00:00",
+            fill_origin_at_form_render="schwab_auto",
+            candidate_index="0",  # operator picked cand_0
+            candidate_signature_hash_0="sig-cand-0",
+            # FORGED order_id — should NOT be persisted; authoritative
+            # envelope's order_id ('REAL-ORDER-A') must win.
+            candidate_order_id_0="FAKE_FORGED_ID",
+            candidate_signature_hash_1="sig-cand-1",
+            candidate_order_id_1="REAL-ORDER-B",
+        )
+    assert resp.status_code == 200, resp.text
+    conn = connect(cfg.paths.db_path)
+    try:
+        row = conn.execute(
+            "SELECT schwab_source_value_json FROM fills "
+            "WHERE action != 'entry' ORDER BY fill_id DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    persisted = json.loads(row[0])
+    # Authoritative envelope value wins — forged client input ignored.
+    assert persisted["selected_candidate_order_id"] == "REAL-ORDER-A", (
+        "Codex R2 M#2: selected_candidate_order_id must come from "
+        "server-stamped candidates_map[sig-cand-0]['order_id'], NOT "
+        f"client-submitted candidate_order_id_0; got {persisted!r}"
+    )
+    assert persisted["selected_candidate_signature_hash"] == "sig-cand-0"
