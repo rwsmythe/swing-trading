@@ -326,6 +326,60 @@ def test_build_patterns_exemplars_vm_populates_exemplar_renders(
 # ---------------------------------------------------------------------------
 
 
+def test_get_patterns_exemplars_chart_invokes_render_theme2_annotated_svg_when_cache_miss(
+    seeded_db_with_silver, monkeypatch,
+):
+    """Codex R1 MAJOR #6 closure + plan G.9 T-A.6.6b acceptance #3:
+    cache-miss path MUST invoke ``render_theme2_annotated_svg`` once per
+    exemplar so the operator workflow gracefully renders even when the
+    pipeline has not yet populated the chart_renders cache.
+
+    Discriminating test pattern: monkeypatch the renderer + the bars
+    fetcher; assert the renderer was invoked exactly once for the silver
+    exemplar.
+    """
+    import pandas as pd
+
+    from swing.web.view_models.patterns import exemplars as ex_module
+
+    call_count = {"count": 0}
+
+    def _stub_renderer(*, ticker, bars, pattern_evaluation,
+                       exemplar_thumbnails=None):
+        call_count["count"] += 1
+        return b"<svg>live</svg>"
+
+    monkeypatch.setattr(
+        "swing.web.charts.render_theme2_annotated_svg", _stub_renderer,
+    )
+
+    def _stub_bars(_ticker):
+        return pd.DataFrame({
+            "Open": [100.0, 101.0],
+            "High": [101.0, 102.0],
+            "Low": [99.0, 100.0],
+            "Close": [100.5, 101.5],
+            "Volume": [1000, 1100],
+        }, index=pd.date_range("2024-01-15", periods=2, freq="D"))
+
+    cfg, _ = seeded_db_with_silver
+    conn = connect(cfg.paths.db_path)
+    try:
+        vm = ex_module.build_patterns_exemplars_vm(
+            conn, session_date="2026-05-20", bars_fetcher=_stub_bars,
+        )
+    finally:
+        conn.close()
+    assert call_count["count"] == 1, (
+        "Codex R1 MAJOR #6 regression: cache-miss path must invoke "
+        f"render_theme2_annotated_svg once; got {call_count['count']}"
+    )
+    # Live-rendered bytes surface in the VM.
+    assert vm.exemplar_renders, "exemplar_renders empty"
+    one = next(iter(vm.exemplar_renders.values()))
+    assert one.chart_svg_bytes == b"<svg>live</svg>"
+
+
 def test_get_patterns_exemplars_narrative_ascii_only(seeded_db_with_silver):
     cfg, cfg_path = seeded_db_with_silver
     app = create_app(cfg, cfg_path)

@@ -87,12 +87,35 @@ def _session_date_str() -> str:
 
 @router.get("/patterns/exemplars", response_class=HTMLResponse)
 def patterns_exemplars_page(request: Request) -> Response:
-    """List silver + gold pattern_exemplars for operator spot-check."""
+    """List silver + gold pattern_exemplars for operator spot-check.
+
+    Phase 13 T2.SB6b T-A.6.6b: injects a ``bars_fetcher`` callable so the
+    VM's cache-miss path can invoke ``render_theme2_annotated_svg`` once
+    per exemplar per Codex R1 MAJOR #6 closure + plan G.9 T-A.6.6b
+    acceptance #3.
+    """
     cfg = request.app.state.cfg
+
+    def _bars_fetcher(ticker: str):  # noqa: ANN202
+        try:
+            from datetime import datetime as _dt
+
+            from swing.data.ohlcv_archive import read_or_fetch_archive
+            from swing.evaluation.dates import last_completed_session
+            end = last_completed_session(_dt.now()).date()
+            return read_or_fetch_archive(
+                ticker, end_date=end,
+                cache_dir=cfg.paths.prices_cache_dir,
+                archive_history_days=cfg.archive.archive_history_days,
+            )
+        except Exception:  # noqa: BLE001 - degraded fallback
+            return None
+
     conn = connect(cfg.paths.db_path)
     try:
         vm = build_patterns_exemplars_vm(
             conn, session_date=_session_date_str(),
+            bars_fetcher=_bars_fetcher,
         )
     finally:
         conn.close()
@@ -441,21 +464,21 @@ def patterns_review_post(
                 )
 
         now_iso = datetime.now(UTC).isoformat()
-        # Trade-opened resolution per spec section 5.10 label_source split.
-        # V1 heuristic: if any trade row exists for the ticker, treat as
-        # organic_trade_history; else closed_loop_review. (The spec
-        # references "candidate-to-trade backlink at trades.candidate_id"
-        # but the trades schema does NOT carry candidate_id; ticker-scoped
-        # lookup is the V1-pragmatic proxy.)
-        trade_opened = bool(conn.execute(
-            "SELECT 1 FROM trades WHERE ticker = ? LIMIT 1",
-            (evaluation.ticker,),
-        ).fetchone())
-
-        if decision == "confirm" and trade_opened:
-            base_label_source = "organic_trade_history"
-        else:
-            base_label_source = "closed_loop_review"
+        # Per spec section 5.10 lines 785-790 label_source split:
+        #   - closed_loop_review if operator reviewed the candidate but did
+        #     NOT open a trade on it.
+        #   - organic_trade_history if confirm + trade opened (candidate-
+        #     to-trade backlink at trades.candidate_id resolves the row).
+        #
+        # V1 emits closed_loop_review unconditionally (Codex R1 MAJOR #3
+        # closure): the trades schema does NOT carry a candidate_id
+        # column, so a ticker-level proxy would silently mislabel a NEW
+        # candidate as organic_trade_history when ANY prior trade on the
+        # same ticker exists (e.g., last-quarter ABC trade + new ABC
+        # candidate review). The pragmatic V1 fix is to never emit
+        # organic_trade_history from this route; the V2 migration adding
+        # trades.candidate_id (or equivalent backlink) lifts this.
+        base_label_source = "closed_loop_review"
 
         # gold_validated_at policy per spec section 5.10: every branch
         # except rejected stamps now; rejected stays NULL.

@@ -52,6 +52,13 @@ class WatchlistVM:
     # VMs constructed without classifications (tests, fixtures, code paths
     # without a pipeline_run_id) render gracefully.
     pattern_tags: Mapping[str, str] = field(default_factory=dict)
+    # Phase 13 T2.SB6b T-A.6.6 — per-ticker thumbnail SVG bytes from the
+    # chart_renders cache (surface='watchlist_row') for the standalone
+    # /watchlist page. Default empty dict so VMs constructed outside the
+    # builder render gracefully. Keyed by ticker.
+    watchlist_chart_svg_bytes: Mapping[str, bytes] = field(
+        default_factory=dict,
+    )
 
     def __post_init__(self) -> None:
         if self.banner_resolve_link is not None:
@@ -153,6 +160,22 @@ def build_watchlist(*, cfg: Config, cache: PriceCache, executor) -> WatchlistVM:
             banner_resolve_link = (
                 fetch_first_pending_ambiguity_resolve_link_path(conn)
             )
+            # Phase 13 T2.SB6b T-A.6.6 — pull cached watchlist row chart
+            # bytes from the chart_renders cache (T2.SB6a substrate
+            # verbatim). Empty dict when no pipeline run / no cache rows.
+            watchlist_chart_svg_bytes: dict[str, bytes] = {}
+            if pipeline_run_id is not None:
+                from swing.data.repos.chart_renders import (
+                    get_cached_chart_svg,
+                )
+                for r in rows:
+                    svg = get_cached_chart_svg(
+                        conn, ticker=r.ticker,
+                        surface="watchlist_row",
+                        pipeline_run_id=pipeline_run_id,
+                    )
+                    if svg is not None:
+                        watchlist_chart_svg_bytes[r.ticker] = svg
     finally:
         conn.close()
     by_ticker = {c.ticker: c for c in candidates}
@@ -184,6 +207,7 @@ def build_watchlist(*, cfg: Config, cache: PriceCache, executor) -> WatchlistVM:
         unresolved_material_discrepancies_count=unresolved,
         recent_multi_leg_auto_correction_count=recent_multi_leg,
         banner_resolve_link=banner_resolve_link,
+        watchlist_chart_svg_bytes=watchlist_chart_svg_bytes,
     )
 
 

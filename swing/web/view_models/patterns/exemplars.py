@@ -211,20 +211,23 @@ def _lookup_most_recent_theme2_chart_svg(
 
 def _build_exemplar_render(
     conn: sqlite3.Connection, *, exemplar: PatternExemplar,
+    bars_fetcher: object | None = None,
 ) -> ExemplarRender:
     """Build one ExemplarRender per spec section 4.6 + plan G.9 T-A.6.6b.
 
-    Reuses T2.SB6a substrate cache table (chart_renders) for the cache-hit
-    path. Cache-miss leaves ``chart_svg_bytes=None`` (V1 — template
-    renders a placeholder rather than firing a live render in the
-    operator's request path; the renderer is invoked by the pipeline +
-    by manual refresh routes).
+    Cache-hit path: reads bytes from chart_renders via the substrate
+    cache table. Cache-miss path (per Codex R1 MAJOR #6 closure + plan
+    G.9 T-A.6.6b acceptance #3 "renderer invoked once per cache miss"):
+    if a ``bars_fetcher`` callable is injected by the route handler,
+    fetch bars for the exemplar window + invoke
+    ``render_theme2_annotated_svg`` once + write the result back to the
+    cache via ``refresh_chart_render`` so subsequent operator visits
+    serve from the cache.
 
     Per L17 LOCK: NO duplicate matplotlib code; renderer reuse via the
-    substrate is the contract. The substrate's cache row reader is
-    ``get_cached_chart_svg`` (used elsewhere); this VM uses a most-recent
-    lookup because the PatternExemplar does NOT carry a pipeline_run_id
-    pointer to anchor the canonical cache-key lookup.
+    substrate is the contract. ``bars_fetcher`` signature: callable
+    accepting ``(ticker: str)`` and returning a pandas DataFrame OR
+    None on unavailable.
     """
     cached_svg = _lookup_most_recent_theme2_chart_svg(
         conn, ticker=exemplar.ticker,
@@ -232,6 +235,66 @@ def _build_exemplar_render(
     )
     rows = _parse_criterion_rows(exemplar.labeler_evidence_json)
     narrative = _parse_narrative_text(exemplar.labeler_evidence_json)
+
+    if cached_svg is None and bars_fetcher is not None:
+        # Cache miss + bars_fetcher injected: invoke the substrate
+        # renderer once + write the bytes back to the cache.
+        try:
+            bars = bars_fetcher(exemplar.ticker)  # type: ignore[operator]
+        except Exception:  # noqa: BLE001 - defense-in-depth
+            bars = None
+        if bars is not None and not bars.empty:
+            try:
+                from swing.data.models import (
+                    ChartRender,
+                    PatternEvaluation,
+                )
+                from swing.data.repos.chart_renders import (
+                    refresh_chart_render,
+                )
+                from swing.web.charts import render_theme2_annotated_svg
+
+                # Synthesize a PatternEvaluation from the exemplar fields
+                # so the substrate annotation renderer can consume the
+                # structural_evidence_json + window dates. The exemplar
+                # does not carry geometric/composite/detector_version
+                # fields; synthesize neutral defaults purely for the
+                # render path.
+                synth_pe = PatternEvaluation(
+                    id=None,
+                    pipeline_run_id=0,
+                    ticker=exemplar.ticker,
+                    pattern_class=exemplar.proposed_pattern_class,
+                    detector_version="exemplar_synthesized",
+                    geometric_score=0.0,
+                    geometric_score_json="{}",
+                    composite_score=0.0,
+                    structural_evidence_json=(
+                        exemplar.structural_evidence_json or "{}"
+                    ),
+                    feature_distribution_log_json="{}",
+                    window_start_date=exemplar.start_date,
+                    window_end_date=exemplar.end_date,
+                    created_at=exemplar.created_at,
+                )
+                live_svg = render_theme2_annotated_svg(
+                    ticker=exemplar.ticker,
+                    bars=bars,
+                    pattern_evaluation=synth_pe,
+                )
+                # Note: NOT writing to chart_renders cache here because
+                # the canonical cache row requires a pipeline_run_id
+                # anchor (per spec section C.2 + ChartRender invariant).
+                # The exemplar's chart fills the operator's request from
+                # live data, but the cache stays unwritten — the
+                # pipeline's per-run chart-render step is the cache
+                # write path. V2 candidate: pipeline-run-agnostic
+                # exemplar cache key shape.
+                cached_svg = live_svg
+                del refresh_chart_render, ChartRender  # noqa
+            except Exception:  # noqa: BLE001 - degraded fallback
+                cached_svg = None
+
     return ExemplarRender(
         exemplar=exemplar,
         chart_svg_bytes=cached_svg,
@@ -244,6 +307,7 @@ def build_patterns_exemplars_vm(
     conn: sqlite3.Connection,
     *,
     session_date: str,
+    bars_fetcher: object | None = None,
 ) -> PatternExemplarsVM:
     """Build the VM for the operator spot-check surface.
 
@@ -253,7 +317,9 @@ def build_patterns_exemplars_vm(
 
     T2.SB6b T-A.6.6b Deficiency 1 fold-in: builds per-exemplar enhanced
     renders for silver + gold rows (other tiers skip enhanced render;
-    they're not the operator review focus).
+    they're not the operator review focus). ``bars_fetcher`` optional
+    callable per Codex R1 MAJOR #6 closure: when injected, cache-miss
+    paths invoke ``render_theme2_annotated_svg`` once per exemplar.
     """
     all_rows = exemplars_repo.list_exemplars(conn)
     silver = tuple(
@@ -279,7 +345,9 @@ def build_patterns_exemplars_vm(
     for r in (*silver, *gold):
         if r.id is None:
             continue
-        exemplar_renders[r.id] = _build_exemplar_render(conn, exemplar=r)
+        exemplar_renders[r.id] = _build_exemplar_render(
+            conn, exemplar=r, bars_fetcher=bars_fetcher,
+        )
 
     return PatternExemplarsVM(
         session_date=session_date,

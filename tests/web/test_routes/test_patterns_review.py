@@ -295,9 +295,19 @@ def _open_trade_for(ticker: str, conn) -> None:
     )
 
 
-def test_post_patterns_review_decision_confirm_persists_organic_trade_history_if_trade_opened(
+def test_post_patterns_review_decision_confirm_persists_closed_loop_review_even_if_unrelated_trade_exists(
     seeded_db_with_evaluation,
 ):
+    """Codex R1 MAJOR #3 closure: V1 emits closed_loop_review
+    unconditionally, even when an unrelated prior trade on the SAME
+    ticker exists. The ticker-level proxy for organic_trade_history was
+    rejected because it would mislabel a new candidate review as organic
+    history just because an old ABC trade happens to share the ticker.
+
+    V2 candidate banked: when trades carries a candidate_id backlink,
+    confirm + trade-opened-on-THIS-candidate persists
+    organic_trade_history per spec section 5.10 lines 787-788.
+    """
     cfg, cfg_path, eval_id = seeded_db_with_evaluation
     app = create_app(cfg, cfg_path)
     conn = connect(cfg.paths.db_path)
@@ -319,12 +329,17 @@ def test_post_patterns_review_decision_confirm_persists_organic_trade_history_if
     conn.close()
     assert rows
     new = rows[-1]
-    assert new.label_source == "organic_trade_history"
+    # V1 LOCK: closed_loop_review even with unrelated prior ticker trade.
+    assert new.label_source == "closed_loop_review", (
+        "Codex R1 MAJOR #3 regression: V1 must emit closed_loop_review "
+        "unconditionally from this route since trades schema lacks a "
+        "candidate-to-trade backlink (organic_trade_history is V2)."
+    )
     assert new.final_decision == "confirmed"
     assert new.ticker == "ABC"
     assert new.proposed_pattern_class == "vcp"
     # Invariant #4 requires geometric_score_json non-NULL for
-    # organic_trade_history source.
+    # closed_loop_review source.
     assert new.geometric_score_json is not None
 
 
