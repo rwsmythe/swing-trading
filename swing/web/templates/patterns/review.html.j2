@@ -1,0 +1,219 @@
+{% extends "base.html.j2" %}
+{% block title %}Pattern review {{ vm.candidate_id }} - Swing Trading{% endblock %}
+{% block content %}
+<section class="patterns-review">
+  <h1>Pattern review: {{ vm.ticker }} ({{ vm.proposed_pattern_class }})</h1>
+  <p class="muted">
+    Phase 13 T2.SB6b closed-loop review surface for pattern_evaluation
+    {{ vm.candidate_id }}. Window {{ vm.window_start_date }} to
+    {{ vm.window_end_date }}; pipeline run {{ vm.pipeline_run_id }}.
+  </p>
+
+  {# ----- 8-item checklist per spec section 5.10 lines 766-775. ----- #}
+  <ol class="checklist">
+    <li class="checklist-item" data-item="proposed-pattern-class">
+      <h2>1. Proposed pattern class</h2>
+      <span class="pattern-class-tile pattern-class-{{ vm.proposed_pattern_class }}">
+        {{ vm.proposed_pattern_class }}
+      </span>
+    </li>
+
+    <li class="checklist-item" data-item="geometric-score">
+      <h2>2. Geometric score breakdown</h2>
+      <p class="muted">
+        composite_score: {{ "%.3f"|format(vm.composite_score) }};
+        geometric_score: {{ "%.3f"|format(vm.geometric_score) }}.
+      </p>
+      {% if vm.criterion_breakdown_rows %}
+      <table class="geometric-score-breakdown">
+        <thead>
+          <tr><th>criterion</th><th>result</th><th>score</th><th>note</th></tr>
+        </thead>
+        <tbody>
+        {% for row in vm.criterion_breakdown_rows %}
+          <tr>
+            <td>{{ row.name }}</td>
+            <td>{{ row.result }}</td>
+            <td>{{ "%.3f"|format(row.score) if row.score is not none else "-" }}</td>
+            <td>{{ row.note or "" }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <p class="muted">(no geometric_score_json criteria available)</p>
+      {% endif %}
+    </li>
+
+    <li class="checklist-item" data-item="template-thumbnails">
+      <h2>3. Top-3 nearest historical bases (template matches)</h2>
+      {% if vm.template_match_score is not none %}
+      <p class="muted">
+        template_match_score: {{ "%.3f"|format(vm.template_match_score) }}.
+      </p>
+      {% endif %}
+      {% if vm.template_match_nearest_exemplar_ids %}
+      <ul class="template-thumbnails">
+        {% for ex_id in vm.template_match_nearest_exemplar_ids %}
+          <li class="thumbnail-placeholder" data-exemplar-id="{{ ex_id }}">
+            exemplar {{ ex_id }} (chart at exemplar review surface)
+          </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="muted">(no template matches available)</p>
+      {% endif %}
+    </li>
+
+    <li class="checklist-item" data-item="trend-template">
+      <h2>4. Trend template status</h2>
+      <span class="trend-template-badge">{{ vm.trend_template_state }}</span>
+    </li>
+
+    <li class="checklist-item" data-item="rs-rank">
+      <h2>5. RS rank</h2>
+      <span class="rs-rank-badge">
+        {{ vm.rs_rank if vm.rs_rank is not none else "n/a" }}
+      </span>
+    </li>
+
+    <li class="checklist-item" data-item="volume-profile">
+      <h2>6. Recent volume profile</h2>
+      <span class="volume-profile">{{ vm.volume_profile_text }}</span>
+    </li>
+
+    <li class="checklist-item" data-item="uncertainty-reason">
+      <h2>7. Uncertainty reason per criterion</h2>
+      {% if vm.uncertainty_reason_rows %}
+      <table class="uncertainty-reason-table">
+        <thead>
+          <tr><th>criterion</th><th>passed</th><th>note</th></tr>
+        </thead>
+        <tbody>
+        {% for row in vm.uncertainty_reason_rows %}
+          <tr>
+            <td>{{ row.name }}</td>
+            <td>{{ "pass" if row.passed else "fail" }}</td>
+            <td>{{ row.note or "" }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <p class="muted">(no criteria_pass payload available)</p>
+      {% endif %}
+    </li>
+
+    <li class="checklist-item" data-item="outcome-distribution">
+      <h2>8. Outcome distribution from prior similar candidates</h2>
+      {% if vm.outcome_distribution_rows %}
+      <table class="outcome-distribution-table">
+        <thead>
+          <tr>
+            <th>pattern class</th><th>n</th>
+            <th>triggered (pct)</th><th>reached 1R (pct)</th>
+            <th>hit stop (pct)</th>
+          </tr>
+        </thead>
+        <tbody>
+        {% for row in vm.outcome_distribution_rows %}
+          <tr>
+            <td>{{ row.pattern_class }}</td>
+            <td>{{ row.n }}</td>
+            <td>
+              {{ "%.1f"|format(row.triggered_pct) if row.triggered_pct is not none else "-" }}
+            </td>
+            <td>
+              {{ "%.1f"|format(row.reached_1r_pct) if row.reached_1r_pct is not none else "-" }}
+            </td>
+            <td>
+              {{ "%.1f"|format(row.hit_stop_pct) if row.hit_stop_pct is not none else "-" }}
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <p class="muted">(no outcome distribution available)</p>
+      {% endif %}
+    </li>
+  </ol>
+
+  {# ----- 6-decision enum form per spec lines 778-783. ----- #}
+  <h2>Decision</h2>
+  <form method="post"
+        action="/patterns/{{ vm.candidate_id }}/review"
+        hx-post="/patterns/{{ vm.candidate_id }}/review"
+        hx-headers='{"HX-Request": "true"}'
+        class="patterns-review-form">
+
+    <fieldset>
+      <legend>Pick one</legend>
+
+      <label>
+        <input type="radio" name="decision" value="confirm" required>
+        confirm (pattern valid + tradeable now)
+      </label>
+      <label>
+        <input type="radio" name="decision" value="watch">
+        watch (pattern valid + not yet tradeable)
+      </label>
+      <label>
+        <input type="radio" name="decision" value="reject">
+        reject (no valid pattern)
+      </label>
+      <label>
+        <input type="radio" name="decision" value="relabel">
+        relabel (pattern exists; proposed class is wrong)
+      </label>
+      <label>
+        <input type="radio" name="decision" value="pattern_present_outside_window">
+        pattern_present_outside_window (window framing wrong)
+      </label>
+      <label>
+        <input type="radio" name="decision" value="multiple_overlapping_patterns">
+        multiple_overlapping_patterns (more than one valid pattern)
+      </label>
+    </fieldset>
+
+    <fieldset>
+      <legend>Relabel target (only when decision=relabel)</legend>
+      <select name="corrected_pattern_class">
+        <option value="">(pick if relabeling)</option>
+        {% for cls in ("vcp", "flat_base", "cup_with_handle", "high_tight_flag", "double_bottom_w") %}
+          {% if cls != vm.proposed_pattern_class %}
+            <option value="{{ cls }}">{{ cls }}</option>
+          {% endif %}
+        {% endfor %}
+      </select>
+    </fieldset>
+
+    <fieldset>
+      <legend>Window correction (only when decision=pattern_present_outside_window)</legend>
+      <label>start
+        <input type="date" name="corrected_window_start_date"
+               value="{{ vm.window_start_date }}">
+      </label>
+      <label>end
+        <input type="date" name="corrected_window_end_date"
+               value="{{ vm.window_end_date }}">
+      </label>
+    </fieldset>
+
+    <fieldset>
+      <legend>Additional pattern classes (only when decision=multiple_overlapping_patterns)</legend>
+      <label>comma-separated
+        <input type="text" name="additional_pattern_classes"
+               placeholder="flat_base,cup_with_handle">
+      </label>
+    </fieldset>
+
+    <fieldset>
+      <legend>Notes (optional)</legend>
+      <textarea name="notes" rows="3"></textarea>
+    </fieldset>
+
+    <button type="submit">Submit review</button>
+  </form>
+</section>
+{% endblock %}
