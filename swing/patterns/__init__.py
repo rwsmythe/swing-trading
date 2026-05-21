@@ -26,6 +26,7 @@ it points to.
 from __future__ import annotations
 
 from swing.data.models import DETECTOR_PATTERN_CLASSES
+from swing.patterns.composite import compute_composite_score
 from swing.patterns.template_matching import (
     TemplateMatchExemplar,
     TemplateMatchHit,
@@ -35,4 +36,5 @@ __all__ = [
     "DETECTOR_PATTERN_CLASSES",
     "TemplateMatchExemplar",
     "TemplateMatchHit",
+    "compute_composite_score",
 ]
