@@ -1,5 +1,7 @@
 # Phase 13 T2.SB4 — Detectors batch 2 (high_tight_flag + double_bottom_w) dispatch brief
 
+> **ERRATA (banked post-Codex T2.SB4 R4 Minor #1; 2026-05-21):** §1.1 #12 (line 49) + §4.1 #4 (line 110) references to "DBW undercut bonus capped at 1.0" are **SUPERSEDED** by spec §5.8 line 718 + §5.6 criterion #8 (line 661) + §10.5 worked example (line 665) LOCK chain — DBW `geometric_score` reaches **1.10** (composite_score clamps at 1.0 via `min(1.0, ...)` wrap). The R1 M1 + R2 + R3 + R4 LOCK chain (T2.SB4 closer) established this; spec line 290 errata closure landed in the same fix bundle aligning the pattern_evaluations table entry with the binding §5.8 + §10.5 text. This brief is an audit artifact; see the T2.SB4 return report for the full LOCK chain disposition.
+
 **Status:** READY FOR DISPATCH. Drafted 2026-05-20 PM #3 post-T3.SB2 SHIPPED + hotfix + housekeeping at main HEAD `be38c17`. Mid-sized sub-bundle (7 tasks; +60-100 fast tests projected per plan §H projections). Per plan §G.6 lines 1881-1971.
 
 **Branch:** `phase13-t2-sb4-detectors-batch2` — branches from main HEAD `be38c17` at dispatch time (per plan §G.6 line 1885 + dispatch sequence §H.1: T2.SB4 branches AFTER T3.SB2 merge).

@@ -287,11 +287,11 @@ Per-`(pipeline_run_id, ticker, pattern_class)` detector verdict with full struct
 | `ticker` | TEXT NOT NULL | |
 | `pattern_class` | TEXT NOT NULL | CHECK enum: `DETECTOR_PATTERN_CLASSES` (per §3.0 LOCK) |
 | `detector_version` | TEXT NOT NULL | rule-set version that fired (e.g., `vcp-v1.0`) |
-| `geometric_score` | REAL NOT NULL | 0..1 composite rule pass rate |
+| `geometric_score` | REAL NOT NULL | rule-tier evidence-strength signal. **Range `[0.0, 1.10]`** — `0.0..1.0` for `vcp` / `flat_base` / `cup_with_handle` / `high_tight_flag`; `0.0..1.10` for `double_bottom_w` when criterion #8 undercut bonus `+0.10` fires (per §5.8 line 718 + §5.6 criterion #8 + §10.5 line 665 LOCK chain). See §5.2-§5.6 per-detector criteria for the per-rule pass/fail composition. ERRATA closure 2026-05-20 (post-Codex T2.SB4 R4 Major #1): prior wording "`0..1` composite rule pass rate" was internally inconsistent with the BINDING §5.8 + §10.5 LOCKs; this entry now aligns with the binding text. |
 | `geometric_score_json` | TEXT NOT NULL | per-rule breakdown |
-| `template_match_score` | REAL NULL | 0..1 if template-matching layer ran; `NULL` if foundation-only sub-bundle |
+| `template_match_score` | REAL NULL | `0..1` if template-matching layer ran; `NULL` if foundation-only sub-bundle |
 | `template_match_nearest_exemplar_ids_json` | TEXT NULL | JSON array of top-3 nearest `pattern_exemplars.id` |
-| `composite_score` | REAL NOT NULL | weighted geometric + template per §5.8 |
+| `composite_score` | REAL NOT NULL | weighted geometric + template per §5.8. **Range `[0.0, 1.0]`** — always clamped via `min(1.0, ...)` wrap (per §5.8 line 718 + line 720 LOCK); the DBW undercut bonus reaches `geometric_score = 1.10` but the composite formula clamps to `1.0`. Pre-T2.SB5 simplifies to `composite_score = min(1.0, geometric_score)` per §5.8 line 720 LOCK. |
 | `structural_evidence_json` | TEXT NOT NULL | dataclass-shape evidence per detector (see §10 walkthroughs) |
 | `feature_distribution_log_json` | TEXT NOT NULL | LOGGING SIDE drift baseline (per v2 brief §14 + L5) — captures input feature values for Phase 13.5 baseline material |
 | `window_start_date` | TEXT NOT NULL | anchor-point search left edge per v2 brief §3 |
