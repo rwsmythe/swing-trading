@@ -546,10 +546,19 @@ def fire_codex_review_for_silver_row(
 #     the high-stakes predicate. An optional ``geometric_score_recompute``
 #     callable is exposed for the operator-paired session at T-A.3.7+ to
 #     wire actual detector invocation when bars are fetched (yfinance via
-#     ``swing.patterns.labeling_bars.autofetch_bars_for_labeling`` + the 3
-#     V1 detectors at ``swing/patterns/{vcp,flat_base,cup_with_handle}.py``);
-#     when supplied, the callable's return value OVERRIDES the corpus
-#     score for the predicate evaluation.
+#     ``swing.patterns.labeling_bars.autofetch_bars_for_labeling`` + the 5
+#     V1 detectors at ``swing/patterns/{vcp,flat_base,cup_with_handle,
+#     high_tight_flag,double_bottom_w}.py`` - HTF + DBW added at T2.SB4
+#     T-A.4.1 + T-A.4.2; high-stakes clause activation extended to all 5
+#     classes at T2.SB4 T-A.4.5 per spec section 5.9 step 4 lines 745-751
+#     + OQ-5 BINDING); when supplied, the callable's return value
+#     OVERRIDES the corpus score for the predicate evaluation. The
+#     function itself is CLASS-AGNOSTIC - it reads geometric_score from
+#     structural_evidence_json regardless of proposed_pattern_class, so
+#     T2.SB4 HTF + DBW corpus rows are processed identically to the 3
+#     T2.SB3 classes (see tests/patterns/test_retroactive_codex_
+#     evaluation.py::test_retroactive_codex_evaluation_invokes_all_5_
+#     detector_classes for the locked discriminating coverage).
 #
 # LOCKs (per dispatch brief section 6 + plan G.4):
 #   - L2: function does NOT write directly. Per-row firing delegates to

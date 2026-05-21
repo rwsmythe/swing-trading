@@ -621,3 +621,214 @@ def test_retroactive_against_t_a17_corpus_dump_via_corpus_path(
     assert fired_selections[0].reason == "high_stakes_a"
     # codex_dispatch invoked exactly once.
     assert len(fired_ids) == 1
+
+
+# ============================================================================
+# Phase 13 T2.SB4 T-A.4.5: high-stakes clause activates for HTF + DBW
+# (ALL 5 detectors covered).
+# ============================================================================
+#
+# Per spec section 5.9 step 4 lines 745-751 + OQ-5 BINDING: at T2.SB4+
+# the high-stakes disagreement clause covers ALL 5 V1 detector pattern
+# classes (T2.SB3's vcp + flat_base + cup_with_handle PLUS T2.SB4's
+# high_tight_flag + double_bottom_w). The retroactive helper is data-
+# driven (consumes the per-row geometric_score regardless of
+# proposed_pattern_class), so the activation is achieved by the corpus
+# carrying HTF + DBW rows + the operator wiring detector recompute when
+# bars are available. These tests pin the BEHAVIOR for the 2 new pattern
+# classes; the V1 default path (corpus-embedded geometric_score) is the
+# same one exercised for vcp / flat_base / cup_with_handle above.
+
+
+def test_retroactive_codex_evaluation_invokes_all_5_detector_classes(
+    conn: sqlite3.Connection,
+) -> None:
+    """All 5 V1 detector pattern classes (T2.SB3 vcp/flat_base/
+    cup_with_handle + T2.SB4 high_tight_flag/double_bottom_w) MUST be
+    evaluable by the retroactive helper - the function is class-agnostic
+    (data-driven from structural_evidence_json) so a row with
+    proposed_pattern_class='high_tight_flag' or 'double_bottom_w' is
+    processed identically to the T2.SB3 classes.
+
+    Plants 1 claude_silver row per pattern class with confidence='medium'
+    + geometric_score=0.55 (in the no-fire band) and seeds the rng above
+    threshold so none fire. Asserts every row appears in selections
+    (none silently skipped); confirms 5 detector classes covered.
+    """
+    pattern_classes = [
+        "vcp",
+        "flat_base",
+        "cup_with_handle",
+        "high_tight_flag",
+        "double_bottom_w",
+    ]
+    planted_ids = {}
+    for idx, pclass in enumerate(pattern_classes):
+        ticker = f"P{idx}"
+        planted_ids[pclass] = _plant_claude_silver_row(
+            conn, ticker=ticker, pattern_class=pclass,
+            confidence="medium", geometric_score=0.55,
+        )
+
+    def codex_dispatch(**kwargs: object) -> CodexReviewResponse:
+        return CodexReviewResponse(agreed=True)
+
+    # 5 rng values all above 0.15 threshold -> random NEVER fires.
+    rng = _SeededRng([0.99, 0.99, 0.99, 0.99, 0.99])
+
+    selections = retroactive_codex_evaluation_against_corpus(
+        conn,
+        phase="t2_sb3_or_later",
+        ai_labeler_version="codex-retro-t2sb4-coverage",
+        codex_dispatch=codex_dispatch,
+        rng=rng,
+    )
+
+    # Every planted pattern class must appear in selections (no class
+    # silently skipped). The reason should be 'not_selected' (medium +
+    # 0.55 + random above threshold) for all 5.
+    selection_ids = {sel.exemplar_id for sel in selections}
+    for pclass, exemplar_id in planted_ids.items():
+        assert exemplar_id in selection_ids, (
+            f"pattern_class={pclass!r} (exemplar_id={exemplar_id}) was "
+            f"silently skipped by retroactive_codex_evaluation_against_"
+            f"corpus; the function MUST be class-agnostic per spec "
+            f"section 5.9 step 4"
+        )
+
+    # All 5 should report 'not_selected' (none fire).
+    fired = [sel for sel in selections if sel.fired]
+    assert fired == []
+
+
+def test_retroactive_codex_high_stakes_fires_on_htf_disagreement_a(
+    conn: sqlite3.Connection,
+) -> None:
+    """Per spec section 5.9 step 4 lines 745-751 + OQ-5 BINDING: T2.SB4
+    activates the HIGH-STAKES disagreement clause for HTF corpus rows.
+
+    Plants an HTF claude_silver row with confidence='high' + rule-tier
+    geometric_score=0.30 (high-stakes A disagreement direction); asserts
+    Codex high-stakes dispatch fires + the row in codex_dispatch payload
+    carries proposed_pattern_class='high_tight_flag'.
+    """
+    htf_id = _plant_claude_silver_row(
+        conn, ticker="HTF", pattern_class="high_tight_flag",
+        confidence="high", geometric_score=0.30,
+    )
+
+    dispatched_classes: list[str] = []
+    dispatched_ids: list[int] = []
+
+    def codex_dispatch(**kwargs: object) -> CodexReviewResponse:
+        parent = kwargs["parent"]
+        dispatched_ids.append(parent.id)  # type: ignore[union-attr]
+        dispatched_classes.append(
+            parent.proposed_pattern_class  # type: ignore[union-attr]
+        )
+        return CodexReviewResponse(agreed=True)
+
+    rng = _SeededRng([0.99])  # random does NOT fire; only high-stakes.
+
+    selections = retroactive_codex_evaluation_against_corpus(
+        conn,
+        phase="t2_sb3_or_later",
+        ai_labeler_version="codex-retro-t2sb4-htf",
+        codex_dispatch=codex_dispatch,
+        rng=rng,
+    )
+
+    fired = [sel for sel in selections if sel.fired]
+    assert len(fired) == 1
+    assert fired[0].exemplar_id == htf_id
+    assert fired[0].reason == "high_stakes_a"
+    assert dispatched_ids == [htf_id]
+    assert dispatched_classes == ["high_tight_flag"]
+
+
+def test_retroactive_codex_high_stakes_fires_on_dbw_disagreement_b(
+    conn: sqlite3.Connection,
+) -> None:
+    """Per spec section 5.9 step 4 lines 745-751 + OQ-5 BINDING: T2.SB4
+    activates the HIGH-STAKES disagreement clause for DBW corpus rows.
+
+    Plants a DBW claude_silver row with confidence='low' + rule-tier
+    geometric_score=0.85 (high-stakes B disagreement direction); asserts
+    Codex high-stakes dispatch fires + payload carries
+    proposed_pattern_class='double_bottom_w'.
+    """
+    dbw_id = _plant_claude_silver_row(
+        conn, ticker="DBW", pattern_class="double_bottom_w",
+        confidence="low", geometric_score=0.85,
+    )
+
+    dispatched_classes: list[str] = []
+    dispatched_ids: list[int] = []
+
+    def codex_dispatch(**kwargs: object) -> CodexReviewResponse:
+        parent = kwargs["parent"]
+        dispatched_ids.append(parent.id)  # type: ignore[union-attr]
+        dispatched_classes.append(
+            parent.proposed_pattern_class  # type: ignore[union-attr]
+        )
+        return CodexReviewResponse(agreed=True)
+
+    rng = _SeededRng([0.99])  # random does NOT fire; only high-stakes B.
+
+    selections = retroactive_codex_evaluation_against_corpus(
+        conn,
+        phase="t2_sb3_or_later",
+        ai_labeler_version="codex-retro-t2sb4-dbw",
+        codex_dispatch=codex_dispatch,
+        rng=rng,
+    )
+
+    fired = [sel for sel in selections if sel.fired]
+    assert len(fired) == 1
+    assert fired[0].exemplar_id == dbw_id
+    assert fired[0].reason == "high_stakes_b"
+    assert dispatched_ids == [dbw_id]
+    assert dispatched_classes == ["double_bottom_w"]
+
+
+def test_retroactive_codex_high_stakes_does_not_fire_when_dbw_agrees(
+    conn: sqlite3.Connection,
+) -> None:
+    """The high-stakes clause MUST NOT fire when Claude silver +
+    rule-tier AGREE - DBW row with confidence='high' AND geometric_score
+    >= 0.8 is the agreement direction (both 'this is a strong DBW'); no
+    Codex dispatch.
+
+    Pre-empts a regression where the high-stakes predicate could fire
+    on agreement (e.g., a typo flipping the comparator), silently
+    burning Codex MCP quota on agreement cases.
+    """
+    dbw_id = _plant_claude_silver_row(
+        conn, ticker="DBW2", pattern_class="double_bottom_w",
+        confidence="high", geometric_score=0.85,
+    )
+
+    dispatched: list[int] = []
+
+    def codex_dispatch(**kwargs: object) -> CodexReviewResponse:
+        parent = kwargs["parent"]
+        dispatched.append(parent.id)  # type: ignore[union-attr]
+        return CodexReviewResponse(agreed=True)
+
+    rng = _SeededRng([0.99])  # random does NOT fire.
+
+    selections = retroactive_codex_evaluation_against_corpus(
+        conn,
+        phase="t2_sb3_or_later",
+        ai_labeler_version="codex-retro-t2sb4-dbw-agree",
+        codex_dispatch=codex_dispatch,
+        rng=rng,
+    )
+
+    fired = [sel for sel in selections if sel.fired]
+    assert fired == []
+    assert dispatched == []
+    # The row was scanned but reason should be 'not_selected'.
+    by_id = {sel.exemplar_id: sel for sel in selections}
+    assert by_id[dbw_id].fired is False
+    assert by_id[dbw_id].reason == "not_selected"
