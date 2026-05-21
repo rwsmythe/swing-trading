@@ -91,8 +91,9 @@ log = logging.getLogger(__name__)
 # Per spec §6.2 + plan §G.5 T-B.2.1 — V1 lookback discipline. The lookback
 # is bounded by ``entry_date`` (passed by caller); the service does NOT
 # apply an additional 7-day cap because operator may exit weeks after
-# entry. ``DEFAULT_LOOKBACK_DAYS`` is retained for parity with the entry
-# auto-fill module + V2 use cases.
+# entry. ``DEFAULT_LOOKBACK_DAYS`` documents the V2 wiring point if a
+# cap is ever added; intentionally NOT in ``__all__`` because the V1
+# function does not consume it (no false-configurability surface).
 DEFAULT_LOOKBACK_DAYS: int = 7
 
 
@@ -508,14 +509,30 @@ def resolve_exit_auto_fill(
     # becomes an ExitAutoFillCandidate. Single-fill case = length-1 list
     # per spec §6.2 paragraph 2. Multi-partial case = length-N list for
     # operator selection.
+    #
+    # Sort matches by enter_time ASCENDING so the candidates list carries
+    # chronological order (oldest first; most-recent last). Then build
+    # candidates from the sorted matches; _build_candidate returns None
+    # for orders lacking execution-grain price/quantity (mapper edge case),
+    # so candidates may have fewer entries than matches.
+    #
+    # Per reviewer fix (T-B.2.1 follow-up): the chosen (default) candidate
+    # is the LAST entry in the candidates list (most recent by enter_time)
+    # — NOT a second invocation of _compute_execution_price /
+    # _resolve_match_quantity against the raw order. This guarantees the
+    # chosen values are consistent with what _build_candidate validated +
+    # avoids a TypeError when _resolve_match_quantity returns None for
+    # partial-then-canceled MARKET orders.
     # ----------------------------------------------------------------------
+    sorted_matches = sorted(matches, key=lambda o: getattr(o, "enter_time", ""))
     candidates: list[ExitAutoFillCandidate] = []
-    for o in matches:
+    for o in sorted_matches:
         cand = _build_candidate(o)
         if cand is not None:
             candidates.append(cand)
     if not candidates:
-        # All matches lacked execution-grain price (mapper edge case).
+        # All matches lacked execution-grain price/quantity (mapper edge
+        # case OR partial-then-canceled MARKET with no resolvable qty).
         return ExitAutoFillResult(
             kind="empty",
             fill_origin="operator_typed",
@@ -526,28 +543,22 @@ def resolve_exit_auto_fill(
             auto_fill_audit_at=auto_fill_audit_at,
         )
 
-    # Most-recent candidate by enter_time drives the default form values;
-    # the full candidates list lets operator select another fill if scaled
-    # out. Lexicographic max matches chronological for valid ISO-Z strings.
-    chosen_order = max(matches, key=lambda o: getattr(o, "enter_time", ""))
-    chosen_price = _compute_execution_price(chosen_order)
-    chosen_quantity = _resolve_match_quantity(chosen_order)
-    chosen_date = _extract_iso_date(
-        getattr(chosen_order, "enter_time", "")
-    )
+    # Most-recent candidate (last in chronological list) drives the
+    # default form values; the full candidates list lets operator select
+    # another fill if scaled out.
+    chosen = candidates[-1]
 
-    # Build a stable signature for the most-recent fill so the
+    # Build a stable signature for the chosen fill so the
     # schwab_source_value_json carries provenance equivalent to the
-    # candidate the operator sees defaulted.
+    # candidate the operator sees defaulted. Use chosen.* directly to
+    # guarantee envelope-vs-candidate value consistency.
     schwab_source_value_json = json.dumps(
         {
-            "exit_date": chosen_date,
-            "exit_price": chosen_price,
-            "closed_shares": int(chosen_quantity),
-            "schwab_order_id": getattr(chosen_order, "order_id", None),
-            "schwab_instrument_symbol": getattr(
-                chosen_order, "instrument_symbol", None,
-            ),
+            "exit_date": chosen.date,
+            "exit_price": chosen.price,
+            "closed_shares": chosen.quantity,
+            "schwab_order_id": chosen.order_id,
+            "schwab_instrument_symbol": ticker,
             "candidate_count": len(candidates),
         },
         sort_keys=True,
@@ -556,9 +567,9 @@ def resolve_exit_auto_fill(
     return ExitAutoFillResult(
         kind="populated",
         fill_origin="schwab_auto",
-        exit_date=chosen_date,
-        exit_price=chosen_price,
-        closed_shares=int(chosen_quantity),
+        exit_date=chosen.date,
+        exit_price=chosen.price,
+        closed_shares=chosen.quantity,
         candidates=candidates,
         advisory_text=None,
         schwab_source_value_json=schwab_source_value_json,
@@ -661,7 +672,6 @@ def _extract_iso_date(iso_string: str) -> str:
 
 
 __all__ = [
-    "DEFAULT_LOOKBACK_DAYS",
     "ExitAutoFillCandidate",
     "ExitAutoFillKind",
     "ExitAutoFillResult",

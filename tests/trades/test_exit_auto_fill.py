@@ -723,6 +723,57 @@ def test_exit_auto_fill_result_invalid_fill_origin_rejected():
         )
 
 
+def test_unresolvable_match_falls_through_to_empty_not_typeerror(
+    conn, fake_now, patch_live_state, patch_credentials,
+    patch_client_factory, patch_get_orders,
+):
+    """T-B.2.1 reviewer fix — chosen-candidate from candidates list.
+
+    Discriminating test: when a matching SELL order passes
+    ``_is_execution_bearing_candidate`` (FILLED with price set) but
+    LACKS executions (``executions=None``), the order-grain helpers
+    ``_compute_execution_price`` and ``_resolve_match_quantity`` cannot
+    surface execution-grain price; ``_build_candidate`` returns None;
+    candidates list is empty; the service returns ``kind='empty'``.
+
+    Pre-fix code path invoked ``int(_resolve_match_quantity(chosen_order))``
+    on the raw order AFTER the candidates list was built. For analogous
+    partial-then-canceled MARKET orders where quantity resolution yields
+    None, this would have raised ``TypeError: int() argument must be ...
+    not 'NoneType'``. Post-fix uses ``chosen = candidates[-1]`` so the
+    chosen values come from the already-validated candidates list and
+    such orders fall through to ``kind='empty'`` cleanly.
+    """
+    # FILLED + price set passes _is_execution_bearing_candidate, but
+    # executions=None makes _compute_execution_price return None →
+    # _build_candidate returns None → candidates list is empty.
+    no_exec_order = SchwabOrderResponse(
+        order_id="order-no-executions",
+        status="FILLED",
+        enter_time="2026-05-19T15:30:00.000Z",
+        instrument_symbol="AAPL",
+        instruction="SELL_TO_CLOSE",
+        quantity=100,
+        order_type="LIMIT",
+        price=160.0,
+        executions=None,  # legacy mapper path / sandbox / coherence-collapse
+    )
+    patch_get_orders.state["orders"] = [no_exec_order]
+    cfg = _make_cfg(environment="production")
+    # Must NOT raise TypeError; must return kind='empty' gracefully.
+    result = resolve_exit_auto_fill(
+        trade_id=42, ticker="AAPL", entry_date="2026-05-15",
+        cfg=cfg, conn=conn, now=fake_now,
+    )
+    assert result.kind == "empty"
+    assert result.fill_origin == "operator_typed"
+    assert result.exit_price is None
+    assert result.closed_shares is None
+    assert result.candidates is None
+    assert result.advisory_text is not None
+    assert "execution-grain" in result.advisory_text.lower()
+
+
 def test_exit_auto_fill_candidate_validates_fields():
     """ExitAutoFillCandidate.__post_init__: empty date/sig rejected."""
     with pytest.raises(ValueError, match="date"):
