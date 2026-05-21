@@ -40,6 +40,9 @@ from swing.web.view_models.metrics.tier_comparison import (
 from swing.web.view_models.metrics.trade_process_card import (
     build_trade_process_card_vm,
 )
+from swing.web.view_models.patterns.outcomes_card import (
+    build_pattern_outcomes_vm,
+)
 
 router = APIRouter()
 
@@ -225,6 +228,33 @@ def metrics_process_grade_trend(request: Request):
     vm = build_process_grade_trend_vm(cfg=cfg)
     return request.app.state.templates.TemplateResponse(
         request, "metrics/process_grade_trend.html.j2", {"vm": vm},
+    )
+
+
+@router.get("/metrics/pattern-outcomes", response_class=HTMLResponse)
+def metrics_pattern_outcomes(request: Request):
+    """Phase 13 T2.SB6b T-A.6.5 — 9th metric tile per OQ-10 LOCK.
+
+    Per spec section 5.10 item 8: per-pattern-class outcome distribution
+    (triggered / reached 1R / hit stop). Composes with Phase 10
+    `swing/metrics/cohort.py` + `honesty.py` confidence-floor + Wilson-CI
+    badge helpers (L10 LOCK: ADDITIVE on top of the shipped 8 tiles).
+
+    Per plan A.9 + I.6 LOCK: pure server-rendered HTML.
+    """
+    from datetime import datetime
+    from swing.evaluation.dates import action_session_for_run
+    db_path = request.app.state.cfg.paths.db_path
+    conn = sqlite3.connect(db_path)
+    try:
+        vm = build_pattern_outcomes_vm(
+            conn,
+            session_date=action_session_for_run(datetime.now()).isoformat(),
+        )
+    finally:
+        conn.close()
+    return request.app.state.templates.TemplateResponse(
+        request, "metrics/pattern_outcomes.html.j2", {"vm": vm},
     )
 
 

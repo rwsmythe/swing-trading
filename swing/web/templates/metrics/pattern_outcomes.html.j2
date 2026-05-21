@@ -1,0 +1,53 @@
+{% extends "base.html.j2" %}
+{% block title %}Pattern outcomes - Swing Trading{% endblock %}
+{% block content %}
+<section class="metrics-pattern-outcomes">
+  <h1>Pattern outcomes (9th metric tile)</h1>
+  <p class="muted">
+    Phase 13 T2.SB6b OQ-10 9th metric tile per spec section 5.10 item 8.
+    Per-pattern-class triggered + reached 1R + hit stop distribution
+    composed with Phase 10 honesty Wilson-CI + suppression at n &lt; 5.
+  </p>
+
+  <table class="pattern-outcomes-table" data-section="pattern-outcomes">
+    <thead>
+      <tr>
+        <th>pattern_class</th>
+        <th>n</th>
+        <th>triggered</th>
+        <th>reached 1R</th>
+        <th>hit stop</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in vm.pattern_outcome_rows %}
+      <tr data-pattern-class="{{ row.pattern_class }}">
+        <td>{{ row.pattern_class }}</td>
+        <td>{{ row.n }}</td>
+        <td>
+          {% if row.suppressed_text %}
+            <span class="suppressed">{{ row.suppressed_text }}</span>
+          {% else %}
+            {{ row.triggered_pct_text }}
+          {% endif %}
+        </td>
+        <td>
+          {% if row.reached_1r_n is none %}
+            <span class="muted">(V1: trade backlink not yet resolved)</span>
+          {% else %}
+            {{ row.reached_1r_n }} / {{ row.n }}
+          {% endif %}
+        </td>
+        <td>
+          {% if row.hit_stop_n is none %}
+            <span class="muted">(V1: trade backlink not yet resolved)</span>
+          {% else %}
+            {{ row.hit_stop_n }} / {{ row.n }}
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

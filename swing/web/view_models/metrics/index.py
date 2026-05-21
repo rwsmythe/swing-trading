@@ -74,6 +74,16 @@ _SURFACES: tuple[MetricsIndexSurface, ...] = (
         label="Process-grade-trend",
         description="Rolling-N grade line + per-stage + violation rate + mistake-cost.",
     ),
+    # Phase 13 T2.SB6b T-A.6.5 - 9th metric tile per OQ-10 LOCK. ADDITIVE
+    # on top of the 8 Phase 10 tiles + 1 umbrella `/metrics` navigator.
+    MetricsIndexSurface(
+        path="/metrics/pattern-outcomes",
+        label="Pattern-outcomes",
+        description=(
+            "Per-pattern-class triggered + reached 1R + hit stop with "
+            "Wilson CI; suppressed at n < 5 (Phase 10 honesty)."
+        ),
+    ),
 )
 
 
