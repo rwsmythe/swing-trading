@@ -1355,8 +1355,10 @@ def test_step_pattern_detect_dbw_evidence_1_10_clamps_composite_to_1_0(
     )
 
     # Verify DBW row persisted with composite clamped + evidence preserved.
+    # Codex R3 Major #1: also assert the DB ``geometric_score`` column
+    # carries the RAW evidence value 1.10 (not the clamped composite).
     row = seeded_env["conn"].execute(
-        "SELECT composite_score, structural_evidence_json "
+        "SELECT geometric_score, composite_score, structural_evidence_json "
         "FROM pattern_evaluations "
         "WHERE pipeline_run_id = ? AND ticker = ? AND pattern_class = ?",
         (
@@ -1372,13 +1374,29 @@ def test_step_pattern_detect_dbw_evidence_1_10_clamps_composite_to_1_0(
         "ValueError; the Pass-2 emit loop catches + continues, "
         "skipping the insert."
     )
-    composite_score, se_json = row
-    # Composite MUST be clamped to 1.0 (NOT 1.10).
+    geometric_score, composite_score, se_json = row
+    # Composite MUST be clamped to 1.0 (NOT 1.10) per R2 Critical #1.
     assert composite_score == pytest.approx(1.0), (
         f"expected composite_score clamped to 1.0 (Codex R2 Critical "
         f"#1 fix); got {composite_score}. Pre-fix would have written "
         f"1.10 -- but the pre-fix drift_logging.ValueError prevented "
         f"the insert from happening at all."
+    )
+    # DB column geometric_score MUST carry RAW evidence value 1.10 per
+    # R3 Major #1. Pre-R3 bug: runner persisted
+    # geometric_score=float(composite_score) (clamped) so the DB column
+    # lost the rule-tier evidence value; only structural_evidence_json
+    # preserved 1.10. Migration 0020 line 240 declares
+    # geometric_score REAL NOT NULL with NO CHECK constraint, so the
+    # column can carry 1.10 directly (Option C in R3 dispatch brief).
+    assert geometric_score == pytest.approx(1.10), (
+        f"expected pattern_evaluations.geometric_score column == 1.10 "
+        f"(RAW evidence; Codex R3 Major #1 fix); got {geometric_score}. "
+        f"Pre-R3 bug: row was constructed with geometric_score="
+        f"float(composite_score) which silently clamped the DB column "
+        f"to 1.0, losing the DBW criterion #8 undercut bonus from the "
+        f"evidence-tier column (spec section 5.8 line 718 + section "
+        f"10.5 line 1325)."
     )
     # Evidence score MUST remain 1.10 in structural_evidence_json.
     se = json.loads(se_json)

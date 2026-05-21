@@ -1835,15 +1835,29 @@ def _step_pattern_detect(
             except Exception:
                 geometric_score_json = "{}"
 
+            # Codex R3 Major #1: persist RAW evidence geometric_score
+            # (rule-tier value, may reach 1.10 for DBW per spec section
+            # 5.8 line 718 + section 10.5 line 1325 undercut bonus). The
+            # composite_score column carries the min(1.0, ...) wrapped
+            # value per spec section 5.8 line 712 composite formula.
+            # `pattern_evaluations.geometric_score` has no CHECK
+            # constraint (migration 0020 line 240 declares `REAL NOT
+            # NULL` only) so the column can carry 1.10 directly --
+            # Option C in the R3 dispatch brief. Pre-R3 bug:
+            # geometric_score=float(composite_score) used the CLAMPED
+            # composite as the column value, losing the DBW rule-tier
+            # evidence; only structural_evidence_json kept the 1.10.
             row = PatternEvaluation(
                 id=None,
                 pipeline_run_id=pipeline_run_id,
                 ticker=ticker,
                 pattern_class=pattern_class,
                 detector_version=version_str,
-                geometric_score=float(composite_score),
+                geometric_score=float(
+                    getattr(evidence, "geometric_score", composite_score)
+                ),
                 geometric_score_json=geometric_score_json,
-                composite_score=composite_score,
+                composite_score=float(composite_score),
                 structural_evidence_json=evidence_json,
                 feature_distribution_log_json=fdl_json,
                 window_start_date=window.start_date.isoformat(),

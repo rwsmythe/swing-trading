@@ -292,11 +292,18 @@ def test_phase13_t2_sb4_detectors_e2e_fast(tmp_path: Path) -> None:
       ``structural_evidence_json`` (dict shape).
     - Every row has parseable + non-empty
       ``feature_distribution_log_json`` (FeatureDistributionLog shape).
-    - ``composite_score == geometric_score`` (T2.SB3 LOCK; template
-      matching arrives at T2.SB5).
+    - For non-DBW detectors (vcp, flat_base, cup_with_handle,
+      high_tight_flag): ``composite_score == geometric_score`` (T2.SB3
+      LOCK; template matching arrives at T2.SB5) and
+      ``0.0 <= geometric_score <= 1.0``.
+    - For DBW (double_bottom_w): evidence-tier
+      ``0.0 <= geometric_score <= 1.10`` (rule-tier criteria up to 1.0
+      plus criterion #8 undercut bonus +0.10 per spec section 5.8 line
+      718 + section 10.5 line 1325) AND composite-tier
+      ``composite_score == min(1.0, geometric_score)`` per spec section
+      5.8 line 712 wrap (Codex R1 M1 + R2 Critical #1 + R3 Major #1
+      LOCK; composite always in [0.0, 1.0]).
     - ``template_match_score`` is None on every row (pre-T2.SB5).
-    - All ``geometric_score`` values in ``[0.0, 1.0]`` (spec section 5.2
-      + dataclass ``__post_init__`` invariant).
     - No duplicate ``(pipeline_run_id, ticker, pattern_class)`` tuples
       (idempotency / L3 no-INSERT-OR-REPLACE preservation).
 
