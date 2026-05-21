@@ -488,7 +488,10 @@ def _row_to_review_log(row: tuple) -> ReviewLog:  # type: ignore[type-arg]
         # Phase 12 Sub-bundle C T-A.6: superseded_by_correction_id at row[22].
         superseded_by_correction_id=row[22],
         # Phase 13 T3.SB3 (Codex R1 MAJOR #1): auto_populated_field_keys_json
-        # at row[23]. Persisted by complete_review_atomic; the read-path map
-        # was lagging the widened dataclass field at Codex R1 catch.
-        auto_populated_field_keys_json=row[23] if len(row) > 23 else None,
+        # at row[23]. Persisted by complete_review_atomic; the read-path
+        # map was lagging the widened dataclass field at Codex R1 catch.
+        # No row-length fallback — schema v20 is enforced by the migration
+        # runner; a pre-v20 row at this site signals a real drift that
+        # should fail fast (Codex R2 MINOR follow-up).
+        auto_populated_field_keys_json=row[23],
     )
