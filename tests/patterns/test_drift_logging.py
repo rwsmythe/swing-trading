@@ -381,8 +381,13 @@ def test_all_5_detectors_emit_consistent_schema() -> None:
             verdict_counts_per_pattern_class={},
         )
 
-    # Test (c.3): the 3 T2.SB3 detectors emit a log with identical field
-    # names (i.e., schema is stable across detectors).
+    # Test (c.3): all 5 V1 detectors (T2.SB3: vcp / flat_base /
+    # cup_with_handle; T2.SB4: high_tight_flag / double_bottom_w) emit a
+    # log with identical field names (i.e., schema is stable across
+    # detectors). T-A.4.7 closer extends from 3-detector body (T2.SB3
+    # T-A.3.5 baseline) to 5-detector body per plan H.3 row 7
+    # (`test_drift_logging_5_detector_schema_consistent` pin un-skipped
+    # at T2.SB4 closer).
     log_vcp = capture_feature_distribution(
         detector_class="vcp",
         evidence=_build_vcp_evidence(),
@@ -398,24 +403,64 @@ def test_all_5_detectors_emit_consistent_schema() -> None:
         evidence=_build_cup_with_handle_evidence(),
         universe_context=_build_universe_context(),
     )
+    log_high_tight_flag = capture_feature_distribution(
+        detector_class="high_tight_flag",
+        evidence=_build_high_tight_flag_evidence(),
+        universe_context=_build_universe_context(),
+    )
+    log_double_bottom_w = capture_feature_distribution(
+        detector_class="double_bottom_w",
+        evidence=_build_double_bottom_w_evidence(),
+        universe_context=_build_universe_context(),
+    )
 
     field_names_vcp = {f.name for f in dataclasses.fields(log_vcp)}
     field_names_flat = {f.name for f in dataclasses.fields(log_flat_base)}
     field_names_cup = {f.name for f in dataclasses.fields(log_cup_with_handle)}
+    field_names_htf = {
+        f.name for f in dataclasses.fields(log_high_tight_flag)
+    }
+    field_names_dbw = {
+        f.name for f in dataclasses.fields(log_double_bottom_w)
+    }
 
-    assert field_names_vcp == field_names_flat == field_names_cup, (
+    assert (
+        field_names_vcp
+        == field_names_flat
+        == field_names_cup
+        == field_names_htf
+        == field_names_dbw
+    ), (
         "FeatureDistributionLog field names must be identical across all "
-        "detector classes per OQ-9 LOCK (T2.SB4 future detectors plug in "
-        "without breaking schema)"
+        "5 V1 detector classes per OQ-9 LOCK (cross-bundle pin "
+        "`test_drift_logging_5_detector_schema_consistent` per plan H.3 "
+        "row 7)"
     )
 
     # Non-VCP detectors should NOT populate contraction_depths.
     assert log_flat_base.contraction_depths is None
     assert log_cup_with_handle.contraction_depths is None
-    # All 3 emit the same detector_class string they were called with.
+    assert log_high_tight_flag.contraction_depths is None
+    assert log_double_bottom_w.contraction_depths is None
+    # All 5 emit the same detector_class string they were called with.
     assert log_vcp.detector_class == "vcp"
     assert log_flat_base.detector_class == "flat_base"
     assert log_cup_with_handle.detector_class == "cup_with_handle"
+    assert log_high_tight_flag.detector_class == "high_tight_flag"
+    assert log_double_bottom_w.detector_class == "double_bottom_w"
+    # Per drift_logging.py per-detector helpers:
+    # - HTF populates volume_aggregates (pole_avg / consolidation_avg /
+    #   ratio) via _extract_volume_aggregates(HighTightFlagEvidence).
+    # - DBW populates center_trough_retracement via
+    #   _extract_center_trough_retracement(DoubleBottomWEvidence).
+    assert log_high_tight_flag.volume_aggregates, (
+        "HTF must populate volume_aggregates per drift_logging "
+        "_extract_volume_aggregates HTF branch"
+    )
+    assert log_double_bottom_w.center_trough_retracement is not None, (
+        "DBW must populate center_trough_retracement per drift_logging "
+        "_extract_center_trough_retracement DBW branch"
+    )
 
 
 # ---------------------------------------------------------------------------
