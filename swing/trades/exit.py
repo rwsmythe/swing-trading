@@ -58,6 +58,14 @@ class ExitRequest:
     notes: str | None
     rationale: str
     event_ts: str
+    # Phase 13 T3.SB2 T-B.2.3 — exit auto-fill audit columns persisted on
+    # the fills row (per spec §6.2 + §6.4 + plan §G.5 T-B.2.3). Defaults
+    # preserve legacy / CLI / bare-cURL callers that don't supply auto-
+    # fill provenance.
+    fill_origin: str = "operator_typed"
+    schwab_source_value_json: str | None = None
+    operator_corrected_value_json: str | None = None
+    auto_fill_audit_at: str | None = None
 
 
 @dataclass(frozen=True)
@@ -191,6 +199,14 @@ def record_exit(conn: sqlite3.Connection, req: ExitRequest) -> ExitResult:
         quantity=float(req.shares),
         price=float(req.exit_price),
         reason=req.reason.value,
+        # Phase 13 T3.SB2 T-B.2.3 — exit auto-fill provenance audit columns.
+        # ExitRequest defaults preserve legacy operator_typed / NULL behavior
+        # for CLI / bare-cURL callers; web POST handler populates these from
+        # the form-render hidden anchor + operator-selection round-trip.
+        fill_origin=req.fill_origin,
+        schwab_source_value_json=req.schwab_source_value_json,
+        operator_corrected_value_json=req.operator_corrected_value_json,
+        auto_fill_audit_at=req.auto_fill_audit_at,
     )
 
     with conn:

@@ -1662,7 +1662,7 @@ def exit_form(request: Request, trade_id: int):
 
 
 @router.post("/trades/{trade_id}/exit", response_class=HTMLResponse)
-def exit_post(
+async def exit_post(
     request: Request,
     trade_id: int,
     exit_date: str = Form(...),
@@ -1670,7 +1670,24 @@ def exit_post(
     shares: int = Form(...),
     reason: str = Form(...),
     notes: str | None = Form(None),
+    # Phase 13 T3.SB2 T-B.2.3 — exit auto-fill hidden audit anchors emitted
+    # by the form-render path (T-B.2.2 template additions). Defaults ""/None
+    # so legacy callers (CLI tests, bare cURL, pre-Phase-13 form submits)
+    # keep working — the POST handler infers fill_origin='operator_typed'
+    # when these are absent. Per CLAUDE.md gotcha "Form-render hidden
+    # anchors driving POST-time validation MUST round-trip" + forward-
+    # binding lesson #13 BINDING. Per-candidate hidden inputs
+    # (candidate_signature_hash_<i> + candidate_order_id_<i> + radio
+    # candidate_index) are read from request.form() below since their
+    # names are dynamic.
+    schwab_source_value_json: str = Form(""),
+    auto_fill_audit_at: str = Form(""),
+    fill_origin_at_form_render: str = Form(""),
 ):
+    import json as _json
+    import math as _math
+    from datetime import date as _date_cls
+
     cfg = apply_overrides(request.app.state.cfg)
     cache = request.app.state.price_cache
     executor = request.app.state.price_fetch_executor
@@ -1686,6 +1703,276 @@ def exit_post(
             status_code=400,
         )
 
+    # ------------------------------------------------------------------
+    # Phase 13 T3.SB2 T-B.2.3 — read dynamic per-candidate hidden inputs
+    # from the raw form (FastAPI's Form(...) bindings only cover known
+    # keys; multi-partial provenance uses dynamic candidate_<n> names).
+    # ------------------------------------------------------------------
+    form_data = await request.form()
+    candidate_index_raw = form_data.get("candidate_index")
+
+    # Collect all candidate_signature_hash_<i> / candidate_order_id_<i>
+    # pairs the form sent. Indices are 0-based; gaps OK (template emits
+    # contiguous indices but defense-in-depth tolerates sparsity).
+    candidate_sigs: dict[int, str] = {}
+    candidate_orders: dict[int, str] = {}
+    for key in form_data:
+        if key.startswith("candidate_signature_hash_"):
+            try:
+                idx = int(key[len("candidate_signature_hash_"):])
+            except ValueError:
+                continue
+            candidate_sigs[idx] = str(form_data.get(key) or "")
+        elif key.startswith("candidate_order_id_"):
+            try:
+                idx = int(key[len("candidate_order_id_"):])
+            except ValueError:
+                continue
+            candidate_orders[idx] = str(form_data.get(key) or "")
+
+    # ------------------------------------------------------------------
+    # Phase 13 T3.SB2 T-B.2.3 — fill_origin transition resolution.
+    # Compare submitted exit_date / exit_price / shares against the
+    # form-render anchor (``schwab_source_value_json`` JSON envelope).
+    # Three outcomes:
+    #   - No anchor (empty/missing JSON) → operator_typed; audit cols NULL.
+    #   - Anchor matches submitted values → schwab_auto.
+    #   - Anchor differs from submitted values → schwab_auto_then_operator_corrected.
+    # Per spec §6.2 + §6.4 + dispatch brief BINDING.
+    # ------------------------------------------------------------------
+    resolved_fill_origin = "operator_typed"
+    resolved_schwab_source_value_json: str | None = None
+    resolved_operator_corrected_value_json: str | None = None
+    resolved_auto_fill_audit_at: str | None = None
+
+    # Normalize claim via strip() once so the consistency-check predicate +
+    # any re-render path consult the same canonical value (mirrors entry_post
+    # Codex R3 Minor #1 fix).
+    fill_origin_at_form_render = fill_origin_at_form_render.strip()
+    claimed_auto_fill = fill_origin_at_form_render in (
+        "schwab_auto", "schwab_auto_then_operator_corrected",
+    )
+
+    # Helper: 400 + recovery-form re-render with anchor CLEARED (T3.SB1 R3
+    # M#2 anchor-clear discipline BINDING). Recovery form is rebuilt from
+    # build_exit_form_vm which re-runs the Schwab fetch (or fallbacks to
+    # operator_typed); the bad submitted anchor is NOT echoed back so the
+    # operator's next retry sees a fresh anchor instead of replaying the
+    # tampered one.
+    def _reject_anchor(error_message: str) -> HTMLResponse:
+        vm_local = build_exit_form_vm(
+            trade_id=trade_id, cfg=cfg, cache=cache, executor=executor,
+        )
+        if vm_local is not None:
+            return templates.TemplateResponse(
+                request, "partials/trade_exit_form.html.j2",
+                {"vm": vm_local, "error_message": error_message},
+                status_code=400,
+            )
+        return templates.TemplateResponse(
+            request, "partials/trade_form_error.html.j2",
+            {"error_message": error_message},
+            status_code=400,
+        )
+
+    # 4-tier rejection ladder (mirrors entry_post pattern):
+    #   (a) malformed JSON → 400 + clear
+    #   (b) non-dict JSON → 400 + clear
+    #   (c) dict missing required keys → 400 + clear
+    #   (d) dict with invalid value shapes → 400 + clear
+    #   plus claim-vs-anchor consistency.
+    if schwab_source_value_json.strip():
+        try:
+            anchor_envelope = _json.loads(schwab_source_value_json)
+        except (ValueError, TypeError):
+            anchor_envelope = None
+
+        # (a) malformed JSON + claim → 400
+        if anchor_envelope is None and claimed_auto_fill:
+            return _reject_anchor(
+                "Trade exit rejected: fill_origin_at_form_render="
+                f"{fill_origin_at_form_render!r} claims auto-fill "
+                "provenance but schwab_source_value_json is malformed, "
+                "unparseable, or not a JSON object. The form has been "
+                "regenerated with a fresh Schwab fetch; please re-submit."
+            )
+        # (b) non-dict JSON + claim → 400
+        if (
+            anchor_envelope is not None
+            and not isinstance(anchor_envelope, dict)
+            and claimed_auto_fill
+        ):
+            return _reject_anchor(
+                "Trade exit rejected: fill_origin_at_form_render="
+                f"{fill_origin_at_form_render!r} claims auto-fill "
+                "provenance but schwab_source_value_json is not a JSON "
+                "object. The form has been regenerated; please re-submit."
+            )
+        # (c) dict missing one or more of the 3 required keys + claim → 400
+        if (
+            isinstance(anchor_envelope, dict)
+            and claimed_auto_fill
+            and not all(
+                k in anchor_envelope
+                for k in ("exit_date", "exit_price", "closed_shares")
+            )
+        ):
+            return _reject_anchor(
+                "Trade exit rejected: fill_origin_at_form_render="
+                f"{fill_origin_at_form_render!r} claims auto-fill "
+                "provenance but schwab_source_value_json is missing one or "
+                "more required keys (exit_date, exit_price, closed_shares). "
+                "The form has been regenerated; please re-submit."
+            )
+        # (d) dict with invalid value shapes + claim → 400
+        if isinstance(anchor_envelope, dict) and claimed_auto_fill:
+            v_exit_date = anchor_envelope.get("exit_date")
+            v_exit_price = anchor_envelope.get("exit_price")
+            v_closed_shares = anchor_envelope.get("closed_shares")
+            exit_date_ok = isinstance(v_exit_date, str)
+            if exit_date_ok:
+                try:
+                    _date_cls.fromisoformat(v_exit_date)
+                except (TypeError, ValueError):
+                    exit_date_ok = False
+            exit_price_ok = (
+                isinstance(v_exit_price, (int, float))
+                and not isinstance(v_exit_price, bool)
+                and _math.isfinite(float(v_exit_price))
+            )
+            shares_ok = (
+                isinstance(v_closed_shares, int)
+                and not isinstance(v_closed_shares, bool)
+            )
+            if not (exit_date_ok and exit_price_ok and shares_ok):
+                return _reject_anchor(
+                    "Trade exit rejected: fill_origin_at_form_render="
+                    f"{fill_origin_at_form_render!r} claims auto-fill "
+                    "provenance but schwab_source_value_json contains "
+                    "invalid values (exit_date must be ISO YYYY-MM-DD; "
+                    "exit_price must be finite numeric; closed_shares must "
+                    "be an integer). The form has been regenerated; please "
+                    "re-submit."
+                )
+
+        # Multi-partial: parse candidate_index + verify it maps to a
+        # server-rendered candidate (its candidate_signature_hash_<i> hidden
+        # input must be present). Single-fill case: candidate_index omitted
+        # → treat as 0 (the template emits no radio at length 1; the form
+        # may or may not emit candidate_signature_hash_0; both shapes OK).
+        selected_index: int | None = None
+        if isinstance(anchor_envelope, dict) and claimed_auto_fill:
+            if candidate_index_raw is not None and str(
+                candidate_index_raw,
+            ).strip() != "":
+                try:
+                    selected_index = int(str(candidate_index_raw).strip())
+                except ValueError:
+                    return _reject_anchor(
+                        "Trade exit rejected: candidate_index "
+                        f"{candidate_index_raw!r} is not an integer. The "
+                        "form has been regenerated; please re-submit."
+                    )
+                # Out-of-range: selected index has no matching
+                # candidate_signature_hash_<i> hidden input.
+                if selected_index not in candidate_sigs:
+                    return _reject_anchor(
+                        "Trade exit rejected: candidate_index="
+                        f"{selected_index} does not map to a server-"
+                        "rendered candidate (no candidate_signature_hash_"
+                        f"{selected_index} hidden input). The form has "
+                        "been regenerated; please re-submit."
+                    )
+            elif candidate_sigs:
+                # candidate_index omitted but per-candidate hidden inputs
+                # ARE present (single-fill case): default to index 0 IF
+                # present, otherwise treat as "no selection" (single-fill
+                # without per-candidate hidden inputs is also legal).
+                selected_index = 0 if 0 in candidate_sigs else None
+
+        # Provenance-stamping branch — fires only when both halves of the
+        # consistency check agree (valid dict envelope + claim present).
+        # Mirrors entry_post Codex R4 Major #1 gate.
+        if isinstance(anchor_envelope, dict) and claimed_auto_fill:
+            anchor_exit_date = anchor_envelope.get("exit_date")
+            anchor_exit_price = anchor_envelope.get("exit_price")
+            anchor_closed_shares = anchor_envelope.get("closed_shares")
+            try:
+                anchor_price_float = (
+                    float(anchor_exit_price)
+                    if anchor_exit_price is not None else None
+                )
+            except (TypeError, ValueError):
+                anchor_price_float = None
+            try:
+                anchor_shares_int = (
+                    int(anchor_closed_shares)
+                    if anchor_closed_shares is not None else None
+                )
+            except (TypeError, ValueError):
+                anchor_shares_int = None
+            exit_date_diff = anchor_exit_date != exit_date
+            price_diff = (
+                anchor_price_float is None
+                or abs(anchor_price_float - exit_price) > 1e-9
+            )
+            shares_diff = (
+                anchor_shares_int is None or anchor_shares_int != shares
+            )
+            if exit_date_diff or price_diff or shares_diff:
+                resolved_fill_origin = "schwab_auto_then_operator_corrected"
+                resolved_operator_corrected_value_json = _json.dumps(
+                    {
+                        "exit_date": exit_date,
+                        "exit_price": exit_price,
+                        "closed_shares": shares,
+                    },
+                    sort_keys=True,
+                )
+            else:
+                resolved_fill_origin = "schwab_auto"
+
+            # Re-stamp envelope with operator-selection provenance (multi-
+            # partial threading per dispatch brief). The persisted envelope
+            # extends the form-render envelope with:
+            #   - ``selected_candidate_signature_hash`` (chosen candidate)
+            #   - ``selected_candidate_order_id`` (chosen candidate's order)
+            #   - ``other_candidate_signature_hashes`` (audit history)
+            # Architectural decision: keep the original envelope keys
+            # verbatim + ADD provenance fields rather than rebuilding so
+            # downstream consumers reading e.g. ``schwab_order_id`` from
+            # the legacy single-fill shape continue to work.
+            extended = dict(anchor_envelope)
+            if selected_index is not None and selected_index in candidate_sigs:
+                extended["selected_candidate_signature_hash"] = (
+                    candidate_sigs[selected_index]
+                )
+                extended["selected_candidate_order_id"] = (
+                    candidate_orders.get(selected_index, "") or None
+                )
+                others = sorted(
+                    sig for idx, sig in candidate_sigs.items()
+                    if idx != selected_index
+                )
+                # Always emit the key for audit clarity (empty list when
+                # single-fill case). Wrapping audit history is the V1
+                # contract per the dispatch brief.
+                extended["other_candidate_signature_hashes"] = others
+            resolved_schwab_source_value_json = _json.dumps(
+                extended, sort_keys=True,
+            )
+            # ``... or None`` not ``... or ''`` (Phase 6 gotcha).
+            resolved_auto_fill_audit_at = auto_fill_audit_at or None
+    elif claimed_auto_fill:
+        # Empty anchor with claim → 400 (claim cannot be trusted without
+        # anchor). Mirrors entry_post Codex R1 Major #1 fix.
+        return _reject_anchor(
+            "Trade exit rejected: fill_origin_at_form_render="
+            f"{fill_origin_at_form_render!r} claims auto-fill provenance "
+            "but schwab_source_value_json is empty. Re-render the form "
+            "to recover."
+        )
+
     # Tranche B-ops T6: rationale is no longer a separate form input.
     # The service still persists trade_events.rationale; derive it from
     # reason_enum.value per spec §3 "Decision — exit rationale: reuse
@@ -1696,6 +1983,12 @@ def exit_post(
         shares=shares, reason=reason_enum, notes=notes,
         rationale=reason_enum.value,
         event_ts=datetime.now().isoformat(timespec="seconds"),
+        # Phase 13 T3.SB2 T-B.2.3 — auto-fill audit columns persisted on
+        # the fills row by ``record_exit`` → ``insert_fill_with_event``.
+        fill_origin=resolved_fill_origin,
+        schwab_source_value_json=resolved_schwab_source_value_json,
+        operator_corrected_value_json=resolved_operator_corrected_value_json,
+        auto_fill_audit_at=resolved_auto_fill_audit_at,
     )
 
     conn = connect(cfg.paths.db_path)
