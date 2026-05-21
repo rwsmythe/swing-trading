@@ -2570,6 +2570,7 @@ def cadence_complete_post(
     duration_minutes: int = Form(...),
     primary_lesson: str = Form(...),
     next_period_focus: str = Form(...),
+    auto_populated_field_keys_json: str | None = Form(None),
 ):
     from datetime import date as _date
 
@@ -2587,12 +2588,19 @@ def cadence_complete_post(
                 status_code=409,
                 detail="Review already completed",
             )
+        # Phase 13 T3.SB3 (T-B.3.4): persist the server-stamped audit
+        # envelope. ``... or None`` per Phase 6 deviation #3 CLAUDE.md
+        # gotcha — empty string must persist as NULL (nullable JSON
+        # column).
         complete_review_atomic(
             conn, review_id=review_id,
             completed_date=_date.today().isoformat(),
             duration_minutes=duration_minutes,
             primary_lesson=primary_lesson,
             next_period_focus=next_period_focus,
+            auto_populated_field_keys_json=(
+                auto_populated_field_keys_json or None
+            ),
         )
     finally:
         conn.close()

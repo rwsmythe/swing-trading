@@ -1,13 +1,45 @@
 <form method="post" action="/reviews/{{ vm.review.review_id }}/complete"
       hx-post="/reviews/{{ vm.review.review_id }}/complete"
       hx-headers='{"HX-Request": "true"}'>
+
+  {# Phase 13 T3.SB3 (T-B.3.4) — server-stamped audit envelope; operator
+     cannot tamper (Phase 8 R2-R5 server-stamping family + L10 LOCK). #}
+  <input type="hidden" name="auto_populated_field_keys_json"
+         value="{{ vm.auto_populated_field_keys_json or '' }}">
+
+  {% if vm.period_mistake_tag_aggregate %}
+  <fieldset class="period-review-auto-fill-mistakes"
+            data-role="t-b-3-4-mistake-aggregate">
+    <legend>Most common mistake tags this period</legend>
+    <ul>
+      {% for tag, count in vm.period_mistake_tag_aggregate.items() %}
+      <li>{{ tag }}: {{ count }}</li>
+      {% endfor %}
+    </ul>
+  </fieldset>
+  {% endif %}
+
+  {% if vm.period_cohort_health_deltas %}
+  <fieldset class="period-review-auto-fill-cohorts"
+            data-role="t-b-3-4-cohort-deltas">
+    <legend>Cohort health deltas (current vs prior period)</legend>
+    <ul>
+      {% for cohort, delta in vm.period_cohort_health_deltas.items() %}
+      <li>{{ cohort }}: {{ "%+.2f"|format(delta) }} R</li>
+      {% endfor %}
+    </ul>
+  </fieldset>
+  {% endif %}
+
   <label>
     Duration (minutes)
     <input type="number" name="duration_minutes" required min="1">
   </label>
   <label>
     Primary lesson
-    <textarea name="primary_lesson" required rows="3"></textarea>
+    {# T-B.3.4: pre-fill with concatenated period-lessons summary as a
+       DEFAULT operator-editable starter text (§E.5 LOCK). #}
+    <textarea name="primary_lesson" required rows="6">{%- if vm.period_lessons_summary -%}{{ vm.period_lessons_summary }}{%- endif -%}</textarea>
   </label>
   <label>
     Next-period focus

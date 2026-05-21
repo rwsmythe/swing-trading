@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Literal
 
 from swing.config import Config
@@ -1169,6 +1169,18 @@ class CadenceCompleteVM:
     # resolve form. None when no pending-ambiguity row exists.
     banner_resolve_link: str | None = None
 
+    # Phase 13 T3.SB3 (T-B.3.4) — period review auto-fill per spec §E.5
+    # LOCK. All values are operator-editable starter text surfaced on the
+    # form-render path; the audit envelope tracks which keys were server-
+    # populated so the POST handler can persist
+    # ``review_log.auto_populated_field_keys_json`` faithfully.
+    period_lessons_summary: str = ""
+    period_mistake_tag_aggregate: dict[str, int] = field(default_factory=dict)
+    period_cohort_health_deltas: dict[str, float] = field(default_factory=dict)
+    # Server-stamped at handler entry; operator cannot tamper (Phase 8
+    # R2-R5 family forward-binding lesson + L10 LOCK).
+    auto_populated_field_keys_json: str | None = None
+
     def __post_init__(self) -> None:
         if self.banner_resolve_link is not None:
             if not isinstance(self.banner_resolve_link, str):
@@ -1297,8 +1309,50 @@ def build_cadence_complete_vm(*, review_id: int, cfg: Config) -> CadenceComplete
         banner_resolve_link = (
             fetch_first_pending_ambiguity_resolve_link_path(conn)
         )
+
+        # Phase 13 T3.SB3 (T-B.3.4): invoke the §E.5 period helpers to
+        # surface starter section text. Prior-period boundaries derived
+        # from the review's period span: same-length window immediately
+        # preceding the current period.
+        from swing.trades.review import (
+            get_period_cohort_health_deltas,
+            get_period_lessons_summary,
+            get_period_mistake_tag_aggregate,
+        )
+
+        period_lessons = get_period_lessons_summary(
+            conn, period_start=ps, period_end=pe,
+        )
+        period_mistake_agg = get_period_mistake_tag_aggregate(
+            conn, period_start=ps, period_end=pe,
+        )
+        period_length_days = (pe - ps).days + 1
+        prior_pe = ps - timedelta(days=1)
+        prior_ps = prior_pe - timedelta(days=period_length_days - 1)
+        period_cohort_deltas = get_period_cohort_health_deltas(
+            conn,
+            current_period_start=ps,
+            current_period_end=pe,
+            prior_period_start=prior_ps,
+            prior_period_end=prior_pe,
+        )
     finally:
         conn.close()
+
+    # T-B.3.4: server-stamp the audit envelope based on which period
+    # helpers produced non-empty output. Operator-typed sections stay
+    # attributable (excluded from the JSON array).
+    auto_keys: list[str] = []
+    if period_lessons:
+        auto_keys.append("primary_lesson")
+    if period_mistake_agg:
+        auto_keys.append("most_common_mistake_tags")
+    if period_cohort_deltas:
+        auto_keys.append("cohort_health_summary")
+    auto_populated_field_keys_json: str | None = (
+        json.dumps(auto_keys) if auto_keys else None
+    )
+
     return CadenceCompleteVM(
         review=review,
         n_closed_trades_in_period=n,
@@ -1306,6 +1360,10 @@ def build_cadence_complete_vm(*, review_id: int, cfg: Config) -> CadenceComplete
         unresolved_material_discrepancies_count=unresolved_material_count,
         recent_multi_leg_auto_correction_count=recent_multi_leg_count,
         banner_resolve_link=banner_resolve_link,
+        period_lessons_summary=period_lessons,
+        period_mistake_tag_aggregate=period_mistake_agg,
+        period_cohort_health_deltas=period_cohort_deltas,
+        auto_populated_field_keys_json=auto_populated_field_keys_json,
     )
 
 

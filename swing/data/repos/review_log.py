@@ -165,6 +165,7 @@ def complete_review_atomic(
     duration_minutes: int,
     primary_lesson: str,
     next_period_focus: str,
+    auto_populated_field_keys_json: str | None = None,
 ) -> None:
     """Mark review complete + freeze all aggregates atomically.
 
@@ -268,6 +269,12 @@ def complete_review_atomic(
         # active policy_id at completion time (spec §3.1.1). NULL when no
         # active policy exists (operator manually flipped seed inactive);
         # legal per spec §9.4 backwards-compatibility contract.
+        # Phase 13 T3.SB3 (T-B.3.4): server-stamped audit envelope of
+        # which form fields were auto-populated at form-render time.
+        # ``... or None`` per Phase 6 deviation #3 CLAUDE.md gotcha — the
+        # column is nullable; submitting an empty form field must persist
+        # NULL (not empty string).
+        audit_value = auto_populated_field_keys_json or None
         conn.execute(
             """
             UPDATE review_log SET
@@ -285,6 +292,7 @@ def complete_review_atomic(
                 avg_loss_R = ?,
                 profit_factor = ?,
                 max_drawdown_R = ?,
+                auto_populated_field_keys_json = ?,
                 risk_policy_id_at_review_completion = (
                     SELECT policy_id FROM risk_policy WHERE is_active = 1
                 )
@@ -295,7 +303,9 @@ def complete_review_atomic(
                 primary_lesson, next_period_focus,
                 total_cost, total_lucky,
                 net_R, expectancy_R, win_rate, avg_win, avg_loss,
-                profit_factor, max_dd, review_id,
+                profit_factor, max_dd,
+                audit_value,
+                review_id,
             ),
         )
         conn.execute("COMMIT")
