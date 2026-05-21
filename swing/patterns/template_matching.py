@@ -399,6 +399,14 @@ def match_forward(
             ex_norm,
             sakoe_chiba_window_ratio=SAKOE_CHIBA_WINDOW_RATIO,
         )
+        # Skip exemplars where the Sakoe-Chiba band makes the path
+        # infeasible (e.g., grossly asymmetric series lengths: a 2-bar
+        # candidate cannot align to a 50-bar exemplar within a 10%
+        # band). The semantic is "no match found"; surface as a
+        # skipped exemplar rather than poisoning the hit list with
+        # a non-finite distance.
+        if not math.isfinite(d):
+            continue
         # Max distance heuristic: on min-max normalized series, the
         # maximum possible per-cell cost is 1.0 (max abs difference);
         # the maximum path length is N + M (boundary path). Use the
@@ -466,6 +474,11 @@ def match_reverse(
             c_norm,
             sakoe_chiba_window_ratio=SAKOE_CHIBA_WINDOW_RATIO,
         )
+        # Skip infeasible-band cases (asymmetric lengths beyond the
+        # Sakoe-Chiba band's reach) - surface as "no match" rather
+        # than a non-finite TemplateMatchHit.
+        if not math.isfinite(d):
+            continue
         max_dist = float(exemplar_norm.size + c_norm.size)
         s = _similarity_from_distance(d, max_distance=max_dist)
         hits.append(

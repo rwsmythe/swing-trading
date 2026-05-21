@@ -50,6 +50,12 @@ from swing.integrations.schwab.client import (
     SchwabConfigMissingError,
 )
 from swing.metrics.discrepancies import count_recent_multi_leg_auto_corrections
+from swing.patterns.composite import compute_composite_score
+from swing.patterns.template_matching import (
+    GEOMETRIC_SCORE_PREGATE_THRESHOLD,
+    TemplateMatchExemplar,
+    match_forward,
+)
 from swing.pipeline.finviz_schema import reject_csv, validate_csv
 from swing.pipeline.finviz_select import AmbiguousInboxError, NoFilesError, select_csv
 from swing.pipeline.heartbeat import Heartbeat
@@ -1421,9 +1427,12 @@ def _step_pattern_detect(
     import json as _json
     from datetime import datetime as _dt_inner
 
+    import pandas as pd
+
     from swing.data.models import PatternEvaluation
     from swing.data.repos.candidates import fetch_candidates_for_run
     from swing.data.repos.pattern_evaluations import insert_evaluation
+    from swing.data.repos.pattern_exemplars import list_exemplars
     from swing.patterns.drift_logging import capture_feature_distribution
     from swing.patterns.foundation import generate_candidate_windows
 
@@ -1553,11 +1562,17 @@ def _step_pattern_detect(
     # provide a dedicated read-only connection (cfg-path) or fall back
     # to the lease's underlying connection in the test-stub path.
     # ----------------------------------------------------------------------
-    # Each per-(ticker, pattern_class) entry collects (window,
-    # evidence, version_str, composite_score) for pass 2 to consume.
+    # Each per-(ticker, pattern_class) entry collects:
+    #   (ticker, pattern_class, version_str, window, evidence,
+    #    geometric_score, candidate_close_prices)
+    # for pass 2 to consume. T2.SB5 T-A.5.4: composite_score is now
+    # derived in Pass 2 AFTER template matching (was Pass 1 in T2.SB4
+    # and earlier). candidate_close_prices is the bar Close-slice for
+    # the candidate's window, used by match_forward in Pass 2.
+    import numpy as _np_pd_inner
     emit_queue: list[
-        tuple[str, str, str, object, object, float]
-    ] = []  # (ticker, pattern_class, version_str, window, evidence, score)
+        tuple[str, str, str, object, object, float, _np_pd_inner.ndarray]
+    ] = []
 
     detector_read_conn = connect(cfg.paths.db_path) if cfg is not None else None
     # Test-stub path: no cfg, so reuse the lease's underlying connection
@@ -1661,27 +1676,52 @@ def _step_pattern_detect(
                 geometric_score = float(
                     getattr(evidence, "geometric_score", 0.0)
                 )
-                # T2.SB3 + T2.SB4 R2 Critical #1: composite_score =
-                # min(1.0, geometric_score) (template_match_score is
-                # None pre-T2.SB5 LOCK per spec section 5.8 line 720;
-                # the composite formula at line 712 wraps with
-                # min(1.0, ...)). DBW evidence geometric_score may
-                # reach 1.10 per spec section 5.8 line 718 + section
-                # 10.5 line 1325 (undercut bonus); the EVIDENCE score
-                # stays at 1.10 in structural_evidence_json but the
-                # COMPOSITE caps at 1.0 -- otherwise downstream
-                # drift_logging._composite_score_histogram (section
-                # 5.11 LOCK [0.0, 1.0]) raises ValueError that aborts
-                # the entire Pass-2 emit loop for the run. Recon
-                # section 8.
-                composite_score = min(1.0, geometric_score)
+                # T2.SB5 T-A.5.4: composite_score derivation MOVED to Pass 2
+                # so template matching (which requires the canonical
+                # pattern_exemplars corpus inside the lease-fenced read) can
+                # contribute to the composite per spec section 5.8 formula.
+                # Pre-T2.SB5 baseline at runner.py was
+                # ``composite_score = min(1.0, geometric_score)`` here in
+                # Pass 1 (the section 5.8 line 720 template=None fallback);
+                # equivalent post-T2.SB5 behavior persists when match_forward
+                # returns no hits via ``compute_composite_score(geo, None)``
+                # which preserves the ``min(1.0, ...)`` wrap on the fallback
+                # path (L5 LOCK; DBW evidence may reach 1.10).
+                #
+                # Slice the candidate's close-price series for template
+                # matching in Pass 2. The candidate window's boundaries
+                # come from the foundation primitive's emitted
+                # ``CandidateWindow``; clipping inclusive on both ends
+                # mirrors T2.SB3 detector entry discipline (L12).
+                try:
+                    _ts_start = pd.Timestamp(window.start_date)
+                    _ts_end = pd.Timestamp(window.end_date)
+                    _window_mask = (bars.index >= _ts_start) & (
+                        bars.index <= _ts_end
+                    )
+                    _close_series = bars.loc[_window_mask, "Close"]
+                    if hasattr(_close_series, "ndim") and _close_series.ndim == 2:
+                        _close_series = _close_series.iloc[:, 0]
+                    candidate_close_prices = _np_pd_inner.asarray(
+                        _close_series.values, dtype=float
+                    )
+                except Exception as exc:
+                    log.warning(
+                        "pattern_detect: candidate close-price slice failed "
+                        "for (%s, %s) (continuing with empty slice): %s",
+                        ticker,
+                        pattern_class,
+                        exc,
+                    )
+                    candidate_close_prices = _np_pd_inner.asarray(
+                        [], dtype=float
+                    )
 
                 # Codex R4 Major #1: do NOT append Pass-1 scores to
                 # universe_context here. The histogram universe is built
                 # once in Pass 2 (after re-read + reconcile) so that
                 # concurrent-skipped queued scores never phantom into
-                # the histogram. The Pass-1 append was the root cause
-                # of the over-count + order-dependent histograms.
+                # the histogram.
                 emit_queue.append(
                     (
                         ticker,
@@ -1689,7 +1729,8 @@ def _step_pattern_detect(
                         version_str,
                         window,
                         evidence,
-                        composite_score,
+                        geometric_score,
+                        candidate_close_prices,
                     )
                 )
     finally:
@@ -1759,8 +1800,12 @@ def _step_pattern_detect(
         # Reconcile emit_queue against canonical existing: any queued
         # tuple already present is DROPPED (its concurrent persisted
         # row's score, not the queued score, counts toward universe).
+        # T2.SB5 T-A.5.4: emit tuple shape is now
+        # (ticker, pattern_class, version_str, window, evidence,
+        #  geometric_score, candidate_close_prices) - composite_score
+        # is derived AFTER match_forward below.
         final_emit_list: list[
-            tuple[str, str, str, object, object, float]
+            tuple[str, str, str, object, object, float, _np_pd_inner.ndarray]
         ] = []
         for tup in emit_queue:
             tup_ticker = tup[0]
@@ -1778,13 +1823,148 @@ def _step_pattern_detect(
                 continue
             final_emit_list.append(tup)
 
-        # Build the FINAL universe ONCE: existing persisted scores plus
-        # the surviving queued scores. Every serialized row sees this
-        # SAME universe (no order dependence).
-        final_universe_scores: list[float] = list(canonical_existing_scores)
+        # T2.SB5 T-A.5.4: load pattern_exemplars corpus + slice
+        # close-price series per exemplar. Pre-index by pattern_class so
+        # match_forward iterates only same-class bundles (Pruning #1).
+        # Load happens INSIDE the lease-fenced read so the corpus
+        # reflects any in-flight commits (per spec section 5.7 retrieval
+        # contract; pass-2 reconcile-before-serialize architecture per
+        # T2.SB3 R4).
+        exemplar_bundles_by_class: dict[
+            str, list[TemplateMatchExemplar]
+        ] = {}
+        try:
+            exemplar_rows = list_exemplars(conn)
+        except Exception as exc:
+            log.warning(
+                "pattern_detect: list_exemplars failed (continuing with "
+                "empty corpus; template_match_score will be NULL): %s",
+                exc,
+            )
+            exemplar_rows = []
+
+        # Filter to confirmed + watch only (rejected exemplars are not
+        # valid positive templates per spec section 5.9 step 5; also
+        # only labeled exemplars carry usable structural evidence).
+        _valid_exemplar_decisions = ("confirmed", "watch")
+        for ex_row in exemplar_rows:
+            if ex_row.final_decision not in _valid_exemplar_decisions:
+                continue
+            try:
+                ex_bars = ohlcv_cache.get_or_fetch(
+                    ticker=ex_row.ticker, window_days=400
+                )
+                _ex_start = pd.Timestamp(ex_row.start_date)
+                _ex_end = pd.Timestamp(ex_row.end_date)
+                _mask = (ex_bars.index >= _ex_start) & (
+                    ex_bars.index <= _ex_end
+                )
+                _ex_close = ex_bars.loc[_mask, "Close"]
+                if hasattr(_ex_close, "ndim") and _ex_close.ndim == 2:
+                    _ex_close = _ex_close.iloc[:, 0]
+                ex_close_arr = _np_pd_inner.asarray(
+                    _ex_close.values, dtype=float
+                )
+                if ex_close_arr.size == 0:
+                    continue
+                bundle = TemplateMatchExemplar(
+                    exemplar=ex_row, close_prices=ex_close_arr
+                )
+            except Exception as exc:
+                log.info(
+                    "pattern_detect: exemplar bars fetch failed for "
+                    "exemplar_id=%s ticker=%s (continuing): %s",
+                    ex_row.id,
+                    ex_row.ticker,
+                    exc,
+                )
+                continue
+            exemplar_bundles_by_class.setdefault(
+                ex_row.proposed_pattern_class, []
+            ).append(bundle)
+
+        # Resolve each emit's template_match_score + nearest_ids +
+        # composite_score per spec section 5.8 formula.
+        # ``resolved_emit_list`` extends the tuple shape with:
+        #   (..., template_match_score, nearest_exemplar_ids, composite_score)
+        resolved_emit_list: list[
+            tuple[
+                str, str, str, object, object, float,
+                float | None, list[int], float,
+            ]
+        ] = []
         for tup in final_emit_list:
+            (
+                tup_ticker,
+                tup_pattern_class,
+                tup_version_str,
+                tup_window,
+                tup_evidence,
+                tup_geometric_score,
+                tup_candidate_close,
+            ) = tup
+            template_match_score: float | None = None
+            nearest_exemplar_ids: list[int] = []
+            bundles_for_class = exemplar_bundles_by_class.get(
+                tup_pattern_class, []
+            )
+            if (
+                bundles_for_class
+                and tup_candidate_close.size > 0
+                and tup_geometric_score >= GEOMETRIC_SCORE_PREGATE_THRESHOLD
+            ):
+                try:
+                    hits = match_forward(
+                        candidate_close_prices=tup_candidate_close,
+                        candidate_pattern_class=tup_pattern_class,
+                        candidate_ticker=tup_ticker,
+                        exemplar_corpus=bundles_for_class,
+                        top_k=3,
+                        geometric_score=tup_geometric_score,
+                    )
+                except Exception as exc:
+                    log.warning(
+                        "pattern_detect: match_forward failed for "
+                        "(%s, %s) (continuing with template_match=None): "
+                        "%s",
+                        tup_ticker,
+                        tup_pattern_class,
+                        exc,
+                    )
+                    hits = []
+                if hits:
+                    template_match_score = max(
+                        h.similarity_score for h in hits
+                    )
+                    nearest_exemplar_ids = [h.exemplar_id for h in hits]
+            # Spec section 5.8 composite formula via the L5-locked helper
+            # (clamp inside compute_composite_score on BOTH paths).
+            composite_score = compute_composite_score(
+                geometric=tup_geometric_score,
+                template_match=template_match_score,
+            )
+            resolved_emit_list.append(
+                (
+                    tup_ticker,
+                    tup_pattern_class,
+                    tup_version_str,
+                    tup_window,
+                    tup_evidence,
+                    tup_geometric_score,
+                    template_match_score,
+                    nearest_exemplar_ids,
+                    composite_score,
+                )
+            )
+
+        # Build the FINAL universe ONCE: existing persisted scores plus
+        # the surviving queued scores (post-template-match composites).
+        # Every serialized row sees this SAME universe (no order
+        # dependence).
+        final_universe_scores: list[float] = list(canonical_existing_scores)
+        for r in resolved_emit_list:
             with _contextlib3.suppress(TypeError, ValueError):
-                final_universe_scores.append(float(tup[5]))
+                final_universe_scores.append(float(r[8]))
         universe_context["composite_scores"] = final_universe_scores
 
         for (
@@ -1793,8 +1973,11 @@ def _step_pattern_detect(
             version_str,
             window,
             evidence,
+            _geometric_score,
+            template_match_score,
+            nearest_exemplar_ids,
             composite_score,
-        ) in final_emit_list:
+        ) in resolved_emit_list:
             # Drift-log capture (T-A.3.5 surface).
             try:
                 fdl = capture_feature_distribution(
@@ -1847,6 +2030,24 @@ def _step_pattern_detect(
             # geometric_score=float(composite_score) used the CLAMPED
             # composite as the column value, losing the DBW rule-tier
             # evidence; only structural_evidence_json kept the 1.10.
+            # T2.SB5 T-A.5.4: template_match_score + nearest_exemplar_ids_json
+            # are now populated from match_forward hits when an exemplar
+            # corpus of the same pattern_class is available AND the
+            # candidate's geometric_score meets the section 5.7 pruning #2
+            # pre-gate (>= 0.4). Otherwise both columns remain NULL (the
+            # T2.SB4 backward-compat fallback path through
+            # compute_composite_score's None branch preserves the
+            # min(1.0, geometric_score) wrap per L5 LOCK).
+            template_match_ids_json: str | None
+            if nearest_exemplar_ids:
+                try:
+                    template_match_ids_json = _json.dumps(
+                        list(nearest_exemplar_ids)
+                    )
+                except (TypeError, ValueError):
+                    template_match_ids_json = None
+            else:
+                template_match_ids_json = None
             row = PatternEvaluation(
                 id=None,
                 pipeline_run_id=pipeline_run_id,
@@ -1863,8 +2064,12 @@ def _step_pattern_detect(
                 window_start_date=window.start_date.isoformat(),
                 window_end_date=window.end_date.isoformat(),
                 created_at=_dt_inner.now(UTC).isoformat(),
-                template_match_score=None,
-                template_match_nearest_exemplar_ids_json=None,
+                template_match_score=(
+                    float(template_match_score)
+                    if template_match_score is not None
+                    else None
+                ),
+                template_match_nearest_exemplar_ids_json=template_match_ids_json,
             )
             try:
                 insert_evaluation(conn, row)
