@@ -1929,7 +1929,7 @@ async def exit_post(
             # validated to be in ``candidate_sigs`` above; here we go one
             # step further and confirm the hash itself is server-issued.
             submitted_sig_hash: str | None = None
-            authoritative_selected: dict[str, Any] | None = None
+            authoritative_selected: dict | None = None
             if selected_index is not None and selected_index in candidate_sigs:
                 submitted_sig_hash = candidate_sigs[selected_index]
                 if (
