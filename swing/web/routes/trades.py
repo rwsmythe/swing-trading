@@ -409,6 +409,22 @@ def entry_form(
     # malformed / cross-ticker / cross-run id is silently dropped to
     # the fallback, NOT 500'd).
     pattern_evaluation_id: int | None = Query(None),
+    # Phase 13 T2.SB6c Codex R2 MAJOR #1 closure — explicit hyp-rec-
+    # emitted ``?pipeline_run_id_at_form_render=<id>`` query param so
+    # the form-render binds to the pipeline_run the operator SAW on the
+    # expanded card. Without this anchor, a fresh pipeline run completing
+    # between expanded-card render and form GET would silently rebind to
+    # the new run's highest-composite PE (reintroducing operator-intent
+    # drift through a new race path). When the explicit run id is present
+    # and matches the PE row's pipeline_run_id, the form pins to that
+    # operator-witnessed run. Validation failure (run mismatch, PE
+    # missing, ticker mismatch) falls back to the legacy
+    # latest_completed_pipeline_run() highest-composite path. When only
+    # an explicit PE id arrives WITHOUT this run anchor, behavior is
+    # unchanged (validation against latest_completed_pipeline_run); this
+    # preserves backwards-compat for any external integration that links
+    # without the run anchor.
+    pipeline_run_id_at_form_render: int | None = Query(None),
 ):
     cfg = apply_overrides(request.app.state.cfg)
     cache = request.app.state.price_cache
@@ -418,6 +434,9 @@ def entry_form(
         ticker=ticker, cfg=cfg, cache=cache, executor=executor,
         origin=origin,
         explicit_pattern_evaluation_id=pattern_evaluation_id,
+        explicit_pipeline_run_id_at_form_render=(
+            pipeline_run_id_at_form_render
+        ),
     )
     return templates.TemplateResponse(
         request, "partials/trade_entry_form.html.j2", {"vm": vm},

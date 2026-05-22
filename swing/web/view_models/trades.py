@@ -383,6 +383,7 @@ def build_entry_form_vm(
     *, ticker: str, cfg: Config, cache: PriceCache, executor,
     origin: str = "watchlist",
     explicit_pattern_evaluation_id: int | None = None,
+    explicit_pipeline_run_id_at_form_render: int | None = None,
 ) -> TradeEntryFormVM:
     """Build entry-form VM from: watchlist row, live price, open
     positions, equity, and (Phase 5) the chart-pattern classification
@@ -578,6 +579,20 @@ def build_entry_form_vm(
     # fall back to the legacy highest-composite_score row (V1
     # simplification preserved for non-anchored entry-form GETs;
     # banked V2: operator picks which class drives the anchor).
+    #
+    # Codex R2 MAJOR #1 closure: when an explicit
+    # ``explicit_pipeline_run_id_at_form_render`` arrives alongside
+    # the explicit PE id, validate against the OPERATOR-SUBMITTED run
+    # (the pipeline_run that was active on the expanded card), NOT
+    # ``latest_completed_pipeline_run()``. Without this discipline, a
+    # new pipeline completing between expanded-card render and form
+    # GET would silently rebind to the new run's highest-composite PE
+    # — reintroducing operator-intent drift via a fresh race path. The
+    # legacy loose-validation path (explicit PE WITHOUT explicit run
+    # anchor) is preserved for backwards-compat: any external caller
+    # that links to ``/trades/entry/form?pattern_evaluation_id=<id>``
+    # without supplying the run anchor still validates against the
+    # latest completed run as before.
     resolved_pattern_evaluation_id: int | None = None
     pattern_evaluation_anchor_pipeline_run_id: int | None = None
     if pipeline_run_id is not None:
@@ -592,13 +607,27 @@ def build_entry_form_vm(
                 if explicit_row is not None:
                     _explicit_run = int(explicit_row[1])
                     _explicit_ticker = (explicit_row[2] or "").upper()
+                    # Codex R2 MAJOR #1: when the caller pinned the run
+                    # anchor on the expanded card, validate against it
+                    # (operator-witnessed run); else fall back to the
+                    # latest-completed run (legacy loose-validation
+                    # contract for non-anchored callers).
                     if (
-                        _explicit_run == pipeline_run_id
+                        explicit_pipeline_run_id_at_form_render
+                        is not None
+                    ):
+                        _expected_run = int(
+                            explicit_pipeline_run_id_at_form_render,
+                        )
+                    else:
+                        _expected_run = pipeline_run_id
+                    if (
+                        _explicit_run == _expected_run
                         and _explicit_ticker == ticker.upper()
                     ):
                         resolved_pattern_evaluation_id = int(explicit_row[0])
                         pattern_evaluation_anchor_pipeline_run_id = (
-                            pipeline_run_id
+                            _explicit_run
                         )
             if resolved_pattern_evaluation_id is None:
                 pe_row = _conn2.execute(

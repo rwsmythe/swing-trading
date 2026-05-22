@@ -1801,3 +1801,291 @@ def test_f4_codex_r1_major4_b5_metric_tile_honors_pattern_evaluation_id_backlink
         f"Codex R1 MAJOR #4: flat_base cohort must NOT inherit VCP-"
         f"anchored trade; got reached_1r_n={flat_row.reached_1r_n}"
     )
+
+
+# ===========================================================================
+# Group F (Codex R2) — explicit-run anchor + soft-warn confirm-fragment
+# resubmission fidelity (R2 MAJOR #1 + R2 MINOR #1)
+# ===========================================================================
+
+
+def test_f5_codex_r2_major1_entry_form_explicit_pe_id_with_explicit_run_validates_against_submitted_run_not_latest(  # noqa: E501
+    seeded_db,
+):
+    """Codex R2 MAJOR #1 closure: when the entry-form GET arrives with
+    BOTH ``?pattern_evaluation_id=<id>`` AND
+    ``?pipeline_run_id_at_form_render=<id>``, the explicit PE is
+    validated against the OPERATOR-SUBMITTED run anchor (the
+    pipeline_run that was active on the expanded card), NOT against
+    ``latest_completed_pipeline_run()``.
+
+    Failure mode the test guards: a new pipeline completes between the
+    expanded-card render (run #1) and the form GET (run #2 is now the
+    latest). Without the explicit run anchor, the form's
+    explicit-PE validation against ``latest_completed_pipeline_run`` =
+    run #2 fails for the operator's run-#1 PE id, and the form
+    silently falls back to run-#2's highest-composite PE — drift via a
+    new race path.
+    """
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            # Pipeline run #1: PE_1 (vcp, ticker T).
+            eval_run_1 = _seed_evaluation_run(
+                conn, action_session_date="2026-05-19",
+            )
+            pipe_1 = _seed_pipeline_run(conn, evaluation_run_id=eval_run_1)
+            _seed_candidate(
+                conn, evaluation_run_id=eval_run_1, ticker="DRIFT",
+            )
+            pe_1 = _seed_evaluation(
+                conn, pipeline_run_id=pipe_1, ticker="DRIFT",
+                pattern_class="vcp", composite_score=0.50,
+            )
+            # Pipeline run #2 (newer; latest_completed_pipeline_run hits this).
+            eval_run_2 = _seed_evaluation_run(
+                conn, action_session_date="2026-05-20",
+            )
+            pipe_2 = _seed_pipeline_run(conn, evaluation_run_id=eval_run_2)
+            _seed_candidate(
+                conn, evaluation_run_id=eval_run_2, ticker="DRIFT",
+            )
+            pe_2 = _seed_evaluation(
+                conn, pipeline_run_id=pipe_2, ticker="DRIFT",
+                pattern_class="flat_base", composite_score=0.95,
+            )
+    finally:
+        conn.close()
+    assert pipe_1 != pipe_2
+    assert pe_1 != pe_2
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        # Operator clicks Take-this-trade button from the expanded card
+        # that was rendered when run #1 was the latest. Both anchors
+        # propagate via the hyp-rec template's hx-get query.
+        r = client.get(
+            f"/trades/entry/form?ticker=DRIFT&origin=hyp-recs"
+            f"&pattern_evaluation_id={pe_1}"
+            f"&pipeline_run_id_at_form_render={pipe_1}",
+        )
+    assert r.status_code == 200
+    body = r.text
+    # Parse the rendered form's hidden inputs from the template's
+    # multi-line attribute layout (name + value can straddle newlines +
+    # leading indent inside the same <input> tag).
+    import re
+
+    hidden = {
+        m.group("name"): m.group("value")
+        for m in re.finditer(
+            r'<input\s+type="hidden"\s+name="(?P<name>[^"]+)"\s+'
+            r'value="(?P<value>[^"]*)"',
+            body,
+        )
+    }
+    # The form's hidden pattern_evaluation_id must be PE_1 (run-1; the
+    # operator-witnessed run), NOT PE_2 (run-2; latest-completed). The
+    # explicit run anchor pins the form to the operator-witnessed run.
+    assert hidden.get("pattern_evaluation_id") == str(pe_1), (
+        f"Codex R2 MAJOR #1: explicit run anchor pipe_1={pipe_1} should "
+        f"pin the form to PE_1={pe_1}; got "
+        f"pattern_evaluation_id={hidden.get('pattern_evaluation_id')!r} "
+        f"(PE_2={pe_2})"
+    )
+    assert hidden.get("pipeline_run_id_at_form_render") == str(pipe_1), (
+        f"Codex R2 MAJOR #1: hidden pipeline_run_id_at_form_render must "
+        f"be pipe_1={pipe_1} (operator-witnessed run); got "
+        f"{hidden.get('pipeline_run_id_at_form_render')!r}"
+    )
+
+
+def test_f5_codex_r2_major1_entry_form_explicit_pe_id_with_mismatched_run_falls_back_to_highest_composite(  # noqa: E501
+    seeded_db,
+):
+    """Codex R2 MAJOR #1 defense: when an explicit
+    ``?pipeline_run_id_at_form_render=<id>`` does NOT match the
+    explicit PE row's pipeline_run_id, the explicit validation fails
+    and the form falls back to the legacy highest-composite-on-latest-
+    completed-run path. (Defense against tampered query strings or
+    operator-edited URLs.)
+    """
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            # Pipeline run #1: PE_1.
+            eval_run_1 = _seed_evaluation_run(
+                conn, action_session_date="2026-05-19",
+            )
+            pipe_1 = _seed_pipeline_run(conn, evaluation_run_id=eval_run_1)
+            _seed_candidate(
+                conn, evaluation_run_id=eval_run_1, ticker="MISMATCH",
+            )
+            pe_1 = _seed_evaluation(
+                conn, pipeline_run_id=pipe_1, ticker="MISMATCH",
+                pattern_class="vcp", composite_score=0.50,
+            )
+            # Pipeline run #2 (newer; will be the fallback target).
+            eval_run_2 = _seed_evaluation_run(
+                conn, action_session_date="2026-05-20",
+            )
+            pipe_2 = _seed_pipeline_run(conn, evaluation_run_id=eval_run_2)
+            _seed_candidate(
+                conn, evaluation_run_id=eval_run_2, ticker="MISMATCH",
+            )
+            pe_2_hi = _seed_evaluation(
+                conn, pipeline_run_id=pipe_2, ticker="MISMATCH",
+                pattern_class="flat_base", composite_score=0.95,
+            )
+    finally:
+        conn.close()
+    assert pipe_1 != pipe_2
+    assert pe_1 != pe_2_hi
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        # Operator submits PE_1 (run-1) but a MISMATCHED run anchor
+        # (pipe_2). Validation fails the (PE.run, anchor.run) equality
+        # check and falls back to highest-composite on the form's
+        # latest-completed run (pipe_2 → pe_2_hi).
+        r = client.get(
+            f"/trades/entry/form?ticker=MISMATCH&origin=hyp-recs"
+            f"&pattern_evaluation_id={pe_1}"
+            f"&pipeline_run_id_at_form_render={pipe_2}",
+        )
+    assert r.status_code == 200
+    body = r.text
+    # Parse hidden inputs from multi-line attribute layout.
+    import re
+
+    hidden = {
+        m.group("name"): m.group("value")
+        for m in re.finditer(
+            r'<input\s+type="hidden"\s+name="(?P<name>[^"]+)"\s+'
+            r'value="(?P<value>[^"]*)"',
+            body,
+        )
+    }
+    # The form does NOT bind to PE_1 — validation failed under the
+    # operator-submitted run anchor mismatching PE_1's run.
+    assert hidden.get("pattern_evaluation_id") != str(pe_1), (
+        f"Codex R2 MAJOR #1 mismatch defense: PE_1={pe_1} must not "
+        f"survive when pipeline_run_id_at_form_render={pipe_2} mismatches "
+        f"PE_1's pipeline_run_id={pipe_1}"
+    )
+    # The form falls back to PE_2_HI (highest-composite on pipe_2).
+    assert hidden.get("pattern_evaluation_id") == str(pe_2_hi), (
+        f"Fallback target should be highest-composite on latest-completed "
+        f"(pipe_2={pipe_2} -> pe_2_hi={pe_2_hi}); got "
+        f"pattern_evaluation_id={hidden.get('pattern_evaluation_id')!r}"
+    )
+
+
+def test_f6_codex_r2_minor1_soft_warn_resubmit_extracts_actual_confirm_fragment_hidden_inputs(  # noqa: E501
+    d_db_with_pipeline_origin_setup,
+):
+    """Codex R2 MINOR #1 closure: the soft-warn resubmit test plays the
+    ACTUAL hidden inputs emitted in the confirm-fragment back to the
+    server (parsed from r1.text via regex), NOT a hand-constructed
+    POST that could mask template name / escaping / value drift.
+
+    This is the stronger version of test_f1 — if a future template
+    refactor renames a hidden input or shifts its value attribute
+    quoting, the regex extractor + POST roundtrip would catch the
+    drift even though test_f1's hand-constructed POST would silently
+    keep working.
+    """
+    import re
+
+    cfg, cfg_path, eval_id, _, pipeline_run_id = d_db_with_pipeline_origin_setup
+    # Trip soft cap.
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            soft_warn = cfg.position_limits.soft_warn_open
+            for i in range(soft_warn):
+                _open_trade(
+                    conn, ticker=f"WRN{i:02d}", entry_date="2026-05-17",
+                )
+    finally:
+        conn.close()
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        # First submit: anchor-carrying POST that trips soft cap.
+        r1 = client.post(
+            "/trades/entry",
+            data=_entry_post_data(
+                ticker="ABC", origin="hyp-recs",
+                pattern_evaluation_id=eval_id,
+                claimed_pattern_evaluation_anchor="true",
+                pipeline_run_id_at_form_render=pipeline_run_id,
+            ),
+            headers={"HX-Request": "true"},
+        )
+        assert r1.status_code == 200
+        # Extract ALL hidden inputs from the rendered confirm fragment
+        # using the project's canonical hidden-input shape:
+        # <input type="hidden" name="X" value="Y">.
+        hidden_input = re.compile(
+            r'<input\s+type="hidden"\s+name="(?P<name>[^"]+)"\s+'
+            r'value="(?P<value>[^"]*)"',
+        )
+        hidden = {
+            m.group("name"): m.group("value")
+            for m in hidden_input.finditer(r1.text)
+        }
+        # Discriminating: the three PE-anchor fields MUST appear with
+        # the exact submitted values (template name + value drift would
+        # cause the test_f1 hand-built resubmit to silently keep working
+        # while this test fails).
+        assert hidden.get("pattern_evaluation_id") == str(eval_id), (
+            f"Codex R2 MINOR #1: confirm-fragment hidden "
+            f"pattern_evaluation_id should equal {eval_id}; "
+            f"got {hidden.get('pattern_evaluation_id')!r}"
+        )
+        assert hidden.get("claimed_pattern_evaluation_anchor") == "true", (
+            f"Codex R2 MINOR #1: confirm-fragment hidden "
+            f"claimed_pattern_evaluation_anchor should equal 'true'; "
+            f"got {hidden.get('claimed_pattern_evaluation_anchor')!r}"
+        )
+        assert (
+            hidden.get("pipeline_run_id_at_form_render")
+            == str(pipeline_run_id)
+        ), (
+            f"Codex R2 MINOR #1: confirm-fragment hidden "
+            f"pipeline_run_id_at_form_render should equal "
+            f"{pipeline_run_id}; got "
+            f"{hidden.get('pipeline_run_id_at_form_render')!r}"
+        )
+        # Build the resubmit data from the EXTRACTED hidden inputs plus
+        # force=true; this exercises the ACTUAL round-trip a real
+        # browser would perform on operator confirm-resubmit.
+        resubmit_data = dict(hidden)
+        resubmit_data["force"] = "true"
+        r2 = client.post(
+            "/trades/entry",
+            data=resubmit_data,
+            headers={"HX-Request": "true"},
+        )
+        assert r2.status_code in (200, 204), (
+            f"Codex R2 MINOR #1: resubmit from extracted confirm-fragment "
+            f"hidden inputs should succeed; got {r2.status_code}: "
+            f"{r2.text[:400]}"
+        )
+    # Verify trade persisted with pattern_evaluation_id non-NULL
+    # AND matching the eval_id the confirm-fragment carried.
+    conn = connect(cfg.paths.db_path)
+    row = conn.execute(
+        "SELECT pattern_evaluation_id FROM trades WHERE ticker = ?",
+        ("ABC",),
+    ).fetchone()
+    conn.close()
+    assert row is not None
+    assert row[0] == eval_id, (
+        f"Codex R2 MINOR #1: PE anchor must survive the confirm-fragment "
+        f"round trip via extracted hidden inputs; persisted value "
+        f"{row[0]} != extracted {eval_id}"
+    )

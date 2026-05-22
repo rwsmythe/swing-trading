@@ -38,8 +38,15 @@
     </ul>
 
     <p class="action-row">
+      {#- Phase 13 T2.SB6c Codex R2 MAJOR #1 closure: emit BOTH the
+          PE id AND the pipeline_run_id the operator saw on this
+          expanded card. The entry-form GET validates the explicit PE
+          against THAT submitted run anchor (not against
+          latest_completed_pipeline_run()), so a new pipeline
+          completing between expanded-card render and form GET cannot
+          silently rebind to a different run's highest-composite PE. -#}
       <button type="button" class="take-this-trade primary"
-              hx-get="/trades/entry/form?ticker={{ expanded.ticker }}&origin=hyp-recs{% if expanded.pattern_evaluation_id %}&pattern_evaluation_id={{ expanded.pattern_evaluation_id }}{% endif %}"
+              hx-get="/trades/entry/form?ticker={{ expanded.ticker }}&origin=hyp-recs{% if expanded.pattern_evaluation_id %}&pattern_evaluation_id={{ expanded.pattern_evaluation_id }}{% if expanded.pipeline_run_id %}&pipeline_run_id_at_form_render={{ expanded.pipeline_run_id }}{% endif %}{% endif %}"
               hx-target="closest tr"
               hx-swap="outerHTML"
               hx-headers='{"HX-Request": "true"}'>Take this trade</button>
