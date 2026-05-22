@@ -296,7 +296,7 @@ The existing POST handler at `swing/web/routes/trades.py:1095` hardcodes `entry_
 
 | Item | Spec source | Schema dep | Wiring | Disposition |
 |---|---|---|---|---|
-| **B.1** Trend-template state live | §5.10 line 771 | NO | `swing/web/view_models/patterns/review_form.py:PatternReviewFormVM` extend with `trend_template_state: str` field. Read via `current_stage()` (Phase 8 weather module) using `swing.data.repos.weather.get_latest(conn, ticker)` to honor backward-looking session anchor (CLAUDE.md gotcha "Session-anchor read/write mismatch"). | LIVE (no schema dep) |
+| **B.1** Trend-template state live | §5.10 line 771 | NO | `swing/web/view_models/patterns/review_form.py:PatternReviewFormVM` extend with `trend_template_state: str` field. Read via `swing.patterns.foundation.current_stage(conn, ticker, asof_date)` (Phase 13 trend-template wrapper at `swing/patterns/foundation.py:745`; V1 returns `'stage_2'` when all 8 TT1-TT8 criteria pass on most-recent `action_session_date <= asof_date` candidate; else `'undefined'`). `asof_date` is the pattern_evaluation's `window_end_date` (the trend-template snapshot at the evaluated window's right edge); fully-deterministic + no session-anchor gotcha because the value is window-bound, not session-anchor-bound. | LIVE (no schema dep) |
 | **B.2** Volume profile live | §5.10 line 773 | NO | `PatternReviewFormVM` extend with `volume_profile: VolumeProfileRow` (NEW frozen dataclass: `recent_30session_volume_sum: int`, `prior_50day_avg_volume: float`, `ratio_pct: float`). Read OHLCV via `swing.web.ohlcv_cache.get_or_fetch(ticker, window_days=80)` (50 + 30 buffer; OQ-14 LOCK). Template renders inline SVG sparkline (SVG bytes don't flow through stdout — escape from cp1252 risk). | LIVE (no schema dep) |
 | **B.3** POST `/patterns/{candidate_id}/review` label_source split (URL parameter named `candidate_id` per shipped T2.SB6b code; value is a `pattern_evaluations.id`) | §5.10 lines 785-790 | YES — Delta A | POST handler at `swing/web/routes/patterns.py:patterns_review_post` (T2.SB6b T-A.6.3) extends per §D.3 cross-row lookup discipline. If row exists (per the SQL in §D.3) AND operator decision is `confirm`, emit `label_source='organic_trade_history'`; else emit `label_source='closed_loop_review'`. | RESOLVED via Delta A |
 | **B.4** Review form outcome distribution bucketing | §5.10 line 775 | YES — Delta A | `PatternReviewFormVM` extend `OutcomeDistributionRow` with `reached_1r_pct: float | None` + `hit_stop_pct: float | None` (None when n<5 per honesty.suppress_for_n). Compute per OQ-6 thresholds. See §D.3 cohort scope. | RESOLVED via Delta A |
@@ -371,10 +371,10 @@ Window-match semantic: `pattern_evaluations.window_start_date <= pattern_exempla
 
 ```sql
 SELECT pe.pattern_class,
-       COUNT(*) AS denominator,
-       COUNT(t.id) AS trades_opened,
-       SUM(CASE WHEN t.id IS NOT NULL AND <reached_1r predicate> THEN 1 ELSE 0 END) AS reached_1r_count,
-       SUM(CASE WHEN t.id IS NOT NULL AND <hit_stop predicate>   THEN 1 ELSE 0 END) AS hit_stop_count
+       COUNT(DISTINCT pe.id) AS denominator,
+       COUNT(DISTINCT t.id) AS trades_opened,
+       COUNT(DISTINCT CASE WHEN t.id IS NOT NULL AND <reached_1r predicate> THEN t.id END) AS reached_1r_count,
+       COUNT(DISTINCT CASE WHEN t.id IS NOT NULL AND <hit_stop predicate>   THEN t.id END) AS hit_stop_count
 FROM pattern_evaluations pe
 INNER JOIN candidates c
     ON pe.ticker = c.ticker
@@ -392,7 +392,7 @@ GROUP BY pe.pattern_class
 HAVING denominator >= 5;
 ```
 
-(`<reached_1r predicate>` and `<hit_stop predicate>` are OQ-6 bucketing predicates; computed via correlated subqueries against `fills` and OHLCV cache at executing-plans phase. Denominator suppression at n<5 LOCK preserved. Per pattern_exemplars Invariant #2 the source-vs-decision matrix admits `confirmed` for label_source IN `('curated_gold', 'claude_silver', 'codex_silver', 'closed_loop_review', 'organic_trade_history')` — all valid denominator participants.)
+(`COUNT(DISTINCT pe.id)` for denominator + `COUNT(DISTINCT t.id ... CASE WHEN ... THEN t.id END)` for numerator counts per Codex R2 MAJOR #1 closure — without DISTINCT, multiple exemplars overlapping one evaluation, OR multiple trades on one candidate, inflate the counts. `<reached_1r predicate>` and `<hit_stop predicate>` are OQ-6 bucketing predicates; computed via correlated subqueries against `fills` and OHLCV cache at executing-plans phase. Denominator suppression at n<5 LOCK preserved. Per pattern_exemplars Invariant #2 the source-vs-decision matrix admits `confirmed` for label_source IN `('curated_gold', 'claude_silver', 'codex_silver', 'closed_loop_review', 'organic_trade_history')` — all valid denominator participants. Discriminating regression test: plant 1 pattern_evaluation + 2 confirmed pattern_exemplars overlapping the same window + 2 trades on that candidate; assert denominator == 1 (NOT 4) and trades_opened == 2.)
 
 ### §D.4 Content-completeness audit (Expansion #6 BINDING per dispatch brief §3.1.6)
 
@@ -941,13 +941,15 @@ Expected: 17-19 FAIL with VM-field-missing errors / cache-empty errors.
 
 - [ ] **Step 6: Implement Gap A.4** — at `swing/web/view_models/patterns/exemplars.py` cache-miss path (look up the existing import at line 258 + the docstring at lines 290-296 "Cache NOT written back"): after `render_theme2_annotated_svg(...)` returns bytes, call `refresh_chart_render(conn, ChartRender(surface='theme2_annotated', ticker=..., pipeline_run_id=..., pattern_class=..., chart_svg_bytes=...))`. Update the docstring to remove the "Cache NOT written back" disclaimer.
 
-- [ ] **Step 7: Implement §1.5.1 amendment** — extend `swing/pipeline/runner.py:_step_charts`. Inside the existing pipeline step transactional block, AFTER existing chart-rendering work (verify exact shape at executing-plans phase via `Grep "_step_charts" swing/pipeline/runner.py`), iterate over the active ticker set (open trades for `position_detail`; watchlist tickers for `watchlist_row`; hyp-rec tickers for `hyprec_detail`; "^GSPC" or canonical market-weather ticker for `market_weather`) and call `refresh_chart_render(conn, ChartRender(...))` per surface. Wrap each per-surface block in a `try: ... except ValueError as exc: logger.warning("F6 transient empty chart skipped: ticker=%s surface=%s err=%s", ticker, surface, exc); continue` to catch construction-barrier rejections (per T2.SB6a R1 MAJOR #2 LOCK).
+- [ ] **Step 7: Implement §1.5.1 amendment** — extend `swing/pipeline/runner.py:_step_charts`. Inside the existing pipeline step transactional block, AFTER existing chart-rendering work (verify exact shape at executing-plans phase via `Grep "_step_charts" swing/pipeline/runner.py`), iterate over the active ticker set (open trades for `position_detail`; watchlist tickers for `watchlist_row`; hyp-rec tickers for `hyprec_detail`; `cfg.rs.benchmark_ticker` for `market_weather`) and call `refresh_chart_render(conn, ChartRender(...))` per surface. Wrap each per-surface block in a `try: ... except ValueError as exc: logger.warning("F6 transient empty chart skipped: ticker=%s surface=%s err=%s", ticker, surface, exc); continue` to catch construction-barrier rejections (per T2.SB6a R1 MAJOR #2 LOCK).
+
+**Per Codex R2 MAJOR #4 closure**: the `market_weather` surface's ticker MUST be `cfg.rs.benchmark_ticker` (NOT `"^GSPC"` or any other hardcoded value). The dashboard reader at T2.SB6b ALREADY consumes `chart_renders` via `get_cached_chart_svg(conn, ticker=cfg.rs.benchmark_ticker, surface='market_weather', ...)`; if the writer uses a different ticker, the cache row IS written but is INVISIBLE to the dashboard read path. Discriminating round-trip test added at Step 1b: write `market_weather` cache row via `_step_charts` + read via `get_cached_chart_svg(conn, ticker=cfg.rs.benchmark_ticker, surface='market_weather', pipeline_run_id=run_id)`; assert bytes round-trip equality.
 
 Cache key shape:
-- `watchlist_row`: `pipeline_run_id=<current_run_id>`, `pattern_class=None`.
-- `hyprec_detail`: `pipeline_run_id=<current_run_id>`, `pattern_class=None`.
-- `position_detail`: `pipeline_run_id=None`, `pattern_class=None` (run-agnostic).
-- `market_weather`: `pipeline_run_id=<current_run_id>`, `pattern_class=None`.
+- `watchlist_row`: `ticker=<watchlist_ticker>`, `pipeline_run_id=<current_run_id>`, `pattern_class=None`.
+- `hyprec_detail`: `ticker=<hyp_rec_ticker>`, `pipeline_run_id=<current_run_id>`, `pattern_class=None`.
+- `position_detail`: `ticker=<open_position_ticker>`, `pipeline_run_id=None`, `pattern_class=None` (run-agnostic).
+- `market_weather`: `ticker=cfg.rs.benchmark_ticker`, `pipeline_run_id=<current_run_id>`, `pattern_class=None`.
 
 - [ ] **Step 8: Run all 17-19 new tests; verify PASS.**
 
@@ -989,22 +991,36 @@ Commit message body enumerates: 11 Gap A tests + 6-8 §1.5.1 amendment tests = 1
 
 - [ ] **Step 1a: Write 9 failing Gap B.1 + B.2 tests** per brainstorm spec §5.1.
 
-Sample skeleton:
+Sample skeleton (per Codex R2 MAJOR #2 closure — `current_stage` is the Phase 13 trend-template wrapper at `swing/patterns/foundation.py:745`, V1 returns only `'stage_2'` or `'undefined'`; NOT a weather-state read):
 
 ```python
 def test_pattern_review_form_vm_populates_trend_template_state_live(v20_db, sample_evaluation):
-    """Gap B.1 — trend-template state via current_stage() + get_latest(weather)."""
-    _seed_weather_run(v20_db, ticker="^GSPC", weather_state="bull_confirmed")
+    """Gap B.1 - trend-template state via current_stage(conn, ticker, window_end_date)."""
+    # Plant a candidate with all 8 TT1-TT8 trend-template criteria passing for
+    # the sample_evaluation's ticker + an action_session_date <= window_end_date.
+    _seed_candidate_with_all_tt_criteria_pass(
+        v20_db, ticker=sample_evaluation.ticker,
+        action_session_date=sample_evaluation.window_end_date,
+    )
     vm = build_pattern_review_form_vm(conn=v20_db, evaluation_id=sample_evaluation.id)
     assert vm.trend_template_state != "n/a"
-    assert isinstance(vm.trend_template_state, str)
-    assert vm.trend_template_state in (
-        "bull_confirmed", "bull_unconfirmed", "neutral", "bear_developing",
-        "bear_confirmed",
+    assert vm.trend_template_state == "stage_2"  # V1 semantic per foundation.py:789
+
+
+def test_pattern_review_form_vm_populates_trend_template_state_undefined_when_criteria_fail(
+    v20_db, sample_evaluation,
+):
+    """Gap B.1 negative - missing-criteria candidate -> 'undefined' per foundation.py:790."""
+    _seed_candidate_with_partial_tt_criteria_pass(
+        v20_db, ticker=sample_evaluation.ticker,
+        action_session_date=sample_evaluation.window_end_date,
+        pass_count=7,  # short by 1
     )
+    vm = build_pattern_review_form_vm(conn=v20_db, evaluation_id=sample_evaluation.id)
+    assert vm.trend_template_state == "undefined"
 ```
 
-(The remaining 8 follow the §5.1 enumeration: VM extension; Phase 8 weather lookup roundtrip; backward-looking session-anchor round-trip discriminating test; template render; VolumeProfileRow dataclass validator; 30-session sum; 50d avg ratio; template render.)
+(The remaining 7 follow the §5.1 enumeration: VM extension; current_stage roundtrip; template render; VolumeProfileRow dataclass validator; 30-session sum; 50d avg ratio; template render.)
 
 - [ ] **Step 1b: Write 4 failing Gap B.6 tests** at `tests/web/test_routes/test_patterns_queue.py` (extend existing).
 
@@ -1039,7 +1055,7 @@ def test_patterns_exemplars_backfill_labeler_evidence_synthesizes_rule_criteria_
 
 - [ ] **Step 2: Run tests; verify FAIL.**
 
-- [ ] **Step 3: Implement Gap B.1** — extend `PatternReviewFormVM` with `trend_template_state: str`; route handler at `swing/web/routes/patterns.py` calls `current_stage()` via `swing.data.repos.weather.get_latest(conn, ticker='^GSPC')` (backward-looking session-anchor per CLAUDE.md gotcha LOCK). Template inserts `<span>{{ vm.trend_template_state }}</span>`.
+- [ ] **Step 3: Implement Gap B.1** — extend `PatternReviewFormVM` with `trend_template_state: str` (value domain `'stage_2' | 'undefined'` per Phase 13 V1 wrapper at `swing/patterns/foundation.py:745`). The VM builder reads via `swing.patterns.foundation.current_stage(conn, ticker=evaluation.ticker, asof_date=evaluation.window_end_date)` — using the pattern_evaluation's `window_end_date` as the trend-template snapshot anchor (deterministic; not session-anchor-bound; no CLAUDE.md gotcha applies). Template inserts `<span class="trend-template-{{ vm.trend_template_state }}">{{ vm.trend_template_state }}</span>` or similar render.
 
 - [ ] **Step 4: Implement Gap B.2** — NEW `VolumeProfileRow` frozen dataclass at `swing/web/view_models/patterns/review_form.py`:
 
@@ -1067,17 +1083,23 @@ Read OHLCV via `swing.web.ohlcv_cache.get_or_fetch(ticker, window_days=80)` (OQ-
 
 Column-verified schema (per `swing/data/migrations/0003_phase2_pipeline_trades.sql:4-15`): `weather_runs` columns `id`, `run_ts` (ISO timestamp), `asof_date`, `ticker` (default 'QQQ'; per-cfg via `cfg.rs.benchmark_ticker`), `status` (CHECK values: 'Bullish', 'Caution', 'Bearish'), close, sma10/20/50, etc.
 
+Per Codex R2 MAJOR #3 closure — the current `prioritize_candidates(conn, *, top_k=20)` signature at `swing/patterns/active_learning.py:162-163` does NOT take cfg; the criterion 3 weather-state feature requires plumbing `benchmark_ticker` THROUGH the caller chain. T-A.6c.3 extends the signature to `prioritize_candidates(conn, *, top_k=20, benchmark_ticker: str = "QQQ")` AND extends the caller `build_patterns_queue_vm(conn, cfg, ...)` to read `cfg.rs.benchmark_ticker` + pass it forward. The route handler at `swing/web/routes/patterns.py:patterns_queue_page` already has access to `cfg` via the existing DI pattern (verify exact accessor at executing-plans phase via `Grep "def patterns_queue_page" swing/web/routes/patterns.py`). The plumbing requires changes to: (a) `prioritize_candidates` signature; (b) `build_patterns_queue_vm` signature; (c) `patterns_queue_page` call site. Default `"QQQ"` matches `weather_runs` schema default at migration 0003 line 8.
+
 ```python
-def prioritize_candidates(conn: sqlite3.Connection, top_k: int = 20) -> list[QueueCandidateRow]:
+def prioritize_candidates(
+    conn: sqlite3.Connection, *, top_k: int = 20, benchmark_ticker: str = "QQQ",
+) -> list[CandidatePriority]:
     """... existing docstring ...
 
     Criterion 3 (underrepresented_regime) — weather-state-aware per spec §5.10 line 799.
     For each candidate's pattern_class, count confirmed exemplars whose labeling-time
     weather status matches the CURRENT market weather status. Rank candidates whose
     pattern_class has the LOWEST same-status count (with tie-break by candidate id desc).
+
+    benchmark_ticker: passed in from cfg.rs.benchmark_ticker by the caller
+        (build_patterns_queue_vm). Defaults to 'QQQ' to match weather_runs schema default.
     """
-    # Current weather status — use the canonical Phase 8 getter; ticker per cfg.
-    benchmark_ticker = _resolve_benchmark_ticker(conn)  # cfg.rs.benchmark_ticker; default 'QQQ'
+    # Current weather status — use the canonical weather getter; ticker per caller's cfg.
     current_weather = get_latest(conn, ticker=benchmark_ticker)
     current_status = current_weather.status if current_weather else None
 
@@ -1113,7 +1135,7 @@ def prioritize_candidates(conn: sqlite3.Connection, top_k: int = 20) -> list[Que
     # the LOWEST count gets the highest criterion-3 priority weight ...
 ```
 
-(Per Expansion #4 NEW refinement, the SQL skeleton's columns are verified at writing-plans phase. The `_resolve_benchmark_ticker(conn)` helper either reads `cfg.rs.benchmark_ticker` directly OR uses the existing pattern at `swing/pipeline/runner.py:2626` `get_latest_for_date(conn, data_asof, ticker=cfg.rs.benchmark_ticker)`; implementer at executing-plans phase verifies the canonical resolver. Per Phase 13 closure intent, this is a read-side derivation — NO new column required.)
+(Per Expansion #4 NEW refinement, the SQL skeleton's columns are verified at writing-plans phase. Per Codex R2 MAJOR #3 closure, the benchmark_ticker is threaded through the caller chain as a keyword argument rather than discovered via a `_resolve_benchmark_ticker(conn)` helper — the cfg is already available at the route handler boundary, so simple kwarg passing keeps the signature change minimal + explicit. Per Phase 13 closure intent, this is a read-side derivation — NO new column required.)
 
 - [ ] **Step 6: Implement §1.5.2 amendment** — add to `swing/cli.py`. **CRITICAL per Codex R1 MAJOR #2 closure**: the `rule_criteria` synthesis source is the dedicated COLUMN `pattern_exemplars.geometric_score_json` (verified at migration 0020 line 94), NOT a key inside the `labeler_evidence_json` payload (existing 34 exemplars carry payload keys `['confidence', 'evaluation', 'geometric_evidence_narrative']` only). Pass the COLUMN value into the synthesizer.
 
@@ -1163,6 +1185,21 @@ def patterns_exemplars_backfill_labeler_evidence_run(conn) -> tuple[int, int]:
         try:
             payload = json.loads(row.labeler_evidence_json)
             if "rule_criteria" in payload and "narrative" in payload:
+                skipped += 1
+                continue
+            # Per Codex R2 MAJOR #5 closure: if rule_criteria is missing AND
+            # the geometric_score_json column is NULL/empty, SKIP this row
+            # (do NOT write an empty rule_criteria array; the consumer would
+            # then have empty-evidence stamped permanently when the source
+            # data is simply unavailable). Idempotency LOCK preserved because
+            # the skip is per-row + per-run; a later backfill run after the
+            # operator populates geometric_score_json will succeed.
+            if "rule_criteria" not in payload and not row.geometric_score_json:
+                logger.warning(
+                    "backfill skipped exemplar %s: geometric_score_json is "
+                    "NULL/empty; rule_criteria cannot be synthesized",
+                    row.id,
+                )
                 skipped += 1
                 continue
             if "narrative" not in payload:
@@ -1248,11 +1285,11 @@ Register the CLI subcommand in the existing `swing.cli` registry per the existin
 - [ ] **Step 9: Commit** — `feat(phase13): Gap B no-schema + labeler_evidence backfill (T-A.6c.3)`
 
 ```bash
-git add swing/web/view_models/patterns/review_form.py swing/web/templates/patterns/review.html.j2 swing/patterns/active_learning.py swing/web/routes/patterns.py swing/cli.py tests/web/test_routes/test_patterns_review_data_completeness.py tests/web/test_routes/test_patterns_queue.py tests/cli/test_patterns_exemplars_backfill_labeler_evidence.py
+git add swing/web/view_models/patterns/review_form.py swing/web/templates/patterns/review.html.j2 swing/patterns/active_learning.py swing/web/routes/patterns.py swing/cli.py swing/data/repos/pattern_exemplars.py tests/web/test_routes/test_patterns_review_data_completeness.py tests/web/test_routes/test_patterns_queue.py tests/cli/test_patterns_exemplars_backfill_labeler_evidence.py
 git commit -m "feat(phase13): Gap B no-schema + labeler_evidence backfill (T-A.6c.3)"
 ```
 
-Commit message body enumerates: 9 Gap B.1+B.2 + 4 Gap B.6 + 5 §1.5.2 amendment = 18 NEW; Path C backfill rule (synthesize rule_criteria from geometric_score_json; copy narrative; preserve original keys; idempotent; fail-soft per row); Path A V2-banked.
+Commit message body enumerates: 9 Gap B.1+B.2 + 4 Gap B.6 + 5 §1.5.2 amendment = 18 NEW; Path C backfill rule (synthesize rule_criteria from `pattern_exemplars.geometric_score_json` COLUMN; copy narrative from `geometric_evidence_narrative` payload key; preserve original keys; idempotent; fail-soft per row); NEW repo helper `update_exemplar_labeler_evidence_json` lands in T-A.6c.3 scope at `swing/data/repos/pattern_exemplars.py` (per Codex R2 MINOR #1); benchmark_ticker plumbed through `prioritize_candidates` + `build_patterns_queue_vm` for Gap B.6 (per Codex R2 MAJOR #3); Path A V2-banked.
 
 **Watch items:**
 - W9 (session-anchor read/write mismatch family) — Gap B.1 trend-template state lookup uses `get_latest(conn, ticker='^GSPC')` (backward-looking).
