@@ -2089,3 +2089,237 @@ def test_f6_codex_r2_minor1_soft_warn_resubmit_extracts_actual_confirm_fragment_
         f"round trip via extracted hidden inputs; persisted value "
         f"{row[0]} != extracted {eval_id}"
     )
+
+
+# ===========================================================================
+# Group F (Codex R3) — candidate-snapshot consistency under explicit run anchor
+# (R3 MAJOR #1)
+# ===========================================================================
+
+
+def test_f7_codex_r3_major1_explicit_pe_run_anchors_candidate_snapshot_consistently(  # noqa: E501
+    seeded_db,
+):
+    """Codex R3 MAJOR #1 closure: when the entry-form GET arrives with
+    ``?pattern_evaluation_id=<id>`` AND
+    ``?pipeline_run_id_at_form_render=<id>`` for hyp-recs origin AND
+    validation succeeds, the candidate-derived form defaults (sector,
+    industry, pivot, initial_stop, sector_industry_evaluation_run_id)
+    MUST come from the OPERATOR-WITNESSED run's candidate row, NOT the
+    latest_completed_pipeline_run's candidate row.
+
+    Failure mode the test guards (mixed-context trade): without this
+    fix, the form binds PE_1 (run-1) but reads sector/industry from
+    run-2's candidate snapshot for the same ticker — the operator sees
+    "Tech / Semiconductors" defaults that look like a run-2 trade even
+    though the PE anchor is run-1. The persisted trade then has old PE
+    backlink + new candidate-derived order defaults (sector + industry
+    + sector_industry_evaluation_run_id), violating snapshot-at-entry
+    consistency.
+    """
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            # Pipeline run #1: candidate_v1 sector=Healthcare; PE_1.
+            eval_run_1 = _seed_evaluation_run(
+                conn, action_session_date="2026-05-19",
+            )
+            pipe_1 = _seed_pipeline_run(conn, evaluation_run_id=eval_run_1)
+            insert_candidates(conn, eval_run_1, [
+                Candidate(
+                    ticker="MIXED",
+                    bucket="watch",
+                    close=120.0,
+                    pivot=99.99,
+                    initial_stop=88.88,
+                    adr_pct=4.0,
+                    tight_streak=3,
+                    pullback_pct=10.0,
+                    prior_trend_pct=35.0,
+                    rs_rank=85,
+                    rs_return_12w_vs_spy=0.18,
+                    rs_method="universe",
+                    pattern_tag="vcp",
+                    notes=None,
+                    criteria=(),
+                    sector="Healthcare",
+                    industry="Biotech",
+                ),
+            ])
+            pe_1 = _seed_evaluation(
+                conn, pipeline_run_id=pipe_1, ticker="MIXED",
+                pattern_class="vcp", composite_score=0.50,
+            )
+            # Pipeline run #2 (newer = latest_completed): candidate_v2
+            # sector=Technology; PE_2 has a higher composite_score (would
+            # be the legacy fallback target if validation failed).
+            eval_run_2 = _seed_evaluation_run(
+                conn, action_session_date="2026-05-20",
+            )
+            pipe_2 = _seed_pipeline_run(conn, evaluation_run_id=eval_run_2)
+            insert_candidates(conn, eval_run_2, [
+                Candidate(
+                    ticker="MIXED",
+                    bucket="watch",
+                    close=120.0,
+                    pivot=77.77,
+                    initial_stop=66.66,
+                    adr_pct=4.0,
+                    tight_streak=3,
+                    pullback_pct=10.0,
+                    prior_trend_pct=35.0,
+                    rs_rank=85,
+                    rs_return_12w_vs_spy=0.18,
+                    rs_method="universe",
+                    pattern_tag="flat_base",
+                    notes=None,
+                    criteria=(),
+                    sector="Technology",
+                    industry="Semiconductors",
+                ),
+            ])
+            _ = _seed_evaluation(
+                conn, pipeline_run_id=pipe_2, ticker="MIXED",
+                pattern_class="flat_base", composite_score=0.95,
+            )
+    finally:
+        conn.close()
+    assert pipe_1 != pipe_2
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        # Operator clicks Take-this-trade from the expanded card rendered
+        # when run #1 was active. Both anchors propagate.
+        r = client.get(
+            f"/trades/entry/form?ticker=MIXED&origin=hyp-recs"
+            f"&pattern_evaluation_id={pe_1}"
+            f"&pipeline_run_id_at_form_render={pipe_1}",
+        )
+    assert r.status_code == 200
+    body = r.text
+    import re
+
+    hidden = {
+        m.group("name"): m.group("value")
+        for m in re.finditer(
+            r'<input\s+type="hidden"\s+name="(?P<name>[^"]+)"\s+'
+            r'value="(?P<value>[^"]*)"',
+            body,
+        )
+    }
+    # Sector + industry hidden inputs must reflect run-1's candidate
+    # (the operator-witnessed run), NOT run-2's latest snapshot.
+    assert hidden.get("sector") == "Healthcare", (
+        f"Codex R3 MAJOR #1: sector hidden input must reflect "
+        f"run-1's candidate (Healthcare); got "
+        f"{hidden.get('sector')!r}. Mixed-context trade defect: form "
+        f"bound PE_1={pe_1} from run-1 but read sector from run-2."
+    )
+    assert hidden.get("industry") == "Biotech", (
+        f"Codex R3 MAJOR #1: industry hidden input must reflect "
+        f"run-1's candidate (Biotech); got "
+        f"{hidden.get('industry')!r}."
+    )
+    # sector_industry_evaluation_run_id hidden input must anchor on
+    # run-1's evaluation_run_id, NOT run-2's.
+    assert (
+        hidden.get("sector_industry_evaluation_run_id") == str(eval_run_1)
+    ), (
+        f"Codex R3 MAJOR #1: sector_industry_evaluation_run_id must "
+        f"equal eval_run_1={eval_run_1} (run-1's eval anchor); got "
+        f"{hidden.get('sector_industry_evaluation_run_id')!r} "
+        f"(eval_run_2={eval_run_2})"
+    )
+    # PE anchor still pinned to run-1 (R2 MAJOR #1 invariant unchanged).
+    assert hidden.get("pattern_evaluation_id") == str(pe_1)
+    assert hidden.get("pipeline_run_id_at_form_render") == str(pipe_1)
+
+
+def test_f7_codex_r3_major1_mismatched_run_falls_back_with_latest_candidate(  # noqa: E501
+    seeded_db,
+):
+    """Codex R3 MAJOR #1 fallback contract: when the explicit-run anchor
+    mismatches (validation fails), the form falls back to
+    latest_completed_pipeline_run's candidate snapshot — the legacy
+    permissive behavior (preserved with explanatory comment per Codex
+    R3 MINOR #1). Verifies sector reflects run-2 (latest) when the
+    operator's submitted run anchor mismatches PE_1's run.
+    """
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            eval_run_1 = _seed_evaluation_run(
+                conn, action_session_date="2026-05-19",
+            )
+            pipe_1 = _seed_pipeline_run(conn, evaluation_run_id=eval_run_1)
+            insert_candidates(conn, eval_run_1, [
+                Candidate(
+                    ticker="FBACK", bucket="watch", close=120.0,
+                    pivot=99.99, initial_stop=88.88, adr_pct=4.0,
+                    tight_streak=3, pullback_pct=10.0,
+                    prior_trend_pct=35.0, rs_rank=85,
+                    rs_return_12w_vs_spy=0.18, rs_method="universe",
+                    pattern_tag="vcp", notes=None, criteria=(),
+                    sector="Healthcare", industry="Biotech",
+                ),
+            ])
+            pe_1 = _seed_evaluation(
+                conn, pipeline_run_id=pipe_1, ticker="FBACK",
+                pattern_class="vcp", composite_score=0.50,
+            )
+            eval_run_2 = _seed_evaluation_run(
+                conn, action_session_date="2026-05-20",
+            )
+            pipe_2 = _seed_pipeline_run(conn, evaluation_run_id=eval_run_2)
+            insert_candidates(conn, eval_run_2, [
+                Candidate(
+                    ticker="FBACK", bucket="watch", close=120.0,
+                    pivot=77.77, initial_stop=66.66, adr_pct=4.0,
+                    tight_streak=3, pullback_pct=10.0,
+                    prior_trend_pct=35.0, rs_rank=85,
+                    rs_return_12w_vs_spy=0.18, rs_method="universe",
+                    pattern_tag="flat_base", notes=None, criteria=(),
+                    sector="Technology", industry="Semiconductors",
+                ),
+            ])
+            _ = _seed_evaluation(
+                conn, pipeline_run_id=pipe_2, ticker="FBACK",
+                pattern_class="flat_base", composite_score=0.95,
+            )
+    finally:
+        conn.close()
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        # Operator submits MISMATCHED run anchor (pipe_2) for PE_1
+        # (run-1). Validation fails -> fallback to latest (run-2) for
+        # BOTH PE anchor + candidate snapshot.
+        r = client.get(
+            f"/trades/entry/form?ticker=FBACK&origin=hyp-recs"
+            f"&pattern_evaluation_id={pe_1}"
+            f"&pipeline_run_id_at_form_render={pipe_2}",
+        )
+    assert r.status_code == 200
+    body = r.text
+    import re
+
+    hidden = {
+        m.group("name"): m.group("value")
+        for m in re.finditer(
+            r'<input\s+type="hidden"\s+name="(?P<name>[^"]+)"\s+'
+            r'value="(?P<value>[^"]*)"',
+            body,
+        )
+    }
+    # Validation failed; fallback to latest-completed (run-2). Sector
+    # reflects run-2's candidate. (Per Codex R3 MINOR #1: this
+    # permissive fallback is documented in build_entry_form_vm.)
+    assert hidden.get("sector") == "Technology", (
+        f"Codex R3 MAJOR #1 fallback: under run mismatch, sector must "
+        f"reflect run-2 (latest); got {hidden.get('sector')!r}."
+    )
+    assert (
+        hidden.get("sector_industry_evaluation_run_id") == str(eval_run_2)
+    )

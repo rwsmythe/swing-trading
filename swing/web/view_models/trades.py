@@ -447,12 +447,65 @@ def build_entry_form_vm(
             # Chart-pattern read above stays bound to ``pipeline_runs`` for
             # BOTH origins (existing behavior; chart-pattern requires a
             # completed pipeline).
+            #
+            # Codex R3 MAJOR #1 closure (mixed-context trade defense): for
+            # the hyp-recs origin, when the caller passes BOTH explicit
+            # ``pattern_evaluation_id`` AND
+            # ``pipeline_run_id_at_form_render`` query params AND the PE
+            # row's pipeline_run_id matches the submitted run anchor,
+            # the candidate-snapshot reads MUST anchor on the EXPLICIT
+            # run's evaluation_run_id — NOT on
+            # ``latest_completed_pipeline_run()``. Otherwise the form
+            # binds PE_1 (run-1) but reads sector/industry/pivot from
+            # run-2's candidate snapshot for the same ticker, yielding
+            # a "mixed-context" persisted trade (old PE backlink + new
+            # candidate-derived order defaults). Validation failure
+            # (run mismatch, ticker mismatch, PE missing) preserves the
+            # legacy permissive fallback to latest-completed-run snapshot
+            # so the operator never sees an empty form on tampered URLs.
             cand_sector = ""
             cand_industry = ""
             cand_pivot: float | None = None
             cand_initial_stop: float | None = None
+            # Resolve the explicit-anchor's evaluation_run_id up-front so
+            # candidate-snapshot reads can anchor on the operator-
+            # witnessed run when validation succeeds.
+            explicit_anchor_validates = False
+            explicit_anchor_eval_run_id: int | None = None
+            if (
+                coerced_origin == "hyp-recs"
+                and explicit_pattern_evaluation_id is not None
+                and explicit_pipeline_run_id_at_form_render is not None
+            ):
+                _anchor_row = conn.execute(
+                    "SELECT pipeline_run_id, ticker FROM "
+                    "pattern_evaluations WHERE id = ?",
+                    (int(explicit_pattern_evaluation_id),),
+                ).fetchone()
+                if _anchor_row is not None:
+                    _pe_run = int(_anchor_row[0])
+                    _pe_ticker = (_anchor_row[1] or "").upper()
+                    if (
+                        _pe_run
+                        == int(explicit_pipeline_run_id_at_form_render)
+                        and _pe_ticker == ticker.upper()
+                    ):
+                        explicit_anchor_validates = True
+                        _pr_row = conn.execute(
+                            "SELECT evaluation_run_id FROM pipeline_runs "
+                            "WHERE id = ?",
+                            (_pe_run,),
+                        ).fetchone()
+                        if _pr_row is not None and _pr_row[0] is not None:
+                            explicit_anchor_eval_run_id = int(_pr_row[0])
             if coerced_origin == "hyp-recs":
-                sector_eval_id = pipeline_eval_id
+                if (
+                    explicit_anchor_validates
+                    and explicit_anchor_eval_run_id is not None
+                ):
+                    sector_eval_id = explicit_anchor_eval_run_id
+                else:
+                    sector_eval_id = pipeline_eval_id
             else:
                 from swing.web.view_models.dashboard import (
                     latest_evaluation_run_id,
@@ -630,6 +683,18 @@ def build_entry_form_vm(
                             _explicit_run
                         )
             if resolved_pattern_evaluation_id is None:
+                # Codex R3 MINOR #1 — explicit-anchor mismatch fallback.
+                # When explicit-anchor validation fails (PE row missing
+                # OR pipeline_run_id mismatch OR ticker mismatch), we
+                # fall back to the highest-composite PE on the latest-
+                # completed pipeline_run rather than 500'ing or
+                # rendering an empty form. This preserves operator UX
+                # continuity at the cost of cosmetic anchor drift on
+                # tampered URLs — the 5-tier rejection ladder at
+                # POST /trades/entry catches every anchor-vs-payload
+                # inconsistency at submit time (anchor stamping is
+                # server-recomputed at POST per the T3.SB3
+                # "server-stamping LOCK" semantic clarification).
                 pe_row = _conn2.execute(
                     "SELECT id FROM pattern_evaluations "
                     "WHERE pipeline_run_id = ? AND ticker = ? "
