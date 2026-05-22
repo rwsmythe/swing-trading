@@ -2621,6 +2621,7 @@ Per §B.2 + OQ-12 BINDING:
 | `test_watchlist_close_track_active_unique_index_per_codex_R1_M9` | T4.SB T-D.1 | T4.SB closer | partial unique index allows re-flag of cleared ticker |
 | `test_base_layout_vm_banner_pin_phase13_arc_complete` | T4.SB T-D.6 | T4.SB closer | all Phase 13 VMs extending base.html.j2 populate banner fields |
 | `test_v20_atomic_landing_python_constants_validators_paired` | T2.SB1 T-A.1.1 | T4.SB closer | Phase 12 C.A T-A.2 LOCK preserved across Phase 13 arc |
+| `test_phase13_t2_sb6c_v21_trade_backlinks_schema_atomic` | T2.SB6c T-A.6c.1 | T2.SB6c T-A.6c.5 closer | v21 trades backlinks schema + FK + index + mapper + INSERT roundtrip per Delta |
 
 ### §H.4 Sub-bundle merge gates
 
