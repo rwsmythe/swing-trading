@@ -604,6 +604,22 @@ class HypRecsExpandedVM:
     # path (Codex R1 Major #1+#2 fix: deadline-bounded; NOT the unbounded
     # single-ticker `get`).
     current_price: PriceSnapshot | None = None
+    # Phase 13 T2.SB6c T-A.6c.2 Gap A.1 — inline SVG bytes from the
+    # chart_renders cache for the operator-facing hyp-rec expansion
+    # surface. None when no cache row exists; template guards with
+    # `{% if expanded.hyprec_detail_chart_svg_bytes %}`. Cache key:
+    # `(ticker, surface='hyprec_detail', pipeline_run_id=<binding.run_id>)`
+    # per spec §C.2 + ChartRender __post_init__ validator.
+    hyprec_detail_chart_svg_bytes: bytes | None = None
+    # Phase 13 T2.SB6c T-A.6c.4 §C.5 Layer 1 — pattern_evaluations
+    # anchor for OQ-12 CLOSURE. Threaded into the entry-form link's
+    # query string so the form-render binds to the same anchor the
+    # operator saw on the hyp-rec card. None when no matching
+    # pattern_evaluations row exists for the (pipeline_run, ticker,
+    # pattern_class) tuple — operator-intent provenance preserved per
+    # spec §2.2 OQ-12 disposition.
+    pattern_evaluation_id: int | None = None
+    pipeline_run_id: int | None = None
 
 
 def build_hyp_recs_expanded(
@@ -708,6 +724,49 @@ def build_hyp_recs_expanded(
         )
         current_price = prices.get(ticker)
 
+    # Phase 13 T2.SB6c T-A.6c.2 Gap A.1 — consult chart_renders cache for
+    # the hyp-rec detail surface (surface='hyprec_detail', run-bound key).
+    # Reuses the T2.SB6a substrate `get_cached_chart_svg` verbatim (L7 +
+    # L17 LOCK).
+    from swing.data.repos.chart_renders import get_cached_chart_svg
+    hyprec_detail_chart_svg_bytes = get_cached_chart_svg(
+        conn,
+        ticker=ticker,
+        surface="hyprec_detail",
+        pipeline_run_id=binding.run_id,
+    )
+
+    # Phase 13 T2.SB6c T-A.6c.4 §C.5 Layer 1 — pattern_evaluations
+    # anchor lookup per plan §G.4 Step 5(d). Uses (pipeline_run_id,
+    # ticker, pattern_class) UNIQUE index per migration 0020 line
+    # 253-254. pattern_class derived from candidate.pattern_tag when
+    # available; if the candidate's pattern_tag is not in
+    # DETECTOR_PATTERN_CLASSES OR no matching pattern_evaluations row
+    # exists, falls back to highest composite_score row for the
+    # (pipeline_run_id, ticker) tuple — operator still sees an anchor
+    # for entry-form linking. None when no row at all.
+    resolved_pattern_evaluation_id: int | None = None
+    cand_class = (candidate.pattern_tag or "").strip()
+    if cand_class:
+        pe_row = conn.execute(
+            "SELECT id FROM pattern_evaluations "
+            "WHERE pipeline_run_id = ? AND ticker = ? AND pattern_class = ? "
+            "LIMIT 1",
+            (binding.run_id, ticker, cand_class),
+        ).fetchone()
+        if pe_row is not None:
+            resolved_pattern_evaluation_id = int(pe_row[0])
+    if resolved_pattern_evaluation_id is None:
+        # Fallback: any pattern_evaluations row for (run, ticker).
+        pe_row = conn.execute(
+            "SELECT id FROM pattern_evaluations "
+            "WHERE pipeline_run_id = ? AND ticker = ? "
+            "ORDER BY composite_score DESC, id DESC LIMIT 1",
+            (binding.run_id, ticker),
+        ).fetchone()
+        if pe_row is not None:
+            resolved_pattern_evaluation_id = int(pe_row[0])
+
     return HypRecsExpandedVM(
         ticker=ticker,
         buy_stop=candidate.pivot,
@@ -725,6 +784,9 @@ def build_hyp_recs_expanded(
         chart_reason_message=chart_message,
         pipeline_finished_at=binding.finished_ts,
         current_price=current_price,
+        hyprec_detail_chart_svg_bytes=hyprec_detail_chart_svg_bytes,
+        pattern_evaluation_id=resolved_pattern_evaluation_id,
+        pipeline_run_id=binding.run_id,
     )
 
 

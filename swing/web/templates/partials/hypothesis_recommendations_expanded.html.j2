@@ -38,8 +38,15 @@
     </ul>
 
     <p class="action-row">
+      {#- Phase 13 T2.SB6c Codex R2 MAJOR #1 closure: emit BOTH the
+          PE id AND the pipeline_run_id the operator saw on this
+          expanded card. The entry-form GET validates the explicit PE
+          against THAT submitted run anchor (not against
+          latest_completed_pipeline_run()), so a new pipeline
+          completing between expanded-card render and form GET cannot
+          silently rebind to a different run's highest-composite PE. -#}
       <button type="button" class="take-this-trade primary"
-              hx-get="/trades/entry/form?ticker={{ expanded.ticker }}&origin=hyp-recs"
+              hx-get="/trades/entry/form?ticker={{ expanded.ticker }}&origin=hyp-recs{% if expanded.pattern_evaluation_id %}&pattern_evaluation_id={{ expanded.pattern_evaluation_id }}{% if expanded.pipeline_run_id %}&pipeline_run_id_at_form_render={{ expanded.pipeline_run_id }}{% endif %}{% endif %}"
               hx-target="closest tr"
               hx-swap="outerHTML"
               hx-headers='{"HX-Request": "true"}'>Take this trade</button>
@@ -66,6 +73,14 @@
         {% endif %}
       </li>
     </ul>
+
+    {# Phase 13 T2.SB6c T-A.6c.2 Gap A.1 — inline SVG chart from
+       chart_renders cache (surface='hyprec_detail'). Rendered ahead of
+       the legacy PNG fallback so the operator sees the live Theme 1
+       chart when the pipeline has populated the cache. -#}
+    {% if expanded.hyprec_detail_chart_svg_bytes %}
+      <div class="hyprec-detail-chart">{{ expanded.hyprec_detail_chart_svg_bytes.decode('utf-8') | safe }}</div>
+    {% endif %}
 
     {% if expanded.chart_reason is none and expanded.data_asof_date %}
       <img src="/charts/{{ expanded.data_asof_date }}/{{ expanded.ticker }}.png"

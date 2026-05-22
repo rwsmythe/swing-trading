@@ -15,10 +15,16 @@ from pathlib import Path
 from swing.config import Config
 from swing.data.backup import do_backup, prune_old_backups, should_backup
 from swing.data.db import connect
-from swing.data.models import Candidate, EvaluationRun
+
+# Phase 13 T2.SB6c T-A.6c.2 §1.5.1 amendment — chart_renders cache
+# write-through helpers + Theme 1 SVG renderers. Imported at module top
+# so test fixtures may monkeypatch `swing.pipeline.runner.render_*`
+# per F6 transient-empty discriminating test pattern.
+from swing.data.models import Candidate, ChartRender, EvaluationRun
 from swing.data.ohlcv_archive import read_or_fetch_archive
 from swing.data.repos.candidates import insert_candidates, insert_evaluation_run
 from swing.data.repos.cash import list_cash
+from swing.data.repos.chart_renders import refresh_chart_render
 from swing.data.repos.pattern_classifications import insert_classification
 from swing.data.repos.pipeline import (
     LeaseRevokedError,
@@ -82,6 +88,12 @@ from swing.rendering.view_models import AdvisorySuggestionVM
 from swing.trades.advisory import AdvisoryContext, compute_all_suggestions
 from swing.trades.equity import current_equity, sizing_equity
 from swing.watchlist.service import compute_watchlist_changes
+from swing.web.charts import (
+    render_hyprec_detail_svg,
+    render_market_weather_svg,
+    render_position_detail_svg,
+    render_watchlist_thumbnail_svg,
+)
 
 log = logging.getLogger(__name__)
 
@@ -2273,6 +2285,163 @@ def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data_asof: str,
                 conn, pipeline_run_id=lease.run_id, ticker=ticker,
                 result=classification,
                 computed_at=_dt.now().isoformat(timespec="seconds"),
+            )
+
+    # Phase 13 T2.SB6c T-A.6c.2 §1.5.1 amendment — write-through to the
+    # chart_renders cache so downstream surfaces (dashboard / watchlist /
+    # trade detail / hyp-rec expansion) can serve charts inline without
+    # re-rendering at request time. 4 surfaces:
+    #   - watchlist_row: per active watchlist ticker (pipeline_run_id non-NULL)
+    #   - hyprec_detail: per A+ candidate (pipeline_run_id non-NULL)
+    #   - position_detail: per open trade (pipeline_run_id IS NULL per v20 §3.2)
+    #   - market_weather: cfg.rs.benchmark_ticker (pipeline_run_id non-NULL,
+    #     per Codex R2 MAJOR #4 closure)
+    # F6 transient-empty defense lives at the ChartRender __post_init__
+    # construction barrier (T2.SB6a R1 MAJOR #2 LOCK): a renderer returning
+    # b"" raises ValueError which we catch + WARN-log + continue.
+    _now_iso = _dt.now().isoformat(timespec="seconds")
+
+    def _bars_or_none(ticker: str):
+        try:
+            return ohlcv_cache.get_or_fetch(ticker=ticker, window_days=200)
+        except Exception as exc:  # noqa: BLE001 - per-ticker isolation
+            log.warning(
+                "chart_renders write-through: ohlcv fetch failed for %s: %s",
+                ticker, exc,
+            )
+            return None
+
+    def _refresh_one(*, ticker: str, surface: str,
+                     pipeline_run_id: int | None, pattern_class: str | None,
+                     bytes_: bytes) -> None:
+        try:
+            chart_render = ChartRender(
+                id=None,
+                ticker=ticker,
+                surface=surface,
+                chart_svg_bytes=bytes_,
+                source_data_hash="step_charts_v1",
+                rendered_at=_now_iso,
+                data_asof_date=data_asof,
+                pipeline_run_id=pipeline_run_id,
+                pattern_class=pattern_class,
+            )
+        except ValueError as exc:
+            log.warning(
+                "F6 transient empty chart skipped: ticker=%s surface=%s err=%s",
+                ticker, surface, exc,
+            )
+            return
+        try:
+            with lease.fenced_write() as conn:
+                refresh_chart_render(conn, chart_render)
+        except LeaseRevokedError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - per-surface isolation
+            log.warning(
+                "chart_renders write-through: refresh failed for "
+                "ticker=%s surface=%s: %s",
+                ticker, surface, exc,
+            )
+
+    # watchlist_row surface — per data-eligible top-N watchlist ticker
+    # already in `tag_aware_top_n`. The thumbnail renderer is small (200x100
+    # MA + volume) so cost stays bounded.
+    for w in tag_aware_top_n:
+        ticker = w.ticker.upper()
+        bars = _bars_or_none(ticker)
+        if bars is None or bars.empty:
+            continue
+        try:
+            svg_bytes = render_watchlist_thumbnail_svg(
+                ticker=ticker, bars=bars, ma_lines=[50, 150, 200],
+            )
+        except Exception as exc:  # noqa: BLE001 - per-ticker isolation
+            log.warning(
+                "render_watchlist_thumbnail_svg failed for %s: %s",
+                ticker, exc,
+            )
+            continue
+        _refresh_one(
+            ticker=ticker, surface="watchlist_row",
+            pipeline_run_id=lease.run_id, pattern_class=None,
+            bytes_=svg_bytes,
+        )
+
+    # hyprec_detail surface — per A+ candidate from this evaluation run.
+    for c in aplus:
+        ticker = c.ticker.upper()
+        bars = _bars_or_none(ticker)
+        if bars is None or bars.empty:
+            continue
+        try:
+            svg_bytes = render_hyprec_detail_svg(
+                ticker=ticker, bars=bars, pattern_evaluation=None,
+            )
+        except Exception as exc:  # noqa: BLE001 - per-ticker isolation
+            log.warning(
+                "render_hyprec_detail_svg failed for %s: %s", ticker, exc,
+            )
+            continue
+        _refresh_one(
+            ticker=ticker, surface="hyprec_detail",
+            pipeline_run_id=lease.run_id, pattern_class=None,
+            bytes_=svg_bytes,
+        )
+
+    # position_detail surface — per open trade. Run-agnostic key shape:
+    # pipeline_run_id IS NULL per v20 §3.2 LOCK so the dashboard reader
+    # (which doesn't anchor on a specific run for open positions) finds
+    # the row.
+    if open_trades:
+        from swing.data.repos.fills import list_fills_for_trade
+        for tr in open_trades:
+            ticker = tr.ticker.upper()
+            bars = _bars_or_none(ticker)
+            if bars is None or bars.empty:
+                continue
+            _conn = connect(cfg.paths.db_path)
+            try:
+                trade_fills = list_fills_for_trade(_conn, tr.id)
+            finally:
+                _conn.close()
+            try:
+                svg_bytes = render_position_detail_svg(
+                    ticker=ticker, bars=bars, trade=tr,
+                    fills=trade_fills, current_stop=tr.current_stop,
+                )
+            except Exception as exc:  # noqa: BLE001 - per-ticker isolation
+                log.warning(
+                    "render_position_detail_svg failed for %s: %s",
+                    ticker, exc,
+                )
+                continue
+            _refresh_one(
+                ticker=ticker, surface="position_detail",
+                pipeline_run_id=None, pattern_class=None,
+                bytes_=svg_bytes,
+            )
+
+    # market_weather surface — cfg.rs.benchmark_ticker per Codex R2 MAJOR #4
+    # closure. Dashboard reader at T2.SB6b reads via the SAME ticker;
+    # divergence here silently invisibles the chart.
+    benchmark_ticker = cfg.rs.benchmark_ticker.upper()
+    bars = _bars_or_none(benchmark_ticker)
+    if bars is not None and not bars.empty:
+        try:
+            svg_bytes = render_market_weather_svg(
+                bars=bars, trend_template_state="stage_2",
+            )
+        except Exception as exc:  # noqa: BLE001 - per-ticker isolation
+            log.warning(
+                "render_market_weather_svg failed for %s: %s",
+                benchmark_ticker, exc,
+            )
+        else:
+            _refresh_one(
+                ticker=benchmark_ticker, surface="market_weather",
+                pipeline_run_id=lease.run_id, pattern_class=None,
+                bytes_=svg_bytes,
             )
 
     # End-of-step summary. Denominator is classifier attempts (success +

@@ -383,6 +383,7 @@ def patterns_review_page(request: Request, candidate_id: int) -> Response:
         vm = build_patterns_review_form_vm(
             conn, candidate_id=candidate_id,
             session_date=_session_date_str(),
+            cfg=cfg,
         )
     finally:
         conn.close()
@@ -464,21 +465,53 @@ def patterns_review_post(
                 )
 
         now_iso = datetime.now(UTC).isoformat()
-        # Per spec section 5.10 lines 785-790 label_source split:
-        #   - closed_loop_review if operator reviewed the candidate but did
-        #     NOT open a trade on it.
-        #   - organic_trade_history if confirm + trade opened (candidate-
-        #     to-trade backlink at trades.candidate_id resolves the row).
+        # Per spec section 5.10 lines 785-790 label_source split (Gap B.3
+        # closure via v21 trades.candidate_id backlink + plan §D.3
+        # cross-row lookup discipline). Resolution chain per plan §D.3:
         #
-        # V1 emits closed_loop_review unconditionally (Codex R1 MAJOR #3
-        # closure): the trades schema does NOT carry a candidate_id
-        # column, so a ticker-level proxy would silently mislabel a NEW
-        # candidate as organic_trade_history when ANY prior trade on the
-        # same ticker exists (e.g., last-quarter ABC trade + new ABC
-        # candidate review). The pragmatic V1 fix is to never emit
-        # organic_trade_history from this route; the V2 migration adding
-        # trades.candidate_id (or equivalent backlink) lifts this.
+        #   URL path int -> pattern_evaluations.id
+        #               -> SELECT pattern_evaluations.pipeline_run_id, ticker
+        #               -> JOIN to candidates via
+        #                  pipeline_runs.evaluation_run_id =
+        #                    candidates.evaluation_run_id
+        #                  AND pipeline_runs.id = pattern_evaluations.pipeline_run_id
+        #                  AND candidates.ticker = pattern_evaluations.ticker
+        #               -> use that candidates.id as lookup target for
+        #                  trades.candidate_id
+        #
+        # When operator confirms AND a trade exists on the resolved
+        # candidate, emit ``organic_trade_history``; else
+        # ``closed_loop_review``. Per-candidate scope (NOT ticker-proxy;
+        # T2.SB6b R1 MAJOR #3 LOCK preserved): an unrelated trade on
+        # the same ticker from a DIFFERENT candidate does NOT promote
+        # this review's label_source.
         base_label_source = "closed_loop_review"
+        if decision == "confirm":
+            cand_row = conn.execute(
+                """
+                SELECT c.id
+                FROM candidates c
+                INNER JOIN pipeline_runs pr
+                    ON c.evaluation_run_id = pr.evaluation_run_id
+                WHERE pr.id = ? AND c.ticker = ?
+                ORDER BY c.id DESC LIMIT 1
+                """,
+                (evaluation.pipeline_run_id, evaluation.ticker),
+            ).fetchone()
+            if cand_row is not None:
+                resolved_candidate_id = int(cand_row[0])
+                trade_row = conn.execute(
+                    """
+                    SELECT 1 FROM trades
+                    WHERE candidate_id = ?
+                      AND state IN ('entered', 'managing',
+                                    'partial_exited', 'closed', 'reviewed')
+                    LIMIT 1
+                    """,
+                    (resolved_candidate_id,),
+                ).fetchone()
+                if trade_row is not None:
+                    base_label_source = "organic_trade_history"
 
         # gold_validated_at policy per spec section 5.10: every branch
         # except rejected stamps now; rejected stays NULL.
@@ -610,7 +643,7 @@ def patterns_queue_page(request: Request) -> Response:
     conn = connect(cfg.paths.db_path)
     try:
         vm = build_patterns_queue_vm(
-            conn, session_date=_session_date_str(), top_k=20,
+            conn, session_date=_session_date_str(), top_k=20, cfg=cfg,
         )
     finally:
         conn.close()

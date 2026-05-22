@@ -70,22 +70,70 @@ class CandidatePriority:
 
 
 def _underrepresented_pattern_classes(
-    conn: sqlite3.Connection, *, min_count_threshold: int = 5,
+    conn: sqlite3.Connection,
+    *,
+    min_count_threshold: int = 5,
+    benchmark_ticker: str = "QQQ",
 ) -> frozenset[str]:
-    """Pattern classes with fewer than ``min_count_threshold`` rows in
-    pattern_exemplars are flagged as underrepresented per spec criterion 3
-    (V1 proxy for "low historical exemplar count for current weather state"
-    — the weather-state-aware refinement is V2 per spec C.6).
+    """Pattern classes underrepresented for the CURRENT weather state per
+    spec section 5.10 line 799 LOCK.
+
+    Phase 13 T2.SB6c T-A.6c.3 — Gap B.6: weather-state-aware variant.
+    Per Codex R1 CRITICAL #1 closure: read-side derivation via at-or-before
+    JOIN on ``weather_runs`` (NO new column on ``pattern_exemplars``).
+
+    Current weather status fetched via ``swing.data.repos.weather.get_latest``
+    (most-recent run_ts; UI-safe per existing CLAUDE.md gotcha
+    "Weather lookup in read-only UIs"). Per-exemplar labeling-time weather
+    derived via ``(SELECT MAX(run_ts) FROM weather_runs WHERE ticker = ?
+    AND run_ts <= px.created_at)`` subquery.
+
+    Confirmed-only filter (``final_decision = 'confirmed'``) keeps the
+    cohort to validated exemplars per spec §5.10.
+
+    When NO weather row exists (current_status is None) the function
+    returns an EMPTY set — criterion 3 emits zero hits (conservative).
     """
-    rows = conn.execute(
-        "SELECT proposed_pattern_class, COUNT(*) FROM pattern_exemplars "
-        "GROUP BY proposed_pattern_class"
-    ).fetchall()
-    counts = {row[0]: int(row[1]) for row in rows}
+    from swing.data.repos.weather import get_latest
+
     detector_classes = (
         "vcp", "flat_base", "cup_with_handle",
         "high_tight_flag", "double_bottom_w",
     )
+
+    current_weather = get_latest(conn, ticker=benchmark_ticker)
+    if current_weather is None:
+        # No weather signal => conservative no-op on criterion 3.
+        return frozenset()
+    current_status = current_weather.status
+
+    # Per-pattern_class count of confirmed exemplars whose labeling-time
+    # weather status matches the CURRENT market status. The at-or-before
+    # JOIN selects each exemplar's most-recent ``weather_runs`` row with
+    # ``run_ts <= px.created_at``. Exemplars labeled before any weather
+    # row exists for benchmark_ticker have lwr.labeling_status = NULL
+    # (excluded by the WHERE filter, conservative count).
+    rows = conn.execute(
+        """
+        SELECT px.proposed_pattern_class, COUNT(*) AS n
+        FROM pattern_exemplars px
+        INNER JOIN (
+            SELECT px2.id AS exemplar_id, wr.status AS labeling_status
+            FROM pattern_exemplars px2
+            INNER JOIN weather_runs wr
+                ON wr.ticker = ?
+               AND wr.run_ts = (
+                   SELECT MAX(run_ts) FROM weather_runs
+                   WHERE ticker = ? AND run_ts <= px2.created_at
+               )
+        ) lwr ON lwr.exemplar_id = px.id
+        WHERE px.final_decision = 'confirmed'
+          AND lwr.labeling_status = ?
+        GROUP BY px.proposed_pattern_class
+        """,
+        (benchmark_ticker, benchmark_ticker, current_status),
+    ).fetchall()
+    counts = {row[0]: int(row[1]) for row in rows}
     out = {
         cls for cls in detector_classes
         if counts.get(cls, 0) < min_count_threshold
@@ -160,7 +208,10 @@ def _classify_priority(
 
 
 def prioritize_candidates(
-    conn: sqlite3.Connection, *, top_k: int = 20,
+    conn: sqlite3.Connection,
+    *,
+    top_k: int = 20,
+    benchmark_ticker: str = "QQQ",
 ) -> list[CandidatePriority]:
     """Return up to ``top_k`` candidates prioritized per spec section 5.10
     4-criterion ranking, sorted by priority_score DESC.
@@ -170,6 +221,13 @@ def prioritize_candidates(
     ``pipeline_runs.finished_ts DESC`` ordering filtered to
     ``state='complete'`` per CLAUDE.md gotcha "Queries ordered by
     started_ts DESC mask prior completes mid-run".
+
+    Phase 13 T2.SB6c T-A.6c.3 — Gap B.6 weather-state-aware criterion 3:
+    ``benchmark_ticker`` (default 'QQQ' to match the ``weather_runs``
+    schema default at migration 0003 line 8) drives the at-or-before
+    JOIN against ``weather_runs`` for current weather status + per-
+    exemplar labeling-time status. Caller (``build_patterns_queue_vm``)
+    plumbs ``cfg.rs.benchmark_ticker``.
     """
     latest_run_row = conn.execute(
         "SELECT id FROM pipeline_runs "
@@ -189,7 +247,9 @@ def prioritize_candidates(
     if not rows:
         return []
 
-    underrepresented = _underrepresented_pattern_classes(conn)
+    underrepresented = _underrepresented_pattern_classes(
+        conn, benchmark_ticker=benchmark_ticker,
+    )
 
     candidates: list[CandidatePriority] = []
     for row in rows:

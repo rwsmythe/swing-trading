@@ -162,6 +162,16 @@ class EntryRequest:
     schwab_source_value_json: str | None = None
     operator_corrected_value_json: str | None = None
     auto_fill_audit_at: str | None = None
+    # Phase 13 T2.SB6c T-A.6c.4 §C.5 Layer 3 + OQ-11 + OQ-12 lifecycle.
+    # ``pattern_evaluation_id`` is the server-re-derived value from the
+    # web POST handler's 5-tier rejection ladder (NOT the operator-
+    # submitted hidden input verbatim). ``candidate_id`` is derived
+    # inside record_entry from the latest-complete-evaluation-run
+    # candidate lookup (pipeline-origin) or left NULL (manual_off_pipeline).
+    # Both default None so legacy callers (CLI tests, bare cURL) keep
+    # working — record_entry's candidate-id resolution still fires.
+    pattern_evaluation_id: int | None = None
+    candidate_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -298,6 +308,47 @@ def record_entry(
             )
         warning = f"Soft warn exceeded: {open_count} open positions (soft={soft_warn})"
 
+    # Phase 13 T2.SB6c T-A.6c.4 §C.5 Layer 3 + OQ-11 lifecycle —
+    # resolve candidate_id from the latest-complete-evaluation-run
+    # candidate row for pipeline-origin trades. NULL for
+    # manual_off_pipeline (no candidate row exists) OR when the
+    # caller already provided one (CLI / E2E paths). Path 1
+    # (evaluation_run_id filter) per plan §B.1; we leverage the
+    # existing _latest_complete_evaluation_run_id helper.
+    #
+    # Codex R1 MAJOR #3 closure: when ``req.pattern_evaluation_id`` is
+    # non-NULL, resolve ``candidate_id`` via the PE row's
+    # ``pipeline_run_id → pipeline_runs.evaluation_run_id`` chain
+    # rather than the latest-complete fallback. Without this, a fresh
+    # pipeline run landing between form render and POST would corrupt
+    # paired backlink semantics: ``pattern_evaluation_id`` validates
+    # against the form-render run's id, but ``candidate_id`` would
+    # bind to a NEWER run's candidate row for the same ticker.
+    from swing.trades.origin import _latest_complete_evaluation_run_id
+    resolved_candidate_id: int | None = req.candidate_id
+    if resolved_candidate_id is None and derived_origin != "manual_off_pipeline":
+        _eval_run_for_candidate: int | None = None
+        if req.pattern_evaluation_id is not None:
+            _chain_row = conn.execute(
+                "SELECT pr.evaluation_run_id FROM pattern_evaluations pe "
+                "JOIN pipeline_runs pr ON pr.id = pe.pipeline_run_id "
+                "WHERE pe.id = ?",
+                (int(req.pattern_evaluation_id),),
+            ).fetchone()
+            if _chain_row is not None and _chain_row[0] is not None:
+                _eval_run_for_candidate = int(_chain_row[0])
+        if _eval_run_for_candidate is None:
+            _eval_run_for_candidate = _latest_complete_evaluation_run_id(conn)
+        if _eval_run_for_candidate is not None:
+            _cand_row = conn.execute(
+                "SELECT id FROM candidates "
+                "WHERE evaluation_run_id = ? AND ticker = ? "
+                "ORDER BY id DESC LIMIT 1",
+                (_eval_run_for_candidate, req.ticker),
+            ).fetchone()
+            if _cand_row is not None:
+                resolved_candidate_id = int(_cand_row[0])
+
     trade = Trade(
         id=None, ticker=req.ticker, entry_date=req.entry_date,
         entry_price=req.entry_price, initial_shares=req.shares,
@@ -346,6 +397,13 @@ def record_entry(
         market_regime=req.market_regime,
         catalyst=req.catalyst,
         catalyst_other_description=req.catalyst_other_description,
+        # Phase 13 T2.SB6c T-A.6c.4 OQ-11 + OQ-12 lifecycle backlinks.
+        # candidate_id: resolved above via the latest-complete-evaluation-
+        # run lookup (Path 1 per plan §B.1); NULL for manual_off_pipeline.
+        # pattern_evaluation_id: server-re-derived value from the route
+        # handler's 5-tier rejection ladder (T3.SB3 R1 M#2 LOCK).
+        candidate_id=resolved_candidate_id,
+        pattern_evaluation_id=req.pattern_evaluation_id,
     )
 
     archived = False

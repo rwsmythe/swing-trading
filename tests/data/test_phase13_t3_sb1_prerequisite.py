@@ -42,14 +42,18 @@ def _extract_check_values_from_sql(sql: str, column: str) -> set[str]:
 
 
 def test_schema_version_is_20(tmp_path: Path) -> None:
-    """T-B.1.1 prerequisite: EXPECTED_SCHEMA_VERSION == 20.
+    """T-B.1.1 prerequisite: EXPECTED_SCHEMA_VERSION pinned (now v21 post-T2.SB6c).
 
-    Fails fast if T3.SB1 worktree branched off pre-T-A.1.1 SHA.
+    Fails fast if worktree branched off pre-T-A.6c.1 SHA. The pin originally
+    landed at T3.SB1 expecting v20; T2.SB6c (migration 0021) bumps the head
+    to v21. Test name preserved to keep grep-history continuity per cumulative
+    discipline (the corresponding tests in test_migration_0017.py etc. follow
+    the same stale-name-but-current-assertion pattern).
     """
-    assert EXPECTED_SCHEMA_VERSION == 20, (
-        f"T3.SB1 worktree branched off wrong SHA — expected v20 schema, "
-        f"got v{EXPECTED_SCHEMA_VERSION}. Re-create worktree off T2.SB1's "
-        f"T-A.1.1 commit SHA per dispatch brief §1.2."
+    assert EXPECTED_SCHEMA_VERSION == 21, (
+        f"Worktree branched off wrong SHA — expected v21 schema, "
+        f"got v{EXPECTED_SCHEMA_VERSION}. Re-create worktree off the "
+        f"current head SHA."
     )
 
 
@@ -191,7 +195,7 @@ def test_sqlite_connect_smoke(tmp_path: Path) -> None:
         assert row is not None
         version = row[0]
         assert isinstance(version, int)
-        assert version == EXPECTED_SCHEMA_VERSION == 20
+        assert version == EXPECTED_SCHEMA_VERSION == 21
         # Verify fills table is queryable with the new columns.
         # (Should succeed even with zero rows.)
         conn.execute(

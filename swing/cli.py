@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io as _io
+import logging as _pe_backfill_logging
 import sqlite3
 import sys as _sys
 from dataclasses import dataclass
@@ -4379,6 +4380,163 @@ def _emit_or_skip_payload(
         ),
     }
     click.echo(_json.dumps(payload, sort_keys=True, indent=2))
+
+
+# ===========================================================================
+# Phase 13 T2.SB6c T-A.6c.3 — §1.5.2 amendment: one-shot Path C backfill of
+# pattern_exemplars.labeler_evidence_json (synthesize rule_criteria from
+# pattern_exemplars.geometric_score_json COLUMN; copy narrative from
+# geometric_evidence_narrative payload key; preserve original keys;
+# idempotent; fail-soft per row).
+# ===========================================================================
+
+_pe_backfill_logger = _pe_backfill_logging.getLogger(__name__)
+
+
+def _synthesize_rule_criteria_from_geometric_score(
+    geometric_score_json: str | None,
+) -> list[dict]:
+    """Synthesize rule_criteria array from geometric_score_json column.
+
+    Input: the geometric_score_json TEXT column value (NOT a key inside
+           labeler_evidence_json).
+    Output: list of {"name": str, "status": "pass"|"fail",
+                     "evidence_value": str, "threshold": str,
+                     "tolerance": str | None} entries.
+
+    Returns empty list when geometric_score_json is NULL/empty OR when
+    its JSON shape does not match the expected {"rules": {...}}
+    convention (e.g. older shapes with "criteria": [...] array — V2
+    candidate to widen).
+    """
+    if not geometric_score_json:
+        return []
+    import json as _json
+    try:
+        parsed = _json.loads(geometric_score_json)
+    except _json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, dict):
+        return []
+    criteria: list[dict] = []
+    rules = parsed.get("rules") or {}
+    if isinstance(rules, dict):
+        # Sort by rule name for deterministic ordering (idempotency-safe).
+        for rule_name in sorted(rules.keys()):
+            rule_result = rules[rule_name]
+            if not isinstance(rule_result, dict):
+                continue
+            passed = rule_result.get("pass")
+            criteria.append({
+                "name": rule_name,
+                "status": "pass" if passed else "fail",
+                "evidence_value": str(rule_result.get("value", "")),
+                "threshold": str(rule_result.get("threshold", "")),
+                "tolerance": (
+                    str(rule_result.get("tolerance"))
+                    if rule_result.get("tolerance") is not None else None
+                ),
+            })
+    return criteria
+
+
+def patterns_exemplars_backfill_labeler_evidence_run(conn) -> tuple[int, int]:
+    """One-shot Path C backfill runner; returns (augmented, skipped).
+
+    Idempotent: re-runs are no-ops on already-augmented payloads (detected
+    by ``rule_criteria`` + ``narrative`` keys present pre-run).
+
+    Skips rows where ``labeler_evidence_json IS NULL`` (Invariant #5
+    NULL-required source class).
+
+    Per Codex R2 MAJOR #5 closure: if ``rule_criteria`` missing AND
+    ``geometric_score_json`` is NULL/empty, the row is SKIPPED (do NOT
+    write an empty rule_criteria array; the operator can re-run after
+    populating geometric_score_json).
+
+    Fail-soft per row: any exception is WARN-logged + the row is skipped.
+    """
+    import json as _json
+
+    from swing.data.repos.pattern_exemplars import (
+        list_exemplars,
+        update_exemplar_labeler_evidence_json,
+    )
+
+    augmented, skipped = 0, 0
+    for row in list_exemplars(conn):
+        if row.labeler_evidence_json is None:
+            # Invariant #5 NULL-required source class; not eligible.
+            continue
+        try:
+            payload = _json.loads(row.labeler_evidence_json)
+            if not isinstance(payload, dict):
+                _pe_backfill_logger.warning(
+                    "backfill skipped exemplar %s: labeler_evidence_json "
+                    "is not a JSON object", row.id,
+                )
+                skipped += 1
+                continue
+            if "rule_criteria" in payload and "narrative" in payload:
+                # Already augmented; idempotent skip.
+                skipped += 1
+                continue
+            # Per Codex R2 MAJOR #5: when rule_criteria is missing AND
+            # geometric_score_json is unavailable, skip the row.
+            if "rule_criteria" not in payload and not row.geometric_score_json:
+                _pe_backfill_logger.warning(
+                    "backfill skipped exemplar %s: geometric_score_json is "
+                    "NULL/empty; rule_criteria cannot be synthesized",
+                    row.id,
+                )
+                skipped += 1
+                continue
+            if "narrative" not in payload:
+                payload["narrative"] = payload.get(
+                    "geometric_evidence_narrative", "",
+                )
+            if "rule_criteria" not in payload:
+                payload["rule_criteria"] = (
+                    _synthesize_rule_criteria_from_geometric_score(
+                        row.geometric_score_json,
+                    )
+                )
+            new_json = _json.dumps(payload, sort_keys=True)
+            with conn:
+                update_exemplar_labeler_evidence_json(
+                    conn, row.id, new_json,
+                )
+            augmented += 1
+        except Exception as exc:  # fail-soft per row
+            _pe_backfill_logger.warning(
+                "backfill skipped exemplar %s: %s", row.id, exc,
+            )
+            skipped += 1
+    return augmented, skipped
+
+
+@main.command("patterns-exemplars-backfill-labeler-evidence")
+@click.pass_context
+def patterns_exemplars_backfill_labeler_evidence(ctx: click.Context) -> None:
+    """Phase 13 T2.SB6c T-A.6c.3 — Path C one-shot backfill.
+
+    Synthesizes ``rule_criteria`` + ``narrative`` keys on existing
+    ``pattern_exemplars.labeler_evidence_json`` payloads.
+
+    Idempotent + fail-soft per row. ASCII-only output per Windows cp1252
+    stdout safety.
+    """
+    from swing.data.db import connect
+
+    cfg = ctx.obj["config"]
+    conn = connect(cfg.paths.db_path)
+    try:
+        augmented, skipped = patterns_exemplars_backfill_labeler_evidence_run(
+            conn,
+        )
+    finally:
+        conn.close()
+    click.echo(f"Augmented: {augmented}; Skipped: {skipped}")
 
 
 if __name__ == "__main__":  # pragma: no cover

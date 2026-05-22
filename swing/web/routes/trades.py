@@ -7,7 +7,7 @@ import logging
 import sqlite3
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Form, HTTPException, Request
+from fastapi import APIRouter, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from markupsafe import Markup
 
@@ -396,7 +396,36 @@ def sizing_hint(
 
 
 @router.get("/trades/entry/form", response_class=HTMLResponse)
-def entry_form(request: Request, ticker: str, origin: str = "watchlist"):
+def entry_form(
+    request: Request,
+    ticker: str,
+    origin: str = "watchlist",
+    # Phase 13 T2.SB6c T-A.6c.4 Codex R1 MAJOR #2 closure — explicit
+    # hyp-rec-emitted ``?pattern_evaluation_id=<id>`` query param so the
+    # form-render binds to the operator-chosen PE row (multi-pattern-
+    # class disambiguation). Falls back to highest-composite when the
+    # param is absent OR the explicit id fails validation against the
+    # form's (pipeline_run_id, ticker) context (defense-in-depth: a
+    # malformed / cross-ticker / cross-run id is silently dropped to
+    # the fallback, NOT 500'd).
+    pattern_evaluation_id: int | None = Query(None),
+    # Phase 13 T2.SB6c Codex R2 MAJOR #1 closure — explicit hyp-rec-
+    # emitted ``?pipeline_run_id_at_form_render=<id>`` query param so
+    # the form-render binds to the pipeline_run the operator SAW on the
+    # expanded card. Without this anchor, a fresh pipeline run completing
+    # between expanded-card render and form GET would silently rebind to
+    # the new run's highest-composite PE (reintroducing operator-intent
+    # drift through a new race path). When the explicit run id is present
+    # and matches the PE row's pipeline_run_id, the form pins to that
+    # operator-witnessed run. Validation failure (run mismatch, PE
+    # missing, ticker mismatch) falls back to the legacy
+    # latest_completed_pipeline_run() highest-composite path. When only
+    # an explicit PE id arrives WITHOUT this run anchor, behavior is
+    # unchanged (validation against latest_completed_pipeline_run); this
+    # preserves backwards-compat for any external integration that links
+    # without the run anchor.
+    pipeline_run_id_at_form_render: int | None = Query(None),
+):
     cfg = apply_overrides(request.app.state.cfg)
     cache = request.app.state.price_cache
     executor = request.app.state.price_fetch_executor
@@ -404,6 +433,10 @@ def entry_form(request: Request, ticker: str, origin: str = "watchlist"):
     vm = build_entry_form_vm(
         ticker=ticker, cfg=cfg, cache=cache, executor=executor,
         origin=origin,
+        explicit_pattern_evaluation_id=pattern_evaluation_id,
+        explicit_pipeline_run_id_at_form_render=(
+            pipeline_run_id_at_form_render
+        ),
     )
     return templates.TemplateResponse(
         request, "partials/trade_entry_form.html.j2", {"vm": vm},
@@ -503,6 +536,13 @@ def entry_post(
     schwab_source_value_json: str = Form(""),
     auto_fill_audit_at: str = Form(""),
     fill_origin_at_form_render: str = Form(""),
+    # Phase 13 T2.SB6c T-A.6c.4 §C.5 anchor-threading (OQ-12 CLOSURE):
+    # 3 hidden anchors propagated from the form-render's resolved
+    # pattern_evaluations row. All Form("") so legacy callers (CLI
+    # tests, bare cURL, manual_off_pipeline submits) keep working.
+    pattern_evaluation_id: str = Form(""),
+    claimed_pattern_evaluation_anchor: str = Form(""),
+    pipeline_run_id_at_form_render: str = Form(""),
 ):
     cfg = apply_overrides(request.app.state.cfg)
     cache = request.app.state.price_cache
@@ -1065,6 +1105,147 @@ def entry_post(
             submitted_fill_origin_at_form_render=fill_origin_at_form_render,
         )
 
+    # Phase 13 T2.SB6c T-A.6c.4 §C.5 anchor-threading (OQ-12 CLOSURE) —
+    # 5-tier rejection ladder + claim-consistency gate per plan §C.5.
+    # All 3 form fields (pattern_evaluation_id + claim + pipeline_run_id
+    # anchor) default to "" so legacy callers (CLI tests, bare cURL,
+    # manual_off_pipeline submits) flow through cleanly. Server-recompute
+    # discipline (T3.SB3 R1 M#2 LOCK): the authoritative
+    # pattern_evaluation_id value passed downstream is the
+    # server-re-derived row from tier (b)'s fetch, NOT the operator-
+    # submitted hidden input verbatim.
+    pe_anchor_raw = pattern_evaluation_id.strip()
+    pe_pipeline_raw = pipeline_run_id_at_form_render.strip()
+    pe_claim_raw = claimed_pattern_evaluation_anchor.strip()
+    # Default-safe coercion per R5 MAJOR #3.
+    if pe_claim_raw == "":
+        pe_claim_raw = "false"
+    claimed_pe_anchor = pe_claim_raw == "true"
+    pe_anchor_present = bool(pe_anchor_raw)
+    pe_pipeline_present = bool(pe_pipeline_raw)
+
+    def _reject_pe_anchor(error_message: str) -> HTMLResponse:
+        """Mirror of T3.SB1 _reject_anchor for the pattern_evaluations
+        anchor. On 400, clear the bad anchor on the recovery form so
+        the operator's next submit replays a fresh anchor (T3.SB1 R3
+        M#2 LOCK + T2.SB6c §C.5 recovery-clear discipline).
+        """
+        return _rerender_entry_form_with_error(
+            request=request, templates=templates, cfg=cfg,
+            cache=cache, executor=executor,
+            ticker=ticker, entry_date=entry_date,
+            entry_price=entry_price, shares=shares,
+            initial_stop=initial_stop, rationale=rationale, notes=notes,
+            error_message=error_message,
+            origin=origin_coerced,
+            submitted_schwab_source_value_json=schwab_source_value_json,
+            submitted_auto_fill_audit_at=auto_fill_audit_at,
+            submitted_fill_origin_at_form_render=fill_origin_at_form_render,
+        )
+
+    resolved_pe_id: int | None = None
+    if pe_anchor_present:
+        # Tier (a) — malformed integer.
+        try:
+            parsed_pe_id = int(pe_anchor_raw)
+        except (TypeError, ValueError):
+            return _reject_pe_anchor(
+                "Trade entry rejected: pattern_evaluation_id "
+                f"{pe_anchor_raw!r} is not an integer. The form has been "
+                "regenerated; please re-submit."
+            )
+        # Tier (b) — row not found.
+        _conn = connect(cfg.paths.db_path)
+        try:
+            pe_row = _conn.execute(
+                "SELECT pipeline_run_id, ticker FROM pattern_evaluations "
+                "WHERE id = ?", (parsed_pe_id,),
+            ).fetchone()
+        finally:
+            _conn.close()
+        if pe_row is None:
+            return _reject_pe_anchor(
+                "Trade entry rejected: pattern_evaluation_id "
+                f"{parsed_pe_id} does not reference an existing "
+                "pattern_evaluations row. The form has been "
+                "regenerated; please re-submit."
+            )
+        row_pipeline_run_id = int(pe_row[0])
+        row_ticker = pe_row[1]
+        # Tier (c) — ticker mismatch.
+        if (row_ticker or "").upper() != ticker.upper():
+            return _reject_pe_anchor(
+                "Trade entry rejected: pattern_evaluation_id "
+                f"{parsed_pe_id} ticker={row_ticker!r} does not match "
+                f"submitted ticker {ticker.upper()!r}. The form has been "
+                "regenerated; please re-submit."
+            )
+        # Tier (d) — pipeline_run_id_at_form_render missing-anchor
+        # symmetry + value mismatch.
+        if not pe_pipeline_present:
+            return _reject_pe_anchor(
+                "Trade entry rejected: pattern_evaluation_id anchor "
+                "present but pipeline_run_id_at_form_render is missing. "
+                "The form has been regenerated; please re-submit."
+            )
+        try:
+            parsed_pipe_id = int(pe_pipeline_raw)
+        except (TypeError, ValueError):
+            return _reject_pe_anchor(
+                "Trade entry rejected: pipeline_run_id_at_form_render "
+                f"{pe_pipeline_raw!r} is not an integer. The form has "
+                "been regenerated; please re-submit."
+            )
+        if parsed_pipe_id != row_pipeline_run_id:
+            return _reject_pe_anchor(
+                "Trade entry rejected: pipeline_run_id_at_form_render "
+                f"{parsed_pipe_id} does not match the pattern_evaluations "
+                f"row's pipeline_run_id={row_pipeline_run_id}. The form "
+                "has been regenerated; please re-submit."
+            )
+        # Tier (e) — server-derived trade_origin guard (per R6 MAJOR #1).
+        # Map UI origin → EntryPath before invoking derive_trade_origin.
+        _ui_origin = origin_coerced
+        if _ui_origin == "hyp-recs":
+            _mapped_path = EntryPath.HYP_RECS_BUTTON
+        else:
+            _mapped_path = EntryPath.MANUAL_WEB_FORM
+        _conn = connect(cfg.paths.db_path)
+        try:
+            from swing.trades.origin import derive_trade_origin
+            _server_origin = derive_trade_origin(
+                _conn, ticker.upper(), _mapped_path,
+            )
+        finally:
+            _conn.close()
+        if _server_origin == "manual_off_pipeline":
+            return _reject_pe_anchor(
+                "Trade entry rejected: pattern_evaluation_id anchor "
+                "present but server-derived trade_origin is "
+                "manual_off_pipeline. The candidate row may have rolled "
+                "out of the latest pipeline run; the form has been "
+                "regenerated."
+            )
+        resolved_pe_id = parsed_pe_id
+
+    # Claim-consistency gate per §C.5.
+    if claimed_pe_anchor and not pe_anchor_present:
+        return _reject_pe_anchor(
+            "Trade entry rejected: claimed_pattern_evaluation_anchor=true "
+            "but pattern_evaluation_id is missing. The form has been "
+            "regenerated; please re-submit."
+        )
+    if (not claimed_pe_anchor) and pe_anchor_present:
+        return _reject_pe_anchor(
+            "Trade entry rejected: pattern_evaluation_id present but "
+            "claimed_pattern_evaluation_anchor is not 'true'. The form "
+            "has been regenerated; please re-submit."
+        )
+    # Claim-gate (iii) — server-derived manual_off_pipeline + claim true
+    # is already covered by tier (e) when an anchor is present. When
+    # anchor is absent but claim is true → covered above. No additional
+    # branch needed here.
+
     req = EntryRequest(
         ticker=ticker.upper(),
         entry_date=entry_date,
@@ -1091,8 +1272,16 @@ def entry_post(
         # ``or None`` coerces empty form strings to NULL so nullable+CHECK
         # columns don't trip CHECK constraint failures at INSERT time
         # (CLAUDE.md gotcha 2026-05-04 — Phase 6 mistake_cost_confidence).
-        # Web entries always come from the manual entry form.
-        entry_path=EntryPath.MANUAL_WEB_FORM,
+        # Phase 13 T2.SB6c T-A.6c.4 R6 MAJOR #2 — entry-path mapping
+        # fix: UI origin=hyp-recs → EntryPath.HYP_RECS_BUTTON;
+        # everything else → EntryPath.MANUAL_WEB_FORM. Without this,
+        # derive_trade_origin cannot distinguish pipeline_watch_hyp_recs
+        # from pipeline_watch_manual + tier (e) coverage is weak.
+        entry_path=(
+            EntryPath.HYP_RECS_BUTTON
+            if origin_coerced == "hyp-recs"
+            else EntryPath.MANUAL_WEB_FORM
+        ),
         thesis=thesis or None,
         why_now=why_now or None,
         invalidation_condition=invalidation_condition or None,
@@ -1113,6 +1302,10 @@ def entry_post(
             resolved_operator_corrected_value_json
         ),
         auto_fill_audit_at=resolved_auto_fill_audit_at,
+        # Phase 13 T2.SB6c T-A.6c.4 §C.5 OQ-12 lifecycle — server-
+        # re-derived pattern_evaluation_id from the 5-tier ladder
+        # above (NOT operator-submitted hidden input verbatim).
+        pattern_evaluation_id=resolved_pe_id,
         gap_risk_present=gap_risk_present,
         gap_risk_handling=gap_risk_handling or None,
         emotional_state_pre_trade=emo_json,
@@ -1382,6 +1575,22 @@ def entry_post(
                 "fill_origin_at_form_render": (
                     fill_origin_at_form_render or ""
                 ),
+                # Phase 13 T2.SB6c T-A.6c.4 Codex R1 MAJOR #1 closure —
+                # PE anchor fields MUST round-trip through the soft-warn
+                # confirm fragment. Without these 3 keys, a hyp-rec-
+                # anchored entry that hits the soft cap would resubmit
+                # with force=true but no pattern_evaluation_id; the
+                # 5-tier ladder treats anchor-absent as bare-cURL path
+                # and persists trade with pattern_evaluation_id=NULL,
+                # violating OQ-12 closure + the recurring CLAUDE.md
+                # gotcha "Form-render hidden anchors driving POST-time
+                # validation MUST round-trip through soft-warn confirm".
+                # Values come verbatim from the operator-submitted form;
+                # the force=true resubmit re-validates via the 5-tier
+                # ladder so any tampered anchor is rejected.
+                "pattern_evaluation_id": pe_anchor_raw,
+                "claimed_pattern_evaluation_anchor": pe_claim_raw,
+                "pipeline_run_id_at_form_render": pe_pipeline_raw,
                 "open_count": actual_open,
                 "soft_warn": cfg.position_limits.soft_warn_open,
                 "hard_cap": cfg.position_limits.hard_cap_open,

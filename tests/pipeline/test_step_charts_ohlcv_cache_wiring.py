@@ -139,8 +139,14 @@ def test_step_charts_calls_ohlcv_cache_get_or_fetch_not_legacy_fetcher_get(
     ``OhlcvCache.get_or_fetch`` (NOT ``PriceFetcher.get``).
 
     Spy stub exposes ONLY ``get_or_fetch``; pre-implementation ``_step_charts``
-    calls ``.get(...)`` → AttributeError → test fails. Post-implementation
-    spy records two callsites (one per A+ candidate).
+    calls ``.get(...)`` → AttributeError → test fails.
+
+    Phase 13 T2.SB6c T-A.6c.2 §1.5.1 amendment: the step now ALSO calls
+    ``get_or_fetch`` per surface during the chart_renders write-through
+    block (one per watchlist ticker + per A+ candidate (hyprec_detail) +
+    per open trade (position_detail) + cfg.rs.benchmark_ticker
+    (market_weather)). The legacy A+ chart-render loop still invokes it
+    once per A+ candidate.
     """
     cfg = _make_cfg(tmp_path)
     cfg = replace(cfg, pipeline=replace(cfg.pipeline, chart_top_n_watch=5))
@@ -159,11 +165,20 @@ def test_step_charts_calls_ohlcv_cache_get_or_fetch_not_legacy_fetcher_get(
         ohlcv_cache=spy,
     )
 
-    assert len(spy.calls) == 2, f"unexpected callcount: {spy.calls}"
+    # Legacy A+ chart-render loop: 1 call per A+ ticker (APLA + APLB).
+    # §1.5.1 amendment: 1 call per A+ ticker (hyprec_detail write-through)
+    # + 1 call per cfg.rs.benchmark_ticker (market_weather write-through).
+    # No watchlist tickers + no open trades seeded → 0 extra calls there.
     tickers_called = sorted(t for (t, _w) in spy.calls)
-    assert tickers_called == ["APLA", "APLB"], (
-        f"unexpected tickers: {tickers_called}"
-    )
+    assert "APLA" in tickers_called
+    assert "APLB" in tickers_called
+    # Each A+ ticker invoked twice (once per legacy chart-render loop +
+    # once per hyprec_detail write-through).
+    assert tickers_called.count("APLA") == 2, tickers_called
+    assert tickers_called.count("APLB") == 2, tickers_called
+    # Benchmark ticker fetched exactly once for market_weather surface.
+    benchmark = cfg.rs.benchmark_ticker.upper()
+    assert tickers_called.count(benchmark) == 1, tickers_called
     # Preserves existing lookback semantics (line 1323 used lookback_days=200).
     windows = sorted({w for (_t, w) in spy.calls})
     assert windows == [200], (

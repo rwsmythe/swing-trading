@@ -36,7 +36,14 @@ from pathlib import Path
 #   'operator_typed' + 3 audit JSON cols) + review_log widening
 #   (auto_populated_field_keys_json). Atomic BEGIN/COMMIT discipline
 #   preserved. OQ-12 Option E migration-only commit boundary.
-EXPECTED_SCHEMA_VERSION = 20
+# phase 13 t2.sb6c trades backlinks atomic landing (migration 0021):
+#   2 NULLable INTEGER FK columns on trades — candidate_id (REFERENCES
+#   candidates(id) ON DELETE SET NULL) + pattern_evaluation_id (REFERENCES
+#   pattern_evaluations(id) ON DELETE SET NULL) + 2 indexes. Closes T2.SB6b
+#   V1 simplifications #4 + #5; enables outcome bucketing per spec §5.10
+#   lines 785-790 + line 775. Backfill semantics: NULL for all pre-v21
+#   existing rows (OQ-1). Atomic BEGIN/COMMIT discipline preserved.
+EXPECTED_SCHEMA_VERSION = 21
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 # Phase 7 backup gate (spec §12.1): when migrating to schema_version >= 14,
@@ -108,6 +115,26 @@ PHASE12_BUNDLE_C_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
 PHASE13_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
     PHASE12_BUNDLE_C_PRE_MIGRATION_EXPECTED_TABLES
     | {"reconciliation_corrections"}
+)
+
+# Phase 13 T2.SB6c backup gate (spec §A.14 + plan §B.5): when migrating from
+# v20 -> v21+, snapshot the live v20 DB. Adds the 5 v20-shipped Phase 13
+# tables (pattern_exemplars + chart_renders + pattern_evaluations +
+# watchlist_close_track_flags + watchlist_close_track_flag_events) to the
+# post-Phase-13-v20 baseline. Derived deterministically from PHASE13 set so
+# provenance stays auditable. Filename pattern:
+# ``swing-pre-phase13-sb6c-migration-<ISO>.db`` per plan §B.5 + OQ-8 LOCK +
+# CLAUDE.md migration-runner backup-gate strict-equality gotcha
+# (``pre_version == 20`` STRICT EQUALITY, NOT ``<=``).
+PHASE13_SB6C_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
+    PHASE13_PRE_MIGRATION_EXPECTED_TABLES
+    | {
+        "pattern_exemplars",
+        "chart_renders",
+        "pattern_evaluations",
+        "watchlist_close_track_flags",
+        "watchlist_close_track_flag_events",
+    }
 )
 
 
@@ -468,6 +495,33 @@ def _create_pre_phase13_migration_backup(
     return backup_path
 
 
+def _create_pre_phase13_sb6c_migration_backup(
+    src_path: Path, *, dest_dir: Path,
+) -> Path:
+    """Phase 13 T2.SB6c mirror with sb6c filename prefix (OQ-8 LOCK).
+
+    Per plan §B.5: backup file pattern
+    ``swing-pre-phase13-sb6c-migration-<ISO>.db``. SQLite-native
+    Connection.backup() is the only acceptable snapshot mechanism (consistent
+    under live writers).
+    """
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    backup_path = (
+        dest_dir / f"swing-pre-phase13-sb6c-migration-{timestamp}.db"
+    )
+    src_conn = sqlite3.connect(src_path)
+    try:
+        dest_conn = sqlite3.connect(backup_path)
+        try:
+            src_conn.backup(dest_conn)
+        finally:
+            dest_conn.close()
+    finally:
+        src_conn.close()
+    return backup_path
+
+
 def _phase8_backup_gate(
     conn: sqlite3.Connection,
     *,
@@ -677,6 +731,52 @@ def _phase13_backup_gate(
         ) from exc
 
 
+def _phase13_sb6c_backup_gate(
+    conn: sqlite3.Connection,
+    *,
+    current_version: int,
+    target_version: int,
+    backup_dir: Path | None,
+) -> None:
+    """Phase 13 T2.SB6c backup-before-migrate gate (plan §B.5 + spec §A.14).
+
+    Fires only when ``current_version == 20 AND target_version >= 21`` —
+    i.e., a real production v20 DB about to receive Phase 13's migration
+    0021. STRICT EQUALITY on pre_version per CLAUDE.md gotcha "Migration
+    runner backup-gate equality form: pre_version == (target - 1) strict
+    equality, NOT pre_version <= (target - 1)" (OQ-3 LOCK). Multi-step
+    migration walks from pre-v20 baselines bypass this gate by design
+    (matches Phase 9 / Phase 12 C.A / Phase 13 T-A.1.1 precedent).
+
+    Filename: ``swing-pre-phase13-sb6c-migration-<ISO>.db`` (NOT
+    phase7/8/9/12-bundle-c/phase13-v20 prefix).
+    """
+    if target_version < 21 or current_version != 20:
+        return
+    src_path = _resolve_main_db_path(conn)
+    if src_path is None:
+        raise MigrationBackupRequiredException(
+            "pre-Phase-13-SB6c backup gate requires a file-backed source DB; "
+            "in-memory connections cannot be snapshotted."
+        )
+    if backup_dir is None:
+        backup_dir = src_path.parent
+    try:
+        backup_path = _create_pre_phase13_sb6c_migration_backup(
+            src_path, dest_dir=backup_dir,
+        )
+        _verify_backup_integrity(
+            backup_path,
+            expected_tables=PHASE13_SB6C_PRE_MIGRATION_EXPECTED_TABLES,
+        )
+    except MigrationBackupRequiredException:
+        raise
+    except (OSError, sqlite3.Error) as exc:
+        raise MigrationBackupRequiredException(
+            f"pre-Phase-13-SB6c backup failed: {exc}"
+        ) from exc
+
+
 def run_migrations(
     conn: sqlite3.Connection,
     *,
@@ -726,6 +826,12 @@ def run_migrations(
         backup_dir=backup_dir,
     )
     _phase13_backup_gate(
+        conn,
+        current_version=current,
+        target_version=target_version,
+        backup_dir=backup_dir,
+    )
+    _phase13_sb6c_backup_gate(
         conn,
         current_version=current,
         target_version=target_version,

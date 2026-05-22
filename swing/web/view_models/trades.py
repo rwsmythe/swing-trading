@@ -359,11 +359,31 @@ class TradeEntryFormVM:
     unresolved_material_discrepancies_count: int = 0
     recent_multi_leg_auto_correction_count: int = 0
     banner_resolve_link: str | None = None
+    # Phase 13 T2.SB6c T-A.6c.4 §C.5 anchor-threading (OQ-12 CLOSURE):
+    # 3 hidden form anchors that propagate the pipeline-origin
+    # pattern_evaluations row through the form submission to the POST
+    # handler's 5-tier rejection ladder + claim-consistency gate.
+    #
+    # ``pattern_evaluation_id``: id of the pattern_evaluations row that
+    #   matches (pipeline_run_id, ticker) at form-render time. None when
+    #   the form-render found no matching row (manual_off_pipeline path).
+    # ``claimed_pattern_evaluation_anchor``: True when the form-render
+    #   resolved an anchor; round-trips through the form so POST can
+    #   detect tampering (anchor present without claim OR vice-versa).
+    # ``pipeline_run_id_at_form_render``: the pipeline_runs.id under
+    #   which the form found the anchor; POST validates this matches
+    #   the evaluation row's pipeline_run_id (R5 MAJOR #1 / R6 MAJOR #3
+    #   missing-anchor symmetry).
+    pattern_evaluation_id: int | None = None
+    claimed_pattern_evaluation_anchor: bool = False
+    pipeline_run_id_at_form_render: int | None = None
 
 
 def build_entry_form_vm(
     *, ticker: str, cfg: Config, cache: PriceCache, executor,
     origin: str = "watchlist",
+    explicit_pattern_evaluation_id: int | None = None,
+    explicit_pipeline_run_id_at_form_render: int | None = None,
 ) -> TradeEntryFormVM:
     """Build entry-form VM from: watchlist row, live price, open
     positions, equity, and (Phase 5) the chart-pattern classification
@@ -427,12 +447,65 @@ def build_entry_form_vm(
             # Chart-pattern read above stays bound to ``pipeline_runs`` for
             # BOTH origins (existing behavior; chart-pattern requires a
             # completed pipeline).
+            #
+            # Codex R3 MAJOR #1 closure (mixed-context trade defense): for
+            # the hyp-recs origin, when the caller passes BOTH explicit
+            # ``pattern_evaluation_id`` AND
+            # ``pipeline_run_id_at_form_render`` query params AND the PE
+            # row's pipeline_run_id matches the submitted run anchor,
+            # the candidate-snapshot reads MUST anchor on the EXPLICIT
+            # run's evaluation_run_id — NOT on
+            # ``latest_completed_pipeline_run()``. Otherwise the form
+            # binds PE_1 (run-1) but reads sector/industry/pivot from
+            # run-2's candidate snapshot for the same ticker, yielding
+            # a "mixed-context" persisted trade (old PE backlink + new
+            # candidate-derived order defaults). Validation failure
+            # (run mismatch, ticker mismatch, PE missing) preserves the
+            # legacy permissive fallback to latest-completed-run snapshot
+            # so the operator never sees an empty form on tampered URLs.
             cand_sector = ""
             cand_industry = ""
             cand_pivot: float | None = None
             cand_initial_stop: float | None = None
+            # Resolve the explicit-anchor's evaluation_run_id up-front so
+            # candidate-snapshot reads can anchor on the operator-
+            # witnessed run when validation succeeds.
+            explicit_anchor_validates = False
+            explicit_anchor_eval_run_id: int | None = None
+            if (
+                coerced_origin == "hyp-recs"
+                and explicit_pattern_evaluation_id is not None
+                and explicit_pipeline_run_id_at_form_render is not None
+            ):
+                _anchor_row = conn.execute(
+                    "SELECT pipeline_run_id, ticker FROM "
+                    "pattern_evaluations WHERE id = ?",
+                    (int(explicit_pattern_evaluation_id),),
+                ).fetchone()
+                if _anchor_row is not None:
+                    _pe_run = int(_anchor_row[0])
+                    _pe_ticker = (_anchor_row[1] or "").upper()
+                    if (
+                        _pe_run
+                        == int(explicit_pipeline_run_id_at_form_render)
+                        and _pe_ticker == ticker.upper()
+                    ):
+                        explicit_anchor_validates = True
+                        _pr_row = conn.execute(
+                            "SELECT evaluation_run_id FROM pipeline_runs "
+                            "WHERE id = ?",
+                            (_pe_run,),
+                        ).fetchone()
+                        if _pr_row is not None and _pr_row[0] is not None:
+                            explicit_anchor_eval_run_id = int(_pr_row[0])
             if coerced_origin == "hyp-recs":
-                sector_eval_id = pipeline_eval_id
+                if (
+                    explicit_anchor_validates
+                    and explicit_anchor_eval_run_id is not None
+                ):
+                    sector_eval_id = explicit_anchor_eval_run_id
+                else:
+                    sector_eval_id = pipeline_eval_id
             else:
                 from swing.web.view_models.dashboard import (
                     latest_evaluation_run_id,
@@ -546,6 +619,96 @@ def build_entry_form_vm(
     watchlist_entry_target = wl_entry.entry_target if wl_entry else None
     watchlist_initial_stop = wl_entry.initial_stop_target if wl_entry else None
 
+    # Phase 13 T2.SB6c T-A.6c.4 §C.5 Layer 1 — resolve the
+    # pattern_evaluations anchor for pipeline-origin trades.
+    #
+    # Codex R1 MAJOR #2 closure: when the caller passes an explicit
+    # ``explicit_pattern_evaluation_id`` (sourced from the hyp-rec
+    # template's ``?pattern_evaluation_id=<id>`` query param), validate
+    # it against the form's ``(pipeline_run_id, ticker)`` context. If
+    # the explicit id resolves to a row whose ticker + pipeline_run_id
+    # match the form's context, USE IT verbatim (operator-chosen PE
+    # row; multi-pattern_class disambiguation per spec §C.5). Else
+    # fall back to the legacy highest-composite_score row (V1
+    # simplification preserved for non-anchored entry-form GETs;
+    # banked V2: operator picks which class drives the anchor).
+    #
+    # Codex R2 MAJOR #1 closure: when an explicit
+    # ``explicit_pipeline_run_id_at_form_render`` arrives alongside
+    # the explicit PE id, validate against the OPERATOR-SUBMITTED run
+    # (the pipeline_run that was active on the expanded card), NOT
+    # ``latest_completed_pipeline_run()``. Without this discipline, a
+    # new pipeline completing between expanded-card render and form
+    # GET would silently rebind to the new run's highest-composite PE
+    # — reintroducing operator-intent drift via a fresh race path. The
+    # legacy loose-validation path (explicit PE WITHOUT explicit run
+    # anchor) is preserved for backwards-compat: any external caller
+    # that links to ``/trades/entry/form?pattern_evaluation_id=<id>``
+    # without supplying the run anchor still validates against the
+    # latest completed run as before.
+    resolved_pattern_evaluation_id: int | None = None
+    pattern_evaluation_anchor_pipeline_run_id: int | None = None
+    if pipeline_run_id is not None:
+        _conn2 = connect(cfg.paths.db_path)
+        try:
+            if explicit_pattern_evaluation_id is not None:
+                explicit_row = _conn2.execute(
+                    "SELECT id, pipeline_run_id, ticker FROM "
+                    "pattern_evaluations WHERE id = ?",
+                    (int(explicit_pattern_evaluation_id),),
+                ).fetchone()
+                if explicit_row is not None:
+                    _explicit_run = int(explicit_row[1])
+                    _explicit_ticker = (explicit_row[2] or "").upper()
+                    # Codex R2 MAJOR #1: when the caller pinned the run
+                    # anchor on the expanded card, validate against it
+                    # (operator-witnessed run); else fall back to the
+                    # latest-completed run (legacy loose-validation
+                    # contract for non-anchored callers).
+                    if (
+                        explicit_pipeline_run_id_at_form_render
+                        is not None
+                    ):
+                        _expected_run = int(
+                            explicit_pipeline_run_id_at_form_render,
+                        )
+                    else:
+                        _expected_run = pipeline_run_id
+                    if (
+                        _explicit_run == _expected_run
+                        and _explicit_ticker == ticker.upper()
+                    ):
+                        resolved_pattern_evaluation_id = int(explicit_row[0])
+                        pattern_evaluation_anchor_pipeline_run_id = (
+                            _explicit_run
+                        )
+            if resolved_pattern_evaluation_id is None:
+                # Codex R3 MINOR #1 — explicit-anchor mismatch fallback.
+                # When explicit-anchor validation fails (PE row missing
+                # OR pipeline_run_id mismatch OR ticker mismatch), we
+                # fall back to the highest-composite PE on the latest-
+                # completed pipeline_run rather than 500'ing or
+                # rendering an empty form. This preserves operator UX
+                # continuity at the cost of cosmetic anchor drift on
+                # tampered URLs — the 5-tier rejection ladder at
+                # POST /trades/entry catches every anchor-vs-payload
+                # inconsistency at submit time (anchor stamping is
+                # server-recomputed at POST per the T3.SB3
+                # "server-stamping LOCK" semantic clarification).
+                pe_row = _conn2.execute(
+                    "SELECT id FROM pattern_evaluations "
+                    "WHERE pipeline_run_id = ? AND ticker = ? "
+                    "ORDER BY composite_score DESC, id DESC LIMIT 1",
+                    (pipeline_run_id, ticker),
+                ).fetchone()
+                if pe_row is not None:
+                    resolved_pattern_evaluation_id = int(pe_row[0])
+                    pattern_evaluation_anchor_pipeline_run_id = (
+                        pipeline_run_id
+                    )
+        finally:
+            _conn2.close()
+
     # Phase 13 T3.SB1 — Schwab auto-fill OVERRIDES the live-price /
     # watchlist fallback chain when the resolver returns a populated
     # result (spec §6.1 + plan §G.2 T-B.1.3). The operator sees the
@@ -642,6 +805,15 @@ def build_entry_form_vm(
         unresolved_material_discrepancies_count=unresolved_material_count,
         recent_multi_leg_auto_correction_count=recent_multi_leg_count,
         banner_resolve_link=banner_resolve_link,
+        # Phase 13 T2.SB6c T-A.6c.4 §C.5 Layer 1 — pattern_evaluations
+        # anchor for OQ-12 CLOSURE. None when no matching row.
+        pattern_evaluation_id=resolved_pattern_evaluation_id,
+        claimed_pattern_evaluation_anchor=(
+            resolved_pattern_evaluation_id is not None
+        ),
+        pipeline_run_id_at_form_render=(
+            pattern_evaluation_anchor_pipeline_run_id
+        ),
     )
 
 
@@ -1458,6 +1630,12 @@ class TradeDetailVM:
     # Phase 12.5 #2 T-2.7 — banner link to FIRST pending-ambiguity discrepancy
     # resolve form. None when no pending-ambiguity row exists.
     banner_resolve_link: str | None = None
+    # Phase 13 T2.SB6c T-A.6c.2 Gap A.2 — inline SVG bytes for the
+    # operator-facing trade-detail page. Cache key:
+    # `(ticker, surface='position_detail', pipeline_run_id IS NULL)` per
+    # v20 §3.2 run-agnostic LOCK. None when no cache row exists; template
+    # guards with `{% if vm.position_chart_svg_bytes %}`.
+    position_chart_svg_bytes: bytes | None = None
 
     def __post_init__(self) -> None:
         if self.banner_resolve_link is not None:
@@ -1586,6 +1764,16 @@ def build_trade_detail_vm(
             trade_discrepancies = list_unresolved_material_for_trade(
                 conn, trade_id,
             )
+            # Phase 13 T2.SB6c T-A.6c.2 Gap A.2 — consult chart_renders
+            # cache for the position_detail surface. Run-agnostic per v20
+            # §3.2 LOCK (pipeline_run_id IS NULL).
+            from swing.data.repos.chart_renders import get_cached_chart_svg
+            position_chart_svg_bytes = get_cached_chart_svg(
+                conn,
+                ticker=trade.ticker,
+                surface="position_detail",
+                pipeline_run_id=None,
+            )
             # Latest weather — pipeline writer stamps `data_asof_date` on
             # weather rows, so read-only UIs MUST use get_latest (per CLAUDE.md
             # "Weather lookup in read-only UIs must NOT query by
@@ -1711,6 +1899,7 @@ def build_trade_detail_vm(
         unresolved_material_discrepancies=tuple(
             _to_discrepancy_display(d) for d in trade_discrepancies
         ),
+        position_chart_svg_bytes=position_chart_svg_bytes,
     )
 
 

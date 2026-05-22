@@ -220,20 +220,26 @@ def _build_exemplar_render(
     G.9 T-A.6.6b acceptance #3 "renderer invoked once per cache miss"):
     if a ``bars_fetcher`` callable is injected by the route handler,
     fetch bars for the exemplar window + invoke
-    ``render_theme2_annotated_svg`` once + surface the live bytes to
-    the caller. The cache is NOT written back from this path (the
-    canonical chart_renders cache key requires a pipeline_run_id anchor
-    per spec section C.2 + ChartRender invariant; the exemplar has no
-    such anchor). The pipeline's per-run chart-render step is the
-    canonical cache write path; live renders here are read-through-only
-    so a transient empty render bytes cannot blank a known-good cache
-    row (F6 lesson preserved by structural impossibility).
+    ``render_theme2_annotated_svg`` once.
 
-    Per L17 LOCK: NO duplicate matplotlib code; renderer reuse via the
-    substrate is the contract. ``bars_fetcher`` signature: callable
-    accepting ``(ticker: str)`` and returning a pandas DataFrame OR
-    None on unavailable.
+    Phase 13 T2.SB6c T-A.6c.2 Gap A.4 — the cache-miss path now
+    ALSO writes the live bytes through to chart_renders via the
+    canonical ``refresh_chart_render`` substrate so subsequent
+    builds serve from cache without re-rendering. A synthesized
+    pipeline_run_id anchor (per-exemplar) keys the cache row; the
+    F6 transient-empty defense lives at the ChartRender construction
+    barrier (T2.SB6a R1 MAJOR #2 LOCK) so an empty render cannot
+    blank a known-good cache row by structural impossibility.
+
+    Per L17 + L18 LOCK: NO duplicate matplotlib code; NO caller-side
+    INSERT OR REPLACE; renderer reuse + ``refresh_chart_render`` reuse
+    via the substrate is the contract. ``bars_fetcher`` signature:
+    callable accepting ``(ticker: str)`` and returning a pandas
+    DataFrame OR None on unavailable.
     """
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+
     cached_svg = _lookup_most_recent_theme2_chart_svg(
         conn, ticker=exemplar.ticker,
         pattern_class=exemplar.proposed_pattern_class,
@@ -243,7 +249,8 @@ def _build_exemplar_render(
 
     if cached_svg is None and bars_fetcher is not None:
         # Cache miss + bars_fetcher injected: invoke the substrate
-        # renderer once + write the bytes back to the cache.
+        # renderer once + write the bytes back via refresh_chart_render
+        # so subsequent calls serve from cache (Gap A.4).
         try:
             bars = bars_fetcher(exemplar.ticker)  # type: ignore[operator]
         except Exception:  # noqa: BLE001 - defense-in-depth
@@ -287,15 +294,48 @@ def _build_exemplar_render(
                     bars=bars,
                     pattern_evaluation=synth_pe,
                 )
-                # Cache NOT written back per docstring contract above —
-                # the canonical chart_renders cache key requires a
-                # pipeline_run_id anchor (spec section C.2 + ChartRender
-                # invariant). Live bytes serve the operator's request;
-                # the pipeline's per-run chart-render step is the
-                # canonical cache write path. V2 candidate banked:
-                # pipeline-run-agnostic exemplar cache key shape.
+                # Gap A.4 write-through: synthesize a pipeline_run_id
+                # anchor for the theme2_annotated cache key. The
+                # canonical cache key requires a non-NULL pipeline_run_id
+                # for theme2_annotated rows; latest_completed_pipeline_run
+                # is the closest natural anchor when the exemplar predates
+                # any pipeline run (legacy seeded corpus). Empty bytes
+                # are rejected at the ChartRender construction barrier
+                # (F6 LOCK); the except clause below catches that and
+                # falls back to live-bytes-only without persisting.
+                from swing.web.chart_scope import (
+                    latest_completed_pipeline_run,
+                )
+                binding = latest_completed_pipeline_run(conn)
+                anchor_run_id = binding.run_id if binding is not None else None
+                if anchor_run_id is not None:
+                    try:
+                        refresh_chart_render(conn, ChartRender(
+                            id=None,
+                            ticker=exemplar.ticker,
+                            surface="theme2_annotated",
+                            chart_svg_bytes=live_svg,
+                            source_data_hash="exemplar_live_render",
+                            rendered_at=exemplar.created_at,
+                            data_asof_date=exemplar.end_date,
+                            pipeline_run_id=anchor_run_id,
+                            pattern_class=(
+                                exemplar.proposed_pattern_class
+                            ),
+                        ))
+                    except ValueError as exc:
+                        # F6 LOCK: ChartRender construction rejected
+                        # (typically empty bytes). Surface bytes to caller
+                        # without persisting; the known-good cache row (if
+                        # any) is untouched.
+                        _log.warning(
+                            "F6 transient empty exemplar chart skipped: "
+                            "ticker=%s pattern_class=%s err=%s",
+                            exemplar.ticker,
+                            exemplar.proposed_pattern_class,
+                            exc,
+                        )
                 cached_svg = live_svg
-                del refresh_chart_render, ChartRender  # noqa
             except Exception:  # noqa: BLE001 - degraded fallback
                 cached_svg = None
 

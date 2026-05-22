@@ -37,8 +37,21 @@ def build_patterns_queue_vm(
     *,
     session_date: str,
     top_k: int = 20,
+    cfg=None,
 ) -> PatternQueueVM:
-    candidates = tuple(prioritize_candidates(conn, top_k=top_k))
+    """Build the active-learning prioritized queue VM.
+
+    Phase 13 T2.SB6c T-A.6c.3 — Gap B.6: ``cfg`` is plumbed through to
+    ``prioritize_candidates`` via ``cfg.rs.benchmark_ticker`` so the
+    weather-state-aware criterion 3 reads the configured benchmark
+    ticker's weather row (default 'QQQ' when cfg=None).
+    """
+    benchmark_ticker = (
+        cfg.rs.benchmark_ticker if cfg is not None else "QQQ"
+    )
+    candidates = tuple(prioritize_candidates(
+        conn, top_k=top_k, benchmark_ticker=benchmark_ticker,
+    ))
     empty: str | None = None
     if not candidates:
         empty = (
