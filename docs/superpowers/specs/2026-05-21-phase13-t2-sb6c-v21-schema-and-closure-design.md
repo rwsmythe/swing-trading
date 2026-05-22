@@ -447,14 +447,16 @@ Per Phase 13 plan §H.3 pin schedule: row 12 is the v21-migration pin (un-skip a
 
 ### §6.4 T-A.6c.4 — SB6 closure Gap B v21-dependent (label_source + outcomes)
 
-**Scope (REVISED per Codex R3-R6 cumulative)**: 3 SB6 closure items (B.3 label_source split + B.4 outcome distribution + B.5 metric tile) + entry-form anchor threading + entry-path mapping fix at `swing/web/routes/trades.py:1095` (per R6 MAJOR #2) + 5-tier rejection validation + claim-consistency gate for `pattern_evaluation_id`; **29 fast tests** (15 closure + 13 anchor-threading-validation tests listed below + 1 entry-path-mapping discriminating test).
+**Scope (REVISED per Codex R3-R7 cumulative)**: 3 SB6 closure items (B.3 label_source split + B.4 outcome distribution + B.5 metric tile) + entry-form anchor threading + entry-path mapping fix at `swing/web/routes/trades.py:1095` + VM/builder extensions for `EntryFormVM` and `HypRecsExpandedVM` + 5-tier rejection validation + claim-consistency gate for `pattern_evaluation_id`; **31 fast tests** (15 closure + 13 anchor-threading-validation tests + 1 entry-path-mapping discriminating test + 2 VM/builder discriminating tests per R7 MAJOR #1).
 
 **Files in scope**:
 - Modify: `swing/web/routes/patterns.py:patterns_review_post` (label_source split via candidate-scope lookup).
 - Modify: `swing/web/view_models/patterns/review_form.py:OutcomeDistributionRow` (extend with reached_1r_pct + hit_stop_pct).
 - Modify: `swing/metrics/pattern_outcomes.py:build_pattern_outcome_rows` (LEFT JOIN trades; extend `PatternOutcomeRow` with reached_1r + hit_stop fields).
-- Modify: `swing/web/routes/trades.py:398` (`GET /trades/entry/form`) — populate hidden `pattern_evaluation_id` anchor + `claimed_pattern_evaluation_anchor` flag at form-render time when entry originates from a `pipeline_aplus` / `pipeline_watch_hyp_recs` / `pipeline_watch_manual` flow with specific pattern_evaluations row visible.
-- Modify: `swing/web/templates/partials/trade_entry_form.html.j2` (canonical entry-form template) — carry hidden inputs `pattern_evaluation_id` + `claimed_pattern_evaluation_anchor`.
+- Modify: `swing/web/routes/trades.py:398` (`GET /trades/entry/form`) — populate hidden `pattern_evaluation_id` anchor + `claimed_pattern_evaluation_anchor` flag + `pipeline_run_id_at_form_render` at form-render time when entry originates from a `pipeline_aplus` / `pipeline_watch_hyp_recs` / `pipeline_watch_manual` flow with specific pattern_evaluations row visible.
+- Modify: `swing/web/templates/partials/trade_entry_form.html.j2` (canonical entry-form template) — carry hidden inputs `pattern_evaluation_id` + `claimed_pattern_evaluation_anchor` + `pipeline_run_id_at_form_render`.
+- Modify: `swing/web/view_models/trades.py` — extend `EntryFormVM` (or canonical entry-form VM dataclass; verify exact name at writing-plans phase) with 3 new fields: `pattern_evaluation_id: int | None`, `claimed_pattern_evaluation_anchor: bool`, `pipeline_run_id_at_form_render: int | None`. Extend `build_entry_form_vm(...)` builder to populate the fields when the entry context provides a `pattern_evaluations` row (looked up via `(pipeline_run_id, ticker)`). Discriminating test: `test_build_entry_form_vm_populates_pattern_evaluation_anchor_fields_when_pattern_evaluations_row_exists`.
+- Modify: `swing/web/view_models/dashboard.py` — extend `HypRecsExpandedVM` (line 567-603) with `pattern_evaluation_id: int | None` field per hyp-rec row + `pipeline_run_id: int | None` field. Extend `build_hyp_recs_expanded(...)` builder to JOIN/query `pattern_evaluations` for each hyp-rec ticker against the current pipeline_run_id. Discriminating test: `test_build_hyp_recs_expanded_populates_pattern_evaluation_id_when_evaluation_row_exists`.
 - Modify: `swing/web/routes/trades.py:413` (`POST /trades/entry`) — 5-tier rejection ladder + claimed-anchor consistency-check gate per §2.2 anchor-threading scope (mirror the existing `_reject_anchor` helper at `swing/web/routes/trades.py:896-911` for the Schwab `schwab_source_value_json` anchor; T3.SB1 precedent).
 - Modify: `swing/web/routes/trades.py:1095` (entry-path mapping per R6 MAJOR #2) — replace the hardcoded `entry_path=EntryPath.MANUAL_WEB_FORM` with a mapping from UI `origin` field: `'hyp-recs'` → `EntryPath.HYP_RECS_BUTTON`; `'watchlist'` + manual → `EntryPath.MANUAL_WEB_FORM`. Discriminating test: `test_entry_post_maps_ui_origin_hyp_recs_to_entry_path_hyp_recs_button`.
 - Modify (REQUIRED per Codex R5 MAJOR #2): `swing/web/templates/partials/hypothesis_recommendations_expanded.html.j2` (existing hyp-rec → entry-form transition at line 41-45 currently passes only `ticker` + `origin=hyp-recs`) — extend with `pattern_evaluation_id` query param when a `pattern_evaluations` row exists for the (run, ticker) tuple. The form-render handler at `trades.py:398` then reads the query param + emits the hidden inputs (`pattern_evaluation_id` + `claimed_pattern_evaluation_anchor=true`). Without this context pass-through, S9 operator-witnessed gate is not implementable. Also extend any other entry-form-link emitters (watchlist row entry-link if applicable; verify at writing-plans phase).
@@ -464,7 +466,7 @@ Per Phase 13 plan §H.3 pin schedule: row 12 is the v21-migration pin (un-skip a
 - Create: `tests/trades/test_entry_populates_candidate_backlinks.py` (NEW lifecycle test).
 
 **Acceptance criteria**:
-- **29 new tests PASS** (15 closure + 13 anchor-threading-validation tests listed below + 1 entry-path-mapping discriminating test).
+- **31 new tests PASS** (15 closure + 13 anchor-threading-validation tests listed below + 1 entry-path-mapping discriminating test + 2 VM/builder discriminating tests per R7 MAJOR #1).
 - S2 (Item 8) + S7 + S9 + S10 operator-witnessed gates PASS.
 
 **Cross-row semantic discipline**: pre-Codex review MUST verify Gap B.3 lookup scope is per-candidate (NOT ticker-proxy regression). Test `test_patterns_review_label_source_split_ticker_proxy_regression_guard` is BINDING (plants 2 trades on same ticker, different candidates; asserts only the SAME-candidate trade qualifies for `organic_trade_history`).
@@ -481,7 +483,7 @@ Per Phase 13 plan §H.3 pin schedule: row 12 is the v21-migration pin (un-skip a
 - `test_entry_post_rejects_pattern_evaluation_id_anchor_present_with_claim_field_omitted_400_clears` — missing-claim semantics test (per Codex R5 MAJOR #3): when `claimed_pattern_evaluation_anchor` form field is OMITTED + `pattern_evaluation_id` anchor is PRESENT, coerce missing → "false"; rule (ii) fires; reject 400.
 - `test_entry_post_rejects_claim_present_without_anchor_400_clears` — `claimed_pattern_evaluation_anchor="true"` + anchor missing → reject.
 - `test_entry_post_rejects_anchor_present_without_claim_400_clears` — anchor present + `claimed_pattern_evaluation_anchor="false"` → reject.
-- `test_entry_post_rejects_manual_origin_with_claim_true_400_clears` — origin=manual_off_pipeline + claim=true → reject.
+- `test_entry_post_rejects_server_derived_manual_off_pipeline_trade_origin_with_claim_true_400_clears` — server-derived `trade_origin == 'manual_off_pipeline'` (NOT form UI origin field; mirror tier (e) discipline per Codex R7 Minor #1 wording fix) + claim=true → reject.
 - `test_entry_post_persists_null_pattern_evaluation_id_when_manual_off_pipeline_origin` — manual-off-pipeline persists NULL (no anchor, no claim, no rejection).
 
 ### §6.5 T-A.6c.5 — Closer (E2E + ruff sweep + cross-bundle pin row 12 promote)
