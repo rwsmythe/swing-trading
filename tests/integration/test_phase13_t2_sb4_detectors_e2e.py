@@ -500,9 +500,12 @@ def test_phase13_t2_sb4_detectors_e2e_fast(tmp_path: Path) -> None:
     assert schema_version_row is not None, (
         "schema_version row missing; ensure_schema did not provision"
     )
-    assert schema_version_row[0] == 20, (
-        f"Expected schema v20 (T-A.1.1 baseline; T2.SB4 does not change "
-        f"schema); got v{schema_version_row[0]}"
+    # T2.SB4 itself does NOT change schema; the v20 baseline at T-A.1.1
+    # is preserved through T2.SB5, but T2.SB6c migration 0021 bumps the
+    # HEAD to v21 post-merge — track the current constant.
+    assert schema_version_row[0] == 21, (
+        f"Expected schema v21 (T2.SB6c HEAD post-migration 0021); got "
+        f"v{schema_version_row[0]}"
     )
 
     conn.close()

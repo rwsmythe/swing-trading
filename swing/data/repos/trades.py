@@ -44,6 +44,16 @@ _CLOSED_STATES_SQL = "('closed','reviewed')"
 # Full SELECT column list for trades. Defined once to avoid drift across the
 # 5+ SELECT call-sites (recurring repo-SELECT-coverage bug per plan §2.1).
 # Order MUST match _row_to_trade's positional indexing.
+#
+# Phase 13 T2.SB6c (migration 0021) added the trailing 2 columns
+# (``candidate_id`` + ``pattern_evaluation_id``). To preserve pre-v21
+# test fixtures (~140 callsites use ``run_migrations(target_version<21)``
+# per the schema-version-aware INSERT discipline lesson from T3.SB1
+# `fills.py:51-53`), the SELECT-cols projection is now schema-aware via
+# the ``_trade_select_cols(conn)`` helper below — emitting either the
+# extended 54-col list (v21+) OR the legacy 52-col list (pre-v21) with
+# ``NULL`` placeholders in the trailing positions so ``_row_to_trade``
+# stays positional + agnostic.
 _TRADE_SELECT_COLS = """
     id, ticker, entry_date, entry_price, initial_shares, initial_stop,
     current_stop, state, watchlist_entry_target,
@@ -62,8 +72,51 @@ _TRADE_SELECT_COLS = """
     event_risk_present, event_handling, event_type, event_date,
     gap_risk_present, gap_risk_handling, emotional_state_pre_trade,
     market_regime, catalyst, catalyst_other_description,
-    planned_target_R
+    planned_target_R,
+    candidate_id, pattern_evaluation_id
 """
+
+# Legacy (pre-v21) SELECT column list — substitutes NULL placeholders for
+# the 2 v21 columns so ``_row_to_trade`` reads them positionally as None.
+# Module-level constant for clarity + ease of grep.
+_TRADE_SELECT_COLS_PRE_V21 = """
+    id, ticker, entry_date, entry_price, initial_shares, initial_stop,
+    current_stop, state, watchlist_entry_target,
+    watchlist_initial_stop, notes, hypothesis_label,
+    chart_pattern_algo, chart_pattern_algo_confidence,
+    chart_pattern_operator, chart_pattern_classification_pipeline_run_id,
+    sector, industry,
+    reviewed_at, mistake_tags, entry_grade, management_grade,
+    exit_grade, process_grade, disqualifying_process_violation,
+    realized_R_if_plan_followed, mistake_cost_confidence, lesson_learned,
+    trade_origin, pre_trade_locked_at, current_size, current_avg_cost,
+    last_fill_at,
+    thesis, why_now, invalidation_condition, expected_scenario,
+    premortem_technical, premortem_market_sector, premortem_execution,
+    premortem_additional,
+    event_risk_present, event_handling, event_type, event_date,
+    gap_risk_present, gap_risk_handling, emotional_state_pre_trade,
+    market_regime, catalyst, catalyst_other_description,
+    planned_target_R,
+    NULL AS candidate_id, NULL AS pattern_evaluation_id
+"""
+
+
+def _trade_select_cols(conn: sqlite3.Connection) -> str:
+    """Return v21-extended SELECT-cols if schema has the new columns; else legacy.
+
+    Mirrors the ``insert_trade_with_event`` SVAI branch (PRAGMA table_info
+    detection). Reads MUST tolerate pre-v21 fixtures (~140 test callsites
+    use ``run_migrations(target_version<21)``); the legacy projection
+    emits ``NULL AS candidate_id, NULL AS pattern_evaluation_id`` so
+    ``_row_to_trade`` reads positionally + agnostically.
+    """
+    cols = {
+        r[1] for r in conn.execute("PRAGMA table_info(trades)").fetchall()
+    }
+    if "candidate_id" in cols and "pattern_evaluation_id" in cols:
+        return _TRADE_SELECT_COLS
+    return _TRADE_SELECT_COLS_PRE_V21
 
 
 def _validate_chart_pattern_invariant(trade: Trade) -> None:
@@ -115,62 +168,137 @@ def insert_trade_with_event(
     must replicate the pattern.
     """
     _validate_chart_pattern_invariant(trade)
-    cur = conn.execute(
-        """
-        INSERT INTO trades
-            (ticker, entry_date, entry_price, initial_shares, initial_stop,
-             current_stop, state, watchlist_entry_target,
-             watchlist_initial_stop, notes, hypothesis_label,
-             chart_pattern_algo, chart_pattern_algo_confidence,
-             chart_pattern_operator,
-             chart_pattern_classification_pipeline_run_id,
-             sector, industry,
-             trade_origin, pre_trade_locked_at, current_size,
-             current_avg_cost, last_fill_at,
-             thesis, why_now, invalidation_condition, expected_scenario,
-             premortem_technical, premortem_market_sector,
-             premortem_execution, premortem_additional,
-             event_risk_present, event_handling, event_type, event_date,
-             gap_risk_present, gap_risk_handling,
-             emotional_state_pre_trade, market_regime, catalyst,
-             catalyst_other_description,
-             planned_target_R)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?,
-                ?, ?, ?, ?,
-                ?, ?, ?, ?,
-                ?, ?, ?, ?,
-                ?, ?,
-                ?, ?, ?, ?,
-                ?)
-        """,
-        (
-            trade.ticker, trade.entry_date, trade.entry_price,
-            trade.initial_shares, trade.initial_stop, trade.current_stop,
-            trade.state,
-            trade.watchlist_entry_target, trade.watchlist_initial_stop,
-            trade.notes, trade.hypothesis_label,
-            trade.chart_pattern_algo, trade.chart_pattern_algo_confidence,
-            trade.chart_pattern_operator,
-            trade.chart_pattern_classification_pipeline_run_id,
-            trade.sector, trade.industry,
-            # Phase 7 lifecycle fields (NOT NULL in schema).
-            trade.trade_origin, trade.pre_trade_locked_at, trade.current_size,
-            trade.current_avg_cost, trade.last_fill_at,
-            # Phase 7 pre-trade decision fields (all NULLABLE).
-            trade.thesis, trade.why_now, trade.invalidation_condition,
-            trade.expected_scenario,
-            trade.premortem_technical, trade.premortem_market_sector,
-            trade.premortem_execution, trade.premortem_additional,
-            trade.event_risk_present, trade.event_handling,
-            trade.event_type, trade.event_date,
-            trade.gap_risk_present, trade.gap_risk_handling,
-            trade.emotional_state_pre_trade, trade.market_regime,
-            trade.catalyst, trade.catalyst_other_description,
-            # Phase 8 (migration 0016) — pre-trade-locked R-multiple target.
-            trade.planned_target_R,
-        ),
-    )
+    # Phase 13 T2.SB6c (migration 0021) SVAI: pre-v21 fixtures (tests using
+    # ``run_migrations(target_version<21)``) lack the 2 new trades columns
+    # (``candidate_id`` + ``pattern_evaluation_id``). Detect via
+    # ``PRAGMA table_info`` and emit the legacy column list for backwards
+    # compat with existing v20 fixtures. Even though both new columns are
+    # NULLable, referring to them in the INSERT statement against a pre-v21
+    # schema raises ``OperationalError: no such column`` — NULL defaults do
+    # NOT cover that case. Pattern mirrors ``fills.py:50-53`` SVAI precedent
+    # (Phase 13 T3.SB1).
+    cols = {
+        r[1] for r in conn.execute("PRAGMA table_info(trades)").fetchall()
+    }
+    if "candidate_id" in cols and "pattern_evaluation_id" in cols:
+        cur = conn.execute(
+            """
+            INSERT INTO trades
+                (ticker, entry_date, entry_price, initial_shares, initial_stop,
+                 current_stop, state, watchlist_entry_target,
+                 watchlist_initial_stop, notes, hypothesis_label,
+                 chart_pattern_algo, chart_pattern_algo_confidence,
+                 chart_pattern_operator,
+                 chart_pattern_classification_pipeline_run_id,
+                 sector, industry,
+                 trade_origin, pre_trade_locked_at, current_size,
+                 current_avg_cost, last_fill_at,
+                 thesis, why_now, invalidation_condition, expected_scenario,
+                 premortem_technical, premortem_market_sector,
+                 premortem_execution, premortem_additional,
+                 event_risk_present, event_handling, event_type, event_date,
+                 gap_risk_present, gap_risk_handling,
+                 emotional_state_pre_trade, market_regime, catalyst,
+                 catalyst_other_description,
+                 planned_target_R,
+                 candidate_id, pattern_evaluation_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?,
+                    ?, ?, ?, ?,
+                    ?, ?, ?, ?,
+                    ?, ?,
+                    ?, ?, ?, ?,
+                    ?,
+                    ?, ?)
+            """,
+            (
+                trade.ticker, trade.entry_date, trade.entry_price,
+                trade.initial_shares, trade.initial_stop, trade.current_stop,
+                trade.state,
+                trade.watchlist_entry_target, trade.watchlist_initial_stop,
+                trade.notes, trade.hypothesis_label,
+                trade.chart_pattern_algo, trade.chart_pattern_algo_confidence,
+                trade.chart_pattern_operator,
+                trade.chart_pattern_classification_pipeline_run_id,
+                trade.sector, trade.industry,
+                # Phase 7 lifecycle fields (NOT NULL in schema).
+                trade.trade_origin, trade.pre_trade_locked_at,
+                trade.current_size,
+                trade.current_avg_cost, trade.last_fill_at,
+                # Phase 7 pre-trade decision fields (all NULLABLE).
+                trade.thesis, trade.why_now, trade.invalidation_condition,
+                trade.expected_scenario,
+                trade.premortem_technical, trade.premortem_market_sector,
+                trade.premortem_execution, trade.premortem_additional,
+                trade.event_risk_present, trade.event_handling,
+                trade.event_type, trade.event_date,
+                trade.gap_risk_present, trade.gap_risk_handling,
+                trade.emotional_state_pre_trade, trade.market_regime,
+                trade.catalyst, trade.catalyst_other_description,
+                # Phase 8 (migration 0016) — pre-trade-locked R-multiple target.
+                trade.planned_target_R,
+                # Phase 13 T2.SB6c (migration 0021) — v21 NULLable backlinks.
+                trade.candidate_id, trade.pattern_evaluation_id,
+            ),
+        )
+    else:
+        # Legacy path: pre-v21 schema; omit the 2 new columns. SQLite
+        # populates the missing columns as NULL on subsequent v21 migration.
+        cur = conn.execute(
+            """
+            INSERT INTO trades
+                (ticker, entry_date, entry_price, initial_shares, initial_stop,
+                 current_stop, state, watchlist_entry_target,
+                 watchlist_initial_stop, notes, hypothesis_label,
+                 chart_pattern_algo, chart_pattern_algo_confidence,
+                 chart_pattern_operator,
+                 chart_pattern_classification_pipeline_run_id,
+                 sector, industry,
+                 trade_origin, pre_trade_locked_at, current_size,
+                 current_avg_cost, last_fill_at,
+                 thesis, why_now, invalidation_condition, expected_scenario,
+                 premortem_technical, premortem_market_sector,
+                 premortem_execution, premortem_additional,
+                 event_risk_present, event_handling, event_type, event_date,
+                 gap_risk_present, gap_risk_handling,
+                 emotional_state_pre_trade, market_regime, catalyst,
+                 catalyst_other_description,
+                 planned_target_R)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?,
+                    ?, ?, ?, ?,
+                    ?, ?, ?, ?,
+                    ?, ?,
+                    ?, ?, ?, ?,
+                    ?)
+            """,
+            (
+                trade.ticker, trade.entry_date, trade.entry_price,
+                trade.initial_shares, trade.initial_stop, trade.current_stop,
+                trade.state,
+                trade.watchlist_entry_target, trade.watchlist_initial_stop,
+                trade.notes, trade.hypothesis_label,
+                trade.chart_pattern_algo, trade.chart_pattern_algo_confidence,
+                trade.chart_pattern_operator,
+                trade.chart_pattern_classification_pipeline_run_id,
+                trade.sector, trade.industry,
+                trade.trade_origin, trade.pre_trade_locked_at,
+                trade.current_size,
+                trade.current_avg_cost, trade.last_fill_at,
+                trade.thesis, trade.why_now, trade.invalidation_condition,
+                trade.expected_scenario,
+                trade.premortem_technical, trade.premortem_market_sector,
+                trade.premortem_execution, trade.premortem_additional,
+                trade.event_risk_present, trade.event_handling,
+                trade.event_type, trade.event_date,
+                trade.gap_risk_present, trade.gap_risk_handling,
+                trade.emotional_state_pre_trade, trade.market_regime,
+                trade.catalyst, trade.catalyst_other_description,
+                trade.planned_target_R,
+            ),
+        )
     trade_id = int(cur.lastrowid)
     payload = {
         "ticker": trade.ticker,
@@ -236,16 +364,18 @@ def add_note_event(
 
 
 def get_trade(conn: sqlite3.Connection, trade_id: int) -> Trade | None:
+    cols = _trade_select_cols(conn)
     row = conn.execute(
-        f"SELECT {_TRADE_SELECT_COLS} FROM trades WHERE id = ?",  # noqa: S608
+        f"SELECT {cols} FROM trades WHERE id = ?",  # noqa: S608
         (trade_id,),
     ).fetchone()
     return _row_to_trade(row) if row else None
 
 
 def list_open_trades(conn: sqlite3.Connection) -> list[Trade]:
+    cols = _trade_select_cols(conn)
     rows = conn.execute(
-        f"SELECT {_TRADE_SELECT_COLS} FROM trades "  # noqa: S608
+        f"SELECT {cols} FROM trades "  # noqa: S608
         f"WHERE state IN {_ACTIVE_STATES_SQL} "
         f"ORDER BY entry_date, ticker"
     ).fetchall()
@@ -260,9 +390,10 @@ def list_closed_trades(
     The since_date branch filters to trades that have a non-entry fill on/after
     the cutoff (analogue of the prior `EXISTS exits.exit_date >= ?` predicate).
     """
+    cols = _trade_select_cols(conn)
     if since_date:
         rows = conn.execute(
-            f"SELECT {_TRADE_SELECT_COLS} FROM trades t "  # noqa: S608
+            f"SELECT {cols} FROM trades t "  # noqa: S608
             f"WHERE t.state IN {_CLOSED_STATES_SQL} "
             "  AND EXISTS (SELECT 1 FROM fills f "
             "              WHERE f.trade_id = t.id "
@@ -273,7 +404,7 @@ def list_closed_trades(
         ).fetchall()
     else:
         rows = conn.execute(
-            f"SELECT {_TRADE_SELECT_COLS} FROM trades "  # noqa: S608
+            f"SELECT {cols} FROM trades "  # noqa: S608
             f"WHERE state IN {_CLOSED_STATES_SQL} "
             "ORDER BY entry_date DESC, ticker"
         ).fetchall()
@@ -304,8 +435,9 @@ def find_any_open_trade(
     tax-lot convention for long positions). Phase 7 T6: active-state predicate
     replaces the legacy `status='open'` filter.
     """
+    cols = _trade_select_cols(conn)
     row = conn.execute(
-        f"SELECT {_TRADE_SELECT_COLS} FROM trades "  # noqa: S608
+        f"SELECT {cols} FROM trades "  # noqa: S608
         f"WHERE ticker = ? AND state IN {_ACTIVE_STATES_SQL} "
         "ORDER BY entry_date ASC LIMIT 1",
         (ticker,),
@@ -323,9 +455,10 @@ def find_open_trade_by_match(
     if shares is None. Phase 7 T6: active-state predicate replaces
     `status='open'`.
     """
+    cols = _trade_select_cols(conn)
     if initial_shares is not None:
         row = conn.execute(
-            f"SELECT {_TRADE_SELECT_COLS} FROM trades "  # noqa: S608
+            f"SELECT {cols} FROM trades "  # noqa: S608
             f"WHERE ticker = ? AND entry_date = ? AND initial_shares = ? "
             f"  AND state IN {_ACTIVE_STATES_SQL} "
             "LIMIT 1",
@@ -333,7 +466,7 @@ def find_open_trade_by_match(
         ).fetchone()
     else:
         row = conn.execute(
-            f"SELECT {_TRADE_SELECT_COLS} FROM trades "  # noqa: S608
+            f"SELECT {cols} FROM trades "  # noqa: S608
             f"WHERE ticker = ? AND entry_date = ? "
             f"  AND state IN {_ACTIVE_STATES_SQL} "
             "LIMIT 1",
@@ -363,6 +496,8 @@ def _row_to_trade(row: tuple) -> Trade:
       45:gap_risk_present 46:gap_risk_handling 47:emotional_state_pre_trade
       48:market_regime 49:catalyst 50:catalyst_other_description
       51:planned_target_R (Phase 8 / migration 0016)
+      52:candidate_id (Phase 13 T2.SB6c / migration 0021)
+      53:pattern_evaluation_id (Phase 13 T2.SB6c / migration 0021)
     """
     dpv = row[24]
     return Trade(
@@ -410,6 +545,8 @@ def _row_to_trade(row: tuple) -> Trade:
         catalyst=row[49],
         catalyst_other_description=row[50],
         planned_target_R=row[51],
+        candidate_id=row[52],
+        pattern_evaluation_id=row[53],
     )
 
 

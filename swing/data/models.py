@@ -229,6 +229,15 @@ class Trade:
     # Phase 8 (migration 0016) — pre-trade-locked R-multiple target. NULL for
     # legacy rows + non-target trades. CHECK constraint enforces > 0 when set.
     planned_target_R: float | None = None  # noqa: N815
+    # Phase 13 T2.SB6c (migration 0021) — v21 NULLable FK backlinks per spec
+    # §5.10 + plan §B.1 + §B.2. Both NULLable: pre-v21 existing rows backfill
+    # to NULL (OQ-1); manual_off_pipeline trades legitimately carry no backlink.
+    # candidate_id populated at trade-entry-form lock time when the entry
+    # context resolves a candidates row for pipeline-origin trades (OQ-11).
+    # pattern_evaluation_id populated when the entry form carries an explicit
+    # pattern_evaluation_id hidden anchor (OQ-12; T-A.6c.4 closes the threading).
+    candidate_id: int | None = None
+    pattern_evaluation_id: int | None = None
 
 
 @dataclass(frozen=True)

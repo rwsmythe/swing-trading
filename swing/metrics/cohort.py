@@ -18,8 +18,8 @@ import sqlite3
 from swing.data.models import Trade
 from swing.data.repos.trades import (
     _CLOSED_STATES_SQL,
-    _TRADE_SELECT_COLS,
     _row_to_trade,
+    _trade_select_cols,
 )
 from swing.trades.entry import canonicalize_hypothesis_label
 
@@ -71,7 +71,8 @@ def list_trades_for_cohort(
         where_clauses.append(f"state IN ({placeholders})")
         params.extend(state_filter)
 
-    sql = f"SELECT {_TRADE_SELECT_COLS} FROM trades"  # noqa: S608
+    cols = _trade_select_cols(conn)
+    sql = f"SELECT {cols} FROM trades"  # noqa: S608
     if where_clauses:
         sql += " WHERE " + " AND ".join(where_clauses)
     sql += " ORDER BY entry_date, ticker, id"

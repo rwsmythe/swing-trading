@@ -251,10 +251,11 @@ def _list_closed_reviewed_trades_ordered(
     rows emit in stable order. Trades with ``reviewed_at IS NULL`` are
     excluded — only fully-reviewed trades carry process_grade letters.
     """
-    from swing.data.repos.trades import _TRADE_SELECT_COLS  # noqa: PLC2701
+    from swing.data.repos.trades import _trade_select_cols  # noqa: PLC2701
 
+    cols = _trade_select_cols(conn)
     rows = conn.execute(
-        f"SELECT {_TRADE_SELECT_COLS} FROM trades "  # noqa: S608
+        f"SELECT {cols} FROM trades "  # noqa: S608
         "WHERE state = 'reviewed' AND reviewed_at IS NOT NULL "
         "ORDER BY reviewed_at, id"
     ).fetchall()
