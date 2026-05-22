@@ -621,7 +621,7 @@ def _recompute_counts_at(
       - **Gate variables** (`trend_template.min_passes`, `vcp.watch_max_fails`):
         full bucket-level resimulation — substitute the gate value + walk
         `bucket_for` semantics including the `allowed_miss_names` invariant.
-      - **Threshold variables** (16 vcp/trend_template/risk/rs thresholds):
+      - **Threshold variables** (15 = 3 trend_template + 8 vcp + 1 risk + 3 rs):
         V1 LIMITATION — per-criterion bucket resimulation requires the
         criterion evaluator harness to re-run against original OHLCV bars
         with the substituted threshold, which is V2 (depends on OHLCV
@@ -840,7 +840,7 @@ def test_output_formatter_emits_csv_and_markdown(tmp_path):
     write_sensitivity_markdown(result, md_path)
 
     csv_text = csv_path.read_text(encoding="utf-8")
-    # CSV must include all 10 columns (kind appended after variable_name) +
+    # CSV must include all 9 columns (kind appended after variable_name) +
     # all data rows (3 gate + 1 threshold).
     assert "variable_name,kind,sweep_point,aplus_count,watch_count" in csv_text
     assert "trend_template.min_passes,gate,5,12,80,4908" in csv_text
@@ -1125,12 +1125,14 @@ version: 0.1.0
 last_updated: 2026-05-22
 ```
 
-Body sections (per `_template.md`):
-- **Definition** — paragraph: "1D parameter-sweep against persisted `candidate_criteria` rows; substitutes each variable (per-criterion threshold, trend-template min_passes, vcp watch_max_fails) one at a time across a reasonable range; recomputes bucket counts; emits sensitivity matrix."
-- **Inputs** — `candidate_criteria` rows (last N eval_runs); `Config` (variable enumeration source).
-- **Outputs** — sensitivity matrix CSV + markdown analysis.
-- **Validation** — current-value sweep point reproduces persisted distribution (parity invariant); discriminating tests at `tests/research/test_aplus_sensitivity_sweep.py`.
-- **Notes** — cross-coupling between variables NOT modeled (first-order); promotion from `research` to `shadow` / `production` per V2.1 §IV.D requires operator-paired evidence summary.
+Body sections (per `_template.md`) — content MUST encode the gate-vs-threshold split per R4 LOCK:
+
+- **Definition** — paragraph: "1D parameter-sweep against persisted `candidate_criteria` rows. The harness enumerates 17 variables across two semantic classes: (a) **gate variables** (`trend_template.min_passes`, `vcp.watch_max_fails`) — substituted at each sweep point with full `bucket_for` resimulation per `swing/evaluation/scoring.py` semantics (risk hard filter + tt_passes + allowed_miss_names + vcp fail count); (b) **threshold variables** (3 trend_template numerics + 8 vcp + 1 risk + 3 rs = 15 vars) — sweep points are enumerated but V1 returns the PERSISTED bucket per row (parity-preserving). True per-criterion bucket resimulation against the substituted threshold requires the V2 OHLCV criterion-evaluator harness banked in this record's V2 dependencies."
+- **Inputs** — `candidate_criteria` rows (last N eval_runs; default N=20, max N=100); `Config` (variable enumeration source via `swing/config.py` TrendTemplate / VCP / Risk / RS dataclasses).
+- **Outputs** — sensitivity matrix CSV (9 cols including Kind) + markdown analysis with explicit Kind column + V1-limitation paragraph. Gate-variable rows DO produce real `delta_aplus` / `delta_watch`; threshold-variable rows have `delta_aplus == delta_watch == 0` by V1 design.
+- **Validation** — current-value sweep point reproduces persisted distribution (parity invariant: both gate and threshold rows); gate-variable sweep points at non-current values produce real bucket-redistribution counts (planted-fixture discriminating test); threshold-variable rows at ALL sweep points have zero deltas (invariant test). Discriminating tests at `tests/research/test_aplus_sensitivity_sweep.py` + `tests/research/test_aplus_sensitivity_output.py`.
+- **Notes** — Cross-coupling between variables NOT modeled (first-order; one variable at a time, others held at production cfg). `cfg.trend_template.allowed_miss_names` (set-membership) + `cfg.rs.benchmark_ticker` (string identifier) explicitly EXCLUDED from V1 enumeration. Promotion from `research` to `shadow` / `production` per V2.1 §IV.D requires operator-paired evidence summary AND lift of the V1 threshold-variable limitation (i.e., bucket resimulation for the 15 threshold variables).
+- **V2 dependencies** — OHLCV criterion-evaluator harness consuming original bars at candidate's `data_asof_date` + substituting per-criterion thresholds + recomputing `bucket_for` end-to-end. Allows the 15 threshold variables to produce real delta_aplus / delta_watch.
 
 - [ ] **Step 1E.2: Write `research/studies/aplus-criterion-sensitivity-2026-05-22.md`**
 
@@ -2549,9 +2551,10 @@ def watchlist_row(request: Request, ticker: str):
     ohlcv_cache = getattr(request.app.state, "ohlcv_cache", None)
     if ohlcv_cache is not None:
         import sqlite3
+        from swing.web.chart_scope import latest_completed_pipeline_run
         conn = sqlite3.connect(str(cfg.paths.db_path))
         try:
-            anchor = _latest_completed_pipeline_run(conn)  # Option A LOCK
+            anchor = latest_completed_pipeline_run(conn)  # Option A LOCK
             if anchor is not None:
                 chart_bytes = get_or_render_surface(
                     conn=conn, ohlcv_cache=ohlcv_cache,
@@ -3709,20 +3712,24 @@ T-T4.SB.4 ───────────────────────�
 - `exports/diagnostics/aplus-sensitivity-<ISO>.csv` — sensitivity matrix.
 - `exports/diagnostics/aplus-sensitivity-<ISO>.md` — markdown analysis.
 
-**CSV schema (8 columns):**
+**CSV schema (9 columns; per R3 + R4 LOCK with Kind in position 2):**
 ```
-variable_name,sweep_point,aplus_count,watch_count,skip_count,excluded_count,delta_aplus,delta_watch
-trend_template.min_passes,5,12,80,4908,0,11,70
-trend_template.min_passes,6,4,70,4926,0,3,60
-trend_template.min_passes,7,1,10,4989,0,0,0
+variable_name,kind,sweep_point,aplus_count,watch_count,skip_count,excluded_count,delta_aplus,delta_watch
+trend_template.min_passes,gate,5,12,80,4908,0,+11,+70
+trend_template.min_passes,gate,6,4,70,4926,0,+3,+60
+trend_template.min_passes,gate,7,1,10,4989,0,+0,+0
+vcp.adr_min_pct,threshold_multiplicative,2.5,1,10,4989,0,+0,+0
+vcp.adr_min_pct,threshold_multiplicative,5.0,1,10,4989,0,+0,+0
 ...
 ```
+
+(Threshold-kind rows always carry `delta_aplus=0` + `delta_watch=0` per V1 parity-preserving semantic; only gate-kind rows produce non-zero deltas.)
 
 **Markdown layout** (see Sub-task 1C.3 output formatter):
 - Title + ISO timestamp.
 - Eval-runs window + range + total candidates.
-- Sensitivity matrix table (Variable | Sweep point | A+ | Watch | Skip | Excluded | dA+ | dWatch).
-- Notes paragraph (cross-coupling caveat; parity-at-current-value invariant).
+- Sensitivity matrix table: `| Variable | Kind | Sweep point | A+ | Watch | Skip | Excluded | dA+ | dWatch |`.
+- Notes section MUST contain (a) cross-coupling caveat (1D only), (b) parity-at-current-value invariant, (c) V1 LIMITATION paragraph explicitly stating threshold-variable deltas are intentionally ZERO and gate-variable deltas are real, (d) study writeup pointer.
 
 ### §D.2 Item 7 metrics-wiring-audit output
 
