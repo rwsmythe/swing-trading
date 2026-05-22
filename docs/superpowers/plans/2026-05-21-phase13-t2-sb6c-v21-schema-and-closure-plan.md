@@ -372,9 +372,9 @@ Window-match semantic: `pattern_evaluations.window_start_date <= pattern_exempla
 ```sql
 SELECT pe.pattern_class,
        COUNT(DISTINCT pe.id) AS denominator,
-       COUNT(DISTINCT t.id) AS trades_opened,
-       COUNT(DISTINCT CASE WHEN t.id IS NOT NULL AND <reached_1r predicate> THEN t.id END) AS reached_1r_count,
-       COUNT(DISTINCT CASE WHEN t.id IS NOT NULL AND <hit_stop predicate>   THEN t.id END) AS hit_stop_count
+       COUNT(DISTINCT CASE WHEN t.id IS NOT NULL THEN pe.id END) AS evaluations_with_trades,
+       COUNT(DISTINCT CASE WHEN t.id IS NOT NULL AND <reached_1r predicate> THEN pe.id END) AS reached_1r_count,
+       COUNT(DISTINCT CASE WHEN t.id IS NOT NULL AND <hit_stop predicate>   THEN pe.id END) AS hit_stop_count
 FROM pattern_evaluations pe
 INNER JOIN candidates c
     ON pe.ticker = c.ticker
@@ -392,7 +392,7 @@ GROUP BY pe.pattern_class
 HAVING denominator >= 5;
 ```
 
-(`COUNT(DISTINCT pe.id)` for denominator + `COUNT(DISTINCT t.id ... CASE WHEN ... THEN t.id END)` for numerator counts per Codex R2 MAJOR #1 closure — without DISTINCT, multiple exemplars overlapping one evaluation, OR multiple trades on one candidate, inflate the counts. `<reached_1r predicate>` and `<hit_stop predicate>` are OQ-6 bucketing predicates; computed via correlated subqueries against `fills` and OHLCV cache at executing-plans phase. Denominator suppression at n<5 LOCK preserved. Per pattern_exemplars Invariant #2 the source-vs-decision matrix admits `confirmed` for label_source IN `('curated_gold', 'claude_silver', 'codex_silver', 'closed_loop_review', 'organic_trade_history')` — all valid denominator participants. Discriminating regression test: plant 1 pattern_evaluation + 2 confirmed pattern_exemplars overlapping the same window + 2 trades on that candidate; assert denominator == 1 (NOT 4) and trades_opened == 2.)
+(Per Codex R3 MAJOR #1 closure: all numerator counts MUST be unit-aware in terms of `pe.id` (evaluations), NOT `t.id` (trades), because OQ-13 specifies denominator = `pattern_evaluations` rows + numerator = "subset of evaluations with trade/outcome". A pre-R3 `COUNT(DISTINCT t.id)` for trades_opened could produce ratios > 100% when one evaluation's candidate has 2+ trades both reaching 1R. Fix: numerator counts `COUNT(DISTINCT CASE WHEN <predicate> THEN pe.id END)` — counts EVALUATIONS satisfying the predicate, NOT individual trades. With 1 evaluation + 2 trades both hitting 1R, `evaluations_with_trades == 1` AND `reached_1r_count == 1` (both bounded by denominator). `<reached_1r predicate>` and `<hit_stop predicate>` are OQ-6 bucketing predicates; computed via correlated subqueries against `fills` and OHLCV cache at executing-plans phase. Denominator suppression at n<5 LOCK preserved. Per pattern_exemplars Invariant #2 the source-vs-decision matrix admits `confirmed` for label_source IN `('curated_gold', 'claude_silver', 'codex_silver', 'closed_loop_review', 'organic_trade_history')` — all valid denominator participants. Discriminating regression test: plant 1 pattern_evaluation + 2 confirmed pattern_exemplars overlapping the same window + 2 trades on that candidate; assert denominator == 1, evaluations_with_trades == 1 (NOT 2; per-evaluation unit; ratio bounded by denominator). Second discriminating test: plant 5 evaluations, 2 of which have trades hitting 1R; assert denominator == 5, reached_1r_count == 2, ratio = 0.4 (40%).)
 
 ### §D.4 Content-completeness audit (Expansion #6 BINDING per dispatch brief §3.1.6)
 
@@ -508,7 +508,7 @@ Baseline **5559 fast tests** UNCHANGED through this writing-plans phase (writing
 - **S8 (browser)**: `/patterns/queue` — confirm criterion 3 ranking matches current weather state (Gap B.6).
 - **S9 (browser; data-shaped)**: open a fresh trade from `/recommendations/` form for a current pipeline candidate where a `pattern_evaluations` row exists for the (run, ticker) tuple; confirm new trade row gets BOTH `candidate_id` AND `pattern_evaluation_id` populated. Also: open a fresh `manual_off_pipeline` trade entry; confirm new trade row gets `candidate_id IS NULL` AND `pattern_evaluation_id IS NULL`.
 - **S10 (browser; closed-loop)**: review the candidate at `/patterns/{candidate_id}/review` with `confirm` decision; confirm `pattern_exemplars` row is written with `label_source='organic_trade_history'` (Gap B.3).
-- **S11 (operator-paired post-merge; one-shot)**: operator runs `python -m swing.cli patterns_exemplars_backfill_labeler_evidence` against operator DB; subsequent `/patterns/exemplars` renders show populated `rule_criteria` + `narrative` (§1.5.2 amendment closure).
+- **S11 (operator-paired post-merge; one-shot)**: operator runs `python -m swing.cli patterns-exemplars-backfill-labeler-evidence` against operator DB; subsequent `/patterns/exemplars` renders show populated `rule_criteria` + `narrative` (§1.5.2 amendment closure). The CLI subcommand uses the Click-canonical hyphenated form `patterns-exemplars-backfill-labeler-evidence` (NOT the underscored Python function name `patterns_exemplars_backfill_labeler_evidence`) per the existing `swing/cli.py` convention (Click auto-converts function names to hyphen-separated subcommand names).
 
 ---
 
@@ -976,9 +976,11 @@ Commit message body enumerates: 11 Gap A tests + 6-8 §1.5.1 amendment tests = 1
 
 **Files:**
 - Modify: `swing/web/view_models/patterns/review_form.py` (Gap B.1 + B.2 — extend with `trend_template_state` + `volume_profile` fields + NEW `VolumeProfileRow` dataclass).
+- Modify: `swing/web/view_models/patterns/queue.py` (Gap B.6 — extend `build_patterns_queue_vm(...)` to accept `cfg` + thread `cfg.rs.benchmark_ticker` into `prioritize_candidates`).
 - Modify: `swing/web/templates/patterns/review.html.j2` (render new fields).
-- Modify: `swing/patterns/active_learning.py:prioritize_candidates` (Gap B.6 — criterion 3 weather-state-aware variant).
-- Modify: `swing/web/routes/patterns.py` (route handler populates VM extensions).
+- Modify: `swing/patterns/active_learning.py:prioritize_candidates` (Gap B.6 — signature extension `benchmark_ticker: str = "QQQ"` + criterion 3 weather-state-aware variant).
+- Modify: `swing/web/routes/patterns.py` (route handler populates VM extensions + threads `cfg` into `build_patterns_queue_vm`).
+- Modify: `swing/data/repos/pattern_exemplars.py` (§1.5.2 amendment — NEW `update_exemplar_labeler_evidence_json` helper).
 - Create: `swing/cli.py:patterns_exemplars_backfill_labeler_evidence` (§1.5.2 amendment — operator-invoked subcommand).
 - Create: `tests/web/test_routes/test_patterns_review_data_completeness.py` (Gap B.1 + B.2; 9 tests).
 - Modify: `tests/web/test_routes/test_patterns_queue.py` (Gap B.6; 4 tests).
@@ -1055,7 +1057,7 @@ def test_patterns_exemplars_backfill_labeler_evidence_synthesizes_rule_criteria_
 
 - [ ] **Step 2: Run tests; verify FAIL.**
 
-- [ ] **Step 3: Implement Gap B.1** — extend `PatternReviewFormVM` with `trend_template_state: str` (value domain `'stage_2' | 'undefined'` per Phase 13 V1 wrapper at `swing/patterns/foundation.py:745`). The VM builder reads via `swing.patterns.foundation.current_stage(conn, ticker=evaluation.ticker, asof_date=evaluation.window_end_date)` — using the pattern_evaluation's `window_end_date` as the trend-template snapshot anchor (deterministic; not session-anchor-bound; no CLAUDE.md gotcha applies). Template inserts `<span class="trend-template-{{ vm.trend_template_state }}">{{ vm.trend_template_state }}</span>` or similar render.
+- [ ] **Step 3: Implement Gap B.1** — extend `PatternReviewFormVM` with `trend_template_state: str` (value domain `'stage_2' | 'undefined'` per Phase 13 V1 wrapper at `swing/patterns/foundation.py:745`). The VM builder reads via `swing.patterns.foundation.current_stage(conn, ticker=evaluation.ticker, asof_date=date.fromisoformat(evaluation.window_end_date))` — using the pattern_evaluation's `window_end_date` (TEXT per migration 0020 line 248) parsed via `date.fromisoformat()` because `current_stage` signature requires a `date` object (not a string; calls `.isoformat()` internally per `swing/patterns/foundation.py:762`). Per Codex R3 MAJOR #2 closure: malformed `window_end_date` (rare; would indicate prior data corruption) raises `ValueError` at the `date.fromisoformat()` call; the VM builder should wrap in `try: ... except ValueError: trend_template_state = "undefined"` + WARN-log so a corrupt single row doesn't 500 the review form. Discriminating test: plant a row with `window_end_date = "not-a-date"`; assert VM populates `'undefined'` + WARN logged + page renders 200. Template inserts `<span class="trend-template-{{ vm.trend_template_state }}">{{ vm.trend_template_state }}</span>` or similar render.
 
 - [ ] **Step 4: Implement Gap B.2** — NEW `VolumeProfileRow` frozen dataclass at `swing/web/view_models/patterns/review_form.py`:
 
@@ -1285,14 +1287,14 @@ Register the CLI subcommand in the existing `swing.cli` registry per the existin
 - [ ] **Step 9: Commit** — `feat(phase13): Gap B no-schema + labeler_evidence backfill (T-A.6c.3)`
 
 ```bash
-git add swing/web/view_models/patterns/review_form.py swing/web/templates/patterns/review.html.j2 swing/patterns/active_learning.py swing/web/routes/patterns.py swing/cli.py swing/data/repos/pattern_exemplars.py tests/web/test_routes/test_patterns_review_data_completeness.py tests/web/test_routes/test_patterns_queue.py tests/cli/test_patterns_exemplars_backfill_labeler_evidence.py
+git add swing/web/view_models/patterns/review_form.py swing/web/view_models/patterns/queue.py swing/web/templates/patterns/review.html.j2 swing/patterns/active_learning.py swing/web/routes/patterns.py swing/data/repos/pattern_exemplars.py swing/cli.py tests/web/test_routes/test_patterns_review_data_completeness.py tests/web/test_routes/test_patterns_queue.py tests/cli/test_patterns_exemplars_backfill_labeler_evidence.py
 git commit -m "feat(phase13): Gap B no-schema + labeler_evidence backfill (T-A.6c.3)"
 ```
 
 Commit message body enumerates: 9 Gap B.1+B.2 + 4 Gap B.6 + 5 §1.5.2 amendment = 18 NEW; Path C backfill rule (synthesize rule_criteria from `pattern_exemplars.geometric_score_json` COLUMN; copy narrative from `geometric_evidence_narrative` payload key; preserve original keys; idempotent; fail-soft per row); NEW repo helper `update_exemplar_labeler_evidence_json` lands in T-A.6c.3 scope at `swing/data/repos/pattern_exemplars.py` (per Codex R2 MINOR #1); benchmark_ticker plumbed through `prioritize_candidates` + `build_patterns_queue_vm` for Gap B.6 (per Codex R2 MAJOR #3); Path A V2-banked.
 
 **Watch items:**
-- W9 (session-anchor read/write mismatch family) — Gap B.1 trend-template state lookup uses `get_latest(conn, ticker='^GSPC')` (backward-looking).
+- Gap B.1 trend-template state uses `swing.patterns.foundation.current_stage(conn, ticker, date.fromisoformat(window_end_date))` — window-bound + deterministic; NOT session-anchor-bound (per Codex R2 MAJOR #2 + R3 MAJOR #2 closure). The CLAUDE.md "Session-anchor read/write mismatch" gotcha does NOT apply here because there is no read/write anchor mismatch — both write (V1 doesn't write; this is read-only) and read use the evaluation's own window_end_date. Discriminating test for malformed window_end_date asserts graceful fallback to 'undefined' (not 500).
 - W16 (ASCII-only narrative + template literals) — labeler backfill emits ASCII-only.
 
 **Step 10 (operator-paired post-merge; tracked separately):** operator runs `python -m swing.cli patterns-exemplars-backfill-labeler-evidence` against operator DB to augment existing 34 exemplar payloads; subsequent `/patterns/exemplars` renders show populated rule_criteria + narrative. This step is operator-invoked AFTER merge; NOT part of the implementer's commit chain.
