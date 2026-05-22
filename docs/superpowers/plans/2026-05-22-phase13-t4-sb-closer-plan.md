@@ -171,19 +171,45 @@ from swing.config import Config
 def test_enumerate_sweep_variables_from_config():
     cfg = Config.from_defaults()
     variables = enumerate_variables(cfg)
-    # Trend-template min_passes is one variable; vcp acceptable-fail-count is another;
-    # risk per-criterion thresholds enumerated. Expect ~10-20 variables.
-    assert len(variables) >= 10
+    # Per spec §1.5.1 + R2 LOCK: 2 gate + 15 threshold = 17 variables.
+    assert len(variables) == 17
     names = {v.name for v in variables}
-    assert "trend_template.min_passes" in names
-    # Each variable carries kind, current_value, sweep_points.
+    expected_names = {
+        # 2 gate
+        "trend_template.min_passes",
+        "vcp.watch_max_fails",
+        # 3 trend_template threshold (allowed_miss_names + min_passes excluded)
+        "trend_template.rising_ma_period_days",
+        "trend_template.high_52w_margin_pct",
+        "trend_template.low_52w_min_pct",
+        # 8 vcp threshold
+        "vcp.prior_trend_min_pct",
+        "vcp.adr_min_pct",
+        "vcp.pullback_max_pct",
+        "vcp.proximity_max_pct",
+        "vcp.tightness_days_required",
+        "vcp.tightness_range_factor",
+        "vcp.orderliness_max_bar_ratio",
+        "vcp.orderliness_max_range_cv",
+        # 1 risk threshold
+        "risk.max_risk_pct",
+        # 3 rs threshold
+        "rs.horizon_weeks",
+        "rs.rs_rank_min_pass",
+        "rs.fallback_extreme_pct",
+    }
+    assert names == expected_names, f"missing: {expected_names - names}; extra: {names - expected_names}"
+    # Each variable carries valid kind + sweep anchor present.
+    gate_count = 0
     for v in variables:
         assert isinstance(v, SweepVariable)
-        assert v.kind in {"multiplicative", "additive", "discrete"}
+        assert v.kind in {"gate", "threshold_additive", "threshold_multiplicative"}
+        if v.kind == "gate":
+            gate_count += 1
         assert v.current_value is not None
         assert len(v.sweep_points) >= 3
-        # Current value MUST be among the sweep points (anchor).
         assert v.current_value in v.sweep_points
+    assert gate_count == 2  # invariant from R2 LOCK
 ```
 
 - [ ] **Step 1A.2: Run test to verify it fails**
@@ -229,9 +255,20 @@ from swing.config import Config
 @dataclass(frozen=True)
 class SweepVariable:
     name: str
-    kind: str  # "multiplicative" | "additive" | "discrete"
+    kind: str  # "gate" | "threshold_additive" | "threshold_multiplicative"
     current_value: float | int
     sweep_points: tuple[float | int, ...]
+
+    _ALLOWED_KINDS = frozenset(
+        {"gate", "threshold_additive", "threshold_multiplicative"}
+    )
+
+    def __post_init__(self) -> None:
+        if self.kind not in self._ALLOWED_KINDS:
+            raise ValueError(
+                f"SweepVariable.kind must be one of {sorted(self._ALLOWED_KINDS)}, "
+                f"got {self.kind!r}"
+            )
 
 
 _MULTIPLICATIVE_FACTORS = (0.5, 0.75, 1.0, 1.25, 1.5)
@@ -246,33 +283,46 @@ def _additive_sweep(current: int, delta: int = 2) -> tuple[int, ...]:
 
 
 def enumerate_variables(cfg: Config) -> tuple[SweepVariable, ...]:
-    """Enumerate all 18 sweep variables against the cfg shape at
+    """Enumerate all 17 sweep variables against the cfg shape at
     `swing/config.py` (TrendTemplate, VCP, Risk, RS dataclasses).
 
-    Includes 2 gate variables (trend_template.min_passes; vcp.watch_max_fails)
-    + 16 threshold variables. For threshold variables under V1, sweep_points
-    are enumerated but only the current_value entry reflects production
-    bucket distribution (sweep machinery documents the V1 limitation
-    per `_bucket_for_substituted` doc).
+    Includes 2 gate variables (`trend_template.min_passes`;
+    `vcp.watch_max_fails`) + 15 threshold variables:
+        - 3 trend_template numerics (rising_ma_period_days +
+          high_52w_margin_pct + low_52w_min_pct)
+        - 8 vcp numerics
+        - 1 risk numeric
+        - 3 rs numerics
+
+    NOT enumerated (V1):
+        - `trend_template.allowed_miss_names` (tuple-set; sweeping over
+          set-membership is V2 because it's not a numeric/additive grid)
+        - `rs.benchmark_ticker` (string identifier, not a threshold)
+
+    For threshold variables under V1, sweep_points are ENUMERATED but
+    `_bucket_for_substituted` returns persisted_bucket for them (parity-
+    preserving). Output formatter MUST surface this distinction explicitly
+    via the `kind` column + per-row notes.
     """
     variables: list[SweepVariable] = [
         # Two gate variables (V1 full bucket-level resimulation supported).
         SweepVariable(
             name="trend_template.min_passes",
-            kind="additive",
+            kind="gate",  # full bucket resimulation
             current_value=cfg.trend_template.min_passes,
             sweep_points=_additive_sweep(cfg.trend_template.min_passes),
         ),
         SweepVariable(
             name="vcp.watch_max_fails",
-            kind="additive",
+            kind="gate",
             current_value=2,  # bucket_for at swing/evaluation/scoring.py:35
             sweep_points=_additive_sweep(2, delta=2),
         ),
-        # Trend-template numeric thresholds (4).
+        # Trend-template numeric thresholds (3; not 4 — `min_passes` is a
+        # gate variable above; `allowed_miss_names` is V2 set-sweep).
         SweepVariable(
             name="trend_template.rising_ma_period_days",
-            kind="additive",
+            kind="threshold_additive",
             current_value=cfg.trend_template.rising_ma_period_days,
             sweep_points=_additive_sweep(
                 cfg.trend_template.rising_ma_period_days, delta=10,
@@ -280,7 +330,7 @@ def enumerate_variables(cfg: Config) -> tuple[SweepVariable, ...]:
         ),
         SweepVariable(
             name="trend_template.high_52w_margin_pct",
-            kind="multiplicative",
+            kind="threshold_multiplicative",
             current_value=cfg.trend_template.high_52w_margin_pct,
             sweep_points=_multiplicative_sweep(
                 cfg.trend_template.high_52w_margin_pct,
@@ -288,7 +338,7 @@ def enumerate_variables(cfg: Config) -> tuple[SweepVariable, ...]:
         ),
         SweepVariable(
             name="trend_template.low_52w_min_pct",
-            kind="multiplicative",
+            kind="threshold_multiplicative",
             current_value=cfg.trend_template.low_52w_min_pct,
             sweep_points=_multiplicative_sweep(
                 cfg.trend_template.low_52w_min_pct,
@@ -296,64 +346,64 @@ def enumerate_variables(cfg: Config) -> tuple[SweepVariable, ...]:
         ),
         # VCP numeric thresholds (8).
         SweepVariable(
-            name="vcp.prior_trend_min_pct", kind="multiplicative",
+            name="vcp.prior_trend_min_pct", kind="threshold_multiplicative",
             current_value=cfg.vcp.prior_trend_min_pct,
             sweep_points=_multiplicative_sweep(cfg.vcp.prior_trend_min_pct),
         ),
         SweepVariable(
-            name="vcp.adr_min_pct", kind="multiplicative",
+            name="vcp.adr_min_pct", kind="threshold_multiplicative",
             current_value=cfg.vcp.adr_min_pct,
             sweep_points=_multiplicative_sweep(cfg.vcp.adr_min_pct),
         ),
         SweepVariable(
-            name="vcp.pullback_max_pct", kind="multiplicative",
+            name="vcp.pullback_max_pct", kind="threshold_multiplicative",
             current_value=cfg.vcp.pullback_max_pct,
             sweep_points=_multiplicative_sweep(cfg.vcp.pullback_max_pct),
         ),
         SweepVariable(
-            name="vcp.proximity_max_pct", kind="multiplicative",
+            name="vcp.proximity_max_pct", kind="threshold_multiplicative",
             current_value=cfg.vcp.proximity_max_pct,
             sweep_points=_multiplicative_sweep(cfg.vcp.proximity_max_pct),
         ),
         SweepVariable(
-            name="vcp.tightness_days_required", kind="additive",
+            name="vcp.tightness_days_required", kind="threshold_additive",
             current_value=cfg.vcp.tightness_days_required,
             sweep_points=_additive_sweep(cfg.vcp.tightness_days_required),
         ),
         SweepVariable(
-            name="vcp.tightness_range_factor", kind="multiplicative",
+            name="vcp.tightness_range_factor", kind="threshold_multiplicative",
             current_value=cfg.vcp.tightness_range_factor,
             sweep_points=_multiplicative_sweep(cfg.vcp.tightness_range_factor),
         ),
         SweepVariable(
-            name="vcp.orderliness_max_bar_ratio", kind="multiplicative",
+            name="vcp.orderliness_max_bar_ratio", kind="threshold_multiplicative",
             current_value=cfg.vcp.orderliness_max_bar_ratio,
             sweep_points=_multiplicative_sweep(cfg.vcp.orderliness_max_bar_ratio),
         ),
         SweepVariable(
-            name="vcp.orderliness_max_range_cv", kind="multiplicative",
+            name="vcp.orderliness_max_range_cv", kind="threshold_multiplicative",
             current_value=cfg.vcp.orderliness_max_range_cv,
             sweep_points=_multiplicative_sweep(cfg.vcp.orderliness_max_range_cv),
         ),
         # Risk numeric threshold (1).
         SweepVariable(
-            name="risk.max_risk_pct", kind="multiplicative",
+            name="risk.max_risk_pct", kind="threshold_multiplicative",
             current_value=cfg.risk.max_risk_pct,
             sweep_points=_multiplicative_sweep(cfg.risk.max_risk_pct),
         ),
         # RS numeric thresholds (3 — note: cfg.rs ALSO read at recon).
         SweepVariable(
-            name="rs.horizon_weeks", kind="additive",
+            name="rs.horizon_weeks", kind="threshold_additive",
             current_value=cfg.rs.horizon_weeks,
             sweep_points=_additive_sweep(cfg.rs.horizon_weeks),
         ),
         SweepVariable(
-            name="rs.rs_rank_min_pass", kind="additive",
+            name="rs.rs_rank_min_pass", kind="threshold_additive",
             current_value=cfg.rs.rs_rank_min_pass,
             sweep_points=_additive_sweep(cfg.rs.rs_rank_min_pass, delta=10),
         ),
         SweepVariable(
-            name="rs.fallback_extreme_pct", kind="multiplicative",
+            name="rs.fallback_extreme_pct", kind="threshold_multiplicative",
             current_value=cfg.rs.fallback_extreme_pct,
             sweep_points=_multiplicative_sweep(cfg.rs.fallback_extreme_pct),
         ),
@@ -361,7 +411,10 @@ def enumerate_variables(cfg: Config) -> tuple[SweepVariable, ...]:
     return tuple(variables)
 ```
 
-The enumeration is concrete (no placeholders): 2 gate vars + 4 trend_template + 8 vcp + 1 risk + 3 rs = 18 variables. The implementer's only execution-time judgment is whether to ALSO emit the `cfg.trend_template.allowed_miss_names` tuple as a discrete-sweep variable (V1 NO; sweep over set-membership is V2; the V1 sweep substrate does not resimulate this dimension and would mislead operator).
+The enumeration is concrete (no placeholders): **2 gate vars + 3 trend_template + 8 vcp + 1 risk + 3 rs = 17 variables.** Per R2 LOCK the exact 17-name set is asserted via `expected_names` set-equality at Sub-task 1A.1 test, NOT the loose `>=10` of the original R1 draft. Excluded explicitly:
+- `cfg.trend_template.allowed_miss_names` (tuple-set; sweeping over set-membership is V2 because it's not a numeric grid).
+- `cfg.rs.benchmark_ticker` (string identifier, not a threshold).
+- `cfg.trend_template.min_passes` counted ONCE (as a gate var; NOT also under trend_template thresholds).
 
 - [ ] **Step 1A.4: Run test to verify it passes**
 
@@ -504,13 +557,6 @@ def run_sensitivity_sweep(
     candidate_ids = {r[0] for r in rows}
     total_candidates = len(candidate_ids)
 
-    # Capture the production trend_template.min_passes BEFORE running the
-    # sweep — `_bucket_for_substituted` reads it when sweeping
-    # vcp.watch_max_fails so the gate matches the prod cfg, not a hard-coded
-    # constant (per Codex R1 Critical #2 LOCK).
-    global _PROD_TREND_TEMPLATE_MIN_PASSES_AT_RECON
-    _PROD_TREND_TEMPLATE_MIN_PASSES_AT_RECON = cfg.trend_template.min_passes
-
     # Per-variable sweep: for each sweep point, recompute buckets per
     # candidate using the variable's value substituted in.
     entries: list[SweepEntry] = []
@@ -594,12 +640,14 @@ def _recompute_counts_at(
         cand[layer].append({"name": name, "result": result, "value": value, "rule": rule})
 
     allowed_miss = set(cfg.trend_template.allowed_miss_names)
+    prod_min_passes = cfg.trend_template.min_passes
     for cid, c in by_candidate.items():
         new_bucket = _bucket_for_substituted(
             tt=c["tt"], vcp=c["vcp"], risk=c["risk"],
             variable_name=variable_name, sweep_value=sweep_value,
             persisted_bucket=c["bucket"],
             allowed_miss_names=allowed_miss,
+            prod_trend_template_min_passes=prod_min_passes,
         )
         counts[new_bucket] = counts.get(new_bucket, 0) + 1
     return counts
@@ -614,6 +662,7 @@ def _bucket_for_substituted(
     sweep_value: float | int,
     persisted_bucket: str,
     allowed_miss_names: set[str],
+    prod_trend_template_min_passes: int,
 ) -> str:
     """Mirror of `swing.evaluation.scoring.bucket_for` for the 2 gate
     variables. For threshold variables, returns `persisted_bucket`
@@ -642,8 +691,9 @@ def _bucket_for_substituted(
         return _vcp_to_bucket(vcp, watch_max_fails=2)
 
     if variable_name == "vcp.watch_max_fails":
-        # Production trend-template gate.
-        if tt_passes < _PROD_TREND_TEMPLATE_MIN_PASSES_AT_RECON:
+        # Production trend-template gate (passed from cfg via caller,
+        # NOT a module global — avoids order/concurrency hazards).
+        if tt_passes < prod_trend_template_min_passes:
             return "skip"
         if not all(n in allowed_miss_names for n in tt_fails):
             return "skip"
@@ -652,12 +702,6 @@ def _bucket_for_substituted(
     # Threshold-variable sweep entry — V1 returns persisted_bucket
     # (resimulation requires V2 criterion evaluator harness).
     return persisted_bucket
-
-
-# Captured at module load against the cfg used by the harness — so the
-# vcp.watch_max_fails sweep applies the SAME trend-template gate the
-# operator's prod pipeline uses (not a hard-coded constant).
-_PROD_TREND_TEMPLATE_MIN_PASSES_AT_RECON: int = 7  # placeholder; recon-time read at run_harness invocation
 
 
 def _vcp_to_bucket(vcp: list[dict], *, watch_max_fails: int) -> str:
@@ -669,7 +713,48 @@ def _vcp_to_bucket(vcp: list[dict], *, watch_max_fails: int) -> str:
     return "skip"
 ```
 
-**V1 limitation contract (BINDING; encoded in output formatter):** the markdown output's "Notes" section MUST explicitly state: "Threshold-variable rows (16 of 18 variables — all except `trend_template.min_passes` and `vcp.watch_max_fails`) report the persisted bucket distribution at each sweep point; per-criterion re-evaluation against original OHLCV bars at the substituted threshold is V2 scope (banked at `research/method-records/aplus-criteria-calibration.md` V2 dependencies). The delta_aplus / delta_watch columns for threshold variables are therefore always 0; the variable enumeration + sweep_point grid serves as a margin-of-failure scaffold to inform V2 dispatch."
+**V1 limitation contract (BINDING; encoded in BOTH the formatter AND a discriminating test):**
+
+The markdown output's `## Sensitivity matrix` table MUST include a `Kind` column rendered immediately after `Variable`. Cell values are the `SweepVariable.kind` tag verbatim: `gate` for the 2 bucket-resimulating variables; `threshold_additive` / `threshold_multiplicative` for the 15 V1-parity-preserving rows.
+
+The `## Notes` section MUST contain a STANDALONE paragraph (asserted by test in §1C.1 with substring `"Threshold variables (kind = threshold_*)"`):
+
+> "V1 LIMITATION: threshold variables (kind = threshold_additive | threshold_multiplicative — 15 of 17 rows) report the persisted bucket distribution at each sweep point; their `delta_aplus` and `delta_watch` columns are intentionally ZERO. True per-criterion bucket resimulation against the substituted threshold requires the V2 OHLCV criterion-evaluator harness (banked at `research/method-records/aplus-criteria-calibration.md` V2 dependencies). Gate variables (kind = gate — 2 of 17 rows: `trend_template.min_passes`, `vcp.watch_max_fails`) DO produce real bucket-redistribution counts via faithful `bucket_for` resimulation."
+
+The method record at `research/method-records/aplus-criteria-calibration.md` MUST cite the same gate-vs-threshold distinction in its `Outputs` section AND its `Validation` section ("threshold-variable deltas asserted == 0 in V1 discriminating test; gate-variable deltas asserted non-zero on planted divergent fixture").
+
+Discriminating test pattern at `tests/research/test_aplus_sensitivity_output.py`:
+
+```python
+def test_markdown_output_distinguishes_gate_from_threshold():
+    result = _build_synthetic_result_with_mixed_kinds()
+    md_path = Path(tmp_path) / "out.md"
+    write_sensitivity_markdown(result, md_path)
+    text = md_path.read_text(encoding="utf-8")
+    # Header includes Kind column.
+    assert "| Variable | Kind | Sweep point" in text
+    # V1 limitation paragraph present verbatim.
+    assert "Threshold variables (kind = threshold_*)" in text or \
+           "Threshold variables (kind = threshold_additive | threshold_multiplicative" in text
+    assert "delta_aplus` and `delta_watch` columns are intentionally ZERO" in text
+
+def test_threshold_variables_have_zero_deltas_in_sweep_result():
+    """Invariant: threshold-variable sweep entries have delta_aplus ==
+    delta_watch == 0 (parity-preserving V1 behavior). Gate variables
+    may have non-zero deltas."""
+    conn = sqlite3.connect(":memory:")
+    _plant_eval_runs_with_known_distribution(conn, aplus=1, watch=2, skip=4)
+    cfg = Config.from_defaults()
+    variables = enumerate_variables(cfg)
+    result = run_sensitivity_sweep(
+        conn, variables=variables, cfg=cfg, eval_runs_window=10,
+    )
+    for entry in result.entries:
+        var = next(v for v in variables if v.name == entry.variable_name)
+        if var.kind.startswith("threshold_"):
+            assert entry.delta_aplus == 0, f"{entry.variable_name}@{entry.sweep_point}"
+            assert entry.delta_watch == 0
+```
 
 For T-T4.SB.1 Sub-task 1B.5 (parity invariant test), the test continues to work because the `_PROD_TREND_TEMPLATE_MIN_PASSES_AT_RECON` constant is read from cfg at run_harness entry; the test invokes `run_sensitivity_sweep` against an in-memory cfg + DB so the gate constant matches the planted rows.
 ```
@@ -2432,18 +2517,26 @@ def watchlist_row(request: Request, ticker: str):
         raise HTTPException(status_code=404, detail=f"ticker {ticker} not on watchlist")
 
     # JIT cache lookup + live render on miss (Item 6 fix via Item 5 helper).
-    conn = request.app.state.db_conn  # implementer verifies state attribute name
-    ohlcv_cache = getattr(request.app.state, "ohlcv_cache", None)
-    anchor = _latest_completed_pipeline_run(conn)  # Option A LOCK
+    # DB connection pattern mirrors swing/web/routes/account.py + charts.py:
+    # acquire a fresh sqlite3 connection from cfg.paths.db_path per-request
+    # (NOT app.state.db_conn — that attribute does not exist on app.state).
     chart_bytes = None
-    if ohlcv_cache is not None and anchor is not None:
-        chart_bytes = get_or_render_surface(
-            conn=conn, ohlcv_cache=ohlcv_cache,
-            surface="watchlist_row", ticker=ticker.upper(),
-            pipeline_run_id=anchor.run_id,
-            data_asof_date=anchor.data_asof_date,
-            ma_lines=[20, 50],  # uniformity LOCK with pipeline pre-gen
-        )
+    ohlcv_cache = getattr(request.app.state, "ohlcv_cache", None)
+    if ohlcv_cache is not None:
+        import sqlite3
+        conn = sqlite3.connect(str(cfg.paths.db_path))
+        try:
+            anchor = _latest_completed_pipeline_run(conn)  # Option A LOCK
+            if anchor is not None:
+                chart_bytes = get_or_render_surface(
+                    conn=conn, ohlcv_cache=ohlcv_cache,
+                    surface="watchlist_row", ticker=ticker.upper(),
+                    pipeline_run_id=anchor.run_id,
+                    data_asof_date=anchor.data_asof_date,
+                    ma_lines=[20, 50],  # uniformity LOCK with pipeline pre-gen
+                )
+        finally:
+            conn.close()
 
     return request.app.state.templates.TemplateResponse(
         request, "partials/watchlist_row.html.j2",
@@ -3801,7 +3894,7 @@ All 7 expansions + 4 NEW candidate refinements (per dispatch brief §3.1):
 ### §I.3 Process discipline BINDING
 
 - **NO Co-Authored-By footer** on any commit (~378+ cumulative streak). Cite per fresh forward-binding lesson #7 from Phase 12 Sub-sub-bundle C.B 2026-05-15 in every commit message.
-- **`python -m swing.cli` from worktree cwd** (NOT bare `swing`).
+- **`python -m swing.cli` from worktree cwd** for implementer-side test invocations (NOT bare `swing` — `pip install -e` from main HEAD's entry point is NOT guaranteed to point at the worktree's copy). Operator-facing examples in this plan (e.g., `swing diagnose aplus-sensitivity --eval-runs 20`) intentionally use the operator-installed CLI form because that is what the operator types after merge.
 - **ASCII-only on stdout-flowing CLI paths** + template narrative text (Windows cp1252 stdout safety).
 - **TDD per task** (failing test → minimal impl → see pass → commit).
 - **Edit tool for per-file edits**; Write tool reserved for net-new files.
@@ -3817,7 +3910,11 @@ All 7 expansions + 4 NEW candidate refinements (per dispatch brief §3.1):
 
 **Scope:** Item 1 diagnostic expanded from snapshot shape to 1D parameter-sweep sensitivity harness. Per-variable sweep range follows first-order heuristics (multiplicative for ratios, additive for counts, discrete for enum). Output: sensitivity matrix CSV + markdown analysis.
 
-**Compute cost (acceptable):** ~10-20 variables × 5-7 sweep points × ~5000 candidate_criteria rows × N=20 eval_runs = ~5-14M bucket_for recomputations. Pure Python arithmetic against pre-stored criterion values; ~seconds-to-minutes total. No DB writes; no yfinance fetches; no full pipeline runs.
+**Compute cost (V1):** 17 variables split as:
+- **Gate** (2 vars × 5 sweep points × ~5000 candidate_criteria rows × N=20 eval_runs) = ~1M `_bucket_for_substituted` calls — real bucket-redistribution arithmetic.
+- **Threshold** (15 vars × 5 sweep points × ~5000 rows × 20 runs) = ~7.5M parity-preserving rows — each row is a constant-time `return persisted_bucket` short-circuit (no real resimulation).
+
+Total: ~seconds-to-minutes pure Python. No DB writes; no yfinance fetches; no full pipeline runs. The threshold-row compute is essentially a count + format pass; cost is dominated by markdown emission, not arithmetic.
 
 **Discriminating tests** (per Sub-tasks 1A.1 + 1B.1 + 1B.5 + 1C.1):
 - variable enumeration produces >= 10 variables; current_value among sweep_points.
@@ -4007,7 +4104,7 @@ Per superpowers:writing-plans skill self-review checklist:
 - §K Phase 13 closure marker → §L here.
 - §M closing notes → §A.4 file map + §F test budget.
 
-**2. Placeholder scan:** searched for "TBD", "TODO", "implement later" — none present in step bodies. **POST-R1 UPDATE:** the earlier `_emit_*_thresholds` placeholder triple was REMOVED at R1 Critical #1 resolution; the enumeration is now fully inline at Sub-task 1A.3 emitting 18 concrete `SweepVariable` rows (2 gate + 4 trend_template + 8 vcp + 1 risk + 3 rs) derived from real `Config` dataclass shapes at `swing/config.py`. The 3 remaining "TBD" references in §K + §L are explicit deferral citations for the post-merge study writeup findings (operator-populated when running the harness against operator DB); these are NOT implementation-step placeholders.
+**2. Placeholder scan:** searched for "TBD", "TODO", "implement later" — none present in step bodies. **POST-R2 UPDATE:** R1 removed the `_emit_*_thresholds` placeholder triple; R2 corrected the count to 17 (NOT 18) — 2 gate + 3 trend_template + 8 vcp + 1 risk + 3 rs — and introduced the `kind` taxonomy distinguishing gate (full resimulation) from threshold variables (parity-preserving V1 limitation). The Sub-task 1A.1 test now asserts the exact 17-name set via set-equality (NOT a loose `>=10`). The 3 remaining "TBD" references in §K + §L are explicit deferral citations for the post-merge study writeup findings (operator-populated when running the harness against operator DB); these are NOT implementation-step placeholders.
 
 **3. Type consistency:**
 - `SweepVariable.kind` ∈ `{"multiplicative", "additive", "discrete"}` consistent across enumeration + sweep + output.
