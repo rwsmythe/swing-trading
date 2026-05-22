@@ -44,8 +44,9 @@ _BASE_LAYOUT_PAGES: tuple[str, ...] = (
     "/reviews/pending",
 )
 
-# 9 metrics pages (umbrella + 8 surfaces) — each populates the field
-# via the BaseLayoutVM mixin in ``metrics/shared.py``.
+# 10 metrics pages (umbrella + 8 Phase 10 surfaces + 1 Phase 13 T2.SB6b
+# T-A.6.5 9th tile) — each populates the field via the BaseLayoutVM mixin
+# in ``metrics/shared.py``.
 _METRICS_PAGES: tuple[str, ...] = (
     "/metrics",
     "/metrics/trade-process",
@@ -56,6 +57,7 @@ _METRICS_PAGES: tuple[str, ...] = (
     "/metrics/maturity-stage",
     "/metrics/identification-funnel",
     "/metrics/process-grade-trend",
+    "/metrics/pattern-outcomes",
 )
 
 

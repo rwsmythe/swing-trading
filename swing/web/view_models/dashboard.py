@@ -364,6 +364,23 @@ class DashboardVM:
     # Phase 12.5 #2 T-2.7 — banner link to FIRST pending-ambiguity discrepancy
     # resolve form. None when no pending-ambiguity row exists.
     banner_resolve_link: str | None = None
+    # Phase 13 T2.SB6b T-A.6.6 — market weather mini-chart SVG bytes (TOP
+    # placement per spec section 4.5 + plan section C.3 LOCK). Populated
+    # from the chart_renders cache (surface='market_weather') when a
+    # recent pipeline run wrote one; None otherwise. Template renders an
+    # empty placeholder per Phase 10 graceful empty-state discipline.
+    dashboard_weather_chart_svg_bytes: bytes | None = None
+    # Phase 13 T2.SB6b T-A.6.6 — per-ticker thumbnail SVG bytes for the
+    # watchlist top-5 + open-position rows. Keyed by ticker; populated
+    # from the chart_renders cache (surface='watchlist_row' for
+    # watchlist tickers; surface='position_detail' for open trades) when
+    # a recent pipeline run wrote one. Empty dict when cache absent.
+    watchlist_chart_svg_bytes: Mapping[str, bytes] = field(
+        default_factory=dict,
+    )
+    position_chart_svg_bytes: Mapping[str, bytes] = field(
+        default_factory=dict,
+    )
 
     def __post_init__(self) -> None:
         if self.banner_resolve_link is not None:
@@ -746,10 +763,52 @@ def build_dashboard(
             else:
                 pipeline_run_id = None
                 pipeline_eval_id = None
+            # Phase 13 T2.SB6b T-A.6.6 — pull cached chart SVG bytes from
+            # the T2.SB6a substrate cache (chart_renders table). All cache
+            # reads are cheap (single SELECT each); None when no row.
+            dashboard_weather_chart_svg_bytes: bytes | None = None
+            watchlist_chart_svg_bytes_by_ticker: dict[str, bytes] = {}
+            position_chart_svg_bytes_by_ticker: dict[str, bytes] = {}
+            if pipeline_run_id is not None:
+                from swing.data.repos.chart_renders import (
+                    get_cached_chart_svg,
+                )
+                dashboard_weather_chart_svg_bytes = get_cached_chart_svg(
+                    conn,
+                    ticker=cfg.rs.benchmark_ticker,
+                    surface="market_weather",
+                    pipeline_run_id=pipeline_run_id,
+                )
             recs = list_for_session(
                 conn, action_session, evaluation_run_id=pipeline_eval_id,
             )
             watchlist = list_active_watchlist(conn)
+            # Phase 13 T2.SB6b T-A.6.6 — populate per-ticker chart SVG bytes
+            # from chart_renders cache (T2.SB6a substrate verbatim).
+            if pipeline_run_id is not None:
+                from swing.data.repos.chart_renders import (
+                    get_cached_chart_svg,
+                )
+                for entry in watchlist:
+                    svg = get_cached_chart_svg(
+                        conn, ticker=entry.ticker,
+                        surface="watchlist_row",
+                        pipeline_run_id=pipeline_run_id,
+                    )
+                    if svg is not None:
+                        watchlist_chart_svg_bytes_by_ticker[entry.ticker] = (
+                            svg
+                        )
+                for trade in open_trades:
+                    svg = get_cached_chart_svg(
+                        conn, ticker=trade.ticker,
+                        surface="position_detail",
+                        pipeline_run_id=None,
+                    )
+                    if svg is not None:
+                        position_chart_svg_bytes_by_ticker[trade.ticker] = (
+                            svg
+                        )
             # Weather is keyed by data_asof_date (last completed session);
             # action_session is forward-looking (next session). Query by
             # ticker only — the latest classification for that ticker is the
@@ -1300,6 +1359,9 @@ def build_dashboard(
         unresolved_material_discrepancies_count=unresolved_material_count,
         recent_multi_leg_auto_correction_count=recent_multi_leg_count,
         banner_resolve_link=banner_resolve_link,
+        dashboard_weather_chart_svg_bytes=dashboard_weather_chart_svg_bytes,
+        watchlist_chart_svg_bytes=watchlist_chart_svg_bytes_by_ticker,
+        position_chart_svg_bytes=position_chart_svg_bytes_by_ticker,
     )
 
 

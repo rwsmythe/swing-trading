@@ -1,0 +1,57 @@
+{% extends "base.html.j2" %}
+{% block title %}Pattern review queue - Swing Trading{% endblock %}
+{% block content %}
+<section class="patterns-queue">
+  <h1>Pattern review queue</h1>
+  <p class="muted">
+    Phase 13 T2.SB6b active-learning prioritized review queue per spec
+    section 5.10 lines 796-801. Top {{ vm.top_k }} candidates by
+    4-criterion ranking.
+  </p>
+
+  {% if vm.empty_advisory %}
+  <aside class="banner banner-info" data-banner="patterns-queue-empty">
+    {{ vm.empty_advisory }}
+  </aside>
+  {% endif %}
+
+  {% if vm.candidates %}
+  <table class="patterns-queue-table" data-section="candidates">
+    <thead>
+      <tr>
+        <th>candidate_id</th>
+        <th>ticker</th>
+        <th>pattern_class</th>
+        <th>geometric_score</th>
+        <th>template_match_score</th>
+        <th>priority_reason</th>
+        <th>priority_score</th>
+        <th>action</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for cand in vm.candidates %}
+      <tr data-candidate-id="{{ cand.candidate_id }}">
+        <td>{{ cand.candidate_id }}</td>
+        <td>{{ cand.ticker }}</td>
+        <td>{{ cand.pattern_class }}</td>
+        <td>{{ "%.3f"|format(cand.geometric_score) }}</td>
+        <td>
+          {% if cand.template_match_score is not none %}
+            {{ "%.3f"|format(cand.template_match_score) }}
+          {% else %}
+            -
+          {% endif %}
+        </td>
+        <td>{{ cand.priority_reason }}</td>
+        <td>{{ "%.3f"|format(cand.priority_score) }}</td>
+        <td>
+          <a href="/patterns/{{ cand.candidate_id }}/review">review</a>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
+{% endblock %}
