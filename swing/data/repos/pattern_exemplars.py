@@ -17,6 +17,7 @@ on construction.
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 
 from swing.data.models import PatternExemplar
@@ -169,3 +170,24 @@ def list_exemplars(
         tuple(params),
     ).fetchall()
     return [_row_to_exemplar(r) for r in rows]
+
+
+def update_exemplar_labeler_evidence_json(
+    conn: sqlite3.Connection, exemplar_id: int, new_json: str,
+) -> None:
+    """Update ``labeler_evidence_json`` for a single exemplar.
+
+    Phase 13 T2.SB6c T-A.6c.3 — §1.5.2 amendment (Path C backfill).
+    Caller wraps in ``with conn:`` per caller-tx repo contract.
+
+    Validates JSON parses (raises ``json.JSONDecodeError`` on malformed
+    payload); raises ``ValueError`` when no row matches ``exemplar_id``.
+    """
+    json.loads(new_json)  # validates; raises JSONDecodeError if malformed
+    cur = conn.execute(
+        "UPDATE pattern_exemplars SET labeler_evidence_json = ? "
+        "WHERE id = ?",
+        (new_json, exemplar_id),
+    )
+    if cur.rowcount == 0:
+        raise ValueError(f"pattern_exemplar id={exemplar_id} not found")

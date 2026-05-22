@@ -383,6 +383,7 @@ def patterns_review_page(request: Request, candidate_id: int) -> Response:
         vm = build_patterns_review_form_vm(
             conn, candidate_id=candidate_id,
             session_date=_session_date_str(),
+            cfg=cfg,
         )
     finally:
         conn.close()
@@ -610,7 +611,7 @@ def patterns_queue_page(request: Request) -> Response:
     conn = connect(cfg.paths.db_path)
     try:
         vm = build_patterns_queue_vm(
-            conn, session_date=_session_date_str(), top_k=20,
+            conn, session_date=_session_date_str(), top_k=20, cfg=cfg,
         )
     finally:
         conn.close()

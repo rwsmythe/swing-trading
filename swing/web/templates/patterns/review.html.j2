@@ -79,7 +79,18 @@
 
     <li class="checklist-item" data-item="volume-profile">
       <h2>6. Recent volume profile</h2>
+      {% if vm.volume_profile is not none %}
+      <span class="volume-profile">
+        recent 30-session volume sum:
+        {{ vm.volume_profile.recent_30session_volume_sum }};
+        prior 50d avg volume:
+        {{ "%.0f"|format(vm.volume_profile.prior_50day_avg_volume) }};
+        ratio:
+        <span class="volume-profile-ratio">{{ "%.1f"|format(vm.volume_profile.ratio_pct) }}%</span>
+      </span>
+      {% else %}
       <span class="volume-profile">{{ vm.volume_profile_text }}</span>
+      {% endif %}
     </li>
 
     <li class="checklist-item" data-item="uncertainty-reason">
