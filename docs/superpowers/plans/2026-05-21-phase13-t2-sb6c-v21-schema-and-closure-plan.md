@@ -229,13 +229,15 @@ T-A.6c.2 closes the loop. Watch items per dispatch brief §3.5b:
 
 Per dispatch brief §1.5.2: all 34 existing pattern_exemplars rows carry `labeler_evidence_json` with keys `['confidence', 'evaluation', 'geometric_evidence_narrative']` — MISSING the `rule_criteria` + `narrative` keys that T-A.6.6b's enhanced `/patterns/exemplars` rendering consumes. Page renders graceful "(no rule_criteria payload available)" / "(no narrative payload available)" placeholders per design.
 
-T-A.6c.3 ships Path C (pragmatic backfill). Watch items per dispatch brief §3.5c:
+T-A.6c.3 ships Path C (pragmatic backfill). Watch items per dispatch brief §3.5c (REVISED per Codex R1 MAJOR #2 closure — source is dedicated COLUMN, NOT a key inside the labeler_evidence_json payload):
 
-- Synthesis rule for `rule_criteria` array: enumerate per-criterion entries derived from `geometric_score_json` (5-detector rule pass/fail + threshold + tolerance per spec §5.2-§5.6 patterns); preserve existing structural_evidence_json keys verbatim.
-- Synthesis rule for `narrative`: copy `geometric_evidence_narrative` verbatim into a NEW `narrative` key (preserve original `geometric_evidence_narrative` key for audit-trail; do NOT delete).
+- Synthesis rule for `rule_criteria` array: enumerate per-criterion entries derived from the dedicated `pattern_exemplars.geometric_score_json` COLUMN (verified at migration 0020 line 94) — 5-detector rule pass/fail + threshold + tolerance per spec §5.2-§5.6 patterns. NOT from `payload.get("geometric_score_json")` because existing 34 exemplars' `labeler_evidence_json` payload carries only `['confidence', 'evaluation', 'geometric_evidence_narrative']` keys. Preserve existing structural_evidence_json keys verbatim.
+- Synthesis rule for `narrative`: copy `geometric_evidence_narrative` (the existing payload key) verbatim into a NEW `narrative` key (preserve original `geometric_evidence_narrative` key for audit-trail; do NOT delete).
+- Invariant #5 (migration 0020 lines 149-160) LOCK respected: skip rows where `labeler_evidence_json IS NULL` (label_source IN ('closed_loop_review', 'organic_trade_history', 'synthetic', 'perturbation') class; nothing to augment).
 - Idempotency: second run is no-op on already-augmented payloads (detect via `rule_criteria` AND `narrative` keys already present); preserves first-run output exactly.
-- Fail-soft per row: exception in single-row synthesis WARN-logs + skips that row; continues remaining rows; final summary reports `(augmented: N; skipped: M; reasons: ...)`.
+- Fail-soft per row: exception in single-row synthesis WARN-logs + skips that row; continues remaining rows; final summary reports `(augmented: N; skipped: M)`.
 - Operator-invoked subcommand at `swing/cli.py:patterns_exemplars_backfill_labeler_evidence`; ASCII-only output per Windows cp1252 stdout safety.
+- NEW repo helper `update_exemplar_labeler_evidence_json(conn, exemplar_id, new_json)` lands in T-A.6c.3 scope at `swing/data/repos/pattern_exemplars.py` (existing repo has `insert_exemplar` + `get_exemplar_by_id` + `list_exemplars`; no update helper exists pre-T-A.6c.3 per Codex R1 MINOR #1 audit).
 - Path A (labeler subagent emit contract widening) banked V2 per §I.4 — fresh exemplars labeled post-T2.SB6c executing-plans will need the V2 contract extension.
 
 ### §C.5 Anchor-threading scope at T-A.6c.4 (OQ-12 CLOSURE-COMMITTED; per brainstorm spec §2.2)
@@ -299,7 +301,7 @@ The existing POST handler at `swing/web/routes/trades.py:1095` hardcodes `entry_
 | **B.3** POST `/patterns/{candidate_id}/review` label_source split (URL parameter named `candidate_id` per shipped T2.SB6b code; value is a `pattern_evaluations.id`) | §5.10 lines 785-790 | YES — Delta A | POST handler at `swing/web/routes/patterns.py:patterns_review_post` (T2.SB6b T-A.6.3) extends per §D.3 cross-row lookup discipline. If row exists (per the SQL in §D.3) AND operator decision is `confirm`, emit `label_source='organic_trade_history'`; else emit `label_source='closed_loop_review'`. | RESOLVED via Delta A |
 | **B.4** Review form outcome distribution bucketing | §5.10 line 775 | YES — Delta A | `PatternReviewFormVM` extend `OutcomeDistributionRow` with `reached_1r_pct: float | None` + `hit_stop_pct: float | None` (None when n<5 per honesty.suppress_for_n). Compute per OQ-6 thresholds. See §D.3 cohort scope. | RESOLVED via Delta A |
 | **B.5** Metric tile reached_1r + hit_stop | plan §G.9 T-A.6.5 + spec §5.10 line 775 | YES — Delta A | `swing/metrics/pattern_outcomes.py:build_pattern_outcome_rows` extend `PatternOutcomeRow` with `reached_1r_count + reached_1r_pct + hit_stop_count + hit_stop_pct` fields. LEFT JOIN `pattern_evaluations` to `trades` via `candidate_id`. Wilson-CI per Phase 10 honesty.wilson_ci; suppression at n<5 per honesty.suppress_for_n. | RESOLVED via Delta A |
-| **B.6** Queue criterion 3 weather-state-aware | §5.10 line 799 | NO | `swing/patterns/active_learning.py:prioritize_candidates` extend criterion 3 (`underrepresented_regime`) to consume current `weather_runs.weather_runs_id` via `get_latest(conn, ticker='^GSPC')` (dashboard market-weather ticker); compare per-pattern_class exemplar count against the SAME-weather-state historical baseline. | LIVE (no schema dep) |
+| **B.6** Queue criterion 3 weather-state-aware | §5.10 line 799 | NO | `swing/patterns/active_learning.py:prioritize_candidates` extend criterion 3 (`underrepresented_regime`) to consume current `weather_runs.status` value (column-verified against `swing/data/migrations/0003_phase2_pipeline_trades.sql:4-15`; values 'Bullish'/'Caution'/'Bearish'; ticker per `cfg.rs.benchmark_ticker` default 'QQQ'). Per-pattern_class exemplar count against the SAME-`status` historical baseline derived via JOIN to `weather_runs` at-or-before `pattern_exemplars.created_at` (no new column; read-side computation per `pattern_exemplars` schema audit — no `weather_state_at_labeling` column exists). | LIVE (no schema dep) |
 | **§1.5.2 amendment** labeler_evidence_json one-shot backfill | dispatch brief §1.5.2 | NO | NEW `swing/cli.py:patterns_exemplars_backfill_labeler_evidence` operator-invoked subcommand per §C.4. | LIVE (Path C; Path A V2-banked) |
 
 ### §D.3 Cross-row lookup discipline (Expansion #7 BINDING per dispatch brief §3.1.7)
@@ -342,7 +344,7 @@ LIMIT 1;
 
 If row exists AND operator decision is `confirm`, emit `label_source='organic_trade_history'`; else `label_source='closed_loop_review'`. **Pre-empt T2.SB6b R1 MAJOR #3 ticker-proxy regression via discriminating test**: plant 2 trades on same ticker (one from candidate A, one from candidate B); review candidate A's pattern; assert ONLY candidate A's trade qualifies as `organic_trade_history`.
 
-**Gap B.4 lookup scope** (outcome distribution): per-candidate cohort; "last N similar-score candidates" means candidates with composite_score in `[evaluation.composite_score - 0.1, evaluation.composite_score + 0.1]` for the SAME pattern_class. Trade lookup is per-candidate via `trades.candidate_id`. SQL skeleton:
+**Gap B.4 lookup scope** (outcome distribution): per-candidate cohort; "last N similar-score candidates" means candidates with composite_score in `[evaluation.composite_score - 0.1, evaluation.composite_score + 0.1]` for the SAME pattern_class. Trade lookup is per-candidate via `trades.candidate_id`. SQL skeleton (column-verified against `swing/data/migrations/0020_phase13_charts_patterns_autofill_usability.sql:230-250` — `pattern_evaluations.id` is the PK column name, NOT `evaluation_id` per Codex R1 CRITICAL #1 catch):
 
 ```sql
 SELECT t.id, t.realized_R_if_plan_followed, t.state, t.entry_price, t.initial_stop, t.entry_date
@@ -354,14 +356,18 @@ INNER JOIN candidates c
 INNER JOIN trades t ON t.candidate_id = c.id
 WHERE pe.pattern_class = ?
   AND pe.composite_score BETWEEN ? AND ?
-  AND pe.evaluation_id != ?
-ORDER BY pe.evaluation_id DESC
+  AND pe.id != ?
+ORDER BY pe.id DESC
 LIMIT ?;
 ```
 
-(Where parameters are `pattern_class`, `composite_score - 0.1`, `composite_score + 0.1`, current `evaluation_id` (excluded), N similar candidates limit. The implementer at executing-plans phase MAY simplify if a join hint surfaces cleaner SQL — but the per-candidate join via `trades.candidate_id` is BINDING.)
+(Where parameters are `pattern_class`, `composite_score - 0.1`, `composite_score + 0.1`, current `pattern_evaluations.id` (excluded), N similar candidates limit. The implementer at executing-plans phase MAY simplify if a join hint surfaces cleaner SQL — but the per-candidate join via `trades.candidate_id` is BINDING.)
 
-**Gap B.5 lookup scope** (metric tile): per-pattern_class cohort; LEFT JOIN denominator = all `pattern_evaluations` rows for the pattern_class WHERE `EXISTS (pattern_exemplars row with final_decision='confirmed' for same (ticker, window))` (OQ-13 LOCK). Numerator = subset that has `trades.candidate_id` populated AND outcome bucket met per OQ-6 thresholds. SQL skeleton:
+**Gap B.5 lookup scope** (metric tile): per-pattern_class cohort; LEFT JOIN denominator = all `pattern_evaluations` rows for the pattern_class WHERE a confirmed `pattern_exemplars` row exists for the SAME `(ticker, pattern_class, window)` tuple (OQ-13 LOCK + Codex R1 MAJOR #4 closure — denominator MUST match on pattern_class + window, NOT just ticker, to avoid contaminating with unrelated historical exemplars). Numerator = subset that has `trades.candidate_id` populated AND outcome bucket met per OQ-6 thresholds.
+
+Confirmed-pattern_class semantic: `pattern_exemplars.final_decision='confirmed'` AND `pattern_exemplars.proposed_pattern_class = pattern_evaluations.pattern_class`; per migration 0020 Invariant #1 `final_pattern_class IS NULL` when `final_decision != 'relabeled'`, so for `confirmed` exemplars the operator's confirmed class equals `proposed_pattern_class`. For `relabeled` exemplars (a different decision than `confirmed`; not part of the denominator since OQ-13 LOCK requires `final_decision='confirmed'`), the operator's confirmed class would be `final_pattern_class`.
+
+Window-match semantic: `pattern_evaluations.window_start_date <= pattern_exemplars.end_date AND pattern_evaluations.window_end_date >= pattern_exemplars.start_date` (interval overlap; column-verified against migration 0020 `pattern_evaluations` lines 247-248 `window_start_date / window_end_date` + `pattern_exemplars` lines 68-69 `start_date / end_date`). SQL skeleton:
 
 ```sql
 SELECT pe.pattern_class,
@@ -375,14 +381,18 @@ INNER JOIN candidates c
    AND pe.pipeline_run_id IN (
        SELECT id FROM pipeline_runs WHERE evaluation_run_id = c.evaluation_run_id)
 INNER JOIN pattern_exemplars px
-    ON px.ticker = c.ticker AND px.final_decision = 'confirmed'
+    ON px.ticker = pe.ticker
+   AND px.proposed_pattern_class = pe.pattern_class
+   AND px.final_decision = 'confirmed'
+   AND pe.window_start_date <= px.end_date
+   AND pe.window_end_date >= px.start_date
 LEFT JOIN trades t ON t.candidate_id = c.id
 WHERE pe.pattern_class = ?
 GROUP BY pe.pattern_class
 HAVING denominator >= 5;
 ```
 
-(`<reached_1r predicate>` and `<hit_stop predicate>` are OQ-6 bucketing predicates; computed via correlated subqueries against `fills` and OHLCV cache at executing-plans phase. Denominator suppression at n<5 LOCK preserved.)
+(`<reached_1r predicate>` and `<hit_stop predicate>` are OQ-6 bucketing predicates; computed via correlated subqueries against `fills` and OHLCV cache at executing-plans phase. Denominator suppression at n<5 LOCK preserved. Per pattern_exemplars Invariant #2 the source-vs-decision matrix admits `confirmed` for label_source IN `('curated_gold', 'claude_silver', 'codex_silver', 'closed_loop_review', 'organic_trade_history')` — all valid denominator participants.)
 
 ### §D.4 Content-completeness audit (Expansion #6 BINDING per dispatch brief §3.1.6)
 
@@ -522,9 +532,21 @@ Baseline **5559 fast tests** UNCHANGED through this writing-plans phase (writing
 - LOCK preserved: schema + dataclass + read-path mapper + write-path INSERT extension + ALL tests land in ONE commit per §A.14.
 - ruff check swing/ clean.
 
-- [ ] **Step 1: Write 23 failing tests** at `tests/data/test_v21_migration_trade_backlinks.py` + `tests/data/test_phase13_t2_sb6c_cross_bundle_pin_row_12.py`.
+Per superpowers:writing-plans bite-sized-step discipline + Codex R1 MAJOR #3 closure: the test-authoring work splits into 5 sub-steps (1a-1e), each ~5-10 minutes (one test-group per sub-step; tests within a group share fixture pattern). The skeleton below is for sub-step 1a's first test; the remaining tests in each sub-step follow the same shape with parameter variations per the brainstorm spec §2.1 + §2.2 + §B.5 + §E enumerations.
 
-The 23 tests fall into 5 groups; each group lands the brainstorm spec's enumerated discriminating tests verbatim. Test bodies use the existing fixture pattern from `tests/data/test_v20_migration_*.py` (Phase 13 T2.SB1 T-A.1.1 precedent). Sample skeleton for one test per group; remaining 22 follow the same shape with parameter variations:
+- [ ] **Step 1a: Write 8 Delta A discriminating tests** at `tests/data/test_v21_migration_trade_backlinks.py`.
+
+Tests per brainstorm spec §2.1 enumeration:
+  - `test_v21_migration_adds_candidate_id_column_at_position_52`
+  - `test_v21_migration_adds_fk_to_candidates_id_on_delete_set_null`
+  - `test_v21_migration_creates_idx_trades_candidate_id`
+  - `test_v21_migration_backfills_existing_trades_with_null_candidate_id`
+  - `test_row_to_trade_populates_candidate_id_from_row_52`
+  - `test_row_to_trade_populates_candidate_id_None_when_null_column`
+  - `test_insert_trade_with_candidate_id_persists_via_schema_aware_path`
+  - `test_fk_cascade_on_candidates_delete_sets_trade_candidate_id_null`
+
+Sample skeleton (first test; bodies for remaining 7 follow same fixture pattern):
 
 ```python
 import sqlite3
@@ -533,7 +555,7 @@ import pytest
 from swing.data.db import run_migrations, EXPECTED_SCHEMA_VERSION
 
 def test_v21_migration_adds_candidate_id_column_at_position_52(v20_db):
-    """Delta A — schema position locked at row[52] per OQ-9."""
+    """Delta A - schema position locked at row[52] per OQ-9."""
     run_migrations(v20_db, target_version=21)
     cols = v20_db.execute("PRAGMA table_info(trades)").fetchall()
     # PRAGMA table_info row shape: (cid, name, type, notnull, dflt_value, pk)
@@ -544,21 +566,33 @@ def test_v21_migration_adds_candidate_id_column_at_position_52(v20_db):
     assert by_name["candidate_id"][3] == 0  # nullable
 ```
 
-The remaining 22 tests follow the brainstorm spec §2.1 + §2.2 + §B.5 + §E enumerations:
+- [ ] **Step 1b: Write 9 Delta B discriminating tests** at the same test file. Tests per brainstorm spec §2.2 enumeration:
+  - `test_v21_migration_adds_pattern_evaluation_id_column_at_position_53`
+  - `test_v21_migration_adds_fk_to_pattern_evaluations_id_on_delete_set_null`
+  - `test_v21_migration_creates_idx_trades_pattern_evaluation_id`
+  - `test_v21_migration_backfills_existing_trades_with_null_pattern_evaluation_id`
+  - `test_row_to_trade_populates_pattern_evaluation_id_from_row_53`
+  - `test_row_to_trade_populates_pattern_evaluation_id_None_when_null_column`
+  - `test_insert_trade_with_pattern_evaluation_id_persists`
+  - `test_fk_cascade_on_pattern_evaluations_delete_sets_trade_pattern_evaluation_id_null`
+  - `test_pattern_evaluations_direct_delete_sets_trade_pattern_evaluation_id_null` (per Codex R1 MAJOR #4 — direct row deletion, NOT chained cascade through pipeline_runs which is blocked by pre-existing trades.chart_pattern_classification_pipeline_run_id FK NO ACTION).
 
-  - 8 Delta A tests per brainstorm spec §2.1 (column at row[52]; FK ON DELETE SET NULL; index idx_trades_candidate_id; NULL backfill; mapper extracts row[52]; mapper handles NULL; INSERT roundtrip; FK cascade on candidates DELETE).
-  - 9 Delta B tests per §2.2 (column at row[53]; FK ON DELETE SET NULL; index idx_trades_pattern_evaluation_id; NULL backfill; mapper extracts row[53]; mapper handles NULL; INSERT roundtrip; FK cascade on pattern_evaluations DELETE; pattern_evaluations DIRECT delete sets NULL).
-  - 4 backup-gate tests per §B.5 (filename `swing-pre-phase13-sb6c-migration-<ISO>.db` created on v20->v21; strict-equality gate fires at `pre_version==20`; multi-version-jump v19->v21 skips SB6c-specific backup; EXPECTED_SCHEMA_VERSION constant is 21).
-  - 2 cross-bundle pin tests per §E (parametrized over delta_label).
+- [ ] **Step 1c: Write 4 backup-gate discriminating tests** at the same test file. Tests per brainstorm spec §B.5 + §2.4 enumeration:
+  - `test_run_migrations_v20_to_v21_creates_backup_with_correct_filename` (asserts file `swing-pre-phase13-sb6c-migration-<ISO>.db` exists in backup_dir before migration body runs).
+  - `test_run_migrations_v20_to_v21_strict_equality_pre_version_predicate` (asserts gate fires at pre_version==20; does NOT fire at pre_version==19 — consistent with existing `swing/data/db.py:575-581` semantics).
+  - `test_run_migrations_v19_to_v21_skips_sb6c_backup_uses_phase13_v20_backup_only` (multi-version jump v19->v21: applies BOTH v20 + v21 migrations; SB6c-specific backup is NOT written because pre_version==19 at SB6c gate; v20 boundary's own backup IS written).
+  - `test_expected_schema_version_constant_is_21_post_sb6c` (asserts `swing.data.db.EXPECTED_SCHEMA_VERSION == 21`).
 
-- [ ] **Step 2: Run tests; verify FAIL.**
+- [ ] **Step 1d: Write 2 cross-bundle pin parametrized tests** at `tests/data/test_phase13_t2_sb6c_cross_bundle_pin_row_12.py` per §E shape (parametrized over delta_label).
+
+- [ ] **Step 1e: Run all 23 new tests; verify ALL FAIL.**
 
 Run: `python -m pytest tests/data/test_v21_migration_trade_backlinks.py tests/data/test_phase13_t2_sb6c_cross_bundle_pin_row_12.py -v`
 Expected: All 23 FAIL with errors like `no such column: candidate_id` or `assert "candidate_id" in by_name` (FAIL).
 
-- [ ] **Step 3: Author migration file** `swing/data/migrations/0021_phase13_t2_sb6c_trades_backlinks.sql` per §B.4 body verbatim.
+- [ ] **Step 2: Author migration file** `swing/data/migrations/0021_phase13_t2_sb6c_trades_backlinks.sql` per §B.4 body verbatim.
 
-- [ ] **Step 4: Extend `swing/data/models.py:Trade`** with 2 new fields at the end of the field list (preserve existing field order; add default None):
+- [ ] **Step 3: Extend `swing/data/models.py:Trade`** with 2 new fields at the end of the field list (preserve existing field order; add default None):
 
 ```python
 @dataclass(frozen=True)
@@ -570,7 +604,7 @@ class Trade:
     pattern_evaluation_id: int | None = None
 ```
 
-- [ ] **Step 5: Extend `swing/data/repos/trades.py:_TRADE_SELECT_COLS`** (line 47-66) with the 2 new columns appended after `planned_target_R`:
+- [ ] **Step 4: Extend `swing/data/repos/trades.py:_TRADE_SELECT_COLS`** (line 47-66) with the 2 new columns appended after `planned_target_R`:
 
 ```python
 _TRADE_SELECT_COLS = """
@@ -618,7 +652,7 @@ def _row_to_trade(row: tuple) -> Trade:
     )
 ```
 
-- [ ] **Step 6: Extend `swing/data/repos/trades.py:insert_trade_with_event`** (line 102-189) with the SVAI runtime branch per §B.3. The branch tests for BOTH new columns present (NOT just one); legacy path used when either is missing:
+- [ ] **Step 5: Extend `swing/data/repos/trades.py:insert_trade_with_event`** (line 102-189) with the SVAI runtime branch per §B.3. The branch tests for BOTH new columns present (NOT just one); legacy path used when either is missing:
 
 ```python
 def insert_trade_with_event(
@@ -679,7 +713,7 @@ def insert_trade_with_event(
 
 (The implementer at executing-plans phase fills in the full column lists from the existing `insert_trade_with_event` body — copy-paste-extend — both branches must spell out the full column list per the fills.py:53-89 precedent.)
 
-- [ ] **Step 7: Extend `swing/data/db.py`** per §B.5:
+- [ ] **Step 6: Extend `swing/data/db.py`** per §B.5:
 
 (a) Line 39: bump `EXPECTED_SCHEMA_VERSION = 20` to `EXPECTED_SCHEMA_VERSION = 21`.
 
@@ -790,23 +824,23 @@ def run_migrations(
     # ... rest of run_migrations body unchanged ...
 ```
 
-- [ ] **Step 8: Run N-mirror audit + extend any direct-SQL trade column readers found.**
+- [ ] **Step 7: Run N-mirror audit + extend any direct-SQL trade column readers found.**
 
 Run: `Grep "SELECT .* FROM trades" swing/` (excluding `_TRADE_SELECT_COLS`-using callsites). Expected ZERO additional callsites — `_row_to_trade` is canonical. If any direct readers are found, extend them in this same commit. Enumerate findings in the commit message body.
 
-- [ ] **Step 9: Run all 23 tests; verify PASS.**
+- [ ] **Step 8: Run all 23 tests; verify PASS.**
 
 Run: `python -m pytest tests/data/test_v21_migration_trade_backlinks.py tests/data/test_phase13_t2_sb6c_cross_bundle_pin_row_12.py -v`
 Expected: All 23 PASS.
 
-- [ ] **Step 10: Run full fast-test suite + ruff check; verify regression-free.**
+- [ ] **Step 9: Run full fast-test suite + ruff check; verify regression-free.**
 
 Run: `python -m pytest -m "not slow" -q swing/ tests/`
 Expected: 5559 + 23 = 5582 fast tests PASS, 0 fail.
 Run: `ruff check swing/`
 Expected: All checks passed.
 
-- [ ] **Step 11: Commit** — `feat(phase13): v21 migration + trades backlinks atomic landing (T-A.6c.1)`
+- [ ] **Step 10: Commit** — `feat(phase13): v21 migration + trades backlinks atomic landing (T-A.6c.1)`
 
 ```bash
 git add swing/data/migrations/0021_phase13_t2_sb6c_trades_backlinks.sql swing/data/models.py swing/data/repos/trades.py swing/data/db.py tests/data/test_v21_migration_trade_backlinks.py tests/data/test_phase13_t2_sb6c_cross_bundle_pin_row_12.py
@@ -1029,42 +1063,71 @@ class VolumeProfileRow:
 
 Read OHLCV via `swing.web.ohlcv_cache.get_or_fetch(ticker, window_days=80)` (OQ-14 LOCK); compute 30-session sum from latest 30 bars + 50d avg from preceding 50 bars; ratio_pct = `100.0 * recent / prior`. Template renders inline SVG sparkline (SVG bytes don't flow through stdout per Windows cp1252 safety).
 
-- [ ] **Step 5: Implement Gap B.6** — extend `swing/patterns/active_learning.py:prioritize_candidates` criterion 3 (`underrepresented_regime`). Consume `weather_runs.weather_state` via `get_latest(conn, ticker='^GSPC')`; compare per-pattern_class exemplar count against the SAME-weather-state historical baseline (instead of total exemplar count proxy). Spec §5.10 line 799 LOCK: "low historical exemplar count for current weather state".
+- [ ] **Step 5: Implement Gap B.6** — extend `swing/patterns/active_learning.py:prioritize_candidates` criterion 3 (`underrepresented_regime`). The `pattern_exemplars` table has NO `weather_state_at_labeling` column (verified against `swing/data/migrations/0020_phase13_charts_patterns_autofill_usability.sql:64-106`). Read-side derivation: JOIN to `weather_runs` at-or-before `pattern_exemplars.created_at` per Codex R1 CRITICAL #1 closure. Spec §5.10 line 799 LOCK: "low historical exemplar count for current weather state".
+
+Column-verified schema (per `swing/data/migrations/0003_phase2_pipeline_trades.sql:4-15`): `weather_runs` columns `id`, `run_ts` (ISO timestamp), `asof_date`, `ticker` (default 'QQQ'; per-cfg via `cfg.rs.benchmark_ticker`), `status` (CHECK values: 'Bullish', 'Caution', 'Bearish'), close, sma10/20/50, etc.
 
 ```python
 def prioritize_candidates(conn: sqlite3.Connection, top_k: int = 20) -> list[QueueCandidateRow]:
     """... existing docstring ...
 
     Criterion 3 (underrepresented_regime) — weather-state-aware per spec §5.10 line 799.
-    For each candidate's pattern_class, count exemplars in the SAME weather_state as
-    the current market regime (via get_latest(conn, ticker='^GSPC').weather_state);
-    rank candidates whose pattern_class has the LOWEST same-weather-state count
-    (with tie-break by candidate id descending).
+    For each candidate's pattern_class, count confirmed exemplars whose labeling-time
+    weather status matches the CURRENT market weather status. Rank candidates whose
+    pattern_class has the LOWEST same-status count (with tie-break by candidate id desc).
     """
-    current_weather = get_latest(conn, ticker="^GSPC")
-    weather_state = current_weather.weather_state if current_weather else None
-    # ... existing criterion 1 + 2 + 4 logic unchanged ...
-    # Criterion 3 query:
-    exemplar_counts = conn.execute(
-        """SELECT pattern_class, COUNT(*) AS n
-           FROM pattern_exemplars
-           WHERE final_decision = 'confirmed'
-             AND weather_state_at_labeling = ?
-           GROUP BY pattern_class""",
-        (weather_state,),
-    ).fetchall() if weather_state else []
-    # ... fold counts into per-candidate priority ranking ...
+    # Current weather status — use the canonical Phase 8 getter; ticker per cfg.
+    benchmark_ticker = _resolve_benchmark_ticker(conn)  # cfg.rs.benchmark_ticker; default 'QQQ'
+    current_weather = get_latest(conn, ticker=benchmark_ticker)
+    current_status = current_weather.status if current_weather else None
+
+    # Criterion 3 query: per-pattern_class count of confirmed exemplars whose
+    # labeling-time weather status (derived via at-or-before JOIN on weather_runs)
+    # matches the current market status. NULL status for pre-Phase-8 exemplars
+    # or no-weather-row-at-time excluded from the count (conservative).
+    exemplar_counts: dict[str, int] = {}
+    if current_status is not None:
+        rows = conn.execute(
+            """
+            SELECT px.proposed_pattern_class AS pattern_class, COUNT(*) AS n
+            FROM pattern_exemplars px
+            INNER JOIN (
+                SELECT px2.id AS exemplar_id, wr.status AS labeling_status
+                FROM pattern_exemplars px2
+                INNER JOIN weather_runs wr
+                    ON wr.ticker = ?
+                   AND wr.run_ts = (
+                       SELECT MAX(run_ts) FROM weather_runs
+                       WHERE ticker = ? AND run_ts <= px2.created_at
+                   )
+            ) lwr ON lwr.exemplar_id = px.id
+            WHERE px.final_decision = 'confirmed'
+              AND lwr.labeling_status = ?
+            GROUP BY px.proposed_pattern_class
+            """,
+            (benchmark_ticker, benchmark_ticker, current_status),
+        ).fetchall()
+        exemplar_counts = {row[0]: row[1] for row in rows}
+
+    # ... fold counts into per-candidate priority ranking; pattern_class with
+    # the LOWEST count gets the highest criterion-3 priority weight ...
 ```
 
-(The implementer at executing-plans phase verifies the actual column name `weather_state_at_labeling` exists on `pattern_exemplars` per v20 migration 0020; if absent, the implementer SUBSTITUTES the canonical column reference OR raises a writing-plans plan correction. Per Expansion #4 NEW refinement, the SQL is column-verified against migrations at executing-plans phase.)
+(Per Expansion #4 NEW refinement, the SQL skeleton's columns are verified at writing-plans phase. The `_resolve_benchmark_ticker(conn)` helper either reads `cfg.rs.benchmark_ticker` directly OR uses the existing pattern at `swing/pipeline/runner.py:2626` `get_latest_for_date(conn, data_asof, ticker=cfg.rs.benchmark_ticker)`; implementer at executing-plans phase verifies the canonical resolver. Per Phase 13 closure intent, this is a read-side derivation — NO new column required.)
 
-- [ ] **Step 6: Implement §1.5.2 amendment** — add to `swing/cli.py`:
+- [ ] **Step 6: Implement §1.5.2 amendment** — add to `swing/cli.py`. **CRITICAL per Codex R1 MAJOR #2 closure**: the `rule_criteria` synthesis source is the dedicated COLUMN `pattern_exemplars.geometric_score_json` (verified at migration 0020 line 94), NOT a key inside the `labeler_evidence_json` payload (existing 34 exemplars carry payload keys `['confidence', 'evaluation', 'geometric_evidence_narrative']` only). Pass the COLUMN value into the synthesizer.
+
+Also add a NEW repo helper `update_exemplar_labeler_evidence_json(conn, exemplar_id, new_json)` to `swing/data/repos/pattern_exemplars.py` at T-A.6c.3 scope (existing repo exposes `insert_exemplar` + `get_exemplar_by_id` + `list_exemplars` per Codex R1 MINOR #1 audit; no update helper exists). The helper is a thin `UPDATE pattern_exemplars SET labeler_evidence_json = ? WHERE id = ?` executed inside the caller's transaction.
+
+Note re Invariant #5 (migration 0020 lines 149-160): `labeler_evidence_json` is constrained NOT-NULL when `label_source IN ('claude_silver', 'codex_silver', 'curated_gold')` and NULL when `label_source IN ('closed_loop_review', 'organic_trade_history', 'synthetic', 'perturbation')`. The backfill only writes to rows where `labeler_evidence_json IS NOT NULL` (else the augmented payload would violate the NULL-required path). The backfill loop MUST filter to `WHERE labeler_evidence_json IS NOT NULL` (or rely on `list_exemplars` returning the column + skip rows where column is NULL).
 
 ```python
 import json
 import click
 from swing.data.db import open_main_db
-from swing.data.repos.pattern_exemplars import list_all_exemplars, update_exemplar_labeler_evidence_json
+from swing.data.repos.pattern_exemplars import (
+    list_exemplars, update_exemplar_labeler_evidence_json,
+)
 
 @click.command("patterns-exemplars-backfill-labeler-evidence")
 def patterns_exemplars_backfill_labeler_evidence() -> None:
@@ -1082,12 +1145,21 @@ def patterns_exemplars_backfill_labeler_evidence_run(conn) -> tuple[int, int]:
     """Backfill runner; returns (augmented_count, skipped_count). Idempotent.
 
     Synthesis rule (Path C per dispatch brief §1.5.2):
-      rule_criteria: enumerate from geometric_score_json per-rule pass/fail/threshold/tolerance
-                     per spec §5.2-§5.6 patterns.
-      narrative: copy from geometric_evidence_narrative (preserve original key).
+      rule_criteria: enumerate from row.geometric_score_json COLUMN per-rule
+                     pass/fail/threshold/tolerance per spec §5.2-§5.6 patterns.
+                     NOT from a key inside labeler_evidence_json (Codex R1 MAJOR #2 closure).
+      narrative: copy from labeler_evidence_json payload's geometric_evidence_narrative
+                 key (the only narrative-shaped value present in the existing 3-key payload
+                 shape `['confidence', 'evaluation', 'geometric_evidence_narrative']`).
+
+    Skips rows where labeler_evidence_json IS NULL (Invariant #5 LOCK: those rows
+    have label_source in the NULL-required source class).
     """
     augmented, skipped = 0, 0
-    for row in list_all_exemplars(conn):
+    for row in list_exemplars(conn):
+        if row.labeler_evidence_json is None:
+            # Invariant #5 NULL-required source class; nothing to augment.
+            continue
         try:
             payload = json.loads(row.labeler_evidence_json)
             if "rule_criteria" in payload and "narrative" in payload:
@@ -1097,9 +1169,12 @@ def patterns_exemplars_backfill_labeler_evidence_run(conn) -> tuple[int, int]:
                 payload["narrative"] = payload.get("geometric_evidence_narrative", "")
             if "rule_criteria" not in payload:
                 payload["rule_criteria"] = _synthesize_rule_criteria_from_geometric_score(
-                    payload.get("geometric_score_json"),
+                    row.geometric_score_json,
                 )
-            update_exemplar_labeler_evidence_json(conn, row.id, json.dumps(payload, sort_keys=True))
+            with conn:
+                update_exemplar_labeler_evidence_json(
+                    conn, row.id, json.dumps(payload, sort_keys=True),
+                )
             augmented += 1
         except Exception as exc:  # fail-soft per row
             logger.warning("backfill skipped exemplar %s: %s", row.id, exc)
@@ -1112,30 +1187,57 @@ def _synthesize_rule_criteria_from_geometric_score(
 ) -> list[dict]:
     """Synthesize rule_criteria array from geometric_score_json per-rule entries.
 
-    Each entry: {"name": str, "status": "pass"|"fail", "evidence_value": str,
-                 "threshold": str, "tolerance": str | None}.
+    Input: the geometric_score_json TEXT column value (NOT a key inside
+           labeler_evidence_json). Existing exemplars have this column populated
+           per Invariant #4 for label_source 'closed_loop_review', etc.; the
+           34 existing exemplars' geometric_score_json values were emitted by
+           the original silver-labeler dispatch + carry rule breakdown.
+    Output: list of {"name": str, "status": "pass"|"fail", "evidence_value": str,
+                     "threshold": str, "tolerance": str | None} entries.
     """
     if not geometric_score_json:
         return []
     parsed = json.loads(geometric_score_json)
     criteria: list[dict] = []
-    # geometric_score_json shape varies per pattern_class; implementer
-    # verifies against existing pattern_exemplars sample at executing-plans
-    # phase via `python -m swing.cli inspect-pattern-exemplars-sample`
-    # OR by reading sample rows directly. The synthesis rule enumerates
-    # the per-rule entries present in the score breakdown.
+    # geometric_score_json shape varies per pattern_class but follows the
+    # convention established at T2.SB1 silver-labeler emit contract: a top-level
+    # "rules" dict OR a "criteria" array per the pattern's detector module
+    # (verify exact shape against operator's sample rows at executing-plans
+    # phase by reading a candidate row directly; the implementer notes the
+    # actual shape in the executing-plans return report).
     for rule_name, rule_result in (parsed.get("rules") or {}).items():
         criteria.append({
             "name": rule_name,
             "status": "pass" if rule_result.get("pass") else "fail",
             "evidence_value": str(rule_result.get("value", "")),
             "threshold": str(rule_result.get("threshold", "")),
-            "tolerance": str(rule_result.get("tolerance")) if rule_result.get("tolerance") else None,
+            "tolerance": (
+                str(rule_result.get("tolerance"))
+                if rule_result.get("tolerance") is not None else None
+            ),
         })
     return criteria
 ```
 
-(The exact `geometric_score_json` shape MUST be verified at executing-plans phase by reading a sample row; the synthesis rule above is the BINDING design but the field names inside the JSON may vary slightly. Implementer notes the verification at executing-plans Step 6 + adjusts the inner per-rule extraction if needed.)
+**NEW repo helper** to add to `swing/data/repos/pattern_exemplars.py` (lands at T-A.6c.3; verify against existing repo's `insert_exemplar`/`get_exemplar_by_id`/`list_exemplars` signatures at executing-plans phase):
+
+```python
+def update_exemplar_labeler_evidence_json(
+    conn: sqlite3.Connection, exemplar_id: int, new_json: str,
+) -> None:
+    """Update labeler_evidence_json for a single exemplar. Caller wraps in `with conn:`.
+
+    Validates JSON parses; raises ValueError on missing exemplar id.
+    Used by the one-shot labeler_evidence_json backfill subcommand (T-A.6c.3).
+    """
+    json.loads(new_json)  # validates; raises json.JSONDecodeError if malformed
+    cur = conn.execute(
+        "UPDATE pattern_exemplars SET labeler_evidence_json = ? WHERE id = ?",
+        (new_json, exemplar_id),
+    )
+    if cur.rowcount == 0:
+        raise ValueError(f"pattern_exemplar id={exemplar_id} not found")
+```
 
 Register the CLI subcommand in the existing `swing.cli` registry per the existing pattern (verify at executing-plans phase via `Grep "def patterns_" swing/cli.py`).
 
@@ -1183,9 +1285,9 @@ Commit message body enumerates: 9 Gap B.1+B.2 + 4 Gap B.6 + 5 §1.5.2 amendment 
 - Existing prior-task fast tests still PASS (no regression).
 - ruff check swing/ clean.
 
-- [ ] **Step 1: Write 31 failing tests.**
+Per superpowers:writing-plans bite-sized-step discipline + Codex R1 MAJOR #3 closure: the 31-test authoring work splits into 5 sub-steps (1a-1e) grouped by behavior, plus 1f run-fail. Each sub-step is ~5-10 minutes of authoring with tests sharing fixture pattern within the group.
 
-The 31 tests fall into 5 groups:
+- [ ] **Step 1a: Write 5 failing Gap B.3 label_source split tests.**
 
 Group A — Gap B.3 label_source split (5 tests):
 
@@ -1232,6 +1334,8 @@ def test_patterns_review_post_label_source_only_emits_organic_when_decision_is_c
 def test_patterns_review_post_label_source_emits_closed_loop_when_decision_is_not_confirm(...): ...
 ```
 
+- [ ] **Step 1b: Write 5 failing Gap B.4 outcome distribution bucketing tests.**
+
 Group B — Gap B.4 outcome distribution bucketing (5 tests):
 
 ```python
@@ -1245,6 +1349,8 @@ def test_outcome_distribution_wilson_ci_emission_at_n_geq_5(...): ...
 def test_outcome_distribution_vm_template_render_with_non_null_pcts(...): ...
 ```
 
+- [ ] **Step 1c: Write 5 failing Gap B.5 metric tile tests.**
+
 Group C — Gap B.5 metric tile (5 tests):
 
 ```python
@@ -1254,6 +1360,8 @@ def test_pattern_outcome_rows_per_pattern_class_aggregation(...): ...
 def test_pattern_outcome_rows_suppressed_at_denominator_lt_5(...): ...
 def test_pattern_outcome_rows_banner_pin_populates_unresolved_count_and_link(...): ...
 ```
+
+- [ ] **Step 1d: Write 13 failing anchor-threading tests at POST /trades/entry per §C.5.**
 
 Group D — Anchor-threading at POST /trades/entry per §C.5 (13 tests):
 
@@ -1273,6 +1381,8 @@ def test_entry_post_rejects_server_derived_manual_off_pipeline_with_claim_true_4
 def test_entry_post_persists_null_pattern_evaluation_id_when_manual_off_pipeline_origin(...): ...      # negative coverage
 ```
 
+- [ ] **Step 1e: Write 3 failing entry-path mapping + VM/builder extension tests.**
+
 Group E — entry-path mapping fix + VM/builder extensions (3 tests):
 
 ```python
@@ -1281,15 +1391,18 @@ def test_build_entry_form_vm_populates_pattern_evaluation_anchor_fields_when_pat
 def test_build_hyp_recs_expanded_populates_pattern_evaluation_id_when_evaluation_row_exists(...): ...                  # R7 MAJOR #1
 ```
 
-- [ ] **Step 2: Run tests; verify FAIL.**
+- [ ] **Step 1f: Run all 31 new tests; verify ALL FAIL.**
 
-- [ ] **Step 3: Implement Gap B.3** — extend `patterns_review_post` at `swing/web/routes/patterns.py` to resolve `candidates.id` via §D.3 SQL skeleton (JOIN through `pipeline_runs.evaluation_run_id`); look up trades via `trades.candidate_id`; if row exists AND decision is `confirm`, emit `label_source='organic_trade_history'`; else `label_source='closed_loop_review'`.
+Run: `python -m pytest tests/web/test_routes/test_patterns_review.py tests/web/test_routes/test_metrics_pattern_outcomes.py tests/trades/test_entry_populates_candidate_backlinks.py tests/web/test_routes/test_trades_entry.py -v`
+Expected: All 31 FAIL with VM-field-missing errors / SQL skeleton not yet implemented / POST handler unchanged from T2.SB6b.
 
-- [ ] **Step 4: Implement Gap B.4** — extend `OutcomeDistributionRow` with `reached_1r_pct: float | None` + `hit_stop_pct: float | None`. Compute via the §D.3 SQL skeleton with OQ-6 bucketing predicates. Suppression at n<5; Wilson CI per Phase 10 honesty.
+- [ ] **Step 2: Implement Gap B.3** — extend `patterns_review_post` at `swing/web/routes/patterns.py` to resolve `candidates.id` via §D.3 SQL skeleton (JOIN through `pipeline_runs.evaluation_run_id`); look up trades via `trades.candidate_id`; if row exists AND decision is `confirm`, emit `label_source='organic_trade_history'`; else `label_source='closed_loop_review'`.
 
-- [ ] **Step 5: Implement Gap B.5** — extend `PatternOutcomeRow` + `build_pattern_outcome_rows` per §D.3 SQL skeleton. LEFT JOIN denominator = confirmed pattern_evaluations; numerator = subset with trades + outcome bucket met; per-pattern_class aggregation; suppression at denominator<5.
+- [ ] **Step 3: Implement Gap B.4** — extend `OutcomeDistributionRow` with `reached_1r_pct: float | None` + `hit_stop_pct: float | None`. Compute via the §D.3 SQL skeleton with OQ-6 bucketing predicates. Suppression at n<5; Wilson CI per Phase 10 honesty.
 
-- [ ] **Step 6: Implement VM/builder extensions (Group E)** —
+- [ ] **Step 4: Implement Gap B.5** — extend `PatternOutcomeRow` + `build_pattern_outcome_rows` per §D.3 SQL skeleton. LEFT JOIN denominator = confirmed pattern_evaluations; numerator = subset with trades + outcome bucket met; per-pattern_class aggregation; suppression at denominator<5.
+
+- [ ] **Step 5: Implement VM/builder extensions (Group E)** —
 
 (a) Extend `EntryFormVM` (verify exact name via `Grep "class EntryFormVM\\|class EntryForm" swing/web/view_models/trades.py`) with 3 new fields:
 
@@ -1306,17 +1419,20 @@ class EntryFormVM:
 
 (c) Extend `HypRecsExpandedVM` (existing dataclass at `swing/web/view_models/dashboard.py:567-603`) with `pattern_evaluation_id: int | None` + `pipeline_run_id: int | None` per hyp-rec row.
 
-(d) Extend `build_hyp_recs_expanded(...)` to JOIN/query `pattern_evaluations` for each hyp-rec ticker against the current pipeline_run_id:
+(d) Extend `build_hyp_recs_expanded(...)` to lookup `pattern_evaluations.id` for each hyp-rec row via `(pipeline_run_id, ticker, pattern_class)` — UNAMBIGUOUS per the unique index at `swing/data/migrations/0020_phase13_charts_patterns_autofill_usability.sql:253-254` (`UNIQUE INDEX idx_pattern_evaluations_run_ticker_class ON pattern_evaluations(pipeline_run_id, ticker, pattern_class)`).
+
+The hyp-rec card already carries `pattern_class` context (hyp-recs are pattern-class-based recommendations rendered per-class per-ticker). The builder uses the SPECIFIC pattern_class shown to the operator on the card as the third lookup-tuple element. Per Codex R1 MAJOR #1 closure: do NOT order-by composite_score + LIMIT 1; that would reintroduce the brainstorm-spec-rejected "highest composite" attribution. SQL skeleton:
 
 ```sql
 SELECT id FROM pattern_evaluations
-WHERE pipeline_run_id = ? AND ticker = ?
-ORDER BY composite_score DESC LIMIT 1;
+WHERE pipeline_run_id = ? AND ticker = ? AND pattern_class = ?;
 ```
 
-(Choose by highest composite_score is acceptable HERE because this is FORM-RENDER-TIME context — the operator sees the choice + accepts via Submit; whereas the brainstorm spec rejects "highest composite" for AUTOMATIC trade attribution. The operator-visible form-render disambiguates which evaluation the trade is being entered against; this is the legitimate provenance source.)
+If the hyp-rec row's `pattern_class` context is unavailable at builder time (rare; should not happen for valid hyp-recs — every hyp-rec row knows its class because the row was emitted by a pattern detector), populate `pattern_evaluation_id = None` + emit NO claim flag → manual_off_pipeline path applies + trade persists with `pattern_evaluation_id = NULL`. This honors operator-intent provenance per spec §2.2 OQ-12 disposition.
 
-- [ ] **Step 7: Implement template emission (Layer 2)** —
+Discriminating test (mirroring §G.4 Group E test_build_hyp_recs_expanded): plant 2 `pattern_evaluations` rows for same `(pipeline_run_id, ticker)` tuple with DIFFERENT pattern_class values (e.g., VCP + flat_base); render the hyp-rec card for the VCP variant; assert `vm.pattern_evaluation_id` resolves to the VCP-class row's id (NOT the higher-composite flat_base row). This guards against the highest-composite regression.
+
+- [ ] **Step 6: Implement template emission (Layer 2)** —
 
 (a) Extend `swing/web/templates/partials/trade_entry_form.html.j2` to emit hidden inputs when VM fields populated:
 
@@ -1336,7 +1452,7 @@ ORDER BY composite_score DESC LIMIT 1;
 
 (c) Audit any other entry-form-link emitters via `Grep -r "trade_entry_form\\|/trades/entry/form" swing/web/templates/` at executing-plans phase; extend each link emitter found.
 
-- [ ] **Step 8: Implement POST handler 5-tier rejection ladder + claim-consistency gate + entry-path mapping fix (Layer 3 + Layer 4)** —
+- [ ] **Step 7: Implement POST handler 5-tier rejection ladder + claim-consistency gate + entry-path mapping fix (Layer 3 + Layer 4)** —
 
 (a) Add `_reject_pattern_evaluation_anchor(...)` helper to `swing/web/routes/trades.py` (mirror `_reject_anchor` at line 896-911 EXACTLY; T3.SB1 precedent):
 
@@ -1383,11 +1499,11 @@ else:
 
 Both lookups execute INSIDE the entry service's own transactional block (which owns its `BEGIN IMMEDIATE` per existing entry service contract; do NOT re-open a separate transaction).
 
-- [ ] **Step 9: Run all 31 new tests; verify PASS.**
+- [ ] **Step 8: Run all 31 new tests; verify PASS.**
 
-- [ ] **Step 10: Run full fast-test suite + ruff check; verify regression-free.**
+- [ ] **Step 9: Run full fast-test suite + ruff check; verify regression-free.**
 
-- [ ] **Step 11: Commit** — `feat(phase13): Gap B v21-dep + entry anchor threading (T-A.6c.4)`
+- [ ] **Step 10: Commit** — `feat(phase13): Gap B v21-dep + entry anchor threading (T-A.6c.4)`
 
 ```bash
 git add swing/web/routes/patterns.py swing/web/view_models/patterns/review_form.py swing/metrics/pattern_outcomes.py swing/web/routes/trades.py swing/web/templates/partials/trade_entry_form.html.j2 swing/web/view_models/trades.py swing/web/view_models/dashboard.py swing/web/templates/partials/hypothesis_recommendations_expanded.html.j2 swing/trades/entry.py tests/web/test_routes/test_patterns_review.py tests/web/test_routes/test_metrics_pattern_outcomes.py tests/trades/test_entry_populates_candidate_backlinks.py tests/web/test_routes/test_trades_entry.py
