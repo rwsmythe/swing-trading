@@ -11,7 +11,7 @@
 ### §1.1 v21 schema delta scope (REVISED — 2 deltas, not 3)
 
 - **Delta A**: `trades.candidate_id INTEGER NULL` + FK + index. Required by spec §5.10 lines 785-790 (label_source split closes T2.SB6b R1 MAJOR #3 V1 simplification).
-- **Delta B**: `trades.pattern_evaluation_id INTEGER NULL` + FK + index. Forward-binding for direct trade → detector evaluation linkage; enables single-JOIN cohort analysis per pattern_class.
+- **Delta B**: `trades.pattern_evaluation_id INTEGER NULL` + FK + index. V1 delivers direct trade → detector evaluation linkage when entry form threads through explicit `pattern_evaluation_id` hidden anchor (T-A.6c.4 scope; closure-committed per Codex R3 MAJOR #3); manual-off-pipeline origin persists NULL. Enables single-JOIN cohort analysis per pattern_class for the populated subset.
 - **Delta C (brief §2.3) — OBSOLETE**: `watchlist_close_track_flags` already exists in v20. No v21 schema work for Q4. T4.SB inherits the existing schema.
 
 v20 LOCKED streak ends with v21 landing. v20 carried 10 sub-bundles since T-A.1.1 (T2.SB1 + T3.SB1 + T2.SB2 + T2.SB3 + T3.SB2 + T2.SB4 + T2.SB5 + T3.SB3 + T2.SB6a + T2.SB6b).
@@ -129,13 +129,18 @@ ALTER TABLE trades ADD COLUMN pattern_evaluation_id INTEGER
 
 **Backfill semantics**: NULL for all pre-v21 existing rows. Same reasoning as §2.1.
 
-**Lifecycle population (NEW OQ-12; REVISED per Codex R1 MAJOR #1 + R2 MAJOR #4)**: at trade-entry-form lock time, populate `pattern_evaluation_id` IF AND ONLY IF the entry form carries an explicit `pattern_evaluation_id` hidden anchor that the operator's flow has caused to be threaded through.
+**Lifecycle population (NEW OQ-12; REVISED per Codex R1 MAJOR #1 + R2 MAJOR #4 + R3 MAJOR #2/#3 CLOSURE COMMITMENT)**: at trade-entry-form lock time, populate `pattern_evaluation_id` IF AND ONLY IF the entry form carries an explicit `pattern_evaluation_id` hidden anchor that the operator's flow has caused to be threaded through. **T-A.6c.4 COMMITS to threading the anchor** per closure-dispatch intent (V1 STUBs explicitly in scope to fix); SB6c does NOT bank this as V2 candidate.
 
-**Rationale (Codex R2 MAJOR #4 closure)**: an earlier draft proposed picking the HIGHEST-`composite_score` evaluation across all pattern classes for the `(pipeline_run_id, ticker)` tuple, but Codex R2 flagged this as arbitrary — if one ticker has multiple detector evaluations (e.g., a VCP at 0.78 + a flat_base at 0.74), "highest composite" would attach the trade to a class the operator did NOT necessarily act on. This contaminates per-pattern-class cohort analysis downstream. **V1 LOCK**: leave `pattern_evaluation_id = NULL` UNLESS the entry form explicitly threads through a `pattern_evaluation_id` anchor (operator-intent provenance). The entry form COULD be extended in T-A.6c.4 to carry a `pattern_evaluation_id` hidden anchor when the entry originates from a `pipeline_aplus` / `pipeline_watch_hyp_recs` / `pipeline_watch_manual` flow where the operator was looking at a specific `pattern_evaluations.id` page — but the brainstorm-default is NULL until that surface is wired explicitly.
+**Anchor-threading scope at T-A.6c.4** (per Codex R3 MAJOR #2 binary scope decision):
+- Entry form (`swing/web/routes/recommendations.py` + recommendations template) extends with hidden input `pattern_evaluation_id` populated at form-render time when the entry originates from a `pipeline_aplus` / `pipeline_watch_hyp_recs` / `pipeline_watch_manual` flow with a specific pattern_evaluations row visible to the operator.
+- POST handler validates the anchor via **4-tier rejection ladder** (T3.SB1 + Hidden-anchor 4-tier rejection ladder CLAUDE.md gotcha precedent; per Codex R3 MAJOR #1 server-validation requirement): (a) malformed integer → 400 + clear anchor on recovery; (b) `pattern_evaluations` row not found by id → 400 + clear; (c) row found but `ticker` differs from operator-submitted ticker → 400 + clear; (d) row found but its `pipeline_run_id` differs from the entry's pipeline-context anchor (where pipeline-context is also a hidden anchor on the form) → 400 + clear. Plus a `claimed_auto_fill` consistency-check gate prevents anti-forgery (valid anchor without claim must NOT stamp provenance).
+- Manual-off-pipeline origin: form does NOT thread the anchor; `pattern_evaluation_id` persists NULL.
 
-**Forward-binding (R2 MAJOR #4 V2 candidate)**: V2 dispatch can extend the entry form with a `pattern_evaluation_id` hidden anchor sourced from the operator's flow context. The Phase 6 `chart_pattern_algo` enum (`'none'|'flag'` per migration 0010 lines 11-36) is independent from the Phase 13 detector enum (`vcp/flat_base/cup_with_handle/high_tight_flag/double_bottom_w` per v20 migration 0020 lines 235-238); a V2 enhancement could unify them via a separate spec dispatch (banked).
+**Rationale (Codex R2 MAJOR #4 closure)**: an earlier draft proposed picking the HIGHEST-`composite_score` evaluation across all pattern classes for the `(pipeline_run_id, ticker)` tuple, but Codex R2 flagged this as arbitrary — if one ticker has multiple detector evaluations (e.g., a VCP at 0.78 + a flat_base at 0.74), "highest composite" would attach the trade to a class the operator did NOT necessarily act on. This contaminates per-pattern-class cohort analysis downstream. Operator-intent provenance via explicit anchor is the only honest source.
 
-If `candidate_id IS NULL` OR no `pattern_evaluation_id` anchor is threaded through, leave `pattern_evaluation_id = NULL`.
+**Forward-binding**: the Phase 6 `chart_pattern_algo` enum (`'none'|'flag'` per migration 0010 lines 11-36) is independent from the Phase 13 detector enum (`vcp/flat_base/cup_with_handle/high_tight_flag/double_bottom_w` per v20 migration 0020 lines 235-238); a V2 enhancement could unify them via a separate spec dispatch (banked).
+
+If `candidate_id IS NULL` OR no `pattern_evaluation_id` anchor is threaded through (manual-off-pipeline origin), leave `pattern_evaluation_id = NULL`.
 
 **Paired dataclass validator**: extend `Trade` dataclass with:
 
@@ -369,7 +374,7 @@ Per Phase 13 plan §H.3 pin schedule: row 12 is the v21-migration pin (un-skip a
 - **S6 (browser)**: `/patterns/exemplars` — under cache-miss path, confirm live render fires + cache row is written through (Gap A.4); verify via DB query post-page-load that `chart_renders` has the new exemplar row.
 - **S7 (browser)**: `/metrics/pattern-outcomes` — confirm `reached_1r_pct` + `hit_stop_pct` columns render LIVE for cohorts with n>=5 (Gap B.5).
 - **S8 (browser)**: `/patterns/queue` — confirm criterion 3 ranking matches current weather state (Gap B.6).
-- **S9 (browser; data-shaped)**: open a fresh trade from `/recommendations/` form for a current pipeline candidate; confirm new trade row gets `candidate_id` + `pattern_evaluation_id` populated (NEW lifecycle logic per §2.1 OQ-11 + §2.2 OQ-12).
+- **S9 (browser; data-shaped)**: open a fresh trade from `/recommendations/` form for a current pipeline candidate where a `pattern_evaluations` row exists for the (run, ticker) tuple; confirm new trade row gets BOTH `candidate_id` AND `pattern_evaluation_id` populated (NEW lifecycle logic per §2.1 OQ-11 + §2.2 OQ-12; closure-committed anchor threading at T-A.6c.4). Additionally: open a fresh `manual_off_pipeline` trade entry; confirm new trade row gets `candidate_id IS NULL` AND `pattern_evaluation_id IS NULL` (manual origin persists NULL).
 - **S10 (browser; closed-loop)**: review the candidate at `/patterns/{candidate_id}/review` with `confirm` decision; confirm `pattern_exemplars` row is written with `label_source='organic_trade_history'` (NOT `closed_loop_review` — closes T2.SB6b V1 simplification #5).
 
 ---
@@ -434,22 +439,34 @@ Per Phase 13 plan §H.3 pin schedule: row 12 is the v21-migration pin (un-skip a
 
 ### §6.4 T-A.6c.4 — SB6 closure Gap B v21-dependent (label_source + outcomes)
 
-**Scope**: 3 items (B.3 label_source split + B.4 outcome distribution + B.5 metric tile); ~15 fast tests.
+**Scope (REVISED per Codex R3 MAJOR #2/#3)**: 3 SB6 closure items (B.3 label_source split + B.4 outcome distribution + B.5 metric tile) + entry-form anchor threading + 4-tier rejection validation for `pattern_evaluation_id`; ~22 fast tests (15 closure + ~7 anchor-threading-validation tests).
 
 **Files in scope**:
 - Modify: `swing/web/routes/patterns.py:patterns_review_post` (label_source split via candidate-scope lookup).
 - Modify: `swing/web/view_models/patterns/review_form.py:OutcomeDistributionRow` (extend with reached_1r_pct + hit_stop_pct).
 - Modify: `swing/metrics/pattern_outcomes.py:build_pattern_outcome_rows` (LEFT JOIN trades; extend `PatternOutcomeRow` with reached_1r + hit_stop fields).
+- Modify: `swing/web/routes/recommendations.py` (entry form rendering — populate hidden `pattern_evaluation_id` anchor when entry originates from a `pipeline_aplus` / `pipeline_watch_hyp_recs` / `pipeline_watch_manual` flow with specific pattern_evaluations row visible).
+- Modify: `swing/web/templates/recommendations/entry_form.html.j2` (or canonical entry-form template — verify path at writing-plans time) to carry hidden input `pattern_evaluation_id`.
+- Modify: `swing/web/routes/recommendations.py` POST handler (entry submit) for 4-tier rejection ladder validation against the threaded anchor (T3.SB1 + Hidden-anchor 4-tier rejection ladder CLAUDE.md gotcha precedent): (a) malformed int → 400 + clear; (b) row not found by id → 400 + clear; (c) ticker mismatch → 400 + clear; (d) pipeline_run_id mismatch vs entry's pipeline-context anchor → 400 + clear. Plus claimed_auto_fill consistency gate.
 - Modify: `swing/trades/entry.py` (canonical trade entry service; calls `insert_trade_with_event` at `swing/data/repos/trades.py:102`) to populate `candidate_id` + `pattern_evaluation_id` per §2.1 OQ-11 + §2.2 OQ-12 lifecycle logic. **Lookup queries (REVISED per Codex R1 + R2 MAJOR #2)**: (a) candidate resolution can use EITHER (i) the direct `c.evaluation_run_id = ?` filter if the entry context carries `evaluation_run_id` (e.g., from `_latest_complete_evaluation_run_id` at `swing/trades/origin.py:27-37` — RETURNS `evaluation_run_id` per the helper's name + return contract, NOT pipeline_run_id) — query: `SELECT id FROM candidates WHERE evaluation_run_id = ? AND ticker = ? ORDER BY id DESC LIMIT 1`; OR (ii) the two-table join if the entry context carries `pipeline_run_id` instead — query: `SELECT c.id FROM candidates c INNER JOIN pipeline_runs pr ON c.evaluation_run_id = pr.evaluation_run_id WHERE pr.id = ? AND c.ticker = ? ORDER BY c.id DESC LIMIT 1`. DO NOT MIX the two — passing an `evaluation_run_id` into a `pipeline_runs.id` filter would silently miss/wrong-match. Writing-plans phase decides which entry-context anchor the entry service consumes. (b) pattern_evaluations lookup: see §2.2 OQ-12 REVISED — V1 default is NULL unless the entry form carries an explicit `pattern_evaluation_id` hidden anchor (closes R2 MAJOR #4 contamination concern); the entry surface could be extended in T-A.6c.4 to thread `pattern_evaluation_id` through the form for `pipeline_aplus` / `pipeline_watch_hyp_recs` / `pipeline_watch_manual` origins. Both lookups execute before the `insert_trade_with_event` call within the entry service's own transactional block (which owns its `BEGIN IMMEDIATE` per existing entry service contract).
 - Modify: `tests/web/test_routes/test_patterns_review.py` (extend with B.3 + B.4 tests).
 - Modify: `tests/web/test_routes/test_metrics_pattern_outcomes.py` (extend with B.5 tests).
 - Create: `tests/trades/test_entry_populates_candidate_backlinks.py` (NEW lifecycle test).
 
 **Acceptance criteria**:
-- 15 new tests PASS.
+- 22 new tests PASS (15 closure + 7 anchor-threading-validation).
 - S2 (Item 8) + S7 + S9 + S10 operator-witnessed gates PASS.
 
 **Cross-row semantic discipline**: pre-Codex review MUST verify Gap B.3 lookup scope is per-candidate (NOT ticker-proxy regression). Test `test_patterns_review_label_source_split_ticker_proxy_regression_guard` is BINDING (plants 2 trades on same ticker, different candidates; asserts only the SAME-candidate trade qualifies for `organic_trade_history`).
+
+**Anchor-threading discriminating tests (per Codex R3 MAJOR #1 server-validation requirement)**:
+- `test_entry_form_renders_pattern_evaluation_id_hidden_anchor_for_pipeline_origin` — assert anchor present on entry form for pipeline origins.
+- `test_entry_form_omits_pattern_evaluation_id_hidden_anchor_for_manual_off_pipeline` — assert anchor absent for manual_off_pipeline.
+- `test_entry_post_rejects_malformed_pattern_evaluation_id_anchor_400_clears_on_recovery` — tier (a) rejection.
+- `test_entry_post_rejects_pattern_evaluation_id_not_found_400_clears` — tier (b).
+- `test_entry_post_rejects_pattern_evaluation_id_ticker_mismatch_400_clears` — tier (c).
+- `test_entry_post_rejects_pattern_evaluation_id_pipeline_run_mismatch_400_clears` — tier (d).
+- `test_entry_post_persists_null_pattern_evaluation_id_when_manual_off_pipeline_origin` — manual-off-pipeline persists NULL.
 
 ### §6.5 T-A.6c.5 — Closer (E2E + ruff sweep + cross-bundle pin row 12 promote)
 
@@ -555,7 +572,7 @@ T-A.6c.1 (v21 migration; foundation)
 | #1 hardcoded-duplicate audit | T3.SB2 hotfix `cf3c489` | **CLEAN** — no new CHECK enums; only new INTEGER FK columns; grep `swing/` for hardcoded SELECT-trade-column-lists is a writing-plans-phase action item, not a brainstorm-phase test |
 | #2 brief-vs-spec source-of-truth | T2.SB4 R1 M1 | **CATCHES BRIEF §2.3 OBSOLETE** — `watchlist_close_track_flags` already in v20; brief proposal contradicts v20 ship reality; spec §7.2 line 986 LOCK is authoritative |
 | #3 schema-CHECK-vs-semantic-contract gap audit | T2.SB6a R1 CRITICAL #1 | **CLEAN at brainstorm** — no new schema CHECK constraints introduced; FK semantics are simple; semantic contracts (column position 52 + 53; lifecycle population logic; cross-row label_source scope) enumerated explicitly at §2.1 + §2.2 + §3.2 |
-| #4 CLAUDE.md gotcha specific-scenario trace | T2.SB6a R1 MAJOR #2 | **CLEAN at brainstorm** — schema-version-aware INSERT pattern verified NOT NEEDED (nullable columns); ALTER TABLE FK behavior verified per SQLite docs; row[52]/[53] read-path scenario traced at §4.1 |
+| #4 CLAUDE.md gotcha specific-scenario trace | T2.SB6a R1 MAJOR #2 | **REVISED at Codex R1 MAJOR #2** — schema-version-aware INSERT pattern ADOPTED for robustness per T3.SB1 fills.py:51-53 precedent (even though both v21 columns are nullable; Codex caught that NULL defaults do NOT help when SQL references columns absent on a v20 fixture). ALTER TABLE FK behavior verified per SQLite docs; row[52]/[53] read-path scenario traced at §4.1. Codex R3 closure: anchor-threading server-validation 4-tier rejection ladder added at T-A.6c.4 for pattern_evaluation_id provenance. |
 | #5 cross-section spec inventory grep | T2.SB6a R1 MAJOR #3 | **CLEAN at brainstorm** — spec §5.10 (lines 766-775 + 785-790 + 799) inventoried + per-item disposition documented at §3.3; spec §4.2 + §3.2 chart cache architecture cited at Gap A items; plan §G.9 + §G.10 cited at sub-bundle decomposition |
 | #6 *(FIRST RUN BINDING)* content-completeness audit | T2.SB6b lesson banked | **VERIFIED at brainstorm** — §3.3 audit table enumerates every §5.10 checklist item with per-field disposition (LIVE / V1 PARTIAL / V1 STUB); post-SB6c ZERO V1 STUBs remain |
 | #7 *(FIRST RUN BINDING)* cross-row semantic audit on operator-input flows | T2.SB6b lesson banked | **VERIFIED at brainstorm** — §3.2 enumerates SCOPE of each cross-row lookup explicitly (per-candidate for Gap B.3; per-candidate cohort for Gap B.4; per-pattern_class cohort for Gap B.5); discriminating ticker-proxy-regression test planted at Gap B.3 |
@@ -583,7 +600,7 @@ T-A.6c.1 (v21 migration; foundation)
 | Backfill historical trades with heuristic ticker+date match against `candidates` | OQ-1 disposition rejected; some operator value possible IF the heuristic is constrained (same-pipeline-run only) | V2 if operator surfaces value |
 | Add `pattern_evaluations.candidate_id` direct column | Closes the JOIN via `(ticker, pipeline_run_id)` indirection at Gap B.3 lookup; cleaner but adds another schema-paired discipline burden | V2 schema dispatch |
 | Auto-fill `candidate_id` retroactively from `chart_pattern_classification_pipeline_run_id` (existing trades column at migration 0010) | Phase 6 column may be sufficient to backfill some pre-v21 trades; needs operator-paired investigation of data quality | V2 enrichment |
-| Multi-pattern_class trade backlink (one trade could match multiple pattern_evaluations) | Current §2.2 OQ-12 picks highest-composite-score; alternative is many-to-many table | V2 if operator surfaces value |
+| Multi-pattern_class trade backlink (one trade could match multiple pattern_evaluations) | Current §2.2 OQ-12 stores ONE explicit anchor (single trade → single pattern_evaluation); alternative is a many-to-many `trade_pattern_evaluations` link table to capture "this trade was visible against N detector evaluations at lock time". V1 single-anchor is honest about operator-intent provenance; V2 many-to-many would capture full evidence context. | V2 if operator surfaces value |
 | `trades.candidate_id` + `pattern_evaluation_id` cascade behavior alternatives (RESTRICT vs CASCADE) | ON DELETE SET NULL preserves trade row but loses backlink; an audit table could capture the deleted FK target's metadata | V2 audit-trail enrichment |
 | `chart_renders` cache key extension for exemplar pages (pipeline_run_id-agnostic exemplar key shape) | Gap A.4 cache-miss write-through is V1 simplification; the cache key for exemplars currently inherits from theme2_annotated; V2 could introduce a fifth `surface='exemplar_thumbnail'` value | V2 cache architecture |
 | Theme 2 narrative auto-generation from `structural_evidence_json` (Gap B.7-like new item) | V1 SB6c uses pre-existing narrative text; V2 could generate the narrative from evidence at render time | V2 detector enrichment |
