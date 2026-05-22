@@ -382,6 +382,7 @@ class TradeEntryFormVM:
 def build_entry_form_vm(
     *, ticker: str, cfg: Config, cache: PriceCache, executor,
     origin: str = "watchlist",
+    explicit_pattern_evaluation_id: int | None = None,
 ) -> TradeEntryFormVM:
     """Build entry-form VM from: watchlist row, live price, open
     positions, equity, and (Phase 5) the chart-pattern classification
@@ -565,25 +566,52 @@ def build_entry_form_vm(
     watchlist_initial_stop = wl_entry.initial_stop_target if wl_entry else None
 
     # Phase 13 T2.SB6c T-A.6c.4 §C.5 Layer 1 — resolve the
-    # pattern_evaluations anchor for pipeline-origin trades. Looked up
-    # via (pipeline_run_id, ticker); multi-pattern_class V1
-    # simplification picks the highest composite_score row (banked V2:
-    # operator picks which class drives the anchor when pipeline emits
-    # multiple classes for the same ticker).
+    # pattern_evaluations anchor for pipeline-origin trades.
+    #
+    # Codex R1 MAJOR #2 closure: when the caller passes an explicit
+    # ``explicit_pattern_evaluation_id`` (sourced from the hyp-rec
+    # template's ``?pattern_evaluation_id=<id>`` query param), validate
+    # it against the form's ``(pipeline_run_id, ticker)`` context. If
+    # the explicit id resolves to a row whose ticker + pipeline_run_id
+    # match the form's context, USE IT verbatim (operator-chosen PE
+    # row; multi-pattern_class disambiguation per spec §C.5). Else
+    # fall back to the legacy highest-composite_score row (V1
+    # simplification preserved for non-anchored entry-form GETs;
+    # banked V2: operator picks which class drives the anchor).
     resolved_pattern_evaluation_id: int | None = None
     pattern_evaluation_anchor_pipeline_run_id: int | None = None
     if pipeline_run_id is not None:
         _conn2 = connect(cfg.paths.db_path)
         try:
-            pe_row = _conn2.execute(
-                "SELECT id FROM pattern_evaluations "
-                "WHERE pipeline_run_id = ? AND ticker = ? "
-                "ORDER BY composite_score DESC, id DESC LIMIT 1",
-                (pipeline_run_id, ticker),
-            ).fetchone()
-            if pe_row is not None:
-                resolved_pattern_evaluation_id = int(pe_row[0])
-                pattern_evaluation_anchor_pipeline_run_id = pipeline_run_id
+            if explicit_pattern_evaluation_id is not None:
+                explicit_row = _conn2.execute(
+                    "SELECT id, pipeline_run_id, ticker FROM "
+                    "pattern_evaluations WHERE id = ?",
+                    (int(explicit_pattern_evaluation_id),),
+                ).fetchone()
+                if explicit_row is not None:
+                    _explicit_run = int(explicit_row[1])
+                    _explicit_ticker = (explicit_row[2] or "").upper()
+                    if (
+                        _explicit_run == pipeline_run_id
+                        and _explicit_ticker == ticker.upper()
+                    ):
+                        resolved_pattern_evaluation_id = int(explicit_row[0])
+                        pattern_evaluation_anchor_pipeline_run_id = (
+                            pipeline_run_id
+                        )
+            if resolved_pattern_evaluation_id is None:
+                pe_row = _conn2.execute(
+                    "SELECT id FROM pattern_evaluations "
+                    "WHERE pipeline_run_id = ? AND ticker = ? "
+                    "ORDER BY composite_score DESC, id DESC LIMIT 1",
+                    (pipeline_run_id, ticker),
+                ).fetchone()
+                if pe_row is not None:
+                    resolved_pattern_evaluation_id = int(pe_row[0])
+                    pattern_evaluation_anchor_pipeline_run_id = (
+                        pipeline_run_id
+                    )
         finally:
             _conn2.close()
 

@@ -315,15 +315,36 @@ def record_entry(
     # caller already provided one (CLI / E2E paths). Path 1
     # (evaluation_run_id filter) per plan §B.1; we leverage the
     # existing _latest_complete_evaluation_run_id helper.
+    #
+    # Codex R1 MAJOR #3 closure: when ``req.pattern_evaluation_id`` is
+    # non-NULL, resolve ``candidate_id`` via the PE row's
+    # ``pipeline_run_id → pipeline_runs.evaluation_run_id`` chain
+    # rather than the latest-complete fallback. Without this, a fresh
+    # pipeline run landing between form render and POST would corrupt
+    # paired backlink semantics: ``pattern_evaluation_id`` validates
+    # against the form-render run's id, but ``candidate_id`` would
+    # bind to a NEWER run's candidate row for the same ticker.
     from swing.trades.origin import _latest_complete_evaluation_run_id
     resolved_candidate_id: int | None = req.candidate_id
     if resolved_candidate_id is None and derived_origin != "manual_off_pipeline":
-        _latest_eval_run = _latest_complete_evaluation_run_id(conn)
-        if _latest_eval_run is not None:
+        _eval_run_for_candidate: int | None = None
+        if req.pattern_evaluation_id is not None:
+            _chain_row = conn.execute(
+                "SELECT pr.evaluation_run_id FROM pattern_evaluations pe "
+                "JOIN pipeline_runs pr ON pr.id = pe.pipeline_run_id "
+                "WHERE pe.id = ?",
+                (int(req.pattern_evaluation_id),),
+            ).fetchone()
+            if _chain_row is not None and _chain_row[0] is not None:
+                _eval_run_for_candidate = int(_chain_row[0])
+        if _eval_run_for_candidate is None:
+            _eval_run_for_candidate = _latest_complete_evaluation_run_id(conn)
+        if _eval_run_for_candidate is not None:
             _cand_row = conn.execute(
                 "SELECT id FROM candidates "
-                "WHERE evaluation_run_id = ? AND ticker = ?",
-                (_latest_eval_run, req.ticker),
+                "WHERE evaluation_run_id = ? AND ticker = ? "
+                "ORDER BY id DESC LIMIT 1",
+                (_eval_run_for_candidate, req.ticker),
             ).fetchone()
             if _cand_row is not None:
                 resolved_candidate_id = int(_cand_row[0])

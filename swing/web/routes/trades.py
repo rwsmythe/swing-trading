@@ -7,7 +7,7 @@ import logging
 import sqlite3
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Form, HTTPException, Request
+from fastapi import APIRouter, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from markupsafe import Markup
 
@@ -396,7 +396,20 @@ def sizing_hint(
 
 
 @router.get("/trades/entry/form", response_class=HTMLResponse)
-def entry_form(request: Request, ticker: str, origin: str = "watchlist"):
+def entry_form(
+    request: Request,
+    ticker: str,
+    origin: str = "watchlist",
+    # Phase 13 T2.SB6c T-A.6c.4 Codex R1 MAJOR #2 closure — explicit
+    # hyp-rec-emitted ``?pattern_evaluation_id=<id>`` query param so the
+    # form-render binds to the operator-chosen PE row (multi-pattern-
+    # class disambiguation). Falls back to highest-composite when the
+    # param is absent OR the explicit id fails validation against the
+    # form's (pipeline_run_id, ticker) context (defense-in-depth: a
+    # malformed / cross-ticker / cross-run id is silently dropped to
+    # the fallback, NOT 500'd).
+    pattern_evaluation_id: int | None = Query(None),
+):
     cfg = apply_overrides(request.app.state.cfg)
     cache = request.app.state.price_cache
     executor = request.app.state.price_fetch_executor
@@ -404,6 +417,7 @@ def entry_form(request: Request, ticker: str, origin: str = "watchlist"):
     vm = build_entry_form_vm(
         ticker=ticker, cfg=cfg, cache=cache, executor=executor,
         origin=origin,
+        explicit_pattern_evaluation_id=pattern_evaluation_id,
     )
     return templates.TemplateResponse(
         request, "partials/trade_entry_form.html.j2", {"vm": vm},
@@ -1542,6 +1556,22 @@ def entry_post(
                 "fill_origin_at_form_render": (
                     fill_origin_at_form_render or ""
                 ),
+                # Phase 13 T2.SB6c T-A.6c.4 Codex R1 MAJOR #1 closure —
+                # PE anchor fields MUST round-trip through the soft-warn
+                # confirm fragment. Without these 3 keys, a hyp-rec-
+                # anchored entry that hits the soft cap would resubmit
+                # with force=true but no pattern_evaluation_id; the
+                # 5-tier ladder treats anchor-absent as bare-cURL path
+                # and persists trade with pattern_evaluation_id=NULL,
+                # violating OQ-12 closure + the recurring CLAUDE.md
+                # gotcha "Form-render hidden anchors driving POST-time
+                # validation MUST round-trip through soft-warn confirm".
+                # Values come verbatim from the operator-submitted form;
+                # the force=true resubmit re-validates via the 5-tier
+                # ladder so any tampered anchor is rejected.
+                "pattern_evaluation_id": pe_anchor_raw,
+                "claimed_pattern_evaluation_anchor": pe_claim_raw,
+                "pipeline_run_id_at_form_render": pe_pipeline_raw,
                 "open_count": actual_open,
                 "soft_warn": cfg.position_limits.soft_warn_open,
                 "hard_cap": cfg.position_limits.hard_cap_open,

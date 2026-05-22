@@ -437,10 +437,19 @@ def _make_review_form_vm(conn, *, cfg, candidate_id: int):
     )
 
 
-def test_b4_outcome_distribution_reached_1r_computed_when_trade_hit_1r(
+def test_b4_outcome_distribution_reached_1r_via_realized_r_surrogate_v1(
     seeded_db,
 ):
-    """Gap B.4 reached_1r: max(daily_high since entry) >= entry + (entry - stop)."""
+    """Gap B.4 reached_1r via V1 realized_R surrogate.
+
+    Codex R1 MINOR #2 closure: V1 implementation uses
+    ``trades.realized_R_if_plan_followed >= 1.0`` as a surrogate for
+    the spec-text ``max(daily_high since entry) >= 1R target``
+    semantic. The surrogate is honest for closed trades whose plan
+    held; banked V2 lifts to a daily-bar-aware max-high lookup once
+    Phase 13 T4.SB or a successor surfaces daily highs in the
+    review-form VM cohort path.
+    """
     cfg, cfg_path = seeded_db
     conn = connect(cfg.paths.db_path)
     try:
@@ -1442,3 +1451,353 @@ def test_e3_build_hyp_recs_expanded_populates_pattern_evaluation_id(
     # New fields per §C.5 Layer 1:
     assert vm.pattern_evaluation_id == eval_id
     assert vm.pipeline_run_id == pipeline_run_id
+
+
+# ===========================================================================
+# Group F — Codex R1 MAJOR fixes (4 tests)
+# ===========================================================================
+
+
+def test_f1_codex_r1_major1_soft_warn_resubmit_preserves_pattern_evaluation_id(
+    d_db_with_pipeline_origin_setup,
+):
+    """Codex R1 MAJOR #1 closure: hyp-rec-anchored entry hitting soft cap →
+    soft-warn confirm fragment includes PE anchor hidden inputs → force=true
+    resubmit persists trade with pattern_evaluation_id IS NOT NULL.
+    """
+    cfg, cfg_path, eval_id, _, pipeline_run_id = d_db_with_pipeline_origin_setup
+    # Force soft-cap trip: open trades up to soft_warn_open threshold.
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            soft_warn = cfg.position_limits.soft_warn_open
+            for i in range(soft_warn):
+                _open_trade(
+                    conn, ticker=f"SOFT{i:02d}", entry_date="2026-05-17",
+                )
+    finally:
+        conn.close()
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        # First submit: anchor-carrying POST that trips soft cap.
+        r1 = client.post(
+            "/trades/entry",
+            data=_entry_post_data(
+                ticker="ABC", origin="hyp-recs",
+                pattern_evaluation_id=eval_id,
+                claimed_pattern_evaluation_anchor="true",
+                pipeline_run_id_at_form_render=pipeline_run_id,
+            ),
+            headers={"HX-Request": "true"},
+        )
+        # Soft-warn confirm fragment renders 200 with hidden inputs.
+        assert r1.status_code == 200
+        body = r1.text
+        # All 3 PE anchor inputs MUST be present in the confirm fragment.
+        assert 'name="pattern_evaluation_id"' in body, (
+            "Codex R1 MAJOR #1: soft-warn confirm dropped pattern_evaluation_id"
+        )
+        assert f'value="{eval_id}"' in body
+        assert 'name="claimed_pattern_evaluation_anchor"' in body
+        assert 'name="pipeline_run_id_at_form_render"' in body
+        # Second submit: force=true resubmit with same anchors.
+        r2 = client.post(
+            "/trades/entry",
+            data={
+                **_entry_post_data(
+                    ticker="ABC", origin="hyp-recs",
+                    pattern_evaluation_id=eval_id,
+                    claimed_pattern_evaluation_anchor="true",
+                    pipeline_run_id_at_form_render=pipeline_run_id,
+                ),
+                "force": "true",
+            },
+            headers={"HX-Request": "true"},
+        )
+        assert r2.status_code in (200, 204), (
+            f"force=true resubmit expected to succeed; got "
+            f"{r2.status_code}: {r2.text[:400]}"
+        )
+    # Verify trade persisted with pattern_evaluation_id non-NULL.
+    conn = connect(cfg.paths.db_path)
+    row = conn.execute(
+        "SELECT pattern_evaluation_id FROM trades WHERE ticker = ?", ("ABC",),
+    ).fetchone()
+    conn.close()
+    assert row is not None
+    assert row[0] == eval_id, (
+        "Codex R1 MAJOR #1: PE anchor must survive soft-warn round trip"
+    )
+
+
+def test_f2_codex_r1_major2_entry_form_explicit_pe_id_binds_operator_choice(
+    seeded_db,
+):
+    """Codex R1 MAJOR #2 closure: ?pattern_evaluation_id=<lower-composite>
+    on the entry-form GET binds to the operator-chosen PE row (NOT the
+    highest-composite row that would have been the default fallback).
+    """
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            eval_run_id = _seed_evaluation_run(conn)
+            pipeline_run_id = _seed_pipeline_run(
+                conn, evaluation_run_id=eval_run_id,
+            )
+            _seed_candidate(
+                conn, evaluation_run_id=eval_run_id, ticker="MUL",
+            )
+            # 2 evaluations same (pipeline_run_id, ticker), different
+            # pattern_class + composite_score. The high one would win
+            # the legacy ORDER BY composite_score DESC fallback.
+            high_eval = _seed_evaluation(
+                conn, pipeline_run_id=pipeline_run_id, ticker="MUL",
+                pattern_class="vcp", composite_score=0.95,
+            )
+            low_eval = _seed_evaluation(
+                conn, pipeline_run_id=pipeline_run_id, ticker="MUL",
+                pattern_class="flat_base", composite_score=0.30,
+            )
+    finally:
+        conn.close()
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        # Operator clicks a hyp-rec anchored to LOW PE row (flat_base).
+        r = client.get(
+            f"/trades/entry/form?ticker=MUL&origin=hyp-recs"
+            f"&pattern_evaluation_id={low_eval}",
+        )
+    assert r.status_code == 200
+    body = r.text
+    # The form's hidden pattern_evaluation_id must be the LOW eval id
+    # (operator's choice), NOT the default highest-composite row.
+    assert f'value="{low_eval}"' in body, (
+        f"Codex R1 MAJOR #2: explicit pattern_evaluation_id={low_eval} "
+        f"should bind operator's choice (got body with high_eval={high_eval})"
+    )
+    assert f'name="pattern_evaluation_id" value="{high_eval}"' not in body
+
+
+def test_f2_codex_r1_major2_entry_form_explicit_pe_id_falls_back_on_validation_fail(
+    d_db_with_pipeline_origin_setup,
+):
+    """Codex R1 MAJOR #2 defense: an explicit ?pattern_evaluation_id that
+    fails validation (wrong ticker / wrong pipeline_run) silently falls
+    back to highest-composite (NOT 500'd).
+    """
+    cfg, cfg_path, eval_id, _, pipeline_run_id = d_db_with_pipeline_origin_setup
+    # Use 99999 — a non-existent PE id.
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get(
+            "/trades/entry/form?ticker=ABC&origin=hyp-recs"
+            "&pattern_evaluation_id=99999",
+        )
+    assert r.status_code == 200, "Bad PE id must NOT 500 — fall back silently"
+    body = r.text
+    # Form falls back to highest-composite for (pipeline_run_id, ticker).
+    assert f'value="{eval_id}"' in body
+
+
+def test_f3_codex_r1_major3_record_entry_candidate_id_via_pe_chain(
+    seeded_db,
+):
+    """Codex R1 MAJOR #3 closure: when pattern_evaluation_id is non-NULL,
+    candidate_id resolves via the PE row's pipeline_run_id →
+    pipeline_runs.evaluation_run_id chain (NOT via
+    _latest_complete_evaluation_run_id).
+
+    Plant pipeline run #1 with PE + candidate for ticker T; complete a
+    NEW pipeline run #2 with a different candidate for T; submit entry
+    with run-#1 PE anchor; assert trade's candidate_id resolves to
+    run-#1's candidate (NOT run-#2's).
+    """
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            # Pipeline run #1 (older).
+            eval_run_1 = _seed_evaluation_run(
+                conn, action_session_date="2026-05-19",
+            )
+            pipe_1 = _seed_pipeline_run(
+                conn, evaluation_run_id=eval_run_1,
+            )
+            cand_1 = _seed_candidate(
+                conn, evaluation_run_id=eval_run_1, ticker="CHAIN",
+            )
+            eval_1 = _seed_evaluation(
+                conn, pipeline_run_id=pipe_1, ticker="CHAIN",
+            )
+            # Pipeline run #2 (newer, would win latest-complete fallback).
+            eval_run_2 = _seed_evaluation_run(
+                conn, action_session_date="2026-05-20",
+            )
+            _seed_pipeline_run(
+                conn, evaluation_run_id=eval_run_2,
+            )
+            cand_2 = _seed_candidate(
+                conn, evaluation_run_id=eval_run_2, ticker="CHAIN",
+            )
+    finally:
+        conn.close()
+    assert cand_1 != cand_2
+
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/entry",
+            data=_entry_post_data(
+                ticker="CHAIN", origin="hyp-recs",
+                pattern_evaluation_id=eval_1,
+                claimed_pattern_evaluation_anchor="true",
+                pipeline_run_id_at_form_render=pipe_1,
+            ),
+            headers={"HX-Request": "true"},
+        )
+    assert r.status_code in (200, 204), (
+        f"Trade-entry with run-1 PE expected to succeed; got "
+        f"{r.status_code}: {r.text[:400]}"
+    )
+    conn = connect(cfg.paths.db_path)
+    row = conn.execute(
+        "SELECT candidate_id, pattern_evaluation_id FROM trades "
+        "WHERE ticker = ? LIMIT 1", ("CHAIN",),
+    ).fetchone()
+    conn.close()
+    assert row is not None
+    assert row[1] == eval_1, "PE anchor must be run-1's eval_1"
+    assert row[0] == cand_1, (
+        f"Codex R1 MAJOR #3: candidate_id should resolve via PE chain "
+        f"to run-1's cand_1={cand_1}, NOT run-2's cand_2={cand_2}; "
+        f"got {row[0]}"
+    )
+
+
+def test_f4_codex_r1_major4_b5_metric_tile_honors_pattern_evaluation_id_backlink(
+    seeded_db,
+):
+    """Codex R1 MAJOR #4 closure: B.5 attributes trades to per-pattern_class
+    cohort via trades.pattern_evaluation_id (when non-NULL), NOT via
+    candidate-only JOIN.
+
+    Plant 1 trade with pattern_evaluation_id=<vcp_pe.id> on a candidate
+    shared by VCP + flat_base PEs. Assert B.5 attributes the trade to
+    VCP cohort + NOT to flat_base cohort.
+    """
+    cfg, cfg_path = seeded_db
+    from swing.data.models import PatternExemplar
+    from swing.data.repos import pattern_exemplars as exemplars_repo
+    from swing.data.repos.risk_policy import get_active_policy
+    from swing.metrics.pattern_outcomes import build_pattern_outcome_rows
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            eval_run_id = _seed_evaluation_run(conn)
+            pipeline_run_id = _seed_pipeline_run(
+                conn, evaluation_run_id=eval_run_id,
+            )
+            # Single candidate (and corresponding ticker).
+            shared_cand = _seed_candidate(
+                conn, evaluation_run_id=eval_run_id, ticker="MULTI",
+            )
+            # Two PE rows for the same (ticker, pipeline_run_id) but
+            # different pattern_class. Per spec, this is the multi-
+            # pattern_class scenario.
+            vcp_eval = _seed_evaluation(
+                conn, pipeline_run_id=pipeline_run_id, ticker="MULTI",
+                pattern_class="vcp",
+                window_start_date="2026-04-01",
+                window_end_date="2026-05-15",
+            )
+            _seed_evaluation(
+                conn, pipeline_run_id=pipeline_run_id, ticker="MULTI",
+                pattern_class="flat_base",
+                window_start_date="2026-04-01",
+                window_end_date="2026-05-15",
+            )
+            # Confirmed pattern_exemplars rows for BOTH classes (so the
+            # B.5 denominator JOIN matches for both).
+            for cls in ("vcp", "flat_base"):
+                exemplars_repo.insert_exemplar(conn, PatternExemplar(
+                    id=None,
+                    ticker="MULTI",
+                    timeframe="daily",
+                    start_date="2026-04-15",
+                    end_date="2026-05-10",
+                    proposed_pattern_class=cls,
+                    final_decision="confirmed",
+                    label_source="closed_loop_review",
+                    structural_evidence_json="{}",
+                    created_at="2026-05-10T12:00:00",
+                    created_by="operator",
+                    geometric_score_json="{}",
+                    labeler_evidence_json=None,
+                    gold_validated_at="2026-05-10T12:00:00",
+                ))
+            # Pad the cohort for each class to reach denominator >= 5
+            # so the suppression doesn't fire.
+            for cls in ("vcp", "flat_base"):
+                for i in range(4):
+                    pad_ticker = f"P{cls[:2].upper()}{i:02d}"
+                    _seed_candidate(
+                        conn, evaluation_run_id=eval_run_id,
+                        ticker=pad_ticker,
+                    )
+                    _seed_evaluation(
+                        conn, pipeline_run_id=pipeline_run_id,
+                        ticker=pad_ticker, pattern_class=cls,
+                        window_start_date="2026-04-01",
+                        window_end_date="2026-05-15",
+                    )
+                    exemplars_repo.insert_exemplar(conn, PatternExemplar(
+                        id=None,
+                        ticker=pad_ticker,
+                        timeframe="daily",
+                        start_date="2026-04-15",
+                        end_date="2026-05-10",
+                        proposed_pattern_class=cls,
+                        final_decision="confirmed",
+                        label_source="closed_loop_review",
+                        structural_evidence_json="{}",
+                        created_at="2026-05-10T12:00:00",
+                        created_by="operator",
+                        geometric_score_json="{}",
+                        labeler_evidence_json=None,
+                        gold_validated_at="2026-05-10T12:00:00",
+                    ))
+            # Plant trade anchored to vcp_eval explicitly. Use the
+            # shared candidate + the explicit PE backlink.
+            tid = _open_trade(
+                conn, ticker="MULTI", candidate_id=shared_cand,
+                pattern_evaluation_id=vcp_eval,
+                entry_date="2026-04-25", entry_price=100.0,
+                initial_stop=90.0,
+            )
+            conn.execute(
+                "UPDATE trades SET state = 'closed', "
+                "realized_R_if_plan_followed = 1.5 WHERE id = ?", (tid,),
+            )
+        policy = get_active_policy(conn)
+        rows = build_pattern_outcome_rows(conn, policy=policy)
+    finally:
+        conn.close()
+    vcp_row = next((r for r in rows if r.pattern_class == "vcp"), None)
+    flat_row = next((r for r in rows if r.pattern_class == "flat_base"), None)
+    assert vcp_row is not None
+    assert flat_row is not None
+    # Trade anchored to VCP attributes ONLY to VCP cohort's reached_1r,
+    # not flat_base's. Pre-fix (candidate-only JOIN): both rows would
+    # see reached_1r_n == 1. Post-fix (PE-aware JOIN): vcp=1, flat=0.
+    assert vcp_row.reached_1r_n == 1, (
+        f"Codex R1 MAJOR #4: VCP cohort should count anchored trade; "
+        f"got reached_1r_n={vcp_row.reached_1r_n}"
+    )
+    assert flat_row.reached_1r_n == 0, (
+        f"Codex R1 MAJOR #4: flat_base cohort must NOT inherit VCP-"
+        f"anchored trade; got reached_1r_n={flat_row.reached_1r_n}"
+    )

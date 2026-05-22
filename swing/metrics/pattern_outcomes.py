@@ -109,7 +109,18 @@ def _count_reached_1r_hit_stop(
            AND pe.pipeline_run_id IN (
                SELECT id FROM pipeline_runs
                WHERE evaluation_run_id = c.evaluation_run_id)
-        LEFT JOIN trades t ON t.candidate_id = c.id
+        -- Codex R1 MAJOR #4 closure: honor the direct
+        -- trades.pattern_evaluation_id backlink when present (v21+
+        -- trades anchored to a specific PE row). Legacy/pre-v21 trades
+        -- with NULL pattern_evaluation_id fall back to candidate-only
+        -- match (existing behavior). Per-pattern_class cohort
+        -- precision: a trade anchored to VCP must NOT attribute to
+        -- flat_base's cohort even when both PEs share the same
+        -- candidate (multi-pattern_class on same ticker scenario).
+        LEFT JOIN trades t
+            ON t.candidate_id = c.id
+           AND (t.pattern_evaluation_id IS NULL
+                OR t.pattern_evaluation_id = pe.id)
         WHERE pe.pattern_class = ?
         """,
         (pattern_class,),
