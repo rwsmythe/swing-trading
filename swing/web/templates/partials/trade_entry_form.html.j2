@@ -40,6 +40,23 @@
           hx-headers='{"HX-Request": "true"}'>
       <input type="hidden" name="ticker" value="{{ vm.ticker }}">
       <input type="hidden" name="origin" value="{{ vm.origin }}">
+      {#- Phase 13 T2.SB6c T-A.6c.4 §C.5 anchor-threading (OQ-12 CLOSURE).
+          Hidden inputs propagate the pattern_evaluations row anchor
+          + claim flag + pipeline_run_id_at_form_render so the POST
+          handler's 5-tier rejection ladder + claim-consistency gate
+          fires on tampered or stale anchors. Only emitted when the
+          form-render resolved an anchor; manual_off_pipeline path
+          omits all 3 (V1 STUB closure per OQ-12). -#}
+      {% if vm.pattern_evaluation_id is not none %}
+      <input type="hidden" name="pattern_evaluation_id"
+             value="{{ vm.pattern_evaluation_id }}">
+      <input type="hidden" name="claimed_pattern_evaluation_anchor"
+             value="{{ 'true' if vm.claimed_pattern_evaluation_anchor else 'false' }}">
+      <input type="hidden" name="pipeline_run_id_at_form_render"
+             value="{{ vm.pipeline_run_id_at_form_render
+                       if vm.pipeline_run_id_at_form_render is not none
+                       else '' }}">
+      {% endif %}
       {#- Phase 13 T3.SB1 — auto-fill hidden anchors (T-B.1.3).
           ``schwab_source_value_json`` carries the SERVER-STAMPED original
           auto-populated values as a JSON envelope; the POST handler

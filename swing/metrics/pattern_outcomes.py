@@ -63,6 +63,65 @@ _TRIGGERING_LABEL_SOURCES: tuple[str, ...] = (
 )
 
 
+def _count_reached_1r_hit_stop(
+    conn: sqlite3.Connection, *, pattern_class: str,
+) -> tuple[int, int, int]:
+    """Gap B.5 (T-A.6c.4) per plan §D.3 SQL skeleton.
+
+    Returns ``(denominator, reached_1r, hit_stop)`` where:
+
+    - ``denominator`` = COUNT(DISTINCT pe.id) where pattern_evaluations
+      matches a confirmed pattern_exemplars row (same pattern_class +
+      overlapping window).
+    - ``reached_1r`` = COUNT(DISTINCT pe.id) subset with a trade on the
+      matching candidate AND trade reached 1R outcome.
+    - ``hit_stop`` = COUNT(DISTINCT pe.id) subset with a trade hitting stop.
+
+    Per R3 MAJOR #1 closure: numerator counted in ``pe.id`` unit (NOT
+    ``t.id``); DISTINCT prevents JOIN-cardinality inflation when one
+    evaluation matches multiple overlapping exemplars OR has multiple
+    trades.
+    """
+    row = conn.execute(
+        """
+        SELECT COUNT(DISTINCT pe.id) AS denominator,
+               COUNT(DISTINCT CASE
+                   WHEN t.id IS NOT NULL
+                    AND t.state IN ('closed', 'reviewed')
+                    AND t.realized_R_if_plan_followed IS NOT NULL
+                    AND t.realized_R_if_plan_followed >= 1.0
+                   THEN pe.id END) AS reached_1r,
+               COUNT(DISTINCT CASE
+                   WHEN t.id IS NOT NULL
+                    AND t.state IN ('closed', 'reviewed')
+                    AND t.realized_R_if_plan_followed IS NOT NULL
+                    AND t.realized_R_if_plan_followed < 0
+                   THEN pe.id END) AS hit_stop
+        FROM pattern_evaluations pe
+        INNER JOIN pattern_exemplars px
+            ON px.ticker = pe.ticker
+           AND px.proposed_pattern_class = pe.pattern_class
+           AND px.final_decision = 'confirmed'
+           AND pe.window_start_date <= px.end_date
+           AND pe.window_end_date >= px.start_date
+        LEFT JOIN candidates c
+            ON pe.ticker = c.ticker
+           AND pe.pipeline_run_id IN (
+               SELECT id FROM pipeline_runs
+               WHERE evaluation_run_id = c.evaluation_run_id)
+        LEFT JOIN trades t ON t.candidate_id = c.id
+        WHERE pe.pattern_class = ?
+        """,
+        (pattern_class,),
+    ).fetchone()
+    if row is None:
+        return (0, 0, 0)
+    denom = int(row[0]) if row[0] is not None else 0
+    reached = int(row[1]) if row[1] is not None else 0
+    hit = int(row[2]) if row[2] is not None else 0
+    return (denom, reached, hit)
+
+
 def _count_triggering_n_k(
     conn: sqlite3.Connection, *, pattern_class: str,
 ) -> tuple[int, int]:
@@ -121,11 +180,55 @@ def build_pattern_outcome_rows(
             f"(95pct CI {ci.lower * 100.0:.1f}-{ci.upper * 100.0:.1f}pct; "
             f"n={n})"
         )
+        # Gap B.5 (T-A.6c.4): populate the previously-V1-stub
+        # ``reached_1r_n + reached_1r_ci + hit_stop_n + hit_stop_ci``
+        # fields per plan §D.3 SQL skeleton. Denominator suppression
+        # at n<5 LOCK preserved separately from the triggering
+        # suppression above; the existing template surface uses the
+        # outer ``n`` field for the ratio denominator.
+        denom_b5, reached_1r, hit_stop = _count_reached_1r_hit_stop(
+            conn, pattern_class=cls,
+        )
+        reached_1r_n: int | None
+        hit_stop_n: int | None
+        reached_1r_ci: WilsonCI | None
+        hit_stop_ci: WilsonCI | None
+        if denom_b5 >= 5:
+            reached_1r_n = reached_1r
+            hit_stop_n = hit_stop
+            reached_1r_ci = wilson_ci(k=reached_1r, n=denom_b5)
+            hit_stop_ci = wilson_ci(k=hit_stop, n=denom_b5)
+        elif denom_b5 > 0:
+            # Below the suppression threshold: emit n=0 sentinels so the
+            # template's ``is none`` guard fires the suppression branch.
+            reached_1r_n = None
+            hit_stop_n = None
+            reached_1r_ci = None
+            hit_stop_ci = None
+        else:
+            # No matching denominator at all — preserve existing V1
+            # behavior (None: template renders muted placeholder).
+            reached_1r_n = None
+            hit_stop_n = None
+            reached_1r_ci = None
+            hit_stop_ci = None
+        # Use the B.5 denominator (NOT the legacy triggering n) as the
+        # ratio denominator surfaced via the existing template at
+        # ``swing/web/templates/metrics/pattern_outcomes.html.j2:38+45``
+        # — the template renders ``row.reached_1r_n / row.n``. To
+        # surface the correct ratio we override ``n`` with the B.5
+        # denominator when populated; otherwise preserve triggering-n.
+        outer_n = denom_b5 if (reached_1r_n is not None
+                                or hit_stop_n is not None) else n
         rows.append(PatternOutcomeRow(
             pattern_class=cls,
-            n=n,
+            n=outer_n,
             triggered_n=k,
             triggered_ci=ci,
             triggered_pct_text=pct_text,
+            reached_1r_n=reached_1r_n,
+            reached_1r_ci=reached_1r_ci,
+            hit_stop_n=hit_stop_n,
+            hit_stop_ci=hit_stop_ci,
         ))
     return rows

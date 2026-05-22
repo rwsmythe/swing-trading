@@ -33,16 +33,34 @@
         </td>
         <td>
           {% if row.reached_1r_n is none %}
-            <span class="muted">(V1: trade backlink not yet resolved)</span>
+            {% if row.suppressed_text %}
+              <span class="suppressed">{{ row.suppressed_text }}</span>
+            {% else %}
+              <span class="muted suppressed">(suppressed: no trade pairing or n&lt;5)</span>
+            {% endif %}
           {% else %}
             {{ row.reached_1r_n }} / {{ row.n }}
+            {% if row.reached_1r_ci %}
+              <span class="muted">(Wilson CI
+                {{ '%.1f' | format(row.reached_1r_ci.lower * 100.0) }}-{{ '%.1f' | format(row.reached_1r_ci.upper * 100.0) }};
+                n={{ row.n }})</span>
+            {% endif %}
           {% endif %}
         </td>
         <td>
           {% if row.hit_stop_n is none %}
-            <span class="muted">(V1: trade backlink not yet resolved)</span>
+            {% if row.suppressed_text %}
+              <span class="suppressed">{{ row.suppressed_text }}</span>
+            {% else %}
+              <span class="muted suppressed">(suppressed: no trade pairing or n&lt;5)</span>
+            {% endif %}
           {% else %}
             {{ row.hit_stop_n }} / {{ row.n }}
+            {% if row.hit_stop_ci %}
+              <span class="muted">(Wilson CI
+                {{ '%.1f' | format(row.hit_stop_ci.lower * 100.0) }}-{{ '%.1f' | format(row.hit_stop_ci.upper * 100.0) }};
+                n={{ row.n }})</span>
+            {% endif %}
           {% endif %}
         </td>
       </tr>

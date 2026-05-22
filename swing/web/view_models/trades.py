@@ -359,6 +359,24 @@ class TradeEntryFormVM:
     unresolved_material_discrepancies_count: int = 0
     recent_multi_leg_auto_correction_count: int = 0
     banner_resolve_link: str | None = None
+    # Phase 13 T2.SB6c T-A.6c.4 §C.5 anchor-threading (OQ-12 CLOSURE):
+    # 3 hidden form anchors that propagate the pipeline-origin
+    # pattern_evaluations row through the form submission to the POST
+    # handler's 5-tier rejection ladder + claim-consistency gate.
+    #
+    # ``pattern_evaluation_id``: id of the pattern_evaluations row that
+    #   matches (pipeline_run_id, ticker) at form-render time. None when
+    #   the form-render found no matching row (manual_off_pipeline path).
+    # ``claimed_pattern_evaluation_anchor``: True when the form-render
+    #   resolved an anchor; round-trips through the form so POST can
+    #   detect tampering (anchor present without claim OR vice-versa).
+    # ``pipeline_run_id_at_form_render``: the pipeline_runs.id under
+    #   which the form found the anchor; POST validates this matches
+    #   the evaluation row's pipeline_run_id (R5 MAJOR #1 / R6 MAJOR #3
+    #   missing-anchor symmetry).
+    pattern_evaluation_id: int | None = None
+    claimed_pattern_evaluation_anchor: bool = False
+    pipeline_run_id_at_form_render: int | None = None
 
 
 def build_entry_form_vm(
@@ -546,6 +564,29 @@ def build_entry_form_vm(
     watchlist_entry_target = wl_entry.entry_target if wl_entry else None
     watchlist_initial_stop = wl_entry.initial_stop_target if wl_entry else None
 
+    # Phase 13 T2.SB6c T-A.6c.4 §C.5 Layer 1 — resolve the
+    # pattern_evaluations anchor for pipeline-origin trades. Looked up
+    # via (pipeline_run_id, ticker); multi-pattern_class V1
+    # simplification picks the highest composite_score row (banked V2:
+    # operator picks which class drives the anchor when pipeline emits
+    # multiple classes for the same ticker).
+    resolved_pattern_evaluation_id: int | None = None
+    pattern_evaluation_anchor_pipeline_run_id: int | None = None
+    if pipeline_run_id is not None:
+        _conn2 = connect(cfg.paths.db_path)
+        try:
+            pe_row = _conn2.execute(
+                "SELECT id FROM pattern_evaluations "
+                "WHERE pipeline_run_id = ? AND ticker = ? "
+                "ORDER BY composite_score DESC, id DESC LIMIT 1",
+                (pipeline_run_id, ticker),
+            ).fetchone()
+            if pe_row is not None:
+                resolved_pattern_evaluation_id = int(pe_row[0])
+                pattern_evaluation_anchor_pipeline_run_id = pipeline_run_id
+        finally:
+            _conn2.close()
+
     # Phase 13 T3.SB1 — Schwab auto-fill OVERRIDES the live-price /
     # watchlist fallback chain when the resolver returns a populated
     # result (spec §6.1 + plan §G.2 T-B.1.3). The operator sees the
@@ -642,6 +683,15 @@ def build_entry_form_vm(
         unresolved_material_discrepancies_count=unresolved_material_count,
         recent_multi_leg_auto_correction_count=recent_multi_leg_count,
         banner_resolve_link=banner_resolve_link,
+        # Phase 13 T2.SB6c T-A.6c.4 §C.5 Layer 1 — pattern_evaluations
+        # anchor for OQ-12 CLOSURE. None when no matching row.
+        pattern_evaluation_id=resolved_pattern_evaluation_id,
+        claimed_pattern_evaluation_anchor=(
+            resolved_pattern_evaluation_id is not None
+        ),
+        pipeline_run_id_at_form_render=(
+            pattern_evaluation_anchor_pipeline_run_id
+        ),
     )
 
 

@@ -274,38 +274,156 @@ def _lookup_rs_rank(
 
 def _build_outcome_distribution(
     conn: sqlite3.Connection, *, pattern_class: str,
+    current_evaluation_id: int | None = None,
+    composite_score: float | None = None,
+    cohort_limit: int = 20,
 ) -> tuple[OutcomeDistributionRow, ...]:
-    """V1 outcome distribution from pattern_exemplars; T-A.6.5 metric tile
-    surfaces the deeper Phase 10 cohort composition.
+    """Gap B.4 (T-A.6c.4) outcome distribution per spec section 5.10 item 8.
 
-    The review form's surface is intentionally light — a single row for
-    the current pattern_class showing n + confirmed/relabeled mix. The
-    9th metric tile at T-A.6.5 carries the cross-pattern view + the 1R /
-    stop bucketing per Phase 10.
+    Cohort = "last N similar-score candidates" per spec — evaluations with
+    composite_score in ``[score - 0.1, score + 0.1]`` for the SAME
+    pattern_class, ordered by pe.id DESC + LIMIT N. The CTE picks the N
+    cohort evaluations FIRST; the outer query LEFT JOINs trades for
+    outcome bucketing per OQ-6:
+
+    - ``reached_1r``: trade.state IN ('closed','reviewed') AND
+      realized_R_if_plan_followed >= 1.0 (V1 proxy; the more precise
+      max(daily_high since entry) >= entry + (entry - stop) is V2; the
+      realized-R surrogate is bias-equivalent for cohort statistics).
+    - ``hit_stop``: trade.state IN ('closed','reviewed') AND
+      realized_R_if_plan_followed < 0.
+
+    Suppression at n<5 per Phase 10 honesty.suppress_for_n (V1 simplified
+    to a numeric guard since the per-cohort n is bounded by the cohort
+    LIMIT not the universe-of-exemplars).
+
+    When called without ``current_evaluation_id`` / ``composite_score`` (older
+    callers / partial fixtures), falls back to the pattern_class-only V1
+    triggered-only surface (backward compat).
     """
-    n_row = conn.execute(
-        "SELECT COUNT(*) FROM pattern_exemplars "
-        "WHERE proposed_pattern_class = ? "
-        "  AND label_source IN ('closed_loop_review', 'organic_trade_history',"
-        " 'curated_gold')",
-        (pattern_class,),
-    ).fetchone()
-    n = int(n_row[0]) if n_row else 0
-    if n == 0:
-        return (OutcomeDistributionRow(pattern_class=pattern_class, n=0),)
-    confirmed_row = conn.execute(
-        "SELECT COUNT(*) FROM pattern_exemplars "
-        "WHERE proposed_pattern_class = ? "
-        "  AND label_source IN ('closed_loop_review', 'organic_trade_history',"
-        " 'curated_gold') "
-        "  AND final_decision = 'confirmed'",
-        (pattern_class,),
-    ).fetchone()
-    confirmed = int(confirmed_row[0]) if confirmed_row else 0
-    triggered_pct = (confirmed / n) * 100.0 if n > 0 else None
+    if current_evaluation_id is None or composite_score is None:
+        # Backward-compat (V1 triggered-only).
+        n_row = conn.execute(
+            "SELECT COUNT(*) FROM pattern_exemplars "
+            "WHERE proposed_pattern_class = ? "
+            "  AND label_source IN ('closed_loop_review',"
+            " 'organic_trade_history', 'curated_gold')",
+            (pattern_class,),
+        ).fetchone()
+        n = int(n_row[0]) if n_row else 0
+        if n == 0:
+            return (OutcomeDistributionRow(pattern_class=pattern_class, n=0),)
+        confirmed_row = conn.execute(
+            "SELECT COUNT(*) FROM pattern_exemplars "
+            "WHERE proposed_pattern_class = ? "
+            "  AND label_source IN ('closed_loop_review',"
+            " 'organic_trade_history', 'curated_gold') "
+            "  AND final_decision = 'confirmed'",
+            (pattern_class,),
+        ).fetchone()
+        confirmed = int(confirmed_row[0]) if confirmed_row else 0
+        triggered_pct = (confirmed / n) * 100.0 if n > 0 else None
+        return (OutcomeDistributionRow(
+            pattern_class=pattern_class, n=n,
+            triggered_pct=triggered_pct,
+        ),)
+
+    # Gap B.4 cohort + outcome bucketing per plan §D.3 SQL skeleton.
+    # CTE picks N cohort evaluations FIRST (LIMIT at evaluation unit per
+    # R4 MAJOR #1 LOCK), then LEFT JOIN trades for per-evaluation
+    # aggregation. MAX(CASE ...) ensures one row per cohort evaluation
+    # regardless of trade JOIN cardinality (Expansion #8 unit lock).
+    score_low = composite_score - 0.1
+    score_high = composite_score + 0.1
+    cohort_rows = conn.execute(
+        """
+        WITH cohort AS (
+            SELECT pe.id AS evaluation_id, pe.composite_score, pe.ticker,
+                   pe.pipeline_run_id
+            FROM pattern_evaluations pe
+            WHERE pe.pattern_class = ?
+              AND pe.composite_score BETWEEN ? AND ?
+              AND pe.id != ?
+            ORDER BY pe.id DESC
+            LIMIT ?
+        )
+        SELECT cohort.evaluation_id,
+               MAX(CASE WHEN t.id IS NOT NULL THEN 1 ELSE 0 END)
+                 AS has_trade,
+               MAX(CASE WHEN t.id IS NOT NULL
+                        AND t.state IN ('closed', 'reviewed')
+                        AND t.realized_R_if_plan_followed IS NOT NULL
+                        AND t.realized_R_if_plan_followed >= 1.0
+                        THEN 1 ELSE 0 END) AS reached_1r,
+               MAX(CASE WHEN t.id IS NOT NULL
+                        AND t.state IN ('closed', 'reviewed')
+                        AND t.realized_R_if_plan_followed IS NOT NULL
+                        AND t.realized_R_if_plan_followed < 0
+                        THEN 1 ELSE 0 END) AS hit_stop
+        FROM cohort
+        LEFT JOIN candidates c
+            ON c.ticker = cohort.ticker
+           AND c.evaluation_run_id = (
+               SELECT evaluation_run_id FROM pipeline_runs
+               WHERE id = cohort.pipeline_run_id)
+        LEFT JOIN trades t ON t.candidate_id = c.id
+        GROUP BY cohort.evaluation_id
+        """,
+        (
+            pattern_class, score_low, score_high, current_evaluation_id,
+            cohort_limit,
+        ),
+    ).fetchall()
+    cohort_n = len(cohort_rows)
+    if cohort_n < 5:
+        # Suppression at n<5 per honesty discipline.
+        # Still expose triggered_pct via the legacy fallback so the
+        # surface degrades gracefully (per spec the legacy text is
+        # NOT suppressed below 5; reached_1r + hit_stop ARE suppressed).
+        # Compute legacy triggered fraction over confirmed exemplars.
+        n_row = conn.execute(
+            "SELECT COUNT(*) FROM pattern_exemplars "
+            "WHERE proposed_pattern_class = ? "
+            "  AND label_source IN ('closed_loop_review',"
+            " 'organic_trade_history', 'curated_gold')",
+            (pattern_class,),
+        ).fetchone()
+        n_exemplars = int(n_row[0]) if n_row else 0
+        confirmed = 0
+        triggered_pct: float | None = None
+        if n_exemplars > 0:
+            confirmed_row = conn.execute(
+                "SELECT COUNT(*) FROM pattern_exemplars "
+                "WHERE proposed_pattern_class = ? "
+                "  AND label_source IN ('closed_loop_review',"
+                " 'organic_trade_history', 'curated_gold') "
+                "  AND final_decision = 'confirmed'",
+                (pattern_class,),
+            ).fetchone()
+            confirmed = int(confirmed_row[0]) if confirmed_row else 0
+            triggered_pct = (confirmed / n_exemplars) * 100.0
+        return (OutcomeDistributionRow(
+            pattern_class=pattern_class,
+            n=cohort_n,
+            triggered_pct=triggered_pct,
+            reached_1r_pct=None,
+            hit_stop_pct=None,
+        ),)
+
+    reached_1r_count = sum(int(r[2]) for r in cohort_rows)
+    hit_stop_count = sum(int(r[3]) for r in cohort_rows)
+    reached_1r_pct = 100.0 * (reached_1r_count / cohort_n)
+    hit_stop_pct = 100.0 * (hit_stop_count / cohort_n)
+    # Triggered = fraction of cohort with any trade opened. V1 simplification:
+    # use cohort has_trade aggregate as triggered proxy.
+    triggered_count = sum(int(r[1]) for r in cohort_rows)
+    triggered_pct = 100.0 * (triggered_count / cohort_n)
     return (OutcomeDistributionRow(
-        pattern_class=pattern_class, n=n,
+        pattern_class=pattern_class,
+        n=cohort_n,
         triggered_pct=triggered_pct,
+        reached_1r_pct=reached_1r_pct,
+        hit_stop_pct=hit_stop_pct,
     ),)
 
 
@@ -425,6 +543,8 @@ def build_patterns_review_form_vm(
     )
     outcome_rows = _build_outcome_distribution(
         conn, pattern_class=ev.pattern_class,
+        current_evaluation_id=candidate_id,
+        composite_score=float(ev.composite_score),
     )
     # Pretty-prints (ASCII-only JSON for in-template inspection).
     try:
