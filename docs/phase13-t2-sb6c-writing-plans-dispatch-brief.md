@@ -8,7 +8,7 @@
 
 **Brief:** `docs/phase13-t2-sb6c-writing-plans-dispatch-brief.md` (this file).
 
-**Sequencing:** T2.SB6c brainstorming SHIPPED 2026-05-21 PM #5 at `fb177e3` + housekeeping at `043a5bc`. This writing-plans dispatch is the next step. Output feeds the executing-plans dispatch (5 sub-tasks per spec §6; concurrent T-A.6c.1 + T-A.6c.2 + T-A.6c.3; sequential T-A.6c.4 + T-A.6c.5).
+**Sequencing:** T2.SB6c brainstorming SHIPPED 2026-05-21 PM #5 at `fb177e3` + housekeeping at `043a5bc` + brief committed at `7297a2b` + **AMENDED post-operator-witnessed S2-S8 gate verification at 2026-05-21 PM #5 (this commit)** per §1.5 below. Output feeds the executing-plans dispatch (5 sub-tasks per spec §6; concurrent T-A.6c.1 + T-A.6c.2 + T-A.6c.3; sequential T-A.6c.4 + T-A.6c.5).
 
 **Branch:** `phase13-t2-sb6c-writing-plans` — branches from main HEAD `043a5bc` (post-brainstorming housekeeping).
 
@@ -84,6 +84,38 @@ Highlights for writing-plans phase scope:
 
 ---
 
+## §1.5 Amendment — post-S2-S8 operator-witnessed gate verification (2026-05-21 PM #5)
+
+Per operator-witnessed S2-S8 browser walkthrough against `127.0.0.1:8080` post-T2.SB6b merge (run 76 manual pipeline @ 2026-05-21T20:34:38; session anchor 2026-05-22), TWO material findings surfaced that the brainstorming spec did NOT capture + were ALSO not Codex-caught in the T2.SB6b chain (would have been caught at S4b operator-paired gate which only runs post-merge). **Both are NEW T2.SB6c scope additions (NOT V2-deferrals) per closure-dispatch intent.**
+
+### §1.5.1 Pipeline-side `_step_charts` chart_renders cache write-through (FINDING A)
+
+`chart_renders` table is **EMPTY across ALL surfaces** post-T2.SB6b merge — confirmed via direct DB query (`SELECT surface, COUNT(*) FROM chart_renders GROUP BY surface` → 0 rows). Surface impacts: `/dashboard` market weather + `/patterns/exemplars` per-exemplar charts + future hyp-rec detail + position detail all render "Chart not yet cached" placeholder.
+
+Root cause: `swing/pipeline/runner.py:_step_charts` does NOT call `refresh_chart_render` for any surface. Production callers of `refresh_chart_render` exist only at `swing/web/routes/dashboard.py:107` (operator-triggered `POST /dashboard/weather-chart/refresh` button) + `swing/web/view_models/patterns/exemplars.py:258` (cache-miss path imports but never invokes — docstring lines 290-296 explicitly say "Cache NOT written back" because exemplar cache key needs pipeline_run_id anchor that exemplars don't have).
+
+This was an EXPLICIT T2.SB6b dispatch brief requirement at §3 "Modify: `swing/pipeline/runner.py:_step_charts` — write `chart_renders` cache rows for 5 surfaces (consumes T2.SB6a `refresh_chart_render` verbatim)" that fell into the Codex R1 MAJOR #5 ACCEPT-WITH-RATIONALE bank as "Theme 1 chart integration partial completeness" + was NOT enumerated in T2.SB6b return report §6 V1-simplifications-with-V2-dependency table.
+
+**T2.SB6c writing-plans MUST add pipeline-side `_step_charts` chart_renders write-through as explicit scope** — folded into T-A.6c.2 (Gap A chart-surface wiring). 4 surfaces touched (watchlist_row + hyprec_detail + position_detail + market_weather) per §C.5 inventory; theme2_annotated handled separately (per-exemplar; covered by T-A.6c.3 backfill below).
+
+### §1.5.2 `pattern_exemplars.labeler_evidence_json` shape gap (FINDING B)
+
+All 34 existing pattern_exemplars rows carry `labeler_evidence_json` with keys `['confidence', 'evaluation', 'geometric_evidence_narrative']` — **MISSING the `rule_criteria` + `narrative` keys** that T-A.6.6b's enhanced `/patterns/exemplars` rendering consumes. Page renders graceful "(no rule_criteria payload available)" / "(no narrative payload available)" placeholders per design.
+
+The labeler subagent emit contract was defined at T-A.1.5b (Phase 13 T2.SB1 silver-tier dispatch) BEFORE T-A.6.6b's consumer rendering was specified. The shape contract drift was Codex-caught at T2.SB6b R1 MAJOR #1 ACCEPT-WITH-RATIONALE bank as "review form checklist placeholders" with V2 wiring noted in return report §6 row 1 — but the specific 34-exemplar consumer-side rendering gap was NOT enumerated.
+
+**Two resolution paths**:
+- **Path A (architectural; V2-banked)**: extend pattern-labeler subagent emit contract to include `rule_criteria` + `narrative` keys + re-run labeler against existing exemplars. Significant scope expansion (requires operator-paired silver-tier label review per existing labeler workflow); NOT in SB6c scope.
+- **Path C (pragmatic; SB6c-included)**: one-shot backfill script at T-A.6c.3 that reads existing 34 exemplars' `labeler_evidence_json` + extracts `geometric_evidence_narrative` → write as `narrative` key + synthesizes `rule_criteria` array from `geometric_score_json` (per-rule pass/fail + threshold + tolerance) + writes augmented JSON back. Output renders cleanly through T-A.6.6b's existing consumer; doesn't change labeler subagent emit contract.
+
+**T2.SB6c writing-plans MUST add the one-shot backfill script to T-A.6c.3 scope** (Path C). Path A remains V2-banked for fresh exemplars labeled post-T2.SB6c executing-plans; the writing-plans plan §I forward-binding lessons enumerates the V2 dependency.
+
+### §1.5.3 Test count impact
+
+§2.3 baseline test projection bumps from ~+81 fast → ~+92-95 fast: T-A.6c.2 adds ~6-8 chart_renders write-through tests (one per surface + discriminating empty-bytes-rejection per F6 substrate gotcha + idempotency per `refresh_chart_render` DELETE-then-INSERT contract); T-A.6c.3 adds ~5 backfill script tests (parse existing → synthesize keys → write back round-trip + idempotency + graceful no-op on already-augmented payloads).
+
+---
+
 ## §2 Scope inheritance from brainstorm spec
 
 The writing-plans output (plan doc) MUST encode the brainstorm spec §6 5-task decomposition with per-task acceptance criteria + cross-task dependency map + writing-plans §5 watch items. The plan is the BINDING substrate for the executing-plans dispatch.
@@ -96,17 +128,17 @@ The writing-plans output (plan doc) MUST encode the brainstorm spec §6 5-task d
 
 **Delta C** = OBSOLETE per brainstorm spec §2.3 (table already in v20 migration 0020:262-307).
 
-### §2.2 Sub-bundle decomposition (per spec §6; OQ-10 affirmed)
+### §2.2 Sub-bundle decomposition (per spec §6; OQ-10 affirmed + §1.5 amendments)
 
 - **T-A.6c.1**: v21 migration atomic landing (~17 paired tests + 3 backup-gate tests + 1 cross-bundle pin). NO schema-dep; foundation.
-- **T-A.6c.2**: SB6 closure Gap A chart-surface wiring (~11 tests; no schema dep; can dispatch concurrent with T-A.6c.1).
-- **T-A.6c.3**: SB6 closure Gap B no-schema review form data-completeness (~13 tests; can dispatch concurrent with T-A.6c.1).
+- **T-A.6c.2**: SB6 closure Gap A chart-surface wiring (**~17-19 tests** per §1.5.1 amendment: ~11 original VM/template wiring + ~6-8 NEW pipeline-side `_step_charts` chart_renders write-through tests for 4 surfaces: watchlist_row + hyprec_detail + position_detail + market_weather; no schema dep; can dispatch concurrent with T-A.6c.1).
+- **T-A.6c.3**: SB6 closure Gap B no-schema review form data-completeness + **labeler_evidence_json one-shot backfill script** (**~18 tests** per §1.5.2 amendment: ~13 original review form data-completeness + ~5 NEW backfill script tests for parse/synthesize/round-trip/idempotency/graceful no-op on already-augmented payloads; no schema dep; can dispatch concurrent with T-A.6c.1).
 - **T-A.6c.4**: SB6 closure Gap B v21-dependent + entry-form anchor threading + entry-path mapping fix + VM/builder extensions (31 tests; consumes Delta A + B; sequential after T-A.6c.1).
 - **T-A.6c.5**: Closer E2E + ruff sweep + cross-bundle pin row 12 promote (sequential after all).
 
-### §2.3 Cumulative test delta projection (per spec §5)
+### §2.3 Cumulative test delta projection (per spec §5; §1.5.3 amended)
 
-~81 fast tests + 1 fast E2E projected (within brainstorming brief's expected ~+80-150 range). Baseline 5559 → ~5640 fast post-T2.SB6c executing-plans. Schema v20 → v21 LANDS at T-A.6c.1 (ending the 10+ sub-bundle v20-LOCKED streak).
+**~92-95 fast tests** + 1 fast E2E projected (bumped from ~81 original per §1.5.3: +6-8 chart_renders write-through tests at T-A.6c.2; +5 labeler_evidence_json backfill tests at T-A.6c.3). Within brainstorming brief's expected ~+80-150 range. Baseline 5559 → **~5651-5654 fast** post-T2.SB6c executing-plans. Schema v20 → v21 LANDS at T-A.6c.1 (ending the 10+ sub-bundle v20-LOCKED streak).
 
 ---
 
@@ -150,9 +182,28 @@ Writing-plans phase pre-Codex review applies ALL 7 expansions (5 original + 2 NE
 - **EntryPath mapping fix at `swing/web/routes/trades.py:1095`** (T2.SB6c brainstorm forward-binding lesson #6): `derive_trade_origin(conn, ticker, entry_path: EntryPath)` cannot distinguish `pipeline_watch_hyp_recs` from `pipeline_watch_manual` if all web POSTs hardcode `EntryPath.MANUAL_WEB_FORM`. T-A.6c.4 fixes as side-effect of anchor-threading.
 - **VM/builder fields as part of anchor-threading scope** (T2.SB6c brainstorm forward-binding lesson #7): enumerate all 4 layers (VM field + builder population + template emission + POST validation) per anchor; discriminating tests per layer.
 
+### §3.5b Pipeline-side cache write-through discipline (§1.5.1 amendment; NEW T2.SB6c writing-plans watch item)
+
+Per §1.5.1: T2.SB6b shipped chart_renders cache READ infrastructure (DashboardVM consumes via `get_cached_chart_svg`; route handlers populate VMs from cache) but did NOT ship the pipeline-side WRITE-THROUGH. T-A.6c.2 closes the loop. Plan §C atomic-landing watch items:
+- `_step_charts` MUST call `refresh_chart_render(conn, ChartRender(...))` for each of 4 surfaces (watchlist_row + hyprec_detail + position_detail + market_weather) during pipeline run; theme2_annotated remains exemplar-keyed + handled separately at /patterns/exemplars cache-miss read path per existing T2.SB6b shipped behavior.
+- Cache key shape per §C.2 (T2.SB6a substrate ChartRender `__post_init__` validates): run-bound surfaces (watchlist_row + hyprec_detail + market_weather) require non-NULL `pipeline_run_id`; `position_detail` requires NULL `pipeline_run_id`; theme2_annotated requires both `pattern_class` + `pipeline_run_id` non-NULL.
+- F6 transient-empty defense at construction barrier: `ChartRender(chart_svg_bytes=b"")` raises per T2.SB6a substrate validator; if a renderer emits empty bytes, the pipeline step must catch + WARN-log + skip (NOT blank the existing cache row per F6 lesson family).
+- DELETE-then-INSERT atomic per §A.15 + BEGIN IMMEDIATE / COMMIT per §A.12 substrate contract — caller-tx semantics; pipeline step opens own fenced_write tx.
+- Discriminating test per surface: assert post-_step_charts the chart_renders table has 1 row per active (surface, pipeline_run_id) tuple for run-bound surfaces + 1 row per surface (NULL pipeline_run_id) for position_detail. Assert F6 transient-empty defense: monkeypatch renderer to return b"" → assert WARN logged + existing cache row preserved verbatim (per T2.SB6a Codex R1 MAJOR #2 discriminating test pattern).
+
+### §3.5c Labeler evidence backfill script discipline (§1.5.2 amendment; NEW T2.SB6c writing-plans watch item)
+
+Per §1.5.2 Path C: T-A.6c.3 ships one-shot backfill script that augments existing pattern_exemplars rows with `rule_criteria` + `narrative` keys synthesized from existing `geometric_evidence_narrative` + `geometric_score_json`. Plan §C watch items:
+- Synthesis rule for `rule_criteria` array: enumerate per-criterion entries derived from `geometric_score_json` (5-detector rule pass/fail + threshold + tolerance per spec §5.2-§5.6); preserve existing structural_evidence_json keys verbatim.
+- Synthesis rule for `narrative`: copy `geometric_evidence_narrative` verbatim → `narrative` key (preserve original key for audit-trail; do NOT delete).
+- Idempotency: second run is no-op on already-augmented payloads (detect via `rule_criteria` AND `narrative` keys already present); preserves first-run output exactly.
+- Fail-soft per row: exception in single-row synthesis WARN-logs + skips that row; continues remaining 33; final summary reports `(augmented: N; skipped: M; reasons: ...)`.
+- Operator-invoked subcommand at `swing/cli.py:patterns_exemplars_backfill_labeler_evidence`; ASCII-only output per Windows cp1252 stdout safety.
+- Path A (labeler subagent contract widening) banked as V2 per writing-plans plan §I — fresh exemplars labeled post-T2.SB6c executing-plans will need the V2 contract extension; the V2 dependency cited explicitly in plan §I.
+
 ### §3.6 V1 simplification banking discipline (T2.SB6b cumulative; T2.SB6c closure-committed)
 
-T2.SB6c is a CLOSURE dispatch. Every T2.SB6b §6 V1 simplification targeted by SB6c MUST be RESOLVED in the plan (closure-committed) — NOT bank again. Plan §5 watch item enumerates this explicitly. NO new V1 STUBs introduced by SB6c (brainstorm spec §9 confirmed ZERO new V1 STUBs).
+T2.SB6c is a CLOSURE dispatch. Every T2.SB6b §6 V1 simplification targeted by SB6c MUST be RESOLVED in the plan (closure-committed) — NOT bank again. Plan §5 watch item enumerates this explicitly. NO new V1 STUBs introduced by SB6c (brainstorm spec §9 confirmed ZERO new V1 STUBs). **§1.5 amendments preserve closure-dispatch intent**: §1.5.1 chart_renders cache write-through closes the partial-completeness gap from T2.SB6b R1 MAJOR #5; §1.5.2 labeler_evidence_json one-shot backfill closes the rendering-data gap for existing 34 exemplars via Path C (Path A labeler subagent contract extension banked V2 for FUTURE exemplars, not existing-state coverage).
 
 ### §3.7 Cumulative process discipline
 
@@ -178,17 +229,23 @@ T-A.6c.1 — v21 migration atomic landing
   Step 5: Run tests; verify PASS; backup-gate strict equality verified
   Step 6: Commit — feat(phase13): v21 migration + trades backlinks atomic landing (T-A.6c.1)
 
-T-A.6c.2 — Gap A chart-surface wiring (no schema dep)
-  Step 1: Write 11 failing tests for hyp-rec detail VM + position detail VM + WatchlistVM template + exemplar cache-miss write-through
-  Step 2: Wire VMs to consume substrate via get_cached_chart_svg + refresh_chart_render
-  Step 3: Run tests; verify PASS
-  Step 4: Commit — feat(phase13): Gap A chart-surface wiring (T-A.6c.2)
+T-A.6c.2 — Gap A chart-surface wiring + pipeline-side chart_renders cache write-through (no schema dep; §1.5.1 amendment)
+  Step 1a: Write 11 failing tests for hyp-rec detail VM + position detail VM + WatchlistVM template + exemplar cache-miss write-through (original Gap A wiring)
+  Step 1b: Write 6-8 failing tests for pipeline-side _step_charts chart_renders write-through (one per surface: watchlist_row + hyprec_detail + position_detail + market_weather; +F6-empty-bytes-rejection discriminating test per substrate ChartRender __post_init__ guard; +DELETE-then-INSERT idempotency discriminating test per substrate §A.15 LOCK)
+  Step 2a: Wire VMs to consume substrate via get_cached_chart_svg
+  Step 2b: Extend swing/pipeline/runner.py:_step_charts to call refresh_chart_render(conn, ChartRender(...)) for each surface during pipeline run; verify cache key shapes per §C.2 (run-bound surfaces non-NULL pipeline_run_id; position_detail NULL pipeline_run_id)
+  Step 3: Run tests; verify PASS; ruff clean
+  Step 4: Commit — feat(phase13): Gap A chart-surface wiring + pipeline-side chart_renders write-through (T-A.6c.2)
 
-T-A.6c.3 — Gap B no-schema review form data-completeness
-  Step 1: Write 13 failing tests for trend-template live read + volume profile join
-  Step 2: Implement VM extensions consuming current_stage() + OhlcvCache.get_or_fetch(window_days=80)
-  Step 3: Run tests; verify PASS
-  Step 4: Commit — feat(phase13): Gap B no-schema data-completeness (T-A.6c.3)
+T-A.6c.3 — Gap B no-schema review form data-completeness + labeler_evidence_json one-shot backfill (§1.5.2 amendment)
+  Step 1a: Write 13 failing tests for trend-template live read + volume profile join (original Gap B no-schema)
+  Step 1b: Write 5 failing tests for labeler_evidence_json one-shot backfill script: parse existing 3-key payload (confidence + evaluation + geometric_evidence_narrative) → extract narrative key → synthesize rule_criteria array from geometric_score_json per-rule pass/fail/threshold/tolerance → write augmented JSON back; idempotency (second run is no-op on already-augmented payloads); graceful no-op on missing geometric_score_json (rare); preserves existing keys (confidence + evaluation); round-trip via public reader.
+  Step 2a: Implement VM extensions consuming current_stage() + OhlcvCache.get_or_fetch(window_days=80) per OQ-14
+  Step 2b: Implement swing/cli.py:patterns_exemplars_backfill_labeler_evidence subcommand (operator-invoked one-shot; idempotent; ASCII-only output; OK to fail-soft on per-row exception with WARN log)
+  Step 3: Run tests; verify PASS; ruff clean
+  Step 4: Commit — feat(phase13): Gap B no-schema + labeler_evidence backfill (T-A.6c.3)
+
+  Step 5 (operator-paired post-merge): operator runs `python -m swing.cli patterns_exemplars_backfill_labeler_evidence` against operator DB to augment existing 34 exemplar payloads; subsequent /patterns/exemplars renders show populated rule_criteria + narrative.
 
 T-A.6c.4 — Gap B v21-dependent + entry-form anchor threading + entry-path mapping fix
   Step 1: Write 31 failing tests for label_source split + reached_1r/hit_stop bucketing + outcome distribution + queue criterion 3 weather-state-aware variant + entry-form anchor threading (5-tier rejection ladder) + entry-path mapping fix + VM/builder extensions per 4-layer scope
