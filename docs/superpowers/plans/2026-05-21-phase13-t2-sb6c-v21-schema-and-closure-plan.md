@@ -300,7 +300,7 @@ The existing POST handler at `swing/web/routes/trades.py:1095` hardcodes `entry_
 | **B.2** Volume profile live | §5.10 line 773 | NO | `PatternReviewFormVM` extend with `volume_profile: VolumeProfileRow` (NEW frozen dataclass: `recent_30session_volume_sum: int`, `prior_50day_avg_volume: float`, `ratio_pct: float`). Read OHLCV via `swing.web.ohlcv_cache.get_or_fetch(ticker, window_days=80)` (50 + 30 buffer; OQ-14 LOCK). Template renders inline SVG sparkline (SVG bytes don't flow through stdout — escape from cp1252 risk). | LIVE (no schema dep) |
 | **B.3** POST `/patterns/{candidate_id}/review` label_source split (URL parameter named `candidate_id` per shipped T2.SB6b code; value is a `pattern_evaluations.id`) | §5.10 lines 785-790 | YES — Delta A | POST handler at `swing/web/routes/patterns.py:patterns_review_post` (T2.SB6b T-A.6.3) extends per §D.3 cross-row lookup discipline. If row exists (per the SQL in §D.3) AND operator decision is `confirm`, emit `label_source='organic_trade_history'`; else emit `label_source='closed_loop_review'`. | RESOLVED via Delta A |
 | **B.4** Review form outcome distribution bucketing | §5.10 line 775 | YES — Delta A | `PatternReviewFormVM` extend `OutcomeDistributionRow` with `reached_1r_pct: float | None` + `hit_stop_pct: float | None` (None when n<5 per honesty.suppress_for_n). Compute per OQ-6 thresholds. See §D.3 cohort scope. | RESOLVED via Delta A |
-| **B.5** Metric tile reached_1r + hit_stop | plan §G.9 T-A.6.5 + spec §5.10 line 775 | YES — Delta A | `swing/metrics/pattern_outcomes.py:build_pattern_outcome_rows` populates the existing `PatternOutcomeRow.reached_1r_n + reached_1r_ci + hit_stop_n + hit_stop_ci` fields (currently None per T2.SB6b V1 simplification at `swing/metrics/pattern_outcomes.py:52-55`). No NEW dataclass fields needed; the field shape was already designed for T2.SB6c's outcome wiring (V1 STUB → LIVE). LEFT JOIN `pattern_evaluations` to `trades` via `candidate_id`. Wilson-CI per Phase 10 honesty.wilson_ci; suppression at n<5 per honesty.suppress_for_n. Existing template at `swing/web/templates/metrics/pattern_outcomes.html.j2:35-45` already renders `row.reached_1r_n / row.n` ratio + WilsonCI separately — NO template edit needed; populating the existing fields is sufficient. | RESOLVED via Delta A |
+| **B.5** Metric tile reached_1r + hit_stop | plan §G.9 T-A.6.5 + spec §5.10 line 775 | YES — Delta A | `swing/metrics/pattern_outcomes.py:build_pattern_outcome_rows` populates the existing `PatternOutcomeRow.reached_1r_n + reached_1r_ci + hit_stop_n + hit_stop_ci` fields (currently None per T2.SB6b V1 simplification at `swing/metrics/pattern_outcomes.py:52-55`). No NEW dataclass fields needed; the field shape was already designed for T2.SB6c's outcome wiring (V1 STUB → LIVE). LEFT JOIN `pattern_evaluations` to `trades` via `candidate_id`. Wilson-CI computed via Phase 10 honesty.wilson_ci helper + persisted into the `_ci` fields (T2.SB6c populates these for future template surfacing); suppression at n<5 per honesty.suppress_for_n. **V1 display**: existing template at `swing/web/templates/metrics/pattern_outcomes.html.j2:35-45` renders `row.reached_1r_n / row.n` + `row.hit_stop_n / row.n` ratio text ONLY; the `_ci` fields are populated + persisted but NOT rendered in V1 (deferred V2 template extension — banked at §I.4 V2 candidates). Per Codex R5 MAJOR #2 closure: NO template edit BECAUSE the V1 display contract is ratio-only; the WilsonCI fields are populated for V2 surfacing. If operator-paired triage requires WilsonCI visible in V1, add template edit at T-A.6c.4 Step 4 + add to git add list. Current decision: V1 ratio-only display matches the existing `triggered_pct_text` rendering pattern. | RESOLVED via Delta A |
 | **B.6** Queue criterion 3 weather-state-aware | §5.10 line 799 | NO | `swing/patterns/active_learning.py:prioritize_candidates` extend criterion 3 (`underrepresented_regime`) to consume current `weather_runs.status` value (column-verified against `swing/data/migrations/0003_phase2_pipeline_trades.sql:4-15`; values 'Bullish'/'Caution'/'Bearish'; ticker per `cfg.rs.benchmark_ticker` default 'QQQ'). Per-pattern_class exemplar count against the SAME-`status` historical baseline derived via JOIN to `weather_runs` at-or-before `pattern_exemplars.created_at` (no new column; read-side computation per `pattern_exemplars` schema audit — no `weather_state_at_labeling` column exists). | LIVE (no schema dep) |
 | **§1.5.2 amendment** labeler_evidence_json one-shot backfill | dispatch brief §1.5.2 | NO | NEW `swing/cli.py:patterns_exemplars_backfill_labeler_evidence` operator-invoked subcommand per §C.4. | LIVE (Path C; Path A V2-banked) |
 
@@ -1627,11 +1627,20 @@ def test_phase13_t2_sb6c_v21_closure_happy_path_e2e(v21_db, ...):
     # 4. Outcome bucket: simulate trade hitting 1R.
     _seed_fill_at_1r_above_entry(v21_db, trade_id=...)
 
-    # 5. Metric tile renders non-None reached_1r_pct.
+    # 5. Metric tile renders non-None reached_1r_n (NOT "_pct" per Codex R5
+    # MAJOR #1 closure — existing field shape uses *_n at
+    # swing/metrics/pattern_outcomes.py:52-55).
     response = client.get("/metrics/pattern-outcomes")
     assert response.status_code == 200
-    assert "reached_1r_pct" in response.text  # or VM field inspection
-    # ... more granular assertion on cohort row for CVGI's pattern_class ...
+    # Existing template at swing/web/templates/metrics/pattern_outcomes.html.j2:38
+    # renders "row.reached_1r_n / row.n". Pre-T2.SB6c this rendered the
+    # "(V1: trade backlink not yet resolved)" placeholder for any non-None
+    # row. Post-T2.SB6c with non-None reached_1r_n the placeholder is GONE
+    # + a real ratio appears.
+    assert "(V1: trade backlink not yet resolved)" not in response.text
+    # VM-field-inspection alternative: look up the row dict directly + assert
+    # row['reached_1r_n'] is not None for the CVGI cohort. The implementer
+    # picks the assertion style at executing-plans phase.
 ```
 
 - [ ] **Step 2: Run E2E; verify PASS.**
