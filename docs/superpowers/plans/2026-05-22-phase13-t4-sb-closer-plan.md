@@ -419,7 +419,7 @@ The enumeration is concrete (no placeholders): **2 gate vars + 3 trend_template 
 - [ ] **Step 1A.4: Run test to verify it passes**
 
 Run: `python -m pytest tests/research/test_aplus_sensitivity_variables.py -v`
-Expected: PASS (10+ variables enumerated; `trend_template.min_passes` present; each has kind + current + sweep).
+Expected: PASS (exact 17-name set asserted via set-equality; `gate_count == 2` invariant satisfied; each variable carries valid `kind` ∈ {gate, threshold_additive, threshold_multiplicative} + current_value in sweep_points anchor).
 
 - [ ] **Step 1A.5: Commit**
 
@@ -451,7 +451,7 @@ def test_sweep_recomputes_buckets_per_variable(tmp_path):
     _plant_minimal_eval_run_fixture(conn)  # helper plants 5 candidates with criteria
     var = SweepVariable(
         name="trend_template.min_passes",
-        kind="additive",
+        kind="gate",
         current_value=7,
         sweep_points=(5, 6, 7, 8, 9),
     )
@@ -501,6 +501,7 @@ from research.harness.aplus_sensitivity.variables import SweepVariable
 @dataclass(frozen=True)
 class SweepEntry:
     variable_name: str
+    kind: str  # "gate" | "threshold_additive" | "threshold_multiplicative"
     sweep_point: float | int
     aplus_count: int
     watch_count: int
@@ -572,6 +573,7 @@ def run_sensitivity_sweep(
             )
             sub_entries.append(SweepEntry(
                 variable_name=var.name,
+                kind=var.kind,
                 sweep_point=point,
                 aplus_count=counts["aplus"],
                 watch_count=counts["watch"],
@@ -587,6 +589,7 @@ def run_sensitivity_sweep(
         for e in sub_entries:
             entries.append(SweepEntry(
                 variable_name=e.variable_name,
+                kind=e.kind,
                 sweep_point=e.sweep_point,
                 aplus_count=e.aplus_count,
                 watch_count=e.watch_count,
@@ -756,7 +759,7 @@ def test_threshold_variables_have_zero_deltas_in_sweep_result():
             assert entry.delta_watch == 0
 ```
 
-For T-T4.SB.1 Sub-task 1B.5 (parity invariant test), the test continues to work because the `_PROD_TREND_TEMPLATE_MIN_PASSES_AT_RECON` constant is read from cfg at run_harness entry; the test invokes `run_sensitivity_sweep` against an in-memory cfg + DB so the gate constant matches the planted rows.
+For T-T4.SB.1 Sub-task 1B.5 (parity invariant test), the test continues to work because `prod_trend_template_min_passes` is now an explicit kwarg threaded from `cfg.trend_template.min_passes` through `_recompute_counts_at` → `_bucket_for_substituted` (no module-global state per R2 Minor #1 LOCK); the test invokes `run_sensitivity_sweep(conn, variables=(var,), cfg=Config.from_defaults(), eval_runs_window=20)` against an in-memory cfg + DB so the gate value matches the planted rows.
 ```
 
 - [ ] **Step 1B.4: Run test to verify it passes**
@@ -776,7 +779,7 @@ def test_sweep_at_current_value_matches_persisted_distribution(tmp_path):
     _plant_eval_runs_with_known_distribution(conn, aplus=2, watch=3, skip=4)
     var = SweepVariable(
         name="vcp.watch_max_fails",
-        kind="additive",
+        kind="gate",
         current_value=2,
         sweep_points=(0, 1, 2, 3, 4),
     )
@@ -823,9 +826,12 @@ def test_output_formatter_emits_csv_and_markdown(tmp_path):
         eval_run_id_range=(101, 120),
         total_candidates=5000,
         entries=(
-            SweepEntry("trend_template.min_passes", 5, 12, 80, 4908, 0, 11, 70),
-            SweepEntry("trend_template.min_passes", 6, 4, 70, 4926, 0, 3, 60),
-            SweepEntry("trend_template.min_passes", 7, 1, 10, 4989, 0, 0, 0),
+            SweepEntry("trend_template.min_passes", "gate", 5, 12, 80, 4908, 0, 11, 70),
+            SweepEntry("trend_template.min_passes", "gate", 6, 4, 70, 4926, 0, 3, 60),
+            SweepEntry("trend_template.min_passes", "gate", 7, 1, 10, 4989, 0, 0, 0),
+            # Threshold variable — delta columns must serialize as 0 per V1.
+            SweepEntry("vcp.adr_min_pct", "threshold_multiplicative",
+                       2.5, 1, 10, 4989, 0, 0, 0),
         ),
     )
     csv_path = tmp_path / "sweep.csv"
@@ -834,18 +840,27 @@ def test_output_formatter_emits_csv_and_markdown(tmp_path):
     write_sensitivity_markdown(result, md_path)
 
     csv_text = csv_path.read_text(encoding="utf-8")
-    # CSV must include all 9 columns + 3 data rows.
-    assert "variable_name,sweep_point,aplus_count,watch_count,skip_count" in csv_text
-    assert "trend_template.min_passes,5,12,80,4908" in csv_text
-    assert "trend_template.min_passes,7,1,10,4989" in csv_text
+    # CSV must include all 10 columns (kind appended after variable_name) +
+    # all data rows (3 gate + 1 threshold).
+    assert "variable_name,kind,sweep_point,aplus_count,watch_count" in csv_text
+    assert "trend_template.min_passes,gate,5,12,80,4908" in csv_text
+    assert "trend_template.min_passes,gate,7,1,10,4989" in csv_text
+    assert "vcp.adr_min_pct,threshold_multiplicative,2.5,1,10,4989" in csv_text
 
     md_text = md_path.read_text(encoding="utf-8")
     # ASCII-only (Windows cp1252 stdout safety).
     md_text.encode("cp1252")
-    # Markdown must surface the sensitivity matrix table.
-    assert "| Variable | Sweep point | A+ | Watch | Skip" in md_text
+    # Markdown must surface the sensitivity matrix table with Kind column.
+    assert "| Variable | Kind | Sweep point | A+ | Watch | Skip" in md_text
     assert "**Eval-runs window:**" in md_text
     assert "**Total candidates:** 5000" in md_text
+    # V1 limitation paragraph present + threshold-variable distinction visible.
+    assert "V1 LIMITATION:" in md_text
+    assert "Threshold variables (kind = threshold_additive |" in md_text
+    assert "intentionally ZERO" in md_text
+    # Per-row kind value rendered in the matrix cells.
+    assert "| trend_template.min_passes | gate | 5 |" in md_text
+    assert "| vcp.adr_min_pct | threshold_multiplicative | 2.5 |" in md_text
 ```
 
 - [ ] **Step 1C.2: Run test to verify it fails**
@@ -872,7 +887,7 @@ from research.harness.aplus_sensitivity.sweep import SweepResult
 
 
 _CSV_HEADERS = (
-    "variable_name", "sweep_point",
+    "variable_name", "kind", "sweep_point",
     "aplus_count", "watch_count", "skip_count", "excluded_count",
     "delta_aplus", "delta_watch",
 )
@@ -885,7 +900,7 @@ def write_sensitivity_csv(result: SweepResult, path: Path) -> None:
         writer.writerow(_CSV_HEADERS)
         for e in result.entries:
             writer.writerow([
-                e.variable_name, e.sweep_point,
+                e.variable_name, e.kind, e.sweep_point,
                 e.aplus_count, e.watch_count, e.skip_count, e.excluded_count,
                 e.delta_aplus, e.delta_watch,
             ])
@@ -904,12 +919,12 @@ def write_sensitivity_markdown(result: SweepResult, path: Path) -> None:
         "",
         "## Sensitivity matrix",
         "",
-        "| Variable | Sweep point | A+ | Watch | Skip | Excluded | dA+ | dWatch |",
-        "|---|---|---|---|---|---|---|---|",
+        "| Variable | Kind | Sweep point | A+ | Watch | Skip | Excluded | dA+ | dWatch |",
+        "|---|---|---|---|---|---|---|---|---|",
     ]
     for e in result.entries:
         lines.append(
-            f"| {e.variable_name} | {e.sweep_point} | "
+            f"| {e.variable_name} | {e.kind} | {e.sweep_point} | "
             f"{e.aplus_count} | {e.watch_count} | {e.skip_count} | "
             f"{e.excluded_count} | {e.delta_aplus:+d} | {e.delta_watch:+d} |"
         )
@@ -920,6 +935,16 @@ def write_sensitivity_markdown(result: SweepResult, path: Path) -> None:
         "- Sweep is 1D (one variable at a time); cross-coupling NOT modeled.",
         "- Counts at current_value match the persisted bucket distribution",
         "  (parity invariant); delta_aplus / delta_watch are relative to that anchor.",
+        "- **V1 LIMITATION: Threshold variables (kind = threshold_additive |",
+        "  threshold_multiplicative — 15 of 17 rows) report the persisted bucket",
+        "  distribution at each sweep point; their `delta_aplus` and `delta_watch`",
+        "  columns are intentionally ZERO. True per-criterion bucket resimulation",
+        "  against the substituted threshold requires the V2 OHLCV criterion-",
+        "  evaluator harness (banked at `research/method-records/",
+        "  aplus-criteria-calibration.md` V2 dependencies). Gate variables",
+        "  (kind = gate — 2 of 17 rows: `trend_template.min_passes`,",
+        "  `vcp.watch_max_fails`) DO produce real bucket-redistribution counts",
+        "  via faithful `bucket_for` resimulation.**",
         "- Margin-of-failure semantics for non-numeric criteria fold to",
         "  boolean-fail counts; see study writeup at",
         "  `research/studies/aplus-criterion-sensitivity-2026-05-22.md`.",
@@ -2604,16 +2629,47 @@ def test_build_hyp_recs_expanded_jit_fallback_on_cache_miss(tmp_path):
     ohlcv_cache = MagicMock()
     ohlcv_cache.get_or_fetch.return_value = _planted_bars_df()
     import swing.web.chart_jit as mod
-    mod._RENDERERS["hyprec_detail"] = MagicMock(return_value=b"<svg>jit</svg>")
+    renderer = MagicMock(return_value=b"<svg>jit</svg>")
+    mod._RENDERERS["hyprec_detail"] = renderer
     try:
         vm = build_hyp_recs_expanded(
             conn, ohlcv_cache=ohlcv_cache, ticker="UCTT",
-            pipeline_run_id=42, ...
+            pipeline_run_id=42, data_asof_date="2026-05-22", ...
         )
     finally:
         import importlib
         importlib.reload(mod)
     assert vm.hyprec_detail_chart_svg_bytes == b"<svg>jit</svg>"
+    # ChartRender requires data_asof_date — verify it was threaded through to
+    # the JIT helper (read-back from cache row written via refresh_chart_render).
+    cached_row = conn.execute(
+        "SELECT data_asof_date FROM chart_renders "
+        "WHERE surface='hyprec_detail' AND ticker='UCTT' AND pipeline_run_id=42"
+    ).fetchone()
+    assert cached_row is not None
+    assert cached_row[0] == "2026-05-22"
+
+
+def test_build_hyp_recs_expanded_skips_jit_when_data_asof_date_missing(tmp_path):
+    """Per R3 LOCK: JIT helper requires data_asof_date (ChartRender column);
+    VM builder gates the fallback on data_asof_date is not None."""
+    conn = sqlite3.connect(":memory:")
+    init_schema(conn)
+    ohlcv_cache = MagicMock()
+    import swing.web.chart_jit as mod
+    renderer = MagicMock(return_value=b"<svg>jit</svg>")
+    mod._RENDERERS["hyprec_detail"] = renderer
+    try:
+        vm = build_hyp_recs_expanded(
+            conn, ohlcv_cache=ohlcv_cache, ticker="UCTT",
+            pipeline_run_id=42, data_asof_date=None, ...
+        )
+    finally:
+        import importlib
+        importlib.reload(mod)
+    # No JIT fallback fires; no cache row written; bytes are None.
+    assert vm.hyprec_detail_chart_svg_bytes is None
+    renderer.assert_not_called()
 ```
 
 - [ ] **Step 3C.3: Run test → expect PASS.**
@@ -3908,7 +3964,7 @@ All 7 expansions + 4 NEW candidate refinements (per dispatch brief §3.1):
 
 **Encoded at:** T-T4.SB.1 Sub-tasks 1A-1E (variable enumeration + 1D sweep + CSV/markdown formatters + harness CLI + method record + study stub).
 
-**Scope:** Item 1 diagnostic expanded from snapshot shape to 1D parameter-sweep sensitivity harness. Per-variable sweep range follows first-order heuristics (multiplicative for ratios, additive for counts, discrete for enum). Output: sensitivity matrix CSV + markdown analysis.
+**Scope:** Item 1 diagnostic expanded from snapshot shape to 1D parameter-sweep sensitivity harness. Per-variable kind taxonomy (3 values): `gate` (full bucket_for resimulation; 2 vars) + `threshold_additive` (sweep heuristic = ±delta around current; parity-preserving V1) + `threshold_multiplicative` (sweep heuristic = current × {0.5, 0.75, 1, 1.25, 1.5}; parity-preserving V1). Output: sensitivity matrix CSV + markdown analysis with explicit Kind column + V1-limitation paragraph.
 
 **Compute cost (V1):** 17 variables split as:
 - **Gate** (2 vars × 5 sweep points × ~5000 candidate_criteria rows × N=20 eval_runs) = ~1M `_bucket_for_substituted` calls — real bucket-redistribution arithmetic.
@@ -4107,7 +4163,7 @@ Per superpowers:writing-plans skill self-review checklist:
 **2. Placeholder scan:** searched for "TBD", "TODO", "implement later" — none present in step bodies. **POST-R2 UPDATE:** R1 removed the `_emit_*_thresholds` placeholder triple; R2 corrected the count to 17 (NOT 18) — 2 gate + 3 trend_template + 8 vcp + 1 risk + 3 rs — and introduced the `kind` taxonomy distinguishing gate (full resimulation) from threshold variables (parity-preserving V1 limitation). The Sub-task 1A.1 test now asserts the exact 17-name set via set-equality (NOT a loose `>=10`). The 3 remaining "TBD" references in §K + §L are explicit deferral citations for the post-merge study writeup findings (operator-populated when running the harness against operator DB); these are NOT implementation-step placeholders.
 
 **3. Type consistency:**
-- `SweepVariable.kind` ∈ `{"multiplicative", "additive", "discrete"}` consistent across enumeration + sweep + output.
+- `SweepVariable.kind` ∈ `{"gate", "threshold_additive", "threshold_multiplicative"}` consistent across enumeration + sweep + output (per R2 + R3 LOCK; the earlier R1 taxonomy of multiplicative/additive/discrete was retired). `SweepEntry.kind` carries the same value verbatim so the CSV/markdown formatter can render the Kind column without an extra lookup.
 - `SilverLabelResponse.rule_criteria: list[dict] | None = None` consistent across dataclass + envelope + test.
 - `get_or_render_surface` signature consistent across helper + watchlist routes + dashboard VM.
 - `label_matches_hypothesis_sql(name) -> tuple[str, list[object]]` consistent across helper + cohort module.
