@@ -246,50 +246,122 @@ def _additive_sweep(current: int, delta: int = 2) -> tuple[int, ...]:
 
 
 def enumerate_variables(cfg: Config) -> tuple[SweepVariable, ...]:
-    variables: list[SweepVariable] = []
+    """Enumerate all 18 sweep variables against the cfg shape at
+    `swing/config.py` (TrendTemplate, VCP, Risk, RS dataclasses).
 
-    # Trend-template gate
-    variables.append(SweepVariable(
-        name="trend_template.min_passes",
-        kind="additive",
-        current_value=cfg.trend_template.min_passes,
-        sweep_points=_additive_sweep(cfg.trend_template.min_passes),
-    ))
-
-    # VCP allowable-fail-count is implicit (`vcp_fails <= 2 -> watch`);
-    # surface it as an additive sweep around the current `<=2` threshold.
-    variables.append(SweepVariable(
-        name="vcp.watch_max_fails",
-        kind="additive",
-        current_value=2,
-        sweep_points=_additive_sweep(2, delta=2),  # (0,1,2,3,4)
-    ))
-
-    # Per-criterion thresholds from cfg.trend_template + cfg.vcp + cfg.risk
-    # (read field-by-field; emit numeric thresholds as multiplicative sweeps).
-    _emit_trend_template_thresholds(cfg, variables)
-    _emit_vcp_thresholds(cfg, variables)
-    _emit_risk_thresholds(cfg, variables)
-
+    Includes 2 gate variables (trend_template.min_passes; vcp.watch_max_fails)
+    + 16 threshold variables. For threshold variables under V1, sweep_points
+    are enumerated but only the current_value entry reflects production
+    bucket distribution (sweep machinery documents the V1 limitation
+    per `_bucket_for_substituted` doc).
+    """
+    variables: list[SweepVariable] = [
+        # Two gate variables (V1 full bucket-level resimulation supported).
+        SweepVariable(
+            name="trend_template.min_passes",
+            kind="additive",
+            current_value=cfg.trend_template.min_passes,
+            sweep_points=_additive_sweep(cfg.trend_template.min_passes),
+        ),
+        SweepVariable(
+            name="vcp.watch_max_fails",
+            kind="additive",
+            current_value=2,  # bucket_for at swing/evaluation/scoring.py:35
+            sweep_points=_additive_sweep(2, delta=2),
+        ),
+        # Trend-template numeric thresholds (4).
+        SweepVariable(
+            name="trend_template.rising_ma_period_days",
+            kind="additive",
+            current_value=cfg.trend_template.rising_ma_period_days,
+            sweep_points=_additive_sweep(
+                cfg.trend_template.rising_ma_period_days, delta=10,
+            ),
+        ),
+        SweepVariable(
+            name="trend_template.high_52w_margin_pct",
+            kind="multiplicative",
+            current_value=cfg.trend_template.high_52w_margin_pct,
+            sweep_points=_multiplicative_sweep(
+                cfg.trend_template.high_52w_margin_pct,
+            ),
+        ),
+        SweepVariable(
+            name="trend_template.low_52w_min_pct",
+            kind="multiplicative",
+            current_value=cfg.trend_template.low_52w_min_pct,
+            sweep_points=_multiplicative_sweep(
+                cfg.trend_template.low_52w_min_pct,
+            ),
+        ),
+        # VCP numeric thresholds (8).
+        SweepVariable(
+            name="vcp.prior_trend_min_pct", kind="multiplicative",
+            current_value=cfg.vcp.prior_trend_min_pct,
+            sweep_points=_multiplicative_sweep(cfg.vcp.prior_trend_min_pct),
+        ),
+        SweepVariable(
+            name="vcp.adr_min_pct", kind="multiplicative",
+            current_value=cfg.vcp.adr_min_pct,
+            sweep_points=_multiplicative_sweep(cfg.vcp.adr_min_pct),
+        ),
+        SweepVariable(
+            name="vcp.pullback_max_pct", kind="multiplicative",
+            current_value=cfg.vcp.pullback_max_pct,
+            sweep_points=_multiplicative_sweep(cfg.vcp.pullback_max_pct),
+        ),
+        SweepVariable(
+            name="vcp.proximity_max_pct", kind="multiplicative",
+            current_value=cfg.vcp.proximity_max_pct,
+            sweep_points=_multiplicative_sweep(cfg.vcp.proximity_max_pct),
+        ),
+        SweepVariable(
+            name="vcp.tightness_days_required", kind="additive",
+            current_value=cfg.vcp.tightness_days_required,
+            sweep_points=_additive_sweep(cfg.vcp.tightness_days_required),
+        ),
+        SweepVariable(
+            name="vcp.tightness_range_factor", kind="multiplicative",
+            current_value=cfg.vcp.tightness_range_factor,
+            sweep_points=_multiplicative_sweep(cfg.vcp.tightness_range_factor),
+        ),
+        SweepVariable(
+            name="vcp.orderliness_max_bar_ratio", kind="multiplicative",
+            current_value=cfg.vcp.orderliness_max_bar_ratio,
+            sweep_points=_multiplicative_sweep(cfg.vcp.orderliness_max_bar_ratio),
+        ),
+        SweepVariable(
+            name="vcp.orderliness_max_range_cv", kind="multiplicative",
+            current_value=cfg.vcp.orderliness_max_range_cv,
+            sweep_points=_multiplicative_sweep(cfg.vcp.orderliness_max_range_cv),
+        ),
+        # Risk numeric threshold (1).
+        SweepVariable(
+            name="risk.max_risk_pct", kind="multiplicative",
+            current_value=cfg.risk.max_risk_pct,
+            sweep_points=_multiplicative_sweep(cfg.risk.max_risk_pct),
+        ),
+        # RS numeric thresholds (3 — note: cfg.rs ALSO read at recon).
+        SweepVariable(
+            name="rs.horizon_weeks", kind="additive",
+            current_value=cfg.rs.horizon_weeks,
+            sweep_points=_additive_sweep(cfg.rs.horizon_weeks),
+        ),
+        SweepVariable(
+            name="rs.rs_rank_min_pass", kind="additive",
+            current_value=cfg.rs.rs_rank_min_pass,
+            sweep_points=_additive_sweep(cfg.rs.rs_rank_min_pass, delta=10),
+        ),
+        SweepVariable(
+            name="rs.fallback_extreme_pct", kind="multiplicative",
+            current_value=cfg.rs.fallback_extreme_pct,
+            sweep_points=_multiplicative_sweep(cfg.rs.fallback_extreme_pct),
+        ),
+    ]
     return tuple(variables)
-
-
-def _emit_trend_template_thresholds(cfg: Config, out: list[SweepVariable]) -> None:
-    # Implementer reads cfg.trend_template fields and emits SweepVariable
-    # per numeric threshold (e.g., rs_rank min, ma slope min). See actual
-    # cfg.trend_template attributes at execution time and emit per field.
-    ...  # populated at execution time per actual cfg shape
-
-
-def _emit_vcp_thresholds(cfg: Config, out: list[SweepVariable]) -> None:
-    ...  # populated at execution time per actual cfg.vcp shape
-
-
-def _emit_risk_thresholds(cfg: Config, out: list[SweepVariable]) -> None:
-    ...  # populated at execution time per actual cfg.risk shape
 ```
 
-Implementer note: the three `_emit_*` helpers populate at execution time by reading the actual `cfg.<layer>` field shape. The test asserts `>= 10` variables and the canonical `trend_template.min_passes` is present; the per-field threshold enumeration is filled by the implementer when running against the actual `Config` definition. The contract for each `SweepVariable` is the dataclass shape; per-field semantic is implementer-decided per layer.
+The enumeration is concrete (no placeholders): 2 gate vars + 4 trend_template + 8 vcp + 1 risk + 3 rs = 18 variables. The implementer's only execution-time judgment is whether to ALSO emit the `cfg.trend_template.allowed_miss_names` tuple as a discrete-sweep variable (V1 NO; sweep over set-membership is V2; the V1 sweep substrate does not resimulate this dimension and would mislead operator).
 
 - [ ] **Step 1A.4: Run test to verify it passes**
 
@@ -330,7 +402,9 @@ def test_sweep_recomputes_buckets_per_variable(tmp_path):
         current_value=7,
         sweep_points=(5, 6, 7, 8, 9),
     )
-    result = run_sensitivity_sweep(conn, variables=(var,), eval_runs_window=20)
+    result = run_sensitivity_sweep(
+        conn, variables=(var,), cfg=Config.from_defaults(), eval_runs_window=20,
+    )
     assert isinstance(result, SweepResult)
     # One matrix entry per variable per sweep point.
     entries = [e for e in result.entries if e.variable_name == "trend_template.min_passes"]
@@ -401,6 +475,7 @@ def run_sensitivity_sweep(
     conn: sqlite3.Connection,
     *,
     variables: tuple[SweepVariable, ...],
+    cfg,  # swing.config.Config — for allowed_miss_names + production min_passes
     eval_runs_window: int = 20,
 ) -> SweepResult:
     eval_run_ids = [
@@ -429,6 +504,13 @@ def run_sensitivity_sweep(
     candidate_ids = {r[0] for r in rows}
     total_candidates = len(candidate_ids)
 
+    # Capture the production trend_template.min_passes BEFORE running the
+    # sweep — `_bucket_for_substituted` reads it when sweeping
+    # vcp.watch_max_fails so the gate matches the prod cfg, not a hard-coded
+    # constant (per Codex R1 Critical #2 LOCK).
+    global _PROD_TREND_TEMPLATE_MIN_PASSES_AT_RECON
+    _PROD_TREND_TEMPLATE_MIN_PASSES_AT_RECON = cfg.trend_template.min_passes
+
     # Per-variable sweep: for each sweep point, recompute buckets per
     # candidate using the variable's value substituted in.
     entries: list[SweepEntry] = []
@@ -440,6 +522,7 @@ def run_sensitivity_sweep(
                 rows=rows,
                 variable_name=var.name,
                 sweep_value=point,
+                cfg=cfg,
             )
             sub_entries.append(SweepEntry(
                 variable_name=var.name,
@@ -480,24 +563,29 @@ def _recompute_counts_at(
     rows: list[tuple],
     variable_name: str,
     sweep_value: float | int,
+    cfg: Config,
 ) -> dict[str, int]:
     """Recompute (aplus, watch, skip, excluded) counts under the
     hypothetical that `variable_name` = `sweep_value`.
 
-    Substitution semantics per variable:
-      - `trend_template.min_passes` — gate trend-template pass-count threshold.
-      - `vcp.watch_max_fails` — gate vcp-fail count for watch promotion.
-      - `<criterion_name>.threshold` — substitute the criterion's pass/fail
-        boundary when the criterion's `rule` parses as a numeric inequality.
-    Other variables fall back to the persisted bucket.
+    V1 substitution semantics support TWO classes of variables:
+      - **Gate variables** (`trend_template.min_passes`, `vcp.watch_max_fails`):
+        full bucket-level resimulation — substitute the gate value + walk
+        `bucket_for` semantics including the `allowed_miss_names` invariant.
+      - **Threshold variables** (16 vcp/trend_template/risk/rs thresholds):
+        V1 LIMITATION — per-criterion bucket resimulation requires the
+        criterion evaluator harness to re-run against original OHLCV bars
+        with the substituted threshold, which is V2 (depends on OHLCV
+        cache validity at original data_asof_date). For these, V1 returns
+        `persisted_bucket` (parity-preserving). Output formatter calls
+        this out explicitly per spec §1.5.1 cross-coupling caveat.
     """
     counts = {"aplus": 0, "watch": 0, "skip": 0, "excluded": 0}
-    # Group rows by candidate_id.
     by_candidate: dict[int, dict] = {}
     for cid, bucket, layer, name, result, value, rule in rows:
         cand = by_candidate.setdefault(cid, {
             "bucket": bucket,
-            "tt": [],  # trend_template results
+            "tt": [],
             "vcp": [],
             "risk": [],
         })
@@ -505,11 +593,13 @@ def _recompute_counts_at(
             continue
         cand[layer].append({"name": name, "result": result, "value": value, "rule": rule})
 
+    allowed_miss = set(cfg.trend_template.allowed_miss_names)
     for cid, c in by_candidate.items():
         new_bucket = _bucket_for_substituted(
             tt=c["tt"], vcp=c["vcp"], risk=c["risk"],
             variable_name=variable_name, sweep_value=sweep_value,
             persisted_bucket=c["bucket"],
+            allowed_miss_names=allowed_miss,
         )
         counts[new_bucket] = counts.get(new_bucket, 0) + 1
     return counts
@@ -523,16 +613,20 @@ def _bucket_for_substituted(
     variable_name: str,
     sweep_value: float | int,
     persisted_bucket: str,
+    allowed_miss_names: set[str],
 ) -> str:
-    """Mirror of `swing.evaluation.scoring.bucket_for` with variable
-    substitution. Pure function; does NOT call into production scoring
-    (decouples this harness from cfg-dependent imports at runtime).
+    """Mirror of `swing.evaluation.scoring.bucket_for` for the 2 gate
+    variables. For threshold variables, returns `persisted_bucket`
+    (V1 limitation per `_recompute_counts_at` docstring).
 
-    For non-substituted variables, returns `persisted_bucket` verbatim
-    (delegated trust; same-current-value sweep entry MUST match
-    persisted distribution).
+    Faithfully encodes the bucket_for semantics:
+      1. Risk hard filter — any non-pass = skip.
+      2. Trend-template gate — `tt_passes >= min_passes` AND every TT
+         failing name is in `allowed_miss_names`.
+      3. VCP gate — `vcp_fails == 0` → aplus; `<= watch_max_fails` → watch;
+         else skip.
     """
-    # Risk hard filter — any non-pass = skip.
+    # 1. Risk hard filter.
     if any(r["result"] != "pass" for r in risk):
         return "skip"
 
@@ -540,24 +634,30 @@ def _bucket_for_substituted(
     tt_fails = [r["name"] for r in tt if r["result"] != "pass"]
 
     if variable_name == "trend_template.min_passes":
+        # Substituted min_passes; allowed_miss_names invariant preserved.
         if tt_passes < int(sweep_value):
+            return "skip"
+        if not all(n in allowed_miss_names for n in tt_fails):
             return "skip"
         return _vcp_to_bucket(vcp, watch_max_fails=2)
 
     if variable_name == "vcp.watch_max_fails":
-        # use production trend_template.min_passes (= persisted bucket
-        # already reflects that gate). If persisted bucket is "skip" due
-        # to trend-template fail, sweep over vcp threshold doesn't move
-        # it; pass through.
-        if persisted_bucket == "skip":
-            # Could be skip due to risk OR trend_template OR vcp >2.
-            # Re-derive: if risk + trend pass, vcp determines bucket.
-            return _vcp_to_bucket(vcp, watch_max_fails=int(sweep_value))
+        # Production trend-template gate.
+        if tt_passes < _PROD_TREND_TEMPLATE_MIN_PASSES_AT_RECON:
+            return "skip"
+        if not all(n in allowed_miss_names for n in tt_fails):
+            return "skip"
         return _vcp_to_bucket(vcp, watch_max_fails=int(sweep_value))
 
-    # Default: delegate to persisted bucket (variable not yet implemented
-    # for sweep semantics OR sweep point == current_value).
+    # Threshold-variable sweep entry — V1 returns persisted_bucket
+    # (resimulation requires V2 criterion evaluator harness).
     return persisted_bucket
+
+
+# Captured at module load against the cfg used by the harness — so the
+# vcp.watch_max_fails sweep applies the SAME trend-template gate the
+# operator's prod pipeline uses (not a hard-coded constant).
+_PROD_TREND_TEMPLATE_MIN_PASSES_AT_RECON: int = 7  # placeholder; recon-time read at run_harness invocation
 
 
 def _vcp_to_bucket(vcp: list[dict], *, watch_max_fails: int) -> str:
@@ -567,6 +667,11 @@ def _vcp_to_bucket(vcp: list[dict], *, watch_max_fails: int) -> str:
     if vcp_fails <= watch_max_fails:
         return "watch"
     return "skip"
+```
+
+**V1 limitation contract (BINDING; encoded in output formatter):** the markdown output's "Notes" section MUST explicitly state: "Threshold-variable rows (16 of 18 variables — all except `trend_template.min_passes` and `vcp.watch_max_fails`) report the persisted bucket distribution at each sweep point; per-criterion re-evaluation against original OHLCV bars at the substituted threshold is V2 scope (banked at `research/method-records/aplus-criteria-calibration.md` V2 dependencies). The delta_aplus / delta_watch columns for threshold variables are therefore always 0; the variable enumeration + sweep_point grid serves as a margin-of-failure scaffold to inform V2 dispatch."
+
+For T-T4.SB.1 Sub-task 1B.5 (parity invariant test), the test continues to work because the `_PROD_TREND_TEMPLATE_MIN_PASSES_AT_RECON` constant is read from cfg at run_harness entry; the test invokes `run_sensitivity_sweep` against an in-memory cfg + DB so the gate constant matches the planted rows.
 ```
 
 - [ ] **Step 1B.4: Run test to verify it passes**
@@ -590,7 +695,9 @@ def test_sweep_at_current_value_matches_persisted_distribution(tmp_path):
         current_value=2,
         sweep_points=(0, 1, 2, 3, 4),
     )
-    result = run_sensitivity_sweep(conn, variables=(var,), eval_runs_window=20)
+    result = run_sensitivity_sweep(
+        conn, variables=(var,), cfg=Config.from_defaults(), eval_runs_window=20,
+    )
     current_entry = next(
         e for e in result.entries
         if e.variable_name == "vcp.watch_max_fails" and e.sweep_point == 2
@@ -781,7 +888,7 @@ def run_harness(*, db_path: Path, eval_runs: int, output_dir: Path) -> tuple[Pat
     conn = sqlite3.connect(str(db_path))
     try:
         result = run_sensitivity_sweep(
-            conn, variables=variables, eval_runs_window=eval_runs,
+            conn, variables=variables, cfg=cfg, eval_runs_window=eval_runs,
         )
     finally:
         conn.close()
@@ -1638,8 +1745,12 @@ def test_count_per_cohort_delimiter_aware_with_orphan_preservation(tmp_path):
     init_schema(conn)
     # Plant registry entries.
     conn.execute(
-        "INSERT INTO hypothesis_registry (id, name, description) VALUES "
-        "(1, 'A+ baseline', 'x'), (2, 'Sub-A+ VCP-not-formed', 'y')"
+        "INSERT INTO hypothesis_registry "
+        "(id, name, statement, target_sample_size, decision_criteria, "
+        " consecutive_loss_tripwire, absolute_loss_tripwire_pct, created_at) "
+        "VALUES "
+        "(1, 'A+ baseline', 's', 30, 'd', 5, 10.0, '2026-05-22T00:00:00Z'), "
+        "(2, 'Sub-A+ VCP-not-formed', 's', 30, 'd', 5, 10.0, '2026-05-22T00:00:00Z')"
     )
     # Plant trades — 1 matching A+ baseline (exact); 1 matching Sub-A+
     # VCP-not-formed via suffix; 1 orphan (no registered match).
@@ -1711,6 +1822,18 @@ def count_per_cohort(conn: sqlite3.Connection) -> dict[str, int]:
         )
         for label, count in conn.execute(orphan_sql, not_params):
             cohort_counts[label] = int(count)
+    else:
+        # Empty-registry branch (production seeds registry rows; defensive
+        # for test DBs / future startup transient states). EVERY non-NULL
+        # label is an orphan; surface raw labels per orphan contract.
+        orphan_sql_empty = (
+            f"SELECT hypothesis_label, COUNT(*) FROM trades "
+            f"WHERE state IN {_CLOSED_STATES_SQL} "
+            f"  AND hypothesis_label IS NOT NULL "
+            f"GROUP BY hypothesis_label"
+        )
+        for label, count in conn.execute(orphan_sql_empty):
+            cohort_counts[label] = int(count)
     return cohort_counts
 ```
 
@@ -1740,8 +1863,11 @@ def test_hypothesis_progress_card_non_zero_on_suffix_labels(tmp_path):
     conn = sqlite3.connect(":memory:")
     init_schema(conn)
     conn.execute(
-        "INSERT INTO hypothesis_registry (id, name, description) VALUES "
-        "(1, 'Sub-A+ VCP-not-formed', 'x')"
+        "INSERT INTO hypothesis_registry "
+        "(id, name, statement, target_sample_size, decision_criteria, "
+        " consecutive_loss_tripwire, absolute_loss_tripwire_pct, created_at) "
+        "VALUES (1, 'Sub-A+ VCP-not-formed', 's', 30, 'd', 5, 10.0, "
+        "        '2026-05-22T00:00:00Z')"
     )
     for ticker, state in (
         ("AAA", "closed"), ("BBB", "closed"),
@@ -1835,8 +1961,11 @@ def _plant_db():
     conn = sqlite3.connect(":memory:")
     init_schema(conn)
     conn.execute(
-        "INSERT INTO hypothesis_registry (id, name, description) VALUES "
-        "(1, 'Sub-A+ VCP-not-formed', 'x')"
+        "INSERT INTO hypothesis_registry "
+        "(id, name, statement, target_sample_size, decision_criteria, "
+        " consecutive_loss_tripwire, absolute_loss_tripwire_pct, created_at) "
+        "VALUES (1, 'Sub-A+ VCP-not-formed', 's', 30, 'd', 5, 10.0, "
+        "        '2026-05-22T00:00:00Z')"
     )
     # Plant 1 suffix-bearing trade.
     _plant_trade(conn, ticker="ZZZ",
@@ -1982,6 +2111,7 @@ def test_get_or_render_surface_cache_hit_returns_cached_bytes(tmp_path):
     result = get_or_render_surface(
         conn=conn, ohlcv_cache=ohlcv_cache,
         surface="hyprec_detail", ticker="UCTT", pipeline_run_id=42,
+        data_asof_date="2026-05-22",
     )
     assert result == b"<svg>cached</svg>"
     # On cache hit, OHLCV cache is NOT consulted.
@@ -2006,6 +2136,7 @@ def test_get_or_render_surface_cache_miss_renders_via_ohlcv_and_writes_through(t
         result = get_or_render_surface(
             conn=conn, ohlcv_cache=ohlcv_cache,
             surface="hyprec_detail", ticker="UCTT", pipeline_run_id=42,
+            data_asof_date="2026-05-22",
         )
     finally:
         # restore real renderer registry between tests
@@ -2030,6 +2161,7 @@ def test_get_or_render_surface_returns_none_on_empty_ohlcv(tmp_path):
     result = get_or_render_surface(
         conn=conn, ohlcv_cache=ohlcv_cache,
         surface="hyprec_detail", ticker="UCTT", pipeline_run_id=42,
+        data_asof_date="2026-05-22",
     )
     assert result is None
     # No cache row written (F6 construction-barrier defense).
@@ -2054,10 +2186,12 @@ def test_get_or_render_surface_cache_collision_renderer_called_once(tmp_path):
         r1 = get_or_render_surface(
             conn=conn, ohlcv_cache=ohlcv_cache,
             surface="hyprec_detail", ticker="UCTT", pipeline_run_id=42,
+            data_asof_date="2026-05-22",
         )
         r2 = get_or_render_surface(
             conn=conn, ohlcv_cache=ohlcv_cache,
             surface="hyprec_detail", ticker="UCTT", pipeline_run_id=42,
+            data_asof_date="2026-05-22",
         )
     finally:
         import importlib
@@ -2123,6 +2257,11 @@ _RENDERERS: dict[str, Callable] = {
 }
 
 
+# Conservative default for watchlist thumbnail MA overlays (mirrors current
+# `_step_charts` invocation pattern + spec §C.5 line 449 thumbnail design).
+_WATCHLIST_THUMBNAIL_MA_LINES: list[int] = [20, 50]
+
+
 def get_or_render_surface(
     *,
     conn: sqlite3.Connection,
@@ -2131,6 +2270,8 @@ def get_or_render_surface(
     ticker: str,
     pipeline_run_id: int | None,
     pattern_class: str | None = None,
+    data_asof_date: str,
+    source_data_hash: str = "chart_jit_v1",
     **renderer_kwargs,
 ) -> bytes | None:
     """Return cached SVG bytes if present; otherwise live-render via the
@@ -2164,9 +2305,15 @@ def get_or_render_surface(
         logger.warning("chart_jit: no renderer for surface=%s", surface)
         return None
 
-    # Step 3: render. Renderer-kwargs uniformity LOCK — for hyprec_detail,
-    # both callsites pass pattern_evaluation=None (V1; pattern_evaluation
-    # overlay reserved for V2 pattern_review_detail surface).
+    # Step 3: render. Renderer-kwargs match the actual signatures at
+    # `swing/web/charts.py:render_*` (verified at writing-plans phase):
+    #   - render_watchlist_thumbnail_svg(*, ticker, bars, ma_lines)
+    #   - render_hyprec_detail_svg(*, ticker, bars, pattern_evaluation)
+    #   - render_market_weather_svg(*, bars, trend_template_state)
+    #   - render_position_detail_svg(*, ticker, bars, trade, fills, current_stop)
+    # Uniformity LOCK: for hyprec_detail, both callsites pass
+    # pattern_evaluation=None (V1). For watchlist_row, both callsites
+    # pass the SAME ma_lines tuple (cache-collision avoidance).
     try:
         if surface == "hyprec_detail":
             svg_bytes = renderer(
@@ -2174,13 +2321,20 @@ def get_or_render_surface(
                 pattern_evaluation=renderer_kwargs.get("pattern_evaluation"),
             )
         elif surface == "watchlist_row":
-            svg_bytes = renderer(ticker=ticker, bars=bars)
+            svg_bytes = renderer(
+                ticker=ticker, bars=bars,
+                ma_lines=renderer_kwargs.get("ma_lines", _WATCHLIST_THUMBNAIL_MA_LINES),
+            )
         elif surface == "market_weather":
-            svg_bytes = renderer(ticker=ticker, bars=bars)
+            svg_bytes = renderer(
+                bars=bars,
+                trend_template_state=renderer_kwargs.get("trend_template_state"),
+            )
         elif surface == "position_detail":
             svg_bytes = renderer(
                 ticker=ticker, bars=bars,
-                trade=renderer_kwargs.get("trade"),
+                trade=renderer_kwargs["trade"],
+                fills=renderer_kwargs["fills"],
                 current_stop=renderer_kwargs.get("current_stop"),
             )
         else:
@@ -2191,14 +2345,21 @@ def get_or_render_surface(
 
     # Step 4: F6 construction-barrier defense — ChartRender(...) raises
     # on empty bytes; catch + WARN + return None (cache row not blanked).
+    # ChartRender dataclass at swing/data/models.py:1907-1924 requires:
+    #   id, ticker, surface, chart_svg_bytes, source_data_hash,
+    #   rendered_at, data_asof_date, [pipeline_run_id=None, pattern_class=None]
+    from datetime import datetime, timezone
     try:
         chart_render = ChartRender(
-            surface=surface,
+            id=None,
             ticker=ticker,
+            surface=surface,
+            chart_svg_bytes=svg_bytes,
+            source_data_hash=source_data_hash,
+            rendered_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            data_asof_date=data_asof_date,
             pipeline_run_id=pipeline_run_id,
             pattern_class=pattern_class,
-            chart_svg_bytes=svg_bytes,
-            rendered_at=None,  # repo stamps at write
         )
     except ValueError as exc:
         logger.warning(
@@ -2273,13 +2434,15 @@ def watchlist_row(request: Request, ticker: str):
     # JIT cache lookup + live render on miss (Item 6 fix via Item 5 helper).
     conn = request.app.state.db_conn  # implementer verifies state attribute name
     ohlcv_cache = getattr(request.app.state, "ohlcv_cache", None)
-    pipeline_run_id = _latest_completed_pipeline_run_id(conn)  # Option A LOCK
+    anchor = _latest_completed_pipeline_run(conn)  # Option A LOCK
     chart_bytes = None
-    if ohlcv_cache is not None and pipeline_run_id is not None:
+    if ohlcv_cache is not None and anchor is not None:
         chart_bytes = get_or_render_surface(
             conn=conn, ohlcv_cache=ohlcv_cache,
             surface="watchlist_row", ticker=ticker.upper(),
-            pipeline_run_id=pipeline_run_id,
+            pipeline_run_id=anchor.run_id,
+            data_asof_date=anchor.data_asof_date,
+            ma_lines=[20, 50],  # uniformity LOCK with pipeline pre-gen
         )
 
     return request.app.state.templates.TemplateResponse(
@@ -2317,7 +2480,8 @@ from swing.web.chart_jit import get_or_render_surface
 
 
 def build_hyp_recs_expanded(
-    conn: sqlite3.Connection, *, ohlcv_cache, ticker: str, pipeline_run_id: int | None, ...
+    conn: sqlite3.Connection, *, ohlcv_cache, ticker: str,
+    pipeline_run_id: int | None, data_asof_date: str | None, ...
 ) -> HypRecsExpandedVM:
     # ... existing logic ...
     hyprec_detail_chart_svg_bytes = get_cached_chart_svg(
@@ -2325,12 +2489,14 @@ def build_hyp_recs_expanded(
         surface="hyprec_detail", ticker=ticker,
         pipeline_run_id=pipeline_run_id, pattern_class=None,
     )
-    if hyprec_detail_chart_svg_bytes is None and ohlcv_cache is not None and pipeline_run_id is not None:
+    if (hyprec_detail_chart_svg_bytes is None and ohlcv_cache is not None
+            and pipeline_run_id is not None and data_asof_date is not None):
         # JIT fallback: live render + cache write-through.
         hyprec_detail_chart_svg_bytes = get_or_render_surface(
             conn=conn, ohlcv_cache=ohlcv_cache,
             surface="hyprec_detail", ticker=ticker,
             pipeline_run_id=pipeline_run_id,
+            data_asof_date=data_asof_date,
             pattern_evaluation=None,  # uniformity LOCK with watchlist expanded path
         )
     # ... continue building VM ...
@@ -2483,7 +2649,7 @@ def test_jit_writes_pipeline_run_id_matching_dashboard_anchor(tmp_path):
     run (N+1) lands mid-session."""
     conn = sqlite3.connect(":memory:")
     init_schema(conn)
-    _plant_pipeline_run(conn, run_id=100, state="completed")
+    _plant_pipeline_run(conn, run_id=100, state="complete")
     # Dashboard render anchors to run_id=100.
     ohlcv_cache = MagicMock()
     ohlcv_cache.get_or_fetch.return_value = _planted_bars_df()
@@ -2496,7 +2662,7 @@ def test_jit_writes_pipeline_run_id_matching_dashboard_anchor(tmp_path):
             pipeline_run_id=100,
         )
         # New pipeline_run lands; dashboard re-renders against run_id=101.
-        _plant_pipeline_run(conn, run_id=101, state="completed")
+        _plant_pipeline_run(conn, run_id=101, state="complete")
         bytes_v101 = get_or_render_surface(
             conn=conn, ohlcv_cache=ohlcv_cache,
             surface="hyprec_detail", ticker="UCTT",
@@ -2918,7 +3084,7 @@ git commit -m "feat(cli): patterns-label-silver --corpus-all operator-paired rel
 ```
 
 **T-T4.SB.4 discriminating tests summary:**
-- Dataclass validation: well-formed accepted; missing name / invalid status / non-list rejected; default None.
+- Dataclass validation: well-formed accepted; missing `name` / invalid `status` (must be in `{"pass", "fail"}`) / non-list rejected; default `rule_criteria=None`.
 - Envelope persistence: `narrative` alias + `rule_criteria` populated when present; alias still populated when rule_criteria absent.
 - Template integration: fresh silver renders criterion_rows + narrative_text; legacy exemplars render placeholder unchanged.
 - (Conditional) `--corpus-all` flag iterates exemplars.
@@ -2959,7 +3125,10 @@ from swing.web.charts import render_market_weather_svg, render_hyprec_detail_svg
 
 def test_render_market_weather_volume_y_ticks_stripped(planted_bars):
     """Per spec §B.3 + Codex R1 MINOR #1 LOCK: volume subplot y-tick
-    LABELS empty list. Volume ylabel ("Volume") intentionally preserved."""
+    LABELS empty list. Volume ylabel ("Volume") intentionally preserved.
+
+    Note actual signature is `render_market_weather_svg(*, bars,
+    trend_template_state)` — no `ticker` parameter."""
     captured = {}
     original_subplots = plt.subplots
 
@@ -2969,7 +3138,7 @@ def test_render_market_weather_volume_y_ticks_stripped(planted_bars):
         return fig, axes
 
     with patch("matplotlib.pyplot.subplots", side_effect=spy):
-        render_market_weather_svg(ticker="SPY", bars=planted_bars)
+        render_market_weather_svg(bars=planted_bars, trend_template_state="stage_2")
 
     ax_vol = captured["axes"][1] if hasattr(captured["axes"], "__getitem__") else None
     if ax_vol is not None:
@@ -2978,8 +3147,24 @@ def test_render_market_weather_volume_y_ticks_stripped(planted_bars):
 
 
 def test_render_hyprec_detail_volume_y_ticks_stripped(planted_bars):
-    # symmetric assertion
-    ...
+    """Symmetric assertion. Signature:
+    `render_hyprec_detail_svg(*, ticker, bars, pattern_evaluation=None)`."""
+    captured = {}
+    original_subplots = plt.subplots
+
+    def spy(*args, **kwargs):
+        fig, axes = original_subplots(*args, **kwargs)
+        captured["axes"] = axes
+        return fig, axes
+
+    with patch("matplotlib.pyplot.subplots", side_effect=spy):
+        render_hyprec_detail_svg(ticker="UCTT", bars=planted_bars,
+                                 pattern_evaluation=None)
+
+    ax_vol = captured["axes"][1] if hasattr(captured["axes"], "__getitem__") else None
+    if ax_vol is not None:
+        labels = [t.get_text() for t in ax_vol.get_yticklabels()]
+        assert labels == [] or all(not lbl for lbl in labels)
 ```
 
 Alternative assertion (if spy-on-`plt.subplots` proves brittle): grep the rendered SVG bytes near the volume subplot for absence of `<text>0</text>` / `<text>1e8</text>` substrings.
@@ -3494,7 +3679,7 @@ No marker drift; all new tests default to fast suite.
 - 25-40 new fast tests GREEN.
 
 ### §G.4 T-T4.SB.4
-- `SilverLabelResponse.rule_criteria` field added; `__post_init__` validation against 3-rule shape contract.
+- `SilverLabelResponse.rule_criteria` field added; `__post_init__` validation against the VM-parser-pinned per-element shape `{name: non-empty str, status: 'pass'|'fail'}` (plus optional `evidence_value`, `threshold`, `tolerance`).
 - Envelope persists `rule_criteria` + `narrative` alias key.
 - `geometric_evidence_narrative` PRESERVED VERBATIM (back-compat anchor test passes).
 - Subagent prompt extended with `rule_criteria` contract + 5 per-pattern-class examples.
@@ -3822,7 +4007,7 @@ Per superpowers:writing-plans skill self-review checklist:
 - §K Phase 13 closure marker → §L here.
 - §M closing notes → §A.4 file map + §F test budget.
 
-**2. Placeholder scan:** searched for "TBD", "TODO", "implement later" — none present in step bodies. The `_emit_*_thresholds` helper placeholders in `variables.py` (Sub-task 1A.3) are documented inline as "populated at execution time per actual cfg shape" — this is the only "fill at execution time" pattern, and the test contract (`>= 10` variables) constrains the implementer to populate them.
+**2. Placeholder scan:** searched for "TBD", "TODO", "implement later" — none present in step bodies. **POST-R1 UPDATE:** the earlier `_emit_*_thresholds` placeholder triple was REMOVED at R1 Critical #1 resolution; the enumeration is now fully inline at Sub-task 1A.3 emitting 18 concrete `SweepVariable` rows (2 gate + 4 trend_template + 8 vcp + 1 risk + 3 rs) derived from real `Config` dataclass shapes at `swing/config.py`. The 3 remaining "TBD" references in §K + §L are explicit deferral citations for the post-merge study writeup findings (operator-populated when running the harness against operator DB); these are NOT implementation-step placeholders.
 
 **3. Type consistency:**
 - `SweepVariable.kind` ∈ `{"multiplicative", "additive", "discrete"}` consistent across enumeration + sweep + output.
