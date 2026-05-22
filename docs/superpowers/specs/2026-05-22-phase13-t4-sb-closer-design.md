@@ -57,13 +57,16 @@ This section is the binding scope substrate for the writing-plans phase. Each it
 
 **Investigation design:**
 
-The diagnostic answers: "of the per-eval-run candidate rows that landed in `bucket == 'watch'` or `bucket == 'skip'`, what is the distribution of failing criteria that prevent promotion to `aplus`?" This is the **per-criterion blocking distribution** + a per-criterion **margin-of-failure** breakdown (e.g., "trend_template_2 failed at 23 of 50 candidates; mean margin = 4.2 percentage points below threshold").
+The diagnostic answers: "of the per-eval-run candidate rows that landed in `bucket == 'watch'` or `bucket == 'skip'`, what is the distribution of failing criteria that prevent promotion to `aplus`?" This is the **per-criterion blocking distribution** + (where possible) a per-criterion **margin-of-failure** breakdown.
+
+**Data source LOCK (per Codex R1 M#1 closure):** the diagnostic reads PERSISTED `candidate_criteria` rows (one row per `(candidate_id, criterion_name)` per migration `0001_phase1_initial.sql:48-56` — columns `result` IN ('pass','fail','na'), `value` TEXT, `rule` TEXT). The diagnostic does NOT re-run criteria against original OHLCV snapshots — that data is not persisted at all (`candidates` stores derived fields like `adr_pct` / `tight_streak` / `pullback_pct` but NOT the bar-level inputs to each criterion). Re-running would require OHLCV cache reconstruction at the relevant `data_asof_date` per candidate, which is V2 scope (OHLCV cache likely has many of the needed bars via `read_or_fetch_archive` BUT cross-day cache validity is not guaranteed). V1 scope: consume `candidate_criteria` directly.
 
 **Diagnostic instrument** (NEW CLI subcommand; lives under production `swing/`):
 - Subcommand: `swing diagnose aplus-blockers --eval-runs LAST_N` (default N=20; max N=100; covers operator's "63 eval_runs" window with operator-tunable scope).
-- Reads `candidates` rows from `evaluation_runs` matching the LAST_N window; for each `bucket != 'aplus'` row, re-runs the per-criterion evaluation against the same input snapshot + tabulates which criterion(ia) failed + margin-of-failure where the criterion's underlying value is numeric.
+- Reads `candidate_criteria` rows JOINed to `candidates` for the LAST_N `evaluation_runs`; aggregates per-criterion failure distribution across `bucket != 'aplus'` candidates.
+- **Margin-of-failure derivation V1**: `candidate_criteria.value` is a free-text TEXT column; many criteria store numeric values as strings (e.g., `value='14.2'`); others store enum strings (e.g., `value='stage_2'`). The diagnostic parses `value` as float when possible + computes margin against the criterion's `rule` (also TEXT; e.g., `rule='value >= 70'`). When parsing fails (non-numeric criterion), the diagnostic emits "boolean-fail" with no margin. V2 candidate: structured `(criterion_value_numeric, criterion_threshold_numeric)` columns OR a parsing helper that knows each criterion's rule schema.
 - Output: deterministic markdown table written to `exports/diagnostics/aplus-blockers-<ISO>.md` PLUS a CSV sidecar `exports/diagnostics/aplus-blockers-<ISO>.csv` for downstream analysis.
-- Output schema (per-criterion-blocker row): `criterion_name`, `failed_count`, `failed_pct`, `mean_margin`, `median_margin`, `p90_margin`, `tickers_sample` (top-3 highest-margin tickers as comma-separated CSV cell).
+- Output schema (per-criterion-blocker row): `criterion_name`, `layer` (trend_template / vcp / risk per `candidate_criteria.layer`), `failed_count`, `na_count`, `failed_pct`, `mean_margin` (None when non-numeric), `median_margin`, `p90_margin`, `tickers_sample` (top-3 highest-margin tickers as comma-separated CSV cell).
 - ASCII-only output (Windows cp1252 stdout safety per existing gotcha).
 
 **Why CLI subcommand (vs. fold into pipeline step output OR fold into research branch):**
@@ -74,13 +77,15 @@ The diagnostic answers: "of the per-eval-run candidate rows that landed in `buck
 **Code surfaces touched:**
 - NEW module `swing/diagnostics/aplus_blockers.py` (pure-function analysis; ~150 LOC).
 - NEW CLI subcommand `swing/cli.py:diagnose_aplus_blockers` (Click subcommand registered under existing `swing` entry point).
-- Read-only against `candidates` + `evaluation_runs`; ZERO writes.
-- Re-uses `swing/evaluation/scoring.py:bucket_for` for criterion-evaluation transparency (instrument re-uses + DOES NOT fork the gating logic).
+- Read-only against `candidates` + `candidate_criteria` + `evaluation_runs`; ZERO writes.
+- Re-uses `swing/evaluation/scoring.py:bucket_for` ONLY as documentation of the gating order (the diagnostic itself does NOT invoke `bucket_for`; it consumes the already-persisted `bucket` column + `candidate_criteria` rows).
 
 **Discriminating tests:**
-- Plant a fixture eval_run with 5 candidates (1 aplus, 2 watch failing tt5+tt8, 2 skip failing risk_size) + invoke diagnostic; assert per-criterion counts match planted distribution.
+- Plant a fixture eval_run with 5 candidates (1 aplus + 2 watch with `candidate_criteria` failing tt5+tt8 + 2 skip with `candidate_criteria` failing risk_size) + invoke diagnostic; assert per-criterion failed_count + failed_pct match planted distribution.
 - Plant a fixture with all-aplus → diagnostic reports "no blockers (all aplus)".
-- Plant a fixture with mixed bucket distribution where `bucket == 'watch'` but one criterion failed in `_resolved` mode (e.g., NA-on-thin-data) → assert "NA" is reported as a distinct blocker, NOT folded into the criterion's pass/fail.
+- Plant a fixture with `candidate_criteria.result='na'` for one criterion → assert "NA" reported as `na_count` (separate from `failed_count`), NOT folded.
+- Plant a fixture with non-numeric `candidate_criteria.value` (e.g., `'stage_2'`) → assert `mean_margin = None` + criterion reported as "boolean-fail" semantic.
+- Plant a fixture with numeric `candidate_criteria.value` + parseable `rule` (e.g., `value='62.3'` + `rule='rs_rank >= 70'`) → assert margin computed correctly (62.3 - 70 = -7.7).
 - ASCII-only stdout assertion (subprocess invocation per Windows-stdout-encoding lesson).
 
 **Architectural decisions:**
@@ -95,25 +100,30 @@ The diagnostic answers: "of the per-eval-run candidate rows that landed in `buck
 
 **Operator framing (verbatim):** "Similar to 1. Potentially too limiting, making it more difficult to identify good entry opportunities."
 
-**Production state:**
-- Path A labeler subagent emit contract at `tools/silver_labeler_subagent.md` (or equivalent CLI invocation per `swing/cli.py:patterns_label_silver`) emits `structural_evidence_json` + `geometric_score_json` + `proposed_pattern_class` + `confidence` + (optionally) `notes`.
-- T2.SB6c §1.5.2 Path C backfill script lands at `swing/cli.py:patterns_exemplars_backfill_labeler_evidence` — backfills `labeler_evidence_json` from `geometric_score_json` for legacy corpus. Path C is effective no-op against the 34 hand-labeled corpus rows because all 34 carry `geometric_score_json IS NULL` (S11 backfill execution observed `Augmented: 0; Skipped: 34`).
-- `/patterns/exemplars` enhanced-rendering surface renders 34 "no rule_criteria" + 34 "no narrative" placeholder strings post-S11 backfill.
+**Production state confirmed by code reading (per Codex R1 M#5 + M#6 closure):**
+- `SilverLabelResponse` dataclass at `swing/patterns/labeling.py:143-178` ALREADY has 4 fields: `evaluation` + `confidence` + `structural_evidence_json` + `geometric_evidence_narrative` (mandatory ASCII-only narrative).
+- `fire_claude_silver_label` at `swing/patterns/labeling.py:294-298` ALREADY persists `geometric_evidence_narrative` into the `labeler_evidence_json` envelope (key: `"geometric_evidence_narrative"`).
+- Subagent prompt at `.claude/agents/pattern-labeler.md` ALREADY emits `geometric_evidence_narrative` per the existing contract.
+- `/patterns/exemplars` enhanced-rendering template at `swing/web/templates/patterns/exemplars.html.j2:33-90` ALREADY renders `render.criterion_rows` (table at lines 51-78) + `render.narrative_text` (paragraph at lines 79-87). The "(no rule_criteria payload available)" + "(no narrative payload available)" placeholders fire when the VM-construction-time parse of `labeler_evidence_json` DOES NOT find those keys.
+- T2.SB6c §1.5.2 Path C backfill script lands at `swing/cli.py:patterns_exemplars_backfill_labeler_evidence`. Path C is effective no-op against the 34 hand-labeled corpus rows because all 34 carry `geometric_score_json IS NULL` (S11 backfill execution observed `Augmented: 0; Skipped: 34`).
+- **Gap location LOCK**: the missing data is at the EMITTER (subagent contract DOES NOT emit `rule_criteria`) + PERSISTENCE (`fire_claude_silver_label` does NOT add it to `labeler_evidence_json`) + VM-CONSTRUCTION (the VM builder for `/patterns/exemplars` does NOT extract `rule_criteria` from `labeler_evidence_json`). The TEMPLATE itself is correct + does NOT need extension.
 
-**Investigation: NONE.** This is an architectural emit-contract widening with known-shape inputs/outputs. Coupling to Item 1: while 0 A+ persists, fresh exemplars do not accumulate organically; Path A widening is the only realistic unblock path.
+**Investigation: NONE.** This is an emitter-contract widening with known-shape inputs/outputs. Coupling to Item 1: while 0 A+ persists, fresh exemplars do not accumulate organically; Path A widening is the only realistic unblock path.
 
 **Design:**
 
-Extend Path A labeler subagent emit contract to emit TWO new keys at silver-label time:
-- `rule_criteria`: array of per-rule pass/fail objects. Schema: `{ rule_name: str, passed: bool, threshold: float|str|null, observed: float|str|null, margin: float|null, narrative: str|null }`. One element per criterion the labeler evaluated (mirrors per-pattern-class criterion list at `swing/patterns/<pattern_class>.py` detector).
-- `narrative`: free-text paragraph (1-3 sentences) describing the labeler's overall qualitative assessment (e.g., "Pole formed cleanly over 5 weeks with rising volume; consolidation phase shows orderly pullback below 25%.").
+The contract widening is **ADDITIVE for `rule_criteria` ONLY** — the existing `geometric_evidence_narrative` field is PRESERVED verbatim + does NOT rename. (The brief proposed "two new keys `rule_criteria` + `narrative`"; Codex R1 M#5 caught that "narrative" is already named `geometric_evidence_narrative` per the existing contract. To avoid contract migration cost on the 34 existing rows + cassette tests, we keep the existing field name.)
 
-**Code surfaces touched:**
-- Subagent prompt at `.claude/agents/pattern-labeler.md` (extended emit contract; example JSON).
-- `swing/cli.py:patterns_label_silver` (and helper `_fire_claude_silver_label`) parse + validate the two new keys.
-- `_SilverLabelResponse` dataclass extension (add `rule_criteria: list[dict] | None` + `narrative: str | None` fields with `__post_init__` validation per existing `Literal[...]` runtime-enforcement gotcha).
-- Persistence: extend `labeler_evidence_json` envelope shape. NO schema change (column is JSON BLOB).
-- `/patterns/exemplars` enhanced-rendering template extends to surface `rule_criteria` + `narrative` when present; preserves "(no rule_criteria; no narrative)" fallback for legacy rows.
+NEW emission key `rule_criteria` — array of per-rule pass/fail objects. Schema: `{ rule_name: str, passed: bool, threshold: float|str|null, observed: float|str|null, margin: float|null, narrative: str|null }`. One element per criterion the labeler evaluated (mirrors per-pattern-class criterion list at `swing/patterns/<pattern_class>.py` detector).
+
+**Code surfaces touched (per Codex R1 M#6 closure — TEMPLATE NOT TOUCHED):**
+- Subagent prompt at `.claude/agents/pattern-labeler.md`: extend emit contract with `rule_criteria` array; provide example JSON for each of the 5 V1 pattern classes (vcp / flat_base / cup_with_handle / high_tight_flag / double_bottom_w).
+- `SilverLabelResponse` dataclass extension: add NEW `rule_criteria: list[dict] | None = None` field (default None for backward-compat with existing tests + cassettes); `__post_init__` validation per existing `Literal[...]` runtime-enforcement gotcha (validate each element is a dict with required keys `rule_name` + `passed`; defensive against malformed subagent output).
+- `swing/cli.py:patterns_label_silver` + `swing/patterns/labeling.py:_fire_claude_silver_label`: parse + validate the new key from subagent JSON; pass through to dataclass construction.
+- `fire_claude_silver_label` at labeling.py:294-298: extend the dict literal that builds `labeler_evidence_json` to include `"rule_criteria": response.rule_criteria` (when non-None; omit key entirely when None for backward-compat with existing rows).
+- **VM-construction-time extension at `/patterns/exemplars` VM builder** (file path discovered at writing-plans phase via grep `exemplar_renders` definition): the existing VM emits `criterion_rows` per-exemplar; extend the VM builder to populate `criterion_rows` from `labeler_evidence_json['rule_criteria']` when present (currently the field is likely populated from a different source or stub-empty). Discriminating test asserts a fresh silver-label invocation emits `rule_criteria` + the VM renders the criterion rows table for that exemplar.
+- **No schema change** (`labeler_evidence_json` is a JSON BLOB column).
+- **No template change** (template already renders `criterion_rows` + `narrative_text`).
 
 **Re-label vs forward-only decision (OQ-2.2):**
 
@@ -122,9 +132,11 @@ Two-pronged design — implementer ships BOTH (operator decides at OQ-paired tri
 - **Re-label-corpus operator-paired script** (CLI subcommand `swing diagnose relabel-corpus --silver-tier` OR fold into existing patterns_label_silver subcommand with `--corpus-all` flag): invokes Path A labeler against all 34 corpus exemplars + re-persists `labeler_evidence_json`. Operator-paired (slow; ~34 subagent invocations; operator may want to spot-check).
 
 **Discriminating tests:**
-- Plant a Path A silver-label invocation against a fresh exemplar + assert `rule_criteria` + `narrative` populated.
-- Plant a malformed `rule_criteria` element (missing required key) + assert `__post_init__` raises typed exception (NOT generic `KeyError`).
-- Plant a re-label of an existing legacy exemplar + assert `labeler_evidence_json` envelope rewritten with new shape; assert `/patterns/exemplars` template renders new keys.
+- Plant a Path A silver-label invocation against a fresh exemplar with subagent emitting `rule_criteria` + assert it's persisted into `labeler_evidence_json['rule_criteria']`.
+- Plant a malformed `rule_criteria` element (missing required `rule_name` key) + assert `SilverLabelResponse.__post_init__` raises typed `ValueError` (NOT generic `KeyError`).
+- Plant a legacy exemplar with `rule_criteria` absent from `labeler_evidence_json` → assert `/patterns/exemplars` VM falls back to current "(no rule_criteria payload available)" placeholder (no regression).
+- Plant a re-label of an existing legacy exemplar via Path A → assert `labeler_evidence_json` rewritten with `rule_criteria` key + assert VM emits `criterion_rows` for that exemplar.
+- Pre-existing test of `geometric_evidence_narrative` persistence unchanged (backward-compat regression anchor).
 
 **V2 dependencies banked:**
 - Path A subagent re-label of ALL 34 corpus exemplars is operator-paired (out of brief auto-mode scope).
@@ -148,9 +160,9 @@ Strip y-axis tick labels on volume subplot for any chart helper that does not al
 
 **Code surfaces touched:** `swing/web/charts.py` (2 one-line additions).
 
-**Discriminating tests:**
-- Render market_weather SVG against a planted bars fixture; parse SVG; assert volume subplot's y-axis has 0 tick labels (no `<text>` elements in volume-axis tick-text group).
-- Render hyp-rec detail SVG analogously.
+**Discriminating tests (per Codex R1 MINOR #1 closure — precise assertion):**
+- Render market_weather SVG against a planted bars fixture; parse via matplotlib API BEFORE serialization OR introspect rendered SVG with explicit-string assertion: assert `ax_vol.get_yticklabels()` returns empty list (NO numeric tick labels like `0`, `1`, `1e8`). NOT a broad "no `<text>` elements in volume axis" assertion — `ax_vol.set_ylabel("Volume")` intentionally remains AS text in the volume subplot.
+- Symmetric assertion for `render_hyprec_detail_svg`.
 - Pre-existing thumbnail test unchanged (acts as already-stripped regression anchor).
 
 **Visual verification (operator-witnessed gate):** S2 post-fix render of `/dashboard` showing the market-weather chart with no volume tick labels. Mathtext lesson applies (no string-equality substitute for visual gate).
@@ -198,18 +210,24 @@ Delete line 14 of `swing/web/templates/partials/watchlist_row.html.j2` (the `{% 
 - `watchlist_row` thumbnails — REDUCED from top-10 tag-aware to **dashboard top-5 visible-by-default** (the rows that render on initial dashboard load). The other 5+ rows shift to JIT cache-miss.
 - `hyprec_detail` — REMOVED from pre-gen (was A+-gated at runner.py:2371 → 0 rows today). Shifts entirely to JIT cache-miss; first expand of any hyp-rec (A+ or sub-A+) triggers live render.
 
-**JIT cache-miss live-render hook:**
+**JIT cache-miss live-render hook (architecture LOCK per Codex R1 M#2 + M#3 closure):**
 
-NEW helper `swing/web/chart_jit.py:get_or_render_surface(surface, ticker, **render_kwargs) -> bytes` (or equivalent module location):
-1. Read cache via `get_cached_chart_svg(surface, ticker, pipeline_run_id_or_NULL_per_surface)`.
+NEW helper `swing/web/chart_jit.py:get_or_render_surface(*, conn, ohlcv_cache, surface, ticker, pipeline_run_id, pattern_class=None, **renderer_kwargs) -> bytes | None`:
+1. Read cache via `get_cached_chart_svg(conn, surface=surface, ticker=ticker, pipeline_run_id=pipeline_run_id_or_NULL_per_surface, pattern_class=pattern_class)`.
 2. On hit: return cached bytes.
-3. On miss: fetch OHLCV via `OhlcvCache.get_or_fetch` (or `read_or_fetch_archive` directly per existing T1.SB0 fallback discipline); construct ChartRender dataclass (F6 construction-barrier defense applies); call appropriate renderer (`render_hyprec_detail_svg` / `render_watchlist_thumbnail_svg` / etc.); write-through to cache via `refresh_chart_render`; return bytes.
-4. On render failure: WARN-log + return None (caller renders fallback banner "Chart loading..." OR "Chart unavailable" per OQ-5.2 disposition).
+3. On miss: fetch OHLCV via `ohlcv_cache.get_or_fetch(ticker=ticker, window_days=200)` (per existing `_step_charts._bars_or_none` precedent at `swing/pipeline/runner.py:2304`); on OHLCV failure return None.
+4. Dispatch to appropriate renderer per `surface`: `watchlist_row` → `render_watchlist_thumbnail_svg`; `hyprec_detail` → `render_hyprec_detail_svg`; `position_detail` → `render_position_detail_svg`; `market_weather` → `render_market_weather_svg`. Renderer kwargs threaded per surface (e.g., position_detail needs trade + fills + current_stop — these come from the CALLER not the JIT helper).
+5. Construct ChartRender dataclass (F6 construction-barrier defense applies — empty-bytes raises ValueError; helper catches + returns None + WARN-logs); on construction success, write-through via `refresh_chart_render(conn, chart_render)`; return bytes.
+6. On render failure (matplotlib exception / OHLCV missing / ValueError at ChartRender construction): WARN-log + return None.
 
-**Chart-scope predicate path update at `swing/web/chart_scope.py:130-131`:**
-- When the resolver would emit `out-of-scope` for `watchlist_row` or `hyprec_detail`, instead invoke JIT cache-miss hook.
-- `out-of-scope-legacy` (heuristic-path; pre-v0006 rows): preserved as fallback for genuinely-unrouted callers.
-- Other banner reasons (`engine-missing`, `pipeline-failed`, `no-run`, `insufficient-data`, `fetcher_failed`, `too_few_bars`) preserved verbatim (these are genuinely "no-bytes-recoverable").
+**Chart-scope LOCK (per Codex R1 M#2 closure):** `swing/web/chart_scope.py:resolve_chart_scope` REMAINS a pure availability-check function for the `/charts/<date>/<ticker>.png` PNG-on-disk path. It does NOT invoke JIT. The JIT invocation lives in the route handlers / VM builders that have the necessary dependency context (`conn`, `ohlcv_cache`, surface-specific render kwargs).
+
+**Wiring (per Codex R1 M#3 closure — explicit dependency threading):**
+- Watchlist row partial JIT integration (Item 5 ∩ Item 6 combined): `swing/web/routes/watchlist.py:watchlist_row` + `:watchlist_expand` route handlers gain access to `request.app.state.ohlcv_cache` (the existing `OhlcvCache` instance already on app.state per `swing/web/app.py` lifespan setup). Both routes invoke `get_or_render_surface(surface='watchlist_row', ticker=ticker.upper(), pipeline_run_id=binding.run_id, ...)`. Result populates `WatchlistRowVM.chart_svg_bytes` (or `vm.watchlist_chart_svg_bytes` mapping per Item 6 §B.6 design); template renders inline.
+- Hyp-rec expand route JIT integration (Item 5 ∩ Item 7 broader audit): identify the route handler that renders the hyp-rec expanded detail view (currently no `chart_renders.hyprec_detail` consumer because A+ candidates are absent; verify route name at writing-plans phase). Thread `request.app.state.ohlcv_cache` through; invoke `get_or_render_surface(surface='hyprec_detail', ticker=ticker.upper(), pipeline_run_id=binding.run_id, ...)`.
+- Existing chart-unavailable banner: when JIT helper returns None (renderer failure / OHLCV missing), surface a NEW banner reason `'render-failed'` or `'ohlcv-missing'` per Codex M#2 distinction (the existing `out-of-scope` reason becomes unreachable for these two surfaces once JIT wires in). Banner code path preserved per OQ-5.5 disposition.
+
+**ohlcv_cache app-state availability check (LOCK):** `swing/web/app.py` lifespan setup already constructs `app.state.ohlcv_cache: OhlcvCache | None` for the existing pipeline + dashboard surfaces (per T1.SB0 LOCK at `swing/web/ohlcv_cache.py`). Verify at writing-plans phase via grep `app.state.ohlcv_cache` to confirm the helper is reachable from the routes. If NOT, plan §H must include "thread OhlcvCache to web app.state lifespan" as a prerequisite task.
 
 **Re-run collision semantics (OQ-5.4 needs operator triage):**
 
@@ -231,7 +249,7 @@ Brainstorm surfaces 4 options:
 
 **JIT latency budget (OQ-5.2 needs operator triage):**
 
-Matplotlib first-render is typically 200-500ms per chart (excluding OHLCV fetch). Operator's expand-and-view UX expects sub-second; the worst case is cold-OHLCV-cache + cold-Schwab-token + first-render = ~1-2 seconds. Brainstorm proposes:
+Matplotlib first-render is typically 200-500ms per chart (excluding OHLCV fetch) — this is an UNVERIFIED ESTIMATE based on general matplotlib timing (per Codex R1 MINOR #2). Operator's expand-and-view UX expects sub-second; the worst case is cold-OHLCV-cache + cold-Schwab-token + first-render = ESTIMATED ~1-2 seconds (also unverified — depends on OHLCV cache state + ticker count + yfinance/cache backoff behavior). **A measured-timing diagnostic ships as part of T-T4.SB.1 OR T-T4.SB.3** (subprocess-or-pytest harness that invokes the JIT helper against a representative test fixture + reports rendered-byte-count + render-time-ms) so the operator's OQ-5.2 triage decision is data-informed. Brainstorm proposes:
 - **Synchronous JIT render — no timeout** (V1 default): expand handler blocks until render completes OR raises. On exception (renderer failure / OHLCV cache empty / etc.), surface a fallback banner ("Chart unavailable — render failed"). Worst-case operator wait under cold-everything path is ~1-2 seconds; acceptable for operator-paced workflow.
 - **Synchronous JIT render — with wallclock timeout** (V1 alternative): wrap the render call in `concurrent.futures.ThreadPoolExecutor.submit + future.result(timeout=N)`; on timeout, return placeholder + 202 status; operator manually retries by re-expanding. ~30 LOC more than no-timeout; useful only if operator confirms wait sensitivity at OQ-5.2.
 - **Async-render with HTMX placeholder swap** (V2 if operator observes UX regression): HTMX response with immediate "Chart loading..." + background-worker render + delayed swap via `hx-trigger` polling. Complex; defers V2.
@@ -280,24 +298,31 @@ Once JIT path lights up, the `out-of-scope` banner becomes unreachable for `watc
 
 **Investigation: NONE.** Direct fix — code reading confirms root cause.
 
-**Design:**
+**Design (per Codex R1 M#7 closure — minimal partial-rewire chosen over VM extension):**
 
-`watchlist_row` route handler MUST pass enough context to the template that `_thumb_bytes` populates correctly. Two design options:
+Two options weighed:
 
-- **Option 6A (minimal)**: pass a `vm`-shaped object with just `watchlist_chart_svg_bytes` populated. The build helper at `swing/web/view_models/watchlist.py:build_watchlist_row` already returns a `WatchlistRowVM`; extend it with a `watchlist_chart_svg_bytes` mapping populated from cache.
-- **Option 6B (rewire template)**: change the template's `vm.watchlist_chart_svg_bytes.get(w.ticker)` to a direct `_thumb_bytes` template parameter passed from the route. More invasive; template loses the optional-vm-availability semantic.
+- **Option 6A (extend WatchlistRowVM + pass as `vm`)**: extend `WatchlistRowVM` with `watchlist_chart_svg_bytes: Mapping[str, bytes]` (singleton dict `{w.ticker: bytes}` matching the existing `WatchlistVM.watchlist_chart_svg_bytes: Mapping[str, bytes]` field at line 59); collapse route passes `{"vm": row_vm, ...}` (the `vm.watchlist_chart_svg_bytes.get(w.ticker)` template dereference resolves). Risk: the template `vm` dereference becomes silently context-dependent on TWO different VM shapes (WatchlistVM-from-page-render and WatchlistRowVM-from-collapse-route); future field drift could re-introduce the gap.
+- **Option 6B (RECOMMENDED — partial rewire)**: change `swing/web/templates/partials/watchlist_row.html.j2:9` from `{% set _thumb_bytes = vm.watchlist_chart_svg_bytes.get(w.ticker) if vm is defined and vm.watchlist_chart_svg_bytes else None %}` to a direct `_thumb_bytes` template parameter looked up from a smaller, explicitly-named context variable (e.g., `chart_svg_bytes_for_row` passed by EVERY caller). Both the page-render path (in `watchlist.html.j2` / `dashboard.html.j2`) AND the collapse route MUST be updated to pass it.
 
-**Orchestrator recommendation: Option 6A.** Preserves template's `vm` dereference semantic; minimal code change; canonical "the row partial gets a `vm` no matter the entry point" discipline.
+**Orchestrator recommendation: Option 6B (partial rewire).** Codex R1 M#7 surfaced that Option 6A repeats the original drift mechanism — partials dereferencing `vm.foo` against contexts that might lack `vm`. Option 6B makes the per-row thumbnail bytes an EXPLICIT template-parameter input; the contract is uniform across page-render + collapse-route. Slightly more invasive (touches both callers) but structurally safer.
 
-**Code surfaces touched:**
-- `swing/web/view_models/watchlist.py:build_watchlist_row` — extend `WatchlistRowVM` to carry `watchlist_chart_svg_bytes: Mapping[str, bytes]` (or just `chart_svg_bytes: bytes | None` if simpler).
-- `swing/web/routes/watchlist.py:watchlist_row` — pass the extended VM into template context as `vm` (or pass alongside the existing per-field keys).
+**Code surfaces touched (Option 6B):**
+- `swing/web/templates/partials/watchlist_row.html.j2:9` — replace `vm.watchlist_chart_svg_bytes.get(w.ticker)` dereference with direct `_thumb_bytes` parameter; rename the Jinja `{% set %}` to `{% set _thumb_bytes = chart_svg_bytes_for_row if chart_svg_bytes_for_row is defined else None %}` for clarity.
+- `swing/web/templates/watchlist.html.j2` (or wherever page-render includes the partial): update the `{% include "partials/watchlist_row.html.j2" with chart_svg_bytes_for_row=vm.watchlist_chart_svg_bytes.get(w.ticker) %}` pattern (or analogous).
+- Dashboard top-5 watchlist render path: update the `{% include %}` call similarly.
+- `swing/web/routes/watchlist.py:watchlist_row` collapse route: extend the template context dict with `chart_svg_bytes_for_row=<cache lookup for ticker>`. Cache lookup invokes the JIT helper from Item 5 (`get_or_render_surface(surface='watchlist_row', ticker=ticker.upper(), pipeline_run_id=..., conn=conn, ohlcv_cache=request.app.state.ohlcv_cache)`).
+- No `WatchlistRowVM` extension needed under Option 6B (existing dataclass stays unchanged).
+
+**Coupling with Item 5 (LOCK):** Item 6's collapse-route fix INVOKES the Item 5 JIT helper. T-T4.SB.5 MUST sequence after T-T4.SB.3 (Item 5 JIT helper landed first).
 
 **Cumulative HTMX-OOB-swap gotcha applicability:** the CLAUDE.md gotcha "HTMX OOB-swap partials that hand-duplicate full-page markup drift silently" identifies the FAILURE FAMILY but NOT this exact mechanism. Here the partial is NOT hand-duplicated — it's the SAME `{% include %}` target, but with an INCOMPLETE context dict. Operationally same outcome (drift between full-page render and partial-swap render); banking refinement of the gotcha as "OOB-swap context dict must include vm" — applicable to all future include-based partials that dereference `vm.foo` fields.
 
 **Discriminating tests:**
 - Render full dashboard → snapshot watchlist row HTML (with thumbnail SVG inline). Issue HTMX expand request → snapshot expanded HTML. Issue HTMX collapse request → assert collapsed HTML CONTAINS the `<span class="watchlist-thumbnail">` element (NOT just absence of expansion).
-- Plant a ticker with NULL `chart_svg_bytes` in cache → collapse → assert NO thumbnail element + NO 500 error (graceful degradation).
+- Plant a ticker with NULL `chart_svg_bytes` in cache + JIT helper returns None → collapse → assert NO thumbnail element + NO 500 error (graceful degradation).
+- Plant a ticker with cached chart_svg_bytes (cache hit) + collapse → assert SAME thumbnail bytes as the full-page render (no live re-render path).
+- Partial-rewire regression test: page-render template passes `chart_svg_bytes_for_row` AND collapse-route passes `chart_svg_bytes_for_row` → both paths emit IDENTICAL `<span class="watchlist-thumbnail">` element when cache populated.
 - Pre-existing watchlist render tests unchanged.
 
 **Operator-witnessed gate (S2):** real browser test of expand-collapse-expand sequence; thumbnail persists across all three.
@@ -349,13 +374,28 @@ NEW instrument lives in CLI under `swing/cli.py:diagnose_metrics_wiring` (or fol
 Two options surface in brainstorm:
 - **Option 7A (NO schema change)**: tier-2 canonicalization strips the suffix entirely at persistence; the per-trade "failed: ..." detail is LOST. Simplest; loses provenance.
 - **Option 7B (NEW NULLable column `trades.hypothesis_label_suffix`)**: tier-2 canonicalization persists canonical name to `hypothesis_label` AND raw suffix to `hypothesis_label_suffix`. Preserves provenance; schema bump to v22. Read-path consumers join + display the suffix in detail views.
-- **Option 7C (canonicalize-at-READ-time)**: dashboard exact-match query rewritten to use prefix match (`LIKE 'hypothesis_name%'` or invoke `_label_matches_hypothesis`-equivalent). Persistence unchanged. NO schema change. Operator's per-trade suffix preserved.
+- **Option 7C (canonicalize-at-READ-time with DELIMITER-AWARE matching)**: dashboard query rewritten to match canonical name PLUS recognized suffix delimiters. Persistence unchanged. NO schema change. Operator's per-trade suffix preserved.
 
-**Orchestrator recommendation: Option 7C** (NO schema change; rewrite dashboard exact-match query to use prefix-match consistent with the CLI path). Rationale:
+**Orchestrator recommendation: Option 7C** (NO schema change; delimiter-aware prefix-match consistent with the CLI path). Rationale:
 - **Avoids schema bump** (T4.SB's expected schema-UNCHANGED posture preserved).
 - **Preserves operator's per-trade suffix** (the suffix encodes which criteria failed for THIS trade — useful for retrospective review).
 - **Matches CLI's existing semantic** (`_label_matches_hypothesis` already does this).
 - **Closes the wiring inconsistency** (CLI + dashboard converge on one match strategy).
+
+**Delimiter-aware matching contract (per Codex R1 M#4 closure):** the existing `_label_matches_hypothesis` uses bare `startswith` (case-insensitive) — this is TOO BROAD because labels like `Sub-A+ VCP-not-formedness ...` would prefix-match `Sub-A+ VCP-not-formed`. Both the CLI helper AND the new SQL helper MUST use **delimiter-aware** matching: a label MATCHES a hypothesis name when (and only when) one of these holds:
+
+1. `label == name` (exact equality after case-fold).
+2. `label.lower().startswith(name.lower() + " ")` (space delimiter — matches `_descriptive_label` output: `"<hypothesis_name> (<bucket>); failed: ..."`).
+3. `label.lower().startswith(name.lower() + ";")` (semicolon delimiter — defensive against future label variants).
+
+Rejected: bare `startswith`; bare SQL `LIKE 'name%'` (matches `name`-prefixed extensions of name); naive `LIKE 'name (%'` only (misses exact equality + future variant suffixes).
+
+**SQL implementation** (for `swing/metrics/cohort.py:list_trades_for_cohort` rewrite): replace `WHERE hypothesis_label = ?` with `WHERE LOWER(hypothesis_label) = LOWER(?) OR LOWER(hypothesis_label) LIKE LOWER(?) || ' %' ESCAPE '\' OR LOWER(hypothesis_label) LIKE LOWER(?) || ';%' ESCAPE '\'` (3 parameters; cohort_name passed thrice). **`ESCAPE '\'` clause + escape SQL wildcards `%`/`_` in cohort_name before binding** — hypothesis names today are clean but a future registry entry containing `%` or `_` would silently broaden the match without escaping. A `_sql_escape_wildcard(name: str) -> str` helper replaces `\` → `\\`, `%` → `\%`, `_` → `\_` before binding.
+
+**Python helper refactor (LOCK):** to avoid two-mirror divergence (existing CLI helper at `swing/recommendations/hypothesis.py:416-435` vs new SQL semantic), introduce a SHARED canonicalization at `swing/recommendations/hypothesis.py` (or new `swing/metrics/label_match.py`):
+- `_label_matches_hypothesis(label, name)` Python: rewrite to use the 3-rule delimiter-aware match (the existing `startswith` widens to the 3-tuple).
+- `_label_matches_hypothesis_sql(name) -> tuple[str, list[object]]` returns the `WHERE`-clause-fragment + binding params (with wildcard-escape) for the SQL surface.
+- Discriminating test asserts Python helper + SQL helper produce IDENTICAL match sets on a fixed corpus of test labels.
 
 Cumulative gotcha applies: "Grouping-key fields need canonicalization-at-persistence-boundary, not just display safety" (orchestrator-context Tranche B-ops). But the existing canonicalization handles Unicode/whitespace; the hypothesis-prefix dimension is a NEW dimension that's better handled at READ-time given the operator's explicit per-trade-suffix value. The gotcha applies UPDIRECTIONAL — DO canonicalize at persistence for non-business-meaning artifacts (whitespace; Unicode); do NOT canonicalize at persistence for business-meaningful suffixes that the operator wants persisted.
 
@@ -732,6 +772,8 @@ All new T4.SB fast tests under `tests/diagnostics/` (NEW directory for Item 1 + 
 **Recommended dispatch sequence (sequential; conservative):** T-T4.SB.1 → T-T4.SB.2 → T-T4.SB.3 → T-T4.SB.4 (or concurrent) → T-T4.SB.5 → T-T4.SB.6.
 
 **Optionally concurrent:** T-T4.SB.4 can fire concurrent with T-T4.SB.2 or T-T4.SB.3 (writing-plans phase decides per subagent-driven-development capacity).
+
+**Verification ordering note (per Codex R1 MINOR #3):** code dependencies as stated above — Item 5 (chart architecture) is independent of Item 7 (metrics wiring) at the COMPILE/TEST level. But the operator-witnessed gate verification of Item 5's hyp-rec chart wiring is EASIER to validate after Item 7's hypothesis-progress fix lands (suffix-bearing labels are easier to debug with a working progress card). Recommendation: keep code dependencies as written; sequence operator-witnessed gate verification of Item 5 chart wiring AFTER Item 7 hyp-progress fix is verified GREEN.
 
 ---
 
