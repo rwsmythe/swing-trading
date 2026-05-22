@@ -300,7 +300,7 @@ The existing POST handler at `swing/web/routes/trades.py:1095` hardcodes `entry_
 | **B.2** Volume profile live | §5.10 line 773 | NO | `PatternReviewFormVM` extend with `volume_profile: VolumeProfileRow` (NEW frozen dataclass: `recent_30session_volume_sum: int`, `prior_50day_avg_volume: float`, `ratio_pct: float`). Read OHLCV via `swing.web.ohlcv_cache.get_or_fetch(ticker, window_days=80)` (50 + 30 buffer; OQ-14 LOCK). Template renders inline SVG sparkline (SVG bytes don't flow through stdout — escape from cp1252 risk). | LIVE (no schema dep) |
 | **B.3** POST `/patterns/{candidate_id}/review` label_source split (URL parameter named `candidate_id` per shipped T2.SB6b code; value is a `pattern_evaluations.id`) | §5.10 lines 785-790 | YES — Delta A | POST handler at `swing/web/routes/patterns.py:patterns_review_post` (T2.SB6b T-A.6.3) extends per §D.3 cross-row lookup discipline. If row exists (per the SQL in §D.3) AND operator decision is `confirm`, emit `label_source='organic_trade_history'`; else emit `label_source='closed_loop_review'`. | RESOLVED via Delta A |
 | **B.4** Review form outcome distribution bucketing | §5.10 line 775 | YES — Delta A | `PatternReviewFormVM` extend `OutcomeDistributionRow` with `reached_1r_pct: float | None` + `hit_stop_pct: float | None` (None when n<5 per honesty.suppress_for_n). Compute per OQ-6 thresholds. See §D.3 cohort scope. | RESOLVED via Delta A |
-| **B.5** Metric tile reached_1r + hit_stop | plan §G.9 T-A.6.5 + spec §5.10 line 775 | YES — Delta A | `swing/metrics/pattern_outcomes.py:build_pattern_outcome_rows` extend `PatternOutcomeRow` with `reached_1r_count + reached_1r_pct + hit_stop_count + hit_stop_pct` fields. LEFT JOIN `pattern_evaluations` to `trades` via `candidate_id`. Wilson-CI per Phase 10 honesty.wilson_ci; suppression at n<5 per honesty.suppress_for_n. | RESOLVED via Delta A |
+| **B.5** Metric tile reached_1r + hit_stop | plan §G.9 T-A.6.5 + spec §5.10 line 775 | YES — Delta A | `swing/metrics/pattern_outcomes.py:build_pattern_outcome_rows` populates the existing `PatternOutcomeRow.reached_1r_n + reached_1r_ci + hit_stop_n + hit_stop_ci` fields (currently None per T2.SB6b V1 simplification at `swing/metrics/pattern_outcomes.py:52-55`). No NEW dataclass fields needed; the field shape was already designed for T2.SB6c's outcome wiring (V1 STUB → LIVE). LEFT JOIN `pattern_evaluations` to `trades` via `candidate_id`. Wilson-CI per Phase 10 honesty.wilson_ci; suppression at n<5 per honesty.suppress_for_n. Existing template at `swing/web/templates/metrics/pattern_outcomes.html.j2:35-45` already renders `row.reached_1r_n / row.n` ratio + WilsonCI separately — NO template edit needed; populating the existing fields is sufficient. | RESOLVED via Delta A |
 | **B.6** Queue criterion 3 weather-state-aware | §5.10 line 799 | NO | `swing/patterns/active_learning.py:prioritize_candidates` extend criterion 3 (`underrepresented_regime`) to consume current `weather_runs.status` value (column-verified against `swing/data/migrations/0003_phase2_pipeline_trades.sql:4-15`; values 'Bullish'/'Caution'/'Bearish'; ticker per `cfg.rs.benchmark_ticker` default 'QQQ'). Per-pattern_class exemplar count against the SAME-`status` historical baseline derived via JOIN to `weather_runs` at-or-before `pattern_exemplars.created_at` (no new column; read-side computation per `pattern_exemplars` schema audit — no `weather_state_at_labeling` column exists). | LIVE (no schema dep) |
 | **§1.5.2 amendment** labeler_evidence_json one-shot backfill | dispatch brief §1.5.2 | NO | NEW `swing/cli.py:patterns_exemplars_backfill_labeler_evidence` operator-invoked subcommand per §C.4. | LIVE (Path C; Path A V2-banked) |
 
@@ -344,24 +344,35 @@ LIMIT 1;
 
 If row exists AND operator decision is `confirm`, emit `label_source='organic_trade_history'`; else `label_source='closed_loop_review'`. **Pre-empt T2.SB6b R1 MAJOR #3 ticker-proxy regression via discriminating test**: plant 2 trades on same ticker (one from candidate A, one from candidate B); review candidate A's pattern; assert ONLY candidate A's trade qualifies as `organic_trade_history`.
 
-**Gap B.4 lookup scope** (outcome distribution): per-candidate cohort; "last N similar-score candidates" means candidates with composite_score in `[evaluation.composite_score - 0.1, evaluation.composite_score + 0.1]` for the SAME pattern_class. Trade lookup is per-candidate via `trades.candidate_id`. SQL skeleton (column-verified against `swing/data/migrations/0020_phase13_charts_patterns_autofill_usability.sql:230-250` — `pattern_evaluations.id` is the PK column name, NOT `evaluation_id` per Codex R1 CRITICAL #1 catch):
+**Gap B.4 lookup scope** (outcome distribution): per-candidate cohort; "last N similar-score candidates" means candidates with composite_score in `[evaluation.composite_score - 0.1, evaluation.composite_score + 0.1]` for the SAME pattern_class. Trade lookup is per-candidate via `trades.candidate_id`. SQL skeleton (column-verified against `swing/data/migrations/0020_phase13_charts_patterns_autofill_usability.sql:230-250` — `pattern_evaluations.id` is the PK column name, NOT `evaluation_id` per Codex R1 CRITICAL #1 catch).
+
+Per Codex R4 MAJOR #1 closure: the LIMIT must apply at the EVALUATION unit (one row per candidate-evaluation), NOT at the trade unit (which would over-truncate or over-include when a candidate has multiple trades). Use a CTE to pick the N cohort evaluations FIRST, then LEFT JOIN trades for outcome bucketing:
 
 ```sql
-SELECT t.id, t.realized_R_if_plan_followed, t.state, t.entry_price, t.initial_stop, t.entry_date
-FROM pattern_evaluations pe
+WITH cohort AS (
+    SELECT pe.id AS evaluation_id, pe.composite_score, pe.ticker, pe.pipeline_run_id
+    FROM pattern_evaluations pe
+    WHERE pe.pattern_class = ?
+      AND pe.composite_score BETWEEN ? AND ?
+      AND pe.id != ?
+    ORDER BY pe.id DESC
+    LIMIT ?
+)
+SELECT cohort.evaluation_id,
+       c.id AS candidate_id,
+       MAX(CASE WHEN t.id IS NOT NULL THEN 1 ELSE 0 END) AS has_trade,
+       MAX(CASE WHEN t.id IS NOT NULL AND <reached_1r predicate> THEN 1 ELSE 0 END) AS reached_1r,
+       MAX(CASE WHEN t.id IS NOT NULL AND <hit_stop predicate>   THEN 1 ELSE 0 END) AS hit_stop
+FROM cohort
 INNER JOIN candidates c
-    ON pe.ticker = c.ticker
-   AND pe.pipeline_run_id IN (
-       SELECT id FROM pipeline_runs WHERE evaluation_run_id = c.evaluation_run_id)
-INNER JOIN trades t ON t.candidate_id = c.id
-WHERE pe.pattern_class = ?
-  AND pe.composite_score BETWEEN ? AND ?
-  AND pe.id != ?
-ORDER BY pe.id DESC
-LIMIT ?;
+    ON c.ticker = cohort.ticker
+   AND c.evaluation_run_id = (
+       SELECT evaluation_run_id FROM pipeline_runs WHERE id = cohort.pipeline_run_id)
+LEFT JOIN trades t ON t.candidate_id = c.id
+GROUP BY cohort.evaluation_id, c.id;
 ```
 
-(Where parameters are `pattern_class`, `composite_score - 0.1`, `composite_score + 0.1`, current `pattern_evaluations.id` (excluded), N similar candidates limit. The implementer at executing-plans phase MAY simplify if a join hint surfaces cleaner SQL — but the per-candidate join via `trades.candidate_id` is BINDING.)
+(Where parameters are `pattern_class`, `composite_score - 0.1`, `composite_score + 0.1`, current `pattern_evaluations.id` (excluded), N similar candidates limit. The CTE picks exactly N evaluations; the outer query left-joins trades + aggregates per-evaluation. With 1 cohort evaluation + 2 trades both hitting 1R, the output has 1 row with `reached_1r=1` — bounded by cohort size. The VM consumes the aggregated `(reached_1r, hit_stop)` flags + computes the distribution percentages over the cohort size. Discriminating regression test: plant 3 cohort evaluations + 2 trades each on one of them (one trade reaches 1R, one hits stop); assert cohort size == 3 + reached_1r_count == 1 + hit_stop_count == 1 (per-evaluation aggregation, NOT 2 + 2).)
 
 **Gap B.5 lookup scope** (metric tile): per-pattern_class cohort; LEFT JOIN denominator = all `pattern_evaluations` rows for the pattern_class WHERE a confirmed `pattern_exemplars` row exists for the SAME `(ticker, pattern_class, window)` tuple (OQ-13 LOCK + Codex R1 MAJOR #4 closure — denominator MUST match on pattern_class + window, NOT just ticker, to avoid contaminating with unrelated historical exemplars). Numerator = subset that has `trades.candidate_id` populated AND outcome bucket met per OQ-6 thresholds.
 
@@ -479,7 +490,7 @@ Row 12 in Phase 13 plan §H.3 cross-bundle pin schedule is APPENDED at T-A.6c.5 
 | §1.5.2 amendment labeler_evidence_json backfill | 5 | parse existing 3-key payload + synthesize rule_criteria + write augmented JSON back + idempotency + graceful no-op on already-augmented |
 | Gap B.3 label_source split | 5 | positive (organic_trade_history) + negative (closed_loop_review) + ticker-proxy-regression discriminating test (T2.SB6b R1 MAJOR #3 LOCK) + confirm-decision-required + non-confirm-decision |
 | Gap B.4 outcome distribution bucketing | 5 | reached_1r computation + hit_stop computation + suppression at n<5 + Wilson CI emission + VM template render |
-| Gap B.5 metric tile reached_1r + hit_stop | 5 | LEFT JOIN denominator/numerator + per-pattern_class + suppression + Wilson CI + VM banner pin |
+| Gap B.5 metric tile reached_1r + hit_stop | 5 | LEFT JOIN denominator/numerator (existing `reached_1r_n` + `hit_stop_n` fields populated; NO schema change to `PatternOutcomeRow`) + per-pattern_class + suppression + Wilson CI (existing `_ci` fields) + VM banner pin |
 | Gap B.6 queue criterion 3 weather-state-aware | 4 | weather-state lookup + per-pattern_class baseline + weather-state-missing fallback + spec line 799 wording verbatim |
 | Anchor-threading at POST /trades/entry (5-tier + claim-gate) | 13 | per §C.5 |
 | Entry-path mapping fix at trades.py:1095 | 1 | UI origin -> EntryPath enum mapping |
@@ -504,7 +515,7 @@ Baseline **5559 fast tests** UNCHANGED through this writing-plans phase (writing
 - **S5 (browser)**: `/watchlist` — confirm thumbnail charts render inline per row (Gap A.3).
 - **S6 (browser)**: `/patterns/exemplars` — under cache-miss path, confirm live render fires + cache row is written through (Gap A.4); verify via DB query post-page-load that `chart_renders` has the new exemplar row.
 - **S6b (DB query)**: after a pipeline run, confirm `chart_renders` has rows for ALL 4 surfaces touched by `_step_charts` write-through (watchlist_row + hyprec_detail + position_detail + market_weather) per the §1.5.1 amendment.
-- **S7 (browser)**: `/metrics/pattern-outcomes` — confirm `reached_1r_pct` + `hit_stop_pct` columns render LIVE for cohorts with n>=5 (Gap B.5).
+- **S7 (browser)**: `/metrics/pattern-outcomes` — confirm `reached_1r_n / n` + `hit_stop_n / n` ratio columns render LIVE values (NOT None / placeholder) for cohorts with n>=5 (Gap B.5; existing field shape per `swing/metrics/pattern_outcomes.py:52-55`).
 - **S8 (browser)**: `/patterns/queue` — confirm criterion 3 ranking matches current weather state (Gap B.6).
 - **S9 (browser; data-shaped)**: open a fresh trade from `/recommendations/` form for a current pipeline candidate where a `pattern_evaluations` row exists for the (run, ticker) tuple; confirm new trade row gets BOTH `candidate_id` AND `pattern_evaluation_id` populated. Also: open a fresh `manual_off_pipeline` trade entry; confirm new trade row gets `candidate_id IS NULL` AND `pattern_evaluation_id IS NULL`.
 - **S10 (browser; closed-loop)**: review the candidate at `/patterns/{candidate_id}/review` with `confirm` decision; confirm `pattern_exemplars` row is written with `label_source='organic_trade_history'` (Gap B.3).
@@ -1304,7 +1315,7 @@ Commit message body enumerates: 9 Gap B.1+B.2 + 4 Gap B.6 + 5 §1.5.2 amendment 
 **Files:**
 - Modify: `swing/web/routes/patterns.py:patterns_review_post` (Gap B.3 label_source split via candidate-scope lookup).
 - Modify: `swing/web/view_models/patterns/review_form.py:OutcomeDistributionRow` (Gap B.4 — extend with reached_1r_pct + hit_stop_pct).
-- Modify: `swing/metrics/pattern_outcomes.py:build_pattern_outcome_rows` (Gap B.5 — LEFT JOIN trades; extend `PatternOutcomeRow`).
+- Modify: `swing/metrics/pattern_outcomes.py:build_pattern_outcome_rows` (Gap B.5 — LEFT JOIN trades; populate EXISTING `PatternOutcomeRow.reached_1r_n + reached_1r_ci + hit_stop_n + hit_stop_ci` fields, currently None per T2.SB6b V1 simplification; NO new fields; existing template already renders).
 - Modify: `swing/web/routes/trades.py:398` (`GET /trades/entry/form` — populate hidden anchors via VM at form-render time).
 - Modify: `swing/web/templates/partials/trade_entry_form.html.j2` (canonical entry-form template — emit hidden inputs).
 - Modify: `swing/web/view_models/trades.py` — extend `EntryFormVM` (or canonical entry-form VM; verify exact name) with 3 new fields + `build_entry_form_vm(...)` builder population.
@@ -1439,7 +1450,7 @@ Expected: All 31 FAIL with VM-field-missing errors / SQL skeleton not yet implem
 
 - [ ] **Step 3: Implement Gap B.4** — extend `OutcomeDistributionRow` with `reached_1r_pct: float | None` + `hit_stop_pct: float | None`. Compute via the §D.3 SQL skeleton with OQ-6 bucketing predicates. Suppression at n<5; Wilson CI per Phase 10 honesty.
 
-- [ ] **Step 4: Implement Gap B.5** — extend `PatternOutcomeRow` + `build_pattern_outcome_rows` per §D.3 SQL skeleton. LEFT JOIN denominator = confirmed pattern_evaluations; numerator = subset with trades + outcome bucket met; per-pattern_class aggregation; suppression at denominator<5.
+- [ ] **Step 4: Implement Gap B.5** — populate the EXISTING `PatternOutcomeRow.reached_1r_n + reached_1r_ci + hit_stop_n + hit_stop_ci` fields in `build_pattern_outcome_rows` per §D.3 SQL skeleton (per Codex R4 MAJOR #2 closure — fields already exist at `swing/metrics/pattern_outcomes.py:52-55` carrying None per T2.SB6b V1 simplification; NO new fields needed; existing template at `swing/web/templates/metrics/pattern_outcomes.html.j2:35-45` already renders). LEFT JOIN denominator = confirmed pattern_evaluations; numerator = subset of evaluations with trades + outcome bucket met (per OQ-13 LOCK; numerator counted in `pe.id` unit per R3 MAJOR #1 closure); per-pattern_class aggregation; suppression at denominator<5.
 
 - [ ] **Step 5: Implement VM/builder extensions (Group E)** —
 
