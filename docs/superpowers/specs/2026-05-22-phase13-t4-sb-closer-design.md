@@ -21,7 +21,7 @@ T4.SB is the **Phase 13 closer**. It does NOT introduce a new Theme — Phase 13
 | Item | Title | Severity | Investigation needed? | Architectural decision? | Cosmetic/UX only? |
 |---|---|---|---|---|---|
 | 1 | 0 A+ candidates diagnostic (63 eval_runs since v20) | **HIGH** | YES (instrument `bucket_for`; capture blocking-criterion distribution) | YES (may surface threshold-loosening proposals) | No |
-| 2 | Path A labeler subagent contract widening (`rule_criteria` + `narrative` keys) | Medium | NO (architectural; emit-contract change) | YES (coupled with Item 1 fix outcome) | No |
+| 2 | Path A labeler subagent contract widening (additive `rule_criteria` key + `narrative` envelope alias for existing `geometric_evidence_narrative`) | Medium | NO (architectural; emit-contract change) | YES (coupled with Item 1 fix outcome) | No |
 | 3 | Market-weather chart volume-axis noise (strip 0/1/1e8 y-tick labels) | Cosmetic | NO | NO | YES |
 | 4 | Lightning glyph on watchlist offsets thumbnails (delete) | Cosmetic/UX | NO | NO | YES |
 | 5 | Chart scope too narrow + JIT-vs-flat-file architectural Q | Medium | NO (orchestrator recommendation REVISED to JIT-primary) | YES (cache architecture + retention policy) | No |
@@ -100,13 +100,14 @@ The diagnostic answers: "of the per-eval-run candidate rows that landed in `buck
 
 **Operator framing (verbatim):** "Similar to 1. Potentially too limiting, making it more difficult to identify good entry opportunities."
 
-**Production state confirmed by code reading (per Codex R1 M#5 + M#6 closure):**
+**Production state confirmed by code reading (per Codex R1 M#5 + M#6 + R3 M#2 closure):**
 - `SilverLabelResponse` dataclass at `swing/patterns/labeling.py:143-178` ALREADY has 4 fields: `evaluation` + `confidence` + `structural_evidence_json` + `geometric_evidence_narrative` (mandatory ASCII-only narrative).
-- `fire_claude_silver_label` at `swing/patterns/labeling.py:294-298` ALREADY persists `geometric_evidence_narrative` into the `labeler_evidence_json` envelope (key: `"geometric_evidence_narrative"`).
+- `fire_claude_silver_label` at `swing/patterns/labeling.py:294-298` ALREADY persists `geometric_evidence_narrative` into the `labeler_evidence_json` envelope under the key `"geometric_evidence_narrative"`.
 - Subagent prompt at `.claude/agents/pattern-labeler.md` ALREADY emits `geometric_evidence_narrative` per the existing contract.
-- `/patterns/exemplars` enhanced-rendering template at `swing/web/templates/patterns/exemplars.html.j2:33-90` ALREADY renders `render.criterion_rows` (table at lines 51-78) + `render.narrative_text` (paragraph at lines 79-87). The "(no rule_criteria payload available)" + "(no narrative payload available)" placeholders fire when the VM-construction-time parse of `labeler_evidence_json` DOES NOT find those keys.
+- `/patterns/exemplars` enhanced-rendering template at `swing/web/templates/patterns/exemplars.html.j2:33-90` ALREADY renders `render.criterion_rows` (table at lines 51-78) + `render.narrative_text` (paragraph at lines 79-87).
+- VM PARSER state (per Codex R3 M#2): `_parse_criterion_rows` at `swing/web/view_models/patterns/exemplars.py:110-160` reads `labeler_evidence_json['rule_criteria']`. `_parse_narrative_text` at lines 171-184 reads `labeler_evidence_json['narrative']` — NOT `'geometric_evidence_narrative'`. The narrative-rendering gap therefore has TWO dimensions: (a) emit-shape mismatch — labeler emits `geometric_evidence_narrative` while parser reads `narrative`; (b) `rule_criteria` not emitted at all.
 - T2.SB6c §1.5.2 Path C backfill script lands at `swing/cli.py:patterns_exemplars_backfill_labeler_evidence`. Path C is effective no-op against the 34 hand-labeled corpus rows because all 34 carry `geometric_score_json IS NULL` (S11 backfill execution observed `Augmented: 0; Skipped: 34`).
-- **Gap location LOCK**: the missing data is at the EMITTER (subagent contract DOES NOT emit `rule_criteria`) + PERSISTENCE (`fire_claude_silver_label` does NOT add it to `labeler_evidence_json`) + VM-CONSTRUCTION (the VM builder for `/patterns/exemplars` does NOT extract `rule_criteria` from `labeler_evidence_json`). The TEMPLATE itself is correct + does NOT need extension.
+- **Gap location LOCK (per Codex R3 M#2 + MIN#2 rewording):** the missing data is at the EMITTER (subagent contract DOES NOT emit `rule_criteria`) + PERSISTENCE (the envelope dict at `fire_claude_silver_label:294-298` populates the parser's expected `rule_criteria` key NEVER, and populates the parser's expected `narrative` key NEVER — even though `geometric_evidence_narrative` is populated under its own original key). The PARSER + TEMPLATE both already do the right thing for the EXPECTED-key contract; the gap is the EMIT side not matching the parser's expected keys.
 
 **Investigation: NONE.** This is an emitter-contract widening with known-shape inputs/outputs. Coupling to Item 1: while 0 A+ persists, fresh exemplars do not accumulate organically; Path A widening is the only realistic unblock path.
 
@@ -116,26 +117,28 @@ The contract widening is **ADDITIVE for `rule_criteria` ONLY** — the existing 
 
 NEW emission key `rule_criteria` — array of per-rule pass/fail objects. **Schema LOCKED to the existing VM parser shape** (per Codex R2 M#3 closure; `swing/web/view_models/patterns/exemplars.py:_parse_criterion_rows` at line 110-160 already pins the shape): `{ name: str, status: "pass"|"fail", evidence_value: str, threshold: str, tolerance: str|null }`. One element per criterion the labeler evaluated (mirrors per-pattern-class criterion list at `swing/patterns/<pattern_class>.py` detector). The earlier brief-proposed schema `{rule_name, passed, threshold, observed, margin, narrative}` is REJECTED because it would fail the existing parser's per-element validation (`status not in ('pass','fail')` returns empty tuple); the existing pinned shape is preserved.
 
-**Code surfaces touched (per Codex R1 M#6 closure — TEMPLATE NOT TOUCHED):**
-- Subagent prompt at `.claude/agents/pattern-labeler.md`: extend emit contract with `rule_criteria` array; provide example JSON for each of the 5 V1 pattern classes (vcp / flat_base / cup_with_handle / high_tight_flag / double_bottom_w).
-- `SilverLabelResponse` dataclass extension: add NEW `rule_criteria: list[dict] | None = None` field (default None for backward-compat with existing tests + cassettes); `__post_init__` validation per existing `Literal[...]` runtime-enforcement gotcha (validate each element is a dict with required keys `rule_name` + `passed`; defensive against malformed subagent output).
+**Code surfaces touched (per Codex R1 M#5 + M#6 + R3 M#1 + M#2 closure — TEMPLATE + PARSER NOT TOUCHED; PERSISTENCE-ENVELOPE TOUCHED for BOTH new field AND alias key):**
+- Subagent prompt at `.claude/agents/pattern-labeler.md`: extend emit contract with `rule_criteria` array following the EXISTING VM-parser-pinned shape (`{name, status (pass|fail), evidence_value, threshold, tolerance}`). Provide example JSON for each of 5 V1 pattern classes.
+- `SilverLabelResponse` dataclass extension: add NEW `rule_criteria: list[dict] | None = None` field (default None for backward-compat with existing tests + cassettes); `__post_init__` validation requires each element be a dict with `name: str (non-empty)` + `status: str IN {"pass", "fail"}` (per pinned parser shape; per Codex R3 M#1 closure — rejects the earlier brief's `rule_name` / `passed` schema).
 - `swing/cli.py:patterns_label_silver` + `swing/patterns/labeling.py:_fire_claude_silver_label`: parse + validate the new key from subagent JSON; pass through to dataclass construction.
-- `fire_claude_silver_label` at labeling.py:294-298: extend the dict literal that builds `labeler_evidence_json` to include `"rule_criteria": response.rule_criteria` (when non-None; omit key entirely when None for backward-compat with existing rows).
-- **VM-construction-time extension at `/patterns/exemplars` VM builder** (file path discovered at writing-plans phase via grep `exemplar_renders` definition): the existing VM emits `criterion_rows` per-exemplar; extend the VM builder to populate `criterion_rows` from `labeler_evidence_json['rule_criteria']` when present (currently the field is likely populated from a different source or stub-empty). Discriminating test asserts a fresh silver-label invocation emits `rule_criteria` + the VM renders the criterion rows table for that exemplar.
+- `fire_claude_silver_label` at labeling.py:294-298: extend the dict literal that builds `labeler_evidence_json` to include (a) `"rule_criteria": response.rule_criteria` when non-None; (b) `"narrative": response.geometric_evidence_narrative` AS ALIAS so the existing `_parse_narrative_text` parser at `swing/web/view_models/patterns/exemplars.py:171-184` reads the operator's narrative (per Codex R3 M#2 closure). The existing `"geometric_evidence_narrative"` key in the envelope is PRESERVED unchanged (backward-compat regression anchor for any consumer reading the original key).
 - **No schema change** (`labeler_evidence_json` is a JSON BLOB column).
+- **No VM parser change** (`_parse_criterion_rows` + `_parse_narrative_text` both already read the right keys; the gap is on the EMIT side).
 - **No template change** (template already renders `criterion_rows` + `narrative_text`).
+- (Conditional on OQ-2.2) Re-label-corpus operator-paired script (CLI subcommand with `--corpus-all` flag): invokes Path A labeler against all 34 corpus exemplars + re-persists `labeler_evidence_json`. Operator-paired (slow; ~34 subagent invocations).
 
 **Re-label vs forward-only decision (OQ-2.2):**
 
 Two-pronged design — implementer ships BOTH (operator decides at OQ-paired triage which to actually run):
-- **Forward-only path**: contract widened; future Path A labeler invocations emit the new keys; existing 34 exemplars remain on legacy shape. Default if operator does not opt to re-label.
-- **Re-label-corpus operator-paired script** (CLI subcommand `swing diagnose relabel-corpus --silver-tier` OR fold into existing patterns_label_silver subcommand with `--corpus-all` flag): invokes Path A labeler against all 34 corpus exemplars + re-persists `labeler_evidence_json`. Operator-paired (slow; ~34 subagent invocations; operator may want to spot-check).
+- **Forward-only path**: contract widened; future Path A labeler invocations emit the new key (`rule_criteria`); future envelope persistence includes the `narrative` alias; existing 34 exemplars remain on legacy shape. Default if operator does not opt to re-label.
+- **Re-label-corpus operator-paired script**: see Code Surfaces above; operator-paired (slow).
 
 **Discriminating tests:**
 - Plant a Path A silver-label invocation against a fresh exemplar with subagent emitting `rule_criteria` + assert it's persisted into `labeler_evidence_json['rule_criteria']`.
-- Plant a malformed `rule_criteria` element (missing required `rule_name` key) + assert `SilverLabelResponse.__post_init__` raises typed `ValueError` (NOT generic `KeyError`).
+- Plant a fresh silver-label persistence + assert `labeler_evidence_json['narrative']` populated from `response.geometric_evidence_narrative` (per Codex R3 M#2 alias requirement); assert `labeler_evidence_json['geometric_evidence_narrative']` ALSO populated (backward-compat preserved).
+- Plant a malformed `rule_criteria` element (missing required `name` key OR `status` not in `{"pass", "fail"}`) + assert `SilverLabelResponse.__post_init__` raises typed `ValueError` (per Codex R3 M#1 schema lock — `name` + `status`, NOT `rule_name` + `passed`).
 - Plant a legacy exemplar with `rule_criteria` absent from `labeler_evidence_json` → assert `/patterns/exemplars` VM falls back to current "(no rule_criteria payload available)" placeholder (no regression).
-- Plant a re-label of an existing legacy exemplar via Path A → assert `labeler_evidence_json` rewritten with `rule_criteria` key + assert VM emits `criterion_rows` for that exemplar.
+- Plant a re-label of an existing legacy exemplar via Path A → assert `labeler_evidence_json` rewritten with `rule_criteria` key + `narrative` alias + assert VM emits `criterion_rows` AND `narrative_text` for that exemplar.
 - Pre-existing test of `geometric_evidence_narrative` persistence unchanged (backward-compat regression anchor).
 
 **V2 dependencies banked:**
@@ -247,7 +250,9 @@ Today (production state confirmed by code reading):
   <div class="chart-unavailable" data-chart-reason="{{ expanded.chart_reason }}">{{ expanded.chart_reason_message }}</div>
 {% endif %}
 ```
-2. `WatchlistExpandedVM` extension: add `watchlist_expanded_chart_svg_bytes: bytes | None = None` field (or a longer descriptive name to disambiguate from the thumbnail-row's mapping). Wire the route handler `swing/web/routes/watchlist.py:watchlist_expand` to invoke `get_or_render_surface(surface='hyprec_detail', ticker=ticker.upper(), pipeline_run_id=binding.run_id, conn=conn, ohlcv_cache=request.app.state.ohlcv_cache, ...)` — the expanded watchlist view IS the same surface semantic as a hyp-rec detail (full-size MA+volume chart). Persist via the existing `hyprec_detail` chart_renders surface; do NOT introduce a NEW surface enum value.
+2. `WatchlistExpandedVM` extension: add `watchlist_expanded_chart_svg_bytes: bytes | None = None` field. Wire the route handler `swing/web/routes/watchlist.py:watchlist_expand` to invoke `get_or_render_surface(surface='hyprec_detail', ticker=ticker.upper(), pipeline_run_id=binding.run_id, conn=conn, ohlcv_cache=request.app.state.ohlcv_cache, ...)` — the expanded watchlist view IS the same surface semantic as a hyp-rec detail (full-size MA + volume chart).
+
+**Per Codex R3 M#3 closure — `hyprec_detail` surface NAME LOCK:** with this expansion, `hyprec_detail` is now CANONICAL for "full-ticker detail chart with MA + volume" rendered in ANY UI surface (hyp-recs expansion + watchlist expansion + future detail surfaces). The historical naming (recommendation-specific) is misleading-but-grandfathered; the V1 LOCK preserves the existing enum value to avoid a v22 schema bump. A rename to e.g. `ticker_detail` would require migration of all existing rows + chart_renders CHECK constraint widening — banked as V2 candidate (low priority; cosmetic). Until the V2 rename, the chart_renders audit + retention tooling (Item 5 OQ-5.1) treats `hyprec_detail` rows uniformly regardless of which UI surface populated them; pipeline_run_id is the join-key that lets operators trace provenance.
 3. Template change to `watchlist_expanded.html.j2`: mirror the if-else cascade from (1).
 4. `build_hyp_recs_expanded` at `swing/web/view_models/dashboard.py:625-787` already populates `hyprec_detail_chart_svg_bytes` from `get_cached_chart_svg`. Extend it to fall back to the JIT helper on cache miss — `if hyprec_detail_chart_svg_bytes is None: hyprec_detail_chart_svg_bytes = get_or_render_surface(...)`.
 5. **Discriminating test** (per Codex R2 M#1 closure): for both expanded views, plant a fixture where `hyprec_detail_chart_svg_bytes` is populated AND `chart_reason='out-of-scope'` → assert response HTML contains the SVG inline AND does NOT contain the chart-unavailable banner div. Pre-existing inline-SVG presence test unchanged.
@@ -747,7 +752,7 @@ All new T4.SB fast tests under `tests/diagnostics/` (NEW directory for Item 1 + 
 - All per-design discriminating tests at §B.2 GREEN.
 
 **Commit message templates:**
-- `feat(patterns): labeler subagent contract widening — rule_criteria additive (Item 2; T-T4.SB.4)`
+- `feat(patterns): labeler subagent contract widening — rule_criteria additive + narrative envelope alias (Item 2; T-T4.SB.4)`
 - (Conditional) `feat(cli): patterns-label-silver --corpus-all relabel flag (Item 2 V1; T-T4.SB.4)`
 
 **Test budget:** +10-15 fast tests.
