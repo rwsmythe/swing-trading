@@ -358,8 +358,11 @@ Per Phase 13 plan §G.9 cumulative precedent, closure items can land across mult
 | Gap B.4 outcome distribution bucketing | 5 | reached_1r computation + hit_stop computation + suppression at n<5 + Wilson CI emission + VM template render |
 | Gap B.5 metric tile reached_1r + hit_stop | 5 | LEFT JOIN denominator/numerator + per-pattern_class + suppression + Wilson CI + VM banner pin |
 | Gap B.6 queue criterion 3 weather-state-aware | 4 | weather-state lookup + per-pattern_class baseline + weather-state-missing fallback + spec line 799 wording verbatim |
+| Anchor-threading at POST /trades/entry (per Codex R3-R7 closure commitment) | 13 | 5-tier rejection ladder per §2.2 + claim consistency-check gate + missing-claim coercion + missing-pipeline_run_id symmetry + server-derived trade_origin discipline |
+| Entry-path mapping fix at trades.py:1095 (per Codex R6 MAJOR #2) | 1 | UI origin → EntryPath enum mapping |
+| VM/builder extensions (per Codex R7 MAJOR #1) | 2 | build_entry_form_vm + build_hyp_recs_expanded populate new anchor fields |
 | Closer E2E + ruff sweep | 1 fast E2E + ruff | §5.4 |
-| **Total estimated** | **~57 + 1 E2E** | Within brief's "~+80-150 fast tests" range (lower bound; closure-focused tests rather than expansive coverage) |
+| **Total estimated** | **~81 + 1 E2E** | Within brief's "~+80-150 fast tests" range (lower bound; closure-focused tests rather than expansive coverage). Breakdown: 17 schema (Delta A+B) + 11 chart-surface (Gap A.1-A.4) + 9 review-form completeness (Gap B.1+B.2) + 19 v21-dependent (Gap B.3-B.5) + 4 queue (Gap B.6) + 13 anchor-threading + 1 entry-path-mapping + 2 VM/builder + 1 closer E2E = 77 fast + 1 E2E (rounded up to ~81 to account for cross-bundle pin row 12 parametrization at T-A.6c.1). |
 
 ### §5.2 Slow-test delta
 
