@@ -58,6 +58,14 @@
 </details>
 {% endif %}
 
+{# Phase 13 T2.SB6c T-A.6c.2 Gap A.2 — inline SVG chart from
+   chart_renders cache (surface='position_detail'; pipeline_run_id IS
+   NULL per v20 §3.2 run-agnostic LOCK). Rendered above the trade
+   summary; absent when no cache row exists. -#}
+{% if vm.position_chart_svg_bytes %}
+  <div class="position-detail-chart">{{ vm.position_chart_svg_bytes.decode('utf-8') | safe }}</div>
+{% endif %}
+
 <dl class="trade-summary">
   <dt>Entry date</dt><dd>{{ vm.trade.entry_date }}</dd>
   <dt>Entry price</dt><dd>${{ "%.2f"|format(vm.trade.entry_price) }}</dd>

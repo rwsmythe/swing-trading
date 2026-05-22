@@ -604,6 +604,13 @@ class HypRecsExpandedVM:
     # path (Codex R1 Major #1+#2 fix: deadline-bounded; NOT the unbounded
     # single-ticker `get`).
     current_price: PriceSnapshot | None = None
+    # Phase 13 T2.SB6c T-A.6c.2 Gap A.1 — inline SVG bytes from the
+    # chart_renders cache for the operator-facing hyp-rec expansion
+    # surface. None when no cache row exists; template guards with
+    # `{% if expanded.hyprec_detail_chart_svg_bytes %}`. Cache key:
+    # `(ticker, surface='hyprec_detail', pipeline_run_id=<binding.run_id>)`
+    # per spec §C.2 + ChartRender __post_init__ validator.
+    hyprec_detail_chart_svg_bytes: bytes | None = None
 
 
 def build_hyp_recs_expanded(
@@ -708,6 +715,18 @@ def build_hyp_recs_expanded(
         )
         current_price = prices.get(ticker)
 
+    # Phase 13 T2.SB6c T-A.6c.2 Gap A.1 — consult chart_renders cache for
+    # the hyp-rec detail surface (surface='hyprec_detail', run-bound key).
+    # Reuses the T2.SB6a substrate `get_cached_chart_svg` verbatim (L7 +
+    # L17 LOCK).
+    from swing.data.repos.chart_renders import get_cached_chart_svg
+    hyprec_detail_chart_svg_bytes = get_cached_chart_svg(
+        conn,
+        ticker=ticker,
+        surface="hyprec_detail",
+        pipeline_run_id=binding.run_id,
+    )
+
     return HypRecsExpandedVM(
         ticker=ticker,
         buy_stop=candidate.pivot,
@@ -725,6 +744,7 @@ def build_hyp_recs_expanded(
         chart_reason_message=chart_message,
         pipeline_finished_at=binding.finished_ts,
         current_price=current_price,
+        hyprec_detail_chart_svg_bytes=hyprec_detail_chart_svg_bytes,
     )
 
 

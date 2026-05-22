@@ -1458,6 +1458,12 @@ class TradeDetailVM:
     # Phase 12.5 #2 T-2.7 — banner link to FIRST pending-ambiguity discrepancy
     # resolve form. None when no pending-ambiguity row exists.
     banner_resolve_link: str | None = None
+    # Phase 13 T2.SB6c T-A.6c.2 Gap A.2 — inline SVG bytes for the
+    # operator-facing trade-detail page. Cache key:
+    # `(ticker, surface='position_detail', pipeline_run_id IS NULL)` per
+    # v20 §3.2 run-agnostic LOCK. None when no cache row exists; template
+    # guards with `{% if vm.position_chart_svg_bytes %}`.
+    position_chart_svg_bytes: bytes | None = None
 
     def __post_init__(self) -> None:
         if self.banner_resolve_link is not None:
@@ -1586,6 +1592,16 @@ def build_trade_detail_vm(
             trade_discrepancies = list_unresolved_material_for_trade(
                 conn, trade_id,
             )
+            # Phase 13 T2.SB6c T-A.6c.2 Gap A.2 — consult chart_renders
+            # cache for the position_detail surface. Run-agnostic per v20
+            # §3.2 LOCK (pipeline_run_id IS NULL).
+            from swing.data.repos.chart_renders import get_cached_chart_svg
+            position_chart_svg_bytes = get_cached_chart_svg(
+                conn,
+                ticker=trade.ticker,
+                surface="position_detail",
+                pipeline_run_id=None,
+            )
             # Latest weather — pipeline writer stamps `data_asof_date` on
             # weather rows, so read-only UIs MUST use get_latest (per CLAUDE.md
             # "Weather lookup in read-only UIs must NOT query by
@@ -1711,6 +1727,7 @@ def build_trade_detail_vm(
         unresolved_material_discrepancies=tuple(
             _to_discrepancy_display(d) for d in trade_discrepancies
         ),
+        position_chart_svg_bytes=position_chart_svg_bytes,
     )
 
 

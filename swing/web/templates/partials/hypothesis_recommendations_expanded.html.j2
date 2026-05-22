@@ -67,6 +67,14 @@
       </li>
     </ul>
 
+    {# Phase 13 T2.SB6c T-A.6c.2 Gap A.1 — inline SVG chart from
+       chart_renders cache (surface='hyprec_detail'). Rendered ahead of
+       the legacy PNG fallback so the operator sees the live Theme 1
+       chart when the pipeline has populated the cache. -#}
+    {% if expanded.hyprec_detail_chart_svg_bytes %}
+      <div class="hyprec-detail-chart">{{ expanded.hyprec_detail_chart_svg_bytes.decode('utf-8') | safe }}</div>
+    {% endif %}
+
     {% if expanded.chart_reason is none and expanded.data_asof_date %}
       <img src="/charts/{{ expanded.data_asof_date }}/{{ expanded.ticker }}.png"
            alt="Chart {{ expanded.ticker }}">
