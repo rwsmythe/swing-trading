@@ -11,7 +11,7 @@
 pip install -e ".[dev,web]"
 swing --help                         # CLI: trade, journal, pipeline, web, finviz, etc.
 swing web                            # FastAPI + HTMX dashboard on 127.0.0.1:8080
-python -m pytest -m "not slow" -q    # fast suite (~1587 tests as of 2026-05-04, ~40-50s)
+python -m pytest -m "not slow" -q    # fast suite (~5670 tests as of 2026-05-22, ~2min with xdist)
 python -m pytest -m slow             # pipeline/yfinance e2e (minutes, needs network)
 ruff check swing/
 ```
@@ -45,7 +45,7 @@ Older strategy documents are archived at `reference/Future Work/archive/`.
 - `evaluation/` — A+ criteria, bucket rules, date semantics (`action_session_for_run`)
 - `web/` — FastAPI + HTMX (`app.py`, `routes/`, `view_models/`, `templates/`, `middleware/`, `price_cache.py`)
 - `integrations/` — Finviz Elite API (`finviz/`) + Schwab Trader/Market Data APIs (`schwab/`); per-vendor sub-packages (post-Phase-11)
-- `metrics/` — Phase 10 dashboard metric surfaces (8 surface routes + planned 9th for Phase 13 T2.SB6 pattern-outcomes)
+- `metrics/` — Phase 10 dashboard metric surfaces (9 surface routes; Phase 13 T2.SB6b pattern-outcomes 9th tile shipped at `6ec989e`)
 - `cli.py` — click-based `swing` CLI entry point
 
 `tests/` mirrors `swing/`. `docs/superpowers/specs/` and `/plans/` hold per-phase design docs.
@@ -54,7 +54,7 @@ Older strategy documents are archived at `reference/Future Work/archive/`.
 
 - **DB location:** `%USERPROFILE%/swing-data/swing.db` — **outside** the Drive dir (hard invariant; Drive syncing corrupts SQLite).
 - **Phase isolation:** `swing/trades/` and `swing/data/` are consumed read-only unless the current-phase spec explicitly scopes a carve-out (historical: 3c touched `update_stop_with_event`; 3d touched `advisory.py`; 5 added `config_overrides.py`; 6 added `swing/trades/review.py` + `swing/data/repos/review_log.py` + 10 nullable trade-row fields + new `review_log` table; **7 introduced state-machine + Fills first-class** with new `swing/trades/state.py` + `origin.py` + `derived_metrics.py` + `swing/data/repos/fills.py` + 28 new trade columns + new `fills` table; status column dropped + exits table dropped + Exit shim deleted). Default posture for new phases remains read-only.
-- **Current baseline:** ~4924 fast tests green on `main` (HEAD `b5e62c5`, 2026-05-18; Phase 13 brainstorm SHIPPED; Phase 12.5 arc CLOSED). Schema v19; ruff 0 E501; production ZERO open discrepancies.
+- **Current baseline:** ~5670 fast tests green on `main` (HEAD `2d266fa`, 2026-05-22 PM; Phase 13 11 of 11 sub-bundles SHIPPED — T4.SB remaining/paused; Phase 12.5 arc CLOSED). Schema v21; ruff 0 E501; production ZERO open discrepancies.
 
 ## Conventions
 
