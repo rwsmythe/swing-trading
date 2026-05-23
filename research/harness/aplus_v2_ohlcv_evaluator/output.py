@@ -8,9 +8,9 @@ Empty-state representation: '(none)' literal string in drill-down /
 flipped-candidate sections; per cumulative T3.SB3 lesson "Audit envelope
 empty-state representation must be uniform".
 
-L2 LOCK preserved: NO imports of yfinance / schwabdev /
-swing.integrations.schwab / swing.data.ohlcv_archive.
-Only stdlib + dataclasses + research.harness.aplus_v2_ohlcv_evaluator.*.
+L2 LOCK preserved: NO imports of the four forbidden modules
+(yfinance, schwabdev, swing.integrations.schwab, ohlcv_archive).
+Only stdlib + research.harness.aplus_v2_ohlcv_evaluator.* imports.
 """
 from __future__ import annotations
 
