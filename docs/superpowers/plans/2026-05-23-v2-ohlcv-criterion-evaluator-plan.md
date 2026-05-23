@@ -93,12 +93,12 @@ Test paths (per §H recalibrated ~80 tests — see §H per-test enumeration; ~65
 | `tests/research/test_aplus_v2_ohlcv_reader.py` | T-V2.1 | ~12 |
 | `tests/research/test_aplus_v2_ohlcv_context_builder.py` | T-V2.1 | ~12 |
 | `tests/research/test_aplus_v2_ohlcv_cfg_substitution.py` | T-V2.1 | ~6 |
-| `tests/research/test_aplus_v2_ohlcv_sweep.py` | T-V2.2 | ~14 |
+| `tests/research/test_aplus_v2_ohlcv_sweep.py` | T-V2.2 | ~17 |
 | `tests/research/test_aplus_v2_ohlcv_output.py` | T-V2.3 | ~10 |
 | `tests/research/test_aplus_v2_ohlcv_run.py` | T-V2.4 | ~8 |
 | `tests/research/test_aplus_v2_ohlcv_integration.py` | T-V2.5 | ~6 |
 
-Baseline 5778 fast tests → ~5846 post-V2-ship. ZERO slow-marked tests in V2 scope.
+Baseline 5778 fast tests → ~5862 post-V2-ship. ZERO slow-marked tests in V2 scope.
 
 ### §B.2 Dependency graph (sequential dispatch per spec §M.2)
 
@@ -2069,7 +2069,7 @@ Per-eval_run BatchContext cache (≤315 reconstructions per spec §F.5) +
 per-TICKER OHLCV cache (≤ N_universe + delta opens per Codex R2.M5) both
 LOAD-BEARING per Codex M4.
 
-Tests: ~14. NO Co-Authored-By footer per cumulative discipline."
+Tests: ~17 per §H R5 recalibration. NO Co-Authored-By footer per cumulative discipline."
 ```
 
 ### Task T-V2.3: `output.py`
@@ -2355,7 +2355,7 @@ Tests: ~6 integration / E2E covering full-pipeline + V1↔V2 parity + coverage
 failure + memory smoke + CRITERION DRIFT + both-exist E2E.
 
 Cumulative streaks preserved: ZERO Co-Authored-By footer (~439+ commits);
-schema v21 UNCHANGED; baseline 5778 → ~5846 fast tests (+68 NEW; ZERO slow);
+schema v21 UNCHANGED; baseline 5778 → ~5862 fast tests (+84 NEW per §H R5 recalibration; ZERO slow);
 ZERO new Schwab API calls (L2 LOCK preserved + reinforced via 3 discriminating
 tests per spec §K + brief §3.5); ZERO production swing/ writes except OQ-17
 CLI carve-out (only swing/cli.py modified — verified by git diff swing/ gate).
@@ -2520,7 +2520,7 @@ T-V2.5 closer (per spec §M.1 row 5) MUST include:
 4. **Method-record bumped 0.1.0 → 0.2.0** at `research/method-records/aplus-criteria-calibration.md` per §L.1.
 5. **Operator smoke run output** captured + committed to `exports/diagnostics/aplus-sensitivity-v2-<ts>.{csv,md}`.
 6. **`research/phase-0-tasks.md` "Next"** refreshed per §L.3.
-7. **Final closer commit message** cites: V2 OHLCV harness SHIPPED; method-record bumped 0.2.0; first study writeup; baseline parity invariant green; ZERO Co-Authored-By footer; ALL 18 cumulative gotchas honored; ZERO new Schwab API calls (L2 LOCK preserved + reinforced via 5 discriminating tests per §K); schema v21 UNCHANGED; baseline 5778 → ~5846 fast tests; OQ-17 carve-out boundary respected (only `swing/cli.py` modified, verified via `git diff swing/` gate).
+7. **Final closer commit message** cites: V2 OHLCV harness SHIPPED; method-record bumped 0.2.0; first study writeup; baseline parity invariant green; ZERO Co-Authored-By footer; ALL 18 cumulative gotchas honored; ZERO new Schwab API calls (L2 LOCK preserved + reinforced via 5 discriminating tests per §K); schema v21 UNCHANGED; baseline 5778 → ~5862 fast tests (+84 NEW per §H R5 recalibration); OQ-17 carve-out boundary respected (only `swing/cli.py` modified, verified via `git diff swing/` gate).
 
 Post-closer orchestrator-side housekeeping (per cumulative discipline; brief §8 handback):
 - QA implementer product per `feedback_orchestrator_qa_implementer_product` BINDING.
@@ -2537,7 +2537,7 @@ Per spec §M.3 OQ #5 (deferred to writing-plans phase): writing-plans estimates 
 | Sub-bundle | Estimated Codex rounds | Justification |
 |------------|------------------------|---------------|
 | T-V2.1 | 2-3 | Tight surface (3 modules; ~30 tests); BatchContext reconstruction has known cross-substrate verification needs (NEW Expansion #2 refinement applied in this plan reduces surprise surface). |
-| T-V2.2 | 3-4 | **HIGHEST** — sweep.py is the largest sub-bundle (~12-18 commits); 2 LOAD-BEARING caches (per-eval_run BatchContext + per-TICKER OHLCV); 3 per-candidate failure modes; tier-1/tier-2 baseline parity invariant CRITICAL + blocking; vcp.watch_max_fails special-case mirroring V1; single-variable downstream propagation. High Codex surface area. |
+| T-V2.2 | 3-4 | **HIGHEST** — sweep.py is the largest sub-bundle (~15-17 commits per §G.0 R5.m3 refresh; brief §2.1 projected ~12-18); 2 LOAD-BEARING caches (per-eval_run BatchContext + per-TICKER OHLCV); 3 per-candidate failure modes; tier-1/tier-2 baseline parity invariant CRITICAL + blocking; vcp.watch_max_fails special-case mirroring V1; single-variable downstream propagation; empty-DB short-circuit per R5.M1; ~17 tests (§H R5 recalibration). High Codex surface area. |
 | T-V2.3 | 2 | output.py is pure formatter; ~10 tests; well-bounded surface. |
 | T-V2.4 | 2-3 | run.py + CLI carve-out; ClickException wrapping; subprocess stdout cp1252 safety; V1 back-compat. Modest Codex surface area but CLI registration touches production code (OQ-17 carve-out) which raises some review scrutiny. |
 | T-V2.5 | 1-2 | **LOWEST** — method-record + study writeup + closer; docs-mostly; small test surface (~6 integration tests). Codex surface area minimal. |
