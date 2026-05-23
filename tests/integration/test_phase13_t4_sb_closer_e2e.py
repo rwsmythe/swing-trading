@@ -327,47 +327,36 @@ def test_phase13_t4_sb_closer_full_dashboard_flow(
         # Confirm the cohort row shows n_closed >= 1 (the planted
         # suffix-bearing trade was attributed via the delimiter-aware
         # match invariant). Pre-fix would have shown 0/<target>.
-        assert "<strong>0 /" not in body or _post_fix_cohort_n_closed_ge_one(
-            body,
-        ), (
+        #
+        # Codex R1 m#1 LOCK: assert against the VM/data layer directly
+        # rather than template-text-scraping. The previous fallback
+        # (``_post_fix_cohort_n_closed_ge_one``) silently returned True
+        # when the progress element was absent — template drift would
+        # cause the test to false-pass. Asserting against the VM is
+        # more discriminating: bypasses template rendering entirely +
+        # speaks to the data-layer invariant the dispatch is gating on.
+        from swing.web.view_models.metrics.hypothesis_progress_card import (
+            build_hypothesis_progress_card_vm,
+        )
+        vm = build_hypothesis_progress_card_vm(cfg=cfg)
+        cohort = next(
+            (c for c in vm.cohorts if c.cohort_name == "Sub-A+ VCP-not-formed"),
+            None,
+        )
+        assert cohort is not None, (
+            "Item 7 (T-T4.SB.2): canonical cohort 'Sub-A+ VCP-not-formed' "
+            "must be present in HypothesisProgressCardVM.cohorts"
+        )
+        assert cohort.n_closed >= 1, (
             "Item 7 (T-T4.SB.2): delimiter-aware match invariant must "
-            "attribute the planted suffix-bearing trade to the "
-            "canonical cohort (n_closed >= 1)"
+            f"attribute the planted suffix-bearing trade to the "
+            f"canonical cohort (n_closed >= 1; got {cohort.n_closed})"
         )
 
 
-def _post_fix_cohort_n_closed_ge_one(body: str) -> bool:
-    """Verify the canonical cohort's n_closed renders >= 1.
-
-    Anchored to the template's progress block:
-      <progress max="{{ target }}" value="{{ n_closed }}">
-        {{ n_closed }}/{{ target }}
-      </progress>
-
-    We anchor the search at the cohort name + a subsequent
-    ``value="1"`` (or higher) in the progress element. Defends against
-    a future template change moving the n_closed render around within
-    the cohort cell -- if the anchor breaks, fall back to true (skip
-    the post-fix assertion) and rely on the cross-bundle pin row 13
-    parametrize set already asserting the VM-layer invariant directly.
-    """
-    cohort_idx = body.find("Sub-A+ VCP-not-formed")
-    if cohort_idx < 0:
-        return False
-    # Search forward for the progress element within the cohort cell.
-    progress_idx = body.find('<progress max="', cohort_idx)
-    if progress_idx < 0:
-        return True  # Template moved; defer to VM-layer pin row 13.
-    # Search for the value attribute on the same progress element.
-    value_marker = 'value="'
-    value_idx = body.find(value_marker, progress_idx)
-    if value_idx < 0 or value_idx > progress_idx + 200:
-        return True  # Template moved; defer to VM-layer pin row 13.
-    value_start = value_idx + len(value_marker)
-    value_end = body.find('"', value_start)
-    if value_end < 0:
-        return True
-    try:
-        return int(body[value_start:value_end]) >= 1
-    except ValueError:
-        return True
+## NOTE: ``_post_fix_cohort_n_closed_ge_one`` removed per Codex R1 m#1 —
+## template-text-scraping with silent ``return True`` fallback on missing
+## anchor could false-pass under template drift. Discrimination moved to
+## a direct VM-layer assertion via
+## ``build_hypothesis_progress_card_vm`` in the test body above (Option B
+## from the dispatch brief).
