@@ -8,10 +8,8 @@ from __future__ import annotations
 
 import argparse
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-
-from swing.config import Config
 
 from research.harness.aplus_sensitivity.output import (
     write_sensitivity_csv,
@@ -19,6 +17,7 @@ from research.harness.aplus_sensitivity.output import (
 )
 from research.harness.aplus_sensitivity.sweep import run_sensitivity_sweep
 from research.harness.aplus_sensitivity.variables import enumerate_variables
+from swing.config import Config
 
 
 def run_harness(
@@ -46,7 +45,7 @@ def run_harness(
         )
     finally:
         conn.close()
-    iso = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    iso = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     csv_path = output_dir / f"aplus-sensitivity-{iso}.csv"
     md_path = output_dir / f"aplus-sensitivity-{iso}.md"
     write_sensitivity_csv(result, csv_path)

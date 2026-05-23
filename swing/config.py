@@ -395,7 +395,7 @@ class Config:
     integrations: IntegrationsConfig = field(default_factory=IntegrationsConfig)
 
     @classmethod
-    def from_defaults(cls) -> "Config":
+    def from_defaults(cls) -> Config:
         """Load the project's tracked ``swing.config.toml`` from the repo root.
 
         Resolves the project root as the parent of this module's package

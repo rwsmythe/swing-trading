@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 
@@ -141,7 +141,7 @@ def write_metrics_wiring_audit_markdown(
     Windows cp1252 stdout safety lesson (tests verify cp1252 encodability).
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    iso = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     rows = [
         audit_surface_match_strategy(conn, r) for r in enumerate_metric_surfaces()
     ]

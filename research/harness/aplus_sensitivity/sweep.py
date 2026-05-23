@@ -25,9 +25,8 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass
 
-from swing.config import Config
-
 from research.harness.aplus_sensitivity.variables import SweepVariable
+from swing.config import Config
 
 
 @dataclass(frozen=True)
@@ -163,7 +162,7 @@ def _recompute_counts_at(
     by_candidate: dict[int, dict] = {}
     # Map persisted ``candidate_criteria.layer`` values
     # ('trend_template'/'vcp'/'risk') onto our short bucket names.
-    _LAYER_BUCKET = {"trend_template": "tt", "vcp": "vcp", "risk": "risk"}
+    _layer_bucket = {"trend_template": "tt", "vcp": "vcp", "risk": "risk"}
     for cid, bucket, layer, name, result, value, rule in rows:
         cand = by_candidate.setdefault(cid, {
             "bucket": bucket,
@@ -173,7 +172,7 @@ def _recompute_counts_at(
         })
         if layer is None:
             continue
-        slot = _LAYER_BUCKET.get(layer)
+        slot = _layer_bucket.get(layer)
         if slot is None:
             continue
         cand[slot].append(
@@ -182,7 +181,7 @@ def _recompute_counts_at(
 
     allowed_miss = set(cfg.trend_template.allowed_miss_names)
     prod_min_passes = cfg.trend_template.min_passes
-    for cid, c in by_candidate.items():
+    for _cid, c in by_candidate.items():
         new_bucket = _bucket_for_substituted(
             tt=c["tt"], vcp=c["vcp"], risk=c["risk"],
             variable_name=variable_name, sweep_value=sweep_value,

@@ -7,11 +7,10 @@ must be cp1252-encodable. Tests verify this via ``text.encode("cp1252")``.
 from __future__ import annotations
 
 import csv
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from research.harness.aplus_sensitivity.sweep import SweepResult
-
 
 _CSV_HEADERS = (
     "variable_name", "kind", "sweep_point",
@@ -49,7 +48,7 @@ def write_sensitivity_markdown(result: SweepResult, path: Path) -> None:
     ZERO for threshold rows.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    iso = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     lines: list[str] = [
         "# A+ Criteria Sensitivity Sweep",
         "",
