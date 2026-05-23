@@ -86,7 +86,15 @@ def get_or_render_surface(
     Returns None on render-failure / OHLCV-missing / construction-barrier
     rejection. Caller emits chart-unavailable banner per spec §B.5 OQ-5.5.
     """
-    # Step 1: cache read
+    # Step 1: cache read.
+    #
+    # Codex R1 MAJOR #2 — F6 transient-empty defense extended to the
+    # cache-HIT path. A bad legacy / future-writer-bypass row whose
+    # ``chart_svg_bytes`` is zero-length BLOB (schema only enforces
+    # NOT NULL, not non-empty) MUST be treated as a cache miss so the
+    # helper falls through to JIT render + write-through replaces the
+    # empty row. Without this guard, ``cached is not None`` succeeded
+    # at the construction-barrier was bypassed — operator stays blank.
     cached = get_cached_chart_svg(
         conn,
         surface=surface,
@@ -94,8 +102,15 @@ def get_or_render_surface(
         pipeline_run_id=pipeline_run_id,
         pattern_class=pattern_class,
     )
-    if cached is not None:
+    if cached is not None and len(cached) > 0:
         return cached
+    if cached is not None:
+        # cached == b"" → log + fall through to render path.
+        logger.warning(
+            "chart_jit: cache row for %s/%s/%s has empty bytes; "
+            "re-rendering",
+            surface, ticker, pipeline_run_id,
+        )
 
     # Step 2: fetch OHLCV via cache (per ``_step_charts._bars_or_none`` precedent).
     try:

@@ -328,3 +328,71 @@ def test_jit_writes_pipeline_run_id_matching_dashboard_anchor(
     assert bytes(rows[0][1]) == b"<svg>v100</svg>"
     assert rows[1][0] == run_id_101
     assert bytes(rows[1][1]) == b"<svg>v101</svg>"
+
+
+def test_get_or_render_surface_treats_empty_cached_bytes_as_miss(
+    conn: sqlite3.Connection, pipeline_run_id: int,
+) -> None:
+    """Codex R1 Major #2 — F6 transient-empty defense MUST cover the
+    cache-HIT path, not only the construction-barrier on writes.
+
+    Plant a chart_renders row directly via raw SQL with
+    ``chart_svg_bytes = b""`` (bypassing the ChartRender dataclass
+    construction barrier — simulates legacy data OR a future writer
+    that skips the dataclass). Call ``get_or_render_surface``. Assert
+    the helper FALLS THROUGH to JIT render (does NOT return ``b""``)
+    + write-through REPLACES the empty row with non-empty bytes.
+
+    Pre-fix: ``get_or_render_surface`` returned the empty bytes
+    verbatim because ``cached is not None`` short-circuited before any
+    length check. Operator never recovered (zero-length blob stuck in
+    cache; chart cell rendered as blank).
+    """
+    # Plant empty-bytes row via raw SQL (bypass ChartRender barrier).
+    with conn:
+        conn.execute(
+            "INSERT INTO chart_renders "
+            "(ticker, surface, pipeline_run_id, pattern_class, "
+            "chart_svg_bytes, source_data_hash, rendered_at, data_asof_date) "
+            "VALUES (?, ?, ?, NULL, ?, 'legacy-empty', "
+            "'2026-05-22T00:00:00Z', '2026-05-22')",
+            ("UCTT", "hyprec_detail", pipeline_run_id, b""),
+        )
+    # Sanity: legacy empty row exists.
+    legacy = conn.execute(
+        "SELECT length(chart_svg_bytes) FROM chart_renders "
+        "WHERE ticker='UCTT' AND surface='hyprec_detail' "
+        "  AND pipeline_run_id=?",
+        (pipeline_run_id,),
+    ).fetchone()
+    assert legacy[0] == 0
+
+    ohlcv_cache = MagicMock()
+    ohlcv_cache.get_or_fetch.return_value = _planted_bars_df()
+
+    import swing.web.chart_jit as mod
+
+    renderer = MagicMock(return_value=b"<svg>recovered</svg>")
+    mod._RENDERERS["hyprec_detail"] = renderer
+    try:
+        result = get_or_render_surface(
+            conn=conn, ohlcv_cache=ohlcv_cache,
+            surface="hyprec_detail", ticker="UCTT",
+            pipeline_run_id=pipeline_run_id,
+            data_asof_date="2026-05-22",
+        )
+    finally:
+        importlib.reload(mod)
+    # Post-fix: helper falls through to render; returns non-empty bytes.
+    assert result == b"<svg>recovered</svg>"
+    # Renderer WAS invoked (pre-fix would have short-circuited at cache hit).
+    assert renderer.call_count == 1
+    # Write-through replaced the empty row with the rendered bytes.
+    rows = list(conn.execute(
+        "SELECT chart_svg_bytes FROM chart_renders "
+        "WHERE ticker='UCTT' AND surface='hyprec_detail' "
+        "  AND pipeline_run_id=?",
+        (pipeline_run_id,),
+    ))
+    assert len(rows) == 1
+    assert bytes(rows[0][0]) == b"<svg>recovered</svg>"
