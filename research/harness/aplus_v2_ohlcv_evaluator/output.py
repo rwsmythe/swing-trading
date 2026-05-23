@@ -383,11 +383,11 @@ def _write_manifest_section(
     lines.append(f"v2_universe_hash: {result.v2_universe_hash}")
 
     # Tier-1 / tier-2 split from baseline parity report
+    # Per spec §H T-V2.3.9: tier_1_count + tier_2_count are TOTAL candidate
+    # counts at baseline (current_value sweep point), NOT mismatch counts.
     parity = result.baseline_parity
-    tier_1_count = len(parity.tier1_mismatch_candidates) if not parity.tier1_match else 0
-    tier_2_count = parity.tier2_match_count + parity.tier2_mismatch_count
-    lines.append(f"tier_1_mismatch_count: {tier_1_count}")
-    lines.append(f"tier_2_count: {tier_2_count}")
+    lines.append(f"tier_1_count: {parity.tier_1_count}")
+    lines.append(f"tier_2_count: {parity.tier_2_count}")
     lines.append(f"tier_2_via_surrogate_count: {parity.tier2_via_surrogate_count}")
 
     # Memory peak from tracemalloc (passed in from run.py; None if not measured)

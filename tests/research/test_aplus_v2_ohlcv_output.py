@@ -461,9 +461,33 @@ def test_both_exist_warning_banner_suppressed_when_count_zero(tmp_path: Path) ->
 def test_manifest_section_contains_required_fields(tmp_path: Path) -> None:
     """Manifest section contains both_exist_shape_a_wins_count,
     accepted_ticker_count (derived from universe_size),
-    tier_1_count, tier_2_count, and memory_peak_bytes."""
+    tier_1_count, tier_2_count (spec §H T-V2.3.9 EXACT field names),
+    and memory_peak_bytes.
+
+    TIGHTENED per spec-compliance fix: assert EXACT strings 'tier_1_count:'
+    and 'tier_2_count:' (not just 'tier' in text.lower()).
+    """
     from research.harness.aplus_v2_ohlcv_evaluator.output import write_sensitivity_markdown_v2
 
+    parity = _make_parity(
+        tier1_match=True,
+        tier1_mismatch_candidates=(),
+        tier2_match_count=8,
+        tier2_mismatch_count=2,
+        tier2_via_surrogate_count=1,
+    )
+    # Construct a result where BaselineParityReport carries tier_1_count=7 and
+    # tier_2_count=10 so we can assert specific numeric values in the manifest.
+    from research.harness.aplus_v2_ohlcv_evaluator.sweep import BaselineParityReport
+    parity_with_counts = BaselineParityReport(
+        tier1_match=True,
+        tier1_mismatch_candidates=(),
+        tier2_match_count=8,
+        tier2_mismatch_count=2,
+        tier2_via_surrogate_count=1,
+        tier_1_count=7,
+        tier_2_count=10,
+    )
     flipped = (
         _make_flipped("AAPL", eval_run_id=10, bucket_via_surrogate=False),
         _make_flipped("MSFT", eval_run_id=10, bucket_via_surrogate=True),
@@ -471,6 +495,7 @@ def test_manifest_section_contains_required_fields(tmp_path: Path) -> None:
     result = _make_result(
         entries=(_make_entry(),),
         flipped=flipped,
+        baseline_parity=parity_with_counts,
         both_exist_count=3,
         both_exist_tickers=["X", "Y", "Z"],
     )
@@ -483,8 +508,22 @@ def test_manifest_section_contains_required_fields(tmp_path: Path) -> None:
     assert "both_exist_shape_a_wins_count" in text or "both_exist" in text.lower()
     # memory_peak_bytes value (50 MiB)
     assert "memory" in text.lower()
-    # tier counts
-    assert "tier" in text.lower() or "tier_1" in text or "tier_2" in text
+    # TIGHTENED: exact field names per spec §H T-V2.3.9
+    assert "tier_1_count:" in text, (
+        f"Expected exact string 'tier_1_count:' in manifest section, not found.\n"
+        f"Manifest area:\n{text[text.find('## Manifest'):]}"
+    )
+    assert "tier_2_count:" in text, (
+        f"Expected exact string 'tier_2_count:' in manifest section, not found.\n"
+        f"Manifest area:\n{text[text.find('## Manifest'):]}"
+    )
+    # Verify the actual numeric values round-trip correctly
+    assert "tier_1_count: 7" in text, (
+        f"Expected 'tier_1_count: 7' in manifest, got: {text[text.find('## Manifest'):]}"
+    )
+    assert "tier_2_count: 10" in text, (
+        f"Expected 'tier_2_count: 10' in manifest, got: {text[text.find('## Manifest'):]}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -534,3 +573,74 @@ def test_output_is_cp1252_encodable(tmp_path: Path) -> None:
                 f"{p.name} contains non-cp1252 character: {exc}. "
                 "ASCII-only output required per cumulative Windows stdout gotcha."
             )
+
+
+# ---------------------------------------------------------------------------
+# Test 13 (NEW): CRITERION DRIFT heading is EXACTLY level-2 top-level section
+# TIGHTENED per spec-compliance fix: assert EXACT heading '## CRITERION DRIFT DETECTED'
+# NOT just 'CRITERION DRIFT' substring (old weak assertion)
+# ---------------------------------------------------------------------------
+
+def test_criterion_drift_heading_is_exact_level2(tmp_path: Path) -> None:
+    """When tier1_match=False, the CRITERION DRIFT alert is emitted as the
+    EXACT level-2 heading '## CRITERION DRIFT DETECTED' (not level-3 ### or
+    buried inside another section).
+
+    Spec §G T-V2.3.5: CRITERION DRIFT is a top-level section, NOT a subsection
+    of '## V1<->V2 Baseline Parity'.
+    """
+    from research.harness.aplus_v2_ohlcv_evaluator.output import write_sensitivity_markdown_v2
+
+    parity = _make_parity(
+        tier1_match=False,
+        tier1_mismatch_candidates=("AAPL:10", "MSFT:11"),
+    )
+    entries = (_make_entry(),)
+    result = _make_result(entries=entries, baseline_parity=parity)
+    md_path = tmp_path / "sensitivity.md"
+    write_sensitivity_markdown_v2(result, md_path)
+
+    text = md_path.read_text(encoding="utf-8")
+    # EXACT heading check (level-2, NOT level-3)
+    assert "## CRITERION DRIFT DETECTED" in text, (
+        f"Expected exact level-2 heading '## CRITERION DRIFT DETECTED', "
+        f"not found in output. Found headings: "
+        f"{[line for line in text.splitlines() if line.startswith('#')]}"
+    )
+    # Must NOT be rendered as level-3 subsection
+    assert "### CRITERION DRIFT DETECTED" not in text, (
+        "CRITERION DRIFT is rendered as ### (level-3, subsection) but spec requires "
+        "## (level-2, top-level section). Found '### CRITERION DRIFT DETECTED'."
+    )
+    # Mismatch candidates must still appear
+    assert "AAPL:10" in text
+    assert "MSFT:11" in text
+
+
+# ---------------------------------------------------------------------------
+# Test 14 (NEW): CRITERION DRIFT section SUPPRESSED when tier1_match=True
+# ---------------------------------------------------------------------------
+
+def test_criterion_drift_section_suppressed_when_no_mismatch(tmp_path: Path) -> None:
+    """When BaselineParityReport.tier1_match=True, the CRITERION DRIFT DETECTED
+    section is NOT emitted at all (neither ## nor ### level).
+
+    Spec §G T-V2.3.5: CRITERION DRIFT fires conditionally only on tier-1 mismatch.
+    """
+    from research.harness.aplus_v2_ohlcv_evaluator.output import write_sensitivity_markdown_v2
+
+    parity = _make_parity(
+        tier1_match=True,
+        tier1_mismatch_candidates=(),
+    )
+    entries = (_make_entry(),)
+    result = _make_result(entries=entries, baseline_parity=parity)
+    md_path = tmp_path / "sensitivity.md"
+    write_sensitivity_markdown_v2(result, md_path)
+
+    text = md_path.read_text(encoding="utf-8")
+    # CRITERION DRIFT section must be absent when tier1_match=True
+    assert "CRITERION DRIFT" not in text, (
+        f"Unexpected CRITERION DRIFT section emitted when tier1_match=True.\n"
+        f"Found headings: {[line for line in text.splitlines() if line.startswith('#')]}"
+    )

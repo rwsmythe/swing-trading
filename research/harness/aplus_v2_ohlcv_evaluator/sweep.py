@@ -116,13 +116,25 @@ class FlippedCandidate:
 
 @dataclass(frozen=True)
 class BaselineParityReport:
-    """V1<->V2 baseline parity (current-value sweep point) per spec §E.4."""
+    """V1<->V2 baseline parity (current-value sweep point) per spec §E.4.
+
+    tier_1_count: total tier-1 candidates processed at baseline (current_value
+      sweep point). Per spec §H T-V2.3.9 manifest field.
+    tier_2_count: total tier-2 candidates processed at baseline (current_value
+      sweep point). Per spec §H T-V2.3.9 manifest field.
+      NOTE: tier_2_count >= tier2_match_count + tier2_mismatch_count because
+      tier-2 candidates that fail OHLCV coverage or substitution are NOT tallied
+      in tier2_match/mismatch counts (they are skipped), but ARE counted in
+      tier_2_count as "candidates classified as tier-2".
+    """
 
     tier1_match: bool  # EXACT match required; blocking
     tier1_mismatch_candidates: tuple[str, ...]  # (ticker:eval_run_id) on mismatch
     tier2_match_count: int
     tier2_mismatch_count: int
     tier2_via_surrogate_count: int
+    tier_1_count: int = 0  # NEW: total tier-1 candidates at baseline
+    tier_2_count: int = 0  # NEW: total tier-2 candidates at baseline
 
 
 @dataclass(frozen=True)
@@ -288,6 +300,9 @@ def run_v2_sweep(
     tier2_match_count = 0
     tier2_mismatch_count = 0
     tier2_via_surrogate_count = 0
+    # Spec §H T-V2.3.9: total tier-1 and tier-2 candidate counts at baseline
+    baseline_tier_1_count = 0
+    baseline_tier_2_count = 0
 
     # Global OHLCV coverage skip count (per-V2-invocation scalar, Codex R1.M3)
     # This is precomputed: a candidate that fails OHLCV coverage fails for ALL
@@ -401,6 +416,13 @@ def run_v2_sweep(
                     # Parity tracking at current_value point
                     if is_current_point:
                         tier = classify_candidate_tier(cand_row.persisted_risk_result)
+                        # Tally total tier-1 / tier-2 counts at baseline
+                        # (spec §H T-V2.3.9 manifest fields)
+                        if tier == 1:
+                            baseline_tier_1_count += 1
+                        else:
+                            baseline_tier_2_count += 1
+
                         if cand_row.persisted_bucket != bucket:
                             _record_flip(
                                 flipped,
@@ -467,6 +489,8 @@ def run_v2_sweep(
         tier2_match_count=tier2_match_count,
         tier2_mismatch_count=tier2_mismatch_count,
         tier2_via_surrogate_count=tier2_via_surrogate_count,
+        tier_1_count=baseline_tier_1_count,
+        tier_2_count=baseline_tier_2_count,
     )
 
     elapsed = time.monotonic() - t_start
