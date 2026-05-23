@@ -56,51 +56,76 @@ _KNOWN_SURFACES: tuple[SurfaceAuditRow, ...] = (
     SurfaceAuditRow(
         surface_name="Dashboard hyp-progress card",
         file_path="swing/web/view_models/metrics/hypothesis_progress_card.py:404",
-        match_strategy="exact_equality",
+        match_strategy="delimiter_aware",
         state_filter="state IN ('closed','reviewed')",
-        join_keys="hypothesis_label = ?",
+        join_keys="hypothesis_label = ? (via list_closed_trades_for_cohort)",
         operator_db_count=None,
-        disposition="WIRING DEFECT",
-        notes="Suffix-bearing labels exact-mismatch; Option 7C fix in T-T4.SB.2.",
+        disposition="LIVE",
+        notes=(
+            "Pre-T-T4.SB.2: WIRING DEFECT (exact-equality silently dropped"
+            " suffix-bearing labels). T-T4.SB.2 Sub-tasks 2B + 2C: card now"
+            " consumes the 3-rule delimiter-aware SQL helper transitively"
+            " via list_closed_trades_for_cohort -> list_trades_for_cohort."
+            " See tests/metrics/test_hypothesis_progress_card_suffix_labels.py."
+        ),
     ),
     SurfaceAuditRow(
         surface_name="CLI compute_hypothesis_progress_breakdown",
         file_path="swing/journal/stats.py:325",
-        match_strategy="prefix_match",
+        match_strategy="delimiter_aware",
         state_filter="state IN ('closed','reviewed')",
-        join_keys="_label_matches_hypothesis",
+        join_keys="_label_matches_hypothesis (delegates to label_match helper)",
         operator_db_count=None,
         disposition="LIVE",
         notes=(
-            "Existing bare-startswith helper; widens to 3-rule delimiter-aware"
-            " in T-T4.SB.2."
+            "Pre-T-T4.SB.2: prefix_match (bare-startswith) -- accepted"
+            " bare-prefix extensions like 'Sub-A+ VCP-not-formedness'."
+            " T-T4.SB.2 Sub-task 2A: _label_matches_hypothesis pivots to"
+            " the shared 3-rule delimiter-aware helper at"
+            " swing.metrics.label_match.label_matches_hypothesis."
         ),
     ),
     SurfaceAuditRow(
         surface_name="list_trades_for_cohort",
         file_path="swing/metrics/cohort.py:40",
-        match_strategy="exact_equality",
+        match_strategy="delimiter_aware",
         state_filter="(via state_filter param)",
-        join_keys="hypothesis_label = ?",
+        join_keys="label_matches_hypothesis_sql 3-predicate fragment",
         operator_db_count=None,
-        disposition="WIRING DEFECT",
-        notes="Pivots to delimiter-aware SQL helper in T-T4.SB.2.",
+        disposition="LIVE",
+        notes=(
+            "Pre-T-T4.SB.2: WIRING DEFECT (exact-equality SQL)."
+            " T-T4.SB.2 Sub-task 2B: SQL switched to the shared 3-predicate"
+            " OR-joined fragment from swing.metrics.label_match."
+            " Wildcard chars (% / _) in registered names are escaped via"
+            " ESCAPE '\\\\' clause + sql_escape_wildcard helper."
+        ),
     ),
     SurfaceAuditRow(
         surface_name="count_per_cohort",
         file_path="swing/metrics/cohort.py:99",
-        match_strategy="exact_equality",
+        match_strategy="delimiter_aware",
         state_filter="state IN closed-states",
-        join_keys="GROUP BY hypothesis_label",
+        join_keys=(
+            "per-registered-name 3-predicate OR fragment + orphan-fallback"
+            " second query"
+        ),
         operator_db_count=None,
-        disposition="WIRING DEFECT",
+        disposition="LIVE",
         notes=(
-            "Suffix-bearing labels create orphan cohorts; delimiter-aware"
-            " GROUP BY in T-T4.SB.2 preserves orphan fallback."
+            "Pre-T-T4.SB.2: WIRING DEFECT (suffix-bearing labels surfaced"
+            " as orphan cohorts instead of aggregating to the registered"
+            " name). T-T4.SB.2 Sub-task 2C: rewrites to per-cohort"
+            " delimiter-aware count + orphan-fallback second query that"
+            " preserves orphan-label rows for cohorts NOT matching any"
+            " registered hypothesis (Expansion #10 sub-discipline (e)"
+            " ORPHAN-PRESERVATION LOCK)."
         ),
     ),
-    # T-T4.SB.1 ships the audit; T-T4.SB.2 extends with audit-derived WIRING
-    # DEFECT entries (e.g., outcome distribution V1 STUB rows).
+    # T-T4.SB.1 ships the audit; T-T4.SB.2 flips the 3 WIRING DEFECT entries
+    # to LIVE post-fix. Future broader-audit FALSE-ZERO RISK entries
+    # (e.g., outcome distribution V1 STUB rows) are added by future
+    # dispatches per V1 simplification banking discipline.
 )
 
 

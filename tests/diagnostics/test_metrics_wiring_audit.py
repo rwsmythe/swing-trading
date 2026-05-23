@@ -80,3 +80,29 @@ def test_write_audit_markdown_includes_per_surface_notes_section(tmp_path: Path)
     # Each known surface has its own ### subsection.
     for row in enumerate_metric_surfaces():
         assert f"### {row.surface_name}" in text
+
+
+def test_audit_dispositions_flipped_live_post_item7_fix() -> None:
+    """Phase 13 T-T4.SB.2 Sub-task 2G: the 4 surfaces fixed by Item 7
+    broader metrics audit (Dashboard hyp-progress card + CLI breakdown +
+    list_trades_for_cohort + count_per_cohort) all carry disposition
+    'LIVE' post-fix and match_strategy 'delimiter_aware'. Regression
+    guard: a future refactor that reintroduces exact-equality or
+    bare-startswith on any of these surfaces MUST trip this test."""
+    rows = {r.surface_name: r for r in enumerate_metric_surfaces()}
+    fixed_surfaces = (
+        "Dashboard hyp-progress card",
+        "CLI compute_hypothesis_progress_breakdown",
+        "list_trades_for_cohort",
+        "count_per_cohort",
+    )
+    for name in fixed_surfaces:
+        row = rows[name]
+        assert row.disposition == "LIVE", (
+            f"Surface {name!r} disposition is {row.disposition!r}; "
+            "expected 'LIVE' post-T-T4.SB.2 Item 7 fix."
+        )
+        assert row.match_strategy == "delimiter_aware", (
+            f"Surface {name!r} match_strategy is {row.match_strategy!r}; "
+            "expected 'delimiter_aware' post-T-T4.SB.2 Item 7 fix."
+        )
