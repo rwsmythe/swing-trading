@@ -677,3 +677,98 @@ def test_build_eval_run_cohort_horizon_weeks_scales_bars_needed(tmp_path):
 
     # With horizon_weeks=12: ZZSHORT included (65 > 60)
     assert "ZZSHORT" in cohort_hw12.batch.returns_12w_by_ticker
+
+
+# ---------------------------------------------------------------------------
+# (19) build_eval_run_cohort uses ohlcv_getter cache when provided (Codex R1.M3)
+# ---------------------------------------------------------------------------
+
+def test_build_eval_run_cohort_uses_ohlcv_getter_cache_when_provided(tmp_path):
+    """Codex R1.M3 discriminating test: when ohlcv_getter is provided,
+    build_eval_run_cohort uses it to get full-history frames rather than
+    calling read_yfinance_shape_a / read_yfinance_shape_a_sliced directly.
+
+    This verifies the dependency-injection path (Option A) is wired correctly:
+    the per-ticker OHLCV cache from sweep.py's _get_ohlcv closure is shared
+    with build_eval_run_cohort to avoid double-reading parquet files.
+
+    Discriminating fixture: getter_call_count increments each time the
+    injected ohlcv_getter is called. After calling build_eval_run_cohort
+    with ohlcv_getter=injected, assert getter_call_count > 0 (the injected
+    getter was used). Also verify read_yfinance_shape_a_sliced was NOT called
+    by monkeypatching the fallback path to raise if invoked.
+    """
+    db_path = tmp_path / "fixture.db"
+    _apply_phase1_migration(db_path)
+    _apply_equity_snapshot_table(db_path)
+
+    # Plant Shape A parquet for SPY + one universe ticker
+    _make_shape_a_parquet(tmp_path / "SPY.yfinance.parquet", n_bars=250)
+    _make_shape_a_parquet(tmp_path / "ZZGETTER1.yfinance.parquet", n_bars=250)
+
+    conn = sqlite3.connect(str(db_path))
+
+    from research.harness.aplus_v2_ohlcv_evaluator.ohlcv_reader import (
+        BothExistDiagnostic,
+        read_yfinance_shape_a,
+    )
+
+    # Build a pre-loaded frame cache (mirrors what sweep.py's _get_ohlcv does)
+    cache: dict[str, object] = {}
+    getter_call_count = {"n": 0}
+
+    def injected_getter(ticker: str):
+        getter_call_count["n"] += 1
+        if ticker not in cache:
+            diag = BothExistDiagnostic()
+            cache[ticker] = read_yfinance_shape_a(ticker, tmp_path, diagnostic=diag)
+        return cache[ticker]
+
+    cfg = Config.from_defaults()
+    from research.harness.aplus_v2_ohlcv_evaluator.context_builder import build_eval_run_cohort
+
+    # Monkeypatch read_yfinance_shape_a_sliced to assert it is NOT called
+    # (when ohlcv_getter is provided the fallback path should be bypassed).
+    import research.harness.aplus_v2_ohlcv_evaluator.context_builder as cb_mod
+
+    original_sliced = cb_mod.read_yfinance_shape_a_sliced
+    fallback_called = {"n": 0}
+
+    def _never_called_sliced(*args, **kwargs):
+        fallback_called["n"] += 1
+        return original_sliced(*args, **kwargs)
+
+    cb_mod.read_yfinance_shape_a_sliced = _never_called_sliced
+    try:
+        diag = BothExistDiagnostic()
+        cohort = build_eval_run_cohort(
+            conn,
+            eval_run_id=1,
+            data_asof_date=date(2026, 4, 30),
+            cfg=cfg,
+            universe_tickers=("ZZGETTER1",),
+            candidate_tickers=(),
+            universe_hash="test_hash",
+            cache_dir=tmp_path,
+            horizon_weeks=12,
+            diagnostic=diag,
+            ohlcv_getter=injected_getter,  # Codex R1.M3: injected cache
+        )
+    finally:
+        cb_mod.read_yfinance_shape_a_sliced = original_sliced
+
+    conn.close()
+
+    # Discriminating: injected getter was called (not the fallback)
+    assert getter_call_count["n"] > 0, (
+        "ohlcv_getter was never called; build_eval_run_cohort must use the "
+        "injected cache when ohlcv_getter is provided (Codex R1.M3 Option A)"
+    )
+    # Discriminating: fallback (read_yfinance_shape_a_sliced) was NOT called
+    assert fallback_called["n"] == 0, (
+        f"read_yfinance_shape_a_sliced was called {fallback_called['n']} times "
+        "when ohlcv_getter was provided; fallback must be bypassed when "
+        "ohlcv_getter is injected (Codex R1.M3 Option A)"
+    )
+    # Cohort built successfully
+    assert cohort.eval_run_id == 1

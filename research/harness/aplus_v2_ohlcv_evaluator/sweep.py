@@ -277,6 +277,7 @@ def run_v2_sweep(
                 cache_dir=cache_dir,
                 horizon_weeks=horizon_weeks,
                 diagnostic=diagnostic,
+                ohlcv_getter=_get_ohlcv,  # Codex R1.M3: share per-ticker OHLCV cache
             )
         return cohort_cache[key]
 

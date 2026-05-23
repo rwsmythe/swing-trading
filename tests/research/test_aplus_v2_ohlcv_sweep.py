@@ -1295,3 +1295,83 @@ def test_baseline_parity_counts_not_inflated_with_multiple_variables(tmp_path):
         f"tier_1_count + tier_2_count = {bp.tier_1_count + bp.tier_2_count} "
         f"> total_candidates = {result.total_candidates}"
     )
+
+
+# ---------------------------------------------------------------------------
+# (20) OHLCV cache shared between cohort construction and sweep loop (Codex R1.M3)
+# ---------------------------------------------------------------------------
+
+def test_ohlcv_cache_shared_with_cohort_builder_via_ohlcv_getter(tmp_path):
+    """Codex R1.M3 discriminating integration test: sweep.py must pass
+    ohlcv_getter to build_eval_run_cohort so the per-ticker OHLCV cache is
+    shared between cohort construction and the main sweep loop.
+
+    Pre-fix: _get_cohort called build_eval_run_cohort WITHOUT ohlcv_getter,
+    so build_eval_run_cohort fell back to direct read_yfinance_shape_a_sliced
+    calls (bypassing the sweep-level cache). Each cohort build would read
+    every universe + candidate parquet file independently.
+
+    Post-fix: _get_cohort passes ohlcv_getter=_get_ohlcv to build_eval_run_cohort.
+    The injected getter is called; the fallback path (read_yfinance_shape_a_sliced)
+    is NOT used inside build_eval_run_cohort.
+
+    This test intercepts build_eval_run_cohort call + asserts ohlcv_getter
+    kwarg is NOT None when called from sweep.py (i.e., the cohort builder
+    receives the sweep-level cache, not None).
+    """
+    db_path = _build_test_db(tmp_path)
+    _seed_eval_run(db_path, 1, "2026-04-30")
+
+    universe_tickers = [f"ZZU{i:03d}" for i in range(100)]
+    for t in universe_tickers:
+        _make_shape_a_parquet(tmp_path / f"{t}.yfinance.parquet", n_bars=250)
+    _make_shape_a_parquet(tmp_path / "SPY.yfinance.parquet", n_bars=250, sentinel_close=500.0)
+
+    _make_shape_a_parquet(tmp_path / "ZZSHARED_CACHE.yfinance.parquet", n_bars=250)
+    _seed_candidate(db_path, eval_run_id=1, ticker="ZZSHARED_CACHE", bucket="skip")
+
+    universe_csv = _make_universe_csv(tmp_path, universe_tickers)
+    cfg = _cfg_with_universe(universe_csv)
+
+    var = _make_variable("rs.rs_rank_min_pass", current_value=70, sweep_points=(70,))
+
+    from research.harness.aplus_v2_ohlcv_evaluator import sweep as sweep_mod
+
+    ohlcv_getter_kwargs_seen: list[object] = []
+    original_build = sweep_mod.build_eval_run_cohort
+
+    def _intercepting_build(*args, **kwargs):
+        ohlcv_getter_kwargs_seen.append(kwargs.get("ohlcv_getter", "MISSING"))
+        return original_build(*args, **kwargs)
+
+    sweep_mod.build_eval_run_cohort = _intercepting_build
+    try:
+        from research.harness.aplus_v2_ohlcv_evaluator.sweep import run_v2_sweep
+        conn = sqlite3.connect(str(db_path))
+        run_v2_sweep(
+            conn,
+            variables=(var,),
+            cfg=cfg,
+            cache_dir=tmp_path,
+            eval_runs_window=5,
+            min_universe_size=50,
+        )
+        conn.close()
+    finally:
+        sweep_mod.build_eval_run_cohort = original_build
+
+    # Discriminating: at least one call to build_eval_run_cohort must have
+    # received a NON-None ohlcv_getter (the sweep-level cache).
+    # Pre-fix: all calls would have ohlcv_getter=None or "MISSING".
+    # Post-fix: all calls pass ohlcv_getter=_get_ohlcv (callable, not None).
+    assert len(ohlcv_getter_kwargs_seen) >= 1, (
+        "build_eval_run_cohort was never called; expected at least 1 call "
+        "(one per eval_run for baseline cohort eagerly built)"
+    )
+    non_none_getters = [g for g in ohlcv_getter_kwargs_seen if g is not None and g != "MISSING"]
+    assert len(non_none_getters) >= 1, (
+        f"build_eval_run_cohort was called {len(ohlcv_getter_kwargs_seen)} times "
+        f"but ohlcv_getter was None or missing on all calls: {ohlcv_getter_kwargs_seen}. "
+        "sweep.py must pass ohlcv_getter=_get_ohlcv to share the per-ticker cache "
+        "(Codex R1.M3 Option A: dependency injection)"
+    )

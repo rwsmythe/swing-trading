@@ -305,20 +305,30 @@ def build_eval_run_cohort(
     cache_dir: Path,
     horizon_weeks: int,
     diagnostic: BothExistDiagnostic,
+    ohlcv_getter: object = None,  # Codex R1.M3: optional per-ticker OHLCV cache
 ) -> EvalRunCohort:
     """Build the BatchContext + resolve current_equity surrogate for one
     (eval_run_id, data_asof_date) cohort.
 
     Steps:
       1. For each ticker in `universe_tickers union candidate_tickers union {SPY}`
-         (Codex R2.M1 RESOLVED): read Shape A; slice to <= data_asof_date;
-         compute `horizon_weeks * 5`-bar trailing return (per-ticker skip if
-         `len(closes) <= horizon_weeks * 5` per production at
-         `swing/pipeline/runner.py:1060-1077`).
+         (Codex R2.M1 RESOLVED): read Shape A (via ohlcv_getter cache when
+         provided, else direct parquet read per Codex R1.M3 Option A);
+         slice to <= data_asof_date; compute `horizon_weeks * 5`-bar trailing
+         return (per-ticker skip if `len(closes) <= horizon_weeks * 5` per
+         production at `swing/pipeline/runner.py:1060-1077`).
       2. SPY return -> spy_return_12w (fallback 0.0 if missing).
       3. current_equity per OQ-15: query account_equity_snapshots;
          fallback to most-recent; fallback to floor surrogate.
       4. Construct BatchContext + return EvalRunCohort.
+
+    Args:
+      ohlcv_getter: optional callable(ticker: str) -> full-history DataFrame
+        (same contract as sweep.py's _get_ohlcv). When provided, uses the
+        per-ticker OHLCV cache from the sweep orchestrator (Codex R1.M3
+        Option A: dependency injection to share cache between build_eval_run_cohort
+        and the main sweep loop). When None (default, backward-compatible),
+        falls back to direct read_yfinance_shape_a / read_yfinance_shape_a_sliced.
     """
     cache_dir = Path(cache_dir)
     bars_needed = horizon_weeks * 5  # Codex R3.M1: scales with horizon_weeks
@@ -331,13 +341,24 @@ def build_eval_run_cohort(
 
     for ticker in all_tickers:
         try:
-            df = read_yfinance_shape_a_sliced(
-                ticker, cache_dir,
-                asof_date=data_asof_date,
-                min_bars=1,  # We gate on bars_needed below; coverage gate (200) is separate
-                diagnostic=diagnostic,
-            )
-        except OhlcvCoverageError:
+            if ohlcv_getter is not None:
+                # Use injected per-ticker cache (Codex R1.M3 Option A).
+                # _get_ohlcv returns full-history frame; slice here.
+                full_df = ohlcv_getter(ticker)
+                df = full_df.loc[full_df.index.date <= data_asof_date]
+                if len(df) < 1:
+                    skipped_count += 1
+                    continue
+            else:
+                # Fallback: direct read (backward-compatible; used in isolated
+                # unit tests that don't have a sweep-level ohlcv_getter).
+                df = read_yfinance_shape_a_sliced(
+                    ticker, cache_dir,
+                    asof_date=data_asof_date,
+                    min_bars=1,  # We gate on bars_needed below; coverage gate (200) is separate
+                    diagnostic=diagnostic,
+                )
+        except (OhlcvCoverageError, FileNotFoundError, OSError):
             skipped_count += 1
             continue
 
