@@ -4539,5 +4539,83 @@ def patterns_exemplars_backfill_labeler_evidence(ctx: click.Context) -> None:
     click.echo(f"Augmented: {augmented}; Skipped: {skipped}")
 
 
+# ---------------------------------------------------------------------------
+# Phase 13 T4.SB T-T4.SB.1 -- ``swing diagnose`` subcommand group.
+#
+# Read-only diagnostics: A+ sensitivity sweep harness + metrics-wiring audit.
+# Each subcommand emits a deterministic markdown report (+ CSV sidecar where
+# applicable) to ``exports/diagnostics/`` and writes ZERO domain rows.
+# Per cumulative gotchas: ValueError-wrapping at CLI boundary;
+# ASCII-only output for cp1252 Windows-stdout safety.
+# ---------------------------------------------------------------------------
+
+
+@main.group("diagnose")
+def diagnose_group() -> None:
+    """Diagnostic CLIs: aplus sensitivity sweep + metrics-wiring audit."""
+
+
+@diagnose_group.command("aplus-sensitivity")
+@click.option(
+    "--db", "db_path", required=True, type=click.Path(path_type=Path),
+)
+@click.option(
+    "--eval-runs", type=click.IntRange(1, 100), default=20, show_default=True,
+)
+@click.option(
+    "--output-dir", type=click.Path(path_type=Path),
+    default=Path("exports/diagnostics"), show_default=True,
+)
+def diagnose_aplus_sensitivity(
+    db_path: Path, eval_runs: int, output_dir: Path,
+) -> None:
+    """1D sensitivity sweep over A+ criteria thresholds.
+
+    Reads persisted candidate_criteria from ``--db`` (last ``--eval-runs``
+    runs); substitutes each variable across a sweep range; writes
+    ``aplus-sensitivity-<ISO>.csv`` + ``.md`` to ``--output-dir``.
+    """
+    try:
+        from research.harness.aplus_sensitivity.run import run_harness
+
+        md_path, csv_path = run_harness(
+            db_path=db_path, eval_runs=eval_runs, output_dir=output_dir,
+        )
+    except ValueError as exc:
+        # Wrap service-layer ValueErrors at the CLI boundary per cumulative
+        # gotcha (Phase 13 T-A.1.5b Codex R4 M#1).
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"Markdown: {md_path}")
+    click.echo(f"CSV:      {csv_path}")
+
+
+@diagnose_group.command("metrics-wiring")
+@click.option(
+    "--db", "db_path", required=True, type=click.Path(path_type=Path),
+)
+@click.option(
+    "--output", "output_path", required=True, type=click.Path(path_type=Path),
+)
+def diagnose_metrics_wiring(db_path: Path, output_path: Path) -> None:
+    """Enumerate metric surfaces + audit match strategy / state filter /
+    join keys / operator-DB count / disposition. Writes markdown table.
+    """
+    import sqlite3 as _sqlite3
+
+    from swing.diagnostics.metrics_wiring_audit import (
+        write_metrics_wiring_audit_markdown,
+    )
+
+    try:
+        conn = _sqlite3.connect(str(db_path))
+        try:
+            write_metrics_wiring_audit_markdown(conn, output_path)
+        finally:
+            conn.close()
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"Audit:    {output_path}")
+
+
 if __name__ == "__main__":  # pragma: no cover
     main()
