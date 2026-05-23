@@ -62,6 +62,53 @@ _VALID_SILVER_CONFIDENCES: frozenset[str] = frozenset(
     ("high", "medium", "low")
 )
 
+# T-T4.SB.4 Sub-task 4A: explicit allowlist for rule_criteria element
+# status field (per CLAUDE.md gotcha "Literal[...] type hints are NOT
+# runtime-enforced"; validated in SilverLabelResponse.__post_init__).
+_VALID_RULE_CRITERIA_STATUSES: frozenset[str] = frozenset(("pass", "fail"))
+
+
+def _validate_rule_criteria(value: object) -> None:
+    """T-T4.SB.4 Sub-task 4A: runtime-validate the rule_criteria payload.
+
+    Contract per plan section B.4 + Codex R3 M#2 LOCK:
+      - None is valid (back-compat default; existing fixtures unchanged).
+      - Empty list is valid (degenerate: zero criteria evaluated).
+      - Each non-empty element MUST be a dict with:
+        - ``name``: non-empty string.
+        - ``status``: one of ``{"pass", "fail"}``.
+      - Optional ``evidence_value`` / ``threshold`` / ``tolerance`` keys
+        are NOT type-validated in V1 (deviation banked in return report;
+        VM parser at swing/web/view_models/patterns/exemplars.py coerces
+        defensively at the read path).
+    """
+    if value is None:
+        return
+    if not isinstance(value, list):
+        raise ValueError(
+            "SilverLabelResponse.rule_criteria must be a list of dicts "
+            f"when provided; got {type(value).__name__}"
+        )
+    for i, elem in enumerate(value):
+        if not isinstance(elem, dict):
+            raise ValueError(
+                f"SilverLabelResponse.rule_criteria[{i}] must be a dict; "
+                f"got {type(elem).__name__}"
+            )
+        name = elem.get("name")
+        if not (isinstance(name, str) and name):
+            raise ValueError(
+                f"SilverLabelResponse.rule_criteria[{i}].name must be a "
+                f"non-empty string; got {name!r}"
+            )
+        status = elem.get("status")
+        if status not in _VALID_RULE_CRITERIA_STATUSES:
+            raise ValueError(
+                f"SilverLabelResponse.rule_criteria[{i}].status must be "
+                f"one of {sorted(_VALID_RULE_CRITERIA_STATUSES)}; got "
+                f"{status!r}"
+            )
+
 
 def _validate_silver_evaluation(value: object) -> None:
     """Codex R3 M#1 closure - runtime validate the evaluation field per
@@ -156,6 +203,11 @@ class SilverLabelResponse:
     confidence: Literal["high", "medium", "low"]
     structural_evidence_json: str  # serialized JSON dict; dict accepted + coerced
     geometric_evidence_narrative: str  # ASCII-only narrative
+    # T-T4.SB.4 Sub-task 4A (additive; back-compat default=None): optional
+    # per-criterion PASS/FAIL payload per plan section B.4 + Codex R3 M#2
+    # LOCK. When present, persisted to envelope by fire_claude_silver_label;
+    # consumed by swing/web/view_models/patterns/exemplars.py:_parse_criterion_rows.
+    rule_criteria: list[dict] | None = None
 
     def __post_init__(self) -> None:
         # Codex R3 M#1 closure: runtime-validate evaluation + confidence
@@ -176,6 +228,8 @@ class SilverLabelResponse:
                 "pattern-labeler.md output contract)"
             )
         object.__setattr__(self, "structural_evidence_json", coerced)
+        # T-T4.SB.4 Sub-task 4A: validate rule_criteria shape.
+        _validate_rule_criteria(self.rule_criteria)
 
 
 @dataclass(frozen=True)
