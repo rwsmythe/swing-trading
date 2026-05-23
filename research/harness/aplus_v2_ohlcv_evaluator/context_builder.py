@@ -399,12 +399,26 @@ def build_eval_run_cohort(
 
 
 def classify_candidate_tier(persisted_risk_result: str | None) -> int:
-    """Per spec §E.4 Codex R2.M3:
-      Tier 1 = bucket is INDEPENDENT of risk gate outcome
-        (persisted_risk_result == 'pass' OR bucket was skip-by-TT-gate).
-      Tier 2 = bucket DEPENDED on risk gate outcome
-        (persisted_risk_result != 'pass' OR None -- risk gate was load-bearing).
+    """Per spec §E.4 Codex R2.M3 (Codex R1.C1-amended):
+      Tier 1 = bucket is INDEPENDENT of risk gate outcome:
+        - persisted_risk_result == 'pass': risk passed; bucket determined by TT/VCP
+          gates (risk was not the load-bearing gate).
+        - persisted_risk_result is None: LEFT JOIN miss -- risk criterion was NOT
+          persisted for this candidate (historical eval-run predating risk_feasibility
+          criterion, or pre-schema-v-risk row). Risk was not evaluated => bucket
+          independent of risk => tier-1.
+      Tier 2 = bucket DEPENDED on risk gate outcome:
+        - persisted_risk_result == 'fail': risk hard-filtered the candidate to 'skip'
+          (risk WAS evaluated and failed => load-bearing).
+        - persisted_risk_result == 'na': risk returned insufficient-data => treated as
+          fail by bucket_for => risk was load-bearing for skip outcome.
 
-    Returns: 1 (tier-1 EXACT parity) or 2 (tier-2 CONDITIONAL via surrogate).
+    Returns: 1 (tier-1 EXACT parity required) or 2 (tier-2 CONDITIONAL via surrogate).
+
+    Discriminating cases (Codex R1.C1 fix):
+      pass  -> 1  (risk passed; non-load-bearing)
+      None  -> 1  (risk not evaluated; non-load-bearing; was incorrectly tier-2 pre-fix)
+      fail  -> 2  (risk blocked the candidate)
+      na    -> 2  (risk returned insufficient-data; treated as fail by bucket_for)
     """
-    return 1 if persisted_risk_result == "pass" else 2
+    return 1 if persisted_risk_result in ("pass", None) else 2
