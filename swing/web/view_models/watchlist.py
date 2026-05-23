@@ -102,6 +102,14 @@ class WatchlistRowVM:
     tags: tuple[str, ...]
     pattern_tag: str | None = None
     current_pivot: float | None = None
+    # Phase 13 T4.SB Codex R2 MAJOR #2 — pinned pipeline_run_id + data_asof
+    # that the VM bound to. Threaded into the /row route's JIT chart lookup
+    # so row metadata (classification tags, current pivot) + thumbnail bytes
+    # ALL bind to the SAME pipeline_run (Option A one-anchor LOCK; §1.5.3).
+    # Both None when no completed pipeline_run exists at request time;
+    # route MUST skip JIT entirely in that case (NOT fall back to latest).
+    pipeline_run_id: int | None = None
+    data_asof_date: str | None = None
 
 
 @dataclass(frozen=True)
@@ -281,6 +289,10 @@ def build_watchlist_row(
         tags=tags,
         pattern_tag=pattern_tag,
         current_pivot=(by_ticker[ticker].pivot if ticker in by_ticker else None),
+        # Codex R2 MAJOR #2: pin the binding so the route's JIT helper
+        # threads the SAME anchor used for classification tags + pivot.
+        pipeline_run_id=pipeline_run_id,
+        data_asof_date=(binding.data_asof_date if binding is not None else None),
     )
 
 
