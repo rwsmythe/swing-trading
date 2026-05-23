@@ -33,9 +33,7 @@ def label_matches_hypothesis(label: str | None, name: str) -> bool:
         return True
     if lo_label.startswith(lo_name + " "):
         return True
-    if lo_label.startswith(lo_name + ";"):
-        return True
-    return False
+    return lo_label.startswith(lo_name + ";")
 
 
 def sql_escape_wildcard(name: str) -> str:
