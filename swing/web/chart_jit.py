@@ -32,8 +32,8 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from datetime import datetime, timezone
-from typing import Callable
+from collections.abc import Callable
+from datetime import UTC, datetime
 
 from swing.data.models import ChartRender
 from swing.data.repos.chart_renders import (
@@ -178,7 +178,7 @@ def get_or_render_surface(
             surface=surface,
             chart_svg_bytes=svg_bytes,
             source_data_hash=source_data_hash,
-            rendered_at=datetime.now(timezone.utc).strftime(
+            rendered_at=datetime.now(UTC).strftime(
                 "%Y-%m-%dT%H:%M:%SZ",
             ),
             data_asof_date=data_asof_date,

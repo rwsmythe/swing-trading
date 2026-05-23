@@ -9,7 +9,6 @@ Discriminating coverage per plan §B.3 Sub-task 3C:
 from __future__ import annotations
 
 import importlib
-from datetime import datetime
 from unittest.mock import MagicMock
 
 import pandas as pd

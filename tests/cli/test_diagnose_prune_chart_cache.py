@@ -8,7 +8,7 @@ only OLD deleted.
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from click.testing import CliRunner
@@ -54,14 +54,14 @@ def test_diagnose_prune_chart_cache_deletes_rows_older_than_days(tmp_path: Path)
         run_id = _ensure_pipeline_run(conn)
         # OLD row (>365 days).
         old_ts = (
-            datetime.now(timezone.utc) - timedelta(days=500)
+            datetime.now(UTC) - timedelta(days=500)
         ).strftime("%Y-%m-%dT%H:%M:%SZ")
         _plant_chart_render(
             conn, ticker="OLD", rendered_at=old_ts,
             pipeline_run_id=run_id,
         )
         # NEW row (just now).
-        new_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        new_ts = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         _plant_chart_render(
             conn, ticker="NEW", rendered_at=new_ts,
             pipeline_run_id=run_id,
@@ -97,7 +97,7 @@ def test_diagnose_prune_chart_cache_zero_days_deletes_all(tmp_path: Path):
     try:
         run_id = _ensure_pipeline_run(conn)
         old_ts = (
-            datetime.now(timezone.utc) - timedelta(days=1)
+            datetime.now(UTC) - timedelta(days=1)
         ).strftime("%Y-%m-%dT%H:%M:%SZ")
         _plant_chart_render(
             conn, ticker="A", rendered_at=old_ts, pipeline_run_id=run_id,
@@ -133,7 +133,7 @@ def test_diagnose_prune_chart_cache_does_not_delete_when_nothing_older(
     conn = ensure_schema(db_path)
     try:
         run_id = _ensure_pipeline_run(conn)
-        new_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        new_ts = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         _plant_chart_render(
             conn, ticker="FRESH", rendered_at=new_ts,
             pipeline_run_id=run_id,

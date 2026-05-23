@@ -2356,8 +2356,8 @@ def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data_asof: str,
     # JIT helper's default (per Codex R4 M#3 cache-collision avoidance).
     # NOTE: this changes the kwargs from the prior [50, 150, 200] —
     # operator-facing change accepted per plan §B.3 Sub-task 3E.
-    _PREGEN_WATCHLIST_TOP_N = 5
-    for w in tag_aware_top_n[:_PREGEN_WATCHLIST_TOP_N]:
+    _pregen_watchlist_top_n = 5
+    for w in tag_aware_top_n[:_pregen_watchlist_top_n]:
         ticker = w.ticker.upper()
         bars = _bars_or_none(ticker)
         if bars is None or bars.empty:

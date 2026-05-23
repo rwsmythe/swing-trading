@@ -11,7 +11,7 @@ on pipeline-end or per-row TTL column.
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 
 def prune_chart_renders_older_than(
@@ -30,7 +30,7 @@ def prune_chart_renders_older_than(
         raise ValueError(
             f"older_than_days must be non-negative; got {older_than_days!r}"
         )
-    cutoff = datetime.now(timezone.utc) - timedelta(days=older_than_days)
+    cutoff = datetime.now(UTC) - timedelta(days=older_than_days)
     cutoff_iso = cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
     cur = conn.execute(
         "DELETE FROM chart_renders WHERE rendered_at < ?",
