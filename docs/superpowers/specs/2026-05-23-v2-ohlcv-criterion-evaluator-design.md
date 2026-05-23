@@ -20,6 +20,17 @@
 - M6 RESOLVED: §A.1 — CLI subcommand registration in `swing/cli.py` is the EXPLICIT MINIMAL carve-out from the read-only invariant. NEW OQ-17 surfaces the carve-out scope.
 - Minor m1 RESOLVED: line 35 → line 37 citation corrected at §B.2.
 
+**Codex Round 2 amendments applied** (1 CRITICAL + 6 MAJOR + 2 MINOR — all RESOLVED inline):
+- R2.C1 RESOLVED: §F.1 — Shape A persists OHLCV columns as lowercase (`open/high/low/close/volume` per `swing/data/ohlcv_archive.py:449+521-522`); production criteria expect capitalized. V2 `ohlcv_reader.py` MUST normalize lowercase → capitalized at read boundary.
+- R2.M1 RESOLVED: scrubbed stale `read_or_fetch_archive`/`prefer_source` references across §A.5, §C.1 dependency table, §F.2, OQ-1 RECOMMEND, OQ-12 RECOMMEND (5 separate sections updated to consistently route through the NEW `ohlcv_reader.py` wrapper).
+- R2.M2 RESOLVED: §F.1 — V2 reader handles legacy `{ticker}.parquet` fallback (production `_backward_compat_rename` at `swing/data/ohlcv_archive.py:584-657` is invoked inside `read_or_fetch_archive` ONLY; V2's direct-read bypass needs its own legacy fallback path).
+- R2.M3 RESOLVED: §F.3 — SQL extended with LEFT JOIN to `candidate_criteria` to fetch `persisted_risk_result` for tier-1 vs tier-2 parity classification per §E.4.
+- R2.M4 RESOLVED: §F.4 — RS universe load fails-fast with `EmptyRsUniverseError` if loaded universe is empty OR has < N_MIN tickers (default 100; configurable via `--min-universe-size`).
+- R2.M5 RESOLVED: §F.5 — V2 OHLCV cache key choice: per-TICKER (full-history frame; in-memory slice for asof_date), NOT per-(ticker, asof_date). Parquet open count bound = `N_universe + N_candidate_tickers_not_in_universe`.
+- R2.M6 RESOLVED: §A.1 + OQ-17 — CLI carve-out described by SURFACE/RESPONSIBILITY (subcommand handler + group attachment + Click options + error wrapping + delegation), NOT line count. Realistic V2 line count is 35-60 (V1 precedent spans `swing/cli.py:4748-4787`); the original 5-10 line estimate was unrealistic.
+- R2.m1 RESOLVED: §F.4 — `universe_hash` renamed `v2_universe_hash_` prefix + SHA-256 (matches production `swing/evaluation/rs.py:45-49`); NOT comparable to persisted `evaluation_runs.rs_universe_hash`.
+- R2.m2 RESOLVED: scrubbed stale "cross-coupling preserved for free / within a single 1D substitution" wording in OQ-2 + OQ-7 RECOMMEND (replaced with "single-variable downstream propagation preserved").
+
 ---
 
 ## §A Status + scope
@@ -32,7 +43,7 @@ V2 OHLCV criterion-evaluator harness lives under `research/` per V2.1 §V branch
 - **NEW study writeup**: `research/studies/<date>-v2-ohlcv-criterion-evaluator.md` (companion to existing `aplus-criterion-sensitivity-2026-05-22.md`). Follows the format precedent from `research/studies/earnings-proximity-exclusion.md`.
 - **Method-record EXTENSION** (not new record): append-only sections at [`research/method-records/aplus-criteria-calibration.md`](../../../research/method-records/aplus-criteria-calibration.md) (see §K). The existing 72-line record stays; V2 sections appended below the existing "V2 dependencies" section + corresponding promotion criteria bullets added to the existing "Validation notes" + "Notes" sections.
 - **Tests** under `tests/research/test_aplus_v2_ohlcv_*.py` mirroring T-T4.SB.1 precedent at `tests/research/test_aplus_sensitivity_*.py`. Test count budget per §H.
-- **Production `swing/` code is READ-ONLY through this dispatch arc EXCEPT for ONE explicit minimal carve-out** (per OQ-17 RECOMMEND): a CLI subcommand registration block (~5-10 lines) in `swing/cli.py` registers `swing diagnose aplus-sensitivity-v2` per the precedent at `swing/cli.py` for `swing diagnose aplus-sensitivity` (T-T4.SB.1 ship). This is the SOLE production-`swing/` modification V2 dispatch makes. NO other writes to `swing/`, NO writes to `swing-data/swing.db` domain tables, NO schema changes.
+- **Production `swing/` code is READ-ONLY through this dispatch arc EXCEPT for ONE explicit minimal carve-out** (per OQ-17 RECOMMEND amended per Codex R2.M6): a CLI subcommand registration in `swing/cli.py` registers `swing diagnose aplus-sensitivity-v2`. Scope of the carve-out is described by SURFACE / RESPONSIBILITY rather than line count: the carve-out covers (a) a `@click.command` decorated function (subcommand handler) + (b) `@diagnose.command` group attachment + (c) Click `@click.option` definitions for the V2 CLI flags (per §C.2) + (d) `ClickException` wrapping per cumulative T-A.1.5b lesson + (e) delegation to `research.harness.aplus_v2_ohlcv_evaluator.run.run_harness`. Per V1 precedent at `swing/cli.py` (V1 `swing diagnose aplus-sensitivity` registration spans roughly `swing/cli.py:4748-4787` per Codex R2.M6 verification), a realistic V2 subcommand with new flags + error wrapping will be in the 35-60 line range. This is the SOLE production-`swing/` modification V2 dispatch makes. NO other writes to `swing/`, NO writes to `swing-data/swing.db` domain tables, NO schema changes.
 
   V2 imports (READ-ONLY usage) from `swing.evaluation.evaluator.evaluate_one` + `swing.evaluation.scoring.bucket_for` + `swing.evaluation.context.{CandidateContext, BatchContext, MarketContext}` + `swing.config.Config` + `swing.data.ohlcv_archive` Shape A parquet reader path (NOT `read_or_fetch_archive` per Codex M1 + M2 disposition; see §F.1 amendment).
 
@@ -73,7 +84,7 @@ V2 ships under a NEW CLI surface name `swing diagnose aplus-sensitivity-v2` per 
 - **`cfg.trend_template.allowed_miss_names` (tuple-set) sweep** — non-numeric grid; V3+ candidate per V1 method-record §"Notes" line 70.
 - **`cfg.rs.benchmark_ticker` (string identifier) sweep** — non-numeric; not a threshold; V3+ candidate per V1 method-record §"Notes" line 70.
 - **Adaptive bisection sweep strategy** — V2 inherits the V1 5-point grid (OQ-3 RECOMMEND). Adaptive bisection deferred V3+ per V2.1 §IV.B parsimony.
-- **Schwab API calls** — V2 OHLCV reconstruction uses yfinance-only via `prefer_source='yfinance'` on the OhlcvArchive read path per OQ-12 RECOMMEND (preserves L2 LOCK; no new Schwab API calls).
+- **Schwab API calls** — V2 OHLCV reconstruction uses yfinance-only by direct Shape A parquet read via the NEW `ohlcv_reader.py` wrapper that opens ONLY `{ticker}.yfinance.parquet` (legacy fallback `{ticker}.parquet`); NEVER touches `{ticker}.schwab_api.parquet`. Per OQ-12 + OQ-16 amended RECOMMEND (preserves L2 LOCK; no new Schwab API calls; no fetch path; no archive mutation).
 
 ---
 
@@ -194,7 +205,8 @@ research/harness/aplus_v2_ohlcv_evaluator/
 
 | Module | Dependencies | Justification |
 |--------|--------------|---------------|
-| `context_builder.py` | `swing.data.ohlcv_archive.read_or_fetch_archive`, `swing.evaluation.context.{CandidateContext, BatchContext, MarketContext}`, `swing.config.Config`, `swing.evaluation.rs.compute_rs` | All READ-ONLY production imports. OHLCV slicing + 12-week-return computation + RS batch context reconstruction at historical asof_date. |
+| `context_builder.py` | `research.harness.aplus_v2_ohlcv_evaluator.ohlcv_reader` (NEW V2 read-only Shape A wrapper per §F.1 amended), `swing.evaluation.context.{CandidateContext, BatchContext, MarketContext}`, `swing.config.Config`, `swing.evaluation.rs.compute_rs`, `swing.evaluation.rs.load_universe` (for RS universe load per §F.4) | All READ-ONLY production imports (plus NEW V2 reader). OHLCV slicing + 12-week-return computation + RS batch context reconstruction at historical asof_date. NOTE: does NOT import `swing.data.ohlcv_archive.read_or_fetch_archive` per Codex M1+M2 amendment — direct Shape A read via V2 reader instead. |
+| `ohlcv_reader.py` (NEW per Codex M1+M2 amendment) | `pandas`, `pathlib.Path`, NO yfinance / NO Schwab imports | Read-only Shape A parquet wrapper at `research/harness/aplus_v2_ohlcv_evaluator/ohlcv_reader.py`. Opens `{ticker}.yfinance.parquet` (or legacy `{ticker}.parquet` fallback per Codex R2.M2); normalizes lowercase OHLCV cols to capitalized per Codex R2.C1; NEVER opens `{ticker}.schwab_api.parquet`. NO fetch. NO write. |
 | `cfg_substitution.py` | `swing.config.{Config, TrendTemplate, VCP, Risk, RS}`, `dataclasses.replace` | Pure cfg-substitution via `dataclasses.replace`. No I/O. |
 | `sweep.py` | `swing.evaluation.evaluator.evaluate_one`, `swing.evaluation.scoring.bucket_for` (for `vcp.watch_max_fails` special-case per §E.3), `swing.config.Config`, `research.harness.aplus_sensitivity.variables.{SweepVariable, enumerate_variables}`, `cfg_substitution.substitute_cfg`, `context_builder.build_candidate_context`, `sqlite3.Connection` (READ-ONLY for `evaluation_runs` + `candidates` + `candidate_criteria` SQL) | Per-candidate per-sweep-point orchestration. Reads candidate universe from operator DB. NO writes. |
 | `output.py` | `dataclasses`, `csv`, `pathlib.Path`, V2 result dataclasses from `sweep.py` | Pure I/O formatter. ASCII-only output (Windows cp1252 safety per cumulative gotcha). |
@@ -432,9 +444,11 @@ V2 uses **direct Shape A parquet read via a NEW read-only V2 wrapper** at `resea
 
 **V2 read-only reader (`ohlcv_reader.py`) responsibilities**:
 - Compose the per-(ticker, source) Shape A parquet path: `{cache_dir}/{ticker}.{source}.parquet` per the Shape A naming convention (verified against `swing/data/ohlcv_archive.py` Shape A path conventions at writing-plans phase).
-- Read ONLY the yfinance Shape A parquet (`{ticker}.yfinance.parquet`); never touch the schwab_api Shape A parquet (L2 LOCK preserved per OQ-12 RECOMMEND).
-- Return the full per-ticker frame indexed by date. Caller slices to `<= data_asof_date` per §F.2.
-- NO fetch path. NO writes. NO archive mutation. If the parquet file does not exist OR if the slice has fewer than the required bars for `evaluate_one` (200 per §E.5), raise `OhlcvCoverageError` → caller skips per §E.5.
+- Read primary: the yfinance Shape A parquet (`{ticker}.yfinance.parquet`); NEVER touch the schwab_api Shape A parquet (L2 LOCK preserved per OQ-12 RECOMMEND).
+- **Legacy archive fallback (Codex R2.M2 RESOLVED)**: if `{ticker}.yfinance.parquet` does NOT exist, fall back to reading `{ticker}.parquet` (the legacy single-source archive). The production `_backward_compat_rename` at `swing/data/ohlcv_archive.py:584-657` copies legacy archives into yfinance Shape A AT FIRST PRODUCTION READ, but if the operator has not invoked production OhlcvArchive read paths for some tickers, the legacy file is still authoritative. V2 reader reads either path. Discriminating test: plant ONLY `{ticker}.parquet` legacy file + assert V2 reader returns correct bars (not raises `OhlcvCoverageError`).
+- **OHLCV column-case normalization (Codex R2.C1 RESOLVED)**: Shape A persists OHLCV columns as lowercase `open/high/low/close/volume` per `swing/data/ohlcv_archive.py:449+521-522`. Production criteria + evaluator expect capitalized `Open/High/Low/Close/Volume` per `swing/evaluation/criteria/trend_template.py:23` + `risk_feasibility.py:17-18` + `vcp.py:16-17` + `swing/evaluation/evaluator.py:55+59-60`. V2 reader normalizes lowercase → capitalized at the read boundary so downstream `evaluate_one(ctx)` sees the production-expected column names. Discriminating test: plant a Shape A parquet with lowercase columns + assert V2 reader returns DataFrame with capitalized columns + assert `evaluate_one(ctx)` does not raise `KeyError` against the normalized DataFrame.
+- Return the full per-ticker frame indexed by date with capitalized OHLCV columns. Caller slices to `<= data_asof_date` per §F.2.
+- NO fetch path. NO writes. NO archive mutation. If neither `{ticker}.yfinance.parquet` NOR legacy `{ticker}.parquet` exists OR if the slice has fewer than the required bars for `evaluate_one` (200 per §E.5), raise `OhlcvCoverageError` → caller skips per §E.5.
 - Discriminating test: plant both `{ticker}.schwab_api.parquet` AND `{ticker}.yfinance.parquet` files for a synthetic ticker + assert V2 reads ONLY the yfinance bytes via byte-checksum compare; assert V2 does NOT invoke `yf.download` / yf.Ticker / any yfinance API path (mock yfinance module + assert zero calls).
 
 Rationale for direct Shape A read:
@@ -453,7 +467,7 @@ REJECTED alternatives:
 
 For each candidate `(ticker, data_asof_date)`:
 
-1. Read full per-ticker parquet via `swing.data.ohlcv_archive.read_or_fetch_archive(ticker, ..., prefer_source='yfinance', ..., end_date=data_asof_date)`. Returns DataFrame indexed by date with OHLCV columns.
+1. Read full per-ticker parquet via NEW V2 reader `research.harness.aplus_v2_ohlcv_evaluator.ohlcv_reader.read_yfinance_shape_a(ticker, cache_dir)` per §F.1 amended (Codex M1+M2 RESOLVED). Returns DataFrame indexed by date with capitalized OHLCV columns (per Codex R2.C1 normalization at the read boundary). The reader bypasses `swing.data.ohlcv_archive.read_or_fetch_archive` entirely; NO fetch; legacy `{ticker}.parquet` fallback per Codex R2.M2.
 2. Slice to bars `<= data_asof_date` (inclusive of asof_date; OHLCV is the session that JUST closed at writer-stamp time per `data_asof_date` backward-looking semantics).
 3. Verify `len(sliced) >= 200` (minimum for TT MA200 per `swing/evaluation/criteria/trend_template.py:24-29`). If insufficient, raise `OhlcvCoverageError` (caught at sweep.py per §D.4).
 4. Pass sliced DataFrame to `CandidateContext(ohlcv=sliced, ...)`.
@@ -474,14 +488,24 @@ SELECT id, data_asof_date
 Verified: `evaluation_runs.id` + `evaluation_runs.data_asof_date` exist at `swing/data/migrations/0001_phase1_initial.sql:9-12`.
 
 ```sql
--- Read all candidates in those eval_runs (V2's primary universe scan)
-SELECT c.id, c.ticker, c.bucket, er.data_asof_date
+-- Read all candidates in those eval_runs (V2's primary universe scan).
+-- Joined with candidate_criteria to surface the persisted risk_feasibility
+-- result per candidate (Codex R2.M3 RESOLVED — needed for tier-1 vs tier-2
+-- parity classification per §E.4).
+SELECT c.id, c.ticker, c.bucket, er.data_asof_date,
+       cc_risk.result AS persisted_risk_result
   FROM candidates c
   JOIN evaluation_runs er ON er.id = c.evaluation_run_id
+  LEFT JOIN candidate_criteria cc_risk
+    ON cc_risk.candidate_id = c.id
+   AND cc_risk.layer = 'risk'
+   AND cc_risk.criterion_name = 'risk_feasibility'
   WHERE c.evaluation_run_id IN (:eval_run_ids)
   ORDER BY er.id DESC, c.ticker ASC;
 ```
-Verified: `candidates.id` + `candidates.ticker` + `candidates.bucket` + `candidates.evaluation_run_id` exist at `swing/data/migrations/0001_phase1_initial.sql:25-28+26`. `evaluation_runs.data_asof_date` already verified.
+Verified: `candidates.id` + `candidates.ticker` + `candidates.bucket` + `candidates.evaluation_run_id` exist at `swing/data/migrations/0001_phase1_initial.sql:25-28+26`. `candidate_criteria.candidate_id` + `.layer` + `.criterion_name` + `.result` exist at `0001_phase1_initial.sql:48-56`. `evaluation_runs.data_asof_date` already verified. LEFT JOIN handles candidates without a persisted risk_feasibility row (e.g., legacy fixtures from pre-Phase-1 — defaults to NULL → V2 treats as tier 2 conservatively).
+
+Per Codex R2.M3 RESOLVED: tier-1 (NON-risk-gated) classification uses `persisted_risk_result == 'pass'` (the risk gate did NOT cause the persisted bucket disposition); tier-2 classification uses `persisted_risk_result != 'pass'` OR NULL (the risk gate's outcome was load-bearing for the persisted bucket; V2 re-evaluation needs the `current_equity` surrogate per OQ-15). Discriminating test: plant 2 candidates with bucket='skip' — one with persisted_risk_result='pass' (skip caused by TT-gate; tier 1) + one with persisted_risk_result='fail' (skip caused by risk; tier 2); assert classifier puts each in correct tier.
 
 Per cumulative gotcha "SQL aggregation UNIT audit (Expansion #8 candidate)": V2's SQL does NOT use COUNT / GROUP BY / SUM — it's a pure row-fetcher. No JOIN-cardinality concerns. No DISTINCT needed (PRIMARY KEY on `candidates.id` guarantees per-row uniqueness). Verified.
 
@@ -500,10 +524,10 @@ Per `swing/evaluation/context.py:14-19`, BatchContext requires:
 V2 reconstructs at each `(eval_run_id, data_asof_date)` cohort:
 
 1. **`universe_tickers` = the FULL RS universe** (Codex C1 RESOLVED — NOT the per-eval_run candidate set). The RS universe is the ranking-universe-of-record from `cfg.paths.rs_universe_path` per production `swing/cli.py:449` + earnings_proximity precedent at `research/harness/earnings_proximity/run.py:197-201`+`279`. **Why**: `compute_rs(...).rank` per `swing/evaluation/rs.py:71-85` computes per-ticker RS percentile via cross-sectional ranking against the universe — using only candidate tickers would produce WRONG percentiles + flip TT8 results + break baseline parity per §E.4 invariant.
-   - NEW dependency: V2 reads the RS universe path from `cfg.paths.rs_universe_path` at invocation time. V2 fails-fast with `MissingRsUniversePathError` if the path is unset OR the file unreadable.
+   - NEW dependency: V2 reads the RS universe via `swing.evaluation.rs.load_universe(cfg.paths.rs_universe_path)` at invocation time. V2 fails-fast with `MissingRsUniversePathError` if the path is unset OR the file unreadable. **Codex R2.M4 RESOLVED**: V2 ADDITIONALLY validates the loaded universe is non-empty AND has ≥ N_MIN tickers (proposed default: 100; configurable via `--min-universe-size N`). `swing.evaluation.rs.load_universe` at `swing/evaluation/rs.py:22-42` returns `Universe(tickers=(), version='unknown')` for empty/malformed-but-readable files; V2 fails-fast with `EmptyRsUniverseError` rather than silently degrading TT8 to fallback-RS semantics for ALL candidates. Discriminating test: plant an empty universe file + assert V2 raises `EmptyRsUniverseError` with actionable hint.
    - NEW OQ-14 surfaces the historical-RS-universe-snapshot question (the universe membership at the historical eval_run may differ from the universe membership today; for V2 ship target, we accept current-universe-snapshot as the surrogate; per-eval_run-historical-universe-snapshot is V3+).
 2. `universe_version` = `f"v2_harness_eval_run_{eval_run_id}_universe_{cfg.paths.rs_universe_path.name}"` (NOT the production universe-version; V2 is a research-branch invariant per §A.1).
-3. `universe_hash` = SHA-1 of the sorted `universe_tickers` tuple (deterministic; reproducible).
+3. `universe_hash` = `v2_universe_hash_` prefix + SHA-256 of the sorted `universe_tickers` tuple bytes (Codex R2.m1 RESOLVED — explicit prefix marks the V2 research-branch derivation; SHA-256 matches production's `swing.evaluation.rs.universe_version_hash` at `swing/evaluation/rs.py:45-49`; deterministic; reproducible). NOT comparable to persisted `evaluation_runs.rs_universe_hash` if such a column exists.
 4. `returns_12w_by_ticker` = per-ticker 12-week return computed from the OHLCV archive slice across the FULL RS universe (NOT just candidates) — mirror earnings_proximity `_return_12w` at `research/harness/earnings_proximity/replay.py:146-158`. Per-ticker skip if <60 bars history available; per-ticker `OhlcvCoverageError` accumulates into per-universe-ticker-skip count (separate from per-candidate skip per §E.5).
 5. `spy_return_12w` = SPY's 12-week return at the asof_date (separate OHLCV archive read via §F.1 V2 reader).
 
@@ -526,13 +550,15 @@ V2 reconstructs at each `(eval_run_id, data_asof_date)` cohort:
 
 V2 caches the BatchContext per `(eval_run_id, substituted_cfg.rs.horizon_weeks)` tuple. Reduces BatchContext reconstructions from 482k to 63 eval_runs × ~5 distinct horizon_weeks values = ~315.
 
-V2 also caches the per-(ticker, asof_date) sliced OHLCV per the V2 invocation lifetime. Each (ticker, eval_run_id) pair has ONE sliced frame loaded into memory; the 17 variables × 5 sweep_points all share the same frame. Reduces parquet open+slice from 482k to 5681 × 1 = 5681 (or fewer if tickers repeat across eval_runs, which they typically do — most tickers appear in multiple eval_runs in the rolling pipeline).
+**V2 OHLCV cache key choice (Codex R2.M5 RESOLVED)** — V2 caches per-TICKER (full-history frame), NOT per-(ticker, asof_date) slice. Each ticker's parquet is OPENED ONCE per V2 invocation; the full-history frame is held in memory and sliced in-memory (cheap) per `(ticker, asof_date)` combo as needed. This makes the cache key `ticker` (NOT `(ticker, asof_date)`) and brings the parquet-open count down to at-most `N_universe + N_candidate_tickers_not_in_universe` (typically `N_universe` for ranking-universe-member candidates + the candidate-only tickers that aren't in the RS universe).
+
+For S3's universe (5681 candidates + N_universe ranking universe; many candidate tickers ARE ranking-universe-members; let candidate_tickers \ universe_tickers = D; then parquet opens ≤ N_universe + D ≤ N_universe + 5681 worst-case if zero overlap).
 
 With both caches: estimated V2 runtime ≈ 15-45 minutes on a fast SSD, within OQ-9's 60-minute target.
 
 **Acceptance criteria**:
 - `test_v2_per_eval_run_batch_context_cached_not_recomputed` (discriminating; counts BatchContext construction calls; must be ≤315).
-- `test_v2_per_ticker_per_asof_date_ohlcv_slice_cached` (discriminating; counts parquet file opens; must be ≤ universe_ticker_count + 5681).
+- `test_v2_per_ticker_ohlcv_parquet_opened_once` (discriminating per Codex R2.M5; counts parquet `pd.read_parquet` calls; must be ≤ N_universe + N_candidate_tickers_not_in_universe).
 - `test_v2_runtime_below_60_minutes_on_smoke_universe` (smoke; synthetic 100-candidate / 5-eval_run / 17-var universe; runtime cap 90 seconds).
 
 If V2 still exceeds OQ-9 budget on operator hardware, V2.5 candidates banked: parquet bulk-read via pyarrow; per-eval_run universe-tickers OHLCV pre-load into a single memory frame indexed by (ticker, date); per-process parallelism via concurrent.futures (operator-paired since this is research code).
@@ -677,13 +703,13 @@ Forward-binding: if V2 ship reveals criterion drift (per §E.4 baseline parity i
 
 **Question**: Limit-to-recent vs fetch-on-demand vs piggyback?
 
-**RECOMMEND**: Piggyback production OhlcvArchive with `prefer_source='yfinance'` enforcement (refinement of option (c)) per §F.1. Reuses operator's authoritative archive; preserves L2 LOCK (OQ-12); reproducible.
+**RECOMMEND** (amended per Codex M1+M2 RESOLVED): Direct Shape A parquet read via NEW read-only V2 wrapper `ohlcv_reader.py` per §F.1 amended decision. Bypasses `read_or_fetch_archive` entirely (which has no `prefer_source` parameter AND actively fetches/mutates the archive). NO fetch path; NEVER reads schwab_api Shape A; reproducible per-V2-invocation; legacy `{ticker}.parquet` fallback per Codex R2.M2. L2 LOCK preserved (OQ-12 + OQ-16).
 
 ### OQ-2: Per-criterion evaluator interface
 
 **Question**: Mutate cfg dataclass vs explicit override-dict?
 
-**RECOMMEND**: (a) mutate cfg via `dataclasses.replace` + invoke production `evaluate_one(ctx)` end-to-end per §D.1. High-fidelity; cross-coupling preserved for free. Special case `vcp.watch_max_fails` per §E.3 / OQ-11.
+**RECOMMEND** (amended per Codex R2.m2): (a) mutate cfg via `dataclasses.replace` + invoke production `evaluate_one(ctx)` end-to-end per §D.1. High-fidelity; single-variable downstream propagation preserved (e.g., substituted `rs.rs_rank_min_pass` propagates through TT8 → tt_passes → bucket_for). Does NOT detect multi-variable interaction effects (that's V3+ per OQ-7). Special case `vcp.watch_max_fails` per §E.3 / OQ-11.
 
 ### OQ-3: Sweep range strategy per variable
 
@@ -713,7 +739,7 @@ Forward-binding: if V2 ship reveals criterion drift (per §E.4 baseline parity i
 
 **Question**: V2 stays 1D vs introduces pair-wise variables?
 
-**RECOMMEND**: 1D per V2.1 §IV.B parsimony. 2D + interaction terms deferred V3+. Note that cross-coupling is preserved WITHIN a single 1D substitution per §D.1 (e.g., substituting `rs.rs_rank_min_pass` propagates through TT8 → `tt_passes` → `bucket_for`).
+**RECOMMEND** (amended per Codex R2.m2): 1D per V2.1 §IV.B parsimony. 2D + interaction terms deferred V3+. Note that single-variable downstream propagation IS preserved WITHIN a single 1D substitution per §D.1 (e.g., substituting `rs.rs_rank_min_pass` propagates through TT8 → `tt_passes` → `bucket_for`); but a 1D sweep does NOT detect interaction effects between MULTIPLE thresholds.
 
 ### OQ-8: Method-record promotion criteria
 
@@ -747,7 +773,7 @@ Forward-binding: if V2 ship reveals criterion drift (per §E.4 baseline parity i
 
 **Question**: V2 OHLCV reconstruction may fall through Schwab API in the production ladder (via `swing/data/ohlcv_archive.py`'s `_SOURCE_PRECEDENCE_MARKET_DATA` shape — verified at lines 52-58: `schwab_api: 0, yfinance: 1`). V2 must explicitly enforce yfinance-only.
 
-**RECOMMEND**: V2 invokes `read_or_fetch_archive(..., prefer_source='yfinance', ...)` (or equivalent — actual signature verification in writing-plans phase). Discriminating test: plant both schwab_api Shape A and yfinance Shape A parquet files for a synthetic ticker + assert V2 reads ONLY the yfinance bytes (e.g., via byte-checksum compare; or via mock that fails the schwab read path). L2 LOCK preserved (ZERO new Schwab API calls through V2 dispatch).
+**RECOMMEND** (amended per Codex M1+M2+R2.M2+R2.C1 RESOLVED): V2 reads the yfinance Shape A parquet directly via the NEW `research/harness/aplus_v2_ohlcv_evaluator/ohlcv_reader.py` wrapper per §F.1 amended. Reader opens `{ticker}.yfinance.parquet` (or legacy `{ticker}.parquet` fallback); normalizes lowercase OHLCV → capitalized; NEVER opens `{ticker}.schwab_api.parquet`. Discriminating test: plant both schwab_api Shape A and yfinance Shape A parquet files for a synthetic ticker + assert V2 reads ONLY the yfinance bytes (via byte-checksum compare) + assert V2 process never opens the schwab_api parquet file (via file-open mock). L2 LOCK preserved (ZERO new Schwab API calls through V2 dispatch).
 
 ### OQ-13 (NEW): OHLCV coverage failure attribution mode
 
@@ -789,7 +815,7 @@ Forward-binding: if V2 ship reveals criterion drift (per §E.4 baseline parity i
 
 **Question**: §A.1 originally claimed "Production `swing/` code is READ-ONLY through this dispatch arc." But V2 must register the new CLI subcommand `swing diagnose aplus-sensitivity-v2` in `swing/cli.py`. This is a contradiction or an explicit carve-out?
 
-**RECOMMEND**: Explicit carve-out per §A.1 amended language. The CLI subcommand registration is a ~5-10 line `@click.command` decorated function added to `swing/cli.py` mirroring the V1 `swing diagnose aplus-sensitivity` registration at the same precedent file (T-T4.SB.1 ship). This is the SOLE production-`swing/` modification V2 dispatch makes. NO other writes; NO schema change; NO migration. Discriminating test: `git diff swing/ --stat` after V2 executing-plans ship shows ONLY `swing/cli.py` modified.
+**RECOMMEND** (amended per Codex R2.M6): Explicit carve-out per §A.1 amended language. The CLI subcommand registration is a `@click.command` decorated function added to `swing/cli.py` mirroring the V1 `swing diagnose aplus-sensitivity` registration at the same precedent file (T-T4.SB.1 ship; V1 registration spans roughly `swing/cli.py:4748-4787`). Carve-out scope described by SURFACE: subcommand handler + diagnose group attachment + Click option definitions + ClickException wrapping + delegation to research-harness `run_harness`. Realistic V2 line count: 35-60 lines (NOT the original 5-10 unrealistic estimate). This is the SOLE production-`swing/` modification V2 dispatch makes. NO other writes; NO schema change; NO migration. Discriminating test: `git diff swing/ --stat` after V2 executing-plans ship shows ONLY `swing/cli.py` modified.
 
 ---
 
