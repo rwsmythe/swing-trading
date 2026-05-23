@@ -295,15 +295,6 @@ def run_v2_sweep(
     entries: list[SweepEntryV2] = []
     flipped: list[FlippedCandidate] = []
 
-    # Baseline parity tracking (only at current_value sweep point)
-    tier1_mismatch_keys: list[str] = []
-    tier2_match_count = 0
-    tier2_mismatch_count = 0
-    tier2_via_surrogate_count = 0
-    # Spec §H T-V2.3.9: total tier-1 and tier-2 candidate counts at baseline
-    baseline_tier_1_count = 0
-    baseline_tier_2_count = 0
-
     # Global OHLCV coverage skip count (per-V2-invocation scalar, Codex R1.M3)
     # This is precomputed: a candidate that fails OHLCV coverage fails for ALL
     # sweep points. Count unique (ticker, eval_run_id) pairs that fail coverage
@@ -312,6 +303,21 @@ def run_v2_sweep(
         candidate_rows_with_run=candidate_rows_with_run,
         eval_run_dates=eval_run_dates,
         ohlcv_getter=_get_ohlcv,
+    )
+
+    # --- Baseline parity computed ONCE (Codex R1.M2 RESOLVED) ---
+    # Run ONE baseline pass with unsubstituted cfg to populate parity counts.
+    # Pre-fix: parity was tracked inside the variable loop at is_current_point,
+    # causing baseline_tier_1_count / tier2_* to be inflated by N_variables
+    # (each variable's current_value sweep_point re-tallied the same candidates).
+    baseline_parity = _compute_baseline_parity(
+        candidate_rows_with_run=candidate_rows_with_run,
+        eval_runs=eval_runs,
+        by_run=by_run,
+        cfg=cfg,
+        flipped=flipped,
+        ohlcv_getter=_get_ohlcv,
+        cohort_getter=_get_cohort,
     )
 
     truncated = False
@@ -363,27 +369,9 @@ def run_v2_sweep(
                         )
                     except OhlcvCoverageError:
                         ohlcv_skips_this_point += 1
-                        if is_current_point:
-                            _record_flip(
-                                flipped,
-                                cand_row=cand_row,
-                                run_id=run_id,
-                                sweep_point=sweep_point,
-                                new_bucket="ohlcv_coverage_skip",
-                                via_surrogate=cohort.current_equity_via_surrogate,
-                            )
                         continue
                     except OutOfRangeSubstitutionError:
                         out_of_range_skips += 1
-                        if is_current_point:
-                            _record_flip(
-                                flipped,
-                                cand_row=cand_row,
-                                run_id=run_id,
-                                sweep_point=sweep_point,
-                                new_bucket="out_of_range_skip",
-                                via_surrogate=cohort.current_equity_via_surrogate,
-                            )
                         continue
                     except Exception as exc:
                         eval_error_skips += 1
@@ -392,15 +380,6 @@ def run_v2_sweep(
                             "eval_run_id=%d variable=%r sweep_point=%r: %s",
                             cand_row.ticker, run_id, var.name, sweep_point, exc,
                         )
-                        if is_current_point:
-                            _record_flip(
-                                flipped,
-                                cand_row=cand_row,
-                                run_id=run_id,
-                                sweep_point=sweep_point,
-                                new_bucket="evaluation_error_skip",
-                                via_surrogate=cohort.current_equity_via_surrogate,
-                            )
                         continue
 
                     # Count bucket
@@ -412,37 +391,6 @@ def run_v2_sweep(
                         excluded_count += 1
                     else:
                         skip_count += 1
-
-                    # Parity tracking at current_value point
-                    if is_current_point:
-                        tier = classify_candidate_tier(cand_row.persisted_risk_result)
-                        # Tally total tier-1 / tier-2 counts at baseline
-                        # (spec §H T-V2.3.9 manifest fields)
-                        if tier == 1:
-                            baseline_tier_1_count += 1
-                        else:
-                            baseline_tier_2_count += 1
-
-                        if cand_row.persisted_bucket != bucket:
-                            _record_flip(
-                                flipped,
-                                cand_row=cand_row,
-                                run_id=run_id,
-                                sweep_point=sweep_point,
-                                new_bucket=bucket,
-                                via_surrogate=cohort.current_equity_via_surrogate,
-                            )
-                            if tier == 1:
-                                tier1_mismatch_keys.append(
-                                    f"{cand_row.ticker}:{run_id}"
-                                )
-                            else:
-                                tier2_mismatch_count += 1
-                        else:
-                            if tier == 2:
-                                tier2_match_count += 1
-                                if cohort.current_equity_via_surrogate:
-                                    tier2_via_surrogate_count += 1
 
             sub_entries.append(SweepEntryV2(
                 variable_name=var.name,
@@ -483,16 +431,6 @@ def run_v2_sweep(
                 evaluation_error_skip_count=e.evaluation_error_skip_count,
             ))
 
-    baseline_parity = BaselineParityReport(
-        tier1_match=(len(tier1_mismatch_keys) == 0),
-        tier1_mismatch_candidates=tuple(tier1_mismatch_keys),
-        tier2_match_count=tier2_match_count,
-        tier2_mismatch_count=tier2_mismatch_count,
-        tier2_via_surrogate_count=tier2_via_surrogate_count,
-        tier_1_count=baseline_tier_1_count,
-        tier_2_count=baseline_tier_2_count,
-    )
-
     elapsed = time.monotonic() - t_start
     return SweepResultV2(
         eval_runs_window=eval_runs_window,
@@ -514,6 +452,117 @@ def run_v2_sweep(
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
+
+def _compute_baseline_parity(
+    *,
+    candidate_rows_with_run: list[tuple[CandidateRow, int]],
+    eval_runs: list[tuple[int, object]],
+    by_run: dict[int, list[tuple[CandidateRow, int]]],
+    cfg: object,
+    flipped: list[FlippedCandidate],
+    ohlcv_getter: object,
+    cohort_getter: object,
+) -> BaselineParityReport:
+    """Compute baseline parity ONCE using unsubstituted cfg.
+
+    Codex R1.M2 RESOLVED: baseline parity was computed inside the per-variable
+    loop at is_current_point. With N=17 variables each having one current_value
+    sweep_point, baseline_tier_1_count and tier2_* were inflated 17x.
+
+    This helper runs ONE pass over all candidates with original cfg (no
+    substitution) and produces the TRUE single-invocation baseline counts.
+
+    Returns a BaselineParityReport with accurate (non-inflated) counts.
+    """
+    # Use a dummy variable-like context: evaluate with cfg unchanged.
+    # We reuse _evaluate_candidate_under_sweep with a sentinel variable that
+    # won't trigger any substitution -- but that function needs a SweepVariable.
+    # Simpler: inline the baseline evaluation here using the existing
+    # _get_ohlcv / _get_cohort interface (no substitution, just evaluate_one).
+    from swing.evaluation.context import CandidateContext, MarketContext
+
+    baseline_horizon = cfg.rs.horizon_weeks  # type: ignore[union-attr]
+
+    tier1_mismatch_keys: list[str] = []
+    tier2_match_count = 0
+    tier2_mismatch_count = 0
+    tier2_via_surrogate_count = 0
+    baseline_tier_1_count = 0
+    baseline_tier_2_count = 0
+
+    for run_id, _asof_date in eval_runs:
+        cohort = cohort_getter(run_id, baseline_horizon)
+        run_cands = by_run.get(run_id, [])
+
+        for cand_row, _rid in run_cands:
+            ticker = cand_row.ticker
+            asof_date = cand_row.data_asof_date
+
+            # Get sliced OHLCV; skip on coverage failure (not a parity error)
+            try:
+                full_df = ohlcv_getter(ticker)
+                sliced = full_df.loc[full_df.index.date <= asof_date]
+                if len(sliced) < 200:
+                    continue  # ohlcv_coverage_skip; not a parity candidate
+            except (OhlcvCoverageError, FileNotFoundError, OSError):
+                continue
+
+            market = MarketContext()
+            ctx = CandidateContext(
+                ticker=ticker,
+                ohlcv=sliced,
+                config=cfg,
+                batch=cohort.batch,
+                market=market,
+                current_equity=cohort.current_equity,
+            )
+            try:
+                candidate = evaluate_one(ctx)
+            except Exception as exc:
+                _logger.warning(
+                    "V2 baseline parity: evaluation_error for ticker=%r "
+                    "eval_run_id=%d: %s",
+                    ticker, run_id, exc,
+                )
+                continue
+
+            bucket = candidate.bucket
+            tier = classify_candidate_tier(cand_row.persisted_risk_result)
+
+            if tier == 1:
+                baseline_tier_1_count += 1
+            else:
+                baseline_tier_2_count += 1
+
+            if cand_row.persisted_bucket != bucket:
+                _record_flip(
+                    flipped,
+                    cand_row=cand_row,
+                    run_id=run_id,
+                    sweep_point=cfg.rs.rs_rank_min_pass,  # type: ignore[union-attr]
+                    new_bucket=bucket,
+                    via_surrogate=cohort.current_equity_via_surrogate,
+                )
+                if tier == 1:
+                    tier1_mismatch_keys.append(f"{ticker}:{run_id}")
+                else:
+                    tier2_mismatch_count += 1
+            else:
+                if tier == 2:
+                    tier2_match_count += 1
+                    if cohort.current_equity_via_surrogate:
+                        tier2_via_surrogate_count += 1
+
+    return BaselineParityReport(
+        tier1_match=(len(tier1_mismatch_keys) == 0),
+        tier1_mismatch_candidates=tuple(tier1_mismatch_keys),
+        tier2_match_count=tier2_match_count,
+        tier2_mismatch_count=tier2_mismatch_count,
+        tier2_via_surrogate_count=tier2_via_surrogate_count,
+        tier_1_count=baseline_tier_1_count,
+        tier_2_count=baseline_tier_2_count,
+    )
+
 
 def _fetch_candidates_with_run_id(
     conn: sqlite3.Connection,
