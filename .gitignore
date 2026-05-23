@@ -41,7 +41,13 @@ reference/images/
 !.claude/agents/*.md
 
 # Pipeline outputs (regenerated each run; not tracked)
-exports/
+# Exception: exports/diagnostics/*.{csv,md} are committed as research ledger
+# (per V2 OHLCV arc; negation rules below override the exports/ ignore).
+exports/*
+!exports/diagnostics
+exports/diagnostics/*
+!exports/diagnostics/*.csv
+!exports/diagnostics/*.md
 
 # Broker statements (personal financial data)
 thinkorswim/

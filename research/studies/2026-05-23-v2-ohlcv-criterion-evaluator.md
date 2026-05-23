@@ -1,7 +1,10 @@
 # Study: V2 OHLCV Criterion-Evaluator Sensitivity Sweep
 
 **Method record:** `../method-records/aplus-criteria-calibration.md`
-**Status:** harness shipped; operator DB run pending.
+**Status:** harness shipped; implementer smoke run captured at
+`exports/diagnostics/aplus-sensitivity-v2-20260523T230131Z.{csv,md}`
+(5 eval_runs, partial -- 120s cap, 2/17 variables completed). Full
+63-eval-run operator run pending (see phase-0-tasks.md "Next").
 **Date:** 2026-05-23
 **Author:** Applied Research arc (Path B LOCKED at `b4d7719`; first arc post-Phase-13-FULLY-CLOSED).
 
@@ -122,7 +125,23 @@ reads Shape A (wins per V2 design). The `both_exist_shape_a_wins_count` in the
 manifest enumerates affected tickers. When non-zero, the operator should
 verify the Shape A archive is the authoritative source for those tickers.
 
-*To be populated post operator DB run.*
+**Implementer smoke run findings (partial; 5 eval_runs, 120s cap):**
+
+- Tier-1 match: FAIL (CRITERION DRIFT DETECTED at DK:62 -- 3 occurrences
+  across sweep points. DK was persisted as `aplus` or `watch` but V2
+  evaluate_one recomputed a different bucket. Operator action required:
+  verify whether DK's classification at eval_run 62 reflects a real
+  production criteria-drift or a known cfg/code divergence at that date.)
+- Tier-2 match count: 30 / Tier-2 mismatch count: 45 (non-blocking)
+- Tier-2 via surrogate count: 0 (all eval-runs had equity snapshots)
+- Both-exist: 16 occurrences (AESI + PL + DK -- accumulated across 5
+  eval_runs and 2 variables sweep. Operator should clean up stale
+  legacy parquet files for AESI, PL, DK from prices-cache directory.)
+- OHLCV coverage skips (global): 5 (FPS, PURR missing sufficient history)
+- Universe size: 516 tickers
+
+Full 63-eval-run findings pending operator manual re-run
+(see `exports/diagnostics/aplus-sensitivity-v2-<ISO>.md` after operator run).
 
 ## Per-variable findings
 
