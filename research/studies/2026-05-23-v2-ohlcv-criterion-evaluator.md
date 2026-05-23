@@ -283,4 +283,22 @@ Per spec §M.4 + brainstorming return report §4:
 
 ## Amendments
 
-*(None at V2 ship. To be appended post operator review of findings.)*
+**Amendment 1 (2026-05-23, post-ship QA):** Three Issues reconciled:
+
+1. **findings table gate rows populated from partial smoke** -- 2 gate-variable
+   rows (`trend_template.min_passes` + `vcp.watch_max_fails`) updated with
+   actual data from 5-eval-run partial smoke CSV. Caveat added; 15 threshold
+   variables remain TBD pending operator full run.
+
+2. **both-exist banner deduplication fix** -- `output.py` now emits
+   `sorted(set(affected_tickers))` instead of raw list at banner emit time.
+   Same ticker was appended once per eval_run per variable per sweep_point;
+   partial smoke showed "16 entries for 3 unique tickers" which was misleading.
+   Discriminating test added (test_aplus_v2_ohlcv_output.py test 14).
+
+3. **L2 LOCK test count reconciliation** -- closer commit `737c589` body
+   cited "3 BINDING discriminating tests" (undercount). Canonical count is
+   **5 L2 LOCK discriminating tests (3 BINDING + 2 defensive) per spec §F + §K**
+   as documented in: (a) test_aplus_v2_ohlcv_reader.py module docstring;
+   (b) method-record aplus-criteria-calibration.md line 63; (c) plan §F + §K.
+   Closer commit is immutable; this amendment serves as the visible correction.
