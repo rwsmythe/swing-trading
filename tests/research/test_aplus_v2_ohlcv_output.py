@@ -20,14 +20,15 @@ from pathlib import Path
 
 import pytest
 
-from research.harness.aplus_v2_ohlcv_evaluator.ohlcv_reader import BothExistDiagnostic
+from research.harness.aplus_v2_ohlcv_evaluator.ohlcv_reader import (
+    BothExistDiagnostic,
+)
 from research.harness.aplus_v2_ohlcv_evaluator.sweep import (
     BaselineParityReport,
     FlippedCandidate,
     SweepEntryV2,
     SweepResultV2,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixture helpers
@@ -211,18 +212,38 @@ def test_markdown_matrix_12col_render(tmp_path: Path) -> None:
     write_sensitivity_markdown_v2(result, md_path)
 
     text = md_path.read_text(encoding="utf-8")
-    # Find the sensitivity matrix table
-    lines = [l for l in text.splitlines() if l.strip().startswith("|")]
+    # Find the sensitivity matrix section (after "## Sensitivity Matrix" heading)
+    assert "## Sensitivity Matrix" in text, "Expected '## Sensitivity Matrix' section"
+    matrix_start = text.index("## Sensitivity Matrix")
+    # Find the next ## section heading to bound the matrix text
+    next_section = text.find("\n## ", matrix_start + 1)
+    matrix_text = (
+        text[matrix_start:]
+        if next_section == -1
+        else text[matrix_start:next_section]
+    )
+
+    # Extract pipe-delimited table rows from the matrix section only
+    matrix_lines = [
+        row for row in matrix_text.splitlines()
+        if row.strip().startswith("|")
+    ]
     # There should be at least the header row + separator row + 1 data row
-    assert len(lines) >= 3, f"Expected table rows, found: {lines}"
+    assert len(matrix_lines) >= 3, f"Expected matrix table rows, found: {matrix_lines}"
 
     # Header row: count pipe chars
-    header_row = lines[0]
-    # Each cell is delimited by |; a row with 12 cols has 13 | chars
+    # A 12-column table row has 13 | chars (leading + 12 separators)
+    header_row = matrix_lines[0]
     pipe_count = header_row.count("|")
     assert pipe_count >= 13, (
         f"Matrix header has {pipe_count} pipes, expected >= 13 (12 cols): {header_row!r}"
     )
+
+    # Each data row (skip separator row) has >= 13 pipes
+    for data_row in matrix_lines[2:]:
+        assert data_row.count("|") >= 13, (
+            f"Matrix data row has {data_row.count('|')} pipes, expected >= 13: {data_row!r}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -425,9 +446,11 @@ def test_both_exist_warning_banner_suppressed_when_count_zero(tmp_path: Path) ->
     write_sensitivity_markdown_v2(result, md_path)
 
     text = md_path.read_text(encoding="utf-8")
-    # No both-exist warning section when count == 0
-    assert "both" not in text.lower() or "WARNING" not in text, (
-        f"Unexpected both-exist WARNING when count=0:\n{text[:600]}"
+    # No both-exist warning SECTION header when count == 0
+    # The notes section may reference OQ-18 generically; what must be absent
+    # is the dedicated warning section heading.
+    assert "## WARNING: Both-Exist Archive Files Detected" not in text, (
+        f"Unexpected both-exist WARNING section when count=0:\n{text[:600]}"
     )
 
 
