@@ -11,7 +11,6 @@ from __future__ import annotations
 import sqlite3
 
 from research.harness.aplus_sensitivity.sweep import (
-    SweepEntry,
     SweepResult,
     run_sensitivity_sweep,
 )
@@ -20,7 +19,6 @@ from research.harness.aplus_sensitivity.variables import (
     enumerate_variables,
 )
 from swing.config import Config
-
 
 # ---------------------------------------------------------------------------
 # Inline fixture helpers (kept here -- not in conftest -- because they are

@@ -34,11 +34,14 @@ def test_audit_enumerates_known_metric_surfaces() -> None:
 
 
 def test_audit_rows_are_frozen_dataclasses() -> None:
-    rows = enumerate_metric_surfaces()
-    assert len(rows) >= 4
+    import dataclasses
+
     import pytest
 
-    with pytest.raises(Exception):
+    rows = enumerate_metric_surfaces()
+    assert len(rows) >= 4
+
+    with pytest.raises(dataclasses.FrozenInstanceError):
         # frozen dataclass -- attribute assignment must fail.
         rows[0].surface_name = "tampered"  # type: ignore[misc]
 

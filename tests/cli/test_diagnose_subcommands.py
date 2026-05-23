@@ -15,7 +15,6 @@ from click.testing import CliRunner
 # tests/cli/test_cli_advisory.py + test_cli_pipeline.py) imports ``main``.
 from swing.cli import main as cli
 
-
 # ---------------------------------------------------------------------------
 # Inline fixture helpers (plant production-shape DB rows matching
 # swing/data/migrations/0001_phase1_initial.sql).
