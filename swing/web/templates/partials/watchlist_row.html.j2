@@ -5,8 +5,14 @@
    (Mapping[ticker, bytes]) when present in the enclosing scope (DashboardVM
    or WatchlistVM both populate it from chart_renders cache). The row gains a
    compact thumbnail column when bytes are available; omitted otherwise so
-   pre-cache callers still render unchanged. -#}
-{% set _thumb_bytes = vm.watchlist_chart_svg_bytes.get(w.ticker) if vm is defined and vm.watchlist_chart_svg_bytes else None %}
+   pre-cache callers still render unchanged.
+
+   Phase 13 T-T4.SB.3 (Item 5 + Item 6) — also accepts a direct
+   `chart_svg_bytes_for_row` context var from the /watchlist/{ticker}/row
+   collapse route (which has no enclosing `vm` — the route renders a single
+   row via build_watchlist_row + JIT cache lookup); without this the
+   collapse path's thumbnail would render blank after expand. -#}
+{% set _thumb_bytes = chart_svg_bytes_for_row if chart_svg_bytes_for_row is defined and chart_svg_bytes_for_row else (vm.watchlist_chart_svg_bytes.get(w.ticker) if vm is defined and vm.watchlist_chart_svg_bytes else None) %}
 <tr id="watchlist-row-{{ w.ticker }}"
     hx-get="/watchlist/{{ w.ticker }}/expand" hx-swap="outerHTML"
     hx-headers='{"HX-Request": "true"}'>
