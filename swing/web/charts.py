@@ -265,6 +265,8 @@ def render_hyprec_detail_svg(
                              label="pattern window")
     if len(volume) > 0:
         ax_vol.bar(range(len(volume)), volume.values, color="#888")
+    # Phase 13 T-T4.SB.5 Item 3: strip volume y-tick labels (ylabel preserved).
+    ax_vol.set_yticks([])
     ax_price.legend(loc="upper left", fontsize=8)
     ax_price.set_ylabel("Price (USD)")
     ax_vol.set_ylabel("Volume")
@@ -362,6 +364,8 @@ def render_market_weather_svg(
         ax_vol.bar(range(len(volume)), volume.values,
                    color="#888", width=1.0)
     ax_vol.set_xticks([])
+    # Phase 13 T-T4.SB.5 Item 3: strip volume y-tick labels.
+    ax_vol.set_yticks([])
     _set_suptitle_no_math(fig, "Market weather (SP500 daily)")
     return _svg_bytes_from_fig(fig)
 
