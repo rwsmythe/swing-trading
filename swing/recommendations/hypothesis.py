@@ -414,25 +414,27 @@ def prioritize_recommendations(
 
 
 def _label_matches_hypothesis(label: str | None, hypothesis_name: str) -> bool:
-    """Trade's `hypothesis_label` matches a hypothesis if the label
-    STARTS WITH the hypothesis NAME (case-insensitive).
+    """Trade's ``hypothesis_label`` matches a hypothesis via 3-rule
+    delimiter-aware contract. See
+    :func:`swing.metrics.label_match.label_matches_hypothesis` for the
+    canonical contract.
 
-    Adversarial review R1 Major 2: prior implementation used substring
-    match, which would silently double-count a label like
-    "A+ baseline / Sub-A+ VCP-not-formed combo" toward both hypotheses
-    and contaminate tripwire/progress arithmetic. Prefix is strict
-    enough to prevent that while still accepting VIR's free-text
-    backfill (which begins with "sub-A+ VCP-not-formed ..." matching
-    the "Sub-A+ VCP-not-formed" hypothesis after case-folding).
+    Phase 13 T-T4.SB.2 (Item 7 broader metrics audit) replaces the prior
+    bare-startswith implementation with the shared 3-rule delimiter-aware
+    helper -- closes the per-trade-suffix false-positive defect family AND
+    rejects bare-prefix extensions like ``"Sub-A+ VCP-not-formedness"``.
+    Companion SQL helper at
+    :func:`swing.metrics.label_match.label_matches_hypothesis_sql`.
 
     Operator-facing implication: when free-typing a hypothesis label,
-    START with the canonical hypothesis name; descriptive context goes
-    AFTER. The recommendation engine's `_descriptive_label` builder
-    already follows this convention. NULL labels never match.
+    START with the canonical hypothesis name FOLLOWED BY a space (or
+    semicolon) and then the descriptive context. The recommendation
+    engine's ``_descriptive_label`` builder already follows this
+    convention. NULL labels never match.
     """
-    if not label:
-        return False
-    return label.lower().startswith(hypothesis_name.lower())
+    from swing.metrics.label_match import label_matches_hypothesis as _shared
+
+    return _shared(label, hypothesis_name)
 
 
 def compute_tripwire_status(

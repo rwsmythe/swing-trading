@@ -965,17 +965,12 @@ def test_pattern_evaluations_template_match_score_persistable(
     conn.close()
 
 
-@pytest.mark.skip(
-    reason=(
-        "Cross-bundle pin per plan §H.3 / §1.5 — un-skip at T4.SB closer "
-        "(verifies ALL 8 v20 schema-CHECK + Python-constant + dataclass-"
-        "validator triples remain atomically paired across the Phase 13 arc)."
-    )
-)
 def test_v20_atomic_landing_python_constants_validators_paired() -> None:
     """Cross-bundle pin: all v20 paired-triples land atomically.
 
-    Un-skip at T4.SB closer per plan §H.3.
+    Un-skipped at T4.SB closer (T-T4.SB.6) per plan §H.3 schedule —
+    verifies ALL 8 v20 schema-CHECK + Python-constant + dataclass-
+    validator triples remain atomically paired across the Phase 13 arc.
     """
     # Smoke check: each constant + matching dataclass exists post-Phase-13.
     assert DETECTOR_PATTERN_CLASSES

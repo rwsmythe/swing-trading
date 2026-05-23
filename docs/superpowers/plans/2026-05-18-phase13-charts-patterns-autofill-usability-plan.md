@@ -2622,6 +2622,7 @@ Per §B.2 + OQ-12 BINDING:
 | `test_base_layout_vm_banner_pin_phase13_arc_complete` | T4.SB T-D.6 | T4.SB closer | all Phase 13 VMs extending base.html.j2 populate banner fields |
 | `test_v20_atomic_landing_python_constants_validators_paired` | T2.SB1 T-A.1.1 | T4.SB closer | Phase 12 C.A T-A.2 LOCK preserved across Phase 13 arc |
 | `test_phase13_t2_sb6c_v21_trade_backlinks_schema_atomic` | T2.SB6c T-A.6c.1 | T2.SB6c T-A.6c.5 closer | v21 trades backlinks schema + FK + index + mapper + INSERT roundtrip per Delta |
+| 13. hypothesis_label delimiter-aware match invariant 4 surfaces (`test_phase13_t4_sb_cross_bundle_pin_row_13`) | T-T4.SB.2 plant | T-T4.SB.6 promote | delimiter-aware match invariant holds at 4 surfaces (list_trades_for_cohort + count_per_cohort + hyp_progress_card_vm + cli_compute_hypothesis_progress_breakdown); GREEN |
 
 ### §H.4 Sub-bundle merge gates
 

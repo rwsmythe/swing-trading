@@ -307,6 +307,14 @@ def test_watchlist_expanded_template_renders_pipeline_failed_reason(
     )
     monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
     monkeypatch.setattr(PriceCache, "degraded_until", lambda self: None)
+    # Phase 13 T-T4.SB.3 (Item 5): force JIT short-circuit so the banner
+    # branch fires. Without this stub, the OhlcvCache fallback may render
+    # SVG that suppresses the chart-unavailable banner per spec §B.5.
+    from swing.web.ohlcv_cache import OhlcvCache
+    monkeypatch.setattr(
+        OhlcvCache, "get_or_fetch",
+        lambda self, *, ticker, window_days=200: None,
+    )
 
     app = create_app(cfg, cfg_path)
     with TestClient(app) as client:
@@ -491,6 +499,14 @@ def test_watchlist_expanded_template_shows_img_when_chart_available(
     )
     monkeypatch.setattr(PriceCache, "is_degraded", lambda self: False)
     monkeypatch.setattr(PriceCache, "degraded_until", lambda self: None)
+    # Phase 13 T-T4.SB.3 (Item 5): force JIT short-circuit so the legacy
+    # PNG branch fires (test predates the inline-SVG cascade). With JIT
+    # populated, the SVG branch would suppress the PNG <img>.
+    from swing.web.ohlcv_cache import OhlcvCache
+    monkeypatch.setattr(
+        OhlcvCache, "get_or_fetch",
+        lambda self, *, ticker, window_days=200: None,
+    )
 
     app = create_app(cfg, cfg_path)
     with TestClient(app) as client:

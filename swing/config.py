@@ -394,6 +394,18 @@ class Config:
     review: ReviewConfig = field(default_factory=ReviewConfig)
     integrations: IntegrationsConfig = field(default_factory=IntegrationsConfig)
 
+    @classmethod
+    def from_defaults(cls) -> Config:
+        """Load the project's tracked ``swing.config.toml`` from the repo root.
+
+        Resolves the project root as the parent of this module's package
+        directory (i.e., ``Path(__file__).resolve().parent.parent``). Used by
+        the A+ sensitivity sweep harness + diagnostic CLIs that want the
+        production defaults without requiring the caller to thread a path.
+        """
+        project_root = Path(__file__).resolve().parent.parent
+        return load(project_root / "swing.config.toml")
+
 
 _PROJECT_INTERNAL_PREFIXES = ("data/", "exports/", "reference/")
 

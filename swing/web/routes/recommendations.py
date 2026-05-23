@@ -185,6 +185,9 @@ def hyp_recs_expand(request: Request, ticker: str):
                 conn, cfg,
                 ticker=ticker_upper, current_balance=current_balance,
                 cache=cache, executor=executor,
+                ohlcv_cache=getattr(
+                    request.app.state, "ohlcv_cache", None,
+                ),
             )
             if vm is None:
                 return templates.TemplateResponse(

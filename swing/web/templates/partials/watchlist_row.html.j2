@@ -1,17 +1,23 @@
 {#- Expects: w (WatchlistEntry), price (PriceSnapshot|None), tags (tuple[str]),
-              pattern_tag (str|None — Phase 4 Task 4.7; spec §3.5 SIBLING to tags).
+              pattern_tag (str|None — Phase 4 Task 4.7; spec §3.5 SIBLING to tags),
+              chart_svg_bytes_for_row (bytes|None — the only supported source
+              of the row's thumbnail SVG).
 
-   Phase 13 T2.SB6c T-A.6c.2 Gap A.3 — also reads `vm.watchlist_chart_svg_bytes`
-   (Mapping[ticker, bytes]) when present in the enclosing scope (DashboardVM
-   or WatchlistVM both populate it from chart_renders cache). The row gains a
-   compact thumbnail column when bytes are available; omitted otherwise so
-   pre-cache callers still render unchanged. -#}
-{% set _thumb_bytes = vm.watchlist_chart_svg_bytes.get(w.ticker) if vm is defined and vm.watchlist_chart_svg_bytes else None %}
+   Phase 13 T-T4.SB.5 Item 6 Option 6B LOCK — `chart_svg_bytes_for_row` is
+   the SOLE source of thumbnail bytes; the prior fallback to an enclosing
+   `vm` cache map is REMOVED. All three render sites pass the param:
+     - watchlist.html.j2 → `{% set chart_svg_bytes_for_row = vm-map.get(...) %}`
+     - partials/watchlist_top5_section.html.j2 → same `{% set %}` pattern
+     - /watchlist/{ticker}/row route → passes via TemplateResponse context
+       (JIT cache lookup at swing/web/routes/watchlist.py:watchlist_row).
+   When absent the thumbnail cell renders empty (no fallback). -#}
+{% set _thumb_bytes = chart_svg_bytes_for_row if chart_svg_bytes_for_row is defined and chart_svg_bytes_for_row else None %}
 <tr id="watchlist-row-{{ w.ticker }}"
     hx-get="/watchlist/{{ w.ticker }}/expand" hx-swap="outerHTML"
     hx-headers='{"HX-Request": "true"}'>
   <td>
-    {% if price and w.entry_target and price.price >= w.entry_target * 0.99 %}⚡{% endif %}
+    {# Phase 13 T-T4.SB.5 Item 4: lightning glyph removed per operator
+       OQ-X.1 LOCK. Thumbnail cell preserved. #}
     {% if _thumb_bytes %}
       <span class="watchlist-thumbnail">{{ _thumb_bytes.decode('utf-8') | safe }}</span>
     {% endif %}

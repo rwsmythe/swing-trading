@@ -97,15 +97,23 @@ def test_list_trades_canonicalizes_label(conn: sqlite3.Connection):
     assert result[0].ticker == "AAA"
 
 
-def test_list_trades_case_difference_does_not_match(conn: sqlite3.Connection):
-    """canonicalize_hypothesis_label preserves case; "A+ baseline" and
-    "a+ baseline" are DIFFERENT cohorts."""
+def test_list_trades_case_difference_matches_under_three_rule_contract(
+    conn: sqlite3.Connection,
+):
+    """Phase 13 T-T4.SB.2 (Item 7 Option 7C LOCK) widens the cohort match
+    contract from bytewise equality to 3-rule delimiter-aware case-insensitive
+    matching. Per the shared helper at
+    :func:`swing.metrics.label_match.label_matches_hypothesis`, ``"a+ baseline"``
+    and ``"A+ baseline"`` now belong to the SAME cohort (Rule 1 case-fold
+    exact equality). Operator-facing implication: hypothesis labels are
+    case-insensitive for cohort attribution.
+    """
     _seed_trade(conn, trade_id=1, ticker="UPPER", state="closed",
                 hypothesis_label="A+ baseline")
     result_lower = list_trades_for_cohort(
         conn, hypothesis_label="a+ baseline",
     )
-    assert result_lower == []
+    assert [t.ticker for t in result_lower] == ["UPPER"]
 
 
 def test_list_trades_ordered_by_entry_date_then_ticker(conn: sqlite3.Connection):

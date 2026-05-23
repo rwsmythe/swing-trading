@@ -4056,6 +4056,179 @@ def label_exemplars_cmd(
 
 
 # ============================================================================
+# Phase 13 T-T4.SB.4 Sub-task 4E (OQ-2.2 LOCK) — `swing patterns
+# label-corpus-all` operator-paired bulk relabel emit-mode CLI.
+#
+# OQ-2.2 disposition: ship the corpus-all path as operator-paired V1.
+# Production labeling is operator-paired by design (no in-process Agent
+# tool callable from Python; LabelingDispatchError gates the
+# subagent-callable kwarg). The CLI therefore EMITS one dispatch payload
+# per claude_silver row to stdout as JSONL (one line per row) so the
+# operator can iterate in a paired session + persist each response via
+# the existing `label-exemplars --silver-response-file` path.
+#
+# Scope per spec section 5.9 step 5 + V1 simplification:
+#   - Includes ONLY `label_source IN ('claude_silver', 'codex_silver')`
+#     rows: gold rows are operator-validated + MUST NOT be relabeled;
+#     other tiers (synthetic / perturbation / closed_loop / organic)
+#     are out of the silver-tier review scope.
+#   - Bars are NOT auto-fetched (would blast yfinance with N requests
+#     + breach the OhlcvCache sliding-window breaker for any sizable
+#     corpus). The emit payload includes `bars: []`; the operator's
+#     paired session re-runs `label-exemplars --window-bars-file`
+#     per row OR consults the original corpus dump bars.
+#   - CTRL-C safe (no DB writes from the emit path).
+#
+# V1 simplification (banked in return report): no per-row persist
+# subcommand. The operator iterates `label-exemplars --silver-response-file`
+# per response file. V2 candidates: `--silver-response-dir <dir>` bulk
+# persist; `--bars-cache-dir <dir>` reuse cached bars per row.
+#
+# ASCII-only output per CLAUDE.md Windows cp1252 stdout gotcha.
+# ============================================================================
+
+
+@patterns_group.command("label-corpus-all")
+@click.option(
+    "--ai-labeler-version", "ai_labeler_version",
+    default="claude-code-pattern-labeler-v1", type=str,
+    show_default=True,
+    help="Stamped on subsequent persist invocations (operator passes "
+         "via --ai-labeler-version on label-exemplars per row).",
+)
+@click.option(
+    "--limit", "limit", type=int, default=None,
+    help="Optional cap on the number of corpus rows to emit "
+         "(operator-paired iteration convenience).",
+)
+@click.pass_context
+def label_corpus_all_cmd(
+    ctx: click.Context,
+    *,
+    ai_labeler_version: str,
+    limit: int | None,
+) -> None:
+    """Emit per-exemplar dispatch payloads for operator-paired bulk relabel.
+
+    \b
+    OQ-2.2 LOCK — operator-paired bulk relabel for the silver corpus.
+
+    \b
+    Iterates `pattern_exemplars` rows where
+    `label_source IN ('claude_silver', 'codex_silver')`, emits one
+    JSON dispatch payload per row to stdout (JSONL), and exits 0.
+    Bars are NOT auto-fetched; the operator's paired Claude Code
+    session re-runs `label-exemplars --silver-response-file <path>`
+    per-row to persist each response.
+
+    \b
+    V1 simplification (return-report-banked): emit-only — no
+    per-row persist subcommand. CTRL-C is safe (no DB writes).
+    """
+    import json as _json
+
+    from swing.data.db import connect as _connect
+    from swing.data.repos import pattern_exemplars as _ex_repo
+    from swing.patterns.spec_static import (
+        get_rule_criteria as _get_rule_criteria,
+    )
+    from swing.patterns.spec_static import (
+        get_structural_evidence_schema as _get_evidence_schema,
+    )
+
+    cfg = ctx.obj["config"]
+    conn = _connect(cfg.paths.db_path)
+    try:
+        # Iterate claude_silver + codex_silver rows in deterministic id
+        # order; gold + other tiers are out of scope (gold is
+        # operator-validated + relabeling it would clobber the audit
+        # trail; other tiers carry non-silver semantics).
+        try:
+            silver_rows = _ex_repo.list_exemplars(
+                conn, label_source="claude_silver",
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise click.ClickException(
+                f"failed to enumerate claude_silver corpus rows: {exc}"
+            ) from exc
+        codex_rows = _ex_repo.list_exemplars(
+            conn, label_source="codex_silver",
+        )
+        all_rows = sorted(
+            list(silver_rows) + list(codex_rows),
+            key=lambda r: (r.id if r.id is not None else 0),
+        )
+        if limit is not None and limit >= 0:
+            all_rows = all_rows[:limit]
+
+        if not all_rows:
+            click.echo(
+                "no silver-tier exemplars found in corpus "
+                "(label_source IN claude_silver | codex_silver). "
+                "Run `swing patterns label-exemplars` first to "
+                "bootstrap the silver corpus."
+            )
+            return
+
+        emitted = 0
+        for row in all_rows:
+            try:
+                rule_criteria = _get_rule_criteria(
+                    row.proposed_pattern_class,
+                )
+                structural_evidence_schema = _get_evidence_schema(
+                    row.proposed_pattern_class,
+                )
+            except (KeyError, ValueError) as exc:
+                # Service-layer ValueError wrap at CLI boundary
+                # (CLAUDE.md gotcha): surface as a clean per-row
+                # warning + continue (CTRL-C-safe; no partial writes).
+                click.echo(
+                    f"# skip row id={row.id} ticker={row.ticker} "
+                    f"pattern_class={row.proposed_pattern_class}: "
+                    f"spec_static lookup failed: {exc}",
+                    err=True,
+                )
+                continue
+
+            window_payload = {
+                "ticker": row.ticker,
+                "timeframe": row.timeframe,
+                "start_date": row.start_date,
+                "end_date": row.end_date,
+                # bars=[] per emit-mode contract; operator runs the
+                # label-exemplars per-row persist path with
+                # --window-bars-file OR auto-fetched bars.
+                "bars": [],
+            }
+            payload = {
+                "exemplar_id": row.id,
+                "ticker": row.ticker,
+                "pattern_class": row.proposed_pattern_class,
+                "window_payload": window_payload,
+                "rule_criteria": rule_criteria,
+                "structural_evidence_schema": structural_evidence_schema,
+                "ai_labeler_version": ai_labeler_version,
+            }
+            # JSONL: one compact JSON object per line (operator-friendly
+            # `head -n 1 | jq` workflow).
+            click.echo(_json.dumps(payload, sort_keys=True))
+            emitted += 1
+
+        click.echo(
+            f"# emitted {emitted} dispatch payload(s) for "
+            f"operator-paired relabel. Iterate via the paired Claude "
+            "Code session + persist each response with "
+            "`swing patterns label-exemplars --silver-response-file "
+            "<response.json> --ticker <ticker> --start <start> "
+            "--end <end> --pattern-class <class>`.",
+            err=True,
+        )
+    finally:
+        conn.close()
+
+
+# ============================================================================
 # T-A.1.8 — `swing patterns review-silver-with-codex` CLI subcommand
 #
 # Per closer dispatch brief T-1.8.1 + spec section 5.9 step 4 + OQ-5 phased
@@ -4537,6 +4710,167 @@ def patterns_exemplars_backfill_labeler_evidence(ctx: click.Context) -> None:
     finally:
         conn.close()
     click.echo(f"Augmented: {augmented}; Skipped: {skipped}")
+
+
+# ---------------------------------------------------------------------------
+# Phase 13 T4.SB T-T4.SB.1 -- ``swing diagnose`` subcommand group.
+#
+# Read-only diagnostics: A+ sensitivity sweep harness + metrics-wiring audit.
+# Each subcommand emits a deterministic markdown report (+ CSV sidecar where
+# applicable) to ``exports/diagnostics/`` and writes ZERO domain rows.
+# Per cumulative gotchas: ValueError-wrapping at CLI boundary;
+# ASCII-only output for cp1252 Windows-stdout safety.
+# ---------------------------------------------------------------------------
+
+
+@main.group("diagnose")
+def diagnose_group() -> None:
+    """Diagnostic CLIs: aplus sensitivity sweep + metrics-wiring audit."""
+
+
+def _validate_diagnose_db_path(db_path: Path) -> None:
+    """Pre-validate the ``--db`` argument for diagnose subcommands.
+
+    Codex R1 m#2 — raw ``sqlite3.connect(path)`` would CREATE an empty
+    SQLite file at a typoed path before any query runs (sqlite3 default
+    behavior); the operator gets an ugly ``OperationalError`` traceback
+    on first SELECT + a stray empty DB file lingers on disk. Pre-
+    validate existence + raise a friendly ``click.ClickException``
+    BEFORE opening the connection.
+    """
+    if not db_path.exists():
+        raise click.ClickException(
+            f"DB not found: {db_path}. Run 'swing db-migrate' to "
+            f"initialize, or check the --db path."
+        )
+
+
+@diagnose_group.command("aplus-sensitivity")
+@click.option(
+    "--db", "db_path", required=True, type=click.Path(path_type=Path),
+)
+@click.option(
+    "--eval-runs", type=click.IntRange(1, 100), default=20, show_default=True,
+)
+@click.option(
+    "--output-dir", type=click.Path(path_type=Path),
+    default=Path("exports/diagnostics"), show_default=True,
+)
+def diagnose_aplus_sensitivity(
+    db_path: Path, eval_runs: int, output_dir: Path,
+) -> None:
+    """1D sensitivity sweep over A+ criteria thresholds.
+
+    Reads persisted candidate_criteria from ``--db`` (last ``--eval-runs``
+    runs); substitutes each variable across a sweep range; writes
+    ``aplus-sensitivity-<ISO>.csv`` + ``.md`` to ``--output-dir``.
+    """
+    # Codex R1 m#2: pre-validate --db existence so a typo surfaces as a
+    # friendly error before the harness opens any sqlite3 connection.
+    _validate_diagnose_db_path(db_path)
+    try:
+        from research.harness.aplus_sensitivity.run import run_harness
+
+        md_path, csv_path = run_harness(
+            db_path=db_path, eval_runs=eval_runs, output_dir=output_dir,
+        )
+    except ValueError as exc:
+        # Wrap service-layer ValueErrors at the CLI boundary per cumulative
+        # gotcha (Phase 13 T-A.1.5b Codex R4 M#1).
+        raise click.ClickException(str(exc)) from exc
+    except sqlite3.OperationalError as exc:
+        # Codex R1 m#2: wrap raw OperationalError so the operator sees a
+        # friendly message instead of a traceback.
+        raise click.ClickException(
+            f"Database error reading {db_path}: {exc}"
+        ) from exc
+    click.echo(f"Markdown: {md_path}")
+    click.echo(f"CSV:      {csv_path}")
+
+
+@diagnose_group.command("metrics-wiring")
+@click.option(
+    "--db", "db_path", required=True, type=click.Path(path_type=Path),
+)
+@click.option(
+    "--output", "output_path", required=True, type=click.Path(path_type=Path),
+)
+def diagnose_metrics_wiring(db_path: Path, output_path: Path) -> None:
+    """Enumerate metric surfaces + audit match strategy / state filter /
+    join keys / operator-DB count / disposition. Writes markdown table.
+    """
+    import sqlite3 as _sqlite3
+
+    from swing.diagnostics.metrics_wiring_audit import (
+        write_metrics_wiring_audit_markdown,
+    )
+
+    # Codex R1 m#2: pre-validate --db existence so a typo surfaces as a
+    # friendly error before sqlite3.connect auto-creates an empty file.
+    _validate_diagnose_db_path(db_path)
+    try:
+        conn = _sqlite3.connect(str(db_path))
+        try:
+            write_metrics_wiring_audit_markdown(conn, output_path)
+        finally:
+            conn.close()
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    except _sqlite3.OperationalError as exc:
+        raise click.ClickException(
+            f"Database error reading {db_path}: {exc}"
+        ) from exc
+    click.echo(f"Audit:    {output_path}")
+
+
+@diagnose_group.command("prune-chart-cache")
+@click.option(
+    "--db", "db_path", required=True, type=click.Path(path_type=Path),
+)
+@click.option(
+    "--older-than", "older_than_days", required=True,
+    type=click.IntRange(0, 36500),
+    help="Delete chart_renders rows whose rendered_at is older than N days.",
+)
+def diagnose_prune_chart_cache(db_path: Path, older_than_days: int) -> None:
+    """Phase 13 T-T4.SB.3 (Item 5; OQ-5.1 R4 LOCK) — manual prune of the
+    chart_renders cache.
+
+    Deletes ``chart_renders`` rows whose ``rendered_at`` is older than
+    ``--older-than`` calendar days (UTC). Operator-invoked under monitored
+    growth. V2 candidate banked for automated time-based eviction.
+    """
+    import sqlite3 as _sqlite3
+
+    from swing.diagnostics.prune_chart_cache import (
+        prune_chart_renders_older_than,
+    )
+
+    # Codex R1 m#2: pre-validate --db existence so a typo surfaces as a
+    # friendly error before sqlite3.connect auto-creates an empty file.
+    _validate_diagnose_db_path(db_path)
+    try:
+        conn = _sqlite3.connect(str(db_path))
+        try:
+            with conn:
+                deleted = prune_chart_renders_older_than(
+                    conn, older_than_days=older_than_days,
+                )
+        finally:
+            conn.close()
+    except ValueError as exc:
+        # Wrap service-layer ValueErrors at the CLI boundary per cumulative
+        # gotcha (Phase 13 T-A.1.5b Codex R4 M#1).
+        raise click.ClickException(str(exc)) from exc
+    except _sqlite3.OperationalError as exc:
+        # Codex R1 m#2: wrap raw OperationalError so the operator sees a
+        # friendly message instead of a traceback (e.g., DB missing
+        # chart_renders table on a legacy schema).
+        raise click.ClickException(
+            f"Database error reading {db_path}: {exc}"
+        ) from exc
+    click.echo(f"Deleted {deleted} chart_renders rows older than "
+               f"{older_than_days} days.")
 
 
 if __name__ == "__main__":  # pragma: no cover

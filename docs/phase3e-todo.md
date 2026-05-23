@@ -8,6 +8,24 @@
 
 ---
 
+## Phase 13 SHIPPED 2026-05-22 PM #4; FULLY CLOSED (12 of 12 sub-bundles)
+
+**Phase 13 SHIPPED 2026-05-22 PM #4** — FULLY CLOSED. T4.SB closer arc lands at T-T4.SB.6 commit; 4 closer commits per plan §B.6 (fast E2E + main plan §H.3 row 13 + triage-agenda stub + docs sweep). Cross-bundle pin row 13 GREEN at all 4 surfaces.
+
+**Next:** post-T4.SB triage agenda at `docs/phase13-closer-next-phase-triage.md`. Operator-paired triage meeting (Phase 14 trigger / Applied Research focus / idle monitoring decision per spec §1.5.2 amendment / OQ-CL.2 deferred disposition).
+
+**T4.SB items 1-7 disposition (per closer arc):**
+
+- [x] **Item 1** — A+ sensitivity diagnostic SHIPPED at T-T4.SB.1 (research harness under `research/harness/aplus_sensitivity/` + CLI `swing diagnose aplus-sensitivity` + study writeup + method record stub).
+- [x] **Item 2** — Path A labeler `rule_criteria` + envelope `narrative` alias SHIPPED at T-T4.SB.4 (subagent contract widened; envelope alias persisted; corpus-all re-label operator-paired CLI surface).
+- [x] **Item 3** — Market weather chart volume y-tick labels stripped SHIPPED at T-T4.SB.5 (`render_market_weather_svg` + `render_hyprec_detail_svg`; commit `3cb9d44`).
+- [x] **Item 4** — Watchlist row lightning glyph removed SHIPPED at T-T4.SB.5 (commit `49258a5`).
+- [x] **Item 5** — JIT chart cache-miss hook SHIPPED at T-T4.SB.3 (`swing/web/chart_jit.py:get_or_render_surface` NEW module + chart_scope LOCKED read-only; wired through /hyp-recs/{ticker}/expand + /watchlist/{ticker}/row + /watchlist/{ticker}/expand).
+- [x] **Item 6** — Watchlist row thumbnail preservation on collapse SHIPPED at T-T4.SB.5 (`chart_svg_bytes_for_row` explicit param Option 6B; commit `7c6fe4c`).
+- [x] **Item 7** — Hypothesis label delimiter-aware match invariant SHIPPED at T-T4.SB.2 (broader metrics wiring audit + Option 7C delimiter-aware fix at 4 surfaces; cross-bundle pin row 13 plant). Promoted GREEN at T-T4.SB.6 closer.
+
+---
+
 ## T4.SB triage items (operator-supplied; PAUSE-FOR-LIST-ADDITIONS accumulation; pre-dispatch-brief)
 
 Per `project_phase13_t4_sb_pause_for_list_additions` BINDING memory: T4.SB dispatch brief is BLOCKED until operator-supplied usability triage items are enumerated. Spec §7.3 5-field template: Issue title / Surface / Frequency / Severity / Operator framing / Proposed resolution. Items accumulate here as operator surfaces them in conversation; orchestrator drafts T4.SB dispatch brief once the list closes.

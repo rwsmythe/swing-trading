@@ -172,18 +172,21 @@ def test_pivot_column_dash_when_both_absent(
     )
 
 
-def test_lightning_trigger_unchanged_uses_entry_target(
+def test_lightning_glyph_absent_post_item_4_removal(
     seeded_db, seed_watchlist_and_candidate, monkeypatch,
 ):
-    """Q4 + spec §3.8 — lightning trigger stays bound to entry_target.
+    """Phase 13 T-T4.SB.5 Item 4: lightning glyph REMOVED from the
+    watchlist row partial per operator OQ-X.1 LOCK.
 
-    Discriminating fixture chosen so the trigger fires under entry_target
-    binding but would NOT fire under current_pivot binding:
-      - entry_target = $42.00; current_pivot = $100.00; price = $41.60.
-      - 41.60 ≥ 0.99 × 42 = 41.58 → lightning fires (entry_target binding).
-      - 41.60 ≥ 0.99 × 100 = 99   → would NOT fire (current_pivot binding).
-    Asserting the lightning glyph IS present proves the trigger binding
-    survives the column-display change.
+    This test was previously
+    ``test_lightning_trigger_unchanged_uses_entry_target`` and asserted
+    the glyph WAS present at the trigger threshold (entry_target binding
+    survives the CC pivot fix). Item 4 removes the glyph entirely, so
+    the assertion is inverted; the discriminating fixture is preserved
+    so the test still exercises the trigger-threshold code path.
+
+    See ``test_watchlist_row_no_lightning_glyph.py`` for the symmetric
+    /watchlist coverage; this test guards the dashboard surface.
     """
     cfg, cfg_path = seeded_db
     seed_watchlist_and_candidate(
@@ -197,9 +200,9 @@ def test_lightning_trigger_unchanged_uses_entry_target(
         resp = client.get("/")
     assert resp.status_code == 200
     body = resp.text
-    assert "⚡" in body, (
-        "Lightning trigger must remain bound to entry_target after CC pivot "
-        "fix — fired at $41.60 ≥ 0.99 × $42.00"
+    assert "⚡" not in body, (
+        "Item 4: lightning glyph must be absent from dashboard surface"
     )
-    # Sanity: the column itself shows current_pivot ($100.00).
+    # Sanity: the column itself still shows current_pivot ($100.00) —
+    # surrounding row rendering is unaffected by the glyph removal.
     assert "$100.00" in body
