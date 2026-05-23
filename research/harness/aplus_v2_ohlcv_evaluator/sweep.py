@@ -575,6 +575,13 @@ def _record_flip(
     via_surrogate: bool,
 ) -> None:
     """Append a FlippedCandidate record to flipped list."""
+    # V1 stub: old_criterion_failure always '(none)'.
+    # Computing the old criterion failure would require fetching the persisted
+    # candidate_criteria rows for the old bucket from the DB (the persisted
+    # Candidate evaluation result is not carried in CandidateRow). Deferred
+    # to T-V2.3 output rendering; see executing-plans return report §6.
+    # V2 candidate: thread the pre-sweep evaluate_one result through _record_flip
+    # and emit '<criterion_name> value=<v> rule=<r>' for the first failing criterion.
     flipped.append(FlippedCandidate(
         ticker=cand_row.ticker,
         eval_run_id=run_id,
