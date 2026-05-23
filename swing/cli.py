@@ -4728,6 +4728,23 @@ def diagnose_group() -> None:
     """Diagnostic CLIs: aplus sensitivity sweep + metrics-wiring audit."""
 
 
+def _validate_diagnose_db_path(db_path: Path) -> None:
+    """Pre-validate the ``--db`` argument for diagnose subcommands.
+
+    Codex R1 m#2 — raw ``sqlite3.connect(path)`` would CREATE an empty
+    SQLite file at a typoed path before any query runs (sqlite3 default
+    behavior); the operator gets an ugly ``OperationalError`` traceback
+    on first SELECT + a stray empty DB file lingers on disk. Pre-
+    validate existence + raise a friendly ``click.ClickException``
+    BEFORE opening the connection.
+    """
+    if not db_path.exists():
+        raise click.ClickException(
+            f"DB not found: {db_path}. Run 'swing db-migrate' to "
+            f"initialize, or check the --db path."
+        )
+
+
 @diagnose_group.command("aplus-sensitivity")
 @click.option(
     "--db", "db_path", required=True, type=click.Path(path_type=Path),
@@ -4748,6 +4765,9 @@ def diagnose_aplus_sensitivity(
     runs); substitutes each variable across a sweep range; writes
     ``aplus-sensitivity-<ISO>.csv`` + ``.md`` to ``--output-dir``.
     """
+    # Codex R1 m#2: pre-validate --db existence so a typo surfaces as a
+    # friendly error before the harness opens any sqlite3 connection.
+    _validate_diagnose_db_path(db_path)
     try:
         from research.harness.aplus_sensitivity.run import run_harness
 
@@ -4758,6 +4778,12 @@ def diagnose_aplus_sensitivity(
         # Wrap service-layer ValueErrors at the CLI boundary per cumulative
         # gotcha (Phase 13 T-A.1.5b Codex R4 M#1).
         raise click.ClickException(str(exc)) from exc
+    except sqlite3.OperationalError as exc:
+        # Codex R1 m#2: wrap raw OperationalError so the operator sees a
+        # friendly message instead of a traceback.
+        raise click.ClickException(
+            f"Database error reading {db_path}: {exc}"
+        ) from exc
     click.echo(f"Markdown: {md_path}")
     click.echo(f"CSV:      {csv_path}")
 
@@ -4779,6 +4805,9 @@ def diagnose_metrics_wiring(db_path: Path, output_path: Path) -> None:
         write_metrics_wiring_audit_markdown,
     )
 
+    # Codex R1 m#2: pre-validate --db existence so a typo surfaces as a
+    # friendly error before sqlite3.connect auto-creates an empty file.
+    _validate_diagnose_db_path(db_path)
     try:
         conn = _sqlite3.connect(str(db_path))
         try:
@@ -4787,6 +4816,10 @@ def diagnose_metrics_wiring(db_path: Path, output_path: Path) -> None:
             conn.close()
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
+    except _sqlite3.OperationalError as exc:
+        raise click.ClickException(
+            f"Database error reading {db_path}: {exc}"
+        ) from exc
     click.echo(f"Audit:    {output_path}")
 
 
@@ -4813,6 +4846,9 @@ def diagnose_prune_chart_cache(db_path: Path, older_than_days: int) -> None:
         prune_chart_renders_older_than,
     )
 
+    # Codex R1 m#2: pre-validate --db existence so a typo surfaces as a
+    # friendly error before sqlite3.connect auto-creates an empty file.
+    _validate_diagnose_db_path(db_path)
     try:
         conn = _sqlite3.connect(str(db_path))
         try:
@@ -4826,6 +4862,13 @@ def diagnose_prune_chart_cache(db_path: Path, older_than_days: int) -> None:
         # Wrap service-layer ValueErrors at the CLI boundary per cumulative
         # gotcha (Phase 13 T-A.1.5b Codex R4 M#1).
         raise click.ClickException(str(exc)) from exc
+    except _sqlite3.OperationalError as exc:
+        # Codex R1 m#2: wrap raw OperationalError so the operator sees a
+        # friendly message instead of a traceback (e.g., DB missing
+        # chart_renders table on a legacy schema).
+        raise click.ClickException(
+            f"Database error reading {db_path}: {exc}"
+        ) from exc
     click.echo(f"Deleted {deleted} chart_renders rows older than "
                f"{older_than_days} days.")
 

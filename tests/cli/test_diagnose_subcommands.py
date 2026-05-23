@@ -191,10 +191,15 @@ def test_diagnose_metrics_wiring_emits_markdown(
 ) -> None:
     runner = CliRunner()
     out_path = tmp_path / "audit.md"
+    # Codex R1 m#2: --db must exist (no auto-create); plant an empty
+    # SQLite file (the V1 audit ignores conn per V1 stub but the
+    # pre-validation gate requires the file to be present).
+    db_path = tmp_path / "empty.db"
+    sqlite3.connect(str(db_path)).close()
     result = runner.invoke(cli, [
         "--config", str(cfg_path),
         "diagnose", "metrics-wiring",
-        "--db", str(tmp_path / "empty.db"),
+        "--db", str(db_path),
         "--output", str(out_path),
     ])
     assert result.exit_code == 0, result.output
