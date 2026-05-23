@@ -29,15 +29,6 @@ _HYPOTHESIS_REGISTRY_NAMES_SQL = (
     "SELECT name FROM hypothesis_registry ORDER BY id"
 )
 
-_CLOSED_TRADE_COUNT_PER_LABEL_SQL = (
-    "SELECT hypothesis_label, COUNT(*) "
-    "FROM trades "
-    f"WHERE state IN {_CLOSED_STATES_SQL} "
-    "  AND hypothesis_label IS NOT NULL "
-    "GROUP BY hypothesis_label"
-)
-
-
 def list_trades_for_cohort(
     conn: sqlite3.Connection,
     *,
@@ -107,23 +98,72 @@ def list_closed_trades_for_cohort(
 
 def count_per_cohort(conn: sqlite3.Connection) -> dict[str, int]:
     """Return ``{cohort_name: closed_trade_count}`` for ALL ``hypothesis_registry``
-    rows.
+    rows, aggregating per the 3-rule delimiter-aware match contract plus
+    an orphan-preservation second query.
 
     Per plan §A.16 empty-cohort discipline: cohorts with zero closed trades
     are INCLUDED with value 0 (NOT omitted). This is what the dashboard
     needs to render every cohort tab even at our current n<5 state.
+
+    Phase 13 T-T4.SB.2 (Item 7) widens the per-cohort count from exact
+    equality GROUP BY to delimiter-aware match per registered hypothesis
+    via :func:`swing.metrics.label_match.label_matches_hypothesis_sql`.
+    A SECOND query (orphan-fallback) selects closed trades with non-NULL
+    ``hypothesis_label`` that match NONE of the registered hypotheses --
+    those labels surface as their own entries in the returned dict so
+    operator can see an "(unregistered cohort)" placeholder. Closes
+    Expansion #10 sub-discipline (e) ORPHAN-PRESERVATION-WHEN-REFACTORING
+    LOCK.
     """
     cohort_counts: dict[str, int] = {}
+    registered_names: list[str] = []
     for (name,) in conn.execute(_HYPOTHESIS_REGISTRY_NAMES_SQL):
+        registered_names.append(name)
         cohort_counts[name] = 0
 
-    for label, count in conn.execute(_CLOSED_TRADE_COUNT_PER_LABEL_SQL):
-        if label in cohort_counts:
+    # Per-cohort count via the shared SQL helper.
+    for name in registered_names:
+        fragment, params = label_matches_hypothesis_sql(name)
+        sql = (
+            "SELECT COUNT(*) FROM trades "
+            f"WHERE state IN {_CLOSED_STATES_SQL} "
+            "  AND hypothesis_label IS NOT NULL "
+            f"  AND {fragment}"
+        )  # noqa: S608
+        (count,) = conn.execute(sql, params).fetchone()
+        cohort_counts[name] = int(count)
+
+    # Orphan-label preservation: a SECOND query selects closed trades with
+    # ``hypothesis_label`` NOT NULL that match NONE of the registered
+    # hypotheses (Codex R4 M#1 LOCK; Expansion #10 sub-discipline (e)).
+    if registered_names:
+        not_clauses: list[str] = []
+        not_params: list[object] = []
+        for name in registered_names:
+            fragment, params = label_matches_hypothesis_sql(name)
+            not_clauses.append(f"NOT {fragment}")
+            not_params.extend(params)
+        orphan_sql = (
+            "SELECT hypothesis_label, COUNT(*) FROM trades "
+            f"WHERE state IN {_CLOSED_STATES_SQL} "
+            "  AND hypothesis_label IS NOT NULL "
+            f"  AND {' AND '.join(not_clauses)} "
+            "GROUP BY hypothesis_label"
+        )  # noqa: S608
+        for label, count in conn.execute(orphan_sql, not_params):
             cohort_counts[label] = int(count)
-        else:
-            # Label exists on trades but not in registry — defensive surface
-            # the orphan-labeled cohort so the dashboard can render an
-            # "(unregistered cohort)" placeholder. Include in returned dict.
+    else:
+        # Empty-registry defensive branch (production seeds registry rows
+        # via migration 0008; this covers test DBs / future startup
+        # transient states). EVERY non-NULL label is an orphan; surface
+        # raw labels per orphan contract.
+        orphan_sql_empty = (
+            "SELECT hypothesis_label, COUNT(*) FROM trades "
+            f"WHERE state IN {_CLOSED_STATES_SQL} "
+            "  AND hypothesis_label IS NOT NULL "
+            "GROUP BY hypothesis_label"
+        )  # noqa: S608
+        for label, count in conn.execute(orphan_sql_empty):
             cohort_counts[label] = int(count)
     return cohort_counts
 
