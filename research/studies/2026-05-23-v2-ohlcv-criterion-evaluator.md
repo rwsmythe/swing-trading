@@ -145,9 +145,15 @@ Full 63-eval-run findings pending operator manual re-run
 
 ## Per-variable findings
 
-**TO BE POPULATED** when the operator runs the V2 harness against
-`~/swing-data/swing.db` and captures the output files under
-`exports/diagnostics/aplus-sensitivity-v2-<ISO>.{csv,md}`.
+**Caveat:** Rows marked with partial-smoke data below are from the
+implementer's 5-eval-run partial smoke run (120s cap, 2/17 variables
+completed; `exports/diagnostics/aplus-sensitivity-v2-20260523T230131Z.csv`).
+The 5-eval-run subset covers eval_run_ids 60..64 (351 candidates total,
+from 516-ticker universe). These are directionally informative but
+NOT the authoritative full-run answer.
+
+**Operator's 63-eval-run reproduction is the authoritative answer.**
+See phase-0-tasks.md "Next" for the operator smoke step.
 
 Expected output structure:
 - 17 variables x 5 sweep points each = 85 SweepEntryV2 rows in the matrix.
@@ -156,27 +162,27 @@ Expected output structure:
 - Threshold-variable rows (15 of 17): real `delta_aplus` / `delta_watch` values
   (V2 lifts the V1 zero-delta stub).
 
-Findings table (fill in post-run):
+Findings table:
 
-| Variable | Kind | Binding? | Sweep point of first flip | Delta aplus at flip | Notes |
-|----------|------|----------|--------------------------|---------------------|-------|
-| trend_template.min_passes | gate | TBD | TBD | TBD | V1 answer already in V1 study |
-| vcp.watch_max_fails | gate | TBD | TBD | TBD | V1 answer already in V1 study |
-| trend_template.rising_ma_period_days | threshold_additive | TBD | TBD | TBD | |
-| trend_template.high_52w_margin_pct | threshold_additive | TBD | TBD | TBD | |
-| trend_template.low_52w_min_pct | threshold_additive | TBD | TBD | TBD | |
-| vcp.prior_trend_min_pct | threshold_additive | TBD | TBD | TBD | |
-| vcp.adr_min_pct | threshold_additive | TBD | TBD | TBD | |
-| vcp.pullback_max_pct | threshold_additive | TBD | TBD | TBD | |
-| vcp.proximity_max_pct | threshold_additive | TBD | TBD | TBD | |
-| vcp.tightness_days_required | threshold_additive | TBD | TBD | TBD | |
-| vcp.tightness_range_factor | threshold_multiplicative | TBD | TBD | TBD | |
-| vcp.orderliness_max_bar_ratio | threshold_multiplicative | TBD | TBD | TBD | |
-| vcp.orderliness_max_range_cv | threshold_multiplicative | TBD | TBD | TBD | |
-| risk.max_risk_pct | threshold_multiplicative | TBD | TBD | TBD | |
-| rs.horizon_weeks | threshold_additive | TBD | TBD | TBD | |
-| rs.rs_rank_min_pass | threshold_additive | TBD | TBD | TBD | |
-| rs.fallback_extreme_pct | threshold_multiplicative | TBD | TBD | TBD | |
+| Variable | Kind | Binding? | Sweep point of first flip | Delta aplus at flip | Delta watch at flip | Notes |
+|----------|------|----------|--------------------------|---------------------|---------------------|-------|
+| trend_template.min_passes | gate | YES (watch) | 8 (tighten from baseline 7) | 0 | -4 | Partial smoke (5 eval_runs). Loosening 5-7 has no effect; tightening to 8 drops 4 watch; to 9 drops all 66 watch. Zero aplus across all sweep points. |
+| vcp.watch_max_fails | gate | YES (watch) | 3 (loosen from baseline 2) | 0 | +137 | Partial smoke (5 eval_runs). Loosening to 3 adds 137 watch; to 4 adds 197. Tightening to 0 drops all 66 watch. Zero aplus across all sweep points. |
+| trend_template.rising_ma_period_days | threshold_additive | TBD | TBD | TBD | TBD | |
+| trend_template.high_52w_margin_pct | threshold_additive | TBD | TBD | TBD | TBD | |
+| trend_template.low_52w_min_pct | threshold_additive | TBD | TBD | TBD | TBD | |
+| vcp.prior_trend_min_pct | threshold_additive | TBD | TBD | TBD | TBD | |
+| vcp.adr_min_pct | threshold_additive | TBD | TBD | TBD | TBD | |
+| vcp.pullback_max_pct | threshold_additive | TBD | TBD | TBD | TBD | |
+| vcp.proximity_max_pct | threshold_additive | TBD | TBD | TBD | TBD | |
+| vcp.tightness_days_required | threshold_additive | TBD | TBD | TBD | TBD | |
+| vcp.tightness_range_factor | threshold_multiplicative | TBD | TBD | TBD | TBD | |
+| vcp.orderliness_max_bar_ratio | threshold_multiplicative | TBD | TBD | TBD | TBD | |
+| vcp.orderliness_max_range_cv | threshold_multiplicative | TBD | TBD | TBD | TBD | |
+| risk.max_risk_pct | threshold_multiplicative | TBD | TBD | TBD | TBD | |
+| rs.horizon_weeks | threshold_additive | TBD | TBD | TBD | TBD | |
+| rs.rs_rank_min_pass | threshold_additive | TBD | TBD | TBD | TBD | |
+| rs.fallback_extreme_pct | threshold_multiplicative | TBD | TBD | TBD | TBD | |
 
 ## Conclusion
 
