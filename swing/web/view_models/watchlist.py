@@ -120,6 +120,12 @@ class WatchlistExpandedVM:
     # Template uses if-else cascade so non-None SVG suppresses the PNG +
     # chart-unavailable banner cascade.
     watchlist_expanded_chart_svg_bytes: bytes | None = None
+    # Phase 13 T4.SB Codex R1 Major #1 — pinned pipeline_run_id that the VM
+    # bound to. Threaded into the route's JIT chart lookup so chart URL +
+    # candidate criteria + chart-scope reason + JIT bytes ALL bind to the
+    # SAME pipeline_run (Option A one-anchor LOCK; §1.5.3). None when no
+    # completed pipeline_run exists at request time.
+    pipeline_run_id: int | None = None
 
 
 def build_watchlist(*, cfg: Config, cache: PriceCache, executor) -> WatchlistVM:
@@ -362,4 +368,8 @@ def build_watchlist_expanded(
         ticker=ticker, entry=row, candidate=candidate,
         last_price=snap, data_asof_date=data_asof,
         chart_reason=chart_reason, chart_reason_message=chart_reason_message,
+        # Codex R1 Major #1: pin the binding's run_id so the route's
+        # JIT helper threads the SAME anchor used for chart URL +
+        # candidate criteria + chart-scope reason.
+        pipeline_run_id=(binding.run_id if binding is not None else None),
     )

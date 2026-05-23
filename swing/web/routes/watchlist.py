@@ -20,6 +20,8 @@ router = APIRouter()
 
 def _resolve_jit_chart_bytes(
     request: Request, *, ticker: str, surface: str,
+    pipeline_run_id: int | None = None,
+    data_asof_date: str | None = None,
     **renderer_kwargs,
 ) -> bytes | None:
     """Helper: acquire a per-request DB connection + pin Option A anchor +
@@ -28,6 +30,17 @@ def _resolve_jit_chart_bytes(
     DB connection acquisition mirrors swing/web/routes/account.py +
     swing/web/charts.py: open a fresh sqlite3.connect(...) per-request from
     cfg.paths.db_path (NOT a non-existent ``request.app.state.db_conn``).
+
+    Codex R1 Major #1 — Option A "one pipeline_run anchor" discipline
+    (§1.5.3 LOCK): callers that already resolved a pipeline_run binding
+    upstream (e.g., ``build_watchlist_expanded`` which threads its run
+    binding into the VM) MUST pass ``pipeline_run_id`` + ``data_asof_date``
+    explicitly to keep chart URL / candidate criteria / chart-scope reason /
+    JIT bytes pinned to the SAME pipeline_run. When BOTH are None, the
+    helper falls back to re-resolving via ``latest_completed_pipeline_run``
+    (legacy behavior for callers without an upstream binding — e.g., the
+    ``/watchlist/{ticker}/row`` route does not run through
+    ``build_watchlist_expanded`` and resolves its own anchor).
 
     Returns None when no completed pipeline_run exists OR when OHLCV cache
     is unavailable OR when the renderer fails / returns empty.
@@ -38,14 +51,23 @@ def _resolve_jit_chart_bytes(
         return None
     conn = sqlite3.connect(str(cfg.paths.db_path))
     try:
-        anchor = latest_completed_pipeline_run(conn)
-        if anchor is None:
-            return None
+        # Caller-supplied anchor wins; fall back to fresh resolve when
+        # absent. Partial anchor (one supplied, one None) is treated as
+        # a programming error — both come from the same upstream binding.
+        if pipeline_run_id is not None and data_asof_date is not None:
+            resolved_run_id = pipeline_run_id
+            resolved_data_asof = data_asof_date
+        else:
+            anchor = latest_completed_pipeline_run(conn)
+            if anchor is None:
+                return None
+            resolved_run_id = anchor.run_id
+            resolved_data_asof = anchor.data_asof_date
         return get_or_render_surface(
             conn=conn, ohlcv_cache=ohlcv_cache,
             surface=surface, ticker=ticker,
-            pipeline_run_id=anchor.run_id,
-            data_asof_date=anchor.data_asof_date,
+            pipeline_run_id=resolved_run_id,
+            data_asof_date=resolved_data_asof,
             **renderer_kwargs,
         )
     finally:
@@ -133,8 +155,17 @@ def watchlist_expand(request: Request, ticker: str):
     # JIT cache lookup + live render on miss — populate
     # watchlist_expanded_chart_svg_bytes via the shared hyprec_detail
     # surface (renderer-kwargs uniformity LOCK).
+    #
+    # Codex R1 Major #1 LOCK: thread the VM's resolved pipeline_run
+    # anchor through to the JIT helper so chart URL + candidate
+    # criteria + chart-scope reason + JIT bytes ALL bind to the SAME
+    # pipeline_run (Option A; §1.5.3). Without the threading, a new
+    # pipeline completing between VM-build and JIT-call would mix
+    # anchors across one response.
     chart_bytes = _resolve_jit_chart_bytes(
         request, ticker=ticker.upper(), surface="hyprec_detail",
+        pipeline_run_id=expanded.pipeline_run_id,
+        data_asof_date=expanded.data_asof_date,
         pattern_evaluation=None,
     )
     # Rebuild VM with chart bytes (dataclass is frozen — emit a new copy).
