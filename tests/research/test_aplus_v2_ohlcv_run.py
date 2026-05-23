@@ -30,7 +30,6 @@ from click.testing import CliRunner
 
 from swing.cli import main as cli
 
-
 # ---------------------------------------------------------------------------
 # Fixture helpers
 # ---------------------------------------------------------------------------
@@ -97,9 +96,12 @@ _DDL = (
     """CREATE TABLE account_equity_snapshots (
          snapshot_id INTEGER PRIMARY KEY,
          snapshot_date TEXT NOT NULL,
-         equity REAL NOT NULL,
+         equity_dollars REAL NOT NULL,
          source TEXT NOT NULL,
-         source_artifact_path TEXT
+         source_artifact_path TEXT,
+         recorded_at TEXT,
+         recorded_by TEXT,
+         notes TEXT
        )""",
 )
 
@@ -109,8 +111,9 @@ def _plant_smoke_db(conn: sqlite3.Connection, n_eval_runs: int = 3) -> None:
     for ddl in _DDL:
         conn.execute(ddl)
     conn.execute(
-        "INSERT INTO account_equity_snapshots (snapshot_date, equity, source) "
-        "VALUES ('2026-01-01', 10000.0, 'manual')"
+        "INSERT INTO account_equity_snapshots "
+        "(snapshot_date, equity_dollars, source, recorded_at, recorded_by) "
+        "VALUES ('2026-01-01', 10000.0, 'manual', '2026-01-01T00:00:00Z', 'test')"
     )
     for run_id in range(1, n_eval_runs + 1):
         conn.execute(
@@ -464,6 +467,10 @@ def test_run_harness_db_connection_is_readonly_uri_mode(
     Discriminating: monkey-patch run_v2_sweep to attempt INSERT within the
     connection passed from run_harness; assert sqlite3.OperationalError raised
     with 'readonly' in message (Codex R2.M2 RESOLVED + R3.m2 path-escape safe).
+
+    The INSERT is attempted INSIDE the spy (before conn is closed by the
+    finally block in run_harness) so the test catches the read-only enforcement
+    at the point the connection is live.
     """
     # Plant a minimal DB (just needs to be a valid SQLite file with
     # evaluation_runs table for fetch_eval_runs to return empty list).
@@ -481,11 +488,23 @@ def test_run_harness_db_connection_is_readonly_uri_mode(
     conn.commit()
     conn.close()
 
-    # Monkeypatch run_v2_sweep to attempt a write via the connection.
-    _captured_conn: list[sqlite3.Connection] = []
+    # Monkeypatch run_v2_sweep to attempt a write via the connection INSIDE the
+    # spy (while the conn is still live, before run_harness closes it).
+    write_error: list[sqlite3.OperationalError] = []
 
     def _spy_sweep(conn_arg, **kwargs):
-        _captured_conn.append(conn_arg)
+        # Attempt INSERT inside the spy to verify the connection is read-only.
+        try:
+            conn_arg.execute(
+                "INSERT INTO evaluation_runs "
+                "(id, run_ts, data_asof_date, action_session_date, "
+                "tickers_evaluated, aplus_count, watch_count, "
+                "skip_count, excluded_count, error_count) "
+                "VALUES (999, 'x', 'x', 'x', 0, 0, 0, 0, 0, 0)"
+            )
+        except sqlite3.OperationalError as exc:
+            write_error.append(exc)
+
         # Return minimal valid SweepResultV2 (empty-DB short-circuit shape).
         from research.harness.aplus_v2_ohlcv_evaluator.ohlcv_reader import BothExistDiagnostic
         from research.harness.aplus_v2_ohlcv_evaluator.sweep import (
@@ -525,11 +544,13 @@ def test_run_harness_db_connection_is_readonly_uri_mode(
 
         run_harness(db_path=db_path, eval_runs=20, output_dir=out_dir)
 
-    # Now attempt INSERT via the captured connection.
-    assert len(_captured_conn) == 1, "Expected run_v2_sweep to capture one connection"
-    ro_conn = _captured_conn[0]
-    with pytest.raises(sqlite3.OperationalError, match="[Rr]eadonly|[Rr]ead.only"):
-        ro_conn.execute("INSERT INTO evaluation_runs (id, run_ts, data_asof_date, action_session_date, tickers_evaluated, aplus_count, watch_count, skip_count, excluded_count, error_count) VALUES (999, 'x', 'x', 'x', 0, 0, 0, 0, 0, 0)")
+    # The spy must have captured exactly one OperationalError with "readonly".
+    assert len(write_error) == 1, (
+        f"Expected 1 readonly OperationalError; got {len(write_error)} errors: {write_error}"
+    )
+    assert "readonly" in str(write_error[0]).lower(), (
+        f"Expected 'readonly' in error message; got: {write_error[0]}"
+    )
 
 
 # ---------------------------------------------------------------------------

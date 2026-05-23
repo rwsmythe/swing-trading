@@ -234,3 +234,37 @@ def test_diagnose_aplus_sensitivity_stdout_is_ascii_safe(
     # Stdout must be cp1252-encodable (Windows safety).
     proc.stdout.encode("cp1252")
     proc.stderr.encode("cp1252")
+
+
+def test_diagnose_aplus_sensitivity_v2_help_smoke(
+    cfg_path: Path, tmp_path: Path,
+) -> None:
+    """V2 subcommand registered + --help exits 0 per OQ-10 CLI surface name."""
+    runner = CliRunner()
+    result = runner.invoke(cli, [
+        "--config", str(cfg_path),
+        "diagnose", "aplus-sensitivity-v2",
+        "--help",
+    ])
+    assert result.exit_code == 0, result.output
+    assert "aplus-sensitivity-v2" in result.output or "eval-runs" in result.output
+
+
+def test_diagnose_aplus_sensitivity_v2_eval_runs_out_of_range(
+    cfg_path: Path, tmp_path: Path,
+) -> None:
+    """V2 subcommand rejects --eval-runs 0 per Click IntRange(1, 100)."""
+    runner = CliRunner()
+    result = runner.invoke(cli, [
+        "--config", str(cfg_path),
+        "diagnose", "aplus-sensitivity-v2",
+        "--db", str(tmp_path / "x.db"),
+        "--eval-runs", "0",
+    ])
+    assert result.exit_code != 0
+    combined = result.output + (getattr(result, "stderr", "") or "")
+    assert (
+        "between 1 and 100" in combined
+        or "1<=" in combined
+        or "Invalid value" in combined
+    )

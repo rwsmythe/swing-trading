@@ -290,10 +290,13 @@ def test_v2_module_set_does_NOT_import_schwab_or_yfinance(monkeypatch):  # noqa:
     # Import all V2 modules -- must NOT trigger any forbidden module load
     # output.py sentinel added at T-V2.3 (deferred from T-V2.1 + T-V2.2
     # since output.py did not exist until T-V2.3).
+    # run.py sentinel added at T-V2.4 (deferred from T-V2.1 + T-V2.2 + T-V2.3
+    # since run.py did not exist until T-V2.4).
     import research.harness.aplus_v2_ohlcv_evaluator.cfg_substitution  # noqa: F401
     import research.harness.aplus_v2_ohlcv_evaluator.context_builder  # noqa: F401
     import research.harness.aplus_v2_ohlcv_evaluator.ohlcv_reader  # noqa: F401
     import research.harness.aplus_v2_ohlcv_evaluator.output  # noqa: F401
+    import research.harness.aplus_v2_ohlcv_evaluator.run  # noqa: F401
     import research.harness.aplus_v2_ohlcv_evaluator.sweep  # noqa: F401
 
     # Defense-in-depth #1: post-import, confirm no forbidden module was loaded
