@@ -114,6 +114,16 @@ if it fails, V2 is surfacing a criterion-drift regression (the production
 pipeline time -- likely a cfg or code change between the pipeline run and the
 V2 harness invocation).
 
+**CRITERION DRIFT alert semantics**: When tier-1 mismatch is detected, V2
+emits a `## CRITERION DRIFT DETECTED` alert section in the markdown output
+and sets `baseline_parity.tier1_match = False` in the manifest. This is a
+REPORTED ALERT, NOT an exit-code blocker: the harness completes the full sweep
+and returns all partial results with the alert prominently surfaced. Operator
+action is required (see "Implementer smoke run findings" below for a real
+example: DK:62 drift). The CLI exits with code 0 regardless of drift status
+so the operator can inspect the full output before deciding whether the drift
+is a known cfg/code divergence or a real regression requiring investigation.
+
 **Tier-2 CONDITIONAL (surrogate-flagged)**: Tier-2 candidates are those where
 the `current_equity` surrogate was used (no historical equity snapshot for the
 eval-run's date). Tier-2 mismatches are reported as non-blocking audit items
@@ -257,6 +267,14 @@ resolution:
    sweep raises an exception before `tracemalloc.get_traced_memory()`. The
    `tracemalloc.stop()` fires in the `finally` block; peak would be available
    there. Accurate failure-path peak reporting is V2.5.
+4. **RS universe duplicate detection is defense-in-depth (inert today)**:
+   `load_validated_rs_universe` performs an explicit duplicate-detection pass
+   after `load_universe` (which already calls `sorted(set(...))` internally).
+   The V2 duplicate pass is defense-in-depth against a future contract change
+   in `load_universe`; it is inert on current production files because
+   `load_universe` pre-dedupletes. V2.5 candidate: validate raw file rows
+   before `load_universe` to surface duplicates at the CSV-read boundary
+   rather than post-load.
 
 ## Forward-binding (V2.5 / V3+ recommendations)
 

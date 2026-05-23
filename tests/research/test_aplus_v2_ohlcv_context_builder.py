@@ -414,7 +414,7 @@ def test_classify_candidate_tier_returns_1_for_persisted_risk_pass():
     assert classify_candidate_tier("pass") == 1
 
 
-def test_classify_candidate_tier_returns_1_for_None_risk_result():
+def test_classify_candidate_tier_returns_1_for_None_risk_result():  # noqa: N802
     """Codex R1.C1 discriminating fix: None risk_result = LEFT JOIN miss = risk
     was not evaluated (TT-gate skip or pre-risk historical candidate). Bucket is
     independent of risk gate => tier-1. Was incorrectly tier-2 pre-fix."""
@@ -725,11 +725,11 @@ def test_build_eval_run_cohort_uses_ohlcv_getter_cache_when_provided(tmp_path):
         return cache[ticker]
 
     cfg = Config.from_defaults()
+    import research.harness.aplus_v2_ohlcv_evaluator.context_builder as cb_mod
     from research.harness.aplus_v2_ohlcv_evaluator.context_builder import build_eval_run_cohort
 
     # Monkeypatch read_yfinance_shape_a_sliced to assert it is NOT called
     # (when ohlcv_getter is provided the fallback path should be bypassed).
-    import research.harness.aplus_v2_ohlcv_evaluator.context_builder as cb_mod
 
     original_sliced = cb_mod.read_yfinance_shape_a_sliced
     fallback_called = {"n": 0}
