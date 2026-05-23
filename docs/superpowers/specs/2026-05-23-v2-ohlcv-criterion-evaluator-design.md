@@ -612,11 +612,11 @@ out_of_range_skip_count, ohlcv_coverage_skip_count, evaluation_error_skip_count
 
 V2 markdown matrix mirrors V1's table format (12 columns instead of 9 — see §D.3 taxonomy-propagation invariant). The markdown matrix's HEADLINE summary section (placed ABOVE the matrix) directly answers operator's motivating question per §B.1:
 
-> ## Headline: variables binding at watch→A+ boundary (V2 OHLCV recompute)
+> ## Headline: variables binding at watch->A+ boundary (V2 OHLCV recompute)
 >
 > Top 5 by marginal A+ count per loosening unit (sorted descending; loosening = sweep direction that grows A+):
 >
-> 1. `<variable>` at sweep_point=<X> → A+ delta +<N> (<+P%>)
+> 1. `<variable>` at sweep_point=<X> -> A+ delta +<N> (<+P%>)
 > 2. ...
 > [zero entries if no variable produces non-zero delta_aplus in the 5-point grid]
 
@@ -629,7 +629,7 @@ For EACH variable with `max(|delta_aplus|) > 0` across its sweep grid, V2 emits 
 ```
 ## Drill-down: <variable_name>
 
-| Sweep point | Direction | A+ delta | Candidates flipped (watch→A+) | Candidates flipped (A+→watch) | Candidates flipped (skip→watch) | ... |
+| Sweep point | Direction | A+ delta | Candidates flipped (watch->A+) | Candidates flipped (A+->watch) | Candidates flipped (skip->watch) | ... |
 |-------------|-----------|----------|---|---|---|---|
 | <pt-2>      | loosen    | +<N>     | <ticker_1, ticker_2, ...>      | ...                            | ...                              | ... |
 | <pt-1>      | loosen    | +<N>     | ...                            | ...                            | ...                              | ... |
@@ -641,7 +641,7 @@ For EACH variable with `max(|delta_aplus|) > 0` across its sweep grid, V2 emits 
 Plus a per-flipped-candidate provenance block:
 
 ```
-### Candidates flipped (watch→A+) at <variable>=<sweep_point>:
+### Candidates flipped (watch->A+) at <variable>=<sweep_point>:
 
 - <ticker> (eval_run=<id>, data_asof_date=<date>): old criterion failure = '<criterion_name>' (value=<old_value>, rule='<old_rule>'); new evaluation = 'pass' under substituted threshold.
 ```
@@ -710,7 +710,7 @@ Each pattern below is a BINDING test for V2 per the cited cumulative gotcha:
 - **`date.fromisoformat()` discipline (cumulative gotcha #12)** — DIRECTLY APPLIES; `evaluation_runs.data_asof_date` is TEXT (ISO format); V2's `context_builder` MUST convert via `date.fromisoformat(row[1])` at the SQL boundary. Discriminating test: plant a row with malformed ISO date + assert `MalformedAsofDateError` (typed) NOT `TypeError` deep in stack.
 - **Bad-exemplar isolation in retrieval functions (cumulative T2.SB5)** — DIRECTLY APPLIES per §D.4. Discriminating test: 3-candidate fixture (1 good + 2 failure-mode) asserts only failure-mode candidates skip + good candidate tallied.
 - **External-API empty-result transient defense (cumulative F6)** — N/A direct (V2 doesn't fetch from external API; uses archive). But indirectly relevant if archive read returns empty parquet: V2 treats as OhlcvCoverageError + skip (per §E.5), NOT silent ZERO-bar evaluation.
-- **Synthetic-fixture-vs-production-emitter shape drift (cumulative, 4 instances)** — DIRECTLY APPLIES to V2 test fixtures: V2 fixture data (synthetic OHLCV bars + synthetic candidate rows) MUST shape-match what `swing.data.ohlcv_archive.read_or_fetch_archive` would actually return AND what `swing.data.repos.candidates.insert_candidates` would actually persist. Discriminating test: derive fixture from a real eval_run dump (write a fixture-generator that consumes operator's DB + dumps to JSON) per the cumulative defense-in-depth pattern.
+- **Synthetic-fixture-vs-production-emitter shape drift (cumulative, 4 instances)** — DIRECTLY APPLIES to V2 test fixtures (Codex R5.m1 RESOLVED — updated to reference the V2 reader path, NOT the bypassed `read_or_fetch_archive`): V2 fixture data MUST shape-match what the NEW `ohlcv_reader.py` reads (both Shape A `{ticker}.yfinance.parquet` AND legacy `{ticker}.parquet` fallback per §F.1 amended) AND what `swing.data.repos.candidates.insert_candidates` actually persists. Discriminating test: derive fixture from a real eval_run dump (write a fixture-generator that consumes operator's DB + dumps to JSON; pair with a parquet-fixture-generator that snapshots the operator's archive at synthetic-test-ticker paths) per the cumulative defense-in-depth pattern.
 
 ### §H.3 Test count baseline + V2 bump projection
 
