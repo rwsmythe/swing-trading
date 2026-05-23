@@ -21,6 +21,7 @@ from swing.data.repos.trades import (
     _row_to_trade,
     _trade_select_cols,
 )
+from swing.metrics.label_match import label_matches_hypothesis_sql
 from swing.trades.entry import canonicalize_hypothesis_label
 
 # Per spec §A.16 + plan §I.14: cohort listing for the dashboard.
@@ -55,6 +56,13 @@ def list_trades_for_cohort(
     Per plan §A.11.1: include ALL trades labeled with the cohort regardless
     of cohort status (active / paused / closed). Paused intervals do NOT
     cause exclusion (operator-intent-at-entry semantics).
+
+    Phase 13 T-T4.SB.2 (Item 7 Option 7C LOCK): match contract widened from
+    exact equality to 3-rule delimiter-aware (exact / space-delimited /
+    semicolon-delimited) so per-trade-suffix labels like
+    ``"Sub-A+ VCP-not-formed (watch); failed: proximity_20ma"`` are
+    correctly attributed to the canonical cohort. See
+    :func:`swing.metrics.label_match.label_matches_hypothesis_sql`.
     """
     canonical = (
         canonicalize_hypothesis_label(hypothesis_label)
@@ -64,8 +72,9 @@ def list_trades_for_cohort(
     where_clauses: list[str] = []
     params: list[object] = []
     if canonical is not None:
-        where_clauses.append("hypothesis_label = ?")
-        params.append(canonical)
+        fragment, fragment_params = label_matches_hypothesis_sql(canonical)
+        where_clauses.append(fragment)
+        params.extend(fragment_params)
     if state_filter:
         placeholders = ",".join("?" for _ in state_filter)
         where_clauses.append(f"state IN ({placeholders})")
