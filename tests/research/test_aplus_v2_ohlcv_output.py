@@ -469,13 +469,6 @@ def test_manifest_section_contains_required_fields(tmp_path: Path) -> None:
     """
     from research.harness.aplus_v2_ohlcv_evaluator.output import write_sensitivity_markdown_v2
 
-    parity = _make_parity(
-        tier1_match=True,
-        tier1_mismatch_candidates=(),
-        tier2_match_count=8,
-        tier2_mismatch_count=2,
-        tier2_via_surrogate_count=1,
-    )
     # Construct a result where BaselineParityReport carries tier_1_count=7 and
     # tier_2_count=10 so we can assert specific numeric values in the manifest.
     from research.harness.aplus_v2_ohlcv_evaluator.sweep import BaselineParityReport

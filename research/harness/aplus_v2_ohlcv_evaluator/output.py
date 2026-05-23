@@ -84,16 +84,17 @@ def write_sensitivity_markdown_v2(
          universe_skipped_ticker_count + runtime_seconds + truncated_by_runtime_cap)
       2. Headline (top binding variables by marginal A+ count per loosening
          unit per §G.1)
-      3. V1<->V2 parity section (CRITERION DRIFT alert on tier-1 mismatch
-         per §G.3)
-      4. Both-exist warning banner (when both_exist_diagnostic.count > 0
+      3. CRITERION DRIFT (conditional top-level ## section when tier1_match=False
+         per §G T-V2.3.5 LOCK; omitted entirely when tier1_match=True)
+      4. V1<->V2 Baseline Parity section (always emitted; parity counts summary)
+      5. Both-exist warning banner (when both_exist_diagnostic.count > 0
          per §G; per OQ-18 + Codex R4.M1)
-      5. Sensitivity matrix (12 cols per spec §G.1)
-      6. Per-variable drill-down (per §G.2; bucket_via_surrogate flag
+      6. Sensitivity matrix (12 cols per spec §G.1)
+      7. Per-variable drill-down (per §G.2; bucket_via_surrogate flag
          per OQ-15)
-      7. Notes (per-variable scope-reduction + tier-2 surrogate count +
+      8. Notes (per-variable scope-reduction + tier-2 surrogate count +
          OQ-15+OQ-18 caveats)
-      8. Manifest (both_exist_shape_a_wins_count + accepted ticker counts +
+      9. Manifest (both_exist_shape_a_wins_count + accepted ticker counts +
          tier-1/tier-2 split + memory peak from tracemalloc per Codex R3.m3)
 
     ASCII-only output per cumulative Windows cp1252 stdout safety gotcha.
@@ -104,7 +105,8 @@ def write_sensitivity_markdown_v2(
 
     _write_header_section(lines, result)
     _write_headline_section(lines, result)
-    _write_parity_section(lines, result)
+    _write_criterion_drift_section(lines, result)  # conditional; top-level ## when firing
+    _write_parity_section(lines, result)            # always emitted; parity summary
     _write_both_exist_banner(lines, result)
     _write_matrix_section(lines, result)
     _write_drilldown_section(lines, result)
@@ -163,24 +165,48 @@ def _write_headline_section(lines: list[str], result: SweepResultV2) -> None:
     lines.append("")
 
 
+def _write_criterion_drift_section(lines: list[str], result: SweepResultV2) -> None:
+    """Section 3 (conditional): CRITERION DRIFT top-level warning section.
+
+    Emitted ONLY when baseline_parity.tier1_match=False.
+    Per spec §G T-V2.3.5 + plan §G T-V2.5 integration test LOCK:
+    '## CRITERION DRIFT DETECTED' is a TOP-LEVEL section (level-2 ##),
+    NOT a subsection of '## V1<->V2 Baseline Parity'.
+    Omitted entirely when tier1_match=True.
+    """
+    parity = result.baseline_parity
+    if parity.tier1_match:
+        return  # suppressed when no mismatch
+
+    lines.append("## CRITERION DRIFT DETECTED")
+    lines.append("")
+    lines.append("**BLOCKING:** V2 baseline (current-value sweep point) does NOT")
+    lines.append("match V1 persisted results for the following tier-1 candidates:")
+    lines.append("")
+    for cand_key in parity.tier1_mismatch_candidates:
+        lines.append(f"- {cand_key}")
+    lines.append("")
+    lines.append("Action required: investigate V1/V2 divergence before trusting")
+    lines.append("V2 sensitivity results.")
+    lines.append("")
+
+
 def _write_parity_section(lines: list[str], result: SweepResultV2) -> None:
-    """Section 3: V1<->V2 parity (CRITERION DRIFT alert on tier-1 mismatch)."""
+    """Section 4: V1<->V2 Baseline Parity summary (always emitted).
+
+    Reports tier-1 match status + tier-2 counts.
+    CRITERION DRIFT alert is in its own top-level section above this one
+    (see _write_criterion_drift_section).
+    """
     parity = result.baseline_parity
     lines.append("## V1<->V2 Baseline Parity")
     lines.append("")
-    if not parity.tier1_match:
-        lines.append("### CRITERION DRIFT DETECTED")
-        lines.append("")
-        lines.append("**BLOCKING:** V2 baseline (current-value sweep point) does NOT")
-        lines.append("match V1 persisted results for the following tier-1 candidates:")
-        lines.append("")
-        for cand_key in parity.tier1_mismatch_candidates:
-            lines.append(f"- {cand_key}")
-        lines.append("")
-        lines.append("Action required: investigate V1/V2 divergence before trusting")
-        lines.append("V2 sensitivity results.")
-    else:
+    if parity.tier1_match:
         lines.append("Tier-1 match: PASS (V1 and V2 agree on all tier-1 candidates)")
+    else:
+        lines.append(
+            "Tier-1 match: FAIL (see CRITERION DRIFT DETECTED section above)"
+        )
     lines.append("")
     lines.append(f"Tier-2 match count: {parity.tier2_match_count}")
     lines.append(f"Tier-2 mismatch count: {parity.tier2_mismatch_count}")
