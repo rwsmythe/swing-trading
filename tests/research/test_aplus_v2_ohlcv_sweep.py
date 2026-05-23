@@ -508,21 +508,18 @@ def test_single_variable_downstream_propagation_rs_rank(tmp_path):
 # (6) vcp.watch_max_fails special-case bucket promotion
 # ---------------------------------------------------------------------------
 
-def test_vcp_watch_max_fails_special_case_promotes_watch_bucket(tmp_path):
-    """Plant a candidate with exactly vcp_fails=3 (currently skip per hardcoded
-    watch_max_fails=2); substitute watch_max_fails=4 via V2 special-case;
-    assert bucket = 'watch'."""
-    db_path = _build_test_db(tmp_path)
-    _seed_eval_run(db_path, 1, "2026-04-30")
+def test_apply_watch_max_fails_override_promotes_watch_bucket():
+    """Test _apply_watch_max_fails_override in isolation with a mock Candidate.
 
-    universe_tickers = [f"ZZU{i:03d}" for i in range(100)]
-    for t in universe_tickers:
-        _make_shape_a_parquet(tmp_path / f"{t}.yfinance.parquet", n_bars=250)
-    _make_shape_a_parquet(tmp_path / "SPY.yfinance.parquet", n_bars=250, sentinel_close=500.0)
+    Verifies: vcp_fails=3 + watch_max_fails=2 -> 'skip';
+              vcp_fails=3 + watch_max_fails=4 -> 'watch'.
 
-    # Candidate that will have vcp_fails=3 when evaluated by V2 with real OHLCV.
-    # We cannot guarantee exact vcp_fails from synthetic OHLCV -- so instead
-    # we test the _apply_watch_max_fails_override directly with a mock Candidate.
+    Note (Option A per code-quality review): the original test had unused DB +
+    universe + parquet fixture setup that was never consumed (the test called
+    _apply_watch_max_fails_override directly with a MagicMock). That misleading
+    setup has been removed. End-to-end integration of the special-case branch
+    through run_v2_sweep is covered by test_vcp_watch_max_fails_special_case_not_via_cfg_substitution.
+    """
     from research.harness.aplus_v2_ohlcv_evaluator.sweep import _apply_watch_max_fails_override
     from swing.data.models import CriterionResult
 
