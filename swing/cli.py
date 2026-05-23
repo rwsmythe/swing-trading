@@ -4617,5 +4617,45 @@ def diagnose_metrics_wiring(db_path: Path, output_path: Path) -> None:
     click.echo(f"Audit:    {output_path}")
 
 
+@diagnose_group.command("prune-chart-cache")
+@click.option(
+    "--db", "db_path", required=True, type=click.Path(path_type=Path),
+)
+@click.option(
+    "--older-than", "older_than_days", required=True,
+    type=click.IntRange(0, 36500),
+    help="Delete chart_renders rows whose rendered_at is older than N days.",
+)
+def diagnose_prune_chart_cache(db_path: Path, older_than_days: int) -> None:
+    """Phase 13 T-T4.SB.3 (Item 5; OQ-5.1 R4 LOCK) — manual prune of the
+    chart_renders cache.
+
+    Deletes ``chart_renders`` rows whose ``rendered_at`` is older than
+    ``--older-than`` calendar days (UTC). Operator-invoked under monitored
+    growth. V2 candidate banked for automated time-based eviction.
+    """
+    import sqlite3 as _sqlite3
+
+    from swing.diagnostics.prune_chart_cache import (
+        prune_chart_renders_older_than,
+    )
+
+    try:
+        conn = _sqlite3.connect(str(db_path))
+        try:
+            with conn:
+                deleted = prune_chart_renders_older_than(
+                    conn, older_than_days=older_than_days,
+                )
+        finally:
+            conn.close()
+    except ValueError as exc:
+        # Wrap service-layer ValueErrors at the CLI boundary per cumulative
+        # gotcha (Phase 13 T-A.1.5b Codex R4 M#1).
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"Deleted {deleted} chart_renders rows older than "
+               f"{older_than_days} days.")
+
+
 if __name__ == "__main__":  # pragma: no cover
     main()
