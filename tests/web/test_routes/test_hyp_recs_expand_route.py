@@ -457,13 +457,29 @@ def test_expand_route_500_row_target_renders_colspan_9(
 def test_expand_route_chart_unavailable_renders_message(
     seeded_db, monkeypatch,
 ):
-    """When `resolve_chart_scope` returns a non-None reason, the
-    `chart-unavailable` div must render with the reason message text."""
+    """When `resolve_chart_scope` returns a non-None reason AND the JIT
+    helper cannot produce SVG bytes (OHLCV unavailable), the
+    `chart-unavailable` div must render with the reason message text.
+
+    Phase 13 T-T4.SB.3 (Item 5) updated semantics: the template cascade
+    now prefers inline SVG over the banner. To exercise the banner
+    branch, we patch OhlcvCache.get_or_fetch to return None so the JIT
+    short-circuits and yields no bytes.
+    """
     cfg, cfg_path = seeded_db
-    # No chart targets seeded → chart_status='ok' but ticker is not in
-    # pipeline_chart_targets → reason 'out-of-scope'.
+    # No chart targets seeded -> chart_status='ok' but ticker is not in
+    # pipeline_chart_targets -> reason 'out-of-scope'.
     _seed_hyp_recs_fixture(cfg, seed_chart_targets=False)
     _patch_price_cache(monkeypatch)
+    # Phase 13 T-T4.SB.3 (Item 5): force JIT short-circuit so the banner
+    # branch fires. Without this stub, the OhlcvCache would attempt yfinance
+    # / archive reads + JIT might render bytes -> banner suppressed by
+    # template cascade.
+    from swing.web.ohlcv_cache import OhlcvCache
+    monkeypatch.setattr(
+        OhlcvCache, "get_or_fetch",
+        lambda self, *, ticker, window_days=200: None,
+    )
     app = create_app(cfg, cfg_path)
     with TestClient(app) as client:
         resp = client.get(
