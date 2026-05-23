@@ -26,6 +26,60 @@
 
 ---
 
+## Post-T4.SB-SHIPPED operator gate feedback (V2 backlog; 2026-05-23)
+
+**Surfaced at**: post-T4.SB-executing-plans-merge S2-S5 operator-witnessed gate session 2026-05-23 (orchestrator-driven gates PASSED algorithmically; operator browser session surfaced 4 NEW visual/data issues NOT covered by gate criteria). Banked here as V2 investigation/resolution backlog. Operator decision 2026-05-23: bank-don't-fix; investigate in V2.
+
+### V2.G1 — Hyp-rec + watchlist expanded charts not rendered (only open-positions table shows candlesticks)
+
+| Field | Value |
+|---|---|
+| **Issue title** | Hyp-rec table expanded rows + watchlist expanded rows do NOT render candlestick charts; only the open-positions table displays them |
+| **Surface** | `/dashboard` hyp-rec table expanded (via `/hyp-recs/{ticker}/expand`) + watchlist expanded (via `/watchlist/{ticker}/expand`) — algorithmic verification at S2.3 + S2.4 showed inline `<svg>` in fetch response (67KB), but operator's browser session reports the candlestick visualization is absent. Open-positions table chart surface (likely `position_detail`) renders correctly. |
+| **Frequency** | Every hyp-rec or watchlist expand on operator's dashboard post-merge `2a56158` |
+| **Severity** | **MEDIUM** — algorithmic gate PASSED on inline-SVG presence; operator-observed visual-render gap suggests the rendered SVG may not display as candlesticks (e.g., rendered as line chart, or rendered SVG bytes don't carry candlestick path geometry, OR template-side CSS/scaling hides candles). Cosmetic-but-UX-meaningful. |
+| **Operator framing (2026-05-23)** | "The only candlestick graphs I see are in the open positions table. The hyp-rec and watchlist tables both do not show candlestick plots." |
+| **Proposed V2 resolution** | **Visual diff investigation** between open-positions chart bytes (working) vs hyp-rec/watchlist expand chart bytes (broken). Three candidate root-cause buckets: (a) **renderer divergence** — `render_position_detail_svg` produces candlesticks; `get_or_render_surface` for `hyprec_detail` invokes a different rendering helper that produces a different chart type (line/area); (b) **renderer-kwargs uniformity** broken per Expansion #10 sub-discipline (c) — `hyprec_detail` surface ms-be invoked with different `ma_lines` or `chart_type` kwargs across callsites; (c) **template embedding** — the inline SVG is present but CSS/sizing in `hypothesis_recommendations_expanded.html.j2` + `watchlist_expanded.html.j2` clips/scales-out the candles. Discriminating test: render each surface against the SAME ticker + diff byte content + visual diff via Playwright/Selenium. |
+| **Cross-reference** | S2.3 + S2.4 PASSED algorithmically (inline `<svg>` content length 67KB; no "chart unavailable" banner); V2.G1 captures the algorithmic-vs-visual gap. Related to T4.SB return report Lesson #4 (template-scraping E2E assertions MUST fail-closed on missing element — same JS-test-harness-gap family). |
+
+### V2.G2 — Watchlist expanded chart title shows "hyp-rec detail" (surface-name leakage)
+
+| Field | Value |
+|---|---|
+| **Issue title** | Watchlist expanded chart titles render the text "hyp-rec detail" — surface-name semantic leakage |
+| **Surface** | `/watchlist/{ticker}/expand` rendered chart title (matplotlib `title=` or similar). Reported by operator at 2026-05-23 gate session. |
+| **Frequency** | Every watchlist row expand |
+| **Severity** | Cosmetic / labeling |
+| **Operator framing (2026-05-23)** | "Title of the plots in the watchlist show 'hyp-rec detail'" |
+| **Proposed V2 resolution** | **Directly maps to existing V1 simplification banked at writing-plans return report §4 item 8**: `hyprec_detail` surface-name grandfathered as CANONICAL "full-ticker detail chart" across MULTIPLE UI surfaces. V2 fix per return report: rename `hyprec_detail` → `ticker_detail` (or surface-distinct names `hyprec_detail` vs `watchlist_expanded_detail`) + v22 schema migration to widen `chart_renders.surface` CHECK enum + per-surface title-formatter that derives title from the CALLER context (not the surface enum value). Cosmetic-only; LOW priority per writing-plans banking. **Confirmation that the operator does notice this** elevates priority to MEDIUM-cosmetic. |
+| **Cross-reference** | Writing-plans return report §4 V1 simplification #8 — predicted exactly this user-visible drift at banking time; operator observation confirms the V2 candidate is needed. Expansion #10 sub-discipline (c) cache-key + renderer-kwargs uniformity LOCK relevant. |
+
+### V2.G3 — VSAT lost Sector and Industry values in open-positions table
+
+| Field | Value |
+|---|---|
+| **Issue title** | VSAT row in open-positions table is missing Sector + Industry values; DHA (DHC?) never had them (legacy pre-feature) |
+| **Surface** | `/dashboard` open-positions table Sector + Industry columns; rendered via `swing/web/view_models/dashboard.py` or `partials/open_positions_row.html.j2`. |
+| **Frequency** | Persistent for VSAT row; legacy for DHA (DHC?) |
+| **Severity** | Data wiring / regression — VSAT once had values (pre-T4.SB?) and lost them; new finviz CSV ingest path may have failed to persist OR a join condition lost the row mid-pipeline |
+| **Operator framing (2026-05-23)** | "In the open positions table, VSAT lost Sector and Industry values. DHA never had them as that position was opened prior to them being included." |
+| **Proposed V2 resolution** | **Investigation path**: (a) check `candidates` table for VSAT's latest row — is Sector/Industry persisted? (b) check `trades` table — does the trade row carry Sector/Industry directly (denormalized at entry-form time) or via JOIN to `candidates`? (c) if VSAT is no longer in today's finviz CSV (post-T4.SB pipeline rotation), the JOIN may return NULL for the open trade. Mirror existing CLAUDE.md gotcha "PriceCache `_last_close` only sees tickers in today's `candidates` table" pattern — Sector/Industry may suffer the same fate. **Fix candidate**: union open-trade tickers into `_step_evaluate` Sector/Industry persistence OR denormalize Sector/Industry onto `trades` at entry-form time OR cache last-known values per-ticker. DHA (DHC?) is acknowledged-legacy (pre-feature; no backfill required per operator). |
+| **Cross-reference** | Same gotcha family as "PriceCache `_last_close` only sees tickers in today's candidates table" (CLAUDE.md) — applies to Sector/Industry surface. Also related to v21 schema (T2.SB6c added `trades.candidate_id` backlink which could be the JOIN path for Sector/Industry inheritance). |
+
+### V2.G4 — "Refresh weather chart" reports "no OHLCV bars available for benchmark 'SPY'; run the pipeline first" even immediately post-pipeline-run
+
+| Field | Value |
+|---|---|
+| **Issue title** | `POST /dashboard/weather-chart/refresh` consistently returns "no OHLCV bars available for benchmark 'SPY'; run the pipeline first" even when triggered shortly after a successful pipeline run that populates SPY bars |
+| **Surface** | `/dashboard` "Refresh weather chart" button → HTMX POST to `/dashboard/weather-chart/refresh` → handler invokes chart_jit OR direct renderer → renderer needs SPY OHLCV bars from `OhlcvCache` or `read_or_fetch_archive`. |
+| **Frequency** | Every "Refresh weather chart" click |
+| **Severity** | **MEDIUM** — feature broken end-to-end. Pipeline writes SPY OHLCV bars to one cache path; refresh handler reads from different cache path OR reads from cache that wasn't populated by pipeline OR has stale cfg-resolved SPY symbol. |
+| **Operator framing (2026-05-23)** | "Clicking 'Refresh weather chart' shows 'no OHLCV bars available for benchmark SPY; run the pipeline first' even if it is clicked shortly after doing a pipeline run." |
+| **Proposed V2 resolution** | **Investigation path**: (a) verify pipeline's SPY-bar write path — is it `OhlcvCache.refresh_archive(ticker='SPY')` or `_step_evaluate`'s yfinance fetch into `OhlcvArchive`? (b) verify refresh-handler's SPY-bar read path — does it consume the SAME cache surface as the write path? (c) check `cfg.rs.benchmark_ticker` resolution — is the refresh handler reading the cfg value at handler-init time vs request-time? (d) check whether the JIT helper `get_or_render_surface(surface='market_weather')` falls back to live yfinance fetch on cache-miss OR fails with the "run the pipeline first" message. **Likely root cause**: `chart_jit.get_or_render_surface` invokes `_RENDERERS['market_weather']` which calls `render_market_weather_svg(...)` requiring `bars: pd.DataFrame` parameter; the handler may be passing an empty DataFrame OR not invoking the OHLCV cache hydration step. Discriminating test: plant SPY bars in `OhlcvCache` directly → invoke handler → assert render succeeds; plant empty bars → invoke → assert specific error message. |
+| **Cross-reference** | Related to T-T4.SB.3 Item 5 architecture (chart_jit.py NEW module) + T-T4.SB.5 Item 3 market_weather chart rendering. Possibly tied to V2.G1 (broken candlestick rendering) — if `market_weather` and `hyprec_detail` share the same broken cache-hydration path, V2.G1 + V2.G4 are the SAME bug with two surface symptoms. Worth checking jointly. |
+
+---
+
 ## T4.SB triage items (operator-supplied; PAUSE-FOR-LIST-ADDITIONS accumulation; pre-dispatch-brief)
 
 Per `project_phase13_t4_sb_pause_for_list_additions` BINDING memory: T4.SB dispatch brief is BLOCKED until operator-supplied usability triage items are enumerated. Spec §7.3 5-field template: Issue title / Surface / Frequency / Severity / Operator framing / Proposed resolution. Items accumulate here as operator surfaces them in conversation; orchestrator drafts T4.SB dispatch brief once the list closes.
