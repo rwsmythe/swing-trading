@@ -69,3 +69,22 @@ def test_registered_hypothesis_names_do_not_delimiter_overlap(tmp_path: Path):
                 f"Registered hypothesis {b!r} delimiter-matches {a!r} "
                 "-- would double-count cohort metrics."
             )
+
+
+def test_synthetic_registry_overlap_invariant_detects_offender():
+    """Discriminating regression: the invariant assertion correctly REJECTS
+    a synthetic registry pair where one name space-delimiter-matches the
+    other -- proves the invariant test would catch a future migration that
+    introduced a delimiter-overlapping cohort name."""
+    # Construct a synthetic pair that violates the invariant.
+    synthetic_names = ["A+ baseline", "A+ baseline extended"]
+    offending_pairs: list[tuple[str, str]] = []
+    for a in synthetic_names:
+        for b in synthetic_names:
+            if a == b:
+                continue
+            if label_matches_hypothesis(b, a):
+                offending_pairs.append((a, b))
+    # The synthetic pair "A+ baseline" + "A+ baseline extended" SHOULD trip
+    # the invariant -- proves the registered-name guard is functional.
+    assert offending_pairs == [("A+ baseline", "A+ baseline extended")]
