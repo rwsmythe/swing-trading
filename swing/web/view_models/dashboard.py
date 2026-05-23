@@ -626,6 +626,7 @@ def build_hyp_recs_expanded(
     conn, cfg: Config, *, ticker: str, current_balance: float,
     cache: PriceCache | None = None,
     executor=None,
+    ohlcv_cache=None,
 ) -> HypRecsExpandedVM | None:
     """Resolve a hyp-recs expansion VM at request time.
 
@@ -735,6 +736,34 @@ def build_hyp_recs_expanded(
         surface="hyprec_detail",
         pipeline_run_id=binding.run_id,
     )
+
+    # Phase 13 T-T4.SB.3 (Item 5) — JIT cache-miss fallback. When the
+    # pipeline's pre-gen did not populate this surface (e.g., the ticker
+    # rotated into A+ AFTER pipeline completed; or _step_charts scope
+    # narrowed per OQ-5.3), live-render via the JIT helper + write-through.
+    #
+    # Gating per R3 LOCK + plan §B.3 Sub-task 3C.1:
+    #   - hyprec_detail_chart_svg_bytes is None (cache miss)
+    #   - ohlcv_cache is not None (caller provided)
+    #   - pipeline_run_id is not None (run-bound surface requires)
+    #   - data_asof_date is not None (ChartRender column non-NULL)
+    #
+    # Renderer-kwargs uniformity LOCK: pattern_evaluation=None matches the
+    # watchlist_expand route's call (Codex R4 M#3 cache-collision avoidance).
+    if (
+        hyprec_detail_chart_svg_bytes is None
+        and ohlcv_cache is not None
+        and binding.run_id is not None
+        and binding.data_asof_date is not None
+    ):
+        from swing.web.chart_jit import get_or_render_surface
+        hyprec_detail_chart_svg_bytes = get_or_render_surface(
+            conn=conn, ohlcv_cache=ohlcv_cache,
+            surface="hyprec_detail", ticker=ticker,
+            pipeline_run_id=binding.run_id,
+            data_asof_date=binding.data_asof_date,
+            pattern_evaluation=None,  # uniformity LOCK with watchlist_expand
+        )
 
     # Phase 13 T2.SB6c T-A.6c.4 §C.5 Layer 1 — pattern_evaluations
     # anchor lookup per plan §G.4 Step 5(d). Uses (pipeline_run_id,
