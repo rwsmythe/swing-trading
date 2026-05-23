@@ -291,6 +291,7 @@ def test_v2_module_set_does_NOT_import_schwab_or_yfinance(monkeypatch):  # noqa:
     import research.harness.aplus_v2_ohlcv_evaluator.cfg_substitution  # noqa: F401
     import research.harness.aplus_v2_ohlcv_evaluator.context_builder  # noqa: F401
     import research.harness.aplus_v2_ohlcv_evaluator.ohlcv_reader  # noqa: F401
+    import research.harness.aplus_v2_ohlcv_evaluator.sweep  # noqa: F401
 
     # Defense-in-depth #1: post-import, confirm no forbidden module was loaded
     # to a real (non-sentinel) class. The sentinels remain in sys.modules; any
