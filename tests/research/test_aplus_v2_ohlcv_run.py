@@ -554,6 +554,68 @@ def test_run_harness_db_connection_is_readonly_uri_mode(
 
 
 # ---------------------------------------------------------------------------
+# Test 11b (discriminating): tracemalloc stopped on sweep exception path
+# ---------------------------------------------------------------------------
+
+
+def test_run_harness_tracemalloc_stopped_when_sweep_raises(
+    tmp_path: Path,
+) -> None:
+    """T-V2.4 #11b: tracemalloc.stop() is called even when run_v2_sweep raises.
+
+    Discriminating test for the tracemalloc-not-stopped-on-exception bug.
+    Pre-fix: tracemalloc.stop() is inside the try block BEFORE the exception
+    propagates the finally; tracemalloc remains tracing after the call.
+    Post-fix: nested try/finally guarantees stop() runs on the exception path.
+
+    Invariant: tracemalloc.is_tracing() == False after run_harness raises.
+    """
+    import tracemalloc
+    import unittest.mock as _mock
+
+    # Plant a minimal valid SQLite file so URI-mode open succeeds.
+    db_path = tmp_path / "fail_test.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        "CREATE TABLE evaluation_runs ("
+        "id INTEGER PRIMARY KEY, run_ts TEXT NOT NULL, "
+        "data_asof_date TEXT NOT NULL, action_session_date TEXT NOT NULL, "
+        "finviz_csv_path TEXT, tickers_evaluated INTEGER NOT NULL DEFAULT 0, "
+        "aplus_count INTEGER NOT NULL DEFAULT 0, watch_count INTEGER NOT NULL DEFAULT 0, "
+        "skip_count INTEGER NOT NULL DEFAULT 0, excluded_count INTEGER NOT NULL DEFAULT 0, "
+        "error_count INTEGER NOT NULL DEFAULT 0)"
+    )
+    conn.commit()
+    conn.close()
+
+    # Ensure tracemalloc is NOT tracing before we start.
+    if tracemalloc.is_tracing():
+        tracemalloc.stop()
+    assert not tracemalloc.is_tracing(), "Precondition: tracemalloc should not be tracing"
+
+    class _SweepError(RuntimeError):
+        pass
+
+    def _raising_sweep(*args, **kwargs):
+        raise _SweepError("deliberate failure for tracemalloc test")
+
+    with _mock.patch(
+        "research.harness.aplus_v2_ohlcv_evaluator.run.run_v2_sweep",
+        side_effect=_raising_sweep,
+    ):
+        from research.harness.aplus_v2_ohlcv_evaluator.run import run_harness
+
+        with pytest.raises(_SweepError, match="deliberate failure"):
+            run_harness(db_path=db_path, eval_runs=20, output_dir=tmp_path / "out")
+
+    # KEY ASSERTION: tracemalloc must NOT still be tracing after the exception.
+    assert not tracemalloc.is_tracing(), (
+        "tracemalloc.stop() was not called on the exception path; "
+        "tracemalloc is still tracing after run_harness raised."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Test 12 (bonus): V1 back-compat --help unchanged (OQ-10)
 # ---------------------------------------------------------------------------
 

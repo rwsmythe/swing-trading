@@ -95,18 +95,21 @@ def run_harness(
     conn = sqlite3.connect(db_uri, uri=True)
     try:
         import tracemalloc
+        peak = 0  # default: sweep raised before get_traced_memory
         tracemalloc.start()
-        result = run_v2_sweep(
-            conn,
-            variables=variables,
-            cfg=cfg,
-            cache_dir=cfg.paths.prices_cache_dir,
-            eval_runs_window=eval_runs,
-            min_universe_size=min_universe_size,
-            max_runtime_seconds=max_runtime_seconds,
-        )
-        _, peak = tracemalloc.get_traced_memory()
-        tracemalloc.stop()
+        try:
+            result = run_v2_sweep(
+                conn,
+                variables=variables,
+                cfg=cfg,
+                cache_dir=cfg.paths.prices_cache_dir,
+                eval_runs_window=eval_runs,
+                min_universe_size=min_universe_size,
+                max_runtime_seconds=max_runtime_seconds,
+            )
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
     finally:
         conn.close()
 
