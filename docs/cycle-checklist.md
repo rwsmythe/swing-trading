@@ -412,6 +412,17 @@ swing rs-universe --help
 
 ---
 
+## Quarterly diagnostics (Phase 13 T4.SB)
+
+- Re-run `swing diagnose aplus-sensitivity --eval-runs 63 --output-dir exports/diagnostics/`
+  to detect criterion calibration drift. Archive prior outputs to
+  `exports/diagnostics/archive/` before re-running.
+- Re-run `swing diagnose metrics-wiring --output exports/diagnostics/metrics-wiring-audit-<ISO>.md`
+  to detect wiring drift on metric surfaces.
+- Operator reviews output + banks V2 candidates if drift surfaces.
+
+---
+
 ## Invariants (don't break these)
 
 - **DB stays at `%USERPROFILE%/swing-data/swing.db`** — NOT inside the Drive folder
