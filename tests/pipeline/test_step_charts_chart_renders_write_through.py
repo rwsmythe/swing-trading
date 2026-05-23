@@ -216,11 +216,14 @@ def test_step_charts_writes_through_chart_renders_for_watchlist_row_surface(
     assert svg.startswith(b"<")  # raw SVG bytes
 
 
-def test_step_charts_writes_through_chart_renders_for_hyprec_detail_surface(
+def test_step_charts_does_not_pregen_hyprec_detail_surface_post_t_t4_sb_3(
     pipeline_db,
 ):
-    """§1.5.1 — A+ candidate is the canonical hyp-rec source; `_step_charts`
-    writes a `chart_renders` row keyed by surface='hyprec_detail'."""
+    """Phase 13 T-T4.SB.3 (OQ-5.3 LOCK): `_step_charts` no longer pre-gens
+    the `hyprec_detail` surface — it is now JIT-rendered on dashboard
+    expand (see ``build_hyp_recs_expanded`` JIT fallback +
+    ``swing/web/chart_jit.py``). This test pins the new contract; the
+    pre-T-T4.SB.3 ASSERT NOT NULL form is deliberately inverted."""
     cfg, run_id, eval_run_id = pipeline_db
     conn = connect(cfg.paths.db_path)
     try:
@@ -240,7 +243,10 @@ def test_step_charts_writes_through_chart_renders_for_hyprec_detail_surface(
         )
     finally:
         conn.close()
-    assert svg is not None
+    assert svg is None, (
+        "_step_charts must NOT pre-gen hyprec_detail (OQ-5.3 LOCK); "
+        "JIT-render on /hyp-recs/{ticker}/expand instead."
+    )
 
 
 def test_step_charts_writes_through_chart_renders_for_position_detail_surface(
@@ -436,8 +442,13 @@ def test_step_charts_chart_renders_write_through_is_idempotent(pipeline_db):
 # ===========================================================================
 
 
-def test_step_charts_populates_all_four_surfaces_in_one_run(pipeline_db):
-    """§1.5.1 — exercise all four cache-write surfaces in one invocation."""
+def test_step_charts_populates_three_pregen_surfaces_in_one_run(pipeline_db):
+    """§1.5.1 amended by Phase 13 T-T4.SB.3 OQ-5.3 LOCK: `_step_charts`
+    pre-gens THREE surfaces (market_weather + watchlist_row +
+    position_detail). The fourth surface (hyprec_detail) is now JIT-only
+    via the dashboard expand path. See
+    ``test_step_charts_does_not_pregen_hyprec_detail_surface_post_t_t4_sb_3``.
+    """
     cfg, run_id, eval_run_id = pipeline_db
     conn = connect(cfg.paths.db_path)
     try:
@@ -463,11 +474,11 @@ def test_step_charts_populates_all_four_surfaces_in_one_run(pipeline_db):
             conn, ticker="MTW", surface="watchlist_row",
             pipeline_run_id=run_id,
         ) is not None
-        # hyprec_detail.
+        # hyprec_detail — NO LONGER PRE-GENNED per OQ-5.3 LOCK.
         assert get_cached_chart_svg(
             conn, ticker="MTA", surface="hyprec_detail",
             pipeline_run_id=run_id,
-        ) is not None
+        ) is None
         # position_detail (pipeline_run_id IS NULL).
         assert get_cached_chart_svg(
             conn, ticker="MTP", surface="position_detail",

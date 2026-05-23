@@ -89,7 +89,6 @@ from swing.trades.advisory import AdvisoryContext, compute_all_suggestions
 from swing.trades.equity import current_equity, sizing_equity
 from swing.watchlist.service import compute_watchlist_changes
 from swing.web.charts import (
-    render_hyprec_detail_svg,
     render_market_weather_svg,
     render_position_detail_svg,
     render_watchlist_thumbnail_svg,
@@ -2344,17 +2343,28 @@ def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data_asof: str,
                 ticker, surface, exc,
             )
 
-    # watchlist_row surface — per data-eligible top-N watchlist ticker
-    # already in `tag_aware_top_n`. The thumbnail renderer is small (200x100
-    # MA + volume) so cost stays bounded.
-    for w in tag_aware_top_n:
+    # watchlist_row surface — per data-eligible dashboard-top-5 watchlist
+    # ticker. Phase 13 T-T4.SB.3 (OQ-5.3 LOCK): pre-gen scope reduced
+    # from top-N (`chart_top_n_watch` = 10) to dashboard-top-5
+    # visible-by-default. Out-of-scope (positions 6-10) thumbnails are
+    # JIT'd at request time via swing/web/chart_jit.py:get_or_render_surface.
+    # The dashboard renders only the top-5 by default — pre-genning the
+    # full 10 burned ~50% of chart-step wall time on rows operators
+    # rarely opened.
+    #
+    # Renderer-kwargs uniformity LOCK: ma_lines=[20, 50] matches the
+    # JIT helper's default (per Codex R4 M#3 cache-collision avoidance).
+    # NOTE: this changes the kwargs from the prior [50, 150, 200] —
+    # operator-facing change accepted per plan §B.3 Sub-task 3E.
+    _PREGEN_WATCHLIST_TOP_N = 5
+    for w in tag_aware_top_n[:_PREGEN_WATCHLIST_TOP_N]:
         ticker = w.ticker.upper()
         bars = _bars_or_none(ticker)
         if bars is None or bars.empty:
             continue
         try:
             svg_bytes = render_watchlist_thumbnail_svg(
-                ticker=ticker, bars=bars, ma_lines=[50, 150, 200],
+                ticker=ticker, bars=bars, ma_lines=[20, 50],
             )
         except Exception as exc:  # noqa: BLE001 - per-ticker isolation
             log.warning(
@@ -2368,26 +2378,13 @@ def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data_asof: str,
             bytes_=svg_bytes,
         )
 
-    # hyprec_detail surface — per A+ candidate from this evaluation run.
-    for c in aplus:
-        ticker = c.ticker.upper()
-        bars = _bars_or_none(ticker)
-        if bars is None or bars.empty:
-            continue
-        try:
-            svg_bytes = render_hyprec_detail_svg(
-                ticker=ticker, bars=bars, pattern_evaluation=None,
-            )
-        except Exception as exc:  # noqa: BLE001 - per-ticker isolation
-            log.warning(
-                "render_hyprec_detail_svg failed for %s: %s", ticker, exc,
-            )
-            continue
-        _refresh_one(
-            ticker=ticker, surface="hyprec_detail",
-            pipeline_run_id=lease.run_id, pattern_class=None,
-            bytes_=svg_bytes,
-        )
+    # hyprec_detail surface — Phase 13 T-T4.SB.3 (OQ-5.3 LOCK): pre-gen
+    # DROPPED from chart-step. The hyp-recs expanded surface is operator-
+    # opened on-demand from the dashboard hyp-recs card; pre-genning all
+    # A+ tickers wastes ~one render per ticker, most never opened. The
+    # /hyp-recs/{ticker}/expand route + build_hyp_recs_expanded VM
+    # builder now JIT-fall-back to swing/web/chart_jit.py:get_or_render_surface
+    # on cache miss + write-through.
 
     # position_detail surface — per open trade. Run-agnostic key shape:
     # pipeline_run_id IS NULL per v20 §3.2 LOCK so the dashboard reader
