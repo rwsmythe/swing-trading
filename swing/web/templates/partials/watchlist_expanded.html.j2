@@ -33,7 +33,14 @@
       <p>Sector: {{ expanded.candidate.sector or "—" }}</p>
       <p>Industry: {{ expanded.candidate.industry or "—" }}</p>
     {% endif %}
-    {% if expanded.chart_reason is none and expanded.data_asof_date %}
+    {# Phase 13 T-T4.SB.3 (Item 5): inline-SVG cascade. When the JIT
+       helper populated watchlist_expanded_chart_svg_bytes, render the
+       SVG and SUPPRESS the PNG fallback + chart-unavailable banner
+       (single source of truth — operator sees ONE chart artifact, not
+       SVG plus banner). #}
+    {% if expanded.watchlist_expanded_chart_svg_bytes %}
+      <div class="watchlist-expanded-chart">{{ expanded.watchlist_expanded_chart_svg_bytes.decode('utf-8') | safe }}</div>
+    {% elif expanded.chart_reason is none and expanded.data_asof_date %}
       <img src="/charts/{{ expanded.data_asof_date }}/{{ expanded.ticker }}.png"
            alt="Chart {{ expanded.ticker }}">
     {% elif expanded.chart_reason_message %}
