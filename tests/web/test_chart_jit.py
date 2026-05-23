@@ -1,0 +1,330 @@
+"""Phase 13 T4.SB T-T4.SB.3 — JIT cache-miss chart-render helper tests.
+
+Discriminating test coverage per plan §B.3 Sub-task 3A:
+- cache hit returns cached bytes; OHLCV cache NOT consulted
+- cache miss renders via OHLCV + writes through to cache
+- OHLCV empty returns None; NO cache row written (F6 defense)
+- cache collision: 2nd caller reads from cache (renderer fires once)
+- Option A re-run collision invariant (Sub-task 3F per §1.5.3 amendment)
+"""
+from __future__ import annotations
+
+import importlib
+import sqlite3
+from pathlib import Path
+from unittest.mock import MagicMock
+
+import pandas as pd
+import pytest
+
+from swing.data.db import ensure_schema
+from swing.web.chart_jit import get_or_render_surface
+
+
+@pytest.fixture
+def conn(tmp_path: Path) -> sqlite3.Connection:
+    db_path = tmp_path / "chart_jit.db"
+    return ensure_schema(db_path)
+
+
+@pytest.fixture
+def pipeline_run_id(conn: sqlite3.Connection) -> int:
+    with conn:
+        conn.execute(
+            "INSERT INTO pipeline_runs (started_ts, trigger, data_asof_date, "
+            "action_session_date, state, lease_token) "
+            "VALUES ('2026-05-22T00:00:00.000', 'manual', '2026-05-22', "
+            "'2026-05-22', 'complete', 'tok-jit')"
+        )
+        return int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+
+
+def _planted_bars_df() -> pd.DataFrame:
+    """Minimal OHLCV DataFrame to satisfy renderer signatures."""
+    dates = pd.date_range("2026-01-01", periods=60, freq="B")
+    return pd.DataFrame(
+        {
+            "Open": [10.0 + i * 0.1 for i in range(60)],
+            "High": [10.5 + i * 0.1 for i in range(60)],
+            "Low": [9.5 + i * 0.1 for i in range(60)],
+            "Close": [10.2 + i * 0.1 for i in range(60)],
+            "Volume": [1000000 + i * 1000 for i in range(60)],
+        },
+        index=dates,
+    )
+
+
+def _plant_chart_render_row(
+    conn: sqlite3.Connection,
+    *,
+    surface: str,
+    ticker: str,
+    pipeline_run_id: int | None,
+    chart_svg_bytes: bytes,
+    pattern_class: str | None = None,
+) -> int:
+    with conn:
+        cur = conn.execute(
+            "INSERT INTO chart_renders "
+            "(ticker, surface, pipeline_run_id, pattern_class, "
+            "chart_svg_bytes, source_data_hash, rendered_at, data_asof_date) "
+            "VALUES (?, ?, ?, ?, ?, 'planted', "
+            "'2026-05-22T00:00:00Z', '2026-05-22')",
+            (ticker, surface, pipeline_run_id, pattern_class, chart_svg_bytes),
+        )
+        return int(cur.lastrowid)
+
+
+def test_get_or_render_surface_cache_hit_returns_cached_bytes(
+    conn: sqlite3.Connection, pipeline_run_id: int,
+) -> None:
+    _plant_chart_render_row(
+        conn, surface="hyprec_detail", ticker="UCTT",
+        pipeline_run_id=pipeline_run_id,
+        chart_svg_bytes=b"<svg>cached</svg>",
+    )
+    ohlcv_cache = MagicMock()
+    result = get_or_render_surface(
+        conn=conn, ohlcv_cache=ohlcv_cache,
+        surface="hyprec_detail", ticker="UCTT",
+        pipeline_run_id=pipeline_run_id,
+        data_asof_date="2026-05-22",
+    )
+    assert result == b"<svg>cached</svg>"
+    # On cache hit, OHLCV cache is NOT consulted.
+    ohlcv_cache.get_or_fetch.assert_not_called()
+
+
+def test_get_or_render_surface_cache_miss_renders_via_ohlcv_and_writes_through(
+    conn: sqlite3.Connection, pipeline_run_id: int,
+) -> None:
+    ohlcv_cache = MagicMock()
+    ohlcv_cache.get_or_fetch.return_value = _planted_bars_df()
+    # Inject a renderer mock to avoid matplotlib in the unit test.
+    import swing.web.chart_jit as mod
+
+    mod._RENDERERS["hyprec_detail"] = MagicMock(
+        return_value=b"<svg>rendered</svg>",
+    )
+    try:
+        result = get_or_render_surface(
+            conn=conn, ohlcv_cache=ohlcv_cache,
+            surface="hyprec_detail", ticker="UCTT",
+            pipeline_run_id=pipeline_run_id,
+            data_asof_date="2026-05-22",
+        )
+    finally:
+        importlib.reload(mod)
+    assert result == b"<svg>rendered</svg>"
+    # Write-through populated cache.
+    cached = conn.execute(
+        "SELECT chart_svg_bytes FROM chart_renders "
+        "WHERE surface = 'hyprec_detail' AND ticker = 'UCTT' "
+        "  AND pipeline_run_id = ?",
+        (pipeline_run_id,),
+    ).fetchone()
+    assert cached is not None
+    assert bytes(cached[0]) == b"<svg>rendered</svg>"
+
+
+def test_get_or_render_surface_returns_none_on_empty_ohlcv(
+    conn: sqlite3.Connection, pipeline_run_id: int,
+) -> None:
+    ohlcv_cache = MagicMock()
+    ohlcv_cache.get_or_fetch.return_value = None
+    result = get_or_render_surface(
+        conn=conn, ohlcv_cache=ohlcv_cache,
+        surface="hyprec_detail", ticker="UCTT",
+        pipeline_run_id=pipeline_run_id,
+        data_asof_date="2026-05-22",
+    )
+    assert result is None
+    # No cache row written (F6 construction-barrier defense — bytes never
+    # produced because OHLCV missing).
+    cached = conn.execute(
+        "SELECT 1 FROM chart_renders WHERE ticker = 'UCTT'"
+    ).fetchone()
+    assert cached is None
+
+
+def test_get_or_render_surface_returns_none_on_empty_dataframe_ohlcv(
+    conn: sqlite3.Connection, pipeline_run_id: int,
+) -> None:
+    """Empty DataFrame from OHLCV cache should also return None + no cache write."""
+    ohlcv_cache = MagicMock()
+    ohlcv_cache.get_or_fetch.return_value = pd.DataFrame()
+    result = get_or_render_surface(
+        conn=conn, ohlcv_cache=ohlcv_cache,
+        surface="hyprec_detail", ticker="UCTT",
+        pipeline_run_id=pipeline_run_id,
+        data_asof_date="2026-05-22",
+    )
+    assert result is None
+    cached = conn.execute(
+        "SELECT 1 FROM chart_renders WHERE ticker = 'UCTT'"
+    ).fetchone()
+    assert cached is None
+
+
+def test_get_or_render_surface_returns_none_on_ohlcv_exception(
+    conn: sqlite3.Connection, pipeline_run_id: int,
+) -> None:
+    """OHLCV cache exception should degrade gracefully + return None."""
+    ohlcv_cache = MagicMock()
+    ohlcv_cache.get_or_fetch.side_effect = RuntimeError("fetch boom")
+    result = get_or_render_surface(
+        conn=conn, ohlcv_cache=ohlcv_cache,
+        surface="hyprec_detail", ticker="UCTT",
+        pipeline_run_id=pipeline_run_id,
+        data_asof_date="2026-05-22",
+    )
+    assert result is None
+
+
+def test_get_or_render_surface_returns_none_on_empty_render_bytes(
+    conn: sqlite3.Connection, pipeline_run_id: int,
+) -> None:
+    """F6 lesson: renderer returning empty bytes MUST NOT blank existing cache.
+
+    Plant a known-good cache row; flip the renderer to return b""; assert
+    the existing cache row is preserved verbatim (the helper short-circuits
+    before any DELETE/INSERT). This is the construction-barrier defense
+    from the CLAUDE.md F6 cumulative gotcha.
+    """
+    _plant_chart_render_row(
+        conn, surface="market_weather", ticker="SPY",
+        pipeline_run_id=pipeline_run_id,
+        chart_svg_bytes=b"<svg>good</svg>",
+    )
+    # Force cache miss for a DIFFERENT ticker so we exercise the render path.
+    ohlcv_cache = MagicMock()
+    ohlcv_cache.get_or_fetch.return_value = _planted_bars_df()
+    import swing.web.chart_jit as mod
+
+    mod._RENDERERS["market_weather"] = MagicMock(return_value=b"")
+    try:
+        result = get_or_render_surface(
+            conn=conn, ohlcv_cache=ohlcv_cache,
+            surface="market_weather", ticker="QQQ",
+            pipeline_run_id=pipeline_run_id,
+            data_asof_date="2026-05-22",
+        )
+    finally:
+        importlib.reload(mod)
+    assert result is None
+    # Existing SPY cache row preserved verbatim.
+    rows = conn.execute(
+        "SELECT ticker, chart_svg_bytes FROM chart_renders "
+        "WHERE surface='market_weather'"
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0][0] == "SPY"
+    assert bytes(rows[0][1]) == b"<svg>good</svg>"
+
+
+def test_get_or_render_surface_cache_collision_renderer_called_once(
+    conn: sqlite3.Connection, pipeline_run_id: int,
+) -> None:
+    """Per Codex R4 M#3: two callers requesting the SAME (surface, ticker,
+    pipeline_run_id) — renderer fires ONCE; second caller reads from cache.
+
+    Renderer-kwargs uniformity LOCK: both callsites pass
+    ``pattern_evaluation=None`` (V1 hyprec_detail callsites).
+    """
+    ohlcv_cache = MagicMock()
+    ohlcv_cache.get_or_fetch.return_value = _planted_bars_df()
+    import swing.web.chart_jit as mod
+
+    renderer = MagicMock(return_value=b"<svg>once</svg>")
+    mod._RENDERERS["hyprec_detail"] = renderer
+    try:
+        r1 = get_or_render_surface(
+            conn=conn, ohlcv_cache=ohlcv_cache,
+            surface="hyprec_detail", ticker="UCTT",
+            pipeline_run_id=pipeline_run_id,
+            data_asof_date="2026-05-22",
+            pattern_evaluation=None,  # Uniformity LOCK
+        )
+        r2 = get_or_render_surface(
+            conn=conn, ohlcv_cache=ohlcv_cache,
+            surface="hyprec_detail", ticker="UCTT",
+            pipeline_run_id=pipeline_run_id,
+            data_asof_date="2026-05-22",
+            pattern_evaluation=None,  # Uniformity LOCK
+        )
+    finally:
+        importlib.reload(mod)
+    assert r1 == r2 == b"<svg>once</svg>"
+    assert renderer.call_count == 1
+    cached_count = conn.execute(
+        "SELECT COUNT(*) FROM chart_renders "
+        "WHERE surface = 'hyprec_detail' AND ticker = 'UCTT' "
+        "  AND pipeline_run_id = ?",
+        (pipeline_run_id,),
+    ).fetchone()[0]
+    assert cached_count == 1
+
+
+def test_jit_writes_pipeline_run_id_matching_dashboard_anchor(
+    conn: sqlite3.Connection,
+) -> None:
+    """Sub-task 3F: per spec §1.5.3 Option A LOCK — dashboard reader binds
+    to ONE pipeline_run anchor; JIT writes match anchor even if a fresher
+    run lands mid-session. Cache holds one row PER run_id; older anchor
+    NOT clobbered.
+    """
+    with conn:
+        cur = conn.execute(
+            "INSERT INTO pipeline_runs (started_ts, trigger, data_asof_date, "
+            "action_session_date, state, lease_token) "
+            "VALUES ('2026-05-22T08:00:00', 'manual', '2026-05-22', "
+            "'2026-05-22', 'complete', 'tok-r100')"
+        )
+        run_id_100 = int(cur.lastrowid)
+    ohlcv_cache = MagicMock()
+    ohlcv_cache.get_or_fetch.return_value = _planted_bars_df()
+    import swing.web.chart_jit as mod
+
+    mod._RENDERERS["hyprec_detail"] = MagicMock(
+        return_value=b"<svg>v100</svg>",
+    )
+    try:
+        bytes_v100 = get_or_render_surface(
+            conn=conn, ohlcv_cache=ohlcv_cache,
+            surface="hyprec_detail", ticker="UCTT",
+            pipeline_run_id=run_id_100,
+            data_asof_date="2026-05-22",
+        )
+        assert bytes_v100 == b"<svg>v100</svg>"
+        # New pipeline_run lands; dashboard re-renders against run_id_101.
+        with conn:
+            cur = conn.execute(
+                "INSERT INTO pipeline_runs (started_ts, trigger, data_asof_date, "
+                "action_session_date, state, lease_token) "
+                "VALUES ('2026-05-22T18:00:00', 'manual', '2026-05-22', "
+                "'2026-05-22', 'complete', 'tok-r101')"
+            )
+            run_id_101 = int(cur.lastrowid)
+        mod._RENDERERS["hyprec_detail"] = MagicMock(
+            return_value=b"<svg>v101</svg>",
+        )
+        bytes_v101 = get_or_render_surface(
+            conn=conn, ohlcv_cache=ohlcv_cache,
+            surface="hyprec_detail", ticker="UCTT",
+            pipeline_run_id=run_id_101,
+            data_asof_date="2026-05-22",
+        )
+        assert bytes_v101 == b"<svg>v101</svg>"
+    finally:
+        importlib.reload(mod)
+    # Cache holds TWO rows — one per run_id. Old run_id NOT clobbered.
+    rows = list(conn.execute(
+        "SELECT pipeline_run_id, chart_svg_bytes FROM chart_renders "
+        "WHERE surface='hyprec_detail' AND ticker='UCTT' "
+        "ORDER BY pipeline_run_id"
+    ))
+    assert len(rows) == 2
+    assert rows[0][0] == run_id_100
+    assert bytes(rows[0][1]) == b"<svg>v100</svg>"
+    assert rows[1][0] == run_id_101
+    assert bytes(rows[1][1]) == b"<svg>v101</svg>"
