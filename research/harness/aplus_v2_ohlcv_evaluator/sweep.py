@@ -560,7 +560,10 @@ def _precompute_ohlcv_coverage_skips(
             sliced = full_df.loc[full_df.index.date <= asof_date]
             if len(sliced) < 200:
                 count += 1
-        except OhlcvCoverageError:
+        except (OhlcvCoverageError, FileNotFoundError, OSError):
+            # FileNotFoundError / OSError: parquet absent (delisted between eval_run
+            # and harness invocation) -- semantically equivalent to "no coverage";
+            # tally as ohlcv_coverage_skip rather than crashing the entire sweep.
             count += 1
     return count
 

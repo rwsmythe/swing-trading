@@ -518,7 +518,8 @@ def test_apply_watch_max_fails_override_promotes_watch_bucket():
     universe + parquet fixture setup that was never consumed (the test called
     _apply_watch_max_fails_override directly with a MagicMock). That misleading
     setup has been removed. End-to-end integration of the special-case branch
-    through run_v2_sweep is covered by test_vcp_watch_max_fails_special_case_not_via_cfg_substitution.
+    through run_v2_sweep is covered by
+    test_vcp_watch_max_fails_special_case_not_via_cfg_substitution.
     """
     from research.harness.aplus_v2_ohlcv_evaluator.sweep import _apply_watch_max_fails_override
     from swing.data.models import CriterionResult
@@ -1137,3 +1138,67 @@ def test_empty_eval_runs_short_circuit_returns_sentinel_without_fetch_candidates
         f"_fetch_candidates_with_run_id called {fetch_candidates_called['n']} times "
         "in empty-DB short-circuit path (expected 0)"
     )
+
+
+# ---------------------------------------------------------------------------
+# (18) FileNotFoundError / OSError in precompute tallied as ohlcv_coverage_skip
+# ---------------------------------------------------------------------------
+
+def test_missing_parquet_in_precompute_tallied_as_ohlcv_coverage_skip(tmp_path):
+    """Plant a candidate ticker with NO parquet file; verify sweep doesn't crash
+    and the missing-file case is tallied as ohlcv_coverage_skip_count == 1.
+
+    Discriminating: verifies _precompute_ohlcv_coverage_skips catches
+    FileNotFoundError / OSError and tallies them as coverage skips rather than
+    crashing the entire sweep (code-quality review Issue 5).
+    """
+    db_path = _build_test_db(tmp_path)
+    _seed_eval_run(db_path, 1, "2026-04-30")
+
+    universe_tickers = [f"ZZU{i:03d}" for i in range(100)]
+    for t in universe_tickers:
+        _make_shape_a_parquet(tmp_path / f"{t}.yfinance.parquet", n_bars=250)
+    _make_shape_a_parquet(tmp_path / "SPY.yfinance.parquet", n_bars=250, sentinel_close=500.0)
+
+    # Good candidate: has parquet
+    _make_shape_a_parquet(tmp_path / "ZZGOOD2.yfinance.parquet", n_bars=250)
+    _seed_candidate(db_path, eval_run_id=1, ticker="ZZGOOD2", bucket="skip")
+
+    # Missing-parquet candidate: seed in DB but NO parquet file planted
+    # (simulates a delisted ticker that was in an old eval_run but whose
+    # parquet has been deleted / never fetched)
+    _seed_candidate(db_path, eval_run_id=1, ticker="ZZMISSING1", bucket="skip")
+    # Deliberately do NOT plant ZZMISSING1.yfinance.parquet
+
+    universe_csv = _make_universe_csv(tmp_path, universe_tickers)
+    cfg = _cfg_with_universe(universe_csv)
+
+    cfg_obj = Config.from_defaults()
+    current_rs_rank = cfg_obj.rs.rs_rank_min_pass
+    var = _make_variable(
+        "rs.rs_rank_min_pass", current_value=current_rs_rank,
+        sweep_points=(current_rs_rank,),
+    )
+
+    from research.harness.aplus_v2_ohlcv_evaluator.sweep import run_v2_sweep
+
+    # Must not raise; sweep should complete and tally the missing-parquet
+    # candidate as an ohlcv_coverage_skip.
+    conn = sqlite3.connect(str(db_path))
+    result = run_v2_sweep(
+        conn,
+        variables=(var,),
+        cfg=cfg,
+        cache_dir=tmp_path,
+        eval_runs_window=5,
+        min_universe_size=50,
+    )
+    conn.close()
+
+    # Missing parquet tallied as ohlcv_coverage_skip
+    assert result.ohlcv_coverage_skip_count >= 1, (
+        f"Expected ohlcv_coverage_skip_count >= 1 for missing-parquet candidate, "
+        f"got {result.ohlcv_coverage_skip_count}"
+    )
+    # Total candidates includes both (one good + one missing)
+    assert result.total_candidates == 2
