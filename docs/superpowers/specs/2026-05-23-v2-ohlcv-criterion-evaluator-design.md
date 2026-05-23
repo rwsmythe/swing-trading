@@ -10,6 +10,16 @@
 
 **Cumulative streaks preserved through this spec write:** ~434+ ZERO `Co-Authored-By` footer trailer; baseline 5778 fast tests UNCHANGED (brainstorming docs-only); schema v21 UNCHANGED (V2 harness does NOT touch schema per §A.2); ZERO new Schwab API calls (L2 LOCK preserved through V2 design per OQ-12 disposition below).
 
+**Codex Round 1 amendments applied** (8 issues — 2 CRITICAL + 6 MAJOR — resolved inline; per-issue cross-references in §C.1 + §E.4 + §E.5 + §F.1 + §F.4 + §F.5 + §D.1 + §A.1 + new OQ-14 / OQ-15 / OQ-16 / OQ-17 sections at §I + minor citation fix at §B.2):
+- C1 RESOLVED: §F.4 — V2 BatchContext `universe_tickers` MUST load the full RS universe (per production `swing/cli.py:449` + earnings_proximity `run.py:197-201` precedent), NOT the per-eval_run candidate set. Otherwise RS percentiles + TT8 break baseline parity. NEW OQ-14 surfaces the universe reconstruction strategy choice.
+- C2 RESOLVED: §E.4 — baseline parity invariant SCOPED to NON-risk bucket transitions because `risk_feasibility` consumes `current_equity` which is NOT persisted in `candidates`/`evaluation_runs` schema. NEW OQ-15 surfaces the `current_equity` reconstruction strategy.
+- M1 + M2 RESOLVED: §F.1 + OQ-12 — `read_or_fetch_archive` has no `prefer_source` parameter AND it actively fetches from yfinance on cache-miss/stale. V2 reads Shape A parquet files directly via a NEW read-only `ohlcv_reader.py` wrapper that bypasses the fetch path. NEW OQ-16 surfaces the read-only-vs-fetch decision.
+- M3 RESOLVED: §E.5 — `evaluate_one` ALWAYS runs all criteria; OHLCV-coverage skip is per-CANDIDATE (one decision shared across all variables for that candidate), NOT per-variable. Single `ohlcv_coverage_skip_count` value per matrix.
+- M4 RESOLVED: §F.5 — per-eval_run BatchContext reuse is LOAD-BEARING (not optional). Full-universe OHLCV reads dominate runtime, not `evaluate_one` invocations.
+- M5 RESOLVED: §D.1 + OQ-7 — terminology corrected: "single-variable downstream propagation preserved" (NOT "cross-coupling preserved"); a 1D sweep does NOT detect interaction effects between thresholds.
+- M6 RESOLVED: §A.1 — CLI subcommand registration in `swing/cli.py` is the EXPLICIT MINIMAL carve-out from the read-only invariant. NEW OQ-17 surfaces the carve-out scope.
+- Minor m1 RESOLVED: line 35 → line 37 citation corrected at §B.2.
+
 ---
 
 ## §A Status + scope
@@ -22,7 +32,9 @@ V2 OHLCV criterion-evaluator harness lives under `research/` per V2.1 §V branch
 - **NEW study writeup**: `research/studies/<date>-v2-ohlcv-criterion-evaluator.md` (companion to existing `aplus-criterion-sensitivity-2026-05-22.md`). Follows the format precedent from `research/studies/earnings-proximity-exclusion.md`.
 - **Method-record EXTENSION** (not new record): append-only sections at [`research/method-records/aplus-criteria-calibration.md`](../../../research/method-records/aplus-criteria-calibration.md) (see §K). The existing 72-line record stays; V2 sections appended below the existing "V2 dependencies" section + corresponding promotion criteria bullets added to the existing "Validation notes" + "Notes" sections.
 - **Tests** under `tests/research/test_aplus_v2_ohlcv_*.py` mirroring T-T4.SB.1 precedent at `tests/research/test_aplus_sensitivity_*.py`. Test count budget per §H.
-- **Production `swing/` code is READ-ONLY** through this dispatch arc. V2 imports from `swing.evaluation.evaluator.evaluate_one` + `swing.evaluation.scoring.bucket_for` + `swing.evaluation.context.{CandidateContext, BatchContext, MarketContext}` + `swing.config.Config` + `swing.data.ohlcv_archive.read_or_fetch_archive` ONLY. NO writes to `swing/`, NO writes to `swing-data/swing.db` domain tables, NO schema changes.
+- **Production `swing/` code is READ-ONLY through this dispatch arc EXCEPT for ONE explicit minimal carve-out** (per OQ-17 RECOMMEND): a CLI subcommand registration block (~5-10 lines) in `swing/cli.py` registers `swing diagnose aplus-sensitivity-v2` per the precedent at `swing/cli.py` for `swing diagnose aplus-sensitivity` (T-T4.SB.1 ship). This is the SOLE production-`swing/` modification V2 dispatch makes. NO other writes to `swing/`, NO writes to `swing-data/swing.db` domain tables, NO schema changes.
+
+  V2 imports (READ-ONLY usage) from `swing.evaluation.evaluator.evaluate_one` + `swing.evaluation.scoring.bucket_for` + `swing.evaluation.context.{CandidateContext, BatchContext, MarketContext}` + `swing.config.Config` + `swing.data.ohlcv_archive` Shape A parquet reader path (NOT `read_or_fetch_archive` per Codex M1 + M2 disposition; see §F.1 amendment).
 
 ### §A.2 Schema discipline (LOCK)
 
@@ -83,7 +95,7 @@ Per operator-paired triage session 2026-05-23 PM (at [`docs/phase13-closer-next-
 
 **Gate findings (LIVE-recompute; 2 variables)** — both NON-BINDING at the watch→A+ boundary:
 - `trend_template.min_passes=7` (current) → loosening to 5/6 produces ZERO A+ delta; tightening to 8 trims 87 Watch (-7%) without changing A+; tightening to 9 collapses A+ (only 8 TT criteria exist; implicit ceiling).
-- `vcp.watch_max_fails=2` (current; HARDCODED in `swing/evaluation/scoring.py:35`, NOT cfg-derived) → sweep 0→4 produces 0/234/1184/2874/3968 Watch counts with A+ UNCHANGED at 5 across all sweep points. Pure Watch-fanout dial.
+- `vcp.watch_max_fails=2` (current; HARDCODED in `swing/evaluation/scoring.py:37` as the literal `2` in `if vcp_fails <= 2:`, NOT cfg-derived) → sweep 0→4 produces 0/234/1184/2874/3968 Watch counts with A+ UNCHANGED at 5 across all sweep points. Pure Watch-fanout dial.
 
 **Threshold findings (15 variables — INERT under V1 per V1 LIMITATION)**:
 
@@ -229,7 +241,7 @@ V2 + V1 outputs coexist in `exports/diagnostics/` with distinct filename prefixe
 
 V2 substitutes ONE variable at a time via `dataclasses.replace(cfg.<sub>, <field>=<sweep_value>)` + invokes the production `swing.evaluation.evaluator.evaluate_one(ctx)` per candidate per sweep point. The end-to-end recompute preserves:
 
-- **Cross-coupling between variables**. Example: substituting `rs.rs_rank_min_pass=60` propagates through `compute_rs(...).rank >= 60` in TT8 → flips tt8 result → may flip `tt_passes` count → may move `bucket_for` from skip to watch to aplus. V2 captures this faithfully without modeling cross-coupling explicitly (per §B.5 null + V2.1 §IV.B 1D parsimony — the cross-coupling is internal to ONE substituted variable; OQ-7 RECOMMEND stays 1D).
+- **Single-variable downstream propagation** (Codex M5 RESOLVED — terminology corrected from "cross-coupling preserved for free" which overstated the V2 design). Example: substituting `rs.rs_rank_min_pass=60` propagates through `compute_rs(...).rank >= 60` in TT8 → flips tt8 result → may flip `tt_passes` count → may move `bucket_for` from skip to watch to aplus. V2 captures THIS downstream effect faithfully — but a 1D sweep does NOT detect interaction effects between MULTIPLE thresholds (e.g., the joint effect of loosening `rs.rs_rank_min_pass` AND `vcp.adr_min_pct` simultaneously may differ from the sum of each variable's solo effect). Multi-variable interaction is V3+ per V2.1 §IV.B parsimony (OQ-7 RECOMMEND stays 1D for V2).
 - **`allowed_miss_names` invariant** preserved verbatim per `swing/evaluation/scoring.py:27` (no V1 `_bucket_for_substituted` mirror needed).
 - **Risk hard-filter semantics** preserved verbatim per `swing/evaluation/scoring.py:20`.
 - **VCP-fails (`na` counts as fail) semantics** preserved verbatim per `swing/evaluation/scoring.py:34`.
@@ -370,40 +382,70 @@ V2 OPTIONS:
 
 BANK as V2.5 (post-V2-ship, post-V2-study-output, operator-paired): "Promote `vcp.watch_max_fails` to cfg-derived in `bucket_for`" — a 1-line production-code change that closes the hardcode AND eliminates V2's special-case branch. Citation: OQ-11 disposition; dependency = operator approval + writing-plans cycle.
 
-### §E.4 Baseline-recompute parity invariant
+### §E.4 Baseline-recompute parity invariant (SCOPED per Codex C2)
 
-V2's first sanity check: when invoked with `substituted_cfg == production_cfg` (i.e., NO substitution; sweep_point == current_value for every variable), V2's bucket distribution MUST match the persisted bucket distribution from `candidates.bucket` exactly.
+V2's first sanity check: when invoked with `substituted_cfg == production_cfg` (i.e., NO substitution; sweep_point == current_value for every variable), V2's bucket distribution MUST match the persisted bucket distribution from `candidates.bucket` per the scoping below.
 
-Failure mode (anti-pattern): V2 baseline diverges from persisted = some criterion has DRIFTED between when the persisted bucket was written (eval_run T) and when V2 re-evaluates against OHLCV at that asof_date. Discovered drift surfaces ANOTHER applied-research candidate (criterion-drift investigation) — banked as orthogonal to V2 OHLCV harness.
+**Scoping clarification (Codex C2 RESOLVED)**: exact baseline parity is NOT achievable for the risk gate because `risk_feasibility.evaluate(ctx)` at `swing/evaluation/criteria/risk_feasibility.py:23` consumes `CandidateContext.current_equity` per `swing/evaluation/context.py:39`, and `current_equity` is NOT persisted on `candidates` / `evaluation_runs` per `swing/data/migrations/0001_phase1_initial.sql:9-56`. The production pipeline supplies dynamic sizing equity per `swing/pipeline/runner.py:1095`+`1121`; the historical value at the original eval_run is unrecoverable from schema.
 
-Acceptance criterion: `test_baseline_recompute_matches_persisted_bucket_distribution_exactly` (discriminating test, blocking landing).
+V2 baseline parity is therefore SCOPED to bucket assignments that do NOT depend on the risk gate's outcome:
+
+1. **Baseline parity tier 1 (EXACT)**: candidates whose persisted bucket is independent of the risk gate (e.g., `bucket='skip'` due to insufficient TT-passes; `bucket='aplus'` only when ALL gates pass including risk). For these, V2 re-evaluation MUST match exactly.
+2. **Baseline parity tier 2 (CONDITIONAL)**: candidates whose persisted bucket DEPENDS on the risk gate outcome. V2 uses a documented `current_equity` surrogate per OQ-15 RECOMMEND (default: operator's CURRENT equity from latest `account_equity_snapshots` row at V2-invocation time; per-eval_run-historical-equity surrogate is V3+). V2 marks tier-2 candidates with `bucket_via_surrogate=True` in drill-down output; parity-mismatch in tier 2 is REPORTED but NOT a blocking failure.
+
+**Acceptance criteria**:
+- `test_baseline_recompute_tier1_matches_persisted_bucket_distribution_exactly` (discriminating test; blocking landing).
+- `test_baseline_recompute_tier2_surfaces_surrogate_attribution_without_blocking` (discriminating test; landing).
+
+Failure mode (anti-pattern): V2 tier-1 baseline diverges from persisted = some criterion has DRIFTED between when the persisted bucket was written (eval_run T) and when V2 re-evaluates against OHLCV at that asof_date OR the OHLCV archive itself has been mutated post-persisted-bucket-write (yfinance backfill / split-adjustment / dividend-adjustment per Codex M2). Discovered drift surfaces ANOTHER applied-research candidate (criterion-drift investigation OR archive-replay investigation) — banked as orthogonal to V2 OHLCV harness.
 
 Per cumulative gotcha "Session-anchor read/write mismatch": V2 reads `evaluation_runs.data_asof_date` (writer-stamped backward-looking session) to slice OHLCV — same anchor the production writer used. Verified via end-to-end discriminating test plant 1 candidate at fixture asof_date + re-evaluate → bucket matches.
 
-### §E.5 OHLCV coverage failure handling (OQ-13 RECOMMEND)
+**OHLCV archive mutation caveat (Codex M2)**: V2's reproducibility is bounded by the OHLCV archive's stability between eval_run write-time and V2 invocation time. Splits / dividend-adjustment events that re-write historical bars (yfinance behavior; per cumulative gotcha "External-API empty-result must be treated as transient") will produce baseline-parity divergence even in tier 1. V2 study writeup MUST surface archive-mutation diagnostics: per-candidate per-asof_date archive-checksum vs current-archive-checksum if available; OR a documented assumption that V2 invocation soon after persisted-bucket-write minimizes mutation risk. See OQ-16 RECOMMEND for the read-only archive reader proposal.
 
-When the OHLCV archive at `swing/data/ohlcv_archive.py` returns insufficient bars at the candidate's `data_asof_date` (most commonly: < 200 bars for trend_template's MA200 requirement at `swing/evaluation/criteria/trend_template.py:24-29`), V2 SKIPS the candidate for that variable-sweep with `OhlcvCoverageError` and increments `ohlcv_coverage_skip_count`. The skip is per-(variable, sweep_point) (NOT per-candidate-once) because a candidate might be evaluable for some variables but not others (e.g., variables whose criterion needs fewer bars are still evaluable).
+### §E.5 OHLCV coverage failure handling (OQ-13 RECOMMEND; M3 RESOLVED)
 
-V1 baseline parity is maintained even with skips: if N candidates skip at the current-value sweep point, those same N candidates skip at all sweep points, and the delta-vs-current-value math (per `delta_aplus = aplus_count - current_aplus`) correctly nets the skip-count out of the delta because the SAME candidates are skipped in both numerator and denominator.
+When the OHLCV archive at `swing/data/ohlcv_archive.py` returns insufficient bars at the candidate's `data_asof_date` (most commonly: < 200 bars for trend_template's MA200 requirement at `swing/evaluation/criteria/trend_template.py:24-29`), V2 SKIPS the candidate for ALL variable-sweep points with `OhlcvCoverageError` and increments `ohlcv_coverage_skip_count`.
 
-Output reporting: V2's per-variable row in the sensitivity matrix surfaces `ohlcv_coverage_skip_count` explicitly so the operator sees coverage attrition. Study writeup's "Limitations" section enumerates skip percentage if material.
+**Codex M3 RESOLVED**: the skip is per-CANDIDATE (NOT per-(variable, sweep_point)) because `evaluate_one(ctx)` at `swing/evaluation/evaluator.py:37-53` ALWAYS runs ALL criteria — there's no path through the production evaluator where some criteria run but others don't based on bar-count availability. The candidate either has 200+ bars (evaluable for all variables) or doesn't (skipped for all variables). The original spec's "some variables still evaluable" premise was wrong.
+
+Consequence: `ohlcv_coverage_skip_count` is a SCALAR per V2 invocation (not a per-variable column with potentially different values across variables). Every per-variable row in the sensitivity matrix surfaces the SAME `ohlcv_coverage_skip_count` value, reflecting the same set of skipped candidates.
+
+Baseline parity is maintained: N skipped candidates are skipped at all sweep points uniformly, so the delta-vs-current-value math nets out cleanly because the SAME candidates participate in both numerator and denominator at every sweep point.
+
+Output reporting: V2's matrix surfaces `ohlcv_coverage_skip_count` (scalar; same value per row). The CSV column is retained per-row for shape simplicity. Study writeup's "Limitations" section enumerates skip percentage if material (e.g., `>5%` skip rate triggers a banner note).
+
+**Out-of-range and evaluation-error skip counts retain per-variable shape** per §D.3 (these vary per variable because out-of-range substitution is variable-specific + evaluation errors can be cfg-substitution-specific). Only the coverage-skip column is invariant across variables.
 
 ---
 
 ## §F OHLCV archive reconstruction strategy
 
-### §F.1 Strategy decision (OQ-1 RECOMMEND)
+### §F.1 Strategy decision (OQ-1 RECOMMEND; M1 + M2 + OQ-12 + OQ-16 RESOLVED)
 
-V2 uses **production OhlcvArchive piggyback with `prefer_source='yfinance'` enforcement** (OQ-1 option c, refined for L2 LOCK preservation per OQ-12 RECOMMEND).
+V2 uses **direct Shape A parquet read via a NEW read-only V2 wrapper** at `research/harness/aplus_v2_ohlcv_evaluator/ohlcv_reader.py`. The wrapper bypasses `swing.data.ohlcv_archive.read_or_fetch_archive` entirely (per Codex M1 + M2 RESOLVED).
 
-Rationale:
-- **Reproducibility**: production OHLCV archive at `swing/data/ohlcv_archive.py` is the operator's authoritative OHLCV state. V2 reading from it ensures V2 outputs are reproducible against the operator's archive.
-- **L2 LOCK preservation (OQ-12)**: passing `prefer_source='yfinance'` (per `_SOURCE_PRECEDENCE_MARKET_DATA` shape in ohlcv_archive.py — verified at spec-write time at lines 52-58) routes V2 reads to the yfinance Shape A parquet, NEVER to the schwab_api Shape A parquet. ZERO new Schwab API calls. Discriminating test mocks both Shape A files + asserts only yfinance bytes consumed.
-- **No double-cache**: avoids the earnings_proximity research-cache pattern (which duplicates archive data at `%USERPROFILE%/swing-data/research-cache/ohlcv/`). For V2 OHLCV harness specifically — where the operator's archive ALREADY contains the relevant historical bars per S3's recent-eval_run coverage — double-caching adds maintenance burden without benefit.
-- **Coverage failure**: when archive read returns insufficient bars (rare; historical S3 universe spans last 63 eval_runs which is well within archive retention), per §E.5 skip-and-report.
+**Why bypass `read_or_fetch_archive`** (Codex M1 + M2 facts):
+- `read_or_fetch_archive(ticker, end_date, cache_dir, archive_history_days)` per `swing/data/ohlcv_archive.py:172-178` has NO `prefer_source` parameter — the OQ-12 original proposal is not implementable as written.
+- The Shape A resolver at `swing/data/ohlcv_archive.py:372-377+428-439` defaults to provider precedence with `schwab_api` winning (per `_SOURCE_PRECEDENCE_MARKET_DATA` at `swing/data/ohlcv_archive.py:52-58`).
+- `read_or_fetch_archive` actively FETCHES from yfinance on cache-miss / stale-archive per `swing/data/ohlcv_archive.py:223-237+242-251`. V2's reproducibility story is incompatible with archive mutation between persisted-bucket-write and V2 invocation; a fetch could backfill bars that did not exist at the original eval_run.
+
+**V2 read-only reader (`ohlcv_reader.py`) responsibilities**:
+- Compose the per-(ticker, source) Shape A parquet path: `{cache_dir}/{ticker}.{source}.parquet` per the Shape A naming convention (verified against `swing/data/ohlcv_archive.py` Shape A path conventions at writing-plans phase).
+- Read ONLY the yfinance Shape A parquet (`{ticker}.yfinance.parquet`); never touch the schwab_api Shape A parquet (L2 LOCK preserved per OQ-12 RECOMMEND).
+- Return the full per-ticker frame indexed by date. Caller slices to `<= data_asof_date` per §F.2.
+- NO fetch path. NO writes. NO archive mutation. If the parquet file does not exist OR if the slice has fewer than the required bars for `evaluate_one` (200 per §E.5), raise `OhlcvCoverageError` → caller skips per §E.5.
+- Discriminating test: plant both `{ticker}.schwab_api.parquet` AND `{ticker}.yfinance.parquet` files for a synthetic ticker + assert V2 reads ONLY the yfinance bytes via byte-checksum compare; assert V2 does NOT invoke `yf.download` / yf.Ticker / any yfinance API path (mock yfinance module + assert zero calls).
+
+Rationale for direct Shape A read:
+- **Reproducibility (Codex M2)**: V2 reads the parquet bytes AS-IS at V2 invocation time. No fetch can mutate the archive between V2's universe scan + V2's per-candidate evaluation. Per-V2-invocation archive snapshot consistency.
+- **L2 LOCK preservation (OQ-12)**: V2 reader is the ONLY consumer of the OHLCV archive path; it explicitly opens ONLY the `{ticker}.yfinance.parquet` file. ZERO new Schwab API calls. Defense-in-depth via test that asserts the schwab Shape A file is unread + yfinance module unloaded.
+- **Coverage failure**: per §E.5 skip-and-report.
+- **No double-cache**: V2 reads the operator's authoritative archive directly. No earnings_proximity-style research-cache layer.
 
 REJECTED alternatives:
 - **Fetch-on-demand via live yfinance**: 5681 candidates × per-candidate fetch is rate-limit-prohibitive AND blocks reproducibility (later runs hit different yfinance-version state).
+- **Reuse `read_or_fetch_archive`**: per Codex M1 + M2 above, the function signature lacks the source-preference parameter AND the fetch path mutates the archive between invocations; both block V2.
 - **Limit-to-recent only**: artificially shrinks the universe + doesn't actually need to be done; the archive covers what's needed for S3's last-63-eval_runs scope.
 - **Independent research-cache (earnings_proximity-style)**: dupe-storage with no offsetting benefit since V2 is operator-paired (not arc-spanning). Acknowledged as PRECEDENT but rejected for V2-specific reasons.
 
@@ -457,19 +499,43 @@ Per `swing/evaluation/context.py:14-19`, BatchContext requires:
 
 V2 reconstructs at each `(eval_run_id, data_asof_date)` cohort:
 
-1. `universe_tickers` = the set of all candidate tickers in that eval_run (from the §F.3 SQL).
-2. `universe_version` = `f"v2_harness_eval_run_{eval_run_id}"` (NOT the production universe-version; V2 is a research-branch invariant per §A.1).
+1. **`universe_tickers` = the FULL RS universe** (Codex C1 RESOLVED — NOT the per-eval_run candidate set). The RS universe is the ranking-universe-of-record from `cfg.paths.rs_universe_path` per production `swing/cli.py:449` + earnings_proximity precedent at `research/harness/earnings_proximity/run.py:197-201`+`279`. **Why**: `compute_rs(...).rank` per `swing/evaluation/rs.py:71-85` computes per-ticker RS percentile via cross-sectional ranking against the universe — using only candidate tickers would produce WRONG percentiles + flip TT8 results + break baseline parity per §E.4 invariant.
+   - NEW dependency: V2 reads the RS universe path from `cfg.paths.rs_universe_path` at invocation time. V2 fails-fast with `MissingRsUniversePathError` if the path is unset OR the file unreadable.
+   - NEW OQ-14 surfaces the historical-RS-universe-snapshot question (the universe membership at the historical eval_run may differ from the universe membership today; for V2 ship target, we accept current-universe-snapshot as the surrogate; per-eval_run-historical-universe-snapshot is V3+).
+2. `universe_version` = `f"v2_harness_eval_run_{eval_run_id}_universe_{cfg.paths.rs_universe_path.name}"` (NOT the production universe-version; V2 is a research-branch invariant per §A.1).
 3. `universe_hash` = SHA-1 of the sorted `universe_tickers` tuple (deterministic; reproducible).
-4. `returns_12w_by_ticker` = per-ticker 12-week return computed from the OHLCV archive slice (mirror earnings_proximity `_return_12w` at `research/harness/earnings_proximity/replay.py:146-158`). Per-ticker skip if <60 bars history available.
-5. `spy_return_12w` = SPY's 12-week return at the asof_date (separate OHLCV archive read).
+4. `returns_12w_by_ticker` = per-ticker 12-week return computed from the OHLCV archive slice across the FULL RS universe (NOT just candidates) — mirror earnings_proximity `_return_12w` at `research/harness/earnings_proximity/replay.py:146-158`. Per-ticker skip if <60 bars history available; per-ticker `OhlcvCoverageError` accumulates into per-universe-ticker-skip count (separate from per-candidate skip per §E.5).
+5. `spy_return_12w` = SPY's 12-week return at the asof_date (separate OHLCV archive read via §F.1 V2 reader).
 
 **The `rs.horizon_weeks` substitution** propagates here: when V2 substitutes `rs.horizon_weeks=14`, the BatchContext reconstruction MUST window returns at 70 trading days (14 × 5), NOT the default 60. V2's `context_builder.build_batch_context(..., horizon_weeks=substituted_cfg.rs.horizon_weeks)` accepts the parameter explicitly.
 
-### §F.5 Per-eval_run batch reuse optimization
+### §F.5 Per-eval_run batch reuse + per-eval_run universe-OHLCV caching (LOAD-BEARING per Codex M4)
 
-Performance optimization (post writing-plans validation): V2 caches the BatchContext per `(eval_run_id, substituted_cfg.rs.horizon_weeks)` tuple to avoid recomputing the same returns_12w dictionary across N tickers in the same eval_run. Reduces total BatchContext reconstructions from 5681 candidates × 17 variables × 5 sweep_points = ~482k to 63 eval_runs × ~5 distinct horizon_weeks values + standard horizon_weeks default = ~315 reconstructions.
+**Codex M4 RESOLVED**: V2's runtime is dominated by full-universe OHLCV reads + per-eval_run returns-12w reconstruction, NOT by `evaluate_one` invocations. The original spec's "optional optimization" framing was wrong.
 
-This optimization is NOT load-bearing for V2 ship (writeup-time complexity acknowledged); V2 ships with simple per-candidate reconstruction if the optimization adds non-trivial code complexity. Acceptance criterion: V2 runtime under 60 minutes for the 5681 / 63 / 17 / 5 universe per OQ-9 budget.
+**Cost breakdown** (envelope-of-the-back; refined in writing-plans phase):
+
+| Cost component | Per V2 invocation | Notes |
+|----------------|-------------------|-------|
+| Full-universe parquet reads | N_universe × 63 eval_runs (read-or-cached) | N_universe = full RS universe size (per production cfg.paths.rs_universe_path; typically 500-2000 tickers). At ~10ms per parquet open + slice = 5-20 minutes per V2 invocation IF cached uniformly. |
+| `returns_12w_by_ticker` cross-sectional computation | 63 eval_runs × N_universe × 1 calc | Cheap per-calc but volume is N_universe × 63 = 30k-130k operations. |
+| `evaluate_one(ctx)` invocations | ~482k (5681 candidates × 17 vars × ~5 sweep_points) | Per-call cost: SMA50 + SMA150 + SMA200 over up-to-200 bars + 9 vcp criteria + 1 risk + RS rank lookup = ~5-20ms per envelope. Cumulative 40-160 minutes IF naive (no batch reuse). |
+| Total naive runtime | ~60-180 minutes | Exceeds OQ-9's 60-minute target without per-eval_run batch reuse. |
+
+**Per-eval_run BatchContext + universe-OHLCV caching is LOAD-BEARING (NOT optional)**:
+
+V2 caches the BatchContext per `(eval_run_id, substituted_cfg.rs.horizon_weeks)` tuple. Reduces BatchContext reconstructions from 482k to 63 eval_runs × ~5 distinct horizon_weeks values = ~315.
+
+V2 also caches the per-(ticker, asof_date) sliced OHLCV per the V2 invocation lifetime. Each (ticker, eval_run_id) pair has ONE sliced frame loaded into memory; the 17 variables × 5 sweep_points all share the same frame. Reduces parquet open+slice from 482k to 5681 × 1 = 5681 (or fewer if tickers repeat across eval_runs, which they typically do — most tickers appear in multiple eval_runs in the rolling pipeline).
+
+With both caches: estimated V2 runtime ≈ 15-45 minutes on a fast SSD, within OQ-9's 60-minute target.
+
+**Acceptance criteria**:
+- `test_v2_per_eval_run_batch_context_cached_not_recomputed` (discriminating; counts BatchContext construction calls; must be ≤315).
+- `test_v2_per_ticker_per_asof_date_ohlcv_slice_cached` (discriminating; counts parquet file opens; must be ≤ universe_ticker_count + 5681).
+- `test_v2_runtime_below_60_minutes_on_smoke_universe` (smoke; synthetic 100-candidate / 5-eval_run / 17-var universe; runtime cap 90 seconds).
+
+If V2 still exceeds OQ-9 budget on operator hardware, V2.5 candidates banked: parquet bulk-read via pyarrow; per-eval_run universe-tickers OHLCV pre-load into a single memory frame indexed by (ticker, date); per-process parallelism via concurrent.futures (operator-paired since this is research code).
 
 ---
 
@@ -605,7 +671,7 @@ Forward-binding: if V2 ship reveals criterion drift (per §E.4 baseline parity i
 
 ## §I OQs surfaced for operator-paired triage
 
-13 OQs surfaced — 8 from dispatch brief §1.1 + 5 NEW from substrate analysis. Each OQ has a RECOMMEND disposition; final disposition is operator-paired between brainstorming + writing-plans phases.
+17 OQs surfaced — 8 from dispatch brief §1.1 + 5 NEW from initial substrate analysis + 4 NEW from Codex Round 1 review (OQ-14 C1 + OQ-15 C2 + OQ-16 M1/M2 + OQ-17 M6). Each OQ has a RECOMMEND disposition; final disposition is operator-paired between brainstorming + writing-plans phases.
 
 ### OQ-1: OHLCV reconstruction scope
 
@@ -687,7 +753,43 @@ Forward-binding: if V2 ship reveals criterion drift (per §E.4 baseline parity i
 
 **Question**: When archive returns <200 bars at candidate's asof_date → V2 attribution? (a) skip + report; (b) substitute persisted bucket (V1 fallback); (c) abort.
 
-**RECOMMEND**: (a) skip + report per §E.5. Clean attribution (V2 cannot recompute → V2 has no opinion). Surfaces in per-variable `ohlcv_coverage_skip_count` column + per-study scope-reduction notes per §G.4.
+**RECOMMEND**: (a) skip + report per §E.5. Clean attribution (V2 cannot recompute → V2 has no opinion). Surfaces in `ohlcv_coverage_skip_count` (scalar per V2 invocation per Codex M3 RESOLVED; same value across all per-variable rows) + per-study scope-reduction notes per §G.4.
+
+### OQ-14 (Codex C1 NEW): RS universe reconstruction strategy at historical asof_date
+
+**Question**: V2's BatchContext reconstruction requires `universe_tickers` = full RS universe at the eval_run's `data_asof_date`. The RS universe membership at the historical eval_run may DIFFER from the universe membership today (RS universe is operator-curated + can drift between months). Three options:
+
+- **(a) current-universe snapshot** — V2 reads `cfg.paths.rs_universe_path` AT V2 INVOCATION TIME + uses that universe for ALL historical eval_runs. Simpler; reproducible per-V2-invocation; may produce a slightly different RS percentile than the original eval_run if universe membership has drifted.
+- **(b) per-eval_run-historical-universe snapshot** — V2 reads a per-eval_run-historical snapshot from a NEW persistence layer (e.g., `evaluation_runs.universe_hash` + a `rs_universe_snapshots` table). Requires schema change (V3+ per V1 method-record V2 dependency #2) + ongoing per-eval_run snapshot persistence. Reproducible.
+- **(c) eval_run universe-hash gate** — V2 checks `evaluation_runs.rs_universe_hash` (if persisted) AND skip-with-WARNING if it differs from current universe hash. Bounded scope but requires per-eval_run universe-hash to be persisted (verify it exists; if not, this option degenerates to (a)).
+
+**RECOMMEND**: (a) current-universe snapshot for V2 ship. Universe drift is bounded between eval_runs (operator typically curates monthly OR by exception); current-universe is a reasonable surrogate for the last-63-eval_runs scope of S3 (~3 trading months). Surface drift caveat in study writeup `Limitations` section. BANK as V3 candidate: persist per-eval_run universe snapshots at write-time (schema change V3+).
+
+### OQ-15 (Codex C2 NEW): `current_equity` surrogate for risk gate recompute
+
+**Question**: V2's `risk_feasibility.evaluate(ctx)` requires `CandidateContext.current_equity`. The historical value at the original eval_run is NOT persisted in `candidates` or `evaluation_runs` (schema verified per `swing/data/migrations/0001_phase1_initial.sql:9-56`). Three options:
+
+- **(a) Operator's CURRENT equity** — V2 reads from latest `account_equity_snapshots` row at V2 invocation time. Simple. Drift-affected for eval_runs predating any equity-snapshot changes (e.g., recent deposits/withdrawals/PnL).
+- **(b) Per-eval_run-historical equity** — V2 reads from `account_equity_snapshots` rows with snapshot_date ≤ eval_run's `data_asof_date`. Reproducible per the snapshot history; requires snapshot rows actually exist at the right dates.
+- **(c) `cfg.account.risk_equity_floor` surrogate** — V2 uses the cfg-defined floor (max(7500, ...) per project Capital risk floor convention auto-memory). Simpler; bounded surrogate; ignores actual equity entirely.
+
+**RECOMMEND**: (b) per-eval_run-historical equity from `account_equity_snapshots` IF snapshot rows are available at the eval_run dates; fall back to (a) current equity OTHERWISE; mark tier-2 candidates (per §E.4) with `bucket_via_surrogate=True` for operator transparency. Per-V2-study writeup `Limitations` section enumerates surrogate usage count.
+
+### OQ-16 (Codex M1 + M2 NEW): OHLCV archive read strategy — fetch path vs read-only
+
+**Question**: `swing.data.ohlcv_archive.read_or_fetch_archive` actively fetches from yfinance on cache-miss / stale archive (per `swing/data/ohlcv_archive.py:223-237+242-251`), which would mutate the archive between V2 invocations + break V2 reproducibility (per Codex M2). Three options:
+
+- **(a) Direct Shape A parquet read via NEW V2 wrapper** — V2 reads `{cache_dir}/{ticker}.yfinance.parquet` directly; NO fetch; raise `OhlcvCoverageError` on missing/insufficient. Bypasses production `read_or_fetch_archive`. RECOMMEND per §F.1 amended decision.
+- **(b) Reuse `read_or_fetch_archive` with archive-snapshot freeze** — V2 takes a `cp -r` snapshot of the archive directory before invocation + reads from the snapshot. Adds disk-snapshot maintenance burden; potential disk-space concern.
+- **(c) Extend `read_or_fetch_archive` to accept `fetch_disabled=True` parameter** — production-code change; violates §A.1 read-only invariant beyond the OQ-17 CLI carve-out.
+
+**RECOMMEND**: (a) direct Shape A parquet read via NEW V2 wrapper at `research/harness/aplus_v2_ohlcv_evaluator/ohlcv_reader.py` per §F.1 amended decision. Simplest. No archive snapshot maintenance. No production-code change. Cleanly preserves L2 LOCK (NEVER reads `{ticker}.schwab_api.parquet`).
+
+### OQ-17 (Codex M6 NEW): CLI subcommand registration as the read-only carve-out
+
+**Question**: §A.1 originally claimed "Production `swing/` code is READ-ONLY through this dispatch arc." But V2 must register the new CLI subcommand `swing diagnose aplus-sensitivity-v2` in `swing/cli.py`. This is a contradiction or an explicit carve-out?
+
+**RECOMMEND**: Explicit carve-out per §A.1 amended language. The CLI subcommand registration is a ~5-10 line `@click.command` decorated function added to `swing/cli.py` mirroring the V1 `swing diagnose aplus-sensitivity` registration at the same precedent file (T-T4.SB.1 ship). This is the SOLE production-`swing/` modification V2 dispatch makes. NO other writes; NO schema change; NO migration. Discriminating test: `git diff swing/ --stat` after V2 executing-plans ship shows ONLY `swing/cli.py` modified.
 
 ---
 
@@ -892,7 +994,7 @@ Checked sections for contradiction:
 - §A.4 + §C.2: V1 CLI `swing diagnose aplus-sensitivity` stays + V2 CLI `swing diagnose aplus-sensitivity-v2` is NEW. Consistent.
 - §D.1 + §E.1 + §E.3: cfg-substitution + production `evaluate_one` invocation for 16 of 17 variables; `vcp.watch_max_fails` special-case for the 1 hardcoded variable. Consistent.
 - §H.1 test count (~46) matches §H.3 baseline-bump projection (+46). Consistent.
-- §I OQs (8 + 5 NEW = 13) match dispatch brief §1.1 (8 brief + 5+ new) bound. Consistent.
+- §I OQs (8 brief + 5 substrate-NEW + 4 Codex-R1-NEW = 17) match dispatch brief §1.1 (8 brief + 5+ new) bound; Codex R1 added 4 more (OQ-14 C1 + OQ-15 C2 + OQ-16 M1/M2 + OQ-17 M6). Consistent.
 - §K version bump (0.1.0 → 0.2.0) matches §K.1 + V2 ship status `research`. Consistent.
 
 ### §N.3 Scope check
