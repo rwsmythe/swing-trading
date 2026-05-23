@@ -346,11 +346,29 @@ def fire_claude_silver_label(
     )
 
     # Compose the labeler_evidence_json from narrative + raw evaluation.
-    labeler_evidence = {
+    # T-T4.SB.4 Sub-task 4B + Codex R3 M#2 LOCK:
+    #   - geometric_evidence_narrative PRESERVED VERBATIM (back-compat
+    #     anchor; existing T2.SB1 corpus + reader at
+    #     _extract_corpus_row_fields keys on this name).
+    #   - NEW ``narrative`` alias key ALWAYS populated (carries the same
+    #     string verbatim; the VM parser at
+    #     swing/web/view_models/patterns/exemplars.py:_parse_narrative_text
+    #     reads ``narrative`` — without the alias, fresh silver rows
+    #     would render the empty-state placeholder despite a populated
+    #     narrative).
+    #   - NEW ``rule_criteria`` key ONLY when SilverLabelResponse.rule_criteria
+    #     is non-None (per audit envelope empty-state uniformity gotcha —
+    #     None means "no payload"; empty list means "zero criteria
+    #     evaluated"; both are meaningful, but None should be ABSENT
+    #     from the envelope rather than serialized as ``null``).
+    labeler_evidence: dict[str, Any] = {
         "evaluation": response.evaluation,
         "confidence": response.confidence,
         "geometric_evidence_narrative": response.geometric_evidence_narrative,
+        "narrative": response.geometric_evidence_narrative,
     }
+    if response.rule_criteria is not None:
+        labeler_evidence["rule_criteria"] = response.rule_criteria
     labeler_evidence_json = json.dumps(labeler_evidence, sort_keys=True)
 
     exemplar = PatternExemplar(
