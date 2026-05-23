@@ -31,6 +31,13 @@
 - R2.m1 RESOLVED: §F.4 — `universe_hash` renamed `v2_universe_hash_` prefix + SHA-256 (matches production `swing/evaluation/rs.py:45-49`); NOT comparable to persisted `evaluation_runs.rs_universe_hash`.
 - R2.m2 RESOLVED: scrubbed stale "cross-coupling preserved for free / within a single 1D substitution" wording in OQ-2 + OQ-7 RECOMMEND (replaced with "single-variable downstream propagation preserved").
 
+**Codex Round 3 amendments applied** (0 CRITICAL + 2 MAJOR + 3 MINOR — all resolved inline):
+- R3.M1 RESOLVED: §F.1 — both-exist legacy/Shape A policy LOCKED to "Shape A wins unconditionally"; caveat documented; NEW OQ-18 surfaces operator triage choice (V2.5 candidate: port production merge logic to V2 reader).
+- R3.M2 RESOLVED: §F.4 — RS universe validation extended from non-empty + min-size to also include (b) ticker-shape regex validation + (c) duplicate detection. Three discriminating tests added.
+- R3.m1 RESOLVED: §F.5 cost table updated to reflect per-TICKER cache choice (was inconsistent with per-(ticker, asof_date) original framing).
+- R3.m2 confirmed §F.1 column normalization is feasible (no action; just confirmation).
+- R3.m3 RESOLVED: §F.5 acceptance criteria add `test_v2_smoke_records_memory_footprint` using `tracemalloc.get_traced_memory()` (non-blocking instrumentation).
+
 ---
 
 ## §A Status + scope
@@ -445,7 +452,7 @@ V2 uses **direct Shape A parquet read via a NEW read-only V2 wrapper** at `resea
 **V2 read-only reader (`ohlcv_reader.py`) responsibilities**:
 - Compose the per-(ticker, source) Shape A parquet path: `{cache_dir}/{ticker}.{source}.parquet` per the Shape A naming convention (verified against `swing/data/ohlcv_archive.py` Shape A path conventions at writing-plans phase).
 - Read primary: the yfinance Shape A parquet (`{ticker}.yfinance.parquet`); NEVER touch the schwab_api Shape A parquet (L2 LOCK preserved per OQ-12 RECOMMEND).
-- **Legacy archive fallback (Codex R2.M2 RESOLVED)**: if `{ticker}.yfinance.parquet` does NOT exist, fall back to reading `{ticker}.parquet` (the legacy single-source archive). The production `_backward_compat_rename` at `swing/data/ohlcv_archive.py:584-657` copies legacy archives into yfinance Shape A AT FIRST PRODUCTION READ, but if the operator has not invoked production OhlcvArchive read paths for some tickers, the legacy file is still authoritative. V2 reader reads either path. Discriminating test: plant ONLY `{ticker}.parquet` legacy file + assert V2 reader returns correct bars (not raises `OhlcvCoverageError`).
+- **Legacy archive fallback (Codex R2.M2 + R3.M1 RESOLVED)**: if `{ticker}.yfinance.parquet` does NOT exist, fall back to reading `{ticker}.parquet` (the legacy single-source archive). The production `_backward_compat_rename` at `swing/data/ohlcv_archive.py:584-657` (+ both-exist merge/freshness logic at `:648-649+663+714`) copies/merges legacy archives into yfinance Shape A AT FIRST PRODUCTION READ. V2 reader policy for the BOTH-EXIST case (Codex R3.M1 LOCK; surface as OQ-18 NEW): **Shape A wins unconditionally**. V2 does NOT merge legacy into Shape A; if the operator has both files for a ticker AND legacy carries fresher / longer history than Shape A, V2 reads Shape A and may produce baseline-parity drift in the affected tier-1 candidates. Caveat documented in V2 study writeup `Limitations` section. Operator remediation: invoke any production OHLCV-read path that goes through `read_or_fetch_archive` (e.g., a CLI subcommand or pipeline run) to force the `_backward_compat_rename` merge AND THEN re-run V2; or accept the drift caveat. Discriminating tests: (a) plant ONLY `{ticker}.parquet` legacy file + assert V2 reader returns correct bars (not raises `OhlcvCoverageError`); (b) plant BOTH `{ticker}.yfinance.parquet` (shorter history) AND `{ticker}.parquet` (longer history) + assert V2 reads Shape A's shorter history (NOT the legacy longer history); (c) document the both-exist policy in the reader's docstring + study writeup template. Rationale for "Shape A wins": deterministic + reproducible per-V2-invocation; simple test surface; the both-exist case is RARE in operator's archive (post-production-read, Shape A becomes the canonical source); the V3+ V2.5 candidate is "V2 reader optionally merges legacy via direct port of `_backward_compat_rename` logic" (operator-paired). See OQ-18.
 - **OHLCV column-case normalization (Codex R2.C1 RESOLVED)**: Shape A persists OHLCV columns as lowercase `open/high/low/close/volume` per `swing/data/ohlcv_archive.py:449+521-522`. Production criteria + evaluator expect capitalized `Open/High/Low/Close/Volume` per `swing/evaluation/criteria/trend_template.py:23` + `risk_feasibility.py:17-18` + `vcp.py:16-17` + `swing/evaluation/evaluator.py:55+59-60`. V2 reader normalizes lowercase → capitalized at the read boundary so downstream `evaluate_one(ctx)` sees the production-expected column names. Discriminating test: plant a Shape A parquet with lowercase columns + assert V2 reader returns DataFrame with capitalized columns + assert `evaluate_one(ctx)` does not raise `KeyError` against the normalized DataFrame.
 - Return the full per-ticker frame indexed by date with capitalized OHLCV columns. Caller slices to `<= data_asof_date` per §F.2.
 - NO fetch path. NO writes. NO archive mutation. If neither `{ticker}.yfinance.parquet` NOR legacy `{ticker}.parquet` exists OR if the slice has fewer than the required bars for `evaluate_one` (200 per §E.5), raise `OhlcvCoverageError` → caller skips per §E.5.
@@ -524,7 +531,11 @@ Per `swing/evaluation/context.py:14-19`, BatchContext requires:
 V2 reconstructs at each `(eval_run_id, data_asof_date)` cohort:
 
 1. **`universe_tickers` = the FULL RS universe** (Codex C1 RESOLVED — NOT the per-eval_run candidate set). The RS universe is the ranking-universe-of-record from `cfg.paths.rs_universe_path` per production `swing/cli.py:449` + earnings_proximity precedent at `research/harness/earnings_proximity/run.py:197-201`+`279`. **Why**: `compute_rs(...).rank` per `swing/evaluation/rs.py:71-85` computes per-ticker RS percentile via cross-sectional ranking against the universe — using only candidate tickers would produce WRONG percentiles + flip TT8 results + break baseline parity per §E.4 invariant.
-   - NEW dependency: V2 reads the RS universe via `swing.evaluation.rs.load_universe(cfg.paths.rs_universe_path)` at invocation time. V2 fails-fast with `MissingRsUniversePathError` if the path is unset OR the file unreadable. **Codex R2.M4 RESOLVED**: V2 ADDITIONALLY validates the loaded universe is non-empty AND has ≥ N_MIN tickers (proposed default: 100; configurable via `--min-universe-size N`). `swing.evaluation.rs.load_universe` at `swing/evaluation/rs.py:22-42` returns `Universe(tickers=(), version='unknown')` for empty/malformed-but-readable files; V2 fails-fast with `EmptyRsUniverseError` rather than silently degrading TT8 to fallback-RS semantics for ALL candidates. Discriminating test: plant an empty universe file + assert V2 raises `EmptyRsUniverseError` with actionable hint.
+   - NEW dependency: V2 reads the RS universe via `swing.evaluation.rs.load_universe(cfg.paths.rs_universe_path)` at invocation time. V2 fails-fast with `MissingRsUniversePathError` if the path is unset OR the file unreadable. **Codex R2.M4 + R3.M2 RESOLVED**: V2 layers THREE validations on top of `load_universe`:
+     - **(a) Non-empty + minimum size** (Codex R2.M4): loaded universe must be non-empty AND have ≥ N_MIN tickers (proposed default: 100; configurable via `--min-universe-size N`). Fail-fast with `EmptyRsUniverseError` if not.
+     - **(b) Ticker-shape validation** (Codex R3.M2): each ticker must match the symbol-shape regex `^[A-Z][A-Z0-9.\-]*$` (NYSE/NASDAQ canonical: starts with capital letter; followed by capital letters / digits / dots / hyphens). `load_universe` at `swing/evaluation/rs.py:22-42` accepts every post-header line as a ticker string without validating shape; a malformed CSV with `header=ticker` + 100 garbage rows would pass (a) silently. V2 counts shape-invalid rows; if > `N_INVALID_THRESHOLD` (default: 5% of total OR 10 rows whichever is greater) → fail-fast with `InvalidRsUniverseError` listing first 10 invalid rows; otherwise log warning + drop invalid rows (proceed with remainder).
+     - **(c) Duplicate detection**: log warning + drop duplicates if any (Codex R3.M2; duplicates skew RS percentile computation).
+   - Discriminating tests: (i) plant empty universe file + assert `EmptyRsUniverseError`; (ii) plant 100-row universe with 50 garbage rows (>5%) + assert `InvalidRsUniverseError`; (iii) plant 100-row universe with 3 garbage rows (<5%) + 2 duplicates + assert warning logged + accepted-tickers = 95 unique.
    - NEW OQ-14 surfaces the historical-RS-universe-snapshot question (the universe membership at the historical eval_run may differ from the universe membership today; for V2 ship target, we accept current-universe-snapshot as the surrogate; per-eval_run-historical-universe-snapshot is V3+).
 2. `universe_version` = `f"v2_harness_eval_run_{eval_run_id}_universe_{cfg.paths.rs_universe_path.name}"` (NOT the production universe-version; V2 is a research-branch invariant per §A.1).
 3. `universe_hash` = `v2_universe_hash_` prefix + SHA-256 of the sorted `universe_tickers` tuple bytes (Codex R2.m1 RESOLVED — explicit prefix marks the V2 research-branch derivation; SHA-256 matches production's `swing.evaluation.rs.universe_version_hash` at `swing/evaluation/rs.py:45-49`; deterministic; reproducible). NOT comparable to persisted `evaluation_runs.rs_universe_hash` if such a column exists.
@@ -537,14 +548,15 @@ V2 reconstructs at each `(eval_run_id, data_asof_date)` cohort:
 
 **Codex M4 RESOLVED**: V2's runtime is dominated by full-universe OHLCV reads + per-eval_run returns-12w reconstruction, NOT by `evaluate_one` invocations. The original spec's "optional optimization" framing was wrong.
 
-**Cost breakdown** (envelope-of-the-back; refined in writing-plans phase):
+**Cost breakdown** (envelope-of-the-back; refined in writing-plans phase) — assumes per-TICKER cache (Codex R3.m1 RESOLVED: previous cost-table version cited per-eval_run parquet reads which conflicted with the locked per-ticker cache; corrected below):
 
 | Cost component | Per V2 invocation | Notes |
 |----------------|-------------------|-------|
-| Full-universe parquet reads | N_universe × 63 eval_runs (read-or-cached) | N_universe = full RS universe size (per production cfg.paths.rs_universe_path; typically 500-2000 tickers). At ~10ms per parquet open + slice = 5-20 minutes per V2 invocation IF cached uniformly. |
-| `returns_12w_by_ticker` cross-sectional computation | 63 eval_runs × N_universe × 1 calc | Cheap per-calc but volume is N_universe × 63 = 30k-130k operations. |
-| `evaluate_one(ctx)` invocations | ~482k (5681 candidates × 17 vars × ~5 sweep_points) | Per-call cost: SMA50 + SMA150 + SMA200 over up-to-200 bars + 9 vcp criteria + 1 risk + RS rank lookup = ~5-20ms per envelope. Cumulative 40-160 minutes IF naive (no batch reuse). |
-| Total naive runtime | ~60-180 minutes | Exceeds OQ-9's 60-minute target without per-eval_run batch reuse. |
+| Parquet opens (per-TICKER cache; LOCKED per §F.5) | `N_universe + N_candidate_tickers_not_in_universe` (typically ≤ N_universe + 5681 worst case; usually much less due to overlap) | N_universe = full RS universe size (per production cfg.paths.rs_universe_path; typically 500-2000 tickers). At ~10ms per parquet open + full-history-load = 5-30 seconds per V2 invocation total. |
+| In-memory slicing per (ticker, asof_date) | ~5681 candidate slices + ~N_universe × 63 batch-context returns_12w slices | Cheap per-slice (pandas DataFrame `loc[]` is ~10µs); total ~63 × N_universe ≈ 30k-130k operations × 10µs = sub-second. |
+| `returns_12w_by_ticker` cross-sectional computation | 63 eval_runs × N_universe × 1 calc | Cached per (eval_run_id, horizon_weeks) tuple per §F.5; ~315 distinct BatchContext reconstructions. |
+| `evaluate_one(ctx)` invocations | ~482k (5681 candidates × 17 vars × ~5 sweep_points) | Per-call cost: SMA50 + SMA150 + SMA200 over up-to-200 bars + 9 vcp criteria + 1 risk + RS rank lookup = ~5-20ms per envelope. Cumulative 40-160 minutes — the DOMINANT cost component (with caches in place; pre-cache parquet I/O would dominate). |
+| Total runtime with both caches | ~15-60 minutes on a fast SSD | Within OQ-9's 60-minute target on a fast machine; tight on a slow machine. |
 
 **Per-eval_run BatchContext + universe-OHLCV caching is LOAD-BEARING (NOT optional)**:
 
@@ -560,6 +572,7 @@ With both caches: estimated V2 runtime ≈ 15-45 minutes on a fast SSD, within O
 - `test_v2_per_eval_run_batch_context_cached_not_recomputed` (discriminating; counts BatchContext construction calls; must be ≤315).
 - `test_v2_per_ticker_ohlcv_parquet_opened_once` (discriminating per Codex R2.M5; counts parquet `pd.read_parquet` calls; must be ≤ N_universe + N_candidate_tickers_not_in_universe).
 - `test_v2_runtime_below_60_minutes_on_smoke_universe` (smoke; synthetic 100-candidate / 5-eval_run / 17-var universe; runtime cap 90 seconds).
+- `test_v2_smoke_records_memory_footprint` (Codex R3.m3; smoke records `N_cached_tickers` + approximate memory bytes from `tracemalloc.get_traced_memory()` peak; logged to V2 invocation manifest so the operator can observe actual memory footprint on real hardware; non-blocking but instrumented).
 
 If V2 still exceeds OQ-9 budget on operator hardware, V2.5 candidates banked: parquet bulk-read via pyarrow; per-eval_run universe-tickers OHLCV pre-load into a single memory frame indexed by (ticker, date); per-process parallelism via concurrent.futures (operator-paired since this is research code).
 
@@ -697,7 +710,7 @@ Forward-binding: if V2 ship reveals criterion drift (per §E.4 baseline parity i
 
 ## §I OQs surfaced for operator-paired triage
 
-17 OQs surfaced — 8 from dispatch brief §1.1 + 5 NEW from initial substrate analysis + 4 NEW from Codex Round 1 review (OQ-14 C1 + OQ-15 C2 + OQ-16 M1/M2 + OQ-17 M6). Each OQ has a RECOMMEND disposition; final disposition is operator-paired between brainstorming + writing-plans phases.
+18 OQs surfaced — 8 from dispatch brief §1.1 + 5 NEW from initial substrate analysis + 4 NEW from Codex Round 1 review (OQ-14 C1 + OQ-15 C2 + OQ-16 M1/M2 + OQ-17 M6) + 1 NEW from Codex Round 3 review (OQ-18 R3.M1 both-exist legacy/Shape A policy). Each OQ has a RECOMMEND disposition; final disposition is operator-paired between brainstorming + writing-plans phases.
 
 ### OQ-1: OHLCV reconstruction scope
 
@@ -810,6 +823,16 @@ Forward-binding: if V2 ship reveals criterion drift (per §E.4 baseline parity i
 - **(c) Extend `read_or_fetch_archive` to accept `fetch_disabled=True` parameter** — production-code change; violates §A.1 read-only invariant beyond the OQ-17 CLI carve-out.
 
 **RECOMMEND**: (a) direct Shape A parquet read via NEW V2 wrapper at `research/harness/aplus_v2_ohlcv_evaluator/ohlcv_reader.py` per §F.1 amended decision. Simplest. No archive snapshot maintenance. No production-code change. Cleanly preserves L2 LOCK (NEVER reads `{ticker}.schwab_api.parquet`).
+
+### OQ-18 (Codex R3.M1 NEW): Both-exist legacy/Shape A archive read policy
+
+**Question**: When BOTH `{ticker}.yfinance.parquet` AND legacy `{ticker}.parquet` exist for the same ticker, which file does V2 read? Production has merge/freshness logic at `swing/data/ohlcv_archive.py:584+648-649+663+714`; V2's direct-read bypass cannot inherit that logic without porting it. Three options:
+
+- **(a) Shape A wins unconditionally** — V2 reads `{ticker}.yfinance.parquet`; ignores legacy in both-exist case. Deterministic + reproducible per-V2-invocation. May produce baseline-parity drift if legacy carries fresher/longer history that Shape A lacks (RARE post-production-read scenario).
+- **(b) Port production `_backward_compat_rename` merge/freshness logic to V2 reader** — adds ~50-100 lines to `ohlcv_reader.py`; matches production semantics; higher fidelity but more code surface.
+- **(c) Pre-V2 hook**: V2 dispatches a "merge-only" production-side call before running (e.g., for each in-universe ticker, invoke `read_or_fetch_archive` with a "no-fetch" parameter ONLY for the merge side-effect). Requires production-code change beyond OQ-17 carve-out.
+
+**RECOMMEND**: (a) Shape A wins unconditionally per §F.1 amended decision. Simplest. Documented caveat in V2 study writeup `Limitations` section. Operator remediation: invoke any production OHLCV-read path (e.g., a normal pipeline run) before V2 to force merge; OR accept the drift caveat. V2.5 candidate: port production merge logic to V2 reader (operator-paired post V2 ship).
 
 ### OQ-17 (Codex M6 NEW): CLI subcommand registration as the read-only carve-out
 
@@ -1020,7 +1043,7 @@ Checked sections for contradiction:
 - §A.4 + §C.2: V1 CLI `swing diagnose aplus-sensitivity` stays + V2 CLI `swing diagnose aplus-sensitivity-v2` is NEW. Consistent.
 - §D.1 + §E.1 + §E.3: cfg-substitution + production `evaluate_one` invocation for 16 of 17 variables; `vcp.watch_max_fails` special-case for the 1 hardcoded variable. Consistent.
 - §H.1 test count (~46) matches §H.3 baseline-bump projection (+46). Consistent.
-- §I OQs (8 brief + 5 substrate-NEW + 4 Codex-R1-NEW = 17) match dispatch brief §1.1 (8 brief + 5+ new) bound; Codex R1 added 4 more (OQ-14 C1 + OQ-15 C2 + OQ-16 M1/M2 + OQ-17 M6). Consistent.
+- §I OQs (8 brief + 5 substrate-NEW + 4 Codex-R1-NEW + 1 Codex-R3-NEW = 18) match dispatch brief §1.1 (8 brief + 5+ new) bound; Codex R1 added 4 (OQ-14 C1 + OQ-15 C2 + OQ-16 M1/M2 + OQ-17 M6); Codex R3 added 1 more (OQ-18 R3.M1 both-exist policy). Consistent.
 - §K version bump (0.1.0 → 0.2.0) matches §K.1 + V2 ship status `research`. Consistent.
 
 ### §N.3 Scope check
