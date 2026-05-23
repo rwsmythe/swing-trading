@@ -430,9 +430,13 @@ def test_baseline_recompute_tier2_surfaces_surrogate_attribution(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_single_variable_downstream_propagation_rs_rank(tmp_path):
-    """Substitute rs.rs_rank_min_pass=60 (looser than current 70);
-    a candidate with rs_rank=65 under V1 (skip) should get a different
-    treatment under V2. We verify V2 runs end-to-end and counts differ."""
+    """Verify cfg substitution propagates to evaluate_one for each sweep_point.
+
+    Mocks evaluate_one in the sweep module to capture the config argument
+    passed at each call; asserts the two sweep_points (60 vs 70) receive
+    different rs.rs_rank_min_pass values, proving substitute_cfg is wired
+    end-to-end through _evaluate_candidate_under_sweep.
+    """
     db_path = _build_test_db(tmp_path)
     _seed_eval_run(db_path, 1, "2026-04-30")
 
@@ -450,28 +454,54 @@ def test_single_variable_downstream_propagation_rs_rank(tmp_path):
     universe_csv = _make_universe_csv(tmp_path, universe_tickers)
     cfg = _cfg_with_universe(universe_csv)
 
-    # V1 current = 70; test with points (60, 70) to verify substitution runs
+    # Two sweep_points that differ so substituted cfg values differ
     var = _make_variable("rs.rs_rank_min_pass", current_value=70, sweep_points=(60, 70))
 
-    from research.harness.aplus_v2_ohlcv_evaluator.sweep import run_v2_sweep
+    # Track configs seen by evaluate_one keyed by sweep_point
+    from research.harness.aplus_v2_ohlcv_evaluator import sweep as sweep_mod
 
-    conn = sqlite3.connect(str(db_path))
-    result = run_v2_sweep(
-        conn,
-        variables=(var,),
-        cfg=cfg,
-        cache_dir=tmp_path,
-        eval_runs_window=5,
-        min_universe_size=50,
-    )
-    conn.close()
+    original_evaluate = sweep_mod.evaluate_one
+    seen_rs_rank_by_sweep_point: dict[float, list[int]] = {}
+
+    def _tracking_evaluate(ctx):
+        rank = ctx.config.rs.rs_rank_min_pass
+        # Record each config.rs.rs_rank_min_pass value seen per invocation
+        seen_rs_rank_by_sweep_point.setdefault("observed", []).append(rank)
+        return original_evaluate(ctx)
+
+    sweep_mod.evaluate_one = _tracking_evaluate
+    try:
+        from research.harness.aplus_v2_ohlcv_evaluator.sweep import run_v2_sweep
+        conn = sqlite3.connect(str(db_path))
+        result = run_v2_sweep(
+            conn,
+            variables=(var,),
+            cfg=cfg,
+            cache_dir=tmp_path,
+            eval_runs_window=5,
+            min_universe_size=50,
+        )
+        conn.close()
+    finally:
+        sweep_mod.evaluate_one = original_evaluate
 
     # V2 runs end-to-end for both sweep points
     assert len(result.entries) == 2
-    # Both entries reference the same variable
-    assert all(e.variable_name == "rs.rs_rank_min_pass" for e in result.entries)
-    # Total candidates counted for both points
     assert result.total_candidates == 1
+
+    # Discriminating: the two sweep_points must produce DIFFERENT rs_rank_min_pass
+    # values in the config passed to evaluate_one (60 for sweep_point=60;
+    # 70 for sweep_point=70). Without this, substitute_cfg would be a no-op.
+    observed_values = seen_rs_rank_by_sweep_point.get("observed", [])
+    assert len(observed_values) == 2, (
+        f"Expected evaluate_one called twice (once per sweep_point), "
+        f"got {observed_values}"
+    )
+    assert set(observed_values) == {60, 70}, (
+        f"Expected evaluate_one to receive rs_rank_min_pass values {{60, 70}} "
+        f"(one per sweep_point), got {observed_values}. "
+        "substitute_cfg may not be propagating the swept variable correctly."
+    )
 
 
 # ---------------------------------------------------------------------------
