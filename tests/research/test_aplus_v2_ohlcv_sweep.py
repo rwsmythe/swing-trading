@@ -401,9 +401,28 @@ def test_baseline_recompute_tier2_surfaces_surrogate_attribution(tmp_path):
     # No equity snapshot -> via_surrogate=True for tier-2
     # tier-2 is non-blocking: tier1_match should still be True (no tier-1 mismatches)
     assert result.baseline_parity.tier1_match is True
-    # tier-2 candidates: either match or mismatch, both are acceptable (non-blocking)
-    # The key assertion: bucket_via_surrogate flag propagates on any flipped tier-2 candidate
-    # Since no equity snapshot is seeded, current_equity_via_surrogate=True for the cohort
+    # Discriminating: the surrogate flag must surface somewhere for the tier-2 candidate.
+    # Two cases at current_value sweep point:
+    #   (a) persisted_bucket == recomputed_bucket (match) -> tier2_via_surrogate_count >= 1
+    #   (b) persisted_bucket != recomputed_bucket (mismatch) -> FlippedCandidate with
+    #       bucket_via_surrogate=True and eval_run_id=1 must appear in result.flipped
+    # At least one of these must hold (the candidate exists, no equity snapshot -> surrogate).
+    flipped_surrogate_tier2 = [
+        f for f in result.flipped
+        if f.eval_run_id == 1 and f.bucket_via_surrogate
+    ]
+    surrogate_surfaced = (
+        result.baseline_parity.tier2_via_surrogate_count >= 1
+        or len(flipped_surrogate_tier2) >= 1
+    )
+    assert surrogate_surfaced, (
+        "Expected bucket_via_surrogate to surface for the tier-2 candidate with no equity "
+        "snapshot: either baseline_parity.tier2_via_surrogate_count >= 1 (bucket match) "
+        "or at least one FlippedCandidate with bucket_via_surrogate=True for eval_run_id=1 "
+        "(bucket mismatch), but neither found. "
+        f"tier2_via_surrogate_count={result.baseline_parity.tier2_via_surrogate_count}, "
+        f"flipped_surrogate_tier2={flipped_surrogate_tier2}"
+    )
 
 
 # ---------------------------------------------------------------------------
