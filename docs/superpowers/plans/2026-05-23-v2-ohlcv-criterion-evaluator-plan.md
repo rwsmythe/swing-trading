@@ -6,7 +6,7 @@
 
 **Architecture:** NEW module per spec §C.1 architecture-location LOCK + Expansion #10 discipline; 5-sub-bundle decomposition (T-V2.1..T-V2.5); read-only direct Shape A parquet read via NEW `ohlcv_reader.py` wrapper (bypasses production `swing.data.ohlcv_archive.read_or_fetch_archive` to preserve reproducibility + L2 LOCK); per-eval_run BatchContext cache + per-ticker OHLCV cache (LOAD-BEARING per spec §F.5); production `swing/` code is READ-ONLY except for one explicit minimal CLI subcommand registration carve-out at `swing/cli.py` per OQ-17 LOCK; schema v21 UNCHANGED.
 
-**Tech Stack:** Python 3.11+ (3.14 on operator's box), pandas (parquet I/O + DataFrame slicing), sqlite3 (read-only against operator's `swing-data/swing.db`), Click (CLI subcommand registration), pytest (TDD per task; ~68 NEW fast tests projected; ZERO slow tests). NO yfinance / NO schwabdev imports in the V2 module set (defense-in-depth per L2 LOCK + OQ-12 + OQ-16).
+**Tech Stack:** Python 3.11+ (3.14 on operator's box), pandas (parquet I/O + DataFrame slicing), sqlite3 (read-only via URI `mode=ro` per Codex R2.M2 RESOLVED against operator's `swing-data/swing.db`), Click (CLI subcommand registration), pytest (TDD per task; **~80 NEW fast tests** projected per §H recalibration — parametrize-consolidated bound ~65-70; ZERO slow tests). NO yfinance / NO schwabdev / NO swing.data.ohlcv_archive / NO swing.integrations.schwab imports in the V2 module set (defense-in-depth per L2 LOCK + OQ-12 + OQ-16 + Codex R1.M3 RESOLVED 4-module sentinel).
 
 ---
 
@@ -86,7 +86,7 @@ Schema v21 LOCKED. V2 does NOT touch migrations. Verified via brief §3.4 + spec
 | T-V2.5 | `research/phase-0-tasks.md` | MODIFIED | "Next" section reflects V2 SHIPPED status (first method-record COMPLETED). |
 | T-V2.5 | `exports/diagnostics/aplus-sensitivity-v2-<ISO>.{csv,md}` | NEW (operator smoke artifact) | Captured operator smoke run output committed for ledger. |
 
-Test paths (per spec §H.1 ~68 tests):
+Test paths (per §H recalibrated ~80 tests — see §H per-test enumeration; ~65-70 parametrize-consolidated):
 
 | Test file | Sub-bundle | Test count |
 |-----------|------------|------------|
@@ -487,6 +487,7 @@ def build_eval_run_cohort(
     data_asof_date: date,
     cfg: Config,
     universe_tickers: tuple[str, ...],
+    candidate_tickers: tuple[str, ...],   # Codex R2.M1 RESOLVED
     universe_hash: str,
     cache_dir: Path,
     horizon_weeks: int,
@@ -496,9 +497,18 @@ def build_eval_run_cohort(
     (eval_run_id, data_asof_date) cohort.
 
     Steps:
-      1. For each ticker in universe_tickers + SPY: read Shape A; slice to
-         <= data_asof_date; compute 12-week return (per-ticker skip if
-         <60 bars per spec §F.4 step 4).
+      1. For each ticker in `universe_tickers ∪ candidate_tickers ∪ {SPY}`
+         (Codex R2.M1 RESOLVED): read Shape A; slice to <= data_asof_date;
+         compute 12-week return (per-ticker skip if <60 bars per spec §F.4
+         step 4). The candidate-not-in-universe inclusion is LOAD-BEARING:
+         production `compute_rs` at `swing/evaluation/rs.py:65-85` returns
+         `method='fallback_spy'` (NOT `'unavailable'`) when the ticker is
+         absent from `universe_tickers` BUT present in `returns_12w_by_ticker`.
+         TT8 at `swing/evaluation/criteria/trend_template.py:125-145` consumes
+         that fallback_spy result via excess-vs-SPY > `rs.fallback_extreme_pct`
+         logic. Without populating returns for candidates outside the universe,
+         their RS resolves to `unavailable` → TT8 fails → baseline parity
+         breaks for the affected candidates.
       2. SPY return → spy_return_12w (fallback 0.0 if missing).
       3. current_equity per OQ-15: query
          account_equity_snapshots via
@@ -781,6 +791,17 @@ def run_harness(
       max_runtime_seconds None or > 0 → ValueError.
       variables_filter: subset of enumerate_variables(cfg) names → ValueError
         on unknown names with the unknown names enumerated in the message.
+
+    DB connection (Codex R2.M2 RESOLVED): opens via URI mode `mode=ro` so
+    any accidental INSERT/UPDATE/CREATE from the V2 module set raises
+    `sqlite3.OperationalError: attempt to write a readonly database`. This
+    is defense-in-depth atop the V2-side read-only invariant per spec §A.1.
+    V1 precedent at `research/harness/aplus_sensitivity/run.py:41` uses the
+    plain non-URI form; V2 deliberately upgrades to URI ro per Codex R2.M2.
+
+    ```python
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    ```
     """
     ...
 
@@ -816,7 +837,7 @@ Verified: `evaluation_runs.id` + `evaluation_runs.data_asof_date` exist at `swin
 
 - (a) Row-set scope: per-eval_run (1 row = 1 eval_run; N rows for N eval_runs).
 - (b) JOIN-cardinality: N/A (no JOINs).
-- (c) Downstream sufficiency: V2's `fetch_eval_runs` returns `[(eval_run_id, parsed_date)]`. The consumer is the eval-run iteration in `build_eval_run_cohort` (per-eval_run BatchContext key) + the candidate fetch's `WHERE evaluation_run_id IN (:eval_run_ids)` clause. Both consumers need only id + asof_date. SUFFICIENT.
+- (c) Downstream sufficiency: V2's `fetch_eval_runs` returns `[(eval_run_id, parsed_date)]`. The consumer is the eval-run iteration in `build_eval_run_cohort` (per-eval_run BatchContext key) + the candidate fetch's `WHERE evaluation_run_id IN (?, ?, ...)` dynamic-positional-placeholder clause per Codex R1.M1 + R2.m1 RESOLVED. Both consumers need only id + asof_date. SUFFICIENT.
 - (d) Post-mutation re-check: V2 is READ-ONLY; no mutation. N/A.
 
 Per cumulative gotcha #12: TEXT `data_asof_date` → `date.fromisoformat()` via `parse_asof_date` helper raises typed `MalformedAsofDateError` on malformed input.
@@ -1006,9 +1027,12 @@ cfg = Config.from_defaults()
 ```
 
 - (a) Signature: classmethod; no args.
-- (b) Side-effect contract: PURE (reads packaged cfg defaults; no file I/O at the operator's config layer).
-- (c) Error semantics: should not raise under normal operation.
-- (d) L2 LOCK: PURE. SAFE.
+- (b) Side-effect contract (Codex R2.M3 RESOLVED — initial draft incorrectly claimed "PURE"; correcting):
+  - Reads tracked-repo `swing.config.toml` at `swing/config.py:399-407` via `open()` at `swing/config.py:437-438`.
+  - May optionally cascade through operator's `~/swing-data/user-config.toml` IF present (per Phase 5 cfg-cascade precedent; reads — does NOT write).
+  - NO operator-secret access (Finviz / Schwab API tokens stored in `user-config.toml` per existing Finviz Elite API token storage gotcha; V2 does NOT need either; verified V2 does NOT read `cfg.integrations.finviz` OR `cfg.integrations.schwab` per §C.4 + §C.5 dependency surfaces).
+- (c) Error semantics: may raise `FileNotFoundError` (config absent) / `tomli.TOMLDecodeError` (malformed) / `KeyError` (missing required field) — V2 propagates to CLI ClickException wrapping per cumulative T-A.1.5b lesson.
+- (d) L2 LOCK: reads ONLY repo + operator user-config TOML files; NO external API; NO `swing/data/ohlcv_archive` import. SAFE.
 
 ---
 
@@ -1232,7 +1256,7 @@ Per-sub-bundle commit count breakdown (projected commits per task):
 | T-V2.3 | T-V2.3 (1 mono-task; 10 sub-steps) | ~10 | ~10 commits | 1 task-wrap | ~11 commits |
 | T-V2.4 | T-V2.4 (1 mono-task; 9 sub-steps) | ~8 | ~8 commits | 1 task-wrap | ~9 commits |
 | T-V2.5 | T-V2.5 (1 mono-task; 6 sub-steps) | ~6 | ~6 commits | 1 task-wrap | ~7 commits |
-| **Total** | | **~68 tests** | **~57 per-test commits** | **7 task-wraps** | **~64 commits** |
+| **Total** | | **~80 tests** (per §H recalibrated) | **~57-70 per-test commits** (parametrize-consolidatable) | **7 task-wraps** | **~64-77 commits** (within brief §2.1's ~42-65 lower-end via parametrize-consolidation OR ~77 upper-end raw) |
 
 This lands at the upper end of brief §2.1's projected ~42-65 commit range — comfortably within the budget. If implementer chooses to cluster tightly-related tests (e.g., the 4 substitute_cfg per-subsection tests landing in one commit), total drops to the brief's lower end ~42 commits.
 
@@ -2311,10 +2335,10 @@ Per Codex R1.M7: each enumerated behavior gets its own discriminating test (no i
 |------------|--------------|------------|----------------------|
 | T-V2.1.1 | `test_aplus_v2_ohlcv_reader.py` | **~14** | (1) primary Shape A read returns capitalized OHLCV; (2) legacy fallback; (3) both-exist Shape A wins + diagnostic increments; (4) OhlcvCoverageError when neither file exists; (5) sliced asof_date inclusive; (6) sliced raises OhlcvCoverageError below min_bars; (7) `column-case normalization` from lowercase to capitalized at read boundary; (8) `asof_date column dropped post-normalization`; (9) L2 LOCK file-open mock (per §F.1); (10) L2 LOCK import-graph mock (per §F.2); (11) L2 LOCK byte-checksum discriminating (per §F.3); (12) defensive `read_or_fetch_archive` signature lock (per §K.4); (13) defensive V2 module-set import-grep for `read_or_fetch_archive` (per §K.5); (14) both-exist diagnostic affected_tickers list cap at 50 (per spec §F.1 R4.M1 capped list). |
 | T-V2.1.2 | `test_aplus_v2_ohlcv_cfg_substitution.py` | **~6** | (1) trend_template field substitution; (2) vcp; (3) risk; (4) rs; (5) unknown-subsection ValueError; (6) type-preservation invariant. |
-| T-V2.1.3 | `test_aplus_v2_ohlcv_context_builder.py` | **~16** | (1) parse_asof_date raises MalformedAsofDateError on garbage; (2) parse_asof_date returns date for valid ISO; (3) load_validated_rs_universe raises EmptyRsUniverseError; (4) raises InvalidRsUniverseError on >5% garbage with first-20-symbols enumerated; (5) accepts ≤5% garbage with warning + drop; (6) handles duplicates with warning + drop; (7) raises PostCleanupUniverseTooSmallError; (8) `MissingRsUniversePathError` on unset/unreadable path; (9) fetch_eval_runs ordering + date parsing; (10) fetch_candidates LEFT JOIN handles missing risk_feasibility row; (11) fetch_candidates multi-eval_run IN clause expansion (Codex R1.M1); (12) classify_candidate_tier tier-1 + tier-2; (13) build_eval_run_cohort current_equity historical snapshot path; (14) current_equity fallback to most-recent snapshot + via_surrogate flag; (15) current_equity fallback to floor surrogate + via_surrogate flag; (16) defensive evaluate_one + load_universe + get_latest_snapshot_on_or_before signature-lock tests (3 tests, consolidatable as parametrize-ids). |
+| T-V2.1.3 | `test_aplus_v2_ohlcv_context_builder.py` | **~17** | (1) parse_asof_date raises MalformedAsofDateError on garbage; (2) parse_asof_date returns date for valid ISO; (3) load_validated_rs_universe raises EmptyRsUniverseError; (4) raises InvalidRsUniverseError on >5% garbage with first-20-symbols enumerated; (5) accepts ≤5% garbage with warning + drop; (6) handles duplicates with warning + drop; (7) raises PostCleanupUniverseTooSmallError; (8) `MissingRsUniversePathError` on unset/unreadable path; (9) fetch_eval_runs ordering + date parsing; (10) fetch_candidates LEFT JOIN handles missing risk_feasibility row; (11) fetch_candidates multi-eval_run IN clause expansion (Codex R1.M1); (12) classify_candidate_tier tier-1 + tier-2; (13) build_eval_run_cohort current_equity historical snapshot path; (14) current_equity fallback to most-recent snapshot + via_surrogate flag; (15) current_equity fallback to floor surrogate + via_surrogate flag; (16) build_eval_run_cohort populates returns for candidate-not-in-universe tickers so compute_rs yields `fallback_spy` not `unavailable` (Codex R2.M1 — plant 1 candidate outside RS universe + assert compute_rs(candidate.ticker, ...).method == "fallback_spy"); (17) defensive evaluate_one + load_universe + get_latest_snapshot_on_or_before signature-lock tests (3 tests, consolidatable as parametrize-ids). |
 | T-V2.2 | `test_aplus_v2_ohlcv_sweep.py` | **~16** | (1) SweepEntryV2 __post_init__ Literal validation; (2) per-(variable, sweep_point) orchestration core; (3) tier-1 baseline parity CRITICAL blocking; (4) tier-2 parity reporting non-blocking surrogate-flagged; (5) single-variable downstream propagation (`rs.rs_rank_min_pass`); (6) vcp.watch_max_fails special-case bucket promotion; (7) vcp.watch_max_fails special-case branch NOT routed through cfg_substitution; (8) failure isolation OhlcvCoverageError mode; (9) failure isolation OutOfRangeSubstitutionError mode; (10) failure isolation generic Exception mode; (11) multi-eval_run universe scan (2+ eval_runs); (12) per-eval_run BatchContext cache bound; (13) per-TICKER OHLCV cache bound; (14) runtime cap truncates with partial-result flag; (15) `out_of_range substitution skip` discriminating fixture (substitute `trend_template.min_passes=9` when only 8 TT criteria exist); (16) defensive bucket_for signature-lock. |
 | T-V2.3 | `test_aplus_v2_ohlcv_output.py` | **~12** | (1) CSV 12-col header + row format; (2) markdown matrix 12-col render; (3) headline binding-variable summary; (4) headline empty-state when no binding variable; (5) per-variable drill-down with bucket_via_surrogate flag; (6) drill-down empty-state '(none)' uniform; (7) CRITERION DRIFT alert on tier-1 mismatch; (8) per-variable scope-reduction Notes; (9) both-exist warning banner emission; (10) both-exist warning banner suppressed when count==0; (11) manifest emission (memory peak from tracemalloc + tier-1/2 split + both_exist_shape_a_wins_count); (12) ASCII-only output (cp1252 round-trip CSV + markdown). |
-| T-V2.4 | `test_aplus_v2_ohlcv_run.py` + `test_diagnose_subcommands.py` extension | **~10** | (1) run_harness returns (md_path, csv_path); (2) --eval-runs out-of-range ValueError; (3) --variables-filter unknown raises ValueError with unknown names listed; (4) --min-universe-size out-of-range ValueError; (5) --max-runtime-seconds out-of-range ValueError + accepted; (6) ClickException wrapping ValueError (no traceback); (7) output file path conventions; (8) baseline smoke against operator-shape fixture; (9) CLI subcommand --help smoke; (10) subprocess stdout cp1252 safety; bonus (11) V1 back-compat --help unchanged; bonus (12) git diff swing/ gate (env-var guarded). |
+| T-V2.4 | `test_aplus_v2_ohlcv_run.py` + `test_diagnose_subcommands.py` extension | **~11** | (1) run_harness returns (md_path, csv_path); (2) --eval-runs out-of-range ValueError; (3) --variables-filter unknown raises ValueError with unknown names listed; (4) --min-universe-size out-of-range ValueError; (5) --max-runtime-seconds out-of-range ValueError + accepted; (6) ClickException wrapping ValueError (no traceback); (7) output file path conventions; (8) baseline smoke against operator-shape fixture; (9) CLI subcommand --help smoke; (10) subprocess stdout cp1252 safety; (11) DB opened read-only via URI mode=ro — discriminating: monkey-patch the V2 module to attempt INSERT INTO candidates within the connection + assert sqlite3.OperationalError "attempt to write a readonly database" (Codex R2.M2); bonus (12) V1 back-compat --help unchanged; bonus (13) git diff swing/ gate (env-var guarded). |
 | T-V2.5 | `test_aplus_v2_ohlcv_integration.py` | **~6** | (1) E2E synthetic-universe run; (2) V1↔V2 parity; (3) OHLCV coverage failure E2E; (4) memory footprint smoke; (5) CRITERION DRIFT detection smoke; (6) both-exist diagnostic E2E. |
 | **Total** | | **~80 NEW fast tests** | Baseline 5778 → ~5858 post-V2-ship. Revised UPWARD from initial ~68 per Codex R1.M7 acknowledged undercount. ZERO slow-marked tests in V2 scope. Implementer MAY consolidate tightly-coupled per-subsection variants via `pytest.mark.parametrize` to reduce raw test-function count while preserving discriminating-test coverage (e.g., the 4 substitute_cfg per-subsection tests OR the 3 signature-lock tests). Parametrize-consolidated raw count: ~65-70. Both upper + parametrized bounds covered by the brief's ~68 estimate as inclusive range. |
 
@@ -2531,4 +2555,4 @@ ZERO type-consistency issues.
 
 ---
 
-*End of V2 OHLCV criterion-evaluator harness implementation plan. ~2400 lines; 15 sections §A-§O (Codex R1.m2 RESOLVED — initial draft footer mis-stated "~1300 lines; 14 sections"; plan grew per task-level TDD code-block expansion). Per writing-plans-phase pre-Codex 7-expansion + 5 NEW candidate refinements + 18 cumulative gotchas BINDING (especially NEW #17 + #18). Production function signatures verified per Expansion #2 refinement (§E). SQL skeletons verified per Expansion #4 refinement (§D). L2 LOCK reinforced via 5 discriminating tests (§F + §K) covering 3 file-open boundaries + 4-module import sentinel graph. 32nd cumulative C.C lesson #6 validation expected at Codex MCP chain handback.*
+*End of V2 OHLCV criterion-evaluator harness implementation plan. ~2400+ lines; 15 sections §A-§O. Per writing-plans-phase pre-Codex 7-expansion + 5 NEW candidate refinements + 18 cumulative gotchas BINDING (especially NEW #17 + #18). Production function signatures verified per Expansion #2 refinement (§E). SQL skeletons verified per Expansion #4 refinement (§D). L2 LOCK reinforced via 5 discriminating tests (§F + §K) covering **4 file-open boundaries** (pd.read_parquet + pathlib.Path.open + builtins.open + pyarrow.parquet.read_table per Codex R1.M4) + **4-module import sentinel graph** (yfinance + schwabdev + swing.integrations.schwab + swing.data.ohlcv_archive per Codex R1.M3). 32nd cumulative C.C lesson #6 validation expected at Codex MCP chain handback.*
