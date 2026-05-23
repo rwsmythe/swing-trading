@@ -611,6 +611,64 @@ def test_criterion_drift_heading_is_exact_level2(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Test 14 (NEW): both-exist affected_tickers banner deduplicates repeated reads
+# ---------------------------------------------------------------------------
+
+def test_both_exist_banner_deduplicates_repeated_ticker_reads(tmp_path: Path) -> None:
+    """When BothExistDiagnostic.affected_tickers has duplicates (same ticker
+    appended on every read during a sweep), the markdown banner emits UNIQUE
+    tickers only -- not the raw repeated list.
+
+    Discriminating test per Issue 2 fix: plant a ticker 5 times in
+    affected_tickers; assert the banner renders it ONCE, not 5 times.
+    """
+    from research.harness.aplus_v2_ohlcv_evaluator.output import write_sensitivity_markdown_v2
+
+    # Simulate 3 unique tickers each read multiple times (e.g., 2 variables x
+    # 5 eval_runs = 10 appends each, but only 3 unique tickers)
+    repeated_tickers = ["AESI", "PL", "DK"] * 5  # 15 entries; 3 unique
+    result = _make_result(
+        entries=(_make_entry(),),
+        both_exist_count=15,  # count accumulates accurately
+        both_exist_tickers=repeated_tickers,
+    )
+    md_path = tmp_path / "sensitivity.md"
+    write_sensitivity_markdown_v2(result, md_path)
+
+    text = md_path.read_text(encoding="utf-8")
+    # Banner must be present (count > 0)
+    assert "## WARNING: Both-Exist Archive Files Detected" in text
+
+    # Extract lines under the "Affected tickers" heading
+    lines = text.splitlines()
+    in_tickers = False
+    ticker_lines = []
+    for line in lines:
+        if "Affected tickers" in line:
+            in_tickers = True
+            continue
+        if in_tickers:
+            if line.startswith("## ") or line.startswith("### "):
+                break
+            if line.startswith("- "):
+                ticker_lines.append(line[2:].strip())
+
+    # Each unique ticker must appear EXACTLY ONCE in the banner list
+    assert ticker_lines.count("AESI") == 1, (
+        f"Expected AESI to appear once in banner, got {ticker_lines.count('AESI')} times. "
+        f"Full ticker list: {ticker_lines}"
+    )
+    assert ticker_lines.count("PL") == 1, (
+        f"Expected PL to appear once in banner, got {ticker_lines.count('PL')} times. "
+        f"Full ticker list: {ticker_lines}"
+    )
+    assert ticker_lines.count("DK") == 1, (
+        f"Expected DK to appear once in banner, got {ticker_lines.count('DK')} times. "
+        f"Full ticker list: {ticker_lines}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Test 14 (NEW): CRITERION DRIFT section SUPPRESSED when tier1_match=True
 # ---------------------------------------------------------------------------
 

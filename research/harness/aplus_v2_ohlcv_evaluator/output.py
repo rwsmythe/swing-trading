@@ -227,9 +227,13 @@ def _write_both_exist_banner(lines: list[str], result: SweepResultV2) -> None:
     lines.append("per OQ-18 LOCK. Verify no stale legacy files contaminate results.")
     lines.append("")
     if diag.affected_tickers:
+        # Deduplicate at emit time: same ticker may be appended on every read
+        # during a sweep (once per eval_run per variable per sweep_point).
+        # sorted(set(...)) preserves deterministic order for test stability.
+        unique_tickers = sorted(set(diag.affected_tickers))
         lines.append("Affected tickers (capped at 50):")
         lines.append("")
-        for ticker in diag.affected_tickers[:50]:
+        for ticker in unique_tickers[:50]:
             lines.append(f"- {ticker}")
     lines.append("")
 
