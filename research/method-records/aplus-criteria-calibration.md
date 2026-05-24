@@ -9,7 +9,7 @@ name: A+ criteria parameter sensitivity calibration
 layer: ranking
 status: research
 baseline_or_predecessor: internal (swing.evaluation.scoring.bucket_for current cfg)
-version: 0.2.1
+version: 0.2.2
 last_updated: 2026-05-24
 ---
 
@@ -137,15 +137,45 @@ Remediation Option A (LOCKED + SHIPPED 2026-05-24 at merge `b7f70ff`): 1-line fi
 
 Honored by CLAUDE.md cumulative gotcha #25 (sentinel-bucket parity-comparison discipline; first canonical application is this Option A fix). Banked V2 candidates (D.4): (a) Fix #3 per-variable drill-down COUNT filter for excluded candidates (matrix-count behavior remains operator-visible; default recommendation FILTER per investigation §9.3; flip-recording is already transitively prevented via `baseline_bucket_map.get is None` guard at `sweep.py:419-420`); (b) sentinel-bucket parity-comparison discipline as research-branch BINDING template for any future V1-vs-V2 parity harness (criterion / scoring / bucket comparison).
 
+**Limitation L6: OHLCV archive bar-content TEMPORAL mutation between V1's eval_run persistence time and V2's current-archive read time invalidates V1↔V2 baseline-parity at the criterion level (v0.2.2 addendum 2026-05-24 PM).**
+
+V1's `candidate_criteria` rows are a FROZEN snapshot of the OHLCV archive contents at original eval_run persistence time. V2 reads the CURRENT archive at invocation time. Between V1 persistence and V2 read, intervening pipeline runs progressively OVERWRITE existing historical bars via `swing/data/ohlcv_archive.py:write_window:358-360` which uses `drop_duplicates(subset=['asof_date'], keep='last')` merge semantics — NEW bars at the same `asof_date` REPLACE existing bars when yfinance returns slightly different historical values (late-reported volume corrections; bar range adjustments; split/dividend retroactive recalculations). Small-magnitude bar value drift (~0.5%-3% on Volume; smaller on High/Low/Close) is enough to flip boundary criteria from PASS to FAIL.
+
+Documented direct evidence: full-63-eval-run reproduction CRITERION DRIFT investigation 2026-05-24 PM (merge `c8f9612`; investigation doc at `docs/v2-full-reproduction-drift-investigation-2026-05-24.md`). 14 of 5666 candidates (0.25%) drifted at the full-reproduction smoke `exports/diagnostics/aplus-sensitivity-v2-20260524T205849Z.{csv,md}`. Per-criterion divergence:
+- 11 of 14 (CNTA/ECVT/APLS/FTI/STNG × mid-range eval_runs): `vcp_volume_contraction` divergence; V2 cons_avg +0.62% to +2.65% HIGHER than V1 persisted; crosses cons<trend threshold from PASS to FAIL.
+- 3 of 14 (PL only at eval_runs 6/7/8): `tightness` divergence; V2 0-day streak vs V1 2-day streak; supported by adr drift V1 10.55% / V2 10.60%.
+
+Decisive counter-test PASSED for all 14: reproducer at `tmp/full-reproduction-investigation/reproducer.py` invokes V2's `evaluate_one` against current archive AND reproduces V2's smoke artifact `bucket='skip'` EXACTLY for every drift entry. **V2 evaluator is CORRECT given inputs**; drift is data-input divergence (NOT V2 evaluator bug). This is the THIRD investigation in a row to confirm V2 evaluator correctness (DK:62 / DHC/UCO/VSAT / full-reproduction).
+
+All 5 narrowed hypotheses FALSIFIED with concrete evidence:
+- H1 (Shape A vs legacy historical desync; L4 extension): PL Shape A and legacy AGREE bar-by-bar on 1236 common dates; 5 of 6 tickers don't have Shape A at all.
+- H2 (OQ-14 RS universe drift): all 6 tickers ABSENT from V2 universe; both V1 and V2 compute `rs_method='fallback_spy'` with identical TT8 result.
+- H3 (V2 source-ladder asymmetry): V2 reads same byte source as V1 (legacy parquet); Schwab API parquet exists for PL but V2 NEVER reads it (L2 LOCK preserved + verified).
+- H4 (V1 sentinel-bucket extension; L5 extension): all 14 candidates have `bucket='watch'` (not sentinel); Option A filter correctly passes them through to parity comparison.
+- H5 (OHLCV history depth threshold): all 14 V2 reads return 1240-1256 bars; well above 200-bar minimum.
+
+**Per-binding-variable study impact (BINDING per dispatch brief §5)**: drift is L4-style (data-input divergence; V2 evaluator correct). The 14 drift candidates flip skip → watch (NOT skip → aplus); they contribute to `delta_watch` but NOT `delta_aplus`. The headline `max_delta_aplus` column is therefore UNAFFECTED. All 5 binding variables ROBUST:
+- `vcp.tightness_range_factor` +75 STRONGLY ROBUST (drift << 75)
+- `vcp.tightness_days_required` +16 STRONGLY ROBUST
+- `vcp.adr_min_pct` +11 MARGINALLY ROBUST (+11 holds)
+- `vcp.proximity_max_pct` +5 MARGINALLY ROBUST
+- `vcp.orderliness_max_bar_ratio` +1 MARGINALLY ROBUST
+
+**Study publication UNBLOCKED.** Suggested caveat language for study writeup (per investigation findings §5.4): "The V2 sensitivity analysis showed 14 baseline-parity FAILs (V1=watch / V2=skip) out of 5666 candidates (0.25%). Investigation [docs/v2-full-reproduction-drift-investigation-2026-05-24.md] identified these as data-input divergence caused by OHLCV archive bar-content mutation between V1's persisted-eval-run time and V2's current-archive read time — not a V2 evaluator bug. Binding-variable identifications are V2-internal arithmetic and are unaffected by V1-vs-V2 baseline parity drift; the top binding variables are robust under this drift class."
+
+Remediation Option A (RECOMMENDED): characterize as L6 limitation (this entry); ZERO V1 code changes; ZERO V2 reader changes. Banked V2 candidates: (a) immutable archive snapshot before V2 run (V2.5/V3 candidate; would eliminate temporal drift but requires new snapshot-management surface); (b) periodic V1 re-evaluation against current archive to refresh persisted criteria (production-side change; not in research scope).
+
+Honored by CLAUDE.md cumulative gotcha #26 (archive bar-content TEMPORAL mutation; first canonical application is this investigation; complements #24 + #25 — three-piece V1-vs-V2 parity discipline family).
+
 ## Promotion criteria (research -> shadow -> production)
 
 Per OQ-8 RECOMMEND + V2.1 §IV.D + §VII.C lifecycle posture:
 
 **research -> shadow**:
 
-1. V2 OHLCV harness shipped + baseline parity invariant green per spec §E.4 (SATISFIED at V2 ship 2026-05-23; REINFORCED 2026-05-24 via L4 remediation D.1 Shape A refresh + L5 remediation Option A sentinel-bucket filter at merge `b7f70ff`; smoke at `exports/diagnostics/aplus-sensitivity-v2-20260524T181554Z.{csv,md}` Tier-1 FULL PASS).
-2. At least 1 V2 study writeup published (SATISFIED: `research/studies/2026-05-23-v2-ohlcv-criterion-evaluator.md`).
-3. AT LEAST ONE binding threshold variable identified OR all 15 declared non-binding with operator-paired sign-off (PENDING: full 63-eval-run reproduction UNBLOCKED post-Option-A; operator runs V2 against `~/swing-data/swing.db` and reviews findings).
+1. V2 OHLCV harness shipped + baseline parity invariant green per spec §E.4 (SATISFIED at V2 ship 2026-05-23; REINFORCED 2026-05-24 via L4 remediation D.1 + L5 remediation Option A at merge `b7f70ff` with 5-eval-run smoke Tier-1 FULL PASS; **OPERATOR-PAIRED INTERPRETATION REQUIRED post 2026-05-24 PM full-63-eval-run reproduction**: smoke at `exports/diagnostics/aplus-sensitivity-v2-20260524T205849Z.{csv,md}` shows 14 tier-1 drift entries — investigation `c8f9612` confirmed L6 limitation (archive bar-content TEMPORAL mutation; V2 evaluator CORRECT given inputs via decisive counter-test; binding variables ROBUST). Either (a) treat as "baseline parity green to the extent V2 evaluator's correctness is verifiable against V1, with 3 documented L4 + L5 + L6 architectural limitations" → SATISFIED; OR (b) maintain strict invariant → PENDING immutable-archive-snapshot V2.5/V3 candidate).
+2. At least 1 V2 study writeup published (SATISFIED: `research/studies/2026-05-23-v2-ohlcv-criterion-evaluator.md`; amendment with L6 caveat pending THIS housekeeping pass).
+3. AT LEAST ONE binding threshold variable identified OR all 15 declared non-binding with operator-paired sign-off (**SATISFIED 2026-05-24 PM via full-63-eval-run reproduction**: 5 binding variables identified — all VCP-family — `vcp.tightness_range_factor` +75, `vcp.tightness_days_required` +16, `vcp.adr_min_pct` +11, `vcp.proximity_max_pct` +5, `vcp.orderliness_max_bar_ratio` +1).
 
 **shadow -> production**:
 
