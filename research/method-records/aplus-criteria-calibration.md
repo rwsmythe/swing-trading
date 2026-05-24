@@ -9,8 +9,8 @@ name: A+ criteria parameter sensitivity calibration
 layer: ranking
 status: research
 baseline_or_predecessor: internal (swing.evaluation.scoring.bucket_for current cfg)
-version: 0.2.0
-last_updated: 2026-05-23
+version: 0.2.1
+last_updated: 2026-05-24
 ---
 
 # A+ criteria parameter sensitivity calibration
@@ -107,15 +107,45 @@ Shipped 2026-05-23 as first Applied Research arc post-Phase-13-FULLY-CLOSED (Pat
 | `_precompute_ohlcv_coverage_skips` catches `OhlcvCoverageError + FileNotFoundError + OSError` (widened beyond spec `OhlcvCoverageError`); test only exercises `OhlcvCoverageError` branch | `sweep.py` | V2.5 discriminating test for FileNotFoundError + OSError branches (defense-in-depth coverage) |
 | `tracemalloc` stopped in `run.py` finally block; peak captured on sweep success only (sweep exception path gets `peak=0`) | `run.py:db6b45f` fix | V2.5: always call `tracemalloc.get_traced_memory()` before stop for accurate failure-path peak reporting |
 
+### Known limitations of V2 baseline-parity claims (v0.2.1 addendum 2026-05-24)
+
+Two post-ship architectural findings surfaced during operator-paired V2 OHLCV harness output review 2026-05-23 → 2026-05-24 (V2 evaluator confirmed CORRECT in both; both findings concern V1/V2 parity-comparison architecture rather than V2 evaluator semantics). Banked as named Limitations L4 + L5 for forward-binding reference + future V2-vs-V1 parity harness designs.
+
+**Limitation L4: Parallel-archive freshness desync between Shape A and legacy archives can invalidate V2 baseline-parity claims at per-ticker boundary dates.**
+
+V2's OHLCV reader consumes Shape A (`{T}.yfinance.parquet`) per OQ-18 LOCK; V1's `read_or_fetch_archive` consumes via the legacy/ladder path. When the two archive paths refresh asynchronously (legacy refresh at pipeline run time; Shape A refresh via `resolve_ohlcv_window` at separate cadence), per-ticker freshness can diverge at boundary dates. V2 baseline-parity claims are invalidated for any candidate whose eval_run lands on a date where Shape A is stale relative to legacy.
+
+Documented direct evidence: DK:62 investigation 2026-05-23 → 2026-05-24 (merge `4afab36`; investigation doc at `docs/v2-dk62-criterion-drift-investigation.md`). DK Shape A mtime 2026-05-21 07:39 (last bar 2026-05-20 Close=44.59); DK legacy mtime 2026-05-21 20:28 (last bar 2026-05-21 Close=42.10 a -5.7% intraday drop). V1 evaluated with the boundary bar (bucket=skip canonical); V2 read stale Shape A (2 criterion flips TT5_above_50 + proximity_20ma promote skip→watch incorrectly). Drift scope ISOLATED to DK:62 (3 both-exist tickers cache-wide AESI/DK/PL; only DK Shape A stale; only eval_run 62 lands on the missing boundary date).
+
+Remediation D.1 (operator-paired; executed 2026-05-24): refresh Shape A for the 3 both-exist tickers (AESI/DK/PL) via `resolve_ohlcv_window`. DK Shape A refreshed (mtime May 21 07:39 → May 24 06:06; 1260 → 1262 rows; 2026-05-21 boundary bar now present); AESI + PL Shape A already current (idempotency-skipped). V2 smoke re-run at `exports/diagnostics/aplus-sensitivity-v2-20260524T162641Z.{csv,md}` confirmed DK:62 RESOLVED ✓ (no longer in CRITERION DRIFT list; tier-2 also dramatically improved 75/45 → 10/0).
+
+Honored by CLAUDE.md cumulative gotcha #24 (parallel-archive freshness desync; BINDING for 34th cumulative validation onwards). Banked V2.5/V3 candidate (D.4): V2 reader "prefer-fresher of (Shape A, legacy)" by mtime tiebreaker — preserves OQ-18 Shape A primacy as default but adds runtime freshness gate. Both-exist banner copy at `research/harness/aplus_v2_ohlcv_evaluator/output.py:225-228` warns the operator when both archives exist for a ticker (current behavior; banked as candidate to extend with mtime-asymmetry detail).
+
+**Limitation L5: V2 baseline-parity comparison MUST filter V1 pre-evaluation-excluded candidates (sentinel-bucket parity-comparison discipline).**
+
+V1 production pipeline at `swing/pipeline/runner.py:1105-1141` SHORT-CIRCUITS criterion evaluation for two excluded-ticker classes:
+- Open positions in `held_set` (read from journal trades; `notes='open position'`)
+- ETF/fund blocklist in `cfg.etf_exclusion.manual_block` (`notes='ETF/fund blocklist'`)
+
+V1 writes `Candidate(bucket='excluded', criteria=(), notes='open position'|'ETF/fund blocklist', rs_method='unavailable', rs_rank=None, ...)` directly without invoking `evaluate_batch`. V2's `evaluate_one(ctx)` produces a `Candidate` from `bucket_for(...)` at `swing/evaluation/scoring.py:13-39` which returns only `{'aplus', 'watch', 'skip'}` — never `'excluded'`. Naive baseline-parity comparison flags every persisted-bucket='excluded' candidate as tier-1 drift false-positive.
+
+Same architectural argument applies to V1's `bucket='error'` sentinel at `swing/pipeline/runner.py:1142-1149` (OHLCV-fetch-failure path); V2 cannot reproduce `'error'` either (errors raise exceptions, not bucket return values). Defense-in-depth requires filtering both sentinel-bucket classes.
+
+Documented direct evidence: DHC/UCO/VSAT × eval_runs 60-64 investigation 2026-05-24 (merge `d7cdd51`; investigation doc at `docs/v2-dhc-uco-vsat-drift-investigation-2026-05-24.md`). 15 false-positive tier-1 baseline-parity drift entries surfaced after Codex R1.C1 fix re-classified `classify_candidate_tier(None)` from tier-2 to tier-1 (the excluded candidates have `risk_result=None` because `criteria=()` yields 0 `candidate_criteria` rows). Decisive counter-test passed for DHC:60 / UCO:62 / VSAT:64 — V2 reproducer returns skip/watch/skip matching smoke artifact exactly when invoked directly on these candidates; **V2 evaluator is CORRECT**. Drift scope SYSTEMIC across open-position + ETF-blocklist populations (DHC/VSAT open trades; UCO sole ETF blocklist entry); ~100-200 entries projected at full 63-eval-run reproduction (linear in `|held_set ∪ etf_exclusion.manual_block|`).
+
+Remediation Option A (LOCKED + SHIPPED 2026-05-24 at merge `b7f70ff`): 1-line filter `if cand_row.persisted_bucket in {"excluded", "error"}: continue` at top of `_compute_baseline_parity`'s per-candidate loop in `research/harness/aplus_v2_ohlcv_evaluator/sweep.py:545-557`. 3 NEW discriminating tests at `tests/research/test_aplus_v2_ohlcv_sweep.py` (open-position-and-blocklist + error-bucket + negative-control). V2 smoke re-run at `exports/diagnostics/aplus-sensitivity-v2-20260524T181554Z.{csv,md}` confirms Tier-1 FULL PASS (15 false-positive entries → 0; CRITERION DRIFT DETECTED section OMITTED entirely; tier-2 unchanged at 10/0). ZERO production swing/ writes; ZERO V1 code changes; preserves L2 LOCK + V2 evaluator unchanged.
+
+Honored by CLAUDE.md cumulative gotcha #25 (sentinel-bucket parity-comparison discipline; first canonical application is this Option A fix). Banked V2 candidates (D.4): (a) Fix #3 per-variable drill-down COUNT filter for excluded candidates (matrix-count behavior remains operator-visible; default recommendation FILTER per investigation §9.3; flip-recording is already transitively prevented via `baseline_bucket_map.get is None` guard at `sweep.py:419-420`); (b) sentinel-bucket parity-comparison discipline as research-branch BINDING template for any future V1-vs-V2 parity harness (criterion / scoring / bucket comparison).
+
 ## Promotion criteria (research -> shadow -> production)
 
 Per OQ-8 RECOMMEND + V2.1 §IV.D + §VII.C lifecycle posture:
 
 **research -> shadow**:
 
-1. V2 OHLCV harness shipped + baseline parity invariant green per spec §E.4 (SATISFIED at V2 ship 2026-05-23).
+1. V2 OHLCV harness shipped + baseline parity invariant green per spec §E.4 (SATISFIED at V2 ship 2026-05-23; REINFORCED 2026-05-24 via L4 remediation D.1 Shape A refresh + L5 remediation Option A sentinel-bucket filter at merge `b7f70ff`; smoke at `exports/diagnostics/aplus-sensitivity-v2-20260524T181554Z.{csv,md}` Tier-1 FULL PASS).
 2. At least 1 V2 study writeup published (SATISFIED: `research/studies/2026-05-23-v2-ohlcv-criterion-evaluator.md`).
-3. AT LEAST ONE binding threshold variable identified OR all 15 declared non-binding with operator-paired sign-off (PENDING: operator must run V2 against `~/swing-data/swing.db` and review findings).
+3. AT LEAST ONE binding threshold variable identified OR all 15 declared non-binding with operator-paired sign-off (PENDING: full 63-eval-run reproduction UNBLOCKED post-Option-A; operator runs V2 against `~/swing-data/swing.db` and reviews findings).
 
 **shadow -> production**:
 
