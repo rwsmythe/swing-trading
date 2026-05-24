@@ -545,16 +545,19 @@ def _compute_baseline_parity(
         for cand_row, _rid in run_cands:
             # Sentinel-bucket filter (CLAUDE.md gotcha #25; investigation at
             # docs/v2-dhc-uco-vsat-drift-investigation-2026-05-24.md Section 5.1).
-            # V1 production at swing/pipeline/runner.py:1105-1141 short-circuits
-            # criterion evaluation for open positions (held_set) + ETF/fund
-            # blocklist (cfg.etf_exclusion.manual_block), writing
-            # Candidate(bucket='excluded', criteria=(), ...) directly. V2's
-            # evaluate_one cannot produce 'excluded' (bucket_for at
-            # swing/evaluation/scoring.py:13-39 returns only {aplus, watch, skip}).
-            # Naive comparison flags every excluded candidate as tier-1 drift
-            # false-positive; skip these from baseline parity (mismatch is
+            # V1 production writes two sentinel buckets that V2's evaluate_one
+            # cannot reproduce (bucket_for at swing/evaluation/scoring.py:13-39
+            # returns only {aplus, watch, skip}):
+            #   - bucket='excluded' at swing/pipeline/runner.py:1105-1141 for
+            #     open positions (held_set) + ETF/fund blocklist
+            #     (cfg.etf_exclusion.manual_block); V1 short-circuits criterion
+            #     evaluation entirely.
+            #   - bucket='error' at swing/pipeline/runner.py:1142-1149 for
+            #     OHLCV fetch failures (error_tickers); same short-circuit.
+            # Naive comparison flags every such candidate as tier-1 drift
+            # false-positive; skip these from baseline parity (the mismatch is
             # architecturally guaranteed, not a real V1<->V2 drift).
-            if cand_row.persisted_bucket == "excluded":
+            if cand_row.persisted_bucket in {"excluded", "error"}:
                 continue
 
             ticker = cand_row.ticker

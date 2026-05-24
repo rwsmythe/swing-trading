@@ -2004,3 +2004,84 @@ def test_baseline_parity_filters_persisted_excluded_open_position_and_blocklist(
         f"Got tier1_match={result.baseline_parity.tier1_match}, "
         f"mismatch_candidates={result.baseline_parity.tier1_mismatch_candidates}."
     )
+
+
+def test_baseline_parity_filters_persisted_error_bucket(tmp_path):
+    """V2 baseline parity MUST also filter persisted bucket='error' candidates.
+
+    V1 production at swing/pipeline/runner.py:1142-1149 writes
+    Candidate(bucket='error', criteria=(), notes='OHLCV fetch failed', ...)
+    for tickers in error_tickers (OHLCV fetch failures during _step_evaluate).
+
+    Same architectural argument as bucket='excluded' (gotcha #25 + investigation
+    Section 4.5 V2 candidate #3 + Section 9 open question #2): V2's evaluate_one
+    cannot produce 'error' (bucket_for returns only {aplus, watch, skip});
+    errors are handled via raised exceptions, not return values. The error
+    candidate's criteria=() means risk_result=None -> tier-1 per Codex R1.C1.
+    Naive comparison would flag every error candidate as tier-1 drift
+    false-positive (same failure mode as 'excluded').
+
+    Defense-in-depth: even with no current error candidates in operator's
+    eval_runs 60-64, future OHLCV fetch failures would surface the same
+    false-positive class without this filter.
+    """
+    db_path = _build_test_db(tmp_path)
+    _seed_eval_run(db_path, 1, "2026-04-30")
+
+    # Plant 100 universe tickers + SPY for RS universe construction
+    universe_tickers = [f"ZZU{i:03d}" for i in range(100)]
+    for t in universe_tickers:
+        _make_shape_a_parquet(tmp_path / f"{t}.yfinance.parquet", n_bars=250)
+    _make_shape_a_parquet(
+        tmp_path / "SPY.yfinance.parquet", n_bars=250, sentinel_close=500.0
+    )
+
+    # OHLCV fetch failed candidate (mirrors V1 production shape:
+    # bucket='error', criteria=() -> risk_feasibility_result=None,
+    # notes='OHLCV fetch failed' per swing/pipeline/runner.py:1148).
+    # Plant the parquet so V2's reader can still read bars (the production
+    # error here was upstream OHLCV fetch; V2 reading the cached parquet would
+    # succeed and recompute a non-'error' bucket -- exactly the false-positive
+    # class this filter defends against).
+    _make_shape_a_parquet(tmp_path / "ZZERR1.yfinance.parquet", n_bars=250)
+    _seed_candidate(
+        db_path, eval_run_id=1, ticker="ZZERR1", bucket="error",
+        risk_feasibility_result=None, notes="OHLCV fetch failed",
+    )
+
+    universe_csv = _make_universe_csv(tmp_path, universe_tickers)
+    cfg = _cfg_with_universe(universe_csv)
+
+    cfg_obj = Config.from_defaults()
+    current_rs_rank = cfg_obj.rs.rs_rank_min_pass
+    var = _make_variable(
+        "rs.rs_rank_min_pass", current_value=current_rs_rank,
+        sweep_points=(current_rs_rank,),
+    )
+
+    from research.harness.aplus_v2_ohlcv_evaluator.sweep import run_v2_sweep
+
+    conn = sqlite3.connect(str(db_path))
+    result = run_v2_sweep(
+        conn,
+        variables=(var,),
+        cfg=cfg,
+        cache_dir=tmp_path,
+        eval_runs_window=5,
+        min_universe_size=50,
+    )
+    conn.close()
+
+    # DISCRIMINATING: error candidate MUST NOT appear in tier1_mismatch_candidates.
+    mismatch_set = set(result.baseline_parity.tier1_mismatch_candidates)
+    assert "ZZERR1:1" not in mismatch_set, (
+        "V2 baseline parity must FILTER persisted bucket='error' candidates "
+        "(CLAUDE.md gotcha #25; investigation 2026-05-24 Section 4.5 V2 #3). "
+        f"Error candidate leaked into tier1_mismatch_candidates: "
+        f"{result.baseline_parity.tier1_mismatch_candidates}."
+    )
+    assert result.baseline_parity.tier1_match is True, (
+        "Tier-1 parity must be PASS when only error candidates exist. "
+        f"Got tier1_match={result.baseline_parity.tier1_match}, "
+        f"mismatch_candidates={result.baseline_parity.tier1_mismatch_candidates}."
+    )
