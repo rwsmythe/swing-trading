@@ -272,7 +272,7 @@ resolution:
    after `load_universe` (which already calls `sorted(set(...))` internally).
    The V2 duplicate pass is defense-in-depth against a future contract change
    in `load_universe`; it is inert on current production files because
-   `load_universe` pre-dedupletes. V2.5 candidate: validate raw file rows
+   `load_universe` pre-deduplicates. V2.5 candidate: validate raw file rows
    before `load_universe` to surface duplicates at the CSV-read boundary
    rather than post-load.
 
