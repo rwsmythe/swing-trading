@@ -1498,3 +1498,216 @@ def test_flipped_candidate_has_variable_name_field():
     assert fc_var.variable_name == "rs.rs_rank_min_pass", (
         "Per-variable FlippedCandidate must carry variable_name"
     )
+
+
+# ---------------------------------------------------------------------------
+# (24) Per-variable drill-down records flipped candidates (Codex R3.M1)
+# ---------------------------------------------------------------------------
+
+def test_per_variable_drilldown_records_flipped_candidate(tmp_path):
+    """Codex R3.M1 discriminating test: per-variable drill-down must list
+    candidates that change bucket from baseline when a threshold is swept.
+
+    Pre-fix: the variable loop only computed aggregate counts (aplus_count /
+    watch_count / etc.) but never called _record_flip for any (variable,
+    sweep_point). result.flipped only contained baseline-parity flips
+    (variable_name=None). Per-variable drill-down rendered '(none)' for every
+    variable even when delta_aplus proved candidates changed buckets.
+
+    Post-fix: when a candidate's bucket at (variable, sweep_point) differs from
+    its baseline bucket, _record_flip is called with variable_name=var.name.
+    The flip appears in result.flipped with variable_name set AND in the
+    per-variable drill-down section in the markdown.
+
+    Test strategy: monkeypatch evaluate_one to return controllable buckets:
+      - at current_value (baseline and variable current-point): return 'skip'
+      - at sweep_point != current_value: return 'aplus'
+    This guarantees the candidate flips for variable 'rs.rs_rank_min_pass'
+    at sweep_point=60. The baseline bucket is 'skip' (persisted). The sweep
+    at current_value=70 also returns 'skip' (matches baseline). At sp=60,
+    returns 'aplus' -> flip recorded with variable_name='rs.rs_rank_min_pass'.
+    """
+    db_path = _build_test_db(tmp_path)
+    _seed_eval_run(db_path, 1, "2026-04-30")
+
+    universe_tickers = [f"ZZU{i:03d}" for i in range(100)]
+    for t in universe_tickers:
+        _make_shape_a_parquet(tmp_path / f"{t}.yfinance.parquet", n_bars=250)
+    _make_shape_a_parquet(tmp_path / "SPY.yfinance.parquet", n_bars=250, sentinel_close=500.0)
+
+    # Candidate: persisted bucket='skip'
+    _make_shape_a_parquet(tmp_path / "ZZFLIP1.yfinance.parquet", n_bars=250)
+    _seed_candidate(db_path, eval_run_id=1, ticker="ZZFLIP1", bucket="skip",
+                    risk_feasibility_result="pass")
+
+    universe_csv = _make_universe_csv(tmp_path, universe_tickers)
+    cfg = _cfg_with_universe(universe_csv)
+    cfg_obj = Config.from_defaults()
+    current_val = cfg_obj.rs.rs_rank_min_pass  # e.g. 70
+
+    # Two sweep_points: one non-current (60) and one current (current_val)
+    var = _make_variable(
+        "rs.rs_rank_min_pass", kind="threshold_additive",
+        current_value=current_val, sweep_points=(60, current_val),
+    )
+
+    from research.harness.aplus_v2_ohlcv_evaluator import sweep as sweep_mod
+
+    original_evaluate = sweep_mod.evaluate_one
+
+    def _controlled_evaluate(ctx):
+        # At current cfg value -> 'skip' (matches persisted; no flip)
+        # At a non-current substituted value -> 'aplus' (flip from baseline 'skip')
+        rs_rank = ctx.config.rs.rs_rank_min_pass
+        mock = MagicMock()
+        if rs_rank == current_val:
+            mock.bucket = "skip"
+        else:
+            mock.bucket = "aplus"
+        # Provide criteria for _apply_watch_max_fails_override paths (unused here)
+        mock.criteria = ()
+        return mock
+
+    sweep_mod.evaluate_one = _controlled_evaluate
+    try:
+        from research.harness.aplus_v2_ohlcv_evaluator.sweep import run_v2_sweep
+        conn = sqlite3.connect(str(db_path))
+        result = run_v2_sweep(
+            conn,
+            variables=(var,),
+            cfg=cfg,
+            cache_dir=tmp_path,
+            eval_runs_window=5,
+            min_universe_size=50,
+        )
+        conn.close()
+    finally:
+        sweep_mod.evaluate_one = original_evaluate
+
+    # DISCRIMINATING: at least one FlippedCandidate with variable_name set
+    # (not None) for this variable must appear in result.flipped.
+    per_var_flips = [
+        fc for fc in result.flipped
+        if fc.variable_name == "rs.rs_rank_min_pass"
+    ]
+    assert len(per_var_flips) >= 1, (
+        f"Expected at least one FlippedCandidate with variable_name="
+        f"'rs.rs_rank_min_pass' in result.flipped, got 0. "
+        f"All flips: {result.flipped}. "
+        "Per-variable drill-down must record bucket changes vs baseline."
+    )
+
+    # The flip must show ZZFLIP1 going from 'skip' to 'aplus'
+    flip = per_var_flips[0]
+    assert flip.ticker == "ZZFLIP1", (
+        f"Expected flip for ZZFLIP1, got ticker={flip.ticker!r}"
+    )
+    assert flip.old_bucket == "skip", (
+        f"Expected old_bucket='skip' (persisted), got {flip.old_bucket!r}"
+    )
+    assert flip.new_bucket == "aplus", (
+        f"Expected new_bucket='aplus' (swept value), got {flip.new_bucket!r}"
+    )
+    assert flip.sweep_point == 60, (
+        f"Expected sweep_point=60 (the non-current point), got {flip.sweep_point!r}"
+    )
+
+
+def test_per_variable_drilldown_isolates_flip_to_correct_variable(tmp_path):
+    """Codex R3.M1 discriminating test: per-variable flip isolation.
+
+    When a candidate flips on variable B (at its non-current sweep_point)
+    but NOT on variable A (all sweep_points produce the same bucket), the
+    flip must appear under variable B's drill-down only, NOT under A's.
+
+    Two variables:
+      var_a: rs.rs_rank_min_pass, sweep_points=(current_val,) only
+             -> controlled_evaluate always returns 'skip' for rs sweeps
+             -> no flip recorded for var_a
+      var_b: trend_template.min_passes, sweep_points=(3, current_val_tt)
+             -> controlled_evaluate returns 'aplus' at sp=3, 'skip' otherwise
+             -> flip recorded for var_b at sp=3 only
+
+    Assert:
+      - result.flipped has at least one FlippedCandidate with
+        variable_name='trend_template.min_passes'
+      - result.flipped has NO FlippedCandidate with variable_name='rs.rs_rank_min_pass'
+    """
+    db_path = _build_test_db(tmp_path)
+    _seed_eval_run(db_path, 1, "2026-04-30")
+
+    universe_tickers = [f"ZZU{i:03d}" for i in range(100)]
+    for t in universe_tickers:
+        _make_shape_a_parquet(tmp_path / f"{t}.yfinance.parquet", n_bars=250)
+    _make_shape_a_parquet(tmp_path / "SPY.yfinance.parquet", n_bars=250, sentinel_close=500.0)
+
+    _make_shape_a_parquet(tmp_path / "ZZISO1.yfinance.parquet", n_bars=250)
+    _seed_candidate(db_path, eval_run_id=1, ticker="ZZISO1", bucket="skip",
+                    risk_feasibility_result="pass")
+
+    universe_csv = _make_universe_csv(tmp_path, universe_tickers)
+    cfg = _cfg_with_universe(universe_csv)
+    cfg_obj = Config.from_defaults()
+
+    current_rs = cfg_obj.rs.rs_rank_min_pass
+    current_tt = cfg_obj.trend_template.min_passes
+
+    # var_a: only the current_value sweep_point (no flip opportunity)
+    var_a = _make_variable(
+        "rs.rs_rank_min_pass", kind="threshold_additive",
+        current_value=current_rs, sweep_points=(current_rs,),
+    )
+    # var_b: sp=3 (non-current) + current_val_tt (current)
+    var_b = _make_variable(
+        "trend_template.min_passes", kind="gate",
+        current_value=current_tt, sweep_points=(3, current_tt),
+    )
+
+    from research.harness.aplus_v2_ohlcv_evaluator import sweep as sweep_mod
+
+    original_evaluate = sweep_mod.evaluate_one
+
+    def _controlled_evaluate(ctx):
+        tt_passes = ctx.config.trend_template.min_passes
+        mock = MagicMock()
+        # Only flip on trend_template.min_passes when it's very low (sp=3)
+        if tt_passes == 3:
+            mock.bucket = "aplus"
+        else:
+            mock.bucket = "skip"
+        mock.criteria = ()
+        return mock
+
+    sweep_mod.evaluate_one = _controlled_evaluate
+    try:
+        from research.harness.aplus_v2_ohlcv_evaluator.sweep import run_v2_sweep
+        conn = sqlite3.connect(str(db_path))
+        result = run_v2_sweep(
+            conn,
+            variables=(var_a, var_b),
+            cfg=cfg,
+            cache_dir=tmp_path,
+            eval_runs_window=5,
+            min_universe_size=50,
+        )
+        conn.close()
+    finally:
+        sweep_mod.evaluate_one = original_evaluate
+
+    # Flip must appear ONLY under var_b, NOT under var_a
+    var_a_flips = [fc for fc in result.flipped if fc.variable_name == "rs.rs_rank_min_pass"]
+    var_b_flips = [fc for fc in result.flipped if fc.variable_name == "trend_template.min_passes"]
+
+    assert len(var_a_flips) == 0, (
+        f"Expected no flips for rs.rs_rank_min_pass (only current_value sweep_point). "
+        f"Got {var_a_flips}"
+    )
+    assert len(var_b_flips) >= 1, (
+        f"Expected at least one flip for trend_template.min_passes at sp=3. "
+        f"Got {var_b_flips}. "
+        f"All flips: {result.flipped}"
+    )
+    # The var_b flip must be at sweep_point=3
+    assert var_b_flips[0].sweep_point == 3, (
+        f"Expected flip at sweep_point=3, got {var_b_flips[0].sweep_point!r}"
+    )

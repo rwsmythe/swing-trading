@@ -324,7 +324,10 @@ def run_v2_sweep(
     # Pre-fix: parity was tracked inside the variable loop at is_current_point,
     # causing baseline_tier_1_count / tier2_* to be inflated by N_variables
     # (each variable's current_value sweep_point re-tallied the same candidates).
-    baseline_parity = _compute_baseline_parity(
+    # Codex R3.M1: also returns baseline_bucket_map + baseline_surrogate_map so
+    # the variable loop can detect per-candidate bucket changes vs baseline and
+    # record flips with variable_name=var.name.
+    baseline_parity, baseline_bucket_map, baseline_surrogate_map = _compute_baseline_parity(
         candidate_rows_with_run=candidate_rows_with_run,
         eval_runs=eval_runs,
         by_run=by_run,
@@ -406,6 +409,26 @@ def run_v2_sweep(
                     else:
                         skip_count += 1
 
+                    # Per-candidate flip detection vs baseline (Codex R3.M1).
+                    # Skip at is_current_point: the current_value bucket should
+                    # match the baseline_bucket_map entry (same cfg, same candidate).
+                    # Recording would produce spurious zero-delta flips.
+                    # Only record flips at non-current sweep_points.
+                    if not is_current_point:
+                        cand_key = (run_id, cand_row.candidate_id)
+                        baseline_bucket = baseline_bucket_map.get(cand_key)
+                        if baseline_bucket is not None and bucket != baseline_bucket:
+                            via_surrogate = baseline_surrogate_map.get(cand_key, False)
+                            _record_flip(
+                                flipped,
+                                cand_row=cand_row,
+                                run_id=run_id,
+                                sweep_point=sweep_point,
+                                new_bucket=bucket,
+                                via_surrogate=via_surrogate,
+                                variable_name=var.name,
+                            )
+
             sub_entries.append(SweepEntryV2(
                 variable_name=var.name,
                 kind=var.kind,
@@ -476,7 +499,7 @@ def _compute_baseline_parity(
     flipped: list[FlippedCandidate],
     ohlcv_getter: object,
     cohort_getter: object,
-) -> BaselineParityReport:
+) -> tuple[BaselineParityReport, dict[tuple[int, int], str], dict[tuple[int, int], bool]]:
     """Compute baseline parity ONCE using unsubstituted cfg.
 
     Codex R1.M2 RESOLVED: baseline parity was computed inside the per-variable
@@ -486,7 +509,13 @@ def _compute_baseline_parity(
     This helper runs ONE pass over all candidates with original cfg (no
     substitution) and produces the TRUE single-invocation baseline counts.
 
-    Returns a BaselineParityReport with accurate (non-inflated) counts.
+    Codex R3.M1: also returns two maps used by the variable loop for per-
+    candidate flip detection:
+      baseline_bucket_map: (eval_run_id, candidate_id) -> baseline bucket string
+      baseline_surrogate_map: (eval_run_id, candidate_id) -> via_surrogate bool
+
+    Returns:
+      (BaselineParityReport, baseline_bucket_map, baseline_surrogate_map)
     """
     # Use a dummy variable-like context: evaluate with cfg unchanged.
     # We reuse _evaluate_candidate_under_sweep with a sentinel variable that
@@ -503,6 +532,10 @@ def _compute_baseline_parity(
     tier2_via_surrogate_count = 0
     baseline_tier_1_count = 0
     baseline_tier_2_count = 0
+
+    # Codex R3.M1: per-candidate baseline bucket + surrogate maps
+    baseline_bucket_map: dict[tuple[int, int], str] = {}
+    baseline_surrogate_map: dict[tuple[int, int], bool] = {}
 
     for run_id, _asof_date in eval_runs:
         cohort = cohort_getter(run_id, baseline_horizon)
@@ -542,11 +575,17 @@ def _compute_baseline_parity(
 
             bucket = candidate.bucket
             tier = classify_candidate_tier(cand_row.persisted_risk_result)
+            via_surrogate = cohort.current_equity_via_surrogate
 
             if tier == 1:
                 baseline_tier_1_count += 1
             else:
                 baseline_tier_2_count += 1
+
+            # Populate per-candidate maps for variable-loop flip detection (Codex R3.M1)
+            cand_key = (run_id, cand_row.candidate_id)
+            baseline_bucket_map[cand_key] = bucket
+            baseline_surrogate_map[cand_key] = via_surrogate
 
             if cand_row.persisted_bucket != bucket:
                 _record_flip(
@@ -555,7 +594,7 @@ def _compute_baseline_parity(
                     run_id=run_id,
                     sweep_point=cfg.rs.rs_rank_min_pass,  # type: ignore[union-attr]
                     new_bucket=bucket,
-                    via_surrogate=cohort.current_equity_via_surrogate,
+                    via_surrogate=via_surrogate,
                     variable_name=None,  # Codex R2.M2: baseline-parity flip
                 )
                 if tier == 1:
@@ -565,17 +604,21 @@ def _compute_baseline_parity(
             else:
                 if tier == 2:
                     tier2_match_count += 1
-                    if cohort.current_equity_via_surrogate:
+                    if via_surrogate:
                         tier2_via_surrogate_count += 1
 
-    return BaselineParityReport(
-        tier1_match=(len(tier1_mismatch_keys) == 0),
-        tier1_mismatch_candidates=tuple(tier1_mismatch_keys),
-        tier2_match_count=tier2_match_count,
-        tier2_mismatch_count=tier2_mismatch_count,
-        tier2_via_surrogate_count=tier2_via_surrogate_count,
-        tier_1_count=baseline_tier_1_count,
-        tier_2_count=baseline_tier_2_count,
+    return (
+        BaselineParityReport(
+            tier1_match=(len(tier1_mismatch_keys) == 0),
+            tier1_mismatch_candidates=tuple(tier1_mismatch_keys),
+            tier2_match_count=tier2_match_count,
+            tier2_mismatch_count=tier2_mismatch_count,
+            tier2_via_surrogate_count=tier2_via_surrogate_count,
+            tier_1_count=baseline_tier_1_count,
+            tier_2_count=baseline_tier_2_count,
+        ),
+        baseline_bucket_map,
+        baseline_surrogate_map,
     )
 
 
