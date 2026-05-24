@@ -1375,3 +1375,126 @@ def test_ohlcv_cache_shared_with_cohort_builder_via_ohlcv_getter(tmp_path):
         "sweep.py must pass ohlcv_getter=_get_ohlcv to share the per-ticker cache "
         "(Codex R1.M3 Option A: dependency injection)"
     )
+
+
+# ---------------------------------------------------------------------------
+# (22) Codex R2.M1 discriminating: max_runtime_seconds cap applies AFTER
+#      baseline parity (Option B: documented semantic -- Codex R2.M1 fix)
+# ---------------------------------------------------------------------------
+
+def test_runtime_cap_applied_after_baseline_parity_completes(tmp_path):
+    """Codex R2.M1 discriminating test: max_runtime_seconds cap is applied
+    at variable-loop boundaries, NOT before _compute_baseline_parity.
+
+    Semantic (Option B): baseline parity is 'mandatory setup work'.
+    Even with a near-zero runtime cap, baseline_parity in the result is a
+    fully-populated BaselineParityReport (never None, never empty sentinel).
+    The cap causes truncated_by_runtime_cap=True for the variable loop.
+
+    Pre-condition check: docstring for run_v2_sweep states that
+    max_runtime_seconds applies after baseline parity setup work.
+    """
+    from research.harness.aplus_v2_ohlcv_evaluator.sweep import run_v2_sweep
+
+    db_path = _build_test_db(tmp_path)
+    _seed_eval_run(db_path, 1, "2026-04-30")
+
+    universe_tickers = [f"ZZR2M{i:03d}" for i in range(60)]
+    for t in universe_tickers:
+        _make_shape_a_parquet(tmp_path / f"{t}.yfinance.parquet", n_bars=250)
+    _make_shape_a_parquet(tmp_path / "SPY.yfinance.parquet", n_bars=250, sentinel_close=500.0)
+
+    _make_shape_a_parquet(tmp_path / "ZZRCA.yfinance.parquet", n_bars=250)
+    _seed_candidate(db_path, eval_run_id=1, ticker="ZZRCA", bucket="aplus",
+                   risk_feasibility_result="pass")
+
+    universe_csv = _make_universe_csv(tmp_path, universe_tickers)
+    cfg = _cfg_with_universe(universe_csv)
+    cfg_obj = Config.from_defaults()
+
+    variables = (
+        _make_variable("rs.rs_rank_min_pass", current_value=cfg_obj.rs.rs_rank_min_pass,
+                       sweep_points=(cfg_obj.rs.rs_rank_min_pass,)),
+    )
+
+    conn = sqlite3.connect(str(db_path))
+    # Set near-zero cap (0.0001s) so variable loop is truncated immediately.
+    result = run_v2_sweep(
+        conn,
+        variables=variables,
+        cfg=cfg,
+        cache_dir=tmp_path,
+        eval_runs_window=5,
+        min_universe_size=50,
+        max_runtime_seconds=0.0001,
+    )
+    conn.close()
+
+    # The result MUST have a fully-populated baseline_parity (not None).
+    # baseline_parity is the mandatory setup work -- it always completes.
+    assert result.baseline_parity is not None, (
+        "baseline_parity must not be None even when max_runtime_seconds is nearly zero. "
+        "The runtime cap applies after baseline parity (Option B semantic)."
+    )
+    # The cap causes truncation of the variable loop
+    assert result.truncated_by_runtime_cap is True, (
+        "Expected truncated_by_runtime_cap=True with near-zero cap, "
+        f"got truncated_by_runtime_cap={result.truncated_by_runtime_cap}. "
+        "The sweep must have started variable-loop processing before truncating."
+    )
+
+
+# ---------------------------------------------------------------------------
+# (23) Codex R2.M2 discriminating: FlippedCandidate.variable_name field
+#      + baseline-parity flips stored with variable_name=None sentinel
+# ---------------------------------------------------------------------------
+
+def test_flipped_candidate_has_variable_name_field():
+    """Codex R2.M2 discriminating test (unit): FlippedCandidate dataclass
+    has a variable_name field typed as str | None.
+
+    Pre-fix: FlippedCandidate has no variable_name field.
+    Post-fix: FlippedCandidate.variable_name present; per-variable flips set
+    variable_name to the variable name string; baseline-parity flips set None.
+    """
+    import dataclasses
+
+    from research.harness.aplus_v2_ohlcv_evaluator.sweep import FlippedCandidate
+
+    field_names = [f.name for f in dataclasses.fields(FlippedCandidate)]
+    assert "variable_name" in field_names, (
+        f"FlippedCandidate must have a 'variable_name' field. "
+        f"Current fields: {field_names}"
+    )
+
+    # Baseline-parity flip: variable_name=None
+    fc_baseline = FlippedCandidate(
+        ticker="AAPL",
+        eval_run_id=1,
+        data_asof_date="2026-04-30",
+        sweep_point=70.0,
+        old_bucket="skip",
+        new_bucket="aplus",
+        old_criterion_failure="(none)",
+        bucket_via_surrogate=False,
+        variable_name=None,
+    )
+    assert fc_baseline.variable_name is None, (
+        "Baseline-parity FlippedCandidate must have variable_name=None"
+    )
+
+    # Per-variable flip: variable_name is set
+    fc_var = FlippedCandidate(
+        ticker="MSFT",
+        eval_run_id=2,
+        data_asof_date="2026-04-30",
+        sweep_point=70.0,
+        old_bucket="watch",
+        new_bucket="aplus",
+        old_criterion_failure="(none)",
+        bucket_via_surrogate=False,
+        variable_name="rs.rs_rank_min_pass",
+    )
+    assert fc_var.variable_name == "rs.rs_rank_min_pass", (
+        "Per-variable FlippedCandidate must carry variable_name"
+    )

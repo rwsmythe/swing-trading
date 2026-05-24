@@ -102,6 +102,10 @@ class FlippedCandidate:
         value=<v> rule=<r>') or '(none)' if old_bucket was already aplus.
       bucket_via_surrogate: per OQ-15 -- True when current_equity was a
         surrogate (no historical snapshot found at eval_run's asof_date).
+      variable_name: name of the SweepVariable that caused this flip (e.g.
+        'rs.rs_rank_min_pass'), or None for baseline-parity-derived flips.
+        Codex R2.M2: used by output.py to route flips to the correct section
+        (per-variable drill-down vs. dedicated baseline parity drift section).
     """
 
     ticker: str
@@ -112,6 +116,7 @@ class FlippedCandidate:
     new_bucket: str
     old_criterion_failure: str
     bucket_via_surrogate: bool
+    variable_name: str | None = None  # Codex R2.M2: None = baseline-parity flip
 
 
 @dataclass(frozen=True)
@@ -181,6 +186,14 @@ def run_v2_sweep(
         exceeds cap, sweep aborts mid-loop + sets truncated_by_runtime_cap=True
         on the returned result; partial entries are returned for variables
         completed so far.
+
+        Codex R2.M1 SEMANTIC (Option B -- documented): the cap is checked at
+        variable-loop + sweep-point boundaries ONLY. Baseline parity
+        (_compute_baseline_parity) is mandatory setup work and always completes
+        before the cap is applied; operators using the cap must budget for
+        baseline-parity time in addition to per-variable sweep time.
+        SweepResultV2.baseline_parity is always fully-populated even under
+        near-zero caps.
 
     Returns: SweepResultV2 with one SweepEntryV2 per (variable, sweep_point) +
       drill-down + baseline parity + diagnostics.
@@ -543,6 +556,7 @@ def _compute_baseline_parity(
                     sweep_point=cfg.rs.rs_rank_min_pass,  # type: ignore[union-attr]
                     new_bucket=bucket,
                     via_surrogate=cohort.current_equity_via_surrogate,
+                    variable_name=None,  # Codex R2.M2: baseline-parity flip
                 )
                 if tier == 1:
                     tier1_mismatch_keys.append(f"{ticker}:{run_id}")
@@ -650,8 +664,15 @@ def _record_flip(
     sweep_point: float | int,
     new_bucket: str,
     via_surrogate: bool,
+    variable_name: str | None,
 ) -> None:
-    """Append a FlippedCandidate record to flipped list."""
+    """Append a FlippedCandidate record to flipped list.
+
+    variable_name: name of the SweepVariable causing the flip, or None for
+      baseline-parity-derived flips (Codex R2.M2 fix). output.py uses this
+      to route flips to the correct section: per-variable drill-down vs.
+      dedicated '## V1<->V2 Baseline Parity Drift' section.
+    """
     # V1 stub: old_criterion_failure always '(none)'.
     # Computing the old criterion failure would require fetching the persisted
     # candidate_criteria rows for the old bucket from the DB (the persisted
@@ -668,6 +689,7 @@ def _record_flip(
         new_bucket=new_bucket,
         old_criterion_failure="(none)",
         bucket_via_surrogate=via_surrogate,
+        variable_name=variable_name,
     ))
 
 
