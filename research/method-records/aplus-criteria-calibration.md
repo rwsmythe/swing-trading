@@ -7,10 +7,11 @@ Phase 13 T4.SB Item 1; shipped under T-T4.SB.1.
 key: aplus-criteria-calibration
 name: A+ criteria parameter sensitivity calibration
 layer: ranking
-status: research
+status: shadow
 baseline_or_predecessor: internal (swing.evaluation.scoring.bucket_for current cfg)
-version: 0.2.2
+version: 0.3.0
 last_updated: 2026-05-24
+shadow_promoted: 2026-05-24 PM (per operator decision D1 post full-63-eval-run reproduction; 5 binding variables identified via V2 sensitivity matrix; 3 architectural limitations L4 + L5 + L6 documented; V2 evaluator correctness verified 3x via decisive counter-tests)
 ---
 
 # A+ criteria parameter sensitivity calibration

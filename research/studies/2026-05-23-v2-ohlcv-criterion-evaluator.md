@@ -1,11 +1,8 @@
 # Study: V2 OHLCV Criterion-Evaluator Sensitivity Sweep
 
-**Method record:** `../method-records/aplus-criteria-calibration.md`
-**Status:** harness shipped; implementer smoke run captured at
-`exports/diagnostics/aplus-sensitivity-v2-20260523T230131Z.{csv,md}`
-(5 eval_runs, partial -- 120s cap, 2/17 variables completed). Full
-63-eval-run operator run pending (see phase-0-tasks.md "Next").
-**Date:** 2026-05-23
+**Method record:** `../method-records/aplus-criteria-calibration.md` (v0.3.0; SHADOW status since 2026-05-24 PM)
+**Status:** harness shipped; **operator full 63-eval-run reproduction SHIPPED 2026-05-24 PM** at `exports/diagnostics/aplus-sensitivity-v2-20260524T205849Z.{csv,md}` (86 min runtime / not truncated / 63 eval_runs / 5666 candidates / 516 universe). **5 binding variables identified** (all VCP-family). Method-record SHADOW promoted per operator decision D1. **3 architectural limitations** documented (L4 parallel-archive freshness desync; L5 sentinel-bucket parity-comparison discipline; L6 archive bar-content TEMPORAL mutation); V2 evaluator correctness verified 3x via decisive counter-tests across DK:62 + DHC/UCO/VSAT + full-reproduction investigations.
+**Date:** 2026-05-23 (initial); 2026-05-24 PM (amended post-full-reproduction)
 **Author:** Applied Research arc (Path B LOCKED at `b4d7719`; first arc post-Phase-13-FULLY-CLOSED).
 
 ## Question
@@ -135,80 +132,79 @@ reads Shape A (wins per V2 design). The `both_exist_shape_a_wins_count` in the
 manifest enumerates affected tickers. When non-zero, the operator should
 verify the Shape A archive is the authoritative source for those tickers.
 
-**Implementer smoke run findings (partial; 5 eval_runs, 120s cap):**
+**Operator full 63-eval-run reproduction findings (AUTHORITATIVE; supersedes prior partial-smoke artifacts):**
 
-- Tier-1 match: FAIL (CRITERION DRIFT DETECTED at DK:62 -- 3 occurrences
-  across sweep points. DK was persisted as `aplus` or `watch` but V2
-  evaluate_one recomputed a different bucket. Operator action required:
-  verify whether DK's classification at eval_run 62 reflects a real
-  production criteria-drift or a known cfg/code divergence at that date.)
-- Tier-2 match count: 30 / Tier-2 mismatch count: 45 (non-blocking)
-- Tier-2 via surrogate count: 0 (all eval-runs had equity snapshots)
-- Both-exist: 16 occurrences (AESI + PL + DK -- accumulated across 5
-  eval_runs and 2 variables sweep. Operator should clean up stale
-  legacy parquet files for AESI, PL, DK from prices-cache directory.)
-- OHLCV coverage skips (global): 5 (FPS, PURR missing sufficient history)
-- Universe size: 516 tickers
+Smoke artifact: `exports/diagnostics/aplus-sensitivity-v2-20260524T205849Z.{csv,md}`.
 
-Full 63-eval-run findings pending operator manual re-run
-(see `exports/diagnostics/aplus-sensitivity-v2-<ISO>.md` after operator run).
+- Runtime: 5172.96s (~86 minutes; under 90-min `--max-runtime-seconds 5400` cap; **not truncated**).
+- Eval-runs window: 63 (ids 2..64; full S3 universe range since v20 detector chain landed).
+- Total candidates evaluated: 5666.
+- V2 universe size: 516 tickers (current S&P 500 snapshot per OQ-14 LOCK).
+- OHLCV coverage skips (global): 88.
+- Tier-2 match count: **120 / Tier-2 mismatch count: 0** (clean; tier-2 baseline parity fully consistent).
+- Tier-2 via surrogate count: 0.
+- Tier-1 match: **FAIL — 14 CRITERION DRIFT entries** (CNTA × 2 + ECVT + APLS × 3 + FTI × 2 + STNG × 3 + PL × 3; spanning eval_runs 6-43; NOT clustered at recent boundary). **Root-caused at investigation merge `c8f9612` (2026-05-24 PM)**: NEW H6 = OHLCV archive bar-content TEMPORAL mutation between V1's persistence time + V2's current-archive read time. V2 evaluator CORRECT given inputs; drift is data-input divergence at the ~0.5%-3% volume/range bar-mutation level. Investigation findings doc at `docs/v2-full-reproduction-drift-investigation-2026-05-24.md`. Characterized as **Limitation L6** in method-record v0.3.0 §"Known limitations of V2 baseline-parity claims".
+- Both-exist banner: 3 tickers (AESI, DK, PL) — unchanged from prior smokes; orthogonal to this study's binding-variable findings.
+
+**Critical caveat — V1↔V2 baseline parity at the criterion level**: V1's `candidate_criteria` rows are a frozen snapshot of OHLCV archive contents at original eval_run persistence time; V2 reads the CURRENT archive. Three architectural limitations characterize the V1↔V2 parity gap, each independently verified non-blocking for the sensitivity-analysis goal:
+
+- **L4** (parallel-archive freshness desync): cross-archive asymmetry between Shape A and legacy paths; remediated for the recent boundary via D.1 Shape A refresh 2026-05-24. CLAUDE.md gotcha #24.
+- **L5** (sentinel-bucket parity-comparison discipline): V1 short-circuit excluded/error buckets V2's `bucket_for` cannot reproduce; remediated via Option A filter at merge `b7f70ff` 2026-05-24. CLAUDE.md gotcha #25.
+- **L6** (archive bar-content TEMPORAL mutation): intervening pipeline runs overwrite historical bars when yfinance returns slightly different values; remediation = characterize as method-record limitation (this writeup includes caveat language; ZERO V1 code changes). CLAUDE.md gotcha #26. Banked V2.5/V3 candidate: immutable archive snapshot before V2 run.
+
+All 3 limitations independently verified non-blocking via decisive counter-tests confirming V2 evaluator correctness given inputs.
 
 ## Per-variable findings
 
-**Caveat:** Rows marked with partial-smoke data below are from the
-implementer's 5-eval-run partial smoke run (120s cap, 2/17 variables
-completed; `exports/diagnostics/aplus-sensitivity-v2-20260523T230131Z.csv`).
-The 5-eval-run subset covers eval_run_ids 60..64 (351 candidates total,
-from 516-ticker universe). These are directionally informative but
-NOT the authoritative full-run answer.
+**Source:** operator's full 63-eval-run reproduction at `exports/diagnostics/aplus-sensitivity-v2-20260524T205849Z.csv` (authoritative; supersedes prior partial-smoke entries). 17 variables × 5 sweep points = 85 SweepEntryV2 rows in the matrix; 5666 candidates / 516 universe.
 
-**Operator's 63-eval-run reproduction is the authoritative answer.**
-See phase-0-tasks.md "Next" for the operator smoke step.
+**Caveat per L4 + L5 + L6**: the 14 tier-1 baseline-parity drift entries (0.25% of candidates) trace to OHLCV archive bar-content TEMPORAL mutation (L6); V2 evaluator is CORRECT given inputs (verified 3x via decisive counter-tests). The 14 candidates flip V1=watch / V2=skip — they contribute to `delta_watch` but NOT `delta_aplus`. The headline `max_delta_aplus` column below is therefore UNAFFECTED by the drift class. Binding-variable identification is V2-internal arithmetic and is robust under the architectural limitations.
 
-Expected output structure:
-- 17 variables x 5 sweep points each = 85 SweepEntryV2 rows in the matrix.
-- Gate-variable rows (2 of 17: `trend_template.min_passes` + `vcp.watch_max_fails`):
-  real `delta_aplus` / `delta_watch` values via live `evaluate_one` recompute.
-- Threshold-variable rows (15 of 17): real `delta_aplus` / `delta_watch` values
-  (V2 lifts the V1 zero-delta stub).
-
-Findings table:
+Findings table (full 63-eval-run reproduction):
 
 | Variable | Kind | Binding? | Sweep point of first flip | Delta aplus at flip | Delta watch at flip | Notes |
 |----------|------|----------|--------------------------|---------------------|---------------------|-------|
-| trend_template.min_passes | gate | YES (watch) | 8 (tighten from baseline 7) | 0 | -4 | Partial smoke (5 eval_runs). Loosening 5-7 has no effect; tightening to 8 drops 4 watch; to 9 drops all 66 watch. Zero aplus across all sweep points. |
-| vcp.watch_max_fails | gate | YES (watch) | 3 (loosen from baseline 2) | 0 | +137 | Partial smoke (5 eval_runs). Loosening to 3 adds 137 watch; to 4 adds 197. Tightening to 0 drops all 66 watch. Zero aplus across all sweep points. |
-| trend_template.rising_ma_period_days | threshold_additive | TBD | TBD | TBD | TBD | |
-| trend_template.high_52w_margin_pct | threshold_additive | TBD | TBD | TBD | TBD | |
-| trend_template.low_52w_min_pct | threshold_additive | TBD | TBD | TBD | TBD | |
-| vcp.prior_trend_min_pct | threshold_additive | TBD | TBD | TBD | TBD | |
-| vcp.adr_min_pct | threshold_additive | TBD | TBD | TBD | TBD | |
-| vcp.pullback_max_pct | threshold_additive | TBD | TBD | TBD | TBD | |
-| vcp.proximity_max_pct | threshold_additive | TBD | TBD | TBD | TBD | |
-| vcp.tightness_days_required | threshold_additive | TBD | TBD | TBD | TBD | |
-| vcp.tightness_range_factor | threshold_multiplicative | TBD | TBD | TBD | TBD | |
-| vcp.orderliness_max_bar_ratio | threshold_multiplicative | TBD | TBD | TBD | TBD | |
-| vcp.orderliness_max_range_cv | threshold_multiplicative | TBD | TBD | TBD | TBD | |
-| risk.max_risk_pct | threshold_multiplicative | TBD | TBD | TBD | TBD | |
-| rs.horizon_weeks | threshold_additive | TBD | TBD | TBD | TBD | |
-| rs.rs_rank_min_pass | threshold_additive | TBD | TBD | TBD | TBD | |
-| rs.fallback_extreme_pct | threshold_multiplicative | TBD | TBD | TBD | TBD | |
+| `vcp.tightness_range_factor` | threshold_multiplicative | **YES (aplus + watch)** | 1.005 (loosen from baseline 0.67) | **+75** | **+527** | **TOP BINDING VARIABLE.** 5 → 80 aplus when loosened to 1.005; 34 aplus at intermediate 0.8375. Tightening to 0.335 / 0.5025 drops aplus to 0 (-5). Strongly bidirectional. |
+| `vcp.tightness_days_required` | threshold_additive | **YES (aplus + watch)** | 1 (loosen from baseline 2) | **+16** | **+246** | 5 → 21 aplus when loosened to 1 day; tightening to 3-4 drops aplus to 3. Sweep_point 0 catastrophic (out_of_range_skip 5578). |
+| `vcp.adr_min_pct` | threshold_multiplicative | **YES (aplus + watch)** | 2.0 (loosen from baseline 4.0) | **+11** | **+569** | 5 → 16 aplus when loosened to 2.0; 12 aplus at 3.0. Tightening to 5.0 / 6.0 drops aplus to 3 (-2). |
+| `vcp.proximity_max_pct` | threshold_multiplicative | **YES (aplus + watch)** | 7.5 (loosen from baseline 5.0) | **+5** | **+234** | 5 → 10 aplus when loosened to 7.5; 9 aplus at 6.25. Tightening to 2.5 / 3.75 drops aplus to 0 (-5). |
+| `vcp.orderliness_max_bar_ratio` | threshold_multiplicative | **YES (aplus + watch)** | 3.75 / 4.5 (loosen from baseline 3.0) | **+1** | **+98 to +113** | 5 → 6 aplus when loosened; marginal effect. Tightening to 1.5 catastrophic (343 watch / 5235 skip). |
+| `trend_template.min_passes` | gate | YES (watch only) | 8 (tighten from baseline 7) | 0 | -91 | Loosening 5-7 has no effect (cumulative gate); tightening to 8 drops 91 watch; to 9 catastrophic cascade (-5 aplus / -1321 watch / +5578 out-of-range). Zero aplus impact when loosening from current. |
+| `vcp.watch_max_fails` | gate | YES (watch only) | 3 (loosen from baseline 2) | 0 | +1749 | Loosening to 3 adds 1749 watch; to 4 adds 2867. Tightening to 0 drops all 1321 watch. Zero aplus impact (aplus requires vcp_fails=0; sweep doesn't reach). |
+| `trend_template.rising_ma_period_days` | threshold_additive | NOT BINDING | (none) | 0 | 0 (max -1 at 30-31) | 5 aplus / 1321 watch invariant across full 11-31 sweep grid except marginal -1 watch at edges. |
+| `trend_template.high_52w_margin_pct` | threshold_multiplicative | NOT BINDING | (none) | 0 | 0 (max -10 at 12.5) | Invariant from 18.75-37.5; marginal -10 watch when tightened to 12.5. |
+| `trend_template.low_52w_min_pct` | threshold_multiplicative | NOT BINDING | (none) | 0 | 0 | Invariant across 15.0-45.0 sweep grid. |
+| `vcp.prior_trend_min_pct` | threshold_multiplicative | NOT BINDING | (none) | 0 | -12 to -24 (tighten only) | No aplus impact; tightening to 31.25 / 37.5 drops 12-24 watch. |
+| `vcp.pullback_max_pct` | threshold_multiplicative | NOT BINDING | (none) | 0 | 0 (max -5 at 12.5) | Invariant from 18.75-37.5; marginal -5 watch at 12.5. |
+| `vcp.orderliness_max_range_cv` | threshold_multiplicative | NOT BINDING | (none) | 0 | 0 (max +4 at 0.75-0.9) | Marginal +4 watch when loosened; no aplus impact. Tightening to 0.3 catastrophic (-886 watch / 5143 skip). |
+| `risk.max_risk_pct` | threshold_multiplicative | NOT BINDING | (none) | 0 | -155 to +19 | No aplus impact across sweep; watch shifts -155 to +19 by sweep direction. |
+| `rs.horizon_weeks` | threshold_additive | NOT BINDING | (none) | 0 | 0 | Invariant across 10-14 sweep grid. |
+| `rs.rs_rank_min_pass` | threshold_additive | NOT BINDING | (none) | 0 | 0 | Invariant across 60-80 sweep grid. RS rank distribution of current universe doesn't intersect the sweep boundary. |
+| `rs.fallback_extreme_pct` | threshold_multiplicative | NOT BINDING | (none) | 0 | 0 | Invariant. (Not surfaced in headline because all sweep deltas == 0.) |
+
+**Binding-variable summary**: 5 of 17 binding for aplus-flip semantics (all in VCP family + zero in TT / risk / RS). 7 of 17 binding for watch-flip semantics (the 5 VCP + 2 gate variables). The remaining 10 of 17 are NOT BINDING within the V1 5-point sweep grids (RS / TT / risk / non-tightness VCP all show zero or marginal aplus delta).
 
 ## Conclusion
 
-*To be populated post operator DB run.*
+**5 binding variables identified — all in the VCP family** (rank by `max_delta_aplus` headline):
 
-Expected conclusion forms:
-- **Binding variables identified**: list which threshold variables cause
-  bucket flips; rank by marginal A+ per loosening unit; propose cfg-policy
-  candidates for shadow promotion.
-- **All 15 declared non-binding**: if no threshold variable causes a bucket
-  flip across the V1 5-point grids, the conclusion is that the current
-  candidate universe has no candidates near the threshold boundaries. This
-  would suggest the issue is not threshold calibration but candidate-universe
-  composition (see V2.1 §III scope).
-- **Gate variables**: V1 already answered; confirm V2 parity at gate-variable
-  sweep points.
+1. `vcp.tightness_range_factor` +75 aplus at sweep_point 1.005 (loosen from baseline 0.67) — **clearly the most binding lever**.
+2. `vcp.tightness_days_required` +16 aplus at sweep_point 1 (loosen from baseline 2).
+3. `vcp.adr_min_pct` +11 aplus at sweep_point 2.0 (loosen from baseline 4.0).
+4. `vcp.proximity_max_pct` +5 aplus at sweep_point 7.5 (loosen from baseline 5.0).
+5. `vcp.orderliness_max_bar_ratio` +1 aplus at sweep_point 4.5 (loosen from baseline 3.0) — marginal.
+
+**Substantive finding**: the operator's actionable A+ surface (current 5 A+ candidates across 5666 evaluated) is most sensitive to VCP-family threshold relaxation, with `vcp.tightness_range_factor` leading by a wide margin (+75 vs next +16). Trend-template thresholds, risk, and RS-related dials are all NON-BINDING within the V1 5-point sweep grids — meaning the current candidate universe has no candidates clustered near those thresholds. This points toward VCP-pattern detection sensitivity rather than ranking-layer (TT / risk / RS) calibration as the most-actionable lever for the next cfg-policy proposal.
+
+**Bidirectional sensitivity**: `vcp.tightness_range_factor` and `vcp.proximity_max_pct` are both strongly bidirectional — tightening drops aplus to 0; loosening adds 5-75 aplus. The 5-A+-baseline finding is sensitive at both edges.
+
+**Catastrophic gate behavior**: `trend_template.min_passes=9` (tighten from baseline 7 by +2) is a cliff edge — drops 5 aplus + all 1321 watch to zero (out_of_range_skip 5578). `vcp.watch_max_fails=0` similarly catastrophic. Both expected per gate semantics; document for operator awareness.
+
+**Forward action sequence (post-promotion-gate decision D1)**:
+
+1. **Method-record promoted research → shadow** 2026-05-24 PM (v0.2.2 → v0.3.0; operator decision D1 LOCKED). Treats baseline-parity invariant as "green to the extent V2 evaluator's correctness is verifiable against V1, with 3 documented L4 + L5 + L6 architectural limitations." V2 evaluator correctness verified 3x via decisive counter-tests.
+2. **Next-arc decision OPERATOR-PAIRED**: (a) cfg-policy proposal for `vcp.tightness_range_factor` shadow → production pathway per V2.1 §VII.C (most binding; clearest evidence); OR (b) market-conditions / other-gates investigation per V2.1 §III scope; OR (c) Phase 14 commissioning consideration per Path B sequencing.
+3. **L6 V2.5/V3 candidate banked**: immutable archive snapshot before V2 run to eliminate temporal-mutation drift class (would also unblock strict baseline-parity invariant interpretation if operator preference shifts).
 
 ## Limitations
 
@@ -320,3 +316,23 @@ Per spec §M.4 + brainstorming return report §4:
    as documented in: (a) test_aplus_v2_ohlcv_reader.py module docstring;
    (b) method-record aplus-criteria-calibration.md line 63; (c) plan §F + §K.
    Closer commit is immutable; this amendment serves as the visible correction.
+
+**Amendment 2 (2026-05-24 PM, post-full-reproduction + 3-investigation arc completion):**
+
+The full 63-eval-run operator reproduction SHIPPED at `exports/diagnostics/aplus-sensitivity-v2-20260524T205849Z.{csv,md}` (86 min runtime / not truncated / 5666 candidates) supersedes the prior partial-smoke artifacts. The findings table + Conclusion section have been populated with authoritative full-reproduction data.
+
+**5 binding variables identified — all VCP-family** with `vcp.tightness_range_factor` leading at +75 max_delta_aplus.
+
+**3 architectural V1↔V2 baseline-parity limitations characterized** across three sequential investigations (2026-05-23 → 2026-05-24 PM):
+
+1. **L4 — Parallel-archive freshness desync** (DK:62 investigation at merge `4afab36` 2026-05-23): cross-archive asymmetry between Shape A and legacy. Remediated for recent boundary via D.1 Shape A refresh 2026-05-24. CLAUDE.md gotcha #24.
+2. **L5 — Sentinel-bucket parity-comparison discipline** (DHC/UCO/VSAT × 60-64 investigation at merge `d7cdd51` 2026-05-24): V1 short-circuits criterion evaluation for `bucket='excluded'` (held_set + ETF blocklist) + `bucket='error'` (OHLCV fetch failure); V2's `bucket_for` cannot reproduce. Remediated via Option A 1-line filter at merge `b7f70ff` 2026-05-24. CLAUDE.md gotcha #25.
+3. **L6 — Archive bar-content TEMPORAL mutation** (full-reproduction investigation at merge `c8f9612` 2026-05-24 PM): intervening pipeline runs progressively overwrite historical bars via `swing/data/ohlcv_archive.py:write_window:358-360` drop_duplicates `keep='last'` semantics when yfinance returns slightly different values (late-reporting + retroactive adjustments). V1's persisted criteria reflect old archive bars; V2 reads current. **Characterized as L6 limitation per Option A; ZERO V1 code changes; immutable-archive-snapshot V2.5/V3 candidate banked.** CLAUDE.md gotcha #26.
+
+**V2 evaluator correctness verified 3x** via decisive counter-tests across all three investigations (DK:62 / DHC/UCO/VSAT / full-reproduction). Each investigation independently confirmed that V2's `evaluate_one` produces the expected bucket given the inputs it actually reads; the divergence in all three cases was architectural (data path / comparison logic / temporal mutation), NOT a V2 evaluator bug.
+
+**Drift class L4-style** (data-input divergence; V2 evaluator correct given inputs) for the L6 surface: the 14 drift candidates (0.25% of 5666) flip V1=watch / V2=skip — they contribute to `delta_watch` but NOT `delta_aplus`. The headline `max_delta_aplus` column is therefore UNAFFECTED. **All 5 binding variables ROBUST** — top 2 (`vcp.tightness_range_factor` +75, `vcp.tightness_days_required` +16) strongly robust; bottom 3 (`vcp.adr_min_pct` +11, `vcp.proximity_max_pct` +5, `vcp.orderliness_max_bar_ratio` +1) marginally robust but +1 to +11 holds.
+
+**Method-record promoted research → shadow** 2026-05-24 PM (v0.2.2 → v0.3.0) per operator decision D1: treat baseline-parity invariant as "green to the extent V2 evaluator's correctness is verifiable against V1, with 3 documented L4 + L5 + L6 architectural limitations". Shadow tier achieved per V2.1 §IV.D + OQ-8 ladder gate conditions (V2 shipped + ≥1 study writeup published + ≥1 binding threshold variable identified — all 3 SATISFIED).
+
+**Next operator-paired decision**: cfg-policy proposal (likely `vcp.tightness_range_factor` per binding-variable headline) for shadow → production pathway per V2.1 §VII.C; OR market-conditions investigation per spec §B.3; OR Phase 14 commissioning per Path B sequencing.
