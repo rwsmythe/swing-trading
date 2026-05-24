@@ -543,6 +543,20 @@ def _compute_baseline_parity(
         run_cands = by_run.get(run_id, [])
 
         for cand_row, _rid in run_cands:
+            # Sentinel-bucket filter (CLAUDE.md gotcha #25; investigation at
+            # docs/v2-dhc-uco-vsat-drift-investigation-2026-05-24.md Section 5.1).
+            # V1 production at swing/pipeline/runner.py:1105-1141 short-circuits
+            # criterion evaluation for open positions (held_set) + ETF/fund
+            # blocklist (cfg.etf_exclusion.manual_block), writing
+            # Candidate(bucket='excluded', criteria=(), ...) directly. V2's
+            # evaluate_one cannot produce 'excluded' (bucket_for at
+            # swing/evaluation/scoring.py:13-39 returns only {aplus, watch, skip}).
+            # Naive comparison flags every excluded candidate as tier-1 drift
+            # false-positive; skip these from baseline parity (mismatch is
+            # architecturally guaranteed, not a real V1<->V2 drift).
+            if cand_row.persisted_bucket == "excluded":
+                continue
+
             ticker = cand_row.ticker
             asof_date = cand_row.data_asof_date
 
