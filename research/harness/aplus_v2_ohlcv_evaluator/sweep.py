@@ -427,6 +427,7 @@ def run_v2_sweep(
                                 new_bucket=bucket,
                                 via_surrogate=via_surrogate,
                                 variable_name=var.name,
+                                old_bucket=baseline_bucket,  # Codex R4.M1: V2 recomputed baseline
                             )
 
             sub_entries.append(SweepEntryV2(
@@ -596,6 +597,7 @@ def _compute_baseline_parity(
                     new_bucket=bucket,
                     via_surrogate=via_surrogate,
                     variable_name=None,  # Codex R2.M2: baseline-parity flip
+                    old_bucket=cand_row.persisted_bucket,  # Codex R4.M1: explicit V1 persisted
                 )
                 if tier == 1:
                     tier1_mismatch_keys.append(f"{ticker}:{run_id}")
@@ -708,6 +710,7 @@ def _record_flip(
     new_bucket: str,
     via_surrogate: bool,
     variable_name: str | None,
+    old_bucket: str | None = None,
 ) -> None:
     """Append a FlippedCandidate record to flipped list.
 
@@ -715,6 +718,15 @@ def _record_flip(
       baseline-parity-derived flips (Codex R2.M2 fix). output.py uses this
       to route flips to the correct section: per-variable drill-down vs.
       dedicated '## V1<->V2 Baseline Parity Drift' section.
+
+    old_bucket: explicit old bucket for the flip record (Codex R4.M1 fix).
+      - Per-variable callsite: pass baseline_bucket_map[cand_key] (V2 recomputed
+        baseline) so the flip shows the correct direction when V1 persisted bucket
+        differs from V2 recomputed baseline (baseline parity drift).
+      - Baseline-parity callsite: pass cand_row.persisted_bucket (V1 persisted)
+        because the baseline-parity section IS comparing V1 vs V2.
+      - Default (None): falls back to cand_row.persisted_bucket for backward-compat
+        at any callsite that does not supply explicit old_bucket.
     """
     # V1 stub: old_criterion_failure always '(none)'.
     # Computing the old criterion failure would require fetching the persisted
@@ -723,12 +735,13 @@ def _record_flip(
     # to T-V2.3 output rendering; see executing-plans return report §6.
     # V2 candidate: thread the pre-sweep evaluate_one result through _record_flip
     # and emit '<criterion_name> value=<v> rule=<r>' for the first failing criterion.
+    resolved_old_bucket = old_bucket if old_bucket is not None else cand_row.persisted_bucket
     flipped.append(FlippedCandidate(
         ticker=cand_row.ticker,
         eval_run_id=run_id,
         data_asof_date=cand_row.data_asof_date.isoformat(),
         sweep_point=sweep_point,
-        old_bucket=cand_row.persisted_bucket,
+        old_bucket=resolved_old_bucket,
         new_bucket=new_bucket,
         old_criterion_failure="(none)",
         bucket_via_surrogate=via_surrogate,

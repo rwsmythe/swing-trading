@@ -1711,3 +1711,196 @@ def test_per_variable_drilldown_isolates_flip_to_correct_variable(tmp_path):
     assert var_b_flips[0].sweep_point == 3, (
         f"Expected flip at sweep_point=3, got {var_b_flips[0].sweep_point!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# (25) Codex R4.M1 discriminating: per-variable flip records V2 recomputed
+#      baseline bucket as old_bucket (NOT V1 persisted bucket) when drift exists
+# ---------------------------------------------------------------------------
+
+def test_per_variable_flip_records_v2_baseline_as_old_bucket_when_drift_exists(tmp_path):
+    """Codex R4.M1 discriminating test: when V1 persisted bucket != V2 recomputed
+    baseline bucket (baseline parity drift), a per-variable flip must record
+    old_bucket == V2 recomputed baseline (NOT the V1 persisted bucket).
+
+    Scenario:
+      - Candidate persisted as 'skip' (V1 persisted bucket)
+      - V2 recomputed baseline at current_value: 'watch' (drift exists)
+      - V2 sweep at non-current sweep_point=60: 'aplus'
+      - Flip detected: 'aplus' != 'watch' (V2 baseline) -> flip recorded
+      - EXPECTED: flip.old_bucket == 'watch' (V2 recomputed baseline)
+      - PRE-FIX: flip.old_bucket == 'skip' (V1 persisted) -- WRONG
+
+    Implementation via monkeypatched evaluate_one:
+      - When rs_rank_min_pass == current_val: return 'watch' (V2 baseline != V1 persisted)
+      - When rs_rank_min_pass != current_val (sweep_point=60): return 'aplus' (flip from 'watch')
+    """
+    db_path = _build_test_db(tmp_path)
+    _seed_eval_run(db_path, 1, "2026-04-30")
+
+    universe_tickers = [f"ZZU{i:03d}" for i in range(100)]
+    for t in universe_tickers:
+        _make_shape_a_parquet(tmp_path / f"{t}.yfinance.parquet", n_bars=250)
+    _make_shape_a_parquet(tmp_path / "SPY.yfinance.parquet", n_bars=250, sentinel_close=500.0)
+
+    # Candidate: persisted bucket='skip' (V1), but V2 baseline recomputes to 'watch'
+    _make_shape_a_parquet(tmp_path / "ZZDRIFT1.yfinance.parquet", n_bars=250)
+    _seed_candidate(db_path, eval_run_id=1, ticker="ZZDRIFT1", bucket="skip",
+                    risk_feasibility_result="pass")
+
+    universe_csv = _make_universe_csv(tmp_path, universe_tickers)
+    cfg = _cfg_with_universe(universe_csv)
+    cfg_obj = Config.from_defaults()
+    current_val = cfg_obj.rs.rs_rank_min_pass  # e.g. 70
+
+    # Two sweep_points: one non-current (60) and one current (current_val)
+    var = _make_variable(
+        "rs.rs_rank_min_pass", kind="threshold_additive",
+        current_value=current_val, sweep_points=(60, current_val),
+    )
+
+    from research.harness.aplus_v2_ohlcv_evaluator import sweep as sweep_mod
+
+    original_evaluate = sweep_mod.evaluate_one
+
+    def _drift_evaluate(ctx):
+        # At current cfg value -> 'watch' (V2 baseline; drifts from persisted 'skip')
+        # At non-current substituted value (sp=60) -> 'aplus' (flip from V2 baseline 'watch')
+        rs_rank = ctx.config.rs.rs_rank_min_pass
+        mock = MagicMock()
+        if rs_rank == current_val:
+            mock.bucket = "watch"
+        else:
+            mock.bucket = "aplus"
+        mock.criteria = ()
+        return mock
+
+    sweep_mod.evaluate_one = _drift_evaluate
+    try:
+        from research.harness.aplus_v2_ohlcv_evaluator.sweep import run_v2_sweep
+        conn = sqlite3.connect(str(db_path))
+        result = run_v2_sweep(
+            conn,
+            variables=(var,),
+            cfg=cfg,
+            cache_dir=tmp_path,
+            eval_runs_window=5,
+            min_universe_size=50,
+        )
+        conn.close()
+    finally:
+        sweep_mod.evaluate_one = original_evaluate
+
+    # DISCRIMINATING: the per-variable flip must use V2 baseline as old_bucket.
+    # There should be a baseline-parity flip (skip -> watch, variable_name=None)
+    # AND a per-variable flip (watch -> aplus, variable_name='rs.rs_rank_min_pass').
+    per_var_flips = [
+        fc for fc in result.flipped
+        if fc.variable_name == "rs.rs_rank_min_pass"
+    ]
+    assert len(per_var_flips) >= 1, (
+        f"Expected at least one per-variable flip for 'rs.rs_rank_min_pass', "
+        f"got 0. All flips: {result.flipped}"
+    )
+
+    flip = per_var_flips[0]
+    assert flip.ticker == "ZZDRIFT1"
+    assert flip.new_bucket == "aplus", (
+        f"Expected new_bucket='aplus', got {flip.new_bucket!r}"
+    )
+
+    # CRITICAL ASSERTION: old_bucket must be V2 recomputed baseline ('watch'),
+    # NOT V1 persisted bucket ('skip').
+    assert flip.old_bucket == "watch", (
+        f"Per-variable flip old_bucket must be V2 recomputed baseline 'watch' "
+        f"(NOT V1 persisted 'skip'). Got old_bucket={flip.old_bucket!r}. "
+        "Codex R4.M1: _record_flip must accept explicit old_bucket and the "
+        "variable loop must pass baseline_bucket_map[cand_key] (V2 recomputed), "
+        "not cand_row.persisted_bucket (V1 persisted)."
+    )
+
+
+def test_baseline_parity_flip_still_records_persisted_bucket_as_old_bucket(tmp_path):
+    """Codex R4.M1 defensive test: baseline-parity flip (variable_name=None)
+    must still record V1 persisted bucket as old_bucket (existing correct behavior
+    is preserved after the per-variable callsite fix).
+
+    Scenario:
+      - Candidate persisted as 'skip' (V1 persisted bucket)
+      - V2 recomputed baseline at current_value: 'watch' (drift -- baseline parity flip)
+      - Baseline parity flip (variable_name=None): old_bucket must == 'skip' (persisted)
+      - This is the CORRECT behavior for the baseline-parity section (comparing
+        V1 persisted vs V2 recomputed -- the drift itself IS the old_bucket)
+
+    Same monkeypatch setup as the per-variable test above, but asserting the
+    baseline-parity flip's old_bucket is the V1 persisted value 'skip'.
+    """
+    db_path = _build_test_db(tmp_path)
+    _seed_eval_run(db_path, 1, "2026-04-30")
+
+    universe_tickers = [f"ZZU{i:03d}" for i in range(100)]
+    for t in universe_tickers:
+        _make_shape_a_parquet(tmp_path / f"{t}.yfinance.parquet", n_bars=250)
+    _make_shape_a_parquet(tmp_path / "SPY.yfinance.parquet", n_bars=250, sentinel_close=500.0)
+
+    # Candidate: persisted bucket='skip', V2 baseline returns 'watch'
+    _make_shape_a_parquet(tmp_path / "ZZDRIFT2.yfinance.parquet", n_bars=250)
+    _seed_candidate(db_path, eval_run_id=1, ticker="ZZDRIFT2", bucket="skip",
+                    risk_feasibility_result="fail")  # tier-2 so non-blocking
+
+    universe_csv = _make_universe_csv(tmp_path, universe_tickers)
+    cfg = _cfg_with_universe(universe_csv)
+    cfg_obj = Config.from_defaults()
+    current_val = cfg_obj.rs.rs_rank_min_pass
+
+    var = _make_variable(
+        "rs.rs_rank_min_pass", kind="threshold_additive",
+        current_value=current_val, sweep_points=(current_val,),
+    )
+
+    from research.harness.aplus_v2_ohlcv_evaluator import sweep as sweep_mod
+
+    original_evaluate = sweep_mod.evaluate_one
+
+    def _drift_baseline_evaluate(ctx):
+        # Always return 'watch' -- drifts from persisted 'skip'
+        mock = MagicMock()
+        mock.bucket = "watch"
+        mock.criteria = ()
+        return mock
+
+    sweep_mod.evaluate_one = _drift_baseline_evaluate
+    try:
+        from research.harness.aplus_v2_ohlcv_evaluator.sweep import run_v2_sweep
+        conn = sqlite3.connect(str(db_path))
+        result = run_v2_sweep(
+            conn,
+            variables=(var,),
+            cfg=cfg,
+            cache_dir=tmp_path,
+            eval_runs_window=5,
+            min_universe_size=50,
+        )
+        conn.close()
+    finally:
+        sweep_mod.evaluate_one = original_evaluate
+
+    # DISCRIMINATING: baseline-parity flip must record V1 persisted bucket as old_bucket.
+    baseline_flips = [
+        fc for fc in result.flipped
+        if fc.variable_name is None and fc.ticker == "ZZDRIFT2"
+    ]
+    assert len(baseline_flips) >= 1, (
+        f"Expected at least one baseline-parity flip (variable_name=None) for ZZDRIFT2. "
+        f"All flips: {result.flipped}"
+    )
+
+    bp_flip = baseline_flips[0]
+    assert bp_flip.old_bucket == "skip", (
+        f"Baseline-parity flip old_bucket must be V1 persisted 'skip', "
+        f"got old_bucket={bp_flip.old_bucket!r}. "
+        "The baseline-parity _record_flip callsite must pass cand_row.persisted_bucket."
+    )
+    assert bp_flip.new_bucket == "watch", (
+        f"Expected new_bucket='watch' (V2 recomputed), got {bp_flip.new_bucket!r}"
+    )
