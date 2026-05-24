@@ -4788,6 +4788,77 @@ def diagnose_aplus_sensitivity(
     click.echo(f"CSV:      {csv_path}")
 
 
+@diagnose_group.command("aplus-sensitivity-v2")
+@click.option(
+    "--db", "db_path", required=True, type=click.Path(path_type=Path),
+)
+@click.option(
+    "--eval-runs", type=click.IntRange(1, 100), default=20, show_default=True,
+)
+@click.option(
+    "--output-dir", type=click.Path(path_type=Path),
+    default=Path("exports/diagnostics"), show_default=True,
+)
+@click.option(
+    "--variables-filter", "variables_filter", type=str, default=None,
+    help="Comma-separated variable-name filter for incremental runs / debugging.",
+)
+@click.option(
+    "--min-universe-size", "min_universe_size", type=int, default=100,
+    show_default=True,
+    help="Minimum valid RS universe size after cleanup; fail-fast below.",
+)
+@click.option(
+    "--max-runtime-seconds", "max_runtime_seconds", type=float, default=None,
+    help="Optional runtime cap; emits partial-result with PARTIAL RUN header.",
+)
+def diagnose_aplus_sensitivity_v2(
+    db_path: Path,
+    eval_runs: int,
+    output_dir: Path,
+    variables_filter: str | None,
+    min_universe_size: int,
+    max_runtime_seconds: float | None,
+) -> None:
+    """V2 OHLCV criterion-evaluator sensitivity sweep.
+
+    Lifts the V1 LIMITATION (15 threshold variables inert in V1) by
+    substituting cfg values one-at-a-time + invoking production
+    evaluate_one(ctx) end-to-end against historical OHLCV. See
+    research/method-records/aplus-criteria-calibration.md (v0.2.0+).
+    """
+    # Codex R1 m#2 precedent: pre-validate --db existence so a typo surfaces
+    # as a friendly error before the harness opens any sqlite3 connection.
+    _validate_diagnose_db_path(db_path)
+    from research.harness.aplus_v2_ohlcv_evaluator.run import run_harness
+
+    filter_tuple: tuple[str, ...] | None = None
+    if variables_filter:
+        filter_tuple = tuple(
+            s.strip() for s in variables_filter.split(",") if s.strip()
+        )
+
+    try:
+        md_path, csv_path = run_harness(
+            db_path=db_path,
+            eval_runs=eval_runs,
+            output_dir=output_dir,
+            variables_filter=filter_tuple,
+            min_universe_size=min_universe_size,
+            max_runtime_seconds=max_runtime_seconds,
+        )
+    except ValueError as exc:
+        # Wrap service-layer ValueErrors at the CLI boundary per cumulative
+        # gotcha (Phase 13 T-A.1.5b Codex R4 M#1).
+        raise click.ClickException(str(exc)) from exc
+    except sqlite3.OperationalError as exc:
+        raise click.ClickException(
+            f"Database error reading {db_path}: {exc}"
+        ) from exc
+    click.echo(f"Markdown: {md_path}")
+    click.echo(f"CSV:      {csv_path}")
+
+
 @diagnose_group.command("metrics-wiring")
 @click.option(
     "--db", "db_path", required=True, type=click.Path(path_type=Path),

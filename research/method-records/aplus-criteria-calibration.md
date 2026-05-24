@@ -9,8 +9,8 @@ name: A+ criteria parameter sensitivity calibration
 layer: ranking
 status: research
 baseline_or_predecessor: internal (swing.evaluation.scoring.bucket_for current cfg)
-version: 0.1.0
-last_updated: 2026-05-22
+version: 0.2.0
+last_updated: 2026-05-23
 ---
 
 # A+ criteria parameter sensitivity calibration
@@ -57,6 +57,10 @@ Gate-variable rows DO produce real `delta_aplus` / `delta_watch` values via fait
 - **ASCII-only output:** all emitted text is cp1252-encodable (Windows stdout safety). Verified via `text.encode("cp1252")` in `tests/research/test_aplus_sensitivity_output.py` + `tests/cli/test_diagnose_subcommands.py`.
 - **`allowed_miss_names` invariant preserved across gate substitution:** the `bucket_for` mirror in `_bucket_for_substituted` walks the same `allowed_miss_names` set membership the production gate enforces.
 - Cross-coupling between variables NOT modeled (first-order; one variable at a time, others held at production cfg).
+- **V2-recompute baseline parity invariant**: V2 invoked with no substitution (sweep_point == current_value for every variable) MUST produce the same bucket distribution as V1's persisted-bucket pass per spec §E.4. Discriminating test: `tests/research/test_aplus_v2_ohlcv_sweep.py::test_baseline_recompute_matches_persisted_bucket_distribution_exactly`.
+- **V1<->V2 gate-variable parity**: V2's gate substitution for `trend_template.min_passes` MUST produce the same delta-counts as V1's `_bucket_for_substituted` mirror path. Discriminating test: `tests/research/test_aplus_v2_ohlcv_sweep.py::test_v2_gate_substitution_matches_v1_bucket_for_substituted_output`.
+- **Per-candidate failure isolation**: V2 candidates failing OHLCV coverage / out-of-range substitution / arbitrary evaluation error MUST NOT poison other candidates' tallies. Discriminating test: 3-candidate fixture per spec §D.4.
+- **L2 LOCK**: V2 module set (`ohlcv_reader.py`, `cfg_substitution.py`, `context_builder.py`, `sweep.py`, `output.py`, `run.py`) MUST NOT import `yfinance`, `schwabdev`, `swing.integrations.schwab`, or `swing.data.ohlcv_archive`. 4-module import sentinel + 4-boundary file-open mock + byte-checksum discriminating tests per `tests/research/test_aplus_v2_ohlcv_reader.py` (5 BINDING discriminating tests per spec §F.1-§F.3 + §K.4-§K.5).
 
 ## V2 dependencies
 
@@ -70,3 +74,57 @@ Gate-variable rows DO produce real `delta_aplus` / `delta_watch` values via fait
 - `cfg.trend_template.allowed_miss_names` (tuple-set; not a numeric grid) + `cfg.rs.benchmark_ticker` (string identifier) explicitly EXCLUDED from V1 enumeration.
 - Margin-of-failure for non-numeric criteria folds to boolean-fail counts.
 - Promotion from `research` to `shadow` / `production` per V2.1 §IV.D requires operator-paired evidence summary AND lift of the V1 threshold-variable limitation (i.e., bucket resimulation for the 15 threshold variables).
+- **V2 shipped 2026-05-23**: `vcp.watch_max_fails` special-cased per spec §E.3 to mirror V1's `_bucket_for_substituted` semantics (production `swing/evaluation/scoring.py:37` hardcoded value `2` not cfg-derived).
+- **V2 BANK**: Promote `vcp.watch_max_fails` to cfg-derived in `bucket_for` as V2.5 production-code change candidate (operator-paired ratification post V2 ship).
+- **V2 BANK**: `cfg.trend_template.allowed_miss_names` tuple-set sweep + `cfg.rs.benchmark_ticker` string-identifier sweep STAY V3+ (consistent with V1 method-record §"Notes" line 70 enumeration).
+- **V2 NOT-scoped**: schema changes (`candidate_criteria` structured threshold columns) STAY V3+ per V1 method-record V2 dependencies #2.
+- **V2 NOT-scoped**: pair-wise cross-coupling STAYS V3+ per V1 method-record V2 dependencies #3.
+
+## V2 OHLCV harness shipped (status='research')
+
+Shipped 2026-05-23 as first Applied Research arc post-Phase-13-FULLY-CLOSED (Path B LOCKED at `b4d7719`).
+
+**Module location**: `research/harness/aplus_v2_ohlcv_evaluator/` (7 modules: `exceptions.py`, `ohlcv_reader.py`, `cfg_substitution.py`, `context_builder.py`, `sweep.py`, `output.py`, `run.py`).
+
+**CLI surface**: `swing diagnose aplus-sensitivity-v2 --db PATH --eval-runs N --output-dir DIR [--variables-filter NAME,...] [--min-universe-size N] [--max-runtime-seconds N]`.
+
+**V2 vs V1 substitution semantic differences** (per spec §A.4):
+
+- V1 (15 threshold variables): returns persisted bucket unchanged (parity-preserving stub; `delta_aplus == delta_watch == 0` always). No per-criterion recompute.
+- V2 (ALL 17 variables, threshold + gate): invokes production `evaluate_one(ctx)` end-to-end against OHLCV bars at the candidate's `data_asof_date` with the substituted cfg. True per-criterion bucket resimulation.
+- V2 cfg-substitution mechanism: `dataclasses.replace` chain (`swing.config.Config` is a frozen dataclass; nested subsections replaced via typed `dataclasses.replace`). Substitution is PURELY in-memory; no production cfg mutation.
+- V2 RS universe: full RS universe loaded from `cfg.paths.rs_universe_path` (same source as production pipeline). The full benchmark + peer set is required for `compute_rs` to score all candidates correctly. V1 read only `candidate_criteria` rows; V2 also fetches the live RS universe to populate `BatchContext.returns_12w_by_ticker`.
+- V2 current_equity surrogate: `current_equity` injected per eval-run cohort from `account_equity_snapshots` closest-on-or-before snapshot (per OQ-15 disposition). When no snapshot exists, the operator's `cfg.risk.capital_floor_constant_dollars` floor serves as surrogate; `bucket_via_surrogate=True` is flagged in the drill-down per-candidate row.
+- V2 OQ-17 carve-out: sole production `swing/` change at ship is `swing/cli.py` subcommand registration (35-60 lines mirroring V1 pattern). ZERO other production code changes; all new code under `research/`.
+
+**V2 coverage**: All 15 threshold variables + 2 gate variables. Lifts the V1 LIMITATION per §B.1 of the spec. The 15 threshold variables now produce real `delta_aplus` / `delta_watch` counts via live `evaluate_one` recompute.
+
+**V1 simplifications shipped in V2** (per cumulative V1-simplification-banking discipline):
+
+| Simplification | Module | V2 dependency |
+|---|---|---|
+| `old_criterion_failure="(none)"` always emitted; real per-criterion attribution not threaded | `sweep.py:FlippedCandidate` | V2.5: thread `evaluate_one` result through `_record_flip`; requires per-criterion value access from `CriteriaResult` |
+| `_precompute_ohlcv_coverage_skips` catches `OhlcvCoverageError + FileNotFoundError + OSError` (widened beyond spec `OhlcvCoverageError`); test only exercises `OhlcvCoverageError` branch | `sweep.py` | V2.5 discriminating test for FileNotFoundError + OSError branches (defense-in-depth coverage) |
+| `tracemalloc` stopped in `run.py` finally block; peak captured on sweep success only (sweep exception path gets `peak=0`) | `run.py:db6b45f` fix | V2.5: always call `tracemalloc.get_traced_memory()` before stop for accurate failure-path peak reporting |
+
+## Promotion criteria (research -> shadow -> production)
+
+Per OQ-8 RECOMMEND + V2.1 §IV.D + §VII.C lifecycle posture:
+
+**research -> shadow**:
+
+1. V2 OHLCV harness shipped + baseline parity invariant green per spec §E.4 (SATISFIED at V2 ship 2026-05-23).
+2. At least 1 V2 study writeup published (SATISFIED: `research/studies/2026-05-23-v2-ohlcv-criterion-evaluator.md`).
+3. AT LEAST ONE binding threshold variable identified OR all 15 declared non-binding with operator-paired sign-off (PENDING: operator must run V2 against `~/swing-data/swing.db` and review findings).
+
+**shadow -> production**:
+
+1. At least 1 cfg-policy proposal evaluated against at least 2 disjoint validation universes.
+2. Proposal's A+ delta statistically distinguishable from baseline (default threshold proposed: at least 5 A+ delta on a 5681-candidate universe -- doubling A+ count).
+3. Operator-paired ratification.
+
+**Anti-promotion guards**: regression on existing A+ candidates; cross-coupling instability (V1 is 1D; V2 inherits); production-cfg drift between study run and ratification.
+
+## Promotion ladder (research -> shadow -> production) per OQ-8
+
+The 3-tier promotion ladder follows V2.1 §IV.D (research) -> §VII.C (shadow) -> production per the governing strategy. The V2 ship satisfies the research tier entry criteria above. Shadow promotion is gated on operator-witnessed binding-variable identification; production promotion additionally requires multi-universe validation + operator-paired ratification. This is the canonical example for future Applied Research Tranche 1 arcs per V2.1 §X tranche progression.

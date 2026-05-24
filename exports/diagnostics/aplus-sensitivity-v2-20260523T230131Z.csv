@@ -1,0 +1,11 @@
+variable_name,kind,sweep_point,aplus_count,watch_count,skip_count,excluded_count,delta_aplus,delta_watch,out_of_range_skip_count,ohlcv_coverage_skip_count,evaluation_error_skip_count
+trend_template.min_passes,gate,5,0,66,280,0,0,0,0,5,0
+trend_template.min_passes,gate,6,0,66,280,0,0,0,0,5,0
+trend_template.min_passes,gate,7,0,66,280,0,0,0,0,5,0
+trend_template.min_passes,gate,8,0,62,284,0,0,-4,0,5,0
+trend_template.min_passes,gate,9,0,0,346,0,0,-66,0,5,0
+vcp.watch_max_fails,gate,0,0,0,346,0,0,-66,0,5,0
+vcp.watch_max_fails,gate,1,0,12,334,0,0,-54,0,5,0
+vcp.watch_max_fails,gate,2,0,66,280,0,0,0,0,5,0
+vcp.watch_max_fails,gate,3,0,203,143,0,0,137,0,5,0
+vcp.watch_max_fails,gate,4,0,263,83,0,0,197,0,5,0
