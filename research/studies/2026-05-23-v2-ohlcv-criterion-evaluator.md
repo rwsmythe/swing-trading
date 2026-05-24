@@ -336,3 +336,75 @@ The full 63-eval-run operator reproduction SHIPPED at `exports/diagnostics/aplus
 **Method-record promoted research → shadow** 2026-05-24 PM (v0.2.2 → v0.3.0) per operator decision D1: treat baseline-parity invariant as "green to the extent V2 evaluator's correctness is verifiable against V1, with 3 documented L4 + L5 + L6 architectural limitations". Shadow tier achieved per V2.1 §IV.D + OQ-8 ladder gate conditions (V2 shipped + ≥1 study writeup published + ≥1 binding threshold variable identified — all 3 SATISFIED).
 
 **Next operator-paired decision**: cfg-policy proposal (likely `vcp.tightness_range_factor` per binding-variable headline) for shadow → production pathway per V2.1 §VII.C; OR market-conditions investigation per spec §B.3; OR Phase 14 commissioning per Path B sequencing.
+
+## Walk-forward backtest validation (vcp.tightness_range_factor=1.005)
+
+**Dispatch brief:** [docs/v2-tightness-range-factor-backtest-dispatch-brief.md](../../docs/v2-tightness-range-factor-backtest-dispatch-brief.md)
+**Findings doc:** [docs/v2-tightness-range-factor-backtest-findings-2026-05-24.md](../../docs/v2-tightness-range-factor-backtest-findings-2026-05-24.md)
+**Backtest artifact:** `exports/research/tightness-range-factor-backtest-<ISO>/`
+**Date:** 2026-05-24.
+
+### Question
+
+Does loosening `vcp.tightness_range_factor` from baseline 0.67 to 1.005 (the V2 sensitivity sweep's `max_delta_aplus = +75` headline) generate profitable trades under realistic exit rulesets, OR does it merely classify non-breakout patterns as A+ candidates?
+
+### Method
+
+- **Cohort:** 67 watch→aplus flips at sweep_point=1.005 (per V2 full-reproduction smoke `aplus-sensitivity-v2-20260524T205849Z.{csv,md}`); 15 unique tickers; 17 unique VCP patterns post-dedup (consecutive eval_runs collapsed within 5 business days).
+- **Control:** V1 baseline A+ candidates from `candidates` table where `bucket='aplus'` (5 rows; 2 unique patterns post-dedup; SLDB + YOU).
+- **Entry rule:** first close > pivot triggers entry at NEXT session's Open. Pivot = V1-persisted `candidates.pivot` at FIRST eval_run in pattern group; initial_stop = V1-persisted `candidates.initial_stop`.
+- **Three exit rulesets:** A (Minervini trail-MA per TLSMW M.2 + DST D.3 — initial stop, +2R extension arms 50d SMA trail, hard exit at close-below-50d); B (Fixed R-multiple — +1R BE, +3R target, 21d SMA trail post-BE); C (Close-below-50d-SMA — trail arms when close > rising 50d, hard exit at first close < 50d).
+- **OHLCV source:** V2 Shape A reader (`research.harness.aplus_v2_ohlcv_evaluator.ohlcv_reader`) — L2 LOCK preserved; ZERO new Schwab API calls; ZERO yfinance calls.
+
+### Results
+
+| Cohort | Patterns | Triggered | Closed | Open | Untriggered | No-data |
+|--------|----------|-----------|--------|------|-------------|---------|
+| vcp.tightness_range_factor=1.005 | 17 | 5 (29.4%) | 0 | 5 | 10 | 2 |
+| V1 baseline A+ (sweep_point=0.67) | 2 | 1 (50.0%) | 0 | 1 | 1 | 0 |
+
+**Per-ruleset stats:** all three rulesets emit IDENTICAL pattern-level outcomes — none of the 5 triggered patterns progressed far enough for the rulesets' post-trigger divergence (+2R / +1R BE / 50d-cross arm) to fire. The 3 rulesets are indistinguishable on this cohort.
+
+**Triggered patterns at data tail (cohort):**
+
+| Pattern | Ticker | Entry date | Days held | R-multiple |
+|---------|--------|------------|-----------|------------|
+| FRO-r19 | FRO | 2026-05-11 | 3 | -0.34R |
+| PTEN-r40 | PTEN | 2026-05-19 | 3 | -0.18R |
+| RNG-r22 | RNG | 2026-05-04 | 8 | -0.28R |
+| YOU-r22 | YOU | 2026-05-07 | 15 | +0.04R |
+| YOU-r55 | YOU | 2026-05-21 | 1 | -0.13R |
+
+Mean unrealized R across 5 open positions: **-0.18R**.
+
+**Untriggered near-miss diagnostic (max forward close as % of pivot):**
+
+The 10 untriggered patterns with non-zero forward bars came close but never crossed: max close ranges 86.3% to 99.0% of pivot. Even patterns with 21 forward bars (RLMD-r13) or 13 forward bars (FRO-r19 baseline window before triggering) failed to break above pivot. This is the signature of *marginal A+ flips* — candidates that trip the loosened criterion but never produce a launch move.
+
+### Conclusion
+
+**INSUFFICIENT POSITIVE EVIDENCE for the cfg-policy proposal** at `vcp.tightness_range_factor=1.005`.
+
+- 70.6% non-breakout rate (12 / 17 patterns; max forward close 86-99% of pivot).
+- 0% closed-trade rate under any of the 3 exit rulesets.
+- 4 / 5 triggered patterns unrealized-negative; 1 marginally positive (+0.04R after 15 days).
+- No cross-ruleset edge (all 3 rulesets emit identical outcomes on this cohort).
+- Control cohort (2 patterns) inherits the same data-tail constraints; provides no positive signal.
+
+**Interpretation:** the V2 sensitivity sweep's +75 max_delta_aplus headline at sweep_point=1.005 measures candidate-classification deltas, NOT realized-trade profitability. Loosening the tightness threshold materially increases the A+ surface by ~16x (5 → 80) — but the marginal candidates added by loosening are predominantly NON-BREAKOUT-DURING-EVAL-WINDOW patterns. The threshold relaxation captures noise more than it captures missed signal.
+
+**Limitations:**
+
+- **OHLCV cache freshness (L4-related):** 14 of 15 cohort tickers fall through to legacy archive (no Shape A); 7 tickers' legacy archives extend less than 5 business days past their first eval_run asof. This is an operator-cache state, not a V2 reader issue.
+- **Walk-forward window asymmetry:** patterns with later first_data_asof_date have fewer forward bars. Mitigated by the near-miss diagnostic — long-window patterns (RLMD-r13 at 21 bars) also fail to break out.
+- **L6 archive temporal-mutation drift:** ZERO overlap between the 14 L6-drifted candidates from the V2 full-reproduction smoke and this cohort's 15 tickers. L6 has zero direct impact on this backtest.
+- **N=5 triggered + N=0 closed:** sample size too small for statistical confidence intervals; verdict is structural (70.6% non-breakout) rather than statistical.
+
+### Forward action
+
+Operator-paired triage:
+
+- **Option A (recommended immediate):** abandon `vcp.tightness_range_factor` as the next cfg-policy substrate. Pivot to a different binding variable's backtest — e.g., `vcp.tightness_days_required` (+16 max_delta_aplus; next-most-binding).
+- **Option B (operator-paired follow-up):** refresh OHLCV Shape A archives for the 14 stale-cache tickers via production pipeline runs; re-run the backtest with full data tail through 2026-05-22. Low-cost archive-state recovery; closes the data-sparsity caveat.
+- **Option C (V2.5/V3):** multi-quarter walk-forward window (e.g., VCP breakouts triggered 2024 + 2025 with full forward-walk to 2026). Provides statistical power for variable-by-variable backtest claims; substantially larger dispatch.
+
