@@ -2085,3 +2085,92 @@ def test_baseline_parity_filters_persisted_error_bucket(tmp_path):
         f"Got tier1_match={result.baseline_parity.tier1_match}, "
         f"mismatch_candidates={result.baseline_parity.tier1_mismatch_candidates}."
     )
+
+
+def test_baseline_parity_filter_does_not_swallow_legitimate_skip_tier1_drift(tmp_path):
+    """NEGATIVE CONTROL for the sentinel-bucket filter (CLAUDE.md gotcha #25).
+
+    Discriminates the filter scope: ONLY persisted_bucket in {'excluded',
+    'error'} is filtered. Legitimate persisted_bucket='skip' / 'watch' / 'aplus'
+    candidates whose V2 evaluator output diverges from V1 persisted MUST still
+    be captured as tier-1 drift. Guards against a future maintainer accidentally
+    over-broadening the filter (e.g., `if cand_row.persisted_bucket: continue`
+    catches all truthy buckets and silently swallows real drift).
+
+    Pattern: plant a candidate with persisted_bucket='skip',
+    risk_feasibility_result='pass' (tier-1 per classify_candidate_tier).
+    Force a drift by monkey-patching sweep_mod.evaluate_one to return
+    bucket='watch'. The skip->watch drift MUST appear in
+    tier1_mismatch_candidates -- the filter must NOT swallow it.
+
+    Brief Section 2 test #3 (negative control).
+    """
+    db_path = _build_test_db(tmp_path)
+    _seed_eval_run(db_path, 1, "2026-04-30")
+
+    universe_tickers = [f"ZZU{i:03d}" for i in range(100)]
+    for t in universe_tickers:
+        _make_shape_a_parquet(tmp_path / f"{t}.yfinance.parquet", n_bars=250)
+    _make_shape_a_parquet(
+        tmp_path / "SPY.yfinance.parquet", n_bars=250, sentinel_close=500.0
+    )
+
+    # Plant a LEGITIMATE candidate: persisted_bucket='skip',
+    # risk_feasibility_result='pass' (tier-1 per classify_candidate_tier).
+    # This candidate is NOT a sentinel; V1 evaluated criteria for it.
+    _make_shape_a_parquet(tmp_path / "ZZLEGIT1.yfinance.parquet", n_bars=250)
+    _seed_candidate(
+        db_path, eval_run_id=1, ticker="ZZLEGIT1", bucket="skip",
+        risk_feasibility_result="pass",
+    )
+
+    universe_csv = _make_universe_csv(tmp_path, universe_tickers)
+    cfg = _cfg_with_universe(universe_csv)
+
+    cfg_obj = Config.from_defaults()
+    current_rs_rank = cfg_obj.rs.rs_rank_min_pass
+    var = _make_variable(
+        "rs.rs_rank_min_pass", current_value=current_rs_rank,
+        sweep_points=(current_rs_rank,),
+    )
+
+    # Force V2 evaluator to drift from V1 persisted 'skip' (always return
+    # 'watch' regardless of cfg / input). Mirrors the existing pattern at
+    # test_baseline_parity_flip_still_records_persisted_bucket_as_old_bucket.
+    from research.harness.aplus_v2_ohlcv_evaluator import sweep as sweep_mod
+    original_evaluate = sweep_mod.evaluate_one
+
+    def _drift_evaluate(ctx):
+        mock = MagicMock()
+        mock.bucket = "watch"
+        mock.criteria = ()
+        return mock
+
+    sweep_mod.evaluate_one = _drift_evaluate
+    try:
+        from research.harness.aplus_v2_ohlcv_evaluator.sweep import run_v2_sweep
+        conn = sqlite3.connect(str(db_path))
+        result = run_v2_sweep(
+            conn,
+            variables=(var,),
+            cfg=cfg,
+            cache_dir=tmp_path,
+            eval_runs_window=5,
+            min_universe_size=50,
+        )
+        conn.close()
+    finally:
+        sweep_mod.evaluate_one = original_evaluate
+
+    # DISCRIMINATING (negative control): legitimate skip->watch drift MUST
+    # still surface as tier-1 mismatch. The filter must NOT swallow it.
+    assert "ZZLEGIT1:1" in set(result.baseline_parity.tier1_mismatch_candidates), (
+        "Legitimate persisted_bucket='skip' candidate with real V1<->V2 drift "
+        "MUST appear in tier1_mismatch_candidates. The sentinel-bucket filter "
+        "must ONLY catch {'excluded', 'error'}, NOT broader buckets. "
+        f"tier1_mismatch_candidates={result.baseline_parity.tier1_mismatch_candidates}."
+    )
+    assert result.baseline_parity.tier1_match is False, (
+        "Tier-1 parity must FAIL with one legitimate skip->watch drift. "
+        f"Got tier1_match={result.baseline_parity.tier1_match}."
+    )
