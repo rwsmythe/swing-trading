@@ -136,12 +136,13 @@ def _seed_candidate(
     ticker: str,
     bucket: str,
     risk_feasibility_result: str | None = "pass",
+    notes: str | None = None,
 ) -> int:
     conn = sqlite3.connect(str(db_path))
     cursor = conn.execute(
-        "INSERT INTO candidates (evaluation_run_id, ticker, bucket, rs_method)"
-        " VALUES (?, ?, ?, 'unavailable')",
-        (eval_run_id, ticker, bucket),
+        "INSERT INTO candidates (evaluation_run_id, ticker, bucket, rs_method, notes)"
+        " VALUES (?, ?, ?, 'unavailable', ?)",
+        (eval_run_id, ticker, bucket, notes),
     )
     candidate_id = cursor.lastrowid
     if risk_feasibility_result is not None:
@@ -1903,4 +1904,273 @@ def test_baseline_parity_flip_still_records_persisted_bucket_as_old_bucket(tmp_p
     )
     assert bp_flip.new_bucket == "watch", (
         f"Expected new_bucket='watch' (V2 recomputed), got {bp_flip.new_bucket!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Gotcha #25 -- sentinel-bucket parity-comparison discipline
+# Fix #1: bucket='excluded' filter; Fix #2: bucket='error' filter
+# Investigation: docs/v2-dhc-uco-vsat-drift-investigation-2026-05-24.md Section 5.1
+# ---------------------------------------------------------------------------
+
+def test_baseline_parity_filters_persisted_excluded_open_position_and_blocklist(tmp_path):
+    """V2 baseline parity MUST filter persisted bucket='excluded' candidates.
+
+    V1 production at swing/pipeline/runner.py:1105-1141 short-circuits criterion
+    evaluation for two excluded-ticker classes -- open positions (held_set) and
+    ETF/fund blocklist (cfg.etf_exclusion.manual_block) -- writing
+    Candidate(bucket='excluded', criteria=(), notes='open position'|'ETF/fund
+    blocklist', ...) directly.
+
+    V2's evaluate_one cannot produce 'excluded' (bucket_for at
+    swing/evaluation/scoring.py:13-39 returns only {aplus, watch, skip}).
+    A naive parity comparison flags every excluded candidate as tier-1 drift
+    false-positive.
+
+    Codex R1.C1 (commit 624e3e1) promoted classify_candidate_tier(
+    persisted_risk_result=None) from tier-2 to tier-1. Excluded candidates have
+    risk_result=None because criteria=() means zero candidate_criteria rows;
+    the R1.C1 fix inadvertently promoted these false-positives from informational
+    tier-2 to BLOCKING tier-1.
+
+    Per CLAUDE.md cumulative gotcha #25 (sentinel-bucket parity-comparison
+    discipline), _compute_baseline_parity MUST filter persisted_bucket='excluded'
+    candidates before invoking V2 evaluate_one.
+    """
+    db_path = _build_test_db(tmp_path)
+    _seed_eval_run(db_path, 1, "2026-04-30")
+
+    # Plant 100 universe tickers + SPY for RS universe construction
+    universe_tickers = [f"ZZU{i:03d}" for i in range(100)]
+    for t in universe_tickers:
+        _make_shape_a_parquet(tmp_path / f"{t}.yfinance.parquet", n_bars=250)
+    _make_shape_a_parquet(
+        tmp_path / "SPY.yfinance.parquet", n_bars=250, sentinel_close=500.0
+    )
+
+    # Open-position excluded candidate (mirrors V1 production shape exactly:
+    # bucket='excluded', criteria=() -> risk_feasibility_result=None,
+    # notes='open position' per swing/pipeline/runner.py:1134).
+    _make_shape_a_parquet(tmp_path / "ZZEXCL1.yfinance.parquet", n_bars=250)
+    _seed_candidate(
+        db_path, eval_run_id=1, ticker="ZZEXCL1", bucket="excluded",
+        risk_feasibility_result=None, notes="open position",
+    )
+
+    # ETF/fund blocklist excluded candidate
+    _make_shape_a_parquet(tmp_path / "ZZEXCL2.yfinance.parquet", n_bars=250)
+    _seed_candidate(
+        db_path, eval_run_id=1, ticker="ZZEXCL2", bucket="excluded",
+        risk_feasibility_result=None, notes="ETF/fund blocklist",
+    )
+
+    universe_csv = _make_universe_csv(tmp_path, universe_tickers)
+    cfg = _cfg_with_universe(universe_csv)
+
+    cfg_obj = Config.from_defaults()
+    current_rs_rank = cfg_obj.rs.rs_rank_min_pass
+    var = _make_variable(
+        "rs.rs_rank_min_pass", current_value=current_rs_rank,
+        sweep_points=(current_rs_rank,),
+    )
+
+    from research.harness.aplus_v2_ohlcv_evaluator.sweep import run_v2_sweep
+
+    conn = sqlite3.connect(str(db_path))
+    result = run_v2_sweep(
+        conn,
+        variables=(var,),
+        cfg=cfg,
+        cache_dir=tmp_path,
+        eval_runs_window=5,
+        min_universe_size=50,
+    )
+    conn.close()
+
+    # DISCRIMINATING: excluded candidates MUST NOT appear in tier1_mismatch_candidates.
+    excluded_keys = {"ZZEXCL1:1", "ZZEXCL2:1"}
+    mismatch_set = set(result.baseline_parity.tier1_mismatch_candidates)
+    leaked = excluded_keys & mismatch_set
+    assert not leaked, (
+        "V2 baseline parity must FILTER persisted bucket='excluded' candidates "
+        "(CLAUDE.md gotcha #25; investigation 2026-05-24 Section 5.1). "
+        f"Excluded candidates leaked into tier1_mismatch_candidates: {sorted(leaked)}. "
+        f"Full tier1_mismatch_candidates={result.baseline_parity.tier1_mismatch_candidates}."
+    )
+    # With only excluded candidates planted, tier-1 parity must PASS post-filter
+    # (zero candidates compared -> no mismatches possible).
+    assert result.baseline_parity.tier1_match is True, (
+        "Tier-1 parity must be PASS when only excluded candidates exist. "
+        f"Got tier1_match={result.baseline_parity.tier1_match}, "
+        f"mismatch_candidates={result.baseline_parity.tier1_mismatch_candidates}."
+    )
+
+
+def test_baseline_parity_filters_persisted_error_bucket(tmp_path):
+    """V2 baseline parity MUST also filter persisted bucket='error' candidates.
+
+    V1 production at swing/pipeline/runner.py:1142-1149 writes
+    Candidate(bucket='error', criteria=(), notes='OHLCV fetch failed', ...)
+    for tickers in error_tickers (OHLCV fetch failures during _step_evaluate).
+
+    Same architectural argument as bucket='excluded' (gotcha #25 + investigation
+    Section 4.5 V2 candidate #3 + Section 9 open question #2): V2's evaluate_one
+    cannot produce 'error' (bucket_for returns only {aplus, watch, skip});
+    errors are handled via raised exceptions, not return values. The error
+    candidate's criteria=() means risk_result=None -> tier-1 per Codex R1.C1.
+    Naive comparison would flag every error candidate as tier-1 drift
+    false-positive (same failure mode as 'excluded').
+
+    Defense-in-depth: even with no current error candidates in operator's
+    eval_runs 60-64, future OHLCV fetch failures would surface the same
+    false-positive class without this filter.
+    """
+    db_path = _build_test_db(tmp_path)
+    _seed_eval_run(db_path, 1, "2026-04-30")
+
+    # Plant 100 universe tickers + SPY for RS universe construction
+    universe_tickers = [f"ZZU{i:03d}" for i in range(100)]
+    for t in universe_tickers:
+        _make_shape_a_parquet(tmp_path / f"{t}.yfinance.parquet", n_bars=250)
+    _make_shape_a_parquet(
+        tmp_path / "SPY.yfinance.parquet", n_bars=250, sentinel_close=500.0
+    )
+
+    # OHLCV fetch failed candidate (mirrors V1 production shape:
+    # bucket='error', criteria=() -> risk_feasibility_result=None,
+    # notes='OHLCV fetch failed' per swing/pipeline/runner.py:1148).
+    # Plant the parquet so V2's reader can still read bars (the production
+    # error here was upstream OHLCV fetch; V2 reading the cached parquet would
+    # succeed and recompute a non-'error' bucket -- exactly the false-positive
+    # class this filter defends against).
+    _make_shape_a_parquet(tmp_path / "ZZERR1.yfinance.parquet", n_bars=250)
+    _seed_candidate(
+        db_path, eval_run_id=1, ticker="ZZERR1", bucket="error",
+        risk_feasibility_result=None, notes="OHLCV fetch failed",
+    )
+
+    universe_csv = _make_universe_csv(tmp_path, universe_tickers)
+    cfg = _cfg_with_universe(universe_csv)
+
+    cfg_obj = Config.from_defaults()
+    current_rs_rank = cfg_obj.rs.rs_rank_min_pass
+    var = _make_variable(
+        "rs.rs_rank_min_pass", current_value=current_rs_rank,
+        sweep_points=(current_rs_rank,),
+    )
+
+    from research.harness.aplus_v2_ohlcv_evaluator.sweep import run_v2_sweep
+
+    conn = sqlite3.connect(str(db_path))
+    result = run_v2_sweep(
+        conn,
+        variables=(var,),
+        cfg=cfg,
+        cache_dir=tmp_path,
+        eval_runs_window=5,
+        min_universe_size=50,
+    )
+    conn.close()
+
+    # DISCRIMINATING: error candidate MUST NOT appear in tier1_mismatch_candidates.
+    mismatch_set = set(result.baseline_parity.tier1_mismatch_candidates)
+    assert "ZZERR1:1" not in mismatch_set, (
+        "V2 baseline parity must FILTER persisted bucket='error' candidates "
+        "(CLAUDE.md gotcha #25; investigation 2026-05-24 Section 4.5 V2 #3). "
+        f"Error candidate leaked into tier1_mismatch_candidates: "
+        f"{result.baseline_parity.tier1_mismatch_candidates}."
+    )
+    assert result.baseline_parity.tier1_match is True, (
+        "Tier-1 parity must be PASS when only error candidates exist. "
+        f"Got tier1_match={result.baseline_parity.tier1_match}, "
+        f"mismatch_candidates={result.baseline_parity.tier1_mismatch_candidates}."
+    )
+
+
+def test_baseline_parity_filter_does_not_swallow_legitimate_skip_tier1_drift(tmp_path):
+    """NEGATIVE CONTROL for the sentinel-bucket filter (CLAUDE.md gotcha #25).
+
+    Discriminates the filter scope: ONLY persisted_bucket in {'excluded',
+    'error'} is filtered. Legitimate persisted_bucket='skip' / 'watch' / 'aplus'
+    candidates whose V2 evaluator output diverges from V1 persisted MUST still
+    be captured as tier-1 drift. Guards against a future maintainer accidentally
+    over-broadening the filter (e.g., `if cand_row.persisted_bucket: continue`
+    catches all truthy buckets and silently swallows real drift).
+
+    Pattern: plant a candidate with persisted_bucket='skip',
+    risk_feasibility_result='pass' (tier-1 per classify_candidate_tier).
+    Force a drift by monkey-patching sweep_mod.evaluate_one to return
+    bucket='watch'. The skip->watch drift MUST appear in
+    tier1_mismatch_candidates -- the filter must NOT swallow it.
+
+    Brief Section 2 test #3 (negative control).
+    """
+    db_path = _build_test_db(tmp_path)
+    _seed_eval_run(db_path, 1, "2026-04-30")
+
+    universe_tickers = [f"ZZU{i:03d}" for i in range(100)]
+    for t in universe_tickers:
+        _make_shape_a_parquet(tmp_path / f"{t}.yfinance.parquet", n_bars=250)
+    _make_shape_a_parquet(
+        tmp_path / "SPY.yfinance.parquet", n_bars=250, sentinel_close=500.0
+    )
+
+    # Plant a LEGITIMATE candidate: persisted_bucket='skip',
+    # risk_feasibility_result='pass' (tier-1 per classify_candidate_tier).
+    # This candidate is NOT a sentinel; V1 evaluated criteria for it.
+    _make_shape_a_parquet(tmp_path / "ZZLEGIT1.yfinance.parquet", n_bars=250)
+    _seed_candidate(
+        db_path, eval_run_id=1, ticker="ZZLEGIT1", bucket="skip",
+        risk_feasibility_result="pass",
+    )
+
+    universe_csv = _make_universe_csv(tmp_path, universe_tickers)
+    cfg = _cfg_with_universe(universe_csv)
+
+    cfg_obj = Config.from_defaults()
+    current_rs_rank = cfg_obj.rs.rs_rank_min_pass
+    var = _make_variable(
+        "rs.rs_rank_min_pass", current_value=current_rs_rank,
+        sweep_points=(current_rs_rank,),
+    )
+
+    # Force V2 evaluator to drift from V1 persisted 'skip' (always return
+    # 'watch' regardless of cfg / input). Mirrors the existing pattern at
+    # test_baseline_parity_flip_still_records_persisted_bucket_as_old_bucket.
+    from research.harness.aplus_v2_ohlcv_evaluator import sweep as sweep_mod
+    original_evaluate = sweep_mod.evaluate_one
+
+    def _drift_evaluate(ctx):
+        mock = MagicMock()
+        mock.bucket = "watch"
+        mock.criteria = ()
+        return mock
+
+    sweep_mod.evaluate_one = _drift_evaluate
+    try:
+        from research.harness.aplus_v2_ohlcv_evaluator.sweep import run_v2_sweep
+        conn = sqlite3.connect(str(db_path))
+        result = run_v2_sweep(
+            conn,
+            variables=(var,),
+            cfg=cfg,
+            cache_dir=tmp_path,
+            eval_runs_window=5,
+            min_universe_size=50,
+        )
+        conn.close()
+    finally:
+        sweep_mod.evaluate_one = original_evaluate
+
+    # DISCRIMINATING (negative control): legitimate skip->watch drift MUST
+    # still surface as tier-1 mismatch. The filter must NOT swallow it.
+    assert "ZZLEGIT1:1" in set(result.baseline_parity.tier1_mismatch_candidates), (
+        "Legitimate persisted_bucket='skip' candidate with real V1<->V2 drift "
+        "MUST appear in tier1_mismatch_candidates. The sentinel-bucket filter "
+        "must ONLY catch {'excluded', 'error'}, NOT broader buckets. "
+        f"tier1_mismatch_candidates={result.baseline_parity.tier1_mismatch_candidates}."
+    )
+    assert result.baseline_parity.tier1_match is False, (
+        "Tier-1 parity must FAIL with one legitimate skip->watch drift. "
+        f"Got tier1_match={result.baseline_parity.tier1_match}."
     )
