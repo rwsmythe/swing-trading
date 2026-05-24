@@ -272,6 +272,16 @@ def _write_matrix_section(lines: list[str], result: SweepResultV2) -> None:
 def _write_drilldown_section(lines: list[str], result: SweepResultV2) -> None:
     """Section 6: per-variable drill-down (FlippedCandidate provenance).
 
+    Codex R2.M2 FIX: FlippedCandidate.variable_name is now the canonical
+    attribution key. Flips with variable_name=None are baseline-parity-derived
+    and rendered in a dedicated '## V1<->V2 Baseline Parity Drift' subsection
+    ONLY -- NOT in per-variable drill-downs. Per-variable drill-downs only
+    include flips where variable_name == var.name.
+
+    Pre-fix: attribution used sweep_point matching alone; a baseline flip at
+    sweep_point=70.0 would appear under ANY variable that sweeps 70.0 even
+    though no variable substitution caused it (misattribution).
+
     Empty-state: literal '(none)' per cumulative T3.SB3 gotcha.
     bucket_via_surrogate rendered per OQ-15.
     V1 simplification: old_criterion_failure is always '(none)' per
@@ -283,36 +293,29 @@ def _write_drilldown_section(lines: list[str], result: SweepResultV2) -> None:
     lines.append("V2 candidate: compute from persisted candidate_criteria rows.")
     lines.append("")
 
-    # Group flipped candidates by variable_name (from sweep_point context)
-    # Since FlippedCandidate doesn't store variable_name, group by eval_run_id
-    # and present all flipped candidates together per variable found in entries.
-    # Per the plan: drill-down groups by variable_name from entries.
-
-    # Build a per-variable_name set of candidate keys from entries
-    variable_names = []
+    # Build per-variable_name list from entries (preserving order)
+    variable_names: list[str] = []
     seen_vars: set[str] = set()
     for e in result.entries:
         if e.variable_name not in seen_vars:
             variable_names.append(e.variable_name)
             seen_vars.add(e.variable_name)
 
-    # Map sweep_point -> variable_name for flipped lookup
-    # (FlippedCandidate carries sweep_point but not variable_name;
-    # use sweep_points that appear in each variable's entries to associate)
-    var_to_sweep_points: dict[str, set[float | int]] = {}
-    for e in result.entries:
-        var_to_sweep_points.setdefault(e.variable_name, set()).add(e.sweep_point)
-
-    # Build per-variable flip lookup from flipped list
-    # When multiple variables share the same sweep_point, a flipped candidate
-    # at that point is ambiguous -- conservatively list under ALL variables
-    # that contain that sweep_point.
+    # Partition flipped candidates:
+    #   variable_name is None  -> baseline-parity flip (rendered in baseline section)
+    #   variable_name is str   -> per-variable flip (rendered in that variable's drill-down)
     var_to_flipped: dict[str, list[FlippedCandidate]] = {v: [] for v in variable_names}
-    for fc in result.flipped:
-        for var_name, sp_set in var_to_sweep_points.items():
-            if fc.sweep_point in sp_set:
-                var_to_flipped[var_name].append(fc)
+    baseline_flipped: list[FlippedCandidate] = []
 
+    for fc in result.flipped:
+        if fc.variable_name is None:
+            baseline_flipped.append(fc)
+        elif fc.variable_name in var_to_flipped:
+            var_to_flipped[fc.variable_name].append(fc)
+        # If variable_name not in entries (e.g., orphan from truncated run),
+        # append to the variable's list if present; otherwise silently skip.
+
+    # --- Per-variable subsections ---
     for var_name in variable_names:
         lines.append(f"### {var_name}")
         lines.append("")
@@ -329,6 +332,34 @@ def _write_drilldown_section(lines: list[str], result: SweepResultV2) -> None:
         )
         lines.append("| --- | --- | --- | --- | --- | --- | --- | --- |")
         for fc in flipped_for_var:
+            surrogate_note = "(via current_equity surrogate)" if fc.bucket_via_surrogate else "no"
+            lines.append(
+                f"| {fc.ticker} | {fc.eval_run_id} | {fc.data_asof_date}"
+                f" | {fc.sweep_point} | {fc.old_bucket} | {fc.new_bucket}"
+                f" | {fc.old_criterion_failure} | {surrogate_note} |"
+            )
+        lines.append("")
+
+    # --- Dedicated baseline parity drift subsection (Codex R2.M2) ---
+    lines.append("## V1<->V2 Baseline Parity Drift")
+    lines.append("")
+    lines.append(
+        "Flips detected during baseline-parity pass (no variable substitution; "
+        "cfg used unmodified). These indicate bucket divergence between persisted "
+        "V1 evaluation and live V2 recompute at the same cfg."
+    )
+    lines.append("")
+    if not baseline_flipped:
+        lines.append("(none)")
+        lines.append("")
+    else:
+        lines.append(
+            "| ticker | eval_run_id | data_asof_date | sweep_point"
+            " | old_bucket | new_bucket | old_criterion_failure"
+            " | bucket_via_surrogate |"
+        )
+        lines.append("| --- | --- | --- | --- | --- | --- | --- | --- |")
+        for fc in baseline_flipped:
             surrogate_note = "(via current_equity surrogate)" if fc.bucket_via_surrogate else "no"
             lines.append(
                 f"| {fc.ticker} | {fc.eval_run_id} | {fc.data_asof_date}"

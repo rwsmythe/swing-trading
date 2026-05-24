@@ -73,6 +73,7 @@ def _make_flipped(
     new_bucket: str = "aplus",
     old_criterion_failure: str = "(none)",
     bucket_via_surrogate: bool = False,
+    variable_name: str | None = "rs.rs_rank_min_pass",
 ) -> FlippedCandidate:
     return FlippedCandidate(
         ticker=ticker,
@@ -83,6 +84,7 @@ def _make_flipped(
         new_bucket=new_bucket,
         old_criterion_failure=old_criterion_failure,
         bucket_via_surrogate=bucket_via_surrogate,
+        variable_name=variable_name,
     )
 
 
@@ -694,4 +696,107 @@ def test_criterion_drift_section_suppressed_when_no_mismatch(tmp_path: Path) -> 
     assert "CRITERION DRIFT" not in text, (
         f"Unexpected CRITERION DRIFT section emitted when tier1_match=True.\n"
         f"Found headings: {[line for line in text.splitlines() if line.startswith('#')]}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 15 (NEW): Codex R2.M2 -- baseline-parity flips appear ONLY in
+#   dedicated baseline section, NOT in per-variable drill-down
+# ---------------------------------------------------------------------------
+
+def test_baseline_parity_flips_appear_only_in_baseline_section(tmp_path: Path) -> None:
+    """Codex R2.M2 discriminating test: when a FlippedCandidate has
+    variable_name=None (baseline-parity flip), it must appear in the dedicated
+    '## V1<->V2 Baseline Parity Drift' section (or equivalent baseline section),
+    NOT in the per-variable drill-down section for any variable.
+
+    Pre-fix: output.py groups all flips by sweep_point matching; a baseline flip
+    at sweep_point=70.0 also appears under any variable that sweeps 70.0.
+    Post-fix: variable_name=None flips go to baseline section only; per-variable
+    drill-down only includes flips where variable_name == var.name.
+    """
+    from research.harness.aplus_v2_ohlcv_evaluator.output import write_sensitivity_markdown_v2
+    from research.harness.aplus_v2_ohlcv_evaluator.sweep import FlippedCandidate
+
+    # Baseline flip at sweep_point=70.0 (same point as the variable below)
+    baseline_flip = FlippedCandidate(
+        ticker="BPARITY",
+        eval_run_id=1,
+        data_asof_date="2026-04-30",
+        sweep_point=70.0,
+        old_bucket="skip",
+        new_bucket="aplus",
+        old_criterion_failure="(none)",
+        bucket_via_surrogate=False,
+        variable_name=None,  # baseline parity sentinel
+    )
+    # Variable flip for rs.rs_rank_min_pass at the same sweep_point=70.0
+    var_flip = FlippedCandidate(
+        ticker="VFLIP",
+        eval_run_id=1,
+        data_asof_date="2026-04-30",
+        sweep_point=70.0,
+        old_bucket="watch",
+        new_bucket="aplus",
+        old_criterion_failure="(none)",
+        bucket_via_surrogate=False,
+        variable_name="rs.rs_rank_min_pass",
+    )
+    entries = (_make_entry("rs.rs_rank_min_pass", "threshold_additive", 70.0, delta_aplus=1),)
+    result = _make_result(entries=entries, flipped=(baseline_flip, var_flip))
+    md_path = tmp_path / "sensitivity.md"
+    write_sensitivity_markdown_v2(result, md_path)
+
+    text = md_path.read_text(encoding="utf-8")
+    lines = text.splitlines()
+
+    # Find per-variable drill-down section for rs.rs_rank_min_pass
+    # and baseline parity section boundaries
+    in_rs_section = False
+    in_baseline_section = False
+    rs_section_lines: list[str] = []
+    baseline_section_lines: list[str] = []
+
+    for line in lines:
+        # Track section boundaries (H3 = variable-level; H2 = top-level section)
+        if line.startswith("### rs.rs_rank_min_pass"):
+            in_rs_section = True
+            in_baseline_section = False
+            continue
+        if line.startswith("## ") and in_rs_section:
+            in_rs_section = False
+        if line.startswith("### ") and in_rs_section:
+            # next sub-section under drill-down
+            in_rs_section = False
+        # Baseline section detection (flexible: any heading containing "Baseline Parity")
+        if line.startswith("## ") and "Baseline Parity" in line:
+            in_baseline_section = True
+            in_rs_section = False
+            continue
+        if line.startswith("## ") and in_baseline_section:
+            in_baseline_section = False
+
+        if in_rs_section:
+            rs_section_lines.append(line)
+        if in_baseline_section:
+            baseline_section_lines.append(line)
+
+    # BPARITY (baseline flip) must NOT appear in the per-variable drill-down
+    rs_text = "\n".join(rs_section_lines)
+    assert "BPARITY" not in rs_text, (
+        "Baseline-parity flip (variable_name=None) must NOT appear in per-variable "
+        f"drill-down section. Found in rs.rs_rank_min_pass section:\n{rs_text}"
+    )
+
+    # VFLIP (variable flip) must appear in the per-variable drill-down
+    assert "VFLIP" in rs_text, (
+        "Variable flip (variable_name='rs.rs_rank_min_pass') must appear in "
+        f"per-variable drill-down. rs section content:\n{rs_text}"
+    )
+
+    # BPARITY must appear in the baseline section
+    baseline_text = "\n".join(baseline_section_lines)
+    assert "BPARITY" in baseline_text, (
+        "Baseline-parity flip (variable_name=None) must appear in the dedicated "
+        f"'## ... Baseline Parity' section. Full text:\n{text[:2000]}"
     )
