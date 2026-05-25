@@ -1,0 +1,23 @@
+{
+  "cache_dir": "C:\\Users\\rwsmy\\swing-data\\prices-cache",
+  "cohort_csv_path": "tests\\fixtures\\research\\double_bottom_w_backtest\\cohort.json",
+  "cohort_csv_sha256": "53fa93eb25ee3fccc907ab04c4d3d585638ff8b6d39878dc1945ec7bca33748c",
+  "composite_threshold": 0.7,
+  "finished_at_utc": "2026-05-25T21:36:38.943730+00:00",
+  "harness_name": "double_bottom_w_backtest",
+  "harness_version": "0.1.0",
+  "l2_lock_preserved": true,
+  "max_trigger_search_business_days": 60,
+  "n_distinct_tickers": 10,
+  "n_patterns_after_recency_filter": 13,
+  "n_trades_emitted": 39,
+  "n_unique_verdicts_pre_filter": 172,
+  "n_verdicts_after_adjacency_merge": 172,
+  "recency_max_calendar_days": 60,
+  "runtime_seconds": 0.168345,
+  "skipped_patterns": {
+    "ohlcv_empty": 0,
+    "ohlcv_missing": 0
+  },
+  "started_at_utc": "2026-05-25T21:36:38.775385+00:00"
+}
