@@ -48,6 +48,13 @@ exports/*
 exports/diagnostics/*
 !exports/diagnostics/*.csv
 !exports/diagnostics/*.md
+# Research-arc cohort substrates (operator-supplied inputs to research harnesses;
+# tracked for reproducibility per Option D pattern_cohort_evaluator dispatch arc).
+!exports/research
+exports/research/*
+!exports/research/cohorts
+exports/research/cohorts/*
+!exports/research/cohorts/*.csv
 
 # Broker statements (personal financial data)
 thinkorswim/
