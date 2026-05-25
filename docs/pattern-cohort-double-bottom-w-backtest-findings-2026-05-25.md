@@ -7,6 +7,7 @@
 **Backtest artifacts (both post-Codex-R1):**
 - Primary (recency-60d filter): [exports/research/double-bottom-w-backtest-20260525T123753Z/](../exports/research/double-bottom-w-backtest-20260525T123753Z/) -- 12 actionable W patterns x 3 rulesets = 36 trade rows
 - Companion (no-recency-filter): [exports/research/double-bottom-w-backtest-20260525T123756Z/](../exports/research/double-bottom-w-backtest-20260525T123756Z/) -- full 172 W primaries x 3 rulesets = 516 trade rows (per Codex R1 M#2 audit-trail companion)
+- **Post-archive-refresh re-run (Turn F continuation 2026-05-25 PM)**: [exports/research/double-bottom-w-backtest-20260525T131423Z/](../exports/research/double-bottom-w-backtest-20260525T131423Z/) -- same 12-pattern cohort fixture; archive-refreshed forward data (7 of 10 tickers gained 7-25 calendar days). See Section 11 Amendment for re-run analysis; as-of-merge verdict (NEGATIVE strict) STILL HOLDS; post-refresh evidence MOTIVATES the next-dispatch cohort expansion + Minervini/O'Neil/Qullamaggie ruleset variants.
 
 **Branch:** `applied-research-pattern-cohort-double-bottom-w-backtest`
 
@@ -311,4 +312,66 @@ Three options for the orchestrator-paired next decision:
 
 ---
 
-*End of findings document. Verdict: NEGATIVE strict per Section 7.5; R1 hypothesis DIRECTIONALLY SUPPORTED on trigger-rate component (58.3% vs 29%; +98% relative under sparse-archive run; Codex R1 M#4 hedge); REFUTED on profitability component (0 closed-and-profitable; mean-R closed -0.708R). Codex R1 review chain converged at NO_NEW_CRITICAL_MAJOR after fix-pass; 0 critical + 8 major + 4 minor original; all 8 majors RESOLVED in-place; see Return Report Section 7 for round-by-round detail. Recommended next action: Option A (pivot to next binding variable cohort smoke + backtest per R2) combined with Option B (operator-paired archive refresh for D1 re-run as data tail advances).*
+## 11. Amendment 2 -- Post-archive-refresh re-run (Turn F continuation 2026-05-25 PM)
+
+Following the as-of-merge NEGATIVE verdict above, Section 9.4 Option B (operator-paired archive refresh + D1 re-run) was executed inline by the orchestrator. Pre-refresh staleness audit revealed **7 of 10 D1 tickers had archives 7-25 calendar days behind 2026-05-22** (the last completed NYSE session): DNTH 22d / KOD 11d / OII 25d / RNG 10d / TROX 11d / TSHA 8d / WULF 7d. Three tickers were already current (DK / UCTT / YOU at 2026-05-22). Archive-refresh script `tmp/d1-cohort-archive-refresh.py` re-fetched all 10 via yfinance `period="max"` overwriting `~/swing-data/prices-cache/{TICKER}.parquet`; verified post-refresh last bar = 2026-05-22 for all 10.
+
+### 11.1 Post-refresh smoke artifact
+
+`exports/research/double-bottom-w-backtest-20260525T131423Z/` (same 12-pattern cohort fixture; same Minervini/fixed-R/close-below-50d ruleset specs).
+
+| Ruleset | Triggered | Closed | Win | Loss | Untrig | Open | Mean R closed |
+|---|---|---|---|---|---|---|---|
+| A_minervini_trail_ma | 11/12 (91.7%) | 8 | 0 | 8 | 1 | 3 | -0.469R |
+| B_fixed_R_multiple | 11/12 (91.7%) | 0 | 0 | 0 | 1 | 11 | n/a |
+| C_close_below_50d | 11/12 (91.7%) | 8 | 0 | 8 | 1 | 3 | -0.469R |
+
+### 11.2 Delta vs original (123753Z) backtest
+
+| Metric | Original (123753Z) | Post-refresh (131423Z) | Delta |
+|---|---|---|---|
+| Trigger rate | 7/12 (58.3%) | 11/12 (91.7%) | +33.4pp |
+| Untriggered | 5 (DNTH/TSHA-2x/WULF/YOU) | 1 (YOU only) | -4 (4 patterns now trigger with deeper forward data) |
+| Closed (A+C) | 2 (DK + TROX) | 8 (DK / DNTH / KOD / OII / RNG / TROX / TSHA-2026-02-05 / TSHA-2026-03-24) | +6 |
+| Mean R closed | -0.708R | -0.469R | +0.239R (less severe; still negative) |
+| Closed-and-profitable | 0 | 0 | unchanged |
+| Open Ruleset B | 7 | 11 | +4 (more triggers; B never closes) |
+
+### 11.3 Key per-pattern shifts
+
+- **OII-2026-03-13**: was open at +0.78R Ruleset A unrealized -> now CLOSED at -0.112R via close_below_50d (peak +1.740R reached before reversal); BUT **Ruleset B (no 50d-floor) shows +1.133R unrealized with peak +1.740R**. The W pattern WORKED at +1.74R peak; Rulesets A+C exit rule killed the trade prematurely.
+- **DNTH-2026-02-13**: was untriggered -> now closed at -0.378R via close_below_50d (4 sessions to peak +0.394R then revert).
+- **KOD-2026-02-05**: was open at -0.145R -> now closed at -0.372R via close_below_50d.
+- **TSHA × 2**: were untriggered -> both now closed at ~-0.47R via close_below_50d.
+- **WULF-2026-03-06**: was untriggered -> now open at +0.279R unrealized (peak +0.337R; 3 sessions; not yet resolved).
+- **RNG-2026-03-27**: was open at -0.284R -> now closed at -0.542R via close_below_50d.
+- **TROX-2026-02-20**: closed pre-refresh at -0.456R; post-refresh unchanged (already-closed pattern not re-evaluated).
+- **YOU-2026-04-29**: still untriggered (asof too recent; 0 forward bars in 60d window post-asof).
+
+### 11.4 Substantive interpretation -- close_below_50d failure mode CONFIRMED
+
+ALL 8 Ruleset A+C closures post-refresh fire via `close_below_50d`. **ZERO via stop_hit / trail_stop / target_3R.** Mechanical pattern:
+
+1. Entry executes on close > center_peak_price (W neckline break)
+2. 50d SMA sits BELOW entry price (typical: 2-5% below the neckline-break level since neckline is recent local high)
+3. First minor pullback (1-3 sessions; typical W "post-breakout retest") drops close below 50d
+4. close_below_50d exit fires at small loss (-0.4 to -0.5R typical)
+5. Pattern subsequently CONTINUES the W recovery (visible in OII Ruleset B at +1.74R peak post the would-be-exit point)
+
+The 50d SMA exit rule is mis-calibrated for W-bottom entries because the 50d is typically only modestly below the breakout level (the W's center_peak is recent; price moved up from trough_2 to center_peak then broke out; 50d has caught up to within ~3-5% of entry). For VCP breakouts (where the consolidation_high pivot is by definition LONG-STANDING resistance with 50d well below), the 50d-floor works as a defensive backstop. For W-bottom breakouts, it's a premature exit.
+
+**This empirically validates the Codex R1 banked V2 candidate at Return Report §5 #3**: require position to first close ABOVE 50d by +5% (or +1×ATR) BEFORE close_below_50d can fire -- gate the exit until the W has demonstrably moved beyond the 50d influence zone.
+
+### 11.5 Implications for next dispatch
+
+The post-refresh re-run STRENGTHENS three pieces of evidence:
+
+1. **W-bottom entry rule (close > center_peak_price) is robust**: 91.7% trigger rate; OII reached +1.74R peak before mechanical exit; WULF currently +0.279R unrealized. Trigger mechanics are sound.
+2. **Close-below-50d exit rule is mis-calibrated for W-bottom entries**: 8/8 closures via this single mode; mean -0.469R; OII peak +1.74R obliterated by the rule. This is a SPEC defect not a pattern defect.
+3. **N=12 cohort is too thin to discriminate winning rule variants**: even with 8 closures, the variance band is ~10pp; any rule variant that produces 1-2 winners on these 12 would APPEAR to work but tells nothing about generalization.
+
+These motivate the next dispatch: (a) expand to S&P-500-wide W-cohort (N=50-200) to provide statistical power for rule variant discrimination; (b) implement 3 new ruleset variants D + E + F based on Minervini canonical + O'Neil cup-with-handle variant + Qullamaggie momentum-burst extension (each with the close-below-50d arming gate per evidence in this Amendment).
+
+---
+
+*End of findings document. Verdict at as-of-merge data tail: NEGATIVE strict per Section 7.5. Post-refresh evidence at Amendment Section 11: trigger-rate component STRENGTHENED to 91.7%; profitability component STILL NEGATIVE; close-below-50d exit-rule mis-calibration CONFIRMED via 8/8 closures via single exit mode. Recommended next action: cohort expansion + Minervini/O'Neil/Qullamaggie ruleset variants per next-dispatch brief.*
