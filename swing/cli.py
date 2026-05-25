@@ -4859,6 +4859,90 @@ def diagnose_aplus_sensitivity_v2(
     click.echo(f"CSV:      {csv_path}")
 
 
+@diagnose_group.command("pattern-cohort-detect")
+@click.option(
+    "--cohort-csv", "cohort_csv", type=click.Path(path_type=Path), default=None,
+    help="Path to cohort CSV (Mode (b)); mutually exclusive with --cohort-inline.",
+)
+@click.option(
+    "--cohort-inline", "cohort_inline", type=str, default=None,
+    help="Inline 'TICKER:YYYY-MM-DD,...' spec (Mode (a)); mutually exclusive with --cohort-csv.",
+)
+@click.option(
+    "--db", "db_path", required=True, type=click.Path(path_type=Path),
+)
+@click.option(
+    "--output-dir", type=click.Path(path_type=Path),
+    default=Path("exports/research"), show_default=True,
+)
+@click.option(
+    "--window-mode", type=click.Choice(("last-only", "per-window")),
+    default="per-window", show_default=True,
+)
+@click.option(
+    "--template-match", "template_match_mode",
+    type=click.Choice(("on", "off")), default="on", show_default=True,
+)
+@click.option(
+    "--pattern-class-filter", "pattern_class_filter", type=str, default=None,
+    help="Comma-separated pattern_class filter (subset of {vcp, flat_base, "
+         "cup_with_handle, high_tight_flag, double_bottom_w}).",
+)
+def diagnose_pattern_cohort_detect(
+    cohort_csv: Path | None,
+    cohort_inline: str | None,
+    db_path: Path,
+    output_dir: Path,
+    window_mode: str,
+    template_match_mode: str,
+    pattern_class_filter: str | None,
+) -> None:
+    """Pattern cohort detector evaluator harness (research-branch only).
+
+    Invokes the 5 Phase 13 chart-shape detectors against an operator-supplied
+    cohort of (ticker, asof_date) tuples + emits per-(entry, pattern_class,
+    window) verdicts CSV + analyst-readable markdown summary + manifest JSON.
+    Designed to answer gotcha #27's silent-skip research question for
+    loosened-A+ cohorts. See research/method-records/pattern-cohort-detection.md.
+    """
+    _validate_diagnose_db_path(db_path)
+    from research.harness.pattern_cohort_evaluator.exceptions import (
+        BothCohortModesSuppliedError,
+        NeitherCohortModeSuppliedError,
+    )
+    from research.harness.pattern_cohort_evaluator.run import run_harness
+
+    filter_tuple: tuple[str, ...] | None = None
+    if pattern_class_filter:
+        filter_tuple = tuple(
+            s.strip() for s in pattern_class_filter.split(",") if s.strip()
+        )
+
+    try:
+        results_csv, summary_md, manifest_json = run_harness(
+            cohort_csv=cohort_csv,
+            cohort_inline=cohort_inline,
+            db_path=db_path,
+            output_dir=output_dir,
+            window_mode=window_mode,
+            template_match_mode=template_match_mode,
+            cli_pattern_class_filter=filter_tuple,
+        )
+    except (
+        ValueError,
+        BothCohortModesSuppliedError,
+        NeitherCohortModeSuppliedError,
+    ) as exc:
+        raise click.ClickException(str(exc)) from exc
+    except sqlite3.OperationalError as exc:
+        raise click.ClickException(
+            f"Database error reading {db_path}: {exc}",
+        ) from exc
+    click.echo(f"Results CSV: {results_csv}")
+    click.echo(f"Summary MD:  {summary_md}")
+    click.echo(f"Manifest:    {manifest_json}")
+
+
 @diagnose_group.command("metrics-wiring")
 @click.option(
     "--db", "db_path", required=True, type=click.Path(path_type=Path),
