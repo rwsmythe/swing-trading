@@ -152,9 +152,12 @@ class RulesetA:
             return close, ("stop_hit" if not state.trail_armed else "trail_stop")
 
         # Trail-arm: close >= entry + 2R (use close, not intraday High).
+        # Dispatch brief §3.1 specifies the post-arm trail rule as
+        # `max(prior_stop, SMA21 - 1*ATR)`. The brief does NOT prescribe a
+        # breakeven raise on arm; this implementation follows the brief
+        # literally (Codex R1 M#1 fix).
         if not state.trail_armed and close >= entry_price + RULESET_A_TRAIL_TRIGGER_R * initial_R:
             state.trail_armed = True
-            state.current_stop = max(state.current_stop, entry_price)  # raise to breakeven
 
         # Post-arm trail: stop = max(prior, SMA21 - 1*ATR14).
         if state.trail_armed:

@@ -39,6 +39,13 @@ from research.harness.double_bottom_w_backtest.rulesets import Ruleset
 
 MAX_TRIGGER_SEARCH_BUSINESS_DAYS = 60
 
+# Capital base for per-trade share-sizing dollar P&L (per CLAUDE.md operator
+# memory `project_capital_risk_floor`: max($7500 floor, actual_balance);
+# floor is the artificial population-of-actionable-stocks baseline).
+DEFAULT_CAPITAL_FLOOR_DOLLARS = 7500.0
+# cfg.risk.max_risk_pct = 0.005 per CLAUDE.md gotcha (0.5% per trade).
+DEFAULT_RISK_PCT = 0.005
+
 
 @dataclass(frozen=True)
 class Trade:
@@ -59,6 +66,10 @@ class Trade:
     r_multiple: float | None
     days_held: int | None
     status: str  # 'closed' | 'untriggered' | 'open' | 'error'
+    triggered: bool = False  # Codex R1 M#7
+    trade_pnl_dollars: float | None = None  # Codex R1 M#7
+    peak_unrealized_R: float | None = None  # Codex R1 M#7
+    drawdown_to_exit_R: float | None = None  # Codex R1 M#7 (peak_R - exit_R)
     forward_bars_available: int = 0
     max_forward_close: float | None = None
     max_close_pct_of_peak: float | None = None
@@ -72,6 +83,26 @@ class Trade:
         if denom <= 0:
             return None
         return denom
+
+
+def _compute_share_count(entry_price: float, initial_stop: float) -> int:
+    """Per-trade share count under fixed-risk sizing.
+
+    Capital base = max($7500 floor, actual_balance) per
+    `project_capital_risk_floor` memory. V1 backtest uses floor (no live
+    balance integration); shares = floor(capital * risk_pct / R_unit).
+    """
+    R_unit = entry_price - initial_stop
+    if R_unit <= 0:
+        return 0
+    risk_dollars = DEFAULT_CAPITAL_FLOOR_DOLLARS * DEFAULT_RISK_PCT
+    return int(risk_dollars / R_unit)
+
+
+def _compute_pnl_dollars(
+    entry_price: float, exit_price: float, shares: int
+) -> float:
+    return (exit_price - entry_price) * shares
 
 
 def _trigger_search_upper_bound(
@@ -188,6 +219,10 @@ def walk_forward(
             exit_date=entry_date, exit_price=entry_price,
             exit_reason="entry_gap_below_stop",
             r_multiple=0.0, days_held=0, status="closed",
+            triggered=True,
+            trade_pnl_dollars=0.0,
+            peak_unrealized_R=0.0,
+            drawdown_to_exit_R=0.0,
             forward_bars_available=n_fwd_window,
             max_forward_close=max_close, max_close_pct_of_peak=max_close_pct,
             days_t2_to_asof=days_t2_to_asof,
@@ -196,8 +231,18 @@ def walk_forward(
     state = ruleset.init_state(
         bars=bars, entry_idx=entry_idx, entry_price=entry_price, initial_stop=initial_stop,
     )
+    shares = _compute_share_count(entry_price, initial_stop)
+    # Peak unrealized R tracked across bars for the drawdown_to_exit_R metric
+    # per dispatch brief §4.1 + Codex R1 M#7. Uses intraday High (favorable
+    # excursion) to capture true peak; symmetric to the close-based exit
+    # semantic of the rulesets but conventional MFE accounting.
+    peak_R = 0.0
 
     for i in range(entry_idx, n_total):
+        bar_high = float(bars["High"].iloc[i])
+        bar_R = (bar_high - entry_price) / R
+        if bar_R > peak_R:
+            peak_R = bar_R
         exit_price, exit_reason = ruleset.update_and_check_exit(
             state=state, bars=bars, bar_idx=i,
             entry_price=entry_price, initial_R=R,
@@ -205,6 +250,7 @@ def walk_forward(
         if exit_price is not None and exit_reason is not None:
             exit_date = bars.index[i].date() if hasattr(bars.index[i], "date") else bars.index[i]
             r_mult = (exit_price - entry_price) / R
+            pnl_dollars = _compute_pnl_dollars(entry_price, exit_price, shares)
             return Trade(
                 pattern_id=verdict.pattern_id, ticker=verdict.ticker, ruleset_name=ruleset.name,
                 anchor_asof_date=verdict.anchor_asof_date, trough_1_date=verdict.trough_1_date,
@@ -215,6 +261,10 @@ def walk_forward(
                 exit_reason=exit_reason, r_multiple=r_mult,
                 days_held=(exit_date - entry_date).days,
                 status="closed",
+                triggered=True,
+                trade_pnl_dollars=pnl_dollars,
+                peak_unrealized_R=peak_R,
+                drawdown_to_exit_R=(peak_R - r_mult),
                 forward_bars_available=n_fwd_window,
                 max_forward_close=max_close, max_close_pct_of_peak=max_close_pct,
                 days_t2_to_asof=days_t2_to_asof,
@@ -224,6 +274,8 @@ def walk_forward(
     last_idx = n_total - 1
     last_close = float(bars.iloc[last_idx]["Close"])
     last_date = bars.index[last_idx].date() if hasattr(bars.index[last_idx], "date") else bars.index[last_idx]
+    tail_r = (last_close - entry_price) / R
+    tail_pnl = _compute_pnl_dollars(entry_price, last_close, shares)
     return Trade(
         pattern_id=verdict.pattern_id, ticker=verdict.ticker, ruleset_name=ruleset.name,
         anchor_asof_date=verdict.anchor_asof_date, trough_1_date=verdict.trough_1_date,
@@ -232,9 +284,13 @@ def walk_forward(
         entry_date=entry_date, entry_price=entry_price,
         exit_date=last_date, exit_price=last_close,
         exit_reason="open_at_data_tail",
-        r_multiple=(last_close - entry_price) / R,
+        r_multiple=tail_r,
         days_held=(last_date - entry_date).days,
         status="open",
+        triggered=True,
+        trade_pnl_dollars=tail_pnl,
+        peak_unrealized_R=peak_R,
+        drawdown_to_exit_R=(peak_R - tail_r),
         forward_bars_available=n_fwd_window,
         max_forward_close=max_close, max_close_pct_of_peak=max_close_pct,
         days_t2_to_asof=days_t2_to_asof,
@@ -259,6 +315,10 @@ def _emit_untriggered(
         exit_date=None, exit_price=None,
         exit_reason=exit_reason, r_multiple=None, days_held=None,
         status="untriggered",
+        triggered=False,
+        trade_pnl_dollars=None,
+        peak_unrealized_R=None,
+        drawdown_to_exit_R=None,
         forward_bars_available=n_fwd_window,
         max_forward_close=max_close, max_close_pct_of_peak=max_close_pct,
         days_t2_to_asof=days_t2_to_asof,

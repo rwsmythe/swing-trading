@@ -4972,6 +4972,11 @@ def diagnose_pattern_cohort_detect(
     "--no-recency-filter", "no_recency_filter", is_flag=True, default=False,
     help="Skip recency filter; backtest ALL unique W primary verdicts.",
 )
+@click.option(
+    "--source-artifact-dir", "source_artifact_dir", type=click.Path(path_type=Path),
+    default=None,
+    help="Upstream pattern_cohort_evaluator run dir for manifest provenance.",
+)
 def diagnose_double_bottom_w_backtest(
     results_csv: Path | None,
     cohort_fixture: Path | None,
@@ -4980,6 +4985,7 @@ def diagnose_double_bottom_w_backtest(
     composite_threshold: float,
     recency_max_calendar_days: int,
     no_recency_filter: bool,
+    source_artifact_dir: Path | None,
 ) -> None:
     """D1 double_bottom_w walk-forward backtest (research-branch only).
 
@@ -5010,6 +5016,8 @@ def diagnose_double_bottom_w_backtest(
     ]
     if no_recency_filter:
         argv += ["--no-recency-filter"]
+    if source_artifact_dir is not None:
+        argv += ["--source-artifact-dir", str(source_artifact_dir)]
     exit_code = backtest_main(argv)
     if exit_code != 0:
         raise click.ClickException(f"Backtest harness exit code {exit_code}")

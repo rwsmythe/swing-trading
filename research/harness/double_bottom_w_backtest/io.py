@@ -21,12 +21,16 @@ RESULTS_CSV_HEADER = [
     "trough_2_price",
     "initial_stop",
     "composite_score",
+    "triggered",
     "entry_date",
     "entry_price",
     "exit_date",
     "exit_price",
     "exit_reason",
     "r_multiple",
+    "trade_pnl_dollars",
+    "peak_unrealized_R",
+    "drawdown_to_exit_R",
     "days_held",
     "status",
     "forward_bars_available",
@@ -60,12 +64,16 @@ def write_results_csv(trades: list[Trade], output_path: Path) -> None:
                     f"{t.trough_2_price:.4f}",
                     f"{t.initial_stop:.4f}",
                     f"{t.composite_score:.4f}",
+                    "true" if t.triggered else "false",
                     t.entry_date.isoformat() if t.entry_date else "",
                     f"{t.entry_price:.4f}" if t.entry_price is not None else "",
                     t.exit_date.isoformat() if t.exit_date else "",
                     f"{t.exit_price:.4f}" if t.exit_price is not None else "",
                     t.exit_reason,
                     f"{t.r_multiple:.4f}" if t.r_multiple is not None else "",
+                    f"{t.trade_pnl_dollars:.2f}" if t.trade_pnl_dollars is not None else "",
+                    f"{t.peak_unrealized_R:.4f}" if t.peak_unrealized_R is not None else "",
+                    f"{t.drawdown_to_exit_R:.4f}" if t.drawdown_to_exit_R is not None else "",
                     t.days_held if t.days_held is not None else "",
                     t.status,
                     t.forward_bars_available,
@@ -307,7 +315,24 @@ def write_manifest(
     skipped_patterns: dict[str, int],
     l2_lock_preserved: bool = True,
     harness_version: str = "0.1.0",
+    source_artifact_manifest_path: str | None = None,
+    source_artifact_manifest_sha256: str | None = None,
+    source_results_csv_sha256: str | None = None,
+    source_cohort_input_sha256: str | None = None,
+    recency_filter_active: bool = True,
 ) -> None:
+    """Emit manifest.json.
+
+    Codex R1 M#5: source provenance fields added so the manifest carries a
+    bidirectional pointer back to the upstream pattern_cohort_evaluator run
+    (whose `results.csv` is gitignored due to size). When --results-csv is
+    used at runtime, `cohort_csv_sha256` IS the source results.csv hash.
+    When --cohort-fixture is used, `source_results_csv_sha256` records the
+    SHA from the upstream manifest's `cohort_input_sha256` field (which
+    identifies the cohort-CSV input to pattern_cohort_evaluator) and
+    `source_artifact_manifest_*` fields point at the upstream run's
+    manifest.json for full provenance chase.
+    """
     manifest = {
         "harness_version": harness_version,
         "harness_name": "double_bottom_w_backtest",
@@ -316,9 +341,14 @@ def write_manifest(
         "runtime_seconds": (finished_at_utc - started_at_utc).total_seconds(),
         "cohort_csv_path": cohort_csv_path,
         "cohort_csv_sha256": cohort_csv_sha256,
+        "source_artifact_manifest_path": source_artifact_manifest_path,
+        "source_artifact_manifest_sha256": source_artifact_manifest_sha256,
+        "source_results_csv_sha256": source_results_csv_sha256,
+        "source_cohort_input_sha256": source_cohort_input_sha256,
         "cache_dir": cache_dir,
         "composite_threshold": composite_threshold,
         "recency_max_calendar_days": recency_max_calendar_days,
+        "recency_filter_active": recency_filter_active,
         "max_trigger_search_business_days": max_trigger_search_business_days,
         "n_unique_verdicts_pre_filter": n_unique_verdicts_pre_filter,
         "n_verdicts_after_adjacency_merge": n_verdicts_after_adjacency_merge,

@@ -56,11 +56,17 @@ def _trade(
     )
 
 
-def test_csv_header_has_21_columns() -> None:
-    assert len(RESULTS_CSV_HEADER) == 21
-    assert "pattern_id" in RESULTS_CSV_HEADER
-    assert "r_multiple" in RESULTS_CSV_HEADER
-    assert "days_t2_to_asof" in RESULTS_CSV_HEADER
+def test_csv_header_has_25_columns_post_codex_r1_m7() -> None:
+    """Codex R1 M#7: 4 fields added (triggered + trade_pnl_dollars +
+    peak_unrealized_R + drawdown_to_exit_R) bringing schema to 25 columns
+    per dispatch brief §4.1 (which enumerated 20 + my 4 near-miss diagnostic
+    additions = 24-25 effective; the brief itself enumerated columns roughly)."""
+    assert len(RESULTS_CSV_HEADER) == 25
+    for col in (
+        "pattern_id", "r_multiple", "days_t2_to_asof",
+        "triggered", "trade_pnl_dollars", "peak_unrealized_R", "drawdown_to_exit_R",
+    ):
+        assert col in RESULTS_CSV_HEADER, f"missing brief-§4.1 column: {col}"
 
 
 def test_write_results_csv_emits_one_row_per_trade(tmp_path: Path) -> None:

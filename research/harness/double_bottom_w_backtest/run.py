@@ -99,10 +99,37 @@ def _emit_missing_archive_trade(verdict: PrimaryVerdict, ruleset_name: str) -> T
         composite_score=verdict.composite_score, initial_stop=verdict.initial_stop,
         entry_date=None, entry_price=None, exit_date=None, exit_price=None,
         exit_reason="ohlcv_missing", r_multiple=None, days_held=None,
-        status="untriggered", forward_bars_available=0,
+        status="untriggered",
+        triggered=False, trade_pnl_dollars=None,
+        peak_unrealized_R=None, drawdown_to_exit_R=None,
+        forward_bars_available=0,
         max_forward_close=None, max_close_pct_of_peak=None,
         days_t2_to_asof=days_t2_to_asof,
     )
+
+
+def _read_upstream_provenance(
+    source_artifact_dir: Path | None,
+) -> tuple[str | None, str | None, str | None]:
+    """Read upstream pattern_cohort_evaluator manifest for provenance fields.
+
+    Returns (manifest_path, manifest_sha256, cohort_input_sha256).
+    Returns all-None when source_artifact_dir is None / manifest missing.
+    """
+    if source_artifact_dir is None:
+        return None, None, None
+    manifest_path = source_artifact_dir / "manifest.json"
+    if not manifest_path.exists():
+        return None, None, None
+    manifest_sha = _sha256_of_file(manifest_path)
+    try:
+        import json
+
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        cohort_input_sha = data.get("cohort_input_sha256")
+    except (OSError, ValueError):
+        cohort_input_sha = None
+    return str(manifest_path), manifest_sha, cohort_input_sha
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -137,6 +164,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--no-recency-filter", action="store_true",
         help="Skip recency filter; backtest ALL unique W primary verdicts (typically ~172)",
+    )
+    parser.add_argument(
+        "--source-artifact-dir", type=Path, default=None,
+        help="Upstream pattern_cohort_evaluator run directory (for provenance "
+             "manifest fields per Codex R1 M#5)",
     )
     args = parser.parse_args(argv)
 
@@ -205,14 +237,31 @@ def main(argv: list[str] | None = None) -> int:
         f"({n_actionable} of {n_after_merge} verdicts passed).\n"
         f"**Both-exist diagnostic:** {diagnostic.count} ticker-reads hit Shape A + legacy (Shape A wins per OQ-18)."
     )
+    if args.no_recency_filter:
+        cohort_label = (
+            f"composite>={args.composite_threshold} double_bottom_w; "
+            f"NO RECENCY FILTER (all unique W primaries)"
+        )
+    else:
+        cohort_label = (
+            f"composite>={args.composite_threshold} double_bottom_w; "
+            f"recency<={args.recency_max_calendar_days}d (max_observed_asof)"
+        )
     write_summary_markdown(
         trades, summary_out,
         n_patterns=n_actionable,
-        cohort_label=f"composite>={args.composite_threshold} double_bottom_w; "
-                     f"recency<={args.recency_max_calendar_days}d",
+        cohort_label=cohort_label,
         population_notes=pop_notes,
     )
     finished_at = datetime.now(timezone.utc)
+    src_manifest_path, src_manifest_sha, src_cohort_input_sha = _read_upstream_provenance(
+        args.source_artifact_dir
+    )
+    # When --results-csv is the input, that IS the source-of-truth results.csv;
+    # surface its sha in source_results_csv_sha256 too for downstream tooling.
+    source_results_csv_sha = (
+        cohort_csv_sha if args.results_csv is not None else None
+    )
     write_manifest(
         manifest_out,
         started_at_utc=started_at,
@@ -229,6 +278,11 @@ def main(argv: list[str] | None = None) -> int:
         n_trades_emitted=len(trades),
         n_distinct_tickers=n_distinct_tickers,
         skipped_patterns=skipped,
+        source_artifact_manifest_path=src_manifest_path,
+        source_artifact_manifest_sha256=src_manifest_sha,
+        source_results_csv_sha256=source_results_csv_sha,
+        source_cohort_input_sha256=src_cohort_input_sha,
+        recency_filter_active=(not args.no_recency_filter),
     )
     print(f"wrote {csv_out}")
     print(f"wrote {summary_out}")

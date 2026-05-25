@@ -44,6 +44,16 @@ class PrimaryVerdict:
     cohort_entry sources may collapse into one PrimaryVerdict if they share
     (ticker, trough_1_date); the verdict tracks aux_count + aux_cohort_entry_ids
     for audit.
+
+    anchor_asof_date: the asof of the highest-composite observation (used for
+        the trigger search window).
+    max_observed_asof_date: the MOST RECENT observation across all
+        cohort_entries that map to this W. Differs from anchor_asof_date
+        when a lower-composite observation has a later asof; used for
+        recency-filter semantics (Codex R1 M#3 fix) so the most-recent
+        observation determines whether the W is actionable at study time.
+    observed_asof_dates: ALL observations' asof_dates, sorted; preserved for
+        full audit trail.
     """
 
     ticker: str
@@ -60,6 +70,9 @@ class PrimaryVerdict:
     template_match_score: float | None
     cohort_entry_ids: tuple[int, ...] = field(default_factory=tuple)
     aux_window_indices: tuple[int, ...] = field(default_factory=tuple)
+    max_observed_asof_date: date | None = None
+    observed_asof_dates: tuple[date, ...] = field(default_factory=tuple)
+    window_count: int = 0
 
     @property
     def pattern_id(self) -> str:
@@ -93,6 +106,13 @@ class PrimaryVerdict:
         d["trough_2_date"] = self.trough_2_date.isoformat()
         d["cohort_entry_ids"] = list(self.cohort_entry_ids)
         d["aux_window_indices"] = list(self.aux_window_indices)
+        d["max_observed_asof_date"] = (
+            self.max_observed_asof_date.isoformat()
+            if self.max_observed_asof_date is not None
+            else None
+        )
+        d["observed_asof_dates"] = [d.isoformat() for d in self.observed_asof_dates]
+        d["window_count"] = self.window_count
         return d
 
     @classmethod
@@ -116,6 +136,15 @@ class PrimaryVerdict:
             ),
             cohort_entry_ids=tuple(d.get("cohort_entry_ids", [])),
             aux_window_indices=tuple(d.get("aux_window_indices", [])),
+            max_observed_asof_date=(
+                date.fromisoformat(d["max_observed_asof_date"])
+                if d.get("max_observed_asof_date")
+                else None
+            ),
+            observed_asof_dates=tuple(
+                date.fromisoformat(s) for s in d.get("observed_asof_dates", [])
+            ),
+            window_count=int(d.get("window_count", 0)),
         )
 
 
@@ -169,6 +198,7 @@ def extract_primary_verdicts_from_csv(
             key = (ticker, t1_iso)
             cohort_entry_id = int(row["cohort_entry_id"])
             window_index = int(row["window_index"])
+            row_asof = date.fromisoformat(row["asof_date"])
             current = by_key.get(key)
             if current is None:
                 by_key[key] = {
@@ -177,11 +207,16 @@ def extract_primary_verdicts_from_csv(
                     "ev": ev,
                     "aux_cohort_entry_ids": [cohort_entry_id],
                     "aux_window_indices": [window_index],
+                    "observed_asofs": [row_asof],
                 }
                 continue
-            # Accumulate audit IDs regardless of which row "wins" primary
+            # Accumulate audit IDs + observed asofs regardless of primary winner
+            # (Codex R1 M#3: max(observed_asofs) feeds recency filter so the
+            # most-recent cohort_entry that observes this W is what determines
+            # recency, not the highest-composite observation.)
             current["aux_cohort_entry_ids"].append(cohort_entry_id)
             current["aux_window_indices"].append(window_index)
+            current["observed_asofs"].append(row_asof)
             # Promote new row to primary if its composite is higher
             if composite > current["composite"]:
                 current["composite"] = composite
@@ -192,6 +227,7 @@ def extract_primary_verdicts_from_csv(
     for key, payload in by_key.items():
         ev = payload["ev"]
         row = payload["row"]
+        observed_asofs = sorted(set(payload["observed_asofs"]))
         verdicts.append(
             PrimaryVerdict(
                 ticker=row["ticker"],
@@ -210,6 +246,9 @@ def extract_primary_verdicts_from_csv(
                 ),
                 cohort_entry_ids=tuple(sorted(set(payload["aux_cohort_entry_ids"]))),
                 aux_window_indices=tuple(sorted(set(payload["aux_window_indices"]))),
+                max_observed_asof_date=max(observed_asofs),
+                observed_asof_dates=tuple(observed_asofs),
+                window_count=len(set(payload["aux_window_indices"])),
             )
         )
     verdicts.sort(key=lambda v: (v.ticker, v.trough_1_date))
@@ -249,6 +288,9 @@ def merge_adjacent_troughs(
             best = max(cluster, key=lambda v: v.composite_score)
             all_entries = sorted({eid for v in cluster for eid in v.cohort_entry_ids})
             all_windows = sorted({wi for v in cluster for wi in v.aux_window_indices})
+            all_asofs = sorted(
+                {d for v in cluster for d in (v.observed_asof_dates or (v.anchor_asof_date,))}
+            )
             merged.append(
                 PrimaryVerdict(
                     ticker=best.ticker,
@@ -265,6 +307,9 @@ def merge_adjacent_troughs(
                     template_match_score=best.template_match_score,
                     cohort_entry_ids=tuple(all_entries),
                     aux_window_indices=tuple(all_windows),
+                    max_observed_asof_date=max(all_asofs),
+                    observed_asof_dates=tuple(all_asofs),
+                    window_count=len(all_windows),
                 )
             )
 
@@ -289,7 +334,14 @@ def filter_recent_patterns(
     max_calendar_days: int = _DEFAULT_RECENCY_DAYS,
 ) -> list[PrimaryVerdict]:
     """Restrict to W's whose right shoulder (trough_2_date) is within N
-    CALENDAR days of the anchor_asof_date.
+    CALENDAR days of the MOST-RECENT observation's asof_date.
+
+    Uses max_observed_asof_date (the latest cohort_entry that observed this W)
+    rather than anchor_asof_date (the highest-composite observation) so that
+    a W with multiple observations across cohort_entries is judged by its
+    most-recent observation -- avoiding the failure mode where the highest-
+    composite observation is OLDER than other observations of the same W
+    (Codex R1 M#3 fix).
 
     Calendar days (not business days) per V2 backtest precedent for forward-
     window depth estimation; documented as a methodology choice in findings.
@@ -300,7 +352,10 @@ def filter_recent_patterns(
     """
     out: list[PrimaryVerdict] = []
     for v in verdicts:
-        days_since_t2 = (v.anchor_asof_date - v.trough_2_date).days
+        # Fall back to anchor_asof_date for fixtures pre-Codex-R1 that
+        # lack max_observed_asof_date (defensive; new extractor always sets it).
+        recency_anchor = v.max_observed_asof_date or v.anchor_asof_date
+        days_since_t2 = (recency_anchor - v.trough_2_date).days
         if days_since_t2 <= max_calendar_days:
             out.append(v)
     return out

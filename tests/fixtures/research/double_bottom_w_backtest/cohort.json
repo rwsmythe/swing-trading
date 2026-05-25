@@ -12,13 +12,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-15",
+    "observed_asof_dates": [
+      "2026-05-15"
+    ],
     "pivot_price": 44.810001373291016,
     "template_match_score": null,
     "ticker": "DK",
     "trough_1_date": "2021-06-18",
     "trough_1_price": 20.690000534057617,
     "trough_2_date": "2021-07-19",
-    "trough_2_price": 16.06999969482422
+    "trough_2_price": 16.06999969482422,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-15",
@@ -33,13 +38,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-15",
+    "observed_asof_dates": [
+      "2026-05-15"
+    ],
     "pivot_price": 44.810001373291016,
     "template_match_score": null,
     "ticker": "DK",
     "trough_1_date": "2021-11-19",
     "trough_1_price": 15.460000038146973,
     "trough_2_date": "2021-11-29",
-    "trough_2_price": 15.390000343322754
+    "trough_2_price": 15.390000343322754,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-15",
@@ -54,13 +64,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-15",
+    "observed_asof_dates": [
+      "2026-05-15"
+    ],
     "pivot_price": 44.810001373291016,
     "template_match_score": null,
     "ticker": "DK",
     "trough_1_date": "2021-11-29",
     "trough_1_price": 15.390000343322754,
     "trough_2_date": "2021-12-20",
-    "trough_2_price": 14.6899995803833
+    "trough_2_price": 14.6899995803833,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-15",
@@ -75,13 +90,18 @@
     ],
     "composite_score": 0.833333,
     "geometric_score": 0.833333,
+    "max_observed_asof_date": "2026-05-15",
+    "observed_asof_dates": [
+      "2026-05-15"
+    ],
     "pivot_price": 44.810001373291016,
     "template_match_score": null,
     "ticker": "DK",
     "trough_1_date": "2022-05-09",
     "trough_1_price": 24.540000915527344,
     "trough_2_date": "2022-06-24",
-    "trough_2_price": 25.0
+    "trough_2_price": 25.0,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-15",
@@ -96,13 +116,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-15",
+    "observed_asof_dates": [
+      "2026-05-15"
+    ],
     "pivot_price": 44.810001373291016,
     "template_match_score": null,
     "ticker": "DK",
     "trough_1_date": "2022-10-14",
     "trough_1_price": 26.260000228881836,
     "trough_2_date": "2022-12-19",
-    "trough_2_price": 25.90999984741211
+    "trough_2_price": 25.90999984741211,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-15",
@@ -117,13 +142,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-15",
+    "observed_asof_dates": [
+      "2026-05-15"
+    ],
     "pivot_price": 44.810001373291016,
     "template_match_score": null,
     "ticker": "DK",
     "trough_1_date": "2023-03-15",
     "trough_1_price": 21.139999389648438,
     "trough_2_date": "2023-05-04",
-    "trough_2_price": 19.6200008392334
+    "trough_2_price": 19.6200008392334,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-15",
@@ -138,13 +168,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-15",
+    "observed_asof_dates": [
+      "2026-05-15"
+    ],
     "pivot_price": 44.810001373291016,
     "template_match_score": null,
     "ticker": "DK",
     "trough_1_date": "2023-08-31",
     "trough_1_price": 25.75,
     "trough_2_date": "2023-10-06",
-    "trough_2_price": 24.81999969482422
+    "trough_2_price": 24.81999969482422,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-15",
@@ -159,13 +194,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-15",
+    "observed_asof_dates": [
+      "2026-05-15"
+    ],
     "pivot_price": 44.810001373291016,
     "template_match_score": null,
     "ticker": "DK",
     "trough_1_date": "2023-10-26",
     "trough_1_price": 25.229999542236328,
     "trough_2_date": "2023-11-09",
-    "trough_2_price": 24.90999984741211
+    "trough_2_price": 24.90999984741211,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-15",
@@ -180,13 +220,18 @@
     ],
     "composite_score": 0.933333,
     "geometric_score": 0.933333,
+    "max_observed_asof_date": "2026-05-15",
+    "observed_asof_dates": [
+      "2026-05-15"
+    ],
     "pivot_price": 44.810001373291016,
     "template_match_score": null,
     "ticker": "DK",
     "trough_1_date": "2024-08-06",
     "trough_1_price": 19.34000015258789,
     "trough_2_date": "2024-09-09",
-    "trough_2_price": 18.75
+    "trough_2_price": 18.75,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-15",
@@ -201,13 +246,18 @@
     ],
     "composite_score": 0.933333,
     "geometric_score": 0.933333,
+    "max_observed_asof_date": "2026-05-15",
+    "observed_asof_dates": [
+      "2026-05-15"
+    ],
     "pivot_price": 44.810001373291016,
     "template_match_score": null,
     "ticker": "DK",
     "trough_1_date": "2024-09-09",
     "trough_1_price": 18.75,
     "trough_2_date": "2024-10-02",
-    "trough_2_price": 18.68000030517578
+    "trough_2_price": 18.68000030517578,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-15",
@@ -222,13 +272,18 @@
     ],
     "composite_score": 0.833333,
     "geometric_score": 0.833333,
+    "max_observed_asof_date": "2026-05-15",
+    "observed_asof_dates": [
+      "2026-05-15"
+    ],
     "pivot_price": 44.810001373291016,
     "template_match_score": null,
     "ticker": "DK",
     "trough_1_date": "2024-11-01",
     "trough_1_price": 15.399999618530273,
     "trough_2_date": "2024-12-20",
-    "trough_2_price": 15.9399995803833
+    "trough_2_price": 15.9399995803833,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-15",
@@ -243,13 +298,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-15",
+    "observed_asof_dates": [
+      "2026-05-15"
+    ],
     "pivot_price": 44.810001373291016,
     "template_match_score": null,
     "ticker": "DK",
     "trough_1_date": "2025-03-10",
     "trough_1_price": 13.529999732971191,
     "trough_2_date": "2025-04-08",
-    "trough_2_price": 11.550000190734863
+    "trough_2_price": 11.550000190734863,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-15",
@@ -264,13 +324,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-15",
+    "observed_asof_dates": [
+      "2026-05-15"
+    ],
     "pivot_price": 44.810001373291016,
     "template_match_score": null,
     "ticker": "DK",
     "trough_1_date": "2025-06-24",
     "trough_1_price": 20.790000915527344,
     "trough_2_date": "2025-08-06",
-    "trough_2_price": 20.040000915527344
+    "trough_2_price": 20.040000915527344,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-15",
@@ -285,13 +350,18 @@
     ],
     "composite_score": 0.75254,
     "geometric_score": 0.666667,
+    "max_observed_asof_date": "2026-05-15",
+    "observed_asof_dates": [
+      "2026-05-15"
+    ],
     "pivot_price": 44.810001373291016,
     "template_match_score": 0.88135,
     "ticker": "DK",
     "trough_1_date": "2026-01-20",
     "trough_1_price": 26.68000030517578,
     "trough_2_date": "2026-02-12",
-    "trough_2_price": 33.02000045776367
+    "trough_2_price": 33.02000045776367,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-15",
@@ -306,13 +376,18 @@
     ],
     "composite_score": 0.740612,
     "geometric_score": 0.666667,
+    "max_observed_asof_date": "2026-05-15",
+    "observed_asof_dates": [
+      "2026-05-15"
+    ],
     "pivot_price": 44.810001373291016,
     "template_match_score": 0.85153,
     "ticker": "DK",
     "trough_1_date": "2026-03-09",
     "trough_1_price": 40.130001068115234,
     "trough_2_date": "2026-03-23",
-    "trough_2_price": 42.38999938964844
+    "trough_2_price": 42.38999938964844,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-27",
@@ -335,13 +410,20 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-04-27",
+    "observed_asof_dates": [
+      "2026-04-23",
+      "2026-04-24",
+      "2026-04-27"
+    ],
     "pivot_price": 87.16000366210938,
     "template_match_score": null,
     "ticker": "DNTH",
     "trough_1_date": "2025-05-30",
     "trough_1_price": 17.389999389648438,
     "trough_2_date": "2025-06-20",
-    "trough_2_price": 16.860000610351562
+    "trough_2_price": 16.860000610351562,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-27",
@@ -364,13 +446,20 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-04-27",
+    "observed_asof_dates": [
+      "2026-04-23",
+      "2026-04-24",
+      "2026-04-27"
+    ],
     "pivot_price": 87.16000366210938,
     "template_match_score": null,
     "ticker": "DNTH",
     "trough_1_date": "2025-07-15",
     "trough_1_price": 19.040000915527344,
     "trough_2_date": "2025-08-08",
-    "trough_2_price": 18.760000228881836
+    "trough_2_price": 18.760000228881836,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-27",
@@ -393,13 +482,20 @@
     ],
     "composite_score": 0.768513,
     "geometric_score": 0.666667,
+    "max_observed_asof_date": "2026-04-27",
+    "observed_asof_dates": [
+      "2026-04-23",
+      "2026-04-24",
+      "2026-04-27"
+    ],
     "pivot_price": 87.16000366210938,
     "template_match_score": 0.921281,
     "ticker": "DNTH",
     "trough_1_date": "2026-01-06",
     "trough_1_price": 36.20000076293945,
     "trough_2_date": "2026-02-05",
-    "trough_2_price": 46.58000183105469
+    "trough_2_price": 46.58000183105469,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-27",
@@ -419,13 +515,19 @@
     ],
     "composite_score": 0.76496,
     "geometric_score": 0.666667,
+    "max_observed_asof_date": "2026-04-27",
+    "observed_asof_dates": [
+      "2026-04-24",
+      "2026-04-27"
+    ],
     "pivot_price": 87.16000366210938,
     "template_match_score": 0.912401,
     "ticker": "DNTH",
     "trough_1_date": "2026-02-13",
     "trough_1_price": 47.400001525878906,
     "trough_2_date": "2026-03-20",
-    "trough_2_price": 77.76000213623047
+    "trough_2_price": 77.76000213623047,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-28",
@@ -444,13 +546,19 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-04-28",
+    "observed_asof_dates": [
+      "2026-04-27",
+      "2026-04-28"
+    ],
     "pivot_price": 36.11000061035156,
     "template_match_score": null,
     "ticker": "FRO",
     "trough_1_date": "2021-05-27",
     "trough_1_price": 8.25,
     "trough_2_date": "2021-06-18",
-    "trough_2_price": 8.180000305175781
+    "trough_2_price": 8.180000305175781,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-28",
@@ -466,13 +574,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-04-28",
+    "observed_asof_dates": [
+      "2026-04-28"
+    ],
     "pivot_price": 36.11000061035156,
     "template_match_score": null,
     "ticker": "FRO",
     "trough_1_date": "2021-08-20",
     "trough_1_price": 7.239999771118164,
     "trough_2_date": "2021-08-31",
-    "trough_2_price": 7.21999979019165
+    "trough_2_price": 7.21999979019165,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-28",
@@ -491,13 +604,19 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-04-28",
+    "observed_asof_dates": [
+      "2026-04-27",
+      "2026-04-28"
+    ],
     "pivot_price": 36.11000061035156,
     "template_match_score": null,
     "ticker": "FRO",
     "trough_1_date": "2021-12-14",
     "trough_1_price": 6.610000133514404,
     "trough_2_date": "2022-01-24",
-    "trough_2_price": 6.429999828338623
+    "trough_2_price": 6.429999828338623,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-28",
@@ -516,13 +635,19 @@
     ],
     "composite_score": 0.933333,
     "geometric_score": 0.933333,
+    "max_observed_asof_date": "2026-04-28",
+    "observed_asof_dates": [
+      "2026-04-27",
+      "2026-04-28"
+    ],
     "pivot_price": 36.11000061035156,
     "template_match_score": null,
     "ticker": "FRO",
     "trough_1_date": "2022-06-17",
     "trough_1_price": 8.34000015258789,
     "trough_2_date": "2022-07-11",
-    "trough_2_price": 8.09000015258789
+    "trough_2_price": 8.09000015258789,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-28",
@@ -538,13 +663,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-04-28",
+    "observed_asof_dates": [
+      "2026-04-28"
+    ],
     "pivot_price": 36.11000061035156,
     "template_match_score": null,
     "ticker": "FRO",
     "trough_1_date": "2022-11-10",
     "trough_1_price": 13.180000305175781,
     "trough_2_date": "2022-11-29",
-    "trough_2_price": 12.9399995803833
+    "trough_2_price": 12.9399995803833,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-28",
@@ -563,13 +693,19 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-04-28",
+    "observed_asof_dates": [
+      "2026-04-27",
+      "2026-04-28"
+    ],
     "pivot_price": 36.11000061035156,
     "template_match_score": null,
     "ticker": "FRO",
     "trough_1_date": "2022-12-07",
     "trough_1_price": 12.3100004196167,
     "trough_2_date": "2023-01-04",
-    "trough_2_price": 10.680000305175781
+    "trough_2_price": 10.680000305175781,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-28",
@@ -588,13 +724,19 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-04-28",
+    "observed_asof_dates": [
+      "2026-04-27",
+      "2026-04-28"
+    ],
     "pivot_price": 36.11000061035156,
     "template_match_score": null,
     "ticker": "FRO",
     "trough_1_date": "2023-03-16",
     "trough_1_price": 15.819999694824219,
     "trough_2_date": "2023-04-03",
-    "trough_2_price": 14.90999984741211
+    "trough_2_price": 14.90999984741211,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-27",
@@ -613,13 +755,19 @@
     ],
     "composite_score": 0.933333,
     "geometric_score": 0.933333,
+    "max_observed_asof_date": "2026-04-28",
+    "observed_asof_dates": [
+      "2026-04-27",
+      "2026-04-28"
+    ],
     "pivot_price": 35.9900016784668,
     "template_match_score": null,
     "ticker": "FRO",
     "trough_1_date": "2023-06-05",
     "trough_1_price": 13.6899995803833,
     "trough_2_date": "2023-06-27",
-    "trough_2_price": 13.359999656677246
+    "trough_2_price": 13.359999656677246,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-28",
@@ -638,13 +786,19 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-04-28",
+    "observed_asof_dates": [
+      "2026-04-27",
+      "2026-04-28"
+    ],
     "pivot_price": 36.11000061035156,
     "template_match_score": null,
     "ticker": "FRO",
     "trough_1_date": "2024-06-17",
     "trough_1_price": 23.950000762939453,
     "trough_2_date": "2024-07-10",
-    "trough_2_price": 23.34000015258789
+    "trough_2_price": 23.34000015258789,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-28",
@@ -663,13 +817,19 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-04-28",
+    "observed_asof_dates": [
+      "2026-04-27",
+      "2026-04-28"
+    ],
     "pivot_price": 36.11000061035156,
     "template_match_score": null,
     "ticker": "FRO",
     "trough_1_date": "2024-07-10",
     "trough_1_price": 23.34000015258789,
     "trough_2_date": "2024-08-05",
-    "trough_2_price": 22.170000076293945
+    "trough_2_price": 22.170000076293945,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-28",
@@ -688,13 +848,19 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-04-28",
+    "observed_asof_dates": [
+      "2026-04-27",
+      "2026-04-28"
+    ],
     "pivot_price": 36.11000061035156,
     "template_match_score": null,
     "ticker": "FRO",
     "trough_1_date": "2024-08-05",
     "trough_1_price": 22.170000076293945,
     "trough_2_date": "2024-09-10",
-    "trough_2_price": 21.799999237060547
+    "trough_2_price": 21.799999237060547,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-28",
@@ -713,13 +879,19 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-04-28",
+    "observed_asof_dates": [
+      "2026-04-27",
+      "2026-04-28"
+    ],
     "pivot_price": 36.11000061035156,
     "template_match_score": null,
     "ticker": "FRO",
     "trough_1_date": "2024-09-10",
     "trough_1_price": 21.799999237060547,
     "trough_2_date": "2024-09-25",
-    "trough_2_price": 21.450000762939453
+    "trough_2_price": 21.450000762939453,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-28",
@@ -738,13 +910,19 @@
     ],
     "composite_score": 0.933333,
     "geometric_score": 0.933333,
+    "max_observed_asof_date": "2026-04-28",
+    "observed_asof_dates": [
+      "2026-04-27",
+      "2026-04-28"
+    ],
     "pivot_price": 36.11000061035156,
     "template_match_score": null,
     "ticker": "FRO",
     "trough_1_date": "2025-01-27",
     "trough_1_price": 15.949999809265137,
     "trough_2_date": "2025-02-27",
-    "trough_2_price": 15.3100004196167
+    "trough_2_price": 15.3100004196167,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-28",
@@ -763,13 +941,19 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-04-28",
+    "observed_asof_dates": [
+      "2026-04-27",
+      "2026-04-28"
+    ],
     "pivot_price": 36.11000061035156,
     "template_match_score": null,
     "ticker": "FRO",
     "trough_1_date": "2025-02-27",
     "trough_1_price": 15.3100004196167,
     "trough_2_date": "2025-03-10",
-    "trough_2_price": 15.140000343322754
+    "trough_2_price": 15.140000343322754,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-01",
@@ -790,13 +974,20 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-01",
+    "observed_asof_dates": [
+      "2026-04-29",
+      "2026-04-30",
+      "2026-05-01"
+    ],
     "pivot_price": 43.959999084472656,
     "template_match_score": null,
     "ticker": "KOD",
     "trough_1_date": "2023-03-24",
     "trough_1_price": 4.809999942779541,
     "trough_2_date": "2023-04-10",
-    "trough_2_price": 4.659999847412109
+    "trough_2_price": 4.659999847412109,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-01",
@@ -817,13 +1008,20 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-01",
+    "observed_asof_dates": [
+      "2026-04-29",
+      "2026-04-30",
+      "2026-05-01"
+    ],
     "pivot_price": 43.959999084472656,
     "template_match_score": null,
     "ticker": "KOD",
     "trough_1_date": "2023-06-29",
     "trough_1_price": 6.739999771118164,
     "trough_2_date": "2023-07-17",
-    "trough_2_price": 6.5
+    "trough_2_price": 6.5,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-01",
@@ -844,13 +1042,20 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-01",
+    "observed_asof_dates": [
+      "2026-04-29",
+      "2026-04-30",
+      "2026-05-01"
+    ],
     "pivot_price": 43.959999084472656,
     "template_match_score": null,
     "ticker": "KOD",
     "trough_1_date": "2024-03-19",
     "trough_1_price": 5.349999904632568,
     "trough_2_date": "2024-04-04",
-    "trough_2_price": 4.079999923706055
+    "trough_2_price": 4.079999923706055,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-01",
@@ -867,13 +1072,19 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-01",
+    "observed_asof_dates": [
+      "2026-04-30",
+      "2026-05-01"
+    ],
     "pivot_price": 43.959999084472656,
     "template_match_score": null,
     "ticker": "KOD",
     "trough_1_date": "2024-04-25",
     "trough_1_price": 3.190000057220459,
     "trough_2_date": "2024-05-29",
-    "trough_2_price": 2.950000047683716
+    "trough_2_price": 2.950000047683716,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-01",
@@ -894,13 +1105,20 @@
     ],
     "composite_score": 0.933333,
     "geometric_score": 0.933333,
+    "max_observed_asof_date": "2026-05-01",
+    "observed_asof_dates": [
+      "2026-04-29",
+      "2026-04-30",
+      "2026-05-01"
+    ],
     "pivot_price": 43.959999084472656,
     "template_match_score": null,
     "ticker": "KOD",
     "trough_1_date": "2024-08-07",
     "trough_1_price": 2.3299999237060547,
     "trough_2_date": "2024-09-06",
-    "trough_2_price": 2.309999942779541
+    "trough_2_price": 2.309999942779541,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-30",
@@ -915,13 +1133,18 @@
     ],
     "composite_score": 0.833333,
     "geometric_score": 0.833333,
+    "max_observed_asof_date": "2026-04-30",
+    "observed_asof_dates": [
+      "2026-04-30"
+    ],
     "pivot_price": 43.47999954223633,
     "template_match_score": null,
     "ticker": "KOD",
     "trough_1_date": "2025-05-15",
     "trough_1_price": 3.3299999237060547,
     "trough_2_date": "2025-05-30",
-    "trough_2_price": 3.4000000953674316
+    "trough_2_price": 3.4000000953674316,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-01",
@@ -942,13 +1165,20 @@
     ],
     "composite_score": 0.833333,
     "geometric_score": 0.833333,
+    "max_observed_asof_date": "2026-05-01",
+    "observed_asof_dates": [
+      "2026-04-29",
+      "2026-04-30",
+      "2026-05-01"
+    ],
     "pivot_price": 43.959999084472656,
     "template_match_score": null,
     "ticker": "KOD",
     "trough_1_date": "2025-05-30",
     "trough_1_price": 3.4000000953674316,
     "trough_2_date": "2025-06-18",
-    "trough_2_price": 3.5299999713897705
+    "trough_2_price": 3.5299999713897705,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-01",
@@ -965,13 +1195,19 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-01",
+    "observed_asof_dates": [
+      "2026-04-30",
+      "2026-05-01"
+    ],
     "pivot_price": 43.959999084472656,
     "template_match_score": null,
     "ticker": "KOD",
     "trough_1_date": "2025-10-23",
     "trough_1_price": 17.110000610351562,
     "trough_2_date": "2025-11-06",
-    "trough_2_price": 16.899999618530273
+    "trough_2_price": 16.899999618530273,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-01",
@@ -992,13 +1228,20 @@
     ],
     "composite_score": 0.838982,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-01",
+    "observed_asof_dates": [
+      "2026-04-29",
+      "2026-04-30",
+      "2026-05-01"
+    ],
     "pivot_price": 43.959999084472656,
     "template_match_score": 0.947455,
     "ticker": "KOD",
     "trough_1_date": "2026-01-05",
     "trough_1_price": 25.0,
     "trough_2_date": "2026-02-05",
-    "trough_2_price": 21.010000228881836
+    "trough_2_price": 21.010000228881836,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-29",
@@ -1019,13 +1262,20 @@
     ],
     "composite_score": 0.856718,
     "geometric_score": 0.833333,
+    "max_observed_asof_date": "2026-05-01",
+    "observed_asof_dates": [
+      "2026-04-29",
+      "2026-04-30",
+      "2026-05-01"
+    ],
     "pivot_price": 43.66999816894531,
     "template_match_score": 0.891795,
     "ticker": "KOD",
     "trough_1_date": "2026-02-05",
     "trough_1_price": 21.010000228881836,
     "trough_2_date": "2026-03-24",
-    "trough_2_price": 21.850000381469727
+    "trough_2_price": 21.850000381469727,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-12",
@@ -1039,13 +1289,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-12",
+    "observed_asof_dates": [
+      "2026-05-12"
+    ],
     "pivot_price": 5.829999923706055,
     "template_match_score": null,
     "ticker": "NAT",
     "trough_1_date": "2022-06-02",
     "trough_1_price": 2.0399999618530273,
     "trough_2_date": "2022-06-13",
-    "trough_2_price": 1.9500000476837158
+    "trough_2_price": 1.9500000476837158,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-12",
@@ -1059,13 +1314,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-12",
+    "observed_asof_dates": [
+      "2026-05-12"
+    ],
     "pivot_price": 5.829999923706055,
     "template_match_score": null,
     "ticker": "NAT",
     "trough_1_date": "2022-06-17",
     "trough_1_price": 1.8899999856948853,
     "trough_2_date": "2022-07-06",
-    "trough_2_price": 1.8600000143051147
+    "trough_2_price": 1.8600000143051147,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-12",
@@ -1079,13 +1339,18 @@
     ],
     "composite_score": 0.933333,
     "geometric_score": 0.933333,
+    "max_observed_asof_date": "2026-05-12",
+    "observed_asof_dates": [
+      "2026-05-12"
+    ],
     "pivot_price": 5.829999923706055,
     "template_match_score": null,
     "ticker": "NAT",
     "trough_1_date": "2022-12-07",
     "trough_1_price": 3.059999942779541,
     "trough_2_date": "2023-01-04",
-    "trough_2_price": 2.9000000953674316
+    "trough_2_price": 2.9000000953674316,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-12",
@@ -1099,13 +1364,18 @@
     ],
     "composite_score": 0.933333,
     "geometric_score": 0.933333,
+    "max_observed_asof_date": "2026-05-12",
+    "observed_asof_dates": [
+      "2026-05-12"
+    ],
     "pivot_price": 5.829999923706055,
     "template_match_score": null,
     "ticker": "NAT",
     "trough_1_date": "2023-01-04",
     "trough_1_price": 2.9000000953674316,
     "trough_2_date": "2023-01-26",
-    "trough_2_price": 2.890000104904175
+    "trough_2_price": 2.890000104904175,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-12",
@@ -1119,13 +1389,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-12",
+    "observed_asof_dates": [
+      "2026-05-12"
+    ],
     "pivot_price": 5.829999923706055,
     "template_match_score": null,
     "ticker": "NAT",
     "trough_1_date": "2023-05-31",
     "trough_1_price": 3.509999990463257,
     "trough_2_date": "2023-06-28",
-    "trough_2_price": 3.490000009536743
+    "trough_2_price": 3.490000009536743,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-12",
@@ -1139,13 +1414,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-12",
+    "observed_asof_dates": [
+      "2026-05-12"
+    ],
     "pivot_price": 5.829999923706055,
     "template_match_score": null,
     "ticker": "NAT",
     "trough_1_date": "2024-03-20",
     "trough_1_price": 3.8499999046325684,
     "trough_2_date": "2024-04-22",
-    "trough_2_price": 3.759999990463257
+    "trough_2_price": 3.759999990463257,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-12",
@@ -1159,13 +1439,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-12",
+    "observed_asof_dates": [
+      "2026-05-12"
+    ],
     "pivot_price": 5.829999923706055,
     "template_match_score": null,
     "ticker": "NAT",
     "trough_1_date": "2024-06-17",
     "trough_1_price": 3.869999885559082,
     "trough_2_date": "2024-07-18",
-    "trough_2_price": 3.690000057220459
+    "trough_2_price": 3.690000057220459,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-12",
@@ -1179,13 +1464,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-12",
+    "observed_asof_dates": [
+      "2026-05-12"
+    ],
     "pivot_price": 5.829999923706055,
     "template_match_score": null,
     "ticker": "NAT",
     "trough_1_date": "2025-11-04",
     "trough_1_price": 3.5199999809265137,
     "trough_2_date": "2025-12-19",
-    "trough_2_price": 3.369999885559082
+    "trough_2_price": 3.369999885559082,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-21",
@@ -1200,13 +1490,18 @@
     ],
     "composite_score": 0.833333,
     "geometric_score": 0.833333,
+    "max_observed_asof_date": "2026-04-21",
+    "observed_asof_dates": [
+      "2026-04-21"
+    ],
     "pivot_price": 37.81999969482422,
     "template_match_score": null,
     "ticker": "OII",
     "trough_1_date": "2026-03-13",
     "trough_1_price": 33.279998779296875,
     "trough_2_date": "2026-04-01",
-    "trough_2_price": 34.369998931884766
+    "trough_2_price": 34.369998931884766,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-08",
@@ -1221,13 +1516,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-08",
+    "observed_asof_dates": [
+      "2026-05-08"
+    ],
     "pivot_price": 11.420000076293945,
     "template_match_score": null,
     "ticker": "PTEN",
     "trough_1_date": "2023-05-16",
     "trough_1_price": 10.069999694824219,
     "trough_2_date": "2023-05-31",
-    "trough_2_price": 9.739999771118164
+    "trough_2_price": 9.739999771118164,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-08",
@@ -1242,13 +1542,18 @@
     ],
     "composite_score": 0.833333,
     "geometric_score": 0.833333,
+    "max_observed_asof_date": "2026-05-08",
+    "observed_asof_dates": [
+      "2026-05-08"
+    ],
     "pivot_price": 11.420000076293945,
     "template_match_score": null,
     "ticker": "PTEN",
     "trough_1_date": "2024-01-17",
     "trough_1_price": 9.890000343322754,
     "trough_2_date": "2024-02-05",
-    "trough_2_price": 10.149999618530273
+    "trough_2_price": 10.149999618530273,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-08",
@@ -1263,13 +1568,18 @@
     ],
     "composite_score": 0.833333,
     "geometric_score": 0.833333,
+    "max_observed_asof_date": "2026-05-08",
+    "observed_asof_dates": [
+      "2026-05-08"
+    ],
     "pivot_price": 11.420000076293945,
     "template_match_score": null,
     "ticker": "PTEN",
     "trough_1_date": "2024-07-08",
     "trough_1_price": 9.739999771118164,
     "trough_2_date": "2024-07-24",
-    "trough_2_price": 9.930000305175781
+    "trough_2_price": 9.930000305175781,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-08",
@@ -1284,13 +1594,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-08",
+    "observed_asof_dates": [
+      "2026-05-08"
+    ],
     "pivot_price": 11.420000076293945,
     "template_match_score": null,
     "ticker": "PTEN",
     "trough_1_date": "2024-09-26",
     "trough_1_price": 7.5,
     "trough_2_date": "2024-11-01",
-    "trough_2_price": 7.420000076293945
+    "trough_2_price": 7.420000076293945,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-08",
@@ -1305,13 +1620,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-08",
+    "observed_asof_dates": [
+      "2026-05-08"
+    ],
     "pivot_price": 11.420000076293945,
     "template_match_score": null,
     "ticker": "PTEN",
     "trough_1_date": "2025-02-03",
     "trough_1_price": 7.880000114440918,
     "trough_2_date": "2025-03-06",
-    "trough_2_price": 7.150000095367432
+    "trough_2_price": 7.150000095367432,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-08",
@@ -1326,13 +1646,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-08",
+    "observed_asof_dates": [
+      "2026-05-08"
+    ],
     "pivot_price": 11.420000076293945,
     "template_match_score": null,
     "ticker": "PTEN",
     "trough_1_date": "2025-03-06",
     "trough_1_price": 7.150000095367432,
     "trough_2_date": "2025-04-08",
-    "trough_2_price": 5.460000038146973
+    "trough_2_price": 5.460000038146973,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-08",
@@ -1347,13 +1672,18 @@
     ],
     "composite_score": 0.833333,
     "geometric_score": 0.833333,
+    "max_observed_asof_date": "2026-05-08",
+    "observed_asof_dates": [
+      "2026-05-08"
+    ],
     "pivot_price": 11.420000076293945,
     "template_match_score": null,
     "ticker": "PTEN",
     "trough_1_date": "2025-04-10",
     "trough_1_price": 5.590000152587891,
     "trough_2_date": "2025-04-30",
-    "trough_2_price": 5.639999866485596
+    "trough_2_price": 5.639999866485596,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-08",
@@ -1368,13 +1698,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-08",
+    "observed_asof_dates": [
+      "2026-05-08"
+    ],
     "pivot_price": 11.420000076293945,
     "template_match_score": null,
     "ticker": "PTEN",
     "trough_1_date": "2025-05-06",
     "trough_1_price": 5.539999961853027,
     "trough_2_date": "2025-06-02",
-    "trough_2_price": 5.510000228881836
+    "trough_2_price": 5.510000228881836,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-08",
@@ -1389,13 +1724,18 @@
     ],
     "composite_score": 0.933333,
     "geometric_score": 0.933333,
+    "max_observed_asof_date": "2026-05-08",
+    "observed_asof_dates": [
+      "2026-05-08"
+    ],
     "pivot_price": 11.420000076293945,
     "template_match_score": null,
     "ticker": "PTEN",
     "trough_1_date": "2025-08-20",
     "trough_1_price": 5.289999961853027,
     "trough_2_date": "2025-09-30",
-    "trough_2_price": 5.179999828338623
+    "trough_2_price": 5.179999828338623,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-12",
@@ -1420,13 +1760,23 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-12",
+    "observed_asof_dates": [
+      "2026-04-23",
+      "2026-04-24",
+      "2026-04-30",
+      "2026-05-04",
+      "2026-05-11",
+      "2026-05-12"
+    ],
     "pivot_price": 7.449999809265137,
     "template_match_score": null,
     "ticker": "RLMD",
     "trough_1_date": "2021-10-27",
     "trough_1_price": 23.0,
     "trough_2_date": "2021-12-03",
-    "trough_2_price": 16.93000030517578
+    "trough_2_price": 16.93000030517578,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-12",
@@ -1451,13 +1801,23 @@
     ],
     "composite_score": 0.933333,
     "geometric_score": 0.933333,
+    "max_observed_asof_date": "2026-05-12",
+    "observed_asof_dates": [
+      "2026-04-23",
+      "2026-04-24",
+      "2026-04-30",
+      "2026-05-04",
+      "2026-05-11",
+      "2026-05-12"
+    ],
     "pivot_price": 7.449999809265137,
     "template_match_score": null,
     "ticker": "RLMD",
     "trough_1_date": "2021-12-03",
     "trough_1_price": 16.93000030517578,
     "trough_2_date": "2022-02-03",
-    "trough_2_price": 16.719999313354492
+    "trough_2_price": 16.719999313354492,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-12",
@@ -1482,13 +1842,23 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-12",
+    "observed_asof_dates": [
+      "2026-04-23",
+      "2026-04-24",
+      "2026-04-30",
+      "2026-05-04",
+      "2026-05-11",
+      "2026-05-12"
+    ],
     "pivot_price": 7.449999809265137,
     "template_match_score": null,
     "ticker": "RLMD",
     "trough_1_date": "2022-05-12",
     "trough_1_price": 18.479999542236328,
     "trough_2_date": "2022-06-06",
-    "trough_2_price": 17.979999542236328
+    "trough_2_price": 17.979999542236328,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-12",
@@ -1513,13 +1883,23 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-12",
+    "observed_asof_dates": [
+      "2026-04-23",
+      "2026-04-24",
+      "2026-04-30",
+      "2026-05-04",
+      "2026-05-11",
+      "2026-05-12"
+    ],
     "pivot_price": 7.449999809265137,
     "template_match_score": null,
     "ticker": "RLMD",
     "trough_1_date": "2023-03-24",
     "trough_1_price": 2.2699999809265137,
     "trough_2_date": "2023-04-05",
-    "trough_2_price": 2.2200000286102295
+    "trough_2_price": 2.2200000286102295,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-12",
@@ -1544,13 +1924,23 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-12",
+    "observed_asof_dates": [
+      "2026-04-23",
+      "2026-04-24",
+      "2026-04-30",
+      "2026-05-04",
+      "2026-05-11",
+      "2026-05-12"
+    ],
     "pivot_price": 7.449999809265137,
     "template_match_score": null,
     "ticker": "RLMD",
     "trough_1_date": "2023-05-16",
     "trough_1_price": 2.9200000762939453,
     "trough_2_date": "2023-06-15",
-    "trough_2_price": 2.549999952316284
+    "trough_2_price": 2.549999952316284,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-12",
@@ -1575,13 +1965,23 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-12",
+    "observed_asof_dates": [
+      "2026-04-23",
+      "2026-04-24",
+      "2026-04-30",
+      "2026-05-04",
+      "2026-05-11",
+      "2026-05-12"
+    ],
     "pivot_price": 7.449999809265137,
     "template_match_score": null,
     "ticker": "RLMD",
     "trough_1_date": "2023-06-15",
     "trough_1_price": 2.549999952316284,
     "trough_2_date": "2023-06-27",
-    "trough_2_price": 2.4200000762939453
+    "trough_2_price": 2.4200000762939453,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-12",
@@ -1606,13 +2006,23 @@
     ],
     "composite_score": 0.833333,
     "geometric_score": 0.833333,
+    "max_observed_asof_date": "2026-05-12",
+    "observed_asof_dates": [
+      "2026-04-23",
+      "2026-04-24",
+      "2026-04-30",
+      "2026-05-04",
+      "2026-05-11",
+      "2026-05-12"
+    ],
     "pivot_price": 7.449999809265137,
     "template_match_score": null,
     "ticker": "RLMD",
     "trough_1_date": "2023-06-27",
     "trough_1_price": 2.4200000762939453,
     "trough_2_date": "2023-07-27",
-    "trough_2_price": 2.4800000190734863
+    "trough_2_price": 2.4800000190734863,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-12",
@@ -1637,13 +2047,23 @@
     ],
     "composite_score": 0.933333,
     "geometric_score": 0.933333,
+    "max_observed_asof_date": "2026-05-12",
+    "observed_asof_dates": [
+      "2026-04-23",
+      "2026-04-24",
+      "2026-04-30",
+      "2026-05-04",
+      "2026-05-11",
+      "2026-05-12"
+    ],
     "pivot_price": 7.449999809265137,
     "template_match_score": null,
     "ticker": "RLMD",
     "trough_1_date": "2023-08-17",
     "trough_1_price": 2.8499999046325684,
     "trough_2_date": "2023-09-19",
-    "trough_2_price": 2.7899999618530273
+    "trough_2_price": 2.7899999618530273,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-12",
@@ -1668,13 +2088,23 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-12",
+    "observed_asof_dates": [
+      "2026-04-23",
+      "2026-04-24",
+      "2026-04-30",
+      "2026-05-04",
+      "2026-05-11",
+      "2026-05-12"
+    ],
     "pivot_price": 7.449999809265137,
     "template_match_score": null,
     "ticker": "RLMD",
     "trough_1_date": "2024-11-26",
     "trough_1_price": 2.7200000286102295,
     "trough_2_date": "2024-12-18",
-    "trough_2_price": 0.3529999852180481
+    "trough_2_price": 0.3529999852180481,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-12",
@@ -1698,13 +2128,22 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-12",
+    "observed_asof_dates": [
+      "2026-04-23",
+      "2026-04-24",
+      "2026-04-30",
+      "2026-05-11",
+      "2026-05-12"
+    ],
     "pivot_price": 7.449999809265137,
     "template_match_score": null,
     "ticker": "RLMD",
     "trough_1_date": "2024-12-18",
     "trough_1_price": 0.3529999852180481,
     "trough_2_date": "2025-02-03",
-    "trough_2_price": 0.3400000035762787
+    "trough_2_price": 0.3400000035762787,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-12",
@@ -1729,13 +2168,23 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-12",
+    "observed_asof_dates": [
+      "2026-04-23",
+      "2026-04-24",
+      "2026-04-30",
+      "2026-05-04",
+      "2026-05-11",
+      "2026-05-12"
+    ],
     "pivot_price": 7.449999809265137,
     "template_match_score": null,
     "ticker": "RLMD",
     "trough_1_date": "2025-06-30",
     "trough_1_price": 0.6000000238418579,
     "trough_2_date": "2025-07-18",
-    "trough_2_price": 0.5770000219345093
+    "trough_2_price": 0.5770000219345093,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-12",
@@ -1760,13 +2209,23 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-12",
+    "observed_asof_dates": [
+      "2026-04-23",
+      "2026-04-24",
+      "2026-04-30",
+      "2026-05-04",
+      "2026-05-11",
+      "2026-05-12"
+    ],
     "pivot_price": 7.449999809265137,
     "template_match_score": null,
     "ticker": "RLMD",
     "trough_1_date": "2025-07-18",
     "trough_1_price": 0.5770000219345093,
     "trough_2_date": "2025-08-11",
-    "trough_2_price": 0.5630000233650208
+    "trough_2_price": 0.5630000233650208,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-04",
@@ -1791,13 +2250,23 @@
     ],
     "composite_score": 0.820064,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-12",
+    "observed_asof_dates": [
+      "2026-04-23",
+      "2026-04-24",
+      "2026-04-30",
+      "2026-05-04",
+      "2026-05-11",
+      "2026-05-12"
+    ],
     "pivot_price": 7.409999847412109,
     "template_match_score": 0.90016,
     "ticker": "RLMD",
     "trough_1_date": "2026-01-16",
     "trough_1_price": 3.740000009536743,
     "trough_2_date": "2026-01-30",
-    "trough_2_price": 3.549999952316284
+    "trough_2_price": 3.549999952316284,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-23",
@@ -1819,13 +2288,21 @@
     ],
     "composite_score": 0.769018,
     "geometric_score": 0.666667,
+    "max_observed_asof_date": "2026-05-12",
+    "observed_asof_dates": [
+      "2026-04-23",
+      "2026-04-24",
+      "2026-05-11",
+      "2026-05-12"
+    ],
     "pivot_price": 7.25,
     "template_match_score": 0.922544,
     "ticker": "RLMD",
     "trough_1_date": "2026-01-30",
     "trough_1_price": 3.549999952316284,
     "trough_2_date": "2026-02-17",
-    "trough_2_price": 3.640000104904175
+    "trough_2_price": 3.640000104904175,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-30",
@@ -1847,13 +2324,20 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-04-30",
+    "observed_asof_dates": [
+      "2026-04-28",
+      "2026-04-29",
+      "2026-04-30"
+    ],
     "pivot_price": 40.220001220703125,
     "template_match_score": null,
     "ticker": "RNG",
     "trough_1_date": "2021-12-16",
     "trough_1_price": 177.8000030517578,
     "trough_2_date": "2022-01-07",
-    "trough_2_price": 172.35000610351562
+    "trough_2_price": 172.35000610351562,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-30",
@@ -1875,13 +2359,20 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-04-30",
+    "observed_asof_dates": [
+      "2026-04-28",
+      "2026-04-29",
+      "2026-04-30"
+    ],
     "pivot_price": 40.220001220703125,
     "template_match_score": null,
     "ticker": "RNG",
     "trough_1_date": "2022-01-27",
     "trough_1_price": 156.4600067138672,
     "trough_2_date": "2022-02-03",
-    "trough_2_price": 155.74000549316406
+    "trough_2_price": 155.74000549316406,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-29",
@@ -1901,13 +2392,19 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-04-29",
+    "observed_asof_dates": [
+      "2026-04-28",
+      "2026-04-29"
+    ],
     "pivot_price": 40.189998626708984,
     "template_match_score": null,
     "ticker": "RNG",
     "trough_1_date": "2022-05-24",
     "trough_1_price": 57.90999984741211,
     "trough_2_date": "2022-06-14",
-    "trough_2_price": 48.689998626708984
+    "trough_2_price": 48.689998626708984,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-29",
@@ -1927,13 +2424,19 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-04-29",
+    "observed_asof_dates": [
+      "2026-04-28",
+      "2026-04-29"
+    ],
     "pivot_price": 40.189998626708984,
     "template_match_score": null,
     "ticker": "RNG",
     "trough_1_date": "2022-06-30",
     "trough_1_price": 52.2599983215332,
     "trough_2_date": "2022-07-14",
-    "trough_2_price": 47.93000030517578
+    "trough_2_price": 47.93000030517578,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-30",
@@ -1955,13 +2458,20 @@
     ],
     "composite_score": 0.833333,
     "geometric_score": 0.833333,
+    "max_observed_asof_date": "2026-04-30",
+    "observed_asof_dates": [
+      "2026-04-28",
+      "2026-04-29",
+      "2026-04-30"
+    ],
     "pivot_price": 40.220001220703125,
     "template_match_score": null,
     "ticker": "RNG",
     "trough_1_date": "2022-07-14",
     "trough_1_price": 47.93000030517578,
     "trough_2_date": "2022-08-01",
-    "trough_2_price": 48.709999084472656
+    "trough_2_price": 48.709999084472656,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-30",
@@ -1976,13 +2486,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-04-30",
+    "observed_asof_dates": [
+      "2026-04-30"
+    ],
     "pivot_price": 40.220001220703125,
     "template_match_score": null,
     "ticker": "RNG",
     "trough_1_date": "2022-08-29",
     "trough_1_price": 41.70000076293945,
     "trough_2_date": "2022-10-03",
-    "trough_2_price": 39.709999084472656
+    "trough_2_price": 39.709999084472656,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-30",
@@ -2004,13 +2519,20 @@
     ],
     "composite_score": 0.833333,
     "geometric_score": 0.833333,
+    "max_observed_asof_date": "2026-04-30",
+    "observed_asof_dates": [
+      "2026-04-28",
+      "2026-04-29",
+      "2026-04-30"
+    ],
     "pivot_price": 40.220001220703125,
     "template_match_score": null,
     "ticker": "RNG",
     "trough_1_date": "2022-11-22",
     "trough_1_price": 34.720001220703125,
     "trough_2_date": "2022-12-07",
-    "trough_2_price": 35.34000015258789
+    "trough_2_price": 35.34000015258789,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-30",
@@ -2025,13 +2547,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-04-30",
+    "observed_asof_dates": [
+      "2026-04-30"
+    ],
     "pivot_price": 40.220001220703125,
     "template_match_score": null,
     "ticker": "RNG",
     "trough_1_date": "2023-06-09",
     "trough_1_price": 32.95000076293945,
     "trough_2_date": "2023-06-23",
-    "trough_2_price": 32.06999969482422
+    "trough_2_price": 32.06999969482422,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-30",
@@ -2053,13 +2580,20 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-04-30",
+    "observed_asof_dates": [
+      "2026-04-28",
+      "2026-04-29",
+      "2026-04-30"
+    ],
     "pivot_price": 40.220001220703125,
     "template_match_score": null,
     "ticker": "RNG",
     "trough_1_date": "2023-09-21",
     "trough_1_price": 28.239999771118164,
     "trough_2_date": "2023-10-27",
-    "trough_2_price": 25.299999237060547
+    "trough_2_price": 25.299999237060547,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-30",
@@ -2081,13 +2615,20 @@
     ],
     "composite_score": 0.833333,
     "geometric_score": 0.833333,
+    "max_observed_asof_date": "2026-04-30",
+    "observed_asof_dates": [
+      "2026-04-28",
+      "2026-04-29",
+      "2026-04-30"
+    ],
     "pivot_price": 40.220001220703125,
     "template_match_score": null,
     "ticker": "RNG",
     "trough_1_date": "2023-10-27",
     "trough_1_price": 25.299999237060547,
     "trough_2_date": "2023-11-13",
-    "trough_2_price": 26.329999923706055
+    "trough_2_price": 26.329999923706055,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-30",
@@ -2102,13 +2643,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-04-30",
+    "observed_asof_dates": [
+      "2026-04-30"
+    ],
     "pivot_price": 40.220001220703125,
     "template_match_score": null,
     "ticker": "RNG",
     "trough_1_date": "2023-12-12",
     "trough_1_price": 31.540000915527344,
     "trough_2_date": "2024-01-03",
-    "trough_2_price": 31.0
+    "trough_2_price": 31.0,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-30",
@@ -2130,13 +2676,20 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-04-30",
+    "observed_asof_dates": [
+      "2026-04-28",
+      "2026-04-29",
+      "2026-04-30"
+    ],
     "pivot_price": 40.220001220703125,
     "template_match_score": null,
     "ticker": "RNG",
     "trough_1_date": "2024-01-03",
     "trough_1_price": 31.0,
     "trough_2_date": "2024-02-22",
-    "trough_2_price": 30.219999313354492
+    "trough_2_price": 30.219999313354492,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-30",
@@ -2158,13 +2711,20 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-04-30",
+    "observed_asof_dates": [
+      "2026-04-28",
+      "2026-04-29",
+      "2026-04-30"
+    ],
     "pivot_price": 40.220001220703125,
     "template_match_score": null,
     "ticker": "RNG",
     "trough_1_date": "2024-02-22",
     "trough_1_price": 30.219999313354492,
     "trough_2_date": "2024-04-18",
-    "trough_2_price": 29.25
+    "trough_2_price": 29.25,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-30",
@@ -2186,13 +2746,20 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-04-30",
+    "observed_asof_dates": [
+      "2026-04-28",
+      "2026-04-29",
+      "2026-04-30"
+    ],
     "pivot_price": 40.220001220703125,
     "template_match_score": null,
     "ticker": "RNG",
     "trough_1_date": "2025-08-11",
     "trough_1_price": 27.09000015258789,
     "trough_2_date": "2025-10-10",
-    "trough_2_price": 26.389999389648438
+    "trough_2_price": 26.389999389648438,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-30",
@@ -2214,13 +2781,20 @@
     ],
     "composite_score": 0.933333,
     "geometric_score": 0.933333,
+    "max_observed_asof_date": "2026-04-30",
+    "observed_asof_dates": [
+      "2026-04-28",
+      "2026-04-29",
+      "2026-04-30"
+    ],
     "pivot_price": 40.220001220703125,
     "template_match_score": null,
     "ticker": "RNG",
     "trough_1_date": "2025-10-10",
     "trough_1_price": 26.389999389648438,
     "trough_2_date": "2025-11-20",
-    "trough_2_price": 26.1200008392334
+    "trough_2_price": 26.1200008392334,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-30",
@@ -2242,13 +2816,20 @@
     ],
     "composite_score": 0.718228,
     "geometric_score": 0.6,
+    "max_observed_asof_date": "2026-04-30",
+    "observed_asof_dates": [
+      "2026-04-28",
+      "2026-04-29",
+      "2026-04-30"
+    ],
     "pivot_price": 40.220001220703125,
     "template_match_score": 0.895569,
     "ticker": "RNG",
     "trough_1_date": "2026-01-02",
     "trough_1_price": 27.59000015258789,
     "trough_2_date": "2026-02-03",
-    "trough_2_price": 24.81999969482422
+    "trough_2_price": 24.81999969482422,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-28",
@@ -2264,13 +2845,18 @@
     ],
     "composite_score": 0.868113,
     "geometric_score": 0.833333,
+    "max_observed_asof_date": "2026-04-28",
+    "observed_asof_dates": [
+      "2026-04-28"
+    ],
     "pivot_price": 39.56999969482422,
     "template_match_score": 0.920283,
     "ticker": "RNG",
     "trough_1_date": "2026-02-03",
     "trough_1_price": 24.81999969482422,
     "trough_2_date": "2026-02-25",
-    "trough_2_price": 34.47999954223633
+    "trough_2_price": 34.47999954223633,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-30",
@@ -2292,13 +2878,20 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-04-30",
+    "observed_asof_dates": [
+      "2026-04-28",
+      "2026-04-29",
+      "2026-04-30"
+    ],
     "pivot_price": 40.220001220703125,
     "template_match_score": null,
     "ticker": "RNG",
     "trough_1_date": "2026-03-27",
     "trough_1_price": 35.36000061035156,
     "trough_2_date": "2026-04-10",
-    "trough_2_price": 33.4900016784668
+    "trough_2_price": 33.4900016784668,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-29",
@@ -2315,13 +2908,18 @@
     ],
     "composite_score": 0.833333,
     "geometric_score": 0.833333,
+    "max_observed_asof_date": "2026-04-29",
+    "observed_asof_dates": [
+      "2026-04-29"
+    ],
     "pivot_price": 9.65999984741211,
     "template_match_score": null,
     "ticker": "TROX",
     "trough_1_date": "2021-12-20",
     "trough_1_price": 21.549999237060547,
     "trough_2_date": "2022-01-28",
-    "trough_2_price": 21.8799991607666
+    "trough_2_price": 21.8799991607666,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-29",
@@ -2338,13 +2936,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-04-29",
+    "observed_asof_dates": [
+      "2026-04-29"
+    ],
     "pivot_price": 9.65999984741211,
     "template_match_score": null,
     "ticker": "TROX",
     "trough_1_date": "2022-01-28",
     "trough_1_price": 21.8799991607666,
     "trough_2_date": "2022-03-08",
-    "trough_2_price": 16.059999465942383
+    "trough_2_price": 16.059999465942383,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-29",
@@ -2361,13 +2964,18 @@
     ],
     "composite_score": 0.933333,
     "geometric_score": 0.933333,
+    "max_observed_asof_date": "2026-04-29",
+    "observed_asof_dates": [
+      "2026-04-29"
+    ],
     "pivot_price": 9.65999984741211,
     "template_match_score": null,
     "ticker": "TROX",
     "trough_1_date": "2022-04-29",
     "trough_1_price": 17.200000762939453,
     "trough_2_date": "2022-05-12",
-    "trough_2_price": 16.510000228881836
+    "trough_2_price": 16.510000228881836,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-29",
@@ -2384,13 +2992,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-04-29",
+    "observed_asof_dates": [
+      "2026-04-29"
+    ],
     "pivot_price": 9.65999984741211,
     "template_match_score": null,
     "ticker": "TROX",
     "trough_1_date": "2022-05-12",
     "trough_1_price": 16.510000228881836,
     "trough_2_date": "2022-06-23",
-    "trough_2_price": 15.710000038146973
+    "trough_2_price": 15.710000038146973,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-29",
@@ -2407,13 +3020,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-04-29",
+    "observed_asof_dates": [
+      "2026-04-29"
+    ],
     "pivot_price": 9.65999984741211,
     "template_match_score": null,
     "ticker": "TROX",
     "trough_1_date": "2022-06-23",
     "trough_1_price": 15.710000038146973,
     "trough_2_date": "2022-07-14",
-    "trough_2_price": 15.100000381469727
+    "trough_2_price": 15.100000381469727,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-29",
@@ -2430,13 +3048,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-04-29",
+    "observed_asof_dates": [
+      "2026-04-29"
+    ],
     "pivot_price": 9.65999984741211,
     "template_match_score": null,
     "ticker": "TROX",
     "trough_1_date": "2022-07-14",
     "trough_1_price": 15.100000381469727,
     "trough_2_date": "2022-08-09",
-    "trough_2_price": 14.899999618530273
+    "trough_2_price": 14.899999618530273,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-29",
@@ -2453,13 +3076,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-04-29",
+    "observed_asof_dates": [
+      "2026-04-29"
+    ],
     "pivot_price": 9.65999984741211,
     "template_match_score": null,
     "ticker": "TROX",
     "trough_1_date": "2022-11-21",
     "trough_1_price": 13.520000457763672,
     "trough_2_date": "2022-12-20",
-    "trough_2_price": 13.170000076293945
+    "trough_2_price": 13.170000076293945,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-29",
@@ -2476,13 +3104,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-04-29",
+    "observed_asof_dates": [
+      "2026-04-29"
+    ],
     "pivot_price": 9.65999984741211,
     "template_match_score": null,
     "ticker": "TROX",
     "trough_1_date": "2023-02-24",
     "trough_1_price": 14.970000267028809,
     "trough_2_date": "2023-03-15",
-    "trough_2_price": 12.930000305175781
+    "trough_2_price": 12.930000305175781,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-29",
@@ -2499,13 +3132,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-04-29",
+    "observed_asof_dates": [
+      "2026-04-29"
+    ],
     "pivot_price": 9.65999984741211,
     "template_match_score": null,
     "ticker": "TROX",
     "trough_1_date": "2023-03-15",
     "trough_1_price": 12.930000305175781,
     "trough_2_date": "2023-04-26",
-    "trough_2_price": 12.529999732971191
+    "trough_2_price": 12.529999732971191,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-29",
@@ -2522,13 +3160,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-04-29",
+    "observed_asof_dates": [
+      "2026-04-29"
+    ],
     "pivot_price": 9.65999984741211,
     "template_match_score": null,
     "ticker": "TROX",
     "trough_1_date": "2023-05-16",
     "trough_1_price": 10.770000457763672,
     "trough_2_date": "2023-05-31",
-    "trough_2_price": 10.640000343322754
+    "trough_2_price": 10.640000343322754,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-29",
@@ -2545,13 +3188,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-04-29",
+    "observed_asof_dates": [
+      "2026-04-29"
+    ],
     "pivot_price": 9.65999984741211,
     "template_match_score": null,
     "ticker": "TROX",
     "trough_1_date": "2024-09-10",
     "trough_1_price": 11.6899995803833,
     "trough_2_date": "2024-11-14",
-    "trough_2_price": 10.880000114440918
+    "trough_2_price": 10.880000114440918,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-29",
@@ -2568,13 +3216,18 @@
     ],
     "composite_score": 0.933333,
     "geometric_score": 0.933333,
+    "max_observed_asof_date": "2026-04-29",
+    "observed_asof_dates": [
+      "2026-04-29"
+    ],
     "pivot_price": 9.65999984741211,
     "template_match_score": null,
     "ticker": "TROX",
     "trough_1_date": "2025-05-07",
     "trough_1_price": 4.909999847412109,
     "trough_2_date": "2025-05-23",
-    "trough_2_price": 4.739999771118164
+    "trough_2_price": 4.739999771118164,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-29",
@@ -2591,13 +3244,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-04-29",
+    "observed_asof_dates": [
+      "2026-04-29"
+    ],
     "pivot_price": 9.65999984741211,
     "template_match_score": null,
     "ticker": "TROX",
     "trough_1_date": "2025-06-30",
     "trough_1_price": 5.070000171661377,
     "trough_2_date": "2025-08-08",
-    "trough_2_price": 3.140000104904175
+    "trough_2_price": 3.140000104904175,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-29",
@@ -2614,13 +3272,18 @@
     ],
     "composite_score": 0.834406,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-04-29",
+    "observed_asof_dates": [
+      "2026-04-29"
+    ],
     "pivot_price": 9.65999984741211,
     "template_match_score": 0.936016,
     "ticker": "TROX",
     "trough_1_date": "2026-02-20",
     "trough_1_price": 6.849999904632568,
     "trough_2_date": "2026-03-06",
-    "trough_2_price": 6.539999961853027
+    "trough_2_price": 6.539999961853027,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-13",
@@ -2634,13 +3297,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-13",
+    "observed_asof_dates": [
+      "2026-05-13"
+    ],
     "pivot_price": 6.670000076293945,
     "template_match_score": null,
     "ticker": "TSHA",
     "trough_1_date": "2022-02-23",
     "trough_1_price": 5.960000038146973,
     "trough_2_date": "2022-03-04",
-    "trough_2_price": 5.71999979019165
+    "trough_2_price": 5.71999979019165,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-13",
@@ -2654,13 +3322,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-13",
+    "observed_asof_dates": [
+      "2026-05-13"
+    ],
     "pivot_price": 6.670000076293945,
     "template_match_score": null,
     "ticker": "TSHA",
     "trough_1_date": "2022-03-28",
     "trough_1_price": 5.800000190734863,
     "trough_2_date": "2022-04-29",
-    "trough_2_price": 3.6600000858306885
+    "trough_2_price": 3.6600000858306885,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-13",
@@ -2674,13 +3347,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-13",
+    "observed_asof_dates": [
+      "2026-05-13"
+    ],
     "pivot_price": 6.670000076293945,
     "template_match_score": null,
     "ticker": "TSHA",
     "trough_1_date": "2022-07-29",
     "trough_1_price": 4.070000171661377,
     "trough_2_date": "2022-08-11",
-    "trough_2_price": 3.950000047683716
+    "trough_2_price": 3.950000047683716,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-13",
@@ -2694,13 +3372,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-13",
+    "observed_asof_dates": [
+      "2026-05-13"
+    ],
     "pivot_price": 6.670000076293945,
     "template_match_score": null,
     "ticker": "TSHA",
     "trough_1_date": "2022-09-07",
     "trough_1_price": 3.059999942779541,
     "trough_2_date": "2022-09-26",
-    "trough_2_price": 1.7599999904632568
+    "trough_2_price": 1.7599999904632568,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-13",
@@ -2714,13 +3397,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-13",
+    "observed_asof_dates": [
+      "2026-05-13"
+    ],
     "pivot_price": 6.670000076293945,
     "template_match_score": null,
     "ticker": "TSHA",
     "trough_1_date": "2022-12-07",
     "trough_1_price": 2.0399999618530273,
     "trough_2_date": "2022-12-27",
-    "trough_2_price": 1.909999966621399
+    "trough_2_price": 1.909999966621399,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-13",
@@ -2734,13 +3422,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-13",
+    "observed_asof_dates": [
+      "2026-05-13"
+    ],
     "pivot_price": 6.670000076293945,
     "template_match_score": null,
     "ticker": "TSHA",
     "trough_1_date": "2023-04-10",
     "trough_1_price": 0.6650000214576721,
     "trough_2_date": "2023-04-25",
-    "trough_2_price": 0.6380000114440918
+    "trough_2_price": 0.6380000114440918,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-13",
@@ -2754,13 +3447,18 @@
     ],
     "composite_score": 0.833333,
     "geometric_score": 0.833333,
+    "max_observed_asof_date": "2026-05-13",
+    "observed_asof_dates": [
+      "2026-05-13"
+    ],
     "pivot_price": 6.670000076293945,
     "template_match_score": null,
     "ticker": "TSHA",
     "trough_1_date": "2023-12-20",
     "trough_1_price": 1.4199999570846558,
     "trough_2_date": "2024-01-18",
-    "trough_2_price": 1.4299999475479126
+    "trough_2_price": 1.4299999475479126,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-13",
@@ -2774,13 +3472,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-13",
+    "observed_asof_dates": [
+      "2026-05-13"
+    ],
     "pivot_price": 6.670000076293945,
     "template_match_score": null,
     "ticker": "TSHA",
     "trough_1_date": "2024-04-04",
     "trough_1_price": 2.680000066757202,
     "trough_2_date": "2024-04-19",
-    "trough_2_price": 2.2699999809265137
+    "trough_2_price": 2.2699999809265137,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-13",
@@ -2794,13 +3497,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-13",
+    "observed_asof_dates": [
+      "2026-05-13"
+    ],
     "pivot_price": 6.670000076293945,
     "template_match_score": null,
     "ticker": "TSHA",
     "trough_1_date": "2024-06-26",
     "trough_1_price": 2.0399999618530273,
     "trough_2_date": "2024-08-05",
-    "trough_2_price": 2.0199999809265137
+    "trough_2_price": 2.0199999809265137,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-13",
@@ -2814,13 +3522,18 @@
     ],
     "composite_score": 0.833333,
     "geometric_score": 0.833333,
+    "max_observed_asof_date": "2026-05-13",
+    "observed_asof_dates": [
+      "2026-05-13"
+    ],
     "pivot_price": 6.670000076293945,
     "template_match_score": null,
     "ticker": "TSHA",
     "trough_1_date": "2024-08-05",
     "trough_1_price": 2.0199999809265137,
     "trough_2_date": "2024-09-06",
-    "trough_2_price": 2.0399999618530273
+    "trough_2_price": 2.0399999618530273,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-13",
@@ -2834,13 +3547,18 @@
     ],
     "composite_score": 0.933333,
     "geometric_score": 0.933333,
+    "max_observed_asof_date": "2026-05-13",
+    "observed_asof_dates": [
+      "2026-05-13"
+    ],
     "pivot_price": 6.670000076293945,
     "template_match_score": null,
     "ticker": "TSHA",
     "trough_1_date": "2025-05-28",
     "trough_1_price": 2.440000057220459,
     "trough_2_date": "2025-06-30",
-    "trough_2_price": 2.309999942779541
+    "trough_2_price": 2.309999942779541,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-13",
@@ -2854,13 +3572,18 @@
     ],
     "composite_score": 0.843114,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-13",
+    "observed_asof_dates": [
+      "2026-05-13"
+    ],
     "pivot_price": 6.670000076293945,
     "template_match_score": 0.957786,
     "ticker": "TSHA",
     "trough_1_date": "2026-01-16",
     "trough_1_price": 4.559999942779541,
     "trough_2_date": "2026-02-05",
-    "trough_2_price": 4.409999847412109
+    "trough_2_price": 4.409999847412109,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-13",
@@ -2874,13 +3597,18 @@
     ],
     "composite_score": 0.732602,
     "geometric_score": 0.6,
+    "max_observed_asof_date": "2026-05-13",
+    "observed_asof_dates": [
+      "2026-05-13"
+    ],
     "pivot_price": 6.670000076293945,
     "template_match_score": 0.931505,
     "ticker": "TSHA",
     "trough_1_date": "2026-02-05",
     "trough_1_price": 4.409999847412109,
     "trough_2_date": "2026-03-24",
-    "trough_2_price": 4.130000114440918
+    "trough_2_price": 4.130000114440918,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-13",
@@ -2894,13 +3622,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-13",
+    "observed_asof_dates": [
+      "2026-05-13"
+    ],
     "pivot_price": 6.670000076293945,
     "template_match_score": null,
     "ticker": "TSHA",
     "trough_1_date": "2026-03-24",
     "trough_1_price": 4.130000114440918,
     "trough_2_date": "2026-03-27",
-    "trough_2_price": 4.070000171661377
+    "trough_2_price": 4.070000171661377,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-12",
@@ -2914,13 +3647,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-12",
+    "observed_asof_dates": [
+      "2026-05-12"
+    ],
     "pivot_price": 82.98999786376953,
     "template_match_score": null,
     "ticker": "UCTT",
     "trough_1_date": "2021-07-16",
     "trough_1_price": 45.810001373291016,
     "trough_2_date": "2021-08-19",
-    "trough_2_price": 39.720001220703125
+    "trough_2_price": 39.720001220703125,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-12",
@@ -2934,13 +3672,18 @@
     ],
     "composite_score": 0.833333,
     "geometric_score": 0.833333,
+    "max_observed_asof_date": "2026-05-12",
+    "observed_asof_dates": [
+      "2026-05-12"
+    ],
     "pivot_price": 82.98999786376953,
     "template_match_score": null,
     "ticker": "UCTT",
     "trough_1_date": "2021-08-19",
     "trough_1_price": 39.720001220703125,
     "trough_2_date": "2021-10-06",
-    "trough_2_price": 41.099998474121094
+    "trough_2_price": 41.099998474121094,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-12",
@@ -2954,13 +3697,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-12",
+    "observed_asof_dates": [
+      "2026-05-12"
+    ],
     "pivot_price": 82.98999786376953,
     "template_match_score": null,
     "ticker": "UCTT",
     "trough_1_date": "2021-12-20",
     "trough_1_price": 50.209999084472656,
     "trough_2_date": "2022-01-27",
-    "trough_2_price": 45.25
+    "trough_2_price": 45.25,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-12",
@@ -2974,13 +3722,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-12",
+    "observed_asof_dates": [
+      "2026-05-12"
+    ],
     "pivot_price": 82.98999786376953,
     "template_match_score": null,
     "ticker": "UCTT",
     "trough_1_date": "2022-05-11",
     "trough_1_price": 29.299999237060547,
     "trough_2_date": "2022-06-16",
-    "trough_2_price": 27.979999542236328
+    "trough_2_price": 27.979999542236328,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-12",
@@ -2994,13 +3747,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-12",
+    "observed_asof_dates": [
+      "2026-05-12"
+    ],
     "pivot_price": 82.98999786376953,
     "template_match_score": null,
     "ticker": "UCTT",
     "trough_1_date": "2022-06-16",
     "trough_1_price": 27.979999542236328,
     "trough_2_date": "2022-07-01",
-    "trough_2_price": 26.989999771118164
+    "trough_2_price": 26.989999771118164,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-12",
@@ -3014,13 +3772,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-12",
+    "observed_asof_dates": [
+      "2026-05-12"
+    ],
     "pivot_price": 82.98999786376953,
     "template_match_score": null,
     "ticker": "UCTT",
     "trough_1_date": "2022-09-26",
     "trough_1_price": 25.440000534057617,
     "trough_2_date": "2022-10-14",
-    "trough_2_price": 24.850000381469727
+    "trough_2_price": 24.850000381469727,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-12",
@@ -3034,13 +3797,18 @@
     ],
     "composite_score": 0.933333,
     "geometric_score": 0.933333,
+    "max_observed_asof_date": "2026-05-12",
+    "observed_asof_dates": [
+      "2026-05-12"
+    ],
     "pivot_price": 82.98999786376953,
     "template_match_score": null,
     "ticker": "UCTT",
     "trough_1_date": "2022-12-28",
     "trough_1_price": 32.150001525878906,
     "trough_2_date": "2023-01-11",
-    "trough_2_price": 31.959999084472656
+    "trough_2_price": 31.959999084472656,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-12",
@@ -3054,13 +3822,18 @@
     ],
     "composite_score": 0.833333,
     "geometric_score": 0.833333,
+    "max_observed_asof_date": "2026-05-12",
+    "observed_asof_dates": [
+      "2026-05-12"
+    ],
     "pivot_price": 82.98999786376953,
     "template_match_score": null,
     "ticker": "UCTT",
     "trough_1_date": "2024-09-09",
     "trough_1_price": 32.70000076293945,
     "trough_2_date": "2024-10-31",
-    "trough_2_price": 33.45000076293945
+    "trough_2_price": 33.45000076293945,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-12",
@@ -3074,13 +3847,18 @@
     ],
     "composite_score": 0.833333,
     "geometric_score": 0.833333,
+    "max_observed_asof_date": "2026-05-12",
+    "observed_asof_dates": [
+      "2026-05-12"
+    ],
     "pivot_price": 82.98999786376953,
     "template_match_score": null,
     "ticker": "UCTT",
     "trough_1_date": "2024-10-31",
     "trough_1_price": 33.45000076293945,
     "trough_2_date": "2024-11-15",
-    "trough_2_price": 33.970001220703125
+    "trough_2_price": 33.970001220703125,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-12",
@@ -3094,13 +3872,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-12",
+    "observed_asof_dates": [
+      "2026-05-12"
+    ],
     "pivot_price": 82.98999786376953,
     "template_match_score": null,
     "ticker": "UCTT",
     "trough_1_date": "2024-12-19",
     "trough_1_price": 34.959999084472656,
     "trough_2_date": "2025-01-27",
-    "trough_2_price": 33.58000183105469
+    "trough_2_price": 33.58000183105469,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-12",
@@ -3114,13 +3897,18 @@
     ],
     "composite_score": 0.833333,
     "geometric_score": 0.833333,
+    "max_observed_asof_date": "2026-05-12",
+    "observed_asof_dates": [
+      "2026-05-12"
+    ],
     "pivot_price": 82.98999786376953,
     "template_match_score": null,
     "ticker": "UCTT",
     "trough_1_date": "2025-04-17",
     "trough_1_price": 18.6299991607666,
     "trough_2_date": "2025-05-01",
-    "trough_2_price": 18.649999618530273
+    "trough_2_price": 18.649999618530273,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-12",
@@ -3134,13 +3922,18 @@
     ],
     "composite_score": 0.833333,
     "geometric_score": 0.833333,
+    "max_observed_asof_date": "2026-05-12",
+    "observed_asof_dates": [
+      "2026-05-12"
+    ],
     "pivot_price": 82.98999786376953,
     "template_match_score": null,
     "ticker": "UCTT",
     "trough_1_date": "2025-05-01",
     "trough_1_price": 18.649999618530273,
     "trough_2_date": "2025-05-30",
-    "trough_2_price": 19.3700008392334
+    "trough_2_price": 19.3700008392334,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-12",
@@ -3154,13 +3947,18 @@
     ],
     "composite_score": 0.772203,
     "geometric_score": 0.666667,
+    "max_observed_asof_date": "2026-05-12",
+    "observed_asof_dates": [
+      "2026-05-12"
+    ],
     "pivot_price": 82.98999786376953,
     "template_match_score": 0.930507,
     "ticker": "UCTT",
     "trough_1_date": "2026-03-06",
     "trough_1_price": 50.560001373291016,
     "trough_2_date": "2026-03-30",
-    "trough_2_price": 55.88999938964844
+    "trough_2_price": 55.88999938964844,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-12",
@@ -3174,13 +3972,18 @@
     ],
     "composite_score": 0.833333,
     "geometric_score": 0.833333,
+    "max_observed_asof_date": "2026-05-12",
+    "observed_asof_dates": [
+      "2026-05-12"
+    ],
     "pivot_price": 82.98999786376953,
     "template_match_score": null,
     "ticker": "UCTT",
     "trough_1_date": "2026-03-30",
     "trough_1_price": 55.88999938964844,
     "trough_2_date": "2026-04-29",
-    "trough_2_price": 72.01000213623047
+    "trough_2_price": 72.01000213623047,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-15",
@@ -3194,13 +3997,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-15",
+    "observed_asof_dates": [
+      "2026-05-15"
+    ],
     "pivot_price": 22.31999969482422,
     "template_match_score": null,
     "ticker": "WULF",
     "trough_1_date": "2021-09-01",
     "trough_1_price": 26.75,
     "trough_2_date": "2021-09-21",
-    "trough_2_price": 26.0
+    "trough_2_price": 26.0,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-15",
@@ -3214,13 +4022,18 @@
     ],
     "composite_score": 0.833333,
     "geometric_score": 0.833333,
+    "max_observed_asof_date": "2026-05-15",
+    "observed_asof_dates": [
+      "2026-05-15"
+    ],
     "pivot_price": 22.31999969482422,
     "template_match_score": null,
     "ticker": "WULF",
     "trough_1_date": "2021-09-21",
     "trough_1_price": 26.0,
     "trough_2_date": "2021-10-29",
-    "trough_2_price": 26.610000610351562
+    "trough_2_price": 26.610000610351562,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-15",
@@ -3234,13 +4047,18 @@
     ],
     "composite_score": 0.833333,
     "geometric_score": 0.833333,
+    "max_observed_asof_date": "2026-05-15",
+    "observed_asof_dates": [
+      "2026-05-15"
+    ],
     "pivot_price": 22.31999969482422,
     "template_match_score": null,
     "ticker": "WULF",
     "trough_1_date": "2021-12-21",
     "trough_1_price": 12.40999984741211,
     "trough_2_date": "2022-01-10",
-    "trough_2_price": 12.510000228881836
+    "trough_2_price": 12.510000228881836,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-15",
@@ -3254,13 +4072,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-15",
+    "observed_asof_dates": [
+      "2026-05-15"
+    ],
     "pivot_price": 22.31999969482422,
     "template_match_score": null,
     "ticker": "WULF",
     "trough_1_date": "2022-03-16",
     "trough_1_price": 7.409999847412109,
     "trough_2_date": "2022-04-27",
-    "trough_2_price": 3.3299999237060547
+    "trough_2_price": 3.3299999237060547,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-15",
@@ -3274,13 +4097,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-15",
+    "observed_asof_dates": [
+      "2026-05-15"
+    ],
     "pivot_price": 22.31999969482422,
     "template_match_score": null,
     "ticker": "WULF",
     "trough_1_date": "2022-05-24",
     "trough_1_price": 2.869999885559082,
     "trough_2_date": "2022-06-16",
-    "trough_2_price": 1.8899999856948853
+    "trough_2_price": 1.8899999856948853,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-15",
@@ -3294,13 +4122,18 @@
     ],
     "composite_score": 0.933333,
     "geometric_score": 0.933333,
+    "max_observed_asof_date": "2026-05-15",
+    "observed_asof_dates": [
+      "2026-05-15"
+    ],
     "pivot_price": 22.31999969482422,
     "template_match_score": null,
     "ticker": "WULF",
     "trough_1_date": "2022-07-12",
     "trough_1_price": 1.3799999952316284,
     "trough_2_date": "2022-07-27",
-    "trough_2_price": 1.3300000429153442
+    "trough_2_price": 1.3300000429153442,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-15",
@@ -3314,13 +4147,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-15",
+    "observed_asof_dates": [
+      "2026-05-15"
+    ],
     "pivot_price": 22.31999969482422,
     "template_match_score": null,
     "ticker": "WULF",
     "trough_1_date": "2022-07-27",
     "trough_1_price": 1.3300000429153442,
     "trough_2_date": "2022-09-07",
-    "trough_2_price": 1.0800000429153442
+    "trough_2_price": 1.0800000429153442,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-15",
@@ -3334,13 +4172,18 @@
     ],
     "composite_score": 0.833333,
     "geometric_score": 0.833333,
+    "max_observed_asof_date": "2026-05-15",
+    "observed_asof_dates": [
+      "2026-05-15"
+    ],
     "pivot_price": 22.31999969482422,
     "template_match_score": null,
     "ticker": "WULF",
     "trough_1_date": "2022-09-26",
     "trough_1_price": 1.0499999523162842,
     "trough_2_date": "2022-10-14",
-    "trough_2_price": 1.090000033378601
+    "trough_2_price": 1.090000033378601,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-15",
@@ -3354,13 +4197,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-15",
+    "observed_asof_dates": [
+      "2026-05-15"
+    ],
     "pivot_price": 22.31999969482422,
     "template_match_score": null,
     "ticker": "WULF",
     "trough_1_date": "2022-11-09",
     "trough_1_price": 0.8100000023841858,
     "trough_2_date": "2022-11-22",
-    "trough_2_price": 0.6899999976158142
+    "trough_2_price": 0.6899999976158142,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-15",
@@ -3374,13 +4222,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-15",
+    "observed_asof_dates": [
+      "2026-05-15"
+    ],
     "pivot_price": 22.31999969482422,
     "template_match_score": null,
     "ticker": "WULF",
     "trough_1_date": "2023-01-19",
     "trough_1_price": 0.8299999833106995,
     "trough_2_date": "2023-02-14",
-    "trough_2_price": 0.6000000238418579
+    "trough_2_price": 0.6000000238418579,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-15",
@@ -3394,13 +4247,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-15",
+    "observed_asof_dates": [
+      "2026-05-15"
+    ],
     "pivot_price": 22.31999969482422,
     "template_match_score": null,
     "ticker": "WULF",
     "trough_1_date": "2023-12-11",
     "trough_1_price": 1.4199999570846558,
     "trough_2_date": "2024-01-18",
-    "trough_2_price": 1.309999942779541
+    "trough_2_price": 1.309999942779541,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-15",
@@ -3414,13 +4272,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-15",
+    "observed_asof_dates": [
+      "2026-05-15"
+    ],
     "pivot_price": 22.31999969482422,
     "template_match_score": null,
     "ticker": "WULF",
     "trough_1_date": "2024-05-01",
     "trough_1_price": 2.119999885559082,
     "trough_2_date": "2024-05-17",
-    "trough_2_price": 1.9500000476837158
+    "trough_2_price": 1.9500000476837158,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-15",
@@ -3434,13 +4297,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-15",
+    "observed_asof_dates": [
+      "2026-05-15"
+    ],
     "pivot_price": 22.31999969482422,
     "template_match_score": null,
     "ticker": "WULF",
     "trough_1_date": "2024-07-11",
     "trough_1_price": 4.75,
     "trough_2_date": "2024-08-07",
-    "trough_2_price": 3.3399999141693115
+    "trough_2_price": 3.3399999141693115,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-15",
@@ -3454,13 +4322,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-15",
+    "observed_asof_dates": [
+      "2026-05-15"
+    ],
     "pivot_price": 22.31999969482422,
     "template_match_score": null,
     "ticker": "WULF",
     "trough_1_date": "2024-09-16",
     "trough_1_price": 3.940000057220459,
     "trough_2_date": "2024-10-09",
-    "trough_2_price": 3.819999933242798
+    "trough_2_price": 3.819999933242798,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-15",
@@ -3474,13 +4347,18 @@
     ],
     "composite_score": 0.833333,
     "geometric_score": 0.833333,
+    "max_observed_asof_date": "2026-05-15",
+    "observed_asof_dates": [
+      "2026-05-15"
+    ],
     "pivot_price": 22.31999969482422,
     "template_match_score": null,
     "ticker": "WULF",
     "trough_1_date": "2024-11-26",
     "trough_1_price": 6.570000171661377,
     "trough_2_date": "2024-12-10",
-    "trough_2_price": 6.71999979019165
+    "trough_2_price": 6.71999979019165,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-15",
@@ -3494,13 +4372,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-15",
+    "observed_asof_dates": [
+      "2026-05-15"
+    ],
     "pivot_price": 22.31999969482422,
     "template_match_score": null,
     "ticker": "WULF",
     "trough_1_date": "2024-12-10",
     "trough_1_price": 6.71999979019165,
     "trough_2_date": "2024-12-30",
-    "trough_2_price": 5.320000171661377
+    "trough_2_price": 5.320000171661377,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-15",
@@ -3514,13 +4397,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-15",
+    "observed_asof_dates": [
+      "2026-05-15"
+    ],
     "pivot_price": 22.31999969482422,
     "template_match_score": null,
     "ticker": "WULF",
     "trough_1_date": "2024-12-30",
     "trough_1_price": 5.320000171661377,
     "trough_2_date": "2025-01-13",
-    "trough_2_price": 5.199999809265137
+    "trough_2_price": 5.199999809265137,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-15",
@@ -3534,13 +4422,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-15",
+    "observed_asof_dates": [
+      "2026-05-15"
+    ],
     "pivot_price": 22.31999969482422,
     "template_match_score": null,
     "ticker": "WULF",
     "trough_1_date": "2025-10-22",
     "trough_1_price": 12.619999885559082,
     "trough_2_date": "2025-11-14",
-    "trough_2_price": 10.989999771118164
+    "trough_2_price": 10.989999771118164,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-15",
@@ -3554,13 +4447,18 @@
     ],
     "composite_score": 0.833333,
     "geometric_score": 0.833333,
+    "max_observed_asof_date": "2026-05-15",
+    "observed_asof_dates": [
+      "2026-05-15"
+    ],
     "pivot_price": 22.31999969482422,
     "template_match_score": null,
     "ticker": "WULF",
     "trough_1_date": "2025-11-14",
     "trough_1_price": 10.989999771118164,
     "trough_2_date": "2025-12-30",
-    "trough_2_price": 11.149999618530273
+    "trough_2_price": 11.149999618530273,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-15",
@@ -3574,13 +4472,18 @@
     ],
     "composite_score": 0.929297,
     "geometric_score": 0.933333,
+    "max_observed_asof_date": "2026-05-15",
+    "observed_asof_dates": [
+      "2026-05-15"
+    ],
     "pivot_price": 22.31999969482422,
     "template_match_score": 0.923243,
     "ticker": "WULF",
     "trough_1_date": "2026-03-06",
     "trough_1_price": 13.75,
     "trough_2_date": "2026-03-30",
-    "trough_2_price": 13.699999809265137
+    "trough_2_price": 13.699999809265137,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-22",
@@ -3600,13 +4503,20 @@
     ],
     "composite_score": 0.933333,
     "geometric_score": 0.933333,
+    "max_observed_asof_date": "2026-05-22",
+    "observed_asof_dates": [
+      "2026-04-28",
+      "2026-05-18",
+      "2026-05-22"
+    ],
     "pivot_price": 60.060001373291016,
     "template_match_score": null,
     "ticker": "YOU",
     "trough_1_date": "2021-07-07",
     "trough_1_price": 41.0099983215332,
     "trough_2_date": "2021-07-19",
-    "trough_2_price": 39.20000076293945
+    "trough_2_price": 39.20000076293945,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-18",
@@ -3625,13 +4535,19 @@
     ],
     "composite_score": 0.933333,
     "geometric_score": 0.933333,
+    "max_observed_asof_date": "2026-05-18",
+    "observed_asof_dates": [
+      "2026-04-28",
+      "2026-05-18"
+    ],
     "pivot_price": 59.18000030517578,
     "template_match_score": null,
     "ticker": "YOU",
     "trough_1_date": "2021-08-03",
     "trough_1_price": 52.13999938964844,
     "trough_2_date": "2021-08-17",
-    "trough_2_price": 46.869998931884766
+    "trough_2_price": 46.869998931884766,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-22",
@@ -3651,13 +4567,20 @@
     ],
     "composite_score": 0.833333,
     "geometric_score": 0.833333,
+    "max_observed_asof_date": "2026-05-22",
+    "observed_asof_dates": [
+      "2026-04-28",
+      "2026-05-18",
+      "2026-05-22"
+    ],
     "pivot_price": 60.060001373291016,
     "template_match_score": null,
     "ticker": "YOU",
     "trough_1_date": "2022-05-10",
     "trough_1_price": 24.719999313354492,
     "trough_2_date": "2022-05-24",
-    "trough_2_price": 25.799999237060547
+    "trough_2_price": 25.799999237060547,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-22",
@@ -3677,13 +4600,20 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-22",
+    "observed_asof_dates": [
+      "2026-04-28",
+      "2026-05-18",
+      "2026-05-22"
+    ],
     "pivot_price": 60.060001373291016,
     "template_match_score": null,
     "ticker": "YOU",
     "trough_1_date": "2022-06-30",
     "trough_1_price": 20.0,
     "trough_2_date": "2022-07-14",
-    "trough_2_price": 19.670000076293945
+    "trough_2_price": 19.670000076293945,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-22",
@@ -3703,13 +4633,20 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-22",
+    "observed_asof_dates": [
+      "2026-04-28",
+      "2026-05-18",
+      "2026-05-22"
+    ],
     "pivot_price": 60.060001373291016,
     "template_match_score": null,
     "ticker": "YOU",
     "trough_1_date": "2022-08-31",
     "trough_1_price": 22.940000534057617,
     "trough_2_date": "2022-09-26",
-    "trough_2_price": 22.469999313354492
+    "trough_2_price": 22.469999313354492,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-22",
@@ -3729,13 +4666,20 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-22",
+    "observed_asof_dates": [
+      "2026-04-28",
+      "2026-05-18",
+      "2026-05-22"
+    ],
     "pivot_price": 60.060001373291016,
     "template_match_score": null,
     "ticker": "YOU",
     "trough_1_date": "2022-10-14",
     "trough_1_price": 23.959999084472656,
     "trough_2_date": "2022-11-09",
-    "trough_2_price": 22.670000076293945
+    "trough_2_price": 22.670000076293945,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-22",
@@ -3755,13 +4699,20 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-22",
+    "observed_asof_dates": [
+      "2026-04-28",
+      "2026-05-18",
+      "2026-05-22"
+    ],
     "pivot_price": 60.060001373291016,
     "template_match_score": null,
     "ticker": "YOU",
     "trough_1_date": "2022-12-28",
     "trough_1_price": 26.799999237060547,
     "trough_2_date": "2023-01-19",
-    "trough_2_price": 26.459999084472656
+    "trough_2_price": 26.459999084472656,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-22",
@@ -3781,13 +4732,20 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-22",
+    "observed_asof_dates": [
+      "2026-04-28",
+      "2026-05-18",
+      "2026-05-22"
+    ],
     "pivot_price": 60.060001373291016,
     "template_match_score": null,
     "ticker": "YOU",
     "trough_1_date": "2023-04-06",
     "trough_1_price": 23.690000534057617,
     "trough_2_date": "2023-05-02",
-    "trough_2_price": 23.420000076293945
+    "trough_2_price": 23.420000076293945,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-22",
@@ -3801,13 +4759,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-22",
+    "observed_asof_dates": [
+      "2026-05-22"
+    ],
     "pivot_price": 60.060001373291016,
     "template_match_score": null,
     "ticker": "YOU",
     "trough_1_date": "2023-05-09",
     "trough_1_price": 23.8700008392334,
     "trough_2_date": "2023-06-09",
-    "trough_2_price": 23.469999313354492
+    "trough_2_price": 23.469999313354492,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-18",
@@ -3826,13 +4789,19 @@
     ],
     "composite_score": 0.833333,
     "geometric_score": 0.833333,
+    "max_observed_asof_date": "2026-05-18",
+    "observed_asof_dates": [
+      "2026-04-28",
+      "2026-05-18"
+    ],
     "pivot_price": 59.18000030517578,
     "template_match_score": null,
     "ticker": "YOU",
     "trough_1_date": "2023-07-06",
     "trough_1_price": 22.329999923706055,
     "trough_2_date": "2023-07-20",
-    "trough_2_price": 22.56999969482422
+    "trough_2_price": 22.56999969482422,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-22",
@@ -3846,13 +4815,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-22",
+    "observed_asof_dates": [
+      "2026-05-22"
+    ],
     "pivot_price": 60.060001373291016,
     "template_match_score": null,
     "ticker": "YOU",
     "trough_1_date": "2024-01-03",
     "trough_1_price": 20.25,
     "trough_2_date": "2024-01-23",
-    "trough_2_price": 19.149999618530273
+    "trough_2_price": 19.149999618530273,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-22",
@@ -3869,13 +4843,19 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-22",
+    "observed_asof_dates": [
+      "2026-04-28",
+      "2026-05-22"
+    ],
     "pivot_price": 60.060001373291016,
     "template_match_score": null,
     "ticker": "YOU",
     "trough_1_date": "2024-01-31",
     "trough_1_price": 19.030000686645508,
     "trough_2_date": "2024-02-26",
-    "trough_2_price": 18.059999465942383
+    "trough_2_price": 18.059999465942383,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-22",
@@ -3889,13 +4869,18 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-22",
+    "observed_asof_dates": [
+      "2026-05-22"
+    ],
     "pivot_price": 60.060001373291016,
     "template_match_score": null,
     "ticker": "YOU",
     "trough_1_date": "2024-11-18",
     "trough_1_price": 25.739999771118164,
     "trough_2_date": "2024-12-19",
-    "trough_2_price": 25.610000610351562
+    "trough_2_price": 25.610000610351562,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-22",
@@ -3912,13 +4897,19 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-22",
+    "observed_asof_dates": [
+      "2026-04-28",
+      "2026-05-22"
+    ],
     "pivot_price": 60.060001373291016,
     "template_match_score": null,
     "ticker": "YOU",
     "trough_1_date": "2025-05-01",
     "trough_1_price": 24.399999618530273,
     "trough_2_date": "2025-05-23",
-    "trough_2_price": 23.979999542236328
+    "trough_2_price": 23.979999542236328,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-22",
@@ -3938,13 +4929,20 @@
     ],
     "composite_score": 0.766667,
     "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-22",
+    "observed_asof_dates": [
+      "2026-04-28",
+      "2026-05-18",
+      "2026-05-22"
+    ],
     "pivot_price": 60.060001373291016,
     "template_match_score": null,
     "ticker": "YOU",
     "trough_1_date": "2025-12-08",
     "trough_1_price": 32.56999969482422,
     "trough_2_date": "2026-02-03",
-    "trough_2_price": 31.670000076293945
+    "trough_2_price": 31.670000076293945,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-04-28",
@@ -3964,13 +4962,20 @@
     ],
     "composite_score": 0.776401,
     "geometric_score": 0.666667,
+    "max_observed_asof_date": "2026-05-22",
+    "observed_asof_dates": [
+      "2026-04-28",
+      "2026-05-18",
+      "2026-05-22"
+    ],
     "pivot_price": 53.77000045776367,
     "template_match_score": 0.941004,
     "ticker": "YOU",
     "trough_1_date": "2026-02-03",
     "trough_1_price": 31.670000076293945,
     "trough_2_date": "2026-03-13",
-    "trough_2_price": 44.630001068115234
+    "trough_2_price": 44.630001068115234,
+    "window_count": 1
   },
   {
     "anchor_asof_date": "2026-05-22",
@@ -3984,12 +4989,17 @@
     ],
     "composite_score": 0.833333,
     "geometric_score": 0.833333,
+    "max_observed_asof_date": "2026-05-22",
+    "observed_asof_dates": [
+      "2026-05-22"
+    ],
     "pivot_price": 60.060001373291016,
     "template_match_score": null,
     "ticker": "YOU",
     "trough_1_date": "2026-04-29",
     "trough_1_price": 53.33000183105469,
     "trough_2_date": "2026-05-13",
-    "trough_2_price": 55.540000915527344
+    "trough_2_price": 55.540000915527344,
+    "window_count": 1
   }
 ]

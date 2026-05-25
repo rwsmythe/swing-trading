@@ -1,26 +1,26 @@
 # Double-Bottom-W Walk-Forward Backtest Summary
 
-**Cohort:** composite>=0.7 double_bottom_w; recency<=60d (13 unique W patterns)
+**Cohort:** composite>=0.7 double_bottom_w; recency<=60d (max_observed_asof) (12 unique W patterns)
 
 **Cohort source:** tests\fixtures\research\double_bottom_w_backtest\cohort.json
-**Recency filter:** trough_2 within 60 calendar days of asof (13 of 172 verdicts passed).
+**Recency filter:** trough_2 within 60 calendar days of asof (12 of 172 verdicts passed).
 **Both-exist diagnostic:** 1 ticker-reads hit Shape A + legacy (Shape A wins per OQ-18).
 
 ## Per-ruleset aggregate stats
 
 | Ruleset | Patterns | Triggered | Closed | Winners | Losers | Untrig | Open | Win-rate | Avg R win | Avg R loser | Expectancy R closed | Avg days held (closed) | Avg days held (open) |
 |---------|----------|-----------|--------|---------|--------|--------|------|----------|-----------|-------------|---------------------|------------------------|----------------------|
-| A_minervini_trail_ma | 13 | 8 | 2 | 0 | 2 | 5 | 6 | 0.0% | n/a | -0.708R | -0.708R | 3.5d | 10.0d |
-| B_fixed_R_multiple | 13 | 8 | 0 | 0 | 0 | 5 | 8 | n/a | n/a | n/a | n/a | n/a | 9.0d |
-| C_close_below_50d | 13 | 8 | 2 | 0 | 2 | 5 | 6 | 0.0% | n/a | -0.708R | -0.708R | 3.5d | 10.0d |
+| A_minervini_trail_ma | 12 | 7 | 2 | 0 | 2 | 5 | 5 | 0.0% | n/a | -0.708R | -0.708R | 3.5d | 7.6d |
+| B_fixed_R_multiple | 12 | 7 | 0 | 0 | 0 | 5 | 7 | n/a | n/a | n/a | n/a | n/a | 7.1d |
+| C_close_below_50d | 12 | 7 | 2 | 0 | 2 | 5 | 5 | 0.0% | n/a | -0.708R | -0.708R | 3.5d | 7.6d |
 
 ## Exit-reason breakdown
 
 | Ruleset | stop_hit | trail_stop | target_3R | close_below_50d | open_at_data_tail | untriggered | ohlcv_empty | entry_gap_below_stop |
 |---------|----------|------------|-----------|-----------------|-------------------|-------------|-------------|----------------------|
-| A_minervini_trail_ma | 0 | 0 | 0 | 2 | 6 | 5 | 0 | 0 |
-| B_fixed_R_multiple | 0 | 0 | 0 | 0 | 8 | 5 | 0 | 0 |
-| C_close_below_50d | 0 | 0 | 0 | 2 | 6 | 5 | 0 | 0 |
+| A_minervini_trail_ma | 0 | 0 | 0 | 2 | 5 | 5 | 0 | 0 |
+| B_fixed_R_multiple | 0 | 0 | 0 | 0 | 7 | 5 | 0 | 0 |
+| C_close_below_50d | 0 | 0 | 0 | 2 | 5 | 5 | 0 | 0 |
 
 ## Per-pattern detail (composite>=0.7; sorted by ticker then trough_1_date)
 
@@ -59,9 +59,6 @@
 | WULF-2026-03-06 | 0.929 | 46 | A_minervini_trail_ma | untriggered | n/a | n/a | untriggered | n/a | n/a |
 | WULF-2026-03-06 | 0.929 | 46 | B_fixed_R_multiple | untriggered | n/a | n/a | untriggered | n/a | n/a |
 | WULF-2026-03-06 | 0.929 | 46 | C_close_below_50d | untriggered | n/a | n/a | untriggered | n/a | n/a |
-| YOU-2026-02-03 | 0.776 | 46 | A_minervini_trail_ma | open | 2026-04-30 | 2026-05-22 | open_at_data_tail | +0.745R | 22 |
-| YOU-2026-02-03 | 0.776 | 46 | B_fixed_R_multiple | open | 2026-04-30 | 2026-05-22 | open_at_data_tail | +0.745R | 22 |
-| YOU-2026-02-03 | 0.776 | 46 | C_close_below_50d | open | 2026-04-30 | 2026-05-22 | open_at_data_tail | +0.745R | 22 |
 | YOU-2026-04-29 | 0.833 | 9 | A_minervini_trail_ma | untriggered | n/a | n/a | untriggered | n/a | n/a |
 | YOU-2026-04-29 | 0.833 | 9 | B_fixed_R_multiple | untriggered | n/a | n/a | untriggered | n/a | n/a |
 | YOU-2026-04-29 | 0.833 | 9 | C_close_below_50d | untriggered | n/a | n/a | untriggered | n/a | n/a |
