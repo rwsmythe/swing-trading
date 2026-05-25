@@ -148,6 +148,52 @@ def test_read_yfinance_shape_a_sliced_raises_OhlcvCoverageError_below_min_bars(t
 
 
 # ---------------------------------------------------------------------------
+# str-vs-date asof_date type coercion fix (dispatch brief §2.1-2.3)
+# ---------------------------------------------------------------------------
+
+def test_read_yfinance_shape_a_sliced_accepts_str_asof_date(tmp_path):
+    """Reader accepts ISO-date str (e.g., PatternExemplar.end_date hydrated
+    from SQLite TEXT) and coerces internally, matching the date-typed call
+    site behavior. Closes the TypeError that silently no-oped template Pass 2
+    in pattern_cohort_evaluator (detector_invoker.py:185)."""
+    _make_shape_a_parquet(tmp_path / "ZZSL.yfinance.parquet", n_bars=250)
+    from research.harness.aplus_v2_ohlcv_evaluator.ohlcv_reader import read_yfinance_shape_a_sliced
+    result = read_yfinance_shape_a_sliced(
+        "ZZSL", tmp_path, asof_date="2026-04-30", min_bars=1,
+    )
+    assert isinstance(result, pd.DataFrame)
+    assert len(result) >= 1
+    assert result.index[-1].date() <= date(2026, 4, 30)
+
+
+def test_read_yfinance_shape_a_sliced_malformed_str_raises_OhlcvCoverageError(tmp_path):  # noqa: N802
+    """Malformed ISO str input re-raises as OhlcvCoverageError per dispatch
+    brief §1.3 LOCK, keeping callers' try/except shape consistent with other
+    reader failure modes (missing-archive + below-min-bars)."""
+    from research.harness.aplus_v2_ohlcv_evaluator.exceptions import OhlcvCoverageError
+    _make_shape_a_parquet(tmp_path / "ZZSL.yfinance.parquet", n_bars=250)
+    from research.harness.aplus_v2_ohlcv_evaluator.ohlcv_reader import read_yfinance_shape_a_sliced
+    with pytest.raises(OhlcvCoverageError, match="malformed.*asof_date"):
+        read_yfinance_shape_a_sliced(
+            "ZZSL", tmp_path, asof_date="not-a-date", min_bars=1,
+        )
+
+
+def test_read_yfinance_shape_a_sliced_str_and_date_inputs_equivalent(tmp_path):
+    """date input continues to work identically (no API break); str input
+    produces a byte-identical DataFrame via coercion at function entry."""
+    _make_shape_a_parquet(tmp_path / "ZZSL.yfinance.parquet", n_bars=250)
+    from research.harness.aplus_v2_ohlcv_evaluator.ohlcv_reader import read_yfinance_shape_a_sliced
+    result_date = read_yfinance_shape_a_sliced(
+        "ZZSL", tmp_path, asof_date=date(2026, 4, 30), min_bars=1,
+    )
+    result_str = read_yfinance_shape_a_sliced(
+        "ZZSL", tmp_path, asof_date="2026-04-30", min_bars=1,
+    )
+    pd.testing.assert_frame_equal(result_date, result_str)
+
+
+# ---------------------------------------------------------------------------
 # §H Test 14: both-exist diagnostic affected_tickers list cap at 50
 # ---------------------------------------------------------------------------
 
