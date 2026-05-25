@@ -102,20 +102,38 @@ def read_yfinance_shape_a_sliced(
     ticker: str,
     cache_dir: Path,
     *,
-    asof_date: date,
+    asof_date: date | str,
     min_bars: int = 200,
     diagnostic: BothExistDiagnostic | None = None,
 ) -> pd.DataFrame:
     """Read + slice the per-ticker yfinance Shape A parquet to bars
     <= asof_date (inclusive).
 
+    The `asof_date` parameter accepts either a `datetime.date` (V2 OHLCV
+    callers per parse_asof_date) OR an ISO-format `str` (pattern_cohort_evaluator
+    callers passing PatternExemplar.end_date hydrated from SQLite TEXT).
+    Per dispatch brief §1.2 LOCK, coercion lives at the boundary here so
+    type annotations are backed by runtime validation (per cumulative
+    gotcha "Literal[...] type hints are NOT runtime-enforced").
+
     Raises:
       OhlcvCoverageError: when the sliced frame has fewer than `min_bars` rows
         (per spec §F.2 + cumulative gotcha "yfinance history strip" backward-
         looking inequality discipline -- `data_asof_date` is BACKWARD-looking,
         so `<=` (inclusive) is correct per the existing weather lookup +
-        Phase 13 T1.SB0 R3 gotcha precedent).
+        Phase 13 T1.SB0 R3 gotcha precedent) OR when `asof_date` is a
+        malformed ISO string (wrapped from date.fromisoformat ValueError per
+        dispatch brief §1.3 LOCK so callers' broad try/except shape stays
+        consistent with other reader failure modes).
     """
+    if isinstance(asof_date, str):
+        try:
+            asof_date = date.fromisoformat(asof_date)
+        except ValueError as exc:
+            raise OhlcvCoverageError(
+                f"OHLCV malformed asof_date for ticker={ticker!r}: "
+                f"{asof_date!r} is not a valid ISO date ({exc})"
+            ) from exc
     df = read_yfinance_shape_a(ticker, cache_dir, diagnostic=diagnostic)
     # Backward-looking anchor: use <= (inclusive) per cumulative gotcha
     sliced = df.loc[df.index.date <= asof_date]
