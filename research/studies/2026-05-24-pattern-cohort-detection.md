@@ -61,31 +61,107 @@ PRE-breakout-trigger, did the detectors confirm the chart shape?
 
 ## Results
 
-**PLACEHOLDER — pending operator-paired smoke run against the 67-entry cohort.**
+Smoke artifact at `exports/research/pattern-cohort-detection-20260525T201617Z/`
+(runtime 22.5 min / 1350 s; 43,370 verdicts emitted across 67 cohort entries x
+5 detector classes x N windows; ZERO entries skipped). Template Pass 2
+populated post-bug-chain remediation (see Amendments section below).
 
-The harness shipped end-to-end at the executing-plans dispatch; the
-first-cohort smoke artifact is operator-paired (requires the operator's local
-`~/swing-data/swing.db` + Shape A parquet cache). The expected smoke artifact
-shape per spec §I.4:
+### Headline per-pattern-class summary
 
-- `exports/research/pattern-cohort-detection-<ISO>/results.csv` — ~67×5×N_windows
-  rows (where N_windows is the per-entry window count under zigzag_pivot).
-- `exports/research/pattern-cohort-detection-<ISO>/summary.md` — analyst headline
-  per-pattern-class summary table with composite≥0.5/0.7/0.9 counters; per-class
-  drill-down capped at first 50; skip-reason summary.
-- `exports/research/pattern-cohort-detection-<ISO>/manifest.json` — cohort SHA-256
-  + corpus sizes + `l2_lock_preserved=true` sentinel.
+| pattern_class    | composite>=0.5 | composite>=0.7 | composite>=0.9 | max_composite |
+|------------------|----------------|----------------|----------------|---------------|
+| double_bottom_w  | 2665 (30.7%)   | 725  (8.4%)    | 86 (1.0%)      | 0.9333        |
+| cup_with_handle  | 1236 (14.3%)   | 23  (0.3%)     | 0              | 0.8750        |
+| flat_base        | 1108 (12.8%)   | 180  (2.1%)    | 0              | 0.7143        |
+| vcp              | 167  (1.9%)    | 63  (0.7%)     | 0              | 0.8799        |
+| high_tight_flag  | 40   (0.5%)    | 0              | 0              | 0.6667        |
 
-When the operator captures the smoke artifact, this section will be amended
-with: (a) per-pattern-class detector-pass counts at composite≥0.5/0.7/0.9
-thresholds; (b) per-ticker breakdown sorted by max composite_score; (c)
-cross-tabulation with V2 OHLCV backtest output at merge `e0a9edd` — i.e., the
-2×2 contingency of `{detector-pass, detector-fail} × {triggered, untriggered}`
-with the 17 backtest patterns mapped to harness verdicts.
+(Percentages relative to 8,674 entries-evaluated per detector class.)
+
+### Headline finding
+
+**The +67 watch->aplus cohort at `vcp.tightness_range_factor=1.005` is
+chart-shape DOMINATED by `double_bottom_w`, NOT `vcp`.** double_bottom_w
+captures 2,665 high-composite windows (composite>=0.5) and 86 robust windows
+(composite>=0.9) -- more than the next three detector classes COMBINED at the
+>=0.5 threshold, and the ONLY detector class with non-zero >=0.9 captures.
+`vcp` itself captures only 167 windows at >=0.5 (1.9% of evaluated entries).
+
+This falsifies the operator's a priori hypothesis (**S3** under
+Interpretation below): the threshold relaxation does NOT select candidates
+that lie OUTSIDE the detectors' acceptance regions entirely. Rather, it
+selects candidates that lie INSIDE a DIFFERENT detector's acceptance region
+(double_bottom_w) than the threshold variable's name suggests (vcp).
+
+### Template Pass 2 effect
+
+Template Pass 2 (DTW similarity vs the 15 filtered pattern_exemplars) boosted
+composite scores for entries with mid-range geometric_score (0.5-0.7) AND
+strong template similarity to an exemplar of the same class. Examples from
+cup_with_handle:
+
+| ticker  | asof_date  | window | geometric | template | composite |
+|---------|------------|--------|-----------|----------|-----------|
+| PTEN    | 2026-05-08 | 123    | 0.6250    | 0.9662   | 0.7615    |
+| PTEN    | 2026-05-08 | 124    | 0.6250    | 0.9617   | 0.7597    |
+| KOD     | 2026-05-01 | 165    | 0.5250    | 0.9486   | 0.6944    |
+| TSHA    | 2026-05-13 | 162    | 0.5250    | 0.9426   | 0.6920    |
+
+Template Pass 2 did NOT materially shift the per-class headline ordering -- the
+already-high-geometric double_bottom_w entries (0.9333) remained at the top
+without template uplift (many high-geometric entries show template=(none),
+consistent with DTW Sakoe-Chiba band infeasibility for short candidate windows
+vs longer exemplar series per cumulative T2.SB5 gotcha "DTW Sakoe-Chiba band
+infeasibility on asymmetric series"). The cohort's RANK ORDER across detector
+classes is robust to template Pass 2.
+
+Marginal changes from pre-template baseline to post-template:
+
+- `vcp` composite>=0.5: 128 -> 167 (+30%; LARGEST relative move)
+- `vcp` max_composite: 0.8571 -> 0.8799
+- `flat_base` composite>=0.5: 1053 -> 1108 (+5%)
+- `cup_with_handle` composite>=0.7: 17 -> 23 (+35%)
+- `double_bottom_w` composite>=0.7: 670 -> 725 (+8%)
+- `high_tight_flag`: unchanged (composite distribution saturated below
+  template-boost threshold)
+
+The vcp uplift is notable in relative terms but small in absolute scale: 167
+windows at >=0.5 still represents 1.9% of entries-evaluated -- one-sixteenth
+of double_bottom_w's captures. The substantive verdict (cohort is
+double-bottom-w-dominated) is reinforced, not overturned.
+
+### Detector-class winners per cohort entry
+
+Of 15 unique tickers in the cohort, double_bottom_w captures at least one
+window at composite>=0.9 for: YOU, DK, WULF, TSHA, NAT, RLMD, UCTT, PTEN,
+KOD, RNG, TROX. cup_with_handle's best capture is YOU 0.8750; vcp's best is
+TROX/RNG/UCTT at 0.8571 with template uplift pushing similar tickers to
+0.8799. **All 15 cohort tickers show stronger double-bottom-w signal than
+vcp signal at the composite>=0.5 threshold.**
+
+### Cross-tabulation with V2 OHLCV backtest (`e0a9edd`)
+
+The backtest at merge `e0a9edd` evaluated 17 patterns from the same +67
+cohort and reported 5 triggered / 12 untriggered breakouts, 0 closed trades,
+-0.18R mean unrealized across 5 open positions. The backtest entry rule was
+`close > consolidation_pivot` (a VCP-appropriate trigger). The 29% breakout
+rate empirically aligned with the harness finding that the cohort is NOT
+VCP-shaped -- a close-above-VCP-pivot rule applied to predominantly
+W-bottom-shaped candidates is mechanically MISMATCHED, which explains BOTH
+the low trigger rate AND the negative unrealized P&L on the few that did
+trigger.
+
+**Full 2x2 contingency mapping (detector-pass x triggered) is BANKED V2** --
+the harness emits per-window verdicts but the backtest reports per-pattern
+trigger outcomes; correct mapping requires aggregating per-pattern (multiple
+windows per pattern) and joining on (ticker, asof_date) pairs. This study's
+headline result holds without the 2x2; the V2 mapping would QUANTIFY the
+per-detector-class trigger-rate differential rather than CHANGE the
+qualitative finding.
 
 ## Interpretation
 
-**Pending Results.** Three a priori interpretation scenarios:
+A priori scenarios + the actual result:
 
 - **S1 (orthogonal signal):** detector-pass cohort has differentiated
   breakout-trigger rate vs detector-fail cohort. The threshold relaxation buys
@@ -104,6 +180,51 @@ with the 17 backtest patterns mapped to harness verdicts.
   passes regardless of class. Stronger version of S2: the threshold variable
   is selecting candidates that lie OUTSIDE the detectors' acceptance regions
   entirely. Implication: same as S2.
+- **S4 (NEW; emerged from data; chart-shape MISMATCH):** the promoted cohort
+  has many detector passes but for a DIFFERENT class than the threshold
+  variable's name suggests. The threshold variable named for VCP analysis
+  (`vcp.tightness_range_factor`) relaxes A criterion that admits candidates
+  matching a DIFFERENT chart shape (`double_bottom_w`). Classification crosses
+  the cfg threshold via a numerical-A+-but-wrong-shape pathway. Implication:
+  the V2 OHLCV backtest's NEGATIVE verdict for `vcp.tightness_range_factor=1.005`
+  is mechanically explained -- the backtest's `close > consolidation_pivot`
+  trigger rule is VCP-appropriate and W-bottom-INAPPROPRIATE; trigger-rate
+  collapse + negative unrealized P&L are predictable rather than diagnostic of
+  a deeper signal failure. The threshold variable is doing "the right
+  classification work" (identifying real chart-shape candidates) but the
+  shape it admits is OUT-OF-FAMILY with the variable's namespace.
+
+**Data supports S4.** The +67 cohort has dense detector captures at
+composite>=0.5 for double_bottom_w (2,665 / 30.7%), cup_with_handle (1,236 /
+14.3%), flat_base (1,108 / 12.8%) -- ruling out S2 + S3. But vcp captures
+only 167 / 1.9%, with zero entries at composite>=0.9 for vcp -- ruling out
+S1's "real VCP chart-shape signal" interpretation. The cohort confirmed
+chart shape exists; it is NOT VCP.
+
+### Implication for cfg-policy direction
+
+The original framing -- "relax vcp threshold X by N to gain N actionable
+A+ candidates" -- was implicitly assumed to admit additional VCP-shaped
+candidates. Data shows the relaxation admits double-bottom-w-shaped
+candidates that happened to pass the relaxed vcp criterion arithmetically
+(numerator-denominator drift across the threshold rather than
+chart-shape-acceptance drift). Three reframing options for the broader
+research program:
+
+- **(R1) Pivot the binding-variable backtest to a chart-shape-appropriate
+  trigger rule.** For double_bottom_w-dominated cohorts: W right-shoulder
+  break (NOT close > pivot). This is the Turn F D1 dispatch hypothesis.
+- **(R2) Re-evaluate the 4 remaining VCP-family binding variables
+  (`vcp.tightness_days_required +16`, `vcp.adr_min_pct +11`,
+  `vcp.proximity_max_pct +5`, `vcp.orderliness_max_bar_ratio +1`).** They
+  may also admit out-of-family shapes; cohort smoke runs per-variable would
+  surface this.
+- **(R3) Treat the V2 OHLCV sensitivity analysis as upstream classification
+  diagnostics WITHOUT cfg-policy deployment intent until paired with a
+  chart-shape-aware downstream gate.** The binding-variable rankings remain
+  useful for understanding A+ classification mechanics; they don't directly
+  inform threshold-relaxation deployment without per-cohort shape
+  verification.
 
 ## Limitations
 
@@ -122,14 +243,98 @@ with the 17 backtest patterns mapped to harness verdicts.
   variables (`vcp.tightness_days_required`, `vcp.adr_min_pct`,
   `vcp.proximity_max_pct`, `vcp.orderliness_max_bar_ratio`) requires
   additional cohort smoke runs.
+- **L7 — Three-bug-chain to template Pass 2 verification.** The smoke artifact
+  ratified above is the FOURTH attempt. Three preceding smoke runs (164425Z,
+  175553Z, 190514Z) all produced 100% `template_match_score=(none)` due to
+  three sequential silent-no-op failure modes that were OBSERVATIONALLY
+  INDISTINGUISHABLE pre-fix: (1) cumulative gotcha #28 exemplar OHLCV cache
+  miss (resolved Turn E inline pre-fetch); (2) V2 reader str-vs-date TypeError
+  swallowed by detector_invoker's per-exemplar try/except (resolved at merge
+  `1dc15f8` reader-side boundary coercion); (3) cumulative gotcha #29 archive
+  depth-insufficiency (operator's earlier pre-fetch used yfinance default 5y
+  window; all 13 exemplar end_dates pre-date the 5y archive's first bar;
+  resolved Turn F operational fix re-pre-fetch with `period="max"`). Substantive
+  result is unaffected by which template-Pass-2-blocker was active because the
+  geometric_score component of composite_score is unchanged across all 4 runs
+  AND the substantive verdict (cohort is double-bottom-w-dominated) holds at
+  the geometric tier; template Pass 2 only refined composite scores (vcp +30%
+  at >=0.5 the largest relative shift; absolute scale unchanged). Forward-
+  binding lesson per gotcha #29: stage-by-stage counter discipline at manifest
+  level is required when verifying a fix unblocks a multi-stage code path.
+- **L8 — Cache directory path-naming-convention.** The harness reads from
+  `cfg.paths.prices_cache_dir` which resolves to
+  `~/swing-data/prices-cache/` (hyphen). The legacy `read_or_fetch_archive`
+  helper writes to the same location. An ad-hoc pre-fetch script that mistakes
+  the path as `~/swing-data/prices_cache/` (underscore) silently writes to a
+  parallel directory that the harness does NOT read; smoke runs from the
+  mistaken-path archives are indistinguishable from no-pre-fetch runs at the
+  results.csv level (both produce 100% `template_match_score=(none)`). Future
+  ad-hoc operator-side scripts MUST verify the cache_dir against
+  `cfg.paths.prices_cache_dir` OR via the manifest's `cache_dir` field from a
+  prior smoke. Banked V2 candidate (low priority): consolidate to one canonical
+  path; tracked in CLAUDE.md gotcha lineage as a footnote to #29.
 
 ## Conclusion
 
-**Pending operator smoke run.** This study writeup ships the methodology +
-limitations + interpretation framework; the result section is to be populated
-when the operator captures the first-cohort smoke artifact.
+Substantive verdict: **the +67 watch->aplus cohort at
+`vcp.tightness_range_factor=1.005` is chart-shape DOMINATED by
+`double_bottom_w`, not `vcp`.** 86 entries achieve composite>=0.9 for
+double_bottom_w (vs zero for any other class); 2,665 entries achieve
+composite>=0.5 for double_bottom_w (vs 167 for vcp). All 15 cohort tickers
+show stronger double-bottom-w signal than vcp signal.
 
-Per V2.1 §IV.D promotion gate: this method-record is `status: research` v0.1.0.
-Research → shadow promotion conditional on the 4 criteria enumerated in
-`research/method-records/pattern-cohort-detection.md` §"Research → shadow"
-including operator-paired cross-tabulation review.
+This explains the V2 OHLCV `vcp.tightness_range_factor=1.005` backtest's
+NEGATIVE result at merge `e0a9edd` (29% breakout-trigger rate; 0 closed
+trades; -0.18R mean unrealized): the backtest's `close > consolidation_pivot`
+entry rule is VCP-appropriate AND mechanically mismatched against the
+cohort's actual chart shape (W-bottom recovery). The trigger-rate collapse is
+predictable rather than diagnostic.
+
+Three forward research directions:
+- (R1) Re-backtest the same +67 cohort with a `double_bottom_w`-appropriate
+  trigger rule (W right-shoulder break) -- Turn F D1 dispatch.
+- (R2) Per-variable cohort smoke for the remaining 4 VCP-family binding
+  variables to test whether the chart-shape mismatch generalizes.
+- (R3) Treat V2 OHLCV sensitivity analysis as upstream classification
+  diagnostics without cfg-policy deployment intent until paired with a
+  chart-shape-aware downstream gate.
+
+Per V2.1 §IV.D promotion gate: the pattern-cohort-detection method-record is
+`status: research` v0.1.0. Research -> shadow promotion gate conditions
+(method-record §"Research -> shadow") now reads:
+- (1) First-cohort smoke artifact published at
+  `exports/research/pattern-cohort-detection-20260525T201617Z/` with non-empty
+  per-class summary + template Pass 2 verdicts populated -- SATISFIED.
+- (2) ZERO new Schwab API calls verified via
+  `manifest.json[l2_lock_preserved] == true` AND 5 BINDING L2 LOCK tests
+  green -- SATISFIED.
+- (3) ZERO production swing/ writes beyond OQ-13 CLI carve-out -- SATISFIED.
+- (4) Operator-paired review of cross-tabulation against V2 OHLCV backtest --
+  PENDING (Turn F operator review; this Conclusion is the ratification
+  substrate).
+
+## Amendments
+
+### 2026-05-25 PM (Turn F): post-bug-chain ratification + S4 chart-shape mismatch finding
+
+This study writeup originally shipped at Option D Phase 3 executing-plans merge
+`eddeb73` with a PLACEHOLDER Results section pending the operator-paired smoke
+run. Four sequential smoke runs landed in Turn E + Turn F (164425Z + 175553Z +
+190514Z + 201617Z); the first three produced 100% `template_match_score=(none)`
+due to a three-bug chain documented at Limitation L7 above. Bug #1 (gotcha #28
+exemplar OHLCV cache miss) resolved Turn E inline; bug #2 (V2 reader
+str-vs-date TypeError) resolved Turn F at merge `1dc15f8`; bug #3 (gotcha #29
+archive depth-insufficiency) resolved Turn F operationally via deeper
+pre-fetch. The 201617Z smoke is the ratification artifact.
+
+Substantive amendment: **NEW scenario S4 (chart-shape MISMATCH) added to
+Interpretation section.** S4 emerged from the data; original methodology
+enumerated S1-S3 a priori. S4 is: "threshold variable named for class X
+relaxes a criterion that admits candidates matching class Y; downstream
+gates calibrated for X will mechanically misfire on Y."  Data supports S4
+unambiguously for `vcp.tightness_range_factor=1.005` -- the +67 cohort is
+double-bottom-w-shaped, not VCP-shaped.
+
+NEW Limitations L7 (three-bug-chain) + L8 (cache_dir path-naming-convention)
+added. Method-record §"Limitations" should mirror these in a v0.1.1 amendment
+at next housekeeping (post-merge of THIS study amendment).

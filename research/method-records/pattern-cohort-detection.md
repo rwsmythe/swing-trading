@@ -4,8 +4,8 @@ name: Chart-shape pattern cohort detector-confirmation harness
 layer: detection
 status: research
 baseline_or_predecessor: production swing.pipeline.runner._step_pattern_detect (aplus-only)
-version: 0.1.0
-last_updated: 2026-05-24
+version: 0.1.1
+last_updated: 2026-05-25
 ---
 
 # Chart-shape pattern cohort detector-confirmation harness
@@ -141,6 +141,35 @@ that V1 sensitivity analysis identifies as binding at the watch→A+ boundary?*
   diagnostic surface. When legacy `{T}.parquet` is fresher than Shape A
   `{T}.yfinance.parquet`, the diagnostic counter increments and the operator
   should treat the affected tickers as drift-bearing.
+- **L5 — Exemplar OHLCV provisioning discipline.** Per cumulative gotchas
+  #28 (archive MISSING entirely) + #29 (archive PRESENT-but-DEPTH-INSUFFICIENT).
+  The harness consumes the `pattern_exemplars` corpus filtered by
+  `final_decision IN ('confirmed','watch')` AND reads each exemplar's OHLCV
+  bars from `cfg.paths.prices_cache_dir`. If any exemplar's `(ticker, end_date)`
+  is missing from the cache OR the archive's first bar post-dates the
+  exemplar's `end_date`, the per-exemplar load loop swallows the failure
+  (correct per cumulative T2.SB5 "Bad-exemplar isolation in retrieval
+  functions" discipline) and template Pass 2 silently no-ops for entries
+  whose pattern_class has zero loaded bundles. Operator must pre-fetch
+  exemplar OHLCV with sufficient historical depth (`yfinance period="max"`
+  recommended; current canonical corpus includes 2017-2021 historical
+  examples that pre-date a 5-year default window from any 2026+ invocation).
+  Banked V2 candidates: (a) NEW `_step_exemplar_ohlcv` pipeline step
+  (architectural fix per gotcha #28 Option B); (b) WARNING-level log +
+  manifest field `exemplar_load_failure_count` when corpus filter passes N
+  exemplars but bundles_by_class is empty (visibility fix per gotcha #27
+  family); (c) operator-paired explicit `--pre-fetch-exemplars` CLI flag
+  with depth-aware lookback derived from `MIN(end_date) - 200d`.
+- **L6 — Cache directory path-naming-convention sensitivity.** The harness
+  reads from `cfg.paths.prices_cache_dir` which resolves canonically to
+  `~/swing-data/prices-cache/` (HYPHEN). Ad-hoc operator scripts that mistake
+  the path as `~/swing-data/prices_cache/` (underscore) silently write to a
+  parallel directory the harness does NOT read. Smoke artifacts from
+  mistaken-path archives are indistinguishable from no-pre-fetch runs at the
+  results.csv level. Pre-empt for future operator-side ad-hoc Python scripts:
+  verify cache_dir against `cfg.paths.prices_cache_dir` directly OR consult
+  the manifest's `cache_dir` field from a prior smoke. Low-priority V2 banked
+  candidate: consolidate to one canonical path naming convention.
 
 ## Notes
 
@@ -157,3 +186,10 @@ that V1 sensitivity analysis identifies as binding at the watch→A+ boundary?*
 
 - 2026-05-24 — v0.1.0 — initial record. Status `research`. Harness shipped at
   applied-research-pattern-cohort-detector-evaluator-executing-plans branch.
+- 2026-05-25 — v0.1.1 — NEW Limitations L5 (exemplar OHLCV provisioning
+  discipline; cites cumulative gotchas #28 + #29) + L6 (cache_dir
+  path-naming-convention sensitivity). Banked V2 candidates enumerated under
+  each. Mirrors L7 + L8 added to study writeup at
+  `research/studies/2026-05-24-pattern-cohort-detection.md` post-bug-chain
+  ratification. Status remains `research` v0.1.1; promotion gate criteria
+  evaluation deferred to operator-paired Turn F review.
