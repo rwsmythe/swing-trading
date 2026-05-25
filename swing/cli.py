@@ -4943,6 +4943,86 @@ def diagnose_pattern_cohort_detect(
     click.echo(f"Manifest:    {manifest_json}")
 
 
+@diagnose_group.command("double-bottom-w-backtest")
+@click.option(
+    "--results-csv", "results_csv", type=click.Path(path_type=Path), default=None,
+    help="Path to pattern_cohort_evaluator results.csv (stream-parsed + deduped).",
+)
+@click.option(
+    "--cohort-fixture", "cohort_fixture", type=click.Path(path_type=Path), default=None,
+    help="Path to pre-extracted cohort.json (skips results.csv parsing).",
+)
+@click.option(
+    "--cache-dir", "cache_dir", required=True, type=click.Path(path_type=Path),
+    help="OHLCV Shape A cache directory (typically ~/swing-data/prices-cache).",
+)
+@click.option(
+    "--output-dir", "output_dir", type=click.Path(path_type=Path),
+    default=Path("exports/research"), show_default=True,
+)
+@click.option(
+    "--composite-threshold", "composite_threshold", type=float, default=0.7,
+    show_default=True,
+)
+@click.option(
+    "--recency-max-calendar-days", "recency_max_calendar_days", type=int, default=60,
+    show_default=True,
+)
+@click.option(
+    "--no-recency-filter", "no_recency_filter", is_flag=True, default=False,
+    help="Skip recency filter; backtest ALL unique W primary verdicts.",
+)
+@click.option(
+    "--source-artifact-dir", "source_artifact_dir", type=click.Path(path_type=Path),
+    default=None,
+    help="Upstream pattern_cohort_evaluator run dir for manifest provenance.",
+)
+def diagnose_double_bottom_w_backtest(
+    results_csv: Path | None,
+    cohort_fixture: Path | None,
+    cache_dir: Path,
+    output_dir: Path,
+    composite_threshold: float,
+    recency_max_calendar_days: int,
+    no_recency_filter: bool,
+    source_artifact_dir: Path | None,
+) -> None:
+    """D1 double_bottom_w walk-forward backtest (research-branch only).
+
+    Filters pattern_cohort_evaluator verdicts to double_bottom_w +
+    composite>=threshold; deduplicates by (ticker, trough_1_date); restricts
+    to RECENT W's (trough_2 within N calendar days of asof); walks forward
+    from each pattern's data_asof_date applying 3 exit rulesets
+    (Minervini trail-MA / fixed R-multiple / close-below-50d). Tests the
+    Turn F study writeup R1 reframing hypothesis. See
+    docs/pattern-cohort-double-bottom-w-backtest-dispatch-brief.md.
+    """
+    if (results_csv is None) == (cohort_fixture is None):
+        raise click.ClickException(
+            "Exactly one of --results-csv or --cohort-fixture must be supplied"
+        )
+    from research.harness.double_bottom_w_backtest.run import main as backtest_main
+
+    argv: list[str] = []
+    if results_csv is not None:
+        argv += ["--results-csv", str(results_csv)]
+    else:
+        argv += ["--cohort-fixture", str(cohort_fixture)]
+    argv += [
+        "--cache-dir", str(cache_dir),
+        "--output-dir", str(output_dir),
+        "--composite-threshold", str(composite_threshold),
+        "--recency-max-calendar-days", str(recency_max_calendar_days),
+    ]
+    if no_recency_filter:
+        argv += ["--no-recency-filter"]
+    if source_artifact_dir is not None:
+        argv += ["--source-artifact-dir", str(source_artifact_dir)]
+    exit_code = backtest_main(argv)
+    if exit_code != 0:
+        raise click.ClickException(f"Backtest harness exit code {exit_code}")
+
+
 @diagnose_group.command("metrics-wiring")
 @click.option(
     "--db", "db_path", required=True, type=click.Path(path_type=Path),

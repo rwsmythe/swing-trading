@@ -69,6 +69,14 @@ exports/research/pattern-cohort-detection-*/*
 !exports/research/pattern-cohort-detection-*/summary.md
 !exports/research/pattern-cohort-detection-*/manifest.json
 
+# Double-bottom-W backtest output tracking. results.csv is small (~6-10 KB
+# at 39 trade rows per smoke run); all three artifacts tracked together.
+!exports/research/double-bottom-w-backtest-*
+exports/research/double-bottom-w-backtest-*/*
+!exports/research/double-bottom-w-backtest-*/summary.md
+!exports/research/double-bottom-w-backtest-*/manifest.json
+!exports/research/double-bottom-w-backtest-*/results.csv
+
 # Broker statements (personal financial data)
 thinkorswim/
 
