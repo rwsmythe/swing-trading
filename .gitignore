@@ -55,6 +55,19 @@ exports/research/*
 !exports/research/cohorts
 exports/research/cohorts/*
 !exports/research/cohorts/*.csv
+# Pattern cohort detection harness smoke artifacts (per-iso timestamp dir; tracks
+# the 2 small summary/manifest files per dir for traceability across bug-discovery
+# iterations + cumulative substantive findings audit trail). results.csv is
+# EXCLUDED — it is the per-verdict drill-down (~275 MB at 43,370 rows × 5 detector
+# classes × 16 fields per V1; exceeds GitHub's 100 MB single-file limit). summary.md
+# aggregates the headline tables + manifest.json captures metadata + skip-reason
+# distribution; together these preserve substantive audit trail without LFS.
+# Mirrors the exports/diagnostics/ tracking pattern (csv + md tracked there because
+# diagnostic outputs are smaller; pattern_cohort outputs are larger per-verdict).
+!exports/research/pattern-cohort-detection-*
+exports/research/pattern-cohort-detection-*/*
+!exports/research/pattern-cohort-detection-*/summary.md
+!exports/research/pattern-cohort-detection-*/manifest.json
 
 # Broker statements (personal financial data)
 thinkorswim/
