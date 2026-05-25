@@ -1,6 +1,6 @@
 """Walk-forward backtest engine for a single (PrimaryVerdict, ruleset) tuple.
 
-Entry rule (all rulesets, per dispatch brief §2):
+Entry rule (all rulesets, per dispatch brief Section 2):
   - Trigger search window: from max(trough_1, trough_2, anchor_asof) + 1
     business day to min(anchor_asof + MAX_TRIGGER_SEARCH_BUSINESS_DAYS,
     archive_tail).
@@ -74,6 +74,10 @@ class Trade:
     max_forward_close: float | None = None
     max_close_pct_of_peak: float | None = None
     days_t2_to_asof: int | None = None
+    # Codex R3 M#2: surface the trigger-window's authoritative asof anchors
+    # so the CSV alone is sufficient for trigger-window auditing.
+    effective_asof_date: date | None = None
+    max_observed_asof_date: date | None = None
 
     @property
     def R(self) -> float | None:
@@ -127,7 +131,7 @@ def _trigger_search_upper_bound(
 ) -> date:
     """asof_date + max_business_days BUSINESS days (np.busday_offset semantics).
 
-    Example: asof=2026-05-22 (Fri), +60 BD → roughly 2026-08-15.
+    Example: asof=2026-05-22 (Fri), +60 BD -> roughly 2026-08-15.
     """
     return np.busday_offset(asof_date, max_business_days, roll="forward").astype(
         "datetime64[D]"
@@ -233,6 +237,8 @@ def walk_forward(
         return Trade(
             pattern_id=verdict.pattern_id, ticker=verdict.ticker, ruleset_name=ruleset.name,
             anchor_asof_date=verdict.anchor_asof_date, trough_1_date=verdict.trough_1_date,
+            effective_asof_date=verdict.effective_asof_date,
+            max_observed_asof_date=verdict.max_observed_asof_date,
             center_peak_price=verdict.center_peak_price, trough_2_price=verdict.trough_2_price,
             composite_score=verdict.composite_score, initial_stop=initial_stop,
             entry_date=entry_date, entry_price=entry_price,
@@ -253,7 +259,7 @@ def walk_forward(
     )
     shares = _compute_share_count(entry_price, initial_stop)
     # Peak unrealized R tracked across bars for the drawdown_to_exit_R metric
-    # per dispatch brief §4.1 + Codex R1 M#7. Uses intraday High (favorable
+    # per dispatch brief Section 4.1 + Codex R1 M#7. Uses intraday High (favorable
     # excursion) to capture true peak; symmetric to the close-based exit
     # semantic of the rulesets but conventional MFE accounting.
     peak_R = 0.0
@@ -274,6 +280,8 @@ def walk_forward(
             return Trade(
                 pattern_id=verdict.pattern_id, ticker=verdict.ticker, ruleset_name=ruleset.name,
                 anchor_asof_date=verdict.anchor_asof_date, trough_1_date=verdict.trough_1_date,
+            effective_asof_date=verdict.effective_asof_date,
+            max_observed_asof_date=verdict.max_observed_asof_date,
                 center_peak_price=verdict.center_peak_price, trough_2_price=verdict.trough_2_price,
                 composite_score=verdict.composite_score, initial_stop=initial_stop,
                 entry_date=entry_date, entry_price=entry_price,
@@ -299,6 +307,8 @@ def walk_forward(
     return Trade(
         pattern_id=verdict.pattern_id, ticker=verdict.ticker, ruleset_name=ruleset.name,
         anchor_asof_date=verdict.anchor_asof_date, trough_1_date=verdict.trough_1_date,
+            effective_asof_date=verdict.effective_asof_date,
+            max_observed_asof_date=verdict.max_observed_asof_date,
         center_peak_price=verdict.center_peak_price, trough_2_price=verdict.trough_2_price,
         composite_score=verdict.composite_score, initial_stop=initial_stop,
         entry_date=entry_date, entry_price=entry_price,
@@ -329,6 +339,8 @@ def _emit_untriggered(
     return Trade(
         pattern_id=verdict.pattern_id, ticker=verdict.ticker, ruleset_name=ruleset.name,
         anchor_asof_date=verdict.anchor_asof_date, trough_1_date=verdict.trough_1_date,
+            effective_asof_date=verdict.effective_asof_date,
+            max_observed_asof_date=verdict.max_observed_asof_date,
         center_peak_price=verdict.center_peak_price, trough_2_price=verdict.trough_2_price,
         composite_score=verdict.composite_score, initial_stop=verdict.initial_stop,
         entry_date=None, entry_price=None,

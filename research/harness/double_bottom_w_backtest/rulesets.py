@@ -1,6 +1,6 @@
 """Exit rulesets for the D1 double_bottom_w walk-forward backtest.
 
-Three rulesets per dispatch brief §3 (DIVERGES from V2 backtest semantics
+Three rulesets per dispatch brief Section 3 (DIVERGES from V2 backtest semantics
 where noted; the D1 brief specifies its own thresholds + fill semantics):
 
   A -- Minervini trail-MA: initial stop = trough_2_price * 0.99; +2R extension
@@ -141,7 +141,7 @@ class RulesetA:
         close = float(bars["Close"].iloc[bar_idx])
 
         # TERMINAL hard exit: first close <= SMA50 regardless of trail state.
-        # Per brief §3.1 "Hard exit: close <= 50-day SMA after entry (terminal
+        # Per brief Section 3.1 "Hard exit: close <= 50-day SMA after entry (terminal
         # stop regardless of trail state)."
         sma50 = _sma_at(bars, bar_idx, RULESET_A_HARD_EXIT_SMA_WINDOW)
         if sma50 is not None and close <= sma50:
@@ -152,7 +152,7 @@ class RulesetA:
             return close, ("stop_hit" if not state.trail_armed else "trail_stop")
 
         # Trail-arm: close >= entry + 2R (use close, not intraday High).
-        # Dispatch brief §3.1 specifies the post-arm trail rule as
+        # Dispatch brief Section 3.1 specifies the post-arm trail rule as
         # `max(prior_stop, SMA21 - 1*ATR)`. The brief does NOT prescribe a
         # breakeven raise on arm; this implementation follows the brief
         # literally (Codex R1 M#1 fix).

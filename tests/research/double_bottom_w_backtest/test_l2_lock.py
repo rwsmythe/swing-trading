@@ -95,7 +95,7 @@ def test_d1_modules_source_contains_no_forbidden_substring() -> None:
     violators: list[tuple[Path, str]] = []
     for py in sorted(pkg_dir.glob("**/*.py")):
         text = py.read_text(encoding="utf-8")
-        # Drop comments + docstrings: trivial heuristic — split at first quote-quote-quote.
+        # Drop comments + docstrings: trivial heuristic  --  split at first quote-quote-quote.
         # We accept this is approximate; the more authoritative check is the
         # sys.modules check above. This source-grep is defense-in-depth.
         for sub in bad_subs:

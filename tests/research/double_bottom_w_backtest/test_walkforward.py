@@ -64,7 +64,7 @@ def _bars(closes: list[float], *, start_date: str = "2026-04-25") -> pd.DataFram
 
 
 def test_trigger_search_upper_bound_60_business_days() -> None:
-    """asof=2026-05-22 (Fri) + 60 BD ≈ 2026-08-14 (Fri)."""
+    """asof=2026-05-22 (Fri) + 60 BD ~ 2026-08-14 (Fri)."""
     ub = _trigger_search_upper_bound(date(2026, 5, 22), max_business_days=60)
     assert ub == date(2026, 8, 14)
 

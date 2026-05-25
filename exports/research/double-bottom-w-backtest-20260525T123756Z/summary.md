@@ -8,7 +8,7 @@
 
 ## Per-ruleset aggregate stats
 
-| Ruleset | Patterns | Triggered | Closed | Winners | Losers | Untrig | Open | Win-rate | Avg R win | Avg R loser | Expectancy R closed | Avg days held (closed) | Avg days held (open) |
+| Ruleset | Patterns | Triggered | Closed | Winners | Losers | Untrig | Open | Win-rate | Avg R win | Avg R loser | Expectancy R closed | Avg sessions held (closed) | Avg sessions held (open) |
 |---------|----------|-----------|--------|---------|--------|--------|------|----------|-----------|-------------|---------------------|------------------------|----------------------|
 | A_minervini_trail_ma | 172 | 103 | 37 | 0 | 37 | 69 | 66 | 0.0% | n/a | -0.150R | -0.150R | 1.4d | 6.4d |
 | B_fixed_R_multiple | 172 | 103 | 0 | 0 | 0 | 69 | 103 | n/a | n/a | n/a | n/a | n/a | 5.4d |

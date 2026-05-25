@@ -5,8 +5,8 @@
 **Study extended:** [research/studies/2026-05-24-pattern-cohort-detection.md](../research/studies/2026-05-24-pattern-cohort-detection.md) Section R1 reframing hypothesis
 **Cohort source:** [exports/research/pattern-cohort-detection-20260525T201617Z/](../exports/research/pattern-cohort-detection-20260525T201617Z/) (untracked results.csv ~287 MB; cohort SHA-256 `5333afe3...`)
 **Backtest artifacts (both post-Codex-R1):**
-- Primary (recency-60d filter): [exports/research/double-bottom-w-backtest-20260525T121009Z/](../exports/research/double-bottom-w-backtest-20260525T121009Z/) -- 12 actionable W patterns x 3 rulesets = 36 trade rows
-- Companion (no-recency-filter): [exports/research/double-bottom-w-backtest-20260525T121012Z/](../exports/research/double-bottom-w-backtest-20260525T121012Z/) -- full 172 W primaries x 3 rulesets = 516 trade rows (per Codex R1 M#2 audit-trail companion)
+- Primary (recency-60d filter): [exports/research/double-bottom-w-backtest-20260525T123753Z/](../exports/research/double-bottom-w-backtest-20260525T123753Z/) -- 12 actionable W patterns x 3 rulesets = 36 trade rows
+- Companion (no-recency-filter): [exports/research/double-bottom-w-backtest-20260525T123756Z/](../exports/research/double-bottom-w-backtest-20260525T123756Z/) -- full 172 W primaries x 3 rulesets = 516 trade rows (per Codex R1 M#2 audit-trail companion)
 
 **Branch:** `applied-research-pattern-cohort-double-bottom-w-backtest`
 
@@ -61,7 +61,7 @@ The dispatch brief Section 1.2 anticipated "roughly 15-30 unique W-bottom patter
 
 **Resolution:** restrict to RECENT W's where `trough_2_date` is within 60 calendar days of MAX-OBSERVED-ASOF (Codex R1 M#3: use the most-recent observation's asof across all cohort_entries observing this W, NOT the highest-composite verdict's asof). This captures "W's that are still recently-actionable at the most-recent observation time" -- the actionable subset matching the dispatch brief's expected scale (12 within 60d; 17 within 90d; 21 within 120d under post-M#3 semantics). The verdict is INSENSITIVE to threshold within 60-120 days (per Section 3 sensitivity analysis); 60-day default matches the V2 backtest precedent for forward-window depth.
 
-**Companion no-recency artifact** at `exports/research/double-bottom-w-backtest-20260525T121012Z/` per Codex R1 M#2 audit-trail discipline. The full 172-pattern backtest confirms: 104/172 triggered (60.5%); 37 closed via `close_below_50d` (all losers; mean -0.148R on closed); the 67/172 open positions trail at small unrealized R. The trivial-trigger failure mode dominates for OLD W's whose entry is far from peak -- `close_below_50d` fires within 2-3 sessions of entry at small losses (smaller R magnitude because entry-to-stop distance is large relative to small post-entry close fluctuation).
+**Companion no-recency artifact** at `exports/research/double-bottom-w-backtest-20260525T123756Z/` per Codex R1 M#2 audit-trail discipline. The full 172-pattern backtest confirms: 104/172 triggered (60.5%); 37 closed via `close_below_50d` (all losers; mean -0.148R on closed); the 67/172 open positions trail at small unrealized R. The trivial-trigger failure mode dominates for OLD W's whose entry is far from peak -- `close_below_50d` fires within 2-3 sessions of entry at small losses (smaller R magnitude because entry-to-stop distance is large relative to small post-entry close fluctuation).
 
 ### 2.3 The 12 RECENT W primary verdicts (post-Codex-R1 M#3 semantics)
 
@@ -145,14 +145,14 @@ Ruleset B is the most-permissive -- its only exits are close < initial_stop (did
 | pattern_id | entry_date | exit_date (A/C) | R (A/C) | R at tail (B) | Trigger date relative to asof |
 |---|---|---|---|---|---|
 | DK-2026-03-09 | 2026-05-20 | 2026-05-21 (close_below_50d) | -0.96R | -0.48R | +5 BD after asof |
-| KOD-2026-02-05 | 2026-05-01 | open | -0.16R | -0.16R | +2 BD after asof |
+| KOD-2026-02-05 | 2026-05-05 | open | -0.15R | -0.15R | +4 sessions after effective_asof |
 | OII-2026-03-13 | 2026-04-23 | open | **+0.78R** | +0.78R | +2 BD after asof |
 | RNG-2026-03-27 | 2026-05-04 | open | -0.28R | -0.28R | +4 BD after asof |
 | TROX-2026-02-20 | 2026-05-01 | 2026-05-07 (close_below_50d) | -0.46R | -0.20R | +2 BD after asof |
 | UCTT-2026-03-06 | 2026-05-14 | open | -0.04R | -0.04R | +2 BD after asof |
 | UCTT-2026-03-30 | 2026-05-14 | open | -0.08R | -0.08R | +2 BD after asof |
 
-**Open position aggregate (Ruleset B; 7 of 7 triggered remain open):** Mean unrealized R = (-0.48 + -0.16 + +0.78 + -0.28 + -0.20 + -0.04 + -0.08) / 7 = **-0.066R** (mean slightly negative with high variance; 1 winner + 6 losers). The +0.745R YOU-2026-02-03 winner that previously skewed mean to +0.04R is now excluded under Codex R1 M#3 max-observed-asof semantics (70d > 60d).
+**Open position aggregate (Ruleset B; 7 of 7 triggered remain open):** Mean unrealized R = (-0.48 + -0.15 + +0.78 + -0.28 + -0.20 + -0.04 + -0.08) / 7 = **-0.064R** (mean slightly negative with high variance; 1 winner + 6 losers). The +0.745R YOU-2026-02-03 winner that previously skewed mean to +0.04R is now excluded under Codex R1 M#3 max-observed-asof semantics (70d > 60d).
 
 The shift to slightly-negative mean post-M#3 is methodologically defensible: the +0.745R YOU-2026-02-03 datum was structurally an "stale W observation" -- the W's trough_2 was 70 days old by the most-recent observation. Excluding it tightens the cohort to "genuinely recent W's" at the cost of a smaller sample.
 
@@ -207,7 +207,7 @@ The closed-trade verdict rests on 2 R values from the SAME exit reason (`close_b
 
 ### 7.5 Mechanical close_below_50d exit timing
 
-Both closed trades exited via `close_below_50d` on consecutive sessions after entry (DK exited on day 1 post-entry; TROX exited on day 6 post-entry). This reflects entries at positions where price was already near SMA50  --  the mechanical exit fires almost immediately, not because the trade failed substantively but because the entry-anchor was near a level the ruleset uses as a stop reference.
+Both closed trades exited via `close_below_50d` on consecutive sessions after entry (DK exited on session 1 post-entry; TROX exited on session 4 post-entry; per Codex R2 M#4 bar-index session count). This reflects entries at positions where price was already near SMA50  --  the mechanical exit fires almost immediately, not because the trade failed substantively but because the entry-anchor was near a level the ruleset uses as a stop reference.
 
 This is a known weakness of the D1 brief's "terminal close <= SMA50 regardless of trail state" semantic (Ruleset A) and the "close < SMA50" semantic (Ruleset C): for positions whose entry is at or near 50d SMA, even small downside fluctuation immediately fires the exit. The ruleset's intent (per Minervini's late-Stage-2 sell discipline) presumes entry is comfortably ABOVE 50d SMA at trigger; D1's `close > center_peak_price` trigger doesn't enforce that  --  when `center_peak_price` happens to be near 50d SMA, mechanical exit fires almost immediately.
 
@@ -289,8 +289,8 @@ Three options for the orchestrator-paired next decision:
 
 ## 10. Artifacts
 
-- **Primary smoke (recency-60d; post-Codex-R1):** [exports/research/double-bottom-w-backtest-20260525T121009Z/](../exports/research/double-bottom-w-backtest-20260525T121009Z/) -- 25-column results.csv (36 trade rows = 12 patterns x 3 rulesets) + summary.md + manifest.json with full source provenance.
-- **Companion smoke (no-recency-filter; post-Codex-R1 M#2):** [exports/research/double-bottom-w-backtest-20260525T121012Z/](../exports/research/double-bottom-w-backtest-20260525T121012Z/) -- 25-column results.csv (516 trade rows = 172 patterns x 3 rulesets) + summary.md + manifest.json. Confirms no-recency interpretation per Section 2.2.
+- **Primary smoke (recency-60d; post-Codex-R1):** [exports/research/double-bottom-w-backtest-20260525T123753Z/](../exports/research/double-bottom-w-backtest-20260525T123753Z/) -- 25-column results.csv (36 trade rows = 12 patterns x 3 rulesets) + summary.md + manifest.json with full source provenance.
+- **Companion smoke (no-recency-filter; post-Codex-R1 M#2):** [exports/research/double-bottom-w-backtest-20260525T123756Z/](../exports/research/double-bottom-w-backtest-20260525T123756Z/) -- 25-column results.csv (516 trade rows = 172 patterns x 3 rulesets) + summary.md + manifest.json. Confirms no-recency interpretation per Section 2.2.
 - **Cohort fixture:** [tests/fixtures/research/double_bottom_w_backtest/cohort.json](../tests/fixtures/research/double_bottom_w_backtest/cohort.json) (172 unique W primary verdicts; 122 KB post-M#3 with new max_observed_asof_date + observed_asof_dates + window_count fields)
 - **Backtest harness:** [research/harness/double_bottom_w_backtest/](../research/harness/double_bottom_w_backtest/) (5 modules: cohort + walkforward + rulesets + io + run)
 - **Discriminating tests:** [tests/research/double_bottom_w_backtest/](../tests/research/double_bottom_w_backtest/) (54 fast tests; +12 from Codex R1 discriminating tests at `test_codex_r1_fixes.py`)

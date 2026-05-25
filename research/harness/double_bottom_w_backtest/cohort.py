@@ -2,7 +2,7 @@
 
 Reads the pattern_cohort_evaluator results.csv (typically ~287 MB), filters to
 pattern_class='double_bottom_w' AND composite_score >= threshold, parses each
-row's structural_evidence_json, deduplicates per dispatch brief §1.3:
+row's structural_evidence_json, deduplicates per dispatch brief Section 1.3:
 
   Step 1: group verdicts by (ticker, trough_1_date); keep the highest-composite
           verdict per group as the "primary verdict" for that W structure.

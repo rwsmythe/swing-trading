@@ -3,7 +3,7 @@
   "cohort_csv_path": "tests\\fixtures\\research\\double_bottom_w_backtest\\cohort.json",
   "cohort_csv_sha256": "9075ac66d70401a19f11c06b681d859d3a5fbcd16e373e282c4db991bd6cc40c",
   "composite_threshold": 0.7,
-  "finished_at_utc": "2026-05-25T22:30:54.529488+00:00",
+  "finished_at_utc": "2026-05-25T22:37:56.625065+00:00",
   "harness_name": "double_bottom_w_backtest",
   "harness_version": "0.1.0",
   "l2_lock_preserved": true,
@@ -15,7 +15,7 @@
   "n_verdicts_after_adjacency_merge": 172,
   "recency_filter_active": false,
   "recency_max_calendar_days": 60,
-  "runtime_seconds": 1.502787,
+  "runtime_seconds": 1.447315,
   "skipped_patterns": {
     "ohlcv_empty": 0,
     "ohlcv_missing": 0
@@ -24,5 +24,5 @@
   "source_artifact_manifest_sha256": "045efad840122ce11545f457798516f0cef3c2f9b4dd283139799afefa36484d",
   "source_cohort_input_sha256": "5333afe3d131c3116ef644acae74ec0e6c594968b610ddc485b85f59fdec1469",
   "source_results_csv_sha256": "231b5917f7eefc9c321f7ae721e69a2b6cc3b195cb136219f7edb16a624cb5d1",
-  "started_at_utc": "2026-05-25T22:30:53.026701+00:00"
+  "started_at_utc": "2026-05-25T22:37:55.177750+00:00"
 }

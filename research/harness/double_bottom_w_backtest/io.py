@@ -16,6 +16,8 @@ RESULTS_CSV_HEADER = [
     "ticker",
     "ruleset_name",
     "anchor_asof_date",
+    "effective_asof_date",  # Codex R3 M#2
+    "max_observed_asof_date",  # Codex R3 M#2
     "trough_1_date",
     "center_peak_price",
     "trough_2_price",
@@ -59,6 +61,8 @@ def write_results_csv(trades: list[Trade], output_path: Path) -> None:
                     t.ticker,
                     t.ruleset_name,
                     t.anchor_asof_date.isoformat(),
+                    t.effective_asof_date.isoformat() if t.effective_asof_date else "",
+                    t.max_observed_asof_date.isoformat() if t.max_observed_asof_date else "",
                     t.trough_1_date.isoformat(),
                     f"{t.center_peak_price:.4f}",
                     f"{t.trough_2_price:.4f}",
@@ -182,7 +186,7 @@ def write_summary_markdown(
     lines.append("## Per-ruleset aggregate stats")
     lines.append("")
     lines.append(
-        "| Ruleset | Patterns | Triggered | Closed | Winners | Losers | Untrig | Open | Win-rate | Avg R win | Avg R loser | Expectancy R closed | Avg days held (closed) | Avg days held (open) |"
+        "| Ruleset | Patterns | Triggered | Closed | Winners | Losers | Untrig | Open | Win-rate | Avg R win | Avg R loser | Expectancy R closed | Avg sessions held (closed) | Avg sessions held (open) |"
     )
     lines.append(
         "|---------|----------|-----------|--------|---------|--------|--------|------|----------|-----------|-------------|---------------------|------------------------|----------------------|"

@@ -55,9 +55,9 @@ The 5 `tests/cli/test_reconcile_backfill_cli.py` tests that failed pre-Schwab-re
 
 ## Section 3 Smoke artifact verification + summary highlights
 
-**Primary artifact (recency-60d; post-Codex-R1):** [exports/research/double-bottom-w-backtest-20260525T121009Z/](../exports/research/double-bottom-w-backtest-20260525T121009Z/) -- 25-column results.csv (36 trade rows = 12 patterns x 3 rulesets) + summary.md + manifest.json. Runtime 0.163 seconds.
+**Primary artifact (recency-60d; post-Codex-R1):** [exports/research/double-bottom-w-backtest-20260525T123753Z/](../exports/research/double-bottom-w-backtest-20260525T123753Z/) -- 25-column results.csv (36 trade rows = 12 patterns x 3 rulesets) + summary.md + manifest.json. Runtime 0.163 seconds.
 
-**Companion artifact (no-recency-filter; Codex R1 M#2):** [exports/research/double-bottom-w-backtest-20260525T121012Z/](../exports/research/double-bottom-w-backtest-20260525T121012Z/) -- 25-column results.csv (516 trade rows = 172 patterns x 3 rulesets) + summary.md + manifest.json. Runtime 0.245 seconds.
+**Companion artifact (no-recency-filter; Codex R1 M#2):** [exports/research/double-bottom-w-backtest-20260525T123756Z/](../exports/research/double-bottom-w-backtest-20260525T123756Z/) -- 25-column results.csv (516 trade rows = 172 patterns x 3 rulesets) + summary.md + manifest.json. Runtime 0.245 seconds.
 
 **Primary manifest highlights (post-Codex-R1):**
 - `l2_lock_preserved: true`
@@ -141,7 +141,7 @@ ThreadId `019e6123-4522-7072-9652-90a547c925a0`. Verdict: ISSUES_FOUND. 0 CRITIC
 | # | Severity | Issue | Disposition |
 |---|---|---|---|
 | M1 | Major | Ruleset A's undocumented breakeven raise at +2R arm (not in brief Section 3.1) | RESOLVED -- removed BE raise in `rulesets.py`; added discriminating test at `test_codex_r1_fixes.py::test_ruleset_a_arm_does_not_raise_stop_to_breakeven_per_codex_r1_m1`. |
-| M2 | Major | Recency filter changes study population from literal brief contract; no audit-trail companion | RESOLVED -- emitted no-recency companion smoke at `exports/research/double-bottom-w-backtest-20260525T121012Z/` (172 patterns x 3 rulesets = 516 trade rows). Findings doc Section 2.2 documents both artifacts. |
+| M2 | Major | Recency filter changes study population from literal brief contract; no audit-trail companion | RESOLVED -- emitted no-recency companion smoke at `exports/research/double-bottom-w-backtest-20260525T123756Z/` (172 patterns x 3 rulesets = 516 trade rows). Findings doc Section 2.2 documents both artifacts. |
 | M3 | Major | Recency applied AFTER highest-composite-wins; lower-composite verdicts with more-recent asof hidden in aux | RESOLVED -- added `max_observed_asof_date` + `observed_asof_dates` fields to PrimaryVerdict; `filter_recent_patterns` now uses max(observed_asofs) instead of anchor_asof. 1 pattern dropped (YOU-2026-02-03; observed 70d after t2 at most-recent observation). 3 discriminating tests at `test_codex_r1_fixes.py`. |
 | M4 | Major | "R1 trigger-rate component unambiguously SUPPORTED" claim overstated for N=12 + uneven forward windows | RESOLVED -- downgraded to "DIRECTIONALLY SUPPORTED under sparse-archive run" throughout findings + return report. |
 | M5 | Major | Smoke artifact not fully traceable to source results.csv (manifest hashes fixture not source) | RESOLVED -- manifest extended with `source_artifact_manifest_path`, `source_artifact_manifest_sha256`, `source_results_csv_sha256`, `source_cohort_input_sha256`. CLI gains `--source-artifact-dir` flag. Discriminating test at `test_codex_r1_fixes.py::test_manifest_carries_source_artifact_provenance_per_codex_r1_m5`. |
@@ -166,11 +166,26 @@ ThreadId continued. Verdict: ISSUES_FOUND. 0 CRITICAL / 4 MAJOR / 2 MINOR (all N
 - r2.m1 (stale "24-column" docstring on `write_results_csv`) -- RESOLVED: docstring updated to "25-column per-(pattern, ruleset) row dump (post-Codex-R1 M#7)".
 - r2.m2 (summary markdown missing trade_pnl_dollars + peak_unrealized_R + drawdown_to_exit_R fields) -- RESOLVED: per-pattern detail table extended with sessions_held + peak_R + dd_to_exit_R + pnl_$ columns.
 
-**R2 smoke re-emit:** primary 20260525T123051Z + companion 20260525T123054Z (replace pre-R2 20260525T121009Z + 20260525T121012Z artifacts). All R2 fixes verified in artifact data (effective_asof shift; results.csv SHA populated; fractional PnL; bar-index sessions). 57 D1 tests pass (was 54 pre-R2).
+**R2 smoke re-emit:** primary 20260525T123753Z + companion 20260525T123756Z (replace pre-R2 20260525T123753Z + 20260525T123756Z artifacts). All R2 fixes verified in artifact data (effective_asof shift; results.csv SHA populated; fractional PnL; bar-index sessions). 57 D1 tests pass (was 54 pre-R2).
 
-### Section 7.3 Round 3
+### Section 7.3 Round 3 (2026-05-25 PM #3)
 
-Pending. After R2 fix commit lands, will run Codex R3 with delta prompt for final NO_NEW_CRITICAL_MAJOR convergence.
+ThreadId continued. Verdict: ISSUES_FOUND. 0 CRITICAL / 2 MAJOR / 2 MINOR (all NEW; no re-raises).
+
+| # | Severity | Issue | Disposition |
+|---|---|---|---|
+| R3.M1 | Major | Findings + return report cite superseded artifact paths (121009Z/121012Z) AND stale per-pattern facts (KOD entry 2026-05-01 vs R2-shifted 2026-05-05; TROX "day 6" vs new sessions=4) | RESOLVED -- automated path-sweep replaced 121009Z->123753Z + 121012Z->123756Z throughout findings + return report. KOD entry date in Section 6.1 triggered table updated to 2026-05-05; R-value updated -0.16 -> -0.15. TROX Section 7.5 mechanical-exit note now reads "(DK exited on session 1 post-entry; TROX exited on session 4 post-entry; per Codex R2 M#4 bar-index session count)". Mean unrealized R aggregate recomputed (-0.066R -> -0.064R reflecting new KOD value). |
+| R3.M2 | Major | results.csv emits anchor_asof_date only; trigger window + days_t2_to_asof actually compute from effective_asof_date (= max(anchor, max_observed)); CSV alone insufficient for trigger-window auditing | RESOLVED -- Trade dataclass + RESULTS_CSV_HEADER + write_results_csv extended with effective_asof_date + max_observed_asof_date columns (25 -> 27 schema). Sample row for KOD-2026-02-05: anchor=2026-04-29 / effective=2026-05-01 / max_observed=2026-05-01 / entry=2026-05-05 -- auditor can now verify trigger bounds end-to-end from the CSV alone. test_io.py header-count test updated to 27. |
+
+**Minor R3 issues:**
+- r3.m1 (ASCII discipline still incomplete; source/test files retain Section / x / em-dash / approximate-sign) -- RESOLVED via expanded sweep across ALL D1 source + test files (15 files total) using same Python sweep harness as the docs.
+- r3.m2 (aggregate-stats "Avg days held" column label vs per-pattern detail "sessions_held" inconsistency) -- RESOLVED: aggregate stats columns renamed to "Avg sessions held (closed)" + "Avg sessions held (open)" to align with bar-index session semantics.
+
+**R3 smoke re-emit:** primary 20260525T123753Z + companion 20260525T123756Z. CSV header 25 -> 27 columns (effective_asof_date + max_observed_asof_date added). Sample KOD-2026-02-05 row verifies anchor=2026-04-29 + effective=2026-05-01 + max_observed=2026-05-01 + entry=2026-05-05 alignment. 57 D1 tests pass.
+
+### Section 7.4 Round 4
+
+Pending. After R3 fix commit lands, will run Codex R4 with delta prompt for final NO_NEW_CRITICAL_MAJOR convergence.
 
 ### Section 7.3 38th cumulative C.C lesson #6 validation outcome
 
@@ -180,7 +195,7 @@ Pending. After R2 fix commit lands, will run Codex R3 with delta prompt for fina
 - 1 hedging discipline (M4: claim strength)
 - 1 traceability/provenance (M5)
 - 1 brief-vs-implementation-vs-L2-LOCK arbitration (M6)
-- 1 brief-§4.1-schema-compliance (M7)
+- 1 brief-Section 4.1-schema-compliance (M7)
 - 1 ASCII discipline (M8)
 
 The validation candidates Codex caught extend the orchestrator's pre-Codex review scope expansions:

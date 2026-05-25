@@ -318,7 +318,7 @@ def test_initial_stop_is_trough_2_times_0_99() -> None:
 
 def test_trigger_threshold_is_center_peak_price() -> None:
     """W-bottom neckline = center_peak_price (NOT pivot_price); the dispatch
-    brief §10 explicitly bans pivot_price as the trigger reference."""
+    brief Section 10 explicitly bans pivot_price as the trigger reference."""
     v = PrimaryVerdict(
         ticker="YOU", anchor_asof_date=date(2026, 5, 22),
         trough_1_date=date(2026, 4, 29),

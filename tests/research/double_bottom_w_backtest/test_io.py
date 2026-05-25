@@ -56,17 +56,18 @@ def _trade(
     )
 
 
-def test_csv_header_has_25_columns_post_codex_r1_m7() -> None:
-    """Codex R1 M#7: 4 fields added (triggered + trade_pnl_dollars +
-    peak_unrealized_R + drawdown_to_exit_R) bringing schema to 25 columns
-    per dispatch brief §4.1 (which enumerated 20 + my 4 near-miss diagnostic
-    additions = 24-25 effective; the brief itself enumerated columns roughly)."""
-    assert len(RESULTS_CSV_HEADER) == 25
+def test_csv_header_has_27_columns_post_codex_r3_m2() -> None:
+    """Codex R3 M#2: added effective_asof_date + max_observed_asof_date columns
+    so the CSV alone is sufficient for trigger-window auditing (previously the
+    anchor_asof_date was the only emitted asof but trigger bounds + days_t2_to_asof
+    used the unexpressed effective_asof_date derived from max_observed_asof_date)."""
+    assert len(RESULTS_CSV_HEADER) == 27
     for col in (
         "pattern_id", "r_multiple", "days_t2_to_asof",
         "triggered", "trade_pnl_dollars", "peak_unrealized_R", "drawdown_to_exit_R",
+        "effective_asof_date", "max_observed_asof_date",
     ):
-        assert col in RESULTS_CSV_HEADER, f"missing brief-§4.1 column: {col}"
+        assert col in RESULTS_CSV_HEADER, f"missing brief-Section 4.1 + R3 column: {col}"
 
 
 def test_write_results_csv_emits_one_row_per_trade(tmp_path: Path) -> None:
@@ -114,7 +115,7 @@ def test_aggregate_stats_distinguishes_status_open_from_closed() -> None:
 
 
 def test_write_summary_markdown_emits_ascii_only(tmp_path: Path) -> None:
-    """ASCII-only on findings.md surfaces per dispatch brief §6.2(b) + cumulative
+    """ASCII-only on findings.md surfaces per dispatch brief Section 6.2(b) + cumulative
     gotcha re: PowerShell cp1252 encoder."""
     trades = [_trade()]
     out = tmp_path / "summary.md"

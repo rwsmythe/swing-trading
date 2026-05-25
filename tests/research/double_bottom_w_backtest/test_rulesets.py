@@ -1,7 +1,7 @@
 """Tests for the 3 exit rulesets via walk_forward.
 
 Synthetic bar fixtures exercise each ruleset's stop-update + exit logic. All
-exits are CLOSE-based (no intraday Low/High triggers) per dispatch brief §3.
+exits are CLOSE-based (no intraday Low/High triggers) per dispatch brief Section 3.
 """
 from __future__ import annotations
 

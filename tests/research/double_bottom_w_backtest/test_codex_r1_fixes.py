@@ -1,7 +1,7 @@
 """Discriminating tests for Codex R1 fixes.
 
 M#1: Ruleset A removes undocumented breakeven raise at +2R arm
-     (brief §3.1 specifies SMA21-ATR14 trail only; no BE raise).
+     (brief Section 3.1 specifies SMA21-ATR14 trail only; no BE raise).
 M#3: Recency filter uses max(observed_asof_dates) not anchor_asof
      (the most-recent observation determines whether the W is still
      temporally actionable; not the highest-composite observation
@@ -10,7 +10,7 @@ M#5: Manifest carries source-artifact provenance (upstream manifest
      path + SHA + cohort_input_sha256) so cohort traceability survives
      the gitignored 287MB results.csv.
 M#7: Trade dataclass + CSV emit add triggered + trade_pnl_dollars +
-     peak_unrealized_R + drawdown_to_exit_R per dispatch brief §4.1.
+     peak_unrealized_R + drawdown_to_exit_R per dispatch brief Section 4.1.
 """
 from __future__ import annotations
 
@@ -95,7 +95,7 @@ def test_ruleset_a_arm_does_not_raise_stop_to_breakeven_per_codex_r1_m1() -> Non
     Only the SMA21-ATR14 trail (when computable) governs post-arm stops.
 
     Pre-fix behavior: stop = max(initial_stop, entry_price) immediately on arm
-    (incorrect; brief §3.1 does not prescribe BE raise).
+    (incorrect; brief Section 3.1 does not prescribe BE raise).
     Post-fix behavior: stop remains at initial_stop until SMA21-ATR14 trail
     raises it (or until the TERMINAL close <= SMA50 exit fires).
 
@@ -124,7 +124,7 @@ def test_ruleset_a_arm_does_not_raise_stop_to_breakeven_per_codex_r1_m1() -> Non
 
 def test_recency_filter_uses_max_observed_asof_not_anchor_per_codex_r1_m3() -> None:
     """A W with anchor_asof=2026-04-01 (highest-composite verdict) BUT also
-    observed at 2026-05-22 (later cohort_entry, lower composite) — recency
+    observed at 2026-05-22 (later cohort_entry, lower composite)  --  recency
     is judged from the LATER observation (2026-05-22), not the anchor.
 
     Scenario: trough_2=2026-03-15. anchor_asof=2026-04-01 gives 17-day age
@@ -147,7 +147,7 @@ def test_recency_filter_uses_max_observed_asof_not_anchor_per_codex_r1_m3() -> N
 
 
 def test_recency_filter_admits_when_max_observed_within_60d() -> None:
-    """Symmetric: W observed multiple times all within 60d of trough_2 → admit."""
+    """Symmetric: W observed multiple times all within 60d of trough_2 -> admit."""
     v = _verdict(
         asof="2026-04-15",
         trough_2="2026-03-15",
@@ -232,7 +232,7 @@ def test_walk_forward_tracks_peak_unrealized_R_and_drawdown() -> None:
     record peak_unrealized_R~2.0 and drawdown_to_exit_R~1.5 at the close."""
     # Trigger idx 1 close=101 > peak=100; entry idx 2 open=101.9; stop=91.08; R=10.82.
     # +2R intraday high ~ 101.9 + 21.64 = 123.54. Plant close=123 (intraday high=123.5)
-    # at bar 3 → peak_R=2.0 reached intraday. Then drop to close=107 at bar 4.
+    # at bar 3 -> peak_R=2.0 reached intraday. Then drop to close=107 at bar 4.
     closes = [99.0, 101.0, 102.0, 123.0, 107.0, 108.0]
     bars = _bars(closes, start_date="2026-05-04")
     v = _verdict(asof="2026-05-01", center_peak_price=100.0, trough_2_price=92.0)

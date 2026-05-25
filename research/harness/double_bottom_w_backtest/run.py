@@ -91,10 +91,12 @@ def run_backtest_for_verdicts(
 
 
 def _emit_missing_archive_trade(verdict: PrimaryVerdict, ruleset_name: str) -> Trade:
-    days_t2_to_asof = (verdict.anchor_asof_date - verdict.trough_2_date).days
+    days_t2_to_asof = (verdict.effective_asof_date - verdict.trough_2_date).days
     return Trade(
         pattern_id=verdict.pattern_id, ticker=verdict.ticker, ruleset_name=ruleset_name,
         anchor_asof_date=verdict.anchor_asof_date, trough_1_date=verdict.trough_1_date,
+        effective_asof_date=verdict.effective_asof_date,
+        max_observed_asof_date=verdict.max_observed_asof_date,
         center_peak_price=verdict.center_peak_price, trough_2_price=verdict.trough_2_price,
         composite_score=verdict.composite_score, initial_stop=verdict.initial_stop,
         entry_date=None, entry_price=None, exit_date=None, exit_price=None,
