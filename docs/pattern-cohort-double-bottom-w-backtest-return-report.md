@@ -55,9 +55,9 @@ The 5 `tests/cli/test_reconcile_backfill_cli.py` tests that failed pre-Schwab-re
 
 ## Section 3 Smoke artifact verification + summary highlights
 
-**Primary artifact (recency-60d; post-Codex-R1):** [exports/research/double-bottom-w-backtest-20260525T123753Z/](../exports/research/double-bottom-w-backtest-20260525T123753Z/) -- 25-column results.csv (36 trade rows = 12 patterns x 3 rulesets) + summary.md + manifest.json. Runtime 0.163 seconds.
+**Primary artifact (recency-60d; post-Codex-R1):** [exports/research/double-bottom-w-backtest-20260525T123753Z/](../exports/research/double-bottom-w-backtest-20260525T123753Z/) -- 27-column results.csv (post-Codex-R3 M#2) (36 trade rows = 12 patterns x 3 rulesets) + summary.md + manifest.json. Runtime 0.163 seconds.
 
-**Companion artifact (no-recency-filter; Codex R1 M#2):** [exports/research/double-bottom-w-backtest-20260525T123756Z/](../exports/research/double-bottom-w-backtest-20260525T123756Z/) -- 25-column results.csv (516 trade rows = 172 patterns x 3 rulesets) + summary.md + manifest.json. Runtime 0.245 seconds.
+**Companion artifact (no-recency-filter; Codex R1 M#2):** [exports/research/double-bottom-w-backtest-20260525T123756Z/](../exports/research/double-bottom-w-backtest-20260525T123756Z/) -- 27-column results.csv (post-Codex-R3 M#2) (516 trade rows = 172 patterns x 3 rulesets) + summary.md + manifest.json. Runtime 0.245 seconds.
 
 **Primary manifest highlights (post-Codex-R1):**
 - `l2_lock_preserved: true`
@@ -183,9 +183,41 @@ ThreadId continued. Verdict: ISSUES_FOUND. 0 CRITICAL / 2 MAJOR / 2 MINOR (all N
 
 **R3 smoke re-emit:** primary 20260525T123753Z + companion 20260525T123756Z. CSV header 25 -> 27 columns (effective_asof_date + max_observed_asof_date added). Sample KOD-2026-02-05 row verifies anchor=2026-04-29 + effective=2026-05-01 + max_observed=2026-05-01 + entry=2026-05-05 alignment. 57 D1 tests pass.
 
-### Section 7.4 Round 4
+### Section 7.4 Round 4 (2026-05-25 PM #4) -- CONVERGENCE
 
-Pending. After R3 fix commit lands, will run Codex R4 with delta prompt for final NO_NEW_CRITICAL_MAJOR convergence.
+ThreadId continued. **Verdict: NO_NEW_CRITICAL_MAJOR.** 0 CRITICAL / 0 MAJOR / 3 MINOR (all NEW).
+
+The Codex MCP adversarial-review chain has CONVERGED per copowers MIN_ROUNDS=2 + verdict-NO_NEW_CRITICAL_MAJOR + all issues_log entries resolved. Total chain: 4 rounds. Cumulative: 0 CRITICAL + 14 MAJOR (8 R1 + 4 R2 + 2 R3) + 11 MINOR (4 R1 + 2 R2 + 2 R3 + 3 R4). ALL 14 majors RESOLVED in-place; all 11 minors banked or resolved. ZERO accepted-as-rationale.
+
+**R4 minor cleanup (resolved in this section's commit):**
+- r4.m1 (schema labels "25-column" stale in 3 places after R3 widened to 27) -- RESOLVED: findings + return report Section 3 + io.py docstring updated to "27-column post-Codex-R3 M#2".
+- r4.m2 (Findings Section 4.1 still says `anchor_asof_date` for trigger bounds; should be `effective_asof_date` post-R2 M#1) -- RESOLVED: Section 4.1 trigger lower + upper bounds updated to cite effective_asof_date with Codex R2 M#1 attribution.
+- r4.m3 (`shares = _compute_share_count(...)` local computed but no longer used after R2 M#3 fractional-PnL refactor) -- RESOLVED via comment: helper retained for audit-tooling discoverability + the discriminating test locking per-trade share-sizing arithmetic.
+
+### Section 7.5 38th cumulative C.C lesson #6 validation outcome (post-convergence)
+
+**NOTABLE.** Codex MCP chain converged at R4 NO_NEW_CRITICAL_MAJOR after 4 rounds. Cumulative finding distribution (0 critical + 14 major + 11 minor) is consistent with the 33rd C.C lesson #6 NOTABLE (V2 OHLCV executing-plans 1C+8M+4m + 4 fix commits) family, NOT the more-CLEAN side. Real defects caught:
+
+| Codex round | Algorithmic / methodology drift | Documentation / discipline |
+|---|---|---|
+| R1 | M#1 (Ruleset A BE raise undocumented) + M#3 (recency-vs-primary semantic ordering) | M#2 (companion artifact) + M#4 (hedging) + M#5 (provenance) + M#6 (reader deviation) + M#7 (CSV schema) + M#8 (ASCII) |
+| R2 | M#1 (walk-forward effective_asof) + M#3 (fractional PnL) + M#4 (sessions vs calendar) | M#2 (source SHA in fixture mode) |
+| R3 | M#2 (CSV needs effective_asof + max_observed columns) | M#1 (stale artifact paths + per-pattern facts) |
+| R4 | none | r4.m1+m2+m3 (label/wording lag) |
+
+**NEW pre-Codex review scope expansion candidates banked (for future C.C lesson #6 validations):**
+
+1. **Recency / filter / dedup semantic-ordering audit** (from R1.M#3 + R2.M#1 chain): when applying multiple filters / dedups in sequence on a multi-observation cohort, audit (a) the ORDER of operations; (b) attribution metadata propagation (max/min/all observations) into each filter; (c) consistency between filter-admit criterion + downstream consumer's reference asof. R2.M#1 was a 2nd-order consequence of R1.M#3 -- the recency fix alone introduced an inconsistency with walk-forward; would benefit from EXPLICIT cross-step consistency check during writing-plans phase.
+
+2. **Brief schema completeness drift** (from R1.M#7): when a brief enumerates N columns / fields, pre-Codex review MUST cross-check implementer's emit count + names against the brief's enumeration before any verdict claim. Sub-discipline: "internal-state-vs-emitted-state CSV completeness audit" (from R3.M#2) -- when the engine computes derived state internally (e.g., effective_asof_date), pre-Codex review verifies whether that derived state is BACKED OUT via the CSV emit so downstream auditors can reconstruct trigger window without re-running the engine.
+
+3. **ASCII discipline scope clarity** (from R1.M#8 + R3.m#1): when claiming ASCII discipline, declare scope explicitly (narrative-docs-only? OR all narrative-docs + source/test files?). Banking a vague "ASCII discipline preserved" claim is the recurring failure mode.
+
+4. **Narrative artifact path / fact lag** (from R3.M#1): when emitting a new smoke artifact after fix bundle, narrative docs MUST be updated to cite the new artifact path AND the new outcome facts (entry dates, R-values, session counts, etc.). The grep+sed sweep is the canonical fix; but PRE-COMMIT discipline (lint hook? schema-check via parsing dates from CSV?) would catch this earlier.
+
+5. **Fix-induced unused-local cleanup** (from R4.m#3): after a refactor that supersedes an intermediate computation (e.g., R2 M#3 fractional PnL superseded integer share count), the intermediate's call site may become a dead local. Pre-Codex review should grep for unused locals in modified files OR mark them with explicit "retained for audit" comments. This pre-empts the kind of trivial nit that fills R-round minor budgets.
+
+These 5 patterns extend the cumulative pre-Codex review scope expansion family (Expansions #1-#13 from prior C.C lesson #6 validations; see CLAUDE.md gotchas #15-#26 family). Future writing-plans + executing-plans dispatches should incorporate these as default §5 watch items.
 
 ### Section 7.3 38th cumulative C.C lesson #6 validation outcome
 

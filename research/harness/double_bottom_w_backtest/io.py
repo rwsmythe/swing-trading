@@ -43,7 +43,7 @@ RESULTS_CSV_HEADER = [
 
 
 def write_results_csv(trades: list[Trade], output_path: Path) -> None:
-    """25-column per-(pattern, ruleset) row dump (post-Codex-R1 M#7).
+    """27-column per-(pattern, ruleset) row dump (post-Codex-R3 M#2).
 
     Includes near-miss diagnostic columns (max_forward_close +
     max_close_pct_of_peak) for untriggered pattern analysis per V2 precedent.

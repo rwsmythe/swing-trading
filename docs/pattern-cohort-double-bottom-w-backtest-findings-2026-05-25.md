@@ -106,8 +106,8 @@ The verdict's NEGATIVE classification is robust to threshold choice within 60-90
 ### 4.1 Entry rule (shared)
 
 - **Trigger threshold:** `center_peak_price` (the W's neckline; the canonical W-bottom breakout reference per dispatch brief Section 2 + Section 10  --  NOT `pivot_price` which is the last close in the candidate window and not actionable).
-- **Trigger lower bound:** `max(trough_1_date, trough_2_date, anchor_asof_date) + 1 business day`.
-- **Trigger upper bound:** `anchor_asof_date + 60 business days` (np.busday_offset semantics).
+- **Trigger lower bound:** `max(trough_1_date, trough_2_date, effective_asof_date) + 1 business day` (Codex R2 M#1: effective_asof_date governs).
+- **Trigger upper bound:** `effective_asof_date + 60 business days` (np.busday_offset semantics; Codex R2 M#1: effective_asof_date = max(anchor_asof, max_observed_asof)).
 - **Trigger event:** first `Close > center_peak_price` within the window.
 - **Entry:** next-session open following the trigger session. If no next session exists, pattern is `untriggered`.
 - **Initial stop:** `trough_2_price * 0.99` (canonical W right-shoulder buffer; the strict canonical definition per dispatch brief Section 2 rather than `min(trough_1, trough_2)`).
@@ -289,8 +289,8 @@ Three options for the orchestrator-paired next decision:
 
 ## 10. Artifacts
 
-- **Primary smoke (recency-60d; post-Codex-R1):** [exports/research/double-bottom-w-backtest-20260525T123753Z/](../exports/research/double-bottom-w-backtest-20260525T123753Z/) -- 25-column results.csv (36 trade rows = 12 patterns x 3 rulesets) + summary.md + manifest.json with full source provenance.
-- **Companion smoke (no-recency-filter; post-Codex-R1 M#2):** [exports/research/double-bottom-w-backtest-20260525T123756Z/](../exports/research/double-bottom-w-backtest-20260525T123756Z/) -- 25-column results.csv (516 trade rows = 172 patterns x 3 rulesets) + summary.md + manifest.json. Confirms no-recency interpretation per Section 2.2.
+- **Primary smoke (recency-60d; post-Codex-R1):** [exports/research/double-bottom-w-backtest-20260525T123753Z/](../exports/research/double-bottom-w-backtest-20260525T123753Z/) -- 27-column results.csv (post-Codex-R3 M#2) (36 trade rows = 12 patterns x 3 rulesets) + summary.md + manifest.json with full source provenance.
+- **Companion smoke (no-recency-filter; post-Codex-R1 M#2):** [exports/research/double-bottom-w-backtest-20260525T123756Z/](../exports/research/double-bottom-w-backtest-20260525T123756Z/) -- 27-column results.csv (post-Codex-R3 M#2) (516 trade rows = 172 patterns x 3 rulesets) + summary.md + manifest.json. Confirms no-recency interpretation per Section 2.2.
 - **Cohort fixture:** [tests/fixtures/research/double_bottom_w_backtest/cohort.json](../tests/fixtures/research/double_bottom_w_backtest/cohort.json) (172 unique W primary verdicts; 122 KB post-M#3 with new max_observed_asof_date + observed_asof_dates + window_count fields)
 - **Backtest harness:** [research/harness/double_bottom_w_backtest/](../research/harness/double_bottom_w_backtest/) (5 modules: cohort + walkforward + rulesets + io + run)
 - **Discriminating tests:** [tests/research/double_bottom_w_backtest/](../tests/research/double_bottom_w_backtest/) (54 fast tests; +12 from Codex R1 discriminating tests at `test_codex_r1_fixes.py`)

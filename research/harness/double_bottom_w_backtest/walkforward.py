@@ -257,7 +257,10 @@ def walk_forward(
     state = ruleset.init_state(
         bars=bars, entry_idx=entry_idx, entry_price=entry_price, initial_stop=initial_stop,
     )
-    shares = _compute_share_count(entry_price, initial_stop)
+    # Codex R4 m#3: integer `_compute_share_count` no longer used since
+    # `_compute_pnl_dollars_fractional` accepts (entry, exit, stop) directly.
+    # Helper retained for audit-tooling discoverability + the discriminating
+    # test that locks the per-trade share-sizing arithmetic.
     # Peak unrealized R tracked across bars for the drawdown_to_exit_R metric
     # per dispatch brief Section 4.1 + Codex R1 M#7. Uses intraday High (favorable
     # excursion) to capture true peak; symmetric to the close-based exit
