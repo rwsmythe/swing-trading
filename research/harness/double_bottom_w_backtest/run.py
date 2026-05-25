@@ -110,17 +110,24 @@ def _emit_missing_archive_trade(verdict: PrimaryVerdict, ruleset_name: str) -> T
 
 def _read_upstream_provenance(
     source_artifact_dir: Path | None,
-) -> tuple[str | None, str | None, str | None]:
+) -> tuple[str | None, str | None, str | None, str | None]:
     """Read upstream pattern_cohort_evaluator manifest for provenance fields.
 
-    Returns (manifest_path, manifest_sha256, cohort_input_sha256).
+    Returns (manifest_path, manifest_sha256, cohort_input_sha256, results_csv_sha256).
+
+    Codex R2 M#2: ALSO hash `results.csv` when --source-artifact-dir is
+    supplied AND the file is present locally. This closes the
+    "fixture-mode provenance gap" by storing the cohort EVALUATOR OUTPUT
+    SHA (not just the upstream cohort INPUT SHA which was already in the
+    upstream manifest's cohort_input_sha256 field).
+
     Returns all-None when source_artifact_dir is None / manifest missing.
     """
     if source_artifact_dir is None:
-        return None, None, None
+        return None, None, None, None
     manifest_path = source_artifact_dir / "manifest.json"
     if not manifest_path.exists():
-        return None, None, None
+        return None, None, None, None
     manifest_sha = _sha256_of_file(manifest_path)
     try:
         import json
@@ -129,7 +136,12 @@ def _read_upstream_provenance(
         cohort_input_sha = data.get("cohort_input_sha256")
     except (OSError, ValueError):
         cohort_input_sha = None
-    return str(manifest_path), manifest_sha, cohort_input_sha
+    # Hash results.csv if locally available (Codex R2 M#2). The file is
+    # gitignored due to size (~287 MB) but is present at the operator's
+    # workstation that ran the upstream harness.
+    results_csv_path = source_artifact_dir / "results.csv"
+    results_csv_sha = _sha256_of_file(results_csv_path) if results_csv_path.exists() else None
+    return str(manifest_path), manifest_sha, cohort_input_sha, results_csv_sha
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -254,13 +266,14 @@ def main(argv: list[str] | None = None) -> int:
         population_notes=pop_notes,
     )
     finished_at = datetime.now(timezone.utc)
-    src_manifest_path, src_manifest_sha, src_cohort_input_sha = _read_upstream_provenance(
-        args.source_artifact_dir
+    src_manifest_path, src_manifest_sha, src_cohort_input_sha, src_results_csv_sha = (
+        _read_upstream_provenance(args.source_artifact_dir)
     )
     # When --results-csv is the input, that IS the source-of-truth results.csv;
-    # surface its sha in source_results_csv_sha256 too for downstream tooling.
+    # surface its sha. When --cohort-fixture is the input but --source-artifact-dir
+    # points at the upstream run, hash that run's results.csv (Codex R2 M#2).
     source_results_csv_sha = (
-        cohort_csv_sha if args.results_csv is not None else None
+        cohort_csv_sha if args.results_csv is not None else src_results_csv_sha
     )
     write_manifest(
         manifest_out,

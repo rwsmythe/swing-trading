@@ -151,9 +151,26 @@ ThreadId `019e6123-4522-7072-9652-90a547c925a0`. Verdict: ISSUES_FOUND. 0 CRITIC
 
 **Minor issues banked (4):** trading-calendar accuracy via np.busday vs exchange calendar; exit-reason priority documentation; L2 source-grep weakness (dynamic imports); fixture `window_count` field cosmetic enhancement (also resolved -- added during M3 refactor).
 
-### Section 7.2 Round 2
+### Section 7.2 Round 2 (2026-05-25 PM #2)
 
-Pending. After fix commits land, will run Codex round 2 with delta prompt enumerating all resolutions to verify NO_NEW_CRITICAL_MAJOR convergence (per copowers MIN_ROUNDS=2).
+ThreadId continued. Verdict: ISSUES_FOUND. 0 CRITICAL / 4 MAJOR / 2 MINOR (all NEW; no re-raises of R1 issues).
+
+| # | Severity | Issue | Disposition |
+|---|---|---|---|
+| R2.M1 | Major | Recency uses max_observed_asof but walk-forward trigger window still uses anchor_asof; backtest can enter BEFORE the most-recent observation that justified recency-admission | RESOLVED -- PrimaryVerdict gains `effective_asof_date` property (max of anchor + max_observed); walk_forward uses effective_asof for both trigger lower bound + trigger search window upper bound. KOD-2026-02-05's entry shifted from 2026-05-01 -> 2026-05-05 (effective_asof later than anchor by 4 sessions); aggregate verdict unchanged (7/12 still triggered). Discriminating test at `test_codex_r1_fixes.py::test_walk_forward_uses_effective_asof_when_max_observed_later_codex_r2_m1`. |
+| R2.M2 | Major | `source_results_csv_sha256` null in committed fixture-mode manifests; cohort traceability gap | RESOLVED -- `_read_upstream_provenance` now hashes the upstream `results.csv` when present at `--source-artifact-dir/results.csv`. Primary smoke manifest now carries `source_results_csv_sha256: 231b5917f7eefc9c321f7ae721e69a2b6cc3b195cb136219f7edb16a624cb5d1`. |
+| R2.M3 | Major | `trade_pnl_dollars` silently rounds to $0.00 for nonzero-R trades when `_compute_share_count` floors to 0 shares (wide-R patterns where R_unit > $37.5 risk budget) | RESOLVED -- replaced integer-share PnL with `_compute_pnl_dollars_fractional(entry, exit, initial_stop)` which computes `R_multiple * risk_dollars` directly. Wide-R patterns now correctly emit R-scaled dollar PnL (e.g., DK-2026-03-09 -0.960R now emits $-35.98 vs prior $0.00). Integer `_compute_share_count` retained for audit visibility. 2 discriminating tests cover the floor-to-zero failure mode + symmetric scenarios. |
+| R2.M4 | Major | `days_held` is calendar-day-based; brief Section 4.1 specifies `trade_duration_sessions`; weekend gaps inflate calendar count | RESOLVED -- `days_held = (i - entry_idx)` for closed trades + `(last_idx - entry_idx)` for open positions. Bar-index delta = actual sessions. KOD example: prior days_held=10 (calendar across weekend), now sessions_held=4 (actual bars). Discriminating test plants a Fri-to-Tue scenario + asserts days_held <= 3 (vs calendar = 4). |
+
+**Minor R2 issues:**
+- r2.m1 (stale "24-column" docstring on `write_results_csv`) -- RESOLVED: docstring updated to "25-column per-(pattern, ruleset) row dump (post-Codex-R1 M#7)".
+- r2.m2 (summary markdown missing trade_pnl_dollars + peak_unrealized_R + drawdown_to_exit_R fields) -- RESOLVED: per-pattern detail table extended with sessions_held + peak_R + dd_to_exit_R + pnl_$ columns.
+
+**R2 smoke re-emit:** primary 20260525T123051Z + companion 20260525T123054Z (replace pre-R2 20260525T121009Z + 20260525T121012Z artifacts). All R2 fixes verified in artifact data (effective_asof shift; results.csv SHA populated; fractional PnL; bar-index sessions). 57 D1 tests pass (was 54 pre-R2).
+
+### Section 7.3 Round 3
+
+Pending. After R2 fix commit lands, will run Codex R3 with delta prompt for final NO_NEW_CRITICAL_MAJOR convergence.
 
 ### Section 7.3 38th cumulative C.C lesson #6 validation outcome
 

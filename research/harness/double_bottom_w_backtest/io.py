@@ -41,7 +41,7 @@ RESULTS_CSV_HEADER = [
 
 
 def write_results_csv(trades: list[Trade], output_path: Path) -> None:
-    """24-column per-(pattern, ruleset) row dump.
+    """25-column per-(pattern, ruleset) row dump (post-Codex-R1 M#7).
 
     Includes near-miss diagnostic columns (max_forward_close +
     max_close_pct_of_peak) for untriggered pattern analysis per V2 precedent.
@@ -239,14 +239,14 @@ def write_summary_markdown(
     lines.append("## Per-pattern detail (composite>=0.7; sorted by ticker then trough_1_date)")
     lines.append("")
     lines.append(
-        "| pattern_id | composite | days_t2_to_asof | ruleset | status | entry_date | exit_date | exit_reason | R-multiple | days_held |"
+        "| pattern_id | composite | days_t2_to_asof | ruleset | status | entry_date | exit_date | exit_reason | R-multiple | sessions_held | peak_R | dd_to_exit_R | pnl_$ |"
     )
     lines.append(
-        "|------------|-----------|-----------------|---------|--------|------------|-----------|-------------|------------|-----------|"
+        "|------------|-----------|-----------------|---------|--------|------------|-----------|-------------|------------|---------------|--------|--------------|-------|"
     )
     for t in sorted(trades, key=lambda x: (x.ticker, x.trough_1_date, x.ruleset_name)):
         lines.append(
-            "| {pid} | {comp} | {dt} | {rs} | {st} | {ed} | {xd} | {xr} | {r} | {dh} |".format(
+            "| {pid} | {comp} | {dt} | {rs} | {st} | {ed} | {xd} | {xr} | {r} | {dh} | {peak} | {dd} | {pnl} |".format(
                 pid=t.pattern_id,
                 comp=f"{t.composite_score:.3f}",
                 dt=t.days_t2_to_asof if t.days_t2_to_asof is not None else "n/a",
@@ -257,6 +257,9 @@ def write_summary_markdown(
                 xr=t.exit_reason,
                 r=_fmt_R(t.r_multiple),
                 dh=t.days_held if t.days_held is not None else "n/a",
+                peak=_fmt_R(t.peak_unrealized_R),
+                dd=_fmt_R(t.drawdown_to_exit_R),
+                pnl=f"${t.trade_pnl_dollars:+.2f}" if t.trade_pnl_dollars is not None else "n/a",
             )
         )
     lines.append("")

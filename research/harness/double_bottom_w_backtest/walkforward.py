@@ -86,11 +86,13 @@ class Trade:
 
 
 def _compute_share_count(entry_price: float, initial_stop: float) -> int:
-    """Per-trade share count under fixed-risk sizing.
+    """Integer share count under fixed-risk sizing.
 
-    Capital base = max($7500 floor, actual_balance) per
-    `project_capital_risk_floor` memory. V1 backtest uses floor (no live
-    balance integration); shares = floor(capital * risk_pct / R_unit).
+    Returned for AUDIT only; dollar PnL uses fractional notional per
+    `_compute_pnl_dollars_fractional` so wide-R patterns don't silently
+    floor to 0 shares + $0 PnL (Codex R2 M#3 fix). Capital base =
+    max($7500 floor, actual_balance) per CLAUDE.md
+    project_capital_risk_floor memory.
     """
     R_unit = entry_price - initial_stop
     if R_unit <= 0:
@@ -99,10 +101,25 @@ def _compute_share_count(entry_price: float, initial_stop: float) -> int:
     return int(risk_dollars / R_unit)
 
 
-def _compute_pnl_dollars(
-    entry_price: float, exit_price: float, shares: int
+def _compute_pnl_dollars_fractional(
+    entry_price: float, exit_price: float, initial_stop: float
 ) -> float:
-    return (exit_price - entry_price) * shares
+    """Theoretical fractional-share dollar P&L (Codex R2 M#3).
+
+    notional_dollars = (exit - entry) * (risk_dollars / R_unit)
+                     = R_multiple * risk_dollars
+
+    Avoids the integer-share floor-to-zero failure mode for wide-R patterns
+    (e.g., entry $100 stop $70 -> R_unit=$30 > $37.5 risk_budget would
+    yield shares=0 + $0 PnL under integer accounting; fractional accounting
+    correctly emits R_multiple * $37.5). Captures true R-scaled dollar
+    impact regardless of share-count granularity.
+    """
+    R_unit = entry_price - initial_stop
+    if R_unit <= 0:
+        return 0.0
+    risk_dollars = DEFAULT_CAPITAL_FLOOR_DOLLARS * DEFAULT_RISK_PCT
+    return (exit_price - entry_price) * (risk_dollars / R_unit)
 
 
 def _trigger_search_upper_bound(
@@ -157,7 +174,10 @@ def walk_forward(
     Entry trigger search is bounded to (max(structural anchors)+1 day,
     asof+max_BD]; walk-forward AFTER entry uses bars to archive end.
     """
-    days_t2_to_asof = (verdict.anchor_asof_date - verdict.trough_2_date).days
+    # Codex R2 M#1: use effective_asof (max of anchor + max_observed) for the
+    # backtest reference; preserves consistency with recency-filter semantics.
+    backtest_asof = verdict.effective_asof_date
+    days_t2_to_asof = (backtest_asof - verdict.trough_2_date).days
     n_total = len(bars)
 
     # Trivial-no-bars short-circuit
@@ -170,7 +190,7 @@ def walk_forward(
     # forward search window for near-miss reporting).
     lower_bound = verdict.trigger_lower_bound_date
     upper_bound = _trigger_search_upper_bound(
-        verdict.anchor_asof_date, max_trigger_search_business_days
+        backtest_asof, max_trigger_search_business_days
     )
     dates_idx = pd.Index([d.date() if hasattr(d, "date") else d for d in bars.index])
     in_window_mask = (dates_idx > lower_bound) & (dates_idx <= upper_bound)
@@ -250,7 +270,7 @@ def walk_forward(
         if exit_price is not None and exit_reason is not None:
             exit_date = bars.index[i].date() if hasattr(bars.index[i], "date") else bars.index[i]
             r_mult = (exit_price - entry_price) / R
-            pnl_dollars = _compute_pnl_dollars(entry_price, exit_price, shares)
+            pnl_dollars = _compute_pnl_dollars_fractional(entry_price, exit_price, initial_stop)
             return Trade(
                 pattern_id=verdict.pattern_id, ticker=verdict.ticker, ruleset_name=ruleset.name,
                 anchor_asof_date=verdict.anchor_asof_date, trough_1_date=verdict.trough_1_date,
@@ -259,7 +279,7 @@ def walk_forward(
                 entry_date=entry_date, entry_price=entry_price,
                 exit_date=exit_date, exit_price=exit_price,
                 exit_reason=exit_reason, r_multiple=r_mult,
-                days_held=(exit_date - entry_date).days,
+                days_held=(i - entry_idx),  # bar-index delta = sessions (Codex R2 M#4)
                 status="closed",
                 triggered=True,
                 trade_pnl_dollars=pnl_dollars,
@@ -275,7 +295,7 @@ def walk_forward(
     last_close = float(bars.iloc[last_idx]["Close"])
     last_date = bars.index[last_idx].date() if hasattr(bars.index[last_idx], "date") else bars.index[last_idx]
     tail_r = (last_close - entry_price) / R
-    tail_pnl = _compute_pnl_dollars(entry_price, last_close, shares)
+    tail_pnl = _compute_pnl_dollars_fractional(entry_price, last_close, initial_stop)
     return Trade(
         pattern_id=verdict.pattern_id, ticker=verdict.ticker, ruleset_name=ruleset.name,
         anchor_asof_date=verdict.anchor_asof_date, trough_1_date=verdict.trough_1_date,
@@ -285,7 +305,7 @@ def walk_forward(
         exit_date=last_date, exit_price=last_close,
         exit_reason="open_at_data_tail",
         r_multiple=tail_r,
-        days_held=(last_date - entry_date).days,
+        days_held=(last_idx - entry_idx),  # bar-index delta = sessions (Codex R2 M#4)
         status="open",
         triggered=True,
         trade_pnl_dollars=tail_pnl,

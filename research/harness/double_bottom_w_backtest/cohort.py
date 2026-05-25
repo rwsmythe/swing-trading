@@ -92,11 +92,31 @@ class PrimaryVerdict:
     def trigger_lower_bound_date(self) -> date:
         """Earliest date on which a trigger can fire.
 
-        Per dispatch brief §2: trigger fires AFTER max(trough_1, trough_2,
-        anchor_asof). For RECENT W's where trough_2_date >= asof, trough_2
-        wins; for the typical RECENT case, asof wins.
+        Per dispatch brief Section 2: trigger fires AFTER max(trough_1,
+        trough_2, asof). Codex R2 M#1 fix: when max_observed_asof_date >
+        anchor_asof_date (this W was observed AGAIN by a later cohort_entry),
+        the EFFECTIVE backtest-as-of is the most-recent observation -- a real
+        operator couldn't have acted before that observation existed. Use
+        max(anchor, max_observed) as the asof reference; otherwise the
+        recency-filter-admit-via-max-observed semantics would be inconsistent
+        with a walk-forward that started at the earlier anchor's asof.
         """
-        return max(self.trough_1_date, self.trough_2_date, self.anchor_asof_date)
+        return max(
+            self.trough_1_date, self.trough_2_date, self.effective_asof_date
+        )
+
+    @property
+    def effective_asof_date(self) -> date:
+        """Backtest-as-of date used as the trigger-window's reference asof.
+
+        Codex R2 M#1: anchor_asof = highest-composite observation; max_observed
+        = most-recent observation. The effective backtest asof is the LATEST
+        of the two; walk-forward + recency filter both use this.
+        """
+        return max(
+            self.anchor_asof_date,
+            self.max_observed_asof_date or self.anchor_asof_date,
+        )
 
     def to_dict(self) -> dict:
         d = asdict(self)

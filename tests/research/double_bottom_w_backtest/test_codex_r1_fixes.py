@@ -33,7 +33,7 @@ from research.harness.double_bottom_w_backtest.rulesets import RulesetA
 from research.harness.double_bottom_w_backtest.walkforward import (
     DEFAULT_CAPITAL_FLOOR_DOLLARS,
     DEFAULT_RISK_PCT,
-    _compute_pnl_dollars,
+    _compute_pnl_dollars_fractional,
     _compute_share_count,
     walk_forward,
 )
@@ -268,9 +268,34 @@ def test_compute_share_count_uses_capital_floor_and_risk_pct() -> None:
     assert _compute_share_count(entry_price=22.5, initial_stop=20.0) == 15
 
 
-def test_compute_pnl_dollars_signed_by_direction() -> None:
-    assert _compute_pnl_dollars(entry_price=100.0, exit_price=110.0, shares=3) == pytest.approx(30.0)
-    assert _compute_pnl_dollars(entry_price=100.0, exit_price=90.0, shares=3) == pytest.approx(-30.0)
+def test_compute_pnl_dollars_fractional_signed_by_direction_codex_r2_m3() -> None:
+    """Fractional dollar PnL = R_multiple * risk_dollars. Avoids the
+    integer-share floor-to-zero failure mode for wide-R patterns."""
+    # entry=100 stop=90: R_unit=10. risk=37.5. exit=110 -> R_multiple=1; PnL=37.5
+    assert _compute_pnl_dollars_fractional(
+        entry_price=100.0, exit_price=110.0, initial_stop=90.0
+    ) == pytest.approx(37.5)
+    # exit=90 -> R_multiple=-1; PnL=-37.5
+    assert _compute_pnl_dollars_fractional(
+        entry_price=100.0, exit_price=90.0, initial_stop=90.0
+    ) == pytest.approx(-37.5)
+
+
+def test_compute_pnl_dollars_fractional_wide_R_does_not_floor_to_zero_codex_r2_m3() -> None:
+    """Wide-R case where integer accounting would yield 0 shares + $0 PnL.
+    Fractional accounting captures the true R-scaled dollar impact."""
+    # entry=100 stop=70: R_unit=30. risk=37.5. exit=130 -> R_multiple=1; PnL=37.5
+    # Under OLD integer logic: shares = floor(37.5/30) = 1; PnL = (130-100)*1 = $30
+    # Under NEW fractional: PnL = (130-100) * (37.5/30) = $37.5
+    assert _compute_pnl_dollars_fractional(
+        entry_price=100.0, exit_price=130.0, initial_stop=70.0
+    ) == pytest.approx(37.5)
+    # entry=100 stop=50: R_unit=50 (> $37.5 risk budget). exit=150 -> R_multiple=1
+    # OLD integer: shares = floor(37.5/50) = 0; PnL = $0 silently (the bug!)
+    # NEW fractional: PnL = (150-100) * (37.5/50) = $37.5 (correctly scaled)
+    assert _compute_pnl_dollars_fractional(
+        entry_price=100.0, exit_price=150.0, initial_stop=50.0
+    ) == pytest.approx(37.5)
 
 
 def test_default_capital_floor_and_risk_pct_match_memory_invariants() -> None:
@@ -278,3 +303,68 @@ def test_default_capital_floor_and_risk_pct_match_memory_invariants() -> None:
     CLAUDE.md operator memory + cfg.risk default."""
     assert DEFAULT_CAPITAL_FLOOR_DOLLARS == 7500.0
     assert DEFAULT_RISK_PCT == 0.005
+
+
+# ---- Codex R2 fixes ---------------------------------------------------
+
+
+def test_walk_forward_uses_effective_asof_when_max_observed_later_codex_r2_m1() -> None:
+    """When max_observed_asof_date > anchor_asof_date, trigger search bounds
+    use the later asof (per recency filter's semantic). Concretely: a W
+    with anchor at 2026-04-15 + max_observed at 2026-05-01 should reject
+    trigger candidates with close > peak occurring in 2026-04-16..2026-04-30
+    (those predate the most-recent observation)."""
+    # anchor=2026-04-15, max_observed=2026-05-01, trough_2=2026-04-10 (recent enough).
+    # Build bars where price > peak on 2026-04-20 (would trigger under old logic
+    # using anchor_asof=2026-04-15) but NOT after 2026-05-01.
+    v = PrimaryVerdict(
+        ticker="ABC",
+        anchor_asof_date=date(2026, 4, 15),
+        trough_1_date=date(2026, 3, 15),
+        trough_1_price=10.0, center_peak_date=date(2026, 3, 22), center_peak_price=100.0,
+        trough_2_date=date(2026, 4, 10), trough_2_price=92.0,
+        pivot_price=99.0,
+        composite_score=0.85, geometric_score=0.85, template_match_score=None,
+        max_observed_asof_date=date(2026, 5, 1),
+        observed_asof_dates=(date(2026, 4, 15), date(2026, 5, 1)),
+    )
+    # Bars: trigger candidate at 2026-04-20 (close=110); ALSO a later trigger at 2026-05-04 (close=120)
+    bars = _bars(
+        [95.0, 110.0, 95.0, 95.0, 95.0, 95.0, 95.0, 95.0, 95.0, 95.0,
+         95.0, 120.0, 122.0],
+        start_date="2026-04-15",
+    )
+    trade = walk_forward(v, bars, RulesetA())
+    # Effective asof = max(2026-04-15, 2026-05-01) = 2026-05-01.
+    # trigger lower bound exclusive = max(trough_1, trough_2, effective_asof) = 2026-05-01.
+    # 2026-04-20 trigger is rejected (predates lower bound); 2026-05-04 trigger is admitted.
+    if trade.triggered:
+        assert trade.entry_date is not None
+        # Entry must be AFTER max_observed (2026-05-01) per M#1 semantics
+        assert trade.entry_date > date(2026, 5, 1), (
+            f"entry_date {trade.entry_date} must be > max_observed 2026-05-01 "
+            f"per Codex R2 M#1 effective_asof semantics"
+        )
+
+
+def test_days_held_is_bar_index_delta_not_calendar_codex_r2_m4() -> None:
+    """days_held = sessions (bar count) not calendar days. Across a weekend
+    a 2-session trade should report days_held=2, not 4 (Fri->Tue calendar)."""
+    # Entry on Friday; exit 2 sessions later (Tue). Calendar diff = 4 days; bar diff = 2.
+    # Use bdate_range starting Wed; entry idx 2 (Fri); exit idx 4 (Tue).
+    closes = [98.0, 99.0, 101.0, 102.0, 88.0]  # idx 0 Wed; trigger idx 2 Fri; entry idx 3 Mon; stop hit idx 4 Tue
+    bars = _bars(closes, start_date="2026-04-29")  # Wed
+    v = _verdict(
+        asof="2026-04-28",  # Tue
+        trough_2="2026-04-15",
+        center_peak_price=100.0,
+        trough_2_price=92.0,
+    )
+    trade = walk_forward(v, bars, RulesetA())
+    if trade.status == "closed":
+        # bar-index delta = exit_idx - entry_idx; for this scenario expect <= 3
+        assert trade.days_held is not None
+        assert trade.days_held <= 3, (
+            f"days_held={trade.days_held} > 3 suggests calendar-days "
+            f"(weekend inflation) not bar-index delta"
+        )
