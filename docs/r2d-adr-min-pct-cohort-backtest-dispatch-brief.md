@@ -317,3 +317,78 @@ Per §1.2 LOCK. R2-D creates its own `research/harness/r2d_adr_min_pct/` mirrori
 ---
 
 *End of dispatch brief. Light dispatch ~4-6h implementer + ~1-2h Codex chain; tests whether R2-A's cohort-specific-NEGATIVE finding is UNIQUE to tightness_days_required OR SYSTEMIC across V2 binding variables. Cross-cohort 4-way consistency is the load-bearing finding; per-cohort verdict is secondary. Gotcha #33 third canonical application; discipline LOCKED.*
+
+---
+
+## Amendment 1 (2026-05-26; implementer ratification post Codex R1)
+
+**Author:** R2-D implementer (Codex MCP adversarial review R1 disposition).
+
+**Rationale:** Reconciles the brief's prescriptive sweep_point=1 against the V2 sensitivity smoke artifact's actual `+11 max_delta_aplus` binding signal, and pre-commits the canonical evaluation cohort's sample-size disposition per gotcha #33.
+
+### A1.1 sweep_point reconciliation (was: §1.1 / §1.2 / §1.3 / §5.1 / §5.5 / §6.1 / §7.2)
+
+The brief consistently stated "sweep_point=1" + "11 watch->aplus flips". Empirical inspection of the source artifact at `exports/diagnostics/aplus-sensitivity-v2-20260524T205849Z.md` shows:
+
+- vcp.adr_min_pct summary table (line 116): `vcp.adr_min_pct | threshold_multiplicative | 2.0 | 16 | 1890 | 3672 | 0 | 11 | 569 | 0 | 88 | 0` -- **the +11 max_delta_aplus signal is at sweep_point=2.0** (NOT 1).
+- vcp.adr_min_pct drill-down section at sweep_point=1: 15 watch->aplus flips (identical to R2-A's vcp.tightness_days_required cohort because adr_min_pct=1 is more relaxed than the +11 binding sweep_point).
+- vcp.adr_min_pct drill-down section at sweep_point=2.0: EXACTLY 11 watch->aplus flips (matches the brief's stated 11-count contract).
+
+The brief's count-based contract (11 flips matching the +11 binding signal) is the binding interpretation; the prescriptive sweep_point=1 is a brief-authoring error. The implementer uses **sweep_point=2.0** as the canonical R2-D sweep_point.
+
+Artifact naming reflects this:
+- Module: `research/harness/r2d_adr_min_pct/` (variable-name-derived; sweep_point-agnostic).
+- Constant: `R2D_SWEEP_POINT = 2.0` (FLOAT-valued; differs from R2-A's int=1).
+- Cohort CSV: `exports/research/cohorts/r2d_adr_min_pct_sp2_0.csv` (NOT `sp1.csv`).
+- Cohort label: `r2d_vcp_adr_min_pct_sp2_0` (NOT `..._sp1`).
+- Fixture: `tests/fixtures/research/r2d_adr_min_pct/cohort.json` (path unchanged; suffix sweep-agnostic).
+
+All "sp1" references in §1.2 / §1.3 / §5.5 / §6.1 / §6.2 / §7.2 / §8.1 are SUPERSEDED by "sp2_0" naming.
+
+### A1.2 Pre-commit: cohort-validity disposition (was: §6.5 + §7.1)
+
+Per gotcha #33 cohort-validity-vs-verdict-criteria discipline (third canonical application; LOCKED):
+
+The canonical evaluation cohort (composite>=0.5 + recency<=365d) for R2-D yields **N=4 W primary verdicts ALL from STNG** (post pattern_cohort_evaluator smoke at `exports/research/pattern-cohort-detection-20260526T160518Z/`; 1559 raw double_bottom_w verdicts -> 132 at composite>=0.5 -> 127 post 5-BD adjacency merge -> **4** post recency<=365d filter).
+
+This is **well below the brief's expected N=50-200 range** (was: §7.3 R2-D row). Per gotcha #33:
+
+- **PARTIAL POSITIVE thresholds** (>=3 closed-and-profitable AND mean-R closed > 0 AND win-rate >= 25%) require at least 3 closed-and-profitable per ruleset. With N=4 total + 4 STNG-only patterns, even the maximum possible PARTIAL POSITIVE outcome (4 of 4 triggered AND profitable across all 6 rulesets) is at the statistical-defensibility threshold.
+
+- **SYSTEMIC NEGATIVE claim is FORBIDDEN** as a headline verdict against this cohort. A NEGATIVE outcome on N=4 STNG-only patterns cannot defensibly support the claim "R2-A's NEGATIVE generalizes across V2 binding variables." The valid finding is "R2-D cohort yields N=4; INSUFFICIENT SAMPLE for the cross-cohort-systemic claim."
+
+- **POSITIVE / PARTIAL POSITIVE on N=4 STNG-only** would be a ticker-concentrated case study NOT a defensible "generalization across V2 binding variables" claim either; findings doc MUST disclose this concentration explicitly.
+
+**Headline verdict for R2-D is bound to one of:**
+- INSUFFICIENT SAMPLE (most likely outcome; the canonical disposition per gotcha #33 when N falls below the discriminating threshold)
+- INSUFFICIENT SAMPLE -- DIRECTIONAL POSITIVE (if all 4 are profitable; case-study qualifier mandatory)
+- INSUFFICIENT SAMPLE -- DIRECTIONAL NEGATIVE (if all 4 are unprofitable; case-study qualifier mandatory)
+
+**INSUFFICIENT SAMPLE is the headline verdict in all three sub-cases** -- the DIRECTIONAL suffix is informational color, not a defense of the systemic claim.
+
+### A1.3 Cross-cohort interpretation under N=4 (was: §6.5 table)
+
+Updated cross-cohort consistency table interpretation:
+
+| R2-A E result | R2-D E result | Cross-cohort verdict |
+|---|---|---|
+| NEGATIVE (canonical) | INSUFFICIENT SAMPLE (N=4) | R2-A's NEGATIVE neither confirmed nor refuted at the systemic level by R2-D. R2-D's thin substrate prevents the cross-cohort discrimination test from running. Next-arc operator decision: pivot to a different V2 binding variable with a thicker substrate (e.g., proximity_max_pct +5 or orderliness_max_bar_ratio +1) OR investigate WHY R2-D's W substrate is so thin (binding variable selection mechanism interacting with W-pattern incidence). |
+
+The brief's §6.5 cross-cohort cells assuming N comparable to R2-A's 65 are NOT applicable to R2-D's actual N=4 substrate. The systemic-vs-cohort-specific research question is **DEFERRED** to a future R2-* dispatch against a thicker substrate.
+
+### A1.4 Acceptance criteria modifications
+
+- §6.4 fourth bullet: "Verdict classification per D2 §6.5..." now reads "Verdict classification per D2 §6.5 on the CANONICAL evaluation cohort (composite>=0.5 + recency<=365d); per A1.2 gotcha #33 pre-commit, headline verdict is INSUFFICIENT SAMPLE with DIRECTIONAL suffix."
+- §6.5 cross-cohort consistency table: superseded by A1.3.
+
+### A1.5 Disposition of brief sections referencing "sp1" / sweep_point=1
+
+The following brief locations contain literal "sp1" / "sweep_point=1" / "sweep_point == 1" text that is technically inconsistent with the implementation but PRESERVED as the brief's authoring record (no edit-in-place per documentation discipline):
+
+- §1.1 (line 53), §1.2 (lines 61, 65, 67), §1.3 (line 80), §5.1 (line 142), §5.5 (line 161), §6.1 (line 172), §7.2 (line 235).
+
+All such references are SUPERSEDED by Amendment 1 §A1.1 above.
+
+---
+
+*End of Amendment 1.*

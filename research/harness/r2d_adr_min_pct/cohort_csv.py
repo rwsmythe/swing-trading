@@ -494,6 +494,13 @@ def write_flips_audit_json(
         "old_bucket": R2D_OLD_BUCKET,
         "new_bucket": R2D_NEW_BUCKET,
         "cohort_label": R2D_COHORT_LABEL,
+        # Cohort selection method + V2 binding variable explicitly recorded
+        # in the audit envelope per dispatch brief section 5.2 + gotcha #33
+        # (Codex R1.M#4 fix): downstream consumers + future cross-cohort
+        # analyses can attribute the cohort selection method without parsing
+        # the variable_name field.
+        "cohort_selection_method": "v2_binding_variable_flips",
+        "v2_binding_variable": R2D_VARIABLE_NAME,
         "flip_count": 0,
         "flips": [],
     }
@@ -523,20 +530,56 @@ class CohortArtifacts:
     raw_flip_count: int
 
 
+def verify_canonical_source_identity(source_sensitivity_md: Path) -> None:
+    """Raise CohortExtractionError if the source file's SHA-256 or byte size
+    does not match CANONICAL_SOURCE_SHA256 / CANONICAL_SOURCE_SIZE_BYTES.
+
+    Codex R1.M#5 fix: previously the wrapper only verified flip-identity
+    against EXPECTED_FLIPS, which would pass for a source artifact with the
+    same 11 triples but altered surrounding text (e.g., other variable
+    sections edited, summary table mutated). This function adds a stronger
+    upstream lock so canonical generation cannot run against a corrupted /
+    re-emitted / divergent source unless the caller explicitly opts out.
+    """
+    source_sensitivity_md = Path(source_sensitivity_md)
+    if not source_sensitivity_md.exists():
+        raise FileNotFoundError(
+            f"V2 sensitivity artifact not found at {source_sensitivity_md}"
+        )
+    actual_sha = _sha256_of_file(source_sensitivity_md)
+    actual_size = source_sensitivity_md.stat().st_size
+    if actual_sha != CANONICAL_SOURCE_SHA256:
+        raise CohortExtractionError(
+            f"Source artifact SHA-256 mismatch at {source_sensitivity_md}: "
+            f"actual={actual_sha} vs canonical={CANONICAL_SOURCE_SHA256}. "
+            f"To regenerate cohort against a non-canonical source, pass "
+            f"allow_non_canonical_source=True (cohort identity will still be "
+            f"verified via EXPECTED_FLIPS layered verifier)."
+        )
+    if actual_size != CANONICAL_SOURCE_SIZE_BYTES:
+        raise CohortExtractionError(
+            f"Source artifact size mismatch at {source_sensitivity_md}: "
+            f"actual={actual_size} bytes vs canonical={CANONICAL_SOURCE_SIZE_BYTES} bytes"
+        )
+
+
 def generate_r2d_cohort_artifacts(
     *,
     source_sensitivity_md: Path,
     cohort_csv_path: Path,
     flips_audit_json_path: Path | None = None,
+    allow_non_canonical_source: bool = False,
 ) -> CohortArtifacts:
     """Canonical one-call R2-D cohort generation pipeline.
 
-    Sequence (Codex R2.M#6 + R3.M#3 inherited from R2-A: ALWAYS verifies;
-    no bypass flag):
-      1. extract_flips_from_sensitivity_md(source_sensitivity_md)
-      2. verify_expected_r2d_cohort(flips) -- ALWAYS fires
-      3. write_cohort_csv(flips, cohort_csv_path)
-      4. write_flips_audit_json(flips, audit_path, source_sensitivity_md=...)
+    Sequence (Codex R2.M#6 + R3.M#3 inherited from R2-A + R1.M#5 R2-D-local):
+      1. verify_canonical_source_identity(source_sensitivity_md) UNLESS
+         allow_non_canonical_source=True -- enforces source SHA + size match
+         against CANONICAL_SOURCE_SHA256 + CANONICAL_SOURCE_SIZE_BYTES
+      2. extract_flips_from_sensitivity_md(source_sensitivity_md)
+      3. verify_expected_r2d_cohort(flips) -- ALWAYS fires
+      4. write_cohort_csv(flips, cohort_csv_path)
+      5. write_flips_audit_json(flips, audit_path, source_sensitivity_md=...)
 
     The audit JSON path defaults to `<cohort_csv_path>.flips_audit.json`
     so the audit sidecar tracks the CSV by filename convention.
@@ -546,11 +589,19 @@ def generate_r2d_cohort_artifacts(
     cohort. The verification step has NO bypass -- if a future arc
     needs a non-canonical extraction (e.g. for a different variable),
     call extract_flips_from_sensitivity_md() directly.
+
+    Parameters:
+        allow_non_canonical_source: when True, skip the source SHA + size
+            check. The cohort-identity layered verifier still fires. Useful
+            for tests + for a future arc that swaps the source artifact (a
+            new V2 sensitivity smoke run would change SHA + likely size).
     """
     cohort_csv_path = Path(cohort_csv_path)
     if flips_audit_json_path is None:
         flips_audit_json_path = cohort_csv_path.with_suffix(".flips_audit.json")
     flips_audit_json_path = Path(flips_audit_json_path)
+    if not allow_non_canonical_source:
+        verify_canonical_source_identity(source_sensitivity_md)
     flips = extract_flips_from_sensitivity_md(source_sensitivity_md)
     verify_expected_r2d_cohort(flips)
     n_unique = write_cohort_csv(flips, cohort_csv_path)
