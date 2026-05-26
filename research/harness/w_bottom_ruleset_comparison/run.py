@@ -97,6 +97,15 @@ def run_backtest_for_verdicts(
                 trades.append(_emit_missing_archive_trade(v, rs.name))
             else:
                 trades.append(walk_forward(v, bars, rs))
+
+    # Codex R3 m#1: walk_forward emits ohlcv_empty trade rows internally
+    # (when bars has 0 rows but read succeeded). Reconcile the skipped
+    # counter post-loop so manifest's ohlcv_empty matches the actual
+    # trade-row exit_reason distribution.
+    distinct_ohlcv_empty_patterns = {
+        t.pattern_id for t in trades if t.exit_reason == "ohlcv_empty"
+    }
+    skipped["ohlcv_empty"] = len(distinct_ohlcv_empty_patterns)
     return trades, skipped
 
 

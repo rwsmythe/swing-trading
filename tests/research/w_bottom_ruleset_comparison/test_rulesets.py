@@ -576,26 +576,37 @@ def test_ruleset_d_trail_check_then_raise_ordering_preserves_d1_precedent_codex_
 
 def test_ruleset_f_trail_post_scaleout_uses_sma20_not_initial_stop():
     """Lock the F semantics: after scale-out, trail uses SMA20 (not initial
-    stop). Verify state.current_stop tracks SMA20 over subsequent bars."""
-    pre = [100.0] * 25
-    post = [
-        101.0, 120.0,  # +2R hit at idx 26 -> ScaleOut
-        125.0, 130.0, 135.0,  # post-scale climbing
-    ]
+    stop). Verify state.current_stop equals max(BE, SMA20) tracking the
+    SMA20 climb (Codex R3 m#2 strengthened from weak `>= entry` assert).
+
+    Build enough post-scale bars so SMA20 (20-bar window) computes from
+    a window of climbing closes (~125-145 range) -> SMA20 > entry (100).
+    state.current_stop should track that SMA20.
+    """
+    # 20 pre-bars at 100 + entry + scale-out at idx 21 (close=120) + many
+    # post-scale climbing bars to build SMA20 well above entry.
+    pre = [100.0] * 20
+    post = [101.0, 120.0]  # entry idx 20, scale-out at idx 21 close=120
+    post += [130.0] * 25  # 25 sustained climbing closes; SMA20 climbs to 130
     closes = pre + post
     bars = _bars(closes, highs=[c + 1.0 for c in closes], lows=[c - 1.0 for c in closes])
     rs = RulesetF()
     v = _verdict()
-    state = rs.init_state(verdict=v, bars=bars, entry_idx=25, entry_price=100.0, initial_stop=90.0)
-    for i in range(25, len(bars)):
+    state = rs.init_state(verdict=v, bars=bars, entry_idx=20, entry_price=100.0, initial_stop=90.0)
+    for i in range(20, len(bars)):
         a = rs.update_and_check(
-            state=state, bars=bars, bar_idx=i, entry_idx=25,
+            state=state, bars=bars, bar_idx=i, entry_idx=20,
             entry_price=100.0, initial_R=10.0,
         )
         if isinstance(a, ScaleOut):
             state.scale_out_fired = True
             state.scale_out_R = (a.price - 100.0) / 10.0
             state.scale_out_fraction = a.fraction
-    # Post-scale-out: stop should track SMA20 (which climbed above entry)
+    # Strong assertions per Codex R3 m#2:
     assert state.scale_out_fired is True
-    assert state.current_stop >= 100.0  # at least at BE
+    # SMA20 across the climbing tail should be well above entry
+    # (window of 20 closes mostly at 130; expect SMA20 ~ 130 - small)
+    assert state.current_stop > 100.0  # strictly above BE
+    # And specifically should match the SMA20-derived trail (not stuck at BE=100)
+    # SMA20 of last 20 closes ~= 130 (dominant value) so stop ~= 130
+    assert state.current_stop > 110.0  # well above BE; tracking SMA20 climb
