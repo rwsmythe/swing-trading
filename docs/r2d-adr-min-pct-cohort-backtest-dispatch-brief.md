@@ -326,7 +326,7 @@ Per §1.2 LOCK. R2-D creates its own `research/harness/r2d_adr_min_pct/` mirrori
 
 **Rationale:** Reconciles the brief's prescriptive sweep_point=1 against the V2 sensitivity smoke artifact's actual `+11 max_delta_aplus` binding signal, and pre-commits the canonical evaluation cohort's sample-size disposition per gotcha #33.
 
-### A1.1 sweep_point reconciliation (was: §1.1 / §1.2 / §1.3 / §5.1 / §5.5 / §6.1 / §7.2)
+### A1.1 sweep_point reconciliation (was: section 1.1 / section 1.2 / section 1.3 / section 5.1 / section 5.5 / section 6.1 / section 7.2)
 
 The brief consistently stated "sweep_point=1" + "11 watch->aplus flips". Empirical inspection of the source artifact at `exports/diagnostics/aplus-sensitivity-v2-20260524T205849Z.md` shows:
 
@@ -343,15 +343,15 @@ Artifact naming reflects this:
 - Cohort label: `r2d_vcp_adr_min_pct_sp2_0` (NOT `..._sp1`).
 - Fixture: `tests/fixtures/research/r2d_adr_min_pct/cohort.json` (path unchanged; suffix sweep-agnostic).
 
-All "sp1" references in §1.2 / §1.3 / §5.5 / §6.1 / §6.2 / §7.2 / §8.1 are SUPERSEDED by "sp2_0" naming.
+All "sp1" references in section 1.2 / section 1.3 / section 5.5 / section 6.1 / section 6.2 / section 7.2 / section 8.1 are SUPERSEDED by "sp2_0" naming.
 
-### A1.2 Pre-commit: cohort-validity disposition (was: §6.5 + §7.1)
+### A1.2 Pre-commit: cohort-validity disposition (was: section 6.5 + section 7.1)
 
 Per gotcha #33 cohort-validity-vs-verdict-criteria discipline (third canonical application; LOCKED):
 
 The canonical evaluation cohort (composite>=0.5 + recency<=365d) for R2-D yields **N=4 W primary verdicts ALL from STNG** (post pattern_cohort_evaluator smoke at `exports/research/pattern-cohort-detection-20260526T160518Z/`; 1559 raw double_bottom_w verdicts -> 132 at composite>=0.5 -> 127 post 5-BD adjacency merge -> **4** post recency<=365d filter).
 
-This is **well below the brief's expected N=50-200 range** (was: §7.3 R2-D row). Per gotcha #33:
+This is **well below the brief's expected N=50-200 range** (was: section 7.3 R2-D row). Per gotcha #33:
 
 - **PARTIAL POSITIVE thresholds** (>=3 closed-and-profitable AND mean-R closed > 0 AND win-rate >= 25%) require at least 3 closed-and-profitable per ruleset. With N=4 total + 4 STNG-only patterns, even the maximum possible PARTIAL POSITIVE outcome (4 of 4 triggered AND profitable across all 6 rulesets) is at the statistical-defensibility threshold.
 
@@ -366,7 +366,7 @@ This is **well below the brief's expected N=50-200 range** (was: §7.3 R2-D row)
 
 **INSUFFICIENT SAMPLE is the headline verdict in all three sub-cases** -- the DIRECTIONAL suffix is informational color, not a defense of the systemic claim.
 
-### A1.3 Cross-cohort interpretation under N=4 (was: §6.5 table)
+### A1.3 Cross-cohort interpretation under N=4 (was: section 6.5 table)
 
 Updated cross-cohort consistency table interpretation:
 
@@ -374,20 +374,20 @@ Updated cross-cohort consistency table interpretation:
 |---|---|---|
 | NEGATIVE (canonical) | INSUFFICIENT SAMPLE (N=4) | R2-A's NEGATIVE neither confirmed nor refuted at the systemic level by R2-D. R2-D's thin substrate prevents the cross-cohort discrimination test from running. Next-arc operator decision: pivot to a different V2 binding variable with a thicker substrate (e.g., proximity_max_pct +5 or orderliness_max_bar_ratio +1) OR investigate WHY R2-D's W substrate is so thin (binding variable selection mechanism interacting with W-pattern incidence). |
 
-The brief's §6.5 cross-cohort cells assuming N comparable to R2-A's 65 are NOT applicable to R2-D's actual N=4 substrate. The systemic-vs-cohort-specific research question is **DEFERRED** to a future R2-* dispatch against a thicker substrate.
+The brief's section 6.5 cross-cohort cells assuming N comparable to R2-A's 65 are NOT applicable to R2-D's actual N=4 substrate. The systemic-vs-cohort-specific research question is **DEFERRED** to a future R2-* dispatch against a thicker substrate.
 
 ### A1.4 Acceptance criteria modifications
 
-- §6.4 fourth bullet: "Verdict classification per D2 §6.5..." now reads "Verdict classification per D2 §6.5 on the CANONICAL evaluation cohort (composite>=0.5 + recency<=365d); per A1.2 gotcha #33 pre-commit, headline verdict is INSUFFICIENT SAMPLE with DIRECTIONAL suffix."
-- §6.5 cross-cohort consistency table: superseded by A1.3.
+- section 6.4 fourth bullet: "Verdict classification per D2 section 6.5..." now reads "Verdict classification per D2 section 6.5 on the CANONICAL evaluation cohort (composite>=0.5 + recency<=365d); per A1.2 gotcha #33 pre-commit, headline verdict is INSUFFICIENT SAMPLE with DIRECTIONAL suffix."
+- section 6.5 cross-cohort consistency table: superseded by A1.3.
 
 ### A1.5 Disposition of brief sections referencing "sp1" / sweep_point=1
 
 The following brief locations contain literal "sp1" / "sweep_point=1" / "sweep_point == 1" text that is technically inconsistent with the implementation but PRESERVED as the brief's authoring record (no edit-in-place per documentation discipline):
 
-- §1.1 (line 53), §1.2 (lines 61, 65, 67), §1.3 (line 80), §5.1 (line 142), §5.5 (line 161), §6.1 (line 172), §7.2 (line 235).
+- section 1.1 (line 53), section 1.2 (lines 61, 65, 67), section 1.3 (line 80), section 5.1 (line 142), section 5.5 (line 161), section 6.1 (line 172), section 7.2 (line 235).
 
-All such references are SUPERSEDED by Amendment 1 §A1.1 above.
+All such references are SUPERSEDED by Amendment 1 section A1.1 above.
 
 ---
 
