@@ -406,6 +406,19 @@ def _composite_bucket_stats(
     return out
 
 
+def per_ruleset_patterns_count(trades: list[Trade]) -> dict[str, int]:
+    """Count distinct pattern_id values per ruleset (Codex R1 M#5).
+
+    For D2, every ruleset should process the SAME population of patterns;
+    surfacing per-ruleset counts in the manifest makes any divergence
+    (e.g., a future ruleset that skip-emits patterns) operator-visible.
+    """
+    out: dict[str, set[str]] = defaultdict(set)
+    for t in trades:
+        out[t.ruleset_name].add(t.pattern_id)
+    return {rs: len(pids) for rs, pids in out.items()}
+
+
 def write_manifest(
     output_path: Path,
     *,
@@ -423,6 +436,8 @@ def write_manifest(
     n_trades_emitted: int,
     n_distinct_tickers: int,
     skipped_patterns: dict[str, int],
+    per_ruleset_patterns: dict[str, int] | None = None,
+    both_exist_diagnostic_count: int = 0,
     rulesets_count: int = 6,
     l2_lock_preserved: bool = True,
     harness_version: str = "0.1.0",
@@ -432,7 +447,12 @@ def write_manifest(
     source_cohort_input_sha256: str | None = None,
     recency_filter_active: bool = True,
 ) -> None:
-    """Emit manifest.json with full provenance + 6-ruleset enumeration."""
+    """Emit manifest.json with full provenance + 6-ruleset enumeration.
+
+    Per dispatch brief Section 4.3 + Codex R1 M#5: includes per-ruleset
+    patterns_count + both-exist diagnostic count (V1 source-ladder
+    consistency surface) in addition to SHA / ruleset / L2 fields.
+    """
     manifest = {
         "harness_version": harness_version,
         "harness_name": "w_bottom_ruleset_comparison",
@@ -464,6 +484,8 @@ def write_manifest(
             "E_oneil_cup_with_handle_measured_move",
             "F_qullamaggie_momentum_burst",
         ],
+        "per_ruleset_patterns_count": per_ruleset_patterns or {},
+        "both_exist_diagnostic_count": both_exist_diagnostic_count,
         "skipped_patterns": skipped_patterns,
         "l2_lock_preserved": l2_lock_preserved,
     }

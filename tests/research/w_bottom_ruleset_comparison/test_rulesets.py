@@ -437,3 +437,108 @@ def test_ruleset_f_momentum_atr_mult_locked_at_1_0():
 
 def test_ruleset_f_atr_window_locked_at_14():
     assert RULESET_F_ATR_WINDOW == 14
+
+
+# ---------------------------------------------------------------------------
+# Codex R1 fix discriminating tests (M1 + M2)
+# ---------------------------------------------------------------------------
+def test_ruleset_f_session_6_open_gate_pre_empts_close_based_stop_codex_r1_m1():
+    """At session 6, momentum_gate_fail at OPEN must fire BEFORE the
+    close-based stop check. Plant a setup where session 6 close would hit
+    the stop but momentum gate has NOT armed -> assert exit_reason is
+    momentum_gate_fail (NOT stop_hit), at OPEN price (not close)."""
+    pre = [100.0] * 20  # enough for ATR14
+    # Sessions 1-5 flat at 100 (no momentum), session 6 OPEN=99 close=80 (stop hit if it ran)
+    post_close = [100.0, 100.0, 100.0, 100.0, 100.0, 80.0]
+    post_open = [100.0, 100.0, 100.0, 100.0, 100.0, 99.0]
+    closes = pre + post_close
+    opens = pre + post_open
+    highs = [c + 0.5 for c in closes]
+    lows = [c - 0.5 for c in closes]
+    bars = _bars(closes, opens=opens, highs=highs, lows=lows)
+    rs = RulesetF()
+    v = _verdict()
+    state = rs.init_state(verdict=v, bars=bars, entry_idx=20, entry_price=100.0, initial_stop=90.0)
+    # Walk through 6 sessions
+    final = None
+    for i in range(20, 26):
+        action = rs.update_and_check(
+            state=state, bars=bars, bar_idx=i, entry_idx=20,
+            entry_price=100.0, initial_R=10.0,
+        )
+        if action is not None:
+            final = action
+            break
+    assert isinstance(final, FullExit)
+    # Pre-fix: would be stop_hit at close=80. Post-fix: momentum_gate_fail at OPEN=99.
+    assert final.reason == "momentum_gate_fail"
+    assert final.price == 99.0
+
+
+def test_ruleset_f_no_atr_pre_history_treats_gate_as_armed_by_default_codex_r1_m2():
+    """If pre-entry bars insufficient for ATR14 (need >= 15 prior bars),
+    state.initial_atr14 = None and gate becomes auto-pass per Codex R1 M#2
+    fix. Trade continues with stop/50d/scale-out rules only."""
+    # Plant only 5 bars before entry; ATR14 requires 14+1 = 15 bars at entry_idx
+    closes = [100.0] * 6  # too short
+    bars = _bars(closes, highs=[c + 1.0 for c in closes], lows=[c - 1.0 for c in closes])
+    rs = RulesetF()
+    v = _verdict()
+    state = rs.init_state(verdict=v, bars=bars, entry_idx=5, entry_price=100.0, initial_stop=90.0)
+    # ATR14 should be None
+    assert state.initial_atr14 is None
+    # momentum_gate_armed should be True by default (skip gate)
+    assert state.momentum_gate_armed is True
+
+
+def test_ruleset_f_no_atr_gate_skip_means_no_momentum_gate_fail_at_session_6():
+    """With ATR14 unavailable -> gate auto-armed -> session 6 does NOT fire
+    momentum_gate_fail even if close stays flat."""
+    closes = [100.0] * 12  # only 12 bars total; ATR14 unavailable at entry_idx=5
+    bars = _bars(closes, highs=[c + 1.0 for c in closes], lows=[c - 1.0 for c in closes])
+    rs = RulesetF()
+    v = _verdict()
+    state = rs.init_state(verdict=v, bars=bars, entry_idx=5, entry_price=100.0, initial_stop=90.0)
+    # Walk 6 sessions
+    actions = []
+    for i in range(5, min(11, len(bars))):
+        a = rs.update_and_check(
+            state=state, bars=bars, bar_idx=i, entry_idx=5,
+            entry_price=100.0, initial_R=10.0,
+        )
+        actions.append(a)
+    # No momentum_gate_fail anywhere
+    assert not any(
+        isinstance(a, FullExit) and a.reason == "momentum_gate_fail" for a in actions
+    )
+
+
+def test_ruleset_f_trail_check_then_raise_ordering_preserves_d1_precedent_codex_r1_m3():
+    """D/F trail ordering: today's close-vs-current-stop check runs BEFORE
+    today's SMA-derived stop raise. If today's close is above yesterday's
+    stop but below today's NEWLY-COMPUTED trail stop, the trade survives
+    THIS bar (close exits next bar against the raised stop)."""
+    pre = [100.0] * 25
+    # Push +2R quickly to fire scale-out at session 3
+    post = [101.0, 110.0, 130.0]
+    # Then trend down slowly; SMA20 trails close
+    post += [125.0, 120.0, 115.0, 110.0, 108.0]
+    closes = pre + post
+    bars = _bars(closes, highs=[c + 1.0 for c in closes], lows=[c - 1.0 for c in closes])
+    rs = RulesetF()
+    v = _verdict()
+    state = rs.init_state(verdict=v, bars=bars, entry_idx=25, entry_price=100.0, initial_stop=90.0)
+    # Fire scale-out at bar_idx=27
+    actions = []
+    for i in range(25, len(bars)):
+        a = rs.update_and_check(
+            state=state, bars=bars, bar_idx=i, entry_idx=25,
+            entry_price=100.0, initial_R=10.0,
+        )
+        if isinstance(a, ScaleOut):
+            state.scale_out_fired = True
+            state.scale_out_R = (a.price - 100.0) / 10.0
+            state.scale_out_fraction = a.fraction
+        actions.append(a)
+    # Post scale-out, trail uses SMA20 which lags. Verify scale-out fired
+    assert any(isinstance(a, ScaleOut) for a in actions)

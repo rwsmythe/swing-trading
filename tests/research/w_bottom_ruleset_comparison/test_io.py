@@ -11,6 +11,7 @@ from research.harness.w_bottom_ruleset_comparison.io import (
     RESULTS_CSV_HEADER,
     aggregate_stats,
     cross_ruleset_comparison,
+    per_ruleset_patterns_count,
     write_manifest,
     write_results_csv,
     write_summary_markdown,
@@ -165,3 +166,49 @@ def test_write_manifest_carries_l2_lock_preserved_true(tmp_path):
     assert len(data["rulesets_enumerated"]) == 6
     assert "F_qullamaggie_momentum_burst" in data["rulesets_enumerated"]
     assert data["harness_name"] == "w_bottom_ruleset_comparison"
+
+
+def test_per_ruleset_patterns_count_counts_distinct_pattern_ids_per_ruleset():
+    """Codex R1 M#5: manifest surfaces per-ruleset patterns_count so any
+    cross-ruleset population divergence is operator-visible."""
+    trades = [
+        _trade(ruleset_name="A_minervini_trail_ma", pattern_id="X-2026-01-01"),
+        _trade(ruleset_name="A_minervini_trail_ma", pattern_id="Y-2026-01-15"),
+        _trade(ruleset_name="B_fixed_R_multiple", pattern_id="X-2026-01-01"),
+        _trade(ruleset_name="B_fixed_R_multiple", pattern_id="Y-2026-01-15"),
+        _trade(ruleset_name="B_fixed_R_multiple", pattern_id="Z-2026-02-01"),
+    ]
+    counts = per_ruleset_patterns_count(trades)
+    assert counts["A_minervini_trail_ma"] == 2
+    assert counts["B_fixed_R_multiple"] == 3
+
+
+def test_write_manifest_carries_per_ruleset_patterns_count_and_both_exist(tmp_path):
+    """Codex R1 M#5: per-ruleset patterns_count + both_exist_diagnostic_count
+    surfaced in manifest per dispatch brief Section 4.3."""
+    out_path = tmp_path / "manifest.json"
+    started = datetime.now(timezone.utc)
+    write_manifest(
+        out_path,
+        started_at_utc=started,
+        finished_at_utc=started,
+        cohort_csv_path="test.csv",
+        cohort_csv_sha256="abc",
+        cache_dir="/tmp",
+        n_unique_verdicts_pre_filter=10,
+        n_verdicts_after_adjacency_merge=10,
+        n_patterns_after_recency_filter=5,
+        recency_max_calendar_days=60,
+        composite_threshold=0.7,
+        max_trigger_search_business_days=60,
+        n_trades_emitted=30,
+        n_distinct_tickers=4,
+        skipped_patterns={"ohlcv_missing": 0, "ohlcv_empty": 0},
+        per_ruleset_patterns={"A_minervini_trail_ma": 5, "B_fixed_R_multiple": 5},
+        both_exist_diagnostic_count=2,
+    )
+    data = json.loads(out_path.read_text(encoding="utf-8"))
+    assert data["per_ruleset_patterns_count"] == {
+        "A_minervini_trail_ma": 5, "B_fixed_R_multiple": 5,
+    }
+    assert data["both_exist_diagnostic_count"] == 2

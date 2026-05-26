@@ -1,0 +1,3115 @@
+diff --git a/.gitignore b/.gitignore
+index 253c88d..a15866f 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -77,6 +77,15 @@ exports/research/double-bottom-w-backtest-*/*
+ !exports/research/double-bottom-w-backtest-*/manifest.json
+ !exports/research/double-bottom-w-backtest-*/results.csv
+ 
++# W-bottom ruleset comparison backtest (D2) output tracking. Row count grows
++# to ~300-1200 per smoke run (N=50-200 patterns x 6 rulesets); CSV still well
++# under 100 KB per smoke.
++!exports/research/w-bottom-ruleset-comparison-*
++exports/research/w-bottom-ruleset-comparison-*/*
++!exports/research/w-bottom-ruleset-comparison-*/summary.md
++!exports/research/w-bottom-ruleset-comparison-*/manifest.json
++!exports/research/w-bottom-ruleset-comparison-*/results.csv
++
+ # Broker statements (personal financial data)
+ thinkorswim/
+ 
+diff --git a/research/harness/w_bottom_ruleset_comparison/__init__.py b/research/harness/w_bottom_ruleset_comparison/__init__.py
+new file mode 100644
+index 0000000..5ff863b
+--- /dev/null
++++ b/research/harness/w_bottom_ruleset_comparison/__init__.py
+@@ -0,0 +1,14 @@
++"""D2 W-bottom ruleset comparison backtest harness.
++
++Extends D1's double_bottom_w_backtest with 3 NEW literature-canonical exit
++rulesets (Minervini Stage-2 / O'Neil cup-with-handle + Bulkowski measured-move
++/ Qullamaggie momentum-burst) tested against an S&P-500-wide W-bottom cohort
++(N=50-200 patterns) for the 39th cumulative C.C lesson #6 validation slot.
++
++Reuses D1's cohort.py extraction + dedup + recency-filter logic verbatim via
++import; defines a NEW walk-forward engine with a generalized Ruleset protocol
++that supports scale-out semantics (required by Ruleset F).
++
++ZERO production swing/ writes; ZERO new Schwab API calls; ZERO yfinance
++fetches at backtest time (L2 LOCK preserved via V2 Shape A reader).
++"""
+diff --git a/research/harness/w_bottom_ruleset_comparison/io.py b/research/harness/w_bottom_ruleset_comparison/io.py
+new file mode 100644
+index 0000000..42dc9be
+--- /dev/null
++++ b/research/harness/w_bottom_ruleset_comparison/io.py
+@@ -0,0 +1,471 @@
++"""CSV + summary markdown + manifest JSON emit for the D2 ruleset comparison.
++
++Preserves D1's 27-column CSV schema (dispatch brief Section 4.1) so downstream
++tooling (auditor scripts; future per-ruleset cross-comparison plots) can
++consume D1 + D2 artifacts identically. Row count grows from 36 (D1: 12
++patterns x 3 rulesets) to 300-1200 (D2: 50-200 patterns x 6 rulesets).
++
++Summary markdown adds a CROSS-RULESET COMPARISON TABLE (NEW; dispatch brief
++Section 4.2) ranking the 6 rulesets by expectancy + per-bucket analysis.
++"""
++from __future__ import annotations
++
++import json
++import statistics
++from collections import defaultdict
++from datetime import date, datetime
++from pathlib import Path
++
++from research.harness.w_bottom_ruleset_comparison.walkforward import Trade
++
++
++RESULTS_CSV_HEADER = [
++    "pattern_id",
++    "ticker",
++    "ruleset_name",
++    "anchor_asof_date",
++    "effective_asof_date",
++    "max_observed_asof_date",
++    "trough_1_date",
++    "center_peak_price",
++    "trough_2_price",
++    "initial_stop",
++    "composite_score",
++    "triggered",
++    "entry_date",
++    "entry_price",
++    "exit_date",
++    "exit_price",
++    "exit_reason",
++    "r_multiple",
++    "trade_pnl_dollars",
++    "peak_unrealized_R",
++    "drawdown_to_exit_R",
++    "days_held",
++    "status",
++    "forward_bars_available",
++    "max_forward_close",
++    "max_close_pct_of_peak",
++    "days_t2_to_asof",
++]
++
++
++def write_results_csv(trades: list[Trade], output_path: Path) -> None:
++    """27-column per-(pattern, ruleset) row dump (preserves D1 schema)."""
++    import csv
++
++    output_path.parent.mkdir(parents=True, exist_ok=True)
++    with output_path.open("w", encoding="utf-8", newline="") as f:
++        w = csv.writer(f)
++        w.writerow(RESULTS_CSV_HEADER)
++        for t in trades:
++            w.writerow(
++                [
++                    t.pattern_id,
++                    t.ticker,
++                    t.ruleset_name,
++                    t.anchor_asof_date.isoformat(),
++                    t.effective_asof_date.isoformat() if t.effective_asof_date else "",
++                    t.max_observed_asof_date.isoformat() if t.max_observed_asof_date else "",
++                    t.trough_1_date.isoformat(),
++                    f"{t.center_peak_price:.4f}",
++                    f"{t.trough_2_price:.4f}",
++                    f"{t.initial_stop:.4f}",
++                    f"{t.composite_score:.4f}",
++                    "true" if t.triggered else "false",
++                    t.entry_date.isoformat() if t.entry_date else "",
++                    f"{t.entry_price:.4f}" if t.entry_price is not None else "",
++                    t.exit_date.isoformat() if t.exit_date else "",
++                    f"{t.exit_price:.4f}" if t.exit_price is not None else "",
++                    t.exit_reason,
++                    f"{t.r_multiple:.4f}" if t.r_multiple is not None else "",
++                    f"{t.trade_pnl_dollars:.2f}" if t.trade_pnl_dollars is not None else "",
++                    f"{t.peak_unrealized_R:.4f}" if t.peak_unrealized_R is not None else "",
++                    f"{t.drawdown_to_exit_R:.4f}" if t.drawdown_to_exit_R is not None else "",
++                    t.days_held if t.days_held is not None else "",
++                    t.status,
++                    t.forward_bars_available,
++                    f"{t.max_forward_close:.4f}" if t.max_forward_close is not None else "",
++                    f"{t.max_close_pct_of_peak:.1f}" if t.max_close_pct_of_peak is not None else "",
++                    t.days_t2_to_asof if t.days_t2_to_asof is not None else "",
++                ]
++            )
++
++
++def _fmt_R(v: float | None) -> str:
++    return f"{v:+.3f}R" if v is not None else "n/a"
++
++
++def _fmt_pct(v: float | None) -> str:
++    return f"{v * 100:.1f}%" if v is not None else "n/a"
++
++
++def aggregate_stats(trades: list[Trade]) -> dict[str, dict]:
++    """Per-ruleset aggregate stats; closed = exit fired; open = data-tail unrealized.
++
++    win_rate denominator excludes untriggered + open (closed-only).
++    """
++    by_rs: dict[str, list[Trade]] = defaultdict(list)
++    for t in trades:
++        by_rs[t.ruleset_name].append(t)
++
++    out: dict[str, dict] = {}
++    for rs_name, rs_trades in by_rs.items():
++        closed = [t for t in rs_trades if t.status == "closed"]
++        winners = [t for t in closed if t.r_multiple is not None and t.r_multiple > 0]
++        losers = [t for t in closed if t.r_multiple is not None and t.r_multiple <= 0]
++        untriggered = [t for t in rs_trades if t.status == "untriggered"]
++        open_pos = [t for t in rs_trades if t.status == "open"]
++        n_triggered = len(closed) + len(open_pos)
++        n_closed = len(closed)
++
++        win_rate = len(winners) / n_closed if n_closed else None
++        avg_R_winner = (
++            statistics.mean(t.r_multiple for t in winners) if winners else None
++        )
++        avg_R_loser = (
++            statistics.mean(t.r_multiple for t in losers) if losers else None
++        )
++        all_closed_R = [t.r_multiple for t in closed if t.r_multiple is not None]
++        all_triggered_R = [
++            t.r_multiple for t in rs_trades if t.r_multiple is not None
++        ]
++        expectancy_closed = (
++            statistics.mean(all_closed_R) if all_closed_R else None
++        )
++        expectancy_triggered = (
++            statistics.mean(all_triggered_R) if all_triggered_R else None
++        )
++        std_R_closed = (
++            statistics.stdev(all_closed_R) if len(all_closed_R) >= 2 else None
++        )
++        avg_days_closed = (
++            statistics.mean(t.days_held for t in closed if t.days_held is not None)
++            if closed else None
++        )
++        avg_days_open = (
++            statistics.mean(t.days_held for t in open_pos if t.days_held is not None)
++            if open_pos else None
++        )
++
++        exit_reasons: dict[str, int] = defaultdict(int)
++        for t in rs_trades:
++            exit_reasons[t.exit_reason] += 1
++
++        max_drawdown = None
++        if closed:
++            dd_vals = [t.drawdown_to_exit_R for t in closed if t.drawdown_to_exit_R is not None]
++            if dd_vals:
++                max_drawdown = max(dd_vals)
++
++        out[rs_name] = {
++            "total_patterns": len(rs_trades),
++            "n_triggered": n_triggered,
++            "n_closed": n_closed,
++            "winners": len(winners),
++            "losers": len(losers),
++            "untriggered": len(untriggered),
++            "open_positions": len(open_pos),
++            "win_rate_closed": win_rate,
++            "avg_R_winner": avg_R_winner,
++            "avg_R_loser": avg_R_loser,
++            "expectancy_R_closed": expectancy_closed,
++            "expectancy_R_triggered": expectancy_triggered,
++            "std_R_closed": std_R_closed,
++            "max_drawdown_closed": max_drawdown,
++            "avg_days_held_closed": avg_days_closed,
++            "avg_days_held_open": avg_days_open,
++            "max_R": max(all_triggered_R) if all_triggered_R else None,
++            "min_R": min(all_triggered_R) if all_triggered_R else None,
++            "exit_reasons": dict(exit_reasons),
++        }
++    return out
++
++
++def cross_ruleset_comparison(
++    trades: list[Trade],
++) -> list[tuple[str, dict]]:
++    """Ranked list of (ruleset_name, stats) sorted by expectancy_R_closed
++    descending; rulesets with no closed trades sort to the bottom."""
++    stats = aggregate_stats(trades)
++
++    def _sort_key(item: tuple[str, dict]) -> tuple[int, float]:
++        name, s = item
++        exp = s["expectancy_R_closed"]
++        if exp is None:
++            return (1, 0.0)  # bottom group
++        return (0, -exp)  # higher expectancy = better rank
++
++    return sorted(stats.items(), key=_sort_key)
++
++
++def write_summary_markdown(
++    trades: list[Trade],
++    output_path: Path,
++    *,
++    n_patterns: int,
++    cohort_label: str,
++    population_notes: str = "",
++) -> None:
++    stats = aggregate_stats(trades)
++    ranked = cross_ruleset_comparison(trades)
++    output_path.parent.mkdir(parents=True, exist_ok=True)
++    lines: list[str] = []
++    lines.append("# W-Bottom Ruleset Comparison Backtest Summary")
++    lines.append("")
++    lines.append(f"**Cohort:** {cohort_label} ({n_patterns} unique W patterns)")
++    lines.append("")
++    if population_notes:
++        lines.append(population_notes)
++        lines.append("")
++
++    # NEW: Cross-ruleset comparison table (brief Section 4.2)
++    lines.append("## Cross-ruleset comparison (ranked by expectancy_R_closed)")
++    lines.append("")
++    lines.append(
++        "| Rank | Ruleset | Win-rate | Mean R closed | Std R closed | Mean R triggered | Max drawdown closed | Avg sessions closed |"
++    )
++    lines.append(
++        "|------|---------|----------|---------------|--------------|------------------|---------------------|---------------------|"
++    )
++    for rank, (rs_name, s) in enumerate(ranked, start=1):
++        lines.append(
++            "| {r} | {rs} | {wr} | {exp_c} | {std} | {exp_t} | {dd} | {dhc} |".format(
++                r=rank,
++                rs=rs_name,
++                wr=_fmt_pct(s["win_rate_closed"]),
++                exp_c=_fmt_R(s["expectancy_R_closed"]),
++                std=f"{s['std_R_closed']:.3f}R" if s["std_R_closed"] is not None else "n/a",
++                exp_t=_fmt_R(s["expectancy_R_triggered"]),
++                dd=_fmt_R(s["max_drawdown_closed"]),
++                dhc=f"{s['avg_days_held_closed']:.1f}d" if s["avg_days_held_closed"] is not None else "n/a",
++            )
++        )
++    lines.append("")
++
++    # Per-ruleset aggregate stats (mirrors D1)
++    lines.append("## Per-ruleset aggregate stats")
++    lines.append("")
++    lines.append(
++        "| Ruleset | Patterns | Triggered | Closed | Winners | Losers | Untrig | Open | Win-rate | Avg R win | Avg R loser | Expectancy R closed | Avg sessions held (closed) | Avg sessions held (open) |"
++    )
++    lines.append(
++        "|---------|----------|-----------|--------|---------|--------|--------|------|----------|-----------|-------------|---------------------|------------------------|----------------------|"
++    )
++    for rs in sorted(stats.keys()):
++        s = stats[rs]
++        lines.append(
++            "| {rs} | {n} | {ntr} | {ncl} | {w} | {l} | {u} | {o} | {wr} | {avg_w} | {avg_l} | {exp} | {dhc} | {dho} |".format(
++                rs=rs,
++                n=s["total_patterns"],
++                ntr=s["n_triggered"],
++                ncl=s["n_closed"],
++                w=s["winners"],
++                l=s["losers"],
++                u=s["untriggered"],
++                o=s["open_positions"],
++                wr=_fmt_pct(s["win_rate_closed"]),
++                avg_w=_fmt_R(s["avg_R_winner"]),
++                avg_l=_fmt_R(s["avg_R_loser"]),
++                exp=_fmt_R(s["expectancy_R_closed"]),
++                dhc=f"{s['avg_days_held_closed']:.1f}d" if s["avg_days_held_closed"] is not None else "n/a",
++                dho=f"{s['avg_days_held_open']:.1f}d" if s["avg_days_held_open"] is not None else "n/a",
++            )
++        )
++    lines.append("")
++
++    # Exit-reason breakdown (expanded with D/E/F exit reasons)
++    lines.append("## Exit-reason breakdown")
++    lines.append("")
++    all_reasons = sorted({r for s in stats.values() for r in s["exit_reasons"]})
++    header = "| Ruleset | " + " | ".join(all_reasons) + " |"
++    sep = "|---------|" + "|".join("-" * (len(r) + 2) for r in all_reasons) + "|"
++    lines.append(header)
++    lines.append(sep)
++    for rs in sorted(stats.keys()):
++        er = stats[rs]["exit_reasons"]
++        row = "| " + rs + " | " + " | ".join(str(er.get(r, 0)) for r in all_reasons) + " |"
++        lines.append(row)
++    lines.append("")
++
++    # Composite-score bucket analysis
++    bucket_stats = _composite_bucket_stats(trades)
++    if bucket_stats:
++        lines.append("## Per-composite-score-bucket analysis")
++        lines.append("")
++        lines.append(
++            "| Bucket | Ruleset | Patterns | Triggered | Closed | Winners | Expectancy R closed |"
++        )
++        lines.append(
++            "|--------|---------|----------|-----------|--------|---------|---------------------|"
++        )
++        for bucket_label in sorted(bucket_stats):
++            for rs in sorted(bucket_stats[bucket_label]):
++                bs = bucket_stats[bucket_label][rs]
++                lines.append(
++                    "| {b} | {rs} | {n} | {ntr} | {ncl} | {w} | {exp} |".format(
++                        b=bucket_label,
++                        rs=rs,
++                        n=bs["total"],
++                        ntr=bs["triggered"],
++                        ncl=bs["closed"],
++                        w=bs["winners"],
++                        exp=_fmt_R(bs["expectancy_R_closed"]),
++                    )
++                )
++        lines.append("")
++
++    # Per-pattern detail (sorted; capped to first 400 rows for summary brevity)
++    sorted_trades = sorted(trades, key=lambda x: (x.ticker, x.trough_1_date, x.ruleset_name))
++    cap = 400
++    lines.append(
++        f"## Per-pattern detail (first {min(len(sorted_trades), cap)} rows; sorted by ticker then trough_1_date)"
++    )
++    lines.append("")
++    lines.append(
++        "| pattern_id | composite | days_t2_to_asof | ruleset | status | entry_date | exit_date | exit_reason | R-multiple | sessions_held | peak_R | dd_to_exit_R | pnl_$ |"
++    )
++    lines.append(
++        "|------------|-----------|-----------------|---------|--------|------------|-----------|-------------|------------|---------------|--------|--------------|-------|"
++    )
++    for t in sorted_trades[:cap]:
++        lines.append(
++            "| {pid} | {comp} | {dt} | {rs} | {st} | {ed} | {xd} | {xr} | {r} | {dh} | {peak} | {dd} | {pnl} |".format(
++                pid=t.pattern_id,
++                comp=f"{t.composite_score:.3f}",
++                dt=t.days_t2_to_asof if t.days_t2_to_asof is not None else "n/a",
++                rs=t.ruleset_name,
++                st=t.status,
++                ed=t.entry_date.isoformat() if t.entry_date else "n/a",
++                xd=t.exit_date.isoformat() if t.exit_date else "n/a",
++                xr=t.exit_reason,
++                r=_fmt_R(t.r_multiple),
++                dh=t.days_held if t.days_held is not None else "n/a",
++                peak=_fmt_R(t.peak_unrealized_R),
++                dd=_fmt_R(t.drawdown_to_exit_R),
++                pnl=f"${t.trade_pnl_dollars:+.2f}" if t.trade_pnl_dollars is not None else "n/a",
++            )
++        )
++    if len(sorted_trades) > cap:
++        lines.append("")
++        lines.append(f"_(per-pattern detail truncated at {cap} rows; see results.csv for full table)_")
++    lines.append("")
++
++    lines.append("## Notes")
++    lines.append("")
++    lines.append("- R-multiple = (exit_price - entry_price) / (entry_price - initial_stop).")
++    lines.append("- For scale-out trades (Ruleset F), r_multiple is the WEIGHTED final R:")
++    lines.append("  scale_fraction * scale_R + (1 - scale_fraction) * final_R.")
++    lines.append("- exit_reason `_after_scaleout` suffix indicates scale-out fired before final exit.")
++    lines.append("- Win-rate denominator = closed trades (excludes untriggered + open).")
++    lines.append("- Entry = next-session open after first close > center_peak_price.")
++    lines.append("- Initial stop varies per ruleset:")
++    lines.append("    - A/B/C/D/F: trough_2_price * 0.99 (canonical W right-shoulder buffer)")
++    lines.append("    - E: max(trough_2 * 0.99, entry * 0.92) (O'Neil 8% max loss floor)")
++    lines.append("- Trigger search window: max(trough_1, trough_2, asof) + 1 BD lower; asof + 60 BD upper.")
++    lines.append("- All non-momentum-gate exits CLOSE-based; momentum_gate_fail (F) is OPEN-based at session 6.")
++    lines.append("- OHLCV source: V2 Shape A reader at ~/swing-data/prices-cache/ (L2 LOCK preserved).")
++    lines.append("- L6 caveat: forward-walk bars come from CURRENT archive; may differ from V1 contemporaneous state.")
++    lines.append("")
++
++    output_path.write_text("\n".join(lines), encoding="utf-8")
++
++
++def _composite_bucket_stats(
++    trades: list[Trade],
++) -> dict[str, dict[str, dict]]:
++    """Per-(composite_bucket, ruleset) stats."""
++    buckets: dict[str, dict[str, list[Trade]]] = defaultdict(lambda: defaultdict(list))
++    for t in trades:
++        c = t.composite_score
++        if c >= 0.9:
++            label = "composite_0.9_plus"
++        elif c >= 0.7:
++            label = "composite_0.7_to_0.9"
++        else:
++            label = "composite_below_0.7"
++        buckets[label][t.ruleset_name].append(t)
++
++    out: dict[str, dict[str, dict]] = {}
++    for blabel, by_rs in buckets.items():
++        out[blabel] = {}
++        for rs_name, rs_trades in by_rs.items():
++            closed = [t for t in rs_trades if t.status == "closed"]
++            winners = [t for t in closed if t.r_multiple is not None and t.r_multiple > 0]
++            triggered = [t for t in rs_trades if t.triggered]
++            closed_R = [t.r_multiple for t in closed if t.r_multiple is not None]
++            out[blabel][rs_name] = {
++                "total": len(rs_trades),
++                "triggered": len(triggered),
++                "closed": len(closed),
++                "winners": len(winners),
++                "expectancy_R_closed": (
++                    statistics.mean(closed_R) if closed_R else None
++                ),
++            }
++    return out
++
++
++def write_manifest(
++    output_path: Path,
++    *,
++    started_at_utc: datetime,
++    finished_at_utc: datetime,
++    cohort_csv_path: str,
++    cohort_csv_sha256: str | None,
++    cache_dir: str,
++    n_unique_verdicts_pre_filter: int,
++    n_verdicts_after_adjacency_merge: int,
++    n_patterns_after_recency_filter: int,
++    recency_max_calendar_days: int,
++    composite_threshold: float,
++    max_trigger_search_business_days: int,
++    n_trades_emitted: int,
++    n_distinct_tickers: int,
++    skipped_patterns: dict[str, int],
++    rulesets_count: int = 6,
++    l2_lock_preserved: bool = True,
++    harness_version: str = "0.1.0",
++    source_artifact_manifest_path: str | None = None,
++    source_artifact_manifest_sha256: str | None = None,
++    source_results_csv_sha256: str | None = None,
++    source_cohort_input_sha256: str | None = None,
++    recency_filter_active: bool = True,
++) -> None:
++    """Emit manifest.json with full provenance + 6-ruleset enumeration."""
++    manifest = {
++        "harness_version": harness_version,
++        "harness_name": "w_bottom_ruleset_comparison",
++        "started_at_utc": started_at_utc.isoformat(),
++        "finished_at_utc": finished_at_utc.isoformat(),
++        "runtime_seconds": (finished_at_utc - started_at_utc).total_seconds(),
++        "cohort_csv_path": cohort_csv_path,
++        "cohort_csv_sha256": cohort_csv_sha256,
++        "source_artifact_manifest_path": source_artifact_manifest_path,
++        "source_artifact_manifest_sha256": source_artifact_manifest_sha256,
++        "source_results_csv_sha256": source_results_csv_sha256,
++        "source_cohort_input_sha256": source_cohort_input_sha256,
++        "cache_dir": cache_dir,
++        "composite_threshold": composite_threshold,
++        "recency_max_calendar_days": recency_max_calendar_days,
++        "recency_filter_active": recency_filter_active,
++        "max_trigger_search_business_days": max_trigger_search_business_days,
++        "n_unique_verdicts_pre_filter": n_unique_verdicts_pre_filter,
++        "n_verdicts_after_adjacency_merge": n_verdicts_after_adjacency_merge,
++        "n_patterns_after_recency_filter": n_patterns_after_recency_filter,
++        "n_distinct_tickers": n_distinct_tickers,
++        "n_trades_emitted": n_trades_emitted,
++        "rulesets_count": rulesets_count,
++        "rulesets_enumerated": [
++            "A_minervini_trail_ma",
++            "B_fixed_R_multiple",
++            "C_close_below_50d",
++            "D_minervini_stage2_progression",
++            "E_oneil_cup_with_handle_measured_move",
++            "F_qullamaggie_momentum_burst",
++        ],
++        "skipped_patterns": skipped_patterns,
++        "l2_lock_preserved": l2_lock_preserved,
++    }
++    output_path.parent.mkdir(parents=True, exist_ok=True)
++    output_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+diff --git a/research/harness/w_bottom_ruleset_comparison/rulesets.py b/research/harness/w_bottom_ruleset_comparison/rulesets.py
+new file mode 100644
+index 0000000..4ca0faa
+--- /dev/null
++++ b/research/harness/w_bottom_ruleset_comparison/rulesets.py
+@@ -0,0 +1,475 @@
++"""Six exit rulesets for D2 W-bottom ruleset comparison backtest.
++
++Rulesets A/B/C reimplement D1's baseline rulesets against the D2 generalized
++Action protocol (FullExit / ScaleOut). Algorithmic semantics preserve D1's
++post-Codex behavior verbatim.
++
++Rulesets D/E/F are NEW literature-canonical variants per dispatch brief
++Section 3:
++
++  D -- Minervini Stage-2 progression (NEW):
++       Initial stop = trough_2 * 0.99
++       +2R close arms BREAKEVEN (stop raised to entry_price)
++       Post-arm trail: stop = max(prior, SMA10 * 0.99) daily
++       Hard exit (close <= SMA50) ARMED only if SMA50 > entry * 1.05
++
++  E -- O'Neil cup-with-handle + Bulkowski measured-move (NEW):
++       Initial stop = max(trough_2 * 0.99, entry * 0.92)  [tighter wins]
++       Target = entry + (center_peak - min(trough_1, trough_2))
++       Exit at TARGET price on first close >= target; stop_hit on close <= stop
++       NO trail, NO momentum gate, NO 50d hard exit
++
++  F -- Qullamaggie momentum-burst (NEW):
++       Initial stop = trough_2 * 0.99
++       Initial ATR14 captured at entry bar
++       Momentum gate: by end of session 5, close - entry must reach >= 1.0 x ATR14
++                      If not, exit at session 6 OPEN (momentum_gate_fail)
++       Scale-out 1/3 of position at +2R close; raise stop on remaining to entry (BE)
++       After scale-out: trail stop daily to max(prior, SMA20)
++       Hard exit (close <= SMA50) ARMED only if SMA50 > entry * 1.05
++
++Source citations:
++  - D: reference/methodology/minervini-trend-template.md (Stage 2 advance phase)
++       + Minervini "Trade Like a Stock Market Wizard" Ch 13 quantitative anchor
++       (M.2 sell-at-multiple-of-stop -> stop_to_BE at +2R)
++       + dispatch brief Section 3.4 specification
++  - E: O'Neil "How to Make Money in Stocks" cup-with-handle chapter
++       (8% max stop loss convention) + Bulkowski "Encyclopedia of Chart Patterns"
++       double-bottom measured-move target convention
++       + dispatch brief Section 3.5 specification
++  - F: Qullamaggie corpus via mcp__qullamaggie__* MCP server queries:
++       * "Sell half after 3-5 days, move stop to breakeven, then trail the rest
++          with close below 10-day MA" (scale-out + BE pattern)
++       * "If a stock doesn't go anywhere for 3-5 days, sell it"
++          (momentum-gate-fail discipline)
++       * "For lower ADR stocks (sub 5-6%), use 20-day MA as trailing stop instead
++          of 10-day" (20-day SMA trail rationale)
++       * "Stop at low of breakout day, trail with 10 day MA" (initial stop pattern)
++       + dispatch brief Section 3.6 specification
++       + D1 V2 candidate #3 (close-below-50d arming gate to avoid mis-fire on
++         entries near 50d SMA per D1 Amendment 2 close_below_50d mis-calibration)
++
++All rulesets use CLOSE-based exit semantics throughout (no intraday Low/High
++triggers) per dispatch brief Section 3 + D1 precedent. The momentum_gate_fail
++in F is an OPEN-based exit at session 6 by canonical spec design.
++"""
++from __future__ import annotations
++
++import pandas as pd
++
++from research.harness.double_bottom_w_backtest.cohort import PrimaryVerdict
++from research.harness.w_bottom_ruleset_comparison.walkforward import (
++    Action,
++    FullExit,
++    Ruleset,
++    ScaleOut,
++    State,
++    atr_at,
++    sma_at,
++)
++
++
++# ---------------------------------------------------------------------------
++# Shared thresholds
++# ---------------------------------------------------------------------------
++RULESET_A_TRAIL_TRIGGER_R = 2.0
++RULESET_A_TRAIL_SMA_WINDOW = 21
++RULESET_A_TRAIL_ATR_WINDOW = 14
++RULESET_A_TRAIL_ATR_MULT = 1.0
++RULESET_A_HARD_EXIT_SMA_WINDOW = 50
++
++RULESET_B_TARGET_R = 3.0
++
++RULESET_C_HARD_EXIT_SMA_WINDOW = 50
++
++RULESET_D_BE_ARM_R = 2.0
++RULESET_D_TRAIL_SMA_WINDOW = 10
++RULESET_D_TRAIL_BUFFER = 0.99  # stop = SMA10 * 0.99
++RULESET_D_50D_GATE_MULT = 1.05  # 50d > entry * 1.05 arms close_below_50d
++RULESET_D_HARD_EXIT_SMA_WINDOW = 50
++
++RULESET_E_STOP_PCT = 0.92  # entry * 0.92 floor (O'Neil 8% max loss)
++RULESET_E_TROUGH_BUFFER = 0.99  # trough_2 * 0.99 (W-bottom stop convention)
++
++RULESET_F_ATR_WINDOW = 14
++RULESET_F_MOMENTUM_GATE_SESSIONS = 5  # close-and-exit at session 6 if not armed
++RULESET_F_MOMENTUM_ATR_MULT = 1.0  # threshold = 1.0 * ATR14_at_entry
++RULESET_F_SCALE_OUT_R = 2.0
++RULESET_F_SCALE_OUT_FRACTION = 1.0 / 3.0
++RULESET_F_TRAIL_SMA_WINDOW = 20
++RULESET_F_50D_GATE_MULT = 1.05
++RULESET_F_HARD_EXIT_SMA_WINDOW = 50
++
++
++# ---------------------------------------------------------------------------
++# Ruleset A -- Minervini trail-MA (D1 baseline; preserved semantics)
++# ---------------------------------------------------------------------------
++class RulesetA:
++    name = "A_minervini_trail_ma"
++
++    def initial_stop(self, *, verdict: PrimaryVerdict, entry_price: float) -> float:
++        return verdict.initial_stop
++
++    def init_state(
++        self,
++        *,
++        verdict: PrimaryVerdict,
++        bars: pd.DataFrame,
++        entry_idx: int,
++        entry_price: float,
++        initial_stop: float,
++    ) -> State:
++        return State(current_stop=initial_stop)
++
++    def update_and_check(
++        self,
++        *,
++        state: State,
++        bars: pd.DataFrame,
++        bar_idx: int,
++        entry_idx: int,
++        entry_price: float,
++        initial_R: float,
++    ) -> Action | None:
++        close = float(bars["Close"].iloc[bar_idx])
++
++        # TERMINAL hard exit: first close <= SMA50 regardless of trail state.
++        # Per D1 brief Section 3.1; preserved post-Codex R1 M#1.
++        sma50 = sma_at(bars, bar_idx, RULESET_A_HARD_EXIT_SMA_WINDOW)
++        if sma50 is not None and close <= sma50:
++            return FullExit(close, "close_below_50d")
++
++        # Stop check (close-based)
++        if close < state.current_stop:
++            reason = "trail_stop" if state.extra.get("trail_armed") else "stop_hit"
++            return FullExit(close, reason)
++
++        # Trail-arm at +2R close
++        if (
++            not state.extra.get("trail_armed")
++            and close >= entry_price + RULESET_A_TRAIL_TRIGGER_R * initial_R
++        ):
++            state.extra["trail_armed"] = True
++
++        # Post-arm trail: max(prior, SMA21 - 1*ATR14)
++        if state.extra.get("trail_armed"):
++            sma21 = sma_at(bars, bar_idx, RULESET_A_TRAIL_SMA_WINDOW)
++            atr14 = atr_at(bars, bar_idx, RULESET_A_TRAIL_ATR_WINDOW)
++            if sma21 is not None and atr14 is not None:
++                proposed = sma21 - RULESET_A_TRAIL_ATR_MULT * atr14
++                state.current_stop = max(state.current_stop, proposed)
++
++        return None
++
++
++# ---------------------------------------------------------------------------
++# Ruleset B -- Fixed R-multiple (D1 baseline; preserved semantics)
++# ---------------------------------------------------------------------------
++class RulesetB:
++    name = "B_fixed_R_multiple"
++
++    def initial_stop(self, *, verdict: PrimaryVerdict, entry_price: float) -> float:
++        return verdict.initial_stop
++
++    def init_state(
++        self,
++        *,
++        verdict: PrimaryVerdict,
++        bars: pd.DataFrame,
++        entry_idx: int,
++        entry_price: float,
++        initial_stop: float,
++    ) -> State:
++        return State(current_stop=initial_stop)
++
++    def update_and_check(
++        self,
++        *,
++        state: State,
++        bars: pd.DataFrame,
++        bar_idx: int,
++        entry_idx: int,
++        entry_price: float,
++        initial_R: float,
++    ) -> Action | None:
++        close = float(bars["Close"].iloc[bar_idx])
++
++        if close < state.current_stop:
++            return FullExit(close, "stop_hit")
++
++        target_price = entry_price + RULESET_B_TARGET_R * initial_R
++        if close >= target_price:
++            return FullExit(target_price, "target_3R")
++
++        return None
++
++
++# ---------------------------------------------------------------------------
++# Ruleset C -- Close-below-50d-SMA (D1 baseline; preserved semantics)
++# ---------------------------------------------------------------------------
++class RulesetC:
++    name = "C_close_below_50d"
++
++    def initial_stop(self, *, verdict: PrimaryVerdict, entry_price: float) -> float:
++        return verdict.initial_stop
++
++    def init_state(
++        self,
++        *,
++        verdict: PrimaryVerdict,
++        bars: pd.DataFrame,
++        entry_idx: int,
++        entry_price: float,
++        initial_stop: float,
++    ) -> State:
++        return State(current_stop=initial_stop)
++
++    def update_and_check(
++        self,
++        *,
++        state: State,
++        bars: pd.DataFrame,
++        bar_idx: int,
++        entry_idx: int,
++        entry_price: float,
++        initial_R: float,
++    ) -> Action | None:
++        close = float(bars["Close"].iloc[bar_idx])
++
++        if close < state.current_stop:
++            return FullExit(close, "stop_hit")
++
++        sma50 = sma_at(bars, bar_idx, RULESET_C_HARD_EXIT_SMA_WINDOW)
++        if sma50 is not None and close < sma50:
++            return FullExit(close, "close_below_50d")
++
++        return None
++
++
++# ---------------------------------------------------------------------------
++# Ruleset D -- Minervini Stage-2 progression (NEW; close-below-50d arming gate)
++# ---------------------------------------------------------------------------
++class RulesetD:
++    name = "D_minervini_stage2_progression"
++
++    def initial_stop(self, *, verdict: PrimaryVerdict, entry_price: float) -> float:
++        return verdict.initial_stop
++
++    def init_state(
++        self,
++        *,
++        verdict: PrimaryVerdict,
++        bars: pd.DataFrame,
++        entry_idx: int,
++        entry_price: float,
++        initial_stop: float,
++    ) -> State:
++        return State(current_stop=initial_stop)
++
++    def update_and_check(
++        self,
++        *,
++        state: State,
++        bars: pd.DataFrame,
++        bar_idx: int,
++        entry_idx: int,
++        entry_price: float,
++        initial_R: float,
++    ) -> Action | None:
++        close = float(bars["Close"].iloc[bar_idx])
++
++        # 1. Stop check (close-based)
++        if close < state.current_stop:
++            reason = "trail_stop" if state.breakeven_armed else "stop_hit"
++            return FullExit(close, reason)
++
++        # 2. Gated 50d hard exit: only ARMED when SMA50 > entry * 1.05
++        sma50 = sma_at(bars, bar_idx, RULESET_D_HARD_EXIT_SMA_WINDOW)
++        if (
++            sma50 is not None
++            and sma50 > entry_price * RULESET_D_50D_GATE_MULT
++            and close <= sma50
++        ):
++            return FullExit(close, "close_below_50d_gated")
++
++        # 3. BE arm at +2R close: raise stop to entry_price
++        if (
++            not state.breakeven_armed
++            and close >= entry_price + RULESET_D_BE_ARM_R * initial_R
++        ):
++            state.breakeven_armed = True
++            state.current_stop = max(state.current_stop, entry_price)
++
++        # 4. Post-BE trail: max(prior, SMA10 * 0.99)
++        if state.breakeven_armed:
++            sma10 = sma_at(bars, bar_idx, RULESET_D_TRAIL_SMA_WINDOW)
++            if sma10 is not None:
++                proposed = sma10 * RULESET_D_TRAIL_BUFFER
++                state.current_stop = max(state.current_stop, proposed)
++
++        return None
++
++
++# ---------------------------------------------------------------------------
++# Ruleset E -- O'Neil cup-with-handle + Bulkowski measured-move (NEW)
++# ---------------------------------------------------------------------------
++class RulesetE:
++    name = "E_oneil_cup_with_handle_measured_move"
++
++    def initial_stop(self, *, verdict: PrimaryVerdict, entry_price: float) -> float:
++        """max(trough_2 * 0.99, entry * 0.92).
++
++        The MAX gives the HIGHER (tighter / less aggressive risk) of the two
++        candidate floors per dispatch brief Section 3.5: "use whichever is
++        HIGHER as the actual stop for risk-control".
++        """
++        return max(
++            verdict.trough_2_price * RULESET_E_TROUGH_BUFFER,
++            entry_price * RULESET_E_STOP_PCT,
++        )
++
++    def init_state(
++        self,
++        *,
++        verdict: PrimaryVerdict,
++        bars: pd.DataFrame,
++        entry_idx: int,
++        entry_price: float,
++        initial_stop: float,
++    ) -> State:
++        """Compute Bulkowski measured-move target from W height and store in
++        state.extra for per-bar lookup."""
++        target_price = entry_price + (
++            verdict.center_peak_price
++            - min(verdict.trough_1_price, verdict.trough_2_price)
++        )
++        state = State(current_stop=initial_stop)
++        state.extra["target_price"] = target_price
++        return state
++
++    def update_and_check(
++        self,
++        *,
++        state: State,
++        bars: pd.DataFrame,
++        bar_idx: int,
++        entry_idx: int,
++        entry_price: float,
++        initial_R: float,
++    ) -> Action | None:
++        close = float(bars["Close"].iloc[bar_idx])
++
++        # 1. Stop check
++        if close <= state.current_stop:
++            return FullExit(close, "stop_hit")
++
++        # 2. Measured-move target: exit at TARGET price on first close >= target
++        target_price = float(state.extra["target_price"])
++        if close >= target_price:
++            return FullExit(target_price, "target_measured_move")
++
++        return None
++
++
++# ---------------------------------------------------------------------------
++# Ruleset F -- Qullamaggie momentum-burst extension (NEW)
++# ---------------------------------------------------------------------------
++class RulesetF:
++    name = "F_qullamaggie_momentum_burst"
++
++    def initial_stop(self, *, verdict: PrimaryVerdict, entry_price: float) -> float:
++        return verdict.initial_stop
++
++    def init_state(
++        self,
++        *,
++        verdict: PrimaryVerdict,
++        bars: pd.DataFrame,
++        entry_idx: int,
++        entry_price: float,
++        initial_stop: float,
++    ) -> State:
++        """Capture ATR14 at the entry bar for the momentum gate threshold."""
++        atr14_at_entry = atr_at(bars, entry_idx, RULESET_F_ATR_WINDOW)
++        return State(current_stop=initial_stop, initial_atr14=atr14_at_entry)
++
++    def update_and_check(
++        self,
++        *,
++        state: State,
++        bars: pd.DataFrame,
++        bar_idx: int,
++        entry_idx: int,
++        entry_price: float,
++        initial_R: float,
++    ) -> Action | None:
++        close = float(bars["Close"].iloc[bar_idx])
++        # session_n: 1 = entry bar; 2..N = subsequent sessions.
++        session_n = bar_idx - entry_idx + 1
++
++        # 1. Stop check (close-based; once scale-out fired the stop is BE/SMA20)
++        if close < state.current_stop:
++            reason = "trail_stop" if state.scale_out_fired else "stop_hit"
++            return FullExit(close, reason)
++
++        # 2. Momentum gate fail at session 6 OPEN if neither armed nor scaled.
++        # The arming check at step 6 happens AFTER this gate fires so that
++        # a session-6-close threshold reach does NOT post-hoc save a trade
++        # that already failed the "advance by end of session 5" condition.
++        if (
++            not state.momentum_gate_armed
++            and not state.scale_out_fired
++            and session_n == RULESET_F_MOMENTUM_GATE_SESSIONS + 1
++        ):
++            open_price = float(bars["Open"].iloc[bar_idx])
++            return FullExit(open_price, "momentum_gate_fail")
++
++        # 3. Gated 50d hard exit: only ARMED when SMA50 > entry * 1.05
++        sma50 = sma_at(bars, bar_idx, RULESET_F_HARD_EXIT_SMA_WINDOW)
++        if (
++            sma50 is not None
++            and sma50 > entry_price * RULESET_F_50D_GATE_MULT
++            and close <= sma50
++        ):
++            return FullExit(close, "close_below_50d_gated")
++
++        # 4. Scale-out 1/3 at +2R close (only fires once per trade)
++        if (
++            not state.scale_out_fired
++            and close >= entry_price + RULESET_F_SCALE_OUT_R * initial_R
++        ):
++            state.breakeven_armed = True
++            state.current_stop = max(state.current_stop, entry_price)
++            return ScaleOut(
++                fraction=RULESET_F_SCALE_OUT_FRACTION,
++                price=close,
++                reason="scale_out_2R",
++            )
++
++        # 5. Post-scale-out trail: max(prior, SMA20)
++        if state.scale_out_fired:
++            sma20 = sma_at(bars, bar_idx, RULESET_F_TRAIL_SMA_WINDOW)
++            if sma20 is not None:
++                state.current_stop = max(state.current_stop, sma20)
++
++        # 6. Arm momentum gate: within first 5 sessions, close - entry must
++        # reach >= 1.0 x ATR14_at_entry.
++        if (
++            not state.momentum_gate_armed
++            and not state.scale_out_fired
++            and session_n <= RULESET_F_MOMENTUM_GATE_SESSIONS
++            and state.initial_atr14 is not None
++            and (close - entry_price)
++            >= RULESET_F_MOMENTUM_ATR_MULT * state.initial_atr14
++        ):
++            state.momentum_gate_armed = True
++
++        return None
++
++
++# ---------------------------------------------------------------------------
++# Registry
++# ---------------------------------------------------------------------------
++def all_rulesets() -> list[Ruleset]:
++    """Six rulesets in canonical iteration order: A, B, C, D, E, F."""
++    return [RulesetA(), RulesetB(), RulesetC(), RulesetD(), RulesetE(), RulesetF()]
+diff --git a/research/harness/w_bottom_ruleset_comparison/run.py b/research/harness/w_bottom_ruleset_comparison/run.py
+new file mode 100644
+index 0000000..9cb0300
+--- /dev/null
++++ b/research/harness/w_bottom_ruleset_comparison/run.py
+@@ -0,0 +1,289 @@
++"""Orchestrator for the D2 W-bottom ruleset comparison backtest.
++
++Loads cohort from results.csv OR pre-extracted cohort fixture; filters to
++actionable RECENT W's; reads each ticker's full OHLCV archive via the V2
++Shape A reader (L2 LOCK preserved); runs ALL 6 exit rulesets (A/B/C/D/E/F)
++per pattern; emits 27-column results.csv + cross-ruleset summary.md + manifest.
++
++ZERO production swing/ writes; ZERO new Schwab API calls; ZERO yfinance
++fetches at backtest time.
++"""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import sys
++from datetime import datetime, timezone
++from pathlib import Path
++
++from research.harness.aplus_v2_ohlcv_evaluator.exceptions import OhlcvCoverageError
++from research.harness.aplus_v2_ohlcv_evaluator.ohlcv_reader import (
++    BothExistDiagnostic,
++    read_yfinance_shape_a,
++)
++from research.harness.double_bottom_w_backtest.cohort import (
++    PrimaryVerdict,
++    extract_primary_verdicts_from_csv,
++    filter_recent_patterns,
++    load_cohort_fixture,
++    merge_adjacent_troughs,
++)
++from research.harness.w_bottom_ruleset_comparison.io import (
++    write_manifest,
++    write_results_csv,
++    write_summary_markdown,
++)
++from research.harness.w_bottom_ruleset_comparison.rulesets import all_rulesets
++from research.harness.w_bottom_ruleset_comparison.walkforward import (
++    Trade,
++    walk_forward,
++)
++
++
++def _sha256_of_file(path: Path) -> str | None:
++    """Streaming sha256 hash; None if file missing."""
++    if not path.exists():
++        return None
++    h = hashlib.sha256()
++    with path.open("rb") as f:
++        for chunk in iter(lambda: f.read(1 << 16), b""):
++            h.update(chunk)
++    return h.hexdigest()
++
++
++def run_backtest_for_verdicts(
++    verdicts: list[PrimaryVerdict],
++    cache_dir: Path,
++    *,
++    diagnostic: BothExistDiagnostic | None = None,
++) -> tuple[list[Trade], dict[str, int]]:
++    """For each verdict, read the ticker's archive ONCE then run all 6 rulesets.
++
++    Per-ticker OHLCV cache avoids 6x re-reads when multiple verdicts share
++    a ticker. Returns (trades, skipped_counts).
++    """
++    trades: list[Trade] = []
++    skipped: dict[str, int] = {"ohlcv_missing": 0, "ohlcv_empty": 0}
++    rulesets = all_rulesets()
++    by_ticker_bars: dict[str, object] = {}
++    for v in verdicts:
++        if v.ticker not in by_ticker_bars:
++            try:
++                by_ticker_bars[v.ticker] = read_yfinance_shape_a(
++                    v.ticker, cache_dir, diagnostic=diagnostic
++                )
++            except OhlcvCoverageError:
++                by_ticker_bars[v.ticker] = None
++                skipped["ohlcv_missing"] += 1
++        bars = by_ticker_bars[v.ticker]
++        for rs in rulesets:
++            if bars is None:
++                trades.append(_emit_missing_archive_trade(v, rs.name))
++            else:
++                trades.append(walk_forward(v, bars, rs))
++    return trades, skipped
++
++
++def _emit_missing_archive_trade(verdict: PrimaryVerdict, ruleset_name: str) -> Trade:
++    days_t2_to_asof = (verdict.effective_asof_date - verdict.trough_2_date).days
++    return Trade(
++        pattern_id=verdict.pattern_id, ticker=verdict.ticker, ruleset_name=ruleset_name,
++        anchor_asof_date=verdict.anchor_asof_date, trough_1_date=verdict.trough_1_date,
++        effective_asof_date=verdict.effective_asof_date,
++        max_observed_asof_date=verdict.max_observed_asof_date,
++        center_peak_price=verdict.center_peak_price, trough_2_price=verdict.trough_2_price,
++        composite_score=verdict.composite_score, initial_stop=verdict.initial_stop,
++        entry_date=None, entry_price=None, exit_date=None, exit_price=None,
++        exit_reason="ohlcv_missing", r_multiple=None, days_held=None,
++        status="untriggered",
++        triggered=False, trade_pnl_dollars=None,
++        peak_unrealized_R=None, drawdown_to_exit_R=None,
++        forward_bars_available=0,
++        max_forward_close=None, max_close_pct_of_peak=None,
++        days_t2_to_asof=days_t2_to_asof,
++    )
++
++
++def _read_upstream_provenance(
++    source_artifact_dir: Path | None,
++) -> tuple[str | None, str | None, str | None, str | None]:
++    """Read upstream pattern_cohort_evaluator manifest for provenance fields.
++
++    Returns (manifest_path, manifest_sha256, cohort_input_sha256, results_csv_sha256).
++    """
++    if source_artifact_dir is None:
++        return None, None, None, None
++    manifest_path = source_artifact_dir / "manifest.json"
++    if not manifest_path.exists():
++        return None, None, None, None
++    manifest_sha = _sha256_of_file(manifest_path)
++    try:
++        import json
++        data = json.loads(manifest_path.read_text(encoding="utf-8"))
++        cohort_input_sha = data.get("cohort_input_sha256")
++    except (OSError, ValueError):
++        cohort_input_sha = None
++    results_csv_path = source_artifact_dir / "results.csv"
++    results_csv_sha = _sha256_of_file(results_csv_path) if results_csv_path.exists() else None
++    return str(manifest_path), manifest_sha, cohort_input_sha, results_csv_sha
++
++
++def main(argv: list[str] | None = None) -> int:
++    parser = argparse.ArgumentParser(
++        description="D2 W-bottom 6-ruleset comparison walk-forward backtest"
++    )
++    src = parser.add_mutually_exclusive_group(required=True)
++    src.add_argument(
++        "--results-csv", type=Path,
++        help="Path to pattern_cohort_evaluator results.csv (will stream-parse + dedup)",
++    )
++    src.add_argument(
++        "--cohort-fixture", type=Path,
++        help="Path to pre-extracted cohort.json (skips results.csv parsing)",
++    )
++    parser.add_argument(
++        "--cache-dir", type=Path, required=True,
++        help="OHLCV Shape A cache dir (~/swing-data/prices-cache)",
++    )
++    parser.add_argument(
++        "--output-dir", type=Path, required=True,
++        help="Output directory; ISO subdir will be created",
++    )
++    parser.add_argument(
++        "--composite-threshold", type=float, default=0.7,
++        help="Minimum composite_score to admit a verdict (default 0.7)",
++    )
++    parser.add_argument(
++        "--recency-max-calendar-days", type=int, default=60,
++        help="Restrict to W's with trough_2 within N calendar days of asof (default 60)",
++    )
++    parser.add_argument(
++        "--no-recency-filter", action="store_true",
++        help="Skip recency filter; backtest ALL unique W primary verdicts",
++    )
++    parser.add_argument(
++        "--source-artifact-dir", type=Path, default=None,
++        help="Upstream pattern_cohort_evaluator run directory (for provenance fields)",
++    )
++    args = parser.parse_args(argv)
++
++    started_at = datetime.now(timezone.utc)
++
++    if args.results_csv:
++        verdicts = extract_primary_verdicts_from_csv(
++            args.results_csv, composite_threshold=args.composite_threshold
++        )
++        cohort_source_path = str(args.results_csv)
++        cohort_csv_sha = _sha256_of_file(args.results_csv)
++    else:
++        verdicts = load_cohort_fixture(args.cohort_fixture)
++        verdicts = [v for v in verdicts if v.composite_score >= args.composite_threshold]
++        cohort_source_path = str(args.cohort_fixture)
++        cohort_csv_sha = _sha256_of_file(args.cohort_fixture)
++
++    n_unique_pre = len(verdicts)
++    print(f"Loaded {n_unique_pre} unique (ticker, trough_1) primary verdicts")
++
++    merged = merge_adjacent_troughs(verdicts)
++    n_after_merge = len(merged)
++    print(f"After 5-BD adjacency merge: {n_after_merge}")
++
++    if args.no_recency_filter:
++        actionable = merged
++    else:
++        actionable = filter_recent_patterns(
++            merged, max_calendar_days=args.recency_max_calendar_days
++        )
++    n_actionable = len(actionable)
++    print(
++        f"After recency filter ({args.recency_max_calendar_days} cal days): "
++        f"{n_actionable} actionable patterns"
++    )
++
++    diagnostic = BothExistDiagnostic()
++    trades, skipped = run_backtest_for_verdicts(
++        actionable, args.cache_dir, diagnostic=diagnostic
++    )
++    n_distinct_tickers = len({v.ticker for v in actionable})
++    rulesets_count = len(all_rulesets())
++    print(
++        f"Emitted {len(trades)} trade rows ({n_actionable} patterns x "
++        f"{rulesets_count} rulesets); distinct tickers: {n_distinct_tickers}"
++    )
++    if skipped["ohlcv_missing"]:
++        print(f"Skipped (ohlcv_missing): {skipped['ohlcv_missing']}")
++
++    iso_now = datetime.now().strftime("%Y%m%dT%H%M%SZ")
++    out_dir = args.output_dir / f"w-bottom-ruleset-comparison-{iso_now}"
++    out_dir.mkdir(parents=True, exist_ok=True)
++
++    csv_out = out_dir / "results.csv"
++    summary_out = out_dir / "summary.md"
++    manifest_out = out_dir / "manifest.json"
++
++    write_results_csv(trades, csv_out)
++    pop_notes = (
++        f"**Cohort source:** {cohort_source_path}\n\n"
++        f"**Recency filter:** trough_2 within {args.recency_max_calendar_days} "
++        f"calendar days of max_observed_asof ({n_actionable} of {n_after_merge} "
++        f"verdicts passed).\n\n"
++        f"**Both-exist diagnostic:** {diagnostic.count} ticker-reads hit Shape A + "
++        f"legacy (Shape A wins per OQ-18).\n\n"
++        f"**Rulesets:** 6 (A_minervini_trail_ma + B_fixed_R_multiple + "
++        f"C_close_below_50d + D_minervini_stage2_progression + "
++        f"E_oneil_cup_with_handle_measured_move + F_qullamaggie_momentum_burst)."
++    )
++    if args.no_recency_filter:
++        cohort_label = (
++            f"composite>={args.composite_threshold} double_bottom_w; "
++            f"NO RECENCY FILTER (all unique W primaries)"
++        )
++    else:
++        cohort_label = (
++            f"composite>={args.composite_threshold} double_bottom_w; "
++            f"recency<={args.recency_max_calendar_days}d (max_observed_asof)"
++        )
++    write_summary_markdown(
++        trades, summary_out,
++        n_patterns=n_actionable,
++        cohort_label=cohort_label,
++        population_notes=pop_notes,
++    )
++    finished_at = datetime.now(timezone.utc)
++    src_manifest_path, src_manifest_sha, src_cohort_input_sha, src_results_csv_sha = (
++        _read_upstream_provenance(args.source_artifact_dir)
++    )
++    source_results_csv_sha = (
++        cohort_csv_sha if args.results_csv is not None else src_results_csv_sha
++    )
++    write_manifest(
++        manifest_out,
++        started_at_utc=started_at,
++        finished_at_utc=finished_at,
++        cohort_csv_path=cohort_source_path,
++        cohort_csv_sha256=cohort_csv_sha,
++        cache_dir=str(args.cache_dir),
++        n_unique_verdicts_pre_filter=n_unique_pre,
++        n_verdicts_after_adjacency_merge=n_after_merge,
++        n_patterns_after_recency_filter=n_actionable,
++        recency_max_calendar_days=args.recency_max_calendar_days,
++        composite_threshold=args.composite_threshold,
++        max_trigger_search_business_days=60,
++        n_trades_emitted=len(trades),
++        n_distinct_tickers=n_distinct_tickers,
++        skipped_patterns=skipped,
++        rulesets_count=rulesets_count,
++        source_artifact_manifest_path=src_manifest_path,
++        source_artifact_manifest_sha256=src_manifest_sha,
++        source_results_csv_sha256=source_results_csv_sha,
++        source_cohort_input_sha256=src_cohort_input_sha,
++        recency_filter_active=(not args.no_recency_filter),
++    )
++    print(f"wrote {csv_out}")
++    print(f"wrote {summary_out}")
++    print(f"wrote {manifest_out}")
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/research/harness/w_bottom_ruleset_comparison/walkforward.py b/research/harness/w_bottom_ruleset_comparison/walkforward.py
+new file mode 100644
+index 0000000..4c77e8d
+--- /dev/null
++++ b/research/harness/w_bottom_ruleset_comparison/walkforward.py
+@@ -0,0 +1,564 @@
++"""Walk-forward backtest engine for D2 W-bottom ruleset comparison.
++
++Extends D1's walk_forward (research/harness/double_bottom_w_backtest/walkforward.py)
++with a generalized Ruleset protocol that supports SCALE-OUT semantics required
++by Ruleset F (Qullamaggie momentum-burst). All other rulesets (A/B/C/D/E) use
++the same protocol with at-most-one FullExit action per trade.
++
++Per-bar protocol: `update_and_check` returns at most one Action per bar:
++  - FullExit(price, reason): closes the entire remaining position; trade ends.
++  - ScaleOut(fraction, price, reason): partial close of `fraction` of the
++    INITIAL position; trade continues with `1 - cumulative_scale_out` remaining.
++  - None: hold; no action this bar.
++
++V1 supports at most ONE scale-out event per trade (Ruleset F: scale 1/3 at +2R
++then trail remainder; brief Section 3.6). The state's `scale_out_fired` flag
++prevents repeat scale-outs.
++
++Trade outcomes preserve the 27-column D1 schema (brief Section 4.1) by folding
++scale-out into:
++  - exit_reason: the FINAL event's reason (e.g., `close_below_50d_gated_after_scaleout`)
++  - r_multiple: weighted final R = fraction_sold_at_scale * R_at_scale +
++                                   (1 - fraction_sold_at_scale) * R_at_final_exit
++  - peak_unrealized_R: peak across all bars regardless of scale-out
++  - drawdown_to_exit_R: peak_R - final_weighted_R
++
++Entry rule (all rulesets, per dispatch brief Section 2 + D1 precedent):
++  - Trigger search window: from max(trough_1, trough_2, effective_asof) + 1
++    business day to effective_asof + 60 business days.
++  - Trigger: first daily close > center_peak_price within search window.
++  - Entry: NEXT session's Open after the trigger session.
++  - Initial stop: trough_2 * 0.99 (Rulesets A/B/C/D/F);
++                  max(trough_2 * 0.99, entry * 0.92) (Ruleset E).
++"""
++from __future__ import annotations
++
++from dataclasses import dataclass, field
++from datetime import date
++from typing import Any, Protocol
++
++import numpy as np
++import pandas as pd
++
++from research.harness.double_bottom_w_backtest.cohort import PrimaryVerdict
++
++
++MAX_TRIGGER_SEARCH_BUSINESS_DAYS = 60
++
++# Capital base for per-trade share-sizing dollar P&L (CLAUDE.md operator
++# memory project_capital_risk_floor: max($7500 floor, actual_balance);
++# floor is the artificial population-of-actionable-stocks baseline).
++DEFAULT_CAPITAL_FLOOR_DOLLARS = 7500.0
++# cfg.risk.max_risk_pct = 0.005 per CLAUDE.md gotcha (0.5% per trade).
++DEFAULT_RISK_PCT = 0.005
++
++
++# ---------------------------------------------------------------------------
++# Actions emitted by rulesets per-bar
++# ---------------------------------------------------------------------------
++@dataclass(frozen=True)
++class FullExit:
++    """Close entire remaining position at `price` with `reason` label."""
++
++    price: float
++    reason: str
++
++
++@dataclass(frozen=True)
++class ScaleOut:
++    """Close `fraction` of the INITIAL position (not the remaining); trade
++    continues with `1 - cumulative_fraction` remaining."""
++
++    fraction: float
++    price: float
++    reason: str
++
++
++Action = FullExit | ScaleOut
++
++
++# ---------------------------------------------------------------------------
++# Ruleset state (generic; rulesets stash their own data in `extra`)
++# ---------------------------------------------------------------------------
++@dataclass
++class State:
++    """Per-trade mutable state shared across all rulesets.
++
++    Rulesets stash ruleset-specific data in `extra` (dict) to keep this
++    dataclass shape minimal + generic.
++    """
++
++    current_stop: float
++    breakeven_armed: bool = False
++    scale_out_fired: bool = False
++    scale_out_R: float | None = None
++    scale_out_fraction: float | None = None
++    scale_out_date: date | None = None
++    scale_out_price: float | None = None
++    momentum_gate_armed: bool = False
++    initial_atr14: float | None = None  # captured at entry for F's gate
++    extra: dict[str, Any] = field(default_factory=dict)
++
++
++# ---------------------------------------------------------------------------
++# Ruleset protocol
++# ---------------------------------------------------------------------------
++class Ruleset(Protocol):
++    name: str
++
++    def initial_stop(
++        self,
++        *,
++        verdict: PrimaryVerdict,
++        entry_price: float,
++    ) -> float:
++        """Return the initial stop price for this ruleset.
++
++        Default for A/B/C/D/F: verdict.initial_stop (trough_2 * 0.99).
++        Ruleset E overrides: max(trough_2 * 0.99, entry * 0.92).
++        """
++        ...
++
++    def init_state(
++        self,
++        *,
++        verdict: PrimaryVerdict,
++        bars: pd.DataFrame,
++        entry_idx: int,
++        entry_price: float,
++        initial_stop: float,
++    ) -> State: ...
++
++    def update_and_check(
++        self,
++        *,
++        state: State,
++        bars: pd.DataFrame,
++        bar_idx: int,
++        entry_idx: int,
++        entry_price: float,
++        initial_R: float,
++    ) -> Action | None:
++        """Returns ONE action this bar (FullExit / ScaleOut) or None to hold."""
++        ...
++
++
++# ---------------------------------------------------------------------------
++# Trade dataclass (preserves D1's 27-column shape; brief Section 4.1)
++# ---------------------------------------------------------------------------
++@dataclass(frozen=True)
++class Trade:
++    pattern_id: str
++    ticker: str
++    ruleset_name: str
++    anchor_asof_date: date
++    trough_1_date: date
++    center_peak_price: float
++    trough_2_price: float
++    composite_score: float
++    initial_stop: float
++    entry_date: date | None
++    entry_price: float | None
++    exit_date: date | None
++    exit_price: float | None
++    exit_reason: str
++    r_multiple: float | None
++    days_held: int | None
++    status: str  # 'closed' | 'untriggered' | 'open' | 'error'
++    triggered: bool = False
++    trade_pnl_dollars: float | None = None
++    peak_unrealized_R: float | None = None
++    drawdown_to_exit_R: float | None = None
++    forward_bars_available: int = 0
++    max_forward_close: float | None = None
++    max_close_pct_of_peak: float | None = None
++    days_t2_to_asof: int | None = None
++    effective_asof_date: date | None = None
++    max_observed_asof_date: date | None = None
++
++
++# ---------------------------------------------------------------------------
++# Indicator helpers (SMA / ATR; shared across rulesets)
++# ---------------------------------------------------------------------------
++def sma_at(bars: pd.DataFrame, bar_idx: int, window: int) -> float | None:
++    """Simple moving average of Close over (bar_idx - window + 1 .. bar_idx)
++    inclusive. Returns None if insufficient bars."""
++    if bar_idx + 1 < window:
++        return None
++    closes = bars["Close"].iloc[bar_idx + 1 - window : bar_idx + 1]
++    return float(closes.mean())
++
++
++def atr_at(bars: pd.DataFrame, bar_idx: int, window: int) -> float | None:
++    """Average True Range over the last `window` bars ending at bar_idx
++    (inclusive). Requires bar_idx + 1 >= window + 1 for one prior close.
++
++    Returns None if insufficient bars.
++    """
++    if bar_idx + 1 < window + 1:
++        return None
++    highs = bars["High"].iloc[bar_idx + 1 - window : bar_idx + 1]
++    lows = bars["Low"].iloc[bar_idx + 1 - window : bar_idx + 1]
++    prev_closes = bars["Close"].iloc[bar_idx - window : bar_idx]
++    highs = highs.reset_index(drop=True)
++    lows = lows.reset_index(drop=True)
++    prev_closes = prev_closes.reset_index(drop=True)
++    tr = pd.concat(
++        [
++            highs - lows,
++            (highs - prev_closes).abs(),
++            (lows - prev_closes).abs(),
++        ],
++        axis=1,
++    ).max(axis=1)
++    return float(tr.mean())
++
++
++# ---------------------------------------------------------------------------
++# P&L helpers (same as D1)
++# ---------------------------------------------------------------------------
++def compute_share_count(entry_price: float, initial_stop: float) -> int:
++    """Audit-only integer share count under fixed-risk sizing.
++
++    PnL computation uses fractional notional per `compute_pnl_dollars_fractional`
++    so wide-R patterns don't silently floor to 0 shares + $0 PnL.
++    """
++    R_unit = entry_price - initial_stop
++    if R_unit <= 0:
++        return 0
++    risk_dollars = DEFAULT_CAPITAL_FLOOR_DOLLARS * DEFAULT_RISK_PCT
++    return int(risk_dollars / R_unit)
++
++
++def compute_pnl_dollars_fractional(
++    entry_price: float, exit_price: float, initial_stop: float
++) -> float:
++    """Theoretical fractional-share dollar P&L; equals R_multiple * risk_dollars.
++
++    For scale-out trades, caller passes the WEIGHTED-equivalent exit_price
++    (entry + r_multiple_final * R_unit) so the helper returns the correct
++    blended dollar PnL.
++    """
++    R_unit = entry_price - initial_stop
++    if R_unit <= 0:
++        return 0.0
++    risk_dollars = DEFAULT_CAPITAL_FLOOR_DOLLARS * DEFAULT_RISK_PCT
++    return (exit_price - entry_price) * (risk_dollars / R_unit)
++
++
++# ---------------------------------------------------------------------------
++# Trigger-search helpers (same semantic as D1)
++# ---------------------------------------------------------------------------
++def trigger_search_upper_bound(
++    asof_date: date, max_business_days: int = MAX_TRIGGER_SEARCH_BUSINESS_DAYS
++) -> date:
++    """asof_date + max_business_days BUSINESS days (np.busday_offset)."""
++    return np.busday_offset(asof_date, max_business_days, roll="forward").astype(
++        "datetime64[D]"
++    ).astype(date)
++
++
++def find_trigger_index(
++    bars: pd.DataFrame,
++    *,
++    trigger_threshold: float,
++    lower_bound_exclusive: date,
++    upper_bound_inclusive: date,
++) -> int | None:
++    """First index i where bars.index[i].date() > lower_bound_exclusive AND
++    <= upper_bound_inclusive AND bars["Close"].iloc[i] > trigger_threshold AND
++    i+1 < len(bars) (next session exists for entry-open).
++    """
++    dates = pd.Index([d.date() if hasattr(d, "date") else d for d in bars.index])
++    closes = bars["Close"].to_numpy()
++    n = len(closes)
++    for i in range(n - 1):
++        d = dates[i]
++        if d <= lower_bound_exclusive:
++            continue
++        if d > upper_bound_inclusive:
++            return None
++        if closes[i] > trigger_threshold:
++            return i
++    return None
++
++
++# ---------------------------------------------------------------------------
++# Walk-forward engine
++# ---------------------------------------------------------------------------
++def walk_forward(
++    verdict: PrimaryVerdict,
++    bars: pd.DataFrame,
++    ruleset: Ruleset,
++    *,
++    max_trigger_search_business_days: int = MAX_TRIGGER_SEARCH_BUSINESS_DAYS,
++) -> Trade:
++    """Walk forward through `bars` for one (verdict, ruleset).
++
++    Supports scale-out via the Ruleset protocol: ScaleOut actions reduce
++    remaining position; the trade continues until FullExit or data tail.
++    Weighted final R folds scale-out + final-exit R per their fractions.
++    """
++    backtest_asof = verdict.effective_asof_date
++    days_t2_to_asof = (backtest_asof - verdict.trough_2_date).days
++    n_total = len(bars)
++
++    if n_total == 0:
++        return _emit_untriggered(
++            verdict, ruleset, "ohlcv_empty", days_t2_to_asof, 0, None, None
++        )
++
++    # Forward-search-window diagnostics for untriggered visibility (D1 parity).
++    lower_bound = verdict.trigger_lower_bound_date
++    upper_bound = trigger_search_upper_bound(
++        backtest_asof, max_trigger_search_business_days
++    )
++    dates_idx = pd.Index([d.date() if hasattr(d, "date") else d for d in bars.index])
++    in_window_mask = (dates_idx > lower_bound) & (dates_idx <= upper_bound)
++    fwd_window_bars = bars.loc[in_window_mask.tolist()]
++    n_fwd_window = len(fwd_window_bars)
++    if n_fwd_window:
++        max_close = float(fwd_window_bars["Close"].max())
++        max_close_pct = (
++            max_close / verdict.center_peak_price * 100
++            if verdict.center_peak_price
++            else None
++        )
++    else:
++        max_close = None
++        max_close_pct = None
++
++    trigger_idx = find_trigger_index(
++        bars,
++        trigger_threshold=verdict.trigger_threshold,
++        lower_bound_exclusive=lower_bound,
++        upper_bound_inclusive=upper_bound,
++    )
++    if trigger_idx is None:
++        return _emit_untriggered(
++            verdict, ruleset, "untriggered", days_t2_to_asof, n_fwd_window,
++            max_close, max_close_pct,
++        )
++
++    entry_idx = trigger_idx + 1
++    entry_bar = bars.iloc[entry_idx]
++    entry_date = bars.index[entry_idx].date() if hasattr(bars.index[entry_idx], "date") else bars.index[entry_idx]
++    entry_price = float(entry_bar["Open"])
++    initial_stop = ruleset.initial_stop(verdict=verdict, entry_price=entry_price)
++    R = entry_price - initial_stop
++
++    # Degenerate: entry gap-down through stop. Same as D1.
++    if R <= 0:
++        return Trade(
++            pattern_id=verdict.pattern_id, ticker=verdict.ticker, ruleset_name=ruleset.name,
++            anchor_asof_date=verdict.anchor_asof_date, trough_1_date=verdict.trough_1_date,
++            effective_asof_date=verdict.effective_asof_date,
++            max_observed_asof_date=verdict.max_observed_asof_date,
++            center_peak_price=verdict.center_peak_price, trough_2_price=verdict.trough_2_price,
++            composite_score=verdict.composite_score, initial_stop=initial_stop,
++            entry_date=entry_date, entry_price=entry_price,
++            exit_date=entry_date, exit_price=entry_price,
++            exit_reason="entry_gap_below_stop",
++            r_multiple=0.0, days_held=0, status="closed",
++            triggered=True,
++            trade_pnl_dollars=0.0,
++            peak_unrealized_R=0.0,
++            drawdown_to_exit_R=0.0,
++            forward_bars_available=n_fwd_window,
++            max_forward_close=max_close, max_close_pct_of_peak=max_close_pct,
++            days_t2_to_asof=days_t2_to_asof,
++        )
++
++    state = ruleset.init_state(
++        verdict=verdict, bars=bars, entry_idx=entry_idx,
++        entry_price=entry_price, initial_stop=initial_stop,
++    )
++    peak_R = 0.0
++
++    for i in range(entry_idx, n_total):
++        bar_high = float(bars["High"].iloc[i])
++        bar_R = (bar_high - entry_price) / R
++        if bar_R > peak_R:
++            peak_R = bar_R
++        action = ruleset.update_and_check(
++            state=state, bars=bars, bar_idx=i, entry_idx=entry_idx,
++            entry_price=entry_price, initial_R=R,
++        )
++        if action is None:
++            continue
++        exit_date_i = bars.index[i].date() if hasattr(bars.index[i], "date") else bars.index[i]
++        if isinstance(action, ScaleOut):
++            # Record the scale-out event + continue trading the remaining fraction.
++            # V1 supports AT MOST ONE scale-out per trade; guard idempotency.
++            if state.scale_out_fired:
++                # Defensive: rulesets MUST NOT emit a second ScaleOut. Treat as
++                # full-exit-at-current-close to surface the misbehavior.
++                fallback_price = float(bars["Close"].iloc[i])
++                return _emit_final_close(
++                    verdict, ruleset.name, state, bars, n_total, peak_R, entry_idx,
++                    entry_date, entry_price, initial_stop, R, exit_date_i,
++                    fallback_price, "second_scaleout_invalid",
++                    n_fwd_window, max_close, max_close_pct, days_t2_to_asof,
++                )
++            state.scale_out_fired = True
++            state.scale_out_R = (action.price - entry_price) / R
++            state.scale_out_fraction = action.fraction
++            state.scale_out_date = exit_date_i
++            state.scale_out_price = action.price
++            # Continue loop to next bar; remainder rides per ruleset's trail rules.
++            continue
++        # FullExit: close remaining position.
++        assert isinstance(action, FullExit)
++        final_R_remainder = (action.price - entry_price) / R
++        weighted_R = _weighted_R(state, final_R_remainder)
++        synthetic_exit_price = entry_price + weighted_R * R
++        pnl_dollars = compute_pnl_dollars_fractional(entry_price, synthetic_exit_price, initial_stop)
++        exit_reason = (
++            f"{action.reason}_after_scaleout" if state.scale_out_fired else action.reason
++        )
++        return Trade(
++            pattern_id=verdict.pattern_id, ticker=verdict.ticker, ruleset_name=ruleset.name,
++            anchor_asof_date=verdict.anchor_asof_date, trough_1_date=verdict.trough_1_date,
++            effective_asof_date=verdict.effective_asof_date,
++            max_observed_asof_date=verdict.max_observed_asof_date,
++            center_peak_price=verdict.center_peak_price, trough_2_price=verdict.trough_2_price,
++            composite_score=verdict.composite_score, initial_stop=initial_stop,
++            entry_date=entry_date, entry_price=entry_price,
++            exit_date=exit_date_i, exit_price=action.price,
++            exit_reason=exit_reason, r_multiple=weighted_R,
++            days_held=(i - entry_idx),
++            status="closed",
++            triggered=True,
++            trade_pnl_dollars=pnl_dollars,
++            peak_unrealized_R=peak_R,
++            drawdown_to_exit_R=(peak_R - weighted_R),
++            forward_bars_available=n_fwd_window,
++            max_forward_close=max_close, max_close_pct_of_peak=max_close_pct,
++            days_t2_to_asof=days_t2_to_asof,
++        )
++
++    # Data tail reached: open position; remainder unrealized.
++    last_idx = n_total - 1
++    last_close = float(bars.iloc[last_idx]["Close"])
++    last_date = bars.index[last_idx].date() if hasattr(bars.index[last_idx], "date") else bars.index[last_idx]
++    tail_R_remainder = (last_close - entry_price) / R
++    weighted_R = _weighted_R(state, tail_R_remainder)
++    synthetic_exit_price = entry_price + weighted_R * R
++    pnl_dollars = compute_pnl_dollars_fractional(entry_price, synthetic_exit_price, initial_stop)
++    tail_reason = (
++        "open_at_data_tail_after_scaleout"
++        if state.scale_out_fired
++        else "open_at_data_tail"
++    )
++    return Trade(
++        pattern_id=verdict.pattern_id, ticker=verdict.ticker, ruleset_name=ruleset.name,
++        anchor_asof_date=verdict.anchor_asof_date, trough_1_date=verdict.trough_1_date,
++        effective_asof_date=verdict.effective_asof_date,
++        max_observed_asof_date=verdict.max_observed_asof_date,
++        center_peak_price=verdict.center_peak_price, trough_2_price=verdict.trough_2_price,
++        composite_score=verdict.composite_score, initial_stop=initial_stop,
++        entry_date=entry_date, entry_price=entry_price,
++        exit_date=last_date, exit_price=last_close,
++        exit_reason=tail_reason,
++        r_multiple=weighted_R,
++        days_held=(last_idx - entry_idx),
++        status="open",
++        triggered=True,
++        trade_pnl_dollars=pnl_dollars,
++        peak_unrealized_R=peak_R,
++        drawdown_to_exit_R=(peak_R - weighted_R),
++        forward_bars_available=n_fwd_window,
++        max_forward_close=max_close, max_close_pct_of_peak=max_close_pct,
++        days_t2_to_asof=days_t2_to_asof,
++    )
++
++
++def _weighted_R(state: State, final_R_remainder: float) -> float:
++    """Combine scale-out R + remainder R per their position fractions.
++
++    Without scale-out: returns final_R_remainder verbatim.
++    With scale-out: weighted = scale_R * scale_fraction + final_R * (1 - scale_fraction).
++    """
++    if not state.scale_out_fired or state.scale_out_R is None or state.scale_out_fraction is None:
++        return final_R_remainder
++    sf = state.scale_out_fraction
++    return state.scale_out_R * sf + final_R_remainder * (1.0 - sf)
++
++
++def _emit_untriggered(
++    verdict: PrimaryVerdict,
++    ruleset: Ruleset,
++    exit_reason: str,
++    days_t2_to_asof: int,
++    n_fwd_window: int,
++    max_close: float | None,
++    max_close_pct: float | None,
++) -> Trade:
++    return Trade(
++        pattern_id=verdict.pattern_id, ticker=verdict.ticker, ruleset_name=ruleset.name,
++        anchor_asof_date=verdict.anchor_asof_date, trough_1_date=verdict.trough_1_date,
++        effective_asof_date=verdict.effective_asof_date,
++        max_observed_asof_date=verdict.max_observed_asof_date,
++        center_peak_price=verdict.center_peak_price, trough_2_price=verdict.trough_2_price,
++        composite_score=verdict.composite_score, initial_stop=verdict.initial_stop,
++        entry_date=None, entry_price=None,
++        exit_date=None, exit_price=None,
++        exit_reason=exit_reason, r_multiple=None, days_held=None,
++        status="untriggered",
++        triggered=False,
++        trade_pnl_dollars=None,
++        peak_unrealized_R=None,
++        drawdown_to_exit_R=None,
++        forward_bars_available=n_fwd_window,
++        max_forward_close=max_close, max_close_pct_of_peak=max_close_pct,
++        days_t2_to_asof=days_t2_to_asof,
++    )
++
++
++def _emit_final_close(
++    verdict: PrimaryVerdict,
++    ruleset_name: str,
++    state: State,
++    bars: pd.DataFrame,
++    n_total: int,
++    peak_R: float,
++    entry_idx: int,
++    entry_date: date,
++    entry_price: float,
++    initial_stop: float,
++    R: float,
++    exit_date_i: date,
++    exit_price: float,
++    exit_reason: str,
++    n_fwd_window: int,
++    max_close: float | None,
++    max_close_pct: float | None,
++    days_t2_to_asof: int,
++) -> Trade:
++    """Defensive emit when an unexpected per-bar state arises (e.g., second
++    ScaleOut). Closes remaining position at given exit_price with given reason.
++    """
++    final_R_remainder = (exit_price - entry_price) / R
++    weighted_R = _weighted_R(state, final_R_remainder)
++    synthetic_exit_price = entry_price + weighted_R * R
++    pnl_dollars = compute_pnl_dollars_fractional(entry_price, synthetic_exit_price, initial_stop)
++    return Trade(
++        pattern_id=verdict.pattern_id, ticker=verdict.ticker, ruleset_name=ruleset_name,
++        anchor_asof_date=verdict.anchor_asof_date, trough_1_date=verdict.trough_1_date,
++        effective_asof_date=verdict.effective_asof_date,
++        max_observed_asof_date=verdict.max_observed_asof_date,
++        center_peak_price=verdict.center_peak_price, trough_2_price=verdict.trough_2_price,
++        composite_score=verdict.composite_score, initial_stop=initial_stop,
++        entry_date=entry_date, entry_price=entry_price,
++        exit_date=exit_date_i, exit_price=exit_price,
++        exit_reason=exit_reason, r_multiple=weighted_R,
++        days_held=None,
++        status="closed",
++        triggered=True,
++        trade_pnl_dollars=pnl_dollars,
++        peak_unrealized_R=peak_R,
++        drawdown_to_exit_R=(peak_R - weighted_R),
++        forward_bars_available=n_fwd_window,
++        max_forward_close=max_close, max_close_pct_of_peak=max_close_pct,
++        days_t2_to_asof=days_t2_to_asof,
++    )
+diff --git a/swing/cli.py b/swing/cli.py
+index 23d7914..61eb9d0 100644
+--- a/swing/cli.py
++++ b/swing/cli.py
+@@ -5023,6 +5023,84 @@ def diagnose_double_bottom_w_backtest(
+         raise click.ClickException(f"Backtest harness exit code {exit_code}")
+ 
+ 
++@diagnose_group.command("w-bottom-ruleset-comparison")
++@click.option(
++    "--results-csv", "results_csv", type=click.Path(path_type=Path), default=None,
++    help="Path to pattern_cohort_evaluator results.csv (stream-parsed + deduped).",
++)
++@click.option(
++    "--cohort-fixture", "cohort_fixture", type=click.Path(path_type=Path), default=None,
++    help="Path to pre-extracted cohort.json (skips results.csv parsing).",
++)
++@click.option(
++    "--cache-dir", "cache_dir", required=True, type=click.Path(path_type=Path),
++    help="OHLCV Shape A cache directory (typically ~/swing-data/prices-cache).",
++)
++@click.option(
++    "--output-dir", "output_dir", type=click.Path(path_type=Path),
++    default=Path("exports/research"), show_default=True,
++)
++@click.option(
++    "--composite-threshold", "composite_threshold", type=float, default=0.7,
++    show_default=True,
++)
++@click.option(
++    "--recency-max-calendar-days", "recency_max_calendar_days", type=int, default=60,
++    show_default=True,
++)
++@click.option(
++    "--no-recency-filter", "no_recency_filter", is_flag=True, default=False,
++    help="Skip recency filter; backtest ALL unique W primary verdicts.",
++)
++@click.option(
++    "--source-artifact-dir", "source_artifact_dir", type=click.Path(path_type=Path),
++    default=None,
++    help="Upstream pattern_cohort_evaluator run dir for manifest provenance.",
++)
++def diagnose_w_bottom_ruleset_comparison(
++    results_csv: Path | None,
++    cohort_fixture: Path | None,
++    cache_dir: Path,
++    output_dir: Path,
++    composite_threshold: float,
++    recency_max_calendar_days: int,
++    no_recency_filter: bool,
++    source_artifact_dir: Path | None,
++) -> None:
++    """D2 W-bottom ruleset comparison backtest (research-branch only).
++
++    Extends D1 with 3 NEW literature-canonical rulesets (Minervini Stage-2 /
++    O'Neil cup-with-handle + Bulkowski measured-move / Qullamaggie momentum-
++    burst) tested against an S&P-500-wide W cohort (N=50-200 patterns).
++    Six rulesets in total (A/B/C reused from D1; D/E/F NEW). See
++    docs/pattern-cohort-w-bottom-ruleset-comparison-dispatch-brief.md.
++    """
++    if (results_csv is None) == (cohort_fixture is None):
++        raise click.ClickException(
++            "Exactly one of --results-csv or --cohort-fixture must be supplied"
++        )
++    from research.harness.w_bottom_ruleset_comparison.run import main as backtest_main
++
++    argv: list[str] = []
++    if results_csv is not None:
++        argv += ["--results-csv", str(results_csv)]
++    else:
++        argv += ["--cohort-fixture", str(cohort_fixture)]
++    argv += [
++        "--cache-dir", str(cache_dir),
++        "--output-dir", str(output_dir),
++        "--composite-threshold", str(composite_threshold),
++        "--recency-max-calendar-days", str(recency_max_calendar_days),
++    ]
++    if no_recency_filter:
++        argv += ["--no-recency-filter"]
++    if source_artifact_dir is not None:
++        argv += ["--source-artifact-dir", str(source_artifact_dir)]
++    exit_code = backtest_main(argv)
++    if exit_code != 0:
++        raise click.ClickException(f"Backtest harness exit code {exit_code}")
++
++
+ @diagnose_group.command("metrics-wiring")
+ @click.option(
+     "--db", "db_path", required=True, type=click.Path(path_type=Path),
+diff --git a/tests/research/w_bottom_ruleset_comparison/__init__.py b/tests/research/w_bottom_ruleset_comparison/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/tests/research/w_bottom_ruleset_comparison/test_cohort_scope.py b/tests/research/w_bottom_ruleset_comparison/test_cohort_scope.py
+new file mode 100644
+index 0000000..40ca4bf
+--- /dev/null
++++ b/tests/research/w_bottom_ruleset_comparison/test_cohort_scope.py
+@@ -0,0 +1,189 @@
++"""Cohort scope assertions per dispatch brief Section 5.5.
++
++These tests verify the cohort generation + extraction pipeline yields
++counts in the expected ranges. The cohort extractor + dedup pipeline
++is reused VERBATIM from D1 (research.harness.double_bottom_w_backtest.cohort)
+++ tests at tests/research/double_bottom_w_backtest/test_cohort.py cover
++the per-row mechanics; this file asserts the SCOPE expectations specific
++to D2 (cohort SIZE not D1's selection-biased N=12).
++"""
++from __future__ import annotations
++
++import csv
++from datetime import date
++from pathlib import Path
++
++import pytest
++
++from research.harness.double_bottom_w_backtest.cohort import (
++    PrimaryVerdict,
++    extract_primary_verdicts_from_csv,
++    filter_recent_patterns,
++    merge_adjacent_troughs,
++)
++
++
++def _write_synthetic_results_csv(
++    path: Path,
++    rows: list[dict],
++) -> None:
++    """Write a synthetic pattern_cohort_evaluator results.csv subset.
++
++    Includes the minimum columns the cohort extractor reads:
++      pattern_class, composite_score, structural_evidence_json, cohort_entry_id,
++      window_index, asof_date, ticker, geometric_score, template_match_score.
++    """
++    fieldnames = [
++        "cohort_entry_id", "ticker", "asof_date", "window_index",
++        "pattern_class", "geometric_score", "template_match_score",
++        "composite_score", "structural_evidence_json",
++    ]
++    with path.open("w", encoding="utf-8", newline="") as f:
++        w = csv.DictWriter(f, fieldnames=fieldnames)
++        w.writeheader()
++        for row in rows:
++            w.writerow(row)
++
++
++def test_cohort_extractor_filters_to_double_bottom_w_composite_threshold(tmp_path):
++    """Verify the extractor admits only pattern_class=double_bottom_w with
++    composite_score >= threshold."""
++    rows = [
++        # Below threshold: skipped
++        {
++            "cohort_entry_id": "0", "ticker": "TKR1", "asof_date": "2026-04-30",
++            "window_index": "0", "pattern_class": "double_bottom_w",
++            "geometric_score": "0.5", "template_match_score": "0.4",
++            "composite_score": "0.65",
++            "structural_evidence_json": '{"trough_1_date":"2026-02-01","trough_1_price":80.0,"center_peak_date":"2026-03-01","center_peak_price":100.0,"trough_2_date":"2026-04-01","trough_2_price":82.0,"pivot_price":99.0}',
++        },
++        # Above threshold + correct pattern_class: admitted
++        {
++            "cohort_entry_id": "1", "ticker": "TKR2", "asof_date": "2026-04-30",
++            "window_index": "0", "pattern_class": "double_bottom_w",
++            "geometric_score": "0.8", "template_match_score": "0.85",
++            "composite_score": "0.82",
++            "structural_evidence_json": '{"trough_1_date":"2026-02-15","trough_1_price":85.0,"center_peak_date":"2026-03-15","center_peak_price":105.0,"trough_2_date":"2026-04-10","trough_2_price":87.0,"pivot_price":104.0}',
++        },
++        # Wrong pattern_class: skipped
++        {
++            "cohort_entry_id": "2", "ticker": "TKR3", "asof_date": "2026-04-30",
++            "window_index": "0", "pattern_class": "vcp",
++            "geometric_score": "0.9", "template_match_score": "0.9",
++            "composite_score": "0.9",
++            "structural_evidence_json": "{}",
++        },
++    ]
++    csv_path = tmp_path / "synthetic_results.csv"
++    _write_synthetic_results_csv(csv_path, rows)
++    verdicts = extract_primary_verdicts_from_csv(csv_path, composite_threshold=0.7)
++    assert len(verdicts) == 1
++    assert verdicts[0].ticker == "TKR2"
++    assert verdicts[0].composite_score == pytest.approx(0.82)
++
++
++def test_cohort_extractor_dedups_per_ticker_trough_1_date(tmp_path):
++    """Multiple windows on the same (ticker, trough_1_date) -> primary =
++    highest composite_score."""
++    rows = [
++        {
++            "cohort_entry_id": "0", "ticker": "TKR1", "asof_date": "2026-04-25",
++            "window_index": "0", "pattern_class": "double_bottom_w",
++            "geometric_score": "0.7", "template_match_score": "0.7",
++            "composite_score": "0.70",
++            "structural_evidence_json": '{"trough_1_date":"2026-02-15","trough_1_price":85.0,"center_peak_date":"2026-03-15","center_peak_price":105.0,"trough_2_date":"2026-04-10","trough_2_price":87.0,"pivot_price":104.0}',
++        },
++        {
++            "cohort_entry_id": "0", "ticker": "TKR1", "asof_date": "2026-04-25",
++            "window_index": "1", "pattern_class": "double_bottom_w",
++            "geometric_score": "0.95", "template_match_score": "0.9",
++            "composite_score": "0.93",
++            "structural_evidence_json": '{"trough_1_date":"2026-02-15","trough_1_price":85.0,"center_peak_date":"2026-03-15","center_peak_price":105.0,"trough_2_date":"2026-04-10","trough_2_price":87.0,"pivot_price":104.0}',
++        },
++    ]
++    csv_path = tmp_path / "synthetic_results.csv"
++    _write_synthetic_results_csv(csv_path, rows)
++    verdicts = extract_primary_verdicts_from_csv(csv_path, composite_threshold=0.7)
++    assert len(verdicts) == 1
++    assert verdicts[0].composite_score == pytest.approx(0.93)
++
++
++def test_recency_filter_uses_max_observed_asof_date(tmp_path):
++    """Two observations of same W: highest-composite asof OLDER than
++    most-recent asof. Recency uses max_observed_asof per D1 Codex R1 M#3.
++    """
++    rows = [
++        # Older observation: highest composite (becomes primary)
++        {
++            "cohort_entry_id": "0", "ticker": "TKR1", "asof_date": "2026-04-15",
++            "window_index": "0", "pattern_class": "double_bottom_w",
++            "geometric_score": "0.95", "template_match_score": "0.9",
++            "composite_score": "0.93",
++            "structural_evidence_json": '{"trough_1_date":"2026-02-15","trough_1_price":85.0,"center_peak_date":"2026-03-15","center_peak_price":105.0,"trough_2_date":"2026-04-10","trough_2_price":87.0,"pivot_price":104.0}',
++        },
++        # Newer observation: lower composite; same W structure
++        {
++            "cohort_entry_id": "1", "ticker": "TKR1", "asof_date": "2026-05-22",
++            "window_index": "0", "pattern_class": "double_bottom_w",
++            "geometric_score": "0.75", "template_match_score": "0.8",
++            "composite_score": "0.77",
++            "structural_evidence_json": '{"trough_1_date":"2026-02-15","trough_1_price":85.0,"center_peak_date":"2026-03-15","center_peak_price":105.0,"trough_2_date":"2026-04-10","trough_2_price":87.0,"pivot_price":104.0}',
++        },
++    ]
++    csv_path = tmp_path / "synthetic_results.csv"
++    _write_synthetic_results_csv(csv_path, rows)
++    verdicts = extract_primary_verdicts_from_csv(csv_path, composite_threshold=0.7)
++    assert len(verdicts) == 1
++    v = verdicts[0]
++    # Primary = highest composite (older observation; asof 2026-04-15)
++    assert v.anchor_asof_date == date(2026, 4, 15)
++    # max_observed_asof = newest observation (asof 2026-05-22)
++    assert v.max_observed_asof_date == date(2026, 5, 22)
++    # 2026-05-22 - 2026-04-10 = 42 calendar days; within 60d filter
++    filtered = filter_recent_patterns(verdicts, max_calendar_days=60)
++    assert len(filtered) == 1
++    # ...but a tight 30d filter rejects (42 > 30)
++    filtered_30 = filter_recent_patterns(verdicts, max_calendar_days=30)
++    assert len(filtered_30) == 0
++
++
++def test_cohort_pipeline_dedup_through_recency_chain(tmp_path):
++    """End-to-end: 3 verdicts with 2 W structures + recency filter -> 2 primaries.
++
++    Plant: TKR1 has 2 windows of one W (dedups to 1 primary); TKR2 has 1 W.
++    Both pass composite>=0.7 + recency.
++    """
++    rows = [
++        # TKR1 W1, window 0
++        {
++            "cohort_entry_id": "0", "ticker": "TKR1", "asof_date": "2026-05-15",
++            "window_index": "0", "pattern_class": "double_bottom_w",
++            "geometric_score": "0.85", "template_match_score": "0.85",
++            "composite_score": "0.85",
++            "structural_evidence_json": '{"trough_1_date":"2026-03-01","trough_1_price":80.0,"center_peak_date":"2026-03-20","center_peak_price":100.0,"trough_2_date":"2026-04-15","trough_2_price":82.0,"pivot_price":99.0}',
++        },
++        # TKR1 W1, window 1 (higher composite; primary)
++        {
++            "cohort_entry_id": "1", "ticker": "TKR1", "asof_date": "2026-05-15",
++            "window_index": "1", "pattern_class": "double_bottom_w",
++            "geometric_score": "0.95", "template_match_score": "0.95",
++            "composite_score": "0.95",
++            "structural_evidence_json": '{"trough_1_date":"2026-03-01","trough_1_price":80.0,"center_peak_date":"2026-03-20","center_peak_price":100.0,"trough_2_date":"2026-04-15","trough_2_price":82.0,"pivot_price":99.0}',
++        },
++        # TKR2 W2
++        {
++            "cohort_entry_id": "2", "ticker": "TKR2", "asof_date": "2026-05-22",
++            "window_index": "0", "pattern_class": "double_bottom_w",
++            "geometric_score": "0.80", "template_match_score": "0.80",
++            "composite_score": "0.80",
++            "structural_evidence_json": '{"trough_1_date":"2026-03-10","trough_1_price":50.0,"center_peak_date":"2026-04-05","center_peak_price":60.0,"trough_2_date":"2026-04-22","trough_2_price":52.0,"pivot_price":59.0}',
++        },
++    ]
++    csv_path = tmp_path / "synthetic_results.csv"
++    _write_synthetic_results_csv(csv_path, rows)
++    verdicts = extract_primary_verdicts_from_csv(csv_path, composite_threshold=0.7)
++    assert len(verdicts) == 2
++    merged = merge_adjacent_troughs(verdicts)
++    assert len(merged) == 2  # no adjacency merge fires (different tickers)
++    actionable = filter_recent_patterns(merged, max_calendar_days=60)
++    assert len(actionable) == 2
+diff --git a/tests/research/w_bottom_ruleset_comparison/test_io.py b/tests/research/w_bottom_ruleset_comparison/test_io.py
+new file mode 100644
+index 0000000..630b0bd
+--- /dev/null
++++ b/tests/research/w_bottom_ruleset_comparison/test_io.py
+@@ -0,0 +1,167 @@
++"""IO tests for D2: CSV schema preservation + cross-ruleset summary."""
++from __future__ import annotations
++
++import json
++from datetime import date, datetime, timezone
++from pathlib import Path
++
++import pytest
++
++from research.harness.w_bottom_ruleset_comparison.io import (
++    RESULTS_CSV_HEADER,
++    aggregate_stats,
++    cross_ruleset_comparison,
++    write_manifest,
++    write_results_csv,
++    write_summary_markdown,
++)
++from research.harness.w_bottom_ruleset_comparison.walkforward import Trade
++
++
++def _trade(
++    *,
++    ruleset_name: str = "A_minervini_trail_ma",
++    status: str = "closed",
++    r_multiple: float | None = -0.5,
++    exit_reason: str = "close_below_50d",
++    triggered: bool = True,
++    days_held: int | None = 3,
++    composite: float = 0.85,
++    pattern_id: str = "TEST-2026-01-01",
++    peak_R: float | None = 0.5,
++    dd_R: float | None = 1.0,
++) -> Trade:
++    return Trade(
++        pattern_id=pattern_id, ticker="TEST", ruleset_name=ruleset_name,
++        anchor_asof_date=date(2026, 5, 1), trough_1_date=date(2026, 1, 1),
++        center_peak_price=100.0, trough_2_price=90.0,
++        composite_score=composite, initial_stop=89.1,
++        entry_date=date(2026, 5, 5), entry_price=102.0,
++        exit_date=date(2026, 5, 8), exit_price=95.0,
++        exit_reason=exit_reason, r_multiple=r_multiple,
++        days_held=days_held, status=status,
++        triggered=triggered, trade_pnl_dollars=-18.75,
++        peak_unrealized_R=peak_R, drawdown_to_exit_R=dd_R,
++        forward_bars_available=30, max_forward_close=105.0,
++        max_close_pct_of_peak=105.0, days_t2_to_asof=20,
++        effective_asof_date=date(2026, 5, 1),
++        max_observed_asof_date=date(2026, 5, 1),
++    )
++
++
++def test_results_csv_header_has_27_columns():
++    """Preserve D1's 27-column schema post-Codex R3 M#2."""
++    assert len(RESULTS_CSV_HEADER) == 27
++
++
++def test_write_results_csv_emits_one_row_per_trade(tmp_path):
++    trades = [_trade(ruleset_name=rs) for rs in ("A_minervini_trail_ma", "B_fixed_R_multiple", "C_close_below_50d")]
++    csv_path = tmp_path / "results.csv"
++    write_results_csv(trades, csv_path)
++    lines = csv_path.read_text(encoding="utf-8").strip().split("\n")
++    assert len(lines) == 1 + len(trades)  # header + N rows
++    header = lines[0].split(",")
++    assert header == RESULTS_CSV_HEADER
++
++
++def test_aggregate_stats_per_ruleset_keyed_by_ruleset_name():
++    trades = [
++        _trade(ruleset_name="A_minervini_trail_ma", status="closed", r_multiple=0.5),
++        _trade(ruleset_name="A_minervini_trail_ma", status="closed", r_multiple=-1.0),
++        _trade(ruleset_name="B_fixed_R_multiple", status="closed", r_multiple=2.0),
++    ]
++    stats = aggregate_stats(trades)
++    assert set(stats.keys()) == {"A_minervini_trail_ma", "B_fixed_R_multiple"}
++    a = stats["A_minervini_trail_ma"]
++    assert a["n_closed"] == 2
++    assert a["winners"] == 1
++    assert a["losers"] == 1
++    assert a["win_rate_closed"] == pytest.approx(0.5)
++    assert a["expectancy_R_closed"] == pytest.approx(-0.25)
++
++
++def test_cross_ruleset_comparison_sorts_by_expectancy_descending():
++    """Higher expectancy = better rank (lower rank index)."""
++    trades = [
++        _trade(ruleset_name="A_minervini_trail_ma", r_multiple=-0.5),
++        _trade(ruleset_name="B_fixed_R_multiple", r_multiple=1.5),
++        _trade(ruleset_name="C_close_below_50d", r_multiple=0.0),
++    ]
++    ranked = cross_ruleset_comparison(trades)
++    assert ranked[0][0] == "B_fixed_R_multiple"  # best
++    assert ranked[1][0] == "C_close_below_50d"
++    assert ranked[2][0] == "A_minervini_trail_ma"  # worst
++
++
++def test_cross_ruleset_comparison_puts_n_closed_zero_rulesets_at_bottom():
++    """A ruleset with 0 closed trades has expectancy=None; sorts to bottom."""
++    trades = [
++        _trade(ruleset_name="A_minervini_trail_ma", r_multiple=0.5),
++        _trade(ruleset_name="B_fixed_R_multiple", status="open", r_multiple=0.2),
++    ]
++    ranked = cross_ruleset_comparison(trades)
++    # A has expectancy=0.5; B has None -> A first
++    assert ranked[0][0] == "A_minervini_trail_ma"
++    assert ranked[1][0] == "B_fixed_R_multiple"
++
++
++def test_write_summary_markdown_is_ascii_only(tmp_path):
++    """Per cumulative gotcha #32 -- ASCII discipline scope across all surfaces."""
++    trades = [
++        _trade(ruleset_name="A_minervini_trail_ma", r_multiple=0.5),
++        _trade(ruleset_name="B_fixed_R_multiple", r_multiple=-0.3),
++    ]
++    out_path = tmp_path / "summary.md"
++    write_summary_markdown(
++        trades, out_path,
++        n_patterns=2,
++        cohort_label="test_cohort",
++        population_notes="Synthetic test population.",
++    )
++    body = out_path.read_text(encoding="utf-8")
++    # Must encode as ASCII without errors per gotcha #32
++    body.encode("ascii")
++
++
++def test_write_summary_markdown_contains_cross_ruleset_comparison_section(tmp_path):
++    trades = [_trade(ruleset_name=rs) for rs in (
++        "A_minervini_trail_ma", "B_fixed_R_multiple", "C_close_below_50d",
++    )]
++    out_path = tmp_path / "summary.md"
++    write_summary_markdown(
++        trades, out_path,
++        n_patterns=1, cohort_label="test",
++    )
++    body = out_path.read_text(encoding="utf-8")
++    assert "Cross-ruleset comparison" in body
++    assert "Per-ruleset aggregate stats" in body
++    assert "Exit-reason breakdown" in body
++
++
++def test_write_manifest_carries_l2_lock_preserved_true(tmp_path):
++    out_path = tmp_path / "manifest.json"
++    started = datetime.now(timezone.utc)
++    finished = started
++    write_manifest(
++        out_path,
++        started_at_utc=started,
++        finished_at_utc=finished,
++        cohort_csv_path="test.csv",
++        cohort_csv_sha256="abc123",
++        cache_dir="/tmp/cache",
++        n_unique_verdicts_pre_filter=100,
++        n_verdicts_after_adjacency_merge=80,
++        n_patterns_after_recency_filter=50,
++        recency_max_calendar_days=60,
++        composite_threshold=0.7,
++        max_trigger_search_business_days=60,
++        n_trades_emitted=300,
++        n_distinct_tickers=40,
++        skipped_patterns={"ohlcv_missing": 0, "ohlcv_empty": 0},
++    )
++    data = json.loads(out_path.read_text(encoding="utf-8"))
++    assert data["l2_lock_preserved"] is True
++    assert data["rulesets_count"] == 6
++    assert len(data["rulesets_enumerated"]) == 6
++    assert "F_qullamaggie_momentum_burst" in data["rulesets_enumerated"]
++    assert data["harness_name"] == "w_bottom_ruleset_comparison"
+diff --git a/tests/research/w_bottom_ruleset_comparison/test_l2_lock.py b/tests/research/w_bottom_ruleset_comparison/test_l2_lock.py
+new file mode 100644
+index 0000000..12be5db
+--- /dev/null
++++ b/tests/research/w_bottom_ruleset_comparison/test_l2_lock.py
+@@ -0,0 +1,77 @@
++"""L2 LOCK BINDING tests for D2 harness (mirrors D1 dispatch brief §5.4).
++
++(a) Source-grep sentinel: no `import yfinance` / `import schwabdev` /
++    `swing.integrations.schwab` in NEW D2 module sources.
++(b) Import-graph sentinel: post-import, sys.modules does NOT contain
++    yfinance / schwabdev / swing.integrations.schwab as imported names.
++"""
++from __future__ import annotations
++
++import sys
++from pathlib import Path
++
++import pytest
++
++
++_D2_PACKAGE_DIR = Path(__file__).parent.parent.parent.parent / "research" / "harness" / "w_bottom_ruleset_comparison"
++
++
++def test_source_grep_no_forbidden_imports():
++    """Sentinel: D2 module sources MUST NOT contain forbidden import
++    statements per L2 LOCK BINDING (no Schwab/yfinance dependencies at
++    backtest time; all OHLCV reads route through the V2 Shape A reader)."""
++    assert _D2_PACKAGE_DIR.exists(), f"D2 package dir missing: {_D2_PACKAGE_DIR}"
++    forbidden_patterns = (
++        "import yfinance",
++        "from yfinance",
++        "import schwabdev",
++        "from schwabdev",
++        "from swing.integrations.schwab",
++        "import swing.integrations.schwab",
++    )
++    offenders = []
++    for source_file in _D2_PACKAGE_DIR.glob("*.py"):
++        body = source_file.read_text(encoding="utf-8")
++        for pattern in forbidden_patterns:
++            if pattern in body:
++                offenders.append((source_file.name, pattern))
++    assert not offenders, (
++        f"D2 module sources contain forbidden imports per L2 LOCK BINDING: {offenders}"
++    )
++
++
++def test_import_graph_post_import_excludes_forbidden_modules():
++    """Sentinel: importing the D2 package must NOT pull yfinance / schwabdev
++    / swing.integrations.schwab into sys.modules (transitively)."""
++    # Strip any pre-existing imports of D2 + L2-forbidden modules so the
++    # test is order-independent. (Test isolation: do NOT pop the production
++    # swing module tree itself; just check forbidden modules after import.)
++    for mod_name in list(sys.modules):
++        if (
++            mod_name.startswith("research.harness.w_bottom_ruleset_comparison")
++            or mod_name.startswith("yfinance")
++            or mod_name.startswith("schwabdev")
++            or mod_name.startswith("swing.integrations.schwab")
++        ):
++            sys.modules.pop(mod_name, None)
++
++    # Fresh import of the D2 package + its submodules.
++    import research.harness.w_bottom_ruleset_comparison  # noqa: F401
++    import research.harness.w_bottom_ruleset_comparison.rulesets  # noqa: F401
++    import research.harness.w_bottom_ruleset_comparison.walkforward  # noqa: F401
++    import research.harness.w_bottom_ruleset_comparison.io  # noqa: F401
++    import research.harness.w_bottom_ruleset_comparison.run  # noqa: F401
++
++    forbidden_prefixes = (
++        "yfinance",
++        "schwabdev",
++        "swing.integrations.schwab",
++    )
++    offenders = [
++        m for m in sys.modules
++        if any(m == p or m.startswith(p + ".") for p in forbidden_prefixes)
++    ]
++    assert not offenders, (
++        f"L2 LOCK violation: forbidden modules present in sys.modules after "
++        f"D2 import: {offenders}"
++    )
+diff --git a/tests/research/w_bottom_ruleset_comparison/test_rulesets.py b/tests/research/w_bottom_ruleset_comparison/test_rulesets.py
+new file mode 100644
+index 0000000..ab88e03
+--- /dev/null
++++ b/tests/research/w_bottom_ruleset_comparison/test_rulesets.py
+@@ -0,0 +1,439 @@
++"""Discriminating tests for the 6 rulesets (A/B/C/D/E/F).
++
++Test discipline mirrors D1: synthetic OHLCV with known close trajectory + plant
++the structural condition + assert per-bar action emitted matches spec.
++
++A/B/C tests preserve D1 semantics. D/E/F tests cover the NEW canonical exit
++rules per dispatch brief Section 3.4-3.6.
++"""
++from __future__ import annotations
++
++from datetime import date, timedelta
++
++import numpy as np
++import pandas as pd
++import pytest
++
++from research.harness.double_bottom_w_backtest.cohort import PrimaryVerdict
++from research.harness.w_bottom_ruleset_comparison.rulesets import (
++    RULESET_D_50D_GATE_MULT,
++    RULESET_E_STOP_PCT,
++    RULESET_F_ATR_WINDOW,
++    RULESET_F_MOMENTUM_ATR_MULT,
++    RulesetA,
++    RulesetB,
++    RulesetC,
++    RulesetD,
++    RulesetE,
++    RulesetF,
++    all_rulesets,
++)
++from research.harness.w_bottom_ruleset_comparison.walkforward import (
++    FullExit,
++    ScaleOut,
++    State,
++)
++
++
++# ---------------------------------------------------------------------------
++# Synthetic-bar helpers
++# ---------------------------------------------------------------------------
++def _bars(closes: list[float], highs: list[float] | None = None,
++          lows: list[float] | None = None, opens: list[float] | None = None,
++          volume: float = 100_000) -> pd.DataFrame:
++    """Build a synthetic OHLCV DataFrame with daily index."""
++    if highs is None:
++        highs = [c * 1.005 for c in closes]
++    if lows is None:
++        lows = [c * 0.995 for c in closes]
++    if opens is None:
++        opens = closes[:]
++    idx = pd.date_range("2026-01-02", periods=len(closes), freq="B")
++    return pd.DataFrame(
++        {"Open": opens, "High": highs, "Low": lows, "Close": closes,
++         "Volume": [volume] * len(closes)},
++        index=idx,
++    )
++
++
++def _verdict(
++    *,
++    center_peak: float = 100.0,
++    trough_2: float = 90.0,
++    trough_1: float = 88.0,
++    asof: date = date(2026, 4, 30),
++    composite: float = 0.85,
++) -> PrimaryVerdict:
++    return PrimaryVerdict(
++        ticker="TEST",
++        anchor_asof_date=asof,
++        trough_1_date=asof - timedelta(days=60),
++        trough_1_price=trough_1,
++        center_peak_date=asof - timedelta(days=40),
++        center_peak_price=center_peak,
++        trough_2_date=asof - timedelta(days=20),
++        trough_2_price=trough_2,
++        pivot_price=center_peak,
++        composite_score=composite,
++        geometric_score=composite,
++        template_match_score=composite,
++        max_observed_asof_date=asof,
++        observed_asof_dates=(asof,),
++    )
++
++
++# ---------------------------------------------------------------------------
++# Registry test
++# ---------------------------------------------------------------------------
++def test_all_rulesets_returns_6_in_canonical_order():
++    rs = all_rulesets()
++    assert len(rs) == 6
++    names = [r.name for r in rs]
++    assert names == [
++        "A_minervini_trail_ma",
++        "B_fixed_R_multiple",
++        "C_close_below_50d",
++        "D_minervini_stage2_progression",
++        "E_oneil_cup_with_handle_measured_move",
++        "F_qullamaggie_momentum_burst",
++    ]
++
++
++# ---------------------------------------------------------------------------
++# Ruleset A -- preserves D1 semantics (terminal close <= SMA50 wins)
++# ---------------------------------------------------------------------------
++def test_ruleset_a_terminal_close_below_sma50_fires_full_exit():
++    """If SMA50 is above close, A fires close_below_50d FullExit regardless
++    of stop / trail state."""
++    bars = _bars([110.0] * 50 + [80.0])  # SMA50 around 110; last close 80 << SMA50
++    rs = RulesetA()
++    v = _verdict()
++    state = rs.init_state(verdict=v, bars=bars, entry_idx=50, entry_price=110.0, initial_stop=90.0)
++    action = rs.update_and_check(
++        state=state, bars=bars, bar_idx=50, entry_idx=50,
++        entry_price=110.0, initial_R=20.0,
++    )
++    assert isinstance(action, FullExit)
++    assert action.reason == "close_below_50d"
++
++
++def test_ruleset_a_does_not_raise_stop_to_breakeven_at_trail_arm():
++    """Codex R1 M#1 (D1): trail-arm sets state.extra['trail_armed']=True but
++    does NOT raise the stop to entry_price. D2 preserves this semantic."""
++    bars = _bars([100.0] * 30 + [200.0])  # huge +R move at last bar
++    rs = RulesetA()
++    v = _verdict()
++    state = rs.init_state(verdict=v, bars=bars, entry_idx=29, entry_price=100.0, initial_stop=90.0)
++    pre_stop = state.current_stop
++    rs.update_and_check(
++        state=state, bars=bars, bar_idx=30, entry_idx=29,
++        entry_price=100.0, initial_R=10.0,
++    )
++    # Trail armed but no breakeven raise
++    assert state.extra.get("trail_armed") is True
++    # current_stop may have been raised by trail formula; but NOT to entry_price=100 directly.
++    # The post-arm trail uses SMA21 - 1*ATR14 which on synthetic flat data lands near 100 - small_atr.
++    # The key invariant: no automatic BE raise on arm itself.
++    assert state.current_stop != 100.0 or state.current_stop == pre_stop
++
++
++# ---------------------------------------------------------------------------
++# Ruleset B -- Fixed R-multiple (D1 reuse)
++# ---------------------------------------------------------------------------
++def test_ruleset_b_target_3R_fires_full_exit_at_target_price():
++    bars = _bars([100.0, 105.0, 110.0, 115.0, 130.0])
++    rs = RulesetB()
++    v = _verdict()
++    initial_stop = 90.0
++    state = rs.init_state(verdict=v, bars=bars, entry_idx=0, entry_price=100.0, initial_stop=initial_stop)
++    # +3R = 100 + 3 * 10 = 130; close=130 at bar_idx=4
++    action = rs.update_and_check(
++        state=state, bars=bars, bar_idx=4, entry_idx=0,
++        entry_price=100.0, initial_R=10.0,
++    )
++    assert isinstance(action, FullExit)
++    assert action.reason == "target_3R"
++    assert action.price == 130.0  # TARGET price, not close
++
++
++def test_ruleset_b_stop_hit_at_close_below_initial_stop():
++    bars = _bars([100.0, 95.0, 89.0])
++    rs = RulesetB()
++    v = _verdict()
++    state = rs.init_state(verdict=v, bars=bars, entry_idx=0, entry_price=100.0, initial_stop=90.0)
++    action = rs.update_and_check(
++        state=state, bars=bars, bar_idx=2, entry_idx=0,
++        entry_price=100.0, initial_R=10.0,
++    )
++    assert isinstance(action, FullExit)
++    assert action.reason == "stop_hit"
++    assert action.price == 89.0
++
++
++# ---------------------------------------------------------------------------
++# Ruleset C -- Close-below-50d (D1 reuse)
++# ---------------------------------------------------------------------------
++def test_ruleset_c_close_below_50d_fires():
++    bars = _bars([110.0] * 50 + [100.0])  # SMA50 around 110; close=100 < SMA50
++    rs = RulesetC()
++    v = _verdict()
++    state = rs.init_state(verdict=v, bars=bars, entry_idx=50, entry_price=110.0, initial_stop=90.0)
++    action = rs.update_and_check(
++        state=state, bars=bars, bar_idx=50, entry_idx=50,
++        entry_price=110.0, initial_R=20.0,
++    )
++    assert isinstance(action, FullExit)
++    assert action.reason == "close_below_50d"
++
++
++# ---------------------------------------------------------------------------
++# Ruleset D -- Minervini Stage-2 progression (NEW)
++# ---------------------------------------------------------------------------
++def test_ruleset_d_breakeven_arms_at_plus_2R_and_raises_stop_to_entry():
++    bars = _bars([100.0, 105.0, 115.0, 125.0])  # +2R hit at bar_idx=2 (close=115; +1.5R)
++    # Use initial_stop=90 so +2R = 100 + 2*10 = 120
++    bars = _bars([100.0, 105.0, 110.0, 120.0])  # +2R at bar_idx=3 (close=120; +2.0R)
++    rs = RulesetD()
++    v = _verdict()
++    state = rs.init_state(verdict=v, bars=bars, entry_idx=0, entry_price=100.0, initial_stop=90.0)
++    assert not state.breakeven_armed
++    rs.update_and_check(
++        state=state, bars=bars, bar_idx=3, entry_idx=0,
++        entry_price=100.0, initial_R=10.0,
++    )
++    assert state.breakeven_armed is True
++    assert state.current_stop >= 100.0  # raised to at least entry (BE)
++
++
++def test_ruleset_d_50d_gate_does_not_fire_when_sma50_at_or_below_entry_threshold():
++    """sma50 = 100 (= entry); gate requires sma50 > entry * 1.05 = 105.
++    Gate NOT armed; close <= sma50 should NOT fire exit."""
++    closes = [100.0] * 50 + [95.0]  # SMA50 = 100; close = 95
++    bars = _bars(closes)
++    rs = RulesetD()
++    v = _verdict()
++    state = rs.init_state(verdict=v, bars=bars, entry_idx=50, entry_price=100.0, initial_stop=90.0)
++    action = rs.update_and_check(
++        state=state, bars=bars, bar_idx=50, entry_idx=50,
++        entry_price=100.0, initial_R=10.0,
++    )
++    # 95 > current_stop (90), so no stop hit. sma50 = 100 NOT > entry * 1.05 (105),
++    # so gate NOT armed; no close_below_50d_gated exit. Should return None.
++    assert action is None
++
++
++def test_ruleset_d_50d_gate_fires_when_sma50_above_entry_times_1_05_and_close_below_sma50():
++    # SMA50 = 120 (well above entry 100 * 1.05 = 105); close = 115 (below SMA50)
++    closes = [120.0] * 50 + [115.0]
++    bars = _bars(closes)
++    rs = RulesetD()
++    v = _verdict()
++    state = rs.init_state(verdict=v, bars=bars, entry_idx=50, entry_price=100.0, initial_stop=90.0)
++    action = rs.update_and_check(
++        state=state, bars=bars, bar_idx=50, entry_idx=50,
++        entry_price=100.0, initial_R=10.0,
++    )
++    assert isinstance(action, FullExit)
++    assert action.reason == "close_below_50d_gated"
++
++
++def test_ruleset_d_50d_gate_mult_is_1_05():
++    """Lock the exact gate threshold per dispatch brief Section 3.4."""
++    assert RULESET_D_50D_GATE_MULT == pytest.approx(1.05)
++
++
++# ---------------------------------------------------------------------------
++# Ruleset E -- O'Neil cup-with-handle + Bulkowski measured-move (NEW)
++# ---------------------------------------------------------------------------
++def test_ruleset_e_initial_stop_uses_max_of_trough_floor_and_oneil_8pct():
++    """Use whichever is HIGHER (tighter risk) per brief Section 3.5."""
++    rs = RulesetE()
++    # Case 1: trough_2 stop tighter (trough_2 * 0.99 = 99 > entry * 0.92 = 92)
++    v = _verdict(trough_2=100.0, trough_1=98.0)
++    stop = rs.initial_stop(verdict=v, entry_price=100.0)
++    assert stop == pytest.approx(99.0)  # 100 * 0.99
++    # Case 2: O'Neil 8% tighter (entry * 0.92 = 92 > trough_2 * 0.99 = 89.1)
++    v = _verdict(trough_2=90.0, trough_1=88.0)
++    stop = rs.initial_stop(verdict=v, entry_price=100.0)
++    assert stop == pytest.approx(92.0)  # entry * 0.92
++
++
++def test_ruleset_e_measured_move_target_equals_entry_plus_W_height():
++    """target = entry + (center_peak - min(trough_1, trough_2))."""
++    rs = RulesetE()
++    v = _verdict(center_peak=120.0, trough_1=85.0, trough_2=80.0)
++    bars = _bars([100.0] * 10)
++    initial_stop = rs.initial_stop(verdict=v, entry_price=100.0)
++    state = rs.init_state(verdict=v, bars=bars, entry_idx=0, entry_price=100.0, initial_stop=initial_stop)
++    # W height = 120 - min(85, 80) = 120 - 80 = 40; target = 100 + 40 = 140
++    assert state.extra["target_price"] == pytest.approx(140.0)
++
++
++def test_ruleset_e_target_exit_fires_at_target_price_not_close():
++    rs = RulesetE()
++    v = _verdict(center_peak=110.0, trough_1=88.0, trough_2=90.0)
++    bars = _bars([100.0, 105.0, 110.0, 125.0])  # bar_idx=3 close=125 >= target 120
++    initial_stop = rs.initial_stop(verdict=v, entry_price=100.0)
++    state = rs.init_state(verdict=v, bars=bars, entry_idx=0, entry_price=100.0, initial_stop=initial_stop)
++    # target = 100 + (110 - 88) = 122; close=125 >= 122 -> target fires at PRICE 122
++    target = state.extra["target_price"]
++    action = rs.update_and_check(
++        state=state, bars=bars, bar_idx=3, entry_idx=0,
++        entry_price=100.0, initial_R=100.0 - initial_stop,
++    )
++    assert isinstance(action, FullExit)
++    assert action.reason == "target_measured_move"
++    assert action.price == pytest.approx(target)
++
++
++def test_ruleset_e_no_trail_no_50d_no_momentum_gate():
++    """E ONLY has stop_hit + target_measured_move. No SMA-based exits.
++    Plant a setup where SMA50 < close + position open + no target hit:
++    should return None (continue holding)."""
++    rs = RulesetE()
++    v = _verdict(center_peak=200.0, trough_1=88.0, trough_2=90.0)  # high target
++    closes = [105.0] * 50 + [115.0]
++    bars = _bars(closes)
++    initial_stop = rs.initial_stop(verdict=v, entry_price=100.0)
++    state = rs.init_state(verdict=v, bars=bars, entry_idx=50, entry_price=100.0, initial_stop=initial_stop)
++    action = rs.update_and_check(
++        state=state, bars=bars, bar_idx=50, entry_idx=50,
++        entry_price=100.0, initial_R=100.0 - initial_stop,
++    )
++    # close=115; target is 100 + (200 - 88) = 212; not hit. SMA50 ~ 105 (above stop).
++    # E has no 50d exit; should return None.
++    assert action is None
++
++
++def test_ruleset_e_stop_at_oneil_8pct_uses_max():
++    rs = RulesetE()
++    assert RULESET_E_STOP_PCT == pytest.approx(0.92)
++
++
++# ---------------------------------------------------------------------------
++# Ruleset F -- Qullamaggie momentum-burst (NEW)
++# ---------------------------------------------------------------------------
++def test_ruleset_f_initial_atr_captured_at_entry_bar():
++    # Generate bars with predictable ATR; capture at entry_idx
++    closes = [100.0 + i * 0.5 for i in range(30)]  # gentle uptrend
++    bars = _bars(closes, highs=[c + 1.0 for c in closes], lows=[c - 1.0 for c in closes])
++    rs = RulesetF()
++    v = _verdict()
++    state = rs.init_state(verdict=v, bars=bars, entry_idx=20, entry_price=110.0, initial_stop=99.0)
++    assert state.initial_atr14 is not None
++    assert state.initial_atr14 > 0  # ATR is positive
++
++
++def test_ruleset_f_momentum_gate_fires_at_session_6_open_if_not_armed():
++    """No momentum: closes stay at entry; ATR > 0; gate should fire at session 6 OPEN."""
++    # Pre-entry bars to satisfy ATR window; entry bar + 5 flat sessions
++    pre = [100.0] * 20
++    post = [101.0] * 6  # tiny moves; close - entry < ATR
++    closes = pre + post
++    bars = _bars(closes, highs=[c + 1.0 for c in closes], lows=[c - 1.0 for c in closes])
++    rs = RulesetF()
++    v = _verdict()
++    state = rs.init_state(verdict=v, bars=bars, entry_idx=20, entry_price=100.0, initial_stop=90.0)
++    # Walk sessions 1..6
++    for i in range(20, 26):
++        action = rs.update_and_check(
++            state=state, bars=bars, bar_idx=i, entry_idx=20,
++            entry_price=100.0, initial_R=10.0,
++        )
++        session_n = i - 20 + 1
++        if session_n == 6:
++            # Should fire momentum_gate_fail at this bar OPEN
++            assert isinstance(action, FullExit)
++            assert action.reason == "momentum_gate_fail"
++            assert action.price == float(bars["Open"].iloc[i])
++        else:
++            assert action is None
++
++
++def test_ruleset_f_momentum_gate_does_not_fire_when_armed_in_sessions_1_to_5():
++    """If close - entry >= ATR14 anywhere in sessions 1-5, gate arms and
++    session 6 does NOT exit on momentum_gate_fail."""
++    pre = [100.0] * 20
++    # Build pre-entry ATR ~ 2 (high-low = 2)
++    pre_highs = [101.0] * 20
++    pre_lows = [99.0] * 20
++    # Session 1 (entry bar): close 100; sessions 2-3 spike +5; sessions 4-6 hold
++    post = [100.0, 105.0, 105.0, 105.0, 105.0, 105.0]
++    post_highs = [101.0, 106.0, 106.0, 106.0, 106.0, 106.0]
++    post_lows = [99.0, 104.0, 104.0, 104.0, 104.0, 104.0]
++    closes = pre + post
++    highs = pre_highs + post_highs
++    lows = pre_lows + post_lows
++    bars = _bars(closes, highs=highs, lows=lows)
++    rs = RulesetF()
++    v = _verdict()
++    state = rs.init_state(verdict=v, bars=bars, entry_idx=20, entry_price=100.0, initial_stop=90.0)
++    # ATR ~ 2; close - entry by session 2 = 5 >= 2; gate arms.
++    actions = []
++    for i in range(20, 26):
++        a = rs.update_and_check(
++            state=state, bars=bars, bar_idx=i, entry_idx=20,
++            entry_price=100.0, initial_R=10.0,
++        )
++        actions.append(a)
++    # Gate should be armed; no momentum_gate_fail across the 6 sessions
++    assert state.momentum_gate_armed is True
++    assert not any(
++        isinstance(a, FullExit) and a.reason == "momentum_gate_fail" for a in actions
++    )
++
++
++def test_ruleset_f_scale_out_fires_at_plus_2R_close():
++    """Plant a setup that reaches +2R; verify ScaleOut(1/3) fires."""
++    pre = [100.0] * 20
++    # Entry 100, R = 10; +2R = 120
++    post = [101.0, 105.0, 120.0]
++    closes = pre + post
++    bars = _bars(closes, highs=[c + 1.0 for c in closes], lows=[c - 1.0 for c in closes])
++    rs = RulesetF()
++    v = _verdict()
++    state = rs.init_state(verdict=v, bars=bars, entry_idx=20, entry_price=100.0, initial_stop=90.0)
++    # Walk sessions 1..3
++    actions = []
++    for i in range(20, 23):
++        actions.append(
++            rs.update_and_check(
++                state=state, bars=bars, bar_idx=i, entry_idx=20,
++                entry_price=100.0, initial_R=10.0,
++            )
++        )
++    # +2R at session 3 (close=120)
++    assert isinstance(actions[2], ScaleOut)
++    assert actions[2].fraction == pytest.approx(1.0 / 3.0)
++    assert actions[2].price == 120.0
++    assert actions[2].reason == "scale_out_2R"
++
++
++def test_ruleset_f_scale_out_raises_stop_to_breakeven():
++    pre = [100.0] * 20
++    post = [101.0, 105.0, 120.0]
++    closes = pre + post
++    bars = _bars(closes, highs=[c + 1.0 for c in closes], lows=[c - 1.0 for c in closes])
++    rs = RulesetF()
++    v = _verdict()
++    state = rs.init_state(verdict=v, bars=bars, entry_idx=20, entry_price=100.0, initial_stop=90.0)
++    for i in range(20, 23):
++        action = rs.update_and_check(
++            state=state, bars=bars, bar_idx=i, entry_idx=20,
++            entry_price=100.0, initial_R=10.0,
++        )
++        if isinstance(action, ScaleOut):
++            state.scale_out_fired = True  # walkforward normally does this
++            state.scale_out_R = (action.price - 100.0) / 10.0
++            state.scale_out_fraction = action.fraction
++    # Stop should have been raised to >= entry (BE)
++    assert state.current_stop >= 100.0
++    assert state.breakeven_armed is True
++
++
++def test_ruleset_f_momentum_atr_mult_locked_at_1_0():
++    assert RULESET_F_MOMENTUM_ATR_MULT == pytest.approx(1.0)
++
++
++def test_ruleset_f_atr_window_locked_at_14():
++    assert RULESET_F_ATR_WINDOW == 14
+diff --git a/tests/research/w_bottom_ruleset_comparison/test_walkforward.py b/tests/research/w_bottom_ruleset_comparison/test_walkforward.py
+new file mode 100644
+index 0000000..dff21f6
+--- /dev/null
++++ b/tests/research/w_bottom_ruleset_comparison/test_walkforward.py
+@@ -0,0 +1,258 @@
++"""Walk-forward engine tests for D2 (extends D1 coverage with scale-out path)."""
++from __future__ import annotations
++
++from datetime import date, timedelta
++
++import pandas as pd
++import pytest
++
++from research.harness.double_bottom_w_backtest.cohort import PrimaryVerdict
++from research.harness.w_bottom_ruleset_comparison.rulesets import (
++    RulesetB,
++    RulesetC,
++    RulesetE,
++    RulesetF,
++)
++from research.harness.w_bottom_ruleset_comparison.walkforward import (
++    FullExit,
++    ScaleOut,
++    State,
++    find_trigger_index,
++    sma_at,
++    atr_at,
++    trigger_search_upper_bound,
++    walk_forward,
++    _weighted_R,
++)
++
++
++def _bars(closes: list[float], opens: list[float] | None = None,
++          highs: list[float] | None = None, lows: list[float] | None = None,
++          start: date = date(2026, 1, 2)) -> pd.DataFrame:
++    if opens is None:
++        opens = closes[:]
++    if highs is None:
++        highs = [c * 1.005 for c in closes]
++    if lows is None:
++        lows = [c * 0.995 for c in closes]
++    idx = pd.date_range(start, periods=len(closes), freq="B")
++    return pd.DataFrame(
++        {"Open": opens, "High": highs, "Low": lows, "Close": closes,
++         "Volume": [100_000] * len(closes)},
++        index=idx,
++    )
++
++
++def _verdict(asof: date = date(2026, 4, 30), **kw) -> PrimaryVerdict:
++    defaults = dict(
++        ticker="TEST",
++        anchor_asof_date=asof,
++        trough_1_date=asof - timedelta(days=60),
++        trough_1_price=88.0,
++        center_peak_date=asof - timedelta(days=40),
++        center_peak_price=100.0,
++        trough_2_date=asof - timedelta(days=20),
++        trough_2_price=90.0,
++        pivot_price=100.0,
++        composite_score=0.85,
++        geometric_score=0.85,
++        template_match_score=0.85,
++        max_observed_asof_date=asof,
++        observed_asof_dates=(asof,),
++    )
++    defaults.update(kw)
++    return PrimaryVerdict(**defaults)
++
++
++# ---------------------------------------------------------------------------
++# Helper tests (SMA / ATR)
++# ---------------------------------------------------------------------------
++def test_sma_at_returns_none_if_insufficient_bars():
++    bars = _bars([100.0, 101.0])
++    assert sma_at(bars, 1, 5) is None  # need 5 bars, only have 2
++    assert sma_at(bars, 1, 2) == pytest.approx(100.5)
++
++
++def test_atr_at_returns_none_if_insufficient_bars():
++    bars = _bars([100.0, 101.0])
++    assert atr_at(bars, 1, 14) is None
++    assert atr_at(bars, 1, 1) is not None  # 1 bar + prior close = ok
++
++
++# ---------------------------------------------------------------------------
++# Trigger search tests
++# ---------------------------------------------------------------------------
++def test_find_trigger_index_returns_first_close_above_threshold():
++    bars = _bars([95.0, 98.0, 99.0, 101.0, 105.0])
++    # lower_bound is EXCLUSIVE; uppers INCLUSIVE
++    idx = find_trigger_index(
++        bars, trigger_threshold=100.0,
++        lower_bound_exclusive=date(2026, 1, 1),
++        upper_bound_inclusive=date(2026, 12, 31),
++    )
++    assert idx == 3  # close=101 at idx=3 is first > 100
++
++
++def test_find_trigger_index_returns_none_if_no_close_above():
++    bars = _bars([90.0, 95.0, 99.0])
++    idx = find_trigger_index(
++        bars, trigger_threshold=100.0,
++        lower_bound_exclusive=date(2026, 1, 1),
++        upper_bound_inclusive=date(2026, 12, 31),
++    )
++    assert idx is None
++
++
++def test_find_trigger_index_respects_lower_bound_exclusive():
++    """A close > threshold AT or BEFORE lower_bound is ignored.
++
++    Need 5 bars so that trigger at idx 3 has idx 4 entry-open available
++    (find_trigger_index requires i + 1 < n).
++    """
++    bars = _bars([105.0, 95.0, 99.0, 102.0, 110.0])
++    # lower_bound at bars[0] date; bars[0] should be ignored
++    idx = find_trigger_index(
++        bars, trigger_threshold=100.0,
++        lower_bound_exclusive=bars.index[0].date(),
++        upper_bound_inclusive=date(2026, 12, 31),
++    )
++    assert idx == 3  # not 0 (lower_bound skips idx 0)
++
++
++def test_trigger_search_upper_bound_60_business_days():
++    ub = trigger_search_upper_bound(date(2026, 4, 30), max_business_days=60)
++    # 60 business days from Thu 2026-04-30 lands in late July 2026
++    assert ub > date(2026, 7, 1)
++    assert ub < date(2026, 8, 15)
++
++
++# ---------------------------------------------------------------------------
++# walk_forward integration tests (using RulesetC for simple semantics)
++# ---------------------------------------------------------------------------
++def test_walk_forward_untriggered_when_no_close_above_center_peak():
++    # asof=2026-04-30; bars from 2026-01-02 through 2026-04-30 + forward window
++    # All closes well below center_peak=100 in forward window
++    closes = [85.0] * 120
++    bars = _bars(closes, start=date(2026, 1, 2))
++    # asof_date in middle so there's forward window
++    v = _verdict(asof=date(2026, 3, 6))  # bar around idx 45
++    trade = walk_forward(v, bars, RulesetC())
++    assert trade.status == "untriggered"
++    assert trade.triggered is False
++    assert trade.exit_reason == "untriggered"
++
++
++def test_walk_forward_emits_open_at_data_tail_when_no_exit_fires():
++    # Build bars where close > center_peak after asof but no exit ever fires
++    # Use RulesetB whose only exits are stop_hit / target_3R
++    closes = [85.0] * 50 + [102.0, 103.0, 104.0]  # trigger at bar 50 (close=102>100); entry next bar
++    bars = _bars(closes, start=date(2026, 1, 2))
++    # asof = date at idx 30 (well before trigger)
++    v = _verdict(asof=bars.index[30].date())
++    trade = walk_forward(v, bars, RulesetB())
++    # Trigger window is asof+1 to asof+60BD; trigger at idx 50
++    assert trade.status == "open"
++    assert trade.triggered is True
++    assert trade.exit_reason == "open_at_data_tail"
++
++
++def test_walk_forward_entry_gap_below_stop_emits_synthetic_closed():
++    """Entry bar's OPEN <= initial_stop -> degenerate; emit closed-at-0R."""
++    closes = [85.0] * 50 + [102.0]  # trigger at 50
++    opens = [85.0] * 50 + [101.0, 80.0]  # entry next bar opens at 80 < initial_stop 89.1
++    closes += [80.0]
++    bars = _bars(closes, opens=opens[: len(closes)], start=date(2026, 1, 2))
++    v = _verdict(asof=bars.index[30].date(), trough_2_price=90.0)
++    trade = walk_forward(v, bars, RulesetB())
++    assert trade.status == "closed"
++    assert trade.exit_reason == "entry_gap_below_stop"
++    assert trade.r_multiple == 0.0
++
++
++def test_walk_forward_ohlcv_empty_returns_untriggered():
++    bars = _bars([], start=date(2026, 1, 2))  # would fail; build empty
++    bars = pd.DataFrame({"Open": [], "High": [], "Low": [], "Close": [], "Volume": []})
++    v = _verdict()
++    trade = walk_forward(v, bars, RulesetC())
++    assert trade.exit_reason == "ohlcv_empty"
++    assert trade.status == "untriggered"
++
++
++# ---------------------------------------------------------------------------
++# Scale-out weighted R tests (NEW for D2)
++# ---------------------------------------------------------------------------
++def test_weighted_R_without_scale_out_returns_remainder_R_verbatim():
++    state = State(current_stop=90.0)
++    assert _weighted_R(state, 1.5) == pytest.approx(1.5)
++
++
++def test_weighted_R_with_scale_out_blends_R_per_fraction():
++    """scale_R=+2.0R at fraction=1/3; remainder ends at +0.5R.
++    weighted = (1/3)*2 + (2/3)*0.5 = 0.6667 + 0.3333 = 1.0R."""
++    state = State(current_stop=100.0, scale_out_fired=True,
++                  scale_out_R=2.0, scale_out_fraction=1.0 / 3.0)
++    weighted = _weighted_R(state, 0.5)
++    expected = (1.0 / 3.0) * 2.0 + (2.0 / 3.0) * 0.5
++    assert weighted == pytest.approx(expected)
++
++
++def test_walk_forward_with_ruleset_f_scale_out_then_continues():
++    """Plant +2R move (scale-out fires) + then close-below-50d_gated trigger
++    later -> exit_reason gets `_after_scaleout` suffix; r_multiple is weighted."""
++    # Build bars: pre-history for ATR, entry+trigger, +2R move, then decline below SMA50_gated
++    pre_closes = [100.0] * 50
++    # trigger at idx 50 (close=102 > center_peak=100)
++    # entry at idx 51 (open=102, close=105)
++    # +2R = entry + 2*R; entry=102, R=102 - 90*0.99 = 102 - 89.1 = 12.9; +2R = 127.8
++    # session 1 (idx 51): close=105
++    # session 2 (idx 52): close=130 -> +2R hit -> ScaleOut + BE arm
++    # subsequent: SMA50 climbs above entry * 1.05 = 107.1; eventually close drops below SMA50
++    # build sufficient bars for SMA50 to climb above 107.1 then close drops below
++    post = [
++        102.0,  # idx 50 trigger close
++        105.0,  # idx 51 entry close (session 1)
++        130.0,  # idx 52 +2R scale-out (session 2)
++        135.0, 140.0, 145.0,  # sustained higher closes -> SMA50 climbs
++        # subsequent sustained higher closes lift SMA50 above 107.1
++    ]
++    # Add many high closes to lift SMA50, then a drop below SMA50
++    post += [140.0] * 100  # SMA50 climbs to ~140
++    post += [100.0]  # final close drops below SMA50 (~140) and < entry*1.05 - but
++                      # gated 50d requires sma50 > entry*1.05 (=107.1) AND close <= sma50.
++                      # SMA50 ~ 140 > 107.1 -> gate armed; close=100 < 140 -> exit fires.
++    closes = pre_closes + post
++    # Opens match closes (no gaps); highs/lows tight band
++    bars = _bars(closes, start=date(2026, 1, 2))
++    asof = bars.index[40].date()  # before trigger; lower_bound=max(trough dates, asof)+1
++    v = _verdict(asof=asof, center_peak_price=100.0, trough_2_price=90.0, trough_1_price=88.0)
++    trade = walk_forward(v, bars, RulesetF())
++    assert trade.status == "closed"
++    # Either close_below_50d_gated_after_scaleout OR open_at_data_tail_after_scaleout
++    # (depending on whether the late drop fires the gate or runs to data tail)
++    assert "after_scaleout" in trade.exit_reason
++    # r_multiple should be the weighted blend (positive due to +2R scale-out)
++    assert trade.r_multiple is not None
++    # Scale-out contribution: (1/3) * 2R = +0.667R; remainder R can be much
++    # smaller or negative; weighted should still be positive overall in this setup.
++    assert trade.r_multiple > 0
++
++
++# ---------------------------------------------------------------------------
++# walk_forward Ruleset E measured-move target test
++# ---------------------------------------------------------------------------
++def test_walk_forward_ruleset_e_exits_at_target_when_close_above_target():
++    pre = [85.0] * 50
++    # trigger at idx 50 (close 102 > center_peak 100)
++    # entry at idx 51 (open 102)
++    # target = entry + (center_peak - min(trough_1, trough_2)) = 102 + (100 - 88) = 114
++    # plant close 115 at idx 53 (well above target)
++    post = [102.0, 102.0, 110.0, 115.0]
++    closes = pre + post
++    bars = _bars(closes, start=date(2026, 1, 2))
++    asof = bars.index[40].date()
++    v = _verdict(asof=asof, center_peak_price=100.0, trough_1_price=88.0, trough_2_price=90.0)
++    trade = walk_forward(v, bars, RulesetE())
++    assert trade.status == "closed"
++    assert trade.exit_reason == "target_measured_move"
++    # Target = 102 + (100 - 88) = 114; exit_price should equal target
++    assert trade.exit_price == pytest.approx(114.0)

@@ -29,6 +29,7 @@ from research.harness.double_bottom_w_backtest.cohort import (
     merge_adjacent_troughs,
 )
 from research.harness.w_bottom_ruleset_comparison.io import (
+    per_ruleset_patterns_count,
     write_manifest,
     write_results_csv,
     write_summary_markdown,
@@ -272,6 +273,8 @@ def main(argv: list[str] | None = None) -> int:
         n_trades_emitted=len(trades),
         n_distinct_tickers=n_distinct_tickers,
         skipped_patterns=skipped,
+        per_ruleset_patterns=per_ruleset_patterns_count(trades),
+        both_exist_diagnostic_count=diagnostic.count,
         rulesets_count=rulesets_count,
         source_artifact_manifest_path=src_manifest_path,
         source_artifact_manifest_sha256=src_manifest_sha,

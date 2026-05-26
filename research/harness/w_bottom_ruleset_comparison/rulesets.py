@@ -52,6 +52,27 @@ Source citations:
 All rulesets use CLOSE-based exit semantics throughout (no intraday Low/High
 triggers) per dispatch brief Section 3 + D1 precedent. The momentum_gate_fail
 in F is an OPEN-based exit at session 6 by canonical spec design.
+
+Stop equality conventions (Codex R1 m#2):
+  - A/B/C/D/F use `close < current_stop` (STRICT less-than) for the stop_hit
+    branch, preserving D1 Ruleset A/B/C precedent semantics. This means a
+    close EXACTLY AT the stop price holds the position one more bar.
+  - E uses `close <= initial_stop` (less-than-or-equal) per dispatch brief
+    Section 3.5's literal text ("close <= initial stop fires stop_hit"). The
+    asymmetry is in the brief itself; preserved literally here.
+
+Trail-ordering convention (Codex R1 M#3):
+  - D / F evaluate the CLOSE-vs-CURRENT-STOP check BEFORE raising the trail
+    stop with today's SMA. This is the "check-then-raise" pattern preserved
+    from D1 Ruleset A: today's close exits only against the stop set by
+    YESTERDAY's data; today's SMA-derived stop applies starting NEXT bar.
+    Equivalent to "trail the stop daily on close-of-bar, evaluate exit on
+    open-of-next-bar (or close-of-same-bar already past)" in operator
+    practice.
+  - Codex R1 M#3 flagged the alternative "raise-then-check" interpretation:
+    that would tighten the exit. The D1 + D2 implementation EXPLICITLY chose
+    check-then-raise for consistency with D1 + the literal "trail daily"
+    semantic. V2 candidate: test BOTH orderings as separate ruleset variants.
 """
 from __future__ import annotations
 
@@ -389,9 +410,26 @@ class RulesetF:
         entry_price: float,
         initial_stop: float,
     ) -> State:
-        """Capture ATR14 at the entry bar for the momentum gate threshold."""
+        """Capture ATR14 at the entry bar for the momentum gate threshold.
+
+        ATR14 NULL handling (Codex R1 M#2): if `atr_at()` returns None due to
+        insufficient pre-entry bars (need >= 15), the momentum gate CANNOT be
+        evaluated. Rather than implicitly auto-failing every such trade at
+        session 6 (a silent losing-rule variant), we treat the gate as
+        ARMED-BY-DEFAULT so the trade continues per the other Ruleset F rules
+        (scale-out / BE / SMA20 trail / gated 50d exit). This preserves the
+        spec's "momentum confirmation" intent without penalizing trades that
+        the archive cannot evaluate. Documented limitation; banked as a V2
+        candidate (use a fallback threshold like 1% of entry_price when ATR
+        unavailable).
+        """
         atr14_at_entry = atr_at(bars, entry_idx, RULESET_F_ATR_WINDOW)
-        return State(current_stop=initial_stop, initial_atr14=atr14_at_entry)
+        gate_armed_by_default = atr14_at_entry is None or atr14_at_entry <= 0
+        return State(
+            current_stop=initial_stop,
+            initial_atr14=atr14_at_entry,
+            momentum_gate_armed=gate_armed_by_default,
+        )
 
     def update_and_check(
         self,
@@ -407,15 +445,10 @@ class RulesetF:
         # session_n: 1 = entry bar; 2..N = subsequent sessions.
         session_n = bar_idx - entry_idx + 1
 
-        # 1. Stop check (close-based; once scale-out fired the stop is BE/SMA20)
-        if close < state.current_stop:
-            reason = "trail_stop" if state.scale_out_fired else "stop_hit"
-            return FullExit(close, reason)
-
-        # 2. Momentum gate fail at session 6 OPEN if neither armed nor scaled.
-        # The arming check at step 6 happens AFTER this gate fires so that
-        # a session-6-close threshold reach does NOT post-hoc save a trade
-        # that already failed the "advance by end of session 5" condition.
+        # 1. Momentum gate fail at session 6 OPEN -- PRE-EMPTS all other
+        # actions this bar (Codex R1 M#1). The position is exited at OPEN
+        # PRICE; the close of session 6 never executes. Same-day close-below-
+        # stop and close-below-SMA50 checks must NOT fire on this bar.
         if (
             not state.momentum_gate_armed
             and not state.scale_out_fired
@@ -423,6 +456,11 @@ class RulesetF:
         ):
             open_price = float(bars["Open"].iloc[bar_idx])
             return FullExit(open_price, "momentum_gate_fail")
+
+        # 2. Stop check (close-based; once scale-out fired the stop is BE/SMA20)
+        if close < state.current_stop:
+            reason = "trail_stop" if state.scale_out_fired else "stop_hit"
+            return FullExit(close, reason)
 
         # 3. Gated 50d hard exit: only ARMED when SMA50 > entry * 1.05
         sma50 = sma_at(bars, bar_idx, RULESET_F_HARD_EXIT_SMA_WINDOW)

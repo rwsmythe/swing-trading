@@ -1,4 +1,4 @@
-"""L2 LOCK BINDING tests for D2 harness (mirrors D1 dispatch brief §5.4).
+"""L2 LOCK BINDING tests for D2 harness (mirrors D1 dispatch brief Section 5.4).
 
 (a) Source-grep sentinel: no `import yfinance` / `import schwabdev` /
     `swing.integrations.schwab` in NEW D2 module sources.
