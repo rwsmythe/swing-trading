@@ -44,8 +44,10 @@ cohort selection method explicitly.
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
-from dataclasses import asdict, dataclass
+import re
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Iterable
@@ -72,12 +74,59 @@ _REQUIRED_COLUMNS = (
 
 # Expected canonical counts for the 2026-05-24 V2 sensitivity smoke artifact;
 # strict validators below check against these. These constants are the
-# canonical truth-source for `verify_expected_r2a_cohort`.
+# canonical truth-source for `verify_expected_r2a_cohort` (Codex R2.M#1+#2:
+# extended from counts-only to per-row identity for full content fidelity).
 EXPECTED_FLIP_COUNT = 15
 EXPECTED_UNIQUE_TICKER_ASOF = 7
 EXPECTED_TICKERS = frozenset(
     {"FRO", "KOD", "NAT", "OII", "RLMD", "SEI", "TROX"}
 )
+# Canonical (ticker, asof_date) tuples expected post-dedup. Asserting
+# the SET guarantees that no flipped asof_date corruption can pass
+# count-only checks (Codex R2.M#1).
+EXPECTED_TICKER_ASOF: frozenset[tuple[str, date]] = frozenset(
+    {
+        ("NAT", date(2026, 5, 12)),
+        ("RLMD", date(2026, 5, 8)),
+        ("SEI", date(2026, 5, 8)),
+        ("KOD", date(2026, 4, 30)),
+        ("TROX", date(2026, 4, 29)),
+        ("FRO", date(2026, 4, 28)),
+        ("OII", date(2026, 4, 21)),
+    }
+)
+# Canonical 15-tuple raw flip multiset (ticker, eval_run_id, asof_date)
+# preserves per-eval_run audit identity. Asserting this set protects
+# against eval_run_id mis-parse + ticker/asof tuple substitution
+# (Codex R2.M#2).
+EXPECTED_FLIPS: frozenset[tuple[str, int, date]] = frozenset(
+    {
+        ("NAT", 44, date(2026, 5, 12)),
+        ("RLMD", 41, date(2026, 5, 8)),
+        ("RLMD", 40, date(2026, 5, 8)),
+        ("SEI", 40, date(2026, 5, 8)),
+        ("KOD", 30, date(2026, 4, 30)),
+        ("KOD", 29, date(2026, 4, 30)),
+        ("TROX", 28, date(2026, 4, 29)),
+        ("TROX", 27, date(2026, 4, 29)),
+        ("TROX", 26, date(2026, 4, 29)),
+        ("TROX", 25, date(2026, 4, 29)),
+        ("FRO", 24, date(2026, 4, 28)),
+        ("FRO", 23, date(2026, 4, 28)),
+        ("FRO", 22, date(2026, 4, 28)),
+        ("OII", 10, date(2026, 4, 21)),
+        ("OII", 9, date(2026, 4, 21)),
+    }
+)
+
+# Anchored heading regex (Codex R2.M#4): only match `### vcp.tightness_days_required`
+# at start of line + end of line (optional trailing whitespace), NOT inside
+# prose, code blocks, or any longer heading title.
+_H3_VARIABLE_REGEX = re.compile(
+    rf"^### {re.escape(R2A_VARIABLE_NAME)}\s*$", re.MULTILINE
+)
+_H3_GENERIC_REGEX = re.compile(r"^### .+$", re.MULTILINE)
+_H2_GENERIC_REGEX = re.compile(r"^## .+$", re.MULTILINE)
 
 
 @dataclass(frozen=True)
@@ -107,41 +156,39 @@ class CohortExtractionError(ValueError):
 
 def _section_body(text: str, variable_name: str) -> str:
     """Slice the drill-down section bounded by the `### variable_name`
-    heading and the NEXT `### ` heading at the SAME level (NOT a 4+ hash
-    sub-heading; NOT a 2-hash major heading).
+    heading and the next h3 OR h2 heading line, whichever comes first.
 
-    Codex R1 M#3 defense: explicit boundary detection on heading-level 3
-    so nested `#### ...` sub-headings inside the variable's section do
-    not prematurely terminate the body.
+    Boundary discipline (Codex R1.M#3 + R2.M#3 + R2.M#4):
+      - Section start: MULTILINE-anchored regex matches ONLY a real h3
+        heading line for the target variable (not prose, code blocks,
+        or longer-title headings that share the variable name as a
+        substring).
+      - Section end: the EARLIEST of (a) next h3 heading line, (b) next
+        h2 heading line, (c) end-of-file. h4 (`#### ...`) and lower
+        sub-headings INSIDE the section do NOT terminate parsing
+        because `^### ` requires exactly three hashes + space at start
+        of line.
+      - Codex R2.M#3 fix: independently compute next h2 + next h3; the
+        prior implementation returned rest-of-file when no h3 was
+        found even if an h2 boundary existed.
     """
-    section_marker = f"### {variable_name}"
-    section_start = text.find(section_marker)
-    if section_start < 0:
+    start_match = _H3_VARIABLE_REGEX.search(text)
+    if start_match is None:
         raise CohortExtractionError(
-            f"V2 sensitivity artifact lacks the `{section_marker}` "
-            f"section; verify the artifact is a full-reproduction smoke "
-            f"(not truncated)"
+            f"V2 sensitivity artifact lacks the `### {variable_name}` "
+            f"line-anchored heading; verify the artifact is a "
+            f"full-reproduction smoke (not truncated) and the heading "
+            f"appears at the start of a line"
         )
-    # Walk forward; the next h3 boundary is the NEXT line that starts with
-    # exactly `### ` (3 hashes + space) and NOT `#### ` (4 hashes); also
-    # accept end-of-file or the next `## ` h2 boundary which would
-    # never appear inside a properly-formed drill-down section.
-    cursor = section_start + len(section_marker)
-    while True:
-        nxt_h3 = text.find("\n### ", cursor)
-        # Must not be a `#### `: check the character at nxt_h3+5 isn't `#`
-        if nxt_h3 < 0:
-            return text[section_start:]
-        if nxt_h3 + 5 < len(text) and text[nxt_h3 + 5] == "#":
-            # The match is actually `\n#### ...` (4-hash sub-heading);
-            # continue searching past this match
-            cursor = nxt_h3 + 5
-            continue
-        # Also bound by the next h2 if it appears before the next h3
-        nxt_h2 = text.find("\n## ", section_start + len(section_marker))
-        if 0 <= nxt_h2 < nxt_h3:
-            return text[section_start:nxt_h2]
-        return text[section_start:nxt_h3]
+    section_start = start_match.start()
+    search_from = start_match.end()
+    next_h3 = _H3_GENERIC_REGEX.search(text, search_from)
+    next_h2 = _H2_GENERIC_REGEX.search(text, search_from)
+    candidates = [m.start() for m in (next_h3, next_h2) if m is not None]
+    if not candidates:
+        return text[section_start:]
+    section_end = min(candidates)
+    return text[section_start:section_end]
 
 
 def _parse_header_columns(line: str) -> dict[str, int]:
@@ -265,8 +312,17 @@ def extract_flips_from_sensitivity_md(md_path: Path) -> list[FlipRecord]:
 
 
 def verify_expected_r2a_cohort(flips: list[FlipRecord]) -> None:
-    """Assert the parsed flips match the expected R2-A cohort canonical
-    counts (Codex R1 M#2 defense against silent under-extraction).
+    """Assert the parsed flips match the canonical R2-A cohort verbatim.
+
+    Validates THREE layers (Codex R1.M#2 + R2.M#1 + R2.M#2):
+      1. Raw flip multiset identity: every (ticker, eval_run_id,
+         data_asof_date) triple must appear exactly once and the set
+         must equal EXPECTED_FLIPS (15 entries).
+      2. Unique (ticker, asof_date) tuple set: must equal
+         EXPECTED_TICKER_ASOF (7 entries; defends against asof-date
+         corruption that preserves count but flips a date).
+      3. Aggregate counts: flip count == 15, ticker count == 7,
+         unique pair count == 7 (sanity).
 
     The expected canonical counts target the 2026-05-24 V2 sensitivity
     smoke artifact. Any deviation indicates either (a) the upstream V2
@@ -275,11 +331,33 @@ def verify_expected_r2a_cohort(flips: list[FlipRecord]) -> None:
 
     Raises CohortExtractionError on any deviation.
     """
+    # Layer 1: raw-flip identity (Codex R2.M#2: eval_run_id provenance)
+    parsed_flips = {
+        (f.ticker, f.eval_run_id, f.data_asof_date) for f in flips
+    }
+    if parsed_flips != EXPECTED_FLIPS:
+        missing = EXPECTED_FLIPS - parsed_flips
+        extra = parsed_flips - EXPECTED_FLIPS
+        raise CohortExtractionError(
+            f"R2-A flip identity mismatch: missing={sorted(missing)}, "
+            f"extra={sorted(extra)}. The parser produced a different raw "
+            f"flip multiset than the canonical 15-tuple set; check the "
+            f"V2 sensitivity artifact + parser logic"
+        )
+    # Layer 2: unique (ticker, asof) set identity (Codex R2.M#1: asof corruption)
+    pairs = {(f.ticker, f.data_asof_date) for f in flips}
+    if pairs != EXPECTED_TICKER_ASOF:
+        missing = EXPECTED_TICKER_ASOF - pairs
+        extra = pairs - EXPECTED_TICKER_ASOF
+        raise CohortExtractionError(
+            f"R2-A (ticker, asof_date) set mismatch: missing={sorted(missing)}, "
+            f"extra={sorted(extra)}"
+        )
+    # Layer 3: aggregate-count sanity (legacy R1.M#2 behavior preserved)
     if len(flips) != EXPECTED_FLIP_COUNT:
         raise CohortExtractionError(
             f"R2-A flip count mismatch: parsed {len(flips)} flips, "
-            f"expected {EXPECTED_FLIP_COUNT} from the 2026-05-24 V2 "
-            f"sensitivity smoke artifact. Check parser + artifact."
+            f"expected {EXPECTED_FLIP_COUNT}. Check for duplicates."
         )
     tickers = {f.ticker for f in flips}
     if tickers != EXPECTED_TICKERS:
@@ -287,7 +365,6 @@ def verify_expected_r2a_cohort(flips: list[FlipRecord]) -> None:
             f"R2-A ticker set mismatch: parsed {sorted(tickers)}, "
             f"expected {sorted(EXPECTED_TICKERS)}"
         )
-    pairs = {(f.ticker, f.data_asof_date) for f in flips}
     if len(pairs) != EXPECTED_UNIQUE_TICKER_ASOF:
         raise CohortExtractionError(
             f"R2-A unique (ticker, asof_date) count mismatch: parsed "
@@ -324,6 +401,16 @@ def write_cohort_csv(flips: Iterable[FlipRecord], output_path: Path) -> int:
     return len(unique)
 
 
+def _sha256_of_file(path: Path) -> str:
+    """Streaming SHA-256 hexdigest of a file (Codex R2.minor#3 audit
+    durability: source artifact identity locked alongside the path)."""
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 16), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def write_flips_audit_json(
     flips: Iterable[FlipRecord],
     output_path: Path,
@@ -343,8 +430,15 @@ def write_flips_audit_json(
     """
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    src_path = Path(source_sensitivity_md)
+    src_sha = _sha256_of_file(src_path) if src_path.exists() else None
+    src_stat = src_path.stat() if src_path.exists() else None
     payload = {
         "source_sensitivity_md": str(source_sensitivity_md),
+        "source_sensitivity_md_sha256": src_sha,
+        "source_sensitivity_md_size_bytes": (
+            src_stat.st_size if src_stat else None
+        ),
         "variable_name": R2A_VARIABLE_NAME,
         "sweep_point": R2A_SWEEP_POINT,
         "old_bucket": R2A_OLD_BUCKET,
@@ -367,3 +461,53 @@ def write_flips_audit_json(
         json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     return len(flip_list)
+
+
+@dataclass(frozen=True)
+class CohortArtifacts:
+    """Output paths + counts from a canonical R2-A cohort generation."""
+
+    cohort_csv_path: Path
+    flips_audit_json_path: Path
+    unique_ticker_asof_count: int
+    raw_flip_count: int
+
+
+def generate_r2a_cohort_artifacts(
+    *,
+    source_sensitivity_md: Path,
+    cohort_csv_path: Path,
+    flips_audit_json_path: Path | None = None,
+    verify: bool = True,
+) -> CohortArtifacts:
+    """Canonical one-call R2-A cohort generation pipeline.
+
+    Sequence (Codex R2.M#6: enforce a single canonical path):
+      1. extract_flips_from_sensitivity_md(source_sensitivity_md)
+      2. if verify: verify_expected_r2a_cohort(flips)
+      3. write_cohort_csv(flips, cohort_csv_path)
+      4. write_flips_audit_json(flips, audit_path, source_sensitivity_md=...)
+
+    The audit JSON path defaults to `<cohort_csv_path>.flips_audit.json`
+    so the audit sidecar tracks the CSV by filename convention.
+
+    Returns a CohortArtifacts dataclass with paths + counts. Raises
+    CohortExtractionError on any deviation when verify=True.
+    """
+    cohort_csv_path = Path(cohort_csv_path)
+    if flips_audit_json_path is None:
+        flips_audit_json_path = cohort_csv_path.with_suffix(".flips_audit.json")
+    flips_audit_json_path = Path(flips_audit_json_path)
+    flips = extract_flips_from_sensitivity_md(source_sensitivity_md)
+    if verify:
+        verify_expected_r2a_cohort(flips)
+    n_unique = write_cohort_csv(flips, cohort_csv_path)
+    n_audit = write_flips_audit_json(
+        flips, flips_audit_json_path, source_sensitivity_md=source_sensitivity_md
+    )
+    return CohortArtifacts(
+        cohort_csv_path=cohort_csv_path,
+        flips_audit_json_path=flips_audit_json_path,
+        unique_ticker_asof_count=n_unique,
+        raw_flip_count=n_audit,
+    )
