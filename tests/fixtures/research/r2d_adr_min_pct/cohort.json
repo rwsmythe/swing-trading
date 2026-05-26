@@ -1,0 +1,102 @@
+[
+  {
+    "anchor_asof_date": "2026-04-24",
+    "aux_window_indices": [
+      340
+    ],
+    "center_peak_date": "2025-05-13",
+    "center_peak_price": 42.2400016784668,
+    "cohort_entry_ids": [
+      1
+    ],
+    "composite_score": 0.5,
+    "geometric_score": 0.5,
+    "max_observed_asof_date": "2026-04-24",
+    "observed_asof_dates": [
+      "2026-04-24"
+    ],
+    "pivot_price": 78.37000274658203,
+    "template_match_score": null,
+    "ticker": "STNG",
+    "trough_1_date": "2025-04-04",
+    "trough_1_price": 31.860000610351562,
+    "trough_2_date": "2025-05-22",
+    "trough_2_price": 39.459999084472656,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-04-24",
+    "aux_window_indices": [
+      345
+    ],
+    "center_peak_date": "2025-06-18",
+    "center_peak_price": 44.29999923706055,
+    "cohort_entry_ids": [
+      1
+    ],
+    "composite_score": 0.766667,
+    "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-04-24",
+    "observed_asof_dates": [
+      "2026-04-24"
+    ],
+    "pivot_price": 78.37000274658203,
+    "template_match_score": null,
+    "ticker": "STNG",
+    "trough_1_date": "2025-05-22",
+    "trough_1_price": 39.459999084472656,
+    "trough_2_date": "2025-06-30",
+    "trough_2_price": 39.130001068115234,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-04-24",
+    "aux_window_indices": [
+      351
+    ],
+    "center_peak_date": "2025-09-15",
+    "center_peak_price": 60.849998474121094,
+    "cohort_entry_ids": [
+      1
+    ],
+    "composite_score": 0.5,
+    "geometric_score": 0.5,
+    "max_observed_asof_date": "2026-04-24",
+    "observed_asof_dates": [
+      "2026-04-24"
+    ],
+    "pivot_price": 78.37000274658203,
+    "template_match_score": null,
+    "ticker": "STNG",
+    "trough_1_date": "2025-08-11",
+    "trough_1_price": 44.06999969482422,
+    "trough_2_date": "2025-10-14",
+    "trough_2_price": 53.400001525878906,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-04-24",
+    "aux_window_indices": [
+      353
+    ],
+    "center_peak_date": "2026-03-04",
+    "center_peak_price": 80.19000244140625,
+    "cohort_entry_ids": [
+      1
+    ],
+    "composite_score": 0.648056,
+    "geometric_score": 0.5,
+    "max_observed_asof_date": "2026-04-24",
+    "observed_asof_dates": [
+      "2026-04-24"
+    ],
+    "pivot_price": 78.37000274658203,
+    "template_match_score": 0.870139,
+    "ticker": "STNG",
+    "trough_1_date": "2026-01-05",
+    "trough_1_price": 49.5099983215332,
+    "trough_2_date": "2026-03-17",
+    "trough_2_price": 66.30000305175781,
+    "window_count": 1
+  }
+]

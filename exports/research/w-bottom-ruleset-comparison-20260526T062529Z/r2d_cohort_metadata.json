@@ -1,0 +1,27 @@
+{
+  "arc": "R2-D",
+  "canonical_evaluation_cohort_filter": "composite_score >= 0.5 AND (max_observed_asof - trough_2_date) <= 365 calendar days",
+  "cohort_artifacts": {
+    "cohort_csv_path": "exports/research/cohorts/r2d_adr_min_pct_sp2_0.csv",
+    "cohort_csv_sha256": "f196518f1eae3c64203fea94954fd28918bf09080e3d57ac36444a5b4b243fb2",
+    "flips_audit_json_path": "exports/research/cohorts/r2d_adr_min_pct_sp2_0.flips_audit.json",
+    "flips_audit_json_sha256": "797eb697a47ddf4aab3c309744ac96f88107b8b50189e10756ad326eb1ec5f66",
+    "source_sensitivity_md": "exports/diagnostics/aplus-sensitivity-v2-20260524T205849Z.md",
+    "source_sensitivity_md_sha256": "b25bcde944c33c7a44d049167e78e9d5c7b3d4fc5538ccc5e9cdc8e01e27a143",
+    "source_sensitivity_md_size_bytes": 830034
+  },
+  "cohort_concentration": "all 4 W primary verdicts from a single ticker (STNG); INSUFFICIENT SAMPLE per gotcha #33 cohort-validity discipline",
+  "cohort_label": "r2d_vcp_adr_min_pct_sp2_0",
+  "cohort_selection_method": "v2_binding_variable_flips",
+  "cohort_size_canonical_evaluation_cohort": 4,
+  "cohort_size_raw_flips": 11,
+  "cohort_size_unique_ticker_asof": 4,
+  "cross_cohort_consistency_test_status": "DEFERRED to future R2-* dispatch against thicker substrate (e.g., proximity_max_pct +5 or orderliness_max_bar_ratio +1)",
+  "gotcha_33_canonical_application_count": 3,
+  "sweep_point": 2.0,
+  "sweep_point_brief_amendment_note": "Brief Amendment 1 reconciles brief-prescribed sp=1 against actual +11 max_delta_aplus binding signal at sp=2.0; the 11-flip-count contract is binding.",
+  "sweep_point_brief_prescribed": 1,
+  "upstream_pattern_cohort_evaluator_artifact": "exports/research/pattern-cohort-detection-20260526T160518Z/",
+  "v2_binding_variable": "vcp.adr_min_pct",
+  "verdict_classification_pre_commit": "INSUFFICIENT SAMPLE (per Amendment 1; headline verdict bound; DIRECTIONAL POSITIVE / NEGATIVE suffix permitted as case-study color)"
+}
