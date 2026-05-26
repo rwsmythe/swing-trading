@@ -1,0 +1,1628 @@
+[
+  {
+    "anchor_asof_date": "2026-04-28",
+    "aux_window_indices": [
+      615
+    ],
+    "center_peak_date": "2025-05-27",
+    "center_peak_price": 18.75,
+    "cohort_entry_ids": [
+      5
+    ],
+    "composite_score": 0.666667,
+    "geometric_score": 0.666667,
+    "max_observed_asof_date": "2026-04-28",
+    "observed_asof_dates": [
+      "2026-04-28"
+    ],
+    "pivot_price": 36.11000061035156,
+    "template_match_score": null,
+    "ticker": "FRO",
+    "trough_1_date": "2025-05-22",
+    "trough_1_price": 17.18000030517578,
+    "trough_2_date": "2025-06-09",
+    "trough_2_price": 17.479999542236328,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-04-28",
+    "aux_window_indices": [
+      617
+    ],
+    "center_peak_date": "2025-06-17",
+    "center_peak_price": 19.770000457763672,
+    "cohort_entry_ids": [
+      5
+    ],
+    "composite_score": 0.6,
+    "geometric_score": 0.6,
+    "max_observed_asof_date": "2026-04-28",
+    "observed_asof_dates": [
+      "2026-04-28"
+    ],
+    "pivot_price": 36.11000061035156,
+    "template_match_score": null,
+    "ticker": "FRO",
+    "trough_1_date": "2025-06-09",
+    "trough_1_price": 17.479999542236328,
+    "trough_2_date": "2025-06-30",
+    "trough_2_price": 16.40999984741211,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-04-28",
+    "aux_window_indices": [
+      619
+    ],
+    "center_peak_date": "2025-07-11",
+    "center_peak_price": 19.079999923706055,
+    "cohort_entry_ids": [
+      5
+    ],
+    "composite_score": 0.666667,
+    "geometric_score": 0.666667,
+    "max_observed_asof_date": "2026-04-28",
+    "observed_asof_dates": [
+      "2026-04-28"
+    ],
+    "pivot_price": 36.11000061035156,
+    "template_match_score": null,
+    "ticker": "FRO",
+    "trough_1_date": "2025-06-30",
+    "trough_1_price": 16.40999984741211,
+    "trough_2_date": "2025-07-21",
+    "trough_2_price": 18.09000015258789,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-04-28",
+    "aux_window_indices": [
+      621
+    ],
+    "center_peak_date": "2025-08-05",
+    "center_peak_price": 20.510000228881836,
+    "cohort_entry_ids": [
+      5
+    ],
+    "composite_score": 0.666667,
+    "geometric_score": 0.666667,
+    "max_observed_asof_date": "2026-04-28",
+    "observed_asof_dates": [
+      "2026-04-28"
+    ],
+    "pivot_price": 36.11000061035156,
+    "template_match_score": null,
+    "ticker": "FRO",
+    "trough_1_date": "2025-07-21",
+    "trough_1_price": 18.09000015258789,
+    "trough_2_date": "2025-08-11",
+    "trough_2_price": 18.479999542236328,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-04-28",
+    "aux_window_indices": [
+      632
+    ],
+    "center_peak_date": "2026-03-02",
+    "center_peak_price": 39.619998931884766,
+    "cohort_entry_ids": [
+      5
+    ],
+    "composite_score": 0.655618,
+    "geometric_score": 0.5,
+    "max_observed_asof_date": "2026-04-28",
+    "observed_asof_dates": [
+      "2026-04-28"
+    ],
+    "pivot_price": 36.11000061035156,
+    "template_match_score": 0.889045,
+    "ticker": "FRO",
+    "trough_1_date": "2026-01-02",
+    "trough_1_price": 20.579999923706055,
+    "trough_2_date": "2026-03-13",
+    "trough_2_price": 30.18000030517578,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-04-28",
+    "aux_window_indices": [
+      634
+    ],
+    "center_peak_date": "2026-03-24",
+    "center_peak_price": 35.439998626708984,
+    "cohort_entry_ids": [
+      5
+    ],
+    "composite_score": 0.666667,
+    "geometric_score": 0.666667,
+    "max_observed_asof_date": "2026-04-28",
+    "observed_asof_dates": [
+      "2026-04-28"
+    ],
+    "pivot_price": 36.11000061035156,
+    "template_match_score": null,
+    "ticker": "FRO",
+    "trough_1_date": "2026-03-13",
+    "trough_1_price": 30.18000030517578,
+    "trough_2_date": "2026-03-30",
+    "trough_2_price": 33.38999938964844,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-04-28",
+    "aux_window_indices": [
+      635
+    ],
+    "center_peak_date": "2026-04-02",
+    "center_peak_price": 36.599998474121094,
+    "cohort_entry_ids": [
+      5
+    ],
+    "composite_score": 0.666667,
+    "geometric_score": 0.666667,
+    "max_observed_asof_date": "2026-04-28",
+    "observed_asof_dates": [
+      "2026-04-28"
+    ],
+    "pivot_price": 36.11000061035156,
+    "template_match_score": null,
+    "ticker": "FRO",
+    "trough_1_date": "2026-03-30",
+    "trough_1_price": 33.38999938964844,
+    "trough_2_date": "2026-04-14",
+    "trough_2_price": 34.15999984741211,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-04-30",
+    "aux_window_indices": [
+      225
+    ],
+    "center_peak_date": "2025-05-05",
+    "center_peak_price": 4.920000076293945,
+    "cohort_entry_ids": [
+      3
+    ],
+    "composite_score": 0.5,
+    "geometric_score": 0.5,
+    "max_observed_asof_date": "2026-04-30",
+    "observed_asof_dates": [
+      "2026-04-30"
+    ],
+    "pivot_price": 43.47999954223633,
+    "template_match_score": null,
+    "ticker": "KOD",
+    "trough_1_date": "2025-04-08",
+    "trough_1_price": 2.059999942779541,
+    "trough_2_date": "2025-05-09",
+    "trough_2_price": 3.7699999809265137,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-04-30",
+    "aux_window_indices": [
+      229
+    ],
+    "center_peak_date": "2025-05-20",
+    "center_peak_price": 4.059999942779541,
+    "cohort_entry_ids": [
+      3
+    ],
+    "composite_score": 0.833333,
+    "geometric_score": 0.833333,
+    "max_observed_asof_date": "2026-04-30",
+    "observed_asof_dates": [
+      "2026-04-30"
+    ],
+    "pivot_price": 43.47999954223633,
+    "template_match_score": null,
+    "ticker": "KOD",
+    "trough_1_date": "2025-05-15",
+    "trough_1_price": 3.3299999237060547,
+    "trough_2_date": "2025-05-30",
+    "trough_2_price": 3.4000000953674316,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-04-30",
+    "aux_window_indices": [
+      231
+    ],
+    "center_peak_date": "2025-06-06",
+    "center_peak_price": 4.21999979019165,
+    "cohort_entry_ids": [
+      3
+    ],
+    "composite_score": 0.833333,
+    "geometric_score": 0.833333,
+    "max_observed_asof_date": "2026-04-30",
+    "observed_asof_dates": [
+      "2026-04-30"
+    ],
+    "pivot_price": 43.47999954223633,
+    "template_match_score": null,
+    "ticker": "KOD",
+    "trough_1_date": "2025-05-30",
+    "trough_1_price": 3.4000000953674316,
+    "trough_2_date": "2025-06-18",
+    "trough_2_price": 3.5299999713897705,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-04-30",
+    "aux_window_indices": [
+      233
+    ],
+    "center_peak_date": "2025-07-25",
+    "center_peak_price": 8.84000015258789,
+    "cohort_entry_ids": [
+      3
+    ],
+    "composite_score": 0.5,
+    "geometric_score": 0.5,
+    "max_observed_asof_date": "2026-04-30",
+    "observed_asof_dates": [
+      "2026-04-30"
+    ],
+    "pivot_price": 43.47999954223633,
+    "template_match_score": null,
+    "ticker": "KOD",
+    "trough_1_date": "2025-06-18",
+    "trough_1_price": 3.5299999713897705,
+    "trough_2_date": "2025-07-31",
+    "trough_2_price": 6.579999923706055,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-04-30",
+    "aux_window_indices": [
+      237
+    ],
+    "center_peak_date": "2025-08-18",
+    "center_peak_price": 11.25,
+    "cohort_entry_ids": [
+      3
+    ],
+    "composite_score": 0.666667,
+    "geometric_score": 0.666667,
+    "max_observed_asof_date": "2026-04-30",
+    "observed_asof_dates": [
+      "2026-04-30"
+    ],
+    "pivot_price": 43.47999954223633,
+    "template_match_score": null,
+    "ticker": "KOD",
+    "trough_1_date": "2025-07-31",
+    "trough_1_price": 6.579999923706055,
+    "trough_2_date": "2025-09-04",
+    "trough_2_price": 8.550000190734863,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-04-30",
+    "aux_window_indices": [
+      240
+    ],
+    "center_peak_date": "2025-09-05",
+    "center_peak_price": 10.520000457763672,
+    "cohort_entry_ids": [
+      3
+    ],
+    "composite_score": 0.5,
+    "geometric_score": 0.5,
+    "max_observed_asof_date": "2026-04-30",
+    "observed_asof_dates": [
+      "2026-04-30"
+    ],
+    "pivot_price": 43.47999954223633,
+    "template_match_score": null,
+    "ticker": "KOD",
+    "trough_1_date": "2025-09-04",
+    "trough_1_price": 8.550000190734863,
+    "trough_2_date": "2025-09-17",
+    "trough_2_price": 9.210000038146973,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-04-30",
+    "aux_window_indices": [
+      244
+    ],
+    "center_peak_date": "2025-10-03",
+    "center_peak_price": 15.0600004196167,
+    "cohort_entry_ids": [
+      3
+    ],
+    "composite_score": 0.6,
+    "geometric_score": 0.6,
+    "max_observed_asof_date": "2026-04-30",
+    "observed_asof_dates": [
+      "2026-04-30"
+    ],
+    "pivot_price": 43.47999954223633,
+    "template_match_score": null,
+    "ticker": "KOD",
+    "trough_1_date": "2025-10-02",
+    "trough_1_price": 13.430000305175781,
+    "trough_2_date": "2025-10-13",
+    "trough_2_price": 11.600000381469727,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-04-30",
+    "aux_window_indices": [
+      245
+    ],
+    "center_peak_date": "2025-10-21",
+    "center_peak_price": 19.0,
+    "cohort_entry_ids": [
+      3
+    ],
+    "composite_score": 0.5,
+    "geometric_score": 0.5,
+    "max_observed_asof_date": "2026-04-30",
+    "observed_asof_dates": [
+      "2026-04-30"
+    ],
+    "pivot_price": 43.47999954223633,
+    "template_match_score": null,
+    "ticker": "KOD",
+    "trough_1_date": "2025-10-13",
+    "trough_1_price": 11.600000381469727,
+    "trough_2_date": "2025-10-23",
+    "trough_2_price": 17.110000610351562,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-04-30",
+    "aux_window_indices": [
+      247
+    ],
+    "center_peak_date": "2025-10-30",
+    "center_peak_price": 21.049999237060547,
+    "cohort_entry_ids": [
+      3
+    ],
+    "composite_score": 0.766667,
+    "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-04-30",
+    "observed_asof_dates": [
+      "2026-04-30"
+    ],
+    "pivot_price": 43.47999954223633,
+    "template_match_score": null,
+    "ticker": "KOD",
+    "trough_1_date": "2025-10-23",
+    "trough_1_price": 17.110000610351562,
+    "trough_2_date": "2025-11-06",
+    "trough_2_price": 16.899999618530273,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-04-30",
+    "aux_window_indices": [
+      248
+    ],
+    "center_peak_date": "2025-12-08",
+    "center_peak_price": 26.139999389648438,
+    "cohort_entry_ids": [
+      3
+    ],
+    "composite_score": 0.666667,
+    "geometric_score": 0.666667,
+    "max_observed_asof_date": "2026-04-30",
+    "observed_asof_dates": [
+      "2026-04-30"
+    ],
+    "pivot_price": 43.47999954223633,
+    "template_match_score": null,
+    "ticker": "KOD",
+    "trough_1_date": "2025-11-06",
+    "trough_1_price": 16.899999618530273,
+    "trough_2_date": "2025-12-15",
+    "trough_2_price": 23.020000457763672,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-04-30",
+    "aux_window_indices": [
+      252
+    ],
+    "center_peak_date": "2025-12-24",
+    "center_peak_price": 31.079999923706055,
+    "cohort_entry_ids": [
+      3
+    ],
+    "composite_score": 0.5,
+    "geometric_score": 0.5,
+    "max_observed_asof_date": "2026-04-30",
+    "observed_asof_dates": [
+      "2026-04-30"
+    ],
+    "pivot_price": 43.47999954223633,
+    "template_match_score": null,
+    "ticker": "KOD",
+    "trough_1_date": "2025-12-15",
+    "trough_1_price": 23.020000457763672,
+    "trough_2_date": "2026-01-05",
+    "trough_2_price": 25.0,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-04-30",
+    "aux_window_indices": [
+      255
+    ],
+    "center_peak_date": "2026-01-14",
+    "center_peak_price": 28.670000076293945,
+    "cohort_entry_ids": [
+      3
+    ],
+    "composite_score": 0.838815,
+    "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-04-30",
+    "observed_asof_dates": [
+      "2026-04-30"
+    ],
+    "pivot_price": 43.47999954223633,
+    "template_match_score": 0.947039,
+    "ticker": "KOD",
+    "trough_1_date": "2026-01-05",
+    "trough_1_price": 25.0,
+    "trough_2_date": "2026-02-05",
+    "trough_2_price": 21.010000228881836,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-04-30",
+    "aux_window_indices": [
+      259
+    ],
+    "center_peak_date": "2026-02-24",
+    "center_peak_price": 27.979999542236328,
+    "cohort_entry_ids": [
+      3
+    ],
+    "composite_score": 0.856586,
+    "geometric_score": 0.833333,
+    "max_observed_asof_date": "2026-04-30",
+    "observed_asof_dates": [
+      "2026-04-30"
+    ],
+    "pivot_price": 43.47999954223633,
+    "template_match_score": 0.891465,
+    "ticker": "KOD",
+    "trough_1_date": "2026-02-05",
+    "trough_1_price": 21.010000228881836,
+    "trough_2_date": "2026-03-24",
+    "trough_2_price": 21.850000381469727,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-04-30",
+    "aux_window_indices": [
+      263,
+      264
+    ],
+    "center_peak_date": "2026-03-26",
+    "center_peak_price": 39.7599983215332,
+    "cohort_entry_ids": [
+      3
+    ],
+    "composite_score": 0.5,
+    "geometric_score": 0.5,
+    "max_observed_asof_date": "2026-04-30",
+    "observed_asof_dates": [
+      "2026-04-30"
+    ],
+    "pivot_price": 43.47999954223633,
+    "template_match_score": null,
+    "ticker": "KOD",
+    "trough_1_date": "2026-03-24",
+    "trough_1_price": 21.850000381469727,
+    "trough_2_date": "2026-03-30",
+    "trough_2_price": 33.65999984741211,
+    "window_count": 2
+  },
+  {
+    "anchor_asof_date": "2026-05-12",
+    "aux_window_indices": [
+      537
+    ],
+    "center_peak_date": "2025-05-16",
+    "center_peak_price": 2.759999990463257,
+    "cohort_entry_ids": [
+      0
+    ],
+    "composite_score": 0.5,
+    "geometric_score": 0.5,
+    "max_observed_asof_date": "2026-05-12",
+    "observed_asof_dates": [
+      "2026-05-12"
+    ],
+    "pivot_price": 5.829999923706055,
+    "template_match_score": null,
+    "ticker": "NAT",
+    "trough_1_date": "2025-04-15",
+    "trough_1_price": 2.4000000953674316,
+    "trough_2_date": "2025-05-29",
+    "trough_2_price": 2.559999942779541,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-05-12",
+    "aux_window_indices": [
+      540
+    ],
+    "center_peak_date": "2025-06-17",
+    "center_peak_price": 2.859999895095825,
+    "cohort_entry_ids": [
+      0
+    ],
+    "composite_score": 0.666667,
+    "geometric_score": 0.666667,
+    "max_observed_asof_date": "2026-05-12",
+    "observed_asof_dates": [
+      "2026-05-12"
+    ],
+    "pivot_price": 5.829999923706055,
+    "template_match_score": null,
+    "ticker": "NAT",
+    "trough_1_date": "2025-05-29",
+    "trough_1_price": 2.559999942779541,
+    "trough_2_date": "2025-07-01",
+    "trough_2_price": 2.609999895095825,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-05-12",
+    "aux_window_indices": [
+      547
+    ],
+    "center_peak_date": "2025-10-01",
+    "center_peak_price": 3.3499999046325684,
+    "cohort_entry_ids": [
+      0
+    ],
+    "composite_score": 0.5,
+    "geometric_score": 0.5,
+    "max_observed_asof_date": "2026-05-12",
+    "observed_asof_dates": [
+      "2026-05-12"
+    ],
+    "pivot_price": 5.829999923706055,
+    "template_match_score": null,
+    "ticker": "NAT",
+    "trough_1_date": "2025-09-29",
+    "trough_1_price": 3.0799999237060547,
+    "trough_2_date": "2025-10-14",
+    "trough_2_price": 3.180000066757202,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-05-12",
+    "aux_window_indices": [
+      548
+    ],
+    "center_peak_date": "2025-10-28",
+    "center_peak_price": 3.700000047683716,
+    "cohort_entry_ids": [
+      0
+    ],
+    "composite_score": 0.5,
+    "geometric_score": 0.5,
+    "max_observed_asof_date": "2026-05-12",
+    "observed_asof_dates": [
+      "2026-05-12"
+    ],
+    "pivot_price": 5.829999923706055,
+    "template_match_score": null,
+    "ticker": "NAT",
+    "trough_1_date": "2025-10-14",
+    "trough_1_price": 3.180000066757202,
+    "trough_2_date": "2025-11-04",
+    "trough_2_price": 3.5199999809265137,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-05-12",
+    "aux_window_indices": [
+      549
+    ],
+    "center_peak_date": "2025-11-18",
+    "center_peak_price": 3.9000000953674316,
+    "cohort_entry_ids": [
+      0
+    ],
+    "composite_score": 0.766667,
+    "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-12",
+    "observed_asof_dates": [
+      "2026-05-12"
+    ],
+    "pivot_price": 5.829999923706055,
+    "template_match_score": null,
+    "ticker": "NAT",
+    "trough_1_date": "2025-11-04",
+    "trough_1_price": 3.5199999809265137,
+    "trough_2_date": "2025-12-19",
+    "trough_2_price": 3.369999885559082,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-05-12",
+    "aux_window_indices": [
+      553
+    ],
+    "center_peak_date": "2026-04-06",
+    "center_peak_price": 6.179999828338623,
+    "cohort_entry_ids": [
+      0
+    ],
+    "composite_score": 0.666667,
+    "geometric_score": 0.666667,
+    "max_observed_asof_date": "2026-05-12",
+    "observed_asof_dates": [
+      "2026-05-12"
+    ],
+    "pivot_price": 5.829999923706055,
+    "template_match_score": null,
+    "ticker": "NAT",
+    "trough_1_date": "2026-03-12",
+    "trough_1_price": 4.96999979019165,
+    "trough_2_date": "2026-04-14",
+    "trough_2_price": 5.710000038146973,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-05-12",
+    "aux_window_indices": [
+      556
+    ],
+    "center_peak_date": "2026-04-20",
+    "center_peak_price": 6.059999942779541,
+    "cohort_entry_ids": [
+      0
+    ],
+    "composite_score": 0.6,
+    "geometric_score": 0.6,
+    "max_observed_asof_date": "2026-05-12",
+    "observed_asof_dates": [
+      "2026-05-12"
+    ],
+    "pivot_price": 5.829999923706055,
+    "template_match_score": null,
+    "ticker": "NAT",
+    "trough_1_date": "2026-04-14",
+    "trough_1_price": 5.710000038146973,
+    "trough_2_date": "2026-04-23",
+    "trough_2_price": 5.449999809265137,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-04-21",
+    "aux_window_indices": [
+      1197
+    ],
+    "center_peak_date": "2025-09-26",
+    "center_peak_price": 25.65999984741211,
+    "cohort_entry_ids": [
+      6
+    ],
+    "composite_score": 0.5,
+    "geometric_score": 0.5,
+    "max_observed_asof_date": "2026-04-21",
+    "observed_asof_dates": [
+      "2026-04-21"
+    ],
+    "pivot_price": 37.81999969482422,
+    "template_match_score": null,
+    "ticker": "OII",
+    "trough_1_date": "2025-08-01",
+    "trough_1_price": 21.170000076293945,
+    "trough_2_date": "2025-10-10",
+    "trough_2_price": 22.200000762939453,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-04-21",
+    "aux_window_indices": [
+      1201
+    ],
+    "center_peak_date": "2025-10-22",
+    "center_peak_price": 24.700000762939453,
+    "cohort_entry_ids": [
+      6
+    ],
+    "composite_score": 0.666667,
+    "geometric_score": 0.666667,
+    "max_observed_asof_date": "2026-04-21",
+    "observed_asof_dates": [
+      "2026-04-21"
+    ],
+    "pivot_price": 37.81999969482422,
+    "template_match_score": null,
+    "ticker": "OII",
+    "trough_1_date": "2025-10-10",
+    "trough_1_price": 22.200000762939453,
+    "trough_2_date": "2025-11-06",
+    "trough_2_price": 22.610000610351562,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-04-21",
+    "aux_window_indices": [
+      1203
+    ],
+    "center_peak_date": "2025-12-09",
+    "center_peak_price": 27.510000228881836,
+    "cohort_entry_ids": [
+      6
+    ],
+    "composite_score": 0.666667,
+    "geometric_score": 0.666667,
+    "max_observed_asof_date": "2026-04-21",
+    "observed_asof_dates": [
+      "2026-04-21"
+    ],
+    "pivot_price": 37.81999969482422,
+    "template_match_score": null,
+    "ticker": "OII",
+    "trough_1_date": "2025-11-06",
+    "trough_1_price": 22.610000610351562,
+    "trough_2_date": "2025-12-18",
+    "trough_2_price": 23.309999465942383,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-04-21",
+    "aux_window_indices": [
+      1204
+    ],
+    "center_peak_date": "2026-02-24",
+    "center_peak_price": 38.81999969482422,
+    "cohort_entry_ids": [
+      6
+    ],
+    "composite_score": 0.5,
+    "geometric_score": 0.5,
+    "max_observed_asof_date": "2026-04-21",
+    "observed_asof_dates": [
+      "2026-04-21"
+    ],
+    "pivot_price": 37.81999969482422,
+    "template_match_score": null,
+    "ticker": "OII",
+    "trough_1_date": "2025-12-18",
+    "trough_1_price": 23.309999465942383,
+    "trough_2_date": "2026-03-13",
+    "trough_2_price": 33.279998779296875,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-04-21",
+    "aux_window_indices": [
+      1212
+    ],
+    "center_peak_date": "2026-03-24",
+    "center_peak_price": 37.20000076293945,
+    "cohort_entry_ids": [
+      6
+    ],
+    "composite_score": 0.833333,
+    "geometric_score": 0.833333,
+    "max_observed_asof_date": "2026-04-21",
+    "observed_asof_dates": [
+      "2026-04-21"
+    ],
+    "pivot_price": 37.81999969482422,
+    "template_match_score": null,
+    "ticker": "OII",
+    "trough_1_date": "2026-03-13",
+    "trough_1_price": 33.279998779296875,
+    "trough_2_date": "2026-04-01",
+    "trough_2_price": 34.369998931884766,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-05-08",
+    "aux_window_indices": [
+      141
+    ],
+    "center_peak_date": "2025-06-06",
+    "center_peak_price": 0.8349999785423279,
+    "cohort_entry_ids": [
+      1
+    ],
+    "composite_score": 0.666667,
+    "geometric_score": 0.666667,
+    "max_observed_asof_date": "2026-05-08",
+    "observed_asof_dates": [
+      "2026-05-08"
+    ],
+    "pivot_price": 7.320000171661377,
+    "template_match_score": null,
+    "ticker": "RLMD",
+    "trough_1_date": "2025-05-21",
+    "trough_1_price": 0.5189999938011169,
+    "trough_2_date": "2025-06-25",
+    "trough_2_price": 0.5360000133514404,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-05-08",
+    "aux_window_indices": [
+      144
+    ],
+    "center_peak_date": "2025-07-10",
+    "center_peak_price": 0.6700000166893005,
+    "cohort_entry_ids": [
+      1
+    ],
+    "composite_score": 0.766667,
+    "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-08",
+    "observed_asof_dates": [
+      "2026-05-08"
+    ],
+    "pivot_price": 7.320000171661377,
+    "template_match_score": null,
+    "ticker": "RLMD",
+    "trough_1_date": "2025-06-30",
+    "trough_1_price": 0.6000000238418579,
+    "trough_2_date": "2025-07-18",
+    "trough_2_price": 0.5770000219345093,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-05-08",
+    "aux_window_indices": [
+      147
+    ],
+    "center_peak_date": "2025-07-23",
+    "center_peak_price": 0.718999981880188,
+    "cohort_entry_ids": [
+      1
+    ],
+    "composite_score": 0.766667,
+    "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-08",
+    "observed_asof_dates": [
+      "2026-05-08"
+    ],
+    "pivot_price": 7.320000171661377,
+    "template_match_score": null,
+    "ticker": "RLMD",
+    "trough_1_date": "2025-07-18",
+    "trough_1_price": 0.5770000219345093,
+    "trough_2_date": "2025-08-11",
+    "trough_2_price": 0.5630000233650208,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-05-08",
+    "aux_window_indices": [
+      150
+    ],
+    "center_peak_date": "2025-10-02",
+    "center_peak_price": 2.6600000858306885,
+    "cohort_entry_ids": [
+      1
+    ],
+    "composite_score": 0.5,
+    "geometric_score": 0.5,
+    "max_observed_asof_date": "2026-05-08",
+    "observed_asof_dates": [
+      "2026-05-08"
+    ],
+    "pivot_price": 7.320000171661377,
+    "template_match_score": null,
+    "ticker": "RLMD",
+    "trough_1_date": "2025-08-11",
+    "trough_1_price": 0.5630000233650208,
+    "trough_2_date": "2025-10-07",
+    "trough_2_price": 1.9900000095367432,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-05-08",
+    "aux_window_indices": [
+      158
+    ],
+    "center_peak_date": "2025-10-09",
+    "center_peak_price": 2.200000047683716,
+    "cohort_entry_ids": [
+      1
+    ],
+    "composite_score": 0.6,
+    "geometric_score": 0.6,
+    "max_observed_asof_date": "2026-05-08",
+    "observed_asof_dates": [
+      "2026-05-08"
+    ],
+    "pivot_price": 7.320000171661377,
+    "template_match_score": null,
+    "ticker": "RLMD",
+    "trough_1_date": "2025-10-07",
+    "trough_1_price": 1.9900000095367432,
+    "trough_2_date": "2025-10-14",
+    "trough_2_price": 1.9299999475479126,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-05-08",
+    "aux_window_indices": [
+      159
+    ],
+    "center_peak_date": "2025-10-28",
+    "center_peak_price": 2.450000047683716,
+    "cohort_entry_ids": [
+      1
+    ],
+    "composite_score": 0.5,
+    "geometric_score": 0.5,
+    "max_observed_asof_date": "2026-05-08",
+    "observed_asof_dates": [
+      "2026-05-08"
+    ],
+    "pivot_price": 7.320000171661377,
+    "template_match_score": null,
+    "ticker": "RLMD",
+    "trough_1_date": "2025-10-14",
+    "trough_1_price": 1.9299999475479126,
+    "trough_2_date": "2025-11-03",
+    "trough_2_price": 2.200000047683716,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-05-08",
+    "aux_window_indices": [
+      162
+    ],
+    "center_peak_date": "2025-11-28",
+    "center_peak_price": 4.510000228881836,
+    "cohort_entry_ids": [
+      1
+    ],
+    "composite_score": 0.5,
+    "geometric_score": 0.5,
+    "max_observed_asof_date": "2026-05-08",
+    "observed_asof_dates": [
+      "2026-05-08"
+    ],
+    "pivot_price": 7.320000171661377,
+    "template_match_score": null,
+    "ticker": "RLMD",
+    "trough_1_date": "2025-11-03",
+    "trough_1_price": 2.200000047683716,
+    "trough_2_date": "2025-12-04",
+    "trough_2_price": 4.0,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-05-08",
+    "aux_window_indices": [
+      165
+    ],
+    "center_peak_date": "2025-12-16",
+    "center_peak_price": 4.5,
+    "cohort_entry_ids": [
+      1
+    ],
+    "composite_score": 0.5,
+    "geometric_score": 0.5,
+    "max_observed_asof_date": "2026-05-08",
+    "observed_asof_dates": [
+      "2026-05-08"
+    ],
+    "pivot_price": 7.320000171661377,
+    "template_match_score": null,
+    "ticker": "RLMD",
+    "trough_1_date": "2025-12-04",
+    "trough_1_price": 4.0,
+    "trough_2_date": "2025-12-17",
+    "trough_2_price": 4.010000228881836,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-05-08",
+    "aux_window_indices": [
+      167
+    ],
+    "center_peak_date": "2025-12-31",
+    "center_peak_price": 4.829999923706055,
+    "cohort_entry_ids": [
+      1
+    ],
+    "composite_score": 0.6,
+    "geometric_score": 0.6,
+    "max_observed_asof_date": "2026-05-08",
+    "observed_asof_dates": [
+      "2026-05-08"
+    ],
+    "pivot_price": 7.320000171661377,
+    "template_match_score": null,
+    "ticker": "RLMD",
+    "trough_1_date": "2025-12-17",
+    "trough_1_price": 4.010000228881836,
+    "trough_2_date": "2026-01-30",
+    "trough_2_price": 3.549999952316284,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-05-08",
+    "aux_window_indices": [
+      172
+    ],
+    "center_peak_date": "2026-02-09",
+    "center_peak_price": 4.199999809265137,
+    "cohort_entry_ids": [
+      1
+    ],
+    "composite_score": 0.847415,
+    "geometric_score": 0.833333,
+    "max_observed_asof_date": "2026-05-08",
+    "observed_asof_dates": [
+      "2026-05-08"
+    ],
+    "pivot_price": 7.320000171661377,
+    "template_match_score": 0.868537,
+    "ticker": "RLMD",
+    "trough_1_date": "2026-01-30",
+    "trough_1_price": 3.549999952316284,
+    "trough_2_date": "2026-02-17",
+    "trough_2_price": 3.640000104904175,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-05-08",
+    "aux_window_indices": [
+      174
+    ],
+    "center_peak_date": "2026-03-09",
+    "center_peak_price": 7.170000076293945,
+    "cohort_entry_ids": [
+      1
+    ],
+    "composite_score": 0.664998,
+    "geometric_score": 0.5,
+    "max_observed_asof_date": "2026-05-08",
+    "observed_asof_dates": [
+      "2026-05-08"
+    ],
+    "pivot_price": 7.320000171661377,
+    "template_match_score": 0.912494,
+    "ticker": "RLMD",
+    "trough_1_date": "2026-02-17",
+    "trough_1_price": 3.640000104904175,
+    "trough_2_date": "2026-03-23",
+    "trough_2_price": 5.860000133514404,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-05-08",
+    "aux_window_indices": [
+      119
+    ],
+    "center_peak_date": "2025-07-03",
+    "center_peak_price": 32.65999984741211,
+    "cohort_entry_ids": [
+      2
+    ],
+    "composite_score": 0.666667,
+    "geometric_score": 0.666667,
+    "max_observed_asof_date": "2026-05-08",
+    "observed_asof_dates": [
+      "2026-05-08"
+    ],
+    "pivot_price": 72.95999908447266,
+    "template_match_score": null,
+    "ticker": "SEI",
+    "trough_1_date": "2025-06-10",
+    "trough_1_price": 25.209999084472656,
+    "trough_2_date": "2025-07-22",
+    "trough_2_price": 28.270000457763672,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-05-08",
+    "aux_window_indices": [
+      122
+    ],
+    "center_peak_date": "2025-07-24",
+    "center_peak_price": 33.84000015258789,
+    "cohort_entry_ids": [
+      2
+    ],
+    "composite_score": 0.6,
+    "geometric_score": 0.6,
+    "max_observed_asof_date": "2026-05-08",
+    "observed_asof_dates": [
+      "2026-05-08"
+    ],
+    "pivot_price": 72.95999908447266,
+    "template_match_score": null,
+    "ticker": "SEI",
+    "trough_1_date": "2025-07-22",
+    "trough_1_price": 28.270000457763672,
+    "trough_2_date": "2025-08-19",
+    "trough_2_price": 26.809999465942383,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-05-08",
+    "aux_window_indices": [
+      125
+    ],
+    "center_peak_date": "2025-08-28",
+    "center_peak_price": 31.719999313354492,
+    "cohort_entry_ids": [
+      2
+    ],
+    "composite_score": 0.766667,
+    "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-08",
+    "observed_asof_dates": [
+      "2026-05-08"
+    ],
+    "pivot_price": 72.95999908447266,
+    "template_match_score": null,
+    "ticker": "SEI",
+    "trough_1_date": "2025-08-19",
+    "trough_1_price": 26.809999465942383,
+    "trough_2_date": "2025-09-09",
+    "trough_2_price": 24.920000076293945,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-05-08",
+    "aux_window_indices": [
+      126
+    ],
+    "center_peak_date": "2025-10-15",
+    "center_peak_price": 54.900001525878906,
+    "cohort_entry_ids": [
+      2
+    ],
+    "composite_score": 0.5,
+    "geometric_score": 0.5,
+    "max_observed_asof_date": "2026-05-08",
+    "observed_asof_dates": [
+      "2026-05-08"
+    ],
+    "pivot_price": 72.95999908447266,
+    "template_match_score": null,
+    "ticker": "SEI",
+    "trough_1_date": "2025-09-09",
+    "trough_1_price": 24.920000076293945,
+    "trough_2_date": "2025-10-22",
+    "trough_2_price": 46.38999938964844,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-05-08",
+    "aux_window_indices": [
+      131
+    ],
+    "center_peak_date": "2025-11-03",
+    "center_peak_price": 53.970001220703125,
+    "cohort_entry_ids": [
+      2
+    ],
+    "composite_score": 0.766667,
+    "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-08",
+    "observed_asof_dates": [
+      "2026-05-08"
+    ],
+    "pivot_price": 72.95999908447266,
+    "template_match_score": null,
+    "ticker": "SEI",
+    "trough_1_date": "2025-10-22",
+    "trough_1_price": 46.38999938964844,
+    "trough_2_date": "2025-11-20",
+    "trough_2_price": 41.22999954223633,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-05-08",
+    "aux_window_indices": [
+      133
+    ],
+    "center_peak_date": "2025-12-05",
+    "center_peak_price": 55.36000061035156,
+    "cohort_entry_ids": [
+      2
+    ],
+    "composite_score": 0.933333,
+    "geometric_score": 0.933333,
+    "max_observed_asof_date": "2026-05-08",
+    "observed_asof_dates": [
+      "2026-05-08"
+    ],
+    "pivot_price": 72.95999908447266,
+    "template_match_score": null,
+    "ticker": "SEI",
+    "trough_1_date": "2025-11-20",
+    "trough_1_price": 41.22999954223633,
+    "trough_2_date": "2025-12-17",
+    "trough_2_price": 40.63999938964844,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-05-08",
+    "aux_window_indices": [
+      134
+    ],
+    "center_peak_date": "2026-01-21",
+    "center_peak_price": 57.0,
+    "cohort_entry_ids": [
+      2
+    ],
+    "composite_score": 0.666667,
+    "geometric_score": 0.666667,
+    "max_observed_asof_date": "2026-05-08",
+    "observed_asof_dates": [
+      "2026-05-08"
+    ],
+    "pivot_price": 72.95999908447266,
+    "template_match_score": null,
+    "ticker": "SEI",
+    "trough_1_date": "2025-12-17",
+    "trough_1_price": 40.63999938964844,
+    "trough_2_date": "2026-02-05",
+    "trough_2_price": 46.11000061035156,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-05-08",
+    "aux_window_indices": [
+      139
+    ],
+    "center_peak_date": "2026-02-13",
+    "center_peak_price": 56.630001068115234,
+    "cohort_entry_ids": [
+      2
+    ],
+    "composite_score": 0.666667,
+    "geometric_score": 0.666667,
+    "max_observed_asof_date": "2026-05-08",
+    "observed_asof_dates": [
+      "2026-05-08"
+    ],
+    "pivot_price": 72.95999908447266,
+    "template_match_score": null,
+    "ticker": "SEI",
+    "trough_1_date": "2026-02-05",
+    "trough_1_price": 46.11000061035156,
+    "trough_2_date": "2026-02-20",
+    "trough_2_price": 49.2400016784668,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-05-08",
+    "aux_window_indices": [
+      141
+    ],
+    "center_peak_date": "2026-02-25",
+    "center_peak_price": 55.220001220703125,
+    "cohort_entry_ids": [
+      2
+    ],
+    "composite_score": 0.822711,
+    "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-05-08",
+    "observed_asof_dates": [
+      "2026-05-08"
+    ],
+    "pivot_price": 72.95999908447266,
+    "template_match_score": 0.906778,
+    "ticker": "SEI",
+    "trough_1_date": "2026-02-20",
+    "trough_1_price": 49.2400016784668,
+    "trough_2_date": "2026-03-03",
+    "trough_2_price": 47.599998474121094,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-05-08",
+    "aux_window_indices": [
+      142
+    ],
+    "center_peak_date": "2026-03-18",
+    "center_peak_price": 68.55999755859375,
+    "cohort_entry_ids": [
+      2
+    ],
+    "composite_score": 0.658846,
+    "geometric_score": 0.5,
+    "max_observed_asof_date": "2026-05-08",
+    "observed_asof_dates": [
+      "2026-05-08"
+    ],
+    "pivot_price": 72.95999908447266,
+    "template_match_score": 0.897116,
+    "ticker": "SEI",
+    "trough_1_date": "2026-03-03",
+    "trough_1_price": 47.599998474121094,
+    "trough_2_date": "2026-03-30",
+    "trough_2_price": 52.84000015258789,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-04-29",
+    "aux_window_indices": [
+      337
+    ],
+    "center_peak_date": "2025-05-02",
+    "center_peak_price": 5.71999979019165,
+    "cohort_entry_ids": [
+      4
+    ],
+    "composite_score": 0.5,
+    "geometric_score": 0.5,
+    "max_observed_asof_date": "2026-04-29",
+    "observed_asof_dates": [
+      "2026-04-29"
+    ],
+    "pivot_price": 9.65999984741211,
+    "template_match_score": null,
+    "ticker": "TROX",
+    "trough_1_date": "2025-04-08",
+    "trough_1_price": 4.510000228881836,
+    "trough_2_date": "2025-05-07",
+    "trough_2_price": 4.909999847412109,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-04-29",
+    "aux_window_indices": [
+      341
+    ],
+    "center_peak_date": "2025-05-12",
+    "center_peak_price": 5.769999980926514,
+    "cohort_entry_ids": [
+      4
+    ],
+    "composite_score": 0.933333,
+    "geometric_score": 0.933333,
+    "max_observed_asof_date": "2026-04-29",
+    "observed_asof_dates": [
+      "2026-04-29"
+    ],
+    "pivot_price": 9.65999984741211,
+    "template_match_score": null,
+    "ticker": "TROX",
+    "trough_1_date": "2025-05-07",
+    "trough_1_price": 4.909999847412109,
+    "trough_2_date": "2025-05-23",
+    "trough_2_price": 4.739999771118164,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-04-29",
+    "aux_window_indices": [
+      342
+    ],
+    "center_peak_date": "2025-06-10",
+    "center_peak_price": 6.119999885559082,
+    "cohort_entry_ids": [
+      4
+    ],
+    "composite_score": 0.666667,
+    "geometric_score": 0.666667,
+    "max_observed_asof_date": "2026-04-29",
+    "observed_asof_dates": [
+      "2026-04-29"
+    ],
+    "pivot_price": 9.65999984741211,
+    "template_match_score": null,
+    "ticker": "TROX",
+    "trough_1_date": "2025-05-23",
+    "trough_1_price": 4.739999771118164,
+    "trough_2_date": "2025-06-30",
+    "trough_2_price": 5.070000171661377,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-04-29",
+    "aux_window_indices": [
+      346
+    ],
+    "center_peak_date": "2025-07-23",
+    "center_peak_price": 5.849999904632568,
+    "cohort_entry_ids": [
+      4
+    ],
+    "composite_score": 0.766667,
+    "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-04-29",
+    "observed_asof_dates": [
+      "2026-04-29"
+    ],
+    "pivot_price": 9.65999984741211,
+    "template_match_score": null,
+    "ticker": "TROX",
+    "trough_1_date": "2025-06-30",
+    "trough_1_price": 5.070000171661377,
+    "trough_2_date": "2025-08-08",
+    "trough_2_price": 3.140000104904175,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-04-29",
+    "aux_window_indices": [
+      355
+    ],
+    "center_peak_date": "2025-09-18",
+    "center_peak_price": 5.059999942779541,
+    "cohort_entry_ids": [
+      4
+    ],
+    "composite_score": 0.6,
+    "geometric_score": 0.6,
+    "max_observed_asof_date": "2026-04-29",
+    "observed_asof_dates": [
+      "2026-04-29"
+    ],
+    "pivot_price": 9.65999984741211,
+    "template_match_score": null,
+    "ticker": "TROX",
+    "trough_1_date": "2025-08-21",
+    "trough_1_price": 3.6700000762939453,
+    "trough_2_date": "2025-10-10",
+    "trough_2_price": 3.309999942779541,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-04-29",
+    "aux_window_indices": [
+      362
+    ],
+    "center_peak_date": "2025-10-24",
+    "center_peak_price": 3.8299999237060547,
+    "cohort_entry_ids": [
+      4
+    ],
+    "composite_score": 0.6,
+    "geometric_score": 0.6,
+    "max_observed_asof_date": "2026-04-29",
+    "observed_asof_dates": [
+      "2026-04-29"
+    ],
+    "pivot_price": 9.65999984741211,
+    "template_match_score": null,
+    "ticker": "TROX",
+    "trough_1_date": "2025-10-17",
+    "trough_1_price": 3.509999990463257,
+    "trough_2_date": "2025-11-06",
+    "trough_2_price": 3.1700000762939453,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-04-29",
+    "aux_window_indices": [
+      364
+    ],
+    "center_peak_date": "2025-11-10",
+    "center_peak_price": 3.609999895095825,
+    "cohort_entry_ids": [
+      4
+    ],
+    "composite_score": 0.6,
+    "geometric_score": 0.6,
+    "max_observed_asof_date": "2026-04-29",
+    "observed_asof_dates": [
+      "2026-04-29"
+    ],
+    "pivot_price": 9.65999984741211,
+    "template_match_score": null,
+    "ticker": "TROX",
+    "trough_1_date": "2025-11-06",
+    "trough_1_price": 3.1700000762939453,
+    "trough_2_date": "2025-11-20",
+    "trough_2_price": 2.880000114440918,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-04-29",
+    "aux_window_indices": [
+      366
+    ],
+    "center_peak_date": "2025-11-28",
+    "center_peak_price": 4.139999866485596,
+    "cohort_entry_ids": [
+      4
+    ],
+    "composite_score": 0.666667,
+    "geometric_score": 0.666667,
+    "max_observed_asof_date": "2026-04-29",
+    "observed_asof_dates": [
+      "2026-04-29"
+    ],
+    "pivot_price": 9.65999984741211,
+    "template_match_score": null,
+    "ticker": "TROX",
+    "trough_1_date": "2025-11-20",
+    "trough_1_price": 2.880000114440918,
+    "trough_2_date": "2025-12-08",
+    "trough_2_price": 3.75,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-04-29",
+    "aux_window_indices": [
+      371
+    ],
+    "center_peak_date": "2026-02-11",
+    "center_peak_price": 8.40999984741211,
+    "cohort_entry_ids": [
+      4
+    ],
+    "composite_score": 0.5,
+    "geometric_score": 0.5,
+    "max_observed_asof_date": "2026-04-29",
+    "observed_asof_dates": [
+      "2026-04-29"
+    ],
+    "pivot_price": 9.65999984741211,
+    "template_match_score": null,
+    "ticker": "TROX",
+    "trough_1_date": "2026-01-30",
+    "trough_1_price": 6.059999942779541,
+    "trough_2_date": "2026-02-20",
+    "trough_2_price": 6.849999904632568,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-04-29",
+    "aux_window_indices": [
+      373
+    ],
+    "center_peak_date": "2026-02-27",
+    "center_peak_price": 7.480000019073486,
+    "cohort_entry_ids": [
+      4
+    ],
+    "composite_score": 0.834406,
+    "geometric_score": 0.766667,
+    "max_observed_asof_date": "2026-04-29",
+    "observed_asof_dates": [
+      "2026-04-29"
+    ],
+    "pivot_price": 9.65999984741211,
+    "template_match_score": 0.936016,
+    "ticker": "TROX",
+    "trough_1_date": "2026-02-20",
+    "trough_1_price": 6.849999904632568,
+    "trough_2_date": "2026-03-06",
+    "trough_2_price": 6.539999961853027,
+    "window_count": 1
+  },
+  {
+    "anchor_asof_date": "2026-04-29",
+    "aux_window_indices": [
+      377
+    ],
+    "center_peak_date": "2026-03-31",
+    "center_peak_price": 9.770000457763672,
+    "cohort_entry_ids": [
+      4
+    ],
+    "composite_score": 0.666667,
+    "geometric_score": 0.666667,
+    "max_observed_asof_date": "2026-04-29",
+    "observed_asof_dates": [
+      "2026-04-29"
+    ],
+    "pivot_price": 9.65999984741211,
+    "template_match_score": null,
+    "ticker": "TROX",
+    "trough_1_date": "2026-03-20",
+    "trough_1_price": 7.010000228881836,
+    "trough_2_date": "2026-04-09",
+    "trough_2_price": 8.899999618530273,
+    "window_count": 1
+  }
+]
