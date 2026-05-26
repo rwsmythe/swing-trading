@@ -89,6 +89,9 @@ exports/research/w-bottom-ruleset-comparison-*/*
 # Broker statements (personal financial data)
 thinkorswim/
 
+# Local tmp / scratch artifacts (operator workstation only; never tracked)
+tmp/
+
 # Finviz evaluator A/B-test artifacts (diagnostic; regenerated on demand)
 tests/fixtures/finviz/suggested-diffs-*.yaml
 
