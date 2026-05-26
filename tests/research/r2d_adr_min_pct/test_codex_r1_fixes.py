@@ -178,6 +178,47 @@ def test_audit_json_contains_cohort_selection_method() -> None:
     )
 
 
+def test_d2_smoke_artifact_dir_has_r2d_cohort_metadata_sidecar() -> None:
+    """The D2 6-ruleset backtest smoke artifact directory MUST include the
+    r2d_cohort_metadata.json sidecar that explicitly stamps
+    cohort_selection_method + v2_binding_variable per dispatch brief
+    section 6.1 manifest field contract.
+
+    Codex R1.M#4 closure: the D2 harness's own manifest.json does NOT
+    include these fields (D2 is a generic 6-ruleset harness reused
+    verbatim by R2-D); the sidecar surfaces R2-D-specific attribution
+    + provenance links to the upstream audit JSON.
+    """
+    smoke_dir = REPO_ROOT / "exports/research/w-bottom-ruleset-comparison-20260526T062529Z"
+    if not smoke_dir.exists():
+        pytest.skip(
+            f"R2-D D2 backtest smoke artifact not present at {smoke_dir}; "
+            f"regenerate via: python -m research.harness.w_bottom_ruleset_comparison.run "
+            f"--cohort-fixture tests/fixtures/research/r2d_adr_min_pct/cohort.json "
+            f"--cache-dir ~/swing-data/prices-cache --output-dir exports/research/ "
+            f"--composite-threshold 0.5 --recency-max-calendar-days 365"
+        )
+    sidecar = smoke_dir / "r2d_cohort_metadata.json"
+    assert sidecar.exists(), (
+        f"R2-D smoke artifact must include r2d_cohort_metadata.json sidecar "
+        f"per Codex R1.M#4 fix; sidecar missing at {sidecar}"
+    )
+    meta = json.loads(sidecar.read_text(encoding="utf-8"))
+    assert meta["arc"] == "R2-D"
+    assert meta["cohort_selection_method"] == "v2_binding_variable_flips"
+    assert meta["v2_binding_variable"] == "vcp.adr_min_pct"
+    assert meta["sweep_point"] == 2.0
+    assert meta["cohort_label"] == "r2d_vcp_adr_min_pct_sp2_0"
+    assert meta["cohort_size_raw_flips"] == 11
+    assert meta["cohort_size_canonical_evaluation_cohort"] == 4
+    assert meta["gotcha_33_canonical_application_count"] == 3
+    # The pre-commit verdict classification MUST surface INSUFFICIENT SAMPLE
+    assert "INSUFFICIENT SAMPLE" in meta["verdict_classification_pre_commit"]
+    # Provenance: cohort CSV + audit JSON SHA fields must be 64-char hex
+    assert len(meta["cohort_artifacts"]["cohort_csv_sha256"]) == 64
+    assert len(meta["cohort_artifacts"]["flips_audit_json_sha256"]) == 64
+
+
 # ---------------------------------------------------------------------------
 # R1.M#5: canonical source SHA/size validation
 # ---------------------------------------------------------------------------
