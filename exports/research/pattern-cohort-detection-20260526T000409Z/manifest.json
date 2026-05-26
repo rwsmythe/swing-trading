@@ -1,0 +1,42 @@
+{
+  "both_exist_diagnostic": {
+    "affected_tickers": [],
+    "count": 0
+  },
+  "cache_dir": "C:\\Users\\rwsmy\\swing-data\\prices-cache",
+  "cohort_entries_count": 2064,
+  "cohort_input_mode": "csv",
+  "cohort_input_path": "C:\\Users\\rwsmy\\swing-trading\\.worktrees\\applied-research-w-bottom-ruleset-comparison\\exports\\research\\cohorts\\w_bottom_ruleset_comparison_sp500_apr_may_2026.csv",
+  "cohort_input_sha256": "98214d29f2200aaed7e3b6bfcd0795112d016bfe60d4d0fae10b1148eee998de",
+  "cohort_unique_asof_dates_count": 4,
+  "cohort_unique_tickers_count": 516,
+  "db_path": "C:\\Users\\rwsmy\\swing-data\\swing.db",
+  "detectors_invoked": [
+    "vcp",
+    "flat_base",
+    "cup_with_handle",
+    "high_tight_flag",
+    "double_bottom_w"
+  ],
+  "entries_processed": 2064,
+  "finished_at_utc": "2026-05-26T00:04:09.287806+00:00",
+  "harness_version": "0.1.0",
+  "l2_lock_preserved": true,
+  "ohlcv_reader_module": "research.harness.aplus_v2_ohlcv_evaluator.ohlcv_reader",
+  "ohlcv_reader_signature_hash": "9ae1d65be61d8c15fa1ece3df447bb29c0b6d4274b0862a1ca2ba313dc75ba2e",
+  "pattern_exemplars_corpus_filter": "final_decision IN ('confirmed','watch')",
+  "pattern_exemplars_corpus_size_at_invocation": 34,
+  "pattern_exemplars_filtered_size": 15,
+  "runtime_seconds": 118.39365196228027,
+  "skipped_entries": {
+    "archive_missing_skip": 0,
+    "coverage_skip": 4,
+    "detector_error_all": 0,
+    "no_windows": 0,
+    "window_generation_error": 0
+  },
+  "started_at_utc": "2026-05-26T00:02:10.891118+00:00",
+  "template_match_mode": "on",
+  "verdicts_emitted": 166007,
+  "window_mode": "per-window"
+}

@@ -77,8 +77,20 @@ exports/research/double-bottom-w-backtest-*/*
 !exports/research/double-bottom-w-backtest-*/manifest.json
 !exports/research/double-bottom-w-backtest-*/results.csv
 
+# W-bottom ruleset comparison backtest (D2) output tracking. Row count grows
+# to ~300-1200 per smoke run (N=50-200 patterns x 6 rulesets); CSV still well
+# under 100 KB per smoke.
+!exports/research/w-bottom-ruleset-comparison-*
+exports/research/w-bottom-ruleset-comparison-*/*
+!exports/research/w-bottom-ruleset-comparison-*/summary.md
+!exports/research/w-bottom-ruleset-comparison-*/manifest.json
+!exports/research/w-bottom-ruleset-comparison-*/results.csv
+
 # Broker statements (personal financial data)
 thinkorswim/
+
+# Local tmp / scratch artifacts (operator workstation only; never tracked)
+tmp/
 
 # Finviz evaluator A/B-test artifacts (diagnostic; regenerated on demand)
 tests/fixtures/finviz/suggested-diffs-*.yaml

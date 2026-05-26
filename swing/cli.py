@@ -5023,6 +5023,84 @@ def diagnose_double_bottom_w_backtest(
         raise click.ClickException(f"Backtest harness exit code {exit_code}")
 
 
+@diagnose_group.command("w-bottom-ruleset-comparison")
+@click.option(
+    "--results-csv", "results_csv", type=click.Path(path_type=Path), default=None,
+    help="Path to pattern_cohort_evaluator results.csv (stream-parsed + deduped).",
+)
+@click.option(
+    "--cohort-fixture", "cohort_fixture", type=click.Path(path_type=Path), default=None,
+    help="Path to pre-extracted cohort.json (skips results.csv parsing).",
+)
+@click.option(
+    "--cache-dir", "cache_dir", required=True, type=click.Path(path_type=Path),
+    help="OHLCV Shape A cache directory (typically ~/swing-data/prices-cache).",
+)
+@click.option(
+    "--output-dir", "output_dir", type=click.Path(path_type=Path),
+    default=Path("exports/research"), show_default=True,
+)
+@click.option(
+    "--composite-threshold", "composite_threshold", type=float, default=0.7,
+    show_default=True,
+)
+@click.option(
+    "--recency-max-calendar-days", "recency_max_calendar_days", type=int, default=60,
+    show_default=True,
+)
+@click.option(
+    "--no-recency-filter", "no_recency_filter", is_flag=True, default=False,
+    help="Skip recency filter; backtest ALL unique W primary verdicts.",
+)
+@click.option(
+    "--source-artifact-dir", "source_artifact_dir", type=click.Path(path_type=Path),
+    default=None,
+    help="Upstream pattern_cohort_evaluator run dir for manifest provenance.",
+)
+def diagnose_w_bottom_ruleset_comparison(
+    results_csv: Path | None,
+    cohort_fixture: Path | None,
+    cache_dir: Path,
+    output_dir: Path,
+    composite_threshold: float,
+    recency_max_calendar_days: int,
+    no_recency_filter: bool,
+    source_artifact_dir: Path | None,
+) -> None:
+    """D2 W-bottom ruleset comparison backtest (research-branch only).
+
+    Extends D1 with 3 NEW literature-canonical rulesets (Minervini Stage-2 /
+    O'Neil cup-with-handle + Bulkowski measured-move / Qullamaggie momentum-
+    burst) tested against an S&P-500-wide W cohort (N=50-200 patterns).
+    Six rulesets in total (A/B/C reused from D1; D/E/F NEW). See
+    docs/pattern-cohort-w-bottom-ruleset-comparison-dispatch-brief.md.
+    """
+    if (results_csv is None) == (cohort_fixture is None):
+        raise click.ClickException(
+            "Exactly one of --results-csv or --cohort-fixture must be supplied"
+        )
+    from research.harness.w_bottom_ruleset_comparison.run import main as backtest_main
+
+    argv: list[str] = []
+    if results_csv is not None:
+        argv += ["--results-csv", str(results_csv)]
+    else:
+        argv += ["--cohort-fixture", str(cohort_fixture)]
+    argv += [
+        "--cache-dir", str(cache_dir),
+        "--output-dir", str(output_dir),
+        "--composite-threshold", str(composite_threshold),
+        "--recency-max-calendar-days", str(recency_max_calendar_days),
+    ]
+    if no_recency_filter:
+        argv += ["--no-recency-filter"]
+    if source_artifact_dir is not None:
+        argv += ["--source-artifact-dir", str(source_artifact_dir)]
+    exit_code = backtest_main(argv)
+    if exit_code != 0:
+        raise click.ClickException(f"Backtest harness exit code {exit_code}")
+
+
 @diagnose_group.command("metrics-wiring")
 @click.option(
     "--db", "db_path", required=True, type=click.Path(path_type=Path),
