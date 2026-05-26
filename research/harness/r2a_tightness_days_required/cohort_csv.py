@@ -121,17 +121,17 @@ EXPECTED_FLIPS: frozenset[tuple[str, int, date]] = frozenset(
     }
 )
 
-# Anchored heading regex (Codex R2.M#4): only match `### vcp.tightness_days_required`
-# at start of line + end of line (optional trailing whitespace). Defends
-# against inline prose substring matches AND longer-title h3 like
-# `### vcp.tightness_days_required (deprecated)`. NOTE: markdown
-# triple-backtick code fences are NOT detected -- a heading-like line
-# at start-of-line INSIDE a code block WILL be matched. The canonical
-# defense against accidental in-code matches is the strict verifier
-# (verify_expected_r2a_cohort) downstream (Codex R3.M#2 ACCEPTED).
-_H3_VARIABLE_REGEX = re.compile(
-    rf"^### {re.escape(R2A_VARIABLE_NAME)}\s*$", re.MULTILINE
-)
+# Anchored heading regex notes (Codex R2.M#4 design): _section_body
+# constructs a per-call variable regex via re.escape(variable_name)
+# so the helper is reusable across drill-down sections. The anchored
+# regex matches `^### <variable>\s*$` MULTILINE; defends against
+# inline prose substring matches AND longer-title h3 like
+# `### vcp.tightness_days_required (deprecated)`.
+# NOTE: markdown triple-backtick code fences are NOT detected -- a
+# heading-like line at start-of-line INSIDE a code block WILL be
+# matched. The canonical defense against accidental in-code matches
+# is the strict verifier (verify_expected_r2a_cohort) downstream
+# (Codex R3.M#2 ACCEPTED).
 _H3_GENERIC_REGEX = re.compile(r"^### .+$", re.MULTILINE)
 _H2_GENERIC_REGEX = re.compile(r"^## .+$", re.MULTILINE)
 
