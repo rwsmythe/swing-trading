@@ -62,9 +62,20 @@ def run_backtest_for_verdicts(
 
     Per-ticker OHLCV cache avoids 6x re-reads when multiple verdicts share
     a ticker. Returns (trades, skipped_counts).
+
+    Codex R2 m#2 clarification: skipped_counts uses BOTH counters for
+    visibility into distinct vs total impact:
+      - skipped_tickers_ohlcv_missing: distinct tickers with missing archives
+      - skipped_patterns_ohlcv_missing: distinct PATTERNS affected (N patterns
+        per missing ticker x 6 rulesets each emit ohlcv_missing rows)
     """
     trades: list[Trade] = []
-    skipped: dict[str, int] = {"ohlcv_missing": 0, "ohlcv_empty": 0}
+    skipped: dict[str, int] = {
+        "ohlcv_missing": 0,  # legacy field name; equals skipped_tickers_ohlcv_missing
+        "ohlcv_empty": 0,
+        "skipped_tickers_ohlcv_missing": 0,
+        "skipped_patterns_ohlcv_missing": 0,
+    }
     rulesets = all_rulesets()
     by_ticker_bars: dict[str, object] = {}
     for v in verdicts:
@@ -76,7 +87,11 @@ def run_backtest_for_verdicts(
             except OhlcvCoverageError:
                 by_ticker_bars[v.ticker] = None
                 skipped["ohlcv_missing"] += 1
+                skipped["skipped_tickers_ohlcv_missing"] += 1
         bars = by_ticker_bars[v.ticker]
+        if bars is None:
+            # Distinct pattern affected (regardless of ruleset multiplier).
+            skipped["skipped_patterns_ohlcv_missing"] += 1
         for rs in rulesets:
             if bars is None:
                 trades.append(_emit_missing_archive_trade(v, rs.name))

@@ -1,9 +1,24 @@
 """L2 LOCK BINDING tests for D2 harness (mirrors D1 dispatch brief Section 5.4).
 
+L2 LOCK scope clarification (Codex R2 M#1):
+  The L2 LOCK is a RUNTIME contract -- ZERO new Schwab API calls + ZERO
+  yfinance fetches at backtest time. The two sentinels below cover the
+  STATIC IMPORT surface of the D2 package proper (research/harness/
+  w_bottom_ruleset_comparison/). They do NOT scan swing/cli.py's transitive
+  import graph: swing/cli.py top-level imports swing.cli_schwab +
+  PriceFetcher (PRE-EXISTING property; D1's CLI subcommand shares this
+  characteristic). The CLI invocation path is the standard operator-CLI
+  entry pattern; the new subcommand delegates to
+  research.harness.w_bottom_ruleset_comparison.run which IS sentinel-
+  covered. For test environments wanting strict isolation, the smoke can
+  be invoked via direct module: `python -m
+  research.harness.w_bottom_ruleset_comparison.run --results-csv ...`
+  bypassing swing/cli.py entirely.
+
 (a) Source-grep sentinel: no `import yfinance` / `import schwabdev` /
     `swing.integrations.schwab` in NEW D2 module sources.
-(b) Import-graph sentinel: post-import, sys.modules does NOT contain
-    yfinance / schwabdev / swing.integrations.schwab as imported names.
+(b) Import-graph sentinel: post-import of the D2 package modules, sys.modules
+    does NOT contain yfinance / schwabdev / swing.integrations.schwab.
 """
 from __future__ import annotations
 

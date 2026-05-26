@@ -362,7 +362,12 @@ def write_summary_markdown(
     lines.append("- Initial stop varies per ruleset:")
     lines.append("    - A/B/C/D/F: trough_2_price * 0.99 (canonical W right-shoulder buffer)")
     lines.append("    - E: max(trough_2 * 0.99, entry * 0.92) (O'Neil 8% max loss floor)")
-    lines.append("- Trigger search window: max(trough_1, trough_2, asof) + 1 BD lower; asof + 60 BD upper.")
+    lines.append(
+        "- Trigger search window lower bound: STRICTLY AFTER "
+        "max(trough_1_date, trough_2_date, effective_asof_date) "
+        "where effective_asof = max(anchor_asof, max_observed_asof). "
+        "Upper bound (INCLUSIVE): effective_asof + 60 business days."
+    )
     lines.append("- All non-momentum-gate exits CLOSE-based; momentum_gate_fail (F) is OPEN-based at session 6.")
     lines.append("- OHLCV source: V2 Shape A reader at ~/swing-data/prices-cache/ (L2 LOCK preserved).")
     lines.append("- L6 caveat: forward-walk bars come from CURRENT archive; may differ from V1 contemporaneous state.")

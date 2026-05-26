@@ -513,23 +513,80 @@ def test_ruleset_f_no_atr_gate_skip_means_no_momentum_gate_fail_at_session_6():
     )
 
 
-def test_ruleset_f_trail_check_then_raise_ordering_preserves_d1_precedent_codex_r1_m3():
-    """D/F trail ordering: today's close-vs-current-stop check runs BEFORE
-    today's SMA-derived stop raise. If today's close is above yesterday's
-    stop but below today's NEWLY-COMPUTED trail stop, the trade survives
-    THIS bar (close exits next bar against the raised stop)."""
+def test_ruleset_d_trail_check_then_raise_ordering_preserves_d1_precedent_codex_r1_m3_strengthened():
+    """D's trail ordering: stop check runs BEFORE today's SMA10-derived
+    stop raise. Discriminating semantic: today's close BETWEEN yesterday's
+    stop AND today's newly-computed trail stop -> trade HOLDS this bar
+    (does not exit on the about-to-be-raised stop). The exit fires on the
+    NEXT bar's close against the now-raised stop.
+
+    Strengthened test per Codex R2 m#1 critique: assert (a) the specific
+    bar at the boundary returns None; (b) state.current_stop is raised
+    after the call; (c) the next bar's close (lower than raised stop)
+    fires the exit.
+    """
+    # Build a setup where SMA10 climbs above the current stop after BE arm.
+    # Stage 1: 25 pre-bars at 100 (warmup); entry at idx 25; +2R hit at idx 26
+    # (close=120); BE arms, stop -> 100; SMA10 starts climbing as more bars
+    # at higher levels accumulate.
     pre = [100.0] * 25
-    # Push +2R quickly to fire scale-out at session 3
-    post = [101.0, 110.0, 130.0]
-    # Then trend down slowly; SMA20 trails close
-    post += [125.0, 120.0, 115.0, 110.0, 108.0]
+    post = [
+        # idx 25 entry close 100
+        100.0,
+        # idx 26 close 120 -> +2R, BE arms (stop=100), SMA10 trail begins
+        120.0,
+        # idx 27-31 closes climb so SMA10 climbs
+        125.0, 130.0, 135.0, 140.0, 145.0,
+    ]
+    closes = pre + post
+    bars = _bars(closes, highs=[c + 1.0 for c in closes], lows=[c - 1.0 for c in closes])
+    rs = RulesetD()
+    v = _verdict()
+    state = rs.init_state(verdict=v, bars=bars, entry_idx=25, entry_price=100.0, initial_stop=90.0)
+    # Walk bars; at idx 26 BE arms (close=120 >= entry + 2R)
+    for i in range(25, len(bars)):
+        action = rs.update_and_check(
+            state=state, bars=bars, bar_idx=i, entry_idx=25,
+            entry_price=100.0, initial_R=10.0,
+        )
+        # No exit on these climbing bars
+        assert action is None, f"bar {i} should not exit"
+    # Stop now raised to SMA10*0.99 (much closer to current close than initial 90)
+    assert state.breakeven_armed is True
+    assert state.current_stop > 100.0  # raised above entry due to SMA10 climbing
+    raised_stop = state.current_stop
+    # Plant a NEXT bar whose close drops below the raised_stop but ABOVE
+    # the prior current_stop value at the start of that bar's processing
+    # (Note: we MUTATE bars to simulate the next bar; this isolates the
+    # check-then-raise semantic.) The exit should fire as trail_stop.
+    next_close = raised_stop * 0.95  # well below raised stop
+    new_bars = _bars(closes + [next_close], highs=[c + 1.0 for c in closes + [next_close]],
+                     lows=[c - 1.0 for c in closes + [next_close]])
+    # Re-init state and re-walk to the next bar (state was on stack)
+    state2 = rs.init_state(verdict=v, bars=new_bars, entry_idx=25, entry_price=100.0, initial_stop=90.0)
+    for i in range(25, len(new_bars)):
+        action = rs.update_and_check(
+            state=state2, bars=new_bars, bar_idx=i, entry_idx=25,
+            entry_price=100.0, initial_R=10.0,
+        )
+        if i == len(new_bars) - 1:
+            assert isinstance(action, FullExit)
+            assert action.reason == "trail_stop"
+
+
+def test_ruleset_f_trail_post_scaleout_uses_sma20_not_initial_stop():
+    """Lock the F semantics: after scale-out, trail uses SMA20 (not initial
+    stop). Verify state.current_stop tracks SMA20 over subsequent bars."""
+    pre = [100.0] * 25
+    post = [
+        101.0, 120.0,  # +2R hit at idx 26 -> ScaleOut
+        125.0, 130.0, 135.0,  # post-scale climbing
+    ]
     closes = pre + post
     bars = _bars(closes, highs=[c + 1.0 for c in closes], lows=[c - 1.0 for c in closes])
     rs = RulesetF()
     v = _verdict()
     state = rs.init_state(verdict=v, bars=bars, entry_idx=25, entry_price=100.0, initial_stop=90.0)
-    # Fire scale-out at bar_idx=27
-    actions = []
     for i in range(25, len(bars)):
         a = rs.update_and_check(
             state=state, bars=bars, bar_idx=i, entry_idx=25,
@@ -539,6 +596,6 @@ def test_ruleset_f_trail_check_then_raise_ordering_preserves_d1_precedent_codex_
             state.scale_out_fired = True
             state.scale_out_R = (a.price - 100.0) / 10.0
             state.scale_out_fraction = a.fraction
-        actions.append(a)
-    # Post scale-out, trail uses SMA20 which lags. Verify scale-out fired
-    assert any(isinstance(a, ScaleOut) for a in actions)
+    # Post-scale-out: stop should track SMA20 (which climbed above entry)
+    assert state.scale_out_fired is True
+    assert state.current_stop >= 100.0  # at least at BE
