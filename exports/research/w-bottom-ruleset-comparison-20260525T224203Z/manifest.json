@@ -1,0 +1,48 @@
+{
+  "both_exist_diagnostic_count": 0,
+  "cache_dir": "C:\\Users\\rwsmy\\swing-data\\prices-cache",
+  "cohort_csv_path": "tests\\fixtures\\research\\r2a_tightness_days_required\\cohort.json",
+  "cohort_csv_sha256": "758675b897affb4cf779259fdfe41398a3305b9480e8e3e510a358d83c4a35e7",
+  "composite_threshold": 0.5,
+  "finished_at_utc": "2026-05-26T08:42:03.930321+00:00",
+  "harness_name": "w_bottom_ruleset_comparison",
+  "harness_version": "0.1.0",
+  "l2_lock_preserved": true,
+  "max_trigger_search_business_days": 60,
+  "n_distinct_tickers": 7,
+  "n_patterns_after_recency_filter": 65,
+  "n_trades_emitted": 390,
+  "n_unique_verdicts_pre_filter": 65,
+  "n_verdicts_after_adjacency_merge": 65,
+  "per_ruleset_patterns_count": {
+    "A_minervini_trail_ma": 65,
+    "B_fixed_R_multiple": 65,
+    "C_close_below_50d": 65,
+    "D_minervini_stage2_progression": 65,
+    "E_oneil_cup_with_handle_measured_move": 65,
+    "F_qullamaggie_momentum_burst": 65
+  },
+  "recency_filter_active": true,
+  "recency_max_calendar_days": 365,
+  "rulesets_count": 6,
+  "rulesets_enumerated": [
+    "A_minervini_trail_ma",
+    "B_fixed_R_multiple",
+    "C_close_below_50d",
+    "D_minervini_stage2_progression",
+    "E_oneil_cup_with_handle_measured_move",
+    "F_qullamaggie_momentum_burst"
+  ],
+  "runtime_seconds": 3.663261,
+  "skipped_patterns": {
+    "ohlcv_empty": 0,
+    "ohlcv_missing": 0,
+    "skipped_patterns_ohlcv_missing": 0,
+    "skipped_tickers_ohlcv_missing": 0
+  },
+  "source_artifact_manifest_path": "exports\\research\\pattern-cohort-detection-20260526T081400Z\\manifest.json",
+  "source_artifact_manifest_sha256": "49168aaeb0dca1c49db7c991c4e5bc2d7308d921e2a16f43b6451e7997b3c2c9",
+  "source_cohort_input_sha256": "c3ec47f09279effcf15c63a59a34f1d65bc19fa4a366f007b730fcb2cffcc197",
+  "source_results_csv_sha256": "4c1b4acfa16a806c9b2dabf4aaa1cf9c538add68824d9c76c0319c9bed510932",
+  "started_at_utc": "2026-05-26T08:42:00.267060+00:00"
+}
