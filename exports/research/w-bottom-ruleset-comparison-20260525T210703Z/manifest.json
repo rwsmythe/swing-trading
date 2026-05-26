@@ -1,0 +1,48 @@
+{
+  "both_exist_diagnostic_count": 0,
+  "cache_dir": "C:\\Users\\rwsmy\\swing-data\\prices-cache",
+  "cohort_csv_path": ".worktrees\\applied-research-w-bottom-ruleset-comparison\\exports\\research\\pattern-cohort-detection-20260526T000409Z\\results.csv",
+  "cohort_csv_sha256": "26257ccc053a89c3adb1ce3c8741e7e102fd04646d32cf16efc1ef5cdb95be51",
+  "composite_threshold": 0.5,
+  "finished_at_utc": "2026-05-26T07:07:03.857806+00:00",
+  "harness_name": "w_bottom_ruleset_comparison",
+  "harness_version": "0.1.0",
+  "l2_lock_preserved": true,
+  "max_trigger_search_business_days": 60,
+  "n_distinct_tickers": 7,
+  "n_patterns_after_recency_filter": 71,
+  "n_trades_emitted": 426,
+  "n_unique_verdicts_pre_filter": 299,
+  "n_verdicts_after_adjacency_merge": 291,
+  "per_ruleset_patterns_count": {
+    "A_minervini_trail_ma": 71,
+    "B_fixed_R_multiple": 71,
+    "C_close_below_50d": 71,
+    "D_minervini_stage2_progression": 71,
+    "E_oneil_cup_with_handle_measured_move": 71,
+    "F_qullamaggie_momentum_burst": 71
+  },
+  "recency_filter_active": true,
+  "recency_max_calendar_days": 365,
+  "rulesets_count": 6,
+  "rulesets_enumerated": [
+    "A_minervini_trail_ma",
+    "B_fixed_R_multiple",
+    "C_close_below_50d",
+    "D_minervini_stage2_progression",
+    "E_oneil_cup_with_handle_measured_move",
+    "F_qullamaggie_momentum_burst"
+  ],
+  "runtime_seconds": 2.523117,
+  "skipped_patterns": {
+    "ohlcv_empty": 0,
+    "ohlcv_missing": 0,
+    "skipped_patterns_ohlcv_missing": 0,
+    "skipped_tickers_ohlcv_missing": 0
+  },
+  "source_artifact_manifest_path": "exports\\research\\pattern-cohort-detection-20260526T000409Z\\manifest.json",
+  "source_artifact_manifest_sha256": "f63306566d9700cf470348f53ec927d330eedf6d601780e587d200e79590b40d",
+  "source_cohort_input_sha256": "98214d29f2200aaed7e3b6bfcd0795112d016bfe60d4d0fae10b1148eee998de",
+  "source_results_csv_sha256": "26257ccc053a89c3adb1ce3c8741e7e102fd04646d32cf16efc1ef5cdb95be51",
+  "started_at_utc": "2026-05-26T07:07:01.334689+00:00"
+}
