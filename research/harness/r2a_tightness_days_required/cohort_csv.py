@@ -95,10 +95,12 @@ EXPECTED_TICKER_ASOF: frozenset[tuple[str, date]] = frozenset(
         ("OII", date(2026, 4, 21)),
     }
 )
-# Canonical 15-tuple raw flip multiset (ticker, eval_run_id, asof_date)
+# Canonical 15-tuple raw flip set (ticker, eval_run_id, asof_date)
 # preserves per-eval_run audit identity. Asserting this set protects
 # against eval_run_id mis-parse + ticker/asof tuple substitution
-# (Codex R2.M#2).
+# (Codex R2.M#2). Implemented as frozenset because the canonical rows
+# happen to be unique triples; if upstream V2 ever emits duplicate
+# raw triples, the verifier's flip-COUNT check (layer 3) still fires.
 EXPECTED_FLIPS: frozenset[tuple[str, int, date]] = frozenset(
     {
         ("NAT", 44, date(2026, 5, 12)),
@@ -172,13 +174,23 @@ def _section_body(text: str, variable_name: str) -> str:
         prior implementation returned rest-of-file when no h3 was
         found even if an h2 boundary existed.
     """
-    start_match = _H3_VARIABLE_REGEX.search(text)
+    # Build the heading regex from the variable_name parameter so the
+    # helper is reusable for other drill-down sections (Codex R3.minor#2).
+    variable_regex = re.compile(
+        rf"^### {re.escape(variable_name)}\s*$", re.MULTILINE
+    )
+    start_match = variable_regex.search(text)
     if start_match is None:
         raise CohortExtractionError(
             f"V2 sensitivity artifact lacks the `### {variable_name}` "
             f"line-anchored heading; verify the artifact is a "
             f"full-reproduction smoke (not truncated) and the heading "
-            f"appears at the start of a line"
+            f"appears at the start of a line. NOTE: the parser intentionally "
+            f"does NOT implement markdown-code-fence detection -- a heading "
+            f"line inside a triple-backtick code block WILL be matched. The "
+            f"defense-in-depth against accidental in-prose / in-code matches "
+            f"is the canonical strict verifier (verify_expected_r2a_cohort), "
+            f"which raises on any deviation from the 15-tuple multiset"
         )
     section_start = start_match.start()
     search_from = start_match.end()
@@ -433,8 +445,11 @@ def write_flips_audit_json(
     src_path = Path(source_sensitivity_md)
     src_sha = _sha256_of_file(src_path) if src_path.exists() else None
     src_stat = src_path.stat() if src_path.exists() else None
+    # Codex R3.minor#3: emit POSIX path (forward slashes) so the audit
+    # JSON is portable across Windows / POSIX environments (the SHA-256
+    # is the durable identity; path is human-readable only).
     payload = {
-        "source_sensitivity_md": str(source_sensitivity_md),
+        "source_sensitivity_md": Path(source_sensitivity_md).as_posix(),
         "source_sensitivity_md_sha256": src_sha,
         "source_sensitivity_md_size_bytes": (
             src_stat.st_size if src_stat else None
@@ -478,13 +493,12 @@ def generate_r2a_cohort_artifacts(
     source_sensitivity_md: Path,
     cohort_csv_path: Path,
     flips_audit_json_path: Path | None = None,
-    verify: bool = True,
 ) -> CohortArtifacts:
     """Canonical one-call R2-A cohort generation pipeline.
 
-    Sequence (Codex R2.M#6: enforce a single canonical path):
+    Sequence (Codex R2.M#6 + R3.M#3: ALWAYS verifies; no bypass flag):
       1. extract_flips_from_sensitivity_md(source_sensitivity_md)
-      2. if verify: verify_expected_r2a_cohort(flips)
+      2. verify_expected_r2a_cohort(flips) -- ALWAYS fires
       3. write_cohort_csv(flips, cohort_csv_path)
       4. write_flips_audit_json(flips, audit_path, source_sensitivity_md=...)
 
@@ -492,15 +506,17 @@ def generate_r2a_cohort_artifacts(
     so the audit sidecar tracks the CSV by filename convention.
 
     Returns a CohortArtifacts dataclass with paths + counts. Raises
-    CohortExtractionError on any deviation when verify=True.
+    CohortExtractionError on any deviation from the canonical 15/7/7
+    cohort. The verification step has NO bypass -- if a future arc
+    needs a non-canonical extraction (e.g. for a different variable),
+    call extract_flips_from_sensitivity_md() directly.
     """
     cohort_csv_path = Path(cohort_csv_path)
     if flips_audit_json_path is None:
         flips_audit_json_path = cohort_csv_path.with_suffix(".flips_audit.json")
     flips_audit_json_path = Path(flips_audit_json_path)
     flips = extract_flips_from_sensitivity_md(source_sensitivity_md)
-    if verify:
-        verify_expected_r2a_cohort(flips)
+    verify_expected_r2a_cohort(flips)
     n_unique = write_cohort_csv(flips, cohort_csv_path)
     n_audit = write_flips_audit_json(
         flips, flips_audit_json_path, source_sensitivity_md=source_sensitivity_md
