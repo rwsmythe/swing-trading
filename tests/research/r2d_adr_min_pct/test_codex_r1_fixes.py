@@ -105,24 +105,30 @@ def test_cohort_fixture_exact_identity_lock() -> None:
         f"All 4 entries must be STNG (the only ticker yielding W primaries within "
         f"the 365d recency filter); got {tickers}"
     )
-    # Exact (trough_1_date, trough_2_date, composite_score) triple set derived
-    # from pattern_cohort_evaluator smoke at
+    # Exact (trough_1_date, center_peak_date, trough_2_date, composite_score)
+    # 4-tuple set derived from pattern_cohort_evaluator smoke at
     # exports/research/pattern-cohort-detection-20260526T160518Z/results.csv
     # post 5-BD adjacency merge + recency<=365d filter against the canonical
-    # composite>=0.5 threshold.
-    triples = {
-        (e["trough_1_date"], e["trough_2_date"], round(float(e["composite_score"]), 4))
+    # composite>=0.5 threshold. Codex R2.m#2 fix: include center_peak_date so
+    # a center-peak mutation cannot pass the identity check.
+    quadruples = {
+        (
+            e["trough_1_date"],
+            e["center_peak_date"],
+            e["trough_2_date"],
+            round(float(e["composite_score"]), 4),
+        )
         for e in entries
     }
-    expected_triples = {
-        ("2025-04-04", "2025-05-22", 0.5),
-        ("2025-05-22", "2025-06-30", 0.7667),
-        ("2025-08-11", "2025-10-14", 0.5),
-        ("2026-01-05", "2026-03-17", 0.6481),
+    expected_quadruples = {
+        ("2025-04-04", "2025-05-13", "2025-05-22", 0.5),
+        ("2025-05-22", "2025-06-18", "2025-06-30", 0.7667),
+        ("2025-08-11", "2025-09-15", "2025-10-14", 0.5),
+        ("2026-01-05", "2026-03-04", "2026-03-17", 0.6481),
     }
-    assert triples == expected_triples, (
-        f"Fixture (trough_1, trough_2, composite) triples={triples}; "
-        f"expected={expected_triples}. Source: pattern_cohort_evaluator smoke "
+    assert quadruples == expected_quadruples, (
+        f"Fixture (trough_1, center_peak, trough_2, composite) quadruples={quadruples}; "
+        f"expected={expected_quadruples}. Source: pattern_cohort_evaluator smoke "
         f"at exports/research/pattern-cohort-detection-20260526T160518Z/."
     )
 
@@ -224,24 +230,91 @@ def test_generate_r2d_cohort_artifacts_allows_non_canonical_with_flag(
     tmp_path: Path,
 ) -> None:
     """allow_non_canonical_source=True MUST bypass the source SHA check
-    (cohort-identity layered verifier still fires)."""
-    # We can't generate a fake-source with the canonical 11 flips identically
-    # in the right table without effectively duplicating the source bytes
-    # (which would match SHA). So the non-canonical flag test exercises the
-    # FALL-THROUGH semantic: pass the canonical source, set the flag True,
-    # verify the wrapper produces the canonical artifacts (proves SHA check
-    # was skipped + extraction still works).
-    if not SOURCE_MD.exists():
-        pytest.skip(f"V2 sensitivity artifact not present at {SOURCE_MD}")
-    csv_path = tmp_path / "r2d_cohort_noncanonical.csv"
+    even when the source SHA does NOT match canonical (cohort-identity
+    layered verifier still fires).
+
+    Codex R2.m#1 fix: stronger test plants a forged source containing
+    all 11 canonical flip triples in the vcp.adr_min_pct section AT
+    sweep_point=2.0. Without the flag, the wrapper raises on SHA mismatch
+    (proven by test_generate_r2d_cohort_artifacts_verifies_canonical_source).
+    With the flag, the wrapper falls through to the layered verifier,
+    which then passes because the 11 canonical triples are present.
+    """
+    # Construct a minimal markdown containing the exact 11 canonical flips
+    # at sweep_point=2.0 (plus a noise section to force a different SHA).
+    forged_md = """\
+## Some unrelated heading
+
+(noise content to make SHA differ from canonical)
+
+## Per-Variable Drill-Down
+
+### vcp.adr_min_pct
+
+| ticker | eval_run_id | data_asof_date | sweep_point | old_bucket | new_bucket | old_criterion_failure | bucket_via_surrogate |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| GLNG | 55 | 2026-05-18 | 2.0 | watch | aplus | (none) | no |
+| STNG | 18 | 2026-04-24 | 2.0 | watch | aplus | (none) | no |
+| STNG | 17 | 2026-04-24 | 2.0 | watch | aplus | (none) | no |
+| STNG | 16 | 2026-04-24 | 2.0 | watch | aplus | (none) | no |
+| STNG | 15 | 2026-04-24 | 2.0 | watch | aplus | (none) | no |
+| AMX | 4 | 2026-04-17 | 2.0 | watch | aplus | (none) | no |
+| XENE | 4 | 2026-04-17 | 2.0 | watch | aplus | (none) | no |
+| AMX | 3 | 2026-04-17 | 2.0 | watch | aplus | (none) | no |
+| XENE | 3 | 2026-04-17 | 2.0 | watch | aplus | (none) | no |
+| AMX | 2 | 2026-04-17 | 2.0 | watch | aplus | (none) | no |
+| XENE | 2 | 2026-04-17 | 2.0 | watch | aplus | (none) | no |
+"""
+    forged = tmp_path / "forged_with_canonical_flips.md"
+    forged.write_text(forged_md, encoding="utf-8")
+
+    # 1) Default path MUST raise on SHA mismatch
+    csv_path = tmp_path / "r2d_cohort_default.csv"
+    with pytest.raises(CohortExtractionError, match="SHA-256 mismatch"):
+        generate_r2d_cohort_artifacts(
+            source_sensitivity_md=forged,
+            cohort_csv_path=csv_path,
+        )
+    assert not csv_path.exists()
+
+    # 2) allow_non_canonical_source=True MUST bypass SHA check AND succeed
+    #    because the forged source contains all 11 canonical flips.
+    csv_path_2 = tmp_path / "r2d_cohort_noncanonical.csv"
     artifacts = generate_r2d_cohort_artifacts(
-        source_sensitivity_md=SOURCE_MD,
-        cohort_csv_path=csv_path,
+        source_sensitivity_md=forged,
+        cohort_csv_path=csv_path_2,
         allow_non_canonical_source=True,
     )
     assert artifacts.raw_flip_count == 11
     assert artifacts.unique_ticker_asof_count == 4
-    assert csv_path.exists()
+    assert csv_path_2.exists()
+
+
+def test_regenerate_cohort_rejects_non_default_output_without_flag(
+    tmp_path: Path,
+) -> None:
+    """Codex R2.m#3 fix: invoking the entrypoint with the canonical source
+    BUT a non-default output cohort CSV path MUST fail without
+    --allow-non-canonical-paths."""
+    custom_csv = tmp_path / "custom_cohort.csv"
+    proc = subprocess.run(
+        [
+            sys.executable, "-m",
+            "research.harness.r2d_adr_min_pct.regenerate_cohort",
+            "exports/diagnostics/aplus-sensitivity-v2-20260524T205849Z.md",
+            str(custom_csv),
+        ],
+        cwd=str(REPO_ROOT),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 2, (
+        f"expected exit code 2 (non-default output rejection); got {proc.returncode}. "
+        f"stderr={proc.stderr!r}"
+    )
+    assert "non-default cohort CSV path" in proc.stderr
+    assert "--allow-non-canonical-paths" in proc.stderr
 
 
 # ---------------------------------------------------------------------------
