@@ -439,4 +439,66 @@ The implementer's technical work + Codex chain are solid. This Amendment reclass
 
 ---
 
-*End of findings document. Canonical verdict per Amendment 3: **PARTIAL POSITIVE for Ruleset E** on N=26 / recency<=120d / composite>=0.5 cohort (3 winners; +1.208R mean R closed; 100% win-rate). PARTIAL POSITIVE directional for Ruleset D (1 winner; +1.685R; needs larger sample). First substantive POSITIVE-direction verdict in V2 -> D1 -> D2 arc. Implementer's original POSITIVE on Companion 1 is structurally artifact-driven per Amendment 3.1; included for transparency only. Recommended next action: Option A per-variable R2 cohort smoke + 6-ruleset backtest for next binding variable WITH recency-filter discipline applied to canonical evaluation cohort selection.*
+## Amendment 4 -- Bootstrap CI on Ruleset E mean R closed (Option A; 2026-05-25 PM)
+
+Per operator-paired next-dispatch direction post-Amendment-3: bootstrap CI on E's PARTIAL POSITIVE finding to quantify statistical robustness BEFORE committing to R2 dispatch.
+
+**Methodology:** Nonparametric bootstrap; 10,000 iterations; seed=42; 95% CI via (a) percentile method + (b) bias-corrected (BC) method. Closed-trade R-multiples only; open positions excluded (unresolved). Analysis script committed at `tmp/d2-bootstrap-ci-option-a.py`.
+
+### Amendment 4.1 Results
+
+**Companion 2 (canonical evaluation cohort; recency<=120d / composite>=0.5):**
+- N=3 closed; R values: [+2.026R, +1.133R, +0.464R]
+- Mean: +1.208R; median: +1.133R; std: 0.784
+- 95% CI (percentile): [+0.464R, +2.026R]
+- 95% CI (bias-corrected): [+0.464R, +1.728R]
+- P(bootstrap mean > 0): 1.000
+
+**Companion 1 (structural artifact reference; no-recency / composite>=0.7):**
+- N=12 closed; 10 winners + 2 losers
+- Mean: +0.586R; median: +0.738R; std: 0.888
+- 95% CI (percentile): [+0.074R, +1.037R]
+- 95% CI (bias-corrected): [+0.052R, +1.023R]
+- P(bootstrap mean > 0): 0.986
+
+### Amendment 4.2 Methodological caveat -- Companion 2 N=3 degeneracy
+
+The Companion 2 result is **methodologically degenerate** despite passing the literal threshold test. With N=3 all positive (+0.464 / +1.133 / +2.026), the bootstrap can only resample those 3 values with replacement; the minimum possible bootstrap mean is +0.464 (all three resamples landing on the lowest value). The lower 95% CI bound EQUALS the sample minimum NOT because the test discriminates a true positive mean but because the sample contains NO negative values to anchor the lower tail. P(mean > 0) = 1.000 is by construction, not by inference.
+
+With N=3, the bootstrap distribution has only 3^3 = 27 distinct resample patterns; the CI cannot expand below the sample minimum. This is a known limitation of nonparametric bootstrap on very small N.
+
+**Honest reading of Companion 2:** the 3 winners are uniformly positive (range +0.464 to +2.026R) and the mean +1.208R is well above zero. This is consistent with a positive expectancy under E on the W-bottom cohort. But the result is fragile — a single 4th trade closing at -1.0R or worse would shift mean to ~+0.65R; multiple losses would more materially erode the verdict. The Companion 2 result is best characterized as **directional evidence of positive expectancy under Ruleset E**, not statistically-robust confirmation.
+
+### Amendment 4.3 Methodological strength -- Companion 1 N=12
+
+The Companion 1 result is **statistically more robust** despite cohort caveats. With N=12 (10 winners + 2 losers), the sample contains genuine variance: bootstrap resamples can produce means below zero when the 2 losers dominate. The percentile CI [+0.074R, +1.037R] reflects this true uncertainty. P(mean > 0) = 0.986 means that across 10,000 bootstrap resamples, 98.6% had positive mean — strong but not overwhelming.
+
+If Companion 1 were the canonical cohort (it's not per Amendment 3.1; it's the structural artifact reference), the verdict "statistically defensible PARTIAL POSITIVE at 98.6% confidence" would be appropriate. As-is, the result confirms that Ruleset E's measured-move mechanism DOES capture meaningful upside on the cohort it was tested against — but the cohort itself includes old-W trivial-trigger entries that don't generalize to real W-bottom trading.
+
+### Amendment 4.4 Cross-cohort interpretation
+
+The two cohorts produce convergent evidence in opposite degeneracy modes:
+- **Companion 2 (small, clean):** all 3 trades positive; high mean but small N
+- **Companion 1 (larger, contaminated):** mixed trades; lower mean but tight CI
+
+Both indicate Ruleset E's measured-move target IS the mechanism generating positive expectancy on the data observed. **What's needed: a cohort that is BOTH (a) selection-bias-free (like Companion 1) AND (b) recency-filtered for actionable W-bottoms (like Companion 2) AND (c) statistically meaningful sample size (N=15-30+).**
+
+### Amendment 4.5 Recommendation revised post-bootstrap
+
+Original Amendment 3 recommendation: "Option A bootstrap CI before R2 commitment."
+
+Post-bootstrap revised recommendation:
+
+**The bootstrap analysis is INFORMATIVE but NOT DEFINITIVE.** Both cohorts support directional positive expectancy for Ruleset E; neither provides robust statistical confirmation under canonical evaluation discipline. Two non-mutually-exclusive next-dispatch paths:
+
+1. **Cohort expansion (lower-risk)**: re-run pattern_cohort_evaluator against EXTENDED asof-date schedule (e.g., 8-12 dates across Apr-May-Jun 2026 as data tail advances) to surface 5-15 additional recency-filtered W patterns. If N reaches 10-15 with composite>=0.5, Companion-2-style bootstrap on the expanded sample would provide genuine CI rather than degenerate N=3 case. Cost: ~1-2h pattern_cohort_evaluator re-run + ~30min orchestrator-side bootstrap re-run. Risk: bias-free incidence may not yield large enough N even at extended schedule.
+
+2. **R2 path (parallel-evidence)**: per-variable cohort smoke + 6-ruleset backtest for `vcp.tightness_days_required +16` (the next-largest V2 binding variable; +16 cohort expected at similar incidence rate). Independent cohort + same ruleset spec generates additional evidence: if R2 cohort also shows E's PARTIAL POSITIVE, the cross-cohort consistency strengthens the verdict beyond what either cohort alone provides. Cost: ~8-16h dispatch.
+
+Synthesis: option (1) is cheaper + faster to surface; if it yields N>=10 with positive mean R closed, Companion-2-style bootstrap becomes statistically defensible at ~95% confidence. Option (2) is more expensive but produces complementary evidence regardless of (1) outcome. Either path is methodologically sound; the choice depends on operator preference for sequential-evidence (1) vs parallel-evidence (2) gathering.
+
+**Caveat preserved for both paths**: any new cohort MUST be selection-bias-free (full S&P 500 / NDX universe, NOT operator hand-selection) AND recency-filtered (per gotcha #33 cohort-validity discipline) to ensure the verdict reflects W-bottom signal not artifact.
+
+---
+
+*End of findings document. Canonical verdict per Amendment 3: **PARTIAL POSITIVE for Ruleset E** on N=26 / recency<=120d / composite>=0.5 cohort (3 winners; +1.208R mean R closed; 100% win-rate). PARTIAL POSITIVE directional for Ruleset D (1 winner; +1.685R; needs larger sample). Bootstrap CI per Amendment 4 confirms positive direction but flags Companion 2 N=3 degeneracy + Companion 1 cohort-validity caveat; recommends cohort expansion OR R2 parallel-evidence as next-dispatch options. First substantive POSITIVE-direction verdict in V2 -> D1 -> D2 arc; preserved + appropriately scoped + statistically characterized.*
