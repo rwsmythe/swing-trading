@@ -17,9 +17,15 @@ from pathlib import Path
 import pytest
 
 from research.harness.r2a_tightness_days_required.cohort_csv import (
+    EXPECTED_FLIP_COUNT,
+    EXPECTED_TICKERS,
+    EXPECTED_UNIQUE_TICKER_ASOF,
     R2A_COHORT_LABEL,
+    CohortExtractionError,
     extract_flips_from_sensitivity_md,
+    verify_expected_r2a_cohort,
     write_cohort_csv,
+    write_flips_audit_json,
 )
 
 
@@ -146,8 +152,149 @@ def test_extract_flips_raises_on_missing_section(tmp_path: Path) -> None:
     the extractor must raise a typed exception (not silently return [])."""
     md = tmp_path / "v2_sensitivity.md"
     md.write_text("# Empty\n\nNo drill-down here.\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="vcp.tightness_days_required"):
+    with pytest.raises(CohortExtractionError, match="vcp.tightness_days_required"):
         extract_flips_from_sensitivity_md(md)
+
+
+def test_extract_flips_raises_on_missing_required_columns(tmp_path: Path) -> None:
+    """Defense against silent under-extraction if upstream V2 emitter
+    drops the eval_run_id column (Codex R1 M#4). The parser MUST raise
+    rather than silently parse with wrong indices.
+    """
+    md_text = """\
+## Per-Variable Drill-Down
+
+### vcp.tightness_days_required
+
+| ticker | data_asof_date | sweep_point | old_bucket | new_bucket | old_criterion_failure | bucket_via_surrogate |
+| --- | --- | --- | --- | --- | --- | --- |
+| NAT | 2026-05-12 | 1 | watch | aplus | (none) | no |
+"""
+    md = tmp_path / "v2_sensitivity.md"
+    md.write_text(md_text, encoding="utf-8")
+    with pytest.raises(CohortExtractionError, match="eval_run_id"):
+        extract_flips_from_sensitivity_md(md)
+
+
+def test_extract_flips_resilient_to_column_reordering(tmp_path: Path) -> None:
+    """If the V2 emitter reorders columns (e.g. moves eval_run_id to the
+    end), the parser MUST still extract correctly by resolving columns
+    by NAME (Codex R1 M#4).
+    """
+    md_text = """\
+## Per-Variable Drill-Down
+
+### vcp.tightness_days_required
+
+| data_asof_date | ticker | sweep_point | old_bucket | new_bucket | eval_run_id | old_criterion_failure | bucket_via_surrogate |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 2026-05-12 | NAT | 1 | watch | aplus | 44 | (none) | no |
+| 2026-04-21 | OII | 1 | watch | aplus | 9 | (none) | no |
+"""
+    md = tmp_path / "v2_sensitivity.md"
+    md.write_text(md_text, encoding="utf-8")
+    flips = extract_flips_from_sensitivity_md(md)
+    assert len(flips) == 2
+    by_ticker = {f.ticker: f for f in flips}
+    assert by_ticker["NAT"].eval_run_id == 44
+    assert by_ticker["OII"].eval_run_id == 9
+
+
+def test_extract_flips_h4_subheading_inside_section_does_not_terminate(
+    tmp_path: Path,
+) -> None:
+    """If the drill-down section contains a 4-hash sub-heading (e.g.
+    `#### Notes`), section-body extraction MUST continue PAST that
+    sub-heading and not silently truncate the table (Codex R1 M#3).
+    """
+    md_text = """\
+## Per-Variable Drill-Down
+
+### vcp.tightness_days_required
+
+| ticker | eval_run_id | data_asof_date | sweep_point | old_bucket | new_bucket | old_criterion_failure | bucket_via_surrogate |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| NAT | 44 | 2026-05-12 | 1 | watch | aplus | (none) | no |
+
+#### Notes about this section
+
+(text content)
+
+| ticker | eval_run_id | data_asof_date | sweep_point | old_bucket | new_bucket | old_criterion_failure | bucket_via_surrogate |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| OII | 9 | 2026-04-21 | 1 | watch | aplus | (none) | no |
+
+### vcp.tightness_range_factor
+
+| ticker | eval_run_id | data_asof_date | sweep_point | old_bucket | new_bucket | old_criterion_failure | bucket_via_surrogate |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| ZZZ | 99 | 2026-05-22 | 1 | watch | aplus | (none) | no |
+"""
+    md = tmp_path / "v2_sensitivity.md"
+    md.write_text(md_text, encoding="utf-8")
+    flips = extract_flips_from_sensitivity_md(md)
+    tickers = {f.ticker for f in flips}
+    assert tickers == {"NAT", "OII"}, (
+        "h4 sub-heading must NOT terminate section; "
+        "next h3 must terminate"
+    )
+
+
+def test_verify_expected_r2a_cohort_strict_on_real_artifact() -> None:
+    """Discriminating test: verify_expected_r2a_cohort MUST pass against
+    the canonical 2026-05-24 V2 sensitivity smoke (15 / 7 / 7) and FAIL
+    when the cohort deviates.
+    """
+    md = Path(__file__).resolve().parents[3] / (
+        "exports/diagnostics/aplus-sensitivity-v2-20260524T205849Z.md"
+    )
+    if not md.exists():
+        pytest.skip(f"V2 smoke artifact not present at {md}")
+    flips = extract_flips_from_sensitivity_md(md)
+    # Should NOT raise on the canonical artifact
+    verify_expected_r2a_cohort(flips)
+
+    # Synthetic deviation: drop one flip; assert raises
+    with pytest.raises(CohortExtractionError, match="flip count"):
+        verify_expected_r2a_cohort(flips[:-1])
+
+
+def test_write_flips_audit_json_preserves_eval_run_ids(tmp_path: Path) -> None:
+    """All 15 raw flip records (with eval_run_id) MUST be persisted in
+    the audit JSON sibling file (Codex R1 M#1 + minor #2: V1->R2-A
+    traceability).
+    """
+    md = tmp_path / "v2_sensitivity.md"
+    md.write_text(SYNTHETIC_SENSITIVITY_MD, encoding="utf-8")
+    flips = extract_flips_from_sensitivity_md(md)
+    audit_path = tmp_path / "audit.flips.json"
+    n = write_flips_audit_json(flips, audit_path, source_sensitivity_md=md)
+    assert n == 15
+    import json
+    payload = json.loads(audit_path.read_text())
+    assert payload["flip_count"] == 15
+    assert payload["variable_name"] == "vcp.tightness_days_required"
+    # The audit MUST preserve ALL 15 entries — duplicates are allowed
+    # (SEI eval_run_id=40 collides with RLMD eval_run_id=40 in the
+    # synthetic + real artifact; eval_run_ids are scoped per-pipeline_run
+    # and may repeat across tickers).
+    assert len(payload["flips"]) == 15
+    # 14 distinct eval_run_id values in the synthetic fixture (40 appears
+    # for both RLMD and SEI). The audit shape preserves both rows.
+    eval_run_ids = {f["eval_run_id"] for f in payload["flips"]}
+    assert len(eval_run_ids) == 14
+
+
+def test_expected_cohort_constants_match_brief_canonical_counts() -> None:
+    """Lock the canonical-counts constants against accidental edit.
+    EXPECTED_FLIP_COUNT must be 15; EXPECTED_UNIQUE_TICKER_ASOF must be 7;
+    EXPECTED_TICKERS must be the 7-ticker set in the brief.
+    """
+    assert EXPECTED_FLIP_COUNT == 15
+    assert EXPECTED_UNIQUE_TICKER_ASOF == 7
+    assert EXPECTED_TICKERS == frozenset(
+        {"FRO", "KOD", "NAT", "OII", "RLMD", "SEI", "TROX"}
+    )
 
 
 def test_extract_flips_against_real_v2_smoke_artifact() -> None:
