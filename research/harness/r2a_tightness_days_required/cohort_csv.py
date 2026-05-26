@@ -122,8 +122,13 @@ EXPECTED_FLIPS: frozenset[tuple[str, int, date]] = frozenset(
 )
 
 # Anchored heading regex (Codex R2.M#4): only match `### vcp.tightness_days_required`
-# at start of line + end of line (optional trailing whitespace), NOT inside
-# prose, code blocks, or any longer heading title.
+# at start of line + end of line (optional trailing whitespace). Defends
+# against inline prose substring matches AND longer-title h3 like
+# `### vcp.tightness_days_required (deprecated)`. NOTE: markdown
+# triple-backtick code fences are NOT detected -- a heading-like line
+# at start-of-line INSIDE a code block WILL be matched. The canonical
+# defense against accidental in-code matches is the strict verifier
+# (verify_expected_r2a_cohort) downstream (Codex R3.M#2 ACCEPTED).
 _H3_VARIABLE_REGEX = re.compile(
     rf"^### {re.escape(R2A_VARIABLE_NAME)}\s*$", re.MULTILINE
 )
@@ -160,11 +165,13 @@ def _section_body(text: str, variable_name: str) -> str:
     """Slice the drill-down section bounded by the `### variable_name`
     heading and the next h3 OR h2 heading line, whichever comes first.
 
-    Boundary discipline (Codex R1.M#3 + R2.M#3 + R2.M#4):
+    Boundary discipline (Codex R1.M#3 + R2.M#3 + R2.M#4 + R3.M#2-ACCEPTED):
       - Section start: MULTILINE-anchored regex matches ONLY a real h3
-        heading line for the target variable (not prose, code blocks,
-        or longer-title headings that share the variable name as a
-        substring).
+        heading line for the target variable. Defends against in-prose
+        substring matches AND longer-title h3 headings that share the
+        variable name as a substring. Does NOT defend against triple-
+        backtick code-block contents (R3.M#2 ACCEPTED); the downstream
+        strict verifier is the canonical defense for that case.
       - Section end: the EARLIEST of (a) next h3 heading line, (b) next
         h2 heading line, (c) end-of-file. h4 (`#### ...`) and lower
         sub-headings INSIDE the section do NOT terminate parsing
