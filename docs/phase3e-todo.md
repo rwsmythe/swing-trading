@@ -8,7 +8,45 @@
 
 ---
 
-## 2026-05-25 PM Turn F: V2 OHLCV reader asof_date str-vs-date type coercion fix SHIPPED at `1dc15f8` — bug #2 of A+B+D1 sequence CLOSED; bug #3 archive depth-insufficiency NEWLY EXPOSED + gotcha #29 banked
+## 2026-05-25 PM #4 Turn F EXTENDED: D2 W-bottom ruleset comparison SHIPPED at `d7387b8` — FIRST substantive PARTIAL POSITIVE verdict in V2 -> D1 -> D2 arc (per Amendment 3 reclassification)
+
+**D2 W-bottom ruleset comparison backtest SHIPPED 2026-05-25 PM #4** at `d7387b8` (integration merge of `applied-research-w-bottom-ruleset-comparison` via `--no-ff`; 9 commits = 5 implementation slices + 3 Codex MCP fix bundles + 1 docs commit; +7910 lines across 27 files; 5 NEW research/harness/w_bottom_ruleset_comparison/ modules + 1 MODIFIED swing/cli.py +78 lines OQ-13-mirror CLI carve-out + 6 NEW test files + 3 smoke artifacts + cohort CSV + findings + return report).
+
+**Codex MCP adversarial-critic chain CONVERGED at R3 NO_NEW_CRITICAL_MAJOR after 3 rounds.** Cumulative: 0 CRITICAL + 6 MAJOR + 9 MINOR. ALL MAJORS resolved in-place OR ACCEPTED with rationale + scope clarification. Real defects Codex caught: R1.M1 Ruleset F session-6 OPEN gate pre-emption; R1.M2 F ATR14 None auto-fail; R1.M3 D/F trail check-then-raise ordering doc lock; R1.M5 manifest provenance + V1 source-ladder consistency; R2.M1 L2 LOCK scope clarification. **39th cumulative C.C lesson #6 validation NOTABLE.** 5 NEW pre-Codex review scope expansion candidates banked at return report §7.5 (banking discipline preserved).
+
+**3 smoke artifacts emitted** (all post-Codex-R3-convergence):
+- Primary recency-60d / composite>=0.7; **N=5**; 30 trade rows -- sample insufficient
+- Companion 1 no-recency-filter / composite>=0.7; **N=89**; 534 trade rows -- structural-artifact reference cohort (old-W trivial-trigger mode per implementer §7.1 self-disclosure)
+- Companion 2 recency-120d / composite>=0.5; **N=26**; 156 trade rows -- canonical evaluation cohort per Amendment 3
+
+**2 DEVIATIONS banked + accepted** (per Codex R1.M4 + dispatch brief §1.2 step 3 implicit permission):
+1. Asof schedule shifted from brief's Feb-Apr 2026 to Apr-May 2026 (production DB evaluation_runs start 2026-04-20; brief's dates pre-date production runs -> detector Stage-2 hard gate returns 'undefined' for ALL pre-2026-04-20 entries; verified empirically 0 verdicts at composite>=0.5)
+2. Cohort size N=5 (Primary; composite>=0.7 + recency<=60d) vs brief expected N=50-200 (bias-free S&P 500 W-bottom population is structurally smaller; only 7 distinct tickers across 516-universe; 1.36% incidence: ON / HPE / OXY / DOW / MCHP / CNC / INTC)
+
+**Canonical verdict per orchestrator Amendment 3 (post-merge housekeeping commit)**: **PARTIAL POSITIVE for Ruleset E (O'Neil cup-with-handle + Bulkowski measured-move target)** on Companion 2's N=26 cohort (3 closed-and-profitable / +1.208R mean R closed / 100% win-rate). PARTIAL POSITIVE directional for Ruleset D (1 winner / +1.685R; needs larger sample). Implementer's original POSITIVE classification on Companion 1 was technically correct per brief §6.5 criteria but Companion 1 is structurally artifact-driven (old-W trivial-trigger mode; entries with days_t2_to_asof of 1320-1577+ days; measured-move target trivially reachable on ancient W neckline observations). Per `feedback_orchestrator_qa_implementer_product` BINDING: orchestrator Amendment 3 reclassifies headline verdict from POSITIVE-on-Companion-1 to PARTIAL POSITIVE-on-Companion-2 (canonical evaluation cohort closest to brief's recency-filtered intent). D1's close-below-50d mis-calibration finding CORROBORATED on bias-free cohort (A and C close 5 each via close_below_50d at mean -0.143R; same mechanism as D1 Amendment 2 §11.4). E's measured-move target avoids SMA-exit family entirely.
+
+**NEW CLAUDE.md gotcha #33 banked at THIS housekeeping (Expansion #17 candidate)**: Cohort-validity-vs-verdict-criteria distinction. Brief verdict thresholds that are CRITERION-based but COHORT-AGNOSTIC let an implementer technically meet thresholds on any cohort; verdict interpretation MUST validate the evaluation cohort actually tests the brief's research question. Pre-empt at writing-plans phase: bind verdict to canonical cohort definition + sample-insufficient escape hatch + cohort-substitution prohibition. BINDING for 40th cumulative validation onwards.
+
+**Discipline preservation**: ZERO Co-Authored-By footer drift (~542+ cumulative streak through `d7387b8` + Amendment 3 commit); L2 LOCK preserved + REINFORCED via 2 BINDING tests; Schema v21 UNCHANGED; ASCII discipline COMPLETE; production swing/ scope = 77 lines (CLI subcommand only); V1 persisted state ZERO writes; ZERO new Schwab API calls; ZERO new yfinance fetches at backtest time.
+
+**D1 -> D2 cohort overlap**: ZERO (operator-curation + detector-bias-free-selection select for different ticker populations).
+
+**Forward action sequence (orchestrator-side; THIS Amendment 3 housekeeping pass)**:
+
+- [x] QA implementer product per `feedback_orchestrator_qa_implementer_product` BINDING (9-commit chain; ZERO Co-Authored-By; diff scope research-only; L2 LOCK + Schema + ASCII all preserved; 57 D2 fast tests + ~6111 total fast tests pass)
+- [x] Surface verdict-interpretation concern to operator + ratify Option 4 (merge AS-IS + post-merge Amendment) at AskUserQuestion 2026-05-25 PM #4
+- [x] Merge `applied-research-w-bottom-ruleset-comparison` `--no-ff` to main at `d7387b8` (preserving implementer's narrative verbatim)
+- [x] Amendment 3 to findings doc + Amendment 3 to return report (reclassify canonical verdict; promote Companion 2 to canonical evaluation cohort)
+- [x] CLAUDE.md gotcha #33 banked (cohort-validity-vs-verdict-criteria distinction; Expansion #17 candidate)
+- [x] phase3e-todo new top entry (THIS pass)
+- [ ] **Operator-paired next-dispatch direction decision** post-Amendment-3. Options enumerated:
+  - **Option A**: Bootstrap CI on E's Companion 2 +1.208R mean (N=3 winners) before R2 dispatch. Quantifies statistical robustness of PARTIAL POSITIVE finding. Cost: 4-8 hours. If lower-bound at 95% confidence is positive, R2 dispatch defensible; if not, hold pending more data.
+  - **Option B**: R2 path per-variable cohort smoke + 6-ruleset backtest for `vcp.tightness_days_required +16` (next-largest binding variable). Tests whether E's PARTIAL POSITIVE generalizes to other chart shapes. Now WITH cohort-validity discipline per gotcha #33: canonical evaluation cohort MUST be recency-filtered. Cost: 8-16 hours.
+  - **Option C**: Real-time prospective tracking for E on operator's pipeline outputs. Validates historical-backtest result in forward deployment. Operator-only after setup; multi-month timeline.
+  - **Option D**: Phase 14 commissioning consideration for E's measured-move target as production trade advisory. Premature without bootstrap + R2 validation; deferred.
+  - **Option E**: D + E hybrid ruleset (D's BE arm + tight trail UNTIL E's measured-move target hits). Combines downside-protection with target-based capture. Cost: 2-4 hours; reuses D2 harness.
+
+
 
 **V2 OHLCV reader asof_date str-vs-date type coercion fix SHIPPED 2026-05-25 PM** at `1dc15f8` (integration merge of `applied-research-v2-reader-asof-date-str-coercion-fix` via `--no-ff`; 3 commits per TDD slice = RED `f7e816b` + GREEN `c5612be` + docs `94447c8`; +297 lines / -2 lines / 3 files; return report at `docs/v2-reader-asof-date-str-coercion-fix-return-report.md`).
 

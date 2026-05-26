@@ -243,4 +243,36 @@ Per findings doc Section 11.4. Three options for orchestrator-paired next decisi
 
 ---
 
-*End of return report. Codex MCP chain CONVERGED at R3 NO_NEW_CRITICAL_MAJOR. Awaiting orchestrator confirmation to push branch + initiate merge sequence per operator's `feedback_orchestrator_performs_merge` BINDING memory.*
+## Section 10 Amendment 3 -- Orchestrator interpretation reclassification (post-merge 2026-05-25)
+
+Per operator decision Option 4 at D2 merge: merge AS-IS preserving implementer's verdict + add orchestrator-side housekeeping commit reclassifying the canonical verdict on cohort-validity grounds.
+
+The implementer's Section 0 + Section 3.2 + Section 9.1 POSITIVE verdict for Ruleset E on Companion 1 (N=89; no-recency-filter) is **technically correct** per dispatch brief Section 6.5 literal criteria: mean-R +0.585R + win-rate 83.3% + 10 closed-and-profitable. All three thresholds PASS.
+
+**HOWEVER**, the implementer's findings doc Section 7.1 honestly self-discloses the mechanism: E winners are dominated by historical-W patterns whose center_peak is far below current price (entries with `days_t2_to_asof` values of 1320 / 1481 / 1577+ -- W observations from 2022 or earlier). These are NOT actionable W-bottom signals -- they are "buy at current price + sell at small target above" trades on ancient W neckline observations. This is precisely the failure mode D1 findings Section 2.2 warned about.
+
+### Section 10.1 Canonical verdict per Amendment 3 reclassification
+
+| Cohort | Original implementer classification | Amended classification |
+|---|---|---|
+| Primary (recency<=60d / composite>=0.7; N=5) | Sample-insufficient | UNCHANGED |
+| **Companion 1** (no-recency-filter / composite>=0.7; N=89) | **HEADLINE** | **Structural-artifact reference cohort** -- transparency only |
+| **Companion 2** (recency<=120d / composite>=0.5; N=26) | Auxiliary | **CANONICAL evaluation cohort** -- closest realizable approximation to brief Section 1 recency-filtered intent |
+
+**Canonical D2 verdict per Amendment 3: PARTIAL POSITIVE for Ruleset E (3 winners; +1.208R mean R closed; 100% win-rate on closed); PARTIAL POSITIVE directional for Ruleset D (1 winner; +1.685R; needs larger sample to confirm).**
+
+Per brief Section 6.5 PARTIAL POSITIVE thresholds (mean-R closed > 0 AND win-rate >= 25% AND closed-and-profitable >= 3) on Companion 2: E satisfies ALL three (3 winners >= 3; +1.208R > 0; 100% >= 25%). D has 1 winner (below the >= 3 threshold) but with +1.685R mean and 100% win-rate -- documented as PARTIAL POSITIVE directional.
+
+### Section 10.2 Forward-action revised per Amendment 3
+
+The implementer's Section 9 Option A (R2 per-variable path) is RETAINED but with added discipline: future dispatches MUST evaluate verdict on a cohort that tests the brief's research question, not just any cohort that meets verdict thresholds. If brief criteria are cohort-agnostic but cohort selection materially changes the verdict (as it did here from PARTIAL POSITIVE on Companion 2 to full POSITIVE on Companion 1), the implementer's verdict MUST be reported on the cohort closest to brief intent + artifact cohorts documented for transparency only.
+
+NEW recommendation: bootstrap CI on E's Companion 2 +1.208R (N=3 winners) BEFORE R2 dispatch ships. If lower-bound at 95% confidence is positive, the PARTIAL POSITIVE for E is statistically defensible; if lower bound crosses zero, hold off on R2 commitment pending more data.
+
+### Section 10.3 Lesson banked at orchestrator-side housekeeping
+
+NEW CLAUDE.md gotcha #33 candidate (Expansion #17): **Cohort-validity-vs-verdict-criteria distinction.** When dispatch brief verdict criteria are CRITERION-based (mean-R + win-rate + count thresholds) but COHORT-AGNOSTIC (don't bind to a specific cohort definition), the implementer can technically meet thresholds by selecting any cohort. Verdict interpretation MUST validate that the cohort being evaluated actually tests the brief's research question. To be promoted to CLAUDE.md gotchas at next housekeeping pass.
+
+---
+
+*End of return report. Codex MCP chain CONVERGED at R3 NO_NEW_CRITICAL_MAJOR. Implementer technical work is solid; Amendment 3 reclassifies the headline verdict from POSITIVE on Companion 1 (structurally artifact-driven) to **PARTIAL POSITIVE on Companion 2 (canonical evaluation cohort)** for Ruleset E. First substantive POSITIVE-direction verdict in V2 -> D1 -> D2 arc preserved + appropriately scoped.*

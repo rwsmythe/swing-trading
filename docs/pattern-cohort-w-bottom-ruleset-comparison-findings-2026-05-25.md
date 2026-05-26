@@ -385,4 +385,58 @@ D2 demonstrates that classification-flips DO translate to profitable trades IF t
 
 ---
 
-*End of findings document. Verdict: **POSITIVE for Ruleset E (O'Neil cup-with-handle + Bulkowski measured-move target)** on Companion 1's N=89 cohort. First substantive POSITIVE verdict in V2 -> D1 -> D2 arc. Mechanism: chart-shape-appropriate measured-move TARGET unlocks W-bottom expectancy that SMA-based exits (A/C/D/F variants) systematically fire premature on. Recommended next action: Option A per-variable R2 cohort smoke + 6-ruleset backtest for next binding variable.*
+## Amendment 3 -- Orchestrator interpretation reclassification (post-merge 2026-05-25)
+
+The implementer's Section 1 + Section 5.2 POSITIVE verdict for Ruleset E on Companion 1 (N=89; no-recency-filter) is technically correct per dispatch brief Section 6.5 literal criteria: mean-R closed +0.585R (PASS > 0), win-rate 83.3% (PASS >= 35%), closed-and-profitable 10 (PASS >= 5). All three thresholds satisfied.
+
+**HOWEVER**, the implementer's own Section 7.1 honestly self-discloses the mechanism: "E winners are dominated by historical-W patterns whose center_peak (old high) is far below current price -- entry triggers immediately on day 1 forward, close > center_peak, then runs to measured-move target. This is the structural mode that benefits E: the measured-move target is reachable BECAUSE the entry-trigger fires on an old W whose neckline has been long since broken."
+
+Verified by inspecting Companion 1 untriggered/triggered rows: many entries have `days_t2_to_asof` values of 1320 / 1481 / 1577+ (i.e., 4+ year-old W observations; W resolved long before current date). These are NOT actionable W-bottom signals; they are "buy at current price + sell at small target above" trades on ancient W neckline observations. The measured-move target for an old W is a small absolute dollar offset above current price (typically ~12-15% of entry); the SMA-based exits used in A/C/D/F don't have an analogous geometric reference + thus fire on normal price action.
+
+This is precisely the failure mode D1 findings doc Section 2.2 explicitly warned about ("the brief's '~15-30 unique patterns' target requires a recency filter ... without recency filter, 159 of 172 patterns are OLD historical W's whose center_peak_price is far below current price; trigger fires trivially on day 1 forward ... results are uninformative").
+
+### Amendment 3.1 Canonical evaluation cohort reclassification
+
+| Cohort | Original implementer classification | Amended classification |
+|---|---|---|
+| Primary (recency<=60d / composite>=0.7; N=5) | Sample-insufficient | UNCHANGED -- sample insufficient for verdict |
+| **Companion 1** (no-recency-filter / composite>=0.7; N=89) | **HEADLINE** | **Structural-artifact reference cohort** -- included for transparency + cross-comparison with D1's no-recency companion at 123756Z; NOT the canonical evaluation cohort for W-bottom rule efficacy |
+| **Companion 2** (recency<=120d / composite>=0.5; N=26) | Auxiliary | **CANONICAL evaluation cohort** -- closest realizable approximation to dispatch brief Section 1's recency-filtered intent (the brief's literal composite>=0.7 + recency<=60d yields N=5 which is sample-insufficient; Companion 2's relaxed filters preserve recency-filter discipline while broadening sample to N=26) |
+
+### Amendment 3.2 Canonical verdict reclassification
+
+**Canonical D2 verdict per orchestrator amendment: PARTIAL POSITIVE for Ruleset E (with PARTIAL POSITIVE directional support for Ruleset D).**
+
+Per dispatch brief Section 6.5 PARTIAL POSITIVE thresholds (mean-R closed > 0 AND win-rate >= 25% AND closed-and-profitable >= 3) applied to Companion 2 (the canonical evaluation cohort per Amendment 3.1):
+
+| Ruleset | Triggered (Companion 2) | Closed | Winners | Win-rate | Mean R closed | Amended verdict |
+|---|---|---|---|---|---|---|
+| A_minervini_trail_ma | 7/26 | 5 | 3 | 60.0% | +0.021R | INCONCLUSIVE (mean near zero; below positive threshold) |
+| B_fixed_R_multiple | 7/26 | 0 | 0 | n/a | n/a | INCONCLUSIVE (no closures) |
+| C_close_below_50d | 7/26 | 5 | 3 | 60.0% | +0.021R | INCONCLUSIVE (same as A) |
+| D_minervini_stage2_progression | 7/26 | 1 | 1 | 100.0% | +1.685R | **PARTIAL POSITIVE directional** (1 winner; below the >=3 threshold for full PARTIAL POSITIVE; directionally aligned) |
+| **E_oneil_cup_with_handle_measured_move** | **7/26** | **3** | **3** | **100.0%** | **+1.208R** | **PARTIAL POSITIVE** (3 winners meets >=3 threshold; mean-R +1.208R; win-rate 100% well above 25%) |
+| F_qullamaggie_momentum_burst | 7/26 | 2 | 0 | 0.0% | -0.264R | NEGATIVE on this cohort (momentum gate too tight for W-bottom timeframe per Section 6.3) |
+
+Cross-arc trajectory revised:
+- **V2 OHLCV backtest (`e0a9edd`)**: NEGATIVE strict
+- **D1 walk-forward (`6aa3fa7`)**: NEGATIVE strict (close-below-50d mis-calibration confirmed)
+- **D2 ruleset comparison (THIS dispatch)**: PARTIAL POSITIVE for Ruleset E on N=26 / recency<=120d / composite>=0.5 cohort; PARTIAL POSITIVE directional for Ruleset D (1 winner; needs larger sample to confirm); D1 close-below-50d mis-calibration CORROBORATED on bias-free cohort
+
+The directional finding is: **E's measured-move target mechanism produces wins on W-bottom breakouts where SMA-based exits do not.** This is consistent with the literature (Bulkowski measured-move discipline for W-bottoms is canonical) + with D1's mechanism analysis (close-below-50d fires prematurely on W-bottom entries because 50d sits close to entry). Sample size (3 winners) is too small for full POSITIVE verdict but ample for direction-of-effect.
+
+### Amendment 3.3 Forward implications + cohort-validity lesson banked
+
+**Forward direction for next dispatch (revised per Amendment 3 substantive ratification):**
+
+1. **R2 path STILL RECOMMENDED**: per-variable cohort smoke + 6-ruleset backtest for the 4 remaining VCP-family binding variables. Now with the added discipline: the canonical evaluation cohort MUST be recency-filtered (matching D2's Companion 2 default of recency<=120d / composite>=0.5 OR brief's original recency<=60d / composite>=0.7 if that yields N>=15 patterns on the new universe).
+
+2. **NEW: Cohort-validity-vs-verdict-criteria check (per Amendment 3 lesson)**: future dispatches MUST evaluate verdict on a cohort that actually tests the brief's research question, not just any cohort that meets verdict thresholds. If brief criteria are cohort-agnostic but cohort selection materially changes the verdict (as it did here from PARTIAL on Companion 2 to full POSITIVE on Companion 1), the implementer's verdict should be reported on the cohort closest to brief intent + the artifact cohorts documented for transparency only.
+
+3. **D2 banked V2 candidates §5 #6 (bootstrap CI on E's mean R)** is HIGHER PRIORITY post-Amendment-3**: N=3 winners on Companion 2 is at the edge of statistical significance. Bootstrap CI on the +1.208R mean R closed (or even on the original Companion 1 +0.585R) would quantify how robustly positive the verdict is. If bootstrap CI lower bound is positive at 95% confidence, the PARTIAL POSITIVE for E is statistically defensible. If lower bound crosses zero, the result is INCONCLUSIVE pending more data.
+
+The implementer's technical work + Codex chain are solid. This Amendment reclassifies the interpretation layer to ensure next-dispatch decisions account for the cohort-validity caveat that the implementer self-disclosed in Section 7.1 but did not propagate to the headline verdict.
+
+---
+
+*End of findings document. Canonical verdict per Amendment 3: **PARTIAL POSITIVE for Ruleset E** on N=26 / recency<=120d / composite>=0.5 cohort (3 winners; +1.208R mean R closed; 100% win-rate). PARTIAL POSITIVE directional for Ruleset D (1 winner; +1.685R; needs larger sample). First substantive POSITIVE-direction verdict in V2 -> D1 -> D2 arc. Implementer's original POSITIVE on Companion 1 is structurally artifact-driven per Amendment 3.1; included for transparency only. Recommended next action: Option A per-variable R2 cohort smoke + 6-ruleset backtest for next binding variable WITH recency-filter discipline applied to canonical evaluation cohort selection.*
