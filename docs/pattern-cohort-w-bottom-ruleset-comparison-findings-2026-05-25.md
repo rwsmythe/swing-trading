@@ -603,4 +603,70 @@ The Option A expansion has produced its informational value: N=5 with cross-tick
 
 ---
 
-*End of findings document. Canonical verdict per Amendments 3 + 4 + 5: **PARTIAL POSITIVE for Ruleset E** on the bias-free recency-filtered cohort family. EXPANDED cohort N=5 closed (5 winners; +1.220R mean; +0.753R 95% CI lower bound; cross-ticker consistency HPE/INTC/OXY; mechanism alignment via target_measured_move exit). 6 of 7 statistical-defensibility tests PASS; methodological N>=10 threshold FAIL requires either R2 dispatch (parallel-evidence) or 1-3 month temporal wait (sequential-evidence). First substantive POSITIVE-direction verdict in V2 -> D1 -> D2 arc; preserved + appropriately scoped + statistically characterized + cross-validated.*
+## Amendment 6 -- R2-A cross-cohort consistency check (PARTIAL POSITIVE does NOT generalize)
+
+**Added 2026-05-26 PM** (main HEAD `634cc9f`; orchestrator Turn G post-merge housekeeping). Cross-cohort robustness test of Amendment 5's PARTIAL POSITIVE verdict for Ruleset E against a DIFFERENT cohort selection mechanism.
+
+**R2-A dispatch:** V2 OHLCV `vcp.tightness_days_required +16` cohort 6-ruleset backtest. Cohort source: V2 sensitivity drill-down at `aplus-sensitivity-v2-20260524T205849Z`; 15 watch->aplus flips at sweep_point=1 across 7 unique tickers (FRO/KOD/NAT/OII/RLMD/SEI/TROX). Selection mechanism: V2-binding-variable algorithm (selection-biased) vs D2's bias-free S&P 500 detection.
+
+- R2-A findings: [docs/r2a-tightness-days-required-cohort-backtest-findings-20260526.md](r2a-tightness-days-required-cohort-backtest-findings-20260526.md)
+- R2-A return report: [docs/r2a-tightness-days-required-cohort-backtest-return-report.md](r2a-tightness-days-required-cohort-backtest-return-report.md)
+- R2-A smoke artifact: [exports/research/w-bottom-ruleset-comparison-20260525T224203Z/](../exports/research/w-bottom-ruleset-comparison-20260525T224203Z/)
+
+### Amendment 6.1 Cross-cohort comparison table
+
+| Cohort | Selection mechanism | N pat | E closed | E closed-and-profitable | E mean R closed | E 95% CI | E verdict |
+|---|---|---|---|---|---|---|---|
+| D2 Companion 2 (canonical original) | bias-free S&P 500 detection; recency<=120d | 26 | 6 | 3 (100% win-rate on closed-and-profitable) | +1.208R | [+0.464R, +2.026R] | PARTIAL POSITIVE (degenerate) |
+| D2 EXPANDED Amendment 5 | bias-free S&P 500 detection; recency<=365d | 71 | 10 | 5 | +1.220R | [+0.753R, +1.704R] | PARTIAL POSITIVE (6 of 7 statistical-defensibility tests PASS) |
+| **R2-A canonical** | **V2 binding-variable flips; recency<=365d** | **65** | **40** | **9 (22.5% win-rate)** | **-1.086R** | **[-1.377R, -0.782R]** | **NEGATIVE** |
+
+### Amendment 6.2 Cross-cohort verdict: cohort-specific finding
+
+**Ruleset E's PARTIAL POSITIVE on D2 bias-free S&P 500 cohort does NOT generalize to V2-binding-variable-selection-biased cohort.**
+
+Per scenario row 2 of Turn G handoff brief §3.3: R2-A NEGATIVE / D2 EXPANDED PARTIAL POSITIVE -> E appears to be **cohort-specific to bias-free S&P 500 W's**. The V2-binding-variable mechanism selects tickers with intrinsically different P&L distributions; their historical W patterns have asymmetric outcomes (R2-A E winners average +0.512R / R2-A E losers average -1.550R vs D2 EXPANDED E winners +1.220R mean).
+
+**Methodological signal:** Cross-cohort verdict inconsistency is a STRONG signal that any single-cohort PARTIAL POSITIVE result deserves wider robustness testing before being treated as production-evidence. D2's bias-free PARTIAL POSITIVE remains valid for the specific S&P 500 universe it tested; D2 EXPANDED's 6-of-7 statistical defensibility holds intact. The R2-A finding does NOT REFUTE D2's verdict on its own cohort; it bounds the verdict's generalization scope.
+
+### Amendment 6.3 R2-A per-ticker concentration analysis
+
+| Ticker | E closed | E winners | E mean R | Note |
+|---|---|---|---|---|
+| FRO | 3 | 3 | +0.768R | All triggered measured-move target |
+| KOD | 14 | 3 | -0.729R | 3 of 14 closed-and-profitable; 11 losers dragging mean |
+| OII | 1 | 1 | +0.862R | Single closed trade, winner |
+| RLMD | 11 | 2 | -1.282R | Heavy loser concentration |
+| TROX | 11 | 0 | -2.027R | Zero winners; deepest mean loss |
+| NAT | 0 | 0 | n/a | All 7 patterns still open at data tail |
+| SEI | 0 | 0 | n/a | All 10 patterns still open at data tail |
+
+R2-A E winners come from 4 of 7 tickers (FRO/KOD/OII/RLMD) but per-ticker R distribution is highly heterogeneous; verdict mechanically driven by KOD+RLMD+TROX (36 of 40 closed E trades) whose poor outcomes outweigh FRO+OII's strong winners. NAT+SEI contribute zero closed trades (their patterns are concentrated near recent asof boundary 2026-05-08/12; insufficient forward bars for 60-BD trigger search OR trail-exit).
+
+### Amendment 6.4 Cohort overlap with D1
+
+5-ticker overlap with D1's hand-curated +67 watch->aplus cohort (KOD/NAT/OII/RLMD/TROX); 2 NEW vs D1 (FRO + SEI). D1's NEGATIVE-strict verdict (7/12 triggered; 0 closed-and-profitable; -0.708R mean closed via DK + TROX close_below_50d) is DIRECTIONALLY CONSISTENT with R2-A's NEGATIVE verdict on the broader composite>=0.5 + recency<=365d filter. E does NOT save the 5 overlap tickers' poor P&L distribution.
+
+### Amendment 6.5 Cohort-validity discipline applied (gotcha #33 second canonical application)
+
+Per CLAUDE.md gotcha #33 cohort-validity-vs-verdict-criteria discipline (banked at D2 Amendment 3): R2-A held the canonical evaluation cohort fixed at the EXPANDED filter (composite>=0.5 + recency<=365d) mirroring D2 Amendment 5. Alternative scopes documented at R2-A findings §5 but NOT used to substitute the verdict. Second canonical application of gotcha #33 post-D2-Amendment-3 banking; discipline observed throughout the implementation chain.
+
+R2-A Codex MCP chain converged at R5 NO_NEW_CRITICAL_MAJOR after 5 rounds (0 CRITICAL + 26 MAJOR + 21 MINOR cumulative; all critical+major RESOLVED in-place or ACCEPTED with rationale; 2 R5 MINOR banked as V2 candidates). 40th cumulative C.C lesson #6 validation NOTABLE; no new gotchas surfaced (parser-robustness findings are localized to the cohort-extraction layer + do not generalize beyond markdown-table extraction patterns).
+
+### Amendment 6.6 Next-arc decision banked
+
+R2-A's NEGATIVE on V2-binding-variable cohort + D2's PARTIAL POSITIVE on bias-free cohort + D1's NEGATIVE-strict on hand-curated cohort cumulatively suggest:
+
+- E's measured-move target exit IS the mechanism that produced the bias-free PARTIAL POSITIVE -- it avoids SMA-exit family entirely (Rulesets A + C close_below_50d) and avoids overly-tight progression gating (Ruleset D)
+- E's PARTIAL POSITIVE is COHORT-SPECIFIC; broader generalization claim cannot be made from current evidence
+- Next-arc options enumerated for operator-paired decision (post-Amendment-6 housekeeping):
+  - **R2-C** different chart-shape detector (e.g., cup_with_handle / flat_base) on D2's bias-free S&P 500 cohort -- tests whether ANY chart-shape x E ruleset combination generalizes
+  - **R2-D** different V2 binding variable (e.g., `vcp.adr_min_pct +11`, `vcp.proximity_max_pct +5`, `vcp.orderliness_max_bar_ratio +1`) -- tests whether the cohort-specific-NEGATIVE pattern is unique to tightness_days_required OR systemic to all V2 binding variables
+  - **Option C real-time prospective tracking** for E on operator's pipeline outputs -- validates D2's bias-free PARTIAL POSITIVE in forward deployment
+  - **D + E hybrid ruleset** -- combines D's BE arm + tight trail with E's measured-move target hit
+  - **Phase 14 commissioning consideration** -- gated on cross-cohort robustness establishment (currently NOT established for any single ruleset)
+  - **Temporal wait** -- 1-3 months for data tail to advance + EXPANDED-cohort re-run for N>=10 bootstrap defensibility
+
+---
+
+*End of findings document. Canonical verdict per Amendments 3 + 4 + 5: **PARTIAL POSITIVE for Ruleset E** on the bias-free recency-filtered cohort family. EXPANDED cohort N=5 closed (5 winners; +1.220R mean; +0.753R 95% CI lower bound; cross-ticker consistency HPE/INTC/OXY; mechanism alignment via target_measured_move exit). 6 of 7 statistical-defensibility tests PASS; methodological N>=10 threshold FAIL requires either R2 dispatch (parallel-evidence) or 1-3 month temporal wait (sequential-evidence). First substantive POSITIVE-direction verdict in V2 -> D1 -> D2 arc; preserved + appropriately scoped + statistically characterized + cross-validated. **Amendment 6 (2026-05-26) bounds the verdict scope to bias-free S&P 500 cohort: R2-A NEGATIVE on V2-binding-variable cohort demonstrates E does NOT generalize across cohort definitions.***

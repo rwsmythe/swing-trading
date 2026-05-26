@@ -8,6 +8,47 @@
 
 ---
 
+## 2026-05-26 PM Turn G: R2-A V2 OHLCV `vcp.tightness_days_required +16` cohort 6-ruleset backtest SHIPPED at `634cc9f` — NEGATIVE verdict on canonical evaluation cohort; D2 Ruleset E PARTIAL POSITIVE does NOT generalize across cohort definitions (cross-cohort cohort-specific finding)
+
+**R2-A SHIPPED 2026-05-26 PM** at integration merge `634cc9f` of `applied-research-r2a-tightness-days-required-cohort-backtest` via `--no-ff`. 8 implementer commits (2 implementation slices + 5 Codex MCP fix bundles R1-R5 + 1 final docs commit) + 1 merge commit. +4353 lines / 16 files; 3 NEW `research/harness/r2a_tightness_days_required/` modules (`cohort_csv.py` 536 lines + `regenerate_cohort.py` 62 lines + `__init__.py` 23 lines) + 1 NEW `tests/fixtures/research/r2a_tightness_days_required/cohort.json` (N=65 canonical PrimaryVerdict entries) + 3 NEW test files at `tests/research/r2a_tightness_days_required/` (39 fast tests: 19 cohort generation + 12 harness-reuse/L2-LOCK + 4 committed-artifact-canonical lock + 4 file structure) + 1 NEW cohort CSV at `exports/research/cohorts/r2a_tightness_days_required_sp1.csv` (7 unique rows) + sibling audit JSON at `r2a_tightness_days_required_sp1.flips_audit.json` (15 raw flips with eval_run_id + source SHA-256) + 2 NEW smoke artifact directories at `exports/research/pattern-cohort-detection-20260526T081400Z/` (manifest.json + summary.md) + `exports/research/w-bottom-ruleset-comparison-20260525T224203Z/` (manifest.json + summary.md) + findings doc at `docs/r2a-tightness-days-required-cohort-backtest-findings-20260526.md` + return report at `docs/r2a-tightness-days-required-cohort-backtest-return-report.md`. ZERO production swing/ writes (D2 harness REUSED VERBATIM; 6 byte-stability tests pass).
+
+**Codex MCP adversarial-critic chain CONVERGED at R5 NO_NEW_CRITICAL_MAJOR after 5 rounds.** Cumulative: 0 CRITICAL + 26 MAJOR + 21 MINOR. ALL CRITICAL + MAJOR RESOLVED in-place or ACCEPTED with documented rationale; 2 R5 MINOR banked as V2 candidates. **40th cumulative C.C lesson #6 validation NOTABLE.** Real defects Codex caught at the cohort-extraction surface: R1.M#2 silent under-extraction on parser permissiveness; R1.M#4 hardcoded column positions vulnerable to schema reorder; R2.M#3 section-boundary bug when no h3 follows; R2.M#4 line-anchored heading regex requirement for prose-defense; R2.M#1+M#2 per-triple identity verification (not just aggregate counts). **0 NEW gotchas banked at THIS housekeeping** — parser-robustness findings are localized to markdown-table extraction patterns; gotcha #33 cohort-validity-vs-verdict-criteria first canonical application post-D2-Amendment-3 banking.
+
+**R2-A canonical evaluation cohort** (composite>=0.5 + recency<=365d; mirrors D2 Amendment 5 EXPANDED filter): N=65 historical W patterns across 7 tickers (FRO=7, KOD=14, NAT=7, OII=5, RLMD=11, SEI=10, TROX=11); 62 of 65 patterns triggered (95% trigger rate). **Ruleset E: 9 closed-and-profitable / 40 closed / 22.5% win-rate / mean R closed -1.086R / 95% CI [-1.377R, -0.782R] / P(mean>0)=0.0000**. ALL of {D, E, F} fail PARTIAL POSITIVE thresholds per dispatch brief §6.5 -> **NEGATIVE verdict**. Asymmetric P&L distribution: R2-A E winners average +0.512R; R2-A E losers average -1.550R. Per-ticker concentration: 4 of 7 tickers produce closed E winners (FRO/KOD/OII/RLMD); KOD+RLMD+TROX drive 36 of 40 closed E trades; NAT+SEI contribute zero closed trades (recent asof boundary 2026-05-08/12; insufficient forward bars for trigger search OR trail-exit).
+
+**Cross-cohort consistency check (the load-bearing finding):**
+
+| Cohort | Selection mechanism | N pat | E closed-and-profitable | E mean R closed | E 95% CI | E verdict |
+|---|---|---|---|---|---|---|
+| D2 Companion 2 canonical | bias-free S&P 500; recency<=120d | 26 | 3 | +1.208R | [+0.464R, +2.026R] | PARTIAL POSITIVE (degenerate) |
+| D2 EXPANDED Amendment 5 | bias-free S&P 500; recency<=365d | 71 | 5 | +1.220R | [+0.753R, +1.704R] | PARTIAL POSITIVE (6 of 7 tests PASS) |
+| **R2-A canonical** | **V2 binding-variable flips; recency<=365d** | **65** | **9 (22.5% wr)** | **-1.086R** | **[-1.377R, -0.782R]** | **NEGATIVE** |
+
+**Cross-cohort verdict: COHORT-SPECIFIC**. D2 E's PARTIAL POSITIVE on bias-free cohort does NOT generalize to V2-binding-variable-selection-biased cohort. Per scenario row 2 of Turn G handoff brief §3.3: E appears to be cohort-specific to bias-free S&P 500 W's; V2-binding-variable mechanism selects tickers with intrinsically different P&L distributions. D2's bias-free PARTIAL POSITIVE remains valid for the specific S&P 500 universe it tested; D2 EXPANDED's 6-of-7 statistical defensibility holds intact. R2-A finding does NOT REFUTE D2's verdict on its own cohort; it **bounds the verdict's generalization scope**.
+
+**D1 + R2-A directional consistency**: 5-ticker overlap between R2-A and D1 (KOD/NAT/OII/RLMD/TROX); 2 NEW vs D1 (FRO + SEI). D1's NEGATIVE-strict (7/12 triggered; 0 closed-and-profitable; -0.708R mean closed via DK + TROX close_below_50d) is DIRECTIONALLY CONSISTENT with R2-A NEGATIVE on the broader composite>=0.5 + recency<=365d filter. E does NOT save the 5 overlap tickers' poor P&L distribution.
+
+**Cohort-validity discipline (gotcha #33 second canonical application):** R2-A held the canonical evaluation cohort FIXED at composite>=0.5 + recency<=365d (mirrors D2 Amendment 5 EXPANDED). Alternative scopes (composite>=0.7 -> N=17; recency<=60d -> N=13; recency<=120d -> N=21) documented at R2-A findings §5 but NOT used to substitute the verdict. Discipline observed throughout implementation + Codex chain.
+
+**Discipline preservation**: ZERO Co-Authored-By footer drift (~553+ cumulative streak through `634cc9f`); L2 LOCK preserved + REINFORCED via 2 BINDING R2-A source-grep tests parametrized over r2a_tightness_days_required module set; Schema v21 UNCHANGED; ASCII discipline COMPLETE; ZERO new Schwab API calls (all 7 tickers use legacy `.parquet` files; V2 reader Shape A fallback to legacy); ZERO new yfinance fetches at backtest time (pre-flight refresh for FRO + NAT via yfinance `period='max'` on 2026-05-25 PM pre-dispatch); V1 persisted state ZERO writes; 39 R2-A fast tests pass; ~6111 broader project tests estimated (baseline ~6054 + 57 D2 + 39 R2-A = small overlap due to 4 R2-A file structure tests).
+
+**Forward action sequence (orchestrator-side; Turn G FIRST SESSION housekeeping pass)**:
+
+- [x] QA implementer product per `feedback_orchestrator_qa_implementer_product` BINDING (8-commit chain; ZERO Co-Authored-By trailers; diff scope research-only; L2 LOCK 2 BINDING tests + 5 D2-cumulative tests preserved; 39 R2-A fast tests pass; cohort-validity discipline per gotcha #33 verified in manifest + findings doc + dispatch brief; cross-cohort comparison vs D2 + D1 documented in findings §2)
+- [x] Merge `applied-research-r2a-tightness-days-required-cohort-backtest` `--no-ff` to main at `634cc9f` + push to origin/main
+- [x] D2 findings Amendment 6 (cross-cohort consistency check; R2-A NEGATIVE on V2-binding-variable cohort bounds D2 EXPANDED PARTIAL POSITIVE generalization scope; gotcha #33 second canonical application; next-arc options banked)
+- [x] phase3e-todo new top entry (THIS pass)
+- [ ] **Operator-paired next-arc decision** post-R2-A SHIP. Options enumerated:
+  - **Option C (real-time prospective tracking)** — banked V2 candidate from D2; validates D2's bias-free PARTIAL POSITIVE in forward deployment; appropriate now that cross-cohort generalization is BOUNDED (cohort-specific finding makes prospective tracking more valuable than additional historical backtests on artificial cohorts)
+  - **R2-C** different chart-shape detector (cup_with_handle / flat_base) on D2's bias-free S&P 500 cohort + 6-ruleset comparison — tests whether ANY chart-shape × E ruleset combination generalizes; tests whether E's success is W-bottom-specific OR chart-shape-agnostic
+  - **R2-D** different V2 binding variable (`vcp.adr_min_pct +11` / `vcp.proximity_max_pct +5` / `vcp.orderliness_max_bar_ratio +1`) — tests whether the cohort-specific-NEGATIVE pattern is unique to tightness_days_required OR systemic to all V2 binding variables; cost: ~4-6h implementer + ~1-2h Codex (harness REUSED again)
+  - **D + E hybrid ruleset** — combines D's BE arm + tight trail with E's measured-move target hit; banked V2 candidate; cost: ~2-4h implementer
+  - **Phase 14 commissioning consideration** — gated on cross-cohort robustness establishment; R2-A's cohort-specific finding indicates premature for E specifically (NOT established for any single ruleset across cohorts)
+  - **Temporal wait** — 1-3 months for data tail to advance + EXPANDED-cohort re-run for N>=10 bootstrap defensibility; zero work; sequential-evidence path
+  - **Pivot to market-conditions investigation** per CLAUDE.md operator-paired next-arc enumeration
+
+---
+
 ## 2026-05-25 PM #4 Turn F EXTENDED: D2 W-bottom ruleset comparison SHIPPED at `d7387b8` — FIRST substantive PARTIAL POSITIVE verdict in V2 -> D1 -> D2 arc (per Amendment 3 reclassification)
 
 **D2 W-bottom ruleset comparison backtest SHIPPED 2026-05-25 PM #4** at `d7387b8` (integration merge of `applied-research-w-bottom-ruleset-comparison` via `--no-ff`; 9 commits = 5 implementation slices + 3 Codex MCP fix bundles + 1 docs commit; +7910 lines across 27 files; 5 NEW research/harness/w_bottom_ruleset_comparison/ modules + 1 MODIFIED swing/cli.py +78 lines OQ-13-mirror CLI carve-out + 6 NEW test files + 3 smoke artifacts + cohort CSV + findings + return report).
