@@ -8,6 +8,55 @@
 
 ---
 
+## 2026-05-27 Turn H: V2-selection-mechanic ANALYTICAL investigation SHIPPED at `64e0099` -- 5 V2 binding variables characterized via per-variable 3-axis profile tags (productivity / size / survival); D_filt = 7.2x-70x baseline 0.138 confirms V2 substrates are ENRICHED for W-pattern productivity on per-ticker basis (substrate "thinness" framing in R2-A/R2-D was small-T not low-W-incidence); 43rd cumulative C.C lesson #6 validation NOTABLE; NEW gotcha #35 banked (substrate density metric disambiguation; Expansion #19 promotion); Brief Amendments 1-4 appended orchestrator-side
+
+**V2-selection-mechanic SHIPPED 2026-05-27** at integration merge `64e0099` of `applied-research-v2-selection-mechanic-investigation` via `--no-ff`. 15 implementer commits + 1 merge commit. 40 files changed; +8491 insertions. 3 NEW `research/harness/v2_{tightness_range_factor,proximity_max_pct,orderliness_max_bar_ratio}/` cohort extractor module sets (3 modules each = 9 files) + 1 NEW `research/harness/v2_selection_mechanic/` analytical orchestration set (5 modules: `__init__` + `substrate_characterization` + `w_density_analysis` + `synthesis` + `run`) + 3 NEW cohort CSVs at `exports/research/cohorts/v2_*_sp*.csv` + 3 sibling audit JSONs + 1 NEW smoke artifact directory at `exports/research/v2-selection-mechanic-analysis-20260527T084319Z/` (manifest + summary + 3 CSVs + synthesis MD; 6 files) + 1 NEW first-class study writeup at `research/studies/2026-05-26-v2-selection-mechanic-analysis.md` (310 lines) + findings doc + return report. ZERO production swing/ writes (R2-A + R2-D + `pattern_cohort_evaluator` + D2 harness REUSE VERBATIM via byte-stability tests).
+
+**Codex MCP adversarial-critic chains CONVERGED in two distinct rounds** per implementer's two-Codex-chain refinement (Brief Amendment 1). Chain #1 post-Slice-4 (implementation review): 5 rounds; 2 CRITICAL + 12 MAJOR + 3 MINOR cumulative; converged R5 NO_NEW_CRITICAL_MAJOR. Chain #2 post-Slice-6 (study writeup methodology review): 2 rounds; 0 CRITICAL + 3 MAJOR + 2 MINOR cumulative; converged R2 NO_NEW_CRITICAL_MAJOR. Cumulative across both chains: 2C + 15M + 5m; 21 closed in-place + 1 MINOR banked V2. **43rd cumulative C.C lesson #6 validation NOTABLE** (spans BOTH chains; chain-split was orchestrator-approved at the Slice 0 pre-flight checkpoint).
+
+**Per-variable 3-axis profile tags LOCK** (smoke artifact ground truth at `exports/research/v2-selection-mechanic-analysis-20260527T084319Z/per_variable_signals.csv`):
+
+| Variable | D_filt = F/T | profile |
+|---|---|---|
+| vcp.tightness_range_factor | 9.13 | ENRICHED + MARGINAL(T=15) + DEGRADED(5.5%) |
+| vcp.tightness_days_required | 9.14 | ENRICHED + MARGINAL(T=7) + SUPPRESSED(3.9%) |
+| vcp.adr_min_pct | 1.00 | TYPICAL + INSUFFICIENT(T=4) + SUPPRESSED(2.3%) |
+| vcp.proximity_max_pct | 9.67 | ENRICHED + INSUFFICIENT(T=3) + COMPARABLE(12.0%) |
+| vcp.orderliness_max_bar_ratio | 3.00 | ENRICHED + INSUFFICIENT(T=1) + COMPARABLE(15.8%) |
+| D2 baseline (REFERENCE) | 0.138 | T=516; F=71 |
+
+**Headline finding**: V2 OHLCV binding-variable cohort selection ENRICHES for W-pattern productivity on per-ticker basis (D_filt 7.2x-70x baseline); the "substrate thinness" framing in R2-A + R2-D findings docs was a function of small substrate size (T<=15 in all 5 V2 cases; T<5 in 3 of 5; baseline T=516), NOT low per-ticker W incidence. R2-A's prior NEGATIVE on Ruleset E + R2-D's INSUFFICIENT SAMPLE reflect substrate-size + survival-quality limitations rather than W-pattern depletion. V2 substrates are METHODOLOGICALLY INFORMATIVE for W-pattern identification but actionable trade outcome QUALITY on V2-selected tickers requires substrate-size-aware verdict gating.
+
+**Brief Amendments 1-4 banked orchestrator-side** (appended to dispatch brief at `docs/v2-selection-mechanic-investigation-dispatch-brief.md`):
+1. Two-Codex-chain refinement (chain #1 implementation; chain #2 study writeup)
+2. D2 baseline universe 88 -> 516 correction (orchestrator-side brief mischaracterization at Sec 1.4)
+3. Substrate density metric disambiguation (3 metric families: D_filt + absolute F + dual-composite survival rates) -- drove NEW gotcha #35
+4. Compatibility verdict structure clarification (per-variable 3-axis profile tags replace single global label)
+
+**NEW CLAUDE.md gotcha #35 BANKED at THIS housekeeping (Expansion #19 promotion)**: Substrate density metric disambiguation -- dispatch briefs referencing prior-arc "density" numerical anchors MUST cite exact denominator + numerator definitions; ambiguous re-framing invites methodological conflation. Pattern complement to gotcha #34 (brief-prescription cross-table verification for SAME-arc data) -- extended to prior-arc-anchor vs new-brief metric-definition disambiguation across different arcs. Forward-binding for any future dispatch carrying forward numerical anchors from prior arcs.
+
+**Discipline preservation**: ZERO Co-Authored-By footer drift (~575+ cumulative streak through `64e0099`; 15 V2-mechanic commits all clean per `%(trailers)` inspection + 0 `noreply@anthropic.com` matches); L2 LOCK preserved + REINFORCED via parametric source-grep tests across NEW v2_selection_mechanic module set; Schema v21 UNCHANGED; ASCII discipline COMPLETE per gotcha #32; ZERO new Schwab API calls; ZERO new yfinance runtime fetches (substrate characterization uses direct `pd.read_parquet` on legacy archives; pre-flight refresh of SSRM + SLDB by orchestrator 2026-05-26 before slice 1; other 16 substrate tickers acceptable per R2-A precedent at 1-4 day archive freshness); 192 NEW fast tests verified green via orchestrator-side pytest sweep (implementer reports 196; minor 4-test accounting drift); broader project fast suite deferred (research-branch-only; ZERO production writes per R2-A + R2-D precedent).
+
+**Forward action sequence (orchestrator-side; Turn H post-merge housekeeping pass)**:
+
+- [x] QA implementer product per `feedback_orchestrator_qa_implementer_product` BINDING (15-commit chain; ZERO Co-Authored-By verified via `%(trailers)`; diff scope research-only; L2 LOCK source-grep clean; 192 fast tests pass; gotcha #34 FIRST + SECOND canonical applications verified via `test_binding_signals_table_cross_check.py`; gotcha #33 banned-terms test verified in `test_synthesis_and_run.py`; smoke artifact + study writeup + findings doc + return report all present + content-verified)
+- [x] Merge `applied-research-v2-selection-mechanic-investigation` `--no-ff` to main at `64e0099` + push to origin/main
+- [x] CLAUDE.md NEW gotcha #35 banked (substrate density metric disambiguation; Expansion #19 promotion; BINDING for 43rd validation onwards)
+- [x] Brief Amendments 1-4 appended to dispatch brief at `docs/v2-selection-mechanic-investigation-dispatch-brief.md`
+- [x] phase3e-todo new top entry (THIS pass)
+- [ ] **Operator-paired next-arc decision** post-V2-selection-mechanic SHIP. Options enumerated:
+  - **Substrate-size augmentation experiment** (V2 candidate #4 from return report Sec 6): aggregate watch->aplus flips across multiple V2 binding variables to construct substrate-size-sufficient (T>=20) V2-style cohort for defensible per-ruleset evaluation. Directly responsive to the per-variable T<=15 limitation surfaced by Turn H. Cost: ~4-8h impl + ~1-2h Codex. (RECOMMENDED -- direct continuation that closes the Turn H limitation)
+  - **D2 baseline canonical_survival_rate L4 remediation** (V2 candidate #1 from return report Sec 6): re-run D2 EXPANDED with results.csv emission enabled to complete the missing baseline survival rate anchor; closes L4-style limitation. Cost: ~1-2h compute + 1h docs. (Methodological completeness; small effort)
+  - **R2-E (vcp.proximity_max_pct +5) backtest**: 3-ticker substrate (T=3); INSUFFICIENT SAMPLE forecast per Turn H profile (INSUFFICIENT + COMPARABLE survival); not informative as a standalone backtest given Turn H finding. Banked but NOT recommended as immediate next arc
+  - **R2-F (vcp.orderliness_max_bar_ratio +1) backtest**: 1-ticker substrate (T=1); INSUFFICIENT SAMPLE forecast; not informative. Banked but NOT recommended
+  - **Option C real-time prospective tracking** for E on operator's pipeline outputs -- banked V2 candidate from D2; multi-month timeline
+  - **D + E hybrid ruleset variant** -- banked V2 candidate from D2; cost: ~2-4h impl
+  - **Phase 14 commissioning consideration** -- gated on cross-cohort robustness establishment (still NOT established; V2-mechanic finding bounds the question but does not close it)
+  - **Market-conditions investigation** -- banked alternative; analytical pivot to other-gates-not-enumerated per V2 sensitivity Sec B.3
+  - **Temporal wait** -- 1-3 months for data tail advance; sequential-evidence path
+
+---
+
 ## 2026-05-26 PM #2 Turn G: R2-D V2 OHLCV `vcp.adr_min_pct +11` cohort 6-ruleset backtest SHIPPED at `7330628` — INSUFFICIENT SAMPLE verdict on canonical evaluation cohort (N=4 STNG-only; substrate ~4x thinner than peer cohorts); cross-cohort systemic-vs-cohort-specific test DEFERRED; gotcha #33 third canonical application + NEW gotcha #34 banked (brief-prescription cross-table verification; Expansion #18 candidate)
 
 **R2-D SHIPPED 2026-05-26 PM #2** at integration merge `7330628` of `applied-research-r2d-adr-min-pct-cohort-backtest` via `--no-ff`. 6 implementer commits (2 slices + 2 Codex fix bundles + 1 smoke artifact + 1 docs) + 1 merge commit. 3 NEW `research/harness/r2d_adr_min_pct/` modules (sibling architecture LOCK observed; DO NOT refactor R2-A's cohort_csv into shared base — banked V2 candidate) + 4 NEW test files at `tests/research/r2d_adr_min_pct/` (59 fast tests) + 1 NEW `tests/fixtures/research/r2d_adr_min_pct/cohort.json` (N=4 canonical PrimaryVerdict entries; STNG-only) + 2 NEW smoke artifact directories + 1 NEW cohort CSV at `exports/research/cohorts/r2d_adr_min_pct_sp2_0.csv` (4 unique rows; sp2_0 naming reflects Amendment 1 sp=1 → sp=2.0 reconciliation). ZERO production swing/ writes (D2 + R2-A harnesses REUSED VERBATIM via byte-stability tests).

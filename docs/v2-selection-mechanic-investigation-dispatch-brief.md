@@ -534,3 +534,61 @@ Operator-side Codex MCP decision: YES (42nd cumulative C.C lesson #6 validation 
 ---
 
 *End of V2-selection-mechanic investigation dispatch brief. The investigation is ANALYTICAL / EXPLORATORY (not a backtest); examines WHY V2-binding-variable cohort selection produces W-pattern-thin substrates (R2-D ~3% density vs peer ~12-13%) AND whether V2 selection is fundamentally compatible with E ruleset deployment. ZERO production `swing/` writes; ZERO new Schwab API calls; sibling-module strategy continues for cohort extractions; bias-free D2 EXPANDED baseline reused; first-class research study writeup as the primary artifact. 34 cumulative CLAUDE.md gotchas BINDING for 42nd cumulative C.C lesson #6 validation slot. NEW gotcha #34 (brief-prescription cross-table verification) FIRST CANONICAL APPLICATION post-banking; ~559+ cumulative ZERO Co-Authored-By trailer drift to preserve.*
+
+---
+
+## Amendments (orchestrator-side; appended post-merge housekeeping 2026-05-27 at HEAD `64e0099`)
+
+### Amendment 1 -- Two-Codex-chain refinement (2026-05-26 PM; pre-Slice-4)
+
+Brief Sec 7 prescribed a SINGLE Codex MCP chain post-Slice-6. The implementer proposed + the orchestrator approved a refinement to TWO distinct Codex chains:
+- Chain #1 post-Slice-4 reviews implementation correctness (3 NEW cohort extractor module sets + 1 NEW orchestration module set + ~100-140 tests)
+- Chain #2 post-Slice-6 reviews study writeup methodology + numerical accuracy + narrative claims
+
+Rationale: distinct review domains; combining both into one post-Slice-6 chain would force Codex to review implementation + methodology + writeup simultaneously and risk implementation defects propagating into the smoke artifacts (Slice 5) BEFORE Codex sees them. The 42nd cumulative C.C lesson #6 validation slot (originally allocated to one chain) was re-scoped to span BOTH chains.
+
+Outcome: chain #1 converged R5 NO_NEW_CRITICAL_MAJOR (5 rounds; 2C + 12M + 3m cumulative); chain #2 converged R2 NO_NEW_CRITICAL_MAJOR (2 rounds; 0C + 3M + 2m cumulative). Total 2C + 15M + 5m; 21 closed in-place + 1 MINOR banked V2. **43rd cumulative C.C lesson #6 validation NOTABLE** (slot consumed across both chains).
+
+### Amendment 2 -- D2 baseline universe 88 -> 516 correction (2026-05-26 PM; pre-Slice-4)
+
+Brief Sec 1.4 stated "D2 EXPANDED... 88 unique S&P 500 tickers". This was orchestrator-side mischaracterization -- the "88" conflated D1's hand-curated overlap count with D2's full candidate universe scan.
+
+Correct values per D2 manifest at `exports/research/pattern-cohort-detection-20260526T000409Z/manifest.json` (`cohort_unique_tickers_count`):
+- D2 universe T_baseline = **516** unique S&P 500 tickers
+- D2 input entries = 2064 (= 516 tickers x 4 asof_date snapshots)
+- D2 EXPANDED filtered W primary count F = 71 (per D2 findings Amendment 5.1 LOCK)
+- D2 EXPANDED baseline filtered density D_filt_baseline = **71 / 516 = 0.138** W primaries per ticker
+
+The "88" cited in Sec 1.4 was wrong; T_baseline=516 is the correct value. The implementer LOCKED these via discriminating tests at Slice 4 (BINDING_SIGNALS_TABLE + D2_BASELINE_UNIVERSE_SIZE + D2_BASELINE_FILTERED_W_COUNT constants).
+
+### Amendment 3 -- Substrate density metric disambiguation (2026-05-27; post-Slice-5)
+
+Brief Sec 1.6 defined `D_filt = F / T` (W primaries per ticker) as the headline density metric. Brief Sec 0 + Sec 1.7 narrative framing referenced "~13% / ~3% / ~12%" substrate density anchors carried over from R2-A + R2-D findings docs -- but those anchors were defined as `F / R_raw_post-merge(composite>=0.5)` (canonical survival rate of high-composite raw W primaries), NOT F/T.
+
+The two metrics measure fundamentally different things:
+- **D_filt** (per-ticker productivity): V2 substrates dwarf D2 baseline by 7.2x-70x (= ENRICHED)
+- **canonical_survival_rate** (recency/quality survival): V2 substrates partly match the "thin" narrative with significant per-variable variation
+
+Resolution (operator-approved at Slice 5 implementer triage): the study writeup surfaces ALL THREE metric families:
+1. D_filt = F/T (per brief Sec 1.6 LOCK)
+2. Aggregate F + substrate size T (absolute output count + selection-bias scope)
+3. canonical_survival_rate at BOTH composite=0 (broadest denominator) AND composite>=0.5 (R2-D narrative anchor) where computable
+
+This drove NEW CLAUDE.md gotcha #35 (substrate density metric disambiguation; Expansion #19 promotion; BINDING for 43rd cumulative validation onwards).
+
+**Substantive consequence:** The "substrate thinness" framing in R2-A + R2-D findings docs was a function of small substrate SIZE T (T<=15 in all 5 V2 cases; baseline T=516), NOT low per-ticker W incidence. V2 binding-variable selection ENRICHES for W-pattern productivity on a per-ticker basis. R2-A's prior NEGATIVE Ruleset E + R2-D's INSUFFICIENT SAMPLE reflect substrate-size + survival-quality limitations rather than W-pattern depletion.
+
+### Amendment 4 -- Compatibility verdict structure clarification (2026-05-27; post-Slice-5)
+
+Brief Sec 1.7 prescribed a single global categorical headline (COMPATIBLE / PARTIALLY-COMPATIBLE / INCOMPATIBLE). The implementer's measurement at Slice 5 showed that a single global label cannot capture the multi-dimensional finding (per-ticker productivity high; substrate size small; survival rates mixed).
+
+Resolution: `synthesis.py` emits PER-VARIABLE 3-axis profile tags instead of a single global label. The 3 axes are:
+- **productivity**: ENRICHED / TYPICAL / DEPLETED (vs D2 baseline 0.138)
+- **substrate size**: SUFFICIENT (T>=20) / MARGINAL (5<=T<20) / INSUFFICIENT (T<5)
+- **survival rate**: COMPARABLE (>=10% at composite=0) / DEGRADED (5-10%) / SUPPRESSED (<5%)
+
+Per gotcha #33 BANNED-TERMS LOCK: the 3-axis tags are DESCRIPTIVE substrate characterization labels, NOT verdict terminology; PARTIAL POSITIVE / NEGATIVE / POSITIVE remain banned at synthesis layer. Codex chain #2 R1 fix bundle closed 2 substring slips in the study writeup that crept past pre-Codex review (caught at the prior-arc carryover quotation points where R2-A/R2-D findings docs were paraphrased).
+
+---
+
+*End of Amendments. The dispatch brief's substantive content (Sec 0-Sec 11 above) was preserved verbatim through Slice 1-Slice 8 execution; Amendments 1-4 capture orchestrator-side refinements + corrections discovered during dispatch. Full implementation history at `docs/v2-selection-mechanic-analysis-return-report.md`. Headline finding at `research/studies/2026-05-26-v2-selection-mechanic-analysis.md`.*
