@@ -151,9 +151,14 @@ def merge_adjacency_5bd(
     """
     if not verdicts:
         return []
+    # Codex R3 MAJOR #2 fix: normalize ticker case before grouping so
+    # ("AAA", t1) and ("aaa", t1) collapse to ONE group. Downstream
+    # compute_w_density() filters substrate-membership case-insensitively;
+    # without consistent grouping here, mixed-case duplicates would
+    # survive both layers + inflate F.
     groups: dict[tuple[str, date], list[WPrimaryVerdict]] = {}
     for v in verdicts:
-        key = (v.ticker, v.trough_1_date)
+        key = (v.ticker.upper(), v.trough_1_date)
         groups.setdefault(key, []).append(v)
     winners: list[WPrimaryVerdict] = []
     for key, members in groups.items():

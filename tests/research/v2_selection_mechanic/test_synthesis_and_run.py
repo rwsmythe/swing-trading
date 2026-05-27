@@ -387,15 +387,21 @@ def test_read_cohort_csv_raises_on_empty_cohort_label(tmp_path: Path) -> None:
 # ----- Codex R2 MAJOR #3 fix: run_analysis missing canonical variable -----
 
 
+def _synthetic_asof() -> date:
+    """A date that IS a business day in the synthetic OHLCV fixture
+    (matches `_synthetic_df(date(2024, 1, 1), 400)` index range)."""
+    return pd.bdate_range(start=pd.Timestamp(date(2024, 1, 1)), periods=400)[-1].date()
+
+
 def _full_cohort_pairs() -> dict[str, list[tuple[str, date]]]:
-    asof = date(2025, 6, 1)
+    asof = _synthetic_asof()
     return {
         v: [("AAA", asof)] for v, _, _ in BINDING_SIGNALS_TABLE
     }
 
 
 def _full_verdicts() -> dict[str, list[WPrimaryVerdict]]:
-    asof = date(2025, 6, 1)
+    asof = _synthetic_asof()
     return {
         v: [
             WPrimaryVerdict(
@@ -452,18 +458,32 @@ def test_run_analysis_raises_on_missing_canonical_verdicts_variable(tmp_path: Pa
         )
 
 
-def test_run_analysis_accepts_empty_list_for_canonical_variable(tmp_path: Path) -> None:
-    """Empty list [] for a canonical variable is ALLOWED (e.g., cohort
+def test_run_analysis_accepts_empty_verdicts_list_for_canonical_variable(tmp_path: Path) -> None:
+    """Empty verdicts list [] for a canonical variable is ALLOWED (cohort
     produced zero W primaries); the variable's PRESENCE in the dict is
-    the contract, not non-empty value."""
+    the contract, not non-empty value. The cohort itself MUST be non-empty
+    (R3 MAJOR #1 fix; tested separately)."""
     cache_dir = tmp_path / "cache"
     cache_dir.mkdir()
     df = _synthetic_df(date(2024, 1, 1), 400)
     df.to_parquet(cache_dir / "AAA.parquet")
-    verdicts = _full_verdicts()
-    verdicts["vcp.orderliness_max_bar_ratio"] = []  # explicitly empty
+    asof = df.index[-1].date()
+    cohort_pairs = {v: [("AAA", asof)] for v, _, _ in BINDING_SIGNALS_TABLE}
+    verdicts = {
+        v: [
+            WPrimaryVerdict(
+                ticker="AAA",
+                anchor_asof_date=asof,
+                trough_1_date=date(2025, 5, 1),
+                trough_2_date=date(2025, 5, 15),
+                composite_score=0.7,
+            )
+        ]
+        for v, _, _ in BINDING_SIGNALS_TABLE
+    }
+    verdicts["vcp.orderliness_max_bar_ratio"] = []  # explicitly empty verdicts
     result = run_analysis(
-        cohort_pairs_by_variable=_full_cohort_pairs(),
+        cohort_pairs_by_variable=cohort_pairs,
         verdicts_by_variable=verdicts,
         cache_dir=cache_dir,
     )
@@ -473,6 +493,33 @@ def test_run_analysis_accepts_empty_list_for_canonical_variable(tmp_path: Path) 
         if s.variable_name == "vcp.orderliness_max_bar_ratio"
     )
     assert obr_signal.filtered_w_count == 0
+
+
+def test_run_analysis_raises_on_empty_cohort_pairs(tmp_path: Path) -> None:
+    """Codex R3 MAJOR #1 fix discriminator: a canonical variable with
+    EMPTY cohort_pairs list -> MissingCanonicalVariableError.
+
+    Pre-fix (R2): missing variable raised; but variable PRESENT with
+    EMPTY value silently substituted with empty substrate; synthesize()
+    5-row contract satisfied; signal counted as neutral. Post-fix: empty
+    cohort_pairs value also raises (the substrate cannot be empty for a
+    canonical V2 variable).
+
+    Empty VERDICTS list is still allowed (zero W primaries is a valid
+    analytical signal when the cohort has tickers).
+    """
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    df = _synthetic_df(date(2024, 1, 1), 400)
+    df.to_parquet(cache_dir / "AAA.parquet")
+    cohort_pairs = _full_cohort_pairs()
+    cohort_pairs["vcp.proximity_max_pct"] = []  # empty substrate
+    with pytest.raises(MissingCanonicalVariableError, match="EMPTY substrate"):
+        run_analysis(
+            cohort_pairs_by_variable=cohort_pairs,
+            verdicts_by_variable=_full_verdicts(),
+            cache_dir=cache_dir,
+        )
 
 
 # ============= run_analysis end-to-end on planted verdicts =============

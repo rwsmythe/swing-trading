@@ -224,6 +224,25 @@ def run_analysis(
             f"variables present (use empty list [] if the cohort produced "
             f"zero W primaries; do not omit the key)."
         )
+    # Codex R3 MAJOR #1 fix: a canonical variable with EMPTY cohort_pairs
+    # (substrate = zero tickers) is INVALID -- it indicates upstream cohort
+    # enumeration failure. An empty cohort produces an empty substrate which
+    # yields None density delta, silently counted as neutral by synthesize().
+    # Empty verdicts_by_variable[v] is STILL allowed (zero-W primaries are a
+    # valid analytical signal when the cohort has tickers but no patterns).
+    empty_cohort_pairs = [
+        v for v in canonical_variables if not cohort_pairs_by_variable[v]
+    ]
+    if empty_cohort_pairs:
+        raise MissingCanonicalVariableError(
+            f"cohort_pairs_by_variable has EMPTY substrate for canonical "
+            f"V2 variable(s): {empty_cohort_pairs}. An empty substrate "
+            f"(zero tickers) indicates upstream cohort enumeration failure; "
+            f"the investigation contract requires non-empty cohorts for "
+            f"all 5 V2 binding variables. Empty verdicts list is allowed "
+            f"(zero W primaries is a valid analytical signal); empty cohort "
+            f"pairs is not."
+        )
 
     gap_lookup = {row[0]: row[2] for row in NON_WATCH_TRANSITION_GAP_TABLE}
     binding_lookup = {row[0]: (row[1], row[2]) for row in BINDING_SIGNALS_TABLE}

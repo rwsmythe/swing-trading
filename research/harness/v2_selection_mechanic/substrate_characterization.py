@@ -53,6 +53,21 @@ class CacheMissError(FileNotFoundError):
     """
 
 
+class AsofDateMissingError(ValueError):
+    """Raised when the requested asof_date is NOT present in the OHLCV
+    archive's DatetimeIndex.
+
+    Codex R3 MAJOR #3 fix 2026-05-26 PM: prior implementation
+    silently substituted the latest prior bar via `_slice_at_or_before`,
+    making weekend/holiday/missing-bar asof_dates indistinguishable from
+    valid trading-session asof_dates. The V2 cohort CSV asof_dates come
+    from V1 eval_run_id snapshots (valid trading sessions); any
+    asof_date NOT in the archive index indicates a data-integrity gap
+    worth surfacing per gotcha #28 + brief Sec 6(d) "CLEAR ERROR not
+    silent fallback" discipline.
+    """
+
+
 @dataclass(frozen=True)
 class PerTickerMetrics:
     """Computed regime metrics at a (ticker, asof_date) snapshot."""
@@ -123,6 +138,29 @@ def _slice_at_or_before(df: pd.DataFrame, asof: date) -> pd.DataFrame:
     idx_dates = df.index.date if hasattr(df.index, "date") else df.index
     mask = idx_dates <= asof
     return df.loc[mask]
+
+
+def _require_asof_in_index(df: pd.DataFrame, asof: date, ticker: str) -> None:
+    """Codex R3 MAJOR #3 strict-asof guard.
+
+    Raises AsofDateMissingError if asof_date is NOT present in the
+    DatetimeIndex. The V2 cohort CSV asof_dates are V1 eval_run snapshots
+    (always valid trading sessions); any miss indicates a data-integrity
+    gap (archive truncation, weekend/holiday cohort artifact emission
+    error, etc.) worth halting per brief Sec 6(d).
+    """
+    if df.empty:
+        raise AsofDateMissingError(
+            f"OHLCV archive for {ticker} is empty; cannot resolve asof={asof}"
+        )
+    idx_dates = df.index.date if hasattr(df.index, "date") else df.index
+    if asof not in set(idx_dates):
+        raise AsofDateMissingError(
+            f"asof_date {asof} not present in OHLCV archive for {ticker}; "
+            f"archive ranges from {min(idx_dates)} to {max(idx_dates)}. "
+            f"Investigation contract requires asof to be a valid trading "
+            f"session present in the archive."
+        )
 
 
 def compute_90d_return_pct(df: pd.DataFrame, asof: date) -> float | None:
@@ -282,11 +320,14 @@ def compute_per_ticker_metrics(
     """Compute the 4 regime metrics for one (ticker, asof) snapshot.
 
     Reads via `read_legacy_archive` -- raises CacheMissError on missing
-    archive (gotcha #28 + brief Sec 6(d)). Individual metric computations
-    return None on insufficient data (caller surfaces None in CSV +
-    aggregates ignore None values).
+    archive (gotcha #28 + brief Sec 6(d)). Raises AsofDateMissingError
+    if the asof_date is NOT present in the archive index (Codex R3 MAJOR
+    #3 fix; gotcha #28 strict semantic). Individual metric computations
+    return None on insufficient HISTORICAL DEPTH (caller surfaces None
+    in CSV + aggregates ignore None values).
     """
     df = read_legacy_archive(ticker, cache_dir=cache_dir)
+    _require_asof_in_index(df, asof, ticker)
     return PerTickerMetrics(
         ticker=ticker.upper(),
         asof_date=asof,

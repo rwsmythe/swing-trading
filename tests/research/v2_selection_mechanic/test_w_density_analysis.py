@@ -182,6 +182,24 @@ def test_merge_adjacency_5bd_transitive_chain_collapses_to_one() -> None:
     assert merged_b[0].composite_score == 0.90
 
 
+def test_merge_adjacency_5bd_normalizes_ticker_case() -> None:
+    """Codex R3 MAJOR #2 fix: mixed-case ticker variants collapse into
+    ONE group (not separate clusters that both survive).
+
+    Pre-fix: ("AAA", t1) and ("aaa", t1) went into different groups +
+    both survived; downstream compute_w_density case-insensitive
+    substrate filter passed both -> F inflated.
+    Post-fix: ticker.upper() in grouping key.
+    """
+    verdicts = [
+        _vp("AAA", date(2026, 5, 1), date(2026, 4, 1), date(2026, 4, 15), 0.6),
+        _vp("aaa", date(2026, 5, 1), date(2026, 4, 1), date(2026, 4, 15), 0.8),
+    ]
+    merged = merge_adjacency_5bd(verdicts)
+    assert len(merged) == 1
+    assert merged[0].composite_score == 0.8
+
+
 def test_merge_adjacency_5bd_mixed_clusters() -> None:
     """Two clusters within (ticker, trough_1_date): one in early-April,
     one in mid-May (well >5 BD apart). Each cluster has its own

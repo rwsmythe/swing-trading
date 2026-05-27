@@ -10,6 +10,7 @@ import pytest
 
 from research.harness.v2_selection_mechanic.substrate_characterization import (
     UNKNOWN_SECTOR,
+    AsofDateMissingError,
     CacheMissError,
     aggregate_cohort_metrics,
     compute_90d_return_pct,
@@ -285,8 +286,38 @@ def test_aggregate_cohort_metrics_empty() -> None:
 
 def test_compute_cohort_characterization_raises_on_cache_miss(tmp_path: Path) -> None:
     """One ticker present + one missing -> CacheMissError on the missing one."""
-    df = _synthetic_df(date(2025, 1, 1), 100, base_price=100.0)
+    df = _synthetic_df(date(2024, 1, 1), 400, base_price=100.0)
     df.to_parquet(tmp_path / "AAA.parquet")
-    pairs = [("AAA", date(2025, 5, 1)), ("MISSING", date(2025, 5, 1))]
+    asof = df.index[-1].date()
+    pairs = [("AAA", asof), ("MISSING", asof)]
     with pytest.raises(CacheMissError):
         compute_cohort_characterization("test", pairs, cache_dir=tmp_path)
+
+
+# ----- Codex R3 MAJOR #3 fix: strict asof_date presence check -----
+
+
+def test_compute_per_ticker_metrics_raises_on_asof_not_in_index(tmp_path: Path) -> None:
+    """Codex R3 MAJOR #3 fix discriminator: asof_date NOT in archive
+    index -> AsofDateMissingError.
+
+    Pre-fix: _slice_at_or_before silently substituted prior bar; metrics
+    were labeled with requested asof but computed from a different bar's
+    close (asof contract violation; data-integrity gap masked).
+    Post-fix: strict guard requires asof in archive index.
+    """
+    df = _synthetic_df(date(2024, 1, 1), 400, base_price=100.0)
+    df.to_parquet(tmp_path / "ABC.parquet")
+    # Pick a date that's NOT in the index (e.g., a weekend or future date)
+    not_in_index = date(2099, 1, 1)
+    with pytest.raises(AsofDateMissingError, match="not present in OHLCV archive"):
+        compute_per_ticker_metrics("ABC", not_in_index, cache_dir=tmp_path)
+
+
+def test_compute_per_ticker_metrics_accepts_asof_in_index(tmp_path: Path) -> None:
+    """An asof_date present in the archive index proceeds normally."""
+    df = _synthetic_df(date(2024, 1, 1), 400, base_price=100.0)
+    df.to_parquet(tmp_path / "ABC.parquet")
+    asof = df.index[100].date()  # Pick a known index date
+    metrics = compute_per_ticker_metrics("ABC", asof, cache_dir=tmp_path)
+    assert metrics.asof_date == asof
