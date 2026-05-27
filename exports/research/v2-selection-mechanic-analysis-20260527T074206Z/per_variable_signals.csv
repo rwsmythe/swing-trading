@@ -1,6 +1,0 @@
-variable_name,binding_sweep_point,max_delta_aplus,drill_down_watch_aplus_count,non_watch_transition_gap,non_watch_transition_gap_pct,substrate_ticker_count,substrate_unique_ticker_asof_count,raw_w_count,filtered_w_count,filtered_density,canonical_survival_rate,density_delta_vs_baseline,regime_return_90d_median,regime_atr_pct_20d_median,regime_high_52w_proximity_pct_median,dominant_sector
-vcp.tightness_range_factor,1.005,75,67,8,10.67,15,29,2482,137,9.133333,0.055197,8.995736,65.0334,5.5648,8.6902,UNKNOWN
-vcp.tightness_days_required,1.0,16,15,1,6.25,7,7,1643,64,9.142857,0.038953,9.005260,64.4944,5.5435,8.7819,UNKNOWN
-vcp.adr_min_pct,2.0,11,11,0,0.00,4,4,173,4,1.000000,0.023121,0.862403,40.3087,2.9379,4.5266,UNKNOWN
-vcp.proximity_max_pct,7.5,5,5,0,0.00,3,3,242,29,9.666667,0.119835,9.529070,42.8571,6.4224,8.0232,UNKNOWN
-vcp.orderliness_max_bar_ratio,3.75,1,1,0,0.00,1,1,19,3,3.000000,0.157895,2.862403,100.5570,8.6153,13.0420,UNKNOWN

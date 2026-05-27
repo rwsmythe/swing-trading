@@ -68,7 +68,12 @@ def _signal(
     delta_vs_baseline: float | None = -0.0376,
     dominant_sector: str = "Technology",
     raw_w_count: int = 10,
+    raw_w_count_c_0_5: int = 5,
     canonical_survival_rate: float | None = 0.1,
+    canonical_survival_rate_c_0_5: float | None = 0.2,
+    productivity_tag: str = "TYPICAL",
+    size_tag: str = "MARGINAL",
+    survival_tag: str = "COMPARABLE",
 ) -> PerVariableSignal:
     return PerVariableSignal(
         variable_name=variable,
@@ -80,14 +85,19 @@ def _signal(
         substrate_ticker_count=t_count,
         substrate_unique_ticker_asof_count=t_count,
         raw_w_count=raw_w_count,
+        raw_w_count_c_0_5=raw_w_count_c_0_5,
         filtered_w_count=f_count,
         filtered_density=d_filt,
         canonical_survival_rate=canonical_survival_rate,
+        canonical_survival_rate_c_0_5=canonical_survival_rate_c_0_5,
         density_delta_vs_baseline=delta_vs_baseline,
         regime_return_90d_median=10.0,
         regime_atr_pct_20d_median=2.5,
         regime_high_52w_proximity_pct_median=20.0,
         dominant_sector=dominant_sector,
+        profile_productivity_tag=productivity_tag,
+        profile_size_tag=size_tag,
+        profile_survival_tag=survival_tag,
     )
 
 
@@ -258,9 +268,11 @@ def _w_density() -> WDensityMetrics:
         cohort_label="test",
         substrate_ticker_count=10,
         raw_w_count=100,
+        raw_w_count_c_0_5=50,
         filtered_w_count=2,
         filtered_density=0.2,
         canonical_survival_rate=0.02,
+        canonical_survival_rate_c_0_5=0.04,
         density_delta_vs_baseline=0.2 - D2_BASELINE_FILTERED_DENSITY,
     )
 
@@ -641,18 +653,20 @@ def test_write_w_density_detail_csv_includes_baseline_first(tmp_path: Path) -> N
         cohort_label="vcp.var1",
         substrate_ticker_count=10,
         raw_w_count=100,
+        raw_w_count_c_0_5=50,
         filtered_w_count=2,
         filtered_density=0.2,
         canonical_survival_rate=0.02,
+        canonical_survival_rate_c_0_5=0.04,
         density_delta_vs_baseline=0.2 - D2_BASELINE_FILTERED_DENSITY,
     )}
     out = tmp_path / "w_density.csv"
     write_w_density_detail_csv(metrics, out)
     lines = out.read_text(encoding="utf-8").strip().splitlines()
     assert lines[0].startswith("cohort_label,substrate_ticker_count,")
-    # D2 baseline as first DATA row (universe 516; raw_w_count 0 because
+    # D2 baseline as first DATA row (universe 516; raw_w_count 0/0 because
     # D2 results.csv not emitted in V1 -- Option B fallback)
-    assert lines[1].startswith("d2_expanded_baseline_sp500,516,0,71,")
+    assert lines[1].startswith("d2_expanded_baseline_sp500,516,0,0,71,")
 
 
 def test_write_manifest_payload_shape(tmp_path: Path) -> None:

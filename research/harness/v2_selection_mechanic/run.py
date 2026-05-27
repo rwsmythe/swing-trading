@@ -193,6 +193,7 @@ def run_analysis(
     cache_dir: Path | None = None,
     finviz_sector_map: dict[str, str] | None = None,
     raw_w_counts_by_variable: dict[str, int] | None = None,
+    raw_w_counts_c_0_5_by_variable: dict[str, int] | None = None,
 ) -> CompatibilitySynthesis:
     """Pure analytical pipeline (testable with planted verdicts).
 
@@ -262,20 +263,25 @@ def run_analysis(
         raw_verdicts = verdicts_by_variable[variable_name]
         filtered = apply_canonical_filter(raw_verdicts)
         merged = merge_adjacency_5bd(filtered)
-        # Raw W count = pre-canonical-filter verdict count (the caller's
-        # raw_w_counts_by_variable mapping can override; defaults to len of
-        # the verdicts list, which represents pre-filter primaries when the
-        # caller extracted at composite_threshold=0.0).
+        # Raw W counts (per Brief Amendment 3):
+        #   raw_count       = composite=0 broadest (defaults to len of verdicts)
+        #   raw_count_c_0_5 = composite>=0.5 R2-A/R2-D anchor (caller-supplied)
         raw_count = (
             raw_w_counts_by_variable.get(variable_name, len(raw_verdicts))
             if raw_w_counts_by_variable is not None
             else len(raw_verdicts)
+        )
+        raw_count_c_0_5 = (
+            raw_w_counts_c_0_5_by_variable.get(variable_name, 0)
+            if raw_w_counts_c_0_5_by_variable is not None
+            else 0
         )
         w_density = compute_w_density(
             cohort_label=variable_name,
             substrate_tickers=tickers,
             canonical_filtered_verdicts=merged,
             raw_w_count=raw_count,
+            raw_w_count_c_0_5=raw_count_c_0_5,
         )
         signals.append(
             build_per_variable_signal(
@@ -317,10 +323,15 @@ def write_per_variable_signal_csv(
                 "substrate_ticker_count",
                 "substrate_unique_ticker_asof_count",
                 "raw_w_count",
+                "raw_w_count_c_0_5",
                 "filtered_w_count",
                 "filtered_density",
                 "canonical_survival_rate",
+                "canonical_survival_rate_c_0_5",
                 "density_delta_vs_baseline",
+                "profile_productivity_tag",
+                "profile_size_tag",
+                "profile_survival_tag",
                 "regime_return_90d_median",
                 "regime_atr_pct_20d_median",
                 "regime_high_52w_proximity_pct_median",
@@ -339,12 +350,18 @@ def write_per_variable_signal_csv(
                     s.substrate_ticker_count,
                     s.substrate_unique_ticker_asof_count,
                     s.raw_w_count,
+                    s.raw_w_count_c_0_5,
                     s.filtered_w_count,
                     "" if s.filtered_density is None else f"{s.filtered_density:.6f}",
                     "" if s.canonical_survival_rate is None
                     else f"{s.canonical_survival_rate:.6f}",
+                    "" if s.canonical_survival_rate_c_0_5 is None
+                    else f"{s.canonical_survival_rate_c_0_5:.6f}",
                     "" if s.density_delta_vs_baseline is None
                     else f"{s.density_delta_vs_baseline:.6f}",
+                    s.profile_productivity_tag,
+                    s.profile_size_tag,
+                    s.profile_survival_tag,
                     "" if s.regime_return_90d_median is None
                     else f"{s.regime_return_90d_median:.4f}",
                     "" if s.regime_atr_pct_20d_median is None
@@ -407,9 +424,11 @@ def write_w_density_detail_csv(
                 "cohort_label",
                 "substrate_ticker_count",
                 "raw_w_count",
+                "raw_w_count_c_0_5",
                 "filtered_w_count",
                 "filtered_density",
                 "canonical_survival_rate",
+                "canonical_survival_rate_c_0_5",
                 "density_delta_vs_baseline",
             ]
         )
@@ -420,10 +439,13 @@ def write_w_density_detail_csv(
                 b.cohort_label,
                 b.substrate_ticker_count,
                 b.raw_w_count,
+                b.raw_w_count_c_0_5,
                 b.filtered_w_count,
                 f"{b.filtered_density:.6f}",
                 "" if b.canonical_survival_rate is None
                 else f"{b.canonical_survival_rate:.6f}",
+                "" if b.canonical_survival_rate_c_0_5 is None
+                else f"{b.canonical_survival_rate_c_0_5:.6f}",
                 f"{b.density_delta_vs_baseline:.6f}",
             ]
         )
@@ -433,11 +455,14 @@ def write_w_density_detail_csv(
                     variable,
                     m.substrate_ticker_count,
                     m.raw_w_count,
+                    m.raw_w_count_c_0_5,
                     m.filtered_w_count,
                     "" if m.filtered_density is None
                     else f"{m.filtered_density:.6f}",
                     "" if m.canonical_survival_rate is None
                     else f"{m.canonical_survival_rate:.6f}",
+                    "" if m.canonical_survival_rate_c_0_5 is None
+                    else f"{m.canonical_survival_rate_c_0_5:.6f}",
                     "" if m.density_delta_vs_baseline is None
                     else f"{m.density_delta_vs_baseline:.6f}",
                 ]
@@ -524,24 +549,24 @@ def _detect_substrate(
     return results_csv
 
 
-def _primary_verdicts_from_results_csv(results_csv: Path) -> list[WPrimaryVerdict]:
+def _primary_verdicts_from_results_csv(
+    results_csv: Path, *, composite_threshold: float = 0.0
+) -> list[WPrimaryVerdict]:
     """Extract double_bottom_w primary verdicts from a pattern_cohort_evaluator
     results.csv via D1 backtest helper `extract_primary_verdicts_from_csv`.
 
-    Reuses the D1 PrimaryVerdict -> WPrimaryVerdict shape conversion;
-    the D1 helper handles structural_evidence_json parsing + per-(ticker,
-    trough_1_date) highest-composite dedup. The output is then passed
-    through the V2-selection-mechanic canonical filter + 5-BD adjacency
-    merge (in run_analysis -> apply_canonical_filter + merge_adjacency_5bd).
+    composite_threshold parameterized per Brief Amendment 3 (operator-paired
+    LOCK 2026-05-27 post-Slice-5): the investigation extracts at BOTH
+    composite=0.0 (broadest R_raw denominator) AND composite>=0.5
+    (R2-A/R2-D findings-doc-anchor denominator) for survival-rate dual-
+    measurement.
     """
     from research.harness.double_bottom_w_backtest.cohort import (
         extract_primary_verdicts_from_csv,
     )
 
-    # Use composite threshold 0.0 to extract ALL D1 primaries; the
-    # canonical filter (0.5) is applied downstream via apply_canonical_filter.
     primaries = extract_primary_verdicts_from_csv(
-        results_csv, composite_threshold=0.0
+        results_csv, composite_threshold=composite_threshold
     )
     return [
         WPrimaryVerdict(
@@ -573,6 +598,7 @@ def _execute_full_run(
 
     cohort_pairs_by_variable: dict[str, list[tuple[str, date]]] = {}
     verdicts_by_variable: dict[str, list[WPrimaryVerdict]] = {}
+    raw_w_counts_c_0_5_by_variable: dict[str, int] = {}
 
     for variable in DEFAULT_COHORT_CSV_BY_VARIABLE:
         cohort_csv_path = Path(DEFAULT_COHORT_CSV_BY_VARIABLE[variable])
@@ -588,9 +614,19 @@ def _execute_full_run(
             db_path=db_path,
             detect_out_root=detect_out_root,
         )
-        primaries = _primary_verdicts_from_results_csv(results_csv)
+        # Two-pass extraction per Brief Amendment 3 (composite=0 + composite>=0.5)
+        primaries = _primary_verdicts_from_results_csv(
+            results_csv, composite_threshold=0.0
+        )
+        primaries_c_0_5 = _primary_verdicts_from_results_csv(
+            results_csv, composite_threshold=0.5
+        )
         verdicts_by_variable[variable] = primaries
-        print(f"    -> {len(primaries)} double_bottom_w primaries extracted")
+        raw_w_counts_c_0_5_by_variable[variable] = len(primaries_c_0_5)
+        print(
+            f"    -> {len(primaries)} primaries(c=0) / "
+            f"{len(primaries_c_0_5)} primaries(c>=0.5) extracted"
+        )
 
     print("  substrate characterization + W-density + synthesis ...", flush=True)
     # Run pure analytical pipeline + capture per-ticker metrics for CSV emission
@@ -610,6 +646,7 @@ def _execute_full_run(
         verdicts_by_variable=verdicts_by_variable,
         cache_dir=cache_dir,
         finviz_sector_map=finviz_sector_map,
+        raw_w_counts_c_0_5_by_variable=raw_w_counts_c_0_5_by_variable,
     )
 
     # Map per-variable W-density metrics back from synthesis output
@@ -619,9 +656,11 @@ def _execute_full_run(
             cohort_label=sig.variable_name,
             substrate_ticker_count=sig.substrate_ticker_count,
             raw_w_count=sig.raw_w_count,
+            raw_w_count_c_0_5=sig.raw_w_count_c_0_5,
             filtered_w_count=sig.filtered_w_count,
             filtered_density=sig.filtered_density,
             canonical_survival_rate=sig.canonical_survival_rate,
+            canonical_survival_rate_c_0_5=sig.canonical_survival_rate_c_0_5,
             density_delta_vs_baseline=sig.density_delta_vs_baseline,
         )
 

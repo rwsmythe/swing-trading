@@ -18,7 +18,7 @@
   "investigation_type": "analytical_exploratory",
   "l2_lock_preserved": true,
   "production_swing_writes": 0,
-  "run_ts_utc": "20260527T074206Z",
+  "run_ts_utc": "20260527T084319Z",
   "schwab_api_calls": 0,
   "yfinance_fetches": 0
 }
