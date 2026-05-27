@@ -163,12 +163,39 @@ def _require_asof_in_index(df: pd.DataFrame, asof: date, ticker: str) -> None:
         )
 
 
+def _check_asof_strict(df: pd.DataFrame, asof: date) -> None:
+    """Codex R4 MAJOR #1 fix: enforce strict asof-in-index contract at
+    PUBLIC primitive boundaries (not only at orchestration entry).
+
+    Prior R3 fix added the guard in `compute_per_ticker_metrics` but the
+    public primitives (compute_90d_return_pct / compute_atr_pct_20d /
+    compute_52w_high_proximity_pct) still violated their own
+    "asof close" docstring contract when called directly with a
+    non-index date. This helper unifies the strict check across all
+    primitive callsites.
+    """
+    if df.empty:
+        raise AsofDateMissingError(
+            f"OHLCV DataFrame is empty; cannot resolve asof={asof}"
+        )
+    idx_dates = df.index.date if hasattr(df.index, "date") else df.index
+    if asof not in set(idx_dates):
+        raise AsofDateMissingError(
+            f"asof_date {asof} not present in OHLCV index "
+            f"(index range {min(idx_dates)} to {max(idx_dates)}); "
+            f"primitive functions require asof to be a valid bar."
+        )
+
+
 def compute_90d_return_pct(df: pd.DataFrame, asof: date) -> float | None:
     """Pct change between close at (asof - 90 business days) and close at asof.
 
-    Returns None if asof is not in index or insufficient prior history
-    (fewer than 90 BD before asof).
+    Raises AsofDateMissingError if asof is not in index (Codex R4 MAJOR #1
+    fix; was silently substituting prior bar via _slice_at_or_before).
+    Returns None on insufficient HISTORICAL DEPTH (fewer than 91 bars at
+    or before asof).
     """
+    _check_asof_strict(df, asof)
     sliced = _slice_at_or_before(df, asof)
     if len(sliced) < 91:  # need asof close + 90 prior business days
         return None
@@ -185,8 +212,11 @@ def compute_atr_pct_20d(df: pd.DataFrame, asof: date) -> float | None:
 
     ATR (per bar) = max(High - Low, |High - PrevClose|, |Low - PrevClose|).
     The trailing 20 BD window ends AT asof_date inclusive.
-    Returns None if fewer than 21 bars available.
+
+    Raises AsofDateMissingError if asof is not in index. Returns None on
+    insufficient HISTORICAL DEPTH (fewer than 21 bars at or before asof).
     """
+    _check_asof_strict(df, asof)
     sliced = _slice_at_or_before(df, asof)
     if len(sliced) < 21:  # need 20 ATR-bars + 1 for the prev-close anchor
         return None
@@ -212,12 +242,13 @@ def compute_52w_high_proximity_pct(df: pd.DataFrame, asof: date) -> float | None
     """`(52w_high - asof_close) / 52w_high * 100`.
 
     52w_high is the max High over the trailing 252 business days ending
-    AT asof inclusive. Returns None on insufficient data: requires at
-    least 252 bars at or before asof (Codex R1 MAJOR #1 fix 2026-05-26 PM
-    -- prior implementation returned a "trailing-window-max" derived
-    value on partial archives, conflating short histories with true
-    52-week lookbacks).
+    AT asof inclusive.
+
+    Raises AsofDateMissingError if asof is not in index. Returns None on
+    insufficient HISTORICAL DEPTH (requires at least 252 bars at or
+    before asof; Codex R1 MAJOR #1 fix 2026-05-26 PM).
     """
+    _check_asof_strict(df, asof)
     sliced = _slice_at_or_before(df, asof)
     if len(sliced) < 252:
         return None

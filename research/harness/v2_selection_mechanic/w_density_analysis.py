@@ -187,6 +187,14 @@ def merge_adjacency_5bd(
                 last_in_cluster = v
         if current_head is not None:
             winners.append(current_head)
+    # Codex R4 MINOR #1 fix: normalize emitted ticker to upper-case so
+    # output is consistent with the grouping key + downstream
+    # case-insensitive substrate filter. Reconstruct the dataclass with
+    # ticker.upper() (frozen dataclass; replace via dataclasses.replace).
+    from dataclasses import replace as _dc_replace
+    winners = [
+        _dc_replace(w, ticker=w.ticker.upper()) for w in winners
+    ]
     winners.sort(key=lambda x: (x.ticker, x.trough_1_date, x.trough_2_date))
     return winners
 

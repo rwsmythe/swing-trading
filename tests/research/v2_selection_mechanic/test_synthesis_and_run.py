@@ -66,6 +66,7 @@ def _signal(
     f_count: int = 1,
     d_filt: float | None = 0.1,
     delta_vs_baseline: float | None = -0.0376,
+    dominant_sector: str = "Technology",
 ) -> PerVariableSignal:
     return PerVariableSignal(
         variable_name=variable,
@@ -82,7 +83,7 @@ def _signal(
         regime_return_90d_median=10.0,
         regime_atr_pct_20d_median=2.5,
         regime_high_52w_proximity_pct_median=20.0,
-        dominant_sector="Technology",
+        dominant_sector=dominant_sector,
     )
 
 
@@ -153,6 +154,30 @@ def test_synthesize_accepts_non_canonical_with_opt_in() -> None:
 def test_canonical_signal_count_lock() -> None:
     """LOCK: 5 V2 binding variables per dispatch brief Q2."""
     assert CANONICAL_SIGNAL_COUNT == 5
+
+
+def test_synthesize_raises_on_banned_term_in_dominant_sector() -> None:
+    """Codex R4 MAJOR #2 fix: pre-render validation catches banned
+    verdict-term substrings embedded in PerVariableSignal fields.
+
+    Pre-fix: a sector value like "Positive Services" would silently render
+    into the narrative; post-render banned-terms discriminating test
+    would fail with no clear attribution. Post-fix: SynthesisContractError
+    at pre-render with offending field identified.
+    """
+    signals = [_signal(dominant_sector="Positive Services") for _ in range(5)]
+    with pytest.raises(SynthesisContractError, match="banned verdict term"):
+        synthesize(signals)
+
+
+def test_synthesize_raises_on_banned_term_in_variable_name() -> None:
+    """Variable name carrying a banned substring also rejected."""
+    signals = [_signal(variable=f"vcp.var{i}") for i in range(5)]
+    # Replace first signal's variable_name with one containing a banned substring
+    from dataclasses import replace as _dc_replace
+    signals[0] = _dc_replace(signals[0], variable_name="vcp.negative_trend")
+    with pytest.raises(SynthesisContractError, match="banned verdict term"):
+        synthesize(signals)
 
 
 # ============= CLASSIFY_COMPATIBILITY DECISION-RULE TESTS =============

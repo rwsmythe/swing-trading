@@ -321,3 +321,44 @@ def test_compute_per_ticker_metrics_accepts_asof_in_index(tmp_path: Path) -> Non
     asof = df.index[100].date()  # Pick a known index date
     metrics = compute_per_ticker_metrics("ABC", asof, cache_dir=tmp_path)
     assert metrics.asof_date == asof
+
+
+# ----- Codex R4 MAJOR #1 fix: strict asof at primitive boundaries -----
+
+
+def test_compute_90d_return_pct_raises_on_asof_not_in_index() -> None:
+    """Codex R4 MAJOR #1: primitive enforces asof-in-index strictly."""
+    df = _synthetic_df(date(2024, 1, 1), 400)
+    with pytest.raises(AsofDateMissingError, match="not present"):
+        compute_90d_return_pct(df, date(2099, 1, 1))
+
+
+def test_compute_atr_pct_20d_raises_on_asof_not_in_index() -> None:
+    df = _synthetic_df(date(2024, 1, 1), 400)
+    with pytest.raises(AsofDateMissingError, match="not present"):
+        compute_atr_pct_20d(df, date(2099, 1, 1))
+
+
+def test_compute_52w_proximity_raises_on_asof_not_in_index() -> None:
+    df = _synthetic_df(date(2024, 1, 1), 400)
+    with pytest.raises(AsofDateMissingError, match="not present"):
+        compute_52w_high_proximity_pct(df, date(2099, 1, 1))
+
+
+def test_primitive_strict_asof_distinguishes_weekend_from_business_day() -> None:
+    """Saturday adjacent to a business-day fixture -> raise.
+
+    Pre-fix: Saturday silently substituted prior Friday's close; metric
+    labeled with Sat but computed from Fri. Post-fix: raise.
+    """
+    df = _synthetic_df(date(2024, 1, 1), 400)
+    # df.index ends on a business day; find adjacent Saturday
+    last_bd = df.index[-1].date()
+    # Saturday is 1-2 calendar days after last bd depending on weekday
+    saturday = last_bd + timedelta(days=(5 - last_bd.weekday()) % 7 or 7)
+    while saturday.weekday() != 5:  # find next Saturday
+        saturday = saturday + timedelta(days=1)
+    # Ensure Saturday is NOT in the bdate-range index
+    assert saturday not in {d.date() for d in df.index}
+    with pytest.raises(AsofDateMissingError):
+        compute_90d_return_pct(df, saturday)

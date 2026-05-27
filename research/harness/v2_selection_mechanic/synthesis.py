@@ -249,6 +249,32 @@ class SynthesisContractError(ValueError):
 CANONICAL_SIGNAL_COUNT = 5
 
 
+def _validate_no_banned_terms_in_input(signals: Sequence[PerVariableSignal]) -> None:
+    """Codex R4 MAJOR #2 fix: pre-render contract check that no per-signal
+    field carries a banned-verdict-term substring.
+
+    Pre-fix: dominant_sector or variable_name carrying a banned substring
+    (e.g., a hypothetical Finviz sector "Positive Services") would
+    silently render into the narrative; the post-render banned-terms
+    discriminating test would then fail with no clear attribution. This
+    pre-render check raises SynthesisContractError with the offending
+    field + value identified.
+    """
+    for s in signals:
+        for field_name in ("variable_name", "dominant_sector"):
+            value = getattr(s, field_name)
+            value_lower = str(value).lower()
+            for banned in BANNED_VERDICT_TERMS:
+                if banned.lower() in value_lower:
+                    raise SynthesisContractError(
+                        f"PerVariableSignal {s.variable_name!r} field "
+                        f"{field_name}={value!r} contains banned verdict "
+                        f"term {banned!r}. The synthesis output contract "
+                        f"(gotcha #33 third canonical application) requires "
+                        f"NO banned terms in rendered narrative."
+                    )
+
+
 def synthesize(
     signals: Sequence[PerVariableSignal],
     *,
@@ -256,13 +282,17 @@ def synthesize(
 ) -> CompatibilitySynthesis:
     """Emit the cross-variable compatibility synthesis.
 
-    Raises SynthesisContractError if signals is empty OR (when
-    require_canonical_signal_count is True) does not contain exactly
-    CANONICAL_SIGNAL_COUNT entries. Caller can pass
-    require_canonical_signal_count=False for ad-hoc analytical use cases
-    against subsets (e.g., re-running on 3 of 5 variables for
-    diagnostic purposes); the V1 canonical run.py invocation enforces
-    the 5-variable contract.
+    Raises SynthesisContractError if:
+      - signals is empty
+      - (when require_canonical_signal_count is True) signals length
+        does not match CANONICAL_SIGNAL_COUNT
+      - any per-signal `variable_name` or `dominant_sector` value
+        contains a banned-verdict-term substring (Codex R4 MAJOR #2 fix
+        2026-05-26 PM)
+
+    Caller can pass require_canonical_signal_count=False for ad-hoc
+    analytical use cases against subsets; the V1 canonical run.py
+    invocation enforces the 5-variable contract.
 
     Output narrative markdown MUST NOT contain any BANNED_VERDICT_TERMS
     substring (gotcha #33 third canonical application LOCK).
@@ -281,6 +311,7 @@ def synthesize(
             f"dispatch brief Q2 LOCK. Pass "
             f"require_canonical_signal_count=False for ad-hoc subsets."
         )
+    _validate_no_banned_terms_in_input(signals)
     label, neg, pos = classify_compatibility(signals)
     narrative = _render_narrative(label, neg, pos, signals)
     return CompatibilitySynthesis(

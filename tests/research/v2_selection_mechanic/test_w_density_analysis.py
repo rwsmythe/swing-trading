@@ -198,6 +198,9 @@ def test_merge_adjacency_5bd_normalizes_ticker_case() -> None:
     merged = merge_adjacency_5bd(verdicts)
     assert len(merged) == 1
     assert merged[0].composite_score == 0.8
+    # Codex R4 MINOR #1 fix: emitted ticker is upper-cased (consistent
+    # with grouping key + downstream filter).
+    assert merged[0].ticker == "AAA"
 
 
 def test_merge_adjacency_5bd_mixed_clusters() -> None:
