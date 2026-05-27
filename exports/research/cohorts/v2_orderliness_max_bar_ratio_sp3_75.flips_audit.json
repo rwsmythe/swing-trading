@@ -1,0 +1,20 @@
+{
+  "cohort_label": "v2_vcp_orderliness_max_bar_ratio_sp3_75",
+  "cohort_selection_method": "v2_binding_variable_flips",
+  "flip_count": 1,
+  "flips": [
+    {
+      "data_asof_date": "2026-05-15",
+      "eval_run_id": 52,
+      "ticker": "LASR"
+    }
+  ],
+  "new_bucket": "aplus",
+  "old_bucket": "watch",
+  "source_sensitivity_md": "exports/diagnostics/aplus-sensitivity-v2-20260524T205849Z.md",
+  "source_sensitivity_md_sha256": "b25bcde944c33c7a44d049167e78e9d5c7b3d4fc5538ccc5e9cdc8e01e27a143",
+  "source_sensitivity_md_size_bytes": 830034,
+  "sweep_point": 3.75,
+  "v2_binding_variable": "vcp.orderliness_max_bar_ratio",
+  "variable_name": "vcp.orderliness_max_bar_ratio"
+}
