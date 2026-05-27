@@ -1,0 +1,40 @@
+{
+  "cohort_label": "v2_vcp_proximity_max_pct_sp7_5",
+  "cohort_selection_method": "v2_binding_variable_flips",
+  "flip_count": 5,
+  "flips": [
+    {
+      "data_asof_date": "2026-05-11",
+      "eval_run_id": 43,
+      "ticker": "SEI"
+    },
+    {
+      "data_asof_date": "2026-04-27",
+      "eval_run_id": 21,
+      "ticker": "YOU"
+    },
+    {
+      "data_asof_date": "2026-04-27",
+      "eval_run_id": 20,
+      "ticker": "YOU"
+    },
+    {
+      "data_asof_date": "2026-04-27",
+      "eval_run_id": 19,
+      "ticker": "YOU"
+    },
+    {
+      "data_asof_date": "2026-04-22",
+      "eval_run_id": 11,
+      "ticker": "SLDB"
+    }
+  ],
+  "new_bucket": "aplus",
+  "old_bucket": "watch",
+  "source_sensitivity_md": "exports/diagnostics/aplus-sensitivity-v2-20260524T205849Z.md",
+  "source_sensitivity_md_sha256": "b25bcde944c33c7a44d049167e78e9d5c7b3d4fc5538ccc5e9cdc8e01e27a143",
+  "source_sensitivity_md_size_bytes": 830034,
+  "sweep_point": 7.5,
+  "v2_binding_variable": "vcp.proximity_max_pct",
+  "variable_name": "vcp.proximity_max_pct"
+}
