@@ -233,16 +233,54 @@ def _render_narrative(
     return "\n".join(lines) + "\n"
 
 
+class SynthesisContractError(ValueError):
+    """Raised when synthesis input violates the investigation contract.
+
+    Codex R1 MAJOR #4 fix 2026-05-26 PM: prior implementation accepted
+    empty signal lists + returned categorical label COMPATIBLE,
+    silently masking upstream orchestration failures (e.g., all 5
+    cohort substrates were empty due to detection-run failure -- which
+    SHOULD halt the investigation, not classify as COMPATIBLE).
+    """
+
+
+# Canonical 5-variable investigation contract per dispatch brief Q2
+# operator-paired LOCK 2026-05-26 AM (all 5 V2 binding variables in scope).
+CANONICAL_SIGNAL_COUNT = 5
+
+
 def synthesize(
     signals: Sequence[PerVariableSignal],
+    *,
+    require_canonical_signal_count: bool = True,
 ) -> CompatibilitySynthesis:
     """Emit the cross-variable compatibility synthesis.
 
+    Raises SynthesisContractError if signals is empty OR (when
+    require_canonical_signal_count is True) does not contain exactly
+    CANONICAL_SIGNAL_COUNT entries. Caller can pass
+    require_canonical_signal_count=False for ad-hoc analytical use cases
+    against subsets (e.g., re-running on 3 of 5 variables for
+    diagnostic purposes); the V1 canonical run.py invocation enforces
+    the 5-variable contract.
+
     Output narrative markdown MUST NOT contain any BANNED_VERDICT_TERMS
-    substring (gotcha #33 third canonical application LOCK). The
-    `test_synthesis_output_has_no_banned_verdict_terms` discriminating
-    test is BINDING.
+    substring (gotcha #33 third canonical application LOCK).
     """
+    if not signals:
+        raise SynthesisContractError(
+            "synthesize() received empty signals list; the investigation "
+            "contract is 5 V2 binding variables (dispatch brief Q2 LOCK). "
+            "Pass require_canonical_signal_count=False for ad-hoc "
+            "analytical subsets."
+        )
+    if require_canonical_signal_count and len(signals) != CANONICAL_SIGNAL_COUNT:
+        raise SynthesisContractError(
+            f"synthesize() received {len(signals)} signals; canonical "
+            f"contract requires exactly {CANONICAL_SIGNAL_COUNT} per "
+            f"dispatch brief Q2 LOCK. Pass "
+            f"require_canonical_signal_count=False for ad-hoc subsets."
+        )
     label, neg, pos = classify_compatibility(signals)
     narrative = _render_narrative(label, neg, pos, signals)
     return CompatibilitySynthesis(

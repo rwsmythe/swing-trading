@@ -174,10 +174,14 @@ def compute_52w_high_proximity_pct(df: pd.DataFrame, asof: date) -> float | None
     """`(52w_high - asof_close) / 52w_high * 100`.
 
     52w_high is the max High over the trailing 252 business days ending
-    AT asof inclusive. Returns None on insufficient data.
+    AT asof inclusive. Returns None on insufficient data: requires at
+    least 252 bars at or before asof (Codex R1 MAJOR #1 fix 2026-05-26 PM
+    -- prior implementation returned a "trailing-window-max" derived
+    value on partial archives, conflating short histories with true
+    52-week lookbacks).
     """
     sliced = _slice_at_or_before(df, asof)
-    if len(sliced) < 1:
+    if len(sliced) < 252:
         return None
     window = sliced.tail(252)
     high_52w = float(window["High"].max())

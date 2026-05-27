@@ -27,7 +27,9 @@ from research.harness.v2_selection_mechanic.substrate_characterization import (
 )
 from research.harness.v2_selection_mechanic.synthesis import (
     BANNED_VERDICT_TERMS,
+    CANONICAL_SIGNAL_COUNT,
     PerVariableSignal,
+    SynthesisContractError,
     build_per_variable_signal,
     classify_compatibility,
     synthesize,
@@ -39,6 +41,8 @@ from research.harness.v2_selection_mechanic.w_density_analysis import (
 from research.harness.v2_selection_mechanic import run as run_module
 from research.harness.v2_selection_mechanic.run import (
     DEFAULT_COHORT_CSV_BY_VARIABLE,
+    REQUIRED_COHORT_CSV_HEADERS,
+    CohortCsvSchemaError,
     main as run_main,
     read_cohort_csv,
     run_analysis,
@@ -89,7 +93,8 @@ def test_synthesis_output_has_no_banned_verdict_terms() -> None:
     emit PARTIAL POSITIVE / NEGATIVE / POSITIVE verdict terminology.
     """
     signals = [
-        _signal(variable=f"vcp.var{i}", delta_vs_baseline=-0.05) for i in range(5)
+        _signal(variable=f"vcp.var{i}", delta_vs_baseline=-0.05)
+        for i in range(CANONICAL_SIGNAL_COUNT)
     ]
     result = synthesize(signals)
     lower = result.narrative_markdown.lower()
@@ -108,7 +113,7 @@ def test_banned_verdict_terms_lock_includes_expected_terms() -> None:
 
 def test_synthesis_emits_descriptive_categorical_label_only() -> None:
     """Synthesis emits COMPATIBLE / PARTIALLY-COMPATIBLE / INCOMPATIBLE."""
-    signals = [_signal(delta_vs_baseline=-0.05) for _ in range(5)]
+    signals = [_signal(delta_vs_baseline=-0.05) for _ in range(CANONICAL_SIGNAL_COUNT)]
     result = synthesize(signals)
     assert result.categorical_label in {
         "COMPATIBLE",
@@ -117,11 +122,43 @@ def test_synthesis_emits_descriptive_categorical_label_only() -> None:
     }
 
 
+# ----- Codex R1 MAJOR #4 fix: synthesize empty / non-canonical contract -----
+
+
+def test_synthesize_raises_on_empty_signals() -> None:
+    """Codex R1 MAJOR #4 fix: empty signals -> SynthesisContractError.
+
+    Pre-fix returned categorical label COMPATIBLE on empty input,
+    silently masking upstream orchestration failure.
+    """
+    with pytest.raises(SynthesisContractError, match="empty signals"):
+        synthesize([])
+
+
+def test_synthesize_raises_on_non_canonical_signal_count() -> None:
+    """Canonical contract: exactly 5 signals. Other counts -> raise."""
+    signals = [_signal() for _ in range(3)]
+    with pytest.raises(SynthesisContractError, match="canonical"):
+        synthesize(signals)
+
+
+def test_synthesize_accepts_non_canonical_with_opt_in() -> None:
+    """Ad-hoc analytical subsets allowed via require_canonical_signal_count=False."""
+    signals = [_signal() for _ in range(3)]
+    result = synthesize(signals, require_canonical_signal_count=False)
+    assert len(result.per_variable_signal_table) == 3
+
+
+def test_canonical_signal_count_lock() -> None:
+    """LOCK: 5 V2 binding variables per dispatch brief Q2."""
+    assert CANONICAL_SIGNAL_COUNT == 5
+
+
 # ============= CLASSIFY_COMPATIBILITY DECISION-RULE TESTS =============
 
 
 def test_classify_all_negative_yields_incompatible() -> None:
-    signals = [_signal(delta_vs_baseline=-0.05) for _ in range(5)]
+    signals = [_signal(delta_vs_baseline=-0.05) for _ in range(CANONICAL_SIGNAL_COUNT)]
     label, neg, pos = classify_compatibility(signals)
     assert label == "INCOMPATIBLE"
     assert neg == 5
@@ -149,6 +186,10 @@ def test_classify_one_negative_yields_compatible() -> None:
 
 
 def test_classify_zero_signals_returns_compatible() -> None:
+    """classify_compatibility([]) returns COMPATIBLE; the strict empty-input
+    guard lives at the synthesize() layer (test_synthesize_raises_on_empty_signals).
+    classify_compatibility is the lower-level helper consumed by ad-hoc paths.
+    """
     label, neg, pos = classify_compatibility([])
     assert label == "COMPATIBLE"
     assert neg == 0
@@ -157,7 +198,7 @@ def test_classify_zero_signals_returns_compatible() -> None:
 
 def test_classify_none_delta_counts_as_neutral() -> None:
     """None delta (zero-substrate edge case) counts as positive_or_zero."""
-    signals = [_signal(delta_vs_baseline=None) for _ in range(5)]
+    signals = [_signal(delta_vs_baseline=None) for _ in range(CANONICAL_SIGNAL_COUNT)]
     label, neg, pos = classify_compatibility(signals)
     assert label == "COMPATIBLE"  # 0 negative; all neutral
     assert neg == 0
@@ -252,6 +293,65 @@ def test_read_cohort_csv_against_committed_v2obr() -> None:
     pairs = read_cohort_csv(path)
     assert len(pairs) == 1
     assert pairs[0] == ("LASR", date(2026, 5, 15))
+
+
+# ----- Codex R1 MAJOR #3 fix: cohort CSV schema validation -----
+
+
+def test_required_cohort_csv_headers_lock() -> None:
+    """LOCK: 3 required cohort CSV headers."""
+    assert set(REQUIRED_COHORT_CSV_HEADERS) == {
+        "ticker", "asof_date", "cohort_label"
+    }
+
+
+def test_read_cohort_csv_raises_on_missing_header(tmp_path: Path) -> None:
+    """Cohort CSV missing required header -> CohortCsvSchemaError."""
+    bad = tmp_path / "bad.csv"
+    bad.write_text("symbol,date\nABC,2026-05-01\n", encoding="utf-8")
+    with pytest.raises(CohortCsvSchemaError, match="missing required headers"):
+        read_cohort_csv(bad)
+
+
+def test_read_cohort_csv_raises_on_empty_ticker(tmp_path: Path) -> None:
+    """Cohort CSV with empty ticker cell -> CohortCsvSchemaError."""
+    bad = tmp_path / "bad.csv"
+    bad.write_text(
+        "ticker,asof_date,cohort_label\n,2026-05-01,test\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(CohortCsvSchemaError, match="empty ticker"):
+        read_cohort_csv(bad)
+
+
+def test_read_cohort_csv_raises_on_empty_asof(tmp_path: Path) -> None:
+    """Cohort CSV with empty asof_date cell -> CohortCsvSchemaError."""
+    bad = tmp_path / "bad.csv"
+    bad.write_text(
+        "ticker,asof_date,cohort_label\nABC,,test\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(CohortCsvSchemaError, match="empty asof_date"):
+        read_cohort_csv(bad)
+
+
+def test_read_cohort_csv_raises_on_malformed_asof(tmp_path: Path) -> None:
+    """Cohort CSV with malformed asof_date -> CohortCsvSchemaError."""
+    bad = tmp_path / "bad.csv"
+    bad.write_text(
+        "ticker,asof_date,cohort_label\nABC,not-a-date,test\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(CohortCsvSchemaError, match="malformed asof_date"):
+        read_cohort_csv(bad)
+
+
+def test_read_cohort_csv_raises_on_empty_file(tmp_path: Path) -> None:
+    """Empty cohort CSV -> CohortCsvSchemaError."""
+    bad = tmp_path / "empty.csv"
+    bad.write_text("", encoding="utf-8")
+    with pytest.raises(CohortCsvSchemaError, match="empty or has no header"):
+        read_cohort_csv(bad)
 
 
 # ============= run_analysis end-to-end on planted verdicts =============
@@ -399,6 +499,40 @@ def test_cli_dry_run_succeeds_against_committed_cohorts(tmp_path: Path) -> None:
     subdirs = list(out_root.iterdir())
     assert len(subdirs) == 1
     assert (subdirs[0] / "manifest.json").exists()
+
+
+def test_cli_dry_run_verifies_canonical_source_sha(tmp_path: Path) -> None:
+    """Codex R1 MAJOR #2 fix discriminator: dry-run mode hashes the
+    canonical source artifact + raises if SHA does not match the LOCK.
+
+    Discriminating: pre-fix CLI advertised SHA validation but main()
+    never read CANONICAL_SOURCE_PATH or hashed it; a tampered source
+    could still emit a placeholder manifest.
+
+    Runs the CLI from tmp_path (so canonical source path resolves to a
+    non-existent file); PYTHONPATH is set to REPO_ROOT so the module
+    loads. CLI must exit 2 with a clear error.
+    """
+    out_root = tmp_path / "out"
+    import os
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(REPO_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
+    result = subprocess.run(
+        [
+            sys.executable, "-m",
+            "research.harness.v2_selection_mechanic.run",
+            "--dry-run",
+            "--out-root", str(out_root),
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert result.returncode == 2, (
+        f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+    assert "canonical source" in result.stderr.lower()
 
 
 def test_cli_refuses_non_dry_run_v1() -> None:

@@ -88,18 +88,67 @@ DEFAULT_COHORT_CSV_BY_VARIABLE: dict[str, str] = {
 }
 
 
+class CohortCsvSchemaError(ValueError):
+    """Raised when a cohort CSV is missing required headers OR contains
+    malformed rows. Distinct from ValueError so callers can catch
+    cohort-schema errors specifically. Codex R1 MAJOR #3 fix 2026-05-26 PM:
+    prior implementation silently skipped malformed rows + accepted CSVs
+    with wrong headers, allowing 5 malformed cohorts to converge to
+    COMPATIBLE instead of failing closed.
+    """
+
+
+REQUIRED_COHORT_CSV_HEADERS: tuple[str, ...] = (
+    "ticker",
+    "asof_date",
+    "cohort_label",
+)
+
+
 def read_cohort_csv(path: Path) -> list[tuple[str, date]]:
-    """Read a cohort CSV (ticker, asof_date, cohort_label) -> list of pairs."""
+    """Read a cohort CSV (ticker, asof_date, cohort_label) -> list of pairs.
+
+    Raises CohortCsvSchemaError if (a) the CSV lacks any of the 3 required
+    headers (ticker / asof_date / cohort_label); (b) a data row has
+    empty ticker OR asof_date; (c) asof_date fails ISO parse. Fail-closed
+    semantic per gotcha #28 + brief Sec 6(d): cohort artifacts feed
+    analytical surfaces; silent skip masks upstream drift.
+    """
     path = Path(path)
     pairs: list[tuple[str, date]] = []
     with path.open("r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
-        for row in reader:
+        if reader.fieldnames is None:
+            raise CohortCsvSchemaError(
+                f"Cohort CSV at {path} is empty or has no header row"
+            )
+        missing_headers = [
+            h for h in REQUIRED_COHORT_CSV_HEADERS if h not in reader.fieldnames
+        ]
+        if missing_headers:
+            raise CohortCsvSchemaError(
+                f"Cohort CSV at {path} missing required headers: "
+                f"{missing_headers}; actual headers: {list(reader.fieldnames)}"
+            )
+        for row_idx, row in enumerate(reader, start=2):
             ticker = (row.get("ticker") or "").strip().upper()
             asof_raw = (row.get("asof_date") or "").strip()
-            if not ticker or not asof_raw:
-                continue
-            pairs.append((ticker, date.fromisoformat(asof_raw)))
+            if not ticker:
+                raise CohortCsvSchemaError(
+                    f"Cohort CSV at {path} row {row_idx} has empty ticker"
+                )
+            if not asof_raw:
+                raise CohortCsvSchemaError(
+                    f"Cohort CSV at {path} row {row_idx} has empty asof_date"
+                )
+            try:
+                asof = date.fromisoformat(asof_raw)
+            except ValueError as exc:
+                raise CohortCsvSchemaError(
+                    f"Cohort CSV at {path} row {row_idx} has malformed "
+                    f"asof_date {asof_raw!r}: {exc}"
+                )
+            pairs.append((ticker, asof))
     return pairs
 
 
@@ -373,6 +422,33 @@ def main(argv: list[str] | None = None) -> int:
     out_root = Path(args.out_root)
     _, iso = _now_iso_utc()
     smoke_dir = out_root / f"v2-selection-mechanic-analysis-{iso}"
+
+    # Codex R1 MAJOR #2 fix: verify canonical source SHA in dry-run mode.
+    # Prior implementation advertised SHA validation in module docstring
+    # but main() never read CANONICAL_SOURCE_PATH or hashed it; a missing
+    # / tampered source could still emit a manifest with the locked SHA
+    # constant.
+    canonical_source = Path(CANONICAL_SOURCE_PATH)
+    if not canonical_source.exists():
+        print(
+            f"ERROR: canonical source artifact not found at "
+            f"{canonical_source}. Brief Sec 6(d): CLEAR ERROR + halt.",
+            file=sys.stderr,
+        )
+        return 2
+    import hashlib
+    h = hashlib.sha256()
+    with canonical_source.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 16), b""):
+            h.update(chunk)
+    actual_sha = h.hexdigest()
+    if actual_sha != CANONICAL_SOURCE_SHA256:
+        print(
+            f"ERROR: canonical source SHA mismatch at {canonical_source}: "
+            f"actual={actual_sha} vs locked={CANONICAL_SOURCE_SHA256}",
+            file=sys.stderr,
+        )
+        return 2
 
     # Validate cohort CSV presence (per dispatch brief Sec 5.1)
     missing: list[str] = []

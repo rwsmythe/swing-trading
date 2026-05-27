@@ -38,6 +38,8 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Iterable, Sequence
 
+import numpy as np
+
 from research.harness.v2_selection_mechanic import (
     CANONICAL_COMPOSITE_THRESHOLD,
     CANONICAL_RECENCY_DAYS,
@@ -105,35 +107,66 @@ def apply_canonical_filter(
     return out
 
 
+def _business_days_between(d1: date, d2: date) -> int:
+    """Inclusive business-days span between two dates (absolute value).
+
+    Uses numpy.busday_count which excludes weekends. Same-day returns 0.
+    Holidays are not modeled (V1 simplification; banked V2 candidate for
+    exchange-calendar-aware adjacency).
+    """
+    if d1 == d2:
+        return 0
+    a, b = sorted((d1, d2))
+    return int(np.busday_count(a, b))
+
+
 def merge_adjacency_5bd(
     verdicts: Sequence[WPrimaryVerdict],
 ) -> list[WPrimaryVerdict]:
-    """5-BD adjacency merge: collapse per-(ticker, trough_1_date) clusters.
+    """5-BD adjacency merge: collapse adjacent trough_2 clusters within
+    each (ticker, trough_1_date) group.
 
-    Within each cluster, dedupe by trough_2_date with the highest
-    composite_score winning if multiple trough_2_dates exist within 5
-    business days of each other. Returns one verdict per (ticker,
-    trough_1_date, dedup'd-trough_2). Stable across runs (sorted output).
+    Within each (ticker, trough_1_date) group, sort verdicts by
+    trough_2_date ascending; walk forward maintaining a "current cluster
+    head" (highest-composite verdict seen so far in the current cluster).
+    When the gap between the current verdict's trough_2_date and the
+    cluster head's trough_2_date exceeds 5 business days, emit the
+    current head as a cluster winner + start a new cluster. Distinct
+    clusters (>5 BD apart) are preserved as distinct primaries.
 
-    NOTE: this is V1 minimal implementation -- production D1 has full
-    adjacency-merge semantics; here we implement the (ticker,
-    trough_1_date) clustering with highest-composite winner, which is
-    methodologically equivalent for the substrate-density measurement
-    use case per dispatch brief Sec 1.6.
+    Holiday-naive (numpy.busday_count semantic); banked V2 candidate:
+    exchange-calendar-aware adjacency. Holidays land in the same
+    5-BD-window so this is acceptable for V1 approximation.
+
+    Output sorted by (ticker, trough_1_date, trough_2_date) for stable
+    determinism across runs.
     """
     if not verdicts:
         return []
-    # Group by (ticker, trough_1_date)
     groups: dict[tuple[str, date], list[WPrimaryVerdict]] = {}
     for v in verdicts:
         key = (v.ticker, v.trough_1_date)
         groups.setdefault(key, []).append(v)
-    # Highest-composite winner per group
     winners: list[WPrimaryVerdict] = []
     for key, members in groups.items():
-        best = max(members, key=lambda x: x.composite_score)
-        winners.append(best)
-    winners.sort(key=lambda x: (x.ticker, x.trough_1_date))
+        members_sorted = sorted(members, key=lambda x: x.trough_2_date)
+        current_head: WPrimaryVerdict | None = None
+        for v in members_sorted:
+            if current_head is None:
+                current_head = v
+                continue
+            bd_gap = _business_days_between(current_head.trough_2_date, v.trough_2_date)
+            if bd_gap <= 5:
+                # Same cluster; replace head if higher composite
+                if v.composite_score > current_head.composite_score:
+                    current_head = v
+            else:
+                # New cluster boundary; emit current head + start new
+                winners.append(current_head)
+                current_head = v
+        if current_head is not None:
+            winners.append(current_head)
+    winners.sort(key=lambda x: (x.ticker, x.trough_1_date, x.trough_2_date))
     return winners
 
 
@@ -150,7 +183,10 @@ def compute_w_density(
       cohort_label: human-readable cohort identifier
       substrate_tickers: unique tickers in the substrate (T)
       canonical_filtered_verdicts: W primaries surviving canonical
-        filter + adjacency merge (F)
+        filter + adjacency merge (F). Verdicts whose ticker is NOT in
+        substrate_tickers are REJECTED before counting (defense against
+        leaked / mis-loaded verdict rows from a wider detection-run).
+        Per Codex R1 CRITICAL #2 fix 2026-05-26 PM.
       baseline_filtered_density: D2 EXPANDED N=71 / 516 = 0.1376
         (overridable for tests)
 
@@ -160,7 +196,14 @@ def compute_w_density(
     """
     tickers = {t.upper() for t in substrate_tickers}
     t_count = len(tickers)
-    f_count = len(list(canonical_filtered_verdicts))
+    # Codex R1 CRITICAL #2 fix: reject verdicts whose ticker is not in
+    # the substrate. A detection-run may emit verdicts for the full
+    # universe; this function counts ONLY verdicts whose ticker is in
+    # the cohort definition (apples-to-apples).
+    in_substrate = [
+        v for v in canonical_filtered_verdicts if v.ticker.upper() in tickers
+    ]
+    f_count = len(in_substrate)
     if t_count == 0:
         d_filt = None
         delta = None

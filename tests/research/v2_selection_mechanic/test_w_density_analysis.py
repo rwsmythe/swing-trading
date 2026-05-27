@@ -97,12 +97,14 @@ def test_canonical_filter_reference_date_auto() -> None:
 # ----- merge_adjacency_5bd -----
 
 
-def test_merge_adjacency_dedups_by_ticker_trough1() -> None:
-    """Two verdicts on same (ticker, trough_1_date) with different composites -> highest wins."""
+def test_merge_adjacency_dedups_close_clusters_within_5bd() -> None:
+    """Three verdicts on same (ticker, trough_1_date) with trough_2 dates
+    3 BD + 3 BD apart (within 5-BD adjacency window) -> collapse to highest composite.
+    """
     verdicts = [
-        _vp("AAA", date(2026, 5, 1), date(2026, 4, 1), date(2026, 4, 15), 0.6),
-        _vp("AAA", date(2026, 5, 1), date(2026, 4, 1), date(2026, 4, 20), 0.8),  # higher
-        _vp("AAA", date(2026, 5, 1), date(2026, 4, 1), date(2026, 4, 25), 0.5),
+        _vp("AAA", date(2026, 5, 1), date(2026, 4, 1), date(2026, 4, 15), 0.6),  # Wed
+        _vp("AAA", date(2026, 5, 1), date(2026, 4, 1), date(2026, 4, 20), 0.8),  # Mon (+3 BD)
+        _vp("AAA", date(2026, 5, 1), date(2026, 4, 1), date(2026, 4, 23), 0.5),  # Thu (+3 BD)
         _vp("BBB", date(2026, 5, 1), date(2026, 4, 1), date(2026, 4, 15), 0.7),
     ]
     merged = merge_adjacency_5bd(verdicts)
@@ -110,6 +112,53 @@ def test_merge_adjacency_dedups_by_ticker_trough1() -> None:
     aaa_winner = next(v for v in merged if v.ticker == "AAA")
     assert aaa_winner.composite_score == 0.8
     assert aaa_winner.trough_2_date == date(2026, 4, 20)
+
+
+def test_merge_adjacency_5bd_breaks_clusters_beyond_5_bd() -> None:
+    """Codex R1 CRITICAL #1 fix discriminator: two verdicts on same
+    (ticker, trough_1_date) with trough_2_dates >5 BD apart MUST be
+    preserved as DISTINCT primaries (not collapsed).
+
+    Discriminating: pre-fix implementation collapsed all (ticker,
+    trough_1_date) duplicates to highest composite, undercounting F +
+    invalidating D_filt deltas. Post-fix uses numpy.busday_count on
+    trough_2_date to break clusters at the 5-BD boundary.
+    """
+    # 20 BD apart (well beyond 5-BD adjacency window)
+    verdicts = [
+        _vp("AAA", date(2026, 5, 1), date(2026, 4, 1), date(2026, 4, 15), 0.6),
+        _vp("AAA", date(2026, 5, 1), date(2026, 4, 1), date(2026, 5, 13), 0.8),
+    ]
+    merged = merge_adjacency_5bd(verdicts)
+    assert len(merged) == 2, (
+        f"Expected 2 distinct W primaries (>5 BD gap); got "
+        f"{[(v.ticker, v.trough_2_date) for v in merged]}"
+    )
+    # Verify both preserved with their original composites
+    composites = sorted(v.composite_score for v in merged)
+    assert composites == [0.6, 0.8]
+
+
+def test_merge_adjacency_5bd_mixed_clusters() -> None:
+    """Two clusters within (ticker, trough_1_date): one in early-April,
+    one in mid-May (well >5 BD apart). Each cluster has its own
+    highest-composite winner.
+    """
+    verdicts = [
+        # Cluster 1: early April (within 5 BD adjacent)
+        _vp("AAA", date(2026, 6, 1), date(2026, 3, 1), date(2026, 4, 6), 0.50),  # Mon
+        _vp("AAA", date(2026, 6, 1), date(2026, 3, 1), date(2026, 4, 9), 0.70),  # Thu (+3 BD)
+        # Cluster 2: mid-May (clearly >5 BD from cluster 1)
+        _vp("AAA", date(2026, 6, 1), date(2026, 3, 1), date(2026, 5, 18), 0.55),  # Mon
+        _vp("AAA", date(2026, 6, 1), date(2026, 3, 1), date(2026, 5, 20), 0.65),  # Wed (+2 BD)
+    ]
+    merged = merge_adjacency_5bd(verdicts)
+    assert len(merged) == 2
+    # Cluster 1 head: trough_2 == 2026-04-09 (composite 0.70)
+    # Cluster 2 head: trough_2 == 2026-05-20 (composite 0.65)
+    by_t2 = {v.trough_2_date: v for v in merged}
+    assert by_t2[date(2026, 4, 9)].composite_score == 0.70
+    assert by_t2[date(2026, 5, 20)].composite_score == 0.65
 
 
 def test_merge_adjacency_distinct_trough1_preserved() -> None:
@@ -184,6 +233,37 @@ def test_compute_w_density_dedupes_tickers() -> None:
     """Substrate_ticker_count counts UNIQUE tickers (case-insens)."""
     m = compute_w_density("dups", ["AAA", "aaa", "BBB"], [])
     assert m.substrate_ticker_count == 2
+
+
+def test_compute_w_density_rejects_verdicts_outside_substrate() -> None:
+    """Codex R1 CRITICAL #2 fix: verdicts whose ticker is NOT in
+    substrate_tickers are rejected before counting.
+
+    Discriminating: pre-fix counted ALL verdicts regardless of substrate
+    membership; a leaked verdict for `ZZZ` would inflate F. Post-fix
+    filters to substrate-membership first.
+    """
+    substrate = ["AAA"]
+    verdicts = [
+        _vp("AAA", date(2026, 5, 1), date(2026, 4, 1), date(2026, 4, 15), 0.7),
+        _vp("ZZZ", date(2026, 5, 1), date(2026, 4, 1), date(2026, 4, 15), 0.7),  # outside substrate
+    ]
+    m = compute_w_density("test", substrate, verdicts)
+    assert m.substrate_ticker_count == 1
+    assert m.filtered_w_count == 1  # ZZZ rejected
+    assert m.filtered_density == 1.0
+
+
+def test_compute_w_density_case_insensitive_substrate_filter() -> None:
+    """Substrate filter is case-insensitive on ticker."""
+    substrate = ["aaa", "BBB"]
+    verdicts = [
+        _vp("AAA", date(2026, 5, 1), date(2026, 4, 1), date(2026, 4, 15), 0.7),
+        _vp("bbb", date(2026, 5, 1), date(2026, 4, 1), date(2026, 4, 15), 0.7),
+    ]
+    m = compute_w_density("test", substrate, verdicts)
+    assert m.substrate_ticker_count == 2
+    assert m.filtered_w_count == 2
 
 
 def test_compute_w_density_distinguishes_correct_vs_buggy_arithmetic() -> None:

@@ -152,27 +152,47 @@ def test_atr_pct_insufficient_history_returns_none() -> None:
 # ----- 52w high proximity -----
 
 
-def test_52w_proximity_at_high_returns_zero() -> None:
-    """At the all-time high in the fixture, proximity = 0."""
-    df = _synthetic_df(date(2025, 1, 1), 100, base_price=100.0)
+def test_52w_proximity_at_high_returns_small_positive() -> None:
+    """At the all-time high in the fixture, proximity is small positive."""
+    df = _synthetic_df(date(2025, 1, 1), 300, base_price=100.0)
     asof = df.index[-1].date()
     prox = compute_52w_high_proximity_pct(df, asof)
     assert prox is not None
-    # All-time high (last bar's High) is the trailing 52w high; close is High - 0.5
-    # so proximity = 0.5 / High * 100 -- positive small number
+    # All-time high (last bar's High = close+0.5) is the trailing 52w high;
+    # close is High - 0.5, so proximity = 0.5 / High * 100 -- small positive
     assert 0 < prox < 1.0
 
 
 def test_52w_proximity_after_drawdown_known_values() -> None:
     """Build a fixture with a known 52w high; close is half that; proximity ~= 50%."""
-    df = _synthetic_df(date(2025, 1, 1), 100, base_price=100.0)
+    df = _synthetic_df(date(2025, 1, 1), 300, base_price=100.0)
     # Force a known high then drawdown
-    df.loc[df.index[50], "High"] = 1000.0  # 52w high
+    df.loc[df.index[200], "High"] = 1000.0  # 52w high inside trailing window
     df.loc[df.index[-1], "Close"] = 500.0  # close at half the high
     asof = df.index[-1].date()
     prox = compute_52w_high_proximity_pct(df, asof)
     assert prox is not None
     assert abs(prox - 50.0) < 1e-9
+
+
+def test_52w_proximity_insufficient_history_returns_none() -> None:
+    """Codex R1 MAJOR #1 fix discriminator: <252 BD history -> None.
+
+    Pre-fix returned a numeric value computed from partial-archive
+    trailing-window max, conflating short histories with true 52-week
+    lookbacks. Post-fix requires len(sliced) >= 252.
+    """
+    df = _synthetic_df(date(2025, 1, 1), 10, base_price=100.0)
+    asof = df.index[-1].date()
+    assert compute_52w_high_proximity_pct(df, asof) is None
+    # Boundary: 251 bars still insufficient
+    df = _synthetic_df(date(2025, 1, 1), 251, base_price=100.0)
+    asof = df.index[-1].date()
+    assert compute_52w_high_proximity_pct(df, asof) is None
+    # 252 bars sufficient
+    df = _synthetic_df(date(2024, 1, 1), 252, base_price=100.0)
+    asof = df.index[-1].date()
+    assert compute_52w_high_proximity_pct(df, asof) is not None
 
 
 # ----- Sector resolution -----
@@ -215,7 +235,7 @@ def test_load_sector_map_missing_file_returns_empty(tmp_path: Path) -> None:
 
 
 def test_per_ticker_metrics_against_fixture(tmp_path: Path) -> None:
-    df = _synthetic_df(date(2025, 1, 1), 300, base_price=100.0)
+    df = _synthetic_df(date(2024, 1, 1), 400, base_price=100.0)
     df.to_parquet(tmp_path / "ABC.parquet")
     asof = df.index[-1].date()
     metrics = compute_per_ticker_metrics(
@@ -232,9 +252,9 @@ def test_per_ticker_metrics_against_fixture(tmp_path: Path) -> None:
 def test_compute_cohort_characterization_aggregates(tmp_path: Path) -> None:
     """Plant 3 ticker archives + compute cohort metrics."""
     for t, base in [("AAA", 100), ("BBB", 200), ("CCC", 300)]:
-        df = _synthetic_df(date(2025, 1, 1), 300, base_price=float(base))
+        df = _synthetic_df(date(2024, 1, 1), 400, base_price=float(base))
         df.to_parquet(tmp_path / f"{t}.parquet")
-    asof = pd.bdate_range(start=pd.Timestamp(date(2025, 1, 1)), periods=300)[-1].date()
+    asof = pd.bdate_range(start=pd.Timestamp(date(2024, 1, 1)), periods=400)[-1].date()
     pairs = [("AAA", asof), ("BBB", asof), ("CCC", asof)]
     sector_map = {"AAA": "Tech", "BBB": "Tech", "CCC": "Energy"}
     per_ticker, aggregate = compute_cohort_characterization(
