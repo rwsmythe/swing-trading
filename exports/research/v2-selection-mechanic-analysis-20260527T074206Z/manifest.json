@@ -1,0 +1,24 @@
+{
+  "canonical_composite_threshold": 0.5,
+  "canonical_recency_days": 365,
+  "canonical_source_path": "exports/diagnostics/aplus-sensitivity-v2-20260524T205849Z.md",
+  "canonical_source_sha256": "b25bcde944c33c7a44d049167e78e9d5c7b3d4fc5538ccc5e9cdc8e01e27a143",
+  "cohort_paths_by_variable": {
+    "vcp.adr_min_pct": "exports/research/cohorts/r2d_adr_min_pct_sp2_0.csv",
+    "vcp.orderliness_max_bar_ratio": "exports/research/cohorts/v2_orderliness_max_bar_ratio_sp3_75.csv",
+    "vcp.proximity_max_pct": "exports/research/cohorts/v2_proximity_max_pct_sp7_5.csv",
+    "vcp.tightness_days_required": "exports/research/cohorts/r2a_tightness_days_required_sp1.csv",
+    "vcp.tightness_range_factor": "exports/research/cohorts/v2_tightness_range_factor_sp1_005.csv"
+  },
+  "compatibility_label": "COMPATIBLE",
+  "d2_baseline_filtered_w_count": 71,
+  "d2_baseline_manifest_path": "exports/research/pattern-cohort-detection-20260526T000409Z/manifest.json",
+  "d2_baseline_universe_size": 516,
+  "investigation": "v2-selection-mechanic-analysis",
+  "investigation_type": "analytical_exploratory",
+  "l2_lock_preserved": true,
+  "production_swing_writes": 0,
+  "run_ts_utc": "20260527T074206Z",
+  "schwab_api_calls": 0,
+  "yfinance_fetches": 0
+}

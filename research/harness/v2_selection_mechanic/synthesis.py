@@ -59,8 +59,10 @@ class PerVariableSignal:
     non_watch_transition_gap_pct: float
     substrate_ticker_count: int
     substrate_unique_ticker_asof_count: int
-    filtered_w_count: int
-    filtered_density: float | None
+    raw_w_count: int  # pre-canonical-filter W primary count (Sec 0/1.7 framing)
+    filtered_w_count: int  # post-canonical-filter (Sec 1.6 LOCK)
+    filtered_density: float | None  # F / T (brief Sec 1.6 LOCK)
+    canonical_survival_rate: float | None  # F / R_raw (Sec 0/1.7 narrative)
     density_delta_vs_baseline: float | None
     regime_return_90d_median: float | None
     regime_atr_pct_20d_median: float | None
@@ -108,8 +110,10 @@ def build_per_variable_signal(
         non_watch_transition_gap_pct=gap_pct,
         substrate_ticker_count=aggregate_metrics.unique_ticker_count,
         substrate_unique_ticker_asof_count=aggregate_metrics.unique_ticker_asof_count,
+        raw_w_count=w_density.raw_w_count,
         filtered_w_count=w_density.filtered_w_count,
         filtered_density=w_density.filtered_density,
+        canonical_survival_rate=w_density.canonical_survival_rate,
         density_delta_vs_baseline=w_density.density_delta_vs_baseline,
         regime_return_90d_median=aggregate_metrics.return_90d_pct_median,
         regime_atr_pct_20d_median=aggregate_metrics.atr_pct_20d_median,

@@ -67,6 +67,8 @@ def _signal(
     d_filt: float | None = 0.1,
     delta_vs_baseline: float | None = -0.0376,
     dominant_sector: str = "Technology",
+    raw_w_count: int = 10,
+    canonical_survival_rate: float | None = 0.1,
 ) -> PerVariableSignal:
     return PerVariableSignal(
         variable_name=variable,
@@ -77,8 +79,10 @@ def _signal(
         non_watch_transition_gap_pct=0.0,
         substrate_ticker_count=t_count,
         substrate_unique_ticker_asof_count=t_count,
+        raw_w_count=raw_w_count,
         filtered_w_count=f_count,
         filtered_density=d_filt,
+        canonical_survival_rate=canonical_survival_rate,
         density_delta_vs_baseline=delta_vs_baseline,
         regime_return_90d_median=10.0,
         regime_atr_pct_20d_median=2.5,
@@ -253,8 +257,10 @@ def _w_density() -> WDensityMetrics:
     return WDensityMetrics(
         cohort_label="test",
         substrate_ticker_count=10,
+        raw_w_count=100,
         filtered_w_count=2,
         filtered_density=0.2,
+        canonical_survival_rate=0.02,
         density_delta_vs_baseline=0.2 - D2_BASELINE_FILTERED_DENSITY,
     )
 
@@ -274,6 +280,9 @@ def test_build_per_variable_signal_populates_all_fields() -> None:
     assert sig.substrate_ticker_count == 10
     assert sig.filtered_w_count == 2
     assert sig.dominant_sector == "Tech"  # 8 > 2 UNKNOWN
+    # Dual-density framing fields populated
+    assert sig.raw_w_count == 100
+    assert sig.canonical_survival_rate is not None
 
 
 def test_build_per_variable_signal_zero_max_delta_no_div_by_zero() -> None:
@@ -631,16 +640,19 @@ def test_write_w_density_detail_csv_includes_baseline_first(tmp_path: Path) -> N
     metrics = {"vcp.var1": WDensityMetrics(
         cohort_label="vcp.var1",
         substrate_ticker_count=10,
+        raw_w_count=100,
         filtered_w_count=2,
         filtered_density=0.2,
+        canonical_survival_rate=0.02,
         density_delta_vs_baseline=0.2 - D2_BASELINE_FILTERED_DENSITY,
     )}
     out = tmp_path / "w_density.csv"
     write_w_density_detail_csv(metrics, out)
     lines = out.read_text(encoding="utf-8").strip().splitlines()
     assert lines[0].startswith("cohort_label,substrate_ticker_count,")
-    # D2 baseline as first DATA row
-    assert lines[1].startswith("d2_expanded_baseline_sp500,516,71,")
+    # D2 baseline as first DATA row (universe 516; raw_w_count 0 because
+    # D2 results.csv not emitted in V1 -- Option B fallback)
+    assert lines[1].startswith("d2_expanded_baseline_sp500,516,0,71,")
 
 
 def test_write_manifest_payload_shape(tmp_path: Path) -> None:
@@ -728,8 +740,8 @@ def test_cli_dry_run_verifies_canonical_source_sha(tmp_path: Path) -> None:
     assert "canonical source" in result.stderr.lower()
 
 
-def test_cli_refuses_non_dry_run_v1() -> None:
-    """Non-dry-run mode is V1-deferred; CLI returns 2 with a clear error."""
+def test_cli_refuses_with_no_mode_flag() -> None:
+    """CLI requires either --dry-run or --execute."""
     result = subprocess.run(
         [sys.executable, "-m", "research.harness.v2_selection_mechanic.run"],
         cwd=REPO_ROOT,
@@ -737,7 +749,34 @@ def test_cli_refuses_non_dry_run_v1() -> None:
         text=True,
     )
     assert result.returncode == 2
-    assert "delegated to slice 5" in result.stderr
+    assert "specify either --dry-run" in result.stderr
+
+
+def test_cli_refuses_mutually_exclusive_flags() -> None:
+    """CLI refuses both --dry-run and --execute simultaneously."""
+    result = subprocess.run(
+        [sys.executable, "-m", "research.harness.v2_selection_mechanic.run",
+         "--dry-run", "--execute"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert "mutually exclusive" in result.stderr
+
+
+def test_cli_execute_refuses_missing_db(tmp_path: Path) -> None:
+    """--execute fails closed if --db path doesn't exist."""
+    result = subprocess.run(
+        [sys.executable, "-m", "research.harness.v2_selection_mechanic.run",
+         "--execute", "--db", str(tmp_path / "no.db"),
+         "--out-root", str(tmp_path)],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert "swing.db not found" in result.stderr
 
 
 # ============= L2 LOCK source-grep across NEW module set =============

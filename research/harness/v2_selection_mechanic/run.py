@@ -192,6 +192,7 @@ def run_analysis(
     verdicts_by_variable: dict[str, list[WPrimaryVerdict]],
     cache_dir: Path | None = None,
     finviz_sector_map: dict[str, str] | None = None,
+    raw_w_counts_by_variable: dict[str, int] | None = None,
 ) -> CompatibilitySynthesis:
     """Pure analytical pipeline (testable with planted verdicts).
 
@@ -261,10 +262,20 @@ def run_analysis(
         raw_verdicts = verdicts_by_variable[variable_name]
         filtered = apply_canonical_filter(raw_verdicts)
         merged = merge_adjacency_5bd(filtered)
+        # Raw W count = pre-canonical-filter verdict count (the caller's
+        # raw_w_counts_by_variable mapping can override; defaults to len of
+        # the verdicts list, which represents pre-filter primaries when the
+        # caller extracted at composite_threshold=0.0).
+        raw_count = (
+            raw_w_counts_by_variable.get(variable_name, len(raw_verdicts))
+            if raw_w_counts_by_variable is not None
+            else len(raw_verdicts)
+        )
         w_density = compute_w_density(
             cohort_label=variable_name,
             substrate_tickers=tickers,
             canonical_filtered_verdicts=merged,
+            raw_w_count=raw_count,
         )
         signals.append(
             build_per_variable_signal(
@@ -282,7 +293,15 @@ def run_analysis(
 def write_per_variable_signal_csv(
     signals: Sequence[PerVariableSignal], path: Path
 ) -> None:
-    """Emit per_variable_signals.csv (Sec 3.2)."""
+    """Emit per_variable_signals.csv (Sec 3.2).
+
+    Emits BOTH density framings per brief Sec 0/1.6/1.7 dual-metric
+    methodological clarification surfaced at slice 5 smoke run 2026-05-27:
+      - filtered_density = F / T (brief Sec 1.6 LOCK; W per ticker)
+      - canonical_survival_rate = F / R_raw (brief Sec 0/1.7 narrative;
+        survival rate through canonical filter; ~12% / ~13% / ~3% framing
+        in R2-A/R2-D findings doc Sec 2.1)
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as f:
@@ -297,8 +316,10 @@ def write_per_variable_signal_csv(
                 "non_watch_transition_gap_pct",
                 "substrate_ticker_count",
                 "substrate_unique_ticker_asof_count",
+                "raw_w_count",
                 "filtered_w_count",
                 "filtered_density",
+                "canonical_survival_rate",
                 "density_delta_vs_baseline",
                 "regime_return_90d_median",
                 "regime_atr_pct_20d_median",
@@ -317,8 +338,11 @@ def write_per_variable_signal_csv(
                     f"{s.non_watch_transition_gap_pct:.2f}",
                     s.substrate_ticker_count,
                     s.substrate_unique_ticker_asof_count,
+                    s.raw_w_count,
                     s.filtered_w_count,
                     "" if s.filtered_density is None else f"{s.filtered_density:.6f}",
+                    "" if s.canonical_survival_rate is None
+                    else f"{s.canonical_survival_rate:.6f}",
                     "" if s.density_delta_vs_baseline is None
                     else f"{s.density_delta_vs_baseline:.6f}",
                     "" if s.regime_return_90d_median is None
@@ -373,7 +397,7 @@ def write_substrate_characterization_csv(
 def write_w_density_detail_csv(
     metrics_by_variable: dict[str, WDensityMetrics], path: Path
 ) -> None:
-    """Emit w_density_detail.csv (per-cohort F/T/D_filt/delta)."""
+    """Emit w_density_detail.csv (per-cohort dual-density framing)."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as f:
@@ -382,8 +406,10 @@ def write_w_density_detail_csv(
             [
                 "cohort_label",
                 "substrate_ticker_count",
+                "raw_w_count",
                 "filtered_w_count",
                 "filtered_density",
+                "canonical_survival_rate",
                 "density_delta_vs_baseline",
             ]
         )
@@ -393,8 +419,11 @@ def write_w_density_detail_csv(
             [
                 b.cohort_label,
                 b.substrate_ticker_count,
+                b.raw_w_count,
                 b.filtered_w_count,
                 f"{b.filtered_density:.6f}",
+                "" if b.canonical_survival_rate is None
+                else f"{b.canonical_survival_rate:.6f}",
                 f"{b.density_delta_vs_baseline:.6f}",
             ]
         )
@@ -403,9 +432,12 @@ def write_w_density_detail_csv(
                 [
                     variable,
                     m.substrate_ticker_count,
+                    m.raw_w_count,
                     m.filtered_w_count,
                     "" if m.filtered_density is None
                     else f"{m.filtered_density:.6f}",
+                    "" if m.canonical_survival_rate is None
+                    else f"{m.canonical_survival_rate:.6f}",
                     "" if m.density_delta_vs_baseline is None
                     else f"{m.density_delta_vs_baseline:.6f}",
                 ]
@@ -459,12 +491,197 @@ def _now_iso_utc() -> tuple[datetime, str]:
     return dt, iso
 
 
+def _detect_substrate(
+    cohort_csv_path: Path,
+    *,
+    db_path: Path,
+    detect_out_root: Path,
+    template_match_mode: str = "on",
+) -> Path:
+    """Invoke pattern_cohort_evaluator.run_harness against a cohort CSV.
+
+    Returns the results.csv path emitted by the detection harness. The
+    harness writes manifest.json + summary.md + results.csv to a fresh
+    timestamped subdirectory under detect_out_root.
+
+    L2 LOCK preserved: pattern_cohort_evaluator is the canonical
+    Phase 13 detection harness; we invoke it via its public API + read
+    only its emitted artifacts. ZERO production swing/ writes; ZERO
+    Schwab API calls; the harness reads OHLCV from legacy parquet
+    archives via its existing ohlcv_reader.
+    """
+    from research.harness.pattern_cohort_evaluator.run import run_harness
+
+    results_csv, _summary_md, _manifest_json = run_harness(
+        cohort_csv=cohort_csv_path,
+        cohort_inline=None,
+        db_path=db_path,
+        output_dir=detect_out_root,
+        window_mode="per-window",
+        template_match_mode=template_match_mode,
+        cli_pattern_class_filter=("double_bottom_w",),
+    )
+    return results_csv
+
+
+def _primary_verdicts_from_results_csv(results_csv: Path) -> list[WPrimaryVerdict]:
+    """Extract double_bottom_w primary verdicts from a pattern_cohort_evaluator
+    results.csv via D1 backtest helper `extract_primary_verdicts_from_csv`.
+
+    Reuses the D1 PrimaryVerdict -> WPrimaryVerdict shape conversion;
+    the D1 helper handles structural_evidence_json parsing + per-(ticker,
+    trough_1_date) highest-composite dedup. The output is then passed
+    through the V2-selection-mechanic canonical filter + 5-BD adjacency
+    merge (in run_analysis -> apply_canonical_filter + merge_adjacency_5bd).
+    """
+    from research.harness.double_bottom_w_backtest.cohort import (
+        extract_primary_verdicts_from_csv,
+    )
+
+    # Use composite threshold 0.0 to extract ALL D1 primaries; the
+    # canonical filter (0.5) is applied downstream via apply_canonical_filter.
+    primaries = extract_primary_verdicts_from_csv(
+        results_csv, composite_threshold=0.0
+    )
+    return [
+        WPrimaryVerdict(
+            ticker=p.ticker.upper(),
+            anchor_asof_date=p.anchor_asof_date,
+            trough_1_date=p.trough_1_date,
+            trough_2_date=p.trough_2_date,
+            composite_score=p.composite_score,
+        )
+        for p in primaries
+    ]
+
+
+def _execute_full_run(
+    out_root: Path,
+    iso: str,
+    *,
+    db_path: Path,
+    cache_dir: Path,
+    finviz_sector_map: dict[str, str] | None = None,
+) -> int:
+    """Full-run mode: invoke detection per substrate; emit smoke artifact dir.
+
+    Returns 0 on success; non-zero on any failure.
+    """
+    smoke_dir = out_root / f"v2-selection-mechanic-analysis-{iso}"
+    detect_out_root = smoke_dir / "detection_runs"
+    detect_out_root.mkdir(parents=True, exist_ok=True)
+
+    cohort_pairs_by_variable: dict[str, list[tuple[str, date]]] = {}
+    verdicts_by_variable: dict[str, list[WPrimaryVerdict]] = {}
+
+    for variable in DEFAULT_COHORT_CSV_BY_VARIABLE:
+        cohort_csv_path = Path(DEFAULT_COHORT_CSV_BY_VARIABLE[variable])
+        pairs = read_cohort_csv(cohort_csv_path)
+        cohort_pairs_by_variable[variable] = pairs
+
+        print(
+            f"  detection: {variable} ({len(pairs)} (ticker, asof) pairs) ...",
+            flush=True,
+        )
+        results_csv = _detect_substrate(
+            cohort_csv_path,
+            db_path=db_path,
+            detect_out_root=detect_out_root,
+        )
+        primaries = _primary_verdicts_from_results_csv(results_csv)
+        verdicts_by_variable[variable] = primaries
+        print(f"    -> {len(primaries)} double_bottom_w primaries extracted")
+
+    print("  substrate characterization + W-density + synthesis ...", flush=True)
+    # Run pure analytical pipeline + capture per-ticker metrics for CSV emission
+    per_variable_per_ticker: dict[str, list[PerTickerMetrics]] = {}
+    w_density_by_variable: dict[str, "WDensityMetrics"] = {}
+    for variable in DEFAULT_COHORT_CSV_BY_VARIABLE:
+        per_ticker, _aggregate = compute_cohort_characterization(
+            cohort_label=variable,
+            ticker_asof_pairs=cohort_pairs_by_variable[variable],
+            cache_dir=cache_dir,
+            finviz_sector_map=finviz_sector_map,
+        )
+        per_variable_per_ticker[variable] = per_ticker
+
+    synthesis_result = run_analysis(
+        cohort_pairs_by_variable=cohort_pairs_by_variable,
+        verdicts_by_variable=verdicts_by_variable,
+        cache_dir=cache_dir,
+        finviz_sector_map=finviz_sector_map,
+    )
+
+    # Map per-variable W-density metrics back from synthesis output
+    for sig in synthesis_result.per_variable_signal_table:
+        from research.harness.v2_selection_mechanic.w_density_analysis import WDensityMetrics
+        w_density_by_variable[sig.variable_name] = WDensityMetrics(
+            cohort_label=sig.variable_name,
+            substrate_ticker_count=sig.substrate_ticker_count,
+            raw_w_count=sig.raw_w_count,
+            filtered_w_count=sig.filtered_w_count,
+            filtered_density=sig.filtered_density,
+            canonical_survival_rate=sig.canonical_survival_rate,
+            density_delta_vs_baseline=sig.density_delta_vs_baseline,
+        )
+
+    # Emit artifacts
+    write_per_variable_signal_csv(
+        synthesis_result.per_variable_signal_table,
+        smoke_dir / "per_variable_signals.csv",
+    )
+    write_substrate_characterization_csv(
+        per_variable_per_ticker,
+        smoke_dir / "substrate_characterization.csv",
+    )
+    write_w_density_detail_csv(
+        w_density_by_variable,
+        smoke_dir / "w_density_detail.csv",
+    )
+    (smoke_dir / "compatibility_synthesis.md").write_text(
+        synthesis_result.narrative_markdown, encoding="utf-8"
+    )
+    write_manifest(
+        smoke_dir / "manifest.json",
+        run_ts_utc=iso,
+        canonical_source_path=CANONICAL_SOURCE_PATH,
+        canonical_source_sha256=CANONICAL_SOURCE_SHA256,
+        cohort_paths_by_variable=dict(DEFAULT_COHORT_CSV_BY_VARIABLE),
+        d2_baseline_manifest_path=D2_BASELINE_MANIFEST_PATH,
+        d2_baseline_universe_size=D2_BASELINE_UNIVERSE_SIZE,
+        d2_baseline_filtered_w_count=D2_BASELINE_FILTERED_W_COUNT,
+        canonical_composite_threshold=CANONICAL_COMPOSITE_THRESHOLD,
+        canonical_recency_days=CANONICAL_RECENCY_DAYS,
+        compatibility_label=synthesis_result.categorical_label,
+    )
+    # Emit a brief summary.md alongside manifest.json
+    summary_lines = [
+        "# V2-Selection-Mechanic Smoke Run Summary",
+        "",
+        f"Run timestamp (UTC): {iso}",
+        f"Compatibility categorical label: {synthesis_result.categorical_label}",
+        f"Substrates analyzed: {len(synthesis_result.per_variable_signal_table)}",
+        f"Below-baseline density count: {synthesis_result.negative_delta_count}",
+        f"At-or-above-baseline density count: {synthesis_result.positive_or_zero_delta_count}",
+        "",
+        "Detection runs emitted under detection_runs/ subdirectory (one per substrate).",
+        "Analytical CSVs + compatibility narrative emitted alongside manifest.json.",
+    ]
+    (smoke_dir / "summary.md").write_text("\n".join(summary_lines) + "\n", encoding="utf-8")
+    print(f"OK: emitted smoke artifact at {smoke_dir}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI entrypoint -- emits smoke artifact directory.
 
-    V1: detection invocation against each substrate is delegated to a
-    follow-up slice; this CLI prints a "DRY RUN" placeholder validating
-    cohort CSV presence + canonical source SHA + manifest emission.
+    Two modes:
+      --dry-run : V1 placeholder mode (validates cohort CSV presence +
+                  canonical source SHA + emits placeholder manifest).
+      --execute : full-run mode (invokes pattern_cohort_evaluator per
+                  substrate; computes W-density + substrate
+                  characterization + compatibility synthesis; emits
+                  full artifact directory).
     """
     parser = argparse.ArgumentParser(
         description="V2-selection-mechanic analytical investigation orchestrator"
@@ -482,12 +699,45 @@ def main(argv: list[str] | None = None) -> int:
             "source SHA + emits manifest with empty detection results."
         ),
     )
+    parser.add_argument(
+        "--execute",
+        action="store_true",
+        help=(
+            "Full-run mode: invoke pattern_cohort_evaluator per substrate; "
+            "compute analytical surfaces; emit full smoke artifact directory."
+        ),
+    )
+    parser.add_argument(
+        "--db",
+        type=Path,
+        default=Path.home() / "swing-data" / "swing.db",
+        help="Path to swing.db (required for --execute; default ~/swing-data/swing.db)",
+    )
+    parser.add_argument(
+        "--cache-dir",
+        type=Path,
+        default=Path.home() / "swing-data" / "prices-cache",
+        help="OHLCV legacy parquet cache dir (default ~/swing-data/prices-cache)",
+    )
+    parser.add_argument(
+        "--finviz-csv",
+        type=Path,
+        default=None,
+        help=(
+            "Optional finviz CSV path for sector resolution. If unset, all "
+            "tickers resolve to UNKNOWN_SECTOR per V1 simplification."
+        ),
+    )
     args = parser.parse_args(argv)
 
-    if not args.dry_run:
+    if args.dry_run and args.execute:
+        print("ERROR: --dry-run and --execute are mutually exclusive", file=sys.stderr)
+        return 2
+
+    if not args.dry_run and not args.execute:
         print(
-            "ERROR: full detection-invocation pipeline is delegated to slice 5; "
-            "run with --dry-run for V1 placeholder mode.",
+            "ERROR: specify either --dry-run (V1 placeholder) or --execute "
+            "(full-run; requires --db pointing to a populated swing.db).",
             file=sys.stderr,
         )
         return 2
@@ -495,6 +745,54 @@ def main(argv: list[str] | None = None) -> int:
     out_root = Path(args.out_root)
     _, iso = _now_iso_utc()
     smoke_dir = out_root / f"v2-selection-mechanic-analysis-{iso}"
+
+    if args.execute:
+        # Canonical source verification + cohort CSV presence (shared with
+        # dry-run path; bail early if locks fail).
+        canonical_source = Path(CANONICAL_SOURCE_PATH)
+        if not canonical_source.exists():
+            print(
+                f"ERROR: canonical source artifact not found at {canonical_source}",
+                file=sys.stderr,
+            )
+            return 2
+        import hashlib
+        h = hashlib.sha256()
+        with canonical_source.open("rb") as f:
+            for chunk in iter(lambda: f.read(1 << 16), b""):
+                h.update(chunk)
+        if h.hexdigest() != CANONICAL_SOURCE_SHA256:
+            print(
+                f"ERROR: canonical source SHA mismatch at {canonical_source}",
+                file=sys.stderr,
+            )
+            return 2
+        if not args.db.exists():
+            print(
+                f"ERROR: swing.db not found at {args.db}; --execute requires "
+                f"the production DB for exemplar corpus loading.",
+                file=sys.stderr,
+            )
+            return 2
+        if not args.cache_dir.exists():
+            print(
+                f"ERROR: OHLCV cache dir not found at {args.cache_dir}",
+                file=sys.stderr,
+            )
+            return 2
+        # Optional finviz sector map
+        finviz_sector_map = (
+            load_sector_map_from_finviz_csv(args.finviz_csv)
+            if args.finviz_csv is not None
+            else None
+        )
+        return _execute_full_run(
+            out_root,
+            iso,
+            db_path=args.db,
+            cache_dir=args.cache_dir,
+            finviz_sector_map=finviz_sector_map,
+        )
 
     # Codex R1 MAJOR #2 fix: verify canonical source SHA in dry-run mode.
     # Prior implementation advertised SHA validation in module docstring

@@ -1,0 +1,7 @@
+cohort_label,substrate_ticker_count,raw_w_count,filtered_w_count,filtered_density,canonical_survival_rate,density_delta_vs_baseline
+d2_expanded_baseline_sp500,516,0,71,0.137597,,0.000000
+vcp.tightness_range_factor,15,2482,137,9.133333,0.055197,8.995736
+vcp.tightness_days_required,7,1643,64,9.142857,0.038953,9.005260
+vcp.adr_min_pct,4,173,4,1.000000,0.023121,0.862403
+vcp.proximity_max_pct,3,242,29,9.666667,0.119835,9.529070
+vcp.orderliness_max_bar_ratio,1,19,3,3.000000,0.157895,2.862403

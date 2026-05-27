@@ -68,13 +68,29 @@ class WPrimaryVerdict:
 
 @dataclass(frozen=True)
 class WDensityMetrics:
-    """Per-cohort W-density measurement."""
+    """Per-cohort W-density measurement.
+
+    The brief defines TWO density-related metrics that are sometimes
+    conflated in narrative docs (R2-A/R2-D findings doc Sec 2.1):
+
+      - filtered_density = F / T    (W primaries per ticker; brief Sec 1.6 LOCK)
+      - canonical_survival_rate = F / R_raw  (survival rate through canonical
+                                              filter; the "~13%" / "~3%" /
+                                              "~12%" framing in R2-A/R2-D
+                                              narrative docs)
+
+    Both are surfaced in the smoke artifact + study writeup to disambiguate
+    the methodological framings. The brief's headline LOCK is F/T (Sec 1.6);
+    the cross-arc narrative carryover uses F/R_raw.
+    """
 
     cohort_label: str
     substrate_ticker_count: int  # T
-    filtered_w_count: int  # F
+    raw_w_count: int  # R_raw (pre-canonical-filter W primaries)
+    filtered_w_count: int  # F (post-canonical-filter)
     filtered_density: float | None  # F / T (None if T == 0)
     density_delta_vs_baseline: float | None  # D_filt - D2_baseline_density
+    canonical_survival_rate: float | None  # F / R_raw (None if R_raw == 0)
 
 
 def apply_canonical_filter(
@@ -204,6 +220,7 @@ def compute_w_density(
     substrate_tickers: Iterable[str],
     canonical_filtered_verdicts: Sequence[WPrimaryVerdict],
     *,
+    raw_w_count: int = 0,
     baseline_filtered_density: float = D2_BASELINE_FILTERED_DENSITY,
 ) -> WDensityMetrics:
     """Compute W-density metrics for a substrate.
@@ -239,22 +256,33 @@ def compute_w_density(
     else:
         d_filt = f_count / t_count
         delta = d_filt - baseline_filtered_density
+    survival = None if raw_w_count == 0 else f_count / raw_w_count
     return WDensityMetrics(
         cohort_label=cohort_label,
         substrate_ticker_count=t_count,
+        raw_w_count=raw_w_count,
         filtered_w_count=f_count,
         filtered_density=d_filt,
         density_delta_vs_baseline=delta,
+        canonical_survival_rate=survival,
     )
 
 
 def baseline_metrics_snapshot() -> WDensityMetrics:
     """Return a synthetic WDensityMetrics row representing the D2 EXPANDED
-    bias-free baseline (delta_vs_baseline is 0 by construction)."""
+    bias-free baseline (delta_vs_baseline is 0 by construction).
+
+    raw_w_count + canonical_survival_rate are None for the baseline because
+    D2 baseline results.csv was NOT emitted in V1 (per investigation
+    Option B fallback at orchestrator greenlight 2026-05-26 PM). Banked
+    V2 candidate: re-run D2 EXPANDED with results.csv emission enabled.
+    """
     return WDensityMetrics(
         cohort_label="d2_expanded_baseline_sp500",
         substrate_ticker_count=D2_BASELINE_UNIVERSE_SIZE,
+        raw_w_count=0,  # not available in V1
         filtered_w_count=D2_BASELINE_FILTERED_W_COUNT,
         filtered_density=D2_BASELINE_FILTERED_DENSITY,
         density_delta_vs_baseline=0.0,
+        canonical_survival_rate=None,  # requires raw_w_count
     )
