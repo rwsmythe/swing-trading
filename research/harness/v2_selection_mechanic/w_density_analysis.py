@@ -123,20 +123,28 @@ def _business_days_between(d1: date, d2: date) -> int:
 def merge_adjacency_5bd(
     verdicts: Sequence[WPrimaryVerdict],
 ) -> list[WPrimaryVerdict]:
-    """5-BD adjacency merge: collapse adjacent trough_2 clusters within
-    each (ticker, trough_1_date) group.
+    """5-BD adjacency merge: collapse transitively-adjacent trough_2
+    clusters within each (ticker, trough_1_date) group.
 
     Within each (ticker, trough_1_date) group, sort verdicts by
-    trough_2_date ascending; walk forward maintaining a "current cluster
-    head" (highest-composite verdict seen so far in the current cluster).
-    When the gap between the current verdict's trough_2_date and the
-    cluster head's trough_2_date exceeds 5 business days, emit the
-    current head as a cluster winner + start a new cluster. Distinct
-    clusters (>5 BD apart) are preserved as distinct primaries.
+    trough_2_date ascending; walk forward. Cluster boundary is
+    determined by the gap between EACH consecutive pair's trough_2_dates
+    (NOT the gap to the cluster head). This produces TRANSITIVE
+    adjacency: a chain of dates each <=5 BD apart all belong to the
+    same cluster regardless of total span. The cluster's "head" is the
+    highest-composite verdict within the cluster.
+
+    Codex R2 MAJOR #1 fix 2026-05-26 PM: prior implementation compared
+    each row to the current cluster HEAD; if the head's date depended on
+    composite-ordering, the cluster boundary detection became
+    composite-sensitive instead of purely topology-based. Repro: rows at
+    days 0/5/10 with mid-row holding the highest composite collapse to
+    1 cluster, but with end-row holding the highest composite split to
+    2 clusters. Post-fix: cluster boundary uses last-row-in-cluster's
+    date so transitive adjacency is preserved regardless of composites.
 
     Holiday-naive (numpy.busday_count semantic); banked V2 candidate:
-    exchange-calendar-aware adjacency. Holidays land in the same
-    5-BD-window so this is acceptable for V1 approximation.
+    exchange-calendar-aware adjacency.
 
     Output sorted by (ticker, trough_1_date, trough_2_date) for stable
     determinism across runs.
@@ -151,19 +159,27 @@ def merge_adjacency_5bd(
     for key, members in groups.items():
         members_sorted = sorted(members, key=lambda x: x.trough_2_date)
         current_head: WPrimaryVerdict | None = None
+        # Track the LAST verdict in the current cluster (for transitive
+        # adjacency boundary detection) -- distinct from current_head
+        # which tracks the highest-composite winner so far.
+        last_in_cluster: WPrimaryVerdict | None = None
         for v in members_sorted:
             if current_head is None:
                 current_head = v
+                last_in_cluster = v
                 continue
-            bd_gap = _business_days_between(current_head.trough_2_date, v.trough_2_date)
+            bd_gap = _business_days_between(last_in_cluster.trough_2_date, v.trough_2_date)
             if bd_gap <= 5:
-                # Same cluster; replace head if higher composite
+                # Same cluster (transitively adjacent); advance the
+                # cluster boundary; replace head if higher composite
                 if v.composite_score > current_head.composite_score:
                     current_head = v
+                last_in_cluster = v
             else:
                 # New cluster boundary; emit current head + start new
                 winners.append(current_head)
                 current_head = v
+                last_in_cluster = v
         if current_head is not None:
             winners.append(current_head)
     winners.sort(key=lambda x: (x.ticker, x.trough_1_date, x.trough_2_date))

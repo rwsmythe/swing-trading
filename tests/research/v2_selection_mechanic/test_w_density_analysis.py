@@ -139,6 +139,49 @@ def test_merge_adjacency_5bd_breaks_clusters_beyond_5_bd() -> None:
     assert composites == [0.6, 0.8]
 
 
+def test_merge_adjacency_5bd_transitive_chain_collapses_to_one() -> None:
+    """Codex R2 MAJOR #1 fix discriminator: transitive adjacency MUST
+    collapse a chain of dates each <=5 BD apart into ONE cluster,
+    REGARDLESS of which composite is highest.
+
+    Repro: rows at days 0 / 5 / 10 BD apart (transitively adjacent).
+    Pre-fix compared each row to the cluster HEAD; if mid-row had
+    highest composite, day-10 was compared to day-5 (5 BD; same cluster
+    -> 1 winner); but if end-row had highest composite, day-10 was
+    compared to day-0 (10 BD; new cluster -> 2 winners). Post-fix
+    compares each row to the PREVIOUS row in the cluster (transitive
+    topology) so cluster boundary is composite-INSENSITIVE.
+
+    Day-0=2026-04-06 (Mon); +5 BD=2026-04-13 (Mon); +5 BD=2026-04-20 (Mon).
+    """
+    # Case A: middle row has highest composite
+    verdicts_a = [
+        _vp("AAA", date(2026, 5, 1), date(2026, 4, 1), date(2026, 4, 6), 0.60),
+        _vp("AAA", date(2026, 5, 1), date(2026, 4, 1), date(2026, 4, 13), 0.90),  # mid; highest
+        _vp("AAA", date(2026, 5, 1), date(2026, 4, 1), date(2026, 4, 20), 0.50),
+    ]
+    merged_a = merge_adjacency_5bd(verdicts_a)
+    assert len(merged_a) == 1, (
+        f"Case A expected 1 cluster (transitive adjacency); got "
+        f"{[(v.trough_2_date, v.composite_score) for v in merged_a]}"
+    )
+    assert merged_a[0].composite_score == 0.90
+
+    # Case B: end row has highest composite (the discriminating case)
+    verdicts_b = [
+        _vp("BBB", date(2026, 5, 1), date(2026, 4, 1), date(2026, 4, 6), 0.90),  # first; highest
+        _vp("BBB", date(2026, 5, 1), date(2026, 4, 1), date(2026, 4, 13), 0.10),
+        _vp("BBB", date(2026, 5, 1), date(2026, 4, 1), date(2026, 4, 20), 0.80),
+    ]
+    merged_b = merge_adjacency_5bd(verdicts_b)
+    assert len(merged_b) == 1, (
+        f"Case B expected 1 cluster (transitive adjacency despite "
+        f"composite ordering); got "
+        f"{[(v.trough_2_date, v.composite_score) for v in merged_b]}"
+    )
+    assert merged_b[0].composite_score == 0.90
+
+
 def test_merge_adjacency_5bd_mixed_clusters() -> None:
     """Two clusters within (ticker, trough_1_date): one in early-April,
     one in mid-May (well >5 BD apart). Each cluster has its own

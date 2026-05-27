@@ -110,9 +110,21 @@ def read_cohort_csv(path: Path) -> list[tuple[str, date]]:
 
     Raises CohortCsvSchemaError if (a) the CSV lacks any of the 3 required
     headers (ticker / asof_date / cohort_label); (b) a data row has
-    empty ticker OR asof_date; (c) asof_date fails ISO parse. Fail-closed
+    empty ticker / asof_date / cohort_label; (c) asof_date fails ISO
+    parse; (d) the CSV has zero data rows (header-only). Fail-closed
     semantic per gotcha #28 + brief Sec 6(d): cohort artifacts feed
-    analytical surfaces; silent skip masks upstream drift.
+    analytical surfaces; silent skip OR empty cohort masks upstream
+    drift.
+
+    Codex R2 MAJOR #2 fix 2026-05-26 PM: prior implementation accepted
+    a header-only CSV as a valid empty cohort, allowing five
+    header-only artifacts to converge to COMPATIBLE classification
+    through `synthesize()` (which enforces 5-signal contract but does
+    NOT check that signals carry non-empty substrates).
+
+    Codex R2 MINOR #1 fix 2026-05-26 PM: prior implementation required
+    `cohort_label` header but never validated row value; now an empty
+    cohort_label cell raises.
     """
     path = Path(path)
     pairs: list[tuple[str, date]] = []
@@ -133,6 +145,7 @@ def read_cohort_csv(path: Path) -> list[tuple[str, date]]:
         for row_idx, row in enumerate(reader, start=2):
             ticker = (row.get("ticker") or "").strip().upper()
             asof_raw = (row.get("asof_date") or "").strip()
+            cohort_label = (row.get("cohort_label") or "").strip()
             if not ticker:
                 raise CohortCsvSchemaError(
                     f"Cohort CSV at {path} row {row_idx} has empty ticker"
@@ -140,6 +153,10 @@ def read_cohort_csv(path: Path) -> list[tuple[str, date]]:
             if not asof_raw:
                 raise CohortCsvSchemaError(
                     f"Cohort CSV at {path} row {row_idx} has empty asof_date"
+                )
+            if not cohort_label:
+                raise CohortCsvSchemaError(
+                    f"Cohort CSV at {path} row {row_idx} has empty cohort_label"
                 )
             try:
                 asof = date.fromisoformat(asof_raw)
@@ -149,7 +166,24 @@ def read_cohort_csv(path: Path) -> list[tuple[str, date]]:
                     f"asof_date {asof_raw!r}: {exc}"
                 )
             pairs.append((ticker, asof))
+    if not pairs:
+        raise CohortCsvSchemaError(
+            f"Cohort CSV at {path} has zero data rows; a valid cohort "
+            f"must contain at least one (ticker, asof_date) pair"
+        )
     return pairs
+
+
+class MissingCanonicalVariableError(KeyError):
+    """Raised when a canonical V2 binding variable is absent from the
+    cohort_pairs_by_variable or verdicts_by_variable inputs.
+
+    Codex R2 MAJOR #3 fix 2026-05-26 PM: prior implementation silently
+    substituted [] when a canonical variable was missing from either
+    input dict; the function emitted a signal anyway (with None delta or
+    F=0), materially altering the compatibility label while still
+    satisfying the 5-row synthesize() contract.
+    """
 
 
 def run_analysis(
@@ -166,16 +200,36 @@ def run_analysis(
     The orchestrator then applies canonical filter + adjacency merge +
     substrate characterization + synthesis.
 
+    Raises MissingCanonicalVariableError if either input dict is missing
+    a canonical V2 binding variable (per BINDING_SIGNALS_TABLE). The
+    investigation contract requires ALL 5 V2 binding variables.
+
     Returns CompatibilitySynthesis (categorical label + narrative +
-    per-variable signal table) plus the per-cohort per-ticker metrics
-    + W-density measurements (accessible via the synthesis's per_variable
-    table).
+    per-variable signal table).
     """
+    # Codex R2 MAJOR #3 fix: fail-closed on missing canonical variable.
+    canonical_variables = [row[0] for row in BINDING_SIGNALS_TABLE]
+    missing_cohort = [v for v in canonical_variables if v not in cohort_pairs_by_variable]
+    missing_verdicts = [v for v in canonical_variables if v not in verdicts_by_variable]
+    if missing_cohort:
+        raise MissingCanonicalVariableError(
+            f"cohort_pairs_by_variable missing canonical V2 variable(s): "
+            f"{missing_cohort}. The 5-variable contract (BINDING_SIGNALS_TABLE) "
+            f"requires all variables present."
+        )
+    if missing_verdicts:
+        raise MissingCanonicalVariableError(
+            f"verdicts_by_variable missing canonical V2 variable(s): "
+            f"{missing_verdicts}. The 5-variable contract requires all "
+            f"variables present (use empty list [] if the cohort produced "
+            f"zero W primaries; do not omit the key)."
+        )
+
     gap_lookup = {row[0]: row[2] for row in NON_WATCH_TRANSITION_GAP_TABLE}
     binding_lookup = {row[0]: (row[1], row[2]) for row in BINDING_SIGNALS_TABLE}
     signals: list[PerVariableSignal] = []
     for variable_name, _, sweep_point in BINDING_SIGNALS_TABLE:
-        pairs = cohort_pairs_by_variable.get(variable_name, [])
+        pairs = cohort_pairs_by_variable[variable_name]
         tickers = sorted({p[0] for p in pairs})
         # Substrate characterization
         _, aggregate = compute_cohort_characterization(
@@ -185,7 +239,7 @@ def run_analysis(
             finviz_sector_map=finviz_sector_map,
         )
         # W-density on caller-supplied verdicts (apply canonical filter + adjacency)
-        raw_verdicts = verdicts_by_variable.get(variable_name, [])
+        raw_verdicts = verdicts_by_variable[variable_name]
         filtered = apply_canonical_filter(raw_verdicts)
         merged = merge_adjacency_5bd(filtered)
         w_density = compute_w_density(

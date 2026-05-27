@@ -43,6 +43,7 @@ from research.harness.v2_selection_mechanic.run import (
     DEFAULT_COHORT_CSV_BY_VARIABLE,
     REQUIRED_COHORT_CSV_HEADERS,
     CohortCsvSchemaError,
+    MissingCanonicalVariableError,
     main as run_main,
     read_cohort_csv,
     run_analysis,
@@ -352,6 +353,126 @@ def test_read_cohort_csv_raises_on_empty_file(tmp_path: Path) -> None:
     bad.write_text("", encoding="utf-8")
     with pytest.raises(CohortCsvSchemaError, match="empty or has no header"):
         read_cohort_csv(bad)
+
+
+def test_read_cohort_csv_raises_on_header_only_zero_data_rows(tmp_path: Path) -> None:
+    """Codex R2 MAJOR #2 fix discriminator: header-only cohort CSV
+    (valid headers but zero data rows) -> CohortCsvSchemaError.
+
+    Pre-fix: header-only CSV returned []; five such CSVs converged to
+    COMPATIBLE synthesis. Post-fix: fail-closed.
+    """
+    bad = tmp_path / "headeronly.csv"
+    bad.write_text(
+        "ticker,asof_date,cohort_label\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(CohortCsvSchemaError, match="zero data rows"):
+        read_cohort_csv(bad)
+
+
+def test_read_cohort_csv_raises_on_empty_cohort_label(tmp_path: Path) -> None:
+    """Codex R2 MINOR #1 fix discriminator: empty cohort_label cell ->
+    CohortCsvSchemaError.
+    """
+    bad = tmp_path / "bad.csv"
+    bad.write_text(
+        "ticker,asof_date,cohort_label\nABC,2026-05-01,\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(CohortCsvSchemaError, match="empty cohort_label"):
+        read_cohort_csv(bad)
+
+
+# ----- Codex R2 MAJOR #3 fix: run_analysis missing canonical variable -----
+
+
+def _full_cohort_pairs() -> dict[str, list[tuple[str, date]]]:
+    asof = date(2025, 6, 1)
+    return {
+        v: [("AAA", asof)] for v, _, _ in BINDING_SIGNALS_TABLE
+    }
+
+
+def _full_verdicts() -> dict[str, list[WPrimaryVerdict]]:
+    asof = date(2025, 6, 1)
+    return {
+        v: [
+            WPrimaryVerdict(
+                ticker="AAA",
+                anchor_asof_date=asof,
+                trough_1_date=date(2025, 5, 1),
+                trough_2_date=date(2025, 5, 15),
+                composite_score=0.7,
+            )
+        ]
+        for v, _, _ in BINDING_SIGNALS_TABLE
+    }
+
+
+def test_run_analysis_raises_on_missing_canonical_cohort_variable(tmp_path: Path) -> None:
+    """Codex R2 MAJOR #3 fix: run_analysis fails closed if a canonical
+    V2 binding variable is missing from cohort_pairs_by_variable.
+
+    Pre-fix: missing variable silently substituted with []; signal still
+    emitted with None delta; 5-row synthesize() contract satisfied;
+    misleading COMPATIBLE classification.
+    """
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    df = _synthetic_df(date(2024, 1, 1), 400)
+    df.to_parquet(cache_dir / "AAA.parquet")
+
+    cohort_pairs = _full_cohort_pairs()
+    del cohort_pairs["vcp.proximity_max_pct"]  # remove canonical variable
+    with pytest.raises(MissingCanonicalVariableError, match="vcp.proximity_max_pct"):
+        run_analysis(
+            cohort_pairs_by_variable=cohort_pairs,
+            verdicts_by_variable=_full_verdicts(),
+            cache_dir=cache_dir,
+        )
+
+
+def test_run_analysis_raises_on_missing_canonical_verdicts_variable(tmp_path: Path) -> None:
+    """Codex R2 MAJOR #3 fix: run_analysis fails closed if a canonical
+    V2 binding variable is missing from verdicts_by_variable.
+    """
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    df = _synthetic_df(date(2024, 1, 1), 400)
+    df.to_parquet(cache_dir / "AAA.parquet")
+
+    verdicts = _full_verdicts()
+    del verdicts["vcp.orderliness_max_bar_ratio"]
+    with pytest.raises(MissingCanonicalVariableError, match="vcp.orderliness_max_bar_ratio"):
+        run_analysis(
+            cohort_pairs_by_variable=_full_cohort_pairs(),
+            verdicts_by_variable=verdicts,
+            cache_dir=cache_dir,
+        )
+
+
+def test_run_analysis_accepts_empty_list_for_canonical_variable(tmp_path: Path) -> None:
+    """Empty list [] for a canonical variable is ALLOWED (e.g., cohort
+    produced zero W primaries); the variable's PRESENCE in the dict is
+    the contract, not non-empty value."""
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    df = _synthetic_df(date(2024, 1, 1), 400)
+    df.to_parquet(cache_dir / "AAA.parquet")
+    verdicts = _full_verdicts()
+    verdicts["vcp.orderliness_max_bar_ratio"] = []  # explicitly empty
+    result = run_analysis(
+        cohort_pairs_by_variable=_full_cohort_pairs(),
+        verdicts_by_variable=verdicts,
+        cache_dir=cache_dir,
+    )
+    assert len(result.per_variable_signal_table) == 5
+    obr_signal = next(
+        s for s in result.per_variable_signal_table
+        if s.variable_name == "vcp.orderliness_max_bar_ratio"
+    )
+    assert obr_signal.filtered_w_count == 0
 
 
 # ============= run_analysis end-to-end on planted verdicts =============
