@@ -1,0 +1,350 @@
+{
+  "cohort_label": "v2_vcp_tightness_range_factor_sp1_005",
+  "cohort_selection_method": "v2_binding_variable_flips",
+  "flip_count": 67,
+  "flips": [
+    {
+      "data_asof_date": "2026-05-22",
+      "eval_run_id": 64,
+      "ticker": "YOU"
+    },
+    {
+      "data_asof_date": "2026-05-18",
+      "eval_run_id": 57,
+      "ticker": "YOU"
+    },
+    {
+      "data_asof_date": "2026-05-18",
+      "eval_run_id": 56,
+      "ticker": "YOU"
+    },
+    {
+      "data_asof_date": "2026-05-18",
+      "eval_run_id": 55,
+      "ticker": "YOU"
+    },
+    {
+      "data_asof_date": "2026-05-15",
+      "eval_run_id": 54,
+      "ticker": "DK"
+    },
+    {
+      "data_asof_date": "2026-05-15",
+      "eval_run_id": 53,
+      "ticker": "DK"
+    },
+    {
+      "data_asof_date": "2026-05-15",
+      "eval_run_id": 52,
+      "ticker": "SSRM"
+    },
+    {
+      "data_asof_date": "2026-05-15",
+      "eval_run_id": 52,
+      "ticker": "WULF"
+    },
+    {
+      "data_asof_date": "2026-05-13",
+      "eval_run_id": 45,
+      "ticker": "TSHA"
+    },
+    {
+      "data_asof_date": "2026-05-12",
+      "eval_run_id": 44,
+      "ticker": "NAT"
+    },
+    {
+      "data_asof_date": "2026-05-12",
+      "eval_run_id": 44,
+      "ticker": "RLMD"
+    },
+    {
+      "data_asof_date": "2026-05-12",
+      "eval_run_id": 44,
+      "ticker": "UCTT"
+    },
+    {
+      "data_asof_date": "2026-05-11",
+      "eval_run_id": 43,
+      "ticker": "RLMD"
+    },
+    {
+      "data_asof_date": "2026-05-11",
+      "eval_run_id": 42,
+      "ticker": "RLMD"
+    },
+    {
+      "data_asof_date": "2026-05-08",
+      "eval_run_id": 41,
+      "ticker": "PTEN"
+    },
+    {
+      "data_asof_date": "2026-05-08",
+      "eval_run_id": 40,
+      "ticker": "PTEN"
+    },
+    {
+      "data_asof_date": "2026-05-04",
+      "eval_run_id": 33,
+      "ticker": "RLMD"
+    },
+    {
+      "data_asof_date": "2026-05-01",
+      "eval_run_id": 32,
+      "ticker": "KOD"
+    },
+    {
+      "data_asof_date": "2026-05-01",
+      "eval_run_id": 31,
+      "ticker": "KOD"
+    },
+    {
+      "data_asof_date": "2026-04-30",
+      "eval_run_id": 30,
+      "ticker": "KOD"
+    },
+    {
+      "data_asof_date": "2026-04-30",
+      "eval_run_id": 30,
+      "ticker": "RLMD"
+    },
+    {
+      "data_asof_date": "2026-04-30",
+      "eval_run_id": 30,
+      "ticker": "RNG"
+    },
+    {
+      "data_asof_date": "2026-04-30",
+      "eval_run_id": 29,
+      "ticker": "KOD"
+    },
+    {
+      "data_asof_date": "2026-04-30",
+      "eval_run_id": 29,
+      "ticker": "RLMD"
+    },
+    {
+      "data_asof_date": "2026-04-30",
+      "eval_run_id": 29,
+      "ticker": "RNG"
+    },
+    {
+      "data_asof_date": "2026-04-29",
+      "eval_run_id": 28,
+      "ticker": "KOD"
+    },
+    {
+      "data_asof_date": "2026-04-29",
+      "eval_run_id": 28,
+      "ticker": "RNG"
+    },
+    {
+      "data_asof_date": "2026-04-29",
+      "eval_run_id": 28,
+      "ticker": "TROX"
+    },
+    {
+      "data_asof_date": "2026-04-29",
+      "eval_run_id": 27,
+      "ticker": "KOD"
+    },
+    {
+      "data_asof_date": "2026-04-29",
+      "eval_run_id": 27,
+      "ticker": "RNG"
+    },
+    {
+      "data_asof_date": "2026-04-29",
+      "eval_run_id": 27,
+      "ticker": "TROX"
+    },
+    {
+      "data_asof_date": "2026-04-29",
+      "eval_run_id": 26,
+      "ticker": "KOD"
+    },
+    {
+      "data_asof_date": "2026-04-29",
+      "eval_run_id": 26,
+      "ticker": "RNG"
+    },
+    {
+      "data_asof_date": "2026-04-29",
+      "eval_run_id": 26,
+      "ticker": "TROX"
+    },
+    {
+      "data_asof_date": "2026-04-29",
+      "eval_run_id": 25,
+      "ticker": "KOD"
+    },
+    {
+      "data_asof_date": "2026-04-29",
+      "eval_run_id": 25,
+      "ticker": "RNG"
+    },
+    {
+      "data_asof_date": "2026-04-29",
+      "eval_run_id": 25,
+      "ticker": "TROX"
+    },
+    {
+      "data_asof_date": "2026-04-28",
+      "eval_run_id": 24,
+      "ticker": "FRO"
+    },
+    {
+      "data_asof_date": "2026-04-28",
+      "eval_run_id": 24,
+      "ticker": "RNG"
+    },
+    {
+      "data_asof_date": "2026-04-28",
+      "eval_run_id": 24,
+      "ticker": "YOU"
+    },
+    {
+      "data_asof_date": "2026-04-28",
+      "eval_run_id": 23,
+      "ticker": "FRO"
+    },
+    {
+      "data_asof_date": "2026-04-28",
+      "eval_run_id": 23,
+      "ticker": "RNG"
+    },
+    {
+      "data_asof_date": "2026-04-28",
+      "eval_run_id": 23,
+      "ticker": "YOU"
+    },
+    {
+      "data_asof_date": "2026-04-28",
+      "eval_run_id": 22,
+      "ticker": "FRO"
+    },
+    {
+      "data_asof_date": "2026-04-28",
+      "eval_run_id": 22,
+      "ticker": "RNG"
+    },
+    {
+      "data_asof_date": "2026-04-28",
+      "eval_run_id": 22,
+      "ticker": "YOU"
+    },
+    {
+      "data_asof_date": "2026-04-27",
+      "eval_run_id": 21,
+      "ticker": "DNTH"
+    },
+    {
+      "data_asof_date": "2026-04-27",
+      "eval_run_id": 21,
+      "ticker": "FRO"
+    },
+    {
+      "data_asof_date": "2026-04-27",
+      "eval_run_id": 20,
+      "ticker": "DNTH"
+    },
+    {
+      "data_asof_date": "2026-04-27",
+      "eval_run_id": 20,
+      "ticker": "FRO"
+    },
+    {
+      "data_asof_date": "2026-04-27",
+      "eval_run_id": 19,
+      "ticker": "DNTH"
+    },
+    {
+      "data_asof_date": "2026-04-27",
+      "eval_run_id": 19,
+      "ticker": "FRO"
+    },
+    {
+      "data_asof_date": "2026-04-24",
+      "eval_run_id": 18,
+      "ticker": "DNTH"
+    },
+    {
+      "data_asof_date": "2026-04-24",
+      "eval_run_id": 18,
+      "ticker": "RLMD"
+    },
+    {
+      "data_asof_date": "2026-04-24",
+      "eval_run_id": 17,
+      "ticker": "DNTH"
+    },
+    {
+      "data_asof_date": "2026-04-24",
+      "eval_run_id": 17,
+      "ticker": "RLMD"
+    },
+    {
+      "data_asof_date": "2026-04-24",
+      "eval_run_id": 16,
+      "ticker": "DNTH"
+    },
+    {
+      "data_asof_date": "2026-04-24",
+      "eval_run_id": 16,
+      "ticker": "RLMD"
+    },
+    {
+      "data_asof_date": "2026-04-24",
+      "eval_run_id": 15,
+      "ticker": "DNTH"
+    },
+    {
+      "data_asof_date": "2026-04-24",
+      "eval_run_id": 15,
+      "ticker": "RLMD"
+    },
+    {
+      "data_asof_date": "2026-04-23",
+      "eval_run_id": 14,
+      "ticker": "DNTH"
+    },
+    {
+      "data_asof_date": "2026-04-23",
+      "eval_run_id": 14,
+      "ticker": "RLMD"
+    },
+    {
+      "data_asof_date": "2026-04-23",
+      "eval_run_id": 13,
+      "ticker": "DNTH"
+    },
+    {
+      "data_asof_date": "2026-04-23",
+      "eval_run_id": 13,
+      "ticker": "RLMD"
+    },
+    {
+      "data_asof_date": "2026-04-23",
+      "eval_run_id": 12,
+      "ticker": "DNTH"
+    },
+    {
+      "data_asof_date": "2026-04-21",
+      "eval_run_id": 10,
+      "ticker": "OII"
+    },
+    {
+      "data_asof_date": "2026-04-21",
+      "eval_run_id": 9,
+      "ticker": "OII"
+    }
+  ],
+  "new_bucket": "aplus",
+  "old_bucket": "watch",
+  "source_sensitivity_md": "exports/diagnostics/aplus-sensitivity-v2-20260524T205849Z.md",
+  "source_sensitivity_md_sha256": "b25bcde944c33c7a44d049167e78e9d5c7b3d4fc5538ccc5e9cdc8e01e27a143",
+  "source_sensitivity_md_size_bytes": 830034,
+  "sweep_point": 1.005,
+  "v2_binding_variable": "vcp.tightness_range_factor",
+  "variable_name": "vcp.tightness_range_factor"
+}
