@@ -13,7 +13,7 @@
 
 ## Sec 1 Dispatch outcome
 
-**SHIPPED end-to-end.** 9-ruleset x 2-substrate G2 W-bottom-derived ruleset backtest complete; 9-metric scorecard emitted with descriptive narrative; gotcha #33 banned-verdict-terms LOCK preserved throughout; gotcha #35 prior-arc-anchor citation discipline FIRST CANONICAL APPLICATION shipped.
+**SHIPPED end-to-end (Slices 0-8 complete; both Codex MCP chains CONVERGED).** 9-ruleset x 2-substrate G2 W-bottom-derived ruleset backtest complete; 9-metric scorecard emitted with descriptive narrative; gotcha #33 banned-verdict-terms LOCK preserved throughout; gotcha #35 prior-arc-anchor citation discipline FIRST CANONICAL APPLICATION shipped (substrate SHAs + metric formulas at every prior-arc citation).
 
 **Joint hypothesis (H_joint) NOT supported at the tested substrate scale.** All 9 rulesets show expectancy_R below zero on both R2-A (N=65) and D2 EXPANDED (N=42) substrates. G_bulkowski's tight-trough_2 stop achieves a substantive avg_loss_R reduction (1.55R -> 0.62R on R2-A) but does not produce expectancy_R > 0 at this substrate size. The 9-metric scorecard surfaces SUBSTANTIVE diagnostic substance (which stop convention reduces per-loss magnitude; volume gating selectivity-vs-conversion trade-off; D2 substrate-freshness sensitivity).
 
@@ -31,11 +31,11 @@
 | 5a | run.py orchestrator + io.py emitters + 47 lock+orchestrator tests | SHIPPED | `a3fb351` |
 | 5b | Codex MCP pre-smoke chain R1-R5 (CONVERGED) | SHIPPED | `9626d84` + `ed3e2d9` + `9b5b263` + `901b9ea` + `63228d3` + `5f15aeb` |
 | 5c | Smoke artifact + .gitignore exception | SHIPPED | `267ed25` |
-| 6 | Findings doc + return report | THIS commit | - |
-| 7 | Codex MCP post-smoke chain | PENDING | - |
-| 8 | Post-Codex sweep + return report finalization | PENDING | - |
+| 6 | Findings doc + return report initial draft | SHIPPED | `48a5f82` |
+| 7 | Codex MCP post-smoke chain R6-R7 (CONVERGED) | SHIPPED | `bb7ddec` + `fe4dada` |
+| 8 | Return report finalization (this slice) | THIS commit | - |
 
-Total commits through Slice 6: 13 implementer commits + 1 dispatch brief = 14 commits on branch.
+Total commits through Slice 8: 15 implementer commits + 1 dispatch brief = 16 commits on branch.
 
 ---
 
@@ -84,13 +84,15 @@ Total commits through Slice 6: 13 implementer commits + 1 dispatch brief = 14 co
 
 ---
 
-## Sec 4 Codex MCP chain summary (pre-smoke; Chain 1)
+## Sec 4 Codex MCP chain summary (2 chains; both CONVERGED)
+
+### Sec 4.1 Chain #1 (pre-smoke; R1-R5)
 
 5-round chain; CONVERGED at R5 NO_NEW_CRITICAL_MAJOR. Detailed per-round dispositions in `docs/g2-w-bottom-ruleset-backtest-findings-20260527.md` Sec 8.
 
 Cumulative: 3 CRITICAL + 13 MAJOR + 12 MINOR. ALL CRITICAL + MAJOR resolved or accepted-with-rationale. 4 Brief Amendments banked.
 
-**Codex caught REAL defects against actual production code:**
+**Codex Chain #1 caught REAL defects against actual production code:**
 - R1.C1: target formula entry-anchored vs pattern-anchored (brief Sec 2.1 line 156 LOCK violation); fixed across all 3 rulesets
 - R1.C2: entry/exit price model harness-parity vs brief-literal (brief Sec 2.1-2.3 LOCK violation); fixed via entry-at-trigger-close + DeferredExit-at-next-bar-open
 - R1.M2: D2 EXPANDED N=71 vs actual N=42 substrate drift (gotcha #34 trigger; Brief Amendment 1 banked)
@@ -99,9 +101,28 @@ Cumulative: 3 CRITICAL + 13 MAJOR + 12 MINOR. ALL CRITICAL + MAJOR resolved or a
 - R3.M2: peak_R can be underreported on next-bar-open gap-up exits (below-zero drawdown_to_exit_R prevention)
 - R4.MAJOR: Brief Amendment 1 not propagated to locked brief doc (gotcha #34 sub-refinement direct evidence)
 
-**Codex DID NOT catch (operator might still discover at smoke-time review):**
-- Substrate-window short (21-31d) extrapolation noise in estimated_dollar_per_period -- noted in findings doc Sec 5.1; banked as caveat
-- D2 Amendment 5 substrate-freshness sensitivity as a substantive methodology finding -- noted in findings doc Sec 4.2
+### Sec 4.2 Chain #2 (post-smoke; R6-R7)
+
+2-round chain; CONVERGED at R7 NO_NEW_CRITICAL_MAJOR. Per operator's 2-chain instruction (added after Slice 5a; an additional Codex review point AFTER implementation completion but BEFORE smoke artifact generation, then a separate chain post-smoke for narrative discipline + smoke-output coherence).
+
+Cumulative: 0 CRITICAL + 3 MAJOR + 5 MINOR. ALL MAJOR resolved.
+
+**Codex Chain #2 caught REAL narrative-discipline defects in findings + return report:**
+- R6.M1: gotcha #33 banned-verdict-term LOCK violations in findings doc CURRENT-RUN narrative (lowercase 'negative expectancy' / 'positive expectancy' / 'NEGATIVE baseline' as G2-verdict labels; not just historical-context citation); swept + replaced with metric-only descriptors
+- R6.M2: gotcha #35 prior-arc-anchor metric-definition incomplete (D2 '+1.220R' had no formula; D_filt loose definition; claimed R2-A '22.5%' citation not actually present in claimed Sec 1+Sec 3); added formula parentheticals + clarified Sec 3 explicit citation
+- R6.M3: cross-doc SHA citation incomplete (findings + return report mentioned 'SHA-locked' but didn't cite actual SHAs); added explicit SHA + N + window-days header blocks to both docs
+
+### Sec 4.3 Cumulative across both chains
+
+3 CRITICAL + 16 MAJOR + 17 MINOR. ALL CRITICAL + MAJOR resolved or accepted-with-rationale. 4 Brief Amendments banked in the locked brief doc itself. 2 NEW sub-refinement candidates banked (per Sec 8 below).
+
+**Codex DID NOT catch (operator might still discover at post-merge review):**
+- Substrate-window short (21-31d) extrapolation noise in estimated_dollar_per_period -- noted in findings doc Sec 5.1; banked as caveat in V2 candidate #8
+- D2 Amendment 5 substrate-freshness sensitivity as a substantive methodology finding -- the IMMEDIATE finding was surfaced by Codex R1.M2 (D2 N=71 vs N=42 drift); the broader methodology lesson (any tight-window substrate verdict may not REPLICATE under regenerate-cohort refresh) is captured in findings doc Sec 4.2 + return report Sec 6 V2 candidates #1
+
+**2 NEW sub-refinement candidates banked from cumulative chain (Sec 8 below):**
+- Expansion #2 sub-refinement: ruleset-formula reference-frame discipline
+- Gotcha #34 sub-refinement: Brief Amendment immediate-propagation discipline
 
 ---
 
@@ -206,4 +227,4 @@ For future dispatches that reference G2 or extend it:
 
 ---
 
-*End of G2 W-bottom-ruleset backtest return report. SHIPPED end-to-end through Slice 6; Slice 7 Codex MCP post-smoke chain pending; Slice 8 post-Codex sweep + return report finalization pending. Joint hypothesis NOT supported at tested substrate scale; substantive diagnostic substance surfaced via 9-metric scorecard; ZERO production swing/ writes; ZERO new Schwab API calls; cumulative discipline preserved across 35 CLAUDE.md gotchas + 19 pre-Codex expansion candidates; 2 NEW expansion candidates banked for future dispatch authoring.*
+*End of G2 W-bottom-ruleset backtest return report. SHIPPED end-to-end through Slice 8 (all slices complete; both Codex MCP chains CONVERGED at NO_NEW_CRITICAL_MAJOR). Joint hypothesis NOT supported at tested substrate scale; substantive diagnostic substance surfaced via 9-metric scorecard; ZERO production swing/ writes; ZERO new Schwab API calls; cumulative discipline preserved across 35 CLAUDE.md gotchas + 19 pre-Codex expansion candidates; 2 NEW sub-refinement candidates banked for future dispatch authoring (Expansion #2 sub-refinement + Gotcha #34 sub-refinement). Dispatch deliverable READY for operator-paired post-merge review + next-arc disposition decision.*
