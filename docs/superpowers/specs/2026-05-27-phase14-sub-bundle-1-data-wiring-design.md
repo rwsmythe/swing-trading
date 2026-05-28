@@ -521,7 +521,7 @@ Anticipated commit topology:
 - T-4.1 Cross-cutting: L2 LOCK source-grep verification (parametric test; 1 commit)
 - T-4.2 Closer: ASCII discipline verification commit + final cleanup (1 commit)
 
-**Estimated total: 8-12 commits.** Within dispatch brief's 8-15 commit estimate.
+**Estimated total: 8-12 commits.** Within dispatch brief's 8-15 commit estimate. The R1-R3 spec-level additions (restore-SQL artifact generation in T-1.2; module-level logger addition in T-2.1; 3-field VM contract in T-3.1; S5a/S5b operator-gate split) are absorbed in the existing per-task buckets without inflating the commit count beyond the range.
 
 ### §10.3 Test count estimation
 
@@ -531,7 +531,7 @@ Anticipated commit topology:
 - L2 LOCK source-grep: ~1 test (parametric)
 - Cumulative gotcha set: ~3 tests (gotcha #11 verification; #27 log-emit; #32 ASCII)
 
-**Estimated total: ~32 new tests.** Within dispatch brief's 25-50 test estimate.
+**Estimated total: ~34-36 new tests** (slight bump from R3's ~32 estimate to absorb the restore-SQL artifact roundtrip test + the logger-emit `caplog` assertion test + the S5b LIVE-case template-render test). Still well within dispatch brief's 25-50 test estimate.
 
 ### §10.4 Cross-bundle pin (if any)
 
