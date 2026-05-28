@@ -57,6 +57,61 @@ from research.harness.w_bottom_ruleset_comparison.walkforward import (
 TriggerPredicate = Callable[[pd.DataFrame, int, PrimaryVerdict], bool]
 
 
+# Forward-declare for the GhiRuleset Protocol below; defined as a class
+# immediately after.
+class _DeferredExitProtocolSentinel:
+    """Sentinel for the GhiRuleset Protocol's return-type annotation; see
+    DeferredExit class definition below for the actual structure."""
+
+
+GhiAction = "FullExit | ScaleOut | DeferredExit | None"
+
+
+class GhiRuleset(Protocol):
+    """G2-specific ruleset protocol; extends the existing harness's
+    Ruleset protocol with DeferredExit as a valid return type from
+    `update_and_check`.
+
+    Per Codex R3 MINOR #3 closure: the imported `Ruleset` protocol from
+    research.harness.w_bottom_ruleset_comparison.walkforward declares
+    `update_and_check -> FullExit | ScaleOut | None` (the existing
+    harness's action set). G/H/I rulesets additionally emit
+    DeferredExit for next-bar-open exit semantics (brief Sec 2.1-2.3
+    LOCK). This local Protocol makes the wider G2-specific contract
+    explicit for type-checking + future implementer reference.
+    """
+
+    name: str
+
+    def initial_stop(
+        self, *, verdict: PrimaryVerdict, entry_price: float
+    ) -> float: ...
+
+    def init_state(
+        self,
+        *,
+        verdict: PrimaryVerdict,
+        bars: pd.DataFrame,
+        entry_idx: int,
+        entry_price: float,
+        initial_stop: float,
+    ) -> State: ...
+
+    def update_and_check(
+        self,
+        *,
+        state: State,
+        bars: pd.DataFrame,
+        bar_idx: int,
+        entry_idx: int,
+        entry_price: float,
+        initial_R: float,
+    ):
+        """Returns ONE action this bar (FullExit / ScaleOut / DeferredExit)
+        or None to hold."""
+        ...
+
+
 @dataclass(frozen=True)
 class DeferredExit:
     """G2-specific action: signals 'exit on the NEXT bar at its open
@@ -105,8 +160,11 @@ def find_trigger_index_with_predicate(
 ) -> int | None:
     """First index i where bars.index[i].date() > lower_bound_exclusive AND
     <= upper_bound_inclusive AND bars["Close"].iloc[i] > trigger_threshold AND
-    i+1 < len(bars) (next session exists for entry-open) AND
     trigger_predicate(bars, i, verdict) returns True.
+
+    Per brief Sec 2.1-2.3 LOCK + Codex R2 MAJOR #1 closure: entry is at
+    the trigger bar's CLOSE (not next-bar open), so NO requirement that
+    bar i+1 exists. The final bar of data is a valid trigger candidate.
 
     Mirrors find_trigger_index from the existing harness with the predicate
     extension applied AFTER the close>threshold gate. Predicate-rejected
@@ -155,8 +213,9 @@ def walk_forward_with_trigger_predicate(
     trade row.
 
     The predicate signature is (bars_df, candidate_idx, verdict) -> bool;
-    candidate_idx is the trigger-bar position in `bars` (entry would be at
-    bars.iloc[candidate_idx + 1]).
+    candidate_idx is the trigger-bar position in `bars`. Per brief Sec
+    2.1-2.3 LOCK, entry is at the TRIGGER BAR'S CLOSE (bars.iloc[
+    candidate_idx]['Close']), NOT the next-bar open.
     """
     if not callable(trigger_predicate):
         raise TypeError(
@@ -266,13 +325,27 @@ def walk_forward_with_trigger_predicate(
         # if exists; else i for data-tail fallback). exit_price +
         # exit_date + days_held all reflect the SAME bar so per_trade
         # detail + median_time_in_trade_sessions stay coherent.
+        #
+        # Codex R3 MAJOR #1 closure: at data tail (no bar i+1), the
+        # next-bar-open execution hasn't happened yet. Mark status='open'
+        # with reason '<original>_pending_at_tail' so the trade counts
+        # toward open_at_tail_count (per brief Sec 1.4 metric #8
+        # "Unresolved fraction") rather than contaminating closed-trade
+        # performance metrics. The exit_price = current-bar close (best-
+        # known last price for unrealized-R reporting); a real operator
+        # would resolve the position on the first available next session
+        # outside the backtest data window.
         if isinstance(action, DeferredExit):
             if i + 1 < n_total:
                 exit_idx_canonical = i + 1
                 exit_price_canonical = float(bars["Open"].iloc[i + 1])
+                status_canonical = "closed"
+                reason_suffix = ""
             else:
                 exit_idx_canonical = i
                 exit_price_canonical = float(bars["Close"].iloc[i])
+                status_canonical = "open"
+                reason_suffix = "_pending_at_tail"
             exit_date_i = (
                 bars.index[exit_idx_canonical].date()
                 if hasattr(bars.index[exit_idx_canonical], "date")
@@ -280,15 +353,22 @@ def walk_forward_with_trigger_predicate(
             )
             final_R_remainder = (exit_price_canonical - entry_price) / R
             weighted_R = _weighted_R(state, final_R_remainder)
+            # Codex R3 MAJOR #2 closure: peak_R was computed BEFORE
+            # update_and_check using bar i's High; for next-bar-open
+            # exits, bar i+1's open price may exceed prior peak, making
+            # weighted_R > peak_R and drawdown_to_exit_R negative.
+            # Defensively widen peak to include the actual exit R.
+            peak_R = max(peak_R, weighted_R)
             synthetic_exit_price = entry_price + weighted_R * R
             pnl_dollars = compute_pnl_dollars_fractional(
                 entry_price, synthetic_exit_price, initial_stop
             )
-            exit_reason = (
+            base_reason = (
                 f"{action.reason}_after_scaleout"
                 if state.scale_out_fired
                 else action.reason
             )
+            exit_reason = f"{base_reason}{reason_suffix}"
             return Trade(
                 pattern_id=verdict.pattern_id, ticker=verdict.ticker,
                 ruleset_name=ruleset.name,
@@ -304,7 +384,7 @@ def walk_forward_with_trigger_predicate(
                 exit_date=exit_date_i, exit_price=exit_price_canonical,
                 exit_reason=exit_reason, r_multiple=weighted_R,
                 days_held=(exit_idx_canonical - entry_idx),
-                status="closed",
+                status=status_canonical,
                 triggered=True,
                 trade_pnl_dollars=pnl_dollars,
                 peak_unrealized_R=peak_R,

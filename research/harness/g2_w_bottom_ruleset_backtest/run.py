@@ -11,15 +11,15 @@ Substrate conventions:
   - R2-A (`tests/fixtures/research/r2a_tightness_days_required/cohort.json`):
     consumed VERBATIM (N=65; pre-filtered by the R2-A harness).
   - D2 EXPANDED (`tests/fixtures/research/double_bottom_w_backtest/
-    cohort.json`): loaded raw (N=172); filtered to composite>=0.5 +
+    cohort.json`): loaded raw (N=172); filtered via composite>=0.5 +
     recency<=365d + 5-BD adjacency merge per D2 Amendment 5.
-    Brief Amendment 1 (post-Codex R1 MAJOR #2): brief Sec 1.3 stated
-    'N=71' citing D2 Amendment 5; the SHA-locked fixture + brief-locked
-    filter actually yields N=42 at dispatch baseline (cohort drifted
-    since Amendment 5 was run). Per gotcha #34, the SHA-locked
-    fixture + filter is authoritative; substrate name is
-    'd2_expanded' (no embedded count) to avoid label-vs-actual
-    confusion in artifacts.
+    Brief Amendment 1 (banked post-Codex R1 MAJOR #2): brief Sec 1.3
+    stated 'N=71' citing D2 Amendment 5; the SHA-locked fixture +
+    brief-locked filter actually yields N=42 at dispatch baseline
+    (cohort drifted since Amendment 5 was run). Per gotcha #34,
+    SHA-locked fixture + filter is authoritative. Substrate label
+    is 'd2_expanded' (no embedded stale count); the ACTUAL count
+    surfaces at runtime in substrate_summary.n_filtered.
 
 ZERO production swing/ writes; ZERO new Schwab API calls; ZERO yfinance
 fetches at backtest time (OHLCV via the existing V2 Shape A reader

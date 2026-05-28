@@ -323,10 +323,12 @@ def test_g_full_engine_exits_at_data_tail_on_stop_break_at_last_bar():
         verdict, bars, g, trigger_predicate=bulkowski_trigger_predicate
     )
     assert trade.triggered is True
-    assert trade.status == "closed"
-    assert trade.exit_reason == "stop_hit"
-    # Data-tail fallback: exit_price = current bar close = 51.0;
-    # exit_date = current bar date = post_date; days_held = 23 - 22 = 1
+    # Per Codex R3 MAJOR #1 closure: DeferredExit at data tail is
+    # UNRESOLVED (next-bar-open execution hasn't happened); status='open'
+    # + reason carries '_pending_at_tail' suffix; exit_price = best-known
+    # last price = current-bar close.
+    assert trade.status == "open"
+    assert trade.exit_reason == "stop_hit_pending_at_tail"
     assert trade.exit_price == pytest.approx(51.0)
     assert trade.exit_date == post_date.date()
     assert trade.days_held == 1
