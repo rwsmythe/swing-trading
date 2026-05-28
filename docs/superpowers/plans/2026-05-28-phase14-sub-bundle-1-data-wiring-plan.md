@@ -80,7 +80,7 @@ The orchestrator brief §5 watch item #1 + brainstorm return report §8 forward-
 | `swing/data/repos/candidates.py` | MODIFIED | V2.G3 | append after line 86 (after `fetch_candidates_for_run`) | NEW top-level function `get_latest_sector_industry_per_ticker(conn, tickers) -> dict[str, CandidateSectorIndustryRecord]`; ~40-55 LOC including docstring + `CandidateSectorIndustryRecord` frozen-dataclass (`sector: str, industry: str, candidate_id: int | None, evaluation_run_id: int | None`) carrying provenance so the V2.G3 dry-run table can audit which candidates row supplied a backfill (Codex R1.M#6 LOCK); SQL via dynamic `?` expansion (gotcha #20); empty-input short-circuit |
 | `swing/cli.py` | MODIFIED | V2.G3 | append after line 5170 (after `diagnose_prune_chart_cache`) | NEW `@diagnose_group.command("backfill-trades-sector-industry")` subcommand + helpers; ~150-220 LOC including docstring + dry-run table emit + restore-SQL artifact emit + apply-path UPDATE under `with conn:`; mirrors `_validate_diagnose_db_path` precedent at line 4731 |
 | `swing/web/routes/dashboard.py` | MODIFIED | V2.G4 | insert at line 4 (add `import logging` after `from datetime import datetime`); insert at line ~17 (add `log = logging.getLogger(__name__)` after `router = APIRouter()`); rewrite block at lines 74-87 (replace dead dict-style consumption + narrow exception catch) | +3 import/module lines (logging import + logger module-level addition); ~10 net-changed lines in the handler body |
-| `swing/web/view_models/trades.py` | MODIFIED | P14.N3 | extend `@dataclass DailyManagementTileVM` at lines 2042-2078 with 3 NEW field declarations | +3 lines: `position_capital_denominator_dollars_resolved: float`, `position_capital_utilization_is_provisional: bool`, `position_capital_utilization_pct_effective: float \| None` |
+| `swing/web/view_models/trades.py` | MODIFIED | P14.N3 | extend `@dataclass DailyManagementTileVM` at lines 2042-2078 with 4 NEW field declarations | +4 lines: `position_capital_denominator_dollars_resolved: float`, `position_capital_utilization_is_provisional: bool`, `position_capital_utilization_pct_effective: float \| None`, `position_capital_policy_missing: bool` (Codex R2.M#1+#2 LOCK -- flag for no-active-risk_policy fallback so template can render PROVISIONAL badge + extra-caveat tooltip OUTSIDE the util-value guard even when util is None) |
 | `swing/web/view_models/dashboard.py` | MODIFIED | P14.N3 | extend inline build at lines 1390-1417 with denominator-stamping mirror per `maturity.py:197-219`; also need to add the imports for `resolve_live_capital_denominator_dollars`, `read_live_policy`, `compute_position_capital_utilization`, `date`, `math` at top of file (audit existing imports first; many likely already present) | ~15-25 net-added LOC in the build site + ~3-5 import lines if any missing |
 | `swing/web/templates/partials/daily_management_tile.html.j2` | MODIFIED | P14.N3 | replace block at lines 91-99 (the PROVISIONAL badge `<td>`) | ~15-20 net-changed Jinja LOC: conditional badge emit; rewritten tooltip text; `(?)` inline affordance; render `position_capital_utilization_pct_effective` instead of `position_capital_utilization_pct` |
 
@@ -176,23 +176,29 @@ if snap is not None and snap.data_asof_session:
     except ValueError:
         row_asof = asof_date  # ValueError-guarded fallback per maturity.py:190-194
 
-# NoActivePolicyError fallback per Codex R1.M#1 LOCK + spec section 6.4
-# second bullet: read_live_policy -> get_active_policy raises
-# NoActivePolicyError when no risk_policy row has is_active=1
-# (pre-Phase-9 / pre-seed DB state OR a manual UPDATE that flipped every
-# row inactive). The build site treats this as PROVISIONAL with extra-
-# caveat tooltip, NOT a 500.
+# NoActivePolicyError fallback per Codex R1.M#1 + R2.M#1+M#2 LOCK +
+# spec section 6.4 second bullet: read_live_policy ->
+# get_active_policy raises NoActivePolicyError when no risk_policy row
+# has is_active=1 (pre-Phase-9 / pre-seed DB state OR a manual UPDATE
+# that flipped every row inactive). The build site treats this as
+# PROVISIONAL with EXTRA-CAVEAT tooltip per spec section 6.4 second
+# bullet -- NOT a 500. Codex R2.M#1+#2 LOCK: set policy_missing=True
+# so the template can render the badge + caveat OUTSIDE the util-
+# value guard (otherwise util_pct_effective=None suppresses badge).
 try:
     live_policy = read_live_policy(conn)
+    policy_missing = False
 except NoActivePolicyError:
     live_policy = None
+    policy_missing = True
 if live_policy is not None:
     denom_resolved, denom_badge = resolve_live_capital_denominator_dollars(
         conn, asof_date=row_asof, at_trade_time_policy=live_policy,
     )
 else:
     # Denominator undefined; PROVISIONAL with util=None
-    # (template renders em-dash for the cell).
+    # (template renders em-dash for the value + emits the policy-
+    # missing badge + extra-caveat tooltip via the policy_missing flag).
     denom_resolved = 0.0
     denom_badge = "PROVISIONAL"
 is_provisional = (denom_badge == "PROVISIONAL")
@@ -251,25 +257,42 @@ tiles.append(DailyManagementTileVM(
 <td data-tile-cell="position_capital_utilization_pct">
     {%- if tile.position_capital_utilization_pct_effective is not none -%}
         {{ "%.1f"|format(tile.position_capital_utilization_pct_effective * 100.0) }}%
-        {%- if tile.position_capital_utilization_is_provisional -%}
-            <span class="badge badge-provisional" data-marker="PROVISIONAL"
-                  title="Capital denominator is the V1 fallback (capital_floor_constant_dollars). Clears to LIVE when an account_equity_snapshots row covers the session date (e.g., swing schwab fetch --snapshot when integration LIVE).">PROVISIONAL</span>
-            <button type="button" class="muted help-affordance"
-                    data-help="provisional-capital"
-                    aria-describedby="provisional-capital-help-1"
-                    aria-label="Why is this PROVISIONAL?">
-                (?)
-            </button>
-            <span id="provisional-capital-help-1" class="help-detail" role="tooltip">
-                LIVE when account_equity_snapshots row covers today; PROVISIONAL otherwise.
-            </span>
-            <!-- NOTE: id suffix mirrors tile.trade_id at template render time
-                 so multiple PROVISIONAL tiles on the same page emit unique
-                 ids. Codex R1.M#2 LOCK -- aria-describedby targets MUST be
-                 unique per tile. Test uses tile_id=1 fixture. -->
-
-        {%- endif -%}
     {%- else -%}--{%- endif -%}
+    {#- Codex R2.M#1+M#2 LOCK: badge + help rendered OUTSIDE the util-value
+        guard so the NoActivePolicyError fallback (where
+        util_pct_effective is None + policy_missing=True) still surfaces
+        the PROVISIONAL marker with a distinct extra-caveat tooltip. -#}
+    {%- if tile.position_capital_policy_missing -%}
+        <span class="badge badge-provisional" data-marker="PROVISIONAL"
+              data-cause="policy_missing"
+              title="No active risk_policy row -- denominator cannot be resolved. Operator-actionable: run `swing db-migrate` to apply migration 0017's seed OR `swing config policy import-from-toml --field capital_floor_constant_dollars` to ratify the active policy.">PROVISIONAL</span>
+        <button type="button" class="muted help-affordance"
+                data-help="provisional-capital-policy-missing"
+                aria-describedby="provisional-capital-help-1"
+                aria-label="Why is this PROVISIONAL?">
+            (?)
+        </button>
+        <span id="provisional-capital-help-1" class="help-detail" role="tooltip">
+            No active risk_policy row found (zero rows have is_active=1). Run `swing db-migrate` or `swing config policy import-from-toml` to remediate.
+        </span>
+    {%- elif tile.position_capital_utilization_is_provisional -%}
+        <span class="badge badge-provisional" data-marker="PROVISIONAL"
+              data-cause="snapshot_missing"
+              title="Capital denominator is the V1 fallback (capital_floor_constant_dollars). Clears to LIVE when an account_equity_snapshots row covers the session date (e.g., swing schwab fetch --snapshot when integration LIVE).">PROVISIONAL</span>
+        <button type="button" class="muted help-affordance"
+                data-help="provisional-capital"
+                aria-describedby="provisional-capital-help-1"
+                aria-label="Why is this PROVISIONAL?">
+            (?)
+        </button>
+        <span id="provisional-capital-help-1" class="help-detail" role="tooltip">
+            LIVE when account_equity_snapshots row covers today; PROVISIONAL otherwise.
+        </span>
+        <!-- NOTE: id suffix mirrors tile.trade_id at template render time
+             so multiple PROVISIONAL tiles on the same page emit unique
+             ids. Codex R1.M#2 LOCK -- aria-describedby targets MUST be
+             unique per tile. Test uses tile_id=1 fixture. -->
+    {%- endif -%}
 </td>
 ```
 
@@ -514,7 +537,8 @@ from swing.data.repos.candidates import (
 
 def test_signature_contract_signature_pinned():
     """Lock signature: get_latest_sector_industry_per_ticker(conn, tickers)
-    returns dict[str, tuple[str, str]] per spec section 4.3."""
+    returns dict[str, CandidateSectorIndustryRecord] per spec section 4.3
+    + Codex R1.M#6 LOCK (provenance metadata carried via the record)."""
     sig = inspect.signature(get_latest_sector_industry_per_ticker)
     params = list(sig.parameters.values())
     assert len(params) == 2, f"expected 2 params, got {len(params)}"
@@ -2324,7 +2348,12 @@ def jinja_env():
     )
 
 
-def _build_tile_vm(*, is_provisional: bool, util_pct_effective: float | None):
+def _build_tile_vm(
+    *,
+    is_provisional: bool,
+    util_pct_effective: float | None,
+    policy_missing: bool = False,
+):
     return DailyManagementTileVM(
         trade_id=1, ticker="VSAT", state="entered",
         current_price=42.0, current_stop=40.0, open_R_effective=0.5,
@@ -2337,9 +2366,13 @@ def _build_tile_vm(*, is_provisional: bool, util_pct_effective: float | None):
         planned_target_R=2.0,
         data_asof_session="2026-05-27",
         # NEW fields per P14.N3:
-        position_capital_denominator_dollars_resolved=7500.0,
+        position_capital_denominator_dollars_resolved=(
+            0.0 if policy_missing else 7500.0
+        ),
         position_capital_utilization_is_provisional=is_provisional,
         position_capital_utilization_pct_effective=util_pct_effective,
+        # Codex R2.M#1+M#2 LOCK -- 4th NEW field for policy-missing branch.
+        position_capital_policy_missing=policy_missing,
     )
 
 
@@ -2398,6 +2431,13 @@ class DailyManagementTileVM:
     # swing.trades.daily_management.compute_position_capital_utilization
     # otherwise; None when ill-defined.
     position_capital_utilization_pct_effective: float | None
+    # True iff no risk_policy row has is_active=1 (NoActivePolicyError
+    # caught at the build site). Codex R2.M#1+M#2 LOCK -- template
+    # renders PROVISIONAL badge + extra-caveat tooltip OUTSIDE the
+    # util-value guard so the operator sees a distinct remediation
+    # path (run `swing db-migrate` or `swing config policy
+    # import-from-toml`) even when util_pct_effective is None.
+    position_capital_policy_missing: bool
 ```
 
 - [ ] **T-3.1 Step 4: Extend inline build at `swing/web/view_models/dashboard.py:1390-1417`**
@@ -2427,14 +2467,21 @@ Within the per-(trade, snap) loop ending at the existing `tiles.append(DailyMana
                 except ValueError:
                     row_asof = asof_date  # ValueError-guarded per
                                           # maturity.py:190-194
-            # NoActivePolicyError fallback per Codex R1.M#1 LOCK + spec
-            # section 6.4 second bullet: zero active risk_policy rows
-            # (pre-Phase-9 / pre-seed / mass-deactivation edge) MUST
-            # render PROVISIONAL with extra-caveat tooltip, NOT 500.
+            # NoActivePolicyError fallback per Codex R1.M#1 + R2.M#1+M#2
+            # LOCK + spec section 6.4 second bullet: zero active risk_policy
+            # rows MUST render PROVISIONAL with EXTRA-CAVEAT tooltip
+            # (distinct from the standard PROVISIONAL tooltip), NOT 500
+            # AND NOT silently swallowed. Codex R2.M#1+#2 LOCK: set
+            # policy_missing=True so the template renders the badge
+            # OUTSIDE the util-value guard (util_pct_effective will be
+            # None in this branch and the standard rendering path would
+            # otherwise suppress the badge entirely).
             try:
                 live_policy = read_live_policy(conn)
+                policy_missing = False
             except NoActivePolicyError:
                 live_policy = None
+                policy_missing = True
             if live_policy is not None:
                 denom_resolved, denom_badge = (
                     resolve_live_capital_denominator_dollars(
@@ -2444,8 +2491,10 @@ Within the per-(trade, snap) loop ending at the existing `tiles.append(DailyMana
                     )
                 )
             else:
-                # Denominator undefined; PROVISIONAL with util=None
-                # (template renders em-dash for the cell).
+                # Denominator undefined; PROVISIONAL with util=None.
+                # Template renders em-dash for the cell + emits the
+                # policy-missing badge + extra-caveat tooltip per spec
+                # section 6.4 second bullet.
                 denom_resolved = 0.0
                 denom_badge = "PROVISIONAL"
             is_provisional = (denom_badge == "PROVISIONAL")
@@ -2507,6 +2556,7 @@ Then extend the existing `tiles.append(DailyManagementTileVM(...))` constructor 
                 position_capital_denominator_dollars_resolved=denom_resolved,
                 position_capital_utilization_is_provisional=is_provisional,
                 position_capital_utilization_pct_effective=util_pct_effective,
+                position_capital_policy_missing=policy_missing,
             ))
 ```
 
@@ -2518,21 +2568,42 @@ Edit `swing/web/templates/partials/daily_management_tile.html.j2` — replace li
           <td data-tile-cell="position_capital_utilization_pct">
             {%- if tile.position_capital_utilization_pct_effective is not none -%}
               {{ "%.1f"|format(tile.position_capital_utilization_pct_effective * 100.0) }}%
-              {%- if tile.position_capital_utilization_is_provisional -%}
-                <span class="badge badge-provisional" data-marker="PROVISIONAL"
-                      title="Capital denominator is the V1 fallback (capital_floor_constant_dollars). Clears to LIVE when an account_equity_snapshots row covers the session date (e.g., swing schwab fetch --snapshot when integration LIVE).">PROVISIONAL</span>
-                <button type="button" class="muted help-affordance"
-                        data-help="provisional-capital"
-                        aria-describedby="provisional-capital-help-{{ tile.trade_id }}"
-                        aria-label="Why is this PROVISIONAL?">
-                  (?)
-                </button>
-                <span id="provisional-capital-help-{{ tile.trade_id }}"
-                      class="help-detail" role="tooltip">
-                  LIVE when account_equity_snapshots row covers today; PROVISIONAL otherwise.
-                </span>
-              {%- endif -%}
             {%- else -%}--{%- endif -%}
+            {#- Codex R2.M#1+M#2 LOCK: badge + help rendered OUTSIDE the
+                util-value guard so the NoActivePolicyError fallback
+                (util_pct_effective=None + policy_missing=True) still
+                surfaces a PROVISIONAL marker with EXTRA-CAVEAT tooltip
+                per spec section 6.4 second bullet. The else-if chain
+                preserves the existing snapshot-missing branch as-is. -#}
+            {%- if tile.position_capital_policy_missing -%}
+              <span class="badge badge-provisional" data-marker="PROVISIONAL"
+                    data-cause="policy_missing"
+                    title="No active risk_policy row -- denominator cannot be resolved. Operator-actionable: run `swing db-migrate` to apply migration 0017's seed OR `swing config policy import-from-toml --field capital_floor_constant_dollars` to ratify the active policy.">PROVISIONAL</span>
+              <button type="button" class="muted help-affordance"
+                      data-help="provisional-capital-policy-missing"
+                      aria-describedby="provisional-capital-help-{{ tile.trade_id }}"
+                      aria-label="Why is this PROVISIONAL?">
+                (?)
+              </button>
+              <span id="provisional-capital-help-{{ tile.trade_id }}"
+                    class="help-detail" role="tooltip">
+                No active risk_policy row found (zero rows have is_active=1). Run `swing db-migrate` or `swing config policy import-from-toml` to remediate.
+              </span>
+            {%- elif tile.position_capital_utilization_is_provisional -%}
+              <span class="badge badge-provisional" data-marker="PROVISIONAL"
+                    data-cause="snapshot_missing"
+                    title="Capital denominator is the V1 fallback (capital_floor_constant_dollars). Clears to LIVE when an account_equity_snapshots row covers the session date (e.g., swing schwab fetch --snapshot when integration LIVE).">PROVISIONAL</span>
+              <button type="button" class="muted help-affordance"
+                      data-help="provisional-capital"
+                      aria-describedby="provisional-capital-help-{{ tile.trade_id }}"
+                      aria-label="Why is this PROVISIONAL?">
+                (?)
+              </button>
+              <span id="provisional-capital-help-{{ tile.trade_id }}"
+                    class="help-detail" role="tooltip">
+                LIVE when account_equity_snapshots row covers today; PROVISIONAL otherwise.
+              </span>
+            {%- endif -%}
           </td>
 ```
 
@@ -2637,6 +2708,53 @@ def test_help_affordance_html_structure_present(jinja_env):
 Append:
 
 ```python
+def test_policy_missing_renders_provisional_badge_even_with_em_dash_value(
+    jinja_env,
+):
+    """Codex R2.M#1+M#2 LOCK + spec section 6.4 second bullet: when
+    NoActivePolicyError fires, util_pct_effective is None (em-dash
+    value cell) BUT the PROVISIONAL badge + EXTRA-CAVEAT tooltip MUST
+    still render (NOT suppressed by the value-guard). Distinct
+    data-cause='policy_missing' marker + tooltip wording cites
+    `swing db-migrate` / `swing config policy import-from-toml`."""
+    vm = MagicMock()
+    vm.daily_management_tiles = [_build_tile_vm(
+        is_provisional=True,
+        util_pct_effective=None,  # em-dash value cell
+        policy_missing=True,
+    )]
+    tmpl = jinja_env.get_template("partials/daily_management_tile.html.j2")
+    rendered = tmpl.render(vm=vm)
+    # Em-dash value renders (no util to display).
+    assert "--" in rendered
+    # PROVISIONAL badge still emitted -- distinct cause marker.
+    assert 'data-cause="policy_missing"' in rendered
+    assert 'data-marker="PROVISIONAL"' in rendered
+    # Extra-caveat tooltip cites operator-actionable remediation.
+    assert "swing db-migrate" in rendered
+    assert "swing config policy import-from-toml" in rendered
+    # The standard snapshot-missing branch is NOT emitted in this case.
+    assert 'data-cause="snapshot_missing"' not in rendered
+
+
+def test_snapshot_missing_branch_renders_when_policy_is_active(jinja_env):
+    """The existing PROVISIONAL-by-snapshot-missing branch fires when
+    policy is active (policy_missing=False) but no account_equity row
+    covers asof_session (is_provisional=True). Distinct
+    data-cause='snapshot_missing' marker + standard tooltip wording."""
+    vm = MagicMock()
+    vm.daily_management_tiles = [_build_tile_vm(
+        is_provisional=True,
+        util_pct_effective=0.15,
+        policy_missing=False,
+    )]
+    tmpl = jinja_env.get_template("partials/daily_management_tile.html.j2")
+    rendered = tmpl.render(vm=vm)
+    assert 'data-cause="snapshot_missing"' in rendered
+    assert 'data-cause="policy_missing"' not in rendered
+    assert "swing schwab fetch --snapshot" in rendered
+
+
 def test_em_dash_rendered_as_ascii_dashes(jinja_env):
     """Per gotcha #32: em-dash placeholder for null util_pct_effective
     rendered as ASCII '--' (spec section 6.5 example #5 + section 15.2)."""
@@ -2669,6 +2787,7 @@ plant-inline within each test using the production-shape repo helpers.
 """
 
 import math
+from dataclasses import replace as dataclass_replace
 from datetime import date, datetime
 from unittest.mock import MagicMock
 
@@ -2676,9 +2795,14 @@ import pytest
 
 from swing.config import Config
 from swing.data.db import connect
-from swing.data.models import AccountEquitySnapshot, Trade
-from swing.data.repos.account_equity_snapshots import insert_snapshot
-from swing.data.repos.trades import insert_trade
+from swing.data.models import Trade
+from swing.data.repos.daily_management import (
+    insert_snapshot as insert_dm_snapshot,
+)
+# Codex R2.M#3 LOCK: actual production helper is insert_trade_with_event
+# (NOT insert_trade); audit `swing/data/repos/trades.py:155` for the
+# event_kind + actor kwargs the executing-plans implementer fills in.
+from swing.data.repos.trades import insert_trade_with_event
 from swing.web.view_models.dashboard import build_dashboard
 
 
@@ -2689,10 +2813,19 @@ def _build_dashboard_under_test(*, db_path, cfg=None):
     `build_dashboard(cfg, cache, executor, ohlcv_cache)` per
     swing/web/routes/dashboard.py:27-28. For VM tests we mock the
     price-cache + executor + ohlcv-cache (none are exercised on the
-    tile-build path -- the tile reads exclusively from `daily_management_records`
-    + `trades` + `risk_policy` + `account_equity_snapshots`).
+    tile-build path -- the tile reads exclusively from
+    `daily_management_records` + `trades` + `risk_policy`
+    + `account_equity_snapshots`).
+
+    Codex R2.M#3 LOCK: `Config.from_defaults(cls) -> Config` takes NO
+    args (per swing/config.py:398). To inject a tmp-path db_path we
+    construct defaults THEN replace cfg.paths.db_path via
+    `dataclasses.replace` on the paths sub-config.
     """
-    cfg = cfg or Config.from_defaults(db_path=db_path)
+    if cfg is None:
+        base_cfg = Config.from_defaults()
+        new_paths = dataclass_replace(base_cfg.paths, db_path=db_path)
+        cfg = dataclass_replace(base_cfg, paths=new_paths)
     cache = MagicMock()
     cache.is_degraded.return_value = False
     cache.degraded_until.return_value = None
@@ -2712,26 +2845,46 @@ def planted_vsat_trade_with_snap(tmp_path):
     additional state per their per-test needs (e.g., account_equity
     snapshot for LIVE path; UPDATE risk_policy SET is_active=0 for the
     NoActivePolicyError fallback test).
+
+    Codex R2.M#3 LOCK: uses production helpers `insert_trade_with_event`
+    (NOT `insert_trade`) + `swing.data.repos.daily_management.insert_snapshot`
+    (NOT a hypothetical `insert_daily_management_record`). The executing-
+    plans implementer audits the current signatures of these two helpers
+    via `inspect.signature(insert_trade_with_event)` +
+    `inspect.signature(swing.data.repos.daily_management.insert_snapshot)`
+    + completes the per-test required kwargs (event_kind + actor for
+    insert_trade_with_event; snapshot fields per the Phase 8 dataclass).
     """
-    from swing.data.repos.daily_management import (
-        insert_daily_management_record,
-    )
     db_path = tmp_path / "swing.db"
     conn = connect(db_path)
     try:
-        trade_id = insert_trade(conn, Trade(
-            id=None, ticker="VSAT", state="entered",
-            sector="Technology", industry="Communications Equipment",
-            current_size=10.0, current_stop=40.0,
-            **_build_remaining_trade_fields("VSAT"),
-        ))
-        insert_daily_management_record(
+        # insert_trade_with_event signature per swing/data/repos/trades.py:155
+        # -- production wrapper that creates the trade row + an
+        # event-log row in one transaction. Executing-plans implementer
+        # fills in event_kind='trade_entered' + actor='test' + any
+        # remaining required kwargs the signature requires.
+        trade_id = insert_trade_with_event(
+            conn,
+            trade=Trade(
+                id=None, ticker="VSAT", state="entered",
+                sector="Technology", industry="Communications Equipment",
+                current_size=10.0, current_stop=40.0,
+                **_build_remaining_trade_fields("VSAT"),
+            ),
+            event_kind="trade_entered",
+            actor="test",
+        )
+        # insert_snapshot at swing.data.repos.daily_management:411
+        # (NOT account_equity_snapshots:58 -- both modules export
+        # insert_snapshot; the dm one writes the daily_management_records
+        # row consumed by the tile VM builder).
+        insert_dm_snapshot(
             conn, trade_id=trade_id,
             data_asof_session="2026-05-27",
             current_price=42.0,
             position_capital_utilization_pct=0.15,
             position_capital_denominator_dollars=7500.0,
-            **_build_remaining_dm_record_fields(),
+            **_build_remaining_dm_snapshot_fields(),
         )
         conn.commit()
     finally:
@@ -2772,16 +2925,26 @@ def test_live_when_account_equity_snapshot_covers_data_asof_session(
         # swing/data/repos/account_equity_snapshots.py (Codex R1.M#4 LOCK
         # -- executing-plans implementer audits + completes missing
         # required fields; no ellipsis trailing args).
-        insert_snapshot(conn, AccountEquitySnapshot(
-            snapshot_id=None,
+        # Codex R2.M#4 LOCK: insert_snapshot at
+        # swing/data/repos/account_equity_snapshots.py:58 uses KEYWORD
+        # args (NOT a dataclass arg); AccountEquitySnapshot has 8 fields
+        # (snapshot_id / snapshot_date / equity_dollars / source /
+        # source_artifact_path / recorded_at / recorded_by / notes) per
+        # swing/data/models.py:1343-1359 -- NO schwab_api_call_id,
+        # NO schwab_account_hash. `recorded_by` is NOT NULL.
+        from swing.data.repos.account_equity_snapshots import (
+            insert_snapshot as insert_aes_snapshot,
+        )
+        insert_aes_snapshot(
+            conn,
             snapshot_date="2026-05-27",
             equity_dollars=12345.0,
             source="manual",
             source_artifact_path="test:fixture:p14n3-live",
             recorded_at=datetime.now().isoformat(timespec="seconds"),
-            schwab_api_call_id=None,
+            recorded_by="test",
             notes="P14.N3 LIVE fixture",
-        ))
+        )
         conn.commit()
     finally:
         conn.close()
@@ -2834,16 +2997,21 @@ def test_effective_pct_recomputed_via_compute_position_capital_utilization_when_
         # Plant a snapshot whose equity (12345.0) DIVERGES from the
         # stored denominator (7500.0) so the math.isclose check fails
         # + recompute path fires.
-        insert_snapshot(conn, AccountEquitySnapshot(
-            snapshot_id=None,
+        # Codex R2.M#4 LOCK: keyword args; 8-field shape;
+        # recorded_by required.
+        from swing.data.repos.account_equity_snapshots import (
+            insert_snapshot as insert_aes_snapshot,
+        )
+        insert_aes_snapshot(
+            conn,
             snapshot_date="2026-05-27",
             equity_dollars=12345.0,
             source="manual",
             source_artifact_path="test:fixture:p14n3-divergent",
             recorded_at=datetime.now().isoformat(timespec="seconds"),
-            schwab_api_call_id=None,
+            recorded_by="test",
             notes="P14.N3 divergent-denom fixture",
-        ))
+        )
         conn.commit()
     finally:
         conn.close()
@@ -2866,11 +3034,12 @@ def test_effective_pct_recomputed_via_compute_position_capital_utilization_when_
 def test_no_active_risk_policy_renders_provisional_not_500(
     planted_vsat_trade_with_snap,
 ):
-    """Codex R1.M#1 LOCK + spec section 6.4 second bullet: when
-    risk_policy has zero rows with is_active=1 (pre-Phase-9 / pre-seed
-    DB state OR a manual UPDATE that flipped every row inactive),
-    build_dashboard MUST NOT raise NoActivePolicyError -- it MUST
-    render the tile as PROVISIONAL with extra-caveat tooltip."""
+    """Codex R1.M#1 + R2.M#1+M#2 LOCK + spec section 6.4 second bullet:
+    when risk_policy has zero rows with is_active=1 (pre-Phase-9 /
+    pre-seed DB state OR a manual UPDATE that flipped every row
+    inactive), build_dashboard MUST NOT raise NoActivePolicyError --
+    it MUST render the tile with policy_missing=True so the template
+    surfaces a distinct PROVISIONAL + extra-caveat badge."""
     conn = connect(planted_vsat_trade_with_snap)
     try:
         conn.execute("UPDATE risk_policy SET is_active = 0")
@@ -2878,18 +3047,21 @@ def test_no_active_risk_policy_renders_provisional_not_500(
     finally:
         conn.close()
     # build_dashboard must not raise NoActivePolicyError; tile is
-    # constructed with is_provisional=True + denom_resolved=0.0.
+    # constructed with policy_missing=True + is_provisional=True
+    # + denom_resolved=0.0.
     vm = _build_dashboard_under_test(
         db_path=planted_vsat_trade_with_snap,
     )
     tile = next(
         t for t in vm.daily_management_tiles if t.ticker == "VSAT"
     )
+    assert tile.position_capital_policy_missing is True
     assert tile.position_capital_utilization_is_provisional is True
     assert tile.position_capital_denominator_dollars_resolved == 0.0
     # With denom_resolved=0.0, util_pct_effective is None (the recompute
     # short-circuits per the denom_resolved > 0 guard); template renders
-    # em-dash.
+    # em-dash + the policy-missing badge (per the dedicated template
+    # render test above).
     assert tile.position_capital_utilization_pct_effective is None
 
 
@@ -2920,7 +3092,7 @@ def test_malformed_data_asof_session_falls_back_to_page_asof_date(
     assert isinstance(tile.position_capital_utilization_is_provisional, bool)
 ```
 
-(The `_build_remaining_trade_fields` + `_build_remaining_dm_record_fields` helpers return the kwargs needed by the `Trade` + `daily_management_records` insert paths beyond the ones explicitly set inline; at executing-plans phase the implementer audits the current dataclass shapes via `inspect.signature(Trade)` + the existing Phase 8 `insert_daily_management_record` signature + emits production-shape default kwargs. Per Codex R1.M#4 LOCK: NO trailing `...` ellipsis in production-shape `insert_*` calls; required fields enumerated explicitly so the test file is executable as written.)
+(The `_build_remaining_trade_fields` + `_build_remaining_dm_snapshot_fields` helpers return the kwargs needed by the `Trade` + `daily_management_records` insert paths beyond the ones explicitly set inline; at executing-plans phase the implementer audits the current dataclass shapes via `inspect.signature(Trade)` + the existing Phase 8 `insert_daily_management_record` signature + emits production-shape default kwargs. Per Codex R1.M#4 LOCK: NO trailing `...` ellipsis in production-shape `insert_*` calls; required fields enumerated explicitly so the test file is executable as written.)
 
 - [ ] **T-3.1 Step 12: Add ASCII discipline test for template + VM module**
 
@@ -2981,10 +3153,10 @@ Optionally split into 2 commits per §G.0: commit 1 = VM extension + dataclass (
 - Test: `tests/integration/test_l2_lock_source_grep.py` (NEW)
 
 **Acceptance criteria:**
-1. New parametric test asserts the SET of `(path, line_text)` matches for `schwabdev.Client.` under `swing/` at HEAD is a SUBSET of the baseline set at `bf7e071` (Codex R1.M#5 LOCK -- count-only comparison would silently pass if a new forbidden call site is added while an OLD occurrence is removed in the same commit).
-2. Test invokes `git grep -n` via `subprocess.run`; captures stdout; parses `(path, line_number, line_text)` tuples; normalizes line_number out (line numbers shift across commits; the LINE TEXT is the L2 LOCK signal).
-3. Compares HEAD set to baseline set at `bf7e071` (Phase 14 commissioning HEAD per dispatch brief §1.1).
-4. Fails with operator-friendly assertion message citing the baseline SHA + the NEW (path, line_text) tuples introduced at HEAD.
+1. New parametric test asserts the multiset (Counter) of `(path, line_text) -> count` matches for `schwabdev.Client.` under `swing/` at HEAD is a multiset SUBSET of the baseline Counter at `bf7e071` (Codex R1.M#5 + R2.M#6 LOCKs -- count-only or set-only comparison would silently pass on swap-introduce-while-remove OR duplicate-identical-line-in-same-file).
+2. Test invokes `git grep -n` via `subprocess.run`; captures stdout; parses `(path, line_number, line_text)` tuples; normalizes line_number out (line numbers shift across commits; the LINE TEXT is the L2 LOCK signal); accumulates per-key counts via `collections.Counter`.
+3. Compares HEAD Counter to baseline Counter at `bf7e071` (Phase 14 commissioning HEAD per dispatch brief §1.1); fails on EITHER (a) NEW (path, line_text) keys OR (b) INCREASED counts on existing keys.
+4. Fails with operator-friendly assertion message enumerating each (path, line_text, baseline_count, head_count) violation tuple introduced at HEAD.
 5. Test is parametric over the `schwabdev.Client.` pattern (extensible to other L2 LOCK signal patterns).
 6. ASCII discipline applied.
 7. 1 parametric test (1 test function, parametrized over the L2 LOCK pattern set).
@@ -3012,6 +3184,7 @@ target pattern in ``swing/`` at HEAD vs baseline.
 from __future__ import annotations
 
 import subprocess
+from collections import Counter
 
 import pytest
 
@@ -3027,16 +3200,16 @@ L2_LOCK_PATTERNS = [
 ]
 
 
-def _grep_call_site_tuples(rev: str, pattern: str) -> set[tuple[str, str]]:
-    """Run ``git grep -n <pattern> <rev> -- swing/`` and return a set of
-    ``(path, normalized_line_text)`` tuples.
+def _count_call_sites(rev: str, pattern: str) -> Counter[tuple[str, str]]:
+    """Run ``git grep -n <pattern> <rev> -- swing/`` and return a
+    ``Counter`` keyed by ``(path, normalized_line_text)``.
 
-    Per Codex R1.M#5 LOCK: count-only comparison can silently pass when
-    a new forbidden call site is added while an old occurrence is
-    removed in the same commit. SET-comparison fails on any NEW
-    (path, line_text) tuple introduced at HEAD vs baseline. Line
-    numbers are normalized out (they shift across commits; the LINE
-    TEXT is the L2 LOCK signal).
+    Per Codex R1.M#5 + R2.M#6 LOCK: set-only comparison silently passes
+    when an IDENTICAL call-site line is duplicated within the same
+    file (set dedupes the duplicate). Multiset/Counter comparison
+    fails on EITHER (a) NEW (path, line_text) keys OR (b) increased
+    count on an EXISTING key. Line numbers are normalized out (they
+    shift across commits; the LINE TEXT is the L2 LOCK signal).
     """
     result = subprocess.run(
         ["git", "grep", "-n", pattern, rev, "--", "swing/"],
@@ -3048,7 +3221,7 @@ def _grep_call_site_tuples(rev: str, pattern: str) -> set[tuple[str, str]]:
             f"git grep failed unexpectedly for {pattern!r} at {rev}: "
             f"stderr={result.stderr!r}"
         )
-    tuples: set[tuple[str, str]] = set()
+    counter: Counter[tuple[str, str]] = Counter()
     for line in result.stdout.splitlines():
         # Format: "<rev>:<path>:<line_number>:<line_text>" -- split on
         # first 3 colons to preserve any colons inside the line_text.
@@ -3056,30 +3229,38 @@ def _grep_call_site_tuples(rev: str, pattern: str) -> set[tuple[str, str]]:
         if len(parts) < 4:
             continue
         _rev, path, _lineno, line_text = parts
-        tuples.add((path, line_text.strip()))
-    return tuples
+        counter[(path, line_text.strip())] += 1
+    return counter
 
 
 @pytest.mark.parametrize("pattern", L2_LOCK_PATTERNS)
 def test_l2_lock_no_new_call_sites_vs_commissioning_baseline(pattern):
-    """HEAD's SET of (path, line_text) matches for the L2 LOCK pattern
-    in ``swing/`` MUST be a SUBSET of the commissioning baseline at
-    ``bf7e071``. New non-whitelisted matches FAIL the test.
+    """HEAD's multiset of (path, line_text) -> count matches for the
+    L2 LOCK pattern in ``swing/`` MUST be a multiset SUBSET of the
+    commissioning baseline at ``bf7e071``. New non-whitelisted matches
+    OR INCREASED counts on existing keys FAIL the test.
 
-    Per Codex R1.M#5 LOCK: set-comparison (NOT count-comparison)
-    catches the swap-introduce-while-remove pattern that count-only
-    would miss.
+    Per Codex R1.M#5 + R2.M#6 LOCKs: Counter-comparison (NOT plain set)
+    catches BOTH the swap-introduce-while-remove pattern AND the
+    duplicate-line-in-same-file pattern that set-only would silently
+    miss.
     """
-    baseline_tuples = _grep_call_site_tuples(L2_LOCK_BASELINE_SHA, pattern)
-    head_tuples = _grep_call_site_tuples("HEAD", pattern)
-    new_tuples = head_tuples - baseline_tuples
-    assert not new_tuples, (
-        f"L2 LOCK violation: HEAD introduces {len(new_tuples)} NEW "
-        f"(path, line_text) tuples matching {pattern!r} in swing/ "
-        f"that are NOT in the commissioning baseline at "
+    baseline = _count_call_sites(L2_LOCK_BASELINE_SHA, pattern)
+    head = _count_call_sites("HEAD", pattern)
+    violations: list[tuple[str, str, int, int]] = []
+    for key, head_count in head.items():
+        baseline_count = baseline.get(key, 0)
+        if head_count > baseline_count:
+            path, line_text = key
+            violations.append((path, line_text, baseline_count, head_count))
+    assert not violations, (
+        f"L2 LOCK violation: HEAD introduces {len(violations)} "
+        f"new-or-inflated (path, line_text) call sites matching "
+        f"{pattern!r} in swing/ vs commissioning baseline at "
         f"{L2_LOCK_BASELINE_SHA}.\n"
-        f"New tuples:\n" + "\n".join(
-            f"  {p}: {t}" for p, t in sorted(new_tuples)
+        + "\n".join(
+            f"  {p}: {t}  (baseline_count={bc}, head_count={hc})"
+            for p, t, bc, hc in sorted(violations)
         )
         + "\nSub-bundle 1 must NOT introduce new Schwab API call sites."
     )
@@ -3327,24 +3508,26 @@ Per Sec 9.1 Q6 LOCK + spec §10.5: the merge-time operator-witnessed gate has 7 
 **Preferred path: repo helper from a Python REPL** (column-shape future-proof; no ellipsis required-field gaps):
 
 ```python
-# S5b LIVE-case planting (run BEFORE reloading /daily-management):
+# S5b LIVE-case planting (run BEFORE reloading /daily-management).
+# Codex R2.M#4 LOCK: insert_snapshot at account_equity_snapshots.py:58
+# uses KEYWORD args; AccountEquitySnapshot has 8 fields per
+# swing/data/models.py:1343-1359; recorded_by is NOT NULL.
 from datetime import datetime
 from swing.data.db import connect
-from swing.data.models import AccountEquitySnapshot
 from swing.data.repos.account_equity_snapshots import insert_snapshot
 
 conn = connect("~/swing-data/swing.db")
 try:
-    insert_snapshot(conn, AccountEquitySnapshot(
-        snapshot_id=None,
+    insert_snapshot(
+        conn,
         snapshot_date="<today's session date YYYY-MM-DD>",  # e.g., "2026-05-28"
         equity_dollars=15000.0,
         source="manual",
         source_artifact_path="manual:gate-S5b",
         recorded_at=datetime.now().isoformat(timespec="seconds"),
-        schwab_api_call_id=None,
+        recorded_by="operator",
         notes="P14.N3 operator-witnessed gate S5b LIVE case",
-    ))
+    )
     conn.commit()
 finally:
     conn.close()
@@ -3353,18 +3536,19 @@ finally:
 #     "DELETE FROM account_equity_snapshots WHERE notes = 'P14.N3 operator-witnessed gate S5b LIVE case'"
 ```
 
-**Raw SQL alternative** (operator audits the current `account_equity_snapshots` column set via `.schema account_equity_snapshots` before invoking; required-field shape per migration `0016_account_equity_snapshots.sql` + Phase 9 Sub-bundle C ship):
+**Raw SQL alternative** (operator audits the current `account_equity_snapshots` column set via `.schema account_equity_snapshots` before invoking; required-field shape per migration `0017_phase9_risk_policy_and_reconciliation.sql` + Phase 9 Sub-bundle C ship). Codex R2.M#5 LOCK: column list MUST include `recorded_by` (NOT NULL) and MUST NOT include `schwab_api_call_id` (NOT a column on this table; only `account_equity_snapshots` columns at v17 are the 8-field shape):
 
 ```sql
 -- S5b LIVE-case planting (operator-paired; verify column set first
 -- via .schema account_equity_snapshots).
--- Concrete columns enumerated per Codex R1.m#3 LOCK; no ellipsis.
+-- Concrete columns enumerated per Codex R1.m#3 + R2.M#5 LOCKs; no
+-- ellipsis. recorded_by is NOT NULL per migration 0017.
 INSERT INTO account_equity_snapshots (
   snapshot_date, equity_dollars, source,
-  source_artifact_path, recorded_at, schwab_api_call_id, notes
+  source_artifact_path, recorded_at, recorded_by, notes
 ) VALUES (
   '<today YYYY-MM-DD>', 15000.0, 'manual',
-  'manual:gate-S5b', datetime('now'), NULL,
+  'manual:gate-S5b', datetime('now'), 'operator',
   'P14.N3 operator-witnessed gate S5b LIVE case'
 );
 -- After the gate, DELETE the row to return to S5a state:
@@ -3630,10 +3814,10 @@ Per §E.4 LOCK preservation verdict: ALL 23 LOCKs (Q1-Q7 + §1.1-§1.6 + spec §
 - [x] Operator-witnessed gate runbook at §I has S5a/S5b split with planting fixture instructions
 - [x] Codex single-chain placement at §J per Sec 9.1 Q7 LOCK
 - [x] Forward-binding lessons from brainstorm return report §8 carried forward at §M
-- [x] Plan target line count ~1500–2500: this plan ~3200 lines (+28% over upper bound; growth content-mandated by per-task TDD step code blocks + §A.3 14-row signature-verification table + §E 23-row LOCK summary table + §F application matrix + §I gate runbook + §J 15 watch items + §N self-review tables; mirrors the spec's own +200 line drift post-R4 due to substantive Codex catches now propagating into binding per-task code blocks rather than spec prose; no ceremonial padding)
+- [x] Plan target line count ~1500–2500: this plan ~3750 lines post-R2 (was ~3200 pre-Codex; +50% over upper bound; growth content-mandated by per-task TDD step code blocks + §A.3 14-row signature-verification table + §E 23-row LOCK summary table + §F application matrix + §I gate runbook + §J 15 watch items + §N self-review tables + R1+R2 fix bundles that introduced concrete production-API call shapes (R2.M#3-M#5) + 4th VM field + policy-missing template branch (R2.M#1+M#2) + multiset L2 LOCK assertion (R2.M#6) + provenance metadata (R1.M#6) + ARIA-compliant focusable affordance (R1.M#2); mirrors the spec's own +200 line drift post-R4 due to substantive Codex catches now propagating into binding per-task code blocks rather than spec prose; no ceremonial padding)
 
 **Plan ready for Codex MCP single-chain adversarial review.**
 
 ---
 
-*End of Phase 14 Sub-bundle 1 data-wiring writing-plans plan. ~3200 lines (+28% over upper ~2500 target; content-mandated per §N.5); 3 data-wiring items (V2.G3 + V2.G4 + P14.N3); 8 per-task slices (T-1.1 + T-1.2 + T-1.3 OPTIONAL + T-2.1 + T-3.1 + T-4.1 + T-4.2); ~8-12 commits + ~34-36 fast tests projected; Schema v21 LOCKED; L2 LOCK preserved; ASCII discipline declared; Co-Authored-By footer suppression discipline cited. Forward-binding lessons from brainstorm return report §8 carried forward. Single Codex MCP chain at end per Sec 9.1 Q7 LOCK + gotcha #36 caveat; target convergence 2-4 rounds NO_NEW_CRITICAL_MAJOR. Plan ready for adversarial review.*
+*End of Phase 14 Sub-bundle 1 data-wiring writing-plans plan. ~3750 lines post-R2 Codex fix bundle (+50% over upper ~2500 target; content-mandated per §N.5); 3 data-wiring items (V2.G3 + V2.G4 + P14.N3); 8 per-task slices (T-1.1 + T-1.2 + T-1.3 OPTIONAL + T-2.1 + T-3.1 + T-4.1 + T-4.2); ~8-12 commits + ~34-36 fast tests projected; Schema v21 LOCKED; L2 LOCK preserved; ASCII discipline declared; Co-Authored-By footer suppression discipline cited. Forward-binding lessons from brainstorm return report §8 carried forward. Single Codex MCP chain at end per Sec 9.1 Q7 LOCK + gotcha #36 caveat; target convergence 2-4 rounds NO_NEW_CRITICAL_MAJOR. Plan ready for adversarial review.*
