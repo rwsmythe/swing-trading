@@ -8,6 +8,47 @@
 
 ---
 
+## 2026-05-28 #2 Phase 14 Sub-bundle 1 (data-wiring) WRITING-PLANS SHIPPED at `b2546d5` -- plan at `docs/superpowers/plans/2026-05-28-phase14-sub-bundle-1-data-wiring-plan.md` (3851 lines; 8 per-task slices T-1.1+T-1.2+T-1.3-OPTIONAL+T-2.1+T-3.1+T-4.1+T-4.2); Codex MCP single-chain CONVERGED at R5 NO_NEW_CRITICAL_MAJOR (5 rounds; 0C+18M+11m cumulative; ALL M resolved in-place); 46th cumulative C.C lesson #6 validation NOTABLE; Sub-bundle 1 executing-plans dispatch authorization NEXT per plan dispatch-readiness summary; memory `feedback_orchestrator_performs_merge` HARDENED to cover all 3 copowers phases
+
+**Sub-bundle 1 writing-plans SHIPPED 2026-05-28 #2** at integration merge `b2546d5` of `phase14-sub-bundle-1-data-wiring-writing-plans` via `--no-ff`. 7 implementer commits (1 draft + 5 Codex fix bundles + 1 return report) + 1 merge commit. 2 files added (plan 3851 lines + return report 279 lines). ZERO production swing/ + tests/ writes (docs-only writing-plans phase); ZERO new Schwab API calls; L2 LOCK preserved + REINFORCED via NEW multiset Counter source-grep test designed at T-4.1 (Codex R1.M#5 + R2.M#6 LOCKs); Schema v21 LOCKED + verified (21 *.sql files; no v22+ added). ~598+ cumulative ZERO Co-Authored-By trailer drift preserved through this merge.
+
+**Production-code spot-checks against plan citations PASSED at orchestrator-side QA**:
+- `insert_trade_with_event` at `swing/data/repos/trades.py:155` per Codex R2.M#3+R3.M#1 LOCK
+- `NoActivePolicyError` + `get_active_policy(conn)` at `swing/data/repos/risk_policy.py:28+98` per R1.M#1 + R2.M#1+M#2 LOCK
+- `DailyManagementTileVM` at `swing/web/view_models/trades.py` (NOT `daily_management.py`)
+- `build_dashboard` constructs tile inline at line 1390 (matches plan citation)
+- `CandidateSectorIndustryRecord` provenance fields (`sector + industry + candidate_id + evaluation_run_id`) per R1.M#6 LOCK
+- `TestClient(raise_server_exceptions=False)` fixture for FastAPI 500 propagation assertions per R1.M#3 LOCK
+- Multiset Counter L2 LOCK source-grep asserts HEAD multiset SUBSET of `bf7e071` baseline per R1.M#5 + R2.M#6 LOCKs
+
+**Semantic extension at P14.N3**: plan extends spec's locked 3-field VM contract to 4 fields (adds `position_capital_policy_missing` for NoActivePolicyError edge case per Codex R2.M#1+M#2 LOCK). Plan §E reverification + return report §4 explicitly characterize this as a SEMANTIC EXTENSION consistent with spec §6.4 second bullet (which anticipates a NoActivePolicyError caveat), NOT a scope re-litigation.
+
+**Sec 9.1 + brainstorm spec §2 + brainstorm dispatch brief §1 + writing-plans dispatch brief §1 LOCKs**: ALL 23 preserved verbatim per return report §4 table. ZERO deviations.
+
+**Per-task slicing locked** per plan §G: T-1.1 (`get_latest_sector_industry_per_ticker` repo helper + `CandidateSectorIndustryRecord` dataclass; ~2-3 commits + ~5 tests) + T-1.2 (`swing diagnose backfill-trades-sector-industry` CLI + restore-SQL artifact; ~2-3 commits + ~9 tests) + T-1.3 OPTIONAL (VM fallback Fix-1b; defer to operator-gate trigger) + T-2.1 (V2.G4 3 surgical edits + `test_client_with_pipeline_run_no_raise` fixture; ~1-2 commits + ~7-8 tests) + T-3.1 (P14.N3 4-field VM extension + denominator-stamping + PROVISIONAL/LIVE/policy-missing template chain + ARIA affordance; ~2-3 commits + ~12-14 tests) + T-4.1 (L2 LOCK multiset source-grep; ~1 commit + ~2 tests) + T-4.2 (integration + return report; ~1 commit + ~2 tests). **Total ~8-12 commits + ~42-46 fast tests projected** (slightly above brief's 34-36 estimate due to denominator-stamping + 4th field + policy-missing fixture coverage).
+
+**4 NEW forward-binding lessons banked at return report §9** (carry forward to executing-plans):
+- #10 NoActivePolicyError fallback semantic-extension audit (4-round cumulative; R1.M#1 + R2.M#1+M#2 + R4.M#1)
+- #11 TestClient `raise_server_exceptions=False` discipline for propagation-to-500 tests (R1.M#3 LOCK)
+- #12 Production API call-graph cascade verification at every Codex round (4-round cumulative; refines gotcha #19)
+- #13 Multiset-comparison discipline for source-grep regression tests (2-round cumulative; R1.M#5 + R2.M#6 LOCKs)
+
+**Orchestrator-side memory hardening at THIS housekeeping**: `feedback_orchestrator_performs_merge` HARDENED to cover all 3 copowers phases (brainstorm + writing-plans + executing-plans). The prior text scoped the override narrowly to operator-witnessed-gate (executing-plans only); brainstorm + writing-plans merges lack an operator-witnessed gate and were silently defaulting back to system-prompt baseline asking-for-confirmation. MEMORY.md index updated.
+
+**Forward action sequence (orchestrator-side; THIS pass)**:
+
+- [x] QA implementer product per `feedback_orchestrator_qa_implementer_product` BINDING (7-commit chain ZERO Co-Authored-By verified via `%(trailers)`; docs-only diff scope; Codex catches spot-checked against production code at `swing/data/repos/trades.py:155` + `swing/data/repos/risk_policy.py:28+98` + `swing/web/view_models/trades.py` + `swing/web/view_models/dashboard.py:1390`; multiset Counter L2 LOCK design verified; Schema v21 LOCKED verified via direct migration file count)
+- [x] Merge `phase14-sub-bundle-1-data-wiring-writing-plans` `--no-ff` to main at `b2546d5` + push to origin/main
+- [x] phase3e-todo new top entry (THIS pass)
+- [x] Memory `feedback_orchestrator_performs_merge` HARDENED + MEMORY.md index updated
+- [ ] **Sub-bundle 1 executing-plans dispatch brief authoring** consuming plan §G per-task slicing + return report §9 forward-binding lessons #10-#13 + dispatch-readiness summary §15
+- [ ] **Sub-bundle 1 executing-plans inline dispatch prompt** provided per `feedback_always_provide_inline_dispatch_prompt` BINDING (commit brief BEFORE inline prompt per `feedback_commit_brief_before_inline_prompt` BINDING)
+- [ ] Worktree teardown for `phase14-sub-bundle-1-data-wiring-writing-plans` (operator-side OR per cleanup-script; not orchestrator-blocking)
+- [ ] Sub-bundle 1 executing-plans implementer ship + Codex chain convergence + QA + merge + operator-witnessed gate + post-merge housekeeping
+- [ ] Sub-bundles 2-5 cycle per Sec 9.1 Q1+Q2 serial sequence
+
+---
+
 ## 2026-05-28 Phase 14 Sub-bundle 1 (data-wiring) BRAINSTORM SHIPPED at `9104bb8` -- spec at `docs/superpowers/specs/2026-05-27-phase14-sub-bundle-1-data-wiring-design.md` (~810 lines); Codex MCP single-chain CONVERGED at R4 NO_NEW_CRITICAL_MAJOR (4 rounds; 1C + 10M + 11m cumulative; ALL C+M resolved in-place); 45th cumulative C.C lesson #6 validation NOTABLE; Sub-bundle 1 writing-plans dispatch authorization NEXT per spec Sec 10.1 single-dispatch recommendation
 
 **Sub-bundle 1 brainstorm SHIPPED 2026-05-28** at integration merge `9104bb8` of `phase14-sub-bundle-1-data-wiring-brainstorm` via `--no-ff`. 6 implementer commits (1 draft + 4 Codex fix bundles + 1 return report) + 1 merge commit. 3 files added (spec 724 lines + return report 215 lines; merge produced no phase3e-todo conflict per pre-merge 3-way analysis -- branch's merge base `3648e56` predated P14.N7 banking at `22874f2`, but the branch never touched phase3e-todo so 3-way merge cleanly preserved P14.N7 from main). ZERO production swing/ + tests/ writes (docs-only brainstorm phase); ZERO new Schwab API calls; L2 LOCK preserved; Schema v21 LOCKED + verified via direct migration file read (21 *.sql files; no v22+ added). ~588+ cumulative ZERO Co-Authored-By trailer drift preserved through this merge.
