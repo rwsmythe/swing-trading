@@ -478,7 +478,7 @@ Operator-side decisions are LOCKED at dispatch time; deviations require return-t
 
 ---
 
-*End of G2 W-bottom-ruleset backtest dispatch brief. Mission: test the joint hypothesis (V2-expanded population + W-bottom-derived ruleset = positive portfolio expectancy at acceptable trade frequency). Introduces 9-metric scorecard (expectancy_R + win_rate + avg_win_R + avg_loss_R + profit_factor + trigger_conversion_rate + median_time_in_trade + open_at_tail_count + estimated_dollar_per_period) as the headline output. Replaces single-metric verdict-gating with narrative across the scorecard. Sibling-module strategy continues; A-F + substrates LOCKED via byte-stability; gotcha #33 banned-verdict-terms LOCK preserved. 35 cumulative CLAUDE.md gotchas BINDING for 44th cumulative C.C lesson #6 validation slot. NEW gotcha #35 FIRST CANONICAL APPLICATION post-banking. ~576+ cumulative ZERO Co-Authored-By trailer drift to preserve.*
+*Note: the 'End of G2 W-bottom-ruleset backtest dispatch brief' end-marker (originally located here) is now PRECEDED by the 'Brief Amendments' section below (banked during Codex MCP pre-smoke chain R1-R4). The 'End of' marker has been moved to AFTER the amendments so the amendments are read as part of the locked brief, not as a stale appendix. See R5 MINOR #1 closure.*
 
 ---
 
@@ -527,3 +527,5 @@ Operator-side decisions are LOCKED at dispatch time; deviations require return-t
 **Resolution:** ACCEPTED-with-rationale: implementation honors the SPEC LINE (145) with strict `>`; line 168 was a discriminating-test sketch with boundary error. Test `test_g_trigger_predicate_rejects_at_or_below_1_3x_volume` asserts strict `>` semantic. Documented as a brief internal inconsistency.
 
 ---
+
+*End of G2 W-bottom-ruleset backtest dispatch brief (including Brief Amendments 1-4 above). Mission: test the joint hypothesis (V2-expanded population + W-bottom-derived ruleset = positive portfolio expectancy at acceptable trade frequency). Introduces 9-metric scorecard (expectancy_R + win_rate + avg_win_R + avg_loss_R + profit_factor + trigger_conversion_rate + median_time_in_trade + open_at_tail_count + estimated_dollar_per_period) as the headline output. Replaces single-metric verdict-gating with narrative across the scorecard. Sibling-module strategy continues; A-F + substrates LOCKED via byte-stability; gotcha #33 banned-verdict-terms LOCK preserved. 35 cumulative CLAUDE.md gotchas BINDING for 44th cumulative C.C lesson #6 validation slot. NEW gotcha #35 FIRST CANONICAL APPLICATION post-banking. ~576+ cumulative ZERO Co-Authored-By trailer drift to preserve.*

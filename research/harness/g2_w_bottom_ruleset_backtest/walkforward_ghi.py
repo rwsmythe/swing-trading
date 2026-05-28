@@ -19,10 +19,14 @@ Brief Sec 2.1-2.3 LOCK -- G/H/I execution-price model:
     per the canonical Bulkowski / O'Neil / Edwards-Magee literature.
   - Stop / SMA-break exit: at NEXT-BAR OPEN (NOT same-bar close). Per
     brief line 160 "Close < stop_price -> exit at next-bar open (with
-    realistic slippage assumption per existing harness)". The ruleset's
-    update_and_check is responsible for peeking next-bar open via
-    `next_bar_open_price_or_close_at_tail(bars, bar_idx)`. At data tail
-    (no next bar exists) the engine falls back to current-bar close.
+    realistic slippage assumption per existing harness)". Rulesets emit
+    `DeferredExit(reason)`; the ENGINE resolves exit_idx_canonical to
+    i+1 (next-bar open) OR i (data tail) and assigns exit_price +
+    exit_date + days_held coherently from exit_idx_canonical. At data
+    tail (no bar i+1), status is 'open' + reason carries
+    '_pending_at_tail' suffix per Codex R3 MAJOR #1 closure (the
+    next-bar-open execution hasn't actually happened; the operator's
+    market-on-open order resolves outside the backtest data window).
   - Target exit: at TARGET PRICE on first close >= target (limit-style
     fill assumption; unchanged from existing convention).
 
@@ -42,7 +46,6 @@ from research.harness.double_bottom_w_backtest.cohort import PrimaryVerdict
 from research.harness.w_bottom_ruleset_comparison.walkforward import (
     FullExit,
     MAX_TRIGGER_SEARCH_BUSINESS_DAYS,
-    Ruleset,
     ScaleOut,
     State,
     Trade,
@@ -55,16 +58,6 @@ from research.harness.w_bottom_ruleset_comparison.walkforward import (
 
 
 TriggerPredicate = Callable[[pd.DataFrame, int, PrimaryVerdict], bool]
-
-
-# Forward-declare for the GhiRuleset Protocol below; defined as a class
-# immediately after.
-class _DeferredExitProtocolSentinel:
-    """Sentinel for the GhiRuleset Protocol's return-type annotation; see
-    DeferredExit class definition below for the actual structure."""
-
-
-GhiAction = "FullExit | ScaleOut | DeferredExit | None"
 
 
 class GhiRuleset(Protocol):
