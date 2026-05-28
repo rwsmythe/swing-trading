@@ -8,9 +8,46 @@
 
 ---
 
+## 2026-05-27 PM #2 Phase 14 preliminary scope roll-up (pre-commissioning; PRUNE AT FORMAL PLANNING)
+
+**Status:** PRELIMINARY decision per operator request Turn H 2026-05-27 PM #2 — close out all currently-open Phase-14-eligible items (V2.G1-G4 + closeout review + 6 NEW operator items banked THIS pass). NOT a commissioning commitment; the formal brainstorming brief will operator-pair through this list with `AskUserQuestion` triage + prune-as-necessary semantics. Phase 14 is still DEFERRED per locked decision 2026-05-23 PM (`docs/phase13-closer-next-phase-triage.md` §"OPERATOR DECISION LOCKED") pending Applied Research cross-cohort robustness establishment — but accumulating the scope list NOW lets brainstorming fire immediately when the operator clears the deferral.
+
+**Items in scope (preliminary; subject to prune at brainstorming):**
+
+| ID | Title | Severity | Source | Note |
+|---|---|---|---|---|
+| **CR.1** | Closeout review exit data + chart snapshot surfacing | Medium | Turn H 2026-05-27 PM (below) | Template-extension scope; reuses T2.SB6 chart_renders cache |
+| **V2.G1** | Hyp-rec + watchlist expanded charts not rendering candlesticks | Medium | Post-T4.SB gate 2026-05-23 | Couples with P14.N2 (candlestick discipline) |
+| **V2.G2** | Watchlist expanded chart title shows "hyp-rec detail" (surface-name leakage) | Cosmetic | Post-T4.SB gate 2026-05-23 | Maps to T4.SB writing-plans V1 simplification #8 (rename `hyprec_detail` to `ticker_detail` + v22 schema) |
+| **V2.G3** | VSAT lost Sector + Industry values in open-positions table | Data wiring | Post-T4.SB gate 2026-05-23 | Same gotcha family as PriceCache `_last_close` ticker-rotation |
+| **V2.G4** | "Refresh weather chart" reports "no OHLCV bars available for SPY" post-pipeline | Medium | Post-T4.SB gate 2026-05-23 | Possibly same root cause as V2.G1 |
+| **P14.N1** | Small dashboard-watchlist-style thumbnail charts on open-positions + hyp-rec tables | Medium-UX | Turn H 2026-05-27 PM #2 (NEW; below) | Bundles with V2.G1 + P14.N2 chart-surface uniformity thread |
+| **P14.N2** | All charts MUST be candlesticks (extends V2.G1); consider 10 + 20 MA overlays | Medium | Turn H 2026-05-27 PM #2 (NEW; below) | Likely a renderer-uniformity audit; subsumes V2.G1 fix |
+| **P14.N3** | Daily management Capital % "PROVISIONAL" suffix unexplained | Cosmetic / UX | Turn H 2026-05-27 PM #2 (NEW; below) | Surface explanation OR remove flag; investigate flip-condition |
+| **P14.N4** | BULZ open-positions chart shows undescribed green + yellow shaded region | Cosmetic / UX | Turn H 2026-05-27 PM #2 (NEW; below) | Legend/annotation missing; suspect entry/stop/target shaded zones |
+| **P14.N5** | Metrics overview dashboard + graphics-driven surfaces (currently text-heavy navigation) | Medium-UX | Turn H 2026-05-27 PM #2 (NEW; below) | Significant scope; potentially multi-bundle |
+| **P14.N6** | Journal page redesign — browse-the-database surface + rich trade entries + clickable per-trade drill-down + annotated chart + small thumbnails | High-UX | Turn H 2026-05-27 PM #2 (NEW; below) | Largest single scope item; likely sub-bundle-decomposed at brainstorming |
+
+**Likely sub-bundle decomposition at formal planning (informational; brainstorming will lock):**
+1. **Chart-surface uniformity bundle** — V2.G1 + V2.G2 + P14.N1 + P14.N2 + P14.N4 + BULZ-shaded-region explanation. Coheres around the chart-render + chart_jit substrate; renderer-kwargs uniformity LOCK per Expansion #10 sub-discipline (c).
+2. **Data-wiring bundle** — V2.G3 + V2.G4 + P14.N3 PROVISIONAL flag investigation. Coheres around persistence/JOIN/cfg-resolution debugging.
+3. **Review + journal UX bundle** — CR.1 + P14.N6 + small-chart integration. Coheres around per-trade close-the-loop workflow.
+4. **Metrics overview bundle** — P14.N5 standalone (depends on metrics-wiring audit landed at T-T4.SB.2; potentially largest scope; may split further).
+
+**Cross-cutting watch items (likely BINDING at brainstorming):**
+- L2 LOCK (zero new Schwab API calls; preserve through Phase 14)
+- V2.G2 rename `hyprec_detail` → `ticker_detail` is a v22 schema migration — backup-gate equality form per gotcha #11 LOCK applies
+- Renderer-kwargs uniformity per Expansion #10 (c); cache-collision discriminating tests
+- Browser-only HTMX failure surfaces (Phase 5 R1 M1 + M2 + Phase 6 I3 trinity) for any new HTMX-driven journal/metrics surface
+- Cumulative gotcha set (currently #1-#36) BINDING for Nth validation onwards at dispatch time
+
+**Forward action:** Phase 14 deferral REMAINS locked until operator clears it; this section accumulates scope so brainstorming brief can be drafted immediately on de-deferral. Following the same `project_phase13_t4_sb_pause_for_list_additions` pattern that gated T4.SB — operator drives reopening + adds further items until list closes.
+
+---
+
 ## 2026-05-27 PM operator-identified operational backlog (not for immediate investigation; banked for future dispatch)
 
-**Closeout review surface enhancement** -- operator feedback during Turn H session 2026-05-27 (post-G2 dispatch):
+**Closeout review surface enhancement** -- operator feedback during Turn H session 2026-05-27 (post-G2 dispatch); rolled up as Phase 14 item **CR.1**:
 
 When doing the per-trade closeout review, surface (a) exit data (price at exit) and (b) a snapshot of the chart at exit/close to help the operator identify notes to add to the journal.
 
@@ -21,6 +58,84 @@ Likely scope when commissioned:
 - Small-to-medium production dispatch when commissioned; ZERO new schema; ZERO new Schwab API calls; sibling-module strategy for any NEW view-model surfaces
 
 Source: operator Turn H feedback 2026-05-27 PM. Not blocking G2 ship; banked to operational backlog for future commissioning.
+
+---
+
+## 2026-05-27 PM #2 NEW Phase 14 operator items (banked this pass; 6 items; 5-field templates)
+
+Operator-supplied additions via Turn H PM #2 follow-up post-G2 housekeeping. Rolled up under Phase 14 preliminary scope (above) as **P14.N1** through **P14.N6**.
+
+### P14.N1 — Small dashboard-watchlist-style thumbnail charts on open-positions + hyp-rec tables
+
+| Field | Value |
+|---|---|
+| **Issue title** | Open-positions table + hyp-rec table SHOULD display small thumbnail charts mirroring the dashboard watchlist top-5 pattern |
+| **Surface** | `/dashboard` open-positions table rows + `/dashboard` hyp-rec table rows + corresponding partial templates (`swing/web/templates/partials/open_positions_row.html.j2` + `swing/web/templates/partials/hypothesis_recommendations_row.html.j2`); thumbnail rendering currently lives at `swing/web/templates/partials/watchlist_row.html.j2:9-16` (`_thumb_bytes` fragment) |
+| **Frequency** | Every dashboard render with any open position OR any hyp-rec |
+| **Severity** | Medium-UX — operator framing explicitly cites the watchlist thumbnails as "very useful" + wants the affordance everywhere |
+| **Operator framing (2026-05-27 PM #2)** | "I have found the small charts on the dashboard watchlist very useful and would like those to display for the open positions and hyp-rec tables." |
+| **Proposed resolution** | Extend `_thumb_bytes` partial inclusion to open-positions row + hyp-rec row templates; VM extension to plumb thumbnail SVG bytes per ticker through the open-positions + hyp-rec VMs (matches T2.SB6b banked V1 simplification "hyp-rec/position detail VM chart bytes per-page VM wire-up"). Cache-key shape per chart_renders surface enum may need NEW values (`open_position_thumbnail`, `hyprec_thumbnail`) OR may reuse `watchlist_row` surface with adjusted scope per Expansion #10 sub-discipline (c) renderer-kwargs uniformity LOCK. CANDLESTICK requirement per P14.N2 applies. Discriminating test: render dashboard with N open positions + M hyp-recs + assert N+M+top5 thumbnail SVGs present in response body. |
+| **Cross-reference** | T2.SB6a substrate (`chart_renders` table + `get_cached_chart_svg` + `refresh_chart_render` + chart_jit cache-miss live-render hook); T2.SB6b V1 simplification #7 (per-page VM wire-up); P14.N2 candlestick requirement subsumes V2.G1 |
+
+### P14.N2 — All charts MUST be candlesticks (extends V2.G1); consider 10 + 20 day MA overlays
+
+| Field | Value |
+|---|---|
+| **Issue title** | All chart surfaces must render as candlesticks (extends V2.G1's hyp-rec + watchlist scope to ALL surfaces); optionally add 10 + 20 day MA overlays |
+| **Surface** | All chart-render surfaces under `swing/web/charts.py` + `swing/web/chart_jit.py`: `render_market_weather_svg`, `render_position_detail_svg`, `render_hyprec_detail_svg`, `render_watchlist_thumbnail_svg`, future `render_*_thumbnail_svg` per P14.N1 |
+| **Frequency** | Every chart render across the dashboard + drilldown surfaces |
+| **Severity** | Medium — chart-type uniformity is core UX expectation; V2.G1 already escalated for hyp-rec + watchlist subset |
+| **Operator framing (2026-05-27 PM #2)** | "All charts need to be candlesticks (as noted in V2.G1). Potentially also should 10 and 20 MAs." |
+| **Proposed resolution** | Renderer-uniformity audit across the 4+ render functions: verify each invokes mplfinance candlestick rendering (or equivalent) AND identical MA-line set per renderer-kwargs uniformity LOCK (Expansion #10 sub-discipline (c)). Wire 10d + 20d SMA into `ma_lines` kwarg propagation per existing `render_watchlist_thumbnail_svg(ma_lines=...)` precedent. Discriminating test: byte-parity OR pixel-diff test asserting all 4+ render functions emit candlestick chart geometry under identical input bars. V2.G1 root-cause investigation (renderer divergence vs renderer-kwargs vs CSS clipping per V2.G1 disposition table) folds into this item. |
+| **Cross-reference** | V2.G1 (subsumed); Expansion #10 sub-discipline (c) renderer-kwargs uniformity; CLAUDE.md gotcha #12 "matplotlib mathtext" discipline applies to any new title/legend strings |
+
+### P14.N3 — Daily management Capital % column "PROVISIONAL" suffix unexplained
+
+| Field | Value |
+|---|---|
+| **Issue title** | Daily management Capital % column appends "PROVISIONAL" with no UI affordance explaining the flag OR what would clear it |
+| **Surface** | Daily management surface — likely `/daily-management` view + `swing/web/view_models/daily_management.py` + `swing/web/templates/daily_management.html.j2`; backing data at `daily_management_records` table per Phase 8 ship + per Phase 9 risk_policy ratification |
+| **Frequency** | Every daily management surface render that includes a PROVISIONAL-flagged row (frequency unknown without investigation) |
+| **Severity** | Cosmetic / UX — operator cannot diagnose state without external context |
+| **Operator framing (2026-05-27 PM #2)** | "Daily management Capital % column shows 'PROVISIONAL' appended, not clear why or what would remove that flag" |
+| **Proposed resolution** | Two-step investigation: (1) `Grep "PROVISIONAL"` across `swing/` to identify the flip-condition + state-machine semantics (likely a placeholder pre-reconciliation OR pre-equity-snapshot-finalization); (2) add UI affordance per CLAUDE.md gotcha #11 template-rendering-surface audit — tooltip OR explanation text OR pre-empty-state messaging. May also be a CHECK enum widening if "PROVISIONAL" should be replaced with descriptive enum values. Discriminating test: plant a row in each known state + assert UI renders the correct affordance (tooltip text OR description OR no flag if condition no longer applies). |
+| **Cross-reference** | Phase 8 daily-management ship (Codex R1-R5 family per CLAUDE.md gotcha collection); Phase 9 risk_policy ratification single-fire semantic per gotcha (V17 ratification) |
+
+### P14.N4 — BULZ open-positions chart green + yellow shaded region undescribed
+
+| Field | Value |
+|---|---|
+| **Issue title** | BULZ chart in open-positions table renders green + yellow shaded regions with no legend or annotation explaining the semantic |
+| **Surface** | `/dashboard` open-positions BULZ chart row — rendered via `render_position_detail_svg` (or equivalent) at `swing/web/charts.py` |
+| **Frequency** | Every dashboard render with BULZ as an open position (and presumably any open position with the same shaded-region semantic) |
+| **Severity** | Cosmetic / UX — operator cannot interpret the visual annotation |
+| **Operator framing (2026-05-27 PM #2)** | "BULZ chart (in open positions table) shows a green and yellow shaded area with no description of what that means." |
+| **Proposed resolution** | Investigate `render_position_detail_svg` (and any peer renderer) for `axhspan` / `axvspan` / `fill_between` calls; likely candidates are (a) entry-to-stop risk zone shaded yellow; (b) entry-to-target reward zone shaded green; (c) trail-MA distance shaded. Add inline legend OR title/subtitle annotation describing the semantic. Apply CLAUDE.md gotcha #12 matplotlib-mathtext discipline (no `$`/`^`/`_` in title strings) + ASCII-only per gotcha #32. Discriminating test: snapshot rendered SVG + assert legend text present; visual gate at operator-witnessed review. |
+| **Cross-reference** | CLAUDE.md gotcha #12 (matplotlib mathtext); P14.N2 candlestick uniformity audit (likely touches same renderer family) |
+
+### P14.N5 — Metrics page needs overview dashboard with graphics (currently text-heavy navigation)
+
+| Field | Value |
+|---|---|
+| **Issue title** | `/metrics/*` surfaces require an overview/dashboard surface so individual metric pages are drill-downs not primary navigation; prefer graphical visualizations over current pure-text rendering |
+| **Surface** | `/metrics/*` route family (9 surface routes per Phase 10 dashboard metric surfaces; `swing/metrics/` + `swing/web/view_models/metrics/` + `swing/web/routes/metrics.py` + `swing/web/templates/metrics/*.html.j2`) |
+| **Frequency** | Every operator visit to the metrics surfaces |
+| **Severity** | Medium-UX — operator workflow regression cited; navigation friction reduces metric utility |
+| **Operator framing (2026-05-27 PM #2)** | "Metrics page needs to show some kind of overall dashboard so the pages don't need to be navigated to except as a drill down. Ideally some kind of graphics would help display the information better rather than the current pure text." |
+| **Proposed resolution** | Significant scope; brainstorming will operator-pair through. Likely structure: (a) NEW `/metrics` index route rendering overview cards summarizing each of the 9 surfaces with sparkline/mini-chart graphics; (b) drill-down clickthrough preserves current per-surface routes; (c) graphics library choice — likely matplotlib SVG (consistent with existing chart_renders pattern) OR a JS-based charting library (introduces new dependency surface). Discriminating tests per overview card: plant N representative metric rows + assert card renders the expected sparkline + summary stat. Couples with P14.N6 (journal-page-as-database-browser) at the visualization-library decision point. Likely sub-bundle decomposed at brainstorming (overview substrate first; per-surface card extensions follow). |
+| **Cross-reference** | Phase 10 metrics dashboard ship (5 bundles); T2.SB6b pattern-outcomes 9th tile at `6ec989e`; Item 7 metrics-wiring audit at T-T4.SB.2 (Option 7C delimiter-aware fix; 4 surfaces) |
+
+### P14.N6 — Journal page redesign (browse-the-database; rich trade entries + clickable drill-down + annotated chart + small thumbnails)
+
+| Field | Value |
+|---|---|
+| **Issue title** | Journal page (`/journal`) is not very useful as-is; needs comprehensive redesign as a database-browsing surface with rich trade-entry rows, clickable drill-down to per-trade entries + annotated chart, and small thumbnail charts in the main listing |
+| **Surface** | `/journal` route + `swing/web/routes/journal.py` (or equivalent) + `swing/web/view_models/journal.py` + `swing/web/templates/journal.html.j2` + related partials |
+| **Frequency** | Every operator visit to the journal surface |
+| **Severity** | High-UX — operator framing explicitly states "not very useful as-is" + requests comprehensive expansion; the journal surface is the post-trade analysis substrate which is core to the closed-loop review workflow |
+| **Operator framing (2026-05-27 PM #2)** | "Journal page is not very useful as-is. More information should be included. This should be a page I can go to to essentially browse the database. The trade entries table should provide indication of how the trade went (open price, shares, total risk, closing price, final R, any flags at opening (chart shapes, A+, hyp-rec (and which), etc... And be clickable to reveal any specific entries associated with that trade (the entries filled out at opening) as well as an annotated chart. Main journal page should have the small charts present as well (the ones currently populating the watchlist on the dashboard, except using candlesticks)." |
+| **Proposed resolution** | Largest single Phase 14 scope; brainstorming will sub-decompose. Listed required surfaces: (a) **Main listing**: each trade row shows open_price + shares + total_risk (cfg.capital_floor-aware per `project_capital_risk_floor` BINDING memory) + closing_price + final_R + entry-time flags (chart_pattern_class + aplus tier + hyp-rec linkage + hypothesis_label per Phase 13 T2.SB6c backlinks) + thumbnail chart (candlestick per P14.N2); (b) **Click-through detail**: surfaces all entries filled at trade open (Phase 6 review_log + Phase 7 fills + Phase 8 daily_management_records + any related event_log rows) + annotated full chart with entry/stop/target/fills marked. Database-browsing affordance suggests filterable + sortable table; HTMX-driven sort/filter without page reload. Cache-key shape considerations per chart_renders surface enum may need NEW `journal_trade_chart` surface. Discriminating tests: plant N trades with various close states + assert main listing renders all N rows with correct flag set + click-through reveals all attached entries + chart shows entry/stop/target markers. |
+| **Cross-reference** | Phase 6 review_log ship; Phase 7 fills + Phase 8 daily_management_records ship; Phase 13 T2.SB6c trade backlinks (candidate_id + pattern_evaluation_id; trades table extension); CLAUDE.md gotcha #25 + #26 dropdown discipline; P14.N1 + P14.N2 thumbnail + candlestick subsumed in main listing scope |
 
 ---
 
@@ -69,6 +184,7 @@ Source: operator Turn H feedback 2026-05-27 PM. Not blocking G2 ship; banked to 
   - **D + E hybrid ruleset variant** -- banked V2 candidate from D2; cost: ~2-4h impl
   - **Phase 14 commissioning consideration** -- gated on cross-cohort robustness establishment (still NOT established; V2-mechanic finding bounds the question but does not close it)
   - **Market-conditions investigation** -- banked alternative; analytical pivot to other-gates-not-enumerated per V2 sensitivity Sec B.3
+  - **Finviz filter adjustment investigation for BOTH VCP/A+ AND W-bottom candidates** -- operator-banked Turn H 2026-05-27 PM #3 as APPLIED RESEARCH candidate. Gated on G2 outcome: IF G2 confirms a W-bottom-derived ruleset achieves positive expectancy on V2-expanded populations, the upstream Finviz screen at `~/swing-data/user-config.toml` `[integrations.finviz]` may need adjustment to admit W-candidate-relevant tickers (different price/volume/trend regimes than the current VCP-focused screen). Research scope: cross-check W-bottom literature for typical screen criteria + compare against current Finviz screen + estimate universe expansion + simulate forward W-incidence on the expanded universe vs current. Not a configuration-only change; a methodological investigation of WHAT filter criteria produce W candidates AND how much universe expansion is justified. Cost estimate deferred to brainstorming. NOT actionable until G2 result.
   - **Temporal wait** -- 1-3 months for data tail advance; sequential-evidence path
 
 ---
