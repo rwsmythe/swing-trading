@@ -8,6 +8,38 @@
 
 ---
 
+## 2026-05-28 Phase 14 Sub-bundle 1 (data-wiring) BRAINSTORM SHIPPED at `9104bb8` -- spec at `docs/superpowers/specs/2026-05-27-phase14-sub-bundle-1-data-wiring-design.md` (~810 lines); Codex MCP single-chain CONVERGED at R4 NO_NEW_CRITICAL_MAJOR (4 rounds; 1C + 10M + 11m cumulative; ALL C+M resolved in-place); 45th cumulative C.C lesson #6 validation NOTABLE; Sub-bundle 1 writing-plans dispatch authorization NEXT per spec Sec 10.1 single-dispatch recommendation
+
+**Sub-bundle 1 brainstorm SHIPPED 2026-05-28** at integration merge `9104bb8` of `phase14-sub-bundle-1-data-wiring-brainstorm` via `--no-ff`. 6 implementer commits (1 draft + 4 Codex fix bundles + 1 return report) + 1 merge commit. 3 files added (spec 724 lines + return report 215 lines; merge produced no phase3e-todo conflict per pre-merge 3-way analysis -- branch's merge base `3648e56` predated P14.N7 banking at `22874f2`, but the branch never touched phase3e-todo so 3-way merge cleanly preserved P14.N7 from main). ZERO production swing/ + tests/ writes (docs-only brainstorm phase); ZERO new Schwab API calls; L2 LOCK preserved; Schema v21 LOCKED + verified via direct migration file read (21 *.sql files; no v22+ added). ~588+ cumulative ZERO Co-Authored-By trailer drift preserved through this merge.
+
+**Five substantive Codex catches verified against production code at orchestrator-side QA**:
+1. **R1.C1**: P14.N3 spec initially cited non-existent `equity_resolver.resolve_live_capital(...)` + non-existent `tile.review_date` field. Production reality: `resolve_live_capital_denominator_dollars` at `swing/metrics/equity_resolver.py:32` + `snap.data_asof_session` anchor. Fix LOCKED both.
+2. **R3.M1**: percent-vs-proportion unit mismatch on the daily-management Capital % rendering path. Initial R1 fix recommended `_compute_position_util_pct` from `swing/metrics/maturity.py:296` (returns percent already × 100); but the daily-management template multiplies by 100 again. Would have rendered 1500.0% on a 15% utilization. Final R3 fix LOCKED `swing/trades/daily_management.py:compute_position_capital_utilization` (returns PROPORTION 0.0-1.0+) per the existing template contract.
+3. **R3.M2**: `swing/web/routes/dashboard.py` has no module-level logger pre-fix; spec's R1-locked `log.warning(...)` would NameError. Fix LOCKED `import logging; log = logging.getLogger(__name__)` addition at module top.
+4. **R1.M5 + R2.M2**: V2.G4 fix initially preserved broad-Exception-then-409 pattern that HID the original V2.G4 root cause. Anti-pattern LOCKED: narrow `ValueError`-only catch (empty-archive expected) -> degrade to 409 + log.warning; let `TypeError`, `AttributeError`, `KeyError`, `RuntimeError`, ... propagate to FastAPI default 500. Discriminating test asserts programming-error propagation.
+5. **R1.M3 + R2.M3**: V2.G3 backfill design LOCKED with STRICT all-or-nothing semantic (dry-run SELECT uses AND-empty filter; partial-empty rows excluded from UPDATE + surfaced via separate SKIP_PARTIAL_EMPTY diagnostic) + restore-SQL artifact emission (defense-in-depth survives crash post-UPDATE) + DHA/DHC legacy-NULL carve-out via SKIP_NO_CANDIDATES_ROW action label (no hardcoded ticker list).
+
+**Sec 9.1 LOCKs preserved verbatim** at the spec (Q1 sequence + Q2 serial + Q6 operator-witnessed gate + Q7 single Codex chain + §1.1-§1.6 sub-bundle locks; return report §4 table cites each). Sub-bundle decomposition per spec §10.1: **single writing-plans + executing-plans dispatch** recommended for all three items (cohere on dashboard + daily-management surfaces; no inter-item dependencies; ~8-12 commits + ~34-36 tests within dispatch brief estimates).
+
+**Return report bankings** at `docs/phase14-sub-bundle-1-data-wiring-brainstorm-return-report.md`:
+- §7: 8 V2 candidates banked (e.g., V2.G3 Fix B/C/D variants; V2.G4 hydrate-then-fetch defense-in-depth; P14.N3 schema CHECK enum widening to descriptive values)
+- §8: 8 forward-binding writing-plans lessons (consume at writing-plans dispatch brief authoring)
+
+**Forward action sequence (orchestrator-side; THIS pass)**:
+
+- [x] QA implementer product per `feedback_orchestrator_qa_implementer_product` BINDING (6-commit chain ZERO Co-Authored-By verified via `%(trailers)`; 3-dot diff confirms docs-only scope; Codex catches spot-checked against production code at `swing/metrics/equity_resolver.py` + `swing/trades/daily_management.py` + `swing/metrics/maturity.py` + `swing/web/routes/dashboard.py`)
+- [x] Merge `phase14-sub-bundle-1-data-wiring-brainstorm` `--no-ff` to main at `9104bb8` + push to origin/main
+- [x] phase3e-todo new top entry (THIS pass)
+- [ ] **Sub-bundle 1 writing-plans dispatch brief authoring** consuming spec §10.1 single-dispatch recommendation + return report §8 forward-binding lessons
+- [ ] **Sub-bundle 1 writing-plans inline dispatch prompt** provided per `feedback_always_provide_inline_dispatch_prompt` BINDING (commit brief BEFORE inline prompt per `feedback_commit_brief_before_inline_prompt` BINDING)
+- [ ] Worktree teardown for `phase14-sub-bundle-1-data-wiring-brainstorm` (operator-side OR per cleanup-script; not orchestrator-blocking)
+- [ ] Sub-bundle 1 writing-plans implementer ship + Codex chain convergence + QA + merge + housekeeping
+- [ ] Sub-bundle 1 executing-plans phase (after writing-plans merged)
+- [ ] Sub-bundle 1 operator-witnessed gate per Sec 9.1 Q6 LOCK
+- [ ] Sub-bundles 2-5 cycle per Sec 9.1 Q1+Q2 serial sequence
+
+---
+
 ## 2026-05-27 PM #3 Turn H: G2 W-bottom-derived ruleset backtest SHIPPED at `31fa281` -- joint hypothesis NOT supported at tested scale (ALL 9 cells expectancy_R < 0); G_bulkowski tight-stop partially validated on avg_loss_R lever; D2 EXPANDED N=71->N=42 substrate-freshness reframe is itself a methodology finding (candidate gotcha #37); 44th cumulative C.C lesson #6 validation NOTABLE (gotcha #36 two-Codex-chain FIRST canonical application validated)
 
 **G2 SHIPPED 2026-05-27 PM #3** at integration merge `31fa281` of `applied-research-g2-w-bottom-ruleset-backtest` via `--no-ff` (with brief Amendment-namespace merge conflict resolved: orchestrator Amendment 0 renamed + retained alongside implementer's Brief Amendments 1-4). 16 implementer commits + 1 merge commit. 28 files changed (3-dot scope: G2-specific only; ZERO orchestrator-file edits). 113 fast tests + 1 self-skip green; ZERO production swing/ writes; ZERO new Schwab API calls; L2 LOCK preserved + REINFORCED; Schema v21 unchanged.
