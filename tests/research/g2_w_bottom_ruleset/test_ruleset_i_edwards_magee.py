@@ -38,6 +38,7 @@ from research.harness.g2_w_bottom_ruleset_backtest.rulesets.i_edwards_magee_clas
     I_BREAKOUT_VOLUME_MULTIPLIER,
 )
 from research.harness.g2_w_bottom_ruleset_backtest.walkforward_ghi import (
+    DeferredExit,
     walk_forward_with_trigger_predicate,
 )
 
@@ -174,8 +175,8 @@ def test_i_stop_exit_fires():
         entry_price=62.0, initial_R=12.5,
     )
     assert action is not None
+    assert isinstance(action, DeferredExit)
     assert action.reason == "stop_hit"
-    assert action.price == pytest.approx(49.0)
 
 
 def test_i_trigger_predicate_rally_volume_baseline_at_1_5x_strict():

@@ -39,6 +39,7 @@ from research.harness.g2_w_bottom_ruleset_backtest.rulesets.h_oneil_double_botto
     H_HARD_EXIT_SMA_WINDOW,
 )
 from research.harness.g2_w_bottom_ruleset_backtest.walkforward_ghi import (
+    DeferredExit,
     walk_forward_with_trigger_predicate,
 )
 
@@ -167,8 +168,8 @@ def test_h_stop_exit_fires_on_close_below_stop():
         entry_price=62.0, initial_R=4.96,
     )
     assert action is not None
+    assert isinstance(action, DeferredExit)
     assert action.reason == "stop_hit"
-    assert action.price == pytest.approx(57.0)
 
 
 def test_h_sma50_break_exits_when_close_below_sma_but_above_stop():
@@ -196,8 +197,8 @@ def test_h_sma50_break_exits_when_close_below_sma_but_above_stop():
         entry_price=62.0, initial_R=4.96,
     )
     assert action is not None
+    assert isinstance(action, DeferredExit)
     assert action.reason == "close_below_50d"
-    assert action.price == pytest.approx(65.0)
 
 
 def test_h_stop_hit_takes_precedence_when_both_break_same_bar():
@@ -224,8 +225,8 @@ def test_h_stop_hit_takes_precedence_when_both_break_same_bar():
         entry_price=62.0, initial_R=4.96,
     )
     assert action is not None
+    assert isinstance(action, DeferredExit)
     assert action.reason == "stop_hit"  # NOT close_below_50d
-    assert action.price == pytest.approx(55.0)
 
 
 def test_h_trigger_predicate_strict_inequality_at_1_4x():

@@ -38,6 +38,7 @@ from research.harness.g2_w_bottom_ruleset_backtest.rulesets.g_bulkowski_double_b
     G_STOP_BUFFER,
 )
 from research.harness.g2_w_bottom_ruleset_backtest.walkforward_ghi import (
+    DeferredExit,
     walk_forward_with_trigger_predicate,
 )
 
@@ -194,43 +195,13 @@ def test_g_exits_at_target_on_first_close_at_or_above():
     assert action.price == pytest.approx(70.0)
 
 
-def test_g_exits_at_next_bar_open_on_stop_break():
-    """Per brief Sec 2.1 line 160 LOCK: stop break exits at NEXT-BAR OPEN
-    (not same-bar close). Tests the canonical case where next bar exists."""
+def test_g_signals_deferred_exit_on_stop_break():
+    """Per brief Sec 2.1 line 160 LOCK + Codex R2 MAJOR #2 closure: stop
+    break emits DeferredExit (engine resolves exit_price + exit_date +
+    days_held to bar i+1 at next-bar open OR bar i at data tail)."""
     verdict = _make_verdict()
     g = RulesetG()
-    # Stop = 51.48; bar 1 close = 51.0 (below stop); bar 2 open = 50.5
-    closes = [62.0, 51.0, 50.5]
-    opens = [62.0, 51.0, 50.5]  # next-bar open = 50.5 (exit price)
-    bars = pd.DataFrame(
-        {
-            "Open": opens, "High": [c + 0.1 for c in closes],
-            "Low": [c - 0.1 for c in closes], "Close": closes,
-            "Volume": [1_000_000.0] * 3,
-        },
-        index=pd.bdate_range(start=date(2026, 1, 6), periods=3),
-    )
-    state = g.init_state(
-        verdict=verdict, bars=bars, entry_idx=0,
-        entry_price=62.0, initial_stop=51.48,
-    )
-    action = g.update_and_check(
-        state=state, bars=bars, bar_idx=1, entry_idx=0,
-        entry_price=62.0, initial_R=10.52,
-    )
-    assert action is not None
-    assert action.reason == "stop_hit"
-    # Exit at NEXT BAR's open (50.5), NOT same-bar close (51.0)
-    assert action.price == pytest.approx(50.5)
-    assert action.price != pytest.approx(51.0)
-
-
-def test_g_exits_at_current_close_on_stop_break_at_data_tail():
-    """Per brief Sec 2.1 LOCK: data-tail fallback uses current-bar close
-    when no next bar exists for the next-bar-open lookup."""
-    verdict = _make_verdict()
-    g = RulesetG()
-    # Stop = 51.48; bar 1 close = 51.0 (below stop); NO bar 2 (data tail)
+    # Stop = 51.48; bar 1 close = 51.0 (below stop)
     closes = [62.0, 51.0]
     bars = pd.DataFrame(
         {
@@ -249,9 +220,116 @@ def test_g_exits_at_current_close_on_stop_break_at_data_tail():
         entry_price=62.0, initial_R=10.52,
     )
     assert action is not None
+    assert isinstance(action, DeferredExit)
     assert action.reason == "stop_hit"
-    # Data-tail fallback: current-bar close = 51.0
-    assert action.price == pytest.approx(51.0)
+
+
+def test_g_full_engine_exits_at_next_bar_open_on_stop_break():
+    """Integration: walk_forward_with_trigger_predicate resolves
+    DeferredExit to next-bar open for exit_price + exit_date + days_held.
+
+    Build a synthetic W where the breakout fires + the next session
+    closes below the stop, triggering a next-bar-open exit on the bar
+    after that."""
+    verdict = _make_verdict(
+        trough_2_date=date(2025, 12, 29),
+        anchor_asof_date=date(2026, 1, 5),
+    )
+    # Pre-window bars from 2025-12-02 (after trough_2) with 20+ bars
+    # to satisfy bulkowski_trigger_predicate's volume baseline + ample
+    # rally bars
+    pre_dates = pd.bdate_range(start=date(2025, 12, 2), periods=22)
+    pre_closes = [55.0] * 22
+    pre_volumes = [1_000_000.0] * 22
+    # Trigger bar on 2026-01-06 (first bdate after asof+1BD lower bound)
+    trigger_date = pd.bdate_range(start=date(2026, 1, 6), periods=1)[0]
+    trigger_close = 62.0
+    trigger_volume = 5_000_000.0  # 5x baseline; passes 1.3x predicate
+    # Post-trigger: bar 1 closes below stop; bar 2 open is the exit price
+    post_dates = pd.bdate_range(
+        start=trigger_date + pd.tseries.offsets.BDay(1), periods=3
+    )
+    post_opens = [62.0, 50.0, 49.0]
+    post_closes = [51.0, 49.5, 49.0]
+    # Bar sequence (post-pre_dates+trigger):
+    #   bar 23 (post[0]): open 62.0, close 51.0  <- stop fires (close < 51.48)
+    #   bar 24 (post[1]): open 50.0, close 49.5  <- DeferredExit resolves here
+    #   bar 25 (post[2]): open 49.0, close 49.0
+    all_dates = list(pre_dates) + [trigger_date] + list(post_dates)
+    all_closes = pre_closes + [trigger_close] + post_closes
+    all_opens = pre_closes + [trigger_close] + post_opens
+    all_volumes = pre_volumes + [trigger_volume] + [1_000_000.0] * 3
+    bars = pd.DataFrame(
+        {
+            "Open": all_opens,
+            "High": [max(o, c) + 0.1 for o, c in zip(all_opens, all_closes)],
+            "Low": [min(o, c) - 0.1 for o, c in zip(all_opens, all_closes)],
+            "Close": all_closes,
+            "Volume": all_volumes,
+        },
+        index=all_dates,
+    )
+    g = RulesetG()
+    trade = walk_forward_with_trigger_predicate(
+        verdict, bars, g, trigger_predicate=bulkowski_trigger_predicate
+    )
+    assert trade.triggered is True
+    assert trade.status == "closed"
+    assert trade.exit_reason == "stop_hit"
+    # Trigger bar idx = 22 (after 22 pre_dates); entry at bar 22.
+    # Bar 23 (post[0]) close=51.0 triggers DeferredExit("stop_hit").
+    # Engine resolves to bar 24 (post[1]) open = 50.0.
+    assert trade.entry_price == pytest.approx(62.0)
+    assert trade.entry_date == trigger_date.date()
+    assert trade.exit_price == pytest.approx(50.0)
+    assert trade.exit_date == post_dates[1].date()
+    # days_held = exit_idx (24) - entry_idx (22) = 2
+    assert trade.days_held == 2
+
+
+def test_g_full_engine_exits_at_data_tail_on_stop_break_at_last_bar():
+    """Integration: DeferredExit at data tail (no next bar) resolves to
+    current-bar close + current-bar date + (bar_idx - entry_idx) days_held."""
+    verdict = _make_verdict(
+        trough_2_date=date(2025, 12, 29),
+        anchor_asof_date=date(2026, 1, 5),
+    )
+    pre_dates = pd.bdate_range(start=date(2025, 12, 2), periods=22)
+    pre_closes = [55.0] * 22
+    pre_volumes = [1_000_000.0] * 22
+    trigger_date = pd.bdate_range(start=date(2026, 1, 6), periods=1)[0]
+    trigger_close = 62.0
+    trigger_volume = 5_000_000.0
+    # Post-trigger: only ONE bar, and it closes below stop (data tail)
+    post_date = pd.bdate_range(
+        start=trigger_date + pd.tseries.offsets.BDay(1), periods=1
+    )[0]
+    all_dates = list(pre_dates) + [trigger_date] + [post_date]
+    all_closes = pre_closes + [trigger_close] + [51.0]
+    all_opens = pre_closes + [trigger_close] + [62.0]
+    all_volumes = pre_volumes + [trigger_volume] + [1_000_000.0]
+    bars = pd.DataFrame(
+        {
+            "Open": all_opens,
+            "High": [max(o, c) + 0.1 for o, c in zip(all_opens, all_closes)],
+            "Low": [min(o, c) - 0.1 for o, c in zip(all_opens, all_closes)],
+            "Close": all_closes,
+            "Volume": all_volumes,
+        },
+        index=all_dates,
+    )
+    g = RulesetG()
+    trade = walk_forward_with_trigger_predicate(
+        verdict, bars, g, trigger_predicate=bulkowski_trigger_predicate
+    )
+    assert trade.triggered is True
+    assert trade.status == "closed"
+    assert trade.exit_reason == "stop_hit"
+    # Data-tail fallback: exit_price = current bar close = 51.0;
+    # exit_date = current bar date = post_date; days_held = 23 - 22 = 1
+    assert trade.exit_price == pytest.approx(51.0)
+    assert trade.exit_date == post_date.date()
+    assert trade.days_held == 1
 
 
 def test_g_trigger_predicate_rejects_at_or_below_1_3x_volume():

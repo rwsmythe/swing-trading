@@ -139,6 +139,41 @@ def test_always_true_predicate_g2_enters_at_trigger_close_legacy_at_next_open():
     assert trade_legacy.triggered is True
 
 
+def test_g2_engine_admits_final_bar_as_trigger_codex_r2_major_1_closure():
+    """Codex R2 MAJOR #1 closure: with entry-at-trigger-close semantic,
+    the LAST bar of data is a valid trigger candidate (no requirement
+    for bar i+1 to exist for entry). A trade triggered on the final
+    bar exits at data tail with status='open'."""
+    # Build bars where the trigger fires on the LAST bar (no bar i+1)
+    verdict = _make_verdict(
+        anchor_asof_date=date(2026, 1, 5),
+    )
+    n_bars = 10
+    pre_dates = pd.bdate_range(start=date(2026, 1, 6), periods=n_bars)
+    closes = [55.0] * (n_bars - 1) + [62.0]  # close > 60 ONLY on final bar
+    opens = [55.0] * n_bars
+    bars = pd.DataFrame(
+        {
+            "Open": opens,
+            "High": [max(o, c) + 0.10 for o, c in zip(opens, closes)],
+            "Low": [min(o, c) - 0.10 for o, c in zip(opens, closes)],
+            "Close": closes,
+            "Volume": [1_000_000.0] * n_bars,
+        },
+        index=pre_dates,
+    )
+    ruleset = RulesetE()
+    trade = walk_forward_with_trigger_predicate(
+        verdict, bars, ruleset, trigger_predicate=lambda b, i, v: True
+    )
+    # Final bar triggered the entry; entry_date = final bar's date
+    assert trade.triggered is True
+    assert trade.entry_date == pre_dates[-1].date()
+    assert trade.entry_price == pytest.approx(62.0)
+    # No bars after entry; trade exits at data tail with status='open'
+    assert trade.status == "open"
+
+
 def test_g2_engine_entry_date_matches_trigger_bar_not_next():
     """Per brief LOCK: g2 enters at TRIGGER BAR (NOT trigger+1). Verifies
     the entry semantic with a synthetic W."""

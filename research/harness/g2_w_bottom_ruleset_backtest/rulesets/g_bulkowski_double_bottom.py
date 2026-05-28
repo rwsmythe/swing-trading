@@ -3,13 +3,12 @@
 Source: Thomas N. Bulkowski, *Encyclopedia of Chart Patterns*, 2nd ed.,
 "Double Bottoms" chapter. Encoded per dispatch brief Sec 2.1 specification.
 
-Entry:
+Entry (brief Sec 2.1 LOCK + Codex R1 CRITICAL #2 closure):
   - First close > center_peak_price within the trigger search window
   - AND breakout_bar_volume > 1.3 x trailing 20-bar mean volume
-  - Entry price = NEXT session's Open per harness convention (the engine
-    uses next-session-open after the trigger bar; the "close of breakout
-    bar" wording in brief Sec 2.1 is the trigger semantic, not the
-    entry-price semantic).
+  - Entry price = the TRIGGER BAR's CLOSE (NOT next-session open;
+    brief line 146 + 147 LOCK). Diverges from existing A-F's harness
+    convention for literature fidelity. Entry date = trigger bar's date.
 
 Initial stop (TIGHT; the key differentiator from RulesetE):
   - stop_price = trough_2_price * (1 - 0.01) = trough_2_price * 0.99
@@ -43,7 +42,7 @@ import pandas as pd
 
 from research.harness.double_bottom_w_backtest.cohort import PrimaryVerdict
 from research.harness.g2_w_bottom_ruleset_backtest.walkforward_ghi import (
-    next_bar_open_price_or_close_at_tail,
+    DeferredExit,
 )
 from research.harness.w_bottom_ruleset_comparison.walkforward import (
     Action,
@@ -107,17 +106,15 @@ class RulesetG:
 
         # 1. Stop check (close-based; STRICT inequality matches Bulkowski's
         # "close below the second trough" failure rule). Per brief Sec 2.1
-        # line 160 LOCK: exit at NEXT-BAR OPEN (at data tail, fall back to
-        # current-bar close). The exit price is the actionable price at
-        # next session's open (realistic slippage); the exit_date stays as
-        # the detection bar by engine convention.
+        # line 160 LOCK + Codex R2 MAJOR #2 closure: emit DeferredExit so
+        # the engine assigns exit_price + exit_date + days_held coherently
+        # to bar i+1 (next session) or to bar i at data tail.
         if close < state.current_stop:
-            exit_price = next_bar_open_price_or_close_at_tail(bars, bar_idx)
-            return FullExit(exit_price, "stop_hit")
+            return DeferredExit("stop_hit")
 
         # 2. Measured-move target on first close >= target. Target exits
         # are limit-style (assume the target was hit intraday by the bar
-        # closing above it); exit at target_price unchanged.
+        # closing above it); exit at target_price on the detection bar.
         target_price = float(state.extra["target_price"])
         if close >= target_price:
             return FullExit(target_price, "target_measured_move")

@@ -174,13 +174,13 @@ def write_summary_markdown(
             "| Ruleset | N_patterns | N_triggered | N_closed | "
             "Expectancy_R | Win_rate | Avg_win_R | Avg_loss_R | "
             "Profit_factor | Trigger_conv | Median_days | "
-            "Open_at_tail | Est_$/period |"
+            "Open_at_tail_n | Open_at_tail_rate | Est_$/period |"
         )
         lines.append(
             "|---------|-----------:|------------:|---------:|"
             "-------------:|---------:|----------:|-----------:|"
             "--------------:|-------------:|------------:|"
-            "-------------:|-------------:|"
+            "---------------:|-------------------:|-------------:|"
         )
         for row in sorted(
             [r for r in scorecard_rows if r.substrate_name == sub_name],
@@ -201,6 +201,7 @@ def write_summary_markdown(
                         _fmt_or_na(row.trigger_conversion_rate),
                         _fmt_or_na(row.median_time_in_trade_sessions, "{:.1f}"),
                         str(row.open_at_tail_count),
+                        _fmt_or_na(row.open_at_tail_rate),
                         _fmt_or_na(row.estimated_dollar_per_period, "${:.2f}"),
                     ]
                 ) + " |"

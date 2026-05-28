@@ -12,7 +12,14 @@ Substrate conventions:
     consumed VERBATIM (N=65; pre-filtered by the R2-A harness).
   - D2 EXPANDED (`tests/fixtures/research/double_bottom_w_backtest/
     cohort.json`): loaded raw (N=172); filtered to composite>=0.5 +
-    recency<=365d + 5-BD adjacency merge per D2 Amendment 5 -> N=71.
+    recency<=365d + 5-BD adjacency merge per D2 Amendment 5.
+    Brief Amendment 1 (post-Codex R1 MAJOR #2): brief Sec 1.3 stated
+    'N=71' citing D2 Amendment 5; the SHA-locked fixture + brief-locked
+    filter actually yields N=42 at dispatch baseline (cohort drifted
+    since Amendment 5 was run). Per gotcha #34, the SHA-locked
+    fixture + filter is authoritative; substrate name is
+    'd2_expanded' (no embedded count) to avoid label-vs-actual
+    confusion in artifacts.
 
 ZERO production swing/ writes; ZERO new Schwab API calls; ZERO yfinance
 fetches at backtest time (OHLCV via the existing V2 Shape A reader
@@ -221,7 +228,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--d2-cohort-fixture", type=Path, required=True,
-        help="D2 raw cohort.json (N=172; filtered to N=71 EXPANDED)",
+        help=(
+            "D2 raw cohort.json (N=172; filtered to D2 EXPANDED via "
+            "composite>=0.5 + recency<=365d + adjacency merge per D2 "
+            "Amendment 5). Brief Sec 1.3 stated N=71 (stale snapshot); "
+            "actual dispatch-baseline count is N=42 per Brief Amendment 1."
+        ),
     )
     parser.add_argument(
         "--cache-dir", type=Path, required=True,
@@ -291,7 +303,7 @@ def main(argv: list[str] | None = None) -> int:
             },
         ),
         (
-            "d2_expanded_n71",
+            "d2_expanded",
             d2_verdicts,
             d2_window_days,
             {
@@ -302,7 +314,9 @@ def main(argv: list[str] | None = None) -> int:
                 "filter_spec": (
                     f"composite>={D2_EXPANDED_COMPOSITE_THRESHOLD} + "
                     f"recency<={D2_EXPANDED_RECENCY_MAX_CALENDAR_DAYS}d + "
-                    f"5-BD adjacency merge (D2 Amendment 5)"
+                    f"5-BD adjacency merge (D2 Amendment 5); Brief "
+                    f"Amendment 1: brief Sec 1.3 stated N=71 (stale "
+                    f"snapshot); actual yields {d2_n_filtered}"
                 ),
                 "substrate_window_days": d2_window_days,
             },

@@ -4,11 +4,12 @@ Source: William J. O'Neil, *How to Make Money in Stocks*, "double bottom"
 as a Stage 2 base variant; 8% max-loss convention. Encoded per dispatch
 brief Sec 2.2 specification.
 
-Entry:
+Entry (brief Sec 2.2 LOCK + Codex R1 CRITICAL #2 closure):
   - First close > pivot_price (= center_peak_price) within the trigger
     search window
   - AND breakout_bar_volume > 1.4 x trailing 50-bar mean volume (strict)
-  - Entry price = NEXT session's Open per harness convention.
+  - Entry price = the TRIGGER BAR's CLOSE (NOT next-session open;
+    brief line 176 + 177 LOCK). Entry date = trigger bar's date.
 
 Initial stop (entry-relative; mirrors O'Neil's 8% max-loss + RulesetE's
 arm but WITHOUT the trough_2 * 0.99 max() comparison):
@@ -37,7 +38,7 @@ import pandas as pd
 
 from research.harness.double_bottom_w_backtest.cohort import PrimaryVerdict
 from research.harness.g2_w_bottom_ruleset_backtest.walkforward_ghi import (
-    next_bar_open_price_or_close_at_tail,
+    DeferredExit,
 )
 from research.harness.w_bottom_ruleset_comparison.walkforward import (
     Action,
@@ -99,23 +100,22 @@ class RulesetH:
 
         # 1. Stop check (close-based; strict inequality). Evaluated FIRST so
         # stop_hit takes precedence over close_below_50d when both break the
-        # same bar (deterministic order). Per brief Sec 2.2 LOCK: exit at
-        # NEXT-BAR OPEN (data tail -> current-bar close).
+        # same bar (deterministic order). Per brief Sec 2.2 LOCK + Codex R2
+        # MAJOR #2 closure: emit DeferredExit for next-bar-open exit
+        # semantics with coherent exit_date + days_held.
         if close < state.current_stop:
-            exit_price = next_bar_open_price_or_close_at_tail(bars, bar_idx)
-            return FullExit(exit_price, "stop_hit")
+            return DeferredExit("stop_hit")
 
         # 2. Target check (first close >= target; limit-style exit at target).
         target_price = float(state.extra["target_price"])
         if close >= target_price:
             return FullExit(target_price, "target_measured_move")
 
-        # 3. SMA50 stage-2-break invalidation. Per brief Sec 2.2 LOCK: exit
-        # at NEXT-BAR OPEN.
+        # 3. SMA50 stage-2-break invalidation. Per brief Sec 2.2 LOCK +
+        # Codex R2 MAJOR #2 closure: DeferredExit for next-bar-open exit.
         sma50 = sma_at(bars, bar_idx, H_HARD_EXIT_SMA_WINDOW)
         if sma50 is not None and close < sma50:
-            exit_price = next_bar_open_price_or_close_at_tail(bars, bar_idx)
-            return FullExit(exit_price, "close_below_50d")
+            return DeferredExit("close_below_50d")
 
         return None
 

@@ -3,11 +3,12 @@
 Source: Robert D. Edwards & John Magee, *Technical Analysis of Stock Trends*,
 double-bottom chapter. Encoded per dispatch brief Sec 2.3 specification.
 
-Entry:
+Entry (brief Sec 2.3 LOCK + Codex R1 CRITICAL #2 closure):
   - First close > center_peak_price within the trigger search window
   - AND breakout_bar_volume > 1.5 x mean(volume between trough_2_date and
     breakout_bar_date - 1) (the rally-from-trough_2 volume baseline; strict).
-  - Entry price = NEXT session's Open per harness convention.
+  - Entry price = the TRIGGER BAR's CLOSE (NOT next-session open;
+    brief line 200 + 201 LOCK). Entry date = trigger bar's date.
 
 Throwback-aware semantic (brief Sec 2.3):
   - The brief specifies 'do NOT re-enter on second break' when an entered
@@ -38,7 +39,7 @@ import pandas as pd
 
 from research.harness.double_bottom_w_backtest.cohort import PrimaryVerdict
 from research.harness.g2_w_bottom_ruleset_backtest.walkforward_ghi import (
-    next_bar_open_price_or_close_at_tail,
+    DeferredExit,
 )
 from research.harness.w_bottom_ruleset_comparison.walkforward import (
     Action,
@@ -97,11 +98,11 @@ class RulesetI:
     ) -> Action | None:
         close = float(bars["Close"].iloc[bar_idx])
 
-        # 1. Stop check. Per brief Sec 2.3 LOCK: exit at NEXT-BAR OPEN
-        # (data tail -> current-bar close).
+        # 1. Stop check. Per brief Sec 2.3 LOCK + Codex R2 MAJOR #2 closure:
+        # DeferredExit for next-bar-open exit semantics with coherent
+        # exit_date + days_held.
         if close < state.current_stop:
-            exit_price = next_bar_open_price_or_close_at_tail(bars, bar_idx)
-            return FullExit(exit_price, "stop_hit")
+            return DeferredExit("stop_hit")
 
         # 2. Measured-move target (limit-style exit at target).
         target_price = float(state.extra["target_price"])

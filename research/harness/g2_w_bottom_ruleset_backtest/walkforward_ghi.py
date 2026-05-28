@@ -32,6 +32,7 @@ calls; ZERO yfinance fetches at backtest time.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date
 from typing import Callable, Protocol
 
@@ -56,15 +57,37 @@ from research.harness.w_bottom_ruleset_comparison.walkforward import (
 TriggerPredicate = Callable[[pd.DataFrame, int, PrimaryVerdict], bool]
 
 
+@dataclass(frozen=True)
+class DeferredExit:
+    """G2-specific action: signals 'exit on the NEXT bar at its open
+    price', with data-tail fallback to current-bar close.
+
+    Per brief Sec 2.1-2.3 LOCK (Codex R2 MAJOR #2 closure): when a
+    ruleset detects a stop / SMA-break event at bar i, the exit happens
+    on bar i+1 at its OPEN (a market-on-open order placed overnight).
+    Both `exit_price` AND `exit_date` AND `days_held` reflect bar i+1.
+    At data tail (no bar i+1), fall back to current-bar close + current
+    bar's date + (bar_idx - entry_idx) holding period.
+
+    Engine handles this action explicitly so the ruleset doesn't need to
+    encode the offset in price/reason strings.
+    """
+
+    reason: str
+
+
+# Backward-compat helper retained for tests that exercise the next-bar-open
+# price computation directly. Engine no longer uses this; rulesets now
+# emit DeferredExit and the engine computes price + offset.
 def next_bar_open_price_or_close_at_tail(
     bars: pd.DataFrame, bar_idx: int
 ) -> float:
     """Return next bar's Open if next bar exists; else current bar's Close.
 
-    Helper for G/H/I rulesets to compute brief Sec 2.1-2.3 LOCK exit prices
-    on stop / SMA-break events: 'exit at next-bar open' canonically; at
-    data tail (no next bar), fall back to the current bar's close as the
-    realistic operator outcome.
+    Per Codex R2 MAJOR #2 closure, rulesets should prefer emitting
+    `DeferredExit(reason=...)` for stop / SMA-break events; the engine
+    handles price + exit_date + days_held consistently. This helper is
+    retained for callsites that need only the price (e.g., diagnostics).
     """
     if bar_idx + 1 < len(bars):
         return float(bars["Open"].iloc[bar_idx + 1])
@@ -90,11 +113,18 @@ def find_trigger_index_with_predicate(
     bars are skipped; the loop continues searching forward through the
     window until an eligible bar is found OR the window upper bound is
     reached.
+
+    Per brief Sec 2.1-2.3 LOCK (Codex R2 MAJOR #1 closure): entry is at
+    the trigger bar's CLOSE (not next-bar open), so the trigger bar
+    itself can be the LAST bar of data -- no requirement that bar i+1
+    exists for entry. The search loop iterates `range(n)` to include
+    the final bar as a valid trigger candidate. Trades triggered on the
+    final bar will exit at data tail with status='open'.
     """
     dates = pd.Index([d.date() if hasattr(d, "date") else d for d in bars.index])
     closes = bars["Close"].to_numpy()
     n = len(closes)
-    for i in range(n - 1):
+    for i in range(n):
         d = dates[i]
         if d <= lower_bound_exclusive:
             continue
@@ -230,6 +260,60 @@ def walk_forward_with_trigger_predicate(
         )
         if action is None:
             continue
+
+        # Per brief Sec 2.1-2.3 LOCK + Codex R2 MAJOR #2 closure: when
+        # the ruleset emits DeferredExit, compute the exit bar idx (i+1
+        # if exists; else i for data-tail fallback). exit_price +
+        # exit_date + days_held all reflect the SAME bar so per_trade
+        # detail + median_time_in_trade_sessions stay coherent.
+        if isinstance(action, DeferredExit):
+            if i + 1 < n_total:
+                exit_idx_canonical = i + 1
+                exit_price_canonical = float(bars["Open"].iloc[i + 1])
+            else:
+                exit_idx_canonical = i
+                exit_price_canonical = float(bars["Close"].iloc[i])
+            exit_date_i = (
+                bars.index[exit_idx_canonical].date()
+                if hasattr(bars.index[exit_idx_canonical], "date")
+                else bars.index[exit_idx_canonical]
+            )
+            final_R_remainder = (exit_price_canonical - entry_price) / R
+            weighted_R = _weighted_R(state, final_R_remainder)
+            synthetic_exit_price = entry_price + weighted_R * R
+            pnl_dollars = compute_pnl_dollars_fractional(
+                entry_price, synthetic_exit_price, initial_stop
+            )
+            exit_reason = (
+                f"{action.reason}_after_scaleout"
+                if state.scale_out_fired
+                else action.reason
+            )
+            return Trade(
+                pattern_id=verdict.pattern_id, ticker=verdict.ticker,
+                ruleset_name=ruleset.name,
+                anchor_asof_date=verdict.anchor_asof_date,
+                trough_1_date=verdict.trough_1_date,
+                effective_asof_date=verdict.effective_asof_date,
+                max_observed_asof_date=verdict.max_observed_asof_date,
+                center_peak_price=verdict.center_peak_price,
+                trough_2_price=verdict.trough_2_price,
+                composite_score=verdict.composite_score,
+                initial_stop=initial_stop,
+                entry_date=entry_date, entry_price=entry_price,
+                exit_date=exit_date_i, exit_price=exit_price_canonical,
+                exit_reason=exit_reason, r_multiple=weighted_R,
+                days_held=(exit_idx_canonical - entry_idx),
+                status="closed",
+                triggered=True,
+                trade_pnl_dollars=pnl_dollars,
+                peak_unrealized_R=peak_R,
+                drawdown_to_exit_R=(peak_R - weighted_R),
+                forward_bars_available=n_fwd_window,
+                max_forward_close=max_close, max_close_pct_of_peak=max_close_pct,
+                days_t2_to_asof=days_t2_to_asof,
+            )
+
         exit_date_i = (
             bars.index[i].date()
             if hasattr(bars.index[i], "date")
