@@ -2526,7 +2526,7 @@ Within the per-(trade, snap) loop ending at the existing `tiles.append(DailyMana
                 util_pct_effective = None
 ```
 
-Then extend the existing `tiles.append(DailyManagementTileVM(...))` constructor with the 3 new keyword arguments (preserve all existing fields verbatim):
+Then extend the existing `tiles.append(DailyManagementTileVM(...))` constructor with the 4 new keyword arguments (preserve all existing fields verbatim; Codex R5.m#2 LOCK -- 4 fields including R2.M#1+M#2's `position_capital_policy_missing`):
 
 ```python
             tiles.append(DailyManagementTileVM(
@@ -2715,8 +2715,11 @@ def test_policy_missing_renders_provisional_badge_even_with_em_dash_value(
     NoActivePolicyError fires, util_pct_effective is None (em-dash
     value cell) BUT the PROVISIONAL badge + EXTRA-CAVEAT tooltip MUST
     still render (NOT suppressed by the value-guard). Distinct
-    data-cause='policy_missing' marker + tooltip wording cites
-    `swing db-migrate` / `swing config policy import-from-toml`."""
+    data-cause='policy_missing' marker + tooltip wording cites the
+    HONEST direct-DB-intervention recovery path per Codex R4.M#1 LOCK
+    (the standard `swing config policy ...` CLI cannot recover from
+    zero-active-policy state because supersede_active_policy raises
+    at swing/trades/risk_policy.py:139-142)."""
     vm = MagicMock()
     vm.daily_management_tiles = [_build_tile_vm(
         is_provisional=True,
