@@ -5186,5 +5186,78 @@ def diagnose_prune_chart_cache(db_path: Path, older_than_days: int) -> None:
                f"{older_than_days} days.")
 
 
+@diagnose_group.command("backfill-trades-sector-industry")
+@click.option(
+    "--db", "db_path", required=True, type=click.Path(path_type=Path),
+)
+@click.option(
+    "--apply", is_flag=True, default=False,
+    help="Commit UPDATEs (atomic). Default: dry-run only.",
+)
+@click.option(
+    "--output-dir", type=click.Path(path_type=Path),
+    default=Path("exports/diagnostics"), show_default=True,
+    help="Directory for the restore-SQL artifact + dry-run table.",
+)
+@click.option(
+    "--allowlist", type=str, default="",
+    help="Comma-separated tickers to opt-in (overrides default open-set).",
+)
+@click.option(
+    "--include-closed", is_flag=True, default=False,
+    help=(
+        "Widen to all trade states (default: entered/managing/partial_exited)."
+    ),
+)
+def diagnose_backfill_trades_sector_industry(
+    db_path: Path, apply: bool, output_dir: Path, allowlist: str,
+    include_closed: bool,
+) -> None:
+    """One-time backfill of trades.sector + trades.industry for V2.G3.
+
+    Strict all-or-nothing semantic: only rows with BOTH sector and
+    industry TRIM-empty get UPDATEd, AND only when the candidates-table
+    helper returns BOTH non-empty replacements. Partial-empty rows are
+    enumerated separately as SKIP_PARTIAL_EMPTY (V1 STRICT per spec
+    section 4.3 R2.M3 LOCK; V2 candidate banked for per-column lookup).
+
+    Dry-run (default) prints the affected count + emits a restore-SQL
+    artifact at <output-dir>/backfill-trades-sector-industry-restore-<ISO>.sql
+    so the apply step is reversible.
+
+    Apply path commits the UPDATEs under ``with conn:`` atomically and
+    re-emits the restore-SQL artifact BEFORE issuing UPDATEs (defense-
+    in-depth against crash post-UPDATE; per spec section 4.3 R1.M3 LOCK).
+    """
+    _validate_diagnose_db_path(db_path)
+    try:
+        from swing.diagnostics.backfill_trades_sector_industry import (
+            run_backfill,
+        )
+        summary = run_backfill(
+            db_path=db_path,
+            apply=apply,
+            output_dir=output_dir,
+            allowlist=_parse_allowlist(allowlist),
+            include_closed=include_closed,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    except sqlite3.OperationalError as exc:
+        raise click.ClickException(
+            f"Database error reading {db_path}: {exc}"
+        ) from exc
+    for line in summary.report_lines:
+        click.echo(line)
+    click.echo(f"Restore-SQL artifact: {summary.restore_sql_path}")
+
+
+def _parse_allowlist(raw: str) -> tuple[str, ...] | None:
+    """Parse the --allowlist comma-separated option into a ticker tuple."""
+    if not raw.strip():
+        return None
+    return tuple(t.strip().upper() for t in raw.split(",") if t.strip())
+
+
 if __name__ == "__main__":  # pragma: no cover
     main()
