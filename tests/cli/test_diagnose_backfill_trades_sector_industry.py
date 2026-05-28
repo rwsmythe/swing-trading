@@ -514,6 +514,144 @@ def test_dry_run_table_renders_source_candidate_and_run_id_columns(tmp_path):
     assert str(run_id) in result.output
 
 
+class _ExecuteSpyConn:
+    """Proxy that wraps a sqlite3.Connection so ``conn.execute`` calls
+    are recorded for assertion. sqlite3.Connection's ``execute``
+    attribute is read-only so we cannot monkey-patch in place; the
+    proxy delegates everything else and records SQL on each execute
+    invocation (per Codex round 1 Major #1 lock verification).
+    """
+
+    def __init__(self, underlying, sink: list[str]) -> None:
+        self._underlying = underlying
+        self._sink = sink
+
+    def execute(self, sql, *args, **kwargs):
+        if isinstance(sql, str):
+            self._sink.append(sql.strip())
+        else:
+            self._sink.append(str(sql))
+        return self._underlying.execute(sql, *args, **kwargs)
+
+    def __enter__(self):
+        return self._underlying.__enter__()
+
+    def __exit__(self, *args, **kwargs):
+        return self._underlying.__exit__(*args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._underlying, name)
+
+
+def test_apply_path_uses_begin_immediate_lock_for_toctou_safety(tmp_path):
+    """Per Codex round 1 Major #1: the apply path MUST acquire a write
+    lock via ``BEGIN IMMEDIATE`` so the row set captured in the
+    restore-SQL artifact matches the row set actually UPDATEd. Without
+    the lock, a concurrent writer could fill an AND-empty trades row
+    between the SELECT and UPDATE; the UPDATE no-ops via the
+    WHERE-clause guard, but the restore-SQL would still contain
+    ``UPDATE trades SET sector='', industry='' WHERE id=N`` -- applying
+    restore later would clobber the concurrent writer's valid data.
+
+    This test asserts the discipline by spying on ``conn.execute``
+    calls to verify ``BEGIN IMMEDIATE`` is issued on the apply path.
+    """
+    from unittest.mock import patch
+
+    db_path = tmp_path / "swing.db"
+    output_dir = tmp_path / "out"
+    conn = ensure_schema(db_path)
+    try:
+        with conn:
+            run_id = insert_evaluation_run(conn, EvaluationRun(
+                id=None, run_ts="2026-05-27T20:00:00",
+                data_asof_date="2026-05-26",
+                action_session_date="2026-05-27",
+                finviz_csv_path=None, tickers_evaluated=1,
+                aplus_count=0, watch_count=1, skip_count=0,
+                excluded_count=0, error_count=0,
+            ))
+            insert_candidates(conn, run_id, [
+                Candidate(
+                    ticker="VSAT",
+                    sector="Technology",
+                    industry="Communications Equipment",
+                    **_build_candidate_fixture("VSAT"),
+                ),
+            ])
+    finally:
+        conn.close()
+    _insert_trade(db_path, ticker="VSAT", sector="", industry="")
+
+    # Spy on every conn.execute call by patching connect to return a
+    # wrapper that records the SQL statement of each invocation.
+    executed_statements: list[str] = []
+    from swing.diagnostics import backfill_trades_sector_industry as mod
+    real_connect = mod.connect
+
+    def _spy_connect(path):
+        underlying = real_connect(path)
+        return _ExecuteSpyConn(underlying, executed_statements)
+
+    runner = CliRunner()
+    with patch.object(mod, "connect", _spy_connect):
+        result = runner.invoke(swing_cli, [
+            "diagnose", "backfill-trades-sector-industry",
+            "--db", str(db_path),
+            "--output-dir", str(output_dir),
+            "--apply",
+        ])
+    assert result.exit_code == 0, result.output
+
+    # The apply path MUST issue BEGIN IMMEDIATE before the UPDATE +
+    # COMMIT after. The dry-run path would NOT do so.
+    begin_immediate_count = sum(
+        1 for s in executed_statements if s.upper() == "BEGIN IMMEDIATE"
+    )
+    commit_count = sum(
+        1 for s in executed_statements if s.upper() == "COMMIT"
+    )
+    assert begin_immediate_count == 1, (
+        f"expected exactly 1 BEGIN IMMEDIATE in apply path; got "
+        f"{begin_immediate_count} (statements={executed_statements!r})"
+    )
+    assert commit_count == 1, (
+        f"expected exactly 1 COMMIT in apply path; got {commit_count}"
+    )
+
+
+def test_dry_run_does_not_acquire_write_lock(tmp_path):
+    """Per Codex round 1 Major #1 (companion): dry-run MUST NOT issue
+    BEGIN IMMEDIATE (no writes fire; lock acquisition is unnecessary
+    overhead and would serialize against other readers/writers)."""
+    from unittest.mock import patch
+
+    db_path = tmp_path / "swing.db"
+    output_dir = tmp_path / "out"
+    ensure_schema(db_path).close()
+    _insert_trade(db_path, ticker="VSAT", sector="", industry="")
+
+    executed_statements: list[str] = []
+    from swing.diagnostics import backfill_trades_sector_industry as mod
+    real_connect = mod.connect
+
+    def _spy_connect(path):
+        underlying = real_connect(path)
+        return _ExecuteSpyConn(underlying, executed_statements)
+
+    runner = CliRunner()
+    with patch.object(mod, "connect", _spy_connect):
+        result = runner.invoke(swing_cli, [
+            "diagnose", "backfill-trades-sector-industry",
+            "--db", str(db_path),
+            "--output-dir", str(output_dir),
+        ])
+    assert result.exit_code == 0, result.output
+    assert not any(
+        s.upper() == "BEGIN IMMEDIATE" for s in executed_statements
+    ), f"dry-run should NOT issue BEGIN IMMEDIATE; statements={executed_statements!r}"
+
+
 def test_cli_subcommand_module_ascii_only():
     """CLI emit + helper module are ASCII-only per gotcha #32 + #16.
 

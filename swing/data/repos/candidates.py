@@ -197,8 +197,8 @@ def get_latest_sector_industry_per_ticker(
                 ) AS rn
             FROM candidates c
             WHERE c.ticker IN ({placeholders})
-              AND c.sector != ''
-              AND c.industry != ''
+              AND TRIM(c.sector) != ''
+              AND TRIM(c.industry) != ''
         ) ranked
         WHERE ranked.rn = 1
     """

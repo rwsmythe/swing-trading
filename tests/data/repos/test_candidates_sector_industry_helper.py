@@ -239,6 +239,41 @@ def test_historical_only_candidates_row_picked_when_no_recent(tmp_path):
         conn.close()
 
 
+def test_whitespace_only_candidate_row_excluded_from_qualifying_pool(tmp_path):
+    """Per Codex round 1 Major #2: whitespace-only sector/industry must
+    NOT qualify as a backfill source. The CLI applies TRIM-empty
+    semantics to the target row (swing/diagnostics/backfill_trades_sector_industry.py),
+    so a source row containing ``"   "`` would propagate whitespace
+    into trades.sector / trades.industry on apply (the dashboard then
+    renders whitespace as truthy instead of the em-dash placeholder).
+    The helper filters via ``TRIM(c.sector) != ''`` to match the CLI's
+    TRIM semantics."""
+    conn = _open_conn(tmp_path)
+    try:
+        with conn:
+            run_id = insert_evaluation_run(conn, EvaluationRun(
+                id=None, run_ts="2026-05-27T20:00:00",
+                data_asof_date="2026-05-26", action_session_date="2026-05-27",
+                finviz_csv_path=None, tickers_evaluated=1,
+                aplus_count=0, watch_count=1, skip_count=0,
+                excluded_count=0, error_count=0,
+            ))
+            insert_candidates(conn, run_id, [
+                Candidate(ticker="VSAT", sector="   ", industry="   ",
+                          **_build_candidate_fixture("VSAT")),
+            ])
+        result = get_latest_sector_industry_per_ticker(conn, ["VSAT"])
+        # VSAT's only candidates row has whitespace-only values; helper
+        # excludes via TRIM-empty WHERE clause + ticker maps to the
+        # no-match sentinel (empty strings + None provenance).
+        assert result["VSAT"].sector == ""
+        assert result["VSAT"].industry == ""
+        assert result["VSAT"].candidate_id is None
+        assert result["VSAT"].evaluation_run_id is None
+    finally:
+        conn.close()
+
+
 def test_helper_module_source_is_ascii_only():
     """Per gotcha #32 + spec section 15.2 ASCII discipline scope:
     swing/data/repos/candidates.py + this test module ASCII-only."""

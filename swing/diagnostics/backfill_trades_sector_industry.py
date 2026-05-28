@@ -16,6 +16,17 @@ Restore-SQL artifact (R1.M3 LOCK):
 - Operator can re-apply via `sqlite3 swing.db < restore.sql`
 - Emitted in BOTH dry-run AND apply paths (defense-in-depth against
   crash post-UPDATE).
+
+Concurrency discipline (Codex round 1 Major #1):
+- Apply path wraps the final SELECT + restore-SQL emit + UPDATE in a
+  single ``BEGIN IMMEDIATE`` write transaction so the row set seen at
+  emit-time matches the row set actually UPDATEd. Without the lock, a
+  concurrent writer could fill an AND-empty row between SELECT and
+  UPDATE; the UPDATE would correctly no-op (the WHERE clause guards
+  per ``_apply_updates``), but the restore-SQL would still contain an
+  UPDATE-to-empty for that row -- the operator applying restore later
+  would clobber the concurrent writer's valid data.
+- Dry-run path is preview-only; no lock required.
 """
 
 from __future__ import annotations
@@ -84,28 +95,54 @@ def run_backfill(
     """
     conn = connect(db_path)
     try:
-        and_empty_rows = _select_and_empty_trade_rows(
-            conn, include_closed=include_closed,
+        output_dir.mkdir(parents=True, exist_ok=True)
+        iso = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        restore_path = (
+            output_dir
+            / f"backfill-trades-sector-industry-restore-{iso}.sql"
         )
-        partial_rows = _select_partial_empty_trade_rows(
-            conn, include_closed=include_closed,
-        )
-        if allowlist is not None:
-            and_empty_rows = [
-                r for r in and_empty_rows if r[1] in allowlist
-            ]
-            partial_rows = [
-                r for r in partial_rows if r[1] in allowlist
-            ]
-        candidate_tickers = sorted({r[1] for r in and_empty_rows})
-        replacements = get_latest_sector_industry_per_ticker(
-            conn, candidate_tickers,
-        )
-        rows = _build_backfill_rows(
-            and_empty_rows=and_empty_rows,
-            partial_rows=partial_rows,
-            replacements=replacements,
-        )
+        if apply:
+            # Per Codex round 1 Major #1: serialize the SELECT + restore-SQL
+            # emit + UPDATE against concurrent writers via BEGIN IMMEDIATE.
+            # Without the lock, a concurrent writer could fill an AND-empty
+            # row between SELECT and UPDATE; the UPDATE would correctly
+            # no-op via the WHERE-clause guard at ``_apply_updates``, but
+            # the restore-SQL would still contain an UPDATE-to-empty
+            # statement for that row -- applying restore later would
+            # clobber the concurrent writer's valid data. Re-selecting
+            # under the write lock ensures the restore artifact and the
+            # actual UPDATE set are the same row set.
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                rows = _gather_backfill_rows(
+                    conn,
+                    include_closed=include_closed,
+                    allowlist=allowlist,
+                )
+                update_rows = [r for r in rows if r.action == "UPDATE"]
+                # Per R1.M3 LOCK: emit restore-SQL BEFORE UPDATE fires
+                # (defense-in-depth against crash mid-UPDATE). Now also
+                # TOCTOU-safe per the BEGIN IMMEDIATE lock above.
+                _emit_restore_sql(restore_path, update_rows)
+                _apply_updates(conn, update_rows)
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+            applied_flag = True
+        else:
+            # Dry-run path: preview-only; no lock required (no writes fire).
+            rows = _gather_backfill_rows(
+                conn,
+                include_closed=include_closed,
+                allowlist=allowlist,
+            )
+            # Per R1.M3 LOCK: emit restore-SQL on dry-run too so operator
+            # can review the artifact before --apply (defense-in-depth).
+            _emit_restore_sql(
+                restore_path, [r for r in rows if r.action == "UPDATE"],
+            )
+            applied_flag = False
         update_count = sum(1 for r in rows if r.action == "UPDATE")
         skip_no_cand = sum(
             1 for r in rows if r.action == "SKIP_NO_CANDIDATES_ROW"
@@ -113,25 +150,6 @@ def run_backfill(
         skip_partial = sum(
             1 for r in rows if r.action == "SKIP_PARTIAL_EMPTY"
         )
-        output_dir.mkdir(parents=True, exist_ok=True)
-        iso = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-        restore_path = (
-            output_dir
-            / f"backfill-trades-sector-industry-restore-{iso}.sql"
-        )
-        # Per R1.M3 LOCK: emit restore-SQL BEFORE any UPDATE fires (covers
-        # both dry-run AND apply paths; defense-in-depth against crash
-        # post-UPDATE).
-        _emit_restore_sql(
-            restore_path, [r for r in rows if r.action == "UPDATE"],
-        )
-        applied_flag = False
-        if apply:
-            with conn:
-                _apply_updates(
-                    conn, [r for r in rows if r.action == "UPDATE"],
-                )
-            applied_flag = True
         report = _format_report(
             rows=rows, update_count=update_count,
             skip_no_cand=skip_no_cand, skip_partial=skip_partial,
@@ -148,6 +166,38 @@ def run_backfill(
         )
     finally:
         conn.close()
+
+
+def _gather_backfill_rows(
+    conn: sqlite3.Connection,
+    *,
+    include_closed: bool,
+    allowlist: tuple[str, ...] | None,
+) -> list[BackfillRow]:
+    """Gather + filter + replacement-lookup + row-assembly pipeline.
+
+    Extracted so the apply-path can re-run it under BEGIN IMMEDIATE
+    (Codex round 1 Major #1) and the dry-run path can run it without
+    a lock with shared code.
+    """
+    and_empty_rows = _select_and_empty_trade_rows(
+        conn, include_closed=include_closed,
+    )
+    partial_rows = _select_partial_empty_trade_rows(
+        conn, include_closed=include_closed,
+    )
+    if allowlist is not None:
+        and_empty_rows = [r for r in and_empty_rows if r[1] in allowlist]
+        partial_rows = [r for r in partial_rows if r[1] in allowlist]
+    candidate_tickers = sorted({r[1] for r in and_empty_rows})
+    replacements = get_latest_sector_industry_per_ticker(
+        conn, candidate_tickers,
+    )
+    return _build_backfill_rows(
+        and_empty_rows=and_empty_rows,
+        partial_rows=partial_rows,
+        replacements=replacements,
+    )
 
 
 def _select_and_empty_trade_rows(
