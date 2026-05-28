@@ -87,7 +87,7 @@ V2.G3 fix preserves operator-acknowledged DHA (DHC?) legacy gap. Restore Sector/
 | Path | Type | Item(s) | Purpose |
 |---|---|---|---|
 | `swing/data/repos/candidates.py` | MODIFIED | V2.G3 | NEW repo helper `get_latest_sector_industry_per_ticker(conn, tickers: Sequence[str]) -> dict[str, tuple[str, str]]` returning the most-recent non-empty `(sector, industry)` per ticker. Empty-string convention preserved (NOT NULL DEFAULT '' per migration 0012); legacy / no-row tickers map to `("", "")`. |
-| `swing/cli.py` OR `swing/cli_diagnose.py` | MODIFIED | V2.G3 | NEW CLI subcommand `swing diagnose backfill-trades-sector-industry [--apply / --dry-run]` (or equivalent) that consumes the new repo helper + emits an idempotent UPDATE: `UPDATE trades SET sector=?, industry=? WHERE id=? AND (sector='' OR industry='') AND state IN (...)`. Dry-run prints the affected ticker count; apply commits the UPDATE under `with conn:` per repo discipline. |
+| `swing/cli.py` OR `swing/cli_diagnose.py` | MODIFIED | V2.G3 | NEW CLI subcommand `swing diagnose backfill-trades-sector-industry [--apply / --dry-run]` (or equivalent) that consumes the new repo helper + emits an idempotent UPDATE: `UPDATE trades SET sector=?, industry=? WHERE id=? AND TRIM(sector)='' AND TRIM(industry)='' AND state IN (...)` (V1 STRICT all-or-nothing per R2.M3 LOCK). Dry-run prints the affected ticker count + emits a restore-SQL artifact per §4.3; apply commits the UPDATE under `with conn:` per repo discipline. |
 | `swing/web/view_models/open_positions_row.py` | OPTIONAL-MODIFIED | V2.G3 | OPTIONAL view-layer fallback if backfill alone is insufficient: if `trade.sector` or `trade.industry` is empty, fall back to `candidates.get_latest_sector_industry_per_ticker(conn, [trade.ticker])` at render time. Brainstorm verdict: ship backfill FIRST; bank VM fallback as Fix-1b if writing-plans phase or operator gate finds residual empty cells. |
 | `swing/web/routes/dashboard.py` | MODIFIED | V2.G4 | Fix `get_or_fetch([benchmark])` call -> `get_or_fetch(ticker=benchmark)`; remove dead dict-style `bars_bundle.get(benchmark)` code; NARROW exception handling per §5.2 Fix A -- catch ONLY `ValueError` (empty-archive expected path; degrade to 409 + log.warning); let any other exception (`TypeError`, `AttributeError`, `KeyError`, `RuntimeError`, ...) propagate to FastAPI default 500 handler per R2.M2 anti-pattern lock. |
 | `swing/web/templates/partials/daily_management_tile.html.j2` | MODIFIED | P14.N3 | Rewrite PROVISIONAL badge tooltip text to describe current clear-condition (`account_equity_snapshots`); add small inline help affordance (`<span class="muted">` with focusable detail) explaining the clear-condition; conditional emit on `tile.position_capital_utilization_is_provisional` rather than unconditional whenever pct is non-NULL; render `tile.position_capital_utilization_pct_effective` (NOT `snap.position_capital_utilization_pct`) per §6.2 denominator-stamping mirror. |
@@ -276,7 +276,16 @@ The brief's four hypotheses (A: hydration gap in chart_jit; B: cfg-resolution ti
 
 ### §5.2 Fix candidates
 
-**Fix A (RECOMMENDED) -- call-site fix + NARROW exception handling.** Rewrite the handler's bars-fetch block to:
+**Fix A (RECOMMENDED) -- call-site fix + NARROW exception handling + add module logger (R3.M2 LOCK).**
+
+Module-level addition at `swing/web/routes/dashboard.py` (the file currently imports no `logging` and defines no `log`; this addition is REQUIRED per R3.M2 -- without it the `log.warning(...)` call below raises `NameError` and converts the empty-archive degraded path into an uncaught exception):
+
+```python
+import logging
+log = logging.getLogger(__name__)
+```
+
+Rewrite the handler's bars-fetch block to:
 
 ```python
 try:
@@ -386,7 +395,7 @@ Located at `swing/web/templates/partials/daily_management_tile.html.j2:91-99`:
    - `position_capital_denominator_dollars_resolved: float` -- the FRESHLY-resolved denominator at render time
    - `position_capital_utilization_is_provisional: bool` -- True iff freshly-resolved state == "PROVISIONAL"
    - `position_capital_utilization_pct_effective: float | None` -- the utilization to render (stored if denominators match; recomputed otherwise; None when ill-defined)
-2. **Build-time VM resolution mirrors `maturity.py:197-219`:** parse `snap.data_asof_session` (NOT a hypothetical `review_date`) via `date.fromisoformat(...)` with a ValueError-guarded fallback to `asof_date` per `maturity.py:190-194`; call `resolve_live_capital_denominator_dollars(conn, asof_date=row_asof, at_trade_time_policy=read_live_policy(conn))`; reuse `snap.position_capital_utilization_pct` ONLY when `snap.position_capital_denominator_dollars` matches the freshly-resolved value via `math.isclose(...)`; otherwise recompute via the same `_compute_position_util_pct(...)` helper `maturity.py:222-229` consumes (or expose a shared utility if not already exposed). This ensures the badge AND the displayed pct are coherent.
+2. **Build-time VM resolution mirrors `maturity.py:197-219` BUT honors the daily-management proportion-unit contract:** parse `snap.data_asof_session` (NOT a hypothetical `review_date`) via `date.fromisoformat(...)` with a ValueError-guarded fallback to `asof_date` per `maturity.py:190-194`; call `resolve_live_capital_denominator_dollars(conn, asof_date=row_asof, at_trade_time_policy=read_live_policy(conn))`; reuse `snap.position_capital_utilization_pct` (PROPORTION 0.0-1.0+; per `swing/trades/daily_management.py:381-394 compute_position_capital_utilization` contract) ONLY when `snap.position_capital_denominator_dollars` matches the freshly-resolved value via `math.isclose(...)`; otherwise recompute as a PROPORTION via `swing/trades/daily_management.py:compute_position_capital_utilization(current_size=..., current_price=..., denominator_dollars=denom_dollars)`. **CRITICAL UNIT NOTE per R3.M1**: do NOT use `maturity.py:296-304 _compute_position_util_pct` here -- that helper returns `(exposure / denom) * 100.0` (already a percent, e.g., 15.0 for 15%). The daily-management template at line 92 multiplies by 100.0 again, so using the percent helper would produce 1500.0%. The proportion contract preserves the existing template render math + the existing snap.position_capital_utilization_pct semantic. This ensures the badge AND the displayed pct are coherent.
 3. **Template only emits the badge when `is_provisional is True`**, renders `position_capital_utilization_pct_effective` for the value, AND emits an inline help affordance:
 
 ```jinja
@@ -448,7 +457,7 @@ Located at `swing/web/templates/partials/daily_management_tile.html.j2:91-99`:
 Item | Error mode | Handler | Operator-visible |
 ---|---|---|---
 V2.G3 | `get_latest_sector_industry_per_ticker` SQL error | Bubble to render path; 500 | Yes (page error) |
-V2.G3 | Empty `candidates` for ticker | Helper returns `(None, None)` | Em-dash render (graceful) |
+V2.G3 | Empty / no-qualifying `candidates` for ticker | Helper returns `("", "")` (empty-string convention per migration 0012 TEXT NOT NULL DEFAULT '') | Em-dash render via template's `row.trade.sector or "—"` (graceful) |
 V2.G4 | `get_or_fetch` raises `ValueError("No data for SPY")` | Catch + log.warning + 409 | Existing 409 operator-friendly message |
 V2.G4 | `get_or_fetch` raises arbitrary `Exception` (TypeError, AttributeError, KeyError, RuntimeError, ...) | NOT caught -- propagates to FastAPI default 500 handler | 500 with full traceback in logs; prevents the V2.G4 root-cause-class from recurring per R1.M5 / R2.M2 anti-pattern lock |
 V2.G4 | TypeError from call-signature mismatch | **POST-FIX: cannot occur**; pre-fix: swallowed by bare except | **GONE** post-fix |
@@ -538,7 +547,8 @@ The merge-time operator-witnessed gate has the following surfaces:
 | **S2** | `ruff check swing/` | 0 errors |
 | **S3** | `/dashboard` VSAT row | Sector + Industry columns render non-NULL values (or em-dash if legitimate legacy) |
 | **S4** | `/dashboard` Refresh weather chart button | Click produces a fresh SPY weather chart render; NOT the "no OHLCV bars" error |
-| **S5** | `/daily-management` Capital % column | PROVISIONAL badge tooltip describes account_equity_snapshots clear-condition; (?) affordance visible; stale "Phase 9 risk_policy versioning" text REMOVED |
+| **S5a** | `/daily-management` Capital % column -- PROVISIONAL CASE | Plant operator's database state with NO `account_equity_snapshots` row covering today's session; render page; assert PROVISIONAL badge present, tooltip describes account_equity_snapshots clear-condition, (?) affordance visible, stale "Phase 9 risk_policy versioning" text REMOVED, AND the displayed Capital % value is a SANE small percentage (e.g., < 50%; NOT 1500.0% per R3.M1 unit-mismatch defense) |
+| **S5b** | `/daily-management` Capital % column -- LIVE CASE | Plant `account_equity_snapshots` row covering today's session via `swing schwab fetch --snapshot` OR direct insert; reload page; assert PROVISIONAL badge NOT present; assert Capital % value still rendered (using the recomputed proportion when stored denominator diverges from freshly-resolved per maturity.py mirror) |
 | **S6** | Cross-fix regression check | Refreshing weather chart (S4) does not break Sector/Industry render (S3); both shipped fixes coexist cleanly |
 
 ---
@@ -586,7 +596,7 @@ Per-item analysis:
 
 | Item | Schema touch? | Migration needed? | Justification |
 |---|---|---|---|
-| V2.G3 | NEW repo helper `get_latest_sector_industry_per_ticker` consumes existing `candidates.sector` + `candidates.industry` (TEXT NULL columns shipped at migration `0001_phase1_initial.sql` Phase 1) | NO | View-layer read; no INSERT / DELETE / DDL |
+| V2.G3 | NEW repo helper `get_latest_sector_industry_per_ticker` consumes existing `candidates.sector` + `candidates.industry` (`TEXT NOT NULL DEFAULT ''` columns shipped at migration `0012_sector_industry.sql:20-21`) + the new backfill CLI emits idempotent UPDATEs against `trades.sector` + `trades.industry` (`TEXT NOT NULL DEFAULT ''` per `0012_sector_industry.sql:23-24`) | NO | Read + UPDATE on existing v12+ columns; no DDL |
 | V2.G4 | One-line call-site fix at `swing/web/routes/dashboard.py:76`; no DB read/write changed | NO | Route handler call-signature fix; cache layer unchanged |
 | P14.N3 | Template + dashboard VM extension; consumes existing `equity_resolver.resolve_live_capital_denominator_dollars` + `read_live_policy` (Phase 11 ship) + existing `account_equity_snapshots` table (Phase 9 Sub-bundle C ship) | NO | Template-rendering + VM field addition (3 new fields per maturity.py pattern); both substrates already shipped |
 
