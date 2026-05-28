@@ -9,7 +9,7 @@
 
 ## 1. Final HEAD on branch + commit count breakdown
 
-**Final HEAD:** to be set at closer commit (this commit). Pre-closer commit chain (5 commits ahead of main `6e65e87`):
+**Final HEAD:** `9a9836b` (post-Codex R1 fix bundle). Commit chain ahead of main `6e65e87`:
 
 | # | SHA | Subject | Task | Files | Codex round |
 |---|---|---|---|---|---|
@@ -18,18 +18,40 @@
 | 3 | `6823698` | `fix(web): correct OhlcvCache.get_or_fetch call signature in weather-chart refresh (V2.G4)` | T-2.1 | 2 (1 prod + 1 test) | pre-Codex |
 | 4 | `f21fde8` | `feat(web): wire DailyManagementTileVM 4-field PROVISIONAL/LIVE denominator stamping (P14.N3)` | T-3.1 | 6 (3 prod + 3 test) | pre-Codex |
 | 5 | `87d1cb7` | `test(integration): add L2 LOCK parametric source-grep regression test` | T-4.1 | 1 (test) | pre-Codex |
+| 6 | `caa52a3` | `docs(phase14-sub-bundle-1): cumulative ASCII sweep + trailer audit + executing-plans return report` | T-4.2 | 2 (test + doc) | pre-Codex |
+| 7 | `9a9836b` | `fix(diagnose): TOCTOU lock + TRIM whitespace filter for V2.G3 backfill (Codex R1)` | T-1.1 + T-1.2 | 4 (2 prod + 2 test) | Codex R1 fix bundle |
 
-Closer commit (this) will land T-4.2 cumulative ASCII sweep test + return report. Total: 6 commits ahead of main (within plan §G.0 cadence target of 8-12).
+Total: **7 commits ahead of main** (within plan §G.0 cadence target of 8-12; the R1 fix bundle adds 1 above the original 6).
 
-**Per-task commit attribution:** T-1.1 = 1; T-1.2 = 1; T-2.1 = 1; T-3.1 = 1; T-4.1 = 1; T-4.2 = 1 (this). T-1.3 OPTIONAL = 0 (skipped per dispatch brief §1.3 default disposition; trigger condition did not fire at pre-merge verification).
+**Per-task commit attribution:** T-1.1 = 1 (+ Codex R1 fix bundle); T-1.2 = 1 (+ Codex R1 fix bundle); T-2.1 = 1; T-3.1 = 1; T-4.1 = 1; T-4.2 = 1. T-1.3 OPTIONAL = 0 (skipped per dispatch brief §1.3 default disposition; trigger condition did not fire at pre-merge verification).
 
-## 2. Codex round chain (placeholder pending Codex MCP single-chain invocation)
+## 2. Codex MCP single-chain round chain
 
 | Round | C / M / m | Net new findings | Convergence |
 |---|---|---|---|
-| Pending Codex MCP single-chain invocation | -- | -- | -- |
+| R1 | 0 / 2 / 3 | 2 NEW MAJOR (TOCTOU restore-SQL + whitespace AND-empty mismatch) + 3 NEW MINOR | ISSUES_FOUND |
+| R2 | 0 / 0 / 3 | 0 NEW CRITICAL/MAJOR (R1.M#1 + R1.M#2 verified resolved); 3 NEW MINOR banked | NO_NEW_CRITICAL_MAJOR |
 
-Per dispatch brief §4 + plan §J: SINGLE Codex MCP chain at END of executing-plans phase. Target 2-5 round convergence at `NO_NEW_CRITICAL_MAJOR`. The pre-Codex orchestrator-side review applied all 19+ expansion candidates at writing-plans phase + caught 18 MAJOR; executing-plans Codex may surface additional defects against actual production code.
+**Convergence:** R2 NO_NEW_CRITICAL_MAJOR after 2 rounds. Cumulative: 0 CRITICAL + 2 MAJOR + 6 MINOR. ALL CRITICAL + MAJOR RESOLVED in-place via 1 fix bundle commit (`9a9836b`); ZERO accepted-with-rationale. 6 MINORS BANKED for V2 disposition (none blocking).
+
+### Codex R1 MAJOR findings + dispositions
+
+**R1.M#1: Restore-SQL TOCTOU between SELECT and UPDATE.** Concurrent writer could fill an AND-empty row between SELECT and UPDATE; the UPDATE no-ops via WHERE-clause guard, but the restore-SQL still contained UPDATE-to-empty -- operator's later restore would clobber valid data. **RESOLVED:** wrapped apply-path SELECT + restore-SQL emit + UPDATE in `BEGIN IMMEDIATE` write transaction. Re-selecting under the lock ensures restore artifact + actual UPDATE set are the same row set. Refactored to extract `_gather_backfill_rows(conn, ...)` shared helper. 2 new tests via `_ExecuteSpyConn` proxy class verifying (a) apply issues exactly 1 `BEGIN IMMEDIATE` + 1 `COMMIT`; (b) dry-run does NOT issue `BEGIN IMMEDIATE`.
+
+**R1.M#2: Helper SQL `c.sector != ''` vs CLI's `TRIM(sector) = ''` mismatch.** Whitespace-only source rows could match the helper while the CLI uses TRIM semantics for the SELECT against trades -- whitespace would propagate into trades on apply, rendering as truthy in the dashboard template instead of em-dash placeholder. **RESOLVED:** changed helper SQL at `swing/data/repos/candidates.py:200-201` to `TRIM(c.sector) != '' AND TRIM(c.industry) != ''`. Added test `test_whitespace_only_candidate_row_excluded_from_qualifying_pool`.
+
+### Codex MINOR findings BANKED (advisory; not blocking; V2 candidates)
+
+| # | Round | Description | V2 disposition |
+|---|---|---|---|
+| 1 | R1 | `DailyManagementTileVM.position_capital_utilization_is_provisional` defaults to `True` -- ad-hoc VM construction omitting the new field would render PROVISIONAL by default | V2: flip default to `False` OR make field required; backwards-compat-safe |
+| 2 | R1 | Visible help text "LIVE when account_equity_snapshots row covers today" misleading for stale/historical daily-management rows -- the resolver uses each tile's `data_asof_session`, not today | V2: change help text to "covers this row's session date" |
+| 3 | R1 | Backfill CLI only wraps `ValueError` + `sqlite3.OperationalError`; output artifact failures from `output_dir.mkdir` / `path.write_text` (`OSError`) surface as raw tracebacks | V2: wrap `OSError` into `ClickException` with output path context |
+| 4 | R2 | Helper returns untrimmed values for qualifying rows with leading/trailing whitespace -- a candidates row like `" Technology "` would persist verbatim into trades | V2: return `TRIM(c.sector)` / `TRIM(c.industry)` from the helper query (preserves operator's whitespace-significant data only if specifically intended) |
+| 5 | R2 | Transaction-order test asserts `BEGIN IMMEDIATE` + `COMMIT` occur but does not assert ordering relative to SELECT/UPDATE statements -- future regression could move gather before lock while preserving the test | V2: strengthen spy assertion to require `BEGIN IMMEDIATE` before the first SELECT + before UPDATE |
+| 6 | R2 | Apply path holds SQLite write transaction open while writing restore artifact to filesystem -- slow/blocked output dir (network mount) would unnecessarily hold DB writer lock | V2 (low priority): emit restore-SQL to a pre-allocated temp file outside the transaction, then atomic-rename inside the transaction |
+
+ZERO Codex Major findings accepted-with-rationale (matches writing-plans phase precedent).
 
 ## 3. Per-task completion summary
 
@@ -105,7 +127,7 @@ Per dispatch brief §4 + plan §J: SINGLE Codex MCP chain at END of executing-pl
 | T-4.1 | `tests/integration/test_l2_lock_source_grep.py` (NEW) | 2 (1 parametric + 1 ASCII) | 47 |
 | T-4.2 | `tests/integration/test_phase14_sub_bundle_1_cross_item.py` (NEW) | 2 (ASCII sweep + trailer audit) | 49 |
 
-**Total NEW fast tests: 49.** Within plan §H projected range (34-41 lower bound; T-3.1 hit the upper bound due to Codex R2.M#1+M#2 4th-field branch + R1.M#1 NoActivePolicyError branch; T-2.1 included parametric expansion; T-1.2 included Codex R1.M#6 provenance assertion).
+**Total NEW fast tests: 52** (49 pre-Codex + 3 Codex R1 fix bundle: `test_apply_path_uses_begin_immediate_lock_for_toctou_safety` + `test_dry_run_does_not_acquire_write_lock` + `test_whitespace_only_candidate_row_excluded_from_qualifying_pool`). Within plan §H projected range upper bound +9 due to Codex-driven additions; well within reasonable scope.
 
 **Full fast-tier suite:** 6563 passed + 3 skipped (pre-existing) at `pytest -m "not slow" -n auto`. Initial parallel run had 1 flaky failure in `tests/research/test_pattern_cohort_evaluator_reader.py::test_ohlcv_reader_re_export_identity` (PASSED on isolated re-run + second full-suite run; pre-existing parallelism flake unrelated to Sub-bundle 1 changes -- `swing.patterns.ohlcv_reader` not touched).
 
@@ -124,7 +146,7 @@ All 23 LOCKs preserved verbatim from plan §E.4 verdict (cumulative ZERO LOCK de
 
 ## 6. Codex Major findings ACCEPTED with rationale
 
-Pre-Codex: ZERO acceptances expected post-Codex chain. Pending Codex MCP single-chain invocation. Writing-plans hit ZERO acceptances; executing-plans aims for the same.
+**ZERO.** All 2 R1 Majors RESOLVED in-place via fix bundle `9a9836b`. Matches writing-plans phase precedent (ZERO acceptances). See §2 for the Codex round chain summary + per-Major dispositions.
 
 ## 7. Production-code citations verified at task completion (forward-binding lesson #1)
 
@@ -206,7 +228,7 @@ Worktree at `.worktrees/phase14-sub-bundle-1-data-wiring-executing-plans/` REMAI
 
 `git log --pretty='%(trailers)' main..HEAD` returns EMPTY (one blank line per commit; ZERO trailer content). Verified across all 5 (pre-closer) + 1 (this closer) = 6 branch commits. Test `test_sub_bundle_1_branch_has_no_co_authored_by_trailers` codifies this as a regression check.
 
-**Cumulative streak preserved: ~599+ commits cumulative ZERO `Co-Authored-By` footer drift through merge of this branch when shipped.**
+**Cumulative streak preserved: ~599+ commits cumulative ZERO `Co-Authored-By` footer drift through merge of this branch when shipped.** Verified post-Codex-R1-fix-bundle (`9a9836b`): trailer audit clean.
 
 ## 16. CLAUDE.md status-line refresh draft text (informational)
 
@@ -216,11 +238,11 @@ Suggested status-line update post-merge of this executing-plans branch (orchestr
 
 ## 17. Operator-witnessed gate handback summary
 
-This dispatch is COMPLETE. Branch `phase14-sub-bundle-1-data-wiring-executing-plans` at HEAD ~6 commits ahead of main. Codex MCP single-chain to be invoked at this report's closer commit per plan §J. Operator-witnessed gate S1-S6 + S5a/S5b/S5c per plan §I.
+This dispatch is **COMPLETE**. Branch `phase14-sub-bundle-1-data-wiring-executing-plans` at HEAD `9a9836b` (7 commits ahead of main `6e65e87`). Codex MCP single-chain CONVERGED at R2 NO_NEW_CRITICAL_MAJOR (2 rounds; 0 CRITICAL + 2 MAJOR + 6 MINOR cumulative; ALL MAJOR resolved in-place via R1 fix bundle; 6 minors banked V2). Operator-witnessed gate S1-S6 + S5a/S5b/S5c ready per plan §I.
 
 Handback to orchestrator for:
-1. Codex MCP single-chain adversarial review (target 2-5 round NO_NEW_CRITICAL_MAJOR convergence).
-2. Codex Major findings (if any) fix bundles + return-to-Codex.
+1. ~~Codex MCP single-chain adversarial review~~ DONE (R2 NO_NEW_CRITICAL_MAJOR converged).
+2. ~~Codex Major findings fix bundles + return-to-Codex~~ DONE (1 fix bundle `9a9836b`; R2 verified resolution).
 3. Push branch to origin.
 4. Operator-witnessed gate scheduling at plan §I runbook.
 5. Merge --no-ff to main + post-merge housekeeping per `feedback_orchestrator_performs_merge` BINDING.
