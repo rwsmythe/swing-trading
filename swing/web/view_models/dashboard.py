@@ -1,10 +1,11 @@
 """DashboardVM + builder."""
 from __future__ import annotations
 
+import math
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 
 from swing.config import Config
 from swing.data.db import connect
@@ -16,13 +17,19 @@ from swing.data.repos.pattern_classifications import (
     list_classifications_for_run,
 )
 from swing.data.repos.recommendations import list_for_session
+from swing.data.repos.risk_policy import NoActivePolicyError
 from swing.data.repos.trades import list_closed_trades, list_open_trades
 from swing.data.repos.watchlist import list_active_watchlist
 from swing.data.repos.weather import get_latest
 from swing.evaluation.dates import action_session_for_run
 from swing.journal.stats import HypothesisProgress
+from swing.metrics.equity_resolver import (
+    resolve_live_capital_denominator_dollars,
+)
+from swing.metrics.policy import read_live_policy
 from swing.recommendations.sizing import SizingResult, compute_shares
 from swing.trades.advisory import AdvisoryContext, compute_all_suggestions
+from swing.trades.daily_management import compute_position_capital_utilization
 from swing.trades.equity import current_equity, sizing_equity, total_current_risk
 from swing.web.chart_scope import (
     latest_completed_pipeline_run,
@@ -1339,81 +1346,186 @@ def build_dashboard(
     open_trades_by_id = {t.id: t for t in open_trades if t.id is not None}
     if open_trades_by_id:
         tiles: list[DailyManagementTileVM] = []
-        for snap in active_snapshots:
-            trade = open_trades_by_id.get(snap.trade_id)
-            if trade is None:
-                # Defensive: snapshot's open-trade JOIN diverges from the
-                # in-memory open_trades list. Skip rather than render a
-                # ghost tile.
-                continue
-            # Codex R1 Major 3 fix — open_R_effective recomputed LIVE.
-            # Spec §7.1 line 547: tile shows the LIVE risk-effective value
-            # using the trades-row's current_size (post-partial-exit) and
-            # the live PriceCache snapshot. Snapshot's open_R_effective is
-            # the close-of-session anchor and remains in the timeline; the
-            # tile is the operator's "right now" view, which must reflect
-            # mid-session partial exits and live price moves.
-            #
-            # Formula matches compute_open_R_effective in
-            # swing/trades/daily_management.py:
-            #   (live_price - live_avg_cost) * live_size / planned_risk
-            # planned_risk_budget = (entry_price - initial_stop) * initial_shares
-            # (Phase 7 pre-trade-locked derivation).
-            live_snap = open_trade_last_prices.get(trade.ticker)
-            live_avg_cost = (
-                trade.current_avg_cost
-                if trade.current_avg_cost is not None
-                else trade.entry_price
-            )
-            planned_risk_budget = (
-                (trade.entry_price - trade.initial_stop)
-                * trade.initial_shares
-            )
-            if (
-                live_snap is not None
-                and trade.current_size is not None
-                and trade.current_size > 0
-                and planned_risk_budget != 0
-            ):
-                live_open_R = (  # noqa: N806
-                    (live_snap.price - live_avg_cost)
-                    * trade.current_size
-                    / planned_risk_budget
+        # P14.N3: open a short-lived read conn for per-row denominator
+        # resolution (account_equity_snapshots + risk_policy lookups).
+        # The page-level fallback session is the last-completed session
+        # because daily-management writers stamp review_date =
+        # last_completed_session(now) per Phase 8 spec section 4.5; this
+        # mirrors the read/write anchor discipline already enforced for
+        # the "updated today?" badge above.
+        page_asof_date = date.fromisoformat(mgmt_session_date)
+        conn_p14n3 = connect(cfg.paths.db_path)
+        try:
+            try:
+                live_policy = read_live_policy(conn_p14n3)
+                policy_missing = False
+            except NoActivePolicyError:
+                # Codex R1.M#1 + R2.M#1+M#2 LOCK + spec section 6.4 second
+                # bullet: zero active risk_policy rows MUST render
+                # PROVISIONAL with EXTRA-CAVEAT tooltip (distinct from the
+                # standard PROVISIONAL tooltip), NOT 500 AND NOT silently
+                # swallowed. policy_missing=True drives the template to
+                # render the badge OUTSIDE the util-value guard so the
+                # operator sees the distinct remediation path even when
+                # util_pct_effective is None.
+                live_policy = None
+                policy_missing = True
+            for snap in active_snapshots:
+                trade = open_trades_by_id.get(snap.trade_id)
+                if trade is None:
+                    # Defensive: snapshot's open-trade JOIN diverges from
+                    # the in-memory open_trades list. Skip rather than
+                    # render a ghost tile.
+                    continue
+                # Codex R1 Major 3 fix -- open_R_effective recomputed LIVE.
+                # Spec section 7.1 line 547: tile shows the LIVE
+                # risk-effective value using the trades-row's current_size
+                # (post-partial-exit) and the live PriceCache snapshot.
+                # Snapshot's open_R_effective is the close-of-session
+                # anchor and remains in the timeline; the tile is the
+                # operator's "right now" view, which must reflect
+                # mid-session partial exits and live price moves.
+                #
+                # Formula matches compute_open_R_effective in
+                # swing/trades/daily_management.py:
+                #   (live_price - live_avg_cost) * live_size / planned_risk
+                # planned_risk_budget =
+                #   (entry_price - initial_stop) * initial_shares
+                # (Phase 7 pre-trade-locked derivation).
+                live_snap = open_trade_last_prices.get(trade.ticker)
+                live_avg_cost = (
+                    trade.current_avg_cost
+                    if trade.current_avg_cost is not None
+                    else trade.entry_price
                 )
-            else:
-                # Fall back to the snapshot's value if live price missing
-                # (PriceCache degraded path) or the trade has zero size.
-                # The fallback is the closing-session anchor, not "right
-                # now"; the operator sees the same value as the timeline.
-                live_open_R = snap.open_R_effective  # noqa: N806
+                planned_risk_budget = (
+                    (trade.entry_price - trade.initial_stop)
+                    * trade.initial_shares
+                )
+                if (
+                    live_snap is not None
+                    and trade.current_size is not None
+                    and trade.current_size > 0
+                    and planned_risk_budget != 0
+                ):
+                    live_open_R = (  # noqa: N806
+                        (live_snap.price - live_avg_cost)
+                        * trade.current_size
+                        / planned_risk_budget
+                    )
+                else:
+                    # Fall back to the snapshot's value if live price
+                    # missing (PriceCache degraded path) or the trade has
+                    # zero size. The fallback is the closing-session
+                    # anchor, not "right now"; the operator sees the same
+                    # value as the timeline.
+                    live_open_R = snap.open_R_effective  # noqa: N806
 
-            tiles.append(DailyManagementTileVM(
-                trade_id=snap.trade_id,
-                ticker=trade.ticker,
-                # §5.6 LIVE values from trades-row:
-                state=trade.state,
-                current_stop=trade.current_stop,
-                planned_target_R=trade.planned_target_R,
-                # §5.6 time-series + end-of-session anchored values from
-                # the active snapshot row:
-                current_price=snap.current_price,
-                open_R_effective=live_open_R,
-                open_MFE_R_to_date=snap.open_MFE_R_to_date,
-                open_MAE_R_to_date=snap.open_MAE_R_to_date,
-                maturity_stage=snap.maturity_stage,
-                trail_MA_eligibility_flag=snap.trail_MA_eligibility_flag,
-                trail_MA_candidate_price=snap.trail_MA_candidate_price,
-                position_capital_utilization_pct=(
-                    snap.position_capital_utilization_pct
-                ),
-                position_capital_denominator_dollars=(
-                    snap.position_capital_denominator_dollars
-                ),
-                position_portfolio_heat_contribution_dollars=(
-                    snap.position_portfolio_heat_contribution_dollars
-                ),
-                data_asof_session=snap.data_asof_session,
-            ))
+                # P14.N3: PROVISIONAL/LIVE state via
+                # swing/metrics/maturity.py lines 197-219 denominator-
+                # stamping mirror. row_asof prefers the snap's
+                # data_asof_session per the ValueError-guarded fallback at
+                # maturity.py:190-194 (malformed strings fall back to the
+                # page-level last-completed-session anchor).
+                row_asof = page_asof_date
+                if snap.data_asof_session:
+                    try:
+                        row_asof = date.fromisoformat(
+                            snap.data_asof_session
+                        )
+                    except ValueError:
+                        row_asof = page_asof_date
+                if live_policy is not None:
+                    denom_resolved, denom_badge = (
+                        resolve_live_capital_denominator_dollars(
+                            conn_p14n3,
+                            asof_date=row_asof,
+                            at_trade_time_policy=live_policy,
+                        )
+                    )
+                else:
+                    # NoActivePolicyError fallback: denominator undefined;
+                    # PROVISIONAL with util=None. Template renders em-dash
+                    # for the value cell AND the distinct policy-missing
+                    # PROVISIONAL badge + extra-caveat tooltip per spec
+                    # section 6.4 second bullet.
+                    denom_resolved = 0.0
+                    denom_badge = "PROVISIONAL"
+                is_provisional = (denom_badge == "PROVISIONAL")
+                # Denominator-stamping per maturity.py:215-219:
+                stored_util = snap.position_capital_utilization_pct
+                stored_denom = snap.position_capital_denominator_dollars
+                if (
+                    stored_util is not None
+                    and stored_denom is not None
+                    and math.isclose(
+                        stored_denom, denom_resolved, rel_tol=1e-9,
+                    )
+                ):
+                    # Reuse stored proportion (denominators match).
+                    util_pct_effective = stored_util
+                elif (
+                    trade.current_size is not None
+                    and snap.current_price is not None
+                    and denom_resolved > 0
+                ):
+                    # R3.M1 LOCK: PROPORTION-unit recompute via
+                    # compute_position_capital_utilization (NOT
+                    # _compute_position_util_pct which returns percent
+                    # and would render 1500.0% after template * 100.0).
+                    util_pct_effective = (
+                        compute_position_capital_utilization(
+                            current_size=trade.current_size,
+                            current_price=snap.current_price,
+                            denominator_dollars=denom_resolved,
+                        )
+                    )
+                else:
+                    util_pct_effective = None
+
+                tiles.append(DailyManagementTileVM(
+                    trade_id=snap.trade_id,
+                    ticker=trade.ticker,
+                    # section 5.6 LIVE values from trades-row:
+                    state=trade.state,
+                    current_stop=trade.current_stop,
+                    planned_target_R=trade.planned_target_R,
+                    # section 5.6 time-series + end-of-session anchored
+                    # values from the active snapshot row:
+                    current_price=snap.current_price,
+                    open_R_effective=live_open_R,
+                    open_MFE_R_to_date=snap.open_MFE_R_to_date,
+                    open_MAE_R_to_date=snap.open_MAE_R_to_date,
+                    maturity_stage=snap.maturity_stage,
+                    trail_MA_eligibility_flag=(
+                        snap.trail_MA_eligibility_flag
+                    ),
+                    trail_MA_candidate_price=snap.trail_MA_candidate_price,
+                    position_capital_utilization_pct=(
+                        snap.position_capital_utilization_pct
+                    ),
+                    position_capital_denominator_dollars=(
+                        snap.position_capital_denominator_dollars
+                    ),
+                    position_portfolio_heat_contribution_dollars=(
+                        snap.position_portfolio_heat_contribution_dollars
+                    ),
+                    data_asof_session=snap.data_asof_session,
+                    # P14.N3 NEW fields (Codex R5.m#2 LOCK -- 4 fields
+                    # including R2.M#1+M#2's policy_missing):
+                    position_capital_denominator_dollars_resolved=(
+                        denom_resolved
+                    ),
+                    position_capital_utilization_is_provisional=(
+                        is_provisional
+                    ),
+                    position_capital_utilization_pct_effective=(
+                        util_pct_effective
+                    ),
+                    position_capital_policy_missing=policy_missing,
+                ))
+        finally:
+            conn_p14n3.close()
         daily_management_tiles = tuple(tiles)
 
     degraded_until = cache.degraded_until()

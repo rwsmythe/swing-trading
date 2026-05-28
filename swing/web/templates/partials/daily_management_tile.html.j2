@@ -1,28 +1,33 @@
 {#- swing/web/templates/partials/daily_management_tile.html.j2 -#}
-{#- Phase 8 Task 5.1 — Per-open-position daily-management dashboard tile.
+{#- Phase 8 Task 5.1 -- Per-open-position daily-management dashboard tile.
 
-  Spec §7.1 composition + §5.6 read-precedence ladder enforced by VM:
+  Spec section 7.1 composition + section 5.6 read-precedence ladder enforced by VM:
     * Live values (current_stop, state, planned_target_R) sourced from
       trades-row (NOT snapshot's stale copy).
-    * open_R_effective is RECOMPUTED LIVE per Codex R1 Major 3 (spec §7.1
-      line 547): VM computes (live_price - live_avg_cost) * live_size /
-      planned_risk_budget. The snapshot column of the same name is the
-      close-of-session anchor and surfaces in the timeline view, not here.
+    * open_R_effective is RECOMPUTED LIVE per Codex R1 Major 3 (spec
+      section 7.1 line 547): VM computes
+      (live_price - live_avg_cost) * live_size / planned_risk_budget. The
+      snapshot column of the same name is the close-of-session anchor and
+      surfaces in the timeline view, not here.
     * Time-series running extrema + end-of-session anchored values
       sourced from latest active snapshot row.
 
-  Section root (NOT a leading <tr>) per CLAUDE.md HTMX `<tr>`-leading
-  makeFragment regression — the surface is rendered server-side as part
+  Section root (NOT a leading <tr>) per CLAUDE.md HTMX <tr>-leading
+  makeFragment regression -- the surface is rendered server-side as part
   of the dashboard full-page render today; future OOB-swap refresh paths
   must continue to wrap inside <section> so makeFragment doesn't drop
   the inner <table>.
 
   data-tile-* attrs are stable hooks for downstream tests + DOM probes.
+
+  Phase 14 Sub-bundle 1 P14.N3 -- ASCII-only render surface per CLAUDE.md
+  gotcha #32 (CLI stdout encoding family applied to operator-facing
+  template). Em-dash placeholder rendered as ASCII "--".
 -#}
 <section id="daily-management-tiles" class="daily-management-tiles">
   <h2>Daily Management</h2>
   {% if not vm.daily_management_tiles %}
-    <p class="empty"><em>No active snapshots — pipeline has not yet emitted daily-management data for any open position.</em></p>
+    <p class="empty"><em>No active snapshots -- pipeline has not yet emitted daily-management data for any open position.</em></p>
   {% else %}
     <table>
       <thead>
@@ -47,38 +52,38 @@
         <tr data-tile-trade-id="{{ tile.trade_id }}">
           <td>{{ tile.ticker }}</td>
           <td><span class="state-badge state-{{ tile.state }}">{{ tile.state }}</span></td>
-          <td>{{ tile.data_asof_session or "—" }}</td>
+          <td>{{ tile.data_asof_session or "--" }}</td>
           <td data-tile-cell="current_price">
             {%- if tile.current_price is not none -%}
               ${{ "%.2f"|format(tile.current_price) }}
-            {%- else -%}—{%- endif -%}
+            {%- else -%}--{%- endif -%}
           </td>
           <td data-tile-cell="current_stop">
-            {#- §5.6: live value from trades-row, NOT snapshot's stale copy. -#}
+            {#- section 5.6: live value from trades-row, NOT snapshot's stale copy. -#}
             ${{ "%.2f"|format(tile.current_stop) }}
           </td>
           <td data-tile-cell="open_R_effective">
             {%- if tile.open_R_effective is not none -%}
               {{ "%.2f"|format(tile.open_R_effective) }}R
-            {%- else -%}—{%- endif -%}
+            {%- else -%}--{%- endif -%}
           </td>
           <td data-tile-cell="open_MFE_R_to_date">
             {%- if tile.open_MFE_R_to_date is not none -%}
               {{ "%.2f"|format(tile.open_MFE_R_to_date) }}R
-            {%- else -%}—{%- endif -%}
+            {%- else -%}--{%- endif -%}
           </td>
           <td data-tile-cell="open_MAE_R_to_date">
             {%- if tile.open_MAE_R_to_date is not none -%}
               {{ "%.2f"|format(tile.open_MAE_R_to_date) }}R
-            {%- else -%}—{%- endif -%}
+            {%- else -%}--{%- endif -%}
           </td>
           <td data-tile-cell="maturity_stage">
             {%- if tile.maturity_stage -%}
               <span class="maturity-badge">{{ tile.maturity_stage }}</span>
-            {%- else -%}—{%- endif -%}
+            {%- else -%}--{%- endif -%}
           </td>
           <td data-tile-cell="trail_MA">
-            {#- Spec §7.1: trail_MA_eligibility_flag badge visible only when TRUE. -#}
+            {#- Spec section 7.1: trail_MA_eligibility_flag badge visible only when TRUE. -#}
             {% if tile.trail_MA_eligibility_flag == 1 %}
               <span class="badge badge-trail-eligible" data-flag="trail-eligible">TRAIL ELIGIBLE</span>
               {% if tile.trail_MA_candidate_price is not none %}
@@ -86,27 +91,58 @@
               {% endif %}
             {% elif tile.trail_MA_candidate_price is not none %}
               <span class="trail-ma-price-only">${{ "%.2f"|format(tile.trail_MA_candidate_price) }}</span>
-            {% else %}—{% endif %}
+            {% else %}--{% endif %}
           </td>
           <td data-tile-cell="position_capital_utilization_pct">
-            {%- if tile.position_capital_utilization_pct is not none -%}
-              {{ "%.1f"|format(tile.position_capital_utilization_pct * 100.0) }}%
-              {#- Spec §10.5: V1 fallback uses capital_floor_constant_dollars
-                 ($7500) as denominator — surface a PROVISIONAL marker so
-                 the operator sees the V1→V2 versioning caveat. -#}
-              <span class="badge badge-provisional" data-marker="PROVISIONAL" title="V1 denominator = $7500 capital_floor_constant_dollars; V2 will resolve to live account equity (Phase 9 risk_policy versioning).">PROVISIONAL</span>
-            {%- else -%}—{%- endif -%}
+            {%- if tile.position_capital_utilization_pct_effective is not none -%}
+              {{ "%.1f"|format(tile.position_capital_utilization_pct_effective * 100.0) }}%
+            {%- else -%}--{%- endif -%}
+            {#- Codex R2.M#1+M#2 LOCK: badge + help rendered OUTSIDE the
+                util-value guard so the NoActivePolicyError fallback
+                (util_pct_effective=None + policy_missing=True) still
+                surfaces a PROVISIONAL marker with EXTRA-CAVEAT tooltip
+                per spec section 6.4 second bullet. The elif chain
+                preserves the existing snapshot-missing branch as-is. -#}
+            {%- if tile.position_capital_policy_missing -%}
+              <span class="badge badge-provisional" data-marker="PROVISIONAL"
+                    data-cause="policy_missing"
+                    title="No active risk_policy row -- denominator cannot be resolved. Schema-corrupted state (zero rows have is_active=1). Recovery requires direct DB intervention: SELECT a historical policy_id from risk_policy, then UPDATE risk_policy SET is_active=1, effective_to=NULL WHERE policy_id=&lt;id&gt;. The standard `swing config policy ...` CLI cannot recover this state because supersede_active_policy raises when no active row exists (swing/trades/risk_policy.py:139-142). Re-running `swing db-migrate` does NOT re-seed an already-v21 DB.">PROVISIONAL</span>
+              <button type="button" class="muted help-affordance"
+                      data-help="provisional-capital-policy-missing"
+                      aria-describedby="provisional-capital-help-{{ tile.trade_id }}"
+                      aria-label="Why is this PROVISIONAL?">
+                (?)
+              </button>
+              <span id="provisional-capital-help-{{ tile.trade_id }}"
+                    class="help-detail" role="tooltip">
+                No active risk_policy row found (zero rows have is_active=1). Schema-corrupted state. Recovery requires DIRECT DB intervention via SQL (reactivate a historical row OR insert a fresh one); the standard `swing config policy ...` CLI raises because supersede_active_policy requires an existing active row to supersede.
+              </span>
+            {%- elif tile.position_capital_utilization_is_provisional -%}
+              <span class="badge badge-provisional" data-marker="PROVISIONAL"
+                    data-cause="snapshot_missing"
+                    title="Capital denominator is the V1 fallback (capital_floor_constant_dollars). Clears to LIVE when an account_equity_snapshots row covers the session date (e.g., swing schwab fetch --snapshot when integration LIVE).">PROVISIONAL</span>
+              <button type="button" class="muted help-affordance"
+                      data-help="provisional-capital"
+                      aria-describedby="provisional-capital-help-{{ tile.trade_id }}"
+                      aria-label="Why is this PROVISIONAL?">
+                (?)
+              </button>
+              <span id="provisional-capital-help-{{ tile.trade_id }}"
+                    class="help-detail" role="tooltip">
+                LIVE when account_equity_snapshots row covers today; PROVISIONAL otherwise.
+              </span>
+            {%- endif -%}
           </td>
           <td data-tile-cell="position_portfolio_heat_contribution_dollars">
             {%- if tile.position_portfolio_heat_contribution_dollars is not none -%}
               ${{ "%.2f"|format(tile.position_portfolio_heat_contribution_dollars) }}
-            {%- else -%}—{%- endif -%}
+            {%- else -%}--{%- endif -%}
           </td>
           <td data-tile-cell="planned_target_R">
-            {#- Spec §7.1: trades.planned_target_R IS NULL → em-dash placeholder. -#}
+            {#- Spec section 7.1: trades.planned_target_R IS NULL -> em-dash placeholder. -#}
             {%- if tile.planned_target_R is not none -%}
               {{ "%.2f"|format(tile.planned_target_R) }}R
-            {%- else -%}—{%- endif -%}
+            {%- else -%}--{%- endif -%}
           </td>
         </tr>
       {% endfor %}

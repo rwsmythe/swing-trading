@@ -2076,6 +2076,24 @@ class DailyManagementTileVM:
     position_portfolio_heat_contribution_dollars: float | None
     planned_target_R: float | None          # noqa: N815  -- from trades-row
     data_asof_session: str | None
+    # ----- Phase 14 Sub-bundle 1 P14.N3 (spec section 6.2) -----
+    # Freshly-resolved denominator at render time (via
+    # equity_resolver.resolve_live_capital_denominator_dollars).
+    position_capital_denominator_dollars_resolved: float = 0.0
+    # True iff freshly-resolved state == "PROVISIONAL".
+    position_capital_utilization_is_provisional: bool = True
+    # The utilization to render: stored when denominators match
+    # (math.isclose rel_tol=1e-9); recomputed via
+    # swing.trades.daily_management.compute_position_capital_utilization
+    # otherwise; None when ill-defined.
+    position_capital_utilization_pct_effective: float | None = None
+    # True iff no risk_policy row has is_active=1 (NoActivePolicyError
+    # caught at the build site). Codex R2.M#1+M#2 LOCK -- template
+    # renders PROVISIONAL badge + extra-caveat tooltip OUTSIDE the
+    # util-value guard so the operator sees a distinct remediation
+    # path (direct DB intervention via SQL) even when
+    # util_pct_effective is None.
+    position_capital_policy_missing: bool = False
 
 
 @dataclass(frozen=True)

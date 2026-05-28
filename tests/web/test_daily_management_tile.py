@@ -261,10 +261,12 @@ def test_dashboard_tile_trail_MA_eligibility_badge_visible_only_when_TRUE(  # no
 def test_dashboard_tile_planned_target_R_renders_dash_when_NULL(  # noqa: N802
     app_factory,
 ):
-    """Spec §7.1: trades.planned_target_R IS NULL → em-dash placeholder.
+    """Spec section 7.1: trades.planned_target_R IS NULL -> dash placeholder.
 
     Post-fix expected: the rendered tile row's planned_target_R cell
-    contains an em-dash ('—').
+    contains the ASCII dash placeholder ('--'). Phase 14 P14.N3 swapped
+    the prior unicode em-dash for ASCII '--' per gotcha #32 (CLI stdout
+    encoding family) so the template surface is ASCII-only.
     """
     app, db_path = app_factory()
     conn = connect(db_path)
@@ -284,16 +286,17 @@ def test_dashboard_tile_planned_target_R_renders_dash_when_NULL(  # noqa: N802
         response = client.get("/")
     assert response.status_code == 200
     body = response.text
-    # Locate the daily-mgmt tile row + assert the em-dash appears within
-    # the planned_target_R cell. Cell carries a discriminating data attr
-    # so we don't false-match on em-dashes elsewhere on the page.
+    # Locate the daily-mgmt tile row + assert the ASCII dash placeholder
+    # appears within the planned_target_R cell. Cell carries a
+    # discriminating data attr so we don't false-match on dashes
+    # elsewhere on the page.
     import re
     cell_match = re.search(
         r'data-tile-cell="planned_target_R"[^>]*>([^<]*)</',
         body,
     )
     assert cell_match, "planned_target_R cell not found"
-    assert "—" in cell_match.group(1)  # em-dash
+    assert "--" in cell_match.group(1)  # ASCII dash placeholder
 
 
 def test_dashboard_tile_capital_utilization_PROVISIONAL_marker(  # noqa: N802
@@ -508,3 +511,247 @@ def test_dashboard_tile_open_R_effective_recomputed_live(  # noqa: N802
         "snapshot's stale open_R_effective (1.00R) leaked into the live "
         "tile — pre-fix bug per Codex R1 Major 3."
     )
+
+
+
+# ---------------------------------------------------------------------------
+# Phase 14 Sub-bundle 1 P14.N3 -- PROVISIONAL/LIVE template + ASCII discipline
+#
+# Direct template-render tests via Jinja2 Environment (NO FastAPI / TestClient
+# layer) so the test stays isolated to the template surface; PROVISIONAL state
+# + tooltip wording + (?) affordance + ASCII discipline asserted independently
+# from the dashboard build path. Build-site tests live in
+# tests/web/view_models/test_dashboard_view_model.py.
+# ---------------------------------------------------------------------------
+
+from pathlib import Path as _P14N3_Path  # noqa: E402
+from unittest.mock import MagicMock as _P14N3_MagicMock  # noqa: E402
+
+from jinja2 import Environment as _P14N3_Env  # noqa: E402
+from jinja2 import FileSystemLoader as _P14N3_FSL  # noqa: E402, N814
+
+import swing.web.templates as _p14n3_tpl_mod  # noqa: E402
+from swing.web.view_models.trades import (  # noqa: E402
+    DailyManagementTileVM as _P14N3_DailyManagementTileVM,
+)
+
+
+@pytest.fixture
+def p14n3_jinja_env():
+    return _P14N3_Env(
+        loader=_P14N3_FSL(_P14N3_Path(list(_p14n3_tpl_mod.__path__)[0])),
+        autoescape=True,
+    )
+
+
+def _build_p14n3_tile_vm(
+    *,
+    is_provisional: bool,
+    util_pct_effective: float | None,
+    policy_missing: bool = False,
+):
+    return _P14N3_DailyManagementTileVM(
+        trade_id=1, ticker="VSAT", state="entered",
+        current_price=42.0, current_stop=40.0, open_R_effective=0.5,
+        open_MFE_R_to_date=1.0, open_MAE_R_to_date=-0.2,
+        maturity_stage="day_2_to_5", trail_MA_eligibility_flag=0,
+        trail_MA_candidate_price=None,
+        position_capital_utilization_pct=0.15,
+        position_capital_denominator_dollars=7500.0,
+        position_portfolio_heat_contribution_dollars=80.0,
+        planned_target_R=2.0,
+        data_asof_session="2026-05-27",
+        # NEW fields per P14.N3:
+        position_capital_denominator_dollars_resolved=(
+            0.0 if policy_missing else 7500.0
+        ),
+        position_capital_utilization_is_provisional=is_provisional,
+        position_capital_utilization_pct_effective=util_pct_effective,
+        position_capital_policy_missing=policy_missing,
+    )
+
+
+def test_proportion_unit_lock_renders_15_percent_not_1500_percent(
+    p14n3_jinja_env,
+):
+    """R3.M1 LOCK: PROPORTION-unit (0.15) rendered as 15.0%, NOT 1500.0%."""
+    vm = _P14N3_MagicMock()
+    vm.daily_management_tiles = [_build_p14n3_tile_vm(
+        is_provisional=True, util_pct_effective=0.15,
+    )]
+    tmpl = p14n3_jinja_env.get_template(
+        "partials/daily_management_tile.html.j2",
+    )
+    rendered = tmpl.render(vm=vm)
+    assert "15.0%" in rendered
+    assert "1500.0%" not in rendered
+
+
+def test_provisional_badge_present_when_is_provisional_true(p14n3_jinja_env):
+    """PROVISIONAL badge emitted when is_provisional=True
+    (spec section 6.5 example #1)."""
+    vm = _P14N3_MagicMock()
+    vm.daily_management_tiles = [_build_p14n3_tile_vm(
+        is_provisional=True, util_pct_effective=0.15,
+    )]
+    tmpl = p14n3_jinja_env.get_template(
+        "partials/daily_management_tile.html.j2",
+    )
+    rendered = tmpl.render(vm=vm)
+    assert 'data-marker="PROVISIONAL"' in rendered
+    assert "PROVISIONAL" in rendered
+
+
+def test_provisional_badge_absent_when_is_provisional_false(p14n3_jinja_env):
+    """PROVISIONAL badge NOT emitted when is_provisional=False (LIVE).
+    Spec section 6.5 example #2."""
+    vm = _P14N3_MagicMock()
+    vm.daily_management_tiles = [_build_p14n3_tile_vm(
+        is_provisional=False, util_pct_effective=0.15,
+    )]
+    tmpl = p14n3_jinja_env.get_template(
+        "partials/daily_management_tile.html.j2",
+    )
+    rendered = tmpl.render(vm=vm)
+    assert 'data-marker="PROVISIONAL"' not in rendered
+    assert "15.0%" in rendered  # value still rendered
+
+
+def test_tooltip_text_describes_account_equity_snapshots_clear_condition(
+    p14n3_jinja_env,
+):
+    """Tooltip wording cites account_equity_snapshots + swing schwab
+    fetch --snapshot per spec section 6.5 example #6."""
+    vm = _P14N3_MagicMock()
+    vm.daily_management_tiles = [_build_p14n3_tile_vm(
+        is_provisional=True, util_pct_effective=0.15,
+    )]
+    tmpl = p14n3_jinja_env.get_template(
+        "partials/daily_management_tile.html.j2",
+    )
+    rendered = tmpl.render(vm=vm)
+    assert "account_equity_snapshots" in rendered
+    assert "swing schwab fetch --snapshot" in rendered
+
+
+def test_stale_phase9_versioning_text_removed(p14n3_jinja_env):
+    """Pre-fix tooltip referenced 'Phase 9 risk_policy versioning';
+    P14.N3 R3.M2 eradicates that wording (spec section 6.5 example #4)."""
+    vm = _P14N3_MagicMock()
+    vm.daily_management_tiles = [_build_p14n3_tile_vm(
+        is_provisional=True, util_pct_effective=0.15,
+    )]
+    tmpl = p14n3_jinja_env.get_template(
+        "partials/daily_management_tile.html.j2",
+    )
+    rendered = tmpl.render(vm=vm)
+    assert "Phase 9 risk_policy versioning" not in rendered
+
+
+def test_help_affordance_html_structure_present(p14n3_jinja_env):
+    """Inline (?) affordance with help-detail blurb. Per Codex R1.M#2
+    LOCK the affordance MUST be a real focusable element with ARIA
+    (button + aria-describedby + aria-label + role=tooltip) -- a plain
+    span has no keyboard focus + fails the spec section 6.1 goal of
+    avoiding hover-only explanation."""
+    vm = _P14N3_MagicMock()
+    vm.daily_management_tiles = [_build_p14n3_tile_vm(
+        is_provisional=True, util_pct_effective=0.15,
+    )]
+    tmpl = p14n3_jinja_env.get_template(
+        "partials/daily_management_tile.html.j2",
+    )
+    rendered = tmpl.render(vm=vm)
+    # Focusable button element (NOT a span).
+    assert '<button type="button" class="muted help-affordance"' in rendered
+    assert 'data-help="provisional-capital"' in rendered
+    assert 'aria-describedby="provisional-capital-help-1"' in rendered
+    assert 'aria-label="Why is this PROVISIONAL?"' in rendered
+    # The help-detail target carries role=tooltip + matching id.
+    assert 'id="provisional-capital-help-1"' in rendered
+    assert 'class="help-detail" role="tooltip"' in rendered
+    assert "(?)" in rendered
+
+
+def test_policy_missing_renders_provisional_badge_even_with_em_dash_value(
+    p14n3_jinja_env,
+):
+    """Codex R2.M#1+M#2 LOCK + spec section 6.4 second bullet: when
+    NoActivePolicyError fires, util_pct_effective is None (dash placeholder
+    value cell) BUT the PROVISIONAL badge + EXTRA-CAVEAT tooltip MUST
+    still render (NOT suppressed by the value-guard). Distinct
+    data-cause='policy_missing' marker + tooltip wording cites the
+    HONEST direct-DB-intervention recovery path per Codex R4.M#1 LOCK."""
+    vm = _P14N3_MagicMock()
+    vm.daily_management_tiles = [_build_p14n3_tile_vm(
+        is_provisional=True,
+        util_pct_effective=None,
+        policy_missing=True,
+    )]
+    tmpl = p14n3_jinja_env.get_template(
+        "partials/daily_management_tile.html.j2",
+    )
+    rendered = tmpl.render(vm=vm)
+    # ASCII dash value renders (no util to display).
+    assert "--" in rendered
+    # PROVISIONAL badge still emitted -- distinct cause marker.
+    assert 'data-cause="policy_missing"' in rendered
+    assert 'data-marker="PROVISIONAL"' in rendered
+    # Extra-caveat tooltip cites the ACTUAL recovery path (direct
+    # DB intervention via SQL) per Codex R4.M#1 LOCK.
+    assert "UPDATE risk_policy SET is_active=1" in rendered
+    assert "schema-corrupted state" in rendered.lower()
+    # The standard snapshot-missing branch is NOT emitted in this case.
+    assert 'data-cause="snapshot_missing"' not in rendered
+
+
+def test_snapshot_missing_branch_renders_when_policy_is_active(
+    p14n3_jinja_env,
+):
+    """Existing PROVISIONAL-by-snapshot-missing branch fires when
+    policy is active (policy_missing=False) but no account_equity row
+    covers asof_session (is_provisional=True). Distinct
+    data-cause='snapshot_missing' marker + standard tooltip wording."""
+    vm = _P14N3_MagicMock()
+    vm.daily_management_tiles = [_build_p14n3_tile_vm(
+        is_provisional=True,
+        util_pct_effective=0.15,
+        policy_missing=False,
+    )]
+    tmpl = p14n3_jinja_env.get_template(
+        "partials/daily_management_tile.html.j2",
+    )
+    rendered = tmpl.render(vm=vm)
+    assert 'data-cause="snapshot_missing"' in rendered
+    assert 'data-cause="policy_missing"' not in rendered
+    assert "swing schwab fetch --snapshot" in rendered
+
+
+def test_em_dash_rendered_as_ascii_dashes(p14n3_jinja_env):
+    """Per gotcha #32: em-dash placeholder for null util_pct_effective
+    rendered as ASCII '--' (spec section 6.5 example #5 + section 15.2)."""
+    vm = _P14N3_MagicMock()
+    vm.daily_management_tiles = [_build_p14n3_tile_vm(
+        is_provisional=True, util_pct_effective=None,
+    )]
+    tmpl = p14n3_jinja_env.get_template(
+        "partials/daily_management_tile.html.j2",
+    )
+    rendered = tmpl.render(vm=vm)
+    assert "--" in rendered
+    # No unicode em-dash characters anywhere in the rendered fragment.
+    rendered.encode("ascii")
+
+
+def test_template_file_is_ascii_only():
+    """Per gotcha #32 + spec section 15.2 -- the P14.N3 template surface
+    is the primary operator-facing render path; the template file itself
+    MUST be ASCII-only so any future contributor adding non-ASCII glyphs
+    surfaces this regression at fast-test time. (VM + dashboard build
+    modules are NOT in scope -- they carry pre-existing non-ASCII docstring
+    glyphs from earlier phases; gotcha #32 is operator-facing rendering.)"""
+    tpl_path = (
+        _P14N3_Path(list(_p14n3_tpl_mod.__path__)[0])
+        / "partials" / "daily_management_tile.html.j2"
+    )
+    tpl_path.read_text(encoding="utf-8").encode("ascii")
