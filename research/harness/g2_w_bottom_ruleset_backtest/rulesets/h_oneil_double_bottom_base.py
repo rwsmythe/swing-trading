@@ -41,7 +41,6 @@ from research.harness.g2_w_bottom_ruleset_backtest.walkforward_ghi import (
     DeferredExit,
 )
 from research.harness.w_bottom_ruleset_comparison.walkforward import (
-    Action,
     FullExit,
     State,
     sma_at,
@@ -95,7 +94,7 @@ class RulesetH:
         entry_idx: int,
         entry_price: float,
         initial_R: float,
-    ) -> Action | None:
+    ) -> FullExit | DeferredExit | None:
         close = float(bars["Close"].iloc[bar_idx])
 
         # 1. Stop check (close-based; strict inequality). Evaluated FIRST so

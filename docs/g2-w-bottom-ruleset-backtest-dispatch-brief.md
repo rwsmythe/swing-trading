@@ -479,3 +479,51 @@ Operator-side decisions are LOCKED at dispatch time; deviations require return-t
 ---
 
 *End of G2 W-bottom-ruleset backtest dispatch brief. Mission: test the joint hypothesis (V2-expanded population + W-bottom-derived ruleset = positive portfolio expectancy at acceptable trade frequency). Introduces 9-metric scorecard (expectancy_R + win_rate + avg_win_R + avg_loss_R + profit_factor + trigger_conversion_rate + median_time_in_trade + open_at_tail_count + estimated_dollar_per_period) as the headline output. Replaces single-metric verdict-gating with narrative across the scorecard. Sibling-module strategy continues; A-F + substrates LOCKED via byte-stability; gotcha #33 banned-verdict-terms LOCK preserved. 35 cumulative CLAUDE.md gotchas BINDING for 44th cumulative C.C lesson #6 validation slot. NEW gotcha #35 FIRST CANONICAL APPLICATION post-banking. ~576+ cumulative ZERO Co-Authored-By trailer drift to preserve.*
+
+---
+
+## Brief Amendments (banked during implementation per gotcha #34 + Codex MCP adversarial-critic feedback)
+
+### Brief Amendment 1 -- D2 EXPANDED substrate actual N=42 (NOT N=71)
+
+**Source:** Codex MCP pre-smoke chain Round 1 MAJOR #2 finding.
+
+**Issue:** Brief Sec 1.3 + Sec 1.5 state 'D2 EXPANDED N=71' citing D2 Amendment 5 source-of-truth (`docs/pattern-cohort-w-bottom-ruleset-comparison-findings-2026-05-25.md` Amendment 5.2). At dispatch baseline (D2 cohort fixture SHA `9075ac66d70401a19f11c06b681d859d3a5fbcd16e373e282c4db991bd6cc40c`), applying the brief-locked filter (composite>=0.5 + recency<=365d + 5-BD adjacency merge) actually yields N=42, NOT N=71. The cohort fixture has drifted since D2 Amendment 5 was originally run (likely a regenerate-cohort pass updated `max_observed_asof_date` timestamps for some verdicts, shifting them out of the 365d recency window).
+
+**Resolution:** Per gotcha #34 (brief-prescription cross-table verification): the SHA-locked fixture + brief-locked filter yields the AUTHORITATIVE count. Brief's stated N=71 was a stale snapshot. The G2 dispatch proceeds against the actual N=42 substrate.
+
+**Implementation evidence:**
+- `tests/research/g2_w_bottom_ruleset/test_locks.py::test_d2_expanded_filter_yields_actual_n_against_real_cohort_fixture` LOCKS `D2_EXPANDED_ACTUAL_N=42` as regression-test constant.
+- `research/harness/g2_w_bottom_ruleset_backtest/run.py` substrate label is `'d2_expanded'` (no embedded stale count); runtime `substrate_summary.n_filtered` surfaces the actual count.
+- `filter_spec` text emitted in `manifest.json` substrates_summary cites both brief's stated N=71 + actual count for forensic clarity.
+
+### Brief Amendment 2 -- entry/exit price semantic CONFIRMED brief-literal (Codex R1 CRITICAL #2 closure)
+
+**Source:** Codex MCP pre-smoke chain Round 1 CRITICAL #2 finding.
+
+**Issue:** Initial implementation used the existing harness's entry-at-next-bar-open + stop-exit-at-same-bar-close convention (mirroring RulesetE). Codex R1 flagged this as a brief LOCK violation: brief Sec 2.1 line 146-147 / Sec 2.2 line 176-177 / Sec 2.3 line 200-201 specify entry at the TRIGGER BAR'S CLOSE with entry date = trigger bar's date; brief Sec 2.1 line 160 / Sec 2.2 line 185-186 / Sec 2.3 line 211 specify stop / SMA-break exit at NEXT-BAR OPEN.
+
+**Resolution:** Implementation switched to brief-literal semantic:
+- `walkforward_ghi.walk_forward_with_trigger_predicate`: entry at trigger bar's close; entry_date = trigger bar's date.
+- NEW `DeferredExit(reason)` action type in walkforward_ghi.py; rulesets G/H/I return DeferredExit for stop / close_below_50d exits; engine resolves exit_idx_canonical = i+1 (next-bar open) OR i (data-tail fallback) and assigns ALL of exit_price + exit_date + days_held from exit_idx_canonical for coherent forensic detail.
+- Data-tail fallback (no bar i+1) emits status='open' + reason suffix '_pending_at_tail' (Codex R3 MAJOR #1 closure; unresolved trade per brief Sec 1.4 metric #8 'Unresolved fraction').
+
+**Methodological consequence:** G/H/I now have GENUINELY DIFFERENT execution semantics from A-F (entry-at-trigger-close vs entry-at-next-bar-open; deferred next-bar-open exits vs same-bar-close exits). The 9-metric scorecard surfaces this divergence as a methodology-comparison feature, NOT a bug. The findings doc will note the execution-semantic divergence as a methodological caveat for cross-ruleset interpretation.
+
+### Brief Amendment 3 -- target measured-move formula = center_peak + height (PATTERN-ANCHORED; NOT entry-relative)
+
+**Source:** Codex MCP pre-smoke chain Round 1 CRITICAL #1 finding.
+
+**Issue:** Initial implementation used `target_price = entry_price + pattern_height` (entry-anchored; mirrored existing RulesetE's convention). Brief Sec 2.1 line 156 / Sec 2.2 / Sec 2.3 explicitly LOCK `target_price = center_peak_price + pattern_height` (PATTERN-ANCHORED -- the measured-move is a property of the W pattern at the neckline, not of the operator's entry price).
+
+**Resolution:** All 3 rulesets (G/H/I) `init_state()` updated to use `verdict.center_peak_price + pattern_height`. Diverges from existing RulesetE convention for literature fidelity (Bulkowski / O'Neil / Edwards-Magee canonical measured-move). Discriminator test asserts target = 70.0 (pattern-anchored, center_peak=60 + height=10) explicitly rejecting 72.0 (entry-anchored, entry=62 + height=10).
+
+### Brief Amendment 4 -- brief Sec 2.1 internal inconsistency on 1.3x volume boundary
+
+**Source:** Codex MCP pre-smoke chain Round 1 MAJOR #1 finding.
+
+**Issue:** Brief Sec 2.1 line 145 specifies `breakout_bar_volume > 1.3 * trailing_20_bar_mean_volume` (STRICT `>`; 1.3x exactly should be REJECTED). Brief Sec 2.1 line 168 specifies in the discriminating-test sketch: `breakout-bar volume = 1.3x mean -> assert entry` (treats 1.3x exactly as ADMITTED; `>=`).
+
+**Resolution:** ACCEPTED-with-rationale: implementation honors the SPEC LINE (145) with strict `>`; line 168 was a discriminating-test sketch with boundary error. Test `test_g_trigger_predicate_rejects_at_or_below_1_3x_volume` asserts strict `>` semantic. Documented as a brief internal inconsistency.
+
+---

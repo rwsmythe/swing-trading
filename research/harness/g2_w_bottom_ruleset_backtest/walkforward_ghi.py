@@ -106,7 +106,7 @@ class GhiRuleset(Protocol):
         entry_idx: int,
         entry_price: float,
         initial_R: float,
-    ):
+    ) -> "FullExit | ScaleOut | DeferredExit | None":
         """Returns ONE action this bar (FullExit / ScaleOut / DeferredExit)
         or None to hold."""
         ...
@@ -199,7 +199,7 @@ def find_trigger_index_with_predicate(
 def walk_forward_with_trigger_predicate(
     verdict: PrimaryVerdict,
     bars: pd.DataFrame,
-    ruleset: Ruleset,
+    ruleset: GhiRuleset,
     *,
     trigger_predicate: TriggerPredicate,
     max_trigger_search_business_days: int = MAX_TRIGGER_SEARCH_BUSINESS_DAYS,
