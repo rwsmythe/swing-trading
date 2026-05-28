@@ -8,6 +8,22 @@
 
 ---
 
+## 2026-05-27 PM operator-identified operational backlog (not for immediate investigation; banked for future dispatch)
+
+**Closeout review surface enhancement** -- operator feedback during Turn H session 2026-05-27 (post-G2 dispatch):
+
+When doing the per-trade closeout review, surface (a) exit data (price at exit) and (b) a snapshot of the chart at exit/close to help the operator identify notes to add to the journal.
+
+Likely scope when commissioned:
+- Touch points: `swing/web/templates/review.html.j2` + `swing/web/templates/partials/review_form.html.j2` + `swing/trades/review.py` + relevant review-related view-model under `swing/web/view_models/`
+- Reuse Phase 13 T2.SB6 chart-render infrastructure (`chart_renders` table + cache + `swing/web/chart_jit.py`); aligns with the T2.SB6b banked V1 simplification "hyp-rec/position detail VM chart bytes per-page VM wire-up" extended to closeout review surface
+- Verify exit_price + exit_date are prominently surfaced (may require template-render extension only per CLAUDE.md gotcha #11 template-rendering-surface audit discipline; data likely already populated in trade VM)
+- Small-to-medium production dispatch when commissioned; ZERO new schema; ZERO new Schwab API calls; sibling-module strategy for any NEW view-model surfaces
+
+Source: operator Turn H feedback 2026-05-27 PM. Not blocking G2 ship; banked to operational backlog for future commissioning.
+
+---
+
 ## 2026-05-27 Turn H: V2-selection-mechanic ANALYTICAL investigation SHIPPED at `64e0099` -- 5 V2 binding variables characterized via per-variable 3-axis profile tags (productivity / size / survival); D_filt = 7.2x-70x baseline 0.138 confirms V2 substrates are ENRICHED for W-pattern productivity on per-ticker basis (substrate "thinness" framing in R2-A/R2-D was small-T not low-W-incidence); 43rd cumulative C.C lesson #6 validation NOTABLE; NEW gotcha #35 banked (substrate density metric disambiguation; Expansion #19 promotion); Brief Amendments 1-4 appended orchestrator-side
 
 **V2-selection-mechanic SHIPPED 2026-05-27** at integration merge `64e0099` of `applied-research-v2-selection-mechanic-investigation` via `--no-ff`. 15 implementer commits + 1 merge commit. 40 files changed; +8491 insertions. 3 NEW `research/harness/v2_{tightness_range_factor,proximity_max_pct,orderliness_max_bar_ratio}/` cohort extractor module sets (3 modules each = 9 files) + 1 NEW `research/harness/v2_selection_mechanic/` analytical orchestration set (5 modules: `__init__` + `substrate_characterization` + `w_density_analysis` + `synthesis` + `run`) + 3 NEW cohort CSVs at `exports/research/cohorts/v2_*_sp*.csv` + 3 sibling audit JSONs + 1 NEW smoke artifact directory at `exports/research/v2-selection-mechanic-analysis-20260527T084319Z/` (manifest + summary + 3 CSVs + synthesis MD; 6 files) + 1 NEW first-class study writeup at `research/studies/2026-05-26-v2-selection-mechanic-analysis.md` (310 lines) + findings doc + return report. ZERO production swing/ writes (R2-A + R2-D + `pattern_cohort_evaluator` + D2 harness REUSE VERBATIM via byte-stability tests).
