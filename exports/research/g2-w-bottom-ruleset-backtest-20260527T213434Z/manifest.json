@@ -1,0 +1,48 @@
+{
+  "cache_dir": "C:\\Users\\rwsmy\\swing-data\\prices-cache",
+  "duration_seconds": 9.119014,
+  "g2_version": "1.0",
+  "per_trade_row_count": 963,
+  "production_swing_writes": 0,
+  "r_dollar_size_at_7500_floor": 75.0,
+  "rulesets_existing_af": 6,
+  "rulesets_new_ghi": 3,
+  "rulesets_total": 9,
+  "run_finished_utc": "2026-05-28T07:34:34.617987+00:00",
+  "run_started_utc": "2026-05-28T07:34:25.498973+00:00",
+  "schwab_api_calls": 0,
+  "scorecard_row_count": 18,
+  "substrates_summary": {
+    "d2_expanded": {
+      "cohort_sha256": "9075ac66d70401a19f11c06b681d859d3a5fbcd16e373e282c4db991bd6cc40c",
+      "filter_spec": "composite>=0.5 + recency<=365d + 5-BD adjacency merge (D2 Amendment 5); Brief Amendment 1: brief Sec 1.3 stated N=71 (stale snapshot); actual yields 42",
+      "fixture_path": "tests\\fixtures\\research\\double_bottom_w_backtest\\cohort.json",
+      "n_filtered": 42,
+      "n_raw": 172,
+      "n_trades_emitted": 378,
+      "skipped_counts": {
+        "ohlcv_empty": 0,
+        "ohlcv_missing": 0,
+        "skipped_patterns_ohlcv_missing": 0,
+        "skipped_tickers_ohlcv_missing": 0
+      },
+      "substrate_window_days": 31
+    },
+    "r2a_canonical_n65": {
+      "cohort_sha256": "758675b897affb4cf779259fdfe41398a3305b9480e8e3e510a358d83c4a35e7",
+      "filter_spec": "verbatim (R2-A pre-filtered)",
+      "fixture_path": "tests\\fixtures\\research\\r2a_tightness_days_required\\cohort.json",
+      "n_filtered": 65,
+      "n_raw": 65,
+      "n_trades_emitted": 585,
+      "skipped_counts": {
+        "ohlcv_empty": 0,
+        "ohlcv_missing": 0,
+        "skipped_patterns_ohlcv_missing": 0,
+        "skipped_tickers_ohlcv_missing": 0
+      },
+      "substrate_window_days": 21
+    }
+  },
+  "yfinance_fetches_at_backtest_time": 0
+}

@@ -86,6 +86,17 @@ exports/research/w-bottom-ruleset-comparison-*/*
 !exports/research/w-bottom-ruleset-comparison-*/manifest.json
 !exports/research/w-bottom-ruleset-comparison-*/results.csv
 
+# G2 W-bottom-derived ruleset backtest (sibling to w-bottom-ruleset-comparison
+# above; 9 rulesets x 2 substrates = 18 scorecard rows + ~600-1000 per-trade
+# detail rows per smoke; tracks all 5 artifacts for substantive audit trail).
+!exports/research/g2-w-bottom-ruleset-backtest-*
+exports/research/g2-w-bottom-ruleset-backtest-*/*
+!exports/research/g2-w-bottom-ruleset-backtest-*/manifest.json
+!exports/research/g2-w-bottom-ruleset-backtest-*/summary.md
+!exports/research/g2-w-bottom-ruleset-backtest-*/narrative_synthesis.md
+!exports/research/g2-w-bottom-ruleset-backtest-*/scorecard.csv
+!exports/research/g2-w-bottom-ruleset-backtest-*/per_trade_detail.csv
+
 # Broker statements (personal financial data)
 thinkorswim/
 
