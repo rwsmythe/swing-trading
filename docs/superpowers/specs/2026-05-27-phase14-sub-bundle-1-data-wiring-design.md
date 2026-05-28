@@ -89,9 +89,9 @@ V2.G3 fix preserves operator-acknowledged DHA (DHC?) legacy gap. Restore Sector/
 | `swing/data/repos/candidates.py` | MODIFIED | V2.G3 | NEW repo helper `get_latest_sector_industry_per_ticker(conn, tickers: Sequence[str]) -> dict[str, tuple[str, str]]` returning the most-recent non-empty `(sector, industry)` per ticker. Empty-string convention preserved (NOT NULL DEFAULT '' per migration 0012); legacy / no-row tickers map to `("", "")`. |
 | `swing/cli.py` OR `swing/cli_diagnose.py` | MODIFIED | V2.G3 | NEW CLI subcommand `swing diagnose backfill-trades-sector-industry [--apply / --dry-run]` (or equivalent) that consumes the new repo helper + emits an idempotent UPDATE: `UPDATE trades SET sector=?, industry=? WHERE id=? AND (sector='' OR industry='') AND state IN (...)`. Dry-run prints the affected ticker count; apply commits the UPDATE under `with conn:` per repo discipline. |
 | `swing/web/view_models/open_positions_row.py` | OPTIONAL-MODIFIED | V2.G3 | OPTIONAL view-layer fallback if backfill alone is insufficient: if `trade.sector` or `trade.industry` is empty, fall back to `candidates.get_latest_sector_industry_per_ticker(conn, [trade.ticker])` at render time. Brainstorm verdict: ship backfill FIRST; bank VM fallback as Fix-1b if writing-plans phase or operator gate finds residual empty cells. |
-| `swing/web/routes/dashboard.py` | MODIFIED | V2.G4 | Fix `get_or_fetch([benchmark])` call -> `get_or_fetch(ticker=benchmark)`; remove dead dict-style `bars_bundle.get(benchmark)` code; tighten exception handling per gotcha #27 -- separate `ValueError` (empty archive) from `Exception` (programming error); emit `log.warning` / `log.exception` before the 409 response. |
-| `swing/web/templates/partials/daily_management_tile.html.j2` | MODIFIED | P14.N3 | Rewrite PROVISIONAL badge tooltip text to describe current clear-condition (`account_equity_snapshots`); add small inline help affordance (`<span class="muted">` with focusable detail) explaining the clear-condition; conditional emit on `tile.position_capital_utilization_is_provisional` rather than unconditional whenever pct is non-NULL. |
-| `swing/web/view_models/daily_management.py` (or equivalent) | MODIFIED | P14.N3 | Tile VM extension: new field `position_capital_utilization_is_provisional: bool` populated by calling `equity_resolver.resolve_live_capital(conn, asof_date=tile.review_date, at_trade_time_policy=policy)` + checking returned state == "PROVISIONAL". |
+| `swing/web/routes/dashboard.py` | MODIFIED | V2.G4 | Fix `get_or_fetch([benchmark])` call -> `get_or_fetch(ticker=benchmark)`; remove dead dict-style `bars_bundle.get(benchmark)` code; NARROW exception handling per §5.2 Fix A -- catch ONLY `ValueError` (empty-archive expected path; degrade to 409 + log.warning); let any other exception (`TypeError`, `AttributeError`, `KeyError`, `RuntimeError`, ...) propagate to FastAPI default 500 handler per R2.M2 anti-pattern lock. |
+| `swing/web/templates/partials/daily_management_tile.html.j2` | MODIFIED | P14.N3 | Rewrite PROVISIONAL badge tooltip text to describe current clear-condition (`account_equity_snapshots`); add small inline help affordance (`<span class="muted">` with focusable detail) explaining the clear-condition; conditional emit on `tile.position_capital_utilization_is_provisional` rather than unconditional whenever pct is non-NULL; render `tile.position_capital_utilization_pct_effective` (NOT `snap.position_capital_utilization_pct`) per §6.2 denominator-stamping mirror. |
+| `swing/web/view_models/dashboard.py` | MODIFIED | P14.N3 | Tile VM construction at lines 1390-1417 extended with THREE fields per §6.2 Fix A: `position_capital_denominator_dollars_resolved: float`, `position_capital_utilization_is_provisional: bool`, `position_capital_utilization_pct_effective: float | None`. Build-time wiring calls `resolve_live_capital_denominator_dollars(conn, asof_date=row_asof, at_trade_time_policy=read_live_policy(conn))` where `row_asof = date.fromisoformat(snap.data_asof_session)` (ValueError-guarded fallback per `swing/metrics/maturity.py:190-194`). Mirrors `swing/metrics/maturity.py:197-219` denominator-stamping pattern. |
 | `tests/web/` (existing dashboard route tests) | MODIFIED | V2.G4 | Update existing weather-chart refresh route tests + add new tests asserting the fixed kwarg signature + log emit on the degraded path. Test path confirmed at writing-plans phase via Grep on existing weather-chart refresh tests. |
 | `tests/data/repos/test_candidates_repo.py` | NEW (likely) OR MODIFIED | V2.G3 | Discriminating tests on the new `get_latest_sector_industry_per_ticker` helper; writing-plans verifies existence vs NEW creation. |
 | `tests/web/test_daily_management_tile_template.py` | NEW | P14.N3 | Template-rendering tests asserting PROVISIONAL badge conditional emit + tooltip text + inline affordance render. |
@@ -199,11 +199,12 @@ swing diagnose backfill-trades-sector-industry --dry-run
 swing diagnose backfill-trades-sector-industry --apply
 ```
 
-Dry-run path:
-1. `SELECT trades.id, trades.ticker, trades.sector, trades.industry FROM trades WHERE (TRIM(sector) = '' OR TRIM(industry) = '') AND state IN (...)` -- active states only (operator-paired allowlist at writing-plans phase: `'entered'`, `'managing'`, `'partial_exited'`; default `--include-closed=false`)
+Dry-run path (V1 STRICT all-or-nothing semantic):
+1. `SELECT trades.id, trades.ticker, trades.sector, trades.industry FROM trades WHERE TRIM(sector) = '' AND TRIM(industry) = '' AND state IN (...)` -- BOTH empty (AND-empty); active states only (operator-paired allowlist at writing-plans phase: `'entered'`, `'managing'`, `'partial_exited'`; default `--include-closed=false`). Rows with `sector='Tech', industry=''` (partial-empty) are EXCLUDED from the selection per R2.M3 lock -- they fall through to a separate diagnostic SELECT in step 5 and emit `SKIP_PARTIAL_EMPTY` rows in the table but never UPDATE.
 2. For each ticker, call `get_latest_sector_industry_per_ticker(conn, [ticker])`
 3. Print table: `(trade_id, ticker, current_sector, current_industry, proposed_sector, proposed_industry, source_candidate_id, source_evaluation_run_id, action)`
-4. Action column: `"UPDATE"` if BOTH replacements are non-empty (all-or-nothing per V1 locked semantic); `"SKIP_NO_CANDIDATES_ROW"` if helper returned `("", "")` (acknowledged-legacy DHA/DHC path; consistent with operator framing); `"SKIP_ALREADY_POPULATED"` if both non-empty already.
+4. Action column for AND-empty rows: `"UPDATE"` if BOTH replacements are non-empty (all-or-nothing per V1 locked semantic); `"SKIP_NO_CANDIDATES_ROW"` if helper returned `("", "")` (acknowledged-legacy DHA/DHC path; consistent with operator framing).
+5. Separate diagnostic enumeration of partial-empty rows: `SELECT id, ticker, sector, industry FROM trades WHERE (TRIM(sector) = '' OR TRIM(industry) = '') AND NOT (TRIM(sector) = '' AND TRIM(industry) = '') AND state IN (...)` -- these get action `"SKIP_PARTIAL_EMPTY"` (operator-visible; banked as V2 candidate to support partial recovery via per-column lookup).
 5. ALWAYS emit a restore-SQL artifact at a dry-run-emitted path (e.g., `exports/diagnostics/backfill-trades-sector-industry-restore-<ISO>.sql`) containing per-affected-row `UPDATE trades SET sector='<OLD>', industry='<OLD>' WHERE id=<ID>;` statements. Operator can apply the restore SQL via `sqlite3 swing.db < restore.sql` if the apply step lands wrong values.
 
 Apply path:
@@ -219,7 +220,7 @@ Apply path:
 ### §4.4 Error handling + edge cases
 
 - **No `candidates` row for ticker** -- helper returns `("", "")`; backfill CLI skips that ticker (no UPDATE); operator sees em-dash in dashboard (acknowledged-legacy path; consistent with DHA/DHC operator framing).
-- **Partial recovery (sector available; industry NULL)** -- helper's WHERE clause requires BOTH non-empty; partial cases return `("", "")`. **Brainstorm decision (operator-paired at writing-plans phase if uncertain):** prefer "all-or-nothing" semantic for V1 simplicity. V2 candidate banked: relax to per-column lookup.
+- **Partial-empty trade row (`sector="Tech"`, `industry=""`) (R2.M3 LOCK)** -- backfill SELECT (step 1) requires BOTH empty (`AND` not `OR`); partial-empty rows fall through to the separate diagnostic enumeration (step 5) and emit `"SKIP_PARTIAL_EMPTY"`; NO UPDATE fires. V1 STRICT all-or-nothing locked at brainstorm. V2 candidate banked: relax to per-column lookup with separate dry-run + apply paths.
 - **Trade in non-open state (closed / cancelled)** -- backfill CLI restricts to active states OR offers `--include-closed` flag. Operator-paired at writing-plans phase.
 - **Helper raises SQL error** -- bubble up; backfill CLI emits operator-friendly error + non-zero exit code.
 
@@ -228,7 +229,7 @@ Apply path:
 1. **Happy path -- VSAT in candidates with non-empty Sector + Industry** -- plant VSAT trade row with `sector=''`, `industry=''`; plant candidates row with `sector="Technology"`, `industry="Communications Equipment"`; invoke backfill --apply; assert UPDATE fired + trades.sector="Technology" + trades.industry="Communications Equipment".
 2. **VSAT historical candidates exists (post-rotation)** -- plant VSAT trade row with empty values; plant a historical (older `evaluation_run_id`) candidates row for VSAT with non-empty values; no recent candidates row; invoke backfill; assert UPDATE picks the historical row.
 3. **DHA legacy -- ZERO candidates rows for ticker** -- plant DHA trade row with empty values; no candidates row; invoke backfill; assert SKIP (no UPDATE); template still renders em-dash post-backfill.
-4. **Partial NULL (sector non-empty already; industry empty)** -- plant ticker with `sector="Tech"`, `industry=""`; plant candidates row with both non-empty; invoke backfill; assert UPDATE only fires for industry (sector preserved). [Brainstorm-decision-pending: writing-plans phase confirms whether helper returns partial vs all-or-nothing; spec recommends all-or-nothing for V1.]
+4. **Partial-empty trade row (R2.M3 lock)** -- plant ticker with `sector="Tech"`, `industry=""`; plant candidates row with both non-empty; invoke backfill; assert action `"SKIP_PARTIAL_EMPTY"` (V1 strict all-or-nothing); NO UPDATE fires; partial-empty row appears in the separate diagnostic enumeration (§4.3 step 5). Template continues to render "Tech" + em-dash post-backfill (no regression).
 5. **Dry-run no-op** -- backfill --dry-run; assert NO UPDATE fired; assert summary table printed.
 6. **Idempotency** -- run backfill --apply twice; second run prints summary with zero affected rows.
 7. **Source-grep verification of L2 LOCK** -- assert backfill helper does NOT import or invoke any `schwabdev.Client.*` method.
@@ -333,7 +334,7 @@ V2.G4 root cause is a **local call-signature bug** in the refresh handler. V2.G1
 1. **Happy path -- fresh pipeline run + SPY bars in archive** -- plant a `pipeline_runs` row with `finished_ts` non-NULL; plant SPY bars in `read_or_fetch_archive` source; POST `/dashboard/weather-chart/refresh`; assert 204 + `HX-Redirect: /dashboard`; assert chart_renders row written.
 2. **TypeError-vs-correctness regression** -- mock `OhlcvCache.get_or_fetch` to assert it's called with `ticker='SPY'` kwarg-style (not positional list); assert no TypeError raised.
 3. **Empty-archive degraded path** -- mock `OhlcvCache.get_or_fetch` to raise `ValueError("No data for SPY")`; POST; assert 409 with operator-friendly message; assert `log.warning` was emitted with the ticker name.
-4. **Unexpected-exception degraded path** -- mock `OhlcvCache.get_or_fetch` to raise an arbitrary `RuntimeError`; POST; assert 409; assert `log.exception` was emitted with traceback.
+4. **Unexpected-exception propagation path** -- mock `OhlcvCache.get_or_fetch` to raise an arbitrary `RuntimeError` (or `TypeError`); POST; assert the exception PROPAGATES (TestClient surfaces as 500 via FastAPI default handler, NOT 409). Asserts that the V2.G4 root-cause class (programming errors silently masked as 409s) cannot recur.
 5. **No-pipeline degraded path** -- empty `pipeline_runs` table; POST; assert existing 409 "no completed pipeline_run" message (unchanged from current behavior).
 6. **Pre-fix regression** -- BEFORE the fix, the handler returns 409 for ALL refresh attempts. Discriminating test asserts post-fix the happy path returns 204 (regression cannot recur).
 
@@ -367,11 +368,11 @@ Located at `swing/web/templates/partials/daily_management_tile.html.j2:91-99`:
 
 **Two problems with the current state:**
 
-1. **Stale tooltip text.** The title text says "V2 will resolve to live account equity (Phase 9 risk_policy versioning)" -- but Phase 9 + Phase 11 ALREADY SHIPPED this infrastructure via `equity_resolver.resolve_live_capital` + `account_equity_snapshots` table. The badge currently fires unconditionally (the template's `{% if tile.position_capital_utilization_pct is not none %}` check does NOT inspect whether the denominator was the live-equity OR the fallback -- it just appends PROVISIONAL whenever the value is rendered).
+1. **Stale tooltip text.** The title text says "V2 will resolve to live account equity (Phase 9 risk_policy versioning)" -- but Phase 9 + Phase 11 ALREADY SHIPPED this infrastructure via `equity_resolver.resolve_live_capital_denominator_dollars` + `account_equity_snapshots` table. The badge currently fires unconditionally (the template's `{% if tile.position_capital_utilization_pct is not none %}` check does NOT inspect whether the denominator was the live-equity OR the fallback -- it just appends PROVISIONAL whenever the value is rendered).
 2. **No visible affordance for clearing the flag.** The tooltip is hover-only; operator framing "no clear explanation of what would clear it" reflects this. Operator does not know that writing an `account_equity_snapshots` row (e.g., via `swing schwab fetch --snapshot` when Schwab integration is LIVE; or via future manual entry surface) would flip the badge to LIVE.
 
 **Underlying state-machine semantics** (verified at brainstorm):
-- `equity_resolver.resolve_live_capital(conn, asof_date, at_trade_time_policy)` returns `tuple[float, Literal["LIVE", "PROVISIONAL"]]`.
+- `equity_resolver.resolve_live_capital_denominator_dollars(conn, *, asof_date: date, at_trade_time_policy: RiskPolicy)` returns `tuple[float, Literal["LIVE", "PROVISIONAL"]]`.
 - LIVE when `account_equity_snapshots` row exists with `snapshot_date <= asof_date`; returns the snapshot's `equity_dollars`.
 - PROVISIONAL when no snapshot satisfies the predicate; falls back to `at_trade_time_policy.capital_floor_constant_dollars`.
 - The metrics views (capital_friction; position_state) consume this triplet correctly; they emit a `ProvisionalBadgeVM(is_provisional: bool, ...)` per `swing/web/view_models/metrics/shared.py:132+`.
@@ -418,14 +419,14 @@ Located at `swing/web/templates/partials/daily_management_tile.html.j2:91-99`:
 
 ### §6.4 Error handling + edge cases
 
-- **`equity_resolver.resolve_live_capital` raises** -- bubble up; tile renders blank cell (consistent with other `position_capital_utilization_pct is not none` checks).
+- **`equity_resolver.resolve_live_capital_denominator_dollars` raises** -- bubble up; tile renders blank cell (consistent with other `position_capital_utilization_pct_effective is not none` checks).
 - **Tile VM builder reads `policy = None`** (no active risk_policy at session date) -- guard at VM builder; treat as PROVISIONAL; render the tooltip with an additional caveat.
 - **Operator never runs `swing schwab fetch --snapshot`** -- badge persists indefinitely; tooltip remains operator-actionable. Acceptable V1 behavior.
 
 ### §6.5 Discriminating-example walkthroughs
 
 1. **PROVISIONAL surfaced -- no account_equity_snapshots row** -- plant `daily_management_records` row with `position_capital_utilization_pct=0.15`; NO `account_equity_snapshots` row; render template; assert badge present + tooltip text NEW wording (mentions account_equity_snapshots).
-2. **LIVE -- account_equity_snapshots row covers asof_date** -- plant `account_equity_snapshots` row with `snapshot_date <= review_date`; render template; assert NO badge emitted; assert capital % value still rendered.
+2. **LIVE -- account_equity_snapshots row covers asof_date** -- plant `account_equity_snapshots` row with `snapshot_date <= date.fromisoformat(snap.data_asof_session)`; render template; assert NO badge emitted; assert capital % value still rendered using `position_capital_utilization_pct_effective` (recomputed if denominators diverge per maturity.py pattern).
 3. **Operator clicks "?" affordance** -- assert `help-detail` text is present in rendered HTML (visible-on-focus via CSS; tests assert the HTML structure).
 4. **Stale tooltip eradication** -- assert the new template does NOT contain the phrase "V2 will resolve to live account equity (Phase 9 risk_policy versioning)" -- discriminating-test pattern: `assert "Phase 9 risk_policy versioning" not in rendered_html`.
 5. **ASCII discipline** -- assert badge + tooltip text use ASCII only (em-dash via `&mdash;` HTML entity or literal `--`; NO non-ASCII per CLAUDE.md gotcha #32).
@@ -436,7 +437,7 @@ Located at `swing/web/templates/partials/daily_management_tile.html.j2:91-99`:
 - New test module at `tests/web/test_daily_management_tile_template.py` (NEW per §3 module touch list).
 - Renders the template fragment via Jinja2 environment + asserts on rendered HTML substrings.
 - Plants `equity_resolver` state via direct `account_equity_snapshots` row inserts.
-- Production-shape fixture: review_date + capital_floor_constant_dollars + position_capital_utilization_pct mirror exactly what `swing/web/view_models/daily_management.py` emits.
+- Production-shape fixture: `data_asof_session` (ISO date string) + `capital_floor_constant_dollars` + `position_capital_utilization_pct` + `position_capital_denominator_dollars` mirror exactly what `swing/web/view_models/dashboard.py:1390-1417` constructs the tile VM from (via the `daily_management_records` snapshot read).
 
 ---
 
@@ -449,7 +450,7 @@ Item | Error mode | Handler | Operator-visible |
 V2.G3 | `get_latest_sector_industry_per_ticker` SQL error | Bubble to render path; 500 | Yes (page error) |
 V2.G3 | Empty `candidates` for ticker | Helper returns `(None, None)` | Em-dash render (graceful) |
 V2.G4 | `get_or_fetch` raises `ValueError("No data for SPY")` | Catch + log.warning + 409 | Existing 409 operator-friendly message |
-V2.G4 | `get_or_fetch` raises arbitrary `Exception` | Catch + log.exception + 409 | Existing 409 operator-friendly message |
+V2.G4 | `get_or_fetch` raises arbitrary `Exception` (TypeError, AttributeError, KeyError, RuntimeError, ...) | NOT caught -- propagates to FastAPI default 500 handler | 500 with full traceback in logs; prevents the V2.G4 root-cause-class from recurring per R1.M5 / R2.M2 anti-pattern lock |
 V2.G4 | TypeError from call-signature mismatch | **POST-FIX: cannot occur**; pre-fix: swallowed by bare except | **GONE** post-fix |
 P14.N3 | `equity_resolver` raises | Bubble to render path; 500 | Yes (page error) |
 P14.N3 | No active `risk_policy` row | Treat as PROVISIONAL with extra-caveat tooltip | Operator sees PROVISIONAL badge + tooltip |
@@ -550,7 +551,7 @@ All web-route + VM tests use TestClient against an ephemeral SQLite at `tmp_path
 
 ### §11.2 Production-shape fixture sourcing
 
-V2.G3 fixtures: planted via `swing.data.repos.candidates.insert_candidate(...)` -- the same emit path used by `_step_evaluate` in production. ZERO synthetic-fixture-vs-production-emitter drift per CLAUDE.md gotcha family. ZERO hand-rolled INSERT SQL in tests.
+V2.G3 fixtures: planted via `swing.data.repos.candidates.insert_candidates(conn, run_id, [Candidate(...)])` (bulk-insert; the same emit path used by `_step_evaluate` in production). ZERO synthetic-fixture-vs-production-emitter drift per CLAUDE.md gotcha family. ZERO hand-rolled INSERT SQL in tests.
 
 V2.G4 fixtures: planted via existing `tests/web/test_dashboard_weather_chart_refresh.py` fixture helpers; production-shape DataFrame matches `read_or_fetch_archive` output (capitalized Open/High/Low/Close/Volume + DatetimeIndex).
 
@@ -587,7 +588,7 @@ Per-item analysis:
 |---|---|---|---|
 | V2.G3 | NEW repo helper `get_latest_sector_industry_per_ticker` consumes existing `candidates.sector` + `candidates.industry` (TEXT NULL columns shipped at migration `0001_phase1_initial.sql` Phase 1) | NO | View-layer read; no INSERT / DELETE / DDL |
 | V2.G4 | One-line call-site fix at `swing/web/routes/dashboard.py:76`; no DB read/write changed | NO | Route handler call-signature fix; cache layer unchanged |
-| P14.N3 | Template + VM extension; consumes existing `equity_resolver.resolve_live_capital` (Phase 11 ship) + existing `account_equity_snapshots` table (Phase 9 Sub-bundle C ship) | NO | Template-rendering + VM field addition; both substrates already shipped |
+| P14.N3 | Template + dashboard VM extension; consumes existing `equity_resolver.resolve_live_capital_denominator_dollars` + `read_live_policy` (Phase 11 ship) + existing `account_equity_snapshots` table (Phase 9 Sub-bundle C ship) | NO | Template-rendering + VM field addition (3 new fields per maturity.py pattern); both substrates already shipped |
 
 **No `swing/data/migrations/0022_*.sql` file added.** If writing-plans phase surfaces a hidden constraint that forces a v22 migration, ESCALATE to orchestrator (would collide with Sub-bundle 2 temporal log v22 migration claim per dispatch brief §1.5).
 
@@ -627,7 +628,7 @@ Open Questions from dispatch brief §3, resolved at brainstorm:
 
 | # | Open Question | Brainstorm resolution |
 |---|---|---|
-| 1 | V2.G3 Fix A vs Fix C | **Fix A (view-layer fallback) recommended.** Cleaner separation-of-concerns; ZERO pipeline-step contract pollution; per-render query overhead is acceptable (single SQL per render). |
+| 1 | V2.G3 Fix A vs Fix C | **Fix A (one-time backfill CLI helper) recommended for V1.** Closes the operator-visible defect via an idempotent UPDATE per §4.3 design. VM-layer fallback (Fix-1b in §4.2) banked as OPTIONAL extension if writing-plans / operator gate reveals residual empty cells. Fix C (pipeline-step pollution) NOT applied. |
 | 2 | V2.G4 + V2.G1 root cause overlap | **NO overlap confirmed.** V2.G4 is a local call-signature mismatch; V2.G1 is chart-renderer concern. Sub-bundle 1 owns V2.G4; Sub-bundle 3 owns V2.G1. |
 | 3 | V2.G4 cfg.rs.benchmark_ticker resolution timing | **No change.** Current request-time resolution via `apply_overrides(...)` is correct. |
 | 4 | P14.N3 state-machine semantic | **Template-rendered, not persisted.** Fix A (template + VM) applies; Fix B (CHECK widening) + Fix C (auto-clear) not applicable. |
@@ -649,7 +650,7 @@ Open Questions from dispatch brief §3, resolved at brainstorm:
 | #1 | Test-count drift in plan docs | Trust pytest output; §10.3 estimate is approximate |
 | #2 | Auto-memory stale snapshot | N/A (no auto-memory consumption) |
 | #3 | HTMX 4xx fragments config override | N/A (no new HTMX surfaces) |
-| #4 | PriceCache `_last_close` ticker-rotation | **APPLIED to V2.G3 -- Sector/Industry view-layer fallback mirrors the discipline** |
+| #4 | PriceCache `_last_close` ticker-rotation | **APPLIED to V2.G3 -- the backfill helper (Fix A) consults `candidates` last-known per ticker, mirroring `_last_close` discipline applied at one-time-fix scope; banked Fix-1b extends the same discipline to render-time fallback** |
 | #5 | OHLCV fetch scope = open-trade tickers ONLY | **VERIFIED preserved -- V2.G4 fix consumes existing OhlcvCache substrate which honors the scope; benchmark fetch reaches archive via `read_or_fetch_archive` fallback (no yfinance scope widening)** |
 | #6 | Empty-API-result transient defense (F6) | N/A (no new write-through caches) |
 | #7-9 | Migration runner discipline (executescript / INSERT OR REPLACE / SQLite-tx) | N/A (no migration) |
@@ -668,7 +669,7 @@ Open Questions from dispatch brief §3, resolved at brainstorm:
 | #27 | Silent-skip-without-audit | **APPLIED to V2.G4 -- log.warning emitted before the 409 degrade response** |
 | #28-29 | Pattern exemplar OHLCV cache discipline | N/A (no detector / template-matching surface) |
 | #30-31 | Recency/filter/dedup + narrative artifact path/fact lag | N/A (no analytical artifact) |
-| #32 | ASCII discipline scope clarity | **APPLIED ACROSS ALL THREE ITEMS -- template text + log messages + spec doc itself ASCII-only; explicit scope: 4 production code modules + 2 templates + 4 test modules + this spec doc** |
+| #32 | ASCII discipline scope clarity | **APPLIED ACROSS ALL THREE ITEMS at PRODUCTION + TEST + RETURN-REPORT surfaces** -- production code modules + 1 template + test modules + return report ASCII-only. The spec doc + dispatch brief are EXCLUDED from strict ASCII per §15.2 rationale (`§` usage extensive; converting degrades operator-orchestrator dispatch contract readability). |
 | #33 | Cohort-validity-vs-verdict-criteria | N/A (no analytical verdict) |
 | #34 | Brief-prescription cross-table verification | N/A (no analytical artifact table) |
 | #35 | Substrate density metric disambiguation | N/A (no metric definitions) |
