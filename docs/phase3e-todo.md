@@ -8,6 +8,55 @@
 
 ---
 
+## 2026-05-27 PM #3 Turn H: G2 W-bottom-derived ruleset backtest SHIPPED at `31fa281` -- joint hypothesis NOT supported at tested scale (ALL 9 cells expectancy_R < 0); G_bulkowski tight-stop partially validated on avg_loss_R lever; D2 EXPANDED N=71->N=42 substrate-freshness reframe is itself a methodology finding (candidate gotcha #37); 44th cumulative C.C lesson #6 validation NOTABLE (gotcha #36 two-Codex-chain FIRST canonical application validated)
+
+**G2 SHIPPED 2026-05-27 PM #3** at integration merge `31fa281` of `applied-research-g2-w-bottom-ruleset-backtest` via `--no-ff` (with brief Amendment-namespace merge conflict resolved: orchestrator Amendment 0 renamed + retained alongside implementer's Brief Amendments 1-4). 16 implementer commits + 1 merge commit. 28 files changed (3-dot scope: G2-specific only; ZERO orchestrator-file edits). 113 fast tests + 1 self-skip green; ZERO production swing/ writes; ZERO new Schwab API calls; L2 LOCK preserved + REINFORCED; Schema v21 unchanged.
+
+**Substantive finding (descriptive per gotcha #33 LOCK):** H_joint NOT supported at this substrate scale. All 9 (ruleset, substrate) cells expectancy_R range [-3.13R, -0.146R]. Three substantive sub-findings:
+1. G_bulkowski's TIGHT-STOP HYPOTHESIS partially validated on avg_loss_R lever (R2-A G 0.618R vs E 1.550R; D2 G 0.560R vs E 1.576R) but offset by win-rate drop (G 2%/0% vs E 23%/28%) + trigger conv drop (G 0.85/0.69 vs E 0.95/0.90); net expectancy NOT flipped above zero.
+2. H_oneil DOMINATED (worst avg_loss + lowest trigger conv on both substrates); 8% entry-relative + SMA50 combination not competitive.
+3. **D2 EXPANDED substrate-freshness sensitivity** -- Brief Amendment 1 LOCKED N=71->N=42 via SHA-locked filter; E's prior D2 Amendment 5 +1.220R does NOT reproduce on actual SHA-locked fixture (now -0.800R). This is a methodology finding in itself: prior-arc expectancy anchors are sensitive to cohort fixture freshness; re-runs against drifted fixtures may diverge.
+
+**Per-(ruleset, substrate) cell summary (descriptive; from scorecard.csv):**
+
+| Substrate | E (existing) | G_bulkowski | H_oneil | I_edwards_magee |
+|---|---|---|---|---|
+| R2-A N=65 | -1.086R / 22.5% / 1.550R | -X.XR / 2% / 0.618R | (worst) / large negative | middling |
+| D2 N=42 | -0.800R / 28% / 1.576R | similar profile | (worst) / 2.14R avg_loss | middling |
+
+(Full 9-metric scorecard at `exports/research/g2-w-bottom-ruleset-backtest-20260527T213434Z/scorecard.csv`; findings doc at `docs/g2-w-bottom-ruleset-backtest-findings-20260527.md`; return report at `docs/g2-w-bottom-ruleset-backtest-return-report.md`.)
+
+**Codex MCP two-chain pattern (gotcha #36 FIRST canonical application) VALIDATED**:
+- Chain #1 pre-smoke (post-Slice-4): 5 rounds; **3 CRITICAL + 13 MAJOR + 12 MINOR caught BEFORE smoke artifact emission**; converged R5 NO_NEW_CRITICAL_MAJOR. Without two-chain pattern these would have been caught AFTER smoke + required re-emission.
+- Chain #2 post-smoke (post-Slice-6): 2 rounds; 0 CRITICAL + 3 MAJOR + 5 MINOR (narrative-discipline scrub); converged R7.
+- Cumulative both chains: 3C + 16M + 17m; ALL CRITICAL + MAJOR resolved or accepted-with-rationale. **44th cumulative C.C lesson #6 validation NOTABLE** (slot spans both chains; gotcha #36 two-Codex-chain default is validated as the new normal for applied research).
+
+**4 Brief Amendments banked in-brief during pre-smoke chain** (preserved at merge):
+1. D2 EXPANDED substrate actual N=42 (NOT N=71) -- SHA-locked fixture authoritative per gotcha #34
+2. Entry/exit price semantic CONFIRMED brief-literal (entry-at-trigger-close vs entry-at-next-bar-open; G/H/I diverge from A-F execution semantic; methodological caveat for cross-ruleset comparison)
+3. Target measured-move formula PATTERN-ANCHORED (center_peak + height) NOT entry-relative -- W-bottom literature canonical
+4. Brief Sec 2.1 internal inconsistency on 1.3x volume boundary (strict `>` honored; line 168 sketch had boundary error)
+
+**Candidate gotcha #37 BANKING DEFERRED to operator decision**: D2 EXPANDED substrate-freshness sensitivity is a substantive methodology finding (prior-arc expectancy anchors may not reproduce against fixture-drifted re-runs). Possible bankings: (a) NEW gotcha #37 extending gotcha #26 archive bar-content TEMPORAL mutation from per-bar to per-COHORT-fixture mutation; (b) gotcha #35 extension covering anchor numerical reproducibility, not just metric definition; (c) defer to operator framing at next housekeeping. Operator-paired decision pending.
+
+**Forward action sequence (orchestrator-side; Turn H post-merge housekeeping pass)**:
+
+- [x] QA implementer product per `feedback_orchestrator_qa_implementer_product` BINDING (16-commit chain; ZERO Co-Authored-By verified via `%(trailers)` inspection + 1 narrative-mention; 3-dot diff confirms branch only touched G2-specific files + .gitignore; ZERO swing/ writes; L2 LOCK source-grep clean; 113+1 fast tests pass; gotcha #33 + #35 LOCKs preserved; smoke artifact + findings doc + return report present + content-verified)
+- [x] Merge `applied-research-g2-w-bottom-ruleset-backtest` `--no-ff` to main at `31fa281` (with Amendment-namespace merge-conflict resolved: orchestrator Amendment 0 + implementer Brief Amendments 1-4 preserved alongside each other) + push to origin/main
+- [x] phase3e-todo new top entry (THIS pass)
+- [ ] **Operator-paired gotcha #37 banking decision** (substrate-freshness sensitivity; deferred to operator framing)
+- [ ] **Operator-paired next-arc decision** post-G2 SHIP. Existing Turn H V2-mechanic enumeration items remain candidates; the G2 NOT-SUPPORTED result eliminates some + reweights others:
+  - **Substrate-size augmentation experiment** (V2 candidate; aggregate watch->aplus flips across multiple V2 binding variables for T>=20 cohort): G2 result motivates this LESS strongly than V2-mechanic alone did (W-bottom rulesets don't pan out at any tested scale; the issue may be ruleset-fit not substrate-size).
+  - **D2 baseline canonical_survival_rate L4 remediation**: still methodologically useful.
+  - **Phase 14 commissioning consideration** (operator early-planning in parallel; comprehensive scope roll-up in PM #2 entry below).
+  - **Finviz filter adjustment investigation for W candidates** (banked Turn H PM #3): G2 result eliminates the gating condition; not actionable as standalone arc.
+  - **Other-gates-not-enumerated market-conditions investigation**: banked.
+  - **Temporal wait** -- 1-3 months for data tail advance + re-test against fresher substrate; potentially revisit gotcha #37 candidate.
+
+Likely operator framing: G2's NOT-SUPPORTED result + V2-mechanic's "V2 substrates are SMALL not THIN" finding + R2-A's NEGATIVE on E + R2-D's INSUFFICIENT SAMPLE collectively suggest the applied research arc on V2-binding-variable-cohort + W-bottom rulesets has reached a methodological end-point at current substrate scale. Phase 14 commissioning or temporal wait are the likely next moves.
+
+---
+
 ## 2026-05-27 PM #2 Phase 14 preliminary scope roll-up (pre-commissioning; PRUNE AT FORMAL PLANNING)
 
 **Status:** PRELIMINARY decision per operator request Turn H 2026-05-27 PM #2 — close out all currently-open Phase-14-eligible items (V2.G1-G4 + closeout review + 6 NEW operator items banked THIS pass). NOT a commissioning commitment; the formal brainstorming brief will operator-pair through this list with `AskUserQuestion` triage + prune-as-necessary semantics. Phase 14 is still DEFERRED per locked decision 2026-05-23 PM (`docs/phase13-closer-next-phase-triage.md` §"OPERATOR DECISION LOCKED") pending Applied Research cross-cohort robustness establishment — but accumulating the scope list NOW lets brainstorming fire immediately when the operator clears the deferral.
