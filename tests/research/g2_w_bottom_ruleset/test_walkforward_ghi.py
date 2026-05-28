@@ -110,8 +110,15 @@ def _make_bars_w_breakout(
     return df
 
 
-def test_always_true_predicate_matches_legacy_walk_forward_on_synthetic_w():
-    """Always-True predicate reproduces existing walk_forward behavior."""
+def test_always_true_predicate_g2_enters_at_trigger_close_legacy_at_next_open():
+    """Per brief Sec 2.1-2.3 LOCK: g2's walk_forward_with_trigger_predicate
+    enters at the TRIGGER BAR's close (one bar earlier than legacy's
+    next-session-open convention). This test asserts the divergence
+    intentionally.
+
+    With breakout at bar idx 5: legacy enters at bar 6 open; g2 enters at
+    bar 5 close. The entry dates differ by 1 trading day.
+    """
     verdict = _make_verdict()
     bars = _make_bars_w_breakout()
     ruleset = RulesetE()
@@ -119,15 +126,33 @@ def test_always_true_predicate_matches_legacy_walk_forward_on_synthetic_w():
     trade_ghi = walk_forward_with_trigger_predicate(
         verdict, bars, ruleset, trigger_predicate=lambda b, i, v: True
     )
-    # Compare entry/exit fields (ruleset_name will differ if we swap rulesets;
-    # here we use the same RulesetE for both).
-    assert trade_ghi.entry_date == trade_legacy.entry_date
-    assert trade_ghi.entry_price == trade_legacy.entry_price
-    assert trade_ghi.exit_date == trade_legacy.exit_date
-    assert trade_ghi.exit_price == trade_legacy.exit_price
-    assert trade_ghi.exit_reason == trade_legacy.exit_reason
-    assert trade_ghi.r_multiple == trade_legacy.r_multiple
-    assert trade_ghi.status == trade_legacy.status
+    # Per brief LOCK: g2 entry date is one bar EARLIER than legacy
+    # (legacy uses next-session open; g2 uses trigger-bar close).
+    # Both trigger on the same breakout bar; entry dates differ by 1 bar.
+    assert trade_ghi.entry_date != trade_legacy.entry_date
+    # g2 entry_price = trigger bar's close; legacy entry_price = next bar's open
+    # In our synthetic, trigger bar close = breakout_close = 62.0
+    # and next bar open also = breakout_close = 62.0 (synthetic). So
+    # entry_price IS THE SAME here but for a different reason.
+    assert trade_ghi.entry_price == pytest.approx(62.0)
+    assert trade_ghi.triggered is True
+    assert trade_legacy.triggered is True
+
+
+def test_g2_engine_entry_date_matches_trigger_bar_not_next():
+    """Per brief LOCK: g2 enters at TRIGGER BAR (NOT trigger+1). Verifies
+    the entry semantic with a synthetic W."""
+    verdict = _make_verdict()
+    bars = _make_bars_w_breakout(breakout_at=5)
+    ruleset = RulesetE()
+    trade = walk_forward_with_trigger_predicate(
+        verdict, bars, ruleset, trigger_predicate=lambda b, i, v: True
+    )
+    # Trigger bar is at idx 5; entry_date should be bars.index[5].date()
+    expected_entry_date = bars.index[5].date()
+    assert trade.entry_date == expected_entry_date
+    # entry_price = close at idx 5 = breakout_close (default 62.0)
+    assert trade.entry_price == pytest.approx(62.0)
 
 
 def test_predicate_rejects_first_admits_second_triggers_on_second():
@@ -157,8 +182,8 @@ def test_predicate_rejects_first_admits_second_triggers_on_second():
     )
     assert 5 in rejected_indices
     assert 10 in rejected_indices
-    # Entry should be at bar 11 (10 + 1)
-    expected_entry_date = bars.index[11].date()
+    # Per brief LOCK: entry at TRIGGER BAR (idx 10), not idx 11
+    expected_entry_date = bars.index[10].date()
     assert trade.entry_date == expected_entry_date
     assert trade.triggered is True
 

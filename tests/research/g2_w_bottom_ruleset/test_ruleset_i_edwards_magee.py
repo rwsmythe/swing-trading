@@ -103,7 +103,9 @@ def test_i_stop_differs_from_g_when_t1_lower():
     assert stop != pytest.approx(54.45)
 
 
-def test_i_target_is_measured_move():
+def test_i_target_is_pattern_anchored_measured_move():
+    """Per brief Sec 2.3 LOCK: target = center_peak + height (PATTERN-
+    ANCHORED). Same formula as G + H."""
     verdict = _make_verdict(
         trough_1_price=50.0, center_peak_price=60.0, trough_2_price=52.0
     )
@@ -119,14 +121,17 @@ def test_i_target_is_measured_move():
         verdict=verdict, bars=bars, entry_idx=0,
         entry_price=62.0, initial_stop=49.5,
     )
-    # height = 60 - 50 = 10; target = 62 + 10 = 72.0
-    assert state.extra["target_price"] == pytest.approx(72.0)
+    # height = 60 - 50 = 10; pattern-anchored target = 60 + 10 = 70.0
+    assert state.extra["target_price"] == pytest.approx(70.0)
+    assert state.extra["target_price"] != pytest.approx(72.0)
 
 
 def test_i_target_exit_fires():
+    """Pattern-anchored target = 70.0; bars build up: 69.99 (below) then
+    70.0 (at target)."""
     verdict = _make_verdict()
     i = RulesetI()
-    closes = [62.0, 71.99, 72.0]
+    closes = [62.0, 69.99, 70.0]
     bars = pd.DataFrame(
         {
             "Open": closes, "High": [c + 0.1 for c in closes],
@@ -145,7 +150,7 @@ def test_i_target_exit_fires():
     )
     assert action is not None
     assert action.reason == "target_measured_move"
-    assert action.price == pytest.approx(72.0)
+    assert action.price == pytest.approx(70.0)
 
 
 def test_i_stop_exit_fires():
@@ -273,7 +278,10 @@ def test_i_full_walkforward_synthetic_w_target_exit():
     assert trade.triggered is True
     assert trade.status == "closed"
     assert trade.exit_reason == "target_measured_move"
-    assert trade.exit_price == pytest.approx(72.0)
+    # Pattern-anchored target = 60 + 10 = 70.0
+    assert trade.exit_price == pytest.approx(70.0)
+    # Entry-at-trigger-close = trigger bar's close = 62.0
+    assert trade.entry_price == pytest.approx(62.0)
 
 
 def test_i_throwback_single_entry_no_reentry():
@@ -316,12 +324,13 @@ def test_i_throwback_single_entry_no_reentry():
     trade = walk_forward_with_trigger_predicate(
         verdict, bars, i, trigger_predicate=edwards_magee_trigger_predicate
     )
-    # Entry should be at the FIRST trigger date (n_rally + 1 = idx 21 bar's
-    # date = first post_date)
-    expected_entry_date = post_dates[0].date()
+    # Per brief Sec 2.1-2.3 LOCK: entry at TRIGGER BAR's date (NOT next-
+    # session). The trigger bar is at trigger_date (first close > 60
+    # after the asof+1BD lower bound). With the engine's entry-at-trigger-
+    # close semantic, entry_date == trigger_date.
     assert trade.triggered is True
-    assert trade.entry_date == expected_entry_date
-    # The trade has only ONE entry (proven by entry_date matching first
-    # post-trigger date, not the later re-break date).
+    assert trade.entry_date == trigger_date.date()
+    # The trade has only ONE entry; the later re-break date does NOT
+    # produce a separate entry.
     later_rebreak_date = post_dates[6].date()
     assert trade.entry_date != later_rebreak_date

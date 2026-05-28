@@ -17,13 +17,22 @@ Initial stop (TIGHT; the key differentiator from RulesetE):
     G omits the entry * 0.92 floor per Bulkowski's "pattern fails on close
     below the second trough" rule).
 
-Target (canonical Bulkowski measured-move):
+Target (canonical Bulkowski measured-move; PATTERN-ANCHORED):
   - pattern_height = center_peak_price - min(trough_1_price, trough_2_price)
-  - target_price = entry_price + pattern_height
+  - target_price = center_peak_price + pattern_height
+    (brief Sec 2.1 line 156 LOCK: pattern-absolute measured-move, NOT
+    entry-relative; the measured-move is a PROPERTY of the W pattern
+    itself, anchored at the neckline = center_peak, not at the
+    operator's entry price; this differs from existing RulesetE which
+    uses entry_price + pattern_height per its own convention)
   - Exit at the target price on first close >= target.
 
 Failure:
-  - Close < stop -> exit at the bar's close.
+  - Close < stop -> exit at NEXT-BAR OPEN (brief Sec 2.1 line 160 LOCK:
+    'exit at next-bar open with realistic slippage assumption'). At
+    data tail (no next bar), fall back to current-bar close. This
+    diverges from existing RulesetE's same-bar-close exit convention
+    for literature fidelity.
   - NO time-stop in V1 (Bulkowski does not specify a time-stop; V2 candidate).
 
 Volume-confirmation predicate: see `bulkowski_trigger_predicate` below.
@@ -33,6 +42,9 @@ from __future__ import annotations
 import pandas as pd
 
 from research.harness.double_bottom_w_backtest.cohort import PrimaryVerdict
+from research.harness.g2_w_bottom_ruleset_backtest.walkforward_ghi import (
+    next_bar_open_price_or_close_at_tail,
+)
 from research.harness.w_bottom_ruleset_comparison.walkforward import (
     Action,
     FullExit,
@@ -66,11 +78,17 @@ class RulesetG:
         entry_price: float,
         initial_stop: float,
     ) -> State:
-        """Compute Bulkowski measured-move target from W height; stash in extra."""
+        """Compute Bulkowski measured-move target from W height; stash in extra.
+
+        Per brief Sec 2.1 line 156 LOCK: target_price = center_peak_price +
+        pattern_height (PATTERN-ANCHORED, not entry-relative). Diverges
+        from existing RulesetE's convention (entry_price + pattern_height)
+        for literature fidelity.
+        """
         pattern_height = verdict.center_peak_price - min(
             verdict.trough_1_price, verdict.trough_2_price
         )
-        target_price = entry_price + pattern_height
+        target_price = verdict.center_peak_price + pattern_height
         state = State(current_stop=initial_stop)
         state.extra["target_price"] = target_price
         return state
@@ -88,11 +106,18 @@ class RulesetG:
         close = float(bars["Close"].iloc[bar_idx])
 
         # 1. Stop check (close-based; STRICT inequality matches Bulkowski's
-        # "close below the second trough" failure rule).
+        # "close below the second trough" failure rule). Per brief Sec 2.1
+        # line 160 LOCK: exit at NEXT-BAR OPEN (at data tail, fall back to
+        # current-bar close). The exit price is the actionable price at
+        # next session's open (realistic slippage); the exit_date stays as
+        # the detection bar by engine convention.
         if close < state.current_stop:
-            return FullExit(close, "stop_hit")
+            exit_price = next_bar_open_price_or_close_at_tail(bars, bar_idx)
+            return FullExit(exit_price, "stop_hit")
 
-        # 2. Measured-move target on first close >= target.
+        # 2. Measured-move target on first close >= target. Target exits
+        # are limit-style (assume the target was hit intraday by the bar
+        # closing above it); exit at target_price unchanged.
         target_price = float(state.extra["target_price"])
         if close >= target_price:
             return FullExit(target_price, "target_measured_move")

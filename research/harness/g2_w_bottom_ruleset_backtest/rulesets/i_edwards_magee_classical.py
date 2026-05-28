@@ -21,12 +21,14 @@ Initial stop (LOWER-TROUGH-RELATIVE):
   - stop_price = min(trough_1_price, trough_2_price) * (1 - 0.01)
   - Wider than RulesetG (which uses trough_2 only) when trough_1 < trough_2.
 
-Target (same measured-move as G + H):
+Target (same measured-move as G + H; PATTERN-ANCHORED per brief Sec 2.3 LOCK):
   - pattern_height = center_peak_price - min(trough_1_price, trough_2_price)
-  - target_price = entry_price + pattern_height
+  - target_price = center_peak_price + pattern_height
+    (pattern-absolute measured-move, NOT entry-relative; matches G/H).
 
 Failure:
-  - Close < stop_price -> exit at the bar's close.
+  - Close < stop_price -> exit at NEXT-BAR OPEN (brief Sec 2.3 line 211
+    LOCK; at data tail, fall back to current-bar close).
 
 Volume-confirmation predicate: see `edwards_magee_trigger_predicate` below.
 """
@@ -35,6 +37,9 @@ from __future__ import annotations
 import pandas as pd
 
 from research.harness.double_bottom_w_backtest.cohort import PrimaryVerdict
+from research.harness.g2_w_bottom_ruleset_backtest.walkforward_ghi import (
+    next_bar_open_price_or_close_at_tail,
+)
 from research.harness.w_bottom_ruleset_comparison.walkforward import (
     Action,
     FullExit,
@@ -70,10 +75,12 @@ class RulesetI:
         entry_price: float,
         initial_stop: float,
     ) -> State:
+        """Per brief Sec 2.3 LOCK: target = center_peak + pattern_height
+        (PATTERN-ANCHORED; matches G/H; diverges from existing RulesetE)."""
         pattern_height = verdict.center_peak_price - min(
             verdict.trough_1_price, verdict.trough_2_price
         )
-        target_price = entry_price + pattern_height
+        target_price = verdict.center_peak_price + pattern_height
         state = State(current_stop=initial_stop)
         state.extra["target_price"] = target_price
         return state
@@ -90,11 +97,13 @@ class RulesetI:
     ) -> Action | None:
         close = float(bars["Close"].iloc[bar_idx])
 
-        # 1. Stop check.
+        # 1. Stop check. Per brief Sec 2.3 LOCK: exit at NEXT-BAR OPEN
+        # (data tail -> current-bar close).
         if close < state.current_stop:
-            return FullExit(close, "stop_hit")
+            exit_price = next_bar_open_price_or_close_at_tail(bars, bar_idx)
+            return FullExit(exit_price, "stop_hit")
 
-        # 2. Measured-move target.
+        # 2. Measured-move target (limit-style exit at target).
         target_price = float(state.extra["target_price"])
         if close >= target_price:
             return FullExit(target_price, "target_measured_move")

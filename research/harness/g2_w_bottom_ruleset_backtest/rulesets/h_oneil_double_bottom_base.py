@@ -14,17 +14,20 @@ Initial stop (entry-relative; mirrors O'Neil's 8% max-loss + RulesetE's
 arm but WITHOUT the trough_2 * 0.99 max() comparison):
   - stop_price = entry_price * 0.92
 
-Target (same measured-move as G):
+Target (same measured-move as G; PATTERN-ANCHORED per brief Sec 2.2 LOCK):
   - pattern_height = center_peak_price - min(trough_1_price, trough_2_price)
-  - target_price = entry_price + pattern_height
+  - target_price = center_peak_price + pattern_height
+    (pattern-absolute measured-move, NOT entry-relative; matches G/I).
   - Exit at target on first close >= target.
 
 Failure (first to fire):
-  - Close < stop_price -> exit at the bar's close ('stop_hit')
-  - Close < 50-bar SMA -> exit at the bar's close ('close_below_50d';
-    O'Neil's stage-2-break invalidation)
+  - Close < stop_price -> exit at NEXT-BAR OPEN ('stop_hit'; brief Sec
+    2.2 line 185-186 LOCK: 'exit at next-bar open')
+  - Close < 50-bar SMA -> exit at NEXT-BAR OPEN ('close_below_50d';
+    O'Neil's stage-2-break invalidation; same next-bar-open convention)
   - Stop check is evaluated BEFORE SMA-break check, so both-breaking the
     same bar yields stop_hit (deterministic order).
+  - At data tail (no next bar), exits fall back to current-bar close.
 
 Volume-confirmation predicate: see `oneil_trigger_predicate` below.
 """
@@ -33,6 +36,9 @@ from __future__ import annotations
 import pandas as pd
 
 from research.harness.double_bottom_w_backtest.cohort import PrimaryVerdict
+from research.harness.g2_w_bottom_ruleset_backtest.walkforward_ghi import (
+    next_bar_open_price_or_close_at_tail,
+)
 from research.harness.w_bottom_ruleset_comparison.walkforward import (
     Action,
     FullExit,
@@ -69,10 +75,12 @@ class RulesetH:
         entry_price: float,
         initial_stop: float,
     ) -> State:
+        """Per brief Sec 2.2 LOCK: target = center_peak + pattern_height
+        (PATTERN-ANCHORED; matches G/I; diverges from existing RulesetE)."""
         pattern_height = verdict.center_peak_price - min(
             verdict.trough_1_price, verdict.trough_2_price
         )
-        target_price = entry_price + pattern_height
+        target_price = verdict.center_peak_price + pattern_height
         state = State(current_stop=initial_stop)
         state.extra["target_price"] = target_price
         return state
@@ -91,19 +99,23 @@ class RulesetH:
 
         # 1. Stop check (close-based; strict inequality). Evaluated FIRST so
         # stop_hit takes precedence over close_below_50d when both break the
-        # same bar (deterministic order).
+        # same bar (deterministic order). Per brief Sec 2.2 LOCK: exit at
+        # NEXT-BAR OPEN (data tail -> current-bar close).
         if close < state.current_stop:
-            return FullExit(close, "stop_hit")
+            exit_price = next_bar_open_price_or_close_at_tail(bars, bar_idx)
+            return FullExit(exit_price, "stop_hit")
 
-        # 2. Target check (first close >= target).
+        # 2. Target check (first close >= target; limit-style exit at target).
         target_price = float(state.extra["target_price"])
         if close >= target_price:
             return FullExit(target_price, "target_measured_move")
 
-        # 3. SMA50 stage-2-break invalidation.
+        # 3. SMA50 stage-2-break invalidation. Per brief Sec 2.2 LOCK: exit
+        # at NEXT-BAR OPEN.
         sma50 = sma_at(bars, bar_idx, H_HARD_EXIT_SMA_WINDOW)
         if sma50 is not None and close < sma50:
-            return FullExit(close, "close_below_50d")
+            exit_price = next_bar_open_price_or_close_at_tail(bars, bar_idx)
+            return FullExit(exit_price, "close_below_50d")
 
         return None
 

@@ -11,14 +11,24 @@ W-bottom-literature rulesets require volume confirmation at the breakout bar
 rally-from-trough_2). A-F apply no such gate and use the bare close>threshold
 check via `find_trigger_index`.
 
-This engine duplicates the body of walk_forward to preserve byte-stability of
-the existing harness. The duplicated section is the per-bar simulation loop +
-the trade-emit helpers; the only material change vs walk_forward is the
-trigger-search step which calls `find_trigger_index_with_predicate` instead
-of `find_trigger_index`.
+Brief Sec 2.1-2.3 LOCK -- G/H/I execution-price model:
+  - Entry: at the TRIGGER BAR's CLOSE (NOT next-session open). Per brief
+    line 146 "Entry price = close of breakout bar"; line 147 "Entry date
+    = breakout bar date". DIVERGES from existing A-F's next-session-open
+    convention; G2 represents idealized execution at close-of-breakout-bar
+    per the canonical Bulkowski / O'Neil / Edwards-Magee literature.
+  - Stop / SMA-break exit: at NEXT-BAR OPEN (NOT same-bar close). Per
+    brief line 160 "Close < stop_price -> exit at next-bar open (with
+    realistic slippage assumption per existing harness)". The ruleset's
+    update_and_check is responsible for peeking next-bar open via
+    `next_bar_open_price_or_close_at_tail(bars, bar_idx)`. At data tail
+    (no next bar exists) the engine falls back to current-bar close.
+  - Target exit: at TARGET PRICE on first close >= target (limit-style
+    fill assumption; unchanged from existing convention).
 
-ZERO production swing/ writes; ZERO new Schwab API calls; ZERO yfinance
-fetches at backtest time.
+This engine duplicates the body of walk_forward to preserve byte-stability of
+the existing harness. ZERO production swing/ writes; ZERO new Schwab API
+calls; ZERO yfinance fetches at backtest time.
 """
 from __future__ import annotations
 
@@ -44,6 +54,21 @@ from research.harness.w_bottom_ruleset_comparison.walkforward import (
 
 
 TriggerPredicate = Callable[[pd.DataFrame, int, PrimaryVerdict], bool]
+
+
+def next_bar_open_price_or_close_at_tail(
+    bars: pd.DataFrame, bar_idx: int
+) -> float:
+    """Return next bar's Open if next bar exists; else current bar's Close.
+
+    Helper for G/H/I rulesets to compute brief Sec 2.1-2.3 LOCK exit prices
+    on stop / SMA-break events: 'exit at next-bar open' canonically; at
+    data tail (no next bar), fall back to the current bar's close as the
+    realistic operator outcome.
+    """
+    if bar_idx + 1 < len(bars):
+        return float(bars["Open"].iloc[bar_idx + 1])
+    return float(bars["Close"].iloc[bar_idx])
 
 
 def find_trigger_index_with_predicate(
@@ -151,14 +176,16 @@ def walk_forward_with_trigger_predicate(
             max_close, max_close_pct,
         )
 
-    entry_idx = trigger_idx + 1
-    entry_bar = bars.iloc[entry_idx]
+    # Brief Sec 2.1-2.3 LOCK: entry at the TRIGGER BAR's close (NOT next-
+    # session open). Diverges from existing harness convention; faithful
+    # to brief line 146 + 147.
+    entry_idx = trigger_idx
     entry_date = (
         bars.index[entry_idx].date()
         if hasattr(bars.index[entry_idx], "date")
         else bars.index[entry_idx]
     )
-    entry_price = float(entry_bar["Open"])
+    entry_price = float(bars["Close"].iloc[entry_idx])
     initial_stop = ruleset.initial_stop(verdict=verdict, entry_price=entry_price)
     R = entry_price - initial_stop
 

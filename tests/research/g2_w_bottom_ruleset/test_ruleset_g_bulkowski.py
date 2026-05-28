@@ -98,19 +98,18 @@ def test_g_initial_stop_does_not_apply_entry_relative_arm():
     assert stop != pytest.approx(92.0)
 
 
-def test_g_target_is_measured_move():
-    """target = entry + (center_peak - min(trough_1, trough_2)); discriminating
-    arithmetic vs alternative formulae.
+def test_g_target_is_pattern_anchored_measured_move():
+    """Per brief Sec 2.1 line 156 LOCK: target = center_peak + (center_peak -
+    min(trough_1, trough_2)) -- PATTERN-ANCHORED, NOT entry-relative.
 
-    With center_peak=60, trough_1=50, trough_2=52, entry=62:
+    With center_peak=60, trough_1=50, trough_2=52:
       pattern_height = 60 - min(50, 52) = 60 - 50 = 10
-      target = 62 + 10 = 72.0
+      target = 60 + 10 = 70.0
     """
     verdict = _make_verdict(
         trough_1_price=50.0, center_peak_price=60.0, trough_2_price=52.0
     )
     g = RulesetG()
-    # Stub bars: 100 flat bars at 62 (enough for any SMA window)
     bars = pd.DataFrame(
         {
             "Open": [62.0] * 100,
@@ -125,7 +124,10 @@ def test_g_target_is_measured_move():
         verdict=verdict, bars=bars, entry_idx=0,
         entry_price=62.0, initial_stop=51.48,
     )
-    assert state.extra["target_price"] == pytest.approx(72.0)
+    # Pattern-anchored: 60 + 10 = 70.0; discriminating vs entry-anchored
+    # (which would be 62 + 10 = 72.0; explicitly rejected per brief LOCK)
+    assert state.extra["target_price"] == pytest.approx(70.0)
+    assert state.extra["target_price"] != pytest.approx(72.0)
 
 
 def test_g_target_uses_min_of_two_troughs_when_t1_lower():
@@ -145,15 +147,17 @@ def test_g_target_uses_min_of_two_troughs_when_t1_lower():
         verdict=verdict, bars=bars, entry_idx=0,
         entry_price=62.0, initial_stop=47.52,
     )
-    # height = 60 - 48 = 12; target = 62 + 12 = 74.0
-    assert state.extra["target_price"] == pytest.approx(74.0)
+    # height = 60 - 48 = 12; pattern-anchored target = 60 + 12 = 72.0
+    # (NOT 62 + 12 = 74.0 which would be entry-anchored)
+    assert state.extra["target_price"] == pytest.approx(72.0)
 
 
 def test_g_exits_at_target_on_first_close_at_or_above():
+    """Pattern-anchored target = 70.0 (center_peak 60 + height 10). Bars
+    build up: bar 1 = 69.99 (below), bar 2 = 70.0 (at target)."""
     verdict = _make_verdict()
     g = RulesetG()
-    # Target = 72.0; build bars where bar 1 = 71.99 (below), bar 2 = 72.0 (at)
-    closes = [62.0, 71.99, 72.0, 75.0]
+    closes = [62.0, 69.99, 70.0, 75.0]
     bars = pd.DataFrame(
         {
             "Open": closes,
@@ -168,32 +172,65 @@ def test_g_exits_at_target_on_first_close_at_or_above():
         verdict=verdict, bars=bars, entry_idx=0,
         entry_price=62.0, initial_stop=51.48,
     )
-    # Bar 0 (entry): close=62.0 < target 72.0 -> None
+    # Bar 0 (entry): close=62.0 < target 70.0 -> None
     action = g.update_and_check(
         state=state, bars=bars, bar_idx=0, entry_idx=0,
         entry_price=62.0, initial_R=10.52,
     )
     assert action is None
-    # Bar 1: close=71.99 < target -> None
+    # Bar 1: close=69.99 < target 70.0 -> None
     action = g.update_and_check(
         state=state, bars=bars, bar_idx=1, entry_idx=0,
         entry_price=62.0, initial_R=10.52,
     )
     assert action is None
-    # Bar 2: close=72.0 >= target -> FullExit at target
+    # Bar 2: close=70.0 >= target -> FullExit at target
     action = g.update_and_check(
         state=state, bars=bars, bar_idx=2, entry_idx=0,
         entry_price=62.0, initial_R=10.52,
     )
     assert action is not None
     assert action.reason == "target_measured_move"
-    assert action.price == pytest.approx(72.0)
+    assert action.price == pytest.approx(70.0)
 
 
-def test_g_exits_at_close_on_stop_break():
+def test_g_exits_at_next_bar_open_on_stop_break():
+    """Per brief Sec 2.1 line 160 LOCK: stop break exits at NEXT-BAR OPEN
+    (not same-bar close). Tests the canonical case where next bar exists."""
     verdict = _make_verdict()
     g = RulesetG()
-    # Stop = 51.48; bar 1 close = 51.0 (below stop)
+    # Stop = 51.48; bar 1 close = 51.0 (below stop); bar 2 open = 50.5
+    closes = [62.0, 51.0, 50.5]
+    opens = [62.0, 51.0, 50.5]  # next-bar open = 50.5 (exit price)
+    bars = pd.DataFrame(
+        {
+            "Open": opens, "High": [c + 0.1 for c in closes],
+            "Low": [c - 0.1 for c in closes], "Close": closes,
+            "Volume": [1_000_000.0] * 3,
+        },
+        index=pd.bdate_range(start=date(2026, 1, 6), periods=3),
+    )
+    state = g.init_state(
+        verdict=verdict, bars=bars, entry_idx=0,
+        entry_price=62.0, initial_stop=51.48,
+    )
+    action = g.update_and_check(
+        state=state, bars=bars, bar_idx=1, entry_idx=0,
+        entry_price=62.0, initial_R=10.52,
+    )
+    assert action is not None
+    assert action.reason == "stop_hit"
+    # Exit at NEXT BAR's open (50.5), NOT same-bar close (51.0)
+    assert action.price == pytest.approx(50.5)
+    assert action.price != pytest.approx(51.0)
+
+
+def test_g_exits_at_current_close_on_stop_break_at_data_tail():
+    """Per brief Sec 2.1 LOCK: data-tail fallback uses current-bar close
+    when no next bar exists for the next-bar-open lookup."""
+    verdict = _make_verdict()
+    g = RulesetG()
+    # Stop = 51.48; bar 1 close = 51.0 (below stop); NO bar 2 (data tail)
     closes = [62.0, 51.0]
     bars = pd.DataFrame(
         {
@@ -213,6 +250,7 @@ def test_g_exits_at_close_on_stop_break():
     )
     assert action is not None
     assert action.reason == "stop_hit"
+    # Data-tail fallback: current-bar close = 51.0
     assert action.price == pytest.approx(51.0)
 
 
@@ -312,5 +350,7 @@ def test_g_full_walkforward_target_exit_on_synthetic_w():
     assert trade.triggered is True
     assert trade.status == "closed"
     assert trade.exit_reason == "target_measured_move"
-    # Target = 62 + (60 - 50) = 72.0; exit_price at target
-    assert trade.exit_price == pytest.approx(72.0)
+    # Pattern-anchored target = 60 + (60 - 50) = 70.0; exit_price at target
+    assert trade.exit_price == pytest.approx(70.0)
+    # Entry-at-trigger-close semantic: entry_price = trigger bar's close = 62.0
+    assert trade.entry_price == pytest.approx(62.0)

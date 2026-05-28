@@ -94,7 +94,9 @@ def test_h_initial_stop_independent_of_trough_2():
     assert stop != pytest.approx(99.0)
 
 
-def test_h_target_is_measured_move_same_as_g():
+def test_h_target_is_pattern_anchored_measured_move_same_as_g():
+    """Per brief Sec 2.2 LOCK: target = center_peak + height (PATTERN-
+    ANCHORED). Same formula as G + I."""
     verdict = _make_verdict(
         trough_1_price=50.0, center_peak_price=60.0, trough_2_price=52.0
     )
@@ -110,14 +112,17 @@ def test_h_target_is_measured_move_same_as_g():
         verdict=verdict, bars=bars, entry_idx=0,
         entry_price=62.0, initial_stop=57.04,
     )
-    # height = 60 - 50 = 10; target = 62 + 10 = 72.0
-    assert state.extra["target_price"] == pytest.approx(72.0)
+    # height = 60 - 50 = 10; pattern-anchored target = 60 + 10 = 70.0
+    assert state.extra["target_price"] == pytest.approx(70.0)
+    # NOT entry-anchored (62 + 10 = 72.0)
+    assert state.extra["target_price"] != pytest.approx(72.0)
 
 
 def test_h_target_exit_fires_when_reached():
     verdict = _make_verdict()
     h = RulesetH()
-    closes = [62.0] * 60 + [71.99, 72.0]  # 60 flat bars + 2 trigger candidates
+    # Pattern-anchored target = 70.0; bars build up to 70.0
+    closes = [62.0] * 60 + [69.99, 70.0]
     bars = pd.DataFrame(
         {
             "Open": closes, "High": [c + 0.1 for c in closes],
@@ -130,14 +135,14 @@ def test_h_target_exit_fires_when_reached():
         verdict=verdict, bars=bars, entry_idx=0,
         entry_price=62.0, initial_stop=57.04,
     )
-    # Bar 61: close=72.0 >= target 72.0 -> FullExit at target
+    # Bar 61: close=70.0 >= target 70.0 -> FullExit at target
     action = h.update_and_check(
         state=state, bars=bars, bar_idx=61, entry_idx=0,
         entry_price=62.0, initial_R=4.96,
     )
     assert action is not None
     assert action.reason == "target_measured_move"
-    assert action.price == pytest.approx(72.0)
+    assert action.price == pytest.approx(70.0)
 
 
 def test_h_stop_exit_fires_on_close_below_stop():
@@ -298,4 +303,7 @@ def test_h_full_walkforward_synthetic_w_target_exit():
     assert trade.triggered is True
     assert trade.status == "closed"
     assert trade.exit_reason == "target_measured_move"
-    assert trade.exit_price == pytest.approx(72.0)
+    # Pattern-anchored target = 60 + 10 = 70.0
+    assert trade.exit_price == pytest.approx(70.0)
+    # Entry-at-trigger-close = trigger bar's close = 62.0
+    assert trade.entry_price == pytest.approx(62.0)
