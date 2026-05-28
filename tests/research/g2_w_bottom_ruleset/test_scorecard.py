@@ -328,17 +328,63 @@ def test_substrate_window_days_zero_emits_none_dollar():
 
 
 def test_scorecard_row_dataclass_shape_includes_all_9_metrics():
-    """Verify all 9 metrics are fields on ScorecardRow."""
+    """Verify all 9 metrics are fields on ScorecardRow.
+
+    Per Codex R1 MAJOR #6 closure: open_at_tail surfaced as BOTH count
+    (integer) and rate (fraction of n_triggered) to disambiguate brief
+    Sec 1.4 line 100 (formula says rate; field name says count).
+    """
     expected_fields = {
         "ruleset_name", "substrate_name", "n_patterns", "n_triggered",
         "n_closed", "expectancy_R", "win_rate", "avg_win_R", "avg_loss_R",
         "profit_factor", "trigger_conversion_rate",
         "median_time_in_trade_sessions", "open_at_tail_count",
+        "open_at_tail_rate",
         "estimated_dollar_per_period", "substrate_window_days",
     }
     actual_fields = set(ScorecardRow.__dataclass_fields__.keys())
     missing = expected_fields - actual_fields
     assert not missing, f"missing fields: {missing}"
+
+
+def test_open_at_tail_rate_derivation():
+    """open_at_tail_rate = open_at_tail_count / n_triggered;
+    None when n_triggered == 0."""
+    trades = [
+        _make_trade(pattern_id="c1", status="closed", r_multiple=1.0),
+        _make_trade(pattern_id="o1", status="open", r_multiple=None,
+                   days_held=None, exit_reason="open_at_data_tail"),
+        _make_trade(pattern_id="o2", status="open", r_multiple=None,
+                   days_held=None, exit_reason="open_at_data_tail"),
+    ]
+    row = build_scorecard_row(
+        ruleset_name="G_bulkowski_double_bottom",
+        substrate_name="rate_test",
+        trades=trades,
+        n_patterns=3,
+        substrate_window_days=365,
+    )
+    assert row.open_at_tail_count == 2
+    assert row.n_triggered == 3
+    assert row.open_at_tail_rate == pytest.approx(2.0 / 3.0)
+
+
+def test_open_at_tail_rate_none_when_zero_triggered():
+    """When no triggered trades, rate is None (cannot divide by zero)."""
+    trades = [
+        _make_trade(pattern_id="u1", triggered=False, status="untriggered",
+                   r_multiple=None, days_held=None, exit_reason="untriggered"),
+    ]
+    row = build_scorecard_row(
+        ruleset_name="G_bulkowski_double_bottom",
+        substrate_name="all_untrig",
+        trades=trades,
+        n_patterns=1,
+        substrate_window_days=365,
+    )
+    assert row.open_at_tail_count == 0
+    assert row.n_triggered == 0
+    assert row.open_at_tail_rate is None
 
 
 def test_filter_to_one_ruleset_when_multiple_rulesets_passed():

@@ -56,7 +56,15 @@ _ADMINISTRATIVE_EXIT_REASONS = frozenset(
 
 @dataclass(frozen=True)
 class ScorecardRow:
-    """One row of the 9-metric scorecard for (ruleset, substrate)."""
+    """One row of the 9-metric scorecard for (ruleset, substrate).
+
+    Note on metric #8 (open-at-tail): brief Sec 1.4 line 100 defines this
+    as `N(open) / N_triggered` (a rate) while the field NAME suggests a
+    count. Codex R1 MAJOR #6 closure: surface BOTH for unambiguous
+    downstream consumption. `open_at_tail_count` is the raw integer
+    count of trades with status='open'; `open_at_tail_rate` is the
+    same count divided by `n_triggered` (None if n_triggered == 0).
+    """
 
     ruleset_name: str
     substrate_name: str
@@ -71,6 +79,7 @@ class ScorecardRow:
     trigger_conversion_rate: float
     median_time_in_trade_sessions: float | None
     open_at_tail_count: int
+    open_at_tail_rate: float | None
     estimated_dollar_per_period: float | None
     substrate_window_days: int
 
@@ -160,12 +169,26 @@ def build_scorecard_row(
         # render a clean zero rather than a missing sentinel.
         estimated_dollar_per_period: float | None = 0.0
     elif expectancy_R is None or substrate_window_days <= 0:
+        # Codex R1 MAJOR #7 ACCEPTED-with-rationale: when triggered>0 but
+        # expectancy is None (all open at data tail), the dollar projection
+        # is INDETERMINATE -- closed-trade-derived expectancy hasn't formed
+        # yet. Returning None (not 0.0) preserves the distinction between
+        # 'no trades to extrapolate' (0.0) and 'trades pending resolution'
+        # (None). Operator-paired: forward projection at this state would
+        # require an assumed mid-trade R, which the brief does not specify.
+        # Substrates with this pattern should be re-run after time elapses
+        # so trades resolve, or characterized as 'forward-resolution
+        # required' in the findings doc.
         estimated_dollar_per_period = None
     else:
         n_triggered_per_year = (n_triggered / substrate_window_days) * 365.0
         estimated_dollar_per_period = (
             n_triggered_per_year * expectancy_R * R_DOLLAR_SIZE_AT_7500_FLOOR
         )
+
+    open_at_tail_rate = (
+        open_at_tail_count / n_triggered if n_triggered > 0 else None
+    )
 
     return ScorecardRow(
         ruleset_name=ruleset_name,
@@ -181,6 +204,7 @@ def build_scorecard_row(
         trigger_conversion_rate=trigger_conversion_rate,
         median_time_in_trade_sessions=median_time_in_trade,
         open_at_tail_count=open_at_tail_count,
+        open_at_tail_rate=open_at_tail_rate,
         estimated_dollar_per_period=estimated_dollar_per_period,
         substrate_window_days=substrate_window_days,
     )

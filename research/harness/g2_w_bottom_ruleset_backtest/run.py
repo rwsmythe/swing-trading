@@ -235,10 +235,20 @@ def main(argv: list[str] | None = None) -> int:
         "--include-d1-cohort", action="store_true",
         help=(
             "Optional: include D1 hand-curated +67 substrate (operator "
-            "triage Sec 11 Q2; default OFF). NOT WIRED in V1 -- TODO."
+            "triage Sec 11 Q2; default OFF). NOT WIRED in V1; raises "
+            "NotImplementedError if passed (silent no-op rejected per "
+            "Codex R1 MINOR #2 closure)."
         ),
     )
     args = parser.parse_args(argv)
+
+    if args.include_d1_cohort:
+        raise NotImplementedError(
+            "--include-d1-cohort is not wired in V1; the D1 hand-curated "
+            "+67 substrate inclusion was operator triage Sec 11 Q2 "
+            "DEFERRED. Re-dispatch with D1 substrate fixture path + "
+            "harness wiring to enable. Banked as V2 candidate."
+        )
 
     started_at = datetime.now(timezone.utc)
 

@@ -40,6 +40,14 @@ def _enumerate_g2_python_files() -> list[Path]:
 # ---------------------------------------------------------------------------
 # L2 LOCK: source-grep for forbidden imports
 # ---------------------------------------------------------------------------
+# Codex R1 MINOR #1 ACCEPTED-with-rationale: this LOCK catches static
+# import statements only (not dynamic importlib.import_module / __import__
+# / monkey-patched attribute access / etc.). For the G2 harness scope this
+# is sufficient -- the harness is pure-Python research code with no need
+# for dynamic-import patterns. The L2 LOCK is one layer of defense in
+# depth alongside the cohort-fixture byte-stability LOCK + the manifest
+# emission's `schwab_api_calls: 0` + `yfinance_fetches_at_backtest_time:
+# 0` assertions (which surface runtime breach in the smoke artifact).
 FORBIDDEN_L2_PATTERNS = [
     r"\bimport\s+schwabdev\b",
     r"\bfrom\s+schwabdev\b",
@@ -108,11 +116,21 @@ def test_ascii_discipline_g2_python_files_encode_clean(py_path):
 # fixtures must remain UNTOUCHED through the G2 dispatch. SHA-256 anchored
 # at dispatch baseline 423f21d (main HEAD at dispatch time).
 EXISTING_HARNESS_BYTE_STABILITY = {
-    "research/harness/w_bottom_ruleset_comparison/__init__.py": None,
-    "research/harness/w_bottom_ruleset_comparison/rulesets.py": None,
-    "research/harness/w_bottom_ruleset_comparison/walkforward.py": None,
-    "research/harness/w_bottom_ruleset_comparison/run.py": None,
-    "research/harness/w_bottom_ruleset_comparison/io.py": None,
+    "research/harness/w_bottom_ruleset_comparison/__init__.py": (
+        "da9653678609860276365e7b0eabdfc0c2c66e061b6c6a79383996fa8bd63a26"
+    ),
+    "research/harness/w_bottom_ruleset_comparison/rulesets.py": (
+        "d4bd9f4f330dc4442b7d66bd23f5ae3d5f1311b1b62199a476f295c3de5f0981"
+    ),
+    "research/harness/w_bottom_ruleset_comparison/walkforward.py": (
+        "91bc871faf07b90ecbeb3d20f5b1d9982dbc04d560063653ec0928bda6c52db5"
+    ),
+    "research/harness/w_bottom_ruleset_comparison/run.py": (
+        "7f6bbc9a63fe3e71c10f27ea0b3214d4959d3a1dfc33b62b9c402bcfb589657d"
+    ),
+    "research/harness/w_bottom_ruleset_comparison/io.py": (
+        "80d4c5fda4ac123394776d5d17e636fdcf2f4dcb417405bfc2e17067861980a6"
+    ),
 }
 
 COHORT_FIXTURE_BYTE_STABILITY = {
@@ -150,22 +168,27 @@ def test_cohort_fixture_byte_stable_through_g2_dispatch(rel_path, expected_sha):
 
 
 @pytest.mark.parametrize(
-    "rel_path", list(EXISTING_HARNESS_BYTE_STABILITY.keys())
+    "rel_path,expected_sha", list(EXISTING_HARNESS_BYTE_STABILITY.items())
 )
-def test_existing_harness_file_present_and_readable(rel_path):
+def test_existing_harness_byte_stable_through_g2_dispatch(rel_path, expected_sha):
     """LOCK: existing w_bottom_ruleset_comparison/ harness files are
-    preserved (file exists; no deletion / move). Byte-content unchanged
-    verification happens via dispatch baseline git diff; this test guards
-    against accidental file removal during the G2 dispatch."""
+    byte-stable through the G2 dispatch. SHA-256 anchored to dispatch
+    baseline main commit 423f21d. Per Codex R1 MAJOR #3 closure:
+    upgraded from file-presence-only check to actual byte-stability
+    verification so any accidental drift in A-F is caught."""
     path = REPO_ROOT / rel_path
     assert path.exists(), (
         f"Existing harness file {rel_path} missing. The G2 dispatch BANS "
         f"modification or removal of the existing harness (brief Sec 5.3 "
         f"sibling-module strategy LOCK)."
     )
-    # File is readable Python (smoke check via compile()).
-    text = path.read_text(encoding="utf-8")
-    assert len(text) > 0
+    actual_sha = _sha256_of(path)
+    assert actual_sha == expected_sha, (
+        f"Existing harness file {rel_path} drifted from dispatch baseline. "
+        f"Expected SHA256 {expected_sha}, got {actual_sha}. The G2 dispatch "
+        f"BANS modification of these files (brief Sec 5.3 sibling-module "
+        f"strategy LOCK)."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -209,6 +232,254 @@ def _strip_python_string_literals_and_comments(text: str) -> str:
     # Drop line comments
     text = re.sub(r"#[^\n]*", "", text)
     return text
+
+
+# Brief Amendment 1 (BANKED post-Codex R1 MAJOR #2): the brief Sec 1.3
+# states 'D2 EXPANDED N=71' citing D2 Amendment 5 source-of-truth. At
+# dispatch baseline (cohort.json SHA 9075ac66...), the same filter
+# (composite>=0.5 + recency<=365d + adjacency merge) yields N=42, NOT
+# N=71. The cohort fixture has drifted since D2 Amendment 5 was run
+# (likely due to a regenerate-cohort pass that updated
+# max_observed_asof_date timestamps, shifting verdicts out of the
+# 365d recency window). Per gotcha #34 (brief-prescription cross-table
+# verification), the SHA-locked fixture + brief-locked filter yields
+# the AUTHORITATIVE count. N=42 is the actual D2 EXPANDED substrate
+# size for this G2 dispatch; brief's N=71 was a stale snapshot.
+D2_EXPANDED_ACTUAL_N = 42
+
+
+def test_d2_expanded_filter_yields_actual_n_against_real_cohort_fixture():
+    """LOCK (Codex R1 MAJOR #2 closure + Brief Amendment 1): the D2
+    EXPANDED filter applied to the real D2 cohort fixture MUST yield
+    `D2_EXPANDED_ACTUAL_N` verdicts. Brief Sec 1.3 stated N=71 (stale
+    snapshot from D2 Amendment 5); the SHA-locked fixture + brief-
+    locked filter actually yields N=42 at dispatch baseline.
+
+    This is a regression guard: any future drift in the D2 cohort.json
+    OR the _filter_d2_expanded implementation will trip this test
+    BEFORE silently shifting the G2 substrate size.
+    """
+    from research.harness.double_bottom_w_backtest.cohort import (
+        load_cohort_fixture,
+    )
+    from research.harness.g2_w_bottom_ruleset_backtest.run import (
+        _filter_d2_expanded,
+    )
+
+    d2_path = REPO_ROOT / "tests/fixtures/research/double_bottom_w_backtest/cohort.json"
+    raw = load_cohort_fixture(d2_path)
+    assert len(raw) == 172, (
+        f"D2 raw cohort drifted from baseline N=172; got {len(raw)}. "
+        f"Check SHA256 byte-stability test for D2 fixture."
+    )
+    filtered = _filter_d2_expanded(raw)
+    assert len(filtered) == D2_EXPANDED_ACTUAL_N, (
+        f"D2 EXPANDED filter drifted; expected N={D2_EXPANDED_ACTUAL_N} "
+        f"(Brief Amendment 1; actual dispatch-baseline count); got "
+        f"{len(filtered)}. The brief Sec 1.3 stated N=71 as a stale "
+        f"snapshot from D2 Amendment 5; the current fixture (SHA-locked) "
+        f"with the brief-locked filter yields N={D2_EXPANDED_ACTUAL_N}."
+    )
+
+
+def test_r2a_canonical_substrate_n65_verbatim():
+    """LOCK: R2-A cohort fixture is consumed VERBATIM (N=65) per brief
+    Sec 1.3. Sibling to the D2 EXPANDED regression test."""
+    from research.harness.double_bottom_w_backtest.cohort import (
+        load_cohort_fixture,
+    )
+
+    r2a_path = REPO_ROOT / "tests/fixtures/research/r2a_tightness_days_required/cohort.json"
+    verdicts = load_cohort_fixture(r2a_path)
+    assert len(verdicts) == 65, (
+        f"R2-A canonical cohort drifted from baseline N=65 per brief "
+        f"Sec 1.3 LOCK; got {len(verdicts)}."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Gotcha #35 prior-arc-anchor citation discipline
+# ---------------------------------------------------------------------------
+# Per brief Sec 6 + gotcha #35 first canonical application post-banking:
+# any narrative referencing prior-arc numerical anchors (R2-A '22.5%
+# win-rate'; D2 '+1.220R mean R'; V2-mechanic 'D_filt 7.2x-70x baseline'
+# etc.) MUST cite the metric definition (composite_filter spec; recency
+# filter; per-ticker vs per-cohort denominator).
+#
+# The NARRATIVE_SYNTHESIS emitter in io.py is pure-metric-rendering;
+# it does NOT quote prior-arc anchors. This test defensively verifies
+# the emitter remains anchor-free at smoke time. The findings doc
+# (Slice 6) will have its own gotcha #35 enforcement.
+
+# Prior-arc numerical anchors (must be absent OR co-cited with metric defs)
+_PRIOR_ARC_ANCHOR_PATTERNS = [
+    r"22\.5\s*%",      # R2-A win-rate
+    r"\+1\.220\s*R",   # D2 mean R
+    r"\bD_filt\b",     # V2-mechanic per-ticker density
+    r"7\.2x[-\s]?70x", # V2-mechanic baseline ratio
+    r"\-1\.086\s*R",   # R2-A mean R closed
+    r"\+0\.512\s*R",   # R2-A E winners
+    r"\-1\.55\s*R",    # R2-A E losers
+]
+
+
+def test_gotcha_35_narrative_synthesis_emitter_does_not_quote_prior_arc_anchors():
+    """LOCK gotcha #35: the narrative_synthesis emitter renders metrics
+    descriptively across (ruleset, substrate) cells; it does NOT quote
+    prior-arc numerical anchors (R2-A 22.5%; D2 +1.220R; V2-mechanic
+    D_filt 7.2x-70x; etc.). Verifies via synthetic input rendered through
+    the emitter (Codex R1 MAJOR #4+#5 closure: artifact-emission-level
+    enforcement, not just source-code-grep)."""
+    from datetime import date as date_cls, datetime as datetime_cls, timezone as timezone_cls
+    from research.harness.g2_w_bottom_ruleset_backtest.io import (
+        write_narrative_synthesis_markdown,
+        write_summary_markdown,
+    )
+    from research.harness.g2_w_bottom_ruleset_backtest.scorecard import (
+        ScorecardRow,
+    )
+
+    rows = [
+        ScorecardRow(
+            ruleset_name="G_bulkowski_double_bottom",
+            substrate_name="r2a_canonical_n65",
+            n_patterns=65, n_triggered=40, n_closed=30,
+            expectancy_R=0.5, win_rate=0.4, avg_win_R=2.0, avg_loss_R=0.5,
+            profit_factor=2.667, trigger_conversion_rate=0.615,
+            median_time_in_trade_sessions=15, open_at_tail_count=10, open_at_tail_rate=0.25,
+            estimated_dollar_per_period=750.0, substrate_window_days=365,
+        ),
+    ]
+    import tempfile
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".md", delete=False, encoding="utf-8"
+    ) as fp:
+        narrative_path = Path(fp.name)
+    try:
+        write_narrative_synthesis_markdown(narrative_path, scorecard_rows=rows)
+        text = narrative_path.read_text(encoding="utf-8")
+        for pattern in _PRIOR_ARC_ANCHOR_PATTERNS:
+            matches = re.findall(pattern, text)
+            assert not matches, (
+                f"Gotcha #35 LOCK violation: narrative_synthesis emitter "
+                f"output contains prior-arc anchor pattern {pattern!r}: "
+                f"{matches}. The V1 emitter must remain anchor-free; the "
+                f"findings doc (Slice 6) has its own enforcement."
+            )
+    finally:
+        narrative_path.unlink(missing_ok=True)
+
+
+def test_gotcha_35_summary_markdown_emitter_does_not_quote_prior_arc_anchors():
+    """LOCK gotcha #35: summary.md emitter is also anchor-free."""
+    from datetime import datetime as datetime_cls, timezone as timezone_cls
+    from research.harness.g2_w_bottom_ruleset_backtest.io import (
+        write_summary_markdown,
+    )
+    from research.harness.g2_w_bottom_ruleset_backtest.scorecard import (
+        ScorecardRow,
+    )
+
+    rows = [
+        ScorecardRow(
+            ruleset_name="G_bulkowski_double_bottom",
+            substrate_name="r2a_canonical_n65",
+            n_patterns=65, n_triggered=40, n_closed=30,
+            expectancy_R=0.5, win_rate=0.4, avg_win_R=2.0, avg_loss_R=0.5,
+            profit_factor=2.667, trigger_conversion_rate=0.615,
+            median_time_in_trade_sessions=15, open_at_tail_count=10, open_at_tail_rate=0.25,
+            estimated_dollar_per_period=750.0, substrate_window_days=365,
+        ),
+    ]
+    import tempfile
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".md", delete=False, encoding="utf-8"
+    ) as fp:
+        summary_path = Path(fp.name)
+    try:
+        write_summary_markdown(
+            summary_path,
+            started_at_utc=datetime_cls.now(timezone_cls.utc),
+            scorecard_rows=rows,
+            substrates_summary={
+                "r2a_canonical_n65": {
+                    "fixture_path": "tests/fixtures/...",
+                    "cohort_sha256": "deadbeef",
+                    "n_raw": 65, "n_filtered": 65,
+                    "filter_spec": "verbatim",
+                    "substrate_window_days": 365,
+                },
+            },
+            cache_dir="/fake/cache",
+        )
+        text = summary_path.read_text(encoding="utf-8")
+        for pattern in _PRIOR_ARC_ANCHOR_PATTERNS:
+            matches = re.findall(pattern, text)
+            assert not matches, (
+                f"Gotcha #35 LOCK violation: summary.md emitter output "
+                f"contains prior-arc anchor pattern {pattern!r}: {matches}."
+            )
+    finally:
+        summary_path.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Gotcha #33 banned-verdict-terms at the EMITTED-ARTIFACT layer
+# ---------------------------------------------------------------------------
+def test_gotcha_33_summary_markdown_emitter_does_not_contain_banned_verdict_terms():
+    """LOCK gotcha #33 (Codex R1 MAJOR #5 closure): the summary.md emitter
+    rendered output MUST NOT contain PARTIAL POSITIVE / NEGATIVE / POSITIVE.
+    The production-code-grep test in test_gotcha_33_no_banned_verdict_terms
+    is necessary-but-insufficient (it strips string literals). This test
+    exercises the actual emitter against synthetic input + scans
+    rendered output."""
+    from datetime import datetime as datetime_cls, timezone as timezone_cls
+    from research.harness.g2_w_bottom_ruleset_backtest.io import (
+        write_summary_markdown,
+    )
+    from research.harness.g2_w_bottom_ruleset_backtest.scorecard import (
+        ScorecardRow,
+    )
+
+    rows = [
+        ScorecardRow(
+            ruleset_name="G_bulkowski_double_bottom",
+            substrate_name="r2a_canonical_n65",
+            n_patterns=65, n_triggered=40, n_closed=30,
+            expectancy_R=0.5, win_rate=0.4, avg_win_R=2.0, avg_loss_R=0.5,
+            profit_factor=2.667, trigger_conversion_rate=0.615,
+            median_time_in_trade_sessions=15, open_at_tail_count=10, open_at_tail_rate=0.25,
+            estimated_dollar_per_period=750.0, substrate_window_days=365,
+        ),
+    ]
+    import tempfile
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".md", delete=False, encoding="utf-8"
+    ) as fp:
+        summary_path = Path(fp.name)
+    try:
+        write_summary_markdown(
+            summary_path,
+            started_at_utc=datetime_cls.now(timezone_cls.utc),
+            scorecard_rows=rows,
+            substrates_summary={
+                "r2a_canonical_n65": {
+                    "fixture_path": "x", "cohort_sha256": "x",
+                    "n_raw": 65, "n_filtered": 65, "filter_spec": "verbatim",
+                    "substrate_window_days": 365,
+                },
+            },
+            cache_dir="/fake",
+        )
+        text = summary_path.read_text(encoding="utf-8")
+        for pattern in _BANNED_VERDICT_PATTERNS:
+            matches = re.findall(pattern, text, flags=re.IGNORECASE)
+            assert not matches, (
+                f"Gotcha #33 LOCK violation: summary.md contains banned "
+                f"verdict pattern {pattern!r}: {matches}"
+            )
+    finally:
+        summary_path.unlink(missing_ok=True)
 
 
 @pytest.mark.parametrize(
