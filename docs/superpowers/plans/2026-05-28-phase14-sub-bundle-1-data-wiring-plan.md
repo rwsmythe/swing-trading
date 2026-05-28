@@ -165,7 +165,7 @@ Plan T-2.1 acceptance criterion 4 (per §G.T-2.1) includes a regression test ass
 
 ### §C.3 P14.N3 integration surface
 
-**Read path (post-fix):** `build_dashboard` constructs the per-trade `DailyManagementTileVM` inline at lines 1390-1417. The build-site extension wires the 3 new fields:
+**Read path (post-fix):** `build_dashboard` constructs the per-trade `DailyManagementTileVM` inline at lines 1390-1417. The build-site extension wires the 4 new fields (Codex R2.M#1+M#2 LOCK added `position_capital_policy_missing` as the 4th):
 
 ```python
 # (Inside the existing per-(trade, snap) loop)
@@ -368,7 +368,7 @@ Per brief §1.5 L5: this section re-cites Sec 9.1 LOCKs + spec §2 LOCKs + brief
 | §2.1 | V2.G3 restore-SQL artifact | "MANDATORY emission at dry-run AND before apply (defense-in-depth)" | spec §4.3 R1.M3 | §G.T-1.2 step 6 + step 11 |
 | §2.1 | V2.G4 design | "call-signature fix + module-level logger addition + narrow `ValueError`-only catch" | spec §5.2 R3.M2 + R2.M2 | §G.T-2.1 |
 | §2.1 | V2.G4 narrow exception | "LOCK programming errors (TypeError, AttributeError, KeyError, RuntimeError) propagate to FastAPI 500" | spec §5.2 R2.M2 | §G.T-2.1 step 8 |
-| §2.1 | P14.N3 design | "3-field VM extension + denominator-stamping per `maturity.py:197-219` + PROPORTION-unit semantic + tooltip surface" | spec §6.2 Fix A | §G.T-3.1 |
+| §2.1 | P14.N3 design | "3-field VM extension + denominator-stamping per `maturity.py:197-219` + PROPORTION-unit semantic + tooltip surface" (spec §2 verbatim; the implementation grew to 4 fields post-Codex R2.M#1+M#2 LOCK to surface the NoActivePolicyError caveat -- semantic extension consistent with spec §6.4 second bullet, NOT a scope re-litigation) | spec §6.2 Fix A | §G.T-3.1 |
 
 ### §E.4 Writing-plans phase-specific LOCKs (this brief §1.5)
 
@@ -473,7 +473,7 @@ Per L4 LOCK + spec §10.2: target ~8–12 commits total. Per-task commit count:
 Examples:
 - `feat(diagnose): add backfill-trades-sector-industry CLI subcommand`
 - `fix(web): correct OhlcvCache.get_or_fetch call signature in weather-chart refresh handler`
-- `feat(web): wire DailyManagementTileVM 3-field PROVISIONAL/LIVE denominator stamping`
+- `feat(web): wire DailyManagementTileVM 4-field PROVISIONAL/LIVE denominator stamping`
 - `test(integration): add L2 LOCK parametric source-grep regression test`
 
 **Co-Authored-By suppression:** NO commit may carry a `Co-Authored-By:` trailer. Verified post-merge via `git log --pretty="%(trailers)" main..HEAD` returning empty for every commit on the executing-plans branch.
@@ -2284,18 +2284,18 @@ Expected: 3 lines (one per addition; all in the same diff).
 
 ---
 
-### §G.T-3.1: P14.N3 VM 3-field extension + template rewrite
+### §G.T-3.1: P14.N3 VM 4-field extension + template rewrite
 
 **Files:**
-- Modify: `swing/web/view_models/trades.py` (extend `DailyManagementTileVM` dataclass at lines 2042-2078 with 3 NEW fields)
+- Modify: `swing/web/view_models/trades.py` (extend `DailyManagementTileVM` dataclass at lines 2042-2078 with 4 NEW fields per Codex R2.M#1+M#2 LOCK)
 - Modify: `swing/web/view_models/dashboard.py` (extend inline build at lines 1390-1417 with denominator-stamping mirror; audit + add imports for `resolve_live_capital_denominator_dollars`, `read_live_policy`, `compute_position_capital_utilization`, `date`, `math` if any missing)
 - Modify: `swing/web/templates/partials/daily_management_tile.html.j2` (replace block at lines 91-99 with conditional badge emit + new tooltip + inline `(?)` affordance)
 - Test: `tests/web/test_daily_management_tile.py` (MODIFIED with ~7-9 new tests)
 - Test: `tests/web/view_models/test_dashboard_view_model.py` (MODIFIED with ~4-6 new tests; create test file if it does not exist)
 
 **Acceptance criteria:**
-1. `DailyManagementTileVM` extended with 3 NEW fields: `position_capital_denominator_dollars_resolved: float`, `position_capital_utilization_is_provisional: bool`, `position_capital_utilization_pct_effective: float | None`.
-2. Inline build site at `swing/web/view_models/dashboard.py:1390-1417` populates the 3 new fields via the canonical `swing/metrics/maturity.py:197-219` denominator-stamping pattern.
+1. `DailyManagementTileVM` extended with 4 NEW fields: `position_capital_denominator_dollars_resolved: float`, `position_capital_utilization_is_provisional: bool`, `position_capital_utilization_pct_effective: float | None`, `position_capital_policy_missing: bool` (4th field per Codex R2.M#1+M#2 LOCK -- surfaces NoActivePolicyError fallback per spec §6.4 second bullet).
+2. Inline build site at `swing/web/view_models/dashboard.py:1390-1417` populates the 4 new fields via the canonical `swing/metrics/maturity.py:197-219` denominator-stamping pattern (extended with NoActivePolicyError try/except branch per Codex R1.M#1).
 3. `row_asof` derived from `snap.data_asof_session` via `date.fromisoformat(...)` with ValueError-guarded fallback to page-level `asof_date` per `maturity.py:190-194`.
 4. `resolve_live_capital_denominator_dollars(conn, asof_date=row_asof, at_trade_time_policy=read_live_policy(conn))` invoked per row.
 5. `position_capital_utilization_pct_effective` = stored `snap.position_capital_utilization_pct` when `math.isclose(snap.position_capital_denominator_dollars, denom_resolved, rel_tol=1e-9)`; otherwise RECOMPUTED via `compute_position_capital_utilization(current_size=..., current_price=..., denominator_dollars=denom_resolved)` (PROPORTION-unit; R3.M1 LOCK).
@@ -2307,7 +2307,7 @@ Expected: 3 lines (one per addition; all in the same diff).
    - NEW tooltip text describing the actual clear-condition (`account_equity_snapshots` row + `swing schwab fetch --snapshot` example).
    - NEW inline `(?)` affordance with `help-detail` blurb visible-on-focus per existing CSS conventions (audit at executing-plans phase).
    - Em-dash placeholder rendered as ASCII `--` per gotcha #32.
-9. Server-stamping discipline (Phase 8 R2.M2+R3.M2+R4.M2 family / forward-binding lesson #13) — all 3 NEW fields are SERVER-COMPUTED at build time; NO hidden form input; NO operator-supplied state.
+9. Server-stamping discipline (Phase 8 R2.M2+R3.M2+R4.M2 family / forward-binding lesson #13) — all 4 NEW fields are SERVER-COMPUTED at build time; NO hidden form input; NO operator-supplied state.
 10. ~8-10 fast template tests + ~5-7 fast VM tests cover all paths (one VM test added per Codex R1.M#1 NoActivePolicyError fallback).
 11. Gotchas applied: #11 (template + VM audited together), #17 (signature contract test on the resolver), #19 (cascade-call-graph: verify `compute_position_capital_utilization` does NOT invoke `_compute_position_util_pct`), #23 (3 fields are required + attribution unambiguous), #32 (ASCII). Watch items #3, #9.
 
@@ -2393,7 +2393,7 @@ def test_proportion_unit_lock_renders_15_percent_not_1500_percent(jinja_env):
 Run: `pytest tests/web/test_daily_management_tile.py::test_proportion_unit_lock_renders_15_percent_not_1500_percent -v`
 Expected: depends on whether the dataclass / template at HEAD already supports the new fields. Pre-T-3.1 fix: FAIL because `position_capital_utilization_pct_effective` is NOT a field on `DailyManagementTileVM` yet (`TypeError` from dataclass constructor OR template AttributeError).
 
-- [ ] **T-3.1 Step 3: Extend `DailyManagementTileVM` with 3 NEW fields**
+- [ ] **T-3.1 Step 3: Extend `DailyManagementTileVM` with 4 NEW fields**
 
 Edit `swing/web/view_models/trades.py:2042-2078` — add 3 fields to the dataclass:
 
@@ -2794,7 +2794,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from swing.config import Config
-from swing.data.db import connect
+from swing.data.db import connect, ensure_schema
 from swing.data.models import Trade
 from swing.data.repos.daily_management import (
     insert_snapshot as insert_dm_snapshot,
@@ -2856,13 +2856,17 @@ def planted_vsat_trade_with_snap(tmp_path):
     insert_trade_with_event; snapshot fields per the Phase 8 dataclass).
     """
     db_path = tmp_path / "swing.db"
+    # Codex R3.M#3 LOCK: connect() at swing/data/db.py:888 raises
+    # SchemaVersionMismatchError if db_path does NOT exist. Run
+    # ensure_schema(db_path) (swing/data/db.py:863) FIRST to create the
+    # SQLite file + apply migrations through current version.
+    ensure_schema(db_path).close()
     conn = connect(db_path)
     try:
-        # insert_trade_with_event signature per swing/data/repos/trades.py:155
-        # -- production wrapper that creates the trade row + an
-        # event-log row in one transaction. Executing-plans implementer
-        # fills in event_kind='trade_entered' + actor='test' + any
-        # remaining required kwargs the signature requires.
+        # Codex R3.M#1 LOCK: insert_trade_with_event signature per
+        # swing/data/repos/trades.py:155 is
+        # `(conn, trade, *, event_ts: str, rationale: str | None = None)`
+        # -- NOT `event_kind` / `actor` (those were R2 invention).
         trade_id = insert_trade_with_event(
             conn,
             trade=Trade(
@@ -2871,20 +2875,30 @@ def planted_vsat_trade_with_snap(tmp_path):
                 current_size=10.0, current_stop=40.0,
                 **_build_remaining_trade_fields("VSAT"),
             ),
-            event_kind="trade_entered",
-            actor="test",
+            event_ts=datetime.now().isoformat(timespec="seconds"),
+            rationale="P14.N3 VM test fixture",
         )
-        # insert_snapshot at swing.data.repos.daily_management:411
-        # (NOT account_equity_snapshots:58 -- both modules export
-        # insert_snapshot; the dm one writes the daily_management_records
-        # row consumed by the tile VM builder).
+        # Codex R3.M#2 LOCK: insert_snapshot at
+        # swing/data/repos/daily_management.py:411 signature is
+        # `(conn, *, trade_id, snapshot_fields: dict[str, Any])` --
+        # the caller wraps the per-snapshot fields in a SINGLE
+        # snapshot_fields dict (NOT spread as kwargs).
+        # NB: per the helper docstring at line 421-425, the caller MUST
+        # validate snapshot_fields per OPERATION_REQUIRED_FIELDS at
+        # `swing/trades/daily_management.py` BEFORE calling. The
+        # executing-plans implementer audits the current
+        # OPERATION_REQUIRED_FIELDS["snapshot_emit"] set + ensures the
+        # fixture dict satisfies it.
         insert_dm_snapshot(
-            conn, trade_id=trade_id,
-            data_asof_session="2026-05-27",
-            current_price=42.0,
-            position_capital_utilization_pct=0.15,
-            position_capital_denominator_dollars=7500.0,
-            **_build_remaining_dm_snapshot_fields(),
+            conn,
+            trade_id=trade_id,
+            snapshot_fields={
+                "data_asof_session": "2026-05-27",
+                "current_price": 42.0,
+                "position_capital_utilization_pct": 0.15,
+                "position_capital_denominator_dollars": 7500.0,
+                **_build_remaining_dm_snapshot_fields(),
+            },
         )
         conn.commit()
     finally:
@@ -3134,7 +3148,7 @@ git add swing/web/view_models/trades.py \
         swing/web/templates/partials/daily_management_tile.html.j2 \
         tests/web/test_daily_management_tile.py \
         tests/web/view_models/test_dashboard_view_model.py
-git commit -m "feat(web): wire DailyManagementTileVM 3-field PROVISIONAL/LIVE denominator stamping (P14.N3)"
+git commit -m "feat(web): wire DailyManagementTileVM 4-field PROVISIONAL/LIVE denominator stamping (P14.N3)"
 ```
 
 Verify ZERO `Co-Authored-By:` trailer:
@@ -3475,7 +3489,7 @@ Per L3 LOCK + spec §10.3 estimate post-R4 bump. Per-task distribution:
 | T-1.2 V2.G3 CLI subcommand | `tests/cli/test_diagnose_backfill_trades_sector_industry.py` (NEW) | 9 (registration + dry-run table + restore-SQL artifact + partial-empty + DHA legacy + apply happy path + idempotency + include-closed + allowlist + missing-db + ASCII) | 16 |
 | T-1.3 V2.G3 VM fallback (OPTIONAL) | extension of open-positions VM test module | 2-3 (only if triggered) | 16-19 |
 | T-2.1 V2.G4 route handler | `tests/web/test_routes/test_dashboard_chart_integration.py` (MODIFIED) | 8 (kwarg signature + ValueError-degraded + TypeError-500 + 3-param propagation + happy 204/HX-Redirect + HTMX trinity + no-pipeline regression + ASCII) | 24-27 |
-| T-3.1 P14.N3 VM + template | `tests/web/test_daily_management_tile.py` (MODIFIED) + `tests/web/view_models/test_dashboard_view_model.py` (MODIFIED) | 11-15 (template: proportion regression + 2 conditional badge + tooltip text + stale-text eradication + (?) affordance + em-dash ASCII + template ASCII = 8; VM: provisional vs LIVE + denominator-match reuse + divergent recompute + malformed session = 4 → totals 12) | 36-39 |
+| T-3.1 P14.N3 VM + template | `tests/web/test_daily_management_tile.py` (MODIFIED) + `tests/web/view_models/test_dashboard_view_model.py` (MODIFIED) | 13-17 (template: proportion regression + 2 conditional badge + tooltip text + stale-text eradication + (?) affordance + em-dash ASCII + template ASCII + policy_missing-emits-badge + snapshot_missing-branch-when-policy-active = 10; VM: provisional vs LIVE + denominator-match reuse + divergent recompute + malformed session + no-active-policy + extra fixture-shape assertions = 5-6 → totals 15-16; +3-4 vs original estimate due to Codex R2.M#1+M#2 4th-field + R1.M#1 NoActivePolicyError branch) | 38-43 |
 | T-4.1 L2 LOCK source-grep | `tests/integration/test_l2_lock_source_grep.py` (NEW) | 1 parametric (1 test function; future-extensible pattern set) + 1 ASCII | 38-41 |
 | T-4.2 Closer cross-item | `tests/integration/test_phase14_sub_bundle_1_cross_item.py` (NEW; optional) | 2 (S6 coexistence + cumulative ASCII sweep) | 40-43 |
 
@@ -3512,11 +3526,15 @@ Per Sec 9.1 Q6 LOCK + spec §10.5: the merge-time operator-witnessed gate has 7 
 # Codex R2.M#4 LOCK: insert_snapshot at account_equity_snapshots.py:58
 # uses KEYWORD args; AccountEquitySnapshot has 8 fields per
 # swing/data/models.py:1343-1359; recorded_by is NOT NULL.
+# Codex R3.M#4 LOCK: connect(db_path) at swing/data/db.py:888 takes a
+# Path (NOT a str) + does NOT expand `~`. Use
+# Path(...).expanduser() OR resolve via the loaded Config.
 from datetime import datetime
+from pathlib import Path
 from swing.data.db import connect
 from swing.data.repos.account_equity_snapshots import insert_snapshot
 
-conn = connect("~/swing-data/swing.db")
+conn = connect(Path("~/swing-data/swing.db").expanduser())
 try:
     insert_snapshot(
         conn,
@@ -3783,7 +3801,7 @@ Type / signature / name consistency across tasks:
 | `BackfillRow` dataclass | T-1.2 step 4 | T-1.2 step 4 (`_emit_restore_sql`, `_apply_updates`, `_format_report`) | YES |
 | `BackfillSummary` dataclass | T-1.2 step 4 | T-1.2 step 3 (CLI subcommand consumes) | YES |
 | `OhlcvCache.get_or_fetch(*, ticker: str, window_days: int = 180) -> pd.DataFrame` | spec §5.1 + §A.3 verification | T-2.1 step 3 (`bars = ohlcv_cache.get_or_fetch(ticker=benchmark)`) | YES |
-| `DailyManagementTileVM` 17 existing + 3 NEW fields | T-3.1 step 3 (dataclass extension) | T-3.1 step 4 (build site) + T-3.1 step 5 (template) + tests | YES |
+| `DailyManagementTileVM` 17 existing + 4 NEW fields (post-R2.M#1+M#2) | T-3.1 step 3 (dataclass extension) | T-3.1 step 4 (build site) + T-3.1 step 5 (template) + tests | YES |
 | `resolve_live_capital_denominator_dollars(conn, *, asof_date, at_trade_time_policy) -> tuple[float, Literal["LIVE", "PROVISIONAL"]]` | §A.3 verification | T-3.1 step 4 build site | YES |
 | `compute_position_capital_utilization(*, current_size, current_price, denominator_dollars) -> float` (PROPORTION) | §A.3 verification | T-3.1 step 4 build site | YES |
 | `read_live_policy(conn) -> RiskPolicy` | §A.3 verification | T-3.1 step 4 build site | YES |
