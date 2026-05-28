@@ -1,6 +1,12 @@
-"""GET / — the main dashboard route + POST /dashboard/weather-chart/refresh."""
+"""GET / -- the main dashboard route + POST /dashboard/weather-chart/refresh."""
 from __future__ import annotations
 
+# Phase 14 Sub-bundle 1 T-2.1 V2.G4 R3.M2 LOCK: module-level logger required
+# for the narrow ValueError-only log.warning path below. The `import logging`
+# + `log = logging.getLogger(__name__)` + `log.warning(...)` triplet MUST
+# land in the same commit (split would NameError on the first
+# ValueError-degraded invocation; forward-binding lesson #4).
+import logging
 from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Request
@@ -15,6 +21,8 @@ from swing.web.chart_scope import latest_completed_pipeline_run
 from swing.web.view_models.dashboard import build_dashboard
 
 router = APIRouter()
+log = logging.getLogger(__name__)  # Phase 14 Sub-bundle 1 T-2.1 V2.G4 R3.M2
+                                    # LOCK: see import logging note above.
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -32,7 +40,7 @@ def index(request: Request):
 
 
 # ---------------------------------------------------------------------------
-# Phase 13 T2.SB6b T-A.6.6 — POST /dashboard/weather-chart/refresh
+# Phase 13 T2.SB6b T-A.6.6 -- POST /dashboard/weather-chart/refresh
 # ---------------------------------------------------------------------------
 
 
@@ -73,10 +81,29 @@ def dashboard_weather_chart_refresh(request: Request) -> Response:
             )
         benchmark = cfg.rs.benchmark_ticker
         try:
-            bars_bundle = ohlcv_cache.get_or_fetch([benchmark])
-            bars = bars_bundle.get(benchmark) if bars_bundle else None
-        except Exception:  # noqa: BLE001 - degraded fallback
+            bars = ohlcv_cache.get_or_fetch(ticker=benchmark)
+        except ValueError as exc:
+            # OhlcvCache.get_or_fetch raises ValueError("No data for {ticker}")
+            # on empty-archive / cache-miss-fallthrough per its docstring at
+            # swing/web/ohlcv_cache.py:131. This is the canonical empty-result
+            # signal (NOT a programming error). Emit a warning so the
+            # operator-visible 409 message can be diagnosed via logs per
+            # CLAUDE.md gotcha #27 (silent-skip-without-audit) + Phase 14
+            # Sub-bundle 1 V2.G4 R2.M2 LOCK.
+            log.warning(
+                "weather-chart refresh: get_or_fetch returned empty for %s: %s",
+                benchmark, exc,
+            )
             bars = None
+        # NOTE: Do NOT catch broad `Exception` here. The pre-fix handler caught
+        # arbitrary exceptions (including the TypeError that hid this bug for
+        # weeks via the positional-list call signature drift) and silently
+        # returned a 409 "no bars" message -- exactly the masking pattern the
+        # operator-witnessed gate surfaced. Let TypeError, AttributeError,
+        # KeyError, RuntimeError, and other programming errors propagate to
+        # FastAPI's default 500 handler so they surface as 500s (not as
+        # misleading "run the pipeline first" 409s). Per R2.M2 anti-pattern
+        # lock + forward-binding lesson #8.
         if bars is None or bars.empty:
             raise HTTPException(
                 status_code=409,
