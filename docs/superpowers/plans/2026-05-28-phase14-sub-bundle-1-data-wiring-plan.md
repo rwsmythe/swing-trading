@@ -77,7 +77,7 @@ The orchestrator brief §5 watch item #1 + brainstorm return report §8 forward-
 
 | Path | Type | Item | Diff range | Purpose |
 |---|---|---|---|---|
-| `swing/data/repos/candidates.py` | MODIFIED | V2.G3 | append after line 86 (after `fetch_candidates_for_run`) | NEW top-level function `get_latest_sector_industry_per_ticker(conn, tickers) -> dict[str, tuple[str, str]]`; ~30-40 LOC including docstring; SQL via dynamic `?` expansion (gotcha #20); empty-input short-circuit |
+| `swing/data/repos/candidates.py` | MODIFIED | V2.G3 | append after line 86 (after `fetch_candidates_for_run`) | NEW top-level function `get_latest_sector_industry_per_ticker(conn, tickers) -> dict[str, CandidateSectorIndustryRecord]`; ~40-55 LOC including docstring + `CandidateSectorIndustryRecord` frozen-dataclass (`sector: str, industry: str, candidate_id: int | None, evaluation_run_id: int | None`) carrying provenance so the V2.G3 dry-run table can audit which candidates row supplied a backfill (Codex R1.M#6 LOCK); SQL via dynamic `?` expansion (gotcha #20); empty-input short-circuit |
 | `swing/cli.py` | MODIFIED | V2.G3 | append after line 5170 (after `diagnose_prune_chart_cache`) | NEW `@diagnose_group.command("backfill-trades-sector-industry")` subcommand + helpers; ~150-220 LOC including docstring + dry-run table emit + restore-SQL artifact emit + apply-path UPDATE under `with conn:`; mirrors `_validate_diagnose_db_path` precedent at line 4731 |
 | `swing/web/routes/dashboard.py` | MODIFIED | V2.G4 | insert at line 4 (add `import logging` after `from datetime import datetime`); insert at line ~17 (add `log = logging.getLogger(__name__)` after `router = APIRouter()`); rewrite block at lines 74-87 (replace dead dict-style consumption + narrow exception catch) | +3 import/module lines (logging import + logger module-level addition); ~10 net-changed lines in the handler body |
 | `swing/web/view_models/trades.py` | MODIFIED | P14.N3 | extend `@dataclass DailyManagementTileVM` at lines 2042-2078 with 3 NEW field declarations | +3 lines: `position_capital_denominator_dollars_resolved: float`, `position_capital_utilization_is_provisional: bool`, `position_capital_utilization_pct_effective: float \| None` |
@@ -176,10 +176,25 @@ if snap is not None and snap.data_asof_session:
     except ValueError:
         row_asof = asof_date  # ValueError-guarded fallback per maturity.py:190-194
 
-live_policy = read_live_policy(conn)
-denom_resolved, denom_badge = resolve_live_capital_denominator_dollars(
-    conn, asof_date=row_asof, at_trade_time_policy=live_policy,
-)
+# NoActivePolicyError fallback per Codex R1.M#1 LOCK + spec section 6.4
+# second bullet: read_live_policy -> get_active_policy raises
+# NoActivePolicyError when no risk_policy row has is_active=1
+# (pre-Phase-9 / pre-seed DB state OR a manual UPDATE that flipped every
+# row inactive). The build site treats this as PROVISIONAL with extra-
+# caveat tooltip, NOT a 500.
+try:
+    live_policy = read_live_policy(conn)
+except NoActivePolicyError:
+    live_policy = None
+if live_policy is not None:
+    denom_resolved, denom_badge = resolve_live_capital_denominator_dollars(
+        conn, asof_date=row_asof, at_trade_time_policy=live_policy,
+    )
+else:
+    # Denominator undefined; PROVISIONAL with util=None
+    # (template renders em-dash for the cell).
+    denom_resolved = 0.0
+    denom_badge = "PROVISIONAL"
 is_provisional = (denom_badge == "PROVISIONAL")
 
 # Denominator-stamping mirror per maturity.py:197-219:
@@ -239,12 +254,20 @@ tiles.append(DailyManagementTileVM(
         {%- if tile.position_capital_utilization_is_provisional -%}
             <span class="badge badge-provisional" data-marker="PROVISIONAL"
                   title="Capital denominator is the V1 fallback (capital_floor_constant_dollars). Clears to LIVE when an account_equity_snapshots row covers the session date (e.g., swing schwab fetch --snapshot when integration LIVE).">PROVISIONAL</span>
-            <span class="muted help-affordance" data-help="provisional-capital">
+            <button type="button" class="muted help-affordance"
+                    data-help="provisional-capital"
+                    aria-describedby="provisional-capital-help-1"
+                    aria-label="Why is this PROVISIONAL?">
                 (?)
-                <span class="help-detail">
-                    LIVE when account_equity_snapshots row covers today; PROVISIONAL otherwise.
-                </span>
+            </button>
+            <span id="provisional-capital-help-1" class="help-detail" role="tooltip">
+                LIVE when account_equity_snapshots row covers today; PROVISIONAL otherwise.
             </span>
+            <!-- NOTE: id suffix mirrors tile.trade_id at template render time
+                 so multiple PROVISIONAL tiles on the same page emit unique
+                 ids. Codex R1.M#2 LOCK -- aria-describedby targets MUST be
+                 unique per tile. Test uses tile_id=1 fixture. -->
+
         {%- endif -%}
     {%- else -%}--{%- endif -%}
 </td>
@@ -443,8 +466,8 @@ Examples:
 - Test: `tests/data/repos/test_candidates_sector_industry_helper.py` (NEW)
 
 **Acceptance criteria:**
-1. New function `get_latest_sector_industry_per_ticker(conn, tickers) -> dict[str, tuple[str, str]]` exported from `swing/data/repos/candidates.py`.
-2. Signature uses `Sequence[str]` for `tickers` parameter and returns `dict[str, tuple[str, str]]` per spec §4.3.
+1. New function `get_latest_sector_industry_per_ticker(conn, tickers) -> dict[str, CandidateSectorIndustryRecord]` exported from `swing/data/repos/candidates.py`. The accompanying `@dataclass(frozen=True) CandidateSectorIndustryRecord` carries `(sector: str, industry: str, candidate_id: int | None, evaluation_run_id: int | None)` provenance per Codex R1.M#6 LOCK so the V2.G3 dry-run table can cite which candidates row supplied each backfill (spec §4.3 dry-run table columns include `source_candidate_id` + `source_evaluation_run_id`).
+2. Signature uses `Sequence[str]` for `tickers` parameter and returns `dict[str, CandidateSectorIndustryRecord]` per spec §4.3 (Codex R1.M#6 LOCK widened from prior `tuple[str, str]`).
 3. SQL uses dynamic `?` expansion via `",".join("?" * len(tickers))` (gotcha #20).
 4. Empty-input short-circuits to `{}` BEFORE SQL execution (gotcha #20).
 5. WHERE clause filters `c.sector != '' AND c.industry != ''` (both non-empty; AND-form per spec §4.3 R2.M3 LOCK).
@@ -482,6 +505,7 @@ import pytest
 from swing.data.db import connect
 from swing.data.models import EvaluationRun, Candidate
 from swing.data.repos.candidates import (
+    CandidateSectorIndustryRecord,
     get_latest_sector_industry_per_ticker,
     insert_candidates,
     insert_evaluation_run,
@@ -497,8 +521,11 @@ def test_signature_contract_signature_pinned():
     assert params[0].name == "conn"
     assert params[1].name == "tickers"
     hints = get_type_hints(get_latest_sector_industry_per_ticker)
-    # Sequence[str] tickers; dict[str, tuple[str, str]] return.
-    assert hints["return"] == dict[str, tuple[str, str]]
+    # Sequence[str] tickers; dict[str, CandidateSectorIndustryRecord] return
+    # (Codex R1.M#6 LOCK -- provenance metadata carried so the V2.G3 dry-run
+    # table can cite source_candidate_id + source_evaluation_run_id).
+    from swing.data.repos.candidates import CandidateSectorIndustryRecord
+    assert hints["return"] == dict[str, CandidateSectorIndustryRecord]
 ```
 
 - [ ] **T-1.1 Step 2: Run test to verify it fails (import error)**
@@ -511,21 +538,43 @@ Expected: FAIL with `ImportError: cannot import name 'get_latest_sector_industry
 Append to `swing/data/repos/candidates.py` (after `fetch_candidates_for_run`):
 
 ```python
+@dataclass(frozen=True)
+class CandidateSectorIndustryRecord:
+    """Most-recent candidates-row Sector + Industry pair WITH provenance.
+
+    Provenance metadata (candidate_id + evaluation_run_id) carried per
+    Codex R1.M#6 LOCK so the V2.G3 backfill dry-run table can cite the
+    source_candidate_id + source_evaluation_run_id columns required by
+    spec section 4.3. For tickers with no qualifying row, the
+    "no-match" sentinel is constructed with empty strings + ``None``
+    provenance fields (per migration 0012_sector_industry.sql TEXT NOT
+    NULL DEFAULT '' convention applied to the ABSENT-row case).
+    """
+    sector: str
+    industry: str
+    candidate_id: int | None
+    evaluation_run_id: int | None
+
+
 def get_latest_sector_industry_per_ticker(
     conn: sqlite3.Connection,
     tickers: Sequence[str],
-) -> dict[str, tuple[str, str]]:
-    """Return {ticker: (sector, industry)} keyed on the most-recent
-    ``candidates`` row per ticker with non-empty sector AND non-empty
-    industry. Tickers with no qualifying row map to ``('', '')``
-    (empty-string default per migration ``0012_sector_industry.sql``
-    TEXT NOT NULL DEFAULT '').
+) -> dict[str, CandidateSectorIndustryRecord]:
+    """Return {ticker: CandidateSectorIndustryRecord} keyed on the
+    most-recent ``candidates`` row per ticker with non-empty sector AND
+    non-empty industry. Tickers with no qualifying row map to a record
+    with empty-string sector/industry + ``None`` provenance fields
+    (per migration ``0012_sector_industry.sql`` TEXT NOT NULL DEFAULT
+    '' convention applied to the ABSENT-row case).
 
     Used by the Phase 14 Sub-bundle 1 V2.G3 backfill helper to repair
     empty ``trades.sector`` / ``trades.industry`` values on legacy or
     candidates-rotation cases. Backwards-compat: operator-acknowledged
-    DHA/DHC legacy trades (no qualifying candidates row) return
-    ``('', '')``; the open-positions template renders em-dash for empty.
+    DHA/DHC legacy trades (no qualifying candidates row) return the
+    no-match sentinel; the open-positions template renders em-dash for
+    empty. The provenance fields let the V2.G3 dry-run table cite
+    which historical candidates row supplied each backfill
+    (spec section 4.3 + Codex R1.M#6 LOCK).
 
     Empty ``tickers`` input returns ``{}`` without executing SQL
     (CLAUDE.md gotcha #20 runtime-binding-shape + empty-input audit).
@@ -539,9 +588,9 @@ def get_latest_sector_industry_per_ticker(
         return {}
     placeholders = ",".join("?" * len(tickers))
     sql = f"""
-        SELECT ticker, sector, industry FROM (
+        SELECT ticker, sector, industry, id, evaluation_run_id FROM (
             SELECT
-                c.ticker, c.sector, c.industry,
+                c.ticker, c.sector, c.industry, c.id, c.evaluation_run_id,
                 ROW_NUMBER() OVER (
                     PARTITION BY c.ticker
                     ORDER BY c.evaluation_run_id DESC, c.id DESC
@@ -553,11 +602,20 @@ def get_latest_sector_industry_per_ticker(
         ) ranked
         WHERE ranked.rn = 1
     """
-    out: dict[str, tuple[str, str]] = {}
+    out: dict[str, CandidateSectorIndustryRecord] = {}
     for row in conn.execute(sql, list(tickers)):
-        out[row[0]] = (row[1], row[2])
+        out[row[0]] = CandidateSectorIndustryRecord(
+            sector=row[1], industry=row[2],
+            candidate_id=row[3], evaluation_run_id=row[4],
+        )
     for t in tickers:
-        out.setdefault(t, ("", ""))
+        out.setdefault(
+            t,
+            CandidateSectorIndustryRecord(
+                sector="", industry="",
+                candidate_id=None, evaluation_run_id=None,
+            ),
+        )
     return out
 ```
 
@@ -565,6 +623,7 @@ Also add to the imports at top of `candidates.py`:
 
 ```python
 from collections.abc import Sequence
+from dataclasses import dataclass
 ```
 
 (audit current imports first; add only if missing).
@@ -618,7 +677,11 @@ def test_happy_path_single_ticker_returns_non_empty_pair(tmp_path):
             **_build_candidate_fixture("VSAT"),
         )])
         result = get_latest_sector_industry_per_ticker(conn, ["VSAT"])
-        assert result == {"VSAT": ("Technology", "Communications Equipment")}
+        assert result["VSAT"].sector == "Technology"
+        assert result["VSAT"].industry == "Communications Equipment"
+        # Provenance present (Codex R1.M#6 LOCK).
+        assert result["VSAT"].candidate_id is not None
+        assert result["VSAT"].evaluation_run_id == run_id
     finally:
         conn.close()
 ```
@@ -651,8 +714,15 @@ def test_multi_ticker_mixed_qualifying_returns_per_ticker_results(tmp_path):
         result = get_latest_sector_industry_per_ticker(
             conn, ["VSAT", "DHA"],
         )
-        assert result["VSAT"] == ("Technology", "Communications Equipment")
-        assert result["DHA"] == ("", "")
+        assert result["VSAT"].sector == "Technology"
+        assert result["VSAT"].industry == "Communications Equipment"
+        assert result["VSAT"].evaluation_run_id == run_id
+        # DHA is the no-match sentinel: empty strings + None provenance
+        # (Codex R1.M#6 LOCK).
+        assert result["DHA"].sector == ""
+        assert result["DHA"].industry == ""
+        assert result["DHA"].candidate_id is None
+        assert result["DHA"].evaluation_run_id is None
     finally:
         conn.close()
 ```
@@ -681,8 +751,12 @@ def test_partial_empty_candidate_row_excluded_from_qualifying_pool(tmp_path):
         ])
         result = get_latest_sector_industry_per_ticker(conn, ["VSAT"])
         # VSAT's only candidates row has industry=''; helper excludes
-        # via AND-empty WHERE clause + ticker maps to ('', '') default.
-        assert result == {"VSAT": ("", "")}
+        # via AND-empty WHERE clause + ticker maps to the no-match
+        # sentinel (empty strings + None provenance per Codex R1.M#6).
+        assert result["VSAT"].sector == ""
+        assert result["VSAT"].industry == ""
+        assert result["VSAT"].candidate_id is None
+        assert result["VSAT"].evaluation_run_id is None
     finally:
         conn.close()
 ```
@@ -723,7 +797,10 @@ def test_ordering_most_recent_evaluation_run_id_wins(tmp_path):
                       **_build_candidate_fixture("VSAT")),
         ])
         result = get_latest_sector_industry_per_ticker(conn, ["VSAT"])
-        assert result == {"VSAT": ("NewSector", "NewIndustry")}
+        assert result["VSAT"].sector == "NewSector"
+        assert result["VSAT"].industry == "NewIndustry"
+        # Provenance points at the NEWER run (Codex R1.M#6 LOCK).
+        assert result["VSAT"].evaluation_run_id == new_run_id
     finally:
         conn.close()
 ```
@@ -753,7 +830,10 @@ def test_historical_only_candidates_row_picked_when_no_recent(tmp_path):
         ])
         # No newer run for VSAT (rotated out of finviz screen).
         result = get_latest_sector_industry_per_ticker(conn, ["VSAT"])
-        assert result == {"VSAT": ("Technology", "Communications Equipment")}
+        assert result["VSAT"].sector == "Technology"
+        assert result["VSAT"].industry == "Communications Equipment"
+        # Provenance still cites the historical run (Codex R1.M#6).
+        assert result["VSAT"].evaluation_run_id == old_run_id
     finally:
         conn.close()
 ```
@@ -817,8 +897,9 @@ Expected output: empty line (no trailers).
 9. Pre-validates `--db` via `_validate_diagnose_db_path` precedent at `swing/cli.py:4731`.
 10. ValueError wrapping at CLI boundary per cumulative gotcha (Phase 13 T-A.1.5b R4 M#1; mirrors existing `aplus-sensitivity` pattern at lines 4777-4786).
 11. ASCII-only output per cumulative gotcha #32 (Phase 12 C.D Windows-stdout safety).
-12. ~8–10 fast tests cover all paths.
-13. Gotchas applied: #1, #4, #11 (CLI output discipline), #21, #22, #27, #32. Watch items #5 + #6.
+12. Provenance columns `source_candidate_id` + `source_evaluation_run_id` rendered on every UPDATE row (Codex R1.M#6 LOCK; spec §4.3 dry-run-table column list); SKIP rows render `-` placeholders for the provenance columns.
+13. ~9-11 fast tests cover all paths (one added per Codex R1.M#6 -- provenance assertion in dry-run output).
+14. Gotchas applied: #1, #4, #11 (CLI output discipline), #21, #22, #27, #32. Watch items #5 + #6.
 
 **OQ #1 resolution at plan-authoring:** the new repo helper lives at `swing/data/repos/candidates.py` (not a separate helper module). LOCKED.
 **OQ #2 resolution at plan-authoring:** active-state allowlist defaults to `('entered', 'managing', 'partial_exited')`. Verified against `swing/data/models.py:Trade.state` enum. LOCKED.
@@ -980,7 +1061,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from swing.data.db import connect
-from swing.data.repos.candidates import get_latest_sector_industry_per_ticker
+from swing.data.repos.candidates import (
+    CandidateSectorIndustryRecord,
+    get_latest_sector_industry_per_ticker,
+)
 
 
 _DEFAULT_ACTIVE_STATES: tuple[str, ...] = (
@@ -990,7 +1074,13 @@ _DEFAULT_ACTIVE_STATES: tuple[str, ...] = (
 
 @dataclass(frozen=True)
 class BackfillRow:
-    """One row in the dry-run table emit."""
+    """One row in the dry-run table emit.
+
+    source_candidate_id + source_evaluation_run_id are populated for
+    UPDATE rows (Codex R1.M#6 LOCK -- provenance auditability per
+    spec section 4.3); None for SKIP rows where no candidates row
+    qualified.
+    """
     trade_id: int
     ticker: str
     current_sector: str
@@ -998,6 +1088,8 @@ class BackfillRow:
     proposed_sector: str
     proposed_industry: str
     action: str  # 'UPDATE' | 'SKIP_NO_CANDIDATES_ROW' | 'SKIP_PARTIAL_EMPTY'
+    source_candidate_id: int | None
+    source_evaluation_run_id: int | None
 
 
 @dataclass(frozen=True)
@@ -1132,21 +1224,33 @@ def _build_backfill_rows(
     *,
     and_empty_rows: Iterable[tuple[int, str, str, str]],
     partial_rows: Iterable[tuple[int, str, str, str]],
-    replacements: dict[str, tuple[str, str]],
+    replacements: dict[str, CandidateSectorIndustryRecord],
 ) -> list[BackfillRow]:
-    """Assemble per-(trade_id, action) rows for the table emit."""
+    """Assemble per-(trade_id, action) rows for the table emit.
+
+    Provenance (source_candidate_id + source_evaluation_run_id) is
+    carried through from the helper's CandidateSectorIndustryRecord
+    so the dry-run table can audit which candidates row supplied each
+    backfill (Codex R1.M#6 LOCK).
+    """
     rows: list[BackfillRow] = []
+    no_match_sentinel = CandidateSectorIndustryRecord(
+        sector="", industry="",
+        candidate_id=None, evaluation_run_id=None,
+    )
     for tid, ticker, cur_sector, cur_industry in and_empty_rows:
-        prop_sector, prop_industry = replacements.get(ticker, ("", ""))
-        if prop_sector and prop_industry:
+        rec = replacements.get(ticker, no_match_sentinel)
+        if rec.sector and rec.industry:
             action = "UPDATE"
         else:
             action = "SKIP_NO_CANDIDATES_ROW"
         rows.append(BackfillRow(
             trade_id=tid, ticker=ticker,
             current_sector=cur_sector, current_industry=cur_industry,
-            proposed_sector=prop_sector, proposed_industry=prop_industry,
+            proposed_sector=rec.sector, proposed_industry=rec.industry,
             action=action,
+            source_candidate_id=rec.candidate_id,
+            source_evaluation_run_id=rec.evaluation_run_id,
         ))
     for tid, ticker, cur_sector, cur_industry in partial_rows:
         rows.append(BackfillRow(
@@ -1154,6 +1258,7 @@ def _build_backfill_rows(
             current_sector=cur_sector, current_industry=cur_industry,
             proposed_sector="", proposed_industry="",
             action="SKIP_PARTIAL_EMPTY",
+            source_candidate_id=None, source_evaluation_run_id=None,
         ))
     rows.sort(key=lambda r: (r.action, r.ticker, r.trade_id))
     return rows
@@ -1212,15 +1317,27 @@ def _format_report(
         f"  SKIP_NO_CANDIDATES_ROW : {skip_no_cand}",
         f"  SKIP_PARTIAL_EMPTY     : {skip_partial}",
         "",
-        "Per-row detail:",
-        "  trade_id | ticker | current | proposed | action",
+        "Per-row detail (provenance per Codex R1.M#6 LOCK):",
+        (
+            "  trade_id | ticker | current | proposed | "
+            "source_cand_id | source_eval_run_id | action"
+        ),
     ]
     for r in rows:
         cur = f"({r.current_sector!r}, {r.current_industry!r})"
         prop = f"({r.proposed_sector!r}, {r.proposed_industry!r})"
+        cand_id_cell = (
+            str(r.source_candidate_id)
+            if r.source_candidate_id is not None else "-"
+        )
+        run_id_cell = (
+            str(r.source_evaluation_run_id)
+            if r.source_evaluation_run_id is not None else "-"
+        )
         out.append(
             f"  {r.trade_id:>8} | {r.ticker:<6} | "
-            f"{cur} | {prop} | {r.action}"
+            f"{cur} | {prop} | "
+            f"{cand_id_cell:>14} | {run_id_cell:>18} | {r.action}"
         )
     return out
 ```
@@ -1633,6 +1750,64 @@ def test_missing_db_path_raises_click_exception(tmp_path):
 Run: `pytest tests/cli/test_diagnose_backfill_trades_sector_industry.py::test_missing_db_path_raises_click_exception -v`
 Expected: PASS.
 
+- [ ] **T-1.2 Step 13b: Add provenance assertion test (Codex R1.M#6 LOCK)**
+
+Append:
+
+```python
+def test_dry_run_table_renders_source_candidate_and_run_id_columns(tmp_path):
+    """The dry-run table cites source_candidate_id +
+    source_evaluation_run_id per spec section 4.3 column list (Codex R1.M#6
+    LOCK -- provenance auditability so operators can re-trace which
+    candidates row supplied each backfill)."""
+    from swing.data.db import connect
+    from swing.data.models import EvaluationRun, Candidate, Trade
+    from swing.data.repos.candidates import (
+        insert_candidates, insert_evaluation_run,
+    )
+    from swing.data.repos.trades import insert_trade
+
+    db_path = tmp_path / "swing.db"
+    output_dir = tmp_path / "out"
+    conn = connect(db_path)
+    try:
+        run_id = insert_evaluation_run(conn, EvaluationRun(
+            id=None, run_ts="2026-05-27T20:00:00",
+            data_asof_date="2026-05-26", action_session_date="2026-05-27",
+        ))
+        insert_candidates(conn, run_id, [
+            Candidate(ticker="VSAT", sector="Technology",
+                      industry="Communications Equipment",
+                      **_build_candidate_fixture("VSAT")),
+        ])
+        insert_trade(conn, Trade(
+            id=None, ticker="VSAT", state="entered",
+            sector="", industry="",
+            **_build_trade_fixture("VSAT"),
+        ))
+    finally:
+        conn.close()
+    runner = CliRunner()
+    result = runner.invoke(swing_cli, [
+        "diagnose", "backfill-trades-sector-industry",
+        "--db", str(db_path),
+        "--output-dir", str(output_dir),
+    ])
+    assert result.exit_code == 0
+    # Column header includes provenance columns.
+    assert "source_cand_id" in result.output
+    assert "source_eval_run_id" in result.output
+    # The UPDATE row cites the actual run_id (not the '-' placeholder
+    # used for SKIP rows).
+    assert str(run_id) in result.output
+    # Skip rows would render '-'; in this fixture there are none, so
+    # we don't assert the '-' here (covered in the DHA legacy test +
+    # the partial-empty test where the SKIP rows render '-').
+```
+
+Run: `pytest tests/cli/test_diagnose_backfill_trades_sector_industry.py::test_dry_run_table_renders_source_candidate_and_run_id_columns -v`
+Expected: PASS.
+
 - [ ] **T-1.2 Step 14: Add ASCII discipline test for the CLI subcommand + helper module**
 
 Append:
@@ -1754,7 +1929,18 @@ def test_weather_refresh_calls_get_or_fetch_with_ticker_kwarg(
     assert call_kwargs == {"ticker": "SPY"}
 ```
 
-(NOTE: `test_client_with_pipeline_run` + `mocked_ohlcv_cache` are pytest fixtures to be added at executing-plans phase per the existing `tests/web/conftest.py` pattern. They plant a completed pipeline_run row + monkeypatch `app.state.ohlcv_cache` to a `MagicMock(spec=OhlcvCache)`.)
+(NOTE: `test_client_with_pipeline_run` + `mocked_ohlcv_cache` are pytest fixtures to be added at executing-plans phase per the existing `tests/web/conftest.py` pattern. They plant a completed pipeline_run row + monkeypatch `app.state.ohlcv_cache` to a `MagicMock(spec=OhlcvCache)`. A SECOND fixture `test_client_with_pipeline_run_no_raise` constructs the TestClient with `raise_server_exceptions=False` per Codex R1.M#3 LOCK -- the propagation-to-500 assertions require the server-side 500 response to be observable as `response.status_code`; FastAPI's TestClient defaults to `raise_server_exceptions=True` which re-raises uncaught exceptions into the test runner instead of producing a response. Fixture shape:
+
+```python
+@pytest.fixture
+def test_client_with_pipeline_run_no_raise(...):
+    from fastapi.testclient import TestClient
+    from swing.web.app import app
+    # ... plant pipeline_runs row + app.state.ohlcv_cache monkeypatch ...
+    with TestClient(app, raise_server_exceptions=False) as client:
+        yield client
+```
+)
 
 - [ ] **T-2.1 Step 2: Run test to verify it fails**
 
@@ -1870,16 +2056,22 @@ Append:
 
 ```python
 def test_type_error_propagates_to_500_not_409(
-    test_client_with_pipeline_run, mocked_ohlcv_cache,
+    test_client_with_pipeline_run_no_raise, mocked_ohlcv_cache,
 ):
     """Programming errors (TypeError) propagate to FastAPI default 500
     handler -- they MUST NOT be silently masked as a misleading 409
-    (R2.M2 LOCK; this is the V2.G4 root-cause-class regression check)."""
+    (R2.M2 LOCK; this is the V2.G4 root-cause-class regression check).
+
+    Per Codex R1.M#3 LOCK: TestClient is constructed with
+    raise_server_exceptions=False so the server-side 500 response is
+    observable. Default TestClient(raise_server_exceptions=True) would
+    re-raise the TypeError into the test rather than yield a 500.
+    """
     mocked_ohlcv_cache.get_or_fetch.side_effect = TypeError(
         "Simulated programming error -- e.g., positional vs keyword "
         "signature drift."
     )
-    response = test_client_with_pipeline_run.post(
+    response = test_client_with_pipeline_run_no_raise.post(
         "/dashboard/weather-chart/refresh",
     )
     # FastAPI default 500 handler returns 500 (NOT the 409 the pre-fix
@@ -1905,13 +2097,20 @@ Append:
     ],
 )
 def test_other_programming_errors_propagate_to_500(
-    test_client_with_pipeline_run, mocked_ohlcv_cache, exc_type, exc_args,
+    test_client_with_pipeline_run_no_raise, mocked_ohlcv_cache,
+    exc_type, exc_args,
 ):
     """AttributeError, KeyError, RuntimeError all propagate as 500
     (forward-binding lesson #8 -- narrow ValueError-only catch ensures
-    programming errors are NOT silently masked)."""
+    programming errors are NOT silently masked).
+
+    Per Codex R1.M#3 LOCK: TestClient(raise_server_exceptions=False)
+    fixture so the 500 server-side response is observable as a
+    response.status_code -- the default TestClient would re-raise the
+    exception into the test runner.
+    """
     mocked_ohlcv_cache.get_or_fetch.side_effect = exc_type(*exc_args)
-    response = test_client_with_pipeline_run.post(
+    response = test_client_with_pipeline_run_no_raise.post(
         "/dashboard/weather-chart/refresh",
     )
     assert response.status_code == 500
@@ -2077,18 +2276,19 @@ Expected: 3 lines (one per addition; all in the same diff).
 4. `resolve_live_capital_denominator_dollars(conn, asof_date=row_asof, at_trade_time_policy=read_live_policy(conn))` invoked per row.
 5. `position_capital_utilization_pct_effective` = stored `snap.position_capital_utilization_pct` when `math.isclose(snap.position_capital_denominator_dollars, denom_resolved, rel_tol=1e-9)`; otherwise RECOMPUTED via `compute_position_capital_utilization(current_size=..., current_price=..., denominator_dollars=denom_resolved)` (PROPORTION-unit; R3.M1 LOCK).
 6. **CRITICAL R3.M1 LOCK**: do NOT swap in `_compute_position_util_pct` (returns PERCENT; would render 1500.0% on a 15% utilization). Discriminating test asserts.
-7. Template at `swing/web/templates/partials/daily_management_tile.html.j2:91-99` rewritten to:
+7. **NoActivePolicyError fallback (Codex R1.M#1 LOCK):** `read_live_policy(conn)` is wrapped in `try / except NoActivePolicyError`; on raise, `live_policy=None` + `denom_resolved=0.0` + `denom_badge="PROVISIONAL"` -- preserves spec §6.4 second bullet contract that "no active risk_policy" still renders PROVISIONAL (NOT a 500). Discriminating test at T-3.1 step 11b plants `risk_policy` table with all rows `is_active=0` and asserts dashboard render succeeds + tile shows PROVISIONAL badge.
+8. Template at `swing/web/templates/partials/daily_management_tile.html.j2:91-99` rewritten to:
    - Render `tile.position_capital_utilization_pct_effective * 100.0` (NOT the legacy field).
    - Conditionally emit PROVISIONAL badge ONLY when `tile.position_capital_utilization_is_provisional` is True.
    - NEW tooltip text describing the actual clear-condition (`account_equity_snapshots` row + `swing schwab fetch --snapshot` example).
    - NEW inline `(?)` affordance with `help-detail` blurb visible-on-focus per existing CSS conventions (audit at executing-plans phase).
    - Em-dash placeholder rendered as ASCII `--` per gotcha #32.
-8. Server-stamping discipline (Phase 8 R2.M2+R3.M2+R4.M2 family / forward-binding lesson #13) — all 3 NEW fields are SERVER-COMPUTED at build time; NO hidden form input; NO operator-supplied state.
-9. ~7-9 fast template tests + ~4-6 fast VM tests cover all paths.
-10. Gotchas applied: #11 (template + VM audited together), #17 (signature contract test on the resolver), #19 (cascade-call-graph: verify `compute_position_capital_utilization` does NOT invoke `_compute_position_util_pct`), #23 (3 fields are required + attribution unambiguous), #32 (ASCII). Watch items #3, #9.
+9. Server-stamping discipline (Phase 8 R2.M2+R3.M2+R4.M2 family / forward-binding lesson #13) — all 3 NEW fields are SERVER-COMPUTED at build time; NO hidden form input; NO operator-supplied state.
+10. ~8-10 fast template tests + ~5-7 fast VM tests cover all paths (one VM test added per Codex R1.M#1 NoActivePolicyError fallback).
+11. Gotchas applied: #11 (template + VM audited together), #17 (signature contract test on the resolver), #19 (cascade-call-graph: verify `compute_position_capital_utilization` does NOT invoke `_compute_position_util_pct`), #23 (3 fields are required + attribution unambiguous), #32 (ASCII). Watch items #3, #9.
 
 **OQ #5 resolution at plan-authoring:** `DailyManagementTileVM` lives at `swing/web/view_models/trades.py:2042-2078`; build site at `swing/web/view_models/dashboard.py:1390-1417` inline construction. LOCKED.
-**OQ #6 resolution at plan-authoring:** tooltip placement = `title` attribute on the badge (existing convention) + NEW inline `<span class="muted help-affordance">` with `(?)` text + `<span class="help-detail">` visible-on-focus / explanatory blurb. LOCKED.
+**OQ #6 resolution at plan-authoring:** tooltip placement = `title` attribute on the badge (existing convention) + NEW inline `<button type="button" class="muted help-affordance" aria-describedby="provisional-capital-help-{tile_id}" aria-label="Why is this PROVISIONAL?">` with `(?)` text + `<span id="provisional-capital-help-{tile_id}" class="help-detail" role="tooltip">` (Codex R1.M#2 LOCK -- real focusable button + ARIA, NOT a `<span>`, for keyboard accessibility). LOCKED.
 
 #### TDD steps
 
@@ -2208,6 +2408,7 @@ Add imports near the top of `swing/web/view_models/dashboard.py` (audit existing
 import math
 from datetime import date
 
+from swing.data.repos.risk_policy import NoActivePolicyError
 from swing.metrics.equity_resolver import (
     resolve_live_capital_denominator_dollars,
 )
@@ -2226,14 +2427,27 @@ Within the per-(trade, snap) loop ending at the existing `tiles.append(DailyMana
                 except ValueError:
                     row_asof = asof_date  # ValueError-guarded per
                                           # maturity.py:190-194
-            live_policy = read_live_policy(conn)
-            denom_resolved, denom_badge = (
-                resolve_live_capital_denominator_dollars(
-                    conn,
-                    asof_date=row_asof,
-                    at_trade_time_policy=live_policy,
+            # NoActivePolicyError fallback per Codex R1.M#1 LOCK + spec
+            # section 6.4 second bullet: zero active risk_policy rows
+            # (pre-Phase-9 / pre-seed / mass-deactivation edge) MUST
+            # render PROVISIONAL with extra-caveat tooltip, NOT 500.
+            try:
+                live_policy = read_live_policy(conn)
+            except NoActivePolicyError:
+                live_policy = None
+            if live_policy is not None:
+                denom_resolved, denom_badge = (
+                    resolve_live_capital_denominator_dollars(
+                        conn,
+                        asof_date=row_asof,
+                        at_trade_time_policy=live_policy,
+                    )
                 )
-            )
+            else:
+                # Denominator undefined; PROVISIONAL with util=None
+                # (template renders em-dash for the cell).
+                denom_resolved = 0.0
+                denom_badge = "PROVISIONAL"
             is_provisional = (denom_badge == "PROVISIONAL")
             # Denominator-stamping per maturity.py:197-219:
             stored_util = snap.position_capital_utilization_pct
@@ -2307,11 +2521,15 @@ Edit `swing/web/templates/partials/daily_management_tile.html.j2` — replace li
               {%- if tile.position_capital_utilization_is_provisional -%}
                 <span class="badge badge-provisional" data-marker="PROVISIONAL"
                       title="Capital denominator is the V1 fallback (capital_floor_constant_dollars). Clears to LIVE when an account_equity_snapshots row covers the session date (e.g., swing schwab fetch --snapshot when integration LIVE).">PROVISIONAL</span>
-                <span class="muted help-affordance" data-help="provisional-capital">
+                <button type="button" class="muted help-affordance"
+                        data-help="provisional-capital"
+                        aria-describedby="provisional-capital-help-{{ tile.trade_id }}"
+                        aria-label="Why is this PROVISIONAL?">
                   (?)
-                  <span class="help-detail">
-                    LIVE when account_equity_snapshots row covers today; PROVISIONAL otherwise.
-                  </span>
+                </button>
+                <span id="provisional-capital-help-{{ tile.trade_id }}"
+                      class="help-detail" role="tooltip">
+                  LIVE when account_equity_snapshots row covers today; PROVISIONAL otherwise.
                 </span>
               {%- endif -%}
             {%- else -%}--{%- endif -%}
@@ -2392,17 +2610,25 @@ Append:
 
 ```python
 def test_help_affordance_html_structure_present(jinja_env):
-    """Inline (?) affordance with help-detail blurb visible-on-focus
-    per spec section 6.5 example #3."""
+    """Inline (?) affordance with help-detail blurb. Per Codex R1.M#2
+    LOCK the affordance MUST be a real focusable element with ARIA
+    (button + aria-describedby + aria-label + role=tooltip) -- a plain
+    span has no keyboard focus + fails the spec section 6.1 goal of
+    avoiding hover-only explanation."""
     vm = MagicMock()
     vm.daily_management_tiles = [_build_tile_vm(
         is_provisional=True, util_pct_effective=0.15,
     )]
     tmpl = jinja_env.get_template("partials/daily_management_tile.html.j2")
     rendered = tmpl.render(vm=vm)
-    assert 'class="muted help-affordance"' in rendered
+    # Focusable button element (NOT a span).
+    assert '<button type="button" class="muted help-affordance"' in rendered
     assert 'data-help="provisional-capital"' in rendered
-    assert 'class="help-detail"' in rendered
+    assert 'aria-describedby="provisional-capital-help-1"' in rendered
+    assert 'aria-label="Why is this PROVISIONAL?"' in rendered
+    # The help-detail target carries role=tooltip + matching id.
+    assert 'id="provisional-capital-help-1"' in rendered
+    assert 'class="help-detail" role="tooltip"' in rendered
     assert "(?)" in rendered
 ```
 
@@ -2435,25 +2661,93 @@ Create or extend `tests/web/view_models/test_dashboard_view_model.py`:
 Per spec section 6.2 (denominator-stamping mirror per maturity.py:197-219)
 + R3.M1 LOCK (PROPORTION-unit semantic; recompute via
 compute_position_capital_utilization).
+
+Per Codex R1.M#4 LOCK: tests use concrete fixtures (no undeclared
+planted_trade_with_snap* names; no literal build_dashboard(...) ellipsis;
+no insert_snapshot(..., ..., ) trailing-ellipsis args). Fixtures are
+plant-inline within each test using the production-shape repo helpers.
 """
 
 import math
-from datetime import date
+from datetime import date, datetime
+from unittest.mock import MagicMock
 
 import pytest
 
+from swing.config import Config
 from swing.data.db import connect
+from swing.data.models import AccountEquitySnapshot, Trade
 from swing.data.repos.account_equity_snapshots import insert_snapshot
+from swing.data.repos.trades import insert_trade
+from swing.web.view_models.dashboard import build_dashboard
+
+
+def _build_dashboard_under_test(*, db_path, cfg=None):
+    """Concrete build_dashboard invocation for P14.N3 VM tests.
+
+    The production builder's signature is
+    `build_dashboard(cfg, cache, executor, ohlcv_cache)` per
+    swing/web/routes/dashboard.py:27-28. For VM tests we mock the
+    price-cache + executor + ohlcv-cache (none are exercised on the
+    tile-build path -- the tile reads exclusively from `daily_management_records`
+    + `trades` + `risk_policy` + `account_equity_snapshots`).
+    """
+    cfg = cfg or Config.from_defaults(db_path=db_path)
+    cache = MagicMock()
+    cache.is_degraded.return_value = False
+    cache.degraded_until.return_value = None
+    executor = MagicMock()
+    ohlcv_cache = None  # exercised separately at T-2.1
+    return build_dashboard(
+        cfg=cfg, cache=cache, executor=executor, ohlcv_cache=ohlcv_cache,
+    )
+
+
+@pytest.fixture
+def planted_vsat_trade_with_snap(tmp_path):
+    """Plant an open VSAT trade + active daily_management snapshot row
+    with data_asof_session='2026-05-27' + util=0.15 + denom=7500.0.
+
+    Returns the swing_db_path for use by tests; tests open + populate
+    additional state per their per-test needs (e.g., account_equity
+    snapshot for LIVE path; UPDATE risk_policy SET is_active=0 for the
+    NoActivePolicyError fallback test).
+    """
+    from swing.data.repos.daily_management import (
+        insert_daily_management_record,
+    )
+    db_path = tmp_path / "swing.db"
+    conn = connect(db_path)
+    try:
+        trade_id = insert_trade(conn, Trade(
+            id=None, ticker="VSAT", state="entered",
+            sector="Technology", industry="Communications Equipment",
+            current_size=10.0, current_stop=40.0,
+            **_build_remaining_trade_fields("VSAT"),
+        ))
+        insert_daily_management_record(
+            conn, trade_id=trade_id,
+            data_asof_session="2026-05-27",
+            current_price=42.0,
+            position_capital_utilization_pct=0.15,
+            position_capital_denominator_dollars=7500.0,
+            **_build_remaining_dm_record_fields(),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return db_path
 
 
 def test_provisional_when_no_account_equity_snapshot_row(
-    swing_db_in_tmp_path, planted_trade_with_snap,
+    planted_vsat_trade_with_snap,
 ):
     """No account_equity_snapshots row covering data_asof_session ->
     is_provisional=True; denom = capital_floor_constant_dollars
     (spec section 6.1)."""
-    from swing.web.view_models.dashboard import build_dashboard
-    vm = build_dashboard(...)
+    vm = _build_dashboard_under_test(
+        db_path=planted_vsat_trade_with_snap,
+    )
     tile = next(
         t for t in vm.daily_management_tiles if t.ticker == "VSAT"
     )
@@ -2465,21 +2759,35 @@ def test_provisional_when_no_account_equity_snapshot_row(
 
 
 def test_live_when_account_equity_snapshot_covers_data_asof_session(
-    swing_db_in_tmp_path, planted_trade_with_snap,
+    planted_vsat_trade_with_snap,
 ):
     """account_equity_snapshots row with snapshot_date <= data_asof_session
     -> is_provisional=False; denom = snapshot equity (spec section 6.5
     example #2)."""
-    from swing.web.view_models.dashboard import build_dashboard
-    conn = connect(swing_db_in_tmp_path)
+    conn = connect(planted_vsat_trade_with_snap)
     try:
-        insert_snapshot(
-            conn, snapshot_date="2026-05-27", equity_dollars=12345.0,
-            ...,
-        )
+        # Plant a snapshot row covering data_asof_session='2026-05-27'.
+        # Concrete required-field shape per AccountEquitySnapshot dataclass
+        # at swing/data/models.py + insert_snapshot signature at
+        # swing/data/repos/account_equity_snapshots.py (Codex R1.M#4 LOCK
+        # -- executing-plans implementer audits + completes missing
+        # required fields; no ellipsis trailing args).
+        insert_snapshot(conn, AccountEquitySnapshot(
+            snapshot_id=None,
+            snapshot_date="2026-05-27",
+            equity_dollars=12345.0,
+            source="manual",
+            source_artifact_path="test:fixture:p14n3-live",
+            recorded_at=datetime.now().isoformat(timespec="seconds"),
+            schwab_api_call_id=None,
+            notes="P14.N3 LIVE fixture",
+        ))
+        conn.commit()
     finally:
         conn.close()
-    vm = build_dashboard(...)
+    vm = _build_dashboard_under_test(
+        db_path=planted_vsat_trade_with_snap,
+    )
     tile = next(
         t for t in vm.daily_management_tiles if t.ticker == "VSAT"
     )
@@ -2490,13 +2798,20 @@ def test_live_when_account_equity_snapshot_covers_data_asof_session(
 
 
 def test_effective_pct_reuses_stored_when_denominators_match(
-    swing_db_in_tmp_path, planted_trade_with_snap_matching_denom,
+    planted_vsat_trade_with_snap,
 ):
     """When snap.position_capital_denominator_dollars == freshly-resolved
     via math.isclose(rel_tol=1e-9), reuse stored proportion (spec section 6.2
-    denominator-stamping mirror per maturity.py:215-219)."""
-    from swing.web.view_models.dashboard import build_dashboard
-    vm = build_dashboard(...)
+    denominator-stamping mirror per maturity.py:215-219).
+
+    Fixture planted stored_denom=7500.0 + util=0.15 + no
+    account_equity_snapshot row -> resolver returns
+    capital_floor_constant_dollars (default 7500.0) -- denominators match;
+    tile reuses stored util.
+    """
+    vm = _build_dashboard_under_test(
+        db_path=planted_vsat_trade_with_snap,
+    )
     tile = next(
         t for t in vm.daily_management_tiles if t.ticker == "VSAT"
     )
@@ -2507,15 +2822,34 @@ def test_effective_pct_reuses_stored_when_denominators_match(
 
 
 def test_effective_pct_recomputed_via_compute_position_capital_utilization_when_denominators_diverge(
-    swing_db_in_tmp_path, planted_trade_with_snap_divergent_denom,
+    planted_vsat_trade_with_snap,
 ):
     """When stored denominator != freshly-resolved, recompute as
     PROPORTION via compute_position_capital_utilization (R3.M1 LOCK)."""
     from swing.trades.daily_management import (
         compute_position_capital_utilization,
     )
-    from swing.web.view_models.dashboard import build_dashboard
-    vm = build_dashboard(...)
+    conn = connect(planted_vsat_trade_with_snap)
+    try:
+        # Plant a snapshot whose equity (12345.0) DIVERGES from the
+        # stored denominator (7500.0) so the math.isclose check fails
+        # + recompute path fires.
+        insert_snapshot(conn, AccountEquitySnapshot(
+            snapshot_id=None,
+            snapshot_date="2026-05-27",
+            equity_dollars=12345.0,
+            source="manual",
+            source_artifact_path="test:fixture:p14n3-divergent",
+            recorded_at=datetime.now().isoformat(timespec="seconds"),
+            schwab_api_call_id=None,
+            notes="P14.N3 divergent-denom fixture",
+        ))
+        conn.commit()
+    finally:
+        conn.close()
+    vm = _build_dashboard_under_test(
+        db_path=planted_vsat_trade_with_snap,
+    )
     tile = next(
         t for t in vm.daily_management_tiles if t.ticker == "VSAT"
     )
@@ -2529,13 +2863,56 @@ def test_effective_pct_recomputed_via_compute_position_capital_utilization_when_
     )
 
 
-def test_malformed_data_asof_session_falls_back_to_page_asof_date(
-    swing_db_in_tmp_path, planted_trade_with_snap_malformed_session,
+def test_no_active_risk_policy_renders_provisional_not_500(
+    planted_vsat_trade_with_snap,
 ):
-    """date.fromisoformat raises ValueError on malformed snap.data_asof_session
-    -> fall back to page-level asof_date (maturity.py:190-194)."""
-    from swing.web.view_models.dashboard import build_dashboard
-    vm = build_dashboard(...)
+    """Codex R1.M#1 LOCK + spec section 6.4 second bullet: when
+    risk_policy has zero rows with is_active=1 (pre-Phase-9 / pre-seed
+    DB state OR a manual UPDATE that flipped every row inactive),
+    build_dashboard MUST NOT raise NoActivePolicyError -- it MUST
+    render the tile as PROVISIONAL with extra-caveat tooltip."""
+    conn = connect(planted_vsat_trade_with_snap)
+    try:
+        conn.execute("UPDATE risk_policy SET is_active = 0")
+        conn.commit()
+    finally:
+        conn.close()
+    # build_dashboard must not raise NoActivePolicyError; tile is
+    # constructed with is_provisional=True + denom_resolved=0.0.
+    vm = _build_dashboard_under_test(
+        db_path=planted_vsat_trade_with_snap,
+    )
+    tile = next(
+        t for t in vm.daily_management_tiles if t.ticker == "VSAT"
+    )
+    assert tile.position_capital_utilization_is_provisional is True
+    assert tile.position_capital_denominator_dollars_resolved == 0.0
+    # With denom_resolved=0.0, util_pct_effective is None (the recompute
+    # short-circuits per the denom_resolved > 0 guard); template renders
+    # em-dash.
+    assert tile.position_capital_utilization_pct_effective is None
+
+
+def test_malformed_data_asof_session_falls_back_to_page_asof_date(
+    planted_vsat_trade_with_snap,
+):
+    """date.fromisoformat raises ValueError on malformed
+    snap.data_asof_session -> fall back to page-level asof_date
+    (maturity.py:190-194)."""
+    conn = connect(planted_vsat_trade_with_snap)
+    try:
+        # Mutate the planted snap's data_asof_session to a malformed
+        # string the ValueError-guarded fallback path handles.
+        conn.execute(
+            "UPDATE daily_management_records "
+            "SET data_asof_session = 'not-a-date'"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    vm = _build_dashboard_under_test(
+        db_path=planted_vsat_trade_with_snap,
+    )
     tile = next(
         t for t in vm.daily_management_tiles if t.ticker == "VSAT"
     )
@@ -2543,7 +2920,7 @@ def test_malformed_data_asof_session_falls_back_to_page_asof_date(
     assert isinstance(tile.position_capital_utilization_is_provisional, bool)
 ```
 
-(The `planted_trade_with_snap*` fixtures are pytest fixtures TBD at executing-plans phase per the existing `tests/web/conftest.py` patterns; they plant production-shape `daily_management_records` rows + open trades. The `...` ellipsis args in `build_dashboard(...)` are replaced at executing-plans phase with the actual `build_dashboard` signature args via grep against the production builder.)
+(The `_build_remaining_trade_fields` + `_build_remaining_dm_record_fields` helpers return the kwargs needed by the `Trade` + `daily_management_records` insert paths beyond the ones explicitly set inline; at executing-plans phase the implementer audits the current dataclass shapes via `inspect.signature(Trade)` + the existing Phase 8 `insert_daily_management_record` signature + emits production-shape default kwargs. Per Codex R1.M#4 LOCK: NO trailing `...` ellipsis in production-shape `insert_*` calls; required fields enumerated explicitly so the test file is executable as written.)
 
 - [ ] **T-3.1 Step 12: Add ASCII discipline test for template + VM module**
 
@@ -2604,10 +2981,10 @@ Optionally split into 2 commits per §G.0: commit 1 = VM extension + dataclass (
 - Test: `tests/integration/test_l2_lock_source_grep.py` (NEW)
 
 **Acceptance criteria:**
-1. New parametric test asserts `git grep` of `schwabdev.Client.` under `swing/` at HEAD has the SAME OR FEWER occurrences than at commissioning baseline `bf7e071`.
-2. Test invokes `git grep` via `subprocess.run`; captures stdout; counts matches per file.
-3. Compares HEAD count to baseline count at `bf7e071` (Phase 14 commissioning HEAD per dispatch brief §1.1).
-4. Fails with operator-friendly assertion message citing the baseline SHA + commit count delta on regression.
+1. New parametric test asserts the SET of `(path, line_text)` matches for `schwabdev.Client.` under `swing/` at HEAD is a SUBSET of the baseline set at `bf7e071` (Codex R1.M#5 LOCK -- count-only comparison would silently pass if a new forbidden call site is added while an OLD occurrence is removed in the same commit).
+2. Test invokes `git grep -n` via `subprocess.run`; captures stdout; parses `(path, line_number, line_text)` tuples; normalizes line_number out (line numbers shift across commits; the LINE TEXT is the L2 LOCK signal).
+3. Compares HEAD set to baseline set at `bf7e071` (Phase 14 commissioning HEAD per dispatch brief §1.1).
+4. Fails with operator-friendly assertion message citing the baseline SHA + the NEW (path, line_text) tuples introduced at HEAD.
 5. Test is parametric over the `schwabdev.Client.` pattern (extensible to other L2 LOCK signal patterns).
 6. ASCII discipline applied.
 7. 1 parametric test (1 test function, parametrized over the L2 LOCK pattern set).
@@ -2650,11 +3027,19 @@ L2_LOCK_PATTERNS = [
 ]
 
 
-def _count_matches(rev: str, pattern: str) -> int:
-    """Run ``git grep -c <pattern> <rev> -- swing/`` and sum per-file
-    match counts."""
+def _grep_call_site_tuples(rev: str, pattern: str) -> set[tuple[str, str]]:
+    """Run ``git grep -n <pattern> <rev> -- swing/`` and return a set of
+    ``(path, normalized_line_text)`` tuples.
+
+    Per Codex R1.M#5 LOCK: count-only comparison can silently pass when
+    a new forbidden call site is added while an old occurrence is
+    removed in the same commit. SET-comparison fails on any NEW
+    (path, line_text) tuple introduced at HEAD vs baseline. Line
+    numbers are normalized out (they shift across commits; the LINE
+    TEXT is the L2 LOCK signal).
+    """
     result = subprocess.run(
-        ["git", "grep", "-c", pattern, rev, "--", "swing/"],
+        ["git", "grep", "-n", pattern, rev, "--", "swing/"],
         check=False, capture_output=True, text=True,
     )
     if result.returncode not in (0, 1):
@@ -2663,27 +3048,40 @@ def _count_matches(rev: str, pattern: str) -> int:
             f"git grep failed unexpectedly for {pattern!r} at {rev}: "
             f"stderr={result.stderr!r}"
         )
-    total = 0
+    tuples: set[tuple[str, str]] = set()
     for line in result.stdout.splitlines():
-        # Format: "<rev>:<path>:<count>" -- last colon-separated field
-        # is the count.
-        parts = line.rsplit(":", 1)
-        if len(parts) == 2 and parts[1].strip().isdigit():
-            total += int(parts[1])
-    return total
+        # Format: "<rev>:<path>:<line_number>:<line_text>" -- split on
+        # first 3 colons to preserve any colons inside the line_text.
+        parts = line.split(":", 3)
+        if len(parts) < 4:
+            continue
+        _rev, path, _lineno, line_text = parts
+        tuples.add((path, line_text.strip()))
+    return tuples
 
 
 @pytest.mark.parametrize("pattern", L2_LOCK_PATTERNS)
 def test_l2_lock_no_new_call_sites_vs_commissioning_baseline(pattern):
-    """HEAD's match count for the L2 LOCK pattern in ``swing/`` MUST NOT
-    exceed the commissioning baseline at ``bf7e071``."""
-    baseline_count = _count_matches(L2_LOCK_BASELINE_SHA, pattern)
-    head_count = _count_matches("HEAD", pattern)
-    assert head_count <= baseline_count, (
-        f"L2 LOCK violation: HEAD has {head_count} occurrences of "
-        f"{pattern!r} in swing/ vs commissioning baseline "
-        f"{baseline_count} at {L2_LOCK_BASELINE_SHA}. "
-        f"Sub-bundle 1 must NOT introduce new Schwab API call sites."
+    """HEAD's SET of (path, line_text) matches for the L2 LOCK pattern
+    in ``swing/`` MUST be a SUBSET of the commissioning baseline at
+    ``bf7e071``. New non-whitelisted matches FAIL the test.
+
+    Per Codex R1.M#5 LOCK: set-comparison (NOT count-comparison)
+    catches the swap-introduce-while-remove pattern that count-only
+    would miss.
+    """
+    baseline_tuples = _grep_call_site_tuples(L2_LOCK_BASELINE_SHA, pattern)
+    head_tuples = _grep_call_site_tuples("HEAD", pattern)
+    new_tuples = head_tuples - baseline_tuples
+    assert not new_tuples, (
+        f"L2 LOCK violation: HEAD introduces {len(new_tuples)} NEW "
+        f"(path, line_text) tuples matching {pattern!r} in swing/ "
+        f"that are NOT in the commissioning baseline at "
+        f"{L2_LOCK_BASELINE_SHA}.\n"
+        f"New tuples:\n" + "\n".join(
+            f"  {p}: {t}" for p, t in sorted(new_tuples)
+        )
+        + "\nSub-bundle 1 must NOT introduce new Schwab API call sites."
     )
 
 
@@ -2698,18 +3096,26 @@ def test_l2_lock_source_grep_module_ascii_only():
 Run: `pytest tests/integration/test_l2_lock_source_grep.py -v`
 Expected: PASS (no Sub-bundle 1 changes introduce new `schwabdev.Client.` references; the test is a regression check that GUARDS future work).
 
-- [ ] **T-4.1 Step 3: Run an artificial-failure rehearsal (manual; not committed)**
+- [ ] **T-4.1 Step 3: Run an artificial-failure rehearsal (manual; not committed; SAFE-REVERT)**
 
-To verify the assertion fires on regression, the executing-plans implementer (or operator) MAY temporarily add a sentinel `# schwabdev.Client.account_orders(maxResults=1)` line to a swing/ source file + re-run the test:
+To verify the assertion fires on regression, the executing-plans implementer (or operator) MAY temporarily add a sentinel `# schwabdev.Client.regression_sentinel` line to a swing/ source file + re-run the test. Per Codex R1.M#7 LOCK: use a sentinel-specific `sed -i` revert (NOT `git checkout --`) to avoid discarding unrelated worktree edits in a dirty tree:
 
 ```bash
+# Add sentinel:
 echo "# schwabdev.Client.regression_sentinel" >> swing/web/routes/dashboard.py
 pytest tests/integration/test_l2_lock_source_grep.py -v
-# Expected: FAIL with L2 LOCK violation message
-git checkout -- swing/web/routes/dashboard.py
+# Expected: FAIL with L2 LOCK violation message listing the new tuple.
+
+# Safe revert (Codex R1.M#7 LOCK -- targeted line removal; does NOT
+# discard unrelated edits the way `git checkout -- file` would):
+sed -i '/schwabdev\.Client\.regression_sentinel/d' \
+    swing/web/routes/dashboard.py
+# Re-run to confirm clean revert:
+pytest tests/integration/test_l2_lock_source_grep.py -v
+# Expected: PASS.
 ```
 
-DO NOT commit the sentinel.
+DO NOT commit the sentinel. ALTERNATIVE (cleaner): omit the rehearsal entirely; the set-based test's correctness is verifiable via a synthetic-source-tree pytest fixture if the executing-plans implementer wants programmatic coverage instead of operator rehearsal (banked V2 candidate; not in V1 scope).
 
 - [ ] **T-4.1 Step 4: Commit**
 
@@ -2916,19 +3322,55 @@ Per Sec 9.1 Q6 LOCK + spec §10.5: the merge-time operator-witnessed gate has 7 
 
 **Sequencing recommendation at operator-witnessed gate:** S1 → S2 → S3 → S4 → S5a → S5b → S6. S1 + S2 are unconditional pass requirements (automated); S3 + S4 + S5a/b are visual / behavioral gates; S6 is the integration check.
 
-**State-planting fixture instructions (per spec R3.m4 LOCK / forward-binding lesson #9):** the S5a / S5b split exists specifically because the PROVISIONAL vs LIVE state is operator-DB-condition-dependent; per-case planting instructions BIND so the gate is reproducible. SQL snippets at S5b:
+**State-planting fixture instructions (per spec R3.m4 LOCK / forward-binding lesson #9):** the S5a / S5b split exists specifically because the PROVISIONAL vs LIVE state is operator-DB-condition-dependent; per-case planting instructions BIND so the gate is reproducible. Per Codex R1.m#3 LOCK: prefer the repo helper over raw SQL for column-shape future-proofing; raw SQL alternative is shown for operators who prefer direct DB access.
 
-```sql
--- S5b LIVE-case planting (run BEFORE reloading /daily-management):
-INSERT INTO account_equity_snapshots (
-  snapshot_date, equity_dollars, source, recorded_at, ...
-) VALUES (
-  '<today's session date YYYY-MM-DD>', 15000.0, 'manual', datetime('now'), ...
-);
--- After the test, DELETE the row to return to S5a state.
+**Preferred path: repo helper from a Python REPL** (column-shape future-proof; no ellipsis required-field gaps):
+
+```python
+# S5b LIVE-case planting (run BEFORE reloading /daily-management):
+from datetime import datetime
+from swing.data.db import connect
+from swing.data.models import AccountEquitySnapshot
+from swing.data.repos.account_equity_snapshots import insert_snapshot
+
+conn = connect("~/swing-data/swing.db")
+try:
+    insert_snapshot(conn, AccountEquitySnapshot(
+        snapshot_id=None,
+        snapshot_date="<today's session date YYYY-MM-DD>",  # e.g., "2026-05-28"
+        equity_dollars=15000.0,
+        source="manual",
+        source_artifact_path="manual:gate-S5b",
+        recorded_at=datetime.now().isoformat(timespec="seconds"),
+        schwab_api_call_id=None,
+        notes="P14.N3 operator-witnessed gate S5b LIVE case",
+    ))
+    conn.commit()
+finally:
+    conn.close()
+# After the gate, DELETE the row to return to S5a state:
+#   sqlite3 ~/swing-data/swing.db \
+#     "DELETE FROM account_equity_snapshots WHERE notes = 'P14.N3 operator-witnessed gate S5b LIVE case'"
 ```
 
-(executing-plans phase audits the actual `account_equity_snapshots` table column set at write time; the operator-paired SQL snippet above is a starting template per Phase 9 Sub-bundle C precedent at `swing/data/repos/account_equity_snapshots.py:insert_snapshot`.)
+**Raw SQL alternative** (operator audits the current `account_equity_snapshots` column set via `.schema account_equity_snapshots` before invoking; required-field shape per migration `0016_account_equity_snapshots.sql` + Phase 9 Sub-bundle C ship):
+
+```sql
+-- S5b LIVE-case planting (operator-paired; verify column set first
+-- via .schema account_equity_snapshots).
+-- Concrete columns enumerated per Codex R1.m#3 LOCK; no ellipsis.
+INSERT INTO account_equity_snapshots (
+  snapshot_date, equity_dollars, source,
+  source_artifact_path, recorded_at, schwab_api_call_id, notes
+) VALUES (
+  '<today YYYY-MM-DD>', 15000.0, 'manual',
+  'manual:gate-S5b', datetime('now'), NULL,
+  'P14.N3 operator-witnessed gate S5b LIVE case'
+);
+-- After the gate, DELETE the row to return to S5a state:
+DELETE FROM account_equity_snapshots
+  WHERE notes = 'P14.N3 operator-witnessed gate S5b LIVE case';
+```
 
 **Pre-merge orchestrator-side checklist:**
 - [ ] S1 + S2 automated pass
@@ -3194,4 +3636,4 @@ Per §E.4 LOCK preservation verdict: ALL 23 LOCKs (Q1-Q7 + §1.1-§1.6 + spec §
 
 ---
 
-*End of Phase 14 Sub-bundle 1 data-wiring writing-plans plan. ~2200 lines; 3 data-wiring items (V2.G3 + V2.G4 + P14.N3); 8 per-task slices (T-1.1 + T-1.2 + T-1.3 OPTIONAL + T-2.1 + T-3.1 + T-4.1 + T-4.2); ~8-12 commits + ~34-36 fast tests projected; Schema v21 LOCKED; L2 LOCK preserved; ASCII discipline declared; Co-Authored-By footer suppression discipline cited. Forward-binding lessons from brainstorm return report §8 carried forward. Single Codex MCP chain at end per Sec 9.1 Q7 LOCK + gotcha #36 caveat; target convergence 2-4 rounds NO_NEW_CRITICAL_MAJOR. Plan ready for adversarial review.*
+*End of Phase 14 Sub-bundle 1 data-wiring writing-plans plan. ~3200 lines (+28% over upper ~2500 target; content-mandated per §N.5); 3 data-wiring items (V2.G3 + V2.G4 + P14.N3); 8 per-task slices (T-1.1 + T-1.2 + T-1.3 OPTIONAL + T-2.1 + T-3.1 + T-4.1 + T-4.2); ~8-12 commits + ~34-36 fast tests projected; Schema v21 LOCKED; L2 LOCK preserved; ASCII discipline declared; Co-Authored-By footer suppression discipline cited. Forward-binding lessons from brainstorm return report §8 carried forward. Single Codex MCP chain at end per Sec 9.1 Q7 LOCK + gotcha #36 caveat; target convergence 2-4 rounds NO_NEW_CRITICAL_MAJOR. Plan ready for adversarial review.*
