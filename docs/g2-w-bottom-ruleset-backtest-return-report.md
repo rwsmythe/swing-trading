@@ -5,13 +5,17 @@
 **Findings doc:** `docs/g2-w-bottom-ruleset-backtest-findings-20260527.md`
 **Smoke artifact:** `exports/research/g2-w-bottom-ruleset-backtest-20260527T213434Z/`
 
+**Substrate SHAs (gotcha #35 + reproducibility):**
+- R2-A canonical N=65: `758675b897affb4cf779259fdfe41398a3305b9480e8e3e510a358d83c4a35e7` (window 21d)
+- D2 EXPANDED N=42: `9075ac66d70401a19f11c06b681d859d3a5fbcd16e373e282c4db991bd6cc40c` (window 31d; Brief Amendment 1; brief stated N=71 stale)
+
 ---
 
 ## Sec 1 Dispatch outcome
 
 **SHIPPED end-to-end.** 9-ruleset x 2-substrate G2 W-bottom-derived ruleset backtest complete; 9-metric scorecard emitted with descriptive narrative; gotcha #33 banned-verdict-terms LOCK preserved throughout; gotcha #35 prior-arc-anchor citation discipline FIRST CANONICAL APPLICATION shipped.
 
-**Joint hypothesis (H_joint) NOT supported at the tested substrate scale.** All 9 rulesets show negative expectancy_R on both R2-A (N=65) and D2 EXPANDED (N=42) substrates. G_bulkowski's tight-trough_2 stop achieves a substantive avg_loss_R reduction (1.55R -> 0.62R on R2-A) but does not flip net expectancy positive at this substrate size. The 9-metric scorecard surfaces SUBSTANTIVE diagnostic substance (which stop convention reduces per-loss magnitude; volume gating selectivity-vs-conversion trade-off; D2 substrate-freshness sensitivity).
+**Joint hypothesis (H_joint) NOT supported at the tested substrate scale.** All 9 rulesets show expectancy_R below zero on both R2-A (N=65) and D2 EXPANDED (N=42) substrates. G_bulkowski's tight-trough_2 stop achieves a substantive avg_loss_R reduction (1.55R -> 0.62R on R2-A) but does not produce expectancy_R > 0 at this substrate size. The 9-metric scorecard surfaces SUBSTANTIVE diagnostic substance (which stop convention reduces per-loss magnitude; volume gating selectivity-vs-conversion trade-off; D2 substrate-freshness sensitivity).
 
 ---
 
@@ -92,7 +96,7 @@ Cumulative: 3 CRITICAL + 13 MAJOR + 12 MINOR. ALL CRITICAL + MAJOR resolved or a
 - R1.M2: D2 EXPANDED N=71 vs actual N=42 substrate drift (gotcha #34 trigger; Brief Amendment 1 banked)
 - R2.M2: DeferredExit exit_date/days_held inconsistency (Expansion #13 cumulative regression cascade)
 - R3.M1: DeferredExit at data tail marked 'closed' contaminates performance metrics (status semantic correction)
-- R3.M2: peak_R can be underreported on next-bar-open gap-up exits (negative drawdown_to_exit_R prevention)
+- R3.M2: peak_R can be underreported on next-bar-open gap-up exits (below-zero drawdown_to_exit_R prevention)
 - R4.MAJOR: Brief Amendment 1 not propagated to locked brief doc (gotcha #34 sub-refinement direct evidence)
 
 **Codex DID NOT catch (operator might still discover at smoke-time review):**
@@ -186,7 +190,9 @@ NOT pre-empted by existing expansions (genuinely novel defect classes for V2 ban
 - **R3.M1 (DeferredExit status='closed' at data tail contaminates metrics):** the third-order regression after the M2 fix. **EXPANSION #13 reinforcement: post-fix audit must enumerate semantic invariants (e.g., status field's relationship to exit-execution-feasibility); each new action type carries an exit-feasibility-at-data-tail discipline.**
 - **R4.MAJOR (Brief Amendments not propagated to locked brief):** the implementer banked amendments in commit messages + docstrings + tests but NOT in the brief doc itself. **NEW EXPANSION CANDIDATE #21 banked: when Codex surfaces a brief-amendment-grade finding, the AMENDMENT must propagate to the brief doc itself in the SAME fix commit -- not as a separate doc-update follow-up.**
 
-**44th validation outcome:** NOTABLE. 19 cumulative expansions caught approximately 60-70% of surfaced defects; the remaining 30-40% are second/third-order regression cascades + brief-vs-implementation methodology divergences. 2 NEW expansion candidates banked (Expansion #20: ruleset-formula reference-frame discipline; Expansion #21: Brief Amendment immediate-propagation discipline).
+**44th validation outcome:** NOTABLE. The 19 cumulative expansions caught a substantial portion of surfaced defects (qualitative; not a precise measured ratio); the unfilled gap was second/third-order regression cascades + brief-vs-implementation methodology divergences. **2 NEW expansion sub-refinement candidates banked** (NOT full new expansion numbers per Codex R6 MINOR #2 -- both are sub-refinements of existing #2 / #34):
+- **Expansion #2 sub-refinement candidate (G2 banking):** ruleset-formula reference-frame discipline -- when adapting existing canonical formulas, verify the BRIEF's reference frame (operator-relative vs pattern-relative) matches the implementation's reference frame. Pattern-matching against existing-harness conventions can silently corrupt brief-LOCKed methodology.
+- **Gotcha #34 sub-refinement candidate (G2 banking):** Brief Amendment immediate-propagation discipline -- when Codex surfaces a brief-amendment-grade finding, the AMENDMENT must propagate to the brief doc itself in the SAME fix commit, not as a separate doc-update follow-up.
 
 ---
 

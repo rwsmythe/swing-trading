@@ -6,21 +6,25 @@
 **Implementer branch:** `applied-research-g2-w-bottom-ruleset-backtest`
 **Codex MCP chain:** pre-smoke chain CONVERGED at Round 5 NO_NEW_CRITICAL_MAJOR (3 CRITICAL + 13 MAJOR + 12 MINOR cumulative; ALL CRITICAL + MAJOR resolved or accepted-with-rationale). Post-smoke chain runs in Slice 7.
 
+**Substrate SHAs (gotcha #35 prior-arc-anchor + reproducibility):**
+- R2-A canonical N=65: `758675b897affb4cf779259fdfe41398a3305b9480e8e3e510a358d83c4a35e7` (consumed verbatim; pre-filtered by R2-A harness; substrate_window_days=21)
+- D2 EXPANDED N=42: `9075ac66d70401a19f11c06b681d859d3a5fbcd16e373e282c4db991bd6cc40c` (raw N=172 -> filter composite>=0.5 + recency<=365d + adjacency merge yields N=42; substrate_window_days=31; Brief Amendment 1 -- brief stated N=71 stale)
+
 ---
 
 ## Sec 1 Headline finding (descriptive)
 
-Across BOTH substrates (R2-A N=65 + D2 EXPANDED N=42) and ALL 9 rulesets (6 existing A-F + 3 new G/H/I W-bottom-derived), every (ruleset, substrate) cell shows negative expectancy_R. The joint hypothesis under test -- that the V2-expanded population combined with a W-bottom-literature ruleset would produce net-positive portfolio expectancy -- is NOT supported by this smoke run.
+Across BOTH substrates (R2-A N=65 + D2 EXPANDED N=42) and ALL 9 rulesets (6 existing A-F + 3 new G/H/I W-bottom-derived), every (ruleset, substrate) cell shows expectancy_R below zero (range -3.13R to -0.146R; full per-cell values at Sec 2). The joint hypothesis under test -- that the V2-expanded population combined with a W-bottom-literature ruleset would produce expectancy_R > 0 AND estimated_dollar_per_period > 0 -- is NOT supported by this smoke run.
 
 The substantive contributions:
-1. **The G_bulkowski tight-stop hypothesis is partially validated on the avg_loss_R lever.** G's avg_loss_R is meaningfully lower than E's on both substrates (R2-A: G 0.618R vs E 1.550R; D2: G 0.560R vs E 1.576R). The tighter trough_2-relative stop achieves what brief Sec 1.1 + Sec 6(g) anticipated. But this gain is offset by sharply lower win-rate (G: 2%/0% vs E: 23%/28%) and lower trigger conversion (G: 0.85/0.69 vs E: 0.95/0.90), so net expectancy stays negative.
+1. **The G_bulkowski tight-stop hypothesis is partially validated on the avg_loss_R lever.** G's avg_loss_R is meaningfully lower than E's on both substrates (R2-A: G 0.618R vs E 1.550R; D2: G 0.560R vs E 1.576R). The tighter trough_2-relative stop achieves what brief Sec 1.1 + Sec 6(g) anticipated. But this gain is offset by sharply lower win-rate (G: 2%/0% vs E: 23%/28%) and lower trigger conversion (G: 0.85/0.69 vs E: 0.95/0.90), so net expectancy_R remains below zero.
 2. **The H_oneil 8% entry-relative stop + SMA50 hard-exit combination produces the LARGEST per-loss magnitudes of all 9 rulesets** (R2-A avg_loss_R: 3.29R; D2: 2.14R). H also has the lowest trigger conversion (R2-A: 0.38; D2: 0.29). H is not competitive on either lever.
 3. **The I_edwards_magee lower-trough stop + 1.5x rally-volume gating produces middling magnitudes** (R2-A avg_loss_R: 0.557R; D2: 0.623R; closer to G's tight-stop profile than to E's wider profile). I's trigger conversion is the second-lowest (R2-A: 0.52; D2: 0.31).
 4. **Volume gating reduces trigger conversion across G/H/I as intended.** G: 0.85/0.69; H: 0.38/0.29; I: 0.52/0.31 (vs A-F's 0.90-0.95 conversion with no volume gate). This is the structural differentiator working as designed; the brief's 1.3x/1.4x/1.5x thresholds successfully filter out weaker breakouts. Whether the filtration is COMPENSATED by better post-entry survival is the substantive question; this smoke says it is not at the substrate sizes available.
-5. **The R2-A NEGATIVE baseline (E -1.086R) is PRESERVED by G + I, MADE WORSE by H, and matched within +/-0.5R by all other rulesets.** No G/H/I variant flips R2-A's NEGATIVE expectancy to positive in this run.
-6. **D2 EXPANDED N=42 substrate-shift (Brief Amendment 1) eliminates E's prior D2 Amendment 5 N=71 +1.220R success.** On the actual SHA-locked D2 fixture, E yields -0.800R (DIFFERS from D2 Amendment 5's +1.220R; explanation: substrate has drifted; the high-composite recent-W primaries that supported E's positive expectancy in Amendment 5 have shifted out of the 365d recency window). This is a substantive methodology finding in itself: D2 Amendment 5's verdict is sensitive to substrate freshness; re-runs against current data do not reproduce the prior positive outcome.
+5. **The R2-A E baseline of -1.086R expectancy is PRESERVED in sign by G + I, EXCEEDED (more below zero) by H, and matched within +/-0.5R by all other rulesets.** No G/H/I variant produces expectancy_R > 0 on R2-A in this run.
+6. **D2 EXPANDED N=42 substrate-shift (Brief Amendment 1) does NOT reproduce E's prior D2 Amendment 5 N=71 expectancy of +1.220R.** On the actual SHA-locked D2 fixture (SHA `9075ac66...`), E yields expectancy_R = -0.800R (DIFFERS from D2 Amendment 5's +1.220R mean R closed = sum R closed / N_closed where N_closed=5 winners; explanation: substrate has drifted; the high-composite recent-W primaries that supported E's above-zero expectancy in Amendment 5 have shifted out of the 365d recency window). This is a substantive methodology finding in itself: D2 Amendment 5's prior-arc outcome is sensitive to substrate freshness; re-runs against current data do not reproduce the prior above-zero expectancy.
 
-The smoke is best characterized as: **the joint hypothesis is not supported at the available substrate scale, but the per-component analyses surface diagnostic substance** about (a) which stop-placement convention reduces per-loss magnitude (G's tight-trough-2 wins; H's entry-relative-8% loses), (b) the volume-gating selectivity vs trigger-conversion trade-off (working as designed; not compensated by win-rate at this scale), and (c) the D2 Amendment 5 substrate-freshness sensitivity (E's prior positive verdict is substrate-bound, not generalizing).
+The smoke is best characterized as: **the joint hypothesis is not supported at the available substrate scale, but the per-component analyses surface diagnostic substance** about (a) which stop-placement convention reduces per-loss magnitude (G's tight-trough-2 wins; H's entry-relative-8% loses), (b) the volume-gating selectivity vs trigger-conversion trade-off (working as designed; not compensated by win-rate at this scale), and (c) the D2 Amendment 5 substrate-freshness sensitivity (E's prior above-zero expectancy is substrate-bound, not generalizing across cohort regenerations).
 
 ---
 
@@ -68,12 +72,12 @@ The cleanest 2x2 cut on R2-A: **(volume gating: yes/no) x (stop tightness: tight
 | **Volume-gated (G/H/I)** | H avg_loss 3.29R | G avg_loss 0.62R; I avg_loss 0.56R |
 
 Observations:
-- The TIGHT-STOP-WITH-VOLUME-GATING cell (G + I) achieves the lowest avg_loss_R among the volume-gated set, but trades less often (G: 55/65 triggered vs E: 62/65; I: 34/65). The reduced trade count + still-near-zero win-rate gives negative net expectancy.
+- The TIGHT-STOP-WITH-VOLUME-GATING cell (G + I) achieves the lowest avg_loss_R among the volume-gated set, but trades less often (G: 55/65 triggered vs E: 62/65; I: 34/65). The reduced trade count + still-near-zero win-rate gives net expectancy_R below zero.
 - The WIDE-STOP-WITH-VOLUME-GATING cell (H) is dominated: highest avg_loss_R magnitude AND lowest trigger conversion.
 - The TIGHT-STOP-NO-VOLUME-GATING cell (A/C) has the same avg_loss_R (0.234R) but materially HIGHER trigger conversion (62 vs G's 55) -- meaning A/C trades more bad-breakout candidates that the volume gate would have filtered.
-- E's wider stop (max(trough_2*0.99, entry*0.92)) plus higher win-rate (0.225) is the only A-F profile with non-zero win-rate at the data tail; its avg_win_R 0.512R is competitive. But its avg_loss_R 1.55R is the largest of the no-gate set.
+- E's wider stop (max(trough_2*0.99, entry*0.92)) plus higher win-rate (0.225 -- the R2-A "22.5% win-rate" anchor cited in R2-A findings doc; formula: N(R > 0 closed) / N_closed = 9 winners / 40 closed) is the only A-F profile with non-zero win-rate at the data tail; its avg_win_R 0.512R (formula: mean(R) over closed-and-profitable trades) is competitive. But its avg_loss_R 1.55R (formula: abs(mean(R)) over closed-and-unprofitable trades) is the largest of the no-gate set.
 
-The DESCRIPTIVE takeaway: tight stop reduces per-loss magnitude as expected; volume gating reduces trigger count as designed; their combination (G/I) produces a smaller-but-better-disciplined trade book but doesn't reach positive expectancy on this substrate.
+The DESCRIPTIVE takeaway: tight stop reduces per-loss magnitude as expected; volume gating reduces trigger count as designed; their combination (G/I) produces a smaller-but-better-disciplined trade book but does not reach expectancy_R > 0 on this substrate.
 
 ---
 
@@ -89,21 +93,21 @@ Per gotcha #33 third canonical application LOCK: each (ruleset, substrate) cell 
 | B | -1.316 | n/a (0 closed) | n/a | n/a |
 | C | -0.234 | -0.274 | yes (both NEG) | 0.040R wider |
 | D | -1.316 | n/a (0 closed) | n/a | n/a |
-| E | -1.086 | -0.800 | yes (both NEG) | 0.286R less negative on D2 |
-| F | -0.154 | -0.146 | yes (both NEG) | 0.008R less negative on D2 |
-| G | -0.604 | -0.560 | yes (both NEG) | 0.044R less negative on D2 |
-| H | -3.134 | -2.143 | yes (both NEG) | 0.991R less negative on D2 |
-| I | -0.491 | -0.564 | yes (both NEG) | 0.073R more negative on D2 |
+| E | -1.086 | -0.800 | yes (both NEG) | 0.286R closer-to-zero on D2 |
+| F | -0.154 | -0.146 | yes (both NEG) | 0.008R closer-to-zero on D2 |
+| G | -0.604 | -0.560 | yes (both NEG) | 0.044R closer-to-zero on D2 |
+| H | -3.134 | -2.143 | yes (both NEG) | 0.991R closer-to-zero on D2 |
+| I | -0.491 | -0.564 | yes (both NEG) | 0.073R further-below-zero on D2 |
 
-All rulesets with closed trades on both substrates show sign-consistent negative expectancy. The D2 substrate is generally less-negative than R2-A across most rulesets (8 of 9 less-negative-or-equal on D2; only I is slightly more negative). This is consistent with D2 being a bias-free S&P 500 derivation while R2-A is V2-binding-variable-derived; the V2 selection mechanism appears to enrich for tickers with somewhat more difficult subsequent W-pattern outcomes.
+All rulesets with closed trades on both substrates show sign-consistent below-zero expectancy_R. The D2 substrate is generally closer-to-zero than R2-A across most rulesets (8 of 9 closer-to-zero-or-equal on D2; only I is slightly further-below-zero on D2). This is consistent with D2 being a bias-free S&P 500 derivation while R2-A is V2-binding-variable-derived; the V2 selection mechanism appears to enrich for tickers with somewhat more difficult subsequent W-pattern outcomes.
 
 ### Sec 4.2 D2 Amendment 5 substrate-shift consequence (Brief Amendment 1)
 
-D2 Amendment 5 reported E on D2 EXPANDED N=71 at +1.220R mean R closed (5 of 5 winners; PARTIAL POSITIVE verdict at that time). G2's actual D2 EXPANDED at N=42 (Brief Amendment 1: SHA-locked fixture + brief-locked filter yields N=42) shows E at -0.800R mean R closed (8 winners of 29; significantly different outcome).
+D2 Amendment 5 reported E on D2 EXPANDED N=71 at +1.220R mean R closed (formula: sum(R per closed trade) / N_closed; 5 of 5 winners; the verdict label cited by Amendment 5 at the time is preserved as historical-context citation per gotcha #35 prior-arc-anchor discipline). G2's actual D2 EXPANDED at N=42 (Brief Amendment 1: SHA-locked fixture SHA `9075ac66...` + brief-locked filter yields N=42) shows E at expectancy_R = -0.800R (8 winners of 29; significantly different outcome).
 
 The implication: D2 Amendment 5's verdict was SUBSTRATE-FRESHNESS-BOUND. The cohort fixture has drifted (max_observed_asof_date timestamps updated by an intervening regenerate-cohort pass), shifting some verdicts out of the 365d recency window. The 29 verdicts now in the substrate that closed for E are NOT the same 5 that drove the +1.220R Amendment 5 mean.
 
-This is a substantive methodology finding: positive backtest verdicts on tight-window substrates may not REPLICATE under substrate refresh. Forward-binding lesson for any future research arc citing prior-arc verdicts: cite the SHA + N + window of the PRIOR substrate; do NOT assume current re-run will reproduce.
+This is a substantive methodology finding: above-zero backtest verdicts on tight-window substrates may not REPLICATE under substrate refresh. Forward-binding lesson for any future research arc citing prior-arc verdicts: cite the SHA + N + window of the PRIOR substrate; do NOT assume current re-run will reproduce.
 
 ---
 
@@ -138,7 +142,7 @@ The D2 cohort fixture has drifted since D2 Amendment 5 was originally run. SHA-l
 - **#26** OHLCV archive bar-content TEMPORAL mutation: G2 reads OHLCV from `~/swing-data/prices-cache/` which IS subject to archive mutation between R2-A pattern persistence time and G2 backtest time. Per the dispatch brief, characterized as L6-style limitation: the smoke yields the AT-G2-DISPATCH-TIME outcomes, which may differ slightly from what R2-A would have observed at original cohort extraction. The scorecard's `n_closed` and `n_triggered` counts ARE accurate for the AT-G2-DISPATCH-TIME archive content; they may not reproduce exactly on a future re-run.
 - **#28 + #29** OHLCV cache discipline: no exemplar tickers in this harness (G2 is rule-based, not template-matching); both gotchas N/A.
 - **#32** ASCII discipline LOCKED across all NEW G2 files (test_locks.py test_ascii_discipline_g2_python_files_encode_clean parametrized over the full G2 module + test set) AND across all 5 emitted artifacts (verified post-smoke via encode('ascii')).
-- **#33** banned-verdict-terms LOCK preserved in scorecard + narrative_synthesis.md + summary.md output (no PARTIAL POSITIVE / NEGATIVE / POSITIVE; descriptive language only).
+- **#33** banned-verdict-terms LOCK preserved in scorecard + narrative_synthesis.md + summary.md output (verified by test_gotcha_33_summary_markdown_emitter_does_not_contain_banned_verdict_terms + manual post-smoke scan; live artifacts contain no banned verdict labels). This findings doc uses metric-only descriptors (expectancy_R below zero / above zero / `+1.220R` / `-1.086R` etc.) for the G2 current-run narrative; banned verdict labels appear ONLY in HISTORICAL-CONTEXT citation of prior-arc verdicts (D2 Amendment 5; brief's H_joint statement quote at Sec 6) per gotcha #35 prior-arc-anchor citation discipline.
 - **#34** brief-prescription cross-table verification: Brief Amendment 1 banked (N=42 vs N=71 stale snapshot); cross-checked SHA-locked fixture + brief-locked filter against brief's stated N.
 - **#35** prior-arc-anchor citation discipline FIRST canonical application: the narrative_synthesis emitter is anchor-free (verified by test_gotcha_35_narrative_synthesis_emitter_does_not_quote_prior_arc_anchors); this findings doc cites prior-arc anchors WITH their metric definitions (e.g., "D2 Amendment 5 reported E on D2 EXPANDED N=71 at +1.220R mean R closed (5 of 5 winners)" cites both substrate size + metric formula). R2-A's "22.5% win-rate" cited at Sec 1 + Sec 3 with anchor to the avg_loss_R lever it failed at.
 
@@ -146,7 +150,9 @@ The D2 cohort fixture has drifted since D2 Amendment 5 was originally run. SHA-l
 
 ## Sec 6 Joint hypothesis H_joint assessment
 
-**H_joint statement (brief Sec 1.1):** A W-bottom-derived ruleset applied to a V2-binding-variable-expanded population produces NET-POSITIVE portfolio performance (positive expectancy in R AND positive estimated $ per period at canonical sizing), in a way that the existing A-F rulesets do not on the same population.
+**H_joint statement (verbatim quote from brief Sec 1.1; banned-verdict-term occurrences below are part of the brief's quoted hypothesis statement, not G2's current-run interpretation):**
+
+> A W-bottom-derived ruleset applied to a V2-binding-variable-expanded population produces NET-POSITIVE portfolio performance (positive expectancy in R AND positive estimated $ per period at canonical sizing), in a way that the existing A-F rulesets do not on the same population.
 
 **G2 smoke assessment:** the smoke does NOT support H_joint at the available substrate scale.
 
@@ -154,17 +160,17 @@ The two preconditions hold:
 - Population expansion is real (V2 sensitivity SUMMARY TABLE +75/+16/+11/+5/+1 candidates per universe scan verified at multiple prior dispatches);
 - Per-ticker substrate IS W-pattern-productive (V2-mechanic Turn H D_filt 7.2x-70x baseline for per-ticker W-pattern productivity).
 
-The remaining question was whether the right ruleset choice could convert the population expansion into expectancy-positive trade outcomes. At G2's tested rulesets + substrates:
+The remaining question was whether the right ruleset choice could convert the population expansion into expectancy_R > 0 trade outcomes. At G2's tested rulesets + substrates:
 - G_bulkowski's tight-trough_2 stop reduces avg_loss_R by ~60% vs E (1.55R -> 0.62R on R2-A) -- a substantive improvement;
 - BUT G's volume gate reduces trigger conversion by ~11% (62 -> 55 trades on R2-A);
 - AND G's win-rate stays near zero (2% on R2-A);
-- Net: G's expectancy_R = -0.604R (still negative, less-negative than E's -1.086R but not positive).
+- Net: G's expectancy_R = -0.604R (still below zero, closer-to-zero than E's -1.086R but does not cross zero).
 
-H_joint requires expectancy_R > 0. G achieves a partial directional improvement (less-negative than E) but does not cross zero. H and I do not improve over E in expectancy.
+H_joint requires expectancy_R > 0. G achieves a partial directional improvement (closer-to-zero than E) but does not cross zero. H and I do not improve over E in expectancy.
 
-**Interpretation:** the V2-binding-variable-derived substrates produce W-pattern candidates that ARE structurally tradeable (per-ticker productivity confirmed), but the post-trigger forward-bar outcomes are insufficient to support positive expectancy under any of the 3 tested W-bottom-literature rulesets at these substrate scales.
+**Interpretation:** the V2-binding-variable-derived substrates produce W-pattern candidates that ARE structurally tradeable (per-ticker productivity confirmed via V2-mechanic Turn H D_filt = F / T where F=W-primary count per ticker and T=ticker count in V2 substrate; 7.2x-70x larger than baseline 0.138), but the post-trigger forward-bar outcomes are insufficient to support expectancy_R > 0 under any of the 3 tested W-bottom-literature rulesets at these substrate scales.
 
-**Substrate-scale caveat:** R2-A N=65 + D2 EXPANDED N=42 are small substrates. Bootstrap confidence intervals would be wide; a single ruleset that turned 5-10 more trades into winners could shift the verdict. The HEADLINE finding ("H_joint NOT supported") is therefore SUBSTRATE-SIZE-BOUND. Operator-paired triage at the orchestrator layer may decide to (a) accept the negative-direction signal as informative, OR (b) re-run on a larger / fresher substrate before drawing scope-broader conclusions.
+**Substrate-scale caveat:** R2-A N=65 + D2 EXPANDED N=42 are small substrates. Bootstrap confidence intervals would be wide; a single ruleset that turned 5-10 more trades into winners could shift the per-cell outcomes materially. The HEADLINE finding ("H_joint NOT supported") is therefore SUBSTRATE-SIZE-BOUND. Operator-paired triage at the orchestrator layer may decide to (a) accept the below-zero-expectancy direction signal as informative, OR (b) re-run on a larger / fresher substrate before drawing scope-broader conclusions.
 
 ---
 
@@ -213,4 +219,4 @@ Post-smoke Codex chain #2 runs in Slice 7; this findings doc + return report ent
 
 ---
 
-*End of G2 W-bottom-ruleset backtest findings doc. The 9-metric scorecard surfaces a substantive directional signal (G's tight-stop hypothesis partially validated on avg_loss_R lever; H's combination is dominated; volume gating works as designed but doesn't reach positive expectancy at this substrate scale; D2 Amendment 5 substrate-freshness sensitivity is itself a methodology finding) without invoking any banned categorical verdict labels per gotcha #33 third canonical application LOCK. Operator-paired interpretation at the orchestrator layer determines next-arc disposition.*
+*End of G2 W-bottom-ruleset backtest findings doc. The 9-metric scorecard surfaces a substantive directional signal (G's tight-stop hypothesis partially validated on avg_loss_R lever; H's combination is dominated on both stop magnitude + trigger conversion; volume gating works as designed but does not reach expectancy_R > 0 at this substrate scale; D2 Amendment 5 substrate-freshness sensitivity is itself a methodology finding) without invoking any banned categorical verdict labels for G2 current-run outcomes per gotcha #33 third canonical application LOCK. Historical-context citations of prior-arc verdicts (D2 Amendment 5 "PARTIAL POSITIVE"; brief H_joint statement quote) preserved per gotcha #35 prior-arc-anchor citation discipline. Operator-paired interpretation at the orchestrator layer determines next-arc disposition.*
