@@ -16,7 +16,7 @@
 
 1. **V2.G3 — backfill Sector/Industry for open trades that lost them due to JOIN gap or pre-migration-0012 legacy default.** Idempotent CLI subcommand `swing diagnose backfill-trades-sector-industry`; strict all-or-nothing semantic (both `sector` AND `industry` empty as precondition; both replacements must be non-empty for the row to UPDATE); preserves operator-acknowledged DHA/DHC legacy carve-out via `SKIP_NO_CANDIDATES_ROW` action label (no hardcoded ticker list); restore-SQL artifact at deterministic path under `exports/diagnostics/` for reversibility.
 2. **V2.G4 — fix `/dashboard/weather-chart/refresh` to actually fetch SPY bars.** One-line callsite fix (`get_or_fetch([benchmark])` → `get_or_fetch(ticker=benchmark)`); remove dead dict-style consumption; add module-level `import logging; log = logging.getLogger(__name__)`; narrow exception catch from bare `except Exception` to `except ValueError` only (programming errors propagate to FastAPI default 500 handler — the broad-catch was the root-cause masking pattern).
-3. **P14.N3 — clarify the PROVISIONAL badge on `/daily-management` Capital %.** Extend `DailyManagementTileVM` with 3 new fields per spec §6.2 Fix A; build the VM via `swing/metrics/maturity.py:197-219` denominator-stamping pattern (LIVE when `account_equity_snapshots` covers the row's `data_asof_session`; PROVISIONAL otherwise); preserve the existing PROPORTION-unit contract (template multiplies by 100.0); rewrite the template to (a) conditionally emit the badge only when `is_provisional=True`; (b) replace stale "V2 will resolve to live account equity (Phase 9 risk_policy versioning)" tooltip text with current clear-condition language (mentioning `account_equity_snapshots` + `swing schwab fetch --snapshot`); (c) add a visible `(?)` inline affordance so operators can diagnose the flag without hovering.
+3. **P14.N3 — clarify the PROVISIONAL badge on `/daily-management` Capital %.** Extend `DailyManagementTileVM` with 4 new fields per spec §6.2 Fix A + Codex R2.M#1+M#2 LOCK extension; build the VM via `swing/metrics/maturity.py:197-219` denominator-stamping pattern (LIVE when `account_equity_snapshots` covers the row's `data_asof_session`; PROVISIONAL otherwise; NoActivePolicyError branch surfaces a distinct policy-missing badge per spec §6.4 second bullet); preserve the existing PROPORTION-unit contract (template multiplies by 100.0); rewrite the template to (a) conditionally emit the badge only when `is_provisional=True`; (b) replace stale "V2 will resolve to live account equity (Phase 9 risk_policy versioning)" tooltip text with current clear-condition language (mentioning `account_equity_snapshots` + `swing schwab fetch --snapshot`); (c) add a visible `(?)` inline affordance so operators can diagnose the flag without hovering.
 
 ### §A.2 Non-goals (out of scope; see §D for full list)
 
@@ -104,7 +104,7 @@ The orchestrator brief §5 watch item #1 + brainstorm return report §8 forward-
 |---|---|---|---|---|
 | `tests/web/test_routes/test_dashboard_chart_integration.py` | MODIFIED | V2.G4 | Add tests: (a) `get_or_fetch` called with `ticker=` kwarg (signature regression); (b) ValueError-degraded path emits `log.warning` via `caplog` + returns 409; (c) TypeError / AttributeError / RuntimeError / KeyError propagate as 500 (NOT 409); (d) happy path returns 204 + `HX-Redirect: /dashboard` with chart_render row written | ~6-8 tests (4 propagation cases per spec §5.2 split into individual parametric / discriminating cases) |
 | `tests/web/test_daily_management_tile.py` | MODIFIED | P14.N3 | Add tests: (a) PROVISIONAL badge emitted when `is_provisional=True`; (b) PROVISIONAL badge NOT emitted when `is_provisional=False` (LIVE); (c) tooltip text NEW wording present + stale "Phase 9 risk_policy versioning" text REMOVED; (d) `(?)` inline affordance HTML structure present; (e) Capital % value renders `position_capital_utilization_pct_effective` (NOT stale `position_capital_utilization_pct`); (f) PROPORTION unit preserved (1500% regression test); (g) ASCII discipline | ~7-9 tests |
-| `tests/web/view_models/test_dashboard_view_model.py` OR equivalent dashboard-VM test module | MODIFIED | P14.N3 | Add tests for the 3 NEW VM fields: (a) `position_capital_denominator_dollars_resolved` populated via `resolve_live_capital_denominator_dollars`; (b) `position_capital_utilization_is_provisional` True when no `account_equity_snapshots` row covers `data_asof_session`, False when one does; (c) `position_capital_utilization_pct_effective` reuses snapshot's stored when denominators match via `math.isclose(..., rel_tol=1e-9)`, recomputes via `compute_position_capital_utilization` otherwise; (d) ValueError-guarded fallback for malformed `data_asof_session` | ~4-6 tests |
+| `tests/web/view_models/test_dashboard_view_model.py` OR equivalent dashboard-VM test module | MODIFIED | P14.N3 | Add tests for the 4 NEW VM fields: (a) `position_capital_denominator_dollars_resolved` populated via `resolve_live_capital_denominator_dollars`; (b) `position_capital_utilization_is_provisional` True when no `account_equity_snapshots` row covers `data_asof_session`, False when one does; (c) `position_capital_utilization_pct_effective` reuses snapshot's stored when denominators match via `math.isclose(..., rel_tol=1e-9)`, recomputes via `compute_position_capital_utilization` otherwise; (d) ValueError-guarded fallback for malformed `data_asof_session`; (e) `position_capital_policy_missing` True when NoActivePolicyError fires (Codex R2.M#1+M#2 + R1.M#1 LOCK) | ~5-6 tests |
 
 ### §B.6 Documentation deliverables
 
@@ -265,7 +265,7 @@ tiles.append(DailyManagementTileVM(
     {%- if tile.position_capital_policy_missing -%}
         <span class="badge badge-provisional" data-marker="PROVISIONAL"
               data-cause="policy_missing"
-              title="No active risk_policy row -- denominator cannot be resolved. Operator-actionable: run `swing db-migrate` to apply migration 0017's seed OR `swing config policy import-from-toml --field capital_floor_constant_dollars` to ratify the active policy.">PROVISIONAL</span>
+              title="No active risk_policy row -- denominator cannot be resolved. Schema-corrupted state (zero rows have is_active=1). Recovery requires direct DB intervention: SELECT a historical policy_id from risk_policy, then UPDATE risk_policy SET is_active=1, effective_to=NULL WHERE policy_id=<id>. The standard `swing config policy ...` CLI cannot recover this state because supersede_active_policy raises when no active row exists (swing/trades/risk_policy.py:139-142). Re-running `swing db-migrate` does NOT re-seed an already-v21 DB.">PROVISIONAL</span>
         <button type="button" class="muted help-affordance"
                 data-help="provisional-capital-policy-missing"
                 aria-describedby="provisional-capital-help-1"
@@ -298,7 +298,7 @@ tiles.append(DailyManagementTileVM(
 
 (ASCII-only per gotcha #32; em-dash placeholder rendered as `--` per spec §6.2 + §15.2 declaration.)
 
-**Server-stamping discipline (forward-binding lesson #13):** All 3 NEW VM fields are SERVER-COMPUTED at build time from authoritative inputs (`account_equity_snapshots` row + active risk_policy + snapshot's stored denominator). NO hidden form input. NO operator-supplied state. Re-renders consistently across page loads with no operator interaction surface. Honors Phase 8 R2.M2+R3.M2+R4.M2 server-stamping family discipline.
+**Server-stamping discipline (forward-binding lesson #13):** All 4 NEW VM fields are SERVER-COMPUTED at build time from authoritative inputs (`account_equity_snapshots` row + active risk_policy + snapshot's stored denominator + NoActivePolicyError exception state). NO hidden form input. NO operator-supplied state. Re-renders consistently across page loads with no operator interaction surface. Honors Phase 8 R2.M2+R3.M2+R4.M2 server-stamping family discipline.
 
 **Cross-fix coexistence:** P14.N3 fix is template + VM only; consumes `equity_resolver` + `read_live_policy` + `compute_position_capital_utilization` (Phase 9 + Phase 11 shipped substrates); does NOT touch V2.G3 backfill OR V2.G4 refresh handler. ZERO cross-fix conflict surface.
 
@@ -403,7 +403,7 @@ Per spec §15.1 + brief §5 forward-binding lesson set. **6 gotchas APPLIED per 
 | #20 / Expansion #4 sub-refinement | Runtime-binding-shape + empty-input audit | APPLIED at V2.G3 helper SQL (dynamic `?` expansion via `",".join("?" * len(tickers))`; empty-input short-circuit to `{}` before SQL) |
 | #21 / Expansion #13 | Cumulative regression cascade audit in fix loops | APPLIED at T-1.2 (restore-SQL emission lives in BOTH dry-run AND apply paths; not extracted to a "post-loop" pass) + at §G.0 commit-cadence preface |
 | #22 / Expansion #8 promotion | Per-counter-accumulation | APPLIED at T-1.2 (dry-run + apply-path counters increment per-(trade_id, action_label) tuple; NOT per-(trade_id, attempted_replacement) which would inflate by N_candidates_row_returned) |
-| #23 / Expansion #11 promotion | Dataclass attribution metadata audit | APPLIED at P14.N3 (3 NEW VM fields are required + carry unambiguous attribution: `_resolved`, `_is_provisional`, `_effective`; backed by single-source-of-truth at build time) |
+| #23 / Expansion #11 promotion | Dataclass attribution metadata audit | APPLIED at P14.N3 (4 NEW VM fields are required + carry unambiguous attribution: `_resolved`, `_is_provisional`, `_effective`, `_policy_missing`; backed by single-source-of-truth at build time) |
 | #26 | OHLCV archive bar-content TEMPORAL mutation | N/A (no time-travel reads; V2.G4 reads current archive via OhlcvCache hook) |
 | #27 | Silent-skip-without-audit | APPLIED at V2.G4 (`log.warning` emitted BEFORE the 409 degrade response) + extended at T-1.2 (CLI emits operator-friendly counts on the dry-run table for every per-action SKIP) |
 | #32 | ASCII discipline scope clarity | APPLIED across all NEW + MODIFIED production code + test files + return report; declared scope at §A.4 + carried into per-task acceptance criteria |
@@ -2578,7 +2578,7 @@ Edit `swing/web/templates/partials/daily_management_tile.html.j2` — replace li
             {%- if tile.position_capital_policy_missing -%}
               <span class="badge badge-provisional" data-marker="PROVISIONAL"
                     data-cause="policy_missing"
-                    title="No active risk_policy row -- denominator cannot be resolved. Operator-actionable: run `swing db-migrate` to apply migration 0017's seed OR `swing config policy import-from-toml --field capital_floor_constant_dollars` to ratify the active policy.">PROVISIONAL</span>
+                    title="No active risk_policy row -- denominator cannot be resolved. Schema-corrupted state (zero rows have is_active=1). Recovery requires direct DB intervention: SELECT a historical policy_id from risk_policy, then UPDATE risk_policy SET is_active=1, effective_to=NULL WHERE policy_id=<id>. The standard `swing config policy ...` CLI cannot recover this state because supersede_active_policy raises when no active row exists (swing/trades/risk_policy.py:139-142). Re-running `swing db-migrate` does NOT re-seed an already-v21 DB.">PROVISIONAL</span>
               <button type="button" class="muted help-affordance"
                       data-help="provisional-capital-policy-missing"
                       aria-describedby="provisional-capital-help-{{ tile.trade_id }}"
@@ -2587,7 +2587,7 @@ Edit `swing/web/templates/partials/daily_management_tile.html.j2` — replace li
               </button>
               <span id="provisional-capital-help-{{ tile.trade_id }}"
                     class="help-detail" role="tooltip">
-                No active risk_policy row found (zero rows have is_active=1). Run `swing db-migrate` or `swing config policy import-from-toml` to remediate.
+                No active risk_policy row found (zero rows have is_active=1). Schema-corrupted state. Recovery requires DIRECT DB intervention via SQL (reactivate a historical row OR insert a fresh one); the standard `swing config policy ...` CLI raises because supersede_active_policy requires an existing active row to supersede.
               </span>
             {%- elif tile.position_capital_utilization_is_provisional -%}
               <span class="badge badge-provisional" data-marker="PROVISIONAL"
@@ -2730,9 +2730,13 @@ def test_policy_missing_renders_provisional_badge_even_with_em_dash_value(
     # PROVISIONAL badge still emitted -- distinct cause marker.
     assert 'data-cause="policy_missing"' in rendered
     assert 'data-marker="PROVISIONAL"' in rendered
-    # Extra-caveat tooltip cites operator-actionable remediation.
-    assert "swing db-migrate" in rendered
-    assert "swing config policy import-from-toml" in rendered
+    # Extra-caveat tooltip cites the ACTUAL recovery path (direct
+    # DB intervention via SQL) per Codex R4.M#1 LOCK -- standard CLI
+    # cannot recover this state because supersede_active_policy
+    # raises when no active row exists
+    # (swing/trades/risk_policy.py:139-142).
+    assert "UPDATE risk_policy SET is_active=1" in rendered
+    assert "schema-corrupted state" in rendered.lower()
     # The standard snapshot-missing branch is NOT emitted in this case.
     assert 'data-cause="snapshot_missing"' not in rendered
 
@@ -2799,9 +2803,10 @@ from swing.data.models import Trade
 from swing.data.repos.daily_management import (
     insert_snapshot as insert_dm_snapshot,
 )
-# Codex R2.M#3 LOCK: actual production helper is insert_trade_with_event
-# (NOT insert_trade); audit `swing/data/repos/trades.py:155` for the
-# event_kind + actor kwargs the executing-plans implementer fills in.
+# Codex R2.M#3 + R3.M#1 LOCK: actual production helper is
+# insert_trade_with_event (NOT insert_trade); signature per
+# swing/data/repos/trades.py:155 is
+# `(conn, trade, *, event_ts: str, rationale: str | None = None)`.
 from swing.data.repos.trades import insert_trade_with_event
 from swing.web.view_models.dashboard import build_dashboard
 
@@ -2852,8 +2857,10 @@ def planted_vsat_trade_with_snap(tmp_path):
     plans implementer audits the current signatures of these two helpers
     via `inspect.signature(insert_trade_with_event)` +
     `inspect.signature(swing.data.repos.daily_management.insert_snapshot)`
-    + completes the per-test required kwargs (event_kind + actor for
-    insert_trade_with_event; snapshot fields per the Phase 8 dataclass).
+    + completes the per-test required kwargs (event_ts + optional
+    rationale for insert_trade_with_event per R3.M#1; snapshot_fields
+    dict per the Phase 8 OPERATION_REQUIRED_FIELDS["snapshot_emit"]
+    set per R3.M#2).
     """
     db_path = tmp_path / "swing.db"
     # Codex R3.M#3 LOCK: connect() at swing/data/db.py:888 raises
@@ -3653,7 +3660,7 @@ Per spec §12 + brief §1.5 LOCK + §A.3 plan-authoring re-verification:
 |---|---|---|---|
 | V2.G3 | NEW repo helper `get_latest_sector_industry_per_ticker` consumes existing `candidates.sector` + `candidates.industry` (`TEXT NOT NULL DEFAULT ''` per `0012_sector_industry.sql:20-21`); NEW CLI subcommand emits idempotent UPDATEs against `trades.sector` + `trades.industry` (`TEXT NOT NULL DEFAULT ''` per `0012_sector_industry.sql:23-24`) | NO | Read + UPDATE on existing v12+ columns; no DDL |
 | V2.G4 | One-line call-site fix at `swing/web/routes/dashboard.py:76`; module-level logger addition; narrow exception catch | NO | Route handler call-signature fix; cache layer unchanged; ZERO DB read/write changes |
-| P14.N3 | Template + dashboard-VM extension; consumes existing `equity_resolver.resolve_live_capital_denominator_dollars` (Phase 11 ship) + existing `account_equity_snapshots` table (Phase 9 Sub-bundle C ship); 3 NEW VM fields are DATACLASS-level only | NO | Template-rendering + VM field addition; both substrates already shipped at Phase 9 + Phase 11; ZERO DB schema change |
+| P14.N3 | Template + dashboard-VM extension; consumes existing `equity_resolver.resolve_live_capital_denominator_dollars` (Phase 11 ship) + existing `account_equity_snapshots` table (Phase 9 Sub-bundle C ship); 4 NEW VM fields are DATACLASS-level only (Codex R2.M#1+M#2 LOCK added the 4th `position_capital_policy_missing` for NoActivePolicyError surfacing) | NO | Template-rendering + VM field addition; both substrates already shipped at Phase 9 + Phase 11; ZERO DB schema change |
 
 ### §K.2 Escalation rule (MANDATORY)
 
