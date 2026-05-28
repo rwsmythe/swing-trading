@@ -21,7 +21,7 @@
 | **P14.N3** | Operator Turn H 2026-05-27 PM #2 -- `/daily-management` Capital % column appends "PROVISIONAL" with no UI affordance explaining the flag or what would clear it |
 | **PROVISIONAL badge** | Template-rendered marker at `swing/web/templates/partials/daily_management_tile.html.j2:97`; tied to `tile.position_capital_utilization_pct`; emitted whenever the V1 fallback denominator (`capital_floor_constant_dollars`) is used per spec section 10.5 |
 | **Open-trade-scoped OHLCV cache** | Per existing CLAUDE.md gotcha "OHLCV fetch scope = open-trade tickers ONLY"; `build_dashboard` computes `ohlcv_tickers = sorted({t.ticker for t in open_trades})`; SPY benchmark is NEVER in the cache unless SPY itself is an open position |
-| **`equity_resolver.resolve_live_capital`** | `swing/metrics/equity_resolver.py` -- returns `(value, "LIVE")` when an `account_equity_snapshots` row covers asof_date; `(value, "PROVISIONAL")` otherwise (falls back to `capital_floor_constant_dollars`) |
+| **`equity_resolver.resolve_live_capital_denominator_dollars`** | `swing/metrics/equity_resolver.py:32-79` -- signature `(conn, *, asof_date: date, at_trade_time_policy: RiskPolicy) -> tuple[float, Literal["LIVE", "PROVISIONAL"]]`; returns `(value, "LIVE")` when an `account_equity_snapshots` row covers asof_date; `(value, "PROVISIONAL")` otherwise (falls back to `at_trade_time_policy.capital_floor_constant_dollars`). Paired with `swing/metrics/policy.py:39 read_live_policy(conn)` to resolve the active policy. The canonical denominator-stamping pattern is `swing/metrics/maturity.py:197-219` -- resolve denominator + badge dynamically; reuse `snap.position_capital_utilization_pct` ONLY when `snap.position_capital_denominator_dollars` matches the freshly-resolved value via `math.isclose(...)`; otherwise recompute the utilization from current position exposure. |
 | **`refresh_chart_render`** | `swing/data/repos/chart_renders.py` -- DELETE-then-INSERT atomic cache invalidation + write helper; F6 transient-empty defense applied at construction barrier (`ChartRender.__post_init__` rejects empty bytes per CLAUDE.md gotcha) |
 | **L2 LOCK** | Project invariant -- ZERO new Schwab API calls outside OQ-13 CLI carve-outs; preserved through 12 applied research arcs + Phase 13 + Sub-bundles ahead. Discriminating source-grep test included per §11 |
 | **Sub-bundle 1** | This sub-bundle; serial first in Phase 14 per Sec 9.1 Q1 + Q2 LOCKs |
@@ -200,15 +200,21 @@ swing diagnose backfill-trades-sector-industry --apply
 ```
 
 Dry-run path:
-1. SELECT trades.id, trades.ticker, trades.sector, trades.industry FROM trades WHERE sector = '' OR industry = ''
+1. `SELECT trades.id, trades.ticker, trades.sector, trades.industry FROM trades WHERE (TRIM(sector) = '' OR TRIM(industry) = '') AND state IN (...)` -- active states only (operator-paired allowlist at writing-plans phase: `'entered'`, `'managing'`, `'partial_exited'`; default `--include-closed=false`)
 2. For each ticker, call `get_latest_sector_industry_per_ticker(conn, [ticker])`
-3. Print table: `(trade_id, ticker, current_sector, current_industry, proposed_sector, proposed_industry, action)`
-4. Action column: `"UPDATE"` if any non-empty replacement; `"SKIP"` if no candidates row OR both already non-empty.
+3. Print table: `(trade_id, ticker, current_sector, current_industry, proposed_sector, proposed_industry, source_candidate_id, source_evaluation_run_id, action)`
+4. Action column: `"UPDATE"` if BOTH replacements are non-empty (all-or-nothing per V1 locked semantic); `"SKIP_NO_CANDIDATES_ROW"` if helper returned `("", "")` (acknowledged-legacy DHA/DHC path; consistent with operator framing); `"SKIP_ALREADY_POPULATED"` if both non-empty already.
+5. ALWAYS emit a restore-SQL artifact at a dry-run-emitted path (e.g., `exports/diagnostics/backfill-trades-sector-industry-restore-<ISO>.sql`) containing per-affected-row `UPDATE trades SET sector='<OLD>', industry='<OLD>' WHERE id=<ID>;` statements. Operator can apply the restore SQL via `sqlite3 swing.db < restore.sql` if the apply step lands wrong values.
 
 Apply path:
-1. Inside `with conn:` -- atomic transaction
-2. For each row needing update: `UPDATE trades SET sector=?, industry=? WHERE id=?` only when corresponding new value is non-empty (preserve partial-NULL state if only one field is recoverable)
-3. Print summary table + commit.
+1. Inside `with conn:` -- atomic transaction.
+2. Re-emit dry-run table (operator confirms count).
+3. ALSO emit the same restore-SQL artifact BEFORE issuing UPDATEs (defense-in-depth; survives a crash post-UPDATE).
+4. Optional `--allowlist <ticker,ticker,...>` flag for per-ticker opt-in; default operates on all `action="UPDATE"` rows.
+5. For each row needing update: `UPDATE trades SET sector=?, industry=? WHERE id=? AND TRIM(sector)='' AND TRIM(industry)=''` -- the WHERE clause makes the UPDATE no-op if the row was concurrently populated (defense against race; SQL idempotent).
+6. Print summary table + commit. Cite the restore-SQL artifact path in the summary so operator can locate it post-apply.
+
+**DHA/DHC operator-acknowledged exclusion**: writing-plans phase confirms whether DHA/DHC are explicitly hardcoded in an exclusion list OR relied on via the `SKIP_NO_CANDIDATES_ROW` action (since DHA/DHC have ZERO candidates rows per operator framing). The latter is preferred for V1 (no hardcoded ticker list); operator can confirm at gate.
 
 ### §4.4 Error handling + edge cases
 
@@ -230,116 +236,9 @@ Apply path:
 ### §4.6 Test fixture strategy
 
 - TestClient or direct SQLite at `tmp_path / 'swing.db'`; populate `candidates` + `trades` via existing repo helpers (NO synthetic-fixture-vs-production-emitter drift per CLAUDE.md gotcha family).
-- The repo helper test consumes pytest fixtures that mirror the production emit path: `_step_evaluate` writes via `insert_candidate(...)` (V1 path); tests use the same `insert_candidate` to plant fixtures.
-- Backfill CLI test consumes existing `tests/cli/test_diagnose_subcommands.py` fixture infrastructure (or extends it; writing-plans phase confirms).
-
-### §4.2 Fix candidates
-
-**Fix A (view-layer fallback; RECOMMENDED for V1)** -- Add `sector: str | None` + `industry: str | None` fields to `OpenPositionsRowVM`; resolve at build time via a new repo helper `candidates.get_latest_sector_industry_per_ticker(conn, [t.ticker for t in open_trades])` that returns the most-recent-non-NULL row per ticker. Template renders em-dash when None. ZERO schema migration.
-
-**Fix B (denormalize on trades at trade-entry time)** -- `trades.sector` + `trades.industry` columns; entry-form POST snapshots from candidates. Requires Schema v22 migration. **V2 candidate per dispatch brief §1.5; ESCALATE if Fix A non-viable. Brainstorm verdict: Fix A is viable; bank Fix B for V2.**
-
-**Fix C (union open-trade tickers into `_step_evaluate`)** -- pipeline writes Sector/Industry for open-trade tickers even when they aren't in today's finviz CSV. Mirrors `_step_evaluate`'s existing precedent of unioning open-trade tickers as `bucket='excluded'`. ZERO schema migration; but pollutes the pipeline-step contract (open-positions data wiring is a render-time concern, NOT a pipeline-step concern). **Brainstorm verdict: bank as alternative V2 candidate; Fix A is the cleaner separation-of-concerns.**
-
-**Fix D (per-ticker last-known cache)** -- separate `sector_industry_cache` table; written at every observation; consumed by VM fallback. Requires Schema v22 migration. **V2 candidate.**
-
-### §4.3 Recommended fix (Fix A): repo helper + VM extension + template render
-
-**New repo helper at `swing/data/repos/candidates.py`:**
-
-```python
-def get_latest_sector_industry_per_ticker(
-    conn: sqlite3.Connection, tickers: Sequence[str],
-) -> dict[str, tuple[str | None, str | None]]:
-    """Return {ticker: (sector, industry)} keyed on the most-recent non-NULL
-    row per ticker. Tickers without ANY non-NULL row map to (None, None);
-    callers render em-dash for None values per template convention.
-
-    Backwards-compat note: legacy trades opened pre-finviz-Sector-Industry
-    feature (e.g., DHA at operator framing 2026-05-23) may have ZERO
-    historical candidates rows; those return (None, None) per operator
-    acknowledgement (no backfill).
-
-    Implementation note: SQLite-specific aggregation. Uses subquery to
-    find the latest `evaluation_run_id` per ticker that has BOTH sector
-    AND industry non-NULL; falls back to most-recent row regardless if no
-    fully-populated row exists. Empty tickers input returns {}.
-    """
-```
-
-**SQL skeleton** (per Expansion #4 + #18 binding column verification):
-
-```sql
-SELECT ticker, sector, industry
-FROM (
-    SELECT
-        c.ticker,
-        c.sector,
-        c.industry,
-        ROW_NUMBER() OVER (
-            PARTITION BY c.ticker
-            ORDER BY
-                (CASE WHEN c.sector IS NOT NULL AND c.industry IS NOT NULL THEN 0 ELSE 1 END),
-                c.evaluation_run_id DESC,
-                c.id DESC
-        ) AS rn
-    FROM candidates c
-    WHERE c.ticker IN ({placeholders})  -- dynamic ?-expansion per gotcha #20
-) ranked
-WHERE ranked.rn = 1;
-```
-
-Per Expansion #4 sub-refinement (CLAUDE.md gotcha #20): the IN-clause uses dynamic `?` expansion (NOT `:name` placeholder which sqlite3 cannot bind a list to). Empty tickers input short-circuits to `{}` BEFORE executing the SQL.
-
-**Column verification (per Expansion #4):**
-- `candidates.ticker` -- migration `0001_phase1_initial.sql:24` (TEXT NOT NULL)
-- `candidates.sector` -- migration `0001_phase1_initial.sql:32` (TEXT NULL) [VERIFY at writing-plans phase]
-- `candidates.industry` -- migration `0001_phase1_initial.sql:33` (TEXT NULL) [VERIFY at writing-plans phase]
-- `candidates.evaluation_run_id` -- migration `0001_phase1_initial.sql:26` (INTEGER NOT NULL); ordering anchor
-- `candidates.id` -- PK; tie-breaker
-
-**VM extension at `OpenPositionsRowVM`:**
-
-```python
-@dataclass(frozen=True)
-class OpenPositionsRowVM:
-    trade: Trade
-    price_snapshot: PriceSnapshot | None
-    remaining_shares: int
-    advisories: tuple[AdvisorySuggestionVM, ...]
-    state_badge_label: str
-    has_update_today: bool = False
-    update_session_date: str = ""
-    # Phase 14 Sub-bundle 1 -- V2.G3 fix
-    sector: str | None = None
-    industry: str | None = None
-```
-
-**`build_dashboard` wires the resolution** -- inside the existing `with conn:` block (post `open_trades = list_open_trades(conn)`), call the new helper once with all open-trade tickers; pass per-ticker lookups into each `_open_positions_row_vm(...)` invocation.
-
-**Template render** -- `partials/open_positions_row.html.j2` adds two cells: `<td>{{ row.sector or '—' }}</td><td>{{ row.industry or '—' }}</td>`. Operator-facing em-dash convention matches existing missing-value renders.
-
-### §4.4 Error handling + edge cases
-
-- **No `candidates` row for ticker** -- helper returns `(None, None)`; template renders em-dash (DHA/DHC legacy path)
-- **Partial NULL (sector present; industry NULL)** -- helper prefers fully-populated rows via the CASE clause; if no fully-populated row exists, returns whichever row is most-recent (may be partial-NULL). Acceptable for V1.
-- **Empty open-trades list** -- VM builder doesn't call the helper; no SQL fires.
-- **Helper raises SQL error** -- bubble up; render-path will 500. Discriminating test at §4.5 #5 plants a malformed `candidates` row to verify exception path.
-
-### §4.5 Discriminating-example walkthroughs
-
-1. **Happy path -- VSAT in latest candidates with non-NULL Sector + Industry** -- plant trade row + candidates row with Sector="Technology" + Industry="Communications Equipment"; assert VM `sector="Technology"`, `industry="Communications Equipment"`; assert template renders the strings literally.
-2. **VSAT rotated out of latest candidates but historical row exists** -- plant trade row + historical candidates row (older `evaluation_run_id`) with non-NULL Sector + Industry; latest `evaluation_run_id` has NO row for VSAT; assert VM picks up the historical row's values.
-3. **DHA legacy -- ZERO candidates rows for ticker** -- plant trade row; no `candidates` row at all; assert VM `sector=None`, `industry=None`; assert template renders em-dash placeholder.
-4. **Partial-NULL fallback** -- plant trade row + historical candidates row with `sector="Tech"`, `industry=NULL`; assert VM `sector="Tech"`, `industry=None`; template renders "Tech" + em-dash.
-5. **Multiple-ticker batch** -- plant 3 open trades + per-ticker latest candidates rows; assert ONE SQL query fires (not three); assert per-ticker resolution correct.
-6. **Backwards-compat -- empty input** -- call helper with empty `tickers=[]`; assert returns `{}` without executing SQL.
-
-### §4.6 Test fixture strategy
-
-- TestClient + ephemeral SQLite at `tmp_path / 'swing.db'`; populate `candidates` + `trades` via existing repo helpers (NO synthetic-fixture-vs-production-emitter drift per CLAUDE.md gotcha family).
-- The repo helper test consumes pytest fixtures that mirror the production emit path: `_step_evaluate` writes via `insert_candidate(...)` (V1 path); tests use the same `insert_candidate` to plant fixtures.
-- Round-trip test asserts the fixture's `sector` + `industry` survive through the helper -> VM -> rendered HTML pipeline.
+- The repo helper test consumes pytest fixtures that mirror the production emit path: `_step_evaluate` writes via `swing.data.repos.candidates.insert_candidates(conn, run_id, [Candidate(...)])` (bulk-insert; V1 path); tests use the same `insert_candidates` to plant fixtures.
+- Backfill CLI test extends `tests/cli/test_diagnose_subcommands.py` infrastructure (writing-plans phase confirms exact insertion point).
+- Existing `tests/data/test_repos_candidates.py` is extended with discriminating tests for the new `get_latest_sector_industry_per_ticker` helper.
 
 ---
 
@@ -376,7 +275,7 @@ The brief's four hypotheses (A: hydration gap in chart_jit; B: cfg-resolution ti
 
 ### §5.2 Fix candidates
 
-**Fix A (RECOMMENDED) -- one-line call-site fix + log-on-degraded.** Rewrite the handler's bars-fetch block to:
+**Fix A (RECOMMENDED) -- call-site fix + NARROW exception handling.** Rewrite the handler's bars-fetch block to:
 
 ```python
 try:
@@ -384,7 +283,7 @@ try:
 except ValueError as exc:
     # OhlcvCache.get_or_fetch raises ValueError("No data for {ticker}") on
     # empty-archive / cache-miss-fallthrough per its docstring. This is the
-    # canonical empty-result signal (not a programming error). Emit a
+    # canonical empty-result signal (NOT a programming error). Emit a
     # warning so the operator-visible 409 message can be diagnosed via
     # logs per gotcha #27 (empty-pool early-return + audit emission).
     log.warning(
@@ -392,11 +291,13 @@ except ValueError as exc:
         benchmark, exc,
     )
     bars = None
-except Exception:  # noqa: BLE001 -- safety boundary; log + degrade
-    log.exception(
-        "weather-chart refresh: get_or_fetch raised for %s", benchmark,
-    )
-    bars = None
+# NOTE: Do NOT catch broad `Exception` here. The pre-fix handler caught
+# arbitrary exceptions (including the TypeError that hid this bug for
+# weeks) and silently returned a 409 "no bars" message -- exactly the
+# masking pattern the operator-witnessed gate surfaced. Let TypeError,
+# AttributeError, KeyError, and other programming errors propagate to
+# FastAPI's default 500 handler so they show up in operator-witnessed
+# gates as 500s (not as "run the pipeline first" 409s).
 if bars is None or bars.empty:
     raise HTTPException(status_code=409, detail=(
         f"no OHLCV bars available for benchmark {benchmark!r}; "
@@ -404,7 +305,7 @@ if bars is None or bars.empty:
     ))
 ```
 
-This separates the **expected empty-result path** (`ValueError`) from the **unexpected-failure path** (`Exception`). Both degrade to a 409 with the existing operator-friendly message; both emit logs so future operator-witnessed-gate findings can be diagnosed without code-reading. Per gotcha #27 -- pipeline-step early-return MUST emit audit; this is the route-handler analogue.
+This separates the **expected empty-result path** (`ValueError`; degrade to 409 with operator-friendly message + log.warning) from the **unexpected-failure path** (any other exception; propagate to FastAPI default 500 handler; surfaces as a 500 in the operator browser + emits the full traceback to logs). Per gotcha #27 -- pipeline-step early-return MUST emit audit; this is the route-handler analogue. Per M5 anti-pattern: do NOT continue the broad-Exception-catch behavior that hid the V2.G4 root cause for so long.
 
 The dead dict-style `bars_bundle.get(benchmark)` consumption is removed.
 
@@ -478,17 +379,19 @@ Located at `swing/web/templates/partials/daily_management_tile.html.j2:91-99`:
 
 ### §6.2 Fix candidates
 
-**Fix A (RECOMMENDED for V1) -- Template-rendering surface audit + VM extension to consume LIVE/PROVISIONAL state.** Two surgical edits:
+**Fix A (RECOMMENDED for V1) -- Template-rendering surface audit + VM extension to consume LIVE/PROVISIONAL state with denominator-stamping discipline.** Three surgical edits mirroring the canonical `swing/metrics/maturity.py:197-219` pattern:
 
-1. **Extend the daily-management tile VM** (`swing/web/view_models/daily_management.py` or equivalent) to include a `position_capital_utilization_is_provisional: bool` field (or reuse the existing `ProvisionalBadgeVM` from metrics shared.py).
-2. **Template only emits the badge when `is_provisional is True`**; rewrite the tooltip text + add an inline affordance explaining the clear-condition.
-
-The new template fragment:
+1. **Extend the daily-management tile VM** (`swing/web/view_models/daily_management.py` or wherever `DailyManagementTileVM` is defined; writing-plans phase confirms exact module -- the dashboard VM at `swing/web/view_models/dashboard.py:1390-1417` currently constructs the tile inline) to include THREE fields:
+   - `position_capital_denominator_dollars_resolved: float` -- the FRESHLY-resolved denominator at render time
+   - `position_capital_utilization_is_provisional: bool` -- True iff freshly-resolved state == "PROVISIONAL"
+   - `position_capital_utilization_pct_effective: float | None` -- the utilization to render (stored if denominators match; recomputed otherwise; None when ill-defined)
+2. **Build-time VM resolution mirrors `maturity.py:197-219`:** parse `snap.data_asof_session` (NOT a hypothetical `review_date`) via `date.fromisoformat(...)` with a ValueError-guarded fallback to `asof_date` per `maturity.py:190-194`; call `resolve_live_capital_denominator_dollars(conn, asof_date=row_asof, at_trade_time_policy=read_live_policy(conn))`; reuse `snap.position_capital_utilization_pct` ONLY when `snap.position_capital_denominator_dollars` matches the freshly-resolved value via `math.isclose(...)`; otherwise recompute via the same `_compute_position_util_pct(...)` helper `maturity.py:222-229` consumes (or expose a shared utility if not already exposed). This ensures the badge AND the displayed pct are coherent.
+3. **Template only emits the badge when `is_provisional is True`**, renders `position_capital_utilization_pct_effective` for the value, AND emits an inline help affordance:
 
 ```jinja
 <td data-tile-cell="position_capital_utilization_pct">
-    {%- if tile.position_capital_utilization_pct is not none -%}
-        {{ "%.1f"|format(tile.position_capital_utilization_pct * 100.0) }}%
+    {%- if tile.position_capital_utilization_pct_effective is not none -%}
+        {{ "%.1f"|format(tile.position_capital_utilization_pct_effective * 100.0) }}%
         {%- if tile.position_capital_utilization_is_provisional -%}
             <span class="badge badge-provisional" data-marker="PROVISIONAL"
                   title="Capital denominator is the V1 fallback (capital_floor_constant_dollars). Clears to LIVE when an account_equity_snapshots row covers the session date (e.g., swing schwab fetch --snapshot when integration LIVE).">PROVISIONAL</span>
@@ -499,11 +402,11 @@ The new template fragment:
                 </span>
             </span>
         {%- endif -%}
-    {%- else -%}—{%- endif -%}
+    {%- else -%}--{%- endif -%}
 </td>
 ```
 
-**VM resolution at build time** -- the tile VM builder calls `equity_resolver.resolve_live_capital(conn, asof_date=tile.review_date, at_trade_time_policy=policy)` and stamps `position_capital_utilization_is_provisional = (denominator_state == "PROVISIONAL")`. The resolver already exists; the tile VM builder simply consumes it.
+(em-dash placeholder shown as ASCII `--` to honor gotcha #32; existing badge surfaces inside the spec use `--` rather than the Unicode em-dash.)
 
 **Fix B (escalate to schema CHECK widening)** -- if PROVISIONAL is a persisted CHECK enum value, widen to descriptive variants. **Brainstorm verdict: NOT applicable -- PROVISIONAL is template-rendered, not persisted; no CHECK widening is needed.**
 
@@ -776,17 +679,18 @@ Open Questions from dispatch brief §3, resolved at brainstorm:
 
 ### §15.2 ASCII discipline scope declaration (per gotcha #32)
 
-ASCII-only across the following Sub-bundle 1 surfaces (writing-plans phase confirms exact file paths against the existing tests/ layout):
+ASCII-only across the following Sub-bundle 1 PRODUCTION + TEST surfaces (writing-plans phase confirms exact file paths against the existing tests/ layout):
 
 1. `swing/data/repos/candidates.py` (MODIFIED -- new helper)
 2. `swing/cli.py` OR `swing/cli_diagnose.py` (MODIFIED -- new backfill subcommand; writing-plans phase chooses the right module)
 3. `swing/web/view_models/open_positions_row.py` (OPTIONAL-MODIFIED; only if Fix-1b VM fallback is applied)
 4. `swing/web/routes/dashboard.py` (MODIFIED -- diff only)
-5. `swing/web/view_models/daily_management.py` or equivalent VM (MODIFIED -- new `position_capital_utilization_is_provisional` field)
+5. `swing/web/view_models/dashboard.py` (MODIFIED -- new tile VM fields per §6.2 Fix A; mirrors `swing/metrics/maturity.py:197-219` denominator-stamping)
 6. `swing/web/templates/partials/daily_management_tile.html.j2` (MODIFIED)
-7. Test modules per §3 module touch list (writing-plans phase confirms exact paths against existing `tests/` layout)
-8. This spec document `docs/superpowers/specs/2026-05-27-phase14-sub-bundle-1-data-wiring-design.md` (NEW)
-9. Return report `docs/phase14-sub-bundle-1-data-wiring-brainstorm-return-report.md` (NEW)
+7. Test modules per §3 module touch list (writing-plans phase confirms exact paths against existing `tests/` layout; known existing: `tests/data/test_repos_candidates.py`, `tests/web/test_daily_management_tile.py`, `tests/cli/test_diagnose_subcommands.py`)
+8. Return report `docs/phase14-sub-bundle-1-data-wiring-brainstorm-return-report.md` (NEW; declared scope)
+
+**This design spec + the dispatch brief are EXCLUDED from the strict ASCII scope.** Both documents use `§` (section sign) extensively to cite specification + plan + brief sections per project convention; converting these would degrade readability of the operator-orchestrator dispatch contract. The strict ASCII scope applies only to production code paths + test files (which flow through Windows stdout via pytest or CLI invocations) + the return report (which the operator may grep / cite).
 
 Writing-plans phase audits the `tests/web/`, `tests/data/repos/`, `tests/cli/` directory layouts against existing test conventions + locks specific test-module paths in plan §B.
 
