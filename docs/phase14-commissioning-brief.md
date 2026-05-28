@@ -325,4 +325,34 @@ Operator decisions are LOCKED at commissioning + propagate through all sub-bundl
 
 ---
 
+## Sec 9.1 Operator-paired decisions LOCKED 2026-05-27 PM #4
+
+Sec 9 triage opened + closed at the commissioning orchestrator session 2026-05-27 PM #4. Operator confirmed all 7 brief recommendations verbatim. LOCKed dispositions propagate to ALL Phase 14 sub-bundle dispatches; deviations require return-trip.
+
+| # | Decision | LOCKed value |
+|---|---|---|
+| Q1 | Sub-bundle sequencing | **Data-wiring -> temporal log -> charts -> review+journal -> metrics** (brief Sec 3 recommended order) |
+| Q2 | Execution mode | **Serial** -- one sub-bundle at a time; cumulative discipline verification at each merge |
+| Q3 | Temporal log V1 scope | **V1+** -- base (2 tables + `_step_pattern_observe` + per-pattern metadata) PLUS chart_render bytes capture at detection time (closes CR.1 dependency cleanly) |
+| Q4 | V2.G2 schema rename | **Ship in chart-surface uniformity sub-bundle (v23 migration)** -- coupled with P14.N1 + P14.N2; data-migration discipline for existing chart_renders rows per gotcha #11 LOCK |
+| Q5 | Metrics overview graphics library | **Matplotlib SVG** -- consistent with chart_renders pattern; no new dependency surface; static rendering only |
+| Q6 | Phase 14 close-out criteria | **All 5 sub-bundles merged + operator browser-witnessed verification** -- matches Phase 13 closer precedent; per-sub-bundle operator-witnessed gate at merge time + final Phase 14 cross-sub-bundle integration review |
+| Q7 | Codex MCP chain count per sub-bundle | **Orchestrator discretion per sub-bundle** -- two-chain for analytical sub-bundles (temporal log likely qualifies; brainstorming confirms); single-chain at orchestrator discretion for pure UX/wiring sub-bundles per gotcha #36 explicit caveat |
+
+**Pre-commissioning cleanup committed at `677cbba`** (this session):
+- 2 stale memories deleted (`project_post_round1_applied_research_direction.md` + `project_phase14_pause_for_list_additions.md`); both superseded by G2 SHIPPED + Phase 14 commissioning
+- MEMORY.md updated to remove stale entries; arc closure entry retained
+- phase3e-todo.md Turn H V2-selection-mechanic next-arc open item marked `[x]` CLOSED with forward pointer to this brief + arc closure document
+- W-shape entry/exit rules extension framing (pre-G2 anticipated next production arc) marked SUPERSEDED in historical bullet; arc closure Finding 5 + Sec 7 future-revisit predicates govern any future ruleset deployment consideration
+
+**Forward sequence per Sec 9.1 LOCKs:**
+1. Sub-bundle 1 (data-wiring; V2.G3 + V2.G4 + P14.N3) -- brainstorming dispatch brief next; estimated 8-15 commits + 25-50 tests
+2. Sub-bundle 2 (temporal log V1+; v22 schema migration) -- depends on sub-bundle 1 merge
+3. Sub-bundle 3 (chart-surface uniformity; V2.G1 + V2.G2 v23 rename + P14.N1 + P14.N2 + P14.N4)
+4. Sub-bundle 4 (review + journal UX; CR.1 + P14.N6)
+5. Sub-bundle 5 (metrics overview; P14.N5)
+6. Final Phase 14 close-out review (cross-sub-bundle integration; operator-witnessed)
+
+---
+
 *End of Phase 14 commissioning brief. Mission: close V2 gate findings + UX/wiring backlog + ship the temporal pattern detection + observation log infrastructure (the highest-leverage methodological improvement surfaced at the close of the applied research arc). 5 sub-bundles enumerated; serial sequencing recommended; ~9-14 weeks operator-paced total. 37 cumulative CLAUDE.md gotchas BINDING. ~580+ cumulative ZERO Co-Authored-By trailer drift to preserve. NOT a ruleset deployment phase. NOT an implementation prompt; the next orchestrator drives the copowers cycle per sub-bundle with operator-paired triage at Sec 9.*
