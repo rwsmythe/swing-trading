@@ -33,6 +33,28 @@ DETECTOR_PATTERN_CLASSES: tuple[str, ...] = (
     "double_bottom_w",
 )
 
+# Phase 14 Sub-bundle 2 (migration 0022) schema enum constants. Mirror the
+# CHECK enums in `swing/data/migrations/0022_phase14_temporal_log.sql`
+# (gotcha #11 paired: CHECK + constant + dataclass validator land together).
+# pattern_detection_events.source enum (5 values).
+_PATTERN_DETECTION_SOURCE_VALUES: tuple[str, ...] = (
+    "pipeline", "v2_cohort", "d2_baseline", "backfill", "synthetic",
+)
+# pattern_forward_observations.status enum (6 values; V1+ emits the
+# ruleset-agnostic subset {pending, triggered_open, invalidated, expired};
+# the two triggered_closed_* values are RESERVED for the Phase 15+ replay
+# engine and are NOT a wiring gap).
+_FORWARD_OBSERVATION_STATUS_VALUES: tuple[str, ...] = (
+    "pending", "triggered_open",
+    "triggered_closed_at_target", "triggered_closed_at_stop",
+    "invalidated", "expired",
+)
+# pattern_forward_observations.status_change_event enum (6 values; nullable).
+_FORWARD_OBSERVATION_STATUS_CHANGE_EVENTS: tuple[str, ...] = (
+    "entry_fired", "stop_fired", "target_fired",
+    "time_exit", "shape_break", "observation_horizon_reached",
+)
+
 # pattern_exemplars.label_source enum (7 values per spec §3.1).
 _LABEL_SOURCE_VALUES: tuple[str, ...] = (
     "curated_gold",
@@ -1987,6 +2009,87 @@ class ChartRender:
             raise ValueError(
                 "chart_renders chart_svg_bytes must be non-empty per "
                 "CLAUDE.md F6 lesson (transient empty must not blank cache)"
+            )
+
+
+@dataclass(frozen=True)
+class PatternDetectionEvent:
+    """One row of ``pattern_detection_events`` (migration 0022; spec section 4.1).
+
+    The FROZEN detection record. APPEND-ONLY: no code path UPDATEs/DELETEs.
+    ``detection_date`` = action_session_date (operator-facing label);
+    ``data_asof_date`` = detector data cutoff (forward-walk boundary anchor).
+    """
+    detection_id: int | None
+    ticker: str
+    detection_date: str
+    data_asof_date: str
+    pattern_class: str
+    structural_anchors_json: str
+    composite_score: float
+    detector_version: str
+    source: str
+    per_pattern_metadata_json: str
+    created_at: str
+    finviz_screen_state: str | None = None
+    pipeline_run_id: int | None = None
+    chart_render_id: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.pattern_class not in DETECTOR_PATTERN_CLASSES:
+            raise ValueError(
+                "pattern_class must be one of "
+                f"{DETECTOR_PATTERN_CLASSES}, got {self.pattern_class!r}"
+            )
+        if self.source not in _PATTERN_DETECTION_SOURCE_VALUES:
+            raise ValueError(
+                "source must be one of "
+                f"{_PATTERN_DETECTION_SOURCE_VALUES}, got {self.source!r}"
+            )
+
+
+@dataclass(frozen=True)
+class PatternForwardObservation:
+    """One row of ``pattern_forward_observations`` (migration 0022; spec section 4.2).
+
+    The append-only forward-walk record. ``ohlc_today_json`` is LOCKED at
+    observation and NEVER re-fetched (gotcha #26 elimination by construction).
+    ``sessions_since_detection`` is measured from the detection's
+    ``data_asof_date`` UP TO AND INCLUDING ``observation_date``.
+    """
+    observation_id: int | None
+    detection_id: int
+    observation_date: str
+    ohlc_today_json: str
+    status: str
+    sessions_since_detection: int
+    created_at: str
+    status_change_event: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.status not in _FORWARD_OBSERVATION_STATUS_VALUES:
+            raise ValueError(
+                "status must be one of "
+                f"{_FORWARD_OBSERVATION_STATUS_VALUES}, got {self.status!r}"
+            )
+        if (
+            self.status_change_event is not None
+            and self.status_change_event
+            not in _FORWARD_OBSERVATION_STATUS_CHANGE_EVENTS
+        ):
+            raise ValueError(
+                "status_change_event must be None or one of "
+                f"{_FORWARD_OBSERVATION_STATUS_CHANGE_EVENTS}, "
+                f"got {self.status_change_event!r}"
+            )
+        # Defensive data-integrity guard (Codex chain #1 Minor #2): the
+        # forward-walk count is never negative. (Mirrors the schema CHECK
+        # (sessions_since_detection >= 0); the dataclass barrier rejects a
+        # malformed construction.)
+        if self.sessions_since_detection < 0:
+            raise ValueError(
+                "sessions_since_detection must be >= 0, got "
+                f"{self.sessions_since_detection!r}"
             )
 
 
