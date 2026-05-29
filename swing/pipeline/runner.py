@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import os
 import sqlite3
@@ -2276,6 +2277,221 @@ def _step_pattern_detect(
         len(aplus_tickers),
         rows_skipped_idempotent,
     )
+
+
+# --- Phase 14 Sub-bundle 2 (T-2.5): forward-walk observe step + status machine.
+
+# Terminal observation statuses (incl. V1-reserved closed_* names): a detection
+# whose latest status is terminal must NEVER reach _advance_status
+# (list_observable_detections excludes it). The guard is defense-in-depth.
+_OBS_TERMINAL_STATUSES = frozenset({
+    "invalidated", "expired",
+    "triggered_closed_at_target", "triggered_closed_at_stop",
+})
+
+
+def _structural_invalidation_level(pattern_class: str, evidence: dict) -> float | None:
+    """Per-class structural low (spec section 7.3.1), read from the frozen
+    structural_anchors_json evidence dict."""
+    if pattern_class == "flat_base":
+        return evidence.get("range_bottom_price")
+    if pattern_class == "vcp":
+        contractions = evidence.get("contractions") or []
+        lows = [c.get("low") for c in contractions if isinstance(c, dict)
+                and c.get("low") is not None]
+        return min(lows) if lows else None
+    if pattern_class == "cup_with_handle":
+        return evidence.get("cup_bottom_price")
+    if pattern_class == "high_tight_flag":
+        return evidence.get("pole_start_price")
+    if pattern_class == "double_bottom_w":
+        t1, t2 = evidence.get("trough_1_price"), evidence.get("trough_2_price")
+        vals = [v for v in (t1, t2) if v is not None]
+        return min(vals) if vals else None
+    return None
+
+
+def _advance_status(det, *, prev, bar, sessions_since_detection,
+                    max_pending, max_post_trigger):
+    """Compute (new_status, status_change_event) for one observation.
+
+    V1+ emits ONLY the ruleset-agnostic subset
+    {pending, triggered_open, invalidated, expired}. Anchors are read from
+    the detection's FROZEN structural_anchors_json (never recomputed).
+    """
+    anchors = json.loads(det.structural_anchors_json)
+    evidence = anchors.get("evidence", {})
+    pivot = evidence.get("pivot_price")
+    invalidation = _structural_invalidation_level(det.pattern_class, evidence)
+    prev_status = prev.status if prev is not None else "pending"
+
+    # Defensive terminal guard (Codex chain #2 Major #4):
+    # list_observable_detections only returns detections whose latest status is
+    # OPEN ('pending'/'triggered_open') or which have no observation yet. A
+    # terminal prev status reaching here is a WIRING BUG -- raise loudly rather
+    # than silently re-transition a frozen terminal chain (and never emit a
+    # reserved closed_* status in V1+).
+    if prev_status in _OBS_TERMINAL_STATUSES:
+        raise ValueError(
+            f"_advance_status called on terminal prev status {prev_status!r}; "
+            "list_observable_detections should have excluded this detection")
+
+    if prev_status == "triggered_open":
+        if sessions_since_detection >= max_pending + max_post_trigger:
+            return "expired", "observation_horizon_reached"
+        return "triggered_open", None
+
+    # prev pending (or first observation). PRECEDENCE (Codex chain #2 Major #1
+    # + #3 -- explicit conflict ordering for a single bar that satisfies >1
+    # condition):
+    #   1. INVALIDATION (close < structural low): a CONFIRMED end-of-day shape
+    #      break is the most decisive ruleset-agnostic signal; it WINS even when
+    #      the same bar's intraday high also touched the pivot (a breakout that
+    #      closes below the base low is a FAILED breakout, not a valid entry).
+    #   2. BREAKOUT (high >= pivot, close >= structural low): an intraday pivot
+    #      break that did NOT close below the structural low. A breakout that
+    #      occurs ON the max_pending boundary still fires (the trigger happened
+    #      within the pending window).
+    #   3. EXPIRY (sessions_since_detection >= max_pending): only when NEITHER
+    #      invalidation NOR breakout fired (matches spec section 7.3 "without
+    #      trigger"). The boundary is inclusive (>=), so a non-triggering bar AT
+    #      max_pending expires.
+    if invalidation is not None and bar["close"] < invalidation:
+        return "invalidated", "shape_break"
+    if pivot is not None and bar["high"] >= pivot:
+        return "triggered_open", "entry_fired"
+    if sessions_since_detection >= max_pending:
+        return "expired", "time_exit"
+    return "pending", None
+
+
+def _bar_for_date(cfg, ohlcv_cache, ticker: str, observation_date: str):
+    """Return an ohlc dict (with provider) for exactly ``observation_date``, or
+    None if the archive has no bar for that session.
+
+    OQ-17 read path (writing-plans decision): (1) populate/refresh the archive
+    via the OhlcvCache write-through ladder (archive-first; zero Schwab); (2)
+    read the date-anchored bar + provider provenance via resolve_ohlcv_window
+    (keyed end=observation_date). Selects the row whose asof_date ==
+    observation_date (NOT iloc[-1]); freezes it; never re-reads it later
+    (#26 elimination honest).
+    """
+    from datetime import date, timedelta
+
+    from swing.data.ohlcv_archive import resolve_ohlcv_window
+    # 1. Populate the archive (write-through; the same call detect makes).
+    #    Best-effort by design (Codex chain #1 Major #6): the date-anchored
+    #    archive read in step 2 is AUTHORITATIVE. A get_or_fetch failure here
+    #    is not fatal -- if it leaves no bar for observation_date, step 2's
+    #    "no match" path returns None and the CALLER records a #27 no-bar
+    #    warning + skips (operator-visible). T-2.5 step 0 confirmed (PASS) that
+    #    get_or_fetch write-throughs to the same prices_cache_dir
+    #    resolve_ohlcv_window reads (Shape-A {TICKER}.{provider}.parquet).
+    try:
+        ohlcv_cache.get_or_fetch(ticker=ticker, window_days=400)
+    except Exception as exc:  # noqa: BLE001 - best-effort populate; read is authoritative
+        log.debug("observe populate get_or_fetch best-effort miss for %s: %s",
+                  ticker, exc)
+    # 2. Date-anchored archive read with per-asof_date provenance.
+    start = (date.fromisoformat(observation_date) - timedelta(days=10)).isoformat()
+    df, provenance = resolve_ohlcv_window(
+        ticker, start=start, end=observation_date,
+        cache_dir=cfg.paths.prices_cache_dir,
+    )
+    if df.empty:
+        return None
+    match = df[df["asof_date"] == observation_date]
+    if match.empty:
+        return None  # no bar for the gap day -> caller records a warning + skips
+    r = match.iloc[-1]
+    return {
+        "open": float(r["open"]), "high": float(r["high"]),
+        "low": float(r["low"]), "close": float(r["close"]),
+        "volume": float(r["volume"]),
+        "provider": provenance.get(observation_date, "yfinance"),
+    }
+
+
+def _sessions_since(data_asof_date: str, observation_date: str) -> int:
+    """Count trading sessions from data_asof_date UP TO AND INCLUDING
+    observation_date (FB-N4: keyed on data_asof_date, NOT detection_date).
+    Uses pandas bdate_range (business days) as the V1 trading-day proxy;
+    holidays are an acceptable V1 approximation (the windows are coarse 30/60).
+    date.fromisoformat boundary conversion at the callsite with malformed-input
+    guard.
+    """
+    from datetime import date
+
+    import pandas as pd
+    start = date.fromisoformat(data_asof_date)
+    end = date.fromisoformat(observation_date)
+    if end <= start:
+        return 0
+    return int(len(pd.bdate_range(start=start, end=end)) - 1)
+
+
+def _step_pattern_observe(*, cfg, lease, ohlcv_cache, run_warnings):
+    """Append today's bar + lifecycle status to pattern_forward_observations
+    for every open detection. Zero new detector invocations (L4)."""
+    from datetime import UTC, datetime
+
+    from swing.data.db import connect
+    from swing.data.models import PatternForwardObservation
+    from swing.data.repos.pattern_detection_events import (
+        list_observable_detections,
+    )
+    from swing.data.repos.pattern_forward_observations import (
+        get_latest_observations_for_detections,
+        insert_observation,
+    )
+    from swing.pipeline.temporal_metadata import build_ohlc_today_json
+
+    observation_date = lease_data_asof(cfg, lease)  # run DATA cutoff (R2 M#1)
+    max_pending = cfg.pipeline.observe_max_pending_window_sessions
+    max_post = cfg.pipeline.observe_max_post_trigger_window_sessions
+
+    read_conn = connect(cfg.paths.db_path)
+    try:
+        open_dets = list_observable_detections(
+            read_conn, source="pipeline", observation_date=observation_date)
+        latest = get_latest_observations_for_detections(
+            read_conn, [d.detection_id for d in open_dets])
+    finally:
+        read_conn.close()
+
+    if not open_dets:
+        run_warnings.append({
+            "step": "pattern_observe", "actual_open_pool": 0,
+            "reason": "no observable detections",
+        })
+        return
+
+    with lease.fenced_write() as conn:
+        for det in open_dets:
+            prev = latest.get(det.detection_id)
+            if prev is not None and prev.observation_date == observation_date:
+                continue  # idempotent: already observed today
+            bar = _bar_for_date(cfg, ohlcv_cache, det.ticker, observation_date)
+            if bar is None:
+                run_warnings.append({
+                    "step": "pattern_observe", "ticker": det.ticker,
+                    "observation_date": observation_date,
+                    "reason": "no bar for observation_date",
+                })
+                continue
+            sessions = _sessions_since(det.data_asof_date, observation_date)
+            status, change = _advance_status(
+                det, prev=prev, bar=bar,
+                sessions_since_detection=sessions,
+                max_pending=max_pending, max_post_trigger=max_post)
+            insert_observation(conn, PatternForwardObservation(
+                observation_id=None, detection_id=det.detection_id,
+                observation_date=observation_date,
+                ohlc_today_json=build_ohlc_today_json(bar),  # validated shape + provider domain
+                status=status, status_change_event=change,
+                sessions_since_detection=sessions,
+                created_at=datetime.now(UTC).isoformat(),
+            ))
 
 
 def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data_asof: str,
