@@ -254,7 +254,7 @@ Verbatim from dispatch brief §4 + spec §11 OUT-OF-SCOPE:
 - Test: `tests/data/test_models_temporal.py` (dataclass validators)
 
 **Acceptance criteria:**
-- `0022_phase14_temporal_log.sql` creates `pattern_detection_events` (12 cols incl. `data_asof_date`; `chart_render_id` + `pipeline_run_id` both `ON DELETE SET NULL`) + `pattern_forward_observations` (8 cols; `detection_id` `ON DELETE RESTRICT`; `UNIQUE(detection_id, observation_date)`) + 7 indexes + CHECK enums; final statement `UPDATE schema_version SET version = 22;` inside explicit `BEGIN;`/`COMMIT;`.
+- `0022_phase14_temporal_log.sql` creates `pattern_detection_events` (12 cols incl. `data_asof_date`; `chart_render_id` + `pipeline_run_id` both `ON DELETE SET NULL`) + `pattern_forward_observations` (8 cols; `detection_id` `ON DELETE RESTRICT`; `UNIQUE(detection_id, observation_date)`) + 7 indexes (1 UNIQUE `idx_pde_source_ticker_date_class` + 3 non-unique on detection_events + 3 non-unique on observations) + CHECK enums; final statement `UPDATE schema_version SET version = 22;` inside explicit `BEGIN;`/`COMMIT;`.
 - `EXPECTED_SCHEMA_VERSION == 22`; `_phase14_backup_gate` fires ONLY at `current_version == 21 AND target_version >= 22` (STRICT); `PHASE14_PRE_MIGRATION_EXPECTED_TABLES == PHASE13_SB6C_PRE_MIGRATION_EXPECTED_TABLES`.
 - `PatternDetectionEvent` + `PatternForwardObservation` frozen dataclasses validate enums in `__post_init__` mirroring the CHECK (gotcha #11 paired -- CHECK + constant + validator in THIS task).
 - Existing suite green; `ruff check swing/` clean.
@@ -691,6 +691,14 @@ class PatternForwardObservation:
                 f"{_FORWARD_OBSERVATION_STATUS_CHANGE_EVENTS}, "
                 f"got {self.status_change_event!r}"
             )
+        # Defensive data-integrity guard (Codex chain #1 Minor #2): the
+        # forward-walk count is never negative. (The schema has no CHECK for
+        # this; the dataclass barrier rejects a malformed construction.)
+        if self.sessions_since_detection < 0:
+            raise ValueError(
+                "sessions_since_detection must be >= 0, got "
+                f"{self.sessions_since_detection!r}"
+            )
 ```
 
 - [ ] **Step 13: Write the dataclass-validator tests (the #11 mirror)**
@@ -964,12 +972,10 @@ Expected: PASS.
 
 - [ ] **Step 5: Write the `list_observable_detections` test (failing) + UNIQUE test**
 
+> **Task-ordering note (Codex chain #1 Critical #1):** T-2.2 must NOT import from `swing.data.repos.pattern_forward_observations` (that module lands in T-2.3). The two observable cases that need NO observation row (same-run-cutoff exclusion; prior-cutoff-no-observation inclusion) live HERE; the observation-dependent case (latest-status-terminal exclusion) is a CROSS-REPO test that lands in **T-2.3 Step 5** (after both repos exist). Subagent-driven execution runs T-2.1 -> T-2.2 -> T-2.3 in order, so T-2.2's suite has no forward dependency.
+
 ```python
-# tests/data/repos/test_pattern_detection_events_repo.py  (append)
-from swing.data.models import PatternForwardObservation
-from swing.data.repos.pattern_forward_observations import insert_observation
-
-
+# tests/data/repos/test_pattern_detection_events_repo.py  (append -- NO cross-repo import)
 def test_unique_source_ticker_date_class(conn):
     with conn:
         insert_detection_event(conn, _event())
@@ -988,30 +994,16 @@ def test_observable_excludes_same_run_data_cutoff(conn):
 
 
 def test_observable_includes_prior_cutoff_with_no_observation_yet(conn):
+    # No observation yet + data_asof_date < observation_date -> observable.
     with conn:
         insert_detection_event(conn, _event(data_asof_date="2026-05-28"))
     obs = list_observable_detections(
         conn, source="pipeline", observation_date="2026-05-29")
     assert len(obs) == 1
     assert obs[0].ticker == "AAA"
-
-
-def test_observable_excludes_terminal_latest_status(conn):
-    with conn:
-        det_id = insert_detection_event(conn, _event(data_asof_date="2026-05-28"))
-        insert_observation(conn, PatternForwardObservation(
-            observation_id=None, detection_id=det_id,
-            observation_date="2026-05-29",
-            ohlc_today_json='{"close":11.0,"provider":"yfinance"}',
-            status="expired", sessions_since_detection=1,
-            created_at="2026-05-29T00:00:00Z",
-            status_change_event="observation_horizon_reached",
-        ))
-    # latest status terminal -> not observable on the next day.
-    obs = list_observable_detections(
-        conn, source="pipeline", observation_date="2026-05-30")
-    assert obs == []
 ```
+
+(The latest-status-terminal exclusion -- which requires `insert_observation` -- is deferred to T-2.3 Step 5 to avoid a forward import; see T-2.3.)
 
 - [ ] **Step 6: Add `list_observable_detections` (window-function latest-status)**
 
@@ -1059,7 +1051,7 @@ def list_observable_detections(
     return [_row_to_detection_event(r) for r in conn.execute(sql, params)]
 ```
 
-- [ ] **Step 7: Run -- PASS** (this depends on T-2.3's `insert_observation`; if T-2.3 is not yet landed, gate the cross-repo tests with the observations repo import -- in subagent-driven execution T-2.3 lands before these cross-repo assertions, or split this step's observation-dependent tests into T-2.3).
+- [ ] **Step 7: Run -- PASS** (no cross-repo dependency; the observation-dependent observable case is deferred to T-2.3 Step 5).
 
 Run: `python -m pytest tests/data/repos/test_pattern_detection_events_repo.py -q`
 Expected: PASS.
@@ -1347,6 +1339,21 @@ def test_restrict_fk_blocks_deleting_detection_with_observations(conn):
             )
 
 
+def test_observable_excludes_terminal_latest_status(conn):
+    # CROSS-REPO (deferred here from T-2.2 to avoid a forward import): a
+    # detection whose latest observation status is terminal drops out of
+    # list_observable_detections (Codex chain #1 Critical #1 ordering fix).
+    from swing.data.repos.pattern_detection_events import list_observable_detections
+    det = _det(conn, data_asof_date="2026-05-28")
+    with conn:
+        insert_observation(conn, _obs(
+            det, "2026-05-29", status="expired", sessions_since_detection=1,
+            status_change_event="observation_horizon_reached"))
+    obs = list_observable_detections(
+        conn, source="pipeline", observation_date="2026-05-30")
+    assert obs == []
+
+
 def test_repo_defines_no_update_or_delete_functions():
     names = [n for n, o in inspect.getmembers(mod, inspect.isfunction)
              if o.__module__ == mod.__name__]
@@ -1438,6 +1445,16 @@ def test_helpers_strip_in_progress_partial_bar():
     bars = _bars(60, last_date="2026-05-29")  # last bar 2026-05-29 > asof
     out = compute_atr_pct(bars, asof="2026-05-28")
     assert out is not None  # did not crash; used <= asof slice
+
+
+def test_helpers_return_none_on_empty_or_columnless_frame():
+    # The Major-#1 empty-frame degrade path: an empty DataFrame (passed when
+    # bars are unexpectedly absent for an emitted verdict) returns None for
+    # every computed field rather than raising KeyError.
+    empty = pd.DataFrame()
+    assert compute_atr_pct(empty, asof="2026-05-28") is None
+    assert compute_return_pct(empty, asof="2026-05-28", lookback_sessions=90) is None
+    assert compute_52w_high_proximity_pct(empty, asof="2026-05-28") is None
 ```
 
 - [ ] **Step 2: Run to verify fail; Step 3: write `temporal_metadata.py`**
@@ -1462,6 +1479,20 @@ from datetime import date
 import pandas as pd
 
 
+_REQUIRED_OHLCV_COLS = ("Open", "High", "Low", "Close", "Volume")
+
+
+def _usable(bars: pd.DataFrame, *, need: tuple[str, ...]) -> bool:
+    """True only if bars is a non-empty frame carrying the needed columns.
+    Guards the empty-frame path (Codex chain #1 R2 Major #1): the detect loop
+    may pass an empty DataFrame when bars are unexpectedly absent for an
+    emitted verdict; the helpers then return None rather than KeyError."""
+    return (
+        bars is not None and not bars.empty
+        and all(c in bars.columns for c in need)
+    )
+
+
 def _slice_to_asof(bars: pd.DataFrame, asof: str) -> pd.DataFrame:
     """Drop any bar dated AFTER asof (strips the yfinance in-progress partial
     bar per the CLAUDE.md gotcha). asof is an ISO date string."""
@@ -1478,6 +1509,8 @@ def _close_series(bars: pd.DataFrame) -> pd.Series:
 
 def compute_atr_pct(bars: pd.DataFrame, *, asof: str, period: int = 14) -> float | None:
     """True ATR(period) / last_close * 100 (distinct from candidates.adr_pct)."""
+    if not _usable(bars, need=("High", "Low", "Close")):
+        return None
     df = _slice_to_asof(bars, asof)
     if len(df) < period + 1:
         return None
@@ -1498,6 +1531,8 @@ def compute_return_pct(
     bars: pd.DataFrame, *, asof: str, lookback_sessions: int,
 ) -> float | None:
     """(close_today - close_N_sessions_ago) / close_N_sessions_ago * 100."""
+    if not _usable(bars, need=("Close",)):
+        return None
     close = _close_series(_slice_to_asof(bars, asof))
     if len(close) < lookback_sessions + 1:
         return None
@@ -1511,6 +1546,8 @@ def compute_return_pct(
 def compute_52w_high_proximity_pct(bars: pd.DataFrame, *, asof: str) -> float | None:
     """(high_52w - close_today) / high_52w * 100 over the last 252 sessions
     (reuses the trend_template.py TT7 formula). Lower = closer to the high."""
+    if not _usable(bars, need=("Close",)):
+        return None
     close = _close_series(_slice_to_asof(bars, asof))
     if len(close) < 1:
         return None
@@ -1627,17 +1664,44 @@ def test_capture_returns_chart_render_id(conn):
 def test_capture_returns_none_on_render_failure(conn):
     with patch(
         "swing.pipeline.detection_chart_capture.render_theme2_annotated_svg",
-        return_value=b"",  # empty bytes -> F6 ChartRender barrier raises
+        return_value=b"",  # empty bytes -> F6 ChartRender barrier raises ValueError
     ):
         cid = render_and_capture_detection_chart(
             conn, ticker="AAA", bars=_bars(), pattern_evaluation=_pe(),
             pipeline_run_id=1, data_asof_date="2026-05-28")
-    assert cid is None
+    assert cid is None  # EXPECTED failure class (ValueError) -> NULL
+
+
+def test_capture_propagates_unexpected_error(conn):
+    # Codex chain #1 R2 Minor #1: an UNEXPECTED exception class (a programming
+    # bug, e.g. TypeError) is NOT swallowed by the narrow except -- it
+    # propagates so the caller logs it distinctly (not masked as "render
+    # failed"). The detect-loop's own try/except then degrades to NULL, but
+    # the bug is visible.
+    with patch(
+        "swing.pipeline.detection_chart_capture.render_theme2_annotated_svg",
+        side_effect=TypeError("boom"),
+    ):
+        with pytest.raises(TypeError):
+            render_and_capture_detection_chart(
+                conn, ticker="AAA", bars=_bars(), pattern_evaluation=_pe(),
+                pipeline_run_id=1, data_asof_date="2026-05-28")
 
 
 def test_capture_cache_collision_last_writer_wins(conn):
-    # Two captures on the same (ticker, run, class) key -> 2nd refresh
-    # replaces the row (DELETE-then-INSERT); only one row survives.
+    # Renderer-kwargs-uniformity / cache-collision mapping (Codex chain #1
+    # Major #8; spec section 8.2 Expansion #10c): because V1+ renders the
+    # theme2_annotated chart DIRECTLY (not through chart_jit's cache-read
+    # path), the spec's "render-once, serve-cached, assert call_count == 1"
+    # JIT concern does NOT apply at the JIT layer. Redundant renders are
+    # instead prevented at the DETECT-STEP level by the SELECT-then-skip
+    # idempotency gate (T-2.4 step 11): each (ticker, detection_date, class)
+    # is emitted once per run, and a re-run skips BEFORE calling capture --
+    # so the renderer is invoked at most once per detection per run. This
+    # test covers the remaining shared-surface concern: two captures on the
+    # same (ticker, run, class) key -> 2nd refresh replaces the row
+    # (DELETE-then-INSERT); only one row survives (last-writer-wins
+    # coexistence with the exemplar theme2_annotated writer, FB-N3).
     c1 = render_and_capture_detection_chart(
         conn, ticker="AAA", bars=_bars(), pattern_evaluation=_pe(),
         pipeline_run_id=1, data_asof_date="2026-05-28")
@@ -1698,7 +1762,14 @@ def render_and_capture_detection_chart(
             pattern_class=pattern_evaluation.pattern_class,
         )
         return refresh_chart_render(conn, chart)
-    except (ValueError, Exception) as exc:  # F6 barrier (ValueError) or render error
+    except (ValueError, RuntimeError, OSError) as exc:
+        # NARROW catch (Codex chain #1 Major #7): isolate the EXPECTED failure
+        # classes only -- ValueError (the F6 empty-bytes ChartRender barrier +
+        # any annotator value error), RuntimeError/OSError (matplotlib render
+        # hiccups, font/backend I/O). Programming errors (AttributeError,
+        # TypeError, KeyError) propagate to the caller's emit-loop try/except
+        # (T-2.4 step 11) where they are logged distinctly -- they must NOT be
+        # silently masked as a chart-render failure.
         log.warning(
             "detection chart capture failed for (%s, %s): %s",
             ticker, pattern_evaluation.pattern_class, exc,
@@ -1706,7 +1777,7 @@ def render_and_capture_detection_chart(
         return None
 ```
 
-> **NOTE for the implementer:** `except (ValueError, Exception)` is redundant (`Exception` subsumes `ValueError`); written this way to document the two failure classes. Collapse to `except Exception as exc:` for ruff cleanliness; keep the docstring distinction. Do NOT catch `LeaseRevokedError` here -- this helper does not run lease steps, but if a future caller passes a lease-bound conn, re-raise lease errors. (Codex chain #1 to confirm the exception breadth is correct -- best-effort capture must never abort the detect step.)
+> **NOTE for the implementer:** the narrow `except (ValueError, RuntimeError, OSError)` is deliberate -- spec §8.3 requires render-failure -> NULL + warning, but NOT masking integration/programming bugs. The detection is still never lost: the caller's emit-loop `try/except` (T-2.4 step 11) wraps the capture call and sets `chart_render_id=None` + warns on ANY exception, so even a propagated programming error degrades to NULL gracefully -- but it surfaces as a distinct ERROR-level log, not a silent "chart render failed" warning. Do NOT catch `LeaseRevokedError`. (If matplotlib raises a class outside the three caught here in practice, widen by ADDING the specific class with a comment -- never go back to bare `except Exception`.)
 
 - [ ] **Step 7: Run chart-capture tests -- PASS (may need matplotlib Agg backend in CI)**
 
@@ -1835,20 +1906,44 @@ Expected: PASS (no regression in existing chart tests).
       ).fetchone()
       if existing is not None:
           continue
-      try:
-          chart_render_id = render_and_capture_detection_chart(
-              conn, ticker=ticker, bars=bars_by_ticker[ticker],
-              pattern_evaluation=row, pipeline_run_id=pipeline_run_id,
-              data_asof_date=data_asof_date,
-          )
-      except Exception as exc:
+      # INVARIANT (Codex chain #1 R2 Major #1): EVERY emitted verdict appends a
+      # pattern_detection_events row -- substrate completeness is the invariant.
+      # bars SHOULD always be present (the emit came from a candidate whose bars
+      # were fetched in Pass-1). If they are absent (internal inconsistency), DO
+      # NOT skip the detection append (that would write pattern_evaluations while
+      # silently missing the permanent substrate); instead degrade gracefully:
+      # warn, skip the chart, and compute metadata from an empty frame (the
+      # compute_* helpers return None on len-0 input via the _usable guard) so
+      # the detection still lands. `pd` is already imported inside this function
+      # (runner.py:1441), so no new import is needed.
+      bars = bars_by_ticker.get(ticker)
+      if bars is None:
+          bars = pd.DataFrame()
+          if run_warnings is not None:
+              run_warnings.append({
+                  "step": "pattern_detect", "ticker": ticker,
+                  "pattern_class": pattern_class,
+                  "reason": "bars absent for emitted verdict (internal); "
+                            "detection written: per_pattern_metadata_json is a "
+                            "valid JSON string with computed fields = JSON null; "
+                            "no chart",
+              })
           chart_render_id = None
-          log.warning("pattern_detect: chart capture errored ... %s", exc)
-      if chart_render_id is None and run_warnings is not None:
-          run_warnings.append({
-              "step": "pattern_detect", "ticker": ticker,
-              "pattern_class": pattern_class, "reason": "chart render failed",
-          })
+      else:
+          try:
+              chart_render_id = render_and_capture_detection_chart(
+                  conn, ticker=ticker, bars=bars, pattern_evaluation=row,
+                  pipeline_run_id=pipeline_run_id, data_asof_date=data_asof_date,
+              )
+          except Exception as exc:  # programming error -> distinct ERROR; still NULL
+              chart_render_id = None
+              log.error("pattern_detect: chart capture unexpected error "
+                        "(%s, %s): %s", ticker, pattern_class, exc)
+          if chart_render_id is None and run_warnings is not None:
+              run_warnings.append({
+                  "step": "pattern_detect", "ticker": ticker,
+                  "pattern_class": pattern_class, "reason": "chart render failed",
+              })
       detection = PatternDetectionEvent(
           detection_id=None, ticker=ticker, detection_date=asof_run,
           data_asof_date=data_asof_date, pattern_class=pattern_class,
@@ -1857,7 +1952,7 @@ Expected: PASS (no regression in existing chart tests).
           finviz_screen_state=build_finviz_screen_state(cand),
           source="pipeline",
           per_pattern_metadata_json=build_per_pattern_metadata(
-              cand, bars_by_ticker[ticker], asof=data_asof_date),
+              cand, bars, asof=data_asof_date),
           created_at=_dt_inner.now(UTC).isoformat(),
           pipeline_run_id=pipeline_run_id, chart_render_id=chart_render_id,
       )
@@ -1868,29 +1963,129 @@ Expected: PASS (no regression in existing chart tests).
           continue
 ```
 
-> **Implementer wiring notes (verify against production at execute time):**
-> - `bars_by_ticker` -- the detect loop fetches `bars = ohlcv_cache.get_or_fetch(ticker=ticker, window_days=400)` at runner.py:1603 inside the Pass-1/window-build loop. T-2.4 step 11 must thread those bars into a `bars_by_ticker: dict[str, pd.DataFrame]` keyed by ticker so the emit loop (Pass-2) can reuse them WITHOUT re-fetching (gotcha #5 + L2). If the bars are not retained to Pass-2, retain them when first fetched (a dict populated in the fetch loop). **DO NOT re-fetch** in the emit loop.
-> - `asof_run` (= `_resolve_eval_run_action_session_date(...)`, runner.py:1499) is `detection_date`; `data_asof_date = lease_data_asof(cfg, lease)` (runner.py:977). Compute `data_asof_date` ONCE before the loop.
-> - All imports (`PatternDetectionEvent`, `insert_detection_event`, `build_*`, `render_and_capture_detection_chart`) added at the top of runner.py.
+**The `bars_by_ticker` retention patch (Codex chain #1 Major #4 -- shown as an executable patch, not a note).** The detect step fetches bars at `runner.py:1603` inside the Pass-1/window-build loop. Retain them in a dict so the Pass-2 emit loop reuses them WITHOUT re-fetching (gotcha #5 + L2):
 
-- [ ] **Step 12: Write the detect-extension integration test**
+```python
+# swing/pipeline/runner.py  -- at the Pass-1 fetch site (~line 1603), capture bars.
+# Initialize the dict before the Pass-1 loop:
++    bars_by_ticker: dict[str, pd.DataFrame] = {}
+     # ... inside the Pass-1 loop, where bars are fetched:
+     bars = ohlcv_cache.get_or_fetch(ticker=ticker, window_days=400)
++    bars_by_ticker[ticker] = bars      # retain for Pass-2 metadata + chart capture
+```
+
+```python
+# swing/pipeline/runner.py  -- once, before the Pass-2 emit loop:
++    data_asof_date = lease_data_asof(cfg, lease)            # detector data cutoff (R2 M#1)
++    candidate_by_ticker = {c.ticker: c for c in candidates}
+```
+
+> **Implementer wiring notes (verify against production at execute time):**
+> - **DO NOT re-fetch** in the emit loop -- the emit loop reads `bars_by_ticker.get(ticker)`. If a ticker is absent (defensive internal-inconsistency case), DO NOT skip the detection append (substrate-completeness invariant, Codex chain #1 R2 Major #1): write the detection with an empty-frame metadata (computed fields -> None via the `_usable` guard) + `chart_render_id=None` + a `warnings_json` entry. Never re-fetch (gotcha #5).
+> - `asof_run` (= `_resolve_eval_run_action_session_date(...)`, runner.py:1499) is `detection_date`; `data_asof_date = lease_data_asof(cfg, lease)` (runner.py:977) is the forward-walk boundary anchor.
+> - All imports (`PatternDetectionEvent`, `insert_detection_event`, `build_structural_anchors_json`, `build_finviz_screen_state`, `build_per_pattern_metadata`, `render_and_capture_detection_chart`) added at the top of runner.py.
+
+- [ ] **Step 12: Write the detect-extension integration tests (REUSE the existing fixture)**
+
+> **Base (Codex chain #1 Major #1):** the production integration harness ALREADY exists at `tests/pipeline/test_step_pattern_detect.py` (`_build_bars`, `insert_candidates`, `insert_evaluation_run`, a context manager that drives `_step_pattern_detect`). The new module IMPORTS those helpers (or copies the fixture pattern) so the detection-event INSERT shape matches the production emitter exactly (Phase-12 C.D anti-drift). Define a thin `_drive_detect(conn, cfg, lease, eval_run_id, ohlcv_cache, run_warnings)` wrapper mirroring the existing module's drive helper, plus a `run_warnings: list[dict]` arg. The tests below are EXECUTABLE as written once that shared fixture is imported.
 
 ```python
 # tests/pipeline/test_step_pattern_detect_temporal_extension.py
-# Plant candidates + drive the detect step (or a focused harness that exercises
-# the emit loop with a stubbed resolved_emit_list) and assert:
-#   - a pattern_detection_events row is appended per emitted verdict
-#   - per_pattern_metadata_json carries sector/industry/adr_pct + computed
-#     atr_pct/ret_90d/prox_52w + market_cap is null
-#   - chart_render_id is non-NULL when the render succeeds
-#   - chart_render_id is NULL + a run_warnings entry exists when the render fails
-#   - a second run on the same (ticker, detection_date, class) is a no-op (idempotent)
-#   - the existing pattern_evaluations row is STILL written (L7 unchanged)
-#   - empty aplus pool appends the gotcha #27 warning + writes nothing
-# Fixtures derive from the production emitter shape (real evidence dataclasses).
+from __future__ import annotations
+import json
+import sqlite3
+from unittest.mock import patch
+import pytest
+from swing.data.repos.pattern_detection_events import list_detection_events
+
+# Reuse the proven harness from the existing detect-step integration module.
+from tests.pipeline.test_step_pattern_detect import (  # type: ignore
+    _build_bars, _seed_aplus_candidate_and_run, _drive_detect, _StubOhlcvCache,
+)
+# (If those helper names differ in the existing module, alias them in a small
+#  local conftest shim; the implementer confirms the exact names at execute
+#  time -- the existing module's public fixture surface is the contract.)
+
+
+def test_detection_event_appended_with_metadata(tmp_db_v22):
+    conn, cfg, lease, eval_run_id = _seed_aplus_candidate_and_run(
+        tmp_db_v22, ticker="AAA", sector="Tech", industry="Software",
+        adr_pct=3.2, rs_rank=42)
+    run_warnings: list[dict] = []
+    _drive_detect(conn, cfg, lease, eval_run_id,
+                  _StubOhlcvCache({"AAA": _build_bars()}), run_warnings)
+    dets = list_detection_events(conn, ticker="AAA")
+    assert len(dets) >= 1
+    md = json.loads(dets[0].per_pattern_metadata_json)
+    assert md["sector"] == "Tech" and md["industry"] == "Software"
+    assert md["adr_pct"] == pytest.approx(3.2)
+    assert md["rs_rank"] == 42
+    assert "atr_pct" in md and "ret_90d" in md and "prox_52w_high_pct" in md
+    assert md["market_cap"] is None  # OQ-16 LOCK
+    assert dets[0].source == "pipeline"
+    assert dets[0].data_asof_date == dets[0].data_asof_date  # populated (not None)
+    # structural_anchors_json carries window + evidence (incl. pivot_price).
+    anchors = json.loads(dets[0].structural_anchors_json)
+    assert "window" in anchors and "evidence" in anchors
+
+
+def test_chart_render_id_populated_on_success(tmp_db_v22):
+    conn, cfg, lease, eval_run_id = _seed_aplus_candidate_and_run(tmp_db_v22, ticker="AAA")
+    _drive_detect(conn, cfg, lease, eval_run_id,
+                  _StubOhlcvCache({"AAA": _build_bars()}), [])
+    det = list_detection_events(conn, ticker="AAA")[0]
+    assert det.chart_render_id is not None
+    row = conn.execute("SELECT surface, pattern_class FROM chart_renders "
+                       "WHERE id = ?", (det.chart_render_id,)).fetchone()
+    assert row[0] == "theme2_annotated" and row[1] == det.pattern_class
+
+
+def test_chart_render_failure_leaves_null_and_warns(tmp_db_v22):
+    conn, cfg, lease, eval_run_id = _seed_aplus_candidate_and_run(tmp_db_v22, ticker="AAA")
+    run_warnings: list[dict] = []
+    with patch("swing.pipeline.runner.render_and_capture_detection_chart",
+               return_value=None):
+        _drive_detect(conn, cfg, lease, eval_run_id,
+                      _StubOhlcvCache({"AAA": _build_bars()}), run_warnings)
+    det = list_detection_events(conn, ticker="AAA")[0]
+    assert det.chart_render_id is None
+    assert any(w.get("reason") == "chart render failed" for w in run_warnings)
+
+
+def test_idempotent_second_run_no_duplicate_detection(tmp_db_v22):
+    conn, cfg, lease, eval_run_id = _seed_aplus_candidate_and_run(tmp_db_v22, ticker="AAA")
+    cache = _StubOhlcvCache({"AAA": _build_bars()})
+    _drive_detect(conn, cfg, lease, eval_run_id, cache, [])
+    first = list_detection_events(conn, ticker="AAA")
+    _drive_detect(conn, cfg, lease, eval_run_id, cache, [])  # re-run same run
+    second = list_detection_events(conn, ticker="AAA")
+    assert len(second) == len(first)  # SELECT-then-skip idempotency
+
+
+def test_pattern_evaluations_still_written_l7(tmp_db_v22):
+    conn, cfg, lease, eval_run_id = _seed_aplus_candidate_and_run(tmp_db_v22, ticker="AAA")
+    _drive_detect(conn, cfg, lease, eval_run_id,
+                  _StubOhlcvCache({"AAA": _build_bars()}), [])
+    n_eval = conn.execute("SELECT COUNT(*) FROM pattern_evaluations").fetchone()[0]
+    assert n_eval >= 1  # the existing write is UNCHANGED (L7)
+
+
+def test_empty_aplus_pool_warns_and_writes_nothing(tmp_db_v22):
+    conn, cfg, lease, eval_run_id = _seed_run_with_zero_aplus(tmp_db_v22)
+    run_warnings: list[dict] = []
+    _drive_detect(conn, cfg, lease, eval_run_id, _StubOhlcvCache({}), run_warnings)
+    assert conn.execute("SELECT COUNT(*) FROM pattern_detection_events").fetchone()[0] == 0
+    entry = next(w for w in run_warnings if w["step"] == "pattern_detect")
+    assert entry["actual_aplus_pool"] == 0
+    assert entry["reason"] == "zero aplus candidates"
 ```
 
-(Full test bodies follow the §L fixture strategy; each assertion is a separate `def test_...`. The implementer writes ~10-14 discriminating tests here -- one per acceptance bullet -- using the real `Candidate` + evidence dataclasses so the INSERT shape matches production, per the Phase-12 C.D synthetic-fixture-vs-production-emitter gotcha.)
+> **Fixture helpers the implementer adds** (concrete, in the test module / a conftest):
+> - `tmp_db_v22` -- a pytest fixture: `sqlite3.connect` + `PRAGMA foreign_keys=ON` + `run_migrations(conn, target_version=22, backup_dir=tmp_path)`.
+> - `_seed_aplus_candidate_and_run(conn, *, ticker, sector="", industry="", adr_pct=None, rs_rank=None)` -- inserts an `EvaluationRun` + one `bucket='aplus'` `Candidate` (via the existing `insert_candidates` + `insert_evaluation_run` from the base module) + a `pipeline_runs` row with a known `data_asof_date`; returns `(conn, cfg, lease, eval_run_id)`. Mirror the existing module's run/lease construction.
+> - `_seed_run_with_zero_aplus(conn)` -- same but inserts only non-aplus candidates.
+> - `_StubOhlcvCache(bars_by_ticker)` -- a stub with `get_or_fetch(*, ticker, window_days)` returning `bars_by_ticker[ticker]` (a `_build_bars()` frame). Mirror the existing module's OHLCV stub.
+> - `_drive_detect(...)` -- calls `_step_pattern_detect(cfg=cfg, lease=lease, eval_run_id=eval_run_id, ohlcv_cache=cache, run_warnings=run_warnings)` inside the existing module's lease/fenced-write context.
 
 - [ ] **Step 13: Add the `PipelineConfig` window fields (needed by T-2.5; land here so detect+observe share the config edit) is DEFERRED to T-2.5 step 1.** Run the full T-2.4 suite + ruff.
 
@@ -2114,10 +2309,21 @@ def _bar_for_date(cfg, ohlcv_cache, ticker: str, observation_date: str):
     from datetime import date, timedelta
     from swing.data.ohlcv_archive import resolve_ohlcv_window
     # 1. Populate the archive (write-through; the same call detect makes).
+    #    Best-effort by design (Codex chain #1 Major #6): the date-anchored
+    #    archive read in step 2 is AUTHORITATIVE. A get_or_fetch failure here
+    #    is not fatal -- if it leaves no bar for observation_date, step 2's
+    #    "no match" path returns None and the CALLER records a #27 no-bar
+    #    warning + skips (operator-visible). This runtime swallow is distinct
+    #    from the PLAN-TIME verify-or-escalate below: the implementer confirms
+    #    ONCE (T-2.5 step 0) that get_or_fetch write-throughs to the same
+    #    prices_cache_dir resolve_ohlcv_window reads; a structural mismatch
+    #    there is an ESCALATION (a #24-family freshness desync), NOT this
+    #    per-ticker runtime warning.
     try:
         ohlcv_cache.get_or_fetch(ticker=ticker, window_days=400)
-    except Exception:
-        pass  # archive may already be fresh; the read below is authoritative
+    except Exception as exc:  # noqa: BLE001 - best-effort populate; read is authoritative
+        log.debug("observe populate get_or_fetch best-effort miss for %s: %s",
+                  ticker, exc)
     # 2. Date-anchored archive read with per-asof_date provenance.
     start = (date.fromisoformat(observation_date) - timedelta(days=10)).isoformat()
     df, provenance = resolve_ohlcv_window(
@@ -2270,42 +2476,151 @@ def _sessions_since(data_asof_date: str, observation_date: str) -> int:
 
 > **Implementer note:** the agent re-grep found the completion path returns `RunResult(...)` at runner.py:974 without an explicit `lease.release(state="complete")` in the immediate frame -- T-2.5 step 0 MUST locate the actual complete-state release (it exists: `lease.release` accepts `state` + `warnings_json`, lease.py:74-86). If the orchestrator finalizes via a different helper (e.g. `finalize_run` directly), thread `warnings_json` there. Empty-state representation MUST be `None`, not `"[]"` (audit-envelope-empty-state gotcha).
 
-- [ ] **Step 6: Write the observe-step integration tests (forward-walk + provenance + idempotency)**
+- [ ] **Step 6: Write the observe-step integration tests (concrete, executable)**
+
+> **ohlc_today_json shape contract (Codex chain #1 Major #5):** `_bar_for_date` returns a dict with EXACTLY these keys -- `{"open": float, "high": float, "low": float, "close": float, "volume": float, "provider": "schwab_api"|"yfinance"}` -- and `_step_pattern_observe` serializes it via `json.dumps(bar)`. The `provider` key is REQUIRED (OQ-17). The tests below assert the key by FIELD (not substring match). A future ruleset replay reads these exact keys.
+
+> **Fixture scaffolding (concrete helpers the implementer adds to the module):**
+> - `tmp_db_v22(tmp_path)` -- file-backed `sqlite3` migrated to v22 (path retained for the observe step's own `connect`).
+> - `_FakeLease(db_path, run_id, data_asof)` -- implements the 3 members `_step_pattern_observe` uses: `run_id` (int), `step(name)` (no-op), and `fenced_write()` (a `contextmanager` yielding a `sqlite3` connection to `db_path` with `BEGIN IMMEDIATE`/COMMIT). The implementer MAY instead use the real `Lease` via the existing pipeline test helpers; `_FakeLease` keeps these tests self-contained.
+> - `_cfg(tmp_path, db_path)` -- a `Config` (or a lightweight stub) exposing `cfg.paths.db_path`, `cfg.paths.prices_cache_dir`, and `cfg.pipeline.observe_max_pending_window_sessions` / `observe_max_post_trigger_window_sessions`.
+> - `_plant_detection(conn, *, ticker, data_asof_date, pivot=10.0, invalidation=8.0)` -- inserts a `PatternDetectionEvent` with a `structural_anchors_json` carrying `{"evidence": {"pivot_price": pivot, "contractions": [{"low": invalidation}]}}` (vcp class).
+> - `_stub_window(close, *, high=None, low=None, provider="yfinance", date_)` -- returns `(pd.DataFrame([{ "asof_date": date_, "open": close, "high": high or close, "low": low or close, "close": close, "volume": 1e6}]), {date_: provider})` to patch `swing.data.ohlcv_archive.resolve_ohlcv_window` (imported locally in `_bar_for_date`).
 
 ```python
-# tests/pipeline/test_step_pattern_observe.py  (append; the spec section 11.6 set)
-# Drive _step_pattern_observe with a mocked OhlcvCache + a stubbed
-# resolve_ohlcv_window returning canned production-shape frames. Assert:
-#   - open detections get one observation for observation_date
-#   - ohlc_today_json carries the provider tag ("yfinance"/"schwab_api")
-#   - status transitions: pending->triggered_open on pivot breakout;
-#     pending->invalidated on structural break; pending->expired at window
-#   - sessions_since_detection == computed bdate delta from data_asof_date
-#   - the first observation lands on the first session with date > data_asof_date
-#   - re-running the step for the same observation_date is a no-op (idempotent;
-#     no UNIQUE violation)
-#   - empty open-pool appends the gotcha #27 warning
-#   - a ticker with no bar for observation_date appends a no-bar warning + skips
-#   - FORWARD-WALK FREEZE (#26): plant a detection + observation at date N;
-#     mutate the archive bar for date N; re-run observe at N+1; assert the
-#     frozen ohlc_today_json for date N is UNCHANGED (never re-read)
+# tests/pipeline/test_step_pattern_observe.py  (append -- integration set)
+import json
+from unittest.mock import patch
+from swing.pipeline.runner import _step_pattern_observe, lease_data_asof
+from swing.data.repos.pattern_forward_observations import get_observations_for_detection
+
+
+def test_observation_appended_with_provider_tag(tmp_db_v22, tmp_path):
+    conn, db_path = tmp_db_v22
+    det_id = _plant_detection(conn, ticker="AAA", data_asof_date="2026-05-28")
+    cfg = _cfg(tmp_path, db_path)
+    lease = _FakeLease(db_path, run_id=1, data_asof="2026-05-29")
+    warnings: list[dict] = []
+    with patch("swing.data.ohlcv_archive.resolve_ohlcv_window",
+               return_value=_stub_window(9.0, provider="yfinance", date_="2026-05-29")):
+        with patch("swing.pipeline.runner.lease_data_asof", return_value="2026-05-29"):
+            _step_pattern_observe(cfg=cfg, lease=lease,
+                                  ohlcv_cache=_StubOhlcvCache({"AAA": _build_bars()}),
+                                  run_warnings=warnings)
+    chain = get_observations_for_detection(conn, det_id)
+    assert len(chain) == 1
+    bar = json.loads(chain[0].ohlc_today_json)
+    assert bar["provider"] == "yfinance"            # OQ-17 by FIELD
+    assert set(bar) == {"open", "high", "low", "close", "volume", "provider"}
+    assert chain[0].observation_date == "2026-05-29"
+    assert chain[0].status == "pending"             # below pivot, above invalidation
+
+
+def test_pending_to_triggered_open_on_breakout(tmp_db_v22, tmp_path):
+    conn, db_path = tmp_db_v22
+    det_id = _plant_detection(conn, ticker="AAA", data_asof_date="2026-05-28", pivot=10.0)
+    cfg = _cfg(tmp_path, db_path); lease = _FakeLease(db_path, 1, "2026-05-29")
+    with patch("swing.data.ohlcv_archive.resolve_ohlcv_window",
+               return_value=_stub_window(10.2, high=10.5, date_="2026-05-29")):
+        with patch("swing.pipeline.runner.lease_data_asof", return_value="2026-05-29"):
+            _step_pattern_observe(cfg=cfg, lease=lease,
+                                  ohlcv_cache=_StubOhlcvCache({"AAA": _build_bars()}),
+                                  run_warnings=[])
+    obs = get_observations_for_detection(conn, det_id)[0]
+    assert obs.status == "triggered_open" and obs.status_change_event == "entry_fired"
+
+
+def test_sessions_since_detection_counts_from_data_asof(tmp_db_v22, tmp_path):
+    conn, db_path = tmp_db_v22
+    det_id = _plant_detection(conn, ticker="AAA", data_asof_date="2026-05-22")  # Fri
+    cfg = _cfg(tmp_path, db_path); lease = _FakeLease(db_path, 1, "2026-05-29")
+    with patch("swing.data.ohlcv_archive.resolve_ohlcv_window",
+               return_value=_stub_window(9.0, date_="2026-05-29")):  # next Fri
+        with patch("swing.pipeline.runner.lease_data_asof", return_value="2026-05-29"):
+            _step_pattern_observe(cfg=cfg, lease=lease,
+                                  ohlcv_cache=_StubOhlcvCache({"AAA": _build_bars()}),
+                                  run_warnings=[])
+    obs = get_observations_for_detection(conn, det_id)[0]
+    # 5 business days from 2026-05-22 (excl) to 2026-05-29 (incl).
+    assert obs.sessions_since_detection == 5
+
+
+def test_idempotent_same_day_reobservation(tmp_db_v22, tmp_path):
+    conn, db_path = tmp_db_v22
+    det_id = _plant_detection(conn, ticker="AAA", data_asof_date="2026-05-28")
+    cfg = _cfg(tmp_path, db_path); lease = _FakeLease(db_path, 1, "2026-05-29")
+    stub = _stub_window(9.0, date_="2026-05-29")
+    with patch("swing.data.ohlcv_archive.resolve_ohlcv_window", return_value=stub):
+        with patch("swing.pipeline.runner.lease_data_asof", return_value="2026-05-29"):
+            _step_pattern_observe(cfg=cfg, lease=lease,
+                                  ohlcv_cache=_StubOhlcvCache({"AAA": _build_bars()}), run_warnings=[])
+            _step_pattern_observe(cfg=cfg, lease=lease,  # re-run same observation_date
+                                  ohlcv_cache=_StubOhlcvCache({"AAA": _build_bars()}), run_warnings=[])
+    assert len(get_observations_for_detection(conn, det_id)) == 1  # no dup; no UNIQUE error
+
+
+def test_empty_open_pool_warns(tmp_db_v22, tmp_path):
+    conn, db_path = tmp_db_v22  # no detections planted
+    cfg = _cfg(tmp_path, db_path); lease = _FakeLease(db_path, 1, "2026-05-29")
+    warnings: list[dict] = []
+    with patch("swing.pipeline.runner.lease_data_asof", return_value="2026-05-29"):
+        _step_pattern_observe(cfg=cfg, lease=lease,
+                              ohlcv_cache=_StubOhlcvCache({}), run_warnings=warnings)
+    assert any(w["step"] == "pattern_observe" and w["actual_open_pool"] == 0
+               for w in warnings)
+
+
+def test_no_bar_for_date_warns_and_skips(tmp_db_v22, tmp_path):
+    conn, db_path = tmp_db_v22
+    det_id = _plant_detection(conn, ticker="AAA", data_asof_date="2026-05-28")
+    cfg = _cfg(tmp_path, db_path); lease = _FakeLease(db_path, 1, "2026-05-29")
+    warnings: list[dict] = []
+    import pandas as pd
+    empty = (pd.DataFrame(columns=["asof_date", "open", "high", "low", "close", "volume"]), {})
+    with patch("swing.data.ohlcv_archive.resolve_ohlcv_window", return_value=empty):
+        with patch("swing.pipeline.runner.lease_data_asof", return_value="2026-05-29"):
+            _step_pattern_observe(cfg=cfg, lease=lease,
+                                  ohlcv_cache=_StubOhlcvCache({"AAA": _build_bars()}),
+                                  run_warnings=warnings)
+    assert get_observations_for_detection(conn, det_id) == []
+    assert any(w.get("reason") == "no bar for observation_date" for w in warnings)
+
+
+def test_forward_walk_freezes_past_bar(tmp_db_v22, tmp_path):
+    # #26/#37-by-construction discriminator: a past observation's frozen
+    # ohlc_today_json is NEVER re-read from a later archive.
+    conn, db_path = tmp_db_v22
+    det_id = _plant_detection(conn, ticker="AAA", data_asof_date="2026-05-27")
+    cfg = _cfg(tmp_path, db_path)
+    # Session N = 2026-05-28: record close 9.00.
+    with patch("swing.data.ohlcv_archive.resolve_ohlcv_window",
+               return_value=_stub_window(9.00, date_="2026-05-28")):
+        with patch("swing.pipeline.runner.lease_data_asof", return_value="2026-05-28"):
+            _step_pattern_observe(cfg=cfg, lease=_FakeLease(db_path, 1, "2026-05-28"),
+                                  ohlcv_cache=_StubOhlcvCache({"AAA": _build_bars()}), run_warnings=[])
+    obs_N_before = json.loads(get_observations_for_detection(conn, det_id)[0].ohlc_today_json)
+    # Session N+1 = 2026-05-29: the archive NOW reports a DIFFERENT close for N
+    # (simulating gotcha #26 drift) -- but observe at N+1 only records N+1.
+    def _drifted(ticker, *, start, end, cache_dir):
+        import pandas as pd
+        rows = [{"asof_date": "2026-05-28", "open": 9.99, "high": 9.99, "low": 9.99,
+                 "close": 9.99, "volume": 1e6},  # DRIFTED date-N bar
+                {"asof_date": "2026-05-29", "open": 9.10, "high": 9.10, "low": 9.10,
+                 "close": 9.10, "volume": 1e6}]
+        df = pd.DataFrame([r for r in rows if start <= r["asof_date"] <= end])
+        return df, {r["asof_date"]: "yfinance" for _, r in df.iterrows() for r in [r]} or {}
+    with patch("swing.data.ohlcv_archive.resolve_ohlcv_window", side_effect=_drifted):
+        with patch("swing.pipeline.runner.lease_data_asof", return_value="2026-05-29"):
+            _step_pattern_observe(cfg=cfg, lease=_FakeLease(db_path, 2, "2026-05-29"),
+                                  ohlcv_cache=_StubOhlcvCache({"AAA": _build_bars()}), run_warnings=[])
+    chain = get_observations_for_detection(conn, det_id)
+    obs_N_after = json.loads(chain[0].ohlc_today_json)  # the date-N row
+    assert obs_N_after == obs_N_before          # FROZEN -- #26 cannot occur
+    assert obs_N_after["close"] == 9.00         # NOT the drifted 9.99
+    assert chain[1].observation_date == "2026-05-29" and json.loads(chain[1].ohlc_today_json)["close"] == 9.10
 ```
 
-The **forward-walk freeze test** (the #26/#37-by-construction discriminator) in full:
-
-```python
-def test_forward_walk_freezes_past_bar(tmp_path, monkeypatch):
-    # Plant a detection (data_asof_date N-1) + an observation for date N.
-    # Then mutate what resolve_ohlcv_window WOULD return for date N and re-run
-    # observe at date N+1. The date-N observation row must be byte-identical
-    # (the substrate never re-reads a past date from a later archive).
-    ...
-    obs_N_before = get_observations_for_detection(conn, det_id)[0].ohlc_today_json
-    # mutate archive for date N; advance to N+1; run observe again
-    ...
-    obs_N_after = get_observations_for_detection(conn, det_id)[0].ohlc_today_json
-    assert obs_N_after == obs_N_before  # frozen -- #26 cannot occur
-```
+(The `_advance_status` unit tests from Step 2 + these integration tests together cover spec section 11.6. `pending->invalidated` and `pending->expired` transitions are covered by the Step-2 unit tests; an integration variant of each MAY be added but the unit tests are the discriminating gate.)
 
 - [ ] **Step 7: Run the full T-2.5 suite + ruff + commit**
 
@@ -2334,22 +2649,65 @@ git commit -m "feat(pipeline): _step_pattern_observe forward-walk + status machi
 
 **Discipline preservation:** L8 (L2 source-grep continued pass); #32/#16 (ASCII); test-fixture-vs-production-emitter parity; Expansion #15 (return-report narrative sweep).
 
-- [ ] **Step 1: Write the cross-step forward-walk e2e test**
+- [ ] **Step 1: Write the cross-step forward-walk e2e test (concrete; reuses T-2.4/T-2.5 fixtures)**
 
 ```python
 # tests/integration/test_phase14_temporal_log_e2e.py
-# 1. Migrate a tmp DB to v22; seed a pipeline_runs row + candidates.
-# 2. Drive the detect-step emit path -> assert a pattern_detection_events row
-#    + a theme2_annotated chart_render row + chart_render_id linkage.
-# 3. Simulate session N+1: drive _step_pattern_observe with a mocked archive
-#    returning a below-pivot bar -> assert a 'pending' observation.
-# 4. Simulate session N+2: above-pivot bar -> assert 'triggered_open' +
-#    'entry_fired'.
-# 5. Resolve the chart chain: detection.chart_render_id -> chart_renders.id ->
-#    non-empty chart_svg_bytes.
-# 6. Assert the detection FACTS (structural_anchors_json, composite_score,
-#    data_asof_date) are unchanged across the observe runs (append-only).
+import json
+from unittest.mock import patch
+from swing.data.repos.pattern_detection_events import list_detection_events
+from swing.data.repos.pattern_forward_observations import get_observations_for_detection
+# Reuse the fixtures established in T-2.4 / T-2.5 (imported or duplicated in a
+# shared conftest: tmp_db_v22, _seed_aplus_candidate_and_run, _drive_detect,
+# _StubOhlcvCache, _build_bars, _FakeLease, _cfg, _stub_window).
+from tests.pipeline.test_step_pattern_detect_temporal_extension import (  # type: ignore
+    _seed_aplus_candidate_and_run, _drive_detect, _StubOhlcvCache, _build_bars,
+)
+from tests.pipeline.test_step_pattern_observe import _FakeLease, _cfg, _stub_window  # type: ignore
+from swing.pipeline.runner import _step_pattern_observe
+
+
+def test_detect_then_forward_walk_e2e(tmp_db_v22, tmp_path):
+    conn, db_path = tmp_db_v22
+    # 1. Detect: one aplus candidate -> a frozen detection + a captured chart.
+    _conn, cfg, lease, eval_run_id = _seed_aplus_candidate_and_run(
+        (conn, db_path), ticker="AAA", data_asof_date="2026-05-27")
+    _drive_detect(conn, cfg, lease, eval_run_id,
+                  _StubOhlcvCache({"AAA": _build_bars()}), [])
+    det = list_detection_events(conn, ticker="AAA")[0]
+    assert det.chart_render_id is not None
+    facts_before = (det.structural_anchors_json, det.composite_score, det.data_asof_date)
+    # chart chain resolves to non-empty bytes.
+    blen = conn.execute("SELECT length(chart_svg_bytes) FROM chart_renders "
+                        "WHERE id = ?", (det.chart_render_id,)).fetchone()[0]
+    assert blen and blen > 0
+
+    # 2. Session N (below pivot) -> 'pending'.
+    with patch("swing.data.ohlcv_archive.resolve_ohlcv_window",
+               return_value=_stub_window(9.0, date_="2026-05-28")):
+        with patch("swing.pipeline.runner.lease_data_asof", return_value="2026-05-28"):
+            _step_pattern_observe(cfg=cfg, lease=_FakeLease(db_path, 2, "2026-05-28"),
+                                  ohlcv_cache=_StubOhlcvCache({"AAA": _build_bars()}), run_warnings=[])
+    chain = get_observations_for_detection(conn, det.detection_id)
+    assert chain[-1].status == "pending"
+
+    # 3. Session N+1 (above pivot) -> 'triggered_open' / 'entry_fired'.
+    with patch("swing.data.ohlcv_archive.resolve_ohlcv_window",
+               return_value=_stub_window(10.5, high=10.9, date_="2026-05-29")):
+        with patch("swing.pipeline.runner.lease_data_asof", return_value="2026-05-29"):
+            _step_pattern_observe(cfg=cfg, lease=_FakeLease(db_path, 3, "2026-05-29"),
+                                  ohlcv_cache=_StubOhlcvCache({"AAA": _build_bars()}), run_warnings=[])
+    chain = get_observations_for_detection(conn, det.detection_id)
+    assert chain[-1].status == "triggered_open"
+    assert chain[-1].status_change_event == "entry_fired"
+
+    # 4. The detection FACTS are unchanged across observe runs (append-only).
+    det_after = list_detection_events(conn, ticker="AAA")[0]
+    assert (det_after.structural_anchors_json, det_after.composite_score,
+            det_after.data_asof_date) == facts_before
 ```
+
+> (The `_seed_aplus_candidate_and_run` signature here takes `(conn, db_path)` to share the e2e DB; the implementer aligns the helper signature across T-2.4/T-2.5/T-2.6 -- one shared conftest fixture set.)
 
 - [ ] **Step 2: Verify the L2 source-grep test still passes**
 
@@ -2505,6 +2863,197 @@ CHECK enums (`pattern_class`, `source`, `status`, `status_change_event`) + Pytho
 - Evidence fixtures use the REAL detector evidence dataclasses (so `asdict` produces the production `structural_anchors_json` shape). Never hand-roll the evidence dict.
 - The `provider` value is consumed by FIELD (`ohlc_today_json["provider"]`), not by value-matching a substring (Expansion #11).
 - The status `change_event` is asserted by the enum value, not by a render heuristic.
+
+### §L.4 Shared fixture module (concrete implementations -- Codex chain #1 R2 Major #2)
+
+Put these in `tests/pipeline/conftest_temporal.py` (or a shared `conftest.py`) so T-2.4/T-2.5/T-2.6 import ONE definition each. The fully-specified helpers below are executable as written; the two harness-dependent helpers (`_seed_aplus_candidate_and_run`, `_drive_detect`) carry concrete bodies plus the 1-2 lines the implementer aligns with the EXISTING `tests/pipeline/test_step_pattern_detect.py` harness (the verified source of truth for driving the step).
+
+```python
+# tests/pipeline/conftest_temporal.py
+from __future__ import annotations
+import json
+import sqlite3
+from contextlib import contextmanager
+from datetime import date
+import numpy as np
+import pandas as pd
+import pytest
+from swing.data.db import run_migrations
+from swing.data.models import PatternDetectionEvent
+
+
+@pytest.fixture
+def tmp_db_v22(tmp_path):
+    """File-backed v22 DB; returns (conn, db_path). The observe step opens its
+    OWN connect(db_path) for reads, so the DB MUST be file-backed."""
+    db_path = tmp_path / "t.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA foreign_keys=ON")
+    run_migrations(conn, target_version=22, backup_dir=tmp_path)
+    return conn, db_path
+
+
+def _build_bars(start: date = date(2025, 6, 1), n_days: int = 180) -> pd.DataFrame:
+    """Reuse the existing detect-step test's bar shape: DatetimeIndex +
+    capitalized OHLCV. (If tests/pipeline/test_step_pattern_detect.py exposes
+    _build_bars, import that instead to share one definition.)"""
+    idx = pd.bdate_range(start=start, periods=n_days)
+    close = np.linspace(8.0, 10.0, n_days)
+    return pd.DataFrame(
+        {"Open": close * 0.99, "High": close * 1.02, "Low": close * 0.98,
+         "Close": close, "Volume": 1_000_000.0}, index=idx)
+
+
+class _StubOhlcvCache:
+    """get_or_fetch(*, ticker, window_days) -> the canned frame for ticker."""
+    def __init__(self, bars_by_ticker: dict[str, pd.DataFrame]):
+        self._b = bars_by_ticker
+
+    def get_or_fetch(self, *, ticker: str, window_days: int = 180) -> pd.DataFrame:
+        if ticker not in self._b:
+            raise KeyError(ticker)  # mimic a fetch miss
+        return self._b[ticker]
+
+
+class _FakeLease:
+    """Minimal lease implementing only what the steps use: run_id, step(),
+    fenced_write() (a contextmanager yielding a conn to the same file DB)."""
+    def __init__(self, db_path, run_id: int, data_asof: str):
+        self.db_path = db_path
+        self.run_id = run_id
+        self._data_asof = data_asof
+
+    def step(self, name: str) -> None:  # no-op breadcrumb
+        pass
+
+    @contextmanager
+    def fenced_write(self):
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA foreign_keys=ON")
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+
+class _Cfg:
+    """Lightweight cfg stub exposing only the attributes the steps read."""
+    class _Paths:
+        def __init__(self, db_path, cache_dir):
+            self.db_path = db_path
+            self.prices_cache_dir = cache_dir
+    class _Pipeline:
+        observe_max_pending_window_sessions = 30
+        observe_max_post_trigger_window_sessions = 60
+    def __init__(self, db_path, cache_dir):
+        self.paths = self._Paths(db_path, cache_dir)
+        self.pipeline = self._Pipeline()
+
+
+def _cfg(tmp_path, db_path):
+    cache = tmp_path / "ohlcv"; cache.mkdir(exist_ok=True)
+    return _Cfg(db_path, cache)
+
+
+def _plant_detection(conn, *, ticker="AAA", data_asof_date="2026-05-28",
+                     pivot=10.0, invalidation=8.0) -> int:
+    """Insert one vcp PatternDetectionEvent via the repo; return detection_id."""
+    from swing.data.repos.pattern_detection_events import insert_detection_event
+    anchors = json.dumps({"window": {}, "evidence": {
+        "pivot_price": pivot, "base_top_price": pivot,
+        "contractions": [{"low": invalidation}]}})
+    with conn:
+        return insert_detection_event(conn, PatternDetectionEvent(
+            detection_id=None, ticker=ticker, detection_date="2026-05-29",
+            data_asof_date=data_asof_date, pattern_class="vcp",
+            structural_anchors_json=anchors, composite_score=0.7,
+            detector_version="vcp_v1", source="pipeline",
+            per_pattern_metadata_json="{}", created_at="2026-05-29T00:00:00Z"))
+
+
+def _stub_window(close, *, high=None, low=None, provider="yfinance", date_):
+    """Return (df, provenance) shaped like resolve_ohlcv_window for ONE date."""
+    df = pd.DataFrame([{
+        "asof_date": date_, "open": close, "high": high or close,
+        "low": low or close, "close": close, "volume": 1_000_000.0}])
+    return df, {date_: provider}
+```
+
+```python
+# tests/pipeline/conftest_temporal.py  (harness helper -- CONCRETE; the
+# EvaluationRun field list + pipeline_runs columns are copied verbatim from
+# the verified harness at tests/pipeline/test_step_pattern_detect.py:131-170 +
+# :110-128, so there are NO flagged lines.)
+def _seed_aplus_candidate_and_run(db, *, ticker="AAA", sector="", industry="",
+                                  adr_pct=2.5, rs_rank=85,
+                                  data_asof_date="2026-05-19",
+                                  action_session_date="2026-05-20"):
+    """Seed a pipeline_runs row + an EvaluationRun + one bucket='aplus'
+    Candidate; return (conn, cfg, lease, eval_run_id). Uses the REAL repos so
+    the INSERT shape matches production (anti-drift). Field shapes verbatim
+    from the verified detect-step harness."""
+    conn, db_path = db
+    from swing.data.repos.candidates import insert_candidates, insert_evaluation_run
+    from swing.data.models import Candidate, EvaluationRun
+    # pipeline_runs row (id=1) -- lease_data_asof reads its data_asof_date.
+    conn.execute(
+        "INSERT INTO pipeline_runs (id, started_ts, data_asof_date, "
+        "action_session_date, lease_token, state) VALUES "
+        "(1, ?, ?, ?, 'tok-test-1', 'running')",
+        ("2026-05-20T18:00:00", data_asof_date, action_session_date))
+    eval_run_id = insert_evaluation_run(conn, EvaluationRun(
+        id=None, run_ts="2026-05-20T18:00:00", data_asof_date=data_asof_date,
+        action_session_date=action_session_date, finviz_csv_path=None,
+        tickers_evaluated=1, aplus_count=1, watch_count=0, skip_count=0,
+        excluded_count=0, error_count=0))
+    insert_candidates(conn, eval_run_id, [Candidate(
+        ticker=ticker, bucket="aplus", close=15.0, pivot=15.1, initial_stop=13.5,
+        adr_pct=adr_pct, tight_streak=3, pullback_pct=5.0, prior_trend_pct=40.0,
+        rs_rank=rs_rank, rs_return_12w_vs_spy=12.0, rs_method="universe",
+        pattern_tag=None, notes=None, criteria=tuple(), sector=sector,
+        industry=industry)])
+    conn.commit()
+    cfg = _cfg(db_path.parent, db_path)
+    lease = _FakeLease(db_path, run_id=1, data_asof=data_asof_date)
+    return conn, cfg, lease, eval_run_id
+
+
+def _seed_run_with_zero_aplus(db):
+    """Same scaffold but the only candidate is bucket='excluded' (no aplus)."""
+    conn, db_path = db
+    from swing.data.repos.candidates import insert_candidates, insert_evaluation_run
+    from swing.data.models import Candidate, EvaluationRun
+    conn.execute(
+        "INSERT INTO pipeline_runs (id, started_ts, data_asof_date, "
+        "action_session_date, lease_token, state) VALUES "
+        "(1, '2026-05-20T18:00:00', '2026-05-19', '2026-05-20', 'tok', 'running')")
+    eval_run_id = insert_evaluation_run(conn, EvaluationRun(
+        id=None, run_ts="2026-05-20T18:00:00", data_asof_date="2026-05-19",
+        action_session_date="2026-05-20", finviz_csv_path=None,
+        tickers_evaluated=1, aplus_count=0, watch_count=0, skip_count=0,
+        excluded_count=1, error_count=0))
+    insert_candidates(conn, eval_run_id, [Candidate(
+        ticker="XYZ", bucket="excluded", close=8.0, pivot=None, initial_stop=None,
+        adr_pct=1.5, tight_streak=0, pullback_pct=0.0, prior_trend_pct=0.0,
+        rs_rank=10, rs_return_12w_vs_spy=-5.0, rs_method="universe",
+        pattern_tag=None, notes=None, criteria=tuple())])
+    conn.commit()
+    return conn, _cfg(db_path.parent, db_path), _FakeLease(db_path, 1, "2026-05-19"), eval_run_id
+
+
+def _drive_detect(conn, cfg, lease, eval_run_id, ohlcv_cache, run_warnings):
+    """Drive the real _step_pattern_detect with the extension args."""
+    from swing.pipeline.runner import _step_pattern_detect
+    _step_pattern_detect(cfg=cfg, lease=lease, eval_run_id=eval_run_id,
+                         ohlcv_cache=ohlcv_cache, run_warnings=run_warnings)
+```
+
+> **No flagged lines remain (Codex chain #1 R3 Major #1):** the `pipeline_runs` INSERT columns + `EvaluationRun` field list + `Candidate` shape are copied verbatim from the verified harness (`tests/pipeline/test_step_pattern_detect.py:110-170`). **T-2.4 step 0** is a 5-minute confirm: open that module, diff the `pipeline_runs` column list + `EvaluationRun`/`Candidate` constructors above against it, and adjust ONLY if the harness has drifted since plan-authoring (it was read at HEAD `6574d2f`). The detect step's `_resolve_eval_run_action_session_date(cfg, lease, eval_run_id)` + `lease_data_asof(cfg, lease)` read `cfg.paths.db_path` only, so the `_cfg` stub suffices (no full `Config` needed); if the detect step turns out to require additional `cfg` attributes, extend `_Cfg` minimally.
 
 ---
 
