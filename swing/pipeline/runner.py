@@ -62,6 +62,14 @@ from swing.patterns.template_matching import (
     TemplateMatchExemplar,
     match_forward,
 )
+
+# Phase 14 Sub-bundle 2 (T-2.4): module-top import so test fixtures may
+# monkeypatch ``swing.pipeline.runner.render_and_capture_detection_chart``
+# (a function-local import would shadow the module attribute the patch
+# targets).
+from swing.pipeline.detection_chart_capture import (
+    render_and_capture_detection_chart,
+)
 from swing.pipeline.finviz_schema import reject_csv, validate_csv
 from swing.pipeline.finviz_select import AmbiguousInboxError, NoFilesError, select_csv
 from swing.pipeline.heartbeat import Heartbeat
@@ -1399,6 +1407,7 @@ def _step_pattern_detect(
     lease: Lease,
     eval_run_id: int,
     ohlcv_cache,
+    run_warnings: list[dict] | None = None,
 ) -> None:
     """Run 5 V1 geometric detectors over the Stage-2-filtered candidate pool.
 
@@ -1440,12 +1449,18 @@ def _step_pattern_detect(
 
     import pandas as pd
 
-    from swing.data.models import PatternEvaluation
+    from swing.data.models import PatternDetectionEvent, PatternEvaluation
     from swing.data.repos.candidates import fetch_candidates_for_run
+    from swing.data.repos.pattern_detection_events import insert_detection_event
     from swing.data.repos.pattern_evaluations import insert_evaluation
     from swing.data.repos.pattern_exemplars import list_exemplars
     from swing.patterns.drift_logging import capture_feature_distribution
     from swing.patterns.foundation import generate_candidate_windows
+    from swing.pipeline.temporal_metadata import (
+        build_finviz_screen_state,
+        build_per_pattern_metadata,
+        build_structural_anchors_json,
+    )
 
     pipeline_run_id = lease.run_id
 
@@ -1487,6 +1502,16 @@ def _step_pattern_detect(
             "pattern_detect: no candidate windows -- zero aplus tickers; "
             "skipping (no writes)"
         )
+        # Gotcha #27: an empty-pool early-return inside a best-effort step
+        # must emit a warnings_json audit entry (expected vs actual pool +
+        # reason) so a zero-work completion is not silent.
+        if run_warnings is not None:
+            run_warnings.append({
+                "step": "pattern_detect",
+                "expected_pool": len(candidates),
+                "actual_aplus_pool": 0,
+                "reason": "zero aplus candidates",
+            })
         return
 
     detectors = _pattern_detect_registry()
@@ -1585,6 +1610,11 @@ def _step_pattern_detect(
         tuple[str, str, str, object, object, float, _np_pd_inner.ndarray]
     ] = []
 
+    # Phase 14 Sub-bundle 2 (T-2.4): retain the Pass-1 fetched bars so the
+    # Pass-2 emit loop reuses them for per-pattern metadata + chart capture
+    # WITHOUT a re-fetch (gotcha #5 + L2 LOCK). Keyed by ticker.
+    bars_by_ticker: dict[str, pd.DataFrame] = {}
+
     detector_read_conn = connect(cfg.paths.db_path) if cfg is not None else None
     # Test-stub path: no cfg, so reuse the lease's underlying connection
     # for read-only detector lookups WITHOUT opening BEGIN IMMEDIATE
@@ -1609,6 +1639,9 @@ def _step_pattern_detect(
                     exc,
                 )
                 continue
+
+            # T-2.4: retain for Pass-2 metadata + chart capture (no re-fetch).
+            bars_by_ticker[ticker] = bars
 
             # Generate candidate windows (zigzag_pivot anchor mode for V1;
             # detectors backward-slice for non-zigzag modes per recon
@@ -1978,6 +2011,30 @@ def _step_pattern_detect(
                 final_universe_scores.append(float(r[8]))
         universe_context["composite_scores"] = final_universe_scores
 
+        # Phase 14 Sub-bundle 2 (T-2.4): compute the detection-event anchors
+        # ONCE before the emit loop.
+        #   - detection_date = asof_run (the action-session label; FB-N4).
+        #   - data_asof_date = lease_data_asof(cfg, lease) (forward-walk
+        #     boundary anchor; the detector data cutoff; FB-N4).
+        #   - candidate_by_ticker = the in-memory candidate rows (ZERO new
+        #     query) for per-pattern metadata + finviz screen-state.
+        detection_date_str = asof_run.isoformat()
+        # data_asof_date = the forward-walk boundary anchor (detector data
+        # cutoff). Production path reads it via lease_data_asof(cfg, lease);
+        # the cfg-None test-stub path reads it off the shared lease conn (the
+        # same row), mirroring _resolve_eval_run_action_session_date's
+        # connection contract so the existing detect-step tests (cfg=None)
+        # stay green (L7).
+        if cfg is not None:
+            data_asof_date = lease_data_asof(cfg, lease)
+        else:
+            _daa_row = conn.execute(
+                "SELECT data_asof_date FROM pipeline_runs WHERE id=?",
+                (pipeline_run_id,),
+            ).fetchone()
+            data_asof_date = _daa_row[0] if _daa_row is not None else None
+        candidate_by_ticker = {c.ticker: c for c in candidates}
+
         for (
             ticker,
             pattern_class,
@@ -2089,6 +2146,106 @@ def _step_pattern_detect(
                 log.warning(
                     "pattern_detect: INSERT failed for (%s, %s) "
                     "(continuing): %s",
+                    ticker,
+                    pattern_class,
+                    exc,
+                )
+                continue
+
+            # --- Phase 14 Sub-bundle 2 (T-2.4): append the frozen detection
+            # event in the SAME lease.fenced_write() transaction. ---
+            cand = candidate_by_ticker.get(ticker)
+            if cand is None:
+                # Defensive: an emit without a candidate row should not
+                # happen (the emit came from an aplus candidate); skip the
+                # detection append rather than fabricate metadata.
+                log.warning(
+                    "pattern_detect: no candidate row for emitted verdict "
+                    "(%s, %s); skipping detection append",
+                    ticker,
+                    pattern_class,
+                )
+                continue
+
+            # SELECT-then-skip idempotency on the unique key (re-run safety):
+            # a re-run must NOT duplicate AND must NOT recompute the frozen
+            # facts. The skip fires BEFORE any chart render.
+            existing_det = conn.execute(
+                "SELECT 1 FROM pattern_detection_events WHERE source='pipeline' "
+                "AND ticker=? AND detection_date=? AND pattern_class=?",
+                (ticker, detection_date_str, pattern_class),
+            ).fetchone()
+            if existing_det is not None:
+                continue
+
+            # Substrate-completeness invariant (Codex chain #1 R2 Major #1):
+            # EVERY emitted verdict appends a pattern_detection_events row.
+            # bars SHOULD always be present (the emit came from a candidate
+            # whose bars were fetched in Pass-1 + retained in bars_by_ticker).
+            # If they are absent (internal inconsistency) DO NOT skip the
+            # detection append -- degrade: empty-frame metadata (the compute_*
+            # helpers return None on len-0 input via the _usable guard), no
+            # chart, + a warnings_json entry.
+            det_bars = bars_by_ticker.get(ticker)
+            if det_bars is None:
+                det_bars = pd.DataFrame()
+                chart_render_id = None
+                if run_warnings is not None:
+                    run_warnings.append({
+                        "step": "pattern_detect", "ticker": ticker,
+                        "pattern_class": pattern_class,
+                        "reason": "bars absent for emitted verdict (internal); "
+                                  "detection written with null computed "
+                                  "metadata fields; no chart",
+                    })
+            else:
+                try:
+                    chart_render_id = render_and_capture_detection_chart(
+                        conn, ticker=ticker, bars=det_bars,
+                        pattern_evaluation=row,
+                        pipeline_run_id=pipeline_run_id,
+                        data_asof_date=data_asof_date,
+                    )
+                except Exception as exc:
+                    # Programming error -> distinct ERROR; still degrade to
+                    # NULL (the detection is never lost).
+                    chart_render_id = None
+                    log.error(
+                        "pattern_detect: chart capture unexpected error "
+                        "(%s, %s): %s",
+                        ticker,
+                        pattern_class,
+                        exc,
+                    )
+                if chart_render_id is None and run_warnings is not None:
+                    run_warnings.append({
+                        "step": "pattern_detect", "ticker": ticker,
+                        "pattern_class": pattern_class,
+                        "reason": "chart render failed",
+                    })
+
+            detection = PatternDetectionEvent(
+                detection_id=None, ticker=ticker,
+                detection_date=detection_date_str,
+                data_asof_date=data_asof_date, pattern_class=pattern_class,
+                structural_anchors_json=build_structural_anchors_json(
+                    window, evidence),
+                composite_score=float(composite_score),
+                detector_version=version_str,
+                finviz_screen_state=build_finviz_screen_state(cand),
+                source="pipeline",
+                per_pattern_metadata_json=build_per_pattern_metadata(
+                    cand, det_bars, asof=data_asof_date),
+                created_at=_dt_inner.now(UTC).isoformat(),
+                pipeline_run_id=pipeline_run_id,
+                chart_render_id=chart_render_id,
+            )
+            try:
+                insert_detection_event(conn, detection)
+            except Exception as exc:
+                log.warning(
+                    "pattern_detect: detection-event INSERT failed for "
+                    "(%s, %s) (continuing): %s",
                     ticker,
                     pattern_class,
                     exc,
