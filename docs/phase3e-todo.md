@@ -8,6 +8,29 @@
 
 ---
 
+## 2026-05-29 #5 Phase 14 Sub-bundle 3 (chart-surface uniformity) BRAINSTORM SHIPPED at `f16735f` -- spec 494 lines (§1-§15); Codex single chain CONVERGED R3 NO_NEW_CRITICAL_MAJOR; 50th cumulative C.C lesson #6 validation NOTABLE; 3 brief-vs-production corrections verified at QA; ~8 OQs + section-2 OD recommendations for writing-plans operator triage; writing-plans dispatch NEXT
+
+**Sub-bundle 3 brainstorm SHIPPED 2026-05-29 #5** at merge `f16735f` of `phase14-sub-bundle-3-chart-surface-uniformity-brainstorming` via `--no-ff`. 3 branch commits (draft `cddb54f` + R1+R2 `d5fda78` + return report `18ca168`) + merge. Spec 494 lines + return report (15 items). Docs-only; ZERO swing/ + tests/ writes; Schema v22 LOCKED (no v23 `.sql` at brainstorm -- v23 DESIGNED, applied at executing-plans); L2 LOCK preserved. ZERO Co-Authored-By (`%(trailers)` empty all 3 branch commits + merge). Merge-base `fd59ece`; branch HEAD `18ca168`.
+
+**Design:** candlesticks via **mplfinance** (already a declared dep at `pyproject.toml:40,42`; within the matplotlib/no-JS Sec 9.1 Q5 LOCK) on the 4 detail surfaces (thumbnails stay line); **V2.G2** `hyprec_detail`->`ticker_detail` FULL rename via a v23 migration (backup-gate STRICT `pre_version==22`; in-migration row UPDATE; gotcha #11 paired; partial unique indexes do NOT reference `hyprec_detail` -- only the CHECK enum does); **P14.N1** thumbnail substrate (consuming-surface wiring deferred to Sub-bundle 4); **P14.N4** BULZ entry/stop/target shaded zones; **P14.N8** REAL `current_stage` trend-state at all 3 weather sites (pipeline `runner.py:2883` + JIT `chart_jit.py:158` + the refresh handler ALL hardcode -> real); **S6** duration-text -> upper-right. The rendered chart is the BINDING operator-witnessed visual gate (matplotlib).
+
+**Codex single chain (Sec 9.1 Q7) CONVERGED R3:** R1 0C/15M/10m -> R2 0C/3M/2m -> R3 NO_NEW_CRITICAL_MAJOR. 0C/18M/12m cumulative; all resolved/accepted in-place. R1 M4 caught a caller-title-vs-cached-row contradiction (fixed by a neutral cache-safe title that also kills the V2.G2 hyp-rec leakage). FB-N1: Codex MCP timed out (operator investigating SEPARATELY -- off orchestrator purview); ran via `codex exec` CLI + `resume --last` backstop.
+
+**~8 OQs + section-2 OD recommendations route to WRITING-PLANS operator triage:** OQ-4 (P14.N1 defer to SB4) / OQ-6 (market_weather MA 50/200) / OQ-7 (v23 in-migration rename) / OQ-N4-target (BULZ target Trade field + draw-only-if-present) / OQ-N4-color (zone hues) / OQ-S6 (text upper-right) / OQ-mav-color (MA palette pinned at writing-plans) / OQ-chain (Codex chain count at writing-plans). Plus the spec §2 "OD-1..OD-3" items (mplfinance / 4-detail-surfaces / real-`current_stage`-at-3-sites / full-rename) -- the implementer labeled these "operator decisions" but the operator only confirmed SCOPE; orchestrator triages all at the writing-plans dispatch (esp. confirming the **P14.N8 expansion to all 3 weather sites**, a justified deviation from brief L7 "match-the-pipeline" framing since the pipeline ALSO hardcodes).
+
+**3 brief-vs-production corrections (orchestrator-verified at QA; the implementer corrected the brief):** (1) partial unique indexes do NOT reference `hyprec_detail` (only the CHECK enum at `0020:180`) -- v23 migrates CHECK + rows only; (2) no renderer currently draws candlesticks (additive, not a divergence fix); (3) the pipeline-time weather render itself hardcodes `stage_2` (`runner.py:2883`) + the JIT default -- so P14.N8 computes REAL `current_stage` rather than matching a hardcoded value; "gridlines" is not a kwarg. No escalations (bars already carry OHLC).
+
+**Forward action sequence (orchestrator-side; THIS pass)**:
+
+- [x] QA per `feedback_orchestrator_qa_implementer_product` (3-commit ZERO Co-Authored-By; docs-only scope; 3 brief-vs-production corrections verified -- partial indexes [mig 0020], mplfinance dep [pyproject:40,42], pipeline stage_2 hardcode [runner.py:2883]; Sec 9.1 + L1-L7 + v23 `pre_version==22` + visual gate verified in spec)
+- [x] Merge `--no-ff` at `f16735f` + push origin/main + worktree + branch teardown
+- [x] phase3e-todo new top entry (THIS pass) + CLAUDE.md line-3 refresh (BRAINSTORM SHIPPED; ~622+ streak)
+- [ ] **Operator-triage the ~8 OQs + OD recommendations** (orchestrator surfaces with recommendations)
+- [ ] **Sub-bundle 3 writing-plans dispatch brief authoring** (LOCK triaged OQ dispositions) + commit + inline prompt
+- [ ] Sub-bundle 3 writing-plans -> executing-plans cycle (v23 rename + per-renderer visual gates), then Sub-bundles 4-5 per Sec 9.1 Q1+Q2 serial, then Phase 14 close-out (Sec 9.1 Q6)
+
+---
+
 ## 2026-05-29 #4 Phase 14 Sub-bundle 2 (temporal log V1+) EXECUTING-PLANS SHIPPED end-to-end at `27f8007` -- v22 substrate LIVE (2 append-only tables + _step_pattern_observe); operator-witnessed gate PASS (orchestrator-run S1-S7); eliminates gotchas #26 + #37 by construction; 49th cumulative C.C lesson #6 validation NOTABLE; Sub-bundle 3 brainstorming dispatch NEXT
 
 **Sub-bundle 2 executing-plans SHIPPED end-to-end 2026-05-29 #4** at integration merge `27f8007` of `phase14-sub-bundle-2-temporal-log-executing-plans` via `--no-ff`. 23 branch commits (22 implementation + 1 return report) + 1 merge commit. 10 swing/ files + 27 tests/ + 1 docs; ZERO Co-Authored-By across all 23 branch commits + merge (verified `%(trailers)` empty; ~620+ cumulative). Schema **v21 -> v22** (exactly one migration `0022_phase14_temporal_log.sql`; no v23). Merge-base `dffaca9`; branch HEAD `d5053d5`.
