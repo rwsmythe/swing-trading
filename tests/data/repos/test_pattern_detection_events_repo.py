@@ -48,3 +48,30 @@ def test_insert_is_caller_tx_no_autocommit(conn):
     insert_detection_event(conn, _event(ticker="BBB"))
     conn.rollback()
     assert list_detection_events(conn, ticker="BBB") == []
+
+
+def test_unique_source_ticker_date_class(conn):
+    with conn:
+        insert_detection_event(conn, _event())
+    with pytest.raises(sqlite3.IntegrityError):
+        with conn:
+            insert_detection_event(conn, _event())  # same identity key
+
+
+def test_observable_excludes_same_run_data_cutoff(conn):
+    # detection data cutoff == observation_date -> NOT observable (STRICT <).
+    with conn:
+        insert_detection_event(conn, _event(data_asof_date="2026-05-29"))
+    obs = list_observable_detections(
+        conn, source="pipeline", observation_date="2026-05-29")
+    assert obs == []
+
+
+def test_observable_includes_prior_cutoff_with_no_observation_yet(conn):
+    # No observation yet + data_asof_date < observation_date -> observable.
+    with conn:
+        insert_detection_event(conn, _event(data_asof_date="2026-05-28"))
+    obs = list_observable_detections(
+        conn, source="pipeline", observation_date="2026-05-29")
+    assert len(obs) == 1
+    assert obs[0].ticker == "AAA"
