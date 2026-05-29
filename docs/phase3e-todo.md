@@ -8,6 +8,41 @@
 
 ---
 
+## 2026-05-29 #4 Phase 14 Sub-bundle 2 (temporal log V1+) EXECUTING-PLANS SHIPPED end-to-end at `27f8007` -- v22 substrate LIVE (2 append-only tables + _step_pattern_observe); operator-witnessed gate PASS (orchestrator-run S1-S7); eliminates gotchas #26 + #37 by construction; 49th cumulative C.C lesson #6 validation NOTABLE; Sub-bundle 3 brainstorming dispatch NEXT
+
+**Sub-bundle 2 executing-plans SHIPPED end-to-end 2026-05-29 #4** at integration merge `27f8007` of `phase14-sub-bundle-2-temporal-log-executing-plans` via `--no-ff`. 23 branch commits (22 implementation + 1 return report) + 1 merge commit. 10 swing/ files + 27 tests/ + 1 docs; ZERO Co-Authored-By across all 23 branch commits + merge (verified `%(trailers)` empty; ~620+ cumulative). Schema **v21 -> v22** (exactly one migration `0022_phase14_temporal_log.sql`; no v23). Merge-base `dffaca9`; branch HEAD `d5053d5`.
+
+**What shipped (the v22 temporal-log substrate):** 2 NEW append-only tables (`pattern_detection_events` + `pattern_forward_observations`; 8 indexes; STRICT `current_version == 21` backup-gate; gotcha #9 BEGIN/COMMIT); 2 append-only repos (no `update_`/`delete_`; UNIQUE + RESTRICT FK; caller-tx); `_step_pattern_detect` EXTENSION (per-pattern metadata per spec §9 redesign + frozen detection-event append + chart-render capture via `render_theme2_annotated_svg` + evidence-key repair; substrate-completeness invariant; bars retention; idempotency); NEW `_step_pattern_observe` (forward-walk + status state machine invalidation>breakout>expiry; date-anchored bar read with `provider` provenance via `resolve_ohlcv_window`; run-warnings accumulator -> `lease.release`). **Eliminates gotchas #26 (archive bar-content mutation) + #37 (substrate-freshness) BY CONSTRUCTION** -- pure-INSERT forward-walk; select-by-`observation_date` + freeze; no archive re-read; no regeneration.
+
+**Both Codex chains CONVERGED NO_NEW_CRITICAL_MAJOR (OQ-20 LOCK):** chain #1 impl-review R1->R3 (5 Major found+resolved); chain #2 schema/semantics R1->R2 (1 minor). Code-grounded catches: silent substrate desync, fabricated provider provenance, absolute-vs-date-anchored latest-status, 2D-column squeeze -- all resolved with fail-before/pass-after tests; ZERO Major accepted-as-rationale. (Ran via `codex exec` CLI backstop -- FB-N1: this implementer session was pre-restart so the 1.0.0 `.mcp.json` fix wasn't bound yet.)
+
+**Operator-witnessed gate PASS (orchestrator-run per operator direction; S1-S7):**
+- **S1** pytest: 6658 passed + 3 skipped (independently re-run in worktree; the pre-existing research xdist-flake did NOT recur); `ruff check swing/` clean.
+- **S2** v22 applied to production DB: `schema_version` table = 22; `pattern_detection_events` + `pattern_forward_observations` both 0 rows + readable + correct column shape; phase14 backup `swing-data/swing-pre-phase14-migration-20260529T161104Z.db` written at the `current_version == 21` boundary (plan's exact filename; the generic `backups/swing-<ISO>.db` also fired).
+- **S3** detect-step CORRECT: live pipeline run 82 evaluated 87 candidates -> **0 aplus** (12 watch / 71 skip / 4 excluded) -> 0 detection rows + #27 empty-pool audit (`expected_pool:87, actual_aplus_pool:0`). (The `aplus=5` cumulative table rows are STALE from eval_runs 9/10/12/31/32; latest eval_run 68 produced 0 aplus -- NOT a bug; the A+ gating caveat realized exactly.)
+- **S4** observe-step CORRECT: 0 open detections -> #27 audit (`no observable detections`).
+- **S5** append-only: mechanical-test-covered (no live detection+observation to probe; T-2.2/T-2.3 source-grep + UNIQUE + RESTRICT tests passed in S1).
+- **S6** rendered chart (BINDING visual): synthetic `flat_base` detection rendered via the branch `render_theme2_annotated_svg` -> orchestrator viewed the PNG: the **evidence-key repair** renders top-of-range (10.18) + bottom-of-range (9.78) dashed lines + base shading + `flat_base` label + `duration: 60 days` text (overlays that were SILENTLY MISSING before the repair, which read stale keys `top_of_range`/`depth_ratio`/`pole_advance_pct`). All text ASCII-clean; NO mathtext corruption.
+- **S7** #27 empty-pool audit: FIRED in production `pipeline_runs.warnings_json` (both `pattern_detect` + `pattern_observe` entries) -- the exact silent-no-op scenario that motivated #27 now audits correctly. Forward-walk freeze is mechanical-test-covered.
+
+**Minor cosmetic banked for Sub-bundle 3** (chart-surface uniformity): the `flat_base` `duration: NN days` text overlaps the legend box at upper-left (pre-existing renderer text placement at axes (0.02, 0.92); NOT a Sub-bundle 2 regression; couples with the P14.N8 + V2.G1/N2 chart-quality thread).
+
+**All LOCKs held verbatim** (return report §5): Sec 9.1 Q1-Q7 + L1-L8 + the 5 operator-LOCKed OQ dispositions + OQ-19 chart FK SET NULL. ZERO re-litigation. L2 LOCK preserved (source-grep continues passing). FB-N2..FB-N6 inherited + applied.
+
+**Forward action sequence (orchestrator-side; THIS pass)**:
+
+- [x] QA implementer product per `feedback_orchestrator_qa_implementer_product` (23-commit chain ZERO Co-Authored-By; swing/ surface matches plan §B; v22 exactly one 0022; append-only repos verified no update_/delete_; backup-gate + CHECK + FK shapes verified in migration)
+- [x] Operator-witnessed gate S1-S7 (orchestrator-run per operator direction): S1 re-run in worktree (6658 passed); S2-S4+S7 probed against the production DB after a real pipeline run; S6 synthetic render viewed (PNG); ALL PASS
+- [x] Merge `--no-ff` to main at `27f8007` + push origin/main
+- [x] Worktree + branch teardown; reinstall `swing` from main (editable install re-pointed worktree -> main); real DB schema_version=22 sanity-confirmed
+- [x] phase3e-todo new top entry (THIS pass) + CLAUDE.md line-3 refresh (SHIPPED end-to-end; **Schema v22 LOCKED**; ~620+ streak)
+- [ ] **Sub-bundle 3 (chart-surface uniformity) brainstorming dispatch brief authoring** -- scope V2.G1 + V2.G2 (`hyprec_detail`->`ticker_detail` v23 rename per Sec 9.1 Q4) + P14.N1 + P14.N2 + P14.N4 + the banked P14.N8 weather-chart-refresh regression + the S6 duration-text-overlap cosmetic; v23 schema migration (gotcha #11 backup-gate); Expansion #10c renderer-kwargs-uniformity LOCK
+- [ ] **Sub-bundle 3 brainstorming inline dispatch prompt** per `feedback_always_provide_inline_dispatch_prompt` (commit brief BEFORE inline prompt)
+- [ ] Sub-bundle 3 brainstorming -> writing-plans -> executing-plans cycle, then Sub-bundles 4-5 per Sec 9.1 Q1+Q2 serial sequence
+- [ ] Phase 14 final close-out review per Sec 9.1 Q6 (all 5 sub-bundles merged + operator browser-witnessed) once Sub-bundle 5 ships
+
+---
+
 ## 2026-05-29 #3 Phase 14 Sub-bundle 2 (temporal log V1+) WRITING-PLANS SHIPPED at `62bf876` -- plan 3357 lines (§A-§N; T-2.1..T-2.6; ~21 commits / ~94 fast tests); TWO Codex chains CONVERGED (OQ-20 LOCK); FB-N1 recurrence TRUE-root-caused (active copowers `1.0.0` `.mcp.json` unpatched -> FIXED) + read-only-sandbox codex-cli wrinkle banked; executing-plans dispatch NEXT
 
 **Sub-bundle 2 writing-plans SHIPPED 2026-05-29 #3** at integration merge `62bf876` of `phase14-sub-bundle-2-temporal-log-writing-plans` via `--no-ff`. 5 branch commits (draft `2068119` + chain#1 `683e074` + chain#2 `f4e4ec6` + return report `a1b628a` + FB-N1 root-cause correction `b76700d`) + 1 merge commit. Plan at `docs/superpowers/plans/2026-05-29-phase14-sub-bundle-2-temporal-log-plan.md` (3357 lines; target 2000-3500) + return report (210 lines; 15 items). Docs-only; ZERO swing/ + tests/ writes; Schema v21 LOCKED + verified (21 *.sql; NO `0022` at writing-plans -- v22 DDL is DESIGNED, applied at executing-plans); L2 LOCK preserved. Merge-base `6574d2f`. **Merge commit amended `537686c` -> `62bf876`** to strip an accidentally git-parsed `FB-N1:` trailer (final `-m` paragraph started `Word:`); `%(trailers)` now `[]`; lesson banked as memory `feedback_commit_message_trailer_parse_hazard`. ZERO Co-Authored-By across all 5 branch commits + merge (~618+ cumulative).
