@@ -121,7 +121,9 @@ ZERO new `schwabdev.Client.*` call sites. The detect-step chart capture reuses a
 
 ### §2.3 The forward-walk + append-only invariant (NORMATIVE; L1 + L2)
 
-> **INVARIANT (L1 + L2):** `pattern_detection_events` and `pattern_forward_observations` are APPEND-ONLY. Once written, no row is ever UPDATEd or DELETEd by application code. `pattern_detection_events.structural_anchors_json`, `.composite_score`, and `.per_pattern_metadata_json` are LOCKED at detection time. `pattern_forward_observations.ohlc_today_json` is LOCKED at observation time and is NEVER re-fetched from a later archive read. The substrate is never regenerated from current state. This is the architectural property that eliminates **gotcha #26 (OHLCV archive bar-content TEMPORAL mutation)** and **gotcha #37 (substrate-freshness sensitivity)** by construction.
+> **INVARIANT (L1 + L2):** `pattern_detection_events` and `pattern_forward_observations` are APPEND-ONLY. No application code path ever UPDATEs or DELETEs a row. The **immutable detection FACTS** -- `structural_anchors_json`, `composite_score`, `per_pattern_metadata_json`, `pattern_class`, `detection_date`, `data_asof_date`, `ticker`, `source`, `detector_version` -- are LOCKED at detection time and NEVER change. `pattern_forward_observations.ohlc_today_json` is LOCKED at observation time and is NEVER re-fetched from a later archive read. The substrate is never regenerated from current state. This is the architectural property that eliminates **gotcha #26 (OHLCV archive bar-content TEMPORAL mutation)** and **gotcha #37 (substrate-freshness sensitivity)** by construction.
+
+> **Frozen-FACTS vs nullable-audit-linkage distinction (Codex R1 C#1 + M#4; REFINED at R2 C#1 + C#2):** the append-only / frozen invariant covers the detection FACTS above. The two NULLABLE referential-pointer columns -- `pipeline_run_id` and `chart_render_id` -- are AUDIT LINKAGES, not facts. A referential-integrity `ON DELETE SET NULL` that severs a dangling pointer when the referenced row is pruned is a referential action, NOT a semantic mutation of a frozen fact. **BOTH use `ON DELETE SET NULL`** (R2 resolution): (a) `pipeline_run_id` -- a pipeline_run row may be pruned (e.g., to cascade-clean its `pattern_evaluations`); the detection SURVIVES with the linkage degraded to NULL. (b) `chart_render_id` -- the chart bytes captured at detection live in the EPHEMERAL run-scoped `chart_renders` cache (whose own `pipeline_run_id` is `ON DELETE CASCADE`, migration `0020:183`); the captured chart is a BEST-EFFORT cache SNAPSHOT, not a frozen fact. Pinning a permanent detection to an ephemeral run-scoped cache row via `RESTRICT` was an over-reach (Codex R1 C#1 initially pushed there, but R2 C#2 showed RESTRICT deadlocks the run-prune CASCADE, and R2 C#1 showed the `theme2_annotated` surface is ALREADY written by the exemplar cache-miss path at `swing/web/view_models/patterns/exemplars.py:223-321`). With SET NULL, the detect step + the exemplar path coexist as last-writer-wins cache writers; the detection records whatever `chart_render_id` was current at detection; if a later refresh replaces that cache row, the pointer degrades to NULL gracefully -- the FACTS are untouched. A guaranteed-permanent immutable detection chart is a V2 candidate (a dedicated non-cache store; §13 #6). This is the deliberate, explicitly-accepted FK posture; §4.1 + §8.3 carry the rationale in-line.
 
 This invariant is HELD against Codex pushback (dispatch brief §7): if Codex proposes an UPDATE path (e.g., "re-classify a detection's composite_score on a better detector version"), the answer is to INSERT a NEW detection event (a new detection_date / a new source / a new run), never to mutate the frozen row.
 
@@ -141,7 +143,8 @@ The 2-table shape is LOCKED at commissioning. This spec validates the primitive 
 | `swing/data/repos/pattern_detection_events.py` | NEW | Append-only repo: `insert_detection_event(conn, event) -> int`; `get_detection_event_by_id`; `list_detection_events(...)`; `list_observable_detections(conn, *, source='pipeline') -> list[...]` (open-status detections for the observe step). Caller-tx contract (NO `conn.commit()`). NO `update_*`/`delete_*`. |
 | `swing/data/repos/pattern_forward_observations.py` | NEW | Append-only repo: `insert_observation(conn, observation) -> int`; `get_observations_for_detection(conn, detection_id) -> list[...]` (the chain, ordered by observation_date); `get_latest_observation_for_detection(conn, detection_id) -> ... | None`; `get_latest_observations_for_detections(conn, detection_ids) -> dict[int, ...]` (batch latest-status read for the observe step; dynamic `?` expansion per gotcha re: sqlite3 list-bind). Caller-tx. NO `update_*`/`delete_*`. |
 | `swing/pipeline/runner.py` | MODIFIED | (a) EXTEND `_step_pattern_detect` Pass-2 loop to append a `pattern_detection_events` row per emitted verdict + capture chart bytes (chart_render_id FK); harden its empty-pool early-return (1485-1490) with a gotcha #27 warnings audit. (b) NEW `_step_pattern_observe`. (c) wire `lease.step("pattern_observe")` + best-effort block into the DAG after `pattern_detect`. (d) thread a run-level warnings accumulator to `lease.release(warnings_json=...)` (§7.4). |
-| `swing/web/chart_jit.py` | MODIFIED | Extend `_RENDERERS` + the `get_or_render_surface` dispatch to handle the `theme2_annotated` surface (render via `render_hyprec_detail_svg` with the `pattern_evaluation` arg). Renderer-kwargs uniformity LOCK (Expansion #10c) across the detect-step callsite + any future caller. |
+| `swing/web/chart_jit.py` (+ a NEW `render_and_capture_detection_chart` helper; module decided at writing-plans -- chart_jit vs a new pipeline-side helper) | MODIFIED/NEW | Register `theme2_annotated` -> `render_theme2_annotated_svg` (the DEDICATED renderer at `swing/web/charts.py:481`; Codex R1 M#1) and add a caller-tx helper returning `(chart_render_id)` via the standard `refresh_chart_render` (Codex R1 m#2; R2 C#1 -- coexists last-writer-wins with the exemplar theme2_annotated writer). Renderer-kwargs uniformity LOCK (Expansion #10c). |
+| `swing/web/charts.py` | MODIFIED (evidence-key repair) | Repair the annotation path's STALE evidence-key reads (`top_of_range`/`bottom_of_range`/`depth_ratio`/`pole_advance_pct` at charts.py:411-447) to the ACTUAL detector evidence field names (`range_top_price`/`range_bottom_price`/`cup_depth_pct`/`pole_pct`) so captured charts are correctly annotated (Codex R1 M#2). Writing-plans confirms the exact stale-key surface (hyprec vs theme2 renderer). |
 | `swing/pipeline/temporal_metadata.py` (or inline in runner) | NEW (likely) | Pure-bars helpers `compute_atr_pct(bars, asof)`, `compute_return_pct(bars, asof, lookback_sessions)`, `compute_52w_high_proximity_pct(bars, asof)` for per-pattern metadata (§9). Writing-plans phase chooses module vs inline. |
 | `tests/data/test_temporal_log_migration.py` | NEW | v22 migration apply + idempotency + backup-gate strict-equality + rollback-through-runner + append-only schema verification. |
 | `tests/data/repos/test_pattern_detection_events_repo.py` | NEW | Repo discriminating tests (insert / get / list / list_observable; append-only -- no update/delete functions exist; UNIQUE constraint). |
@@ -163,7 +166,8 @@ The 2-table shape is LOCKED at commissioning. This spec validates the primitive 
 CREATE TABLE pattern_detection_events (
     detection_id INTEGER PRIMARY KEY AUTOINCREMENT,
     ticker TEXT NOT NULL,
-    detection_date TEXT NOT NULL,            -- asof_date at which the pattern was identified (ISO)
+    detection_date TEXT NOT NULL,            -- action_session_date: the forward-looking session this detection was prepped FOR (the detect step's asof_run anchor; runner.py:1499)
+    data_asof_date TEXT NOT NULL,            -- the detector's DATA cutoff = last completed bar the detector saw (the run's data_asof_date / lease_data_asof). Forward-walk boundary anchor (Codex R2 M#1).
     pattern_class TEXT NOT NULL CHECK (pattern_class IN (
         'vcp', 'flat_base', 'cup_with_handle',
         'high_tight_flag', 'double_bottom_w'
@@ -177,9 +181,9 @@ CREATE TABLE pattern_detection_events (
     )),
     per_pattern_metadata_json TEXT NOT NULL, -- LOCKED (sector/industry/adr_pct/atr_pct/ret_90d/prox_52w/market_cap-or-null)
     pipeline_run_id INTEGER
-        REFERENCES pipeline_runs(id) ON DELETE SET NULL,  -- detection SURVIVES run pruning
+        REFERENCES pipeline_runs(id) ON DELETE SET NULL,  -- AUDIT LINKAGE: detection SURVIVES run pruning; SET NULL is a referential action, not a fact mutation (R1 M#4)
     chart_render_id INTEGER
-        REFERENCES chart_renders(id) ON DELETE SET NULL,  -- nullable if render failed (gotcha #27 audit)
+        REFERENCES chart_renders(id) ON DELETE SET NULL,  -- AUDIT LINKAGE to the ephemeral run-scoped chart cache (R2 C#1+C#2): best-effort capture; NULL if render failed at capture (gotcha #27 audit) OR if a later cache refresh replaces the row
     created_at TEXT NOT NULL                 -- INSERT timestamp (ISO)
 );
 
@@ -188,6 +192,8 @@ CREATE TABLE pattern_detection_events (
 -- is effectively one per (ticker, pipeline_run_id, pattern_class) -- mirroring
 -- the pattern_evaluations unique index, but keyed on detection_date (not run_id)
 -- so non-pipeline sources (V2) with NULL run_id still get a stable key.
+-- (data_asof_date is NOT in the unique key -- it is a function of the run; the
+-- forward-walk boundary uses it but the identity key stays on detection_date.)
 CREATE UNIQUE INDEX idx_pde_source_ticker_date_class
     ON pattern_detection_events(source, ticker, detection_date, pattern_class);
 
@@ -206,9 +212,10 @@ CREATE INDEX idx_pde_pipeline_run_id
 
 **Design notes:**
 - `source` CHECK enum LOCKed to 5 values; V1+ writes only `'pipeline'`. The other 4 reserve future ingestion paths (banked OUT-OF-SCOPE for V1+; the enum is forward-compat so a V2 backfill needs no further CHECK widening).
-- `pipeline_run_id ON DELETE SET NULL` (NOT CASCADE): the detection is a PERMANENT record; pruning a `pipeline_runs` row must not delete the detection (only sever the linkage). This is the deliberate asymmetry vs `pattern_evaluations` (CASCADE). HOLD against any "make it consistent with pattern_evaluations" pushback -- the asymmetry is intentional + load-bearing for the append-only substrate.
-- `chart_render_id ON DELETE SET NULL`: chart_renders is a cache (its rows may be invalidated/replaced); the detection survives chart-cache churn.
+- `pipeline_run_id ON DELETE SET NULL` (NOT CASCADE): the detection is a PERMANENT record; pruning a `pipeline_runs` row must not delete the detection (only sever the audit linkage). This is the deliberate asymmetry vs `pattern_evaluations` (CASCADE). HOLD against any "make it consistent with pattern_evaluations" pushback -- the asymmetry is intentional + load-bearing for the append-only substrate. Per the §2.3 frozen-FACTS-vs-nullable-audit-linkage distinction, the SET NULL is a referential action on an audit pointer, not a mutation of a frozen fact.
+- `chart_render_id ON DELETE SET NULL` (FINAL, Codex R2 C#1 + C#2; the R1 RESTRICT attempt was reverted): `chart_renders` is an EPHEMERAL run-scoped cache -- its own `pipeline_run_id` is `ON DELETE CASCADE` (migration `0020:183`). RESTRICT would deadlock the run-prune CASCADE (you could never delete a pipeline_run that produced a detection-referenced chart row -- contradicting the `pipeline_run_id SET NULL` prunability rationale). Worse, the `theme2_annotated` surface is NOT exclusively ours: the exemplar cache-miss path at `swing/web/view_models/patterns/exemplars.py:223-321` ALREADY renders + `refresh_chart_render`s `theme2_annotated` rows keyed by `(ticker, latest_completed_pipeline_run, pattern_class)` against the SAME partial unique index (`0020:219`). So both writers share the surface as a last-writer-wins cache. SET NULL makes this coexistence safe: the detection records whatever `chart_render_id` was current at detection; if the exemplar path (or a re-run) later refreshes that cache key, the pointer degrades to NULL -- the detection FACTS are untouched (§2.3). The captured chart is a best-effort SNAPSHOT; permanence is a V2 candidate (§13 #6).
 - `detector_version` added beyond the brief's Sec 2.5 sketch: provenance for which detector emitted the row (the brief's `composite_score` is "LOCKED at detection"; `detector_version` records WHICH detector produced it -- important when detectors evolve). Mirrors `pattern_evaluations.detector_version`.
+- **`detection_date` vs `data_asof_date` (Codex R2 M#1):** the runner computes BOTH `action_session_date` (the forward-looking NEXT session, `swing/evaluation/dates.py:43`) and `data_asof_date` (the last completed bar, `dates.py:21`). The detect step's `asof_run` anchor is `action_session_date` (runner.py:1499), so `detection_date = action_session_date` (the operator-facing label the verdict is FOR; consistent with `pattern_evaluations`). BUT the detector's information cutoff is `data_asof_date` (the last bar it saw). The forward-walk boundary therefore uses `data_asof_date`, NOT `detection_date` -- otherwise (with `detection_date` = a not-yet-traded action session) the strict `> detection_date` boundary would skip the first tradable session's bar. `data_asof_date` is stored on the detection so the observe step's boundary (`detection.data_asof_date < observation_date`) is self-contained (§7.1). Available at detect time via `lease_data_asof(cfg, lease)` (runner.py:977).
 
 ### §4.2 `pattern_forward_observations` DDL
 
@@ -255,7 +262,7 @@ CREATE INDEX idx_pfo_status
 - `detection_id ON DELETE RESTRICT`: you cannot delete a detection that has observations (append-only invariant; the forward-walk record is permanent). HOLD against any cascade-delete pushback.
 - The `status` CHECK allows ALL 6 values for forward-compatibility, BUT V1+ only EMITS the ruleset-agnostic subset `{pending, triggered_open, invalidated, expired}` (§7.3 + OQ-18). The `triggered_closed_at_target`/`triggered_closed_at_stop` values are reserved for the Phase 15+ replay engine (which is OUT-OF-SCOPE). Documented prominently in the migration comment + the dataclass docstring so a future maintainer does not mistake the dead V1+ values for a wiring gap.
 - `status_change_event` is nullable (NULL when `status == 'pending'` and no transition fired); the V1+ emitted subset uses `{entry_fired, shape_break, time_exit, observation_horizon_reached}` (the `stop_fired`/`target_fired` events pair with the reserved closed_at_* statuses).
-- `sessions_since_detection` is persisted (not just derived) so the observe-step's open-set scan + the expiry/horizon predicates are cheap (no per-row date arithmetic in SQL). It is a deterministic function of `(observation_date, detection.detection_date)` -- not an independent fact -- but persisting it is a standard denormalization for query cheapness; the discriminating test asserts it equals the computed trading-session delta.
+- `sessions_since_detection` is persisted (not just derived) so the observe-step's open-set scan + the expiry/horizon predicates are cheap (no per-row date arithmetic in SQL). It is the count of trading sessions from the detection's **`data_asof_date`** (the detector data cutoff -- the forward-walk origin) UP TO AND INCLUDING `observation_date` (Codex R3 M#2 -- measured from `data_asof_date`, NOT the forward-looking `detection_date` action-session label; the two differ and the boundary/window predicates at §7.3 all use `data_asof_date` for consistency). It is a deterministic function of `(observation_date, detection.data_asof_date)` -- not an independent fact -- but persisting it is a standard denormalization for query cheapness; the discriminating test asserts it equals the computed trading-session delta from `data_asof_date`.
 
 ### §4.3 Migration file structure (gotcha #9)
 
@@ -335,14 +342,20 @@ def list_detection_events(conn, *, ticker=None, pattern_class=None,
                           limit=None, offset=0) -> list[PatternDetectionEvent]: ...
 
 def list_observable_detections(conn, *, source: str = "pipeline",
-                               max_open_window: int) -> list[PatternDetectionEvent]:
-    """Return detections whose MOST-RECENT forward observation has a status
-    in the OPEN set ('pending','triggered_open') OR which have NO observation
-    yet (newly detected this run, observed for the first time next run).
-    Uses a correlated subquery / window function over
-    pattern_forward_observations to find the latest status per detection.
+                               observation_date: str) -> list[PatternDetectionEvent]:
+    """Return detections OBSERVABLE for `observation_date`:
+      - detection.data_asof_date < observation_date  (STRICT; Codex R1 C#2 +
+        R2 M#1 -- the forward-walk starts the FIRST COMPLETED SESSION AFTER the
+        detector's DATA CUTOFF, NOT after the action-session label. This
+        correctly INCLUDES the first tradable session (whose bar date exceeds
+        the detection's data_asof_date) and EXCLUDES same-run detections whose
+        data cutoff equals the current observation_date), AND
+      - the MOST-RECENT forward observation has a status in the OPEN set
+        ('pending','triggered_open') OR there is NO observation yet.
     Excludes detections whose latest status is terminal
-    ('invalidated','expired','triggered_closed_*')."""
+    ('invalidated','expired','triggered_closed_*'). Uses a window function
+    (ROW_NUMBER() OVER PARTITION BY detection_id ORDER BY observation_date DESC)
+    to find the latest status per detection."""
 ```
 
 **NO `update_detection_event` / `delete_detection_event`** -- append-only enforced at the repo layer (L1). The discriminating test source-greps the module for `def update_`/`def delete_` and asserts none exist (§11).
@@ -394,7 +407,8 @@ _FORWARD_OBSERVATION_STATUS_CHANGE_EVENTS = (
 class PatternDetectionEvent:
     detection_id: int | None
     ticker: str
-    detection_date: str
+    detection_date: str          # action_session_date (operator-facing label)
+    data_asof_date: str          # detector data cutoff (forward-walk boundary anchor; R2 M#1)
     pattern_class: str           # validated against DETECTOR_PATTERN_CLASSES
     structural_anchors_json: str
     composite_score: float
@@ -435,7 +449,7 @@ The existing step (runner.py:1396-2104) builds `resolved_emit_list` (Pass 2, run
 **The extension appends, in the SAME loop iteration, AFTER the successful `insert_evaluation`:**
 1. Compute per-pattern metadata (§9) from the already-fetched `bars` + the candidate object.
 2. Capture chart bytes -> `chart_render_id` (§8) (reuses `bars`).
-3. Build a `PatternDetectionEvent` (source='pipeline'; detection_date = `asof_run`; pipeline_run_id = `pipeline_run_id`; structural_anchors_json = serialized evidence asdict + window anchors; composite_score = the same composite; finviz_screen_state = canonicalized candidate state; per_pattern_metadata_json = the metadata).
+3. Build a `PatternDetectionEvent` (source='pipeline'; detection_date = `asof_run` (= action_session_date); data_asof_date = `lease_data_asof(cfg, lease)` (the detector data cutoff; R2 M#1); pipeline_run_id = `pipeline_run_id`; structural_anchors_json = serialized evidence asdict + window anchors; composite_score = the same composite; finviz_screen_state = canonicalized candidate state; per_pattern_metadata_json = the metadata).
 4. SELECT-then-skip idempotency (a re-run with an existing `(source='pipeline', ticker, detection_date, pattern_class)` row is skipped, mirroring the existing `existing_keys` pattern) then `insert_detection_event(conn, event)`.
 
 All writes happen inside the SAME `lease.fenced_write()` transaction as the `insert_evaluation` (one atomic commit per detect step; the detection event + the evaluation row are written together).
@@ -460,27 +474,32 @@ The detect step's empty-pool early-return (runner.py:1485-1490: `if not aplus_ti
 
 ```
 def _step_pattern_observe(*, cfg, lease, ohlcv_cache, run_warnings, max_pending_window, max_post_trigger_window):
-    observation_date = <the run's action_session_date>   # = detect step's asof_run
-    # 1. Read observable detections (open-status OR never-observed).
-    open_detections = list_observable_detections(read_conn, source='pipeline', max_open_window=...)
+    observation_date = lease_data_asof(cfg, lease)   # the run's DATA cutoff = the last completed bar's session (R2 M#1); the bar being recorded
+    # 1. Read observable detections: detection.data_asof_date < observation_date
+    #    (STRICT on the data cutoff; includes the first tradable session, excludes
+    #    same-run/no-forward-bar-yet detections per R1 C#2 + R2 M#1) AND latest status open.
+    open_detections = list_observable_detections(read_conn, source='pipeline', observation_date=observation_date)
     if not open_detections:
-        run_warnings.append({step: "pattern_observe", actual_open_pool: 0, reason: "no open detections"})
+        run_warnings.append({step: "pattern_observe", actual_open_pool: 0, reason: "no observable detections"})
         return
     # 2. Batch-read latest observation per detection.
     latest = get_latest_observations_for_detections(read_conn, [d.detection_id for d in open_detections])
-    # 3. For each open detection: fetch today's bar, compute status, append observation.
+    # 3. For each open detection: fetch the bar FOR observation_date, compute status, append.
     with lease.fenced_write() as conn:
         for det in open_detections:
-            bar = _today_bar_or_none(ohlcv_cache, det.ticker, observation_date)   # archive-first
+            # _bar_for_date selects the row whose date == observation_date (NOT
+            # blindly the last row); asserts presence; strips in-progress partial
+            # bar; archive-anchored read (R1 M#3 -- see 7.2).
+            bar = _bar_for_date(ohlcv_cache, det.ticker, observation_date)
             if bar is None:
                 run_warnings.append({step:"pattern_observe", ticker: det.ticker, reason:"no bar for observation_date"})
                 continue
             prev = latest.get(det.detection_id)
-            new_status, change_event = _advance_status(det, prev, bar, observation_date,
-                                                        max_pending_window, max_post_trigger_window)
-            # idempotency: skip if an observation already exists for (detection_id, observation_date)
+            # idempotency: an observation already exists for (detection_id, observation_date) -> skip
             if prev is not None and prev.observation_date == observation_date:
                 continue
+            new_status, change_event = _advance_status(det, prev, bar, observation_date,
+                                                        max_pending_window, max_post_trigger_window)
             insert_observation(conn, PatternForwardObservation(...ohlc_today_json=json(bar)..., status=new_status, ...))
 ```
 
@@ -490,7 +509,13 @@ The observe step reuses the SAME `OhlcvCache` instance the orchestrator passes t
 
 **Nuance (OQ-17; surfaced for operator triage):** the observe step's open-detection set may include tickers that have rotated OUT of today's `bucket=='aplus'` pool and are not open trades -- so observing them is a DEFENSIBLE expansion of the "OHLCV fetch scope = open-trade tickers ONLY" gotcha (#5). The expansion is bounded (the open-detection set is the project's own actionable substrate -- small in absolute terms; observations expire/invalidate, so the set does not grow unboundedly per the §7.3 horizon), archive-first (cheap), and zero-Schwab (L2). The `get_or_fetch` per-ticker pattern is identical to the detect step's existing per-aplus-ticker fetch. **RECOMMENDED disposition:** accept the bounded expansion; document it explicitly; gotcha #5's intent (don't bulk-fetch the watchlist on every dashboard render) is not violated (this is a once-per-day pipeline step over a bounded set). Operator confirms at executing-plans.
 
-The "today's bar" is the bar in the OHLCV archive whose date matches `observation_date` (the run's action_session). If the archive has no bar for `observation_date` for a given ticker (e.g., the ticker's archive was not refreshed this run), the step records a warnings-audit entry + skips that detection for the day (no observation row for the gap day; the next run re-attempts). The bar's in-progress-partial-bar strip discipline (CLAUDE.md yfinance gotcha) is inherited from the OhlcvCache ladder.
+**Bar selection MUST be anchored to `observation_date`, not "the last row" (Codex R1 M#3).** `OhlcvCache.get_or_fetch` is TTL-keyed by `(ticker, window_days)` and anchors to `last_completed_session(now())` (`swing/web/ohlcv_cache.py`), and the archive ladder can refresh from yfinance while serving a read (`swing/data/ohlcv_archive.py`) -- so blindly taking `bars.iloc[-1]` risks (a) a stale TTL hit from a different session, or (b) recording a bar that is not the intended `observation_date`. The `_bar_for_date(ohlcv_cache, ticker, observation_date)` helper therefore:
+1. obtains the frame (via `get_or_fetch` OR, preferred, an archive-anchored read keyed to `observation_date`; writing-plans selects the exact read path -- e.g. `read_or_fetch_archive(ticker=..., end_date=observation_date, ...)` so the right-edge is the observation session, archive-first);
+2. strips the in-progress partial bar per the CLAUDE.md yfinance gotcha if present (`observation_date` = `data_asof_date` is a COMPLETED session, so a partial bar with date > observation_date is dropped before selection; the OhlcvCache ladder already strips, and an archive-anchored read keyed to `end_date=observation_date` makes the partial-bar concern moot);
+3. SELECTS the row whose date == `observation_date` (NOT `iloc[-1]`); if no such row exists, returns None (the step records a gap warning + skips -- no observation row for the gap day; the next run re-attempts);
+4. returns the OHLC for exactly that session.
+
+This anchoring is what keeps the #26-elimination claim honest at capture time: the observe step records the bar FOR `observation_date` as the archive knows it at capture, freezes it into `ohlc_today_json`, and never re-reads it -- there is no time-travel read of a past date from a later archive. (The frozen bar's value is "what was known that session"; that IS the forward-walk semantic.) The exact read path (archive-only vs cache-with-assertion) is OQ-17/writing-plans; the binding requirement here is: select-by-`observation_date` + assert-or-skip, never blind-last-row.
 
 ### §7.3 Status state machine (ruleset-agnostic V1+; OQ-4 + OQ-18)
 
@@ -535,17 +560,20 @@ The `chart_renders.surface` CHECK already includes `theme2_annotated` (migration
 
 **Alternative REJECTED:** a NEW `pattern_detection_chart` surface would require a `chart_renders` table rebuild (CREATE-COPY-DROP-RENAME like the schwab_api_calls widening) + new partial-index + cross-column CHECK logic = materially more invasive v22 work for no benefit (theme2_annotated is literally "Theme 2 = pattern recognition, annotated chart").
 
-### §8.2 Rendering (OQ-19): extend `chart_jit` dispatch
+### §8.2 Rendering (OQ-19; Codex R1 M#1 + M#2): use the DEDICATED `render_theme2_annotated_svg`
 
-`chart_jit._RENDERERS` (chart_jit.py:56-61) currently maps 4 surfaces (`hyprec_detail`, `market_weather`, `position_detail`, `watchlist_row`) -- there is NO `theme2_annotated` renderer. `render_hyprec_detail_svg(*, ticker, bars, pattern_evaluation)` (chart_jit.py:142-146) is pattern-aware (currently always passed `pattern_evaluation=None` per the uniformity LOCK).
+Production ALREADY has a dedicated, pattern-consuming renderer: `render_theme2_annotated_svg(*, ticker, bars, pattern_evaluation: PatternEvaluation, exemplar_thumbnails=None) -> bytes` (`swing/web/charts.py:481`). It parses `pattern_evaluation.structural_evidence_json` + draws per-class structural overlays. **`chart_jit._RENDERERS` does NOT register it** (chart_jit.py:56-61 maps only `hyprec_detail`, `market_weather`, `position_detail`, `watchlist_row`). The initial draft's recommendation to render via `render_hyprec_detail_svg` was WRONG (Codex R1 M#1) -- that would silently downgrade the locked `theme2_annotated` semantics.
 
-**RECOMMENDED:** extend `get_or_render_surface`'s dispatch with a `theme2_annotated` branch that renders via `render_hyprec_detail_svg(ticker=..., bars=..., pattern_evaluation=<the verdict>)`, caching under `surface='theme2_annotated'` with `pattern_class` + `pipeline_run_id` set. Renderer-kwargs uniformity LOCK (Expansion #10c): the detect-step callsite (and any future caller of theme2_annotated) MUST pass identical kwargs; a cache-collision discriminating test mocks the renderer + asserts `call_count == 1` on a second same-key request. Writing-plans phase verifies the exact `render_hyprec_detail_svg` signature + whether a dedicated annotated renderer (drawing the structural anchors as overlays) is preferred over the hyprec renderer; for V1+ reusing the existing pattern-aware renderer is sufficient.
+**RECOMMENDED (REVISED):** wire `theme2_annotated` to `render_theme2_annotated_svg`. The detect step has the exact `PatternEvaluation` row it just built (the `row` object built at runner.py:2062 before `insert_evaluation`) and passes it as `pattern_evaluation`. The capture helper (§8.3) renders via `render_theme2_annotated_svg(ticker=..., bars=..., pattern_evaluation=row)` and caches under `surface='theme2_annotated'` with `pattern_class` + `pipeline_run_id` set. Renderer-kwargs uniformity LOCK (Expansion #10c): the detect-step callsite (and any future caller of theme2_annotated) MUST pass identical kwargs; a cache-collision discriminating test mocks the renderer + asserts `call_count == 1` on a second same-key request.
+
+**Evidence-key repair IN SCOPE (Codex R1 M#2):** the annotation path in `swing/web/charts.py` reads STALE evidence keys -- `top_of_range`/`bottom_of_range` (charts.py:411-412), `depth_ratio` (charts.py:429), `pole_advance_pct` (charts.py:447) -- but the ACTUAL detector evidence fields are `range_top_price`/`range_bottom_price` (`swing/patterns/flat_base.py:97-98`), `cup_depth_pct` (`swing/patterns/cup_with_handle.py:135`), and `pole_pct` (`swing/patterns/high_tight_flag.py:126`). Unrepaired, `render_theme2_annotated_svg` produces base candlesticks + MAs but with MISSING/incorrect structural overlays. Writing-plans phase MUST (a) verify which renderer function actually reads which stale key (lines 411-449 fall in the hyprec region; the theme2 renderer at 481+ parses `structural_evidence_json` -- the exact stale-key surface is verified at writing-plans), and (b) include an evidence-key repair sub-task in T-2.4 so captured charts are correctly annotated. **If the repair is deferred** (operator option), the captured chart still renders (base price + MAs) with degraded overlays -- a V1 simplification (§13 #11), NOT a capture failure. The chart bytes are still frozen + non-empty (F6 barrier satisfied).
 
 ### §8.3 Invocation + failure handling (OQ-8 + OQ-13)
 
 - **Trigger (OQ-13):** chart capture fires on EVERY emitted `pattern_detection_events` row. Since `_step_pattern_detect` runs ONLY on `bucket=='aplus'` candidates, ALL detections are A+ tier -> chart capture on every A+ detection (the natural V1+ scope; resolves OQ-13). Substrate growth is bounded: ~(#aplus tickers x #detected classes) SVGs per run; the aplus pool is typically small (0-20 in production).
-- **Invoked at detect-step time** inside the `lease.fenced_write()` transaction: call the chart_jit helper (which itself does a write-through `with conn:` -- writing-plans phase reconciles the nested-transaction concern: the chart capture should use the SAME `conn` + NOT open its own `with conn:`; a thin variant `render_and_cache_theme2(conn, ...)` that does the DELETE-then-INSERT WITHOUT its own commit, honoring the caller-tx contract, is preferred over `get_or_render_surface`'s self-committing path). This is a §10 writing-plans concern flagged here.
-- **Failure handling (OQ-8):** if the render fails (matplotlib hiccup; bar shortage; F6 empty-bytes rejection at `ChartRender.__post_init__`), the chart capture returns None; the `pattern_detection_events` row STILL inserts with `chart_render_id = NULL`; a gotcha #27 warnings-audit entry is appended (`{step:"pattern_detect", ticker, pattern_class, reason:"chart render failed"}`). The detection is never lost because a chart could not render. Closes CR.1 cleanly.
+- **Capture helper returns the id (Codex R1 m#2; FINALIZED at R2):** `get_or_render_surface` returns only bytes (chart_jit.py); `refresh_chart_render` returns the inserted id. To populate `chart_render_id`, the detect step uses a NEW thin helper `render_and_capture_detection_chart(conn, *, ticker, bars, pattern_evaluation, pipeline_run_id, data_asof_date) -> int | None` that: (1) renders via `render_theme2_annotated_svg`; (2) builds the `ChartRender` (construction-barrier F6 empty-bytes rejection applies); (3) calls the standard **`refresh_chart_render`** (DELETE-then-INSERT on the `theme2_annotated` key; caller-tx, returns the new id) -- this is the SAME write helper the exemplar path uses (`swing/web/view_models/patterns/exemplars.py`), so the two writers coexist as last-writer-wins cache (R2 C#1); (4) honors the CALLER-TX contract (uses the passed `conn`; does NOT open its own `with conn:` -- `refresh_chart_render` is already caller-tx per its docstring at `chart_renders.py:200-249`; it runs inside the detect step's existing `lease.fenced_write()` so the chart row + evaluation row + detection row commit atomically). The returned id is stored as the detection's `chart_render_id` (a nullable audit linkage; SET NULL if the cache row is later refreshed away -- §4.1).
+- **Idempotency (Codex R1 C#1, re-framed at R2):** the detection-event INSERT is idempotency-gated (SELECT-then-skip on the unique key, §6.1 step 4); on a skip, the chart capture is also skipped (no wasted render). Because `chart_render_id` is now SET NULL (not RESTRICT), a re-run's `refresh_chart_render` that legitimately replaces the cache row is HARMLESS (the prior detection's pointer degrades to NULL; FACTS untouched) -- there is no RESTRICT deadlock and no collision failure.
+- **Failure handling (OQ-8):** if the render fails (matplotlib hiccup; bar shortage; F6 empty-bytes rejection at `ChartRender.__post_init__`), the helper returns None; the `pattern_detection_events` row STILL inserts with `chart_render_id = NULL`; a gotcha #27 warnings-audit entry is appended (`{step:"pattern_detect", ticker, pattern_class, reason:"chart render failed"}`). The detection is never lost because a chart could not render. Closes CR.1 cleanly.
 
 ### §8.4 Cost note
 
@@ -577,11 +605,11 @@ Dispatch brief §2.6 prescribed: "market_cap: from `candidates.market_cap_dollar
 
 ### §9.3 Computation helpers + in-progress-bar discipline
 
-The 3 pure-bars helpers (`compute_atr_pct`, `compute_return_pct`, `compute_52w_high_proximity_pct`) operate on the `bars` DataFrame ALREADY fetched in the detect loop, sliced to `<= detection_date` (strip the in-progress partial bar per the CLAUDE.md yfinance gotcha if present; the OhlcvCache ladder already strips, but the helpers assert `bars.index[-1].date() <= asof` defensively). Each helper guards short-history (e.g., `< 90` bars for ret_90d -> field = None inside the JSON, not an exception) so a short-history ticker never poisons the metadata emit. Writing-plans phase chooses module location (`swing/pipeline/temporal_metadata.py` vs inline).
+The 3 pure-bars helpers (`compute_atr_pct`, `compute_return_pct`, `compute_52w_high_proximity_pct`) operate on the `bars` DataFrame ALREADY fetched in the detect loop, sliced to `<= data_asof_date` (the detector DATA cutoff -- the last completed bar; NOT the forward-looking `detection_date` action-session label, which has no bar yet -- Codex R3 M#3) with the in-progress partial bar stripped per the CLAUDE.md yfinance gotcha if present (the OhlcvCache ladder already strips, but the helpers assert `bars.index[-1].date() <= data_asof_date` defensively). Each helper guards short-history (e.g., `< 90` bars for ret_90d -> field = None inside the JSON, not an exception) so a short-history ticker never poisons the metadata emit. Writing-plans phase chooses module location (`swing/pipeline/temporal_metadata.py` vs inline).
 
 ### §9.4 finviz_screen_state (OQ-6)
 
-At detect time, the `Candidate` object carries `criteria: tuple[CriterionResult, ...]` + `bucket` + `rs_rank` + `rs_method`. `finviz_screen_state = json.dumps({"bucket": c.bucket, "rs_rank": c.rs_rank, "rs_method": c.rs_method, "criteria": {<criterion_name>: <passed_bool>}})` -- a canonicalized (NOT verbatim) per-ticker evaluation/screen state. (The literal Finviz screen-query params are not per-ticker; the per-ticker signal is which evaluation criteria the candidate passed.) Nullable for non-pipeline sources (V2). Writing-plans phase verifies the exact `CriterionResult` field names (name + pass/fail).
+At detect time, the `Candidate` object carries `criteria: tuple[CriterionResult, ...]` + `bucket` + `rs_rank` + `rs_method`. The `CriterionResult` dataclass fields are `criterion_name` + `result` (+ `layer`, `value`, `rule`) (`swing/data/models.py:103-105`; repo deserialization constructs `CriterionResult(name, layer, res, val, rule)` at `swing/data/repos/candidates.py:114`). `finviz_screen_state = json.dumps({"bucket": c.bucket, "rs_rank": c.rs_rank, "rs_method": c.rs_method, "criteria": {cr.criterion_name: cr.result for cr in c.criteria}})` -- a canonicalized (NOT verbatim) per-ticker evaluation/screen state, where the per-criterion value is the `CriterionResult.result` (the pass/fail/na verdict string, NOT a coerced bool -- writing-plans confirms the exact `result` value domain). (The literal Finviz screen-query params are not per-ticker; the per-ticker signal is which evaluation criteria the candidate passed.) Nullable for non-pipeline sources (V2).
 
 ---
 
@@ -594,8 +622,8 @@ Sub-bundle 2 is larger than Sub-bundle 1 (commissioning estimate ~15-25 commits 
 - **T-2.1 Schema:** migration `0022` + `db.py` v22 wiring (EXPECTED_SCHEMA_VERSION + backup gate + expected-tables) + migration tests. (gotcha #9 + #11 + strict-equality backup gate.)
 - **T-2.2 Models + repos:** 2 dataclasses + constants + 2 append-only repos + repo tests. (gotcha #11 paired discipline; append-only source-grep tests.)
 - **T-2.3 detect-step extension:** per-pattern metadata helpers + candidate-object sourcing + `pattern_detection_events` append + empty-pool warnings audit + tests.
-- **T-2.4 chart capture:** chart_jit theme2_annotated dispatch + the caller-tx render-and-cache variant + chart_render_id wiring + cache-collision test.
-- **T-2.5 observe step:** `_step_pattern_observe` + status state machine + DAG wiring + run-warnings accumulator + tests.
+- **T-2.4 chart capture:** register `theme2_annotated` -> `render_theme2_annotated_svg`; caller-tx `render_and_capture_detection_chart` helper (uses `refresh_chart_render`; returns chart_render_id) + chart_render_id wiring (SET NULL FK; coexists with the exemplar theme2_annotated writer last-writer-wins) + charts.py evidence-key repair + cache-collision test. (Codex R1 C#1+M#1+M#2+m#2; R2 C#1+C#2.)
+- **T-2.5 observe step:** `_step_pattern_observe` + `detection.data_asof_date < observation_date` forward-walk boundary (observation_date = run data_asof_date; Codex R1 C#2 + R2 M#1) + select-bar-for-observation_date anchoring (Codex R1 M#3) + status state machine (windows measured from data_asof_date) + DAG wiring + run-warnings accumulator + tests.
 - **T-2.6 closer:** L2 source-grep verify + ASCII discipline verify + cross-step integration test.
 
 **Alternative (operator option):** split into TWO executing-plans dispatches -- (A) substrate (T-2.1 + T-2.2 + T-2.3) then (B) behavior (T-2.4 + T-2.5 + T-2.6). RECOMMENDED single dispatch (the slices cohere + share the v22 substrate); surface the split as an operator option at executing-plans dispatch.
@@ -648,7 +676,7 @@ Existing `tests/integration/test_l2_lock_source_grep.py` (multiset Counter; base
 
 ### §11.6 Status state machine tests
 
-Plant a detection with a known `pivot_price` + `structural_invalidation_level`; drive `_step_pattern_observe` across a synthetic bar sequence; assert each transition: pending (below pivot, above invalidation, within window) -> triggered_open (high crosses pivot) ; pending -> invalidated (close below structural low) ; pending -> expired (window elapsed without trigger) ; triggered_open -> expired (post-trigger horizon). Assert `sessions_since_detection` equals the computed trading-session delta. Assert `ohlc_today_json` is frozen verbatim (never re-fetched/mutated on a later run).
+Plant a detection with a known `pivot_price` + `structural_invalidation_level`; drive `_step_pattern_observe` across a synthetic bar sequence; assert each transition: pending (below pivot, above invalidation, within window) -> triggered_open (high crosses pivot) ; pending -> invalidated (close below structural low) ; pending -> expired (window elapsed without trigger) ; triggered_open -> expired (post-trigger horizon). Assert `sessions_since_detection` equals the computed trading-session delta FROM `data_asof_date` (not detection_date). Assert the first observation lands on the first session with date > `data_asof_date` (R2 M#1). Assert `ohlc_today_json` is frozen verbatim (never re-fetched/mutated on a later run).
 
 ---
 
@@ -676,7 +704,8 @@ Plant a detection with a known `pivot_price` + `structural_invalidation_level`; 
 | 3 | `structural_anchors_json` = full evidence asdict (+ window) | V2: normalized per-class anchor columns/table for indexed structural queries |
 | 4 | `per_pattern_metadata_json` = JSON blob (OQ-5) | V2: normalize into typed columns if stratified queries need indexing |
 | 5 | Status state machine emits only `{pending, triggered_open, invalidated, expired}` (ruleset-agnostic) | Phase 15+: replay engine emits `triggered_closed_at_target`/`triggered_closed_at_stop` by replaying `ohlc_today_json` against ruleset stops/targets (schema already forward-compat) |
-| 6 | chart capture REUSES `theme2_annotated` (no new surface) | V2: dedicated `pattern_detection_chart` surface + annotated overlay renderer (structural anchors drawn) if theme2_annotated proves too coupled |
+| 6 | chart capture REUSES `theme2_annotated` (no new surface) + the DEDICATED `render_theme2_annotated_svg` renderer | V2: dedicated `pattern_detection_chart` surface if theme2_annotated proves too coupled with a future web journal surface |
+| 11 | theme2 renderer evidence-key repair (charts.py stale keys -> actual detector fields) is IN SCOPE (T-2.4); IF deferred at operator option, captured charts render base price+MAs with degraded structural overlays | V2: full annotation-overlay parity if the repair is deferred in V1+ |
 | 7 | Append-only enforced at repo layer (no update/delete fns) + UNIQUE + RESTRICT FK (OQ-10) | V2: SQLite BEFORE UPDATE/DELETE triggers (RAISE) for defense-in-depth (no existing table uses triggers; new mechanism) |
 | 8 | Observe-step records gap days as skips (no observation row when no bar for the day) | V2: backfill gap observations from archive at next run (carefully; would touch #26 boundary -- likely NOT done) |
 | 9 | `finviz_screen_state` = canonicalized eval criteria (not verbatim Finviz params) | V2: capture verbatim Finviz screen-query params at run level + link |
@@ -708,7 +737,7 @@ Brief §3 OQs (1-15) + 5 NEW OQs surfaced by code-read (16-20). RECOMMENDED disp
 | 16 | **NEW:** market_cap + true ATR NOT in `candidates` | V1+ captures sector/industry/adr_pct (candidates) + atr_pct/ret_90d/prox_52w (computed from bars); market_cap = NULL (V2: persist Finviz Market Cap to candidates -- out of Sub-bundle 2 scope). **OPERATOR TRIAGE** (confirm NULL-market_cap-for-V1 is acceptable). |
 | 17 | **NEW:** observe-step fetch scope vs gotcha #5 | bounded, archive-first, zero-Schwab expansion of the open-trade-only fetch scope to the open-detection set. RECOMMENDED accept. **OPERATOR TRIAGE.** |
 | 18 | **NEW:** status state machine thresholds | RECOMMENDED `max_pending_window=30`, `max_post_trigger_window=60` sessions; per-class `structural_invalidation_level` definition (§7.3.1); config-surfaced. **OPERATOR TRIAGE** (confirm windows + invalidation levels; or choose the leaner pure-time V1-- variant). |
-| 19 | **NEW:** theme2_annotated renderer | RECOMMENDED reuse `render_hyprec_detail_svg(pattern_evaluation=...)` + caller-tx render-and-cache variant (no self-commit) (§8.2-8.3). Writing-plans verifies signature. RESOLVED (pending writing-plans signature re-grep). |
+| 19 | **NEW:** theme2_annotated renderer + chart FK | **REVISED (Codex R1 M#1+M#2+C#1+m#2; R2 C#1+C#2):** use the DEDICATED `render_theme2_annotated_svg` (charts.py:481) -- NOT render_hyprec_detail_svg; caller-tx helper returns chart_render_id via the standard `refresh_chart_render` (coexists last-writer-wins with the exemplar theme2_annotated writer at `view_models/patterns/exemplars.py`); `chart_render_id` FK = `ON DELETE SET NULL` (nullable audit linkage to the ephemeral run-scoped cache -- the R1 RESTRICT attempt was reverted because it deadlocked the run-prune CASCADE + collided with the exemplar path); evidence-key repair IN SCOPE for T-2.4 (deferral is a V1 simplification §13 #11). RESOLVED. |
 | 20 | **NEW:** Codex two-chain at writing-plans (gotcha #36) | §15.5 evaluation. **OPERATOR TRIAGE at writing-plans dispatch.** |
 
 ---
@@ -724,7 +753,8 @@ Brief §3 OQs (1-15) + 5 NEW OQs surfaced by code-read (16-20). RECOMMENDED disp
 | migration backup-gate STRICT equality | **APPLIED** -- `_phase14_backup_gate` `current_version == 21` (§4.4) |
 | sqlite3 list-bind / dynamic `?` expansion + empty-input | **APPLIED** -- `get_latest_observations_for_detections` (§5.2 + §11.5) |
 | `date.fromisoformat` TEXT->date boundary | **APPLIED** -- detection_date / observation_date are TEXT; the observe-step session-delta computation + status predicates convert at the callsite with malformed-input guards (§7) |
-| #26 (OHLCV archive bar-content TEMPORAL mutation) | **ELIMINATED BY CONSTRUCTION** -- forward-walk; ohlc_today_json frozen at observation; no archive re-read (§1.1 + §2.3) |
+| #26 (OHLCV archive bar-content TEMPORAL mutation) | **ELIMINATED BY CONSTRUCTION** -- forward-walk; ohlc_today_json frozen at observation; no archive re-read (§1.1 + §2.3). Hardened per Codex R1 M#3: the observe step selects the bar FOR `observation_date` (not blind last-row) + freezes it; no time-travel read of a past date from a later archive (§7.2). |
+| chart-pointer FK posture | **RESOLVED per Codex R1 C#1 + R2 C#1+C#2** -- `chart_render_id` is a nullable AUDIT LINKAGE to the ephemeral run-scoped cache: `ON DELETE SET NULL` + standard `refresh_chart_render` (coexists last-writer-wins with the exemplar theme2_annotated writer); the chart is a best-effort capture, NOT a frozen fact; a guaranteed-permanent chart is a V2 candidate (§2.3, §4.1, §8.3, §13 #6) |
 | #27 (silent-skip-without-audit) | **APPLIED** -- detect-step empty-pool (§6.4) + observe-step empty-pool/no-bar (§7.4) + chart-render-failure (§8.3) emit warnings_json |
 | #5 (OHLCV fetch scope = open-trade tickers) | **AUDITED** -- observe-step scope expansion analyzed + bounded + accepted (§7.2 + OQ-17) |
 | #28/#29 (exemplar OHLCV cache discipline) | **N/A** -- chart capture uses the candidate's OWN already-fetched bars (not an exemplar corpus); the detect step's existing exemplar-template-match path is unchanged |
