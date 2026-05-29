@@ -38,7 +38,7 @@ This plan does NOT build: backfill of `pattern_detection_events` from `pattern_e
 
 | Path | Responsibility | Approx. size |
 |---|---|---|
-| `swing/data/migrations/0022_phase14_temporal_log.sql` | v22 migration: 2 NEW tables + 7 indexes + CHECK + FK; explicit `BEGIN;`/`COMMIT;`; `UPDATE schema_version SET version = 22;` as FINAL statement (gotcha #9; `0021` precedent). | ~110 lines |
+| `swing/data/migrations/0022_phase14_temporal_log.sql` | v22 migration: 2 NEW tables + 8 indexes + CHECK + FK; explicit `BEGIN;`/`COMMIT;`; `UPDATE schema_version SET version = 22;` as the final DML/DDL statement before COMMIT (gotcha #9; `0021` precedent). | ~115 lines |
 | `swing/data/repos/pattern_detection_events.py` | Append-only repo: `insert_detection_event`, `get_detection_event_by_id`, `list_detection_events`, `list_observable_detections`, `_row_to_detection_event` mapper. Caller-tx (NO `conn.commit()`). NO `update_*`/`delete_*`. | ~180 lines |
 | `swing/data/repos/pattern_forward_observations.py` | Append-only repo: `insert_observation`, `get_observations_for_detection`, `get_latest_observation_for_detection`, `get_latest_observations_for_detections` (dynamic-`?` IN-clause + empty short-circuit), `_row_to_observation` mapper. Caller-tx. NO `update_*`/`delete_*`. | ~170 lines |
 | `swing/pipeline/temporal_metadata.py` | Pure-bars helpers: `compute_atr_pct(bars, asof)`, `compute_return_pct(bars, asof, lookback_sessions)`, `compute_52w_high_proximity_pct(bars, asof)`, `build_per_pattern_metadata(...)`, `build_finviz_screen_state(candidate)`, `build_structural_anchors_json(window, evidence)`. No I/O; consumes already-fetched bars + the `Candidate`. | ~190 lines |
@@ -254,7 +254,7 @@ Verbatim from dispatch brief §4 + spec §11 OUT-OF-SCOPE:
 - Test: `tests/data/test_models_temporal.py` (dataclass validators)
 
 **Acceptance criteria:**
-- `0022_phase14_temporal_log.sql` creates `pattern_detection_events` (12 cols incl. `data_asof_date`; `chart_render_id` + `pipeline_run_id` both `ON DELETE SET NULL`) + `pattern_forward_observations` (8 cols; `detection_id` `ON DELETE RESTRICT`; `UNIQUE(detection_id, observation_date)`) + 7 indexes (1 UNIQUE `idx_pde_source_ticker_date_class` + 3 non-unique on detection_events + 3 non-unique on observations) + CHECK enums; final statement `UPDATE schema_version SET version = 22;` inside explicit `BEGIN;`/`COMMIT;`.
+- `0022_phase14_temporal_log.sql` creates `pattern_detection_events` (12 cols incl. `data_asof_date`; `chart_render_id` + `pipeline_run_id` both `ON DELETE SET NULL`) + `pattern_forward_observations` (8 cols; `detection_id` `ON DELETE RESTRICT`; `UNIQUE(detection_id, observation_date)`) + 8 indexes (1 UNIQUE `idx_pde_source_ticker_date_class` + 4 non-unique on detection_events incl. `idx_pde_source_data_asof` + 3 non-unique on observations) + CHECK enums; the final DML/DDL statement before COMMIT is `UPDATE schema_version SET version = 22;` inside explicit `BEGIN;`/`COMMIT;`.
 - `EXPECTED_SCHEMA_VERSION == 22`; `_phase14_backup_gate` fires ONLY at `current_version == 21 AND target_version >= 22` (STRICT); `PHASE14_PRE_MIGRATION_EXPECTED_TABLES == PHASE13_SB6C_PRE_MIGRATION_EXPECTED_TABLES`.
 - `PatternDetectionEvent` + `PatternForwardObservation` frozen dataclasses validate enums in `__post_init__` mirroring the CHECK (gotcha #11 paired -- CHECK + constant + validator in THIS task).
 - Existing suite green; `ruff check swing/` clean.
@@ -362,6 +362,11 @@ CREATE INDEX idx_pde_class_date
     ON pattern_detection_events(pattern_class, detection_date);
 CREATE INDEX idx_pde_pipeline_run_id
     ON pattern_detection_events(pipeline_run_id);
+-- Daily observe-step open scan (Codex chain #2 Minor #4): list_observable_detections
+-- filters (source = ? AND data_asof_date < ?); a (source, data_asof_date) index
+-- serves that range predicate directly.
+CREATE INDEX idx_pde_source_data_asof
+    ON pattern_detection_events(source, data_asof_date);
 
 CREATE TABLE pattern_forward_observations (
     observation_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -380,7 +385,8 @@ CREATE TABLE pattern_forward_observations (
             'time_exit', 'shape_break', 'observation_horizon_reached'
         )
     ),
-    sessions_since_detection INTEGER NOT NULL,  -- count of sessions from detection.data_asof_date UP TO AND INCLUDING observation_date
+    sessions_since_detection INTEGER NOT NULL
+        CHECK (sessions_since_detection >= 0),  -- count from detection.data_asof_date UP TO AND INCLUDING observation_date; mirrors the dataclass validator (gotcha #11)
     created_at TEXT NOT NULL,                 -- INSERT timestamp (ISO)
 
     UNIQUE (detection_id, observation_date)
@@ -393,7 +399,7 @@ CREATE INDEX idx_pfo_observation_date
 CREATE INDEX idx_pfo_status
     ON pattern_forward_observations(status);
 
-UPDATE schema_version SET version = 22;   -- MUST be FINAL statement before COMMIT
+UPDATE schema_version SET version = 22;   -- MUST be the final DML/DDL statement before COMMIT
 
 COMMIT;
 ```
@@ -447,6 +453,17 @@ def test_db_migrate_twice_is_noop(tmp_path):
     v_after_first = _current_version(conn)
     run_migrations(conn, target_version=22, backup_dir=tmp_path)  # no-op
     assert _current_version(conn) == v_after_first == 22
+
+
+def test_run_migrations_wires_gate_and_writes_backup_once(tmp_path):
+    # Codex chain #2 Major #7: prove the gate is WIRED into run_migrations
+    # (not just callable directly) -- a v21 -> v22 run writes exactly one
+    # backup file at the boundary.
+    conn = _fresh_v21_db(tmp_path)
+    run_migrations(conn, target_version=22, backup_dir=tmp_path)
+    backups = list(tmp_path.glob("swing-pre-phase14-migration-*.db"))
+    assert len(backups) == 1
+    assert _current_version(conn) == 22
 ```
 
 - [ ] **Step 7: Run to verify it fails**
@@ -593,6 +610,27 @@ def test_check_rejects_bad_status(tmp_path):
             "(detection_id, observation_date, ohlc_today_json, status, "
             " sessions_since_detection, created_at) "
             "VALUES (1,'2026-05-29','{}','NOT_A_STATUS',1,'2026-05-29T00:00:00Z')"
+        )
+
+
+def test_check_rejects_negative_sessions_since_detection(tmp_path):
+    # Codex chain #2 Major #2: the schema CHECK mirrors the dataclass validator.
+    conn = _fresh_v21_db(tmp_path)
+    run_migrations(conn, target_version=22, backup_dir=tmp_path)
+    conn.execute(
+        "INSERT INTO pattern_detection_events "
+        "(detection_id, ticker, detection_date, data_asof_date, pattern_class, "
+        " structural_anchors_json, composite_score, detector_version, source, "
+        " per_pattern_metadata_json, created_at) "
+        "VALUES (1,'AAA','2026-05-29','2026-05-28','vcp','{}',0.5,'v1',"
+        "'pipeline','{}','2026-05-29T00:00:00Z')"
+    )
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO pattern_forward_observations "
+            "(detection_id, observation_date, ohlc_today_json, status, "
+            " sessions_since_detection, created_at) "
+            "VALUES (1,'2026-05-29','{}','pending',-1,'2026-05-29T00:00:00Z')"
         )
 ```
 
@@ -1069,6 +1107,19 @@ def test_repo_defines_no_update_or_delete_functions():
              if o.__module__ == mod.__name__]
     offenders = [n for n in names if n.startswith(("update_", "delete_"))]
     assert offenders == [], f"append-only violated: {offenders}"
+
+
+def test_repo_source_has_no_mutating_sql():
+    # Codex chain #2 Minor #2: the name-prefix grep is not enough -- a generic
+    # helper could embed UPDATE/DELETE/REPLACE. Assert the module SOURCE has no
+    # mutating SQL STATEMENT (the repo is INSERT/SELECT only). The patterns
+    # match SQL-statement shapes (verb + SQL continuation), so prose/docstrings
+    # mentioning "update_*"/"delete_*" do NOT false-positive.
+    import re
+    src = inspect.getsource(mod).upper()
+    for pat in (r"\bUPDATE\s+\w+\s+SET\b", r"\bDELETE\s+FROM\b",
+                r"\bREPLACE\s+INTO\b", r"\bDROP\s+(TABLE|INDEX)\b"):
+        assert re.search(pat, src) is None, f"append-only violated: {pat}"
 ```
 
 - [ ] **Step 9: Run all T-2.2 tests + ruff + commit**
@@ -1359,6 +1410,19 @@ def test_repo_defines_no_update_or_delete_functions():
              if o.__module__ == mod.__name__]
     offenders = [n for n in names if n.startswith(("update_", "delete_"))]
     assert offenders == [], f"append-only violated: {offenders}"
+
+
+def test_repo_source_has_no_mutating_sql():
+    # Codex chain #2 Minor #2: the name-prefix grep is not enough -- a generic
+    # helper could embed UPDATE/DELETE/REPLACE. Assert the module SOURCE has no
+    # mutating SQL STATEMENT (the repo is INSERT/SELECT only). The patterns
+    # match SQL-statement shapes (verb + SQL continuation), so prose/docstrings
+    # mentioning "update_*"/"delete_*" do NOT false-positive.
+    import re
+    src = inspect.getsource(mod).upper()
+    for pat in (r"\bUPDATE\s+\w+\s+SET\b", r"\bDELETE\s+FROM\b",
+                r"\bREPLACE\s+INTO\b", r"\bDROP\s+(TABLE|INDEX)\b"):
+        assert re.search(pat, src) is None, f"append-only violated: {pat}"
 ```
 
 - [ ] **Step 6: Run all T-2.3 tests + ruff + commit**
@@ -1455,6 +1519,21 @@ def test_helpers_return_none_on_empty_or_columnless_frame():
     assert compute_atr_pct(empty, asof="2026-05-28") is None
     assert compute_return_pct(empty, asof="2026-05-28", lookback_sessions=90) is None
     assert compute_52w_high_proximity_pct(empty, asof="2026-05-28") is None
+
+
+def test_build_ohlc_today_json_validates_shape_and_provider():
+    # Codex chain #2 Major #6: the observation JSON construction barrier.
+    import json as _j
+    from swing.pipeline.temporal_metadata import build_ohlc_today_json
+    good = {"open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5,
+            "volume": 1e6, "provider": "yfinance"}
+    out = _j.loads(build_ohlc_today_json(good))
+    assert out["provider"] == "yfinance"
+    assert set(out) == {"open", "high", "low", "close", "volume", "provider"}
+    with pytest.raises(ValueError, match="provider"):
+        build_ohlc_today_json({**good, "provider": "bogus"})
+    with pytest.raises(ValueError, match="missing keys"):
+        build_ohlc_today_json({"open": 1.0})  # incomplete
 ```
 
 - [ ] **Step 2: Run to verify fail; Step 3: write `temporal_metadata.py`**
@@ -1599,6 +1678,27 @@ def build_structural_anchors_json(window, evidence) -> str:
         },
         "evidence": dataclasses.asdict(evidence),
     }, default=str)
+
+
+_OHLC_TODAY_PROVIDERS = ("schwab_api", "yfinance")
+_OHLC_TODAY_KEYS = ("open", "high", "low", "close", "volume", "provider")
+
+
+def build_ohlc_today_json(bar: dict) -> str:
+    """Validated serializer for ohlc_today_json (Codex chain #2 Major #6 --
+    construction barrier for the observation JSON shape so the substrate's
+    provider provenance is guaranteed, not convention). Rejects a missing key
+    or an out-of-domain provider so a bad shape never enters the append-only
+    log. The observe step uses THIS instead of a bare json.dumps."""
+    missing = [k for k in _OHLC_TODAY_KEYS if k not in bar]
+    if missing:
+        raise ValueError(f"ohlc_today_json missing keys: {missing}")
+    if bar["provider"] not in _OHLC_TODAY_PROVIDERS:
+        raise ValueError(
+            f"ohlc_today_json provider must be one of {_OHLC_TODAY_PROVIDERS}, "
+            f"got {bar['provider']!r}"
+        )
+    return json.dumps({k: bar[k] for k in _OHLC_TODAY_KEYS})
 ```
 
 - [ ] **Step 4: Run helper tests -- PASS**
@@ -2052,14 +2152,36 @@ def test_chart_render_failure_leaves_null_and_warns(tmp_db_v22):
     assert any(w.get("reason") == "chart render failed" for w in run_warnings)
 
 
-def test_idempotent_second_run_no_duplicate_detection(tmp_db_v22):
+def test_idempotent_rerun_skips_recompute_frozen_facts(tmp_db_v22):
+    # Codex chain #2 Major #5 (+ R2 Minor #1 scope fix): a re-run with DIFFERENT
+    # bars must NOT duplicate AND must NOT recompute/replace the FROZEN detection
+    # facts. The frozen-fact tuple is structural_anchors_json + composite_score
+    # + per_pattern_metadata_json + detector_version + data_asof_date (the
+    # immutable facts per spec section 2.3). chart_render_id is a NULLABLE AUDIT
+    # LINKAGE (not a frozen fact; it may degrade to NULL via ON DELETE SET NULL)
+    # -- asserted SEPARATELY as "the same-run skip did not refresh the linkage".
     conn, cfg, lease, eval_run_id = _seed_aplus_candidate_and_run(tmp_db_v22, ticker="AAA")
-    cache = _StubOhlcvCache({"AAA": _build_bars()})
-    _drive_detect(conn, cfg, lease, eval_run_id, cache, [])
+    _drive_detect(conn, cfg, lease, eval_run_id,
+                  _StubOhlcvCache({"AAA": _build_bars()}), [])
     first = list_detection_events(conn, ticker="AAA")
-    _drive_detect(conn, cfg, lease, eval_run_id, cache, [])  # re-run same run
+    frozen_before = [(d.structural_anchors_json, d.composite_score,
+                      d.per_pattern_metadata_json, d.detector_version,
+                      d.data_asof_date) for d in first]
+    linkage_before = [d.chart_render_id for d in first]
+    import pandas as pd
+    drifted = _build_bars().copy()
+    drifted[["Open", "High", "Low", "Close"]] *= 1.5
+    _drive_detect(conn, cfg, lease, eval_run_id,
+                  _StubOhlcvCache({"AAA": drifted}), [])
     second = list_detection_events(conn, ticker="AAA")
-    assert len(second) == len(first)  # SELECT-then-skip idempotency
+    assert len(second) == len(first)  # no duplicate (SELECT-then-skip)
+    frozen_after = [(d.structural_anchors_json, d.composite_score,
+                     d.per_pattern_metadata_json, d.detector_version,
+                     d.data_asof_date) for d in second]
+    assert frozen_after == frozen_before          # FROZEN FACTS unchanged
+    # The skip also left the audit linkage untouched in the SAME run (it is NOT
+    # a frozen fact -- a later run-prune CASCADE could SET NULL it; that is fine).
+    assert [d.chart_render_id for d in second] == linkage_before
 
 
 def test_pattern_evaluations_still_written_l7(tmp_db_v22):
@@ -2228,6 +2350,58 @@ def test_triggered_open_stays_open_within_horizon():
         _Det(), prev=_PrevOpen(), bar=_bar(11.0, 10.5, 10.8),
         sessions_since_detection=50, max_pending=30, max_post_trigger=60)
     assert status == "triggered_open" and ev is None
+
+
+# --- Same-bar conflict precedence (Codex chain #2 Major #1 + #3) ---
+
+def test_same_bar_breakout_and_invalidation_resolves_to_invalidated():
+    # high 10.5 >= pivot 10.0 (intraday breakout) AND close 7.5 < invalidation
+    # 8.0 (confirmed shape break) -> INVALIDATION WINS (failed breakout).
+    status, ev = _advance_status(
+        _Det(pivot=10.0, invalidation=8.0), prev=None,
+        bar=_bar(10.5, 7.4, 7.5),
+        sessions_since_detection=5, max_pending=30, max_post_trigger=60)
+    assert status == "invalidated" and ev == "shape_break"
+
+
+def test_breakout_at_max_pending_boundary_fires_not_expires():
+    # high >= pivot exactly at sessions == max_pending -> trigger wins over expiry.
+    status, ev = _advance_status(
+        _Det(pivot=10.0), prev=None, bar=_bar(10.5, 9.8, 10.2),
+        sessions_since_detection=30, max_pending=30, max_post_trigger=60)
+    assert status == "triggered_open" and ev == "entry_fired"
+
+
+def test_invalidation_at_max_pending_boundary_wins_over_expiry():
+    status, ev = _advance_status(
+        _Det(invalidation=8.0), prev=None, bar=_bar(8.2, 7.5, 7.8),
+        sessions_since_detection=30, max_pending=30, max_post_trigger=60)
+    assert status == "invalidated" and ev == "shape_break"
+
+
+def test_non_triggering_bar_at_max_pending_expires():
+    # neither breakout nor invalidation at the boundary -> expired.
+    status, ev = _advance_status(
+        _Det(pivot=10.0, invalidation=8.0), prev=None, bar=_bar(9.0, 8.5, 8.8),
+        sessions_since_detection=30, max_pending=30, max_post_trigger=60)
+    assert status == "expired" and ev == "time_exit"
+
+
+def test_near_miss_breakout_stays_pending():
+    # high 9.9 < pivot 10.0 -> NOT a breakout (distinguishes the >= predicate).
+    status, ev = _advance_status(
+        _Det(pivot=10.0, invalidation=8.0), prev=None, bar=_bar(9.9, 9.0, 9.5),
+        sessions_since_detection=5, max_pending=30, max_post_trigger=60)
+    assert status == "pending" and ev is None
+
+
+def test_terminal_prev_status_raises():
+    # Defensive guard (Major #4): a terminal prev status must never reach here.
+    class _PrevTerminal:
+        status = "invalidated"
+    with pytest.raises(ValueError, match="terminal prev status"):
+        _advance_status(_Det(), prev=_PrevTerminal(), bar=_bar(9.0, 8.5, 8.8),
+                        sessions_since_detection=5, max_pending=30, max_post_trigger=60)
 ```
 
 > **Regression-test arithmetic verification (`feedback_verify_regression_test_arithmetic`):** the at-threshold (30, 90) vs under-threshold (29, 50) pairs DISTINGUISH the `>=` boundary. Under the pre-fix path (no `_advance_status`) every test fails (function missing); under the post-fix path the boundary tests pass at `>=` and FAIL at `>` -- so the test pins the inequality directionality (`>=` per spec §7.3). The breakout test (high 10.5 >= pivot 10.0) vs a near-miss (high 9.9 < pivot 10.0, add as an extra test) distinguishes the breakout predicate.
@@ -2274,16 +2448,41 @@ def _advance_status(det, *, prev, bar, sessions_since_detection,
     invalidation = _structural_invalidation_level(det.pattern_class, evidence)
     prev_status = prev.status if prev is not None else "pending"
 
+    # Defensive terminal guard (Codex chain #2 Major #4): list_observable_detections
+    # only returns detections whose latest status is OPEN ('pending'/'triggered_open')
+    # or which have no observation yet. A terminal prev status reaching here is a
+    # WIRING BUG -- raise loudly rather than silently re-transition a frozen
+    # terminal chain (and never emit a reserved closed_* status in V1+).
+    _TERMINAL = {"invalidated", "expired",
+                 "triggered_closed_at_target", "triggered_closed_at_stop"}
+    if prev_status in _TERMINAL:
+        raise ValueError(
+            f"_advance_status called on terminal prev status {prev_status!r}; "
+            "list_observable_detections should have excluded this detection")
+
     if prev_status == "triggered_open":
         if sessions_since_detection >= max_pending + max_post_trigger:
             return "expired", "observation_horizon_reached"
         return "triggered_open", None
 
-    # prev pending (or first observation).
-    if pivot is not None and bar["high"] >= pivot:
-        return "triggered_open", "entry_fired"
+    # prev pending (or first observation). PRECEDENCE (Codex chain #2 Major #1 + #3
+    # -- explicit conflict ordering for a single bar that satisfies >1 condition):
+    #   1. INVALIDATION (close < structural low): a CONFIRMED end-of-day shape
+    #      break is the most decisive ruleset-agnostic signal; it WINS even when
+    #      the same bar's intraday high also touched the pivot (a breakout that
+    #      closes below the base low is a FAILED breakout, not a valid entry).
+    #   2. BREAKOUT (high >= pivot, close >= structural low): an intraday pivot
+    #      break that did NOT close below the structural low. A breakout that
+    #      occurs ON the max_pending boundary still fires (the trigger happened
+    #      within the pending window).
+    #   3. EXPIRY (sessions_since_detection >= max_pending): only when NEITHER
+    #      invalidation NOR breakout fired (matches spec section 7.3 "without
+    #      trigger"). The boundary is inclusive (>=), so a non-triggering bar AT
+    #      max_pending expires.
     if invalidation is not None and bar["close"] < invalidation:
         return "invalidated", "shape_break"
+    if pivot is not None and bar["high"] >= pivot:
+        return "triggered_open", "entry_fired"
     if sessions_since_detection >= max_pending:
         return "expired", "time_exit"
     return "pending", None
@@ -2347,7 +2546,6 @@ def _bar_for_date(cfg, ohlcv_cache, ticker: str, observation_date: str):
 def _step_pattern_observe(*, cfg, lease, ohlcv_cache, run_warnings):
     """Append today's bar + lifecycle status to pattern_forward_observations
     for every open detection. Zero new detector invocations (L4)."""
-    import json as _j
     from datetime import UTC, datetime, date
     from swing.data.db import connect
     from swing.data.repos.pattern_detection_events import list_observable_detections
@@ -2355,6 +2553,7 @@ def _step_pattern_observe(*, cfg, lease, ohlcv_cache, run_warnings):
         insert_observation, get_latest_observations_for_detections,
     )
     from swing.data.models import PatternForwardObservation
+    from swing.pipeline.temporal_metadata import build_ohlc_today_json
 
     observation_date = lease_data_asof(cfg, lease)  # run DATA cutoff (R2 M#1)
     max_pending = cfg.pipeline.observe_max_pending_window_sessions
@@ -2397,7 +2596,7 @@ def _step_pattern_observe(*, cfg, lease, ohlcv_cache, run_warnings):
             insert_observation(conn, PatternForwardObservation(
                 observation_id=None, detection_id=det.detection_id,
                 observation_date=observation_date,
-                ohlc_today_json=_j.dumps(bar),
+                ohlc_today_json=build_ohlc_today_json(bar),  # validated shape + provider domain
                 status=status, status_change_event=change,
                 sessions_since_detection=sessions,
                 created_at=datetime.now(UTC).isoformat(),
@@ -2586,6 +2785,33 @@ def test_no_bar_for_date_warns_and_skips(tmp_db_v22, tmp_path):
     assert any(w.get("reason") == "no bar for observation_date" for w in warnings)
 
 
+def test_terminal_detection_not_observed_at_step_boundary(tmp_db_v22, tmp_path):
+    # Codex chain #2 R2 Minor #3: the terminal-guard invariant lives at the
+    # STEP boundary -- list_observable_detections excludes a detection whose
+    # latest status is terminal, so _step_pattern_observe never appends a new
+    # row for it (and _advance_status is never reached -> no ValueError).
+    conn, db_path = tmp_db_v22
+    det_id = _plant_detection(conn, ticker="AAA", data_asof_date="2026-05-27")
+    from swing.data.repos.pattern_forward_observations import insert_observation
+    from swing.data.models import PatternForwardObservation
+    with conn:
+        insert_observation(conn, PatternForwardObservation(
+            observation_id=None, detection_id=det_id, observation_date="2026-05-28",
+            ohlc_today_json='{"open":1,"high":1,"low":1,"close":1,"volume":1,"provider":"yfinance"}',
+            status="expired", sessions_since_detection=1,
+            created_at="2026-05-28T00:00:00Z",
+            status_change_event="observation_horizon_reached"))
+    cfg = _cfg(tmp_path, db_path)
+    with patch("swing.data.ohlcv_archive.resolve_ohlcv_window",
+               return_value=_stub_window(9.0, date_="2026-05-29")):
+        with patch("swing.pipeline.runner.lease_data_asof", return_value="2026-05-29"):
+            _step_pattern_observe(cfg=cfg, lease=_FakeLease(db_path, 2, "2026-05-29"),
+                                  ohlcv_cache=_StubOhlcvCache({"AAA": _build_bars()}),
+                                  run_warnings=[])
+    # Still only the terminal observation -- no new row appended (no raise).
+    assert len(get_observations_for_detection(conn, det_id)) == 1
+
+
 def test_forward_walk_freezes_past_bar(tmp_db_v22, tmp_path):
     # #26/#37-by-construction discriminator: a past observation's frozen
     # ohlc_today_json is NEVER re-read from a later archive.
@@ -2763,9 +2989,9 @@ git commit -m "test(integration): phase14 temporal-log cross-step e2e + L2/ASCII
 | T-2.4 | `test_temporal_metadata.py` (~6) + `test_detection_chart_capture.py` (~4) + `test_chart_theme2_overlay.py` (~1) + `test_step_pattern_detect_temporal_extension.py` (~12) | 23 |
 | T-2.5 | `test_pipeline_observe_windows.py` (2) + `test_step_pattern_observe.py` (~8 status arithmetic + ~10 integration incl. forward-walk-freeze) | 20 |
 | T-2.6 | `test_phase14_temporal_log_e2e.py` (~3) + `test_phase14_ascii_discipline.py` (1) + L2 source-grep (verify-pass, pre-existing) | 4 |
-| **Sum** | | **~81** |
+| **Sum** | | **~94** |
 
-**Sum-check: ~81 fast tests, inside the ~50-100 LOCK band.** Distribution proportions match dispatch brief §2.3 (migration/CHECK/validator ~14; detection repo ~9; observations repo ~11; detect-extension+metadata+chart ~23; observe+status+provenance ~20; integration+L2 ~4). **The implementer trusts `pytest -m "not slow" -q` output, NOT this estimate** -- the count will drift as discriminating tests are added/merged; the LOCK is the band, not the exact integer.
+**Sum-check: ~94 fast tests, inside the ~50-100 LOCK band.** (Up from the ~81 pre-Codex estimate: the two Codex chains added ~13 discriminating tests -- T-2.1 +2 [runner-level backup wiring; negative-`sessions_since_detection` CHECK rejection], T-2.4 +3 [empty-frame metadata None; `build_ohlc_today_json` validation; chart-capture unexpected-error propagation], T-2.5 +6 [same-bar precedence x5 + terminal-prev guard], +2 elsewhere.) Distribution proportions still match dispatch brief §2.3 (migration/CHECK/validator ~16; detection repo ~10; observations repo ~12; detect-extension+metadata+chart ~26; observe+status+provenance ~26; integration+L2 ~4). **The implementer trusts `pytest -m "not slow" -q` output, NOT this estimate** -- the count drifts as discriminating tests are added/merged; the LOCK is the band, not the exact integer (gotcha #1).
 
 **Project baseline:** ~5670 fast tests green on `main` (CLAUDE.md). Post-Sub-bundle-2 projection: ~5670 + ~81 = ~5751 fast tests. The executing-plans closer reports the actual count.
 
@@ -2831,7 +3057,7 @@ Baseline is 21 `*.sql` files (`0001`..`0021`; verified §C / Explore item 16); `
 
 ### §K.3 Migration-runner discipline (gotcha #9)
 
-`0022` uses explicit `BEGIN;`/`COMMIT;` with `UPDATE schema_version SET version = 22;` as the FINAL statement before COMMIT. The runner (`_apply_migration`, `db.py:171-214`) wraps with `PRAGMA foreign_keys=OFF` + try/except `rollback()`+re-raise. No table rebuilds in `0022` (pure additive CREATE TABLE), so the FK-cascade-wipe risk is absent -- but the discipline is inherited uniformly. The rollback-through-runner test (T-2.1 step 10) asserts a malformed `0022` variant leaves the DB at v21 + `conn.in_transaction == False`, tested through the REAL `_apply_migration` path (not bare `executescript`).
+`0022` uses explicit `BEGIN;`/`COMMIT;` with `UPDATE schema_version SET version = 22;` as the final DML/DDL statement before COMMIT. The runner (`_apply_migration`, `db.py:171-214`) wraps with `PRAGMA foreign_keys=OFF` + try/except `rollback()`+re-raise. No table rebuilds in `0022` (pure additive CREATE TABLE), so the FK-cascade-wipe risk is absent -- but the discipline is inherited uniformly. The rollback-through-runner test (T-2.1 step 10) asserts a malformed `0022` variant leaves the DB at v21 + `conn.in_transaction == False`, tested through the REAL `_apply_migration` path (not bare `executescript`).
 
 ### §K.4 ASCII discipline scope (gotcha #16/#32)
 
@@ -2839,7 +3065,9 @@ ASCII-only across ALL NEW/MODIFIED production + test surfaces: `0022_phase14_tem
 
 ### §K.5 gotcha #11 paired discipline
 
-CHECK enums (`pattern_class`, `source`, `status`, `status_change_event`) + Python module constants (`_PATTERN_DETECTION_SOURCE_VALUES`, `_FORWARD_OBSERVATION_STATUS_VALUES`, `_FORWARD_OBSERVATION_STATUS_CHANGE_EVENTS`; `DETECTOR_PATTERN_CLASSES` reused) + dataclass `__post_init__` validators ALL land in T-2.1. The `_row_to_*` read-path mappers land in their respective repo tasks (T-2.2/T-2.3) -- these are NEW glue, not enum widenings, so the #11 read-path-same-task rule (about widening) is satisfied by the atomic CHECK+constant+validator landing.
+CHECK enums (`pattern_class`, `source`, `status`, `status_change_event`) + Python module constants (`_PATTERN_DETECTION_SOURCE_VALUES`, `_FORWARD_OBSERVATION_STATUS_VALUES`, `_FORWARD_OBSERVATION_STATUS_CHANGE_EVENTS`; `DETECTOR_PATTERN_CLASSES` reused) + dataclass `__post_init__` validators ALL land in T-2.1. The `sessions_since_detection >= 0` schema CHECK mirrors the dataclass validator (Codex chain #2 Major #2). The `_row_to_*` read-path mappers land in their respective repo tasks (T-2.2/T-2.3) -- these are NEW glue, not enum widenings, so the #11 read-path-same-task rule (about widening) is satisfied by the atomic CHECK+constant+validator landing.
+
+**`status_change_event` / `status` PAIRING (Codex chain #2 Minor #3):** the schema CHECK + dataclass validate each field's domain INDEPENDENTLY (a valid `status` value; a valid-or-NULL `status_change_event` value). The COMPATIBILITY pairing (e.g. `entry_fired` pairs with `triggered_open`; `shape_break` with `invalidated`) is enforced by `_advance_status` -- the SOLE V1+ writer of these fields. The reserved `stop_fired`/`target_fired` events pair with the reserved `triggered_closed_*` statuses that V1+ never emits. Strict cross-field pairing validation in the dataclass is a banked V2 tightening (it would over-constrain the forward-compat enum that the Phase 15+ replay engine will exercise); V1+ relies on `_advance_status` correctness + its unit tests (T-2.5 step 2). Test-only raw inserts (which legitimately plant minimal rows) are not bound by the pairing.
 
 ---
 
