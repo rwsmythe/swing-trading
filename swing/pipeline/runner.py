@@ -2415,11 +2415,16 @@ def _bar_for_date(cfg, ohlcv_cache, ticker: str, observation_date: str):
     #    get_or_fetch write-throughs to the same prices_cache_dir
     #    resolve_ohlcv_window reads (Shape-A {TICKER}.{provider}.parquet).
     try:
+        # window_days=400 mirrors the detect-step Pass-1 fetch window (~400
+        # calendar days) so the archive refresh covers the same depth.
         ohlcv_cache.get_or_fetch(ticker=ticker, window_days=400)
     except Exception as exc:  # noqa: BLE001 - best-effort populate; read is authoritative
         log.debug("observe populate get_or_fetch best-effort miss for %s: %s",
                   ticker, exc)
     # 2. Date-anchored archive read with per-asof_date provenance.
+    # A small (10 calendar-day) back-pad guarantees the target session row is
+    # inside the [start, end] window even across weekends/holidays; the exact
+    # observation_date row is then selected below.
     start = (date.fromisoformat(observation_date) - timedelta(days=10)).isoformat()
     df, provenance = resolve_ohlcv_window(
         ticker, start=start, end=observation_date,
