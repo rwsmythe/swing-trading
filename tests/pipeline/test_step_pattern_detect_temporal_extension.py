@@ -1,0 +1,196 @@
+"""Phase 14 Sub-bundle 2 T-2.4 -- detect-step temporal-log extension tests.
+
+Imports the shared fixtures + helpers from conftest_temporal (plan section L.4).
+The detection-event INSERT shape matches the production emitter exactly
+(anti-drift): the seed helpers use the REAL candidate/eval-run repos and the
+step is driven through the production _step_pattern_detect.
+"""
+from __future__ import annotations
+import json
+from unittest.mock import patch
+import pytest
+from swing.data.repos.pattern_detection_events import list_detection_events
+
+# Reuse the proven harness from the shared temporal conftest module.
+from tests.pipeline.conftest_temporal import (  # noqa: F401  (tmp_db_v22 fixture)
+    tmp_db_v22,
+    _build_bars, _seed_aplus_candidate_and_run, _seed_run_with_zero_aplus,
+    _drive_detect, _StubOhlcvCache,
+)
+
+
+def test_detection_event_appended_with_metadata(tmp_db_v22):
+    conn, cfg, lease, eval_run_id = _seed_aplus_candidate_and_run(
+        tmp_db_v22, ticker="AAA", sector="Tech", industry="Software",
+        adr_pct=3.2, rs_rank=42)
+    run_warnings: list[dict] = []
+    _drive_detect(conn, cfg, lease, eval_run_id,
+                  _StubOhlcvCache({"AAA": _build_bars()}), run_warnings)
+    dets = list_detection_events(conn, ticker="AAA")
+    assert len(dets) >= 1
+    md = json.loads(dets[0].per_pattern_metadata_json)
+    assert md["sector"] == "Tech" and md["industry"] == "Software"
+    assert md["adr_pct"] == pytest.approx(3.2)
+    assert md["rs_rank"] == 42
+    assert "atr_pct" in md and "ret_90d" in md and "prox_52w_high_pct" in md
+    assert md["market_cap"] is None  # OQ-16 LOCK
+    assert dets[0].source == "pipeline"
+    assert dets[0].data_asof_date is not None  # populated
+    # structural_anchors_json carries window + evidence (incl. pivot_price).
+    anchors = json.loads(dets[0].structural_anchors_json)
+    assert "window" in anchors and "evidence" in anchors
+
+
+def test_chart_render_id_populated_on_success(tmp_db_v22):
+    conn, cfg, lease, eval_run_id = _seed_aplus_candidate_and_run(tmp_db_v22, ticker="AAA")
+    _drive_detect(conn, cfg, lease, eval_run_id,
+                  _StubOhlcvCache({"AAA": _build_bars()}), [])
+    det = list_detection_events(conn, ticker="AAA")[0]
+    assert det.chart_render_id is not None
+    row = conn.execute("SELECT surface, pattern_class FROM chart_renders "
+                       "WHERE id = ?", (det.chart_render_id,)).fetchone()
+    assert row[0] == "theme2_annotated" and row[1] == det.pattern_class
+
+
+def test_chart_render_failure_leaves_null_and_warns(tmp_db_v22):
+    conn, cfg, lease, eval_run_id = _seed_aplus_candidate_and_run(tmp_db_v22, ticker="AAA")
+    run_warnings: list[dict] = []
+    with patch("swing.pipeline.runner.render_and_capture_detection_chart",
+               return_value=None):
+        _drive_detect(conn, cfg, lease, eval_run_id,
+                      _StubOhlcvCache({"AAA": _build_bars()}), run_warnings)
+    det = list_detection_events(conn, ticker="AAA")[0]
+    assert det.chart_render_id is None
+    assert any(w.get("reason") == "chart render failed" for w in run_warnings)
+
+
+def test_idempotent_rerun_skips_recompute_frozen_facts(tmp_db_v22):
+    # Codex chain #2 Major #5 (+ R2 Minor #1 scope fix): a re-run with DIFFERENT
+    # bars must NOT duplicate AND must NOT recompute/replace the FROZEN detection
+    # facts. The frozen-fact tuple is structural_anchors_json + composite_score
+    # + per_pattern_metadata_json + detector_version + data_asof_date.
+    # chart_render_id is a NULLABLE AUDIT LINKAGE (not a frozen fact) --
+    # asserted SEPARATELY as "the same-run skip did not refresh the linkage".
+    conn, cfg, lease, eval_run_id = _seed_aplus_candidate_and_run(tmp_db_v22, ticker="AAA")
+    _drive_detect(conn, cfg, lease, eval_run_id,
+                  _StubOhlcvCache({"AAA": _build_bars()}), [])
+    first = list_detection_events(conn, ticker="AAA")
+    frozen_before = [(d.structural_anchors_json, d.composite_score,
+                      d.per_pattern_metadata_json, d.detector_version,
+                      d.data_asof_date) for d in first]
+    linkage_before = [d.chart_render_id for d in first]
+    drifted = _build_bars().copy()
+    drifted[["Open", "High", "Low", "Close"]] *= 1.5
+    _drive_detect(conn, cfg, lease, eval_run_id,
+                  _StubOhlcvCache({"AAA": drifted}), [])
+    second = list_detection_events(conn, ticker="AAA")
+    assert len(second) == len(first)  # no duplicate (SELECT-then-skip)
+    frozen_after = [(d.structural_anchors_json, d.composite_score,
+                     d.per_pattern_metadata_json, d.detector_version,
+                     d.data_asof_date) for d in second]
+    assert frozen_after == frozen_before          # FROZEN FACTS unchanged
+    # The skip also left the audit linkage untouched in the SAME run.
+    assert [d.chart_render_id for d in second] == linkage_before
+
+
+def test_pattern_evaluations_still_written_l7(tmp_db_v22):
+    conn, cfg, lease, eval_run_id = _seed_aplus_candidate_and_run(tmp_db_v22, ticker="AAA")
+    _drive_detect(conn, cfg, lease, eval_run_id,
+                  _StubOhlcvCache({"AAA": _build_bars()}), [])
+    n_eval = conn.execute("SELECT COUNT(*) FROM pattern_evaluations").fetchone()[0]
+    assert n_eval >= 1  # the existing write is UNCHANGED (L7)
+
+
+def test_detection_insert_failure_is_audited_not_silent(tmp_db_v22):
+    # gotcha #27: a failed detection-event INSERT leaves the pattern_evaluations
+    # row written but NO detection row -- a SILENT substrate desync. The except
+    # block must convert this into an AUDITED skip (run_warnings entry), not a
+    # silent continue.
+    conn, cfg, lease, eval_run_id = _seed_aplus_candidate_and_run(
+        tmp_db_v22, ticker="AAA")
+    run_warnings: list[dict] = []
+    with patch("swing.data.repos.pattern_detection_events.insert_detection_event",
+               side_effect=RuntimeError("boom")):
+        _drive_detect(conn, cfg, lease, eval_run_id,
+                      _StubOhlcvCache({"AAA": _build_bars()}), run_warnings)
+    # (a) pattern_evaluations row exists (the upstream write is unchanged).
+    n_eval = conn.execute(
+        "SELECT COUNT(*) FROM pattern_evaluations").fetchone()[0]
+    assert n_eval >= 1
+    # (b) NO detection row exists for the ticker (the INSERT failed).
+    assert list_detection_events(conn, ticker="AAA") == []
+    # (c) the desync was AUDITED into run_warnings.
+    desync = [w for w in run_warnings
+              if w.get("step") == "pattern_detect"
+              and "substrate desync" in w.get("reason", "")]
+    assert desync, run_warnings
+    assert desync[0]["ticker"] == "AAA"
+    assert "pattern_class" in desync[0]
+
+
+def test_cand_is_none_skip_is_audited_not_silent(tmp_db_v22):
+    # Major #1 (gotcha #27): if an emitted verdict's ticker is ABSENT from
+    # candidate_by_ticker, the detect step skips the detection append -- which
+    # leaves a pattern_evaluations row with NO pattern_detection_events row (a
+    # silent substrate desync). The skip must be AUDITED into run_warnings.
+    #
+    # Forcing the branch: candidate_by_ticker = {c.ticker: c for c in
+    # candidates}. _step_pattern_detect iterates the `candidates` list TWICE
+    # before that comprehension matters: once to build aplus_tickers (drives
+    # the emit), and once to build candidate_by_ticker. We patch
+    # fetch_candidates_for_run to return a custom iterable that yields the real
+    # aplus candidate on its FIRST iteration (so AAA IS emitted + a
+    # pattern_evaluations row is written) but yields NOTHING on the SECOND
+    # iteration (so candidate_by_ticker is EMPTY -> .get("AAA") is None ->
+    # the cand-is-None branch fires).
+    conn, cfg, lease, eval_run_id = _seed_aplus_candidate_and_run(
+        tmp_db_v22, ticker="AAA")
+    from swing.data.repos.candidates import fetch_candidates_for_run
+    real_candidates = list(fetch_candidates_for_run(conn, eval_run_id))
+
+    class _IterOnceCandidates:
+        """list-like; yields the real candidates on the first __iter__ call,
+        empty on every subsequent call (the dict-comprehension pass)."""
+        def __init__(self, items):
+            self._items = items
+            self._calls = 0
+
+        def __iter__(self):
+            self._calls += 1
+            if self._calls == 1:
+                return iter(self._items)
+            return iter(())
+
+        def __len__(self):
+            return len(self._items)
+
+    run_warnings: list[dict] = []
+    # _step_pattern_detect imports fetch_candidates_for_run locally from the
+    # repo module, so patch it there (not on swing.pipeline.runner).
+    with patch("swing.data.repos.candidates.fetch_candidates_for_run",
+               return_value=_IterOnceCandidates(real_candidates)):
+        _drive_detect(conn, cfg, lease, eval_run_id,
+                      _StubOhlcvCache({"AAA": _build_bars()}), run_warnings)
+    # (a) a pattern_evaluations row WAS written (the upstream emit succeeded).
+    n_eval = conn.execute(
+        "SELECT COUNT(*) FROM pattern_evaluations").fetchone()[0]
+    assert n_eval >= 1
+    # (b) NO detection row exists (the cand-is-None branch skipped the append).
+    assert list_detection_events(conn, ticker="AAA") == []
+    # (c) the desync was AUDITED with a "candidate row missing" reason.
+    missing = [w for w in run_warnings
+               if w.get("step") == "pattern_detect"
+               and "candidate row missing" in w.get("reason", "")]
+    assert missing, run_warnings
+    assert missing[0]["ticker"] == "AAA"
+    assert "pattern_class" in missing[0]
+
+
+def test_empty_aplus_pool_warns_and_writes_nothing(tmp_db_v22):
+    conn, cfg, lease, eval_run_id = _seed_run_with_zero_aplus(tmp_db_v22)
+    run_warnings: list[dict] = []
+    _drive_detect(conn, cfg, lease, eval_run_id, _StubOhlcvCache({}), run_warnings)
+    assert conn.execute("SELECT COUNT(*) FROM pattern_detection_events").fetchone()[0] == 0
+    entry = next(w for w in run_warnings if w["step"] == "pattern_detect")
+    assert entry["actual_aplus_pool"] == 0
+    assert entry["reason"] == "zero aplus candidates"

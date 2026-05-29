@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import os
 import sqlite3
@@ -61,6 +62,14 @@ from swing.patterns.template_matching import (
     GEOMETRIC_SCORE_PREGATE_THRESHOLD,
     TemplateMatchExemplar,
     match_forward,
+)
+
+# Phase 14 Sub-bundle 2 (T-2.4): module-top import so test fixtures may
+# monkeypatch ``swing.pipeline.runner.render_and_capture_detection_chart``
+# (a function-local import would shadow the module attribute the patch
+# targets).
+from swing.pipeline.detection_chart_capture import (
+    render_and_capture_detection_chart,
 )
 from swing.pipeline.finviz_schema import reject_csv, validate_csv
 from swing.pipeline.finviz_select import AmbiguousInboxError, NoFilesError, select_csv
@@ -772,6 +781,13 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
                 from swing.web.ohlcv_cache import OhlcvCache
                 ohlcv_cache = OhlcvCache(cfg)
 
+            # Phase 14 Sub-bundle 2 (FB-N6): run-level structured warnings
+            # accumulator. Steps append {step, reason, ...} dicts (gotcha #27
+            # silent-skip-without-audit). Serialized to the completion
+            # lease.release(warnings_json=...) below (None when empty, not
+            # "[]" -- audit-envelope-empty-state gotcha).
+            run_warnings: list[dict] = []
+
             lease.step("evaluate")
             try:
                 eval_run_id = _step_evaluate(
@@ -846,11 +862,28 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
                     lease=lease,
                     eval_run_id=eval_run_id,
                     ohlcv_cache=ohlcv_cache,
+                    run_warnings=run_warnings,
                 )
             except LeaseRevokedError:
                 raise
             except Exception as exc:
                 log.warning("pattern_detect failed: %s", exc)
+
+            # Phase 14 Sub-bundle 2 (T-2.5): forward-walk observe step. Appends
+            # one pattern_forward_observations row per OPEN detection (today's
+            # bar + lifecycle status). Best-effort failure shape mirrors
+            # _step_pattern_detect (re-raise LeaseRevokedError; log.warning
+            # others). Inserted AFTER pattern_detect, BEFORE schwab_snapshot.
+            lease.step("pattern_observe")
+            try:
+                _step_pattern_observe(
+                    cfg=cfg, lease=lease, ohlcv_cache=ohlcv_cache,
+                    run_warnings=run_warnings,
+                )
+            except LeaseRevokedError:
+                raise
+            except Exception as exc:
+                log.warning("pattern_observe failed: %s", exc)
 
             # Phase 11 Sub-bundle B (T-B.3 + T-B.4 + Codex R1 M#1 + R2 M#1 +
             # R3 M#1 + M#2 fix) — Schwab snapshot + orders pipeline steps
@@ -958,7 +991,10 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
                 # primary value chain (briefing emission). Log + continue. Brief §6.2
                 # watch item 13.
                 log.warning("review_log cadence step failed (continuing): %s", exc)
-            lease.release(state="complete")
+            lease.release(
+                state="complete",
+                warnings_json=(json.dumps(run_warnings) if run_warnings else None),
+            )
         except LeaseRevokedError as exc:
             # Force-cleared mid-run. The pipeline_runs row has already moved to
             # state='force_cleared'; we cannot lease.release() anymore. Just
@@ -1399,6 +1435,7 @@ def _step_pattern_detect(
     lease: Lease,
     eval_run_id: int,
     ohlcv_cache,
+    run_warnings: list[dict] | None = None,
 ) -> None:
     """Run 5 V1 geometric detectors over the Stage-2-filtered candidate pool.
 
@@ -1440,12 +1477,18 @@ def _step_pattern_detect(
 
     import pandas as pd
 
-    from swing.data.models import PatternEvaluation
+    from swing.data.models import PatternDetectionEvent, PatternEvaluation
     from swing.data.repos.candidates import fetch_candidates_for_run
+    from swing.data.repos.pattern_detection_events import insert_detection_event
     from swing.data.repos.pattern_evaluations import insert_evaluation
     from swing.data.repos.pattern_exemplars import list_exemplars
     from swing.patterns.drift_logging import capture_feature_distribution
     from swing.patterns.foundation import generate_candidate_windows
+    from swing.pipeline.temporal_metadata import (
+        build_finviz_screen_state,
+        build_per_pattern_metadata,
+        build_structural_anchors_json,
+    )
 
     pipeline_run_id = lease.run_id
 
@@ -1487,6 +1530,16 @@ def _step_pattern_detect(
             "pattern_detect: no candidate windows -- zero aplus tickers; "
             "skipping (no writes)"
         )
+        # Gotcha #27: an empty-pool early-return inside a best-effort step
+        # must emit a warnings_json audit entry (expected vs actual pool +
+        # reason) so a zero-work completion is not silent.
+        if run_warnings is not None:
+            run_warnings.append({
+                "step": "pattern_detect",
+                "expected_pool": len(candidates),
+                "actual_aplus_pool": 0,
+                "reason": "zero aplus candidates",
+            })
         return
 
     detectors = _pattern_detect_registry()
@@ -1585,6 +1638,11 @@ def _step_pattern_detect(
         tuple[str, str, str, object, object, float, _np_pd_inner.ndarray]
     ] = []
 
+    # Phase 14 Sub-bundle 2 (T-2.4): retain the Pass-1 fetched bars so the
+    # Pass-2 emit loop reuses them for per-pattern metadata + chart capture
+    # WITHOUT a re-fetch (gotcha #5 + L2 LOCK). Keyed by ticker.
+    bars_by_ticker: dict[str, pd.DataFrame] = {}
+
     detector_read_conn = connect(cfg.paths.db_path) if cfg is not None else None
     # Test-stub path: no cfg, so reuse the lease's underlying connection
     # for read-only detector lookups WITHOUT opening BEGIN IMMEDIATE
@@ -1609,6 +1667,9 @@ def _step_pattern_detect(
                     exc,
                 )
                 continue
+
+            # T-2.4: retain for Pass-2 metadata + chart capture (no re-fetch).
+            bars_by_ticker[ticker] = bars
 
             # Generate candidate windows (zigzag_pivot anchor mode for V1;
             # detectors backward-slice for non-zigzag modes per recon
@@ -1978,6 +2039,30 @@ def _step_pattern_detect(
                 final_universe_scores.append(float(r[8]))
         universe_context["composite_scores"] = final_universe_scores
 
+        # Phase 14 Sub-bundle 2 (T-2.4): compute the detection-event anchors
+        # ONCE before the emit loop.
+        #   - detection_date = asof_run (the action-session label; FB-N4).
+        #   - data_asof_date = lease_data_asof(cfg, lease) (forward-walk
+        #     boundary anchor; the detector data cutoff; FB-N4).
+        #   - candidate_by_ticker = the in-memory candidate rows (ZERO new
+        #     query) for per-pattern metadata + finviz screen-state.
+        detection_date_str = asof_run.isoformat()
+        # data_asof_date = the forward-walk boundary anchor (detector data
+        # cutoff). Production path reads it via lease_data_asof(cfg, lease);
+        # the cfg-None test-stub path reads it off the shared lease conn (the
+        # same row), mirroring _resolve_eval_run_action_session_date's
+        # connection contract so the existing detect-step tests (cfg=None)
+        # stay green (L7).
+        if cfg is not None:
+            data_asof_date = lease_data_asof(cfg, lease)
+        else:
+            _daa_row = conn.execute(
+                "SELECT data_asof_date FROM pipeline_runs WHERE id=?",
+                (pipeline_run_id,),
+            ).fetchone()
+            data_asof_date = _daa_row[0] if _daa_row is not None else None
+        candidate_by_ticker = {c.ticker: c for c in candidates}
+
         for (
             ticker,
             pattern_class,
@@ -1989,6 +2074,23 @@ def _step_pattern_detect(
             nearest_exemplar_ids,
             composite_score,
         ) in resolved_emit_list:
+            # Defensive guard for the cfg-None/no-run-row edge: if the
+            # pipeline_runs lookup returned no row, data_asof_date is None and
+            # build_per_pattern_metadata(..., asof=None) -> date.fromisoformat(
+            # None) would raise at PatternDetectionEvent construction (BEFORE
+            # the insert try/except, so it would propagate uncaught). This path
+            # is test-only/unreachable in production; skip the append for this
+            # verdict and record a warning rather than crash.
+            if data_asof_date is None:
+                if run_warnings is not None:
+                    run_warnings.append({
+                        "step": "pattern_detect", "ticker": ticker,
+                        "pattern_class": pattern_class,
+                        "reason": "data_asof_date unresolved; "
+                                  "detection-event append skipped",
+                    })
+                continue
+
             # Drift-log capture (T-A.3.5 surface).
             try:
                 fdl = capture_feature_distribution(
@@ -2095,6 +2197,131 @@ def _step_pattern_detect(
                 )
                 continue
 
+            # --- Phase 14 Sub-bundle 2 (T-2.4): append the frozen detection
+            # event in the SAME lease.fenced_write() transaction. ---
+            cand = candidate_by_ticker.get(ticker)
+            if cand is None:
+                # Defensive: an emit without a candidate row should not
+                # happen (the emit came from an aplus candidate); skip the
+                # detection append rather than fabricate metadata.
+                # gotcha #27: skipping leaves a pattern_evaluations row with
+                # NO pattern_detection_events row -- a SILENT substrate
+                # desync. AUDIT the skip (run_warnings) so it is
+                # operator-visible. Audit-skip (not degrade) is correct here:
+                # without the candidate row the per-pattern metadata +
+                # finviz_screen_state cannot be meaningfully built.
+                log.warning(
+                    "pattern_detect: no candidate row for emitted verdict "
+                    "(%s, %s); skipping detection append",
+                    ticker,
+                    pattern_class,
+                )
+                if run_warnings is not None:
+                    run_warnings.append({
+                        "step": "pattern_detect", "ticker": ticker,
+                        "pattern_class": pattern_class,
+                        "reason": "candidate row missing for emitted verdict; "
+                                  "evaluation written without detection row "
+                                  "(substrate desync)",
+                    })
+                continue
+
+            # SELECT-then-skip idempotency on the unique key (re-run safety):
+            # a re-run must NOT duplicate AND must NOT recompute the frozen
+            # facts. The skip fires BEFORE any chart render.
+            existing_det = conn.execute(
+                "SELECT 1 FROM pattern_detection_events WHERE source='pipeline' "
+                "AND ticker=? AND detection_date=? AND pattern_class=?",
+                (ticker, detection_date_str, pattern_class),
+            ).fetchone()
+            if existing_det is not None:
+                continue
+
+            # Substrate-completeness invariant (Codex chain #1 R2 Major #1):
+            # EVERY emitted verdict appends a pattern_detection_events row.
+            # bars SHOULD always be present (the emit came from a candidate
+            # whose bars were fetched in Pass-1 + retained in bars_by_ticker).
+            # If they are absent (internal inconsistency) DO NOT skip the
+            # detection append -- degrade: empty-frame metadata (the compute_*
+            # helpers return None on len-0 input via the _usable guard), no
+            # chart, + a warnings_json entry.
+            det_bars = bars_by_ticker.get(ticker)
+            if det_bars is None:
+                det_bars = pd.DataFrame()
+                chart_render_id = None
+                if run_warnings is not None:
+                    run_warnings.append({
+                        "step": "pattern_detect", "ticker": ticker,
+                        "pattern_class": pattern_class,
+                        "reason": "bars absent for emitted verdict (internal); "
+                                  "detection written with null computed "
+                                  "metadata fields; no chart",
+                    })
+            else:
+                try:
+                    chart_render_id = render_and_capture_detection_chart(
+                        conn, ticker=ticker, bars=det_bars,
+                        pattern_evaluation=row,
+                        pipeline_run_id=pipeline_run_id,
+                        data_asof_date=data_asof_date,
+                    )
+                except Exception as exc:
+                    # Programming error -> distinct ERROR; still degrade to
+                    # NULL (the detection is never lost).
+                    chart_render_id = None
+                    log.error(
+                        "pattern_detect: chart capture unexpected error "
+                        "(%s, %s): %s",
+                        ticker,
+                        pattern_class,
+                        exc,
+                    )
+                if chart_render_id is None and run_warnings is not None:
+                    run_warnings.append({
+                        "step": "pattern_detect", "ticker": ticker,
+                        "pattern_class": pattern_class,
+                        "reason": "chart render failed",
+                    })
+
+            detection = PatternDetectionEvent(
+                detection_id=None, ticker=ticker,
+                detection_date=detection_date_str,
+                data_asof_date=data_asof_date, pattern_class=pattern_class,
+                structural_anchors_json=build_structural_anchors_json(
+                    window, evidence),
+                composite_score=float(composite_score),
+                detector_version=version_str,
+                finviz_screen_state=build_finviz_screen_state(cand),
+                source="pipeline",
+                per_pattern_metadata_json=build_per_pattern_metadata(
+                    cand, det_bars, asof=data_asof_date),
+                created_at=_dt_inner.now(UTC).isoformat(),
+                pipeline_run_id=pipeline_run_id,
+                chart_render_id=chart_render_id,
+            )
+            try:
+                insert_detection_event(conn, detection)
+            except Exception as exc:
+                log.warning(
+                    "pattern_detect: detection-event INSERT failed for "
+                    "(%s, %s) (continuing): %s",
+                    ticker,
+                    pattern_class,
+                    exc,
+                )
+                # gotcha #27: a failed detection-event INSERT leaves the
+                # pattern_evaluations row written but NO detection row -- a
+                # SILENT substrate desync. Convert it into an AUDITED skip.
+                if run_warnings is not None:
+                    run_warnings.append({
+                        "step": "pattern_detect", "ticker": ticker,
+                        "pattern_class": pattern_class,
+                        "reason": "detection-event INSERT failed; evaluation "
+                                  "written without detection row (substrate "
+                                  "desync)",
+                    })
+                continue
+
     log.info(
         "pattern_detect: wrote %d pattern_evaluations rows across %d "
         "aplus tickers (%d skipped idempotent)",
@@ -2102,6 +2329,232 @@ def _step_pattern_detect(
         len(aplus_tickers),
         rows_skipped_idempotent,
     )
+
+
+# --- Phase 14 Sub-bundle 2 (T-2.5): forward-walk observe step + status machine.
+
+# Terminal observation statuses (incl. V1-reserved closed_* names): a detection
+# whose latest status is terminal must NEVER reach _advance_status
+# (list_observable_detections excludes it). The guard is defense-in-depth.
+_OBS_TERMINAL_STATUSES = frozenset({
+    "invalidated", "expired",
+    "triggered_closed_at_target", "triggered_closed_at_stop",
+})
+
+
+def _structural_invalidation_level(pattern_class: str, evidence: dict) -> float | None:
+    """Per-class structural low (spec section 7.3.1), read from the frozen
+    structural_anchors_json evidence dict."""
+    if pattern_class == "flat_base":
+        return evidence.get("range_bottom_price")
+    if pattern_class == "vcp":
+        contractions = evidence.get("contractions") or []
+        lows = [c.get("low") for c in contractions if isinstance(c, dict)
+                and c.get("low") is not None]
+        return min(lows) if lows else None
+    if pattern_class == "cup_with_handle":
+        return evidence.get("cup_bottom_price")
+    if pattern_class == "high_tight_flag":
+        return evidence.get("pole_start_price")
+    if pattern_class == "double_bottom_w":
+        t1, t2 = evidence.get("trough_1_price"), evidence.get("trough_2_price")
+        vals = [v for v in (t1, t2) if v is not None]
+        return min(vals) if vals else None
+    return None
+
+
+def _advance_status(det, *, prev, bar, sessions_since_detection,
+                    max_pending, max_post_trigger):
+    """Compute (new_status, status_change_event) for one observation.
+
+    V1+ emits ONLY the ruleset-agnostic subset
+    {pending, triggered_open, invalidated, expired}. Anchors are read from
+    the detection's FROZEN structural_anchors_json (never recomputed).
+    """
+    anchors = json.loads(det.structural_anchors_json)
+    evidence = anchors.get("evidence", {})
+    pivot = evidence.get("pivot_price")
+    invalidation = _structural_invalidation_level(det.pattern_class, evidence)
+    prev_status = prev.status if prev is not None else "pending"
+
+    # Defensive terminal guard (Codex chain #2 Major #4):
+    # list_observable_detections only returns detections whose latest status is
+    # OPEN ('pending'/'triggered_open') or which have no observation yet. A
+    # terminal prev status reaching here is a WIRING BUG -- raise loudly rather
+    # than silently re-transition a frozen terminal chain (and never emit a
+    # reserved closed_* status in V1+).
+    if prev_status in _OBS_TERMINAL_STATUSES:
+        raise ValueError(
+            f"_advance_status called on terminal prev status {prev_status!r}; "
+            "list_observable_detections should have excluded this detection")
+
+    if prev_status == "triggered_open":
+        if sessions_since_detection >= max_pending + max_post_trigger:
+            return "expired", "observation_horizon_reached"
+        return "triggered_open", None
+
+    # prev pending (or first observation). PRECEDENCE (Codex chain #2 Major #1
+    # + #3 -- explicit conflict ordering for a single bar that satisfies >1
+    # condition):
+    #   1. INVALIDATION (close < structural low): a CONFIRMED end-of-day shape
+    #      break is the most decisive ruleset-agnostic signal; it WINS even when
+    #      the same bar's intraday high also touched the pivot (a breakout that
+    #      closes below the base low is a FAILED breakout, not a valid entry).
+    #   2. BREAKOUT (high >= pivot, close >= structural low): an intraday pivot
+    #      break that did NOT close below the structural low. A breakout that
+    #      occurs ON the max_pending boundary still fires (the trigger happened
+    #      within the pending window).
+    #   3. EXPIRY (sessions_since_detection >= max_pending): only when NEITHER
+    #      invalidation NOR breakout fired (matches spec section 7.3 "without
+    #      trigger"). The boundary is inclusive (>=), so a non-triggering bar AT
+    #      max_pending expires.
+    if invalidation is not None and bar["close"] < invalidation:
+        return "invalidated", "shape_break"
+    if pivot is not None and bar["high"] >= pivot:
+        return "triggered_open", "entry_fired"
+    if sessions_since_detection >= max_pending:
+        return "expired", "time_exit"
+    return "pending", None
+
+
+def _bar_for_date(cfg, ohlcv_cache, ticker: str, observation_date: str):
+    """Return an ohlc dict (with provider) for exactly ``observation_date``, or
+    None if the archive has no bar for that session.
+
+    OQ-17 read path (writing-plans decision): (1) populate/refresh the archive
+    via the OhlcvCache write-through ladder (archive-first; zero Schwab); (2)
+    read the date-anchored bar + provider provenance via resolve_ohlcv_window
+    (keyed end=observation_date). Selects the row whose asof_date ==
+    observation_date (NOT iloc[-1]); freezes it; never re-reads it later
+    (#26 elimination honest).
+    """
+    from datetime import date, timedelta
+
+    from swing.data.ohlcv_archive import resolve_ohlcv_window
+    # 1. Populate the archive (write-through; the same call detect makes).
+    #    Best-effort by design (Codex chain #1 Major #6): the date-anchored
+    #    archive read in step 2 is AUTHORITATIVE. A get_or_fetch failure here
+    #    is not fatal -- if it leaves no bar for observation_date, step 2's
+    #    "no match" path returns None and the CALLER records a #27 no-bar
+    #    warning + skips (operator-visible). T-2.5 step 0 confirmed (PASS) that
+    #    get_or_fetch write-throughs to the same prices_cache_dir
+    #    resolve_ohlcv_window reads (Shape-A {TICKER}.{provider}.parquet).
+    try:
+        # window_days=400 mirrors the detect-step Pass-1 fetch window (~400
+        # calendar days) so the archive refresh covers the same depth.
+        ohlcv_cache.get_or_fetch(ticker=ticker, window_days=400)
+    except Exception as exc:  # noqa: BLE001 - best-effort populate; read is authoritative
+        log.debug("observe populate get_or_fetch best-effort miss for %s: %s",
+                  ticker, exc)
+    # 2. Date-anchored archive read with per-asof_date provenance.
+    # A small (10 calendar-day) back-pad guarantees the target session row is
+    # inside the [start, end] window even across weekends/holidays; the exact
+    # observation_date row is then selected below.
+    start = (date.fromisoformat(observation_date) - timedelta(days=10)).isoformat()
+    df, provenance = resolve_ohlcv_window(
+        ticker, start=start, end=observation_date,
+        cache_dir=cfg.paths.prices_cache_dir,
+    )
+    if df.empty:
+        return None
+    match = df[df["asof_date"] == observation_date]
+    if match.empty:
+        return None  # no bar for the gap day -> caller records a warning + skips
+    r = match.iloc[-1]
+    provider = provenance.get(observation_date)
+    if provider is None:
+        # No verified provenance for this date -> treat as no-bar (do NOT
+        # fabricate a provider into the append-only log). The caller records a
+        # #27 no-bar warning + skips.
+        return None
+    return {
+        "open": float(r["open"]), "high": float(r["high"]),
+        "low": float(r["low"]), "close": float(r["close"]),
+        "volume": float(r["volume"]),
+        "provider": provider,
+    }
+
+
+def _sessions_since(data_asof_date: str, observation_date: str) -> int:
+    """Count trading sessions from data_asof_date UP TO AND INCLUDING
+    observation_date (FB-N4: keyed on data_asof_date, NOT detection_date).
+    Uses pandas bdate_range (business days) as the V1 trading-day proxy;
+    holidays are an acceptable V1 approximation (the windows are coarse 30/60).
+    date.fromisoformat boundary conversion at the callsite with malformed-input
+    guard.
+    """
+    from datetime import date
+
+    import pandas as pd
+    start = date.fromisoformat(data_asof_date)
+    end = date.fromisoformat(observation_date)
+    if end <= start:
+        return 0
+    return int(len(pd.bdate_range(start=start, end=end)) - 1)
+
+
+def _step_pattern_observe(*, cfg, lease, ohlcv_cache, run_warnings):
+    """Append today's bar + lifecycle status to pattern_forward_observations
+    for every open detection. Zero new detector invocations (L4)."""
+    from datetime import UTC, datetime
+
+    from swing.data.db import connect
+    from swing.data.models import PatternForwardObservation
+    from swing.data.repos.pattern_detection_events import (
+        list_observable_detections,
+    )
+    from swing.data.repos.pattern_forward_observations import (
+        get_latest_observations_for_detections,
+        insert_observation,
+    )
+    from swing.pipeline.temporal_metadata import build_ohlc_today_json
+
+    observation_date = lease_data_asof(cfg, lease)  # run DATA cutoff (R2 M#1)
+    max_pending = cfg.pipeline.observe_max_pending_window_sessions
+    max_post = cfg.pipeline.observe_max_post_trigger_window_sessions
+
+    read_conn = connect(cfg.paths.db_path)
+    try:
+        open_dets = list_observable_detections(
+            read_conn, source="pipeline", observation_date=observation_date)
+        latest = get_latest_observations_for_detections(
+            read_conn, [d.detection_id for d in open_dets])
+    finally:
+        read_conn.close()
+
+    if not open_dets:
+        run_warnings.append({
+            "step": "pattern_observe", "actual_open_pool": 0,
+            "reason": "no observable detections",
+        })
+        return
+
+    with lease.fenced_write() as conn:
+        for det in open_dets:
+            prev = latest.get(det.detection_id)
+            if prev is not None and prev.observation_date == observation_date:
+                continue  # idempotent: already observed today
+            bar = _bar_for_date(cfg, ohlcv_cache, det.ticker, observation_date)
+            if bar is None:
+                run_warnings.append({
+                    "step": "pattern_observe", "ticker": det.ticker,
+                    "observation_date": observation_date,
+                    "reason": "no bar for observation_date",
+                })
+                continue
+            sessions = _sessions_since(det.data_asof_date, observation_date)
+            status, change = _advance_status(
+                det, prev=prev, bar=bar,
+                sessions_since_detection=sessions,
+                max_pending=max_pending, max_post_trigger=max_post)
+            insert_observation(conn, PatternForwardObservation(
+                observation_id=None, detection_id=det.detection_id,
+                observation_date=observation_date,
+                ohlc_today_json=build_ohlc_today_json(bar),  # validated shape + provider domain
+                status=status, status_change_event=change,
+                sessions_since_detection=sessions,
+                created_at=datetime.now(UTC).isoformat(),
+            ))
 
 
 def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data_asof: str,

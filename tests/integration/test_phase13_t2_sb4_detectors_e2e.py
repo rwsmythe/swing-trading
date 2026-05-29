@@ -44,7 +44,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from swing.data.db import ensure_schema
+from swing.data.db import EXPECTED_SCHEMA_VERSION, ensure_schema
 from swing.data.models import (
     DETECTOR_PATTERN_CLASSES,
     Candidate,
@@ -500,11 +500,12 @@ def test_phase13_t2_sb4_detectors_e2e_fast(tmp_path: Path) -> None:
     assert schema_version_row is not None, (
         "schema_version row missing; ensure_schema did not provision"
     )
-    # T2.SB4 itself does NOT change schema; the v20 baseline at T-A.1.1
-    # is preserved through T2.SB5, but T2.SB6c migration 0021 bumps the
-    # HEAD to v21 post-merge — track the current constant.
-    assert schema_version_row[0] == 21, (
-        f"Expected schema v21 (T2.SB6c HEAD post-migration 0021); got "
+    # T2.SB4 itself does NOT change schema; ensure_schema always provisions
+    # the current HEAD. Track EXPECTED_SCHEMA_VERSION (the db.py constant) so
+    # this assertion stays correct across migration bumps (v21 at T2.SB6c
+    # post-migration 0021; v22 at Phase 14 Sub-bundle 2 post-migration 0022).
+    assert schema_version_row[0] == EXPECTED_SCHEMA_VERSION, (
+        f"Expected schema v{EXPECTED_SCHEMA_VERSION} (current db.py HEAD); got "
         f"v{schema_version_row[0]}"
     )
 

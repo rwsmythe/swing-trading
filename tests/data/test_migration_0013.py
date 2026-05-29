@@ -22,9 +22,9 @@ def conn(tmp_path: Path) -> sqlite3.Connection:
 
 
 def test_migration_0013_advances_schema_version(conn: sqlite3.Connection) -> None:
-    # ensure_schema walks to HEAD; migration 0021 advanced schema_version to 21.
+    # ensure_schema walks to HEAD; migration 0022 advanced schema_version to 22.
     version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-    assert version == 21
+    assert version == 22
 
 
 def test_migration_0013_adds_ten_trade_columns(conn: sqlite3.Connection) -> None:
