@@ -8,6 +8,35 @@
 
 ---
 
+## 2026-05-29 #2 Phase 14 Sub-bundle 2 (temporal pattern detection + observation log infrastructure; V1+) BRAINSTORM SHIPPED at `9fc661b` -- spec 788 lines; Codex single-chain CONVERGED R4 NO_NEW_CRITICAL_MAJOR; 48th cumulative C.C lesson #6 validation NOTABLE; Expansion #4 brief-vs-reality finding (candidates.market_cap_dollars + atr_pct DO NOT EXIST) reshaped §9; 5 OQs for writing-plans operator triage; FB-N1 Codex-MCP-transport note banked; writing-plans dispatch NEXT
+
+**Sub-bundle 2 brainstorm SHIPPED 2026-05-29 #2** at integration merge `9fc661b` of `phase14-sub-bundle-2-temporal-log-brainstorming` via `--no-ff`. 3 implementer commits (draft `3ec8d1b` + R1-R4 fix bundle `815471a` + return report `3ef07ce`) + 1 merge commit. 2 files added (spec 788 lines at `docs/superpowers/specs/2026-05-28-phase14-sub-bundle-2-temporal-log-design.md` + return report 165 lines). Docs-only; ZERO swing/ + tests/ writes; Schema v21 LOCKED + verified (21 *.sql; NO v22 .sql at brainstorm -- v22 lands at writing-plans/executing-plans); L2 LOCK preserved (no Schwab API calls possible in docs-only). Branch cut from `665cab0` (post-CLAUDE.md-restructure) -> clean 3-way merge. ZERO Co-Authored-By across all 3 branch commits + merge commit (verified via `%(trailers)`).
+
+**What the spec designs:** 2 NEW append-only tables (`pattern_detection_events` + `pattern_forward_observations`) via a v22 migration (strict backup-gate `pre_version == 21` per gotcha #11; explicit BEGIN/COMMIT/ROLLBACK per gotcha #9); NEW `_step_pattern_observe` step (after detect, before charts); per-pattern metadata enrichment at detection; chart_render bytes capture REUSING the existing `theme2_annotated` surface + `render_theme2_annotated_svg` renderer. **#26 (OHLCV archive bar-content TEMPORAL mutation) + #37 (substrate-freshness sensitivity) stated as ELIMINATED-BY-CONSTRUCTION normatively at spec §2.3** (forward-walk; no archive re-read; no regeneration) -- the methodological payoff of the whole sub-bundle. All Sec 9.1 Q1-Q7 + L1-L8 LOCKs honored verbatim (spec §2; 2-table primitive at §2.4 per commissioning brief Sec 2.5).
+
+**Codex adversarial chain (single chain per Sec 9.1 Q7) CONVERGED at R4:** R1 (2C/4M/2m) -> R2 (2C/1M/0m) -> R3 (0C/3M/2m) -> R4 NO_NEW_CRITICAL_MAJOR. 16 findings ALL resolved in-place; ZERO accepted-as-rationale. Strongest code-grounded catches: (a) chart_render immutability-vs-DELETE-then-INSERT-cache + CASCADE-deadlock + already-shared-exemplar-surface tangle -> `ON DELETE SET NULL` nullable audit linkage on `chart_render_id`; (b) `data_asof_date`-vs-`detection_date` forward-walk boundary trap -> NEW `data_asof_date` column; (c) dedicated `render_theme2_annotated_svg` renderer + its stale evidence-keys.
+
+**Key brief-vs-reality finding (Expansion #4 column verification; orchestrator-verified against migrations at QA):** the dispatch brief's L6 assumed `candidates.market_cap_dollars` + `candidates.atr_pct` -- **NEITHER EXISTS** (confirmed: only `candidates.sector`/`industry` [mig `0012_sector_industry.sql`] + `adr_pct` [mig `0001_phase1_initial.sql:32`]; `market_cap_dollars`/`atr_pct` absent across ALL 21 migrations). Spec §9 redesigned: compute ATR% / 90d-return / 52w-prox from already-fetched bars; `market_cap = NULL` in V1+ with a V2 dependency banked. Sector/industry sourced from `candidates` (V2.G3-consistent).
+
+**5 Open Questions flagged for writing-plans operator triage** (NOT merge-blocking per implementer recommendation): **OQ-10** (append-only enforcement: repo-layer vs schema triggers) / **OQ-16** (accept `market_cap=NULL` in V1+?) / **OQ-17** (observe-step fetch-scope expansion to open-detection set) / **OQ-18** (status-machine window thresholds 30/60 sessions + invalidation-level defs) / **OQ-20** (single vs two Codex chains at writing-plans per gotcha #36).
+
+**FB-N1 banked (forward-binding; orchestrator-attention):** the copowers Codex MCP server tool (`mcp__plugin_copowers_codex__codex`) timed out at the 1s client ceiling on EVERY call (registration/config issue, not cold-start). The chain ran via the working `codex exec` CLI fallback (identical adversarial substance). Verify the MCP registration before the writing-plans dispatch (`copowers:setup` can validate). NON-blocking -- adversarial review substance occurred.
+
+**Recommendation (implementer):** single writing-plans + executing-plans dispatch (~15-25 commits + ~50-100 tests), with operator-paired OQ triage folded into the writing-plans dispatch brief.
+
+**Forward action sequence (orchestrator-side; THIS pass)**:
+
+- [x] QA implementer product per `feedback_orchestrator_qa_implementer_product` (3-commit chain ZERO Co-Authored-By via `%(trailers)`; docs-only scope confirmed; Codex catches spot-checked against migrations 0001+0012 + `swing/web/charts.py:481`; Sec 9.1 + L1-L8 + 2-table primitive + #26/#37 normative + `pre_version == 21` verified in spec)
+- [x] Merge `phase14-sub-bundle-2-temporal-log-brainstorming` `--no-ff` to main at `9fc661b` + push to origin/main
+- [x] phase3e-todo new top entry (THIS pass) + CLAUDE.md line-3 refresh (Sub-bundle 2 BRAINSTORM SHIPPED; ~616+ ZERO-trailer streak)
+- [x] Brainstorm worktree + branch teardown (merged; clean)
+- [ ] **Sub-bundle 2 writing-plans dispatch brief authoring** (fold 5 OQ operator-triage + FB-N1 MCP note + Expansion #4 §9-redesign substrate; recommend gotcha #36 two-chain evaluation per OQ-20)
+- [ ] **Sub-bundle 2 writing-plans inline dispatch prompt** per `feedback_always_provide_inline_dispatch_prompt` (commit brief BEFORE inline prompt per `feedback_commit_brief_before_inline_prompt`)
+- [ ] Sub-bundle 2 writing-plans + executing-plans cycle + operator-witnessed gate per Sec 9.1 Q6 (v22 schema verification + temporal log table population + chart_render bytes capture)
+- [ ] Sub-bundles 3-5 cycle per Sec 9.1 Q1+Q2 serial sequence (Sub-bundle 3 inherits P14.N8 weather-chart-refresh-handler regression)
+
+---
+
 ## 2026-05-29 Phase 14 Sub-bundle 1 (data-wiring) EXECUTING-PLANS SHIPPED end-to-end at `e323339` -- V2.G3 + V2.G4 + P14.N3 fixes in production code + tests; operator-witnessed gate PASS (S1+S2+S3+S4+S5b naturally verified; S5a covered by mechanical tests); pre-existing Phase 13 cosmetic regression revealed by V2.G4 fix banked as P14.N8 at `9b2b81e` routed to Sub-bundle 3; Codex R2 NO_NEW_CRITICAL_MAJOR convergence; 47th cumulative C.C lesson #6 validation NOTABLE; Sub-bundle 2 temporal log V1+ brainstorming NEXT per Sec 9.1 Q1+Q2 LOCKed sequence
 
 **Sub-bundle 1 executing-plans SHIPPED 2026-05-29** at integration merge `e323339` of `phase14-sub-bundle-1-data-wiring-executing-plans` via `--no-ff`. 8 implementer commits + 4 main housekeeping commits + 1 merge commit. 16 files changed (+3048 / -119 across production code + tests + return report). Schema v21 LOCKED + verified (21 *.sql files; no v22+ added in this sub-bundle). L2 LOCK preserved + REINFORCED via NEW `tests/integration/test_l2_lock_source_grep.py` multiset Counter assertion vs `bf7e071` commissioning baseline (R1.M#5 + R2.M#6 LOCK). ~608+ cumulative ZERO Co-Authored-By trailer drift preserved through merge.
