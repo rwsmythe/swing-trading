@@ -408,15 +408,15 @@ def _annotate_flat_base(
     ax: Any, ctx: _AnnotationContext, bars: pd.DataFrame
 ) -> None:
     """Flat base: top/bottom horizontal lines + duration label."""
-    top = ctx.evidence.get("top_of_range")
-    bottom = ctx.evidence.get("bottom_of_range")
+    top = ctx.evidence.get("range_top_price")
+    bottom = ctx.evidence.get("range_bottom_price")
     if isinstance(top, (int, float)):
         ax.axhline(float(top), color="#2ca02c", linestyle="--",
                    linewidth=0.8, alpha=0.7, label="top of range")
     if isinstance(bottom, (int, float)):
         ax.axhline(float(bottom), color="#d62728", linestyle="--",
                    linewidth=0.8, alpha=0.7, label="bottom of range")
-    duration = ctx.evidence.get("duration_days")
+    duration = ctx.evidence.get("base_duration_days")
     if isinstance(duration, int):
         ax.text(0.02, 0.92, f"duration: {duration} days",
                 transform=ax.transAxes, fontsize=8, color="#222")
@@ -426,7 +426,7 @@ def _annotate_cup_with_handle(
     ax: Any, ctx: _AnnotationContext, bars: pd.DataFrame
 ) -> None:
     """CWH: cup edges + handle markers + depth ratio."""
-    depth = ctx.evidence.get("depth_ratio")
+    depth = ctx.evidence.get("cup_depth_pct")
     if isinstance(depth, (int, float)):
         ax.text(0.02, 0.92, f"depth ratio: {depth:.2f}",
                 transform=ax.transAxes, fontsize=8, color="#222")
@@ -444,7 +444,7 @@ def _annotate_high_tight_flag(
     if isinstance(days_tight, int):
         ax.text(0.02, 0.92, f"days tight: {days_tight}",
                 transform=ax.transAxes, fontsize=8, color="#222")
-    pole_pct = ctx.evidence.get("pole_advance_pct")
+    pole_pct = ctx.evidence.get("pole_pct")
     if isinstance(pole_pct, (int, float)):
         ax.text(0.02, 0.86, f"pole advance: {pole_pct:.1f}pct",
                 transform=ax.transAxes, fontsize=8, color="#222")

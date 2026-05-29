@@ -196,9 +196,13 @@ def test_render_theme2_annotated_svg_vcp():
 
 def test_render_theme2_annotated_svg_flat_base():
     bars = _make_bars(150)
+    # Phase 14 Sub-bundle 2 (T-2.4 §C.6 evidence-key repair): the annotator
+    # now reads the ACTUAL FlatBaseEvidence field names
+    # (range_top_price / range_bottom_price / base_duration_days), not the
+    # pre-repair stale keys (top_of_range / bottom_of_range / duration_days).
     evidence = {
-        "top_of_range": 130.0, "bottom_of_range": 118.0,
-        "duration_days": 28,
+        "range_top_price": 130.0, "range_bottom_price": 118.0,
+        "base_duration_days": 28,
     }
     pe = _make_pattern_eval(pattern_class="flat_base",
                             structural_evidence=evidence, bars=bars)
@@ -211,7 +215,11 @@ def test_render_theme2_annotated_svg_flat_base():
 
 def test_render_theme2_annotated_svg_cup_with_handle():
     bars = _make_bars(180)
-    evidence = {"depth_ratio": 0.28, "cup_bottom_price": 95.0}
+    # Phase 14 Sub-bundle 2 (T-2.4 §C.6 evidence-key repair): the annotator
+    # now reads the ACTUAL CupWithHandleEvidence field name (cup_depth_pct),
+    # not the pre-repair stale key (depth_ratio). cup_bottom_price already
+    # matched. The label renders the value with %.2f.
+    evidence = {"cup_depth_pct": 0.28, "cup_bottom_price": 95.0}
     pe = _make_pattern_eval(pattern_class="cup_with_handle",
                             structural_evidence=evidence, bars=bars)
     out = render_theme2_annotated_svg(
@@ -223,9 +231,13 @@ def test_render_theme2_annotated_svg_cup_with_handle():
 
 def test_render_theme2_annotated_svg_high_tight_flag():
     bars = _make_bars(120)
+    # Phase 14 Sub-bundle 2 (T-2.4 §C.6 evidence-key repair): the annotator
+    # now reads the ACTUAL HighTightFlagEvidence field name (pole_pct), not
+    # the pre-repair stale key (pole_advance_pct). consolidation_duration_days
+    # already matched.
     evidence = {
         "consolidation_duration_days": 21,
-        "pole_advance_pct": 105.5,
+        "pole_pct": 105.5,
     }
     pe = _make_pattern_eval(pattern_class="high_tight_flag",
                             structural_evidence=evidence, bars=bars)
@@ -234,6 +246,7 @@ def test_render_theme2_annotated_svg_high_tight_flag():
     )
     assert b"high_tight_flag" in out
     assert b"days tight: 21" in out
+    assert b"pole advance: 105.5pct" in out
 
 
 def test_render_theme2_annotated_svg_double_bottom_w():
