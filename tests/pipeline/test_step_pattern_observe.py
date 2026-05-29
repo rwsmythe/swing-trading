@@ -138,3 +138,173 @@ def test_terminal_prev_status_raises():
     with pytest.raises(ValueError, match="terminal prev status"):
         _advance_status(_Det(), prev=_PrevTerminal(), bar=_bar(9.0, 8.5, 8.8),
                         sessions_since_detection=5, max_pending=30, max_post_trigger=60)
+
+
+# --- Step 6: _step_pattern_observe integration set ---------------------------
+
+import json  # noqa: E402
+
+from unittest.mock import patch  # noqa: E402
+
+from swing.data.repos.pattern_forward_observations import (  # noqa: E402
+    get_observations_for_detection,
+)
+from swing.pipeline.runner import _step_pattern_observe  # noqa: E402
+
+
+def test_observation_appended_with_provider_tag(tmp_db_v22, tmp_path):
+    conn, db_path = tmp_db_v22
+    det_id = _plant_detection(conn, ticker="AAA", data_asof_date="2026-05-28")
+    cfg = _cfg(tmp_path, db_path)
+    lease = _FakeLease(db_path, run_id=1, data_asof="2026-05-29")
+    warnings: list[dict] = []
+    with patch("swing.data.ohlcv_archive.resolve_ohlcv_window",
+               return_value=_stub_window(9.0, provider="yfinance", date_="2026-05-29")):
+        with patch("swing.pipeline.runner.lease_data_asof", return_value="2026-05-29"):
+            _step_pattern_observe(cfg=cfg, lease=lease,
+                                  ohlcv_cache=_StubOhlcvCache({"AAA": _build_bars()}),
+                                  run_warnings=warnings)
+    chain = get_observations_for_detection(conn, det_id)
+    assert len(chain) == 1
+    bar = json.loads(chain[0].ohlc_today_json)
+    assert bar["provider"] == "yfinance"            # OQ-17 by FIELD
+    assert set(bar) == {"open", "high", "low", "close", "volume", "provider"}
+    assert chain[0].observation_date == "2026-05-29"
+    assert chain[0].status == "pending"             # below pivot, above invalidation
+
+
+def test_pending_to_triggered_open_on_breakout(tmp_db_v22, tmp_path):
+    conn, db_path = tmp_db_v22
+    det_id = _plant_detection(conn, ticker="AAA", data_asof_date="2026-05-28", pivot=10.0)
+    cfg = _cfg(tmp_path, db_path)
+    lease = _FakeLease(db_path, 1, "2026-05-29")
+    with patch("swing.data.ohlcv_archive.resolve_ohlcv_window",
+               return_value=_stub_window(10.2, high=10.5, date_="2026-05-29")):
+        with patch("swing.pipeline.runner.lease_data_asof", return_value="2026-05-29"):
+            _step_pattern_observe(cfg=cfg, lease=lease,
+                                  ohlcv_cache=_StubOhlcvCache({"AAA": _build_bars()}),
+                                  run_warnings=[])
+    obs = get_observations_for_detection(conn, det_id)[0]
+    assert obs.status == "triggered_open" and obs.status_change_event == "entry_fired"
+
+
+def test_sessions_since_detection_counts_from_data_asof(tmp_db_v22, tmp_path):
+    conn, db_path = tmp_db_v22
+    det_id = _plant_detection(conn, ticker="AAA", data_asof_date="2026-05-22")  # Fri
+    cfg = _cfg(tmp_path, db_path)
+    lease = _FakeLease(db_path, 1, "2026-05-29")
+    with patch("swing.data.ohlcv_archive.resolve_ohlcv_window",
+               return_value=_stub_window(9.0, date_="2026-05-29")):  # next Fri
+        with patch("swing.pipeline.runner.lease_data_asof", return_value="2026-05-29"):
+            _step_pattern_observe(cfg=cfg, lease=lease,
+                                  ohlcv_cache=_StubOhlcvCache({"AAA": _build_bars()}),
+                                  run_warnings=[])
+    obs = get_observations_for_detection(conn, det_id)[0]
+    # 5 business days from 2026-05-22 (excl) to 2026-05-29 (incl).
+    assert obs.sessions_since_detection == 5
+
+
+def test_idempotent_same_day_reobservation(tmp_db_v22, tmp_path):
+    conn, db_path = tmp_db_v22
+    det_id = _plant_detection(conn, ticker="AAA", data_asof_date="2026-05-28")
+    cfg = _cfg(tmp_path, db_path)
+    lease = _FakeLease(db_path, 1, "2026-05-29")
+    stub = _stub_window(9.0, date_="2026-05-29")
+    with patch("swing.data.ohlcv_archive.resolve_ohlcv_window", return_value=stub):
+        with patch("swing.pipeline.runner.lease_data_asof", return_value="2026-05-29"):
+            _step_pattern_observe(cfg=cfg, lease=lease,
+                                  ohlcv_cache=_StubOhlcvCache({"AAA": _build_bars()}), run_warnings=[])
+            _step_pattern_observe(cfg=cfg, lease=lease,  # re-run same observation_date
+                                  ohlcv_cache=_StubOhlcvCache({"AAA": _build_bars()}), run_warnings=[])
+    assert len(get_observations_for_detection(conn, det_id)) == 1  # no dup; no UNIQUE error
+
+
+def test_empty_open_pool_warns(tmp_db_v22, tmp_path):
+    conn, db_path = tmp_db_v22  # no detections planted
+    cfg = _cfg(tmp_path, db_path)
+    lease = _FakeLease(db_path, 1, "2026-05-29")
+    warnings: list[dict] = []
+    with patch("swing.pipeline.runner.lease_data_asof", return_value="2026-05-29"):
+        _step_pattern_observe(cfg=cfg, lease=lease,
+                              ohlcv_cache=_StubOhlcvCache({}), run_warnings=warnings)
+    assert any(w["step"] == "pattern_observe" and w["actual_open_pool"] == 0
+               for w in warnings)
+
+
+def test_no_bar_for_date_warns_and_skips(tmp_db_v22, tmp_path):
+    conn, db_path = tmp_db_v22
+    det_id = _plant_detection(conn, ticker="AAA", data_asof_date="2026-05-28")
+    cfg = _cfg(tmp_path, db_path)
+    lease = _FakeLease(db_path, 1, "2026-05-29")
+    warnings: list[dict] = []
+    import pandas as pd
+    empty = (pd.DataFrame(columns=["asof_date", "open", "high", "low", "close", "volume"]), {})
+    with patch("swing.data.ohlcv_archive.resolve_ohlcv_window", return_value=empty):
+        with patch("swing.pipeline.runner.lease_data_asof", return_value="2026-05-29"):
+            _step_pattern_observe(cfg=cfg, lease=lease,
+                                  ohlcv_cache=_StubOhlcvCache({"AAA": _build_bars()}),
+                                  run_warnings=warnings)
+    assert get_observations_for_detection(conn, det_id) == []
+    assert any(w.get("reason") == "no bar for observation_date" for w in warnings)
+
+
+def test_terminal_detection_not_observed_at_step_boundary(tmp_db_v22, tmp_path):
+    # Codex chain #2 R2 Minor #3: the terminal-guard invariant lives at the
+    # STEP boundary -- list_observable_detections excludes a detection whose
+    # latest status is terminal, so _step_pattern_observe never appends a new
+    # row for it (and _advance_status is never reached -> no ValueError).
+    conn, db_path = tmp_db_v22
+    det_id = _plant_detection(conn, ticker="AAA", data_asof_date="2026-05-27")
+    from swing.data.models import PatternForwardObservation
+    from swing.data.repos.pattern_forward_observations import insert_observation
+    with conn:
+        insert_observation(conn, PatternForwardObservation(
+            observation_id=None, detection_id=det_id, observation_date="2026-05-28",
+            ohlc_today_json='{"open":1,"high":1,"low":1,"close":1,"volume":1,"provider":"yfinance"}',
+            status="expired", sessions_since_detection=1,
+            created_at="2026-05-28T00:00:00Z",
+            status_change_event="observation_horizon_reached"))
+    cfg = _cfg(tmp_path, db_path)
+    with patch("swing.data.ohlcv_archive.resolve_ohlcv_window",
+               return_value=_stub_window(9.0, date_="2026-05-29")):
+        with patch("swing.pipeline.runner.lease_data_asof", return_value="2026-05-29"):
+            _step_pattern_observe(cfg=cfg, lease=_FakeLease(db_path, 2, "2026-05-29"),
+                                  ohlcv_cache=_StubOhlcvCache({"AAA": _build_bars()}),
+                                  run_warnings=[])
+    # Still only the terminal observation -- no new row appended (no raise).
+    assert len(get_observations_for_detection(conn, det_id)) == 1
+
+
+def test_forward_walk_freezes_past_bar(tmp_db_v22, tmp_path):
+    # #26/#37-by-construction discriminator: a past observation's frozen
+    # ohlc_today_json is NEVER re-read from a later archive.
+    conn, db_path = tmp_db_v22
+    det_id = _plant_detection(conn, ticker="AAA", data_asof_date="2026-05-27")
+    cfg = _cfg(tmp_path, db_path)
+    # Session N = 2026-05-28: record close 9.00.
+    with patch("swing.data.ohlcv_archive.resolve_ohlcv_window",
+               return_value=_stub_window(9.00, date_="2026-05-28")):
+        with patch("swing.pipeline.runner.lease_data_asof", return_value="2026-05-28"):
+            _step_pattern_observe(cfg=cfg, lease=_FakeLease(db_path, 1, "2026-05-28"),
+                                  ohlcv_cache=_StubOhlcvCache({"AAA": _build_bars()}), run_warnings=[])
+    obs_N_before = json.loads(get_observations_for_detection(conn, det_id)[0].ohlc_today_json)
+
+    # Session N+1 = 2026-05-29: the archive NOW reports a DIFFERENT close for N
+    # (simulating gotcha #26 drift) -- but observe at N+1 only records N+1.
+    def _drifted(ticker, *, start, end, cache_dir):
+        import pandas as pd
+        rows = [{"asof_date": "2026-05-28", "open": 9.99, "high": 9.99, "low": 9.99,
+                 "close": 9.99, "volume": 1e6},  # DRIFTED date-N bar
+                {"asof_date": "2026-05-29", "open": 9.10, "high": 9.10, "low": 9.10,
+                 "close": 9.10, "volume": 1e6}]
+        df = pd.DataFrame([r for r in rows if start <= r["asof_date"] <= end])
+        return df, {r["asof_date"]: "yfinance" for _, r in df.iterrows()}
+    with patch("swing.data.ohlcv_archive.resolve_ohlcv_window", side_effect=_drifted):
+        with patch("swing.pipeline.runner.lease_data_asof", return_value="2026-05-29"):
+            _step_pattern_observe(cfg=cfg, lease=_FakeLease(db_path, 2, "2026-05-29"),
+                                  ohlcv_cache=_StubOhlcvCache({"AAA": _build_bars()}), run_warnings=[])
+    chain = get_observations_for_detection(conn, det_id)
+    obs_N_after = json.loads(chain[0].ohlc_today_json)  # the date-N row
+    assert obs_N_after == obs_N_before          # FROZEN -- #26 cannot occur
+    assert obs_N_after["close"] == 9.00         # NOT the drifted 9.99
+    assert chain[1].observation_date == "2026-05-29" and json.loads(chain[1].ohlc_today_json)["close"] == 9.10
