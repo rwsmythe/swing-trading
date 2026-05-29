@@ -2295,6 +2295,17 @@ def _step_pattern_detect(
                     pattern_class,
                     exc,
                 )
+                # gotcha #27: a failed detection-event INSERT leaves the
+                # pattern_evaluations row written but NO detection row -- a
+                # SILENT substrate desync. Convert it into an AUDITED skip.
+                if run_warnings is not None:
+                    run_warnings.append({
+                        "step": "pattern_detect", "ticker": ticker,
+                        "pattern_class": pattern_class,
+                        "reason": "detection-event INSERT failed; evaluation "
+                                  "written without detection row (substrate "
+                                  "desync)",
+                    })
                 continue
 
     log.info(
@@ -2436,11 +2447,17 @@ def _bar_for_date(cfg, ohlcv_cache, ticker: str, observation_date: str):
     if match.empty:
         return None  # no bar for the gap day -> caller records a warning + skips
     r = match.iloc[-1]
+    provider = provenance.get(observation_date)
+    if provider is None:
+        # No verified provenance for this date -> treat as no-bar (do NOT
+        # fabricate a provider into the append-only log). The caller records a
+        # #27 no-bar warning + skips.
+        return None
     return {
         "open": float(r["open"]), "high": float(r["high"]),
         "low": float(r["low"]), "close": float(r["close"]),
         "volume": float(r["volume"]),
-        "provider": provenance.get(observation_date, "yfinance"),
+        "provider": provider,
     }
 
 

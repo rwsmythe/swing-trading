@@ -248,6 +248,34 @@ def test_no_bar_for_date_warns_and_skips(tmp_db_v22, tmp_path):
     assert any(w.get("reason") == "no bar for observation_date" for w in warnings)
 
 
+def test_missing_provenance_treated_as_no_bar(tmp_db_v22, tmp_path):
+    # Codex chain #1 Major #2: _bar_for_date must NOT fabricate provider
+    # provenance. A matching df row WITH an EMPTY provenance dict has no
+    # VERIFIED provider -> treat as no-bar (skip + #27 warning), never
+    # fabricate "yfinance" into the append-only log.
+    conn, db_path = tmp_db_v22
+    det_id = _plant_detection(conn, ticker="AAA", data_asof_date="2026-05-28")
+    cfg = _cfg(tmp_path, db_path)
+    lease = _FakeLease(db_path, run_id=1, data_asof="2026-05-29")
+    warnings: list[dict] = []
+    import pandas as pd
+    # A real matching row for observation_date BUT empty provenance dict.
+    df = pd.DataFrame([{
+        "asof_date": "2026-05-29", "open": 9.0, "high": 9.0,
+        "low": 9.0, "close": 9.0, "volume": 1_000_000.0}])
+    no_prov = (df, {})  # row present, provenance missing for the date
+    with patch("swing.data.ohlcv_archive.resolve_ohlcv_window",
+               return_value=no_prov):
+        with patch("swing.pipeline.runner.lease_data_asof",
+                   return_value="2026-05-29"):
+            _step_pattern_observe(cfg=cfg, lease=lease,
+                                  ohlcv_cache=_StubOhlcvCache({"AAA": _build_bars()}),
+                                  run_warnings=warnings)
+    # NO observation appended (missing-provenance row treated as no-bar).
+    assert get_observations_for_detection(conn, det_id) == []
+    assert any(w.get("reason") == "no bar for observation_date" for w in warnings)
+
+
 def test_terminal_detection_not_observed_at_step_boundary(tmp_db_v22, tmp_path):
     # Codex chain #2 R2 Minor #3: the terminal-guard invariant lives at the
     # STEP boundary -- list_observable_detections excludes a detection whose

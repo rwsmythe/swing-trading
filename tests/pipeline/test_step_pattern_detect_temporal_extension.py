@@ -101,6 +101,33 @@ def test_pattern_evaluations_still_written_l7(tmp_db_v22):
     assert n_eval >= 1  # the existing write is UNCHANGED (L7)
 
 
+def test_detection_insert_failure_is_audited_not_silent(tmp_db_v22):
+    # gotcha #27: a failed detection-event INSERT leaves the pattern_evaluations
+    # row written but NO detection row -- a SILENT substrate desync. The except
+    # block must convert this into an AUDITED skip (run_warnings entry), not a
+    # silent continue.
+    conn, cfg, lease, eval_run_id = _seed_aplus_candidate_and_run(
+        tmp_db_v22, ticker="AAA")
+    run_warnings: list[dict] = []
+    with patch("swing.data.repos.pattern_detection_events.insert_detection_event",
+               side_effect=RuntimeError("boom")):
+        _drive_detect(conn, cfg, lease, eval_run_id,
+                      _StubOhlcvCache({"AAA": _build_bars()}), run_warnings)
+    # (a) pattern_evaluations row exists (the upstream write is unchanged).
+    n_eval = conn.execute(
+        "SELECT COUNT(*) FROM pattern_evaluations").fetchone()[0]
+    assert n_eval >= 1
+    # (b) NO detection row exists for the ticker (the INSERT failed).
+    assert list_detection_events(conn, ticker="AAA") == []
+    # (c) the desync was AUDITED into run_warnings.
+    desync = [w for w in run_warnings
+              if w.get("step") == "pattern_detect"
+              and "substrate desync" in w.get("reason", "")]
+    assert desync, run_warnings
+    assert desync[0]["ticker"] == "AAA"
+    assert "pattern_class" in desync[0]
+
+
 def test_empty_aplus_pool_warns_and_writes_nothing(tmp_db_v22):
     conn, cfg, lease, eval_run_id = _seed_run_with_zero_aplus(tmp_db_v22)
     run_warnings: list[dict] = []
