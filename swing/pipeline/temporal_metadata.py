@@ -34,11 +34,16 @@ def _slice_to_asof(bars: pd.DataFrame, asof: str) -> pd.DataFrame:
     return bars[bars.index.map(lambda ts: ts.date() <= asof_d)]
 
 
+def _squeeze(col):
+    """Squeeze a yfinance group_by='column' MultiIndex single-ticker column
+    (a one-column DataFrame, ndim==2) down to a Series. Pass-through for an
+    already-1D Series. Used by every helper that reads High/Low/Close so a
+    single-ticker MultiIndex frame never makes float(col.iloc[-1]) raise."""
+    return col.iloc[:, 0] if getattr(col, "ndim", 1) == 2 else col
+
+
 def _close_series(bars: pd.DataFrame) -> pd.Series:
-    close = bars["Close"]
-    if getattr(close, "ndim", 1) == 2:  # MultiIndex single-ticker squeeze
-        close = close.iloc[:, 0]
-    return close
+    return _squeeze(bars["Close"])
 
 
 def compute_atr_pct(bars: pd.DataFrame, *, asof: str, period: int = 14) -> float | None:
@@ -48,7 +53,9 @@ def compute_atr_pct(bars: pd.DataFrame, *, asof: str, period: int = 14) -> float
     df = _slice_to_asof(bars, asof)
     if len(df) < period + 1:
         return None
-    high, low, close = df["High"], df["Low"], df["Close"]
+    high = _squeeze(df["High"])
+    low = _squeeze(df["Low"])
+    close = _squeeze(df["Close"])
     prev_close = close.shift(1)
     tr = pd.concat(
         [(high - low), (high - prev_close).abs(), (low - prev_close).abs()],

@@ -57,6 +57,36 @@ def test_helpers_return_none_on_empty_or_columnless_frame():
     assert compute_52w_high_proximity_pct(empty, asof="2026-05-28") is None
 
 
+def _bars_2d_single_ticker(n: int, last_date="2026-05-28") -> pd.DataFrame:
+    """yfinance group_by='column' single-ticker shape: a (Price x Ticker)
+    MultiIndex so df['High']/['Low']/['Close'] are one-column DataFrames
+    (ndim==2), not Series. compute_atr_pct must squeeze these like the
+    close-only helpers already do, or float(col.iloc[-1]) raises (the raise
+    would abort the whole detect-step lease.fenced_write())."""
+    idx = pd.bdate_range(end=last_date, periods=n)
+    close = np.linspace(10.0, 20.0, n)
+    cols = pd.MultiIndex.from_product(
+        [["Open", "High", "Low", "Close", "Volume"], ["AAA"]],
+        names=["Price", "Ticker"],
+    )
+    data = np.column_stack(
+        [close * 0.99, close * 1.02, close * 0.98, close,
+         np.full(n, 1_000_000.0)]
+    )
+    return pd.DataFrame(data, index=idx, columns=cols)
+
+
+def test_atr_pct_squeezes_2d_single_ticker_columns():
+    # Major #2: the yfinance MultiIndex single-ticker shape makes
+    # df['High']/['Low']/['Close'] one-column DataFrames. Without squeezing
+    # High/Low/Close, float(col.iloc[-1]) raises (a Series, not a scalar).
+    bars = _bars_2d_single_ticker(60)
+    # Guard the precondition: these ARE 2D columns (the regression target).
+    assert bars["High"].ndim == 2 and bars["Close"].ndim == 2
+    out = compute_atr_pct(bars, asof="2026-05-28")
+    assert out is not None and out > 0  # returns a float, does NOT raise
+
+
 def test_build_ohlc_today_json_validates_shape_and_provider():
     # Codex chain #2 Major #6: the observation JSON construction barrier.
     import json as _j

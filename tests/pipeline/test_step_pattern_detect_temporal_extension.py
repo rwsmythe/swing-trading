@@ -128,6 +128,64 @@ def test_detection_insert_failure_is_audited_not_silent(tmp_db_v22):
     assert "pattern_class" in desync[0]
 
 
+def test_cand_is_none_skip_is_audited_not_silent(tmp_db_v22):
+    # Major #1 (gotcha #27): if an emitted verdict's ticker is ABSENT from
+    # candidate_by_ticker, the detect step skips the detection append -- which
+    # leaves a pattern_evaluations row with NO pattern_detection_events row (a
+    # silent substrate desync). The skip must be AUDITED into run_warnings.
+    #
+    # Forcing the branch: candidate_by_ticker = {c.ticker: c for c in
+    # candidates}. _step_pattern_detect iterates the `candidates` list TWICE
+    # before that comprehension matters: once to build aplus_tickers (drives
+    # the emit), and once to build candidate_by_ticker. We patch
+    # fetch_candidates_for_run to return a custom iterable that yields the real
+    # aplus candidate on its FIRST iteration (so AAA IS emitted + a
+    # pattern_evaluations row is written) but yields NOTHING on the SECOND
+    # iteration (so candidate_by_ticker is EMPTY -> .get("AAA") is None ->
+    # the cand-is-None branch fires).
+    conn, cfg, lease, eval_run_id = _seed_aplus_candidate_and_run(
+        tmp_db_v22, ticker="AAA")
+    from swing.data.repos.candidates import fetch_candidates_for_run
+    real_candidates = list(fetch_candidates_for_run(conn, eval_run_id))
+
+    class _IterOnceCandidates:
+        """list-like; yields the real candidates on the first __iter__ call,
+        empty on every subsequent call (the dict-comprehension pass)."""
+        def __init__(self, items):
+            self._items = items
+            self._calls = 0
+
+        def __iter__(self):
+            self._calls += 1
+            if self._calls == 1:
+                return iter(self._items)
+            return iter(())
+
+        def __len__(self):
+            return len(self._items)
+
+    run_warnings: list[dict] = []
+    # _step_pattern_detect imports fetch_candidates_for_run locally from the
+    # repo module, so patch it there (not on swing.pipeline.runner).
+    with patch("swing.data.repos.candidates.fetch_candidates_for_run",
+               return_value=_IterOnceCandidates(real_candidates)):
+        _drive_detect(conn, cfg, lease, eval_run_id,
+                      _StubOhlcvCache({"AAA": _build_bars()}), run_warnings)
+    # (a) a pattern_evaluations row WAS written (the upstream emit succeeded).
+    n_eval = conn.execute(
+        "SELECT COUNT(*) FROM pattern_evaluations").fetchone()[0]
+    assert n_eval >= 1
+    # (b) NO detection row exists (the cand-is-None branch skipped the append).
+    assert list_detection_events(conn, ticker="AAA") == []
+    # (c) the desync was AUDITED with a "candidate row missing" reason.
+    missing = [w for w in run_warnings
+               if w.get("step") == "pattern_detect"
+               and "candidate row missing" in w.get("reason", "")]
+    assert missing, run_warnings
+    assert missing[0]["ticker"] == "AAA"
+    assert "pattern_class" in missing[0]
+
+
 def test_empty_aplus_pool_warns_and_writes_nothing(tmp_db_v22):
     conn, cfg, lease, eval_run_id = _seed_run_with_zero_aplus(tmp_db_v22)
     run_warnings: list[dict] = []

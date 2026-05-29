@@ -34,7 +34,7 @@ from swing.data.repos.pattern_detection_events import list_detection_events
 from swing.data.repos.pattern_forward_observations import (
     get_observations_for_detection,
 )
-from swing.pipeline.runner import _step_pattern_observe
+from swing.pipeline.runner import _advance_status, _step_pattern_observe
 
 # Reuse the proven harness from the shared temporal conftest module
 # (one shared fixture set across T-2.4 / T-2.5 / T-2.6).
@@ -113,6 +113,31 @@ def test_detect_then_forward_walk_e2e(tmp_db_v22):
             det_after.data_asof_date) == facts_before
     # No detection rows were added/removed by the observe runs.
     assert len(list_detection_events(conn, ticker="AAA")) == 5
+
+
+def test_real_detect_anchors_parse_through_advance_status(tmp_db_v22):
+    # Minor #1: prove that EVERY production detector-emitted detection's
+    # structural_anchors_json is semantically consumable by _advance_status
+    # WITHOUT crashing (closes the planted-detection residual-risk gap -- the
+    # main e2e exercises the status machine against a PLANTED detection only).
+    # The real _build_bars detections freeze pivot_price=0.0, so they resolve
+    # to triggered_open on high>=0.0; the assertion is "no crash + valid
+    # status", not a specific transition.
+    conn, db_path = tmp_db_v22
+    _conn, cfg, lease, eval_run_id = _seed_aplus_candidate_and_run(
+        (conn, db_path), ticker="AAA", data_asof_date="2026-05-27")
+    _drive_detect(conn, cfg, lease, eval_run_id,
+                  _StubOhlcvCache({"AAA": _build_bars()}), [])
+    dets = list_detection_events(conn, ticker="AAA")
+    assert dets, "expected at least one real detect-step detection"
+    bar = {"open": 12.0, "high": 12.5, "low": 11.5, "close": 12.0,
+           "volume": 1_000_000.0}
+    valid = {"pending", "triggered_open", "invalidated", "expired"}
+    for det in dets:
+        status, event = _advance_status(
+            det, prev=None, bar=bar, sessions_since_detection=1,
+            max_pending=30, max_post_trigger=60)
+        assert status in valid, (det.pattern_class, status)
 
 
 def test_e2e_module_ascii_only():

@@ -2204,12 +2204,26 @@ def _step_pattern_detect(
                 # Defensive: an emit without a candidate row should not
                 # happen (the emit came from an aplus candidate); skip the
                 # detection append rather than fabricate metadata.
+                # gotcha #27: skipping leaves a pattern_evaluations row with
+                # NO pattern_detection_events row -- a SILENT substrate
+                # desync. AUDIT the skip (run_warnings) so it is
+                # operator-visible. Audit-skip (not degrade) is correct here:
+                # without the candidate row the per-pattern metadata +
+                # finviz_screen_state cannot be meaningfully built.
                 log.warning(
                     "pattern_detect: no candidate row for emitted verdict "
                     "(%s, %s); skipping detection append",
                     ticker,
                     pattern_class,
                 )
+                if run_warnings is not None:
+                    run_warnings.append({
+                        "step": "pattern_detect", "ticker": ticker,
+                        "pattern_class": pattern_class,
+                        "reason": "candidate row missing for emitted verdict; "
+                                  "evaluation written without detection row "
+                                  "(substrate desync)",
+                    })
                 continue
 
             # SELECT-then-skip idempotency on the unique key (re-run safety):
