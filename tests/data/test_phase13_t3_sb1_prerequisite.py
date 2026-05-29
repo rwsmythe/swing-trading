@@ -52,7 +52,7 @@ def test_schema_version_is_20(tmp_path: Path) -> None:
     stale-name-but-current-assertion pattern).
     """
     assert EXPECTED_SCHEMA_VERSION == 22, (
-        f"Worktree branched off wrong SHA — expected v22 schema, "
+        f"Worktree branched off wrong SHA - expected v22 schema, "
         f"got v{EXPECTED_SCHEMA_VERSION}. Re-create worktree off the "
         f"current head SHA."
     )
