@@ -2,7 +2,18 @@ import pytest
 from swing.data.models import (
     PatternDetectionEvent, PatternForwardObservation,
     _PATTERN_DETECTION_SOURCE_VALUES, _FORWARD_OBSERVATION_STATUS_VALUES,
+    _FORWARD_OBSERVATION_STATUS_CHANGE_EVENTS,
 )
+
+
+def _valid_observation(**kw):
+    base = dict(
+        observation_id=None, detection_id=1, observation_date="2026-05-29",
+        ohlc_today_json="{}", status="pending", sessions_since_detection=1,
+        created_at="2026-05-29T00:00:00Z",
+    )
+    base.update(kw)
+    return PatternForwardObservation(**base)
 
 
 def _valid_detection(**kw):
@@ -50,6 +61,17 @@ def test_observation_rejects_bad_status_change_event():
         )
 
 
+def test_observation_rejects_negative_sessions_since_detection():
+    with pytest.raises(ValueError, match="sessions_since_detection"):
+        _valid_observation(sessions_since_detection=-1)
+
+
+def test_observation_accepts_valid_status_change_event():
+    obs = _valid_observation(
+        status="triggered_open", status_change_event="entry_fired")
+    assert obs.status_change_event == "entry_fired"
+
+
 def test_validator_mirrors_schema_check_value_domain():
     """The Python enum constants MUST equal the schema CHECK value domain
     (gotcha #11 mirror). Hard-code the CHECK lists here so a drift in either
@@ -59,3 +81,6 @@ def test_validator_mirrors_schema_check_value_domain():
     assert set(_FORWARD_OBSERVATION_STATUS_VALUES) == {
         "pending", "triggered_open", "triggered_closed_at_target",
         "triggered_closed_at_stop", "invalidated", "expired"}
+    assert set(_FORWARD_OBSERVATION_STATUS_CHANGE_EVENTS) == {
+        "entry_fired", "stop_fired", "target_fired",
+        "time_exit", "shape_break", "observation_horizon_reached"}
