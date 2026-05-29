@@ -88,6 +88,16 @@ def test_triggered_open_stays_open_within_horizon():
     assert status == "triggered_open" and ev is None
 
 
+def test_triggered_open_at_89_stays_open():
+    # Immediately UNDER the horizon (89 = max_pending+max_post_trigger-1 = 90-1):
+    # 89 >= 90 is False -> stays open. Pins the >= boundary against an off-by-one
+    # regression (e.g. > max_pending+max_post_trigger-1 would wrongly expire 89).
+    status, ev = _advance_status(
+        _Det(), prev=_PrevOpen(), bar=_bar(11.0, 10.5, 10.8),
+        sessions_since_detection=89, max_pending=30, max_post_trigger=60)
+    assert status == "triggered_open" and ev is None
+
+
 # --- Same-bar conflict precedence (Codex chain #2 Major #1 + #3) ---
 
 def test_same_bar_breakout_and_invalidation_resolves_to_invalidated():
