@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 from swing.data.models import Candidate, CriterionResult, EvaluationRun
 
 
 def insert_evaluation_run(conn: sqlite3.Connection, run: EvaluationRun) -> int:
-    """Insert an evaluation_runs row. Does NOT commit — caller wraps in a transaction
+    """Insert an evaluation_runs row. Does NOT commit -- caller wraps in a transaction
     (e.g. `with conn:`) so the run + candidates + criteria persist atomically.
     """
     cur = conn.execute(
@@ -40,7 +41,7 @@ def insert_evaluation_run(conn: sqlite3.Connection, run: EvaluationRun) -> int:
 def insert_candidates(
     conn: sqlite3.Connection, run_id: int, candidates: Sequence[Candidate]
 ) -> None:
-    """Insert candidate + criteria rows. Does NOT commit — caller wraps in a transaction."""
+    """Insert candidate + criteria rows. Does NOT commit -- caller wraps in a transaction."""
     for c in candidates:
         cur = conn.execute(
             """
@@ -135,3 +136,84 @@ def fetch_candidates_for_run(conn: sqlite3.Connection, run_id: int) -> list[Cand
             )
         )
     return result
+
+
+@dataclass(frozen=True)
+class CandidateSectorIndustryRecord:
+    """Most-recent candidates-row Sector + Industry pair WITH provenance.
+
+    Provenance metadata (candidate_id + evaluation_run_id) carried per
+    Codex R1.M#6 LOCK so the V2.G3 backfill dry-run table can cite the
+    source_candidate_id + source_evaluation_run_id columns required by
+    spec section 4.3. For tickers with no qualifying row, the
+    "no-match" sentinel is constructed with empty strings + ``None``
+    provenance fields (per migration 0012_sector_industry.sql TEXT NOT
+    NULL DEFAULT '' convention applied to the ABSENT-row case).
+    """
+    sector: str
+    industry: str
+    candidate_id: int | None
+    evaluation_run_id: int | None
+
+
+def get_latest_sector_industry_per_ticker(
+    conn: sqlite3.Connection,
+    tickers: Sequence[str],
+) -> dict[str, CandidateSectorIndustryRecord]:
+    """Return {ticker: CandidateSectorIndustryRecord} keyed on the
+    most-recent ``candidates`` row per ticker with non-empty sector AND
+    non-empty industry. Tickers with no qualifying row map to a record
+    with empty-string sector/industry + ``None`` provenance fields
+    (per migration ``0012_sector_industry.sql`` TEXT NOT NULL DEFAULT
+    '' convention applied to the ABSENT-row case).
+
+    Used by the Phase 14 Sub-bundle 1 V2.G3 backfill helper to repair
+    empty ``trades.sector`` / ``trades.industry`` values on legacy or
+    candidates-rotation cases. Backwards-compat: operator-acknowledged
+    DHA/DHC legacy trades (no qualifying candidates row) return the
+    no-match sentinel; the open-positions template renders em-dash for
+    empty. The provenance fields let the V2.G3 dry-run table cite
+    which historical candidates row supplied each backfill
+    (spec section 4.3 + Codex R1.M#6 LOCK).
+
+    Empty ``tickers`` input returns ``{}`` without executing SQL
+    (CLAUDE.md gotcha #20 runtime-binding-shape + empty-input audit).
+
+    Ordering: most-recent first via
+    ``ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY
+    evaluation_run_id DESC, id DESC)`` -- 1:1 cardinality per
+    cumulative gotcha #18.
+    """
+    if not tickers:
+        return {}
+    placeholders = ",".join("?" * len(tickers))
+    sql = f"""
+        SELECT ticker, sector, industry, id, evaluation_run_id FROM (
+            SELECT
+                c.ticker, c.sector, c.industry, c.id, c.evaluation_run_id,
+                ROW_NUMBER() OVER (
+                    PARTITION BY c.ticker
+                    ORDER BY c.evaluation_run_id DESC, c.id DESC
+                ) AS rn
+            FROM candidates c
+            WHERE c.ticker IN ({placeholders})
+              AND TRIM(c.sector) != ''
+              AND TRIM(c.industry) != ''
+        ) ranked
+        WHERE ranked.rn = 1
+    """
+    out: dict[str, CandidateSectorIndustryRecord] = {}
+    for row in conn.execute(sql, list(tickers)):
+        out[row[0]] = CandidateSectorIndustryRecord(
+            sector=row[1], industry=row[2],
+            candidate_id=row[3], evaluation_run_id=row[4],
+        )
+    for t in tickers:
+        out.setdefault(
+            t,
+            CandidateSectorIndustryRecord(
+                sector="", industry="",
+                candidate_id=None, evaluation_run_id=None,
+            ),
+        )
+    return out
