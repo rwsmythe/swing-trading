@@ -13,8 +13,6 @@ from datetime import date
 
 import pandas as pd
 
-_REQUIRED_OHLCV_COLS = ("Open", "High", "Low", "Close", "Volume")
-
 
 def _usable(bars: pd.DataFrame, *, need: tuple[str, ...]) -> bool:
     """True only if bars is a non-empty frame carrying the needed columns.

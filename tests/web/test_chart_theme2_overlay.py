@@ -19,6 +19,15 @@ def test_flat_base_overlay_reads_repaired_keys():
         window_end_date="2026-05-28", created_at="2026-05-29T00:00:00Z")
     svg = render_theme2_annotated_svg(ticker="AAA", bars=bars, pattern_evaluation=pe)
     assert svg and len(svg) > 0  # renders non-empty with the repaired keys present
+    # DISCRIMINATING: the "duration: N days" label appears ONLY when the
+    # repaired base_duration_days key is read (the annotator isinstance-guards
+    # the .get(), so a missing/renamed key silently skips it while still
+    # rendering non-empty SVG). The "top/bottom of range" axhline labels appear
+    # only when range_top_price/range_bottom_price are read. All three are
+    # provably absent if the repaired keys are not consumed.
+    assert b"duration: 30 days" in svg
+    assert b"top of range" in svg
+    assert b"bottom of range" in svg
 
 
 def test_cup_with_handle_overlay_reads_repaired_keys():

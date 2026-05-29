@@ -2046,6 +2046,23 @@ def _step_pattern_detect(
             nearest_exemplar_ids,
             composite_score,
         ) in resolved_emit_list:
+            # Defensive guard for the cfg-None/no-run-row edge: if the
+            # pipeline_runs lookup returned no row, data_asof_date is None and
+            # build_per_pattern_metadata(..., asof=None) -> date.fromisoformat(
+            # None) would raise at PatternDetectionEvent construction (BEFORE
+            # the insert try/except, so it would propagate uncaught). This path
+            # is test-only/unreachable in production; skip the append for this
+            # verdict and record a warning rather than crash.
+            if data_asof_date is None:
+                if run_warnings is not None:
+                    run_warnings.append({
+                        "step": "pattern_detect", "ticker": ticker,
+                        "pattern_class": pattern_class,
+                        "reason": "data_asof_date unresolved; "
+                                  "detection-event append skipped",
+                    })
+                continue
+
             # Drift-log capture (T-A.3.5 surface).
             try:
                 fdl = capture_feature_distribution(
