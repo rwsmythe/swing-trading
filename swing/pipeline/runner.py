@@ -781,6 +781,13 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
                 from swing.web.ohlcv_cache import OhlcvCache
                 ohlcv_cache = OhlcvCache(cfg)
 
+            # Phase 14 Sub-bundle 2 (FB-N6): run-level structured warnings
+            # accumulator. Steps append {step, reason, ...} dicts (gotcha #27
+            # silent-skip-without-audit). Serialized to the completion
+            # lease.release(warnings_json=...) below (None when empty, not
+            # "[]" -- audit-envelope-empty-state gotcha).
+            run_warnings: list[dict] = []
+
             lease.step("evaluate")
             try:
                 eval_run_id = _step_evaluate(
@@ -855,11 +862,28 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
                     lease=lease,
                     eval_run_id=eval_run_id,
                     ohlcv_cache=ohlcv_cache,
+                    run_warnings=run_warnings,
                 )
             except LeaseRevokedError:
                 raise
             except Exception as exc:
                 log.warning("pattern_detect failed: %s", exc)
+
+            # Phase 14 Sub-bundle 2 (T-2.5): forward-walk observe step. Appends
+            # one pattern_forward_observations row per OPEN detection (today's
+            # bar + lifecycle status). Best-effort failure shape mirrors
+            # _step_pattern_detect (re-raise LeaseRevokedError; log.warning
+            # others). Inserted AFTER pattern_detect, BEFORE schwab_snapshot.
+            lease.step("pattern_observe")
+            try:
+                _step_pattern_observe(
+                    cfg=cfg, lease=lease, ohlcv_cache=ohlcv_cache,
+                    run_warnings=run_warnings,
+                )
+            except LeaseRevokedError:
+                raise
+            except Exception as exc:
+                log.warning("pattern_observe failed: %s", exc)
 
             # Phase 11 Sub-bundle B (T-B.3 + T-B.4 + Codex R1 M#1 + R2 M#1 +
             # R3 M#1 + M#2 fix) — Schwab snapshot + orders pipeline steps
@@ -967,7 +991,10 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
                 # primary value chain (briefing emission). Log + continue. Brief §6.2
                 # watch item 13.
                 log.warning("review_log cadence step failed (continuing): %s", exc)
-            lease.release(state="complete")
+            lease.release(
+                state="complete",
+                warnings_json=(json.dumps(run_warnings) if run_warnings else None),
+            )
         except LeaseRevokedError as exc:
             # Force-cleared mid-run. The pipeline_runs row has already moved to
             # state='force_cleared'; we cannot lease.release() anymore. Just
