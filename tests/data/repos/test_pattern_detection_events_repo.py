@@ -82,6 +82,29 @@ def test_observable_includes_prior_cutoff_with_no_observation_yet(conn):
     assert obs[0].ticker == "AAA"
 
 
+def test_observable_latest_status_anchored_to_observation_date(conn):
+    # A FUTURE observation (from a replay/backfill/rerun) with a TERMINAL status
+    # must NOT drive the latest-status decision AS OF an earlier observation_date.
+    # The `latest` CTE is date-bounded (observation_date <= ?), so a terminal row
+    # dated D2 (> D1) is invisible at D1 -> the detection stays observable at D1.
+    from swing.data.models import PatternForwardObservation
+    from swing.data.repos.pattern_forward_observations import insert_observation
+    with conn:
+        det_id = insert_detection_event(conn, _event(data_asof_date="2026-05-27"))
+        # Future TERMINAL observation dated D2 = 2026-05-30 (> D1 = 2026-05-28).
+        insert_observation(conn, PatternForwardObservation(
+            observation_id=None, detection_id=det_id,
+            observation_date="2026-05-30", status="expired",
+            ohlc_today_json='{"close":1.0,"provider":"yfinance"}',
+            sessions_since_detection=2, created_at="2026-05-30T00:00:00Z",
+            status_change_event="observation_horizon_reached"))
+    # AS OF D1 = 2026-05-28 the future terminal row is invisible -> observable.
+    obs = list_observable_detections(
+        conn, source="pipeline", observation_date="2026-05-28")
+    assert len(obs) == 1
+    assert obs[0].detection_id == det_id
+
+
 def test_repo_defines_no_update_or_delete_functions():
     names = [n for n, o in inspect.getmembers(mod, inspect.isfunction)
              if o.__module__ == mod.__name__]

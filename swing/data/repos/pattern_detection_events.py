@@ -120,11 +120,16 @@ def list_observable_detections(
         cutoff; the forward-walk starts the first COMPLETED session AFTER the
         detector's DATA CUTOFF -- includes the first tradable session, excludes
         same-run detections whose cutoff == observation_date), AND
-      - the MOST-RECENT forward observation has a status in the OPEN set
-        ('pending','triggered_open') OR there is NO observation yet.
+      - the MOST-RECENT forward observation AS OF ``observation_date`` has a
+        status in the OPEN set ('pending','triggered_open') OR there is NO
+        observation yet.
 
     Window function (ROW_NUMBER() OVER PARTITION BY detection_id ORDER BY
-    observation_date DESC) finds the latest status per detection.
+    observation_date DESC) finds the latest status per detection. The ``latest``
+    CTE is date-bounded (``observation_date <= ?``) so a FUTURE observation
+    (from a replay/backfill/rerun) never drives the latest-status decision --
+    latest-status is determined AS OF ``observation_date`` (date-anchored
+    forward-walk model).
     """
     placeholders = ",".join("?" * len(_OPEN_STATUSES))
     sql = f"""
@@ -135,6 +140,7 @@ def list_observable_detections(
                        ORDER BY observation_date DESC, observation_id DESC
                    ) AS rn
             FROM pattern_forward_observations
+            WHERE observation_date <= ?
         )
         SELECT {", ".join("d." + c for c in _COLS.split(", "))}
         FROM pattern_detection_events d
@@ -145,5 +151,5 @@ def list_observable_detections(
           AND (l.status IS NULL OR l.status IN ({placeholders}))
         ORDER BY d.detection_id
     """
-    params = [source, observation_date, *_OPEN_STATUSES]
+    params = [observation_date, source, observation_date, *_OPEN_STATUSES]
     return [_row_to_detection_event(r) for r in conn.execute(sql, params)]
