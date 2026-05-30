@@ -1114,3 +1114,180 @@ def test_position_detail_zone_legend_ascii(ohlc_bars):
         b"reward zone (entry-&gt;target)" in out
         or b"reward zone (entry->target)" in out
     )
+
+
+# ---------------------------------------------------------------------------
+# Codex executing-plans review — FIX 1 (real regression): position-detail
+# fill markers must land on the NEAREST-FORWARD trading bar, not be DROPPED
+# when the fill date has no exact daily bar (weekend / holiday / tz shift).
+# ---------------------------------------------------------------------------
+
+
+def _capture_scatter_x(monkeypatch):
+    """Capture every Axes.scatter call's x list during a render."""
+    import matplotlib.axes
+    calls: list[list] = []
+    real_scatter = matplotlib.axes.Axes.scatter
+
+    def spy_scatter(self, x, y, *args, **kwargs):
+        try:
+            calls.append(list(x))
+        except TypeError:
+            calls.append([x])
+        return real_scatter(self, x, y, *args, **kwargs)
+
+    monkeypatch.setattr(matplotlib.axes.Axes, "scatter", spy_scatter)
+    return calls
+
+
+def test_position_detail_fill_on_non_bar_date_lands_on_next_bar(
+    monkeypatch, ohlc_bars
+):
+    """A fill stamped on a Saturday (no exact daily bar) must be placed on
+    the NEXT trading bar, NOT silently dropped.
+
+    ohlc_bars is business days from 2026-01-02; 2026-01-10 is a Saturday.
+    The next trading bar is Monday 2026-01-12. Pre-fix (exact
+    df.index.get_loc) the KeyError caused the fill to be skipped (zero
+    scatter calls). Post-fix the fill lands on the bar position for
+    2026-01-12.
+    """
+    from swing.web.charts import _normalize_ohlc_for_mpf
+
+    df = _normalize_ohlc_for_mpf(ohlc_bars)
+    # Expected bar index = first bar with date >= 2026-01-10 -> 2026-01-12.
+    expected = next(
+        i for i, ts in enumerate(df.index)
+        if ts.date() >= date(2026, 1, 10)
+    )
+    trade = _make_trade(ticker="BULZ")
+    fills = [
+        _make_fill(action="entry", price=120.50,
+                   fill_datetime="2026-01-10T09:30:00"),  # Saturday
+    ]
+    calls = _capture_scatter_x(monkeypatch)
+    out = render_position_detail_svg(
+        ticker="BULZ", bars=ohlc_bars, trade=trade,
+        fills=fills, current_stop=95.0,
+    )
+    assert isinstance(out, bytes)
+    # Exactly one scatter call (one fill) — NOT dropped.
+    assert len(calls) == 1
+    assert calls[0] == [expected]
+
+
+def test_position_detail_fill_count_equals_fills_on_non_bar_dates(
+    monkeypatch, ohlc_bars
+):
+    """Every fill produces a marker even when none of the fill dates match
+    an exact bar; the marker count equals the number of fills."""
+    trade = _make_trade(ticker="BULZ")
+    fills = [
+        _make_fill(action="entry", price=120.50,
+                   fill_datetime="2026-01-10T09:30:00"),  # Saturday
+        _make_fill(action="trim", price=130.00,
+                   fill_datetime="2026-01-11T10:00:00"),  # Sunday
+    ]
+    calls = _capture_scatter_x(monkeypatch)
+    render_position_detail_svg(
+        ticker="BULZ", bars=ohlc_bars, trade=trade,
+        fills=fills, current_stop=95.0,
+    )
+    assert len(calls) == len(fills)
+
+
+def test_position_detail_fill_past_window_clamps_to_last_bar(
+    monkeypatch, ohlc_bars
+):
+    """A fill dated AFTER the last bar clamps to the last bar position
+    (preserving the pre-candlestick nearest-forward/clamp behavior), NOT
+    dropped."""
+    from swing.web.charts import _normalize_ohlc_for_mpf
+
+    df = _normalize_ohlc_for_mpf(ohlc_bars)
+    last_pos = len(df.index) - 1
+    trade = _make_trade(ticker="BULZ")
+    fills = [
+        _make_fill(action="exit", price=200.0,
+                   fill_datetime="2030-01-01T09:30:00"),  # far future
+    ]
+    calls = _capture_scatter_x(monkeypatch)
+    render_position_detail_svg(
+        ticker="BULZ", bars=ohlc_bars, trade=trade,
+        fills=fills, current_stop=95.0,
+    )
+    assert len(calls) == 1
+    assert calls[0] == [last_pos]
+
+
+def test_position_detail_unparseable_fill_datetime_skipped(
+    monkeypatch, ohlc_bars
+):
+    """A fill whose fill_datetime cannot be parsed is still skipped (parse
+    guard preserved)."""
+    trade = _make_trade(ticker="BULZ")
+    fills = [
+        _make_fill(action="entry", price=120.50,
+                   fill_datetime="not-a-date"),
+    ]
+    calls = _capture_scatter_x(monkeypatch)
+    render_position_detail_svg(
+        ticker="BULZ", bars=ohlc_bars, trade=trade,
+        fills=fills, current_stop=95.0,
+    )
+    assert calls == []
+
+
+# ---------------------------------------------------------------------------
+# FIX 2 (hardening): _normalize_ohlc_for_mpf coerces a non-DatetimeIndex.
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_ohlc_coerces_string_index_to_datetime():
+    """A string/object-indexed frame is coerced to a DatetimeIndex at the
+    barrier (not failing deep in mpf/get_loc later)."""
+    frame = pd.DataFrame(
+        {
+            "Open": [1.0, 2.0, 3.0],
+            "High": [1.0, 2.0, 3.0],
+            "Low": [1.0, 2.0, 3.0],
+            "Close": [1.0, 2.0, 3.0],
+        },
+        index=["2026-05-26", "2026-05-27", "2026-05-28"],
+    )
+    out = _normalize_ohlc_for_mpf(frame)
+    assert isinstance(out.index, pd.DatetimeIndex)
+    assert list(out.index) == sorted(out.index)
+
+
+def test_normalize_ohlc_raises_on_non_datetime_coercible_index():
+    """A non-datetime-coercible index raises OhlcNormalizationError at the
+    barrier rather than a deep mpf error."""
+    frame = pd.DataFrame(
+        {
+            "Open": [1.0, 2.0],
+            "High": [1.0, 2.0],
+            "Low": [1.0, 2.0],
+            "Close": [1.0, 2.0],
+        },
+        index=["alpha", "beta"],
+    )
+    with pytest.raises(OhlcNormalizationError):
+        _normalize_ohlc_for_mpf(frame)
+
+
+# ---------------------------------------------------------------------------
+# FIX 3 (hardening): _render_candles_fig raises a clear error on an MA window
+# that has no _MA_COLORS palette entry (not a bare KeyError deep in render).
+# ---------------------------------------------------------------------------
+
+
+def test_render_candles_fig_raises_clear_error_on_unpinned_ma_window(
+    ohlc_bars,
+):
+    df = _normalize_ohlc_for_mpf(ohlc_bars)
+    assert 30 not in charts._MA_COLORS
+    with pytest.raises(ValueError, match="_MA_COLORS"):
+        _render_candles_fig(
+            df, ma_windows=(30,), figsize=(8, 5), volume=False,
+        )

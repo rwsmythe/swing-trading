@@ -285,6 +285,18 @@ def _normalize_ohlc_for_mpf(bars: pd.DataFrame) -> pd.DataFrame:
             )
     df = df.rename(columns=rename)
 
+    # (b2) coerce a non-DatetimeIndex to datetime BEFORE the sort/dedup/tz
+    # steps. mplfinance assumes a DatetimeIndex; an object/string index would
+    # otherwise fail in a deep mpf / get_loc error. Surface it here as a typed
+    # ASCII error instead.
+    if not isinstance(df.index, pd.DatetimeIndex):
+        try:
+            df.index = pd.to_datetime(df.index)
+        except (ValueError, TypeError) as exc:
+            raise OhlcNormalizationError(
+                "OHLC index is not datetime-coercible"
+            ) from exc
+
     # (c) sort ascending.
     df = df.sort_index()
 
@@ -317,6 +329,25 @@ def _x_for_date(price_ax: Any, df: pd.DataFrame, target_date: Any) -> int:
     single place coupled to mpf's coordinate convention.
     """
     return int(df.index.get_loc(pd.Timestamp(target_date)))
+
+
+def _x_for_fill_date(df: pd.DataFrame, fill_date: date) -> int:
+    """Nearest-forward-bar position for a FILL date on mpf's positional x-axis.
+
+    Preserves the pre-candlestick behavior: fills on a non-trading-day /
+    holiday / tz-shifted date (no exact daily bar) land on the NEXT trading
+    bar, not dropped. Returns the first position ``i`` in ``df.index`` whose
+    date is ``>= fill_date``; clamps to the last bar (``len - 1``) when the
+    fill date is past the window. ``df`` MUST be the SAME normalized frame
+    passed to :func:`_render_candles_fig`.
+
+    NOTE: this is the FILL-marker placement rule ONLY. Exact-date overlays
+    (the pattern_evaluation window band) keep using :func:`_x_for_date`.
+    """
+    return next(
+        (i for i, ts in enumerate(df.index) if ts.date() >= fill_date),
+        len(df.index) - 1,
+    )
 
 
 def _resolve_volume_ax(fig: Any, price_ax: Any) -> Any:
@@ -386,6 +417,11 @@ def _render_candles_fig(
 
     addplots = []
     for window in ma_windows:
+        if window not in _MA_COLORS:
+            raise ValueError(
+                f"no _MA_COLORS entry for MA window {window}; add it to "
+                "the palette"
+            )
         if window > len(close):
             continue
         sma = close.rolling(window).mean()
@@ -597,19 +633,17 @@ def render_position_detail_svg(
         volume=True,
     )
 
-    # Fill markers (one per Fill row); positioned at the fill date via the
-    # NORMALIZED df. Guard parse / off-window errors per-fill so a malformed
-    # or out-of-window fill doesn't crash the renderer; an in-window valid
-    # fill is never silently lost.
+    # Fill markers (one per Fill row); positioned via NEAREST-FORWARD-bar
+    # placement on the NORMALIZED df (:func:`_x_for_fill_date`). A fill on a
+    # non-trading-day / holiday / tz-shifted date lands on the next trading
+    # bar (clamped to the last bar if past the window), NOT dropped. Only a
+    # fill whose fill_datetime can't be parsed at all is skipped.
     for fill in fills:
         try:
             fill_date = date.fromisoformat(fill.fill_datetime[:10])
         except (ValueError, TypeError, AttributeError):
             continue
-        try:
-            x = _x_for_date(price_ax, df, fill_date)
-        except (KeyError, ValueError, TypeError):
-            continue
+        x = _x_for_fill_date(df, fill_date)
         marker = {"entry": "^", "exit": "v", "trim": "v", "stop": "x"}.get(
             fill.action, "o",
         )
