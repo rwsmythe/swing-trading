@@ -53,9 +53,17 @@ def _synthetic_ohlcv() -> pd.DataFrame:
     weekend + Monday-holiday + DST-transition + clock-skew between fixture
     creation and runner invocation).
     """
-    closes = [100.0 + i * 0.5 for i in range(260)]
+    # Build the business-day index FIRST, then derive the close series from
+    # ``len(idx)`` so the value arrays always match the index length. Prior
+    # form hard-coded ``range(260)`` then passed ``periods=260``; when the
+    # dynamic ``end`` lands on a weekend, ``pd.bdate_range(end=<Sat>,
+    # periods=260)`` yields 259 rows, so a 260-len ``closes`` raised
+    # ``ValueError: Length of values (260) does not match length of index
+    # (259)`` (date-sensitive: passed on a Fri-ending window, failed on a
+    # Sat-ending one). Deriving the arrays from ``len(idx)`` is alignment-proof.
     end_date = (datetime.now() + timedelta(days=7)).date()
-    idx = pd.bdate_range(end=end_date, periods=len(closes))
+    idx = pd.bdate_range(end=end_date, periods=260)
+    closes = [100.0 + i * 0.5 for i in range(len(idx))]
     return pd.DataFrame({
         "Open": closes,
         "High": [c * 1.01 for c in closes],
