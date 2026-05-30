@@ -60,7 +60,7 @@ Older strategy documents are archived at `reference/Future Work/archive/`.
 - **Branch:** all work on `main` (established for this project).
 - **Commits:** conventional (`feat(web):`, `fix(web):`, `refactor(...)`, `test(...)`). **No Claude co-author footer, no `--no-verify`.**
 - **TDD:** write failing test → see fail → minimal implementation → see pass → commit, per task.
-- **copowers workflow:** `copowers:brainstorming` → `copowers:writing-plans` → `copowers:executing-plans` (wraps `subagent-driven-development`). Each adds adversarial Codex MCP review (2–5 rounds) before approval. Session state in `.copowers-session-*.json` at project root.
+- **copowers workflow:** `copowers:brainstorming` → `copowers:writing-plans` → `copowers:executing-plans` (wraps `subagent-driven-development`). Each adds an adversarial Codex review **run to convergence** (zero new crit/major; the old 5-round cap is suspended for this project — memory `feedback_codex_round_limit_suspended`) before approval. **Codex transport:** the MCP `codex`/`codex-reply` tools are DEAD in the VS Code extension (hardcoded ~1s `MCP_CONNECTION_NONBLOCKING` deadline; not fixable from our side). copowers is GitHub-sourced (`copowers@copowers`, v2.0.2+) and auto-routes to a **WSL Codex CLI fallback** that reads the repo from disk (memory `feedback_copowers_codex_mcp_windows_launcher`). Session state in `.copowers-session-*.json` at project root.
 - **Starlette 1.0 signature:** `TemplateResponse(request, "name", {...}, status_code=...)`.
 - **TestClient lifespan:** tests touching `app.state.price_fetch_executor` MUST use `with TestClient(app) as client:` (enters lifespan).
 
