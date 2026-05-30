@@ -17,12 +17,19 @@ row 10 (un-skipped at T-A.6.7 closer).
 from __future__ import annotations
 
 import json
+from datetime import date
 
+import matplotlib.pyplot as plt
 import pandas as pd
 import pytest
 
+import swing.web.charts as charts
 from swing.data.models import Fill, PatternEvaluation, Trade
 from swing.web.charts import (
+    OhlcNormalizationError,
+    _normalize_ohlc_for_mpf,
+    _render_candles_fig,
+    _x_for_date,
     render_market_weather_svg,
     render_position_detail_svg,
     render_theme2_annotated_svg,
@@ -423,18 +430,6 @@ def test_ticker_detail_title_is_neutral_no_surface_descriptor():
 # ===========================================================================
 # Phase 14 SB3 T-3.2 — shared mplfinance candlestick infrastructure tests.
 # ===========================================================================
-
-from datetime import date  # noqa: E402
-
-import matplotlib.pyplot as plt  # noqa: E402
-
-import swing.web.charts as charts  # noqa: E402
-from swing.web.charts import (  # noqa: E402
-    OhlcNormalizationError,
-    _normalize_ohlc_for_mpf,
-    _render_candles_fig,
-    _x_for_date,
-)
 
 
 # ---------------------------------------------------------------------------

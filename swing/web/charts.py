@@ -472,51 +472,61 @@ def render_ticker_detail_svg(
     *, ticker: str, bars: pd.DataFrame,
     pattern_evaluation: PatternEvaluation | None = None,
 ) -> bytes:
-    _assert_ticker_safe(ticker)
-    close = _close_series(bars)
-    volume = _volume_series(bars)
+    """Phase 14 SB3 T-3.2 (§C.2): 800x500 candlestick detail chart.
 
-    fig, (ax_price, ax_vol) = plt.subplots(
-        nrows=2, ncols=1,
+    Candlesticks (volume=True) with the uniform MA palette (10/20/50/150/200)
+    via the shared :func:`_render_candles_fig` builder. Optional
+    ``pattern_evaluation`` paints a window band using NORMALIZED positions
+    via :func:`_x_for_date`. The suptitle stays neutral + caller-agnostic
+    (the single cached ticker_detail row is read by both the hyp-rec-expand
+    and watchlist-expand callers).
+    """
+    _assert_ticker_safe(ticker)
+    # Normalize ONCE; pass the SAME df to the figure builder AND every
+    # _x_for_date call (mpf positional-x coupling discipline).
+    df = _normalize_ohlc_for_mpf(bars)
+    close = _close_series(df)
+
+    fig, price_ax, vol_ax = _render_candles_fig(
+        df,
+        ma_windows=(10, 20, 50, 150, 200),
         figsize=_figsize_inches(_TICKER_DETAIL_SIZE_PX),
-        gridspec_kw={"height_ratios": [3, 1]},
-        sharex=True,
+        volume=True,
     )
-    ax_price.plot(range(len(close)), close.values, color="#1f77b4",
-                  linewidth=1.0, label="Close")
-    for window, color in ((50, "#ff7f0e"), (150, "#2ca02c"), (200, "#d62728")):
-        if window <= len(close):
-            sma = close.rolling(window).mean()
-            ax_price.plot(range(len(sma)), sma.values, color=color,
-                          linewidth=0.8, alpha=0.8,
-                          label=f"MA{window}")
+
     if pattern_evaluation is not None:
-        # Pattern window boundaries as vertical band.
+        # Pattern window boundaries as a vertical band (positions via the
+        # normalized df, NOT raw bars).
         try:
-            window_start = bars.index.get_loc(
-                pd.Timestamp(pattern_evaluation.window_start_date)
+            window_start = _x_for_date(
+                price_ax, df, pattern_evaluation.window_start_date,
             )
         except (KeyError, TypeError):
             window_start = None
         try:
-            window_end = bars.index.get_loc(
-                pd.Timestamp(pattern_evaluation.window_end_date)
+            window_end = _x_for_date(
+                price_ax, df, pattern_evaluation.window_end_date,
             )
         except (KeyError, TypeError):
             window_end = None
         if window_start is not None and window_end is not None:
-            ax_price.axvspan(window_start, window_end,
+            price_ax.axvspan(window_start, window_end,
                              color="#ffeb3b", alpha=0.2,
                              label="pattern window")
-    if len(volume) > 0:
-        ax_vol.bar(range(len(volume)), volume.values, color="#888")
-    # Phase 13 T-T4.SB.5 Item 3: strip volume y-tick labels (ylabel preserved).
-    ax_vol.set_yticks([])
-    ax_price.legend(loc="upper left", fontsize=8)
-    ax_price.set_ylabel("Price (USD)")
-    ax_vol.set_ylabel("Volume")
+
+    # Legend only when there are labeled artists (the candles + MA addplots
+    # are unlabeled; the optional pattern-window band carries a label).
+    handles, _labels = price_ax.get_legend_handles_labels()
+    if handles:
+        price_ax.legend(loc="upper left", fontsize=8)
+    price_ax.set_ylabel("Price (USD)")
     _assert_ascii_only("Price (USD)", field="ylabel_price")
-    _assert_ascii_only("Volume", field="ylabel_vol")
+    if vol_ax is not None:
+        vol_ax.set_ylabel("Volume")
+        _assert_ascii_only("Volume", field="ylabel_vol")
+    # KEEP the neutral, caller-agnostic suptitle. mpf renders `title=` as
+    # fig.suptitle; we suppress mpf's title (none passed) and set our own
+    # via _set_suptitle_no_math to avoid a duplicate suptitle.
     _set_suptitle_no_math(fig, f"{ticker} | last {len(close)} bars")
     return _svg_bytes_from_fig(fig)
 
@@ -738,15 +748,16 @@ def render_theme2_annotated_svg(
     embedding inline SVG-in-SVG (deferred to V2 per spec §C.6).
     """
     _assert_ticker_safe(ticker)
-    close = _close_series(bars)
-    fig, ax = plt.subplots(figsize=_figsize_inches(_THEME2_ANNOTATED_SIZE_PX))
-    ax.plot(range(len(close)), close.values, color="#1f77b4",
-            linewidth=1.0, label="Close")
-    for window, color in ((50, "#ff7f0e"), (150, "#2ca02c"), (200, "#d62728")):
-        if window <= len(close):
-            sma = close.rolling(window).mean()
-            ax.plot(range(len(sma)), sma.values, color=color,
-                    linewidth=0.6, alpha=0.7, label=f"MA{window}")
+    # Phase 14 SB3 T-3.2 (§C.5): candlesticks with volume=False so the
+    # single-axis _annotate_* layout is preserved. Normalize ONCE; pass the
+    # SAME df to the figure builder AND every _x_for_date call.
+    df = _normalize_ohlc_for_mpf(bars)
+    fig, ax, _vol_ax = _render_candles_fig(
+        df,
+        ma_windows=(10, 20, 50, 150, 200),
+        figsize=_figsize_inches(_THEME2_ANNOTATED_SIZE_PX),
+        volume=False,
+    )  # _vol_ax is None
 
     pattern_class = pattern_evaluation.pattern_class
     try:
@@ -760,16 +771,16 @@ def render_theme2_annotated_svg(
         ctx = _AnnotationContext(pattern_class=pattern_class, evidence=evidence)
         annotator(ax, ctx, bars)
 
-    # Pattern window vertical band.
+    # Pattern window vertical band (positions via the normalized df).
     try:
-        window_start = bars.index.get_loc(
-            pd.Timestamp(pattern_evaluation.window_start_date)
+        window_start = _x_for_date(
+            ax, df, pattern_evaluation.window_start_date,
         )
     except (KeyError, TypeError):
         window_start = None
     try:
-        window_end = bars.index.get_loc(
-            pd.Timestamp(pattern_evaluation.window_end_date)
+        window_end = _x_for_date(
+            ax, df, pattern_evaluation.window_end_date,
         )
     except (KeyError, TypeError):
         window_end = None
@@ -784,7 +795,11 @@ def render_theme2_annotated_svg(
                 transform=ax.transAxes, fontsize=7, color="#555",
                 ha="right")
 
-    ax.legend(loc="upper left", fontsize=7)
+    # Legend only when an annotator added labeled artists (some annotators
+    # emit only ax.text overlays with no legend handle).
+    handles, _labels = ax.get_legend_handles_labels()
+    if handles:
+        ax.legend(loc="upper left", fontsize=7)
     ax.set_ylabel("Price (USD)")
     # Per L7 LOCK: pattern-class slugs like flat_base / cup_with_handle /
     # high_tight_flag / double_bottom_w contain ``_`` and MUST NOT flow
