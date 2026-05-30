@@ -281,6 +281,118 @@ def test_render_theme2_annotated_svg_double_bottom_w():
 
 
 # ---------------------------------------------------------------------------
+# Phase 14 SB3 T-3.5 (plan §C.5a) — S6 annotation reposition. The
+# `_annotate_*` body-text stack moved from the upper-LEFT (x=0.02, colliding
+# with the upper-left legend) to the upper-RIGHT edge (x=0.98, ha="right"),
+# co-located with the right-aligned pattern slug + exemplar footnote. These
+# tests capture each ``ax.text`` call's (x, y, ha) by monkeypatching
+# ``matplotlib.axes.Axes.text`` so they pin coordinates, not just the
+# rendered string.
+# ---------------------------------------------------------------------------
+
+# Annotation body strings the `_annotate_*` family emits — used to filter the
+# captured ax.text calls down to the annotate family (excluding the slug,
+# footnote, and watchlist ticker badge).
+_ANNOTATE_BODY_PREFIXES = (
+    "contraction ", "duration: ", "depth ratio: ",
+    "days tight: ", "pole advance: ", "undercut: ",
+)
+
+
+def _capture_annotate_text_coords(monkeypatch, *, pattern, evidence):
+    """Render render_theme2_annotated_svg for ``pattern`` and capture each
+    ``ax.text`` call as (x, y, ha, body), filtered to the _annotate_* family.
+
+    Returns a list of (x, y, ha) tuples for the body-text annotations the
+    per-pattern annotator emitted.
+    """
+    import matplotlib.axes
+
+    captured: list[tuple] = []
+    real_text = matplotlib.axes.Axes.text
+
+    def spy_text(self, *args, **kwargs):
+        if len(args) >= 3:
+            x, y, body = args[0], args[1], args[2]
+            if isinstance(body, str) and any(
+                body.startswith(p) for p in _ANNOTATE_BODY_PREFIXES
+            ):
+                captured.append((x, y, kwargs.get("ha"), body))
+        return real_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(matplotlib.axes.Axes, "text", spy_text)
+    bars = _make_bars(150)
+    pe = _make_pattern_eval(
+        pattern_class=pattern, structural_evidence=evidence, bars=bars,
+    )
+    render_theme2_annotated_svg(
+        ticker="ABC", bars=bars, pattern_evaluation=pe,
+    )
+    return captured
+
+
+def test_theme2_annotation_text_anchored_upper_right_not_upper_left(monkeypatch):
+    captured = _capture_annotate_text_coords(
+        monkeypatch, pattern="flat_base",
+        evidence={
+            "range_top_price": 130.0, "range_bottom_price": 118.0,
+            "base_duration_days": 28,
+        },
+    )
+    assert captured, "expected at least one _annotate_* body text"
+    assert all(x >= 0.9 for (x, _y, _ha, _b) in captured)
+    assert all(ha == "right" for (_x, _y, ha, _b) in captured)
+
+
+def test_theme2_flat_base_duration_text_ascii(monkeypatch):
+    captured = _capture_annotate_text_coords(
+        monkeypatch, pattern="flat_base",
+        evidence={
+            "range_top_price": 130.0, "range_bottom_price": 118.0,
+            "base_duration_days": 28,
+        },
+    )
+    bodies = [b for (_x, _y, _ha, b) in captured]
+    assert any(b.startswith("duration: ") for b in bodies)
+    for b in bodies:
+        b.encode("ascii")  # raises UnicodeEncodeError on non-ASCII
+
+
+def test_theme2_annotation_stack_descends_from_092(monkeypatch):
+    captured = _capture_annotate_text_coords(
+        monkeypatch, pattern="vcp",
+        evidence={
+            "pivot_price": 130.0,
+            "contractions": [
+                {"depth_pct": 15.0},
+                {"depth_pct": 10.0},
+                {"depth_pct": 6.0},
+            ],
+        },
+    )
+    ys = [y for (_x, y, _ha, _b) in captured]
+    assert len(ys) == 3
+    # Stack starts at 0.92 and descends by 0.05 per line.
+    assert ys == pytest.approx([0.92, 0.87, 0.82])
+    assert all(x >= 0.9 for (x, _y, _ha, _b) in captured)
+
+
+def test_theme2_high_tight_flag_second_line_at_087(monkeypatch):
+    captured = _capture_annotate_text_coords(
+        monkeypatch, pattern="high_tight_flag",
+        evidence={
+            "consolidation_duration_days": 21,
+            "pole_pct": 105.5,
+        },
+    )
+    by_body = {b.split(":")[0]: (x, y, ha) for (x, y, ha, b) in captured}
+    assert by_body["days tight"][1] == pytest.approx(0.92)
+    assert by_body["pole advance"][1] == pytest.approx(0.87)
+    assert all(x >= 0.9 for (x, _y, _ha) in by_body.values())
+    assert all(ha == "right" for (_x, _y, ha) in by_body.values())
+
+
+# ---------------------------------------------------------------------------
 # Cross-bundle pin (plan §H.3 row 10) — shared renderer handles 5 V1 patterns.
 # ---------------------------------------------------------------------------
 

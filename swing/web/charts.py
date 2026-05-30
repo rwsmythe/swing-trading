@@ -757,9 +757,10 @@ def _annotate_vcp(ax: Any, ctx: _AnnotationContext, bars: pd.DataFrame) -> None:
             if not isinstance(depth, (int, float)):
                 continue
             ax.text(
-                0.02, 0.92 - i * 0.05,
+                0.98, 0.92 - i * 0.05,
                 f"contraction {i + 1}: {depth:.1f}pct",
                 transform=ax.transAxes, fontsize=8, color="#222",
+                ha="right",
             )
 
 
@@ -777,8 +778,9 @@ def _annotate_flat_base(
                    linewidth=0.8, alpha=0.7, label="bottom of range")
     duration = ctx.evidence.get("base_duration_days")
     if isinstance(duration, int):
-        ax.text(0.02, 0.92, f"duration: {duration} days",
-                transform=ax.transAxes, fontsize=8, color="#222")
+        ax.text(0.98, 0.92, f"duration: {duration} days",
+                transform=ax.transAxes, fontsize=8, color="#222",
+                ha="right")
 
 
 def _annotate_cup_with_handle(
@@ -787,8 +789,9 @@ def _annotate_cup_with_handle(
     """CWH: cup edges + handle markers + depth ratio."""
     depth = ctx.evidence.get("cup_depth_pct")
     if isinstance(depth, (int, float)):
-        ax.text(0.02, 0.92, f"depth ratio: {depth:.2f}",
-                transform=ax.transAxes, fontsize=8, color="#222")
+        ax.text(0.98, 0.92, f"depth ratio: {depth:.2f}",
+                transform=ax.transAxes, fontsize=8, color="#222",
+                ha="right")
     cup_bottom = ctx.evidence.get("cup_bottom_price")
     if isinstance(cup_bottom, (int, float)):
         ax.axhline(float(cup_bottom), color="#9467bd", linestyle=":",
@@ -801,12 +804,14 @@ def _annotate_high_tight_flag(
     """HTF: pole markers + consolidation box + days-tight."""
     days_tight = ctx.evidence.get("consolidation_duration_days")
     if isinstance(days_tight, int):
-        ax.text(0.02, 0.92, f"days tight: {days_tight}",
-                transform=ax.transAxes, fontsize=8, color="#222")
+        ax.text(0.98, 0.92, f"days tight: {days_tight}",
+                transform=ax.transAxes, fontsize=8, color="#222",
+                ha="right")
     pole_pct = ctx.evidence.get("pole_pct")
     if isinstance(pole_pct, (int, float)):
-        ax.text(0.02, 0.86, f"pole advance: {pole_pct:.1f}pct",
-                transform=ax.transAxes, fontsize=8, color="#222")
+        ax.text(0.98, 0.87, f"pole advance: {pole_pct:.1f}pct",
+                transform=ax.transAxes, fontsize=8, color="#222",
+                ha="right")
 
 
 def _annotate_double_bottom_w(
@@ -824,8 +829,9 @@ def _annotate_double_bottom_w(
                        linewidth=0.8, alpha=0.7, label=label)
     undercut = ctx.evidence.get("undercut")
     if isinstance(undercut, bool) and undercut:
-        ax.text(0.02, 0.92, "undercut: yes",
-                transform=ax.transAxes, fontsize=8, color="#222")
+        ax.text(0.98, 0.92, "undercut: yes",
+                transform=ax.transAxes, fontsize=8, color="#222",
+                ha="right")
 
 
 _ANNOTATORS = {
