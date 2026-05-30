@@ -8,6 +8,28 @@
 
 ---
 
+## 2026-05-30 Phase 14 Sub-bundle 3 (chart-surface uniformity) WRITING-PLANS SHIPPED at `4fa20dd` -- plan 1311 lines (§A-§N; T-3.1..T-3.6); Codex single chain CONVERGED R4; 11 OQs operator-LOCKed; 51st cumulative C.C lesson #6 NOTABLE; **ORCHESTRATOR HANDOFF at this boundary (33% context); executing-plans dispatch is the next action** (see `docs/phase14-sub-bundle-3-executing-plans-handoff.md`)
+
+**Sub-bundle 3 writing-plans SHIPPED 2026-05-30** at merge `4fa20dd` of `phase14-sub-bundle-3-chart-surface-uniformity-writing-plans` via `--no-ff`. 3 branch commits (draft `65b6423` + Codex R1-R4 `c3207b4` + return report `af08b4b`) + merge. Plan 1311 lines + return report (15 items). Docs-only; ZERO swing/ + tests/ writes; Schema v22 LOCKED (no v23 `.sql` at writing-plans -- v23 DESIGNED, applied at executing-plans); L2 LOCK preserved. ZERO Co-Authored-By (`%(trailers)` empty all 3 + merge). Merge-base `69efa80`; branch HEAD `c3207b4`.
+
+**Codex single chain (OQ-chain LOCK) CONVERGED R4:** R1 0C/12M/3m -> R2 0C/6M/2m -> R3 0C/2M/1m -> R4 NO_NEW_CRITICAL_MAJOR (0/0/0). 0C/20M/6m cumulative; ALL resolved in-place; ZERO accepted-without-fix. Ran via `codex exec` CLI + `resume --last` backstop (MCP off-purview -- operator investigating separately). All 11 §1.3 OQ dispositions + Sec 9.1 + L1-L7 reverified per task (§E). Pinned at writing-plans: the Okabe-Ito MA palette + the S6 reserved-region map + the per-renderer binding visual-gate runbook (§I).
+
+**Two production corrections (orchestrator-verified at QA; re-grep at `69efa80`):** (1) the spec's cited `current_stage` caller `review_form.py:454` does NOT exist -- `current_stage` is defined at `swing/patterns/foundation.py:745`, signature `current_stage(conn, ticker, asof_date: date)`, returns only `stage_2`/`undefined` in V1; (2) the dashboard reads `market_weather` from cache only (no live JIT caller), so the `chart_jit` `stage_2` default is dead/defensive -> fixed to honest `undefined`; **P14.N8's 3 sites became 2 live + 1 defensive**. **BULZ target** field verified = `Trade.planned_target_R` (line 253; NO absolute `target_price`); the plan derives `target = entry_price + planned_target_R*(entry_price - initial_stop)` anchored on the locked `trade.entry_price` -- **the avg-fill->locked-entry change is an OPERATOR-SURFACED V1 simplification deviating from spec §7; CONFIRM at the executing-plans visual gate.**
+
+**ORCHESTRATOR HANDOFF (this pass):** prior orchestrator at 33% context; operator chose "merge + housekeep now, then hand off" (2026-05-30). Clean boundary = SB3 writing-plans SHIPPED. **Next orchestrator's first action: author the SB3 executing-plans dispatch brief** (mirror `docs/phase14-sub-bundle-2-temporal-log-executing-plans-dispatch-brief.md`; consume plan §G T-3.1..T-3.6 + the 11 OQ LOCKs + the per-renderer visual-gate runbook §I + the BULZ entry-anchor confirm-item + the 2 production corrections) then drive the executing-plans cycle. Full handoff context: `docs/phase14-sub-bundle-3-executing-plans-handoff.md`.
+
+**Forward action sequence (orchestrator-side; THIS pass)**:
+
+- [x] QA per `feedback_orchestrator_qa_implementer_product` (3-commit ZERO Co-Authored-By; docs-only; 2 production corrections verified -- `current_stage` at foundation.py:745, BULZ `planned_target_R` at models.py:253; Sec 9.1 + L1-L7 + 11 OQ LOCKs + v23-designed verified)
+- [x] Merge `--no-ff` at `4fa20dd` + push origin/main + worktree + branch teardown
+- [x] phase3e-todo new top entry + CLAUDE.md line-3 refresh (WRITING-PLANS SHIPPED; handoff boundary; ~624+ streak)
+- [x] Orchestrator handoff brief authored at `docs/phase14-sub-bundle-3-executing-plans-handoff.md` + paste-ready prompt provided
+- [ ] **[NEW ORCHESTRATOR] Sub-bundle 3 executing-plans dispatch brief authoring** + inline prompt
+- [ ] Sub-bundle 3 executing-plans ship + QA + per-renderer operator-witnessed visual gate (v23 applied + candlestick/BULZ/weather visuals) + merge + housekeeping
+- [ ] Sub-bundles 4-5 per Sec 9.1 Q1+Q2 serial sequence, then Phase 14 close-out review (Sec 9.1 Q6: all 5 merged + operator browser-witnessed)
+
+---
+
 ## 2026-05-29 #5 Phase 14 Sub-bundle 3 (chart-surface uniformity) BRAINSTORM SHIPPED at `f16735f` -- spec 494 lines (§1-§15); Codex single chain CONVERGED R3 NO_NEW_CRITICAL_MAJOR; 50th cumulative C.C lesson #6 validation NOTABLE; 3 brief-vs-production corrections verified at QA; ~8 OQs + section-2 OD recommendations for writing-plans operator triage; writing-plans dispatch NEXT
 
 **Sub-bundle 3 brainstorm SHIPPED 2026-05-29 #5** at merge `f16735f` of `phase14-sub-bundle-3-chart-surface-uniformity-brainstorming` via `--no-ff`. 3 branch commits (draft `cddb54f` + R1+R2 `d5fda78` + return report `18ca168`) + merge. Spec 494 lines + return report (15 items). Docs-only; ZERO swing/ + tests/ writes; Schema v22 LOCKED (no v23 `.sql` at brainstorm -- v23 DESIGNED, applied at executing-plans); L2 LOCK preserved. ZERO Co-Authored-By (`%(trailers)` empty all 3 branch commits + merge). Merge-base `fd59ece`; branch HEAD `18ca168`.
