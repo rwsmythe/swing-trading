@@ -275,17 +275,16 @@ contradiction between R1 M#1 and R1 M#12).** The "ZERO new `chart_renders`
 rows" claim is precise per surface class:
 - **Closed-trade surfaces (CR.1 chart, journal thumbnail, journal drill-down):**
   render-direct; touch `chart_renders` not at all (zero reads, zero writes).
-- **Open-position BULZ row-expand (§6):** reuses the EXISTING `position_detail`
-  cache that `build_trade_detail_vm` ALREADY populates for the same open trade.
-  SB4 adds no new surface enum, key, column, or migration. The row-expand is a
-  new *reader*; the existing JIT write-through (DELETE-then-INSERT of the SAME
-  ticker-keyed `position_detail` row) is pre-existing behavior the trade-detail
-  page already performs -- NOT a new row type and NOT a new write path. To keep
-  the "read-mostly" claim airtight, §6 specifies read-first via
-  `get_cached_chart_svg` with the JIT write-through as the identical fallback
-  the trade-detail page uses. So: no NEW chart_renders rows of any new
-  kind; the only `chart_renders` write is the pre-existing open-trade
-  `position_detail` refresh, unchanged by SB4.
+- **Open-position BULZ row-expand (§6):** reads the EXISTING `position_detail`
+  cache via the SAME read-only call `build_trade_detail_vm` uses
+  (`get_cached_chart_svg(conn, ticker=, surface='position_detail',
+  pipeline_run_id=None)`, `trades.py:1771` -- verified read-only, NO JIT, NO
+  write-through). SB4 adds no new surface enum, key, column, or migration, and
+  the row-expand performs **ZERO `chart_renders` writes** -- it is purely a new
+  *reader* of the cache the pipeline `_step_charts` already refreshes each run.
+  So ALL of SB4 is write-free against `chart_renders`. (Correction to an
+  earlier draft that implied a JIT write-through fallback: `build_trade_detail_vm`
+  does not JIT; the row-expand mirrors that exactly.)
 
 ### §4.2 Chart snapshot -- the trade-window render-direct helper
 
@@ -348,6 +347,25 @@ A cross-request memo is permitted ONLY with a *deterministic fingerprint over
 ALL render-affecting trade + fill fields* (a cheap hash), never a partial
 token. The spec forbids both a bare `trade_id` memo AND a partial-token memo.
 
+**matplotlib renders MUST be serialized (Codex R3 M#2).** `swing/web/charts.py`
+uses pyplot GLOBAL state (`matplotlib.pyplot as plt`, `mpf.plot(...)`,
+`plt.subplots(...)`, `plt.close(fig)`) -- which is NOT thread-safe -- and there
+is NO existing render lock today. A single concurrent chart request is a latent
+risk already; the journal listing's up-to-`page_size` lazy thumbnail renders
+make it acute. Resolution: SB4 introduces a **process-wide matplotlib render
+lock (a module-level `threading.Lock` / semaphore of 1)** that every SB4 render
+path (CR.1 chart, journal thumbnail, drill-down chart) acquires around the
+`charts.py` render call. This simultaneously (a) fixes the pyplot thread-safety
+hazard and (b) is the "explicit render-concurrency bound" R2 M#2 called for --
+the two concerns unify into one lock. Consequence: thumbnails render
+sequentially behind the lock (~250ms each warm); the lazy-load (async per row)
+means the browser is never blocked -- renders trickle in -- and the
+freshness/request memo + pagination keep the queue bounded. If the
+writing-plans phase instead PROVES the SB3 renderers are fully figure-local /
+Agg-safe (OO `Figure`/`FigureCanvasAgg`, no pyplot global state), the lock may
+be relaxed to a pure load bound -- but the pyplot evidence above says assume
+serialize until proven otherwise.
+
 **No-coverage is a first-class state (Codex R1 M#6):** a journal explicitly
 invites historical browsing, so a trade older than the ~5y archive depth is NOT
 a rare edge case to wave away. When `_trade_window_bars` returns `None`
@@ -402,7 +420,13 @@ embedded HTMX control, §8); (d) direct (non-HX) browser access returns the same
 fragment harmlessly. **`Cache-Control` (m#3):** these endpoints serve trading
 data -> set `private, max-age=<short>` (browser-private only; never a
 shared/proxy cache). Low-risk on a single-operator localhost app, but specified
-explicitly rather than left to framework default.
+explicitly rather than left to framework default. **(Codex R3 m#1/m#2)** the
+`200 + chart-unavailable` fallback must NOT hide regressions: every exception
+fallback logs a structured WARNING with context (trade_id, ticker, window,
+exception), and a missing-trade (404 row) is distinguished in BOTH the fragment
+text ("trade not found" vs "chart unavailable") and the log, so broken
+drill-down links remain detectable even though the browser-visible response
+stays non-blank.
 
 ### §4.4 ASCII / mathtext (L5)
 
@@ -613,11 +637,21 @@ because the row only exists for OPEN trades (`open_position_expand` 404s
 closed trades, `routes/trades.py:2556-2582`): the trailing-today window and
 ticker-only key are both correct for an open position. Plumb
 `position_chart_svg_bytes: bytes | None` onto `OpenPositionsExpandedVM`,
-populated in `build_open_positions_expanded` via
-`chart_jit.get_or_render_surface(surface='position_detail', ticker=,
-pipeline_run_id=None, trade=, fills=, current_stop=, data_asof_date=,
-ohlcv_cache=)` -- the SAME path `build_trade_detail_vm` uses (`trades.py:1771`),
-keeping renderer-kwargs uniform (Expansion #10c; cache-collision-free).
+populated in `build_open_positions_expanded` via the SAME read-only call
+`build_trade_detail_vm` uses: `get_cached_chart_svg(conn, ticker=trade.ticker,
+surface='position_detail', pipeline_run_id=None)` (`trades.py:1771`).
+
+**Freshness = identical to the trade-detail page (Codex R3 M#1).** This is a
+plain read of the run-agnostic `position_detail` row that the pipeline
+`_step_charts` refreshes each run; the row-expand inherits EXACTLY the
+trade-detail page's freshness semantics (both read the same row; both can lag
+intraday fills/stop changes until the next pipeline run). SB4 introduces **no
+new staleness** -- it makes the row-expand CONSISTENT with the already-shipped
+trade-detail page, which is the desired outcome (the operator currently sees a
+stale static PNG; after SB4 they see the same SVG the detail page shows). There
+is deliberately NO JIT re-render here (that would be a write); if the cache row
+is absent the row-expand shows the chart-unavailable state, exactly as the
+detail page does.
 
 Template (SVG INSIDE the existing `<td colspan="10">`, fragment still leads
 with `<tr>` per the synthetic-table-wrap rule -- gotcha preserved):
@@ -844,7 +878,9 @@ lockout of caching/schema work:
   under ~500ms warm. **Evidence that trips the v24 escalation:** the operator
   perceiving sluggishness at the gate, OR a measured warm median exceeding the
   budget at their trade count. Cold-archive first-loads (post-weekly-refresh
-  yfinance fetch) are exempt from the budget (one-off).
+  yfinance fetch) are exempt from the budget (one-off). **(Codex R3 m#3)** the
+  observed warm medians at the gate are RECORDED in the merge notes so future
+  regressions have a baseline to compare against.
 - *Tripwire -> escalation:* if those budgets are missed in practice, the
   pre-designed escalation is the **v24 persisted trade-keyed chart cache** (a
   `trade_id` column + partial unique index on `chart_renders`, §7/§11) -- a
@@ -989,7 +1025,22 @@ Minors folded: m#1 (gate check for focus/scroll/control persistence on swap),
 m#3 (`Cache-Control: private` on chart endpoints), m#4 (exit-date = stored fill
 date prefix). m#2 (n/a display text for unavailable risk) -> §10.2.
 
-*(Round 3 verdict appended at chain close; target NO_NEW_CRITICAL_MAJOR.)*
+**Round 3 -- 0 critical / 2 major / 3 minor (verdict ISSUES_FOUND).** Both
+majors resolved in-spec (issues now narrowing 12 -> 6 -> 2):
+- R3 M#1 BULZ row-expand staleness -> §4.1/§6 corrected to the SAME read-only
+  `get_cached_chart_svg` path `build_trade_detail_vm` uses (NO JIT, NO write);
+  freshness is identical to the already-shipped trade-detail page; SB4 is fully
+  write-free against `chart_renders`.
+- R3 M#2 matplotlib thread-safety -> §4.2 process-wide matplotlib render lock
+  (charts.py uses pyplot global state, verified; no existing lock); unifies
+  with the R2 M#2 render bound.
+Minors folded: m#1 structured WARNING on every exception fallback; m#2
+distinguish missing-trade in fragment text + logs; m#3 record warm medians in
+merge notes as a baseline.
+
+*(Round 4 verdict appended at chain close; target NO_NEW_CRITICAL_MAJOR.
+Cumulative through R3: 0 critical / 20 major / 17 minor; ALL 20 majors
+resolved-via-code, ZERO accepted-without-fix.)*
 
 ---
 
