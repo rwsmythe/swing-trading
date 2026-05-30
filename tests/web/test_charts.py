@@ -1276,6 +1276,40 @@ def test_normalize_ohlc_raises_on_non_datetime_coercible_index():
         _normalize_ohlc_for_mpf(frame)
 
 
+def test_normalize_ohlc_rejects_numeric_index():
+    """A numeric (integer/RangeIndex) index is datetime-coercible by pandas
+    (epoch-nanosecond timestamps near 1970) but semantically WRONG -- reject
+    it at the barrier rather than silently producing a 1970-anchored chart."""
+    frame = pd.DataFrame(
+        {
+            "Open": [1.0, 2.0, 3.0],
+            "High": [1.0, 2.0, 3.0],
+            "Low": [1.0, 2.0, 3.0],
+            "Close": [1.0, 2.0, 3.0],
+        },
+        index=pd.RangeIndex(start=0, stop=3),
+    )
+    with pytest.raises(OhlcNormalizationError):
+        _normalize_ohlc_for_mpf(frame)
+
+
+def test_normalize_ohlc_rejects_nat_index():
+    """An index that coerces to a DatetimeIndex containing NaT (from a
+    blank/invalid datetime-like entry) raises rather than passing a NaT
+    through to downstream ``.date()`` comparisons."""
+    frame = pd.DataFrame(
+        {
+            "Open": [1.0, 2.0],
+            "High": [1.0, 2.0],
+            "Low": [1.0, 2.0],
+            "Close": [1.0, 2.0],
+        },
+        index=pd.to_datetime(["2026-05-26", "not-a-date"], errors="coerce"),
+    )
+    with pytest.raises(OhlcNormalizationError):
+        _normalize_ohlc_for_mpf(frame)
+
+
 # ---------------------------------------------------------------------------
 # FIX 3 (hardening): _render_candles_fig raises a clear error on an MA window
 # that has no _MA_COLORS palette entry (not a bare KeyError deep in render).

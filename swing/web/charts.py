@@ -290,12 +290,30 @@ def _normalize_ohlc_for_mpf(bars: pd.DataFrame) -> pd.DataFrame:
     # otherwise fail in a deep mpf / get_loc error. Surface it here as a typed
     # ASCII error instead.
     if not isinstance(df.index, pd.DatetimeIndex):
+        # A numeric (integer/float/RangeIndex) index is "datetime-coercible"
+        # by pandas -- it becomes nanosecond timestamps near 1970-01-01,
+        # producing a plausible-but-semantically-WRONG chart (and breaking
+        # fill/window overlays that compare against real trade dates). Reject
+        # it loudly rather than coercing numerics to epoch timestamps.
+        if pd.api.types.is_numeric_dtype(df.index):
+            raise OhlcNormalizationError(
+                "OHLC index is numeric, not a date index"
+            )
         try:
             df.index = pd.to_datetime(df.index)
         except (ValueError, TypeError) as exc:
             raise OhlcNormalizationError(
                 "OHLC index is not datetime-coercible"
             ) from exc
+
+    # NaT can survive coercion (None/blank/partial-invalid datetime-like
+    # input) -- and a DatetimeIndex passed in directly may already carry NaT.
+    # Downstream _x_for_fill_date assumes every index value has a comparable
+    # .date(), so reject any NaT here.
+    if df.index.isna().any():
+        raise OhlcNormalizationError(
+            "OHLC index contains unparseable/NaT dates"
+        )
 
     # (c) sort ascending.
     df = df.sort_index()
