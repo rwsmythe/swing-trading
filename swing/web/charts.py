@@ -36,8 +36,6 @@ from typing import Any
 
 import pandas as pd
 
-logger = logging.getLogger(__name__)
-
 # L8 LOCK: import canonical surface enum from swing/data/models.py — DO NOT
 # redefine. Forward-binding from T3.SB2 hotfix at cf3c489 (4-surface-guard
 # audit) + plan §B.7.
@@ -71,6 +69,8 @@ except ImportError as exc:  # pragma: no cover - install gate
         "mplfinance is required for swing/web/charts.py candlestick "
         "rendering; install via pip install -e \".[web]\""
     ) from exc
+
+logger = logging.getLogger(__name__)
 
 # Chart dimensions per spec §C.5 chart surface inventory.
 _WATCHLIST_THUMBNAIL_SIZE_PX = (200, 100)
@@ -575,26 +575,41 @@ def render_position_detail_svg(
     *, ticker: str, bars: pd.DataFrame, trade: Trade,
     fills: list[Fill], current_stop: float | None,
 ) -> bytes:
+    """Phase 14 SB3 T-3.3 (§C.3 / §C.3a): 800x500 candlestick position chart.
+
+    Candlesticks (volume=True) with the uniform MA palette (10/20/50) via the
+    shared :func:`_render_candles_fig` builder. Fill markers re-attach via the
+    NORMALIZED df + :func:`_x_for_date` (mpf positional-x coupling). The
+    ``current_stop`` axhline is preserved. BULZ risk/reward shaded zones
+    (P14.N4) are drawn long-only (``stop < entry < target``); invalid shapes
+    skip + WARN-log per-ticker, never raise.
+    """
     _assert_ticker_safe(ticker)
-    close = _close_series(bars)
-    fig, ax = plt.subplots(figsize=_figsize_inches(_POSITION_DETAIL_SIZE_PX))
-    ax.plot(range(len(close)), close.values, color="#1f77b4",
-            linewidth=1.0, label="Close")
-    # MA50 for trail context.
-    if len(close) >= 50:
-        sma = close.rolling(50).mean()
-        ax.plot(range(len(sma)), sma.values, color="#ff7f0e",
-                linewidth=0.8, alpha=0.8, label="MA50")
-    # Fill markers (one per Fill row); positioned at the fill date if present
-    # in the bar window, else clamped to right edge.
-    bar_dates = [d.date() if hasattr(d, "date") else d for d in bars.index]
+    # Normalize ONCE; pass the SAME df to the figure builder AND every
+    # _x_for_date call (mpf positional-x coupling discipline).
+    df = _normalize_ohlc_for_mpf(bars)
+    close = _close_series(df)
+
+    fig, price_ax, vol_ax = _render_candles_fig(
+        df,
+        ma_windows=(10, 20, 50),
+        figsize=_figsize_inches(_POSITION_DETAIL_SIZE_PX),
+        volume=True,
+    )
+
+    # Fill markers (one per Fill row); positioned at the fill date via the
+    # NORMALIZED df. Guard parse / off-window errors per-fill so a malformed
+    # or out-of-window fill doesn't crash the renderer; an in-window valid
+    # fill is never silently lost.
     for fill in fills:
         try:
-            fill_date = pd.Timestamp(fill.fill_datetime).date()
-        except (ValueError, AttributeError):
+            fill_date = date.fromisoformat(fill.fill_datetime[:10])
+        except (ValueError, TypeError, AttributeError):
             continue
-        x = next((i for i, bd in enumerate(bar_dates) if bd >= fill_date),
-                 len(bar_dates) - 1)
+        try:
+            x = _x_for_date(price_ax, df, fill_date)
+        except (KeyError, ValueError, TypeError):
+            continue
         marker = {"entry": "^", "exit": "v", "trim": "v", "stop": "x"}.get(
             fill.action, "o",
         )
@@ -602,18 +617,79 @@ def render_position_detail_svg(
                  "trim": "#ff7f0e", "stop": "#d62728"}.get(
                      fill.action, "#888",
         )
-        ax.scatter([x], [fill.price], marker=marker, color=color,
-                   s=100, zorder=5, label=f"fill {fill.action}")
+        price_ax.scatter([x], [fill.price], marker=marker, color=color,
+                         s=100, zorder=5, label=f"fill {fill.action}")
+
     # Current stop horizontal line.
     if current_stop is not None and current_stop > 0:
-        ax.axhline(current_stop, color="#d62728", linestyle="--",
-                   linewidth=0.8, alpha=0.7, label="current stop")
-    ax.set_ylabel("Price (USD)")
-    ax.legend(loc="upper left", fontsize=7)
+        price_ax.axhline(current_stop, color="#d62728", linestyle="--",
+                         linewidth=0.8, alpha=0.7, label="current stop")
+
+    # BULZ risk/reward shaded zones (P14.N4). Long-only V1: zones assume
+    # stop < entry < target. Invalid/unsupported shapes skip + WARN; NEVER
+    # raise; NEVER draw an inverted band. Off-range valid zones are DRAWN
+    # (axhspan autoscales the y-axis), not silently hidden.
+    _draw_bulz_zones(price_ax, ticker=ticker, trade=trade,
+                     current_stop=current_stop)
+
+    price_ax.set_ylabel("Price (USD)")
+    _assert_ascii_only("Price (USD)", field="ylabel_price")
+    if vol_ax is not None:
+        vol_ax.set_ylabel("Volume")
+        _assert_ascii_only("Volume", field="ylabel_vol")
+    handles, _labels = price_ax.get_legend_handles_labels()
+    if handles:
+        price_ax.legend(loc="upper left", fontsize=7)
     _set_suptitle_no_math(
         fig, f"{trade.ticker} | position detail | last {len(close)} bars",
     )
     return _svg_bytes_from_fig(fig)
+
+
+def _draw_bulz_zones(
+    price_ax: Any, *, ticker: str, trade: Trade, current_stop: float | None,
+) -> None:
+    """Draw BULZ risk (entry->stop) + reward (entry->target) shaded zones.
+
+    Per §C.3a. Risk zone drawn only when ``stop`` and ``entry`` are both
+    present and ``stop < entry`` (valid long). Reward zone drawn only when a
+    target is derivable and ``target > entry``. Invalid/unsupported shapes
+    (short, ``stop >= entry``, ``target <= entry``, missing/zero entry/stop)
+    skip + WARN-log per-ticker; never raise; never draw an inverted band.
+    ASCII-only labels (the ``->`` arrow is ASCII).
+    """
+    entry = trade.entry_price
+    stop = current_stop
+
+    # Risk zone: entry -> stop (valid long requires stop < entry, both > 0).
+    if (entry is not None and stop is not None and entry > 0 and stop > 0
+            and stop < entry):
+        label = _assert_ascii_only(
+            "risk zone (entry->stop)", field="risk_zone_label",
+        )
+        price_ax.axhspan(stop, entry, color="#d62728", alpha=0.10,
+                         label=label)
+    else:
+        logger.warning(
+            "skipping BULZ risk zone for %s: invalid long shape "
+            "(entry=%s, stop=%s); long-only V1 requires stop < entry",
+            ticker, entry, stop,
+        )
+
+    # Reward zone: entry -> target (valid requires target > entry).
+    target = _bulz_target_price(trade)
+    if target is not None and entry is not None and entry > 0 and target > entry:
+        label = _assert_ascii_only(
+            "reward zone (entry->target)", field="reward_zone_label",
+        )
+        price_ax.axhspan(entry, target, color="#2ca02c", alpha=0.10,
+                         label=label)
+    elif target is not None:
+        logger.warning(
+            "skipping BULZ reward zone for %s: invalid long shape "
+            "(entry=%s, target=%s); long-only V1 requires target > entry",
+            ticker, entry, target,
+        )
 
 
 # ---------------------------------------------------------------------------
