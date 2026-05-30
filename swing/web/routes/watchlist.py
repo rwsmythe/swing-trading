@@ -178,7 +178,7 @@ def watchlist_expand(request: Request, ticker: str):
 
     Phase 13 T-T4.SB.3 (Item 5): populates
     ``WatchlistExpandedVM.watchlist_expanded_chart_svg_bytes`` via the JIT
-    helper (surface='hyprec_detail' per spec §B.5 — both the hyp-recs route
+    helper (surface='ticker_detail' per spec §B.5 — both the hyp-recs route
     and the watchlist expanded route share the SAME surface for
     cache-key reuse).
 
@@ -196,7 +196,7 @@ def watchlist_expand(request: Request, ticker: str):
         raise HTTPException(status_code=404, detail=f"ticker {ticker} not on watchlist")
 
     # JIT cache lookup + live render on miss — populate
-    # watchlist_expanded_chart_svg_bytes via the shared hyprec_detail
+    # watchlist_expanded_chart_svg_bytes via the shared ticker_detail
     # surface (renderer-kwargs uniformity LOCK).
     #
     # Codex R1 Major #1 LOCK: thread the VM's resolved pipeline_run
@@ -213,7 +213,7 @@ def watchlist_expand(request: Request, ticker: str):
     # attach new-run chart bytes to a VM whose ``chart_reason='no-run'``
     # banner is already in flight (mixed anchors across one response).
     chart_bytes = _resolve_jit_chart_bytes(
-        request, ticker=ticker.upper(), surface="hyprec_detail",
+        request, ticker=ticker.upper(), surface="ticker_detail",
         pipeline_run_id=expanded.pipeline_run_id,
         data_asof_date=expanded.data_asof_date,
         resolve_latest_if_missing=False,

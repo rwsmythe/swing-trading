@@ -171,7 +171,7 @@ def test_watchlist_expand_threads_single_pipeline_anchor(
     # body so the post-response assertion can prove the correct anchor
     # was honored.
     _plant_chart_render(
-        cfg, ticker=ticker, surface="hyprec_detail",
+        cfg, ticker=ticker, surface="ticker_detail",
         pipeline_run_id=run101, data_asof_date="2026-05-19",
         body=b"<svg>RUN_101_BYTES</svg>",
     )
@@ -179,7 +179,7 @@ def test_watchlist_expand_threads_single_pipeline_anchor(
     # Build the app + monkeypatch the routes module so that, AFTER
     # ``build_watchlist_expanded`` returns, but BEFORE the route's
     # ``_resolve_jit_chart_bytes`` call, a NEW pipeline_run lands +
-    # gets its own ``hyprec_detail`` chart row planted. This is the
+    # gets its own ``ticker_detail`` chart row planted. This is the
     # GET/POST TOCTOU window simulation.
     app = create_app(cfg, cfg_path)
 
@@ -196,7 +196,7 @@ def test_watchlist_expand_threads_single_pipeline_anchor(
             action_session_date="2026-05-20", lease_token="t-run102",
         )
         _plant_chart_render(
-            cfg, ticker=ticker, surface="hyprec_detail",
+            cfg, ticker=ticker, surface="ticker_detail",
             pipeline_run_id=run102, data_asof_date="2026-05-19",
             body=b"<svg>RUN_102_BYTES</svg>",
         )

@@ -146,7 +146,7 @@ def test_watchlist_expand_then_collapse_preserves_thumbnail(
     the thumbnail across all three renders.
 
     Plants both a watchlist_row surface SVG (for full-page + collapse)
-    AND an hyprec_detail surface SVG (for expand); asserts each render
+    AND an ticker_detail surface SVG (for expand); asserts each render
     surfaces the expected planted bytes. This guards against the
     pre-fix defect where the collapse path produced a blank thumbnail
     cell because the partial fell back to ``vm.watchlist_chart_svg_bytes``
@@ -168,7 +168,7 @@ def test_watchlist_expand_then_collapse_preserves_thumbnail(
             chart_svg_bytes=b"<svg>row-thumb</svg>",
         )
         _plant_chart_render_row(
-            conn, surface="hyprec_detail", ticker="UCTT",
+            conn, surface="ticker_detail", ticker="UCTT",
             pipeline_run_id=run_id,
             chart_svg_bytes=b"<svg>expanded</svg>",
         )

@@ -614,10 +614,10 @@ class HypRecsExpandedVM:
     # Phase 13 T2.SB6c T-A.6c.2 Gap A.1 — inline SVG bytes from the
     # chart_renders cache for the operator-facing hyp-rec expansion
     # surface. None when no cache row exists; template guards with
-    # `{% if expanded.hyprec_detail_chart_svg_bytes %}`. Cache key:
-    # `(ticker, surface='hyprec_detail', pipeline_run_id=<binding.run_id>)`
+    # `{% if expanded.ticker_detail_chart_svg_bytes %}`. Cache key:
+    # `(ticker, surface='ticker_detail', pipeline_run_id=<binding.run_id>)`
     # per spec §C.2 + ChartRender __post_init__ validator.
-    hyprec_detail_chart_svg_bytes: bytes | None = None
+    ticker_detail_chart_svg_bytes: bytes | None = None
     # Phase 13 T2.SB6c T-A.6c.4 §C.5 Layer 1 — pattern_evaluations
     # anchor for OQ-12 CLOSURE. Threaded into the entry-form link's
     # query string so the form-render binds to the same anchor the
@@ -733,14 +733,14 @@ def build_hyp_recs_expanded(
         current_price = prices.get(ticker)
 
     # Phase 13 T2.SB6c T-A.6c.2 Gap A.1 — consult chart_renders cache for
-    # the hyp-rec detail surface (surface='hyprec_detail', run-bound key).
+    # the ticker detail surface (surface='ticker_detail', run-bound key).
     # Reuses the T2.SB6a substrate `get_cached_chart_svg` verbatim (L7 +
     # L17 LOCK).
     from swing.data.repos.chart_renders import get_cached_chart_svg
-    hyprec_detail_chart_svg_bytes = get_cached_chart_svg(
+    ticker_detail_chart_svg_bytes = get_cached_chart_svg(
         conn,
         ticker=ticker,
-        surface="hyprec_detail",
+        surface="ticker_detail",
         pipeline_run_id=binding.run_id,
     )
 
@@ -750,7 +750,7 @@ def build_hyp_recs_expanded(
     # narrowed per OQ-5.3), live-render via the JIT helper + write-through.
     #
     # Gating per R3 LOCK + plan §B.3 Sub-task 3C.1:
-    #   - hyprec_detail_chart_svg_bytes is None (cache miss)
+    #   - ticker_detail_chart_svg_bytes is None (cache miss)
     #   - ohlcv_cache is not None (caller provided)
     #   - pipeline_run_id is not None (run-bound surface requires)
     #   - data_asof_date is not None (ChartRender column non-NULL)
@@ -758,15 +758,15 @@ def build_hyp_recs_expanded(
     # Renderer-kwargs uniformity LOCK: pattern_evaluation=None matches the
     # watchlist_expand route's call (Codex R4 M#3 cache-collision avoidance).
     if (
-        hyprec_detail_chart_svg_bytes is None
+        ticker_detail_chart_svg_bytes is None
         and ohlcv_cache is not None
         and binding.run_id is not None
         and binding.data_asof_date is not None
     ):
         from swing.web.chart_jit import get_or_render_surface
-        hyprec_detail_chart_svg_bytes = get_or_render_surface(
+        ticker_detail_chart_svg_bytes = get_or_render_surface(
             conn=conn, ohlcv_cache=ohlcv_cache,
-            surface="hyprec_detail", ticker=ticker,
+            surface="ticker_detail", ticker=ticker,
             pipeline_run_id=binding.run_id,
             data_asof_date=binding.data_asof_date,
             pattern_evaluation=None,  # uniformity LOCK with watchlist_expand
@@ -820,7 +820,7 @@ def build_hyp_recs_expanded(
         chart_reason_message=chart_message,
         pipeline_finished_at=binding.finished_ts,
         current_price=current_price,
-        hyprec_detail_chart_svg_bytes=hyprec_detail_chart_svg_bytes,
+        ticker_detail_chart_svg_bytes=ticker_detail_chart_svg_bytes,
         pattern_evaluation_id=resolved_pattern_evaluation_id,
         pipeline_run_id=binding.run_id,
     )

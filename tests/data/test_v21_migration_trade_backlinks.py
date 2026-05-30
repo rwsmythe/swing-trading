@@ -717,10 +717,10 @@ def test_expected_schema_version_constant_is_21_post_sb6c() -> None:
     """EXPECTED_SCHEMA_VERSION constant tracks HEAD (now 22 post-Phase-14-SB2).
 
     Test name preserved (stale-name-but-current-assertion) per cumulative
-    discipline; Phase 14 Sub-bundle 2 migration 0022 bumps HEAD from 21 to 22.
+    discipline; Phase 14 Sub-bundle 3 migration 0023 bumps HEAD from 22 to 23.
     """
-    assert EXPECTED_SCHEMA_VERSION == 22, (
-        f"EXPECTED_SCHEMA_VERSION must be 22, got {EXPECTED_SCHEMA_VERSION}"
+    assert EXPECTED_SCHEMA_VERSION == 23, (
+        f"EXPECTED_SCHEMA_VERSION must be 23, got {EXPECTED_SCHEMA_VERSION}"
     )
 
 
@@ -776,15 +776,15 @@ def test_row_to_trade_index_map_matches_select_cols(
 def test_schema_version_reaches_21_after_v21_migration(
     tmp_path: Path,
 ) -> None:
-    """SELECT version FROM schema_version returns HEAD (22) post-migration.
+    """SELECT version FROM schema_version returns HEAD (23) post-migration.
 
     Test name preserved (stale-name-but-current-assertion); _v21_conn uses
-    ensure_schema which walks to HEAD, now v22 post-Phase-14-SB2.
+    ensure_schema which walks to HEAD, now v23 post-Phase-14-SB3.
     """
     conn = _v21_conn(tmp_path)
     try:
         ver = conn.execute("SELECT version FROM schema_version").fetchone()
-        assert ver[0] == 22, f"schema_version != 22, got {ver[0]}"
+        assert ver[0] == 23, f"schema_version != 23, got {ver[0]}"
     finally:
         conn.close()
 

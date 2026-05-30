@@ -23,7 +23,7 @@ def _plant_chart_render(
     ticker: str,
     rendered_at: str,
     pipeline_run_id: int | None = None,
-    surface: str = "hyprec_detail",
+    surface: str = "ticker_detail",
 ) -> None:
     with conn:
         conn.execute(

@@ -9,7 +9,7 @@ operator-witnessed-flow surfaces in one TestClient round-trip:
      (Item 6 Option 6B; chart_svg_bytes_for_row populated when the
      `watchlist_row` chart_renders cache row exists).
   3. `/hyp-recs/{ticker}/expand` -- JIT cache-hit path renders 200 with
-     <svg ...> chart bytes when the `hyprec_detail` chart_renders cache
+     <svg ...> chart bytes when the `ticker_detail` chart_renders cache
      row exists for the latest completed pipeline_run.
   4. `/metrics/hypothesis-progress` -- hyp-progress card cohort row for
      ``"Sub-A+ VCP-not-formed"`` reports ``n_closed == 1`` for a planted
@@ -19,7 +19,7 @@ operator-witnessed-flow surfaces in one TestClient round-trip:
      /watchlist/{ticker}/row response bodies.
 
 Item 3 (volume y-tick labels stripped from market_weather +
-hyprec_detail) is covered by ``tests/web/test_charts_volume_yticks_stripped.py``
+ticker_detail) is covered by ``tests/web/test_charts_volume_yticks_stripped.py``
 at the matplotlib renderer layer -- cache-hit paths in this E2E render
 seeded SVG bytes directly so the renderer is not exercised. Discrete
 T-T4.SB.5 test gating preserved.
@@ -135,7 +135,7 @@ def _plant_phase13_closer_fixture(cfg, ticker: str) -> int:
       - 2 chart_renders cache rows for the latest run anchor:
         (a) ``surface='watchlist_row'`` (drives Item 6 thumbnail
             preservation on the /watchlist/{ticker}/row endpoint).
-        (b) ``surface='hyprec_detail'`` (drives Item 5 JIT cache-hit on
+        (b) ``surface='ticker_detail'`` (drives Item 5 JIT cache-hit on
             the /hyp-recs/{ticker}/expand endpoint).
 
     Returns the pipeline_run_id for cross-reference assertions.
@@ -207,7 +207,7 @@ def _plant_phase13_closer_fixture(cfg, ticker: str) -> int:
             # /hyp-recs/{ticker}/expand). Shared surface with the
             # watchlist /expand path per chart-jit cache-key reuse LOCK.
             refresh_chart_render(conn, ChartRender(
-                id=None, ticker=ticker, surface="hyprec_detail",
+                id=None, ticker=ticker, surface="ticker_detail",
                 chart_svg_bytes=b"<svg>hyprec-closer-e2e</svg>",
                 source_data_hash="h-hr",
                 rendered_at="2026-05-20T08:05:00",
@@ -284,7 +284,7 @@ def test_phase13_t4_sb_closer_full_dashboard_flow(
         assert expand.status_code == 200
         assert "<svg>hyprec-closer-e2e</svg>" in expand.text, (
             "Item 5 (T-T4.SB.3): JIT cache-hit path on "
-            "/hyp-recs/{ticker}/expand must surface the hyprec_detail "
+            "/hyp-recs/{ticker}/expand must surface the ticker_detail "
             "chart_renders cache bytes"
         )
 

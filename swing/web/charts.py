@@ -13,7 +13,7 @@ write-through + T-A.6.6 chart surface integration + T-A.6.6b exemplars
 enhancement):
 
   - ``render_watchlist_thumbnail_svg``  (200x100; eager per-run)
-  - ``render_hyprec_detail_svg``        (800x500; eager per-run)
+  - ``render_ticker_detail_svg``        (800x500; eager per-run)
   - ``render_position_detail_svg``      (800x500; eager; fill markers)
   - ``render_market_weather_svg``       (400x150; per-pipeline-run)
   - ``render_theme2_annotated_svg``     (800x600; pattern-class-specific
@@ -28,8 +28,10 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import math
 from dataclasses import dataclass
+from datetime import date
 from typing import Any
 
 import pandas as pd
@@ -56,9 +58,23 @@ except ImportError as exc:  # pragma: no cover - install gate
         "pip install -e \".[web]\""
     ) from exc
 
+# Phase 14 SB3 T-3.2: mplfinance is a declared runtime dependency for the
+# candlestick detail renderers. HARD-fail at import (mirror the matplotlib
+# guard) — silent line-chart degradation would mask the very regression this
+# sub-bundle fixes (close-line detail charts -> candlesticks).
+try:
+    import mplfinance as mpf  # noqa: E402
+except ImportError as exc:  # pragma: no cover - install gate
+    raise RuntimeError(
+        "mplfinance is required for swing/web/charts.py candlestick "
+        "rendering; install via pip install -e \".[web]\""
+    ) from exc
+
+logger = logging.getLogger(__name__)
+
 # Chart dimensions per spec §C.5 chart surface inventory.
 _WATCHLIST_THUMBNAIL_SIZE_PX = (200, 100)
-_HYPREC_DETAIL_SIZE_PX = (800, 500)
+_TICKER_DETAIL_SIZE_PX = (800, 500)
 _POSITION_DETAIL_SIZE_PX = (800, 500)
 _MARKET_WEATHER_SIZE_PX = (400, 150)
 _THEME2_ANNOTATED_SIZE_PX = (800, 600)
@@ -173,6 +189,302 @@ def _volume_series(bars: pd.DataFrame) -> pd.Series:
 
 
 # ---------------------------------------------------------------------------
+# Phase 14 SB3 T-3.2 — shared mplfinance candlestick infrastructure.
+#
+# The detail renderers (ticker_detail volume=True; theme2_annotated
+# volume=False) route ALL OHLC bars through _normalize_ohlc_for_mpf
+# (pre-plot barrier) -> _render_candles_fig (shared figure builder). Overlay
+# coordinate mapping goes through _x_for_date so mpf's positional integer
+# x-axis convention is coupled in exactly ONE place. MA overlay colors come
+# ONLY from _MA_COLORS so the palette is identical across every surface
+# (Expansion #10c uniformity).
+# ---------------------------------------------------------------------------
+
+
+class OhlcNormalizationError(ValueError):
+    """OHLC frame failed the pre-plot normalization barrier.
+
+    Raised with an ASCII-only message so a malformed frame surfaces as a
+    typed error at the renderer boundary rather than a deep mplfinance
+    KeyError mid-plot.
+    """
+
+
+# Okabe-Ito colorblind-safe palette, keyed by MA window. ASCII hex.
+# Deliberately avoids #d62728/#2ca02c (reserved for BULZ risk/reward fills).
+_MA_COLORS: dict[int, str] = {
+    10:  "#0072B2",  # blue
+    20:  "#E69F00",  # orange
+    50:  "#009E73",  # bluish green
+    150: "#CC79A7",  # reddish purple
+    200: "#D55E00",  # vermillion
+}
+
+# mplfinance's lower volume panel ylabel — used to resolve the volume axis
+# by ROLE (never a fixed index) on the returnfig axes list.
+_MPF_VOLUME_YLABEL = "Volume"
+
+_REQUIRED_OHLC_COLS = ("Open", "High", "Low", "Close")
+_OHLC_TITLECASE_MAP = {
+    "open": "Open", "high": "High", "low": "Low",
+    "close": "Close", "volume": "Volume",
+}
+
+
+def _normalize_ohlc_for_mpf(bars: pd.DataFrame) -> pd.DataFrame:
+    """Pre-plot barrier: coerce raw bars into the exact shape mplfinance needs.
+
+    Output columns are Title-cased Open/High/Low/Close[/Volume] on an
+    ascending, tz-naive, duplicate-deduped DatetimeIndex. Raises
+    :class:`OhlcNormalizationError` (typed, ASCII messages) rather than
+    letting a deep mplfinance ``KeyError`` surface mid-plot.
+
+    Steps (spec C.1b):
+      (a) flatten a SINGLE-ticker yfinance ``group_by='column'`` MultiIndex
+          (Price x Ticker) by taking level 0; RAISE on >1 ticker.
+      (b) Title-case columns to Open/High/Low/Close/Volume; RAISE on a
+          Title-casing collision (e.g. both ``close`` and ``Close``).
+      (c) sort index ascending.
+      (d) drop duplicate timestamps keep='last'.
+      (e) make index tz-naive.
+      (f) RAISE if any required OHLC column is absent.
+
+    The thumbnail/line renderer does NOT route through this barrier.
+    """
+    df = bars.copy()
+
+    # (a) Single-ticker MultiIndex flatten.
+    if isinstance(df.columns, pd.MultiIndex):
+        if df.columns.nlevels < 2:
+            raise OhlcNormalizationError(
+                "MultiIndex columns must have a (Price, Ticker) shape"
+            )
+        tickers = df.columns.get_level_values(-1).unique()
+        if len(tickers) > 1:
+            raise OhlcNormalizationError(
+                "cannot normalize a multi-ticker frame; got tickers "
+                f"{[str(t) for t in tickers]} -- pass a single-ticker frame"
+            )
+        df.columns = df.columns.get_level_values(0)
+
+    # (b) Title-case columns; reject collisions.
+    rename: dict[Any, str] = {}
+    target_sources: dict[str, list[str]] = {}
+    for col in df.columns:
+        key = str(col).lower()
+        target = _OHLC_TITLECASE_MAP.get(key)
+        if target is None:
+            continue
+        rename[col] = target
+        target_sources.setdefault(target, []).append(str(col))
+    for target, sources in target_sources.items():
+        if len(sources) > 1:
+            raise OhlcNormalizationError(
+                f"Title-casing OHLC columns collides on {target!r}: "
+                f"sources {sorted(sources)}"
+            )
+    df = df.rename(columns=rename)
+
+    # (b2) coerce a non-DatetimeIndex to datetime BEFORE the sort/dedup/tz
+    # steps. mplfinance assumes a DatetimeIndex; an object/string index would
+    # otherwise fail in a deep mpf / get_loc error. Surface it here as a typed
+    # ASCII error instead.
+    if not isinstance(df.index, pd.DatetimeIndex):
+        # A numeric (integer/float/RangeIndex) index is "datetime-coercible"
+        # by pandas -- it becomes nanosecond timestamps near 1970-01-01,
+        # producing a plausible-but-semantically-WRONG chart (and breaking
+        # fill/window overlays that compare against real trade dates). Reject
+        # it loudly rather than coercing numerics to epoch timestamps.
+        if pd.api.types.is_numeric_dtype(df.index):
+            raise OhlcNormalizationError(
+                "OHLC index is numeric, not a date index"
+            )
+        try:
+            df.index = pd.to_datetime(df.index)
+        except (ValueError, TypeError) as exc:
+            raise OhlcNormalizationError(
+                "OHLC index is not datetime-coercible"
+            ) from exc
+
+    # NaT can survive coercion (None/blank/partial-invalid datetime-like
+    # input) -- and a DatetimeIndex passed in directly may already carry NaT.
+    # Downstream _x_for_fill_date assumes every index value has a comparable
+    # .date(), so reject any NaT here.
+    if df.index.isna().any():
+        raise OhlcNormalizationError(
+            "OHLC index contains unparseable/NaT dates"
+        )
+
+    # (c) sort ascending.
+    df = df.sort_index()
+
+    # (d) drop duplicate timestamps, keep last.
+    df = df[~df.index.duplicated(keep="last")]
+
+    # (e) make index tz-naive.
+    idx = df.index
+    if isinstance(idx, pd.DatetimeIndex) and idx.tz is not None:
+        df.index = idx.tz_localize(None)
+
+    # (f) require OHLC columns.
+    missing = [c for c in _REQUIRED_OHLC_COLS if c not in df.columns]
+    if missing:
+        raise OhlcNormalizationError(
+            f"OHLC frame is missing required columns {missing}; "
+            f"present columns are {list(df.columns)}"
+        )
+
+    return df
+
+
+def _x_for_date(price_ax: Any, df: pd.DataFrame, target_date: Any) -> int:
+    """Integer bar position for ``target_date`` on mpf's positional x-axis.
+
+    ``df`` MUST be the SAME normalized frame passed to
+    :func:`_render_candles_fig` (NOT raw bars). mplfinance candle plots
+    render along a positional integer x-axis (bar 0..N-1), so overlay
+    coordinates are bar indices, not date-locator coordinates. This is the
+    single place coupled to mpf's coordinate convention.
+    """
+    return int(df.index.get_loc(pd.Timestamp(target_date)))
+
+
+def _x_for_fill_date(df: pd.DataFrame, fill_date: date) -> int:
+    """Nearest-forward-bar position for a FILL date on mpf's positional x-axis.
+
+    Preserves the pre-candlestick behavior: fills on a non-trading-day /
+    holiday / tz-shifted date (no exact daily bar) land on the NEXT trading
+    bar, not dropped. Returns the first position ``i`` in ``df.index`` whose
+    date is ``>= fill_date``; clamps to the last bar (``len - 1``) when the
+    fill date is past the window. ``df`` MUST be the SAME normalized frame
+    passed to :func:`_render_candles_fig`.
+
+    NOTE: this is the FILL-marker placement rule ONLY. Exact-date overlays
+    (the pattern_evaluation window band) keep using :func:`_x_for_date`.
+    """
+    return next(
+        (i for i, ts in enumerate(df.index) if ts.date() >= fill_date),
+        len(df.index) - 1,
+    )
+
+
+def _resolve_volume_ax(fig: Any, price_ax: Any) -> Any:
+    """Resolve mpf's volume panel by ROLE, never a fixed axes index.
+
+    mplfinance's axes count/order shifts with style/panels (and each panel
+    has a twin sibling for the secondary y-axis). The volume panel
+    advertises its role through its lower y-label, but mpf appends an
+    auto-computed scale-factor suffix (e.g. ``"Volume  $10^{6}$"``), so an
+    exact-equality check never fires on the real panel. We therefore match
+    on a NORMALIZED y-label prefix: an axis whose configured y-label,
+    stripped of surrounding whitespace and compared case-insensitively,
+    starts with ``"Volume"``. This is the primary role mechanism.
+
+    Only when no axis advertises a Volume label do we fall back to GEOMETRY:
+    the lowest panel (smallest ``y0``) below the price axis. We do NOT
+    explicitly skip twin axes — a twin shares its host's exact ``y0``, and
+    the volume twin carries an empty y-label, so the role match selects the
+    labelled (non-twin) volume panel directly; the geometry fallback relies
+    on ``fig.axes`` insertion order placing the labelled panel ahead of its
+    twin when ``y0`` values tie. Callers never touch ``axes[i]`` by position.
+    """
+    candidates = []
+    for ax in fig.axes:
+        if ax is price_ax:
+            continue
+        ylabel = ax.get_ylabel()
+        candidates.append((ax, ylabel, ax.get_position().y0))
+    # Primary: an axis whose y-label advertises the volume role. mpf appends
+    # a scale-factor suffix, so match on a normalized prefix, not equality.
+    for ax, ylabel, _y0 in candidates:
+        if ylabel.strip().lower().startswith(_MPF_VOLUME_YLABEL.lower()):
+            return ax
+    # Secondary fallback: no axis advertises a Volume label — pick the lowest
+    # panel (smallest y0) that sits below the price axis by geometry.
+    price_y0 = price_ax.get_position().y0
+    below = [c for c in candidates if c[2] < price_y0]
+    if below:
+        below.sort(key=lambda c: c[2])
+        return below[0][0]
+    return None
+
+
+def _render_candles_fig(
+    df: pd.DataFrame,
+    *,
+    ma_windows: tuple[int, ...],
+    figsize: tuple[float, float],
+    volume: bool = True,
+    style: str = "yahoo",
+) -> tuple[Any, Any, Any]:
+    """Shared candlestick figure builder for the detail renderers.
+
+    ``df`` MUST be :func:`_normalize_ohlc_for_mpf` output. Returns
+    ``(fig, price_ax, vol_ax)`` where ``vol_ax is None`` when
+    ``volume=False``. MA overlays draw close rolling means in
+    ``_MA_COLORS`` (skip windows longer than the series; skip all-NaN).
+
+    The volume axis is resolved by ROLE (see :func:`_resolve_volume_ax`);
+    callers never index ``axes[i]``. Volume y-tick labels are stripped on
+    the volume axis only; the price axis keeps its price ticks. A uniform
+    grid (P14.N8) is enabled on the price axis.
+    """
+    close = df["Close"]
+    if hasattr(close, "ndim") and close.ndim == 2:
+        close = close.iloc[:, 0]
+
+    addplots = []
+    for window in ma_windows:
+        if window not in _MA_COLORS:
+            raise ValueError(
+                f"no _MA_COLORS entry for MA window {window}; add it to "
+                "the palette"
+            )
+        if window > len(close):
+            continue
+        sma = close.rolling(window).mean()
+        if sma.isna().all():
+            continue
+        addplots.append(
+            mpf.make_addplot(sma, color=_MA_COLORS[window], width=1.0)
+        )
+
+    plot_kwargs: dict[str, Any] = dict(
+        type="candle",
+        style=style,
+        volume=volume,
+        returnfig=True,
+        figsize=figsize,
+    )
+    if addplots:
+        plot_kwargs["addplot"] = addplots
+
+    fig, axes = mpf.plot(df, **plot_kwargs)
+    price_ax = axes[0]
+
+    # mplfinance pads the positional x-axis with a wide date-tick-driven
+    # margin (~7 bars each side on a 120-bar daily chart), leaving large
+    # empty gutters and breaking the integer-extent contract (bars sit at
+    # integer positions 0..N-1). Collapse the x-margin so the axis spans the
+    # data tightly; bars remain at integer positions, overlays via
+    # _x_for_date stay correct.
+    price_ax.margins(x=0)
+
+    vol_ax = None
+    if volume:
+        vol_ax = _resolve_volume_ax(fig, price_ax)
+        if vol_ax is not None:
+            # Strip volume y-tick labels (price ticks preserved on price_ax).
+            vol_ax.set_yticklabels([])
+            vol_ax.margins(x=0)
+
+    # Uniform gridlines per P14.N8.
+    price_ax.grid(True, alpha=0.3)
+
+    return fig, price_ax, vol_ax
+
+
+# ---------------------------------------------------------------------------
 # 1. Watchlist row thumbnail (200x100; MA lines; volume)
 # ---------------------------------------------------------------------------
 
@@ -219,92 +531,137 @@ def render_watchlist_thumbnail_svg(
 
 
 # ---------------------------------------------------------------------------
-# 2. Hyp-rec detail chart (800x500; MA + volume + optional pattern boundaries)
+# 2. Ticker detail chart (800x500; MA + volume + optional pattern boundaries)
+#    Shared by BOTH the hyp-rec-expand caller AND the watchlist-expand caller
+#    (single cached ticker_detail row); the suptitle is caller-agnostic.
 # ---------------------------------------------------------------------------
 
 
-def render_hyprec_detail_svg(
+def render_ticker_detail_svg(
     *, ticker: str, bars: pd.DataFrame,
     pattern_evaluation: PatternEvaluation | None = None,
 ) -> bytes:
-    _assert_ticker_safe(ticker)
-    close = _close_series(bars)
-    volume = _volume_series(bars)
+    """Phase 14 SB3 T-3.2 (§C.2): 800x500 candlestick detail chart.
 
-    fig, (ax_price, ax_vol) = plt.subplots(
-        nrows=2, ncols=1,
-        figsize=_figsize_inches(_HYPREC_DETAIL_SIZE_PX),
-        gridspec_kw={"height_ratios": [3, 1]},
-        sharex=True,
+    Candlesticks (volume=True) with the uniform MA palette (10/20/50/150/200)
+    via the shared :func:`_render_candles_fig` builder. Optional
+    ``pattern_evaluation`` paints a window band using NORMALIZED positions
+    via :func:`_x_for_date`. The suptitle stays neutral + caller-agnostic
+    (the single cached ticker_detail row is read by both the hyp-rec-expand
+    and watchlist-expand callers).
+    """
+    _assert_ticker_safe(ticker)
+    # Normalize ONCE; pass the SAME df to the figure builder AND every
+    # _x_for_date call (mpf positional-x coupling discipline).
+    df = _normalize_ohlc_for_mpf(bars)
+    close = _close_series(df)
+
+    fig, price_ax, vol_ax = _render_candles_fig(
+        df,
+        ma_windows=(10, 20, 50, 150, 200),
+        figsize=_figsize_inches(_TICKER_DETAIL_SIZE_PX),
+        volume=True,
     )
-    ax_price.plot(range(len(close)), close.values, color="#1f77b4",
-                  linewidth=1.0, label="Close")
-    for window, color in ((50, "#ff7f0e"), (150, "#2ca02c"), (200, "#d62728")):
-        if window <= len(close):
-            sma = close.rolling(window).mean()
-            ax_price.plot(range(len(sma)), sma.values, color=color,
-                          linewidth=0.8, alpha=0.8,
-                          label=f"MA{window}")
+
     if pattern_evaluation is not None:
-        # Pattern window boundaries as vertical band.
+        # Pattern window boundaries as a vertical band (positions via the
+        # normalized df, NOT raw bars).
         try:
-            window_start = bars.index.get_loc(
-                pd.Timestamp(pattern_evaluation.window_start_date)
+            window_start = _x_for_date(
+                price_ax, df, pattern_evaluation.window_start_date,
             )
         except (KeyError, TypeError):
             window_start = None
         try:
-            window_end = bars.index.get_loc(
-                pd.Timestamp(pattern_evaluation.window_end_date)
+            window_end = _x_for_date(
+                price_ax, df, pattern_evaluation.window_end_date,
             )
         except (KeyError, TypeError):
             window_end = None
         if window_start is not None and window_end is not None:
-            ax_price.axvspan(window_start, window_end,
+            price_ax.axvspan(window_start, window_end,
                              color="#ffeb3b", alpha=0.2,
                              label="pattern window")
-    if len(volume) > 0:
-        ax_vol.bar(range(len(volume)), volume.values, color="#888")
-    # Phase 13 T-T4.SB.5 Item 3: strip volume y-tick labels (ylabel preserved).
-    ax_vol.set_yticks([])
-    ax_price.legend(loc="upper left", fontsize=8)
-    ax_price.set_ylabel("Price (USD)")
-    ax_vol.set_ylabel("Volume")
+
+    # Legend only when there are labeled artists (the candles + MA addplots
+    # are unlabeled; the optional pattern-window band carries a label).
+    handles, _labels = price_ax.get_legend_handles_labels()
+    if handles:
+        price_ax.legend(loc="upper left", fontsize=8)
+    price_ax.set_ylabel("Price (USD)")
     _assert_ascii_only("Price (USD)", field="ylabel_price")
-    _assert_ascii_only("Volume", field="ylabel_vol")
-    _set_suptitle_no_math(fig, f"{ticker} | hyp-rec detail | last {len(close)} bars")
+    if vol_ax is not None:
+        vol_ax.set_ylabel("Volume")
+        _assert_ascii_only("Volume", field="ylabel_vol")
+    # KEEP the neutral, caller-agnostic suptitle. mpf renders `title=` as
+    # fig.suptitle; we suppress mpf's title (none passed) and set our own
+    # via _set_suptitle_no_math to avoid a duplicate suptitle.
+    _set_suptitle_no_math(fig, f"{ticker} | last {len(close)} bars")
     return _svg_bytes_from_fig(fig)
 
 
 # ---------------------------------------------------------------------------
 # 3. Position detail chart (800x500; fill markers + stop line + trail-MA)
+#    Phase 14 SB3 T-3.3 (§C.3 / §C.3a): candlesticks + BULZ risk/reward zones.
 # ---------------------------------------------------------------------------
+
+
+def _bulz_target_price(trade: Trade) -> float | None:
+    """Absolute BULZ target price, the inverse of the canonical r_mult formula.
+
+    ``target = entry_price + planned_target_R * (entry_price - initial_stop)``
+
+    This is a FIXED price locked at trade open (single-entry basis =
+    ``trade.entry_price``; NO avg-fill in V1). Returns ``None`` when
+    ``planned_target_R`` is unset (legacy / non-target trades) or the locked
+    risk-unit ``(entry_price - initial_stop)`` is non-positive (invalid long
+    shape — never invents an inverted target).
+    """
+    if trade.planned_target_R is None:
+        return None
+    r_unit = trade.entry_price - trade.initial_stop
+    if r_unit <= 0:
+        return None
+    return trade.entry_price + trade.planned_target_R * r_unit
 
 
 def render_position_detail_svg(
     *, ticker: str, bars: pd.DataFrame, trade: Trade,
     fills: list[Fill], current_stop: float | None,
 ) -> bytes:
+    """Phase 14 SB3 T-3.3 (§C.3 / §C.3a): 800x500 candlestick position chart.
+
+    Candlesticks (volume=True) with the uniform MA palette (10/20/50) via the
+    shared :func:`_render_candles_fig` builder. Fill markers re-attach via the
+    NORMALIZED df + :func:`_x_for_date` (mpf positional-x coupling). The
+    ``current_stop`` axhline is preserved. BULZ risk/reward shaded zones
+    (P14.N4) are drawn long-only (``stop < entry < target``); invalid shapes
+    skip + WARN-log per-ticker, never raise.
+    """
     _assert_ticker_safe(ticker)
-    close = _close_series(bars)
-    fig, ax = plt.subplots(figsize=_figsize_inches(_POSITION_DETAIL_SIZE_PX))
-    ax.plot(range(len(close)), close.values, color="#1f77b4",
-            linewidth=1.0, label="Close")
-    # MA50 for trail context.
-    if len(close) >= 50:
-        sma = close.rolling(50).mean()
-        ax.plot(range(len(sma)), sma.values, color="#ff7f0e",
-                linewidth=0.8, alpha=0.8, label="MA50")
-    # Fill markers (one per Fill row); positioned at the fill date if present
-    # in the bar window, else clamped to right edge.
-    bar_dates = [d.date() if hasattr(d, "date") else d for d in bars.index]
+    # Normalize ONCE; pass the SAME df to the figure builder AND every
+    # _x_for_date call (mpf positional-x coupling discipline).
+    df = _normalize_ohlc_for_mpf(bars)
+    close = _close_series(df)
+
+    fig, price_ax, vol_ax = _render_candles_fig(
+        df,
+        ma_windows=(10, 20, 50),
+        figsize=_figsize_inches(_POSITION_DETAIL_SIZE_PX),
+        volume=True,
+    )
+
+    # Fill markers (one per Fill row); positioned via NEAREST-FORWARD-bar
+    # placement on the NORMALIZED df (:func:`_x_for_fill_date`). A fill on a
+    # non-trading-day / holiday / tz-shifted date lands on the next trading
+    # bar (clamped to the last bar if past the window), NOT dropped. Only a
+    # fill whose fill_datetime can't be parsed at all is skipped.
     for fill in fills:
         try:
-            fill_date = pd.Timestamp(fill.fill_datetime).date()
-        except (ValueError, AttributeError):
+            fill_date = date.fromisoformat(fill.fill_datetime[:10])
+        except (ValueError, TypeError, AttributeError):
             continue
-        x = next((i for i, bd in enumerate(bar_dates) if bd >= fill_date),
-                 len(bar_dates) - 1)
+        x = _x_for_fill_date(df, fill_date)
         marker = {"entry": "^", "exit": "v", "trim": "v", "stop": "x"}.get(
             fill.action, "o",
         )
@@ -312,18 +669,79 @@ def render_position_detail_svg(
                  "trim": "#ff7f0e", "stop": "#d62728"}.get(
                      fill.action, "#888",
         )
-        ax.scatter([x], [fill.price], marker=marker, color=color,
-                   s=100, zorder=5, label=f"fill {fill.action}")
+        price_ax.scatter([x], [fill.price], marker=marker, color=color,
+                         s=100, zorder=5, label=f"fill {fill.action}")
+
     # Current stop horizontal line.
     if current_stop is not None and current_stop > 0:
-        ax.axhline(current_stop, color="#d62728", linestyle="--",
-                   linewidth=0.8, alpha=0.7, label="current stop")
-    ax.set_ylabel("Price (USD)")
-    ax.legend(loc="upper left", fontsize=7)
+        price_ax.axhline(current_stop, color="#d62728", linestyle="--",
+                         linewidth=0.8, alpha=0.7, label="current stop")
+
+    # BULZ risk/reward shaded zones (P14.N4). Long-only V1: zones assume
+    # stop < entry < target. Invalid/unsupported shapes skip + WARN; NEVER
+    # raise; NEVER draw an inverted band. Off-range valid zones are DRAWN
+    # (axhspan autoscales the y-axis), not silently hidden.
+    _draw_bulz_zones(price_ax, ticker=ticker, trade=trade,
+                     current_stop=current_stop)
+
+    price_ax.set_ylabel("Price (USD)")
+    _assert_ascii_only("Price (USD)", field="ylabel_price")
+    if vol_ax is not None:
+        vol_ax.set_ylabel("Volume")
+        _assert_ascii_only("Volume", field="ylabel_vol")
+    handles, _labels = price_ax.get_legend_handles_labels()
+    if handles:
+        price_ax.legend(loc="upper left", fontsize=7)
     _set_suptitle_no_math(
         fig, f"{trade.ticker} | position detail | last {len(close)} bars",
     )
     return _svg_bytes_from_fig(fig)
+
+
+def _draw_bulz_zones(
+    price_ax: Any, *, ticker: str, trade: Trade, current_stop: float | None,
+) -> None:
+    """Draw BULZ risk (entry->stop) + reward (entry->target) shaded zones.
+
+    Per §C.3a. Risk zone drawn only when ``stop`` and ``entry`` are both
+    present and ``stop < entry`` (valid long). Reward zone drawn only when a
+    target is derivable and ``target > entry``. Invalid/unsupported shapes
+    (short, ``stop >= entry``, ``target <= entry``, missing/zero entry/stop)
+    skip + WARN-log per-ticker; never raise; never draw an inverted band.
+    ASCII-only labels (the ``->`` arrow is ASCII).
+    """
+    entry = trade.entry_price
+    stop = current_stop
+
+    # Risk zone: entry -> stop (valid long requires stop < entry, both > 0).
+    if (entry is not None and stop is not None and entry > 0 and stop > 0
+            and stop < entry):
+        label = _assert_ascii_only(
+            "risk zone (entry->stop)", field="risk_zone_label",
+        )
+        price_ax.axhspan(stop, entry, color="#d62728", alpha=0.10,
+                         label=label)
+    else:
+        logger.warning(
+            "skipping BULZ risk zone for %s: invalid long shape "
+            "(entry=%s, stop=%s); long-only V1 requires stop < entry",
+            ticker, entry, stop,
+        )
+
+    # Reward zone: entry -> target (valid requires target > entry).
+    target = _bulz_target_price(trade)
+    if target is not None and entry is not None and entry > 0 and target > entry:
+        label = _assert_ascii_only(
+            "reward zone (entry->target)", field="reward_zone_label",
+        )
+        price_ax.axhspan(entry, target, color="#2ca02c", alpha=0.10,
+                         label=label)
+    elif target is not None:
+        logger.warning(
+            "skipping BULZ reward zone for %s: invalid long shape "
+            "(entry=%s, target=%s); long-only V1 requires target > entry",
+            ticker, entry, target,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -334,38 +752,31 @@ def render_position_detail_svg(
 def render_market_weather_svg(
     *, bars: pd.DataFrame, trend_template_state: str,
 ) -> bytes:
-    """Per spec §C.5 line 452: market weather mini-chart with MA50 + MA200
-    + volume bars + trend-template state badge.
+    """Phase 14 SB3 T-3.4 (§C.4): 400x150 candlestick market-weather chart.
+
+    Candlesticks (volume=True) with MA50 + MA200 from the uniform palette
+    via the shared :func:`_render_candles_fig` builder (gridlines per
+    P14.N8 come from the helper). The trend-template state renders as an
+    ASCII body-text badge via ``ax.text`` (underscore is LITERAL outside
+    mathtext, so ``trend: stage_2`` is SAFE in body text — it would NOT be
+    safe in a title). The real ``trend_template_state`` is computed at the
+    call sites (pipeline + interactive refresh) via
+    :func:`swing.patterns.foundation.current_stage` (§C.4a); this renderer
+    is state-agnostic.
     """
     _assert_ascii_only(trend_template_state, field="trend_template_state")
-    close = _close_series(bars)
-    volume = _volume_series(bars)
-    fig, (ax_price, ax_vol) = plt.subplots(
-        nrows=2, ncols=1,
+    df = _normalize_ohlc_for_mpf(bars)
+    fig, price_ax, _vol_ax = _render_candles_fig(
+        df,
+        ma_windows=(50, 200),
         figsize=_figsize_inches(_MARKET_WEATHER_SIZE_PX),
-        gridspec_kw={"height_ratios": [3, 1]},
-        sharex=True,
+        volume=True,
     )
-    ax_price.plot(range(len(close)), close.values,
-                  color="#1f77b4", linewidth=0.8)
-    for window, color in ((50, "#ff7f0e"), (200, "#d62728")):
-        if window <= len(close):
-            sma = close.rolling(window).mean()
-            ax_price.plot(range(len(sma)), sma.values, color=color,
-                          linewidth=0.6, alpha=0.8)
-    ax_price.set_xticks([])
-    ax_price.text(
+    price_ax.text(
         0.02, 0.88, f"trend: {trend_template_state}",
-        transform=ax_price.transAxes,
+        transform=price_ax.transAxes,
         fontsize=9, color="#222", fontweight="bold",
     )
-    # Volume bars per plan §C.5 line 452.
-    if len(volume) > 0:
-        ax_vol.bar(range(len(volume)), volume.values,
-                   color="#888", width=1.0)
-    ax_vol.set_xticks([])
-    # Phase 13 T-T4.SB.5 Item 3: strip volume y-tick labels.
-    ax_vol.set_yticks([])
     _set_suptitle_no_math(fig, "Market weather (SP500 daily)")
     return _svg_bytes_from_fig(fig)
 
@@ -398,9 +809,10 @@ def _annotate_vcp(ax: Any, ctx: _AnnotationContext, bars: pd.DataFrame) -> None:
             if not isinstance(depth, (int, float)):
                 continue
             ax.text(
-                0.02, 0.92 - i * 0.05,
+                0.98, 0.92 - i * 0.05,
                 f"contraction {i + 1}: {depth:.1f}pct",
                 transform=ax.transAxes, fontsize=8, color="#222",
+                ha="right",
             )
 
 
@@ -418,8 +830,9 @@ def _annotate_flat_base(
                    linewidth=0.8, alpha=0.7, label="bottom of range")
     duration = ctx.evidence.get("base_duration_days")
     if isinstance(duration, int):
-        ax.text(0.02, 0.92, f"duration: {duration} days",
-                transform=ax.transAxes, fontsize=8, color="#222")
+        ax.text(0.98, 0.92, f"duration: {duration} days",
+                transform=ax.transAxes, fontsize=8, color="#222",
+                ha="right")
 
 
 def _annotate_cup_with_handle(
@@ -428,8 +841,9 @@ def _annotate_cup_with_handle(
     """CWH: cup edges + handle markers + depth ratio."""
     depth = ctx.evidence.get("cup_depth_pct")
     if isinstance(depth, (int, float)):
-        ax.text(0.02, 0.92, f"depth ratio: {depth:.2f}",
-                transform=ax.transAxes, fontsize=8, color="#222")
+        ax.text(0.98, 0.92, f"depth ratio: {depth:.2f}",
+                transform=ax.transAxes, fontsize=8, color="#222",
+                ha="right")
     cup_bottom = ctx.evidence.get("cup_bottom_price")
     if isinstance(cup_bottom, (int, float)):
         ax.axhline(float(cup_bottom), color="#9467bd", linestyle=":",
@@ -442,12 +856,14 @@ def _annotate_high_tight_flag(
     """HTF: pole markers + consolidation box + days-tight."""
     days_tight = ctx.evidence.get("consolidation_duration_days")
     if isinstance(days_tight, int):
-        ax.text(0.02, 0.92, f"days tight: {days_tight}",
-                transform=ax.transAxes, fontsize=8, color="#222")
+        ax.text(0.98, 0.92, f"days tight: {days_tight}",
+                transform=ax.transAxes, fontsize=8, color="#222",
+                ha="right")
     pole_pct = ctx.evidence.get("pole_pct")
     if isinstance(pole_pct, (int, float)):
-        ax.text(0.02, 0.86, f"pole advance: {pole_pct:.1f}pct",
-                transform=ax.transAxes, fontsize=8, color="#222")
+        ax.text(0.98, 0.87, f"pole advance: {pole_pct:.1f}pct",
+                transform=ax.transAxes, fontsize=8, color="#222",
+                ha="right")
 
 
 def _annotate_double_bottom_w(
@@ -465,8 +881,9 @@ def _annotate_double_bottom_w(
                        linewidth=0.8, alpha=0.7, label=label)
     undercut = ctx.evidence.get("undercut")
     if isinstance(undercut, bool) and undercut:
-        ax.text(0.02, 0.92, "undercut: yes",
-                transform=ax.transAxes, fontsize=8, color="#222")
+        ax.text(0.98, 0.92, "undercut: yes",
+                transform=ax.transAxes, fontsize=8, color="#222",
+                ha="right")
 
 
 _ANNOTATORS = {
@@ -493,15 +910,16 @@ def render_theme2_annotated_svg(
     embedding inline SVG-in-SVG (deferred to V2 per spec §C.6).
     """
     _assert_ticker_safe(ticker)
-    close = _close_series(bars)
-    fig, ax = plt.subplots(figsize=_figsize_inches(_THEME2_ANNOTATED_SIZE_PX))
-    ax.plot(range(len(close)), close.values, color="#1f77b4",
-            linewidth=1.0, label="Close")
-    for window, color in ((50, "#ff7f0e"), (150, "#2ca02c"), (200, "#d62728")):
-        if window <= len(close):
-            sma = close.rolling(window).mean()
-            ax.plot(range(len(sma)), sma.values, color=color,
-                    linewidth=0.6, alpha=0.7, label=f"MA{window}")
+    # Phase 14 SB3 T-3.2 (§C.5): candlesticks with volume=False so the
+    # single-axis _annotate_* layout is preserved. Normalize ONCE; pass the
+    # SAME df to the figure builder AND every _x_for_date call.
+    df = _normalize_ohlc_for_mpf(bars)
+    fig, ax, _vol_ax = _render_candles_fig(
+        df,
+        ma_windows=(10, 20, 50, 150, 200),
+        figsize=_figsize_inches(_THEME2_ANNOTATED_SIZE_PX),
+        volume=False,
+    )  # _vol_ax is None
 
     pattern_class = pattern_evaluation.pattern_class
     try:
@@ -515,16 +933,16 @@ def render_theme2_annotated_svg(
         ctx = _AnnotationContext(pattern_class=pattern_class, evidence=evidence)
         annotator(ax, ctx, bars)
 
-    # Pattern window vertical band.
+    # Pattern window vertical band (positions via the normalized df).
     try:
-        window_start = bars.index.get_loc(
-            pd.Timestamp(pattern_evaluation.window_start_date)
+        window_start = _x_for_date(
+            ax, df, pattern_evaluation.window_start_date,
         )
     except (KeyError, TypeError):
         window_start = None
     try:
-        window_end = bars.index.get_loc(
-            pd.Timestamp(pattern_evaluation.window_end_date)
+        window_end = _x_for_date(
+            ax, df, pattern_evaluation.window_end_date,
         )
     except (KeyError, TypeError):
         window_end = None
@@ -539,7 +957,11 @@ def render_theme2_annotated_svg(
                 transform=ax.transAxes, fontsize=7, color="#555",
                 ha="right")
 
-    ax.legend(loc="upper left", fontsize=7)
+    # Legend only when an annotator added labeled artists (some annotators
+    # emit only ax.text overlays with no legend handle).
+    handles, _labels = ax.get_legend_handles_labels()
+    if handles:
+        ax.legend(loc="upper left", fontsize=7)
     ax.set_ylabel("Price (USD)")
     # Per L7 LOCK: pattern-class slugs like flat_base / cup_with_handle /
     # high_tight_flag / double_bottom_w contain ``_`` and MUST NOT flow

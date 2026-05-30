@@ -54,7 +54,7 @@ def test_insert_chart_render_roundtrips_through_sql(
     conn: sqlite3.Connection, pipeline_run_id: int,
 ) -> None:
     """insert_chart_render persists; SELECT post-INSERT returns matching values."""
-    chart = _make_chart(pipeline_run_id, ticker="XYZ", surface="hyprec_detail")
+    chart = _make_chart(pipeline_run_id, ticker="XYZ", surface="ticker_detail")
     with conn:
         chart_id = repo.insert_chart_render(conn, chart)
     row = conn.execute(
@@ -62,7 +62,7 @@ def test_insert_chart_render_roundtrips_through_sql(
         "source_data_hash FROM chart_renders WHERE id = ?",
         (chart_id,),
     ).fetchone()
-    assert row == ("XYZ", "hyprec_detail", pipeline_run_id, None, "deadbeef")
+    assert row == ("XYZ", "ticker_detail", pipeline_run_id, None, "deadbeef")
 
 
 def test_get_chart_render_by_id_returns_inserted_row(
@@ -99,7 +99,7 @@ def test_list_chart_renders_paginates_correctly(
     """list_chart_renders + filters + pagination work."""
     with conn:
         for i, sfc in enumerate([
-            "watchlist_row", "hyprec_detail", "watchlist_row",
+            "watchlist_row", "ticker_detail", "watchlist_row",
             "market_weather", "watchlist_row",
         ]):
             chart = _make_chart(
@@ -141,7 +141,7 @@ def test_repo_does_not_commit_within_function(
 def test_chart_renders_run_bound_cache_one_row_per_ticker_surface_run(
     conn: sqlite3.Connection, pipeline_run_id: int,
 ) -> None:
-    """Run-bound surfaces (watchlist_row / hyprec_detail / market_weather)
+    """Run-bound surfaces (watchlist_row / ticker_detail / market_weather)
     key on (ticker, surface, pipeline_run_id) per spec §C.2.
 
     ``refresh_chart_render`` is the canonical DELETE-then-INSERT path;
@@ -230,7 +230,7 @@ def test_chart_renders_session_anchor_read_write_alignment_no_false_miss(
     HIT (no false-MISS due to read/write anchor mismatch).
     """
     chart = _make_chart(
-        pipeline_run_id, ticker="SESS", surface="hyprec_detail",
+        pipeline_run_id, ticker="SESS", surface="ticker_detail",
         data_asof_date="2024-02-01",  # writer-stamped
     )
     with conn:
@@ -238,7 +238,7 @@ def test_chart_renders_session_anchor_read_write_alignment_no_false_miss(
 
     # Reader uses the SAME anchor value the writer stamped.
     out = repo.get_cached_chart_svg(
-        conn, ticker="SESS", surface="hyprec_detail",
+        conn, ticker="SESS", surface="ticker_detail",
         pipeline_run_id=pipeline_run_id,
         min_data_asof_date="2024-02-01",
     )
@@ -247,7 +247,7 @@ def test_chart_renders_session_anchor_read_write_alignment_no_false_miss(
     # Negative: a STRICTLY-LATER predicate (writer stamped 2024-02-01;
     # reader demands >= 2024-02-02) must return None (stale).
     stale = repo.get_cached_chart_svg(
-        conn, ticker="SESS", surface="hyprec_detail",
+        conn, ticker="SESS", surface="ticker_detail",
         pipeline_run_id=pipeline_run_id,
         min_data_asof_date="2024-02-02",
     )
@@ -293,7 +293,7 @@ def test_get_cached_chart_svg_returns_none_on_miss(
 ) -> None:
     """Cache-miss path: no row for the key → None (NOT an exception)."""
     out = repo.get_cached_chart_svg(
-        conn, ticker="MISS", surface="hyprec_detail",
+        conn, ticker="MISS", surface="ticker_detail",
         pipeline_run_id=pipeline_run_id,
     )
     assert out is None
@@ -332,14 +332,14 @@ def test_refresh_chart_render_caller_tx_rollback_undoes_both_delete_and_insert(
 
 
 def test_chart_render_rejects_run_bound_surface_with_null_pipeline_run_id() -> None:
-    """Per plan §C.2: run-bound surfaces (watchlist_row, hyprec_detail,
+    """Per plan §C.2: run-bound surfaces (watchlist_row, ticker_detail,
     market_weather) require non-NULL ``pipeline_run_id``. The pre-fix
     substrate accepted NULL silently; rows would be invisible to the
     canonical cache reader. Closes Codex R1 CRITICAL #1.
     """
     from swing.data.models import ChartRender
 
-    for surface in ("watchlist_row", "hyprec_detail", "market_weather"):
+    for surface in ("watchlist_row", "ticker_detail", "market_weather"):
         with pytest.raises(ValueError, match="pipeline_run_id"):
             ChartRender(
                 id=None, ticker="ABC", surface=surface,

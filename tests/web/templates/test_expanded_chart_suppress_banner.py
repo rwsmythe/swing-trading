@@ -43,7 +43,7 @@ def _make_hyp_vm(*, svg_bytes: bytes | None,
         data_asof_date=data_asof_date,
         chart_reason=chart_reason, chart_reason_message=chart_reason_message,
         pipeline_finished_at="2026-04-29T16:00:00",
-        hyprec_detail_chart_svg_bytes=svg_bytes,
+        ticker_detail_chart_svg_bytes=svg_bytes,
     )
 
 

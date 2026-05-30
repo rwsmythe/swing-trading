@@ -3,7 +3,7 @@
 Discriminating coverage per plan §B.3 Sub-task 3B:
 - watchlist_row collapse path serves cached watchlist_row SVG via JIT
 - watchlist_expand path populates watchlist_expanded_chart_svg_bytes via
-  JIT (shared hyprec_detail surface per spec §B.5)
+  JIT (shared ticker_detail surface per spec §B.5)
 """
 from __future__ import annotations
 
@@ -109,7 +109,7 @@ def test_watchlist_expand_uses_jit_to_populate_expanded_chart_bytes(
     seeded_db, seed_watchlist_and_candidate, monkeypatch,
 ):
     """Per spec §B.5 Item 5: watchlist_expand wires JIT via shared
-    surface='hyprec_detail' (cache-key reuse with hyp-recs route)."""
+    surface='ticker_detail' (cache-key reuse with hyp-recs route)."""
     cfg, cfg_path = seeded_db
     seed_watchlist_and_candidate(
         ticker="UCTT", entry_target=42.00,
@@ -121,7 +121,7 @@ def test_watchlist_expand_uses_jit_to_populate_expanded_chart_bytes(
     conn = connect(cfg.paths.db_path)
     try:
         _plant_chart_render_row(
-            conn, surface="hyprec_detail", ticker="UCTT",
+            conn, surface="ticker_detail", ticker="UCTT",
             pipeline_run_id=run_id,
             chart_svg_bytes=b"<svg>jit-expanded</svg>",
         )

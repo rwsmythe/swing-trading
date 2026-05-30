@@ -43,7 +43,12 @@ from pathlib import Path
 #   V1 simplifications #4 + #5; enables outcome bucketing per spec §5.10
 #   lines 785-790 + line 775. Backfill semantics: NULL for all pre-v21
 #   existing rows (OQ-1). Atomic BEGIN/COMMIT discipline preserved.
-EXPECTED_SCHEMA_VERSION = 22
+# phase 14 sub-bundle 3 chart-surface uniformity (migration 0023):
+#   atomic rename of the chart_renders.surface old detail token to
+#   'ticker_detail' via an id-preserving single-table rebuild. NO new tables,
+#   NO column-shape change, NO candlestick change. Atomic BEGIN/COMMIT
+#   discipline preserved (gotcha #9).
+EXPECTED_SCHEMA_VERSION = 23
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 # Phase 7 backup gate (spec §12.1): when migrating to schema_version >= 14,
@@ -147,6 +152,20 @@ PHASE13_SB6C_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
 # NOT ``<=``).
 PHASE14_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
     PHASE13_SB6C_PRE_MIGRATION_EXPECTED_TABLES
+)
+
+# Phase 14 Sub-bundle 3 backup gate (plan §G Task T-3.1): when migrating from
+# v22 -> v23+, snapshot the live v22 DB. Migration 0023 only renames a
+# chart_renders.surface enum value via a single-table rebuild -- NO new tables
+# -- so the table set present at v22 equals the set present after Sub-bundle 2
+# (which added pattern_detection_events + pattern_forward_observations).
+# Derived deterministically from the PHASE14 set so provenance stays auditable.
+# Filename pattern ``swing-pre-phase14-sb3-migration-<ISO>.db`` per CLAUDE.md
+# migration-runner backup-gate strict-equality gotcha (``pre_version == 22``
+# STRICT EQUALITY, NOT ``<=``).
+PHASE14_SB3_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
+    PHASE14_PRE_MIGRATION_EXPECTED_TABLES
+    | {"pattern_detection_events", "pattern_forward_observations"}
 )
 
 
@@ -534,6 +553,33 @@ def _create_pre_phase13_sb6c_migration_backup(
     return backup_path
 
 
+def _create_pre_phase14_sb3_migration_backup(
+    src_path: Path, *, dest_dir: Path,
+) -> Path:
+    """Phase 14 Sub-bundle 3 mirror with phase14-sb3 filename prefix.
+
+    SQLite-native Connection.backup() snapshot before the 0023 migration.
+    Backup file pattern ``swing-pre-phase14-sb3-migration-<ISO>.db``.
+    SQLite-native Connection.backup() is the only acceptable snapshot
+    mechanism (consistent under live writers).
+    """
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    backup_path = (
+        dest_dir / f"swing-pre-phase14-sb3-migration-{timestamp}.db"
+    )
+    src_conn = sqlite3.connect(src_path)
+    try:
+        dest_conn = sqlite3.connect(backup_path)
+        try:
+            src_conn.backup(dest_conn)
+        finally:
+            dest_conn.close()
+    finally:
+        src_conn.close()
+    return backup_path
+
+
 def _create_pre_phase14_migration_backup(
     src_path: Path, *, dest_dir: Path,
 ) -> Path:
@@ -860,6 +906,50 @@ def _phase14_backup_gate(
         ) from exc
 
 
+def _phase14_sb3_backup_gate(
+    conn: sqlite3.Connection,
+    *,
+    current_version: int,
+    target_version: int,
+    backup_dir: Path | None,
+) -> None:
+    """Phase 14 Sub-bundle 3 backup-before-migrate gate (plan §G Task T-3.1).
+
+    Fires only when ``current_version == 22 AND target_version >= 23`` -- a
+    real production v22 DB about to receive migration 0023 (chart_renders
+    surface rename). STRICT EQUALITY on pre_version per CLAUDE.md gotcha
+    ``pre_version == (target - 1)`` (NOT ``<=``). Multi-step walks from
+    pre-v22 baselines bypass this gate by design (matches Phase 9 / 12 C.A /
+    13 / 14 SB2 precedent).
+
+    Filename: ``swing-pre-phase14-sb3-migration-<ISO>.db``.
+    """
+    if target_version < 23 or current_version != 22:
+        return
+    src_path = _resolve_main_db_path(conn)
+    if src_path is None:
+        raise MigrationBackupRequiredException(
+            "pre-Phase-14-SB3 backup gate requires a file-backed source DB; "
+            "in-memory connections cannot be snapshotted."
+        )
+    if backup_dir is None:
+        backup_dir = src_path.parent
+    try:
+        backup_path = _create_pre_phase14_sb3_migration_backup(
+            src_path, dest_dir=backup_dir,
+        )
+        _verify_backup_integrity(
+            backup_path,
+            expected_tables=PHASE14_SB3_PRE_MIGRATION_EXPECTED_TABLES,
+        )
+    except MigrationBackupRequiredException:
+        raise
+    except (OSError, sqlite3.Error) as exc:
+        raise MigrationBackupRequiredException(
+            f"pre-Phase-14-SB3 backup failed: {exc}"
+        ) from exc
+
+
 def run_migrations(
     conn: sqlite3.Connection,
     *,
@@ -921,6 +1011,12 @@ def run_migrations(
         backup_dir=backup_dir,
     )
     _phase14_backup_gate(
+        conn,
+        current_version=current,
+        target_version=target_version,
+        backup_dir=backup_dir,
+    )
+    _phase14_sb3_backup_gate(
         conn,
         current_version=current,
         target_version=target_version,

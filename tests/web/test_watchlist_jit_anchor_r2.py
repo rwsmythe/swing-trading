@@ -188,7 +188,7 @@ def test_watchlist_expand_no_run_does_not_pick_up_mid_request_pipeline(
             action_session_date="2026-05-20", lease_token="t-run100",
         )
         _plant_chart_render(
-            cfg, ticker=ticker, surface="hyprec_detail",
+            cfg, ticker=ticker, surface="ticker_detail",
             pipeline_run_id=run100, data_asof_date="2026-05-19",
             body=b"<svg>RUN_100_LATE_BYTES</svg>",
         )
@@ -224,7 +224,7 @@ def test_watchlist_row_threads_single_pipeline_anchor(
     """R2 MAJOR #2: /row response must thread VM-pinned anchor through to
     the JIT chart lookup.
 
-    Plant pipeline_run 100 + a planted hyprec_detail-style row chart for
+    Plant pipeline_run 100 + a planted ticker_detail-style row chart for
     it. Build the VM (binds to run 100). Plant pipeline_run 101 + a chart
     for it between VM-build and JIT-call. Assert the response carries
     run 100's chart bytes (the VM's anchor), NOT run 101's.

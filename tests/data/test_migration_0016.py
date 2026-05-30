@@ -33,9 +33,9 @@ def conn(tmp_path: Path) -> Iterator[sqlite3.Connection]:
 
 
 def test_migration_0016_advances_schema_version(conn: sqlite3.Connection) -> None:
-    # ensure_schema walks to HEAD; migration 0022 advanced schema_version to 22.
+    # ensure_schema walks to HEAD; migration 0023 advanced schema_version to 23.
     version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-    assert version == 22
+    assert version == 23
 
 
 def test_migration_0016_creates_daily_management_records_table(

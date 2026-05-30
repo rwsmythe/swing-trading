@@ -44,6 +44,12 @@ web = [
     "fastapi>=0.115,<1.0",
     "uvicorn[standard]>=0.30,<1.0",
     "jinja2>=3.1,<4.0",
+    # Phase 14 Sub-bundle 3 (chart-surface uniformity): `swing.web.charts`
+    # imports mplfinance at module load (candlestick conversion T-3.2..T-3.5),
+    # and `swing web` launches the FastAPI app which imports that module. Every
+    # profile that can launch `swing web` needs mplfinance, so it is declared
+    # here in addition to `dev`/`charts`.
+    "mplfinance>=0.12",
 ]
 
 [project.scripts]

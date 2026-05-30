@@ -227,14 +227,14 @@ def test_v20_migration_lands_all_tables(tmp_path: Path) -> None:
         assert required in indexes, f"v20 index missing: {required!r}"
 
     # Schema version landed.
-    # ensure_schema walks to HEAD (v22 post-Phase-14-SB2 migration 0022).
+    # ensure_schema walks to HEAD (v23 post-Phase-14-SB3 migration 0023).
     version_row = conn.execute("SELECT version FROM schema_version").fetchone()
     assert version_row is not None
-    assert version_row[0] == 22, (
-        f"schema_version should be 22 (HEAD) post-migration, got {version_row[0]}"
+    assert version_row[0] == 23, (
+        f"schema_version should be 23 (HEAD) post-migration, got {version_row[0]}"
     )
-    assert EXPECTED_SCHEMA_VERSION == 22, (
-        "EXPECTED_SCHEMA_VERSION must equal 22 in db.py (post-Phase-14-SB2)"
+    assert EXPECTED_SCHEMA_VERSION == 23, (
+        "EXPECTED_SCHEMA_VERSION must equal 23 in db.py (post-Phase-14-SB3)"
     )
 
     conn.close()
@@ -827,10 +827,10 @@ def test_schema_version_v20_invariant(tmp_path: Path) -> None:
     db_path = tmp_path / "pin_v20.db"
     conn = ensure_schema(db_path)
     version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-    # Phase 14 Sub-bundle 2 migration 0022 bumps HEAD to 22; the cross-bundle
+    # Phase 14 Sub-bundle 3 migration 0023 bumps HEAD to 23; the cross-bundle
     # pin's intent (schema_version pinned at HEAD) is preserved by tracking the
     # current constant, not the literal v20 from T3.SB1's branch-base.
-    assert version == 22
+    assert version == 23
     conn.close()
 
 

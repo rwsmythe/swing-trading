@@ -122,7 +122,7 @@ class WatchlistExpandedVM:
     chart_reason: str | None = None         # None when chart is available
     chart_reason_message: str | None = None
     # Phase 13 T-T4.SB.3 (Item 5): inline SVG bytes from chart_renders cache
-    # (surface='hyprec_detail' — shared with the hyp-recs route per spec §B.5
+    # (surface='ticker_detail' — shared with the hyp-recs route per spec §B.5
     # cache-key reuse + renderer-kwargs uniformity LOCK). None when no cache
     # row exists; populated by the route via the JIT helper at request time.
     # Template uses if-else cascade so non-None SVG suppresses the PNG +
