@@ -17,7 +17,15 @@ from swing.data.db import connect
 from swing.data.models import ChartRender
 from swing.data.repos.chart_renders import refresh_chart_render
 from swing.evaluation.dates import last_completed_session
+# Phase 14 SB3 T-3.4 (§C.4a): module-top import so the discriminating test may
+# monkeypatch ``swing.web.routes.dashboard.current_stage``. Read-only wrapper
+# (SELECTs only — L6/L2 preserved).
+from swing.patterns.foundation import current_stage
 from swing.web.chart_scope import latest_completed_pipeline_run
+# Phase 14 SB3 T-3.4: module-top import (was a function-local import) so the
+# discriminating test may monkeypatch
+# ``swing.web.routes.dashboard.render_market_weather_svg``.
+from swing.web.charts import render_market_weather_svg
 from swing.web.view_models.dashboard import build_dashboard
 
 router = APIRouter()
@@ -112,9 +120,24 @@ def dashboard_weather_chart_refresh(request: Request) -> Response:
                     "run the pipeline first"
                 ),
             )
-        from swing.web.charts import render_market_weather_svg
+        # Phase 14 SB3 T-3.4 (§C.4a): derive the REAL trend-template state via
+        # current_stage at this LIVE site. `last_completed_session(...)`
+        # returns a `date` already — pass it DIRECTLY (no `.date()`). Own
+        # fail-soft try/except falls back to "undefined" on any error so the
+        # refresh never crashes. `conn` is in scope; read is SELECT-only
+        # (L6/L2 preserved).
+        try:
+            weather_state = current_stage(
+                conn, benchmark, last_completed_session(datetime.now()),
+            )
+        except Exception as exc:  # noqa: BLE001 - fail-soft, never crash refresh
+            log.warning(
+                "weather refresh current_stage failed for %s: %s",
+                benchmark, exc,
+            )
+            weather_state = "undefined"
         svg_bytes = render_market_weather_svg(
-            bars=bars, trend_template_state="n/a",
+            bars=bars, trend_template_state=weather_state,
         )
         now_iso = datetime.now().isoformat()
         chart_render = ChartRender(

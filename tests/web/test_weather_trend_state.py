@@ -44,9 +44,14 @@ def pipeline_db(tmp_path):
     from swing.data.db import ensure_schema as _ensure
     from tests.cli.test_cli_eval import _minimal_config
 
-    project = tmp_path / "project"
+    # Use a dedicated subdir so this fixture does not collide with the
+    # conftest `seeded_db`/`test_cfg` fixture (which also creates a top-level
+    # `project` dir under the same tmp_path) when a test uses both.
+    base = tmp_path / "pipeline_db"
+    base.mkdir()
+    project = base / "project"
     project.mkdir()
-    home = tmp_path / "home"
+    home = base / "home"
     home.mkdir()
     cfg_path = _minimal_config(project, home)
     cfg = load_config(cfg_path)
