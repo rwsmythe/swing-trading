@@ -196,6 +196,15 @@ operator-confirmed locks (no live operator in this dispatch):
   `build_open_positions_expanded` (consult `position_detail` cache via
   `get_or_render_surface`).
 
+**Shared chart substrate (small carve-out, Codex R4 M#1):**
+- `swing/web/charts.py` -- add a module-level **matplotlib render lock** at the
+  shared render boundary (`_svg_bytes_from_fig` + the `mpf.plot`/`plt.subplots`
+  sites) so EVERY web render path serializes (pyplot global-state safety, §4.2).
+  This is the one in-scope edit to the SB3-created shared helper; it is a
+  correctness fix SB4 owns because it introduces the high-concurrency rendering
+  (the journal listing) that makes the latent hazard acute. No behavior change
+  to existing renderers beyond serialization.
+
 **Chart helper (new, read-only):**
 - NEW `swing/web/trade_charts.py` (sibling to `charts.py`) --
   `render_trade_window_position_svg(...)` + `render_trade_window_thumbnail_svg(...)`
@@ -352,19 +361,24 @@ uses pyplot GLOBAL state (`matplotlib.pyplot as plt`, `mpf.plot(...)`,
 `plt.subplots(...)`, `plt.close(fig)`) -- which is NOT thread-safe -- and there
 is NO existing render lock today. A single concurrent chart request is a latent
 risk already; the journal listing's up-to-`page_size` lazy thumbnail renders
-make it acute. Resolution: SB4 introduces a **process-wide matplotlib render
-lock (a module-level `threading.Lock` / semaphore of 1)** that every SB4 render
-path (CR.1 chart, journal thumbnail, drill-down chart) acquires around the
-`charts.py` render call. This simultaneously (a) fixes the pyplot thread-safety
-hazard and (b) is the "explicit render-concurrency bound" R2 M#2 called for --
-the two concerns unify into one lock. Consequence: thumbnails render
-sequentially behind the lock (~250ms each warm); the lazy-load (async per row)
-means the browser is never blocked -- renders trickle in -- and the
-freshness/request memo + pagination keep the queue bounded. If the
-writing-plans phase instead PROVES the SB3 renderers are fully figure-local /
-Agg-safe (OO `Figure`/`FigureCanvasAgg`, no pyplot global state), the lock may
-be relaxed to a pure load bound -- but the pyplot evidence above says assume
-serialize until proven otherwise.
+make it acute. Resolution: SB4 introduces a **process-wide matplotlib render lock (a
+module-level `threading.Lock` / semaphore of 1) at the SHARED `charts.py` render
+boundary** -- the single choke point `_svg_bytes_from_fig` (and the
+`mpf.plot`/`plt.subplots` sites) that EVERY web renderer passes through -- NOT
+only the SB4 paths. **(Codex R4 M#1):** the pyplot hazard is process-global, so
+a lock that wrapped only SB4 renders would still let an existing render
+(trade-detail JIT, watchlist thumbnail, weather) run concurrently with an SB4
+render and corrupt pyplot state. Centralizing the lock at the shared boundary
+makes EVERY web matplotlib render path acquire it with one change. This is a
+small, deliberate carve-out into the SB3-created `charts.py` shared helper
+(§3) -- justified because SB4 is the surface that introduces the high-concurrency
+rendering that makes the pre-existing latent hazard acute, and the shared helper
+is the correct single home. It simultaneously (a) fixes the pyplot
+thread-safety hazard globally and (b) is the "explicit render-concurrency bound"
+R2 M#2 called for. If writing-plans instead PROVES the renderers are fully
+figure-local / Agg-safe (OO `Figure`/`FigureCanvasAgg`, no pyplot global state),
+the lock may relax to a pure load bound -- but the pyplot evidence above says
+assume serialize until proven otherwise.
 
 **No-coverage is a first-class state (Codex R1 M#6):** a journal explicitly
 invites historical browsing, so a trade older than the ~5y archive depth is NOT
@@ -521,16 +535,25 @@ So the journal thumbnail is a NEW small **candlestick** via
 `render_trade_window_thumbnail_svg` (§4.2), NOT a reuse of the `watchlist_row`
 cache surface.
 
-**Lazy-load to keep the listing fast:** N synchronous matplotlib renders on
-the listing load would block. Each row emits an empty thumbnail cell that
-self-loads:
+**Lazy-load ON SCROLL to keep the listing fast AND bound the render queue
+(Codex R4 M#2):** rendering all rows' thumbnails at once -- even lazily -- would
+queue up to `page_size` renders behind the process-wide render lock (§4.2),
+creating multi-second tail latency and occupying workers. Instead each row's
+thumbnail loads only when scrolled into view, via `hx-trigger="revealed"`
+(HTMX's intersection-observer trigger), so the lock queue is naturally bounded
+to the handful of rows actually on screen:
 
 ```
 <td class="journal-thumb"
     hx-get="/journal/trades/{{ row.trade_id }}/thumbnail"
-    hx-trigger="load" hx-swap="innerHTML"
+    hx-trigger="revealed" hx-swap="innerHTML"
     hx-headers='{"HX-Request": "true"}'></td>
 ```
+
+Combined with a **smaller default page size for the thumbnail-bearing listing
+(~20-25 rows, not 50)**, this keeps the concurrent render demand low even on a
+fast scroll. The render lock + on-scroll trigger + freshness memo together
+prevent a single journal page from becoming a self-inflicted DoS.
 
 `GET /journal/trades/{id}/thumbnail` returns the `<svg>` (or a
 chart-unavailable `<span>`), memoized via the freshness-keyed memo (§4.2; NOT
@@ -1038,8 +1061,17 @@ Minors folded: m#1 structured WARNING on every exception fallback; m#2
 distinguish missing-trade in fragment text + logs; m#3 record warm medians in
 merge notes as a baseline.
 
-*(Round 4 verdict appended at chain close; target NO_NEW_CRITICAL_MAJOR.
-Cumulative through R3: 0 critical / 20 major / 17 minor; ALL 20 majors
+**Round 4 -- 0 critical / 2 major / 0 minor (verdict ISSUES_FOUND).** Both
+majors were follow-ons of the R3 render-lock decision; resolved in-spec:
+- R4 M#1 lock must be global, not SB4-only -> §3/§4.2 the render lock lives at
+  the SHARED `charts.py` render boundary so every web render path serializes (a
+  small, justified carve-out into the SB3 shared helper).
+- R4 M#2 lock could queue ~50 renders / DoS -> §5.3 thumbnails load on scroll
+  via `hx-trigger="revealed"` (intersection-observer) + a smaller default page
+  size (~20-25), bounding the lock queue to on-screen rows.
+
+*(Round 5 verdict appended at chain close; target NO_NEW_CRITICAL_MAJOR.
+Cumulative through R4: 0 critical / 22 major / 17 minor; ALL 22 majors
 resolved-via-code, ZERO accepted-without-fix.)*
 
 ---
