@@ -29,6 +29,7 @@ from swing.web.charts import (
     OhlcNormalizationError,
     _normalize_ohlc_for_mpf,
     _render_candles_fig,
+    _resolve_volume_ax,
     _x_for_date,
     render_market_weather_svg,
     render_position_detail_svg,
@@ -550,6 +551,38 @@ def test_render_candles_fig_returns_price_and_volume_axes(ohlc_bars):
         assert vol_ax is not price_ax
         # SECONDARY geometry guard: volume panel sits below the price panel.
         assert vol_ax.get_position().y0 < price_ax.get_position().y0
+    finally:
+        plt.close(fig)
+
+
+def test_resolve_volume_ax_matches_volume_ylabel_role(ohlc_bars):
+    """T-3.2: the ROLE branch must actually fire on the real mpf panel.
+
+    mplfinance labels the volume panel ``"Volume  $10^{6}$"`` (auto
+    scale-factor suffix), so resolution must match on a normalized Volume
+    PREFIX, not exact equality. Assert the resolved axis is the one whose
+    configured y-label (BEFORE any stripping) starts with "Volume" — i.e.
+    the role mechanism selected it, not the geometry fallback.
+    """
+    df = _normalize_ohlc_for_mpf(ohlc_bars)
+    fig, price_ax, _vol = _render_candles_fig(
+        df, ma_windows=(10, 20, 50), figsize=(8, 5), volume=True,
+    )
+    try:
+        # Identify the labelled volume panel independently of the helper.
+        labelled = [
+            ax for ax in fig.axes
+            if ax is not price_ax
+            and ax.get_ylabel().strip().lower().startswith("volume")
+        ]
+        assert labelled, (
+            "expected mpf to label the volume panel with a 'Volume' prefix; "
+            f"got ylabels {[ax.get_ylabel() for ax in fig.axes]!r}"
+        )
+        resolved = _resolve_volume_ax(fig, price_ax)
+        assert resolved in labelled
+        # The suffix proves the exact-equality check would have been DEAD.
+        assert resolved.get_ylabel().strip().lower().startswith("volume")
     finally:
         plt.close(fig)
 

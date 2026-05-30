@@ -319,24 +319,35 @@ def _resolve_volume_ax(fig: Any, price_ax: Any) -> Any:
     """Resolve mpf's volume panel by ROLE, never a fixed axes index.
 
     mplfinance's axes count/order shifts with style/panels (and each panel
-    has a twin for secondary y). The volume panel is the lower
-    (smaller ``y0``) non-twin sibling whose configured lower y-label is the
-    volume label. We match on the ylabel role + geometry rather than an
-    index so callers never touch ``axes[i]`` by position.
+    has a twin sibling for the secondary y-axis). The volume panel
+    advertises its role through its lower y-label, but mpf appends an
+    auto-computed scale-factor suffix (e.g. ``"Volume  $10^{6}$"``), so an
+    exact-equality check never fires on the real panel. We therefore match
+    on a NORMALIZED y-label prefix: an axis whose configured y-label,
+    stripped of surrounding whitespace and compared case-insensitively,
+    starts with ``"Volume"``. This is the primary role mechanism.
+
+    Only when no axis advertises a Volume label do we fall back to GEOMETRY:
+    the lowest panel (smallest ``y0``) below the price axis. We do NOT
+    explicitly skip twin axes — a twin shares its host's exact ``y0``, and
+    the volume twin carries an empty y-label, so the role match selects the
+    labelled (non-twin) volume panel directly; the geometry fallback relies
+    on ``fig.axes`` insertion order placing the labelled panel ahead of its
+    twin when ``y0`` values tie. Callers never touch ``axes[i]`` by position.
     """
     candidates = []
     for ax in fig.axes:
         if ax is price_ax:
             continue
-        # Skip twin axes (shared position with another axis) — pick the
-        # primary panel sibling. Twins share the exact bbox of their host.
         ylabel = ax.get_ylabel()
         candidates.append((ax, ylabel, ax.get_position().y0))
-    # Prefer an axis whose ylabel matches the volume role.
+    # Primary: an axis whose y-label advertises the volume role. mpf appends
+    # a scale-factor suffix, so match on a normalized prefix, not equality.
     for ax, ylabel, _y0 in candidates:
-        if ylabel == _MPF_VOLUME_YLABEL:
+        if ylabel.strip().lower().startswith(_MPF_VOLUME_YLABEL.lower()):
             return ax
-    # Fallback: the lowest panel (smallest y0) that is below the price axis.
+    # Secondary fallback: no axis advertises a Volume label — pick the lowest
+    # panel (smallest y0) that sits below the price axis by geometry.
     price_y0 = price_ax.get_position().y0
     below = [c for c in candidates if c[2] < price_y0]
     if below:
