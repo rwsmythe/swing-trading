@@ -18,7 +18,7 @@ from swing.data.models import ChartRender
 from swing.data.repos.chart_renders import refresh_chart_render
 from swing.evaluation.dates import last_completed_session
 
-# Phase 14 SB3 T-3.4 (§C.4a): module-top import so the discriminating test may
+# Phase 14 SB3 T-3.4 (section C.4a): module-top import so the test may
 # monkeypatch ``swing.web.routes.dashboard.current_stage``. Read-only wrapper
 # (SELECTs only -- L6/L2 preserved).
 from swing.patterns.foundation import current_stage
@@ -122,7 +122,7 @@ def dashboard_weather_chart_refresh(request: Request) -> Response:
                     "run the pipeline first"
                 ),
             )
-        # Phase 14 SB3 T-3.4 (§C.4a): derive the REAL trend-template state via
+        # Phase 14 SB3 T-3.4 (section C.4a): derive the REAL trend state via
         # current_stage at this LIVE site. `last_completed_session(...)`
         # returns a `date` already -- pass it DIRECTLY (no `.date()`). Own
         # fail-soft try/except falls back to "undefined" on any error so the
