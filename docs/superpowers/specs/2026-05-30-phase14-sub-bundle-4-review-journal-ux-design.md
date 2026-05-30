@@ -1,0 +1,727 @@
+# Phase 14 Sub-bundle 4 -- Review + Journal UX -- Design Spec
+
+**Status:** brainstorming draft (pre-Codex). Authored 2026-05-30 from
+`docs/phase14-sub-bundle-4-review-journal-ux-brainstorming-dispatch-brief.md`.
+Branch `phase14-sub-bundle-4-review-journal-ux-brainstorming` off main HEAD
+`f4fe825`. Schema substrate v23 (LOCKED). Single Codex chain at end (Sec 9.1
+Q7; pure UX/wiring).
+
+**Scope (L1):** CR.1 (closeout-review surface exit-data + chart-snapshot
+enhancement) + P14.N6 (journal browse-the-database redesign) + the in-scope
+BULZ row-expand wiring (SB3 banked follow-up #1). Read-mostly over
+already-shipped data; **no new trade-mutation path; no schema change** (verdict
+in §11).
+
+---
+
+## §1 Architecture overview
+
+### §1.1 The three deliverables and their shared spine
+
+All three surfaces consume **already-shipped data** (trades, fills,
+review_log, trade_events, daily_management_records, candidates,
+pattern_evaluations) and the **SB3 candlestick renderers** in
+`swing/web/charts.py`. None requires a new write path or a new analytical
+artifact. The unifying technical spine is a single new **read-only,
+trade-window chart helper** (§4.2) that CR.1 and P14.N6's drill-down both
+reuse, plus a single new **per-trade chronology assembly** (§5.4) that only
+the drill-down needs.
+
+| Deliverable | Surface(s) | New code center of gravity | Chart source |
+|---|---|---|---|
+| CR.1 | `GET /trades/{id}/review` (EXISTS) | `ReviewVM` field delta + `review.html.j2` block | trade-window render-direct (§4.2) |
+| P14.N6 listing | `GET /journal` (EXISTS, minimal) | `JournalVM` enrichment + redesigned `journal.html.j2` + new row partial | lazy-load candlestick thumbnail (§5.3) |
+| P14.N6 drill-down | `GET /journal/trades/{id}` (NEW route) | new VM + chronology helper + template | trade-window render-direct (§4.2) |
+| BULZ row-expand | `GET /trades/open/{id}/expand` (EXISTS) | `OpenPositionsExpandedVM` field + template swap | **cached** `position_detail` SVG (§6) |
+
+### §1.2 The central technical finding (drives §4, §7, §11)
+
+The naive plan -- "reuse the cached `position_detail` SVG for the review and
+journal charts" -- is **wrong for closed trades** on two independent axes,
+both verified in production code at draft time:
+
+1. **Window anchoring.** `OhlcvCache.get_or_fetch(ticker, window_days=180)`
+   (`swing/web/ohlcv_cache.py:131`) is *backward-looking, anchored on
+   `last_completed_session(now())`* (docstring lines 143-146). The
+   `position_detail` JIT (`swing/web/chart_jit.py:117`) calls it with
+   `window_days=200`. So the rendered window always ends at *today*, never at
+   the trade's exit date. For a trade closed more than ~200 calendar days ago
+   the chart contains **none of the trade's bars**; the fill markers clamp to
+   the last bar (`_x_for_fill_date` nearest-forward clamp,
+   `swing/web/charts.py`) and render a misleading chart. This is the #29
+   historical-depth / window-anchoring failure mode in full.
+2. **Cache-key collision.** The `position_detail` cache key is
+   `(ticker, surface='position_detail', pipeline_run_id IS NULL)` -- *ticker
+   only, run-agnostic* (`get_cached_chart_svg` lines 170-197; v20 §3.2 LOCK).
+   There is exactly one cached `position_detail` row per ticker. A ticker that
+   was traded, closed, and re-entered has two `Trade` rows but one cache slot;
+   serving the journal drill-down for the *old* closed trade from that slot
+   shows the *current* open trade's chart (different fills, different stop).
+
+**Resolution (no schema):** closed-trade charts (CR.1, journal drill-down,
+journal thumbnails) **reuse the SB3 _renderer_ `render_position_detail_svg`
+(and the shared `_render_candles_fig` helper), NOT the `chart_renders`
+_cache_.** They render direct over a **trade-window archive slice** keyed
+conceptually by `trade_id` (immutable closed trades), with an optional
+in-process memo. The `position_detail` *cache* stays the property of the
+pipeline/dashboard surfaces, where it is correct (open tickers, current run,
+trailing window). The **BULZ row-expand (open trades only) keeps using the
+cache** because for an open position the trailing-today window and the
+ticker-only key are both correct. This asymmetry -- *open trades use the
+cache, closed trades render-direct* -- is the load-bearing decision of the
+sub-bundle.
+
+### §1.3 Brief-vs-production corrections (Expansion #2 / #4; verified at f4fe825)
+
+1. **CR.1 form already exists (CONFIRMED).** `GET`/`POST /trades/{id}/review`
+   at `swing/web/routes/trades.py:2589`/`:2609`; `build_review_vm` +
+   `ReviewVM` at `swing/web/view_models/trades.py:1183`/`:1106`; templates
+   `review.html.j2` + `partials/review_form.html.j2`. CR.1 is the
+   exit-data + chart-snapshot **delta**, not a greenfield form. ReviewVM
+   already carries `actual_realized_R_effective`, `mfe_pct`, `mae_pct`,
+   priors. It does **not** carry exit_price/exit_date or any chart bytes ->
+   that is the delta.
+2. **`Trade` has no `exit_price`/`exit_date` column (CORRECTION).** Exit data
+   is derived from non-entry `fills` (`swing/data/repos/fills.py`
+   `list_fills_for_trade:168`). `_fill_to_exit_like` + the existing
+   `compute_actual_realized_R_effective` path already consume them. CR.1's
+   "exit price" is a **derivation**, not a column read.
+3. **The `position_detail` JIT window is anchored on today, not the trade
+   (CORRECTION to the brief's "reuse the cached position_detail SVG"
+   recommendation).** See §1.2. Reuse the renderer, not the cache, for closed
+   trades.
+4. **Entry-flag column sources (#4 verification, partial).** chart shapes:
+   `Trade.chart_pattern_algo` / `Trade.chart_pattern_operator`
+   (`models.py:206-208`) + `pattern_evaluations.pattern_class` via
+   `Trade.pattern_evaluation_id` (`models.py:265`; `pattern_class` CHECK enum
+   = vcp/flat_base/cup_with_handle/high_tight_flag/double_bottom_w at
+   `0020_*.sql`). A+ tier: `candidates.bucket`
+   (aplus/watch/skip/error/excluded, `0001_phase1_initial.sql:28`) via
+   `Trade.candidate_id` (`models.py:264`). Hypothesis: `Trade.hypothesis_label`
+   free-text (`models.py:203`). **The "hyp-rec (and which)" linkage has NO
+   direct FK on `trades`** -- see OQ-4 (§13). `planned_target_R`
+   (`models.py:256`) drives the BULZ target via `_bulz_target_price`
+   (`charts.py:609`).
+5. **A `journal_trade_chart` cache surface (the brief's hypothetical v24
+   trigger) would need a new `trade_id` COLUMN + partial unique index, not
+   merely a CHECK-enum value** -- because closed trades are neither run-bound
+   nor safely ticker-keyed. That is heavier than the brief assumed and is
+   unnecessary under the render-direct resolution. Schema stays v23 (§11).
+
+---
+
+## §2 Pre-locked operator decisions
+
+### §2.1 Sec 9.1 commissioning LOCKs (binding for all Phase 14 sub-bundles)
+
+- **Q1** sequencing: data-wiring (SHIPPED) -> temporal log (SHIPPED) ->
+  chart-surface uniformity (SHIPPED) -> **review + journal UX (THIS)** ->
+  metrics overview. Confirmed.
+- **Q2** execution = SERIAL. Confirmed.
+- **Q5** graphics = matplotlib SVG. **No JS charting library.** Every chart /
+  thumbnail in this sub-bundle uses the SB3 mplfinance renderers. Confirmed.
+- **Q6** close-out = operator browser-witnessed verification at merge.
+  Confirmed; gate ladder in §10.
+- **Q7** Codex chain count = orchestrator discretion; **SINGLE chain** for
+  this brainstorming (pure UX/wiring). Reconsider at writing-plans only if the
+  chronology assembly (§5.4) is judged a substantive analytical artifact
+  (recommend: still single -- it is a read-only merge, not analysis).
+
+### §2.2 Operator decisions captured / assumed at this brainstorming (2026-05-30)
+
+These are the brainstorm's own resolutions of the brief's §3 OQs. They are
+**recommendations for operator triage at writing-plans dispatch**, NOT
+operator-confirmed locks (no live operator in this dispatch):
+
+- **OD-1 (chart surface):** reuse SB3 renderer, render-direct, no cache, no
+  schema for closed-trade charts (§1.2). Open-trade BULZ row-expand reuses the
+  cache.
+- **OD-2 (thumbnails):** candlestick (not the watchlist line thumbnail),
+  lazy-loaded per row (§5.3).
+- **OD-3 (thumbnail breadth):** journal listing ONLY in this sub-bundle. The
+  broader dashboard open-positions / hyp-rec thumbnail wiring (P14.N1) stays
+  banked (OQ-3, §13).
+- **OD-4 (total_risk):** dollar risk at open = `initial_shares *
+  (entry_price - initial_stop)`; capital-floor memory applies only if a
+  %-of-capital column is added (OQ-6).
+- **OD-5 (decomposition):** 6 writing-plans slices (§9).
+- **OD-6 (banked rider #2):** bank the market_weather 200MA fetch-window fix
+  standalone; do NOT fold into SB4 (L8).
+
+### §2.3 Sub-bundle 4 phase LOCKs (this brief, restated)
+
+- **L1** scope = CR.1 + P14.N6 + BULZ row-expand wiring ONLY.
+- **L2** read-mostly; NO new trade-mutation path. The review POST +
+  `complete_trade_review` (`swing/trades/review.py:550`) write contract is
+  **unchanged**. Journal + drill-down + all charts are pure reads. Escalate if
+  a write seems required (none does, per this design).
+- **L3** no schema change expected; verdict v23-unchanged (§11). A v24 would
+  only arise from a new chart cache surface, which §1.2 eliminates.
+- **L4** HTMX browser-only failure-surface trinity applies to journal
+  sort/filter/drill-down/thumbnail (§8).
+- **L5** matplotlib visual-gate discipline; ASCII-only annotations; reuse SB3
+  renderers, no candlestick re-implementation (§4, §10).
+- **L6** L2 Schwab LOCK preserved; ZERO new `schwabdev.Client.*` call sites;
+  source-grep test stays green. The Schwab daily-bar wiring (banked #4) stays
+  OUT (§12).
+- **L7** record the chart-access UX brief §2 reversal when the row-expand
+  inlines the `position_detail` SVG (§6).
+- **L8** market_weather 200MA fix banked standalone (OD-6).
+
+---
+
+## §3 Module touch list
+
+**Read-only assemblies / VMs (new or extended):**
+- `swing/web/view_models/trades.py` -- `ReviewVM` (+ exit-data fields +
+  `position_chart_svg_bytes`); `build_review_vm` (derive exit legs + render
+  closed-trade chart).
+- `swing/web/view_models/journal.py` -- `JournalVM` (+ rich per-trade row
+  list `rows: tuple[JournalRowVM, ...]`); `build_journal` (enrich each trade);
+  NEW `JournalRowVM` dataclass; NEW `build_trade_drilldown_vm` +
+  `TradeDrilldownVM`.
+- NEW `swing/web/view_models/trade_chronology.py` (sibling-module strategy) --
+  `TradeChronology`, `ChronologyEntry`, `build_trade_chronology(conn,
+  trade_id)` (§5.4).
+- `swing/web/view_models/open_positions_row.py` --
+  `OpenPositionsExpandedVM` (+ `position_chart_svg_bytes`);
+  `build_open_positions_expanded` (consult `position_detail` cache via
+  `get_or_render_surface`).
+
+**Chart helper (new, read-only):**
+- NEW `swing/web/trade_charts.py` (sibling to `charts.py`) --
+  `render_trade_window_position_svg(...)` + `render_trade_window_thumbnail_svg(...)`
+  + `_trade_window_bars(...)` (§4.2). Reuses `charts.render_position_detail_svg`
+  and `charts._render_candles_fig`; NO candlestick re-implementation.
+
+**Routes:**
+- `swing/web/routes/journal.py` -- extend `GET /journal` (sort/filter query
+  params); NEW `GET /journal/trades/{trade_id}` (drill-down); NEW
+  `GET /journal/trades/{trade_id}/thumbnail` (lazy thumbnail fragment).
+- `swing/web/routes/trades.py` -- `review_form_page` passes the new
+  `ohlcv`/archive plumbing (already passes `ohlcv_cache`); `open_position_expand`
+  unchanged signature (VM does the work).
+
+**Templates:**
+- `swing/web/templates/review.html.j2` + `partials/review_form.html.j2` --
+  exit-data block + chart block.
+- `swing/web/templates/journal.html.j2` -- full redesign (rich table).
+- NEW `partials/journal_row.html.j2`, NEW `partials/journal_thumbnail.html.j2`,
+  NEW `journal_trade_detail.html.j2`, NEW
+  `partials/trade_chronology.html.j2`.
+- `partials/open_positions_expanded.html.j2` -- swap legacy `<img>` for SVG.
+
+**Repos consumed (read-only, no change):** `repos/fills.py`
+(`list_fills_for_trade`, `list_all_fills`, `get_authoritative_entry_fill`);
+`repos/trades.py` (`get_trade`, `list_open_trades`, `list_closed_trades`);
+`repos/review_log.py`; `repos/chart_renders.py` (`get_cached_chart_svg`);
+`data/ohlcv_archive.py` (`read_or_fetch_archive`); `trade_events` +
+`daily_management_records` via inline SELECTs in the chronology helper.
+
+**NO schema files touched.** `EXPECTED_SCHEMA_VERSION` stays 23
+(`swing/data/db.py:51`). No `0024_*.sql`.
+
+---
+
+## §4 CR.1 design (exit data + chart snapshot)
+
+### §4.1 Exit-data delta
+
+CR.1 is a read-surface enrichment of the EXISTING review form. `build_review_vm`
+already loads `non_entry_fills` (`trades.py:1232`). Add to `ReviewVM`:
+
+- `exit_legs: tuple[ExitLegVM, ...]` -- per-leg `(action, fill_datetime[:10],
+  price, quantity, reason)` from the non-entry fills (sorted by datetime ASC).
+- `exit_price_vwap: float | None` -- share-weighted average exit price across
+  exit/trim/stop fills (`sum(price*qty)/sum(qty)`); `None` when no exit fill
+  exists (defensive -- a `state=='closed'` trade should always have at least
+  one). Mirrors the `_compute_execution_price` multi-leg VWAP discipline
+  (Phase 12 reconciliation gotcha) so the displayed "exit price" matches the
+  execution-grain convention used elsewhere.
+- `exit_date_last: str | None` -- the final exit fill's date (the close date).
+- `total_risk_dollars: float` -- `initial_shares * (entry_price -
+  initial_stop)` (the risk taken at open; OD-4). Display-only.
+
+`actual_realized_R_effective` (final R) is ALREADY on the VM -- surface it
+prominently in the exit block; no new computation.
+
+All four are pure derivations inside the existing `with conn:` block in
+`build_review_vm`; no new query against trade-mutation tables, no write.
+
+### §4.2 Chart snapshot -- the trade-window render-direct helper
+
+NEW `swing/web/trade_charts.py`:
+
+```
+def _trade_window_bars(*, ticker, entry_date: date, exit_date: date | None,
+                       cfg, pad_before_days=30, pad_after_days=10) -> pd.DataFrame | None:
+    """Archive slice [entry_date - pad_before, (exit_date or today) + pad_after].
+    Reads read_or_fetch_archive(ticker, end_date=window_end,
+    cache_dir=cfg.paths.prices_cache_dir,
+    archive_history_days=cfg.archive.archive_history_days) -> full archive
+    rows <= end_date; then slices the lower bound locally (consumer-slices
+    per the 'return FULL archive; consumers slice' gotcha). Returns None when
+    the archive lacks coverage for the window (older than archive depth) or
+    yfinance is empty (F6 transient -> None, never blank)."""
+
+def render_trade_window_position_svg(*, trade, fills, cfg) -> bytes | None:
+    """Full 800x500 candlestick trade chart. Reuses
+    charts.render_position_detail_svg(ticker=, bars=<window>, trade=, fills=,
+    current_stop=trade.current_stop). Returns None on no-coverage ->
+    caller renders a chart-unavailable state (reuse the open_positions
+    chart_reason pattern)."""
+
+def render_trade_window_thumbnail_svg(*, trade, fills, cfg) -> bytes | None:
+    """Small candlestick thumbnail via charts._render_candles_fig at thumbnail
+    figsize (ma_windows=(10, 20)). Same window as the full chart. No
+    fill markers (thumbnail). Returns None on no-coverage."""
+```
+
+**Archive depth is ample (mitigates #29):** `cfg.archive.archive_history_days
+= 1260` (`swing/config.py:205`) -- ~1260 trading days (~5 calendar years). The
+on-disk archive always extends to today (`read_or_fetch_archive` docstring:
+the archive "always extends to `_last_completed_session_today()` regardless")
+with ~5y of depth, so virtually every closed trade in a swing system (held
+days-to-weeks, closed within the last few years) has full window coverage.
+The no-coverage path bites only trades older than ~5 years -- rare -- and
+degrades cleanly to a chart-unavailable state (never a misleading clamped
+chart). This is precisely why render-direct over the archive (vs the
+trailing-200d `position_detail` JIT) is both correct AND practical.
+
+**Why render-direct, not cache:** §1.2. The helper is pure-read; closed trades
+are immutable so an optional `functools.lru_cache`-style memo keyed by
+`trade_id` (or a request-lifetime dict) is safe and sufficient -- NOT a
+`chart_renders` row. **Do NOT write through to `chart_renders`** (would
+collide the ticker-keyed `position_detail` slot).
+
+**Window correctness for open trades:** when `exit_date is None` (open trade,
+relevant only in the journal path, not CR.1 which is closed-only), the window
+end is today -> the live trailing window. So the single helper is correct for
+both states; CR.1 only ever calls it on closed trades.
+
+### §4.3 ReviewVM chart field
+
+Add `position_chart_svg_bytes: bytes | None = None` to `ReviewVM`, populated by
+`render_trade_window_position_svg`. Template guards
+`{% if vm.position_chart_svg_bytes %}` (mirrors `detail.html.j2:65`). The
+chart renders the candlesticks + the trade's fill markers (entry ^, exit v,
+stop x) + current-stop line + BULZ risk/reward zones -- exactly what the
+operator needs to "identify notes to add to the journal" (CR.1 framing).
+
+### §4.4 ASCII / mathtext (L5)
+
+No new title/label strings beyond what `render_position_detail_svg` already
+emits (ASCII-clean, verified SB3). The thumbnail renderer passes NO title
+(thumbnails are unlabeled). `_assert_ascii_only` already guards the reused
+renderer's labels.
+
+---
+
+## §5 P14.N6 design (browse-the-database journal)
+
+### §5.1 Main listing -- rich rows
+
+Redesign `journal.html.j2`'s trade table (currently 3 columns:
+Ticker/Entry/Status, lines 36-43) into a rich, sortable/filterable table.
+`build_journal` already loads `list_open_trades + list_closed_trades` and the
+`_ExitShape` adapter. Build a per-trade `JournalRowVM`:
+
+```
+@dataclass(frozen=True)
+class JournalRowVM:
+    trade_id: int
+    ticker: str
+    entry_date: str
+    state: str
+    open_price: float            # trade.entry_price
+    shares: int                  # trade.initial_shares
+    total_risk_dollars: float    # initial_shares*(entry_price-initial_stop)
+    closing_price: float | None  # VWAP exit (None for open trades)
+    final_r: float | None        # compute_actual_realized_R_effective (None=open)
+    # entry-time flags (all None-safe):
+    chart_pattern: str | None    # chart_pattern_operator or _algo or pattern_evaluations.pattern_class
+    aplus_bucket: str | None     # candidates.bucket via candidate_id
+    hypothesis_label: str | None # trade.hypothesis_label
+    has_hyprec_link: bool        # candidate_id is not None (see OQ-4 for "which")
+```
+
+`closing_price` + `final_r` reuse the SAME `_ExitShape` / VWAP /
+`compute_actual_realized_R_effective` derivations as CR.1 (§4.1) -- factor a
+shared `swing/trades/derived_metrics`-adjacent helper or call the review
+helpers directly; do NOT duplicate the math (single source of math truth per
+the existing `derived_metrics` discipline).
+
+Entry-flag joins: a single batched read of `candidates.bucket` /
+`candidates.pattern_tag` (by the set of `candidate_id`s) and
+`pattern_evaluations.pattern_class` (by the set of `pattern_evaluation_id`s)
+inside the existing `with conn:` block -- avoid N+1 per-row queries.
+
+### §5.2 Database-browsing affordance -- sort + filter
+
+The "browse the database" ask = a sortable + filterable table. V1 columns
+sortable: entry_date, ticker, final_r, total_risk_dollars, state. Filters:
+state (open/closed/reviewed), period (existing), has-A+ flag, chart-pattern
+class. **HTMX-driven, no full reload** -- the table `<tbody>` swaps via an
+OOB-safe fragment (§8). Server-side sort/filter (the dataset is small,
+single-operator); the route accepts `sort=`, `dir=`, `filter_state=`,
+`filter_pattern=` query params, validates against allowlists (frozenset, reject
+unknown -> 400 + clear, mirroring `_ALLOWED_PERIODS`), and re-renders the
+`<tbody>` partial.
+
+### §5.3 Candlestick thumbnails -- lazy-loaded per row
+
+Operator ask: "the small charts ... except using candlesticks." The watchlist
+thumbnail is a LINE chart (`render_watchlist_thumbnail_svg`); SB3 left it line.
+So the journal thumbnail is a NEW small **candlestick** via
+`render_trade_window_thumbnail_svg` (§4.2), NOT a reuse of the `watchlist_row`
+cache surface.
+
+**Lazy-load to keep the listing fast:** N synchronous matplotlib renders on
+the listing load would block. Each row emits an empty thumbnail cell that
+self-loads:
+
+```
+<td class="journal-thumb"
+    hx-get="/journal/trades/{{ row.trade_id }}/thumbnail"
+    hx-trigger="load" hx-swap="innerHTML"
+    hx-headers='{"HX-Request": "true"}'></td>
+```
+
+`GET /journal/trades/{id}/thumbnail` returns the `<svg>` (or a
+chart-unavailable `<span>`), memoized in-process by `trade_id`. SVG content is
+not a table element -> no synthetic-table-wrap hazard (§8). For open trades the
+thumbnail uses today's trailing window; for closed trades the trade window.
+
+### §5.4 Click-through drill-down -- chronology + annotated chart
+
+NEW `GET /journal/trades/{trade_id}` -> `journal_trade_detail.html.j2`. Two
+panels:
+
+**(a) Per-trade chronology** (NEW read-only assembly,
+`swing/web/view_models/trade_chronology.py`). There is **no existing
+chronology helper** -- this is the only genuinely new assembly logic. Merge,
+into one timestamp-sorted list of `ChronologyEntry(ts, source, kind, summary,
+detail)`:
+- `fills` (entry/exit/trim/stop -- `list_fills_for_trade`),
+- `trade_events` (event_type rows -- inline SELECT, best-effort JSON payload
+  parse with None fallbacks per the `_load_audit_entries` precedent),
+- `daily_management_records` (Phase 8 daily snapshots / stop adjusts --
+  inline SELECT, active rows `is_superseded=0`),
+- `review_log` (the post-trade review entry, if any -- via
+  `repos/review_log.py`).
+
+Ordering: ascending by ISO timestamp; ties broken by a fixed source-precedence
+(fill < daily_management < trade_event < review) so the merge is
+deterministic. Malformed/missing timestamps sort last with a flag, never
+raise (read-only over operator data). **Per-source sub-sections are an
+alternative** (OQ-5) but a unified chronology better serves "browse the
+database / how the trade went."
+
+The "entries filled out at opening" the operator references = the entry fill +
+the pre-trade decision fields already on the `Trade` row (`thesis`, `why_now`,
+`invalidation_condition`, premortem_*, etc., `models.py:236-253`) -- surface
+those as a static "trade thesis at open" block above the chronology
+(read-only; no new data).
+
+**(b) Annotated full chart** = `render_trade_window_position_svg` (§4.2) --
+candlesticks + entry/stop/target (BULZ zones) + fill markers over the trade
+window. Same helper CR.1 uses (built once in CR.1 slice, reused here).
+
+### §5.5 ASCII / mathtext (L5)
+
+New template text is HTML, not matplotlib -- mathtext N/A. The only matplotlib
+strings are the reused `render_position_detail_svg` labels (ASCII-clean). The
+chronology `summary`/`detail` are plain text in HTML. ASCII discipline (#16/#32)
+declared across all NEW templates + the new view-model + `trade_charts.py`.
+
+---
+
+## §6 BULZ row-expand wiring (in-scope rider)
+
+`partials/open_positions_expanded.html.j2:38-40` embeds the legacy static
+`<img src="/charts/{date}/{ticker}.png">`. Replace with the SB3
+`position_detail` SVG -- candlesticks + BULZ zones (P14.N4) -- so the operator's
+PRIMARY dashboard workflow shows the same chart as the trade-detail page.
+
+**This row-expand reuses the `position_detail` CACHE (not render-direct)**
+because the row only exists for OPEN trades (`open_position_expand` 404s
+closed trades, `routes/trades.py:2556-2582`): the trailing-today window and
+ticker-only key are both correct for an open position. Plumb
+`position_chart_svg_bytes: bytes | None` onto `OpenPositionsExpandedVM`,
+populated in `build_open_positions_expanded` via
+`chart_jit.get_or_render_surface(surface='position_detail', ticker=,
+pipeline_run_id=None, trade=, fills=, current_stop=, data_asof_date=,
+ohlcv_cache=)` -- the SAME path `build_trade_detail_vm` uses (`trades.py:1771`),
+keeping renderer-kwargs uniform (Expansion #10c; cache-collision-free).
+
+Template (SVG INSIDE the existing `<td colspan="10">`, fragment still leads
+with `<tr>` per the synthetic-table-wrap rule -- gotcha preserved):
+
+```
+{% if expanded.position_chart_svg_bytes %}
+  <div class="position-detail-chart">{{ expanded.position_chart_svg_bytes.decode('utf-8') | safe }}</div>
+{% elif expanded.chart_reason_message %}
+  <div class="chart-unavailable" ...>{{ expanded.chart_reason_message }}</div>
+{% endif %}
+```
+
+**L7 reversal record:** the chart-access UX brief §2 deliberately put
+position-detail on a SEPARATE page; inlining it into the row-expand reverses
+that. Add a dated note to that brief in the BULZ-wiring slice commit.
+
+**Discriminating test:** assert `GET /trades/open/{id}/expand` response body
+contains `<svg` (or `position-detail-chart`) and does NOT contain
+`<img src="/charts/`.
+
+---
+
+## §7 Chart-surface reuse-vs-new-enum decision (schema impact)
+
+| Surface | Trades | Window correct? | Key correct? | Decision |
+|---|---|---|---|---|
+| `position_detail` cache (existing) | open | yes (trailing today) | yes (ticker, current run) | **reuse cache** -> BULZ row-expand (§6) |
+| `position_detail` cache for CLOSED | closed | **NO** (anchored today) | **NO** (ticker collides) | reject -> render-direct |
+| NEW `journal_trade_chart` cache | closed | needs trade_id col | needs trade_id col + index | reject (heavier than enum; v24+) |
+| render-direct trade-window (NEW helper) | both | yes (explicit window) | yes (trade_id memo) | **adopt** for CR.1 + journal (§4.2) |
+
+**Verdict: reuse the SB3 _renderer_, NOT a cache surface, for closed-trade
+charts. No new `chart_renders` surface enum. No v24 migration. Schema stays
+v23.** (Full schema analysis §11.)
+
+---
+
+## §8 HTMX surface disciplines applied (L4)
+
+Every new HTMX interaction inherits the binding trinity + shared-VM discipline:
+
+1. **Sort/filter `<tbody>` swap:** the sort/filter endpoint returns a fragment
+   whose root is **table-row-free** is NOT achievable for a `<tbody>` body, so
+   deliver the new rows via an **OOB swap into the destination `<tbody>`** (the
+   fragment's primary content is a `<div>`/empty; rows arrive as
+   `hx-swap-oob` into `#journal-tbody`) -- per the "HTMX response leading with
+   `<tr>` triggers synthetic-table-wrap" gotcha. Alternatively target the
+   whole `<table>` with `outerHTML` so the `<table>` wrapper is present (no
+   bare `<tr>` at root). The writing-plans slice pins one approach; the
+   operator-witnessed browser gate is binding (TestClient cannot see the
+   synthetic-wrap drop).
+2. **Lazy thumbnail (`hx-trigger="load"`):** returns `<svg>`/`<span>` (not a
+   table element) -> no wrap hazard; `innerHTML` swap into the `<td>`.
+3. **Drill-down link:** a plain `<a href="/journal/trades/{id}">` full
+   navigation (not HTMX) -- simplest; the drill-down is a full page. If made
+   HTMX, the HX-Redirect/204 disciplines would apply, but a plain link avoids
+   them entirely (recommended V1).
+4. **Embedded controls** (sort headers, filter `<select>`) inside HTMX
+   fragments carry `hx-headers='{"HX-Request":"true"}'` so OriginGuard
+   strict-mode does not 403 them.
+5. **No new POST** -> no 204/HX-Redirect-vs-303 surface in this sub-bundle
+   (read-only; L2). If any control is a form, success stays GET-render.
+6. **Shared `base.html.j2` VM fields:** `JournalRowVM`/`TradeDrilldownVM` are
+   NOT base-layout VMs, but `JournalVM` IS (it extends base). Any NEW
+   `vm.foo` referenced in `base.html.j2` must be added with a safe default to
+   ALL base VMs (`DashboardVM`, `PipelineVM`, `JournalVM`, `WatchlistVM`,
+   `PageErrorVM`) -- this sub-bundle adds none to base, but the new
+   `TradeDrilldownVM` (a base-layout page) MUST carry the full base banner
+   field set (`session_date`, `stale_banner`, `*_degraded`,
+   `unresolved_material_discrepancies_count`, `recent_multi_leg_auto_correction_count`,
+   `banner_resolve_link`) with safe defaults, or Jinja 500s.
+
+---
+
+## §9 Sub-bundle decomposition recommendation (writing-plans slices)
+
+P14.N6 is the largest item; CR.1 establishes the shared chart helper. Six
+slices, ordered so each lands testable and reuses the prior:
+
+- **Slice 0 -- CR.1 (exit-data + chart snapshot).** Builds the shared
+  `trade_charts.py` helper (`_trade_window_bars` +
+  `render_trade_window_position_svg`) + `ReviewVM` exit fields + chart field +
+  `review.html.j2` blocks. Smallest; lands the helper Slice 4 reuses.
+  (~3-5 commits, ~10-15 tests.)
+- **Slice 1 -- BULZ row-expand wiring.** Independent; `OpenPositionsExpandedVM`
+  field + cache plumbing + template swap + L7 reversal note. (~2-3 commits,
+  ~5-8 tests.)
+- **Slice 2 -- Journal listing substrate.** `JournalRowVM` + `build_journal`
+  enrichment (open_price/shares/total_risk/closing_price/final_r/entry-flags) +
+  redesigned `journal.html.j2` + `journal_row.html.j2`. No charts, no
+  sort/filter yet -- pure data + template (testable without matplotlib).
+  (~4-6 commits, ~15-20 tests.)
+- **Slice 3 -- Sort/filter (database-browsing).** Query-param sort/filter +
+  HTMX `<tbody>` swap (§8). (~3-4 commits, ~10-15 tests; operator browser gate.)
+- **Slice 4 -- Candlestick thumbnails.** `render_trade_window_thumbnail_svg` +
+  `GET /journal/trades/{id}/thumbnail` + lazy-load cell. (~2-4 commits,
+  ~8-12 tests; matplotlib visual gate.)
+- **Slice 5 -- Drill-down.** `GET /journal/trades/{id}` +
+  `build_trade_drilldown_vm` + `trade_chronology.py` assembly + annotated
+  chart (reuses Slice 0 helper) + templates. Largest. (~5-8 commits,
+  ~20-30 tests; matplotlib + chronology gate.)
+
+Total estimate ~19-30 commits + ~70-100 tests (aligns with the commissioning
+brief's ~20-35 commits / ~50-100 tests for this sub-bundle). Slices 0-1 are
+independent of 2-5 and could parallelize at executing-plans; 2->3->4->5 are
+serial (each builds on the listing).
+
+---
+
+## §10 Test fixture strategy + visual-gate enumeration
+
+### §10.1 Fixtures
+- A closed single-leg trade + its entry/exit fills + a recent exit date
+  (within archive depth) -> trade-window chart has coverage.
+- A closed multi-leg trade (2 exit fills) -> VWAP exit price + multi-marker
+  chart.
+- An OLD closed trade (exit date older than archive depth) -> helper returns
+  None -> chart-unavailable state asserted.
+- An open trade -> thumbnail uses trailing window; final_r/closing_price None.
+- A reopened ticker (two trades, same ticker) -> proves render-direct serves
+  the correct per-trade chart (the cache-collision regression test).
+- Trades with / without candidate_id + pattern_evaluation_id -> entry-flag
+  None-safety.
+- A trade with fills + trade_events + daily_management_records + review_log ->
+  chronology merge ordering + malformed-payload best-effort.
+
+### §10.2 What tests CAN and CANNOT certify (L4 / L5)
+- **CAN:** VM field values; derivation arithmetic (exit VWAP, total_risk,
+  final_r -- compute under both single + multi-leg per the
+  `feedback_regression_test_arithmetic` discipline); route status codes; body
+  contains `<svg`/absence of legacy `<img>`; chronology ordering; sort/filter
+  allowlist rejection; OHLCV-window slice bounds; None-on-no-coverage.
+- **CANNOT (operator-witnessed gate required):** that the candlestick chart
+  renders correctly (matplotlib geometry, not string equality -- L5); that the
+  HTMX `<tbody>` swap / lazy thumbnail / drill-down navigation work in a REAL
+  browser (synthetic-table-wrap + OriginGuard are browser-only -- L4).
+  Byte/string-equality tests are declared INSUFFICIENT for chart correctness.
+
+### §10.3 Operator-witnessed gate ladder (Sec 9.1 Q6)
+- **S1** fast suite (`pytest -m "not slow"`) + `ruff check swing/` clean.
+- **S2** schema probe: `EXPECTED_SCHEMA_VERSION == 23`; NO new `00XX_*.sql`;
+  live DB untouched (no migration runs).
+- **S3** CR.1: operator opens a real closed trade's review page -> exit
+  price/date/legs + final R visible + candlestick chart with fills/zones over
+  the TRADE window (not a trailing-today window).
+- **S4** journal listing: rich rows render with all flag columns; candlestick
+  thumbnails lazy-load; sort + filter work without full reload.
+- **S5** drill-down: chronology renders in order; annotated chart shows
+  entry/stop/target/fills over the trade window.
+- **S6** BULZ row-expand: dashboard open-position row-expand shows the SB3
+  candlestick + BULZ zones SVG, NOT the legacy PNG.
+- **Fallback** for surfaces with no live data (e.g. no eligible closed trade
+  with in-depth archive): orchestrator render-to-PNG + Read inspection, per
+  the SB3 S6 documented substitute. Re-confirm the
+  `feedback_visual_gate_both_render_and_browser` operator-driven-browser
+  preference for SB4 at the gate.
+
+---
+
+## §11 Schema impact analysis
+
+**Verdict: NO schema change. Schema stays v23.**
+
+- No new table, column, CHECK, or index. `EXPECTED_SCHEMA_VERSION = 23`
+  unchanged; no `0024_*.sql`.
+- The only candidate trigger (a new `chart_renders` surface enum for closed-
+  trade charts) is **eliminated** by the render-direct decision (§1.2, §7).
+  Closed-trade charts hold no cache row.
+- Because no schema changes, gotcha #11 (CHECK + constant + dataclass +
+  `_row_to_*` paired) and #9 (executescript BEGIN/COMMIT/ROLLBACK) and the
+  STRICT `pre_version==23` backup gate are **not invoked** -- and the spec must
+  ASSERT zero migration (S2 gate). The v22 (temporal-log) and v23 (chart-
+  surface-rename) substrates are untouched.
+- If writing-plans or Codex later argues for a persisted closed-trade chart
+  cache (performance), that is a v24 with a NEW `trade_id` column + partial
+  unique index (NOT a bare enum value) -- flagged as a V2 candidate (§12), not
+  V1.
+
+---
+
+## §12 V1 simplifications + V2 candidates
+
+**V1 simplifications (deliberate, documented):**
+- Closed-trade charts render-direct (in-process memo only); no persisted
+  cache. Acceptable for a single operator; revisit only if profiling shows
+  listing latency.
+- "Total risk" = dollar risk at open; no %-of-capital column (OD-4 / OQ-6).
+- "hyp-rec (and which)" surfaces `has_hyprec_link` (candidate_id present) +
+  `hypothesis_label`; the specific hyp-rec registry row is deferred (OQ-4) --
+  no direct FK exists on `trades`.
+- Drill-down is a full page navigation (plain `<a>`), not an HTMX in-place
+  expand -- avoids the 204/HX-Redirect surface entirely.
+- Sort/filter is server-side full-`<tbody>` re-render, not client-side.
+- Thumbnails lazy-load one render at a time (no batch executor parallelism).
+
+**V2 candidates (banked, NOT designed here):**
+- Persisted closed-trade chart cache (v24: `trade_id` column + index) if
+  render-direct latency becomes a problem.
+- %-of-capital risk column (capital-floor-aware per
+  `project_capital_risk_floor`).
+- Formal hyp-rec registry linkage (a `trades.hypothesis_recommendation_id` FK)
+  if the operator wants "which hyp-rec" precisely.
+- Broader P14.N1 thumbnail wiring to dashboard open-positions + hyp-rec rows
+  (OQ-3) -- outside the review+journal L1 LOCK.
+- Operator failure-mode classification surface (Tier 4; commissioning brief
+  Sec 6) -- explicitly Phase 15 / later sub-bundle.
+- market_weather 200MA fetch-window fix (banked rider #2; OD-6).
+
+---
+
+## §13 Operator decision items (OQs)
+
+Surfaced for operator triage at writing-plans dispatch (Codex should pressure-
+test the recommendations):
+
+1. **OQ-1 CR.1 chart window:** confirm the trade-window render-direct chart
+   (entry-30d .. exit+10d) over a reused cached `position_detail` (trailing
+   today). **Recommend render-direct** (§1.2). Padding days (30/10)
+   operator-tunable.
+2. **OQ-2 chart surface / schema:** confirm NO new `chart_renders` surface
+   enum; reuse the SB3 renderer render-direct. **Recommend confirm** (§7,
+   §11).
+3. **OQ-3 thumbnail breadth:** journal listing ONLY (recommend), or also
+   dashboard open-positions + hyp-rec rows (broader P14.N1)? The BULZ
+   row-expand already touches the dashboard -- does that widen the door?
+   **Recommend keep surgical** (journal only); bank P14.N1 dashboard breadth.
+4. **OQ-4 entry-flag "hyp-rec (and which)":** no direct FK on `trades`. V1 =
+   `has_hyprec_link` + `hypothesis_label` + pattern_class + A+ bucket. Confirm
+   that suffices, or scope a hyp-rec FK (would be a schema change -> defers).
+5. **OQ-5 chronology shape:** unified timestamp-merged chronology (recommend)
+   vs per-source sections? Confirm the source-precedence tiebreak order.
+6. **OQ-6 total_risk semantics:** dollar risk at open (recommend) vs
+   %-of-capital (needs the capital floor) vs both?
+7. **OQ-7 banked rider #2:** market_weather 200MA fetch-window -- bank
+   standalone (recommend, OD-6) vs fold into SB4?
+8. **OQ-8 Codex chain count at writing-plans:** single (pure-UX, recommend)
+   vs two-chain if the chronology assembly is judged substantive?
+9. **OQ-9 sort/filter fragment shape:** OOB-into-`<tbody>` vs whole-`<table>`
+   `outerHTML` swap (§8) -- pin at writing-plans; operator browser gate
+   binding.
+
+---
+
+## §14 Cumulative discipline compliance summary
+
+| Discipline | Application in this design |
+|---|---|
+| #2 brief-vs-signature | All routes/VMs/renderers/repos re-grepped at f4fe825 (§1.3); re-grep again at writing-plans. CR.1-form-exists CONFIRMED; `Trade` has no exit_price/date CORRECTED; position_detail-window CORRECTED. |
+| #4 SQL-column | Entry-flag sources verified (chart_pattern_*, candidates.bucket, pattern_evaluations.pattern_class, hypothesis_label); hyp-rec FK absence flagged (OQ-4). |
+| #9 / #11 / backup-gate | NOT invoked -- no schema change; spec ASSERTS zero migration (S2). |
+| #16 / #32 ASCII | Declared across all NEW files/templates/view-model; reused renderer labels ASCII-clean. |
+| L4 HTMX trinity | §8 -- table-row-free fragment root / OOB tbody; hx-headers HX-Request; no new POST (no 204/303 surface); base-VM safe defaults on the new drill-down page. |
+| L5 matplotlib visual-gate | §10 -- byte/string tests INSUFFICIENT; per-surface operator-witnessed gate; reuse SB3 renderers (no candlestick re-implementation). |
+| #10c renderer-kwargs uniformity | BULZ row-expand uses the SAME `get_or_render_surface(position_detail, ...)` kwargs as `build_trade_detail_vm` (cache-collision-free). |
+| F6 / full-archive-slice / OHLCV-scope | `_trade_window_bars` returns None on empty (never blanks); consumes the FULL archive and slices locally; render-direct so closed-trade fetch does not pollute the open-trade OHLCV scope. |
+| #28 / #29 exemplar/historical-depth | The #29 window-anchoring failure is the CENTRAL finding (§1.2); old-trade no-coverage -> chart-unavailable state (S4/S5 fixture). |
+| L2 Schwab LOCK | ZERO new `schwabdev.Client.*`; source-grep test stays green; Schwab daily-bar wiring stays OUT (§12). |
+| Co-Authored-By / trailer | NO footer; final `-m` paragraph plain prose; `%(trailers)` verified empty before push. |
+| capital risk floor | total_risk = dollar-risk-at-open (OD-4); floor applies only to a future %-of-capital column (OQ-6 / V2). |
+
+---
+
+*End of design spec. Phase 14 Sub-bundle 4 -- review + journal UX. CR.1
+(exit-data + chart-snapshot delta on the EXISTING review form) + P14.N6
+(browse-the-database journal: rich rows + sort/filter + candlestick thumbnails
++ drill-down chronology + annotated chart) + the BULZ row-expand wiring.
+Read-mostly; NO schema change (v23 held); NO new trade-mutation path. The
+load-bearing decision: closed-trade charts reuse the SB3 renderer render-
+direct over a trade-window archive slice (NOT the ticker-keyed,
+trailing-today `position_detail` cache); open-trade BULZ row-expand reuses the
+cache. The rendered surface in a real browser is the binding operator-witnessed
+gate.*
