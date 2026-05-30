@@ -418,3 +418,341 @@ def test_ticker_detail_title_is_neutral_no_surface_descriptor():
     out = render_ticker_detail_svg(ticker="ABC", bars=bars)
     assert b"hyp-rec detail" not in out
     assert b"ABC" in out
+
+
+# ===========================================================================
+# Phase 14 SB3 T-3.2 — shared mplfinance candlestick infrastructure tests.
+# ===========================================================================
+
+from datetime import date  # noqa: E402
+
+import matplotlib.pyplot as plt  # noqa: E402
+
+import swing.web.charts as charts  # noqa: E402
+from swing.web.charts import (  # noqa: E402
+    OhlcNormalizationError,
+    _normalize_ohlc_for_mpf,
+    _render_candles_fig,
+    _x_for_date,
+)
+
+
+# ---------------------------------------------------------------------------
+# Step 2: _MA_COLORS / _normalize_ohlc_for_mpf / _x_for_date /
+# _render_candles_fig.
+# ---------------------------------------------------------------------------
+
+
+def test_ma_colors_cover_all_surface_windows_and_are_unique():
+    used = {10, 20, 50, 150, 200}
+    assert used <= set(charts._MA_COLORS)
+    values = list(charts._MA_COLORS.values())
+    assert len(values) == len(set(values))
+
+
+def test_normalize_ohlc_sorts_dedups_tznaive_and_squeezes_multiindex():
+    idx = pd.to_datetime(
+        ["2026-05-28", "2026-05-26", "2026-05-27", "2026-05-27"], utc=True,
+    )
+    frame = pd.DataFrame(
+        {
+            "Open": [1.0, 2.0, 3.0, 9.0],
+            "High": [1.0, 2.0, 3.0, 9.0],
+            "Low": [1.0, 2.0, 3.0, 9.0],
+            "Close": [1.0, 2.0, 3.0, 9.0],
+        },
+        index=idx,
+    )
+    out = _normalize_ohlc_for_mpf(frame)
+    assert list(out.index) == sorted(out.index)
+    assert out.index.tz is None
+    assert len(out) == 3
+    assert out.loc[pd.Timestamp("2026-05-27"), "Close"] == 9.0
+
+
+def test_normalize_ohlc_raises_on_missing_column():
+    idx = pd.to_datetime(["2026-05-26", "2026-05-27"])
+    frame = pd.DataFrame(
+        {"Open": [1.0, 2.0], "Low": [1.0, 2.0], "Close": [1.0, 2.0]},
+        index=idx,
+    )
+    with pytest.raises(OhlcNormalizationError):
+        _normalize_ohlc_for_mpf(frame)
+
+
+def test_normalize_ohlc_raises_on_titlecase_collision():
+    idx = pd.to_datetime(["2026-05-26", "2026-05-27"])
+    frame = pd.DataFrame(
+        {
+            "Open": [1.0, 2.0],
+            "High": [1.0, 2.0],
+            "Low": [1.0, 2.0],
+            "close": [1.0, 2.0],
+            "Close": [3.0, 4.0],
+        },
+        index=idx,
+    )
+    with pytest.raises(OhlcNormalizationError):
+        _normalize_ohlc_for_mpf(frame)
+
+
+def test_normalize_ohlc_flattens_single_ticker_multiindex():
+    idx = pd.to_datetime(["2026-05-26", "2026-05-27"])
+    cols = pd.MultiIndex.from_product(
+        [["Open", "High", "Low", "Close", "Volume"], ["AAPL"]],
+    )
+    frame = pd.DataFrame(
+        [[1.0] * 5, [2.0] * 5], index=idx, columns=cols,
+    )
+    out = _normalize_ohlc_for_mpf(frame)
+    assert {"Open", "High", "Low", "Close"} <= set(out.columns)
+
+
+def test_normalize_ohlc_raises_on_multi_ticker_multiindex():
+    idx = pd.to_datetime(["2026-05-26", "2026-05-27"])
+    cols = pd.MultiIndex.from_product(
+        [["Open", "High", "Low", "Close"], ["AAPL", "MSFT"]],
+    )
+    frame = pd.DataFrame(
+        [[1.0] * 8, [2.0] * 8], index=idx, columns=cols,
+    )
+    with pytest.raises(OhlcNormalizationError):
+        _normalize_ohlc_for_mpf(frame)
+
+
+def test_x_for_date_returns_integer_bar_position(known_bars):
+    df = _normalize_ohlc_for_mpf(known_bars)
+    fig, price_ax, _vol = _render_candles_fig(
+        df, ma_windows=(10,), figsize=(6, 4), volume=False,
+    )
+    try:
+        pos = _x_for_date(price_ax, df, date(2026, 5, 29))
+        assert pos == 3
+    finally:
+        plt.close(fig)
+
+
+def test_x_for_date_uses_normalized_order_not_raw(known_bars):
+    reversed_bars = known_bars.iloc[::-1]
+    df = _normalize_ohlc_for_mpf(reversed_bars)
+    fig, price_ax, _vol = _render_candles_fig(
+        df, ma_windows=(10,), figsize=(6, 4), volume=False,
+    )
+    try:
+        pos = _x_for_date(price_ax, df, date(2026, 5, 29))
+        assert pos == 3
+    finally:
+        plt.close(fig)
+
+
+def test_render_candles_fig_returns_price_and_volume_axes(ohlc_bars):
+    df = _normalize_ohlc_for_mpf(ohlc_bars)
+    fig, price_ax, vol_ax = _render_candles_fig(
+        df, ma_windows=(10, 20, 50), figsize=(8, 5), volume=True,
+    )
+    try:
+        assert vol_ax is not None
+        assert vol_ax is not price_ax
+        # SECONDARY geometry guard: volume panel sits below the price panel.
+        assert vol_ax.get_position().y0 < price_ax.get_position().y0
+    finally:
+        plt.close(fig)
+
+
+def test_render_candles_fig_strips_only_volume_yticks(ohlc_bars):
+    df = _normalize_ohlc_for_mpf(ohlc_bars)
+    fig, price_ax, vol_ax = _render_candles_fig(
+        df, ma_windows=(10, 20, 50), figsize=(8, 5), volume=True,
+    )
+    try:
+        vol_labels = [t.get_text() for t in vol_ax.get_yticklabels()]
+        assert all(not lbl for lbl in vol_labels)
+        price_labels = [t.get_text() for t in price_ax.get_yticklabels()]
+        assert any(lbl for lbl in price_labels)
+    finally:
+        plt.close(fig)
+
+
+def test_render_candles_fig_grid_enabled(ohlc_bars):
+    df = _normalize_ohlc_for_mpf(ohlc_bars)
+    fig, price_ax, _vol = _render_candles_fig(
+        df, ma_windows=(10, 20, 50), figsize=(8, 5), volume=True,
+    )
+    try:
+        # At least one gridline visible on the price axis.
+        gridlines = price_ax.get_xgridlines() + price_ax.get_ygridlines()
+        assert any(gl.get_visible() for gl in gridlines)
+    finally:
+        plt.close(fig)
+
+
+def test_render_candles_fig_volume_false_returns_none_vol_ax(ohlc_bars):
+    df = _normalize_ohlc_for_mpf(ohlc_bars)
+    fig, price_ax, vol_ax = _render_candles_fig(
+        df, ma_windows=(10, 20, 50), figsize=(8, 5), volume=False,
+    )
+    try:
+        assert vol_ax is None
+    finally:
+        plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# Step 4: render_ticker_detail_svg candlestick conversion.
+# ---------------------------------------------------------------------------
+
+
+def _assert_renders_candles(monkeypatch, render_callable, **kwargs):
+    """Spy swing.web.charts.mpf.plot and assert type='candle' was passed."""
+    captured: dict = {}
+    real_plot = charts.mpf.plot
+
+    def spy_plot(df, **kw):
+        captured["kw"] = kw
+        return real_plot(df, **kw)
+
+    monkeypatch.setattr(charts.mpf, "plot", spy_plot)
+    render_callable(**kwargs)
+    assert captured, "mpf.plot was not invoked"
+    assert captured["kw"].get("type") == "candle"
+
+
+def test_ticker_detail_renders_candles_not_line(monkeypatch):
+    bars = _make_bars(120)
+    _assert_renders_candles(
+        monkeypatch, render_ticker_detail_svg, ticker="ABC", bars=bars,
+    )
+
+
+def test_ticker_detail_title_is_neutral_no_surface_descriptor_candles():
+    bars = _make_bars(120)
+    out = render_ticker_detail_svg(ticker="ABC", bars=bars)
+    assert b"hyp-rec detail" not in out
+
+
+def test_ticker_detail_overlays_pattern_window_band():
+    bars = _make_bars(180)
+    pe = _make_pattern_eval(pattern_class="vcp", bars=bars)
+    out = render_ticker_detail_svg(
+        ticker="ABC", bars=bars, pattern_evaluation=pe,
+    )
+    assert b"</svg>" in out
+    # axvspan emits a <path>; chart is non-trivial.
+    assert len(out) > 1000
+
+
+def test_ticker_detail_cache_single_row_across_two_callers(tmp_path):
+    """Two get_or_render_surface calls with identical bars -> byte-identical
+    SVG + exactly ONE cached row (L3)."""
+    import sqlite3
+    from unittest.mock import MagicMock
+
+    from swing.data.db import ensure_schema
+    from swing.web.chart_jit import get_or_render_surface
+
+    conn: sqlite3.Connection = ensure_schema(tmp_path / "two_callers.db")
+    with conn:
+        conn.execute(
+            "INSERT INTO pipeline_runs (started_ts, trigger, "
+            "data_asof_date, action_session_date, state, lease_token) "
+            "VALUES ('2026-05-22T00:00:00.000', 'manual', '2026-05-22', "
+            "'2026-05-22', 'complete', 'tok-two')"
+        )
+        run_id = int(
+            conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        )
+    bars = _make_bars(120)
+    ohlcv_cache = MagicMock()
+    ohlcv_cache.get_or_fetch.return_value = bars
+    r1 = get_or_render_surface(
+        conn=conn, ohlcv_cache=ohlcv_cache,
+        surface="ticker_detail", ticker="UCTT",
+        pipeline_run_id=run_id, data_asof_date="2026-05-22",
+        pattern_evaluation=None,
+    )
+    r2 = get_or_render_surface(
+        conn=conn, ohlcv_cache=ohlcv_cache,
+        surface="ticker_detail", ticker="UCTT",
+        pipeline_run_id=run_id, data_asof_date="2026-05-22",
+        pattern_evaluation=None,
+    )
+    assert r1 == r2
+    count = conn.execute(
+        "SELECT COUNT(*) FROM chart_renders WHERE surface='ticker_detail' "
+        "AND ticker='UCTT' AND pipeline_run_id=?",
+        (run_id,),
+    ).fetchone()[0]
+    assert count == 1
+
+
+def test_ticker_detail_svg_ascii_only():
+    bars = _make_bars(120)
+    out = render_ticker_detail_svg(ticker="ABC", bars=bars)
+    out.decode("ascii")  # raises if non-ASCII present
+
+
+# ---------------------------------------------------------------------------
+# Step 5: render_theme2_annotated_svg candlestick conversion.
+# ---------------------------------------------------------------------------
+
+
+def test_theme2_annotated_renders_candles_not_line(monkeypatch):
+    bars = _make_bars(150)
+    pe = _make_pattern_eval(pattern_class="vcp", bars=bars)
+    _assert_renders_candles(
+        monkeypatch, render_theme2_annotated_svg,
+        ticker="ABC", bars=bars, pattern_evaluation=pe,
+    )
+
+
+def test_theme2_annotated_volume_false_single_axis(monkeypatch):
+    bars = _make_bars(150)
+    pe = _make_pattern_eval(pattern_class="vcp", bars=bars)
+    captured: dict = {}
+    real_plot = charts.mpf.plot
+
+    def spy_plot(df, **kw):
+        captured["kw"] = kw
+        return real_plot(df, **kw)
+
+    monkeypatch.setattr(charts.mpf, "plot", spy_plot)
+    render_theme2_annotated_svg(
+        ticker="ABC", bars=bars, pattern_evaluation=pe,
+    )
+    assert captured["kw"].get("volume") is False
+
+
+def test_theme2_annotated_ascii_only_all_text():
+    bars = _make_bars(150)
+    pe = _make_pattern_eval(pattern_class="flat_base", bars=bars)
+    out = render_theme2_annotated_svg(
+        ticker="ABC", bars=bars, pattern_evaluation=pe,
+    )
+    out.decode("ascii")
+
+
+# ---------------------------------------------------------------------------
+# Step 6: pin the mpf positional-x integer-extent contract.
+# ---------------------------------------------------------------------------
+
+
+def test_candles_use_integer_x_axis_positions(ohlc_bars):
+    df = _normalize_ohlc_for_mpf(ohlc_bars)
+    fig, price_ax, _vol = _render_candles_fig(
+        df, ma_windows=(10, 20, 50), figsize=(8, 5), volume=True,
+    )
+    try:
+        xmin, xmax = price_ax.get_xlim()
+        assert (xmax - xmin) == pytest.approx(len(ohlc_bars) - 1, abs=2)
+    finally:
+        plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# Step 7: bars-fixture precondition test.
+# ---------------------------------------------------------------------------
+
+
+def test_charts_bars_fixture_has_ohlc_columns_and_datetimeindex(ohlc_bars):
+    assert {"Open", "High", "Low", "Close", "Volume"} <= set(ohlc_bars.columns)
+    assert isinstance(ohlc_bars.index, pd.DatetimeIndex)

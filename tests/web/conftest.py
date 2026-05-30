@@ -156,6 +156,51 @@ def _auto_entry_fill_after_insert_trade(monkeypatch):
 
 
 @pytest.fixture
+def ohlc_bars():
+    """Phase 14 SB3 T-3.2 (plan §L.2): 120 business-day OHLCV bars.
+
+    Open=range(100,220); High=Open+2; Low=Open-2; Close=Open+0.5;
+    Volume=1e6. DatetimeIndex from 2026-01-02 business days.
+    """
+    import pandas as pd
+
+    idx = pd.bdate_range(start="2026-01-02", periods=120)
+    opens = list(range(100, 220))
+    return pd.DataFrame(
+        {
+            "Open": [float(o) for o in opens],
+            "High": [float(o + 2) for o in opens],
+            "Low": [float(o - 2) for o in opens],
+            "Close": [float(o + 0.5) for o in opens],
+            "Volume": [1_000_000.0 for _ in opens],
+        },
+        index=idx,
+    )
+
+
+@pytest.fixture
+def known_bars():
+    """Phase 14 SB3 T-3.2 (plan §L.2): 5 bars 2026-05-26..05-30 with
+    ``index[3] == 2026-05-29``."""
+    import pandas as pd
+
+    idx = pd.to_datetime(
+        ["2026-05-26", "2026-05-27", "2026-05-28", "2026-05-29", "2026-05-30"]
+    )
+    closes = [100.0, 101.0, 102.0, 103.0, 104.0]
+    return pd.DataFrame(
+        {
+            "Open": [c - 0.5 for c in closes],
+            "High": [c + 1.0 for c in closes],
+            "Low": [c - 1.0 for c in closes],
+            "Close": closes,
+            "Volume": [1_000_000.0 for _ in closes],
+        },
+        index=idx,
+    )
+
+
+@pytest.fixture
 def test_cfg(tmp_path: Path) -> tuple[Config, Path]:
     """Return (cfg, cfg_path) for a fresh test project."""
     from tests.cli.test_cli_eval import _minimal_config

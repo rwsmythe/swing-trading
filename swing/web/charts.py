@@ -56,6 +56,18 @@ except ImportError as exc:  # pragma: no cover - install gate
         "pip install -e \".[web]\""
     ) from exc
 
+# Phase 14 SB3 T-3.2: mplfinance is a declared runtime dependency for the
+# candlestick detail renderers. HARD-fail at import (mirror the matplotlib
+# guard) — silent line-chart degradation would mask the very regression this
+# sub-bundle fixes (close-line detail charts -> candlesticks).
+try:
+    import mplfinance as mpf  # noqa: E402
+except ImportError as exc:  # pragma: no cover - install gate
+    raise RuntimeError(
+        "mplfinance is required for swing/web/charts.py candlestick "
+        "rendering; install via pip install -e \".[web]\""
+    ) from exc
+
 # Chart dimensions per spec §C.5 chart surface inventory.
 _WATCHLIST_THUMBNAIL_SIZE_PX = (200, 100)
 _TICKER_DETAIL_SIZE_PX = (800, 500)
@@ -170,6 +182,237 @@ def _volume_series(bars: pd.DataFrame) -> pd.Series:
     if hasattr(vol, "ndim") and vol.ndim == 2:
         vol = vol.iloc[:, 0]
     return vol
+
+
+# ---------------------------------------------------------------------------
+# Phase 14 SB3 T-3.2 — shared mplfinance candlestick infrastructure.
+#
+# The detail renderers (ticker_detail volume=True; theme2_annotated
+# volume=False) route ALL OHLC bars through _normalize_ohlc_for_mpf
+# (pre-plot barrier) -> _render_candles_fig (shared figure builder). Overlay
+# coordinate mapping goes through _x_for_date so mpf's positional integer
+# x-axis convention is coupled in exactly ONE place. MA overlay colors come
+# ONLY from _MA_COLORS so the palette is identical across every surface
+# (Expansion #10c uniformity).
+# ---------------------------------------------------------------------------
+
+
+class OhlcNormalizationError(ValueError):
+    """OHLC frame failed the pre-plot normalization barrier.
+
+    Raised with an ASCII-only message so a malformed frame surfaces as a
+    typed error at the renderer boundary rather than a deep mplfinance
+    KeyError mid-plot.
+    """
+
+
+# Okabe-Ito colorblind-safe palette, keyed by MA window. ASCII hex.
+# Deliberately avoids #d62728/#2ca02c (reserved for BULZ risk/reward fills).
+_MA_COLORS: dict[int, str] = {
+    10:  "#0072B2",  # blue
+    20:  "#E69F00",  # orange
+    50:  "#009E73",  # bluish green
+    150: "#CC79A7",  # reddish purple
+    200: "#D55E00",  # vermillion
+}
+
+# mplfinance's lower volume panel ylabel — used to resolve the volume axis
+# by ROLE (never a fixed index) on the returnfig axes list.
+_MPF_VOLUME_YLABEL = "Volume"
+
+_REQUIRED_OHLC_COLS = ("Open", "High", "Low", "Close")
+_OHLC_TITLECASE_MAP = {
+    "open": "Open", "high": "High", "low": "Low",
+    "close": "Close", "volume": "Volume",
+}
+
+
+def _normalize_ohlc_for_mpf(bars: pd.DataFrame) -> pd.DataFrame:
+    """Pre-plot barrier: coerce raw bars into the exact shape mplfinance needs.
+
+    Output columns are Title-cased Open/High/Low/Close[/Volume] on an
+    ascending, tz-naive, duplicate-deduped DatetimeIndex. Raises
+    :class:`OhlcNormalizationError` (typed, ASCII messages) rather than
+    letting a deep mplfinance ``KeyError`` surface mid-plot.
+
+    Steps (spec C.1b):
+      (a) flatten a SINGLE-ticker yfinance ``group_by='column'`` MultiIndex
+          (Price x Ticker) by taking level 0; RAISE on >1 ticker.
+      (b) Title-case columns to Open/High/Low/Close/Volume; RAISE on a
+          Title-casing collision (e.g. both ``close`` and ``Close``).
+      (c) sort index ascending.
+      (d) drop duplicate timestamps keep='last'.
+      (e) make index tz-naive.
+      (f) RAISE if any required OHLC column is absent.
+
+    The thumbnail/line renderer does NOT route through this barrier.
+    """
+    df = bars.copy()
+
+    # (a) Single-ticker MultiIndex flatten.
+    if isinstance(df.columns, pd.MultiIndex):
+        if df.columns.nlevels < 2:
+            raise OhlcNormalizationError(
+                "MultiIndex columns must have a (Price, Ticker) shape"
+            )
+        tickers = df.columns.get_level_values(-1).unique()
+        if len(tickers) > 1:
+            raise OhlcNormalizationError(
+                "cannot normalize a multi-ticker frame; got tickers "
+                f"{[str(t) for t in tickers]} -- pass a single-ticker frame"
+            )
+        df.columns = df.columns.get_level_values(0)
+
+    # (b) Title-case columns; reject collisions.
+    rename: dict[Any, str] = {}
+    target_sources: dict[str, list[str]] = {}
+    for col in df.columns:
+        key = str(col).lower()
+        target = _OHLC_TITLECASE_MAP.get(key)
+        if target is None:
+            continue
+        rename[col] = target
+        target_sources.setdefault(target, []).append(str(col))
+    for target, sources in target_sources.items():
+        if len(sources) > 1:
+            raise OhlcNormalizationError(
+                f"Title-casing OHLC columns collides on {target!r}: "
+                f"sources {sorted(sources)}"
+            )
+    df = df.rename(columns=rename)
+
+    # (c) sort ascending.
+    df = df.sort_index()
+
+    # (d) drop duplicate timestamps, keep last.
+    df = df[~df.index.duplicated(keep="last")]
+
+    # (e) make index tz-naive.
+    idx = df.index
+    if isinstance(idx, pd.DatetimeIndex) and idx.tz is not None:
+        df.index = idx.tz_localize(None)
+
+    # (f) require OHLC columns.
+    missing = [c for c in _REQUIRED_OHLC_COLS if c not in df.columns]
+    if missing:
+        raise OhlcNormalizationError(
+            f"OHLC frame is missing required columns {missing}; "
+            f"present columns are {list(df.columns)}"
+        )
+
+    return df
+
+
+def _x_for_date(price_ax: Any, df: pd.DataFrame, target_date: Any) -> int:
+    """Integer bar position for ``target_date`` on mpf's positional x-axis.
+
+    ``df`` MUST be the SAME normalized frame passed to
+    :func:`_render_candles_fig` (NOT raw bars). mplfinance candle plots
+    render along a positional integer x-axis (bar 0..N-1), so overlay
+    coordinates are bar indices, not date-locator coordinates. This is the
+    single place coupled to mpf's coordinate convention.
+    """
+    return int(df.index.get_loc(pd.Timestamp(target_date)))
+
+
+def _resolve_volume_ax(fig: Any, price_ax: Any) -> Any:
+    """Resolve mpf's volume panel by ROLE, never a fixed axes index.
+
+    mplfinance's axes count/order shifts with style/panels (and each panel
+    has a twin for secondary y). The volume panel is the lower
+    (smaller ``y0``) non-twin sibling whose configured lower y-label is the
+    volume label. We match on the ylabel role + geometry rather than an
+    index so callers never touch ``axes[i]`` by position.
+    """
+    candidates = []
+    for ax in fig.axes:
+        if ax is price_ax:
+            continue
+        # Skip twin axes (shared position with another axis) — pick the
+        # primary panel sibling. Twins share the exact bbox of their host.
+        ylabel = ax.get_ylabel()
+        candidates.append((ax, ylabel, ax.get_position().y0))
+    # Prefer an axis whose ylabel matches the volume role.
+    for ax, ylabel, _y0 in candidates:
+        if ylabel == _MPF_VOLUME_YLABEL:
+            return ax
+    # Fallback: the lowest panel (smallest y0) that is below the price axis.
+    price_y0 = price_ax.get_position().y0
+    below = [c for c in candidates if c[2] < price_y0]
+    if below:
+        below.sort(key=lambda c: c[2])
+        return below[0][0]
+    return None
+
+
+def _render_candles_fig(
+    df: pd.DataFrame,
+    *,
+    ma_windows: tuple[int, ...],
+    figsize: tuple[float, float],
+    volume: bool = True,
+    style: str = "yahoo",
+) -> tuple[Any, Any, Any]:
+    """Shared candlestick figure builder for the detail renderers.
+
+    ``df`` MUST be :func:`_normalize_ohlc_for_mpf` output. Returns
+    ``(fig, price_ax, vol_ax)`` where ``vol_ax is None`` when
+    ``volume=False``. MA overlays draw close rolling means in
+    ``_MA_COLORS`` (skip windows longer than the series; skip all-NaN).
+
+    The volume axis is resolved by ROLE (see :func:`_resolve_volume_ax`);
+    callers never index ``axes[i]``. Volume y-tick labels are stripped on
+    the volume axis only; the price axis keeps its price ticks. A uniform
+    grid (P14.N8) is enabled on the price axis.
+    """
+    close = df["Close"]
+    if hasattr(close, "ndim") and close.ndim == 2:
+        close = close.iloc[:, 0]
+
+    addplots = []
+    for window in ma_windows:
+        if window > len(close):
+            continue
+        sma = close.rolling(window).mean()
+        if sma.isna().all():
+            continue
+        addplots.append(
+            mpf.make_addplot(sma, color=_MA_COLORS[window], width=1.0)
+        )
+
+    plot_kwargs: dict[str, Any] = dict(
+        type="candle",
+        style=style,
+        volume=volume,
+        returnfig=True,
+        figsize=figsize,
+    )
+    if addplots:
+        plot_kwargs["addplot"] = addplots
+
+    fig, axes = mpf.plot(df, **plot_kwargs)
+    price_ax = axes[0]
+
+    # mplfinance pads the positional x-axis with a wide date-tick-driven
+    # margin (~7 bars each side on a 120-bar daily chart), leaving large
+    # empty gutters and breaking the integer-extent contract (bars sit at
+    # integer positions 0..N-1). Collapse the x-margin so the axis spans the
+    # data tightly; bars remain at integer positions, overlays via
+    # _x_for_date stay correct.
+    price_ax.margins(x=0)
+
+    vol_ax = None
+    if volume:
+        vol_ax = _resolve_volume_ax(fig, price_ax)
+        if vol_ax is not None:
+            # Strip volume y-tick labels (price ticks preserved on price_ax).
+            vol_ax.set_yticklabels([])
+            vol_ax.margins(x=0)
+
+    # Uniform gridlines per P14.N8.
+    price_ax.grid(True, alpha=0.3)
+
+    return fig, price_ax, vol_ax
 
 
 # ---------------------------------------------------------------------------
