@@ -58,6 +58,10 @@ from swing.integrations.schwab.client import (
 )
 from swing.metrics.discrepancies import count_recent_multi_leg_auto_corrections
 from swing.patterns.composite import compute_composite_score
+# Phase 14 SB3 T-3.4 (§C.4a): module-top import so the discriminating test
+# may monkeypatch ``swing.pipeline.runner.current_stage``. Read-only wrapper
+# over the shipped evaluation surface (SELECTs only — L6/L2 preserved).
+from swing.patterns.foundation import current_stage
 from swing.patterns.template_matching import (
     GEOMETRIC_SCORE_PREGATE_THRESHOLD,
     TemplateMatchExemplar,
@@ -2878,9 +2882,30 @@ def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data_asof: str,
     benchmark_ticker = cfg.rs.benchmark_ticker.upper()
     bars = _bars_or_none(benchmark_ticker)
     if bars is not None and not bars.empty:
+        # Phase 14 SB3 T-3.4 (§C.4a): derive the REAL trend-template state via
+        # current_stage at this LIVE site. Own fail-soft try/except using a
+        # short-lived read connection (the function-level conn was CLOSED
+        # earlier in _step_charts; mirror the fills-lookup pattern above).
+        # The read is SELECT-only (L6/L2 preserved) and must NEVER abort the
+        # charts step — fall soft to "undefined" on any error.
+        try:
+            run_asof_date = _date.fromisoformat(lease_data_asof(cfg, lease))
+            _ws_conn = connect(cfg.paths.db_path)
+            try:
+                weather_state = current_stage(
+                    _ws_conn, benchmark_ticker, run_asof_date,
+                )
+            finally:
+                _ws_conn.close()
+        except Exception as exc:  # noqa: BLE001 - fail-soft, never abort step
+            log.warning(
+                "market_weather current_stage failed for %s: %s",
+                benchmark_ticker, exc,
+            )
+            weather_state = "undefined"
         try:
             svg_bytes = render_market_weather_svg(
-                bars=bars, trend_template_state="stage_2",
+                bars=bars, trend_template_state=weather_state,
             )
         except Exception as exc:  # noqa: BLE001 - per-ticker isolation
             log.warning(
