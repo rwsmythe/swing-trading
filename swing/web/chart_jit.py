@@ -152,10 +152,17 @@ def get_or_render_surface(
                 ),
             )
         elif surface == "market_weather":
+            # Phase 14 SB3 T-3.4 (§C.4a): honest dead/defensive default. No
+            # production caller routes market_weather through the JIT today
+            # (the two live sites -- pipeline _step_charts + the weather
+            # refresh handler -- compute the real state via current_stage and
+            # pass it explicitly). A future SB4 caller MUST compute + pass the
+            # real trend_template_state; the default below is deliberately a
+            # non-committal placeholder, not a fabricated stage label.
             svg_bytes = renderer(
                 bars=bars,
                 trend_template_state=renderer_kwargs.get(
-                    "trend_template_state", "stage_2",
+                    "trend_template_state", "undefined",
                 ),
             )
         elif surface == "position_detail":
