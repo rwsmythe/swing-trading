@@ -700,38 +700,31 @@ def _draw_bulz_zones(
 def render_market_weather_svg(
     *, bars: pd.DataFrame, trend_template_state: str,
 ) -> bytes:
-    """Per spec §C.5 line 452: market weather mini-chart with MA50 + MA200
-    + volume bars + trend-template state badge.
+    """Phase 14 SB3 T-3.4 (§C.4): 400x150 candlestick market-weather chart.
+
+    Candlesticks (volume=True) with MA50 + MA200 from the uniform palette
+    via the shared :func:`_render_candles_fig` builder (gridlines per
+    P14.N8 come from the helper). The trend-template state renders as an
+    ASCII body-text badge via ``ax.text`` (underscore is LITERAL outside
+    mathtext, so ``trend: stage_2`` is SAFE in body text — it would NOT be
+    safe in a title). The real ``trend_template_state`` is computed at the
+    call sites (pipeline + interactive refresh) via
+    :func:`swing.patterns.foundation.current_stage` (§C.4a); this renderer
+    is state-agnostic.
     """
     _assert_ascii_only(trend_template_state, field="trend_template_state")
-    close = _close_series(bars)
-    volume = _volume_series(bars)
-    fig, (ax_price, ax_vol) = plt.subplots(
-        nrows=2, ncols=1,
+    df = _normalize_ohlc_for_mpf(bars)
+    fig, price_ax, _vol_ax = _render_candles_fig(
+        df,
+        ma_windows=(50, 200),
         figsize=_figsize_inches(_MARKET_WEATHER_SIZE_PX),
-        gridspec_kw={"height_ratios": [3, 1]},
-        sharex=True,
+        volume=True,
     )
-    ax_price.plot(range(len(close)), close.values,
-                  color="#1f77b4", linewidth=0.8)
-    for window, color in ((50, "#ff7f0e"), (200, "#d62728")):
-        if window <= len(close):
-            sma = close.rolling(window).mean()
-            ax_price.plot(range(len(sma)), sma.values, color=color,
-                          linewidth=0.6, alpha=0.8)
-    ax_price.set_xticks([])
-    ax_price.text(
+    price_ax.text(
         0.02, 0.88, f"trend: {trend_template_state}",
-        transform=ax_price.transAxes,
+        transform=price_ax.transAxes,
         fontsize=9, color="#222", fontweight="bold",
     )
-    # Volume bars per plan §C.5 line 452.
-    if len(volume) > 0:
-        ax_vol.bar(range(len(volume)), volume.values,
-                   color="#888", width=1.0)
-    ax_vol.set_xticks([])
-    # Phase 13 T-T4.SB.5 Item 3: strip volume y-tick labels.
-    ax_vol.set_yticks([])
     _set_suptitle_no_math(fig, "Market weather (SP500 daily)")
     return _svg_bytes_from_fig(fig)
 

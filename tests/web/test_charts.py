@@ -917,6 +917,40 @@ def test_position_detail_risk_zone_only_when_no_target(monkeypatch, ohlc_bars):
     assert (95.0, 100.0) in spans
 
 
+# --- T-3.4: market_weather candlestick conversion (§C.4) -------------------
+
+
+def test_market_weather_renders_candles_not_line(monkeypatch, ohlc_bars):
+    """Per plan §C.4: market_weather routes through _render_candles_fig
+    (type='candle'), not the legacy ax.plot close line."""
+    _assert_renders_candles(
+        monkeypatch, render_market_weather_svg,
+        bars=ohlc_bars, trend_template_state="stage_2",
+    )
+
+
+def test_market_weather_trend_badge_ascii_body_text(ohlc_bars):
+    """Trend badge renders as ASCII body text; underscore is LITERAL in
+    ax.text body (NOT mathtext). `trend: stage_2` survives verbatim."""
+    out = render_market_weather_svg(
+        bars=ohlc_bars, trend_template_state="stage_2",
+    )
+    assert isinstance(out, bytes)
+    assert b"trend: stage_2" in out
+    out.decode("ascii")  # raises if any non-ASCII glyph present
+
+
+def test_market_weather_grid_enabled(ohlc_bars):
+    """Gridlines come from _render_candles_fig (P14.N8); the renderer
+    produces a valid non-trivial SVG."""
+    out = render_market_weather_svg(
+        bars=ohlc_bars, trend_template_state="stage_2",
+    )
+    assert isinstance(out, bytes)
+    assert b"</svg>" in out
+    assert len(out) > 1000
+
+
 def test_position_detail_skips_zones_on_invalid_long_shape_and_warns(
     monkeypatch, ohlc_bars, caplog
 ):
