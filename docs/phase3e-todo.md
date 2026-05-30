@@ -29,7 +29,7 @@
 - [ ] **Sub-bundle 4 writing-plans dispatch brief** (LOCK triaged OQ dispositions) + commit BEFORE inline prompt
 - [ ] SB4 writing-plans -> executing-plans cycle (operator-witnessed gate per Sec 9.1 Q6), then SB5 (metrics overview; P14.N5) + Phase 14 close-out review (Sec 9.1 Q6: all 5 sub-bundles merged + operator browser-witnessed)
 
-**Infra note (RESOLVED THIS PASS at `<this commit>` once the T/S instance closed):** CLAUDE.md Conventions "adversarial Codex MCP review (2-5 rounds)" was stale on two axes -- (1) the MCP transport is dead in the VS Code extension (WSL Codex CLI fallback is the path; copowers `copowers@copowers` v2.0.2+); (2) the 5-round cap is suspended for swing-trading (run to convergence; memory `feedback_codex_round_limit_suspended`). The operator closed the T/S debug instance + cleared the orchestrator to edit CLAUDE.md; the Conventions copowers-workflow bullet (line ~63) was updated to the WSL-fallback + run-to-convergence framing.
+**Infra note (RESOLVED at `d98e8e6` once the T/S instance closed):** CLAUDE.md Conventions "adversarial Codex MCP review (2-5 rounds)" was stale on two axes -- (1) the MCP transport is dead in the VS Code extension (WSL Codex CLI fallback is the path; copowers `copowers@copowers` v2.0.2+); (2) the 5-round cap is suspended for swing-trading (run to convergence; memory `feedback_codex_round_limit_suspended`). The operator closed the T/S debug instance + cleared the orchestrator to edit CLAUDE.md; the Conventions copowers-workflow bullet (line ~63) was updated to the WSL-fallback + run-to-convergence framing.
 
 ---
 
