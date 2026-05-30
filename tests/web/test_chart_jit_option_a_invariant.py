@@ -87,13 +87,13 @@ def test_option_a_dashboard_anchor_flip_does_not_clobber_old_run_id(
     ohlcv_cache.get_or_fetch.return_value = _planted_bars_df()
     import swing.web.chart_jit as mod
 
-    mod._RENDERERS["hyprec_detail"] = MagicMock(
+    mod._RENDERERS["ticker_detail"] = MagicMock(
         return_value=b"<svg>v100-bytes</svg>",
     )
     try:
         bytes_v100 = get_or_render_surface(
             conn=conn, ohlcv_cache=ohlcv_cache,
-            surface="hyprec_detail", ticker="UCTT",
+            surface="ticker_detail", ticker="UCTT",
             pipeline_run_id=binding_v1.run_id,
             data_asof_date=binding_v1.data_asof_date,
         )
@@ -109,12 +109,12 @@ def test_option_a_dashboard_anchor_flip_does_not_clobber_old_run_id(
         assert binding_v2 is not None
         assert binding_v2.run_id == run_id_101
 
-        mod._RENDERERS["hyprec_detail"] = MagicMock(
+        mod._RENDERERS["ticker_detail"] = MagicMock(
             return_value=b"<svg>v101-bytes</svg>",
         )
         bytes_v101 = get_or_render_surface(
             conn=conn, ohlcv_cache=ohlcv_cache,
-            surface="hyprec_detail", ticker="UCTT",
+            surface="ticker_detail", ticker="UCTT",
             pipeline_run_id=binding_v2.run_id,
             data_asof_date=binding_v2.data_asof_date,
         )
@@ -126,7 +126,7 @@ def test_option_a_dashboard_anchor_flip_does_not_clobber_old_run_id(
     # the OLD anchor's bytes preserved verbatim (not clobbered).
     rows = list(conn.execute(
         "SELECT pipeline_run_id, chart_svg_bytes FROM chart_renders "
-        "WHERE surface='hyprec_detail' AND ticker='UCTT' "
+        "WHERE surface='ticker_detail' AND ticker='UCTT' "
         "ORDER BY pipeline_run_id"
     ))
     assert len(rows) == 2

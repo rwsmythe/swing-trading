@@ -48,7 +48,7 @@ def test_build_hyp_recs_expanded_jit_fallback_on_cache_miss(seeded_db):
     ohlcv_cache.get_or_fetch.return_value = _planted_bars_df()
     import swing.web.chart_jit as mod
 
-    mod._RENDERERS["hyprec_detail"] = MagicMock(
+    mod._RENDERERS["ticker_detail"] = MagicMock(
         return_value=b"<svg>jit-hyprec</svg>",
     )
     try:
@@ -63,13 +63,13 @@ def test_build_hyp_recs_expanded_jit_fallback_on_cache_miss(seeded_db):
     finally:
         importlib.reload(mod)
     assert vm is not None
-    assert vm.hyprec_detail_chart_svg_bytes == b"<svg>jit-hyprec</svg>"
+    assert vm.ticker_detail_chart_svg_bytes == b"<svg>jit-hyprec</svg>"
     # Verify data_asof_date was threaded through to the write-through path.
     conn = connect(cfg.paths.db_path)
     try:
         cached_row = conn.execute(
             "SELECT data_asof_date FROM chart_renders "
-            "WHERE surface='hyprec_detail' AND ticker='UCTT'"
+            "WHERE surface='ticker_detail' AND ticker='UCTT'"
         ).fetchone()
     finally:
         conn.close()
@@ -93,7 +93,7 @@ def test_build_hyp_recs_expanded_skips_jit_when_ohlcv_cache_missing(
     import swing.web.chart_jit as mod
 
     renderer = MagicMock(return_value=b"<svg>jit-hyprec</svg>")
-    mod._RENDERERS["hyprec_detail"] = renderer
+    mod._RENDERERS["ticker_detail"] = renderer
     try:
         conn = connect(cfg.paths.db_path)
         try:
@@ -107,7 +107,7 @@ def test_build_hyp_recs_expanded_skips_jit_when_ohlcv_cache_missing(
         importlib.reload(mod)
     # No JIT fallback fires; bytes remain None.
     assert vm is not None
-    assert vm.hyprec_detail_chart_svg_bytes is None
+    assert vm.ticker_detail_chart_svg_bytes is None
     renderer.assert_not_called()
 
 
@@ -128,7 +128,7 @@ def test_build_hyp_recs_expanded_cache_hit_does_not_invoke_jit(seeded_db):
                 "INSERT INTO chart_renders "
                 "(ticker, surface, pipeline_run_id, pattern_class, "
                 "chart_svg_bytes, source_data_hash, rendered_at, data_asof_date) "
-                "VALUES ('UCTT', 'hyprec_detail', ?, NULL, ?, 'planted', "
+                "VALUES ('UCTT', 'ticker_detail', ?, NULL, ?, 'planted', "
                 "'2026-04-29T09:00:00Z', '2026-04-28')",
                 (pipeline_run_id, b"<svg>planted</svg>"),
             )
@@ -138,7 +138,7 @@ def test_build_hyp_recs_expanded_cache_hit_does_not_invoke_jit(seeded_db):
     import swing.web.chart_jit as mod
 
     renderer = MagicMock(return_value=b"<svg>jit-hyprec</svg>")
-    mod._RENDERERS["hyprec_detail"] = renderer
+    mod._RENDERERS["ticker_detail"] = renderer
     try:
         conn = connect(cfg.paths.db_path)
         try:
@@ -152,7 +152,7 @@ def test_build_hyp_recs_expanded_cache_hit_does_not_invoke_jit(seeded_db):
         importlib.reload(mod)
     assert vm is not None
     # Returned the PLANTED cached bytes — JIT did NOT fire.
-    assert vm.hyprec_detail_chart_svg_bytes == b"<svg>planted</svg>"
+    assert vm.ticker_detail_chart_svg_bytes == b"<svg>planted</svg>"
     renderer.assert_not_called()
     # OHLCV cache should NOT have been consulted on cache hit.
     ohlcv_cache.get_or_fetch.assert_not_called()

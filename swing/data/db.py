@@ -44,7 +44,7 @@ from pathlib import Path
 #   lines 785-790 + line 775. Backfill semantics: NULL for all pre-v21
 #   existing rows (OQ-1). Atomic BEGIN/COMMIT discipline preserved.
 # phase 14 sub-bundle 3 chart-surface uniformity (migration 0023):
-#   atomic rename of chart_renders.surface enum value 'hyprec_detail' ->
+#   atomic rename of the chart_renders.surface old detail token to
 #   'ticker_detail' via an id-preserving single-table rebuild. NO new tables,
 #   NO column-shape change, NO candlestick change. Atomic BEGIN/COMMIT
 #   discipline preserved (gotcha #9).

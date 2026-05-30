@@ -143,7 +143,7 @@ def test_step_charts_calls_ohlcv_cache_get_or_fetch_not_legacy_fetcher_get(
 
     Phase 13 T2.SB6c T-A.6c.2 §1.5.1 amendment: the step now ALSO calls
     ``get_or_fetch`` per surface during the chart_renders write-through
-    block (one per watchlist ticker + per A+ candidate (hyprec_detail) +
+    block (one per watchlist ticker + per A+ candidate (ticker_detail) +
     per open trade (position_detail) + cfg.rs.benchmark_ticker
     (market_weather)). The legacy A+ chart-render loop still invokes it
     once per A+ candidate.
@@ -166,16 +166,16 @@ def test_step_charts_calls_ohlcv_cache_get_or_fetch_not_legacy_fetcher_get(
     )
 
     # Legacy A+ chart-render loop: 1 call per A+ ticker (APLA + APLB).
-    # Phase 13 T-T4.SB.3 (OQ-5.3 LOCK): hyprec_detail write-through DROPPED
+    # Phase 13 T-T4.SB.3 (OQ-5.3 LOCK): ticker_detail write-through DROPPED
     # from _step_charts; JIT-render at expand time instead. So each A+
     # ticker is invoked ONCE (legacy chart-render loop only); the prior
-    # hyprec_detail write-through call no longer fires.
+    # ticker_detail write-through call no longer fires.
     # No watchlist tickers + no open trades seeded → 0 extra calls there.
     tickers_called = sorted(t for (t, _w) in spy.calls)
     assert "APLA" in tickers_called
     assert "APLB" in tickers_called
     # Each A+ ticker invoked exactly once post-T-T4.SB.3 (legacy chart-render
-    # loop only; hyprec_detail dropped per OQ-5.3 LOCK).
+    # loop only; ticker_detail dropped per OQ-5.3 LOCK).
     assert tickers_called.count("APLA") == 1, tickers_called
     assert tickers_called.count("APLB") == 1, tickers_called
     # Benchmark ticker fetched exactly once for market_weather surface.

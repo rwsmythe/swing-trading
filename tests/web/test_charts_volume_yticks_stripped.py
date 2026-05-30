@@ -1,8 +1,8 @@
 """Phase 13 T-T4.SB.5 Sub-task 5A — Item 3: strip volume y-tick labels.
 
 Per plan §B.5 Sub-task 5A.1: assert volume subplot y-tick labels are
-EMPTY on both ``render_market_weather_svg`` and ``render_hyprec_detail_svg``.
-Volume ylabel ("Volume") intentionally PRESERVED on hyprec_detail (the
+EMPTY on both ``render_market_weather_svg`` and ``render_ticker_detail_svg``.
+Volume ylabel ("Volume") intentionally PRESERVED on ticker_detail (the
 fix scope is tick labels, not the ylabel).
 
 Uses ``spy-on-plt.subplots`` to capture the axes tuple, then inspects
@@ -16,7 +16,7 @@ from unittest.mock import patch
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from swing.web.charts import render_hyprec_detail_svg, render_market_weather_svg
+from swing.web.charts import render_ticker_detail_svg, render_market_weather_svg
 
 
 def _make_bars(n: int = 90) -> pd.DataFrame:
@@ -72,15 +72,15 @@ def test_render_market_weather_volume_y_tick_labels_stripped():
     )
 
 
-def test_render_hyprec_detail_volume_y_tick_labels_stripped():
-    """Item 3: volume subplot y-tick labels empty on hyprec_detail chart.
+def test_render_ticker_detail_volume_y_tick_labels_stripped():
+    """Item 3: volume subplot y-tick labels empty on ticker_detail chart.
 
-    Signature: ``render_hyprec_detail_svg(*, ticker, bars,
+    Signature: ``render_ticker_detail_svg(*, ticker, bars,
     pattern_evaluation=None)``.
     """
     bars = _make_bars()
     axes = _capture_axes_for(
-        render_hyprec_detail_svg,
+        render_ticker_detail_svg,
         ticker="UCTT",
         bars=bars,
         pattern_evaluation=None,
@@ -94,14 +94,14 @@ def test_render_hyprec_detail_volume_y_tick_labels_stripped():
     )
 
 
-def test_render_hyprec_detail_preserves_volume_ylabel():
+def test_render_ticker_detail_preserves_volume_ylabel():
     """Item 3 scope LOCK: only the tick LABELS are stripped; the axis
     ylabel text ('Volume') remains. This guards against an over-broad
     fix that also removes the ylabel.
     """
     bars = _make_bars()
     axes = _capture_axes_for(
-        render_hyprec_detail_svg,
+        render_ticker_detail_svg,
         ticker="UCTT",
         bars=bars,
         pattern_evaluation=None,

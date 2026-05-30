@@ -2,12 +2,12 @@
 
 Per plan §B.3 Sub-task 3E: `_step_charts` pre-gen scope reduced from
 top-N (`chart_top_n_watch` = 10) to dashboard-top-5 visible-by-default.
-The fourth surface (`hyprec_detail`) is now JIT-only — pre-gen DROPPED;
+The fourth surface (`ticker_detail`) is now JIT-only — pre-gen DROPPED;
 JIT-rendered on `/hyp-recs/{ticker}/expand` via the chart_jit helper.
 
 Discriminating fixtures:
 - 10 active watchlist tickers + 1 A+ candidate + 1 open trade →
-  `_step_charts` writes ≤5 watchlist_row rows + 0 hyprec_detail +
+  `_step_charts` writes ≤5 watchlist_row rows + 0 ticker_detail +
   ≥1 market_weather + ≥1 position_detail.
 """
 from __future__ import annotations
@@ -137,12 +137,12 @@ def _run_step_charts(*, cfg, run_id, eval_run_id):
     )
 
 
-def test_step_charts_pregen_scope_reduced_to_top5_no_hyprec_detail(
+def test_step_charts_pregen_scope_reduced_to_top5_no_ticker_detail(
     pipeline_db,
 ):
     """Plan §B.3 Sub-task 3E + OQ-5.3 LOCK: pre-gen writes ONLY
     market_weather + position_detail + watchlist_row (top-5). NOT
-    hyprec_detail. NOT top-10 watchlist.
+    ticker_detail. NOT top-10 watchlist.
     """
     cfg, run_id, eval_run_id = pipeline_db
     conn = connect(cfg.paths.db_path)
@@ -151,7 +151,7 @@ def test_step_charts_pregen_scope_reduced_to_top5_no_hyprec_detail(
             # Seed 10 watchlist entries (more than the new top-5 limit).
             for i in range(10):
                 _seed_watchlist_entry(conn, f"WCH{i:02d}")
-            # Seed 1 A+ candidate (should NOT pre-gen hyprec_detail).
+            # Seed 1 A+ candidate (should NOT pre-gen ticker_detail).
             _seed_aplus(conn, eval_run_id, ticker="APX")
             # Seed 1 open trade.
             _seed_open_trade(conn, ticker="POS1")
@@ -172,11 +172,11 @@ def test_step_charts_pregen_scope_reduced_to_top5_no_hyprec_detail(
         conn.close()
     surface_counts = dict(rows)
 
-    # OQ-5.3 LOCK: hyprec_detail dropped from pre-gen.
-    assert surface_counts.get("hyprec_detail", 0) == 0, (
-        "hyprec_detail must NOT be pre-genned (OQ-5.3 LOCK); JIT-render "
+    # OQ-5.3 LOCK: ticker_detail dropped from pre-gen.
+    assert surface_counts.get("ticker_detail", 0) == 0, (
+        "ticker_detail must NOT be pre-genned (OQ-5.3 LOCK); JIT-render "
         "on /hyp-recs/{ticker}/expand instead. Got "
-        f"{surface_counts.get('hyprec_detail', 0)} rows."
+        f"{surface_counts.get('ticker_detail', 0)} rows."
     )
     # market_weather + position_detail still pre-genned.
     assert surface_counts.get("market_weather", 0) >= 1

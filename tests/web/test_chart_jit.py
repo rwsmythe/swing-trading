@@ -79,14 +79,14 @@ def test_get_or_render_surface_cache_hit_returns_cached_bytes(
     conn: sqlite3.Connection, pipeline_run_id: int,
 ) -> None:
     _plant_chart_render_row(
-        conn, surface="hyprec_detail", ticker="UCTT",
+        conn, surface="ticker_detail", ticker="UCTT",
         pipeline_run_id=pipeline_run_id,
         chart_svg_bytes=b"<svg>cached</svg>",
     )
     ohlcv_cache = MagicMock()
     result = get_or_render_surface(
         conn=conn, ohlcv_cache=ohlcv_cache,
-        surface="hyprec_detail", ticker="UCTT",
+        surface="ticker_detail", ticker="UCTT",
         pipeline_run_id=pipeline_run_id,
         data_asof_date="2026-05-22",
     )
@@ -103,13 +103,13 @@ def test_get_or_render_surface_cache_miss_renders_via_ohlcv_and_writes_through(
     # Inject a renderer mock to avoid matplotlib in the unit test.
     import swing.web.chart_jit as mod
 
-    mod._RENDERERS["hyprec_detail"] = MagicMock(
+    mod._RENDERERS["ticker_detail"] = MagicMock(
         return_value=b"<svg>rendered</svg>",
     )
     try:
         result = get_or_render_surface(
             conn=conn, ohlcv_cache=ohlcv_cache,
-            surface="hyprec_detail", ticker="UCTT",
+            surface="ticker_detail", ticker="UCTT",
             pipeline_run_id=pipeline_run_id,
             data_asof_date="2026-05-22",
         )
@@ -119,7 +119,7 @@ def test_get_or_render_surface_cache_miss_renders_via_ohlcv_and_writes_through(
     # Write-through populated cache.
     cached = conn.execute(
         "SELECT chart_svg_bytes FROM chart_renders "
-        "WHERE surface = 'hyprec_detail' AND ticker = 'UCTT' "
+        "WHERE surface = 'ticker_detail' AND ticker = 'UCTT' "
         "  AND pipeline_run_id = ?",
         (pipeline_run_id,),
     ).fetchone()
@@ -134,7 +134,7 @@ def test_get_or_render_surface_returns_none_on_empty_ohlcv(
     ohlcv_cache.get_or_fetch.return_value = None
     result = get_or_render_surface(
         conn=conn, ohlcv_cache=ohlcv_cache,
-        surface="hyprec_detail", ticker="UCTT",
+        surface="ticker_detail", ticker="UCTT",
         pipeline_run_id=pipeline_run_id,
         data_asof_date="2026-05-22",
     )
@@ -155,7 +155,7 @@ def test_get_or_render_surface_returns_none_on_empty_dataframe_ohlcv(
     ohlcv_cache.get_or_fetch.return_value = pd.DataFrame()
     result = get_or_render_surface(
         conn=conn, ohlcv_cache=ohlcv_cache,
-        surface="hyprec_detail", ticker="UCTT",
+        surface="ticker_detail", ticker="UCTT",
         pipeline_run_id=pipeline_run_id,
         data_asof_date="2026-05-22",
     )
@@ -174,7 +174,7 @@ def test_get_or_render_surface_returns_none_on_ohlcv_exception(
     ohlcv_cache.get_or_fetch.side_effect = RuntimeError("fetch boom")
     result = get_or_render_surface(
         conn=conn, ohlcv_cache=ohlcv_cache,
-        surface="hyprec_detail", ticker="UCTT",
+        surface="ticker_detail", ticker="UCTT",
         pipeline_run_id=pipeline_run_id,
         data_asof_date="2026-05-22",
     )
@@ -229,25 +229,25 @@ def test_get_or_render_surface_cache_collision_renderer_called_once(
     pipeline_run_id) — renderer fires ONCE; second caller reads from cache.
 
     Renderer-kwargs uniformity LOCK: both callsites pass
-    ``pattern_evaluation=None`` (V1 hyprec_detail callsites).
+    ``pattern_evaluation=None`` (V1 ticker_detail callsites).
     """
     ohlcv_cache = MagicMock()
     ohlcv_cache.get_or_fetch.return_value = _planted_bars_df()
     import swing.web.chart_jit as mod
 
     renderer = MagicMock(return_value=b"<svg>once</svg>")
-    mod._RENDERERS["hyprec_detail"] = renderer
+    mod._RENDERERS["ticker_detail"] = renderer
     try:
         r1 = get_or_render_surface(
             conn=conn, ohlcv_cache=ohlcv_cache,
-            surface="hyprec_detail", ticker="UCTT",
+            surface="ticker_detail", ticker="UCTT",
             pipeline_run_id=pipeline_run_id,
             data_asof_date="2026-05-22",
             pattern_evaluation=None,  # Uniformity LOCK
         )
         r2 = get_or_render_surface(
             conn=conn, ohlcv_cache=ohlcv_cache,
-            surface="hyprec_detail", ticker="UCTT",
+            surface="ticker_detail", ticker="UCTT",
             pipeline_run_id=pipeline_run_id,
             data_asof_date="2026-05-22",
             pattern_evaluation=None,  # Uniformity LOCK
@@ -258,7 +258,7 @@ def test_get_or_render_surface_cache_collision_renderer_called_once(
     assert renderer.call_count == 1
     cached_count = conn.execute(
         "SELECT COUNT(*) FROM chart_renders "
-        "WHERE surface = 'hyprec_detail' AND ticker = 'UCTT' "
+        "WHERE surface = 'ticker_detail' AND ticker = 'UCTT' "
         "  AND pipeline_run_id = ?",
         (pipeline_run_id,),
     ).fetchone()[0]
@@ -285,13 +285,13 @@ def test_jit_writes_pipeline_run_id_matching_dashboard_anchor(
     ohlcv_cache.get_or_fetch.return_value = _planted_bars_df()
     import swing.web.chart_jit as mod
 
-    mod._RENDERERS["hyprec_detail"] = MagicMock(
+    mod._RENDERERS["ticker_detail"] = MagicMock(
         return_value=b"<svg>v100</svg>",
     )
     try:
         bytes_v100 = get_or_render_surface(
             conn=conn, ohlcv_cache=ohlcv_cache,
-            surface="hyprec_detail", ticker="UCTT",
+            surface="ticker_detail", ticker="UCTT",
             pipeline_run_id=run_id_100,
             data_asof_date="2026-05-22",
         )
@@ -305,12 +305,12 @@ def test_jit_writes_pipeline_run_id_matching_dashboard_anchor(
                 "'2026-05-22', 'complete', 'tok-r101')"
             )
             run_id_101 = int(cur.lastrowid)
-        mod._RENDERERS["hyprec_detail"] = MagicMock(
+        mod._RENDERERS["ticker_detail"] = MagicMock(
             return_value=b"<svg>v101</svg>",
         )
         bytes_v101 = get_or_render_surface(
             conn=conn, ohlcv_cache=ohlcv_cache,
-            surface="hyprec_detail", ticker="UCTT",
+            surface="ticker_detail", ticker="UCTT",
             pipeline_run_id=run_id_101,
             data_asof_date="2026-05-22",
         )
@@ -320,7 +320,7 @@ def test_jit_writes_pipeline_run_id_matching_dashboard_anchor(
     # Cache holds TWO rows — one per run_id. Old run_id NOT clobbered.
     rows = list(conn.execute(
         "SELECT pipeline_run_id, chart_svg_bytes FROM chart_renders "
-        "WHERE surface='hyprec_detail' AND ticker='UCTT' "
+        "WHERE surface='ticker_detail' AND ticker='UCTT' "
         "ORDER BY pipeline_run_id"
     ))
     assert len(rows) == 2
@@ -356,12 +356,12 @@ def test_get_or_render_surface_treats_empty_cached_bytes_as_miss(
             "chart_svg_bytes, source_data_hash, rendered_at, data_asof_date) "
             "VALUES (?, ?, ?, NULL, ?, 'legacy-empty', "
             "'2026-05-22T00:00:00Z', '2026-05-22')",
-            ("UCTT", "hyprec_detail", pipeline_run_id, b""),
+            ("UCTT", "ticker_detail", pipeline_run_id, b""),
         )
     # Sanity: legacy empty row exists.
     legacy = conn.execute(
         "SELECT length(chart_svg_bytes) FROM chart_renders "
-        "WHERE ticker='UCTT' AND surface='hyprec_detail' "
+        "WHERE ticker='UCTT' AND surface='ticker_detail' "
         "  AND pipeline_run_id=?",
         (pipeline_run_id,),
     ).fetchone()
@@ -373,11 +373,11 @@ def test_get_or_render_surface_treats_empty_cached_bytes_as_miss(
     import swing.web.chart_jit as mod
 
     renderer = MagicMock(return_value=b"<svg>recovered</svg>")
-    mod._RENDERERS["hyprec_detail"] = renderer
+    mod._RENDERERS["ticker_detail"] = renderer
     try:
         result = get_or_render_surface(
             conn=conn, ohlcv_cache=ohlcv_cache,
-            surface="hyprec_detail", ticker="UCTT",
+            surface="ticker_detail", ticker="UCTT",
             pipeline_run_id=pipeline_run_id,
             data_asof_date="2026-05-22",
         )
@@ -390,7 +390,7 @@ def test_get_or_render_surface_treats_empty_cached_bytes_as_miss(
     # Write-through replaced the empty row with the rendered bytes.
     rows = list(conn.execute(
         "SELECT chart_svg_bytes FROM chart_renders "
-        "WHERE ticker='UCTT' AND surface='hyprec_detail' "
+        "WHERE ticker='UCTT' AND surface='ticker_detail' "
         "  AND pipeline_run_id=?",
         (pipeline_run_id,),
     ))

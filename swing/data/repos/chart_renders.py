@@ -150,7 +150,7 @@ def get_cached_chart_svg(
     """Return the cached SVG bytes for the canonical chart cache key, or None.
 
     Per spec §C.2 cache key shape LOCK:
-      - Run-bound surfaces (``watchlist_row``, ``hyprec_detail``,
+      - Run-bound surfaces (``watchlist_row``, ``ticker_detail``,
         ``market_weather``): key on ``(ticker, surface, pipeline_run_id)``.
       - ``position_detail`` surface: key on ``(ticker, surface)`` with
         ``pipeline_run_id IS NULL``.
@@ -236,7 +236,7 @@ def refresh_chart_render(
             (chart_render.ticker, chart_render.surface),
         )
     else:
-        # Run-bound: watchlist_row / hyprec_detail / market_weather.
+        # Run-bound: watchlist_row / ticker_detail / market_weather.
         conn.execute(
             "DELETE FROM chart_renders WHERE ticker = ? AND surface = ? "
             "AND pipeline_run_id = ?",

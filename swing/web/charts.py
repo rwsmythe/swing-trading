@@ -13,7 +13,7 @@ write-through + T-A.6.6 chart surface integration + T-A.6.6b exemplars
 enhancement):
 
   - ``render_watchlist_thumbnail_svg``  (200x100; eager per-run)
-  - ``render_hyprec_detail_svg``        (800x500; eager per-run)
+  - ``render_ticker_detail_svg``        (800x500; eager per-run)
   - ``render_position_detail_svg``      (800x500; eager; fill markers)
   - ``render_market_weather_svg``       (400x150; per-pipeline-run)
   - ``render_theme2_annotated_svg``     (800x600; pattern-class-specific
@@ -58,7 +58,7 @@ except ImportError as exc:  # pragma: no cover - install gate
 
 # Chart dimensions per spec §C.5 chart surface inventory.
 _WATCHLIST_THUMBNAIL_SIZE_PX = (200, 100)
-_HYPREC_DETAIL_SIZE_PX = (800, 500)
+_TICKER_DETAIL_SIZE_PX = (800, 500)
 _POSITION_DETAIL_SIZE_PX = (800, 500)
 _MARKET_WEATHER_SIZE_PX = (400, 150)
 _THEME2_ANNOTATED_SIZE_PX = (800, 600)
@@ -219,11 +219,13 @@ def render_watchlist_thumbnail_svg(
 
 
 # ---------------------------------------------------------------------------
-# 2. Hyp-rec detail chart (800x500; MA + volume + optional pattern boundaries)
+# 2. Ticker detail chart (800x500; MA + volume + optional pattern boundaries)
+#    Shared by BOTH the hyp-rec-expand caller AND the watchlist-expand caller
+#    (single cached ticker_detail row); the suptitle is caller-agnostic.
 # ---------------------------------------------------------------------------
 
 
-def render_hyprec_detail_svg(
+def render_ticker_detail_svg(
     *, ticker: str, bars: pd.DataFrame,
     pattern_evaluation: PatternEvaluation | None = None,
 ) -> bytes:
@@ -233,7 +235,7 @@ def render_hyprec_detail_svg(
 
     fig, (ax_price, ax_vol) = plt.subplots(
         nrows=2, ncols=1,
-        figsize=_figsize_inches(_HYPREC_DETAIL_SIZE_PX),
+        figsize=_figsize_inches(_TICKER_DETAIL_SIZE_PX),
         gridspec_kw={"height_ratios": [3, 1]},
         sharex=True,
     )
@@ -272,7 +274,7 @@ def render_hyprec_detail_svg(
     ax_vol.set_ylabel("Volume")
     _assert_ascii_only("Price (USD)", field="ylabel_price")
     _assert_ascii_only("Volume", field="ylabel_vol")
-    _set_suptitle_no_math(fig, f"{ticker} | hyp-rec detail | last {len(close)} bars")
+    _set_suptitle_no_math(fig, f"{ticker} | last {len(close)} bars")
     return _svg_bytes_from_fig(fig)
 
 

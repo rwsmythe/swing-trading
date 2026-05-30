@@ -3,7 +3,7 @@ write-through tests for `_step_charts`.
 
 Per plan §G.2 step 1b (6-8 tests):
 
-  - 4 surface-population tests (watchlist_row / hyprec_detail / position_detail
+  - 4 surface-population tests (watchlist_row / ticker_detail / position_detail
     / market_weather) — exactly 1 chart_renders row exists per active ticker
     per surface with the correct cache key shape.
   - 1 F6 transient-empty-bytes defense test — renderer returns b""; ChartRender
@@ -216,11 +216,11 @@ def test_step_charts_writes_through_chart_renders_for_watchlist_row_surface(
     assert svg.startswith(b"<")  # raw SVG bytes
 
 
-def test_step_charts_does_not_pregen_hyprec_detail_surface_post_t_t4_sb_3(
+def test_step_charts_does_not_pregen_ticker_detail_surface_post_t_t4_sb_3(
     pipeline_db,
 ):
     """Phase 13 T-T4.SB.3 (OQ-5.3 LOCK): `_step_charts` no longer pre-gens
-    the `hyprec_detail` surface — it is now JIT-rendered on dashboard
+    the `ticker_detail` surface — it is now JIT-rendered on dashboard
     expand (see ``build_hyp_recs_expanded`` JIT fallback +
     ``swing/web/chart_jit.py``). This test pins the new contract; the
     pre-T-T4.SB.3 ASSERT NOT NULL form is deliberately inverted."""
@@ -238,13 +238,13 @@ def test_step_charts_does_not_pregen_hyprec_detail_surface_post_t_t4_sb_3(
     conn = connect(cfg.paths.db_path)
     try:
         svg = get_cached_chart_svg(
-            conn, ticker="HYP1", surface="hyprec_detail",
+            conn, ticker="HYP1", surface="ticker_detail",
             pipeline_run_id=run_id,
         )
     finally:
         conn.close()
     assert svg is None, (
-        "_step_charts must NOT pre-gen hyprec_detail (OQ-5.3 LOCK); "
+        "_step_charts must NOT pre-gen ticker_detail (OQ-5.3 LOCK); "
         "JIT-render on /hyp-recs/{ticker}/expand instead."
     )
 
@@ -445,9 +445,9 @@ def test_step_charts_chart_renders_write_through_is_idempotent(pipeline_db):
 def test_step_charts_populates_three_pregen_surfaces_in_one_run(pipeline_db):
     """§1.5.1 amended by Phase 13 T-T4.SB.3 OQ-5.3 LOCK: `_step_charts`
     pre-gens THREE surfaces (market_weather + watchlist_row +
-    position_detail). The fourth surface (hyprec_detail) is now JIT-only
+    position_detail). The fourth surface (ticker_detail) is now JIT-only
     via the dashboard expand path. See
-    ``test_step_charts_does_not_pregen_hyprec_detail_surface_post_t_t4_sb_3``.
+    ``test_step_charts_does_not_pregen_ticker_detail_surface_post_t_t4_sb_3``.
     """
     cfg, run_id, eval_run_id = pipeline_db
     conn = connect(cfg.paths.db_path)
@@ -474,9 +474,9 @@ def test_step_charts_populates_three_pregen_surfaces_in_one_run(pipeline_db):
             conn, ticker="MTW", surface="watchlist_row",
             pipeline_run_id=run_id,
         ) is not None
-        # hyprec_detail — NO LONGER PRE-GENNED per OQ-5.3 LOCK.
+        # ticker_detail — NO LONGER PRE-GENNED per OQ-5.3 LOCK.
         assert get_cached_chart_svg(
-            conn, ticker="MTA", surface="hyprec_detail",
+            conn, ticker="MTA", surface="ticker_detail",
             pipeline_run_id=run_id,
         ) is None
         # position_detail (pipeline_run_id IS NULL).

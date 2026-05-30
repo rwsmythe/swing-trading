@@ -1,7 +1,7 @@
-"""Phase 13 T2.SB6c task T-A.6c.2 — Gap A.1 hyp-rec detail chart wiring.
+"""Phase 13 T2.SB6c task T-A.6c.2 — Gap A.1 ticker detail chart wiring.
 
 Per plan §G.2 step 1a (3 tests covering Gap A.1):
-  - VM field populated from chart_renders cache (surface='hyprec_detail').
+  - VM field populated from chart_renders cache (surface='ticker_detail').
   - Template renders the inline SVG bytes when present.
   - Cache-miss leaves the field None + template renders nothing.
 
@@ -70,18 +70,18 @@ def _seed_complete_run_with_eval(conn) -> tuple[int, int]:
     return pipeline_run_id, eval_run_id
 
 
-def test_hyprec_detail_template_renders_inline_chart_svg_when_cache_hit(
+def test_ticker_detail_template_renders_inline_chart_svg_when_cache_hit(
     seeded_db,
 ):
     """Gap A.1 — operator-facing expansion partial renders inline SVG bytes
-    pulled from chart_renders (surface='hyprec_detail', run-bound key)."""
+    pulled from chart_renders (surface='ticker_detail', run-bound key)."""
     cfg, cfg_path = seeded_db
     conn = connect(cfg.paths.db_path)
     try:
         with conn:
             run_id, _ = _seed_complete_run_with_eval(conn)
             refresh_chart_render(conn, ChartRender(
-                id=None, ticker="HYP", surface="hyprec_detail",
+                id=None, ticker="HYP", surface="ticker_detail",
                 chart_svg_bytes=b"<svg>hyprec-cached</svg>",
                 source_data_hash="h",
                 rendered_at="2026-05-22T09:00:00",
@@ -98,7 +98,7 @@ def test_hyprec_detail_template_renders_inline_chart_svg_when_cache_hit(
     assert "<svg>hyprec-cached</svg>" in r.text
 
 
-def test_hyprec_detail_template_omits_chart_when_cache_miss(seeded_db):
+def test_ticker_detail_template_omits_chart_when_cache_miss(seeded_db):
     """Gap A.1 — cache-miss leaves the chart field None; template emits no
     raw bytes (operator-facing page still renders 200 + the order params)."""
     cfg, cfg_path = seeded_db
@@ -118,9 +118,9 @@ def test_hyprec_detail_template_omits_chart_when_cache_miss(seeded_db):
     assert "<svg>hyprec-cached</svg>" not in r.text
 
 
-def test_hyprec_detail_vm_populates_chart_svg_bytes_from_cache(seeded_db):
+def test_ticker_detail_vm_populates_chart_svg_bytes_from_cache(seeded_db):
     """Gap A.1 — `HypRecsExpandedVM` carries the cached bytes via a new
-    `hyprec_detail_chart_svg_bytes` field; the route handler threads the
+    `ticker_detail_chart_svg_bytes` field; the route handler threads the
     `conn` + `pipeline_run_id` so the builder can consult the substrate.
     """
     cfg, _ = seeded_db
@@ -129,7 +129,7 @@ def test_hyprec_detail_vm_populates_chart_svg_bytes_from_cache(seeded_db):
         with conn:
             run_id, _ = _seed_complete_run_with_eval(conn)
             refresh_chart_render(conn, ChartRender(
-                id=None, ticker="HYP", surface="hyprec_detail",
+                id=None, ticker="HYP", surface="ticker_detail",
                 chart_svg_bytes=b"<svg>hyprec-vm</svg>",
                 source_data_hash="h",
                 rendered_at="2026-05-22T09:00:00",
@@ -150,6 +150,6 @@ def test_hyprec_detail_vm_populates_chart_svg_bytes_from_cache(seeded_db):
     finally:
         conn.close()
     assert vm is not None
-    assert getattr(vm, "hyprec_detail_chart_svg_bytes", None) == (
+    assert getattr(vm, "ticker_detail_chart_svg_bytes", None) == (
         b"<svg>hyprec-vm</svg>"
     )

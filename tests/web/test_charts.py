@@ -23,10 +23,10 @@ import pytest
 
 from swing.data.models import Fill, PatternEvaluation, Trade
 from swing.web.charts import (
-    render_hyprec_detail_svg,
     render_market_weather_svg,
     render_position_detail_svg,
     render_theme2_annotated_svg,
+    render_ticker_detail_svg,
     render_watchlist_thumbnail_svg,
 )
 
@@ -127,10 +127,10 @@ def test_render_watchlist_thumbnail_svg_returns_valid_svg_bytes():
     assert b"</svg>" in out
 
 
-def test_render_hyprec_detail_svg_with_pattern_evaluation_renders_pattern_boundaries():
+def test_render_ticker_detail_svg_with_pattern_evaluation_renders_pattern_boundaries():
     bars = _make_bars(180)
     pe = _make_pattern_eval(pattern_class="vcp", bars=bars)
-    out = render_hyprec_detail_svg(
+    out = render_ticker_detail_svg(
         ticker="ABC", bars=bars, pattern_evaluation=pe,
     )
     assert isinstance(out, bytes)
@@ -395,14 +395,26 @@ def test_charts_suptitle_uses_parse_math_false():
     title, ``parse_math=False`` on suptitle prevents mathtext interpretation.
 
     Verify by inspecting the rendered SVG: a literal ``$`` would survive
-    when parse_math=False is honored. Here we plant a hyp-rec render then
-    confirm the suptitle text round-trips ASCII-only (the ASCII assertion
-    already gates the construction; this test confirms the title is
-    actually present in output).
+    when parse_math=False is honored. Here we plant a ticker-detail render
+    then confirm the suptitle text round-trips ASCII-only (the ASCII
+    assertion already gates the construction; this test confirms the title
+    is actually present in output).
     """
     bars = _make_bars(90)
     pe = _make_pattern_eval(pattern_class="vcp", bars=bars)
-    out = render_hyprec_detail_svg(
+    out = render_ticker_detail_svg(
         ticker="ABC", bars=bars, pattern_evaluation=pe,
     )
-    assert b"hyp-rec detail" in out
+    # Neutral, caller-agnostic suptitle: ticker + bar count present.
+    assert b"ABC" in out
+
+
+def test_ticker_detail_title_is_neutral_no_surface_descriptor():
+    """The single cached ticker_detail row is read by BOTH the hyp-rec-expand
+    caller AND the watchlist-expand caller, so the suptitle must be
+    caller-agnostic -- no 'hyp-rec detail' surface descriptor (Phase 14 SB3
+    T-3.1)."""
+    bars = _make_bars(90)
+    out = render_ticker_detail_svg(ticker="ABC", bars=bars)
+    assert b"hyp-rec detail" not in out
+    assert b"ABC" in out

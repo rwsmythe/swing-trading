@@ -2744,7 +2744,7 @@ def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data_asof: str,
     # trade detail / hyp-rec expansion) can serve charts inline without
     # re-rendering at request time. 4 surfaces:
     #   - watchlist_row: per active watchlist ticker (pipeline_run_id non-NULL)
-    #   - hyprec_detail: per A+ candidate (pipeline_run_id non-NULL)
+    #   - ticker_detail: per A+ candidate (pipeline_run_id non-NULL)
     #   - position_detail: per open trade (pipeline_run_id IS NULL per v20 §3.2)
     #   - market_weather: cfg.rs.benchmark_ticker (pipeline_run_id non-NULL,
     #     per Codex R2 MAJOR #4 closure)
@@ -2831,7 +2831,7 @@ def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data_asof: str,
             bytes_=svg_bytes,
         )
 
-    # hyprec_detail surface — Phase 13 T-T4.SB.3 (OQ-5.3 LOCK): pre-gen
+    # ticker_detail surface — Phase 13 T-T4.SB.3 (OQ-5.3 LOCK): pre-gen
     # DROPPED from chart-step. The hyp-recs expanded surface is operator-
     # opened on-demand from the dashboard hyp-recs card; pre-genning all
     # A+ tickers wastes ~one render per ticker, most never opened. The

@@ -93,10 +93,10 @@ _FILL_ORIGIN_VALUES: tuple[str, ...] = (
     "imported_legacy",
 )
 
-# chart_renders.surface enum (5 values per spec §3.2; v23 rename
-# 'hyprec_detail' -> 'ticker_detail' per Phase 14 Sub-bundle 3 T-3.1 -- the
-# single cached detail-chart row is read by BOTH the hyp-rec-expand caller AND
-# the watchlist-expand caller, so the surface name is caller-agnostic).
+# chart_renders.surface enum (5 values per spec §3.2; v23 renamed the old
+# detail surface token to 'ticker_detail' per Phase 14 Sub-bundle 3 T-3.1 --
+# the single cached detail-chart row is read by BOTH the hyp-rec-expand caller
+# AND the watchlist-expand caller, so the surface name is caller-agnostic).
 _CHART_SURFACE_VALUES: tuple[str, ...] = (
     "watchlist_row",
     "ticker_detail",
@@ -1995,7 +1995,7 @@ class ChartRender:
             self.surface != "theme2_annotated"
             and self.pipeline_run_id is None
         ):
-            # Run-bound: watchlist_row / hyprec_detail / market_weather.
+            # Run-bound: watchlist_row / ticker_detail / market_weather.
             raise ValueError(
                 "chart_renders cache key shape violated: "
                 f"surface={self.surface!r} (run-bound) requires "

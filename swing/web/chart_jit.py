@@ -6,19 +6,19 @@ Architecture LOCK per spec §B.5:
     necessary dependency context (``conn``, ``ohlcv_cache``, surface-
     specific render kwargs).
   - Cache key shape preserved: run-bound surfaces (``watchlist_row``,
-    ``hyprec_detail``, ``market_weather``) write pipeline_run_id non-NULL;
+    ``ticker_detail``, ``market_weather``) write pipeline_run_id non-NULL;
     ``position_detail`` writes NULL.
   - F6 construction-barrier defense: ``ChartRender(...)`` construction
     raises on empty bytes; helper catches + returns None + WARN-logs.
   - Renderer-kwargs uniformity LOCK across callsites for cache-collision
-    avoidance (per Codex R4 M#3): both hyprec_detail callers (hyp-recs
+    avoidance (per Codex R4 M#3): both ticker_detail callers (hyp-recs
     route + watchlist expanded) pass identical kwargs.
 
 Cumulative gotchas applied:
 - Expansion #10 sub-discipline (a) architecture-location: NEW module with
   explicit dependency-injection signature; chart_scope.py LOCKED read-only.
 - Expansion #10 sub-discipline (c) renderer-kwargs uniformity for cache
-  collision avoidance — both hyprec_detail callsites pass
+  collision avoidance — both ticker_detail callsites pass
   ``pattern_evaluation=None``; both watchlist_row callsites pass identical
   ma_lines.
 - F6 transient-empty defense at construction barrier — ``ChartRender(...)``
@@ -41,9 +41,9 @@ from swing.data.repos.chart_renders import (
     refresh_chart_render,
 )
 from swing.web.charts import (
-    render_hyprec_detail_svg,
     render_market_weather_svg,
     render_position_detail_svg,
+    render_ticker_detail_svg,
     render_watchlist_thumbnail_svg,
 )
 
@@ -51,10 +51,10 @@ logger = logging.getLogger(__name__)
 
 
 # Renderer registry — module-level so tests can mock individual surface
-# renderers via ``mod._RENDERERS["hyprec_detail"] = MagicMock(...)`` +
+# renderers via ``mod._RENDERERS["ticker_detail"] = MagicMock(...)`` +
 # restore via ``importlib.reload(mod)`` in finally block.
 _RENDERERS: dict[str, Callable] = {
-    "hyprec_detail": render_hyprec_detail_svg,
+    "ticker_detail": render_ticker_detail_svg,
     "market_weather": render_market_weather_svg,
     "position_detail": render_position_detail_svg,
     "watchlist_row": render_watchlist_thumbnail_svg,
@@ -131,15 +131,15 @@ def get_or_render_surface(
     # Step 3: render. Renderer-kwargs match the actual signatures at
     # ``swing/web/charts.py:render_*``:
     #   - render_watchlist_thumbnail_svg(*, ticker, bars, ma_lines)
-    #   - render_hyprec_detail_svg(*, ticker, bars, pattern_evaluation)
+    #   - render_ticker_detail_svg(*, ticker, bars, pattern_evaluation)
     #   - render_market_weather_svg(*, bars, trend_template_state)
     #   - render_position_detail_svg(*, ticker, bars, trade, fills,
     #                                  current_stop)
-    # Uniformity LOCK: for hyprec_detail, both callsites pass
+    # Uniformity LOCK: for ticker_detail, both callsites pass
     # pattern_evaluation=None (V1). For watchlist_row, both callsites
     # pass the SAME ma_lines (cache-collision avoidance).
     try:
-        if surface == "hyprec_detail":
+        if surface == "ticker_detail":
             svg_bytes = renderer(
                 ticker=ticker, bars=bars,
                 pattern_evaluation=renderer_kwargs.get("pattern_evaluation"),
