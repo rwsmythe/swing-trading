@@ -426,3 +426,99 @@ def test_chart_jit_market_weather_default_is_undefined(
     finally:
         importlib.reload(mod)
     assert captured.get("trend_template_state") == "undefined"
+
+
+# ---------------------------------------------------------------------------
+# Phase 14 SB3 T-3.5 (plan §C.6, OQ-4) — P14.N1 thumbnail substrate proof.
+#
+# Substrate-only: prove ``render_watchlist_thumbnail_svg`` (the line-chart
+# 200x100 thumbnail) is REUSABLE as the substrate for open-position / hyp-rec
+# table thumbnails via the existing ``watchlist_row`` JIT surface — with NO
+# new renderer, NO new surface enum, and NO consuming-surface row TEMPLATE
+# wiring (deferred to SB4). The thumbnail STAYS a line chart.
+# ---------------------------------------------------------------------------
+
+
+def test_jit_renders_watchlist_thumbnail_for_non_watchlist_ticker(
+    conn: sqlite3.Connection, pipeline_run_id: int,
+) -> None:
+    """A non-watchlist ticker (e.g. an open-position ticker that rotated out
+    of finviz) renders + caches a ``watchlist_row`` thumbnail through the JIT
+    via the SAME run-bound (ticker, pipeline_run_id) cache key. Uses the REAL
+    ``render_watchlist_thumbnail_svg`` substrate (no renderer mock) so the
+    proof exercises the actual line-chart renderer. The second call returns
+    the cached row byte-identical (write-through reuse).
+    """
+    from swing.web.chart_jit import _WATCHLIST_THUMBNAIL_MA_LINES
+
+    ohlcv_cache = MagicMock()
+    ohlcv_cache.get_or_fetch.return_value = _planted_bars_df()
+
+    r1 = get_or_render_surface(
+        conn=conn, ohlcv_cache=ohlcv_cache,
+        surface="watchlist_row", ticker="ZZZZ",
+        pipeline_run_id=pipeline_run_id,
+        data_asof_date="2026-05-22",
+        ma_lines=_WATCHLIST_THUMBNAIL_MA_LINES,
+    )
+    assert r1 is not None
+    assert b"</svg>" in r1
+    # Write-through populated a run-bound watchlist_row cache row.
+    rows = list(conn.execute(
+        "SELECT chart_svg_bytes, pipeline_run_id FROM chart_renders "
+        "WHERE surface='watchlist_row' AND ticker='ZZZZ'"
+    ))
+    assert len(rows) == 1
+    assert rows[0][1] == pipeline_run_id
+
+    # Second call reads from cache — byte-identical (substrate reuse). The
+    # OHLCV cache is consulted exactly once (first render only).
+    r2 = get_or_render_surface(
+        conn=conn, ohlcv_cache=ohlcv_cache,
+        surface="watchlist_row", ticker="ZZZZ",
+        pipeline_run_id=pipeline_run_id,
+        data_asof_date="2026-05-22",
+        ma_lines=_WATCHLIST_THUMBNAIL_MA_LINES,
+    )
+    assert r2 == r1
+    assert ohlcv_cache.get_or_fetch.call_count == 1
+
+
+def test_open_position_and_hyprec_row_vms_expose_thumbnail_binding(
+    conn: sqlite3.Connection,
+) -> None:
+    """Substrate-binding contract proof (NO production change expected): the
+    open-position + hyp-rec row VMs already expose the ``ticker`` the
+    thumbnail substrate needs, and the run binding ``(pipeline_run_id,
+    data_asof_date)`` is resolvable from VM context via
+    ``latest_completed_pipeline_run(conn)`` (the same anchor the dashboard
+    binds to). This unblocks SB4's row-template wiring without any template
+    change here.
+    """
+    from swing.web.chart_scope import latest_completed_pipeline_run
+    from swing.web.view_models.dashboard import HypothesisRecommendation
+    from swing.web.view_models.open_positions_row import OpenPositionsRowVM
+
+    # The hyp-rec row VM exposes `ticker` directly (the substrate's first
+    # identity coordinate).
+    assert "ticker" in HypothesisRecommendation.__dataclass_fields__
+
+    # OpenPositionsRowVM carries the `trade` (which holds `.ticker`); confirm
+    # the substrate's ticker is resolvable from the VM.
+    op_fields = OpenPositionsRowVM.__dataclass_fields__
+    assert "trade" in op_fields
+
+    # The run binding is resolvable from VM context: build a completed run +
+    # confirm latest_completed_pipeline_run returns the (run_id, data_asof)
+    # pair the substrate cache key needs.
+    with conn:
+        conn.execute(
+            "INSERT INTO pipeline_runs (started_ts, finished_ts, trigger, "
+            "data_asof_date, action_session_date, state, lease_token) "
+            "VALUES ('2026-05-22T08:00:00', '2026-05-22T08:05:00', 'manual', "
+            "'2026-05-22', '2026-05-22', 'complete', 'tok-bind')"
+        )
+    binding = latest_completed_pipeline_run(conn)
+    assert binding is not None
+    assert isinstance(binding.run_id, int)
+    assert binding.data_asof_date == "2026-05-22"
