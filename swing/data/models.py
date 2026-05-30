@@ -93,10 +93,13 @@ _FILL_ORIGIN_VALUES: tuple[str, ...] = (
     "imported_legacy",
 )
 
-# chart_renders.surface enum (5 values per spec §3.2).
+# chart_renders.surface enum (5 values per spec §3.2; v23 rename
+# 'hyprec_detail' -> 'ticker_detail' per Phase 14 Sub-bundle 3 T-3.1 -- the
+# single cached detail-chart row is read by BOTH the hyp-rec-expand caller AND
+# the watchlist-expand caller, so the surface name is caller-agnostic).
 _CHART_SURFACE_VALUES: tuple[str, ...] = (
     "watchlist_row",
-    "hyprec_detail",
+    "ticker_detail",
     "position_detail",
     "market_weather",
     "theme2_annotated",
