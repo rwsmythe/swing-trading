@@ -361,11 +361,17 @@ uses pyplot GLOBAL state (`matplotlib.pyplot as plt`, `mpf.plot(...)`,
 `plt.subplots(...)`, `plt.close(fig)`) -- which is NOT thread-safe -- and there
 is NO existing render lock today. A single concurrent chart request is a latent
 risk already; the journal listing's up-to-`page_size` lazy thumbnail renders
-make it acute. Resolution: SB4 introduces a **process-wide matplotlib render lock (a
-module-level `threading.Lock` / semaphore of 1) at the SHARED `charts.py` render
-boundary** -- the single choke point `_svg_bytes_from_fig` (and the
-`mpf.plot`/`plt.subplots` sites) that EVERY web renderer passes through -- NOT
-only the SB4 paths. **(Codex R4 M#1):** the pyplot hazard is process-global, so
+make it acute. Resolution: SB4 introduces a **process-wide matplotlib render lock acquired
+ONCE per render at a SINGLE outer boundary** -- each top-level `render_*_svg`
+function (and the new `trade_charts.py` helpers) acquires the module-level lock
+around its WHOLE body, exactly once, covering the `mpf.plot` / `plt.subplots` /
+`_svg_bytes_from_fig` sequence. **(Codex R5 M#1)** the lock must NOT be acquired
+at BOTH an inner `mpf.plot` site AND again at `_svg_bytes_from_fig` with a
+non-reentrant `threading.Lock` -- that self-deadlocks a single render. The spec
+mandates: ONE acquisition per render (outer boundary); if any nesting is
+genuinely unavoidable, use `threading.RLock` (reentrant); and the writing-plans
+slice adds a no-deadlock test that exercises EACH chart path under the lock.
+The lock covers EVERY web renderer (existing + SB4), NOT only the SB4 paths. **(Codex R4 M#1):** the pyplot hazard is process-global, so
 a lock that wrapped only SB4 renders would still let an existing render
 (trade-detail JIT, watchlist thumbnail, weather) run concurrently with an SB4
 render and corrupt pyplot state. Centralizing the lock at the shared boundary
@@ -554,6 +560,16 @@ Combined with a **smaller default page size for the thumbnail-bearing listing
 (~20-25 rows, not 50)**, this keeps the concurrent render demand low even on a
 fast scroll. The render lock + on-scroll trigger + freshness memo together
 prevent a single journal page from becoming a self-inflicted DoS.
+
+**`revealed` requires window scrolling (Codex R5 M#2).** HTMX `revealed` keys
+off the element scrolling within the WINDOW viewport; if the journal table sits
+inside an `overflow:auto/scroll` container, `revealed` may never fire and
+thumbnails never load. The writing-plans slice MUST verify the journal listing
+uses normal window scrolling (the existing `base.html.j2` page layout does NOT
+wrap content in an overflow-scroll container -- confirm at implementation), OR
+switch to `hx-trigger="intersect"` with an explicit `root`/`threshold`
+configured to the actual scroll container. The operator-witnessed gate (§10 S4)
+explicitly verifies thumbnails DO load as the operator scrolls the real page.
 
 `GET /journal/trades/{id}/thumbnail` returns the `<svg>` (or a
 chart-unavailable `<span>`), memoized via the freshness-keyed memo (§4.2; NOT
@@ -1070,9 +1086,26 @@ majors were follow-ons of the R3 render-lock decision; resolved in-spec:
   via `hx-trigger="revealed"` (intersection-observer) + a smaller default page
   size (~20-25), bounding the lock queue to on-screen rows.
 
-*(Round 5 verdict appended at chain close; target NO_NEW_CRITICAL_MAJOR.
-Cumulative through R4: 0 critical / 22 major / 17 minor; ALL 22 majors
-resolved-via-code, ZERO accepted-without-fix.)*
+**Round 5 -- 0 critical / 2 major / 0 minor (verdict ISSUES_FOUND).** MAX_ROUNDS
+(5) reached. Both R5 majors were narrow implementation-detail catches on the R4
+render-lock/lazy-load resolutions; both resolved in-spec:
+- R5 M#1 lock self-deadlock risk -> §4.2 single outer acquisition per render
+  (not inner + outer); `RLock` if nesting unavoidable; writing-plans no-deadlock
+  test per chart path.
+- R5 M#2 `revealed` in overflow containers -> §5.3 verify window-scroll layout
+  or use `hx-trigger="intersect"` with explicit root; gate verifies thumbnails
+  load on scroll.
+
+**Chain close (honest):** the chain ran the full MIN..MAX (R1-R5) and did NOT
+reach a terminal clean `NO_NEW_CRITICAL_MAJOR` verdict -- each round surfaced
+NEW, progressively narrower majors (R1 design-level -> R5 implementation-detail
+nuances). **All 24 cumulative majors (0 critical) were resolved-via-code in the
+spec; ZERO were accepted-without-fix; ZERO remain unresolved at close.** The R5
+residue (RLock-vs-Lock, `revealed`-vs-`intersect`) is genuinely writing-plans
+implementation granularity, appropriately addressed with explicit guidance +
+deferred tests rather than left open. Cumulative: 0 critical / 24 major / 17
+minor across R1-R5. This is a "max-rounds-reached, all-majors-resolved" close,
+not a "converged-on-clean-verdict" close -- reported as such, not overstated.
 
 ---
 
