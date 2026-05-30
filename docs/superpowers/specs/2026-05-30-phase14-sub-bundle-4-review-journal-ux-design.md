@@ -193,8 +193,9 @@ operator-confirmed locks (no live operator in this dispatch):
   trade_id)` (§5.4).
 - `swing/web/view_models/open_positions_row.py` --
   `OpenPositionsExpandedVM` (+ `position_chart_svg_bytes`);
-  `build_open_positions_expanded` (consult `position_detail` cache via
-  `get_or_render_surface`).
+  `build_open_positions_expanded` (read the `position_detail` cache via the
+  read-only `get_cached_chart_svg`, mirroring `build_trade_detail_vm`; no JIT,
+  no write -- §6).
 
 **Shared chart substrate (small carve-out, Codex R4 M#1):**
 - `swing/web/charts.py` -- add a module-level **matplotlib render lock** at the
@@ -710,12 +711,14 @@ invariant: **at most ONE open trade exists per ticker** (the open-positions
 list is per-ticker; the `open_position_expand` comment at `trades.py:2550-2552`
 notes the trade_id route key defends only the *closed*-then-reopened case,
 i.e. one closed + one open, never two simultaneously open). So the ticker key
-is unambiguous for the open row-expand. Belt-and-suspenders: `get_or_render_surface`
-does a DELETE-then-INSERT write-through refresh with the CURRENT trade/fills/
-current_stop, so even a stale row is replaced on read. Slice 1 adds a test
-asserting the row-expand chart reflects the current open trade's fills.
-**Escalate** if the data model is ever found to permit two concurrently-open
-trades per ticker (it does not today).
+is unambiguous for the open row-expand: the single `position_detail` row for
+that ticker IS this open trade's chart, refreshed each pipeline run by
+`_step_charts`. (Because the row-expand is now read-only -- mirroring
+`build_trade_detail_vm`, no JIT, R3 M#1 -- the freshness is exactly the
+trade-detail page's; SB4 adds no write.) Slice 1 adds a test asserting the
+row-expand chart reflects the current open trade's fills. **Escalate** if the
+data model is ever found to permit two concurrently-open trades per ticker (it
+does not today).
 
 **L7 reversal record:** the chart-access UX brief §2 deliberately put
 position-detail on a SEPARATE page; inlining it into the row-expand reverses
@@ -998,7 +1001,7 @@ test the recommendations):
 | #16 / #32 ASCII | Declared across all NEW files/templates/view-model; reused renderer labels ASCII-clean. |
 | L4 HTMX trinity | §8 -- table-row-free fragment root / OOB tbody; hx-headers HX-Request; no new POST (no 204/303 surface); base-VM safe defaults on the new drill-down page. |
 | L5 matplotlib visual-gate | §10 -- byte/string tests INSUFFICIENT; per-surface operator-witnessed gate; reuse SB3 renderers (no candlestick re-implementation). |
-| #10c renderer-kwargs uniformity | BULZ row-expand uses the SAME `get_or_render_surface(position_detail, ...)` kwargs as `build_trade_detail_vm` (cache-collision-free). |
+| #10c renderer-kwargs uniformity | BULZ row-expand reads the cache via the SAME read-only `get_cached_chart_svg(surface='position_detail', pipeline_run_id=None)` call as `build_trade_detail_vm` (cache-collision-free; no JIT/write). |
 | F6 / full-archive-slice / OHLCV-scope | `_trade_window_bars` returns None on empty (never blanks); consumes the FULL archive and slices locally; render-direct so closed-trade fetch does not pollute the open-trade OHLCV scope. |
 | #28 / #29 exemplar/historical-depth | The #29 window-anchoring failure is the CENTRAL finding (§1.2); old-trade no-coverage -> chart-unavailable state (S4/S5 fixture). |
 | L2 Schwab LOCK | ZERO new `schwabdev.Client.*`; source-grep test stays green; Schwab daily-bar wiring stays OUT (§12). |
