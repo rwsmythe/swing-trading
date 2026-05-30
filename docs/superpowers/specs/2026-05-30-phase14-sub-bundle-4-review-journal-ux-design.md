@@ -1089,9 +1089,9 @@ majors were follow-ons of the R3 render-lock decision; resolved in-spec:
   via `hx-trigger="revealed"` (intersection-observer) + a smaller default page
   size (~20-25), bounding the lock queue to on-screen rows.
 
-**Round 5 -- 0 critical / 2 major / 0 minor (verdict ISSUES_FOUND).** MAX_ROUNDS
-(5) reached. Both R5 majors were narrow implementation-detail catches on the R4
-render-lock/lazy-load resolutions; both resolved in-spec:
+**Round 5 -- 0 critical / 2 major / 0 minor (verdict ISSUES_FOUND).** Both R5
+majors were narrow implementation-detail catches on the R4 render-lock/lazy-load
+resolutions; both resolved in-spec:
 - R5 M#1 lock self-deadlock risk -> §4.2 single outer acquisition per render
   (not inner + outer); `RLock` if nesting unavoidable; writing-plans no-deadlock
   test per chart path.
@@ -1099,16 +1099,18 @@ render-lock/lazy-load resolutions; both resolved in-spec:
   or use `hx-trigger="intersect"` with explicit root; gate verifies thumbnails
   load on scroll.
 
-**Chain close (honest):** the chain ran the full MIN..MAX (R1-R5) and did NOT
-reach a terminal clean `NO_NEW_CRITICAL_MAJOR` verdict -- each round surfaced
-NEW, progressively narrower majors (R1 design-level -> R5 implementation-detail
-nuances). **All 24 cumulative majors (0 critical) were resolved-via-code in the
-spec; ZERO were accepted-without-fix; ZERO remain unresolved at close.** The R5
-residue (RLock-vs-Lock, `revealed`-vs-`intersect`) is genuinely writing-plans
-implementation granularity, appropriately addressed with explicit guidance +
-deferred tests rather than left open. Cumulative: 0 critical / 24 major / 17
-minor across R1-R5. This is a "max-rounds-reached, all-majors-resolved" close,
-not a "converged-on-clean-verdict" close -- reported as such, not overstated.
+**Round 6 -- 0 critical / 0 major / 0 minor (verdict NO_NEW_CRITICAL_MAJOR).
+CONVERGED.** The R5 resolutions drew no new findings; the chain reached a clean
+terminal verdict.
+
+**Chain close:** R1 0C/12M/10m -> R2 0C/6M/4m -> R3 0C/2M/3m -> R4 0C/2M/0m ->
+R5 0C/2M/0m -> R6 CLEAN. The config MAX_ROUNDS default (5) was extended by
+operator direction ("continue the chain until a clean terminal verdict, per
+project precedence"); R6 delivered it. **Cumulative 0 critical / 24 major / 17
+minor across R1-R6; ALL 24 majors resolved-via-code, ZERO accepted-without-fix,
+ZERO unresolved at close.** Each round's findings narrowed from design-level
+(R1) to implementation-detail (R5) to none (R6). Ran via the `codex exec` CLI +
+`resume --last` read-only backstop (MCP off-purview, FB-N1).
 
 ---
 
