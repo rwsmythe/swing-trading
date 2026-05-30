@@ -58,9 +58,10 @@ from swing.integrations.schwab.client import (
 )
 from swing.metrics.discrepancies import count_recent_multi_leg_auto_corrections
 from swing.patterns.composite import compute_composite_score
+
 # Phase 14 SB3 T-3.4 (§C.4a): module-top import so the discriminating test
 # may monkeypatch ``swing.pipeline.runner.current_stage``. Read-only wrapper
-# over the shipped evaluation surface (SELECTs only — L6/L2 preserved).
+# over the shipped evaluation surface (SELECTs only -- L6/L2 preserved).
 from swing.patterns.foundation import current_stage
 from swing.patterns.template_matching import (
     GEOMETRIC_SCORE_PREGATE_THRESHOLD,

@@ -17,11 +17,13 @@ from swing.data.db import connect
 from swing.data.models import ChartRender
 from swing.data.repos.chart_renders import refresh_chart_render
 from swing.evaluation.dates import last_completed_session
+
 # Phase 14 SB3 T-3.4 (§C.4a): module-top import so the discriminating test may
 # monkeypatch ``swing.web.routes.dashboard.current_stage``. Read-only wrapper
-# (SELECTs only — L6/L2 preserved).
+# (SELECTs only -- L6/L2 preserved).
 from swing.patterns.foundation import current_stage
 from swing.web.chart_scope import latest_completed_pipeline_run
+
 # Phase 14 SB3 T-3.4: module-top import (was a function-local import) so the
 # discriminating test may monkeypatch
 # ``swing.web.routes.dashboard.render_market_weather_svg``.
@@ -122,7 +124,7 @@ def dashboard_weather_chart_refresh(request: Request) -> Response:
             )
         # Phase 14 SB3 T-3.4 (§C.4a): derive the REAL trend-template state via
         # current_stage at this LIVE site. `last_completed_session(...)`
-        # returns a `date` already — pass it DIRECTLY (no `.date()`). Own
+        # returns a `date` already -- pass it DIRECTLY (no `.date()`). Own
         # fail-soft try/except falls back to "undefined" on any error so the
         # refresh never crashes. `conn` is in scope; read is SELECT-only
         # (L6/L2 preserved).
