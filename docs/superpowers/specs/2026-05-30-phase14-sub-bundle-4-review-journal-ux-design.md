@@ -52,7 +52,10 @@ both verified in production code at draft time:
    historical-depth / window-anchoring failure mode in full.
 2. **Cache-key collision.** The `position_detail` cache key is
    `(ticker, surface='position_detail', pipeline_run_id IS NULL)` -- *ticker
-   only, run-agnostic* (`get_cached_chart_svg` lines 170-197; v20 §3.2 LOCK).
+   only, run-agnostic* (`get_cached_chart_svg` lines 170-197 /
+   `swing/data/repos/chart_renders.py:152-158`; partial-unique index at
+   `swing/data/migrations/0023_phase14_sb3_chart_surface_rename.sql:60-62`;
+   v20 §3.2 LOCK).
    There is exactly one cached `position_detail` row per ticker. A ticker that
    was traded, closed, and re-entered has two `Trade` rows but one cache slot;
    serving the journal drill-down for the *old* closed trade from that slot
@@ -483,7 +486,7 @@ class JournalRowVM:
     chart_pattern: str | None    # chart_pattern_operator or _algo or pattern_evaluations.pattern_class
     aplus_bucket: str | None     # candidates.bucket via candidate_id
     hypothesis_label: str | None # trade.hypothesis_label
-    has_hyprec_link: bool        # candidate_id is not None (see OQ-4 for "which")
+    has_hyprec_link: bool        # trade_origin == "pipeline_watch_hyp_recs" (see OQ-4 for "which")
 ```
 
 `closing_price` + `final_r` reuse the SAME `_ExitShape` / VWAP /
@@ -504,9 +507,21 @@ Entry-flag joins: a single batched read of `candidates.bucket` /
 `pattern_evaluations.pattern_class` (by the set of `pattern_evaluation_id`s)
 inside the existing `with conn:` block -- avoid N+1 per-row queries.
 
-**Pagination / windowing (Codex R1 M#7):** the listing MUST be paginated (V1
-default page size ~50 rows; `page=` / `page_size=` query params validated
-against a max). This bounds the per-page thumbnail render count (§5.3),
+**`has_hyprec_link` derives from `trade_origin`, NOT `candidate_id` (Codex
+re-review M#2).** `candidate_id` is populated for ALL candidate-backed entries
+-- A+ (`pipeline_aplus`), hyp-rec (`pipeline_watch_hyp_recs`), AND manual watch
+(`pipeline_watch_manual`) -- so `candidate_id is not None` would mislabel A+
+and manual-watch trades as hyp-rec. The hyp-rec linkage is exactly
+`trade.trade_origin == "pipeline_watch_hyp_recs"` (the origin enum resolved in
+`swing/trades/origin.py:67-72`, persisted on the trade row at
+`swing/trades/entry.py:374-405`). `candidate_id` remains the join key for the
+`aplus_bucket` / `chart_pattern` backlinks only.
+
+**Pagination / windowing (Codex R1 M#7):** the listing MUST be paginated. The
+journal listing is thumbnail-bearing, so the V1 default page size is **~20-25
+rows** -- the SINGLE page-size figure across the spec (the §5.3 render-queue
+bound governs; Codex re-review M#4) -- with `page=` / `page_size=` query params
+validated against a max. This bounds the per-page thumbnail render count (§5.3),
 bounds the entry-flag join sizes, and keeps the table usable as the trade
 history grows. The period filter already narrows the set; pagination is the
 hard cap on top of it.
@@ -527,12 +542,25 @@ filtering on `state == 'reviewed'` is equivalent to "has a completed review"
 and hides nothing. (If a future write path ever set `reviewed_at` without the
 state transition, escalate -- it does not today.) A coarse open-vs-closed
 toggle maps `{entered, managing, partial_exited}` -> open and
-`{closed, reviewed}` -> closed. **HTMX-driven, no full reload** -- the table `<tbody>` swaps via an
-OOB-safe fragment (§8). Server-side sort/filter (the dataset is small,
-single-operator); the route accepts `sort=`, `dir=`, `filter_state=`,
-`filter_pattern=` query params, validates against allowlists (frozenset, reject
-unknown -> 400 + clear, mirroring `_ALLOWED_PERIODS`), and re-renders the
-`<tbody>` partial.
+`{closed, reviewed}` -> closed. **HTMX-driven, no full reload** -- the sort/
+filter endpoint swaps the **whole `<table>` via `hx-swap="outerHTML"`** with a
+`<table>`-rooted fragment (the SINGLE decided contract -- §8 item 1; chosen
+over OOB-into-`<tbody>` to dodge the synthetic-table-wrap hazard; Codex
+re-review M#3). Server-side sort/filter (the dataset is small, single-operator);
+the route accepts `sort=`, `dir=`, `filter_state=`, `filter_pattern=` query
+params, validates against allowlists (frozenset, mirroring `_ALLOWED_PERIODS`)
+and re-renders the full `<table>` partial; an out-of-allowlist value returns the
+in-page error fragment (§8 item 4), not a bare 400, and is logged.
+
+**Route typing (Codex re-review R2 m#2):** the sort/filter route MUST type ALL
+table query params (`period`, `sort`, `dir`, `filter_state`, `filter_pattern`)
+as plain `str` and run the allowlist check itself -- NOT as FastAPI
+`Literal[...]`. The existing `journal_page` types `period` as
+`Literal["week","month",...]` (`routes/journal.py:18`), which makes FastAPI
+raise a **422 BEFORE app code runs** -- so an out-of-allowlist value would never
+reach the in-page error fragment. The journal sort/filter endpoint therefore
+uses `str`-typed params (a loosened `period` included) and validates through the
+fragment-returning allowlist path.
 
 ### §5.3 Candlestick thumbnails -- lazy-loaded per row
 
@@ -578,8 +606,10 @@ bare `trade_id`). SVG content is not a table element -> no synthetic-table-wrap
 hazard (§8). For open trades the thumbnail uses today's trailing window; for
 closed trades the trade window.
 
-**Request-storm control (Codex R1 M#7 / R2 M#2):** with pagination (§5.1) the
-page fires at most `page_size` (~50) thumbnail requests on load. Bounds:
+**Request-storm control (Codex R1 M#7 / R2 M#2):** with pagination (§5.1,
+~20-25 rows) AND the `hx-trigger="revealed"` on-scroll trigger, the page fires
+thumbnail requests only for the rows actually scrolled into view -- never the
+whole `page_size` at once. Bounds:
 (a) the freshness-keyed memo means a re-sort / re-filter of the SAME rows does
 NOT re-render (cache hit); (b) **fetch side -- corrected (R2 M#2):** the
 closed-trade helper uses `read_or_fetch_archive` (module-level), NOT
@@ -591,10 +621,11 @@ thumbnail loads are mostly warm parquet reads + matplotlib renders, not a
 network stampede; (c) **render side:** matplotlib renders are CPU-bound -- the
 thumbnail route renders synchronously per request, and the writing-plans slice
 adds an explicit render-concurrency bound (a small semaphore, or reuse
-`app.state.price_fetch_executor`) so ~50 simultaneous loads do not saturate the
-box; (d) the thumbnail endpoint is GET-cacheable + idempotent. If ~50
-concurrent renders still prove heavy, the escalation is the v24 persisted
-trade-keyed cache (§12 tripwire), not an undocumented silent cap.
+`app.state.price_fetch_executor`) so even a fast scroll's burst of on-screen
+renders does not saturate the box; (d) the thumbnail endpoint is GET-cacheable
++ idempotent. If the on-scroll render burst still proves heavy, the escalation
+is the v24 persisted trade-keyed cache (§12 tripwire), not an undocumented
+silent cap.
 
 ### §5.4 Click-through drill-down -- chronology + annotated chart
 
@@ -609,10 +640,23 @@ detail)`:
 - `fills` (entry/exit/trim/stop -- `list_fills_for_trade`),
 - `trade_events` (event_type rows -- inline SELECT, best-effort JSON payload
   parse with None fallbacks per the `_load_audit_entries` precedent),
-- `daily_management_records` (Phase 8 daily snapshots / stop adjusts --
-  inline SELECT, active rows `is_superseded=0`),
-- `review_log` (the post-trade review entry, if any -- via
-  `repos/review_log.py`).
+- `daily_management_records` -- TWO distinct record kinds, NOT one (Codex
+  re-review M#5). `record_type IN ('daily_snapshot','event_log')`
+  (`0016_phase8_daily_management.sql:31-43`): `daily_snapshot` rows carry the
+  position-state snapshot fields (review_date, MFE/MAE, trail-MA eligibility);
+  `event_log` rows carry the operator stop-adjust / thesis-event fields
+  (`prior_stop`/`new_stop`, `action_taken`, `thesis_status`,
+  `stop_change_reason`). Both filtered to active rows `is_superseded=0`, and
+  the two kinds get SEPARATE field maps + summary templates (§5.4 contract).
+- the **per-trade post-trade review** (if any) -- this is the `trades` review
+  COLUMNS (`reviewed_at` + grade/tag/`lesson_learned`, `models.py:213-223`),
+  written by `complete_trade_review` (`swing/trades/review.py:598-615`), NOT
+  the `review_log` table (Codex re-review M#1). `review_log` is a CADENCE /
+  period review (daily / weekly / monthly / quarterly / circuit-breaker) with
+  NO `trade_id` (`0013_phase6_post_trade_review.sql:44-70`) -- it cannot key to
+  a trade and is OUT of the per-trade chronology. (A separate period-review
+  context block could surface cadence `review_log` later; it is not this
+  chronology's source.)
 
 Ordering: ascending by ISO timestamp; ties broken by a fixed source-precedence
 (fill < daily_management < trade_event < review) so the merge is
@@ -627,10 +671,17 @@ sources, and its source-contract decisions materially shape operator
 interpretation. The writing-plans slice (Slice 5) MUST pin, as explicit
 contracts with dedicated tests (not incidental template assertions):
 - **per-source field map** -- which column supplies `ts`, `kind`, `summary`,
-  `detail` for each of fills / trade_events / daily_management_records /
-  review_log;
-- **supersession** -- `daily_management_records.is_superseded=0` only (active
-  rows); superseded snapshots excluded (or shown struck-through -- decide);
+  `detail` for each of fills / trade_events / daily_management_records
+  (split by `record_type`: `daily_snapshot` vs `event_log` -- separate maps) /
+  the `trades` post-trade-review columns (`reviewed_at` + lesson/grade -- NOT
+  the `review_log` table);
+- **supersession + record_type -- V1 DECIDED (Codex re-review R2 M#2):**
+  include only active `daily_management_records.is_superseded=0` rows;
+  superseded rows are EXCLUDED outright (not struck-through) -- simplest, and
+  the chronology shows the trade's effective history, not its edit trail. AND
+  the `daily_snapshot` vs `event_log` discriminator is honored so an
+  `event_log` stop-adjust renders its operator-input fields, not blank snapshot
+  columns (and vice-versa);
 - **timestamp normalization** -- the source timestamp formats differ
   (`fill_datetime`, event `ts`, record dates, `reviewed_at`); normalize to a
   common ISO key, document the precision (date vs datetime) per source;
@@ -640,6 +691,24 @@ contracts with dedicated tests (not incidental template assertions):
   renders those sections empty, never errors.
 This elevates Slice 5 from "wiring" to a tested domain assembly and is the one
 place OQ-8 (writing-plans Codex chain count) could tip toward two chains.
+
+**V1 per-source field map (Codex re-review R2 M#2 -- concrete, not deferred).**
+The writing-plans slice implements EXACTLY this `ts`/`kind` mapping (tests
+assert it); it is no longer "decide later":
+
+| source | `ts` (source column) | `kind` | `summary` | `detail` |
+|---|---|---|---|---|
+| `fills` | `fill_datetime` (datetime) | `fill:{action}` (`action` IN entry/trim/exit/stop -- `models.py:289-296`; there is NO "side" column) | "{action} {quantity} @ {price}" (field is `quantity`, not `qty`) | `reason`, `rule_based` if present |
+| `trade_events` | event `ts` (datetime) | `event` + `event_type` | event_type label | best-effort JSON payload (None-fallback) |
+| `daily_management_records` `daily_snapshot` | `review_date` (date) | `snapshot` | position-state one-liner | MFE/MAE **R** (`open_MFE_R_to_date`/`open_MAE_R_to_date`, R-multiples NOT %), trail-MA eligibility |
+| `daily_management_records` `event_log` | `review_date` (date) | precedence from the REAL columns (`daily_management.py:272-294`): `stop_adjust` if `stop_changed=1`; else `action:{action_taken}` if `action_taken NOT IN (None,'no_action')`; else `thesis` if `thesis_status` set; else `management_event` | "{prior_stop}->{new_stop}" (stop_adjust) / `action_reason` / `thesis_status` | `stop_change_reason`, volume/RS/regime, `management_notes` |
+| `trades` post-trade review | `reviewed_at` (datetime) | `review` | grade + one-line lesson | full lesson/tag fields |
+
+Timestamp precision differs (date-only for daily_management; datetime for
+fills / events / review) -- normalize all to one sortable ISO key (date-only
+rows sort at start-of-day) and label the displayed precision. Slice 5 MAY
+refine the `summary`/`detail` COPY, but the source column feeding `ts`/`kind`
+is fixed by this table.
 
 The "entries filled out at opening" the operator references = the entry fill +
 the pre-trade decision fields already on the `Trade` row (`thesis`, `why_now`,
@@ -764,8 +833,11 @@ Every new HTMX interaction inherits the binding trinity + shared-VM discipline:
    cycles leave controls usable (sort indicator + selected filter persist in
    the re-rendered header; scroll not jarringly reset). If annoying, narrowing
    to a `<tbody>` swap + OOB header update is the noted fallback.
-2. **Lazy thumbnail (`hx-trigger="load"`):** returns `<svg>`/`<span>` (not a
-   table element) -> no wrap hazard; `innerHTML` swap into the `<td>`.
+2. **Lazy thumbnail (`hx-trigger="revealed"`, on-scroll -- §5.3 / Codex
+   re-review M#4):** returns `<svg>`/`<span>` (not a table element) -> no wrap
+   hazard; `innerHTML` swap into the `<td>`. (The SINGLE review-form chart of
+   §4.3 uses `hx-trigger="load"` -- one chart, fired immediately -- but the
+   journal *thumbnail grid* uses `revealed` so only on-screen rows render.)
 3. **Drill-down link:** a plain `<a href="/journal/trades/{id}">` full
    navigation (not HTMX) -- simplest; the drill-down is a full page. If made
    HTMX, the HX-Redirect/204 disciplines would apply, but a plain link avoids
@@ -807,8 +879,10 @@ slices, ordered so each lands testable and reuses the prior:
 
 - **Slice 0 -- CR.1 (exit-data + chart snapshot).** Builds the shared
   `trade_charts.py` helper (`_trade_window_bars` +
-  `render_trade_window_position_svg`) + `ReviewVM` exit fields + chart field +
-  `review.html.j2` blocks. Smallest; lands the helper Slice 4 reuses.
+  `render_trade_window_position_svg`) + `ReviewVM` exit fields + the lazy
+  chart-load target (a `review_chart_url`/placeholder -- NOT chart bytes on the
+  VM, per §4.3 / Codex re-review m#1) + `review.html.j2` blocks. Smallest;
+  lands the helper Slice 4 reuses.
   (~3-5 commits, ~10-15 tests.)
 - **Slice 1 -- BULZ row-expand wiring.** Independent; `OpenPositionsExpandedVM`
   field + cache plumbing + template swap + L7 reversal note. (~2-3 commits,
@@ -819,7 +893,8 @@ slices, ordered so each lands testable and reuses the prior:
   sort/filter yet -- pure data + template (testable without matplotlib).
   (~4-6 commits, ~15-20 tests.)
 - **Slice 3 -- Sort/filter (database-browsing).** Query-param sort/filter +
-  HTMX `<tbody>` swap (§8). (~3-4 commits, ~10-15 tests; operator browser gate.)
+  HTMX whole-`<table>` `outerHTML` swap (§8 item 1). (~3-4 commits, ~10-15
+  tests; operator browser gate.)
 - **Slice 4 -- Candlestick thumbnails.** `render_trade_window_thumbnail_svg` +
   `GET /journal/trades/{id}/thumbnail` + lazy-load cell. (~2-4 commits,
   ~8-12 tests; matplotlib visual gate.)
@@ -849,8 +924,21 @@ serial (each builds on the listing).
   the correct per-trade chart (the cache-collision regression test).
 - Trades with / without candidate_id + pattern_evaluation_id -> entry-flag
   None-safety.
-- A trade with fills + trade_events + daily_management_records + review_log ->
-  chronology merge ordering + malformed-payload best-effort.
+- A trade with fills + trade_events + daily_management_records (one
+  `daily_snapshot` + one `event_log`) + a completed `trades` post-trade review
+  -> chronology merge ordering + per-`record_type` field maps +
+  malformed-payload best-effort. A cadence `review_log` row (no `trade_id`)
+  also present in the DB MUST NOT appear in any trade's chronology (M#1 / M#5
+  regression guard).
+- A missing trade id -- TWO distinct contracts (Codex re-review R2 M#1):
+  the FULL-PAGE drill-down `GET /journal/trades/{id}` for a non-existent trade
+  returns a normal **404** (matching the existing full-page route pattern --
+  the review page raises `HTTPException(404)` when the VM is None,
+  `routes/trades.py:2598-2602`, and `open_position_expand` 404s closed/missing
+  rows); whereas the HTMX FRAGMENT endpoints (`.../thumbnail` + the review-chart
+  fragment) return `200` with the distinct "trade not found" copy + structured
+  WARNING (so the HTMX swap is never blank), asserted SEPARATELY from the
+  generic chart-unavailable path (minor m#2).
 
 ### §10.2 What tests CAN and CANNOT certify (L4 / L5)
 - **CAN:** VM field values; derivation arithmetic (exit VWAP, total_risk,
@@ -860,8 +948,9 @@ serial (each builds on the listing).
   allowlist rejection; OHLCV-window slice bounds; None-on-no-coverage.
 - **CANNOT (operator-witnessed gate required):** that the candlestick chart
   renders correctly (matplotlib geometry, not string equality -- L5); that the
-  HTMX `<tbody>` swap / lazy thumbnail / drill-down navigation work in a REAL
-  browser (synthetic-table-wrap + OriginGuard are browser-only -- L4).
+  HTMX whole-`<table>` `outerHTML` swap / lazy thumbnail / drill-down
+  navigation work in a REAL browser (synthetic-table-wrap + OriginGuard are
+  browser-only -- L4).
   Byte/string-equality tests are declared INSUFFICIENT for chart correctness.
 
 ### §10.3 Operator-witnessed gate ladder (Sec 9.1 Q6)
@@ -915,7 +1004,7 @@ lockout of caching/schema work:
   warm-archive (parquet present, the steady-state after the weekly refresh),
   operator-box medians at the operator's real trade count**, observed at the
   operator-witnessed gate (§10) -- NOT cold-start, NOT a CI/p95 number. Initial
-  paginated-listing HTML (~50 rows, thumbnails lazy/deferred) well under ~1s;
+  paginated-listing HTML (~20-25 rows, thumbnails lazy/deferred) well under ~1s;
   each lazy thumbnail render under ~250ms warm; the drill-down / review chart
   under ~500ms warm. **Evidence that trips the v24 escalation:** the operator
   perceiving sluggishness at the gate, OR a measured warm median exceeding the
@@ -935,12 +1024,14 @@ lockout of caching/schema work:
   only); no persisted cache. Acceptable for a single operator within the
   budget above; the v24 cache is the escalation if the budget is missed.
 - "Total risk" = dollar risk at open; no %-of-capital column (OD-4 / OQ-6).
-- "hyp-rec (and which)" surfaces `has_hyprec_link` (candidate_id present) +
-  `hypothesis_label`; the specific hyp-rec registry row is deferred (OQ-4) --
-  no direct FK exists on `trades`.
+- "hyp-rec (and which)" surfaces `has_hyprec_link`
+  (`trade_origin == "pipeline_watch_hyp_recs"`, NOT mere `candidate_id`
+  presence -- §5.1 / Codex re-review M#2) + `hypothesis_label`; the specific
+  hyp-rec registry row is deferred (OQ-4) -- no direct FK exists on `trades`.
 - Drill-down is a full page navigation (plain `<a>`), not an HTMX in-place
   expand -- avoids the 204/HX-Redirect surface entirely.
-- Sort/filter is server-side full-`<tbody>` re-render, not client-side.
+- Sort/filter is a server-side whole-`<table>` `outerHTML` re-render (§8 item
+  1), not client-side.
 - Thumbnails lazy-load one render at a time (no batch executor parallelism).
 
 **V2 candidates (banked, NOT designed here):**
@@ -1111,6 +1202,66 @@ minor across R1-R6; ALL 24 majors resolved-via-code, ZERO accepted-without-fix,
 ZERO unresolved at close.** Each round's findings narrowed from design-level
 (R1) to implementation-detail (R5) to none (R6). Ran via the `codex exec` CLI +
 `resume --last` read-only backstop (MCP off-purview, FB-N1).
+
+### §15.1 Re-review (copowers v2.0.2, 2026-05-30) -- operator-requested full re-run
+
+copowers was upgraded to v2.0.2 (WSL CLI transport, persisted sessions) AFTER
+the original R1-R6 chain above. At operator direction the adversarial review was
+re-run from scratch through convergence, this time with Codex (codex-cli
+0.135.0) running READ-ONLY inside the actual branch working tree -- so every
+spec claim was independently verified against the live source, not taken at face
+value. The re-run surfaced **8 new majors the original chain missed**, all with
+file:line citations confirmed against production:
+
+**Re-R1 -- 0 critical / 5 major / 3 minor (ISSUES_FOUND).**
+- M#1: §5.4 chronology used `review_log` for per-trade review, but `review_log`
+  is a CADENCE table with NO `trade_id` (`0013_phase6...sql:44-70`); per-trade
+  review lives on `trades` columns (`reviewed_at`/lesson/grade,
+  `review.py:598-615`). RESOLVED -> source switched to `trades` review columns;
+  `review_log` explicitly excluded.
+- M#2: `has_hyprec_link = candidate_id is not None` mislabels A+ and
+  manual-watch trades (all candidate-backed). RESOLVED -> derive from
+  `trade_origin == "pipeline_watch_hyp_recs"` (`origin.py:67-72`).
+- M#3: HTMX swap contract contradictory (whole-`<table>` outerHTML vs `<tbody>`
+  across §5.2/§8/Slice 3/V1). RESOLVED -> single decided contract = whole-
+  `<table>` `outerHTML` (§8 item 1) propagated everywhere.
+- M#4: thumbnail trigger (`revealed` vs `load`) + page size (~50 vs ~20-25)
+  contradictory. RESOLVED -> `revealed` everywhere + single ~20-25 figure.
+- M#5: `daily_management_records` has a `record_type IN
+  ('daily_snapshot','event_log')` discriminator with distinct field groups;
+  spec lumped them + left supersession undecided. RESOLVED -> §5.4 splits the
+  two kinds, decides V1 supersession (exclude superseded), adds a concrete
+  per-source field-map table.
+- minors m#1 (ReviewVM "chart field" ambiguity), m#2 (missing-trade test),
+  m#3 (preserve cache anchors) all RESOLVED.
+
+**Re-R2 -- 0 critical / 2 major / 2 minor (ISSUES_FOUND).** M#1: the m#2 fix
+over-corrected -- the full-page drill-down `GET /journal/trades/{id}` must 404
+(per `routes/trades.py:2598-2602`), only HTMX FRAGMENTS return 200+unavailable.
+M#2: the daily-management resolution wasn't concrete (supersession still
+"decide", no field map) -> §5.4 decided + enumerated the table. minors: stale
+"~50" in §12 budget; `period` typed as FastAPI `Literal[...]`
+(`routes/journal.py:18`) 422s before the in-page error fragment can render
+(loosen table params to `str`). All RESOLVED.
+
+**Re-R3 -- 0 critical / 1 major / 2 minor (ISSUES_FOUND).** Verifying the new
+concrete field-map table against real columns: M#1 `event_log` kind wrongly
+"from `action_taken`" (stop changes live in `stop_changed`/`prior_stop`/
+`new_stop`) -> precedence over the real columns. minors: daily_snapshot
+"MFE/MAE %" are R-multiples (`open_MFE_R_to_date`); fills "side/role" -> `action`
+(no side column). All RESOLVED.
+
+**Re-R4 -- 0 critical / 0 major / 1 minor (NO_NEW_CRITICAL_MAJOR). CONVERGED.**
+Lone minor: `{qty}` -> `{quantity}` placeholder (`models.py:293`). RESOLVED.
+
+**Re-run chain close:** Re-R1 0C/5M/3m -> Re-R2 0C/2M/2m -> Re-R3 0C/1M/2m ->
+Re-R4 CLEAN. **Cumulative 0 critical / 8 major / 8 minor; ALL 8 majors
+resolved-via-code, ZERO accepted-without-fix, ZERO unresolved at close.** The
+new majors were source-of-truth errors (wrong table / wrong column / wrong enum)
++ internal-consistency contradictions that the original MCP-era chain (which did
+not read the live tree) could not catch -- vindicating the re-run. Findings
+record persisted at `.copowers-findings.md`. Ran via `codex exec` +
+`resume --last`, read-only, codex-cli 0.135.0.
 
 ---
 
