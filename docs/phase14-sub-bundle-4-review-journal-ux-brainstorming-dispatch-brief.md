@@ -16,7 +16,7 @@
 - Invoke `copowers:brainstorming` skill against this brief.
 - `copowers:brainstorming` wraps `superpowers:brainstorming` with adversarial Codex MCP review after the spec is written.
 - **Codex chain count: SINGLE chain at end** for THIS brainstorming phase per Sec 9.1 Q7 LOCK + gotcha #36 caveat (pure UX/wiring sub-bundle, no substantive analytical artifact). Reconsider at writing-plans if P14.N6's "browse-the-database" assembly surfaces a substantive analytical/aggregation artifact warranting the two-chain default.
-- **Codex MCP transport (FB-N1):** the copowers Codex MCP launcher is **off orchestrator purview** -- the operator has a SEPARATE instance actively debugging the 1s-timeout (it may touch memory / CLAUDE.md but NOT code files; do not attempt to fix the MCP in this dispatch). If the MCP times out, the `codex exec` CLI with INLINE-pasted artifacts is the transport-independent backstop (`codex-cli -s read-only` cannot spawn shells on this host -> use `resume --last` with `-c sandbox_mode="read-only"`, NOT `-s`, and paste the spec/diff/signature-digest inline). See memory `feedback_copowers_codex_mcp_windows_launcher`.
+- **Codex MCP transport (FB-N1) -- RESOLVED 2026-05-30, definitive:** the copowers Codex MCP `codex`/`codex-reply` tools are **PERMANENTLY UNUSABLE in the VS Code Claude Code extension** and this is NOT fixable from our side. The extension spawns the agent with a hardcoded `MCP_CONNECTION_NONBLOCKING="true"` (extension.js ~line 824) imposing a ~1s fire-and-forget deadline detected by PRESENCE (not value, so settings overrides don't help); the `codex` tool runs a full agent turn (always >1s) -> ALWAYS reports `timed out after 1s` while the correct answer lands 10-60s later as a discarded message. The server is healthy; the wall is the extension (corroborated: gh #43791 `.mcp.json timeout` ignored, #47076 `MCP_TOOL_TIMEOUT` unimplemented). **Run the entire Codex chain via the `codex exec` CLI from the start -- do NOT attempt the MCP tools, do NOT re-attempt the launcher/marketplace/settings angle (exhausted).** CLI mechanics: round 1 `codex exec -s read-only --skip-git-repo-check - < prompt` with the spec + a re-grepped production-signature digest pasted INLINE (`-s read-only` cannot spawn shells on this host, so Codex reads only from prompt text); deltas via `codex exec resume --last -c sandbox_mode="read-only" --skip-git-repo-check -` (note: `resume` rejects the `-s` flag; use the `-c` config override). Thread continuity over `resume --last` works (Codex remembers prior rounds -> delta-only prompts). See memory `feedback_copowers_codex_mcp_windows_launcher` for the full verified writeup.
 - Output: design spec at `docs/superpowers/specs/<YYYY-MM-DD>-phase14-sub-bundle-4-review-journal-ux-design.md`.
 
 ---
@@ -161,7 +161,7 @@ Invoked by `copowers:brainstorming` after the spec draft. SINGLE chain (Q7); 2-4
 - If Codex pushes to fold the Schwab daily-bar wiring (follow-up #4) into SB4, HOLD THE LINE -- it's a separate L2-touching Phase 14 item (L6/§4).
 - DO NOT add `Co-Authored-By`; DO NOT `--no-verify`; keep the final `-m` paragraph plain prose.
 - DO NOT modify the v22/v23 substrate.
-- DO NOT attempt to fix the Codex MCP transport (separate instance owns it); use the `codex exec` CLI + inline artifacts if the MCP times out.
+- DO NOT attempt the Codex MCP tools or its launcher/settings (permanently unusable in the VS Code extension, verified 2026-05-30); run the Codex chain via the `codex exec` CLI + inline artifacts from the start.
 
 ---
 
@@ -175,7 +175,7 @@ Mirror the SB3 brainstorm return report (15 items): final HEAD + commit breakdow
 - **Subagent type:** `general-purpose`. **Foreground.** **Model:** harness default.
 - **Worktree:** YES -- branch `phase14-sub-bundle-4-review-journal-ux-brainstorming`. Dir `.worktrees/phase14-sub-bundle-4-review-journal-ux-brainstorming/`. Branch from main HEAD `604211e`.
 - **CLI in worktree:** `python -m swing.cli` (NOT bare `swing`).
-- **Codex MCP chain count:** SINGLE chain at end (Sec 9.1 Q7). MCP is off-purview (separate debug instance); `codex exec` CLI + inline artifacts is the backstop (FB-N1).
+- **Codex MCP chain count:** SINGLE chain at end (Sec 9.1 Q7), run via the **`codex exec` CLI** with inline artifacts -- the MCP transport is permanently unusable in the VS Code extension (verified 2026-05-30; FB-N1). Do not attempt the MCP tools.
 - **Expected duration:** ~3-5 hours brainstorming + ~30-90 min Codex chain.
 
 ---
