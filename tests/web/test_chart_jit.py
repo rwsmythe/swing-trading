@@ -396,3 +396,33 @@ def test_get_or_render_surface_treats_empty_cached_bytes_as_miss(
     ))
     assert len(rows) == 1
     assert bytes(rows[0][0]) == b"<svg>recovered</svg>"
+
+
+def test_chart_jit_market_weather_default_is_undefined(
+    conn: sqlite3.Connection, pipeline_run_id: int,
+) -> None:
+    """Phase 14 SB3 T-3.4 (§C.4a): the dead/defensive JIT market_weather
+    branch defaults trend_template_state to an honest "undefined" (NOT the
+    old "stage_2"). BEHAVIORAL: spy the renderer + assert the kwarg value.
+    """
+    ohlcv_cache = MagicMock()
+    ohlcv_cache.get_or_fetch.return_value = _planted_bars_df()
+    import swing.web.chart_jit as mod
+
+    captured: dict = {}
+
+    def spy(*, bars, trend_template_state):
+        captured["trend_template_state"] = trend_template_state
+        return b"<svg>jit</svg>"
+
+    mod._RENDERERS["market_weather"] = spy
+    try:
+        get_or_render_surface(
+            conn=conn, ohlcv_cache=ohlcv_cache,
+            surface="market_weather", ticker="SPY",
+            pipeline_run_id=pipeline_run_id,
+            data_asof_date="2026-05-22",
+        )
+    finally:
+        importlib.reload(mod)
+    assert captured.get("trend_template_state") == "undefined"
