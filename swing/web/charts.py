@@ -28,11 +28,15 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import math
 from dataclasses import dataclass
+from datetime import date
 from typing import Any
 
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 # L8 LOCK: import canonical surface enum from swing/data/models.py — DO NOT
 # redefine. Forward-binding from T3.SB2 hotfix at cf3c489 (4-surface-guard
@@ -544,7 +548,27 @@ def render_ticker_detail_svg(
 
 # ---------------------------------------------------------------------------
 # 3. Position detail chart (800x500; fill markers + stop line + trail-MA)
+#    Phase 14 SB3 T-3.3 (§C.3 / §C.3a): candlesticks + BULZ risk/reward zones.
 # ---------------------------------------------------------------------------
+
+
+def _bulz_target_price(trade: Trade) -> float | None:
+    """Absolute BULZ target price, the inverse of the canonical r_mult formula.
+
+    ``target = entry_price + planned_target_R * (entry_price - initial_stop)``
+
+    This is a FIXED price locked at trade open (single-entry basis =
+    ``trade.entry_price``; NO avg-fill in V1). Returns ``None`` when
+    ``planned_target_R`` is unset (legacy / non-target trades) or the locked
+    risk-unit ``(entry_price - initial_stop)`` is non-positive (invalid long
+    shape — never invents an inverted target).
+    """
+    if trade.planned_target_R is None:
+        return None
+    r_unit = trade.entry_price - trade.initial_stop
+    if r_unit <= 0:
+        return None
+    return trade.entry_price + trade.planned_target_R * r_unit
 
 
 def render_position_detail_svg(

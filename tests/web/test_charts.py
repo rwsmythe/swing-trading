@@ -27,6 +27,7 @@ import swing.web.charts as charts
 from swing.data.models import Fill, PatternEvaluation, Trade
 from swing.web.charts import (
     OhlcNormalizationError,
+    _bulz_target_price,
     _normalize_ohlc_for_mpf,
     _render_candles_fig,
     _resolve_volume_ax,
@@ -90,19 +91,27 @@ def _make_pattern_eval(
     )
 
 
-def _make_trade(ticker: str = "ABC") -> Trade:
+def _make_trade(
+    ticker: str = "ABC",
+    *,
+    entry_price: float = 120.50,
+    initial_stop: float = 115.00,
+    current_stop: float = 118.00,
+    planned_target_R: float | None = None,
+) -> Trade:
     return Trade(
         id=1,
         ticker=ticker,
         entry_date="2024-02-10",
-        entry_price=120.50,
+        entry_price=entry_price,
         initial_shares=100,
-        initial_stop=115.00,
-        current_stop=118.00,
+        initial_stop=initial_stop,
+        current_stop=current_stop,
         state="managing",
         watchlist_entry_target=None,
         watchlist_initial_stop=None,
         notes=None,
+        planned_target_R=planned_target_R,
     )
 
 
@@ -784,3 +793,178 @@ def test_candles_use_integer_x_axis_positions(ohlc_bars):
 def test_charts_bars_fixture_has_ohlc_columns_and_datetimeindex(ohlc_bars):
     assert {"Open", "High", "Low", "Close", "Volume"} <= set(ohlc_bars.columns)
     assert isinstance(ohlc_bars.index, pd.DatetimeIndex)
+
+
+# ---------------------------------------------------------------------------
+# Phase 14 SB3 T-3.3 — position_detail candlestick conversion + BULZ zones.
+# ---------------------------------------------------------------------------
+
+
+# --- Step 1/2: _bulz_target_price helper -----------------------------------
+
+
+def test_bulz_target_price_from_planned_target_R():
+    # entry=100, stop=90 -> R_unit=10; target = 100 + 2.0*10 = 120.0.
+    # A swapped inverse (100 + 2*(90-100)=80) would FAIL this.
+    trade = _make_trade(
+        entry_price=100.0, initial_stop=90.0, planned_target_R=2.0,
+    )
+    assert _bulz_target_price(trade) == pytest.approx(120.0)
+
+
+def test_bulz_target_price_none_when_planned_target_R_absent():
+    trade = _make_trade(
+        entry_price=100.0, initial_stop=90.0, planned_target_R=None,
+    )
+    assert _bulz_target_price(trade) is None
+
+
+def test_bulz_target_price_none_when_risk_unit_nonpositive():
+    # entry=90, stop=100 -> r_unit = 90-100 = -10 (<= 0) -> None.
+    trade = _make_trade(
+        entry_price=90.0, initial_stop=100.0, planned_target_R=2.0,
+    )
+    assert _bulz_target_price(trade) is None
+
+
+# --- Step 3: candlestick conversion + stop axhline -------------------------
+
+
+def test_position_detail_renders_candles_not_line(monkeypatch, ohlc_bars):
+    trade = _make_trade(ticker="BULZ")
+    _assert_renders_candles(
+        monkeypatch, render_position_detail_svg,
+        ticker="BULZ", bars=ohlc_bars, trade=trade,
+        fills=[], current_stop=95.0,
+    )
+
+
+def test_position_detail_stop_axhline_present(monkeypatch, ohlc_bars):
+    recorded: list[float] = []
+    real_axhline = plt.matplotlib.axes.Axes.axhline
+
+    def spy_axhline(self, y=0, *args, **kwargs):
+        recorded.append(y)
+        return real_axhline(self, y, *args, **kwargs)
+
+    monkeypatch.setattr(plt.matplotlib.axes.Axes, "axhline", spy_axhline)
+    trade = _make_trade(ticker="BULZ")
+    render_position_detail_svg(
+        ticker="BULZ", bars=ohlc_bars, trade=trade,
+        fills=[], current_stop=95.0,
+    )
+    assert 95.0 in recorded
+
+
+# --- Step 4/5: BULZ risk/reward zones (axhspan) ----------------------------
+
+
+def _render_and_capture_axhspans(monkeypatch, ohlc_bars, **kwargs):
+    """Capture every (ymin, ymax) passed to Axes.axhspan during render."""
+    spans: list[tuple[float, float]] = []
+    real_axhspan = plt.matplotlib.axes.Axes.axhspan
+
+    def spy_axhspan(self, ymin, ymax, *args, **kw):
+        spans.append((ymin, ymax))
+        return real_axhspan(self, ymin, ymax, *args, **kw)
+
+    monkeypatch.setattr(plt.matplotlib.axes.Axes, "axhspan", spy_axhspan)
+    out = render_position_detail_svg(bars=ohlc_bars, fills=[], **kwargs)
+    return spans, out
+
+
+def test_position_detail_renders_risk_zone_axhspan_bounds(
+    monkeypatch, ohlc_bars
+):
+    trade = _make_trade(
+        ticker="BULZ", entry_price=100.0, initial_stop=90.0,
+        planned_target_R=None,
+    )
+    spans, _ = _render_and_capture_axhspans(
+        monkeypatch, ohlc_bars, ticker="BULZ", trade=trade,
+        current_stop=95.0,
+    )
+    # Risk zone = (stop, entry) = (95.0, 100.0). A swapped (100, 95) FAILS.
+    assert (95.0, 100.0) in spans
+
+
+def test_position_detail_renders_reward_zone_when_target_present(
+    monkeypatch, ohlc_bars
+):
+    trade = _make_trade(
+        ticker="BULZ", entry_price=100.0, initial_stop=90.0,
+        planned_target_R=2.0,
+    )
+    spans, _ = _render_and_capture_axhspans(
+        monkeypatch, ohlc_bars, ticker="BULZ", trade=trade,
+        current_stop=95.0,
+    )
+    # Reward zone = (entry, target) = (100.0, 120.0); risk band also present.
+    assert (100.0, 120.0) in spans
+    assert (95.0, 100.0) in spans
+
+
+def test_position_detail_risk_zone_only_when_no_target(monkeypatch, ohlc_bars):
+    trade = _make_trade(
+        ticker="BULZ", entry_price=100.0, initial_stop=90.0,
+        planned_target_R=None,
+    )
+    spans, _ = _render_and_capture_axhspans(
+        monkeypatch, ohlc_bars, ticker="BULZ", trade=trade,
+        current_stop=95.0,
+    )
+    assert len(spans) == 1
+    assert (95.0, 100.0) in spans
+
+
+def test_position_detail_skips_zones_on_invalid_long_shape_and_warns(
+    monkeypatch, ohlc_bars, caplog
+):
+    # current_stop=105.0 >= entry=100.0 -> invalid long; skip + WARN, never raise.
+    trade = _make_trade(
+        ticker="BULZ", entry_price=100.0, initial_stop=90.0,
+        planned_target_R=None,
+    )
+    with caplog.at_level("WARNING", logger="swing.web.charts"):
+        spans, _ = _render_and_capture_axhspans(
+            monkeypatch, ohlc_bars, ticker="BULZ", trade=trade,
+            current_stop=105.0,
+        )
+    assert spans == []
+    assert any("zone" in rec.message.lower() for rec in caplog.records)
+
+
+def test_position_detail_off_range_valid_zone_is_drawn_not_hidden(
+    monkeypatch, ohlc_bars
+):
+    # R=20.0 -> target = 100 + 20*10 = 300 (far above ohlc_bars range);
+    # geometrically valid -> drawn (axhspan autoscales), NOT silently hidden.
+    trade = _make_trade(
+        ticker="BULZ", entry_price=100.0, initial_stop=90.0,
+        planned_target_R=20.0,
+    )
+    spans, _ = _render_and_capture_axhspans(
+        monkeypatch, ohlc_bars, ticker="BULZ", trade=trade,
+        current_stop=95.0,
+    )
+    assert (100.0, 300.0) in spans
+
+
+def test_position_detail_zone_legend_ascii(ohlc_bars):
+    trade = _make_trade(
+        ticker="BULZ", entry_price=100.0, initial_stop=90.0,
+        planned_target_R=2.0,
+    )
+    out = render_position_detail_svg(
+        ticker="BULZ", bars=ohlc_bars, trade=trade,
+        fills=[], current_stop=95.0,
+    )
+    # matplotlib may HTML-escape > to &gt; in the SVG <text> element.
+    assert (
+        b"risk zone (entry-&gt;stop)" in out
+        or b"risk zone (entry->stop)" in out
+    )
+    assert (
+        b"reward zone (entry-&gt;target)" in out
+        or b"reward zone (entry->target)" in out
+    )
