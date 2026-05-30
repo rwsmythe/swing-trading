@@ -10,7 +10,7 @@
 
 **Cumulative discipline at dispatch:** 37+ CLAUDE.md gotchas BINDING (the Gotchas section is compressed to trigger+fix; the "Expansion #N" process/review + brief-authoring disciplines were RELOCATED to `docs/orchestrator-context.md` §"Pre-Codex review + brief-authoring disciplines" -- read BOTH); ~648+ cumulative ZERO Co-Authored-By trailer drift; **Schema v23 LOCKED** (operator's live DB migrated v22->v23 at SB3 ship; `swing` reinstalled, expects v23); L2 LOCK preserved (multiset Counter source-grep test at `tests/integration/test_l2_lock_source_grep.py`). **SB4 likely introduces NO schema change** -- if one is needed (a `chart_renders` surface-enum widening is the only realistic trigger) it would be **v24, STRICT backup-gate `pre_version == 23`** per gotcha #11 + #9.
 
-**Expected duration:** ~3-5 hours brainstorming + 2-4 Codex rounds. Spec line target **~600-1000 lines** (CR.1 is small/template-extension; P14.N6 is the LARGEST single Phase 14 item -- a multi-surface "browse-the-database" redesign -- and dominates the spec; the BULZ row-expand wiring is a small in-scope rider).
+**Expected duration:** ~3-5 hours brainstorming + a Codex chain **run to convergence** (zero new criticals AND zero new majors; the ~5-round cap is **suspended for this project** per `feedback_codex_round_limit_suspended` -- the chain may exceed 5 rounds; do NOT stop while majors still surface, do NOT pad rounds after convergence). Spec line target **~600-1000 lines** (CR.1 is small/template-extension; P14.N6 is the LARGEST single Phase 14 item -- a multi-surface "browse-the-database" redesign -- and dominates the spec; the BULZ row-expand wiring is a small in-scope rider).
 
 **Skill posture:**
 - Invoke `copowers:brainstorming` skill against this brief.
@@ -133,7 +133,7 @@ This is the LARGEST item -- design it carefully and recommend a writing-plans su
 
 ## §5 Adversarial review (Codex) -- watch items
 
-Invoked by `copowers:brainstorming` after the spec draft. SINGLE chain (Q7); 2-4 round target.
+Invoked by `copowers:brainstorming` after the spec draft. SINGLE chain (Q7); **run to convergence** (zero new crit/major) -- the ~5-round cap is suspended for swing-trading, so the chain may exceed 5 rounds; do NOT stop while majors are still surfacing.
 
 1. **Brief-vs-production-signature verification (#2)** -- cite real route/VM/renderer/repo names + signatures (`review_post`, `build_review_vm`, `build_journal`, `render_position_detail_svg`, `list_fills_for_trade`, `get_cached_chart_svg`); re-grep at writing-plans. CONFIRM the CR.1-form-already-exists correction.
 2. **SQL-column verification (#4)** -- P14.N6 entry-time flags + total_risk + final_R depend on REAL columns; verify against migrations, do not assume backlink column names.
@@ -179,7 +179,7 @@ Mirror the SB3 brainstorm return report (15 items): final HEAD + commit breakdow
 - **Worktree:** YES -- branch `phase14-sub-bundle-4-review-journal-ux-brainstorming`. Dir `.worktrees/phase14-sub-bundle-4-review-journal-ux-brainstorming/`. Branch from main HEAD `604211e`.
 - **CLI in worktree:** `python -m swing.cli` (NOT bare `swing`).
 - **Codex chain count:** SINGLE chain at end (Sec 9.1 Q7), run via copowers' **WSL Codex CLI fallback** (v2.0.2 auto-routes on MCP failure; Codex reads the worktree from disk, findings -> `.copowers-findings.md`). The MCP tools are permanently dead in the VS Code extension -- do not attempt them (FB-N1).
-- **Expected duration:** ~3-5 hours brainstorming + ~30-90 min Codex chain.
+- **Expected duration:** ~3-5 hours brainstorming + a Codex chain run to convergence (no fixed round cap; zero new crit/major is the stop criterion).
 
 ---
 
