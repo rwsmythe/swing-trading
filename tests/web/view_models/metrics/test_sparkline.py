@@ -65,6 +65,15 @@ def test_non_positive_dimensions_raise():
         build_sparkline_points([1.0, 2.0], height=-1)
 
 
+def test_min_points_below_two_raises():
+    # A polyline needs >=2 vertices; min_points<2 would risk a ZeroDivision
+    # for a single defined point (Codex R1 MINOR).
+    with pytest.raises(ValueError):
+        build_sparkline_points([1.0], min_points=1)
+    with pytest.raises(ValueError):
+        build_sparkline_points([], min_points=0)
+
+
 def test_ascii_only_output():
     out = build_sparkline_points([1.0, 2.0, 3.0])
     assert out is not None and out.isascii()

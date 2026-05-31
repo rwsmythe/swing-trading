@@ -31,6 +31,10 @@ def build_sparkline_points(
     for ``values``, or ``None`` when fewer than ``min_points`` are defined."""
     if width <= 0 or height <= 0:
         raise ValueError(f"width/height must be > 0; got {width!r}x{height!r}")
+    if min_points < 2:
+        # A polyline needs >=2 vertices; min_points<2 would let a single
+        # point reach denom == 0 (ZeroDivision). Enforce the floor.
+        raise ValueError(f"min_points must be >= 2; got {min_points!r}")
     n = len(values)
     if n < min_points:
         return None
