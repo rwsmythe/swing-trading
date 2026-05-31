@@ -84,6 +84,8 @@ This dispatch wires up small connecting routes + a new partial. **No new domain 
 - **Schema / migration changes** — none required; both #2 and #3 are pure routing + presentation layer.
 - **CLI / pipeline / advisories / classifier code** — not touched.
 
+> **2026-05-30 (SB4) — L7 reversal note:** the open-positions row-expand now inlines the `position_detail` SVG (read from the `chart_renders` cache), reversing the §2 separate-page decision for this surface. The standalone date-less `GET /charts/{ticker}.png` route (§4.1) and the date-prefixed `<img>` previously rendered in the row-expand are no longer the chart-access path for open positions; the expand fragment now renders the SB3 candlestick+BULZ-zones SVG inline (with a terminal cache-miss fallback), per the Phase 14 SB4 Slice 1 plan.
+
 ---
 
 ## §3 Binding conventions
