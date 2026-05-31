@@ -277,37 +277,55 @@ def build_sparkline_points(
     values: Sequence[float | None],
     *, width: int = 100, height: int = 30, min_points: int = 2,
 ) -> str | None:
-    # Drop None; if < min_points defined ⇒ return None (caller renders suppressed caption).
-    # X evenly spaced across [0, width]; Y normalized over [min..max] of defined values,
-    # inverted (SVG y-down) into [pad, height-pad]; flat series (max==min) ⇒ mid-line.
+    # X is positioned over the ORIGINAL sequence index (i / (len(values)-1) * width),
+    #   NOT over the compacted list — so a None gap leaves a horizontal gap in spacing
+    #   and does NOT compress time (Codex R1 MAJOR fix: dropping None compresses the
+    #   axis and visually hides missing middle runs).
+    # Y normalized over [min..max] of the DEFINED values, inverted (SVG y-down) into
+    #   [pad, height-pad]; flat series (max==min) ⇒ mid-line.
+    # None points: omit their (x,y) vertex; the single polyline therefore CONNECTS
+    #   across a gap (same behavior as the process_grade_trend precedent, which the
+    #   drill-down already accepts). If gaps are common for a surface, writing-plans may
+    #   elect to emit multiple polylines split at gaps (V2 candidate).
+    # If < min_points DEFINED values ⇒ return None (caller renders the suppressed caption).
     # Returns "x1,y1 x2,y2 …" (2-dp) or None.
 ```
-This mirrors `_format_polyline_points`/`_polyline_x`/`_polyline_y` but is standalone, tiny, and free of
-the grade-axis/marker machinery. The **threshold gating lives in the builder** (per §5.1–§5.3), not in
-this helper — this helper only refuses to draw a degenerate (<2-point) line.
+This mirrors `_format_polyline_points`/`_polyline_x`/`_polyline_y` (the precedent likewise positions x
+over the sequence index and skips undefined y) but is standalone, tiny, and free of the grade-axis/marker
+machinery. The **threshold gating lives in the builder** (per §5.1–§5.3), not in this helper — this
+helper only refuses to draw a degenerate (<2-point) line. **Gap semantics (single connected polyline)
+are an accepted V1 simplification matching the existing drill-down; per-gap splitting is banked V2.**
 
 ---
 
 ## §6 Headline-stat contract (all 9) — OQ-4
 
-Single at-a-glance figure per surface, pulled from the EXISTING result/VM fields (no re-derivation).
-All are OQ-4 (operator confirms the chosen figure); the table below is the recommendation.
+Single at-a-glance figure per surface, pulled from an EXACT EXISTING result/VM field (no re-derivation,
+no cross-row aggregate — L2). **Fixed-selector discipline (Codex R1 MAJOR fixes):** where a surface
+returns a *collection* (cohort tabs, tier cohorts, deviation rows, pattern rows, the 7 rolling-series
+metrics), the overview picks ONE row/cell by a **fixed, hard-coded selector** (a named cohort key /
+pattern class / metric key) and reads its already-computed field — it MUST NOT compute a "worst"/"delta"
+/"overall" across the collection (that would be new computation). All are OQ-4 (operator confirms the
+selector + figure); the table below is the recommendation with the EXACT accessor.
 
-| # | Surface | Headline stat (recommended) | Source field | Caption | Suppressed when |
-|---|---------|------------------------------|--------------|---------|-----------------|
-| 1 | trade_process | expectancy (R) | `compute_trade_process_metrics` overall expectancy_r | "expectancy R" | n below trade-process floor |
-| 2 | hypothesis_progress | active cohorts count (or worst-tripwire) | cohort VM | "active cohorts" | none / 0 cohorts |
-| 3 | tier_comparison | A+ expectancy vs Sub-A+ delta | tier VM A+ point | "A+ expectancy R" | n<5 per tier (existing CI suppression) |
-| 4 | capital_friction | current utilization % | `CapitalFrictionResult.current_capital_utilization_pct` | "utilization" | None denom (PROVISIONAL badge) |
-| 5 | maturity_stage | open positions count | maturity VM rows length | "open positions" | 0 open |
-| 6 | identification_funnel | latest-run A+ identifications | latest `trend_runs[-1].aplus_identifications_per_run` | "A+ ident. (latest run)" | 0 runs |
-| 7 | deviation_outcome | worst deviation-class expectancy gap | deviation VM | "Δ expectancy vs A+" | n<5 |
-| 8 | process_grade_trend | latest rolling grade score (letter) | `ProcessGradeTrendResult` latest grade | "rolling grade" | 0 reviewed trades |
-| 9 | pattern_outcomes | overall trigger rate % | pattern_outcomes VM (Wilson) | "trigger rate" | n<5 (existing) |
+| # | Surface | Headline stat (recommended) | EXACT source accessor | Caption | Suppressed when |
+|---|---------|------------------------------|------------------------|---------|-----------------|
+| 1 | trade_process | overall expectancy (R) | `next(t for t in vm.cohort_tabs if t.cohort_key == ALL_COHORTS_KEY).metrics.expectancy_R` (a metric obj; if `SuppressedMetric` → its placeholder) | "expectancy R (all)" | metric is `SuppressedMetric` |
+| 2 | hypothesis_progress | active cohorts count | `len(vm.<cohort rows>)` (count of the registry cohorts the VM already lists) | "active cohorts" | 0 cohorts |
+| 3 | tier_comparison | A+ cohort expectancy (point) | the A+ cohort's existing expectancy point on `TierComparisonResult.cohorts[<A+ key>]` (NOT a delta) | "A+ expectancy R" | A+ cohort n<5 (existing CI suppression) |
+| 4 | capital_friction | current utilization % | `CapitalFrictionResult.current_capital_utilization_pct` (renders with LIVE/PROVISIONAL badge — PROVISIONAL is a VALID fallback, NOT suppression) | "utilization" | value is `None` / compute fails |
+| 5 | maturity_stage | open positions count | `len(vm.<position rows>)` | "open positions" | 0 open |
+| 6 | identification_funnel | latest-run A+ identifications | `trend_runs[-1].aplus_identifications_per_run` (a real field) | "A+ ident. (latest run)" | 0 runs |
+| 7 | deviation_outcome | one fixed cohort's relative-pct | `DeviationOutcomeResult.rows[<fixed cohort key>].expectancy_relative_to_aplus_pct` (a fixed row, NOT "worst") | "Δ vs A+ (<cohort>)" | that row's n<5 placeholder |
+| 8 | process_grade_trend | latest rolling grade (numeric) | the headline metric's `RollingSeriesDisplay.point_value_text` (a NUMERIC value, e.g. rolling grade score; a numeric→letter map would be presentation-only, flagged as such) | "rolling grade" | the metric's `is_suppressed` |
+| 9 | pattern_outcomes | one fixed pattern class's trigger rate | `PatternOutcomesVM.pattern_outcome_rows[<fixed pattern class>]` trigger-rate cell (NOT an "overall" row — none exists) | "trigger rate (<class>)" | that row's n<5 (existing Wilson) |
 
 **Discipline:** every headline reuses the surface's EXISTING suppression semantics (the per-surface VMs
-already encode n<5 / Wilson / provisional-badge suppression). The overview never invents a number the
-drill-down wouldn't show, and never renders a bare `—`/`N/A` (uses the honest placeholder text).
+already encode n<5 / Wilson / provisional-badge / `SuppressedMetric` placeholder behavior). The overview
+never invents a number the drill-down wouldn't show, never computes a cross-row aggregate (L2), and never
+renders a bare `—`/`N/A` (uses the honest placeholder text). **The fixed selectors for rows 3, 7, 9 (and
+the metric key for row 8) are OQ-4 items the operator confirms at writing-plans** — pick a cohort/class
+that is meaningful at a glance (e.g. the primary registry cohort, the headline pattern class).
 
 ---
 
@@ -333,8 +351,10 @@ contention on the index hot path (which renders up to 3 sparklines per load), an
 for a 100×30 glyph. Matplotlib's richness is wasted at sparkline size and imports a serialized
 render-storm onto the most-visited metrics page. **HELD for operator at writing-plans dispatch.**
 
-If the operator chooses matplotlib for cross-surface consistency: mitigate L6 via OQ-5 (cache the SVG
-in `chart_renders` → v24) OR OQ-6 (HTMX lazy-load per card so the 3 renders don't block first paint).
+If the operator chooses matplotlib for cross-surface consistency: L6 mitigation is **OQ-6 (HTMX
+lazy-load per card so the 3 serialized renders don't block first paint)** — caching in `chart_renders`
+is NOT available (the table is ticker/run-keyed; §8). With only 3 sparklines per load the render-lock
+cost is bounded but non-zero; inline-`<polyline>` avoids it entirely.
 
 ---
 
@@ -343,12 +363,20 @@ in `chart_renders` → v24) OR OQ-6 (HTMX lazy-load per card so the 3 renders do
 - **Recommended:** render-direct / inline → NO `chart_renders` writes → **NO migration** (L3).
 - The sparkline points string (inline option) is computed per-request and embedded in the HTML; nothing
   persists.
-- The matplotlib option, if chosen render-direct (SVG bytes inlined per request), ALSO needs no schema —
-  only the *cached* matplotlib variant (OQ-5) would add a `chart_renders.surface` enum value
-  (`"metrics_overview_sparkline"`) → v24. That is the ONLY realistic v24 trigger and is **avoidable**.
-- If v24 is ever taken: STRICT backup-gate `pre_version == 23` (NOT `<=`); gotcha #11 (schema-CHECK +
-  Python-constant + dataclass-validator + every `_row_to_*` mapper in ONE task) + #9 (explicit
-  BEGIN/COMMIT migration runner). **Recommend avoiding entirely.**
+- The matplotlib option, if chosen render-direct (SVG bytes inlined per request), ALSO needs no schema.
+- **Cached matplotlib via `chart_renders` is NOT a viable SB5 cache target (Codex R1 MAJOR fix).** The
+  `chart_renders` table is structurally **ticker-and-run keyed**: `ChartRender.ticker` is REQUIRED
+  (`models.py:1942`), and any surface other than `position_detail`/`theme2_annotated` is treated as
+  *run-bound* and REQUIRES a non-NULL `pipeline_run_id` (`models.py:~1981`); the surface enum is the 5
+  values at `models.py:96`. A metrics-overview sparkline has **no ticker and no pipeline_run binding** —
+  it does not fit the cache-key shape. Caching it would require NOT just a new enum value but a new
+  nullable-ticker/nullable-run cache-key class + the cross-column CHECK rework + new partial index +
+  every `_row_to_*` mapper + dataclass `__post_init__` (gotcha #11) + the migration runner (gotcha #9).
+  That is disproportionate to a 100×30 glyph. **Cached matplotlib is therefore REMOVED from the viable
+  option set** (it was already not recommended); OQ-5 collapses to "render-direct" for BOTH OQ-1 options.
+- If a v24 were ever taken for an unrelated reason: STRICT backup-gate `pre_version == 23` (NOT `<=`);
+  gotcha #11 (schema-CHECK + Python-constant + dataclass-validator + every `_row_to_*` mapper in ONE
+  task) + #9 (explicit BEGIN/COMMIT migration runner). **Not in SB5 scope.**
 
 ---
 
@@ -404,8 +432,10 @@ also visually verify no mathtext mangling (though sparklines carry no annotation
 ## §11 Schema impact — VERDICT: NO change (v23 held)
 
 Recommended path (inline-`<polyline>`, render-direct) writes nothing and adds no enum → **schema stays
-v23**. No `chart_renders` rows, no migration, no v24. The ONLY path to v24 is the non-recommended
-cached-matplotlib variant (OQ-5). v22/v23 substrate untouched (L3).
+v23**. No `chart_renders` rows, no migration, no v24. **BOTH OQ-1 options (inline AND matplotlib) are
+render-direct → both are schema-free** — because the cached-matplotlib variant is structurally
+incompatible with the ticker/run-keyed `chart_renders` table and is REMOVED from scope (§8). There is
+therefore **no in-scope v24 trigger at all.** v22/v23 substrate untouched (L3).
 
 ---
 
@@ -420,7 +450,8 @@ cached-matplotlib variant (OQ-5). v22/v23 substrate untouched (L3).
 **V2 candidates (banked, NOT in V1):**
 - Per-card HTMX lazy-load if any compute proves heavy on the operator's box.
 - Multi-series sparklines (utilization + heat overlaid; A+ + watch).
-- Cached sparkline SVGs (`chart_renders`) if matplotlib is chosen and latency warrants (v24).
+- Cached sparkline SVGs — would need a NEW non-ticker/non-run cache table (NOT `chart_renders`, which is
+  ticker/run-keyed; §8). Only if profiling ever shows the render-direct path is too slow. Out of SB5.
 - A "headline delta vs prior run" arrow on the trend cards.
 - Sparkline for additional surfaces IF they later gain a series (would require new computation — out of
   scope here per L1/L2).
@@ -435,8 +466,9 @@ cached-matplotlib variant (OQ-5). v22/v23 substrate untouched (L3).
 - **OQ-3:** route shape — **enhance `/metrics` in place (recommended)** vs new `/metrics/overview`.
 - **OQ-4:** headline stat per surface — confirm the §6 table (esp. which series for the 3 sparklines:
   utilization vs heat; A+ ident vs taken; which of the 7 process-grade metric keys).
-- **OQ-5:** render path — **render-direct / inline, no schema (recommended)** vs cached `chart_renders`
-  (v24).
+- **OQ-5:** render path — **render-direct, no schema** (the ONLY viable path; cached `chart_renders` is
+  REMOVED as structurally incompatible — §8). Both OQ-1 options are render-direct. (OQ-5 is effectively
+  resolved; retained for the record.)
 - **OQ-6:** lazy-load — **eager inline (recommended)** vs HTMX per-card (matters mainly if matplotlib).
 - **OQ-7:** Codex chain count at writing-plans — **single (pure-UX, recommended)** vs two-chain
   (unlikely — no analytical artifact).
