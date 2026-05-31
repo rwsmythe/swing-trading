@@ -1,14 +1,15 @@
-"""View-model for the ``GET /metrics`` umbrella index page (plan §D Task A.8).
+"""View-model for the ``GET /metrics`` umbrella index page.
 
-Renders an 8-tile navigator card linking to each Phase 10 metrics surface
-per plan §A.3 + spec §4.1-§4.8. The per-surface routes land in
-Sub-bundles B/C/D/E; at Sub-bundle A landing the links resolve to 404
-until those bundles ship — operator's S3 gate confirms the index renders
-+ links are present.
+Renders a 9-card overview navigator linking to each Phase 10 metrics surface
+(P14.N5). Each card carries a headline stat read read-only from the existing
+per-surface output, and the 3 trend-bearing surfaces also carry an inline
+``<polyline>`` sparkline. Every card stays the drill-down link to its
+per-surface route.
 """
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -19,25 +20,89 @@ from swing.metrics.discrepancies import (
     count_unresolved_material,
     fetch_first_pending_ambiguity_resolve_link_path,
 )
+from swing.metrics.honesty import BootstrapCI, SuppressedMetric
 from swing.web.view_models.metrics.shared import BaseLayoutVM
+
+_LOG = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
 class MetricsIndexSurface:
-    """Single tile in the 8-tile navigator."""
+    """One overview card. Static {path,label,description} from the registry;
+    the rest are populated per-request from existing per-surface outputs."""
 
     path: str
     label: str
     description: str
+    headline_stat_text: str | None = None       # display-ready, e.g. "42.0%"
+    headline_caption: str | None = None          # unit caption, e.g. "utilization"
+    headline_suppressed_text: str | None = None  # honest placeholder when unavailable
+    sparkline_points: str | None = None          # inline-SVG points; None => no line
+    sparkline_suppressed_text: str | None = None  # trend-bearing but below threshold
+    sparkline_kind: str = "none"                 # "none" | "inline_svg"
 
 
-# Per plan §A.3: 8 surfaces + the umbrella `/metrics` index navigator.
-# Tile ordering mirrors spec §4.1-§4.8 numbering.
+@dataclass(frozen=True)
+class _OverviewCard:
+    """The 6 per-request overview fields an extractor returns."""
+
+    headline_stat_text: str | None = None
+    headline_caption: str | None = None
+    headline_suppressed_text: str | None = None
+    sparkline_points: str | None = None
+    sparkline_suppressed_text: str | None = None
+    sparkline_kind: str = "none"
+
+
+# Reused metric strings (placeholder_text/suppressed_text/triggered_pct_text)
+# may embed NON-ASCII - e.g. honesty.py builds "need: >=N" with a real
+# U+2265 glyph. Coerce to ASCII at the overview boundary (#16/#32 cp1252).
+# The map keys are written as \uXXXX escapes so THIS source file stays pure
+# ASCII (the T-5.4 file-wide non-ASCII gate would otherwise flag the keys).
+_ASCII_SUBSTITUTIONS = {
+    chr(0x2265): ">=",     # U+2265 GREATER-THAN OR EQUAL TO
+    chr(0x2264): "<=",     # U+2264 LESS-THAN OR EQUAL TO
+    chr(0x2013): "-",      # U+2013 EN DASH
+    chr(0x2014): "-",      # U+2014 EM DASH
+    chr(0x2192): "->",     # U+2192 RIGHTWARDS ARROW
+    chr(0x00B1): "+/-",    # U+00B1 PLUS-MINUS SIGN
+    chr(0x0394): "delta",  # U+0394 GREEK CAPITAL LETTER DELTA
+    chr(0x00A7): "sec ",   # U+00A7 SECTION SIGN
+}
+
+
+def _ascii(text: str | None) -> str | None:
+    if text is None:
+        return None
+    for src, dst in _ASCII_SUBSTITUTIONS.items():
+        text = text.replace(src, dst)
+    # encode("ascii","replace") is the last-resort net; the substitution map
+    # above MUST cover every glyph the reused metric strings actually use
+    # (today only U+2265 in honesty.py). A "?" appearing in overview text is a
+    # BUG (an unmapped glyph) - the no-"?" test guards it.
+    return text.encode("ascii", "replace").decode("ascii")
+
+
+def _format_metric_value(value: object) -> tuple[str | None, str | None]:
+    """Map a metric value to (headline_text, suppressed_text), reusing the
+    metric's OWN suppression placeholder (never fabricates a number - L2/L4).
+    The suppressed text is ASCII-coerced (it may carry a non-ASCII glyph)."""
+    if isinstance(value, SuppressedMetric):
+        return (None, _ascii(value.placeholder_text))
+    if isinstance(value, BootstrapCI):
+        return (f"{value.point:.2f}", None)
+    if value is None:
+        return (None, "unavailable")
+    return (f"{float(value):.2f}", None)
+
+
+# 9 surfaces in the umbrella `/metrics` index navigator (registry order).
+# Card ordering mirrors the Phase 10 spec surface numbering.
 _SURFACES: tuple[MetricsIndexSurface, ...] = (
     MetricsIndexSurface(
         path="/metrics/trade-process",
         label="Trade-process card",
-        description="Per-cohort + overall metrics across §3.1 closed-trade scope.",
+        description="Per-cohort + overall metrics across the closed-trade scope.",
     ),
     MetricsIndexSurface(
         path="/metrics/hypothesis-progress",
@@ -89,7 +154,8 @@ _SURFACES: tuple[MetricsIndexSurface, ...] = (
 
 @dataclass(frozen=True)
 class MetricsIndexVM(BaseLayoutVM):
-    """VM for ``GET /metrics``. Extends BaseLayoutVM per §A.8 + §I.5."""
+    """VM for ``GET /metrics``. Extends BaseLayoutVM (leaf overview fields
+    live on MetricsIndexSurface, not here - L7)."""
 
     surfaces: tuple[MetricsIndexSurface, ...] = field(default_factory=tuple)
 
