@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 
 from swing.config import Config
@@ -381,23 +381,69 @@ class MetricsIndexVM(BaseLayoutVM):
     surfaces: tuple[MetricsIndexSurface, ...] = field(default_factory=tuple)
 
 
-def build_metrics_index_vm(conn: sqlite3.Connection) -> MetricsIndexVM:
-    """Factory per plan §A.18 + §I.5: populate
-    ``unresolved_material_discrepancies_count`` via the discrepancies helper
-    eagerly so the banner block can render from Sub-bundle A onward.
+_EXTRACTORS = {
+    "/metrics/trade-process": _extract_trade_process,
+    "/metrics/hypothesis-progress": _extract_hypothesis_progress,
+    "/metrics/tier-comparison": _extract_tier_comparison,
+    "/metrics/capital-friction": _extract_capital_friction,
+    "/metrics/maturity-stage": _extract_maturity_stage,
+    "/metrics/identification-funnel": _extract_identification_funnel,
+    "/metrics/deviation-outcome": _extract_deviation_outcome,
+    "/metrics/process-grade-trend": _extract_process_grade_trend,
+    "/metrics/pattern-outcomes": _extract_pattern_outcomes,
+}
 
-    ``session_date`` uses forward-looking ``action_session_for_run(now)``
-    matching the dashboard surface (the navigator is operator-facing entry
-    to all metrics surfaces; session_date matches the dashboard topbar).
-    """
+_OVERVIEW_FIELD_NAMES = (
+    "headline_stat_text", "headline_caption", "headline_suppressed_text",
+    "sparkline_points", "sparkline_suppressed_text", "sparkline_kind",
+)
+
+_TEXT_FIELDS = (
+    "headline_stat_text", "headline_caption",
+    "headline_suppressed_text", "sparkline_suppressed_text",
+)
+
+
+def _enrich_surface(
+    base: MetricsIndexSurface, cfg: Config, conn: sqlite3.Connection, session_date: str,
+) -> MetricsIndexSurface:
+    extractor = _EXTRACTORS.get(base.path)
+    if extractor is None:  # defensive - every registry path has an extractor
+        return base
+    try:
+        card = extractor(cfg, conn, session_date)
+    except Exception:  # noqa: BLE001 - per-card isolation: one fail != whole-page 500
+        _LOG.warning(
+            "metrics overview extractor failed for %s", base.path, exc_info=True
+        )
+        card = _OverviewCard(headline_suppressed_text="unavailable")
+    values = {name: getattr(card, name) for name in _OVERVIEW_FIELD_NAMES}
+    # CENTRAL ASCII chokepoint: every reused text field is coerced to ASCII
+    # here, so no extractor can leak honesty.py's U+2265 etc. Also sanitise the
+    # static label/description (defense-in-depth even though the registry is
+    # ASCII at source) so the rendered body.isascii().
+    for name in _TEXT_FIELDS:
+        values[name] = _ascii(values[name])
+    values["label"] = _ascii(base.label)
+    values["description"] = _ascii(base.description)
+    return replace(base, **values)
+
+
+def build_metrics_index_vm(cfg: Config, conn: sqlite3.Connection) -> MetricsIndexVM:
+    """Build the enhanced overview VM. ``session_date`` stays forward-looking
+    ``action_session_for_run(now)`` (the navigator topbar date, as before).
+    Each surface card is enriched read-only from the existing per-surface
+    output; a single surface's failure degrades only that card."""
+    session_date = action_session_for_run(datetime.now()).isoformat()
+    enriched = tuple(
+        _enrich_surface(base, cfg, conn, session_date) for base in _SURFACES
+    )
     return MetricsIndexVM(
-        session_date=action_session_for_run(datetime.now()).isoformat(),
+        session_date=session_date,
         unresolved_material_discrepancies_count=count_unresolved_material(conn),
         recent_multi_leg_auto_correction_count=(
             count_recent_multi_leg_auto_corrections(conn)
         ),
-        banner_resolve_link=fetch_first_pending_ambiguity_resolve_link_path(
-            conn,
-        ),
-        surfaces=_SURFACES,
+        banner_resolve_link=fetch_first_pending_ambiguity_resolve_link_path(conn),
+        surfaces=enriched,
     )

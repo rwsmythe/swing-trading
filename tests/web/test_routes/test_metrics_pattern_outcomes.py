@@ -232,7 +232,7 @@ def test_metrics_pattern_outcomes_composes_with_phase10_cohort_architecture(
     conn = connect(cfg.paths.db_path)
     try:
         # Phase 10 navigator includes the new tile.
-        idx_vm = build_metrics_index_vm(conn)
+        idx_vm = build_metrics_index_vm(cfg, conn)
         labels = {s.label for s in idx_vm.surfaces}
         assert "Pattern-outcomes" in labels
         # Phase 10 honesty's class-A threshold drives suppression.

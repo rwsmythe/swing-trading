@@ -250,3 +250,38 @@ def test_trade_process_and_tier_headline_use_existing_suppression(low_data_cfg_c
     # Each surface emits EITHER a headline value OR an honest suppressed text.
     assert (tp.headline_stat_text is not None) or (tp.headline_suppressed_text is not None)
     assert (tier.headline_stat_text is not None) or (tier.headline_suppressed_text is not None)
+
+
+# --------------------------------------------------------------------------
+# T-5.2.d — widened builder + dispatch + per-card isolation
+# --------------------------------------------------------------------------
+from swing.web.view_models.metrics.index import build_metrics_index_vm  # noqa: E402
+
+
+def test_builder_widened_signature_populates_nine_cards(high_data_cfg_conn):
+    cfg, conn = high_data_cfg_conn
+    vm = build_metrics_index_vm(cfg, conn)
+    assert len(vm.surfaces) == len(_SURFACES) == 9
+    assert vm.session_date
+    assert hasattr(vm, "unresolved_material_discrepancies_count")
+    trend = [s for s in vm.surfaces if s.sparkline_kind == "inline_svg"]
+    assert {s.path for s in trend} == {
+        "/metrics/capital-friction",
+        "/metrics/identification-funnel",
+        "/metrics/process-grade-trend",
+    }
+
+
+def test_one_surface_failure_degrades_only_that_card(high_data_cfg_conn, monkeypatch):
+    cfg, conn = high_data_cfg_conn
+
+    def _boom(*a, **k):
+        raise RuntimeError("synthetic compute failure")
+
+    monkeypatch.setattr(
+        "swing.web.view_models.metrics.index.build_capital_friction_vm", _boom
+    )
+    vm = build_metrics_index_vm(cfg, conn)
+    assert len(vm.surfaces) == 9  # grid still renders all 9
+    cap = next(s for s in vm.surfaces if s.path == "/metrics/capital-friction")
+    assert cap.headline_suppressed_text == "unavailable"
