@@ -104,18 +104,22 @@ def trade_with_malformed_event_payload(conn):
 
 def test_chronology_fills_only(conn, trade_with_two_fills):
     chron = build_trade_chronology(conn, trade_with_two_fills.id)
-    kinds = [e.kind for e in chron.entries]
-    assert kinds[0] == "fill:entry"
+    # FIX-4: the fill kind is the bare action (no 'fill:' prefix).
+    fill_kinds = [e.kind for e in chron.entries if e.source == "fill"]
+    assert fill_kinds[0] == "entry"
     assert all(chron.entries[i].ts <= chron.entries[i + 1].ts
                for i in range(len(chron.entries) - 1))
-    entry = chron.entries[0]
-    # entry fill: action='entry', quantity=10.0, price=10.0 (field is quantity)
-    assert entry.summary == "entry 10.0 @ 10.0"
+    entry = next(e for e in chron.entries if e.source == "fill")
+    # FIX-4: entry fill summary carries only the VALUES (quantity @ price); the
+    # action word is the kind, not repeated in the summary.
+    assert entry.summary == "10.0 @ 10.0"
 
 
 def test_chronology_includes_trade_events(conn, trade_with_event):
     chron = build_trade_chronology(conn, trade_with_event.id)
-    assert any(e.source == "trade_event" and e.kind.startswith("event:")
+    # FIX-4: trade_event kind is the bare event_type ('flag'), NOT 'event:flag'.
+    assert any(e.source == "trade_event" and e.kind == "flag"
+               and not e.kind.startswith("event:")
                for e in chron.entries)
 
 

@@ -60,9 +60,11 @@ def _fill_entries(conn, trade_id) -> list[ChronologyEntry]:
     out = []
     for f in list_fills_for_trade(conn, trade_id):
         ts_key, malformed = _normalize_ts(f.fill_datetime, precision="datetime")
+        # FIX-4: kind IS the action (no 'fill:' prefix); summary carries only
+        # the VALUES (qty @ price), not the action word — type once, value once.
         out.append(ChronologyEntry(
-            ts=ts_key, source="fill", kind=f"fill:{f.action}",
-            summary=f"{f.action} {f.quantity} @ {f.price}",
+            ts=ts_key, source="fill", kind=str(f.action),
+            summary=f"{f.quantity} @ {f.price}",
             detail=(f.reason or None), ts_malformed=malformed))
     return out
 
@@ -80,11 +82,15 @@ def _trade_event_entries(conn, trade_id) -> list[ChronologyEntry]:
             payload = json.loads(payload_json) if payload_json else None
         except (ValueError, TypeError):
             payload = None  # best-effort; never raise on operator/legacy data
-        detail = rationale or (json.dumps(payload) if payload else None)
+        # FIX-4: kind IS the bare event_type (no 'event:' prefix + no duplicate
+        # summary==event_type). The human rationale becomes the summary; the
+        # payload (when present) is the detail — type once, no repeated value.
         ts_key, malformed = _normalize_ts(ts, precision="datetime")  # WP-R3 M#2
         out.append(ChronologyEntry(
-            ts=ts_key, source="trade_event", kind=f"event:{event_type}",
-            summary=str(event_type), detail=detail, ts_malformed=malformed))
+            ts=ts_key, source="trade_event", kind=str(event_type),
+            summary=(rationale or ""),
+            detail=(json.dumps(payload) if payload else None),
+            ts_malformed=malformed))
     return out
 
 
@@ -111,23 +117,29 @@ def _daily_management_entries(conn, trade_id) -> list[ChronologyEntry]:
          vol, rs, regime, sector, news, notes) = r
         ts_key, malformed = _normalize_ts(rdate, precision="date")  # WP-R3 M#2
         if rtype == "daily_snapshot":
-            # WP-R3 M#3: MFE/MAE are R-multiples; include trail-MA eligibility.
-            detail = (f"MFE={mfe}R MAE={mae}R; maturity={maturity}; "
+            # FIX-4: MFE/MAE (R-multiples) live ONLY in the summary; 'snapshot'
+            # is the kind (not repeated in summary). detail carries the
+            # remaining context (maturity + trail-MA eligibility, WP-R3 M#3) —
+            # NOT a duplicate of the MFE/MAE the summary already shows.
+            detail = (f"maturity={maturity}; "
                       f"trail_MA_eligible={trail_elig} (cand={trail_price})")
             out.append(ChronologyEntry(
                 ts=ts_key, source="daily_management", kind="snapshot",
-                summary=f"snapshot MFE {mfe}R / MAE {mae}R",
+                summary=f"MFE {mfe}R / MAE {mae}R",
                 detail=detail, ts_malformed=malformed))
         else:  # event_log -- kind precedence over the REAL columns
+            # FIX-4: summary never repeats the kind word. action summary is the
+            # reason only (the action verb is already the kind); the bare
+            # management_event has no redundant "management event" summary.
             if stop_changed == 1:
                 kind, summary = "stop_adjust", f"{prior_stop}->{new_stop}"
             elif action_taken not in (None, "no_action"):
                 kind, summary = (f"action:{action_taken}",
-                                 (action_reason or str(action_taken)))
+                                 (action_reason or ""))
             elif thesis_status:
                 kind, summary = "thesis", str(thesis_status)
             else:
-                kind, summary = "management_event", "management event"
+                kind, summary = "management_event", ""
             # WP-R3 M#3: include volume/RS/regime + management notes in detail.
             detail_bits = [b for b in (
                 stop_reason, f"vol={vol}" if vol else None,
@@ -152,7 +164,6 @@ def _review_entry(conn, trade_id) -> list[ChronologyEntry]:
     if not row:
         return []
     reviewed_at, grade, lesson, tags = row
-    one_line = (lesson or "").splitlines()[0] if lesson else ""
     ts_key, malformed = _normalize_ts(reviewed_at, precision="datetime")
     # WP-R3 M#4: detail carries the full lesson AND the mistake tags. Decode
     # the JSON tag list best-effort into a readable form for display.
@@ -166,10 +177,13 @@ def _review_entry(conn, trade_id) -> list[ChronologyEntry]:
                 tag_display = str(tags)
         except (ValueError, TypeError):
             tag_display = str(tags)
+    # FIX-4: 'review' is the kind (shown once); the summary is the process
+    # grade only. The full lesson + mistake tags live ONCE in detail (no
+    # duplicated one-line lesson in the summary).
     detail = "; ".join(b for b in (lesson, tag_display) if b)
     return [ChronologyEntry(
         ts=ts_key, source="review", kind="review",
-        summary=f"review {grade or ''} {one_line}".strip(),
+        summary=(str(grade) if grade else ""),
         detail=(detail or None), ts_malformed=malformed)]
 
 

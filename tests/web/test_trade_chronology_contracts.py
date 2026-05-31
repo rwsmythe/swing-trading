@@ -257,11 +257,12 @@ def trade_mixed_sources(conn):
 def test_daily_snapshot_field_map(conn, trade_with_daily_snapshot):
     chron = build_trade_chronology(conn, trade_with_daily_snapshot.id)
     snap = next(e for e in chron.entries if e.kind == "snapshot")
-    assert "MFE" in (snap.detail or "") and "MAE" in (snap.detail or "")  # R
+    # FIX-4: MFE/MAE live in the summary now (de-duplicated out of detail).
+    assert "MFE" in (snap.summary or "") and "MAE" in (snap.summary or "")
+    # MFE/MAE are R-multiples (rendered with an 'R' suffix), NOT percentages.
+    assert "R" in (snap.summary or "")
     # WP-R3 M#3: trail-MA eligibility is spec-locked into snapshot detail.
     assert "trail_MA_eligible" in (snap.detail or "")
-    # MFE/MAE are R-multiples (rendered with an 'R' suffix), NOT percentages.
-    assert "R" in (snap.detail or "")
 
 
 def test_event_log_detail_carries_volume_rs_regime(
