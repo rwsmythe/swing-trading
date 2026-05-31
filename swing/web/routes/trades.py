@@ -14,6 +14,7 @@ from markupsafe import Markup
 from swing.config_overrides import apply_overrides
 from swing.data.db import connect
 from swing.data.repos.cash import list_cash
+from swing.data.repos.fills import list_fills_for_trade
 from swing.data.repos.trades import get_trade, list_open_trades
 from swing.recommendations.sizing import SizingResult, compute_shares
 from swing.trades.entry import (
@@ -34,6 +35,7 @@ from swing.trades.stop_adjust import (
     StopRegressionError,
     adjust_stop,
 )
+from swing.web.trade_charts import render_trade_window_position_svg
 from swing.web.view_models.dashboard import build_dashboard
 from swing.web.view_models.open_positions_row import (
     build_open_positions_expanded,
@@ -2604,6 +2606,64 @@ def review_form_page(request: Request, trade_id: int):
     return templates.TemplateResponse(
         request, "review.html.j2", {"vm": vm},
     )
+
+
+@router.get("/trades/{trade_id}/review/chart", response_class=HTMLResponse)
+def review_chart_fragment(request: Request, trade_id: int):
+    """Phase 14 SB4 Slice 0 CR.1: lazy review-chart fragment.
+
+    Three contracts: 200 + SVG / 200 + unavailable / 200 + not-found-distinct
+    (with a WARNING log). Render exceptions are isolated (logged, never
+    raised). ``Cache-Control: private`` keeps the per-trade chart out of any
+    shared cache. Read-only: zero domain writes (only ``read_or_fetch_archive``
+    inside the renderer).
+    """
+    cfg = apply_overrides(request.app.state.cfg)
+    templates = request.app.state.templates
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            trade = get_trade(conn, trade_id)
+            if trade is None:
+                log.warning(
+                    "review chart: trade not found trade_id=%s", trade_id,
+                )
+                resp = templates.TemplateResponse(
+                    request, "partials/review_chart.html.j2",
+                    {"chart_svg_bytes": None, "not_found": True},
+                )
+                resp.headers["Cache-Control"] = "private, max-age=60"
+                return resp
+            fills = list_fills_for_trade(conn, trade_id)
+    finally:
+        conn.close()
+    try:
+        svg = render_trade_window_position_svg(
+            trade=trade, fills=fills, cfg=cfg,
+        )
+    except Exception:
+        log.warning(
+            "review chart render failed trade_id=%s ticker=%s",
+            trade_id, trade.ticker, exc_info=True,
+        )
+        svg = None
+    if svg is None:
+        log.warning(
+            "review chart unavailable trade_id=%s ticker=%s",
+            trade_id, trade.ticker,
+        )
+    resp = templates.TemplateResponse(
+        request, "partials/review_chart.html.j2",
+        {"chart_svg_bytes": svg, "not_found": False},
+    )
+    # A None render can be a TRANSIENT no-coverage read (yfinance-empty / F6),
+    # not only the permanent "predates archive" case -- caching it 60s would
+    # block a quick reload from retrying. Successful SVG is safe to cache 60s.
+    if svg is None:
+        resp.headers["Cache-Control"] = "private, max-age=0"
+    else:
+        resp.headers["Cache-Control"] = "private, max-age=60"
+    return resp
 
 
 @router.post("/trades/{trade_id}/review")

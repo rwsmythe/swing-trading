@@ -1,0 +1,32 @@
+{# Phase 14 SB4 Slice 2 Task 2.3 — one journal-listing <tr> per JournalRowVM.
+
+   Codex WP-R2 M#1: a macro imported in journal.html.j2 is NOT visible inside
+   an {% include %}d partial — the partial MUST import it itself (matches the
+   journal.html.j2 import line). The macro export name is `render`
+   (partials/state_badge.html.j2).
+
+   ALL operator/derived text is auto-escaped (NO `| safe`). n/a / open
+   fallbacks for None. Slice 4 (OQ-3): the `journal-thumb` <td> lazy-loads its
+   candlestick thumbnail on scroll-into-view (hx-trigger=revealed) -- the
+   journal listing scrolls in the WINDOW viewport (base.html.j2 wraps no
+   overflow:auto/scroll container), so `revealed` fires correctly. #}
+{% from "partials/state_badge.html.j2" import render as state_badge %}
+<tr data-trade-id="{{ row.trade_id }}">
+  <td class="journal-thumb" data-trade-id="{{ row.trade_id }}"
+      hx-get="/journal/trades/{{ row.trade_id }}/thumbnail"
+      hx-trigger="revealed" hx-swap="innerHTML"
+      hx-headers='{"HX-Request": "true"}'></td>
+  <td><a href="/journal/trades/{{ row.trade_id }}">{{ row.ticker }}</a></td>
+  <td>{{ row.entry_date }}</td>
+  <td>{{ state_badge(row.state) }}</td>
+  <td>{{ '%.2f' % row.open_price }}</td>
+  <td>{{ row.shares }}</td>
+  <td>{{ ('$%.2f' % row.total_risk_dollars) if row.total_risk_dollars is not none else 'n/a' }}</td>
+  <td>{{ row.exit_date if row.exit_date is not none else 'open' }}</td>
+  <td>{{ row.days_open if row.days_open is not none else 'n/a' }}</td>
+  <td>{{ ('%.2f' % row.closing_price) if row.closing_price is not none else 'open' }}</td>
+  <td>{{ ('%.2f' % row.final_r) if row.final_r is not none else 'open' }}</td>
+  <td>{{ row.chart_pattern or '' }}</td>
+  <td>{{ row.aplus_bucket or '' }}</td>
+  <td>{{ 'hyp-rec' if row.has_hyprec_link else '' }}{% if row.hypothesis_label %} ({{ row.hypothesis_label }}){% endif %}</td>
+</tr>

@@ -1104,6 +1104,38 @@ def build_stop_form_vm(*, trade_id: int, cfg: Config) -> TradeStopFormVM | None:
 
 
 @dataclass(frozen=True)
+class ExitLegVM:
+    """Phase 14 SB4 CR.1: one reducing (non-entry) fill surfaced on the
+    review page exit table."""
+    action: str
+    fill_date: str       # fill_datetime[:10]
+    price: float
+    quantity: float
+    reason: str | None
+
+
+def _exit_vwap(non_entry_fills) -> float | None:
+    """Share-weighted VWAP of the reducing fills, or None when no quantity.
+
+    NOT a naive mean: (60*11 + 40*13)/100 = 11.80, not (11+13)/2 = 12.00.
+    """
+    num = sum(f.price * f.quantity for f in non_entry_fills if f.quantity)
+    den = sum(f.quantity for f in non_entry_fills if f.quantity)
+    return round(num / den, 4) if den else None
+
+
+def _total_risk_dollars(trade) -> float | None:
+    """Dollar-risk-at-open = initial_shares * (entry - initial_stop).
+
+    Long-only; None on a missing or inverted (>= entry) stop.
+    """
+    stop = trade.initial_stop
+    if stop is None or not (trade.entry_price > stop):
+        return None
+    return round(trade.initial_shares * (trade.entry_price - stop), 2)
+
+
+@dataclass(frozen=True)
 class ReviewVM:
     trade: Trade
     actual_realized_R_effective: float  # noqa: N815
@@ -1161,6 +1193,15 @@ class ReviewVM:
     # Server-stamped at handler entry; operator cannot tamper (Phase 8
     # R2-R5 family forward-binding lesson + L10 LOCK).
     auto_populated_field_keys_json: str | None = None
+
+    # Phase 14 SB4 Slice 0 CR.1 — exit-data + chart snapshot. Safe defaults
+    # so base.html.j2's 5-VM existing-fields rule holds and any non-returned
+    # construction site stays valid.
+    exit_legs: tuple[ExitLegVM, ...] = ()
+    exit_price_vwap: float | None = None
+    exit_date_last: str | None = None
+    total_risk_dollars: float | None = None
+    review_chart_url: str | None = None  # Task 0.6
 
     def __post_init__(self) -> None:
         if self.banner_resolve_link is not None:
@@ -1252,6 +1293,25 @@ def build_review_vm(
     exits = tuple(_fill_to_exit_like(f, trade) for f in non_entry_fills)
     actual_r = compute_actual_realized_R_effective(trade, list(exits))
 
+    # Phase 14 SB4 Slice 0 CR.1 — exit-data derivations. non_entry_fills are
+    # the reducing fills; surface them sorted ASC by fill_datetime, plus the
+    # share-weighted exit VWAP, the last-exit date, and the dollar risk at
+    # open. _exit_vwap / _total_risk_dollars are the single math source reused
+    # by Slice 2.
+    non_entry_sorted = sorted(non_entry_fills, key=lambda f: f.fill_datetime)
+    exit_legs = tuple(
+        ExitLegVM(
+            action=f.action, fill_date=f.fill_datetime[:10], price=f.price,
+            quantity=f.quantity, reason=f.reason,
+        )
+        for f in non_entry_sorted
+    )
+    exit_price_vwap = _exit_vwap(non_entry_fills)
+    exit_date_last = (
+        non_entry_sorted[-1].fill_datetime[:10] if non_entry_sorted else None
+    )
+    total_risk_dollars = _total_risk_dollars(trade)
+
     # T-B.3.3: server-stamp the audit envelope at handler entry. Each key
     # is included iff its auto-fill source produced a non-empty / non-
     # trivial value. Operator-typed fields stay attributable (omitted from
@@ -1322,6 +1382,11 @@ def build_review_vm(
         mfe_pct=mfe_pct,
         mae_pct=mae_pct,
         auto_populated_field_keys_json=auto_populated_field_keys_json,
+        exit_legs=exit_legs,
+        exit_price_vwap=exit_price_vwap,
+        exit_date_last=exit_date_last,
+        total_risk_dollars=total_risk_dollars,
+        review_chart_url=f"/trades/{trade_id}/review/chart",
     )
 
 

@@ -356,3 +356,103 @@ def seed_watchlist_and_candidate(seeded_db):
             conn.close()
 
     return _seed
+
+
+# ---------------------------------------------------------------------------
+# Phase 14 SB4 Slice 0 — chart-renderer test fixtures (render-lock no-deadlock
+# parametrized test + trade-window helpers). Inputs mirror tests/web/
+# test_charts.py's _make_bars / _make_trade / _make_fill / _make_pattern_eval.
+# ---------------------------------------------------------------------------
+
+
+def _sb4_make_bars(n: int = 150, *, start: str = "2024-01-01"):
+    import pandas as pd
+    idx = pd.bdate_range(start=start, periods=n)
+    close = [100.0 + 0.5 * i + (i % 7) * 0.1 for i in range(n)]
+    return pd.DataFrame(
+        {
+            "Open": [c - 0.5 for c in close],
+            "High": [c + 0.8 for c in close],
+            "Low": [c - 0.8 for c in close],
+            "Close": close,
+            "Volume": [1_000_000 + 10_000 * i for i in range(n)],
+        },
+        index=idx,
+    )
+
+
+def _sb4_make_trade(ticker: str = "ABC"):
+    from swing.data.models import Trade
+    return Trade(
+        id=1, ticker=ticker, entry_date="2024-02-10", entry_price=120.50,
+        initial_shares=100, initial_stop=115.00, current_stop=118.00,
+        state="managing", watchlist_entry_target=None,
+        watchlist_initial_stop=None, notes=None,
+    )
+
+
+def _sb4_make_fill(*, action="entry", price=120.50,
+                   fill_datetime="2024-02-10T09:30:00", quantity=100.0):
+    from swing.data.models import Fill
+    return Fill(
+        fill_id=None, trade_id=1, fill_datetime=fill_datetime,
+        action=action, quantity=quantity, price=price,
+    )
+
+
+def _sb4_make_pattern_eval(bars):
+    import json as _json
+    from swing.data.models import PatternEvaluation
+    start = str(bars.index[10].date())
+    end = str(bars.index[80].date())
+    return PatternEvaluation(
+        id=None, pipeline_run_id=1, ticker="ABC", pattern_class="vcp",
+        detector_version="t2.sb3-v1", geometric_score=0.72,
+        geometric_score_json="{}", composite_score=0.81,
+        structural_evidence_json=_json.dumps(
+            {"pivot_price": 130.0,
+             "contractions": [{"depth_pct": 15.0}, {"depth_pct": 10.0},
+                              {"depth_pct": 6.0}]}),
+        feature_distribution_log_json="{}",
+        window_start_date=start, window_end_date=end,
+        created_at="2024-04-02T00:00:00.000",
+    )
+
+
+@pytest.fixture
+def renderer_args_for():
+    """Return (args, kwargs) of valid minimal inputs per public renderer.
+
+    Used by tests/web/test_charts_render_lock.py's parametrized no-deadlock
+    test (Task 0.1). Every renderer is keyword-only, so args is empty.
+    """
+    def _factory(renderer_name: str):
+        bars = _sb4_make_bars(150)
+        if renderer_name == "render_watchlist_thumbnail_svg":
+            return (), {"ticker": "ABC", "bars": bars, "ma_lines": [50, 200]}
+        if renderer_name == "render_ticker_detail_svg":
+            return (), {"ticker": "ABC", "bars": bars,
+                        "pattern_evaluation": _sb4_make_pattern_eval(bars)}
+        if renderer_name == "render_position_detail_svg":
+            return (), {"ticker": "ABC", "bars": bars,
+                        "trade": _sb4_make_trade(),
+                        "fills": [_sb4_make_fill()], "current_stop": 118.00}
+        if renderer_name == "render_market_weather_svg":
+            return (), {"bars": bars, "trend_template_state": "Stage 2"}
+        if renderer_name == "render_theme2_annotated_svg":
+            return (), {"ticker": "ABC", "bars": bars,
+                        "pattern_evaluation": _sb4_make_pattern_eval(bars)}
+        raise KeyError(f"unknown renderer {renderer_name!r}")
+    return _factory
+
+
+@pytest.fixture
+def cfg_fixture(test_cfg) -> Config:
+    """A Config with a valid paths.prices_cache_dir + archive_history_days.
+
+    For Phase 14 SB4 Slice 0 trade-window helpers; the archive read is always
+    monkeypatched in these tests, so the cache dir need only exist.
+    """
+    cfg, _ = test_cfg
+    cfg.paths.prices_cache_dir.mkdir(parents=True, exist_ok=True)
+    return cfg

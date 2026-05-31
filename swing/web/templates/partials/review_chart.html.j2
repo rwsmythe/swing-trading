@@ -1,0 +1,10 @@
+{# Phase 14 SB4 Slice 0 Task 0.5: lazy review-chart fragment. The ONLY
+   | safe content is matplotlib-generated SVG bytes. Operator/derived text is
+   auto-escaped. Fragment root is a <div>/<span> (never a bare <tr>). #}
+{% if chart_svg_bytes %}
+  <div class="review-chart">{{ chart_svg_bytes.decode('utf-8') | safe }}</div>
+{% elif not_found %}
+  <span class="chart-unavailable" data-chart-reason="trade-not-found">Trade not found.</span>
+{% else %}
+  <span class="chart-unavailable" data-chart-reason="no-coverage">Chart unavailable -- trade predates the chart archive.</span>
+{% endif %}

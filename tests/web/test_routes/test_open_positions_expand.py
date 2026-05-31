@@ -228,10 +228,34 @@ def test_build_open_positions_expanded_unknown_id_returns_none(seeded_db):
 # Route tests
 # ---------------------------------------------------------------------------
 
-def test_expand_route_in_scope_renders_chart_img(seeded_db, monkeypatch):
-    """In-scope trade → expand fragment contains <img src="/charts/<date>/<ticker>.png">"""
+def test_expand_route_in_scope_renders_inline_svg(seeded_db, monkeypatch):
+    """Phase 14 SB4 Slice 1 — the open-positions row-expand now inlines the
+    SB3 `position_detail` SVG (read from the chart_renders cache) instead of
+    the legacy static PNG. With a position_detail cache row present, the
+    fragment carries the inline SVG and NO legacy `<img src="/charts/...">`.
+
+    (Pre-SB4 this asserted `<img src="/charts/<date>/<ticker>.png">`; that
+    static-PNG path is intentionally reversed for this surface per the dated
+    L7 note in docs/chart-pattern-flag-v1-chart-access-ux-brief.md §2.)
+    """
+    from swing.data.models import ChartRender
+    from swing.data.repos.chart_renders import insert_chart_render
+
     cfg, cfg_path = seeded_db
     trade_id = _seed_in_scope_trade(cfg, ticker="AAPL")
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            insert_chart_render(conn, ChartRender(
+                id=None, ticker="AAPL", surface="position_detail",
+                chart_svg_bytes=b"<svg>position_detail</svg>",
+                source_data_hash="hash-pd",
+                rendered_at="2026-04-17T16:05:00",
+                data_asof_date="2026-04-17",
+                pipeline_run_id=None, pattern_class=None,
+            ))
+    finally:
+        conn.close()
     _patch_price_cache(monkeypatch)
 
     app = create_app(cfg, cfg_path)
@@ -242,9 +266,10 @@ def test_expand_route_in_scope_renders_chart_img(seeded_db, monkeypatch):
         )
     assert r.status_code == 200, r.text[:200]
     body = r.text
-    # Chart-display block — img with date-prefixed URL.
-    assert '<img src="/charts/2026-04-17/AAPL.png"' in body
-    # No chart-unavailable placeholder for the in-scope path.
+    # Inline SVG present; legacy static-PNG img gone.
+    assert "<svg" in body
+    assert '<img src="/charts/' not in body
+    # No chart-unavailable placeholder when the SVG cache hit.
     assert 'class="chart-unavailable"' not in body
 
 

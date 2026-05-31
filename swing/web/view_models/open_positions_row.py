@@ -254,6 +254,14 @@ class OpenPositionsExpandedVM:
     # Spec-conformant ``field(default_factory=tuple)`` per brief §0.3 #5
     # (Codex R2 Minor #1 alignment).
     advisories: tuple = field(default_factory=tuple)  # tuple[AdvisorySuggestionVM, ...]
+    # Phase 14 SB4 Slice 1 — the SB3 `position_detail` candlestick+BULZ-zones
+    # SVG, read from the existing `chart_renders` cache (run-agnostic; the
+    # `position_detail` key uses `pipeline_run_id IS NULL`). Mirrors the
+    # read-only call `build_trade_detail_vm` makes. The template inlines this
+    # SVG in place of the legacy static PNG; None when no cache row exists
+    # (the template falls back to a chart-unavailable message). Default None
+    # so legacy hand-constructed VMs (no cache thread) render the fallback.
+    position_chart_svg_bytes: bytes | None = None
 
 
 def build_open_positions_expanded(
@@ -353,6 +361,19 @@ def build_open_positions_expanded(
             for s in raw
         )
 
+    # Phase 14 SB4 Slice 1 — read the existing `position_detail` SVG cache
+    # (the SAME read-only call `build_trade_detail_vm` makes; run-agnostic per
+    # the v20 §3.2 LOCK, `pipeline_run_id IS NULL`). NO JIT, NO write-through:
+    # a cache miss returns None and the template falls back to a
+    # chart-unavailable message.
+    from swing.data.repos.chart_renders import get_cached_chart_svg
+    position_chart_svg_bytes = get_cached_chart_svg(
+        conn,
+        ticker=trade.ticker,
+        surface="position_detail",
+        pipeline_run_id=None,
+    )
+
     binding = latest_completed_pipeline_run(conn)
     if binding is None:
         # No completed runs — chart unavailable AND data_asof_date is None.
@@ -363,6 +384,7 @@ def build_open_positions_expanded(
             chart_reason="no-run",
             chart_reason_message=CHART_REASON_MESSAGES["no-run"],
             advisories=advisories,
+            position_chart_svg_bytes=position_chart_svg_bytes,
         )
 
     chart_reason, chart_reason_message = resolve_chart_scope(
@@ -377,4 +399,5 @@ def build_open_positions_expanded(
         chart_reason=chart_reason,
         chart_reason_message=chart_reason_message,
         advisories=advisories,
+        position_chart_svg_bytes=position_chart_svg_bytes,
     )
