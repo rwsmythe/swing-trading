@@ -59,6 +59,7 @@ class WatchlistVM:
     watchlist_chart_svg_bytes: Mapping[str, bytes] = field(
         default_factory=dict,
     )
+    schwab_checker_badge: object | None = None  # P14.N7 badge (SB5.5)
 
     def __post_init__(self) -> None:
         if self.banner_resolve_link is not None:

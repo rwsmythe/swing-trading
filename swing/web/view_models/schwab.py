@@ -90,6 +90,7 @@ class SchwabSetupVM:
     # have to re-extract from the browser address bar. NEVER persisted;
     # exists only in the failure-path re-render.
     callback_url_value: str = ""
+    schwab_checker_badge: object | None = None  # P14.N7 badge (SB5.5)
 
     def __post_init__(self) -> None:
         if not self.session_date:
@@ -250,6 +251,7 @@ class SchwabStatusVM:
     # Phase 12.5 #2 T-2.7 — banner link to FIRST pending-ambiguity discrepancy
     # resolve form. None when no pending-ambiguity row exists.
     banner_resolve_link: str | None = None
+    schwab_checker_badge: object | None = None  # P14.N7 badge (SB5.5)
 
     def __post_init__(self) -> None:
         if not self.session_date:
@@ -599,6 +601,7 @@ class SchwabSetupErrorVM:
     # Phase 12.5 #2 T-2.7 — banner link to FIRST pending-ambiguity discrepancy
     # resolve form. None when no pending-ambiguity row exists.
     banner_resolve_link: str | None = None
+    schwab_checker_badge: object | None = None  # P14.N7 badge (SB5.5)
 
     def __post_init__(self) -> None:
         if not self.session_date:

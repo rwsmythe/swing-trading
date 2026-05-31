@@ -28,6 +28,7 @@ class PipelineVM:
     # Phase 12.5 #2 T-2.7 — banner link to FIRST pending-ambiguity discrepancy
     # resolve form. None when no pending-ambiguity row exists.
     banner_resolve_link: str | None = None
+    schwab_checker_badge: object | None = None  # P14.N7 badge (SB5.5)
 
     def __post_init__(self) -> None:
         if self.banner_resolve_link is not None:

@@ -62,6 +62,7 @@ class BaseLayoutVM:
     # keeps the banner advisory text-only when no pending-ambiguity row
     # exists.
     banner_resolve_link: str | None = None
+    schwab_checker_badge: object | None = None  # P14.N7 badge (SB5.5)
 
     def __post_init__(self) -> None:
         # Per plan §A.6 watch: lock asserts session_date is non-empty so

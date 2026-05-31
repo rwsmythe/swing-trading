@@ -78,6 +78,11 @@
             class="theme-toggle"
             type="button"
             aria-label="Switch to dark theme">🌙</button>
+    {% if vm.schwab_checker_badge %}
+    <a class="schwab-health-badge schwab-health-badge--{{ vm.schwab_checker_badge.css_class }}"
+       href="/schwab/status"
+       title="{{ vm.schwab_checker_badge.title }}">{{ vm.schwab_checker_badge.label }}</a>
+    {% endif %}
   </nav>
   {% if vm.stale_banner %}
     {% include "partials/stale_banner.html.j2" %}
