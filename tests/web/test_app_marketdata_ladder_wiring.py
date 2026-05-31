@@ -186,3 +186,24 @@ def test_cfg_tier_credentials_construct_client_without_env(seeded_db, monkeypatc
     monkeypatch.setattr("swing.web.app.construct_authenticated_client", lambda *a, **k: fake)
     app = create_app(_production_cfg(cfg))
     assert app.state.schwab_client is fake  # cfg-tier creds construct the client
+
+
+def test_open_trade_memo_db_error_degrades_to_yfinance(seeded_db, monkeypatch, tmp_path):
+    # A DB error while refreshing the open-trade memo must NOT propagate out of
+    # the hook; it degrades to yfinance with NO Schwab call (no row, no raise).
+    cfg, _ = seeded_db
+    calls = []
+    monkeypatch.setattr(
+        "swing.integrations.schwab.marketdata_ladder.fetch_quote_via_ladder",
+        lambda ticker, **k: calls.append(ticker) or (MagicMock(price=1.0), "schwab_api"),
+    )
+
+    def _boom(_conn):
+        raise RuntimeError("transient DB lock during pipeline write")
+
+    monkeypatch.setattr("swing.data.repos.trades.list_open_trades", _boom)
+    app = _install_hooks(cfg, monkeypatch, MagicMock(), tmp_path)
+    monkeypatch.setattr(app.state.price_cache, "_fetch_live_price", lambda t: 9.0)
+    _price, provider = app.state.price_cache._ladder_fetcher("AAA")  # must NOT raise
+    assert provider == "yfinance"
+    assert calls == []  # memo refresh failed -> empty scope -> Schwab not attempted
