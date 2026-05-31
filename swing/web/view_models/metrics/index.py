@@ -25,12 +25,24 @@ from swing.metrics.discrepancies import (
 from swing.metrics.funnel import TREND_MIN_RUNS as _FUNNEL_TREND_MIN_RUNS
 from swing.metrics.honesty import BootstrapCI, SuppressedMetric
 from swing.metrics.process_grade_trend import compute_process_grade_trend
+from swing.metrics.tier import APLUS_COHORT
 from swing.web.view_models.metrics.capital_friction import build_capital_friction_vm
+from swing.web.view_models.metrics.deviation_outcome import build_deviation_outcome_vm
+from swing.web.view_models.metrics.hypothesis_progress_card import (
+    build_hypothesis_progress_card_vm,
+)
 from swing.web.view_models.metrics.identification_funnel import (
     build_identification_funnel_vm,
 )
+from swing.web.view_models.metrics.maturity_stage import build_maturity_stage_vm
 from swing.web.view_models.metrics.shared import BaseLayoutVM
 from swing.web.view_models.metrics.sparkline import build_sparkline_points
+from swing.web.view_models.metrics.tier_comparison import build_tier_comparison_vm
+from swing.web.view_models.metrics.trade_process_card import (
+    ALL_COHORTS_KEY,
+    build_trade_process_card_vm,
+)
+from swing.web.view_models.patterns.outcomes_card import build_pattern_outcomes_vm
 
 _LOG = logging.getLogger(__name__)
 
@@ -215,6 +227,94 @@ def _extract_process_grade_trend(cfg: Config, conn, session_date: str) -> _Overv
         sparkline_suppressed_text=supp,
         sparkline_kind="inline_svg",
     )
+
+
+# OQ-4 fixed selectors (operator-confirmable at executing-plans; plan sec C.4).
+DEVIATION_HEADLINE_COHORT: str = "Near-A+ defensible: extension test"
+_DEVIATION_HEADLINE_SHORT: str = "Near-A+"
+PATTERN_HEADLINE_CLASS: str = "vcp"
+
+
+def _extract_trade_process(cfg: Config, conn, session_date: str) -> _OverviewCard:
+    vm = build_trade_process_card_vm(cfg=cfg, conn=conn)
+    tab = next((t for t in vm.cohort_tabs if t.cohort_key == ALL_COHORTS_KEY), None)
+    if tab is None:
+        return _OverviewCard(headline_suppressed_text="unavailable")
+    stat, supp = _format_metric_value(tab.metrics.expectancy_R.value)
+    return _OverviewCard(
+        headline_stat_text=stat,
+        headline_caption="expectancy R (all)",
+        headline_suppressed_text=supp,
+    )
+
+
+def _extract_hypothesis_progress(cfg: Config, conn, session_date: str) -> _OverviewCard:
+    vm = build_hypothesis_progress_card_vm(cfg=cfg, conn=conn)
+    n = len(vm.cohorts)
+    if n == 0:
+        return _OverviewCard(headline_suppressed_text="no registered cohorts")
+    return _OverviewCard(headline_stat_text=str(n), headline_caption="registered cohorts")
+
+
+def _extract_tier_comparison(cfg: Config, conn, session_date: str) -> _OverviewCard:
+    vm = build_tier_comparison_vm(cfg=cfg, conn=conn)
+    if vm.result is None:
+        return _OverviewCard(headline_suppressed_text="unavailable")
+    cohort = next((c for c in vm.result.cohorts if c.cohort_name == APLUS_COHORT), None)
+    if cohort is None:
+        return _OverviewCard(headline_suppressed_text="A+ cohort unavailable")
+    stat, supp = _format_metric_value(cohort.expectancy)
+    return _OverviewCard(
+        headline_stat_text=stat,
+        headline_caption="A+ expectancy R",
+        headline_suppressed_text=supp,
+    )
+
+
+def _extract_maturity_stage(cfg: Config, conn, session_date: str) -> _OverviewCard:
+    vm = build_maturity_stage_vm(cfg=cfg, conn=conn)
+    if vm.result is None:
+        return _OverviewCard(headline_suppressed_text="unavailable")
+    return _OverviewCard(
+        headline_stat_text=str(len(vm.result.rows)),
+        headline_caption="open positions",
+    )
+
+
+def _extract_deviation_outcome(cfg: Config, conn, session_date: str) -> _OverviewCard:
+    vm = build_deviation_outcome_vm(cfg=cfg, conn=conn)
+    caption = f"delta vs A+ ({_DEVIATION_HEADLINE_SHORT})"
+    if vm.result is None:
+        return _OverviewCard(headline_suppressed_text="unavailable", headline_caption=caption)
+    row = next(
+        (r for r in vm.result.rows if r.cohort_name == DEVIATION_HEADLINE_COHORT), None
+    )
+    if row is None:
+        return _OverviewCard(
+            headline_suppressed_text="cohort unavailable", headline_caption=caption
+        )
+    if row.row_suppressed or row.expectancy_relative_to_aplus_pct is None:
+        return _OverviewCard(headline_suppressed_text="n too low", headline_caption=caption)
+    return _OverviewCard(
+        headline_stat_text=f"{row.expectancy_relative_to_aplus_pct:+.1f}%",
+        headline_caption=caption,
+    )
+
+
+def _extract_pattern_outcomes(cfg: Config, conn, session_date: str) -> _OverviewCard:
+    vm = build_pattern_outcomes_vm(conn, session_date=session_date)
+    caption = f"trigger rate ({PATTERN_HEADLINE_CLASS})"
+    row = next(
+        (r for r in vm.pattern_outcome_rows if r.pattern_class == PATTERN_HEADLINE_CLASS),
+        None,
+    )
+    if row is None:
+        return _OverviewCard(
+            headline_suppressed_text="pattern unavailable", headline_caption=caption
+        )
+    if row.triggered_ci is not None:
+        return _OverviewCard(headline_stat_text=row.triggered_pct_text, headline_caption=caption)
+    return _OverviewCard(headline_suppressed_text=row.suppressed_text, headline_caption=caption)
 
 
 # 9 surfaces in the umbrella `/metrics` index navigator (registry order).

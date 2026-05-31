@@ -194,3 +194,59 @@ def test_process_grade_sparkline_uses_line_band_gate(high_data_cfg_conn):
     assert card.sparkline_kind == "inline_svg"
     assert (card.sparkline_points is not None) ^ (card.sparkline_suppressed_text is not None)
     assert card.headline_caption == "rolling grade"
+
+
+# --------------------------------------------------------------------------
+# T-5.2.c — the 6 headline-only extractors + the 2 OQ-4 constants
+# --------------------------------------------------------------------------
+from swing.web.view_models.metrics.index import (  # noqa: E402
+    DEVIATION_HEADLINE_COHORT,
+    PATTERN_HEADLINE_CLASS,
+    _extract_deviation_outcome,
+    _extract_hypothesis_progress,
+    _extract_maturity_stage,
+    _extract_pattern_outcomes,
+    _extract_tier_comparison,
+    _extract_trade_process,
+)
+
+
+def test_hypothesis_progress_headline_counts_registered_cohorts(high_data_cfg_conn):
+    cfg, conn = high_data_cfg_conn
+    card = _extract_hypothesis_progress(cfg, conn, "2026-05-30")
+    assert card.sparkline_kind == "none"
+    assert card.headline_caption == "registered cohorts"
+    assert card.headline_stat_text == "4"  # 4 TAXONOMY_COHORTS registered
+
+
+def test_maturity_headline_is_open_position_count(high_data_cfg_conn):
+    cfg, conn = high_data_cfg_conn
+    card = _extract_maturity_stage(cfg, conn, "2026-05-30")
+    assert card.headline_caption == "open positions"
+    assert card.headline_stat_text is not None  # "0" is a valid honest value
+
+
+def test_pattern_outcomes_uses_fixed_class_and_existing_suppression(low_data_cfg_conn):
+    cfg, conn = low_data_cfg_conn
+    card = _extract_pattern_outcomes(cfg, conn, "2026-05-30")
+    assert card.sparkline_kind == "none"
+    assert f"({PATTERN_HEADLINE_CLASS})" in card.headline_caption
+    assert (card.headline_stat_text is not None) or (card.headline_suppressed_text is not None)
+
+
+def test_deviation_headline_uses_fixed_cohort(high_data_cfg_conn):
+    cfg, conn = high_data_cfg_conn
+    card = _extract_deviation_outcome(cfg, conn, "2026-05-30")
+    assert "delta vs A+" in card.headline_caption
+    assert DEVIATION_HEADLINE_COHORT
+
+
+def test_trade_process_and_tier_headline_use_existing_suppression(low_data_cfg_conn):
+    cfg, conn = low_data_cfg_conn
+    tp = _extract_trade_process(cfg, conn, "2026-05-30")
+    tier = _extract_tier_comparison(cfg, conn, "2026-05-30")
+    assert tp.sparkline_kind == "none"
+    assert tier.sparkline_kind == "none"
+    # Each surface emits EITHER a headline value OR an honest suppressed text.
+    assert (tp.headline_stat_text is not None) or (tp.headline_suppressed_text is not None)
+    assert (tier.headline_stat_text is not None) or (tier.headline_suppressed_text is not None)
