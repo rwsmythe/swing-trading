@@ -8,6 +8,41 @@
 
 ---
 
+## 2026-05-30 #5 Phase 14 close-out + NEW Sub-bundle 5.5 (Schwab-focused) punch-list -- banked-items consolidation (operator-decided 2026-05-30)
+
+**Purpose:** consolidate every banked/orphaned Phase-14-scope item into ONE close-out tracker so nothing is lost. Compiled via a full sweep of the commissioning brief (Sec 1 deferred-list + Sec 8 forward-look) + the 4 SB executing-plans return reports + the SB1-SB4 phase3e-todo entries. Operator bucketing decisions dated 2026-05-30.
+
+**Updated Phase 14 forward sequence:** SB5 (metrics overview; P14.N5; brainstorm in progress) -> **NEW SB5.5 (Schwab-focused)** -> Phase 14 close-out polish batch + B-7 final touch -> Phase 14 close-out review (Sec 9.1 Q6: all sub-bundles merged + operator browser-witnessed cross-sub-bundle integration).
+
+**NEW Sub-bundle 5.5 -- Schwab-focused (operator-decided 2026-05-30):**
+- **A-3 Schwab daily-bar web wiring** (SB3 follow-up #4): the web-side SMA/daily-bar path (`OhlcvCache`/`PriceCache` constructed plain in `swing/web/app.py`) is yfinance-only by wiring; the Schwab market-data ladder (`swing/integrations/schwab/marketdata_ladder.py`, gated `env==production AND marketdata_ladder_enabled`) is pipeline-side + NOT installed on the web caches. Wire it onto the web SMA path. **Touches the L2-locked Schwab surface** -- A-3 installs the EXISTING ladder (intended ZERO new `schwabdev.Client.*` call SITES beyond the ladder's own); confirm the L2 framing at SB5.5 brainstorm.
+- **P14.N7 schwabdev background `checker`-thread resilience**: schwabdev's background token-refresh `checker` thread dies with uncaught `ConnectionError`/`NameResolutionError` under sleep/wake/DNS-failure cycles -> silent token-refresh degradation until `swing web` restart. Wrap/replace the checker loop with exception-isolation + retry-with-backoff; add an operator-visible degraded-health surface (`swing schwab status` checker-liveness); discriminating test simulates DNS failure during refresh.
+- Coheres around the Schwab integration surface; both infrastructure/resilience; L2 LOCK discipline central. Its own copowers cycle.
+
+**Phase 14 close-out polish batch (small, Phase-14-scope; sequence after SB5/SB5.5):**
+- **P14.N1 (dashboard portion -- the orphaned bit)** -- open-positions + hyp-rec TABLE thumbnails. Substrate + the render-direct helper `render_trade_window_thumbnail_svg` (`swing/web/trade_charts.py:87`) exist; SB4 proved the journal-listing VM->row-template pattern; wire onto `open_positions_row.html.j2` + `hypothesis_recommendations_row.html.j2` + their VMs. Banked at SB4 OQ-3 (operator chose "journal listing only"). (P14.N1 substrate [SB3] + journal-listing thumbnails [SB4] already SHIPPED; this is the remaining dashboard-table portion.)
+- **A-1 market_weather 200MA fetch-window** (SB3 #2) -- widen the benchmark fetch window to >=200 trading bars (~300 calendar days) at both sites (pipeline `_bars_or_none(window_days=200)` + the refresh handler's `get_or_fetch(ticker=benchmark)`) + a regression asserting >=200 bars reach `render_market_weather_svg`.
+- **A-2 theme2_annotated vcp 5-contraction label crowding** (SB3 #3) -- cosmetic; reposition the right-edge labels off the price y-axis ticks.
+- **A-4 `_bulz_*` -> general rename** (SB4) -- cosmetic; rename `_bulz_target_price`/`_draw_bulz_zones` (`swing/web/charts.py:609,701`) -> general (`_rr_target_price`/`_draw_risk_reward_zones`) + comments/WARN text; the zones are a GENERAL open-long-position feature, NOT BULZ-specific.
+
+**B-7 operator failure-mode classification UI -- Phase 14 FINAL TOUCH (operator-decided 2026-05-30):** extend the CR.1 review surface to capture operator-annotated failure reasons (e.g. "stopped out on volatility", "thesis invalidated", "execution issue") for outcome-attribution analysis. Likely a small dedicated cycle (new review field(s) + UI) -- assess schema impact at its brainstorm (may add a nullable review column -> v24 STRICT `pre_version`, or reuse existing). Sequenced as the LAST Phase 14 feature before close-out review.
+
+**A-5 styled full-page 404 (SB4 FIX-5) -- CLOSED (operator 2026-05-30, "no intention to revisit").** The JSON 404 stands. Removed from the punch-list.
+
+**Phase 15+ (tracked; NOT Phase 14; depend on temporal-log accumulation / strategic decisions):** B-1 substrate-size augmentation; B-2 Finviz filter widening; B-3 cohort-stability LOCK (gotcha #37 -- already eliminated-by-construction in the v22 temporal log); B-4 D2 survival-rate remediation; B-5 real-time prospective tracking; B-6 multi-pattern composites; B-8 other-gates market-regime investigation.
+
+**Minor V2 advisories + banked implementation lessons (C-1..C-19; ZERO close-out impact):** ~6 genuinely-open minor advisories (SB1: PROVISIONAL-default flip; "covers today" tooltip wording; backfill `OSError`->`ClickException`; `BEGIN IMMEDIATE` ordering-test strengthening; apply-path write-lock-during-artifact-write; cross-SB `test_ohlcv_reader_re_export_identity` xdist co-residency flake) + ~3 accepted-as-LOCKed-by-design (SB2 schema-version test NAMES for grep-history; observe read-then-write benign under single-lease; repo fixture `ohlc_today_json` shape nit) + ~10 already-fixed forward-binding lessons captured for reference (mpf x-axis padding `margins(x=0)` / volume-label auto-scale; `last_completed_session` returns `date`; post-close read-connection; fill-marker nearest-forward x-placement; index-coercion-rejects-numeric; synthetic-bars-use-planted-detections; derived-duration state-predicate). Full detail in the per-SB executing-plans return reports §"V2 candidates" / §"forward-binding lessons". NONE require close-out action.
+
+**Forward action:**
+
+- [ ] SB5 (metrics overview; P14.N5) brainstorm (IN PROGRESS) -> writing-plans -> executing-plans
+- [ ] **SB5.5 (Schwab-focused: A-3 + P14.N7) brainstorm dispatch brief** when sequenced (after SB5)
+- [ ] Phase 14 close-out polish batch (P14.N1-dashboard + A-1 + A-2 + A-4)
+- [ ] B-7 operator failure-mode classification (Phase 14 final touch)
+- [ ] Phase 14 close-out review (Sec 9.1 Q6: all merged + operator browser-witnessed cross-sub-bundle integration)
+
+---
+
 ## 2026-05-30 #4 Phase 14 Sub-bundle 4 (review + journal UX) EXECUTING-PLANS SHIPPED end-to-end at `31da4a5` -- operator-witnessed gate PASS (S3-S7); 32 impl + 6 gate-fix commits; two GENUINE copowers v2.0.2 WSL Codex chains CONVERGED (EP-R2 + GF-R2); 6905 fast tests green on MERGED main; NO schema change (v23 held); read-mostly; 9 OQs operator-LOCKed; `_bulz_*` rename banked; FIX-5 (styled 404) operator-skipped
 
 **Sub-bundle 4 executing-plans SHIPPED end-to-end 2026-05-30 #4** at integration merge `31da4a5` of `phase14-sub-bundle-4-review-journal-ux-executing-plans` via `--no-ff`. 32 implementation commits (6 slices) + 6 gate-fix commits + merge. 18 swing/ files (NEW `swing/web/trade_charts.py` + `swing/web/view_models/trade_chronology.py` + render lock in `charts.py` + journal route/VM + 8 templates) + ~30 NEW test files; ZERO swing-domain writes. Schema **v23 LOCKED** (NO migration; render-direct keeps SB4 schema-free; v22/v23 substrates UNTOUCHED). ZERO Co-Authored-By across all branch commits + merge (`%(trailers)` empty). Merge-base `b17efc0`.
