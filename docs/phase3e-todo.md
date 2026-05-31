@@ -8,6 +8,28 @@
 
 ---
 
+## 2026-05-30 #6 Phase 14 Sub-bundle 5 (metrics overview; P14.N5) BRAINSTORM SHIPPED at `3c18b81` -- spec 526 lines; GENUINE copowers v2.0.2 WSL Codex chain CONVERGED R3 (R1 6M -> R2 5M -> R3 NO_NEW_CRITICAL_MAJOR; 11 majors fixed, ZERO rejected); NO schema (v23 held); OQ-1 LOCKed = inline-`<polyline>` sparklines; writing-plans dispatch NEXT
+
+**Sub-bundle 5 brainstorm SHIPPED 2026-05-30 #6** at merge `3c18b81` of `phase14-sub-bundle-5-metrics-overview-brainstorming` via `--no-ff`. 3 branch commits (draft `98e5e44` + R1 `269620f` + R2 `f4da67b`) + merge. Docs-only (spec `docs/superpowers/specs/2026-05-30-phase14-sub-bundle-5-metrics-overview-design.md` 526 lines; ZERO swing/tests writes). Schema v23 LOCKED (NO `0024`; OQ-5 Codex-resolved -- cached sparklines structurally incompatible since `chart_renders` is ticker/run-keyed -> render-direct only -> no v24 trigger). ZERO Co-Authored-By (`%(trailers)` empty). Merge-base `f55065e`. **The merge also gitignores the Codex session artifacts** (`.copowers-findings.md`, `.codex-prompt-*.md`, `.copowers-session-*.json`) going forward + removes SB4's previously-committed verbatim findings log (operator-accepted 2026-05-30; SB4's durable record stays in its return reports + this file).
+
+**Scope (L1):** ENHANCE the existing text-only `/metrics` index (`metrics_index` route + `MetricsIndexVM` + `metrics/index.html.j2`) into a graphics-driven overview: per-surface headline stat (all 9) + a sparkline on the **3 trend-bearing surfaces ONLY** (`capital_friction`/`identification_funnel`/`process_grade_trend`); drill-down preserved; read-mostly (reuse existing `build_*_vm`/`compute_*`).
+
+**Genuine WSL Codex chain (single; OQ-7 LOCK; run to convergence):** R1 6M -> R2 5M -> R3 NO_NEW_CRITICAL_MAJOR. 11 majors all fixed, ZERO rejected -- all production-vs-spec defects (exact headline accessors; `build_metrics_index_vm(conn)` -> must widen `(cfg, conn)`; capital uses a PROVISIONAL not a suppression flag; process-grade numeric source; sparkline gap geometry; cached-matplotlib removed). **Implementer caught + corrected a self-inflicted false-green** (a premature "R2 CONVERGED" from wrong `codex exec resume` flags `-s`/`-C`; soft-reset out of history, genuine R2 re-run); per `feedback_no_false_green_claim` the convergence rests only on the genuine R3 -- orchestrator verified the on-disk findings + the clean 3-commit history (no false-green artifact).
+
+**Brief-vs-production corrections (orchestrator-verified):** `/metrics` already exists (ENHANCEMENT, not greenfield); only 3 of 9 surfaces carry series; **suppression thresholds are NOT uniform** (capital=5, funnel=10, process-grade=line-band -- each sparkline uses its own constant); `build_metrics_index_vm` widens `conn` -> `(cfg, conn)`.
+
+**OQ dispositions (operator-triaged 2026-05-30):** **OQ-1 = inline-`<polyline>` SVG** (the existing `process_grade_trend` precedent; lighter; no `_RENDER_LOCK` contention; no-JS -- NOT matplotlib) · OQ-2 = 3 trend-bearing surfaces only (honesty floor) · OQ-3 = enhance `/metrics` in place · OQ-5 = render-direct, no cache, no schema (Codex-resolved) · OQ-6 = eager render · OQ-7 = single writing-plans chain · OQ-4 = exact headline selectors finalized at writing-plans. §9 decomposition = single executing-plans bundle (~4 tasks: sparkline helper -> VM -> route+template -> operator visual gate).
+
+**Forward action sequence (orchestrator-side; THIS pass):**
+
+- [x] QA per `feedback_orchestrator_qa_implementer_product` (3-commit ZERO Co-Authored-By; docs-only; spec 526 lines; NO schema/0024; genuine chain verified via on-disk `.copowers-findings.md` [R1 6M -> R2 5M genuine -> R3 converged] + clean history [no false-green commit]; `build_metrics_index_vm(conn)` correction grounded at index.py:97)
+- [x] Merge `--no-ff` at `3c18b81` + push origin/main + worktree/branch teardown (only main remains)
+- [x] phase3e-todo new top entry (THIS) + CLAUDE.md line-3 refresh
+- [ ] **Sub-bundle 5 writing-plans dispatch brief** (LOCK the OQ dispositions; esp. OQ-1 inline-`<polyline>`) + commit BEFORE inline prompt
+- [ ] SB5 writing-plans -> executing-plans cycle (operator-witnessed render gate), then **SB5.5 (Schwab) + close-out polish batch + B-7 final touch + Phase 14 close-out review** (Sec 9.1 Q6) -- full punch-list in the `#5` entry below
+
+---
+
 ## 2026-05-30 #5 Phase 14 close-out + NEW Sub-bundle 5.5 (Schwab-focused) punch-list -- banked-items consolidation (operator-decided 2026-05-30)
 
 **Purpose:** consolidate every banked/orphaned Phase-14-scope item into ONE close-out tracker so nothing is lost. Compiled via a full sweep of the commissioning brief (Sec 1 deferred-list + Sec 8 forward-look) + the 4 SB executing-plans return reports + the SB1-SB4 phase3e-todo entries. Operator bucketing decisions dated 2026-05-30.
