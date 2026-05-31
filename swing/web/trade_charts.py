@@ -14,7 +14,10 @@ import pandas as pd
 from swing.data.ohlcv_archive import read_or_fetch_archive
 from swing.evaluation.dates import last_completed_session
 from swing.web.charts import (
+    _normalize_ohlc_for_mpf,
+    _render_candles_fig,
     _serialized_render,
+    _svg_bytes_from_fig,
     render_position_detail_svg,
 )
 
@@ -79,3 +82,27 @@ def render_trade_window_position_svg(*, trade: Trade, fills,
     return render_position_detail_svg(
         ticker=trade.ticker, bars=bars, trade=trade, fills=fills,
         current_stop=trade.current_stop)
+
+
+@_serialized_render
+def render_trade_window_thumbnail_svg(*, trade: Trade, fills,
+                                      cfg: Config) -> bytes | None:
+    """Small candlestick thumbnail over the trade window (no markers, no
+    title). Open trades use the trailing window (exit_date None). None on
+    no-coverage. Render-direct; no chart_renders write.
+
+    Uses the live ``_render_candles_fig`` (3-tuple, no ``title`` kwarg) over a
+    ``_normalize_ohlc_for_mpf`` frame with ``ma_windows=(10, 20)`` (both in
+    ``_MA_COLORS``). The thumbnail carries no label, so it adds no mathtext
+    surface (Matplotlib-mathtext gotcha N/A).
+    """
+    entry_date = date.fromisoformat(trade.entry_date[:10])
+    exit_date = _exit_date_for(trade, fills)
+    bars = _trade_window_bars(
+        ticker=trade.ticker, entry_date=entry_date, exit_date=exit_date, cfg=cfg)
+    if bars is None:
+        return None
+    norm = _normalize_ohlc_for_mpf(bars)               # mpf-ready frame
+    fig, _price_ax, _vol_ax = _render_candles_fig(     # 3-tuple, NO title kwarg
+        norm, ma_windows=(10, 20), figsize=(2.4, 1.4), volume=True)
+    return _svg_bytes_from_fig(fig)
