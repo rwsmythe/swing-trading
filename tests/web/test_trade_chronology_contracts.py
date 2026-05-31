@@ -207,9 +207,13 @@ def trade_with_garbage_fill_ts(conn):
         tid = _seed_trade(conn)
         # Plant a fill with a non-empty GARBAGE fill_datetime (must flag +
         # sort last, never raise). Inserted directly to bypass any validation.
+        # The garbage value sorts LEXICALLY EARLY among the ISO keys ('0000-...'
+        # < '2026-...') so the "all malformed sort last" assertion genuinely
+        # depends on _sorted's malformed_last primary key, not on string order:
+        # drop that key and this entry would interleave at the FRONT.
         conn.execute(
             "INSERT INTO fills (trade_id, fill_datetime, action, quantity, "
-            "price, reason) VALUES (?, 'not-a-timestamp', 'exit', 5.0, 11.0, "
+            "price, reason) VALUES (?, '0000-garbage', 'exit', 5.0, 11.0, "
             "'manual')", (tid,))
     return _TradeRef(id=tid)
 
