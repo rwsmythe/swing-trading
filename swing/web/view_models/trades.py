@@ -1386,6 +1386,7 @@ def build_review_vm(
         exit_price_vwap=exit_price_vwap,
         exit_date_last=exit_date_last,
         total_risk_dollars=total_risk_dollars,
+        review_chart_url=f"/trades/{trade_id}/review/chart",
     )
 
 
