@@ -1341,6 +1341,9 @@ def test_thumbnail_busy_when_semaphore_exhausted(client, seeded_closed_trade,
     assert r.status_code == 200
     assert 'data-chart-reason="busy"' in r.text
     assert 'hx-trigger="load delay' in r.text          # self-retry present
+    # Codex WP-R3 M#1: the retry must REPLACE the busy span (outerHTML on self),
+    # not nest the SVG inside it.
+    assert 'hx-target="this"' in r.text and 'hx-swap="outerHTML"' in r.text
     assert r.headers.get("cache-control") == "no-store"  # not cacheable
     assert any("busy" in rec.message for rec in caplog.records)
     # Permits fully released after the request (no leak).
@@ -1389,7 +1392,7 @@ def test_thumbnail_busy_when_semaphore_exhausted(client, seeded_closed_trade,
 {% elif not_found %}<span class="chart-unavailable" data-chart-reason="trade-not-found">Trade not found.</span>
 {% elif busy %}<span class="chart-unavailable" data-chart-reason="busy"
       hx-get="/journal/trades/{{ trade_id }}/thumbnail"
-      hx-trigger="load delay:1500ms" hx-swap="innerHTML"
+      hx-trigger="load delay:1500ms" hx-target="this" hx-swap="outerHTML"
       hx-headers='{"HX-Request": "true"}'>Chart loading...</span>
 {% else %}<span class="chart-unavailable" data-chart-reason="no-coverage">Chart unavailable.</span>{% endif %}
 ```
@@ -1531,13 +1534,38 @@ class TradeChronology:
     entries: tuple[ChronologyEntry, ...] = ()
 
 
+def _normalize_ts(raw, *, precision: str) -> tuple[str, bool]:
+    """Normalize a source timestamp to a sortable ISO key + a malformed flag.
+
+    Codex WP-R3 M#2: missing AND malformed-non-empty timestamps must both be
+    handled (the spec sorts them last with a flag). `precision` is 'datetime'
+    (fills/events/review) or 'date' (daily_management). Returns
+    (iso_key, ts_malformed); a date-only value normalizes to start-of-day so it
+    co-sorts with datetimes. Never raises (read-only over operator/legacy data).
+    """
+    if raw is None or str(raw).strip() == "":
+        return ("", True)
+    s = str(raw).strip()
+    try:
+        if precision == "date":
+            d = date.fromisoformat(s[:10])
+            return (f"{d.isoformat()}T00:00:00", False)
+        # datetime: accept ISO 'YYYY-MM-DDTHH:MM:SS' or space-separated
+        dt = datetime.fromisoformat(s.replace(" ", "T"))
+        return (dt.isoformat(), False)
+    except (ValueError, TypeError):
+        # Non-empty garbage -> keep the raw for display but flag + sort last.
+        return (s, True)
+
+
 def _fill_entries(conn, trade_id) -> list[ChronologyEntry]:
     out = []
     for f in list_fills_for_trade(conn, trade_id):
+        ts_key, malformed = _normalize_ts(f.fill_datetime, precision="datetime")
         out.append(ChronologyEntry(
-            ts=f.fill_datetime, source="fill", kind=f"fill:{f.action}",
+            ts=ts_key, source="fill", kind=f"fill:{f.action}",
             summary=f"{f.action} {f.quantity} @ {f.price}",
-            detail=(f.reason or None)))
+            detail=(f.reason or None), ts_malformed=malformed))
     return out
 
 
@@ -1600,10 +1628,10 @@ def _trade_event_entries(conn, trade_id) -> list[ChronologyEntry]:
         except (ValueError, TypeError):
             payload = None  # best-effort; never raise on operator/legacy data
         detail = rationale or (json.dumps(payload) if payload else None)
+        ts_key, malformed = _normalize_ts(ts, precision="datetime")  # WP-R3 M#2
         out.append(ChronologyEntry(
-            ts=ts or "", source="trade_event", kind=f"event:{event_type}",
-            summary=str(event_type), detail=detail,
-            ts_malformed=not bool(ts)))
+            ts=ts_key, source="trade_event", kind=f"event:{event_type}",
+            summary=str(event_type), detail=detail, ts_malformed=malformed))
     return out
 ```
 
@@ -1638,7 +1666,19 @@ Supersession (V1 DECIDED): include only `is_superseded=0`; superseded rows EXCLU
 def test_daily_snapshot_field_map(conn, trade_with_daily_snapshot):
     chron = build_trade_chronology(conn, trade_with_daily_snapshot.id)
     snap = next(e for e in chron.entries if e.kind == "snapshot")
-    assert "MFE" in (snap.detail or "") or "MAE" in (snap.detail or "")  # R-multiples
+    assert "MFE" in (snap.detail or "") and "MAE" in (snap.detail or "")  # R-multiples
+    # WP-R3 M#3: trail-MA eligibility is spec-locked into snapshot detail.
+    assert "trail_MA_eligible" in (snap.detail or "")
+
+
+def test_event_log_detail_carries_volume_rs_regime(conn,
+        trade_with_event_log_context):
+    # WP-R3 M#3: event_log detail must include volume/RS/regime + notes.
+    chron = build_trade_chronology(conn, trade_with_event_log_context.id)
+    ev = next(e for e in chron.entries
+              if e.source == "daily_management" and e.kind != "snapshot")
+    d = ev.detail or ""
+    assert ("vol=" in d) or ("rs=" in d) or ("regime_change=" in d)
 
 
 def test_event_log_stop_adjust_precedence(conn, trade_with_stop_adjust_event_log):
@@ -1666,6 +1706,18 @@ def test_trades_review_source(conn, trade_with_completed_review):
     chron = build_trade_chronology(conn, trade_with_completed_review.id)
     rev = next(e for e in chron.entries if e.source == "review")
     assert rev.kind == "review" and rev.ts  # reviewed_at
+    # WP-R3 M#4: detail must carry the mistake tags (selected but previously dropped).
+    assert trade_with_completed_review.mistake_tag_text in (rev.detail or "")
+
+
+def test_malformed_timestamp_sorts_last_with_flag(conn, trade_with_garbage_fill_ts):
+    # WP-R3 M#2: a non-empty GARBAGE timestamp must flag + sort last, not raise
+    # and not interleave lexicographically among valid ISO keys.
+    chron = build_trade_chronology(conn, trade_with_garbage_fill_ts.id)
+    bad = [e for e in chron.entries if e.ts_malformed]
+    assert bad, "garbage-ts entry must be flagged ts_malformed"
+    # all malformed entries are at the end of the ordering
+    assert all(e.ts_malformed for e in chron.entries[len(chron.entries) - len(bad):])
 
 
 def test_empty_sources_no_error(conn, bare_trade_only_fills):
@@ -1685,25 +1737,36 @@ def test_timestamp_precision_normalized_sortable(conn, trade_mixed_sources):
 
 - [ ] **Step 3: Implement** the two `daily_management_records` field maps (split on `record_type`, `is_superseded=0` only) + the `trades` review source. Normalize date-only `review_date` to a sortable ISO key (date-only sorts at start-of-day; keep the displayed precision). Use the verified columns.
 
+**Detail must carry the spec-locked fields (Codex WP-R3 M#3).** The spec §5.4 table locks `daily_snapshot` detail to include **trail-MA eligibility** alongside MFE/MAE, and `event_log` detail to include **volume/RS/regime + management_notes**. The verified live columns (`0016_phase8_daily_management.sql`): `maturity_stage`, `trail_MA_candidate_price`, `trail_MA_period_days`, `trail_MA_eligibility_flag` (snapshot); `volume_behavior`, `relative_strength_status`, `market_regime_change`, `sector_condition_change`, `news_or_event_update`, `management_notes` (event_log). The SELECT + detail mapping load them.
+
 ```python
 def _daily_management_entries(conn, trade_id) -> list[ChronologyEntry]:
     rows = conn.execute(
         "SELECT record_type, review_date, open_MFE_R_to_date, open_MAE_R_to_date, "
+        "       maturity_stage, trail_MA_eligibility_flag, trail_MA_candidate_price, "
         "       stop_changed, prior_stop, new_stop, stop_change_reason, "
-        "       action_taken, action_reason, thesis_status, management_notes "
+        "       action_taken, action_reason, thesis_status, "
+        "       volume_behavior, relative_strength_status, market_regime_change, "
+        "       sector_condition_change, news_or_event_update, management_notes "
         "FROM daily_management_records "
         "WHERE trade_id = ? AND is_superseded = 0 ORDER BY review_date",
         (trade_id,)).fetchall()
     out = []
     for r in rows:
-        (rtype, rdate, mfe, mae, stop_changed, prior_stop, new_stop,
-         stop_reason, action_taken, action_reason, thesis_status, notes) = r
+        (rtype, rdate, mfe, mae, maturity, trail_elig, trail_price,
+         stop_changed, prior_stop, new_stop, stop_reason,
+         action_taken, action_reason, thesis_status,
+         vol, rs, regime, sector, news, notes) = r
+        ts_key, malformed = _normalize_ts(rdate, precision="date")  # WP-R3 M#2
         if rtype == "daily_snapshot":
+            # WP-R3 M#3: MFE/MAE are R-multiples; include trail-MA eligibility.
+            detail = (f"MFE={mfe}R MAE={mae}R; maturity={maturity}; "
+                      f"trail_MA_eligible={trail_elig} (cand={trail_price})")
             out.append(ChronologyEntry(
-                ts=rdate or "", source="daily_management", kind="snapshot",
+                ts=ts_key, source="daily_management", kind="snapshot",
                 summary=f"snapshot MFE {mfe}R / MAE {mae}R",
-                detail=f"MFE={mfe}R MAE={mae}R", ts_malformed=not bool(rdate)))
-        else:  # event_log -- precedence over the REAL columns
+                detail=detail, ts_malformed=malformed))
+        else:  # event_log -- kind precedence over the REAL columns
             if stop_changed == 1:
                 kind, summary = "stop_adjust", f"{prior_stop}->{new_stop}"
             elif action_taken not in (None, "no_action"):
@@ -1712,11 +1775,17 @@ def _daily_management_entries(conn, trade_id) -> list[ChronologyEntry]:
                 kind, summary = "thesis", str(thesis_status)
             else:
                 kind, summary = "management_event", "management event"
+            # WP-R3 M#3: include volume/RS/regime + management notes in detail.
+            detail_bits = [b for b in (
+                stop_reason, f"vol={vol}" if vol else None,
+                f"rs={rs}" if rs else None,
+                f"regime_change={regime}" if regime else None,
+                f"sector_change={sector}" if sector else None,
+                f"news={news}" if news else None, notes) if b]
             out.append(ChronologyEntry(
-                ts=rdate or "", source="daily_management", kind=kind,
-                summary=summary,
-                detail=(stop_change_reason or notes or None),
-                ts_malformed=not bool(rdate)))
+                ts=ts_key, source="daily_management", kind=kind, summary=summary,
+                detail=("; ".join(str(b) for b in detail_bits) or None),
+                ts_malformed=malformed))
     return out
 
 
@@ -1728,13 +1797,17 @@ def _review_entry(conn, trade_id) -> list[ChronologyEntry]:
         return []
     reviewed_at, grade, lesson, tags = row
     one_line = (lesson or "").splitlines()[0] if lesson else ""
+    ts_key, malformed = _normalize_ts(reviewed_at, precision="datetime")  # WP-R3 M#2
+    # WP-R3 M#4: detail must carry the full lesson AND the mistake tags (selected
+    # but previously dropped). `mistake_tags` is a JSON list (verify shape at impl).
+    detail = "; ".join(b for b in (lesson, (tags if tags else None)) if b)
     return [ChronologyEntry(
-        ts=reviewed_at or "", source="review", kind="review",
+        ts=ts_key, source="review", kind="review",
         summary=f"review {grade or ''} {one_line}".strip(),
-        detail=lesson, ts_malformed=not bool(reviewed_at))]
+        detail=(detail or None), ts_malformed=malformed)]
 ```
 
-(Verify the EXACT `trades` review column names at implementation: `process_grade` / `mistake_tags` / `lesson_learned` — grep `models.py:213-223`; the spec cites `reviewed_at`/grade/tag/`lesson_learned`. Adjust the SELECT to the real column names.) Wire both into `build_trade_chronology`.
+(Verify the EXACT `trades` review column names at implementation: `process_grade` / `mistake_tags` / `lesson_learned` — grep `models.py:213-223`; the spec cites `reviewed_at`/grade/tag/`lesson_learned`. `mistake_tags` is stored as JSON — decode it best-effort for display if a readable form is wanted. Adjust the SELECTs to the real column names.) Wire both into `build_trade_chronology`.
 
 - [ ] **Step 4: Run, verify pass.** All contract tests green.
 
@@ -1949,6 +2022,9 @@ Reuse the existing web conftest harness (grep `tests/web/conftest.py` for the es
 - **`closed_then_reopened_same_ticker`** (two trades, same ticker) → render-direct serves the correct per-trade chart (cache-collision regression).
 - **`aplus_trade_with_candidate`** (origin `pipeline_aplus`, candidate_id set) + **`hyprec_trade`** (origin `pipeline_watch_hyp_recs`) + **`trade_no_candidate`** → `has_hyprec_link` + entry-flag None-safety.
 - **`trade_mixed_sources`** — fills + trade_events + daily_management (one `daily_snapshot` + one `event_log` + one `is_superseded=1` row) + a completed `trades` post-trade review + an UNRELATED cadence `review_log` row (no `trade_id`) present in the DB → chronology merge ordering + per-`record_type` field-maps + supersession exclusion + `review_log`-never-leaks + malformed-payload best-effort.
+- **`trade_with_daily_snapshot`** (snapshot carrying `open_MFE_R_to_date`/`open_MAE_R_to_date` + `trail_MA_eligibility_flag`) and **`trade_with_event_log_context`** (event_log carrying `volume_behavior`/`relative_strength_status`/`market_regime_change`/`management_notes`) → assert the spec-locked detail fields (WP-R3 M#3).
+- **`trade_with_completed_review`** carries a known `mistake_tag_text` so the review-source test asserts tags appear in `detail` (WP-R3 M#4).
+- **`trade_with_garbage_fill_ts`** (a fill with a non-empty NON-ISO `fill_datetime`) → `_normalize_ts` flags it `ts_malformed` and it sorts last, never raises (WP-R3 M#2).
 - **`stop_above_entry`** → `total_risk_dollars` None (inverted/missing stop guard).
 - **`planted_archive`** — a callable returning a fixture OHLCV DataFrame spanning the trade window (monkeypatches `read_or_fetch_archive`); a sibling returning `None` for the no-coverage path.
 
