@@ -207,6 +207,13 @@ def journal_trade_chart_fragment(request: Request, trade_id: int):
     finally:
         conn.close()
     try:
+        # Deliberately NOT bounded by _THUMBNAIL_RENDER_SEMAPHORE: this
+        # annotated drill-down chart is ONE render per full-page navigation
+        # (hx-trigger="load", one per drill-down view), not the per-row scroll
+        # burst that motivated the thumbnail route's concurrency bound. It
+        # relies on the process-wide matplotlib render lock alone, which still
+        # serializes it against every other render. The backpressure bound
+        # stays where the burst risk actually is (the thumbnail route).
         svg = render_trade_window_position_svg(
             trade=trade, fills=fills, cfg=cfg,
         )
