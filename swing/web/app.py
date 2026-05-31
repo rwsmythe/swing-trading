@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import logging
+import threading
+import time as _time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -24,6 +26,11 @@ from swing.web.middleware.request_id import (
 )
 from swing.web.ohlcv_cache import OhlcvCache
 from swing.web.price_cache import PriceCache
+from swing.integrations.schwab.auth import (
+    construct_authenticated_client,
+    resolve_credentials_env_or_prompt,
+)
+from swing.integrations.schwab.client import SchwabConfigMissingError
 
 log = logging.getLogger(__name__)
 
@@ -128,6 +135,215 @@ def _register_exception_handlers(app: FastAPI) -> None:
         )
 
 
+# ---- A-3 web market-data ladder install (mirrors pipeline runner) ----
+# SB5.5 / Phase 14: install the EXISTING production-gated market-data ladder on
+# the long-lived `swing web` caches at full parity, bounded by the L9 gates.
+# ZERO new `schwabdev.Client.*` call sites (reuses construct_authenticated_client).
+
+_WEB_OPEN_TRADE_MEMO_TTL_S = 60.0
+_WEB_LADDER_FALLBACK_COOLDOWN_THRESHOLD = 3
+
+
+def _construct_web_schwab_client(cfg) -> object | None:
+    """Construct the long-lived web Schwab client (graceful degradation).
+
+    Gated on _is_ladder_active(cfg) FIRST so the default sandbox/test app
+    constructs NO client, spawns NO checker thread, and hits NO network.
+    Mirrors swing/pipeline/runner.py:_construct_pipeline_schwab_client but
+    adds the web-layer ladder-active gate (so TestClient stays offline).
+    """
+    from swing.integrations.schwab.marketdata_ladder import _is_ladder_active
+    if not _is_ladder_active(cfg):
+        return None
+    environment = cfg.integrations.schwab.environment
+    try:
+        client_id, client_secret = resolve_credentials_env_or_prompt(
+            cfg, environment, allow_prompt=False,
+        )
+    except SchwabConfigMissingError:
+        log.warning(
+            "Web schwab_client construction skipped: credentials incomplete; "
+            "web market-data falls back to yfinance.",
+        )
+        return None
+    if client_id is None or client_secret is None:
+        return None  # silent -- operator not using Schwab
+    try:
+        return construct_authenticated_client(
+            cfg, environment, client_id=client_id, client_secret=client_secret,
+        )
+    except Exception as exc:  # noqa: BLE001 -- graceful-degradation safety boundary
+        from swing.integrations.schwab.auth import _redacted_excerpt
+        log.warning(
+            "Web schwab_client construction failed (%s: %s); web market-data "
+            "falls back to yfinance.",
+            type(exc).__name__, _redacted_excerpt(exc),
+        )
+        return None
+
+
+class _WebLadderState:
+    """L9 gate state shared by both hooks; thread-safe (executor + request)."""
+
+    def __init__(self, cfg) -> None:
+        self._cfg = cfg
+        self._lock = threading.Lock()
+        self._open_trades: frozenset[str] = frozenset()
+        self._open_trades_asof = -1e18           # monotonic; forces first refresh
+        self._consecutive_fallbacks = 0
+        self._cooldown_until = 0.0               # monotonic
+
+    def _refresh_open_trades(self) -> None:
+        # DB read OUTSIDE the lock to avoid holding it during I/O. A transient
+        # DB error (e.g. a lock during a pipeline write) must NOT propagate out
+        # of the cache worker: retain the prior memo and back off for the TTL so
+        # the hook degrades to yfinance rather than raising (Codex R1 Major #1).
+        from swing.data.db import connect
+        from swing.data.repos.trades import list_open_trades
+        try:
+            conn = connect(self._cfg.paths.db_path)
+            try:
+                tickers = frozenset(
+                    t.ticker.upper() for t in list_open_trades(conn)
+                )
+            finally:
+                conn.close()
+        except Exception:  # noqa: BLE001 -- never let a DB error kill the hook
+            log.warning(
+                "web ladder open-trade memo refresh failed; retaining prior "
+                "scope and backing off for the memo TTL.",
+            )
+            with self._lock:
+                self._open_trades_asof = _time.monotonic()
+            return
+        with self._lock:
+            self._open_trades = tickers
+            self._open_trades_asof = _time.monotonic()
+
+    def should_use_schwab(self, ticker: str) -> bool:
+        now = _time.monotonic()
+        with self._lock:
+            if now < self._cooldown_until:
+                return False
+            stale = (now - self._open_trades_asof) > _WEB_OPEN_TRADE_MEMO_TTL_S
+            current = self._open_trades
+        if stale:
+            self._refresh_open_trades()
+            with self._lock:
+                current = self._open_trades
+        return ticker.upper() in current
+
+    def note_provider(self, provider_tag: str) -> None:
+        with self._lock:
+            if provider_tag == "yfinance":
+                self._consecutive_fallbacks += 1
+                if self._consecutive_fallbacks >= _WEB_LADDER_FALLBACK_COOLDOWN_THRESHOLD:
+                    self._cooldown_until = (
+                        _time.monotonic()
+                        + self._cfg.web.circuit_breaker_cooldown_seconds
+                    )
+                    self._consecutive_fallbacks = 0
+            else:  # 'schwab_api' success
+                self._consecutive_fallbacks = 0
+
+
+def _install_web_marketdata_caches(cfg, price_cache, ohlcv_cache) -> object | None:
+    """Install the EXISTING ladder hooks on the web caches (full parity).
+
+    Returns the constructed web Schwab client or None (sandbox / no creds /
+    construction failure -> yfinance-only web app, today's behavior). Also
+    installs the P14.N7 resilient checker wrap + seeds one refresh.
+    """
+    client = _construct_web_schwab_client(cfg)
+    if client is None:
+        return None
+
+    # P14.N7: wrap the checker + seed one refresh before serving.
+    from swing.integrations.schwab.checker_resilience import (
+        CheckerLiveness,
+        checker_liveness_sidecar_path,
+        install_resilient_checker,
+    )
+    env = cfg.integrations.schwab.environment
+    liveness = CheckerLiveness(
+        installed_ts=_time.time(),
+        sidecar_path=checker_liveness_sidecar_path(env),
+    )
+    install_resilient_checker(client, liveness=liveness)
+    client.tokens.update_tokens()  # seed (origin='seed'; exception-isolated by the wrap)
+
+    from swing.data.db import connect
+    from swing.integrations.schwab.marketdata_ladder import (
+        fetch_quote_via_ladder,
+        fetch_window_via_ladder,
+    )
+
+    state = _WebLadderState(cfg)
+
+    def _yf_quote_fallback(ticker: str):
+        from datetime import datetime as _dt2
+
+        from swing.web.price_cache import PriceSnapshot
+        price = price_cache._fetch_live_price(ticker)
+        return PriceSnapshot(
+            ticker=ticker, price=price, asof=_dt2.now(),
+            is_stale=False, source="live", provider="yfinance",
+        )
+
+    def _quote_hook(ticker: str) -> tuple[float, str]:
+        if not state.should_use_schwab(ticker):
+            snap = _yf_quote_fallback(ticker)          # bypass Schwab; NO audit row
+            return (snap.price, "yfinance")
+        conn = connect(cfg.paths.db_path)
+        try:
+            snap, provider_tag = fetch_quote_via_ladder(
+                ticker, cfg=cfg, schwab_client=client,
+                yfinance_fallback_fn=_yf_quote_fallback,
+                conn=conn, surface="pipeline", pipeline_run_id=None,
+            )
+        finally:
+            conn.close()
+        state.note_provider(provider_tag)
+        return (snap.price, provider_tag)
+
+    def _yf_window_fallback(ticker: str, start, end):
+        from datetime import datetime as _dt
+
+        from swing.data.ohlcv_archive import read_or_fetch_archive
+        from swing.evaluation.dates import last_completed_session
+        return read_or_fetch_archive(
+            ticker,
+            end_date=last_completed_session(_dt.now()),
+            cache_dir=cfg.paths.prices_cache_dir,
+            archive_history_days=cfg.archive.archive_history_days,
+        )
+
+    def _bars_hook(ticker: str):
+        if not state.should_use_schwab(ticker):
+            bars = _yf_window_fallback(ticker, None, None)
+            return (bars, "yfinance")              # bypass Schwab; NO audit row
+        conn = connect(cfg.paths.db_path)
+        try:
+            window, provider_tag = fetch_window_via_ladder(
+                ticker, start=None, end=None, cfg=cfg, schwab_client=client,
+                yfinance_fallback_fn=_yf_window_fallback,
+                conn=conn, surface="pipeline", pipeline_run_id=None,
+                period_type="year", period=5, frequency_type="daily", frequency=1,
+            )
+        finally:
+            conn.close()
+        state.note_provider(provider_tag)
+        if provider_tag == "schwab_api" and hasattr(window, "to_dataframe"):
+            bars = window.to_dataframe()
+        else:
+            bars = window
+        return (bars, provider_tag)
+
+    price_cache.set_ladder_fetcher(_quote_hook)
+    ohlcv_cache.set_ladder_bars_fetcher(_bars_hook)
+    return client
+
+
 def create_app(cfg: Config, cfg_path: Path | None = None) -> FastAPI:
     """Build the dashboard app.
 
@@ -187,6 +403,9 @@ def create_app(cfg: Config, cfg_path: Path | None = None) -> FastAPI:
     app.state.cfg_path = cfg_path
     app.state.price_cache = PriceCache(cfg)
     app.state.ohlcv_cache = OhlcvCache(cfg)     # NEW — Phase 3d §3.5
+    app.state.schwab_client = _install_web_marketdata_caches(  # NEW -- A-3 / P14.N7
+        cfg, app.state.price_cache, app.state.ohlcv_cache,
+    )
     app.state.templates_dir = _templates_dir()
     app.state.templates = _build_templates(app.state.templates_dir)
 
