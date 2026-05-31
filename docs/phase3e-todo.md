@@ -8,6 +8,29 @@
 
 ---
 
+## 2026-05-31 #9 NEW prerequisite arc -- schwabdev v2.5.1 -> 3.0.5 upgrade (operator-chosen 2026-05-31; brainstorm dispatched) -- inserted FIRST in the Phase 14 close-out tail; obviates P14.N7; re-anchors the L2 LOCK baseline (operator sign-off); NO swing schema change
+
+**Decision (operator 2026-05-31):** after an investigation (committed `9d4f6a4`, `docs/schwabdev-v3-upgrade-investigation-findings.md`; in-session subagent, isolated context) recommended KEEP 2.5.1, the operator chose **path B -- UPGRADE NOW** as a prerequisite arc before SB5.5 (for v3's better data handling + the optional Fernet token encryption that retires the plaintext-OAuth-at-rest V1 gotcha).
+
+**Why it leads the tail:** v3 REMOVED the daemon `checker` thread by construction (sync per-request token refresh wrapped in try/except) -> **P14.N7 (checker resilience) is OBVIATED** -> SB5.5 re-scopes to A-3 (web market-data wiring)-centric once this lands. Doing the upgrade first avoids building P14.N7 on a soon-replaced surface.
+
+**Scope (own copowers cycle; brainstorm dispatched, brief `docs/schwabdev-v3-upgrade-brainstorming-dispatch-brief.md`):** re-pin schwabdev `>=3.0.5,<4.0.0`; the tokens-storage rewrite (JSON file -> v3 SQLite; `tokens_file=`->`tokens_db=` at all sites; the `cli_schwab.py:469-490`/`:606-725` status JSON-parse; the `auth.py:1335` writer); `account_linked()`->`linked_accounts()` (`trader.py:270` + `auth.py:653` + the signature-pin test); the `Client.__init__` signature; a one-time operator re-`setup` (old JSON token DBs unreadable by v3); optional Fernet `encryption=`; preserve EVERY Schwab gotcha (the `"Schwabdev"` redaction, `update_tokens` post-state, sandbox gate, price_history daily discipline, audit-row close). ~400-600 LOC, ~8 files, 15-25 tests. Ground the spec in the INSTALLED 3.0.5 surface (throwaway venv), not GitHub main (the investigation read main=3.0.4).
+
+**L2 LOCK -- first-ever baseline re-anchor (operator sign-off REQUIRED):** the migration edits comments/docstrings/type-annotations containing `schwabdev.Client.`, tripping the multiset source-grep (`tests/integration/test_l2_lock_source_grep.py`, baseline `bf7e071`). The arc re-anchors `L2_LOCK_BASELINE_SHA` to the post-migration HEAD with an audited rationale + a manual endpoint-set diff proving ZERO new Schwab endpoints (the lock's SPIRIT is preserved; only the rename/docstring churn forces the move). This is the only sanctioned baseline move to date.
+
+**Schema:** NO swing-DB change (v23 held); schwabdev's tokens DB is its own SQLite, separate from `swing.db`. **Binding gate:** an operator LIVE-OAuth re-setup smoke (`swing schwab logout` -> `setup` on v3 -> `status` -> a `fetch`) -- mock tests insufficient for the auth/token-storage path.
+
+**Forward action sequence (orchestrator-side):**
+
+- [x] Investigation (subagent; `9d4f6a4`) + operator decision (B = upgrade now)
+- [x] Brainstorm dispatch brief (THIS arc) + commit + inline prompt
+- [ ] schwabdev v3 brainstorm -> writing-plans -> executing-plans (each: single WSL Codex chain to convergence; v2.0.3 transcript in `.copowers-findings.md`) -> operator live-OAuth re-setup gate -> merge (WITH the L2 re-anchor + operator sign-off)
+- [ ] then SB5.5 (re-scoped A-3-centric; P14.N7 obviated) -> close-out polish batch (incl. A-6) -> B-7 -> Sec 9.1 Q6 close-out review
+
+**Supersedes the `#5` forward sequence:** the v3 upgrade now precedes SB5.5; the `#5` SB5.5 block's P14.N7 item is obviated by this arc (A-3 stands).
+
+---
+
 ## 2026-05-31 #8 Phase 14 Sub-bundle 5 (metrics overview; P14.N5) EXECUTING-PLANS SHIPPED end-to-end at `6206fb6` -- operator-witnessed S3 render gate PASS; 8 commits (7 impl + return report); GENUINE single WSL Codex chain CONVERGED (R1 1 MINOR fixed -> R2 NO_NEW_CRITICAL_MAJOR; responses PERSISTED on disk per the new lesson); 6933 fast tests green on MERGED main; NO schema (v23 held); read-mostly; ALL 5 Phase 14 sub-bundles SHIPPED -> close-out tail NEXT
 
 **Sub-bundle 5 executing-plans SHIPPED end-to-end 2026-05-31 #8** at merge `6206fb6` of `phase14-sub-bundle-5-metrics-overview-executing-plans` via `--no-ff`. 8 branch commits (7 impl `81a5cd2`/`f143f5c`/`dd140c2`/`f60e629`/`675d68e`/`c16d187`/`c0201e8` + return report `70fd768`) + merge. 5 production files (NEW `swing/web/view_models/metrics/sparkline.py` + MODIFY `index.py`/`routes/metrics.py`/`templates/metrics/index.html.j2`/`static/app.css`) + 3 new test files + 3 call-site test edits; **ZERO swing-domain writes, ZERO new computation** (read-mostly verified). Schema **v23 LOCKED** (NO `0024`; render-direct inline; `EXPECTED_SCHEMA_VERSION==23`). ZERO Co-Authored-By across all 8 commits + merge (`%(trailers)` empty). Merge-base `b0175dd`.
