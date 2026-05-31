@@ -1070,6 +1070,11 @@ def test_journal_listing_rich_columns(client, seeded_mixed_trades):
 
 ```jinja
 {# partials/journal_row.html.j2 #}
+{# Codex WP-R2 M#1: a macro imported in journal.html.j2 is NOT visible inside an
+   {% include %}d partial -- the partial MUST import it itself (matches the
+   existing journal.html.j2 import line). Verify the macro export name is
+   `render` at implementation. #}
+{% from "partials/state_badge.html.j2" import render as state_badge %}
 <tr data-trade-id="{{ row.trade_id }}">
   <td class="journal-thumb" data-trade-id="{{ row.trade_id }}"></td>
   <td><a href="/journal/trades/{{ row.trade_id }}">{{ row.ticker }}</a></td>
@@ -1128,7 +1133,7 @@ def test_bad_sort_falls_back_and_flags(build_journal_for):
 
 - [ ] **Step 2: Run, verify fail.**
 
-- [ ] **Step 3: Implement.** Frozensets `_SORT_KEYS = frozenset({"entry_date","ticker","final_r","total_risk_dollars","state"})`, `_DIRS = frozenset({"asc","desc"})`, `_FILTER_STATES = frozenset({"entered","managing","partial_exited","closed","reviewed","open","closed_any"})` (where `open`→`{entered,managing,partial_exited}`, `closed_any`→`{closed,reviewed}`), `_FILTER_PATTERNS = frozenset({"vcp","flat_base","cup_with_handle","high_tight_flag","double_bottom_w"})`, and (Codex R1 M#5 — the spec §5.2 "has-A+ flag" filter) `_FILTER_APLUS = frozenset({"aplus","non_aplus"})` where `aplus`→`row.aplus_bucket == "aplus"` and `non_aplus`→`row.aplus_bucket != "aplus"`. In `build_journal`: validate each; on any out-of-allowlist value set `invalid_filter=True`, log a WARNING, and use the default (no raise). Apply filters (state, pattern, A+) to `filtered` rows, then sort (None-last for `final_r`/`total_risk_dollars`), then paginate. Add `invalid_filter: bool = False`, `sort`, `dir`, `filter_state`, `filter_pattern`, `filter_aplus` to `JournalVM`.
+- [ ] **Step 3: Implement.** Frozensets `_SORT_KEYS = frozenset({"entry_date","ticker","final_r","total_risk_dollars","state"})`, `_DIRS = frozenset({"asc","desc"})`, `_FILTER_STATES = frozenset({"entered","managing","partial_exited","closed","reviewed","open","closed_any"})` (where `open`→`{entered,managing,partial_exited}`, `closed_any`→`{closed,reviewed}`), `_FILTER_PATTERNS = frozenset({"vcp","flat_base","cup_with_handle","high_tight_flag","double_bottom_w"})`, and (Codex R1 M#5 — the spec §5.2 "has-A+ flag" filter) `_FILTER_APLUS = frozenset({"aplus","non_aplus"})` where `aplus`→`row.aplus_bucket == "aplus"` and `non_aplus`→`row.aplus_bucket != "aplus"`. In `build_journal`: validate each; on any out-of-allowlist value set `invalid_filter=True`, log a WARNING, and use the default (no raise). Apply filters (state, pattern, A+) to `filtered` rows, then sort (None-last for `final_r`/`total_risk_dollars`), then paginate. Add `invalid_filter: bool = False`, `sort`, `dir`, `filter_state`, `filter_pattern`, `filter_aplus`, and `query_state: dict` (the set-only current params, for URL preservation per WP-R2 M#5) to `JournalVM`.
 
   Add a has-A+ filter test:
 
@@ -1149,7 +1154,7 @@ def test_filter_aplus_includes_excludes(build_journal_for, aplus_trade_with_cand
 #### Task 3.2 — Sort/filter HTMX route (whole-`<table>` `outerHTML` swap) + in-page error fragment
 
 **Files:**
-- Modify: `swing/web/routes/journal.py` (`journal_page` accepts `sort`/`dir`/`filter_state`/`filter_pattern` as `str`; renders the `<table>`-rooted fragment for HX requests)
+- Modify: `swing/web/routes/journal.py` (`journal_page` accepts `sort`/`dir`/`filter_state`/`filter_pattern`/`filter_aplus` as `str | None`; renders the `<table>`-rooted fragment for HX requests)
 - Modify: `swing/web/templates/journal.html.j2` (the `<table>` extracted into an includable partial OR a `{% if request_is_htmx %}` fragment branch; header sort controls + filter `<select>`s carry `hx-headers` HX-Request)
 - Test: `tests/web/test_journal_sortfilter_route.py` (NEW)
 
@@ -1181,11 +1186,26 @@ def test_bad_filter_returns_inpage_notice_not_400(client):
 
 - [ ] **Step 3: Implement.** Detect HX via the request header (the codebase's existing `HX-Request` check — grep for the established helper). For HX requests, render ONLY the `<table id="journal-table">...</table>` partial (a `journal_table.html.j2` extracted from `journal.html.j2`, included by both the full page and the fragment path) so the fragment root is the `<table>` (no bare `<tr>` → synthetic-table-wrap cannot fire). The full-page render `{% include "partials/journal_table.html.j2" %}`. Route params `sort/dir/filter_state/filter_pattern/filter_aplus: str | None = Query(None)` (M#5), passed to `build_journal`. When `vm.invalid_filter`, the table partial shows a visible "invalid filter, showing all" notice (driven by `vm.invalid_filter`).
 
+**Query-state preservation (Codex WP-R2 M#5).** A sort link that carries only `sort`/`dir`/`period` would DROP the active `filter_state`/`filter_pattern`/`filter_aplus` on click — violating the S4 "selected filter persists" gate. Every sort/filter control URL MUST be built from the FULL current query state. Expose the current params on the VM as a `query_state: dict` (period, sort, dir, filter_state, filter_pattern, filter_aplus — only the set ones) and build each control's URL by overriding ONLY the one param it changes, carrying the rest. A small Jinja helper or a precomputed `sort_urls`/`filter_urls` dict on the VM is cleaner than string-concatenation in the template.
+
 ```jinja
-{# header sort control example, inside journal_table.html.j2 #}
-<th><a hx-get="/journal?sort=final_r&dir=desc&period={{ vm.period }}"
+{# header sort control example, inside journal_table.html.j2 -- carries ALL
+   active filters via vm.query_state so sorting does not drop the filter set #}
+{% set _q = vm.query_state %}
+<th><a hx-get="/journal?period={{ _q.period }}&sort=final_r&dir=desc{% if _q.filter_state %}&filter_state={{ _q.filter_state }}{% endif %}{% if _q.filter_pattern %}&filter_pattern={{ _q.filter_pattern }}{% endif %}{% if _q.filter_aplus %}&filter_aplus={{ _q.filter_aplus }}{% endif %}"
        hx-target="#journal-table" hx-swap="outerHTML"
        hx-headers='{"HX-Request": "true"}'>Final R</a></th>
+```
+
+Add a test asserting sort-after-filter preserves the filter:
+
+```python
+def test_sort_link_preserves_active_filters(client, seeded_mixed_trades):
+    r = client.get("/journal?filter_state=reviewed&filter_aplus=aplus",
+                   headers={"HX-Request": "true"})
+    # the rendered sort controls must carry the active filters forward
+    assert "filter_state=reviewed" in r.text
+    assert "filter_aplus=aplus" in r.text
 ```
 
 - [ ] **Step 4: Run, verify pass.**
@@ -1302,7 +1322,33 @@ def test_thumbnail_200_unavailable(client, seeded_closed_trade, monkeypatch):
 def test_thumbnail_200_not_found(client, caplog):
     r = client.get("/journal/trades/999999/thumbnail")
     assert r.status_code == 200 and "not found" in r.text.lower()
+
+
+def test_thumbnail_busy_when_semaphore_exhausted(client, seeded_closed_trade,
+                                                 caplog):
+    # Codex WP-R2 M#4: force the semaphore to time out by holding all permits,
+    # then assert the 200+busy contract: busy body, no-store cache, self-retry
+    # trigger, structured WARNING, and that permits are released afterward.
+    import swing.web.routes.journal as J
+    J._THUMBNAIL_RENDER_SEMAPHORE.acquire()
+    J._THUMBNAIL_RENDER_SEMAPHORE.acquire()  # both permits held (BoundedSemaphore(2))
+    try:
+        r = client.get(f"/journal/trades/{seeded_closed_trade.id}/thumbnail",
+                       headers={"HX-Request": "true"})
+    finally:
+        J._THUMBNAIL_RENDER_SEMAPHORE.release()
+        J._THUMBNAIL_RENDER_SEMAPHORE.release()
+    assert r.status_code == 200
+    assert 'data-chart-reason="busy"' in r.text
+    assert 'hx-trigger="load delay' in r.text          # self-retry present
+    assert r.headers.get("cache-control") == "no-store"  # not cacheable
+    assert any("busy" in rec.message for rec in caplog.records)
+    # Permits fully released after the request (no leak).
+    assert J._THUMBNAIL_RENDER_SEMAPHORE.acquire(blocking=False) is True
+    J._THUMBNAIL_RENDER_SEMAPHORE.release()
 ```
+
+(Use a short semaphore `timeout` in tests OR monkeypatch it down so the busy test does not wait 2s; the timeout value is a module constant.)
 
 - [ ] **Step 2: Run, verify fail.**
 
@@ -1316,22 +1362,39 @@ def test_thumbnail_200_not_found(client, caplog):
   # in the route, around the render:
   if not _THUMBNAIL_RENDER_SEMAPHORE.acquire(timeout=2.0):
       log.warning("thumbnail render busy trade_id=%s", trade_id)
-      return _thumbnail_fragment(request, busy=True)   # 200 + "busy" span
+      resp = templates.TemplateResponse(
+          request, "partials/journal_thumbnail.html.j2",
+          {"chart_svg_bytes": None, "not_found": False, "busy": True,
+           "trade_id": trade_id})
+      # Codex WP-R2 M#3: the busy state is transient backpressure -- it must NOT
+      # be cached, or the browser would replay "busy" instead of retrying.
+      resp.headers["Cache-Control"] = "no-store"
+      return resp
   try:
       svg = render_trade_window_thumbnail_svg(trade=trade, fills=fills, cfg=cfg)
   finally:
       _THUMBNAIL_RENDER_SEMAPHORE.release()
+  # success / unavailable / not-found responses keep Cache-Control: private, max-age=<short>
   ```
 
   **Memo scope (Codex R1 m#2 correction).** The thumbnail endpoint serves ONE trade per request, so a cross-request memo is NOT used (and the bare-`trade_id` cross-request memo is forbidden per R2 M#3). There is no meaningful within-request double-render to dedupe here either — so the thumbnail route carries NO memo; the freshness discipline note (no cross-request bare-`trade_id` cache) and the v24 persisted trade-keyed cache remain the banked escalation if profiling demands it. (The request-lifetime memo concept applies only where a single request renders the same trade's chart more than once — not this route.)
 
 ```jinja
 {# partials/journal_thumbnail.html.j2 #}
+{# Codex WP-R2 M#2: the `revealed` trigger already fired on the cell, so a busy
+   fragment that does not re-trigger would strand the thumbnail until a full
+   table rerender. The busy span SELF-RETRIES with a bounded backoff delay so it
+   recovers to the SVG once the semaphore frees. #}
 {% if chart_svg_bytes %}{{ chart_svg_bytes.decode('utf-8') | safe }}
 {% elif not_found %}<span class="chart-unavailable" data-chart-reason="trade-not-found">Trade not found.</span>
-{% elif busy %}<span class="chart-unavailable" data-chart-reason="busy">Chart busy.</span>
+{% elif busy %}<span class="chart-unavailable" data-chart-reason="busy"
+      hx-get="/journal/trades/{{ trade_id }}/thumbnail"
+      hx-trigger="load delay:1500ms" hx-swap="innerHTML"
+      hx-headers='{"HX-Request": "true"}'>Chart loading...</span>
 {% else %}<span class="chart-unavailable" data-chart-reason="no-coverage">Chart unavailable.</span>{% endif %}
 ```
+
+(The busy branch needs `trade_id` in the fragment context — pass it from the route.)
 
 - [ ] **Step 4: Run, verify pass.**
 
