@@ -35,12 +35,29 @@
             aria-label="Close expanded row for {{ expanded.ticker }}"
             title="Close">✕</button>
     <h3>{{ expanded.ticker }}</h3>
-    {% if expanded.chart_reason is none and expanded.data_asof_date %}
-      <img src="/charts/{{ expanded.data_asof_date }}/{{ expanded.ticker }}.png"
-           alt="Chart {{ expanded.ticker }}">
+    {#- Phase 14 SB4 Slice 1 — inline the SB3 `position_detail` candlestick+
+        BULZ-zones SVG (read from the chart_renders cache, mirroring the
+        trade-detail page) in place of the legacy static PNG.
+
+        WP M#3 TERMINAL-else invariant: the legacy `chart_reason` /
+        `chart_reason_message` come from the static-PNG chart scope, NOT the
+        SVG cache. So `chart_reason is None` ("PNG available") can co-occur
+        with `position_chart_svg_bytes is None` (no SVG cache row) — without a
+        terminal `{% else %}` the `{% elif chart_reason_message %}` branch is
+        skipped and the chart area renders BLANK. The terminal fallback below
+        guarantees the operator always sees a chart or an explanatory message.
+
+        `| safe` is applied ONLY to the matplotlib-generated SVG bytes;
+        operator-/scope-derived text is auto-escaped. -#}
+    {% if expanded.position_chart_svg_bytes %}
+      <div class="position-detail-chart">{{ expanded.position_chart_svg_bytes.decode('utf-8') | safe }}</div>
     {% elif expanded.chart_reason_message %}
       <div class="chart-unavailable" data-chart-reason="{{ expanded.chart_reason }}">
         {{ expanded.chart_reason_message }}
+      </div>
+    {% else %}
+      <div class="chart-unavailable" data-chart-reason="position-detail-cache-miss">
+        Position chart unavailable.
       </div>
     {% endif %}
     {# Codex R2 Major #1 fix — brief §4.2 + §5 Surface 4 require the empty-
