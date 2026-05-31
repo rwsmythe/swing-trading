@@ -114,3 +114,82 @@ def test_sort_link_preserves_active_filters(client):
     sort_url = m.group(1)
     assert "filter_state=reviewed" in sort_url
     assert "filter_aplus=aplus" in sort_url
+
+
+# --- GAP #1: filter <select> UI controls ------------------------------------
+
+
+def test_filter_selects_present(client):
+    # The filter BACKEND existed but there was no browser control to INITIATE a
+    # filter. A <select name="filter_state"> (+ pattern + aplus) must render so
+    # the operator can pick a filter (plan lines 71, 1069, 1158; S4 gate).
+    r = client.get("/journal?period=all")
+    assert r.status_code == 200
+    assert 'name="filter_state"' in r.text
+    assert 'name="filter_pattern"' in r.text
+    assert 'name="filter_aplus"' in r.text
+
+
+def test_filter_state_options_cover_allowlist(client):
+    # Every backend-accepted filter_state (incl. virtual groups) must be a
+    # selectable option, plus a blank "All".
+    r = client.get("/journal?period=all")
+    for value in (
+        "open", "closed_any", "entered", "managing", "partial_exited",
+        "closed", "reviewed",
+    ):
+        assert f'value="{value}"' in r.text, f"missing filter_state option {value}"
+
+
+def test_active_filter_option_marked_selected(client):
+    # The currently-applied filter option carries `selected` so it persists in
+    # the re-rendered fragment after a swap.
+    r = client.get("/journal?filter_state=reviewed",
+                   headers={"HX-Request": "true"})
+    m = re.search(r'<option[^>]*value="reviewed"[^>]*>', r.text)
+    assert m, "reviewed option not found"
+    assert "selected" in m.group(0)
+
+
+def test_filter_selects_carry_htmx_attrs(client):
+    # The selects fire an HX request on change, targeting the same table with
+    # an outerHTML swap + the HX-Request header (OriginGuard strict-mode).
+    r = client.get("/journal?period=all", headers={"HX-Request": "true"})
+    # the filter form/selects must carry the HTMX trinity
+    assert 'hx-get="/journal"' in r.text
+    assert 'hx-target="#journal-table"' in r.text
+    assert 'hx-swap="outerHTML"' in r.text
+    assert 'hx-headers=\'{"HX-Request": "true"}\'' in r.text
+    assert 'hx-trigger="change"' in r.text
+
+
+def test_filter_change_preserves_active_sort(client):
+    # Changing a filter must NOT drop the active sort. The form carries the
+    # active sort/dir as hidden inputs so an hx-include sweeps them into the
+    # filter-change request (the specific mechanism, mirroring the sort-link
+    # discrimination — not merely "sort appears somewhere").
+    r = client.get("/journal?sort=final_r&dir=asc",
+                   headers={"HX-Request": "true"})
+    assert re.search(
+        r'<input[^>]*type="hidden"[^>]*name="sort"[^>]*value="final_r"', r.text
+    ) or re.search(
+        r'<input[^>]*name="sort"[^>]*value="final_r"[^>]*type="hidden"', r.text
+    ), "hidden sort input carrying active sort not found in filter form"
+    assert re.search(
+        r'<input[^>]*name="dir"[^>]*value="asc"', r.text
+    ), "hidden dir input carrying active dir not found in filter form"
+
+
+def test_aplus_filter_options(client):
+    r = client.get("/journal?period=all")
+    assert 'value="aplus"' in r.text
+    assert 'value="non_aplus"' in r.text
+
+
+def test_pattern_filter_options(client):
+    r = client.get("/journal?period=all")
+    for value in (
+        "vcp", "flat_base", "cup_with_handle", "high_tight_flag",
+        "double_bottom_w",
+    ):
+        assert f'value="{value}"' in r.text, f"missing filter_pattern option {value}"

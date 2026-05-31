@@ -25,14 +25,77 @@ period={{ _q.period }}
   {%- set _dir = 'asc' if (_q.sort == key and _q.dir == 'desc') else 'desc' -%}
   <th><a hx-get="/journal?{{ _filters }}&sort={{ key }}&dir={{ _dir }}"
        hx-target="#journal-table" hx-swap="outerHTML"
-       hx-headers='{"HX-Request": "true"}'>{{ label }}{% if _q.sort == key %} {{ '▼' if _q.dir == 'desc' else '▲' }}{% endif %}</a></th>
+       hx-headers='{"HX-Request": "true"}'>{{ label }}{% if _q.sort == key %} {{ 'v' if _q.dir == 'desc' else '^' }}{% endif %}</a></th>
 {%- endmacro -%}
+{# GAP #1 — filter <select> controls. The control row lives INSIDE the
+   <table> (a <thead> row whose <th colspan> hosts a <form>), so the fragment
+   ROOT stays `<table id="journal-table">` (OQ-9). Because the whole table —
+   controls included — is replaced on every outerHTML swap, each select's
+   active value is re-marked `selected` from vm.filter_*, so selections persist
+   across sort/filter swaps. Hidden inputs carry the active period/sort/dir so a
+   filter change (hx-include="closest form") does NOT drop the active sort.
+   Allowlist-only option values; all text auto-escaped (NO `| safe`). #}
+{%- set _state_options = [
+  ('open', 'Open'), ('closed_any', 'Closed (any)'), ('entered', 'Entered'),
+  ('managing', 'Managing'), ('partial_exited', 'Partial exited'),
+  ('closed', 'Closed'), ('reviewed', 'Reviewed')] -%}
+{%- set _pattern_options = [
+  ('vcp', 'VCP'), ('flat_base', 'Flat base'),
+  ('cup_with_handle', 'Cup with handle'), ('high_tight_flag', 'High tight flag'),
+  ('double_bottom_w', 'Double bottom (W)')] -%}
+{%- set _aplus_options = [('aplus', 'A+'), ('non_aplus', 'Non-A+')] -%}
 <table id="journal-table">
   {% if vm.invalid_filter %}
   <caption class="invalid-filter-notice">Invalid filter, showing all.</caption>
   {% endif %}
   <thead>
-    <tr>
+    <tr class="journal-filter-row">
+      <th colspan="12">
+        <form class="journal-filters">
+          {# Hidden inputs preserve the active period + sort/dir so an
+             hx-include="closest form" on a filter change carries them. #}
+          <input type="hidden" name="period" value="{{ _q.period }}">
+          {% if _q.sort %}<input type="hidden" name="sort" value="{{ _q.sort }}">{% endif %}
+          {% if _q.dir %}<input type="hidden" name="dir" value="{{ _q.dir }}">{% endif %}
+          <label>State
+            <select name="filter_state"
+                    hx-get="/journal" hx-target="#journal-table"
+                    hx-swap="outerHTML" hx-trigger="change"
+                    hx-include="closest form"
+                    hx-headers='{"HX-Request": "true"}'>
+              <option value="">All</option>
+              {% for value, label in _state_options %}
+              <option value="{{ value }}"{% if vm.filter_state == value %} selected{% endif %}>{{ label }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>Pattern
+            <select name="filter_pattern"
+                    hx-get="/journal" hx-target="#journal-table"
+                    hx-swap="outerHTML" hx-trigger="change"
+                    hx-include="closest form"
+                    hx-headers='{"HX-Request": "true"}'>
+              <option value="">All</option>
+              {% for value, label in _pattern_options %}
+              <option value="{{ value }}"{% if vm.filter_pattern == value %} selected{% endif %}>{{ label }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>A+
+            <select name="filter_aplus"
+                    hx-get="/journal" hx-target="#journal-table"
+                    hx-swap="outerHTML" hx-trigger="change"
+                    hx-include="closest form"
+                    hx-headers='{"HX-Request": "true"}'>
+              <option value="">All</option>
+              {% for value, label in _aplus_options %}
+              <option value="{{ value }}"{% if vm.filter_aplus == value %} selected{% endif %}>{{ label }}</option>
+              {% endfor %}
+            </select>
+          </label>
+        </form>
+      </th>
+    </tr>
       <th>Chart</th>
       {{ sort_th('Ticker', 'ticker') }}
       {{ sort_th('Entry', 'entry_date') }}
