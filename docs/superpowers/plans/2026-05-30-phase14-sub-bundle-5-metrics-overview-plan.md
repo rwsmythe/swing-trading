@@ -44,7 +44,7 @@ All paths relative to repo root. **(N)** = new, **(M)** = modify, **(R)** = reus
 |------|------|----------------|
 | `swing/web/view_models/metrics/sparkline.py` | **(N)** | Pure `build_sparkline_points(values, *, width=100, height=30, pad=2.0, min_points=2) -> str \| None`. The only new module. ~50 lines. |
 | `swing/web/view_models/metrics/index.py` | **(M)** | Extend `MetricsIndexSurface` with 6 overview fields; widen `build_metrics_index_vm(conn)` → `(cfg, conn)`; add 9 per-surface extractor helpers (each try/except-isolated) reusing existing `build_*_vm`/`compute_*`; compose enriched surfaces. |
-| `swing/web/routes/metrics.py` | **(M)** | `metrics_index` route: pass `cfg` to the widened builder (`build_metrics_index_vm(cfg, conn)`). NO other route changes. |
+| `swing/web/routes/metrics.py` | **(M)** | `metrics_index` route: pass `cfg` to the widened builder (`build_metrics_index_vm(cfg, conn)`). Updated in T-5.2.d ATOMIC with the builder widening (NOT T-5.3), so `GET /metrics` never runs against the old signature. NO other route changes. |
 | `swing/web/templates/metrics/index.html.j2` | **(M)** | Replace `<ul>` with the card grid: per-card label + headline stat (+ caption) or honest suppressed text + inline-`<svg><polyline></svg>` sparkline (3 surfaces) or sparkline-suppressed caption + drill-down link. ASCII-only. |
 | `swing/web/static/app.css` | **(M)** | Card-grid + sparkline-glyph styling (`.metrics-overview-grid`, `.metrics-card`, `.metrics-card__headline`, `.metrics-card__sparkline`, `.metrics-card__suppressed`). The 3 `.metrics-tiles`/`.metrics-tile` classes are currently UNSTYLED (no rule references them); the new classes supersede them. |
 
@@ -171,7 +171,7 @@ Identical to §A.2. Specifically the executing engineer MUST NOT: add a migratio
 ## §F Discipline hooks (cumulative gotchas applied)
 
 - **base.html.j2 shared / L7:** new fields land on `MetricsIndexSurface` (leaf VM) + `MetricsIndexVM` already inherits BaseLayoutVM unchanged → NO base-VM fan-out. Verify `BaseLayoutVM` (shared.py:27) is untouched.
-- **PowerShell cp1252 (#16/#32):** ALL headline/caption/suppressed strings ASCII-only — `>=` not `≥`, `delta` not `Δ`, `R` not a glyph, `-` hyphen not em-dash. No non-ASCII in `index.py`, the template, or CSS. T-5.4 adds a subprocess-through-PowerShell render smoke OR an ASCII-grep assertion over the new strings.
+- **PowerShell cp1252 (#16/#32) — TWO sources of non-ASCII (Codex R1 CRITICAL #1):** (a) strings THIS plan authors (`>=` not `≥`, `delta` not `Δ`, `-` not em-dash) — keep ASCII; AND (b) **REUSED metric text** — `SuppressedMetric.placeholder_text` is built with a real `≥` glyph (`honesty.py:42`), so reusing it verbatim leaks non-ASCII the source-grep gate would miss. FIX: a central `_ascii()` chokepoint in `_enrich_surface` coerces every reused text field (`≥`->`>=` etc., then `encode("ascii","replace")`) so the overview's ASCII guarantee holds end-to-end. Verified by a rendered-`body.isascii()` route test (T-5.3) on a LOW-sample DB where suppression text appears — NOT just a source grep.
 - **matplotlib mathtext (#):** N/A — inline `<polyline>` carries no text; OQ-1 LOCKed inline. If ANY matplotlib appears, STOP (OQ-1 violation).
 - **session-anchor read/write:** the overview introduces NO new anchor predicate. Each reused builder already encodes its correct backward-looking `last_completed_session` vs forward-looking `action_session_for_run` choice (capital/funnel trends are backward-looking; the index `session_date` stays forward-looking `action_session_for_run` as today). Consume the post-T-T4.SB.2 (delimiter-aware, wiring-correct) outputs as-is — NO re-derivation.
 - **bad-exemplar isolation (#):** each per-surface extractor wrapped in its own try/except → a single compute failure degrades THAT card only (logged via `logging.getLogger(__name__).warning(...)`); the grid always renders 9 cards (§C.2 / §G T-5.2).
@@ -444,11 +444,29 @@ class _OverviewCard:
     sparkline_kind: str = "none"
 
 
+# Reused metric strings (placeholder_text/suppressed_text/triggered_pct_text)
+# may embed NON-ASCII — e.g. honesty.py:42 builds "need: >=N" with a real
+# U+2265 glyph. Coerce to ASCII at the overview boundary (#16/#32 cp1252).
+_ASCII_SUBSTITUTIONS = {
+    "≥": ">=", "≤": "<=", "–": "-", "—": "-",
+    "→": "->", "±": "+/-", "Δ": "delta",
+}
+
+
+def _ascii(text: str | None) -> str | None:
+    if text is None:
+        return None
+    for src, dst in _ASCII_SUBSTITUTIONS.items():
+        text = text.replace(src, dst)
+    return text.encode("ascii", "replace").decode("ascii")
+
+
 def _format_metric_value(value: object) -> tuple[str | None, str | None]:
     """Map a metric value to (headline_text, suppressed_text), reusing the
-    metric's OWN suppression placeholder (never fabricates a number — L2/L4)."""
+    metric's OWN suppression placeholder (never fabricates a number — L2/L4).
+    The suppressed text is ASCII-coerced (it may carry a non-ASCII glyph)."""
     if isinstance(value, SuppressedMetric):
-        return (None, value.placeholder_text)
+        return (None, _ascii(value.placeholder_text))
     if isinstance(value, BootstrapCI):
         return (f"{value.point:.2f}", None)
     if value is None:
@@ -456,7 +474,20 @@ def _format_metric_value(value: object) -> tuple[str | None, str | None]:
     return (f"{float(value):.2f}", None)
 ```
 
-- [ ] **Step 4: Run; verify pass.** `ruff check` clean.
+Add a sanitizer test to Step 1 above:
+
+```python
+from swing.web.view_models.metrics.index import _ascii
+
+
+def test_ascii_sanitizer_coerces_geq_glyph():
+    # honesty.py emits "need: >=N" with a real U+2265; the overview must ASCII it.
+    assert _ascii("[grade: n too low (current: 3, need: ≥5)]").isascii()
+    assert ">=5" in _ascii("need: ≥5")
+    assert _ascii(None) is None
+```
+
+- [ ] **Step 4: Run; verify pass.** `ruff check` clean. The central application of `_ascii` to every card text field lands in T-5.2.d's `_enrich_surface` (so EVERY extractor's output is sanitized in one chokepoint, not per-extractor).
 
 - [ ] **Step 5: Commit**
 
@@ -811,7 +842,9 @@ reuses that surface's own suppression text; no sparkline slot for the six
 non-trend surfaces per the honesty floor."
 ```
 
-#### §G.T-5.2.d — widen the builder + dispatch + error isolation + update call-sites
+#### §G.T-5.2.d — widen the builder + dispatch + isolation + ROUTE + call-sites (ALL ATOMIC)
+
+> **Codex R1 MAJOR #2 fix:** the route call-site MUST be widened in the SAME commit as the builder signature — otherwise `GET /metrics` 500s while T-5.2's route tests run. The route update (formerly T-5.3 Step 3a) moves HERE. T-5.3 becomes template + CSS only.
 
 - [ ] **Step 1: Write the failing tests** (append)
 
@@ -871,6 +904,12 @@ _OVERVIEW_FIELD_NAMES = (
 )
 
 
+_TEXT_FIELDS = (
+    "headline_stat_text", "headline_caption",
+    "headline_suppressed_text", "sparkline_suppressed_text",
+)
+
+
 def _enrich_surface(base, cfg: Config, conn, session_date: str) -> MetricsIndexSurface:
     extractor = _EXTRACTORS.get(base.path)
     if extractor is None:  # defensive — every registry path has an extractor
@@ -882,9 +921,12 @@ def _enrich_surface(base, cfg: Config, conn, session_date: str) -> MetricsIndexS
             "metrics overview extractor failed for %s", base.path, exc_info=True
         )
         card = _OverviewCard(headline_suppressed_text="unavailable")
-    return replace(
-        base, **{name: getattr(card, name) for name in _OVERVIEW_FIELD_NAMES}
-    )
+    values = {name: getattr(card, name) for name in _OVERVIEW_FIELD_NAMES}
+    # CENTRAL ASCII chokepoint (Codex R1 CRITICAL #1): every reused text field
+    # is coerced to ASCII here, so no extractor can leak honesty.py's U+2265.
+    for name in _TEXT_FIELDS:
+        values[name] = _ascii(values[name])
+    return replace(base, **values)
 
 
 def build_metrics_index_vm(cfg: Config, conn: sqlite3.Connection) -> MetricsIndexVM:
@@ -907,75 +949,7 @@ def build_metrics_index_vm(cfg: Config, conn: sqlite3.Connection) -> MetricsInde
     )
 ```
 
-- [ ] **Step 4: Update the 3 existing call-site tests** (route is updated in T-5.3). Read 10 lines of context at each before editing; each test already has a `cfg` fixture in scope (it builds other VMs from `cfg`). Change `build_metrics_index_vm(conn)` -> `build_metrics_index_vm(cfg, conn)` at: `tests/web/test_base_layout_vm_recent_multi_leg_field.py:~459`, `tests/web/test_routes/test_metrics_routes.py:~78`, `tests/web/test_routes/test_metrics_pattern_outcomes.py:~235`.
-
-- [ ] **Step 5: Run; verify pass** — `python -m pytest tests/web/view_models/metrics/test_index_overview.py tests/web/test_base_layout_vm_recent_multi_leg_field.py tests/web/test_routes/test_metrics_routes.py tests/web/test_routes/test_metrics_pattern_outcomes.py -q`. Cascade-audit: `git grep -n "build_metrics_index_vm(" -- swing tests` shows only the route + these 3 tests. `ruff check swing/` clean.
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add swing/web/view_models/metrics/index.py tests/
-git commit -m "feat(web): widen build_metrics_index_vm to (cfg, conn) and enrich nine surface cards
-
-Dispatches each registry surface to its read-only extractor on the shared
-connection with per-card try/except isolation, and updates the three existing
-call-sites to the widened signature."
-```
-
----
-
-### Task T-5.3: route + template + CSS
-
-**Files:**
-- Modify: `swing/web/routes/metrics.py` (the `metrics_index` route only)
-- Modify: `swing/web/templates/metrics/index.html.j2`
-- Modify: `swing/web/static/app.css`
-- Test: `tests/web/test_routes/test_metrics_index_overview.py`
-
-**Acceptance criteria:** the route passes `cfg` to the widened builder; the template renders 9 cards (label + headline-or-suppressed + drill-down link); the 3 trend cards emit an inline `<svg><polyline points="..."/></svg>` when points present else the sparkline-suppressed caption; the 6 non-trend cards render NO `<polyline>`; drill-down hrefs unchanged; ASCII-only; pure server-render (no HTMX — L8).
-
-- [ ] **Step 1: Write the failing route/render tests**
-
-```python
-# tests/web/test_routes/test_metrics_index_overview.py
-"""T-5.3 — /metrics overview route + template render (P14.N5)."""
-from __future__ import annotations
-
-from fastapi.testclient import TestClient
-
-# `seeded_app` (high-data) and `low_seeded_app` (3 runs) mirror the existing
-# metrics route tests' app+DB construction.
-
-
-def test_overview_renders_nine_cards_with_three_polylines(seeded_app):
-    with TestClient(seeded_app) as client:
-        resp = client.get("/metrics")
-    assert resp.status_code == 200
-    body = resp.text
-    for path in (
-        "/metrics/trade-process", "/metrics/hypothesis-progress",
-        "/metrics/tier-comparison", "/metrics/capital-friction",
-        "/metrics/maturity-stage", "/metrics/identification-funnel",
-        "/metrics/deviation-outcome", "/metrics/process-grade-trend",
-        "/metrics/pattern-outcomes",
-    ):
-        assert f'href="{path}"' in body
-    assert body.count("<polyline") == 3  # exactly the 3 trend surfaces
-    assert body.isascii()
-
-
-def test_overview_below_threshold_shows_suppressed_caption_no_polyline(low_seeded_app):
-    with TestClient(low_seeded_app) as client:
-        resp = client.get("/metrics")
-    assert resp.status_code == 200
-    body = resp.text
-    assert "<polyline" not in body  # 3 runs -> all suppressed, none drawn
-    assert "needs >=5 runs" in body  # capital's honest caption
-```
-
-- [ ] **Step 2: Run; verify fail** — route still calls `build_metrics_index_vm(conn)` (`TypeError`) or `<polyline>` count wrong.
-
-- [ ] **Step 3a: Update the route** (`swing/web/routes/metrics.py`, `metrics_index`)
+- [ ] **Step 4: Update the production route in the SAME commit** (`swing/web/routes/metrics.py`, `metrics_index`) — Codex R1 MAJOR #2:
 
 ```python
 @router.get("/metrics", response_class=HTMLResponse)
@@ -991,6 +965,137 @@ def metrics_index(request: Request):
         request, "metrics/index.html.j2", {"vm": vm},
     )
 ```
+
+- [ ] **Step 5: Update the 3 existing call-site tests** — NOT all are mechanical (Codex R1 MAJOR #3). Read context at each first:
+  - `tests/web/test_routes/test_metrics_routes.py:~78` — has `cfg, _ = seeded_db` in scope -> mechanical: `build_metrics_index_vm(cfg, conn)`.
+  - `tests/web/test_routes/test_metrics_pattern_outcomes.py:~235` — has `cfg, _ = seeded_db` in scope -> mechanical: `build_metrics_index_vm(cfg, conn)`.
+  - `tests/web/test_base_layout_vm_recent_multi_leg_field.py:452-462` — **has ONLY `tmp_path`, NO `cfg`** (`test_metrics_index_vm_populates_recent_multi_leg_field`). Construct a Config pointing at the temp DB BEFORE the call:
+
+```python
+def test_metrics_index_vm_populates_recent_multi_leg_field(tmp_path):
+    import dataclasses
+    from swing.config import load as load_cfg
+    from swing.web.view_models.metrics.index import build_metrics_index_vm
+    db = tmp_path / "swing.db"
+    _create_empty_db(db)
+    base_cfg = load_cfg(Path(__file__).resolve().parents[2] / "swing.config.toml")
+    cfg = dataclasses.replace(
+        base_cfg, paths=dataclasses.replace(base_cfg.paths, db_path=db)
+    )
+    conn = _open_conn(db)
+    try:
+        _seed_multi_leg_auto_correction(conn)
+        vm = build_metrics_index_vm(cfg, conn)
+    finally:
+        conn.close()
+    assert vm.recent_multi_leg_auto_correction_count == 1
+```
+  (Confirm the `Config`/`paths` field names by reading the dataclass before editing; mirror the neighbouring `test_journal_vm_populates_recent_multi_leg_field` at :465, which already loads a cfg from the repo toml. If `dataclasses.replace` on `paths` is awkward, mirror that neighbour's monkeypatch approach instead.)
+
+- [ ] **Step 6: Run; verify pass** — `python -m pytest tests/web/view_models/metrics/test_index_overview.py tests/web/test_base_layout_vm_recent_multi_leg_field.py tests/web/test_routes/test_metrics_routes.py tests/web/test_routes/test_metrics_pattern_outcomes.py -q`. Cascade-audit: `git grep -n "build_metrics_index_vm(" -- swing tests` shows only the route + these 3 tests. `ruff check swing/` clean.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add swing/web/view_models/metrics/index.py swing/web/routes/metrics.py tests/
+git commit -m "feat(web): widen build_metrics_index_vm to (cfg, conn), update the route, and enrich nine cards
+
+Dispatches each registry surface to its read-only extractor on the shared
+connection with per-card try/except isolation and a central ASCII chokepoint;
+updates the route call-site and the three existing test call-sites in the
+same change so GET /metrics never runs against the old signature."
+```
+
+---
+
+### Task T-5.3: template + CSS (route already widened in T-5.2.d)
+
+**Files:**
+- Modify: `swing/web/templates/metrics/index.html.j2`
+- Modify: `swing/web/static/app.css`
+- Test: `tests/web/test_routes/test_metrics_index_overview.py`
+
+**Acceptance criteria:** the template renders 9 cards (label + headline-or-suppressed + drill-down link); the 3 trend cards emit an inline `<svg><polyline points="..."/></svg>` when points present else the sparkline-suppressed caption; the 6 non-trend cards render NO `<polyline>`; drill-down hrefs unchanged; rendered body ASCII-only (incl. reused suppression text — Codex R1 CRITICAL #1); pure server-render (no HTMX — L8). The route was already widened in T-5.2.d.
+
+> **Codex R1 MAJOR #4 fix — deterministic render tests via a monkeypatched builder.** The route/template test asserts TEMPLATE behaviour, so it builds a known `MetricsIndexVM` directly and monkeypatches `swing.web.routes.metrics.build_metrics_index_vm` to return it — NO heavy/fragile multi-surface DB seeding (that is covered against real seeded DBs in the T-5.2 VM tests). This makes the "exactly 3 polylines / 0 polylines / body.isascii()" assertions deterministic. `seeded_app`/`low_seeded_app` are NOT used (they do not exist globally).
+
+- [ ] **Step 1: Write the failing route/render tests**
+
+```python
+# tests/web/test_routes/test_metrics_index_overview.py
+"""T-5.3 — /metrics overview template render (P14.N5)."""
+from __future__ import annotations
+
+import pytest
+from fastapi.testclient import TestClient
+
+from swing.web.app import create_app
+from swing.web.view_models.metrics.index import (
+    MetricsIndexSurface,
+    MetricsIndexVM,
+    _SURFACES,
+)
+# `seeded_db` is the existing global fixture (tests/web/conftest.py) yielding
+# (cfg, cfg_path) for an empty schema-only DB — enough to build the app.
+
+
+def _vm_from(trend_points: str | None, suppressed: str | None) -> MetricsIndexVM:
+    """Hand-build a 9-card VM: the 3 trend surfaces carry inline_svg, the rest
+    are headline-only. ``trend_points`` None + ``suppressed`` set => suppressed."""
+    trend_paths = {
+        "/metrics/capital-friction",
+        "/metrics/identification-funnel",
+        "/metrics/process-grade-trend",
+    }
+    surfaces = tuple(
+        MetricsIndexSurface(
+            path=s.path, label=s.label, description=s.description,
+            headline_stat_text="1.23", headline_caption="x",
+            sparkline_points=(trend_points if s.path in trend_paths else None),
+            sparkline_suppressed_text=(suppressed if s.path in trend_paths else None),
+            sparkline_kind=("inline_svg" if s.path in trend_paths else "none"),
+        )
+        for s in _SURFACES
+    )
+    return MetricsIndexVM(session_date="2026-05-30", surfaces=surfaces)
+
+
+def test_overview_renders_nine_cards_with_three_polylines(seeded_db, monkeypatch):
+    cfg, cfg_path = seeded_db
+    monkeypatch.setattr(
+        "swing.web.routes.metrics.build_metrics_index_vm",
+        lambda cfg, conn: _vm_from("2.00,28.00 98.00,2.00", None),
+    )
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = client.get("/metrics")
+    assert resp.status_code == 200
+    body = resp.text
+    for s in _SURFACES:
+        assert f'href="{s.path}"' in body
+    assert body.count("<polyline") == 3  # exactly the 3 trend surfaces
+    assert body.isascii()
+
+
+def test_overview_below_threshold_shows_suppressed_caption_no_polyline(seeded_db, monkeypatch):
+    cfg, cfg_path = seeded_db
+    monkeypatch.setattr(
+        "swing.web.routes.metrics.build_metrics_index_vm",
+        lambda cfg, conn: _vm_from(None, "trend needs >=5 runs (have 3)"),
+    )
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = client.get("/metrics")
+    assert resp.status_code == 200
+    body = resp.text
+    assert "<polyline" not in body
+    assert "needs >=5 runs" in body
+    assert body.isascii()
+```
+
+> Confirm `seeded_db`'s yield shape (`(cfg, cfg_path)`) and `create_app(cfg, cfg_path)` by mirroring `tests/web/test_routes/test_metrics_routes.py:13-18`. If `MetricsIndexVM` requires more BaseLayoutVM kwargs than `session_date`, supply their safe defaults (they already default — shared.py:42-64).
+
+- [ ] **Step 2: Run; verify fail** — `tests/web/test_routes/test_metrics_index_overview.py` -> FAIL: the template still emits the old `<ul class="metrics-tiles">` (no `<polyline>`, count 0 != 3).
 
 - [ ] **Step 3b: Rewrite the template** (`swing/web/templates/metrics/index.html.j2`)
 
@@ -1075,13 +1180,13 @@ def metrics_index(request: Request):
 - [ ] **Step 5: Commit**
 
 ```bash
-git add swing/web/routes/metrics.py swing/web/templates/metrics/index.html.j2 swing/web/static/app.css tests/web/test_routes/test_metrics_index_overview.py
+git add swing/web/templates/metrics/index.html.j2 swing/web/static/app.css tests/web/test_routes/test_metrics_index_overview.py
 git commit -m "feat(web): render the metrics overview card grid with inline sparklines
 
-Route passes cfg to the widened builder; the template emits a nine-card grid
-with headline stats, inline polyline sparklines on the three trend surfaces,
-honest suppressed captions, and the preserved drill-down links; pure
-server-render with no HTMX."
+The template emits a nine-card grid with headline stats, inline polyline
+sparklines on the three trend surfaces, honest suppressed captions, and the
+preserved drill-down links; pure server-render with no HTMX. The route was
+already widened with the builder in the prior task."
 ```
 
 ---
@@ -1108,14 +1213,14 @@ server-render with no HTMX."
 | Task | New test file | Tests (count) | Discriminating assertions |
 |------|---------------|---------------|---------------------------|
 | T-5.1 | `test_sparkline.py` | 9 | 2-vertex span; empty/all-None/single-defined -> None; flat -> mid-line; **None-gap does NOT compress X** (the Codex R1 geometry fix); 2-dp; dimension-guard raise; ASCII. |
-| T-5.2.a | `test_index_overview.py` (+) | 1 | 6 overview fields present with safe defaults (leaf-VM; no BaseLayoutVM change). |
+| T-5.2.a | `test_index_overview.py` (+) | 2 | 6 overview fields present with safe defaults (leaf-VM; no BaseLayoutVM change); **`_ascii()` coerces the U+2265 glyph** (Codex R1 CRITICAL #1). |
 | T-5.2.b | `test_index_overview.py` (+) | 4 | capital sparkline present >=5 / suppressed <5; **funnel 10-run floor vs capital 5-run floor on the SAME 7-run DB** (the NON-uniform-threshold discriminator); process-grade line-band gate (drawn XOR suppressed). |
 | T-5.2.c | `test_index_overview.py` (+) | 4 | hypothesis count == 4; maturity open-count present; pattern fixed-class + existing suppression; deviation fixed-cohort caption. |
 | T-5.2.d | `test_index_overview.py` (+) | 2 | widened `(cfg, conn)` -> 9 cards + exactly the 3 trend paths inline_svg; **one-surface failure degrades only that card (grid still 9)**. |
-| T-5.3 | `test_metrics_index_overview.py` | 2 | route 200; 9 drill-down hrefs preserved; **exactly 3 `<polyline>`**; ASCII body; below-threshold -> 0 polylines + honest `"needs >=5 runs"` caption. |
-| — | updated call-sites | 3 (edits) | the 3 existing `build_metrics_index_vm(conn)` callers pass `(cfg, conn)`. |
+| T-5.3 | `test_metrics_index_overview.py` | 2 | **monkeypatched builder** (deterministic, no DB seed); route 200; 9 drill-down hrefs preserved; **exactly 3 `<polyline>`**; `body.isascii()`; below-threshold -> 0 polylines + honest `"needs >=5 runs"` caption + `body.isascii()`. |
+| — | updated call-sites | 3 (edits) | route + `test_metrics_routes.py` + `test_metrics_pattern_outcomes.py` mechanical; `test_base_layout_vm_recent_multi_leg_field.py` needs a constructed Config (Codex R1 MAJOR #3). |
 
-**Total new tests: ~22** across 3 new files (+3 call-site edits). Net suite delta ~ +22.
+**Total new tests: ~23** across 3 new files (+1 route edit, +3 call-site edits). Net suite delta ~ +23.
 
 **Insufficiency caveat (L5):** these string/`data-*` assertions confirm the points string is EMITTED and the polyline COUNT is right; they do NOT confirm the rendered glyph reads correctly. The operator-witnessed browser render (§I) is the BINDING gate.
 
@@ -1138,7 +1243,7 @@ The rendered overview in a real browser is the binding gate. Re-confirm the orch
 6. No mojibake / no `UnicodeEncodeError` in the `swing web` console (ASCII-only strings).
 
 **S4 — L2 Schwab source-grep (orchestrator):** no new Schwab call-sites.
-**S5 — ASCII (orchestrator):** the §G T-5.4 Step-5 grep returns nothing.
+**S5 — ASCII (orchestrator):** the §G T-5.4 Step-5 grep returns nothing AND the T-5.3 rendered-`body.isascii()` tests pass (covers reused suppression text coerced by `_ascii()`, which a source grep would miss).
 **S6 — trailers (orchestrator):** `git log -1 --format='%(trailers)'` == `[]`.
 
 **Teardown (memory `feedback_taskstop_does_not_kill_detached_server`):** after S3, find the `swing web` PID via `Get-NetTCPConnection -LocalPort 8080`, `Stop-Process -Force`, and VERIFY the port is free + no straggler `python ... swing ... web` processes before claiming the gate is torn down.
@@ -1167,12 +1272,15 @@ Merge is BLOCKED until the operator confirms S3.
 ## §L Fixtures
 
 - **Sparkline helper (T-5.1):** pure unit values — empty, all-None, 1 defined, 2 defined, flat, monotone, mixed None gaps. No DB.
-- **VM (T-5.2):** three seeded fixture DBs, reusing the seeding utilities the per-surface metric tests already use (do NOT hand-roll new schema fixtures — derive from the production emitter shape):
-  - `high_data_cfg_conn` — >=10 `pipeline_runs` with candidates/buckets so capital + funnel `trend_runs` populate >=10; >=5 reviewed closed trades so process-grade `rolling_series` draws. Asserts sparklines present + headline values.
-  - `low_data_cfg_conn` — 3 runs / <5 reviewed. Asserts each sparkline suppresses with the correct per-surface caption.
-  - `borderline_7_runs_cfg_conn` — exactly 7 runs (the discriminator: capital draws at >=5, funnel suppresses at <10 on the SAME DB).
-- **Route (T-5.3):** `with TestClient(app) as client:` (lifespan-entered); a high-data seeded app (`seeded_app`) + a 3-run app (`low_seeded_app`). Assert 200, 9 cards, exactly 3 `<polyline>`, drill-down hrefs unchanged, ASCII body.
-- **Fixture-shape discipline:** these DBs must match the PRODUCTION insert shape exactly (gotcha: synthetic-fixture-vs-emitter drift). Prefer constructing rows via the existing per-surface test helpers over hand-written SQL.
+- **VM (T-5.2):** three seeded fixture DBs, reusing the EXISTING per-surface seeders (do NOT hand-roll new schema fixtures — derive from the production emitter shape). Concrete seeder sources to copy/adapt:
+  - capital/funnel trend (`pipeline_runs` + candidates/buckets): `tests/metrics/test_capital.py`, `tests/metrics/test_funnel.py`, `tests/web/test_view_models/test_capital_friction_vm.py`, `tests/web/test_view_models/test_identification_funnel_vm.py`, `tests/integration/test_phase10_bundle_d_e2e.py`.
+  - process-grade reviewed-trade seeding: `tests/web/test_routes/test_metrics_process_grade_trend_route.py`.
+  - The fixtures:
+    - `high_data_cfg_conn` — >=10 `pipeline_runs` with candidates/buckets so capital + funnel `trend_runs` populate >=10; >=5 reviewed closed trades so process-grade `rolling_series` draws. Asserts sparklines present + headline values.
+    - `low_data_cfg_conn` — 3 runs / <5 reviewed. Asserts each sparkline suppresses with the correct per-surface caption.
+    - `borderline_7_runs_cfg_conn` — exactly 7 runs (the discriminator: capital draws at >=5, funnel suppresses at <10 on the SAME DB).
+- **Route (T-5.3):** NO DB seeding — the route/template test monkeypatches `swing.web.routes.metrics.build_metrics_index_vm` to return a hand-built `MetricsIndexVM` (deterministic), then asserts via `with TestClient(app) as client:` 200, 9 cards, exactly 3 `<polyline>` (and 0 in the suppressed case), drill-down hrefs unchanged, `body.isascii()`. The real-data extraction is covered by the T-5.2 VM tests against the seeded DBs above (Codex R1 MAJOR #4).
+- **Fixture-shape discipline:** the T-5.2 DBs must match the PRODUCTION insert shape exactly (gotcha: synthetic-fixture-vs-emitter drift). Construct rows via the existing per-surface seeders above, not hand-written SQL.
 
 ---
 
@@ -1184,7 +1292,7 @@ Merge is BLOCKED until the operator confirms S3.
 4. **NON-uniform thresholds** — import each constant (`capital.TREND_MIN_RUNS=5`, `funnel.TREND_MIN_RUNS=10`) by name; never hardcode a single `n<5`. The 7-run discriminator test guards this.
 5. **Per-card try/except** wraps each extractor; one failure degrades that card to `"unavailable"`, never 500s the page. The `except Exception` is intentional (`# noqa: BLE001`) and LOGS (not a silent swallow).
 6. **Shared connection** — pass the route's `conn` to all 9 reused builders (surfaces 1-7 via `conn=conn`, 9 positionally, 8 via `compute_*(conn)`). One connection per request.
-7. **ASCII-only** every user-facing string (`>=` not `≥`, `delta` not `Δ`). PowerShell cp1252 crashes on non-ASCII.
+7. **ASCII-only** every user-facing string AND every REUSED metric string — `SuppressedMetric.placeholder_text` carries a real `≥` (honesty.py:42). A source-grep gate misses imported non-ASCII; coerce reused text via the central `_ascii()` chokepoint in `_enrich_surface` and assert `body.isascii()` on a rendered low-sample page. (Codex R1 CRITICAL.)
 8. **Leaf-VM fields only** — never add a field to `BaseLayoutVM` (shared.py); the overview data lives on `MetricsIndexSurface`.
 
 ---
