@@ -43,7 +43,7 @@ All paths relative to repo root. **(N)** = new, **(M)** = modify, **(R)** = reus
 | File | Disp | Responsibility |
 |------|------|----------------|
 | `swing/web/view_models/metrics/sparkline.py` | **(N)** | Pure `build_sparkline_points(values, *, width=100, height=30, pad=2.0, min_points=2) -> str \| None`. The only new module. ~50 lines. |
-| `swing/web/view_models/metrics/index.py` | **(M)** | Extend `MetricsIndexSurface` with 6 overview fields; widen `build_metrics_index_vm(conn)` → `(cfg, conn)`; add 9 per-surface extractor helpers (each try/except-isolated) reusing existing `build_*_vm`/`compute_*`; compose enriched surfaces. |
+| `swing/web/view_models/metrics/index.py` | **(M)** | Extend `MetricsIndexSurface` with 6 overview fields; add the `_ascii()` sanitizer; ASCII-ify the one non-ASCII `_SURFACES` description (`§3.1` -> ASCII); widen `build_metrics_index_vm(conn)` → `(cfg, conn)`; add 9 per-surface extractor helpers (each try/except-isolated) reusing existing `build_*_vm`/`compute_*`; compose enriched surfaces through the central ASCII chokepoint. |
 | `swing/web/routes/metrics.py` | **(M)** | `metrics_index` route: pass `cfg` to the widened builder (`build_metrics_index_vm(cfg, conn)`). Updated in T-5.2.d ATOMIC with the builder widening (NOT T-5.3), so `GET /metrics` never runs against the old signature. NO other route changes. |
 | `swing/web/templates/metrics/index.html.j2` | **(M)** | Replace `<ul>` with the card grid: per-card label + headline stat (+ caption) or honest suppressed text + inline-`<svg><polyline></svg>` sparkline (3 surfaces) or sparkline-suppressed caption + drill-down link. ASCII-only. |
 | `swing/web/static/app.css` | **(M)** | Card-grid + sparkline-glyph styling (`.metrics-overview-grid`, `.metrics-card`, `.metrics-card__headline`, `.metrics-card__sparkline`, `.metrics-card__suppressed`). The 3 `.metrics-tiles`/`.metrics-tile` classes are currently UNSTYLED (no rule references them); the new classes supersede them. |
@@ -449,7 +449,7 @@ class _OverviewCard:
 # U+2265 glyph. Coerce to ASCII at the overview boundary (#16/#32 cp1252).
 _ASCII_SUBSTITUTIONS = {
     "≥": ">=", "≤": "<=", "–": "-", "—": "-",
-    "→": "->", "±": "+/-", "Δ": "delta",
+    "→": "->", "±": "+/-", "Δ": "delta", "§": "sec ",
 }
 
 
@@ -458,6 +458,10 @@ def _ascii(text: str | None) -> str | None:
         return None
     for src, dst in _ASCII_SUBSTITUTIONS.items():
         text = text.replace(src, dst)
+    # encode("ascii","replace") is the last-resort net; the substitution map
+    # above MUST cover every glyph the reused metric strings actually use
+    # (today only U+2265 in honesty.py:42). A "?" appearing in overview text
+    # is a BUG (an unmapped glyph) — the no-"?" test (Step 1) guards it.
     return text.encode("ascii", "replace").decode("ascii")
 
 
@@ -477,17 +481,36 @@ def _format_metric_value(value: object) -> tuple[str | None, str | None]:
 Add a sanitizer test to Step 1 above:
 
 ```python
-from swing.web.view_models.metrics.index import _ascii
+from swing.web.view_models.metrics.index import _ascii, _SURFACES
 
 
-def test_ascii_sanitizer_coerces_geq_glyph():
-    # honesty.py emits "need: >=N" with a real U+2265; the overview must ASCII it.
-    assert _ascii("[grade: n too low (current: 3, need: ≥5)]").isascii()
-    assert ">=5" in _ascii("need: ≥5")
+def test_ascii_sanitizer_coerces_geq_glyph_without_question_mark():
+    # honesty.py emits "need: >=N" with a real U+2265; the overview must ASCII it
+    # via a MAPPED substitution (no silent "?" masking — Codex R2 MINOR).
+    out = _ascii("[grade: n too low (current: 3, need: ≥5)]")
+    assert out.isascii()
+    assert ">=5" in out
+    assert "?" not in out  # the glyph was mapped, not replace-masked
     assert _ascii(None) is None
+
+
+def test_surfaces_registry_is_ascii():
+    # The template renders surface.label + surface.description verbatim; the
+    # static registry MUST be ASCII so body.isascii() holds (Codex R2 CRITICAL).
+    for s in _SURFACES:
+        assert s.label.isascii(), s.label
+        assert s.description.isascii(), s.description
 ```
 
-- [ ] **Step 4: Run; verify pass.** `ruff check` clean. The central application of `_ascii` to every card text field lands in T-5.2.d's `_enrich_surface` (so EVERY extractor's output is sanitized in one chokepoint, not per-extractor).
+- [ ] **Step 3b: ASCII-ify the static `_SURFACES` registry copy** (Codex R2 CRITICAL — the template renders `surface.description`). Exactly ONE entry is non-ASCII today: the trade-process description contains `§`. Edit it in `_SURFACES`:
+
+```python
+# swing/web/view_models/metrics/index.py — trade-process surface
+        description="Per-cohort + overall metrics across the closed-trade scope.",
+```
+(was `"... across §3.1 closed-trade scope."`). Re-run the `test_surfaces_registry_is_ascii` guard. (All other labels/descriptions are already ASCII — verified at plan time.)
+
+- [ ] **Step 4: Run; verify pass.** `ruff check` clean. The central application of `_ascii` to every card text field lands in T-5.2.d's `_enrich_surface` (so EVERY extractor's output is sanitized in one chokepoint, not per-extractor) — and that chokepoint ALSO sanitizes `label`/`description` as defense-in-depth even though the registry is ASCII at source.
 
 - [ ] **Step 5: Commit**
 
@@ -922,10 +945,14 @@ def _enrich_surface(base, cfg: Config, conn, session_date: str) -> MetricsIndexS
         )
         card = _OverviewCard(headline_suppressed_text="unavailable")
     values = {name: getattr(card, name) for name in _OVERVIEW_FIELD_NAMES}
-    # CENTRAL ASCII chokepoint (Codex R1 CRITICAL #1): every reused text field
-    # is coerced to ASCII here, so no extractor can leak honesty.py's U+2265.
+    # CENTRAL ASCII chokepoint (Codex R1 CRITICAL / R2 CRITICAL): every reused
+    # text field is coerced to ASCII here, so no extractor can leak honesty.py's
+    # U+2265. Also sanitise the static label/description (defense-in-depth even
+    # though the registry is ASCII at source) so the rendered body.isascii().
     for name in _TEXT_FIELDS:
         values[name] = _ascii(values[name])
+    values["label"] = _ascii(base.label)
+    values["description"] = _ascii(base.description)
     return replace(base, **values)
 
 
@@ -1213,14 +1240,14 @@ already widened with the builder in the prior task."
 | Task | New test file | Tests (count) | Discriminating assertions |
 |------|---------------|---------------|---------------------------|
 | T-5.1 | `test_sparkline.py` | 9 | 2-vertex span; empty/all-None/single-defined -> None; flat -> mid-line; **None-gap does NOT compress X** (the Codex R1 geometry fix); 2-dp; dimension-guard raise; ASCII. |
-| T-5.2.a | `test_index_overview.py` (+) | 2 | 6 overview fields present with safe defaults (leaf-VM; no BaseLayoutVM change); **`_ascii()` coerces the U+2265 glyph** (Codex R1 CRITICAL #1). |
+| T-5.2.a | `test_index_overview.py` (+) | 3 | 6 overview fields present with safe defaults (leaf-VM; no BaseLayoutVM change); **`_ascii()` maps U+2265 with no `?`-masking** (R1+R2 CRITICAL/MINOR); **`_SURFACES` registry is ASCII** (R2 CRITICAL). |
 | T-5.2.b | `test_index_overview.py` (+) | 4 | capital sparkline present >=5 / suppressed <5; **funnel 10-run floor vs capital 5-run floor on the SAME 7-run DB** (the NON-uniform-threshold discriminator); process-grade line-band gate (drawn XOR suppressed). |
 | T-5.2.c | `test_index_overview.py` (+) | 4 | hypothesis count == 4; maturity open-count present; pattern fixed-class + existing suppression; deviation fixed-cohort caption. |
 | T-5.2.d | `test_index_overview.py` (+) | 2 | widened `(cfg, conn)` -> 9 cards + exactly the 3 trend paths inline_svg; **one-surface failure degrades only that card (grid still 9)**. |
 | T-5.3 | `test_metrics_index_overview.py` | 2 | **monkeypatched builder** (deterministic, no DB seed); route 200; 9 drill-down hrefs preserved; **exactly 3 `<polyline>`**; `body.isascii()`; below-threshold -> 0 polylines + honest `"needs >=5 runs"` caption + `body.isascii()`. |
 | — | updated call-sites | 3 (edits) | route + `test_metrics_routes.py` + `test_metrics_pattern_outcomes.py` mechanical; `test_base_layout_vm_recent_multi_leg_field.py` needs a constructed Config (Codex R1 MAJOR #3). |
 
-**Total new tests: ~23** across 3 new files (+1 route edit, +3 call-site edits). Net suite delta ~ +23.
+**Total new tests: ~24** across 3 new files (+1 route edit, +3 call-site edits, +1 `_SURFACES` description ASCII edit). Net suite delta ~ +24.
 
 **Insufficiency caveat (L5):** these string/`data-*` assertions confirm the points string is EMITTED and the polyline COUNT is right; they do NOT confirm the rendered glyph reads correctly. The operator-witnessed browser render (§I) is the BINDING gate.
 
