@@ -174,3 +174,103 @@ All 6 slices SHIPPED to the branch; the single Codex chain CONVERGED (EP-R1 1 ma
 ---
 
 *End of return report. Phase 14 Sub-bundle 4 executing-plans — CR.1 (exit-data + render-direct chart) + P14.N6 (rich listing + sort/filter + journal-only thumbnails + drill-down unified-chronology + annotated chart) + the BULZ row-expand rewire. Read-mostly; NO schema change (v23 held); NO new trade-mutation path. Single Codex chain converged via the WSL fallback. Ready for orchestrator merge + the operator-witnessed S1–S7 gate.*
+
+---
+
+# 19. GATE-FIX addendum (operator-witnessed-gate findings) — 2026-05-30
+
+The SB4 operator-witnessed gate PASSED S3/S4/S7-chart/S7-404 but found defects on
+the journal listing (S5), sort/filter (S6), and chronology verbiage (S7). This
+addendum resolves them on the SAME branch (continuation; base `f320ea7`). 5 new
+commits (`f320ea7..HEAD`): `29f0af7` `85009e5` `3a1a279` `2618b68` `8f5b2ab`.
+
+## 19.1 Fixes shipped
+
+- **FIX-1 (S5) — Exit + Days-open columns** (`29f0af7`). `JournalRowVM` gains
+  `exit_date` (the LAST/max exit; `None` for open trades) + `days_open`;
+  `_row_for` populates them from the pre-grouped exits + an injected `today`
+  anchor; `journal_table.html.j2` renders an **Exit** header before **Closing
+  price** + a **Days open** header, both sortable (colspan 12→14);
+  `journal_row.html.j2` renders the two cells before Closing price. Multi-leg
+  exit-date selects the last leg; single-leg the only one.
+- **FIX-2 (S6 defect) — sort all columns** (`85009e5` tests; keys landed with
+  FIX-1). `_SORT_KEYS` widened from 5 keys to 13: the 6 columns the operator
+  could not sort (`open_price`/`shares`/`closing_price`/`chart_pattern`/
+  `aplus_bucket`/`hypothesis_label`) + the 2 new (`exit_date`/`days_open`). The
+  6 plain `<th>` headers became `sort_th(...)` controls. None-last determinism
+  in BOTH directions (the existing present/missing split). Parametrized tests
+  over every column × both directions + filter-preservation.
+- **FIX-3 (S6 defect) — filter value-contract + open-trade scope** (`3a1a279`).
+  Root cause 1: the "All" `<select>` option emits `value=""` and
+  `hx-include="closest form"` co-submits every sibling's `""` on a change; `""`
+  was neither `None` nor an allowlist token, so it tripped `invalid_filter`
+  ("Invalid filter, showing all") on EVERY valid selection. Empty/whitespace
+  sort+filter params now normalize to `None` before allowlist validation. Root
+  cause 2: the listing scope was closed-date period-filtered, dropping open
+  trades, so 'Open' returned nothing under the default period; open trades are
+  now ALWAYS in the listing scope (browse-the-DB, P14.N6) while stats/flags stay
+  over the period-filtered closed set. Verified end-to-end across EVERY option
+  of EVERY dimension (operator directive): template-options ⊆ allowlist parity +
+  correct filtered subset + invalid→graceful-fallback + valid→never-invalid.
+- **FIX-4 (S7 defect, cosmetic) — chronology de-dup** (`2618b68`). Each entry
+  double-printed its type and/or values; now each renders the TYPE once and
+  VALUES once: fill `kind`=action / summary=`qty @ price`; trade_event `kind`=
+  bare event_type / summary=rationale / detail=payload; snapshot keeps MFE/MAE
+  in summary, maturity+trail in detail (no duplicate); review summary=grade,
+  full lesson+tags in detail. Presentation only — sources, order, source
+  precedence, and the `review_log`-excluded rule unchanged (contract suite still
+  green). ASCII preserved.
+- **FIX-5** — SKIPPED (operator-gated; not requested).
+
+## 19.2 Codex chain (single, run to convergence)
+
+Genuine WSL-native Codex chain (codex-cli 0.135.0 at
+`/home/rwsmythe/.local/node22/bin/codex`) over `f320ea7..HEAD`. Full per-round
+log: `.copowers-findings.md` §"GATE-FIX chain".
+
+- **GF-R1 — 0 critical / 1 major / 0 minor.** M#1: `_row_for` anchored
+  `days_open` to `today` whenever `exit_date` was missing, so a closed/reviewed
+  trade with NO exit fills (legacy data the code tolerates) rendered
+  `Exit='open'` yet a non-null `days_open` aging to today. RESOLVED at `8f5b2ab`:
+  `today` anchors ONLY open states; terminal-without-exit → `days_open=None`;
+  red-first regression test `test_closed_without_exit_has_no_days_open`.
+- **GF-R2 — NO_NEW_CRITICAL_MAJOR — CONVERGED.**
+
+**Codex lesson learned (carry forward):** a derived-duration column must key its
+"end" anchor off the SAME state predicate that decides whether the row is open —
+an `... if exit_date else today` binary fallback silently mis-renders the
+edge state where neither the value NOR the open condition holds. Make the
+open-vs-closed split EXPLICIT three-way (exit present → exit date; open state →
+today; else → None), never a convenient `value or today` default. Same family as
+the session-anchor read/write-mismatch gotcha: derive the displayed value from
+the writer's own state semantics, not a default.
+
+## 19.3 Transport note (WSL Codex, for future gate-fixes)
+
+The Windows-native `codex exec` fails at the OS sandbox layer (`windows sandbox:
+spawn setup refresh`) under every `--sandbox` mode — it cannot spawn its shell
+tool even for `Get-Location`. The working path is the WSL-native codex, which
+requires an **interactive** login shell (`wsl bash -ilc`): the node22 PATH entry
+is in `~/.bashrc`, NOT the login profile, so `bash -lc` (non-interactive) falls
+back to the broken Windows npm shim. The worktree's `.git` points to a Windows
+path unreachable from WSL, so generate the diff on the Windows side into a file
+and have Codex review that + the on-disk files (no `git` in the WSL shell).
+
+## 19.4 Verification (post-fix HEAD)
+
+- Full fast suite: **6905 passed, 3 skipped** (`pytest -m "not slow"`, branch
+  HEAD; the 3 skips are pre-existing intentional). ~80 new gate-fix tests.
+- `ruff check swing/`: All checks passed.
+- Files touched: `swing/web/view_models/journal.py`,
+  `swing/web/view_models/trade_chronology.py`, the 2 journal partials, + 6 test
+  files. NO `swing/data`, NO `swing/trades`, NO `.sql`/migration.
+- **NO schema change (v23 held)**; **read-mostly** (ZERO new
+  trade/fill/review/chart_renders writes); **L2 Schwab** (no new
+  `schwabdev.Client.*`); **ZERO Co-Authored-By** (`%(trailers)` empty per commit).
+
+## 19.5 Re-gate handback
+
+Branch pushed for orchestrator QA + operator re-gate of S5 (Exit/Days-open
+columns + thumbnails), S6 (sort on ALL columns + filter incl. 'Open' + every
+option), S7 (chronology readability). On gate-pass the orchestrator merges +
+re-runs the suite on the merged HEAD (`feedback_no_false_green_claim`).
