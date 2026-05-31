@@ -14,14 +14,23 @@ import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from swing.config import Config
 from swing.evaluation.dates import action_session_for_run
+from swing.metrics.capital import TREND_MIN_RUNS as _CAPITAL_TREND_MIN_RUNS
 from swing.metrics.discrepancies import (
     count_recent_multi_leg_auto_corrections,
     count_unresolved_material,
     fetch_first_pending_ambiguity_resolve_link_path,
 )
+from swing.metrics.funnel import TREND_MIN_RUNS as _FUNNEL_TREND_MIN_RUNS
 from swing.metrics.honesty import BootstrapCI, SuppressedMetric
+from swing.metrics.process_grade_trend import compute_process_grade_trend
+from swing.web.view_models.metrics.capital_friction import build_capital_friction_vm
+from swing.web.view_models.metrics.identification_funnel import (
+    build_identification_funnel_vm,
+)
 from swing.web.view_models.metrics.shared import BaseLayoutVM
+from swing.web.view_models.metrics.sparkline import build_sparkline_points
 
 _LOG = logging.getLogger(__name__)
 
@@ -94,6 +103,118 @@ def _format_metric_value(value: object) -> tuple[str | None, str | None]:
     if value is None:
         return (None, "unavailable")
     return (f"{float(value):.2f}", None)
+
+
+_PROCESS_GRADE_HEADLINE_METRIC = "process_grade_rolling_N"
+
+
+# --------------------------------------------------------------------------
+# Per-surface extractors (read-only; reuse the existing per-surface output).
+# The 3 trend-bearing surfaces each gate their sparkline on their OWN
+# threshold constant (capital=5, funnel=10, process-grade line-band) - L4.
+# --------------------------------------------------------------------------
+def _extract_capital_friction(cfg: Config, conn, session_date: str) -> _OverviewCard:
+    vm = build_capital_friction_vm(cfg=cfg, conn=conn)
+    result = vm.result
+    if result is None:
+        return _OverviewCard(
+            headline_suppressed_text="unavailable",
+            sparkline_kind="inline_svg",
+            sparkline_suppressed_text="trend unavailable",
+        )
+    util = result.current_capital_utilization_pct
+    headline = None if util is None else f"{util:.1f}%"
+    headline_supp = "utilization unavailable" if util is None else None
+    runs = result.trend_runs
+    points: str | None = None
+    if len(runs) >= _CAPITAL_TREND_MIN_RUNS:
+        points = build_sparkline_points(
+            [p.current_capital_utilization_pct for p in runs]
+        )
+    if points is None:
+        supp = (
+            f"trend needs >={_CAPITAL_TREND_MIN_RUNS} runs (have {len(runs)})"
+            if len(runs) < _CAPITAL_TREND_MIN_RUNS
+            else "trend not drawable (insufficient defined points)"
+        )
+    else:
+        supp = None
+    return _OverviewCard(
+        headline_stat_text=headline,
+        headline_caption="utilization",
+        headline_suppressed_text=headline_supp,
+        sparkline_points=points,
+        sparkline_suppressed_text=supp,
+        sparkline_kind="inline_svg",
+    )
+
+
+def _extract_identification_funnel(cfg: Config, conn, session_date: str) -> _OverviewCard:
+    vm = build_identification_funnel_vm(cfg=cfg, conn=conn)
+    result = vm.result
+    if result is None:
+        return _OverviewCard(
+            headline_suppressed_text="unavailable",
+            sparkline_kind="inline_svg",
+            sparkline_suppressed_text="trend unavailable",
+        )
+    runs = result.trend_runs
+    if runs:
+        headline = str(runs[-1].aplus_identifications_per_run)
+        headline_supp = None
+    else:
+        headline = None
+        headline_supp = "no pipeline runs yet"
+    points: str | None = None
+    if len(runs) >= _FUNNEL_TREND_MIN_RUNS:
+        points = build_sparkline_points(
+            [float(p.aplus_identifications_per_run) for p in runs]
+        )
+    if points is None:
+        supp = (
+            f"trend needs >={_FUNNEL_TREND_MIN_RUNS} runs (have {len(runs)})"
+            if len(runs) < _FUNNEL_TREND_MIN_RUNS
+            else "trend not drawable (insufficient defined points)"
+        )
+    else:
+        supp = None
+    return _OverviewCard(
+        headline_stat_text=headline,
+        headline_caption="A+ ident. (latest run)",
+        headline_suppressed_text=headline_supp,
+        sparkline_points=points,
+        sparkline_suppressed_text=supp,
+        sparkline_kind="inline_svg",
+    )
+
+
+def _extract_process_grade_trend(cfg: Config, conn, session_date: str) -> _OverviewCard:
+    result = compute_process_grade_trend(conn)
+    series = result.rolling_series[_PROCESS_GRADE_HEADLINE_METRIC]
+    if series.suppressed is not None:
+        headline = None
+        headline_supp = series.suppressed.placeholder_text
+    else:
+        rv = series.rendered_value  # BootstrapCI for the class-"B" headline metric
+        point = getattr(rv, "point", rv)
+        headline = None if point is None else f"{float(point):.2f}"
+        headline_supp = None if headline is not None else "unavailable"
+    points: str | None = None
+    drawable = (
+        series.suppressed is None
+        and series.drawability_text == "rolling line drawable"
+    )
+    if drawable:
+        points = build_sparkline_points([p.value for p in series.line_points])
+    supp = None if points is not None else "rolling grade line not yet drawable"
+    return _OverviewCard(
+        headline_stat_text=headline,
+        headline_caption="rolling grade",
+        headline_suppressed_text=_ascii(headline_supp),
+        sparkline_points=points,
+        sparkline_suppressed_text=supp,
+        sparkline_kind="inline_svg",
+    )
 
 
 # 9 surfaces in the umbrella `/metrics` index navigator (registry order).
