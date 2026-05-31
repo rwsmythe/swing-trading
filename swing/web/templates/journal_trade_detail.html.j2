@@ -1,0 +1,23 @@
+{# Phase 14 SB4 Slice 5 Task 5.5: journal per-trade drill-down full page.
+   Extends base.html.j2 (base-layout page VM). The ONLY `| safe` content in
+   SB4 is the chart SVG bytes (delivered by the lazy fragment); all thesis +
+   chronology text here is auto-escaped. ASCII hyphen in the <h1> (NOT
+   em-dash) per the Matplotlib/encoding ASCII discipline + R1 m#1. #}
+{% extends "base.html.j2" %}
+{% block content %}
+  <h1>{{ vm.trade.ticker }} - trade detail</h1>
+  <section class="thesis-at-open">
+    <h2>Thesis at open</h2>
+    <p class="thesis">{{ vm.thesis or '' }}</p>
+    <p class="why-now">Why now: {{ vm.why_now or '' }}</p>
+    <p class="invalidation">Invalidation: {{ vm.invalidation_condition or '' }}</p>
+  </section>
+  <section class="annotated-chart" hx-get="{{ vm.chart_url }}" hx-trigger="load"
+           hx-swap="innerHTML" hx-headers='{"HX-Request": "true"}'>
+    <span class="chart-loading">Loading chart...</span>
+  </section>
+  <section class="chronology">
+    <h2>Chronology</h2>
+    {% include "partials/trade_chronology.html.j2" %}
+  </section>
+{% endblock %}

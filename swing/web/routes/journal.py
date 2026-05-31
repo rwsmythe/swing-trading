@@ -4,15 +4,22 @@ from __future__ import annotations
 import logging
 import threading
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 
 from swing.config_overrides import apply_overrides
 from swing.data.db import connect
 from swing.data.repos.fills import list_fills_for_trade
 from swing.data.repos.trades import get_trade
-from swing.web.trade_charts import render_trade_window_thumbnail_svg
-from swing.web.view_models.journal import DEFAULT_PAGE_SIZE, build_journal
+from swing.web.trade_charts import (
+    render_trade_window_position_svg,
+    render_trade_window_thumbnail_svg,
+)
+from swing.web.view_models.journal import (
+    DEFAULT_PAGE_SIZE,
+    build_journal,
+    build_trade_drilldown_vm,
+)
 
 log = logging.getLogger(__name__)
 
@@ -139,4 +146,90 @@ def journal_thumbnail_fragment(request: Request, trade_id: int):
          "trade_id": trade_id},
     )
     resp.headers["Cache-Control"] = _THUMBNAIL_CACHE_CONTROL
+    return resp
+
+
+@router.get("/journal/trades/{trade_id}", response_class=HTMLResponse)
+def journal_trade_detail_page(request: Request, trade_id: int):
+    """Phase 14 SB4 Slice 5 Task 5.5: the journal per-trade drill-down page.
+
+    Full-page navigation (the listing links here via a plain <a href>, NOT
+    HTMX — no 204/HX-Redirect surface). Missing trade -> 404 (the full-page
+    contract; mirror routes/trades.py review_form_page). Read-only.
+    """
+    cfg = apply_overrides(request.app.state.cfg)
+    templates = request.app.state.templates
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            vm = build_trade_drilldown_vm(conn, cfg, trade_id)
+    finally:
+        conn.close()
+    if vm is None:
+        raise HTTPException(
+            status_code=404, detail=f"Trade #{trade_id} not found",
+        )
+    return templates.TemplateResponse(
+        request, "journal_trade_detail.html.j2", {"vm": vm},
+    )
+
+
+@router.get("/journal/trades/{trade_id}/chart", response_class=HTMLResponse)
+def journal_trade_chart_fragment(request: Request, trade_id: int):
+    """Phase 14 SB4 Slice 5 Task 5.5: lazy annotated trade-window chart.
+
+    Three contracts (the fragment contract is DISTINCT from the page's 404):
+      200 + SVG          (render produced bytes)
+      200 + unavailable  (render returned None -- no coverage)
+      200 + not-found    (distinct trade-not-found copy + WARNING log; NOT 404)
+    Render exceptions are isolated (logged, never raised) -- identical
+    failure-isolation to the Slice 0 review-chart route. Read-only: zero
+    domain writes (only ``read_or_fetch_archive`` inside the renderer).
+    """
+    cfg = apply_overrides(request.app.state.cfg)
+    templates = request.app.state.templates
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            trade = get_trade(conn, trade_id)
+            if trade is None:
+                log.warning(
+                    "journal trade chart: trade not found trade_id=%s",
+                    trade_id,
+                )
+                resp = templates.TemplateResponse(
+                    request, "partials/journal_trade_chart.html.j2",
+                    {"chart_svg_bytes": None, "not_found": True},
+                )
+                resp.headers["Cache-Control"] = "private, max-age=60"
+                return resp
+            fills = list_fills_for_trade(conn, trade_id)
+    finally:
+        conn.close()
+    try:
+        svg = render_trade_window_position_svg(
+            trade=trade, fills=fills, cfg=cfg,
+        )
+    except Exception:
+        log.warning(
+            "journal trade chart render failed trade_id=%s ticker=%s",
+            trade_id, trade.ticker, exc_info=True,
+        )
+        svg = None
+    if svg is None:
+        log.warning(
+            "journal trade chart unavailable trade_id=%s ticker=%s",
+            trade_id, trade.ticker,
+        )
+    resp = templates.TemplateResponse(
+        request, "partials/journal_trade_chart.html.j2",
+        {"chart_svg_bytes": svg, "not_found": False},
+    )
+    # A None render can be a TRANSIENT no-coverage read (yfinance-empty / F6),
+    # not only the permanent "predates archive" case -- caching it would block
+    # a quick reload from retrying. Successful SVG is safe to cache 60s.
+    if svg is None:
+        resp.headers["Cache-Control"] = "private, max-age=0"
+    else:
+        resp.headers["Cache-Control"] = "private, max-age=60"
     return resp

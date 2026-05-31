@@ -1,0 +1,16 @@
+{# Phase 14 SB4 Slice 5 Task 5.5: unified per-trade chronology list. All
+   chronology summary/detail text is OPERATOR/DERIVED data -> auto-escaped
+   (NEVER `| safe`). The only `| safe` content in SB4 is the chart SVG
+   fragment. Fragment root is a <ol> (never a bare <tr>). #}
+<ol class="chronology-list">
+  {% for e in vm.chronology.entries %}
+    <li class="chron-{{ e.source }}{% if e.ts_malformed %} chron-ts-malformed{% endif %}">
+      <span class="chron-ts">{{ e.ts }}</span>
+      <span class="chron-kind">{{ e.kind }}</span>
+      <span class="chron-summary">{{ e.summary }}</span>
+      {% if e.detail %}<span class="chron-detail">{{ e.detail }}</span>{% endif %}
+    </li>
+  {% else %}
+    <li>No recorded events.</li>
+  {% endfor %}
+</ol>

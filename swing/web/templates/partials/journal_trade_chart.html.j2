@@ -1,0 +1,12 @@
+{# Phase 14 SB4 Slice 5 Task 5.5: lazy annotated trade-window chart fragment.
+   The ONLY `| safe` content in SB4 is matplotlib-generated SVG bytes;
+   operator/derived text is auto-escaped. Fragment root is a <div>/<span>
+   (never a bare <tr>). Two distinct missing-state contracts: not_found
+   (trade absent -> distinct copy + WARNING) vs no-coverage (render None). #}
+{% if chart_svg_bytes %}
+  <div class="trade-chart">{{ chart_svg_bytes.decode('utf-8') | safe }}</div>
+{% elif not_found %}
+  <span class="chart-unavailable" data-chart-reason="trade-not-found">Trade not found.</span>
+{% else %}
+  <span class="chart-unavailable" data-chart-reason="no-coverage">Chart unavailable -- trade predates the chart archive.</span>
+{% endif %}
