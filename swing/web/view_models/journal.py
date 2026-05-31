@@ -39,8 +39,16 @@ MAX_PAGE_SIZE = 50
 # user-supplied sort/filter value is validated against these frozensets; an
 # out-of-allowlist value falls back to the default + flags invalid_filter
 # (no raise / no 500). NEVER interpolate raw user values into SQL/template.
+# FIX-2: every column the listing renders as a sort control must be in this
+# allowlist or the click silently flags invalid_filter. Original set was
+# {entry_date, ticker, final_r, total_risk_dollars, state}; the 6 columns the
+# operator could not sort (open_price/shares/closing_price/chart_pattern/
+# aplus_bucket/hypothesis_label) + the 2 new FIX-1 columns (exit_date/days_open)
+# are added. None-handling for the nullable keys lives in _apply_sort_filter.
 _SORT_KEYS: frozenset[str] = frozenset(
-    {"entry_date", "ticker", "final_r", "total_risk_dollars", "state"}
+    {"entry_date", "ticker", "final_r", "total_risk_dollars", "state",
+     "open_price", "shares", "closing_price", "chart_pattern",
+     "aplus_bucket", "hypothesis_label", "exit_date", "days_open"}
 )
 _DIRS: frozenset[str] = frozenset({"asc", "desc"})
 # Concrete trade `state` CHECK enum (0014 migration) plus two virtual groups.
@@ -154,6 +162,8 @@ class JournalRowVM:
     open_price: float                 # trade.entry_price
     shares: int                       # trade.initial_shares
     total_risk_dollars: float | None  # initial_shares*(entry_price-initial_stop)
+    exit_date: str | None             # last (max) exit date; None for open trades
+    days_open: int | None             # closed: exit-entry; open: today-entry
     closing_price: float | None       # VWAP exit (None for open trades)
     final_r: float | None             # compute_actual_realized_R_effective (None=open)
     chart_pattern: str | None         # chart_pattern_operator|_algo|pattern_class
@@ -281,14 +291,15 @@ def _fetch_pclass_by_peid(conn, peids: set[int]) -> dict[int, str]:
     return {int(r[0]): r[1] for r in rows}
 
 
-def _row_for(trade, *, fills_by_trade, exits_by_trade, bucket_by_cid,
+def _row_for(trade, *, today, fills_by_trade, exits_by_trade, bucket_by_cid,
              pclass_by_peid) -> JournalRowVM:
     """Build one ``JournalRowVM`` from a trade + its pre-grouped fills/exits
     and the batched entry-flag lookup dicts.
 
     ``fills_by_trade``: trade_id -> list[Fill] (non-entry only) for the
     share-weighted exit VWAP. ``exits_by_trade``: trade_id -> list[_ExitShape]
-    (ExitLike) for the realized-R computation.
+    (ExitLike) for the realized-R computation. ``today`` (a ``date``) anchors
+    the open-trade days-open arithmetic.
     """
     reducing_fills = fills_by_trade.get(trade.id, [])
     exits = exits_by_trade.get(trade.id, [])
@@ -297,6 +308,22 @@ def _row_for(trade, *, fills_by_trade, exits_by_trade, bucket_by_cid,
         compute_actual_realized_R_effective(trade, exits)
         if trade.state in ("closed", "reviewed") and exits else None
     )
+    # FIX-1: exit / closed date = the LAST (max) exit, but only for terminal
+    # states (a partial_exited trade is still OPEN -> no closed date yet).
+    # _ExitShape.exit_date is already date-only ('YYYY-MM-DD'), so the lexical
+    # max is the latest exit (single-leg: the only one; multi-leg: the last).
+    exit_date: str | None = None
+    if trade.state in ("closed", "reviewed") and exits:
+        exit_date = max(e.exit_date for e in exits)
+    # FIX-1: days-open = (closed) last exit - entry; (open) today - entry. Parse
+    # date-only prefixes defensively; never raise on legacy/operator data.
+    days_open: int | None = None
+    try:
+        entry_d = date.fromisoformat(trade.entry_date[:10])
+        end_d = date.fromisoformat(exit_date[:10]) if exit_date else today
+        days_open = (end_d - entry_d).days
+    except (ValueError, TypeError):
+        days_open = None
     chart_pattern = (
         trade.chart_pattern_operator
         or trade.chart_pattern_algo
@@ -308,6 +335,7 @@ def _row_for(trade, *, fills_by_trade, exits_by_trade, bucket_by_cid,
         state=trade.state, open_price=trade.entry_price,
         shares=trade.initial_shares,
         total_risk_dollars=_total_risk_dollars(trade),
+        exit_date=exit_date, days_open=days_open,
         closing_price=closing, final_r=final_r,
         chart_pattern=chart_pattern,
         aplus_bucket=(
@@ -453,7 +481,8 @@ def build_journal(
     # sort/filter, THEN paginate the result.
     all_rows = [
         _row_for(
-            t, fills_by_trade=fills_by_trade, exits_by_trade=exits_by_trade,
+            t, today=today,
+            fills_by_trade=fills_by_trade, exits_by_trade=exits_by_trade,
             bucket_by_cid=bucket_by_cid, pclass_by_peid=pclass_by_peid,
         )
         for t in filtered

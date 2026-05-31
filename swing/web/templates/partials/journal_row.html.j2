@@ -22,6 +22,8 @@
   <td>{{ '%.2f' % row.open_price }}</td>
   <td>{{ row.shares }}</td>
   <td>{{ ('$%.2f' % row.total_risk_dollars) if row.total_risk_dollars is not none else 'n/a' }}</td>
+  <td>{{ row.exit_date if row.exit_date is not none else 'open' }}</td>
+  <td>{{ row.days_open if row.days_open is not none else 'n/a' }}</td>
   <td>{{ ('%.2f' % row.closing_price) if row.closing_price is not none else 'open' }}</td>
   <td>{{ ('%.2f' % row.final_r) if row.final_r is not none else 'open' }}</td>
   <td>{{ row.chart_pattern or '' }}</td>

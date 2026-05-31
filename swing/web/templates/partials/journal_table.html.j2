@@ -50,7 +50,7 @@ period={{ _q.period }}
   {% endif %}
   <thead>
     <tr class="journal-filter-row">
-      <th colspan="12">
+      <th colspan="14">
         <form class="journal-filters">
           {# Hidden inputs preserve the active period + sort/dir so an
              hx-include="closest form" on a filter change carries them. #}
@@ -101,21 +101,23 @@ period={{ _q.period }}
       {{ sort_th('Ticker', 'ticker') }}
       {{ sort_th('Entry', 'entry_date') }}
       {{ sort_th('State', 'state') }}
-      <th>Open price</th>
-      <th>Shares</th>
+      {{ sort_th('Open price', 'open_price') }}
+      {{ sort_th('Shares', 'shares') }}
       {{ sort_th('Total risk', 'total_risk_dollars') }}
-      <th>Closing price</th>
+      {{ sort_th('Exit', 'exit_date') }}
+      {{ sort_th('Days open', 'days_open') }}
+      {{ sort_th('Closing price', 'closing_price') }}
       {{ sort_th('Final R', 'final_r') }}
-      <th>Pattern</th>
-      <th>A+ bucket</th>
-      <th>Hypothesis</th>
+      {{ sort_th('Pattern', 'chart_pattern') }}
+      {{ sort_th('A+ bucket', 'aplus_bucket') }}
+      {{ sort_th('Hypothesis', 'hypothesis_label') }}
     </tr>
   </thead>
   <tbody>
     {% for row in vm.rows %}
       {% include "partials/journal_row.html.j2" %}
     {% else %}
-      <tr><td colspan="12">No trades in this period.</td></tr>
+      <tr><td colspan="14">No trades in this period.</td></tr>
     {% endfor %}
   </tbody>
 </table>
