@@ -1,0 +1,57 @@
+{# Phase 14 SB4 Slice 3 (OQ-9) — the journal listing <table>, extracted so the
+   SAME include serves BOTH the full page (journal.html.j2) AND the HX sort/filter
+   fragment (routes/journal.py HX branch). Hand-duplicating this markup would
+   silently drift (the OOB-drift gotcha) — keep this the single source.
+
+   The fragment ROOT is `<table id="journal-table">` (NOT a bare <tr>), so the
+   HTMX synthetic-table-wrap (makeFragment) cannot fire on an outerHTML swap.
+
+   Query-state preservation (WP-R2 M#5): every sort control URL is built from the
+   FULL current query state (vm.query_state) overriding only `sort`/`dir`, so a
+   sort click NEVER drops the active filters. `_filters` holds the carry-over
+   filter querystring (period + any active filter_*); each sort link appends its
+   own sort/dir on top.
+
+   ALL operator/derived text is auto-escaped (NO `| safe`). #}
+{%- set _q = vm.query_state -%}
+{%- set _filters -%}
+period={{ _q.period }}
+{%- if _q.filter_state %}&filter_state={{ _q.filter_state }}{% endif -%}
+{%- if _q.filter_pattern %}&filter_pattern={{ _q.filter_pattern }}{% endif -%}
+{%- if _q.filter_aplus %}&filter_aplus={{ _q.filter_aplus }}{% endif -%}
+{%- endset -%}
+{# A sort header cell: clicking flips to `dir` for `key`, carrying all filters. #}
+{%- macro sort_th(label, key) -%}
+  {%- set _dir = 'asc' if (_q.sort == key and _q.dir == 'desc') else 'desc' -%}
+  <th><a hx-get="/journal?{{ _filters }}&sort={{ key }}&dir={{ _dir }}"
+       hx-target="#journal-table" hx-swap="outerHTML"
+       hx-headers='{"HX-Request": "true"}'>{{ label }}{% if _q.sort == key %} {{ '▼' if _q.dir == 'desc' else '▲' }}{% endif %}</a></th>
+{%- endmacro -%}
+<table id="journal-table">
+  {% if vm.invalid_filter %}
+  <caption class="invalid-filter-notice">Invalid filter, showing all.</caption>
+  {% endif %}
+  <thead>
+    <tr>
+      <th>Chart</th>
+      {{ sort_th('Ticker', 'ticker') }}
+      {{ sort_th('Entry', 'entry_date') }}
+      {{ sort_th('State', 'state') }}
+      <th>Open price</th>
+      <th>Shares</th>
+      {{ sort_th('Total risk', 'total_risk_dollars') }}
+      <th>Closing price</th>
+      {{ sort_th('Final R', 'final_r') }}
+      <th>Pattern</th>
+      <th>A+ bucket</th>
+      <th>Hypothesis</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in vm.rows %}
+      {% include "partials/journal_row.html.j2" %}
+    {% else %}
+      <tr><td colspan="12">No trades in this period.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
