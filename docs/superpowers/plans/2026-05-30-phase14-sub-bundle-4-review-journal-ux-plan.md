@@ -1200,12 +1200,18 @@ def test_bad_filter_returns_inpage_notice_not_400(client):
 Add a test asserting sort-after-filter preserves the filter:
 
 ```python
+import re
+
 def test_sort_link_preserves_active_filters(client, seeded_mixed_trades):
     r = client.get("/journal?filter_state=reviewed&filter_aplus=aplus",
                    headers={"HX-Request": "true"})
-    # the rendered sort controls must carry the active filters forward
-    assert "filter_state=reviewed" in r.text
-    assert "filter_aplus=aplus" in r.text
+    # WP-R5 m#1: assert the SPECIFIC Final R sort control's hx-get carries the
+    # active filters (not merely that the params appear somewhere on the page).
+    m = re.search(r'hx-get="([^"]*sort=final_r[^"]*)"', r.text)
+    assert m, "Final R sort control not found"
+    sort_url = m.group(1)
+    assert "filter_state=reviewed" in sort_url
+    assert "filter_aplus=aplus" in sort_url
 ```
 
 - [ ] **Step 4: Run, verify pass.**
@@ -1674,12 +1680,20 @@ def test_daily_snapshot_field_map(conn, trade_with_daily_snapshot):
 
 def test_event_log_detail_carries_volume_rs_regime(conn,
         trade_with_event_log_context):
-    # WP-R3 M#3: event_log detail must include volume/RS/regime + notes.
+    # WP-R3 M#3 / WP-R5 m#2: the fixture populates ALL event_log context columns
+    # (volume_behavior, relative_strength_status, market_regime_change,
+    # management_notes); the detail map must carry EACH (not just one).
     chron = build_trade_chronology(conn, trade_with_event_log_context.id)
     ev = next(e for e in chron.entries
               if e.source == "daily_management" and e.kind != "snapshot")
     d = ev.detail or ""
-    assert ("vol=" in d) or ("rs=" in d) or ("regime_change=" in d)
+    assert "vol=" in d and "rs=" in d and "regime_change=" in d
+    assert trade_with_event_log_context.notes_marker in d  # management_notes carried
+```
+
+(The `trade_with_event_log_context` fixture MUST populate `volume_behavior`, `relative_strength_status`, `market_regime_change`, and a `management_notes` carrying a unique `notes_marker` so each token is individually asserted — WP-R5 m#2.)
+
+```python
 
 
 def test_event_log_stop_adjust_precedence(conn, trade_with_stop_adjust_event_log):
