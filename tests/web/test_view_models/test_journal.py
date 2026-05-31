@@ -14,11 +14,13 @@ def test_build_journal_default_period_month(seeded_db):
     assert vm.stats.n_trades == 0
 
 
-def test_build_journal_rejects_unknown_period(seeded_db):
+def test_build_journal_clamps_unknown_period_to_default(seeded_db):
+    # Phase 14 SB4 Slice 2: an unknown period CLAMPS to the default 'month'
+    # instead of raising, so a bad `period` query renders the page (no 500/422).
     from swing.web.view_models.journal import build_journal
     cfg, _ = seeded_db
-    with pytest.raises(ValueError, match="period"):
-        build_journal(cfg=cfg, period="fortnight")
+    vm = build_journal(cfg=cfg, period="fortnight")
+    assert vm.period == "month"
 
 
 # ---------------------------------------------------------------------------

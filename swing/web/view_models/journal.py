@@ -20,6 +20,10 @@ Period = Literal["week", "month", "quarter", "ytd", "all"]
 
 _ALLOWED_PERIODS: frozenset[str] = frozenset({"week", "month", "quarter", "ytd", "all"})
 
+# Phase 14 SB4 Slice 2 — pagination. The single page-size figure governs §5.3.
+DEFAULT_PAGE_SIZE = 22
+MAX_PAGE_SIZE = 50
+
 
 @dataclass(frozen=True)
 class _ExitShape:
@@ -128,6 +132,11 @@ class JournalVM:
     flags: list[BehavioralFlag]
     trades: list[Trade]
     rows: tuple[JournalRowVM, ...] = ()
+    # Phase 14 SB4 Slice 2 — pagination metadata for the listing template.
+    page: int = 1
+    page_size: int = DEFAULT_PAGE_SIZE
+    total_rows: int = 0
+    has_next: bool = False
     # Fields required by base.html.j2 (uniform banner guards)
     session_date: str = ""
     stale_banner: str | None = None
@@ -225,11 +234,18 @@ def _row_for(trade, *, fills_by_trade, exits_by_trade, bucket_by_cid,
     )
 
 
-def build_journal(*, cfg: Config, period: str = "month") -> JournalVM:
+def build_journal(
+    *, cfg: Config, period: str = "month",
+    page: int = 1, page_size: int = DEFAULT_PAGE_SIZE,
+) -> JournalVM:
+    # Slice 2 (Codex Re-R2 m#2 intent extended to the listing route): an
+    # unknown period CLAMPS to the default instead of raising, so a bad
+    # `period` query renders the page rather than 500/422-ing.
     if period not in _ALLOWED_PERIODS:
-        raise ValueError(
-            f"unknown period {period!r}; allowed: {sorted(_ALLOWED_PERIODS)}"
-        )
+        period = "month"
+    # Clamp pagination inputs to sane bounds.
+    page_size = max(1, min(int(page_size), MAX_PAGE_SIZE))
+    page = max(1, int(page))
     from swing.metrics.discrepancies import (
         count_recent_multi_leg_auto_corrections,
         count_unresolved_material,
@@ -279,20 +295,28 @@ def build_journal(*, cfg: Config, period: str = "month") -> JournalVM:
     stats = compute_stats(trades=filtered, exits=exits)
     # Flags computed over ALL trades (cross-period behavioral patterns).
     flags = compute_flags(trades=trades, exits=exits, weather_runs=weather)
-    # Slice 2 — per-trade enrichment rows over the FILTERED trade set.
+    # Slice 2 — per-trade enrichment rows over the FILTERED trade set,
+    # sliced to the requested page window. Stats/flags stay over the full
+    # filtered set (above); only the displayed rows paginate.
     exits_by_trade: dict[int, list] = {}
     for e in exits:
         exits_by_trade.setdefault(e.trade_id, []).append(e)
+    total_rows = len(filtered)
+    start = (page - 1) * page_size
+    page_trades = filtered[start:start + page_size]
+    has_next = (start + page_size) < total_rows
     rows = tuple(
         _row_for(
             t, fills_by_trade=fills_by_trade, exits_by_trade=exits_by_trade,
             bucket_by_cid=bucket_by_cid, pclass_by_peid=pclass_by_peid,
         )
-        for t in filtered
+        for t in page_trades
     )
     return JournalVM(
         period=period, stats=stats, flags=list(flags),
         trades=list(filtered), rows=rows,
+        page=page, page_size=page_size,
+        total_rows=total_rows, has_next=has_next,
         session_date=today.isoformat(),
         unresolved_material_discrepancies_count=unresolved,
         recent_multi_leg_auto_correction_count=recent_multi_leg,
