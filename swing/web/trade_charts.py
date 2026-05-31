@@ -30,7 +30,7 @@ def _today() -> date:
     return last_completed_session(datetime.now())
 
 
-def _exit_date_for(trade: "Trade", fills) -> date | None:
+def _exit_date_for(trade: Trade, fills) -> date | None:
     """Last non-entry fill's date, or None (open trade / no reducing fill)."""
     reducing = [f for f in fills if f.action != "entry"]
     if not reducing:
@@ -40,7 +40,7 @@ def _exit_date_for(trade: "Trade", fills) -> date | None:
 
 
 def _trade_window_bars(*, ticker, entry_date: date, exit_date: date | None,
-                       cfg: "Config",
+                       cfg: Config,
                        pad_before_days: int = PAD_BEFORE_DAYS,
                        pad_after_days: int = PAD_AFTER_DAYS) -> pd.DataFrame | None:
     """Archive slice [entry-pad_before .. (exit or today)+pad_after].
@@ -63,3 +63,19 @@ def _trade_window_bars(*, ticker, entry_date: date, exit_date: date | None,
     if sliced.index.min().date() > entry_date:  # #29: entry must be visible
         return None
     return sliced
+
+
+@_serialized_render
+def render_trade_window_position_svg(*, trade: Trade, fills,
+                                     cfg: Config) -> bytes | None:
+    """Full candlestick trade chart over the trade window. Reuses
+    charts.render_position_detail_svg. None on no-coverage. Render-direct."""
+    entry_date = date.fromisoformat(trade.entry_date[:10])
+    exit_date = _exit_date_for(trade, fills)
+    bars = _trade_window_bars(
+        ticker=trade.ticker, entry_date=entry_date, exit_date=exit_date, cfg=cfg)
+    if bars is None:
+        return None
+    return render_position_detail_svg(
+        ticker=trade.ticker, bars=bars, trade=trade, fills=fills,
+        current_stop=trade.current_stop)
