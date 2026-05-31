@@ -1,5 +1,7 @@
 # schwabdev v2.5.1 -> v3.0.5 Upgrade -- Brainstorming Dispatch Brief
 
+> **STATUS (2026-05-31): DEFERRED to PHASE 15 -- NOT dispatched.** The operator chose path A (keep schwabdev 2.5.1 for Phase 14). This brief is a PRE-DRAFTED scoping artifact for a future Phase-15 arc (bundled with Fernet token encryption); do NOT dispatch it as part of Phase 14. Scoping basis: `docs/schwabdev-v3-upgrade-investigation-findings.md` (`9d4f6a4`). Tracked at `docs/phase3e-todo.md` `#9`. (An earlier same-session commit `d69f136` briefly framed this as a Phase-14 prerequisite; that was corrected -- this is Phase 15.)
+
 **Audience:** Fresh Claude Code instance dispatched as the schwabdev-v3-upgrade brainstorming implementer. No prior conversation context.
 
 **Mission:** Produce a brainstorming design spec for migrating the project off **schwabdev 2.5.1** to **3.0.5** (latest). This is an **operator-inserted prerequisite arc** sequenced FIRST in the Phase 14 close-out tail (before SB5.5), chosen deliberately for v3's better data-handling + the optional Fernet token encryption. **A deep scoping investigation already exists -- BUILD ON IT, do not re-investigate from scratch:** `docs/schwabdev-v3-upgrade-investigation-findings.md` (committed `9d4f6a4`; orchestrator-verified). Your job is to turn that findings doc into a migration DESIGN SPEC: the migration strategy, the token-storage rewrite, the breaking-change fixes, the test strategy, the operator re-setup UX, the L2-LOCK re-anchor, and the design OQs.
