@@ -138,7 +138,8 @@ def _register_exception_handlers(app: FastAPI) -> None:
 # ---- A-3 web market-data ladder install (mirrors pipeline runner) ----
 # SB5.5 / Phase 14: install the EXISTING production-gated market-data ladder on
 # the long-lived `swing web` caches at full parity, bounded by the L9 gates.
-# ZERO new `schwabdev.Client.*` call sites (reuses construct_authenticated_client).
+# ZERO new schwabdev client-construction call sites (reuses the shared
+# construct_authenticated_client factory; L2 LOCK).
 
 _WEB_OPEN_TRADE_MEMO_TTL_S = 60.0
 _WEB_LADDER_FALLBACK_COOLDOWN_THRESHOLD = 3
