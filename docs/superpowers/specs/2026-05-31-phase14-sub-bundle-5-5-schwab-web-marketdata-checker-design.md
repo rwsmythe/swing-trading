@@ -382,7 +382,7 @@ Per the brief's deliverable outline (which lists schema impact at both section 8
 - Ephemeral sidecar for liveness -- avoids a v24 (section 5.4).
 - Instance-level `update_tokens` wrap -- avoids supervising schwabdev's private thread (section 5.2).
 - Open-trade-scope gate + TTL cache as the primary rate-limit defense; closure-local Schwab cooldown reusing `circuit_breaker_cooldown_seconds` -- no new breaker subsystem (section 4.5).
-- L9c reduced to a header-name addition on existing plumbing (section 4.5.3).
+- L9c reduced to a header-name addition on existing plumbing (section 4.5.4).
 - CLI-only liveness (L8) -- no web health badge.
 
 ### V2 candidates
