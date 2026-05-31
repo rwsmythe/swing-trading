@@ -61,6 +61,8 @@ _VIRTUAL_STATE_GROUPS: dict[str, frozenset[str]] = {
     "open": frozenset({"entered", "managing", "partial_exited"}),
     "closed_any": frozenset({"closed", "reviewed"}),
 }
+# FIX-3: the open (not-yet-closed) states, always in the listing scope.
+_OPEN_STATES: tuple[str, ...] = ("entered", "managing", "partial_exited")
 # pattern_class CHECK enum (0020/0022/0023 migrations, spec §3.0 LOCK).
 _FILTER_PATTERNS: frozenset[str] = frozenset(
     {"vcp", "flat_base", "cup_with_handle", "high_tight_flag",
@@ -425,6 +427,16 @@ def build_journal(
     # `period` query renders the page rather than 500/422-ing.
     if period not in _ALLOWED_PERIODS:
         period = "month"
+    # FIX-3 (part 1): the filter <select>'s "All" option emits value="", and
+    # hx-include="closest form" co-submits every OTHER select's "" on a change.
+    # "" is "no filter", NOT an out-of-allowlist token — normalize it (and any
+    # whitespace-only value) to None BEFORE allowlist validation so a valid
+    # selection that co-submits empty siblings never trips invalid_filter.
+    sort = (sort or "").strip() or None
+    dir = (dir or "").strip() or None
+    filter_state = (filter_state or "").strip() or None
+    filter_pattern = (filter_pattern or "").strip() or None
+    filter_aplus = (filter_aplus or "").strip() or None
     # Clamp pagination inputs to sane bounds.
     page_size = max(1, min(int(page_size), MAX_PAGE_SIZE))
     page = max(1, int(page))
@@ -452,14 +464,29 @@ def build_journal(
                 fills_by_trade.setdefault(f.trade_id, []).append(f)
             # Slice 2 — period-filter here so the batched entry-flag joins run
             # inside the same connection over the FILTERED trade set only.
+            # `filtered` is closed-date based, so it returns CLOSED trades only
+            # (except period='all'). It drives stats/flags below.
             filtered = period_filter(
                 trades, exits, period=period, today=today.isoformat(),
             )
+            # FIX-3 (part 2): the LISTING scope always includes open trades.
+            # Open trades have no closed date, so period_filter drops them — but
+            # they belong in the browse listing regardless of period (P14.N6),
+            # so an 'Open' filter under the default period actually returns
+            # them. Dedup by id (period='all' already has the open trades).
+            listing_by_id: dict[int, Trade] = {
+                t.id: t for t in filtered if t.id is not None
+            }
+            for t in trades:
+                if t.state in _OPEN_STATES and t.id is not None:
+                    listing_by_id.setdefault(t.id, t)
+            listing_trades = list(listing_by_id.values())
             candidate_ids = {
-                t.candidate_id for t in filtered if t.candidate_id is not None
+                t.candidate_id for t in listing_trades
+                if t.candidate_id is not None
             }
             peids = {
-                t.pattern_evaluation_id for t in filtered
+                t.pattern_evaluation_id for t in listing_trades
                 if t.pattern_evaluation_id is not None
             }
             bucket_by_cid = _fetch_bucket_by_cid(conn, candidate_ids)
@@ -485,7 +512,7 @@ def build_journal(
             fills_by_trade=fills_by_trade, exits_by_trade=exits_by_trade,
             bucket_by_cid=bucket_by_cid, pclass_by_peid=pclass_by_peid,
         )
-        for t in filtered
+        for t in listing_trades
     ]
     sorted_rows, invalid_filter = _apply_sort_filter(
         all_rows, sort=sort, dir=dir, filter_state=filter_state,
