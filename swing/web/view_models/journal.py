@@ -1,7 +1,8 @@
 """JournalVM + builder."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+import logging
+from dataclasses import dataclass, field
 from datetime import date
 from typing import Literal
 
@@ -16,6 +17,8 @@ from swing.journal.stats import JournalStats, compute_stats, period_filter
 from swing.trades.review import compute_actual_realized_R_effective
 from swing.web.view_models.trades import _exit_vwap, _total_risk_dollars
 
+_log = logging.getLogger(__name__)
+
 Period = Literal["week", "month", "quarter", "ytd", "all"]
 
 _ALLOWED_PERIODS: frozenset[str] = frozenset({"week", "month", "quarter", "ytd", "all"})
@@ -23,6 +26,32 @@ _ALLOWED_PERIODS: frozenset[str] = frozenset({"week", "month", "quarter", "ytd",
 # Phase 14 SB4 Slice 2 — pagination. The single page-size figure governs §5.3.
 DEFAULT_PAGE_SIZE = 22
 MAX_PAGE_SIZE = 50
+
+# Phase 14 SB4 Slice 3 — server-side sort/filter allowlists (OQ-9). Every
+# user-supplied sort/filter value is validated against these frozensets; an
+# out-of-allowlist value falls back to the default + flags invalid_filter
+# (no raise / no 500). NEVER interpolate raw user values into SQL/template.
+_SORT_KEYS: frozenset[str] = frozenset(
+    {"entry_date", "ticker", "final_r", "total_risk_dollars", "state"}
+)
+_DIRS: frozenset[str] = frozenset({"asc", "desc"})
+# Concrete trade `state` CHECK enum (0014 migration) plus two virtual groups.
+_FILTER_STATES: frozenset[str] = frozenset(
+    {"entered", "managing", "partial_exited", "closed", "reviewed",
+     "open", "closed_any"}
+)
+# Virtual state groups -> the concrete states they expand to.
+_VIRTUAL_STATE_GROUPS: dict[str, frozenset[str]] = {
+    "open": frozenset({"entered", "managing", "partial_exited"}),
+    "closed_any": frozenset({"closed", "reviewed"}),
+}
+# pattern_class CHECK enum (0020/0022/0023 migrations, spec §3.0 LOCK).
+_FILTER_PATTERNS: frozenset[str] = frozenset(
+    {"vcp", "flat_base", "cup_with_handle", "high_tight_flag",
+     "double_bottom_w"}
+)
+# spec §5.2 "has-A+ flag" filter (Codex R1 M#5).
+_FILTER_APLUS: frozenset[str] = frozenset({"aplus", "non_aplus"})
 
 
 @dataclass(frozen=True)
@@ -137,6 +166,18 @@ class JournalVM:
     page_size: int = DEFAULT_PAGE_SIZE
     total_rows: int = 0
     has_next: bool = False
+    # Phase 14 SB4 Slice 3 — server-side sort/filter state (OQ-9). `sort`/`dir`/
+    # `filter_*` reflect the APPLIED (post-fallback) values; `invalid_filter`
+    # is True when any supplied value was out-of-allowlist (default substituted,
+    # no raise). `query_state` carries ONLY the set params for URL preservation
+    # (WP-R2 M#5: a sort link must not drop active filters).
+    invalid_filter: bool = False
+    sort: str | None = None
+    dir: str | None = None
+    filter_state: str | None = None
+    filter_pattern: str | None = None
+    filter_aplus: str | None = None
+    query_state: dict = field(default_factory=dict)
     # Fields required by base.html.j2 (uniform banner guards)
     session_date: str = ""
     stale_banner: str | None = None
@@ -234,9 +275,78 @@ def _row_for(trade, *, fills_by_trade, exits_by_trade, bucket_by_cid,
     )
 
 
+def _apply_sort_filter(
+    rows: list[JournalRowVM],
+    *,
+    sort: str | None,
+    dir: str | None,
+    filter_state: str | None,
+    filter_pattern: str | None,
+    filter_aplus: str | None,
+) -> tuple[list[JournalRowVM], bool]:
+    """Allowlist-validate then apply filter + sort over already-built rows.
+
+    Pure in-memory (no DB). Out-of-allowlist values fall back to the default
+    and set ``invalid_filter=True`` (logged WARNING, never raised). Returns
+    ``(filtered_sorted_rows, invalid_filter)``.
+    """
+    invalid = False
+
+    # --- filters (validate each independently; bad value => drop the filter)
+    fstate = filter_state
+    if fstate is not None and fstate not in _FILTER_STATES:
+        _log.warning("journal: invalid filter_state %r; ignoring", fstate)
+        fstate, invalid = None, True
+    fpattern = filter_pattern
+    if fpattern is not None and fpattern not in _FILTER_PATTERNS:
+        _log.warning("journal: invalid filter_pattern %r; ignoring", fpattern)
+        fpattern, invalid = None, True
+    faplus = filter_aplus
+    if faplus is not None and faplus not in _FILTER_APLUS:
+        _log.warning("journal: invalid filter_aplus %r; ignoring", faplus)
+        faplus, invalid = None, True
+
+    out = rows
+    if fstate is not None:
+        wanted = _VIRTUAL_STATE_GROUPS.get(fstate, frozenset({fstate}))
+        out = [r for r in out if r.state in wanted]
+    if fpattern is not None:
+        out = [r for r in out if r.chart_pattern == fpattern]
+    if faplus is not None:
+        if faplus == "aplus":
+            out = [r for r in out if r.aplus_bucket == "aplus"]
+        else:  # non_aplus
+            out = [r for r in out if r.aplus_bucket != "aplus"]
+
+    # --- sort (validate key + dir; bad => default = no sort / leave order)
+    skey = sort
+    if skey is not None and skey not in _SORT_KEYS:
+        _log.warning("journal: invalid sort key %r; ignoring", skey)
+        skey, invalid = None, True
+    sdir = dir
+    if sdir is not None and sdir not in _DIRS:
+        _log.warning("journal: invalid sort dir %r; ignoring", sdir)
+        sdir, invalid = None, True
+    if skey is not None:
+        reverse = (sdir == "desc")
+        # None-last for numeric columns regardless of direction: sort on a
+        # (is_none, value) key so None rows always trail. For asc, None-last
+        # is achieved by the is_none primary key; reverse flips both, so we
+        # sort the present-value rows separately and append None rows.
+        present = [r for r in out if getattr(r, skey) is not None]
+        missing = [r for r in out if getattr(r, skey) is None]
+        present.sort(key=lambda r: getattr(r, skey), reverse=reverse)
+        out = present + missing
+
+    return out, invalid
+
+
 def build_journal(
     *, cfg: Config, period: str = "month",
     page: int = 1, page_size: int = DEFAULT_PAGE_SIZE,
+    sort: str | None = None, dir: str | None = None,
+    filter_state: str | None = None, filter_pattern: str | None = None,
+    filter_aplus: str | None = None,
 ) -> JournalVM:
     # Slice 2 (Codex Re-R2 m#2 intent extended to the listing route): an
     # unknown period CLAMPS to the default instead of raising, so a bad
@@ -301,22 +411,48 @@ def build_journal(
     exits_by_trade: dict[int, list] = {}
     for e in exits:
         exits_by_trade.setdefault(e.trade_id, []).append(e)
-    total_rows = len(filtered)
-    start = (page - 1) * page_size
-    page_trades = filtered[start:start + page_size]
-    has_next = (start + page_size) < total_rows
-    rows = tuple(
+    # Slice 3 (OQ-9): sort/filter operate on enriched rows (final_r, pattern,
+    # A+ bucket), so build ALL rows over the period-filtered set FIRST, then
+    # sort/filter, THEN paginate the result.
+    all_rows = [
         _row_for(
             t, fills_by_trade=fills_by_trade, exits_by_trade=exits_by_trade,
             bucket_by_cid=bucket_by_cid, pclass_by_peid=pclass_by_peid,
         )
-        for t in page_trades
+        for t in filtered
+    ]
+    sorted_rows, invalid_filter = _apply_sort_filter(
+        all_rows, sort=sort, dir=dir, filter_state=filter_state,
+        filter_pattern=filter_pattern, filter_aplus=filter_aplus,
     )
+    total_rows = len(sorted_rows)
+    start = (page - 1) * page_size
+    rows = tuple(sorted_rows[start:start + page_size])
+    has_next = (start + page_size) < total_rows
+    # query_state carries ONLY the set params (WP-R2 M#5 URL preservation).
+    # `period` always present; sort/dir/filter_* only when supplied + valid.
+    query_state: dict[str, str] = {"period": period}
+    if sort is not None and sort in _SORT_KEYS:
+        query_state["sort"] = sort
+    if dir is not None and dir in _DIRS:
+        query_state["dir"] = dir
+    if filter_state is not None and filter_state in _FILTER_STATES:
+        query_state["filter_state"] = filter_state
+    if filter_pattern is not None and filter_pattern in _FILTER_PATTERNS:
+        query_state["filter_pattern"] = filter_pattern
+    if filter_aplus is not None and filter_aplus in _FILTER_APLUS:
+        query_state["filter_aplus"] = filter_aplus
     return JournalVM(
         period=period, stats=stats, flags=list(flags),
         trades=list(filtered), rows=rows,
         page=page, page_size=page_size,
         total_rows=total_rows, has_next=has_next,
+        invalid_filter=invalid_filter,
+        sort=query_state.get("sort"), dir=query_state.get("dir"),
+        filter_state=query_state.get("filter_state"),
+        filter_pattern=query_state.get("filter_pattern"),
+        filter_aplus=query_state.get("filter_aplus"),
+        query_state=query_state,
         session_date=today.isoformat(),
         unresolved_material_discrepancies_count=unresolved,
         recent_multi_leg_auto_correction_count=recent_multi_leg,
