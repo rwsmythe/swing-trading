@@ -2656,7 +2656,13 @@ def review_chart_fragment(request: Request, trade_id: int):
         request, "partials/review_chart.html.j2",
         {"chart_svg_bytes": svg, "not_found": False},
     )
-    resp.headers["Cache-Control"] = "private, max-age=60"
+    # A None render can be a TRANSIENT no-coverage read (yfinance-empty / F6),
+    # not only the permanent "predates archive" case -- caching it 60s would
+    # block a quick reload from retrying. Successful SVG is safe to cache 60s.
+    if svg is None:
+        resp.headers["Cache-Control"] = "private, max-age=0"
+    else:
+        resp.headers["Cache-Control"] = "private, max-age=60"
     return resp
 
 

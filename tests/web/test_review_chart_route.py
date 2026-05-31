@@ -66,7 +66,10 @@ def test_review_chart_200_svg(app_with_closed_trade, monkeypatch):
         r = client.get(f"/trades/{tid}/review/chart",
                        headers={"HX-Request": "true"})
     assert r.status_code == 200 and "<svg" in r.text
-    assert "private" in r.headers.get("cache-control", "")
+    cache_control = r.headers.get("cache-control", "")
+    assert "private" in cache_control
+    # Successful SVG is safe to cache briefly.
+    assert "max-age=60" in cache_control
 
 
 def test_review_chart_200_unavailable(app_with_closed_trade, monkeypatch):
@@ -77,6 +80,12 @@ def test_review_chart_200_unavailable(app_with_closed_trade, monkeypatch):
     with TestClient(app_with_closed_trade) as client:
         r = client.get(f"/trades/{tid}/review/chart")
     assert r.status_code == 200 and "unavailable" in r.text.lower()
+    # A None render can be a TRANSIENT yfinance-empty/F6 read -- caching it
+    # would block a quick reload from retrying, so it must NOT be cached.
+    cache_control = r.headers.get("cache-control", "")
+    assert "private" in cache_control
+    assert "max-age=0" in cache_control
+    assert "max-age=60" not in cache_control
 
 
 def test_review_chart_200_not_found_distinct(app_with_closed_trade, caplog):
