@@ -88,11 +88,98 @@ def _trade_event_entries(conn, trade_id) -> list[ChronologyEntry]:
     return out
 
 
+def _daily_management_entries(conn, trade_id) -> list[ChronologyEntry]:
+    # Verified columns (0016_phase8_daily_management.sql). Only is_superseded=0
+    # rows (V1 DECIDED: superseded rows EXCLUDED outright). The mixed-case
+    # column names (open_MFE_R_to_date / trail_MA_eligibility_flag) are REAL —
+    # match case exactly. MFE/MAE are R-multiples (NOT percentages).
+    rows = conn.execute(
+        "SELECT record_type, review_date, open_MFE_R_to_date, open_MAE_R_to_date, "
+        "       maturity_stage, trail_MA_eligibility_flag, trail_MA_candidate_price, "
+        "       stop_changed, prior_stop, new_stop, stop_change_reason, "
+        "       action_taken, action_reason, thesis_status, "
+        "       volume_behavior, relative_strength_status, market_regime_change, "
+        "       sector_condition_change, news_or_event_update, management_notes "
+        "FROM daily_management_records "
+        "WHERE trade_id = ? AND is_superseded = 0 ORDER BY review_date",
+        (trade_id,)).fetchall()
+    out = []
+    for r in rows:
+        (rtype, rdate, mfe, mae, maturity, trail_elig, trail_price,
+         stop_changed, prior_stop, new_stop, stop_reason,
+         action_taken, action_reason, thesis_status,
+         vol, rs, regime, sector, news, notes) = r
+        ts_key, malformed = _normalize_ts(rdate, precision="date")  # WP-R3 M#2
+        if rtype == "daily_snapshot":
+            # WP-R3 M#3: MFE/MAE are R-multiples; include trail-MA eligibility.
+            detail = (f"MFE={mfe}R MAE={mae}R; maturity={maturity}; "
+                      f"trail_MA_eligible={trail_elig} (cand={trail_price})")
+            out.append(ChronologyEntry(
+                ts=ts_key, source="daily_management", kind="snapshot",
+                summary=f"snapshot MFE {mfe}R / MAE {mae}R",
+                detail=detail, ts_malformed=malformed))
+        else:  # event_log -- kind precedence over the REAL columns
+            if stop_changed == 1:
+                kind, summary = "stop_adjust", f"{prior_stop}->{new_stop}"
+            elif action_taken not in (None, "no_action"):
+                kind, summary = (f"action:{action_taken}",
+                                 (action_reason or str(action_taken)))
+            elif thesis_status:
+                kind, summary = "thesis", str(thesis_status)
+            else:
+                kind, summary = "management_event", "management event"
+            # WP-R3 M#3: include volume/RS/regime + management notes in detail.
+            detail_bits = [b for b in (
+                stop_reason, f"vol={vol}" if vol else None,
+                f"rs={rs}" if rs else None,
+                f"regime_change={regime}" if regime is not None else None,
+                f"sector_change={sector}" if sector is not None else None,
+                f"news={news}" if news else None, notes) if b]
+            out.append(ChronologyEntry(
+                ts=ts_key, source="daily_management", kind=kind, summary=summary,
+                detail=("; ".join(str(b) for b in detail_bits) or None),
+                ts_malformed=malformed))
+    return out
+
+
+def _review_entry(conn, trade_id) -> list[ChronologyEntry]:
+    # Verified trades review columns (models.py:214-223): reviewed_at,
+    # process_grade, lesson_learned, mistake_tags (JSON-list TEXT).
+    row = conn.execute(
+        "SELECT reviewed_at, process_grade, lesson_learned, mistake_tags "
+        "FROM trades WHERE id = ? AND reviewed_at IS NOT NULL",
+        (trade_id,)).fetchone()
+    if not row:
+        return []
+    reviewed_at, grade, lesson, tags = row
+    one_line = (lesson or "").splitlines()[0] if lesson else ""
+    ts_key, malformed = _normalize_ts(reviewed_at, precision="datetime")
+    # WP-R3 M#4: detail carries the full lesson AND the mistake tags. Decode
+    # the JSON tag list best-effort into a readable form for display.
+    tag_display: str | None = None
+    if tags:
+        try:
+            parsed = json.loads(tags)
+            if isinstance(parsed, list):
+                tag_display = ", ".join(str(t) for t in parsed)
+            else:
+                tag_display = str(tags)
+        except (ValueError, TypeError):
+            tag_display = str(tags)
+    detail = "; ".join(b for b in (lesson, tag_display) if b)
+    return [ChronologyEntry(
+        ts=ts_key, source="review", kind="review",
+        summary=f"review {grade or ''} {one_line}".strip(),
+        detail=(detail or None), ts_malformed=malformed)]
+
+
 def build_trade_chronology(conn, trade_id: int) -> TradeChronology:
     entries: list[ChronologyEntry] = []
     entries += _fill_entries(conn, trade_id)
     entries += _trade_event_entries(conn, trade_id)
-    # Task 5.3 adds daily_management + review.
+    entries += _daily_management_entries(conn, trade_id)
+    entries += _review_entry(conn, trade_id)
+    # review_log is EXCLUDED entirely (cadence table, NO trade_id).
     return TradeChronology(trade_id=trade_id, entries=_sorted(entries))
 
 
