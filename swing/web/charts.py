@@ -26,10 +26,12 @@ Per L8 LOCK (plan §B.7 + T3.SB2 hotfix ``cf3c489`` discipline): the
 """
 from __future__ import annotations
 
+import functools
 import io
 import json
 import logging
 import math
+import threading
 from dataclasses import dataclass
 from datetime import date
 from typing import Any
@@ -71,6 +73,25 @@ except ImportError as exc:  # pragma: no cover - install gate
     ) from exc
 
 logger = logging.getLogger(__name__)
+
+# Process-wide matplotlib render lock. charts.py renders through pyplot GLOBAL
+# state (matplotlib.pyplot as plt, mpf.plot, plt.subplots, plt.close) which is
+# NOT thread-safe and has no other serialization. Every top-level web render
+# path acquires this ONCE at its boundary (Codex R3 M#2 / R4 M#1: process-wide,
+# not SB4-only). RLock (reentrant) so a helper that delegates to another
+# serialized renderer on the same thread cannot self-deadlock (Codex R5 M#1).
+_RENDER_LOCK = threading.RLock()
+
+
+def _serialized_render(fn):
+    """Serialize a top-level SVG renderer under the process-wide render lock."""
+    @functools.wraps(fn)
+    def _wrapped(*args, **kwargs):
+        with _RENDER_LOCK:
+            return fn(*args, **kwargs)
+    _wrapped._is_serialized_render = True  # marker for the coverage test
+    return _wrapped
+
 
 # Chart dimensions per spec §C.5 chart surface inventory.
 _WATCHLIST_THUMBNAIL_SIZE_PX = (200, 100)
@@ -489,6 +510,7 @@ def _render_candles_fig(
 # ---------------------------------------------------------------------------
 
 
+@_serialized_render
 def render_watchlist_thumbnail_svg(
     *, ticker: str, bars: pd.DataFrame, ma_lines: list[int]
 ) -> bytes:
@@ -537,6 +559,7 @@ def render_watchlist_thumbnail_svg(
 # ---------------------------------------------------------------------------
 
 
+@_serialized_render
 def render_ticker_detail_svg(
     *, ticker: str, bars: pd.DataFrame,
     pattern_evaluation: PatternEvaluation | None = None,
@@ -625,6 +648,7 @@ def _bulz_target_price(trade: Trade) -> float | None:
     return trade.entry_price + trade.planned_target_R * r_unit
 
 
+@_serialized_render
 def render_position_detail_svg(
     *, ticker: str, bars: pd.DataFrame, trade: Trade,
     fills: list[Fill], current_stop: float | None,
@@ -749,6 +773,7 @@ def _draw_bulz_zones(
 # ---------------------------------------------------------------------------
 
 
+@_serialized_render
 def render_market_weather_svg(
     *, bars: pd.DataFrame, trend_template_state: str,
 ) -> bytes:
@@ -895,6 +920,7 @@ _ANNOTATORS = {
 }
 
 
+@_serialized_render
 def render_theme2_annotated_svg(
     *, ticker: str, bars: pd.DataFrame,
     pattern_evaluation: PatternEvaluation,
