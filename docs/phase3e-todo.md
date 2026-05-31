@@ -8,6 +8,29 @@
 
 ---
 
+## 2026-05-30 #3 Phase 14 Sub-bundle 4 (review + journal UX) WRITING-PLANS SHIPPED at `573bcb3` -- plan 2089 lines (§A-§O; 6 slices / ~25 tasks); GENUINE copowers v2.0.2 WSL Codex chain (reads the tree) CONVERGED WP-R6 (0C/17M/6m; narrowed 6->5->4->2->0); 9 OQs operator-LOCKed; NO schema change (v23 held); executing-plans dispatch NEXT
+
+**Sub-bundle 4 writing-plans SHIPPED 2026-05-30 #3** at merge `573bcb3` of `phase14-sub-bundle-4-review-journal-ux-writing-plans` via `--no-ff`. 7 branch commits (draft `bd6bf86` + WP-R1..R6 fix/record `88eddc8`/`837eadd`/`7701cae`/`775623c`/`8e9b7ed`/`76b4dd0`) + merge. Docs-only (plan `docs/superpowers/plans/2026-05-30-phase14-sub-bundle-4-review-journal-ux-plan.md` 2089 lines + `.copowers-findings.md` writing-plans section appended; ZERO swing/ + tests/ writes). Schema v23 LOCKED (no `0024`; render-direct keeps SB4 schema-free). ZERO Co-Authored-By across branch + merge (`%(trailers)` empty). Merge-base `0d5c0a3`.
+
+**GENUINE v2.0.2 WSL Codex chain (single, OQ-8 LOCK; run to convergence):** WP-R1 0C/6M/2m -> R2 0C/5M/1m -> R3 0C/4M/0m -> R4 0C/2M/1m -> R5 0C/0M/2m (NO_NEW_CRITICAL_MAJOR) -> R6 0C/0M/0m CLEAN. Cumulative 0C/17M/6m; ALL 17 majors resolved-via-code, ZERO accepted. The chain READ THE TREE every round (WSL `codex exec` + `resume --last`, read-only) -> caught production-truth errors at finer granularity than the orchestrator-verified anchors: `_render_candles_fig` is a 3-tuple with no title kwarg (`charts.py:412-419`); FIVE public `render_*_svg` not 2; BULZ cache-miss-renders-blank risk (`chart_reason_message` is legacy-PNG scope); `build_review_vm` is closed-only (`trades.py:1223`); `trade_events` payload is `payload_json`+`rationale` NOT `notes`; `daily_management_records` detail columns at `0016*.sql:60-72,84-94`. Persisted at `.copowers-findings.md` ("WRITING-PLANS review" section).
+
+**9 OQs operator-LOCKed (triage 2026-05-30; in the writing-plans dispatch brief §1.3):** OQ-1 render-direct closed charts (`entry-30d..exit+10d`) / OQ-2 no enum, no schema / OQ-3 journal-listing thumbnails ONLY (dashboard breadth banked) / OQ-4 `trade_origin`-derived hyp-rec flags (no FK) / OQ-5 unified chronology, precedence `fill < daily_management < trade_event < review` / OQ-6 dollar total_risk / OQ-7 market_weather 200MA banked standalone / OQ-8 single chain / OQ-9 whole-`<table>` outerHTML swap.
+
+**Two highest-risk executing-plans items (plan §M):** (a) process-wide matplotlib **render lock** (RLock at the shared `charts.py` boundary; decorate all 5 public renderers + the 2 new helpers; single outer acquisition; no-deadlock test per chart path; thumbnail-DoS guard); (b) the unified **chronology** per-source contracts (production-verified columns; `_normalize_ts` malformed-timestamp handling; `review_log` excluded as it has no `trade_id`). 6 slices: 0 (CR.1 + `trade_charts.py` + render lock) + 1 (BULZ rewire) independent; 2->3->4->5 serial. ~70-105 new tests / ~25-34 commits / 0 new slow.
+
+**Banked follow-up (operator-confirmed 2026-05-30, "proceed as-is, bank rename"):** the SB3 `_bulz_target_price` + `_draw_bulz_zones` helpers (`swing/web/charts.py:609,701`) + their comments/WARN text are MISLEADINGLY NAMED -- the risk/reward shaded zones are a GENERAL open-long-position feature (computed from `planned_target_R`/`entry_price`/`initial_stop`; per-ticker `%s` skip+WARN), NOT BULZ-specific (no `if ticker=='BULZ'` anywhere; BULZ was just the example position when P14.N4 was flagged). Future cosmetic refactor: rename `_bulz_*` -> general (e.g. `_rr_target_price` / `_draw_risk_reward_zones`) + update comments/WARN strings. Out of SB4 scope; private-helper rename; low-risk; NOT urgent.
+
+**Forward action sequence (orchestrator-side; THIS pass):**
+
+- [x] QA per `feedback_orchestrator_qa_implementer_product` (7-commit ZERO Co-Authored-By; docs-only; plan 2089 lines; v23 held / no `0024`; genuine WSL chain confirmed via `.copowers-findings.md` monotonic-narrowing signature + code-grounded catches; BULZ-generality verified by grep -> answered the operator's question)
+- [x] Merge `--no-ff` at `573bcb3` + push origin/main + worktree/branch teardown (only main worktree remains)
+- [x] phase3e-todo new top entry (THIS) + CLAUDE.md line-3 refresh + `_bulz_*` rename banked
+- [ ] **Sub-bundle 4 executing-plans dispatch brief** (consume plan §G 6 slices + the §1.3 OQ LOCKs + the render-lock + chronology highest-risk items + the operator-witnessed S3-S6 browser gate; re-confirm the gate split per `feedback_visual_gate_both_render_and_browser`) + commit BEFORE inline prompt
+- [ ] SB4 executing-plans ship + QA + single Codex chain (run to convergence) + operator-witnessed gate + merge + housekeeping
+- [ ] SB5 (metrics overview; P14.N5) then Phase 14 close-out review (Sec 9.1 Q6: all 5 sub-bundles merged + operator browser-witnessed)
+
+---
+
 ## 2026-05-30 #2 Phase 14 Sub-bundle 4 (review + journal UX) BRAINSTORM SHIPPED at `2cf30f9` -- spec 1277 lines; GENUINE copowers v2.0.2 WSL Codex chain (reads the tree) CONVERGED Re-R4 (0C/8M/8m); 8 code-grounded majors the prior pre-v2.0.2 BLIND chain structurally couldn't catch; NO schema change (v23 held); writing-plans dispatch NEXT (operator OQ triage first)
 
 **Sub-bundle 4 brainstorm SHIPPED 2026-05-30 #2** at merge `2cf30f9` of `phase14-sub-bundle-4-review-journal-ux-brainstorming` via `--no-ff`. Docs-only (spec `docs/superpowers/specs/2026-05-30-phase14-sub-bundle-4-review-journal-ux-design.md` 1277 lines + `.copowers-findings.md` 169 lines; ZERO swing/ + tests/ writes). Schema v23 LOCKED (no `0024`; v22/v23 substrates untouched). ZERO Co-Authored-By across branch + merge (`%(trailers)` empty). Merge-base `f4fe825` (the branch left the dispatch brief untouched, so the orchestrator's 3 transport/convergence-policy brief refinements `5490557`/`1e1c1b1`/`dca5da0` survived the merge).
