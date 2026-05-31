@@ -210,6 +210,42 @@ class JournalVM:
                 )
 
 
+def _base_banner_fields(conn, cfg: Config) -> dict:
+    """Phase 14 SB4 Slice 5 Task 5.0 (Codex R1 M#11): the shared base-banner
+    field set every base-layout page VM carries (so a new base.html.j2 field is
+    added ONCE here, not hand-copied into each VM -> no UndefinedError 500).
+
+    Lifts the reads ``build_journal`` already performs: the three
+    discrepancy/ambiguity banner counts + first-pending-ambiguity link, the
+    session_date anchor (``date.today()`` — matching build_journal's existing
+    anchor), and the price/ohlcv degraded flags (defaulted False/None for the
+    read-only drill-down surfaces, mirroring the JournalVM defaults). Read-only:
+    issues SELECTs only, ZERO writes.
+    """
+    from swing.metrics.discrepancies import (
+        count_recent_multi_leg_auto_corrections,
+        count_unresolved_material,
+        fetch_first_pending_ambiguity_resolve_link_path,
+    )
+
+    return {
+        "session_date": date.today().isoformat(),
+        "stale_banner": None,
+        "price_source_degraded": False,
+        "price_source_degraded_until": None,
+        "ohlcv_source_degraded": False,
+        "unresolved_material_discrepancies_count": count_unresolved_material(
+            conn,
+        ),
+        "recent_multi_leg_auto_correction_count": (
+            count_recent_multi_leg_auto_corrections(conn)
+        ),
+        "banner_resolve_link": (
+            fetch_first_pending_ambiguity_resolve_link_path(conn)
+        ),
+    }
+
+
 def _fetch_bucket_by_cid(conn, candidate_ids: set[int]) -> dict[int, str]:
     """Batched join: candidates.bucket keyed by candidate id. Short-circuits
     the empty set (no ``IN ()`` — invalid SQL)."""
@@ -356,11 +392,6 @@ def build_journal(
     # Clamp pagination inputs to sane bounds.
     page_size = max(1, min(int(page_size), MAX_PAGE_SIZE))
     page = max(1, int(page))
-    from swing.metrics.discrepancies import (
-        count_recent_multi_leg_auto_corrections,
-        count_unresolved_material,
-        fetch_first_pending_ambiguity_resolve_link_path,
-    )
 
     today = date.today()
     conn = connect(cfg.paths.db_path)
@@ -372,13 +403,11 @@ def build_journal(
             # adapters retire.
             exits = _list_all_exitshape_via_fills(conn)
             weather = list_weather_runs(conn)
-            unresolved = count_unresolved_material(conn)
-            # Phase 12.5 #1 T-1.8 — multi-leg auto-redirect banner counter.
-            recent_multi_leg = count_recent_multi_leg_auto_corrections(conn)
-            # Phase 12.5 #2 T-2.9 — banner first-pending-ambiguity link.
-            banner_resolve_link = (
-                fetch_first_pending_ambiguity_resolve_link_path(conn)
-            )
+            # Task 5.0: the base-banner reads (the 3 discrepancy/ambiguity
+            # counts + first-pending link + session_date + degraded flags) are
+            # now factored into the shared helper so the drill-down page VM
+            # consumes the SAME source (no hand-copy — M#11).
+            banner = _base_banner_fields(conn, cfg)
             # Slice 2 — raw non-entry fills (for the exit VWAP) keyed by trade.
             fills_by_trade: dict[int, list] = {}
             for f in list_all_fills(conn):
@@ -453,8 +482,12 @@ def build_journal(
         filter_pattern=query_state.get("filter_pattern"),
         filter_aplus=query_state.get("filter_aplus"),
         query_state=query_state,
-        session_date=today.isoformat(),
-        unresolved_material_discrepancies_count=unresolved,
-        recent_multi_leg_auto_correction_count=recent_multi_leg,
-        banner_resolve_link=banner_resolve_link,
+        session_date=banner["session_date"],
+        unresolved_material_discrepancies_count=(
+            banner["unresolved_material_discrepancies_count"]
+        ),
+        recent_multi_leg_auto_correction_count=(
+            banner["recent_multi_leg_auto_correction_count"]
+        ),
+        banner_resolve_link=banner["banner_resolve_link"],
     )
