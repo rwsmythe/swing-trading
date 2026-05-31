@@ -44,7 +44,7 @@ All paths relative to repo root. **(N)** = new, **(M)** = modify, **(R)** = reus
 |------|------|----------------|
 | `swing/web/app.py` | **(M)** | Add `_construct_web_schwab_client(cfg)` (graceful degradation; gated on `_is_ladder_active` + creds) + `_install_web_marketdata_caches(cfg, price_cache, ohlcv_cache)` + the `_WebLadderState` L9 gate object + the quote/bars hook factories. Invoke the installer right after `app.py:188-189`; hold the client at `app.state.schwab_client` (default `None`). Install the P14.N7 resilient wrap + seed on the constructed client. |
 | `swing/integrations/schwab/checker_resilience.py` | **(N)** | P14.N7: `CheckerLiveness` record (thread-safe) + `install_resilient_checker(client, *, liveness, retries=2, backoff_base_s=1.0)` + the sidecar path/writer/reader + the shared `evaluate_liveness_state(...)` 6-step state machine + the timing constants. Single clear purpose; cleanly removable. |
-| `swing/integrations/schwab/marketdata.py` | **(M)** | L9c (Slice 1b): in `_extract_response_payload`, when env is production AND no known rate-limit header matched, emit a ONCE-per-process redaction-safe DEBUG log of the response header KEY list (names only, no values) so OQ-10 is confirmable at the S7 smoke. NO guessed header name added. |
+| `swing/integrations/schwab/marketdata.py` | **(M)** | L9c (Slice 1b): in `_extract_response_payload`, when no known rate-limit header matched, emit a ONCE-per-process redaction-safe INFO log of the response header KEY list (names only, no values) so OQ-10 is confirmable at the S7 smoke. NO env gate (the function has no `environment` param — Codex R1 Major #4; under sandbox the ladder short-circuits before any real Schwab response, so the extractor only sees real responses anyway). NO guessed header name added. |
 | `swing/cli_schwab.py` | **(M)** | In `render_status` (`:790`): append a "Checker liveness" line read from the sidecar via `evaluate_liveness_state`. ASCII-only (cp1252 stdout). `schwab_status` (`:1426`) stays READ-ONLY (no Client construction). |
 | `swing/web/view_models/schwab_checker_badge.py` | **(N)** | `SchwabCheckerBadgeVM` (ASCII fields) + `build_schwab_checker_badge(cfg) -> SchwabCheckerBadgeVM | None` (reads the SAME sidecar via the SAME state machine; `None` when sidecar absent → badge hidden). The shared helper (no forked liveness logic). |
 | `swing/web/view_models/metrics/shared.py` | **(M)** | Add `schwab_checker_badge: SchwabCheckerBadgeVM | None = None` to `BaseLayoutVM` (covers Family A — ~11 metrics/account/exemplar VMs in ONE edit). |
@@ -53,9 +53,11 @@ All paths relative to repo root. **(N)** = new, **(M)** = modify, **(R)** = reus
 | `swing/web/view_models/journal.py` | **(M)** | Field on `JournalVM` + `TradeDrilldownVM`; populate via `_base_banner_fields(conn, cfg)` (covers BOTH). |
 | `swing/web/view_models/watchlist.py` | **(M)** | Field on `WatchlistVM`; populate in `build_watchlist`. |
 | `swing/web/view_models/config.py` | **(M)** | Field on `ConfigPageVM`; populate in `build_config_vm`. |
-| `swing/web/view_models/error.py` | **(M)** | Field on `PageErrorVM` (safe default; populated `None` — error pages need only the field to exist). |
-| `swing/web/view_models/schwab.py` | **(M)** | Field on `SchwabSetupVM` + `SchwabStatusVM`; populate in their route builders. |
-| `swing/web/templates/base.html.j2` | **(M)** | Render `vm.schwab_checker_badge` in the topbar (after the Config link / theme toggle). ASCII-only badge markup, linked to `/schwab/status`. |
+| `swing/web/view_models/error.py` | **(M)** | Field on `PageErrorVM` (safe default; not populated — render-safe per §C.6 mechanism 1). |
+| `swing/web/view_models/schwab.py` | **(M)** | Field on `SchwabSetupVM` + `SchwabSetupErrorVM` + `SchwabStatusVM`; populate Setup/Status in their route builders. |
+| `swing/web/view_models/reconcile.py` | **(M)** | Field on `ReconcileDiscrepancyResolveVM` + `ReconcileDiscrepancyErrorVM` (safe default; not populated in V1 — render-safe). |
+| `swing/web/view_models/trades.py` | **(M)** | Field on `ReviewVM` + `ReviewsPendingVM` + `CadenceCompleteVM` + `TradeDetailVM` (safe default; not populated in V1 — render-safe). |
+| `swing/web/templates/base.html.j2` | **(M)** | Render `vm.schwab_checker_badge` in the topbar (after the Config link / theme toggle) via a TRUTHINESS `{% if %}` guard (render-safe on any VM lacking the field — §C.6). ASCII-only badge markup, linked to `/schwab/status`. |
 | `swing/web/static/app.css` | **(M)** | `.schwab-health-badge` + `--ok` / `--warn` / `--info` modifier styling. |
 
 ### §B.2 Reuse (read-only — DO NOT modify)
@@ -78,7 +80,7 @@ All paths relative to repo root. **(N)** = new, **(M)** = modify, **(R)** = reus
 | File | Covers |
 |------|--------|
 | `tests/web/test_app_marketdata_ladder_wiring.py` | Slice 1: L7 production-path wiring (hooks installed under production, absent under sandbox); daily-bar kwargs; the L9 scope gate; the provider_tag cooldown gate; concurrent-miss thread-safety; cfg-tier credential resolution. |
-| `tests/integration/schwab/test_marketdata_header_capture.py` | Slice 1b: the header-KEY capture diagnostic fires only when no known header matched under production; never logs header VALUES. |
+| `tests/integration/schwab/test_marketdata_header_capture.py` | Slice 1b: the header-KEY capture diagnostic fires once-per-process when no known header matched (no env gate); never logs header VALUES. |
 | `tests/integration/schwab/test_checker_resilience.py` | Slice 2: DNS-failure survival; liveness transitions; forced-call passthrough re-raises; seed-vs-daemon origin; bounded-backoff timing; the `importlib.metadata` version guard; wrap-effectiveness. |
 | `tests/integration/schwab/test_checker_liveness_state.py` | Slice 3: the shared 6-step `evaluate_liveness_state` precedence; atomic sidecar write/read; `STALE_THRESHOLD > HEARTBEAT_WRITE_INTERVAL`. |
 | `tests/cli/test_schwab_status_checker_liveness.py` | Slice 3: `render_status` checker line per state; ASCII scoped to the new line. |
@@ -121,13 +123,14 @@ any web page render  base.html.j2 topbar
 ### §C.2 L9 design (the governing runtime driver) — verified corrections embedded
 - **Open-trade fetch scope (primary render-storm defense).** Each hook consults `state.should_use_schwab(ticker)`: True iff `ticker.upper()` is in the memoized open-trade set (`list_open_trades(conn)`, refreshed at most every 60s) AND not in cooldown. False → bypass Schwab, return the yfinance fallback DIRECTLY (NO Schwab call, NO audit row). Bounds Schwab calls to a small multiple of the open-trade count regardless of render volume.
 - **Provider_tag-driven cooldown (NOT a 429 catch).** The ladder swallows `SchwabRateLimitError` internally (`marketdata_ladder.py:317`) and returns `provider_tag='yfinance'` — the hook NEVER sees the 429 exception. So the hook keys its cooldown on the OBSERVED `provider_tag`: after `WEB_LADDER_FALLBACK_COOLDOWN_THRESHOLD` (=3) consecutive `provider_tag=='yfinance'` returns (Schwab attempted + fell through for ANY reason), it sets `_cooldown_until = monotonic() + cfg.web.circuit_breaker_cooldown_seconds`; while in cooldown `should_use_schwab` returns False for ALL tickers. A `'schwab_api'` success resets the counter. **Do NOT write a test expecting the hook to catch `SchwabRateLimitError`.**
-- **Thread-safety (BINDING).** The hooks run concurrently from executor workers (`price_cache.py:151`, `ohlcv_cache.py:437`) AND request paths (`ohlcv_cache.py:217`). The open-trade memo, the consecutive-fallback counter, and the cooldown timestamp are shared mutable state guarded by a `threading.Lock` on `_WebLadderState`. The DB read for the open-trade set is performed OUTSIDE the lock (double-checked) to avoid holding the lock during I/O.
+- **Thread-safety (BINDING) — SCOPE of the guarantee (Codex R1 Major #2).** The hooks run concurrently from executor workers (`price_cache.py:151`, `ohlcv_cache.py:437`) AND request paths (`ohlcv_cache.py:217`). The `threading.Lock` on `_WebLadderState` makes the COOLDOWN GATE + the consecutive-fallback counter + the open-trade memo race-free (no two threads can over-count fallbacks or each independently trip/reset the cooldown). The DB read for the open-trade set is performed OUTSIDE the lock (double-checked) to avoid holding the lock during I/O. **The lock does NOT provide per-`(ticker, window_days)` in-flight de-duplication** — the underlying caches release their own locks before the external fetch and `OhlcvCache` explicitly documents no in-flight dedupe (`ohlcv_cache.py:165-170`). So N concurrent COLD misses for the SAME open-trade ticker can each attempt Schwab before any TTL entry is written.
+- **Accepted residual (explicit, corrected bound — Codex R2 Major #2):** `chart_jit.get_or_render_surface` calls `ohlcv_cache.get_or_fetch(...)` SYNCHRONOUSLY on the request-handling path (`chart_jit.py:115-117`), and `OhlcvCache` releases its lock before the external fetch + permits concurrent same-key fetches (`ohlcv_cache.py:165-170`). So the worst-case concurrent Schwab burst for ONE open-trade ticker is bounded by the number of concurrent in-flight web requests for that ticker's chart — i.e. Starlette/AnyIO's sync-route threadpool capacity (the server's request concurrency), NOT just `max_concurrent_price_fetches` or the OhlcvCache executor. In practice this is a small multiple (a single operator's browser issues a handful of concurrent chart requests; the open-trade SET is small via the scope gate; the TTL caches collapse repeats after the FIRST write completes). The absolute ceiling is still well under the ~120/min budget for V1's single-operator use, and any 429 degrades gracefully to yfinance. V1 explicitly ACCEPTS this (no per-key in-flight suppression); a per-`(ticker, window_days)` single-flight latch is banked V2. The concurrent test asserts the COOLDOWN holds under concurrency (the lock's real guarantee), NOT per-key dedup.
 - **TTL caches are the primary natural backoff.** A yfinance fallback result is cached for its TTL, so the same cache key is not re-attempted against Schwab until expiry. NO retry/backoff on the market-data path (the only backoff in SB5.5 is P14.N7's checker wrap).
 - **No app-wide governor in V1** (explicit residual; §4.5.3 of spec) — the per-process cooldown cannot see pipeline/CLI/checker traffic. Acceptable because the open-trade scope keeps web steady-state tiny and any 429 degrades gracefully. Banked V2.
 
 ### §C.3 L9c header-name confirmation (OQ-10) — RESOLUTION
 **Finding (this plan, re-grepped):** `_extract_response_payload` (`marketdata.py:101-144`) already reads three candidate header names (`X-RateLimit-Remaining`, `X-Rate-Limit-Remaining`, `Schwab-Client-RateLimit-Remaining`) and plumbs `rate_limit_remaining` to the audit close (`:564` failure, `:643` success). **The actual Schwab rate-limit-remaining header name is NOT confirmable from any on-disk artifact:** no recorded response headers exist in any cassette; `reference/schwab-api/market-data-specification.md` documents the ~120/min budget but NO rate-limit-remaining response header. (Schwab's Trader API is widely reported to emit NO such header — only HTTP 429 on breach — so `rate_limit_remaining` resolving to `None` in production is likely because Schwab sends no header at all, not merely a name mismatch.)
-**Disposition:** Slice 1b does NOT add a guessed name (that would silently stay `None` → false confidence, exactly what OQ-10 forbids). Instead it lands a redaction-safe, ONCE-per-process DEBUG log of the response header KEY list (names only, no values) when env is production AND no known header matched, so the operator EMPIRICALLY confirms the actual header name (or its absence) from the `swing web` console during the S7 production smoke. The candidate-name addition is then a trivial follow-up landed BEHIND the confirmed name. The primary L9 rate-limit defense (open-trade scope + TTL + cooldown) does not depend on `rate_limit_remaining`; it is observability-only (SHOULD-tier).
+**Disposition:** Slice 1b does NOT add a guessed name (that would silently stay `None` → false confidence, exactly what OQ-10 forbids). Instead it lands a redaction-safe, ONCE-per-process INFO log of the response header KEY list (names only, no values) when no known header matched (NO env gate — `_extract_response_payload` has no `environment` param, and under sandbox the ladder short-circuits before any real Schwab response, so the extractor only fires on real responses; Codex R1 Major #4), so the operator EMPIRICALLY confirms the actual header name (or its absence) from the `swing web` console during the S7 production smoke. The candidate-name addition is then a trivial follow-up landed BEHIND the confirmed name. The primary L9 rate-limit defense (open-trade scope + TTL + cooldown) does not depend on `rate_limit_remaining`; it is observability-only (SHOULD-tier).
 
 ### §C.4 P14.N7 checker wrap — contract
 `install_resilient_checker(client, *, liveness, retries=2, backoff_base_s=1.0)` records `startup_thread = threading.current_thread()` at install time, then replaces `client.tokens.update_tokens`:
@@ -140,6 +143,7 @@ def resilient_update_tokens(force_access_token=False, force_refresh_token=False)
     liveness.record_tick(origin)            # sets last_daemon_tick_ts ONLY for origin=='daemon'
     attempt = 0
     while True:
+        before_token = _access_token(client)    # capture BEFORE to detect rotation (Major #5)
         try:
             refreshed = original()           # background no-force path
         except Exception as exc:             # noqa: BLE001 — ConnectionError/NameResolutionError/etc.
@@ -149,13 +153,16 @@ def resilient_update_tokens(force_access_token=False, force_refresh_token=False)
                 time.sleep(backoff_base_s * (2 ** (attempt - 1)))   # bounded backoff WITHIN this cycle
                 continue
             return False                     # give up THIS cycle; the loop survives -> retries in 30s
+        after_token = _access_token(client)
         liveness.record_success(refreshed=refreshed,
-                                access_present=_access_token_present(client))
+                                access_present=bool(after_token),
+                                rotated=(after_token != before_token))
         return refreshed
 ```
+(`_access_token(client)` is `getattr(getattr(client, "tokens", None), "access_token", None)`; the verbatim Slice 2 implementation in §G Slice 2 Step 3 uses the same before/after capture.)
 - **Returns `False` on give-up** so schwabdev's `if self.tokens.update_tokens() and use_session:` treats it as "no update" — the daemon loop continues, NEVER dies.
 - **Origin via the startup-thread identity** (the daemon thread already started before the wrap installed, so we cannot capture its id; comparing `current_thread() is startup_thread` is robust — the seed runs on the startup thread, daemon ticks do not).
-- **Post-call state verification** (`update_tokens` does NOT raise on auth failure): `record_success` records a degraded liveness (auth-failed) when `refreshed` is True but the access token is absent.
+- **Post-call ROTATION verification (Major #5)** (`update_tokens` returns True after `update_access_token`, which LOGS errors on a non-OK response WITHOUT raising or clearing the old token — schwabdev 2.5.1 `tokens.py:193-218`): `record_success` records a DEGRADED `AuthRefreshNotRotated` liveness when `refreshed` is True but the access token did NOT actually rotate (or is absent) — verifying presence alone is insufficient.
 - **Redaction (L6):** `record_failure` logs only `_redacted_excerpt(exc)`; the `setLogRecordFactory` `"Schwabdev"` redactor stays installed (A-3's `construct_authenticated_client` already installs it).
 
 ### §C.5 Liveness record + the shared 6-step state machine (OQ-5/OQ-9)
@@ -174,11 +181,16 @@ last_refresh_ts, consecutive_failures, last_error_class
 6. no daemon tick, no failure, older than `STARTUP_GRACE` → `("DEGRADED", "no daemon heartbeat since startup")` (STARTING expires).
 All reasons ASCII.
 
-### §C.6 Web badge — population breadth (V1 decision; documented)
-The badge must EXIST (safe default `None`) on EVERY base-layout VM or Jinja 500s unrelated routes (the `base.html.j2` gotcha). Two VM families:
-- **Family A** — ~11 VMs inheriting `BaseLayoutVM` (`metrics/shared.py`): ONE edit adds the field to all.
-- **Family B** — 9 hand-replicated VMs (`DashboardVM`, `PipelineVM`, `JournalVM`, `WatchlistVM`, `PageErrorVM`, `ConfigPageVM`, `SchwabSetupVM`, `SchwabStatusVM`, `TradeDrilldownVM`): the field is added to EACH (no shared base for this family — verified: the existing `unresolved_material_discrepancies_count` is hand-populated at ~30 sites; there is no universal chokepoint).
-**Population (showing the badge):** `build_schwab_checker_badge(cfg)` returns `None` when the sidecar is absent (sandbox / no Schwab / tests), so populating broadly is SAFE (badge silently hidden). V1 populates at the primary topbar-nav-target builders (all take `cfg: Config`): `build_dashboard`, `build_pipeline`, `build_journal` + `build_trade_drilldown_vm` (via `_base_banner_fields(conn, cfg)`), `build_watchlist`, `build_config_vm`, `build_metrics_index_vm`, and the `/schwab/status` + `/schwab/setup` route builders. Other base-layout surfaces (pattern review/queue, reconcile, account, per-metric drilldowns) carry the field at default `None` (badge hidden) in V1 — a safe, gotcha-compliant simplification, banked for V2 broadening.
+### §C.6 Web badge — complete VM fan-out + render-safety (Codex R1 Major #1)
+**Two safety mechanisms, belt-and-suspenders:**
+
+1. **Template render-safety (the primary guarantee).** The badge is read with a TRUTHINESS guard `{% if vm.schwab_checker_badge %}` — NOT a comparison/arithmetic. The web Jinja `Environment` uses the DEFAULT `Undefined` (verified: `swing/web/app.py:91-95` constructs `jinja2.Environment(loader=..., autoescape=True)` with NO `undefined=StrictUndefined`). Under default `Undefined`, accessing a missing attribute yields a falsy `Undefined` (no raise), so `{% if vm.schwab_checker_badge %}` renders NOTHING on any VM lacking the field — it does NOT 500. (The base.html.j2 gotcha's 500 comes from `> 0` arithmetic on a missing field, e.g. `:124` `vm.recent_multi_leg_auto_correction_count > 0`; a truthiness `{% if %}` is the safe idiom.) This means an un-enumerated base-extending VM degrades gracefully to "no badge", never a crash — a route-render regression test (Slice 3d) proves it.
+
+2. **Complete field fan-out (the explicit operator instruction + defense-in-depth).** The field IS added with a safe default `None` to the COMPLETE set of base-layout VMs (verified by grepping every template that `{% extends "base.html.j2" %}` → its VM class):
+   - **Family A** — inherits `BaseLayoutVM` (`metrics/shared.py`): ONE edit covers all (the 9 metrics VMs + `AccountSnapshotFormVM` + `PatternExemplarsVM` + `PatternQueueVM` + `PatternOutcomesVM` + `PatternReviewFormVM`).
+   - **Family B** — 16 VMs NOT inheriting `BaseLayoutVM` (no shared base; the field is added to EACH): `DashboardVM` (`dashboard.py`), `PipelineVM` (`pipeline.py`), `JournalVM` + `TradeDrilldownVM` (`journal.py`), `WatchlistVM` (`watchlist.py`), `PageErrorVM` (`error.py`), `ConfigPageVM` (`config.py`), `SchwabSetupVM` + `SchwabSetupErrorVM` + `SchwabStatusVM` (`schwab.py`), `ReconcileDiscrepancyResolveVM` + `ReconcileDiscrepancyErrorVM` (`reconcile.py`), `ReviewVM` + `ReviewsPendingVM` + `CadenceCompleteVM` + `TradeDetailVM` (`trades.py`).
+
+**Population (showing the badge):** `build_schwab_checker_badge(cfg)` returns `None` when the sidecar is absent (sandbox / no Schwab / tests), so populating broadly is SAFE (badge silently hidden). V1 populates at the primary topbar-nav-target builders (all take `cfg: Config`): `build_dashboard`, `build_pipeline`, `build_journal` + `build_trade_drilldown_vm` (via `_base_banner_fields(conn, cfg)`), `build_watchlist`, `build_config_vm`, `build_metrics_index_vm`, and the `/schwab/status` + `/schwab/setup` route builders. The remaining Family-B VMs carry the field at default `None` (badge hidden, render-safe per mechanism 1) in V1 — banked for V2 population broadening.
 
 ---
 
@@ -214,7 +226,7 @@ Identical to §A.2. Specifically the executing engineer MUST NOT: add a `schwabd
 ---
 
 ## §F Discipline hooks (cumulative gotchas applied)
-- **base.html.j2 shared / VM-field-default gotcha:** the new `schwab_checker_badge` field lands with a safe default `None` on `BaseLayoutVM` (Family A) AND each of the 9 Family B VMs; a cascade-grep gate (Slice 3) asserts EVERY base-layout VM carries it. base.html.j2 reads ONLY `vm.*` (verified — no context-processor channel), so the field-existence fan-out is mandatory.
+- **base.html.j2 shared / VM-field-default gotcha:** the new `schwab_checker_badge` field lands with a safe default `None` on `BaseLayoutVM` (Family A) AND each of the 16 Family B VMs (the COMPLETE set — §C.6); the fan-out test asserts EVERY enumerated base-layout VM carries it, AND a route-render regression test (Slice 3d) proves an un-populated base-extending route renders 200. base.html.j2 reads ONLY `vm.*` (verified — no context-processor channel), but the badge uses a TRUTHINESS `{% if %}` guard which is render-safe under the project's default Jinja `Undefined` (§C.6 mechanism 1), so a missed VM degrades to "no badge", not a 500.
 - **PowerShell cp1252 (#16/#32):** the CLI `render_status` checker line is strictly ASCII (it flows through stdout). The badge template markup is ASCII (text + CSS, NOT a glyph). base.html.j2 ALREADY contains non-ASCII (`🌙` :80, `⚠` :99) so ASCII assertions are SCOPED to the new line / badge substring, never whole-body (mirrors the SB5 D2 lesson).
 - **Schwab daily-bar minute-default footgun:** the web bars-hook passes explicit `period_type='year', period=5, frequency_type='daily', frequency=1` (mirrors `runner.py:448-452`); a discriminating test asserts the kwargs reach `fetch_window_via_ladder`.
 - **`update_tokens()` does not raise on auth failure:** the wrap verifies post-call `access_token` presence (§C.4) and records degraded rather than false-alive.
@@ -281,8 +293,10 @@ def test_sandbox_app_constructs_no_client_no_hooks(seeded_db):
     assert app.state.ohlcv_cache._ladder_bars_fetcher is None
 
 
-def test_production_app_installs_both_hooks(seeded_db, monkeypatch):
+def test_production_app_installs_both_hooks(seeded_db, monkeypatch, tmp_path):
     cfg, _ = seeded_db
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # Slice 2 seed writes sidecar here
+    monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("SCHWAB_CLIENT_ID", "id-xxxx")
     monkeypatch.setenv("SCHWAB_CLIENT_SECRET", "secret-xxxx")
     fake_client = MagicMock(name="schwab_client")
@@ -309,7 +323,7 @@ from swing.integrations.schwab.auth import (
     construct_authenticated_client,
     resolve_credentials_env_or_prompt,
 )
-from swing.integrations.schwab.errors import SchwabConfigMissingError
+from swing.integrations.schwab.client import SchwabConfigMissingError  # verified: defined at client.py:314, imported the same way at runner.py:57 (NOT an `errors` module)
 
 _WEB_OPEN_TRADE_MEMO_TTL_S = 60.0
 _WEB_LADDER_FALLBACK_COOLDOWN_THRESHOLD = 3
@@ -407,27 +421,22 @@ class _WebLadderState:
 def _install_web_marketdata_caches(cfg, price_cache, ohlcv_cache) -> object | None:
     """Install the EXISTING ladder hooks on the web caches (full parity).
 
-    Returns the constructed web Schwab client (with the P14.N7 resilient
-    checker wrap installed) or None (sandbox / no creds / construction
-    failure → yfinance-only web app, today's behavior).
+    Returns the constructed web Schwab client or None (sandbox / no creds /
+    construction failure → yfinance-only web app, today's behavior).
+
+    SLICE ORDERING (Codex R1 Critical #2): Slice 1 installs the LADDER HOOKS
+    ONLY — it has ZERO dependency on `checker_resilience` (which does not exist
+    until Slice 2). Slice 2 EDITS this helper to INSERT the P14.N7 resilient
+    wrap + seed at the marked point below. Do NOT import `checker_resilience`
+    here in Slice 1.
     """
     client = _construct_web_schwab_client(cfg)
     if client is None:
         return None
 
-    # P14.N7 (Slice 2): wrap the checker + seed one refresh before serving.
-    from swing.integrations.schwab.checker_resilience import (
-        CheckerLiveness,
-        checker_liveness_sidecar_path,
-        install_resilient_checker,
-    )
-    env = cfg.integrations.schwab.environment
-    liveness = CheckerLiveness(
-        installed_ts=_time.time(),
-        sidecar_path=checker_liveness_sidecar_path(env),
-    )
-    install_resilient_checker(client, liveness=liveness)
-    client.tokens.update_tokens()  # seed (origin='seed'; exception-isolated by the wrap)
+    # >>> SLICE 2 INSERTION POINT (P14.N7): the resilient-checker wrap + seed
+    #     land HERE — see Slice 2 Step 3c. Slice 1 leaves this empty so the
+    #     ladder install has no dependency on checker_resilience. <<<
 
     from swing.integrations.schwab.marketdata_ladder import (
         fetch_quote_via_ladder,
@@ -532,9 +541,14 @@ offline."
 ```python
 # tests/web/test_app_marketdata_ladder_wiring.py (append)
 
-def _install_hooks(cfg, monkeypatch, fake_client):
-    """Build a production app with a captured ladder, returning the state +
-    the installed hooks for direct invocation."""
+def _install_hooks(cfg, monkeypatch, fake_client, tmp_path):
+    """Build a production app with a captured ladder, returning the app.
+
+    Codex R1 Major #3: BOTH USERPROFILE and HOME are monkeypatched to tmp_path
+    so the P14.N7 seed call (added in Slice 2) writes the liveness sidecar under
+    tmp_path, never the operator's real ~/swing-data."""
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("SCHWAB_CLIENT_ID", "id-xxxx")
     monkeypatch.setenv("SCHWAB_CLIENT_SECRET", "secret-xxxx")
     monkeypatch.setattr(
@@ -544,7 +558,7 @@ def _install_hooks(cfg, monkeypatch, fake_client):
     return app
 
 
-def test_bars_hook_passes_explicit_daily_kwargs(seeded_db, monkeypatch):
+def test_bars_hook_passes_explicit_daily_kwargs(seeded_db, monkeypatch, tmp_path):
     cfg, _ = seeded_db
     captured = {}
 
@@ -558,7 +572,7 @@ def test_bars_hook_passes_explicit_daily_kwargs(seeded_db, monkeypatch):
     )
     # seed AAA as the only open trade so the scope gate ATTEMPTS Schwab
     _seed_open_trade(cfg, "AAA")
-    app = _install_hooks(cfg, monkeypatch, MagicMock())
+    app = _install_hooks(cfg, monkeypatch, MagicMock(), tmp_path)
     app.state.ohlcv_cache._ladder_bars_fetcher("AAA")
     assert captured["period_type"] == "year"
     assert captured["period"] == 5
@@ -568,7 +582,7 @@ def test_bars_hook_passes_explicit_daily_kwargs(seeded_db, monkeypatch):
     assert captured["pipeline_run_id"] is None
 
 
-def test_scope_gate_bypasses_schwab_for_non_open_trade(seeded_db, monkeypatch):
+def test_scope_gate_bypasses_schwab_for_non_open_trade(seeded_db, monkeypatch, tmp_path):
     cfg, _ = seeded_db
     calls = []
     monkeypatch.setattr(
@@ -576,7 +590,7 @@ def test_scope_gate_bypasses_schwab_for_non_open_trade(seeded_db, monkeypatch):
         lambda ticker, **k: calls.append(ticker) or (MagicMock(price=1.0), "schwab_api"),
     )
     _seed_open_trade(cfg, "AAA")
-    app = _install_hooks(cfg, monkeypatch, MagicMock())
+    app = _install_hooks(cfg, monkeypatch, MagicMock(), tmp_path)
     # also stub the yfinance fallback so the bypass path needs no network
     monkeypatch.setattr(app.state.price_cache, "_fetch_live_price", lambda t: 9.0)
     _price, provider = app.state.price_cache._ladder_fetcher("ZZZ")  # not open
@@ -584,7 +598,7 @@ def test_scope_gate_bypasses_schwab_for_non_open_trade(seeded_db, monkeypatch):
     assert calls == []  # Schwab NEVER attempted for the non-open-trade ticker
 
 
-def test_cooldown_after_consecutive_yfinance_fallbacks(seeded_db, monkeypatch):
+def test_cooldown_after_consecutive_yfinance_fallbacks(seeded_db, monkeypatch, tmp_path):
     cfg, _ = seeded_db
     attempts = []
     monkeypatch.setattr(
@@ -592,7 +606,7 @@ def test_cooldown_after_consecutive_yfinance_fallbacks(seeded_db, monkeypatch):
         lambda ticker, **k: attempts.append(ticker) or (MagicMock(price=1.0), "yfinance"),
     )
     _seed_open_trade(cfg, "AAA")
-    app = _install_hooks(cfg, monkeypatch, MagicMock())
+    app = _install_hooks(cfg, monkeypatch, MagicMock(), tmp_path)
     monkeypatch.setattr(app.state.price_cache, "_fetch_live_price", lambda t: 9.0)
     hook = app.state.price_cache._ladder_fetcher
     for _ in range(3):       # _WEB_LADDER_FALLBACK_COOLDOWN_THRESHOLD
@@ -602,7 +616,7 @@ def test_cooldown_after_consecutive_yfinance_fallbacks(seeded_db, monkeypatch):
     assert len(attempts) == 3
 
 
-def test_concurrent_misses_do_not_slip_past_cooldown(seeded_db, monkeypatch):
+def test_concurrent_misses_do_not_slip_past_cooldown(seeded_db, monkeypatch, tmp_path):
     cfg, _ = seeded_db
     attempts = []
     lock = threading.Lock()
@@ -614,7 +628,7 @@ def test_concurrent_misses_do_not_slip_past_cooldown(seeded_db, monkeypatch):
         "swing.integrations.schwab.marketdata_ladder.fetch_quote_via_ladder", _fetch,
     )
     _seed_open_trade(cfg, "AAA")
-    app = _install_hooks(cfg, monkeypatch, MagicMock())
+    app = _install_hooks(cfg, monkeypatch, MagicMock(), tmp_path)
     monkeypatch.setattr(app.state.price_cache, "_fetch_live_price", lambda t: 9.0)
     hook = app.state.price_cache._ladder_fetcher
     for _ in range(3):
@@ -635,17 +649,18 @@ git add swing/web/app.py tests/web/test_app_marketdata_ladder_wiring.py
 git commit -m "feat(web): bound web ladder calls with an open-trade scope gate and a provider-tag cooldown
 
 The hooks attempt Schwab only for open-trade tickers and back off to yfinance
-after a run of consecutive fallbacks, with all shared gate state guarded by a
-lock so concurrent cache misses cannot over-issue calls. The daily-bar hook
-passes explicit year and daily kwargs so the chart path never receives intraday
-minute candles."
+after a run of consecutive fallbacks, with the lock keeping the cooldown gate
+and fallback counter race-free. The daily-bar hook passes explicit year and
+daily kwargs so the chart path never receives intraday minute candles."
 ```
 
 - [ ] **Step 8: Add the cfg-tier credential-resolution test**
 
 ```python
-def test_cfg_tier_credentials_construct_client_without_env(seeded_db, monkeypatch):
+def test_cfg_tier_credentials_construct_client_without_env(seeded_db, monkeypatch, tmp_path):
     cfg, _ = seeded_db
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # Slice 2 seed writes sidecar here
+    monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("SCHWAB_CLIENT_ID", raising=False)
     monkeypatch.delenv("SCHWAB_CLIENT_SECRET", raising=False)
     monkeypatch.setattr(
@@ -667,7 +682,7 @@ Run; verify pass; commit (`feat(web): resolve web Schwab credentials via the env
 - Modify: `swing/integrations/schwab/marketdata.py` (`_extract_response_payload`)
 - Test: `tests/integration/schwab/test_marketdata_header_capture.py`
 
-**Acceptance criteria:** when a response carries NONE of the known rate-limit header names AND env is production, the extractor logs the response header KEY list (names only — NO values) ONCE per process at DEBUG; when a known header matches, no capture log fires; header VALUES never appear in any log. NO guessed header name is added to the candidate list (the actual name is confirmed at the S7 smoke; the candidate-add is a follow-up).
+**Acceptance criteria:** when a response carries NONE of the known rate-limit header names, the extractor logs the response header KEY list (names only — NO values) ONCE per process at INFO (web root logger is INFO; key-only is redaction-safe) (NO env gate — the function has no `environment` param; under sandbox the ladder short-circuits before any real Schwab response); the once-per-process flag is thread-safe; when a known header matches, no capture log fires; header VALUES never appear in any log. NO guessed header name is added to the candidate list (the actual name is confirmed at the S7 smoke; the candidate-add is a follow-up).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -691,7 +706,7 @@ class _Resp:
 
 def test_capture_logs_header_keys_when_no_known_header(caplog, monkeypatch):
     marketdata._reset_header_capture_for_tests()  # clear the once-per-process flag
-    with caplog.at_level(logging.DEBUG, logger="swing.integrations.schwab.marketdata"):
+    with caplog.at_level(logging.INFO, logger="swing.integrations.schwab.marketdata"):
         marketdata._extract_response_payload(
             _Resp({"X-Mystery-Budget": "118", "Content-Type": "application/json"}),
             endpoint="quotes",
@@ -703,7 +718,7 @@ def test_capture_logs_header_keys_when_no_known_header(caplog, monkeypatch):
 
 def test_no_capture_when_known_header_present(caplog, monkeypatch):
     marketdata._reset_header_capture_for_tests()
-    with caplog.at_level(logging.DEBUG, logger="swing.integrations.schwab.marketdata"):
+    with caplog.at_level(logging.INFO, logger="swing.integrations.schwab.marketdata"):
         _payload, _status, remaining = marketdata._extract_response_payload(
             _Resp({"X-RateLimit-Remaining": "42"}), endpoint="quotes",
         )
@@ -717,34 +732,45 @@ def test_no_capture_when_known_header_present(caplog, monkeypatch):
 
 ```python
 # module level (near the top of marketdata.py)
+import threading as _threading
 _HEADER_CAPTURE_DONE = False
+_HEADER_CAPTURE_LOCK = _threading.Lock()
 
 
 def _reset_header_capture_for_tests() -> None:
     global _HEADER_CAPTURE_DONE
-    _HEADER_CAPTURE_DONE = False
+    with _HEADER_CAPTURE_LOCK:
+        _HEADER_CAPTURE_DONE = False
 
 
 # inside _extract_response_payload, AFTER the existing candidate-name loop,
 # replacing the bare `return payload, http_status, rate_limit_remaining`:
     global _HEADER_CAPTURE_DONE
-    if (
-        rate_limit_remaining is None
-        and headers is not None
-        and not _HEADER_CAPTURE_DONE
-    ):
+    if rate_limit_remaining is None and headers is not None:
         # OQ-10: the actual Schwab rate-limit header name is unknown (no
         # on-disk artifact records it). Log the header KEY list ONCE (names
         # only, never values) so the operator can confirm the real name from
         # the production console; the candidate-name addition then lands
-        # behind that confirmation. NO guessed name is added here.
+        # behind that confirmation. NO guessed name is added here. The
+        # check-and-set is lock-guarded (Codex R2 Minor #3) so concurrent
+        # first responses log exactly once.
         try:
             keys = sorted(headers.keys())
         except Exception:  # noqa: BLE001 — best-effort diagnostic only
             keys = None
+        should_log = False
         if keys is not None:
-            _HEADER_CAPTURE_DONE = True
-            log.debug(
+            with _HEADER_CAPTURE_LOCK:
+                if not _HEADER_CAPTURE_DONE:
+                    _HEADER_CAPTURE_DONE = True
+                    should_log = True
+        if should_log:
+            # INFO, not DEBUG (Codex R3 Major #2): the web root logger is INFO
+            # (`swing/web/middleware/request_id.py`), so a DEBUG line would be
+            # suppressed AND the one-shot flag would be consumed silently — the
+            # operator would never see it at the S7 smoke. Header KEYS (names)
+            # are not secrets; VALUES are never logged, so INFO is safe (L6).
+            log.info(
                 "Schwab rate-limit header-name capture (%s): no known "
                 "rate-limit header matched; response header keys present: %s",
                 endpoint, keys,
@@ -774,8 +800,8 @@ addition then lands behind that confirmation."
 
 **Files:**
 - Create: `swing/integrations/schwab/checker_resilience.py`
+- Modify: `swing/web/app.py` (`_install_web_marketdata_caches` — INSERT the wrap + seed at the Slice-2 insertion point; this is where Slice 1 deliberately left a gap — Codex R1 Critical #2).
 - Test: `tests/integration/schwab/test_checker_resilience.py`
-- (Slice 1 already calls `install_resilient_checker` + seed; this slice makes it real.)
 
 **Acceptance criteria:** the wrap replaces `client.tokens.update_tokens`; a background no-force call that raises does NOT propagate (returns `False` after bounded backoff); a forced call passes through and DOES propagate; liveness transitions installed → degraded(`consecutive_failures>0`) → alive(`consecutive_failures==0`); a seed-origin call sets `last_seed_ts` (NOT `last_daemon_tick_ts`); the schwabdev version guard asserts `2.5.1` via `importlib.metadata.version` WITHOUT constructing a `Client`.
 
@@ -799,9 +825,11 @@ from swing.integrations.schwab.checker_resilience import (
 
 
 class _FakeTokens:
-    def __init__(self, raises_n=0, access_token="acc"):
+    def __init__(self, raises_n=0, access_token="acc", rotate=True):
         self._raises_left = raises_n
         self.access_token = access_token
+        self._rotate = rotate          # whether a successful refresh ROTATES the token
+        self._rot = 0
         self.calls = []
     def update_tokens(self, force_access_token=False, force_refresh_token=False):
         self.calls.append((force_access_token, force_refresh_token))
@@ -810,6 +838,11 @@ class _FakeTokens:
         if self._raises_left > 0:
             self._raises_left -= 1
             raise ConnectionError("Failed to resolve api.schwabapi.com")
+        # A real successful refresh ROTATES the access token; a non-rotating
+        # "success" simulates the schwabdev auth-fail-without-raise path (M5).
+        if self._rotate:
+            self._rot += 1
+            self.access_token = f"acc{self._rot}"
         return True
 
 
@@ -871,6 +904,20 @@ def test_seed_origin_does_not_advance_daemon_heartbeat(tmp_path):
 def test_schwabdev_version_guard_without_constructing_client():
     # OQ-4: NEVER construct a Client; assert via package metadata.
     assert importlib.metadata.version("schwabdev") == "2.5.1"
+
+
+def test_refresh_without_rotation_is_degraded(tmp_path):
+    # M5: update_tokens() can return True yet leave the OLD (stale) access
+    # token in place (schwabdev logs the auth error without raising). The wrap
+    # must record DEGRADED, not a false ALIVE.
+    tokens = _FakeTokens(rotate=False)   # "success" that does NOT rotate the token
+    client = _FakeClient(tokens)
+    lv = _liveness(tmp_path)
+    install_resilient_checker(client, liveness=lv)
+    th = threading.Thread(target=lambda: client.tokens.update_tokens())  # daemon-origin
+    th.start(); th.join()
+    assert lv.consecutive_failures > 0           # non-rotating refresh = degraded
+    assert lv.last_error_class == "AuthRefreshNotRotated"
 ```
 
 - [ ] **Step 2: Run; verify fail** — module does not exist.
@@ -894,12 +941,17 @@ this module with it. Validated against schwabdev 2.5.1
 """
 from __future__ import annotations
 
+import json
 import logging
+import math
+import os
+import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from swing.config_user import _user_home
 from swing.integrations.schwab.auth import _redacted_excerpt
 
 log = logging.getLogger(__name__)
@@ -948,14 +1000,18 @@ class CheckerLiveness:
         )
         self._write_sidecar()  # transition -> persist
 
-    def record_success(self, *, refreshed: bool, access_present: bool) -> None:
+    def record_success(self, *, refreshed: bool, access_present: bool, rotated: bool) -> None:
         with self._lock:
             had_failures = self.consecutive_failures > 0
-            if refreshed and not access_present:
-                # update_tokens does not raise on auth failure (gotcha):
-                # a claimed refresh with no token = degraded, not alive.
+            if refreshed and (not access_present or not rotated):
+                # update_tokens() returns True after update_access_token(), but
+                # update_access_token() LOGS errors on a non-OK response without
+                # raising or clearing the OLD token (schwabdev 2.5.1
+                # tokens.py:193-218, Codex R1 Major #5). So a claimed refresh
+                # that did NOT actually rotate the access token (or left it
+                # empty) is a DEGRADED auth failure, not a healthy refresh.
                 self.consecutive_failures += 1
-                self.last_error_class = "AuthRefreshNoToken"
+                self.last_error_class = "AuthRefreshNotRotated"
                 transition = True
             else:
                 self.consecutive_failures = 0
@@ -963,7 +1019,11 @@ class CheckerLiveness:
                 self.last_success_ts = time.time()
                 if refreshed:
                     self.last_refresh_ts = time.time()
-                transition = had_failures
+                # Persist on a transition OUT of failure OR whenever a real
+                # rotation happened (Codex R3 Minor #2): otherwise last_refresh_ts
+                # updates in memory but the sidecar only catches up at the next
+                # heartbeat, so the ALIVE line could briefly say "no rotation yet".
+                transition = had_failures or refreshed
         if transition:
             self._write_sidecar()
 
@@ -976,8 +1036,8 @@ class CheckerLiveness:
             log.debug("checker liveness sidecar write skipped", exc_info=True)
 
 
-def _access_token_present(client: object) -> bool:
-    return bool(getattr(getattr(client, "tokens", None), "access_token", None))
+def _access_token(client: object) -> object | None:
+    return getattr(getattr(client, "tokens", None), "access_token", None)
 
 
 def install_resilient_checker(
@@ -998,6 +1058,7 @@ def install_resilient_checker(
         liveness.record_tick(origin)
         attempt = 0
         while True:
+            before_token = _access_token(client)
             try:
                 refreshed = original()
             except Exception as exc:  # noqa: BLE001
@@ -1007,8 +1068,11 @@ def install_resilient_checker(
                     time.sleep(backoff_base_s * (2 ** (attempt - 1)))
                     continue
                 return False
+            after_token = _access_token(client)
             liveness.record_success(
-                refreshed=bool(refreshed), access_present=_access_token_present(client),
+                refreshed=bool(refreshed),
+                access_present=bool(after_token),
+                rotated=(after_token != before_token),  # Major #5: verify ACTUAL rotation
             )
             return refreshed
 
@@ -1018,14 +1082,9 @@ def install_resilient_checker(
 
 - [ ] **Step 3b: Add the sidecar path + writer (so Slice 1's import + the wrap's `_write_sidecar` resolve)**
 
+(`json`, `os`, `tempfile`, `math`, and `_user_home` are already imported in the module header above — do NOT re-import.)
+
 ```python
-import json
-import os
-import tempfile
-
-from swing.config_user import _user_home
-
-
 def checker_liveness_sidecar_path(env: str) -> Path:
     return _user_home() / "swing-data" / f"schwab-checker-liveness.{env}.json"
 
@@ -1054,12 +1113,31 @@ def write_liveness_sidecar(record: "CheckerLiveness", path: Path) -> None:
         raise
 ```
 
-- [ ] **Step 4: Run; verify pass** — `python -m pytest tests/integration/schwab/test_checker_resilience.py -q`. Note: the `_write_sidecar` calls need a real `sidecar_path` under `tmp_path` (the tests pass `tmp_path / "lv.json"`); monkeypatch `USERPROFILE`/`HOME` is NOT needed because the tests inject the path directly. `ruff check` clean.
+- [ ] **Step 3c: Insert the P14.N7 wrap + seed into `_install_web_marketdata_caches`** (`swing/web/app.py`) — at the `>>> SLICE 2 INSERTION POINT <<<` marker Slice 1 left (Codex R1 Critical #2). This is the ONLY app.py change in Slice 2:
+
+```python
+    # >>> P14.N7 (Slice 2): wrap the checker + seed one refresh before serving.
+    from swing.integrations.schwab.checker_resilience import (
+        CheckerLiveness,
+        checker_liveness_sidecar_path,
+        install_resilient_checker,
+    )
+    env = cfg.integrations.schwab.environment
+    liveness = CheckerLiveness(
+        installed_ts=_time.time(),
+        sidecar_path=checker_liveness_sidecar_path(env),
+    )
+    install_resilient_checker(client, liveness=liveness)
+    client.tokens.update_tokens()  # seed (origin='seed'; exception-isolated by the wrap)
+```
+(The `app.state.schwab_client` test from Slice 1 still passes — the MagicMock client's `tokens.update_tokens` is a MagicMock, so `install_resilient_checker` replaces it and the seed call is a no-op mock. The Slice-1 production-app tests already monkeypatch `USERPROFILE`/`HOME` (Step 6 / Codex R1 Major #3), so the seed's sidecar write lands under `tmp_path`, not the real home.)
+
+- [ ] **Step 4: Run; verify pass** — `python -m pytest tests/integration/schwab/test_checker_resilience.py tests/web/test_app_marketdata_ladder_wiring.py -q`. Note: the `_write_sidecar` calls in the unit tests inject a `sidecar_path` under `tmp_path` directly; the app-wiring tests rely on the Step-6 `USERPROFILE`/`HOME` monkeypatch. `ruff check` clean.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add swing/integrations/schwab/checker_resilience.py tests/integration/schwab/test_checker_resilience.py
+git add swing/integrations/schwab/checker_resilience.py swing/web/app.py tests/integration/schwab/test_checker_resilience.py tests/web/test_app_marketdata_ladder_wiring.py
 git commit -m "feat(schwab): resilient wrap for the schwabdev checker token-refresh thread
 
 Replaces the bound update_tokens on the long-lived web client with a wrapper
@@ -1077,7 +1155,7 @@ version is asserted from package metadata so no client is constructed in tests."
 - Modify: `swing/integrations/schwab/checker_resilience.py` (`read_liveness_sidecar` + `evaluate_liveness_state`)
 - Modify: `swing/cli_schwab.py` (`render_status` checker line)
 - Create: `swing/web/view_models/schwab_checker_badge.py`
-- Modify: `swing/web/view_models/metrics/shared.py` + the 9 Family B VMs + the population builders
+- Modify: `swing/web/view_models/metrics/shared.py` + the 16 Family B VMs (§C.6) + the population builders
 - Modify: `swing/web/templates/base.html.j2`, `swing/web/static/app.css`
 - Tests: `tests/integration/schwab/test_checker_liveness_state.py`, `tests/cli/test_schwab_status_checker_liveness.py`, `tests/web/test_schwab_checker_badge.py`
 
@@ -1140,6 +1218,39 @@ def test_seed_only_past_grace_expires_to_degraded():
     assert state == "DEGRADED" and "no daemon heartbeat" in reason
 
 
+def test_non_dict_sidecar_does_not_crash_reader(tmp_path):
+    # Codex R3 Major #1: valid-but-non-object JSON must not crash the consumers.
+    from swing.integrations.schwab.checker_resilience import read_liveness_sidecar
+    for bad in ("[]", '"bad"', "42"):
+        p = tmp_path / f"lv_{abs(hash(bad))}.json"
+        p.write_text(bad, encoding="ascii")
+        assert read_liveness_sidecar(p) is None        # -> caller renders UNKNOWN
+        # and the state machine tolerates the None it gets back
+        assert evaluate_liveness_state(read_liveness_sidecar(p), now_ts=1.0)[0] == "UNKNOWN"
+
+
+def test_typed_garbage_fields_do_not_crash_state_machine():
+    # Codex R4 Major #1 + R5 Major #1: non-numeric AND non-finite typed fields
+    # must NOT raise (no TypeError/OverflowError; no ALIVE-forever via inf).
+    # R5 Minor #1: an escaped-unicode last_error_class must not leak non-ASCII.
+    for data in (
+        {"consecutive_failures": "x"},
+        {"last_daemon_tick_ts": "bad"},
+        {"installed_ts": "bad", "last_seed_ts": None},
+        {"last_refresh_ts": "bad", "last_daemon_tick_ts": 0.0},
+        {"consecutive_failures": float("nan")},
+        {"last_daemon_tick_ts": float("inf")},      # must NOT report ALIVE-forever
+        {"last_refresh_ts": float("inf"), "last_daemon_tick_ts": 1000.0},
+        {"consecutive_failures": 1, "last_error_class": "\u2603"},  # non-ASCII via ASCII source escape (Codex R6 Minor #1)
+    ):
+        state, reason = evaluate_liveness_state(data, now_ts=1000.0)
+        assert state in {"ALIVE", "STARTING", "DEGRADED", "UNKNOWN"}
+        assert reason.isascii()
+    # inf daemon tick must NOT be treated as a fresh heartbeat
+    s, _ = evaluate_liveness_state({"last_daemon_tick_ts": float("inf")}, now_ts=1000.0)
+    assert s != "ALIVE"
+
+
 def test_all_reasons_ascii():
     for data, now in [
         (None, 0.0),
@@ -1160,9 +1271,37 @@ def read_liveness_sidecar(path: Path) -> dict | None:
         return None
     try:
         with open(path, encoding="ascii") as fh:
-            return json.load(fh)
+            payload = json.load(fh)
     except (OSError, ValueError):
         return None
+    # Codex R3 Major #1: valid-but-non-object JSON ([] / "bad" / 42) must NOT
+    # crash the CLI or the web badge (both call data.get(...)). Treat anything
+    # that is not a dict as "no usable sidecar" -> caller renders UNKNOWN.
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _num(data: dict, key: str) -> float | None:
+    """Coerce a sidecar field to a FINITE float, or None if absent / non-numeric
+    / bool / non-finite (Codex R4 Major #1 + R5 Major #1 — a corrupted ephemeral
+    sidecar must NOT crash the CLI or the web badge: a non-numeric type would
+    raise a TypeError, and `json.load` parses `NaN`/`Infinity`/`-Infinity` which
+    would crash `int(...)` with OverflowError OR report ALIVE forever via
+    `now_ts - inf`). `math.isfinite` rejects the non-finite cases."""
+    v = data.get(key)
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    f = float(v)
+    if not math.isfinite(f):
+        return None
+    return f
+
+
+def _ascii_safe(text: object) -> str:
+    """ASCII-only coercion for sidecar text interpolated into a reason (R5 Minor
+    #1 — an ASCII-encoded sidecar can still carry escaped-unicode like \\u2603)."""
+    return str(text).encode("ascii", "replace").decode("ascii")
 
 
 def evaluate_liveness_state(data: dict | None, *, now_ts: float) -> tuple[str, str]:
@@ -1172,19 +1311,32 @@ def evaluate_liveness_state(data: dict | None, *, now_ts: float) -> tuple[str, s
       1 absent -> UNKNOWN | 2 failure -> DEGRADED | 3 fresh daemon tick -> ALIVE
       4 stale daemon tick -> DEGRADED | 5 seed-only within grace -> STARTING
       6 seed-only past grace -> DEGRADED.
+    All numeric fields are coerced via _num so a type-corrupted sidecar cannot
+    raise (Codex R4 Major #1).
     """
     if data is None:
         return ("UNKNOWN", "web server not running, or pre-N7 build")
-    failures = data.get("consecutive_failures") or 0
+    failures_num = _num(data, "consecutive_failures")
+    failures = int(failures_num) if failures_num is not None else 0
     if failures > 0 or data.get("last_error_class"):
-        cls = data.get("last_error_class") or "refresh failure"
+        cls = _ascii_safe(data.get("last_error_class") or "refresh failure")
         return ("DEGRADED", f"{failures} consecutive failures ({cls})")
-    last_tick = data.get("last_daemon_tick_ts")
+    last_tick = _num(data, "last_daemon_tick_ts")
     if last_tick is not None:
         if now_ts - last_tick <= STALE_THRESHOLD:
-            return ("ALIVE", "checker heartbeat fresh")
+            # Minor #1: enrich the ALIVE reason with the operator-useful detail
+            # (age of last actual rotation + the running failure count) instead
+            # of a bare "fresh". All ASCII.
+            refresh_ts = _num(data, "last_refresh_ts")
+            if refresh_ts is not None:
+                refresh_txt = f"last refresh {int(now_ts - refresh_ts)}s ago"
+            else:
+                refresh_txt = "no rotation needed yet"
+            return ("ALIVE", f"{refresh_txt}; {failures} consecutive failures")
         return ("DEGRADED", "stale heartbeat")
-    anchor = data.get("last_seed_ts") or data.get("installed_ts") or 0.0
+    anchor = _num(data, "last_seed_ts")
+    if anchor is None:
+        anchor = _num(data, "installed_ts") or 0.0
     if now_ts - anchor < STARTUP_GRACE:
         return ("STARTING", "awaiting first daemon heartbeat")
     return ("DEGRADED", "no daemon heartbeat since startup")
@@ -1321,6 +1473,8 @@ def test_badge_alive(tmp_path, monkeypatch, seeded_db):
 
 
 def test_every_base_layout_vm_has_badge_field_with_safe_default():
+    # COMPLETE set (Codex R1 Major #1): BaseLayoutVM (Family A — covers the
+    # metrics/account/pattern VMs by inheritance) + all 16 Family B VMs.
     from dataclasses import fields
     from swing.web.view_models.metrics.shared import BaseLayoutVM
     from swing.web.view_models.dashboard import DashboardVM
@@ -1329,12 +1483,25 @@ def test_every_base_layout_vm_has_badge_field_with_safe_default():
     from swing.web.view_models.watchlist import WatchlistVM
     from swing.web.view_models.error import PageErrorVM
     from swing.web.view_models.config import ConfigPageVM
-    from swing.web.view_models.schwab import SchwabSetupVM, SchwabStatusVM
-    for vm_cls in (BaseLayoutVM, DashboardVM, PipelineVM, JournalVM, TradeDrilldownVM,
-                   WatchlistVM, PageErrorVM, ConfigPageVM, SchwabSetupVM, SchwabStatusVM):
+    from swing.web.view_models.schwab import (
+        SchwabSetupVM, SchwabSetupErrorVM, SchwabStatusVM,
+    )
+    from swing.web.view_models.reconcile import (
+        ReconcileDiscrepancyResolveVM, ReconcileDiscrepancyErrorVM,
+    )
+    from swing.web.view_models.trades import (
+        ReviewVM, ReviewsPendingVM, CadenceCompleteVM, TradeDetailVM,
+    )
+    for vm_cls in (
+        BaseLayoutVM, DashboardVM, PipelineVM, JournalVM, TradeDrilldownVM,
+        WatchlistVM, PageErrorVM, ConfigPageVM, SchwabSetupVM, SchwabSetupErrorVM,
+        SchwabStatusVM, ReconcileDiscrepancyResolveVM, ReconcileDiscrepancyErrorVM,
+        ReviewVM, ReviewsPendingVM, CadenceCompleteVM, TradeDetailVM,
+    ):
         names = {f.name for f in fields(vm_cls)}
         assert "schwab_checker_badge" in names, vm_cls.__name__
 ```
+(Confirm the exact class names/locations at IMPLEMENT time by grepping every template that `{% extends "base.html.j2" %}` → its VM. The list above was derived that way at plan time. If a base-extending VM is added later, mechanism-1 render-safety keeps it from 500-ing; this test + the §G.S3.d route-render test are the regression guards.)
 
 - [ ] **Step 2: Run; verify fail** — module + fields absent.
 
@@ -1387,29 +1554,33 @@ def build_schwab_checker_badge(cfg) -> SchwabCheckerBadgeVM | None:
     )
 ```
 
-- [ ] **Step 4: Add the `schwab_checker_badge` field (safe default None) to `BaseLayoutVM` + the 9 Family B VMs**
+- [ ] **Step 4: Add the `schwab_checker_badge` field (safe default None) to `BaseLayoutVM` + ALL 16 Family B VMs** (Codex R1 Major #1 — the COMPLETE set)
 
 In `swing/web/view_models/metrics/shared.py` `BaseLayoutVM` (after the existing base fields, all defaulted):
 ```python
     schwab_checker_badge: "object | None" = None  # SchwabCheckerBadgeVM | None (P14.N7 badge)
 ```
-(Use `object | None` to avoid a circular import in `shared.py`; the template only reads `.label`/`.title`/`.css_class`. If `shared.py` can import the VM without a cycle, prefer the precise type.)
+(Use `object | None` to avoid a circular import in `shared.py` (it would import the view-model package); the template only reads `.label`/`.title`/`.css_class`. If `shared.py` can import the VM without a cycle, prefer the precise type.)
 
-Add the SAME line to each Family B VM dataclass (each is `@dataclass(frozen=True)`; add as a trailing defaulted field, mind any `__post_init__` — the badge needs no validation):
+Add the SAME defaulted field to each Family B VM dataclass (each is `@dataclass(frozen=True)`; add as a trailing defaulted field, mind any `__post_init__` — the badge needs no validation). The COMPLETE list (verified against templates extending `base.html.j2`):
 - `swing/web/view_models/dashboard.py` `DashboardVM`
 - `swing/web/view_models/pipeline.py` `PipelineVM`
 - `swing/web/view_models/journal.py` `JournalVM` AND `TradeDrilldownVM`
 - `swing/web/view_models/watchlist.py` `WatchlistVM`
 - `swing/web/view_models/error.py` `PageErrorVM`
 - `swing/web/view_models/config.py` `ConfigPageVM`
-- `swing/web/view_models/schwab.py` `SchwabSetupVM` AND `SchwabStatusVM`
+- `swing/web/view_models/schwab.py` `SchwabSetupVM` AND `SchwabSetupErrorVM` AND `SchwabStatusVM`
+- `swing/web/view_models/reconcile.py` `ReconcileDiscrepancyResolveVM` AND `ReconcileDiscrepancyErrorVM`
+- `swing/web/view_models/trades.py` `ReviewVM` AND `ReviewsPendingVM` AND `CadenceCompleteVM` AND `TradeDetailVM`
+
+> **Completeness audit (do this BEFORE writing):** `git grep -l 'extends "base.html.j2"' -- swing/web/templates` lists every base-extending template; map each to its VM class and confirm the field is present. Mechanism-1 render-safety (§C.6) covers any VM accidentally missed (truthiness guard, no 500), but the fan-out should be complete.
 
 - [ ] **Step 5: Run; verify the fan-out test passes** — `python -m pytest tests/web/test_schwab_checker_badge.py -q`. `ruff check` clean.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add swing/web/view_models/schwab_checker_badge.py swing/web/view_models/metrics/shared.py swing/web/view_models/dashboard.py swing/web/view_models/pipeline.py swing/web/view_models/journal.py swing/web/view_models/watchlist.py swing/web/view_models/error.py swing/web/view_models/config.py swing/web/view_models/schwab.py tests/web/test_schwab_checker_badge.py
+git add swing/web/view_models/schwab_checker_badge.py swing/web/view_models/metrics/shared.py swing/web/view_models/dashboard.py swing/web/view_models/pipeline.py swing/web/view_models/journal.py swing/web/view_models/watchlist.py swing/web/view_models/error.py swing/web/view_models/config.py swing/web/view_models/schwab.py swing/web/view_models/reconcile.py swing/web/view_models/trades.py tests/web/test_schwab_checker_badge.py
 git commit -m "feat(web): add the Schwab checker-health badge view-model and base-layout field
 
 A shared helper reads the same liveness sidecar through the same state machine
@@ -1452,8 +1623,29 @@ def test_dashboard_hides_badge_when_sidecar_absent(tmp_path, monkeypatch, seeded
         resp = client.get("/")
     assert resp.status_code == 200
     assert "schwab-health-badge" not in resp.text
+
+
+def test_unpopulated_base_extending_route_renders_200_with_sidecar(tmp_path, monkeypatch, seeded_db):
+    # Codex R1 Major #1 regression: a base-extending route whose VM does NOT
+    # populate the badge MUST still render 200 EVEN WHEN a sidecar exists (the
+    # truthiness {% if %} guard handles the missing/None field). /reviews/pending
+    # is such a route (ReviewsPendingVM is not populated in V1).
+    cfg, cfg_path = seeded_db
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    p = cr.checker_liveness_sidecar_path(cfg.integrations.schwab.environment)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(
+        {"installed_ts": 0.0, "last_daemon_tick_ts": time.time(), "consecutive_failures": 0}
+    ), encoding="ascii")
+    from fastapi.testclient import TestClient
+    from swing.web.app import create_app
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = client.get("/reviews/pending")
+    assert resp.status_code == 200  # no Jinja UndefinedError despite the un-populated VM
 ```
-(Confirm `seeded_db` yields `(cfg, cfg_path)` and that `GET /` builds a `DashboardVM`; mirror an existing dashboard route test.)
+(Confirm `seeded_db` yields `(cfg, cfg_path)` and that `GET /` builds a `DashboardVM`; mirror an existing dashboard route test. If `/reviews/pending` needs seeding to return 200, pick any base-extending route whose VM is in the un-populated set and seed minimally — the point is a 200, not content.)
 
 - [ ] **Step 2: Run; verify fail** — the badge is not populated/rendered yet.
 
@@ -1529,12 +1721,12 @@ render nothing, so unrelated routes are unaffected."
 |------|---------------|-------|---------------------------|
 | 1 | `test_app_marketdata_ladder_wiring.py` | ~7 | sandbox → no client/hooks (the ~6900-test safety guarantee); production → both hooks + `app.state.schwab_client`; **daily-bar `(year,5,daily,1)` kwargs reach the ladder**; **scope gate bypasses Schwab for a non-open-trade ticker (zero attempts)**; **provider_tag cooldown after N consecutive `'yfinance'` (the 4th call adds zero attempts)**; **concurrent misses do not slip past cooldown**; cfg-tier creds construct the client without env. |
 | 1b | `test_marketdata_header_capture.py` | 2 | unmatched header → KEY list logged once, **VALUE never logged**; known header → no capture, `rate_limit_remaining` populated. |
-| 2 | `test_checker_resilience.py` | ~5 | wrap replaced `update_tokens`; **background failure isolated (returns False, no raise) with bounded backoff `[1.0, 2.0]` then recovers**; **forced call propagates**; **seed-origin sets `last_seed_ts` NOT `last_daemon_tick_ts`**; **version `2.5.1` via `importlib.metadata`, NO Client constructed**. |
+| 2 | `test_checker_resilience.py` | ~6 | wrap replaced `update_tokens`; **background failure isolated (returns False, no raise) with bounded backoff `[1.0, 2.0]` then recovers**; **forced call propagates**; **seed-origin sets `last_seed_ts` NOT `last_daemon_tick_ts`**; **a refresh that returns True but does NOT rotate the token → DEGRADED `AuthRefreshNotRotated`** (Major #5); **version `2.5.1` via `importlib.metadata`, NO Client constructed**. |
 | 3a | `test_checker_liveness_state.py` | ~8 | **`STALE_THRESHOLD > HEARTBEAT_WRITE_INTERVAL`**; the 6-step precedence incl. **explicit-failure outranks STARTING** + **STARTING expires to DEGRADED past grace** + stale-tick → DEGRADED; reasons ASCII. |
 | 3b | `test_schwab_status_checker_liveness.py` | 3 | `render_status` ALIVE / unknown(absent); **the new checker line `.isascii()` (scoped)**. |
-| 3c/d | `test_schwab_checker_badge.py` | ~5 | badge None when sidecar absent; ALIVE badge fields ASCII; **EVERY base-layout VM carries the field with a safe default**; dashboard renders `schwab-health-badge` when present, hides it when absent. |
+| 3c/d | `test_schwab_checker_badge.py` | ~6 | badge None when sidecar absent; ALIVE badge fields ASCII; **ALL 17 enumerated base-layout VMs carry the field with a safe default** (BaseLayoutVM + 16 Family B); dashboard renders `schwab-health-badge` when present, hides it when absent; **an un-populated base-extending route (`/reviews/pending`) renders 200 with a sidecar present** (the truthiness-guard regression, Major #1). |
 
-**Total new tests: ~30.** No test constructs a `schwabdev.Client`. No test expects the hook to catch `SchwabRateLimitError`.
+**Total new tests: ~32.** No test constructs a `schwabdev.Client`. No test expects the hook to catch `SchwabRateLimitError`.
 
 **Insufficiency caveat:** the badge string/markup assertions confirm the badge is EMITTED; the operator-witnessed browser render (§I S6) is the BINDING visual gate for the badge.
 
@@ -1550,7 +1742,7 @@ Re-confirm the orchestrator/operator split at executing-plans (`feedback_visual_
 **S4 — A-3 production-path + L9:** the Slice 1 tests green — hooks installed under production, absent under sandbox; Schwab scoped to open-trade tickers; sustained `provider_tag='yfinance'` → cooldown (NOT a direct-429 catch — the ladder swallows the 429).
 **S5 — P14.N7 + CLI (operator-confirmed):** the Slice 2 DNS-survival test green; operator runs `python -m swing.cli schwab status` and confirms the "Checker:" line renders (UNKNOWN when no web server is running; ALIVE in a healthy production session).
 **S6 (NEW — browser leg; operator-driven, BINDING for the badge):** with a sidecar present (either a live production `swing web` session OR a hand-seeded sidecar for a sandbox demo), `python -m swing.cli web`; open `http://127.0.0.1:8080/` and confirm the topbar shows a small "Schwab" health badge (green ALIVE / red DEGRADED), the badge links to `/schwab/status`, no mojibake / no `UnicodeEncodeError` in the console; with the sidecar removed, the badge is absent and all pages still render.
-**S7 (optional — if a production Schwab session is available):** operator smoke of the web daily-bar path: load an OPEN-TRADE chart surface under `env=production` + ladder enabled → confirm a `surface='pipeline'` (`pipeline_run_id IS NULL`) `schwab_api_calls` row was written, the chart renders DAILY (not minute) bars, a NON-open-trade chart wrote NO Schwab row (scope gate held), AND — for OQ-10 — read the `swing web` console for the one-time "rate-limit header-name capture" DEBUG line and record the actual Schwab header key list (confirms or refutes a rate-limit-remaining header for the follow-up extractor add).
+**S7 (optional — if a production Schwab session is available):** operator smoke of the web daily-bar path: load an OPEN-TRADE chart surface under `env=production` + ladder enabled → confirm a `surface='pipeline'` (`pipeline_run_id IS NULL`) `schwab_api_calls` row was written, the chart renders DAILY (not minute) bars, a NON-open-trade chart wrote NO Schwab row (scope gate held), AND — for OQ-10 — read the `swing web` console for the one-time "rate-limit header-name capture" INFO line (it logs at INFO so the default web logging config surfaces it) and record the actual Schwab header key list (confirms or refutes a rate-limit-remaining header for the follow-up extractor add).
 
 **Teardown (`feedback_taskstop_does_not_kill_detached_server`):** after S6/S7, find the `swing web` PID via `Get-NetTCPConnection -LocalPort 8080`, `Stop-Process -Force`, and VERIFY the port is free + no straggler `python ... web` processes.
 
@@ -1589,11 +1781,11 @@ Merge is BLOCKED until the operator confirms S5 + S6.
 2. **The hook NEVER sees `SchwabRateLimitError`** — the ladder swallows it and returns `provider_tag='yfinance'`. The cooldown keys on the observed `provider_tag`, never on catching the 429. Do NOT write a 429-catch test.
 3. **Thread-safety:** `_WebLadderState` is touched by executor workers AND request threads. Guard the memo/counter/cooldown with the lock; do the open-trade DB read OUTSIDE the lock (double-checked).
 4. **Seed ≠ heartbeat:** the seed call runs on the startup thread → `origin='seed'` → sets `last_seed_ts`, NOT `last_daemon_tick_ts`. Otherwise `status` would show false-ALIVE for a dead-at-tick-1 daemon.
-5. **`update_tokens` does NOT raise on auth failure** — verify post-call `access_token` presence; a claimed refresh with no token records DEGRADED.
+5. **`update_tokens` does NOT raise on auth failure** AND returns True even when `update_access_token` logged an error without rotating (schwabdev 2.5.1 `tokens.py:193-218`) — so verify ACTUAL ROTATION: capture the access token before the call, compare after; a claimed refresh that did not rotate (or left it absent) records DEGRADED `AuthRefreshNotRotated`. Presence alone is insufficient (Major #5).
 6. **Version guard via `importlib.metadata.version("schwabdev")` — NEVER construct a `Client`** (spawns a checker daemon + needs creds/network).
 7. **Sidecar atomicity:** `tempfile.mkstemp(dir=<dest parent>)` + `os.replace` (same filesystem; Windows-safe). `mkdir(parents=True, exist_ok=True)` first.
 8. **ASCII scope:** the CLI checker line + the badge markup are ASCII; assert `.isascii()` on the NEW substring only (base.html.j2 + render_status already carry non-ASCII elsewhere).
-9. **base.html.j2 reads only `vm.*`** — the badge field must exist (safe default) on EVERY base-layout VM (Family A base + 9 Family B); the cascade-grep test guards it.
+9. **base.html.j2 reads only `vm.*`** — the badge field is added (safe default) to `BaseLayoutVM` (Family A) + all 16 Family B VMs (§C.6); the fan-out test + a route-render regression test guard it. The badge's TRUTHINESS `{% if %}` guard is render-safe under the project's default Jinja `Undefined`, so a missed VM degrades to "no badge", never a 500 (verify the env is NOT StrictUndefined at implement time — it is `jinja2.Environment(autoescape=True)` at `app.py:91`).
 10. **OQ-10:** do NOT add a guessed header name (it would stay `None`). The capture diagnostic confirms the real name at S7; the candidate-add is a follow-up.
 11. **Startup race (accepted narrow residual):** the checker's first tick can run before the wrap installs; the seed mitigation closes most of it but a dead-at-tick-1 daemon under a near-expiry token surfaces as STARTING→DEGRADED (never false-ALIVE) + an operator restart. Documented, NOT fully closed (V2: construction-window class patch).
 12. **schwabdev `update_refresh_token()` path:** a non-force background call with `rt_delta < 1800` (refresh token near its 7-day expiry) tries `update_refresh_token()` which calls `input()` — in a daemon thread with no stdin this raises (e.g. `EOFError`), which the wrap catches and records as DEGRADED (surfaced via liveness; operator re-auths). The wrap does NOT attempt to drive the OAuth `input()` dance.
@@ -1617,6 +1809,8 @@ SB5.5 is the FIRST item of the operator-LOCKed Phase 14 close-out tail. Sequence
 - Web-badge population broadening to the remaining base-layout surfaces (pattern review/queue, reconcile, account, per-metric drilldowns) — V1 carries the field at default `None` there.
 - A dedicated `surface='web'` audit value (needs a future schema phase).
 - An app-wide cross-process Schwab-budget governor (V2).
+- A per-`(ticker, window_days)` single-flight latch on the web caches to collapse concurrent cold misses for the same open-trade ticker (V2; the accepted bounded residual in §C.2).
+- Web-badge population broadening to the remaining base-layout VMs (reconcile, reviews, cadence, trade detail, per-metric drilldowns) — V1 carries the field there at default `None` (render-safe).
 - The checker startup-race full closure (construction-window class patch) — V2.
 - The Phase-15 schwabdev v3 upgrade obsoletes the checker + deletes P14.N7.
 
