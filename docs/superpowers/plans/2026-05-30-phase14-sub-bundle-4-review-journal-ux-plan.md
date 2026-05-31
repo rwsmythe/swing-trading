@@ -256,6 +256,34 @@ def test_serialized_render_decorator_runs_under_lock():
 
     assert fake_render() == b"<svg/>"
     assert seen == [True]
+
+
+# Codex R1 M#2: assert EVERY public renderer is wrapped (global coverage,
+# R4 M#1) so a future renderer added without the decorator is caught.
+_PUBLIC_RENDERERS = (
+    "render_watchlist_thumbnail_svg", "render_ticker_detail_svg",
+    "render_position_detail_svg", "render_market_weather_svg",
+    "render_theme2_annotated_svg",
+)  # verified at swing/web/charts.py:492/540/628/752/898 -- re-grep at impl
+
+
+def test_all_public_renderers_are_serialized():
+    import inspect
+    # Each public render_*_svg must be wrapped by _serialized_render. The
+    # decorator uses functools.wraps, so detect the marker we set on it.
+    for name in _PUBLIC_RENDERERS:
+        fn = getattr(charts, name)
+        assert getattr(fn, "_is_serialized_render", False), \
+            f"{name} is not wrapped by _serialized_render"
+
+
+def test_no_public_renderer_left_undecorated():
+    # Guard against a NEW public renderer added later without the decorator.
+    import inspect
+    for name, fn in inspect.getmembers(charts, inspect.isfunction):
+        if name.startswith("render_") and name.endswith("_svg"):
+            assert getattr(fn, "_is_serialized_render", False), \
+                f"public renderer {name} must be @_serialized_render"
 ```
 
 - [ ] **Step 2: Run, verify fail** — `python -m pytest tests/web/test_charts_render_lock.py -v` → FAIL (`AttributeError: ... '_RENDER_LOCK'`).
@@ -282,16 +310,39 @@ def _serialized_render(fn):
     def _wrapped(*args, **kwargs):
         with _RENDER_LOCK:
             return fn(*args, **kwargs)
+    _wrapped._is_serialized_render = True  # marker for the coverage test
     return _wrapped
 ```
 
-Apply `@_serialized_render` to EACH public top-level renderer: `render_position_detail_svg` (`:628`), `render_watchlist_thumbnail_svg` (`:492`), and any other `render_*_svg` public entry point (grep `^def render_.*_svg` at implementation time and decorate ALL — R4 M#1 requires global coverage). Do NOT decorate the private helpers `_render_candles_fig` / `_svg_bytes_from_fig` (they run inside an already-held lock; the single-outer-acquisition rule prefers decorating only the public boundary).
+Apply `@_serialized_render` to **ALL FIVE** verified public top-level renderers (Codex R1 M#2): `render_watchlist_thumbnail_svg` (`:492`), `render_ticker_detail_svg` (`:540`), `render_position_detail_svg` (`:628`), `render_market_weather_svg` (`:752`), `render_theme2_annotated_svg` (`:898`) — and re-grep `^def render_.*_svg` at implementation to catch any added since. The two new `trade_charts.py` helpers are also decorated (Tasks 0.3/4.1). Do NOT decorate the private helpers `_render_candles_fig` / `_svg_bytes_from_fig` (they run inside an already-held lock; the single-outer-acquisition rule decorates only the public boundary; the RLock makes the nested `render_position_detail_svg` acquisition from `render_trade_window_position_svg` safe).
 
-- [ ] **Step 4: Run test + full charts suite** — `python -m pytest tests/web/test_charts_render_lock.py tests/web/test_charts.py -q` → PASS; existing chart tests still green (serialization is behavior-preserving).
+- [ ] **Step 3b: Add a parametrized held-lock no-deadlock test** for EVERY public renderer (Codex R1 M#2 — the §M highest-risk lesson demands per-path coverage, not just the decorator). Each renderer is invoked once with the lock ALREADY held on the same thread; it must complete (reentrancy), not block. Stub the matplotlib internals minimally OR feed each renderer a valid planted frame so it produces bytes.
+
+```python
+# tests/web/test_charts_render_lock.py  (append)
+import pytest
+
+@pytest.mark.parametrize("renderer_name", [
+    "render_watchlist_thumbnail_svg", "render_ticker_detail_svg",
+    "render_position_detail_svg", "render_market_weather_svg",
+    "render_theme2_annotated_svg",
+])
+def test_public_renderer_no_deadlock_under_held_lock(renderer_name,
+                                                     renderer_args_for):
+    fn = getattr(charts, renderer_name)
+    args, kwargs = renderer_args_for(renderer_name)  # valid planted inputs
+    with charts._RENDER_LOCK:            # reentrant: must complete, not block
+        out = fn(*args, **kwargs)
+    assert out is not None
+```
+
+(`renderer_args_for` is a conftest helper returning valid minimal inputs per renderer — planted OHLCV frame + the trade/ticker each needs; grep the existing `tests/web/test_charts.py` for how each renderer is currently exercised and reuse those fixtures.)
+
+- [ ] **Step 4: Run test + full charts suite** — `python -m pytest tests/web/test_charts_render_lock.py tests/web/test_charts.py -q` → PASS (incl. the all-wrapped + per-renderer no-deadlock tests); existing chart tests still green (serialization is behavior-preserving).
 
 - [ ] **Step 5: Commit** — `git commit -m "feat(web): add process-wide matplotlib render lock at the charts.py boundary"`.
 
-**Acceptance:** `_RENDER_LOCK` reentrant; `_serialized_render` decorates every public `render_*_svg`; no-deadlock verified; existing chart tests green; ZERO behavior change beyond serialization; ZERO schema/write.
+**Acceptance:** `_RENDER_LOCK` reentrant; `_serialized_render` (with the `_is_serialized_render` marker) decorates ALL FIVE public `render_*_svg` (the all-wrapped + no-undecorated-renderer tests prove global coverage — R4 M#1); a parametrized held-lock no-deadlock test passes for EVERY public renderer; existing chart tests green; ZERO behavior change beyond serialization; ZERO schema/write.
 
 #### Task 0.2 — `_trade_window_bars` (trade-window archive slice)
 
@@ -525,10 +576,15 @@ def test_total_risk_none_when_stop_inverted(build_review_vm_for, stop_above_entr
     assert build_review_vm_for(stop_above_entry).total_risk_dollars is None
 
 
-def test_exit_fields_none_when_open(build_review_vm_for, open_trade):
-    vm = build_review_vm_for(open_trade)
-    assert vm.exit_price_vwap is None and vm.exit_legs == ()
+# Codex R1 M#4: build_review_vm returns None unless trade.state == 'closed'
+# (swing/web/view_models/trades.py:1223). The review surface is CLOSED-ONLY, so
+# the empty-exit case is tested on the helper directly, NOT via an open trade.
+def test_exit_vwap_helper_none_on_empty():
+    from swing.web.view_models.trades import _exit_vwap
+    assert _exit_vwap([]) is None  # defensive: no reducing fill -> None
 ```
+
+**CR.1 is closed-only (Codex R1 M#4):** `build_review_vm` returns `None` for any non-`closed` trade (and for already-reviewed trades). The review chart therefore always renders a closed trade — consistent with §4.2's "CR.1 only ever calls the helper on closed trades." Do NOT widen the review page to open trades; do NOT write a VM-level open-trade exit test (it would assert against a `None` VM).
 
 - [ ] **Step 2: Run, verify fail** — attribute missing.
 
@@ -778,13 +834,27 @@ def test_expand_shows_svg_not_legacy_png(client, seeded_open_trade,
 
 - [ ] **Step 2: Run, verify fail** — legacy `<img>` still present.
 
-- [ ] **Step 3: Implement** the template swap (inside the existing `<td colspan>`; keep the unavailable branch):
+- [ ] **Step 1b: Add the cache-miss no-blank test** (Codex R1 M#3) — the legacy `chart_reason`/`chart_reason_message` come from the static-PNG chart scope (`resolve_chart_scope`, `open_positions_row.py:368`), NOT the `position_detail` SVG cache. So `chart_reason is None` (PNG-scope says "available") can co-occur with `position_chart_svg_bytes is None` (no SVG cache row) → the naive `{% if svg %}{% elif chart_reason_message %}` would render BLANK. The template MUST have a terminal `{% else %}` fallback.
+
+```python
+def test_expand_no_blank_when_svg_cache_missing(client, seeded_open_trade):
+    # chart_reason resolves "available" (PNG scope) but the position_detail
+    # SVG cache row is absent -> must show a fallback, never blank.
+    r = client.get(f"/trades/open/{seeded_open_trade.id}/expand",
+                   headers={"HX-Request": "true"})
+    assert r.status_code == 200
+    assert ("<svg" in r.text) or ("chart-unavailable" in r.text)  # never blank
+```
+
+- [ ] **Step 3: Implement** the template swap (inside the existing `<td colspan>`) with a TERMINAL else fallback so a cache miss never renders blank:
 
 ```jinja
 {% if expanded.position_chart_svg_bytes %}
   <div class="position-detail-chart">{{ expanded.position_chart_svg_bytes.decode('utf-8') | safe }}</div>
 {% elif expanded.chart_reason_message %}
   <div class="chart-unavailable" data-chart-reason="{{ expanded.chart_reason }}">{{ expanded.chart_reason_message }}</div>
+{% else %}
+  <div class="chart-unavailable" data-chart-reason="position-detail-cache-miss">Position chart unavailable.</div>
 {% endif %}
 ```
 
@@ -792,7 +862,7 @@ def test_expand_shows_svg_not_legacy_png(client, seeded_open_trade,
 
 - [ ] **Step 5: Commit** — `git commit -m "feat(web): inline position_detail SVG in the open-positions row-expand"`.
 
-**Acceptance:** SVG present, legacy `<img>` gone, fragment root still `<tr>`; `| safe` only on generated SVG. **Operator-witnessed gate S6 BINDING.**
+**Acceptance:** SVG present, legacy `<img>` gone, fragment root still `<tr>`; **a cache miss shows the terminal fallback, never blank** (M#3); `| safe` only on generated SVG. **Operator-witnessed gate S6 BINDING.**
 
 #### Task 1.3 — Reopened-ticker safety test + L7 reversal note
 
@@ -1058,7 +1128,17 @@ def test_bad_sort_falls_back_and_flags(build_journal_for):
 
 - [ ] **Step 2: Run, verify fail.**
 
-- [ ] **Step 3: Implement.** Frozensets `_SORT_KEYS = frozenset({"entry_date","ticker","final_r","total_risk_dollars","state"})`, `_DIRS = frozenset({"asc","desc"})`, `_FILTER_STATES = frozenset({"entered","managing","partial_exited","closed","reviewed","open","closed_any"})` (where `open`→`{entered,managing,partial_exited}`, `closed_any`→`{closed,reviewed}`), `_FILTER_PATTERNS = frozenset({"vcp","flat_base","cup_with_handle","high_tight_flag","double_bottom_w"})`. In `build_journal`: validate each; on any out-of-allowlist value set `invalid_filter=True`, log a WARNING, and use the default (no raise). Apply filters to `filtered` rows, then sort (None-last for `final_r`/`total_risk_dollars`), then paginate. Add `invalid_filter: bool = False`, `sort`, `dir`, `filter_state`, `filter_pattern` to `JournalVM`.
+- [ ] **Step 3: Implement.** Frozensets `_SORT_KEYS = frozenset({"entry_date","ticker","final_r","total_risk_dollars","state"})`, `_DIRS = frozenset({"asc","desc"})`, `_FILTER_STATES = frozenset({"entered","managing","partial_exited","closed","reviewed","open","closed_any"})` (where `open`→`{entered,managing,partial_exited}`, `closed_any`→`{closed,reviewed}`), `_FILTER_PATTERNS = frozenset({"vcp","flat_base","cup_with_handle","high_tight_flag","double_bottom_w"})`, and (Codex R1 M#5 — the spec §5.2 "has-A+ flag" filter) `_FILTER_APLUS = frozenset({"aplus","non_aplus"})` where `aplus`→`row.aplus_bucket == "aplus"` and `non_aplus`→`row.aplus_bucket != "aplus"`. In `build_journal`: validate each; on any out-of-allowlist value set `invalid_filter=True`, log a WARNING, and use the default (no raise). Apply filters (state, pattern, A+) to `filtered` rows, then sort (None-last for `final_r`/`total_risk_dollars`), then paginate. Add `invalid_filter: bool = False`, `sort`, `dir`, `filter_state`, `filter_pattern`, `filter_aplus` to `JournalVM`.
+
+  Add a has-A+ filter test:
+
+```python
+def test_filter_aplus_includes_excludes(build_journal_for, aplus_trade_with_candidate):
+    incl = build_journal_for(period="all", filter_aplus="aplus")
+    assert all(r.aplus_bucket == "aplus" for r in incl.rows)
+    excl = build_journal_for(period="all", filter_aplus="non_aplus")
+    assert all(r.aplus_bucket != "aplus" for r in excl.rows)
+```
 
 - [ ] **Step 4: Run, verify pass.**
 
@@ -1099,7 +1179,7 @@ def test_bad_filter_returns_inpage_notice_not_400(client):
 
 - [ ] **Step 2: Run, verify fail.**
 
-- [ ] **Step 3: Implement.** Detect HX via the request header (the codebase's existing `HX-Request` check — grep for the established helper). For HX requests, render ONLY the `<table id="journal-table">...</table>` partial (a `journal_table.html.j2` extracted from `journal.html.j2`, included by both the full page and the fragment path) so the fragment root is the `<table>` (no bare `<tr>` → synthetic-table-wrap cannot fire). The full-page render `{% include "partials/journal_table.html.j2" %}`. Route params `sort/dir/filter_state/filter_pattern: str | None = Query(None)`, passed to `build_journal`. When `vm.invalid_filter`, the table partial shows a visible "invalid filter, showing all" notice (driven by `vm.invalid_filter`).
+- [ ] **Step 3: Implement.** Detect HX via the request header (the codebase's existing `HX-Request` check — grep for the established helper). For HX requests, render ONLY the `<table id="journal-table">...</table>` partial (a `journal_table.html.j2` extracted from `journal.html.j2`, included by both the full page and the fragment path) so the fragment root is the `<table>` (no bare `<tr>` → synthetic-table-wrap cannot fire). The full-page render `{% include "partials/journal_table.html.j2" %}`. Route params `sort/dir/filter_state/filter_pattern/filter_aplus: str | None = Query(None)` (M#5), passed to `build_journal`. When `vm.invalid_filter`, the table partial shows a visible "invalid filter, showing all" notice (driven by `vm.invalid_filter`).
 
 ```jinja
 {# header sort control example, inside journal_table.html.j2 #}
@@ -1161,28 +1241,31 @@ def test_thumbnail_no_deadlock_under_lock(monkeypatch, cfg_fixture,
 
 - [ ] **Step 2: Run, verify fail.**
 
-- [ ] **Step 3: Implement.** Thumbnail uses `_render_candles_fig` at a small figsize, `ma_windows=(10, 20)`, NO title, NO fill markers; serialize the body under the lock.
+- [ ] **Step 3: Implement.** Thumbnail uses `_render_candles_fig` at a small figsize, `ma_windows=(10, 20)`, NO fill markers; serialize the body under the lock. **The verified live signature (Codex R1 M#1) is `_render_candles_fig(df, *, ma_windows, figsize, volume=True, style="yahoo") -> (fig, price_ax, vol_ax)` (`swing/web/charts.py:412-419`) — there is NO `title` parameter and it returns a 3-TUPLE.** `df` MUST be `_normalize_ohlc_for_mpf` output (verify that helper at implementation and apply it to `bars` first); `ma_windows` values must exist in `_MA_COLORS` (10 and 20 are present — verify). Unpack the 3-tuple; pass only `fig` to `_svg_bytes_from_fig`.
 
 ```python
 # swing/web/trade_charts.py  (append)
+from swing.web.charts import _normalize_ohlc_for_mpf  # verify exact name/location
+
 @_serialized_render
 def render_trade_window_thumbnail_svg(*, trade: "Trade", fills,
                                       cfg: "Config") -> bytes | None:
-    """Small candlestick thumbnail over the trade window (no title, no
-    markers). Open trades use the trailing window (exit_date None). None on
-    no-coverage. Render-direct; no chart_renders write."""
+    """Small candlestick thumbnail over the trade window (no markers). Open
+    trades use the trailing window (exit_date None). None on no-coverage.
+    Render-direct; no chart_renders write."""
     entry_date = date.fromisoformat(trade.entry_date[:10])
     exit_date = _exit_date_for(trade, fills)
     bars = _trade_window_bars(
         ticker=trade.ticker, entry_date=entry_date, exit_date=exit_date, cfg=cfg)
     if bars is None:
         return None
-    fig = _render_candles_fig(bars, ma_windows=(10, 20), figsize=(2.4, 1.4),
-                              title=None)
+    norm = _normalize_ohlc_for_mpf(bars)               # mpf-ready frame
+    fig, _price_ax, _vol_ax = _render_candles_fig(     # 3-tuple, NO title kwarg
+        norm, ma_windows=(10, 20), figsize=(2.4, 1.4), volume=True)
     return _svg_bytes_from_fig(fig)
 ```
 
-**Verify** `_render_candles_fig`'s real signature at implementation (`grep -n "def _render_candles_fig" -A20 swing/web/charts.py`) — match the exact param names (`figsize`, `ma_windows`, `title`/`label` may differ). If it always draws a title/labels, pass the minimal ASCII-safe values or extend it with a `title=None` branch as a tiny additive change (keep existing renderers green). Do NOT introduce any non-ASCII label.
+**Re-verify at implementation** the exact names `_render_candles_fig` / `_normalize_ohlc_for_mpf` / `_svg_bytes_from_fig` and that `figsize=(2.4, 1.4)` produces a usable thumbnail (mplfinance has a minimum sensible size; bump if it errors). The thumbnail is unlabeled because `_render_candles_fig` emits no title/axis labels of its own beyond the SB3 renderers' ASCII-clean ones — so there is no new mathtext surface. Do NOT introduce any non-ASCII label.
 
 - [ ] **Step 4: Run, verify pass** (incl. no-deadlock).
 
@@ -1223,20 +1306,38 @@ def test_thumbnail_200_not_found(client, caplog):
 
 - [ ] **Step 2: Run, verify fail.**
 
-- [ ] **Step 3: Implement** the fragment + route (structurally identical to the review-chart route, §C.1). Memo: a per-request dict keyed by `trade_id` (request-lifetime ONLY — NOT cross-request; NOT bare-`trade_id` cross-request per R2 M#3). Since each thumbnail is its own request, the memo only dedupes a within-request double render; document that a cross-request cache is the banked v24 escalation.
+- [ ] **Step 3: Implement** the fragment + route (structurally identical to the review-chart route, §C.1).
+
+  **Explicit render-concurrency bound (Codex R1 M#6 — the spec §5.3(c) contract).** The process-wide render LOCK serializes matplotlib but does NOT bound how many request workers PILE UP waiting behind it on a fast scroll — a burst of `revealed` triggers could queue many blocked workers. Add an explicit module-level **render semaphore** (`_THUMBNAIL_RENDER_SEMAPHORE = threading.BoundedSemaphore(2)`) acquired with a SHORT timeout around the render call; on timeout, return the 200+unavailable fragment with a `data-chart-reason="busy"` (the client may re-trigger on next reveal) rather than blocking a worker indefinitely. This caps concurrent thumbnail renders independent of the page-size/`revealed` bound and prevents the self-inflicted DoS the spec flags. (Reusing `app.state.price_fetch_executor` is the documented alternative; the bounded semaphore is simpler and sufficient for a single-operator box.)
+
+  ```python
+  import threading
+  _THUMBNAIL_RENDER_SEMAPHORE = threading.BoundedSemaphore(2)
+  # in the route, around the render:
+  if not _THUMBNAIL_RENDER_SEMAPHORE.acquire(timeout=2.0):
+      log.warning("thumbnail render busy trade_id=%s", trade_id)
+      return _thumbnail_fragment(request, busy=True)   # 200 + "busy" span
+  try:
+      svg = render_trade_window_thumbnail_svg(trade=trade, fills=fills, cfg=cfg)
+  finally:
+      _THUMBNAIL_RENDER_SEMAPHORE.release()
+  ```
+
+  **Memo scope (Codex R1 m#2 correction).** The thumbnail endpoint serves ONE trade per request, so a cross-request memo is NOT used (and the bare-`trade_id` cross-request memo is forbidden per R2 M#3). There is no meaningful within-request double-render to dedupe here either — so the thumbnail route carries NO memo; the freshness discipline note (no cross-request bare-`trade_id` cache) and the v24 persisted trade-keyed cache remain the banked escalation if profiling demands it. (The request-lifetime memo concept applies only where a single request renders the same trade's chart more than once — not this route.)
 
 ```jinja
 {# partials/journal_thumbnail.html.j2 #}
 {% if chart_svg_bytes %}{{ chart_svg_bytes.decode('utf-8') | safe }}
 {% elif not_found %}<span class="chart-unavailable" data-chart-reason="trade-not-found">Trade not found.</span>
+{% elif busy %}<span class="chart-unavailable" data-chart-reason="busy">Chart busy.</span>
 {% else %}<span class="chart-unavailable" data-chart-reason="no-coverage">Chart unavailable.</span>{% endif %}
 ```
 
 - [ ] **Step 4: Run, verify pass.**
 
-- [ ] **Step 5: Commit** — `git commit -m "feat(web): lazy journal thumbnail fragment route"`.
+- [ ] **Step 5: Commit** — `git commit -m "feat(web): lazy journal thumbnail fragment route with a render-concurrency bound"`.
 
-**Acceptance:** three response contracts; `Cache-Control: private`; SVG/`<span>` is not a table element (no wrap hazard); render exception isolated + logged; request-lifetime memo only; ZERO write.
+**Acceptance:** four response contracts (200+SVG / 200+unavailable / 200+not-found / 200+busy); `Cache-Control: private`; SVG/`<span>` is not a table element (no wrap hazard); render exception isolated + logged; **explicit `BoundedSemaphore(2)` render-concurrency bound** so a fast-scroll burst cannot pile up workers (M#6); NO memo on this one-trade-per-request route (m#2); ZERO write.
 
 #### Task 4.3 — Wire the on-scroll thumbnail cell + verify window-scroll layout
 
@@ -1669,7 +1770,7 @@ def test_drilldown_chart_fragment_200_unavailable_when_missing(client):
 {# journal_trade_detail.html.j2 #}
 {% extends "base.html.j2" %}
 {% block content %}
-  <h1>{{ vm.trade.ticker }} — trade detail</h1>
+  <h1>{{ vm.trade.ticker }} - trade detail</h1>{# ASCII hyphen (R1 m#1) #}
   <section class="thesis-at-open">
     <h2>Thesis at open</h2>
     <p>{{ vm.thesis or '' }}</p>
