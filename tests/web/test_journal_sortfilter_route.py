@@ -193,3 +193,25 @@ def test_pattern_filter_options(client):
         "double_bottom_w",
     ):
         assert f'value="{value}"' in r.text, f"missing filter_pattern option {value}"
+
+
+def test_thead_rows_are_well_formed(client):
+    # Codex R1 MAJOR: when the filter control row was added, the column-header
+    # row lost its opening <tr>, leaving the <thead> with one <tr> open but two
+    # </tr> close -> malformed table served on BOTH the full page and the
+    # whole-<table> outerHTML fragment. Browsers auto-correct so TestClient
+    # content assertions miss it; assert <tr>/</tr> balance inside <thead>.
+    r = client.get("/journal?period=all", headers={"HX-Request": "true"})
+    assert r.status_code == 200
+    m = re.search(r"<thead>(.*?)</thead>", r.text, re.DOTALL)
+    assert m, "journal table has no <thead>"
+    thead = m.group(1)
+    opens = len(re.findall(r"<tr\b", thead))
+    closes = len(re.findall(r"</tr>", thead))
+    assert opens == closes, (
+        f"<thead> has unbalanced rows: {opens} <tr> vs {closes} </tr> "
+        "(column-header row missing its opening <tr>)"
+    )
+    # The column-header cells must live inside a <tr> (not orphaned after the
+    # filter row closes): the filter row and the heading row are TWO rows.
+    assert opens == 2, f"expected filter-row + heading-row (2 <tr>), got {opens}"
