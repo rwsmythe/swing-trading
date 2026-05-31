@@ -1403,7 +1403,7 @@ def test_thumbnail_busy_when_semaphore_exhausted(client, seeded_closed_trade,
 
 - [ ] **Step 5: Commit** — `git commit -m "feat(web): lazy journal thumbnail fragment route with a render-concurrency bound"`.
 
-**Acceptance:** four response contracts (200+SVG / 200+unavailable / 200+not-found / 200+busy); `Cache-Control: private`; SVG/`<span>` is not a table element (no wrap hazard); render exception isolated + logged; **explicit `BoundedSemaphore(2)` render-concurrency bound** so a fast-scroll burst cannot pile up workers (M#6); NO memo on this one-trade-per-request route (m#2); ZERO write.
+**Acceptance:** four response contracts (200+SVG / 200+unavailable / 200+not-found / 200+busy); **cache headers DISTINCT by contract (WP-R4 m#1): success/unavailable/not-found = `Cache-Control: private, max-age=<short>`; busy = `Cache-Control: no-store`** (transient backpressure must not be cached); SVG/`<span>` is not a table element (no wrap hazard); render exception isolated + logged; **explicit `BoundedSemaphore(2)` render-concurrency bound** so a fast-scroll burst cannot pile up workers (M#6); the busy fragment self-retries via `hx-target="this" hx-swap="outerHTML"` (WP-R3 M#1); NO memo on this one-trade-per-request route (m#2); ZERO write.
 
 #### Task 4.3 — Wire the on-scroll thumbnail cell + verify window-scroll layout
 
@@ -1510,7 +1510,8 @@ review_log is a CADENCE table with NO trade_id and is EXCLUDED (Codex Re-R1 M#1)
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from datetime import date, datetime  # WP-R4 M#1: _normalize_ts uses both
 
 from swing.data.repos.fills import list_fills_for_trade
 
@@ -1688,10 +1689,18 @@ def test_event_log_stop_adjust_precedence(conn, trade_with_stop_adjust_event_log
 
 
 def test_superseded_daily_management_excluded(conn, trade_with_superseded_row):
+    # WP-R4 M#2: discriminating. The fixture's superseded row carries a UNIQUE
+    # marker string in a detail-bearing column (e.g. management_notes =
+    # "SUPERSEDED_MARKER_xyz"); if the is_superseded=0 filter regressed, that
+    # marker would surface in some entry's summary/detail. Assert its ABSENCE,
+    # and assert the ACTIVE row's marker IS present (so the test fails if the
+    # filter excludes everything by mistake).
+    marker = trade_with_superseded_row.superseded_marker      # only on the superseded row
+    active_marker = trade_with_superseded_row.active_marker   # only on the active row
     chron = build_trade_chronology(conn, trade_with_superseded_row.id)
-    # the superseded snapshot/event_log row must NOT appear
-    assert all(getattr(e, "_src_id", None) != trade_with_superseded_row.superseded_id
-               for e in chron.entries)
+    blob = " ".join((e.summary or "") + " " + (e.detail or "") for e in chron.entries)
+    assert marker not in blob          # superseded row excluded
+    assert active_marker in blob       # active row included (not over-filtered)
 
 
 def test_review_log_cadence_row_never_in_chronology(conn,
