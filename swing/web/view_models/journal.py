@@ -319,11 +319,19 @@ def _row_for(trade, *, today, fills_by_trade, exits_by_trade, bucket_by_cid,
         exit_date = max(e.exit_date for e in exits)
     # FIX-1: days-open = (closed) last exit - entry; (open) today - entry. Parse
     # date-only prefixes defensively; never raise on legacy/operator data.
+    # Codex R1 MAJOR: `today` anchors ONLY open states. A terminal-state trade
+    # with no exit fill has an UNKNOWN duration -> days_open is None (it must
+    # NOT silently age to today like an open position would).
     days_open: int | None = None
     try:
         entry_d = date.fromisoformat(trade.entry_date[:10])
-        end_d = date.fromisoformat(exit_date[:10]) if exit_date else today
-        days_open = (end_d - entry_d).days
+        if exit_date is not None:
+            end_d: date | None = date.fromisoformat(exit_date[:10])
+        elif trade.state in _OPEN_STATES:
+            end_d = today
+        else:
+            end_d = None
+        days_open = (end_d - entry_d).days if end_d is not None else None
     except (ValueError, TypeError):
         days_open = None
     chart_pattern = (

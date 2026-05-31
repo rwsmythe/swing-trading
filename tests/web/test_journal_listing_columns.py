@@ -128,6 +128,31 @@ def test_row_open_trade_days_open_uses_today(build_journal_for, open_managing):
     assert row.days_open == expected
 
 
+@pytest.fixture
+def closed_without_exit(seeded_db):
+    # Legacy/operator data the code tolerates: a terminal-state trade with NO
+    # exit fills. exit_date is unknown -> days_open must be None (NOT counted
+    # to today, which would be a closed trade silently aging forever).
+    cfg, _ = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            tid = _insert_trade(conn, ticker="ORP", entry_date="2026-04-15",
+                                state="closed")
+    finally:
+        conn.close()
+    return tid
+
+
+def test_closed_without_exit_has_no_days_open(build_journal_for, closed_without_exit):
+    # Codex R1 MAJOR: a closed/reviewed trade with no exit fill must NOT show a
+    # today-anchored days_open (only open states age to today).
+    vm = build_journal_for(period="all")
+    row = next(r for r in vm.rows if r.trade_id == closed_without_exit)
+    assert row.exit_date is None
+    assert row.days_open is None
+
+
 def test_listing_exit_before_closing_price_header(seeded_db, single_leg_closed):
     cfg, cfg_path = seeded_db
     app = create_app(cfg, cfg_path)
