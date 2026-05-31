@@ -444,3 +444,15 @@ def renderer_args_for():
                         "pattern_evaluation": _sb4_make_pattern_eval(bars)}
         raise KeyError(f"unknown renderer {renderer_name!r}")
     return _factory
+
+
+@pytest.fixture
+def cfg_fixture(test_cfg) -> Config:
+    """A Config with a valid paths.prices_cache_dir + archive_history_days.
+
+    For Phase 14 SB4 Slice 0 trade-window helpers; the archive read is always
+    monkeypatched in these tests, so the cache dir need only exist.
+    """
+    cfg, _ = test_cfg
+    cfg.paths.prices_cache_dir.mkdir(parents=True, exist_ok=True)
+    return cfg
