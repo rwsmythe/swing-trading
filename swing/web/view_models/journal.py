@@ -10,11 +10,19 @@ from swing.config import Config
 from swing.data.db import connect
 from swing.data.models import Trade
 from swing.data.repos.fills import list_all_fills
-from swing.data.repos.trades import list_closed_trades, list_open_trades
+from swing.data.repos.trades import (
+    get_trade,
+    list_closed_trades,
+    list_open_trades,
+)
 from swing.data.repos.weather import list_weather_runs
 from swing.journal.flags import BehavioralFlag, compute_flags
 from swing.journal.stats import JournalStats, compute_stats, period_filter
 from swing.trades.review import compute_actual_realized_R_effective
+from swing.web.view_models.trade_chronology import (
+    TradeChronology,
+    build_trade_chronology,
+)
 from swing.web.view_models.trades import _exit_vwap, _total_risk_dollars
 
 _log = logging.getLogger(__name__)
@@ -490,4 +498,68 @@ def build_journal(
             banner["recent_multi_leg_auto_correction_count"]
         ),
         banner_resolve_link=banner["banner_resolve_link"],
+    )
+
+
+@dataclass(frozen=True)
+class TradeDrilldownVM:
+    """Phase 14 SB4 Slice 5 Task 5.4 — the journal per-trade drill-down page VM.
+
+    Base-layout page VM (extends base.html.j2): carries the FULL base-banner
+    field set via ``_base_banner_fields`` (no hand-copy — M#11) + the trade, the
+    unified chronology, the thesis-at-open static decision columns (read-only),
+    and a lazy annotated ``chart_url`` (the fragment renders on hx-trigger=load).
+    """
+    trade: Trade
+    chronology: TradeChronology
+    chart_url: str
+    # thesis-at-open (static decision columns; read-only; models.py:236-238)
+    thesis: str | None = None
+    why_now: str | None = None
+    invalidation_condition: str | None = None
+    # base-banner fields (populated via _base_banner_fields):
+    session_date: str = ""
+    stale_banner: str | None = None
+    price_source_degraded: bool = False
+    price_source_degraded_until: str | None = None
+    ohlcv_source_degraded: bool = False
+    unresolved_material_discrepancies_count: int = 0
+    recent_multi_leg_auto_correction_count: int = 0
+    banner_resolve_link: str | None = None
+
+    def __post_init__(self) -> None:
+        # Mirror the JournalVM banner_resolve_link guard.
+        if self.banner_resolve_link is not None:
+            if not isinstance(self.banner_resolve_link, str):
+                raise TypeError(
+                    "TradeDrilldownVM.banner_resolve_link must be str | None; "
+                    f"got {type(self.banner_resolve_link).__name__}"
+                )
+            if (
+                not self.banner_resolve_link
+                or not self.banner_resolve_link.startswith("/")
+            ):
+                raise ValueError(
+                    "TradeDrilldownVM.banner_resolve_link must be None or a "
+                    "non-empty path starting with '/'; got "
+                    f"{self.banner_resolve_link!r}"
+                )
+
+
+def build_trade_drilldown_vm(conn, cfg: Config, trade_id: int):
+    """Assemble the drill-down page VM. Returns ``None`` when the trade is
+    missing (-> the route raises 404). Read-only: SELECTs only, ZERO writes."""
+    trade = get_trade(conn, trade_id)
+    if trade is None:
+        return None
+    chronology = build_trade_chronology(conn, trade_id)
+    banner = _base_banner_fields(conn, cfg)
+    return TradeDrilldownVM(
+        trade=trade,
+        chronology=chronology,
+        chart_url=f"/journal/trades/{trade_id}/chart",
+        thesis=trade.thesis,
+        why_now=trade.why_now,
+        invalidation_condition=trade.invalidation_condition,
+        **banner,
     )
