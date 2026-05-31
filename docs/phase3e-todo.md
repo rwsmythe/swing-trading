@@ -8,6 +8,28 @@
 
 ---
 
+## 2026-05-31 #11 Phase 14 Sub-bundle 5.5 (Schwab) WRITING-PLANS SHIPPED at `1bd1558` -- plan 1821 lines; GENUINE single WSL Codex chain CONVERGED R6 (2 crit + 11 major + 8 minor ALL fixed, ZERO rejected); NO schema (v23 held); ZERO new schwabdev.Client.* sites (no L2 re-anchor); OQ-6 web health badge added; executing-plans NEXT
+
+**SB5.5 writing-plans SHIPPED 2026-05-31 #11** at merge `1bd1558` of `phase14-sub-bundle-5-5-schwab-writing-plans` via `--no-ff`. 2 branch commits (`47f1377` initial + `41ca915` R1-R6 convergence) + merge. Docs-only (plan `docs/superpowers/plans/2026-05-31-phase14-sub-bundle-5-5-schwab-web-marketdata-checker-plan.md`, 1821 lines; 4 slices [1/1b/2/3], ~32 tests). ZERO Co-Authored-By (`%(trailers)` empty). Based on `c7a8df3`.
+
+**Genuine WSL Codex chain CONVERGED R6 (responses persisted -- v2.0.3):** 6 rounds; 2 crit + 11 major + 8 minor ALL fixed, ZERO rejected; final `### Verdict` NO_NEW_CRITICAL_MAJOR on disk in `.copowers-findings.md` (297 lines). codex verified at `/home/rwsmythe/.local/node22/bin/codex` (not the dead Windows shim).
+
+**Orchestrator QA (per `feedback_orchestrator_qa_implementer_product`):** docs-only single-file plan; trailers `[]`; convergence read on disk; the architecture verified -- A-3 mirrors `_install_pipeline_marketdata_caches` (reuse `construct_authenticated_client` + the existing hooks; L9 gates in the hook closures under a `threading.Lock`); P14.N7 replaces the one web client's bound `update_tokens` (wrap-not-replace); ONE shared 6-step liveness state machine consumed by BOTH `swing schwab status` AND the web badge (no forked logic); NO schema (v23; ephemeral sidecar; surface=`'pipeline'`); ZERO new `schwabdev.Client.*` sites; P14.N7 cleanly-removable. The `_build_caches_with_ladder` brief-drift is corrected in the plan ("that name does not exist").
+
+**OQ dispositions honored:** OQ-1..OQ-10 (incl. OQ-6 = CLI + web health badge, both reading the SAME sidecar via the SAME state machine; OQ-10 = a no-guess INFO-level header-KEY capture so the operator confirms the real Schwab rate-limit-remaining header name at the S7 production smoke, then a one-line follow-up lands the candidate name). **Web-badge fan-out:** field on `BaseLayoutVM` + 16 leaf Family-B VMs, behind a truthiness `{% if %}` guard (render-safe under the default-Undefined Jinja env) + a fan-out field-presence test + a route-render regression test.
+
+**Gate (executing-plans, S1-S7):** test/CLI-driven + a NEW browser leg (S6 = the web health badge, operator-witnessed) + S7 optional production smoke (incl. the OQ-10 header-key capture). schwabdev **2.5.1** target (3.0.5 is Phase 15).
+
+**Forward action sequence (orchestrator-side):**
+
+- [x] QA the returned plan + read `.copowers-findings.md` (R6 convergence) + verify the architecture/LOCKs/OQ-6 badge
+- [x] Merge `--no-ff` at `1bd1558` + housekeep (THIS entry + CLAUDE.md line-3) + push + teardown (docs-only -> no suite run)
+- [ ] **SB5.5 executing-plans dispatch brief** (mirror the SB4/SB5 executing-plans briefs; the 4 slices; the S1-S7 gate incl. the browser badge leg; persist-Codex-responses; schwabdev 2.5.1 target) + commit BEFORE inline prompt
+- [ ] SB5.5 executing-plans (single WSL Codex chain to convergence) -> operator test/CLI + browser-badge gate -> merge -> re-run suite on MERGED head + reinstall swing
+- [ ] then close-out polish batch (incl. A-6) -> B-7 -> Sec 9.1 Q6 close-out review
+
+---
+
 ## 2026-05-31 #10 Phase 14 Sub-bundle 5.5 (Schwab; A-3 web market-data ladder + P14.N7 checker resilience) BRAINSTORM SHIPPED at `4205b63` -- spec 437 lines; GENUINE single WSL Codex chain CONVERGED R7 (1 crit + 16 major fixed across R1-R6, 1 accepted, ZERO rejected); on schwabdev 2.5.1 (operator chose path A); NO schema (v23 held); zero new schwabdev.Client.* call sites; writing-plans NEXT
 
 **SB5.5 brainstorm SHIPPED 2026-05-31 #10** at merge `4205b63` of `phase14-sub-bundle-5-5-schwab-brainstorming` via `--no-ff`. 8 branch commits (draft `eaeafec` + R1-R6 `9133292`/`4d3fb5e`/`c9189b9`/`742a066`/`e9b732c`/`6d85e55` + post-convergence `fd795b1`) + merge. Docs-only (spec `docs/superpowers/specs/2026-05-31-phase14-sub-bundle-5-5-schwab-web-marketdata-checker-design.md`, 437 lines). ZERO Co-Authored-By (`%(trailers)` empty on all 8 + merge). Based on `ea0d69c` (the SB5.5 brief with the operator rulings).
