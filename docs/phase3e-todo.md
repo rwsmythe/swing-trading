@@ -8,6 +8,26 @@
 
 ---
 
+## 2026-05-30 #7 Phase 14 Sub-bundle 5 (metrics overview; P14.N5) WRITING-PLANS SHIPPED at `9635d17` -- plan 1351 lines; GENUINE single WSL Codex chain CONVERGED R3 (R1 1C+3M -> R2 1C+1m -> R3 NO_NEW_CRITICAL_MAJOR; 2 crit + 4 major fixed, ZERO rejected); NO schema (v23 held); non-uniform thresholds 5/10/line-band; route widening atomic with builder; executing-plans dispatch NEXT
+
+**Sub-bundle 5 writing-plans SHIPPED 2026-05-30 #7** at merge `9635d17` of `phase14-sub-bundle-5-metrics-overview-writing-plans` via `--no-ff`. 3 branch commits (draft `2e865ec` + R2 `66c3605` + R3 `c61c0de`) + merge. Docs-only (plan `docs/superpowers/plans/2026-05-30-phase14-sub-bundle-5-metrics-overview-plan.md` 1351 lines; ZERO swing/tests writes). Schema v23 LOCKED (NO `0024`; render-direct inline -> no v24 trigger; plan §K). ZERO Co-Authored-By (`%(trailers)` empty on all 3 commits + merge). Branched from `3d022d4` (the brief's §9 `3e82fbb` base was stale; superseded by the brief's own commit).
+
+**Genuine single WSL Codex chain (OQ-7 LOCK; run to convergence):** R1 = 1 CRITICAL + 3 MAJOR (ASCII leak via reused `placeholder_text` carrying honesty.py's `>=` glyph; route-update-deferred-to-T-5.3 would 500 the T-5.2 route tests; cfg-less call-site test mis-described; missing `seeded_app`/`low_seeded_app` fixtures) -> R2 = 3 prior RESOLVED + 1 new CRITICAL (static `_SURFACES` `sec 3.1` description bypassed the `_ascii` chokepoint -> `body.isascii()` fails) + 1 MINOR (silent `?`-masking) -> R3 = both RESOLVED + fresh pass = NO_NEW_CRITICAL_MAJOR. Token growth 121k -> 152k -> 175k corroborates genuine (non-stubbed) execution.
+
+**GAP -> lesson-learned (operator-flagged 2026-05-30):** the implementer persisted only the Codex PROMPTS (`.codex-review-prompt/-r2/-r3.md`), NOT the responses, so the orchestrator could not independently read the R3 `NO_NEW_CRITICAL_MAJOR` verdict on disk and relied on the return-report attestation plus an independent accessor re-grep. Operator confirmed this is a real gap; fixed forward via memory `feedback_implementer_persist_codex_responses` -- every implementer brief MUST require persisting each round's RESPONSE (not just the prompt) to a gitignored on-disk file. No extra Codex pass run (operator-decided; attestation sufficient).
+
+**Orchestrator QA (per `feedback_orchestrator_qa_implementer_product`):** docs-only single-file plan; trailers `[]`; the 7 OQ LOCKs honored (plan §E matrix); accessor claims re-verified against production -- `TREND_MIN_RUNS` 5 (`capital.py:61`) vs 10 (`funnel.py:42`), and BOTH build their suppressed strings with a real `>=` glyph (`capital.py:640`/`funnel.py:288`), confirming the central `_ascii` chokepoint is a genuine need not a theoretical one; `build_trade_process_card_vm`/`build_hypothesis_progress_card_vm`/`MetricCellB`/`ALL_COHORTS_KEY="__all__"`/`compute_process_grade_trend`/`build_pattern_outcomes_vm` all exist; the route imports `build_metrics_index_vm` into its namespace (`metrics.py:30`, called bare at `:56`) so the T-5.3 monkeypatch target resolves. **Monkeypatch route-test approach OPERATOR-CONFIRMED** (real-data extraction covered by the T-5.2 VM tests against seeded high/low/7-run DBs + the existing widened route test + the binding browser gate; no executing-plans revisit).
+
+**Forward action sequence (orchestrator-side):**
+
+- [x] QA the returned plan + accessor re-grep + convergence attestation accepted (lesson recorded for the responses-persistence gap)
+- [x] Merge `--no-ff` at `9635d17` + housekeep (THIS entry + CLAUDE.md line-3) + push origin/main + worktree/branch teardown
+- [ ] **SB5 executing-plans dispatch brief** (mirror the SB4 executing-plans brief; CARRY the persist-Codex-responses requirement per `feedback_implementer_persist_codex_responses`) + commit BEFORE the inline prompt
+- [ ] SB5 executing-plans cycle -> operator-witnessed RENDER gate (plan §I) -> merge -> re-run the fast suite on the MERGED head + READ it (`feedback_no_false_green_claim`) -> reinstall `swing` from main -> housekeep
+- [ ] then SB5.5 (Schwab) + close-out polish batch + B-7 final touch + Phase 14 close-out review (Sec 9.1 Q6) -- full punch-list in `#5`
+
+---
+
 ## 2026-05-30 #6 Phase 14 Sub-bundle 5 (metrics overview; P14.N5) BRAINSTORM SHIPPED at `3c18b81` -- spec 526 lines; GENUINE copowers v2.0.2 WSL Codex chain CONVERGED R3 (R1 6M -> R2 5M -> R3 NO_NEW_CRITICAL_MAJOR; 11 majors fixed, ZERO rejected); NO schema (v23 held); OQ-1 LOCKed = inline-`<polyline>` sparklines; writing-plans dispatch NEXT
 
 **Sub-bundle 5 brainstorm SHIPPED 2026-05-30 #6** at merge `3c18b81` of `phase14-sub-bundle-5-metrics-overview-brainstorming` via `--no-ff`. 3 branch commits (draft `98e5e44` + R1 `269620f` + R2 `f4da67b`) + merge. Docs-only (spec `docs/superpowers/specs/2026-05-30-phase14-sub-bundle-5-metrics-overview-design.md` 526 lines; ZERO swing/tests writes). Schema v23 LOCKED (NO `0024`; OQ-5 Codex-resolved -- cached sparklines structurally incompatible since `chart_renders` is ticker/run-keyed -> render-direct only -> no v24 trigger). ZERO Co-Authored-By (`%(trailers)` empty). Merge-base `f55065e`. **The merge also gitignores the Codex session artifacts** (`.copowers-findings.md`, `.codex-prompt-*.md`, `.copowers-session-*.json`) going forward + removes SB4's previously-committed verbatim findings log (operator-accepted 2026-05-30; SB4's durable record stays in its return reports + this file).
@@ -25,7 +45,7 @@
 - [x] QA per `feedback_orchestrator_qa_implementer_product` (3-commit ZERO Co-Authored-By; docs-only; spec 526 lines; NO schema/0024; genuine chain verified via on-disk `.copowers-findings.md` [R1 6M -> R2 5M genuine -> R3 converged] + clean history [no false-green commit]; `build_metrics_index_vm(conn)` correction grounded at index.py:97)
 - [x] Merge `--no-ff` at `3c18b81` + push origin/main + worktree/branch teardown (only main remains)
 - [x] phase3e-todo new top entry (THIS) + CLAUDE.md line-3 refresh
-- [ ] **Sub-bundle 5 writing-plans dispatch brief** (LOCK the OQ dispositions; esp. OQ-1 inline-`<polyline>`) + commit BEFORE inline prompt
+- [x] **Sub-bundle 5 writing-plans dispatch brief** (LOCK the OQ dispositions; esp. OQ-1 inline-`<polyline>`) + commit BEFORE inline prompt -- DONE `3d022d4`; writing-plans SHIPPED `9635d17` (see `#7`)
 - [ ] SB5 writing-plans -> executing-plans cycle (operator-witnessed render gate), then **SB5.5 (Schwab) + close-out polish batch + B-7 final touch + Phase 14 close-out review** (Sec 9.1 Q6) -- full punch-list in the `#5` entry below
 
 ---
