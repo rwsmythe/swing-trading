@@ -6,6 +6,7 @@ review_log is a CADENCE table with NO trade_id and is EXCLUDED (Codex Re-R1 M#1)
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import date, datetime  # WP-R4 M#1: _normalize_ts uses both
 
@@ -66,10 +67,32 @@ def _fill_entries(conn, trade_id) -> list[ChronologyEntry]:
     return out
 
 
+def _trade_event_entries(conn, trade_id) -> list[ChronologyEntry]:
+    # Columns are payload_json + rationale (NO `notes` column) — verified
+    # 0003_phase2_pipeline_trades.sql:88-95. event_type CHECK enum:
+    # entry/stop_adjust/note/exit/flag.
+    rows = conn.execute(
+        "SELECT ts, event_type, payload_json, rationale FROM trade_events "
+        "WHERE trade_id = ? ORDER BY ts", (trade_id,)).fetchall()
+    out = []
+    for ts, event_type, payload_json, rationale in rows:
+        try:
+            payload = json.loads(payload_json) if payload_json else None
+        except (ValueError, TypeError):
+            payload = None  # best-effort; never raise on operator/legacy data
+        detail = rationale or (json.dumps(payload) if payload else None)
+        ts_key, malformed = _normalize_ts(ts, precision="datetime")  # WP-R3 M#2
+        out.append(ChronologyEntry(
+            ts=ts_key, source="trade_event", kind=f"event:{event_type}",
+            summary=str(event_type), detail=detail, ts_malformed=malformed))
+    return out
+
+
 def build_trade_chronology(conn, trade_id: int) -> TradeChronology:
     entries: list[ChronologyEntry] = []
     entries += _fill_entries(conn, trade_id)
-    # Task 5.2 adds trade_events; Task 5.3 adds daily_management + review.
+    entries += _trade_event_entries(conn, trade_id)
+    # Task 5.3 adds daily_management + review.
     return TradeChronology(trade_id=trade_id, entries=_sorted(entries))
 
 
