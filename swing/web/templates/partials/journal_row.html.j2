@@ -6,11 +6,16 @@
    (partials/state_badge.html.j2).
 
    ALL operator/derived text is auto-escaped (NO `| safe`). n/a / open
-   fallbacks for None. The `journal-thumb` <td> is a placeholder for the
-   per-row chart thumbnail wired in Slice 4. #}
+   fallbacks for None. Slice 4 (OQ-3): the `journal-thumb` <td> lazy-loads its
+   candlestick thumbnail on scroll-into-view (hx-trigger=revealed) -- the
+   journal listing scrolls in the WINDOW viewport (base.html.j2 wraps no
+   overflow:auto/scroll container), so `revealed` fires correctly. #}
 {% from "partials/state_badge.html.j2" import render as state_badge %}
 <tr data-trade-id="{{ row.trade_id }}">
-  <td class="journal-thumb" data-trade-id="{{ row.trade_id }}"></td>
+  <td class="journal-thumb" data-trade-id="{{ row.trade_id }}"
+      hx-get="/journal/trades/{{ row.trade_id }}/thumbnail"
+      hx-trigger="revealed" hx-swap="innerHTML"
+      hx-headers='{"HX-Request": "true"}'></td>
   <td><a href="/journal/trades/{{ row.trade_id }}">{{ row.ticker }}</a></td>
   <td>{{ row.entry_date }}</td>
   <td>{{ state_badge(row.state) }}</td>
