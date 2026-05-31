@@ -100,10 +100,11 @@ per-trade-marker machinery wholesale). This is the heart of **OQ-1** (§7).
   metric computations/algorithms; NO SB1–SB4 surfaces; NO Phase 15+.
 - **L2 Read-mostly** = reuse the post-wiring-fix `build_*_vm`/`compute_*` outputs; ZERO new computation;
   ZERO `chart_renders`/domain writes. The overview is a pure read/aggregate surface.
-- **L3 NO schema (recommended)** = sparklines render-direct (inline-SVG or matplotlib-SVG-direct) → no
-  `chart_renders` rows. A new `chart_renders` surface enum (only if cached matplotlib sparklines, NOT
-  recommended) is the sole v24 trigger (STRICT `pre_version == 23`; gotchas #11 paired + #9). **Verdict
-  recommended: NO schema change** (§11).
+- **L3 NO schema (no in-scope trigger)** = sparklines render-direct (inline-SVG or matplotlib-SVG-direct)
+  → no `chart_renders` rows. There is **no in-scope v24 trigger at all**: caching a metrics-overview
+  sparkline is structurally incompatible with the ticker-and-run-keyed `chart_renders` table (§8), so it
+  is REMOVED from scope — a future cached variant would need a NEW non-`chart_renders` cache design
+  outside SB5. **Verdict: NO schema change, schema stays v23** (§11).
 - **L4 Honesty floor** = NO fabricated sparkline. ONLY the 3 trend-bearing surfaces get sparklines; the
   other 6 get a headline stat + honest suppressed/empty state. Each sparkline reflects REAL series the
   drill-down also shows, and respects that surface's OWN suppression threshold (5 / 10 / line-band — §1.2).
@@ -301,24 +302,24 @@ are an accepted V1 simplification matching the existing drill-down; per-gap spli
 ## §6 Headline-stat contract (all 9) — OQ-4
 
 Single at-a-glance figure per surface, pulled from an EXACT EXISTING result/VM field (no re-derivation,
-no cross-row aggregate — L2). **Fixed-selector discipline (Codex R1 MAJOR fixes):** where a surface
+no cross-row aggregate — L2). **Fixed-selector discipline (Codex R1+R2 MAJOR fixes):** where a surface
 returns a *collection* (cohort tabs, tier cohorts, deviation rows, pattern rows, the 7 rolling-series
-metrics), the overview picks ONE row/cell by a **fixed, hard-coded selector** (a named cohort key /
+metrics), the overview picks ONE row/cell by a **fixed, hard-coded selector** (a named cohort name /
 pattern class / metric key) and reads its already-computed field — it MUST NOT compute a "worst"/"delta"
-/"overall" across the collection (that would be new computation). All are OQ-4 (operator confirms the
-selector + figure); the table below is the recommendation with the EXACT accessor.
+/"overall"/"active-only count" across the collection (that would be new computation). Every accessor
+below is verified against production (Codex R2). All are OQ-4 (operator confirms the selector + figure).
 
-| # | Surface | Headline stat (recommended) | EXACT source accessor | Caption | Suppressed when |
+| # | Surface | Headline stat (recommended) | EXACT source accessor (verified) | Caption | Suppressed when |
 |---|---------|------------------------------|------------------------|---------|-----------------|
-| 1 | trade_process | overall expectancy (R) | `next(t for t in vm.cohort_tabs if t.cohort_key == ALL_COHORTS_KEY).metrics.expectancy_R` (a metric obj; if `SuppressedMetric` → its placeholder) | "expectancy R (all)" | metric is `SuppressedMetric` |
-| 2 | hypothesis_progress | active cohorts count | `len(vm.<cohort rows>)` (count of the registry cohorts the VM already lists) | "active cohorts" | 0 cohorts |
-| 3 | tier_comparison | A+ cohort expectancy (point) | the A+ cohort's existing expectancy point on `TierComparisonResult.cohorts[<A+ key>]` (NOT a delta) | "A+ expectancy R" | A+ cohort n<5 (existing CI suppression) |
+| 1 | trade_process | overall expectancy (R) | `next(t for t in vm.cohort_tabs if t.cohort_key == ALL_COHORTS_KEY).metrics.expectancy_R` (a metric obj; if `SuppressedMetric` → its `placeholder_text`) | "expectancy R (all)" | metric is `SuppressedMetric` |
+| 2 | hypothesis_progress | registered cohorts count | `len(vm.cohorts)` (the VM lists ALL registered cohorts; a registered-count, NOT an "active" filter — an active-only count would be a new derivation) | "registered cohorts" | 0 cohorts |
+| 3 | tier_comparison | A+ cohort expectancy (point) | `next(c for c in TierComparisonResult.cohorts if c.cohort_name == APLUS_COHORT).expectancy` → `.point` if `BootstrapCI` else the `SuppressedMetric.placeholder_text` (`APLUS_COHORT == "A+ baseline"` tier.py:95; `CohortStatistics.expectancy: BootstrapCI | SuppressedMetric` tier.py:225; NO `is_aplus`/`cohort_key`/`expectancy_r`) | "A+ expectancy R" | A+ cohort `expectancy` is `SuppressedMetric` |
 | 4 | capital_friction | current utilization % | `CapitalFrictionResult.current_capital_utilization_pct` (renders with LIVE/PROVISIONAL badge — PROVISIONAL is a VALID fallback, NOT suppression) | "utilization" | value is `None` / compute fails |
 | 5 | maturity_stage | open positions count | `len(vm.<position rows>)` | "open positions" | 0 open |
 | 6 | identification_funnel | latest-run A+ identifications | `trend_runs[-1].aplus_identifications_per_run` (a real field) | "A+ ident. (latest run)" | 0 runs |
-| 7 | deviation_outcome | one fixed cohort's relative-pct | `DeviationOutcomeResult.rows[<fixed cohort key>].expectancy_relative_to_aplus_pct` (a fixed row, NOT "worst") | "Δ vs A+ (<cohort>)" | that row's n<5 placeholder |
+| 7 | deviation_outcome | one fixed cohort's relative-pct | `next(r for r in DeviationOutcomeResult.rows if r.cohort_name == <FIXED_COHORT>).expectancy_relative_to_aplus_pct` (`rows` is a TUPLE ordered by `TAXONOMY_COHORTS`, NOT a dict; `DeviationOutcomeRow` has `row_suppressed` + `expectancy_relative_to_aplus_pct` tier.py:349) | "Δ vs A+ (<cohort>)" | `row_suppressed` is True OR value is `None` |
 | 8 | process_grade_trend | latest rolling grade (numeric) | the headline metric's `RollingSeriesDisplay.point_value_text` (a NUMERIC value, e.g. rolling grade score; a numeric→letter map would be presentation-only, flagged as such) | "rolling grade" | the metric's `is_suppressed` |
-| 9 | pattern_outcomes | one fixed pattern class's trigger rate | `PatternOutcomesVM.pattern_outcome_rows[<fixed pattern class>]` trigger-rate cell (NOT an "overall" row — none exists) | "trigger rate (<class>)" | that row's n<5 (existing Wilson) |
+| 9 | pattern_outcomes | one fixed pattern class's trigger rate | `row = next(r for r in PatternOutcomesVM.pattern_outcome_rows if r.pattern_class == <FIXED>)` → `row.triggered_pct_text` when `row.triggered_ci is not None`, else `row.suppressed_text` (`PatternOutcomeRow`: `triggered_ci`/`triggered_pct_text`/`suppressed_text` pattern_outcomes.py:47; no generic cell, no "overall" row) | "trigger rate (<class>)" | `row.triggered_ci is None` (existing Wilson n<5) |
 
 **Discipline:** every headline reuses the surface's EXISTING suppression semantics (the per-surface VMs
 already encode n<5 / Wilson / provisional-badge / `SuppressedMetric` placeholder behavior). The overview
@@ -419,8 +420,8 @@ also visually verify no mathtext mangling (though sparklines carry no annotation
 
 ### §10.3 Operator-witnessed gate (S-steps)
 - **S1** fast suite (`pytest -m "not slow"`) green on the branch + `ruff check swing/` clean.
-- **S2** schema: assert `EXPECTED_SCHEMA_VERSION == 23` unchanged (NO migration) — unless OQ-5 lands
-  cached-matplotlib (then v24 STRICT `pre_version==23`).
+- **S2** schema: assert `EXPECTED_SCHEMA_VERSION == 23` unchanged (NO migration). There is no in-scope
+  v24 path (cached sparklines are out of SB5 — §8); both OQ-1 options are render-direct.
 - **S3** browser: `/metrics` renders 9 cards; the 3 trend surfaces show sparklines; the 6 point-estimate
   surfaces show headline-only; below-threshold trend surfaces show honest suppressed captions; every
   drill-down link resolves to its existing surface route.
@@ -477,8 +478,9 @@ therefore **no in-scope v24 trigger at all.** v22/v23 substrate untouched (L3).
 
 ## §14 Cumulative discipline compliance
 
-- **#11/#9 schema:** N/A in the recommended path (no migration); guards documented for the v24 escape
-  hatch only (§8).
+- **#11/#9 schema:** N/A — there is no in-scope v24 path (no migration at all; cached sparklines are out
+  of SB5 because `chart_renders` is ticker/run-keyed — §8). The #11/#9 guards are noted only as the
+  generic procedure a hypothetical future cache would follow, NOT an SB5 escape hatch.
 - **base.html.j2 shared / L7:** new fields live on `MetricsIndexSurface`/`MetricsIndexVM` (leaf), NOT
   `BaseLayoutVM` → no base-VM fan-out.
 - **matplotlib mathtext (#):** sparklines carry NO annotation text; if matplotlib chosen, the ASCII /
