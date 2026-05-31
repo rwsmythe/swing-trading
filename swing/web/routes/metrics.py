@@ -49,11 +49,11 @@ router = APIRouter()
 
 @router.get("/metrics", response_class=HTMLResponse)
 def metrics_index(request: Request):
-    """8-tile navigator for Phase 10 metrics surfaces."""
-    db_path = request.app.state.cfg.paths.db_path
-    conn = sqlite3.connect(db_path)
+    """9-card overview navigator for Phase 10 metrics surfaces (P14.N5)."""
+    cfg = request.app.state.cfg
+    conn = sqlite3.connect(cfg.paths.db_path)
     try:
-        vm = build_metrics_index_vm(conn)
+        vm = build_metrics_index_vm(cfg, conn)
     finally:
         conn.close()
     return request.app.state.templates.TemplateResponse(

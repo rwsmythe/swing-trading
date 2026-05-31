@@ -3,15 +3,43 @@
 <section class="metrics-index">
   <h1>Metrics dashboard</h1>
   <p class="muted">
-    Phase 10 surfaces — per spec §4.1-§4.8. Per-surface routes light up
-    as Sub-bundles B/C/D/E ship.
+    Per-surface overview. Each card links through to its full drill-down.
   </p>
-  <ul class="metrics-tiles">
+  <ul class="metrics-overview-grid">
     {% for surface in vm.surfaces %}
-    <li class="metrics-tile">
-      <a href="{{ surface.path }}">
-        <h3>{{ surface.label }}</h3>
-        <p>{{ surface.description }}</p>
+    <li class="metrics-card">
+      <a class="metrics-card__link" href="{{ surface.path }}">
+        <h3 class="metrics-card__label">{{ surface.label }}</h3>
+        {% if surface.headline_stat_text %}
+        <p class="metrics-card__headline">
+          <span class="metrics-card__stat">{{ surface.headline_stat_text }}</span>
+          {% if surface.headline_caption %}
+          <span class="metrics-card__caption">{{ surface.headline_caption }}</span>
+          {% endif %}
+        </p>
+        {% else %}
+        <p class="metrics-card__suppressed">
+          <em>{{ surface.headline_suppressed_text or "unavailable" }}</em>
+          {% if surface.headline_caption %}
+          <span class="metrics-card__caption">{{ surface.headline_caption }}</span>
+          {% endif %}
+        </p>
+        {% endif %}
+        {% if surface.sparkline_kind == "inline_svg" %}
+          {% if surface.sparkline_points %}
+          <svg class="metrics-card__sparkline" viewBox="0 0 100 30"
+               width="100" height="30" preserveAspectRatio="none"
+               role="img" aria-label="{{ surface.label }} trend">
+            <polyline points="{{ surface.sparkline_points }}"
+                      fill="none" stroke="currentColor" stroke-width="1.5"/>
+          </svg>
+          {% else %}
+          <small class="metrics-card__spark-suppressed">
+            {{ surface.sparkline_suppressed_text or "trend not available" }}
+          </small>
+          {% endif %}
+        {% endif %}
+        <p class="metrics-card__desc">{{ surface.description }}</p>
       </a>
     </li>
     {% endfor %}

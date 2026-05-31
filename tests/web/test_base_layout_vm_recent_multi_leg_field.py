@@ -449,14 +449,22 @@ def test_config_page_vm_populates_recent_multi_leg_field(tmp_path, monkeypatch):
     assert vm.recent_multi_leg_auto_correction_count == 1
 
 
-def test_metrics_index_vm_populates_recent_multi_leg_field(tmp_path):
+def test_metrics_index_vm_populates_recent_multi_leg_field(tmp_path, monkeypatch):
+    from swing.config import load as load_cfg
+    _config_path = Path(__file__).resolve().parents[2] / "swing.config.toml"
     from swing.web.view_models.metrics.index import build_metrics_index_vm
     db = tmp_path / "swing.db"
     _create_empty_db(db)
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    cfg = load_cfg(_config_path)
+    cfg = dataclasses.replace(
+        cfg, paths=dataclasses.replace(cfg.paths, db_path=db),
+    )
     conn = _open_conn(db)
     try:
         _seed_multi_leg_auto_correction(conn)
-        vm = build_metrics_index_vm(conn)
+        vm = build_metrics_index_vm(cfg, conn)
     finally:
         conn.close()
     assert vm.recent_multi_leg_auto_correction_count == 1

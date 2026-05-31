@@ -75,7 +75,7 @@ def test_metrics_index_unresolved_material_field_populated(seeded_db):
     cfg, _ = seeded_db
     conn = sqlite3.connect(cfg.paths.db_path)
     try:
-        vm = build_metrics_index_vm(conn)
+        vm = build_metrics_index_vm(cfg, conn)
     finally:
         conn.close()
     # Empty DB has 0 unresolved-material discrepancies → field is 0.
