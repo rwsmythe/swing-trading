@@ -32,14 +32,44 @@
     {% endfor %}
   </section>
   <section class="trades">
-    <h2>Trades ({{ vm.trades | length }})</h2>
-    <table>
-      <thead><tr><th>Ticker</th><th>Entry</th><th>Status</th></tr></thead>
+    <h2>Trades ({{ vm.total_rows }})</h2>
+    {# Phase 14 SB4 Slice 2 — rich per-trade listing. Sort controls in the
+       <thead> are wired in Slice 3; the per-row chart thumbnail in Slice 4.
+       Each <tr> is the include'd journal_row.html.j2 partial. #}
+    <table id="journal-table">
+      <thead>
+        <tr>
+          <th>Chart</th>
+          <th>Ticker</th>
+          <th>Entry</th>
+          <th>State</th>
+          <th>Open price</th>
+          <th>Shares</th>
+          <th>Total risk</th>
+          <th>Closing price</th>
+          <th>Final R</th>
+          <th>Pattern</th>
+          <th>A+ bucket</th>
+          <th>Hypothesis</th>
+        </tr>
+      </thead>
       <tbody>
-        {% for t in vm.trades %}
-          <tr><td>{{ t.ticker }}</td><td>{{ t.entry_date }}</td><td>{{ state_badge(t.state) }}</td></tr>
+        {% for row in vm.rows %}
+          {% include "partials/journal_row.html.j2" %}
+        {% else %}
+          <tr><td colspan="12">No trades in this period.</td></tr>
         {% endfor %}
       </tbody>
     </table>
+    <nav class="pagination">
+      {% set _qp = '&period=' ~ vm.period ~ '&page_size=' ~ vm.page_size %}
+      {% if vm.page > 1 %}
+        <a href="/journal?page={{ vm.page - 1 }}{{ _qp }}" rel="prev">Prev</a>
+      {% endif %}
+      <span class="page-indicator">Page {{ vm.page }}</span>
+      {% if vm.has_next %}
+        <a href="/journal?page={{ vm.page + 1 }}{{ _qp }}" rel="next">Next</a>
+      {% endif %}
+    </nav>
   </section>
 {% endblock %}

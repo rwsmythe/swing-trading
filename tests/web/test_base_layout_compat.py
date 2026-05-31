@@ -48,12 +48,16 @@ def test_watchlist_renders_with_ohlcv_source_degraded_default_false(
 
 def test_page_error_renders_with_ohlcv_source_degraded_default_false(test_cfg, seeded_db):
     """Force a validation error on /journal to trigger the full-page 400 path.
-    PageErrorVM.ohlcv_source_degraded defaults to False; banner absent."""
+    PageErrorVM.ohlcv_source_degraded defaults to False; banner absent.
+
+    Phase 14 SB4 Slice 2: `period` is no longer Literal-validated (it clamps),
+    so a non-int `page` param is now the validation-error vehicle (page/page_size
+    stay typed ints)."""
     cfg, cfg_path = test_cfg
     app = create_app(cfg, cfg_path)
     with TestClient(app) as client:
         r = client.get(
-            "/journal?period=fortnight",
+            "/journal?page=notanint",
             headers={"Accept": "text/html,application/xhtml+xml,*/*"},
         )
     assert r.status_code == 400
