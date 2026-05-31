@@ -80,9 +80,9 @@ def test_review_chart_200_unavailable(app_with_closed_trade, monkeypatch):
 
 
 def test_review_chart_200_not_found_distinct(app_with_closed_trade, caplog):
-    with TestClient(app_with_closed_trade) as client:
-        with caplog.at_level("WARNING"):
-            r = client.get("/trades/999999/review/chart")
+    with TestClient(app_with_closed_trade) as client, \
+            caplog.at_level("WARNING"):
+        r = client.get("/trades/999999/review/chart")
     assert r.status_code == 200 and "not found" in r.text.lower()
     assert any("999999" in rec.message for rec in caplog.records)
 
@@ -95,8 +95,8 @@ def test_review_chart_render_exception_isolated(app_with_closed_trade,
     monkeypatch.setattr(
         "swing.web.routes.trades.render_trade_window_position_svg", _boom)
     tid = app_with_closed_trade.state._review_chart_trade_id
-    with TestClient(app_with_closed_trade) as client:
-        with caplog.at_level("WARNING"):
-            r = client.get(f"/trades/{tid}/review/chart")
+    with TestClient(app_with_closed_trade) as client, \
+            caplog.at_level("WARNING"):
+        r = client.get(f"/trades/{tid}/review/chart")
     # Exception is caught -> 200 + unavailable, never a 500.
     assert r.status_code == 200 and "unavailable" in r.text.lower()

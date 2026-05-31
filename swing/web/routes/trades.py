@@ -14,6 +14,7 @@ from markupsafe import Markup
 from swing.config_overrides import apply_overrides
 from swing.data.db import connect
 from swing.data.repos.cash import list_cash
+from swing.data.repos.fills import list_fills_for_trade
 from swing.data.repos.trades import get_trade, list_open_trades
 from swing.recommendations.sizing import SizingResult, compute_shares
 from swing.trades.entry import (
@@ -34,7 +35,6 @@ from swing.trades.stop_adjust import (
     StopRegressionError,
     adjust_stop,
 )
-from swing.data.repos.fills import list_fills_for_trade
 from swing.web.trade_charts import render_trade_window_position_svg
 from swing.web.view_models.dashboard import build_dashboard
 from swing.web.view_models.open_positions_row import (
