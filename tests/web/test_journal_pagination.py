@@ -90,3 +90,24 @@ def test_period_str_not_literal_422(seeded_db):
     with TestClient(app) as client:
         r = client.get("/journal?period=bogus")
     assert r.status_code == 200
+
+
+def test_pagination_links_preserve_active_filter(seeded_db):
+    # GAP #2: the Prev/Next pagination URLs must carry the active sort/filter
+    # state (built from vm.query_state, overriding only `page`) so paging does
+    # NOT discard an active filter/sort.
+    cfg, cfg_path = seeded_db
+    _seed_n_trades(cfg, 30)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get(
+            "/journal?period=all&page_size=20&filter_state=managing&sort=ticker"
+        )
+    assert r.status_code == 200
+    import re
+    m = re.search(r'href="([^"]*page=2[^"]*)"[^>]*rel="next"', r.text)
+    assert m, "Next pagination link not found"
+    next_url = m.group(1)
+    assert "filter_state=managing" in next_url
+    assert "sort=ticker" in next_url
+    assert "period=all" in next_url

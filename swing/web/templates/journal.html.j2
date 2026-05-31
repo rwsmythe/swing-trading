@@ -39,13 +39,24 @@
        filter notice live inside the partial. Per-row chart thumbnail in S4. #}
     {% include "partials/journal_table.html.j2" %}
     <nav class="pagination">
-      {% set _qp = '&period=' ~ vm.period ~ '&page_size=' ~ vm.page_size %}
+      {# GAP #2 — build the Prev/Next URLs from the FULL current query state
+         (vm.query_state: period + sort + dir + active filter_*) plus page_size,
+         overriding only `page`, so paging does NOT drop an active sort/filter. #}
+      {%- set _q = vm.query_state -%}
+      {%- set _pageqp -%}
+period={{ _q.period }}&page_size={{ vm.page_size }}
+{%- if _q.sort %}&sort={{ _q.sort }}{% endif -%}
+{%- if _q.dir %}&dir={{ _q.dir }}{% endif -%}
+{%- if _q.filter_state %}&filter_state={{ _q.filter_state }}{% endif -%}
+{%- if _q.filter_pattern %}&filter_pattern={{ _q.filter_pattern }}{% endif -%}
+{%- if _q.filter_aplus %}&filter_aplus={{ _q.filter_aplus }}{% endif -%}
+      {%- endset -%}
       {% if vm.page > 1 %}
-        <a href="/journal?page={{ vm.page - 1 }}{{ _qp }}" rel="prev">Prev</a>
+        <a href="/journal?page={{ vm.page - 1 }}&{{ _pageqp }}" rel="prev">Prev</a>
       {% endif %}
       <span class="page-indicator">Page {{ vm.page }}</span>
       {% if vm.has_next %}
-        <a href="/journal?page={{ vm.page + 1 }}{{ _qp }}" rel="next">Next</a>
+        <a href="/journal?page={{ vm.page + 1 }}&{{ _pageqp }}" rel="next">Next</a>
       {% endif %}
     </nav>
   </section>
