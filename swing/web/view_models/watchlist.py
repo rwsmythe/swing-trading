@@ -214,6 +214,7 @@ def build_watchlist(*, cfg: Config, cache: PriceCache, executor) -> WatchlistVM:
         executor=executor,
     )
     degraded_until = cache.degraded_until()
+    from swing.web.view_models.schwab_checker_badge import build_schwab_checker_badge
     return WatchlistVM(
         session_date=action_session_for_run(now).isoformat(),
         rows=list(rows),
@@ -230,6 +231,7 @@ def build_watchlist(*, cfg: Config, cache: PriceCache, executor) -> WatchlistVM:
         recent_multi_leg_auto_correction_count=recent_multi_leg,
         banner_resolve_link=banner_resolve_link,
         watchlist_chart_svg_bytes=watchlist_chart_svg_bytes,
+        schwab_checker_badge=build_schwab_checker_badge(cfg),
     )
 
 

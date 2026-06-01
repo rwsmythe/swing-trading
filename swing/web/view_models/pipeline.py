@@ -68,6 +68,7 @@ def build_pipeline(*, cfg: Config, limit: int = 10, ohlcv_degraded: bool = False
             )
     finally:
         conn.close()
+    from swing.web.view_models.schwab_checker_badge import build_schwab_checker_badge
     return PipelineVM(
         session_date=datetime.now().date().isoformat(),
         recent_runs=list(runs),
@@ -76,4 +77,5 @@ def build_pipeline(*, cfg: Config, limit: int = 10, ohlcv_degraded: bool = False
         unresolved_material_discrepancies_count=unresolved,
         recent_multi_leg_auto_correction_count=recent_multi_leg,
         banner_resolve_link=banner_resolve_link,
+        schwab_checker_badge=build_schwab_checker_badge(cfg),
     )

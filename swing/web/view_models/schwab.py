@@ -560,6 +560,7 @@ def build_schwab_status_vm(
     # template uses it to decide whether to surface the re-auth link.
     degraded_banner_active = state != "LIVE" or refresh_severity != "ok"
 
+    from swing.web.view_models.schwab_checker_badge import build_schwab_checker_badge
     return SchwabStatusVM(
         session_date=session_date,
         environment=env,
@@ -576,6 +577,7 @@ def build_schwab_status_vm(
         unresolved_material_discrepancies_count=unresolved_count,
         recent_multi_leg_auto_correction_count=recent_multi_leg_count,
         banner_resolve_link=banner_resolve_link,
+        schwab_checker_badge=build_schwab_checker_badge(cfg),
     )
 
 

@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 import time
 
+import pytest
+
 from swing.integrations.schwab import checker_resilience as cr
 from swing.web.view_models.schwab_checker_badge import (
     SchwabCheckerBadgeVM,
@@ -130,3 +132,31 @@ def test_unpopulated_base_extending_route_renders_200_with_sidecar(tmp_path, mon
     with TestClient(app) as client:
         resp = client.get("/reviews/pending")
     assert resp.status_code == 200  # no Jinja UndefinedError despite the un-populated VM
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["/pipeline", "/watchlist", "/metrics", "/schwab/status", "/schwab/setup"],
+)
+def test_primary_nav_route_populates_badge_when_sidecar_present(
+    path, tmp_path, monkeypatch, seeded_db,
+):
+    # Codex R1 MAJOR: these primary base-layout builders never populated the
+    # badge, so with a valid sidecar the pages silently hid it. Each must now
+    # render the topbar badge. (Pre-fix: badge field defaulted None -> absent.)
+    cfg, cfg_path = seeded_db
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    p = cr.checker_liveness_sidecar_path(cfg.integrations.schwab.environment)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(
+        {"installed_ts": 0.0, "last_daemon_tick_ts": time.time(), "consecutive_failures": 0}
+    ), encoding="ascii")
+    from fastapi.testclient import TestClient
+
+    from swing.web.app import create_app
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = client.get(path)
+    assert resp.status_code == 200, resp.text[:500]
+    assert "schwab-health-badge" in resp.text, f"badge absent on {path}"
