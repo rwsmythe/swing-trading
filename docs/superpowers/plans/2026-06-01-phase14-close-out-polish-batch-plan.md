@@ -11,6 +11,13 @@
 **Source spec:** `docs/superpowers/specs/2026-06-01-phase14-close-out-polish-batch-design.md` (AUTHORITATIVE except the OQ-5 hyp-rec deferral, REVERSED per the writing-plans brief §1.1 — hyp-rec thumbnails ARE in scope via the EXISTING `render_watchlist_thumbnail_svg`).
 **Dispatch brief:** `docs/phase14-close-out-polish-batch-writing-plans-dispatch-brief.md`.
 
+> **⚠️ SPEC SECTIONS SUPERSEDED BY THIS PLAN — DO NOT FOLLOW THEM.** The spec was written BEFORE the operator's OQ-5 hyp-rec OVERRIDE. These spec passages are STALE and contradict the binding scope; **THIS PLAN governs execution, not the spec, wherever they disagree:**
+> - Spec §3.1 "Recommendation (HOLD for operator at OQ-5): P14.N1 V1 = open-positions thumbnails ONLY ... DEFER hyp-rec" — **REVERSED.** Hyp-rec thumbnails ARE in scope (Slice B Tasks B.3–B.4) via `render_watchlist_thumbnail_svg`.
+> - Spec §9 item 2 "Slice B — P14.N1 open-positions thumbnails ... Hyp-rec deferred" — **REVERSED.** Slice B does BOTH tables.
+> - Spec §11 "P14.N1 = open-positions ONLY (hyp-rec deferred — no Trade, needs a new renderer)" — **REVERSED.** No new renderer; the EXISTING watchlist renderer is ticker-keyed and applies.
+> - Spec §12 OQ-5 "Recommend open-positions ONLY for V1; defer hyp-rec" — **REVERSED** by the operator 2026-06-01.
+> Everything else in the spec remains authoritative.
+
 ---
 
 ## §A Goals / Non-Goals
@@ -43,10 +50,11 @@
 - Create: `swing/web/thumbnail_render.py` (NEW — the shared render cap: `_THUMBNAIL_RENDER_SEMAPHORE`, `_THUMBNAIL_RENDER_TIMEOUT_S`, `_THUMBNAIL_CACHE_CONTROL`, extracted from `routes/journal.py` so both the journal route and the new hyp-rec route share ONE process-wide matplotlib render cap).
 - Modify: `swing/web/routes/journal.py:34-39` (import the three constants from the new module instead of defining them; behavior-identical).
 - Modify (open-positions, reuse journal route): `swing/web/templates/partials/open_positions.html.j2:8` (add `<th>Chart</th>` → 11 `<th>`), `swing/web/templates/partials/open_positions_row.html.j2` (add leading lazy `<td>` → 11 cells), `swing/web/templates/partials/open_positions_expanded.html.j2:17-19,27` (colspan 10→11 + the MUST-match comment).
-- Create (hyp-rec, render-direct): route handler `GET /dashboard/hyprec/{ticker}/thumbnail` in `swing/web/routes/dashboard.py`; partial `swing/web/templates/partials/hyprec_thumbnail.html.j2` (ticker-keyed; svg / busy-self-retry / unavailable; fragment root `<svg>`/`<span>`).
+- Create (hyp-rec, render-direct): route handler `GET /hyp-recs/{ticker}/thumbnail` in `swing/web/routes/recommendations.py` (next to the existing `/hyp-recs/refresh` `:120` + `/hyp-recs/{ticker}/expand` `:160` routes — cohesion + naming consistency; Codex R1 m#1); partial `swing/web/templates/partials/hyprec_thumbnail.html.j2` (ticker-keyed; svg / busy-self-retry / unavailable; fragment root `<svg>`/`<span>`).
 - Modify (hyp-rec table): `swing/web/templates/partials/hypothesis_recommendations.html.j2:36-44` (add `<th>Chart</th>` after the expand `<th>` → 10 `<th>`), `swing/web/templates/partials/hypothesis_recommendations_row.html.j2:15-20` (add lazy `<td>` after the chevron `<td>` → 10 cells; the `<tr>` stays trigger-free), `swing/web/templates/partials/hypothesis_recommendations_expanded.html.j2:10` (colspan 9→10).
+- **Modify (colspan alignment — Task B.6; Codex R1 M#2/M#3):** `swing/web/app.py:73-76` (`_row_error_colspan`: hyp-rec `9→10`, open-position `10→11`, + the comment at `:57-58`); `swing/web/templates/partials/hyp_recs_expand_unavailable.html.j2:10` (colspan `9→10`); `swing/web/templates/partials/trade_entry_form.html.j2:17` (the hyp-rec-origin branch `9→10`; leave the non-hyp-rec `else 8` branch); `swing/web/templates/partials/soft_warn_confirm.html.j2:25` (the hyp-rec-origin branch `9→10`; leave `else 8`). **Pre-existing under-spans NOT touched** (documented out-of-scope; §C): the open-position exit/stop forms `trade_exit_form.html.j2:11`/`trade_stop_form.html.j2:9` (colspan=8 — already 2-short of the 10-col row; `app.py:66-67` flags this ambiguity as a separate tracked follow-up) and the `else 8` branches.
 - Reuse (no change): `swing/web/trade_charts.py:88` (`render_trade_window_thumbnail_svg`), `swing/web/charts.py:514` (`render_watchlist_thumbnail_svg`), `swing/web/routes/journal.py:80` (the journal thumbnail route — open-positions reuses it), `swing/web/templates/partials/journal_thumbnail.html.j2` (open-positions reuses it).
-- Test: `tests/web/test_open_positions_thumbnail.py` (NEW), `tests/web/test_hyprec_thumbnail.py` (NEW), plus column-count regressions in each (see §H).
+- Test: `tests/web/test_open_positions_thumbnail.py` (NEW), `tests/web/test_hyprec_thumbnail.py` (NEW), `tests/web/test_row_error_colspan.py` (NEW or extend — `_row_error_colspan` returns 10/11), plus column-count regressions in each (see §H).
 
 ### Slice C — A-1 fetch-window widening
 - Modify: `swing/web/ohlcv_cache.py` (add module constant `MIN_CALENDAR_DAYS_FOR_MA200 = 300` near the `get_or_fetch` default at `:131`).
@@ -75,7 +83,8 @@
 
 - **A-7:** The badge renders in the topbar of every page via `base.html.j2:81` `{% if vm.schwab_checker_badge %}`. `build_schwab_checker_badge(cfg)` is the SINGLE construction point, called by every base-layout VM builder (dashboard, journal, pipeline, watchlist, error, metrics, schwab, trades, config, reconcile). Changing the one function changes all surfaces — NO per-VM field change (the `schwab_checker_badge` field already exists on all base-layout VMs from SB5.5).
 - **P14.N1 open-positions:** the lazy `<td>` `hx-get`s the existing journal route `/journal/trades/{trade_id}/thumbnail` (open trades have `trade_id`s; the helper renders open trades with `exit_date=None` → trailing window). No new route. Delivered via `hx-trigger="revealed"` + `innerHTML` swap into the cell.
-- **P14.N1 hyp-rec:** hyp-rec rows are ticker-keyed candidates with NO underlying `Trade`. A NEW render-direct route `/dashboard/hyprec/{ticker}/thumbnail` fetches bars via `app.state.ohlcv_cache.get_or_fetch(...)` and calls `render_watchlist_thumbnail_svg(ticker=, bars=, ma_lines=)` under the SHARED render cap. **Render-direct — NO `chart_renders` write** (it does NOT route through `chart_jit.get_or_render_surface`, which writes the cache; L5). Delivered lazily like the journal cell.
+- **P14.N1 hyp-rec:** hyp-rec rows are ticker-keyed candidates with NO underlying `Trade`. A NEW render-direct route `GET /hyp-recs/{ticker}/thumbnail` in `recommendations.py` (alongside the existing `/hyp-recs/...` routes) fetches bars via `request.app.state.ohlcv_cache.get_or_fetch(...)` and calls `render_watchlist_thumbnail_svg(ticker=, bars=, ma_lines=)` under the SHARED render cap. **Render-direct — NO `chart_renders` write** (it does NOT route through `chart_jit.get_or_render_surface`, which writes the cache; L5). Delivered lazily like the journal cell.
+- **P14.N1 colspan invariant (Codex R1 M#2/M#3):** adding a Chart column changes the FULL-ROW width on each table. Every fragment whose colspan is MEANT to span the full row of that table must move in lockstep — hyp-rec `9→10` (expanded, expand-unavailable, the hyp-rec-origin entry/soft-warn branches, `_row_error_colspan` hyp-rec), open-position `10→11` (expanded, `_row_error_colspan` open-position). The open-position exit/stop forms (colspan=8) and the non-hyp-rec `else 8` branches are PRE-EXISTING under-spans (never full-row; `app.py:66-67` flags the exit/stop ambiguity as a separate tracked follow-up) and are explicitly OUT of scope — adding a column does not introduce a NEW breakage class for them (one more empty trailing column at most).
 - **A-1:** `MIN_CALENDAR_DAYS_FOR_MA200` feeds `OhlcvCache.get_or_fetch(window_days=...)` at every benchmark/chart fetch site so a 200-trading-bar SMA200 has enough bars. Widening is monotonic-safe (more bars only; consumers slice).
 - **A-2/A-4/A-6:** in-place edits to existing chart annotation, helper names, and CSS; no new surface.
 
@@ -117,7 +126,7 @@
 `build_schwab_checker_badge` :30, early-out `if data is None: return None` :42-43, `_BADGE_MAP["UNKNOWN"]=("Schwab?","warn")` :26, `_is_ladder_active` :221, `evaluate_liveness_state(None,...)→("UNKNOWN","web server not running, or pre-N7 build")` :228-229, `read_liveness_sidecar` :180, `checker_liveness_sidecar_path` :154. Badge markup `base.html.j2:82` class `schwab-health-badge schwab-health-badge--{css_class}`, label at `:84`. **All matched — no drift.**
 
 ### §E.4 Re-grep finding — A-1 has a THIRD `window_days=200` site
-Beyond the two spec/brief sites (`_bars_or_none` `runner.py:2763`, dashboard refresh `dashboard.py:94`) and the JIT (`chart_jit.py:117`, OQ-6), STEP-0 re-grep found **`runner.py:2694`** — the `_step_charts` per-ticker OHLCV-consume feeding the classifier trend-template AND the per-ticker chart renders (which use `ma_windows` up to 200, e.g. `render_ticker_detail` `charts.py:584` `(10,20,50,150,200)`). This is ALSO an MA200-bearing surface with the identical too-few-bars defect. **This plan folds `:2694` into the same `MIN_CALENDAR_DAYS_FOR_MA200` constant** under the same monotonic-safe rationale as OQ-6's JIT widening (more bars only; the classifier 52-week / MA200 logic and per-ticker MA200 charts need ≥200 trading bars too). This is a re-grep-discovered site beyond the brief's enumerated list — flagged here and surfaced to Codex/operator; if the operator wants `:2694` excluded, drop that one edit (the rest stand).
+Beyond the two spec/brief sites (`_bars_or_none` `runner.py:2763`, dashboard refresh `dashboard.py:94`) and the JIT (`chart_jit.py:117`, OQ-6), STEP-0 re-grep found **`runner.py:2694`** — the `_step_charts` per-ticker OHLCV-consume feeding the classifier trend-template AND the per-ticker chart renders (which use `ma_windows` up to 200, e.g. `render_ticker_detail` `charts.py:584` `(10,20,50,150,200)`). This is ALSO an MA200-bearing surface with the identical too-few-bars defect. **Disposition (Codex R1 M#6): `:2694` is an ACCEPTED in-scope widening** under the same monotonic-safe rationale as OQ-6's JIT widening (more bars only; the classifier 52-week / MA200 logic and per-ticker MA200 charts need ≥200 trading bars too). It is implemented in its OWN task + commit (Task C.1b) so it is cleanly revertible if the operator objects at the gate — but it IS in scope, not a hand-waved maybe. This is the principled outcome of the STEP-0 re-grep (#2): surface the additional defect site and fix it consistently, rather than fixing only the brief's named anchors.
 
 ### §E.5 Re-grep finding — A-4 `BULZ` is BOTH a feature nickname AND a real ticker
 `swing/web/charts.py` + `tests/web/test_charts.py` are the only files with `bulz`/`BULZ` tokens. Two DISTINCT usages:
@@ -453,7 +462,7 @@ Expected: FAIL (header has 10 `<th>`, row has 10 `<td>`, colspan is 10, no thumb
       </tr></thead>
 ```
 
-`open_positions_row.html.j2` — add the leading lazy thumbnail `<td>` as the FIRST cell inside the `<tr>` (mirror `journal_row.html.j2:14-18`; the cell-level `hx-trigger="revealed"` loads on scroll; clicking it still bubbles to the row's expand binding, which is the existing behavior for every cell):
+`open_positions_row.html.j2` — add the leading lazy thumbnail `<td>` as the FIRST cell inside the `<tr>` (mirror `journal_row.html.j2:14-18`; the cell-level `hx-trigger="revealed"` loads on scroll). **Deliberate (Codex R1 m#2): NO `event.stopPropagation()` on the thumbnail cell** — the whole open-position `<tr>` is a click-to-expand affordance and the thumbnail cell participating in that (clicking it expands the row, like every other non-button cell) is consistent, not a regression. Re-evaluate at the S4 browser gate if the operator finds it surprising.
 
 ```html
 <tr id="open-position-{{ row.trade.id }}"
@@ -494,9 +503,11 @@ git commit -m "feat(web): lazy candlestick thumbnail on open-positions rows (P14
 #### Task B.3 — hyp-rec render-direct thumbnail route
 
 **Files:**
-- Modify: `swing/web/routes/dashboard.py` (add the route + a module MA-lines constant)
+- Modify: `swing/web/routes/recommendations.py` (add the route + a module MA-lines constant, next to `/hyp-recs/refresh` `:120` + `/hyp-recs/{ticker}/expand` `:160`)
 - Create: `swing/web/templates/partials/hyprec_thumbnail.html.j2`
 - Test: `tests/web/test_hyprec_thumbnail.py` (NEW)
+
+**Production-path note (Codex R1 M#4):** these route tests drive the REAL route handler + the REAL `render_watchlist_thumbnail_svg` + the REAL Jinja partial — i.e. the regression-relevant production wiring (route→renderer→template) IS exercised, not stubbed. Only the EXTERNAL OHLCV-fetch boundary is controlled: the fixture supplies an `app.state.ohlcv_cache` whose `get_or_fetch` returns a REAL OHLCV `DataFrame` (so the real renderer actually runs on real bar shapes) or raises/empties for the unavailable path. This is the lowest sensible stub boundary (yfinance/archive I/O is legitimately external; #15's concern is "don't stub the derivation logic," and the derivation logic here — renderer + template — is real). Optionally add ONE variant that constructs a real `OhlcvCache(cfg)` pointed at a temp archive seeded with bars, monkeypatching only the yfinance fetch, to prove the cache layer too.
 
 - [ ] **Step 1: Write the failing test (route contracts, production-path)**
 
@@ -504,9 +515,9 @@ git commit -m "feat(web): lazy candlestick thumbnail on open-positions rows (P14
 from fastapi.testclient import TestClient
 
 def test_hyprec_thumbnail_returns_svg(monkeypatch, tmp_path):
-    app = _build_app_with_ohlcv_cache_returning_bars(tmp_path)  # see §L
+    app = _build_app_with_ohlcv_cache_returning_bars(tmp_path)  # real renderer; cache returns a real DataFrame; see §L
     with TestClient(app) as client:
-        resp = client.get("/dashboard/hyprec/NVDA/thumbnail",
+        resp = client.get("/hyp-recs/NVDA/thumbnail",
                           headers={"HX-Request": "true"})
         assert resp.status_code == 200
         assert "<svg" in resp.text
@@ -515,7 +526,7 @@ def test_hyprec_thumbnail_returns_svg(monkeypatch, tmp_path):
 def test_hyprec_thumbnail_unavailable_on_no_bars(monkeypatch, tmp_path):
     app = _build_app_with_ohlcv_cache_empty(tmp_path)  # get_or_fetch -> None/empty
     with TestClient(app) as client:
-        resp = client.get("/dashboard/hyprec/NVDA/thumbnail",
+        resp = client.get("/hyp-recs/NVDA/thumbnail",
                           headers={"HX-Request": "true"})
         assert resp.status_code == 200
         assert "chart-unavailable" in resp.text
@@ -524,9 +535,23 @@ def test_hyprec_thumbnail_unavailable_on_no_bars(monkeypatch, tmp_path):
 def test_hyprec_thumbnail_does_not_write_chart_renders(monkeypatch, tmp_path):
     app = _build_app_with_ohlcv_cache_returning_bars(tmp_path)
     with TestClient(app) as client:
-        client.get("/dashboard/hyprec/NVDA/thumbnail", headers={"HX-Request": "true"})
+        client.get("/hyp-recs/NVDA/thumbnail", headers={"HX-Request": "true"})
     # assert zero rows in chart_renders for surface='watchlist_row' ticker NVDA
     assert _count_chart_renders(tmp_path, surface="watchlist_row", ticker="NVDA") == 0
+
+def test_hyprec_thumbnail_invalid_ticker_does_not_fetch(monkeypatch, tmp_path):
+    # Codex R2 M#2: a malformed ticker returns the unavailable fragment WITHOUT
+    # calling get_or_fetch (no archive/network I/O).
+    calls = []
+    app = _build_app_with_recording_ohlcv_cache(tmp_path, calls)  # get_or_fetch appends to calls
+    with TestClient(app) as client:
+        # Use a SINGLE invalid path segment (Codex R3 m#1) — NOT an encoded-slash
+        # path like ..%2F.. (those may be decoded to separators and 404 at the
+        # router before the guard runs). "BAD_TICKER" fails _TICKER_RE (underscore).
+        resp = client.get("/hyp-recs/BAD_TICKER/thumbnail", headers={"HX-Request": "true"})
+        assert resp.status_code == 200
+        assert "chart-unavailable" in resp.text
+    assert calls == []  # get_or_fetch never invoked for an invalid ticker
 ```
 
 - [ ] **Step 2: Run to verify failure**
@@ -536,9 +561,12 @@ Expected: FAIL (route 404 — not registered).
 
 - [ ] **Step 3: Implementation**
 
-In `swing/web/routes/dashboard.py` add the module constant + route (imports: `render_watchlist_thumbnail_svg` from `swing.web.charts`; the shared cap from `swing.web.thumbnail_render`; `apply_overrides`):
+In `swing/web/routes/recommendations.py` add the module constant + route. **Explicitly include the logger** (Codex R2 m#1 — `recommendations.py` may not already have one): add `import logging` + `log = logging.getLogger(__name__)` at module top if absent. Imports: `render_watchlist_thumbnail_svg` from `swing.web.charts`; the shared cap from `swing.web.thumbnail_render`. **Validate the path ticker BEFORE any fetch** (Codex R2 M#2): a direct `GET /hyp-recs/{ticker}/thumbnail` with a malformed ticker must NOT reach `get_or_fetch` (archive/network) before the chart-layer safety check — validate up front and return the unavailable fragment for an invalid ticker.
 
 ```python
+import logging  # at module top if absent
+import re
+
 from swing.web.charts import render_watchlist_thumbnail_svg
 from swing.web.thumbnail_render import (
     _THUMBNAIL_CACHE_CONTROL,
@@ -546,18 +574,30 @@ from swing.web.thumbnail_render import (
     _THUMBNAIL_RENDER_TIMEOUT_S,
 )
 
+log = logging.getLogger(__name__)  # at module top if absent
+
 # Mirror chart_jit._WATCHLIST_THUMBNAIL_MA_LINES for cache/visual uniformity.
 _HYPREC_THUMBNAIL_MA_LINES: list[int] = [20, 50]
+# Conservative web-route ticker shape guard, applied BEFORE any fetch so a
+# malformed path segment never hits get_or_fetch. NOTE (Codex R3 m#2): this is
+# INTENTIONALLY a stricter route-level guard, NOT a copy of the renderer's
+# charts._assert_ticker_safe policy -- the renderer's own check remains the
+# authoritative content-layer validation (a future engineer should not try to
+# "reconcile" the two; the route guard only needs to reject obviously-malformed
+# path segments before I/O).
+_TICKER_RE = re.compile(r"^[A-Za-z][A-Za-z0-9.\-]{0,9}$")
 
 
-@router.get("/dashboard/hyprec/{ticker}/thumbnail", response_class=HTMLResponse)
+@router.get("/hyp-recs/{ticker}/thumbnail", response_class=HTMLResponse)
 def hyprec_thumbnail_fragment(request: Request, ticker: str):
     """Phase 14 close-out (P14.N1): lazy ticker-window thumbnail for a hyp-rec
     candidate row. RENDER-DIRECT (no chart_renders write; L5) -- fetches bars
     via the OHLCV cache and calls render_watchlist_thumbnail_svg directly,
     NOT chart_jit.get_or_render_surface (which writes the cache). Three
     contracts: 200+SVG / 200+busy (self-retry) / 200+unavailable. Render
-    exceptions isolated. Cache-Control distinct (busy = no-store)."""
+    exceptions isolated. Cache-Control distinct (busy = no-store). The path
+    ticker is shape-validated BEFORE any fetch (no archive/network I/O for a
+    malformed ticker)."""
     templates = request.app.state.templates
     ohlcv_cache = request.app.state.ohlcv_cache
 
@@ -571,6 +611,11 @@ def hyprec_thumbnail_fragment(request: Request, ticker: str):
         )
         return resp
 
+    # Validate the ticker shape BEFORE any fetch (Codex R2 M#2): a malformed
+    # path segment must NOT trigger archive/network I/O via get_or_fetch.
+    if not _TICKER_RE.match(ticker):
+        log.warning("hyp-rec thumbnail invalid ticker=%r", ticker)
+        return _frag(svg=None, busy=False)
     if ohlcv_cache is None:
         return _frag(svg=None, busy=False)
     if not _THUMBNAIL_RENDER_SEMAPHORE.acquire(
@@ -606,7 +651,7 @@ Create `swing/web/templates/partials/hyprec_thumbnail.html.j2` (ticker-keyed; ro
    does not apply. Busy self-retries the ticker-keyed route. #}
 {% if chart_svg_bytes %}{{ chart_svg_bytes.decode('utf-8') | safe }}
 {% elif busy %}<span class="chart-unavailable" data-chart-reason="busy"
-      hx-get="/dashboard/hyprec/{{ ticker }}/thumbnail"
+      hx-get="/hyp-recs/{{ ticker }}/thumbnail"
       hx-trigger="load delay:1500ms" hx-target="this" hx-swap="outerHTML"
       hx-headers='{"HX-Request": "true"}'>Chart loading...</span>
 {% else %}<span class="chart-unavailable" data-chart-reason="no-coverage">Chart unavailable.</span>{% endif %}
@@ -620,7 +665,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add swing/web/routes/dashboard.py swing/web/templates/partials/hyprec_thumbnail.html.j2 tests/web/test_hyprec_thumbnail.py
+git add swing/web/routes/recommendations.py swing/web/templates/partials/hyprec_thumbnail.html.j2 tests/web/test_hyprec_thumbnail.py
 git commit -m "feat(web): render-direct lazy thumbnail route for hyp-rec rows (P14.N1)"
 ```
 
@@ -647,7 +692,7 @@ def test_hyprec_column_counts_align(seeded_hyprec_db, monkeypatch):
 def test_hyprec_row_lazy_cell_but_tr_trigger_free(seeded_hyprec_db, monkeypatch):
     body = _render_dashboard(seeded_hyprec_db, monkeypatch)
     # the lazy thumbnail cell hx-gets the ticker route
-    assert 'hx-get="/dashboard/hyprec/' in body and "/thumbnail" in body
+    assert 'hx-get="/hyp-recs/' in body and "/thumbnail" in body
     assert 'hx-trigger="revealed"' in body
     # the <tr> OPEN TAG itself must remain trigger-free (discriminator)
     import re
@@ -681,7 +726,7 @@ Expected: FAIL (9 `<th>`, 9 `<td>`, colspan 9).
               hx-get="/hyp-recs/{{ rec.ticker }}/expand"
               ...>▸</button></td>
   <td class="hyprec-thumb" data-ticker="{{ rec.ticker }}"
-      hx-get="/dashboard/hyprec/{{ rec.ticker }}/thumbnail"
+      hx-get="/hyp-recs/{{ rec.ticker }}/thumbnail"
       hx-trigger="revealed" hx-swap="innerHTML"
       hx-headers='{"HX-Request": "true"}'></td>
   <td>{{ rec.ticker }}</td>
@@ -702,39 +747,103 @@ git add swing/web/templates/partials/hypothesis_recommendations*.html.j2 tests/w
 git commit -m "feat(web): lazy ticker thumbnail on hyp-rec rows (P14.N1)"
 ```
 
-#### Task B.5 — Slice B full-suite check
+#### Task B.5 — colspan alignment across row-replacement fragments (Codex R1 M#2/M#3)
 
-- [ ] Run `python -m pytest -m "not slow" -q` → green; `ruff check swing/` → clean. Fix any drift (esp. pre-existing column-count assertions on either table) in the owning task's commit.
+**Files:**
+- Modify: `swing/web/app.py:73-76` (`_row_error_colspan`) + comment `:57-58`
+- Modify: `swing/web/templates/partials/hyp_recs_expand_unavailable.html.j2:10`
+- Modify: `swing/web/templates/partials/trade_entry_form.html.j2:17`
+- Modify: `swing/web/templates/partials/soft_warn_confirm.html.j2:25`
+- Test: `tests/web/test_row_error_colspan.py` (NEW or extend existing colspan tests)
+
+**Why:** adding a Chart column changes the full-row width of BOTH tables. Several row-replacement/error fragments hardcode that width and would render SHORT rows after Slice B's header/row/expanded edits. The full-row colspans are: hyp-rec `9` (→`10`), open-position `10` (→`11`). The exit/stop forms (`trade_exit_form.html.j2:11` / `trade_stop_form.html.j2:9`, colspan=8) and the non-hyp-rec `else 8` branches are PRE-EXISTING under-spans (already not full-row; `app.py:66-67` flags the exit/stop case as a separately-tracked ambiguity) — **leave them unchanged** (no NEW breakage class; out of scope).
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+import types
+from swing.web.app import _row_error_colspan
+
+def _req(hx_target):
+    return types.SimpleNamespace(headers={"HX-Target": hx_target})  # match the real header read
+
+def test_row_error_colspan_hyprec_is_10():
+    assert _row_error_colspan(_req("hyp-rec-row-NVDA")) == 10
+
+def test_row_error_colspan_open_position_is_11():
+    assert _row_error_colspan(_req("open-position-42")) == 11
+```
+
+> Re-grep `_row_error_colspan`'s exact header-read mechanism (`request.headers.get("HX-Target")` vs an `hx_target` arg) at executing-plans STEP 0 and shape `_req` to match (it reads the HX-Target header per `app.py:73`).
+
+- [ ] **Step 2: Run to verify failure** — FAIL (returns 9 / 10).
+
+- [ ] **Step 3: Implementation**
+
+`app.py:73-76`:
+
+```python
+    if hx_target.startswith("hyp-rec-row-"):
+        return 10   # hyp-recs table: 9 data columns + Chart (P14.N1)
+    if hx_target.startswith("open-position-"):
+        return 11   # open-positions table: 10 data columns + Chart (P14.N1)
+```
+Update the docstring lines `:57-58` to `hyp-rec-row-* -> 10` / `open-position-* -> 11`.
+
+`hyp_recs_expand_unavailable.html.j2:10`: `<td colspan="9">` → `<td colspan="10">`.
+`trade_entry_form.html.j2:17`: `{{ 9 if vm.origin == 'hyp-recs' else 8 }}` → `{{ 10 if vm.origin == 'hyp-recs' else 8 }}`.
+`soft_warn_confirm.html.j2:25`: `{{ 9 if form_values.origin == 'hyp-recs' else 8 }}` → `{{ 10 if form_values.origin == 'hyp-recs' else 8 }}`.
+
+- [ ] **Step 4: Run to verify pass** — PASS. Also run `python -m pytest tests/web/ -q -k "colspan or hyp_recs or entry_form or soft_warn"` and update any pre-existing colspan=9/10 assertions for these fragments in THIS task.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add swing/web/app.py swing/web/templates/partials/hyp_recs_expand_unavailable.html.j2 swing/web/templates/partials/trade_entry_form.html.j2 swing/web/templates/partials/soft_warn_confirm.html.j2 tests/web/test_row_error_colspan.py
+git commit -m "fix(web): align row-replacement colspans with the new Chart column (P14.N1)"
+```
+
+#### Task B.6 — register the hyp-rec thumbnail route + Slice B full-suite check
+
+- [ ] **Step 1:** Confirm `recommendations.py`'s router is already mounted (`app.include_router(recommendations_route.router)` in `app.py` — re-grep at executing-plans; the existing `/hyp-recs/...` routes prove it is). No new `include_router` needed — the new route registers automatically on the existing router.
+- [ ] **Step 2:** Run `python -m pytest -m "not slow" -q` → green; `ruff check swing/` → clean. Fix any drift (esp. pre-existing column-count / colspan assertions on either table) in the owning task's commit.
 
 ---
 
 ### Slice C — A-1 market_weather ≥200-bar fetch window
 
-#### Task C.1 — shared constant + pipeline `_bars_or_none` (+ regression)
+#### Task C.1 — shared constant + pipeline `_bars_or_none` (+ renderer-boundary regression)
 
 **Files:**
 - Modify: `swing/web/ohlcv_cache.py` (add `MIN_CALENDAR_DAYS_FOR_MA200 = 300`)
-- Modify: `swing/pipeline/runner.py:2763` and `:2694`
+- Modify: `swing/pipeline/runner.py:2763` (`_bars_or_none` — the market_weather benchmark + per-ticker chart path)
 - Test: `tests/pipeline/test_step_charts_fetch_window.py` (NEW or extend an existing `_step_charts` test)
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing test (capture the window AND assert bars reach the renderer; Codex R1 M#5)**
 
 ```python
-def test_bars_or_none_uses_min_calendar_days_for_ma200(monkeypatch):
+def test_step_charts_market_weather_gets_min_calendar_days_and_enough_bars(monkeypatch):
     from swing.web.ohlcv_cache import MIN_CALENDAR_DAYS_FOR_MA200
-    assert MIN_CALENDAR_DAYS_FOR_MA200 >= 290  # >=200 trading bars
+    assert MIN_CALENDAR_DAYS_FOR_MA200 >= 290  # >=200 trading bars (200 * 365/252)
     captured = {}
     class FakeCache:
         def get_or_fetch(self, *, ticker, window_days):
-            captured[ticker] = window_days
-            return _fake_bars()  # >=200 rows
-    # drive _bars_or_none (or _step_charts) with FakeCache; assert the window
-    # passed for the benchmark ticker == MIN_CALENDAR_DAYS_FOR_MA200
+            captured.setdefault("windows", []).append(window_days)
+            return _fake_bars(rows=260)  # a real-shaped OHLCV frame, >=200 rows
+    # Spy on the REAL renderer boundary to prove >=200 bars actually arrive:
+    seen = {}
+    real = charts.render_market_weather_svg
+    def spy(*, bars, **kw):
+        seen["bars_len"] = len(bars)
+        return real(bars=bars, **kw)
+    monkeypatch.setattr("swing.pipeline.runner.render_market_weather_svg", spy)
+    # drive _step_charts (or _bars_or_none + the benchmark render) with FakeCache
     ...
-    assert captured[BENCHMARK] == MIN_CALENDAR_DAYS_FOR_MA200
+    assert MIN_CALENDAR_DAYS_FOR_MA200 in captured["windows"]
+    assert seen["bars_len"] >= 200   # the binding assertion (M#5): bars REACH the renderer
 ```
 
-- [ ] **Step 2: Run to verify failure** — Run the new test → FAIL (constant absent / window is 200).
+- [ ] **Step 2: Run to verify failure** — FAIL (constant absent / window is 200 / fewer than 200 bars reach the renderer).
 
 - [ ] **Step 3: Implementation**
 
@@ -750,15 +859,32 @@ def test_bars_or_none_uses_min_calendar_days_for_ma200(monkeypatch):
 MIN_CALENDAR_DAYS_FOR_MA200 = 300
 ```
 
-`runner.py:2763` (`_bars_or_none`) and `:2694` — import at module top `from swing.web.ohlcv_cache import MIN_CALENDAR_DAYS_FOR_MA200` (pipeline already imports from `swing.web.ohlcv_cache` at `:352` lazily; add a top-level import or a local import mirroring the existing lazy pattern), then replace `window_days=200` → `window_days=MIN_CALENDAR_DAYS_FOR_MA200` at both lines.
+`runner.py:2763` (`_bars_or_none`) — import at module top `from swing.web.ohlcv_cache import MIN_CALENDAR_DAYS_FOR_MA200` (the pipeline already imports `swing.web.charts` at module top `:105`, so a top-level `swing.web.ohlcv_cache` import is import-safe), then replace `window_days=200` → `window_days=MIN_CALENDAR_DAYS_FOR_MA200`.
 
-- [ ] **Step 4: Run to verify pass** — Run the new test → PASS.
+- [ ] **Step 4: Run to verify pass** — PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add swing/web/ohlcv_cache.py swing/pipeline/runner.py tests/pipeline/test_step_charts_fetch_window.py
-git commit -m "fix(pipeline): widen OHLCV fetch window to >=200 trading bars for MA200 (A-1)"
+git commit -m "fix(pipeline): widen market-weather/chart fetch window to >=200 bars for MA200 (A-1)"
+```
+
+#### Task C.1b — ACCEPTED scope expansion: the classifier OHLCV-consume site `runner.py:2694` (Codex R1 M#6)
+
+**ACCEPTED in scope** (not operator-excludable hand-waving): STEP-0 re-grep found `runner.py:2694` — the `_step_charts` per-ticker OHLCV-consume that feeds the classifier trend-template AND the per-ticker MA200 charts (`render_ticker_detail` uses `ma_windows=(10,20,50,150,200)`). It has the IDENTICAL too-few-bars defect for any MA200/52-week computation. The same monotonic-safe rationale as OQ-6's JIT widening applies. It is kept as its OWN commit so it is cleanly revertible if the operator objects at the gate, but it IS implemented.
+
+**Files:** Modify `swing/pipeline/runner.py:2694`.
+
+- [ ] **Step 1:** Write a test asserting the per-ticker classifier OHLCV consume uses `MIN_CALENDAR_DAYS_FOR_MA200` (capture `window_days` for a candidate ticker in `_step_charts`).
+- [ ] **Step 2:** Run → FAIL (200).
+- [ ] **Step 3:** `runner.py:2694`: `window_days=200` → `window_days=MIN_CALENDAR_DAYS_FOR_MA200`.
+- [ ] **Step 4:** Run → PASS.
+- [ ] **Step 5: Commit** (separate, revertible):
+
+```bash
+git add swing/pipeline/runner.py tests/pipeline/test_step_charts_fetch_window.py
+git commit -m "fix(pipeline): widen classifier/per-ticker OHLCV window to >=200 bars for MA200 (A-1)"
 ```
 
 #### Task C.2 — dashboard weather refresh passes the constant (production-path)
@@ -770,17 +896,24 @@ git commit -m "fix(pipeline): widen OHLCV fetch window to >=200 trading bars for
 - [ ] **Step 1: Write the failing test**
 
 ```python
-def test_weather_refresh_fetches_min_calendar_days(monkeypatch, tmp_path):
+def test_weather_refresh_fetches_min_calendar_days_and_bars_reach_renderer(monkeypatch, tmp_path):
     from swing.web.ohlcv_cache import MIN_CALENDAR_DAYS_FOR_MA200
     captured = {}
-    # patch app.state.ohlcv_cache with a fake recording window_days, seed a
-    # completed pipeline_run, POST the weather refresh, assert >=200 bars reach
-    # render_market_weather_svg via the REAL handler path.
+    # fake app.state.ohlcv_cache recording window_days + returning a real >=200-row frame
+    # spy the REAL render_market_weather_svg in the dashboard route module
+    seen = {}
+    import swing.web.routes.dashboard as dash
+    real = dash.render_market_weather_svg
+    def spy(*, bars, **kw):
+        seen["bars_len"] = len(bars); return real(bars=bars, **kw)
+    monkeypatch.setattr(dash, "render_market_weather_svg", spy)
+    # seed a completed pipeline_run, POST /dashboard/weather-chart/refresh via the REAL handler
     ...
     assert captured["window_days"] == MIN_CALENDAR_DAYS_FOR_MA200
+    assert seen["bars_len"] >= 200   # binding (Codex R1 M#5): bars REACH the renderer
 ```
 
-- [ ] **Step 2: Run to verify failure** — FAIL (handler passes no `window_days` → 180).
+- [ ] **Step 2: Run to verify failure** — FAIL (handler passes no `window_days` → 180; fewer than 200 bars reach the renderer).
 
 - [ ] **Step 3: Implementation**
 
@@ -807,7 +940,7 @@ git commit -m "fix(web): weather-chart refresh fetches >=200 bars for MA200 (A-1
 
 **Files:**
 - Modify: `swing/web/chart_jit.py:117`
-- Modify: `swing/web/routes/dashboard.py` (the hyp-rec route `get_or_fetch` — pass the constant)
+- Modify: `swing/web/routes/recommendations.py` (the hyp-rec route `get_or_fetch` — pass the constant)
 - Test: extend `tests/web/test_hyprec_thumbnail.py` / a `chart_jit` test
 
 - [ ] **Step 1: Write the failing test** — assert `chart_jit.get_or_render_surface` calls `get_or_fetch(window_days=MIN_CALENDAR_DAYS_FOR_MA200)` (mock the cache) and the hyp-rec route passes the same.
@@ -816,14 +949,14 @@ git commit -m "fix(web): weather-chart refresh fetches >=200 bars for MA200 (A-1
 
 - [ ] **Step 3: Implementation**
 
-`chart_jit.py:117`: `bars = ohlcv_cache.get_or_fetch(ticker=ticker, window_days=MIN_CALENDAR_DAYS_FOR_MA200)` (import the constant). In the hyp-rec route (Task B.3) change `ohlcv_cache.get_or_fetch(ticker=ticker)` → `ohlcv_cache.get_or_fetch(ticker=ticker, window_days=MIN_CALENDAR_DAYS_FOR_MA200)`.
+`chart_jit.py:117`: `bars = ohlcv_cache.get_or_fetch(ticker=ticker, window_days=MIN_CALENDAR_DAYS_FOR_MA200)` (import the constant). In the hyp-rec route (Task B.3, in `recommendations.py`) change `ohlcv_cache.get_or_fetch(ticker=ticker)` → `ohlcv_cache.get_or_fetch(ticker=ticker, window_days=MIN_CALENDAR_DAYS_FOR_MA200)`.
 
 - [ ] **Step 4: Run to verify pass** — PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add swing/web/chart_jit.py swing/web/routes/dashboard.py tests/web/test_hyprec_thumbnail.py
+git add swing/web/chart_jit.py swing/web/routes/recommendations.py tests/web/test_hyprec_thumbnail.py
 git commit -m "fix(web): widen JIT + hyp-rec thumbnail fetch window for MA200 uniformity (A-1 OQ-6)"
 ```
 
@@ -1091,7 +1224,7 @@ def test_ohlcv_reader_re_export_identity():
 
 Ensure `import pytest` is present at the top of the module.
 
-- [ ] **Step 2: Run to verify** — Run `python -m pytest tests/research/test_pattern_cohort_evaluator_reader.py -v` (in isolation) → PASS; run the full suite with xdist `python -m pytest -m "not slow" -q` → the flake no longer reproduces.
+- [ ] **Step 2: Run to verify (use the EXPLICIT xdist invocation; Codex R1 m#3)** — Run `python -m pytest tests/research/test_pattern_cohort_evaluator_reader.py -v` (in isolation) → PASS; then reproduce the co-residency condition with the project's xdist invocation `python -m pytest -n auto tests/research/ -q` (NOT `-m "not slow" -q`, which may not enable xdist) → the flake no longer reproduces. Confirm the marker actually groups by checking `pytest --collect-only -q` shows the xdist_group, or run `-n auto` twice.
 
 - [ ] **Step 3: Commit**
 
@@ -1108,7 +1241,7 @@ git commit -m "test(research): pin ohlcv-reader re-export test to an xdist group
 ## §H Test surface (production-path; #15 / L6)
 
 - **A-7:** VM-level (UNKNOWN/None branches) + a TestClient topbar render under the UNSEEDED fixture asserting `schwab-health-badge--warn` + `Schwab?` in the rendered `base.html.j2`, AND no sidecar created by the lifespan — the regression the SB5.5 seeded gate missed. Plus the L2-LOCK grep test.
-- **P14.N1:** real-route tests (open-positions reuses `/journal/trades/{id}/thumbnail`; hyp-rec hits `/dashboard/hyprec/{ticker}/thumbnail`) driving the REAL renderers; the hyp-rec no-`chart_renders`-write assertion (L5); column-count regressions on BOTH tables (compact == header == expanded); the hyp-rec `<tr>`-trigger-free regression re-run.
+- **P14.N1:** real-route tests (open-positions reuses `/journal/trades/{id}/thumbnail`; hyp-rec hits `/hyp-recs/{ticker}/thumbnail`) driving the REAL route handler + REAL renderer + REAL Jinja partial — only the external OHLCV-fetch boundary is stubbed (a cache returning a real DataFrame; Codex R1 M#4); the hyp-rec no-`chart_renders`-write assertion (L5); column-count regressions on BOTH tables (compact == header == expanded); the `_row_error_colspan` 10/11 regression (Task B.5); the hyp-rec `<tr>`-trigger-free regression re-run.
 - **A-1:** assert ≥200-calendar-day window reaches `get_or_fetch` via the REAL pipeline `_bars_or_none`/`_step_charts` path AND the REAL dashboard refresh handler (not a stub) + the JIT path.
 - **A-2:** ax.text-capture (label x-anchor off the tick column; mathtext-free). **A-4:** import + rename completeness (zero `_bulz`/`bulz` tokens in `swing/`). **A-6:** CSS-presence (weak; the binding check is S6).
 - **group-(a):** C-1 default; C-2 tooltip substring; C-3 ClickException; C-5 ordering; C-19 isolation.
@@ -1173,14 +1306,16 @@ A fake OHLCV cache recording `window_days` (Tasks C.1–C.3); seed a completed `
 
 **Placeholder scan:** every code step shows the actual edit; test steps show real assertions. Re-grep-at-executing-plans notes are explicit pointers (not deferrals of design) for fixture/anchor confirmation per discipline #2. ✓
 
-**Type/name consistency:** `MIN_CALENDAR_DAYS_FOR_MA200` (one name, used in C.1–C.3); `_THUMBNAIL_RENDER_SEMAPHORE`/`_THUMBNAIL_RENDER_TIMEOUT_S`/`_THUMBNAIL_CACHE_CONTROL` (shared module, imported by journal + hyp-rec route); `_rr_target_price`/`_draw_risk_reward_zones` (consistent across charts.py + tests); `hyprec_thumbnail.html.j2` context keys (`chart_svg_bytes`/`busy`/`ticker`) consistent between route and partial. ✓
+**Type/name consistency:** `MIN_CALENDAR_DAYS_FOR_MA200` (one name, used in C.1/C.1b/C.2/C.3); `_THUMBNAIL_RENDER_SEMAPHORE`/`_THUMBNAIL_RENDER_TIMEOUT_S`/`_THUMBNAIL_CACHE_CONTROL` (shared module, imported by journal + the hyp-rec route in recommendations.py); the hyp-rec route path `/hyp-recs/{ticker}/thumbnail` consistent across §B/§C/§H/Task B.3; `_rr_target_price`/`_draw_risk_reward_zones` (consistent across charts.py + tests); `hyprec_thumbnail.html.j2` context keys (`chart_svg_bytes`/`busy`/`ticker`) consistent between route and partial; the colspan values (hyp-rec 10, open-position 11) consistent across the expanded fragments, `_row_error_colspan`, and the entry/soft-warn/expand-unavailable fragments (Task B.5). ✓
+
+**Codex R1 resolutions folded in:** M1 (spec-supersession callout), M2/M3 (Task B.5 colspan alignment across 5 hyp-rec + 1 open-position width surfaces + `_row_error_colspan` regression), M4 (production-path wording — real route/renderer/template, stub only the fetch boundary), M5 (renderer-boundary `len(bars)>=200` spy in C.1/C.2), M6 (Task C.1b accepted-scope `:2694`), m1 (route → recommendations.py `/hyp-recs/...`), m2 (intentional bubbling documented), m3 (explicit xdist invocation in E.5). ✓
 
 **LOCK reverification:** L1–L7 + OQ-1..8 mapped in §E. NO schema (§K). L2-LOCK green (§E.7). C-6 deferred with documented rationale (§E.6). ✓
 
 ---
 
 ## §O Phase 14 close-out position
-This batch is the FIRST close-out-tail item (SB1–SB5.5 all SHIPPED). After it merges: **B-7 (operator failure-mode classification — NEXT; may add a nullable review column → v24, OUT of this batch) → Phase 14 close-out review (Sec 9.1 Q6) → CLAUDE.md "Phase 14 CLOSED" at v23.** Banked follow-ups carried OUT of this batch: **C-6** (backfill write-lock narrowing — deferred, TOCTOU; §E.6) and (if the operator excludes it) the `runner.py:2694` A-1 widening. The schwabdev v2.5.1→3.0.5 upgrade (deletes P14.N7's checker guard) remains Phase 15. This batch holds v23, holds L2-LOCK, stays read-mostly.
+This batch is the FIRST close-out-tail item (SB1–SB5.5 all SHIPPED). After it merges: **B-7 (operator failure-mode classification — NEXT; may add a nullable review column → v24, OUT of this batch) → Phase 14 close-out review (Sec 9.1 Q6) → CLAUDE.md "Phase 14 CLOSED" at v23.** Banked follow-ups carried OUT of this batch: **C-6** (backfill write-lock narrowing — deferred, TOCTOU; §E.6). (The `runner.py:2694` A-1 widening is IN scope — Task C.1b, its own revertible commit — not a banked follow-up; see §E.4.) The schwabdev v2.5.1→3.0.5 upgrade (deletes P14.N7's checker guard) remains Phase 15. This batch holds v23, holds L2-LOCK, stays read-mostly.
 
 ---
 
