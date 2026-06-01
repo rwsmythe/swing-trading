@@ -327,9 +327,20 @@ reason text is sufficient and stays within L3/L5.
 The SB5.5 S6 gate witnessed the badge ONLY via orchestrator-SEEDED sidecars (cleaned up post-gate),
 which MASKED the live no-checker-no-badge behavior (`feedback_seeded_gate_masks_default_state`).
 A-7's own gate (S7) MUST witness the **UNSEEDED** state: with NO sidecar present, the topbar shows
-the `Schwab?` UNKNOWN (warn) badge instead of nothing. A-7's regression test asserts the badge
-renders UNKNOWN when no sidecar exists (the exact regression the SB5.5 seeded gate missed), via the
-real `build_schwab_checker_badge` derivation path (L6).
+the `Schwab?` UNKNOWN (warn) badge instead of nothing.
+
+**Critical subtlety (per the §4.2 trace):** "no orchestrator-seeded sidecar" is NOT sufficient to
+reproduce UNKNOWN, because under VALID production tokens the APP ITSELF installs the checker and
+synchronously seeds a sidecar at startup (→ STARTING/ALIVE, the correct healthy state). To witness
+the UNKNOWN default state reproducibly you need: **production + ladder enabled (so `_is_ladder_active`
+is True and the badge gate passes) BUT no constructible Schwab client at startup** — i.e.
+missing/invalid creds (or a controlled construction-failure) so `_construct_web_schwab_client`
+returns `None` → no checker → no app-created sidecar — PLUS an isolated HOME/sidecar path with no
+pre-existing sidecar. This is exactly the operator's reported case (a configured-but-degraded Schwab
+that cannot construct a client). The valid-token ALIVE/STARTING witness is a SEPARATE, optional
+check. A-7's regression test asserts UNKNOWN renders under these preconditions via the real
+`build_schwab_checker_badge` + topbar template path (L6) — the exact regression the SB5.5 seeded
+gate missed.
 
 ---
 
@@ -434,15 +445,19 @@ Single Codex chain at each phase (OQ-8; orchestrator discretion, recommend singl
   alignment regression (compact-row cells == header `<th>` == expanded `colspan`).
 - A-1: assert ≥200 bars reach `render_market_weather_svg` via the real `get_or_fetch` path at BOTH
   sites (the pipeline `_bars_or_none` and the dashboard refresh `dashboard.py:94`).
-- **A-7 (the regression the SB5.5 seeded gate missed) — at TWO levels:** (1) a VM-level test that
+- **A-7 (the regression the SB5.5 seeded gate missed) — at TWO levels, with a precise UNSEEDED
+  fixture:** the test fixture must give production + ladder enabled (so the badge gate passes) +
+  isolated HOME/sidecar path with NO pre-existing sidecar + **no constructible Schwab client** (no
+  creds / construction-failure → no app-created sidecar; monkeypatch `USERPROFILE`+`HOME` per the
+  config-write gotcha so nothing leaks to the real `~/swing-data`). Then: (1) a VM-level test that
   `build_schwab_checker_badge` returns a VM with `state="UNKNOWN"`, `label="Schwab?"`,
-  `css_class="warn"` when **no sidecar exists** under a production+ladder-enabled cfg; AND (2) — the
-  binding one — a **TestClient route test** (production+ladder-enabled cfg, NO seeded sidecar) that
-  asserts the RENDERED topbar HTML contains `schwab-health-badge` + `Schwab?` + the warn class. The
-  observed bug is the topbar disappearing through `base.html.j2`'s `{% if vm.schwab_checker_badge %}`
-  guard, which a VM-only test cannot catch (#15 production-path discipline). Also assert the badge is
-  ABSENT (VM `None`) under a sandbox/ladder-disabled cfg (the `_is_ladder_active` guard → no
-  sandbox noise).
+  `css_class="warn"`; AND (2) — the binding one — a **TestClient route test** (`with TestClient(app)
+  as client:` to enter lifespan) asserting the RENDERED topbar HTML contains `schwab-health-badge` +
+  `Schwab?` + the warn class, AND that the lifespan did NOT create a sidecar before the first
+  rendered request. The observed bug is the topbar disappearing through `base.html.j2`'s `{% if
+  vm.schwab_checker_badge %}` guard, which a VM-only test cannot catch (#15 production-path
+  discipline). Also assert the badge is ABSENT (VM `None`) under a sandbox/ladder-disabled cfg (the
+  `_is_ladder_active` guard → no sandbox noise).
 
 **Operator-witnessed browser gate (Q6; UNSEEDED/default-state witness):**
 - **S4 (P14.N1)** open-positions table thumbnails render with real open trades; no-coverage rows
@@ -450,10 +465,12 @@ Single Codex chain at each phase (OQ-8; orchestrator discretion, recommend singl
 - **S5 (A-1)** the market-weather widget's 200-MA renders (full line).
 - **S6 (A-2/A-4/A-6)** VCP labels uncrowded; the rename is behavior-neutral (tests green); the
   process-grade-trend chart visible in DARK mode.
-- **S7 (A-7 — the default-state witness)** operator browser with **NO seeded sidecar**: the topbar
-  shows the `Schwab?` UNKNOWN (warn) badge instead of nothing. (Optional/feasibility-gated: if the
-  operator has a live production session with valid tokens, confirm the badge shows ALIVE/STARTING —
-  validating the §4.2 wiring verdict end-to-end.)
+- **S7 (A-7 — the default-state witness)** operator browser under the reproducible UNSEEDED
+  precondition (§4.3): production + ladder enabled, NO pre-existing sidecar, AND no constructible
+  Schwab client at startup (degraded/missing creds → no app-created sidecar). The topbar shows the
+  `Schwab?` UNKNOWN (warn) badge instead of nothing. (Optional/feasibility-gated SEPARATE witness: if
+  the operator has a live production session with VALID tokens, confirm the badge shows
+  ALIVE/STARTING — the app-seeded healthy state — validating the §4.2 wiring verdict end-to-end.)
 
 ---
 
