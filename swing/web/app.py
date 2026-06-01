@@ -18,6 +18,11 @@ from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from swing.config import Config
+from swing.integrations.schwab.auth import (
+    construct_authenticated_client,
+    resolve_credentials_env_or_prompt,
+)
+from swing.integrations.schwab.client import SchwabConfigMissingError
 from swing.web.middleware.body_size import MaxBodySizeMiddleware
 from swing.web.middleware.origin_guard import OriginGuardMiddleware
 from swing.web.middleware.request_id import (
@@ -26,11 +31,6 @@ from swing.web.middleware.request_id import (
 )
 from swing.web.ohlcv_cache import OhlcvCache
 from swing.web.price_cache import PriceCache
-from swing.integrations.schwab.auth import (
-    construct_authenticated_client,
-    resolve_credentials_env_or_prompt,
-)
-from swing.integrations.schwab.client import SchwabConfigMissingError
 
 log = logging.getLogger(__name__)
 
