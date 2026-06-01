@@ -8,6 +8,36 @@
 
 ---
 
+## 2026-06-01 #13 Phase 14 close-out polish batch BRAINSTORM SHIPPED at `83043ba` -- spec 546 lines; GENUINE single WSL Codex chain CONVERGED R3 (R1 5 maj + 3 min -> R2 1 maj -> R3 NO_NEW_CRITICAL_MAJOR; 9/9 accepted, ZERO rejected); NO schema (v23 held); L2 green (A-7 zero new schwabdev.Client. sites); A-7 verdict = design fix renders UNKNOWN gated on `_is_ladder_active`, NO checker-non-start wiring bug, NO cycle-split; hyp-rec thumbnails deferred (no Trade); OQ-1 A-7 design-ratification + OQ-2 wiring-verdict HELD for operator; writing-plans NEXT
+
+**Close-out polish batch brainstorm SHIPPED 2026-06-01 #13** at merge `83043ba` of `phase14-close-out-polish-batch-brainstorming` via `--no-ff`. 3 branch commits (draft `6d9cf7a` + R1 `98984b2` + R2 `c76d5db`) + merge. Docs-only (spec `docs/superpowers/specs/2026-06-01-phase14-close-out-polish-batch-design.md`, 546 lines, 14 sections). ZERO Co-Authored-By (`%(trailers)` empty on all 3 + merge). Branched from `e26803f`; merge-base `e26803f` (the brief commit `42eaafd` is independent on main -> clean merge).
+
+**Scope (L1):** the `#5` close-out polish batch -- P14.N1-dashboard thumbnails + A-1 market_weather 200MA fetch-window + A-2 vcp label crowding + A-4 `_bulz_*` rename + A-6 process-grade dark-mode chart + A-7 schwab web badge not rendering + group-(a) minors (C-1/C-2/C-3/C-5/C-6/C-19). Read-mostly UX/wiring/cosmetic + test-hardening on already-shipped surfaces; NO new feature/metric/schema.
+
+**Genuine WSL Codex chain CONVERGED R3 (responses persisted -- v2.0.3):** R1 ISSUES_FOUND (5 maj + 3 min) -> R2 (1 new maj; 8 R1 fixes confirmed) -> R3 NO_NEW_CRITICAL_MAJOR. 9/9 accepted, ZERO rejected; transcript in the gitignored `.copowers-findings.md` (verified on disk; codex at `/home/rwsmythe/.local/node22/bin/codex`, codex-cli 0.135.0 -- not a dead `/mnt/c` shim). Token growth 68k->94k->105k corroborates genuine execution.
+
+**The two load-bearing deliverables:**
+- **A-7 design-vs-wiring investigation (spec §4):** (i) DESIGN -- render the UNKNOWN (`Schwab?`, warn) badge **gated on `_is_ladder_active(cfg)`** (production AND ladder enabled -- the EXACT "checker is expected" predicate; a pure config read, L3-safe) instead of hiding; reuses the existing `evaluate_liveness_state` UNKNOWN branch + `_BADGE_MAP`; ~3-line web-VM change; plus a reason-text refinement. (ii) WIRING -- traced `app.py:407` `_install_web_marketdata_caches` -> `_construct_web_schwab_client` (gated `_is_ladder_active` FIRST) -> on valid client, installs the checker + **synchronously seeds** a sidecar (`update_tokens()` :274) before serving -> badge ALIVE/STARTING. VERDICT: **NO checker-non-start bug under valid tokens**; "no badge" is the by-design hide manifesting when the client can't construct (degraded tokens / no creds). No A-7-wiring cycle-split (L8 does not fire). **Orchestrator-verified the wiring trace + the self-seed on disk.**
+- **Per-item IN/OUT triage + decomposition (§5/§9):** ONE executing-plans bundle, 5 slices -- A-7 / P14.N1 (open-positions ONLY) / A-1 / cosmetics (A-2+A-4+A-6) / group-(a). **Notable scope reduction: hyp-rec thumbnails DEFERRED** -- hyp-rec rows are ticker-keyed candidates with NO underlying `Trade`, so `render_trade_window_thumbnail_svg(*, trade, fills, cfg)` cannot be reused (would need a new ticker-window renderer -> violates L4). Group-(a): recommend all six, C-6 (tx-lock narrowing) flagged for careful review (TOCTOU).
+
+**Brief-vs-production anchor corrections (orchestrator-verified on disk):** A-1 web site `dashboard.py:141`->`:94` (passes NO `window_days` -> inherits the `OhlcvCache.get_or_fetch` default `window_days=180` calendar, ~124 trading bars -- even shorter than the pipeline's 200; verified `ohlcv_cache.py:131`); A-4 `#5` line 166 stale `:609,701` -> verified `:632/:725` (the brief §0.5 anchors were correct); A-7 install "lifespan" -> `create_app` state construction `app.py:406-407` (verified). A-6 root cause DEEPENED: the polyline `stroke` defaults to `none` (NOT black) -> the rolling line was invisible in BOTH themes; the circle `fill` defaults to black -> dark-mode-only. Both fixed by one CSS rule (`var(--accent)`).
+
+**Locks verified (orchestrator QA):** Schema NO change, v23 held (`EXPECTED_SCHEMA_VERSION=23`) across ALL items; L2-LOCK (A-7) zero new `schwabdev.Client.*` sites (the `_is_ladder_active` gate is a pure config read; `test_l2_lock_source_grep.py` baseline `bf7e071` stays green); L4 reuse / L5 read-mostly / L7 ASCII+redaction honored.
+
+**OQs HELD for operator (writing-plans dispatch):** OQ-1 (CENTRAL -- ratify the `_is_ladder_active`-gated always-surface design; replaces the SB5.5 "UNKNOWN is CLI-only" ruling) · OQ-2 (confirm the wiring verdict = no split) · OQ-3 decomposition · OQ-4 group-(a) subset (C-6 caution) · OQ-5 P14.N1 = open-positions only + route reuse · OQ-6 A-1 JIT-path scope · OQ-7 A-6 CSS-rule · OQ-8 single chain.
+
+**Forward action sequence (orchestrator-side):**
+
+- [x] QA the returned branch + read `.copowers-findings.md` (R3 convergence confirmed on disk) + verify the A-7 wiring trace + A-1/A-4/A-7 anchor corrections + locks
+- [x] Merge `--no-ff` at `83043ba` + housekeep (THIS entry + CLAUDE.md line-3) + push + teardown (docs-only -> no suite run)
+- [ ] **Operator triages OQ-1 (design ratification) + OQ-2 (wiring verdict) + OQ-4 (group-(a) subset) + OQ-5 (hyp-rec defer)**, then the **writing-plans dispatch brief** (LOCK the OQ dispositions; the 5-slice decomposition; persist-Codex-responses; the UNSEEDED-state A-7 gate) + commit BEFORE inline prompt
+- [ ] then close-out polish batch writing-plans -> executing-plans (operator-witnessed gate; A-7 witnessed UNSEEDED) -> merge -> re-run suite on MERGED head
+- [ ] then B-7 final touch -> Phase 14 close-out review (Sec 9.1 Q6) -> CLAUDE.md "Phase 14 CLOSED" at v23
+
+**ALL Phase 14 feature sub-bundles SHIPPED:** SB1 `e323339` · SB2 `27f8007` (v22) · SB3 `edd098d` (v23) · SB4 `31da4a5` · SB5 `6206fb6` · SB5.5 `16b3366`. The close-out polish batch is the FIRST close-out-tail item; B-7 + the Sec 9.1 Q6 review follow. The schwabdev v3 upgrade + Fernet is the PHASE 15 item (`#9`).
+
+---
+
 ## 2026-06-01 #12 Phase 14 Sub-bundle 5.5 (Schwab) EXECUTING-PLANS SHIPPED end-to-end at `16b3366` -- A-3 web ladder + P14.N7 checker resilience + web health badge; resumed after a degraded-harness false-start; genuine single WSL Codex chain CONVERGED R2 (rebuttal-withdrawal); operator-witnessed S6 badge gate PASS (ALIVE->DEGRADED); 6976 fast tests green on MERGED main; NO schema (v23 held); ZERO new schwabdev.Client.* sites; ALL Phase 14 SB1-SB5.5 SHIPPED -> close-out tail NEXT
 
 **SB5.5 executing-plans SHIPPED end-to-end 2026-06-01 #12** at integration merge `16b3366` of `phase14-sub-bundle-5-5-schwab-executing-plans` via `--no-ff`. Final branch HEAD `d9e2a43` (10 impl/test commits + return report `9748704` + orchestrator ruff gate-fix `d9e2a43`). 26 files (NEW `swing/integrations/schwab/checker_resilience.py` + `swing/web/view_models/schwab_checker_badge.py` + 6 test files; MODIFY `app.py` [A-3 ladder install + L9], `marketdata.py` [OQ-10 header-key capture], `cli_schwab.py` [checker line], the badge fan-out across BaseLayoutVM + 16 leaf VMs, base.html.j2 + app.css). ZERO Co-Authored-By (`%(trailers)` empty). Merge-base `ba3e6e4`.
