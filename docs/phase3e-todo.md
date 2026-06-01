@@ -8,6 +8,30 @@
 
 ---
 
+## 2026-06-01 #12 Phase 14 Sub-bundle 5.5 (Schwab) EXECUTING-PLANS SHIPPED end-to-end at `16b3366` -- A-3 web ladder + P14.N7 checker resilience + web health badge; resumed after a degraded-harness false-start; genuine single WSL Codex chain CONVERGED R2 (rebuttal-withdrawal); operator-witnessed S6 badge gate PASS (ALIVE->DEGRADED); 6976 fast tests green on MERGED main; NO schema (v23 held); ZERO new schwabdev.Client.* sites; ALL Phase 14 SB1-SB5.5 SHIPPED -> close-out tail NEXT
+
+**SB5.5 executing-plans SHIPPED end-to-end 2026-06-01 #12** at integration merge `16b3366` of `phase14-sub-bundle-5-5-schwab-executing-plans` via `--no-ff`. Final branch HEAD `d9e2a43` (10 impl/test commits + return report `9748704` + orchestrator ruff gate-fix `d9e2a43`). 26 files (NEW `swing/integrations/schwab/checker_resilience.py` + `swing/web/view_models/schwab_checker_badge.py` + 6 test files; MODIFY `app.py` [A-3 ladder install + L9], `marketdata.py` [OQ-10 header-key capture], `cli_schwab.py` [checker line], the badge fan-out across BaseLayoutVM + 16 leaf VMs, base.html.j2 + app.css). ZERO Co-Authored-By (`%(trailers)` empty). Merge-base `ba3e6e4`.
+
+**Degraded-harness false-start + recovery (lesson `feedback_degraded_harness_sequential_tool_calls`):** the FIRST executing-plans session ran under mid-batch tool cancellations -> ~7 broken/partial commits + false converged/green claims (implementer self-retracted) + ~986 lines of corrupted/triplicated edits that leaked into the MAIN working tree. The orchestrator caught it at QA (main was NOT working-tree-clean despite a "restored" claim), quarantined the contamination to `git stash`, restored main to pristine `ba3e6e4`, and dispatched a FRESH session (single sequential calls) that re-applied the regressed pieces cleanly + converged.
+
+**Genuine WSL Codex chain CONVERGED R2 (responses persisted):** R1 = 1 CRITICAL (`app.py:294/322` L9 cold-miss first-burst race) -> implementer REBUTTED per receiving-code-review (a RE-RAISE of the residual the LOCKed plan explicitly analyzed twice + accepted for V1: bounded by open-trade scope + single operator + graceful 429; single-flight latch banked V2 at plan:1812) -> Codex WITHDREW it at R2 -> NO_NEW_CRITICAL_MAJOR. Orchestrator verified the rebuttal against the plan on disk (legitimate, not a rationalization). ZERO majors accepted, ZERO rejected.
+
+**Orchestrator QA + gate:** S1 ruff (caught + fixed a FALSE "ruff clean" claim -- the I001 import-sort in app.py; orchestrator gate-fix `d9e2a43`) + suite **6976 passed / 0 failed on MERGED main `16b3366`** (`feedback_no_false_green_claim`; the lone `test_ohlcv_reader_re_export_identity` failure on one branch run is the KNOWN pre-existing xdist co-residency flake -- passes in isolation); S2 schema v23 / no migration; S3 L2 source-grep green (zero new `schwabdev.Client.*` sites; NO re-anchor); S4 A-3 production-path test; S5 operator-confirmed `swing schwab status` checker line; **S6 operator-witnessed web health badge -- rendered ALIVE then transitioned to DEGRADED in a real browser** (witnessed via orchestrator-seeded liveness sidecars at the production env path, since the operator's production Schwab client degraded [no live tokens] so no real checker ran; the 3 synthetic sidecars cleaned up post-gate). An orchestrator grep false-negative initially mis-reported "no badge" (the badge `<a>` spans 3 lines) -- corrected by the operator's browser witness.
+
+**Web-badge note:** reachable web states = ALIVE (ok) / STARTING (info) / DEGRADED (warn); UNKNOWN is CLI-only by design (the web badge hides via `build_schwab_checker_badge -> None` when no sidecar, rather than showing UNKNOWN). P14.N7 is a cleanly-removable guard -- the Phase-15 v3 upgrade deletes the daemon checker.
+
+**Forward action sequence (orchestrator-side):**
+
+- [x] QA the resumed branch + read `.copowers-findings.md` (R2 convergence + rebuttal verified against the plan) + orchestrator gate S1-S4 + ruff gate-fix `d9e2a43`
+- [x] Operator-witnessed S5 (CLI checker line) + S6 (web badge ALIVE->DEGRADED) gate PASS; synthetic sidecars + 8081 server cleaned up
+- [x] Merge `--no-ff` at `16b3366` + re-run suite on MERGED main (6976 passed) + reinstall `swing` + push origin/main + worktree/branch teardown (local + remote)
+- [x] CLAUDE.md line-3 + THIS entry
+- [ ] **Phase 14 close-out tail:** close-out polish batch (P14.N1-dashboard thumbnails + A-1 market_weather 200MA + A-2 vcp crowding + A-4 `_bulz_*` rename + A-6 process-grade dark-mode chart + group-(a) minors) -> B-7 operator failure-mode classification (final touch) -> Phase 14 close-out review (Sec 9.1 Q6: all merged + operator browser-witnessed cross-sub-bundle integration) -> CLAUDE.md "Phase 14 CLOSED" at v23
+
+**ALL Phase 14 sub-bundles SHIPPED:** SB1 `e323339` · SB2 `27f8007` (v22) · SB3 `edd098d` (v23) · SB4 `31da4a5` · SB5 `6206fb6` · SB5.5 `16b3366`. Phase 14 lands at v23. The schwabdev v3 upgrade + Fernet is the PHASE 15 item (`#9`).
+
+---
+
 ## 2026-05-31 #11 Phase 14 Sub-bundle 5.5 (Schwab) WRITING-PLANS SHIPPED at `1bd1558` -- plan 1821 lines; GENUINE single WSL Codex chain CONVERGED R6 (2 crit + 11 major + 8 minor ALL fixed, ZERO rejected); NO schema (v23 held); ZERO new schwabdev.Client.* sites (no L2 re-anchor); OQ-6 web health badge added; executing-plans NEXT
 
 **SB5.5 writing-plans SHIPPED 2026-05-31 #11** at merge `1bd1558` of `phase14-sub-bundle-5-5-schwab-writing-plans` via `--no-ff`. 2 branch commits (`47f1377` initial + `41ca915` R1-R6 convergence) + merge. Docs-only (plan `docs/superpowers/plans/2026-05-31-phase14-sub-bundle-5-5-schwab-web-marketdata-checker-plan.md`, 1821 lines; 4 slices [1/1b/2/3], ~32 tests). ZERO Co-Authored-By (`%(trailers)` empty). Based on `c7a8df3`.
