@@ -18,6 +18,12 @@ def test_badge_none_when_sidecar_absent(tmp_path, monkeypatch, seeded_db):
     assert build_schwab_checker_badge(cfg) is None  # hidden when no sidecar
 
 
+def test_badge_none_when_cfg_is_none():
+    # Broad population across builders is safe even where a caller lacks a
+    # resolved Config: None cfg yields None (no AttributeError).
+    assert build_schwab_checker_badge(None) is None
+
+
 def test_badge_alive(tmp_path, monkeypatch, seeded_db):
     cfg, _ = seeded_db
     monkeypatch.setenv("USERPROFILE", str(tmp_path))

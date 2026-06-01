@@ -29,8 +29,14 @@ _BADGE_MAP = {
 
 def build_schwab_checker_badge(cfg) -> SchwabCheckerBadgeVM | None:
     """Return the badge VM, or None when no sidecar exists (badge hidden:
-    sandbox / no Schwab client / tests)."""
+    sandbox / no Schwab client / tests).
+
+    Returns None when ``cfg`` is None so broad population across builders is
+    safe even where a caller lacks a resolved Config.
+    """
     import time
+    if cfg is None:
+        return None
     env = cfg.integrations.schwab.environment
     data = read_liveness_sidecar(checker_liveness_sidecar_path(env))
     if data is None:

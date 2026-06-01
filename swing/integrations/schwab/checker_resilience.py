@@ -34,6 +34,7 @@ log = logging.getLogger(__name__)
 HEARTBEAT_WRITE_INTERVAL = 120.0   # write the sidecar every ~4th daemon tick
 STALE_THRESHOLD = 300.0            # CLI/badge report DEGRADED past this
 STARTUP_GRACE = 90.0              # STARTING expires to DEGRADED past this
+CLOCK_SKEW_TOLERANCE = 5.0         # a heartbeat further in the future than this = corrupted/skewed
 _HEARTBEAT_TICKS = 4               # 4 * 30s ~ HEARTBEAT_WRITE_INTERVAL
 
 
@@ -233,7 +234,12 @@ def evaluate_liveness_state(data: dict | None, *, now_ts: float) -> tuple[str, s
         return ("DEGRADED", f"{failures} consecutive failures ({cls})")
     last_tick = _num(data, "last_daemon_tick_ts")
     if last_tick is not None:
-        if now_ts - last_tick <= STALE_THRESHOLD:
+        age = now_ts - last_tick
+        if age < -CLOCK_SKEW_TOLERANCE:
+            # A finite heartbeat further in the future than the skew tolerance is
+            # a corrupted/clock-skewed sidecar -- never report a false ALIVE.
+            return ("DEGRADED", "heartbeat timestamp in the future (clock skew)")
+        if age <= STALE_THRESHOLD:
             refresh_ts = _num(data, "last_refresh_ts")
             if refresh_ts is not None:
                 refresh_txt = f"last refresh {int(now_ts - refresh_ts)}s ago"

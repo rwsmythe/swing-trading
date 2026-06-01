@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from swing.integrations.schwab.checker_resilience import (
+    CLOCK_SKEW_TOLERANCE,
     HEARTBEAT_WRITE_INTERVAL,
     STALE_THRESHOLD,
     STARTUP_GRACE,
@@ -37,6 +38,26 @@ def test_stale_daemon_tick_is_degraded():
             "consecutive_failures": 0}
     state, reason = evaluate_liveness_state(data, now_ts=1000.0 + STALE_THRESHOLD + 1)
     assert state == "DEGRADED" and "stale" in reason
+
+
+def test_future_heartbeat_beyond_skew_is_degraded_not_alive():
+    # A finite but future heartbeat (clock skew / corrupted sidecar) must NOT
+    # report a false ALIVE via a large negative age. Pre-fix this returned ALIVE
+    # because now_ts - last_tick = -9000 <= STALE_THRESHOLD.
+    data = {"installed_ts": 0.0, "last_daemon_tick_ts": 10000.0,
+            "consecutive_failures": 0}
+    state, reason = evaluate_liveness_state(data, now_ts=1000.0)
+    assert state == "DEGRADED"
+    assert "future" in reason and reason.isascii()
+
+
+def test_small_future_skew_within_tolerance_stays_alive():
+    # A heartbeat slightly in the future (within CLOCK_SKEW_TOLERANCE) is benign.
+    data = {"installed_ts": 0.0,
+            "last_daemon_tick_ts": 1000.0 + CLOCK_SKEW_TOLERANCE - 1,
+            "consecutive_failures": 0}
+    state, _ = evaluate_liveness_state(data, now_ts=1000.0)
+    assert state == "ALIVE"
 
 
 def test_seed_only_within_grace_is_starting():
