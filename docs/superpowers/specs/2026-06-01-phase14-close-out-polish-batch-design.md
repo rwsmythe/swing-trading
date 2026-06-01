@@ -117,6 +117,15 @@ the batch within L4 and avoids inventing a candidate-chart surface during a clos
 - VM: add a boolean/flag to `OpenPositionsRowVM` only if the template needs it; simplest is no VM
   change — the template emits the lazy `<td>` referencing `row.trade.id` directly (mirror
   `journal_row.html.j2`). Re-grep `swing/web/view_models/open_positions_row.py` at writing-plans.
+- **Table-shape update (load-bearing — the new `<td>` changes the row 10→11 cells):** the
+  open-positions table is a FIXED 10-column layout — `partials/open_positions.html.j2:8` has 10
+  `<th>` (Ticker, Entry date, Entry price, Shares, Current stop, Last, Sector, Industry, Advisory,
+  Actions) and `partials/open_positions_expanded.html.j2:27` hard-codes `<td colspan="10">` (with a
+  comment at `:5` that it MUST match the compact row). Adding a thumbnail cell REQUIRES: (1) a
+  `<th>Chart</th>` in the header (mirror the journal precedent `journal_table.html.j2:100`), (2) the
+  expanded `colspan` 10→11 + its comment, and (3) a regression asserting the compact-row cell count
+  == header `<th>` count == expanded `colspan`. Decide column position (recommend leading `Chart`
+  column, mirroring journal).
 - Route: reuse `GET /journal/trades/{trade_id}/thumbnail` (open trades have trade_ids; the helper
   handles open trades). If route-namespacing is a concern, add a thin
   `/trades/open/{trade_id}/thumbnail` that calls the SAME helper + SAME semaphore constant.
@@ -136,14 +145,19 @@ producing an incomplete/absent 200-MA.
 - Pipeline: `swing/pipeline/runner.py:2761` `_bars_or_none(ticker)` →
   `ohlcv_cache.get_or_fetch(ticker=ticker, window_days=200)`; called for the benchmark at `:2884`
   (`bars = _bars_or_none(benchmark_ticker)`).
-- Web refresh handler: `swing/web/routes/dashboard.py:141` `render_market_weather_svg(bars=bars,
-  ...)`, fed by the benchmark `get_or_fetch` above it.
+- Web refresh handler: `swing/web/routes/dashboard.py:94` `bars =
+  ohlcv_cache.get_or_fetch(ticker=benchmark)` — passes NO `window_days`, so it uses
+  `OhlcvCache.get_or_fetch`'s **default `window_days=180`** (`swing/web/ohlcv_cache.py:131`), i.e.
+  ~124 trading bars — even shorter than the pipeline's 200. These bars feed
+  `render_market_weather_svg(bars=bars, ...)` at `dashboard.py:141`.
 
 **Fix:** widen the benchmark fetch window to **≥200 trading bars**. 200 trading bars ≈ 200 × 365/252
 ≈ **290 calendar days**; with margin use **`window_days=300`** (recommend a named constant, e.g.
 `_MIN_CALENDAR_DAYS_FOR_MA200 = 300`, so the intent is self-documenting and shared). Apply at BOTH
-sites. Widening is monotonic-safe (more bars only; downstream consumers slice — per the
-"return full archive; consumers slice" gotcha).
+sites — the pipeline `_bars_or_none` (replace the literal `200`) AND the dashboard refresh
+(`dashboard.py:94`, which today passes NO `window_days` and inherits the 180 default → must pass the
+constant explicitly). Widening is monotonic-safe (more bars only; downstream consumers slice — per
+the "return full archive; consumers slice" gotcha).
 
 **Regression (production-path, L6):** assert that ≥200 bars reach `render_market_weather_svg` via
 the real fetch path (not a stub) at both the pipeline and refresh sites.
@@ -179,12 +193,15 @@ all comments + WARN-log text ("skipping BULZ risk zone" → "skipping risk zone"
 
 ### §3.5 A-6 — process-grade-trend dark-mode chart (cosmetic; LIGHT)
 
-`swing/web/templates/metrics/process_grade_trend.html.j2:39-60`: the per-trade
-`<circle ... class="process-grade-marker">` (`:40-49`, NO explicit `fill=`/`stroke=` → SVG-default
-black) and the per-metric `<polyline ... stroke-width="1.5" ... class="process-grade-rolling-line
-metric-{name}">` (`:56-60`, `stroke-width` but NO `stroke=` → SVG-default black). There is NO CSS
-rule anywhere for `.process-grade-rolling-line` / `.process-grade-marker`, so they render black and
-vanish against the dark background (light-mode only bug).
+`swing/web/templates/metrics/process_grade_trend.html.j2:39-60`. Two distinct SVG-default failures
+(both fixed by the same CSS rule):
+- the per-trade `<circle ... class="process-grade-marker">` (`:40-49`) has NO explicit `fill=` →
+  SVG initial `fill` is **black** → visible in light mode, INVISIBLE against the dark background
+  (the dark-mode-only symptom that was reported);
+- the per-metric `<polyline ... fill="none" stroke-width="1.5" ... class="process-grade-rolling-line
+  metric-{name}">` (`:56-60`) has `stroke-width` but NO `stroke=` → SVG initial `stroke` is **`none`**
+  (NOT black) → the rolling line is **invisible in BOTH themes** (it was never actually drawn). There
+  is NO CSS rule anywhere for `.process-grade-rolling-line` / `.process-grade-marker`.
 
 **Fix (CSS rule, recommend — OQ-7):** add to `swing/web/static/app.css` theme-aware stroke/fill via
 the existing accent token (`--accent` = `#0066cc` light `:35` / `#6ab0ff` dark `:122`):
@@ -231,28 +248,28 @@ already handles `data is None` → UNKNOWN) and rendering the badge. The `cfg is
 guard (`:38-39`, render-safe for cfg-less callers / broad VM population) **stays** — the badge is
 truly hidden only when there is no `Config` at all.
 
-**Design sub-question (the genuinely open part of OQ-1):** "always-render UNKNOWN" is correct when
-the operator IS using Schwab in production, but the badge appears in the topbar of EVERY page (it is
-populated across all base-layout VMs). For an operator who does NOT use Schwab (sandbox / no creds /
-ladder disabled), a **permanent `Schwab?` warn badge would be misleading noise** — Schwab is not
-expected, so "unknown health" is not a warning, it is "n/a."
+**The decided design (the deliverable; OQ-1 is operator RATIFICATION, not an open choice).** The
+badge appears in the topbar of EVERY page (it is populated across all base-layout VMs). For an
+operator who does NOT use Schwab (sandbox / no creds / ladder disabled), a permanent `Schwab?` warn
+badge would be misleading noise — Schwab is not expected, so "unknown health" is "n/a," not a
+warning. Therefore the V1 design is: **render the UNKNOWN (`Schwab?`, warn) badge when Schwab
+checker health is EXPECTED and no usable sidecar exists; otherwise return `None` (hide).**
 
-Two design options:
-- **(A) Blanket always-render UNKNOWN** whenever `cfg` is present and no sidecar exists. Simplest;
-  but lights a perpetual warn badge in sandbox/non-Schwab sessions.
-- **(B) Gate UNKNOWN on "Schwab is expected"** — render UNKNOWN only when the operator is actually
-  using Schwab (e.g. `cfg.integrations.schwab.environment == "production"`, optionally AND ladder
-  enabled, mirroring `_is_ladder_active`); otherwise return `None` (hide) as today. In production the
-  badge ALWAYS surfaces (ALIVE/STARTING/DEGRADED when the checker runs; UNKNOWN when it does not) —
-  which is exactly the operator-reported gap — while sandbox/non-Schwab stays clean.
+**The "Schwab is expected" predicate = `_is_ladder_active(cfg)`** (`marketdata_ladder.py:221-236`:
+`environment == "production" AND marketdata_ladder_enabled`). This is the EXACT gate that decides
+whether the checker is installed at all (`_construct_web_schwab_client` →
+`_install_web_marketdata_caches` install the checker only when `_is_ladder_active`), so it is the
+precisely-correct "checker is expected to be running" signal — a production-but-ladder-disabled
+config gets no checker AND no noisy badge. `_is_ladder_active` is a **pure config read** (env +
+enabled flag; NO API call, NO client construction, NO token inspection) → L3-safe. Concretely,
+`build_schwab_checker_badge` becomes: `if cfg is None: return None` (unchanged); `if not
+_is_ladder_active(cfg): return None`; else `state, reason = evaluate_liveness_state(data,
+now_ts=...)` where `data = read_liveness_sidecar(...)` (which is `None` when absent → UNKNOWN), then
+map through `_BADGE_MAP`. **Pure web-VM change; L3 green (no Schwab API call).**
 
-**Recommendation (HOLD for operator — OQ-1, the central A-7 product decision):** **Option (B)** —
-flip the web badge to always-surface Schwab health *when Schwab is expected* (production env),
-rendering UNKNOWN when no checker sidecar exists, and keep hiding it when Schwab is not in use. This
-fixes the operator-reported symptom (badge vanishes when Schwab is down in production) without
-introducing sandbox noise. If the operator prefers the simpler Option (A), it is a one-line
-difference (drop the env gate). **Either option keeps L3 green — it is a pure web-VM change with no
-Schwab API call.**
+*(Operator alternative at OQ-1, one-line difference: blanket always-render UNKNOWN whenever `cfg`
+present and no sidecar — simpler, but lights a perpetual warn badge in sandbox/non-Schwab sessions.
+Recommend the `_is_ladder_active`-gated design above.)*
 
 **Reason-text refinement (recommend, low cost):** when `cfg` is present + production + no sidecar,
 the state machine's hardcoded UNKNOWN reason ("web server not running, or pre-N7 build") is now
@@ -265,7 +282,9 @@ only (L7).
 
 **Investigation (traced from the lifespan to the sidecar write):**
 
-1. `swing/web/app.py:407` (lifespan) → `_install_web_marketdata_caches(cfg, ...)`.
+1. `swing/web/app.py:406-407` — in `create_app(...)` state construction (after
+   `app.state.ohlcv_cache = OhlcvCache(cfg)`), NOT inside the async lifespan function:
+   `app.state.schwab_client = _install_web_marketdata_caches(cfg, ...)`.
 2. `_install_web_marketdata_caches` (`:251`) → `_construct_web_schwab_client(cfg)` (`:258`); if that
    returns `None`, returns early (yfinance-only; **no checker, no sidecar**).
 3. `_construct_web_schwab_client` (`:148`) is gated **FIRST** on `_is_ladder_active(cfg)`
@@ -286,8 +305,10 @@ operator-reported "no badge" is the **by-design hide manifesting**, and it happe
 cases:
 - **sandbox / ladder disabled / no creds** — no client by design (Schwab not in use); and
 - **production + creds present but DEGRADED tokens** (e.g. expired 7-day refresh token →
-  `construct_authenticated_client` raises → returns `None`) — **this is the operator's case**: the
-  client cannot construct, so no checker runs, so no sidecar, so (today) no badge.
+  `construct_authenticated_client` raises → returns `None`) — **the operator-reported-compatible
+  (likely) case**: the client cannot construct, so no checker runs, so no sidecar, so (today) no
+  badge. (The code proves construction-failure → no sidecar; it does not by itself prove the
+  operator's live case was specifically expired tokens — that is the most likely fit.)
 
 So question (ii) resolves to "working as intended; the checker correctly does not run when the
 client cannot construct — but that failure is currently SILENT in the UI." The fix is question (i):
@@ -336,12 +357,15 @@ triages the final IN/OUT set at OQ-4.
 ## §6 Module touch list (per item)
 
 - **P14.N1 (open-positions V1):** `swing/web/templates/partials/open_positions_row.html.j2` (add the
-  lazy `<td>`); reuse `swing/web/routes/journal.py` thumbnail route (or thin new route under
+  lazy `<td>`); `swing/web/templates/partials/open_positions.html.j2` (header `<th>Chart</th>`);
+  `swing/web/templates/partials/open_positions_expanded.html.j2` (`colspan` 10→11 + comment); reuse
+  `swing/web/routes/journal.py` thumbnail route (or thin new route under
   `routes/trades.py`/`routes/dashboard.py`); `swing/web/trade_charts.py` (unchanged — reuse helper);
   open-positions VM only if a flag is needed. Tests: `tests/web/`.
-- **A-1:** `swing/pipeline/runner.py` (`_bars_or_none` / benchmark call); `swing/web/routes/dashboard.py`
-  (benchmark `get_or_fetch`); optionally `swing/web/chart_jit.py:117` (OQ-6). A shared constant.
-  Tests: `tests/pipeline/` + `tests/web/`.
+- **A-1:** `swing/pipeline/runner.py` (`_bars_or_none` literal 200 → constant);
+  `swing/web/routes/dashboard.py:94` (benchmark `get_or_fetch` — pass the constant explicitly; today
+  inherits the 180 default); a shared constant (e.g. in `swing/web/ohlcv_cache.py` or a charts
+  module); optionally `swing/web/chart_jit.py:117` (OQ-6). Tests: `tests/pipeline/` + `tests/web/`.
 - **A-2:** `swing/web/charts.py` (`_annotate_vcp`). Tests: `tests/web/` (render-format-string).
 - **A-4:** `swing/web/charts.py` (rename) + every `_bulz`/`bulz` reference in `swing/` + `tests/`.
 - **A-6:** `swing/web/static/app.css` (CSS rules). Optional: the template if inline `currentColor`
@@ -366,11 +390,11 @@ S2 asserts v23 + NO migration.
 
 A-7 is the only Schwab-touching item. The fix (render UNKNOWN instead of hiding) modifies
 `build_schwab_checker_badge`, which calls `read_liveness_sidecar` + `evaluate_liveness_state` +
-`_BADGE_MAP` — all pure file-read / pure-function helpers. It adds **ZERO new `schwabdev.Client.*`
-call sites** and no new client-construction path. The optional env-gate (Option B) reads
-`cfg.integrations.schwab.environment` (a config attribute, not an API call). The reason-text
-refinement is string formatting. `tests/integration/test_l2_lock_source_grep.py` (baseline
-`bf7e071`) stays GREEN. S3 asserts this.
+`_BADGE_MAP` — all pure file-read / pure-function helpers — plus the new `_is_ladder_active(cfg)`
+gate, which is a **pure config read** (`marketdata_ladder.py:221-236`: env + `marketdata_ladder_enabled`;
+NO API call, NO client construction). It adds **ZERO new `schwabdev.Client.*` call sites** and no
+new client-construction path. The reason-text refinement is string formatting.
+`tests/integration/test_l2_lock_source_grep.py` (baseline `bf7e071`) stays GREEN. S3 asserts this.
 
 ---
 
@@ -406,13 +430,19 @@ Single Codex chain at each phase (OQ-8; orchestrator discretion, recommend singl
 
 **Production-path tests (L6 / #15):**
 - P14.N1: a test driving the real route + the real `render_trade_window_thumbnail_svg` derivation
-  (open trade present → SVG bytes; no-coverage → unavailable), NOT a stub.
-- A-1: assert ≥200 bars reach `render_market_weather_svg` via the real `get_or_fetch` path at both
-  sites.
-- **A-7 (the regression the SB5.5 seeded gate missed):** assert `build_schwab_checker_badge` returns
-  a VM with `state="UNKNOWN"`, `label="Schwab?"`, `css_class="warn"` when **no sidecar exists**
-  (the default state), via the real derivation path. Under Option B, also assert it returns `None`
-  in sandbox (env != production) so the sandbox-noise guard holds.
+  (open trade present → SVG bytes; no-coverage → unavailable), NOT a stub. PLUS a column-count
+  alignment regression (compact-row cells == header `<th>` == expanded `colspan`).
+- A-1: assert ≥200 bars reach `render_market_weather_svg` via the real `get_or_fetch` path at BOTH
+  sites (the pipeline `_bars_or_none` and the dashboard refresh `dashboard.py:94`).
+- **A-7 (the regression the SB5.5 seeded gate missed) — at TWO levels:** (1) a VM-level test that
+  `build_schwab_checker_badge` returns a VM with `state="UNKNOWN"`, `label="Schwab?"`,
+  `css_class="warn"` when **no sidecar exists** under a production+ladder-enabled cfg; AND (2) — the
+  binding one — a **TestClient route test** (production+ladder-enabled cfg, NO seeded sidecar) that
+  asserts the RENDERED topbar HTML contains `schwab-health-badge` + `Schwab?` + the warn class. The
+  observed bug is the topbar disappearing through `base.html.j2`'s `{% if vm.schwab_checker_badge %}`
+  guard, which a VM-only test cannot catch (#15 production-path discipline). Also assert the badge is
+  ABSENT (VM `None`) under a sandbox/ladder-disabled cfg (the `_is_ladder_active` guard → no
+  sandbox noise).
 
 **Operator-witnessed browser gate (Q6; UNSEEDED/default-state witness):**
 - **S4 (P14.N1)** open-positions table thumbnails render with real open trades; no-coverage rows
@@ -447,10 +477,12 @@ Single Codex chain at each phase (OQ-8; orchestrator discretion, recommend singl
 
 ## §12 Operator decision items (OQs — triaged at writing-plans dispatch)
 
-1. **OQ-1 (A-7 design ruling) — CENTRAL, HOLD for operator:** render the web badge as always-surface
-   when Schwab is expected. **Recommend Option (B)** (gate UNKNOWN on `env == production` so sandbox
-   stays clean) over Option (A) (blanket always-render) over the SB5.5 "UNKNOWN is CLI-only" status
-   quo. Plus the reason-text refinement (recommend yes).
+1. **OQ-1 (A-7 design RATIFICATION) — CENTRAL:** the spec DECIDES the design (§4.1): render the
+   UNKNOWN (`Schwab?`, warn) badge when Schwab is expected, gated on **`_is_ladder_active(cfg)`**
+   (production AND ladder enabled — the exact "checker is expected" predicate), else hide. Operator
+   ratifies, or chooses the one-line alternative (blanket always-render whenever cfg present + no
+   sidecar). Plus the reason-text refinement (recommend yes). This replaces the SB5.5 "UNKNOWN is
+   CLI-only" ruling, which predates the operator discovering the badge vanishes when most needed.
 2. **OQ-2 (A-7 wiring verdict):** the §4.2 trace concludes there is **no real checker-non-start bug
    under valid tokens** — no-badge is the by-design hide manifesting under degraded tokens / failed
    client construction. Operator confirms the verdict + that A-7 does NOT split into its own cycle.
@@ -462,7 +494,9 @@ Single Codex chain at each phase (OQ-8; orchestrator discretion, recommend singl
    re-implement a ticker-window renderer, conflicts L4). Confirm. Also: reuse the journal thumbnail
    route vs add a thin parallel route (recommend reuse).
 6. **OQ-6 (A-1 JIT-path scope):** widen `chart_jit.py:117 window_days=200` too (recommend, uniformity)
-   vs market-weather sites only. Note the market_weather JIT branch is dead today.
+   vs market-weather sites only. Note the market_weather JIT branch is dead today. (Both live sites
+   are widened regardless: pipeline `_bars_or_none` and the dashboard refresh `dashboard.py:94`,
+   which currently inherits the 180 default.)
 7. **OQ-7 (A-6 mechanism):** CSS rule (recommend) vs inline `stroke=`/`currentColor`.
 8. **OQ-8 (Codex chain count at writing-plans/executing-plans):** single chain (recommend).
 
