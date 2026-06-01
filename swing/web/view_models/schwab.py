@@ -90,6 +90,7 @@ class SchwabSetupVM:
     # have to re-extract from the browser address bar. NEVER persisted;
     # exists only in the failure-path re-render.
     callback_url_value: str = ""
+    schwab_checker_badge: object | None = None  # P14.N7 badge (SB5.5)
 
     def __post_init__(self) -> None:
         if not self.session_date:
@@ -250,6 +251,7 @@ class SchwabStatusVM:
     # Phase 12.5 #2 T-2.7 — banner link to FIRST pending-ambiguity discrepancy
     # resolve form. None when no pending-ambiguity row exists.
     banner_resolve_link: str | None = None
+    schwab_checker_badge: object | None = None  # P14.N7 badge (SB5.5)
 
     def __post_init__(self) -> None:
         if not self.session_date:
@@ -558,6 +560,7 @@ def build_schwab_status_vm(
     # template uses it to decide whether to surface the re-auth link.
     degraded_banner_active = state != "LIVE" or refresh_severity != "ok"
 
+    from swing.web.view_models.schwab_checker_badge import build_schwab_checker_badge
     return SchwabStatusVM(
         session_date=session_date,
         environment=env,
@@ -574,6 +577,7 @@ def build_schwab_status_vm(
         unresolved_material_discrepancies_count=unresolved_count,
         recent_multi_leg_auto_correction_count=recent_multi_leg_count,
         banner_resolve_link=banner_resolve_link,
+        schwab_checker_badge=build_schwab_checker_badge(cfg),
     )
 
 
@@ -599,6 +603,7 @@ class SchwabSetupErrorVM:
     # Phase 12.5 #2 T-2.7 — banner link to FIRST pending-ambiguity discrepancy
     # resolve form. None when no pending-ambiguity row exists.
     banner_resolve_link: str | None = None
+    schwab_checker_badge: object | None = None  # P14.N7 badge (SB5.5)
 
     def __post_init__(self) -> None:
         if not self.session_date:

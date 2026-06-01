@@ -438,6 +438,7 @@ def build_metrics_index_vm(cfg: Config, conn: sqlite3.Connection) -> MetricsInde
     enriched = tuple(
         _enrich_surface(base, cfg, conn, session_date) for base in _SURFACES
     )
+    from swing.web.view_models.schwab_checker_badge import build_schwab_checker_badge
     return MetricsIndexVM(
         session_date=session_date,
         unresolved_material_discrepancies_count=count_unresolved_material(conn),
@@ -446,4 +447,5 @@ def build_metrics_index_vm(cfg: Config, conn: sqlite3.Connection) -> MetricsInde
         ),
         banner_resolve_link=fetch_first_pending_ambiguity_resolve_link_path(conn),
         surfaces=enriched,
+        schwab_checker_badge=build_schwab_checker_badge(cfg),
     )

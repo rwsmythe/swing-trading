@@ -49,6 +49,7 @@ import hashlib
 import json
 import logging
 import sqlite3
+import threading
 import time
 from datetime import datetime
 from typing import Any
@@ -73,6 +74,52 @@ from swing.integrations.schwab.models import (
 )
 
 log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# OQ-10 / L9c: response header-name capture (names only, never values).
+#
+# The actual Schwab rate-limit-remaining header name is not recorded in any
+# on-disk artifact, so guessing one would leave the audit value silently null.
+# When no known candidate header matches, log the observed header KEY names
+# exactly once per process at INFO so the operator can confirm the real name
+# during the production smoke; the candidate-name addition then lands behind
+# that confirmation. Redaction-safe: names only, no values, no guessed name.
+# ---------------------------------------------------------------------------
+_HEADER_CAPTURE_LOCK = threading.Lock()
+_RESPONSE_HEADER_NAMES_LOGGED = False
+
+
+def _reset_header_capture_for_tests() -> None:
+    """Test-only: clear the once-per-process header-name capture flag."""
+    global _RESPONSE_HEADER_NAMES_LOGGED
+    with _HEADER_CAPTURE_LOCK:
+        _RESPONSE_HEADER_NAMES_LOGGED = False
+
+
+def _maybe_log_response_header_names(headers: Any) -> None:
+    """Once per process, INFO-log the response header KEY names (never values).
+
+    Fires only when no known rate-limit header matched and headers are present.
+    All flag mutation is guarded by ``_HEADER_CAPTURE_LOCK`` (forward-binding
+    lesson: all hook/diagnostic state under a lock).
+    """
+    global _RESPONSE_HEADER_NAMES_LOGGED
+    with _HEADER_CAPTURE_LOCK:
+        if _RESPONSE_HEADER_NAMES_LOGGED:
+            return
+        _RESPONSE_HEADER_NAMES_LOGGED = True
+    try:
+        names = sorted(str(k) for k in headers)
+    except (AttributeError, TypeError):
+        return
+    if not names:
+        return
+    log.info(
+        "Schwab response header-name capture (names only, no values): "
+        "no known rate-limit header matched; observed header keys: %s",
+        ", ".join(names),
+    )
 
 
 # ============================================================================
@@ -140,6 +187,8 @@ def _extract_response_payload(
                     break
                 except (TypeError, ValueError):
                     rate_limit_remaining = None
+        if rate_limit_remaining is None:
+            _maybe_log_response_header_names(headers)
 
     return payload, http_status, rate_limit_remaining
 

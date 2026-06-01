@@ -331,3 +331,15 @@ tr.tripwire-fired td:first-child { border-left: 4px solid var(--tripwire-border)
 .metrics-card__sparkline { display: block; margin: 0.35rem 0; color: var(--accent); }
 .metrics-card__spark-suppressed { color: var(--fg-muted); font-style: italic; }
 .metrics-card__desc { margin: 0.35rem 0 0; color: var(--fg-muted); font-size: 0.8rem; }
+.schwab-health-badge {
+  display: inline-block;
+  margin-left: 0.5rem;
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  text-decoration: none;
+  font-weight: 600;
+}
+.schwab-health-badge--ok { background: var(--badge-bullish-bg); color: var(--badge-bullish-fg); }
+.schwab-health-badge--info { background: var(--badge-caution-bg); color: var(--badge-caution-fg); }
+.schwab-health-badge--warn { background: var(--badge-bearish-bg); color: var(--badge-bearish-fg); }
