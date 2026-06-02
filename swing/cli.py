@@ -3325,9 +3325,23 @@ def web_cmd(ctx, host, port, reload):
     """Run the dashboard on localhost."""
     # Lazy import: do NOT hoist to module top — keeps base install working
     # without [web] extra (invariant 12).
+    from swing.config_overrides import apply_overrides
     from swing.web.cli_cmd import run_server
+    # F-1 (Phase 14 close-out follow-on): apply user-config overrides so the
+    # web process surfaces Schwab credentials (integrations.schwab.client_id /
+    # client_secret) + environment the same way the CLI + pipeline entry points
+    # do (cli.py:1877 / cli.py:3199). (marketdata_ladder_enabled is tracked-only
+    # and already reaches _is_ladder_active; apply_overrides does NOT touch it.)
+    # Without this, _construct_web_schwab_client cannot resolve creds at the cfg
+    # tier -> returns None -> no checker -> the A-7 badge reads UNKNOWN under
+    # healthy tokens. apply_overrides also surfaces account.risk_equity_floor,
+    # which create_app's risk-policy divergence hook then reconciles against the
+    # DB -- this is CONSISTENT with the established "ratify/reconcile against the
+    # EFFECTIVE cfg" discipline (cli.py:268-279). ZERO new schwabdev
+    # client-construction sites (config plumbing only; L2 LOCK).
+    cfg = apply_overrides(ctx.obj["config"])
     run_server(
-        cfg=ctx.obj["config"],
+        cfg=cfg,
         cfg_path=ctx.obj.get("config_path"),
         host=host, port=port, reload=reload,
     )
