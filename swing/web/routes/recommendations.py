@@ -39,6 +39,7 @@ from swing.data.repos.fills import list_all_fills
 from swing.data.repos.trades import list_closed_trades, list_open_trades
 from swing.trades.equity import current_equity
 from swing.web.charts import render_watchlist_thumbnail_svg
+from swing.web.ohlcv_cache import MIN_CALENDAR_DAYS_FOR_MA200
 from swing.web.thumbnail_render import (
     _THUMBNAIL_CACHE_CONTROL,
     _THUMBNAIL_RENDER_SEMAPHORE,
@@ -267,7 +268,9 @@ def hyprec_thumbnail_fragment(request: Request, ticker: str):
         log.warning("hyp-rec thumbnail render busy ticker=%s", ticker)
         return _frag(svg=None, busy=True)
     try:
-        bars = ohlcv_cache.get_or_fetch(ticker=ticker)
+        bars = ohlcv_cache.get_or_fetch(
+            ticker=ticker, window_days=MIN_CALENDAR_DAYS_FOR_MA200,
+        )
         if bars is None or len(bars) == 0:
             svg = None
         else:

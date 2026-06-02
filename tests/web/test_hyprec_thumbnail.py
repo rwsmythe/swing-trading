@@ -163,3 +163,15 @@ def test_hyprec_row_lazy_cell_but_tr_trigger_free(seeded_db, monkeypatch):
     # the <tr> OPEN TAG itself must remain trigger-free (discriminator)
     m = re.search(r'<tr\b[^>]*\bid="hyp-rec-row-NVDA"[^>]*>', body)
     assert m and "hx-get" not in m.group(0) and "hx-trigger" not in m.group(0)
+
+
+# -- Task C.3: hyp-rec thumbnail fetch window (A-1 OQ-6 uniformity) ------------
+
+def test_hyprec_thumbnail_uses_min_calendar_days_window(seeded_db):
+    from swing.web.ohlcv_cache import MIN_CALENDAR_DAYS_FOR_MA200
+    cache = _FakeCache(_make_bars(260))
+    app, cache, cfg = _app_with_cache(seeded_db, cache)
+    with TestClient(app) as client:
+        app.state.ohlcv_cache = cache
+        client.get("/hyp-recs/NVDA/thumbnail", headers={"HX-Request": "true"})
+    assert cache.calls == [("NVDA", MIN_CALENDAR_DAYS_FOR_MA200)]
