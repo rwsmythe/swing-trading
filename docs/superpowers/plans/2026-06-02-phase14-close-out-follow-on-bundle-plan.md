@@ -39,6 +39,7 @@
 - **Test** `tests/web/test_checker_liveness_install_path.py` (NEW) — the production-path install+wrap+seed test (fake client, tmp sidecar) + the daemon-tick -> ALIVE test.
 - **Test** `tests/web/test_construct_web_schwab_client.py` (NEW) — the parameterized construction-path test (4 credential scenarios) + USERPROFILE/HOME monkeypatch.
 - **Test** `tests/web/test_web_cmd_applies_overrides.py` (NEW) — the credential-plumbing-propagation test (CliRunner + mocked `run_server`).
+- **Test** `tests/web/test_create_app_startup_with_overrides.py` (NEW) — the create_app startup regression with the overridden cfg (risk-policy divergence hook tolerance; Codex R1 Major #1).
 
 ### Slice 2 (F-2) — market-weather trend live-compute
 - **Modify** `swing/web/ohlcv_cache.py`: add `MIN_CALENDAR_DAYS_FOR_TREND_TEMPLATE = 390` (compute-window constant, distinct from `MIN_CALENDAR_DAYS_FOR_MA200 = 300`); add the pure `slice_recent_calendar_days(bars, *, window_days)` display-slice helper.
@@ -120,7 +121,9 @@ Listed in §A Non-Goals. Additionally: NO change to the `"Schwabdev"` `setLogRec
 ### SLICE 1 — F-1: P14.N7 web-checker liveness in normal operation
 
 **Root-cause analysis (orchestrator-verified at STEP 0; the executing-plans §3.3 diagnostic CONFIRMS at the gate):**
-The A-7 badge is VISIBLE (operator saw `Schwab?` UNKNOWN), which requires `_is_ladder_active(cfg)` True. That holds on the web cfg WITHOUT `apply_overrides` because tracked `swing.config.toml` carries `marketdata_ladder_enabled = true` and the `IntegrationsSchwab` dataclass defaults `environment = "production"`. But `client_id`/`client_secret` are **user-config-only** (NOT in tracked config, NOT defaults), and **`web_cmd` -> `run_server` -> `create_app` never calls `apply_overrides`** (unlike `pipeline_run_cmd:3199` + the Schwab CLI `:1877`). So the web `cfg.integrations.schwab.client_id/.client_secret` are empty -> `resolve_credentials_env_or_prompt(cfg, env, allow_prompt=False)` finds nothing at the cfg tier; if env vars are also absent in the web process it returns `(None, None)` -> `_construct_web_schwab_client` returns None at `app.py:170-171` (**Class A, sub-path #3**) -> no checker installed -> no sidecar -> badge UNKNOWN.
+The A-7 badge is VISIBLE (operator saw `Schwab?` UNKNOWN), which requires `_is_ladder_active(cfg)` True. `_is_ladder_active` = `environment == "production" AND marketdata_ladder_enabled`. **`marketdata_ladder_enabled` is TRACKED-config / dataclass-default only** — it is NOT user-overridable (`config_overrides.py:107-110` comment: "timeout_seconds + marketdata_ladder_enabled live in tracked"; `apply_overrides` does NOT apply it) — and tracked `swing.config.toml` sets `marketdata_ladder_enabled = true`. `environment` defaults to `"production"` (`config.py:249`) and IS user-overridable. So `_is_ladder_active` is True on the web cfg even WITHOUT `apply_overrides` (tracked ladder=true + default/overridden environment=production). But `client_id`/`client_secret` are **user-config-only** (NOT in tracked config, NOT defaults) and ARE applied by `apply_overrides` (`config_overrides.py:130-135`), and **`web_cmd` -> `run_server` -> `create_app` never calls `apply_overrides`** (unlike `pipeline_run_cmd:3199` + the Schwab CLI `:1877`). So the web `cfg.integrations.schwab.client_id/.client_secret` are empty -> `resolve_credentials_env_or_prompt(cfg, env, allow_prompt=False)` finds nothing at the cfg tier; if env vars are also absent in the web process it returns `(None, None)` -> `_construct_web_schwab_client` returns None at `app.py:170-171` (**Class A, sub-path #3**) -> no checker installed -> no sidecar -> badge UNKNOWN.
+
+> **`apply_overrides` field scope (Codex R1 Major #2 correction):** `apply_overrides` applies the user-config Schwab fields `environment`, `account_hash`, `lookback_days`, `callback_url`, `client_id`, `client_secret` (`config_overrides.py:111-135`) — plus `account.risk_equity_floor` + finviz/risk-policy fields. It does **NOT** apply `marketdata_ladder_enabled` (tracked-only). The F-1 fix surfaces the **creds + environment** to the web cfg; the ladder flag was already reaching `_is_ladder_active` via tracked config. Do NOT claim the fix surfaces `marketdata_ladder_enabled`.
 
 **This is the LEADING hypothesis, NOT a pre-assumption.** The §3.3 startup diagnostic (Task F1.1) confirms A vs B (and which sub-path) against the operator's actual config/env state at the gate. The plan delivers BOTH the Class-A fix (Task F1.3, `apply_overrides` on the web cfg) AND the Class-B hardening (Task F1.2, install-anchored write + readback-verify), so whichever class the diagnostic pins, the fix is already in place.
 
@@ -200,16 +203,6 @@ def _install_web_marketdata_caches(cfg, price_cache, ohlcv_cache) -> object | No
     from swing.integrations.schwab.marketdata_ladder import _is_ladder_active
     ladder_active = _is_ladder_active(cfg)
 
-    client = _construct_web_schwab_client(cfg)
-    if client is None:
-        log.info(
-            "P14.N7 checker install summary: ladder_active=%s "
-            "client_constructed=False (no checker installed; badge UNKNOWN)",
-            ladder_active,
-        )
-        return None
-
-    # P14.N7: wrap the checker + anchor a STARTING sidecar before serving.
     from swing.integrations.schwab.checker_resilience import (
         CheckerLiveness,
         checker_liveness_sidecar_path,
@@ -218,6 +211,24 @@ def _install_web_marketdata_caches(cfg, price_cache, ohlcv_cache) -> object | No
     )
     env = cfg.integrations.schwab.environment
     sidecar_path = checker_liveness_sidecar_path(env)
+
+    client = _construct_web_schwab_client(cfg)
+    if client is None:
+        # Self-contained one-line summary (Codex R1 Minor #1): the specific
+        # None-path reason is logged by _construct_web_schwab_client just above
+        # (creds-absent / creds-partial-raise / construction-raise); this line
+        # ties it to the ladder gate + the sidecar path the badge reads, so the
+        # operator can diagnose from ONE startup line.
+        log.info(
+            "P14.N7 checker install summary: ladder_active=%s "
+            "client_constructed=False (no checker installed; badge UNKNOWN; "
+            "see the construction-skip reason logged immediately above) "
+            "sidecar_path=%s",
+            ladder_active, sidecar_path,
+        )
+        return None
+
+    # P14.N7: wrap the checker + anchor a STARTING sidecar before serving.
     liveness = CheckerLiveness(
         installed_ts=_time.time(),
         sidecar_path=sidecar_path,
@@ -280,11 +291,16 @@ def web_cmd(ctx, host, port, reload):
     from swing.web.cli_cmd import run_server
     # F-1 (Phase 14 close-out follow-on): apply user-config overrides so the
     # web process surfaces Schwab credentials (integrations.schwab.client_id /
-    # client_secret) + environment + marketdata_ladder_enabled the same way
-    # the CLI + pipeline entry points do (cli.py:1877 / cli.py:3199). Without
-    # this, _construct_web_schwab_client cannot resolve creds at the cfg tier
-    # -> returns None -> no checker -> the A-7 badge reads UNKNOWN under
-    # healthy tokens. ZERO new schwabdev.Client.* sites (config plumbing only).
+    # client_secret) + environment the same way the CLI + pipeline entry points
+    # do (cli.py:1877 / cli.py:3199). (marketdata_ladder_enabled is tracked-only
+    # and already reaches _is_ladder_active; apply_overrides does NOT touch it.)
+    # Without this, _construct_web_schwab_client cannot resolve creds at the cfg
+    # tier -> returns None -> no checker -> the A-7 badge reads UNKNOWN under
+    # healthy tokens. apply_overrides also surfaces account.risk_equity_floor,
+    # which create_app's risk-policy divergence hook then reconciles against the
+    # DB -- this is CONSISTENT with the established "ratify/reconcile against the
+    # EFFECTIVE cfg" discipline (cli.py:268-279). ZERO new schwabdev.Client.*
+    # sites (config plumbing only).
     cfg = apply_overrides(ctx.obj["config"])
     run_server(
         cfg=cfg,
@@ -583,6 +599,70 @@ Expected: PASS; the grep total stays **3**.
 
 ---
 
+#### Task F1.6: create_app startup divergence regression (the apply_overrides side-effect; Codex R1 Major #1)
+
+**Why:** `apply_overrides` (Task F1.3) also applies `account.risk_equity_floor` (`config_overrides.py:79-89`), so the cfg reaching `create_app` is now the EFFECTIVE cfg. `create_app` runs the risk-policy divergence reconciliation on that cfg (`app.py:381-403` -> `check_and_reconcile_toml_divergence`). The mocked-`run_server` propagation test (F1.5) does NOT exercise that hook, so a regression in reconciliation-against-the-effective-cfg would be missed. This test pins that `create_app` startup tolerates the overridden cfg (no crash; divergence handled) AND that `_install_web_marketdata_caches` is reached with the creds-bearing cfg.
+
+**Files:**
+- Create: `tests/web/test_create_app_startup_with_overrides.py`
+
+- [ ] **Step 1: Write the failing/guard test.** Build a real on-disk DB at v23 (reuse the project's schema fixture), set a user-config with Schwab creds + a risk policy that diverges from tracked TOML, apply overrides, and assert `create_app(cfg)` constructs without raising and that `app.state.cfg` reflects the reconciled risk policy while still carrying the Schwab creds.
+
+```python
+"""F-1 (Codex R1 Major #1): create_app startup tolerates the overridden cfg.
+apply_overrides now reaches create_app -> the risk-policy divergence hook sees
+the EFFECTIVE risk_equity_floor; assert no crash + the Schwab creds survive +
+_install_web_marketdata_caches is reached."""
+from __future__ import annotations
+
+from unittest.mock import patch
+
+import swing.web.app as web_app
+
+
+def test_create_app_with_overridden_cfg_constructs_and_reaches_install(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    # Re-grep at STEP 0 the canonical schema/db fixture + cfg builder the
+    # existing web app tests use (e.g. a `cfg` fixture that points db_path at a
+    # migrated tmp DB). Reuse it here. Construct an effective cfg with Schwab
+    # creds in user-config + a divergent risk policy.
+    cfg = _effective_cfg_with_schwab_creds_and_divergent_policy(tmp_path)
+
+    install_calls = {}
+
+    def _spy_install(cfg_arg, price_cache, ohlcv_cache):
+        install_calls["cfg"] = cfg_arg
+        return None  # no real Schwab client in this startup test
+
+    monkeypatch.setattr(web_app, "_install_web_marketdata_caches", _spy_install)
+
+    app = web_app.create_app(cfg, cfg_path=None)
+
+    assert app is not None
+    # _install_web_marketdata_caches was reached with a creds-bearing cfg.
+    assert install_calls["cfg"].integrations.schwab.client_id
+    # app.state.cfg is set (risk-policy reconciliation did not crash).
+    assert getattr(app.state, "cfg", None) is not None
+```
+
+> **Implementer note:** re-grep at STEP 0 the EXISTING web-app startup test harness (`tests/web/` — there is an established `cfg` fixture + a migrated-tmp-DB fixture used by the create_app tests). Build `_effective_cfg_with_schwab_creds_and_divergent_policy` by loading the tracked config, applying overrides over a user-config TOML you write under `tmp_path/swing-data/user-config.toml` (creds + a risk policy field that differs from tracked), and pointing `db_path` at a freshly-migrated v23 tmp DB seeded with a risk_policy row that diverges from the TOML so the reconciliation hook actually fires. If building a divergent-policy DB is heavy, the minimum viable assertion is: create_app(overridden_cfg) does not raise + reaches _install with creds — the divergence branch is exercised by the existing risk_policy reconciliation tests; this test guards the NEW interaction (overridden cfg -> startup).
+
+- [ ] **Step 2: Run it.**
+
+Run: `cd <worktree> && python -m pytest tests/web/test_create_app_startup_with_overrides.py -v`
+Expected: PASS (create_app tolerates the overridden cfg).
+
+- [ ] **Step 3: Commit.**
+
+```bash
+cd <worktree> && git add tests/web/test_create_app_startup_with_overrides.py && git commit -m "test(web): F-1 create_app startup tolerates the overridden web cfg"
+```
+
+---
+
 ### SLICE 2 — F-2: market-weather trend live-compute
 
 **Note F2-N1 (OQ-9; escalation guard):** confirm at executing-plans (against the operator's DB or a representative pipeline run) that SPY has NO passing `candidate_criteria` rows — pinning the §4.2 structural finding empirically. The live-compute fix is correct regardless. **If** the operator prefers making SPY a first-class evaluated candidate (un-exclude + evaluate + persist trend criteria), that is a larger, write-touching pipeline change (NOT read-mostly) and an **escalation point** — do NOT pursue it here.
@@ -613,23 +693,26 @@ MIN_CALENDAR_DAYS_FOR_TREND_TEMPLATE = 390
 
 ```python
 def slice_recent_calendar_days(bars: "pd.DataFrame", *, window_days: int) -> "pd.DataFrame":
-    """Slice a fetched bar frame to the most recent ``window_days`` calendar
-    days, mirroring OhlcvCache._fetch_bars_window's cutoff so a wider compute
-    fetch can be displayed at the narrower (prior) window without a second
-    fetch. ``end`` anchors at last_completed_session(now()) (backward-looking).
-    Returns the input unchanged if it is empty.
+    """Slice a fetched bar frame to its most recent ``window_days`` calendar
+    days so a wider compute fetch can be displayed at the narrower (prior)
+    window without a second fetch.
+
+    Codex R1 Major #4: anchor ``end`` on the FRAME'S OWN last bar
+    (``bars.index[-1].date()``), NOT last_completed_session(now()). Re-slicing
+    a cached/lagging 390-day frame against a fresh now() could drop the frame's
+    last available bar (or empty the display) on a stale archive. Anchoring on
+    the frame's last bar yields exactly the last ``window_days`` of the
+    AVAILABLE frame, robust to cache lag. Returns the input unchanged if empty.
     """
     from datetime import timedelta
-    from swing.evaluation.dates import last_completed_session
-    from datetime import datetime as _dt
     if bars is None or bars.empty:
         return bars
-    end = last_completed_session(_dt.now())
+    end = bars.index[-1].date()
     cutoff = end - timedelta(days=window_days)
-    return bars.loc[(bars.index.date >= cutoff) & (bars.index.date <= end)]
+    return bars.loc[bars.index.date >= cutoff]
 ```
 
-> **Implementer note:** re-grep at STEP 0 the exact import for `last_completed_session` already used in `ohlcv_cache.py` (it is imported at module top for `_fetch_bars_window` — reuse that import rather than the inline import shown; the inline import here is illustrative). Match the EXACT inequality (`>=` cutoff, `<= end`) from `_fetch_bars_window:259-261`.
+> **Implementer note:** the compute fetch (`get_or_fetch`) already stripped any future/partial bar and bounded the upper end at fetch time, so the frame's last bar is the canonical "end"; a `<= end` upper bound is therefore redundant here (the slice only needs the lower `cutoff` bound). This makes the display window the last `window_days` of WHATEVER the compute fetch returned — byte-identical to a `get_or_fetch(window_days=MIN_CALENDAR_DAYS_FOR_MA200)` frame when the archives match, and SAFE (never empty/short) when the archive lags. Add a stale-frame unit test (a fixture whose last bar is several days in the past) asserting the slice is non-empty and ends on the same last bar.
 
 - [ ] **Step 3: Commit.**
 
@@ -691,6 +774,24 @@ def test_structural_stage_short_history_is_undefined():
     assert structural_stage(closes, rising_period=21) == "undefined"
 
 
+def test_structural_stage_semantic_is_tt1_tt5_only_acceptance():
+    """ACCEPTANCE GUARDRAIL (Codex R1 Major #6; OQ-3a LOCK): market-weather
+    'stage_2' means the structural TT1-TT5 checks pass -- a DIFFERENT rule than
+    current_stage's 8/8 trend_template definition (foundation.py:750-789). This
+    is intentional: TT6/TT7 (52w high/low) + TT8 (RS rank) are stock-selection
+    criteria, not meaningful for the index benchmark vs itself. This test pins
+    the documented divergence so a future reader does not assume label parity.
+    A series that passes TT1-TT5 but would FAIL a 52w-high check (TT7) still
+    classifies stage_2 here -- by design."""
+    # An uptrend that just made a new high passes TT1-TT5 -> stage_2, regardless
+    # of TT6/TT7/TT8 (which structural_stage does not consult).
+    closes = _uptrend_closes(260)
+    assert structural_stage(closes, rising_period=21) == "stage_2"
+    # structural_stage consults exactly 5 checks (TT1-TT5), never TT6-TT8.
+    from swing.evaluation.criteria.trend_template import structural_checks
+    assert len(structural_checks(closes, rising_period=21)) == 5
+
+
 def test_evaluate_byte_identical_tt1_tt5_for_uptrend():
     # Build a minimal CandidateContext for a known-uptrend ticker and assert
     # the TT1-TT5 Result rows match the pre-refactor formatting EXACTLY.
@@ -719,7 +820,35 @@ def test_evaluate_under_200_bars_all_na_unchanged():
     assert [r.name for r in results] == list(CHECK_NAMES)
 ```
 
-> **Implementer note (`_make_ctx`):** re-grep at STEP 0 the `CandidateContext` constructor + `ctx.config.trend_template.rising_ma_period_days` + `ctx.batch.*` (RS context for TT8) shapes. Build the smallest valid ctx (real config load or a stub config exposing `trend_template.rising_ma_period_days=21`, `rs.*`, and a `batch` with `returns_12w_by_ticker`/`universe_tickers`/`spy_return_12w`/`universe_version`). TT8 may legitimately be NA in the stub (no universe) — that is fine; the regression asserts TT1-TT5 (the refactored rows) + the `<200` all-NA path. The STRONGEST form of this regression: in a separate throwaway step, capture `evaluate(ctx)` output on the PRE-refactor code into a literal, then assert equality post-refactor. Recommended: snapshot the full `tuple(Result)` for 2-3 fixtures before editing `evaluate()` and assert exact equality after.
+**MANDATORY full-golden regression (Codex R1 Major #3 — the partial-field assertions above are NOT sufficient to enforce the byte-identical LOCK).** The partial TT1/TT3 assertions are a readable smoke layer; the BINDING gate is a FULL `tuple(Result)` golden captured from the PRE-refactor `evaluate()` and asserted for exact equality post-refactor. This catches any drift in TT2/TT4/TT5 values/rules, `Result.metrics` tuples, row ordering, or fail/NA behavior. Procedure (do this as the FIRST implementation move of Task F2.2, before touching `evaluate()`):
+
+- [ ] **Step 1a (golden capture — run ONCE against the CURRENT/pre-refactor code):** write a throwaway script (or a `-s` test) that builds the FOUR canonical fixtures and prints `repr(tuple(evaluate(ctx)))` for each, then paste those literals into the test as `_GOLDEN_*` constants:
+  - **Fixture A — all-pass uptrend:** `_uptrend_closes(260)` (all 8 computable; TT8 = whatever the stub batch yields — capture it AS-IS).
+  - **Fixture B — a fail case:** a series where at least one of TT1-TT5 fails (e.g. a downtrend `np.linspace(300,100,260)` -> TT1/TT4/TT5 fail).
+  - **Fixture C — TT3-NA boundary:** exactly 200-220 bars (>=200 so not the early-return, but `len(sma200.dropna()) < rising_period+1` -> TT3 NA via the "not enough 200MA history" path). Use 205 bars with `rising_period=21` (205-199=6 non-NaN 200MA points < 22 -> NA).
+  - **Fixture D — `<200` early-return:** `_uptrend_closes(150)` (all 8 NA "need 200 bars, have 150").
+
+```python
+def test_evaluate_full_tuple_byte_identical_fixture_a():
+    ctx = _make_ctx(_uptrend_closes(260))
+    assert tuple(evaluate(ctx)) == _GOLDEN_A  # exact Result-tuple equality
+
+def test_evaluate_full_tuple_byte_identical_fixture_b():
+    ctx = _make_ctx(_downtrend_closes(260))
+    assert tuple(evaluate(ctx)) == _GOLDEN_B
+
+def test_evaluate_full_tuple_byte_identical_fixture_c_tt3_na():
+    ctx = _make_ctx(_uptrend_closes(205))
+    assert tuple(evaluate(ctx)) == _GOLDEN_C
+
+def test_evaluate_full_tuple_byte_identical_fixture_d_under_200():
+    ctx = _make_ctx(_uptrend_closes(150))
+    assert tuple(evaluate(ctx)) == _GOLDEN_D
+```
+
+`Result` is a frozen dataclass (`_base.py:9`), so `==` compares all fields (name/layer/result/value/rule/metrics). The goldens must be captured from the SAME `_make_ctx` the post-refactor test uses (so TT8's stub-dependent value is identical on both sides — only the refactor changes TT1-TT5's PRODUCING code, not TT8). If TT8 is non-deterministic across runs (it should not be for a fixed stub batch), pin the stub batch so it is.
+
+> **Implementer note (`_make_ctx`):** re-grep at STEP 0 the `CandidateContext` constructor + `ctx.config.trend_template.rising_ma_period_days` + `ctx.batch.*` (RS context for TT8) shapes. Build the smallest valid ctx (real config load or a stub config exposing `trend_template.rising_ma_period_days=21`, `rs.*`, and a deterministic `batch` with fixed `returns_12w_by_ticker`/`universe_tickers`/`spy_return_12w`/`universe_version`). TT8 may legitimately be NA in the stub (no universe) — that is fine; it just must be DETERMINISTIC so the golden is stable.
 
 - [ ] **Step 2: Run to verify it fails** (`StructuralCheck`/`structural_checks`/`structural_stage` don't exist yet).
 
@@ -1090,14 +1219,49 @@ def test_display_slice_narrows_compute_frame():
     assert display.index[-1] == bars.index[-1]
 ```
 
-> **Implementer note:** for a STRONGER production-path test of the dashboard refresh ROUTE (exercising `get_or_fetch` -> `structural_stage` -> `render_market_weather_svg`), add a TestClient test that monkeypatches `OhlcvCache.get_or_fetch` (or the ladder fetcher) to return `_uptrend_frame(260)` and asserts the rendered market-weather SVG contains `trend: stage_2` (NOT `trend: undefined`). Use `with TestClient(app) as client:` (lifespan). Re-grep at STEP 0 the exact refresh route path + how `ohlcv_cache` is reached from the route (via `request.app.state.ohlcv_cache`). This is the #15 production-path assertion the gate's S5 mirrors.
+- [ ] **Step 2 (MANDATORY — Codex R1 Major #5; the direct-`structural_stage` tests above would pass even if `runner.py`/`dashboard.py` still called `current_stage`):** add a CALL-SITE production-path test for BOTH live sites. The web-route test exercises `get_or_fetch -> structural_stage -> render_market_weather_svg` end-to-end:
 
-- [ ] **Step 2: Run to verify (pre-implementation fails on import; post-F2.1/F2.2 passes).**
+```python
+from fastapi.testclient import TestClient
+
+
+def test_dashboard_refresh_route_renders_defined_trend(monkeypatch, _app_fixture):
+    # Re-grep at STEP 0: the refresh route path + how ohlcv_cache is reached
+    # (request.app.state.ohlcv_cache). Monkeypatch the cache's get_or_fetch to
+    # return _uptrend_frame(260) so the REAL route computes the state live.
+    app = _app_fixture  # the project's web app fixture (migrated tmp DB)
+    monkeypatch.setattr(
+        type(app.state.ohlcv_cache), "get_or_fetch",
+        lambda self, *, ticker, window_days: _uptrend_frame(260),
+    )
+    with TestClient(app) as client:
+        resp = client.post("<refresh-route-path>")  # re-grep the exact path
+    assert resp.status_code == 200
+    # The rendered market-weather SVG carries the DEFINED trend (NOT undefined).
+    body = resp.content.decode("utf-8", "replace")
+    assert "trend: stage_2" in body
+    assert "trend: undefined" not in body
+
+
+def test_pipeline_step_charts_market_weather_uses_structural_stage(monkeypatch):
+    # Re-grep at STEP 0 the _step_charts harness used by existing pipeline
+    # chart tests. Assert that with a healthy benchmark fetch the persisted
+    # market_weather ChartRender's SVG carries 'trend: stage_2' (the live
+    # structural_stage path), NOT 'trend: undefined'. If a full _step_charts
+    # run is heavy, assert at minimum that runner imports + calls
+    # structural_stage (NOT current_stage) for the market_weather block via a
+    # spy on swing.evaluation.criteria.trend_template.structural_stage.
+    ...  # implementer fills from the existing _step_charts test harness
+```
+
+> **Implementer note:** re-grep at STEP 0 the EXACT refresh-route path + the existing web-app test fixture (TestClient + migrated tmp DB) and the existing `_step_charts` pipeline-test harness. These two call-site tests are REQUIRED (not optional) — they are the #15 production-path assertions the gate's S5 mirrors, and they fail if either site is left on `current_stage`. The web-route test monkeypatches `get_or_fetch` (the real cache surface), NOT `structural_stage`.
+
+- [ ] **Step 3: Run to verify (pre-implementation fails on import; post-F2.1/F2.2/F2.3/F2.4 passes).**
 
 Run: `cd <worktree> && python -m pytest tests/web/test_market_weather_live_state.py -v`
-Expected: PASS after F2.1 + F2.2 land (this task's commit follows them).
+Expected: PASS after F2.1-F2.4 land (this task's commit follows them; the call-site tests fail until F2.3/F2.4 replace `current_stage`).
 
-- [ ] **Step 3: Commit.**
+- [ ] **Step 4: Commit.**
 
 ```bash
 cd <worktree> && git add tests/web/test_market_weather_live_state.py && git commit -m "test(web): F-2 production-path market-weather live-state regression"
@@ -1292,23 +1456,44 @@ cd <worktree> && git add swing/web/view_models/metrics/process_grade_trend.py te
     )
 ```
 
-- [ ] **Step 4: Write a builder-level test** asserting the VM carries segments + `is_drawable` (append to the Task F3.1 test file):
+- [ ] **Step 4: Write a builder-level test** asserting the REAL builder emits non-empty segments + `is_drawable` for a drawable series, reusing the existing `_seed_n` + `build_process_grade_trend_vm` harness from `tests/web/test_view_models/test_process_grade_trend_vm.py` (re-grep at STEP 0 — `_seed_n(conn, N, process_grade=...)` seeds N graded reviews; `build_process_grade_trend_vm(cfg=cfg)` builds the VM). Append to that existing file (it already has the `cfg` fixture + `_seed_n`):
 
 ```python
-def test_builder_emits_segments_and_drawable_flag():
-    # Re-grep the builder name + RollingMetricSeries shape at STEP 0; this test
-    # constructs a minimal series with a None gap and asserts >=2 segments when
-    # the line band fired, or () + is_drawable False otherwise.
-    ...  # implementer fills in per the real RollingMetricSeries constructor
+def test_builder_emits_polyline_segments_for_drawable_series(cfg) -> None:
+    import sqlite3
+    conn = sqlite3.connect(cfg.paths.db_path)
+    try:
+        _seed_n(conn, 5, process_grade="B")  # >=5 -> line band fires (drawable)
+    finally:
+        conn.close()
+    vm = build_process_grade_trend_vm(cfg=cfg)
+    process_series = next(
+        s for s in vm.rolling_series if s.metric_name == "process_grade_rolling_N"
+    )
+    assert process_series.is_drawable is True
+    assert isinstance(process_series.svg_polyline_segments, tuple)
+    assert process_series.svg_polyline_segments  # non-empty
+    # Every segment is a non-empty "x,y x,y ..." run with >=2 points.
+    for seg in process_series.svg_polyline_segments:
+        assert seg.count(",") >= 2
 ```
 
-> **Implementer note:** re-grep at STEP 0 the `RollingMetricSeries` + `series.badges`/`series.drawability_text`/`series.rendered_value`/`series.line_points`/`series.suppressed` shapes to build a real minimal series. If constructing a full `RollingMetricSeries` is heavy, assert at the builder boundary via an existing fixture used by the current process-grade-trend VM tests (re-grep `tests/.../process_grade_trend` for an existing series fixture and reuse it). Keep this test meaningful (it must exercise the real builder, not a stub).
+> **Implementer note:** this exercises the REAL builder (not a stub). The gap-splitting CORRECTNESS (one segment per contiguous run, 1-point drop) is exhaustively unit-tested in Task F3.1 via `_format_polyline_segments`; this builder test pins the integration (drawable real series -> non-empty segment tuple -> `is_drawable` True). Keep BOTH layers.
+
+- [ ] **Step 4b: MIGRATE the existing VM tests (Codex R1 Major #7 — the field rename BREAKS 4 existing sites; migrate them NOW, before the grep gate, not at full-suite time).** In `tests/web/test_view_models/test_process_grade_trend_vm.py`:
+  - `:136` `assert series.svg_polyline_points == ""` -> `assert series.svg_polyline_segments == ()`
+  - `:193` `assert process_series.svg_polyline_points  # non-empty` -> `assert process_series.svg_polyline_segments  # non-empty`
+  - `:214` `assert process_series.svg_polyline_points == ""` -> `assert process_series.svg_polyline_segments == ()`
+  - `:278` (the `RollingSeriesDisplay(...)` constructor in `test_rolling_series_display_rejects_empty_placeholder_when_suppressed`) `svg_polyline_points="",` -> `svg_polyline_segments=(),`
+
+  Run: `cd <worktree> && python -m pytest tests/web/test_view_models/test_process_grade_trend_vm.py -v`
+  Expected: PASS (all migrated). These line numbers are from HEAD `a56d5f9`; re-grep `svg_polyline_points` in that file at STEP 0 in case they drift.
 
 - [ ] **Step 5: Run + commit.**
 
 ```bash
-cd <worktree> && python -m pytest tests/web/view_models/metrics/test_process_grade_trend_segments.py -v
-cd <worktree> && git add swing/web/view_models/metrics/process_grade_trend.py tests/web/view_models/metrics/test_process_grade_trend_segments.py && git commit -m "feat(web): F-3 RollingSeriesDisplay carries polyline segments"
+cd <worktree> && python -m pytest tests/web/view_models/metrics/test_process_grade_trend_segments.py tests/web/test_view_models/test_process_grade_trend_vm.py -v
+cd <worktree> && git add swing/web/view_models/metrics/process_grade_trend.py tests/web/view_models/metrics/test_process_grade_trend_segments.py tests/web/test_view_models/test_process_grade_trend_vm.py && git commit -m "feat(web): F-3 RollingSeriesDisplay carries polyline segments"
 ```
 
 ---
@@ -1319,17 +1504,29 @@ cd <worktree> && git add swing/web/view_models/metrics/process_grade_trend.py te
 - Modify: `swing/web/templates/metrics/process_grade_trend.html.j2:52-62`
 - Test: a render-string test (append to the Task F3.1 file or a route-level test)
 
-- [ ] **Step 1: Write the failing render test.** Assert that a series with a mid-series None renders >=2 `<polyline>` elements and a fully-contiguous series renders exactly 1.
+- [ ] **Step 1: Write the failing render test.** Assert the rendered process-grade-trend surface emits a `<polyline ... class="process-grade-rolling-line metric-...">` for a drawable series (the template now loops over `svg_polyline_segments`). Use the REAL surface render (TestClient route OR a direct Jinja render of the template with a seeded VM).
 
 ```python
-def test_template_renders_multiple_polylines_for_gapped_series():
-    # Render the process-grade-trend fragment/page with a gapped series via the
-    # real route; assert the rendered HTML has >=2 <polyline ... metric-...>
-    # for the gapped metric and exactly 1 for a contiguous metric.
-    ...  # implementer: use TestClient against the process-grade-trend surface
+def test_process_grade_trend_surface_renders_segment_polylines(cfg) -> None:
+    # Re-grep at STEP 0: the process-grade-trend route path + the web app test
+    # fixture (TestClient + migrated tmp DB). Seed a drawable series, render the
+    # surface, and assert at least one segment <polyline> is emitted with the
+    # preserved CSS class hooks (F-3 keeps `process-grade-rolling-line
+    # metric-{name}` per segment).
+    import sqlite3
+    conn = sqlite3.connect(cfg.paths.db_path)
+    try:
+        _seed_n(conn, 5, process_grade="B")
+    finally:
+        conn.close()
+    # If a route exists, prefer it (production-path); else render the template
+    # via the app's Jinja environment with build_process_grade_trend_vm(cfg).
+    html = _render_process_grade_trend_surface(cfg)  # re-grep the route/render
+    assert 'class="process-grade-rolling-line metric-process_grade_rolling_N"' in html
+    assert html.count("<polyline") >= 1
 ```
 
-> **Implementer note:** re-grep at STEP 0 the process-grade-trend route + how the VM is seeded for a route test (the metrics surfaces commonly accept a monkeypatched VM builder or a seeded DB). Reuse the existing process-grade-trend route test harness if present. The assertion counts `<polyline` occurrences carrying `class="process-grade-rolling-line metric-..."`.
+> **Implementer note:** re-grep at STEP 0 the process-grade-trend route + the web-app TestClient fixture (reuse the existing metrics-surface route test harness if present — the metrics surfaces have route tests). `_render_process_grade_trend_surface` is the route call (preferred, production-path) or a direct template render using the app's configured Jinja env + `build_process_grade_trend_vm(cfg)`. The assertion checks the preserved per-segment CSS class hooks + at least one `<polyline>` element. The gap-splitting count (>=2 for gapped) is unit-tested in F3.1; this asserts the TEMPLATE actually loops over the segment tuple.
 
 - [ ] **Step 2: Update the template** (`:52-62`):
 
@@ -1462,9 +1659,11 @@ cd <worktree> && git add swing/web/charts.py tests/web/test_charts_thumbnail_spi
 | F-1 | `test_checker_liveness_install_path.py` | REAL `_install_web_marketdata_caches` install+wrap+seed writes a STARTING sidecar (fake client, tmp path — NOT hand-seeded); daemon-origin tick -> ALIVE |
 | F-1 | `test_construct_web_schwab_client.py` | the 4 credential-resolution paths (env / cfg-tier / absent / partial-env) + the redacted None-path logs |
 | F-1 | `test_web_cmd_applies_overrides.py` | `swing web` applies `apply_overrides` so creds reach the cfg tier (the Class-A fix) |
+| F-1 | `test_create_app_startup_with_overrides.py` | create_app startup tolerates the overridden cfg (risk-policy divergence hook; Major #1) |
 | F-1 | `test_l2_lock_source_grep.py` (existing) | ZERO new `schwabdev.Client.*` sites (count stays 3) |
-| F-2 | `test_trend_template_structural.py` | `evaluate()` byte-identical after the TT1-TT5 extraction; `structural_checks`/`structural_stage` |
-| F-2 | `test_market_weather_live_state.py` | live compute classifies >=250-bar uptrend as `stage_2` (DEFINED), <221 as `undefined`; display slice narrows the compute frame |
+| F-2 | `test_trend_template_structural.py` | `evaluate()` FULL-tuple byte-identical golden (4 fixtures) + `structural_checks`/`structural_stage` + the TT1-TT5-only semantic guardrail |
+| F-2 | `test_market_weather_live_state.py` | live compute classifies >=250-bar uptrend as `stage_2` (DEFINED), <221 as `undefined`; the MANDATORY route + pipeline call-site tests (Major #5); display slice anchored on the frame's last bar (Major #4) |
+| F-2 | `test_process_grade_trend_vm.py` (existing, migrated) | the 4 `svg_polyline_points` -> `svg_polyline_segments` sites + the drawable-series segment integration (Major #7) |
 | F-3 | `test_process_grade_trend_segments.py` | segment split at None gaps; 1-point drop; >=2 `<polyline>` for gapped, 1 for contiguous |
 | F-4 | `test_charts_thumbnail_spines.py` | spines hidden on both sub-axes; render still valid |
 
@@ -1514,7 +1713,7 @@ The executing-plans phase runs its OWN single Codex chain to convergence (OQ-7).
 
 ## §M Forward-binding lessons
 
-1. **Entry-point `apply_overrides` discipline is NOT universal — the web entry was missing it.** `pipeline_run_cmd` and the Schwab CLI apply overrides; `web_cmd` did not, silently denying the whole web app its user-config (creds, environment, ladder flag). When adding a NEW CLI entry that builds/serves a long-lived app, mirror the `apply_overrides(ctx.obj["config"])` step — and add a propagation test. (The root cause was invisible because tracked `swing.config.toml` + dataclass defaults made `_is_ladder_active` True regardless, so the badge rendered but the client never constructed.)
+1. **Entry-point `apply_overrides` discipline is NOT universal — the web entry was missing it.** `pipeline_run_cmd` and the Schwab CLI apply overrides; `web_cmd` did not, silently denying the whole web app its user-config (Schwab creds + environment + account_hash/lookback/callback + risk_equity_floor + finviz fields). When adding a NEW CLI entry that builds/serves a long-lived app, mirror the `apply_overrides(ctx.obj["config"])` step — and add a propagation test PLUS a startup regression that the divergence/reconciliation hook tolerates the overridden cfg. (The root cause was invisible because tracked `swing.config.toml` (`marketdata_ladder_enabled=true`, NOT user-overridable) + the `environment` default `"production"` made `_is_ladder_active` True regardless, so the badge rendered but the client never constructed for lack of creds.)
 2. **A debug-only swallow in a best-effort IO path hides a whole failure class.** `CheckerLiveness._write_sidecar` logged write failures at `debug`, so Class-B silent-write-failure was indistinguishable from Class-A construction-None. The fix surfaces it via an install-anchored readback + WARNING. Best-effort IO that drives a USER-VISIBLE signal needs a one-shot readback-verify at install, not just a swallow.
 3. **A read-from-persisted-state wrapper silently returns the default when the entity is not in the persisted set.** `current_stage('SPY')` returned `undefined` not because the math failed but because SPY is never an evaluated candidate. When a render site needs a derived state for an entity OUTSIDE the producing pipeline's universe, compute it LIVE from inputs — do not read the producer's persisted output.
 4. **SVG `<polyline>` cannot bridge a break — segment at gaps.** Any None-gapped series rendered as a single polyline draws a false diagonal across the gap. One element per contiguous run; drop 1-point runs.
@@ -1536,7 +1735,7 @@ The executing-plans phase runs its OWN single Codex chain to convergence (OQ-7).
 - §11 test+gate (S1-S7) -> §H + §I. ✓
 - §13 OQ table -> §E. ✓
 
-**2. Placeholder scan:** the F3.2 Step 4 / F3.3 Step 1 / F4.1 builder-and-route assertions carry explicit `...` with implementer notes pointing at the real fixtures to re-grep — these are intentional "re-grep the real fixture shape at STEP 0" hooks, NOT lazy placeholders (the surrounding test structure + assertions are concrete). The executing-plans implementer fills the fixture construction from the real `RollingMetricSeries`/route harness. All CODE steps that introduce new functions show full code.
+**2. Placeholder scan:** after the Codex R1 resolutions, the F-3 builder + template tests are now CONCRETE (they reuse the existing `_seed_n` + `build_process_grade_trend_vm` harness rather than `...`). The remaining `...` markers (the F2.5 pipeline-call-site spy, the F1.6 effective-cfg builder, the F3.3 surface-render call) are explicit "re-grep the existing harness at STEP 0" hooks with concrete surrounding assertions + named real helpers to reuse — NOT lazy placeholders. The executing-plans implementer wires them to the real route/pipeline harnesses (which exist; the metrics surfaces + `_step_charts` have established test harnesses). All CODE steps that introduce new production functions show full code.
 
 **3. Type consistency:** `StructuralCheck(name, status, value, rule)` used consistently in F2.2; `structural_checks(closes, *, rising_period)` + `structural_stage(closes, *, rising_period)` signatures match across F2.2/F2.3/F2.4/F2.5; `svg_polyline_segments: tuple[str, ...]` consistent across F3.1/F3.2/F3.3; `_format_polyline_segments` name consistent; `slice_recent_calendar_days(bars, *, window_days)` consistent across F2.1/F2.3/F2.4/F2.5.
 
