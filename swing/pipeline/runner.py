@@ -42,6 +42,13 @@ from swing.data.repos.watchlist import (
 )
 from swing.data.repos.weather import get_latest_for_date
 from swing.evaluation.context import BatchContext, CandidateContext, MarketContext
+
+# Phase 14 close-out follow-on (F-2): module-top import so the pipeline
+# call-site test may monkeypatch ``swing.pipeline.runner.structural_stage``.
+# Pure compute over fetched closes (no DB; replaces the persisted-criteria
+# current_stage read at the market_weather site). No import cycle:
+# trend_template imports only swing.evaluation.{context,criteria._base,rs}.
+from swing.evaluation.criteria.trend_template import structural_stage
 from swing.evaluation.dates import action_session_for_run, last_completed_session
 from swing.evaluation.evaluator import evaluate_batch
 from swing.evaluation.patterns.flag_classifier import (
@@ -58,11 +65,6 @@ from swing.integrations.schwab.client import (
 )
 from swing.metrics.discrepancies import count_recent_multi_leg_auto_corrections
 from swing.patterns.composite import compute_composite_score
-
-# Phase 14 SB3 T-3.4 (§C.4a): module-top import so the discriminating test
-# may monkeypatch ``swing.pipeline.runner.current_stage``. Read-only wrapper
-# over the shipped evaluation surface (SELECTs only -- L6/L2 preserved).
-from swing.patterns.foundation import current_stage
 from swing.patterns.template_matching import (
     GEOMETRIC_SCORE_PREGATE_THRESHOLD,
     TemplateMatchExemplar,
@@ -2585,7 +2587,11 @@ def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data_asof: str,
     # `from swing.web.ohlcv_cache import ...` creates a runner<->ohlcv_cache
     # import cycle (ohlcv_cache imports swing.pipeline -> __init__ imports
     # runner) that breaks `import swing.web.ohlcv_cache` standalone.
-    from swing.web.ohlcv_cache import MIN_CALENDAR_DAYS_FOR_MA200
+    from swing.web.ohlcv_cache import (
+        MIN_CALENDAR_DAYS_FOR_MA200,
+        MIN_CALENDAR_DAYS_FOR_TREND_TEMPLATE,
+        slice_recent_calendar_days,
+    )
     conn = connect(cfg.paths.db_path)
     try:
         # Spec §A "Open-position tier snapshot semantics": all three reads
@@ -2890,33 +2896,47 @@ def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data_asof: str,
     # market_weather surface — cfg.rs.benchmark_ticker per Codex R2 MAJOR #4
     # closure. Dashboard reader at T2.SB6b reads via the SAME ticker;
     # divergence here silently invisibles the chart.
+    #
+    # F-2 (Phase 14 close-out follow-on): compute the trend state LIVE from a
+    # wide (>= MIN_CALENDAR_DAYS_FOR_TREND_TEMPLATE) benchmark fetch via
+    # structural_stage. current_stage read PERSISTED candidate_criteria for the
+    # benchmark, which is NOT in the evaluated set -> always 'undefined'. Display
+    # the narrower MIN_CALENDAR_DAYS_FOR_MA200 window (legibility unchanged);
+    # the wider compute window is sliced down (anchored on the frame's own last
+    # bar, cache-lag-safe).
     benchmark_ticker = cfg.rs.benchmark_ticker.upper()
-    bars = _bars_or_none(benchmark_ticker)
-    if bars is not None and not bars.empty:
-        # Phase 14 SB3 T-3.4 (§C.4a): derive the REAL trend-template state via
-        # current_stage at this LIVE site. Own fail-soft try/except using a
-        # short-lived read connection (the function-level conn was CLOSED
-        # earlier in _step_charts; mirror the fills-lookup pattern above).
-        # The read is SELECT-only (L6/L2 preserved) and must NEVER abort the
-        # charts step — fall soft to "undefined" on any error.
+    try:
+        compute_bars = ohlcv_cache.get_or_fetch(
+            ticker=benchmark_ticker,
+            window_days=MIN_CALENDAR_DAYS_FOR_TREND_TEMPLATE,
+        )
+    except Exception as exc:  # noqa: BLE001 - per-ticker isolation
+        log.warning(
+            "market_weather benchmark fetch failed for %s: %s",
+            benchmark_ticker, exc,
+        )
+        compute_bars = None
+    if compute_bars is not None and not compute_bars.empty:
+        # Fail-soft: a structural_stage error must NEVER abort the charts step.
         try:
-            run_asof_date = _date.fromisoformat(lease_data_asof(cfg, lease))
-            _ws_conn = connect(cfg.paths.db_path)
-            try:
-                weather_state = current_stage(
-                    _ws_conn, benchmark_ticker, run_asof_date,
-                )
-            finally:
-                _ws_conn.close()
+            closes = compute_bars["Close"]
+            if getattr(closes, "ndim", 1) == 2:
+                closes = closes.iloc[:, 0]
+            weather_state = structural_stage(
+                closes, rising_period=cfg.trend_template.rising_ma_period_days,
+            )
         except Exception as exc:  # noqa: BLE001 - fail-soft, never abort step
             log.warning(
-                "market_weather current_stage failed for %s: %s",
+                "market_weather structural_stage failed for %s: %s",
                 benchmark_ticker, exc,
             )
             weather_state = "undefined"
+        display_bars = slice_recent_calendar_days(
+            compute_bars, window_days=MIN_CALENDAR_DAYS_FOR_MA200,
+        )
         try:
             svg_bytes = render_market_weather_svg(
-                bars=bars, trend_template_state=weather_state,
+                bars=display_bars, trend_template_state=weather_state,
             )
         except Exception as exc:  # noqa: BLE001 - per-ticker isolation
             log.warning(
