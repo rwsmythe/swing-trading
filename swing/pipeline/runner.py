@@ -2692,7 +2692,9 @@ def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data_asof: str,
             # ``get_or_fetch`` matches ``PriceFetcher.get``'s shape + raise-
             # on-empty contract (recon §1 + §3), so the except clause
             # preserves the existing ``fetcher_failed`` semantic.
-            ohlcv = ohlcv_cache.get_or_fetch(ticker=ticker, window_days=200)
+            ohlcv = ohlcv_cache.get_or_fetch(
+                ticker=ticker, window_days=MIN_CALENDAR_DAYS_FOR_MA200,
+            )
         except Exception:
             with lease.fenced_write() as conn:
                 update_chart_target_status(

@@ -26,6 +26,7 @@ from swing.data.repos.candidates import (
 from swing.data.repos.pipeline import set_evaluation_run_id
 from swing.pipeline.lease import acquire_lease
 from swing.pipeline.runner import _step_charts
+from swing.web.ohlcv_cache import MIN_CALENDAR_DAYS_FOR_MA200
 from tests.cli.test_cli_eval import _minimal_config
 
 
@@ -181,14 +182,14 @@ def test_step_charts_calls_ohlcv_cache_get_or_fetch_not_legacy_fetcher_get(
     # Benchmark ticker fetched exactly once for market_weather surface.
     benchmark = cfg.rs.benchmark_ticker.upper()
     assert tickers_called.count(benchmark) == 1, tickers_called
-    # Phase 14 close-out (A-1): _bars_or_none (market_weather + write-through,
-    # runner.py:2763) now uses MIN_CALENDAR_DAYS_FOR_MA200 (300) for the
-    # benchmark; the classifier per-ticker consume (runner.py:2694, A+ loop)
-    # is widened to 300 in Task C.1b. In this commit (C.1) the A+ calls still
-    # use 200 while the benchmark uses 300.
+    # Phase 14 close-out (A-1): both the classifier per-ticker consume
+    # (runner.py:2694) and _bars_or_none (market_weather + write-through,
+    # runner.py:2763) now use MIN_CALENDAR_DAYS_FOR_MA200 (300) so a 200-MA
+    # has enough bars.
     windows = sorted({w for (_t, w) in spy.calls})
-    assert windows == [200, 300], (
-        f"window_days: A+ loop=200 (pre-C.1b), benchmark=300; got {windows}"
+    assert windows == [MIN_CALENDAR_DAYS_FOR_MA200], (
+        f"window_days: all chart fetches use {MIN_CALENDAR_DAYS_FOR_MA200}; "
+        f"got {windows}"
     )
 
 
