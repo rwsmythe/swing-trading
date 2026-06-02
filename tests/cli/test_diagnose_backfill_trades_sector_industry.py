@@ -680,3 +680,52 @@ def test_cli_subcommand_module_ascii_only():
     assert post != -1, "tail anchor not found in cli.py"
     new_region = src[pre:post]
     new_region.encode("ascii")
+
+
+def test_artifact_write_oserror_raises_click_exception(tmp_path, monkeypatch):
+    """C-3: an OSError while writing the restore-SQL artifact surfaces as a
+    clean ClickException (non-zero exit, no raw traceback), not an unhandled
+    OSError. The service/CLI boundary wraps it at the CLI layer."""
+    db_path = tmp_path / "swing.db"
+    output_dir = tmp_path / "out"
+    conn = ensure_schema(db_path)
+    try:
+        with conn:
+            run_id = insert_evaluation_run(conn, EvaluationRun(
+                id=None, run_ts="2026-05-27T20:00:00",
+                data_asof_date="2026-05-26",
+                action_session_date="2026-05-27",
+                finviz_csv_path=None, tickers_evaluated=1,
+                aplus_count=0, watch_count=1, skip_count=0,
+                excluded_count=0, error_count=0,
+            ))
+            insert_candidates(conn, run_id, [
+                Candidate(
+                    ticker="VSAT",
+                    sector="Technology",
+                    industry="Communications Equipment",
+                    **_build_candidate_fixture("VSAT"),
+                ),
+            ])
+    finally:
+        conn.close()
+    _insert_trade(db_path, ticker="VSAT", sector="", industry="")
+
+    def _raise_oserror(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(
+        "swing.diagnostics.backfill_trades_sector_industry._emit_restore_sql",
+        _raise_oserror,
+    )
+    runner = CliRunner()
+    result = runner.invoke(swing_cli, [
+        "diagnose", "backfill-trades-sector-industry",
+        "--db", str(db_path),
+        "--output-dir", str(output_dir),
+        "--apply",
+    ])
+    assert result.exit_code != 0
+    assert not isinstance(result.exception, OSError)
+    assert "Error:" in result.output
+    assert "restore artifact" in result.output

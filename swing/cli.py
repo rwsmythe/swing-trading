@@ -5247,6 +5247,13 @@ def diagnose_backfill_trades_sector_industry(
         raise click.ClickException(
             f"Database error reading {db_path}: {exc}"
         ) from exc
+    except OSError as exc:
+        # C-3: an artifact-write failure (restore-SQL emit / output-dir mkdir)
+        # surfaces as a clean ClickException, not a raw traceback. Wrapped at
+        # the CLI boundary (preserve the service/CLI boundary discipline).
+        raise click.ClickException(
+            f"failed to write backfill restore artifact: {exc}"
+        ) from exc
     for line in summary.report_lines:
         click.echo(line)
     click.echo(f"Restore-SQL artifact: {summary.restore_sql_path}")
