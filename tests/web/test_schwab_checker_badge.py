@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import time
+import types
 
 import pytest
 
@@ -13,11 +14,36 @@ from swing.web.view_models.schwab_checker_badge import (
 )
 
 
-def test_badge_none_when_sidecar_absent(tmp_path, monkeypatch, seeded_db):
+def _make_cfg(*, environment: str, marketdata_ladder_enabled: bool):
+    """Minimal cfg tree for build_schwab_checker_badge / _is_ladder_active.
+
+    Both consume the config via getattr on
+    ``cfg.integrations.schwab.{environment,marketdata_ladder_enabled}``, so a
+    SimpleNamespace tree is sufficient (no real Config load needed).
+    """
+    return types.SimpleNamespace(
+        integrations=types.SimpleNamespace(
+            schwab=types.SimpleNamespace(
+                environment=environment,
+                marketdata_ladder_enabled=marketdata_ladder_enabled,
+            )
+        )
+    )
+
+
+def test_badge_unknown_when_sidecar_absent_and_expected(tmp_path, monkeypatch, seeded_db):
+    # Phase 14 close-out (A-7): the seeded test cfg defaults to
+    # production + ladder-enabled, so a MISSING sidecar now renders the UNKNOWN
+    # (Schwab?, warn) badge instead of vanishing (the old buggy behavior). This
+    # is the real-Config complement to
+    # test_badge_unknown_when_ladder_active_and_no_sidecar (SimpleNamespace cfg).
     cfg, _ = seeded_db
+    assert cfg.integrations.schwab.environment == "production"
+    assert cfg.integrations.schwab.marketdata_ladder_enabled is True
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setenv("HOME", str(tmp_path))
-    assert build_schwab_checker_badge(cfg) is None  # hidden when no sidecar
+    vm = build_schwab_checker_badge(cfg)
+    assert vm is not None and vm.state == "UNKNOWN" and vm.css_class == "warn"
 
 
 def test_badge_none_when_cfg_is_none():
@@ -98,10 +124,18 @@ def test_dashboard_renders_badge_when_sidecar_present(tmp_path, monkeypatch, see
     assert "schwab-health-badge" in resp.text
 
 
-def test_dashboard_hides_badge_when_sidecar_absent(tmp_path, monkeypatch, seeded_db):
+def test_dashboard_shows_unknown_badge_when_expected_and_no_sidecar(
+    tmp_path, monkeypatch, seeded_db,
+):
+    # Phase 14 close-out (A-7): production + ladder-enabled (the seeded default)
+    # with NO constructible Schwab client (tmp HOME, no creds) installs no
+    # checker and writes no sidecar -> the topbar shows the UNKNOWN (warn) badge
+    # rather than nothing. Real Config + real create_app render (production path).
     cfg, cfg_path = seeded_db
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setenv("HOME", str(tmp_path))
+    import swing.web.app as web_app
+    monkeypatch.setattr(web_app, "_construct_web_schwab_client", lambda cfg: None)
     from fastapi.testclient import TestClient
 
     from swing.web.app import create_app
@@ -109,7 +143,8 @@ def test_dashboard_hides_badge_when_sidecar_absent(tmp_path, monkeypatch, seeded
     with TestClient(app) as client:
         resp = client.get("/")
     assert resp.status_code == 200
-    assert "schwab-health-badge" not in resp.text
+    assert "schwab-health-badge--warn" in resp.text
+    assert "Schwab?" in resp.text
 
 
 def test_unpopulated_base_extending_route_renders_200_with_sidecar(tmp_path, monkeypatch, seeded_db):
@@ -160,3 +195,35 @@ def test_primary_nav_route_populates_badge_when_sidecar_present(
         resp = client.get(path)
     assert resp.status_code == 200, resp.text[:500]
     assert "schwab-health-badge" in resp.text, f"badge absent on {path}"
+
+
+def test_badge_unknown_when_ladder_active_and_no_sidecar(monkeypatch, tmp_path):
+    # Isolate HOME so checker_liveness_sidecar_path resolves under tmp (no real
+    # sidecar). Production + ladder enabled -> the checker is EXPECTED, so a
+    # missing sidecar renders UNKNOWN rather than hiding (A-7).
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    cfg = _make_cfg(environment="production", marketdata_ladder_enabled=True)
+    vm = build_schwab_checker_badge(cfg)
+    assert vm is not None
+    assert vm.state == "UNKNOWN"
+    assert vm.label == "Schwab?"
+    assert vm.css_class == "warn"
+    # reason-text refinement: not the misleading default
+    assert "web server not running" not in vm.title
+    assert "check credentials/tokens" in vm.title
+    assert vm.title.isascii()
+
+
+def test_badge_hidden_when_ladder_disabled(monkeypatch, tmp_path):
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    cfg = _make_cfg(environment="production", marketdata_ladder_enabled=False)
+    assert build_schwab_checker_badge(cfg) is None
+
+
+def test_badge_hidden_in_sandbox(monkeypatch, tmp_path):
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    cfg = _make_cfg(environment="sandbox", marketdata_ladder_enabled=True)
+    assert build_schwab_checker_badge(cfg) is None
