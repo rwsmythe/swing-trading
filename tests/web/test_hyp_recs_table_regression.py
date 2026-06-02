@@ -196,12 +196,13 @@ def test_existing_seven_columns_preserved(seeded_db, monkeypatch):
         assert f">{label}<" in section, (
             f"existing column header '{label}' missing from thead"
         )
-    # Column count = 9 at the end of Task 5.5 (chevron + 7 existing + Action).
+    # Column count = 10 after Phase 14 close-out P14.N1 (chevron + Chart +
+    # 7 existing + Action).
     th_pattern = re.compile(r"<th\b[^>]*>", flags=re.DOTALL)
     th_count = len(th_pattern.findall(section))
-    assert th_count == 9, (
-        f"expected 9 thead <th> elements (chevron + 7 originals + Action),"
-        f" got {th_count}"
+    assert th_count == 10, (
+        f"expected 10 thead <th> elements (chevron + Chart + 7 originals"
+        f" + Action), got {th_count}"
     )
 
 
