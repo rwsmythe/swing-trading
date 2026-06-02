@@ -28,6 +28,7 @@ from swing.web.chart_scope import latest_completed_pipeline_run
 # discriminating test may monkeypatch
 # ``swing.web.routes.dashboard.render_market_weather_svg``.
 from swing.web.charts import render_market_weather_svg
+from swing.web.ohlcv_cache import MIN_CALENDAR_DAYS_FOR_MA200
 from swing.web.view_models.dashboard import build_dashboard
 
 router = APIRouter()
@@ -91,7 +92,9 @@ def dashboard_weather_chart_refresh(request: Request) -> Response:
             )
         benchmark = cfg.rs.benchmark_ticker
         try:
-            bars = ohlcv_cache.get_or_fetch(ticker=benchmark)
+            bars = ohlcv_cache.get_or_fetch(
+                ticker=benchmark, window_days=MIN_CALENDAR_DAYS_FOR_MA200,
+            )
         except ValueError as exc:
             # OhlcvCache.get_or_fetch raises ValueError("No data for {ticker}")
             # on empty-archive / cache-miss-fallthrough per its docstring at
