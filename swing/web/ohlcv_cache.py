@@ -51,7 +51,7 @@ MIN_CALENDAR_DAYS_FOR_MA200 = 300
 MIN_CALENDAR_DAYS_FOR_TREND_TEMPLATE = 390
 
 
-def slice_recent_calendar_days(bars: "pd.DataFrame", *, window_days: int) -> "pd.DataFrame":
+def slice_recent_calendar_days(bars: pd.DataFrame, *, window_days: int) -> pd.DataFrame:
     """Slice a fetched bar frame to its most recent ``window_days`` calendar
     days so a wider compute fetch can be displayed at the narrower (prior)
     window without a second fetch.
