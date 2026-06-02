@@ -16,19 +16,24 @@ from swing.config_overrides import apply_overrides
 from swing.data.db import connect
 from swing.data.models import ChartRender
 from swing.data.repos.chart_renders import refresh_chart_render
-from swing.evaluation.dates import last_completed_session
 
-# Phase 14 SB3 T-3.4 (section C.4a): module-top import so the test may
-# monkeypatch ``swing.web.routes.dashboard.current_stage``. Read-only wrapper
-# (SELECTs only -- L6/L2 preserved).
-from swing.patterns.foundation import current_stage
+# Phase 14 close-out follow-on (F-2): module-top import so the call-site test
+# may monkeypatch ``swing.web.routes.dashboard.structural_stage``. Pure compute
+# over fetched closes (no DB; the persisted-criteria read via current_stage is
+# replaced by a LIVE structural compute -- see the refresh handler below).
+from swing.evaluation.criteria.trend_template import structural_stage
+from swing.evaluation.dates import last_completed_session
 from swing.web.chart_scope import latest_completed_pipeline_run
 
 # Phase 14 SB3 T-3.4: module-top import (was a function-local import) so the
 # discriminating test may monkeypatch
 # ``swing.web.routes.dashboard.render_market_weather_svg``.
 from swing.web.charts import render_market_weather_svg
-from swing.web.ohlcv_cache import MIN_CALENDAR_DAYS_FOR_MA200
+from swing.web.ohlcv_cache import (
+    MIN_CALENDAR_DAYS_FOR_MA200,
+    MIN_CALENDAR_DAYS_FOR_TREND_TEMPLATE,
+    slice_recent_calendar_days,
+)
 from swing.web.view_models.dashboard import build_dashboard
 
 router = APIRouter()
@@ -91,9 +96,12 @@ def dashboard_weather_chart_refresh(request: Request) -> Response:
                 detail="OHLCV cache not initialized",
             )
         benchmark = cfg.rs.benchmark_ticker
+        # F-2: fetch a WIDE compute window so structural_stage has TT3's 200MA
+        # rising history (>= MIN_CALENDAR_DAYS_FOR_TREND_TEMPLATE); display the
+        # narrower MIN_CALENDAR_DAYS_FOR_MA200 slice (legibility unchanged).
         try:
-            bars = ohlcv_cache.get_or_fetch(
-                ticker=benchmark, window_days=MIN_CALENDAR_DAYS_FOR_MA200,
+            compute_bars = ohlcv_cache.get_or_fetch(
+                ticker=benchmark, window_days=MIN_CALENDAR_DAYS_FOR_TREND_TEMPLATE,
             )
         except ValueError as exc:
             # OhlcvCache.get_or_fetch raises ValueError("No data for {ticker}")
@@ -107,7 +115,7 @@ def dashboard_weather_chart_refresh(request: Request) -> Response:
                 "weather-chart refresh: get_or_fetch returned empty for %s: %s",
                 benchmark, exc,
             )
-            bars = None
+            compute_bars = None
         # NOTE: Do NOT catch broad `Exception` here. The pre-fix handler caught
         # arbitrary exceptions (including the TypeError that hid this bug for
         # weeks via the positional-list call signature drift) and silently
@@ -117,7 +125,7 @@ def dashboard_weather_chart_refresh(request: Request) -> Response:
         # FastAPI's default 500 handler so they surface as 500s (not as
         # misleading "run the pipeline first" 409s). Per R2.M2 anti-pattern
         # lock + forward-binding lesson #8.
-        if bars is None or bars.empty:
+        if compute_bars is None or compute_bars.empty:
             raise HTTPException(
                 status_code=409,
                 detail=(
@@ -125,22 +133,26 @@ def dashboard_weather_chart_refresh(request: Request) -> Response:
                     "run the pipeline first"
                 ),
             )
-        # Phase 14 SB3 T-3.4 (section C.4a): derive the REAL trend state via
-        # current_stage at this LIVE site. `last_completed_session(...)`
-        # returns a `date` already -- pass it DIRECTLY (no `.date()`). Own
-        # fail-soft try/except falls back to "undefined" on any error so the
-        # refresh never crashes. `conn` is in scope; read is SELECT-only
-        # (L6/L2 preserved).
+        # F-2: compute the trend state LIVE from the wide compute window via
+        # structural_stage (current_stage read PERSISTED criteria for a
+        # benchmark not in the evaluated set -> always 'undefined'). Fail-soft
+        # to "undefined" on any error so the refresh never crashes.
         try:
-            weather_state = current_stage(
-                conn, benchmark, last_completed_session(datetime.now()),
+            closes = compute_bars["Close"]
+            if getattr(closes, "ndim", 1) == 2:
+                closes = closes.iloc[:, 0]
+            weather_state = structural_stage(
+                closes, rising_period=cfg.trend_template.rising_ma_period_days,
             )
         except Exception as exc:  # noqa: BLE001 - fail-soft, never crash refresh
             log.warning(
-                "weather refresh current_stage failed for %s: %s",
+                "weather refresh structural_stage failed for %s: %s",
                 benchmark, exc,
             )
             weather_state = "undefined"
+        bars = slice_recent_calendar_days(
+            compute_bars, window_days=MIN_CALENDAR_DAYS_FOR_MA200,
+        )
         svg_bytes = render_market_weather_svg(
             bars=bars, trend_template_state=weather_state,
         )

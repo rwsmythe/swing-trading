@@ -1,9 +1,10 @@
 """Phase 14 Sub-bundle 3 T-3.4 (§C.4a) — market_weather trend-state derivation.
-
-The market_weather renderer is state-agnostic; the REAL trend-template state
-is computed at the two LIVE call sites (pipeline `_step_charts` + the
-interactive `POST /dashboard/weather-chart/refresh` handler) via
-`swing.patterns.foundation.current_stage`. The dead/defensive JIT branch
+MIGRATED at the Phase 14 close-out follow-on (F-2): the two LIVE call sites
+(pipeline `_step_charts` + the interactive `POST /dashboard/weather-chart/refresh`
+handler) now compute the trend state LIVE from a wide benchmark fetch via
+`swing.evaluation.criteria.trend_template.structural_stage` (was
+`current_stage`, which read PERSISTED criteria for a benchmark not in the
+evaluated set -> always 'undefined'). The dead/defensive JIT branch still
 defaults to an honest "undefined".
 
 Expansion #10c discipline (byte-parity-insufficient): we assert the ACTUAL
@@ -138,14 +139,14 @@ def test_pipeline_weather_render_computes_real_trend_state(
     pipeline_db, monkeypatch,
 ):
     """The pipeline site derives trend_template_state from
-    `current_stage` — the sentinel reaches the renderer (NOT the old
+    `structural_stage` — the sentinel reaches the renderer (NOT the old
     hardcoded "stage_2")."""
     cfg, run_id, eval_run_id = pipeline_db
     import swing.pipeline.runner as runner_mod
 
     monkeypatch.setattr(
-        runner_mod, "current_stage",
-        lambda conn, ticker, asof: _TREND_SENTINEL,
+        runner_mod, "structural_stage",
+        lambda closes, *, rising_period: _TREND_SENTINEL,
     )
     captured = _capture_weather_kwargs(monkeypatch, runner_mod)
     _run_step_charts(
@@ -158,16 +159,16 @@ def test_pipeline_weather_render_computes_real_trend_state(
 def test_pipeline_weather_failsoft_to_undefined_does_not_abort_step(
     pipeline_db, monkeypatch, caplog,
 ):
-    """If `current_stage` raises, the pipeline site fails soft to
+    """If `structural_stage` raises, the pipeline site fails soft to
     "undefined" (NOT "n/a"), logs a WARNING, and `_step_charts` completes
     without raising."""
     cfg, run_id, eval_run_id = pipeline_db
     import swing.pipeline.runner as runner_mod
 
-    def _boom(conn, ticker, asof):
-        raise RuntimeError("current_stage failed (synthetic)")
+    def _boom(closes, *, rising_period):
+        raise RuntimeError("structural_stage failed (synthetic)")
 
-    monkeypatch.setattr(runner_mod, "current_stage", _boom)
+    monkeypatch.setattr(runner_mod, "structural_stage", _boom)
     captured = _capture_weather_kwargs(monkeypatch, runner_mod)
 
     with caplog.at_level(logging.WARNING):
@@ -179,8 +180,8 @@ def test_pipeline_weather_failsoft_to_undefined_does_not_abort_step(
 
     assert captured.get("trend_template_state") == "undefined"
     assert any(
-        "current_stage" in rec.getMessage() for rec in caplog.records
-    ), "expected a WARNING mentioning current_stage"
+        "structural_stage" in rec.getMessage() for rec in caplog.records
+    ), "expected a WARNING mentioning structural_stage"
 
 
 # ---------------------------------------------------------------------------
@@ -243,13 +244,13 @@ def test_weather_refresh_handler_computes_real_trend_state(
     seeded_db, monkeypatch,
 ):
     """The refresh handler derives trend_template_state from
-    `current_stage` — the sentinel reaches the renderer (NOT the old
+    `structural_stage` — the sentinel reaches the renderer (NOT the old
     hardcoded "n/a")."""
     import swing.web.routes.dashboard as dash_mod
 
     monkeypatch.setattr(
-        dash_mod, "current_stage",
-        lambda conn, ticker, asof: _TREND_SENTINEL,
+        dash_mod, "structural_stage",
+        lambda closes, *, rising_period: _TREND_SENTINEL,
     )
     captured = _capture_weather_kwargs(monkeypatch, dash_mod)
 
@@ -265,14 +266,14 @@ def test_weather_refresh_handler_computes_real_trend_state(
 
 
 def test_weather_refresh_failsoft_to_undefined(seeded_db, monkeypatch, caplog):
-    """If `current_stage` raises in the refresh handler, fail soft to
+    """If `structural_stage` raises in the refresh handler, fail soft to
     "undefined" (NOT "n/a"), log a WARNING, and still 204 (no crash)."""
     import swing.web.routes.dashboard as dash_mod
 
-    def _boom(conn, ticker, asof):
-        raise RuntimeError("current_stage failed (synthetic)")
+    def _boom(closes, *, rising_period):
+        raise RuntimeError("structural_stage failed (synthetic)")
 
-    monkeypatch.setattr(dash_mod, "current_stage", _boom)
+    monkeypatch.setattr(dash_mod, "structural_stage", _boom)
     captured = _capture_weather_kwargs(monkeypatch, dash_mod)
 
     app, _cfg, _cfg_path = _make_refresh_app(seeded_db)
@@ -286,8 +287,8 @@ def test_weather_refresh_failsoft_to_undefined(seeded_db, monkeypatch, caplog):
     assert r.status_code == 204, r.text
     assert captured.get("trend_template_state") == "undefined"
     assert any(
-        "current_stage" in rec.getMessage() for rec in caplog.records
-    ), "expected a WARNING mentioning current_stage"
+        "structural_stage" in rec.getMessage() for rec in caplog.records
+    ), "expected a WARNING mentioning structural_stage"
 
 
 # ---------------------------------------------------------------------------
@@ -346,14 +347,14 @@ def test_weather_two_live_callsites_identical_kwarg_derivation(
     pipeline_db, seeded_db, monkeypatch,
 ):
     """Both LIVE call sites (pipeline + refresh) derive trend_template_state
-    from `current_stage` — the SAME sentinel reaches the renderer at both,
+    from `structural_stage` — the SAME sentinel reaches the renderer at both,
     proving uniform derivation (Expansion #10c)."""
     # --- Pipeline site ---
     cfg_p, run_id, eval_run_id = pipeline_db
     import swing.pipeline.runner as runner_mod
     monkeypatch.setattr(
-        runner_mod, "current_stage",
-        lambda conn, ticker, asof: _TREND_SENTINEL,
+        runner_mod, "structural_stage",
+        lambda closes, *, rising_period: _TREND_SENTINEL,
     )
     pipeline_captured = _capture_weather_kwargs(monkeypatch, runner_mod)
     _run_step_charts(
@@ -364,8 +365,8 @@ def test_weather_two_live_callsites_identical_kwarg_derivation(
     # --- Refresh site ---
     import swing.web.routes.dashboard as dash_mod
     monkeypatch.setattr(
-        dash_mod, "current_stage",
-        lambda conn, ticker, asof: _TREND_SENTINEL,
+        dash_mod, "structural_stage",
+        lambda closes, *, rising_period: _TREND_SENTINEL,
     )
     refresh_captured = _capture_weather_kwargs(monkeypatch, dash_mod)
     app, _cfg, _cfg_path = _make_refresh_app(seeded_db)
