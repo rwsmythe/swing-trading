@@ -443,11 +443,12 @@ def test_dashboard_pivot_falls_back_to_dash_when_none(seeded_db, monkeypatch):
     full_row_html = section[tr_start:row_end]
     import re
     cells = re.findall(r"<td[^>]*>(.*?)</td>", full_row_html, re.DOTALL)
-    # Task 5.4 prepends a chevron-button column → cells are now:
-    #   chevron / Ticker / Price / Pivot / Hypothesis / Progress / Tripwire / Label
-    # Pivot is at index 3.
-    assert len(cells) >= 4, f"row has fewer cells than expected: {cells!r}"
-    pivot_cell = cells[3].strip()
+    # Task 5.4 prepends a chevron-button column; Phase 14 close-out P14.N1
+    # inserts a Chart thumbnail column after it → cells are now:
+    #   chevron / Chart / Ticker / Price / Pivot / Hypothesis / Progress /
+    #   Tripwire / Label. Pivot is at index 4.
+    assert len(cells) >= 5, f"row has fewer cells than expected: {cells!r}"
+    pivot_cell = cells[4].strip()
     assert pivot_cell == "—", f"pivot cell expected em-dash, got {pivot_cell!r}"
 
 
