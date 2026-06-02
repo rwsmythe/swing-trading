@@ -27,10 +27,10 @@ import swing.web.charts as charts
 from swing.data.models import Fill, PatternEvaluation, Trade
 from swing.web.charts import (
     OhlcNormalizationError,
-    _bulz_target_price,
     _normalize_ohlc_for_mpf,
     _render_candles_fig,
     _resolve_volume_ax,
+    _rr_target_price,
     _x_for_date,
     render_market_weather_svg,
     render_position_detail_svg,
@@ -930,35 +930,35 @@ def test_charts_bars_fixture_has_ohlc_columns_and_datetimeindex(ohlc_bars):
 
 
 # ---------------------------------------------------------------------------
-# Phase 14 SB3 T-3.3 — position_detail candlestick conversion + BULZ zones.
+# Phase 14 SB3 T-3.3 — position_detail candlestick conversion + risk/reward zones.
 # ---------------------------------------------------------------------------
 
 
-# --- Step 1/2: _bulz_target_price helper -----------------------------------
+# --- Step 1/2: _rr_target_price helper -----------------------------------
 
 
-def test_bulz_target_price_from_planned_target_R():
+def test_rr_target_price_from_planned_target_R():
     # entry=100, stop=90 -> R_unit=10; target = 100 + 2.0*10 = 120.0.
     # A swapped inverse (100 + 2*(90-100)=80) would FAIL this.
     trade = _make_trade(
         entry_price=100.0, initial_stop=90.0, planned_target_R=2.0,
     )
-    assert _bulz_target_price(trade) == pytest.approx(120.0)
+    assert _rr_target_price(trade) == pytest.approx(120.0)
 
 
-def test_bulz_target_price_none_when_planned_target_R_absent():
+def test_rr_target_price_none_when_planned_target_R_absent():
     trade = _make_trade(
         entry_price=100.0, initial_stop=90.0, planned_target_R=None,
     )
-    assert _bulz_target_price(trade) is None
+    assert _rr_target_price(trade) is None
 
 
-def test_bulz_target_price_none_when_risk_unit_nonpositive():
+def test_rr_target_price_none_when_risk_unit_nonpositive():
     # entry=90, stop=100 -> r_unit = 90-100 = -10 (<= 0) -> None.
     trade = _make_trade(
         entry_price=90.0, initial_stop=100.0, planned_target_R=2.0,
     )
-    assert _bulz_target_price(trade) is None
+    assert _rr_target_price(trade) is None
 
 
 # --- Step 3: candlestick conversion + stop axhline -------------------------

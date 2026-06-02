@@ -254,8 +254,8 @@ class OpenPositionsExpandedVM:
     # Spec-conformant ``field(default_factory=tuple)`` per brief §0.3 #5
     # (Codex R2 Minor #1 alignment).
     advisories: tuple = field(default_factory=tuple)  # tuple[AdvisorySuggestionVM, ...]
-    # Phase 14 SB4 Slice 1 — the SB3 `position_detail` candlestick+BULZ-zones
-    # SVG, read from the existing `chart_renders` cache (run-agnostic; the
+    # Phase 14 SB4 Slice 1 — the SB3 `position_detail` candlestick+risk/reward
+    # -zones SVG, read from the existing `chart_renders` cache (run-agnostic; the
     # `position_detail` key uses `pipeline_run_id IS NULL`). Mirrors the
     # read-only call `build_trade_detail_vm` makes. The template inlines this
     # SVG in place of the legacy static PNG; None when no cache row exists

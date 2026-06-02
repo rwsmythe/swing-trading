@@ -232,7 +232,7 @@ class OhlcNormalizationError(ValueError):
 
 
 # Okabe-Ito colorblind-safe palette, keyed by MA window. ASCII hex.
-# Deliberately avoids #d62728/#2ca02c (reserved for BULZ risk/reward fills).
+# Deliberately avoids #d62728/#2ca02c (reserved for risk/reward fills).
 _MA_COLORS: dict[int, str] = {
     10:  "#0072B2",  # blue
     20:  "#E69F00",  # orange
@@ -625,12 +625,12 @@ def render_ticker_detail_svg(
 
 # ---------------------------------------------------------------------------
 # 3. Position detail chart (800x500; fill markers + stop line + trail-MA)
-#    Phase 14 SB3 T-3.3 (§C.3 / §C.3a): candlesticks + BULZ risk/reward zones.
+#    Phase 14 SB3 T-3.3 (§C.3 / §C.3a): candlesticks + risk/reward zones.
 # ---------------------------------------------------------------------------
 
 
-def _bulz_target_price(trade: Trade) -> float | None:
-    """Absolute BULZ target price, the inverse of the canonical r_mult formula.
+def _rr_target_price(trade: Trade) -> float | None:
+    """Absolute risk/reward target price, the inverse of the canonical r_mult formula.
 
     ``target = entry_price + planned_target_R * (entry_price - initial_stop)``
 
@@ -658,7 +658,7 @@ def render_position_detail_svg(
     Candlesticks (volume=True) with the uniform MA palette (10/20/50) via the
     shared :func:`_render_candles_fig` builder. Fill markers re-attach via the
     NORMALIZED df + :func:`_x_for_date` (mpf positional-x coupling). The
-    ``current_stop`` axhline is preserved. BULZ risk/reward shaded zones
+    ``current_stop`` axhline is preserved. risk/reward shaded zones
     (P14.N4) are drawn long-only (``stop < entry < target``); invalid shapes
     skip + WARN-log per-ticker, never raise.
     """
@@ -701,11 +701,11 @@ def render_position_detail_svg(
         price_ax.axhline(current_stop, color="#d62728", linestyle="--",
                          linewidth=0.8, alpha=0.7, label="current stop")
 
-    # BULZ risk/reward shaded zones (P14.N4). Long-only V1: zones assume
+    # risk/reward shaded zones (P14.N4). Long-only V1: zones assume
     # stop < entry < target. Invalid/unsupported shapes skip + WARN; NEVER
     # raise; NEVER draw an inverted band. Off-range valid zones are DRAWN
     # (axhspan autoscales the y-axis), not silently hidden.
-    _draw_bulz_zones(price_ax, ticker=ticker, trade=trade,
+    _draw_risk_reward_zones(price_ax, ticker=ticker, trade=trade,
                      current_stop=current_stop)
 
     price_ax.set_ylabel("Price (USD)")
@@ -722,10 +722,10 @@ def render_position_detail_svg(
     return _svg_bytes_from_fig(fig)
 
 
-def _draw_bulz_zones(
+def _draw_risk_reward_zones(
     price_ax: Any, *, ticker: str, trade: Trade, current_stop: float | None,
 ) -> None:
-    """Draw BULZ risk (entry->stop) + reward (entry->target) shaded zones.
+    """Draw risk (entry->stop) + reward (entry->target) shaded zones.
 
     Per §C.3a. Risk zone drawn only when ``stop`` and ``entry`` are both
     present and ``stop < entry`` (valid long). Reward zone drawn only when a
@@ -747,13 +747,13 @@ def _draw_bulz_zones(
                          label=label)
     else:
         logger.warning(
-            "skipping BULZ risk zone for %s: invalid long shape "
+            "skipping risk zone for %s: invalid long shape "
             "(entry=%s, stop=%s); long-only V1 requires stop < entry",
             ticker, entry, stop,
         )
 
     # Reward zone: entry -> target (valid requires target > entry).
-    target = _bulz_target_price(trade)
+    target = _rr_target_price(trade)
     if target is not None and entry is not None and entry > 0 and target > entry:
         label = _assert_ascii_only(
             "reward zone (entry->target)", field="reward_zone_label",
@@ -762,7 +762,7 @@ def _draw_bulz_zones(
                          label=label)
     elif target is not None:
         logger.warning(
-            "skipping BULZ reward zone for %s: invalid long shape "
+            "skipping reward zone for %s: invalid long shape "
             "(entry=%s, target=%s); long-only V1 requires target > entry",
             ticker, entry, target,
         )
