@@ -8,6 +8,30 @@
 
 ---
 
+## 2026-06-02 #17 Phase 14 close-out FOLLOW-ON bundle WRITING-PLANS SHIPPED at `48fcbfe` -- plan 1768 lines, 4 serial slices; GENUINE single WSL Codex chain CONVERGED R3 (R1 7 maj+3 min -> R2 2 maj+1 min -> R3 all-None; ZERO rejected); NO schema (v23 held); L2 green (F-1 zero new schwabdev.Client. sites, count 3); F-1 Class-A root cause PINNED + orchestrator-verified on disk; executing-plans NEXT
+
+**Follow-on bundle writing-plans SHIPPED 2026-06-02 #17** at merge `48fcbfe` of `phase14-close-out-follow-on-bundle-writing-plans` via `--no-ff`. 3 branch commits (draft `62ad850` + R1 `2ca6848` + R2 `53e16c9`) + merge. Docs-only (plan `docs/superpowers/plans/2026-06-02-phase14-close-out-follow-on-bundle-plan.md`, 1768 lines, §A-§O). ZERO Co-Authored-By. Based on `a56d5f9`; merge-base `a56d5f9`.
+
+**Genuine WSL Codex chain CONVERGED R3:** R1 (0 crit / 7 maj + 3 min) -> R2 (0 crit / 2 maj + 1 min, both precise corrections to R1-added tests) -> R3 (0/0/0, all-None) = NO_NEW_CRITICAL_MAJOR. 9 maj + 4 min resolved, ZERO rejected (1 minor accepted-with-mitigation -- F-4 spine-test brittleness). Transcript on disk in `.copowers-findings.md`. **Orchestrator QA note:** R1+R2 verdicts persisted as genuine `ISSUES_FOUND`; R3's response shows all-None findings but its literal verdict string was NOT written (blank after `### Verdict`) -- convergence verified via the all-None R3 findings + the 7M->2M->0 descent, not a verbatim verdict line (minor persistence gap, not a false-green).
+
+**F-1 Class-A root cause PINNED + orchestrator-verified on disk:** the `main` CLI group sets `ctx.obj["config"] = load_config(...)` (`cli.py:185`) with NO `apply_overrides` at the group level; `web_cmd` (`cli.py:3324`) -> `run_server(cfg=ctx.obj["config"])` passes that RAW cfg WITHOUT calling `apply_overrides` (other Schwab commands DO call it themselves) -> the web cfg lacks the user-config-only Schwab CLIENT_ID/SECRET -> `_construct_web_schwab_client` -> `resolve_credentials_env_or_prompt(allow_prompt=False)` -> `(None,None)` -> returns None -> no checker -> no sidecar -> badge UNKNOWN. The badge is nonetheless VISIBLE because `marketdata_ladder_enabled=true` is TRACKED (not user-overridable; `config_overrides.py:107-110`, Codex R1-M2 correction) + `environment` defaults to "production", so `_is_ladder_active` is True without overrides. **The plan ships the Class-A fix (`apply_overrides` on the web path -- NO new `schwabdev.Client.*` site, L3 green) + the Class-B install-anchored STARTING-write readback-verify + the §3.3 startup diagnostic (confirms A vs B at the gate without pre-assuming) + the UNSEEDED real-token gate.**
+
+**F-2 (deeper than the brief, verified `#16`):** `current_stage` reads PERSISTED criteria for a benchmark not in the evaluated set -> live-compute via a two-tier `structural_checks`/`structural_stage` helper from a >=250-bar fetch; `evaluate()` refactors to REUSE `structural_checks` with a MANDATORY byte-identical full-tuple `Result` golden (4 fixtures: all-pass / fail / TT3-NA 200-220 bars / <200); frame-anchored display slice (cache-lag-safe); mandatory route + pipeline call-site tests (`structural_stage` import at module load). `MIN_CALENDAR_DAYS_FOR_TREND_TEMPLATE` (= 200 + `rising_ma_period_days`(21) + margin ~= ~250-260 trading bars / ~390 calendar days).
+
+**Locks verified (orchestrator QA):** NO schema (v23; last migration `0023`; no `0024`); L3 -- F-1 ZERO new `schwabdev.Client.*` sites (grep count 3 at draft + final, all comments/docstrings; construction stays in `auth.py:construct_authenticated_client`); L4 reuse; L5 read-mostly. ~30 new tests across 4 slices projected.
+
+**Forward action sequence (orchestrator-side):**
+
+- [x] QA the returned plan + read `.copowers-findings.md` (R3 all-None convergence; the R3-verdict-string persistence gap noted) + VERIFY the F-1 Class-A root cause (`cli.py:185` main group no-overrides + `web_cmd:3324` raw cfg) on disk + locks
+- [x] Merge `--no-ff` at `48fcbfe` + housekeep (THIS entry + CLAUDE.md line-3) + push + teardown (docs-only -> no suite run)
+- [ ] **Follow-on bundle executing-plans dispatch brief** (point at the 1768-line plan; the §3.3 diagnostic FIRST in F-1; the byte-identical `evaluate()` golden + call-site tests in F-2; the UNSEEDED real-token F-1 gate; persist-Codex-responses; the worktree-cwd corollary) + commit BEFORE inline prompt
+- [ ] follow-on executing-plans (single WSL Codex chain to convergence; F-1 startup diagnostic pins Class A/B) -> operator-witnessed gate (F-1 UNSEEDED real-token STARTING->ALIVE with the operator's HEALTHY tokens; F-2 trend defined; F-3/F-4 browser) -> merge -> re-run suite on MERGED head + reinstall swing
+- [ ] then B-7 final touch -> Phase 14 close-out review (Sec 9.1 Q6) -> CLAUDE.md "Phase 14 CLOSED" at v23
+
+**F-1's diagnosis feeds the PHASE 15 schwabdev v3 upgrade (`#9`).**
+
+---
+
 ## 2026-06-02 #16 Phase 14 close-out FOLLOW-ON bundle (F-1 P14.N7 checker · F-2 market-weather trend · F-3 segmented polylines · F-4 thumbnail spines) BRAINSTORM SHIPPED at `6836aa5` -- spec 547 lines; GENUINE single WSL Codex chain CONVERGED R3 (4 maj+2 min R1 + 1 maj R2 all fixed, ZERO rejected); NO schema (v23 held); L2 green (F-1 zero new schwabdev.Client. sites); the brief F-1 hypothesis REFUTED + F-2 cause deeper than the brief; writing-plans NEXT
 
 **Follow-on bundle brainstorm SHIPPED 2026-06-02 #16** at merge `6836aa5` of `phase14-close-out-follow-on-bundle-brainstorming` via `--no-ff`. 3 branch commits (draft `249e71b` + R1 `410f4fa` + R2 `19234f7`) + merge. Docs-only (spec `docs/superpowers/specs/2026-06-02-phase14-close-out-follow-on-bundle-design.md`, 547 lines). ZERO Co-Authored-By (`%(trailers)` empty). Based on `7e89b26`; merge-base `7e89b26`.
