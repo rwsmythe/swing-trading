@@ -107,6 +107,7 @@ from swing.web.charts import (
     render_position_detail_svg,
     render_watchlist_thumbnail_svg,
 )
+from swing.web.ohlcv_cache import MIN_CALENDAR_DAYS_FOR_MA200
 
 log = logging.getLogger(__name__)
 
@@ -2760,7 +2761,9 @@ def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data_asof: str,
 
     def _bars_or_none(ticker: str):
         try:
-            return ohlcv_cache.get_or_fetch(ticker=ticker, window_days=200)
+            return ohlcv_cache.get_or_fetch(
+                ticker=ticker, window_days=MIN_CALENDAR_DAYS_FOR_MA200,
+            )
         except Exception as exc:  # noqa: BLE001 - per-ticker isolation
             log.warning(
                 "chart_renders write-through: ohlcv fetch failed for %s: %s",

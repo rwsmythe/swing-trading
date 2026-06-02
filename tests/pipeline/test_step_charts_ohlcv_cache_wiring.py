@@ -181,10 +181,14 @@ def test_step_charts_calls_ohlcv_cache_get_or_fetch_not_legacy_fetcher_get(
     # Benchmark ticker fetched exactly once for market_weather surface.
     benchmark = cfg.rs.benchmark_ticker.upper()
     assert tickers_called.count(benchmark) == 1, tickers_called
-    # Preserves existing lookback semantics (line 1323 used lookback_days=200).
+    # Phase 14 close-out (A-1): _bars_or_none (market_weather + write-through,
+    # runner.py:2763) now uses MIN_CALENDAR_DAYS_FOR_MA200 (300) for the
+    # benchmark; the classifier per-ticker consume (runner.py:2694, A+ loop)
+    # is widened to 300 in Task C.1b. In this commit (C.1) the A+ calls still
+    # use 200 while the benchmark uses 300.
     windows = sorted({w for (_t, w) in spy.calls})
-    assert windows == [200], (
-        f"window_days drift — expected 200 to preserve legacy chart window: {windows}"
+    assert windows == [200, 300], (
+        f"window_days: A+ loop=200 (pre-C.1b), benchmark=300; got {windows}"
     )
 
 
