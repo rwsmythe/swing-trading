@@ -18,14 +18,16 @@ L2-LOCK green (F-1 adds ZERO new `schwabdev.Client.*` sites).
   under healthy production tokens, because no checker liveness sidecar is written in normal
   operation. **The brief's stated hypothesis (the seed `update_tokens()` is a no-op when the
   access token is still valid, so no STARTING sidecar is written) is REFUTED by the code at
-  `7e89b26`** -- see §3. The real cause is upstream of the sidecar logic.
+  `7e89b26`** -- see §3. The seed writes STARTING before any network call, so an absent sidecar means
+  either client-construction returned None (Class A; likely credential plumbing) or the sidecar write
+  itself failed silently (Class B); a one-shot diagnostic pins which.
 - **F-2 (deep):** the market-weather chart shows `trend: undefined`. **The brief's stated
   hypothesis (the Trend Template bails to NA at `<200` closes; widen the fetch) is INCOMPLETE
-  -- the deeper, decisive cause is that the trend STATE is read from PERSISTED `candidate_criteria`
-  via `current_stage`, and the benchmark (SPY) is never evaluated into the candidates table, so
-  the read is structurally `undefined` regardless of bar count.** See §4. The fix realigns the
-  state-derivation with the operator's ruling (compute the classification from fetched bars;
-  decouple compute-window from display-window).
+  -- the decisive cause is that the trend STATE is read from PERSISTED `candidate_criteria`
+  via `current_stage`, and the benchmark (SPY) is not in the evaluated ticker set (finviz + open
+  trades), so in the observed path it has no persisted criteria and the read is `undefined`
+  regardless of bar count.** See §4. The fix realigns the state-derivation with the operator's ruling
+  (compute the classification live from fetched bars; decouple compute-window from display-window).
 - **F-3 (short):** the process-grade-trend rolling lines bridge `None` gaps with straight
   diagonals (one `<polyline>` skips `None`s). Emit one polyline per contiguous run. §5.
 - **F-4 (short):** hyp-rec / watchlist thumbnails show matplotlib default axes-spine boxes.
@@ -117,12 +119,21 @@ returns a non-None client, the seed writes a STARTING sidecar BEFORE any network
 needed refreshing). Therefore:
 
 > **An observed UNKNOWN (= absent sidecar) with the badge VISIBLE means `_is_ladder_active(cfg)` is
-> True (else the badge would be hidden) AND `_construct_web_schwab_client(cfg)` returned None even
-> though the operator's tokens are healthy.** The brief's "seed no-op" hypothesis is refuted: the
-> seed is not the gate; **client construction is.**
+> True (else the badge would be hidden) AND EITHER (a) `_construct_web_schwab_client(cfg)` returned
+> None even though the operator's tokens are healthy, OR (b) the seed sidecar WRITE itself silently
+> failed.** The brief's "seed no-op" hypothesis is refuted: the seed call is reached and writes BEFORE
+> any network round-trip; the gate is no longer the token validity but EITHER client construction OR
+> the sidecar write.
 
-`_construct_web_schwab_client` (`app.py:148-183`) returns None on exactly these paths (all guarded
-by the SAME `_is_ladder_active` gate the badge uses, so they cannot diverge on the config gate):
+**Caveat (Codex R1 Major #1):** `CheckerLiveness._write_sidecar` (`checker_resilience.py:104-108`)
+catches every exception and logs only at `debug` level, so a failed sidecar write (e.g. `_user_home()`
+resolving to a non-writable / different path under the web process, a permissions error, or the dest
+dir not existing) leaves NO sidecar AND NO visible log -- an absent sidecar therefore does NOT
+STRICTLY prove construction returned None. The two candidate failure CLASSES are:
+
+**Class A -- construction returned None.** `_construct_web_schwab_client` (`app.py:148-183`) returns
+None on exactly these paths (all guarded by the SAME `_is_ladder_active` gate the badge uses, so they
+cannot diverge on the config gate):
 1. `_is_ladder_active(cfg)` False -> None. **Excluded** by the observed VISIBLE badge.
 2. `resolve_credentials_env_or_prompt(cfg, env, allow_prompt=False)` raises `SchwabConfigMissingError`
    (partial env-tier: one of `SCHWAB_CLIENT_ID`/`SCHWAB_CLIENT_SECRET` set, the other missing/blank)
@@ -134,18 +145,28 @@ by the SAME `_is_ladder_active` gate the badge uses, so they cannot diverge on t
 4. `construct_authenticated_client(...)` raises (schwabdev `Client()` init error or the
    post-construction `SchwabAuthError` access-token check) -> caught at `:176-183` -> None.
 
+**Class B -- construction succeeded but the seed sidecar write failed silently** (the `debug`-only
+swallow above). The §3.3 diagnostic + the install-anchored write below distinguish A vs B definitively.
+
 ### §3.3 The diagnosis step (convert the guess to a fact at executing-plans -- #15, no-guess)
 
 The brainstorm CANNOT run the operator's live `swing web` with production credentials, so the exact
-None-path (§3.2 #2/#3/#4) is not statically determinable. The plan MUST add a **one-shot, redacted
-startup INFO log** in `_install_web_marketdata_caches` that states, in order:
+cause (Class A None-path #2/#3/#4 vs Class B silent-write-failure) is not statically determinable. The
+plan MUST add a **one-shot, redacted startup INFO log** in `_install_web_marketdata_caches` that
+states, in order:
 - whether `_is_ladder_active(cfg)` is True;
 - whether `_construct_web_schwab_client` returned a client or None **and which None-path fired**
-  (creds-missing / creds-partial-raise / construction-raise), via a redacted reason;
-- the absolute `checker_liveness_sidecar_path(env)` the seed will write to.
+  (creds-missing / creds-partial-raise / construction-raise), via a redacted reason (distinguishes
+  Class A);
+- the absolute `checker_liveness_sidecar_path(env)` the seed will write to, AND **whether a readback of
+  that path immediately after the install-anchored STARTING write SUCCEEDED** (i.e.
+  `read_liveness_sidecar(path) is not None`) -- this distinguishes Class B (write failed) from a clean
+  STARTING. Because the install-anchored write (§3.4) is no longer swallowed-silent for diagnostic
+  purposes, a write failure surfaces in this one line.
 
-The operator reads ONE startup line and the executing-plans implementer pins the cause. This honors
-the no-guess discipline + #15 (exercise the real derivation path) without a rework.
+The operator reads ONE startup line and the executing-plans implementer pins the cause (A vs B, and
+which sub-path). This honors the no-guess discipline + #15 (exercise the real derivation path) without
+a rework.
 
 ### §3.4 The fix (robust to the diagnosed cause)
 
@@ -157,13 +178,19 @@ way the CLI does. If the operator's creds ARE in user-config but the web `cfg` d
 to `resolve_credentials_env_or_prompt`'s cfg tier, that wiring gap is the fix (config plumbing, NOT
 a checker change, NOT a new `schwabdev.Client.*` site). Confirmed by §3.3 #2.
 
+**Class B fix (if the diagnostic shows the write failed):** the install-anchored STARTING write
+(below) does a `read_liveness_sidecar` readback and logs at WARNING (not the silent `debug` swallow)
+if the readback is None, surfacing the path/permission cause. The fix is then to correct the path /
+permissions (e.g. `_user_home()` resolution under the web process); still NO schema, NO new client site.
+
 **Hardening (independent of the exact cause; low-cost, additive):**
 - **Anchor the STARTING write at install.** Although the current seed already writes STARTING before
   `original()`, make the install path write an initial STARTING tick **immediately after constructing
   `CheckerLiveness`, before the seed `update_tokens()` network round-trip** (reuse
-  `record_tick("seed")` or a direct `write_liveness_sidecar`). Rationale: a slow/hanging seed network
-  call must never delay the STARTING sidecar; the badge should flip to STARTING the instant the
-  checker is wired. This is OQ-1's recommended "former."
+  `record_tick("seed")` or a direct `write_liveness_sidecar`), then **readback-verify it once** and log
+  WARNING on failure (Class B detection). Rationale: a slow/hanging seed network call must never delay
+  the STARTING sidecar; the badge should flip to STARTING the instant the checker is wired, and a
+  write failure must not stay invisible. This is OQ-1's recommended "former."
 - **Do NOT regress the A-7 badge contract** (L7): a missing sidecar still maps to UNKNOWN with the
   "client unavailable" reason; this fix just makes the sidecar appear when the client constructs.
 - **NO new `schwabdev.Client.*` site (L3):** construction stays via the existing
@@ -192,6 +219,18 @@ written by the seed wiring (read it back via `read_liveness_sidecar`; assert
 `evaluate_liveness_state(...) == STARTING`). This exercises the install+wrap+seed derivation path
 WITHOUT writing the sidecar JSON by hand. A second test simulates a daemon-origin tick (call the
 wrapped `update_tokens` from a non-startup thread) and asserts the sidecar advances to ALIVE.
+
+**Construction-path test (Codex R1 Major #2 -- covers the credential-plumbing fix, NOT just
+install+wrap+seed):** add a separate production-gated test of `_construct_web_schwab_client` itself
+with `_is_ladder_active` True (`environment='production'` + `marketdata_ladder_enabled=True`) and a
+monkeypatched `construct_authenticated_client` (so no real network/`schwabdev.Client`), parameterized
+over the credential sources: (i) creds in env vars -> returns a client; (ii) creds in the cfg tier
+(the post-fix path -- the web `cfg` surfaces `~/swing-data/user-config.toml [integrations.schwab]`) ->
+returns a client; (iii) creds absent at all tiers -> returns None + logs the redacted "credentials
+incomplete" reason; (iv) partial env-tier -> `SchwabConfigMissingError` caught -> None + redacted log.
+This asserts the fix actually makes construction succeed under the operator's credential layout and
+that each None-path logs its distinct redacted reason (§3.3). Monkeypatch BOTH `USERPROFILE` AND
+`HOME` if the test touches user-config resolution (the `write_user_overrides` gotcha family).
 
 ---
 
@@ -225,11 +264,16 @@ The benchmark fetch + chart window:
 
 In `_step_evaluate` (`runner.py:1030+`), the evaluated ticker set is the **finviz CSV tickers +
 open-trade tickers** (`:1102`, `:1043-1066`). The benchmark (`cfg.rs.benchmark_ticker = "SPY"`) is
-fetched ONLY for RS (`:1091`, `lookback_days=365`) and is **never added to the evaluated set**. Even
-were SPY present in finviz, it would be ETF-excluded (`excluded = cfg.etf_exclusion.manual_block |
-held_set`, `:1150`) -> `bucket='excluded'` with `criteria=()` (empty). **Either way the benchmark has
-NO passing trend_template criteria persisted, so `current_stage(conn, 'SPY', ...)` returns
-`undefined` ALWAYS -- independent of bar count.**
+fetched ONLY for RS (`:1091`, `lookback_days=365`) and is **never added to the evaluated set.** In the
+observed/default path, therefore, SPY has no `candidates` row and `current_stage(conn, 'SPY', ...)`
+returns `undefined` (`:775-776`) -- independent of bar count.
+
+**Correction (Codex R1 Major #3):** this is NOT structurally undefined for ALL possible inputs. SPY is
+NOT in the ETF blocklist (`swing.config.toml`: `etf_exclusion.manual_block = ["UCO"]`), so IF SPY ever
+appeared in the finviz CSV (and was not held), it WOULD be evaluated and persisted with trend criteria.
+The claim is the narrower, accurate one: **SPY is not added to the evaluated set; in the operator's
+observed/default path it is only fetched for RS, so `current_stage('SPY')` is `undefined` there.** The
+§4.4 diagnostic pins this empirically against the operator's DB.
 
 Note the finviz tickers that ARE evaluated use `lookback_days=400` (`:1104`) ~= ~275 bars -- already
 ample for the 221-bar TT3 requirement. So the `<200`/`MIN_CALENDAR_DAYS_FOR_MA200=300` bar-count
@@ -254,19 +298,28 @@ the fetched benchmark bars**:
   that is `>= 221`; add margin -> **~250-260 trading bars ~= ~370-390 calendar days.** Introduce a
   dedicated compute-window constant (e.g. `MIN_CALENDAR_DAYS_FOR_TREND_TEMPLATE ~= 390`) rather than
   overloading `MIN_CALENDAR_DAYS_FOR_MA200` (whose `=300` value is correct for the 200-MA chart line).
-  Per the "return FULL archive; consumers slice" gotcha, the fetch helper returns full history; the
-  classifier consumes the full window and the chart slices a readable recent window for DISPLAY.
-- **Compute the structural classification** by reusing the Trend-Template SMA logic (TT1 above
-  150/200, TT2 150>200, TT3 200 rising, TT4 50>150/200, TT5 above 50). These are the structural
-  market-regime checks and need only `closes` (no RS batch / universe). Map "all structural checks
-  pass" -> `stage_2`, else `undefined` (the existing two-value label; richer Weinstein staging stays
-  V2). **OQ-3a:** the exact check set (structural TT1-TT5 vs the full TT1-TT8). Recommend TT1-TT5:
-  TT6/TT7 (52w high/low) and TT8 (RS rank vs a universe) are stock-selection criteria, not meaningful
-  for the index benchmark vs itself. Reuse `sma` from `criteria/_base.py`; do NOT re-implement.
-- **Display window unchanged / readable.** The chart keeps a readable recent window; do NOT chase a
-  visible 200-MA line (operator ruling). **OQ-4:** keep `ma_windows=(50,200)` (a short, possibly
-  clipped 200 tail) vs drop the 200 line for legibility. Recommend keep `(50,200)` -- the line is
-  harmless even if short, and removing it is a separate cosmetic call.
+- **Extract a SHARED structural classifier (Codex R1 Major #4 -- reuse, not re-implement).**
+  `trend_template.evaluate()` computes TT1-TT8 as one unit and TT8 depends on RS/batch context (not
+  available at the render site), so the live site MUST NOT call `evaluate()` and MUST NOT hand-duplicate
+  the TT1-TT5 comparisons. Instead, **extract a small pure helper in
+  `swing/evaluation/criteria/trend_template.py`** (e.g. `structural_stage(closes, *, rising_period) ->
+  "stage_2" | "undefined"`) that computes TT1-TT5 from `closes` using the existing `sma` from
+  `criteria/_base.py`, and **refactor `evaluate()` to call that same helper** for TT1-TT5 so there is
+  ONE source of truth. Both the pipeline `_step_charts` site and the web refresh site call the helper.
+  **OQ-3a:** the exact check set (structural TT1-TT5 vs full TT1-TT8). Recommend TT1-TT5: TT6/TT7 (52w
+  high/low) and TT8 (RS rank vs a universe) are stock-selection criteria, not meaningful for the index
+  benchmark vs itself.
+- **Display window -- explicit slicing contract (Codex R1 Minor #5).** `OhlcvCache.get_or_fetch(
+  window_days=...)` already returns a calendar-sliced window (NOT a raw full archive), so "return FULL
+  archive; consumers slice" applies at the CALL site, not inside the helper: the live sites fetch with
+  `window_days = MIN_CALENDAR_DAYS_FOR_TREND_TEMPLATE` (~390) -> the returned frame IS the compute
+  window; pass that full frame to the structural classifier, and pass a **separately sliced recent
+  display frame** (e.g. `bars.tail(N_display)` with `N_display ~= the prior display size, ~90-120
+  bars`) to `render_market_weather_svg`. Specify `N_display` at writing-plans (recommend keep the prior
+  effective display window so the chart's legibility is unchanged). Do NOT chase a visible 200-MA line
+  (operator ruling). **OQ-4:** keep `ma_windows=(50,200)` on the (now shorter) display frame -- a short
+  200 tail is harmless -- vs drop the 200 line. Recommend keep `(50,200)`; removing it is a separate
+  cosmetic call.
 - **Fail-soft preserved:** both sites keep their `try/except -> "undefined"` fallback so a fetch /
   compute error never crashes the refresh or aborts the charts step (L5/L6).
 
@@ -306,6 +359,11 @@ is the alternative -- recommend multiple `<polyline>`s to preserve the existing 
   `_polyline_x`/`_polyline_y` unchanged (L4). A single isolated defined point yields a 1-point segment
   -- decide whether to drop 1-point segments (invisible as a polyline) or keep them (OQ-5a; recommend
   drop -- a lone point draws nothing and only adds an empty element).
+- **`is_drawable` segment semantics (Codex R1 Minor #6).** `is_drawable` currently keys off
+  `bool(svg_polyline_points)`. After the segment refactor (and after dropping 1-point segments), define
+  it as `(drawability == "<rolling line drawable>") and bool(svg_polyline_segments)` -- i.e. drawable
+  iff at least one >=2-point segment survives -- so the template's `{% if series.is_drawable %}` guard
+  never wraps an empty segment list (no empty/invisible `<polyline>` elements emitted).
 - **Template:** `{% for seg in series.svg_polyline_segments %}<polyline points="{{ seg }}" .../>{% endfor %}`
   inside the existing `{% if series.is_drawable %}`.
 - **Test:** a render-string test with a `None` in the middle asserts >=2 `<polyline>` elements
@@ -337,11 +395,13 @@ on the watchlist thumbnails too).
   or the cfg the web app builds); possibly `swing/integrations/schwab/checker_resilience.py` (only if
   the install-anchored write needs a tiny helper -- prefer reusing `record_tick`/`write_liveness_sidecar`).
   NO change to `auth.py` construction (L3). `tests/...` production-path test (§3.5).
-- **F-2:** `swing/web/ohlcv_cache.py` (new compute-window constant); `swing/pipeline/runner.py`
-  (`_step_charts` market-weather site) + `swing/web/routes/dashboard.py` (refresh site): replace
-  `current_stage` with the live classifier; a small reusable structural-classifier helper (location
-  TBD at writing-plans -- candidate: `swing/evaluation/criteria/trend_template.py` or a thin
-  `swing/patterns/foundation.py` companion to `current_stage`). `tests/...` regression.
+- **F-2:** `swing/web/ohlcv_cache.py` (new compute-window constant
+  `MIN_CALENDAR_DAYS_FOR_TREND_TEMPLATE`); `swing/evaluation/criteria/trend_template.py` (extract the
+  shared `structural_stage(closes, *, rising_period)` helper for TT1-TT5 + refactor `evaluate()` to call
+  it -- ONE source of truth, Major #4); `swing/pipeline/runner.py` (`_step_charts` market-weather site)
+  + `swing/web/routes/dashboard.py` (refresh site): replace `current_stage` with the helper, fetch the
+  compute window + slice the display frame. `tests/...` regression (incl. a test that `evaluate()`
+  still produces identical TT1-TT5 results after the refactor).
 - **F-3:** `swing/web/view_models/metrics/process_grade_trend.py` (`_format_polyline_points` ->
   segments + the `RollingSeriesDisplay` field) + `swing/web/templates/metrics/process_grade_trend.html.j2`
   (segment loop). `tests/...` render test.
@@ -432,8 +492,9 @@ find the PID via `Get-NetTCPConnection -LocalPort`, `Stop-Process -Force`, verif
    1-point segments (recommend) vs keep.
 6. **OQ-6 (decomposition):** one bundle / 4 slices (recommend) vs split F-1.
 7. **OQ-7 (Codex chain count downstream):** single (recommend).
-8. **OQ-8 (F-1 root cause):** confirm the exact construction-None path via the §3.3 diagnostic before
-   locking the credential-plumbing fix (the fix's precise shape depends on it).
+8. **OQ-8 (F-1 root cause):** confirm via the §3.3 diagnostic whether the cause is Class A (which
+   construction-None sub-path) or Class B (silent sidecar-write failure) before locking the fix shape
+   (credential-plumbing for A; path/permission for B).
 9. **OQ-9 (F-2 structural finding):** confirm SPY has no passing `candidate_criteria` in the operator's
    DB (§4.4); if the operator prefers making SPY an evaluated candidate instead, escalate (write-touching).
 
@@ -441,7 +502,9 @@ find the PID via `Get-NetTCPConnection -LocalPort`, `Stop-Process -Force`, verif
 
 ## §14 Cumulative discipline applied
 
-- "Return FULL archive; consumers slice" (F-2 compute vs display).
+- "Return FULL archive; consumers slice" -- applied at the CALL site (F-2 fetches the wider compute
+  window via `get_or_fetch(window_days=...)`, which itself returns a sliced calendar window, then slices
+  a narrower display frame; the classifier consumes the full fetched frame). Codex R1 Minor #5.
 - `feedback_seeded_gate_masks_default_state` (F-1's UNSEEDED real-token gate; the lesson F-1 proves
   AGAIN).
 - #15 production-path tests (F-1 + F-2 exercise the real derivation path, NOT stubs/hand-seeds).
@@ -463,9 +526,11 @@ obviate P14.N7's checker guard. NO scope creep into B-7 / the close-out review /
 
 ---
 
-*End of design spec. Four gate-found corrections: F-1 (P14.N7 web checker -- the real cause is
-client-construction-None, not the seed; fix the credential plumbing + anchor the STARTING write +
-design an UNSEEDED real-token gate), F-2 (market-weather "undefined" -- the real cause is `current_stage`
-reading absent persisted criteria for a non-candidate benchmark; compute the regime state live from a
->=250-bar fetch, decoupling compute from display), F-3 (segmented polylines), F-4 (hide thumbnail
-spines). NO schema (v23 held); L2-LOCK green; reuse not re-implement; read-mostly.*
+*End of design spec. Four gate-found corrections: F-1 (P14.N7 web checker -- the seed is NOT the gate;
+the absent sidecar is Class A construction-None (likely credential plumbing) OR Class B silent
+sidecar-write failure, pinned by a one-shot diagnostic; anchor + readback-verify the STARTING write +
+design an UNSEEDED real-token gate), F-2 (market-weather "undefined" -- the cause is `current_stage`
+reading absent persisted criteria for a benchmark not in the evaluated set; compute the regime state
+live via a SHARED TT1-TT5 helper from a >=250-bar fetch, decoupling compute from display), F-3
+(segmented polylines), F-4 (hide thumbnail spines). NO schema (v23 held); L2-LOCK green; reuse not
+re-implement; read-mostly.*
