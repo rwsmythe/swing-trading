@@ -94,3 +94,24 @@ def test_open_positions_row_has_lazy_thumbnail_cell(seeded_db, monkeypatch):
     assert 'hx-get="/journal/trades/' in section and "/thumbnail" in section
     assert 'hx-trigger="revealed"' in section
     assert 'HX-Request' in section
+
+
+def test_open_positions_thumbnail_cell_targets_self(seeded_db, monkeypatch):
+    """Gate-fix regression: the lazy thumbnail <td> MUST set hx-target="this".
+
+    The open-positions <tr> carries hx-target="closest tr" (click-to-expand);
+    without an explicit hx-target on the thumbnail <td>, HTMX attribute
+    inheritance makes the revealed thumbnail swap replace the WHOLE row's
+    innerHTML, wiping every other cell. Browser-only failure (the initial
+    render looks fine); locked here against the exact rendered attribute order.
+    """
+    cfg, cfg_path = seeded_db
+    _seed_open_trade(cfg, "AAPL")
+    _patch_price_cache(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        body = client.get("/").text
+    section = _open_positions_section(body)
+    assert (
+        'hx-trigger="revealed" hx-target="this" hx-swap="innerHTML"' in section
+    )
