@@ -8,6 +8,32 @@
 
 ---
 
+## 2026-06-02 #18 Phase 14 close-out FOLLOW-ON bundle EXECUTING-PLANS SHIPPED end-to-end at `77388b3` -- 4 slices; 7038 fast tests green on MERGED main; genuine WSL Codex chain CONVERGED R2; NO schema (v23 held); L2 green; operator-witnessed gate F-1/F-2/F-4 PASS (F-1 web checker now writes a real sidecar -- ORCHESTRATOR-VERIFIED the unseeded server flips Schwab? -> STARTING server-side); F-3 RE-DIAGNOSED (gap-splitting correct but latent; the real plunge-line issue = non-grade metrics on the grade axis -> NEW chart-redesign follow-on banked)
+
+**Follow-on bundle executing-plans SHIPPED end-to-end 2026-06-02 #18** at integration merge `77388b3` of `phase14-close-out-follow-on-bundle-executing-plans` via `--no-ff`. Final branch HEAD `25e7f24` (15 impl/test commits + return report). 24 swing/+tests files (NEW: `test_checker_liveness_install_path.py`, `test_construct_web_schwab_client.py`, `test_create_app_startup_with_overrides.py`, `test_web_cmd_applies_overrides.py`, `test_trend_template_structural.py`, `test_market_weather_live_state.py`, `test_charts_thumbnail_spines.py`, `test_process_grade_trend_segments.py`). **7038 passed / 3 skipped on MERGED main** (`feedback_no_false_green_claim`). ZERO Co-Authored-By. Merge-base `f509a9d`.
+
+**Genuine WSL Codex chain CONVERGED R2:** R1 (0 crit / 1 maj + 1 min -- the major was a stale-sidecar-can't-mask-silent-write-fail readback-verify; both fixed) -> R2 NO_NEW_CRITICAL_MAJOR (literal verdict persisted on disk this time -- the prior writing-plans R3-verdict-string gap corrected).
+
+**What shipped:** F-1 -- `web_cmd` now calls `apply_overrides` (`cli.py:3342`; the Class-A creds-plumbing fix; ZERO new `schwabdev.Client.*` sites, L3 green) + `_install_web_marketdata_caches` anchors a STARTING sidecar with an install-identity readback-verify + a one-shot §3.3 INFO diagnostic. F-2 -- two-tier `structural_checks`/`structural_stage`; `evaluate()` refactored byte-identical (4-fixture full-tuple golden); `MIN_CALENDAR_DAYS_FOR_TREND_TEMPLATE=390` + frame-anchored slice; both live sites compute LIVE. F-3 -- one `<polyline>` per contiguous non-None run + drop-1-point (the gap-splitting). F-4 -- spines hidden on both sub-axes (143 thumbnail/watchlist tests green).
+
+**Operator-witnessed gate (orchestrator-run branch server :8081, UNSEEDED real-token):** **S4 (F-1) PASS** -- the orchestrator deleted the sidecar, started the branch server, and verified server-side that a sidecar now APPEARS (`installed_ts` + `last_seed_ts` set = STARTING; daemon -> ALIVE ~30s) where the pre-fix unseeded server wrote NOTHING -> Class A confirmed, `apply_overrides` resolved it; operator browser-confirmed Schwab? -> STARTING/ALIVE. **S5 (F-2) PASS** -- market-weather trend now DEFINED (live compute). **S6 F-4 PASS** -- no thumbnail spine borders. **S6 F-3 -- RE-DIAGNOSED (orchestrator owned the mis-diagnosis):** the operator reported "F-3 not fixed"; the orchestrator inspected the rendered polylines and found NONE are gap-bridges (every series has all 9 points, no `None` gaps) -- F-3's gap-splitting is correct but LATENT in this data. The "plunge-to-F=0" lines are REAL normalized values of the NON-GRADE metrics (`mistake_cost_R_per_trade`, `mistake_cost_R_total`, `disqualifying_violation_rate`) overlaid on the shared A-F grade axis. The original close-out-gate F-3 diagnosis (gap-bridging) was WRONG; the real issue is a chart-DESIGN problem (mixed-unit metrics on the grade axis). **Operator chose (a): ship F-1/F-2/F-4 + the correct-latent F-3 now; bank the process-grade-trend chart redesign as a NEW follow-on.**
+
+**NEW banked follow-on (operator-decided 2026-06-02): process-grade-trend chart redesign.** The `/metrics/process-grade-trend` "Grade chart" overlays 7 rolling series -- 4 letter grades (0-4) PLUS `disqualifying_violation_rate` + `mistake_cost_R_per_trade` + `mistake_cost_R_total` -- each self-normalized to its own y-bounds on a shared A-F visual axis, producing confusing "plunge-to-F=0" lines (the non-grade metrics map to the bottom). Redesign options: separate the non-grade metrics onto their own panel/scale; restyle/dash them so they read as distinct from grades; or move them table-only. Its own cycle (a deeper multi-metric-layout UX decision; Phase-13-era surface; the operator sequences it -- could precede B-7 or defer past Phase 14). NOT gap-bridging (F-3's gap-splitting already correctly handles the `None`-gap case).
+
+**Locks verified:** schema v23 (no `0024`); L2 grep = 3 (all comments); read-mostly (zero domain writes); A-7 badge contract + `"Schwabdev"` redaction preserved; ASCII.
+
+**Forward action sequence (orchestrator-side):**
+
+- [x] QA the returned branch + read `.copowers-findings.md` (R2 literal NO_NEW_CRITICAL_MAJOR on disk) + VERIFY the F-1 `web_cmd` apply_overrides fix (`cli.py:3342`) + L2 + schema on disk
+- [x] Operator-witnessed gate (UNSEEDED real-token): orchestrator verified F-1 sidecar appears server-side; operator browser-confirmed S4/S5/S6 (F-1/F-2/F-4 PASS); F-3 re-diagnosed -> chart-redesign banked
+- [x] Merge `--no-ff` at `77388b3` + re-run suite on MERGED main (7038 passed) + reinstall `swing` (F-1 fix now live) + push origin/main + worktree/branch teardown + :8081 server kill + gate-sidecar cleanup
+- [x] CLAUDE.md line-3 + THIS entry + the chart-redesign follow-on banked
+- [ ] **Phase 14 close-out tail:** the NEW process-grade-trend chart-redesign follow-on (operator-sequenced) -> B-7 operator failure-mode classification (final touch) -> Phase 14 close-out review (Sec 9.1 Q6) -> CLAUDE.md "Phase 14 CLOSED" at v23 (+ the line-3 compact-summary restructure)
+
+**F-1's diagnosis feeds the PHASE 15 schwabdev v3 upgrade (`#9`).**
+
+---
+
 ## 2026-06-02 #17 Phase 14 close-out FOLLOW-ON bundle WRITING-PLANS SHIPPED at `48fcbfe` -- plan 1768 lines, 4 serial slices; GENUINE single WSL Codex chain CONVERGED R3 (R1 7 maj+3 min -> R2 2 maj+1 min -> R3 all-None; ZERO rejected); NO schema (v23 held); L2 green (F-1 zero new schwabdev.Client. sites, count 3); F-1 Class-A root cause PINNED + orchestrator-verified on disk; executing-plans NEXT
 
 **Follow-on bundle writing-plans SHIPPED 2026-06-02 #17** at merge `48fcbfe` of `phase14-close-out-follow-on-bundle-writing-plans` via `--no-ff`. 3 branch commits (draft `62ad850` + R1 `2ca6848` + R2 `53e16c9`) + merge. Docs-only (plan `docs/superpowers/plans/2026-06-02-phase14-close-out-follow-on-bundle-plan.md`, 1768 lines, §A-§O). ZERO Co-Authored-By. Based on `a56d5f9`; merge-base `a56d5f9`.
