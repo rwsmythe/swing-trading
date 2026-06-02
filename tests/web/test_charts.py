@@ -374,7 +374,29 @@ def test_theme2_annotation_stack_descends_from_092(monkeypatch):
     assert len(ys) == 3
     # Stack starts at 0.92 and descends by 0.05 per line.
     assert ys == pytest.approx([0.92, 0.87, 0.82])
-    assert all(x >= 0.9 for (x, _y, _ha, _b) in captured)
+    # Phase 14 close-out (A-2): the VCP contraction labels are moved INWARD
+    # off the right price-tick column (was x=0.98, ha="right" -- crowded the
+    # y-axis ticks). They stay ha="right" but anchor at x=0.74.
+    assert all(x <= 0.75 for (x, _y, _ha, _b) in captured)
+    assert all(ha == "right" for (_x, _y, ha, _b) in captured)
+
+
+def test_vcp_contraction_labels_off_price_tick_column(monkeypatch):
+    # A-2: contraction labels clear the right price-tick column and are
+    # mathtext-free (no $ / ^ / _ that matplotlib mathtext would eat).
+    captured = _capture_annotate_text_coords(
+        monkeypatch, pattern="vcp",
+        evidence={
+            "pivot_price": 130.0,
+            "contractions": [{"depth_pct": 15.0}, {"depth_pct": 10.0}],
+        },
+    )
+    contraction = [c for c in captured if c[3].startswith("contraction ")]
+    assert contraction
+    for x, _y, _ha, body in contraction:
+        assert x <= 0.75  # off the right tick column
+        assert "pct" in body
+        assert "$" not in body and "^" not in body and "_" not in body
 
 
 def test_theme2_high_tight_flag_second_line_at_087(monkeypatch):

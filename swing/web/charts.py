@@ -833,8 +833,11 @@ def _annotate_vcp(ax: Any, ctx: _AnnotationContext, bars: pd.DataFrame) -> None:
             depth = ctr.get("depth_pct")
             if not isinstance(depth, (int, float)):
                 continue
+            # Phase 14 close-out (A-2): anchor INWARD at x=0.74 (was 0.98) so
+            # the stacked contraction labels clear the right price-tick column.
+            # Stays ha="right"; mathtext-free ("pct", no $/^/_).
             ax.text(
-                0.98, 0.92 - i * 0.05,
+                0.74, 0.92 - i * 0.05,
                 f"contraction {i + 1}: {depth:.1f}pct",
                 transform=ax.transAxes, fontsize=8, color="#222",
                 ha="right",
