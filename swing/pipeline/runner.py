@@ -107,7 +107,6 @@ from swing.web.charts import (
     render_position_detail_svg,
     render_watchlist_thumbnail_svg,
 )
-from swing.web.ohlcv_cache import MIN_CALENDAR_DAYS_FOR_MA200
 
 log = logging.getLogger(__name__)
 
@@ -2581,6 +2580,11 @@ def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data_asof: str,
     _walltime_start = time.monotonic()
     from swing.data.repos.candidates import fetch_candidates_for_run
     from swing.data.repos.trades import list_open_trades  # NEW (Task 5)
+    # Phase 14 close-out (A-1): imported lazily (NOT module-top) -- a module-top
+    # `from swing.web.ohlcv_cache import ...` creates a runner<->ohlcv_cache
+    # import cycle (ohlcv_cache imports swing.pipeline -> __init__ imports
+    # runner) that breaks `import swing.web.ohlcv_cache` standalone.
+    from swing.web.ohlcv_cache import MIN_CALENDAR_DAYS_FOR_MA200
     conn = connect(cfg.paths.db_path)
     try:
         # Spec §A "Open-position tier snapshot semantics": all three reads
