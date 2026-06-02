@@ -42,6 +42,33 @@ log = logging.getLogger(__name__)
 # bars only; consumers slice).
 MIN_CALENDAR_DAYS_FOR_MA200 = 300
 
+# Phase 14 close-out follow-on (F-2): the market-weather trend classification
+# needs the structural Trend-Template checks INCLUDING TT3 (200MA rising over
+# rising_ma_period_days=21 bars), i.e. >= 200 + 21 = 221 trading bars. 221 bars
+# ~= 221 * 365/252 ~= 320 calendar days; add margin -> 390 (~= 250-260 trading
+# bars). This is the COMPUTE window (decoupled from the 300-day DISPLAY/MA200
+# window). Monotonic-safe (more bars only; consumers slice).
+MIN_CALENDAR_DAYS_FOR_TREND_TEMPLATE = 390
+
+
+def slice_recent_calendar_days(bars: "pd.DataFrame", *, window_days: int) -> "pd.DataFrame":
+    """Slice a fetched bar frame to its most recent ``window_days`` calendar
+    days so a wider compute fetch can be displayed at the narrower (prior)
+    window without a second fetch.
+
+    Codex R1 Major #4: anchor ``end`` on the FRAME'S OWN last bar
+    (``bars.index[-1].date()``), NOT last_completed_session(now()). Re-slicing
+    a cached/lagging 390-day frame against a fresh now() could drop the frame's
+    last available bar (or empty the display) on a stale archive. Anchoring on
+    the frame's last bar yields exactly the last ``window_days`` of the
+    AVAILABLE frame, robust to cache lag. Returns the input unchanged if empty.
+    """
+    if bars is None or bars.empty:
+        return bars
+    end = bars.index[-1].date()
+    cutoff = end - timedelta(days=window_days)
+    return bars.loc[bars.index.date >= cutoff]
+
 
 @dataclass(frozen=True)
 class OhlcvBundle:
