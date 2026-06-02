@@ -336,13 +336,22 @@
 
 **Minor V2 items (C-1..C-19):** **Group (a) -- the ~6 genuinely-open minor advisories -- MOVED INTO the close-out polish batch above (operator 2026-05-30).** Remaining OUT of close-out: ~3 accepted-as-LOCKed-by-design (SB2 schema-version test NAMES for grep-history; observe read-then-write benign under single-lease; repo fixture `ohlc_today_json` shape nit) + ~10 already-fixed forward-binding lessons captured for reference (mpf x-axis padding `margins(x=0)` / volume-label auto-scale; `last_completed_session` returns `date`; post-close read-connection; fill-marker nearest-forward x-placement; index-coercion-rejects-numeric; synthetic-bars-use-planted-detections; derived-duration state-predicate). Full detail in the per-SB executing-plans return reports §"V2 candidates" / §"forward-binding lessons". Groups (b)+(c) require NO close-out action.
 
-**Forward action:**
+**Forward action (UPDATED 2026-06-02 -- close-out tail status; per-cycle ship records in `#6`-`#18`):**
 
-- [ ] SB5 (metrics overview; P14.N5) brainstorm (IN PROGRESS) -> writing-plans -> executing-plans
-- [ ] **SB5.5 (Schwab-focused: A-3 + P14.N7) brainstorm dispatch brief** when sequenced (after SB5)
-- [ ] Phase 14 close-out polish batch (P14.N1-dashboard + A-1 + A-2 + A-4 + group-(a) minor advisories)
-- [ ] B-7 operator failure-mode classification (Phase 14 final touch)
-- [ ] Phase 14 close-out review (Sec 9.1 Q6: all merged + operator browser-witnessed cross-sub-bundle integration)
+- [x] SB5 (metrics overview; P14.N5): brainstorm `3c18b81` -> writing-plans `9635d17` -> executing-plans `6206fb6` (SHIPPED `#6`/`#7`/`#8`)
+- [x] SB5.5 (Schwab A-3 + P14.N7): brainstorm `4205b63` -> writing-plans `1bd1558` -> executing-plans `16b3366` (SHIPPED `#10`/`#11`/`#12`)
+- [x] **Close-out polish batch** (P14.N1 BOTH tables [open-positions journal-route reuse + hyp-rec `render_watchlist_thumbnail_svg`] + A-1 + A-2 + A-4 + A-6 + A-7 + group-(a) C-1/C-2/C-3/C-5/C-19): brainstorm `83043ba` -> writing-plans `30ce9d4` -> executing-plans `f2cd376` (SHIPPED `#13`/`#14`/`#15`; orchestrator-inline gate-fix `718c403` = open-positions thumbnail `hx-target` row-collapse)
+- [x] **Close-out FOLLOW-ON bundle** (F-1 P14.N7 web-checker [the A-7 wiring fix -- `web_cmd` now applies `apply_overrides`; the healthy Schwab badge is now LIVE on main] + F-2 market-weather trend live-compute [two-tier `structural_checks`/`structural_stage` helper] + F-3 segmented polylines + F-4 thumbnail spines): brainstorm `6836aa5` -> writing-plans `48fcbfe` -> executing-plans `77388b3` (SHIPPED `#16`/`#17`/`#18`)
+- [ ] **NEW: process-grade-trend chart redesign** (banked `#18`): the non-grade metrics (`mistake_cost_R` x2, `disqualifying_violation_rate`) overlaid on the A-F grade axis produce confusing "plunge-to-F=0" lines -> separate panel/scale, restyle/dash, or table-only. A multi-metric-layout UX decision; Phase-13-era surface; operator-sequenced (may precede B-7 or defer past Phase 14). NOT gap-bridging (F-3's gap-splitting already handles `None`-gaps correctly).
+- [ ] **B-7 operator failure-mode classification** (Phase 14 FINAL TOUCH): extend the CR.1 review surface for operator-annotated failure reasons; assess schema impact at its brainstorm (may add a nullable review column -> v24 STRICT `pre_version`, or reuse existing).
+- [ ] **Phase 14 close-out review** (Sec 9.1 Q6: all merged + operator browser-witnessed cross-sub-bundle integration) -> CLAUDE.md **"Phase 14 CLOSED"** at v23 + the line-3 compact-summary restructure (line-3 is an overdue giant ledger; restructure to a ~5-10-sentence pointer per the orchestrator-context size-check discipline).
+
+**DEFERRED / banked (NOT in the remaining tail):**
+- **C-6** (backfill apply-path write-lock narrowing) -- reopens a deliberate `BEGIN IMMEDIATE` TOCTOU + crash-safety ordering (`backfill_trades_sector_industry.py:115-128`); deferred `#14`/`#17`/`#18` to its own follow-up if ever pursued.
+- **A-5** (styled full-page 404) -- CLOSED (operator, no revisit).
+- **schwabdev v2.5.1 -> 3.0.5 upgrade + Fernet** -- PHASE 15 (`#9`); deletes the daemon checker + P14.N7; F-1's diagnosis feeds it; first L2-LOCK baseline re-anchor.
+
+**Remaining Phase 14 close-out tail (3 items):** the process-grade-trend chart redesign (new) -> B-7 (final touch) -> the Sec 9.1 Q6 close-out review -> "Phase 14 CLOSED" at v23. ALL Phase 14 feature sub-bundles + the close-out polish batch + the follow-on bundle are SHIPPED end-to-end.
 
 ---
 
