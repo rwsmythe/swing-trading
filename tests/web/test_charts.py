@@ -990,7 +990,7 @@ def test_position_detail_stop_axhline_present(monkeypatch, ohlc_bars):
     assert 95.0 in recorded
 
 
-# --- Step 4/5: BULZ risk/reward zones (axhspan) ----------------------------
+# --- Step 4/5: risk/reward zones (axhspan) ----------------------------
 
 
 def _render_and_capture_axhspans(monkeypatch, ohlc_bars, **kwargs):
