@@ -21,6 +21,16 @@
     hx-target="closest tr"
     hx-swap="outerHTML"
     hx-headers='{"HX-Request": "true"}'>
+  {#- Phase 14 close-out (P14.N1): leading lazy candlestick thumbnail cell.
+      Reuses the journal thumbnail route (open trades render with exit_date=None
+      -> trailing window). The cell-level hx-trigger="revealed" loads on scroll;
+      hx-* live on the <td> (not the <tr>). The cell intentionally participates
+      in the row's click-to-expand affordance (no event.stopPropagation), like
+      every other non-button cell (Codex R1 m#2). -#}
+  <td class="open-position-thumb" data-trade-id="{{ row.trade.id }}"
+      hx-get="/journal/trades/{{ row.trade.id }}/thumbnail"
+      hx-trigger="revealed" hx-swap="innerHTML"
+      hx-headers='{"HX-Request": "true"}'></td>
   <td>{{ row.trade.ticker }} {{ state_badge(row.trade.state) }}
     {% if row.has_update_today %}<span class="badge-update-today" title="daily-management entry recorded for session {{ row.update_session_date }}">✓ logged</span>{% else %}<span class="badge-update-needed" title="no daily-management entry for session {{ row.update_session_date }}">⚠ pending</span>{% endif %}
   </td>
