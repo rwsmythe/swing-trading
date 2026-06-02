@@ -298,15 +298,24 @@ the fetched benchmark bars**:
   that is `>= 221`; add margin -> **~250-260 trading bars ~= ~370-390 calendar days.** Introduce a
   dedicated compute-window constant (e.g. `MIN_CALENDAR_DAYS_FOR_TREND_TEMPLATE ~= 390`) rather than
   overloading `MIN_CALENDAR_DAYS_FOR_MA200` (whose `=300` value is correct for the 200-MA chart line).
-- **Extract a SHARED structural classifier (Codex R1 Major #4 -- reuse, not re-implement).**
-  `trend_template.evaluate()` computes TT1-TT8 as one unit and TT8 depends on RS/batch context (not
-  available at the render site), so the live site MUST NOT call `evaluate()` and MUST NOT hand-duplicate
-  the TT1-TT5 comparisons. Instead, **extract a small pure helper in
-  `swing/evaluation/criteria/trend_template.py`** (e.g. `structural_stage(closes, *, rising_period) ->
-  "stage_2" | "undefined"`) that computes TT1-TT5 from `closes` using the existing `sma` from
-  `criteria/_base.py`, and **refactor `evaluate()` to call that same helper** for TT1-TT5 so there is
-  ONE source of truth. Both the pipeline `_step_charts` site and the web refresh site call the helper.
-  **OQ-3a:** the exact check set (structural TT1-TT5 vs full TT1-TT8). Recommend TT1-TT5: TT6/TT7 (52w
+- **Extract a SHARED structural classifier -- TWO-TIER, per Codex R1 Major #4 + R2 Major #1
+  (reuse, not re-implement, WITHOUT changing the existing 8-criterion path).** `trend_template.evaluate()`
+  computes TT1-TT8 as one unit and TT8 depends on RS/batch context (not available at the render site),
+  so the live site MUST NOT call `evaluate()` and MUST NOT hand-duplicate the TT1-TT5 comparisons. An
+  aggregate `stage_2|undefined` helper is too LOSSY for `evaluate()` to reuse (it must preserve each
+  criterion's `Result` row -- name/value/message/pass-fail-NA). So extract a **lower-level per-check
+  helper** in `swing/evaluation/criteria/trend_template.py`:
+  - `structural_checks(closes, *, rising_period) -> tuple[StructuralCheck, ...]` -- computes the TT1-TT5
+    structural checks from `closes` using the existing `sma` from `criteria/_base.py`, each carrying
+    its status (pass/fail/NA) + the formatted value/message strings the current `evaluate()` emits.
+  - **Refactor `evaluate()` to build its TT1-TT5 `Result` rows by converting these check objects**
+    (so the existing per-criterion output -- names, values, messages, NA behavior -- is byte-identical;
+    a regression test asserts this). TT6-TT8 stay in `evaluate()` unchanged (they need batch/RS context).
+  - A thin `structural_stage(closes, *, rising_period) -> "stage_2" | "undefined"` wrapper maps the SAME
+    `structural_checks(...)` output to the regime label (all TT1-TT5 pass -> `stage_2`, else `undefined`).
+  Both the pipeline `_step_charts` site and the web refresh site call `structural_stage`. ONE source of
+  truth for the TT1-TT5 math; ZERO behavior change to the 8-criterion pipeline path.
+  **OQ-3a:** the regime check set (structural TT1-TT5 vs full TT1-TT8). Recommend TT1-TT5: TT6/TT7 (52w
   high/low) and TT8 (RS rank vs a universe) are stock-selection criteria, not meaningful for the index
   benchmark vs itself.
 - **Display window -- explicit slicing contract (Codex R1 Minor #5).** `OhlcvCache.get_or_fetch(
@@ -397,11 +406,13 @@ on the watchlist thumbnails too).
   NO change to `auth.py` construction (L3). `tests/...` production-path test (§3.5).
 - **F-2:** `swing/web/ohlcv_cache.py` (new compute-window constant
   `MIN_CALENDAR_DAYS_FOR_TREND_TEMPLATE`); `swing/evaluation/criteria/trend_template.py` (extract the
-  shared `structural_stage(closes, *, rising_period)` helper for TT1-TT5 + refactor `evaluate()` to call
-  it -- ONE source of truth, Major #4); `swing/pipeline/runner.py` (`_step_charts` market-weather site)
-  + `swing/web/routes/dashboard.py` (refresh site): replace `current_stage` with the helper, fetch the
-  compute window + slice the display frame. `tests/...` regression (incl. a test that `evaluate()`
-  still produces identical TT1-TT5 results after the refactor).
+  per-check `structural_checks(closes, *, rising_period)` helper + a thin `structural_stage(...)`
+  wrapper for TT1-TT5; refactor `evaluate()` to build its TT1-TT5 `Result` rows from `structural_checks`
+  -- ONE source of truth, ZERO behavior change to the 8-criterion path; Major #4 + R2 #1);
+  `swing/pipeline/runner.py` (`_step_charts` market-weather site) + `swing/web/routes/dashboard.py`
+  (refresh site): replace `current_stage` with `structural_stage`, fetch the compute window + slice the
+  display frame. `tests/...` regression (incl. a test that `evaluate()` produces byte-identical TT1-TT5
+  Result rows after the refactor).
 - **F-3:** `swing/web/view_models/metrics/process_grade_trend.py` (`_format_polyline_points` ->
   segments + the `RollingSeriesDisplay` field) + `swing/web/templates/metrics/process_grade_trend.html.j2`
   (segment loop). `tests/...` render test.
