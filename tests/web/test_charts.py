@@ -27,10 +27,10 @@ import swing.web.charts as charts
 from swing.data.models import Fill, PatternEvaluation, Trade
 from swing.web.charts import (
     OhlcNormalizationError,
-    _bulz_target_price,
     _normalize_ohlc_for_mpf,
     _render_candles_fig,
     _resolve_volume_ax,
+    _rr_target_price,
     _x_for_date,
     render_market_weather_svg,
     render_position_detail_svg,
@@ -374,7 +374,29 @@ def test_theme2_annotation_stack_descends_from_092(monkeypatch):
     assert len(ys) == 3
     # Stack starts at 0.92 and descends by 0.05 per line.
     assert ys == pytest.approx([0.92, 0.87, 0.82])
-    assert all(x >= 0.9 for (x, _y, _ha, _b) in captured)
+    # Phase 14 close-out (A-2): the VCP contraction labels are moved INWARD
+    # off the right price-tick column (was x=0.98, ha="right" -- crowded the
+    # y-axis ticks). They stay ha="right" but anchor at x=0.74.
+    assert all(x <= 0.75 for (x, _y, _ha, _b) in captured)
+    assert all(ha == "right" for (_x, _y, ha, _b) in captured)
+
+
+def test_vcp_contraction_labels_off_price_tick_column(monkeypatch):
+    # A-2: contraction labels clear the right price-tick column and are
+    # mathtext-free (no $ / ^ / _ that matplotlib mathtext would eat).
+    captured = _capture_annotate_text_coords(
+        monkeypatch, pattern="vcp",
+        evidence={
+            "pivot_price": 130.0,
+            "contractions": [{"depth_pct": 15.0}, {"depth_pct": 10.0}],
+        },
+    )
+    contraction = [c for c in captured if c[3].startswith("contraction ")]
+    assert contraction
+    for x, _y, _ha, body in contraction:
+        assert x <= 0.75  # off the right tick column
+        assert "pct" in body
+        assert "$" not in body and "^" not in body and "_" not in body
 
 
 def test_theme2_high_tight_flag_second_line_at_087(monkeypatch):
@@ -908,35 +930,35 @@ def test_charts_bars_fixture_has_ohlc_columns_and_datetimeindex(ohlc_bars):
 
 
 # ---------------------------------------------------------------------------
-# Phase 14 SB3 T-3.3 — position_detail candlestick conversion + BULZ zones.
+# Phase 14 SB3 T-3.3 — position_detail candlestick conversion + risk/reward zones.
 # ---------------------------------------------------------------------------
 
 
-# --- Step 1/2: _bulz_target_price helper -----------------------------------
+# --- Step 1/2: _rr_target_price helper -----------------------------------
 
 
-def test_bulz_target_price_from_planned_target_R():
+def test_rr_target_price_from_planned_target_R():
     # entry=100, stop=90 -> R_unit=10; target = 100 + 2.0*10 = 120.0.
     # A swapped inverse (100 + 2*(90-100)=80) would FAIL this.
     trade = _make_trade(
         entry_price=100.0, initial_stop=90.0, planned_target_R=2.0,
     )
-    assert _bulz_target_price(trade) == pytest.approx(120.0)
+    assert _rr_target_price(trade) == pytest.approx(120.0)
 
 
-def test_bulz_target_price_none_when_planned_target_R_absent():
+def test_rr_target_price_none_when_planned_target_R_absent():
     trade = _make_trade(
         entry_price=100.0, initial_stop=90.0, planned_target_R=None,
     )
-    assert _bulz_target_price(trade) is None
+    assert _rr_target_price(trade) is None
 
 
-def test_bulz_target_price_none_when_risk_unit_nonpositive():
+def test_rr_target_price_none_when_risk_unit_nonpositive():
     # entry=90, stop=100 -> r_unit = 90-100 = -10 (<= 0) -> None.
     trade = _make_trade(
         entry_price=90.0, initial_stop=100.0, planned_target_R=2.0,
     )
-    assert _bulz_target_price(trade) is None
+    assert _rr_target_price(trade) is None
 
 
 # --- Step 3: candlestick conversion + stop axhline -------------------------
@@ -968,7 +990,7 @@ def test_position_detail_stop_axhline_present(monkeypatch, ohlc_bars):
     assert 95.0 in recorded
 
 
-# --- Step 4/5: BULZ risk/reward zones (axhspan) ----------------------------
+# --- Step 4/5: risk/reward zones (axhspan) ----------------------------
 
 
 def _render_and_capture_axhspans(monkeypatch, ohlc_bars, **kwargs):

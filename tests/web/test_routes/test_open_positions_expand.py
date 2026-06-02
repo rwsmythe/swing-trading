@@ -577,9 +577,9 @@ def test_expanded_partial_colspan_matches_row(seeded_db, monkeypatch):
     actual <td> count. A mismatch breaks the table layout (cells overflow
     into adjacent columns or leave gaps).
 
-    Compact row has 10 <td> cells (Ticker, Entry date, Entry price, Shares,
-    Current stop, Last, Sector, Industry, Advisory, Actions). Expanded must
-    use colspan="10". (Sector + Industry added in Task 9.)
+    Compact row has 11 <td> cells (Chart, Ticker, Entry date, Entry price,
+    Shares, Current stop, Last, Sector, Industry, Advisory, Actions). Expanded
+    must use colspan="11". (Chart added in Phase 14 close-out P14.N1.)
     """
     cfg, cfg_path = seeded_db
     trade_id = _seed_in_scope_trade(cfg, ticker="AAPL")
@@ -593,8 +593,8 @@ def test_expanded_partial_colspan_matches_row(seeded_db, monkeypatch):
         )
     assert r.status_code == 200
     body = r.text
-    assert 'colspan="10"' in body, (
-        "expanded row must use colspan='10' to match the 10-cell compact row; "
+    assert 'colspan="11"' in body, (
+        "expanded row must use colspan='11' to match the 11-cell compact row; "
         f"body excerpt: {body[:200]!r}"
     )
 
@@ -604,14 +604,15 @@ def test_open_position_row_target_500_renders_colspan_10(
 ):
     """Codex R3 Major-1 — when the global exception handler renders
     `trade_form_error.html.j2` for an `open-position-*` HX-Target, the <td>
-    must be `colspan="10"` to match the 10-column open-positions table
-    layout (Ticker / Entry date / Entry price / Shares / Current stop /
-    Last / Sector / Industry / Advisory / Actions).
+    must be `colspan="11"` to match the 11-column open-positions table
+    layout (Chart / Ticker / Entry date / Entry price / Shares / Current
+    stop / Last / Sector / Industry / Advisory / Actions; Chart added in
+    Phase 14 close-out P14.N1: 10 -> 11).
 
     Discriminating: pre-fix `_row_error_colspan` returned 9 for
     `hyp-rec-row-*` and 8 for everything else (including
-    `open-position-*`), leaving a 2-cell short row in the 10-col
-    open-positions table on every server-error swap.
+    `open-position-*`), leaving a short row in the open-positions table
+    on every server-error swap.
     """
     cfg, cfg_path = seeded_db
     trade_id = _seed_in_scope_trade(cfg, ticker="AAPL")
@@ -637,9 +638,9 @@ def test_open_position_row_target_500_renders_colspan_10(
         )
     assert resp.status_code == 500, resp.text
     body = resp.text
-    assert 'colspan="10"' in body, (
-        "open-position-* row-target error fragment must render colspan=10 "
-        "(10-col open-positions table); pre-fix renders colspan=8.\nBody:\n"
+    assert 'colspan="11"' in body, (
+        "open-position-* row-target error fragment must render colspan=11 "
+        "(11-col open-positions table); pre-fix renders colspan=8.\nBody:\n"
         + body[:600]
     )
 
@@ -681,13 +682,13 @@ def test_open_positions_row_renders_sector_industry(seeded_db, monkeypatch):
 
 def test_open_positions_expanded_colspan_matches_new_row_cell_count():
     """colspan in open_positions_expanded.html.j2 must match the cell count
-    in open_positions_row.html.j2 — was 8, becomes 10 with sector + industry.
+    in open_positions_row.html.j2 — becomes 11 with the P14.N1 Chart column.
     """
     from pathlib import Path
     expanded = Path("swing/web/templates/partials/open_positions_expanded.html.j2").read_text(encoding="utf-8")
-    assert 'colspan="10"' in expanded, (
-        "colspan must be 10 to match open_positions_row.html.j2's 10 cells "
-        "(Ticker, Entry date, Entry price, Shares, Current stop, Last, "
+    assert 'colspan="11"' in expanded, (
+        "colspan must be 11 to match open_positions_row.html.j2's 11 cells "
+        "(Chart, Ticker, Entry date, Entry price, Shares, Current stop, Last, "
         "Sector, Industry, Advisory, Actions)."
     )
 

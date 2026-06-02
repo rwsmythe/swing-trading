@@ -2,7 +2,7 @@
     Expects: expanded (OpenPositionsExpandedVM)
 
     3e.8 Bundle 1 (§4.F B.AC.5): the prior V1 scope-limit "no advisories list"
-    exclusion is REMOVED. Advisories are rendered inside the <td colspan="10">
+    exclusion is REMOVED. Advisories are rendered inside the <td colspan="11">
     via the SAME canonical shared partial used by the dashboard list-view row
     and the trade-detail page (CLAUDE.md HTMX OOB-swap-drift gotcha — single
     canonical include target).
@@ -15,8 +15,8 @@
     BOTH files must migrate together.
 
     Colspan must match the compact open_positions_row.html.j2 cell count
-    (10 cells: Ticker, Entry date, Entry price, Shares, Current stop, Last,
-    Sector, Industry, Advisory, Actions). A mismatch breaks the table layout.
+    (11 cells: Chart, Ticker, Entry date, Entry price, Shares, Current stop,
+    Last, Sector, Industry, Advisory, Actions). A mismatch breaks the layout.
 
     HTMX-safety pre-empt list (§0.3 #7): response MUST lead with <tr> so the
     htmx.js makeFragment synthetic-table-wrap rule fires correctly for the
@@ -24,7 +24,7 @@
     rendering goes INSIDE the existing <tr>, not as a leading element.
 -#}
 <tr id="open-position-{{ expanded.trade_id }}" class="expanded">
-  <td colspan="10">
+  <td colspan="11">
     <button class="close-expanded"
             type="button"
             onclick="event.stopPropagation()"
@@ -36,7 +36,7 @@
             title="Close">✕</button>
     <h3>{{ expanded.ticker }}</h3>
     {#- Phase 14 SB4 Slice 1 — inline the SB3 `position_detail` candlestick+
-        BULZ-zones SVG (read from the chart_renders cache, mirroring the
+        risk/reward-zones SVG (read from the chart_renders cache, mirroring the
         trade-detail page) in place of the legacy static PNG.
 
         WP M#3 TERMINAL-else invariant: the legacy `chart_reason` /

@@ -14,6 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 
 def _make_shape_a_parquet(path: Path, n_bars: int = 250, sentinel_close: float = 100.0):
@@ -34,6 +35,7 @@ def _make_shape_a_parquet(path: Path, n_bars: int = 250, sentinel_close: float =
 # L2 LOCK Test 1: identity-preserving re-export per §F.1
 # ---------------------------------------------------------------------------
 
+@pytest.mark.xdist_group(name="ohlcv_reader_re_export")
 def test_ohlcv_reader_re_export_identity():
     """L2 LOCK reinforcement test #1: harness's ohlcv_reader symbols are
     IDENTICALLY the V2 OHLCV evaluator's symbols (same object, not a

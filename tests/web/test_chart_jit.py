@@ -127,6 +127,30 @@ def test_get_or_render_surface_cache_miss_renders_via_ohlcv_and_writes_through(
     assert bytes(cached[0]) == b"<svg>rendered</svg>"
 
 
+def test_get_or_render_surface_fetches_min_calendar_days_for_ma200(
+    conn: sqlite3.Connection, pipeline_run_id: int,
+) -> None:
+    """Phase 14 close-out (A-1 OQ-6): the JIT fetch uses the widened
+    MIN_CALENDAR_DAYS_FOR_MA200 window so a JIT-rendered MA200-bearing surface
+    has enough bars."""
+    from swing.web.ohlcv_cache import MIN_CALENDAR_DAYS_FOR_MA200
+    ohlcv_cache = MagicMock()
+    ohlcv_cache.get_or_fetch.return_value = _planted_bars_df()
+    import swing.web.chart_jit as mod
+    mod._RENDERERS["ticker_detail"] = MagicMock(return_value=b"<svg>x</svg>")
+    try:
+        get_or_render_surface(
+            conn=conn, ohlcv_cache=ohlcv_cache,
+            surface="ticker_detail", ticker="UCTT",
+            pipeline_run_id=pipeline_run_id, data_asof_date="2026-05-22",
+        )
+    finally:
+        importlib.reload(mod)
+    ohlcv_cache.get_or_fetch.assert_called_once_with(
+        ticker="UCTT", window_days=MIN_CALENDAR_DAYS_FOR_MA200,
+    )
+
+
 def test_get_or_render_surface_returns_none_on_empty_ohlcv(
     conn: sqlite3.Connection, pipeline_run_id: int,
 ) -> None:

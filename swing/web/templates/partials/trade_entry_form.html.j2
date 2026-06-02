@@ -14,7 +14,7 @@
 {% if name in vm.missing_fields %} class="field-error"{% endif %}
 {%- endmacro -%}
 <tr id="entry-form-{{ vm.ticker }}">
-  <td colspan="{{ 9 if vm.origin == 'hyp-recs' else 8 }}">
+  <td colspan="{{ 10 if vm.origin == 'hyp-recs' else 8 }}">
     {% if error_message %}<div class="banner banner-degraded" role="alert">{{ error_message }}</div>{% endif %}
     {#- Phase 13 T3.SB1 — Schwab entry auto-fill advisory + display-only
         audit metadata (spec §6.1 + plan §G.2 T-B.1.3). The banner renders

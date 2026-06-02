@@ -24,6 +24,8 @@ trade_form_error.html.j2 fragment.
 """
 from __future__ import annotations
 
+import logging
+import re
 from dataclasses import dataclass
 
 from fastapi import APIRouter, Request
@@ -36,12 +38,32 @@ from swing.data.repos.cash import list_cash
 from swing.data.repos.fills import list_all_fills
 from swing.data.repos.trades import list_closed_trades, list_open_trades
 from swing.trades.equity import current_equity
+from swing.web.charts import render_watchlist_thumbnail_svg
+from swing.web.ohlcv_cache import MIN_CALENDAR_DAYS_FOR_MA200
+from swing.web.thumbnail_render import (
+    _THUMBNAIL_CACHE_CONTROL,
+    _THUMBNAIL_RENDER_SEMAPHORE,
+    _THUMBNAIL_RENDER_TIMEOUT_S,
+)
 from swing.web.view_models.dashboard import (
     build_hyp_recs_expanded,
     build_hyp_recs_section,
 )
 
+log = logging.getLogger(__name__)
+
 router = APIRouter()
+
+# Mirror chart_jit._WATCHLIST_THUMBNAIL_MA_LINES for cache/visual uniformity.
+_HYPREC_THUMBNAIL_MA_LINES: list[int] = [20, 50]
+# Conservative web-route ticker shape guard, applied BEFORE any fetch so a
+# malformed path segment never hits get_or_fetch. NOTE (Codex R3 m#2): this is
+# INTENTIONALLY a stricter route-level guard, NOT a copy of the renderer's
+# charts._assert_ticker_safe policy -- the renderer's own check remains the
+# authoritative content-layer validation (a future engineer should not try to
+# "reconcile" the two; the route guard only needs to reject obviously-malformed
+# path segments before I/O).
+_TICKER_RE = re.compile(r"^[A-Za-z][A-Za-z0-9.\-]{0,9}$")
 
 
 @dataclass(frozen=True)
@@ -211,4 +233,60 @@ def hyp_recs_expand(request: Request, ticker: str):
         conn.close()
 
 
-__all__ = ["router", "hyp_recs_refresh", "hyp_recs_expand"]
+@router.get("/hyp-recs/{ticker}/thumbnail", response_class=HTMLResponse)
+def hyprec_thumbnail_fragment(request: Request, ticker: str):
+    """Phase 14 close-out (P14.N1): lazy ticker-window thumbnail for a hyp-rec
+    candidate row. RENDER-DIRECT (no chart_renders write; L5) -- fetches bars
+    via the OHLCV cache and calls render_watchlist_thumbnail_svg directly,
+    NOT chart_jit.get_or_render_surface (which writes the cache). Three
+    contracts: 200+SVG / 200+busy (self-retry) / 200+unavailable. Render
+    exceptions isolated. Cache-Control distinct (busy = no-store). The path
+    ticker is shape-validated BEFORE any fetch (no archive/network I/O for a
+    malformed ticker)."""
+    templates = request.app.state.templates
+    ohlcv_cache = getattr(request.app.state, "ohlcv_cache", None)
+
+    def _frag(*, svg, busy):
+        resp = templates.TemplateResponse(
+            request, "partials/hyprec_thumbnail.html.j2",
+            {"chart_svg_bytes": svg, "busy": busy, "ticker": ticker},
+        )
+        resp.headers["Cache-Control"] = (
+            "no-store" if busy else _THUMBNAIL_CACHE_CONTROL
+        )
+        return resp
+
+    # Validate the ticker shape BEFORE any fetch (Codex R2 M#2): a malformed
+    # path segment must NOT trigger archive/network I/O via get_or_fetch.
+    if not _TICKER_RE.match(ticker):
+        log.warning("hyp-rec thumbnail invalid ticker=%r", ticker)
+        return _frag(svg=None, busy=False)
+    if ohlcv_cache is None:
+        return _frag(svg=None, busy=False)
+    if not _THUMBNAIL_RENDER_SEMAPHORE.acquire(
+            timeout=_THUMBNAIL_RENDER_TIMEOUT_S):
+        log.warning("hyp-rec thumbnail render busy ticker=%s", ticker)
+        return _frag(svg=None, busy=True)
+    try:
+        bars = ohlcv_cache.get_or_fetch(
+            ticker=ticker, window_days=MIN_CALENDAR_DAYS_FOR_MA200,
+        )
+        if bars is None or len(bars) == 0:
+            svg = None
+        else:
+            svg = render_watchlist_thumbnail_svg(
+                ticker=ticker, bars=bars,
+                ma_lines=_HYPREC_THUMBNAIL_MA_LINES,
+            )
+    except Exception:
+        log.warning("hyp-rec thumbnail render failed ticker=%s",
+                    ticker, exc_info=True)
+        svg = None
+    finally:
+        _THUMBNAIL_RENDER_SEMAPHORE.release()
+    return _frag(svg=svg, busy=False)
+
+
+__all__ = [
+    "router", "hyp_recs_refresh", "hyp_recs_expand", "hyprec_thumbnail_fragment",
+]

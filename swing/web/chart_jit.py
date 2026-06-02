@@ -46,6 +46,7 @@ from swing.web.charts import (
     render_ticker_detail_svg,
     render_watchlist_thumbnail_svg,
 )
+from swing.web.ohlcv_cache import MIN_CALENDAR_DAYS_FOR_MA200
 
 logger = logging.getLogger(__name__)
 
@@ -114,7 +115,9 @@ def get_or_render_surface(
 
     # Step 2: fetch OHLCV via cache (per ``_step_charts._bars_or_none`` precedent).
     try:
-        bars = ohlcv_cache.get_or_fetch(ticker=ticker, window_days=200)
+        bars = ohlcv_cache.get_or_fetch(
+            ticker=ticker, window_days=MIN_CALENDAR_DAYS_FOR_MA200,
+        )
     except Exception as exc:  # noqa: BLE001 — log + degrade
         logger.warning(
             "chart_jit ohlcv_cache failure for %s: %s", ticker, exc,

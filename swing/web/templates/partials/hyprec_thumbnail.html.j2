@@ -1,0 +1,10 @@
+{# Phase 14 close-out (P14.N1): lazy hyp-rec candidate thumbnail fragment. The
+   ONLY | safe content is matplotlib-generated SVG bytes. Fragment root is
+   <svg>/<span> (never a bare <tr>), so the HTMX synthetic-table-wrap hazard
+   does not apply. Busy self-retries the ticker-keyed route. #}
+{% if chart_svg_bytes %}{{ chart_svg_bytes.decode('utf-8') | safe }}
+{% elif busy %}<span class="chart-unavailable" data-chart-reason="busy"
+      hx-get="/hyp-recs/{{ ticker }}/thumbnail"
+      hx-trigger="load delay:1500ms" hx-target="this" hx-swap="outerHTML"
+      hx-headers='{"HX-Request": "true"}'>Chart loading...</span>
+{% else %}<span class="chart-unavailable" data-chart-reason="no-coverage">Chart unavailable.</span>{% endif %}

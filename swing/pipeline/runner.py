@@ -2580,6 +2580,12 @@ def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data_asof: str,
     _walltime_start = time.monotonic()
     from swing.data.repos.candidates import fetch_candidates_for_run
     from swing.data.repos.trades import list_open_trades  # NEW (Task 5)
+
+    # Phase 14 close-out (A-1): imported lazily (NOT module-top) -- a module-top
+    # `from swing.web.ohlcv_cache import ...` creates a runner<->ohlcv_cache
+    # import cycle (ohlcv_cache imports swing.pipeline -> __init__ imports
+    # runner) that breaks `import swing.web.ohlcv_cache` standalone.
+    from swing.web.ohlcv_cache import MIN_CALENDAR_DAYS_FOR_MA200
     conn = connect(cfg.paths.db_path)
     try:
         # Spec §A "Open-position tier snapshot semantics": all three reads
@@ -2691,7 +2697,9 @@ def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data_asof: str,
             # ``get_or_fetch`` matches ``PriceFetcher.get``'s shape + raise-
             # on-empty contract (recon §1 + §3), so the except clause
             # preserves the existing ``fetcher_failed`` semantic.
-            ohlcv = ohlcv_cache.get_or_fetch(ticker=ticker, window_days=200)
+            ohlcv = ohlcv_cache.get_or_fetch(
+                ticker=ticker, window_days=MIN_CALENDAR_DAYS_FOR_MA200,
+            )
         except Exception:
             with lease.fenced_write() as conn:
                 update_chart_target_status(
@@ -2760,7 +2768,9 @@ def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data_asof: str,
 
     def _bars_or_none(ticker: str):
         try:
-            return ohlcv_cache.get_or_fetch(ticker=ticker, window_days=200)
+            return ohlcv_cache.get_or_fetch(
+                ticker=ticker, window_days=MIN_CALENDAR_DAYS_FOR_MA200,
+            )
         except Exception as exc:  # noqa: BLE001 - per-ticker isolation
             log.warning(
                 "chart_renders write-through: ohlcv fetch failed for %s: %s",

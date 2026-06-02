@@ -54,8 +54,8 @@ def _row_error_colspan(request: Request) -> int:
 
     Per-target column-count mapping for HTMX row-swap error fragments:
 
-    - `hyp-rec-row-*`     → 9  (hyp-recs table; Codex R2 Major-2)
-    - `open-position-*`   → 10 (open-positions table; Codex R3 Major-1)
+    - `hyp-rec-row-*`     → 10 (hyp-recs table; +Chart col, P14.N1)
+    - `open-position-*`   → 11 (open-positions table; +Chart col, P14.N1)
     - everything else     → 8  (default)
 
     The default-8 bucket currently covers `watchlist-row-*` (8-col
@@ -71,9 +71,9 @@ def _row_error_colspan(request: Request) -> int:
     """
     hx_target = request.headers.get("HX-Target", "")
     if hx_target.startswith("hyp-rec-row-"):
-        return 9
+        return 10   # hyp-recs table: 8 data columns + chevron + Chart (P14.N1)
     if hx_target.startswith("open-position-"):
-        return 10
+        return 11   # open-positions table: 10 data columns + Chart (P14.N1)
     return 8
 
 

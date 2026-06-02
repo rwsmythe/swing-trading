@@ -349,7 +349,7 @@ def test_post_dashboard_weather_chart_refresh_invalidates_and_regenerates(
         # dict). Stub updated to match the production contract; pre-fix
         # stub returned a {ticker: df} dict via positional list which only
         # worked because the route's bare-except masked the TypeError.
-        def get_or_fetch(self, *, ticker):
+        def get_or_fetch(self, *, ticker, window_days=180):
             return df
         def is_degraded(self):
             return False
@@ -480,7 +480,12 @@ def test_weather_refresh_calls_get_or_fetch_with_ticker_kwarg(
         "get_or_fetch must be invoked with KEYWORD ticker= argument, "
         "not positional list (V2.G4 root cause)"
     )
-    assert call_kwargs == {"ticker": "SPY"}
+    # Phase 14 close-out (A-1): the refresh now also passes the widened
+    # window_days so the market-weather 200-MA has enough bars.
+    from swing.web.ohlcv_cache import MIN_CALENDAR_DAYS_FOR_MA200
+    assert call_kwargs == {
+        "ticker": "SPY", "window_days": MIN_CALENDAR_DAYS_FOR_MA200,
+    }
 
 
 def test_value_error_degraded_path_logs_warning_and_returns_409(

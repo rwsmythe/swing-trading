@@ -619,6 +619,31 @@ def test_apply_path_uses_begin_immediate_lock_for_toctou_safety(tmp_path):
         f"expected exactly 1 COMMIT in apply path; got {commit_count}"
     )
 
+    # C-5: strengthen to assert ORDER, not just presence -- BEGIN IMMEDIATE
+    # MUST precede the re-SELECT of trades AND the UPDATE, or the TOCTOU
+    # window the lock closes is reopened. (Per feedback_regression_test_
+    # arithmetic: this distinguishes -- if BEGIN IMMEDIATE were emitted AFTER
+    # the SELECT/UPDATE, bi would exceed first_select/first_update and these
+    # assertions would fail.)
+    statements_upper = [s.strip().upper() for s in executed_statements]
+    bi = statements_upper.index("BEGIN IMMEDIATE")
+    first_select = next(
+        i for i, s in enumerate(statements_upper)
+        if s.startswith("SELECT") and "TRADES" in s
+    )
+    first_update = next(
+        i for i, s in enumerate(statements_upper) if s.startswith("UPDATE")
+    )
+    assert bi < first_select, (
+        "BEGIN IMMEDIATE must precede the re-SELECT of trades "
+        f"(bi={bi}, first_select={first_select}); statements="
+        f"{statements_upper!r}"
+    )
+    assert bi < first_update, (
+        "BEGIN IMMEDIATE must precede the UPDATE "
+        f"(bi={bi}, first_update={first_update})"
+    )
+
 
 def test_dry_run_does_not_acquire_write_lock(tmp_path):
     """Per Codex round 1 Major #1 (companion): dry-run MUST NOT issue
@@ -680,3 +705,52 @@ def test_cli_subcommand_module_ascii_only():
     assert post != -1, "tail anchor not found in cli.py"
     new_region = src[pre:post]
     new_region.encode("ascii")
+
+
+def test_artifact_write_oserror_raises_click_exception(tmp_path, monkeypatch):
+    """C-3: an OSError while writing the restore-SQL artifact surfaces as a
+    clean ClickException (non-zero exit, no raw traceback), not an unhandled
+    OSError. The service/CLI boundary wraps it at the CLI layer."""
+    db_path = tmp_path / "swing.db"
+    output_dir = tmp_path / "out"
+    conn = ensure_schema(db_path)
+    try:
+        with conn:
+            run_id = insert_evaluation_run(conn, EvaluationRun(
+                id=None, run_ts="2026-05-27T20:00:00",
+                data_asof_date="2026-05-26",
+                action_session_date="2026-05-27",
+                finviz_csv_path=None, tickers_evaluated=1,
+                aplus_count=0, watch_count=1, skip_count=0,
+                excluded_count=0, error_count=0,
+            ))
+            insert_candidates(conn, run_id, [
+                Candidate(
+                    ticker="VSAT",
+                    sector="Technology",
+                    industry="Communications Equipment",
+                    **_build_candidate_fixture("VSAT"),
+                ),
+            ])
+    finally:
+        conn.close()
+    _insert_trade(db_path, ticker="VSAT", sector="", industry="")
+
+    def _raise_oserror(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(
+        "swing.diagnostics.backfill_trades_sector_industry._emit_restore_sql",
+        _raise_oserror,
+    )
+    runner = CliRunner()
+    result = runner.invoke(swing_cli, [
+        "diagnose", "backfill-trades-sector-industry",
+        "--db", str(db_path),
+        "--output-dir", str(output_dir),
+        "--apply",
+    ])
+    assert result.exit_code != 0
+    assert not isinstance(result.exception, OSError)
+    assert "Error:" in result.output
+    assert "restore artifact" in result.output

@@ -34,6 +34,14 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+# Phase 14 close-out (A-1): a 200-trading-bar SMA200 needs ~200 * 365/252 ~=
+# 290 calendar days of lookback; use 300 with margin. CALENDAR-day window
+# (get_or_fetch's window_days is a calendar lookback). Shared by the pipeline
+# benchmark/chart fetch + the dashboard weather refresh + the JIT path so the
+# 200-MA on any MA200-bearing surface has enough bars. Monotonic-safe (more
+# bars only; consumers slice).
+MIN_CALENDAR_DAYS_FOR_MA200 = 300
+
 
 @dataclass(frozen=True)
 class OhlcvBundle:

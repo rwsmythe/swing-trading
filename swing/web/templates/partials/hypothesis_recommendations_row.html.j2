@@ -18,6 +18,13 @@
               hx-swap="outerHTML"
               hx-headers='{"HX-Request": "true"}'
               aria-label="Expand {{ rec.ticker }}">▸</button></td>
+  {#- Phase 14 close-out (P14.N1): lazy ticker-window thumbnail cell. hx-* live
+      on the <td> only; the <tr> stays trigger-free (discriminator vs the
+      watchlist row, per test_hyp_recs_table_regression). -#}
+  <td class="hyprec-thumb" data-ticker="{{ rec.ticker }}"
+      hx-get="/hyp-recs/{{ rec.ticker }}/thumbnail"
+      hx-trigger="revealed" hx-swap="innerHTML"
+      hx-headers='{"HX-Request": "true"}'></td>
   <td>{{ rec.ticker }}</td>
   <td>{% if rec.current_price is not none %}${{ "%.2f"|format(rec.current_price) }}{% else %}—{% endif %}</td>
   <td>{% if rec.pivot_price is not none %}${{ "%.2f"|format(rec.pivot_price) }}{% else %}—{% endif %}</td>

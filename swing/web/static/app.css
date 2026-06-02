@@ -331,6 +331,12 @@ tr.tripwire-fired td:first-child { border-left: 4px solid var(--tripwire-border)
 .metrics-card__sparkline { display: block; margin: 0.35rem 0; color: var(--accent); }
 .metrics-card__spark-suppressed { color: var(--fg-muted); font-style: italic; }
 .metrics-card__desc { margin: 0.35rem 0 0; color: var(--fg-muted); font-size: 0.8rem; }
+/* Phase 14 close-out (A-6): the process-grade-trend SVG marker has no fill=
+   (SVG-default black -> invisible in dark mode) and the rolling polyline has
+   no stroke= (SVG-default none -> invisible in BOTH themes). Resolve both via
+   the theme-aware accent token (mirrors .metrics-card__sparkline). */
+.process-grade-rolling-line { stroke: var(--accent); }
+.process-grade-marker { fill: var(--accent); }
 .schwab-health-badge {
   display: inline-block;
   margin-left: 0.5rem;

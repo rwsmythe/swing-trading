@@ -49,6 +49,7 @@ from swing.data.repos.trades import insert_trade_with_event
 from swing.data.repos.watchlist import upsert_watchlist_entry
 from swing.pipeline.lease import Lease, acquire_lease
 from swing.pipeline.runner import _step_charts, run_pipeline_internal
+from swing.web.ohlcv_cache import MIN_CALENDAR_DAYS_FOR_MA200
 
 
 def _ohlcv(closes=None, end="2026-04-15"):
@@ -217,7 +218,10 @@ def test_step_charts_records_fetcher_failed(tmp_path: Path, monkeypatch):
     # selective-raise behavior on the new chart-OHLCV path so this test's
     # AAPL chart fetch still raises while non-AAPL still resolves.
     def selective_cache_fetch(self, *, ticker, window_days):
-        if window_days == 200 and ticker == "AAPL":
+        # Phase 14 close-out (A-1): the chart-OHLCV path now requests
+        # MIN_CALENDAR_DAYS_FOR_MA200 (300); match it so AAPL's simulated
+        # outage still fires on the classifier consume (runner.py:2694).
+        if window_days == MIN_CALENDAR_DAYS_FOR_MA200 and ticker == "AAPL":
             raise RuntimeError("simulated yfinance outage for chart fetch")
         return _ohlcv()
 
