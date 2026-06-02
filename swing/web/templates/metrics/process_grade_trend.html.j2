@@ -50,14 +50,17 @@
       {% endif %}
     {% endfor %}
     {# Per-metric rolling polylines — drawn only when the §5.4 line band fires
-       AND we have at least two non-None rolling-mean points. #}
+       AND at least one >=2-point segment survives. One <polyline> per
+       contiguous non-None run so None gaps render as gaps (F-3). #}
     {% for series in vm.rolling_series %}
       {% if series.is_drawable %}
-      <polyline points="{{ series.svg_polyline_points }}"
-                fill="none"
-                stroke-width="1.5"
-                data-series="{{ series.metric_name }}"
-                class="process-grade-rolling-line metric-{{ series.metric_name }}" />
+        {% for seg in series.svg_polyline_segments %}
+        <polyline points="{{ seg }}"
+                  fill="none"
+                  stroke-width="1.5"
+                  data-series="{{ series.metric_name }}"
+                  class="process-grade-rolling-line metric-{{ series.metric_name }}" />
+        {% endfor %}
       {% endif %}
     {% endfor %}
   </svg>

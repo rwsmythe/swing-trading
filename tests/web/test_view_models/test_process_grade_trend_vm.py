@@ -133,7 +133,7 @@ def test_vm_zero_trades_no_markers_all_suppressed(cfg) -> None:
     for series in vm.rolling_series:
         assert series.is_suppressed is True
         assert series.suppressed_placeholder
-        assert series.svg_polyline_points == ""
+        assert series.svg_polyline_segments == ()
         assert series.is_drawable is False
 
 
@@ -190,7 +190,9 @@ def test_polyline_emitted_when_window_partial_drawable(cfg) -> None:
         s for s in vm.rolling_series if s.metric_name == "process_grade_rolling_N"
     )
     assert process_series.is_drawable is True
-    assert process_series.svg_polyline_points  # non-empty
+    assert process_series.svg_polyline_segments  # non-empty
+    for seg in process_series.svg_polyline_segments:
+        assert seg.count(",") >= 2  # every segment is a >=2-point run
     # Drawability + warnings as SEPARATE distinct fields per lesson #23.
     assert process_series.drawability_text == "rolling line drawable"
     assert process_series.window_not_full_warning_text == "rolling window not yet at N"
@@ -211,7 +213,7 @@ def test_polyline_omitted_when_suppressed(cfg) -> None:
     )
     assert process_series.is_suppressed is True
     assert process_series.is_drawable is False
-    assert process_series.svg_polyline_points == ""
+    assert process_series.svg_polyline_segments == ()
 
 
 def test_grade_axis_labels_carry_numeric_encoding_text(cfg) -> None:
@@ -275,6 +277,6 @@ def test_rolling_series_display_rejects_empty_placeholder_when_suppressed() -> N
             drawability_text=None,
             window_not_full_warning_text=None,
             confidence_floor_warning_text=None,
-            svg_polyline_points="",
+            svg_polyline_segments=(),
             is_drawable=False,
         )

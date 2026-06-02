@@ -112,6 +112,12 @@ def test_process_grade_trend_renders_svg_polyline_when_window_drawable(seeded_db
     # Polyline emitted for the process_grade_rolling_N series.
     assert 'data-series="process_grade_rolling_N"' in r.text
     assert "<polyline points=" in r.text
+    # F-3: the template loops over svg_polyline_segments; the per-segment CSS
+    # class hooks are preserved so gaps render as separate <polyline>s.
+    assert (
+        'class="process-grade-rolling-line metric-process_grade_rolling_N"'
+        in r.text
+    )
 
 
 def test_process_grade_trend_renders_per_trade_circles_always(seeded_db):
