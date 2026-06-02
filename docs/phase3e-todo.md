@@ -8,6 +8,23 @@
 
 ---
 
+## 2026-06-02 #19 PHASE 14 CLOSED -- all feature sub-bundles (SB1-SB5 + SB5.5) + the close-out polish batch + the follow-on bundle SHIPPED end-to-end; schema v23; ~7038 fast tests green; the 3 remaining close-out-tail items MOVED TO PHASE 15 (operator-decided 2026-06-02); CLAUDE.md line-3 compact-summary restructure + orchestrator-context in-flight refresh done in this pass
+
+**PHASE 14 CLOSED 2026-06-02 #19** (operator-decided). Phase 14 -- a UX + wiring + methodological-infrastructure phase (NOT a ruleset-deployment phase, per the 2026-05-27 applied research arc closure) -- lands at **schema v23**, **~7038 fast tests green on main** (`ef4fbf5`), **~700+ commits ZERO Co-Authored-By**, **L2 LOCK preserved (zero re-anchor -- the schwabdev v3 upgrade is the first)**.
+
+**SHIPPED end-to-end (per-cycle records in `#1`-`#18`):** SB1 data-wiring `e323339` · SB2 temporal-log (v22) `27f8007` · SB3 chart-surface (v23) `edd098d` · SB4 review+journal `31da4a5` · SB5 metrics-overview `6206fb6` · SB5.5 Schwab (A-3 + P14.N7) `16b3366` · close-out polish batch (P14.N1 both tables + A-1 + A-2 + A-4 + A-6 + A-7 + group-(a) C-1/C-2/C-3/C-5/C-19) `f2cd376` · follow-on bundle (F-1 web-checker + F-2 trend + F-3 polylines + F-4 spines) `77388b3`. Operator-witnessed gates throughout; two inline gate-fixes (`718c403` hx-target row-collapse; the F-1 `web_cmd` apply_overrides fix that made the web Schwab badge LIVE in normal operation).
+
+**3 remaining close-out-tail items MOVED TO PHASE 15 (operator-decided 2026-06-02):**
+1. **Process-grade-trend chart redesign** (the F-3 re-diagnosis follow-on, `#18`) -- non-grade metrics (`mistake_cost_R` x2, `disqualifying_violation_rate`) overlaid on the A-F grade axis produce confusing plunge-lines; separate panel/scale, restyle/dash, or table-only. Phase-13-era surface; UX polish.
+2. **B-7 operator failure-mode classification** (was the Phase 14 FINAL TOUCH) -- extend the CR.1 review surface for operator-annotated failure reasons; may add a nullable review column (v24) or reuse existing.
+3. **Phase 14 cross-sub-bundle integration review** (Sec 9.1 Q6) -- operator browser-witnessed coherence check across charts + review/journal + metrics overview + the Schwab surface; runs early in Phase 15 as a retrospective integration check.
+
+**"Phase 14 CLOSED" housekeeping (THIS pass):** CLAUDE.md line-3 compact-summary restructure (the giant Phase-14 ledger -> a ~5-10-sentence pointer; full per-cycle history preserved in `#1`-`#18` + `docs/CLAUDE.md-archive.md`) + the "Current baseline" + restructure-note refreshed; orchestrator-context.md in-flight section refreshed to "Phase 14 CLOSED" (was stale to 2026-05-23 #3, pre-Phase-14) + lessons-cap trimmed. Repo cleanup also done this session (64 dead local + 18 stale remote branches pruned; scratch removed).
+
+**PHASE 15 (uncommissioned; tracked):** the schwabdev v2.5.1->3.0.5 upgrade + Fernet (`#9`; first L2-LOCK baseline re-anchor; deletes the daemon checker + P14.N7; F-1's diagnosis feeds it) · B-7 · the process-grade-trend chart redesign · the Phase-14 cross-sub-bundle integration review · B-1..B-8 strategic items (substrate-size, Finviz-widening, cohort-stability, survival-rate, real-time tracking, multi-pattern composites, other-gates market-regime) per `#5` "Phase 15+". Phase 15 commissioning is an operator decision.
+
+---
+
 ## 2026-06-02 #18 Phase 14 close-out FOLLOW-ON bundle EXECUTING-PLANS SHIPPED end-to-end at `77388b3` -- 4 slices; 7038 fast tests green on MERGED main; genuine WSL Codex chain CONVERGED R2; NO schema (v23 held); L2 green; operator-witnessed gate F-1/F-2/F-4 PASS (F-1 web checker now writes a real sidecar -- ORCHESTRATOR-VERIFIED the unseeded server flips Schwab? -> STARTING server-side); F-3 RE-DIAGNOSED (gap-splitting correct but latent; the real plunge-line issue = non-grade metrics on the grade axis -> NEW chart-redesign follow-on banked)
 
 **Follow-on bundle executing-plans SHIPPED end-to-end 2026-06-02 #18** at integration merge `77388b3` of `phase14-close-out-follow-on-bundle-executing-plans` via `--no-ff`. Final branch HEAD `25e7f24` (15 impl/test commits + return report). 24 swing/+tests files (NEW: `test_checker_liveness_install_path.py`, `test_construct_web_schwab_client.py`, `test_create_app_startup_with_overrides.py`, `test_web_cmd_applies_overrides.py`, `test_trend_template_structural.py`, `test_market_weather_live_state.py`, `test_charts_thumbnail_spines.py`, `test_process_grade_trend_segments.py`). **7038 passed / 3 skipped on MERGED main** (`feedback_no_false_green_claim`). ZERO Co-Authored-By. Merge-base `f509a9d`.
@@ -342,16 +359,16 @@
 - [x] SB5.5 (Schwab A-3 + P14.N7): brainstorm `4205b63` -> writing-plans `1bd1558` -> executing-plans `16b3366` (SHIPPED `#10`/`#11`/`#12`)
 - [x] **Close-out polish batch** (P14.N1 BOTH tables [open-positions journal-route reuse + hyp-rec `render_watchlist_thumbnail_svg`] + A-1 + A-2 + A-4 + A-6 + A-7 + group-(a) C-1/C-2/C-3/C-5/C-19): brainstorm `83043ba` -> writing-plans `30ce9d4` -> executing-plans `f2cd376` (SHIPPED `#13`/`#14`/`#15`; orchestrator-inline gate-fix `718c403` = open-positions thumbnail `hx-target` row-collapse)
 - [x] **Close-out FOLLOW-ON bundle** (F-1 P14.N7 web-checker [the A-7 wiring fix -- `web_cmd` now applies `apply_overrides`; the healthy Schwab badge is now LIVE on main] + F-2 market-weather trend live-compute [two-tier `structural_checks`/`structural_stage` helper] + F-3 segmented polylines + F-4 thumbnail spines): brainstorm `6836aa5` -> writing-plans `48fcbfe` -> executing-plans `77388b3` (SHIPPED `#16`/`#17`/`#18`)
-- [ ] **NEW: process-grade-trend chart redesign** (banked `#18`): the non-grade metrics (`mistake_cost_R` x2, `disqualifying_violation_rate`) overlaid on the A-F grade axis produce confusing "plunge-to-F=0" lines -> separate panel/scale, restyle/dash, or table-only. A multi-metric-layout UX decision; Phase-13-era surface; operator-sequenced (may precede B-7 or defer past Phase 14). NOT gap-bridging (F-3's gap-splitting already handles `None`-gaps correctly).
-- [ ] **B-7 operator failure-mode classification** (Phase 14 FINAL TOUCH): extend the CR.1 review surface for operator-annotated failure reasons; assess schema impact at its brainstorm (may add a nullable review column -> v24 STRICT `pre_version`, or reuse existing).
-- [ ] **Phase 14 close-out review** (Sec 9.1 Q6: all merged + operator browser-witnessed cross-sub-bundle integration) -> CLAUDE.md **"Phase 14 CLOSED"** at v23 + the line-3 compact-summary restructure (line-3 is an overdue giant ledger; restructure to a ~5-10-sentence pointer per the orchestrator-context size-check discipline).
+- [-> PHASE 15, `#19`] **process-grade-trend chart redesign** (the F-3 re-diagnosis follow-on) -- MOVED TO PHASE 15 (operator-decided 2026-06-02).
+- [-> PHASE 15, `#19`] **B-7 operator failure-mode classification** (was the Phase 14 FINAL TOUCH) -- MOVED TO PHASE 15 (operator-decided 2026-06-02); assess schema (v24 vs reuse existing) at its Phase-15 brainstorm.
+- [-> PHASE 15, `#19`] **Phase 14 cross-sub-bundle integration review** (Sec 9.1 Q6: operator browser-witnessed coherence across charts + review/journal + metrics overview + the Schwab surface) -- MOVED TO PHASE 15 (operator-decided 2026-06-02); runs early in Phase 15 as a retrospective check.
 
 **DEFERRED / banked (NOT in the remaining tail):**
 - **C-6** (backfill apply-path write-lock narrowing) -- reopens a deliberate `BEGIN IMMEDIATE` TOCTOU + crash-safety ordering (`backfill_trades_sector_industry.py:115-128`); deferred `#14`/`#17`/`#18` to its own follow-up if ever pursued.
 - **A-5** (styled full-page 404) -- CLOSED (operator, no revisit).
 - **schwabdev v2.5.1 -> 3.0.5 upgrade + Fernet** -- PHASE 15 (`#9`); deletes the daemon checker + P14.N7; F-1's diagnosis feeds it; first L2-LOCK baseline re-anchor.
 
-**Remaining Phase 14 close-out tail (3 items):** the process-grade-trend chart redesign (new) -> B-7 (final touch) -> the Sec 9.1 Q6 close-out review -> "Phase 14 CLOSED" at v23. ALL Phase 14 feature sub-bundles + the close-out polish batch + the follow-on bundle are SHIPPED end-to-end.
+**PHASE 14 CLOSED 2026-06-02 (`#19`).** The 3 former close-out-tail items (process-grade-trend chart redesign + B-7 + the Sec 9.1 Q6 cross-sub-bundle integration review) were MOVED TO PHASE 15 (operator-decided 2026-06-02); Phase 14 lands at v23 on the shipped state. ALL Phase 14 feature sub-bundles + the close-out polish batch + the follow-on bundle SHIPPED end-to-end.
 
 ---
 
