@@ -168,7 +168,15 @@ def _construct_web_schwab_client(cfg) -> object | None:
         )
         return None
     if client_id is None or client_secret is None:
-        return None  # silent -- operator not using Schwab
+        log.info(
+            "Web schwab_client construction skipped: Schwab credentials "
+            "absent at the env and cfg tiers (allow_prompt=False); web "
+            "market-data falls back to yfinance. If you use Schwab, set "
+            "integrations.schwab.client_id/client_secret in "
+            "~/swing-data/user-config.toml (the web app now applies "
+            "user-config overrides).",
+        )
+        return None
     try:
         return construct_authenticated_client(
             cfg, environment, client_id=client_id, client_secret=client_secret,
@@ -253,24 +261,78 @@ def _install_web_marketdata_caches(cfg, price_cache, ohlcv_cache) -> object | No
 
     Returns the constructed web Schwab client or None (sandbox / no creds /
     construction failure -> yfinance-only web app, today's behavior). Also
-    installs the P14.N7 resilient checker wrap + seeds one refresh.
+    installs the P14.N7 resilient checker wrap + seeds one refresh, anchoring
+    a STARTING liveness sidecar at install (readback-verified) so the A-7
+    topbar badge flips to STARTING the instant the checker is wired -- even if
+    the seed network call is slow -- and a silent sidecar-write failure
+    surfaces as a WARNING (not the debug-only swallow in CheckerLiveness).
     """
-    client = _construct_web_schwab_client(cfg)
-    if client is None:
-        return None
+    from swing.integrations.schwab.marketdata_ladder import _is_ladder_active
+    ladder_active = _is_ladder_active(cfg)
 
-    # P14.N7: wrap the checker + seed one refresh before serving.
     from swing.integrations.schwab.checker_resilience import (
         CheckerLiveness,
         checker_liveness_sidecar_path,
         install_resilient_checker,
+        read_liveness_sidecar,
     )
     env = cfg.integrations.schwab.environment
+    sidecar_path = checker_liveness_sidecar_path(env)
+
+    client = _construct_web_schwab_client(cfg)
+    if client is None:
+        # Self-contained one-line summary (Codex R1 Minor #1): the specific
+        # None-path reason is logged by _construct_web_schwab_client just above
+        # (creds-absent / creds-partial-raise / construction-raise); this line
+        # ties it to the ladder gate + the sidecar path the badge reads, so the
+        # operator can diagnose from ONE startup line.
+        log.info(
+            "P14.N7 checker install summary: ladder_active=%s "
+            "client_constructed=False (no checker installed; badge UNKNOWN; "
+            "see the construction-skip reason logged immediately above) "
+            "sidecar_path=%s",
+            ladder_active, sidecar_path,
+        )
+        return None
+
+    # P14.N7: wrap the checker + anchor a STARTING sidecar before serving.
     liveness = CheckerLiveness(
         installed_ts=_time.time(),
-        sidecar_path=checker_liveness_sidecar_path(env),
+        sidecar_path=sidecar_path,
     )
     install_resilient_checker(client, liveness=liveness)
+
+    # Install-anchored STARTING write (independent of the seed network timing)
+    # + readback-verify. record_tick("seed") writes the sidecar; the readback
+    # turns CheckerLiveness's debug-only write swallow into a visible WARNING
+    # so a Class-B path/permission failure is no longer invisible.
+    #
+    # Codex R1 Major: the readback MUST prove it read back THIS install's write,
+    # not a stale sidecar from a prior run. A bare `is not None` would falsely
+    # report readback OK when the new STARTING write failed silently but an old
+    # sidecar still sits at the path -- masking Class B exactly where the fix is
+    # meant to expose it. Tie the readback to liveness.installed_ts (the install
+    # stamped it onto the just-written sidecar via record_tick("seed")).
+    liveness.record_tick("seed")
+    _readback = read_liveness_sidecar(sidecar_path)
+    readback_ok = (
+        _readback is not None
+        and _readback.get("installed_ts") == liveness.installed_ts
+    )
+    if not readback_ok:
+        log.warning(
+            "P14.N7 checker liveness sidecar readback FAILED at %s -- this "
+            "install's STARTING write did not persist (write failed, or only a "
+            "stale sidecar from a prior run is present; check path/permissions "
+            "under the web process); the topbar badge will read UNKNOWN.",
+            sidecar_path,
+        )
+    log.info(
+        "P14.N7 checker install summary: ladder_active=%s "
+        "client_constructed=True sidecar_path=%s starting_write_readback=%s",
+        ladder_active, sidecar_path, readback_ok,
+    )
+
     client.tokens.update_tokens()  # seed (origin='seed'; exception-isolated by the wrap)
 
     from swing.data.db import connect

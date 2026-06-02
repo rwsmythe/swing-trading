@@ -26,7 +26,10 @@ from swing.data.repos.candidates import (
 from swing.data.repos.pipeline import set_evaluation_run_id
 from swing.pipeline.lease import acquire_lease
 from swing.pipeline.runner import _step_charts
-from swing.web.ohlcv_cache import MIN_CALENDAR_DAYS_FOR_MA200
+from swing.web.ohlcv_cache import (
+    MIN_CALENDAR_DAYS_FOR_MA200,
+    MIN_CALENDAR_DAYS_FOR_TREND_TEMPLATE,
+)
 from tests.cli.test_cli_eval import _minimal_config
 
 
@@ -182,14 +185,19 @@ def test_step_charts_calls_ohlcv_cache_get_or_fetch_not_legacy_fetcher_get(
     # Benchmark ticker fetched exactly once for market_weather surface.
     benchmark = cfg.rs.benchmark_ticker.upper()
     assert tickers_called.count(benchmark) == 1, tickers_called
-    # Phase 14 close-out (A-1): both the classifier per-ticker consume
-    # (runner.py:2694) and _bars_or_none (market_weather + write-through,
-    # runner.py:2763) now use MIN_CALENDAR_DAYS_FOR_MA200 (300) so a 200-MA
-    # has enough bars.
+    # Phase 14 close-out (A-1): the classifier per-ticker consume + the
+    # chart-target / write-through fetches use MIN_CALENDAR_DAYS_FOR_MA200 (300)
+    # so a 200-MA has enough bars. F-2 widened the market_weather/benchmark
+    # fetch to MIN_CALENDAR_DAYS_FOR_TREND_TEMPLATE (390) so structural_stage has
+    # TT3's 200MA-rising history (the display frame is then sliced to MA200).
     windows = sorted({w for (_t, w) in spy.calls})
-    assert windows == [MIN_CALENDAR_DAYS_FOR_MA200], (
-        f"window_days: all chart fetches use {MIN_CALENDAR_DAYS_FOR_MA200}; "
-        f"got {windows}"
+    assert windows == [
+        MIN_CALENDAR_DAYS_FOR_MA200,
+        MIN_CALENDAR_DAYS_FOR_TREND_TEMPLATE,
+    ], (
+        f"window_days: chart/classifier fetches use "
+        f"{MIN_CALENDAR_DAYS_FOR_MA200}, the market_weather fetch uses "
+        f"{MIN_CALENDAR_DAYS_FOR_TREND_TEMPLATE}; got {windows}"
     )
 
 

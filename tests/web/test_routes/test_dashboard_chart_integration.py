@@ -480,11 +480,12 @@ def test_weather_refresh_calls_get_or_fetch_with_ticker_kwarg(
         "get_or_fetch must be invoked with KEYWORD ticker= argument, "
         "not positional list (V2.G4 root cause)"
     )
-    # Phase 14 close-out (A-1): the refresh now also passes the widened
-    # window_days so the market-weather 200-MA has enough bars.
-    from swing.web.ohlcv_cache import MIN_CALENDAR_DAYS_FOR_MA200
+    # F-2 (Phase 14 close-out follow-on): the refresh now fetches the WIDE
+    # COMPUTE window (structural_stage needs TT3's 200MA-rising history); the
+    # display frame is sliced down to MA200 afterwards.
+    from swing.web.ohlcv_cache import MIN_CALENDAR_DAYS_FOR_TREND_TEMPLATE
     assert call_kwargs == {
-        "ticker": "SPY", "window_days": MIN_CALENDAR_DAYS_FOR_MA200,
+        "ticker": "SPY", "window_days": MIN_CALENDAR_DAYS_FOR_TREND_TEMPLATE,
     }
 
 

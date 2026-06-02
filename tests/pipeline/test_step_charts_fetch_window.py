@@ -10,7 +10,10 @@ from dataclasses import replace
 import swing.pipeline.runner as runner_mod
 from swing.pipeline.lease import acquire_lease
 from swing.pipeline.runner import _step_charts
-from swing.web.ohlcv_cache import MIN_CALENDAR_DAYS_FOR_MA200
+from swing.web.ohlcv_cache import (
+    MIN_CALENDAR_DAYS_FOR_MA200,
+    MIN_CALENDAR_DAYS_FOR_TREND_TEMPLATE,
+)
 from tests.pipeline.test_step_charts_ohlcv_cache_wiring import (
     _make_cfg,
     _ohlcv,
@@ -57,7 +60,10 @@ def test_step_charts_market_weather_window_and_bars(tmp_path, monkeypatch):
         ohlcv_cache=_FakeCache(),
     )
 
-    # The benchmark/market_weather fetch (_bars_or_none) uses the widened window.
+    # F-2: the market_weather fetch uses the WIDE compute window (structural_stage
+    # needs TT3's 200MA-rising history); the chart-target fetches still use MA200.
+    assert MIN_CALENDAR_DAYS_FOR_TREND_TEMPLATE in captured_windows
     assert MIN_CALENDAR_DAYS_FOR_MA200 in captured_windows
-    # Binding (Codex M#5): >=200 bars REACH the renderer.
+    # Binding (Codex M#5): >=200 bars REACH the renderer (the sliced display
+    # window still carries a full 200-MA line).
     assert seen["bars_len"] >= 200

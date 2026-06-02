@@ -549,6 +549,12 @@ def render_watchlist_thumbnail_svg(
                    color="#888", width=1.0)
     ax_vol.set_xticks([])
     ax_vol.set_yticks([])
+    # F-4 (Phase 14 close-out follow-on): hide the axes spines on BOTH sub-axes
+    # so the hyp-rec / watchlist thumbnails have no black box border.
+    for _spine in ax_price.spines.values():
+        _spine.set_visible(False)
+    for _spine in ax_vol.spines.values():
+        _spine.set_visible(False)
     return _svg_bytes_from_fig(fig)
 
 

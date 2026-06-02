@@ -1,7 +1,9 @@
 """Phase 14 close-out (A-1) — the dashboard weather-chart refresh handler
-fetches >=200 trading bars (~300 calendar days) so the market-weather 200-MA
-renders as a full line. Production-path: drives the REAL POST handler + REAL
-render_market_weather_svg; only the OHLCV-fetch boundary is faked.
+fetches the COMPUTE window (>= MIN_CALENDAR_DAYS_FOR_TREND_TEMPLATE; F-2 widened
+this from MIN_CALENDAR_DAYS_FOR_MA200 so structural_stage has TT3's 200MA-rising
+history) and displays the sliced MIN_CALENDAR_DAYS_FOR_MA200 window so the
+200-MA renders as a full line. Production-path: drives the REAL POST handler +
+REAL render_market_weather_svg; only the OHLCV-fetch boundary is faked.
 """
 from __future__ import annotations
 
@@ -11,7 +13,7 @@ from fastapi.testclient import TestClient
 import swing.web.routes.dashboard as dash
 from swing.data.db import connect
 from swing.web.app import create_app
-from swing.web.ohlcv_cache import MIN_CALENDAR_DAYS_FOR_MA200
+from swing.web.ohlcv_cache import MIN_CALENDAR_DAYS_FOR_TREND_TEMPLATE
 from tests.web.test_routes.test_dashboard_chart_integration import (
     _seed_complete_run,
 )
@@ -64,6 +66,9 @@ def test_weather_refresh_fetches_min_calendar_days_and_bars_reach_renderer(
             headers={"HX-Request": "true"},
         )
     assert resp.status_code == 204, resp.text
-    assert captured["window_days"] == MIN_CALENDAR_DAYS_FOR_MA200
-    # Binding (Codex M#5): >=200 bars REACH the renderer.
+    # F-2: the refresh fetches the WIDE compute window (structural_stage needs
+    # TT3's 200MA-rising history); the display frame is sliced down to ~MA200.
+    assert captured["window_days"] == MIN_CALENDAR_DAYS_FOR_TREND_TEMPLATE
+    # Binding (Codex M#5): >=200 bars REACH the renderer (the sliced display
+    # window still carries a full 200-MA line).
     assert seen["bars_len"] >= 200
