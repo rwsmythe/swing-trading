@@ -413,11 +413,12 @@ def test_expand_route_500_row_target_renders_colspan_9(
 ):
     """Codex R2 Major-2 — when the global exception handler renders
     `trade_form_error.html.j2` for a `hyp-rec-row-*` target, the <td>
-    must be `colspan="9"` to match the 9-column hyp-recs table layout.
+    must be `colspan="10"` to match the 10-column hyp-recs table layout
+    (Phase 14 close-out P14.N1 added the Chart column: 9 -> 10).
 
     Discriminating: pre-fix `trade_form_error.html.j2` hardcodes
-    `colspan="8"`, which leaves a 1-cell short row in a 9-col table
-    on every hyp-recs-row server-error swap.
+    `colspan="8"`, which leaves a short row on every hyp-recs-row
+    server-error swap.
     """
     cfg, cfg_path = seeded_db
     _seed_hyp_recs_fixture(cfg)
@@ -444,9 +445,9 @@ def test_expand_route_500_row_target_renders_colspan_9(
         )
     assert resp.status_code == 500, resp.text
     body = resp.text
-    assert 'colspan="9"' in body, (
-        "hyp-rec-row-* row-target error fragment must render colspan=9 "
-        "(9-col hyp-recs table); pre-fix renders colspan=8.\nBody:\n"
+    assert 'colspan="10"' in body, (
+        "hyp-rec-row-* row-target error fragment must render colspan=10 "
+        "(10-col hyp-recs table); pre-fix renders colspan=8.\nBody:\n"
         + body[:600]
     )
     assert 'colspan="8"' not in body, (
@@ -968,7 +969,8 @@ def test_entry_form_origin_hyp_recs_renders_colspan_9_and_refresh_cancel(
     seeded_db, monkeypatch,
 ):
     """Spec §3.8b.1 R3-Major-1 — when ?origin=hyp-recs, form renders
-    colspan=9 + Cancel /hyp-recs/refresh.
+    colspan=10 + Cancel /hyp-recs/refresh (Phase 14 close-out P14.N1 added
+    the Chart column: 9 -> 10).
 
     Discriminating: pre-fix path renders colspan=8 + watchlist Cancel
     regardless of the query param.
@@ -984,8 +986,8 @@ def test_entry_form_origin_hyp_recs_renders_colspan_9_and_refresh_cancel(
         )
     assert resp.status_code == 200, resp.text
     body = resp.text
-    assert 'colspan="9"' in body, (
-        "?origin=hyp-recs must render colspan=9 (R3-Major-1)"
+    assert 'colspan="10"' in body, (
+        "?origin=hyp-recs must render colspan=10 (R3-Major-1 + P14.N1)"
     )
     assert "/hyp-recs/refresh" in body, (
         "?origin=hyp-recs Cancel must target /hyp-recs/refresh"
@@ -1292,9 +1294,10 @@ def test_validation_error_rerender_preserves_origin(seeded_db, monkeypatch):
         )
     assert resp.status_code == 400, resp.text
     body = resp.text
-    assert 'colspan="9"' in body, (
+    assert 'colspan="10"' in body, (
         "validation-error re-render must preserve origin=hyp-recs"
-        " (colspan=9; pre-fix would default to colspan=8)"
+        " (colspan=10 after P14.N1 Chart column; pre-fix would default to"
+        " colspan=8)"
     )
     assert "/hyp-recs/refresh" in body, (
         "validation-error re-render Cancel must target /hyp-recs/refresh"
@@ -1349,9 +1352,10 @@ def test_duplicate_open_position_rerender_preserves_origin(
         )
     assert resp.status_code == 400, resp.text
     body = resp.text
-    assert 'colspan="9"' in body, (
+    assert 'colspan="10"' in body, (
         "duplicate-position re-render must preserve origin=hyp-recs"
-        " (colspan=9; pre-fix would default to colspan=8)"
+        " (colspan=10 after P14.N1 Chart column; pre-fix would default to"
+        " colspan=8)"
     )
     assert "/hyp-recs/refresh" in body, (
         "duplicate-position re-render Cancel must target /hyp-recs/refresh"
@@ -1427,10 +1431,10 @@ def test_soft_warn_confirm_round_trips_origin(seeded_db, monkeypatch):
     assert "/hyp-recs/refresh" in body, (
         "soft-warn confirm Cancel must target /hyp-recs/refresh"
     )
-    assert 'colspan="9"' in body, (
-        "soft-warn confirm fragment must render colspan=9 when origin="
-        "hyp-recs (R1-Major-1); pre-fix renders colspan=8 — visually"
-        " broken inside the 9-cell hyp-recs table"
+    assert 'colspan="10"' in body, (
+        "soft-warn confirm fragment must render colspan=10 when origin="
+        "hyp-recs (R1-Major-1 + P14.N1 Chart column: 9 -> 10); pre-fix"
+        " renders colspan=8 — visually broken inside the hyp-recs table"
     )
 
 

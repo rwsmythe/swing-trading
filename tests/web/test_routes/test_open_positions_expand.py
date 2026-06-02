@@ -604,14 +604,15 @@ def test_open_position_row_target_500_renders_colspan_10(
 ):
     """Codex R3 Major-1 — when the global exception handler renders
     `trade_form_error.html.j2` for an `open-position-*` HX-Target, the <td>
-    must be `colspan="10"` to match the 10-column open-positions table
-    layout (Ticker / Entry date / Entry price / Shares / Current stop /
-    Last / Sector / Industry / Advisory / Actions).
+    must be `colspan="11"` to match the 11-column open-positions table
+    layout (Chart / Ticker / Entry date / Entry price / Shares / Current
+    stop / Last / Sector / Industry / Advisory / Actions; Chart added in
+    Phase 14 close-out P14.N1: 10 -> 11).
 
     Discriminating: pre-fix `_row_error_colspan` returned 9 for
     `hyp-rec-row-*` and 8 for everything else (including
-    `open-position-*`), leaving a 2-cell short row in the 10-col
-    open-positions table on every server-error swap.
+    `open-position-*`), leaving a short row in the open-positions table
+    on every server-error swap.
     """
     cfg, cfg_path = seeded_db
     trade_id = _seed_in_scope_trade(cfg, ticker="AAPL")
@@ -637,9 +638,9 @@ def test_open_position_row_target_500_renders_colspan_10(
         )
     assert resp.status_code == 500, resp.text
     body = resp.text
-    assert 'colspan="10"' in body, (
-        "open-position-* row-target error fragment must render colspan=10 "
-        "(10-col open-positions table); pre-fix renders colspan=8.\nBody:\n"
+    assert 'colspan="11"' in body, (
+        "open-position-* row-target error fragment must render colspan=11 "
+        "(11-col open-positions table); pre-fix renders colspan=8.\nBody:\n"
         + body[:600]
     )
 
