@@ -780,16 +780,20 @@ def test_structural_stage_semantic_is_tt1_tt5_only_acceptance():
     current_stage's 8/8 trend_template definition (foundation.py:750-789). This
     is intentional: TT6/TT7 (52w high/low) + TT8 (RS rank) are stock-selection
     criteria, not meaningful for the index benchmark vs itself. This test pins
-    the documented divergence so a future reader does not assume label parity.
-    A series that passes TT1-TT5 but would FAIL a 52w-high check (TT7) still
-    classifies stage_2 here -- by design."""
-    # An uptrend that just made a new high passes TT1-TT5 -> stage_2, regardless
-    # of TT6/TT7/TT8 (which structural_stage does not consult).
+    the documented divergence so a future reader does not assume label parity:
+    structural_stage consults EXACTLY the 5 structural checks (TT1-TT5), never
+    the 8 that current_stage requires."""
+    from swing.evaluation.criteria.trend_template import (
+        CHECK_NAMES, structural_checks,
+    )
     closes = _uptrend_closes(260)
+    checks = structural_checks(closes, rising_period=21)
+    # The decisive, verifiable divergence: 5 checks (TT1-TT5), not 8.
+    assert len(checks) == 5
+    assert [c.name for c in checks] == list(CHECK_NAMES[:5])
+    # And TT6/TT7/TT8 are NEVER consulted by the regime label.
+    assert all(c.name not in CHECK_NAMES[5:] for c in checks)
     assert structural_stage(closes, rising_period=21) == "stage_2"
-    # structural_stage consults exactly 5 checks (TT1-TT5), never TT6-TT8.
-    from swing.evaluation.criteria.trend_template import structural_checks
-    assert len(structural_checks(closes, rising_period=21)) == 5
 
 
 def test_evaluate_byte_identical_tt1_tt5_for_uptrend():
@@ -1225,36 +1229,54 @@ def test_display_slice_narrows_compute_frame():
 from fastapi.testclient import TestClient
 
 
-def test_dashboard_refresh_route_renders_defined_trend(monkeypatch, _app_fixture):
-    # Re-grep at STEP 0: the refresh route path + how ohlcv_cache is reached
-    # (request.app.state.ohlcv_cache). Monkeypatch the cache's get_or_fetch to
-    # return _uptrend_frame(260) so the REAL route computes the state live.
+def test_dashboard_refresh_route_computes_defined_trend(monkeypatch, _app_fixture):
+    # Codex R2 Major #1: the refresh route returns 204 + HX-Redirect and
+    # PERSISTS the SVG (it does NOT return the SVG in the body) -- so spy the
+    # renderer and assert the trend_template_state kwarg, mirroring the existing
+    # tests/web/test_weather_trend_state.py + test_market_weather_fetch_window.py.
+    # Re-grep at STEP 0: the refresh route path, the web-app fixture, and the
+    # render_market_weather_svg import site in routes/dashboard.py.
     app = _app_fixture  # the project's web app fixture (migrated tmp DB)
     monkeypatch.setattr(
         type(app.state.ohlcv_cache), "get_or_fetch",
         lambda self, *, ticker, window_days: _uptrend_frame(260),
     )
+    captured = {}
+    import swing.web.routes.dashboard as dash_mod
+
+    def _spy_render(*, bars, trend_template_state):
+        captured["state"] = trend_template_state
+        return b"<svg/>"
+
+    monkeypatch.setattr(dash_mod, "render_market_weather_svg", _spy_render)
     with TestClient(app) as client:
         resp = client.post("<refresh-route-path>")  # re-grep the exact path
-    assert resp.status_code == 200
-    # The rendered market-weather SVG carries the DEFINED trend (NOT undefined).
-    body = resp.content.decode("utf-8", "replace")
-    assert "trend: stage_2" in body
-    assert "trend: undefined" not in body
+    assert resp.status_code == 204  # 204 + HX-Redirect, NOT 200 + body
+    assert captured["state"] == "stage_2"  # the DEFINED live trend (F-2)
 
 
 def test_pipeline_step_charts_market_weather_uses_structural_stage(monkeypatch):
-    # Re-grep at STEP 0 the _step_charts harness used by existing pipeline
-    # chart tests. Assert that with a healthy benchmark fetch the persisted
-    # market_weather ChartRender's SVG carries 'trend: stage_2' (the live
-    # structural_stage path), NOT 'trend: undefined'. If a full _step_charts
-    # run is heavy, assert at minimum that runner imports + calls
-    # structural_stage (NOT current_stage) for the market_weather block via a
-    # spy on swing.evaluation.criteria.trend_template.structural_stage.
+    # Codex R2 Major #2: runner.py imports structural_stage at module load, so
+    # spy swing.pipeline.runner.structural_stage (NOT the source module) OR
+    # assert via the captured render_market_weather_svg kwarg / the persisted
+    # market_weather ChartRender's SVG carrying 'trend: stage_2'. Re-grep at
+    # STEP 0 the existing _step_charts pipeline-test harness.
+    import swing.pipeline.runner as runner_mod
+    captured = {}
+    real = runner_mod.structural_stage
+
+    def _spy(closes, *, rising_period):
+        captured["called"] = True
+        return real(closes, rising_period=rising_period)
+
+    monkeypatch.setattr(runner_mod, "structural_stage", _spy)
+    # ... drive the _step_charts market_weather block via the existing harness
+    # with a healthy benchmark fetch; assert captured["called"] is True AND the
+    # persisted market_weather ChartRender SVG contains 'trend: stage_2'.
     ...  # implementer fills from the existing _step_charts test harness
 ```
 
-> **Implementer note:** re-grep at STEP 0 the EXACT refresh-route path + the existing web-app test fixture (TestClient + migrated tmp DB) and the existing `_step_charts` pipeline-test harness. These two call-site tests are REQUIRED (not optional) — they are the #15 production-path assertions the gate's S5 mirrors, and they fail if either site is left on `current_stage`. The web-route test monkeypatches `get_or_fetch` (the real cache surface), NOT `structural_stage`.
+> **Implementer note:** re-grep at STEP 0 the EXACT refresh-route path + the existing web-app test fixture (TestClient + migrated tmp DB), the `render_market_weather_svg` import name in `routes/dashboard.py` (spy target), and the existing `_step_charts` pipeline-test harness. These two call-site tests are REQUIRED (not optional) — they are the #15 production-path assertions the gate's S5 mirrors, and they fail if either site is left on `current_stage`. The web-route test monkeypatches `get_or_fetch` (the real cache surface) + spies the renderer (the route persists, it does not return the SVG). The pipeline spy MUST target `swing.pipeline.runner.structural_stage` (the imported-at-load symbol), not the source module.
 
 - [ ] **Step 3: Run to verify (pre-implementation fails on import; post-F2.1/F2.2/F2.3/F2.4 passes).**
 
