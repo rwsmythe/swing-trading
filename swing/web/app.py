@@ -306,13 +306,25 @@ def _install_web_marketdata_caches(cfg, price_cache, ohlcv_cache) -> object | No
     # + readback-verify. record_tick("seed") writes the sidecar; the readback
     # turns CheckerLiveness's debug-only write swallow into a visible WARNING
     # so a Class-B path/permission failure is no longer invisible.
+    #
+    # Codex R1 Major: the readback MUST prove it read back THIS install's write,
+    # not a stale sidecar from a prior run. A bare `is not None` would falsely
+    # report readback OK when the new STARTING write failed silently but an old
+    # sidecar still sits at the path -- masking Class B exactly where the fix is
+    # meant to expose it. Tie the readback to liveness.installed_ts (the install
+    # stamped it onto the just-written sidecar via record_tick("seed")).
     liveness.record_tick("seed")
-    readback_ok = read_liveness_sidecar(sidecar_path) is not None
+    _readback = read_liveness_sidecar(sidecar_path)
+    readback_ok = (
+        _readback is not None
+        and _readback.get("installed_ts") == liveness.installed_ts
+    )
     if not readback_ok:
         log.warning(
-            "P14.N7 checker liveness sidecar readback FAILED at %s -- the "
-            "STARTING write did not persist (check path/permissions under the "
-            "web process); the topbar badge will read UNKNOWN.",
+            "P14.N7 checker liveness sidecar readback FAILED at %s -- this "
+            "install's STARTING write did not persist (write failed, or only a "
+            "stale sidecar from a prior run is present; check path/permissions "
+            "under the web process); the topbar badge will read UNKNOWN.",
             sidecar_path,
         )
     log.info(
