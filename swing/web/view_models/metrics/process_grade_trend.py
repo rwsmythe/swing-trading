@@ -88,10 +88,10 @@ class RollingSeriesDisplay:
     drawability_text: str | None
     window_not_full_warning_text: str | None
     confidence_floor_warning_text: str | None
-    # SVG polyline points string ("x1,y1 x2,y2 ..."); empty when not
-    # drawable.
-    svg_polyline_points: str
-    # Whether the rolling-line polyline is renderable.
+    # SVG polyline points strings, one per contiguous non-None run; () when
+    # not drawable (a single <polyline> cannot bridge a None gap; F-3).
+    svg_polyline_segments: tuple[str, ...]
+    # Whether at least one >=2-point rolling-line segment is renderable.
     is_drawable: bool
 
     def __post_init__(self) -> None:
@@ -259,7 +259,7 @@ def _polyline_y(
     return float(margin_top) + plot_height * (1.0 - normalized)
 
 
-def _format_polyline_points(
+def _format_polyline_segments(
     line_points: tuple[RollingLinePoint, ...],
     *,
     total_points: int,
@@ -271,16 +271,26 @@ def _format_polyline_points(
     margin_right: int,
     margin_top: int,
     margin_bottom: int,
-) -> str:
-    """SVG polyline ``points`` attribute string ``"x1,y1 x2,y2 ..."``.
+) -> tuple[str, ...]:
+    """SVG polyline ``points`` strings, ONE per contiguous non-None run.
 
-    Skips positions where the rolling-mean is None (operational <3 floor)
-    so the polyline draws across contiguous defined segments. Returns ""
-    when no points are defined.
+    A single ``<polyline>`` cannot contain a break, so a None gap in the
+    rolling-mean series (operational <3 floor) must split into multiple
+    polyline elements -- otherwise the line bridges the gap with a straight
+    diagonal. Runs of a single defined point are dropped (one point is not a
+    line). Returns () when no >=2-point run exists.
     """
-    pieces: list[str] = []
+    segments: list[str] = []
+    current: list[str] = []
+
+    def _flush() -> None:
+        if len(current) >= 2:
+            segments.append(" ".join(current))
+        current.clear()
+
     for p in line_points:
         if p.value is None:
+            _flush()
             continue
         x = _polyline_x(
             p.ordinal,
@@ -297,8 +307,9 @@ def _format_polyline_points(
             margin_top=margin_top,
             margin_bottom=margin_bottom,
         )
-        pieces.append(f"{x:.2f},{y:.2f}")
-    return " ".join(pieces)
+        current.append(f"{x:.2f},{y:.2f}")
+    _flush()
+    return tuple(segments)
 
 
 def _y_axis_bounds_for_metric(
@@ -349,7 +360,7 @@ def _build_rolling_display(
             drawability_text=None,
             window_not_full_warning_text=None,
             confidence_floor_warning_text=None,
-            svg_polyline_points="",
+            svg_polyline_segments=(),
             is_drawable=False,
         )
 
@@ -358,7 +369,7 @@ def _build_rolling_display(
         series.badges, drawability_text=series.drawability_text,
     )
     y_min, y_max = _y_axis_bounds_for_metric(metric_name, series.line_points)
-    polyline_points = _format_polyline_points(
+    segments = _format_polyline_segments(
         series.line_points,
         total_points=total_points,
         y_min=y_min,
@@ -370,12 +381,12 @@ def _build_rolling_display(
         margin_top=margin_top,
         margin_bottom=margin_bottom,
     )
-    # Drawability gate: ``drawability_text='rolling line drawable'``
-    # means the §5.4 line band has fired. The polyline may still be empty
-    # when fewer than 3 contiguous non-None rolling-mean positions exist.
+    # Drawability gate: ``drawability_text='rolling line drawable'`` means the
+    # §5.4 line band has fired AND at least one >=2-point segment must survive
+    # (else the template would emit an empty <polyline> set; F-3).
     is_drawable = (
         drawability == "rolling line drawable"
-        and bool(polyline_points)
+        and bool(segments)
     )
     return RollingSeriesDisplay(
         metric_name=metric_name,
@@ -388,7 +399,7 @@ def _build_rolling_display(
         drawability_text=drawability,
         window_not_full_warning_text=window_text,
         confidence_floor_warning_text=floor_text,
-        svg_polyline_points=polyline_points,
+        svg_polyline_segments=segments,
         is_drawable=is_drawable,
     )
 
