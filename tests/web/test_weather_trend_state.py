@@ -210,7 +210,7 @@ def _refresh_df() -> pd.DataFrame:
 
 
 class _RefreshStubOhlcvCache:
-    def get_or_fetch(self, *, ticker):
+    def get_or_fetch(self, *, ticker, window_days=180):
         return _refresh_df()
 
     def is_degraded(self):
