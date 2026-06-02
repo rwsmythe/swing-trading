@@ -2580,6 +2580,7 @@ def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data_asof: str,
     _walltime_start = time.monotonic()
     from swing.data.repos.candidates import fetch_candidates_for_run
     from swing.data.repos.trades import list_open_trades  # NEW (Task 5)
+
     # Phase 14 close-out (A-1): imported lazily (NOT module-top) -- a module-top
     # `from swing.web.ohlcv_cache import ...` creates a runner<->ohlcv_cache
     # import cycle (ohlcv_cache imports swing.pipeline -> __init__ imports
