@@ -2149,8 +2149,10 @@ class DailyManagementTileVM:
     # Freshly-resolved denominator at render time (via
     # equity_resolver.resolve_live_capital_denominator_dollars).
     position_capital_denominator_dollars_resolved: float = 0.0
-    # True iff freshly-resolved state == "PROVISIONAL".
-    position_capital_utilization_is_provisional: bool = True
+    # True iff freshly-resolved state == "PROVISIONAL". Defaults False (LIVE):
+    # the builder sets the real PROVISIONAL state explicitly, so an omitting
+    # caller must not be silently marked PROVISIONAL (C-1).
+    position_capital_utilization_is_provisional: bool = False
     # The utilization to render: stored when denominators match
     # (math.isclose rel_tol=1e-9); recomputed via
     # swing.trades.daily_management.compute_position_capital_utilization

@@ -755,3 +755,35 @@ def test_template_file_is_ascii_only():
         / "partials" / "daily_management_tile.html.j2"
     )
     tpl_path.read_text(encoding="utf-8").encode("ascii")
+
+
+# -- Phase 14 close-out group-(a): C-1 default + C-2 tooltip wording ----------
+
+def test_daily_management_tile_provisional_defaults_false():
+    """C-1: position_capital_utilization_is_provisional defaults to False
+    (LIVE) -- a freshly-resolved PROVISIONAL state is set explicitly by the
+    builder; the dataclass default must not silently mark omitting callers
+    PROVISIONAL."""
+    from dataclasses import fields
+    fmap = {f.name: f for f in fields(_P14N3_DailyManagementTileVM)}
+    assert (
+        fmap["position_capital_utilization_is_provisional"].default is False
+    )
+
+
+def test_provisional_tooltip_wording_says_session_date_not_today(
+    p14n3_jinja_env,
+):
+    """C-2: the PROVISIONAL help tooltip says LIVE clears when the snapshot
+    covers THIS ROW'S session date (the accurate condition), not 'today'
+    (misleading on weekends/evenings)."""
+    vm = _P14N3_MagicMock()
+    vm.daily_management_tiles = [_build_p14n3_tile_vm(
+        is_provisional=True, util_pct_effective=0.15,
+    )]
+    tmpl = p14n3_jinja_env.get_template(
+        "partials/daily_management_tile.html.j2",
+    )
+    rendered = tmpl.render(vm=vm)
+    assert "covers this row's session date" in rendered
+    assert "covers today" not in rendered
