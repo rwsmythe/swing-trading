@@ -690,6 +690,25 @@ def _redacted_excerpt(exc: BaseException, *, max_chars: int = 80) -> str:
     return redacted[:max_chars]
 
 
+def _raise_on_auth(auth_url: str) -> None:
+    """Injected as ``call_on_auth`` on the NON-setup construction paths. v3 would
+    otherwise prompt interactively (``input()`` / browser launch) at construction
+    when the tokens row is missing/stale; raise a clean catchable error instead.
+
+    Defense-in-depth ONLY -- the comprehensive preflight
+    (``_assert_v3_tokens_db_loadable_or_raise``) is the PRIMARY defense (it runs
+    BEFORE construction so this callback normally never fires). schwabdev's
+    ``_update_refresh_token`` runs ``BEGIN EXCLUSIVE`` with NO try/finally around
+    ``call_for_auth`` (tokens.py:395-422), so raising here SKIPS schwabdev's
+    rollback and holds the lock until the partially-constructed object is
+    collected; callers MUST ``del`` the construction frame + ``gc.collect()``.
+    """
+    raise SchwabAuthError(
+        401,
+        "<tokens expired/invalid; run `swing schwab logout` then `swing schwab setup`>",
+    )
+
+
 def construct_authenticated_client(
     cfg: Any,
     environment: str,
@@ -760,6 +779,8 @@ def construct_authenticated_client(
             callback_url=cfg.integrations.schwab.callback_url,
             tokens_db=str(tokens_path),
             timeout=int(cfg.integrations.schwab.timeout_seconds),
+            call_on_auth=_raise_on_auth,
+            open_browser_for_auth=False,
         )
 
     # Silent-failure defense (D1 hotfix pattern).
@@ -1862,6 +1883,8 @@ def force_refresh(
                 callback_url=cfg.integrations.schwab.callback_url,
                 tokens_db=str(tokens_path),
                 timeout=int(cfg.integrations.schwab.timeout_seconds),
+                call_on_auth=_raise_on_auth,
+                open_browser_for_auth=False,
             )
             # Codex R1 Major #1 (parity with D1 setup hotfix) — capture
             # the pre-call access_token so we can detect schwabdev

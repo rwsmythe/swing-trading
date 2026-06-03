@@ -42,3 +42,32 @@ def test_construct_authenticated_client_passes_tokens_db(monkeypatch, tmp_path) 
     # Post-fix path: captured has 'tokens_db'; 'tokens_file' absent -> PASS.
     assert "tokens_db" in captured
     assert "tokens_file" not in captured
+
+
+def test_nonsetup_sites_pass_raise_on_auth_and_no_browser(monkeypatch, tmp_path) -> None:
+    captured: dict = {}
+    monkeypatch.setattr(
+        auth, "_resolve_tokens_db_path", lambda env: tmp_path / "schwab-tokens.production.db"
+    )
+    # Robust across Slice 2: once the preflight (Task 2.6) is wired before construction,
+    # no-op it so this test still reaches the Client() call to inspect its kwargs.
+    monkeypatch.setattr(
+        auth, "_assert_v3_tokens_db_loadable_or_raise", lambda *a, **k: None, raising=False
+    )
+    with patch.object(schwabdev, "Client", _fake_client_capture(captured)):
+        try:
+            auth.construct_authenticated_client(_FakeCfg(), "production", "id", "secret")
+        except Exception:
+            pass
+    # Pre-fix: captured lacks call_on_auth / open_browser_for_auth -> FAIL.
+    # Post-fix: both present; open_browser_for_auth is False; call_on_auth is callable.
+    assert captured.get("open_browser_for_auth") is False
+    assert callable(captured.get("call_on_auth"))
+
+
+def test_raise_on_auth_raises_schwab_auth_error() -> None:
+    import pytest
+
+    from swing.integrations.schwab.auth import SchwabAuthError, _raise_on_auth
+    with pytest.raises(SchwabAuthError):
+        _raise_on_auth("https://example/auth-url")  # never prompts; always raises
