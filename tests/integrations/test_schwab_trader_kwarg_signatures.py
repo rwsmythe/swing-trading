@@ -28,18 +28,45 @@ def _kwarg_names(method) -> set[str]:
     return {name for name in sig.parameters if name != "self"}
 
 
-def test_account_linked_no_kwargs_required() -> None:
-    """`Client.account_linked()` takes no parameters beyond self.
+def test_linked_accounts_no_kwargs_required() -> None:
+    """`Client.linked_accounts()` takes no parameters beyond self (v3 rename of
+    account_linked; same REST path /trader/v1/accounts/accountNumbers).
 
     Wrapper at swing/integrations/schwab/trader.py:270 invokes as
-    `client.account_linked()` — no kwargs to validate.
+    `client.linked_accounts()` -- no kwargs to validate.
     """
-    sig = inspect.signature(schwabdev.Client.account_linked)
-    params = [p for p in sig.parameters if p != "self"]
-    assert params == [], (
-        f"Schwabdev account_linked signature changed; expected no params, got {params}. "
+    # Pre-fix path: on v3, schwabdev.Client.account_linked does not exist ->
+    #   the OLD test raised AttributeError. linked_accounts exists (client.py:181).
+    # Post-fix path: linked_accounts resolves; params beyond self == ().
+    sig = inspect.signature(schwabdev.Client.linked_accounts)
+    params = tuple(p for p in sig.parameters if p != "self")
+    assert params == (), (
+        f"Schwabdev linked_accounts signature changed; expected no params, got {params}. "
         "Update trader.py:get_accounts_linked if so."
     )
+
+
+def test_stub_call_uses_linked_accounts() -> None:
+    """The setup seam invokes client.linked_accounts(), not the removed account_linked()."""
+    from swing.integrations.schwab import auth
+
+    class _FakeClient:
+        def __init__(self) -> None:
+            self.called: list[str] = []
+
+        def linked_accounts(self):
+            self.called.append("linked_accounts")
+            return "OK"
+
+        def account_linked(self):  # pragma: no cover - must NOT be called on v3
+            self.called.append("account_linked")
+            raise AssertionError("account_linked is removed on v3")
+
+    fake = _FakeClient()
+    # Pre-fix: _stub_call_account_linked calls account_linked -> AssertionError.
+    # Post-fix: calls linked_accounts -> returns "OK".
+    assert auth._stub_call_account_linked(fake) == "OK"
+    assert fake.called == ["linked_accounts"]
 
 
 def test_account_details_kwargs_match_schwabdev() -> None:

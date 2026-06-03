@@ -636,7 +636,7 @@ def _is_pipeline_active(conn: sqlite3.Connection) -> bool:
 
 
 def _stub_call_account_linked(client: Any) -> Any:
-    """T-A.4 placeholder for the `client.account_linked()` invocation.
+    """T-A.4 placeholder for the `client.linked_accounts()` invocation.
 
     Full implementation lands at T-B.1 in `swing/integrations/schwab/trader.py`
     (`get_accounts_linked`). T-A.4 calls schwabdev directly; tests patch
@@ -645,12 +645,12 @@ def _stub_call_account_linked(client: Any) -> Any:
     Returns the parsed JSON payload (expected: list of
     `{accountNumber, hashValue}` dicts; D2 hotfix — on Schwab auth failure
     schwabdev's wrapper returns a dict-shaped error envelope instead).
-    schwabdev's `Client.account_linked()` returns a `requests.Response`;
+    schwabdev's `Client.linked_accounts()` returns a `requests.Response`;
     we accept either a list/dict (for stub) or a `.json()`-callable object.
     Validation of the shape happens at the call site so the audit row
     can carry an `auth_failed` status with a non-leaky error message.
     """
-    result = client.account_linked()
+    result = client.linked_accounts()
     # Tolerate both raw payloads (test stubs) and Response-like objects
     # (real schwabdev). Real schwabdev returns a Response.
     if hasattr(result, "json") and callable(result.json):

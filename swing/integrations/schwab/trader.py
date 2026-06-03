@@ -254,10 +254,10 @@ def get_accounts_linked(
     environment: str,
     pipeline_run_id: int | None = None,
 ) -> list[str]:
-    """Fetch `Client.account_linked()`. Returns list of hashValue strings.
+    """Fetch `Client.linked_accounts()`. Returns list of hashValue strings.
 
     Audit endpoint: `accounts.linked`. Sub-bundle A's `auth.py:setup_paste_flow`
-    already invokes `client.account_linked()` directly via the `_stub_*` seam;
+    already invokes `client.linked_accounts()` directly via the `_stub_*` seam;
     Sub-bundle B's `get_accounts_linked` is the canonical wrapper for the
     `swing schwab status` + future re-discovery flows.
 
@@ -267,7 +267,7 @@ def get_accounts_linked(
         SchwabApiError on other failures.
     """
     return _call_endpoint(
-        client_method=lambda: client.account_linked(),
+        client_method=lambda: client.linked_accounts(),
         endpoint="accounts.linked",
         conn=conn,
         surface=surface,
