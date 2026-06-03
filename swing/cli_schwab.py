@@ -369,6 +369,12 @@ def schwab_logout(
             raise click.ClickException(str(exc)) from exc
         except SchwabConfigMissingError as exc:
             raise click.ClickException(str(exc)) from exc
+        except RuntimeError as exc:
+            # The v3 logout rewrite raises a clean RuntimeError on a hard tokens-DB
+            # rename failure (str carries the operator-actionable "retry / close other"
+            # guidance; SchwabApiError.__str__ would redact it). SchwabApiError is a
+            # RuntimeError subclass but is caught above, so this only sees the rename error.
+            raise click.ClickException(str(exc)) from exc
     finally:
         conn.close()
 

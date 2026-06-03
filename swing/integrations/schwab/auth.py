@@ -2213,6 +2213,43 @@ def force_refresh(
     }
 
 
+def _read_v3_refresh_token(tokens_path: Path, fernet_key: str | None = None) -> str | None:
+    """Read the refresh_token from the v3 SQLite tokens DB for the logout revoke body.
+
+    SAFETY (Codex R1 MAJOR -- never POST ciphertext): a plaintext (non-``enc:``) column
+    value is returned as-is; an ``enc:``-prefixed value is returned ONLY if ``fernet_key``
+    is set AND ``Fernet(key).decrypt(...)`` SUCCEEDS. On a missing key, a wrong key, an
+    old/foreign format, a locked DB, a missing row, or ANY decrypt failure the helper
+    returns ``None`` -- it MUST NEVER return the raw ``enc:...`` ciphertext.
+    """
+    import contextlib
+
+    if not tokens_path.exists():
+        return None
+    conn = None
+    try:
+        ro_uri = Path(tokens_path).as_uri() + "?mode=ro"
+        conn = sqlite3.connect(ro_uri, uri=True, timeout=1.0)
+        row = conn.execute("SELECT refresh_token FROM schwabdev LIMIT 1").fetchone()
+    except sqlite3.DatabaseError:
+        return None
+    finally:
+        if conn is not None:
+            with contextlib.suppress(Exception):
+                conn.close()
+    if row is None or not row[0] or not isinstance(row[0], str):
+        return None
+    value = row[0]
+    if not value.startswith("enc:"):
+        return value
+    if not fernet_key:
+        return None
+    try:
+        return _fernet_cipher(fernet_key).decrypt(value[len("enc:"):].encode()).decode()
+    except Exception:
+        return None
+
+
 def revoke_and_delete(
     cfg: Any,
     environment: str,
@@ -2226,32 +2263,32 @@ def revoke_and_delete(
     tokens DB to `<path>.deleted-<ts>` for 24h recovery — plan §F.3 + §H.2
     revoke surface.
 
-    Algorithm:
+    Algorithm (v3 rewrite — read SQLite, rename-FIRST, revoke-SECOND):
       1. Server-stamp start_ts.
-      2. Refuse if pipeline state='running' UNLESS force=True (mirrors
-         setup; logout DOES have --force).
+      2. Refuse if pipeline state='running' UNLESS force=True (logout has --force).
       3. Resolve env + tokens path.
-      4. Read existing tokens file → extract refresh_token for revoke body.
-         If file missing/unreadable → audit-row 'error' + raise.
-      5. INSERT in-flight audit row (oauth.revoke / cli / env).
-      6. POST https://api.schwabapi.com/v1/oauth/revoke
-         (form-urlencoded body, Basic auth header).
-         Wrap in try/except — non-200 + network failures tolerated per
-         plan §E.6 (best-effort revocation).
-      7. UPDATE audit row terminal status (success on HTTP 200; error
-         otherwise).
-      8. os.replace(path, path + f'.deleted-{ts}') — same-volume rename,
-         no cross-device-link risk (CLAUDE.md gotcha).
-      9. Return summary dict.
-
-    The rename happens REGARDLESS of revoke success/failure — operator's
-    intent on `logout` is "deactivate this device's tokens locally" and
-    revocation-at-Schwab is best-effort.
+      4. INSERT in-flight audit row (oauth.revoke / cli / env), then read the
+         refresh_token from the v3 SQLite DB via `_read_v3_refresh_token`
+         (decrypts when a key is configured; returns None on old-format /
+         undecryptable / missing — NEVER ciphertext). File missing → audit
+         'error' + raise.
+      5. Rename the tokens DB aside FIRST (`<path>.deleted-<ts>`; same-volume
+         os.replace with a bounded retry). A hard rename failure → audit
+         'error' + a clean operator-actionable RuntimeError (retry / close
+         other processes). The rename precedes revoke because the operator's
+         intent on logout is "deactivate this device's tokens locally".
+      6. If the refresh_token was unreadable/undecryptable → delete-without-
+         revoke fallback: NO revoke POST, a WARNING, audit 'success',
+         revoke_status='skipped_no_token', return.
+      7. Otherwise POST https://api.schwabapi.com/v1/oauth/revoke (Basic auth,
+         form body) best-effort (non-200 + network failures tolerated), close
+         the audit row, return the summary dict.
 
     Raises:
       * SchwabConfigMissingError — invalid environment.
       * SchwabPipelineActiveError — pipeline running + force=False.
-      * SchwabApiError — tokens file missing (cannot extract refresh_token).
+      * SchwabApiError — tokens DB missing.
+      * RuntimeError — hard tokens-DB rename failure (operator-actionable).
     """
     import base64
     import os
@@ -2300,24 +2337,16 @@ def revoke_and_delete(
         environment=environment,
     )
 
-    refresh_token: str | None = None
+    # Read the refresh_token from the v3 SQLite DB (presence-/decrypt-safe). NEVER
+    # returns ciphertext: an undecryptable / old-format / missing token -> None -> the
+    # delete-without-revoke fallback below. fernet_key=None in Slice 2; Slice 4 threads
+    # _resolve_fernet_key(cfg).
     file_missing = not tokens_path.exists()
-    if not file_missing:
-        try:
-            import json as _json
-            with open(tokens_path) as f:
-                payload = _json.load(f)
-            refresh_token = payload.get("token_dictionary", {}).get(
-                "refresh_token",
-            )
-        except Exception as exc:
-            log.warning(
-                "schwab logout: tokens file unreadable: %s",
-                type(exc).__name__,
-            )
-            refresh_token = None
+    refresh_token = (
+        None if file_missing else _read_v3_refresh_token(tokens_path, fernet_key=None)
+    )
 
-    if file_missing or not refresh_token:
+    if file_missing:
         audit_service.record_call_finish(
             conn,
             call_id=call_id,
@@ -2326,14 +2355,68 @@ def revoke_and_delete(
             response_time_ms=0,
             signature_hash=None,
             rate_limit_remaining=None,
-            error_message=(
-                "<tokens file missing>" if file_missing
-                else "<refresh_token missing from tokens file>"
-            ),
+            error_message="<tokens DB missing>",
         )
-        raise SchwabApiError(
-            f"<cannot logout: tokens file missing or unreadable at {tokens_path}>",
+        raise SchwabApiError(404, f"<cannot logout: no tokens DB at {tokens_path}>")
+
+    # Step 5 — rename-aside FIRST (logout intent is "deactivate this device's tokens
+    # locally"; revocation at Schwab is best-effort). Bounded retry so a transient
+    # Windows file-in-use (antivirus / a running `swing web`) clears; a hard failure
+    # raises a clean operator-actionable error (NOT a SchwabApiError -- its __str__ is
+    # redacted, so the operator would never see the guidance).
+    rename_ts = _dt.now().strftime("%Y%m%dT%H%M%S")
+    deleted_path = tokens_path.with_name(f"{tokens_path.name}.deleted-{rename_ts}")
+    rename_exc: BaseException | None = None
+    for _attempt in range(3):
+        try:
+            os.replace(str(tokens_path), str(deleted_path))
+            rename_exc = None
+            break
+        except OSError as exc:
+            rename_exc = exc
+            time.sleep(0.05)
+    if rename_exc is not None:
+        audit_service.record_call_finish(
+            conn,
+            call_id=call_id,
+            http_status=None,
+            status="error",
+            response_time_ms=0,
+            signature_hash=None,
+            rate_limit_remaining=None,
+            error_message=f"<tokens DB rename failed: {_redacted_excerpt(rename_exc)}>",
         )
+        raise RuntimeError(
+            "could not rename the tokens DB aside; close other processes using it "
+            "(antivirus or a running `swing web`) and retry `swing schwab logout`"
+        ) from rename_exc
+
+    # Step 6 — delete-without-revoke fallback when the refresh_token was unreadable /
+    # undecryptable / old-format (NEVER POST ciphertext). The DB is already renamed
+    # aside; the refresh token self-expires within the 7-day TTL.
+    if not refresh_token:
+        log.warning(
+            "schwab logout: the local tokens DB was renamed aside but the refresh "
+            "token was not server-side revoked (old-format / undecryptable); it "
+            "self-expires within the 7-day TTL."
+        )
+        audit_service.record_call_finish(
+            conn,
+            call_id=call_id,
+            http_status=None,
+            status="success",
+            response_time_ms=0,
+            signature_hash=None,
+            rate_limit_remaining=None,
+            error_message=None,
+        )
+        return {
+            "call_id": call_id,
+            "tokens_path": str(tokens_path),
+            "deleted_path": str(deleted_path),
+            "environment": environment,
+            "revoke_status": "skipped_no_token",
+        }
 
     # Codex R1 Major #2 — register cfg-known sensitive bytes + ensure
     # the redaction factory is current before the manual POST. The
@@ -2346,7 +2429,7 @@ def revoke_and_delete(
     register_schwab_secrets([client_id, client_secret, refresh_token])
     ensure_schwab_log_redaction_factory_installed()
 
-    # Step 5+6 — POST /v1/oauth/revoke (best-effort).
+    # Step 7 — best-effort revoke SECOND. POST /v1/oauth/revoke.
     auth_header = base64.b64encode(
         f"{client_id}:{client_secret}".encode(),
     ).decode("ascii")
@@ -2397,13 +2480,7 @@ def revoke_and_delete(
         error_message=revoke_error_message,
     )
 
-    # Step 8 — atomic rename. Same-volume → no cross-device-link risk.
-    rename_ts = _dt.now().strftime("%Y%m%dT%H%M%S")
-    deleted_path = tokens_path.with_name(
-        f"{tokens_path.name}.deleted-{rename_ts}",
-    )
-    os.replace(str(tokens_path), str(deleted_path))
-
+    # (Rename already happened at Step 5, before the best-effort revoke.)
     return {
         "call_id": call_id,
         "tokens_path": str(tokens_path),
