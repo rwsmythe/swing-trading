@@ -41,3 +41,44 @@ def test_writer_produces_loadable_v3_db(tmp_path: Path) -> None:
     finally:
         del client
         gc.collect()
+
+
+def test_v3_schwabdev_ddl_matches_live_install(tmp_path: Path) -> None:
+    """T1b: introspect the LIVE schwabdev table vs our pinned _V3_SCHWABDEV_DDL.
+    NON-INTERACTIVE + deterministic lock release (R3-M1). This guard makes the
+    OQ-3 floored pin (>=3.0.5,<4.0.0) merge-safe: a future 3.x that silently
+    changes the private schema fails this test loudly."""
+    import sqlite3
+
+    db = tmp_path / "schwab-tokens.production.db"
+    # Construct a real Client against an EMPTY tokens_db WITH the guard; v3 CREATEs +
+    # commits the schwabdev table BEFORE the auth flow's BEGIN EXCLUSIVE (tokens.py:80,93,398),
+    # then enters the interactive refresh path -> our _raise_on_auth fires.
+    try:
+        client = schwabdev.Client(
+            app_key="k" * 32, app_secret="s" * 16, callback_url="https://127.0.0.1",
+            tokens_db=str(db), call_on_auth=auth._raise_on_auth,
+            open_browser_for_auth=False, timeout=5,
+        )
+        client = None  # pragma: no cover - guard should have raised
+    except auth.SchwabAuthError:
+        pass
+    # DETERMINISTIC lock release: schwabdev holds an open BEGIN EXCLUSIVE (no try/finally
+    # around call_for_auth). Drop locals + gc so the next connection is not "database is locked".
+    locals().pop("client", None)
+    gc.collect()
+
+    conn = sqlite3.connect(str(db))
+    cols = [(r[1], r[2]) for r in conn.execute("PRAGMA table_info(schwabdev)").fetchall()]
+    conn.close()
+    expected = [
+        ("access_token_issued", "TEXT"), ("refresh_token_issued", "TEXT"),
+        ("access_token", "TEXT"), ("refresh_token", "TEXT"), ("id_token", "TEXT"),
+        ("expires_in", "INTEGER"), ("token_type", "TEXT"), ("scope", "TEXT"),
+    ]
+    # Pre-fix risk this guards: a future 3.x silently changing the private schema.
+    # Post-fix: the live table matches our pinned 8-col copy.
+    assert cols == expected, (
+        f"schwabdev private table DDL drifted: live={cols} pinned={expected}. "
+        "The W-A writer copies this DDL; the OQ-3 floored pin is unsafe until reconciled."
+    )
