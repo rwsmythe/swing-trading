@@ -1516,6 +1516,52 @@ def test_setup_generates_and_persists_key_then_enc_wraps(tmp_path, monkeypatch) 
     assert auth._resolve_fernet_key(_cfg_from_user_config(tmp_path)) is not None  # re-grep loader
 
 
+def test_setup_loadback_constructs_with_the_generated_key(tmp_path, monkeypatch) -> None:
+    """Codex R2 MAJOR-1: the SAME setup path that generated the key must construct its
+    load-back Client WITH that key -- not a stale _resolve_fernet_key(cfg)==None that
+    would fail into the auth path against the just-written encrypted DB."""
+    import schwabdev
+
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    tokens_path = tmp_path / "swing-data" / "schwab-tokens.production.db"
+    tokens_path.parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(auth, "_resolve_tokens_db_path", lambda env: tokens_path)
+    constructed = {}
+    real_client = schwabdev.Client
+
+    def _spy_client(**kw):
+        constructed.update(kw)
+        return real_client(**kw)
+
+    monkeypatch.setattr(auth.schwabdev, "Client", _spy_client)
+    # Drive the full setup persist+loadback path (re-grep the real entrypoint that writes
+    # then constructs the load-back Client). cfg has NO key at entry.
+    auth.setup_paste_flow(_cfg(encryption_key=None), "production", ...)  # re-grep setup entrypoint args
+    # Pre-fix: encryption kwarg is None -> v3 cannot decrypt the just-written enc: DB -> auth path.
+    # Post-fix: the load-back construction received the generated key.
+    assert constructed.get("encryption")  # non-None, equals the generated key
+
+
+def test_keygen_persist_preserves_existing_credentials(tmp_path, monkeypatch) -> None:
+    """Codex R2 MAJOR-2: generating the key must MERGE into user-config, not clobber the
+    operator's client_id/client_secret (which would break the logout->setup->fetch gate)."""
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    cfg_dir = tmp_path / "swing-data"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    (cfg_dir / "user-config.toml").write_text(
+        '[integrations.schwab]\nclient_id = "CID"\nclient_secret = "CSECRET"\n'
+        'environment = "production"\n', encoding="utf-8")
+    # Persist a generated key via the same code path setup uses (re-grep the helper).
+    auth._persist_generated_encryption_key(auth._generate_fernet_key())  # re-grep / introduce
+    merged = (cfg_dir / "user-config.toml").read_text(encoding="utf-8")
+    # Pre-fix: write_user_overrides clobbered the dict -> client_id/secret GONE.
+    # Post-fix: load/merge/write preserved them AND added the key.
+    assert "CID" in merged and "CSECRET" in merged and 'environment = "production"' in merged
+    assert "encryption_key" in merged
+
+
 def test_t7b_logout_decrypts_encrypted_refresh(tmp_path, monkeypatch, conn) -> None:
     key = auth._generate_fernet_key()
     p = tmp_path / "schwab-tokens.production.db"
@@ -1572,17 +1618,19 @@ def test_t7f_encrypted_db_wrong_key_falls_back_no_revoke(tmp_path, monkeypatch, 
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `python -m pytest tests/integrations/schwab/test_fernet_tokens.py -k "enc_wraps or t7b or t7e or t7f or setup_generates" -v`
-Expected: FAIL (setup does not generate a key; writer not passed a key by callers; revoke not decrypting).
+Run: `python -m pytest tests/integrations/schwab/test_fernet_tokens.py -k "enc_wraps or t7b or t7e or t7f or setup_generates or loadback or preserves" -v`
+Expected: FAIL (setup does not generate a key; the load-back constructs without the key; persistence clobbers credentials; writer not passed a key; revoke not decrypting).
 
 - [ ] **Step 3: Implement**
 
-**Setup-path key generation (the CRITICAL fix):** introduce `_ensure_fernet_key_then_write_tokens(...)` (or fold into the existing setup token-persist step -- re-grep `_write_schwabdev_tokens_db`'s setup caller). On the SETUP path, if `_resolve_fernet_key(cfg)` returns `None`, GENERATE `_generate_fernet_key()`, PERSIST it to user-config `[integrations.schwab] encryption_key` via `write_user_overrides` (masked by `config show`), and pass that key to the writer's `fernet_key=` so the freshly-written DB is enc:-wrapped. Then thread `_resolve_fernet_key(cfg)` into: the writer callers, `_read_v3_refresh_token` (revoke), and `_assert_v3_tokens_db_loadable_or_raise`; add `encryption=_resolve_fernet_key(cfg)` to the 4 construction sites. The writer's `_enc` + the preflight's decrypt branch are already coded (Slice 2) -- this task supplies the key SOURCE and the setup-time generation. (If the operator wants to OPT OUT of encryption, a config flag may force `encryption_key=""` -> plaintext; V1 default is generate-on-setup.)
+**Setup-path key generation (the CRITICAL fix) -- with effective-key threading (Codex R2 MAJOR-1):** introduce `_ensure_fernet_key_then_write_tokens(...)` (or fold into the existing setup token-persist step -- re-grep `_write_schwabdev_tokens_db`'s setup caller). On the SETUP path, if `_resolve_fernet_key(cfg)` returns `None`, GENERATE `_generate_fernet_key()`, PERSIST it (merge-write, below), and write the DB enc:-wrapped with that key. **CRITICAL ordering:** the helper RETURNS the EFFECTIVE key, and the SETUP load-back construction (sites 901/1684) MUST pass `encryption=<that effective key>` -- NOT a fresh `_resolve_fernet_key(cfg)` on a cfg object that was built BEFORE generation (which would still return `None`, construct against the encrypted DB without a key, and drop into the auth path). Either thread the returned key directly into the load-back `Client(...)`, or RELOAD cfg from disk after persisting so `_resolve_fernet_key(cfg_reloaded)` sees the new key. The non-setup FETCH/force_refresh sites (762/1864) read the persisted key normally via `_resolve_fernet_key(cfg)` (their cfg is built fresh per call, after any prior setup). Then thread `_resolve_fernet_key(cfg)` into the writer callers, `_read_v3_refresh_token` (revoke), and `_assert_v3_tokens_db_loadable_or_raise`. The writer's `_enc` + the preflight's decrypt branch are already coded (Slice 2). (Opt-out: a config flag may force `encryption_key=""` -> plaintext; V1 default is generate-on-setup.)
+
+**Merge-write persistence (Codex R2 MAJOR-2 -- do NOT clobber credentials):** persisting `encryption_key` MUST use load/merge/write semantics -- READ the existing `user-config.toml`, set ONLY `[integrations.schwab].encryption_key`, and write the merged result back -- so the operator's existing `client_id`/`client_secret`/`environment`/`callback_url` SURVIVE. If `write_user_overrides` overwrites the whole dict it is handed, the setup caller must pass the FULL merged dict (existing overrides + the new key), not just `{"encryption_key": ...}`. A clobber here would break the exact `logout -> setup -> status -> fetch` gate.
 
 - [ ] **Step 4: Run to verify they pass**
 
 Run: `python -m pytest tests/integrations/schwab/test_fernet_tokens.py -v`
-Expected: PASS (setup-generation; enc-wrap load-back; T7b decrypt; T7e/T7f key-loss fallback no-revoke).
+Expected: PASS (setup-generation; effective-key load-back; merge-write preserves credentials; enc-wrap load-back; T7b decrypt; T7e/T7f key-loss fallback no-revoke).
 
 - [ ] **Step 5: Commit**
 
