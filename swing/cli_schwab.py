@@ -651,11 +651,12 @@ def _compute_degraded_state(
 
     Signal order (matches dispatch brief §5.2 + Codex R1 + R2 directives):
       1. tokens DB missing on disk            → PROVISIONAL
-      2. tokens DB unparseable / corrupt JSON → DEGRADED
-      3. `token_dictionary` missing or non-dict
-                                              → DEGRADED   (R2 M#1)
-      4. `token_dictionary.refresh_token` bytes missing or empty
-                                              → DEGRADED   (R2 M#1)
+      2. tokens DB unreadable (pre-v3 2.x JSON / foreign / locked / no row)
+                                              → DEGRADED
+         (subsumes the old Signal 3 token_dictionary-missing case, since the
+          v3 reader returns (None, "<no token row...>") for an empty DB)
+      4. v3 `refresh_token` column empty (presence-only; value never read)
+                                              → DEGRADED
       5. `refresh_token_issued` field missing → DEGRADED   (R2 M#2)
       6. `refresh_token_issued` unparseable   → DEGRADED   (R2 M#2)
       7. `refresh_token_issued` already expired (issued + 7d <= now)
@@ -685,26 +686,16 @@ def _compute_degraded_state(
         return "DEGRADED", f"tokens DB unparseable: {parse_err}"
 
     if payload is not None:
-        # Signal 3 (R2 M#1): token_dictionary missing or non-dict → DEGRADED.
-        token_dict = payload.get("token_dictionary")
-        if not isinstance(token_dict, dict):
+        # Signal 4 (v3 re-map): refresh_token bytes missing or empty → DEGRADED.
+        # The v3 reader computes presence in SQL (`refresh_token IS NOT NULL AND
+        # != ''`); SECURITY: ONLY presence is consulted -- the token VALUE is never
+        # read. (The old Signal 3 -- `token_dictionary` missing/non-dict -- is now
+        # subsumed by Signal 2: the v3 reader returns (None, "<no token row...>") for
+        # an empty DB, so `parse_err` catches it above.)
+        if not payload.get("refresh_token_present"):
             return (
                 "DEGRADED",
-                "token_dictionary missing or non-dict — "
-                "run `swing schwab logout` then `swing schwab setup`",
-            )
-        # Signal 4 (R2 M#1): refresh_token bytes missing or empty → DEGRADED.
-        # SECURITY: ONLY presence/non-emptiness is checked; the token
-        # VALUE is never echoed into the return string (sentinel-leak
-        # tests assert this).
-        refresh_token_bytes = token_dict.get("refresh_token")
-        if (
-            not isinstance(refresh_token_bytes, str)
-            or not refresh_token_bytes.strip()
-        ):
-            return (
-                "DEGRADED",
-                "token_dictionary missing refresh_token bytes — "
+                "tokens DB missing refresh_token bytes - "
                 "run `swing schwab logout` then `swing schwab setup`",
             )
 
