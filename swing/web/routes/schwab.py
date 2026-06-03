@@ -224,7 +224,6 @@ def _build_form_vm(
         session_date = action_session_for_run(datetime.now()).isoformat()
     except Exception:  # pragma: no cover
         session_date = "n/a"
-    from swing.web.view_models.schwab_checker_badge import build_schwab_checker_badge
     return SchwabSetupVM(
         session_date=session_date,
         environment=environment,
@@ -235,7 +234,6 @@ def _build_form_vm(
         unresolved_material_discrepancies_count=unresolved_count,
         recent_multi_leg_auto_correction_count=recent_multi_leg_count,
         banner_resolve_link=banner_resolve_link,
-        schwab_checker_badge=build_schwab_checker_badge(cfg),
     )
 
 

@@ -1202,7 +1202,6 @@ class ReviewVM:
     exit_date_last: str | None = None
     total_risk_dollars: float | None = None
     review_chart_url: str | None = None  # Task 0.6
-    schwab_checker_badge: object | None = None  # P14.N7 badge (SB5.5)
 
     def __post_init__(self) -> None:
         if self.banner_resolve_link is not None:
@@ -1425,7 +1424,6 @@ class CadenceCompleteVM:
     # Server-stamped at handler entry; operator cannot tamper (Phase 8
     # R2-R5 family forward-binding lesson + L10 LOCK).
     auto_populated_field_keys_json: str | None = None
-    schwab_checker_badge: object | None = None  # P14.N7 badge (SB5.5)
 
     def __post_init__(self) -> None:
         if self.banner_resolve_link is not None:
@@ -1462,7 +1460,6 @@ class ReviewsPendingVM:
     # Phase 12.5 #2 T-2.7 — banner link to FIRST pending-ambiguity discrepancy
     # resolve form. None when no pending-ambiguity row exists.
     banner_resolve_link: str | None = None
-    schwab_checker_badge: object | None = None  # P14.N7 badge (SB5.5)
 
     def __post_init__(self) -> None:
         if self.banner_resolve_link is not None:
@@ -1704,7 +1701,6 @@ class TradeDetailVM:
     # v20 §3.2 run-agnostic LOCK. None when no cache row exists; template
     # guards with `{% if vm.position_chart_svg_bytes %}`.
     position_chart_svg_bytes: bytes | None = None
-    schwab_checker_badge: object | None = None  # P14.N7 badge (SB5.5)
 
     def __post_init__(self) -> None:
         if self.banner_resolve_link is not None:

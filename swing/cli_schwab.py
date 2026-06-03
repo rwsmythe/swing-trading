@@ -853,25 +853,6 @@ def render_status(
         out.append(f"Schwab integration: DEGRADED ({env}) — {reason}")
     out.append("")
 
-    # Section 1b -- P14.N7 checker-thread liveness (read from the ephemeral
-    # sidecar; cross-process bridge to the swing web checker). ASCII-only.
-    from swing.integrations.schwab.checker_resilience import (
-        checker_liveness_sidecar_path,
-        evaluate_liveness_state,
-        read_liveness_sidecar,
-    )
-    _live = read_liveness_sidecar(checker_liveness_sidecar_path(env))
-    _state, _reason = evaluate_liveness_state(_live, now_ts=now.timestamp())
-    if _state == "ALIVE":
-        out.append(f"Checker: ALIVE ({_reason})")
-    elif _state == "STARTING":
-        out.append(f"Checker: STARTING ({_reason})")
-    elif _state == "UNKNOWN":
-        out.append(f"Checker: unknown -- {_reason}")
-    else:
-        out.append(f"Checker: DEGRADED -- {_reason}")
-    out.append("")
-
     # Section 2 — cfg + tokens-file metadata.
     schwab_cfg = getattr(cfg.integrations, "schwab", None)
     account_hash = getattr(schwab_cfg, "account_hash", None) if schwab_cfg else None

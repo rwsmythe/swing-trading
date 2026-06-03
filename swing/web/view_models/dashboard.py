@@ -388,7 +388,6 @@ class DashboardVM:
     position_chart_svg_bytes: Mapping[str, bytes] = field(
         default_factory=dict,
     )
-    schwab_checker_badge: object | None = None  # P14.N7 badge (SB5.5)
 
     def __post_init__(self) -> None:
         if self.banner_resolve_link is not None:
@@ -1530,9 +1529,7 @@ def build_dashboard(
         daily_management_tiles = tuple(tiles)
 
     degraded_until = cache.degraded_until()
-    from swing.web.view_models.schwab_checker_badge import build_schwab_checker_badge
     return DashboardVM(
-        schwab_checker_badge=build_schwab_checker_badge(cfg),
         generated_at=now.isoformat(timespec="seconds"),
         session_date=action_session,
         stale_banner=stale_banner,

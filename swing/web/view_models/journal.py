@@ -211,7 +211,6 @@ class JournalVM:
     # Phase 12.5 #2 T-2.7 — banner link to FIRST pending-ambiguity discrepancy
     # resolve form. None when no pending-ambiguity row exists.
     banner_resolve_link: str | None = None
-    schwab_checker_badge: object | None = None  # P14.N7 badge (SB5.5)
 
     def __post_init__(self) -> None:
         if self.banner_resolve_link is not None:
@@ -248,13 +247,9 @@ def _base_banner_fields(conn, cfg: Config) -> dict:
         count_unresolved_material,
         fetch_first_pending_ambiguity_resolve_link_path,
     )
-    from swing.web.view_models.schwab_checker_badge import (
-        build_schwab_checker_badge,
-    )
 
     return {
         "session_date": date.today().isoformat(),
-        "schwab_checker_badge": build_schwab_checker_badge(cfg),
         "stale_banner": None,
         "price_source_degraded": False,
         "price_source_degraded_until": None,
@@ -595,7 +590,6 @@ class TradeDrilldownVM:
     unresolved_material_discrepancies_count: int = 0
     recent_multi_leg_auto_correction_count: int = 0
     banner_resolve_link: str | None = None
-    schwab_checker_badge: object | None = None  # P14.N7 badge (SB5.5)
 
     def __post_init__(self) -> None:
         # Mirror the JournalVM banner_resolve_link guard.

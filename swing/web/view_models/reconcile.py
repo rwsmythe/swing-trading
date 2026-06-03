@@ -213,7 +213,6 @@ class ReconcileDiscrepancyResolveVM:
     prior_ambiguity_kind_at_render: str = ""
     error_band_message: str | None = None
     error_band_field_hint: str | None = None
-    schwab_checker_badge: object | None = None  # P14.N7 badge (SB5.5)
 
     def __post_init__(self) -> None:
         if not self.session_date:
@@ -886,7 +885,6 @@ class ReconcileDiscrepancyErrorVM:
     disc_resolution: str | None = None
     disc_resolved_by: str | None = None
     disc_created_at: str | None = None
-    schwab_checker_badge: object | None = None  # P14.N7 badge (SB5.5)
 
     def __post_init__(self) -> None:
         if not self.session_date:
