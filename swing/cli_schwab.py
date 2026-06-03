@@ -16,7 +16,7 @@ subcommand decorator style.
 """
 from __future__ import annotations
 
-import json
+import contextlib
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -467,27 +467,52 @@ def _render_token_validity(
 
 
 def _read_tokens_metadata(tokens_path: Path) -> tuple[dict | None, str | None]:
-    """Read + parse the tokens JSON file.
+    """Read the v3 schwabdev SQLite tokens DB (presence-only).
 
-    Returns ``(payload, error_message)``. On success: ``(payload, None)``.
+    Returns ``(meta, error_message)``. On success: ``(meta, None)`` where ``meta``
+    carries ONLY non-secret presence fields: ``access_token_issued``,
+    ``refresh_token_issued``, ``expires_in``, ``refresh_token_present`` (bool).
     On missing file: ``(None, None)`` (caller distinguishes via Path.exists).
-    On parse failure: ``(None, "<error description>")``.
+    On a pre-v3 (2.x JSON) / foreign / locked DB: ``(None, "<actionable message>")``.
 
-    SECURITY: this function returns the FULL payload including token
-    bytes. The caller MUST consume only ``access_token_issued`` +
-    ``refresh_token_issued`` + ``token_dictionary.expires_in`` and MUST
-    NOT echo other keys (access_token / refresh_token / id_token).
+    SECURITY: STRONGER than the 2.x reader -- it never SELECTs or returns the
+    ``access_token`` / ``refresh_token`` / ``id_token`` VALUE bytes; the boolean
+    presence column is computed in SQL.
     """
+    if not tokens_path.exists():
+        return None, None
+    conn = None
     try:
-        with open(tokens_path) as f:
-            payload = json.load(f)
-    except json.JSONDecodeError as exc:
-        return None, f"<tokens file unreadable: invalid JSON: {exc.msg}>"
-    except OSError as exc:
-        return None, f"<tokens file unreadable: {type(exc).__name__}>"
-    if not isinstance(payload, dict):
-        return None, "<tokens file unparseable: top-level not a JSON object>"
-    return payload, None
+        # `as_uri()` percent-escapes spaces / `#` / `?` in the path; `mode=ro` opens
+        # read-only; a short timeout keeps the status CLI responsive on a locked DB.
+        ro_uri = Path(tokens_path).as_uri() + "?mode=ro"
+        conn = sqlite3.connect(ro_uri, uri=True, timeout=1.0)
+        row = conn.execute(
+            "SELECT access_token_issued, refresh_token_issued, expires_in, "
+            "(refresh_token IS NOT NULL AND refresh_token != '') FROM schwabdev LIMIT 1"
+        ).fetchone()
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc):
+            return None, "<tokens DB pre-v3 / foreign format; run `swing schwab logout` then setup>"
+        return None, "<tokens DB busy (refresh in progress); retry>"
+    except sqlite3.DatabaseError:
+        return None, "<tokens DB pre-v3 (2.x JSON) format; run `swing schwab logout` then setup>"
+    finally:
+        if conn is not None:
+            with contextlib.suppress(Exception):
+                conn.close()
+    if row is None:
+        return None, "<no token row; run `swing schwab setup`>"
+    at_issued, rt_issued, expires_in, has_refresh = row
+    return (
+        {
+            "access_token_issued": at_issued,
+            "refresh_token_issued": rt_issued,
+            "expires_in": expires_in,
+            "refresh_token_present": bool(has_refresh),
+        },
+        None,
+    )
 
 
 def _render_recent_calls(
