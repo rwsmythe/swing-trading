@@ -30,7 +30,7 @@ import os
 import sqlite3
 import time
 from collections.abc import Callable
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -709,6 +709,118 @@ def _raise_on_auth(auth_url: str) -> None:
     )
 
 
+def _assert_v3_tokens_db_loadable_or_raise(
+    tokens_path: Path, fernet_key: str | None = None
+) -> None:
+    """PRIMARY non-setup auth defense (§C.2). Read the v3 DB DIRECTLY (NOT by
+    constructing a Client) and assert: (1) the `schwabdev` table is present with one
+    row; (2) the refresh token is FRESH (now - rt_issued < 7d - 3630s, so construction's
+    `update_tokens()` will NOT force a refresh -> the interactive callback never fires);
+    (3) the columns are decryptable, driven by the column `enc:` prefix NOT the config
+    flag (the key-loss gap). Any failure raises a clean ``SchwabAuthError`` -- never an
+    unwrapped sqlite3 error, never an ``input()`` prompt.
+    """
+    import contextlib
+
+    if not tokens_path.exists():
+        raise SchwabAuthError(401, "<no tokens DB; run `swing schwab setup`>")
+    try:
+        ro_uri = Path(tokens_path).as_uri() + "?mode=ro"
+        conn = sqlite3.connect(ro_uri, uri=True, timeout=1.0)
+    except sqlite3.DatabaseError:
+        raise SchwabAuthError(
+            401, "<tokens DB pre-v3/foreign; run `swing schwab logout` then setup>"
+        ) from None
+    try:
+        try:
+            row = conn.execute(
+                "SELECT refresh_token_issued, access_token, refresh_token "
+                "FROM schwabdev LIMIT 1"
+            ).fetchone()
+        except sqlite3.OperationalError as exc:
+            if "no such table" in str(exc):
+                raise SchwabAuthError(
+                    401, "<tokens DB pre-v3/foreign; run `swing schwab logout` then setup>"
+                ) from None
+            raise SchwabAuthError(
+                401, "<tokens DB busy (refresh in progress); retry>"
+            ) from None
+        except sqlite3.DatabaseError:
+            raise SchwabAuthError(
+                401, "<tokens DB pre-v3 (2.x JSON); run `swing schwab logout` then setup>"
+            ) from None
+        if row is None:
+            raise SchwabAuthError(401, "<no token row; run `swing schwab setup`>")
+        rt_issued, at_val, rt_val = row
+        # (2) freshness: now - rt_issued < 7d - 3630s (else construction forces a refresh).
+        try:
+            issued = datetime.fromisoformat(rt_issued) if rt_issued else None
+        except (TypeError, ValueError):
+            issued = None
+        if issued is not None and issued.tzinfo is None:
+            issued = issued.replace(tzinfo=UTC)
+        if issued is None or (
+            datetime.now(UTC) - issued
+        ).total_seconds() >= (7 * 24 * 3600 - 3630):
+            raise SchwabAuthError(
+                401, "<refresh token expired/expiring; run `swing schwab logout` then setup>"
+            )
+        # (3) decryptability by COLUMN CONTENT, not the config flag.
+        for col in (at_val, rt_val):
+            if isinstance(col, str) and col.startswith("enc:"):
+                if not fernet_key:
+                    raise SchwabAuthError(
+                        401,
+                        "<encrypted tokens but no key (key loss?); "
+                        "run `swing schwab logout` then setup>",
+                    )
+                try:
+                    _fernet_cipher(fernet_key).decrypt(col[len("enc:"):].encode())
+                except Exception as exc:
+                    raise SchwabAuthError(
+                        401,
+                        "<encrypted tokens, key invalid (key loss?); "
+                        "run `swing schwab logout` then setup>",
+                    ) from exc
+    finally:
+        with contextlib.suppress(Exception):
+            conn.close()
+
+
+def _construct_v3_client_with_guard(
+    *, tokens_path, app_key, app_secret, callback_url, encryption, timeout
+):
+    """Construct the v3 Client on a NON-setup path with the non-interactive guard, and
+    on the residual-race auth raise (a refresh token that expired between the preflight
+    read and the construct) drop the partially-constructed ref + ``gc.collect()`` so
+    schwabdev's open ``BEGIN EXCLUSIVE`` (no try/finally around ``call_for_auth``,
+    tokens.py:395-422) releases before any subsequent tokens-DB read. The preflight is the
+    PRIMARY defense; this is the belt for the read-to-construct race.
+    """
+    import gc
+
+    import schwabdev
+
+    client = None
+    try:
+        client = schwabdev.Client(
+            app_key=app_key,
+            app_secret=app_secret,
+            callback_url=callback_url,
+            tokens_db=str(tokens_path),
+            encryption=encryption,
+            call_on_auth=_raise_on_auth,
+            open_browser_for_auth=False,
+            timeout=timeout,
+        )
+        return client
+    except SchwabAuthError:
+        client = None
+        del client
+        gc.collect()  # release the EXCLUSIVE lock deterministically before any retry/read
+        raise
+
+
 def construct_authenticated_client(
     cfg: Any,
     environment: str,
@@ -771,16 +883,19 @@ def construct_authenticated_client(
     register_schwab_secrets([client_id, client_secret])
     ensure_schwab_log_redaction_factory_installed()
 
-    import schwabdev
+    # PRIMARY defense (§C.2): read the v3 DB directly and reject old-format /
+    # stale-refresh / key-loss states with a clean SchwabAuthError BEFORE construction,
+    # so v3's interactive auth-at-construction path is unreachable. Slice 4 threads
+    # fernet_key=_resolve_fernet_key(cfg); Slice 2 passes None (plaintext).
+    _assert_v3_tokens_db_loadable_or_raise(tokens_path, fernet_key=None)
     with _suppress_transport_debug_logs():
-        client = schwabdev.Client(
+        client = _construct_v3_client_with_guard(
+            tokens_path=tokens_path,
             app_key=client_id,
             app_secret=client_secret,
             callback_url=cfg.integrations.schwab.callback_url,
-            tokens_db=str(tokens_path),
+            encryption=None,  # Slice 4: _resolve_fernet_key(cfg)
             timeout=int(cfg.integrations.schwab.timeout_seconds),
-            call_on_auth=_raise_on_auth,
-            open_browser_for_auth=False,
         )
 
     # Silent-failure defense (D1 hotfix pattern).
@@ -1928,16 +2043,17 @@ def force_refresh(
     # Step 5+6 — construct Client + invoke update_tokens.
     call_start = time.monotonic()
     try:
-        import schwabdev
+        # PRIMARY defense (§C.2): reject old-format / stale-refresh / key-loss with a
+        # clean SchwabAuthError BEFORE construction (audited auth_failed below).
+        _assert_v3_tokens_db_loadable_or_raise(tokens_path, fernet_key=None)  # Slice 4: key
         with _suppress_transport_debug_logs():
-            client = schwabdev.Client(
+            client = _construct_v3_client_with_guard(
+                tokens_path=tokens_path,
                 app_key=client_id,
                 app_secret=client_secret,
                 callback_url=cfg.integrations.schwab.callback_url,
-                tokens_db=str(tokens_path),
+                encryption=None,  # Slice 4: _resolve_fernet_key(cfg)
                 timeout=int(cfg.integrations.schwab.timeout_seconds),
-                call_on_auth=_raise_on_auth,
-                open_browser_for_auth=False,
             )
             # Codex R1 Major #1 (parity with D1 setup hotfix) — capture
             # the pre-call access_token so we can detect schwabdev

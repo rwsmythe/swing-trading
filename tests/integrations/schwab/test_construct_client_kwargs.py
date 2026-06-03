@@ -33,6 +33,8 @@ def test_construct_authenticated_client_passes_tokens_db(monkeypatch, tmp_path) 
     monkeypatch.setattr(
         auth, "_resolve_tokens_db_path", lambda env: tmp_path / "schwab-tokens.production.db"
     )
+    # No-op the Slice-2 preflight so this mechanical kwarg test reaches construction.
+    monkeypatch.setattr(auth, "_assert_v3_tokens_db_loadable_or_raise", lambda *a, **k: None)
     with patch.object(schwabdev, "Client", _fake_client_capture(captured)):
         try:
             auth.construct_authenticated_client(_FakeCfg(), "production", "id", "secret")
