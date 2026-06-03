@@ -2,8 +2,9 @@
 
 The L2 LOCK = ZERO new Schwab API calls beyond OQ-13 CLI carve-outs;
 preserved through 12 applied research arcs + Phase 13 + Sub-bundle 1.
-Per dispatch brief section 1.1 commissioning baseline = main commit
-``bf7e071`` (Phase 14 commissioning HEAD).
+Commissioning baseline was ``bf7e071`` (Phase 14 HEAD); RE-ANCHORED to the
+schwabdev-v3 post-migration HEAD ``9d05a8f`` at Phase 15 (the first sanctioned
+baseline move -- see the L2_LOCK_BASELINE_SHA rationale block below).
 
 Per CLAUDE.md gotcha #34: brief-prescription cross-table verification.
 The verification consumes ``git grep`` output to count occurrences of the
@@ -23,7 +24,14 @@ from pathlib import Path
 
 import pytest
 
-L2_LOCK_BASELINE_SHA = "bf7e071"
+# L2_LOCK_BASELINE_SHA re-anchored to 9d05a8f on 2026-06-03 (Phase 15, schwabdev v3
+# upgrade). FIRST-EVER baseline move (was "bf7e071", the Phase-14 commissioning HEAD).
+# Reason: the 2.5.1->3.0.5 migration rewrites docstrings/comments/type-annotations that
+# embed "schwabdev.Client(" (the tokens_file= signature + the account_linked reference)
+# -> new PROSE (path, line_text) keys in this source grep, NOT new Schwab call sites. The
+# manual endpoint-set diff (docs/schwab-v3-endpoint-diff.md) proves ZERO new Schwab REST
+# endpoints. Operator-signed at the executing-plans GATE A (OQ-4). L2 spirit preserved.
+L2_LOCK_BASELINE_SHA = "9d05a8f"
 
 L2_LOCK_PATTERNS = [
     # Direct schwabdev SDK invocations.
@@ -97,6 +105,16 @@ def test_l2_lock_no_new_call_sites_vs_commissioning_baseline(pattern: str) -> No
         )
         + "\nSub-bundle 1 must NOT introduce new Schwab API call sites."
     )
+
+
+def test_l2_grep_still_functions_after_reanchor() -> None:
+    """Health: the grep still RUNS and returns a non-empty Counter at HEAD (the lock is
+    not silently disabled by the re-anchor), and the endpoint-diff artifact backing the
+    re-anchor is present on disk."""
+    head = _count_call_sites("HEAD", L2_LOCK_PATTERNS[0])
+    assert sum(head.values()) > 0, "the L2 grep returned zero matches -- lock disabled?"
+    diff = Path(__file__).resolve().parents[2] / "docs" / "schwab-v3-endpoint-diff.md"
+    assert diff.exists(), "the L2 re-anchor endpoint-diff artifact is missing"
 
 
 def test_l2_lock_source_grep_module_ascii_only() -> None:
