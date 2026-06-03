@@ -34,41 +34,27 @@ def _isolate_home(monkeypatch, tmp_path) -> None:
 def _seed_tokens_db_live(tmp_path, env: str) -> None:
     """Plant a tokens DB that yields state='LIVE' from
     `_compute_degraded_state` — fresh refresh_token_issued + valid bytes."""
-    swing_data = tmp_path / "swing-data"
-    swing_data.mkdir(parents=True, exist_ok=True)
-    tokens_path = swing_data / f"schwab-tokens.{env}.db"
-    now_iso = datetime.now(UTC).isoformat()
-    payload = {
-        "access_token_issued": now_iso,
-        "refresh_token_issued": now_iso,
-        "token_dictionary": {
-            "access_token": "abc-access",
-            "refresh_token": "abc-refresh",
-            "id_token": "abc-id",
-            "expires_in": 1800,
-        },
-    }
-    tokens_path.write_text(json.dumps(payload), encoding="utf-8")
+    from tests._v3_tokens_helper import write_v3_tokens_db
+
+    tokens_path = tmp_path / "swing-data" / f"schwab-tokens.{env}.db"
+    write_v3_tokens_db(
+        tokens_path, access_token="abc-access", refresh_token="abc-refresh",
+        id_token="abc-id",
+    )
 
 
 def _seed_tokens_db_degraded(tmp_path, env: str) -> None:
-    """Plant a tokens DB that yields state='DEGRADED' — refresh_token_issued
+    """Plant a v3 tokens DB that yields state='DEGRADED' — refresh_token_issued
     8 days ago (signal 7 in `_compute_degraded_state`)."""
-    swing_data = tmp_path / "swing-data"
-    swing_data.mkdir(parents=True, exist_ok=True)
-    tokens_path = swing_data / f"schwab-tokens.{env}.db"
+    from tests._v3_tokens_helper import write_v3_tokens_db
+
+    tokens_path = tmp_path / "swing-data" / f"schwab-tokens.{env}.db"
     eight_days_ago = (datetime.now(UTC) - timedelta(days=8)).isoformat()
-    payload = {
-        "access_token_issued": eight_days_ago,
-        "refresh_token_issued": eight_days_ago,
-        "token_dictionary": {
-            "access_token": "abc-access",
-            "refresh_token": "abc-refresh",
-            "id_token": "abc-id",
-            "expires_in": 1800,
-        },
-    }
-    tokens_path.write_text(json.dumps(payload), encoding="utf-8")
+    write_v3_tokens_db(
+        tokens_path, access_token="abc-access", refresh_token="abc-refresh",
+        id_token="abc-id", access_token_issued=eight_days_ago,
+        refresh_token_issued=eight_days_ago,
+    )
 
 
 def _seed_successful_call(db_path, env: str) -> None:

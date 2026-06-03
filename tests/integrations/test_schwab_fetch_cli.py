@@ -12,12 +12,10 @@ Tests cover:
 """
 from __future__ import annotations
 
-import json
 import sqlite3
-import sys
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import click
 import pytest
@@ -99,6 +97,13 @@ def _stub_schwabdev_client(monkeypatch, *, nlv: float = 2014.36):
 
     import schwabdev
     monkeypatch.setattr(schwabdev, "Client", MagicMock(return_value=mock_client))
+    # The v3 preflight runs before construction in construct_authenticated_client; this
+    # mock-based fetch test exercises fetch logic, not the auth/preflight path, so no-op
+    # it (the isolated home has no real v3 tokens DB to load).
+    from swing.integrations.schwab import auth
+    monkeypatch.setattr(
+        auth, "_assert_v3_tokens_db_loadable_or_raise", lambda *a, **k: None
+    )
     return mock_client
 
 

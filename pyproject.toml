@@ -25,6 +25,13 @@ dev = [
     "pytest>=8",
     "pytest-cov>=5",
     "pytest-recording>=0.13",
+    # Phase 15 schwabdev v3 upgrade: schwabdev 3.0.5 pulls `aiohttp` (for its
+    # unused ClientAsync). aiohttp >= 3.12 removed `aiohttp.streams.
+    # AsyncStreamReaderMixin`, which vcrpy 8.1.1's aiohttp stub imports at
+    # cassette-setup time -> every VCR/cassette test ERRORs. Pin aiohttp below
+    # 3.12 (test-only; the project uses `requests`, not aiohttp, at runtime) so
+    # the post-cutover `pip install -e ".[dev,web]"` test suite stays green.
+    "aiohttp<3.12",
     "pytest-xdist>=3.5.0",
     # Phase 13 T2.SB5 T-A.5.5: pytest-benchmark drives the 120s/run DTW
     # template matching slow gate per spec section 5.7 line 706 + OQ-4.

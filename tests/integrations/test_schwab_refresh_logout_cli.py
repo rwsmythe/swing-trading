@@ -22,7 +22,6 @@ Logout-specific contracts (per plan §F.3):
 """
 from __future__ import annotations
 
-import json
 import re
 import sqlite3
 from pathlib import Path
@@ -97,20 +96,16 @@ def tokens_file(home: Path) -> Path:
     would have written at T-A.4 setup time. Sentinel access/refresh tokens
     so leak-detector tests can pin redaction.
     """
+    # v3 migration: a FRESH v3 SQLite tokens DB (issued now) so the non-setup preflight
+    # accepts it -- exactly what a healthy post-setup state looks like.
+    from tests._v3_tokens_helper import write_v3_tokens_db
+
     path = home / "swing-data" / "schwab-tokens.production.db"
-    payload = {
-        "access_token_issued": "2026-05-14T11:28:13.234697+00:00",
-        "refresh_token_issued": "2026-05-14T11:28:13.234697+00:00",
-        "token_dictionary": {
-            "expires_in": 1800,
-            "token_type": "Bearer",
-            "scope": "api",
-            "refresh_token": _SENTINEL_REFRESH_TOKEN,
-            "access_token": _SENTINEL_ACCESS_TOKEN,
-        },
-    }
-    path.write_text(json.dumps(payload, indent=4))
-    return path
+    return write_v3_tokens_db(
+        path,
+        access_token=_SENTINEL_ACCESS_TOKEN,
+        refresh_token=_SENTINEL_REFRESH_TOKEN,
+    )
 
 
 class _FakeTokens:
@@ -175,7 +170,7 @@ class _FakeSchwabdevClient:
             rotate_on_update=rotate_on_update,
             clear_access_on_update=clear_access_on_update,
         )
-        self.tokens_file = kwargs.get("tokens_file")
+        self.tokens_db = kwargs.get("tokens_db")
 
 
 def _make_stub(

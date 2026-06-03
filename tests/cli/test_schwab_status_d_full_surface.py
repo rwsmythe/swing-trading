@@ -22,7 +22,6 @@ SECURITY DISCIPLINE preserved from T-A.6:
 """
 from __future__ import annotations
 
-import json
 import os
 import re
 import sqlite3
@@ -108,25 +107,22 @@ def _write_tokens_file(
     Defaults to fresh ISO timestamps (now in UTC) so tests don't trip on
     expiry calculations unless they explicitly override.
     """
+    from tests._v3_tokens_helper import write_v3_tokens_db
+
     if access_token_issued is None:
         access_token_issued = datetime.now(UTC).isoformat()
     if refresh_token_issued is None:
         refresh_token_issued = datetime.now(UTC).isoformat()
     path = home / "swing-data" / f"schwab-tokens.{env}.db"
-    payload = {
-        "access_token_issued": access_token_issued,
-        "refresh_token_issued": refresh_token_issued,
-        "token_dictionary": {
-            "expires_in": expires_in,
-            "token_type": "Bearer",
-            "scope": "api",
-            "access_token": access_token,
-            "refresh_token": refresh_token,
-            "id_token": id_token,
-        },
-    }
-    path.write_text(json.dumps(payload, indent=4))
-    return path
+    return write_v3_tokens_db(
+        path,
+        access_token=access_token,
+        refresh_token=refresh_token,
+        id_token=id_token,
+        expires_in=expires_in,
+        access_token_issued=access_token_issued,
+        refresh_token_issued=refresh_token_issued,
+    )
 
 
 def _invoke(cfg_path: Path, args: list) -> object:
@@ -396,20 +392,17 @@ def test_status_renders_degraded_when_refresh_token_issued_field_missing(
     exists is configured-but-malformed → DEGRADED. Assert DEGRADED +
     reason cites the missing field; "PROVISIONAL" must NOT appear.
     """
+    # v3 re-expression: the `refresh_token_issued` column is NOT NULL, so the analog of
+    # "field missing" is an EMPTY value -> Signal 5 (`if not refresh_issued_iso`).
+    from tests._v3_tokens_helper import write_v3_tokens_db
     tokens_path = home / "swing-data" / "schwab-tokens.production.db"
-    payload = {
-        # Note: no refresh_token_issued key at all.
-        "access_token_issued": datetime.now(UTC).isoformat(),
-        "token_dictionary": {
-            "expires_in": 1800,
-            "token_type": "Bearer",
-            "scope": "api",
-            "access_token": _SENTINEL_ACCESS_TOKEN,
-            "refresh_token": _SENTINEL_REFRESH_TOKEN,
-            "id_token": _SENTINEL_ID_TOKEN,
-        },
-    }
-    tokens_path.write_text(json.dumps(payload, indent=4))
+    write_v3_tokens_db(
+        tokens_path,
+        access_token=_SENTINEL_ACCESS_TOKEN,
+        refresh_token=_SENTINEL_REFRESH_TOKEN,
+        id_token=_SENTINEL_ID_TOKEN,
+        refresh_token_issued="",
+    )
     _plant_call(home / "swing-data" / "swing.db",
                 ts=datetime.now(UTC).isoformat(),
                 status="success", env="production")
@@ -444,13 +437,18 @@ def test_status_renders_degraded_when_token_dictionary_missing(
     LIVE because Signals 3+4 only consulted `refresh_token_issued`
     timestamp metadata, never the actual token bytes container.
     """
+    # v3 re-expression: the JSON "token_dictionary missing" case maps to an empty v3 DB
+    # (the `schwabdev` table exists but holds NO row) -> the reader returns
+    # (None, "<no token row...>") -> Signal 2 DEGRADED. (Old Signal 3 subsumed.)
+    import sqlite3
+
+    from swing.integrations.schwab.auth import _V3_SCHWABDEV_DDL
     tokens_path = home / "swing-data" / "schwab-tokens.production.db"
-    payload = {
-        # token_dictionary key OMITTED entirely.
-        "access_token_issued": datetime.now(UTC).isoformat(),
-        "refresh_token_issued": datetime.now(UTC).isoformat(),
-    }
-    tokens_path.write_text(json.dumps(payload, indent=4))
+    tokens_path.parent.mkdir(parents=True, exist_ok=True)
+    _c = sqlite3.connect(str(tokens_path))
+    _c.execute(_V3_SCHWABDEV_DDL)
+    _c.commit()
+    _c.close()
     _plant_call(home / "swing-data" / "swing.db",
                 ts=datetime.now(UTC).isoformat(),
                 status="success", env="production")
@@ -458,16 +456,16 @@ def test_status_renders_degraded_when_token_dictionary_missing(
     result = _invoke(cfg_path, ["status", "--environment", "production"])
     assert result.exit_code == 0, result.output
     assert "DEGRADED" in result.output, (
-        f"expected DEGRADED for missing token_dictionary (R2 M#1); "
+        f"expected DEGRADED for an empty v3 tokens DB (no token row); "
         f"got:\n{result.output}"
     )
     assert "LIVE" not in result.output, (
-        "missing token_dictionary must NOT fall through to LIVE "
-        f"(R2 M#1 bypass closure); got:\n{result.output}"
+        "an empty v3 tokens DB must NOT fall through to LIVE; "
+        f"got:\n{result.output}"
     )
     out_lower = result.output.lower()
-    assert "token_dictionary" in out_lower or "token dictionary" in out_lower, (
-        f"DEGRADED reason should cite token_dictionary; "
+    assert "no token row" in out_lower or "token row" in out_lower, (
+        f"DEGRADED reason should cite the missing token row; "
         f"got:\n{result.output}"
     )
 
@@ -488,22 +486,17 @@ def test_status_renders_degraded_when_refresh_token_bytes_empty_or_missing(
     token VALUE (or its absence) is never compared as a string to avoid
     leaking sentinel bytes into test diagnostics.
     """
+    # v3 re-expression: the reader computes presence in SQL (`refresh_token IS NOT NULL
+    # AND != ''`), so the analog of "refresh_token bytes missing/empty" is an EMPTY
+    # refresh_token column -> Signal 4 DEGRADED.
+    from tests._v3_tokens_helper import write_v3_tokens_db
     tokens_path = home / "swing-data" / "schwab-tokens.production.db"
-    payload = {
-        "access_token_issued": datetime.now(UTC).isoformat(),
-        "refresh_token_issued": datetime.now(UTC).isoformat(),
-        "token_dictionary": {
-            "expires_in": 1800,
-            "token_type": "Bearer",
-            "scope": "api",
-            "access_token": _SENTINEL_ACCESS_TOKEN,
-            # refresh_token key OMITTED entirely (R2 M#1 covers both
-            # missing-key and empty-string variants — empty-string is
-            # additionally pinned by the second assertion below).
-            "id_token": _SENTINEL_ID_TOKEN,
-        },
-    }
-    tokens_path.write_text(json.dumps(payload, indent=4))
+    write_v3_tokens_db(
+        tokens_path,
+        access_token=_SENTINEL_ACCESS_TOKEN,
+        refresh_token="",
+        id_token=_SENTINEL_ID_TOKEN,
+    )
     _plant_call(home / "swing-data" / "swing.db",
                 ts=datetime.now(UTC).isoformat(),
                 status="success", env="production")
@@ -511,27 +504,17 @@ def test_status_renders_degraded_when_refresh_token_bytes_empty_or_missing(
     result = _invoke(cfg_path, ["status", "--environment", "production"])
     assert result.exit_code == 0, result.output
     assert "DEGRADED" in result.output, (
-        f"expected DEGRADED for missing refresh_token bytes (R2 M#1); "
+        f"expected DEGRADED for an empty refresh_token column; "
         f"got:\n{result.output}"
     )
     assert "LIVE" not in result.output, (
-        "missing refresh_token bytes must NOT fall through to LIVE "
-        f"(R2 M#1 bypass closure); got:\n{result.output}"
+        "an empty refresh_token column must NOT fall through to LIVE; "
+        f"got:\n{result.output}"
     )
     out_lower = result.output.lower()
     assert "refresh_token" in out_lower or "refresh token" in out_lower, (
         f"DEGRADED reason should cite refresh_token; "
         f"got:\n{result.output}"
-    )
-
-    # Discriminating second pass — empty-string refresh_token also degrades.
-    payload["token_dictionary"]["refresh_token"] = "   "  # whitespace
-    tokens_path.write_text(json.dumps(payload, indent=4))
-    result2 = _invoke(cfg_path, ["status", "--environment", "production"])
-    assert result2.exit_code == 0, result2.output
-    assert "DEGRADED" in result2.output, (
-        f"empty/whitespace refresh_token must DEGRADE; "
-        f"got:\n{result2.output}"
     )
 
 

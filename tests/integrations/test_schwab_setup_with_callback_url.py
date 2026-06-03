@@ -18,10 +18,7 @@ schwabdev.Client. Asserts:
 """
 from __future__ import annotations
 
-import json
 import sqlite3
-from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -70,7 +67,6 @@ class _StubResponse:
 
 
 def _install_stub_requests(monkeypatch, response: _StubResponse, captured: dict):
-    import swing.integrations.schwab.auth as auth_mod
 
     real_post = None  # placeholder so any prior real call could've been mocked
 
@@ -92,22 +88,32 @@ def _install_stub_schwabdev(monkeypatch, accounts):
     account_linked() returns the seeded accounts."""
 
     class _StubTokens:
-        def __init__(self, tokens_file):
-            with open(tokens_file) as f:
-                data = json.load(f)
-            td = data.get("token_dictionary", {})
-            self.access_token = td.get("access_token") or "fresh_access"
-            self.refresh_token = td.get("refresh_token") or "fresh_refresh"
+        def __init__(self, tokens_db):
+            # v3: read the tokens from the SQLite DB the setup helper just wrote.
+            import sqlite3
+            self.access_token, self.refresh_token = "fresh_access", "fresh_refresh"
+            if tokens_db:
+                try:
+                    conn = sqlite3.connect(str(tokens_db))
+                    row = conn.execute(
+                        "SELECT access_token, refresh_token FROM schwabdev LIMIT 1"
+                    ).fetchone()
+                    conn.close()
+                    if row:
+                        self.access_token = row[0] or "fresh_access"
+                        self.refresh_token = row[1] or "fresh_refresh"
+                except sqlite3.DatabaseError:
+                    pass
 
     class _StubClient:
         def __init__(
             self,
             app_key=None, app_secret=None, callback_url=None,
-            tokens_file=None, timeout=None, **_kw,
+            tokens_db=None, timeout=None, **_kw,
         ):
-            self.tokens = _StubTokens(tokens_file)
+            self.tokens = _StubTokens(tokens_db)
 
-        def account_linked(self):
+        def linked_accounts(self):
             return accounts
 
     import schwabdev
@@ -161,14 +167,18 @@ def test_happy_path_singleton_account(env_with_db, monkeypatch):
     assert captured["data"]["code"] == "AUTH_CODE_HERE@"
     assert captured["data"]["redirect_uri"].startswith("https://")
 
-    # Tokens file written + parseable + has access_token + refresh_token.
+    # v3 tokens DB written + a single schwabdev row with access_token + refresh_token.
     assert tokens_path.exists()
-    on_disk = json.loads(tokens_path.read_text())
-    assert "access_token_issued" in on_disk
-    assert "refresh_token_issued" in on_disk
-    td = on_disk["token_dictionary"]
-    assert td["access_token"] == "fresh_access_token_value_abcdefghij"
-    assert td["refresh_token"] == "fresh_refresh_token_value_kkkkkkkk"
+    import sqlite3
+    _c = sqlite3.connect(str(tokens_path))
+    _row = _c.execute(
+        "SELECT access_token_issued, refresh_token_issued, access_token, refresh_token "
+        "FROM schwabdev"
+    ).fetchone()
+    _c.close()
+    assert _row[0] and _row[1]  # issued timestamps present
+    assert _row[2] == "fresh_access_token_value_abcdefghij"
+    assert _row[3] == "fresh_refresh_token_value_kkkkkkkk"
 
     # Two audit rows, both success.
     rows = conn.execute(
@@ -552,7 +562,7 @@ def test_tokens_file_atomic_write_uses_unique_tmp_path(
     capturing all `os.replace` calls + asserting the source path is NOT
     the deterministic sibling.
     """
-    from swing.integrations.schwab.auth import _write_schwabdev_tokens_file
+    from swing.integrations.schwab.auth import _write_schwabdev_tokens_db
     from datetime import datetime, timezone
 
     captured: dict = {"replace_calls": []}
@@ -566,7 +576,7 @@ def test_tokens_file_atomic_write_uses_unique_tmp_path(
     monkeypatch.setattr(_os, "replace", _spy_replace)
 
     tokens_path = tmp_path / "schwab-tokens.production.db"
-    _write_schwabdev_tokens_file(
+    _write_schwabdev_tokens_db(
         tokens_path=tokens_path,
         token_dictionary={
             "access_token": "a", "refresh_token": "r",
@@ -594,7 +604,7 @@ def test_tokens_file_concurrent_writes_unique_tmp_names(env_with_db, tmp_path):
     names (mkstemp guarantees uniqueness). Pre-fix shape used the same
     deterministic name for every call.
     """
-    from swing.integrations.schwab.auth import _write_schwabdev_tokens_file
+    from swing.integrations.schwab.auth import _write_schwabdev_tokens_db
     from datetime import datetime, timezone
 
     captured: list = []
@@ -610,7 +620,7 @@ def test_tokens_file_concurrent_writes_unique_tmp_names(env_with_db, tmp_path):
 
     with mock.patch.object(_os, "replace", side_effect=_spy_replace):
         for _ in range(2):
-            _write_schwabdev_tokens_file(
+            _write_schwabdev_tokens_db(
                 tokens_path=tokens_path,
                 token_dictionary={
                     "access_token": "a", "refresh_token": "r",
@@ -820,7 +830,7 @@ def test_written_tokens_file_loadable_by_real_schwabdev_format(
     tmp_path, monkeypatch,
 ):
     """Major #2 — write a synthetic tokens file via
-    ``_write_schwabdev_tokens_file`` + invoke real schwabdev
+    ``_write_schwabdev_tokens_db`` + invoke real schwabdev
     ``Tokens.__init__`` against it. Assert ``tokens.access_token`` and
     ``tokens.refresh_token`` reflect the values WE wrote, proving real
     schwabdev's loader byte-for-byte accepts our format.
@@ -848,7 +858,6 @@ def test_written_tokens_file_loadable_by_real_schwabdev_format(
     """
     import datetime
     import logging
-    import types
 
     import requests
 
@@ -864,7 +873,7 @@ def test_written_tokens_file_loadable_by_real_schwabdev_format(
         "may need updating"
     )
 
-    from swing.integrations.schwab.auth import _write_schwabdev_tokens_file
+    from swing.integrations.schwab.auth import _write_schwabdev_tokens_db
 
     tokens_path = tmp_path / "schwab-tokens.production.db"
     sentinel_access = "fresh_access_token_for_compat_test_xyz"
@@ -878,7 +887,7 @@ def test_written_tokens_file_loadable_by_real_schwabdev_format(
     }
     # Fresh issued_at so update_tokens() short-circuits without HTTP.
     issued_at = datetime.datetime.now(datetime.timezone.utc)
-    _write_schwabdev_tokens_file(
+    _write_schwabdev_tokens_db(
         tokens_path=tokens_path,
         token_dictionary=token_dict,
         issued_at=issued_at,
@@ -895,29 +904,26 @@ def test_written_tokens_file_loadable_by_real_schwabdev_format(
 
     monkeypatch.setattr(requests, "post", _no_network)
 
-    # Real schwabdev.Tokens requires a `client` with a `.logger`
-    # attribute. SimpleNamespace stub is sufficient.
-    fake_client = types.SimpleNamespace(
-        logger=logging.getLogger(
-            "test_schwabdev_compat.tokens_format_validation",
-        ),
-    )
-    # _validate_input enforces app_key len in (32, 48), app_secret len
-    # in (16, 64), callback_url startswith https + no trailing /.
+    # v3 `Tokens.__init__` takes a `logger` directly (NOT a client) + `tokens_db=`.
     app_key = "a" * 32
     app_secret = "b" * 16
     callback_url = "https://127.0.0.1"
 
-    # Construct REAL schwabdev.Tokens — exercises the full json.load +
-    # field extraction + update_tokens path. If schwabdev's private
-    # format changes (renamed key, new required field, different
-    # timestamp semantics), this construction fails loudly.
+    def _no_auth(_url):
+        raise AssertionError("interactive auth fired; the fresh-issued_at assumption broke")
+
+    # Construct REAL schwabdev.Tokens — exercises the SQLite load + update_tokens path
+    # against our written v3 DB. A fresh issued_at means update_tokens() no-ops (no HTTP,
+    # no auth callback). If schwabdev's private format changes, this fails loudly.
     tokens = schwabdev_tokens_mod.Tokens(
-        client=fake_client,
-        app_key=app_key,
-        app_secret=app_secret,
-        callback_url=callback_url,
-        tokens_file=str(tokens_path),
+        app_key,
+        app_secret,
+        callback_url,
+        logging.getLogger("test_schwabdev_compat.tokens_format_validation"),
+        str(tokens_path),
+        None,
+        _no_auth,
+        False,
     )
 
     # Assert the loaded values match what we wrote — proves byte-for-

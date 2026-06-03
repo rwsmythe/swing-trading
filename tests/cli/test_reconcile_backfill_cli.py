@@ -1207,6 +1207,23 @@ def test_cli_renders_partial_summary_on_mid_iteration_abort(
 
     monkeypatch.setattr(_bf, "_classify_and_apply", _spy)
 
+    # Mock the Schwab client construction (mirrors the other --apply tests). Without
+    # this the --apply path builds a real client -> the v3 preflight 401s on the absent
+    # tokens DB BEFORE the iteration, masking the mid-iteration-abort behaviour under test.
+    from swing import cli_schwab as _cli_schwab
+
+    class _FakeClient:
+        def account_orders(self, *args, **kwargs):
+            return []
+
+    monkeypatch.setattr(
+        _cli_schwab, "_resolve_credentials_for_cli", lambda c, e: ("spy-id", "spy-secret")
+    )
+    monkeypatch.setattr(
+        _cli_schwab, "_build_schwabdev_client_for_fetch",
+        lambda c, e, cid, csec: _FakeClient(),
+    )
+
     r = runner.invoke(
         main, [
             "--config", str(cfg), "journal", "reconcile-backfill",

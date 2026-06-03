@@ -29,6 +29,17 @@ from click.testing import CliRunner
 from swing.data.db import ensure_schema
 
 
+@pytest.fixture(autouse=True)
+def _noop_v3_preflight(monkeypatch):
+    """These verify-marketdata tests mock schwabdev.Client and isolate the home (no real
+    v3 tokens DB), so the construction preflight has nothing to load. They exercise the
+    market-data path, not the auth/preflight, so no-op the preflight module-wide."""
+    from swing.integrations.schwab import auth
+    monkeypatch.setattr(
+        auth, "_assert_v3_tokens_db_loadable_or_raise", lambda *a, **k: None
+    )
+
+
 @pytest.fixture
 def isolated_home(tmp_path: Path, monkeypatch):
     """Isolate USERPROFILE + HOME per CLAUDE.md gotcha for write_user_overrides."""

@@ -23,7 +23,6 @@ T-A.6 binding constraints (per dispatch brief + spec §3.5 + recon §6.bis):
 """
 from __future__ import annotations
 
-import json
 import re
 import sqlite3
 from datetime import UTC
@@ -103,22 +102,19 @@ def _write_tokens_file(
     id_token: str = _SENTINEL_ID_TOKEN,
     expires_in: int = 1800,
 ) -> Path:
-    """Write a tokens JSON file shaped per recon §6.bis."""
+    """Write a v3 schwabdev SQLite tokens DB (Task 2.8 migration from the 2.x JSON)."""
+    from tests._v3_tokens_helper import write_v3_tokens_db
+
     path = home / "swing-data" / f"schwab-tokens.{env}.db"
-    payload = {
-        "access_token_issued": access_token_issued,
-        "refresh_token_issued": refresh_token_issued,
-        "token_dictionary": {
-            "expires_in": expires_in,
-            "token_type": "Bearer",
-            "scope": "api",
-            "access_token": access_token,
-            "refresh_token": refresh_token,
-            "id_token": id_token,
-        },
-    }
-    path.write_text(json.dumps(payload, indent=4))
-    return path
+    return write_v3_tokens_db(
+        path,
+        access_token=access_token,
+        refresh_token=refresh_token,
+        id_token=id_token,
+        expires_in=expires_in,
+        access_token_issued=access_token_issued,
+        refresh_token_issued=refresh_token_issued,
+    )
 
 
 def _invoke(cfg_path: Path, args: list) -> object:

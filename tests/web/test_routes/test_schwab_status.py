@@ -20,7 +20,6 @@ Sub-bundle A return report §11 lesson + tokens-DB path resolution reads
 """
 from __future__ import annotations
 
-import json
 import sqlite3
 
 import pytest
@@ -49,25 +48,21 @@ def _seed_tokens_db(
     """Plant a schwabdev-shaped tokens JSON file at the tmp_path location
     consulted by ``_user_home() / 'swing-data' / f'schwab-tokens.{env}.db'``.
 
-    The tokens-DB format is plaintext JSON with a `token_dictionary`
-    nested under `access_token_issued` + `refresh_token_issued`. Test
-    rows plant non-token-shaped sentinel substrings for the sentinel-leak
+    v3 migration: a single-row `schwabdev` SQLite tokens DB (presence-only reader).
+    Test rows plant non-token-shaped sentinel substrings for the sentinel-leak
     audit (T-2.1 #13).
     """
-    swing_data = tmp_path / "swing-data"
-    swing_data.mkdir(parents=True, exist_ok=True)
-    tokens_path = swing_data / f"schwab-tokens.{env}.db"
-    payload = {
-        "access_token_issued": access_token_issued,
-        "refresh_token_issued": refresh_token_issued,
-        "token_dictionary": {
-            "access_token": access_token_bytes,
-            "refresh_token": refresh_token_bytes,
-            "id_token": id_token_bytes,
-            "expires_in": 1800,
-        },
-    }
-    tokens_path.write_text(json.dumps(payload), encoding="utf-8")
+    from tests._v3_tokens_helper import write_v3_tokens_db
+
+    tokens_path = tmp_path / "swing-data" / f"schwab-tokens.{env}.db"
+    write_v3_tokens_db(
+        tokens_path,
+        access_token=access_token_bytes,
+        refresh_token=refresh_token_bytes,
+        id_token=id_token_bytes,
+        access_token_issued=access_token_issued,
+        refresh_token_issued=refresh_token_issued,
+    )
 
 
 def _seed_unresolved_material_discrepancy(db_path) -> None:
