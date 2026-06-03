@@ -752,7 +752,17 @@ def _assert_v3_tokens_db_loadable_or_raise(
         if row is None:
             raise SchwabAuthError(401, "<no token row; run `swing schwab setup`>")
         rt_issued, at_val, rt_val = row
-        # (2) freshness: now - rt_issued < 7d - 3630s (else construction forces a refresh).
+        # (2) both token columns must be present + NON-EMPTY (Codex R1 MAJOR-2). A v3 row
+        # CAN be written with an empty column; an empty refresh_token would defeat the
+        # refresh cycle, and construct_authenticated_client's silent-failure check only
+        # validates access_token. Reject empty plaintext here, before construction.
+        for _label, _col in (("access_token", at_val), ("refresh_token", rt_val)):
+            if not isinstance(_col, str) or not _col:
+                raise SchwabAuthError(
+                    401,
+                    f"<tokens DB {_label} empty; run `swing schwab logout` then setup>",
+                )
+        # (3) freshness: now - rt_issued < 7d - 3630s (else construction forces a refresh).
         try:
             issued = datetime.fromisoformat(rt_issued) if rt_issued else None
         except (TypeError, ValueError):
@@ -765,7 +775,8 @@ def _assert_v3_tokens_db_loadable_or_raise(
             raise SchwabAuthError(
                 401, "<refresh token expired/expiring; run `swing schwab logout` then setup>"
             )
-        # (3) decryptability by COLUMN CONTENT, not the config flag.
+        # (4) decryptability by COLUMN CONTENT (not the config flag); an enc: value MUST
+        # decrypt to NON-EMPTY plaintext (Codex R1 MAJOR-2).
         for col in (at_val, rt_val):
             if isinstance(col, str) and col.startswith("enc:"):
                 if not fernet_key:
@@ -775,13 +786,21 @@ def _assert_v3_tokens_db_loadable_or_raise(
                         "run `swing schwab logout` then setup>",
                     )
                 try:
-                    _fernet_cipher(fernet_key).decrypt(col[len("enc:"):].encode())
+                    _plain = _fernet_cipher(fernet_key).decrypt(
+                        col[len("enc:"):].encode()
+                    ).decode()
                 except Exception as exc:
                     raise SchwabAuthError(
                         401,
                         "<encrypted tokens, key invalid (key loss?); "
                         "run `swing schwab logout` then setup>",
                     ) from exc
+                if not _plain:
+                    raise SchwabAuthError(
+                        401,
+                        "<encrypted tokens decrypt to empty; "
+                        "run `swing schwab logout` then setup>",
+                    )
     finally:
         with contextlib.suppress(Exception):
             conn.close()
@@ -797,7 +816,9 @@ def _construct_v3_client_with_guard(
     tokens.py:395-422) releases before any subsequent tokens-DB read. The preflight is the
     PRIMARY defense; this is the belt for the read-to-construct race.
     """
+    import contextlib
     import gc
+    import traceback as _traceback
 
     import schwabdev
 
@@ -814,11 +835,25 @@ def _construct_v3_client_with_guard(
             timeout=timeout,
         )
         return client
-    except SchwabAuthError:
+    except SchwabAuthError as exc:
+        # Codex R1 MAJOR-1: a bare ``raise`` keeps the original traceback alive, and that
+        # traceback retains schwabdev's construction frames -> the partially-built Tokens
+        # object + its open SQLite connection (holding ``BEGIN EXCLUSIVE``). ``gc.collect()``
+        # then CANNOT reclaim them and the lock leaks. Detach the schwabdev frames from the
+        # traceback (``clear_frames`` drops their locals), drop our own refs, collect, and
+        # re-raise a FRESH error ``from None`` so no traceback chain re-anchors those frames.
+        status_code = getattr(exc, "status_code", 401)
+        body = getattr(
+            exc, "body_excerpt",
+            "<tokens expired/invalid; run `swing schwab logout` then `swing schwab setup`>",
+        )
+        with contextlib.suppress(Exception):
+            _traceback.clear_frames(exc.__traceback__)
         client = None
         del client
+        del exc
         gc.collect()  # release the EXCLUSIVE lock deterministically before any retry/read
-        raise
+        raise SchwabAuthError(status_code, body) from None
 
 
 def construct_authenticated_client(

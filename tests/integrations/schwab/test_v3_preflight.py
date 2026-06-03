@@ -63,9 +63,9 @@ def test_t9b_keyloss_on_construction_path(tmp_path: Path) -> None:
 
 def test_t9c_residual_race_guard_leaves_no_locked_db(tmp_path: Path, monkeypatch) -> None:
     """The residual-race BELT: if _raise_on_auth fires during construction, the wrapper
-    drops refs + gc.collect()s so schwabdev's open BEGIN EXCLUSIVE releases -- a follow-up
-    tokens read must SUCCEED, not hit 'database is locked'."""
-    import gc
+    DETERMINISTICALLY releases schwabdev's open BEGIN EXCLUSIVE (clears the traceback frames
+    that retain the partially-built Tokens + its SQLite connection, then gc.collect()s) --
+    a follow-up tokens read must SUCCEED with NO caller-side gc (Codex R1 MAJOR-1)."""
     import sqlite3
 
     db = tmp_path / "schwab-tokens.production.db"
@@ -80,10 +80,46 @@ def test_t9c_residual_race_guard_leaves_no_locked_db(tmp_path: Path, monkeypatch
         auth._construct_v3_client_with_guard(
             tokens_path=db, app_key="k" * 32, app_secret="s" * 16,
             callback_url="https://127.0.0.1", encryption=None, timeout=5)
-    gc.collect()  # belt-and-suspenders; the wrapper already did this on the raise path
+    # NO caller-side gc.collect() here (it would mask a non-deterministic wrapper). The
+    # wrapper alone must have released the lock.
     # Pre-fix risk: schwabdev's BEGIN EXCLUSIVE (no try/finally around call_for_auth) leaves
     # the connection locked -> this read raises OperationalError. Post-fix: it succeeds.
     conn1 = sqlite3.connect(str(db), timeout=2)
     rows = conn1.execute("SELECT COUNT(*) FROM schwabdev").fetchone()[0]
     conn1.close()
     assert rows == 0
+
+
+def test_preflight_rejects_empty_plaintext_refresh_token(tmp_path: Path) -> None:
+    """Codex R1 MAJOR-2: a v3 row with an EMPTY refresh_token must be rejected by the
+    PRIMARY preflight BEFORE construction (construct's silent-failure check only validates
+    access_token, so an empty refresh_token would otherwise slip through)."""
+    p = tmp_path / "schwab-tokens.production.db"
+    auth._write_schwabdev_tokens_db(tokens_path=p, token_dictionary={
+        "access_token": "AT", "refresh_token": "", "id_token": "ID",
+        "expires_in": 1800, "token_type": "Bearer", "scope": "api"},
+        issued_at=datetime.now(timezone.utc), fernet_key=None)
+    with pytest.raises(SchwabAuthError):
+        auth._assert_v3_tokens_db_loadable_or_raise(p, fernet_key=None)
+
+
+def test_preflight_rejects_empty_plaintext_access_token(tmp_path: Path) -> None:
+    p = tmp_path / "schwab-tokens.production.db"
+    auth._write_schwabdev_tokens_db(tokens_path=p, token_dictionary={
+        "access_token": "", "refresh_token": "RT", "id_token": "ID",
+        "expires_in": 1800, "token_type": "Bearer", "scope": "api"},
+        issued_at=datetime.now(timezone.utc), fernet_key=None)
+    with pytest.raises(SchwabAuthError):
+        auth._assert_v3_tokens_db_loadable_or_raise(p, fernet_key=None)
+
+
+def test_preflight_rejects_encrypted_empty_plaintext(tmp_path: Path) -> None:
+    """An enc: column that decrypts to EMPTY plaintext is also rejected (Codex R1 MAJOR-2)."""
+    key = auth._generate_fernet_key()
+    p = tmp_path / "schwab-tokens.production.db"
+    auth._write_schwabdev_tokens_db(tokens_path=p, token_dictionary={
+        "access_token": "AT", "refresh_token": "", "id_token": "ID",
+        "expires_in": 1800, "token_type": "Bearer", "scope": "api"},
+        issued_at=datetime.now(timezone.utc), fernet_key=key)
+    with pytest.raises(SchwabAuthError):
+        auth._assert_v3_tokens_db_loadable_or_raise(p, fernet_key=key)
