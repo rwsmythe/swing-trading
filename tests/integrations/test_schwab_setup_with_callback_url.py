@@ -170,6 +170,9 @@ def test_happy_path_singleton_account(env_with_db, monkeypatch):
     # v3 tokens DB written + a single schwabdev row with access_token + refresh_token.
     assert tokens_path.exists()
     import sqlite3
+    import tomllib
+
+    from swing.integrations.schwab import auth as _auth
     _c = sqlite3.connect(str(tokens_path))
     _row = _c.execute(
         "SELECT access_token_issued, refresh_token_issued, access_token, refresh_token "
@@ -177,8 +180,14 @@ def test_happy_path_singleton_account(env_with_db, monkeypatch):
     ).fetchone()
     _c.close()
     assert _row[0] and _row[1]  # issued timestamps present
-    assert _row[2] == "fresh_access_token_value_abcdefghij"
-    assert _row[3] == "fresh_refresh_token_value_kkkkkkkk"
+    # Fernet is ON by default (setup generated + persisted a key) -> columns are enc:-wrapped
+    # and decrypt to the OAuth-response token values with the persisted key.
+    assert _row[2].startswith("enc:") and _row[3].startswith("enc:")
+    with open(tokens_path.parent / "user-config.toml", "rb") as _f:
+        _key = tomllib.load(_f)["integrations"]["schwab"]["encryption_key"]
+    _cipher = _auth._fernet_cipher(_key)
+    assert _cipher.decrypt(_row[2][4:].encode()).decode() == "fresh_access_token_value_abcdefghij"
+    assert _cipher.decrypt(_row[3][4:].encode()).decode() == "fresh_refresh_token_value_kkkkkkkk"
 
     # Two audit rows, both success.
     rows = conn.execute(
@@ -188,6 +197,49 @@ def test_happy_path_singleton_account(env_with_db, monkeypatch):
     assert len(rows) == 2
     assert rows[0] == ("oauth.code_exchange", "success", "cli")
     assert rows[1] == ("accounts.linked", "success", "cli")
+
+
+def test_setup_loadback_constructs_with_the_generated_key(env_with_db, monkeypatch):
+    """Codex R2 MAJOR-1: when no encryption_key is configured, the web setup path
+    generates + persists a key, writes the tokens DB enc:-wrapped, and constructs its
+    load-back Client with that EFFECTIVE key -- NOT a stale _resolve_fernet_key(cfg)==None
+    that would fail into the auth path against the just-encrypted DB."""
+    cfg, conn, tokens_path = env_with_db
+    captured: dict = {}
+    _install_stub_requests(
+        monkeypatch,
+        _StubResponse(ok=True, status_code=200, body={
+            "access_token": "AT-gen", "refresh_token": "RT-gen",
+            "token_type": "Bearer", "expires_in": 1800, "scope": "api"}),
+        captured)
+
+    construct_kwargs: dict = {}
+
+    class _CapClient:
+        def __init__(self, app_key=None, app_secret=None, callback_url=None,
+                     tokens_db=None, encryption=None, timeout=None, **_kw):
+            construct_kwargs["encryption"] = encryption
+            self.tokens = type("T", (), {"access_token": "x", "refresh_token": "y"})()
+
+        def linked_accounts(self):
+            return [{"accountNumber": "12345", "hashValue": "HASHED_ABC"}]
+
+    import schwabdev
+    monkeypatch.setattr(schwabdev, "Client", _CapClient)
+
+    setup_paste_flow_with_callback_url(
+        cfg, "production", "test_client_id_value_xyz", "test_secret_value_aaa",
+        "https://127.0.0.1/?code=AUTH_CODE_HERE%40SESSION_TOKEN", conn)
+
+    # Pre-fix: encryption kwarg None -> v3 cannot decrypt the just-written enc: DB.
+    # Post-fix: the load-back construction received the generated key.
+    assert construct_kwargs.get("encryption")  # non-None
+    import sqlite3
+    row = sqlite3.connect(str(tokens_path)).execute(
+        "SELECT access_token, refresh_token FROM schwabdev").fetchone()
+    assert row[0].startswith("enc:") and row[1].startswith("enc:")
+    persisted = (tokens_path.parent / "user-config.toml").read_text(encoding="utf-8")
+    assert "encryption_key" in persisted
 
 
 def test_callback_url_missing_code_raises_auth_error(env_with_db, monkeypatch):

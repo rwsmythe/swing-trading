@@ -887,14 +887,14 @@ def construct_authenticated_client(
     # stale-refresh / key-loss states with a clean SchwabAuthError BEFORE construction,
     # so v3's interactive auth-at-construction path is unreachable. Slice 4 threads
     # fernet_key=_resolve_fernet_key(cfg); Slice 2 passes None (plaintext).
-    _assert_v3_tokens_db_loadable_or_raise(tokens_path, fernet_key=None)
+    _assert_v3_tokens_db_loadable_or_raise(tokens_path, fernet_key=_resolve_fernet_key(cfg))
     with _suppress_transport_debug_logs():
         client = _construct_v3_client_with_guard(
             tokens_path=tokens_path,
             app_key=client_id,
             app_secret=client_secret,
             callback_url=cfg.integrations.schwab.callback_url,
-            encryption=None,  # Slice 4: _resolve_fernet_key(cfg)
+            encryption=_resolve_fernet_key(cfg),
             timeout=int(cfg.integrations.schwab.timeout_seconds),
         )
 
@@ -1020,9 +1020,17 @@ def setup_paste_flow(
     register_schwab_secrets([client_id, client_secret])
     ensure_schwab_log_redaction_factory_installed()
 
+    # Fernet (OQ-1): ensure a key exists BEFORE the interactive construct so schwabdev
+    # writes the tokens DB enc:-wrapped (and the SAME key decrypts on the next
+    # construction). Generate + persist (merge-write) when none is configured.
+    _setup_fernet_key = _resolve_fernet_key(cfg)
+    if _setup_fernet_key is None:
+        _setup_fernet_key = _generate_fernet_key()
+        _persist_generated_encryption_key(_setup_fernet_key)
+
     # Step 6 — construct schwabdev.Client(...). schwabdev 3.0.5 uses
     # `tokens_db=` (SQLite) + restores the `open_browser_for_auth=` kwarg;
-    # this SETUP path writes a fresh DB before constructing the load-back.
+    # this SETUP path does the interactive paste-back; schwabdev writes the DB.
     construction_start = time.monotonic()
     try:
         # Import here so test fixtures can `monkeypatch.setattr(
@@ -1034,6 +1042,7 @@ def setup_paste_flow(
                 app_secret=client_secret,
                 callback_url=cfg.integrations.schwab.callback_url,
                 tokens_db=str(tokens_path),
+                encryption=_setup_fernet_key,
                 timeout=int(cfg.integrations.schwab.timeout_seconds),
             )
         elapsed_ms = int((time.monotonic() - construction_start) * 1000)
@@ -1505,6 +1514,48 @@ def _resolve_fernet_key(cfg: Any) -> str | None:
     return key or None
 
 
+def _persist_generated_encryption_key(key: str) -> None:
+    """Persist a generated Fernet key to user-config.toml WITHOUT clobbering the
+    operator's existing overrides (Codex R2 MAJOR-2). ``write_user_overrides``
+    OVERWRITES the whole file, so we load -> merge ONLY [integrations.schwab].
+    encryption_key -> write, preserving client_id/client_secret/environment/...."""
+    from swing.config_user import load_user_overrides, write_user_overrides
+
+    overrides = load_user_overrides()
+    integrations = overrides.setdefault("integrations", {})
+    if not isinstance(integrations, dict):
+        integrations = overrides["integrations"] = {}
+    schwab = integrations.setdefault("schwab", {})
+    if not isinstance(schwab, dict):
+        schwab = integrations["schwab"] = {}
+    schwab["encryption_key"] = key
+    write_user_overrides(overrides)
+
+
+def _ensure_fernet_key_then_write_tokens(*, cfg: Any, environment: str,
+                                         token_dictionary: dict) -> str | None:
+    """SETUP-path token persist with Fernet (OQ-1). Resolve the cfg key; if absent,
+    GENERATE one + PERSIST it (merge-write) so the NEXT construction can decrypt.
+    Write the tokens DB enc:-wrapped with the EFFECTIVE key and RETURN that key
+    (Codex R2 MAJOR-1: the caller MUST construct its load-back with this RETURNED
+    key, NOT a stale ``_resolve_fernet_key(cfg)`` built before generation)."""
+    import datetime as _dt
+
+    key = _resolve_fernet_key(cfg)
+    if key is None:
+        key = _generate_fernet_key()
+        _persist_generated_encryption_key(key)
+    tokens_path = _resolve_tokens_db_path(environment)
+    tokens_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_schwabdev_tokens_db(
+        tokens_path=tokens_path,
+        token_dictionary=token_dictionary,
+        issued_at=_dt.datetime.now(_dt.UTC),
+        fernet_key=key,
+    )
+    return key
+
+
 def _write_schwabdev_tokens_db(
     *,
     tokens_path: Path,
@@ -1832,17 +1883,13 @@ def setup_paste_flow_with_callback_url(
 
     elapsed_ms = int((time.monotonic() - exchange_start) * 1000)
 
-    # Step 8 — write the schwabdev-compatible tokens file. issued_at is
-    # `now()` (UTC-aware); matches schwabdev's `Tokens._update_refresh_
-    # token_from_code` semantics ("both issued NOW on a fresh exchange").
-    import datetime as _dt
-    issued_at = datetime.now(_dt.UTC)
+    # Step 8 — write the v3 SQLite tokens DB (issued NOW). Fernet (OQ-1): generate +
+    # persist a key when none is configured, write enc:-wrapped, and thread the EFFECTIVE
+    # key into the load-back construction below (Codex R2 MAJOR-1 -- NOT a stale
+    # _resolve_fernet_key(cfg) that would still read None against the just-encrypted DB).
     try:
-        _write_schwabdev_tokens_db(
-            tokens_path=tokens_path,
-            token_dictionary=token_dictionary,
-            issued_at=issued_at,
-            fernet_key=None,  # Slice 4 wires the cfg key source via the setup keygen
+        effective_fernet_key = _ensure_fernet_key_then_write_tokens(
+            cfg=cfg, environment=environment, token_dictionary=token_dictionary,
         )
     except OSError as exc:
         audit_service.record_call_finish(
@@ -1880,6 +1927,7 @@ def setup_paste_flow_with_callback_url(
                 app_secret=client_secret,
                 callback_url=cfg.integrations.schwab.callback_url,
                 tokens_db=str(tokens_path),
+                encryption=effective_fernet_key,  # Codex R2 MAJOR-1: the EFFECTIVE key
                 timeout=int(cfg.integrations.schwab.timeout_seconds),
             )
 
@@ -2055,14 +2103,16 @@ def force_refresh(
     try:
         # PRIMARY defense (§C.2): reject old-format / stale-refresh / key-loss with a
         # clean SchwabAuthError BEFORE construction (audited auth_failed below).
-        _assert_v3_tokens_db_loadable_or_raise(tokens_path, fernet_key=None)  # Slice 4: key
+        _assert_v3_tokens_db_loadable_or_raise(
+            tokens_path, fernet_key=_resolve_fernet_key(cfg)
+        )
         with _suppress_transport_debug_logs():
             client = _construct_v3_client_with_guard(
                 tokens_path=tokens_path,
                 app_key=client_id,
                 app_secret=client_secret,
                 callback_url=cfg.integrations.schwab.callback_url,
-                encryption=None,  # Slice 4: _resolve_fernet_key(cfg)
+                encryption=_resolve_fernet_key(cfg),
                 timeout=int(cfg.integrations.schwab.timeout_seconds),
             )
             # Codex R1 Major #1 (parity with D1 setup hotfix) — capture
@@ -2353,7 +2403,8 @@ def revoke_and_delete(
     # _resolve_fernet_key(cfg).
     file_missing = not tokens_path.exists()
     refresh_token = (
-        None if file_missing else _read_v3_refresh_token(tokens_path, fernet_key=None)
+        None if file_missing
+        else _read_v3_refresh_token(tokens_path, fernet_key=_resolve_fernet_key(cfg))
     )
 
     if file_missing:
