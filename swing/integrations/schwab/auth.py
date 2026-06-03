@@ -1352,25 +1352,58 @@ def _exchange_code_for_tokens(
     return token_dict
 
 
-def _write_schwabdev_tokens_file(
+# Verbatim copy of the installed schwabdev 3.0.5 private DDL
+# (site-packages/schwabdev/tokens.py:80-91, table `schwabdev`, single row).
+# The T1b DDL-drift guard (tests/integrations/schwab/test_v3_tokens_writer.py)
+# introspects the LIVE installed table against this copy and fails loudly on a
+# future 3.x private-schema change -- the safety condition for the OQ-3 floored pin.
+_V3_SCHWABDEV_DDL = (
+    "CREATE TABLE IF NOT EXISTS schwabdev ("
+    "access_token_issued TEXT NOT NULL, refresh_token_issued TEXT NOT NULL, "
+    "access_token TEXT NOT NULL, refresh_token TEXT NOT NULL, id_token TEXT NOT NULL, "
+    "expires_in INTEGER, token_type TEXT, scope TEXT)"
+)
+
+
+def _generate_fernet_key() -> str:
+    """Generate a fresh Fernet key as a url-safe base64 str (round-trips through
+    user-config.toml and matches schwabdev's `encryption=` kwarg, which builds
+    `Fernet(encryption)` when `len(encryption) > 16`)."""
+    from cryptography.fernet import Fernet
+    return Fernet.generate_key().decode()
+
+
+def _fernet_cipher(key: Any):
+    """Build a Fernet cipher from a str|bytes key (parity with installed
+    schwabdev tokens.py:68 `Fernet(encryption)`)."""
+    from cryptography.fernet import Fernet
+    return Fernet(key.encode() if isinstance(key, str) else key)
+
+
+def _write_schwabdev_tokens_db(
     *,
     tokens_path: Path,
     token_dictionary: dict,
     issued_at: datetime,
+    fernet_key: str | None = None,
 ) -> None:
-    """Write the schwabdev-compatible tokens JSON file at ``tokens_path``.
+    """Write the v3 schwabdev-compatible SQLite tokens DB at ``tokens_path`` (W-A).
 
-    schwabdev's ``Tokens._set_tokens`` produces a file with three keys:
-    ``access_token_issued`` + ``refresh_token_issued`` (both ISO 8601
-    UTC-aware) and ``token_dictionary`` (the raw JSON dict from
-    /v1/oauth/token). On subsequent ``schwabdev.Client(...)``
+    schwabdev 3.0.5 stores tokens in a SQLite DB with a single ``schwabdev``
+    table row (8 columns: ``access_token_issued`` + ``refresh_token_issued``
+    ISO-8601, ``access_token`` + ``refresh_token`` + ``id_token``, ``expires_in``,
+    ``token_type``, ``scope``). On subsequent ``schwabdev.Client(...)``
     construction, ``Tokens.__init__`` reads this exact format.
 
-    T-B.4 mirrors that format byte-for-byte so the web-side OAuth
-    exchange produces a tokens file indistinguishable from one that
-    schwabdev wrote itself. After this call, a subsequent
-    ``construct_authenticated_client(...)`` call loads the freshly-
-    written tokens cleanly without prompting.
+    W-A owns a verbatim pinned copy of the private DDL (``_V3_SCHWABDEV_DDL``);
+    the T1b DDL-drift guard makes that copy safe against a future minor. After
+    this call a subsequent ``construct_authenticated_client(...)`` loads the
+    freshly-written tokens cleanly without prompting.
+
+    ``fernet_key`` is None in Slice 2 (plaintext, exactly as 2.x behaved); Slice 4
+    supplies the cfg key source. When set, the ``access_token`` + ``refresh_token``
+    columns are ``enc:``-prefixed (mirror of schwabdev tokens.py:121-123) so a real
+    ``Client(encryption=key)`` decrypts them.
 
     The mode-0o600 discipline mirrors the at-rest posture of the
     self-heal rename path (auth.py:_rename_stale_tokens_db).
@@ -1390,14 +1423,15 @@ def _write_schwabdev_tokens_file(
     Mirrors ``swing/config_user.py:write_user_overrides`` discipline.
     """
     import contextlib
-    import json as _json
+    import sqlite3 as _sqlite3
     import tempfile
 
-    payload = {
-        "access_token_issued": issued_at.isoformat(),
-        "refresh_token_issued": issued_at.isoformat(),
-        "token_dictionary": token_dictionary,
-    }
+    cipher = _fernet_cipher(fernet_key) if fernet_key else None
+
+    def _enc(value: str) -> str:
+        # Mirror schwabdev tokens.py:121-123 (`enc:` + Fernet ciphertext).
+        return ("enc:" + cipher.encrypt(value.encode()).decode()) if cipher else value
+
     # Same-dir tempfile via mkstemp: unique name per concurrent call;
     # placed alongside the canonical path so os.replace is intra-volume.
     fd, tmp_name = tempfile.mkstemp(
@@ -1412,15 +1446,33 @@ def _write_schwabdev_tokens_file(
         # _rename_stale_tokens_db posture (no-op on Windows).
         with contextlib.suppress(OSError):
             os.chmod(str(tmp_path), 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            _json.dump(payload, f, ensure_ascii=False, indent=4)
-            # Codex R2 Minor #1 — flush Python buffer + fsync kernel
-            # buffer before os.replace. Without this, a crash between
-            # dump-return + replace can leave a partially-durable tmp
-            # file that os.replace promotes to canonical. Mirrors the
-            # config_user.write_user_overrides fsync pattern.
-            f.flush()
-            os.fsync(f.fileno())
+        # Release the mkstemp handle; sqlite3 reopens the path. An empty
+        # mkstemp file is a valid (zero-byte) SQLite database. SQLite's COMMIT
+        # fsyncs the page cache (synchronous=FULL default), so the tmp DB is
+        # durable before os.replace promotes it to canonical (intra-volume).
+        os.close(fd)
+        conn = _sqlite3.connect(str(tmp_path))
+        try:
+            conn.execute(_V3_SCHWABDEV_DDL)
+            conn.execute("DELETE FROM schwabdev")
+            conn.execute(
+                "INSERT INTO schwabdev (access_token_issued, refresh_token_issued, "
+                "access_token, refresh_token, id_token, expires_in, token_type, scope) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    issued_at.isoformat(),
+                    issued_at.isoformat(),
+                    _enc(token_dictionary["access_token"]),
+                    _enc(token_dictionary["refresh_token"]),
+                    token_dictionary.get("id_token", ""),
+                    token_dictionary.get("expires_in", 1800),
+                    token_dictionary.get("token_type", "Bearer"),
+                    token_dictionary.get("scope", "api"),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
         os.replace(str(tmp_path), str(tokens_path))
         # Codex R3 Minor #1 — best-effort parent-directory fsync to
         # ensure the rename itself is durable across a power-loss or
@@ -1661,10 +1713,11 @@ def setup_paste_flow_with_callback_url(
     import datetime as _dt
     issued_at = datetime.now(_dt.UTC)
     try:
-        _write_schwabdev_tokens_file(
+        _write_schwabdev_tokens_db(
             tokens_path=tokens_path,
             token_dictionary=token_dictionary,
             issued_at=issued_at,
+            fernet_key=None,  # Slice 4 wires the cfg key source via the setup keygen
         )
     except OSError as exc:
         audit_service.record_call_finish(
