@@ -18,7 +18,7 @@
 
 Full enumeration in the `#19` PHASE 14 CLOSED record + the `#5` punch-list below. Summary:
 
-- **schwabdev v2.5.1 -> 3.0.5 upgrade + Fernet token encryption** -- **SHIPPED 2026-06-03 `7ee04c3`** (full copowers cycle; isolated-venv-green 7053 passed; Codex-converged; the FIRST-EVER L2-LOCK baseline re-anchor `bf7e071`->`9d05a8f`, operator-signed GATE A). **PENDING: the operator GATE-B live-OAuth cutover** (global `pip install` v3 + `logout`->`setup`->`status`->`fetch`). Full record in `#20`. (was `#9`)
+- **schwabdev v2.5.1 -> 3.0.5 upgrade + Fernet token encryption** -- **SHIPPED 2026-06-03 `7ee04c3`** (full copowers cycle; isolated-venv-green 7053 passed; Codex-converged; the FIRST-EVER L2-LOCK baseline re-anchor `bf7e071`->`9d05a8f`, operator-signed GATE A). **GATE-B live-OAuth cutover DONE 2026-06-03** (operator-validated on v3; 7053 fast tests green post-cutover; ARC FULLY CLOSED). Full record in `#20`. (was `#9`)
 - **B-7 operator failure-mode classification** -- extend the CR.1 review surface for operator-annotated failure reasons; assess schema (nullable review column -> v24, or reuse existing) at its brainstorm. (was Phase 14 FINAL TOUCH; moved to Phase 15)
 - **Process-grade-trend chart redesign** -- `/metrics/process-grade-trend` overlays non-grade metrics (`mistake_cost_R` x2 + `disqualifying_violation_rate`) on the A-F grade axis -> confusing plunge-lines; separate panel/scale, restyle/dash, or table-only. Phase-13-era surface. (the F-3 re-diagnosis follow-on)
 - **Phase 14 cross-sub-bundle integration review** (commissioning brief Sec 9.1 Q6) -- operator browser-witnessed coherence check across charts + review/journal + metrics overview + Schwab; runs early in Phase 15 as a retrospective.
@@ -61,7 +61,7 @@ Full enumeration in the `#19` PHASE 14 CLOSED record + the `#5` punch-list below
 
 ---
 
-## 2026-06-03 #20 PHASE 15 FIRST ARC SHIPPED -- schwabdev v2.5.1->3.0.5 + Fernet (full copowers cycle; the FIRST-EVER L2-LOCK baseline re-anchor); the operator GATE-B live-OAuth cutover is PENDING
+## 2026-06-03 #20 PHASE 15 FIRST ARC SHIPPED + CLOSED -- schwabdev v2.5.1->3.0.5 + Fernet (full copowers cycle; the FIRST-EVER L2-LOCK baseline re-anchor); the operator GATE-B live-OAuth cutover DONE 2026-06-03
 
 **SHIPPED 2026-06-03 `7ee04c3`** (operator-commissioned 2026-06-02). The first commissioned Phase-15 arc: migrate off **schwabdev 2.5.1** to **3.0.5** + Fernet token-at-rest. Full copowers cycle -- brainstorm `f7e15b9` -> writing-plans `333367f` -> executing-plans `7ee04c3` (20 TDD commits, ZERO Co-Authored-By); each phase Codex-converged via the WSL CLI fallback (`NO_NEW_CRITICAL_MAJOR`). Executed ENTIRELY in an isolated venv (the operator's live 2.5.1 + token DB untouched); **7053 fast tests green** on the merged HEAD in the venv (schwabdev 3.0.5). Briefs: `docs/schwabdev-v3-upgrade-{brainstorming,writing-plans,executing-plans}-dispatch-brief.md`; spec `docs/superpowers/specs/2026-06-02-schwabdev-v3-upgrade-design.md`; plan `docs/superpowers/plans/2026-06-02-schwabdev-v3-upgrade-plan.md`.
 
@@ -69,7 +69,7 @@ Full enumeration in the `#19` PHASE 14 CLOSED record + the `#5` punch-list below
 
 **The FIRST-EVER L2-LOCK baseline re-anchor:** `L2_LOCK_BASELINE_SHA` `bf7e071`->`9d05a8f` (`tests/integration/test_l2_lock_source_grep.py`). Reason: the migration churns docstrings/comments embedding `schwabdev.Client(` (NOT new call sites). `docs/schwab-v3-endpoint-diff.md` (9 endpoints, pre==post) proves ZERO new Schwab REST endpoints; operator-signed at GATE A. The lock's SPIRIT (zero new endpoints) preserved; the escalation rule stands.
 
-**PENDING -- the operator GATE-B live-OAuth cutover (post-merge; NOT yet done):** main now carries v3 code while the operator's shared env is still 2.5.1, so the primary-repo Schwab paths are inert until the cutover. Runbook (executing-plans dispatch brief §3 / spec §11): `git pull` -> global `pip install -e ".[dev,web]"` (pulls v3 + `cryptography`/`aiohttp<3.12`) -> `swing schwab logout` -> `swing schwab setup` (real OAuth; v3 SQLite DB; Fernet key auto-generated+persisted) -> `swing schwab status` -> a live `swing schwab fetch` / `swing web` Schwab render -> witness the UNSEEDED no-badge default. Rollback if it fails: revert the pin to `<3.0.0` -> `pip install -e` -> `logout`->`setup` (re-creates the 2.x DB). Low blast radius (no swing.db change).
+**DONE -- the operator GATE-B live-OAuth cutover (2026-06-03):** the operator ran the global `pip install -e ".[dev,web]"` (shared env now schwabdev 3.0.5) + `swing schwab logout` -> `setup` (real OAuth; v3 SQLite DB; Fernet key auto-generated) -> `status` -> `fetch` -> `swing web` (UNSEEDED no-badge default witnessed) -- ALL PASSED; web server stopped (ports verified free). Post-cutover **shared-env fast suite 7053 passed / 0 failed** (v3 code on v3 lib, the operator's real env). **ARC FULLY CLOSED.** (Rollback path, unused: revert the migration + reinstall 2.5.1 + re-setup; low blast radius, no swing.db change.)
 
 **PHASE 15 remaining (tracked):** B-7 operator failure-mode classification; the process-grade-trend chart redesign; the Phase-14 cross-sub-bundle integration review; B-1..B-8 strategic items (`#5` "Phase 15+").
 
