@@ -18,7 +18,8 @@ def test_registry_has_expected_v1_fields():
     """Phase 5 V1 registered 3 editable fields. Sub-bundle A T-A.2 added the
     masked display-only `integrations.schwab.account_hash` entry. Phase 12
     Sub-bundle B T-B.2 added masked `integrations.schwab.client_id` +
-    `integrations.schwab.client_secret` for the credentials-in-file cascade."""
+    `integrations.schwab.client_secret` for the credentials-in-file cascade.
+    Phase 15 schwabdev v3 (OQ-1) added masked `integrations.schwab.encryption_key`."""
     paths = {s.path for s in FIELD_REGISTRY}
     assert paths == {
         "web.chase_factor",
@@ -27,6 +28,7 @@ def test_registry_has_expected_v1_fields():
         "integrations.schwab.account_hash",
         "integrations.schwab.client_id",
         "integrations.schwab.client_secret",
+        "integrations.schwab.encryption_key",
     }
 
 

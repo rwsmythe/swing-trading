@@ -261,6 +261,10 @@ class SchwabIntegrationConfig:
     # config show` masks them (first-3 + `***` + last-2).
     client_id: str = ""
     client_secret: str = ""
+    # Phase 15 schwabdev v3 upgrade (OQ-1) — optional Fernet token-at-rest key.
+    # Sensitive (lives in user-config only); generated at `swing schwab setup` when
+    # absent; FIELD_REGISTRY surfaces it `masked=True` in `swing config show`.
+    encryption_key: str | None = None
 
     def __post_init__(self) -> None:
         import math as _math
@@ -334,6 +338,12 @@ class SchwabIntegrationConfig:
             raise TypeError(
                 "integrations.schwab.client_secret must be str; got "
                 f"{type(self.client_secret).__name__}"
+            )
+        # Phase 15 (OQ-1) — encryption_key: str | None (a Fernet url-safe base64 key).
+        if self.encryption_key is not None and not isinstance(self.encryption_key, str):
+            raise TypeError(
+                "integrations.schwab.encryption_key must be str or None; got "
+                f"{type(self.encryption_key).__name__}"
             )
 
 
@@ -487,6 +497,8 @@ def load(config_path: Path) -> Config:
     # in user-config.toml only (or env vars via T-A.1 / T-B.1 cascade).
     raw_schwab.pop("client_id", None)
     raw_schwab.pop("client_secret", None)
+    # Phase 15 (OQ-1) — the Fernet key is sensitive; user-config.toml only.
+    raw_schwab.pop("encryption_key", None)
 
     return Config(
         paths=paths,

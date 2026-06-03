@@ -117,6 +117,22 @@ FIELD_REGISTRY: tuple[FieldSpec, ...] = (
         soft_warn_min=None, soft_warn_max=None,
         masked=True,
     ),
+    # Phase 15 schwabdev v3 (OQ-1) — Fernet token-at-rest key. Sensitive; lives in
+    # user-config.toml only; generated at `swing schwab setup` when absent. Mirrors the
+    # client_secret masked=True template (first-3 + `***` + last-2 via mask_sensitive_value).
+    FieldSpec(
+        path="integrations.schwab.encryption_key",
+        label="Schwab encryption_key",
+        description=(
+            "Optional Fernet token-at-rest key for the v3 SQLite tokens DB "
+            "(sensitive). Generated at `swing schwab setup` when absent. Displayed "
+            "masked here."
+        ),
+        type=str, default="",
+        hard_refuse_min=None, hard_refuse_max=None,
+        soft_warn_min=None, soft_warn_max=None,
+        masked=True,
+    ),
 )
 
 

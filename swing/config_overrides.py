@@ -26,6 +26,8 @@ _V1_PATHS = (
     # `get_field_source` for every registry path, so these must appear here too.
     "integrations.schwab.client_id",
     "integrations.schwab.client_secret",
+    # Phase 15 schwabdev v3 (OQ-1) — Fernet token-at-rest key (masked registry entry).
+    "integrations.schwab.encryption_key",
 )
 
 
@@ -133,6 +135,9 @@ def apply_overrides(base_cfg: Config) -> Config:
     sw_csec = _get(overrides, "integrations.schwab.client_secret")
     if not isinstance(sw_csec, _Missing):
         new_schwab = replace(new_schwab, client_secret=str(sw_csec))
+    sw_enc = _get(overrides, "integrations.schwab.encryption_key")
+    if not isinstance(sw_enc, _Missing):
+        new_schwab = replace(new_schwab, encryption_key=str(sw_enc))
 
     if (
         new_finviz is not base_cfg.integrations.finviz

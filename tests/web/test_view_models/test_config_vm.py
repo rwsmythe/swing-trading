@@ -26,9 +26,10 @@ def test_vm_has_expected_rows(base_cfg):
     masked display-only `integrations.schwab.account_hash` row; Phase 12
     Sub-bundle B T-B.2 adds masked `integrations.schwab.client_id` +
     `integrations.schwab.client_secret` rows for the credentials-in-file
-    cascade."""
+    cascade. Phase 15 schwabdev v3 (OQ-1) adds the masked
+    `integrations.schwab.encryption_key` row."""
     vm = build_config_vm(base_cfg)
-    assert len(vm.rows) == 6
+    assert len(vm.rows) == 7
     paths = [r.path for r in vm.rows]
     assert paths == [
         "web.chase_factor",
@@ -37,6 +38,7 @@ def test_vm_has_expected_rows(base_cfg):
         "integrations.schwab.account_hash",
         "integrations.schwab.client_id",
         "integrations.schwab.client_secret",
+        "integrations.schwab.encryption_key",
     ]
 
 

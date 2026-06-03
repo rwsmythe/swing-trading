@@ -1495,6 +1495,16 @@ def _fernet_cipher(key: Any):
     return Fernet(key.encode() if isinstance(key, str) else key)
 
 
+def _resolve_fernet_key(cfg: Any) -> str | None:
+    """Resolve the Fernet token-at-rest key from cfg `[integrations.schwab]
+    encryption_key` (OQ-1). Returns the key string, or None when unset/empty
+    (plaintext at rest). The preflight/reader/writer drive encryption off the
+    column `enc:` prefix, NOT this flag (the key-loss gap)."""
+    schwab = getattr(getattr(cfg, "integrations", None), "schwab", None)
+    key = getattr(schwab, "encryption_key", None) if schwab is not None else None
+    return key or None
+
+
 def _write_schwabdev_tokens_db(
     *,
     tokens_path: Path,
