@@ -1,14 +1,14 @@
 """T-A.1: assert installed schwabdev version satisfies the pyproject.toml pin.
 
-Phase 11 Schwab API integration Sub-bundle A. The plan pins
-``schwabdev>=2.4.0,<3.0.0`` in ``pyproject.toml`` so synthesized signatures in
-the reconciliation doc (``docs/schwab-bundle-A-task-A0b-recon.md``) stay
-aligned with the runtime library surface. This test guards against silent
-drift if a future ``pip install`` resolves to a version outside the pin.
+Phase 15 schwabdev v3 upgrade. The project pins
+``schwabdev>=3.0.5,<4.0.0`` in ``pyproject.toml`` (OQ-3 floored range). This
+test guards against silent drift if a future ``pip install`` resolves to a
+version outside the pin.
 
-schwabdev 2.5.x does NOT expose ``schwabdev.__version__`` as a module
-attribute, so we read the installed-distribution version via
-``importlib.metadata.version`` (PEP 566; stdlib since Python 3.8).
+schwabdev 3.0.5 ships ``schwabdev.__version__ == '3.0.4'`` (stale inside the
+3.0.5 dist -- Note A), so we read the installed-distribution version via
+``importlib.metadata.version`` (PEP 566; stdlib since Python 3.8), NOT the
+module dunder.
 """
 
 from __future__ import annotations
@@ -16,8 +16,8 @@ from __future__ import annotations
 from importlib import metadata
 
 
-_LOWER_INCLUSIVE = (2, 4, 0)
-_UPPER_EXCLUSIVE = (3, 0, 0)
+_LOWER_INCLUSIVE = (3, 0, 5)
+_UPPER_EXCLUSIVE = (4, 0, 0)
 
 
 def _parse_version(raw: str) -> tuple[int, int, int]:
@@ -51,13 +51,13 @@ def test_schwabdev_installed_and_importable() -> None:
 
 
 def test_schwabdev_version_within_pin_range() -> None:
-    """Installed schwabdev version must satisfy ``>=2.4.0,<3.0.0``."""
+    """Installed schwabdev version must satisfy ``>=3.0.5,<4.0.0``."""
 
     raw = metadata.version("schwabdev")
     assert isinstance(raw, str) and raw, f"unexpected version value: {raw!r}"
     parsed = _parse_version(raw)
     assert _LOWER_INCLUSIVE <= parsed < _UPPER_EXCLUSIVE, (
         f"schwabdev=={raw} (parsed={parsed}) is outside the pyproject pin "
-        f">={_LOWER_INCLUSIVE}, <{_UPPER_EXCLUSIVE}; re-record the §E "
-        "signature reconciliation doc if intentionally bumping the pin."
+        f">={_LOWER_INCLUSIVE}, <{_UPPER_EXCLUSIVE}; re-record the signature "
+        "reconciliation doc if intentionally bumping the pin."
     )

@@ -113,14 +113,14 @@ def _stub_schwabdev(monkeypatch):
     mock_client.account_orders.return_value = list_resp
     mock_client.transactions.return_value = list_resp
 
-    # account_linked: list of one dict.
+    # linked_accounts: list of one dict.
     linked_resp = MagicMock()
     linked_resp.json.return_value = [
         {"accountNumber": "12345678", "hashValue": "abc...64charhash"},
     ]
     linked_resp.status_code = 200
     linked_resp.headers = {}
-    mock_client.account_linked.return_value = linked_resp
+    mock_client.linked_accounts.return_value = linked_resp
 
     import schwabdev
     monkeypatch.setattr(schwabdev, "Client", MagicMock(return_value=mock_client))

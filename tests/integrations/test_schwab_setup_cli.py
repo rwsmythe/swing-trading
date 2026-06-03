@@ -119,9 +119,9 @@ class _FakeSchwabdevClient:
             {"accountNumber": "12345678", "hashValue": "ABCDEFHASH1"},
         ]
         # Persist the tokens_file kwarg so we can assert per-env DB path.
-        self.tokens_file = kwargs.get("tokens_file")
+        self.tokens_db = kwargs.get("tokens_db")
 
-    def account_linked(self) -> list[dict]:
+    def linked_accounts(self) -> list[dict]:
         return self._accounts
 
 
@@ -140,7 +140,7 @@ def _make_schwabdev_stub(
         if raise_on_account_linked is not None:
             def _raiser() -> list[dict]:
                 raise raise_on_account_linked
-            client.account_linked = _raiser  # type: ignore[method-assign]
+            client.linked_accounts = _raiser  # type: ignore[method-assign]
         return client
 
     return factory
@@ -388,7 +388,7 @@ def test_setup_tokens_path_resolves_under_tmp_home(
         input="my_client_id\nmy_client_secret\n",
     )
     assert result.exit_code == 0, result.output
-    tokens_path = Path(captured["tokens_file"])
+    tokens_path = Path(captured["tokens_db"])
     # tokens_path MUST be under tmp_path (str-prefix containment).
     assert str(tokens_path).startswith(str(home)), (
         f"tokens_path {tokens_path} escaped tmp home {home}"
@@ -476,7 +476,7 @@ def test_setup_environment_sandbox_routes_to_sandbox_tokens_db(
         input="my_client_id\nmy_client_secret\n",
     )
     assert result.exit_code == 0, result.output
-    tokens_path = Path(captured["tokens_file"])
+    tokens_path = Path(captured["tokens_db"])
     assert tokens_path.name == "schwab-tokens.sandbox.db"
     rows = _read_audit_rows(home / "swing-data" / "swing.db")
     assert rows[0]["environment"] == "sandbox"
@@ -501,7 +501,7 @@ def test_setup_environment_defaults_to_production_when_flag_omitted(
         input="my_client_id\nmy_client_secret\n",
     )
     assert result.exit_code == 0, result.output
-    tokens_path = Path(captured["tokens_file"])
+    tokens_path = Path(captured["tokens_db"])
     assert tokens_path.name == "schwab-tokens.production.db"
 
 
@@ -620,9 +620,9 @@ class _FakeSchwabdevClientNoTokens:
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         self.tokens = _FakeTokensEmpty()
-        self.tokens_file = kwargs.get("tokens_file")
+        self.tokens_db = kwargs.get("tokens_db")
 
-    def account_linked(self) -> list[dict]:
+    def linked_accounts(self) -> list[dict]:
         # Should never be called; included for shape symmetry.
         return []
 
@@ -674,7 +674,7 @@ def test_setup_d2_account_linked_returns_dict_marked_auth_failed(
     """
 
     class _ClientWithDictAccounts(_FakeSchwabdevClient):
-        def account_linked(self) -> Any:
+        def linked_accounts(self) -> Any:
             return {"errors": ["fake error envelope"]}
 
     def factory(*args: Any, **kwargs: Any) -> _ClientWithDictAccounts:
@@ -707,7 +707,7 @@ def test_setup_d2_account_linked_returns_list_with_non_dict_entries_raises(
     """
 
     class _ClientWithBadListEntries(_FakeSchwabdevClient):
-        def account_linked(self) -> Any:
+        def linked_accounts(self) -> Any:
             return ["not-a-dict"]
 
     def factory(*args: Any, **kwargs: Any) -> _ClientWithBadListEntries:
@@ -735,7 +735,7 @@ def test_setup_d2_account_linked_returns_dict_entries_missing_hashvalue_raises(
     """
 
     class _ClientWithDictsNoHash(_FakeSchwabdevClient):
-        def account_linked(self) -> Any:
+        def linked_accounts(self) -> Any:
             return [{"accountNumber": "12345678"}]
 
     def factory(*args: Any, **kwargs: Any) -> _ClientWithDictsNoHash:
@@ -824,7 +824,7 @@ def test_setup_account_linked_empty_list_audits_auth_failed(
     """
 
     class _ClientWithEmptyAccounts(_FakeSchwabdevClient):
-        def account_linked(self) -> list[dict]:
+        def linked_accounts(self) -> list[dict]:
             return []
 
     def factory(*args: Any, **kwargs: Any) -> _ClientWithEmptyAccounts:

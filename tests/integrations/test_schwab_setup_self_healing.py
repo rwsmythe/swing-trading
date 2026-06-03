@@ -110,14 +110,14 @@ class _FakeSchwabdevClient:
         self._accounts = accounts if accounts is not None else [
             {"accountNumber": "12345678", "hashValue": "SINGLEHASH"},
         ]
-        self.tokens_file = kwargs.get("tokens_file")
+        self.tokens_db = kwargs.get("tokens_db")
         # Simulate schwabdev writing the on-disk tokens file post-OAuth.
-        if self.tokens_file:
-            Path(self.tokens_file).write_text(
+        if self.tokens_db:
+            Path(self.tokens_db).write_text(
                 '{"token_dictionary": {"access_token": "NEW", "refresh_token": "NEW"}}'
             )
 
-    def account_linked(self) -> list[dict]:
+    def linked_accounts(self) -> list[dict]:
         return self._accounts
 
 
@@ -146,7 +146,7 @@ def _patch_schwabdev_raises(
     state: dict = {"tokens_file_existed_pre_init": None}
 
     def factory(*args: Any, **kwargs: Any) -> _FakeSchwabdevClient:
-        tokens_file = kwargs.get("tokens_file")
+        tokens_file = kwargs.get("tokens_db")
         state["tokens_file_existed_pre_init"] = (
             tokens_file is not None and Path(tokens_file).exists()
         )

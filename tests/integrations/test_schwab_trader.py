@@ -128,7 +128,7 @@ def _latest_call_id(conn: sqlite3.Connection) -> int | None:
 def test_01_get_accounts_linked_happy_path(v18_conn):
     """Map list of {accountNumber, hashValue} dicts → list of hashValues."""
     client = MagicMock()
-    client.account_linked.return_value = _mock_response(
+    client.linked_accounts.return_value = _mock_response(
         [
             {"accountNumber": "12345678", "hashValue": "abc...64charhash"},
         ],
@@ -283,7 +283,7 @@ def test_06_accounts_linked_empty_list_audit_fails_not_success(v18_conn):
     success-then-error which silently logs a successful call).
     """
     client = MagicMock()
-    client.account_linked.return_value = _mock_response([])
+    client.linked_accounts.return_value = _mock_response([])
 
     with pytest.raises(SchwabSchemaParityError):
         get_accounts_linked(
@@ -412,7 +412,7 @@ def test_11_ensure_factory_called_before_each_schwabdev_invocation(
     the Layer-2 redactor disabled for subsequent calls.
     """
     client = MagicMock()
-    client.account_linked.return_value = _mock_response([
+    client.linked_accounts.return_value = _mock_response([
         {"accountNumber": "12345678", "hashValue": "abc...hash"},
     ])
 
@@ -594,7 +594,7 @@ def test_17_silent_failure_post_call_token_cleared_triggers_auth_failed(v18_conn
         resp.headers = {}
         return resp
 
-    client.account_linked.side_effect = side_effect
+    client.linked_accounts.side_effect = side_effect
 
     with pytest.raises(SchwabAuthError):
         get_accounts_linked(
