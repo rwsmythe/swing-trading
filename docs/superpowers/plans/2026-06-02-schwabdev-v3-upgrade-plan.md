@@ -187,11 +187,14 @@ def test_schwabdev_distribution_in_v3_floored_range() -> None:
     )
 
 
-def test_version_test_uses_distribution_not_dunder() -> None:
-    # Guard against regressing to schwabdev.__version__ (reads 3.0.4 in the 3.0.5 dist).
-    import schwabdev
-    assert md.version("schwabdev") != getattr(schwabdev, "__version__", None) or True
-    # The meaningful assertion is that the pin test above reads md.version, not __version__.
+def test_pin_test_reads_distribution_metadata_not_dunder() -> None:
+    # Discriminating source-level guard (Codex R1 minor; replaces the old `or True`
+    # tautology): assert the pin test reads importlib.metadata.version, NOT
+    # schwabdev.__version__ (which reads 3.0.4 in the 3.0.5 dist -- Note A). This is
+    # robust to a future patch that fixes __version__.
+    import inspect
+    src = inspect.getsource(test_schwabdev_distribution_in_v3_floored_range)
+    assert "md.version(" in src and "__version__" not in src
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -407,9 +410,37 @@ def test_g4_price_history_passes_eight_camelcase_kwargs() -> None:
         assert kw in src, f"get_price_history dropped explicit {kw} (daily-bar footgun)"
 
 
-def test_g5_linked_accounts_path_closes_audit_row_before_raise(monkeypatch) -> None:
-    # The renamed path still closes its schwab_api_calls row via record_call_finish before re-raise.
-    ...  # exercise the trader linked_accounts wrapper with a raising client; assert finish-before-raise
+def test_g5_linked_accounts_path_closes_audit_row_before_raise(conn) -> None:
+    # The renamed linked_accounts path still closes its schwab_api_calls row via
+    # record_call_finish BEFORE re-raising (the gotcha most likely broken by the rename).
+    from swing.integrations.schwab import trader
+    from swing.integrations.schwab.errors import SchwabApiError  # re-grep the typed-error module
+
+    class _RaisingClient:
+        def linked_accounts(self):
+            raise SchwabApiError(503, "<simulated upstream failure>")
+
+    order_of_calls = []
+    import swing.integrations.schwab.audit_service as aud
+    real_finish = aud.record_call_finish
+
+    def _spy_finish(*a, **k):
+        order_of_calls.append(("finish", k.get("status")))
+        return real_finish(*a, **k)
+
+    import pytest
+    with pytest.MonkeyPatch().context() as mp:
+        mp.setattr(aud, "record_call_finish", _spy_finish)
+        with pytest.raises(SchwabApiError):
+            trader.fetch_linked_account_hashes(_RaisingClient(), conn)  # re-grep the wrapper name
+    # Pre-fix risk: an exception path that re-raises BEFORE record_call_finish leaves an
+    # in-flight row open. Post-fix: finish (status='error'/'auth_failed') is recorded, THEN raise.
+    assert order_of_calls and order_of_calls[-1][0] == "finish"
+    # No open in-flight row remains for this env/endpoint:
+    open_rows = conn.execute(
+        "SELECT COUNT(*) FROM schwab_api_calls WHERE status = 'in_flight'"
+    ).fetchone()[0]
+    assert open_rows == 0
 
 
 def test_g6_source_artifact_shape_unchanged() -> None:
@@ -441,7 +472,41 @@ Logger name, update_tokens signature, sandbox gate, price_history kwargs, audit-
 close on the renamed path, and the source-artifact shape all survive the upgrade."
 ```
 
-**Slice 1 done-when:** `python -m pytest -m "not slow" -q` is green EXCEPT the token-storage tests (Slice 2) and the L2 grep test (which will FAIL on prose churn -- expected; re-anchored in Slice 4). Note the L2 test failure is EXPECTED from Task 1.3's prose churn; do not chase it before Slice 4.
+### Task 1.5: Legacy 2.x test/fixture migration -- the RENAME surface (Codex R1 MAJOR)
+
+**Why:** the live tree has ~13 existing Schwab test files asserting the 2.x surface (`account_linked()` fakes, `tokens_file=` kwargs). Tasks 1.2/1.3 rename the production calls; these existing tests then FAIL. The suite cannot converge unless they are migrated IN THE SAME SLICE. (Re-grep at executing-plans -- `account_linked`, `tokens_file` -- the list below was captured at the dispatch HEAD.)
+
+**Files (re-grep + migrate):**
+- `tests/integrations/test_schwab_trader.py`, `tests/integrations/test_schwab_setup_cli.py`, `tests/integrations/test_schwab_setup_with_callback_url.py`, `tests/integrations/test_schwab_setup_self_healing.py`, `tests/integrations/test_schwab_pipeline_active_exclusion.py`, `tests/web/test_routes/test_schwab_setup_route.py`, + any other hit of `account_linked`/`tokens_file` (the storage-shape hits go to Task 2.8).
+
+- [ ] **Step 1: Re-grep the affected set**
+
+Run: `python -m pytest -m "not slow" -q -k "schwab" 2>&1 | tail -40` (after Tasks 1.2/1.3) to enumerate the RED tests; cross-check `git grep -n "account_linked\|tokens_file=" tests/`.
+
+- [ ] **Step 2: Confirm the failures are the rename (not a real regression)**
+
+For each RED test, confirm the failure is a fake client exposing `account_linked()` (now uncalled) or an assertion on the `tokens_file=` kwarg -- i.e. the test encodes the OLD surface.
+
+- [ ] **Step 3: Migrate the fakes + assertions**
+
+Rename fake-client methods `account_linked` -> `linked_accounts`; change kwarg assertions `tokens_file=` -> `tokens_db=`. Do NOT touch storage-shape fixtures (JSON `token_dictionary` / `_write_schwabdev_tokens_file`) -- those are Task 2.8.
+
+- [ ] **Step 4: Run the Schwab suite**
+
+Run: `python -m pytest -m "not slow" -q -k "schwab"`
+Expected: the rename-surface tests are GREEN (storage-shape tests still RED until Slice 2 -- expected).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add tests/
+git commit -m "test(schwab): migrate the rename-surface legacy tests to the v3 method and kwarg
+
+Existing fakes and assertions encoded account_linked and tokens_file; they move to
+linked_accounts and tokens_db so the suite converges after the mechanical rename."
+```
+
+**Slice 1 done-when:** `python -m pytest -m "not slow" -q` is green EXCEPT the token-storage-shape tests (Slice 2 / Task 2.8) and the L2 grep test (which will FAIL on prose churn -- expected; re-anchored in Slice 4). Note the L2 test failure is EXPECTED from Task 1.3's prose churn; do not chase it before Slice 4.
 
 ---
 
@@ -944,6 +1009,38 @@ def test_t9b_keyloss_on_construction_path(tmp_path) -> None:
         "scope": "api"}, issued_at=datetime.now(timezone.utc), fernet_key=key)
     with pytest.raises(SchwabAuthError):
         auth._assert_v3_tokens_db_loadable_or_raise(p, fernet_key=None)
+
+
+def test_t9c_residual_race_guard_leaves_no_locked_db(tmp_path, monkeypatch) -> None:
+    """The residual-race BELT: if _raise_on_auth fires during construction (a refresh
+    token that expired between the preflight read and the construct), the caller drops
+    refs + gc.collect()s so schwabdev's open BEGIN EXCLUSIVE releases -- a follow-up
+    tokens read must SUCCEED, not hit 'database is locked'."""
+    import gc
+    import sqlite3
+
+    db = tmp_path / "schwab-tokens.production.db"
+    # An EMPTY v3 DB (table only, no row) forces v3 into the interactive refresh path at
+    # construction; _raise_on_auth converts that to SchwabAuthError mid-construct.
+    conn0 = sqlite3.connect(str(db))
+    conn0.execute(auth._V3_SCHWABDEV_DDL)
+    conn0.commit()
+    conn0.close()
+    monkeypatch.setattr(auth, "_resolve_tokens_db_path", lambda env: db)
+    # Bypass the preflight for THIS test (we are exercising the residual-race belt, not the
+    # preflight) by pointing it at the no-row path: the preflight raises 'no token row' too,
+    # so to reach construction we call the construct helper that wraps Client directly.
+    with pytest.raises(auth.SchwabAuthError):
+        auth._construct_v3_client_with_guard(  # re-grep / introduce the thin wrapper named in Step 3
+            tokens_path=db, app_key="k" * 32, app_secret="s" * 16,
+            callback_url="https://127.0.0.1", encryption=None, timeout=5)
+    gc.collect()  # belt-and-suspenders; the wrapper already did this on the raise path
+    # Pre-fix risk: schwabdev's BEGIN EXCLUSIVE (no try/finally around call_for_auth) leaves
+    # the connection locked -> this read raises OperationalError. Post-fix: it succeeds.
+    conn1 = sqlite3.connect(str(db), timeout=2)
+    rows = conn1.execute("SELECT COUNT(*) FROM schwabdev").fetchone()[0]
+    conn1.close()
+    assert rows == 0
 ```
 
 (T9b uses `_generate_fernet_key` + `_fernet_cipher`, which LAND IN SLICE 2 Task 2.2 -- so T9b is REAL here, NOT xfailed. Slice 4 only wires the cfg key SOURCE (`_resolve_fernet_key` + the `encryption_key` config field). `_cfg()` is an inline cfg stub.)
@@ -995,12 +1092,37 @@ def _assert_v3_tokens_db_loadable_or_raise(tokens_path: Path, fernet_key=None) -
             conn.close()
 ```
 
-Wire it immediately before the `schwabdev.Client(...)` call at sites 762 + 1864 (the fetch + force_refresh paths). When the residual-race guard fires (the `SchwabAuthError` from `_raise_on_auth` during construction), the caller drops the client ref + `gc.collect()`s before any subsequent read (T9c).
+Wire the preflight immediately before the `schwabdev.Client(...)` call at sites 762 + 1864 (fetch + force_refresh). Introduce a thin shared construction wrapper that encloses BOTH non-setup sites and guarantees deterministic lock release on the residual-race path:
+
+```python
+def _construct_v3_client_with_guard(*, tokens_path, app_key, app_secret, callback_url,
+                                    encryption, timeout):
+    """Construct the v3 Client on a NON-setup path with the non-interactive guard, and
+    on the residual-race auth raise, drop the (partially-constructed) ref + gc.collect()
+    so schwabdev's open BEGIN EXCLUSIVE (no try/finally around call_for_auth) releases
+    before any subsequent tokens-DB read. The preflight is the PRIMARY defense; this is
+    the belt for the read-to-construct race (a refresh token expiring in that window)."""
+    import gc
+    client = None
+    try:
+        client = schwabdev.Client(
+            app_key=app_key, app_secret=app_secret, callback_url=callback_url,
+            tokens_db=str(tokens_path), encryption=encryption,
+            call_on_auth=_raise_on_auth, open_browser_for_auth=False, timeout=timeout)
+        return client
+    except SchwabAuthError:
+        client = None
+        del client
+        gc.collect()  # release the EXCLUSIVE lock deterministically before the caller retries/reads
+        raise
+```
+
+Call it from sites 762 + 1864 (passing `encryption=_resolve_fernet_key(cfg)` once Slice 4 lands; `None` in Slice 2). The SETUP sites (901, 1684) keep their direct construction (they write a fresh DB first).
 
 - [ ] **Step 4: Run to verify they pass**
 
 Run: `python -m pytest tests/integrations/schwab/test_v3_preflight.py -v`
-Expected: PASS (T8, T9a, T9b; add T9c asserting a post-guard tokens read succeeds after `gc.collect()`).
+Expected: PASS (T8, T9a, T9b, T9c -- T9c proves a follow-up tokens read succeeds after the guard's `gc.collect()`).
 
 - [ ] **Step 5: Commit**
 
@@ -1078,13 +1200,40 @@ def test_t7d_hard_rename_failure_clean_error(tmp_path, monkeypatch, conn) -> Non
 ```
 
 ```python
-"""C.5/§1.2: /schwab/status renders token-health off the v3 reader (production-path)."""
+"""C.5/§1.2: /schwab/status renders token-health off the v3 reader (production-path,
+gotcha #15 -- a REAL on-disk v3 DB, not a stub)."""
+from datetime import datetime, timezone
+from pathlib import Path
+
+from fastapi.testclient import TestClient
+
+from swing.integrations.schwab import auth
+from swing.web.app import app  # re-grep: module-level `app` or a create_app() factory
+
+
 def test_status_page_renders_off_v3_reader(tmp_path, monkeypatch) -> None:
-    from fastapi.testclient import TestClient
-    from swing.web.app import create_app  # re-grep factory name
-    # Seed a real v3 DB at the resolved tokens path; assert the page renders 200 and shows
-    # refresh-token days-remaining + last_success/last_failure (fed by schwab_api_calls, unchanged).
-    ...
+    tokens_path = tmp_path / "schwab-tokens.production.db"
+    auth._write_schwabdev_tokens_db(
+        tokens_path=tokens_path,
+        token_dictionary={"access_token": "AT", "refresh_token": "RT", "id_token": "ID",
+                          "expires_in": 1800, "token_type": "Bearer", "scope": "api"},
+        issued_at=datetime.now(timezone.utc), fernet_key=None)
+    monkeypatch.setattr(auth, "_resolve_tokens_db_path", lambda env: tokens_path)
+    monkeypatch.setattr("swing.cli_schwab._resolve_tokens_db_path", lambda env: tokens_path,
+                        raising=False)  # re-grep where the status VM resolves the path
+    # Pre-fix: the status VM's _read_tokens_metadata json.load on a v3 SQLite file -> the
+    # page degrades/errs. Post-fix: it reads the v3 row -> the page renders the token-health
+    # fields. Lifespan-entered client (app.state).
+    with TestClient(app) as client:
+        resp = client.get("/schwab/status")
+    assert resp.status_code == 200
+    body = resp.text
+    # The PRESERVED at-a-glance signals (NOT a new widget): refresh-token validity +
+    # the schwab_api_calls-fed last_success/last_failure section render.
+    assert "Refresh token" in body  # re-grep the exact label
+    assert "Recent API calls" in body  # the schwab_api_calls-fed section, unchanged
+    # And NO secret bytes leak into the page:
+    assert "RT" not in body and "AT" not in body
 ```
 
 - [ ] **Step 2: Run to verify they fail**
@@ -1094,7 +1243,7 @@ Expected: FAIL (logout still `json.load`s + raises before rename; status page ma
 
 - [ ] **Step 3: Implement the rewrite** (spec §5.5)
 
-Add `_read_v3_refresh_token(tokens_path, fernet_key=None) -> str | None` (SELECT `refresh_token`; if `enc:`-prefixed and `fernet_key`, decrypt; else return raw or None). Rewrite `revoke_and_delete` step 4 to call it (not `json.load`). Re-order: rename-aside FIRST via `_rename_stale_tokens_db` (bounded retry; on hard failure raise a clean actionable error), then best-effort revoke SECOND; if the refresh_token could not be read/decrypted, take the delete-without-revoke fallback (DB still renamed; WARNING "token not server-side revoked; it self-expires within the 7-day TTL"). Keep the in-flight audit row + the `register_schwab_secrets`/`ensure_*` redaction call before the POST.
+Add `_read_v3_refresh_token(tokens_path, fernet_key=None) -> str | None` (SELECT `refresh_token`). **SAFETY (Codex R1 MAJOR -- never POST ciphertext):** a plaintext (non-`enc:`) column value is returned as-is; an `enc:`-prefixed value is returned ONLY if `fernet_key` is set AND `Fernet(key).decrypt(...)` SUCCEEDS -- on a missing key, a wrong key, or any decrypt failure the helper returns **`None`** (it MUST NEVER return the raw `enc:...` ciphertext). Rewrite `revoke_and_delete` step 4 to call it (not `json.load`). Re-order: rename-aside FIRST via `_rename_stale_tokens_db` (bounded retry; on hard failure raise a clean actionable error), then best-effort revoke SECOND; if `_read_v3_refresh_token` returned `None` (unreadable / undecryptable / old-format), take the delete-without-revoke fallback (DB still renamed; NO `requests.post` revoke attempt; WARNING "refresh token not server-side revoked; it self-expires within the 7-day TTL"). Keep the in-flight audit row + the `register_schwab_secrets`/`ensure_*` redaction call before the POST.
 
 - [ ] **Step 4: Run to verify they pass**
 
@@ -1111,7 +1260,41 @@ Logout now renames the DB aside first and revokes best-effort, falls back to del
 without revoke on an unreadable DB, and surfaces a clean error on a hard rename failure."
 ```
 
-**Slice 2 done-when:** `python -m pytest -m "not slow" -q` is green EXCEPT the L2 grep test (still expected-fail until Slice 4). The token-storage core, the preflight, the guard, and logout all exercise real on-disk v3 DBs (gotcha #15 production-path).
+### Task 2.8: Legacy 2.x test/fixture migration -- the STORAGE surface (Codex R1 MAJOR)
+
+**Why:** existing Schwab tests build JSON `token_dictionary` fixtures and assert against `_write_schwabdev_tokens_file` / the JSON status/logout reads. Tasks 2.2/2.4/2.5/2.7 change those surfaces; the legacy fixtures then FAIL. Migrate them within Slice 2 so the suite converges. (Re-grep `token_dictionary`, `_write_schwabdev_tokens_file`, `json.load`/tokens at executing-plans.)
+
+**Files (re-grep + migrate):**
+- `tests/integrations/test_schwab_status_cli.py`, `tests/cli/test_schwab_status_d_full_surface.py`, `tests/integrations/test_schwab_refresh_logout_cli.py`, `tests/integrations/test_schwab_token_redaction_audit.py`, `tests/web/test_templates/test_schwab_status.py`, `tests/web/test_routes/test_schwab_status.py`, + any other `token_dictionary` / `_write_schwabdev_tokens_file` hit.
+
+- [ ] **Step 1: Re-grep the affected set**
+
+Run: `git grep -n "token_dictionary\|_write_schwabdev_tokens_file" tests/` + `python -m pytest -m "not slow" -q -k "schwab" 2>&1 | tail -40`.
+
+- [ ] **Step 2: Confirm each failure is the storage-shape change**
+
+For each RED test, confirm it builds a JSON tokens fixture or asserts JSON-key reads (the OLD storage), not a real behavior regression.
+
+- [ ] **Step 3: Migrate the fixtures**
+
+Replace JSON-tokens-file fixtures with `auth._write_schwabdev_tokens_db(...)` producing a real v3 DB; update status/logout expectations to the v3 reader's presence-only return shape + the SQLite refresh-token read. Add a shared `_write_v3_tokens(tmp_path, *, encrypted=False)` test helper (re-grep an existing conftest to host it) so fixtures are DRY.
+
+- [ ] **Step 4: Run the full fast suite**
+
+Run: `python -m pytest -m "not slow" -q`
+Expected: green EXCEPT the L2 grep test (Slice 4). The storage-shape legacy tests are now GREEN.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add tests/
+git commit -m "test(schwab): migrate the storage-shape legacy tests to the v3 SQLite tokens DB
+
+Fixtures that built a JSON token_dictionary now write a real v3 DB via the new writer, and
+status and logout expectations move to the presence-only reader and the SQLite refresh read."
+```
+
+**Slice 2 done-when:** `python -m pytest -m "not slow" -q` is green EXCEPT the L2 grep test (still expected-fail until Slice 4). The token-storage core, the preflight, the guard, and logout all exercise real on-disk v3 DBs (gotcha #15 production-path); ALL legacy 2.x storage-shape fixtures are migrated (Task 2.8).
 
 ---
 
@@ -1220,11 +1403,28 @@ def test_resolve_fernet_key_value_when_present() -> None:
     assert auth._resolve_fernet_key(_cfg(encryption_key=k)) == k
 
 
-def test_config_show_masks_encryption_key(capsys) -> None:
+def test_config_show_masks_encryption_key(monkeypatch, tmp_path) -> None:
     # swing config show MUST mask encryption_key like client_secret.
-    from swing import cli
-    # ... invoke config show with a key set; assert the raw key bytes are NOT in stdout.
-    ...
+    from click.testing import CliRunner
+
+    from swing.cli import cli  # re-grep the click group name
+
+    key = auth._generate_fernet_key()
+    # Monkeypatch BOTH USERPROFILE and HOME so write_user_overrides cannot leak to the
+    # operator's real ~/swing-data (CLAUDE.md test-discipline gotcha).
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    swing_data = tmp_path / "swing-data"
+    swing_data.mkdir(parents=True, exist_ok=True)
+    (swing_data / "user-config.toml").write_text(
+        f'[integrations.schwab]\nencryption_key = "{key}"\n', encoding="utf-8")
+    result = CliRunner().invoke(cli, ["config", "show"])
+    assert result.exit_code == 0
+    # Pre-fix: encryption_key unknown to config-show -> printed raw OR absent. Post-fix:
+    # the key is present-but-masked; the RAW key bytes never appear.
+    assert key not in result.output
+    assert "encryption_key" in result.output  # the field IS surfaced (masked), not hidden
+    assert "***" in result.output or "<set>" in result.output  # re-grep the mask token used for client_secret
 ```
 
 - [ ] **Step 2: Run to verify they fail**
@@ -1251,10 +1451,10 @@ The encryption key lives in the out-of-tree user config alongside the client sec
 is masked by config show; the cipher helpers back the writer enc-wrap and the revoke decrypt."
 ```
 
-### Task 4.2: Turn Fernet on -- writer enc-wrap + `encryption=` at all 4 construction sites + revoke decrypt (T7b)
+### Task 4.2: Turn Fernet on -- setup-time key generation + writer enc-wrap + `encryption=` at all 4 sites + revoke decrypt
 
 **Files:**
-- Modify: `swing/integrations/schwab/auth.py` (pass `fernet_key=_resolve_fernet_key(cfg)` into the writer + `_read_v3_refresh_token`; `encryption=_resolve_fernet_key(cfg)` at the 4 construction sites; `fernet_key` into the preflight)
+- Modify: `swing/integrations/schwab/auth.py` (NEW `_ensure_fernet_key_then_write_tokens` setup-path generation; pass `fernet_key=_resolve_fernet_key(cfg)` into the writer + `_read_v3_refresh_token`; `encryption=_resolve_fernet_key(cfg)` at the 4 construction sites; `fernet_key` into the preflight) + `swing/config_user.py` (`write_user_overrides` persists the generated `encryption_key`)
 - Test: `tests/integrations/schwab/test_fernet_tokens.py` (extend)
 
 - [ ] **Step 1: Write the failing tests**
@@ -1282,6 +1482,40 @@ def test_writer_enc_wraps_when_key_present(tmp_path) -> None:
         del c; gc.collect()
 
 
+def test_setup_generates_and_persists_key_then_enc_wraps(tmp_path, monkeypatch) -> None:
+    """CRITICAL (Codex R1): on a fresh operator with NO encryption_key configured, setup
+    GENERATES a key, persists it (masked) to user-config, and the tokens DB it writes is
+    enc:-wrapped -- otherwise 'Fernet shipped' is false and setup silently writes plaintext."""
+    import sqlite3
+
+    from swing.integrations.schwab import auth
+
+    # No key in config initially. Monkeypatch USERPROFILE+HOME so the persist cannot leak
+    # to the operator's real ~/swing-data (CLAUDE.md test-discipline gotcha).
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    tokens_path = tmp_path / "swing-data" / "schwab-tokens.production.db"
+    tokens_path.parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(auth, "_resolve_tokens_db_path", lambda env: tokens_path)
+
+    # Drive the setup token-persist step (re-grep the real entrypoint: the function that, after
+    # the OAuth exchange, calls _write_schwabdev_tokens_db). It must ensure a key exists first.
+    auth._ensure_fernet_key_then_write_tokens(  # re-grep / introduce per Step 3
+        cfg=_cfg(encryption_key=None), environment="production",
+        token_dictionary={"access_token": "AT", "refresh_token": "RT", "id_token": "ID",
+                          "expires_in": 1800, "token_type": "Bearer", "scope": "api"})
+
+    # Pre-fix: setup writes plaintext (no key generated) -> columns are 'AT'/'RT'.
+    # Post-fix: a key was generated + persisted; columns are enc:-prefixed.
+    row = sqlite3.connect(str(tokens_path)).execute(
+        "SELECT access_token, refresh_token FROM schwabdev").fetchone()
+    assert row[0].startswith("enc:") and row[1].startswith("enc:")
+    # The generated key is now persisted in user-config (so the NEXT construction can decrypt):
+    persisted = (tmp_path / "swing-data" / "user-config.toml").read_text(encoding="utf-8")
+    assert "encryption_key" in persisted
+    assert auth._resolve_fernet_key(_cfg_from_user_config(tmp_path)) is not None  # re-grep loader
+
+
 def test_t7b_logout_decrypts_encrypted_refresh(tmp_path, monkeypatch, conn) -> None:
     key = auth._generate_fernet_key()
     p = tmp_path / "schwab-tokens.production.db"
@@ -1297,30 +1531,68 @@ def test_t7b_logout_decrypts_encrypted_refresh(tmp_path, monkeypatch, conn) -> N
         auth.revoke_and_delete(_cfg(), "production", "id", "secret", conn, force=True)
         # revoke body carries the DECRYPTED plaintext, not the enc: ciphertext.
         assert rq.post.call_args.kwargs["data"]["token"] == "RT-secret"
+
+
+def test_t7e_encrypted_db_missing_key_falls_back_no_revoke(tmp_path, monkeypatch, conn, caplog) -> None:
+    """Key-loss on logout: enc: DB but no configured key -> NO ciphertext POSTed; DB still
+    renamed aside; WARNING emitted (Codex R1 MAJOR)."""
+    from datetime import datetime, timezone
+    from unittest.mock import patch
+    key = auth._generate_fernet_key()
+    p = tmp_path / "schwab-tokens.production.db"
+    auth._write_schwabdev_tokens_db(tokens_path=p, token_dictionary={"access_token": "AT",
+        "refresh_token": "RT", "id_token": "ID", "expires_in": 1800, "token_type": "Bearer",
+        "scope": "api"}, issued_at=datetime.now(timezone.utc), fernet_key=key)
+    monkeypatch.setattr(auth, "_resolve_tokens_db_path", lambda env: p)
+    monkeypatch.setattr(auth, "_resolve_fernet_key", lambda cfg: None)  # key LOST
+    with patch.object(auth, "requests") as rq:
+        auth.revoke_and_delete(_cfg(), "production", "id", "secret", conn, force=True)
+        # _read_v3_refresh_token returned None (undecryptable) -> revoke is NEVER attempted.
+        rq.post.assert_not_called()
+    assert not p.exists()  # still renamed aside
+    assert any("not server-side revoked" in r.message or "not revoked" in r.message.lower()
+               for r in caplog.records)
+
+
+def test_t7f_encrypted_db_wrong_key_falls_back_no_revoke(tmp_path, monkeypatch, conn) -> None:
+    """A WRONG key must also yield None (no ciphertext POST), not a decrypt exception bubbling up."""
+    from datetime import datetime, timezone
+    from unittest.mock import patch
+    p = tmp_path / "schwab-tokens.production.db"
+    auth._write_schwabdev_tokens_db(tokens_path=p, token_dictionary={"access_token": "AT",
+        "refresh_token": "RT", "id_token": "ID", "expires_in": 1800, "token_type": "Bearer",
+        "scope": "api"}, issued_at=datetime.now(timezone.utc), fernet_key=auth._generate_fernet_key())
+    monkeypatch.setattr(auth, "_resolve_tokens_db_path", lambda env: p)
+    monkeypatch.setattr(auth, "_resolve_fernet_key", lambda cfg: auth._generate_fernet_key())  # different key
+    with patch.object(auth, "requests") as rq:
+        auth.revoke_and_delete(_cfg(), "production", "id", "secret", conn, force=True)
+        rq.post.assert_not_called()
+    assert not p.exists()
 ```
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `python -m pytest tests/integrations/schwab/test_fernet_tokens.py -k "enc_wraps or t7b" -v`
-Expected: FAIL (writer not passed a key by callers; revoke not decrypting).
+Run: `python -m pytest tests/integrations/schwab/test_fernet_tokens.py -k "enc_wraps or t7b or t7e or t7f or setup_generates" -v`
+Expected: FAIL (setup does not generate a key; writer not passed a key by callers; revoke not decrypting).
 
 - [ ] **Step 3: Implement**
 
-Thread `_resolve_fernet_key(cfg)` into: the writer callers (the setup write path), `_read_v3_refresh_token` (revoke), and `_assert_v3_tokens_db_loadable_or_raise`. Add `encryption=_resolve_fernet_key(cfg)` to the 4 construction sites. The writer's `_enc` + the preflight's decrypt branch are already coded (Slice 2) -- this task only supplies the key. Un-xfail T9b if it was xfailed.
+**Setup-path key generation (the CRITICAL fix):** introduce `_ensure_fernet_key_then_write_tokens(...)` (or fold into the existing setup token-persist step -- re-grep `_write_schwabdev_tokens_db`'s setup caller). On the SETUP path, if `_resolve_fernet_key(cfg)` returns `None`, GENERATE `_generate_fernet_key()`, PERSIST it to user-config `[integrations.schwab] encryption_key` via `write_user_overrides` (masked by `config show`), and pass that key to the writer's `fernet_key=` so the freshly-written DB is enc:-wrapped. Then thread `_resolve_fernet_key(cfg)` into: the writer callers, `_read_v3_refresh_token` (revoke), and `_assert_v3_tokens_db_loadable_or_raise`; add `encryption=_resolve_fernet_key(cfg)` to the 4 construction sites. The writer's `_enc` + the preflight's decrypt branch are already coded (Slice 2) -- this task supplies the key SOURCE and the setup-time generation. (If the operator wants to OPT OUT of encryption, a config flag may force `encryption_key=""` -> plaintext; V1 default is generate-on-setup.)
 
 - [ ] **Step 4: Run to verify they pass**
 
 Run: `python -m pytest tests/integrations/schwab/test_fernet_tokens.py -v`
-Expected: PASS.
+Expected: PASS (setup-generation; enc-wrap load-back; T7b decrypt; T7e/T7f key-loss fallback no-revoke).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add swing/integrations/schwab/auth.py tests/integrations/schwab/test_fernet_tokens.py
+git add swing/integrations/schwab/auth.py swing/config_user.py tests/integrations/schwab/test_fernet_tokens.py
 git commit -m "feat(schwab): enable Fernet token-at-rest encryption end to end
 
-The writer enc-wraps when a key is configured, the four construction sites pass encryption,
-and logout decrypts the refresh token before revoke; status stays presence-only with no key."
+Setup generates and persists a key when none is configured so the written DB is encrypted,
+the four construction sites pass encryption, logout decrypts before revoke, and a lost or
+wrong key falls back to local delete without posting ciphertext; status stays presence-only."
 ```
 
 ### Task 4.3: L3 verification -- no swing schema change
@@ -1492,10 +1764,11 @@ At merge time, BEFORE the first v3 `swing web`/pipeline run: merge -> `pip insta
 | §10 T1-T9 | 2.2-2.7 | YES |
 | §10 G7 live-OAuth gate | §H.2 | YES |
 | §1.2 /schwab/status preserved | 2.7 status test + §C.5 | YES |
+| legacy 2.x test/fixture migration | 1.5 (rename surface) + 2.8 (storage surface) | YES (Codex R1) |
 | ASCII (#16/#32) | §C.6 + per-task strings | YES |
 | Co-Authored-By / trailer hazard | every commit stem (plain-prose final para) | YES |
 
-**Placeholder scan:** every code/test step contains real code; the only deliberately-deferred literal is `<post-migration-SHA>` in Task 4.4 (filled at executing-plans on the real HEAD, behind the sign-off GATE -- by design, not a placeholder gap). The `...` markers in G5/status-page/config-show test bodies are explicitly flagged "re-grep + fill at executing-plans" where the exact symbol/route names must be confirmed live; the surrounding assertions are concrete.
+**Placeholder scan:** every code/test step contains real code. After the Codex R1 pass, the prior `...` markers in the G5, `/schwab/status`, and `config show` test bodies were replaced with concrete assertions; the only deliberately-deferred literal is `<post-migration-SHA>` in Task 4.4 (filled at executing-plans on the real HEAD, behind the sign-off GATE -- by design, not a placeholder gap). Remaining inline `# re-grep` notes mark exact symbol/route names to confirm live (the surrounding assertions are concrete and discriminating).
 
 **Type/name consistency:** `_write_schwabdev_tokens_db`, `_V3_SCHWABDEV_DDL`, `_raise_on_auth`, `_assert_v3_tokens_db_loadable_or_raise`, `_read_v3_refresh_token`, `_resolve_fernet_key`, `_generate_fernet_key`, `_fernet_cipher` are used consistently across Slices 2 + 4. `_read_tokens_metadata` keeps its name (signature/return-shape change only).
 
@@ -1503,7 +1776,7 @@ At merge time, BEFORE the first v3 `swing web`/pipeline run: merge -> `pip insta
 
 ## §J Execution notes
 
-**Task count:** Slice 1 = 4 tasks; Slice 2 = 7 tasks; Slice 3 = 1 atomic task; Slice 4 = 6 tasks. **Total = 18 tasks** (+ 2 operator GATE checkpoints: §H.1 L2 sign-off, §H.2 G7 live-OAuth smoke).
+**Task count:** Slice 1 = 5 tasks (incl. 1.5 legacy rename-surface migration); Slice 2 = 8 tasks (incl. 2.8 legacy storage-surface migration); Slice 3 = 1 atomic task; Slice 4 = 6 tasks. **Total = 20 tasks** (+ 2 operator GATE checkpoints: §H.1 L2 sign-off, §H.2 G7 live-OAuth smoke).
 
 **Codex convergence (OQ-7):** SINGLE adversarial chain at the END of writing-plans (this plan), run to convergence (zero new criticals AND zero new majors; the ~5-round cap is suspended). Executing-plans runs its own single chain at the end.
 
