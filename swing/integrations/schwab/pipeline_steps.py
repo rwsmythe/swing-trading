@@ -87,10 +87,10 @@ def _build_default_client(cfg: Any, environment: str) -> Any:
     Pipeline-step + CLI consumers call this when they don't have an existing
     client instance. Tests inject `client=...` to bypass.
 
-    Per Sub-bundle A T-A.0.b §6.bis schwabdev 2.5.1 signature:
+    schwabdev 3.0.5 signature:
         Client(app_key, app_secret, callback_url='https://127.0.0.1',
-               tokens_file='tokens.json', timeout=10, capture_callback=False,
-               use_session=True, call_on_notify=None)
+               tokens_db='tokens.db', encryption=None, timeout=5,
+               call_on_auth=None, open_browser_for_auth=True)
 
     schwabdev requires `app_key` + `app_secret`. In the pipeline context,
     these are NOT stored in cfg (sensitive). Pipeline-step consumers cannot

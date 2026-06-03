@@ -252,7 +252,7 @@ def schwab_setup(
     help="Tier: sandbox or production. Defaults to cfg.integrations.schwab.environment.",
 )
 # CONCURRENT-SAFE per Codex R1 Minor #3: refresh has NO `--force` flag.
-# schwabdev's RLock + SQLite file lock on the tokens_file handle the inner
+# schwabdev's RLock + SQLite lock on the v3 tokens_db handle the inner
 # race naturally; gating on pipeline-active would block a legitimate refresh
 # during a long-running pipeline. The discriminating test
 # `test_refresh_does_not_accept_force_flag` pins this contract.

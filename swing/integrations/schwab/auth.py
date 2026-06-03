@@ -13,16 +13,15 @@ Full implementations land in:
 
 T-A.4 implements `setup_paste_flow`. T-A.5 stubs remain `NotImplementedError`.
 
-LIVE-LIBRARY DEVIATION (T-A.4 banked as V2.1 §VII.F amendment): the recon
-doc §2.1 enumerated the constructor signature from `client.md` documentation
-as having `tokens_db=` + `open_browser_for_auth=True` kwargs. Live inspection
-of the installed `schwabdev==2.5.1` reveals the actual constructor signature
-to be: `Client(app_key, app_secret, callback_url='https://127.0.0.1',
-tokens_file='tokens.json', timeout=10, capture_callback=False,
-use_session=True, call_on_notify=None)`. The implementation MUST use the
-actual installed signature — `tokens_file=` (NOT `tokens_db=`) and
-`capture_callback=False` (no `open_browser_for_auth=` kwarg exists). Banked
-as additional plan-text amendment to recon doc §6 §B.
+SCHWABDEV v3 UPGRADE (Phase 15): the project migrated from `schwabdev==2.5.1`
+to `3.0.5`. The v3 constructor signature is `Client(app_key, app_secret,
+callback_url='https://127.0.0.1', tokens_db='tokens.db', encryption=None,
+timeout=5, call_on_auth=None, open_browser_for_auth=True)`. v3 stores tokens in
+a SQLite DB (`tokens_db=`, NOT the 2.x JSON `tokens_file=`) and restores the
+`open_browser_for_auth=` kwarg; the non-setup construction paths inject
+`call_on_auth=` + `open_browser_for_auth=False` so construction never prompts
+interactively (the comprehensive preflight is the primary defense; see
+`_assert_v3_tokens_db_loadable_or_raise`).
 """
 from __future__ import annotations
 
@@ -611,10 +610,10 @@ def _rename_stale_tokens_db(
 def _resolve_tokens_db_path(environment: str) -> Path:
     """Per-env tokens DB / file path under `~/swing-data/`.
 
-    The path is constructed for the schwabdev `tokens_file=` kwarg. The
-    schwabdev 2.5.1 default filename suggests JSON-format on-disk storage
-    (per `client.md` L41 in installed package); we anchor to a per-env
-    name so sandbox + production never share the same on-disk state.
+    The path is constructed for the schwabdev `tokens_db=` kwarg. schwabdev
+    3.0.5 stores tokens in a SQLite DB at this path (the `.db` extension is
+    apt; the 2.x JSON format is gone). We anchor to a per-env name so
+    sandbox + production never share the same on-disk state.
 
     Per CLAUDE.md gotcha: tests MUST monkeypatch `USERPROFILE` AND `HOME`
     before invoking — `_user_home()` reads them unmonkeypatched.
@@ -759,7 +758,7 @@ def construct_authenticated_client(
             app_key=client_id,
             app_secret=client_secret,
             callback_url=cfg.integrations.schwab.callback_url,
-            tokens_file=str(tokens_path),
+            tokens_db=str(tokens_path),
             timeout=int(cfg.integrations.schwab.timeout_seconds),
         )
 
@@ -885,9 +884,9 @@ def setup_paste_flow(
     register_schwab_secrets([client_id, client_secret])
     ensure_schwab_log_redaction_factory_installed()
 
-    # Step 6 — construct schwabdev.Client(...). Implementation deviation
-    # from recon doc §2.1: live schwabdev 2.5.1 uses `tokens_file=`
-    # (NOT `tokens_db=`) + has NO `open_browser_for_auth=` kwarg.
+    # Step 6 — construct schwabdev.Client(...). schwabdev 3.0.5 uses
+    # `tokens_db=` (SQLite) + restores the `open_browser_for_auth=` kwarg;
+    # this SETUP path writes a fresh DB before constructing the load-back.
     construction_start = time.monotonic()
     try:
         # Import here so test fixtures can `monkeypatch.setattr(
@@ -898,7 +897,7 @@ def setup_paste_flow(
                 app_key=client_id,
                 app_secret=client_secret,
                 callback_url=cfg.integrations.schwab.callback_url,
-                tokens_file=str(tokens_path),
+                tokens_db=str(tokens_path),
                 timeout=int(cfg.integrations.schwab.timeout_seconds),
             )
         elapsed_ms = int((time.monotonic() - construction_start) * 1000)
@@ -1681,7 +1680,7 @@ def setup_paste_flow_with_callback_url(
                 app_key=client_id,
                 app_secret=client_secret,
                 callback_url=cfg.integrations.schwab.callback_url,
-                tokens_file=str(tokens_path),
+                tokens_db=str(tokens_path),
                 timeout=int(cfg.integrations.schwab.timeout_seconds),
             )
 
@@ -1777,9 +1776,9 @@ def force_refresh(
       3. Resolve per-env tokens DB path.
       4. INSERT in-flight audit row (oauth.refresh / cli / env).
       5. Construct schwabdev.Client(...) — Client.__init__ loads existing
-         tokens from `tokens_file` without re-prompting when valid; the
-         daemon-thread checker schwabdev spawns is `daemon=True` so does
-         not block process exit.
+         tokens from the v3 `tokens_db` (SQLite) without re-prompting when
+         valid; v3 refreshes synchronously per-request (no daemon thread),
+         and this non-setup path injects the non-interactive guard.
       6. Invoke `client.tokens.update_tokens(force_access_token=True)`.
 
          DEVIATION from plan §H.2 step 6 (banked as V2.1 §VII.F amendment
@@ -1800,7 +1799,7 @@ def force_refresh(
       8. On success: return summary with `call_id` + `tokens_path`.
 
     Concurrent-safe (Codex R1 Minor #3 LOCK): NO pipeline-active gate.
-    schwabdev's RLock + the SQLite file lock on tokens_file handle the
+    schwabdev's RLock + the SQLite lock on the v3 `tokens_db` handle the
     race naturally. `refresh` has NO `--force` flag at the CLI layer.
 
     Raises:
@@ -1861,7 +1860,7 @@ def force_refresh(
                 app_key=client_id,
                 app_secret=client_secret,
                 callback_url=cfg.integrations.schwab.callback_url,
-                tokens_file=str(tokens_path),
+                tokens_db=str(tokens_path),
                 timeout=int(cfg.integrations.schwab.timeout_seconds),
             )
             # Codex R1 Major #1 (parity with D1 setup hotfix) — capture
