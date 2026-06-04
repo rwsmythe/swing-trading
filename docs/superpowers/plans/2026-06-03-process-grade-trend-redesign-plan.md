@@ -106,7 +106,7 @@ In B3 the GRADES panel reuses this **exact fragment shape** but loops `vm.grade_
 | File | Slice / Task | Change |
 |---|---|---|
 | `swing/web/view_models/trades.py` | A1 | `build_reviews_pending_vm` returns `session_date=last_completed_session(datetime.now()).isoformat()` + a local import. |
-| `swing/web/static/app.css` | B1 | Add 4 `--series-*` tokens under `:root` AND `body.dark`; add 3 two-class per-series stroke rules. Existing rules untouched. |
+| `swing/web/static/app.css` | B1 | Add 4 `--series-*` tokens under `:root` AND the combined `html.dark, body.dark` block; add the two-class per-series stroke rules + the legend-swatch fill rules. Existing rules untouched. |
 | `swing/web/view_models/metrics/process_grade_trend.py` | B2 | Per-panel height constants; cost-panel 0-anchored bounds helper + `[0,1]` fallback; `_build_rolling_display` `bounds_override`; new VM fields (`grade_series`/`rate_series`/`cost_series`, panel heights, `rate_axis_labels`/`cost_axis_labels`, `cost_y_max`); additive `__post_init__` group validation. `rolling_series` (all 7) UNCHANGED. |
 | `swing/web/templates/metrics/process_grade_trend.html.j2` | B3 | Replace the single `<svg>` (lines 24-66) with three `<svg>` panels + legend + under-floor captions + cost caption. Table (68-120) + empty-state guard UNCHANGED. |
 | `tests/web/view_models/.../test_..._vm.py` + route + css tests | A1, B1-B4 | New assertions (additive); existing assertions preserved. See §3 + per-task. |
@@ -139,7 +139,7 @@ In B3 the GRADES panel reuses this **exact fragment shape** but loops `vm.grade_
 ### 3b. NEW assertions added (per spec §5.1)
 - **Route (B3/B4):** three `data-panel="grades|rate|cost"` `<svg>` present when drawable; `data-marker="grades-legend"` names all 4 series ASCII `process / entry / management / exit`; `data-marker="rate-axis"` shows `0.0`/`1.0`; `data-marker="cost-axis"` shows `0.0` + the data-driven max; the rate line `data-series="disqualifying_violation_rate_rolling_N"` renders inside the rate panel; the cost line `data-series="mistake_cost_R_rolling_N_per_trade"` renders inside the cost panel; `mistake_cost_R_rolling_N_total` renders **NO** polyline but **DOES** appear as a table row; under-floor captions (`data-marker="rate-under-floor"`/`"cost-under-floor"`) render when `1 ≤ trades < 5`; cost caption `data-marker="cost-axis-caption"`.
 - **VM (B2):** `grade_series`/`rate_series`/`cost_series` grouping + names; 0-anchored cost bounds (`cost_y_max`) + the `[0,1]` all-zero fallback + the baseline-Y discriminator; per-panel heights; `rate_axis_labels`/`cost_axis_labels`; additive `__post_init__` group validation.
-- **CSS (B1):** the 4 `--series-*` tokens defined under BOTH `:root` and `body.dark`; the 3 two-class per-series stroke rules.
+- **CSS (B1):** the 4 `--series-*` tokens defined under BOTH `:root` and the combined `html.dark, body.dark` block (block-scoped assertions); the two-class per-series stroke rules; the legend-swatch fill rules.
 
 ---
 
@@ -302,6 +302,8 @@ def test_legend_swatch_fill_rules_present():
    - `cost_axis_labels: tuple[tuple[float,str],...]` = for `v in (0.0, cost_y_max/2, cost_y_max)`: `(_polyline_y(v, 0, cost_y_max, COST_SVG_HEIGHT, margins...), f"{v:.2f}")` — data-driven, ASCII `%.2f`. (`grade_axis_labels` keeps its `(value, label)` shape UNCHANGED — the grades panel preserves its existing inline-Y markup; the rate/cost panels use pre-positioned labels. This asymmetry is deliberate and preservation-driven.)
 7. **Additive `__post_init__` group validation** (mirror-the-contract, #11): assert `{s.metric_name for s in self.grade_series} == _GRADE_METRICS`; `rate_series` names == `{"disqualifying_violation_rate_rolling_N"}`; `cost_series` names == `{"mistake_cost_R_rolling_N_per_trade"}`. Keep the existing all-7 `rolling_series` check.
 
+**RED-sequencing for the cost-bounds helper** (Codex R2-M1 — avoid an ImportError false-fail): the cost tests below call `_cost_panel_bounds`, which does not exist pre-fix, so a bare red phase would fail by `ImportError`, not by the arithmetic. Make the RED genuine: **first add `_cost_panel_bounds` as a thin pass-through** returning the OLD behavior — `return _y_axis_bounds_for_metric("mistake_cost_R_rolling_N_per_trade", line_points)` — commit nothing yet; run the test and SEE it fail on the VALUE (`(0.3, 2.0)`≠`(0.0, 2.0)`; `(-0.5, 0.5)`≠`(0.0, 1.0)`). **Then** replace the body with the 0-anchored logic → GREEN. The test thus distinguishes the arithmetic, not the symbol's existence.
+
 **(a) Failing tests first** (each distinguishes):
 - `test_vm_groups_series_into_three_panels`: seed n=5; assert `{s.metric_name for s in vm.grade_series} == {4 grade names}`; `rate_series` names == `{rate}`; `cost_series` names == `{per_trade}`; and `mistake_cost_R_rolling_N_total` is in `vm.rolling_series` (table) but in none of the three groups. *(Pre-fix: the fields don't exist → AttributeError/fail; post-fix: pass.)*
 - `test_cost_panel_bounds_zero_anchored_for_nonzero_costs` (**direct helper test**, Codex R1-m1 — NOT DB-seeded, so the max is exact): call `_cost_panel_bounds((RollingLinePoint(0,0.3), RollingLinePoint(1,2.0), RollingLinePoint(2,1.0)))` → assert `== (0.0, 2.0)` (0-anchored; min ignored). *(Pre-fix `_y_axis_bounds_for_metric` for the cost branch returns `(min, max) = (0.3, 2.0)` — NOT 0-anchored → the helper's `(0.0, 2.0)` distinguishes.)* Then assert `_polyline_y(2.0, y_min=0.0, y_max=2.0, layout_height=COST_SVG_HEIGHT, margin_top=24, margin_bottom=40) == 24.00` (the peak maps to the top margin, not clipped — the `margin_top=24` band is the headroom) and `_polyline_y(0.0, …) == 120.00` (baseline).
@@ -324,50 +326,68 @@ def test_legend_swatch_fill_rules_present():
 
 **Files:** `swing/web/templates/metrics/process_grade_trend.html.j2`; `tests/web/test_routes/test_metrics_process_grade_trend_route.py`.
 
-**(a) Failing tests first** (NEW route assertions; the §3a preserved tests must ALSO stay green — run the full route module):
+**(a) Failing tests first** (NEW route assertions; the §3a preserved tests must ALSO stay green — run the full route module). **Assertions are PANEL-SCOPED** (Codex R2-M2: a global `in r.text` search would pass even if all 7 polylines stayed in the grades SVG with empty rate/cost panels added). A module-level helper slices each panel's SVG:
 ```
+import re
+def _panel(html, name):
+    # the inner markup of the <svg data-panel="<name>"> ... </svg> block
+    m = re.search(rf'<svg[^>]*data-panel="{name}"[^>]*>(.*?)</svg>', html, re.S)
+    assert m is not None, f"panel {name} svg missing"
+    return m.group(1)
+def _legend(html):
+    m = re.search(r'<g[^>]*data-marker="grades-legend"[^>]*>(.*?)</g>', html, re.S)
+    assert m is not None, "grades-legend group missing"
+    return m.group(1)
+
 test_three_scale_separated_panels_present_when_drawable(seeded n=5):
-    assert 'data-panel="grades"' in r.text
-    assert 'data-panel="rate"' in r.text
-    assert 'data-panel="cost"' in r.text
+    for name in ("grades", "rate", "cost"):
+        assert f'data-panel="{name}"' in r.text
+
+test_each_series_renders_in_its_own_panel(seeded n=5):   # the anti-"all in grades" guard
+    grades, rate, cost = _panel(r.text,"grades"), _panel(r.text,"rate"), _panel(r.text,"cost")
+    # the 4 grade lines live ONLY in the grades panel:
+    for n in ("process_grade_rolling_N","entry_grade_rolling_N","management_grade_rolling_N","exit_grade_rolling_N"):
+        assert f'data-series="{n}"' in grades
+    # the rate line ONLY in rate; the per-trade cost line ONLY in cost:
+    assert 'data-series="disqualifying_violation_rate_rolling_N"' in rate
+    assert 'data-series="disqualifying_violation_rate_rolling_N"' not in grades + cost
+    assert 'data-series="mistake_cost_R_rolling_N_per_trade"' in cost
+    assert 'data-series="mistake_cost_R_rolling_N_per_trade"' not in grades + rate
+    # _total charts in NO svg panel (table-only):
+    for p in (grades, rate, cost):
+        assert 'data-series="mistake_cost_R_rolling_N_total"' not in p
 
 test_grades_legend_names_all_four_series(seeded n=5):
-    assert 'data-marker="grades-legend"' in r.text
+    leg = _legend(r.text)                       # scope to the legend group (Codex R2-m2)
     for label in ("process", "entry", "management", "exit"):
-        assert label in r.text            # ASCII slash-separated legend
-    assert "·" not in r.text          # NO middle-dot (ASCII discipline #16/#32)
-    # Codex R1-M3: each legend swatch carries its metric-<name> class so the
-    # CSS fill rule resolves (no default/black swatch):
-    for name in ("process_grade_rolling_N", "entry_grade_rolling_N",
-                 "management_grade_rolling_N", "exit_grade_rolling_N"):
-        assert f'process-grade-legend-swatch metric-{name}' in r.text
+        assert f'>{label}<' in leg or f'>{label} ' in leg   # the visible <text> label, not prose/class
+    assert "·" not in r.text                    # NO middle-dot (ASCII discipline #16/#32)
+    for name in ("process_grade_rolling_N","entry_grade_rolling_N","management_grade_rolling_N","exit_grade_rolling_N"):
+        assert f'process-grade-legend-swatch metric-{name}' in leg   # Codex R1-M3 swatch class
 
 test_rate_panel_axis_and_line(seeded n=5):
-    assert 'data-marker="rate-axis"' in r.text
-    assert "0.0" in r.text and "1.0" in r.text
-    assert 'data-series="disqualifying_violation_rate_rolling_N"' in r.text   # in rate panel
+    rate = _panel(r.text, "rate")
+    assert 'data-marker="rate-axis"' in rate
+    assert "0.0" in rate and "1.0" in rate
 
 test_cost_panel_axis_line_and_caption(seeded n=5):
-    assert 'data-marker="cost-axis"' in r.text
-    assert 'data-series="mistake_cost_R_rolling_N_per_trade"' in r.text       # in cost panel
-    assert 'data-marker="cost-axis-caption"' in r.text
-    assert "running total in table below" in r.text
+    cost = _panel(r.text, "cost")
+    assert 'data-marker="cost-axis"' in cost
+    assert 'data-marker="cost-axis-caption"' in cost
+    assert "running total in table below" in cost
 
-test_total_cost_not_charted_but_in_table(seeded n=5):
-    # _total renders NO polyline anywhere:
-    assert 'data-series="mistake_cost_R_rolling_N_total"' not in r.text
-    # but DOES appear as a table row (table loops all 7):
-    assert 'data-metric="mistake_cost_R_rolling_N_total"' in r.text
+test_total_cost_in_table_row(seeded n=5):
+    assert 'data-metric="mistake_cost_R_rolling_N_total"' in r.text   # the table row exists (table loops all 7)
 
 test_under_floor_captions_render_for_partial_window(seeded n=3):
-    # 1 <= trades < 5 -> rate/cost panels show the caption, NOT a line:
-    assert 'data-marker="rate-under-floor"' in r.text
-    assert 'data-marker="cost-under-floor"' in r.text
-    assert ">=5 effective samples" in r.text     # literal ASCII '>=' (Codex R1-M1: the caption is static template text, NOT the &gt; entity)
-    assert "<polyline" not in r.text             # under-floor: no line in ANY panel
+    rate, cost = _panel(r.text,"rate"), _panel(r.text,"cost")
+    assert 'data-marker="rate-under-floor"' in rate
+    assert 'data-marker="cost-under-floor"' in cost
+    assert ">=5 effective samples" in rate     # literal ASCII '>=' (Codex R1-M1: static template text, NOT the &gt; entity)
+    assert "<polyline" not in r.text           # under-floor: no line in ANY panel (route test 6 family)
 ```
-- **Pre-fix:** the single `<svg>` has no `data-panel`/`data-marker="rate-axis"`/legend/cost-caption → the new assertions FAIL.
-- **Post-fix:** three panels emit them → PASS; and the §3a preserved assertions (esp. test 5's GRADES hooks + test 6's `"<polyline" not in` at n=2) still hold.
+- **Pre-fix:** the single `<svg>` has no `data-panel`/per-panel axes/legend/cost-caption → the new assertions FAIL.
+- **Post-fix:** three panels emit them AND each series is scoped to its own panel → PASS; the §3a preserved assertions (esp. test 5's GRADES hooks + test 6's `"<polyline" not in` at n=2) still hold. The `_each_series_renders_in_its_own_panel` test is the anti-regression guard against "leave everything in grades + add empty panels."
 
 **(b) Minimal implementation** — inside the `{% else %}` (trades exist) branch, REPLACE lines 24-66 (the single `<svg>`) with three `<svg>` blocks; the empty-state `{% if %}` guard, the heading, and the table stay:
 
@@ -397,7 +417,7 @@ test_under_floor_captions_render_for_partial_window(seeded n=3):
 
 **(a) Residual structural assertions** (spec §5.1 items not yet covered by B1-B3):
 - `test_empty_state_still_wraps_all_panels_when_no_trades`: with zero trades, `data-empty-state="process-grade-trend"` present AND none of `data-panel="grades|rate|cost"` present (the empty-state guard short-circuits all three panels). *(Pre-fix: trivially true with one svg; post-fix: confirms the guard still wraps the 3-panel block.)*
-- `test_cost_axis_all_zero_renders_nondegenerate_labels_route`: seed n=5 perfect-process trades whose `_per_trade` cost is all `0.0`; assert the cost panel shows `0.00`/`0.50`/`1.00` (the `[0,1]` fallback), NOT three identical `0.00`. *(Route-level companion to the B2 VM test — exercises the production derivation path, not stubs; per the "byte-parity insufficient" discipline.)*
+- `test_cost_axis_all_zero_renders_nondegenerate_labels_route`: seed n=5 perfect-process trades whose `_per_trade` cost is all `0.0`; **scope to the cost panel** `cost = _panel(r.text, "cost")` (Codex R2-m1 — avoid false-green from table/other-axis text) and assert `cost` contains `0.00`, `0.50`, AND `1.00` (the `[0,1]` fallback), NOT three identical `0.00`. *(Route-level companion to the B2 VM test — exercises the production derivation path, not stubs; per the "byte-parity insufficient" discipline.)*
 
 **(b) Green-bar verification** (the binding evidence step, `superpowers:verification-before-completion`):
 ```
