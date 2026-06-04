@@ -189,6 +189,25 @@ def test_vocabulary_is_the_locked_seven() -> None:
     })
 
 
+def test_migration_check_tokens_equal_frozenset() -> None:
+    # Spec §7.1 #2 + gotcha #11: the SQL CHECK enum and the Python frozenset must
+    # be IDENTICAL sets, not merely "all 7 insert + one bogus rejects" (that weaker
+    # check passes even if the CHECK accidentally allows an 8th token). Parse the
+    # migration's `failure_mode IN ( ... )` list and assert exact set equality.
+    import re
+    from pathlib import Path
+    sql = Path(
+        "swing/data/migrations/0024_phase15_b7_failure_mode.sql"
+    ).read_text(encoding="utf-8")
+    m = re.search(r"failure_mode\s+IN\s*\((.*?)\)", sql, re.IGNORECASE | re.DOTALL)
+    assert m, "could not locate the failure_mode IN (...) CHECK clause"
+    check_tokens = set(re.findall(r"'([^']+)'", m.group(1)))
+    # PRE-FIX: the migration file does not exist -> FileNotFoundError. POST-FIX:
+    # the CHECK token set equals FAILURE_MODES exactly (drift in EITHER direction
+    # fails). This is the binding #11 vocabulary-identity assertion.
+    assert check_tokens == set(FAILURE_MODES)
+
+
 def test_all_tokens_insert_and_non_member_rejected_by_check(tmp_path: Path) -> None:
     conn = _fresh(tmp_path, target=24)
     try:
@@ -767,12 +786,12 @@ def update_trade_review_fields(
 
 - [ ] **Step 10: Implement — `review.py`: `complete_trade_review` gains the param**
 
-In `swing/trades/review.py`, add `failure_mode: str | None = None` as a keyword-only param to `complete_trade_review` (after `lesson_learned: str,` at `:563`, before `event_ts`) and thread it into the `update_trade_review_fields(...)` call (after `lesson_learned=lesson_learned,` at `:610`):
+In `swing/trades/review.py`, add `failure_mode: str | None = None` as a keyword-only param to `complete_trade_review` and thread it into the `update_trade_review_fields(...)` call (after `lesson_learned=lesson_learned,` at `:610`). Place the new param **after** `event_ts` and **before** `rationale`:
 
 ```python
     lesson_learned: str,
-    failure_mode: str | None = None,
     event_ts: str,
+    failure_mode: str | None = None,
     rationale: str | None = None,
 ) -> None:
 ```
@@ -783,7 +802,7 @@ In `swing/trades/review.py`, add `failure_mode: str | None = None` as a keyword-
         )
 ```
 
-> `event_ts` is currently a required positional-after-keyword param; keep `failure_mode` BEFORE `event_ts` with a default so existing callers passing `event_ts=` keep working (all callers use keyword form — verified at `routes/trades.py:2790`, `cli.py:1474`). Since every param after `*` (there is a bare `*,`? no — `complete_trade_review` uses `trade_id` positional then `*,`). Re-check: `:550-566` shows `def complete_trade_review(conn, trade_id, *, reviewed_at=..., ...)`. All review fields are keyword-only after `*,`, so inserting `failure_mode=None` with a default anywhere in that block is safe; ordering among keyword-only params is irrelevant. Place it after `lesson_learned`.
+> **Technical note (Codex R1 finding #1).** `complete_trade_review` declares all review fields keyword-only (`def complete_trade_review(conn, trade_id, *, reviewed_at, …, event_ts, rationale=None)`). For **keyword-only** params Python *does* permit a defaulted param before a required one (`def f(*, a=1, b)` is valid — the "non-default after default" rule applies only to *positional* params), so placing `failure_mode=None` before `event_ts` would also be valid. We nonetheless place it **after** `event_ts` (before `rationale`) for clarity and to avoid the foot-gun. All callers pass `event_ts=` / `rationale=` by keyword (verified `routes/trades.py:2790`, `cli.py:1474`), so the reorder is caller-safe.
 
 - [ ] **Step 11: Run the full new suite + the legacy review suite to verify GREEN**
 
@@ -1406,11 +1425,14 @@ git commit -m "feat(cli): add --failure-mode option to the trade review command"
 ### Task B7: L2 orthogonality guard test (no implementation)
 
 **Files:**
-- Test: `tests/trades/test_failure_mode_orthogonality.py` (new)
+- Test: `tests/trades/test_failure_mode_orthogonality.py` (new) — the static guards
+- Test: `tests/metrics/test_process.py` (append) — the metric-level guard (Codex R1 finding #3)
 
-This is a **standing guard** (passes on first run because the code already keeps the surfaces separate). It documents the L2 contract and fails only if a future change wires `failure_mode` into the grade or the mistake-tag vocabulary. It asserts COMPUTATIONAL separation, NOT statistical independence (an `execution_error` outcome may legitimately co-occur with execution mistake tags — that is fine).
+These are **standing guards** (they pass on first run because the code already keeps the surfaces separate). They document the L2 contract and fail only if a future change wires `failure_mode` into the grade or the mistake-tag vocabulary/metric. They assert COMPUTATIONAL separation, NOT statistical independence (an `execution_error` outcome may legitimately co-occur with execution mistake tags — that is fine).
 
-- [ ] **Step 1: Write the guard test**
+- [ ] **Step 1: Write the static guard tests**
+
+Create `tests/trades/test_failure_mode_orthogonality.py`:
 
 ```python
 import inspect
@@ -1430,23 +1452,56 @@ def test_failure_mode_does_not_feed_process_grade() -> None:
 
 
 def test_failure_mode_vocabulary_is_disjoint_from_mistake_tags() -> None:
-    # failure_mode is NOT a mistake tag; the mistake-tag frequency metric never
-    # sees it. Disjoint token sets prove the computational separation.
+    # failure_mode is NOT a mistake tag. Disjoint token sets prove the
+    # computational separation at the vocabulary level.
     assert FAILURE_MODES.isdisjoint(ALL_MISTAKE_TAGS)
     flat = {t for tags in MISTAKE_TAGS.values() for t in tags}
     assert FAILURE_MODES.isdisjoint(flat)
 ```
 
-- [ ] **Step 2: Run to verify it PASSES (standing guard)**
+- [ ] **Step 2: Write the metric-level guard (Codex R1 finding #3)**
 
-Run: `python -m pytest tests/trades/test_failure_mode_orthogonality.py -q`
-Expected: PASS (the surfaces are already separate; the guard would FAIL if a later change adds a `failure_mode` param to `compute_process_grade` or folds a token into `MISTAKE_TAGS`).
+The vocabulary-disjointness check above is necessary but not sufficient — spec §6/§7.1 #5 requires `failure_mode` be **excluded from the mistake-tag frequency metric** itself. Verified faithful: `compute_trade_process_metrics` (`swing/metrics/process.py:747-768`) builds `mistake_tag_frequency` purely from `x.trade.mistake_tags` (JSON) and never references `failure_mode`. Append to `tests/metrics/test_process.py` (reuse its `conn` fixture + `_seed_full_trade` helper + the `hypothesis_label="A+ baseline"` filter; the helper defaults that label):
 
-- [ ] **Step 3: Commit**
+```python
+def test_failure_mode_excluded_from_mistake_tag_frequency_metric(
+    conn: sqlite3.Connection,
+) -> None:
+    # A reviewed trade carrying BOTH a mistake tag AND a failure_mode must NOT
+    # leak the failure_mode token into mistake_tag_frequency.
+    from swing.data.models import FAILURE_MODES
+    _seed_full_trade(
+        conn, trade_id=1, ticker="ORTH",
+        entry_price=10.0, initial_stop=9.0, initial_shares=100, exit_price=11.0,
+        reviewed_at="2026-04-15T09:30:00",
+        mistake_tags=json.dumps(["SOLD_TOO_EARLY"]),
+    )
+    # The metric runs against v24 here (the test DB is migrated to HEAD), so the
+    # failure_mode column exists; stamp it directly on the seeded reviewed row.
+    conn.execute(
+        "UPDATE trades SET failure_mode = 'execution_error' WHERE id = 1")
+    result = compute_trade_process_metrics(conn, hypothesis_label="A+ baseline")
+    freq = result.mistake_tag_frequency
+    # PRE-FIX (hypothetical leak): "execution_error" would appear as a key.
+    # POST-FIX: the metric only sees mistake_tags -> the failure_mode token is absent.
+    assert "execution_error" in FAILURE_MODES  # sanity: it IS a failure-mode token
+    assert "execution_error" not in freq
+    assert set(freq.keys()).isdisjoint(FAILURE_MODES)
+    assert "SOLD_TOO_EARLY" in freq  # the real mistake tag still counts
+```
+
+> If `_seed_full_trade` is module-private and the metrics test file already migrates the fixture DB to HEAD (`EXPECTED_SCHEMA_VERSION == 24`), the `UPDATE … failure_mode` succeeds. If the metrics `conn` fixture pins an older `target_version`, bump it to default (HEAD) for this test or guard the UPDATE with the PRAGMA check (mirror Task B5). Confirm against the fixture at execution time.
+
+- [ ] **Step 3: Run to verify both guards PASS**
+
+Run: `python -m pytest tests/trades/test_failure_mode_orthogonality.py tests/metrics/test_process.py::test_failure_mode_excluded_from_mistake_tag_frequency_metric -q`
+Expected: PASS (the surfaces are already separate; the static guard would FAIL if a later change adds a `failure_mode` param to `compute_process_grade` or folds a token into `MISTAKE_TAGS`; the metric guard would FAIL if the frequency metric ever consumed `failure_mode`).
+
+- [ ] **Step 4: Commit**
 
 ```bash
-git add tests/trades/test_failure_mode_orthogonality.py
-git commit -m "test(trades): guard the failure-mode orthogonality contract"
+git add tests/trades/test_failure_mode_orthogonality.py tests/metrics/test_process.py
+git commit -m "test: guard the failure-mode orthogonality contract at vocabulary and metric level"
 ```
 
 ### Slice B final: full fast-suite sanity + ruff
