@@ -8,10 +8,15 @@ MIG = pathlib.Path(__file__).resolve().parents[2] / "swing" / "data" / "migratio
 
 
 def test_expected_schema_version_unchanged() -> None:
-    assert EXPECTED_SCHEMA_VERSION == 23
+    # The schwabdev-v3 arc itself made NO swing-DB change (it landed at v23). The
+    # B-7 (Phase 15) arc subsequently bumped HEAD to v24 (migration 0024 adds the
+    # nullable failure_mode column); this guard tracks the current HEAD so the
+    # schwabdev-arc invariant (it added nothing of its own) stays auditable.
+    assert EXPECTED_SCHEMA_VERSION == 24
 
 
 def test_no_new_migration_file_added() -> None:
-    # Highest existing migration is 0023 for v23; assert no 0024+ appeared.
+    # The schwabdev-v3 arc added NO migration; B-7 added exactly one (0024 / v24).
+    # Highest existing migration is 0024; assert no 0025+ slipped in.
     versions = sorted(int(p.name[:4]) for p in MIG.glob("[0-9][0-9][0-9][0-9]_*.sql"))
-    assert versions[-1] <= 23, f"a new migration file was added: {versions[-1]} (L3 violation)"
+    assert versions[-1] <= 24, f"a new migration file was added: {versions[-1]} (L3 violation)"

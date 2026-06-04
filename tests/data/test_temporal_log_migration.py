@@ -27,7 +27,7 @@ def test_0022_brings_db_to_v22_with_both_tables(tmp_path):
 
 
 def test_expected_schema_version_is_22():
-    assert EXPECTED_SCHEMA_VERSION == 23
+    assert EXPECTED_SCHEMA_VERSION == 24
 
 
 from swing.data.db import _phase14_backup_gate, PHASE14_PRE_MIGRATION_EXPECTED_TABLES

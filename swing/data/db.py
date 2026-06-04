@@ -48,7 +48,7 @@ from pathlib import Path
 #   'ticker_detail' via an id-preserving single-table rebuild. NO new tables,
 #   NO column-shape change, NO candlestick change. Atomic BEGIN/COMMIT
 #   discipline preserved (gotcha #9).
-EXPECTED_SCHEMA_VERSION = 23
+EXPECTED_SCHEMA_VERSION = 24
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 # Phase 7 backup gate (spec §12.1): when migrating to schema_version >= 14,
@@ -166,6 +166,14 @@ PHASE14_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
 PHASE14_SB3_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
     PHASE14_PRE_MIGRATION_EXPECTED_TABLES
     | {"pattern_detection_events", "pattern_forward_observations"}
+)
+
+# B-7 (Phase 15) backup gate: migrating v23 -> v24 snapshots the live v23 DB.
+# Migration 0024 only ADDs the nullable failure_mode column -- NO new tables --
+# so the table set present at v23 equals the post-SB3 set. Derived from the SB3
+# set so provenance stays auditable.
+B7_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
+    PHASE14_SB3_PRE_MIGRATION_EXPECTED_TABLES
 )
 
 
@@ -580,6 +588,29 @@ def _create_pre_phase14_sb3_migration_backup(
     return backup_path
 
 
+def _create_pre_b7_migration_backup(
+    src_path: Path, *, dest_dir: Path,
+) -> Path:
+    """B-7 (Phase 15) mirror with the b7 filename prefix.
+
+    SQLite-native Connection.backup() snapshot before the 0024 migration.
+    Backup file pattern ``swing-pre-b7-migration-<ISO>.db``.
+    """
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    backup_path = dest_dir / f"swing-pre-b7-migration-{timestamp}.db"
+    src_conn = sqlite3.connect(src_path)
+    try:
+        dest_conn = sqlite3.connect(backup_path)
+        try:
+            src_conn.backup(dest_conn)
+        finally:
+            dest_conn.close()
+    finally:
+        src_conn.close()
+    return backup_path
+
+
 def _create_pre_phase14_migration_backup(
     src_path: Path, *, dest_dir: Path,
 ) -> Path:
@@ -950,6 +981,49 @@ def _phase14_sb3_backup_gate(
         ) from exc
 
 
+def _b7_backup_gate(
+    conn: sqlite3.Connection,
+    *,
+    current_version: int,
+    target_version: int,
+    backup_dir: Path | None,
+) -> None:
+    """B-7 (Phase 15) backup-before-migrate gate (spec §4.4).
+
+    Fires ONLY when ``current_version == 23 AND target_version >= 24`` -- a real
+    production v23 DB about to receive migration 0024 (failure_mode column).
+    STRICT EQUALITY on pre_version per the ``pre_version == (target - 1)`` gotcha
+    (NOT ``<=``). Multi-step walks from pre-v23 baselines bypass this gate by
+    design (Phase 9 / 12 / 13 / 14 precedent).
+
+    Filename: ``swing-pre-b7-migration-<ISO>.db``.
+    """
+    if target_version < 24 or current_version != 23:
+        return
+    src_path = _resolve_main_db_path(conn)
+    if src_path is None:
+        raise MigrationBackupRequiredException(
+            "pre-B7 backup gate requires a file-backed source DB; in-memory "
+            "connections cannot be snapshotted."
+        )
+    if backup_dir is None:
+        backup_dir = src_path.parent
+    try:
+        backup_path = _create_pre_b7_migration_backup(
+            src_path, dest_dir=backup_dir,
+        )
+        _verify_backup_integrity(
+            backup_path,
+            expected_tables=B7_PRE_MIGRATION_EXPECTED_TABLES,
+        )
+    except MigrationBackupRequiredException:
+        raise
+    except (OSError, sqlite3.Error) as exc:
+        raise MigrationBackupRequiredException(
+            f"pre-B7 backup failed: {exc}"
+        ) from exc
+
+
 def run_migrations(
     conn: sqlite3.Connection,
     *,
@@ -1017,6 +1091,12 @@ def run_migrations(
         backup_dir=backup_dir,
     )
     _phase14_sb3_backup_gate(
+        conn,
+        current_version=current,
+        target_version=target_version,
+        backup_dir=backup_dir,
+    )
+    _b7_backup_gate(
         conn,
         current_version=current,
         target_version=target_version,

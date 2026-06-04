@@ -35,7 +35,7 @@ def _apply_migration_0012(conn: sqlite3.Connection) -> None:
 
 def test_expected_schema_version_is_19():
     """Code-side constant matches the current HEAD migration's UPDATE schema_version."""
-    assert EXPECTED_SCHEMA_VERSION == 23
+    assert EXPECTED_SCHEMA_VERSION == 24
 
 
 def test_migration_0012_advances_schema_version_from_11_to_12(tmp_path: Path):

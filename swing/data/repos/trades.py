@@ -73,7 +73,32 @@ _TRADE_SELECT_COLS = """
     gap_risk_present, gap_risk_handling, emotional_state_pre_trade,
     market_regime, catalyst, catalyst_other_description,
     planned_target_R,
-    candidate_id, pattern_evaluation_id
+    candidate_id, pattern_evaluation_id, failure_mode
+"""
+
+# v21-v23 era (candidate_id/pattern_evaluation_id present, failure_mode absent):
+# real backlink values + NULL AS failure_mode. MUST NOT null the v21 backlinks
+# (the three-era trap a naive single-PRE projection would fall into).
+_TRADE_SELECT_COLS_V21_TO_V23 = """
+    id, ticker, entry_date, entry_price, initial_shares, initial_stop,
+    current_stop, state, watchlist_entry_target,
+    watchlist_initial_stop, notes, hypothesis_label,
+    chart_pattern_algo, chart_pattern_algo_confidence,
+    chart_pattern_operator, chart_pattern_classification_pipeline_run_id,
+    sector, industry,
+    reviewed_at, mistake_tags, entry_grade, management_grade,
+    exit_grade, process_grade, disqualifying_process_violation,
+    realized_R_if_plan_followed, mistake_cost_confidence, lesson_learned,
+    trade_origin, pre_trade_locked_at, current_size, current_avg_cost,
+    last_fill_at,
+    thesis, why_now, invalidation_condition, expected_scenario,
+    premortem_technical, premortem_market_sector, premortem_execution,
+    premortem_additional,
+    event_risk_present, event_handling, event_type, event_date,
+    gap_risk_present, gap_risk_handling, emotional_state_pre_trade,
+    market_regime, catalyst, catalyst_other_description,
+    planned_target_R,
+    candidate_id, pattern_evaluation_id, NULL AS failure_mode
 """
 
 # Legacy (pre-v21) SELECT column list — substitutes NULL placeholders for
@@ -98,24 +123,29 @@ _TRADE_SELECT_COLS_PRE_V21 = """
     gap_risk_present, gap_risk_handling, emotional_state_pre_trade,
     market_regime, catalyst, catalyst_other_description,
     planned_target_R,
-    NULL AS candidate_id, NULL AS pattern_evaluation_id
+    NULL AS candidate_id, NULL AS pattern_evaluation_id, NULL AS failure_mode
 """
 
 
 def _trade_select_cols(conn: sqlite3.Connection) -> str:
-    """Return v21-extended SELECT-cols if schema has the new columns; else legacy.
+    """Return the schema-era-appropriate SELECT-cols projection.
 
-    Mirrors the ``insert_trade_with_event`` SVAI branch (PRAGMA table_info
-    detection). Reads MUST tolerate pre-v21 fixtures (~140 test callsites
-    use ``run_migrations(target_version<21)``); the legacy projection
-    emits ``NULL AS candidate_id, NULL AS pattern_evaluation_id`` so
-    ``_row_to_trade`` reads positionally + agnostically.
+    THREE eras (B-7 migration 0024 added a third):
+      * v24+ (failure_mode present)  -> full projection incl. failure_mode.
+      * v21-v23 (candidate_id present, failure_mode absent) -> real backlinks +
+        NULL AS failure_mode. MUST preserve the real backlinks (the era trap).
+      * pre-v21 (none present) -> NULL backlinks + NULL failure_mode.
+    Detect failure_mode AND the v21 columns INDEPENDENTLY, then compose. Keeps
+    _row_to_trade positional + agnostic across all eras (~140 pre-v21 fixtures).
     """
     cols = {
         r[1] for r in conn.execute("PRAGMA table_info(trades)").fetchall()
     }
-    if "candidate_id" in cols and "pattern_evaluation_id" in cols:
+    has_v21 = "candidate_id" in cols and "pattern_evaluation_id" in cols
+    if "failure_mode" in cols:  # v24 implies v21 columns exist
         return _TRADE_SELECT_COLS
+    if has_v21:
+        return _TRADE_SELECT_COLS_V21_TO_V23
     return _TRADE_SELECT_COLS_PRE_V21
 
 
@@ -498,6 +528,7 @@ def _row_to_trade(row: tuple) -> Trade:
       51:planned_target_R (Phase 8 / migration 0016)
       52:candidate_id (Phase 13 T2.SB6c / migration 0021)
       53:pattern_evaluation_id (Phase 13 T2.SB6c / migration 0021)
+      54:failure_mode (B-7 / migration 0024)
     """
     dpv = row[24]
     return Trade(
@@ -547,6 +578,7 @@ def _row_to_trade(row: tuple) -> Trade:
         planned_target_R=row[51],
         candidate_id=row[52],
         pattern_evaluation_id=row[53],
+        failure_mode=row[54],
     )
 
 
@@ -564,33 +596,52 @@ def update_trade_review_fields(
     realized_R_if_plan_followed: float | None,  # noqa: N803
     mistake_cost_confidence: str,
     lesson_learned: str,
+    failure_mode: str | None = None,
 ) -> None:
-    """UPDATE the 10 review fields atomically. Caller wraps in `with conn:`.
-    All 10 fields written together — partial-state review rows are not valid.
-    mistake_tags_json must be canonicalized by caller.
-    Missing trade_id raises ValueError."""
+    """UPDATE the review fields atomically. Caller wraps in `with conn:`.
+
+    The Phase-6 review fields are written together — partial-state review rows
+    are not valid. mistake_tags_json must be canonicalized by caller. Missing
+    trade_id raises ValueError.
+
+    B-7 (migration 0024): ``failure_mode`` is PRAGMA-aware. The assignment is
+    included ONLY when the column exists (v24+). On a pre-v24 schema a non-None
+    ``failure_mode`` raises a clean ValueError (NOT a leaked OperationalError);
+    ``failure_mode=None`` against pre-v24 is a no-op (keeps the legacy
+    run_migrations(target_version=16) review fixtures green).
+    """
+    from swing.data.models import FAILURE_MODES
+
+    if failure_mode is not None and failure_mode not in FAILURE_MODES:
+        raise ValueError(
+            f"failure_mode must be one of {sorted(FAILURE_MODES)} or None, "
+            f"got {failure_mode!r}")
+    has_fm = "failure_mode" in {
+        r[1] for r in conn.execute("PRAGMA table_info(trades)").fetchall()
+    }
+    if failure_mode is not None and not has_fm:
+        raise ValueError(
+            "failure_mode requires schema v24+ (the trades.failure_mode column "
+            "is absent on this DB)")
+    set_clauses = [
+        "reviewed_at = ?", "mistake_tags = ?", "entry_grade = ?",
+        "management_grade = ?", "exit_grade = ?", "process_grade = ?",
+        "disqualifying_process_violation = ?", "realized_R_if_plan_followed = ?",
+        "mistake_cost_confidence = ?", "lesson_learned = ?",
+    ]
+    params: list = [
+        reviewed_at, mistake_tags_json, entry_grade, management_grade,
+        exit_grade, process_grade,
+        (None if disqualifying_process_violation is None
+         else (1 if disqualifying_process_violation else 0)),
+        realized_R_if_plan_followed, mistake_cost_confidence, lesson_learned,
+    ]
+    if has_fm:
+        set_clauses.append("failure_mode = ?")
+        params.append(failure_mode)
+    params.append(trade_id)
     cur = conn.execute(
-        """
-        UPDATE trades SET
-            reviewed_at = ?,
-            mistake_tags = ?,
-            entry_grade = ?,
-            management_grade = ?,
-            exit_grade = ?,
-            process_grade = ?,
-            disqualifying_process_violation = ?,
-            realized_R_if_plan_followed = ?,
-            mistake_cost_confidence = ?,
-            lesson_learned = ?
-        WHERE id = ?
-        """,
-        (reviewed_at, mistake_tags_json, entry_grade, management_grade,
-         exit_grade, process_grade,
-         (None if disqualifying_process_violation is None
-          else (1 if disqualifying_process_violation else 0)),
-         realized_R_if_plan_followed, mistake_cost_confidence,
-         lesson_learned, trade_id),
-    )
+        f"UPDATE trades SET {', '.join(set_clauses)} WHERE id = ?", params)
     if cur.rowcount == 0:
         raise ValueError(f"trade {trade_id} not found")
 

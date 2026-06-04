@@ -175,6 +175,25 @@ class EvaluationRun:
     rs_universe_hash: str | None = None
 
 
+# B-7 (Phase 15, migration 0024 / v24) — operator failure-mode vocabulary.
+# Co-located with the Trade dataclass + the Phase-6 CHECK mirrors per the
+# schema-CHECK + Python-constant + dataclass-validator paired discipline. Placed
+# HERE (NOT swing/trades/review.py) to avoid the review.py -> models.py import
+# cycle: review.py already imports Trade FROM models.py, so the constant must
+# live upstream. The migration 0024 CHECK list and this frozenset are asserted
+# identical by tests/data/test_b7_failure_mode_schema.py. NULL = "no failure
+# attributed" (NOT a token).
+FAILURE_MODES: frozenset[str] = frozenset({
+    "thesis_invalidated",
+    "normal_volatility_stop",
+    "market_regime_shift",
+    "adverse_event_shock",
+    "execution_error",
+    "failed_to_advance",
+    "other",
+})
+
+
 @dataclass(frozen=True)
 class Trade:
     """Phase 7 Sub-A T3 — Trade dataclass.
@@ -263,6 +282,20 @@ class Trade:
     # pattern_evaluation_id hidden anchor (OQ-12; T-A.6c.4 closes the threading).
     candidate_id: int | None = None
     pattern_evaluation_id: int | None = None
+    # B-7 (Phase 15, migration 0024 / v24) — operator failure-mode attribution.
+    # Review-time field; always NULL at entry. Nullable: a winning trade has no
+    # failure mode, and an unclassified loss stays NULL. Validated against
+    # FAILURE_MODES in __post_init__ (Literal[...] is NOT runtime-enforced).
+    failure_mode: str | None = None
+
+    def __post_init__(self) -> None:
+        # B-7 (#11 paired-atomic-landing validator): the failure_mode value, when
+        # set, MUST be a member of FAILURE_MODES. Mirrors the migration 0024 CHECK
+        # so the model rejects exactly what the schema rejects.
+        if self.failure_mode is not None and self.failure_mode not in FAILURE_MODES:
+            raise ValueError(
+                f"failure_mode must be one of {sorted(FAILURE_MODES)} or None, "
+                f"got {self.failure_mode!r}")
 
 
 @dataclass(frozen=True)

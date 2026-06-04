@@ -562,6 +562,7 @@ def complete_trade_review(
     mistake_cost_confidence: str | None,
     lesson_learned: str,
     event_ts: str,
+    failure_mode: str | None = None,
     rationale: str | None = None,
 ) -> None:
     """Atomic per-trade review completion.
@@ -608,6 +609,7 @@ def complete_trade_review(
             realized_R_if_plan_followed=realized_R_if_plan_followed,
             mistake_cost_confidence=mistake_cost_confidence,
             lesson_learned=lesson_learned,
+            failure_mode=failure_mode,
         )
         state_transition(
             conn,
