@@ -75,8 +75,8 @@ Three **separate `<svg>` elements** (each its own `viewBox` + independent Y coor
 <section class="metrics-process-grade-trend">
   <h2>Grades</h2>
   <svg viewBox="0 0 800 360" class="process-grade-trend-chart" data-panel="grades" ...>
-    <g class="grade-axis-labels" data-marker="grade-axis-encoding"> A=4 … F=0 </g>
-    <g class="legend" data-marker="grades-legend"> process · entry · management · exit </g>
+    <g class="grade-axis-labels" data-marker="grade-axis-encoding"> A=4 B=3 C=2 D=1 F=0 </g>
+    <g class="legend" data-marker="grades-legend"> process / entry / management / exit </g>
     {circles: process_grade markers}            <!-- always, when grade letter present -->
     {polylines: 4 grade series, per-series class + color}
   </svg>
@@ -95,7 +95,7 @@ Three **separate `<svg>` elements** (each its own `viewBox` + independent Y coor
   </svg>
 
   <h2>Per-metric rolling window (most recent)</h2>
-  <table …> {all 7 metrics — UNCHANGED} </table>
+  <table ...> {all 7 metrics - UNCHANGED} </table>
 </section>
 ```
 
@@ -108,25 +108,26 @@ Three **separate `<svg>` elements** (each its own `viewBox` + independent Y coor
 The 4 grade lines in ONE panel cannot all be `var(--accent)` (indistinguishable). **Recommendation: distinct theme-aware colors + a legend** (OQ-2 — recommend distinct colors over dashing; dashing 4 ways is hard to tell apart at 1.5px).
 
 - Introduce **4 theme-aware CSS custom properties** — `--series-process` (alias `var(--accent)`), `--series-entry`, `--series-management`, `--series-exit` — defined in BOTH `:root` (light) and `body.dark` (dark) in `app.css`, chosen for legibility on each background (mirrors how `--accent` already shifts `#0066cc`→`#6ab0ff`). This **preserves L4 theme-awareness** — colors stay tokenized, never hardcoded hex in the SVG.
-- Per-series stroke is **additive** on top of the existing rule:
+- Per-series stroke is **additive** on top of the existing rule, using a **TWO-class selector so specificity (not source order) enforces the override** (Codex R1 Major #1 — `.metric-entry_grade_rolling_N` alone is *equal* specificity to `.process-grade-rolling-line`, so a later-declared base rule would silently win):
   - `.process-grade-rolling-line { stroke: var(--accent); }` **stays** (the A-6 test asserts its literal presence → green) and is the default / process-line color.
-  - Add `.metric-entry_grade_rolling_N { stroke: var(--series-entry); }` etc. (more-specific selector wins).
+  - Add `.process-grade-rolling-line.metric-entry_grade_rolling_N { stroke: var(--series-entry); }` (two classes → higher specificity → wins regardless of order), and likewise for `_management_` / `_exit_`. (The `process` line keeps `var(--accent)` = `--series-process`.)
   - `.process-grade-marker { fill: var(--accent); }` **stays** (markers are process-grade only).
-- The legend is inline SVG `<text>` + a short colored `<line>`/`<rect>` swatch per grade series, ASCII labels only (`process`, `entry`, `management`, `exit`) — no metacharacters (the matplotlib-mathtext gotcha is N/A for inline SVG, but ASCII discipline #16/#32 still applies to all rendered text).
+- The legend is inline SVG `<text>` + a short colored `<line>`/`<rect>` swatch per grade series, **ASCII labels only** — `process / entry / management / exit` (slash separators, NOT `·`). The matplotlib-mathtext gotcha is N/A for inline SVG, but ASCII discipline applies to all proposed rendered SVG strings (§10).
 - RATE + COST panels each have one line → keep `var(--accent)` (no legend needed; the `<h2>` names them).
 
 ### §3.5 Cost-panel scale (OQ-3)
 
 - **Chart `_per_trade` only; demote `_total` to the table.** Co-plotting a window *mean* and a window *running SUM* on one axis re-creates the incommensurability inside the cost panel. `_total`'s "trend as a line" is low-value (a running sum); it already appears in the table (L4) — that is sufficient. **Operator-binding — flagged OQ-3.**
-- **0-anchor the cost axis:** the cost panel uses `[0, pad(max_finite_per_trade_value)]`, NOT `(raw_min, raw_max)`. Anchoring at 0 makes magnitude honest (a 0.30→0.50 move no longer fills the panel). When no finite cost values exist, fall back to `[0, 1]` (matches the current empty-bounds fallback). This is a *display-bounds* change, not a computation change (L1-safe).
-- The cost axis labels are data-driven: `0.0`, a midpoint, and the computed `max` (formatted `%.2f`, ASCII).
+- **0-anchor the cost axis:** the cost panel uses `[0, pad(max_finite_per_trade_value)]`, NOT `(raw_min, raw_max)`. Anchoring at 0 makes magnitude honest (a 0.30→0.50 move no longer fills the panel).
+- **The all-zero / no-data edge case (Codex R1 Major #2):** when `max_finite_per_trade_value <= 0` (no finite cost values OR every cost is exactly 0.0 — common early, e.g. a perfect-process operator), use bounds **`[0, 1]`**, NOT `[0, 0]`. Reason: the existing `_polyline_y` centers the line when `y_max == y_min` ([`process_grade_trend.py` `_polyline_y`](../../../swing/web/view_models/metrics/process_grade_trend.py)), so `[0,0]` would float a zero-cost line in the panel middle with degenerate `0.0 / 0.0 / 0.0` labels. With `[0,1]`, a 0.0 cost maps to the **bottom baseline** and the axis labels (`0.0 / 0.5 / 1.0`) are non-degenerate. A discriminating test asserts: zero-cost line at the baseline (max Y), non-degenerate labels.
+- The cost axis labels are data-driven: `0.0`, a midpoint, and the computed `max` (formatted `%.2f`, ASCII) — except the all-zero case above, which renders the fixed `0.0 / 0.5 / 1.0`.
 
 ### §3.6 VM changes (presentation layer only)
 
 - Replace the per-series `_y_axis_bounds_for_metric` "draw-all-in-one-box" mapping with **per-panel** bounds:
   - GRADES: `[0,4]` shared by all 4 grade lines (already commensurate — no change to bounds, only to which SVG they render into).
   - RATE: `[0,1]`.
-  - COST: `[0, pad(max)]` 0-anchored over the charted `_per_trade` line (§3.5).
+  - COST: `[0, pad(max)]` 0-anchored over the charted `_per_trade` line, falling back to `[0, 1]` when `max <= 0` (§3.5).
 - Add a **panel discriminator** so the template routes each series to its panel — e.g. a `panel: str` field on `RollingSeriesDisplay` (values `"grades" | "rate" | "cost" | "table_only"`), OR the VM emits three grouped tuples (`grade_series`, `rate_series`, `cost_series`). Recommend the grouped-tuples shape (the template stays a simple per-panel loop; `_total` is simply not placed in any panel group but still flows to the table loop). `mistake_cost_R_rolling_N_total` → `table_only`.
 - Per-panel SVG layout constants (height per panel) become VM fields (`grades_svg_height=360`, `rate_svg_height=160`, `cost_svg_height=160`), mirroring the existing `svg_*` constants. X mapping (`_polyline_x`) is shared/unchanged.
 - The `is_drawable` gate + segmented-polyline (F-3 None-gap splitting) logic is **unchanged per series** — it just runs within each panel's bounds.
@@ -134,7 +135,7 @@ The 4 grade lines in ONE panel cannot all be `var(--accent)` (indistinguishable)
 ### §3.7 Suppression floor / decoupled badges / empty-state in the new layout (L4, L6)
 
 - **Empty state (no trades):** the single `data-empty-state="process-grade-trend"` `<em>` wraps ALL three panels (unchanged) — no panels render. Existing test stays green.
-- **Under-floor (trades exist, <5 effective samples):** the GRADES panel renders its axis + the `process_grade` `<circle>` markers (markers always render) + NO grade polylines; the RATE + COST panels render their axes + NO line + a small `data-marker="…-under-floor"` caption ("rolling line draws once the window has ≥5 effective samples"). This makes the DEFAULT state honest and **witnessable** (L6 / `feedback_seeded_gate_masks_default_state`) — the operator sees axes + markers, not a blank box.
+- **Under-floor (trades exist, <5 effective samples):** the GRADES panel renders its axis + the `process_grade` `<circle>` markers (markers always render) + NO grade polylines; the RATE + COST panels render their axes + NO line + a small `data-marker="<panel>-under-floor"` caption — rendered string `rolling line draws once the window has >=5 effective samples` (ASCII `>=`, not the glyph). This makes the DEFAULT state honest and **witnessable** (L6 / `feedback_seeded_gate_masks_default_state`) — the operator sees axes + markers, not a blank box.
 - **Decoupled badges (lesson #23):** UNCHANGED — they live in the per-metric *table* rows (`data-marker="drawability-…"` / `window-warning-…` / `floor-warning-…`), not in the SVG. The redesign does not touch them; `test_…_renders_separate_decoupled_badge_text_elements` stays green.
 - **Per-trade markers:** unchanged — `process_grade` circles in the GRADES panel only.
 
@@ -142,13 +143,13 @@ The 4 grade lines in ONE panel cannot all be `var(--accent)` (indistinguishable)
 
 ## §4 The nav-date fix (§0.3 / L5)
 
-**Bug:** `/reviews/pending`'s shared topbar `<span class="date">{{ vm.session_date }}</span>` ([`base.html.j2:69`](../../../swing/web/templates/base.html.j2)) renders blank because [`build_reviews_pending_vm`](../../../swing/web/view_models/trades.py) never sets `session_date`. `ReviewsPendingVM` is **not** a `BaseLayoutVM` subclass — it redefines the field with `session_date: str = ""` and has no non-empty guard, so the empty default silently slips through (every other page's VM sets it).
+**Bug:** `/reviews/pending`'s shared topbar `<span class="date">{{ vm.session_date }}</span>` ([`base.html.j2:69`](../../../swing/web/templates/base.html.j2)) renders blank because [`build_reviews_pending_vm`](../../../swing/web/view_models/trades.py) never sets `session_date`. `ReviewsPendingVM` is **not** a `BaseLayoutVM` subclass — it redefines the field with `session_date: str = ""` and has no non-empty guard (unlike `BaseLayoutVM.__post_init__`, which *raises* on empty), so the empty default silently slips through. (Every page's VM is expected to set `session_date`; this one simply doesn't.)
 
 **Fix (one line + a local import):** in `build_reviews_pending_vm`'s `return ReviewsPendingVM(...)`, add:
 ```python
 session_date=last_completed_session(datetime.now()).isoformat(),
 ```
-- `last_completed_session` — the **backward-looking topbar anchor** every other base VM uses (NOT `action_session_for_run`, which is forward-looking and would mismatch the other pages + blank on weekends, per the session-anchor read/write gotcha). OQ-4 confirms.
+- `last_completed_session` — the **backward-looking anchor** (NOT `action_session_for_run`). Topbar anchors are a MIX across the app: forward-looking/navigator pages (dashboard, watchlist, metrics-index) use `action_session_for_run`; backward-looking content pages use `last_completed_session`. `/reviews/pending` is backward-looking content (it lists already-*closed* trades awaiting review), so it should match its sibling review page [`build_review_vm`](../../../swing/web/view_models/trades.py) (`session_date = last_completed_session(...).isoformat()`, ~line 1351), NOT the forward-looking navigator anchor. `last_completed_session` also avoids the weekend/evening silent-blank that `action_session_for_run` would cause for backward-looking content (the session-anchor read/write gotcha). OQ-4 confirms. The test (below) asserts the requested anchor *directly* — it does not assert "matches other pages."
 - Imports: `datetime` is already module-level in `trades.py` (`from datetime import … datetime …`); add the local `from swing.evaluation.dates import last_completed_session` inside the function (mirrors `build_review_vm:1351`).
 - **No schema/base-VM impact:** this sets an EXISTING field; the shared-`base.html.j2` 5-VM rule is NOT triggered (no new `vm.foo`).
 
@@ -210,7 +211,7 @@ A single small cycle, two independent slices:
 1. **OQ-1 — the layout (BINDING, the core UX call).** Recommend **(a) small-multiples** (three scale-separated inline-SVG panels). Alternatives: primary-grade-chart + table-for-the-rest (b); secondary-axis (c); table-only (d). → §3.
 2. **OQ-2 — per-series color.** Recommend **distinct theme-aware colors per grade line + a legend** (4 new `--series-*` tokens, light+dark) over single-`--accent`-with-dashing. → §3.4.
 3. **OQ-3 — cost-panel scale.** Recommend **chart `_per_trade` only, 0-anchored `[0,max]`; `_total` table-only.** → §3.5.
-4. **OQ-4 — nav-date anchor.** Confirm **`last_completed_session`** (backward-looking; matches the other pages). Recommend yes. → §4.
+4. **OQ-4 — nav-date anchor.** Confirm **`last_completed_session`** (backward-looking; correct for backward-looking review content; matches the sibling `build_review_vm`). Recommend yes. → §4.
 5. **OQ-5 — scope.** Recommend **redesign-only** — no adjacent metrics-card affordance, no `/metrics` overview change.
 
 ---
@@ -219,7 +220,7 @@ A single small cycle, two independent slices:
 
 - **Web/HTMX/forms gotchas:** shared-`base.html.j2` 5-VM rule NOT triggered (neither item adds a new `vm.foo`; nav-date sets an existing field). Pure server-rendered HTML — no HTMX OOB-swap / HX-Redirect / embedded forms on this surface (the §A.9/§I.6 LOCK). Matplotlib-mathtext gotcha N/A (inline SVG, not matplotlib).
 - **Session-anchor read/write gotcha:** nav-date uses the backward-looking `last_completed_session` (L5/OQ-4) — the writer-anchor family fix.
-- **ASCII (#16/#32):** all new rendered SVG text (legend labels, axis labels, captions) is ASCII (no `→ § ↔ ✓` / em-dash / fractions).
+- **ASCII (#16/#32):** all PROPOSED rendered SVG strings are ASCII (Codex R1 Minor #1) — legend `process / entry / management / exit` (slash, not `·`); axis labels `A=4 B=3 C=2 D=1 F=0`, `0.0 / 0.5 / 1.0`, data-driven `%.2f`; under-floor caption `... >=5 effective samples` (`>=`, not the glyph). (Browser SVG is UTF-8 so a glyph would not crash like a CLI cp1252 path, but the discipline is honored for consistency with the existing surface's intent.)
 - **Regression-test-arithmetic (memory):** the nav-date test distinguishes pre-fix (`""`) vs post-fix (ISO date); the cost-axis test distinguishes pre-fix `(raw_min,raw_max)` vs post-fix 0-anchored bounds.
 - **A-6 / L4:** the existing `.process-grade-rolling-line`/`.process-grade-marker` + `var(--accent)` CSS rules are preserved (additive `--series-*` tokens); the suppression floor, per-trade markers, decoupled badges, and table all survive.
 - **Commits:** conventional; NO `Co-Authored-By`; NO `--no-verify`; final `-m` paragraph plain prose; verify `git log -1 --format='%(trailers)'` is `[]` before any push (trailer-parse-hazard memory).
