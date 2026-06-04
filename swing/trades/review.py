@@ -65,6 +65,36 @@ ALL_MISTAKE_TAGS: frozenset[str] = frozenset(
     tag for tags in MISTAKE_TAGS.values() for tag in tags
 )
 
+# B-7 (Phase 15) — ordered (value, label) display tuple for the failure-mode
+# <select>. A frozenset has NO iteration-order guarantee, so the form/labels MUST
+# iterate THIS tuple, never FAILURE_MODES directly. Labels are plain-ASCII title-
+# case prose (hyphens, NOT em-dashes -- the CLI echo is a cp1252 stdout path and
+# the form snippet keeps parity). A test asserts {v for v, _ in DISPLAY} ==
+# FAILURE_MODES so the two never drift.
+FAILURE_MODE_DISPLAY: tuple[tuple[str, str], ...] = (
+    ("thesis_invalidated", "Thesis invalidated"),
+    ("normal_volatility_stop", "Normal-volatility stop"),
+    ("market_regime_shift", "Market / sector regime shift"),
+    ("adverse_event_shock", "Adverse event shock"),
+    ("execution_error", "Execution error"),
+    ("failed_to_advance", "Failed to advance (dead money)"),
+    ("other", "Other"),
+)
+
+_FAILURE_MODE_LABELS: dict[str, str] = dict(FAILURE_MODE_DISPLAY)
+
+
+def failure_mode_display_choices() -> tuple[tuple[str, str], ...]:
+    """Ordered (value, label) pairs for the review-form <select> + VM."""
+    return FAILURE_MODE_DISPLAY
+
+
+def failure_mode_label(value: str | None) -> str | None:
+    """Map a stored token to its display label; None -> None; unknown -> itself."""
+    if value is None:
+        return None
+    return _FAILURE_MODE_LABELS.get(value, value)
+
 
 def validate_mistake_tags(tags: list[str]) -> None:
     """Raise ValueError if `tags` contains anything not in ALL_MISTAKE_TAGS,
