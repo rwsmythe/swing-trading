@@ -1149,6 +1149,12 @@ class ReviewVM:
     # Per-grade label list (A..F):
     grade_choices: tuple[str, ...] = ("A", "B", "C", "D", "F")
 
+    # B-7 (Phase 15) — ordered (value, label) pairs for the failure-mode <select>.
+    # Safe default () keeps the VM constructible without the field; referenced
+    # ONLY in review_form.html.j2 (no base-layout deref -> the 5-VM rule needs no
+    # other base-layout VM change).
+    failure_mode_choices: tuple[tuple[str, str], ...] = ()
+
     # Phase 5 lesson — base.html.j2 dereferences these. New page VMs MUST
     # carry safe defaults (5-VM existing-fields rule; brief §6.2 watch item 8).
     session_date: str = ""
@@ -1250,6 +1256,7 @@ def build_review_vm(
         compute_actual_realized_R_effective,
         compute_lucky_violation_R,
         compute_mistake_cost_R,
+        failure_mode_display_choices,
         get_priors_for_ticker,
     )
     from swing.trades.review_auto_fill import compute_mfe_mae_from_ohlcv_cache
@@ -1387,6 +1394,7 @@ def build_review_vm(
         exit_date_last=exit_date_last,
         total_risk_dollars=total_risk_dollars,
         review_chart_url=f"/trades/{trade_id}/review/chart",
+        failure_mode_choices=failure_mode_display_choices(),
     )
 
 
