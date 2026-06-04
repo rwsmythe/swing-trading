@@ -86,7 +86,7 @@ In B3 the GRADES panel reuses this **exact fragment shape** but loops `vm.grade_
   - lines 68-120: the 7-row `<table>` (`{% for series in vm.rolling_series %}`). **UNCHANGED.**
 - CSS: [`swing/web/static/app.css`](../../../swing/web/static/app.css):
   - `:root { --accent: #0066cc; ... }` (`--accent` @ line ~35).
-  - `body.dark { --accent: #6ab0ff; ... }` (`--accent` @ line ~122).
+  - the **combined** dark block `html.dark,` / `body.dark { --accent: #6ab0ff; ... }` (selector @ lines ~96-97; `--accent` @ ~122) — the FOUC-prevention pairing; add the `--series-*` tokens HERE (Codex R1-m2), not a standalone `body.dark`.
   - `.process-grade-rolling-line { stroke: var(--accent); }` (~338) + `.process-grade-marker { fill: var(--accent); }` (~339). **STAY (A-6 test asserts the literal strings).**
 - Metric matrix (read-only, L1): [`swing/metrics/process_grade_trend.py:68-76`](../../../swing/metrics/process_grade_trend.py) — `PROCESS_GRADE_TREND_METRIC_CLASSES` (7 keys). `RollingLinePoint`, `compute_process_grade_trend` consumed read-only.
 
@@ -151,24 +151,30 @@ In B3 the GRADES panel reuses this **exact fragment shape** but loops `vm.grade_
 
 **Files:** `swing/web/view_models/trades.py`; new test in `tests/web/test_routes/test_trades_route.py` (the existing reviews-pending route test module) OR a focused `tests/web/test_view_models/test_reviews_pending_session_date.py`.
 
-**(a) Failing test first** — render-assertion, pre-fix-vs-post-fix distinguishing (memory `feedback_regression_test_arithmetic`):
+**(a) Failing test first** — render-assertion, pre-fix-vs-post-fix distinguishing (memory `feedback_regression_test_arithmetic`). **Freeze the clock** (Codex R1-M2: two independent `datetime.now()` calls can straddle a session boundary → flake; the module-level `datetime` is monkeypatchable precisely because the fix uses it unqualified):
 ```
-test_reviews_pending_topbar_date_is_last_completed_session(seeded_db):
+test_reviews_pending_topbar_date_is_last_completed_session(seeded_db, monkeypatch):
+  import re
+  from datetime import datetime
+  import swing.web.view_models.trades as trades_mod
+  from swing.evaluation.dates import last_completed_session
+  FIXED = datetime(2026, 6, 3, 21, 0, 0)          # any fixed instant
+  class _FrozenDT(datetime):
+      @classmethod
+      def now(cls, tz=None):
+          return FIXED
+  monkeypatch.setattr(trades_mod, "datetime", _FrozenDT)   # build_reviews_pending_vm resolves the module-global name at call time
+  expected = last_completed_session(FIXED).isoformat()     # computed from the SAME frozen instant
   app = create_app(cfg, cfg_path)
   with TestClient(app) as client:
       r = client.get("/reviews/pending")
   assert r.status_code == 200
-  # Compute the expected the SAME way the fix does:
-  from datetime import datetime
-  from swing.evaluation.dates import last_completed_session
-  expected = last_completed_session(datetime.now()).isoformat()
-  # Topbar span must be non-empty AND equal the backward-looking anchor:
-  assert f'<span class="date">{expected}</span>' in r.text  # (allow whitespace; assert on the value)
+  m = re.search(r'<span class="date">([^<]*)</span>', r.text)
+  assert m is not None and m.group(1).strip() == expected
 ```
-- **Pre-fix arithmetic:** `session_date` defaults to `""` → the rendered span is `<span class="date"></span>` → the assertion (non-empty ISO date) **FAILS**.
-- **Post-fix arithmetic:** `session_date == expected` (a real ISO date, e.g. `2026-06-03`) → **PASSES**.
-- The test distinguishes. (Whitespace-robust form: extract the span's inner text and assert `== expected` and `!= ""`.)
-- **Anti-flake note:** compute `expected` inside the test from `last_completed_session(datetime.now())` so a day-boundary crossing between request and assertion still matches the writer (both call the same helper); this is a stable same-second comparison in practice. The test asserts the **requested anchor directly** — it does NOT assert "matches other pages."
+- **Pre-fix arithmetic:** `session_date` defaults to `""` → the span inner text is `""` → `"" == expected` (a real ISO date `2026-06-03`) is `False` → **FAILS**.
+- **Post-fix arithmetic:** the route's `build_reviews_pending_vm` calls the monkeypatched module-level `datetime.now()` → `FIXED`; `session_date == last_completed_session(FIXED).isoformat() == expected` → **PASSES**.
+- The test distinguishes AND is deterministic — the route and the assertion share `FIXED`, so no wall-clock race. (This is the concrete reason the fix uses the module-level `datetime`, not a local import: it must be monkeypatchable by name.) The test asserts the **requested anchor directly** — it does NOT assert "matches other pages."
 
 **(b) Minimal implementation:**
 ```python
@@ -194,24 +200,42 @@ from swing.evaluation.dates import last_completed_session
 
 **Files:** `swing/web/static/app.css`; `tests/web/test_app_css_process_grade.py`.
 
-**(a) Failing test first** (additive — the existing 4 assertions stay):
+**(a) Failing tests first** (additive — the existing 4 assertions stay). **Scope each token assertion to its actual selector block** (Codex R1-M4: a global `count >= 2` falsely passes on two declarations in one block; the dark selector is the COMBINED `html.dark, body.dark {…}` block — Codex R1-m2, verified at `app.css:96-97`):
 ```
-def test_series_tokens_defined_in_both_themes():
+def _block(css, selector_line):
+    # return the text between `selector_line` ... and its closing '}' (first one)
+    start = css.index(selector_line)
+    end = css.index("}", start)
+    return css[start:end]
+
+def test_series_tokens_defined_in_both_theme_blocks():
     css = Path("swing/web/static/app.css").read_text(encoding="utf-8")
+    root = _block(css, ":root {")
+    dark = _block(css, "html.dark,\nbody.dark {")     # the combined FOUC-prevention dark block
     for token in ("--series-process", "--series-entry", "--series-management", "--series-exit"):
-        # defined in BOTH :root (light) and body.dark — assert >=2 occurrences each
-        assert css.count(token + ":") >= 2, token
+        assert (token + ":") in root, f"{token} missing from :root"
+        assert (token + ":") in dark, f"{token} missing from html.dark,body.dark"
 
 def test_per_series_two_class_stroke_rules_present():
     css = Path("swing/web/static/app.css").read_text(encoding="utf-8")
     assert ".process-grade-rolling-line.metric-entry_grade_rolling_N { stroke: var(--series-entry); }" in css
     assert ".process-grade-rolling-line.metric-management_grade_rolling_N { stroke: var(--series-management); }" in css
     assert ".process-grade-rolling-line.metric-exit_grade_rolling_N { stroke: var(--series-exit); }" in css
-    # the base rule (the process line + A-6) STAYS:
-    assert ".process-grade-rolling-line { stroke: var(--accent); }" in css
+    assert ".process-grade-rolling-line { stroke: var(--accent); }" in css   # base rule + A-6 STAYS
+
+def test_legend_swatch_fill_rules_present():
+    # Codex R1-M3: pin the legend swatch coloring (SVG presentation attrs cannot
+    # take var(); the swatch <rect> must resolve its fill via a CSS rule, NOT a
+    # default/black fill). Mirror the two-class specificity pattern on fill.
+    css = Path("swing/web/static/app.css").read_text(encoding="utf-8")
+    assert ".process-grade-legend-swatch { fill: var(--accent); }" in css
+    assert ".process-grade-legend-swatch.metric-entry_grade_rolling_N { fill: var(--series-entry); }" in css
+    assert ".process-grade-legend-swatch.metric-management_grade_rolling_N { fill: var(--series-management); }" in css
+    assert ".process-grade-legend-swatch.metric-exit_grade_rolling_N { fill: var(--series-exit); }" in css
 ```
-- **Pre-fix:** tokens absent (`count == 0 < 2`) + two-class rules absent → **FAILS**.
-- **Post-fix:** tokens present in both `:root` and `body.dark` + rules present → **PASSES**.
+- **Pre-fix:** tokens absent from both blocks + the two-class stroke rules + the swatch fill rules absent → **FAILS**.
+- **Post-fix:** tokens declared once inside `:root` AND once inside `html.dark,\nbody.dark` + all rules present → **PASSES**.
+- (The `_block` slicer assumes each token sits on its own `--token: value;` line within the first-encountered selector block — true for `app.css`'s one-declaration-per-line style. If the dark selector's exact whitespace differs at executing-plans time, re-grep and adjust the `selector_line` literal.)
 
 **(b) Minimal implementation:**
 - Under `:root` (after `--accent-hover` ~line 36) add:
@@ -221,21 +245,28 @@ def test_per_series_two_class_stroke_rules_present():
   --series-management: #b8860b;
   --series-exit: #c0392b;
   ```
-- Under `body.dark` (after its `--accent-hover` ~line 123) add the dark-legible variants:
+- Inside the **combined** dark block `html.dark,\nbody.dark { … }` (after its `--accent-hover` ~line 123 — NOT a new standalone `body.dark` rule; the FOUC-prevention `html.dark` path must also get the colors — Codex R1-m2) add the dark-legible variants:
   ```css
   --series-process: var(--accent);
   --series-entry: #4ecb8a;
   --series-management: #e0b341;
   --series-exit: #ff7a6b;
   ```
-  (Exact hexes are the implementer's legibility call at the operator browser gate, L6; the binding constraint is: tokenized, distinct, defined in BOTH themes, with `--series-process` aliasing `var(--accent)`.)
-- After `.process-grade-marker { fill: var(--accent); }` (~line 339) add the **two-class** rules (specificity 0,2,0 beats the single-class base 0,1,0 regardless of source order — Codex R1-M1):
+  (Exact hexes are the implementer's legibility call at the operator browser gate, L6; the binding constraint is: tokenized, distinct, defined in BOTH the `:root` and `html.dark,body.dark` blocks, with `--series-process` aliasing `var(--accent)`.)
+- After `.process-grade-marker { fill: var(--accent); }` (~line 339) add the **two-class** line-stroke rules (specificity 0,2,0 beats the single-class base 0,1,0 regardless of source order — Codex R1-M1):
   ```css
   .process-grade-rolling-line.metric-entry_grade_rolling_N { stroke: var(--series-entry); }
   .process-grade-rolling-line.metric-management_grade_rolling_N { stroke: var(--series-management); }
   .process-grade-rolling-line.metric-exit_grade_rolling_N { stroke: var(--series-exit); }
   ```
   (No rule for `process_grade_rolling_N` — it keeps the base `var(--accent)` = `--series-process`. The rate + cost panels' single lines also keep the base `var(--accent)`.)
+- Add the **legend-swatch fill** rules (Codex R1-M3 — SVG presentation attributes cannot take `var()`, so the swatch `<rect>` must resolve its fill via a CSS rule keyed by the same `metric-<name>` class; mirror the two-class specificity pattern on `fill`):
+  ```css
+  .process-grade-legend-swatch { fill: var(--accent); }                                  /* process swatch */
+  .process-grade-legend-swatch.metric-entry_grade_rolling_N { fill: var(--series-entry); }
+  .process-grade-legend-swatch.metric-management_grade_rolling_N { fill: var(--series-management); }
+  .process-grade-legend-swatch.metric-exit_grade_rolling_N { fill: var(--series-exit); }
+  ```
 
 **(c) Commit stem:** `feat(web): add theme-aware --series-* tokens + per-series chart stroke CSS`
 
@@ -273,10 +304,10 @@ def test_per_series_two_class_stroke_rules_present():
 
 **(a) Failing tests first** (each distinguishes):
 - `test_vm_groups_series_into_three_panels`: seed n=5; assert `{s.metric_name for s in vm.grade_series} == {4 grade names}`; `rate_series` names == `{rate}`; `cost_series` names == `{per_trade}`; and `mistake_cost_R_rolling_N_total` is in `vm.rolling_series` (table) but in none of the three groups. *(Pre-fix: the fields don't exist → AttributeError/fail; post-fix: pass.)*
-- `test_cost_panel_bounds_zero_anchored_for_nonzero_costs`: construct/seed per-trade cost line with finite max `M=2.0`; assert `vm.cost_y_max == 2.0`. *(Pre-fix `_y_axis_bounds_for_metric` would give `(raw_min, raw_max)` with `raw_min>0` if costs are all positive → not 0-anchored; here we assert the NEW `cost_y_max` field + that `cost_series` segments map value `M` to Y == `margin_top` (top) and `0.0`-equivalent to baseline.)*
-- `test_cost_panel_all_zero_uses_unit_fallback_not_degenerate`: seed costs all `0.0` (or no finite values); assert `vm.cost_y_max == 1.0` (NOT `0.0`); assert `cost_axis_labels` texts are `("0.00","0.50","1.00")` (non-degenerate, NOT `"0.00"/"0.00"/"0.00"`); assert the zero-cost segment point Y == the **baseline** `margin_top + plot_height` (= `24 + (160-24-40) = 120.00`), NOT the panel midpoint `72.00`.
-  - **Arithmetic (the discriminator):** plot_height = 160−24−40 = 96; baseline Y = 24 + 96·(1−0) = **120.00**.
-    - Pre-fix bounds (all-zero → `(raw_min-0.5, raw_max+0.5) = (-0.5, 0.5)`): value 0 → normalized = (0−(−0.5))/1.0 = 0.5 → Y = 24 + 96·(1−0.5) = **72.00** (mid-panel) → assertion FAILS.
+- `test_cost_panel_bounds_zero_anchored_for_nonzero_costs` (**direct helper test**, Codex R1-m1 — NOT DB-seeded, so the max is exact): call `_cost_panel_bounds((RollingLinePoint(0,0.3), RollingLinePoint(1,2.0), RollingLinePoint(2,1.0)))` → assert `== (0.0, 2.0)` (0-anchored; min ignored). *(Pre-fix `_y_axis_bounds_for_metric` for the cost branch returns `(min, max) = (0.3, 2.0)` — NOT 0-anchored → the helper's `(0.0, 2.0)` distinguishes.)* Then assert `_polyline_y(2.0, y_min=0.0, y_max=2.0, layout_height=COST_SVG_HEIGHT, margin_top=24, margin_bottom=40) == 24.00` (the peak maps to the top margin, not clipped — the `margin_top=24` band is the headroom) and `_polyline_y(0.0, …) == 120.00` (baseline).
+- `test_cost_panel_all_zero_uses_unit_fallback_not_degenerate` (**direct helper test**): `_cost_panel_bounds(())` AND `_cost_panel_bounds((RollingLinePoint(0,0.0), RollingLinePoint(1,0.0)))` both → assert `== (0.0, 1.0)` (NOT `(0.0,0.0)`). Then `_polyline_y(0.0, y_min=0.0, y_max=1.0, layout_height=160, margin_top=24, margin_bottom=40)` → assert `== 120.00` (the **baseline**), NOT the panel midpoint `72.00`. Also build the VM (n=5 perfect-process seed) and assert `vm.cost_y_max == 1.0` and `cost_axis_labels` texts are `("0.00","0.50","1.00")` (non-degenerate, NOT `"0.00"/"0.00"/"0.00"`).
+  - **Arithmetic (the discriminator):** plot_height = 160−24−40 = 96; baseline Y = 24 + 96·(1−0) = **120.00**; top Y = 24 + 96·(1−1) = **24.00**; midpoint = 24 + 96·0.5 = **72.00**.
+    - Pre-fix all-zero bounds (`_y_axis_bounds_for_metric` → `(raw_min-0.5, raw_max+0.5) = (-0.5, 0.5)`): value 0 → normalized = (0−(−0.5))/1.0 = 0.5 → Y = **72.00** (mid-panel) → assertion FAILS.
     - Post-fix bounds `[0,1]`: value 0 → normalized = 0 → Y = **120.00** (baseline) → assertion PASSES.
 - `test_rate_axis_labels_present_and_positioned`: assert `rate_axis_labels` texts == `("0.0","0.5","1.0")` and Ys are within the 160-panel plot band.
 - `test_vm_post_init_rejects_malformed_panel_groups`: constructing `ProcessGradeTrendVM` with a `cost_series` containing the wrong metric raises `ValueError`. *(Distinguishes the new guard.)*
@@ -305,6 +336,11 @@ test_grades_legend_names_all_four_series(seeded n=5):
     for label in ("process", "entry", "management", "exit"):
         assert label in r.text            # ASCII slash-separated legend
     assert "·" not in r.text          # NO middle-dot (ASCII discipline #16/#32)
+    # Codex R1-M3: each legend swatch carries its metric-<name> class so the
+    # CSS fill rule resolves (no default/black swatch):
+    for name in ("process_grade_rolling_N", "entry_grade_rolling_N",
+                 "management_grade_rolling_N", "exit_grade_rolling_N"):
+        assert f'process-grade-legend-swatch metric-{name}' in r.text
 
 test_rate_panel_axis_and_line(seeded n=5):
     assert 'data-marker="rate-axis"' in r.text
@@ -327,7 +363,7 @@ test_under_floor_captions_render_for_partial_window(seeded n=3):
     # 1 <= trades < 5 -> rate/cost panels show the caption, NOT a line:
     assert 'data-marker="rate-under-floor"' in r.text
     assert 'data-marker="cost-under-floor"' in r.text
-    assert ">=5 effective samples" in r.text     # ASCII '>=' (NOT the glyph)
+    assert ">=5 effective samples" in r.text     # literal ASCII '>=' (Codex R1-M1: the caption is static template text, NOT the &gt; entity)
     assert "<polyline" not in r.text             # under-floor: no line in ANY panel
 ```
 - **Pre-fix:** the single `<svg>` has no `data-panel`/`data-marker="rate-axis"`/legend/cost-caption → the new assertions FAIL.
@@ -337,14 +373,15 @@ test_under_floor_captions_render_for_partial_window(seeded n=3):
 
 - **GRADES panel** (`<h2>Grades</h2>` + `<svg viewBox="0 0 {{ vm.svg_width }} {{ vm.grades_svg_height }}" ... data-panel="grades">`):
   - **Preserve verbatim** the `grade-axis-labels` `<g data-marker="grade-axis-encoding">` block (the `A=4..F=0` inline-Y math, height `vm.grades_svg_height` == 360 == the old `vm.svg_height`) and the per-trade `<circle ... class="process-grade-marker">` loop (markers built at 360; unchanged).
-  - Add a `<g class="legend" data-marker="grades-legend">` with one `<rect>` swatch (class `metric-<name>`, fill via the `--series-*` token through a `.legend rect.metric-… { fill: var(--series-…) }` rule OR an inline `fill` referencing the token) + one `<text>` ASCII label per grade series — `process` / `entry` / `management` / `exit` (slash separators in any visible joiner text; **never `·`**). **Swatches are `<rect>`/`<line>`, NEVER `<polyline>`** (protects test 6).
+  - Add a `<g class="legend" data-marker="grades-legend">` containing, per grade series, one `<rect class="process-grade-legend-swatch metric-{{ series.metric_name }}" ...>` swatch + one `<text>` ASCII label — `process` / `entry` / `management` / `exit` (slash separators in any visible joiner text; **never `·`**). The swatch fill resolves through the B1 `.process-grade-legend-swatch.metric-<name> { fill: var(--series-<name>) }` rules (Codex R1-M3 — SVG presentation attrs can't take `var()`, so the `metric-<name>` CLASS drives the color, never a raw `fill="var(...)"`). **Swatches are `<rect>`/`<line>`, NEVER `<polyline>`** (protects route test 6's `"<polyline" not in r.text` at n=2).
+  - **Placement (Codex R1-m3 — avoid overlap):** render the legend in a reserved strip near the top of the grades panel — swatches/labels at `y ≈ 12` (inside the `margin_top=24` band, clear of the `A=4` line at `y≈24` and the grade-axis label column at `x=6`), `x` starting in the right half (e.g. `x ≥ 400`) so it does not collide with the axis labels. Exact coordinates are an implementer detail confirmed at the L6 operator gate; the binding rule is: outside the `[0,4]` plot band's left axis-label column and not on top of the top grade line.
   - The 4 grade polylines: `{% for series in vm.grade_series %}{% if series.is_drawable %}{% for seg in series.svg_polyline_segments %}<polyline points="{{ seg }}" fill="none" stroke-width="1.5" data-series="{{ series.metric_name }}" class="process-grade-rolling-line metric-{{ series.metric_name }}" />{% endfor %}{% endif %}{% endfor %}` — **identical hook shape to the current template** (preserves test 5's exact class + `data-series` for `process_grade_rolling_N`).
 - **RATE panel** (`<h2>Disqualifying-violation rate</h2>` + `<svg viewBox="0 0 {{ vm.svg_width }} {{ vm.rate_svg_height }}" ... data-panel="rate">`):
   - `<g class="rate-axis-labels" data-marker="rate-axis">` rendering `{% for y, text in vm.rate_axis_labels %}<text x="6" y="{{ "%.2f"|format(y) }}" class="muted">{{ text }}</text>{% endfor %}`.
-  - `{% for series in vm.rate_series %}{% if series.is_drawable %}{% for seg in series.svg_polyline_segments %}<polyline ... data-series="{{ series.metric_name }}" class="process-grade-rolling-line metric-{{ series.metric_name }}" />{% endfor %}{% else %}<text class="muted" data-marker="rate-under-floor">rolling line draws once the window has &gt;=5 effective samples</text>{% endif %}{% endfor %}` (the `&gt;=` renders ASCII `>=`).
+  - `{% for series in vm.rate_series %}{% if series.is_drawable %}{% for seg in series.svg_polyline_segments %}<polyline ... data-series="{{ series.metric_name }}" class="process-grade-rolling-line metric-{{ series.metric_name }}" />{% endfor %}{% else %}<text class="muted" data-marker="rate-under-floor" ...>rolling line draws once the window has >=5 effective samples</text>{% endif %}{% endfor %}`. **Write the caption with the LITERAL `>=` characters in static template text — NOT the `&gt;` entity and NOT the `≥` glyph** (Codex R1-M1): `>` is valid in element text content and Jinja emits static template text verbatim (it only escapes `{{ }}` expressions), so `r.text` contains the literal `>=5`. (Contrast: the line-12 prose uses the `&ge;` entity deliberately, and `n&lt;20` is escaped because it comes from a `{{ }}` value — neither applies to this static literal.) Caption positioned centered in the panel's plot band.
 - **COST panel** (`<h2>Mistake cost (R per trade)</h2>` + `<svg viewBox="0 0 {{ vm.svg_width }} {{ vm.cost_svg_height }}" ... data-panel="cost">`):
   - `<g class="cost-axis-labels" data-marker="cost-axis">` rendering `vm.cost_axis_labels` (`%.2f` texts).
-  - `{% for series in vm.cost_series %}{% if series.is_drawable %}<polyline ... data-series="{{ series.metric_name }}" .../>{% else %}<text class="muted" data-marker="cost-under-floor">rolling line draws once the window has &gt;=5 effective samples</text>{% endif %}{% endfor %}`.
+  - `{% for series in vm.cost_series %}{% if series.is_drawable %}{% for seg in series.svg_polyline_segments %}<polyline points="{{ seg }}" ... data-series="{{ series.metric_name }}" class="process-grade-rolling-line metric-{{ series.metric_name }}" />{% endfor %}{% else %}<text class="muted" data-marker="cost-under-floor" ...>rolling line draws once the window has >=5 effective samples</text>{% endif %}{% endfor %}`. Same LITERAL `>=` rule as the rate caption (Codex R1-M1).
   - `<text class="muted" data-marker="cost-axis-caption">running total in table below</text>`.
 - The `<h2>Per-metric rolling window (most recent)</h2>` + table (`{% for series in vm.rolling_series %}` over all 7) stay UNCHANGED (so `_total` keeps its `data-metric=` row + the decoupled badges).
 
@@ -435,7 +472,11 @@ TestClient asserts structure only. The operator drives a real browser (`python -
 4. **Cost `[0,1]` fallback (R1-M2)** — `_polyline_y` centers on `y_max==y_min`; `[0,0]` would float a zero line mid-panel with degenerate labels. *Mitigation: `_cost_panel_bounds` returns `(0.0,1.0)` when `max<=0`; B2's baseline-Y arithmetic test (120.00 vs 72.00) discriminates.*
 5. **Nav-date anchor** — must be `last_completed_session` (backward-looking), NOT `action_session_for_run`. *Mitigation: A1's test asserts the anchor directly; the metrics-page `action_session_for_run` line is correctly NOT touched.*
 6. **ASCII (#16/#32)** — legend slash (not `·`), `>=` (not `≥`), `%.2f`. *Mitigation: route tests assert the ASCII forms + `"·" not in r.text`.*
-7. **Day-boundary flake in A1** — compute `expected` from the same helper inside the test. *Mitigation: noted in A1.*
+7. **Day-boundary flake in A1** (Codex R1-M2) — two independent `datetime.now()` calls can straddle a session boundary. *Mitigation: A1 monkeypatches `trades.datetime` to a frozen instant; expected computed from the same instant — deterministic.*
+8. **Under-floor caption raw-HTML mismatch** (Codex R1-M1) — `TestClient` sees raw HTML; the `&gt;` entity would NOT match a `">="` assertion. *Mitigation: B3 writes the caption with LITERAL `>=` static template text (emitted verbatim); the assertion matches.*
+9. **Legend swatch default/black fill** (Codex R1-M3) — SVG presentation attrs can't take `var()`. *Mitigation: B1 adds `.process-grade-legend-swatch` + two-class fill rules; B3 swatches carry the `metric-<name>` class; B1+B3 tests assert both.*
+10. **Weak/duplicate-tolerant CSS token test** (Codex R1-M4 / R1-m2) — a global count passes on same-block duplicates and misses the dark selector. *Mitigation: B1 test slices the `:root` and the combined `html.dark, body.dark` blocks and asserts each token once per block.*
+11. **DB-seeded cost max imprecision** (Codex R1-m1) — rolling-mean max may not equal the intended value. *Mitigation: B2 cost-bounds tests call `_cost_panel_bounds`/`_polyline_y` directly with explicit `RollingLinePoint` values.*
 
 ---
 
