@@ -16,7 +16,7 @@ outcome-attribution analysis. Nothing else in the system grows: there is no new 
 route, no new service module. The feature is a thin capture surface layered on machinery that
 already exists.
 
-The five touch-points, all on the established Phase-6/Phase-7 review path:
+The six touch-points, all on the established Phase-6/Phase-7 review path:
 
 1. **Schema** — migration `0024` adds the nullable, CHECK-constrained `failure_mode` TEXT column to
    `trades`; `EXPECTED_SCHEMA_VERSION` 23 → 24; a strict `_b7_backup_gate` mirrors the
@@ -150,9 +150,13 @@ FAILURE_MODES: frozenset[str] = frozenset({
 
 Display labels (form `<option>` text) are title-cased prose ("Thesis invalidated", "Normal-volatility
 stop", "Market / sector regime shift", "Adverse event shock", "Execution error", "Failed to advance
-(dead money)", "Other"). The label map can live beside the form layer (e.g. a
-`failure_mode_display_choices()` helper in `review.py`, importing `FAILURE_MODES` from `models.py`);
-the stored value is always the snake_case token.
+(dead money)", "Other"). **UI order must be deterministic** — a `frozenset` has NO iteration-order
+guarantee, so the form/labels MUST NOT iterate `FAILURE_MODES` directly. Define an **ordered**
+`FAILURE_MODE_DISPLAY: tuple[tuple[str, str], ...]` (value, label) beside the form layer (e.g. a
+`failure_mode_display_choices()` helper in `review.py`, importing `FAILURE_MODES` from `models.py`),
+with the order above; a test asserts `{v for v, _ in FAILURE_MODE_DISPLAY} == FAILURE_MODES` (no
+drift between the validation set and the display order). The stored value is always the snake_case
+token.
 
 **OQ-4 (operator-binding):** the exact value set and labels are the operator's own attribution
 language. The set above is the recommendation; the operator confirms / edits at writing-plans.
@@ -224,11 +228,22 @@ rejects (or vice-versa). The complete set:
    in all three. **This is the single most error-prone wiring point** (#11 "read-path mapper widened
    in the SAME task as the write-path"). Tests cover BOTH a pre-v21 fixture AND a v21–v23 fixture,
    the latter asserting real backlink values survive (§7.1 #3).
-5. **Write-path widening** — `insert_trade_with_event` SVAI branch (`repos/trades.py:155-181`): the
-   INSERT column list referencing `failure_mode` against a pre-v24 schema raises `no such column`
-   (NULL defaults do NOT cover that case — verbatim the v21 SVAI precedent). Entry-time
-   `failure_mode` is always NULL (it's a review-time field), so the legacy INSERT path simply omits
-   the column; the SVAI branch must tolerate all three schema eras (mirror the read-path detection).
+5. **Write-path widening (TWO write paths, both schema-version-aware).**
+   - **`insert_trade_with_event` SVAI branch** (`repos/trades.py:155-181`): the INSERT column list
+     referencing `failure_mode` against a pre-v24 schema raises `no such column` (NULL defaults do NOT
+     cover that case — verbatim the v21 SVAI precedent). Entry-time `failure_mode` is always NULL (a
+     review-time field), so the legacy INSERT path simply omits the column; the SVAI branch tolerates
+     all three eras.
+   - **`update_trade_review_fields` review UPDATE** (`repos/trades.py:553-595`) — the SAME hazard, and
+     easy to miss: it is explicit-column `UPDATE trades SET … reviewed_at=?, … WHERE id=?`. Existing
+     `complete_trade_review` tests run `run_migrations(target_version=16)` then call the service
+     (`tests/trades/test_review.py:31-36`, `:118-133`) — i.e. against a pre-v24 schema. If the UPDATE
+     unconditionally adds `failure_mode = ?`, those tests raise `no such column` before v24. Require
+     the review UPDATE to be PRAGMA-aware: include the `failure_mode = ?` assignment ONLY when the
+     column exists; if the caller passes a non-`None` `failure_mode` against a pre-v24 schema, raise a
+     clean `ValueError` (NOT a leaked `OperationalError`). `failure_mode=None` against pre-v24 is a
+     no-op (omit the assignment). This keeps the legacy review fixtures green and threads through
+     `complete_trade_review` unchanged.
 
 ### §4.4 The strict backup-gate (v23 → v24)
 
@@ -343,8 +358,9 @@ would reject it (a clean 400, not a 500 from the DB).
 existing-fields rule (a new `vm.foo` needs a safe default on every base-layout VM only if the base
 template dereferences it; `failure_mode_choices` is referenced ONLY in `review_form.html.j2`, so the
 default on `ReviewVM` suffices, but the plan double-checks no base-layout deref). `build_review_vm`
-(`:1224-1370`) populates it from a `failure_mode_display_choices()` helper in `review.py` that pairs
-each `FAILURE_MODES` token with its label.
+(`:1224-1370`) populates it from the ordered `FAILURE_MODE_DISPLAY` tuple (§3.4) via a
+`failure_mode_display_choices()` helper — NOT by iterating the unordered `FAILURE_MODES` frozenset, so
+the `<option>` order is stable across renders.
 
 ### §5.6 Read-back display
 
@@ -439,16 +455,20 @@ attributable to execution"), `mistake_tags` is the **granular catalog** ("specif
    and a trade with a non-NULL `failure_mode` is unaffected in its computed grade; `compute_process_grade`
    has no `failure_mode` parameter; `failure_mode` is absent from `MISTAKE_TAGS` and from the
    mistake-tag frequency aggregation.
-6. **Read-back** — a reviewed trade's chronology `_review_entry` detail includes the failure-mode
-   label; chronology fixtures migrated to v24.
-7. **`complete_trade_review` signature + CLI parity** — the new keyword-only `failure_mode=None`
-   default keeps existing callers green; passing a value writes it atomically with the other 10
-   fields + the `closed → reviewed` transition. The CLI `--failure-mode` option (§5.7): a valid token
-   persists, an invalid token raises a clean `click.ClickException` (not a traceback), and omitting it
-   persists `NULL`.
-8. **ASCII (#16/#32)** — no non-ASCII glyph in any new user-facing string (labels use plain hyphens,
-   not em-dashes, in any CLI path; the form uses `&mdash;` HTML entity, which is browser-rendered, not
-   stdout-encoded).
+6. **Read-back (PRAGMA-aware, both eras)** — a v24 reviewed trade's chronology `_review_entry` detail
+   includes the failure-mode label; AND a **pre-v24** chronology fixture renders WITHOUT raising
+   `no such column` (the PRAGMA fallback in §5.6). No fixture-wide v24 migration is required.
+7. **`complete_trade_review` signature + CLI parity + pre-v24 review UPDATE** — the new keyword-only
+   `failure_mode=None` default keeps existing callers green; passing a value writes it atomically with
+   the other 10 fields + the `closed → reviewed` transition. **Pre-v24 review-UPDATE behavior** (§4.3
+   #5): a `complete_trade_review` against a pre-v24 schema with `failure_mode=None` completes cleanly
+   (the assignment is omitted); with a non-`None` `failure_mode` it raises a clean `ValueError` (not a
+   leaked `OperationalError`); against v24 it persists. The CLI `--failure-mode` option (§5.7): a valid
+   token persists, an invalid token raises a clean `click.ClickException` (not a traceback), and
+   omitting it persists `NULL`.
+8. **ASCII (#16/#32)** — no non-ASCII glyph in any new user-facing string: the form snippet (§5.1) and
+   all labels use plain hyphens (NOT em-dashes / HTML entities), and the CLI help/echo text is plain
+   ASCII (a stdout path — the cp1252 `UnicodeEncodeError` hazard).
 
 ### §7.2 The operator-witnessed browser gate (BINDING — L6)
 
@@ -563,8 +583,8 @@ parity) was surfaced by the round-1 adversarial review and is recommended for V1
   `... or None` (§5.4) + the empty-field-persists-NULL test (§7.1 #4).
 - **base.html.j2 5-VM rule** — `failure_mode_choices` is referenced only in `review_form.html.j2`;
   the plan verifies no base-layout deref (§5.5).
-- **ASCII (#16/#32)** — labels use plain hyphens in any stdout path; the form uses HTML entities
-  (browser-rendered) (§7.1 #8).
+- **ASCII (#16/#32)** — the form snippet + labels + CLI text all use plain hyphens (no em-dash / HTML
+  entity); the CLI path is a cp1252 stdout surface (§7.1 #8).
 - **Commits** — conventional, ZERO `Co-Authored-By`, no `--no-verify`, final `-m` paragraph plain
   prose (trailer-parse hazard); `%(trailers)` verified `[]` before push.
 - **L2/L3** — orthogonality contract (§6) + the explicit phase-isolation carve-out (§2 L3).
