@@ -106,6 +106,23 @@
   </fieldset>
 
   <fieldset>
+    <legend>Why did this trade fail? (outcome attribution - optional)</legend>
+    <label>
+      Primary failure mode
+      <select name="failure_mode">
+        <option value="">- not a loss / not attributed -</option>
+        {% for value, label in vm.failure_mode_choices %}
+          <option value="{{ value }}">{{ label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <p><small>Records the proximate cause of the loss for later attribution
+       analysis. Separate from process grade (how well you executed) and mistake
+       tags (what you did wrong): a clean "good loss" can be an A-grade trade with
+       zero mistakes.</small></p>
+  </fieldset>
+
+  <fieldset>
     <legend>Counterfactual (optional)</legend>
     <label>
       Realized R if plan followed
