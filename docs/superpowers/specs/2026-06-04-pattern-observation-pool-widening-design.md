@@ -298,9 +298,13 @@ MAJOR flagged that the spec previously conflated them):**
 - **Lever 2 -- the OBSERVE-side PRE-FETCH SHED (IMMEDIATE relief; shed-without-expiry).**
   For immediate relief of an existing backlog, the lever is a shorter watch-origin
   observation horizon (`observe_max_pending_window_sessions_watch` /
-  `_post_trigger_window_sessions_watch`; None = inherit the aplus defaults) and/or a
-  per-night observe cap (`observe_watch_cap`) on how many open detections are
-  bar-looked-up. **The mechanism is a PRE-FETCH SKIP, NOT an expiry transition (Codex
+  `_post_trigger_window_sessions_watch`; None = inherit the aplus defaults). **V1 does
+  NOT include a per-night count cap** (a count cap over the `detection_id`-ordered
+  observable scan would deterministically STARVE later detections forever and needs a
+  fairness/selection rule -- Codex R4 MAJOR; deferred to V2, Sec 10). The window shed
+  is age-based + applied UNIFORMLY to every watch-origin detection past the horizon,
+  so it needs no selection rule and cannot starve. **The mechanism is a PRE-FETCH
+  SKIP, NOT an expiry transition (Codex
   R2 MAJOR -- the earlier "transition to expired" claim was WRONG):** the expensive
   operation is `_bar_for_date` (the `get_or_fetch`), and `_advance_status` only runs
   AFTER that fetch; an `expired` row also requires a non-null `ohlc_today_json`
@@ -344,13 +348,12 @@ run_warnings.append({
     "dropped_bucket": "watch",
     "reason": "watch detect pool capped at <N> (cfg.pipeline.detect_watch_pool_cap)",
 })
-# Lever 2 (observe-side shorter watch window / per-night observe cap):
+# Lever 2 (observe-side shorter watch window -- pre-fetch shed):
 run_warnings.append({
     "step": "pattern_observe",
-    "shed_count": <open watch detections not observed this run due to the cap/window>,
+    "shed_count": <open watch detections shed (not fetched/observed) this run>,
     "reason": "watch observe window shortened to <N> sessions "
-              "(cfg.pipeline.observe_max_*_watch)" |
-              "watch observe per-night cap <N> (cfg.pipeline.observe_watch_cap)",
+              "(cfg.pipeline.observe_max_*_watch)",
 })
 ```
 
@@ -473,12 +476,26 @@ is a PROVABLE-aplus ladder, evaluated in order:
    `pattern_evaluations` (migration 0020) PREDATES `pattern_detection_events`
    (migration 0022), so an OLD aplus PE row may have no PDE to read AND a pruned
    candidate. Such a row is aplus-origin BY CONSTRUCTION (every pre-widen pipeline PE
-   was aplus-only). INCLUDE it iff its run's `action_session_date` (or
-   `pipeline_runs.finished_ts`) PREDATES the widen-rollout date. This clause is NOT
-   optional -- it is what satisfies the historical-preservation requirement (Sec 7.1
-   test #5) without leaking any post-widen row.
+   was aplus-only). INCLUDE it iff its run is **strictly before the FIRST widened
+   pipeline run** (Codex R4 MINOR -- a date-only boundary would wrongly exclude a
+   pre-widen run that shares the rollout calendar date). Define the boundary by the
+   first widened `pipeline_run_id` (or its `finished_ts`) where available, falling
+   back to `action_session_date < rollout_date` only for legacy rows lacking a precise
+   timestamp. This clause is NOT optional -- it satisfies the historical-preservation
+   requirement (Sec 7.1 test #5) without leaking any post-widen row.
 4. **Otherwise (post-widen, unprovable): EXCLUDE.** A post-rollout PE row that cannot
    be PROVEN aplus is omitted -- it can never leak a watch row.
+
+**Filter BEFORE `LIMIT` for the review-form cohort (Codex R4 MAJOR).** The review-form
+B.4 cohort selects inside a CTE with `ORDER BY pe.id DESC LIMIT ?`
+(`review_form.py:340-369`) BEFORE joining candidates/trades. The provable-aplus ladder
+MUST be applied INSIDE that cohort CTE, BEFORE `ORDER BY ... LIMIT ?` -- so the query
+picks the last N similar-score APLUS-ORIGIN evaluations. If the filter is applied
+AFTER the CTE, watch rows consume cohort slots and are then discarded, yielding
+fewer/older results than the aplus-only baseline (the widen becomes visible as a
+SHRUNKEN cohort even though no watch row is displayed). The pattern-outcomes tile
+(COUNT-based, no LIMIT) and active_learning queue (also benefit from filtering at the
+source) follow the same "filter at selection, not after" discipline.
 
 **Run-pruning precision (Codex R3 MINOR).** `pattern_evaluations.pipeline_run_id` is
 `ON DELETE CASCADE` (migration 0020), so deleting a pipeline run removes its PE rows
@@ -570,7 +587,11 @@ brainstorm; pin exact files at writing-plans):
    the displayed count vs the aplus-only baseline. Plus the two ladder-edge regressions
    (Sec 6.3): (a) a POST-rollout watch PE with a DELETED candidate -> EXCLUDED; (b) a
    PRE-rollout historical aplus PE with NEITHER candidate NOR PDE -> INCLUDED (the
-   mandatory historical gate).
+   mandatory historical gate). PLUS a cohort filter-before-LIMIT regression (Codex R4):
+   seed MORE aplus rows than the review-form cohort `LIMIT` with watch rows interleaved
+   at higher `pe.id`; assert the post-isolation cohort == the aplus-only baseline (the
+   last N aplus-origin rows), NOT "top N widened then filtered" (which would drop
+   trailing aplus rows the watch rows displaced).
 6. **Backlink-KEEP test (Sec 6.4) -- axis: intended-exception vs blanket-isolation.**
    Enter a trade on a watch ticker. **Intended implementation (backlink KEPT):** the
    entry-form PE-anchor resolves to the watch detection's `pattern_evaluations` row
@@ -640,11 +661,12 @@ what keeps the widen invisible to existing surfaces per L1):
   WITH or BEFORE Slice 1's behavior change reaches the live pipeline** -- otherwise
   the first widened run silently shifts the tile/cohort/queue. (Writing-plans may
   order isolation FIRST so the widen is dark until the surfaces are protected.)
-- **Slice 3 (the dormant cap levers + observe-load instrumentation).** The two cfg
-  knob families (Lever 1 detect cap, Lever 2 observe window/cap; both default None),
-  the selection rule, both #27 audit shapes, and the observe-load measurement probe.
-  Tests: dormant-cap audit-accuracy (both levers), observe-scaling + net-new-fetch
-  counter. Ships dormant; feeds the operator's accept-uncapped decision.
+- **Slice 3 (the dormant relief levers + observe-load instrumentation).** The two cfg
+  knob families (Lever 1 detect-pool cap with its deterministic selection rule; Lever
+  2 observe-side shorter watch window pre-fetch shed; both default None), both #27
+  audit shapes, and the observe-load measurement probe. Tests: dormant-lever
+  audit-accuracy (both), observe-scaling + net-new-fetch counter, repeated-runs-no-
+  refetch for the shed. Ships dormant; feeds the operator's accept-uncapped decision.
 
 Writing-plans sets the final slice ordering; the binding constraint is Slice 2
 (isolation) not lagging Slice 1 (the widen) into the operator-visible surfaces.
@@ -671,8 +693,12 @@ Writing-plans sets the final slice ordering; the binding constraint is Slice 2
 - An aplus/watch FeatureDistributionLog sub-population split.
 - A beyond-Finviz universe net (a separate, larger commissioning -- needs its own
   universe source + bar-fetch budget).
-- Activating the cap (flip the dormant knob) if the live measurement crosses the
-  operator threshold.
+- Activating a relief lever (flip the dormant knob) if the live measurement crosses
+  the operator threshold.
+- A per-night observe COUNT cap (`observe_watch_cap`) -- deferred from V1 (Codex R4):
+  a count cap over the `detection_id`-ordered observable scan needs a fairness/
+  selection rule to avoid starving later detections; if a future need arises it ships
+  with that rule + a no-starvation test. V1's window-based shed needs no selection rule.
 
 ---
 
