@@ -39,7 +39,7 @@
 - **L2 — inline-SVG-only (HARD).** Hand-rolled inline SVG + the existing table. The no-matplotlib / no-JS-chart-lib route test stays green.
 - **L3 — NO schema change.** v24 holds; `EXPECTED_SCHEMA_VERSION` stays 24; no migration; no `swing/data` or `swing/trades` write. (Confirmed at brainstorm — §6.)
 - **L4 — preserve chart invariants:** the A-6 theme-aware `var(--accent)` stroke/fill (dark-mode); the ≥5-effective-sample suppression floor + per-trade markers; the DECOUPLED badge text elements (drawability / window-not-full / confidence-floor as SEPARATE elements, lesson #23 — these live in the *table*, untouched); the per-metric table (it already shows all 7 — the redesign LEANS on it for `_total`).
-- **L5 — nav-date fix:** `build_reviews_pending_vm` sets `session_date = last_completed_session(datetime.now()).isoformat()` (the backward-looking topbar anchor every other base VM uses), NOT `action_session_for_run`. One-line VM change + a render-assertion test.
+- **L5 — nav-date fix:** `build_reviews_pending_vm` sets `session_date = last_completed_session(datetime.now()).isoformat()` (the backward-looking anchor — correct for backward-looking review content, matching the sibling `build_review_vm`; §4), NOT `action_session_for_run`. One-line VM change + a render-assertion test.
 - **L6 — binding gate = operator browser-witness:** the redesigned chart is legible (no plunge-lines; each series readable against a meaningful scale) in BOTH light + dark mode; the empty/under-floor DEFAULT state is witnessed (memory `feedback_seeded_gate_masks_default_state`); `/reviews/pending` shows the date matching the other pages. TestClient is structural-only; the legibility judgment is the operator's.
 
 ---
@@ -170,7 +170,7 @@ session_date=last_completed_session(datetime.now()).isoformat(),
 TestClient asserts structure only. The operator drives a real browser and confirms:
 1. **Legibility, light + dark:** each panel reads against its own labeled scale; no plunge-lines; the 4 grade colors are distinguishable and the legend is correct; dark mode shows all lines (the `--series-*` + `--accent` tokens resolve).
 2. **The empty/under-floor DEFAULT state** (≤4 reviewed trades): axes + process-grade markers + the under-floor captions render — no blank box (the seeded-gate-masks lesson).
-3. **`/reviews/pending`** shows the topbar date matching the other pages.
+3. **`/reviews/pending`** shows a non-empty topbar date (the `last_completed_session` ISO date), no longer blank.
 Merge is blocked until the operator confirms all three.
 
 ---
