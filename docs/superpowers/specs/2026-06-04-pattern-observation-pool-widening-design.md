@@ -392,8 +392,13 @@ watch on prior days, aplus on others). Under the wider pool a ticker can be `wat
 in run 1 and `aplus` in run 2 of the same `detection_date`. Because the unique index
 is bucket-agnostic AND the detection facts (`finviz_screen_state`,
 `structural_anchors_json`, `composite_score`, ...) are LOCKED at the FIRST detection
-(append-only invariant, migration 0022:8-13), run 2 finds the existing row and SKIPS
-(SELECT-then-skip) -- it does NOT rewrite the locked provenance.
+(append-only invariant, migration 0022:8-13), run 2 finds the existing detection event
+and SKIPS the DETECTION-EVENT append (the SELECT-then-skip at `runner.py:2239-2245`) --
+it does NOT rewrite the locked provenance. (Precision for writing-plans: run 2 may
+still write a per-run `pattern_evaluations` row -- that table's idempotency is keyed
+per `pipeline_run_id` and a same-day re-run is a distinct run id; that is acceptable
+because first-detection-wins applies to the LOCKED DETECTION facts/provenance in
+`pattern_detection_events`, not to the per-run PE verdict rows.)
 
 **Decision: first-detection-wins IS the correct V1 semantic.** It matches the
 append-only forward-walk invariant: the forward walk begins from the FIRST detection's
