@@ -808,3 +808,29 @@ def test_invalid_planned_risk_budget_excludes_trade_from_realized_R(
     assert result.n_closed == 2
     # realized_R cell has 1 sample (only the valid trade).
     assert result.realized_R.sample_n == 1
+
+
+def test_failure_mode_excluded_from_mistake_tag_frequency_metric(
+    conn: sqlite3.Connection,
+) -> None:
+    # A reviewed trade carrying BOTH a mistake tag AND a failure_mode must NOT
+    # leak the failure_mode token into mistake_tag_frequency.
+    from swing.data.models import FAILURE_MODES
+    _seed_full_trade(
+        conn, trade_id=1, ticker="ORTH",
+        entry_price=10.0, initial_stop=9.0, initial_shares=100, exit_price=11.0,
+        reviewed_at="2026-04-15T09:30:00",
+        mistake_tags=json.dumps(["SOLD_TOO_EARLY"]),
+    )
+    # The metric runs against v24 here (the test DB is migrated to HEAD), so the
+    # failure_mode column exists; stamp it directly on the seeded reviewed row.
+    conn.execute(
+        "UPDATE trades SET failure_mode = 'execution_error' WHERE id = 1")
+    result = compute_trade_process_metrics(conn, hypothesis_label="A+ baseline")
+    freq = result.mistake_tag_frequency
+    # PRE-FIX (hypothetical leak): "execution_error" would appear as a key.
+    # POST-FIX: the metric only sees mistake_tags -> the failure_mode token is absent.
+    assert "execution_error" in FAILURE_MODES  # sanity: it IS a failure-mode token
+    assert "execution_error" not in freq
+    assert set(freq.keys()).isdisjoint(FAILURE_MODES)
+    assert "SOLD_TOO_EARLY" in freq  # the real mistake tag still counts
