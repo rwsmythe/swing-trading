@@ -415,3 +415,22 @@ def test_cli_invalid_failure_mode_is_clean_clickexception(tmp_path: Path) -> Non
     # pre-fix UsageError does NOT satisfy it.
     assert res.exit_code == 1
     assert "Invalid --failure-mode" in res.output
+
+
+def test_cli_empty_string_failure_mode_normalizes_to_null(tmp_path: Path) -> None:
+    # L5 parity (Codex R1 MAJOR): an explicit `--failure-mode ""` is "no
+    # attribution" -> NULL, NOT an invalid-token error. PRE-FIX: the membership
+    # check rejects "" -> exit 1 "Invalid --failure-mode". POST-FIX: `... or None`
+    # normalizes "" -> None -> exit 0 + NULL persisted.
+    runner, cfg, db_path = _setup(tmp_path)
+    trade_id = _seed_closed_trade(db_path)
+    res = runner.invoke(main, [
+        "--config", str(cfg), "trade", "review", "--trade-id", str(trade_id),
+        "--entry-grade", "A", "--management-grade", "A", "--exit-grade", "A",
+        "--mistake-tags", "none_observed", "--lesson-learned", "clean",
+        "--failure-mode", ""])
+    assert res.exit_code == 0, res.output
+    from swing.data.db import connect
+    assert connect(db_path).execute(
+        "SELECT failure_mode FROM trades WHERE id=?",
+        (trade_id,)).fetchone()[0] is None

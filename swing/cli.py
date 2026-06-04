@@ -1453,6 +1453,9 @@ def trade_review_cmd(
             raise click.ClickException(str(exc)) from exc
 
         from swing.data.models import FAILURE_MODES
+        # L5 parity with the web POST (`... or None`): an explicit empty
+        # --failure-mode "" is "no attribution" (-> NULL), NOT an invalid token.
+        failure_mode = failure_mode or None
         if failure_mode is not None and failure_mode not in FAILURE_MODES:
             raise click.ClickException(
                 f"Invalid --failure-mode {failure_mode!r}; choose one of "
