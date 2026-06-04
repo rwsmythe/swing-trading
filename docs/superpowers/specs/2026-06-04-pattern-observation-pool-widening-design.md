@@ -295,18 +295,30 @@ MAJOR flagged that the spec previously conflated them):**
   mechanism. If the operator flips it on because a live night tripped the
   `OhlcvCache` breaker, it will NOT relieve that night -- the backlog runs off over
   ~90 sessions.
-- **Lever 2 -- the OBSERVE-side window/cap (IMMEDIATE relief).** For immediate
-  relief of an existing backlog, the lever is a shorter watch-origin observation
-  window (`observe_max_pending_window_sessions_watch` /
+- **Lever 2 -- the OBSERVE-side PRE-FETCH SHED (IMMEDIATE relief; shed-without-expiry).**
+  For immediate relief of an existing backlog, the lever is a shorter watch-origin
+  observation horizon (`observe_max_pending_window_sessions_watch` /
   `_post_trigger_window_sessions_watch`; None = inherit the aplus defaults) and/or a
-  per-night observe cap on how many open detections are bar-looked-up. A shorter
-  watch window EXPIRES existing watch-origin detections sooner (they leave the open
-  set), cutting the daily `_bar_for_date` volume on the NEXT run -- the only lever
-  that shrinks an already-accumulated backlog. The runoff semantic: shortening the
-  window does NOT delete or mutate locked observations (append-only / L5); it changes
-  the OPEN-set membership predicate so already-past-horizon detections are no longer
-  re-observed (they transition to `expired` via the existing `_advance_status`
-  horizon path -- no new terminal state, no schema change).
+  per-night observe cap (`observe_watch_cap`) on how many open detections are
+  bar-looked-up. **The mechanism is a PRE-FETCH SKIP, NOT an expiry transition (Codex
+  R2 MAJOR -- the earlier "transition to expired" claim was WRONG):** the expensive
+  operation is `_bar_for_date` (the `get_or_fetch`), and `_advance_status` only runs
+  AFTER that fetch; an `expired` row also requires a non-null `ohlc_today_json`
+  (migration 0022 NOT NULL), so a no-fetch expiry is impossible without a schema
+  change (out of scope, D4). Instead, the shed guard sits in the observe loop BEFORE
+  `_bar_for_date` (or as an age filter inside `list_observable_detections`): for a
+  watch-origin detection (bucket read from the detection's locked
+  `finviz_screen_state`) whose `sessions_since_detection` exceeds the shortened
+  horizon, **SKIP it -- no fetch, no observation row, no terminal state.** The
+  detection remains nominally "open" (its last real observation is its final record),
+  but it is no longer FETCHED -- which is exactly the cost being relieved, on the very
+  next run. The trade-off (stated honestly): shed detections never receive a clean
+  terminal `expired` row under V1's no-schema-change constraint. (The alternative
+  semantic -- spend one more fetch per shed detection to write a real terminal
+  `expired` row, relief starting the run AFTER -- is documented but NOT recommended:
+  it pays the fetch it is trying to avoid.) Repeated runs cheaply re-skip the same
+  shed detections (no fetch); a regression test asserts repeated runs do not re-fetch
+  them.
 
 **The selection rule** (Lever 1, when active). Deterministic + documented (e.g. rank
 watch tickers by `rs_rank` ascending, take the top N) -- NOT random (reproducibility;
@@ -437,14 +449,36 @@ pattern-outcomes + review-form cohort queries ALREADY join `candidates` (for the
 trades backlink), so adding the aplus filter is a localized SQL change; the
 active_learning queue query (`WHERE pipeline_run_id = ?`) gains a `candidates` join.
 
-**Run-pruning edge (writing-plans SQL design point).** A `candidates` row can be
-absent if its run was pruned. But every `pattern_evaluations` row that exists BEFORE
-the widen ships is aplus-origin by construction (forward-walk; the widen only adds
-watch rows from ship date forward). So the isolation predicate is "include iff
-origin-candidate `bucket = 'aplus'`"; rows whose candidate is unavailable are
-historical aplus-origin and SHOULD be included. Writing-plans pins the exact SQL
-(e.g. `LEFT JOIN candidates ... WHERE c.bucket = 'aplus' OR c.id IS NULL`), with a
-discriminating test for both the present-candidate and pruned-candidate paths.
+**Run-pruning edge -- the discriminator MUST be provable, NOT a NULL fallback (Codex
+R2 MAJOR).** A `candidates` row can be absent if its run was pruned. A naive
+`WHERE c.bucket = 'aplus' OR c.id IS NULL` is UNSOUND post-ship: a future
+watch-origin PE row that later loses its candidate (pruning/retention) would match
+`c.id IS NULL` and LEAK into the supposedly aplus-only aggregate -- the Round-1 leak
+reappears on a delay. The isolation predicate must instead be PROVABLY aplus, with
+"unknown" defaulting to EXCLUDE (never leak watch into an aplus aggregate):
+
+- **Primary discriminator (robust to run pruning): the locked bucket in
+  `pattern_detection_events.finviz_screen_state`.** The detection event SURVIVES run
+  pruning (its `pipeline_run_id` FK is `ON DELETE SET NULL`, the row persists) and its
+  `finviz_screen_state` JSON carries the bucket LOCKED at detection (Sec 3.4). Join
+  `pattern_evaluations -> pattern_detection_events` on
+  (`pipeline_run_id`-or-(`ticker`,`detection_date`,`pattern_class`)) and require the
+  JSON bucket == `aplus`. This is robust precisely where the candidates join is not.
+- **Fast path where the candidate still exists:** `candidates.bucket = 'aplus'` (the
+  cheaper join; equivalent result while the candidate row is present).
+- **Unknown (neither a live candidate NOR a matching detection event -- the rare #27
+  desync): EXCLUDE.** A PE row that cannot be PROVEN aplus-origin is omitted from the
+  aplus-only aggregate/queue. Conservative: it can never leak a watch row; the cost is
+  dropping an unprovable-but-historically-aplus row from a denominator (acceptable --
+  pre-ship aplus rows have detection events too, so this is genuinely rare).
+- **Simpler alternative (writing-plans may choose): a ship-date gate** -- candidate-
+  missing rows count as aplus ONLY if their `pipeline_runs.finished_ts` predates the
+  widen rollout date. More fragile (hardcoded date) than the locked-JSON discriminator;
+  documented as a fallback, not the recommendation.
+
+Writing-plans pins the exact SQL + adds a **post-ship watch + deleted-candidate
+regression test** (a watch PE whose candidate is then removed must STILL be excluded
+from every isolated aggregate).
 
 ### 6.4 Why the by-ticker/by-id backlinks are KEPT (deliberate exception to "isolate all")
 
@@ -478,11 +512,17 @@ detections. (Statement only; not enforced in V1.)
 
 ### 7.1 Test rework (per `feedback_verify_regression_test_arithmetic`)
 
-Every new/changed test must DISTINGUISH the aplus-only path from the aplus+watch path
--- the asserted value is computed under BOTH paths and they MUST differ (so the test
-actually exercises the widen, not a tautology). Each bullet states both expectations
-explicitly. Test surfaces (enumerate via grep at brainstorm; pin exact files at
-writing-plans):
+Per `feedback_verify_regression_test_arithmetic`, each test must DISTINGUISH the
+specific CHANGE it guards -- the asserted value computed under BOTH states of that
+change, which MUST differ (no tautology). NOTE the discriminating AXIS differs by test
+(Codex R2 MAJOR -- the earlier blanket "every test distinguishes aplus-only vs
+widened" claim overreached): tests 1/2/3/7 discriminate the **aplus-only vs
+aplus+watch** behavior axis; test 4 (empty-pool, skip-only candidates) discriminates
+the **audit field-name/shape** axis (both pool paths do zero detect work, so the
+discriminator is the renamed/restructured warning, NOT widen behavior); tests 5/6
+discriminate the **pre-isolation vs post-isolation** axis. Each bullet names its axis
++ both expectations. Test surfaces (enumerate via grep at brainstorm; pin exact files
+at writing-plans):
 
 1. **Detect-pool widen test.** Fixture: A aplus + W watch + S skip candidates, each
    producing a detectable window. **aplus-only:** detect loop processes A tickers ->
@@ -678,8 +718,9 @@ trade-anchor behavior).
   #24/#26).
 - **ASCII discipline (#16 / #32).** All new text in this spec + the planned code is
   ASCII (no non-ASCII glyphs in user-facing `print`/`click.echo`/log paths).
-- **`feedback_verify_regression_test_arithmetic`.** Every test count computed under
-  BOTH paths (Sec 7.1).
+- **`feedback_verify_regression_test_arithmetic`.** Each test computes its asserted
+  value under BOTH states of the CHANGE it guards (the discriminating axis is named
+  per test -- widen-behavior, audit-shape, or pre/post-isolation; Sec 7.1).
 - **ZERO `Co-Authored-By`; no `--no-verify`; final `-m` paragraph plain prose;** verify
   `git log -1 --format='%(trailers)'` is `[]` before any push
   (`feedback_commit_message_trailer_parse_hazard`).
