@@ -21,9 +21,10 @@ The five touch-points, all on the established Phase-6/Phase-7 review path:
 1. **Schema** — migration `0024` adds the nullable, CHECK-constrained `failure_mode` TEXT column to
    `trades`; `EXPECTED_SCHEMA_VERSION` 23 → 24; a strict `_b7_backup_gate` mirrors the
    `_phase14_sb3_backup_gate` shape.
-2. **Model + read mapper** — `Trade.failure_mode` field + `__post_init__` frozenset validation
-   ([`swing/data/models.py`](../../../swing/data/models.py)); `_row_to_trade` + `_TRADE_SELECT_COLS`
-   widened, with a `_TRADE_SELECT_COLS_PRE_V24` legacy projection for pre-v24 fixtures
+2. **Model + read mapper** — the canonical `FAILURE_MODES` frozenset + `Trade.failure_mode` field +
+   `__post_init__` validation, BOTH in [`swing/data/models.py`](../../../swing/data/models.py) (§3.4
+   — avoids the `review.py`→`models.py` import cycle); `_row_to_trade` widened + a **three-era**
+   `_trade_select_cols()` branch (v24 / v21–v23 / pre-v21)
    ([`swing/data/repos/trades.py:478-550`, `:57-119`](../../../swing/data/repos/trades.py)).
 3. **Persistence** — `update_trade_review_fields` (repo, `:553-595`) + `complete_trade_review`
    (service, [`swing/trades/review.py:550-618`](../../../swing/trades/review.py)) each gain a
@@ -36,6 +37,11 @@ The five touch-points, all on the established Phase-6/Phase-7 review path:
 5. **Read-back** — `_review_entry`
    ([`swing/web/view_models/trade_chronology.py:157-187`](../../../swing/web/view_models/trade_chronology.py))
    folds `failure_mode` into the per-trade chronology review entry's detail string.
+6. **CLI parity** — the per-trade-review CLI command
+   ([`swing/cli.py:1400-1483`](../../../swing/cli.py)) ALSO calls `complete_trade_review` (`:1460`)
+   and enforces single-review-per-trade (`:1434-1438`). It gains an optional `--failure-mode` option
+   so a CLI-reviewed losing trade can capture its attribution; without it, a CLI-completed review is
+   a **permanent** capture gap (the trade can never be re-reviewed). See §5.7 + OQ-8.
 
 The vocabulary itself (§3) is the single substantive design question; everything else is mechanical
 wiring against a well-trodden path.
@@ -54,8 +60,11 @@ wiring against a well-trodden path.
   the separation.
 - **L3 — Phase-isolation carve-out (EXPLICIT).** B-7 writes into the normally-read-only
   `swing/trades/review.py` and `swing/data/` trees: a new nullable `trades` column, migration `0024`,
-  the `Trade` dataclass field + validator, the `_row_to_trade`/`_TRADE_SELECT_COLS` read path, and the
-  `complete_trade_review` / `update_trade_review_fields` signatures. This carve-out is scoped exactly
+  the `Trade` dataclass field + `FAILURE_MODES` constant + validator (in `models.py`), the
+  `_row_to_trade`/`_trade_select_cols` read path, and the `complete_trade_review` /
+  `update_trade_review_fields` signatures. The carve-out ALSO extends to **`swing/cli.py`** (the
+  per-trade-review command gains `--failure-mode` — §5.7) and the web layer (`routes/trades.py`,
+  `view_models/trades.py`, `view_models/trade_chronology.py`, the templates). This is scoped exactly
   as Phase 6 scoped the original review carve-out (per the Invariants block: "6 added
   `swing/trades/review.py` … + 10 nullable trade-row fields"). Default read-only posture holds
   everywhere else.
@@ -118,8 +127,16 @@ so keeping both is doctrine-faithful, not redundant.
 
 ### §3.4 The exact frozenset (the canonical Python mirror)
 
+**Placement (resolves an import-cycle hazard):** the canonical `FAILURE_MODES` frozenset lives in
+**`swing/data/models.py`** — NOT in `swing/trades/review.py`. `review.py` already imports `Trade`
+*from* `models.py` (`swing/trades/review.py:23`); if the constant lived in `review.py` and
+`Trade.__post_init__` (in `models.py`) imported it back, that is a circular import. Placing it in
+`models.py` also matches the repo's established discipline of co-locating schema-CHECK mirrors with
+the dataclass (`models.py:9-20`). `review.py` (and the web layer) import `FAILURE_MODES` *from*
+`models.py` for form-choice rendering and POST validation.
+
 ```python
-# swing/trades/review.py
+# swing/data/models.py  (co-located with the Trade dataclass + the Phase-6 CHECK mirrors)
 FAILURE_MODES: frozenset[str] = frozenset({
     "thesis_invalidated",
     "normal_volatility_stop",
@@ -133,7 +150,9 @@ FAILURE_MODES: frozenset[str] = frozenset({
 
 Display labels (form `<option>` text) are title-cased prose ("Thesis invalidated", "Normal-volatility
 stop", "Market / sector regime shift", "Adverse event shock", "Execution error", "Failed to advance
-(dead money)", "Other"). The stored value is always the snake_case token.
+(dead money)", "Other"). The label map can live beside the form layer (e.g. a
+`failure_mode_display_choices()` helper in `review.py`, importing `FAILURE_MODES` from `models.py`);
+the stored value is always the snake_case token.
 
 **OQ-4 (operator-binding):** the exact value set and labels are the operator's own attribution
 language. The set above is the recommendation; the operator confirms / edits at writing-plans.
@@ -180,22 +199,36 @@ together in a single task, or a partial landing leaves a schema that accepts val
 rejects (or vice-versa). The complete set:
 
 1. **Migration 0024** — the CHECK enum (the 7 tokens) — §4.1.
-2. **`FAILURE_MODES` frozenset** — `swing/trades/review.py` — the canonical Python mirror (§3.4).
+2. **`FAILURE_MODES` frozenset** — `swing/data/models.py` (NOT `review.py` — §3.4, import-cycle) —
+   the canonical Python mirror; the migration's CHECK list and this frozenset are asserted identical
+   by a test (§7.1 #2).
 3. **`Trade.failure_mode: str | None = None`** + `__post_init__` validation against `FAILURE_MODES`
-   — `swing/data/models.py:214-265` (append after the Phase-6 review block). `Literal[...]` is NOT
-   runtime-enforced (gotcha) → an explicit frozenset check is required for this external/CLI-fed
-   field.
-4. **Read-path widening** — `_row_to_trade` (`repos/trades.py:478-550`) reads the new column;
-   `_TRADE_SELECT_COLS` appends `failure_mode`; a new `_TRADE_SELECT_COLS_PRE_V24` legacy projection
-   emits `NULL AS failure_mode`; `_trade_select_cols` (`:105-119`) gains a `failure_mode`-presence
-   branch (PRAGMA `table_info` detection) so the ~140 pre-v21/pre-v24 fixture callsites keep reading
-   positionally. **This is the single most error-prone wiring point** — the brief's #11 "read-path
-   `_row_to_*` mapper widened in the SAME task as the write-path" is exactly this.
+   — `swing/data/models.py:214-265` (append after the Phase-6 review block; the constant is defined
+   in the same module). `Literal[...]` is NOT runtime-enforced (gotcha) → an explicit frozenset check
+   is required for this external/CLI-fed field.
+4. **Read-path widening — a THREE-era `_trade_select_cols()`.** The repo ALREADY branches on the v21
+   columns: `_TRADE_SELECT_COLS` (full) vs `_TRADE_SELECT_COLS_PRE_V21` (which emits
+   `NULL AS candidate_id, NULL AS pattern_evaluation_id`) — `repos/trades.py:57-119`. Adding
+   `failure_mode` at v24 creates a THIRD era, so a two-projection design is insufficient. The three
+   eras the `_trade_select_cols()` PRAGMA-`table_info` switch must cover:
+   - **v24+** (`failure_mode` present) → full projection incl. `failure_mode` + the real v21 backlinks.
+   - **v21–v23** (`candidate_id`/`pattern_evaluation_id` present, `failure_mode` absent) → real
+     backlink values + `NULL AS failure_mode`. **This era must NOT null-out the v21 backlinks** (a
+     naive single PRE projection would lose real `candidate_id`/`pattern_evaluation_id` values).
+   - **pre-v21** (none present) → `NULL AS candidate_id, NULL AS pattern_evaluation_id,
+     NULL AS failure_mode`.
+   Concretely: detect `failure_mode` AND the v21 columns independently; compose the projection. Add a
+   `failure_mode`-bearing column to `_TRADE_SELECT_COLS`, a `_TRADE_SELECT_COLS_V21_TO_V23` projection
+   (real backlinks + `NULL AS failure_mode`), and keep `_TRADE_SELECT_COLS_PRE_V21` extended with
+   `NULL AS failure_mode`. `_row_to_trade` (`repos/trades.py:478-550`) reads the new positional column
+   in all three. **This is the single most error-prone wiring point** (#11 "read-path mapper widened
+   in the SAME task as the write-path"). Tests cover BOTH a pre-v21 fixture AND a v21–v23 fixture,
+   the latter asserting real backlink values survive (§7.1 #3).
 5. **Write-path widening** — `insert_trade_with_event` SVAI branch (`repos/trades.py:155-181`): the
    INSERT column list referencing `failure_mode` against a pre-v24 schema raises `no such column`
    (NULL defaults do NOT cover that case — verbatim the v21 SVAI precedent). Entry-time
    `failure_mode` is always NULL (it's a review-time field), so the legacy INSERT path simply omits
-   the column; the SVAI branch must still tolerate both schemas.
+   the column; the SVAI branch must tolerate all three schema eras (mirror the read-path detection).
 
 ### §4.4 The strict backup-gate (v23 → v24)
 
@@ -228,11 +261,11 @@ signal it answers a different question than the grades/tags:
 
 ```html
 <fieldset>
-  <legend>Why did this trade fail? (outcome attribution — optional)</legend>
+  <legend>Why did this trade fail? (outcome attribution - optional)</legend>
   <label>
     Primary failure mode
     <select name="failure_mode">
-      <option value="">&mdash; not a loss / not attributed &mdash;</option>
+      <option value="">- not a loss / not attributed -</option>
       {% for value, label in vm.failure_mode_choices %}
         <option value="{{ value }}">{{ label }}</option>
       {% endfor %}
@@ -240,7 +273,7 @@ signal it answers a different question than the grades/tags:
   </label>
   <p><small>Records the proximate cause of the loss for later attribution analysis.
      Separate from process grade (how well you executed) and mistake tags (what you
-     did wrong) — a clean "good loss" can be an A-grade trade with zero mistakes.</small></p>
+     did wrong): a clean "good loss" can be an A-grade trade with zero mistakes.</small></p>
 </fieldset>
 ```
 
@@ -255,9 +288,19 @@ emphasizing it for losses; winners simply leave it blank → `NULL`.** This is t
 (a) — "nullable + only solicited for losing/scratch trades" — implemented WITHOUT hard-gating the
 control's visibility on a derived R outcome. Rationale: gating visibility on
 `actual_realized_R_effective <= 0` introduces a derivation dependency and a GET/POST TOCTOU surface
-for no real benefit — a `NULL` from a winner and a `NULL` from an un-classified loss are
-indistinguishable AND identical in meaning ("no failure attributed"). The helper text steers the
-operator; the data model stays trivially clean.
+for little benefit.
+
+**The explicit tradeoff (honest accounting, OQ-2).** Under this recommendation a `NULL` is
+*overloaded*: it means EITHER "winner / not a loss" OR "loss the operator did not classify." For the
+follow-on analysis surface (OQ-5) that ambiguity matters — a failure-mode distribution cannot tell a
+clean winner from an unclassified loss by the column alone. Three ways to resolve it, in increasing
+cost: (i) **leave it** — the analysis surface can disambiguate by joining on the outcome
+(`actual_realized_R_effective`): a `NULL` failure_mode on a losing trade IS an "unclassified loss",
+on a winner it is "not a loss". This keeps the column clean and is the recommendation. (ii) Make
+failure-mode **required on losses** (OQ-7) — then a losing trade can never be an unclassified `NULL`.
+(iii) Add an explicit `not_a_loss` sentinel (rejected, §5.2.1). The recommendation is (i): keep
+`NULL` + derive the winner/loss split from the realized-R outcome at analysis time, NOT from the
+failure_mode column. The helper text steers the operator; the data model stays trivially clean.
 
 #### §5.2.1 Rejected: an explicit `not_a_loss` sentinel
 
@@ -307,12 +350,36 @@ each `FAILURE_MODES` token with its label.
 
 `_review_entry` ([`trade_chronology.py:157-187`](../../../swing/web/view_models/trade_chronology.py))
 is the per-trade read-back: it SELECTs the review columns for a reviewed trade into the chronology
-stream. Add `failure_mode` to its SELECT and fold it into the `detail` string (e.g.
-`detail = "; ".join(b for b in (failure_mode_label, lesson, tag_display) if b)`). Because this SELECT
-names explicit columns (not via `_trade_select_cols`), it is v24-coupled; chronology test fixtures
-must migrate to v24 (§7). The review FORM page (`review.html.j2`) is NOT a read-back surface — it
-renders only pre-review (build_review_vm returns None once reviewed), so the chronology is the
-correct single display target for a completed attribution.
+stream. It names explicit columns (NOT via `_trade_select_cols`), so a literal
+`SELECT … failure_mode …` would throw `no such column: failure_mode` against any pre-v24 chronology
+fixture or older DB read. **Make `_review_entry` PRAGMA-aware** — exactly as the trade read-path is:
+detect `failure_mode` via `PRAGMA table_info(trades)` and SELECT either `failure_mode` or
+`NULL AS failure_mode`. This keeps chronology working across schema eras with no fixture-wide
+migration burden (the weak "just migrate all chronology fixtures to v24" mitigation is rejected — it
+silently couples an unrelated read surface to v24 and would surface as `no such column` the moment a
+pre-v24 fixture is added). Fold the value into the `detail` string (e.g.
+`detail = "; ".join(b for b in (failure_mode_label, lesson, tag_display) if b)`). A test asserts a
+pre-v24 chronology fixture still renders (no raise) and a v24 reviewed trade shows the label (§7.1 #6).
+The review FORM page (`review.html.j2`) is NOT a read-back surface — it renders only pre-review
+(`build_review_vm` returns None once reviewed), so the chronology is the correct single display
+target for a completed attribution.
+
+### §5.7 CLI parity (closes a permanent capture gap)
+
+The per-trade-review CLI command ([`swing/cli.py:1400-1483`](../../../swing/cli.py)) calls the same
+`complete_trade_review` service (`:1460`) and enforces single-review-per-trade (`:1434-1438`). If
+B-7 only wires the web form and the CLI passes the `failure_mode=None` default, then **every
+CLI-completed review permanently loses the ability to capture a failure mode** — the trade is already
+`reviewed` and cannot be reviewed again. That is a silent data-loss path, not a benign deferral.
+
+**Recommended (V1):** add an optional `--failure-mode` click option to the command, validated against
+`FAILURE_MODES` (wrap the `ValueError` at the CLI boundary as a `click.ClickException` per the
+service-layer-ValueError gotcha), passed through as `failure_mode=<value or None>`. This is a small,
+in-scope addition (the field already threads through `complete_trade_review`) and keeps the CLI and
+web capture surfaces at parity. **Flagged as OQ-8** for operator sign-off — if the operator reviews
+exclusively via the browser, the option can be deferred, but the spec records the gap explicitly
+rather than letting it pass as "green by default." ASCII discipline (#16/#32): the CLI help text and
+any echo use plain hyphens (no em-dash / non-ASCII glyph — this is a stdout path).
 
 ---
 
@@ -360,9 +427,11 @@ attributable to execution"), `mistake_tags` is the **granular catalog** ("specif
    cleanly; a non-member raises (SQL CHECK) AND `Trade(failure_mode="bogus")` raises (`__post_init__`).
    The two vocabularies are asserted identical (the migration's CHECK list == `FAILURE_MODES`) via a
    test that parses the migration or asserts the round-trip for all 7.
-3. **Read-mapper parity** — `_row_to_trade` returns `failure_mode` for a v24 row; a pre-v24 fixture
-   (run_migrations target < 24) reads `failure_mode = None` via the `_TRADE_SELECT_COLS_PRE_V24`
-   projection (no `no such column` raise).
+3. **Read-mapper parity across THREE eras** — `_row_to_trade` returns `failure_mode` for a v24 row;
+   a **v21–v23** fixture reads `failure_mode = None` AND preserves its real
+   `candidate_id`/`pattern_evaluation_id` backlink values (the era-trap: a naive single PRE projection
+   would null them); a **pre-v21** fixture reads all three as `None`. No `no such column` raise in any
+   era (§4.3 #4).
 4. **POST persistence ladder** — empty submit → `NULL` persisted (the `... or None` empty-field
    test); a valid token → stored; an invalid token → `400` + re-render (NOT 500). Success → `204` +
    `HX-Redirect`.
@@ -372,9 +441,11 @@ attributable to execution"), `mistake_tags` is the **granular catalog** ("specif
    mistake-tag frequency aggregation.
 6. **Read-back** — a reviewed trade's chronology `_review_entry` detail includes the failure-mode
    label; chronology fixtures migrated to v24.
-7. **`complete_trade_review` signature** — the new keyword-only `failure_mode=None` default keeps
-   existing CLI callers green; passing a value writes it atomically with the other 10 fields + the
-   `closed → reviewed` transition.
+7. **`complete_trade_review` signature + CLI parity** — the new keyword-only `failure_mode=None`
+   default keeps existing callers green; passing a value writes it atomically with the other 10
+   fields + the `closed → reviewed` transition. The CLI `--failure-mode` option (§5.7): a valid token
+   persists, an invalid token raises a clean `click.ClickException` (not a traceback), and omitting it
+   persists `NULL`.
 8. **ASCII (#16/#32)** — no non-ASCII glyph in any new user-facing string (labels use plain hyphens,
    not em-dashes, in any CLI path; the form uses `&mdash;` HTML entity, which is browser-rendered, not
    stdout-encoded).
@@ -406,7 +477,12 @@ OriginGuard 403; `204`+`HX-Redirect` vs `303`-swallow). The binding acceptance g
   UPDATE schema_version SET version = 24; COMMIT;` (gotcha #9).
 - **Strict backup-gate** — `_b7_backup_gate`, `current_version == 23 AND target_version >= 24`,
   mirroring `_phase14_sb3_backup_gate`. Re-exercises the backup machinery dormant since v23.
-- **No multi-version jump** — v24 only (OUT-of-scope: any multi-step walk; strict gate enforces it).
+- **Backup-gate scope (correction).** The strict equality (`current_version == 23`) means the gate
+  fires ONLY on the exact one-step v23 → v24 migration — a real production v23 DB. It does NOT
+  *enforce* single-stepping; on the contrary, a fresh DB or a pre-v23 baseline walking many
+  migrations at once **bypasses** this gate by design (it never equals 23 at the moment 0024 runs),
+  exactly as every prior phase gate behaves (Phase 9/12/13/14 precedent). The migration itself is a
+  single v23 → v24 step; there is no multi-version 0024.
 - **Operator live-DB migration** — the operator's live v23 DB migrates to v24 at ship, exactly as it
   migrated v22 → v23 at SB3. Existing trade rows get `failure_mode = NULL` (forward-only, OQ-6).
 
@@ -421,8 +497,9 @@ makes the schema+model+repo slice indivisible):
   `EXPECTED_SCHEMA_VERSION` bump + `FAILURE_MODES` + `Trade.failure_mode` + validator + read/write
   mapper widening + `update_trade_review_fields` + `complete_trade_review` params. All of §4 lands
   together, tested by §7.1 #1–3,7. (TDD per task.)
-- **Slice B — the web surface.** The form fieldset + VM `failure_mode_choices` + POST handler
-  validate/thread + the chronology read-back. Tested by §7.1 #4–6, gated by §7.2 (browser).
+- **Slice B — the capture surfaces.** The web form fieldset + VM `failure_mode_choices` + POST
+  handler validate/thread + the chronology read-back (PRAGMA-aware) + the CLI `--failure-mode` option
+  (§5.7). Tested by §7.1 #4–7, gated by §7.2 (browser).
 
 Slice B depends on Slice A (the column must exist before the form persists into it). Within each
 slice, TDD per the project convention (failing test → minimal impl → commit).
@@ -435,7 +512,9 @@ slice, TDD per the project convention (failing test → minimal impl → commit)
 - Single-select, single column — no multi-select, no side-table (OQ-3 deferred).
 - Capture-only — NO analysis/distribution surface (OQ-5 deferred).
 - Forward-only — existing reviewed trades stay `NULL`, no backfill prompt (OQ-6).
-- Web review form only — the CLI review path passes the `None` default; no CLI prompt in V1.
+- Both capture surfaces (web form + CLI `--failure-mode`) are wired in V1 — there is NO half-wired
+  state where one review path can capture the field and the other silently can't (the CLI gap was
+  closed per §5.7; OQ-8 lets the operator defer the CLI option if they review only via browser).
 - Optional at submit — no required-on-loss gate (OQ-7 default).
 
 **V2 candidates (explicitly out of V1):**
@@ -445,7 +524,6 @@ slice, TDD per the project convention (failing test → minimal impl → commit)
   follow-on). This is the *reason the feature exists* and should be the immediate next arc.
 - **Multi-select failure modes** (OQ-3) — if the operator finds single-cause too coarse, migrate to a
   JSON-list (like `mistake_tags`, losing the CHECK) or a `trade_failure_modes` side-table.
-- **CLI review-path solicitation** — a `--failure-mode` option on the CLI review command.
 - **Required-on-loss gate** (OQ-7) — outcome-conditional requirement if the operator wants it.
 - **An optional free-text `failure_mode_note`** companion column — deferred; `lesson_learned` covers
   narrative for now (weighed under OQ-1 per brief §7; not needed in V1).
@@ -457,15 +535,17 @@ slice, TDD per the project convention (failing test → minimal impl → commit)
 | OQ | Question | Recommendation | Status |
 |----|----------|----------------|--------|
 | **OQ-1** | Schema shape: new nullable `failure_mode` column → v24, vs reuse / free-text / side-table. | **New nullable CHECK column → v24** (§4). | **Operator-binding (the first v24).** |
-| **OQ-2** | Solicitation scope: losing/scratch-only vs always-solicited + sentinel. | **Always-shown, optional, nullable; NULL = winner/unattributed; NO sentinel** (§5.2). | **Operator UX — flagged.** |
+| **OQ-2** | Solicitation scope: losing/scratch-only vs always-solicited + sentinel. Note the `NULL` overload (winner vs unclassified-loss). | **Always-shown, optional, nullable; NULL = winner OR unclassified-loss, disambiguated at analysis time by the realized-R outcome; NO sentinel** (§5.2 tradeoff). | **Operator UX — flagged.** |
 | OQ-3 | Cardinality: single primary vs multi-select. | **Single-select** (§4.2, §10). | Deferred to V2. |
 | **OQ-4** | The exact vocabulary (value set + labels). | **The 7-value set in §3.2** — operator's own attribution language. | **Operator-binding — flagged.** |
 | OQ-5 | Read/analysis surface in V1? | **No — capture-only; analysis tile is the next arc** (§10). | Deferred (recommend immediate follow-on). |
 | OQ-6 | Backfill existing reviewed trades? | **Forward-only; existing rows stay NULL** (§8). | Recommended; low-stakes. |
 | **OQ-7** | Required-or-optional at submit. | **Optional** (§5.3). | **Flagged for operator.** |
+| OQ-8 | CLI `--failure-mode` parity in V1, or defer (browser-only review)? | **Include in V1** — closes the permanent CLI capture gap (§5.7); trivial. | Flagged; defer only if the operator never reviews via CLI. |
 
 The four **bolded** OQs (OQ-1 schema/v24, OQ-2 solicitation, OQ-4 vocabulary, OQ-7 required/optional)
-are the operator-triage items the brief calls out for explicit sign-off at writing-plans.
+are the operator-triage items the brief calls out for explicit sign-off at writing-plans. OQ-8 (CLI
+parity) was surfaced by the round-1 adversarial review and is recommended for V1.
 
 ---
 
@@ -473,8 +553,8 @@ are the operator-triage items the brief calls out for explicit sign-off at writi
 
 - **Migration discipline** — gotcha #9 (explicit `BEGIN;…COMMIT;`), #11 (CHECK + frozenset +
   validator + read/write mapper in ONE task — §4.3), strict backup-gate `pre_version == target-1`
-  (§4.4), run-migrate-twice no-op test (§7.1 #1), schema-version-aware read/write via PRAGMA
-  (`_TRADE_SELECT_COLS_PRE_V24` + SVAI).
+  (§4.4), run-migrate-twice no-op test (§7.1 #1), schema-version-aware read/write via the three-era
+  PRAGMA-`table_info` branch (v24 / v21–v23 / pre-v21) + SVAI (§4.3 #4).
 - **Form discipline (L6)** — `hx-headers HX-Request` (inherited from the existing form root), `204` +
   `HX-Redirect` success, `400` + re-render validation ladder, the server-stamped
   `auto_populated_field_keys_json` envelope untouched, `... or None` for the nullable CHECK column,
