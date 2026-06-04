@@ -18,9 +18,13 @@ import pytest
 
 from swing.config import load as load_config
 from swing.data.db import ensure_schema
+from swing.metrics.process_grade_trend import RollingLinePoint
 from swing.web.view_models.metrics.process_grade_trend import (
+    COST_SVG_HEIGHT,
     ProcessGradeTrendVM,
     RollingSeriesDisplay,
+    _cost_panel_bounds,
+    _polyline_y,
     build_process_grade_trend_vm,
 )
 from swing.web.view_models.metrics.shared import BaseLayoutVM
@@ -280,3 +284,118 @@ def test_rolling_series_display_rejects_empty_placeholder_when_suppressed() -> N
             svg_polyline_segments=(),
             is_drawable=False,
         )
+
+
+# ---------------------------------------------------------------------------
+# Slice B (B2) — small-multiples per-panel grouping + 0-anchored cost bounds
+# ---------------------------------------------------------------------------
+
+_GRADE_NAMES = {
+    "process_grade_rolling_N",
+    "entry_grade_rolling_N",
+    "management_grade_rolling_N",
+    "exit_grade_rolling_N",
+}
+
+
+def test_vm_groups_series_into_three_panels(cfg) -> None:
+    """grade/rate/cost panel groups are ADDITIVE; rolling_series stays all 7 for
+    the table. _total is charted in NO panel group (table-only, OQ-3)."""
+    conn = sqlite3.connect(cfg.paths.db_path)
+    try:
+        _seed_n(conn, 5, process_grade="B")
+    finally:
+        conn.close()
+    vm = build_process_grade_trend_vm(cfg=cfg)
+    assert {s.metric_name for s in vm.grade_series} == _GRADE_NAMES
+    assert {s.metric_name for s in vm.rate_series} == {
+        "disqualifying_violation_rate_rolling_N"
+    }
+    assert {s.metric_name for s in vm.cost_series} == {
+        "mistake_cost_R_rolling_N_per_trade"
+    }
+    # _total stays in rolling_series (table) but in none of the panel groups.
+    all_names = {s.metric_name for s in vm.rolling_series}
+    assert "mistake_cost_R_rolling_N_total" in all_names
+    panel_names = (
+        {s.metric_name for s in vm.grade_series}
+        | {s.metric_name for s in vm.rate_series}
+        | {s.metric_name for s in vm.cost_series}
+    )
+    assert "mistake_cost_R_rolling_N_total" not in panel_names
+
+
+def test_cost_panel_bounds_zero_anchored_for_nonzero_costs() -> None:
+    """Direct helper test (Codex R1-m1 — exact, not DB-seeded). 0-anchored:
+    the min is ignored, the bound starts at 0."""
+    bounds = _cost_panel_bounds((
+        RollingLinePoint(0, 0.3),
+        RollingLinePoint(1, 2.0),
+        RollingLinePoint(2, 1.0),
+    ))
+    assert bounds == (0.0, 2.0)
+    # The peak maps to the top margin (24), not clipped; baseline maps to 120.
+    assert _polyline_y(
+        2.0, y_min=0.0, y_max=2.0, layout_height=COST_SVG_HEIGHT,
+        margin_top=24, margin_bottom=40,
+    ) == 24.00
+    assert _polyline_y(
+        0.0, y_min=0.0, y_max=2.0, layout_height=COST_SVG_HEIGHT,
+        margin_top=24, margin_bottom=40,
+    ) == 120.00
+
+
+def test_cost_panel_all_zero_uses_unit_fallback_not_degenerate(cfg) -> None:
+    """The all-zero (perfect-process) edge uses [0,1] not [0,0]: _polyline_y
+    centers when y_max==y_min, so a [0,0] zero line would float mid-panel (72)
+    with degenerate labels. [0,1] keeps the zero line on the baseline (120)."""
+    assert _cost_panel_bounds(()) == (0.0, 1.0)
+    assert _cost_panel_bounds((
+        RollingLinePoint(0, 0.0),
+        RollingLinePoint(1, 0.0),
+    )) == (0.0, 1.0)
+    # Baseline Y discriminator: 120.00 (baseline) NOT 72.00 (panel midpoint).
+    assert _polyline_y(
+        0.0, y_min=0.0, y_max=1.0, layout_height=160,
+        margin_top=24, margin_bottom=40,
+    ) == 120.00
+    # Build the VM with an all-zero-cost perfect-process seed (grade A, no
+    # disqualifying, realized_R_if_plan_followed left as the 1.0 default so
+    # mistake_cost is 0).
+    conn = sqlite3.connect(cfg.paths.db_path)
+    try:
+        _seed_n(conn, 5, process_grade="A")
+    finally:
+        conn.close()
+    vm = build_process_grade_trend_vm(cfg=cfg)
+    assert vm.cost_y_max == 1.0
+    cost_texts = tuple(text for _, text in vm.cost_axis_labels)
+    assert cost_texts == ("0.00", "0.50", "1.00")
+
+
+def test_rate_axis_labels_present_and_positioned(cfg) -> None:
+    conn = sqlite3.connect(cfg.paths.db_path)
+    try:
+        _seed_n(conn, 5, process_grade="B")
+    finally:
+        conn.close()
+    vm = build_process_grade_trend_vm(cfg=cfg)
+    rate_texts = tuple(text for _, text in vm.rate_axis_labels)
+    assert rate_texts == ("0.0", "0.5", "1.0")
+    # Ys within the 160-panel plot band [margin_top=24, height-margin_bottom=120].
+    for y, _ in vm.rate_axis_labels:
+        assert 24.0 <= y <= 120.0
+
+
+def test_vm_post_init_rejects_malformed_panel_groups(cfg) -> None:
+    """The additive group validation rejects a cost_series carrying the wrong
+    metric (mirror-the-contract, #11)."""
+    conn = sqlite3.connect(cfg.paths.db_path)
+    try:
+        _seed_n(conn, 5, process_grade="B")
+    finally:
+        conn.close()
+    vm = build_process_grade_trend_vm(cfg=cfg)
+    wrong = vm.grade_series[0]  # process_grade series, not the per-trade cost
+    with pytest.raises(ValueError, match="cost_series"):
+        dc_replace(vm, cost_series=(wrong,))

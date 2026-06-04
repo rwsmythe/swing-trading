@@ -55,6 +55,13 @@ SVG_MARGIN_RIGHT: int = 16
 SVG_MARGIN_TOP: int = 24
 SVG_MARGIN_BOTTOM: int = 40
 
+# Small-multiples per-panel heights (Slice B). The GRADES panel reuses the
+# legacy 360 (so its inline-Y grade-axis math + the route-test hooks are
+# preserved); the RATE/COST panels are shorter, scale-separated panels.
+GRADES_SVG_HEIGHT: int = 360
+RATE_SVG_HEIGHT: int = 160
+COST_SVG_HEIGHT: int = 160
+
 # Grade-axis Y-encoding. Lesson #19 unit-semantic precision: A=4..F=0
 # visible as axis label so operator reads grade values, not raw numerics.
 GRADE_AXIS_LABELS: tuple[tuple[float, str], ...] = (
@@ -143,6 +150,18 @@ class ProcessGradeTrendVM(BaseLayoutVM):
     svg_margin_top: int = SVG_MARGIN_TOP
     svg_margin_bottom: int = SVG_MARGIN_BOTTOM
     grade_axis_labels: tuple[tuple[float, str], ...] = GRADE_AXIS_LABELS
+    # Slice B small-multiples: scale-separated panel groups (ADDITIVE — the
+    # all-7 ``rolling_series`` above still drives the table). The GRADES panel
+    # reuses ``svg_height``/360; RATE + COST are shorter 0-anchored panels.
+    grades_svg_height: int = GRADES_SVG_HEIGHT
+    rate_svg_height: int = RATE_SVG_HEIGHT
+    cost_svg_height: int = COST_SVG_HEIGHT
+    grade_series: tuple[RollingSeriesDisplay, ...] = ()
+    rate_series: tuple[RollingSeriesDisplay, ...] = ()
+    cost_series: tuple[RollingSeriesDisplay, ...] = ()
+    cost_y_max: float = 1.0
+    rate_axis_labels: tuple[tuple[float, str], ...] = ()
+    cost_axis_labels: tuple[tuple[float, str], ...] = ()
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -158,6 +177,28 @@ class ProcessGradeTrendVM(BaseLayoutVM):
             raise ValueError(
                 "ProcessGradeTrendVM.rolling_series metric names must match "
                 f"the §A.21 matrix; missing={sorted(missing)!r}, extra={sorted(extra)!r}"
+            )
+        # Additive panel-group validation (mirror-the-contract, #11). Runs
+        # AFTER the all-7 rolling_series check so the missing-key test keeps its
+        # message. The default empty groups (e.g. the missing-key constructor)
+        # never reach here because that path already raised above.
+        grade_got = {s.metric_name for s in self.grade_series}
+        if grade_got != _GRADE_METRICS:
+            raise ValueError(
+                "ProcessGradeTrendVM.grade_series must be exactly the 4 grade "
+                f"metrics; got {sorted(grade_got)!r}"
+            )
+        rate_got = {s.metric_name for s in self.rate_series}
+        if rate_got != {"disqualifying_violation_rate_rolling_N"}:
+            raise ValueError(
+                "ProcessGradeTrendVM.rate_series must be exactly "
+                f"disqualifying_violation_rate_rolling_N; got {sorted(rate_got)!r}"
+            )
+        cost_got = {s.metric_name for s in self.cost_series}
+        if cost_got != {"mistake_cost_R_rolling_N_per_trade"}:
+            raise ValueError(
+                "ProcessGradeTrendVM.cost_series must be exactly "
+                f"mistake_cost_R_rolling_N_per_trade; got {sorted(cost_got)!r}"
             )
 
 
@@ -335,6 +376,55 @@ def _y_axis_bounds_for_metric(
     return (raw_min, raw_max)
 
 
+def _cost_panel_bounds(
+    line_points: tuple[RollingLinePoint, ...],
+) -> tuple[float, float]:
+    """0-anchored (y_min=0) bounds for the cost panel (OQ-3).
+
+    The minimum is IGNORED so the panel reads against a true zero baseline (no
+    "plunge-line" from a non-zero floor). When there are no finite values OR
+    every cost is 0.0 (a perfect-process operator), return (0.0, 1.0) NOT
+    (0.0, 0.0): ``_polyline_y`` centers the line when ``y_max == y_min``, so a
+    degenerate [0,0] range would float the zero line at the panel midpoint with
+    three identical "0.00" labels. [0,1] keeps the zero line on the baseline.
+    """
+    finite = [
+        float(p.value) for p in line_points
+        if p.value is not None and math.isfinite(p.value)
+    ]
+    m = max(finite) if finite else 0.0
+    if m <= 0.0:
+        return (0.0, 1.0)
+    return (0.0, m)
+
+
+def _panel_axis_labels(
+    values_texts: tuple[tuple[float, str], ...],
+    *,
+    y_max: float,
+    layout_height: int,
+) -> tuple[tuple[float, str], ...]:
+    """Pre-position (svg_y, text) axis labels for a [0, y_max] panel.
+
+    The template needs no per-panel Y math: it renders each ``<text>`` at the
+    supplied ``svg_y``. ``y_min`` is always 0 (rate + cost are 0-anchored).
+    """
+    return tuple(
+        (
+            _polyline_y(
+                value,
+                y_min=0.0,
+                y_max=y_max,
+                layout_height=layout_height,
+                margin_top=SVG_MARGIN_TOP,
+                margin_bottom=SVG_MARGIN_BOTTOM,
+            ),
+            text,
+        )
+        for value, text in values_texts
+    )
+
+
 def _build_rolling_display(
     metric_name: str,
     series,
@@ -346,8 +436,14 @@ def _build_rolling_display(
     margin_right: int,
     margin_top: int,
     margin_bottom: int,
+    bounds_override: tuple[float, float] | None = None,
 ) -> RollingSeriesDisplay:
-    """Map one RollingMetricSeries to its display VM."""
+    """Map one RollingMetricSeries to its display VM.
+
+    ``bounds_override`` lets a panel impose its own (y_min, y_max) instead of
+    the per-metric default from ``_y_axis_bounds_for_metric`` (the cost panel
+    passes the 0-anchored ``_cost_panel_bounds``).
+    """
     if series.suppressed is not None:
         return RollingSeriesDisplay(
             metric_name=metric_name,
@@ -368,7 +464,10 @@ def _build_rolling_display(
     drawability, window_text, floor_text = _badge_texts(
         series.badges, drawability_text=series.drawability_text,
     )
-    y_min, y_max = _y_axis_bounds_for_metric(metric_name, series.line_points)
+    if bounds_override is not None:
+        y_min, y_max = bounds_override
+    else:
+        y_min, y_max = _y_axis_bounds_for_metric(metric_name, series.line_points)
     segments = _format_polyline_segments(
         series.line_points,
         total_points=total_points,
@@ -508,6 +607,60 @@ def build_process_grade_trend_vm(
         for metric_name in PROCESS_GRADE_TREND_METRIC_CLASSES
     )
 
+    # Slice B small-multiples panel groups (ADDITIVE — rolling_displays/the
+    # table is unchanged). The GRADES panel reuses the height-360 displays
+    # verbatim (so its route-test hooks stay byte-identical). RATE + COST are
+    # rebuilt at their shorter heights; COST is 0-anchored via bounds_override.
+    grade_series = tuple(
+        d for d in rolling_displays if d.metric_name in _GRADE_METRICS
+    )
+    rate_series = (
+        _build_rolling_display(
+            "disqualifying_violation_rate_rolling_N",
+            result.rolling_series["disqualifying_violation_rate_rolling_N"],
+            total_points=total_points,
+            layout_width=SVG_WIDTH,
+            layout_height=RATE_SVG_HEIGHT,
+            margin_left=SVG_MARGIN_LEFT,
+            margin_right=SVG_MARGIN_RIGHT,
+            margin_top=SVG_MARGIN_TOP,
+            margin_bottom=SVG_MARGIN_BOTTOM,
+        ),
+    )
+    cost_line_points = result.rolling_series[
+        "mistake_cost_R_rolling_N_per_trade"
+    ].line_points
+    cost_bounds = _cost_panel_bounds(cost_line_points)
+    cost_y_max = cost_bounds[1]
+    cost_series = (
+        _build_rolling_display(
+            "mistake_cost_R_rolling_N_per_trade",
+            result.rolling_series["mistake_cost_R_rolling_N_per_trade"],
+            total_points=total_points,
+            layout_width=SVG_WIDTH,
+            layout_height=COST_SVG_HEIGHT,
+            margin_left=SVG_MARGIN_LEFT,
+            margin_right=SVG_MARGIN_RIGHT,
+            margin_top=SVG_MARGIN_TOP,
+            margin_bottom=SVG_MARGIN_BOTTOM,
+            bounds_override=cost_bounds,
+        ),
+    )
+    rate_axis_labels = _panel_axis_labels(
+        ((0.0, "0.0"), (0.5, "0.5"), (1.0, "1.0")),
+        y_max=1.0,
+        layout_height=RATE_SVG_HEIGHT,
+    )
+    cost_axis_labels = _panel_axis_labels(
+        (
+            (0.0, f"{0.0:.2f}"),
+            (cost_y_max / 2.0, f"{cost_y_max / 2.0:.2f}"),
+            (cost_y_max, f"{cost_y_max:.2f}"),
+        ),
+        y_max=cost_y_max,
+        layout_height=COST_SVG_HEIGHT,
+    )
+
     return ProcessGradeTrendVM(
         session_date=action_session_for_run(datetime.now()).isoformat(),
         unresolved_material_discrepancies_count=unresolved,
@@ -516,11 +669,20 @@ def build_process_grade_trend_vm(
         window_size=result.window_size,
         per_trade_markers=markers,
         rolling_series=rolling_displays,
+        grade_series=grade_series,
+        rate_series=rate_series,
+        cost_series=cost_series,
+        cost_y_max=cost_y_max,
+        rate_axis_labels=rate_axis_labels,
+        cost_axis_labels=cost_axis_labels,
     )
 
 
 __all__ = [
+    "COST_SVG_HEIGHT",
+    "GRADES_SVG_HEIGHT",
     "GRADE_AXIS_LABELS",
+    "RATE_SVG_HEIGHT",
     "PerTradeMarkerDisplay",
     "ProcessGradeTrendVM",
     "RollingSeriesDisplay",
