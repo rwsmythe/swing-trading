@@ -360,6 +360,11 @@ tr.tripwire-fired td:first-child { border-left: 4px solid var(--tripwire-border)
 .process-grade-legend-swatch.metric-entry_grade_rolling_N { fill: var(--series-entry); }
 .process-grade-legend-swatch.metric-management_grade_rolling_N { fill: var(--series-management); }
 .process-grade-legend-swatch.metric-exit_grade_rolling_N { fill: var(--series-exit); }
+/* Axis/legend/caption labels are SVG <text> -- painted by `fill`, NOT the
+   `.muted` `color` property; with no fill they default to black and vanish in
+   dark mode (operator browser-gate fix). Resolve via the theme-aware muted
+   token (#666666 light / #adb5bd dark), mirroring the A-6 line/marker tokens. */
+.process-grade-trend-chart text { fill: var(--fg-muted); }
 .schwab-health-badge {
   display: inline-block;
   margin-left: 0.5rem;

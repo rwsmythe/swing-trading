@@ -59,3 +59,15 @@ def test_legend_swatch_fill_rules_present():
     assert ".process-grade-legend-swatch.metric-entry_grade_rolling_N { fill: var(--series-entry); }" in css
     assert ".process-grade-legend-swatch.metric-management_grade_rolling_N { fill: var(--series-management); }" in css
     assert ".process-grade-legend-swatch.metric-exit_grade_rolling_N { fill: var(--series-exit); }" in css
+
+
+def test_chart_svg_text_is_theme_aware_fill():
+    # Browser-gate fix (dark-mode): an SVG <text> is painted by `fill`, NOT the
+    # `.muted` `color` property -- with no `fill` it defaults to BLACK (the SVG
+    # default), which is visible on light but INVISIBLE on the dark background.
+    # The chart's axis/legend/caption labels must resolve their fill via the
+    # theme-aware --fg-muted token (#666666 light / #adb5bd dark), mirroring the
+    # A-6 line/marker token discipline. (Pre-fix: no such rule -> black -> dark
+    # invisible; post-fix: tokenized -> visible in both themes.)
+    css = Path("swing/web/static/app.css").read_text(encoding="utf-8")
+    assert ".process-grade-trend-chart text { fill: var(--fg-muted); }" in css
