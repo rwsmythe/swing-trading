@@ -348,6 +348,7 @@ test_each_series_renders_in_its_own_panel(seeded n=5):   # the anti-"all in grad
     # the 4 grade lines live ONLY in the grades panel:
     for n in ("process_grade_rolling_N","entry_grade_rolling_N","management_grade_rolling_N","exit_grade_rolling_N"):
         assert f'data-series="{n}"' in grades
+        assert f'data-series="{n}"' not in rate + cost   # Codex R3-m1: prove "ONLY in grades"
     # the rate line ONLY in rate; the per-trade cost line ONLY in cost:
     assert 'data-series="disqualifying_violation_rate_rolling_N"' in rate
     assert 'data-series="disqualifying_violation_rate_rolling_N"' not in grades + cost
