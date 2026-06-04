@@ -10,11 +10,32 @@ Per plan §H T-E.2 acceptance:
 """
 from __future__ import annotations
 
+import re
 import sqlite3
 
 from fastapi.testclient import TestClient
 
 from swing.web.app import create_app
+
+
+def _panel(html: str, name: str) -> str:
+    """Inner markup of the <svg data-panel="<name>"> ... </svg> block.
+
+    Panel-scoped slicing (Codex R2-M2): a global ``in r.text`` would falsely
+    pass even if every series stayed in the grades SVG with empty rate/cost
+    panels bolted on.
+    """
+    m = re.search(rf'<svg[^>]*data-panel="{name}"[^>]*>(.*?)</svg>', html, re.S)
+    assert m is not None, f"panel {name} svg missing"
+    return m.group(1)
+
+
+def _legend(html: str) -> str:
+    m = re.search(
+        r'<g[^>]*data-marker="grades-legend"[^>]*>(.*?)</g>', html, re.S,
+    )
+    assert m is not None, "grades-legend group missing"
+    return m.group(1)
 
 
 def _seed_n_reviewed_trades(
@@ -183,3 +204,104 @@ def test_process_grade_trend_does_not_use_matplotlib_or_external_chart_lib(
     assert "matplotlib" not in r.text.lower()
     assert "chart.js" not in r.text.lower()
     assert "d3.min.js" not in r.text.lower()
+
+
+# ---------------------------------------------------------------------------
+# Slice B (B3) — small-multiples: three scale-separated SVG panels
+# ---------------------------------------------------------------------------
+
+_GRADE_NAMES = (
+    "process_grade_rolling_N",
+    "entry_grade_rolling_N",
+    "management_grade_rolling_N",
+    "exit_grade_rolling_N",
+)
+
+
+def _get(cfg, cfg_path):
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        return client.get("/metrics/process-grade-trend")
+
+
+def test_three_scale_separated_panels_present_when_drawable(seeded_db):
+    cfg, cfg_path = seeded_db
+    _seed_n_reviewed_trades(cfg.paths.db_path, n=5)
+    r = _get(cfg, cfg_path)
+    assert r.status_code == 200
+    for name in ("grades", "rate", "cost"):
+        assert f'data-panel="{name}"' in r.text
+
+
+def test_each_series_renders_in_its_own_panel(seeded_db):
+    """Anti-regression guard against 'leave everything in grades + add empty
+    panels' (Codex R2-M2 / R3-m1): each series renders ONLY in its panel."""
+    cfg, cfg_path = seeded_db
+    _seed_n_reviewed_trades(cfg.paths.db_path, n=5)
+    r = _get(cfg, cfg_path)
+    grades = _panel(r.text, "grades")
+    rate = _panel(r.text, "rate")
+    cost = _panel(r.text, "cost")
+    for n in _GRADE_NAMES:
+        assert f'data-series="{n}"' in grades
+        assert f'data-series="{n}"' not in rate + cost
+    assert 'data-series="disqualifying_violation_rate_rolling_N"' in rate
+    assert 'data-series="disqualifying_violation_rate_rolling_N"' not in grades + cost
+    assert 'data-series="mistake_cost_R_rolling_N_per_trade"' in cost
+    assert 'data-series="mistake_cost_R_rolling_N_per_trade"' not in grades + rate
+    # _total charts in NO svg panel (table-only).
+    for p in (grades, rate, cost):
+        assert 'data-series="mistake_cost_R_rolling_N_total"' not in p
+
+
+def test_grades_legend_names_all_four_series(seeded_db):
+    cfg, cfg_path = seeded_db
+    _seed_n_reviewed_trades(cfg.paths.db_path, n=5)
+    r = _get(cfg, cfg_path)
+    leg = _legend(r.text)
+    for label in ("process", "entry", "management", "exit"):
+        assert f'>{label}<' in leg or f'>{label} ' in leg
+    # ASCII discipline (#16/#32): NO middle-dot anywhere in the response.
+    assert "·" not in r.text
+    for name in _GRADE_NAMES:
+        assert f'process-grade-legend-swatch metric-{name}' in leg
+
+
+def test_rate_panel_axis_and_line(seeded_db):
+    cfg, cfg_path = seeded_db
+    _seed_n_reviewed_trades(cfg.paths.db_path, n=5)
+    r = _get(cfg, cfg_path)
+    rate = _panel(r.text, "rate")
+    assert 'data-marker="rate-axis"' in rate
+    assert "0.0" in rate and "1.0" in rate
+
+
+def test_cost_panel_axis_line_and_caption(seeded_db):
+    cfg, cfg_path = seeded_db
+    _seed_n_reviewed_trades(cfg.paths.db_path, n=5)
+    r = _get(cfg, cfg_path)
+    cost = _panel(r.text, "cost")
+    assert 'data-marker="cost-axis"' in cost
+    assert 'data-marker="cost-axis-caption"' in cost
+    assert "running total in table below" in cost
+
+
+def test_total_cost_in_table_row(seeded_db):
+    cfg, cfg_path = seeded_db
+    _seed_n_reviewed_trades(cfg.paths.db_path, n=5)
+    r = _get(cfg, cfg_path)
+    assert 'data-metric="mistake_cost_R_rolling_N_total"' in r.text
+
+
+def test_under_floor_captions_render_for_partial_window(seeded_db):
+    cfg, cfg_path = seeded_db
+    _seed_n_reviewed_trades(cfg.paths.db_path, n=3)
+    r = _get(cfg, cfg_path)
+    rate = _panel(r.text, "rate")
+    cost = _panel(r.text, "cost")
+    assert 'data-marker="rate-under-floor"' in rate
+    assert 'data-marker="cost-under-floor"' in cost
+    # Literal ASCII '>=' in static template text (Codex R1-M1), NOT &gt;.
+    assert ">=5 effective samples" in rate
+    # Under-floor: no line in ANY panel (route test 6 family).
+    assert "<polyline" not in r.text

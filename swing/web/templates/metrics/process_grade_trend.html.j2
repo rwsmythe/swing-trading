@@ -13,7 +13,7 @@
   </p>
 
   <p class="muted">
-    Window size: N={{ vm.window_size }} · Closed-reviewed trades:
+    Window size: N={{ vm.window_size }} | Closed-reviewed trades:
     {{ vm.per_trade_markers|length }}
   </p>
 
@@ -21,18 +21,37 @@
   <p><em data-empty-state="process-grade-trend">No closed-reviewed trades to plot.</em></p>
   {% else %}
 
-  <h2>Grade chart</h2>
-  <svg viewBox="0 0 {{ vm.svg_width }} {{ vm.svg_height }}"
+  {# Small-multiples: three scale-separated inline-SVG panels (OQ-1). Each
+     series reads against a scale it belongs to — GRADES [0,4], RATE [0,1],
+     COST [0,max] 0-anchored. The single overlay chart's incommensurability
+     (a proportion + cost lines read against A=4..F=0) is fixed by separation,
+     not restyling. _total stays table-only (OQ-3). #}
+
+  <h2>Grades</h2>
+  <svg viewBox="0 0 {{ vm.svg_width }} {{ vm.grades_svg_height }}"
        xmlns="http://www.w3.org/2000/svg"
        class="process-grade-trend-chart"
        width="{{ vm.svg_width }}"
-       height="{{ vm.svg_height }}">
+       height="{{ vm.grades_svg_height }}"
+       data-panel="grades">
     {# Axis labels per lesson #19 — grade numeric encoding visible inline. #}
     <g class="grade-axis-labels" data-marker="grade-axis-encoding">
       {% for value, label in vm.grade_axis_labels %}
       <text x="6"
-            y="{{ vm.svg_margin_top + ((4.0 - value) / 4.0) * (vm.svg_height - vm.svg_margin_top - vm.svg_margin_bottom) + 4 }}"
+            y="{{ vm.svg_margin_top + ((4.0 - value) / 4.0) * (vm.grades_svg_height - vm.svg_margin_top - vm.svg_margin_bottom) + 4 }}"
             class="muted">{{ label }}</text>
+      {% endfor %}
+    </g>
+    {# Legend — names the 4 grade series. Swatch fill resolves through the
+       metric-<name> CSS class (SVG presentation attrs cannot take var()).
+       Swatches are <rect> (NEVER <polyline>, so the n=2 under-floor state
+       still emits zero polylines). #}
+    <g class="legend" data-marker="grades-legend">
+      {% for series in vm.grade_series %}
+      <rect class="process-grade-legend-swatch metric-{{ series.metric_name }}"
+            x="{{ 360 + loop.index0 * 105 }}" y="6" width="10" height="10" />
+      <text x="{{ 360 + loop.index0 * 105 + 14 }}" y="15"
+            class="muted">{{ series.metric_name.split('_grade_')[0] }}</text>
       {% endfor %}
     </g>
     {# Per-trade markers — always rendered for trades with a grade letter. #}
@@ -49,10 +68,10 @@
       </circle>
       {% endif %}
     {% endfor %}
-    {# Per-metric rolling polylines — drawn only when the §5.4 line band fires
-       AND at least one >=2-point segment survives. One <polyline> per
-       contiguous non-None run so None gaps render as gaps (F-3). #}
-    {% for series in vm.rolling_series %}
+    {# The 4 grade rolling polylines — identical hook shape to the legacy
+       template (preserves the route-test class + data-series). One <polyline>
+       per contiguous non-None run so None gaps render as gaps (F-3). #}
+    {% for series in vm.grade_series %}
       {% if series.is_drawable %}
         {% for seg in series.svg_polyline_segments %}
         <polyline points="{{ seg }}"
@@ -63,6 +82,67 @@
         {% endfor %}
       {% endif %}
     {% endfor %}
+  </svg>
+
+  <h2>Disqualifying-violation rate</h2>
+  <svg viewBox="0 0 {{ vm.svg_width }} {{ vm.rate_svg_height }}"
+       xmlns="http://www.w3.org/2000/svg"
+       class="process-grade-trend-chart"
+       width="{{ vm.svg_width }}"
+       height="{{ vm.rate_svg_height }}"
+       data-panel="rate">
+    <g class="rate-axis-labels" data-marker="rate-axis">
+      {% for y, text in vm.rate_axis_labels %}
+      <text x="6" y="{{ "%.2f"|format(y) }}" class="muted">{{ text }}</text>
+      {% endfor %}
+    </g>
+    {% for series in vm.rate_series %}
+      {% if series.is_drawable %}
+        {% for seg in series.svg_polyline_segments %}
+        <polyline points="{{ seg }}"
+                  fill="none"
+                  stroke-width="1.5"
+                  data-series="{{ series.metric_name }}"
+                  class="process-grade-rolling-line metric-{{ series.metric_name }}" />
+        {% endfor %}
+      {% else %}
+        <text class="muted" data-marker="rate-under-floor"
+              x="{{ vm.svg_margin_left }}"
+              y="{{ "%.2f"|format(vm.rate_svg_height / 2) }}">rolling line draws once the window has >=5 effective samples</text>
+      {% endif %}
+    {% endfor %}
+  </svg>
+
+  <h2>Mistake cost (R per trade)</h2>
+  <svg viewBox="0 0 {{ vm.svg_width }} {{ vm.cost_svg_height }}"
+       xmlns="http://www.w3.org/2000/svg"
+       class="process-grade-trend-chart"
+       width="{{ vm.svg_width }}"
+       height="{{ vm.cost_svg_height }}"
+       data-panel="cost">
+    <g class="cost-axis-labels" data-marker="cost-axis">
+      {% for y, text in vm.cost_axis_labels %}
+      <text x="6" y="{{ "%.2f"|format(y) }}" class="muted">{{ text }}</text>
+      {% endfor %}
+    </g>
+    {% for series in vm.cost_series %}
+      {% if series.is_drawable %}
+        {% for seg in series.svg_polyline_segments %}
+        <polyline points="{{ seg }}"
+                  fill="none"
+                  stroke-width="1.5"
+                  data-series="{{ series.metric_name }}"
+                  class="process-grade-rolling-line metric-{{ series.metric_name }}" />
+        {% endfor %}
+      {% else %}
+        <text class="muted" data-marker="cost-under-floor"
+              x="{{ vm.svg_margin_left }}"
+              y="{{ "%.2f"|format(vm.cost_svg_height / 2) }}">rolling line draws once the window has >=5 effective samples</text>
+      {% endif %}
+    {% endfor %}
+    <text class="muted" data-marker="cost-axis-caption"
+          x="{{ vm.svg_margin_left }}"
+          y="{{ vm.cost_svg_height - 4 }}">mistake-cost running total in table below</text>
   </svg>
 
   <h2>Per-metric rolling window (most recent)</h2>
