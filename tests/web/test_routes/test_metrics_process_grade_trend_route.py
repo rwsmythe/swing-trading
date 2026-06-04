@@ -305,3 +305,32 @@ def test_under_floor_captions_render_for_partial_window(seeded_db):
     assert ">=5 effective samples" in rate
     # Under-floor: no line in ANY panel (route test 6 family).
     assert "<polyline" not in r.text
+
+
+# ---------------------------------------------------------------------------
+# Slice B (B4) — structural sweep residuals
+# ---------------------------------------------------------------------------
+
+def test_empty_state_still_wraps_all_panels_when_no_trades(seeded_db):
+    """The empty-state guard short-circuits all three panels (not just one)."""
+    cfg, cfg_path = seeded_db
+    r = _get(cfg, cfg_path)
+    assert r.status_code == 200
+    assert 'data-empty-state="process-grade-trend"' in r.text
+    for name in ("grades", "rate", "cost"):
+        assert f'data-panel="{name}"' not in r.text
+
+
+def test_cost_axis_all_zero_renders_nondegenerate_labels_route(seeded_db):
+    """Route companion to the B2 VM test — exercises the production VM->template
+    path (not stubs). All-zero cost -> [0,1] fallback -> non-degenerate labels
+    0.00/0.50/1.00 scoped to the cost panel (Codex R2-m1), NOT three '0.00'."""
+    cfg, cfg_path = seeded_db
+    # The default seed (grade B, realized_R_if_plan_followed=1.0, no
+    # disqualifying) yields all-zero per-trade mistake cost.
+    _seed_n_reviewed_trades(cfg.paths.db_path, n=5)
+    r = _get(cfg, cfg_path)
+    cost = _panel(r.text, "cost")
+    assert "0.00" in cost
+    assert "0.50" in cost
+    assert "1.00" in cost
