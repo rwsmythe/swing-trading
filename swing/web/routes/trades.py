@@ -2677,6 +2677,7 @@ def review_post(
     realized_R_if_plan_followed: float | None = Form(None),  # noqa: N803
     mistake_cost_confidence: str = Form(""),
     mistake_tags: list[str] = Form(default=[]),  # noqa: B008
+    failure_mode: str | None = Form(None),
 ):
     """Phase 6: persist a post-trade review.
 
@@ -2750,6 +2751,20 @@ def review_post(
             status_code=400,
         )
 
+    from swing.data.models import FAILURE_MODES
+    fm = failure_mode or None  # ... or None: empty string -> NULL (nullable CHECK)
+    if fm is not None and fm not in FAILURE_MODES:
+        from swing.web.view_models.trades import build_review_vm
+        vm = build_review_vm(trade_id=trade_id, cfg=cfg)
+        fm_err = f"Invalid failure_mode {fm!r}"
+        if vm is None:
+            return templates.TemplateResponse(
+                request, "partials/trade_form_error.html.j2",
+                {"error_message": fm_err}, status_code=400)
+        return templates.TemplateResponse(
+            request, "partials/review_form.html.j2",
+            {"vm": vm, "error_message": fm_err}, status_code=400)
+
     conn = connect(cfg.paths.db_path)
     try:
         trade = get_trade(conn, trade_id)
@@ -2787,6 +2802,7 @@ def review_post(
             realized_R_if_plan_followed=realized_R_if_plan_followed,
             mistake_cost_confidence=mistake_cost_confidence or None,
             lesson_learned=lesson_learned,
+            failure_mode=fm,
             event_ts=review_ts,
             rationale=None,
         )

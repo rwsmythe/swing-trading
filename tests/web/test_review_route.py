@@ -501,3 +501,61 @@ def test_post_review_transitions_state_closed_to_reviewed(
         f"{state_value!r}. Pre-hotfix value would be 'closed' because the "
         f"web route bypassed complete_trade_review's state_transition."
     )
+
+
+def test_post_review_blank_failure_mode_persists_null(test_app_closed_trade) -> None:
+    import inspect
+    from swing.web.routes.trades import review_post
+    # Discriminator (regression-arithmetic, Codex R3 #1): FastAPI silently ignores
+    # an unknown form field, so PRE-B4 a blank submit would 204 and leave the
+    # column NULL too -- the persisted value alone cannot distinguish. This static
+    # precondition fails PRE-B4 (no failure_mode param) and passes POST-B4.
+    assert "failure_mode" in inspect.signature(review_post).parameters
+    app = test_app_closed_trade
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/1/review",
+            data={"entry_grade": "A", "management_grade": "A", "exit_grade": "A",
+                  "lesson_learned": "clean", "mistake_tags": ["none_observed"],
+                  "failure_mode": ""},
+            headers={"HX-Request": "true"}, follow_redirects=False)
+    assert r.status_code == 204                                   # success unchanged
+    assert r.headers.get("HX-Redirect") == "/reviews/pending"     # L6 invariant
+    from swing.data.db import connect
+    val = connect(app.state.cfg.paths.db_path).execute(
+        "SELECT failure_mode FROM trades WHERE id=1").fetchone()[0]
+    # The ... or None gotcha persists NULL on a blank submit (regression guard).
+    assert val is None
+
+
+def test_post_review_valid_failure_mode_persists(test_app_closed_trade) -> None:
+    app = test_app_closed_trade
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/1/review",
+            data={"entry_grade": "A", "management_grade": "A", "exit_grade": "A",
+                  "lesson_learned": "clean", "mistake_tags": ["none_observed"],
+                  "failure_mode": "thesis_invalidated"},
+            headers={"HX-Request": "true"}, follow_redirects=False)
+    assert r.status_code == 204
+    assert r.headers.get("HX-Redirect") == "/reviews/pending"     # L6 invariant
+    from swing.data.db import connect
+    val = connect(app.state.cfg.paths.db_path).execute(
+        "SELECT failure_mode FROM trades WHERE id=1").fetchone()[0]
+    assert val == "thesis_invalidated"
+
+
+def test_post_review_invalid_failure_mode_is_400_not_500(test_app_closed_trade) -> None:
+    app = test_app_closed_trade
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/1/review",
+            data={"entry_grade": "A", "management_grade": "A", "exit_grade": "A",
+                  "lesson_learned": "clean", "mistake_tags": ["none_observed"],
+                  "failure_mode": "not_a_token"},
+            headers={"HX-Request": "true"})
+    # PRE-FIX: the value reaches the CHECK -> 500 IntegrityError. POST-FIX:
+    # validated against FAILURE_MODES BEFORE the DB -> a clean 400 + re-render.
+    assert r.status_code == 400
+    assert 'name="lesson_learned"' in r.text                      # form re-rendered
+    assert "failure_mode" in r.text.lower() or "failure mode" in r.text.lower()
