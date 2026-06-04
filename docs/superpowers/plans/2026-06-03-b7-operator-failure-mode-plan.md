@@ -1098,63 +1098,70 @@ git commit -m "feat(web): add failure-mode select to the review form"
 
 **Files:**
 - Modify: `swing/web/routes/trades.py:2669-2799`
-- Test: `tests/web/test_review_post_failure_mode.py` (new)
+- Test: **append** to `tests/web/test_review_route.py` (reuse its `test_app_closed_trade` fixture `:16-68` — `ensure_schema` migrates the DB to HEAD = v24; the existing happy-path POST test is at `:203-221`, the 400-re-render test at `:224-240`)
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing tests (concrete; appended to `tests/web/test_review_route.py`)**
 
-Create `tests/web/test_review_post_failure_mode.py`. Reuse the existing review-POST test setup pattern in `tests/web/` (find the closest existing `test_*review*` for the app/client + a closed-unreviewed trade seed; mirror its fixture). The three discriminating cases:
+These use the real `test_app_closed_trade` fixture (closed VIR trade id=1) already in that module. `app.state.cfg.paths.db_path` is the DB path; read it back with `swing.data.db.connect`. The success cases assert BOTH `204` AND the L6 `HX-Redirect` invariant (Codex R2 finding #2):
 
 ```python
-# Pseudocode shape — adapt the app/client/seed to the existing review-POST test
-# helper in tests/web/ (use `with TestClient(app) as client:` — lifespan).
-def test_empty_failure_mode_persists_null(client, closed_trade_id, db_path):
-    resp = client.post(
-        f"/trades/{closed_trade_id}/review",
-        data={"entry_grade": "A", "management_grade": "A", "exit_grade": "A",
-              "lesson_learned": "clean", "mistake_tags": ["none_observed"],
-              "failure_mode": ""},  # blank -> ... or None -> NULL
-        headers={"HX-Request": "true"})
-    assert resp.status_code == 204  # success path unchanged
-    import sqlite3
-    val = sqlite3.connect(db_path).execute(
-        "SELECT failure_mode FROM trades WHERE id=?", (closed_trade_id,)).fetchone()[0]
-    # PRE-FIX: KeyError/422 (no such Form field) OR the column never written.
-    # POST-FIX: NULL persisted (the ... or None gotcha).
+def test_post_review_blank_failure_mode_persists_null(test_app_closed_trade) -> None:
+    app = test_app_closed_trade
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/1/review",
+            data={"entry_grade": "A", "management_grade": "A", "exit_grade": "A",
+                  "lesson_learned": "clean", "mistake_tags": ["none_observed"],
+                  "failure_mode": ""},
+            headers={"HX-Request": "true"}, follow_redirects=False)
+    assert r.status_code == 204                                   # success unchanged
+    assert r.headers.get("HX-Redirect") == "/reviews/pending"     # L6 invariant
+    from swing.data.db import connect
+    val = connect(app.state.cfg.paths.db_path).execute(
+        "SELECT failure_mode FROM trades WHERE id=1").fetchone()[0]
+    # PRE-FIX: 422 (unknown Form field) OR column never written. POST-FIX: the
+    # ... or None gotcha persists NULL on a blank submit.
     assert val is None
 
 
-def test_valid_failure_mode_persists(client, closed_trade_id, db_path):
-    resp = client.post(
-        f"/trades/{closed_trade_id}/review",
-        data={"entry_grade": "A", "management_grade": "A", "exit_grade": "A",
-              "lesson_learned": "clean", "mistake_tags": ["none_observed"],
-              "failure_mode": "thesis_invalidated"},
-        headers={"HX-Request": "true"})
-    assert resp.status_code == 204
-    import sqlite3
-    val = sqlite3.connect(db_path).execute(
-        "SELECT failure_mode FROM trades WHERE id=?", (closed_trade_id,)).fetchone()[0]
+def test_post_review_valid_failure_mode_persists(test_app_closed_trade) -> None:
+    app = test_app_closed_trade
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/1/review",
+            data={"entry_grade": "A", "management_grade": "A", "exit_grade": "A",
+                  "lesson_learned": "clean", "mistake_tags": ["none_observed"],
+                  "failure_mode": "thesis_invalidated"},
+            headers={"HX-Request": "true"}, follow_redirects=False)
+    assert r.status_code == 204
+    assert r.headers.get("HX-Redirect") == "/reviews/pending"     # L6 invariant
+    from swing.data.db import connect
+    val = connect(app.state.cfg.paths.db_path).execute(
+        "SELECT failure_mode FROM trades WHERE id=1").fetchone()[0]
     assert val == "thesis_invalidated"
 
 
-def test_invalid_failure_mode_is_400_not_500(client, closed_trade_id):
-    resp = client.post(
-        f"/trades/{closed_trade_id}/review",
-        data={"entry_grade": "A", "management_grade": "A", "exit_grade": "A",
-              "lesson_learned": "clean", "mistake_tags": ["none_observed"],
-              "failure_mode": "not_a_token"},
-        headers={"HX-Request": "true"})
-    # PRE-FIX: the value would reach the CHECK -> a 500 IntegrityError. POST-FIX:
+def test_post_review_invalid_failure_mode_is_400_not_500(test_app_closed_trade) -> None:
+    app = test_app_closed_trade
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/1/review",
+            data={"entry_grade": "A", "management_grade": "A", "exit_grade": "A",
+                  "lesson_learned": "clean", "mistake_tags": ["none_observed"],
+                  "failure_mode": "not_a_token"},
+            headers={"HX-Request": "true"})
+    # PRE-FIX: the value reaches the CHECK -> 500 IntegrityError. POST-FIX:
     # validated against FAILURE_MODES BEFORE the DB -> a clean 400 + re-render.
-    assert resp.status_code == 400
-    assert b"failure_mode" in resp.content or b"failure mode" in resp.content.lower()
+    assert r.status_code == 400
+    assert 'name="lesson_learned"' in r.text                      # form re-rendered
+    assert "failure_mode" in r.text.lower() or "failure mode" in r.text.lower()
 ```
 
-> The new schema test seeds a v24 DB; the web app under test must also be on a v24 DB. If the existing web-review fixture builds the DB via `run_migrations` (no explicit target), it now reaches v24 automatically (`EXPECTED_SCHEMA_VERSION == 24`). Confirm the fixture does not pin an older `target_version`.
+> `ensure_schema` (used by `test_app_closed_trade`) migrates to `EXPECTED_SCHEMA_VERSION` = 24, so the `failure_mode` column exists in the fixture DB. `TestClient`, `pytest`, and the fixture are already imported at the top of `test_review_route.py`.
 
 - [ ] **Step 2: Run to verify FAIL**
 
-Run: `python -m pytest tests/web/test_review_post_failure_mode.py -q`
+Run: `python -m pytest tests/web/test_review_route.py -k failure_mode -q`
 Expected: FAIL (422 from the unknown Form field, or 500 on the invalid token).
 
 - [ ] **Step 3: Implement**
@@ -1184,13 +1191,13 @@ In `swing/web/routes/trades.py` `review_post`:
 
 - [ ] **Step 4: Run to verify PASS**
 
-Run: `python -m pytest tests/web/test_review_post_failure_mode.py -q`
+Run: `python -m pytest tests/web/test_review_route.py -k failure_mode -q`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add swing/web/routes/trades.py tests/web/test_review_post_failure_mode.py
+git add swing/web/routes/trades.py tests/web/test_review_route.py
 git commit -m "feat(web): validate and persist failure_mode on review POST"
 ```
 
@@ -1303,56 +1310,60 @@ git commit -m "feat(web): fold failure-mode label into the chronology review ent
 
 **Files:**
 - Modify: `swing/cli.py:1330-1483`
-- Test: `tests/cli/test_trade_review_failure_mode.py` (new; mirror the closest existing `tests/cli/test_*review*`)
+- Test: **append** to `tests/cli/test_trade_review_cli.py` (reuse its `_setup(tmp_path) -> (runner, cfg, db_path)` `:28-39` and `_seed_closed_trade(db_path) -> trade_id` `:42-95`; `ensure_schema` migrates to HEAD = v24; `main` is imported at `:20`)
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing tests (concrete; appended to `tests/cli/test_trade_review_cli.py`)**
 
-Create `tests/cli/test_trade_review_failure_mode.py` (use `click.testing.CliRunner`; seed a closed-unreviewed trade on a v24 DB via the existing CLI-test fixture pattern):
+These reuse the module's existing `_setup` + `_seed_closed_trade` helpers and the `["--config", str(cfg), "trade", "review", …]` invocation shape (verified against `:102-114`):
 
 ```python
-# Adapt the seed/runner to the existing CLI review test. Three cases:
-def test_cli_valid_failure_mode_persists(runner, cfg, closed_trade_id, db_path):
+def test_cli_valid_failure_mode_persists(tmp_path: Path) -> None:
+    runner, cfg, db_path = _setup(tmp_path)
+    trade_id = _seed_closed_trade(db_path)
     res = runner.invoke(main, [
-        "trade", "review", "--trade-id", str(closed_trade_id),
+        "--config", str(cfg), "trade", "review", "--trade-id", str(trade_id),
         "--entry-grade", "A", "--management-grade", "A", "--exit-grade", "A",
         "--mistake-tags", "none_observed", "--lesson-learned", "clean",
-        "--failure-mode", "thesis_invalidated"], obj={"config": cfg})
+        "--failure-mode", "thesis_invalidated"])
     assert res.exit_code == 0, res.output
-    import sqlite3
-    assert sqlite3.connect(db_path).execute(
+    from swing.data.db import connect
+    assert connect(db_path).execute(
         "SELECT failure_mode FROM trades WHERE id=?",
-        (closed_trade_id,)).fetchone()[0] == "thesis_invalidated"
+        (trade_id,)).fetchone()[0] == "thesis_invalidated"
 
 
-def test_cli_omitted_failure_mode_persists_null(runner, cfg, closed_trade_id, db_path):
+def test_cli_omitted_failure_mode_persists_null(tmp_path: Path) -> None:
+    runner, cfg, db_path = _setup(tmp_path)
+    trade_id = _seed_closed_trade(db_path)
     res = runner.invoke(main, [
-        "trade", "review", "--trade-id", str(closed_trade_id),
+        "--config", str(cfg), "trade", "review", "--trade-id", str(trade_id),
         "--entry-grade", "A", "--management-grade", "A", "--exit-grade", "A",
-        "--mistake-tags", "none_observed", "--lesson-learned", "clean"],
-        obj={"config": cfg})
+        "--mistake-tags", "none_observed", "--lesson-learned", "clean"])
     assert res.exit_code == 0, res.output
-    import sqlite3
-    assert sqlite3.connect(db_path).execute(
+    from swing.data.db import connect
+    assert connect(db_path).execute(
         "SELECT failure_mode FROM trades WHERE id=?",
-        (closed_trade_id,)).fetchone()[0] is None
+        (trade_id,)).fetchone()[0] is None
 
 
-def test_cli_invalid_failure_mode_is_clean_clickexception(runner, cfg, closed_trade_id):
+def test_cli_invalid_failure_mode_is_clean_clickexception(tmp_path: Path) -> None:
+    runner, cfg, db_path = _setup(tmp_path)
+    trade_id = _seed_closed_trade(db_path)
     res = runner.invoke(main, [
-        "trade", "review", "--trade-id", str(closed_trade_id),
+        "--config", str(cfg), "trade", "review", "--trade-id", str(trade_id),
         "--entry-grade", "A", "--management-grade", "A", "--exit-grade", "A",
         "--mistake-tags", "none_observed", "--lesson-learned", "clean",
-        "--failure-mode", "not_a_token"], obj={"config": cfg})
+        "--failure-mode", "not_a_token"])
     # PRE-FIX: "No such option: --failure-mode" (exit 2). POST-FIX: a clean
-    # ClickException message (exit 1), NOT a traceback.
+    # ClickException message (exit 1), NOT a traceback (no leaked ValueError).
     assert res.exit_code != 0
-    assert res.exception is None or isinstance(res.exception, SystemExit)
-    assert "failure_mode" in res.output or "failure mode" in res.output.lower()
+    assert not isinstance(res.exception, (KeyError, AttributeError, TypeError, ValueError))
+    assert "failure" in res.output.lower()
 ```
 
 - [ ] **Step 2: Run to verify FAIL**
 
-Run: `python -m pytest tests/cli/test_trade_review_failure_mode.py -q`
+Run: `python -m pytest tests/cli/test_trade_review_cli.py -k failure_mode -q`
 Expected: FAIL — `No such option: --failure-mode`.
 
 - [ ] **Step 3: Implement**
@@ -1412,13 +1423,13 @@ Optionally extend the success echo (`:1480-1483`) with an ASCII suffix (plain hy
 
 - [ ] **Step 4: Run to verify PASS**
 
-Run: `python -m pytest tests/cli/test_trade_review_failure_mode.py -q`
+Run: `python -m pytest tests/cli/test_trade_review_cli.py -k failure_mode -q`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add swing/cli.py tests/cli/test_trade_review_failure_mode.py
+git add swing/cli.py tests/cli/test_trade_review_cli.py
 git commit -m "feat(cli): add --failure-mode option to the trade review command"
 ```
 
@@ -1537,7 +1548,7 @@ TestClient cannot catch the HTMX browser-only surfaces (`hx-headers` OriginGuard
 - §7.1 #1-8 tests → A1 (#1-3,7), B3/B6/B1 (#8 ASCII), B4 (#4), B7 (#5), B5 (#6). ✅
 - §7.2 browser gate incl. unseeded-blank → the gate section. ✅
 
-**Placeholder scan:** no "TBD"/"handle edge cases"; the only pseudocode is the web/CLI test SHAPES (Tasks B4/B6) where the app/client/seed fixture must mirror the project's existing review-POST / CLI-review test harness — flagged explicitly with the exact assertions and discriminating pre/post values; the executor wires the fixture from the nearest existing test. The `_mk` helper in A1 Step 3 is flagged to hoist above first use.
+**Placeholder scan:** no "TBD"/"handle edge cases". The web (B4) and CLI (B6) tests are now CONCRETE — they append to the real harness files (`tests/web/test_review_route.py`'s `test_app_closed_trade` fixture; `tests/cli/test_trade_review_cli.py`'s `_setup` + `_seed_closed_trade`) with real fixtures, not undefined `client`/`runner` params (resolved per Codex R2). The `_mk` helper in A1 Step 3 is flagged to hoist above first use.
 
 **Type consistency:** `failure_mode: str | None` everywhere (model field, `update_trade_review_fields` param, `complete_trade_review` param, POST `Form(None)`, CLI option, `failure_mode_label` arg). `FAILURE_MODE_DISPLAY: tuple[tuple[str, str], ...]`; `ReviewVM.failure_mode_choices: tuple[tuple[str, str], ...]`. `_TRADE_SELECT_COLS_V21_TO_V23` matches the naming family. `failure_mode` is column index **54** in all three projections (0-53 unchanged).
 
