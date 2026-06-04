@@ -155,15 +155,21 @@ def _daily_management_entries(conn, trade_id) -> list[ChronologyEntry]:
 
 
 def _review_entry(conn, trade_id) -> list[ChronologyEntry]:
-    # Verified trades review columns (models.py:214-223): reviewed_at,
-    # process_grade, lesson_learned, mistake_tags (JSON-list TEXT).
+    # Verified trades review columns (models.py): reviewed_at, process_grade,
+    # lesson_learned, mistake_tags. B-7: failure_mode is PRAGMA-aware so a pre-v24
+    # DB / chronology fixture renders without `no such column: failure_mode`.
+    from swing.trades.review import failure_mode_label
+    has_fm = "failure_mode" in {
+        r[1] for r in conn.execute("PRAGMA table_info(trades)").fetchall()
+    }
+    fm_select = "failure_mode" if has_fm else "NULL AS failure_mode"
     row = conn.execute(
-        "SELECT reviewed_at, process_grade, lesson_learned, mistake_tags "
-        "FROM trades WHERE id = ? AND reviewed_at IS NOT NULL",
+        f"SELECT reviewed_at, process_grade, lesson_learned, mistake_tags, "
+        f"{fm_select} FROM trades WHERE id = ? AND reviewed_at IS NOT NULL",
         (trade_id,)).fetchone()
     if not row:
         return []
-    reviewed_at, grade, lesson, tags = row
+    reviewed_at, grade, lesson, tags, failure_mode = row
     ts_key, malformed = _normalize_ts(reviewed_at, precision="datetime")
     # WP-R3 M#4: detail carries the full lesson AND the mistake tags. Decode
     # the JSON tag list best-effort into a readable form for display.
@@ -179,8 +185,10 @@ def _review_entry(conn, trade_id) -> list[ChronologyEntry]:
             tag_display = str(tags)
     # FIX-4: 'review' is the kind (shown once); the summary is the process
     # grade only. The full lesson + mistake tags live ONCE in detail (no
-    # duplicated one-line lesson in the summary).
-    detail = "; ".join(b for b in (lesson, tag_display) if b)
+    # duplicated one-line lesson in the summary). B-7: the failure-mode label
+    # leads the detail when attributed.
+    fm_label = failure_mode_label(failure_mode)
+    detail = "; ".join(b for b in (fm_label, lesson, tag_display) if b)
     return [ChronologyEntry(
         ts=ts_key, source="review", kind="review",
         summary=(str(grade) if grade else ""),
