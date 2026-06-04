@@ -65,7 +65,10 @@ change).
 2. The provenance-by-construction confirmation (Sec 3.4 / Sec 8 -- D4).
 3. Idempotency + first-detection-wins provenance under ~83x population + same-day
    bucket flips (Sec 5).
-4. The pattern-outcomes-tile isolation confirmation (Sec 6).
+4. Consumer isolation -- the detect step also writes the sibling `pattern_evaluations`,
+   which HAS operator-facing consumers; the aggregate/queue ones must be isolated to
+   aplus-origin so the widen stays invisible (Sec 6 -- the substantive surface a Codex
+   round corrected).
 5. The test rework (Sec 7).
 
 ### 1.3 The bucket semantics (why widening is correct, not a gate relaxation)
@@ -146,18 +149,29 @@ counter counts):
 ```python
 run_warnings.append({
     "step": "pattern_detect",
-    "expected_pool": len(candidates),       # total candidate rows this run
-    "actual_pool": 0,                        # aplus+watch tickers entering detect
-    "actual_pool_by_bucket": {"aplus": 0, "watch": 0},  # per-bucket breakdown
+    "expected_pool": len(candidates),        # total candidate rows this run
+    "expected_detect_pool": 0,               # aplus+watch tickers (pre-cap)
+    "expected_pool_by_bucket": {"aplus": 0, "watch": 0},  # the aplus+watch split
+    "actual_pool": 0,                        # tickers ENTERING the detect loop (post-cap)
+    "actual_pool_by_bucket": {"aplus": 0, "watch": 0},    # post-cap per-bucket split
     "reason": "zero aplus|watch candidates",
 })
 ```
 
-- `expected_pool` = total candidate rows (unchanged unit).
-- `actual_pool` = count of tickers entering the detect loop (= aplus + watch).
-- `actual_pool_by_bucket` = the per-bucket split, computed from `candidates`
-  pre-predicate (so the empty-pool path still reports e.g. `{"aplus":0,"watch":0}`
-  even when both are zero).
+**Standardized audit vocabulary (MANDATORY -- the SAME keys + units in BOTH the
+empty-pool audit and the dormant-cap audit, Sec 4.4 -- this closes a Codex MAJOR
+that flagged a per-key unit conflict; Expansion #8):**
+- `expected_pool` = total candidate rows this run (`len(candidates)`). SAME unit
+  everywhere -- never repurposed.
+- `expected_detect_pool` = the aplus+watch count BEFORE any cap (the pool the
+  predicate selects).
+- `expected_pool_by_bucket` = the aplus+watch split before any cap, computed from
+  `candidates` pre-predicate (so the empty-pool path still reports
+  `{"aplus":0,"watch":0}` even when both are zero).
+- `actual_pool` = count of tickers ENTERING the detect loop (= aplus+watch AFTER any
+  cap; equals `expected_detect_pool` when uncapped).
+- `actual_pool_by_bucket` = the post-cap per-bucket split.
+- `dropped_count` (cap path only) = `expected_detect_pool - actual_pool`.
 - The field `actual_aplus_pool` is REMOVED. **Back-compat: confirmed safe.** A grep
   of the repo shows the ONLY reader of `actual_aplus_pool` is one test
   (`tests/pipeline/test_step_pattern_detect_temporal_extension.py:195`); NO
@@ -268,36 +282,67 @@ measured numbers); the spec fixes the SHAPE of the decision, not the numbers.
 Per OQ-1 (operator-confirmed: no cap + dormant mechanism), V1 ships uncapped, but
 the spec DESIGNS the cap so the operator can flip it on later without re-architecture:
 
-- **WHERE it sits.** A cap on the DETECT pool (cap the number of watch tickers
-  admitted per night) is the cleanest insertion point -- it bounds both detect and
-  the downstream observe population at the source. A shorter watch-origin observation
-  window (a watch-specific `observe_max_*`) is the alternative lever; it caps observe
-  cost without capping detect coverage. The spec recommends the detect-pool cap as
-  the primary knob and notes the shorter-window as a secondary option.
-- **The knob.** A `cfg.pipeline.*` setting, default OFF/unbounded in V1, e.g.
-  `detect_watch_pool_cap: int | None = None` (None = uncapped) +, if the
-  shorter-window lever is wanted, `observe_max_pending_window_sessions_watch` /
-  `_post_trigger_window_sessions_watch` (None = inherit the aplus defaults).
-- **The selection rule** (when a cap is active). Deterministic + documented (e.g.
-  rank watch tickers by `rs_rank` ascending, take the top N) -- NOT random
-  (reproducibility; vary nothing across re-runs of the same session).
-- **The #27 audit (MANDATORY whenever the cap drops anything).** Emit a
-  `warnings_json` entry accounting for every dropped/sampled detection:
+**TWO distinct levers (they bound DIFFERENT costs at DIFFERENT times -- a Codex
+MAJOR flagged that the spec previously conflated them):**
+
+- **Lever 1 -- the DETECT-pool cap (FUTURE-only relief).** Cap the number of watch
+  tickers admitted to the detect loop per night (`cfg.pipeline.detect_watch_pool_cap:
+  int | None = None`; None = uncapped). It bounds the detect-step CPU AND the
+  GROWTH of the open-detection population, so it caps FUTURE observe load. **It does
+  NOT reduce the EXISTING open-detection backlog:** detections already open keep
+  generating `_bar_for_date` calls for the remainder of their ~90-session lifecycle.
+  So the detect cap is a steady-state-growth limiter, NOT an immediate breaker-relief
+  mechanism. If the operator flips it on because a live night tripped the
+  `OhlcvCache` breaker, it will NOT relieve that night -- the backlog runs off over
+  ~90 sessions.
+- **Lever 2 -- the OBSERVE-side window/cap (IMMEDIATE relief).** For immediate
+  relief of an existing backlog, the lever is a shorter watch-origin observation
+  window (`observe_max_pending_window_sessions_watch` /
+  `_post_trigger_window_sessions_watch`; None = inherit the aplus defaults) and/or a
+  per-night observe cap on how many open detections are bar-looked-up. A shorter
+  watch window EXPIRES existing watch-origin detections sooner (they leave the open
+  set), cutting the daily `_bar_for_date` volume on the NEXT run -- the only lever
+  that shrinks an already-accumulated backlog. The runoff semantic: shortening the
+  window does NOT delete or mutate locked observations (append-only / L5); it changes
+  the OPEN-set membership predicate so already-past-horizon detections are no longer
+  re-observed (they transition to `expired` via the existing `_advance_status`
+  horizon path -- no new terminal state, no schema change).
+
+**The selection rule** (Lever 1, when active). Deterministic + documented (e.g. rank
+watch tickers by `rs_rank` ascending, take the top N) -- NOT random (reproducibility;
+vary nothing across re-runs of the same session). Lever 2 needs no selection rule
+(it is window-based, applied uniformly to watch-origin detections).
+
+**The #27 audit (MANDATORY whenever EITHER lever drops/sheds anything).** Emit a
+`warnings_json` entry using the SAME standardized vocabulary as Sec 3.2:
 
 ```python
+# Lever 1 (detect-pool cap):
 run_warnings.append({
     "step": "pattern_detect",
-    "expected_pool": <aplus+watch count before cap>,
+    "expected_pool": len(candidates),                 # total candidate rows
+    "expected_detect_pool": <aplus+watch before cap>, # the predicate's selection
+    "expected_pool_by_bucket": {"aplus": A, "watch": W_full},
     "actual_pool": <count after cap>,
     "actual_pool_by_bucket": {"aplus": A, "watch": W_capped},
-    "dropped_count": <expected - actual>,
+    "dropped_count": <expected_detect_pool - actual_pool>,
     "dropped_bucket": "watch",
-    "reason": "watch pool capped at <N> (cfg.pipeline.detect_watch_pool_cap)",
+    "reason": "watch detect pool capped at <N> (cfg.pipeline.detect_watch_pool_cap)",
+})
+# Lever 2 (observe-side shorter watch window / per-night observe cap):
+run_warnings.append({
+    "step": "pattern_observe",
+    "shed_count": <open watch detections not observed this run due to the cap/window>,
+    "reason": "watch observe window shortened to <N> sessions "
+              "(cfg.pipeline.observe_max_*_watch)" |
+              "watch observe per-night cap <N> (cfg.pipeline.observe_watch_cap)",
 })
 ```
 
 A silent cap is FORBIDDEN (L4 / #27): a wider-but-partially-dropped pool MUST NOT
-read as "covered everything."
+read as "covered everything." Both levers ship DORMANT in V1 (knobs default None);
+the operator flips the one that matches the cost they need to bound (growth vs
+existing backlog).
 
 ---
 
@@ -346,29 +391,86 @@ detection row, with `finviz_screen_state` carrying the FIRST run's bucket (`watc
 
 ---
 
-## 6. Q5 -- pattern-outcomes tile isolation
+## 6. Q5 -- consumer isolation (the temporal log AND the sibling `pattern_evaluations`)
 
-### 6.1 Confirmed uncontaminated by construction (grep result)
+### 6.1 The temporal log has ZERO consumers (confirmed by grep)
 
-- A grep of `swing/web/` for `pattern_detection_events`,
-  `pattern_forward_observations`, and `list_observable_detections` returns **ZERO
-  hits.** No web surface reads the widened log.
-- The 9th metric tile
-  [`swing/metrics/pattern_outcomes.py`](../../../swing/metrics/pattern_outcomes.py)
-  is **exemplar-driven**: it reads `pattern_exemplars` by `label_source`
-  (`closed_loop_review`, `organic_trade_history`, `curated_gold`) + `final_decision`
-  (`confirmed`) -- NOT `pattern_detection_events` / `pattern_forward_observations`.
+A grep of `swing/web/` for `pattern_detection_events`, `pattern_forward_observations`,
+and `list_observable_detections` returns **ZERO hits.** Nothing reads the temporal
+observation log; widening it cannot contaminate any existing surface. The
+`pattern_outcomes` 9th tile's TRIGGERING numerator (`_count_triggering_n_k`) is
+exemplar-driven (`pattern_exemplars` by `label_source`/`final_decision`), not
+detection-driven.
 
-**Implication:** widening the pool cannot contaminate any existing surface -- there
-is none. Q5 isolation holds by construction; no V1 code is needed to enforce it.
+### 6.2 BUT the detect step ALSO writes `pattern_evaluations` -- which HAS consumers (Codex MAJOR -- corrected premise)
 
-### 6.2 Forward hygiene for future consumers (OQ-5: document -- recommend)
+`_step_pattern_detect` writes a `pattern_evaluations` row (`insert_evaluation`,
+`runner.py:2195`) for EVERY emitted detect-pool verdict, BEFORE appending the
+detection event. The commissioning brief's Q5 premise (the tile is "exemplar-driven,
+uncontaminated") was INCOMPLETE: the tile's reached-1R/hit-stop denominator
+(`_count_reached_1r_hit_stop`, `pattern_outcomes.py:100`, wired at `:200`) reads
+`pattern_evaluations`. Today detect is aplus-only, so every `pattern_evaluations` row
+is aplus-origin and all consumers implicitly see aplus-only. **The widen adds
+watch-origin rows -> existing consumers can change.** A full grep of `swing/` for
+`pattern_evaluations` reads yields these consumers, categorized by contamination
+TYPE:
 
-There is no V1 consumer either way, so no V1 code. The spec DOCUMENTS a forward-hygiene
-recommendation: any FUTURE consumer of the widened log should DEFAULT to aplus-only
-with watch as an explicit opt-in filter (read the bucket from `finviz_screen_state`).
-This keeps the eventual consumer surface honest about the looser-VCP provenance of
-watch-origin detections. (Statement only; not enforced in V1.)
+| Consumer | File:line | Type | V1 treatment |
+|---|---|---|---|
+| pattern-outcomes tile reached-1R/hit-stop denominator | `metrics/pattern_outcomes.py:100` | **silent aggregate** (a displayed statistic shifts with NO operator action) | **ISOLATE** to aplus-origin |
+| review-form B.4 "last N similar-score" cohort | `web/view_models/patterns/review_form.py:343` | **silent aggregate** (cohort composition shifts) | **ISOLATE** to aplus-origin |
+| active_learning pattern-review QUEUE (all PEs for latest run) | `patterns/active_learning.py:243` | **queue flood** (~83x more review-queue items, no operator action) | **ISOLATE** to aplus-origin |
+| detect-step histogram seed | `runner.py:1587,1596,1861` | **intra-step universe** (the detector universe SHOULD include watch) | KEEP (intended; not contamination) |
+| entry-form PE-anchor resolve (dashboard) | `web/view_models/dashboard.py:787,798` | **by-ticker backlink** (operator selected the ticker) | KEEP (see 6.4) |
+| entry-form PE-anchor resolve (trades VM) | `web/view_models/trades.py:698` | by-ticker backlink | KEEP |
+| entry POST anchor validation | `web/routes/trades.py:1162` | by-id backlink | KEEP |
+| entry candidate resolution from pe_id | `trades/entry.py:332` | by-id backlink | KEEP |
+| journal pattern_class by pe_id | `web/view_models/journal.py:288` | by-id backlink (already-linked trades) | KEEP |
+| repo single-row fetch by id | `data/repos/pattern_evaluations.py:105,147` | by-id repo primitive | KEEP |
+
+### 6.3 The isolation mechanism (D4-safe -- NO schema change)
+
+`pattern_evaluations` has NO bucket column (and D4 forbids adding one). The bucket is
+reached by joining `pattern_evaluations -> pipeline_runs -> candidates` on
+(`ticker`, `evaluation_run_id`) and filtering `candidates.bucket = 'aplus'`. The
+pattern-outcomes + review-form cohort queries ALREADY join `candidates` (for the
+trades backlink), so adding the aplus filter is a localized SQL change; the
+active_learning queue query (`WHERE pipeline_run_id = ?`) gains a `candidates` join.
+
+**Run-pruning edge (writing-plans SQL design point).** A `candidates` row can be
+absent if its run was pruned. But every `pattern_evaluations` row that exists BEFORE
+the widen ships is aplus-origin by construction (forward-walk; the widen only adds
+watch rows from ship date forward). So the isolation predicate is "include iff
+origin-candidate `bucket = 'aplus'`"; rows whose candidate is unavailable are
+historical aplus-origin and SHOULD be included. Writing-plans pins the exact SQL
+(e.g. `LEFT JOIN candidates ... WHERE c.bucket = 'aplus' OR c.id IS NULL`), with a
+discriminating test for both the present-candidate and pruned-candidate paths.
+
+### 6.4 Why the by-ticker/by-id backlinks are KEPT (deliberate exception to "isolate all")
+
+The operator's "isolate all (invisible widen)" decision (OQ-7) targets surfaces that
+change WITHOUT operator action -- the genuine "the widen became visible" leak (6.2
+silent-aggregate + queue). The by-ticker/by-id backlinks are a DIFFERENT category:
+they surface a watch PE ONLY when the operator explicitly enters/reviews a trade on
+that specific ticker. Today, entering a trade on a watch ticker finds NO PE
+(`resolved_pattern_evaluation_id` stays None -> unanchored trade); after the widen
+the trade auto-links to its watch detection -- an IMPROVEMENT, not contamination, and
+it changes NO displayed statistic. **Blanket-isolating these backlinks to aplus-only
+would BREAK legitimate watch-ticker trade linkage** (a watch ticker the operator
+trades could no longer anchor to its detection). So they are KEPT, with this rationale
+recorded. This is the one place the implementation honors the INTENT of "invisible
+widen" (no surface changes without operator action) over a literal reading; it is
+**flagged for operator confirmation at writing-plans (OQ-7)** in case the operator
+wants the stricter literal isolation (which would then also need a decision on
+watch-ticker trade-anchor behavior).
+
+### 6.5 Forward hygiene for future temporal-log consumers (OQ-5: document -- recommend)
+
+No V1 consumer of the temporal log exists, so no V1 code. The spec DOCUMENTS: any
+FUTURE consumer of the widened temporal log should DEFAULT to aplus-only with watch
+as an explicit opt-in filter (read the bucket from `finviz_screen_state`). This keeps
+the eventual consumer surface honest about the looser-VCP provenance of watch-origin
+detections. (Statement only; not enforced in V1.)
 
 ---
 
@@ -377,32 +479,53 @@ watch-origin detections. (Statement only; not enforced in V1.)
 ### 7.1 Test rework (per `feedback_verify_regression_test_arithmetic`)
 
 Every new/changed test must DISTINGUISH the aplus-only path from the aplus+watch path
--- compute the asserted count under BOTH paths and confirm they differ (so the test
-actually exercises the widen). Test surfaces (enumerate via grep at brainstorm; pin
-exact files at writing-plans):
+-- the asserted value is computed under BOTH paths and they MUST differ (so the test
+actually exercises the widen, not a tautology). Each bullet states both expectations
+explicitly. Test surfaces (enumerate via grep at brainstorm; pin exact files at
+writing-plans):
 
-1. **Detect-pool widen test.** A fixture with aplus + watch + skip candidates;
-   assert the detect loop processes aplus+watch (not skip). Arithmetic: under
-   aplus-only, N detections = (aplus count); under aplus+watch, N = (aplus + watch);
-   assert the latter (and that it strictly exceeds the aplus-only count).
-2. **Provenance-by-construction test (D4).** Plant a watch candidate that produces a
-   detection; assert its `finviz_screen_state` JSON carries `"bucket": "watch"`. This
-   is the discriminating test that confirms D4 by construction.
-3. **Bucket-flip idempotency test (Q4 / Sec 5.2).** Two same-day runs, ticker flips
-   watch->aplus; assert exactly one detection row + first bucket (`watch`) locked in
-   `finviz_screen_state`.
-4. **#27 audit-accuracy test.** (a) Widened-empty pool: assert the warning carries
-   `actual_pool: 0` + `actual_pool_by_bucket: {"aplus":0,"watch":0}` and NO
-   `actual_aplus_pool` key. (b) Dormant-cap path (even though V1 ships uncapped):
-   with the cap knob set, assert the `dropped_count` / `dropped_bucket` /
-   `reason` accounting is emitted and accurate. Update the existing
-   `tests/pipeline/test_step_pattern_detect_temporal_extension.py:195` assertion
-   (the only reader of the old field name).
-5. **Observe-scaling test.** Seed multiple open watch-origin detections; assert the
+1. **Detect-pool widen test.** Fixture: A aplus + W watch + S skip candidates, each
+   producing a detectable window. **aplus-only:** detect loop processes A tickers ->
+   A detections. **aplus+watch:** A+W tickers -> A+W detections (and skip never
+   enters either path). Assert the count == A+W AND strictly > A.
+2. **Provenance-by-construction test (D4).** Plant ONE watch candidate that produces
+   a detection. **aplus-only:** 0 detection rows for it. **aplus+watch:** 1 row whose
+   `finviz_screen_state` JSON carries `"bucket": "watch"`. Assert the widened path's
+   row + bucket value.
+3. **Bucket-flip idempotency test (Q4 / Sec 5.2).** Two same-day runs, same
+   `detection_date`, ticker flips watch (run 1) -> aplus (run 2). **aplus-only:** run
+   1 skips the ticker (not aplus) -> run 2 inserts 1 row locked `aplus`.
+   **aplus+watch:** run 1 inserts 1 row locked `watch` -> run 2 finds it + skips ->
+   still 1 row, bucket STILL `watch` (first-detection-wins). Assert exactly 1 row +
+   bucket==`watch` on the widened path (this is the discriminating difference: the two
+   paths lock DIFFERENT buckets).
+4. **#27 audit-accuracy test.** (a) Widened-empty pool (candidates all `skip`): both
+   paths have zero detect pool, but assert the WIDENED audit carries `actual_pool: 0`
+   + `actual_pool_by_bucket: {"aplus":0,"watch":0}` + `expected_detect_pool: 0` and NO
+   `actual_aplus_pool` key (the field-name/shape is the discriminator; update the
+   existing `tests/pipeline/test_step_pattern_detect_temporal_extension.py:195`
+   assertion -- the only reader of the old name). (b) Dormant Lever-1 cap path: with
+   `detect_watch_pool_cap=N` set and W>N watch tickers, assert
+   `dropped_count == (A+W) - actual_pool`, `dropped_bucket=="watch"`, accurate
+   `reason`. (c) Dormant Lever-2 observe path: with a shortened watch window, assert
+   the `pattern_observe` `shed_count` + `reason` accounting.
+5. **PE-isolation tests (Sec 6.2/6.3 -- the Codex MAJOR fix).** For EACH of the 3
+   isolated consumers (pattern-outcomes tile denominator, review-form B.4 cohort,
+   active_learning queue): plant a watch-origin `pattern_evaluations` row that WOULD
+   match/enter the aggregate, plus an aplus-origin row. **Pre-isolation (no filter):**
+   the watch row enters -> denominator/cohort/queue count = aplus + watch.
+   **Post-isolation (aplus filter):** = aplus only. Assert the widen does NOT change
+   the displayed count vs the aplus-only baseline. Include the pruned-candidate edge
+   (a historical aplus-origin row with no candidate row still counts).
+6. **Backlink-KEEP test (Sec 6.4).** Enter a trade on a watch ticker; assert the
+   entry-form PE-anchor resolves to the watch detection's `pattern_evaluations` row
+   (NOT None) -- i.e. the backlink is deliberately NOT isolated. (Guards against an
+   over-eager blanket isolation regressing legitimate watch-ticker linkage.)
+7. **Observe-scaling test.** Seed multiple open watch-origin detections; assert the
    observe step appends one observation per open detection per session and the
    idempotent already-observed-today guard holds at scale; assert the net-new-fetch
    counter/probe (Sec 4.2) is emitted.
-6. **Existing-fixture migration.** The detect/observe + temporal e2e fixtures that
+8. **Existing-fixture migration.** The detect/observe + temporal e2e fixtures that
    assume aplus-only must be re-baselined for aplus+watch (writing-plans pins the
    exact files; gotcha #1: trust the final pytest count, not an estimate).
 
@@ -443,23 +566,31 @@ gate). The gate is:
 
 ## 9. Slice recommendation
 
-This is a small, contained change best executed as a single tight slice (the
-substance is verification + measurement + tests, not feature breadth):
+The substance is verification + isolation + measurement + tests, not feature breadth.
+Three slices (the Codex MAJOR added the isolation slice -- it is NOT optional, it is
+what keeps the widen invisible to existing surfaces per L1):
 
 - **Slice 1 (the widen + audit + rename + provenance confirmation).** The predicate
   widen, the `aplus_tickers` -> `detect_pool_tickers` rename, the #27 audit reshape
-  (`actual_pool` + per-bucket breakdown), the `stage_2_pass_rate` comment update, the
-  FDL `universe_size` rename. Tests: detect-pool widen, provenance-by-construction,
-  bucket-flip idempotency, #27 audit-accuracy (widened-empty). This is the shippable
-  core.
-- **Slice 2 (the dormant cap mechanism + observe-load instrumentation).** The cfg
-  knob (default OFF), the selection rule, the cap-path #27 audit, and the observe-load
-  measurement probe. Tests: dormant-cap audit-accuracy, observe-scaling + net-new-fetch
-  counter. V1 ships the mechanism dormant; the measurement feeds the operator's
-  accept-uncapped decision.
+  (standardized vocabulary, Sec 3.2), the `stage_2_pass_rate` comment update, the FDL
+  `universe_size` rename. Tests: detect-pool widen, provenance-by-construction,
+  bucket-flip idempotency, #27 audit-accuracy (widened-empty).
+- **Slice 2 (consumer isolation -- the invisible-widen requirement, Sec 6).** Add the
+  aplus-origin filter to the 3 change-without-operator-action `pattern_evaluations`
+  consumers (pattern-outcomes tile denominator, review-form B.4 cohort,
+  active_learning queue); KEEP the by-ticker/by-id backlinks. Tests: the 3
+  PE-isolation tests + the backlink-KEEP test (Sec 7.1 #5/#6). **This slice must land
+  WITH or BEFORE Slice 1's behavior change reaches the live pipeline** -- otherwise
+  the first widened run silently shifts the tile/cohort/queue. (Writing-plans may
+  order isolation FIRST so the widen is dark until the surfaces are protected.)
+- **Slice 3 (the dormant cap levers + observe-load instrumentation).** The two cfg
+  knob families (Lever 1 detect cap, Lever 2 observe window/cap; both default None),
+  the selection rule, both #27 audit shapes, and the observe-load measurement probe.
+  Tests: dormant-cap audit-accuracy (both levers), observe-scaling + net-new-fetch
+  counter. Ships dormant; feeds the operator's accept-uncapped decision.
 
-Writing-plans may merge these into one slice if the diff stays small; the natural
-seam is "behavior change" (Slice 1) vs "dormant safety valve + measurement" (Slice 2).
+Writing-plans sets the final slice ordering; the binding constraint is Slice 2
+(isolation) not lagging Slice 1 (the widen) into the operator-visible surfaces.
 
 ---
 
@@ -470,8 +601,9 @@ seam is "behavior change" (Slice 1) vs "dormant safety valve + measurement" (Sli
 - No cap active -- dormant mechanism only (OQ-1).
 - No FeatureDistributionLog aplus/watch split -- single detector-universe snapshot
   (OQ-2).
-- No new consumer surface -- the log accumulates; nothing reads the widened slice yet
-  (L1).
+- No new consumer surface -- the temporal log accumulates; nothing reads the widened
+  slice (L1). Existing `pattern_evaluations` aggregate/queue consumers are ISOLATED to
+  aplus-origin (Sec 6) so the widen stays invisible to them.
 - No historical backfill -- forward-walk from ship date (L1).
 
 **V2 candidates (explicitly out of V1 scope; documented for the backlog):**
@@ -487,28 +619,42 @@ seam is "behavior change" (Slice 1) vs "dormant safety valve + measurement" (Sli
 
 ---
 
-## 11. Operator decision items (OQ-1..OQ-6) -- resolution log
+## 11. Operator decision items (OQ-1..OQ-7) -- resolution log
 
 | OQ | Decision | Resolved by |
 |---|---|---|
 | OQ-1 observe-load cap policy | **No cap in V1 + dormant mechanism designed** | Operator 2026-06-04 |
 | OQ-2 universe-context semantics | **Single detector-universe FDL snapshot** (split = V2) | Recommend (propagated) |
-| OQ-3 #27 audit field naming | **`actual_pool` + `actual_pool_by_bucket` breakdown** | Operator 2026-06-04 |
+| OQ-3 #27 audit field naming | **`actual_pool` + `actual_pool_by_bucket` (standardized vocabulary, Sec 3.2)** | Operator 2026-06-04 |
 | OQ-4 pre-merge gate shape | **QA + measurement + isolated step-smoke + operator-witnessed live run** | Operator 2026-06-04 |
 | OQ-5 future-consumer default | **Document aplus-only default, watch opt-in** (no V1 code) | Recommend (propagated) |
 | OQ-6 variable rename | **Rename `aplus_tickers` -> `detect_pool_tickers`** | Operator 2026-06-04 |
+| OQ-7 `pattern_evaluations` consumer isolation (Codex MAJOR) | **Isolate all (invisible widen)**: aplus-filter the 3 aggregate/queue consumers; KEEP the by-ticker/by-id backlinks (Sec 6.4) | Operator 2026-06-04 |
 
 OQ-1 (cap policy, gated on the measured numbers) and OQ-4 (gate shape) remain
 operator-binding at writing-plans -- the acceptance criterion (Sec 4.3) is judged
 against the real measurement; the live-run gate (Sec 7.2) is the operator's confirm.
+**OQ-7 carries a flagged sub-decision (Sec 6.4):** the by-ticker/by-id backlinks are
+KEPT (not isolated) because blanket isolation would break legitimate watch-ticker
+trade linkage; the operator confirms this exception at writing-plans (the alternative
+-- literal isolation of the backlinks -- additionally requires deciding watch-ticker
+trade-anchor behavior).
 
 ---
 
 ## 12. Cumulative discipline compliance
 
-- **#27 (silent-skip-without-audit).** The widened-pool empty-pool audit + the
-  dormant cap path both emit accurate `warnings_json`; NO silent cap (Sec 3.2 / 4.4).
-  Each audit field's UNIT is stated (Expansion #8).
+- **#27 (silent-skip-without-audit).** The widened-pool empty-pool audit + BOTH
+  dormant cap levers emit accurate `warnings_json` with a SINGLE standardized field
+  vocabulary (Sec 3.2 -- no per-key unit drift, the Codex MAJOR fix); NO silent cap
+  (Sec 4.4). Each audit field's UNIT is stated (Expansion #8).
+- **Consumer isolation (Sec 6 -- the Codex MAJOR fix to the commissioning brief's Q5
+  premise).** The detect step writes the sibling `pattern_evaluations`, which HAS
+  operator-facing consumers. The 3 change-without-operator-action consumers
+  (pattern-outcomes tile denominator, review-form B.4 cohort, active_learning queue)
+  are isolated to aplus-origin so the widen is invisible to them (L1); the
+  by-ticker/by-id backlinks are KEPT with rationale (Sec 6.4). PE-isolation +
+  backlink-KEEP tests (Sec 7.1 #5/#6).
 - **#28 / #29 (exemplar OHLCV cache + historical depth).** Less acute here -- watch
   tickers are IN-universe (unlike out-of-universe exemplars), so their bars are
   fetched upstream. The multi-session observe window re-raises cache-miss handling
