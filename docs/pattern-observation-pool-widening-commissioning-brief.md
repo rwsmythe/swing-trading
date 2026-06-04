@@ -145,4 +145,21 @@ Operator decisions LOCK at commissioning and propagate to the implementer dispat
 
 ---
 
+## Sec 10 Triage outcome (operator-paired, 2026-06-03) -- BANKED + SCOPED
+
+Sec 9 operator-paired triage completed 2026-06-03; decisions LOCKED for the eventual standalone commissioning:
+
+- **D1 -- BANKED.** Do NOT commission now (the process-grade-trend-redesign writing-plans arc is in flight). Commission as a standalone copowers sub-bundle AFTER the PGT-redesign arc closes (and ideally the Phase-14 cross-sub-bundle integration review). Tracked in `docs/phase3e-todo.md` §A (Phase-15 strategic backlog).
+- **D2 -- Phase-15 strategic-backlog item (B-family)** -- the B-1..B-8 substrate-augmentation family (orchestrator-recommended, operator-accepted).
+- **D3 (Q1) -- pool = `aplus + watch`** (NOT skip). Reuses already-evaluated watch tickers (OHLCV largely cached); ~83x population (3 -> 252 on the snapshot).
+- **D4 (Q2) -- `finviz_screen_state` JSON only; NO schema change.** No v25 `source_bucket` column for V1 -- there is no consumer surface yet; the bucket rides in the existing JSON. (If a future consumer needs indexed filtering, the column is a follow-on.)
+- **D5 (Q3) -- accept-and-measure.** The brainstorm MEASURES the widened observe runtime + bar-fetch volume; cap/sample ONLY if it crosses an operator threshold, and ONLY with a gotcha-#27 `warnings_json` audit (NO silent cap).
+- **D6 -- single Codex chain** per phase (orchestrator-recommended, operator-accepted; the scope is a mechanical pipeline-pool change with the analytical/consumer surface out of scope -- no methodology claim triggers the two-chain treatment).
+
+**Verified at triage (against disk):** the predicate `runner.py:1531` (`c.bucket == "aplus"`) + the #27 audit field `actual_aplus_pool:1547`; the observe step `runner.py:2503` (`list_observable_detections(source="pipeline")` -> per-open-detection cached bar + idempotency + per-ticker #27 no-bar warning); migration 0022 (the `source` enum + nullable `finviz_screen_state` JSON, NO bucket column; append-only `ohlc_today_json` LOCK-at-observation neutralizes #26/#37); the study funnel (aplus 3/0.25%, watch 249/20.6%, skip 898/74.3%; blockers trend/VCP-quality, not capital).
+
+**When commissioned:** these locks propagate into the `copowers:brainstorming` spec (Sec 4 Q1/Q2/Q3 are pre-resolved as D3/D4/D5; Q4 idempotency-under-the-wider-pool + Q5 pattern-outcomes-tile isolation remain brainstorm work). Deviations require a return-trip to the operator.
+
+---
+
 *End of commissioning brief. Mission: widen the nightly pattern detect/observe pool from aplus to aplus+watch so the Phase-14 observation log accumulates ~80× more forward-walk learning data at zero capital risk and zero Finviz-screen change — the clean expression of "decouple data-generation from capital." One contained copowers cycle. NOT a Phase-15 bolt-on (Sec 7). NOT a ruleset/sizing/screen change. NOT an implementation prompt. The substance is the observe-load bound + bucket-provenance + test rework, not the one-line predicate.*
