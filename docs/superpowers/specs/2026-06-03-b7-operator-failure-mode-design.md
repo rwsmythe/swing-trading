@@ -573,8 +573,11 @@ parity) was surfaced by the round-1 adversarial review and is recommended for V1
 
 - **Migration discipline** — gotcha #9 (explicit `BEGIN;…COMMIT;`), #11 (CHECK + frozenset +
   validator + read/write mapper in ONE task — §4.3), strict backup-gate `pre_version == target-1`
-  (§4.4), run-migrate-twice no-op test (§7.1 #1), schema-version-aware read/write via the three-era
-  PRAGMA-`table_info` branch (v24 / v21–v23 / pre-v21) + SVAI (§4.3 #4).
+  (§4.4), run-migrate-twice no-op test (§7.1 #1), schema-version-aware reads via the three-era
+  PRAGMA-`table_info` branch (v24 / v21–v23 / pre-v21) + SVAI (§4.3 #4), AND schema-version-aware
+  writes on BOTH write paths — the `insert_trade_with_event` SVAI branch and the PRAGMA-aware
+  `update_trade_review_fields` review UPDATE (None-as-no-op / non-None-against-pre-v24-raises-ValueError;
+  §4.3 #5).
 - **Form discipline (L6)** — `hx-headers HX-Request` (inherited from the existing form root), `204` +
   `HX-Redirect` success, `400` + re-render validation ladder, the server-stamped
   `auto_populated_field_keys_json` envelope untouched, `... or None` for the nullable CHECK column,
