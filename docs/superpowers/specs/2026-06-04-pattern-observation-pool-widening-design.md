@@ -325,8 +325,11 @@ watch tickers by `rs_rank` ascending, take the top N) -- NOT random (reproducibi
 vary nothing across re-runs of the same session). Lever 2 needs no selection rule
 (it is window-based, applied uniformly to watch-origin detections).
 
-**The #27 audit (MANDATORY whenever EITHER lever drops/sheds anything).** Emit a
-`warnings_json` entry using the SAME standardized vocabulary as Sec 3.2:
+**The #27 audit (MANDATORY whenever EITHER lever drops/sheds anything).** Lever 1
+(detect-pool) reuses the SAME standardized vocabulary as Sec 3.2; Lever 2 (observe
+pre-fetch shed) emits a distinct `pattern_observe` entry keyed on `shed_count` +
+`reason` (it sheds open detections pre-fetch, a different unit than the detect-pool
+counts -- so it does NOT reuse `expected_pool`/`actual_pool`):
 
 ```python
 # Lever 1 (detect-pool cap):
@@ -449,36 +452,43 @@ pattern-outcomes + review-form cohort queries ALREADY join `candidates` (for the
 trades backlink), so adding the aplus filter is a localized SQL change; the
 active_learning queue query (`WHERE pipeline_run_id = ?`) gains a `candidates` join.
 
-**Run-pruning edge -- the discriminator MUST be provable, NOT a NULL fallback (Codex
-R2 MAJOR).** A `candidates` row can be absent if its run was pruned. A naive
-`WHERE c.bucket = 'aplus' OR c.id IS NULL` is UNSOUND post-ship: a future
-watch-origin PE row that later loses its candidate (pruning/retention) would match
-`c.id IS NULL` and LEAK into the supposedly aplus-only aggregate -- the Round-1 leak
-reappears on a delay. The isolation predicate must instead be PROVABLY aplus, with
-"unknown" defaulting to EXCLUDE (never leak watch into an aplus aggregate):
+**The discriminator MUST be provable, NOT a NULL fallback (Codex R2 MAJOR), AND it
+MUST preserve historical aplus rows (Codex R3 MAJOR).** A naive
+`WHERE c.bucket = 'aplus' OR c.id IS NULL` is UNSOUND post-ship: a future watch-origin
+PE row whose `candidates` row is later removed would match `c.id IS NULL` and LEAK
+into the aplus-only aggregate -- the Round-1 leak reappears on a delay. The predicate
+is a PROVABLE-aplus ladder, evaluated in order:
 
-- **Primary discriminator (robust to run pruning): the locked bucket in
-  `pattern_detection_events.finviz_screen_state`.** The detection event SURVIVES run
-  pruning (its `pipeline_run_id` FK is `ON DELETE SET NULL`, the row persists) and its
-  `finviz_screen_state` JSON carries the bucket LOCKED at detection (Sec 3.4). Join
-  `pattern_evaluations -> pattern_detection_events` on
-  (`pipeline_run_id`-or-(`ticker`,`detection_date`,`pattern_class`)) and require the
-  JSON bucket == `aplus`. This is robust precisely where the candidates join is not.
-- **Fast path where the candidate still exists:** `candidates.bucket = 'aplus'` (the
-  cheaper join; equivalent result while the candidate row is present).
-- **Unknown (neither a live candidate NOR a matching detection event -- the rare #27
-  desync): EXCLUDE.** A PE row that cannot be PROVEN aplus-origin is omitted from the
-  aplus-only aggregate/queue. Conservative: it can never leak a watch row; the cost is
-  dropping an unprovable-but-historically-aplus row from a denominator (acceptable --
-  pre-ship aplus rows have detection events too, so this is genuinely rare).
-- **Simpler alternative (writing-plans may choose): a ship-date gate** -- candidate-
-  missing rows count as aplus ONLY if their `pipeline_runs.finished_ts` predates the
-  widen rollout date. More fragile (hardcoded date) than the locked-JSON discriminator;
-  documented as a fallback, not the recommendation.
+1. **Fast path -- the candidate exists:** `candidates.bucket = 'aplus'` (the cheap
+   join, reached `pattern_evaluations -> pipeline_runs -> candidates` on
+   (`ticker`, `evaluation_run_id`); equivalent result while the candidate is present).
+2. **Robust path -- the locked bucket in `pattern_detection_events.finviz_screen_state`.**
+   The detection event's `finviz_screen_state` JSON carries the bucket LOCKED at
+   detection (Sec 3.4). Join `pattern_evaluations -> pattern_detection_events` on the
+   shared (`pipeline_run_id`, `ticker`, `pattern_class`) (both tables carry these --
+   PE in migration 0020, PDE in 0022; the detect loop builds both with the same
+   `pipeline_run_id`/ticker/class). Require JSON bucket == `aplus`. Use this when the
+   candidate is gone but the PDE survives.
+3. **MANDATORY historical gate -- pre-widen rows with neither a candidate NOR a PDE.**
+   `pattern_evaluations` (migration 0020) PREDATES `pattern_detection_events`
+   (migration 0022), so an OLD aplus PE row may have no PDE to read AND a pruned
+   candidate. Such a row is aplus-origin BY CONSTRUCTION (every pre-widen pipeline PE
+   was aplus-only). INCLUDE it iff its run's `action_session_date` (or
+   `pipeline_runs.finished_ts`) PREDATES the widen-rollout date. This clause is NOT
+   optional -- it is what satisfies the historical-preservation requirement (Sec 7.1
+   test #5) without leaking any post-widen row.
+4. **Otherwise (post-widen, unprovable): EXCLUDE.** A post-rollout PE row that cannot
+   be PROVEN aplus is omitted -- it can never leak a watch row.
 
-Writing-plans pins the exact SQL + adds a **post-ship watch + deleted-candidate
-regression test** (a watch PE whose candidate is then removed must STILL be excluded
-from every isolated aggregate).
+**Run-pruning precision (Codex R3 MINOR).** `pattern_evaluations.pipeline_run_id` is
+`ON DELETE CASCADE` (migration 0020), so deleting a pipeline run removes its PE rows
+ENTIRELY (no orphan PE consumer survives a run deletion). The leak vector is therefore
+NOT a surviving-PE-after-run-pruning; it is **candidate loss** (a `candidates` row
+removed while its PE + run survive) -- which ladder steps 2-4 handle. Writing-plans
+pins the exact SQL + the widen-rollout-date source, and adds two regression tests: (a)
+post-rollout watch PE with a deleted candidate -> EXCLUDED from every isolated
+aggregate; (b) pre-rollout historical aplus PE with neither candidate nor PDE ->
+INCLUDED.
 
 ### 6.4 Why the by-ticker/by-id backlinks are KEPT (deliberate exception to "isolate all")
 
@@ -519,10 +529,12 @@ change, which MUST differ (no tautology). NOTE the discriminating AXIS differs b
 widened" claim overreached): tests 1/2/3/7 discriminate the **aplus-only vs
 aplus+watch** behavior axis; test 4 (empty-pool, skip-only candidates) discriminates
 the **audit field-name/shape** axis (both pool paths do zero detect work, so the
-discriminator is the renamed/restructured warning, NOT widen behavior); tests 5/6
-discriminate the **pre-isolation vs post-isolation** axis. Each bullet names its axis
-+ both expectations. Test surfaces (enumerate via grep at brainstorm; pin exact files
-at writing-plans):
+discriminator is the renamed/restructured warning, NOT widen behavior); test 5
+discriminates the **pre-isolation vs post-isolation** axis; test 6 discriminates the
+**intended-backlink-exception vs blanket-isolation** axis (it passes both before AND
+after the intended isolation -- it only fails an OVER-eager blanket isolation). Each
+bullet names its axis + both expectations. Test surfaces (enumerate via grep at
+brainstorm; pin exact files at writing-plans):
 
 1. **Detect-pool widen test.** Fixture: A aplus + W watch + S skip candidates, each
    producing a detectable window. **aplus-only:** detect loop processes A tickers ->
@@ -555,12 +567,17 @@ at writing-plans):
    match/enter the aggregate, plus an aplus-origin row. **Pre-isolation (no filter):**
    the watch row enters -> denominator/cohort/queue count = aplus + watch.
    **Post-isolation (aplus filter):** = aplus only. Assert the widen does NOT change
-   the displayed count vs the aplus-only baseline. Include the pruned-candidate edge
-   (a historical aplus-origin row with no candidate row still counts).
-6. **Backlink-KEEP test (Sec 6.4).** Enter a trade on a watch ticker; assert the
+   the displayed count vs the aplus-only baseline. Plus the two ladder-edge regressions
+   (Sec 6.3): (a) a POST-rollout watch PE with a DELETED candidate -> EXCLUDED; (b) a
+   PRE-rollout historical aplus PE with NEITHER candidate NOR PDE -> INCLUDED (the
+   mandatory historical gate).
+6. **Backlink-KEEP test (Sec 6.4) -- axis: intended-exception vs blanket-isolation.**
+   Enter a trade on a watch ticker. **Intended implementation (backlink KEPT):** the
    entry-form PE-anchor resolves to the watch detection's `pattern_evaluations` row
-   (NOT None) -- i.e. the backlink is deliberately NOT isolated. (Guards against an
-   over-eager blanket isolation regressing legitimate watch-ticker linkage.)
+   (NOT None). **Over-eager blanket-isolated implementation:** it returns None (broken
+   watch-ticker linkage). Assert the KEPT behavior (resolves NOT None) -- this test
+   fails ONLY a regression that wrongly isolates the backlinks; it passes both before
+   and after the intended aggregate/queue isolation.
 7. **Observe-scaling test.** Seed multiple open watch-origin detections; assert the
    observe step appends one observation per open detection per session and the
    idempotent already-observed-today guard holds at scale; assert the net-new-fetch
@@ -720,7 +737,8 @@ trade-anchor behavior).
   ASCII (no non-ASCII glyphs in user-facing `print`/`click.echo`/log paths).
 - **`feedback_verify_regression_test_arithmetic`.** Each test computes its asserted
   value under BOTH states of the CHANGE it guards (the discriminating axis is named
-  per test -- widen-behavior, audit-shape, or pre/post-isolation; Sec 7.1).
+  per test -- widen-behavior, audit-shape, pre/post-isolation, or
+  intended-backlink-exception-vs-blanket-isolation; Sec 7.1).
 - **ZERO `Co-Authored-By`; no `--no-verify`; final `-m` paragraph plain prose;** verify
   `git log -1 --format='%(trailers)'` is `[]` before any push
   (`feedback_commit_message_trailer_parse_hazard`).
