@@ -1489,6 +1489,7 @@ class ReviewsPendingVM:
 
 def build_reviews_pending_vm(*, cfg: Config) -> ReviewsPendingVM:
     from swing.data.repos.review_log import list_unreviewed_closed_trades
+    from swing.evaluation.dates import last_completed_session
     from swing.metrics.discrepancies import (
         count_recent_multi_leg_auto_corrections,
         count_unresolved_material,
@@ -1515,6 +1516,11 @@ def build_reviews_pending_vm(*, cfg: Config) -> ReviewsPendingVM:
         unresolved_material_discrepancies_count=unresolved_material_count,
         recent_multi_leg_auto_correction_count=recent_multi_leg_count,
         banner_resolve_link=banner_resolve_link,
+        # Backward-looking content (already-closed trades awaiting review) gets
+        # the backward-looking anchor, mirroring build_review_vm and avoiding the
+        # forward-looking action_session_for_run weekend/evening silent-blank
+        # (CLAUDE.md session-anchor read/write gotcha family).
+        session_date=last_completed_session(datetime.now()).isoformat(),
     )
 
 
