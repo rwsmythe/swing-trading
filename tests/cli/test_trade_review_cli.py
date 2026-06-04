@@ -360,3 +360,58 @@ def test_review_rejects_already_reviewed_trade(tmp_path: Path) -> None:
     ])
     assert result.exit_code != 0
     assert "not closed" in result.output.lower()
+
+
+def test_cli_valid_failure_mode_persists(tmp_path: Path) -> None:
+    runner, cfg, db_path = _setup(tmp_path)
+    trade_id = _seed_closed_trade(db_path)
+    res = runner.invoke(main, [
+        "--config", str(cfg), "trade", "review", "--trade-id", str(trade_id),
+        "--entry-grade", "A", "--management-grade", "A", "--exit-grade", "A",
+        "--mistake-tags", "none_observed", "--lesson-learned", "clean",
+        "--failure-mode", "thesis_invalidated"])
+    assert res.exit_code == 0, res.output
+    from swing.data.db import connect
+    assert connect(db_path).execute(
+        "SELECT failure_mode FROM trades WHERE id=?",
+        (trade_id,)).fetchone()[0] == "thesis_invalidated"
+
+
+def test_cli_command_exposes_failure_mode_option() -> None:
+    # Discriminator (regression-arithmetic, Codex R3 #2): the omitted-option test
+    # below would pass PRE-B6 too (the existing CLI completes review + leaves the
+    # column NULL), so it cannot distinguish on its own. This static check fails
+    # PRE-B6 (no such param) and passes POST-B6.
+    from swing.cli import trade_review_cmd
+    assert "failure_mode" in {p.name for p in trade_review_cmd.params}
+
+
+def test_cli_omitted_failure_mode_persists_null(tmp_path: Path) -> None:
+    runner, cfg, db_path = _setup(tmp_path)
+    trade_id = _seed_closed_trade(db_path)
+    res = runner.invoke(main, [
+        "--config", str(cfg), "trade", "review", "--trade-id", str(trade_id),
+        "--entry-grade", "A", "--management-grade", "A", "--exit-grade", "A",
+        "--mistake-tags", "none_observed", "--lesson-learned", "clean"])
+    assert res.exit_code == 0, res.output
+    from swing.data.db import connect
+    assert connect(db_path).execute(
+        "SELECT failure_mode FROM trades WHERE id=?",
+        (trade_id,)).fetchone()[0] is None  # regression guard (omitted -> NULL)
+
+
+def test_cli_invalid_failure_mode_is_clean_clickexception(tmp_path: Path) -> None:
+    runner, cfg, db_path = _setup(tmp_path)
+    trade_id = _seed_closed_trade(db_path)
+    res = runner.invoke(main, [
+        "--config", str(cfg), "trade", "review", "--trade-id", str(trade_id),
+        "--entry-grade", "A", "--management-grade", "A", "--exit-grade", "A",
+        "--mistake-tags", "none_observed", "--lesson-learned", "clean",
+        "--failure-mode", "not_a_token"])
+    # Discriminator (Codex R3 #2): PRE-B6 Click raises "No such option:
+    # --failure-mode" -> exit code 2 + that message. POST-B6 the explicit
+    # membership check raises click.ClickException -> exit code 1 + the planned
+    # "Invalid --failure-mode" message. Assert the EXACT post-fix shape so the
+    # pre-fix UsageError does NOT satisfy it.
+    assert res.exit_code == 1
+    assert "Invalid --failure-mode" in res.output

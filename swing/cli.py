@@ -1355,12 +1355,17 @@ def _render_trade_analysis(a) -> list[str]:
               type=click.Choice(["high", "medium", "low"]), default=None)
 @click.option("--lesson-learned", default=None,
               help="REQUIRED unless --list is set. Free-text reflection.")
+@click.option("--failure-mode", "failure_mode", default=None,
+              help="Optional outcome attribution for a losing trade. One of: "
+                   "thesis_invalidated, normal_volatility_stop, "
+                   "market_regime_shift, adverse_event_shock, execution_error, "
+                   "failed_to_advance, other. Omit for a winner / unattributed.")
 @click.pass_context
 def trade_review_cmd(
     ctx, list_mode, window_days, trade_id, mistake_tags,
     entry_grade, management_grade, exit_grade,
     disqualifying_process_violation, realized_r_if_plan_followed,
-    mistake_cost_confidence, lesson_learned,
+    mistake_cost_confidence, lesson_learned, failure_mode,
 ):
     """Post-trade review surface — log mistakes, process grade, and outcome attribution."""
     import json
@@ -1447,6 +1452,12 @@ def trade_review_cmd(
         except ValueError as exc:
             raise click.ClickException(str(exc)) from exc
 
+        from swing.data.models import FAILURE_MODES
+        if failure_mode is not None and failure_mode not in FAILURE_MODES:
+            raise click.ClickException(
+                f"Invalid --failure-mode {failure_mode!r}; choose one of "
+                f"{sorted(FAILURE_MODES)} or omit.")
+
         process_grade = compute_process_grade(
             entry=entry_grade, management=management_grade, exit_=exit_grade,
             disqualifying=disqualifying_process_violation,
@@ -1457,30 +1468,37 @@ def trade_review_cmd(
         # in a single transaction. The service opens its own `with conn:`
         # block (B.6 implementation) so no outer wrapper is needed.
         reviewed_at = _dt.now().isoformat(timespec="seconds")
-        complete_trade_review(
-            conn, trade_id,
-            reviewed_at=reviewed_at,
-            mistake_tags_json=json.dumps(canonical_tags),
-            entry_grade=entry_grade,
-            management_grade=management_grade,
-            exit_grade=exit_grade,
-            process_grade=process_grade,
-            disqualifying_process_violation=disqualifying_process_violation,
-            realized_R_if_plan_followed=realized_r_if_plan_followed,
-            # Column is nullable; empty string fails the CHECK constraint.
-            # Pass None when operator did not specify --mistake-cost-confidence.
-            mistake_cost_confidence=mistake_cost_confidence or None,
-            lesson_learned=lesson_learned,
-            event_ts=reviewed_at,
-            rationale=None,
-        )
+        try:
+            complete_trade_review(
+                conn, trade_id,
+                reviewed_at=reviewed_at,
+                mistake_tags_json=json.dumps(canonical_tags),
+                entry_grade=entry_grade,
+                management_grade=management_grade,
+                exit_grade=exit_grade,
+                process_grade=process_grade,
+                disqualifying_process_violation=disqualifying_process_violation,
+                realized_R_if_plan_followed=realized_r_if_plan_followed,
+                # Column is nullable; empty string fails the CHECK constraint.
+                # Pass None when operator did not specify --mistake-cost-confidence.
+                mistake_cost_confidence=mistake_cost_confidence or None,
+                lesson_learned=lesson_learned,
+                failure_mode=failure_mode,
+                event_ts=reviewed_at,
+                rationale=None,
+            )
+        except ValueError as exc:
+            # Defense-in-depth: the repo-layer pre-v24 / membership ValueError
+            # surfaces as a clean ClickException, not a traceback. Production is
+            # v24 so this is the belt to the membership check's suspenders.
+            raise click.ClickException(str(exc)) from exc
     finally:
         conn.close()
 
     click.echo(
         f"Review recorded for trade #{trade_id} ({trade.ticker}). "
         f"Process grade: {process_grade}."
-    )
+        + (f" Failure mode: {failure_mode}." if failure_mode else ""))
 
 
 @main.group("review")
