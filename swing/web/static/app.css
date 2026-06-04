@@ -34,6 +34,12 @@
      in app.css rules — browser defaults still apply to non-topbar links). */
   --accent: #0066cc;
   --accent-hover: #004999;
+  /* Process-grade-trend small-multiples: distinct per-series line colors.
+     --series-process aliases the accent (A-6). Light-bg-legible variants. */
+  --series-process: var(--accent);
+  --series-entry: #1f9d55;
+  --series-management: #b8860b;
+  --series-exit: #c0392b;
 
   /* Weather + state-managing share a green family. */
   --badge-bullish-bg: #d1e7dd;
@@ -121,6 +127,12 @@ body.dark {
   /* Accents — lighter blue for legibility on dark bg. */
   --accent: #6ab0ff;
   --accent-hover: #8cc1ff;
+  /* Dark-bg-legible per-series variants (the FOUC-prevention html.dark path
+     must also carry these so lines resolve before the body class settles). */
+  --series-process: var(--accent);
+  --series-entry: #4ecb8a;
+  --series-management: #e0b341;
+  --series-exit: #ff7a6b;
 
   /* Weather + state badges — darker backgrounds, lighter foregrounds. */
   --badge-bullish-bg: #1e4a36;
@@ -337,6 +349,17 @@ tr.tripwire-fired td:first-child { border-left: 4px solid var(--tripwire-border)
    the theme-aware accent token (mirrors .metrics-card__sparkline). */
 .process-grade-rolling-line { stroke: var(--accent); }
 .process-grade-marker { fill: var(--accent); }
+/* Per-series strokes (two-class, specificity 0,2,0 > the base 0,1,0 — wins by
+   specificity regardless of source order). process_grade keeps the base accent. */
+.process-grade-rolling-line.metric-entry_grade_rolling_N { stroke: var(--series-entry); }
+.process-grade-rolling-line.metric-management_grade_rolling_N { stroke: var(--series-management); }
+.process-grade-rolling-line.metric-exit_grade_rolling_N { stroke: var(--series-exit); }
+/* Legend swatches: SVG presentation attrs cannot take var(), so the swatch
+   <rect> fill is driven by the metric-<name> class, mirroring the stroke rules. */
+.process-grade-legend-swatch { fill: var(--accent); }
+.process-grade-legend-swatch.metric-entry_grade_rolling_N { fill: var(--series-entry); }
+.process-grade-legend-swatch.metric-management_grade_rolling_N { fill: var(--series-management); }
+.process-grade-legend-swatch.metric-exit_grade_rolling_N { fill: var(--series-exit); }
 .schwab-health-badge {
   display: inline-block;
   margin-left: 0.5rem;
