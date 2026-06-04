@@ -1106,6 +1106,13 @@ These use the real `test_app_closed_trade` fixture (closed VIR trade id=1) alrea
 
 ```python
 def test_post_review_blank_failure_mode_persists_null(test_app_closed_trade) -> None:
+    import inspect
+    from swing.web.routes.trades import review_post
+    # Discriminator (regression-arithmetic, Codex R3 #1): FastAPI silently ignores
+    # an unknown form field, so PRE-B4 a blank submit would 204 and leave the
+    # column NULL too -- the persisted value alone cannot distinguish. This static
+    # precondition fails PRE-B4 (no failure_mode param) and passes POST-B4.
+    assert "failure_mode" in inspect.signature(review_post).parameters
     app = test_app_closed_trade
     with TestClient(app) as client:
         r = client.post(
@@ -1119,8 +1126,7 @@ def test_post_review_blank_failure_mode_persists_null(test_app_closed_trade) -> 
     from swing.data.db import connect
     val = connect(app.state.cfg.paths.db_path).execute(
         "SELECT failure_mode FROM trades WHERE id=1").fetchone()[0]
-    # PRE-FIX: 422 (unknown Form field) OR column never written. POST-FIX: the
-    # ... or None gotcha persists NULL on a blank submit.
+    # The ... or None gotcha persists NULL on a blank submit (regression guard).
     assert val is None
 
 
@@ -1332,6 +1338,15 @@ def test_cli_valid_failure_mode_persists(tmp_path: Path) -> None:
         (trade_id,)).fetchone()[0] == "thesis_invalidated"
 
 
+def test_cli_command_exposes_failure_mode_option() -> None:
+    # Discriminator (regression-arithmetic, Codex R3 #2): the omitted-option test
+    # below would pass PRE-B6 too (the existing CLI completes review + leaves the
+    # column NULL), so it cannot distinguish on its own. This static check fails
+    # PRE-B6 (no such param) and passes POST-B6.
+    from swing.cli import trade_review_cmd
+    assert "failure_mode" in {p.name for p in trade_review_cmd.params}
+
+
 def test_cli_omitted_failure_mode_persists_null(tmp_path: Path) -> None:
     runner, cfg, db_path = _setup(tmp_path)
     trade_id = _seed_closed_trade(db_path)
@@ -1343,7 +1358,7 @@ def test_cli_omitted_failure_mode_persists_null(tmp_path: Path) -> None:
     from swing.data.db import connect
     assert connect(db_path).execute(
         "SELECT failure_mode FROM trades WHERE id=?",
-        (trade_id,)).fetchone()[0] is None
+        (trade_id,)).fetchone()[0] is None  # regression guard (omitted -> NULL)
 
 
 def test_cli_invalid_failure_mode_is_clean_clickexception(tmp_path: Path) -> None:
@@ -1354,11 +1369,13 @@ def test_cli_invalid_failure_mode_is_clean_clickexception(tmp_path: Path) -> Non
         "--entry-grade", "A", "--management-grade", "A", "--exit-grade", "A",
         "--mistake-tags", "none_observed", "--lesson-learned", "clean",
         "--failure-mode", "not_a_token"])
-    # PRE-FIX: "No such option: --failure-mode" (exit 2). POST-FIX: a clean
-    # ClickException message (exit 1), NOT a traceback (no leaked ValueError).
-    assert res.exit_code != 0
-    assert not isinstance(res.exception, (KeyError, AttributeError, TypeError, ValueError))
-    assert "failure" in res.output.lower()
+    # Discriminator (Codex R3 #2): PRE-B6 Click raises "No such option:
+    # --failure-mode" -> exit code 2 + that message. POST-B6 the explicit
+    # membership check raises click.ClickException -> exit code 1 + the planned
+    # "Invalid --failure-mode" message. Assert the EXACT post-fix shape so the
+    # pre-fix UsageError does NOT satisfy it.
+    assert res.exit_code == 1
+    assert "Invalid --failure-mode" in res.output
 ```
 
 - [ ] **Step 2: Run to verify FAIL**
