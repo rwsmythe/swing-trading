@@ -125,7 +125,7 @@ The spec (Sec 9) binds: **Slice 2 (consumer isolation) MUST land WITH or BEFORE 
 **Ladder semantics (per spec Sec 6.3):**
 1. **Fast path** -- the candidate row still exists with `bucket='aplus'` (join PE -> pipeline_runs -> candidates on `(ticker, evaluation_run_id)`).
 2. **Robust path** -- the bucket LOCKED in the detection event's `finviz_screen_state` JSON is `aplus` (join PE -> PDE on `(pipeline_run_id, ticker, pattern_class)`; used when the candidate is pruned but the PDE survives -- PDE `pipeline_run_id` is `ON DELETE SET NULL`, so the PDE row itself is never deleted by app code).
-3. **MANDATORY historical gate** -- a PE with NEITHER a candidate NOR a PDE is aplus BY CONSTRUCTION iff its run is **strictly before the FIRST widened run**. Boundary = `MIN(pipeline_run_id)` among runs that emitted a watch-origin PDE (**RUN-ID ordering, NOT `finished_ts`** -- run id is a NOT NULL monotonic PK, so the boundary is well-defined even when the first widened run's `finished_ts` is still NULL; Codex R1 MAJOR #1). When NO watch-origin PDE exists (no widen shipped yet), INCLUDE. **Residual corner (documented, accepted):** if the FIRST widened run emits ZERO surviving watch PDEs (every one of its ~249 watch tickers fails to form a detectable window AND/OR every PDE write fails -- a quadruple coincidence, and the whole point of the widen is to emit ~249 watch detections from night 1), the boundary points to a later run and a pathological unprovable watch PE on the gap run could be included. Bounded to near-zero by isolation-ships-first (Part A lands with zero widened runs) + the rarity; if the operator ever needs it fully closed, a config-pinned `rollout_run_id` is the V2 follow-on.
+3. **MANDATORY historical gate** -- a PE with NEITHER a candidate NOR a PDE is aplus BY CONSTRUCTION iff its run's `action_session_date` is **strictly before the FIRST widened session**. Boundary = `MIN(detection_date)` among watch-origin PDEs. **DURABLE-COLUMN ordering (Codex R3 MAJOR):** both `detection_date` (PDE) and `action_session_date` (pipeline_runs) are NOT NULL and SURVIVE run pruning, so the boundary does NOT move when a run is pruned. (The earlier `MIN(pipeline_run_id)` boundary was UNSOUND: `PDE.pipeline_run_id` is `ON DELETE SET NULL` -- pruning the first widened run NULLs its surviving watch PDE's run id and ADVANCES the boundary, leaking gap-run watch rows. Run-pruning is a NORMAL retention op, not a rare coincidence -- this was a real hole, not the residual.) When NO watch-origin PDE exists (no widen shipped yet), INCLUDE. NO first-run edge: a watch PE on the first widened session has `action_session_date == boundary` so `< boundary` is false -> EXCLUDE (correct). **Residual (documented, accepted -- a DIP, not a LEAK):** if the operator runs the pipeline TWICE on the merge calendar date (once pre-merge aplus-only, once post-merge widened, sharing one `action_session_date`), a pre-merge aplus PE that became unprovable (candidate + PDE both lost) would be EXCLUDED (an under-count of historical aplus, self-correcting; never a watch leak). Narrow (the live nightly pipeline runs once per session) + safe-direction.
 4. **Otherwise (post-widen, unprovable): EXCLUDE** -- it can never leak a watch row.
 
 **Leak-vector note (verified):** `pattern_evaluations.pipeline_run_id` is `ON DELETE CASCADE` (migration 0020:232-233), so deleting a run removes its PE rows ENTIRELY -- there is NO surviving-PE-after-run-pruning vector. The ONLY leak vector is **candidate loss** (a `candidates` row removed while its PE + run survive), which steps 2-4 handle.
@@ -189,18 +189,26 @@ PROVABLE_APLUS_PE_PREDICATE = """(
                 WHERE json_extract(pde_w.finviz_screen_state, '$.bucket') = 'watch'
             )
             -- Otherwise INCLUDE iff this row's run is strictly BEFORE the first
-            -- widened run. Boundary = the MIN pipeline_run_id among runs that
-            -- emitted a watch-origin PDE. RUN-ID ordering (NOT finished_ts): id
-            -- is a NOT NULL monotonic PK, so this is NULL-safe even when the
-            -- first widened run's finished_ts is still NULL (Codex R1 MAJOR #1).
-            -- pe.pipeline_run_id is NOT NULL (migration 0020:232). PDE
-            -- pipeline_run_id can be SET NULL after run pruning, but such a run's
-            -- PE rows were CASCADE-deleted (migration 0020:233), so excluding
-            -- NULL PDE run-ids from the MIN cannot drop a still-evaluable row.
-            OR pe.pipeline_run_id < (
-                SELECT MIN(pde_w.pipeline_run_id) FROM pattern_detection_events pde_w
+            -- widened SESSION. Boundary = MIN(detection_date) among watch-origin
+            -- PDEs, compared to this PE's run action_session_date.
+            -- DURABLE-COLUMN ordering (Codex R3 MAJOR): both detection_date (on
+            -- the PDE) and action_session_date (on pipeline_runs) are NOT NULL
+            -- and SURVIVE run pruning. The earlier MIN(pipeline_run_id) boundary
+            -- was UNSOUND because PDE.pipeline_run_id is ON DELETE SET NULL
+            -- (migration 0022:41-42): pruning the first widened run NULLs its
+            -- surviving watch PDE's run id and silently ADVANCES the boundary to
+            -- a later run, leaking unprovable watch rows from the gap runs. The
+            -- durable detection_date does NOT move when a run is pruned. Date
+            -- strings 'YYYY-MM-DD' compare chronologically. No first-run edge: a
+            -- watch PE on the first widened session has action_session_date ==
+            -- the boundary, so `< boundary` is false -> EXCLUDE (correct).
+            OR (
+                SELECT pr_s.action_session_date FROM pipeline_runs pr_s
+                WHERE pr_s.id = pe.pipeline_run_id
+            ) < (
+                SELECT MIN(pde_w.detection_date)
+                FROM pattern_detection_events pde_w
                 WHERE json_extract(pde_w.finviz_screen_state, '$.bucket') = 'watch'
-                  AND pde_w.pipeline_run_id IS NOT NULL
             )
         )
     )
@@ -287,15 +295,23 @@ def _pe(conn, run_id, ticker, pattern_class="vcp", score=0.7):
     return cur.lastrowid
 
 
-def _pde(conn, run_id, ticker, bucket, pattern_class="vcp"):
+def _pde(conn, run_id, ticker, bucket, pattern_class="vcp", detection_date=None):
+    # detection_date defaults to the run's action_session_date so the durable
+    # historical-gate boundary (MIN(detection_date) over watch PDEs) reflects the
+    # run's session -- a watch PDE on a later widened run sets a later boundary.
     import json
+    if detection_date is None:
+        r = conn.execute(
+            "SELECT action_session_date FROM pipeline_runs WHERE id = ?",
+            (run_id,)).fetchone()
+        detection_date = r[0] if r is not None else "2026-05-20"
     conn.execute(
         "INSERT INTO pattern_detection_events (ticker, detection_date, "
         "data_asof_date, pattern_class, structural_anchors_json, "
         "composite_score, detector_version, finviz_screen_state, source, "
         "per_pattern_metadata_json, pipeline_run_id, created_at) VALUES "
         "(?,?,?,?,'{}',0.7,'v1',?, 'pipeline','{}',?, '2026-05-20T00:00:00Z')",
-        (ticker, "2026-05-20", "2026-05-19", pattern_class,
+        (ticker, detection_date, "2026-05-19", pattern_class,
          json.dumps({"bucket": bucket}), run_id))
 
 
@@ -379,6 +395,32 @@ def test_ladder_first_widened_run_finished_ts_null_excludes_unprovable(tmp_path)
     got = _included_ids(conn)
     assert e in got
     assert f not in got
+
+
+def test_ladder_survives_run_pruning_null_pde_run_id(tmp_path):
+    # Codex R3 MAJOR regression: PDE.pipeline_run_id is ON DELETE SET NULL, so
+    # pruning the FIRST widened run NULLs its surviving watch PDE's run id. The
+    # DURABLE detection_date boundary must NOT move -> a pre-widen historical
+    # row stays INCLUDED and a post-widen gap-run unprovable watch row stays
+    # EXCLUDED even after the null-out.
+    conn = _db(tmp_path)
+    _run(conn, 3, eval_run_id=3, asof="2026-05-18", session="2026-05-19",
+         finished_ts="2026-05-19T18:30:00")   # pre-widen
+    _run(conn, 5, eval_run_id=5, asof="2026-06-02", session="2026-06-03",
+         finished_ts="2026-06-03T18:30:00")   # first widened
+    _run(conn, 6, eval_run_id=6, asof="2026-06-03", session="2026-06-04",
+         finished_ts="2026-06-04T18:30:00")   # widened gap run
+    _pde(conn, 5, "WW1", "watch")             # detection_date = 2026-06-03
+    hist = _pe(conn, 3, "HIS")                # pre-widen historical -> INCLUDE
+    leak = _pe(conn, 6, "LEK")                # post-widen unprovable watch -> EXCLUDE
+    # Simulate run 5 pruning: NULL its surviving watch PDE's pipeline_run_id.
+    conn.execute(
+        "UPDATE pattern_detection_events SET pipeline_run_id = NULL "
+        "WHERE ticker = 'WW1'")
+    conn.commit()
+    got = _included_ids(conn)
+    assert hist in got      # boundary (detection_date 2026-06-03) is durable
+    assert leak not in got  # gap-run unprovable watch NOT leaked
 ```
 
 - [ ] **Step 2: Run -- verify it fails**
@@ -393,7 +435,7 @@ Expected: FAIL at import (`ModuleNotFoundError: swing.evaluation.pe_origin`).
 - [ ] **Step 4: Run -- verify it passes**
 
 Run: `python -m pytest tests/evaluation/test_pe_origin_ladder.py -q`
-Expected: PASS (3 tests: `test_ladder_all_six_branches`, `test_ladder_no_widen_yet_includes_historical`, `test_ladder_first_widened_run_finished_ts_null_excludes_unprovable`).
+Expected: PASS (4 tests: `test_ladder_all_six_branches`, `test_ladder_no_widen_yet_includes_historical`, `test_ladder_first_widened_run_finished_ts_null_excludes_unprovable`, `test_ladder_survives_run_pruning_null_pde_run_id`).
 
 - [ ] **Step 5: Commit**
 
