@@ -95,3 +95,52 @@ def test_transient_empty_incoming_preserves_valid_history(tmp_path, fixed_cutoff
     df, _ = resolve_ohlcv_window("AAPL", start="2026-06-01", end="2026-06-30",
                                  cache_dir=tmp_path)
     assert list(df["asof_date"]) == ["2026-06-03", "2026-06-04"]
+
+
+def test_strip_raises_on_unrecognized_nonempty_frame(fixed_cutoff):
+    """Codex R1 MAJOR #1: the barrier FAILS CLOSED -- a non-empty frame with
+    neither an asof_date column nor a DatetimeIndex raises rather than silently
+    persisting a possibly-> cutoff row."""
+    weird = pd.DataFrame({"open": [10], "high": [11], "low": [9], "close": [10.5]})
+    with pytest.raises(ValueError, match="unrecognized frame shape"):
+        arch._strip_incomplete_sessions(weird, fixed_cutoff.isoformat())
+
+
+def test_strip_passes_empty_unrecognized_frame(fixed_cutoff):
+    """An EMPTY frame of any shape passes through (nothing to strip)."""
+    empty = pd.DataFrame({"open": [], "high": [], "low": [], "close": []})
+    out = arch._strip_incomplete_sessions(empty, fixed_cutoff.isoformat())
+    assert len(out) == 0
+
+
+def test_empty_incoming_strips_preexisting_datetimeindex_partial(
+        tmp_path, fixed_cutoff, monkeypatch):
+    """Codex R1 MAJOR #2: write_window with empty incoming strips a pre-existing
+    on-disk partial even when `existing` is a DatetimeIndex (legacy-shape) frame
+    at the Shape-A path, not only an asof_date frame."""
+    path = _shape_a_path(tmp_path, "AAPL", "schwab_api")
+    # Seed a DatetimeIndex partial bypassing the strip.
+    monkeypatch.setattr(arch, "_strip_incomplete_sessions", lambda df, _c: df)
+    idx = pd.to_datetime(["2026-06-04", "2026-06-05"])
+    _write_archive_atomic(path, pd.DataFrame(
+        {"open": [10, 10], "high": [11, 12], "low": [9, 9],
+         "close": [10.5, 11], "volume": [100, 200]}, index=idx))
+    monkeypatch.undo()
+    monkeypatch.setattr(arch, "_last_completed_session_today",
+                        lambda: date(2026, 6, 4))
+    write_window("AAPL", None, "schwab_api", cache_dir=tmp_path)
+    on_disk = pd.read_parquet(path)
+    assert on_disk.index.max().date() == date(2026, 6, 4)  # 06-05 stripped
+
+
+def test_timestamp_string_asof_date_keeps_cutoff_day(tmp_path, fixed_cutoff):
+    """Codex R1 MINOR #1: an asof_date carrying a full Timestamp string
+    (`2026-06-04 00:00:00`) must NOT be lexically stripped at cutoff 2026-06-04
+    -- the value is normalized to a date before comparison."""
+    df = pd.DataFrame(
+        [["2026-06-04 00:00:00", 10, 11, 9, 10.5, 100],
+         ["2026-06-05 00:00:00", 10, 12, 9, 11.0, 200]],
+        columns=["asof_date", "open", "high", "low", "close", "volume"])
+    out = arch._strip_incomplete_sessions(df, fixed_cutoff.isoformat())
+    kept = [str(v)[:10] for v in out["asof_date"]]
+    assert kept == ["2026-06-04"]  # cutoff day kept, 06-05 dropped

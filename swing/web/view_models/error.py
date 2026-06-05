@@ -14,7 +14,7 @@ class PageErrorVM:
     error page doesn't turn into a 500 via UndefinedError. Spec §3.2."""
 
     PAGE_KIND = PageKind.HISTORY_ANALYSIS  # Issue #5 topbar (backward)
-    session_date: str                     # today's action_session_for_run() value, or "n/a"
+    session_date: str                     # topbar_session_date(HISTORY_ANALYSIS) value, or "n/a"
     stale_banner: None = None             # never stale on an error page
     price_source_degraded: bool = False   # degraded-cache banner not shown
     status_code: int = 400

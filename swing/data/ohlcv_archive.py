@@ -98,16 +98,29 @@ def _read_archive(parquet_path: Path) -> pd.DataFrame | None:
 
 def _strip_incomplete_sessions(df: pd.DataFrame, cutoff_iso: str) -> pd.DataFrame:
     """Drop archive rows dated AFTER the last completed session (cutoff_iso =
-    ISO YYYY-MM-DD). Shape-agnostic: Shape-A frames carry an `asof_date` string
-    column (lexical `<=` is a valid ISO-date comparison); legacy/yfinance
-    frames are DatetimeIndex'd (compare `index.date`). Returns a new frame
-    (may be empty). A frame with neither shape is returned unchanged."""
+    ISO YYYY-MM-DD). Shape-agnostic: Shape-A frames carry an `asof_date` column
+    (string OR Timestamp -- both normalized to date before comparison so a
+    `2026-06-04 00:00:00` value cannot lexically out-sort the cutoff day);
+    legacy/yfinance frames are DatetimeIndex'd (compare `index.date`). Returns a
+    new frame (may be empty).
+
+    Codex R1 MAJOR #1: this is the single write-barrier chokepoint, so it FAILS
+    CLOSED -- a NON-EMPTY frame carrying neither recognized shape raises (it
+    must never silently persist a possibly-`> cutoff` row). An EMPTY frame of
+    any shape passes through unchanged (nothing to strip)."""
+    cutoff = date.fromisoformat(cutoff_iso)
     if "asof_date" in df.columns:
-        return df[df["asof_date"].astype(str) <= cutoff_iso]
+        asof = pd.to_datetime(df["asof_date"]).dt.date
+        return df[asof <= cutoff]
     if isinstance(df.index, pd.DatetimeIndex):
-        cutoff = date.fromisoformat(cutoff_iso)
         return df[df.index.date <= cutoff]
-    return df
+    if len(df) == 0:
+        return df
+    raise ValueError(
+        "_strip_incomplete_sessions: unrecognized frame shape (no 'asof_date' "
+        "column and non-DatetimeIndex index); refusing to persist to avoid "
+        "leaking a row dated after the last completed session"
+    )
 
 
 def _write_archive_atomic(parquet_path: Path, df: pd.DataFrame) -> None:
@@ -356,18 +369,21 @@ def write_window(
     if incoming is None and existing is None:
         return
 
-    # legacy REPLACE for non-Shape-A incoming (dedup needs the asof_date key);
-    # the atomic strip still fires inside _write_archive_atomic.
-    if incoming is not None and "asof_date" not in incoming.columns:
-        _write_archive_atomic(path, incoming)
+    # Empty incoming: the only work is M3 -- strip a pre-existing on-disk
+    # partial. SHAPE-AGNOSTIC (Codex R1 MAJOR #2): handle a DatetimeIndex/legacy
+    # `existing` too, not just Shape-A. F6: an empty fetch NEVER blanks valid
+    # (<= cutoff) history -- rewrite ONLY when a > cutoff partial is present.
+    if incoming is None:
+        assert existing is not None  # the both-None case returned above
+        if len(_strip_incomplete_sessions(existing, cutoff_iso)) == len(existing):
+            return  # no partial -> no-op
+        _write_archive_atomic(path, existing)  # the barrier strips the partial
         return
 
-    # cheap no-op: empty incoming + existing already has no > cutoff rows.
-    if (
-        incoming is None and existing is not None
-        and "asof_date" in existing.columns
-        and len(_strip_incomplete_sessions(existing, cutoff_iso)) == len(existing)
-    ):
+    # legacy REPLACE for non-Shape-A incoming (dedup needs the asof_date key);
+    # the atomic strip still fires inside _write_archive_atomic.
+    if "asof_date" not in incoming.columns:
+        _write_archive_atomic(path, incoming)
         return
 
     frames = [f for f in (existing, incoming)
