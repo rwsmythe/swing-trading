@@ -24,6 +24,7 @@ from datetime import date
 
 from swing.data.models import PatternEvaluation
 from swing.data.repos import pattern_evaluations as evals_repo
+from swing.evaluation.pe_origin import PROVABLE_APLUS_PE_PREDICATE
 from swing.metrics.discrepancies import (
     count_recent_multi_leg_auto_corrections,
     count_unresolved_material,
@@ -336,7 +337,7 @@ def _build_outcome_distribution(
     score_low = composite_score - 0.1
     score_high = composite_score + 0.1
     cohort_rows = conn.execute(
-        """
+        f"""
         WITH cohort AS (
             SELECT pe.id AS evaluation_id, pe.composite_score, pe.ticker,
                    pe.pipeline_run_id
@@ -344,6 +345,7 @@ def _build_outcome_distribution(
             WHERE pe.pattern_class = ?
               AND pe.composite_score BETWEEN ? AND ?
               AND pe.id != ?
+              AND {PROVABLE_APLUS_PE_PREDICATE}
             ORDER BY pe.id DESC
             LIMIT ?
         )

@@ -404,9 +404,11 @@ def _seed_b4_cohort(conn, *, n_cohort: int = 5, base_composite: float = 0.55):
     pipeline_run_id = _seed_pipeline_run(
         conn, evaluation_run_id=eval_run_id,
     )
-    # Current evaluation (the one being reviewed); excluded from cohort.
+    # Pool-widening (2026-06-04): the review-form B.4 cohort is isolated to
+    # aplus-origin PEs (filter-before-LIMIT). Seed aplus so the cohort still
+    # populates (was bucket="watch" default, now correctly excluded).
     cur_cand = _seed_candidate(
-        conn, evaluation_run_id=eval_run_id, ticker="CUR",
+        conn, evaluation_run_id=eval_run_id, ticker="CUR", bucket="aplus",
     )
     cur_eval = _seed_evaluation(
         conn, pipeline_run_id=pipeline_run_id, ticker="CUR",
@@ -417,7 +419,7 @@ def _seed_b4_cohort(conn, *, n_cohort: int = 5, base_composite: float = 0.55):
     for i in range(n_cohort):
         ticker = f"COH{i:02d}"
         cand_id = _seed_candidate(
-            conn, evaluation_run_id=eval_run_id, ticker=ticker,
+            conn, evaluation_run_id=eval_run_id, ticker=ticker, bucket="aplus",
         )
         ev_id = _seed_evaluation(
             conn, pipeline_run_id=pipeline_run_id, ticker=ticker,
