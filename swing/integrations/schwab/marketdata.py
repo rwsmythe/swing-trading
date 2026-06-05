@@ -52,7 +52,7 @@ import sqlite3
 import threading
 import time
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable
 
 from swing.integrations.schwab import audit_service
 from swing.integrations.schwab.client import (
@@ -375,6 +375,37 @@ def get_quotes_batch(
     )
 
 
+def _build_price_history_client_method(
+    client: Any,
+    symbol: str,
+    *,
+    period_type: str | None,
+    period: int | None,
+    frequency_type: str | None,
+    frequency: int | None,
+    start_dt: Any,
+    end_dt: Any,
+) -> Callable[[], Any]:
+    """Build the price_history call thunk. **camelCase BINDING -- see module
+    docstring + signature-pin test.** needExtendedHoursData=False (L1:
+    regular-session candles only); needPreviousClose=False (explicit -- we
+    never consume previousClose; flip this kwarg alone if a future consumer
+    needs it -- it does not affect candle OHLC)."""
+    def _client_method() -> Any:
+        return client.price_history(
+            symbol,
+            periodType=period_type,
+            period=period,
+            frequencyType=frequency_type,
+            frequency=frequency,
+            startDate=start_dt,
+            endDate=end_dt,
+            needExtendedHoursData=False,
+            needPreviousClose=False,
+        )
+    return _client_method
+
+
 def get_price_history(
     client: Any,
     conn: sqlite3.Connection,
@@ -423,17 +454,12 @@ def get_price_history(
             0, "get_price_history: symbol must be non-empty str"
         )
 
-    def _client_method() -> Any:
-        # **camelCase BINDING — see module docstring + signature-pin test.**
-        return client.price_history(
-            symbol,
-            periodType=period_type,
-            period=period,
-            frequencyType=frequency_type,
-            frequency=frequency,
-            startDate=start_dt,
-            endDate=end_dt,
-        )
+    _client_method = _build_price_history_client_method(
+        client, symbol,
+        period_type=period_type, period=period,
+        frequency_type=frequency_type, frequency=frequency,
+        start_dt=start_dt, end_dt=end_dt,
+    )
 
     def _mapper(payload: Any) -> SchwabPriceHistoryWindow:
         return map_price_history_to_window(payload, ticker=symbol)
