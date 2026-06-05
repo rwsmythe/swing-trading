@@ -2581,6 +2581,13 @@ def _step_pattern_observe(*, cfg, lease, ohlcv_cache, run_warnings):
                       "observe_max_post_trigger_window_sessions_watch", None)
     _shed_count = 0
     _observed_count = 0
+    # Reset cache telemetry at observe ENTRY so the observe_load audit reflects
+    # observe-ONLY fetch cost (Codex R1 MAJOR): the runner shares ONE OhlcvCache
+    # across _step_pattern_detect / _step_charts / _step_pattern_observe, so
+    # without this reset the post-loop drain double-counts the prior steps'
+    # fetches. Best-effort (a bare stub cache has no drain_telemetry).
+    if hasattr(ohlcv_cache, "drain_telemetry"):
+        ohlcv_cache.drain_telemetry()
     with lease.fenced_write() as conn:
         for det in open_dets:
             prev = latest.get(det.detection_id)

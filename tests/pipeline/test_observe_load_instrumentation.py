@@ -76,6 +76,25 @@ def test_observe_emits_fetch_telemetry_metrics_entry(tmp_db_v22, tmp_path):
     assert entry["fetch_window"] + entry["in_memory_hit"] == 2  # == get_or_fetch
 
 
+def test_observe_load_excludes_prior_step_fetches(tmp_db_v22, tmp_path):
+    # Codex R1 MAJOR: the runner shares one OhlcvCache across detect/charts/
+    # observe. Simulate prior-step fetches on the SAME cache before observe;
+    # the observe_load audit must reflect observe-ONLY fetches (entry reset).
+    conn, db_path = tmp_db_v22
+    _plant_detection(conn, ticker="AAA", data_asof_date="2026-05-28")
+    cfg = _cfg(tmp_path, db_path)
+    cache = _TeleStub({"AAA": _build_bars()})
+    # Prior steps already fetched 5 windows on this cache instance.
+    for _ in range(5):
+        cache.get_or_fetch(ticker="AAA")
+    warnings: list[dict] = []
+    _drive_observe(cfg, _FakeLease(db_path, 1, _OBS), cache, warnings)
+    entry = next(w for w in warnings if w.get("metric") == "observe_load")
+    # Observe touched 1 open detection -> fetch_window == 1, NOT 6.
+    assert entry["fetch_window"] == 1
+    assert entry["observed"] == 1
+
+
 def test_observe_scaling_one_obs_per_open_detection(tmp_db_v22, tmp_path):
     # Plant 5 open detections; drive observe; assert 5 observation rows (one per
     # open detection) and the idempotent already-observed-today guard holds on a
