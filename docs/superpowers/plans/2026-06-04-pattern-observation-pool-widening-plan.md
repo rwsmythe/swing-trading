@@ -393,7 +393,7 @@ Expected: FAIL at import (`ModuleNotFoundError: swing.evaluation.pe_origin`).
 - [ ] **Step 4: Run -- verify it passes**
 
 Run: `python -m pytest tests/evaluation/test_pe_origin_ladder.py -q`
-Expected: PASS (2 tests).
+Expected: PASS (3 tests: `test_ladder_all_six_branches`, `test_ladder_no_widen_yet_includes_historical`, `test_ladder_first_widened_run_finished_ts_null_excludes_unprovable`).
 
 - [ ] **Step 5: Commit**
 
@@ -642,49 +642,54 @@ git commit -m "feat(pool-widening): isolate active_learning queue to aplus-origi
 **Files:**
 - Test ONLY: `tests/web/view_models/test_pe_backlink_keep.py` (NO production change -- this guards that a future over-eager isolation does NOT break the backlinks)
 
-**Codex R1 MAJOR #3:** the guard MUST call REAL kept-backlink callsites (not re-implement SQL), so it fails if those callsites were blanket-isolated. The two unit-testable kept callsites: (a) `swing.data.repos.pattern_evaluations.get_evaluation_by_id` (the by-id repo primitive, `pattern_evaluations.py:100-110`); (b) the entry-form PE-anchor -> candidate chain query in `swing/trades/entry.py:331-339` (`SELECT pr.evaluation_run_id FROM pattern_evaluations pe JOIN pipeline_runs pr ... WHERE pe.id = ?`).
+**Codex R1 MAJOR #3 + R2 MAJOR:** the guard MUST drive REAL kept-backlink callsites (not re-implement SQL), so it fails if those callsites were blanket-isolated. Two real callsites: (a) the END-TO-END entry service `swing.trades.entry.record_entry` on a WATCH-origin PE (an EXISTING test, `tests/trades/test_entry_populates_candidate_backlinks.py`, already seeds a `bucket="watch"` candidate + PE and drives `record_entry` -- reuse its `_seed_v21` / `_seed_pipeline_with_watch_candidate` / `_req` helpers); (b) the by-id repo primitive `swing.data.repos.pattern_evaluations.get_evaluation_by_id` (`pattern_evaluations.py:100-110`).
 
-- [ ] **Step 1: Write the test.** Seed a run with a WATCH candidate + its watch PE. Resolve the watch PE via the real repo getter AND verify the entry chain resolves its candidate; assert both succeed (NOT None).
+- [ ] **Step 1: Write the test.** Drive the real `record_entry` with a watch-origin PE; assert the persisted trade binds the watch candidate + PE. Plus the repo-getter guard.
 
 ```python
 # tests/web/view_models/test_pe_backlink_keep.py
 from __future__ import annotations
-import sqlite3
 import pytest
-from swing.data.db import EXPECTED_SCHEMA_VERSION, run_migrations
 from swing.data.repos.pattern_evaluations import get_evaluation_by_id
-from tests.evaluation.test_pe_origin_ladder import _run, _cand, _pe  # noqa
+from swing.data.repos.trades import get_trade
+from swing.trades.entry import record_entry
+from swing.trades.origin import EntryPath
+# Reuse the EXISTING real-callsite watch-backlink harness (avoids re-pinning the
+# 25-field EntryRequest + drives the production record_entry path verbatim).
+from tests.trades.test_entry_populates_candidate_backlinks import (
+    _seed_v21, _seed_pipeline_with_watch_candidate, _req)
 
 
-def test_watch_ticker_backlink_resolves_via_real_callsites(tmp_path):
+def test_watch_ticker_backlink_resolves_via_record_entry(tmp_path):
     """A trade entered on a WATCH ticker must still auto-link to its detection's
-    PE row (an IMPROVEMENT; changes no displayed statistic). This test drives
-    the REAL kept-backlink callsites, so a future blanket-isolation that wrongly
-    filtered them to aplus-only would FAIL here. It passes both before AND after
-    the aggregate/queue isolation (Tasks 2-4) -- axis: intended-exception."""
-    conn = sqlite3.connect(tmp_path / "t.db")
-    conn.execute("PRAGMA foreign_keys=ON")
-    run_migrations(conn, target_version=EXPECTED_SCHEMA_VERSION, backup_dir=tmp_path)
-    _run(conn, 1, eval_run_id=1, asof="2026-05-19", session="2026-05-20",
-         finished_ts="2026-05-20T18:30:00")
-    _cand(conn, 1, "WCH", "watch"); pe_id = _pe(conn, 1, "WCH", pattern_class="vcp")
-    conn.commit()
-    # (a) The by-id repo primitive resolves the watch PE (NOT None).
-    got = get_evaluation_by_id(conn, pe_id)
-    assert got is not None and got.ticker == "WCH"
-    # (b) The entry-form anchor->candidate chain (entry.py:331-339) resolves the
-    #     watch PE's evaluation_run_id (NOT None) -> proves the watch trade can
-    #     still bind its candidate. Mirror the production chain query verbatim:
-    chain = conn.execute(
-        "SELECT pr.evaluation_run_id FROM pattern_evaluations pe "
-        "JOIN pipeline_runs pr ON pr.id = pe.pipeline_run_id WHERE pe.id = ?",
-        (pe_id,)).fetchone()
-    assert chain is not None and chain[0] == 1
+    PE row (an IMPROVEMENT; changes no displayed statistic). Drives the REAL
+    end-to-end record_entry service on a watch-origin PE, so a future
+    blanket-isolation that filtered the entry anchor->candidate resolution to
+    aplus-only would FAIL here. Passes both before AND after the aggregate/queue
+    isolation (Tasks 2-4) -- axis: intended-exception-vs-blanket-isolation."""
+    conn = _seed_v21(tmp_path)
+    try:
+        _eval_run_id, _pipeline_run_id, watch_pe_id = (
+            _seed_pipeline_with_watch_candidate(conn))   # bucket='watch'
+        result = record_entry(
+            conn, _req(entry_path=EntryPath.HYP_RECS_BUTTON,
+                       pattern_evaluation_id=watch_pe_id),
+            soft_warn=10, hard_cap=20, force=False)
+        trade = get_trade(conn, result.trade_id)
+        # The real entry path bound the WATCH candidate + PE (NOT isolated away):
+        assert trade is not None
+        assert trade.candidate_id is not None
+        assert trade.pattern_evaluation_id == watch_pe_id
+        # The by-id repo primitive also resolves the watch PE (NOT None).
+        got = get_evaluation_by_id(conn, watch_pe_id)
+        assert got is not None and got.ticker == "ABC"
+    finally:
+        conn.close()
 ```
 
 - [ ] **Step 2: Run -- verify it passes** (the backlinks are NOT isolated). Run: `python -m pytest tests/web/view_models/test_pe_backlink_keep.py -q`. Expected: PASS.
 
-> This is a guard, not a TDD red->green. It documents OQ-7 (KEEP) and fails loudly if a later change wrongly isolates the by-id repo getter or the entry-form anchor chain. (NOTE: `get_evaluation_by_id` is the by-id primitive shared by the entry/dashboard/journal backlinks; the by-(run,ticker,class) dashboard resolver at `dashboard.py:787-792` is inline in a heavy VM builder -- the repo getter is its de-facto unit; if a stricter end-to-end guard is wanted, drive the dashboard VM builder at exec.)
+> This is a guard, not a TDD red->green. It documents OQ-7 (KEEP) and fails loudly if a later change wrongly isolates the end-to-end entry resolution or the by-id repo getter. (The existing `test_entry_populates_candidate_backlinks.py::test_record_entry_populates_candidate_id_for_pipeline_origin` ALREADY exercises this watch path; this test makes the KEEP-on-purpose intent explicit + adds the repo-getter assertion.)
 
 - [ ] **Step 3: Commit**
 
@@ -738,6 +743,10 @@ def _seed_aplus_watch_skip_candidates_and_run(
     rows = ([_mk(t, "aplus") for t in aplus] + [_mk(t, "watch") for t in watch]
             + [_mk(t, "skip") for t in skip])
     insert_candidates(conn, eval_run_id, rows)
+    # Codex R2 MINOR: link pipeline_runs.evaluation_run_id (the provable-aplus
+    # fast path joins pipeline_runs -> candidates on it; production-faithful).
+    conn.execute("UPDATE pipeline_runs SET evaluation_run_id = ? WHERE id = 1",
+                 (eval_run_id,))
     conn.commit()
     cfg = _cfg(db_path.parent, db_path)
     lease = _FakeLease(db_path, run_id=1, data_asof=data_asof_date)
@@ -991,21 +1000,46 @@ def test_lever1_active_cap_audit_accuracy(tmp_db_v22):
     assert audit["dropped_bucket"] == "watch"
     assert audit["expected_pool_by_bucket"] == {"aplus": 1, "watch": 3}
     assert audit["actual_pool_by_bucket"] == {"aplus": 1, "watch": 1}
+
+
+def test_lever1_cap_must_be_positive():
+    # Codex R2 MAJOR: cap=0 is rejected by the real frozen PipelineConfig
+    # (None = uncapped; >=1 = a real cap). Prevents the cap from colliding with
+    # the empty-pool audit.
+    from swing.config import PipelineConfig
+    with pytest.raises(ValueError):
+        PipelineConfig(detect_watch_pool_cap=0)
+    assert PipelineConfig(detect_watch_pool_cap=1).detect_watch_pool_cap == 1
+    assert PipelineConfig().detect_watch_pool_cap is None
 ```
 
-(`_Cfg._Pipeline` is a plain class; `cfg.pipeline.detect_watch_pool_cap = N` mutates it for the test. Production `PipelineConfig` is frozen; the cap is read-only there.)
+(`_Cfg._Pipeline` is a plain class; `cfg.pipeline.detect_watch_pool_cap = N` mutates it for the test. Production `PipelineConfig` is frozen + validates via `__post_init__`; the cap is read-only there.)
 
 - [ ] **Step 2: Run -- verify they fail** (no cap logic / no knob).
 
 - [ ] **Step 3: Implement.**
-  - `config.py`: add `detect_watch_pool_cap: int | None = None` to `PipelineConfig`.
+  - `config.py`: add `detect_watch_pool_cap: int | None = None` to `PipelineConfig`, AND validate it in `PipelineConfig.__post_init__` (a frozen dataclass supports `__post_init__`): **the cap must be `>= 1` when set** (Codex R2 MAJOR -- a cap of 0 is ill-defined: to exclude watch entirely, do not widen; it would also collide with the empty-pool audit). To disable the lever use `None`, not `0`.
+
+```python
+    def __post_init__(self) -> None:
+        if self.detect_watch_pool_cap is not None and self.detect_watch_pool_cap < 1:
+            raise ValueError(
+                "detect_watch_pool_cap must be >= 1 when set (None = uncapped)")
+```
+
   - `conftest_temporal.py` `_Cfg._Pipeline`: add `detect_watch_pool_cap = None`.
-  - `runner.py` after `:1533`: split aplus vs watch, apply the deterministic cap, emit the audit:
+  - `runner.py`: the cap fires **AFTER the empty-pool guard at `:1535-1550`** (Codex R2 MAJOR -- so the raw-empty path always emits the empty-pool audit, NEVER the cap audit, and a capped pool can never spuriously read as "zero candidates"). Because aplus tickers are NEVER capped and `cap >= 1`, a non-empty raw pool stays non-empty post-cap, so NO double-emit is possible:
 
 ```python
     detect_pool_tickers: list[str] = [
         c.ticker for c in candidates if c.bucket in ("aplus", "watch")
     ]
+
+    if not detect_pool_tickers:            # :1535 raw-empty guard (PRE-cap)
+        ...                                # the empty-pool #27 audit (Task 7); return
+
+    # Dormant Lever 1 -- AFTER the raw-empty guard (the raw pool is non-empty
+    # here). aplus is never capped; watch is ranked by rs_rank ASC + truncated.
     _cap = getattr(cfg.pipeline, "detect_watch_pool_cap", None) if cfg else None
     if _cap is not None:
         _aplus = [c for c in candidates if c.bucket == "aplus"]
@@ -1031,7 +1065,7 @@ def test_lever1_active_cap_audit_accuracy(tmp_db_v22):
         detect_pool_tickers = _capped
 ```
 
-(ASCII-only strings; #16/#32. The cap fires AFTER the empty-pool guard at `:1535` -- if `detect_pool_tickers` is empty the early-return already happened.)
+(ASCII-only strings; #16/#32. The `_cap` test stub mutates the plain `_Cfg._Pipeline` class attr, which bypasses `__post_init__`; the cap>=1 validation is tested against the real frozen `PipelineConfig` in Step 1's `test_lever1_cap_must_be_positive` below.)
 
 - [ ] **Step 4: Run -- verify they pass** + ruff.
 
