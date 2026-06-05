@@ -1207,8 +1207,13 @@ def purge_marketdata_archive(ctx: click.Context, yes: bool) -> None:
     rows that read-precedence would otherwise keep serving. L3-safe: the
     archive is re-fetchable cache, NOT append-only locked facts; the
     pattern_forward_observations log is untouched."""
-    cfg = _load_cfg(ctx)  # the module's standard cfg loader
-    _refuse_if_pipeline_running(cfg)  # SchwabPipelineActiveError shared helper
+    from swing.config_overrides import apply_overrides
+    cfg = apply_overrides(ctx.obj["config"])   # the real CLI cfg pattern
+    conn = connect(cfg.paths.db_path)
+    try:
+        _check_pipeline_not_running(conn)      # raises SchwabPipelineActiveError
+    finally:
+        conn.close()
     cache_dir = Path(cfg.paths.prices_cache_dir)
     targets = sorted(cache_dir.glob("*.schwab_api.parquet"))
     if not targets:
@@ -1223,7 +1228,7 @@ def purge_marketdata_archive(ctx: click.Context, yes: bool) -> None:
                f"re-fetches clean.")
 ```
 
-> Use the module's actual cfg loader + pipeline-active guard helpers (search `cli_schwab.py` for the existing `_load_cfg`/`SchwabPipelineActiveError` usage and reuse them; do not invent new names).
+> Real helpers (Codex R3 MINOR #4, verified on this checkout): cfg via `apply_overrides(ctx.obj["config"])` (cli_schwab.py:173-174); the pipeline-active guard is `_check_pipeline_not_running(conn)` (raises `SchwabPipelineActiveError`). `connect` is the project DB opener. Match the exact guard signature the other write-ish `swing schwab` subcommands use.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -1519,6 +1524,8 @@ git commit -m "feat(evaluation): topbar_session_date(PageKind) classifier"
 | ReviewVM | view_models/trades.py:1351 | last_completed_session | HISTORY_ANALYSIS (keep) |
 | ReviewsPendingVM | view_models/trades.py:1523 | last_completed_session | HISTORY_ANALYSIS (keep) |
 | CadenceCompleteVM | view_models/trades.py:1387 | last_completed_session | HISTORY_ANALYSIS (keep) |
+| TradeDetailVM | view_models/trades.py:1635 | (re-grep current anchor) | HISTORY_ANALYSIS (fix) |
+| TradeDrilldownVM | view_models/journal.py:569 | (re-grep current anchor) | HISTORY_ANALYSIS (fix) |
 | ReconcileDiscrepancyResolveVM | view_models/reconcile.py:782 | action_session_for_run | HISTORY_ANALYSIS (fix) |
 | ReconcileDiscrepancyErrorVM | routes/reconcile.py:89 | action_session_for_run (fallback "n/a") | HISTORY_ANALYSIS (fix) |
 | SchwabSetupVM | routes/schwab.py:224 | action_session_for_run (fallback "n/a") | HISTORY_ANALYSIS (fix) |
@@ -1603,21 +1610,26 @@ from swing.evaluation.dates import (
 import ast
 from pathlib import Path
 
-# Force-import the metrics base + the standalone VM modules so PAGE_KIND is
-# readable; the COMPLETENESS check below is pure-AST and import-independent.
+# Import every base-layout VM from its DEFINING module (Codex R3 MAJOR #1 -- the
+# home modules verified on this checkout). The COMPLETENESS check below is
+# pure-AST and import-independent; these imports only make PAGE_KIND readable.
 from swing.web.view_models.metrics.shared import BaseLayoutVM
 from swing.web.view_models.dashboard import DashboardVM
 from swing.web.view_models.watchlist import WatchlistVM
-from swing.web.view_models.journal import JournalVM
+from swing.web.view_models.journal import JournalVM, TradeDrilldownVM
 from swing.web.view_models.config import ConfigPageVM
 from swing.web.view_models.pipeline import PipelineVM
-from swing.web.view_models.trades import ReviewVM, ReviewsPendingVM, CadenceCompleteVM
+from swing.web.view_models.error import PageErrorVM
+from swing.web.view_models.trades import (
+    ReviewVM, ReviewsPendingVM, CadenceCompleteVM, TradeDetailVM,
+)
 from swing.web.view_models.reconcile import (
     ReconcileDiscrepancyResolveVM, ReconcileDiscrepancyErrorVM,
 )
-from swing.web.routes.schwab import SchwabSetupVM, SchwabStatusVM, SchwabSetupErrorVM
-from swing.web.routes.account import AccountSnapshotFormVM
-from swing.web.app import PageErrorVM
+from swing.web.view_models.schwab import (
+    SchwabSetupVM, SchwabStatusVM, SchwabSetupErrorVM,
+)
+from swing.web.view_models.account import AccountSnapshotFormVM
 from swing.web.view_models.metrics.index import MetricsIndexVM
 from swing.web.view_models.metrics.capital_friction import CapitalFrictionVM
 from swing.web.view_models.metrics.deviation_outcome import DeviationOutcomeVM
@@ -1629,10 +1641,14 @@ from swing.web.view_models.metrics.tier_comparison import TierComparisonVM
 from swing.web.view_models.metrics.trade_process_card import TradeProcessCardVM
 from swing.web.view_models.patterns.exemplars import PatternExemplarsVM
 from swing.web.view_models.patterns.outcomes_card import PatternOutcomesVM
-from swing.web.routes.patterns import PatternQueueVM, PatternReviewFormVM
+from swing.web.view_models.patterns.queue import PatternQueueVM
+from swing.web.view_models.patterns.review_form import PatternReviewFormVM
 
 NOW = datetime(2026, 6, 4, 20, 0)  # post-close ET evening on a session day
 WEB = Path(__file__).resolve().parents[2] / "swing" / "web"
+# The abstract shared base carries the session_date field but is NOT a page;
+# exclude it from discovery (Codex R3 MAJOR #2).
+_DISCOVERY_EXCLUDE = {"BaseLayoutVM"}
 
 # The AUTHORITATIVE manifest -- every base-layout VM + its declared PageKind.
 # NO ellipsis: the completeness test below mechanically (AST) discovers every
@@ -1648,6 +1664,8 @@ MANIFEST = {
     ReviewVM: PageKind.HISTORY_ANALYSIS,
     ReviewsPendingVM: PageKind.HISTORY_ANALYSIS,
     CadenceCompleteVM: PageKind.HISTORY_ANALYSIS,
+    TradeDetailVM: PageKind.HISTORY_ANALYSIS,       # trades.py:1635 (Codex R3 #2)
+    TradeDrilldownVM: PageKind.HISTORY_ANALYSIS,    # journal.py:569 (Codex R3 #2)
     ReconcileDiscrepancyResolveVM: PageKind.HISTORY_ANALYSIS,
     ReconcileDiscrepancyErrorVM: PageKind.HISTORY_ANALYSIS,
     SchwabSetupVM: PageKind.HISTORY_ANALYSIS,
@@ -1687,6 +1705,8 @@ def _discover_base_layout_vm_names() -> set[str]:
             declares_session_date = any(
                 isinstance(s, ast.AnnAssign) and isinstance(s.target, ast.Name)
                 and s.target.id == "session_date" for s in node.body)
+            if node.name in _DISCOVERY_EXCLUDE:
+                continue  # the abstract shared base, not a page
             if "BaseLayoutVM" in base_names or declares_session_date:
                 names.add(node.name)
     return names
@@ -1758,8 +1778,6 @@ import ast
 from pathlib import Path
 
 WEB = Path(__file__).resolve().parents[2] / "swing" / "web"
-_BANNED_CALLS = {"action_session_for_run", "last_completed_session"}
-_BANNED_NAIVE = {"today"}  # date.today()
 _GOOD = "topbar_session_date"
 
 
@@ -1773,20 +1791,30 @@ def _call_name(node: ast.AST) -> str | None:
     return None
 
 
-def _provenance_ok(value: ast.AST, local_defs: dict[str, ast.AST]) -> bool:
-    """True if `value` (the RHS assigned to session_date, possibly .isoformat()
-    chained) traces to topbar_session_date, resolving one level of local var."""
-    # unwrap `.isoformat()` / attribute calls to the base call/name
+def _banned_source(value: ast.AST, local_defs: dict[str, ast.AST]) -> str | None:
+    """DENYLIST (Codex R3 MAJOR #3): return a reason if `value` traces to a RAW
+    anchor (banned), else None. Resolves `.isoformat()`/`.date()` chains + one
+    local-var hop. A string literal (the deliberate "n/a" fallback) and a
+    `topbar_session_date(...)` call are NOT banned -- so the
+    `try: session_date = topbar(...); except: session_date = "n/a"` shape does
+    not false-positive."""
     node = value
     while isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-        node = node.func.value
-    if _call_name(node) == _GOOD:
-        return True
+        if node.func.attr == "today":
+            return "date.today()"
+        if node.func.attr == "date":
+            return "datetime.now().date()"
+        node = node.func.value  # unwrap .isoformat() etc.
+    name = _call_name(node)
+    if name in {"action_session_for_run", "last_completed_session"}:
+        return f"{name}(...)"
+    if name == _GOOD:
+        return None  # explicitly OK
     if isinstance(node, ast.Name):
         bound = local_defs.get(node.id)
         if bound is not None:
-            return _provenance_ok(bound, {})  # one resolution hop
-    return False
+            return _banned_source(bound, {})  # one resolution hop
+    return None  # literals / unknowns are not raw anchors
 
 
 def _offenders_in(path: Path) -> list[str]:
@@ -1802,27 +1830,27 @@ def _offenders_in(path: Path) -> list[str]:
                     if isinstance(t, ast.Name):
                         local_defs[t.id] = stmt.value
         for stmt in ast.walk(fn):
-            # session_date as a keyword (VM(...session_date=X)) or assignment
-            kwvals = []
+            vals = []
             if isinstance(stmt, ast.Call):
-                kwvals += [kw.value for kw in stmt.keywords
-                           if kw.arg == "session_date"]
+                vals += [kw.value for kw in stmt.keywords if kw.arg == "session_date"]
             if isinstance(stmt, ast.Assign):
                 for t in stmt.targets:
                     if isinstance(t, ast.Name) and t.id == "session_date":
-                        kwvals.append(stmt.value)
-            for v in kwvals:
-                if not _provenance_ok(v, local_defs):
-                    out.append(f"{path.name}:{getattr(v,'lineno','?')}")
+                        vals.append(stmt.value)
+            for v in vals:
+                reason = _banned_source(v, local_defs)
+                if reason:
+                    out.append(f"{path.name}:{getattr(v, 'lineno', '?')} ({reason})")
     return out
 
 
-def test_session_date_traces_to_topbar_helper():
+def test_session_date_never_from_raw_anchor():
     offenders = []
     for path in WEB.rglob("*.py"):
         offenders += _offenders_in(path)
     assert not offenders, (
-        "session_date must trace to topbar_session_date(...):\n" + "\n".join(offenders))
+        "session_date must NOT come from a raw anchor (use topbar_session_date):\n"
+        + "\n".join(offenders))
 ```
 
 > **Implementer note:** this AST scan is a heuristic; tune it against the REAL post-D2 callsites until green (the import-time `"n/a"` fallbacks in PageErrorVM/error VMs wrap the helper -- ensure `_provenance_ok` accepts a `topbar_session_date(...)` inside a `try` or a ternary; extend the unwrap to handle those shapes). The intent is binding: no `session_date` value may originate from a raw anchor or naive date. Where a VM has a genuinely non-topbar field literally named `session_date` (none found in the D2 inventory), rename it. Keep the simpler text-regex lint from the prior draft as an ADDITIONAL cheap layer if desired.
