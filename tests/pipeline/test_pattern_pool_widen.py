@@ -38,3 +38,18 @@ def test_empty_pool_audit_uses_standardized_vocabulary(tmp_db_v22, tmp_path):
     assert entry["actual_pool"] == 0
     assert entry["actual_pool_by_bucket"] == {"aplus": 0, "watch": 0}
     assert "actual_aplus_pool" not in entry     # the removed key
+
+
+def test_watch_detection_tags_bucket_watch(tmp_db_v22, tmp_path):
+    import json
+    conn, cfg, lease, eval_run_id, tickers = \
+        _seed_aplus_watch_skip_candidates_and_run(
+            tmp_db_v22, aplus=(), watch=("WAT1",), skip=())
+    cache = _StubOhlcvCache({t: _build_bars() for t in tickers})
+    _drive_detect(conn, cfg, lease, eval_run_id, cache, [])
+    rows = conn.execute(
+        "SELECT finviz_screen_state FROM pattern_detection_events "
+        "WHERE ticker='WAT1'").fetchall()
+    assert rows, "widened path must emit a detection for the watch ticker"
+    assert any(json.loads(r[0]).get("bucket") == "watch" for r in rows)
+    # Pre-isolation discriminator: aplus-only path emits ZERO rows for WAT1.
