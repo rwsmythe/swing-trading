@@ -32,7 +32,7 @@
 - **The true write barrier is `_write_archive_atomic`, NOT `write_window` (Codex R1 CRITICAL #1).** `write_window` (ohlcv_archive.py:281-370) is only the Schwab-ladder-persist path. THREE OTHER write paths bypass it and call `_write_archive_atomic` (ohlcv_archive.py:99) directly: `read_or_fetch_archive` full-refresh (235) + incremental (248), and `_backward_compat_rename` (660, 737) -- and `_backward_compat_rename` is run by `resolve_ohlcv_window` on EVERY read (line 410), so a write_window-only strip can be undone (clean the yfinance parquet, then a read merges the legacy `{T}.parquet` back into Shape A, reintroducing a partial row). `read_or_fetch_archive` writes the raw `fetched`/`combined` frame WITHOUT trimming the in-progress tail before persist (only its RETURN is sliced). Therefore the hard `> cutoff` strip MUST live in `_write_archive_atomic` -- the literal single lowest writer that ALL four paths funnel through -- so every write inherits it (Task C1). `write_window` keeps the F6/M3 merge logic on top.
 - **OhlcvCache freshness (OQ-1b):** `get_or_fetch` (ohlcv_cache.py:175-211) has an in-memory TTL gate only (3600s), NO archive-coverage gate, NO `force_refresh` param. `_fetch_bars_window` (ohlcv_cache.py:253-311) branches: `if self._ladder_bars_fetcher is not None:` -> Schwab ladder (writes `schwab_api.parquet`); `else:` -> `read_or_fetch_archive` (yfinance). The pipeline installs `_ladder_bars_fetcher` (runner.py:468) so detect/observe DO use the ladder. The ladder is active by default (`environment="production"` + `marketdata_ladder_enabled=True`).
 - `_SOURCE_PRECEDENCE_MARKET_DATA = {"schwab_api": 0, "yfinance": 1}` (ohlcv_archive.py:56-59) -> schwab_api wins on read.
-- **Slice D inventory is 33 VMs**, split into two populations: the metrics family + `AccountSnapshotFormVM` SUBCLASS `BaseLayoutVM` (view_models/metrics/shared.py:28); the rest (Dashboard, Watchlist, Journal+drilldown, Config, Pipeline, PageError, the reviews/reconcile/schwab VMs) each INDEPENDENTLY declare the 8 banner fields. The template renders `{{ vm.session_date }}` (base.html.j2:69). Full inventory in Task D2.
+- **Slice D inventory is 30 base-layout VMs** (the AST-discovered set, == the D2 manifest; excludes the abstract `BaseLayoutVM`), split into two populations: the metrics family + `AccountSnapshotFormVM` + the patterns queue/review-form SUBCLASS `BaseLayoutVM` (view_models/metrics/shared.py:28); the rest (Dashboard, Watchlist, Journal+TradeDrilldown, Config, Pipeline, PageError, the reviews/reconcile/schwab/trade-detail VMs) each INDEPENDENTLY declare the 8 banner fields. The template renders `{{ vm.session_date }}` (base.html.j2:69). Full inventory in Task D2.
 
 ## L1-L6 verification (propagated, not re-opened)
 
@@ -79,7 +79,7 @@
 
 **Slice D**
 - Modify: `swing/evaluation/dates.py` (+ `PageKind` + `topbar_session_date`)
-- Modify: the 33 base-layout VMs / routes (route `session_date` through the helper)
+- Modify: the 30 base-layout VMs / routes (route `session_date` through the helper)
 - Test: `tests/evaluation/test_topbar_session_date.py` (new)
 - Test: `tests/web/test_topbar_cross_vm_consistency.py` (new)
 - Test: `tests/web/test_topbar_no_naive_anchor_lint.py` (new)
@@ -1508,7 +1508,7 @@ git commit -m "feat(evaluation): topbar_session_date(PageKind) classifier"
 
 ### Task D2: Route every base-layout VM's `session_date` through the helper
 
-**Files:** the 33 VMs/routes below. **Classification:** FORWARD_PLANNING = `{DashboardVM, WatchlistVM}`; everything else = HISTORY_ANALYSIS ("the page is about the last completed session").
+**Files:** the 30 VMs/routes below. **Classification:** FORWARD_PLANNING = `{DashboardVM, WatchlistVM}`; everything else = HISTORY_ANALYSIS ("the page is about the last completed session").
 
 **Authoritative inventory (re-grepped this checkout):**
 
@@ -1546,7 +1546,7 @@ git commit -m "feat(evaluation): topbar_session_date(PageKind) classifier"
 | PatternQueueVM | routes/patterns.py:117 (`_session_date_str`) | last_completed_session | HISTORY_ANALYSIS (keep) |
 | PatternReviewFormVM | routes/patterns.py:385 (`_session_date_str`) | last_completed_session | HISTORY_ANALYSIS (keep) |
 
-> The remaining rows from the 33-count are drill-down/error VMs sharing one of the above setters -- when you touch the setter, they inherit the fix. **Before coding, re-grep `session_date` across `swing/web/` and reconcile against this table** -- Codex flagged a standalone base-layout-fields declaration at `view_models/reconcile.py:100` that must be in the manifest. The D3 completeness test (`MANIFEST ⊇ all BaseLayoutVM subclasses`) + the D4 AST lint enforce that nothing is missed; add any newly-found VM to the D3 MANIFEST and route its setter.
+> This table is the full 30-VM inventory (TradeDetailVM + TradeDrilldownVM were surfaced by the D3 AST discovery and added). **Before coding, re-grep `session_date` across `swing/web/`** -- the D3 `test_manifest_is_complete_and_exact` (pure-AST discovery `==` the manifest, both populations) + the D4 denylist lint enforce that nothing is missed; if the AST discovery surfaces a VM not in this table, add it to the D2 routing + the D3 MANIFEST with its PageKind and route its setter.
 
 - [ ] **Step 1: For EACH row, replace the anchor expression with the helper.** The mechanical edit, per callsite:
 
@@ -1729,26 +1729,58 @@ def test_every_vm_declares_matching_page_kind():
             f"{cls.__name__} PAGE_KIND != {kind}"
 
 
-def test_representative_vms_render_the_right_anchor(monkeypatch):
-    """Construct one VM per family at frozen NOW and assert the rendered
-    session_date matches the declared kind's anchor (not a naive date)."""
+# Per-VM builders the implementer WIRES to the project's real fixtures. Each
+# value is a zero-arg callable returning a constructed VM at the monkeypatched
+# `now`. This registry is the BEHAVIORAL proof (Codex R4 MAJOR #1): it catches a
+# wrong PageKind ARGUMENT at a callsite (a metrics builder mistakenly calling
+# topbar_session_date(PageKind.FORWARD_PLANNING, ...) would render `forward`,
+# failing the assertion below even though its PAGE_KIND attr says backward).
+# MUST cover both families + >=1 metrics VM + >=1 standalone VM (the guard test
+# below FAILS on an empty/one-sided registry, so it cannot pass vacuously).
+_REPRESENTATIVES: dict = {
+    # DashboardVM: lambda: build_dashboard_vm(<minimal fixture>),     # forward
+    # WatchlistVM: lambda: build_watchlist_vm(<minimal fixture>),     # forward
+    # JournalVM: lambda: build_journal_vm(<minimal fixture>),         # backward
+    # MetricsIndexVM: lambda: build_metrics_index_vm(<minimal fixture>),  # backward
+    # CapitalFrictionVM: lambda: build_capital_friction_vm(<...>),    # backward leaf
+    # PipelineVM: lambda: build_pipeline_vm(<minimal fixture>),       # backward
+    # SchwabSetupErrorVM: lambda: SchwabSetupErrorVM(...),            # backward fallback
+    # PatternQueueVM: lambda: build_pattern_queue_vm(<...>),          # backward
+}
+
+
+def test_representatives_registry_is_non_vacuous():
+    """Guard: the behavioral test cannot pass with an empty/one-sided registry."""
+    kinds = {MANIFEST[c] for c in _REPRESENTATIVES}
+    assert len(_REPRESENTATIVES) >= 6, "wire at least 6 representative builders"
+    assert kinds == {PageKind.FORWARD_PLANNING, PageKind.HISTORY_ANALYSIS}, \
+        "representatives must cover BOTH PageKinds"
+    metrics = {MetricsIndexVM, CapitalFrictionVM, DeviationOutcomeVM,
+               HypothesisProgressCardVM, IdentificationFunnelVM, MaturityStageVM,
+               ProcessGradeTrendVM, TierComparisonVM, TradeProcessCardVM}
+    assert _REPRESENTATIVES.keys() & metrics, "include >=1 metrics VM"
+    assert _REPRESENTATIVES.keys() - metrics, "include >=1 non-metrics VM"
+
+
+@pytest.mark.parametrize("cls", list(_REPRESENTATIVES))
+def test_representative_renders_its_declared_anchor(cls, monkeypatch):
+    """Build the VM at frozen NOW; its rendered session_date MUST equal the
+    anchor for its DECLARED kind and DIFFER from the other kind -- catching a
+    wrong PageKind argument at the construction callsite."""
     forward = action_session_for_run(NOW).isoformat()
     backward = last_completed_session(NOW).isoformat()
     assert forward != backward
     import swing.evaluation.dates as dates
     monkeypatch.setattr(dates, "datetime",
                         type("D", (), {"now": staticmethod(lambda: NOW)}))
-    # Build the representatives via the project's real VM builders/fixtures:
-    #   dash = build_dashboard_vm(...);   assert dash.session_date == forward
-    #   journ = build_journal_vm(...);    assert journ.session_date == backward
-    #   metric = build_metrics_index_vm(...); assert metric.session_date == backward
-    #   review = build_reviews_pending_vm(...); assert review.session_date == backward
-    #   pipe = build_pipeline_vm(...);    assert pipe.session_date == backward
-    # Each must differ from a naive datetime.now().date().isoformat() unless it
-    # legitimately equals an anchor.
+    vm = _REPRESENTATIVES[cls]()
+    expected = forward if MANIFEST[cls] is PageKind.FORWARD_PLANNING else backward
+    wrong = backward if MANIFEST[cls] is PageKind.FORWARD_PLANNING else forward
+    assert vm.session_date == expected, f"{cls.__name__} rendered the wrong anchor"
+    assert vm.session_date != wrong
 ```
 
-> **Implementer note (binding):** the `MANIFEST` above is the D2 inventory written out IN FULL -- no ellipsis. If `test_manifest_is_complete_and_exact` FAILS, the AST discovery found a base-layout VM the manifest omits (e.g. the standalone-fields class Codex flagged at `view_models/reconcile.py:100` -- add it with its PageKind) or a stale entry (remove it). Fix the import + the MANIFEST entry until the discovery and the manifest agree exactly. Confirm the `BaseLayoutVM`/`PageErrorVM`/`SchwabStatusVM` import paths against the real modules (grounded above; adjust if a class moved). For `test_representative_vms_render_the_right_anchor`, build 5-6 representatives via the project's VM builders (grep `tests/web/` for each). The completeness + PAGE_KIND tests run with zero construction; the representative render test is the behavioral proof.
+> **Implementer note (binding):** `import pytest` at the top of the file. The `MANIFEST` is the D2 inventory IN FULL -- no ellipsis. If `test_manifest_is_complete_and_exact` FAILS, the AST discovery found a base-layout VM the manifest omits or a stale entry -- fix the import + the MANIFEST entry until discovery and manifest agree exactly. **Wire `_REPRESENTATIVES`** to the project's real VM builders/fixtures (grep `tests/web/` for how each is constructed); `test_representatives_registry_is_non_vacuous` FAILS until you wire >=6 covering both families + >=1 metrics + >=1 non-metrics, so the behavioral proof cannot be skipped. The completeness + PAGE_KIND tests run with zero construction; the parametrized render test is the binding behavioral proof that the PageKind ARGUMENT at each callsite matches the VM's intent.
 
 - [ ] **Step 2: Run + Commit**
 
@@ -1901,4 +1933,4 @@ The implementer does NOT run the live fetch against the operator's DB -- it is t
 
 ---
 
-*End of plan. Four slices in dependency order A -> C -> B -> D: ext-hours pull fix (needExtendedHoursData=False + mapper float-normalization + typed SchwabBarConsistencyError) -> completed-day write-barrier in write_window + date-only lock-guards + the automatic refetch-overwrite remediation and the one-time purge belt -> quotes regular-session (gated on a live cassette) -> uniform topbar_session_date(PageKind) across the 33-VM authoritative registry. The guard is date-only (a proof-test documents the boundary); the mapper normalizes floats with no global epsilon; NO schema. The binding gate is the operator-witnessed live Schwab re-fetch confirming the ~16% error rate collapses.*
+*End of plan. Four slices in dependency order A -> C -> B -> D: ext-hours pull fix (needExtendedHoursData=False + mapper float-normalization + typed SchwabBarConsistencyError) -> completed-day write-barrier in write_window + date-only lock-guards + the automatic refetch-overwrite remediation and the one-time purge belt -> quotes regular-session (gated on a live cassette) -> uniform topbar_session_date(PageKind) across the 30-VM authoritative registry. The guard is date-only (a proof-test documents the boundary); the mapper normalizes floats with no global epsilon; NO schema. The binding gate is the operator-witnessed live Schwab re-fetch confirming the ~16% error rate collapses.*
