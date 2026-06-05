@@ -93,7 +93,8 @@ The spec cites base HEAD `32132654`; the live tree was re-grepped (discipline #2
 - `swing/metrics/pattern_outcomes.py:85-127` -- add the aplus ladder to `_count_reached_1r_hit_stop`.
 - `swing/web/view_models/patterns/review_form.py:340-349` -- add the aplus ladder INSIDE the cohort CTE (filter-before-LIMIT).
 - `swing/patterns/active_learning.py:241-246` -- add the aplus ladder to the queue query.
-- `swing/pipeline/runner.py` -- the predicate widen + rename + #27 audit reshape (Slice 1); the Lever 1 cap + audit (Slice 3); the Lever 2 shed + audit + the observe-load counter (Slice 3).
+- `swing/pipeline/runner.py` -- the predicate widen + rename + #27 audit reshape (Slice 1); the Lever 1 cap + audit (Slice 3); the Lever 2 shed + audit (Slice 3); the observe-load metrics drain/emit (Slice 3).
+- `swing/web/ohlcv_cache.py` -- add a thread-safe fetch-vs-hit telemetry counter + `drain_telemetry()` (Slice 3, Task 12 -- the truthful net-new signal).
 - `swing/config.py:157-171` -- add 3 dormant cfg knobs to `PipelineConfig`.
 - `tests/pipeline/conftest_temporal.py` -- add `_seed_aplus_watch_skip_candidates_and_run` + extend the `_Cfg._Pipeline` stub with the 3 new knobs (default `None`).
 - `tests/pipeline/test_step_pattern_detect_temporal_extension.py:195` -- update the lone `actual_aplus_pool` reader to the new audit shape.
@@ -124,7 +125,7 @@ The spec (Sec 9) binds: **Slice 2 (consumer isolation) MUST land WITH or BEFORE 
 **Ladder semantics (per spec Sec 6.3):**
 1. **Fast path** -- the candidate row still exists with `bucket='aplus'` (join PE -> pipeline_runs -> candidates on `(ticker, evaluation_run_id)`).
 2. **Robust path** -- the bucket LOCKED in the detection event's `finviz_screen_state` JSON is `aplus` (join PE -> PDE on `(pipeline_run_id, ticker, pattern_class)`; used when the candidate is pruned but the PDE survives -- PDE `pipeline_run_id` is `ON DELETE SET NULL`, so the PDE row itself is never deleted by app code).
-3. **MANDATORY historical gate** -- a PE with NEITHER a candidate NOR a PDE is aplus BY CONSTRUCTION iff its run is **strictly before the FIRST widened run**. Boundary = the earliest run that emitted a watch-origin PDE (`finished_ts` primary; `action_session_date` fallback ONLY when the self-run lacks `finished_ts`). A NULL boundary => no widen has shipped => INCLUDE.
+3. **MANDATORY historical gate** -- a PE with NEITHER a candidate NOR a PDE is aplus BY CONSTRUCTION iff its run is **strictly before the FIRST widened run**. Boundary = `MIN(pipeline_run_id)` among runs that emitted a watch-origin PDE (**RUN-ID ordering, NOT `finished_ts`** -- run id is a NOT NULL monotonic PK, so the boundary is well-defined even when the first widened run's `finished_ts` is still NULL; Codex R1 MAJOR #1). When NO watch-origin PDE exists (no widen shipped yet), INCLUDE. **Residual corner (documented, accepted):** if the FIRST widened run emits ZERO surviving watch PDEs (every one of its ~249 watch tickers fails to form a detectable window AND/OR every PDE write fails -- a quadruple coincidence, and the whole point of the widen is to emit ~249 watch detections from night 1), the boundary points to a later run and a pathological unprovable watch PE on the gap run could be included. Bounded to near-zero by isolation-ships-first (Part A lands with zero widened runs) + the rarity; if the operator ever needs it fully closed, a config-pinned `rollout_run_id` is the V2 follow-on.
 4. **Otherwise (post-widen, unprovable): EXCLUDE** -- it can never leak a watch row.
 
 **Leak-vector note (verified):** `pattern_evaluations.pipeline_run_id` is `ON DELETE CASCADE` (migration 0020:232-233), so deleting a run removes its PE rows ENTIRELY -- there is NO surviving-PE-after-run-pruning vector. The ONLY leak vector is **candidate loss** (a `candidates` row removed while its PE + run survive), which steps 2-4 handle.
@@ -180,37 +181,28 @@ PROVABLE_APLUS_PE_PREDICATE = """(
               AND pde_h.ticker = pe.ticker
               AND pde_h.pattern_class = pe.pattern_class
         )
-        AND CASE
-            WHEN (
-                SELECT MIN(pr_w.finished_ts) FROM pipeline_runs pr_w
-                JOIN pattern_detection_events pde_w
-                  ON pde_w.pipeline_run_id = pr_w.id
+        AND (
+            -- No widen has shipped yet (no watch-origin PDE anywhere) =>
+            -- every historical neither-cand-nor-PDE row is aplus => INCLUDE.
+            NOT EXISTS (
+                SELECT 1 FROM pattern_detection_events pde_w
                 WHERE json_extract(pde_w.finviz_screen_state, '$.bucket') = 'watch'
-            ) IS NULL
-                THEN 1
-            WHEN (
-                SELECT pr_s.finished_ts FROM pipeline_runs pr_s
-                WHERE pr_s.id = pe.pipeline_run_id
-            ) IS NOT NULL
-                THEN CASE WHEN (
-                        SELECT pr_s.finished_ts FROM pipeline_runs pr_s
-                        WHERE pr_s.id = pe.pipeline_run_id
-                    ) < (
-                        SELECT MIN(pr_w.finished_ts) FROM pipeline_runs pr_w
-                        JOIN pattern_detection_events pde_w
-                          ON pde_w.pipeline_run_id = pr_w.id
-                        WHERE json_extract(pde_w.finviz_screen_state, '$.bucket') = 'watch'
-                    ) THEN 1 ELSE 0 END
-            ELSE CASE WHEN (
-                        SELECT pr_s.action_session_date FROM pipeline_runs pr_s
-                        WHERE pr_s.id = pe.pipeline_run_id
-                    ) < (
-                        SELECT MIN(pr_w.action_session_date) FROM pipeline_runs pr_w
-                        JOIN pattern_detection_events pde_w
-                          ON pde_w.pipeline_run_id = pr_w.id
-                        WHERE json_extract(pde_w.finviz_screen_state, '$.bucket') = 'watch'
-                    ) THEN 1 ELSE 0 END
-        END = 1
+            )
+            -- Otherwise INCLUDE iff this row's run is strictly BEFORE the first
+            -- widened run. Boundary = the MIN pipeline_run_id among runs that
+            -- emitted a watch-origin PDE. RUN-ID ordering (NOT finished_ts): id
+            -- is a NOT NULL monotonic PK, so this is NULL-safe even when the
+            -- first widened run's finished_ts is still NULL (Codex R1 MAJOR #1).
+            -- pe.pipeline_run_id is NOT NULL (migration 0020:232). PDE
+            -- pipeline_run_id can be SET NULL after run pruning, but such a run's
+            -- PE rows were CASCADE-deleted (migration 0020:233), so excluding
+            -- NULL PDE run-ids from the MIN cannot drop a still-evaluable row.
+            OR pe.pipeline_run_id < (
+                SELECT MIN(pde_w.pipeline_run_id) FROM pattern_detection_events pde_w
+                WHERE json_extract(pde_w.finviz_screen_state, '$.bucket') = 'watch'
+                  AND pde_w.pipeline_run_id IS NOT NULL
+            )
+        )
     )
 )"""
 ```
@@ -358,6 +350,35 @@ def test_ladder_no_widen_yet_includes_historical(tmp_path):
     e = _pe(conn, 1, "EEE")  # no candidate, no PDE, no watch run exists
     conn.commit()
     assert e in _included_ids(conn)
+
+
+def test_ladder_first_widened_run_finished_ts_null_excludes_unprovable(tmp_path):
+    # Codex R1 MAJOR #1 regression: the first widened run's finished_ts is still
+    # NULL (run crashed / in progress) but it HAS a watch PDE. An unprovable
+    # same-run PE (no candidate, no PDE) must be EXCLUDED (the run-id boundary is
+    # NULL-safe; a finished_ts-MIN boundary would collapse to NULL and leak).
+    conn = _db(tmp_path)
+    _run(conn, 1, eval_run_id=1, asof="2026-05-19", session="2026-05-20",
+         finished_ts="2026-05-20T18:30:00")          # pre-widen, finished
+    # run 2 = first widened run, finished_ts NULL:
+    conn.execute(
+        "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, "
+        "action_session_date, tickers_evaluated, aplus_count, watch_count, "
+        "skip_count, excluded_count, error_count) VALUES "
+        "(2,'2026-06-03T18:00:00','2026-06-02','2026-06-03',1,0,1,0,0,0)")
+    conn.execute(
+        "INSERT INTO pipeline_runs (id, started_ts, finished_ts, trigger, "
+        "data_asof_date, action_session_date, lease_token, state, "
+        "evaluation_run_id) VALUES "
+        "(2,'2026-06-03T18:00:00',NULL,'manual','2026-06-02','2026-06-03',"
+        "'tok2','running',2)")
+    e = _pe(conn, 1, "EEE")           # pre-widen historical -> INCLUDE
+    _pe(conn, 2, "GGG"); _pde(conn, 2, "GGG", "watch")  # widened run has a watch PDE
+    f = _pe(conn, 2, "FFF")           # unprovable same-run PE -> EXCLUDE
+    conn.commit()
+    got = _included_ids(conn)
+    assert e in got
+    assert f not in got
 ```
 
 - [ ] **Step 2: Run -- verify it fails**
@@ -476,44 +497,36 @@ from swing.web.view_models.patterns.review_form import _build_outcome_distributi
 from tests.evaluation.test_pe_origin_ladder import _run, _cand, _pe, _pde  # noqa
 
 
-def test_cohort_filter_before_limit(tmp_path):
+def test_cohort_filter_before_limit_drives_production(tmp_path):
+    """Drives the PRODUCTION _build_outcome_distribution (NOT a re-implemented
+    query -- Codex R1 MAJOR #2 closed the tautology). Seed 10 aplus PEs (lower
+    pe.id) + 20 watch PEs (HIGHER pe.id) at the same composite score, cohort
+    LIMIT=20. The returned row's `n` (= cohort size) discriminates all 3 states:
+      - FIXED (filter-BEFORE-LIMIT): cohort = the 10 aplus  -> n == 10
+      - CURRENT/unfiltered: cohort = top-20 by id = the 20 watch -> n == 20
+      - BROKEN filter-AFTER-LIMIT: top-20 (20 watch) then aplus-filter = 0
+        -> cohort_n == 0 (< 5 suppression path).
+    Asserting n == 10 fails BOTH the current code AND the after-LIMIT bug."""
     conn = sqlite3.connect(tmp_path / "t.db")
     conn.execute("PRAGMA foreign_keys=ON")
     run_migrations(conn, target_version=EXPECTED_SCHEMA_VERSION, backup_dir=tmp_path)
     _run(conn, 1, eval_run_id=1, asof="2026-05-19", session="2026-05-20",
          finished_ts="2026-05-20T18:30:00")
     score = 0.70
-    aplus_ids = []
-    # Interleave: aplus, watch, aplus, watch ... watch rows at higher pe.id.
-    for i in range(40):
-        _cand(conn, 1, f"A{i}", "aplus"); aplus_ids.append(_pe(conn, 1, f"A{i}", score=score))
-        _cand(conn, 1, f"W{i}", "watch"); wid = _pe(conn, 1, f"W{i}", score=score)
+    for i in range(10):   # 10 aplus, LOWER ids (inserted first)
+        _cand(conn, 1, f"A{i}", "aplus"); _pe(conn, 1, f"A{i}", score=score)
+    for i in range(20):   # 20 watch, HIGHER ids
+        _cand(conn, 1, f"W{i}", "watch"); _pe(conn, 1, f"W{i}", score=score)
         _pde(conn, 1, f"W{i}", "watch")
-    # current evaluation = a separate aplus row.
     _cand(conn, 1, "CUR", "aplus"); cur = _pe(conn, 1, "CUR", score=score)
     conn.commit()
-    # The exact assertion is pinned at exec against the real fn signature; the
-    # property: every cohort evaluation_id is an aplus-origin id, and the
-    # cohort size equals min(cohort_limit, len(aplus_ids)). A post-CTE filter
-    # would yield fewer aplus rows (watch rows displaced trailing aplus).
-    # Assert via the cohort SQL directly (the production CTE string), e.g.:
-    from swing.evaluation.pe_origin import PROVABLE_APLUS_PE_PREDICATE
-    rows = conn.execute(
-        f"""WITH cohort AS (
-              SELECT pe.id FROM pattern_evaluations pe
-              WHERE pe.pattern_class='vcp'
-                AND pe.composite_score BETWEEN ? AND ?
-                AND pe.id != ?
-                AND {PROVABLE_APLUS_PE_PREDICATE}
-              ORDER BY pe.id DESC LIMIT 20)
-            SELECT id FROM cohort""",
-        (score - 0.1, score + 0.1, cur)).fetchall()
-    got = {r[0] for r in rows}
-    assert got <= set(aplus_ids)          # NO watch row in the cohort
-    assert len(got) == 20                  # full cohort (filter-before-LIMIT)
+    (row,) = _build_outcome_distribution(
+        conn, pattern_class="vcp", current_evaluation_id=cur,
+        composite_score=score, cohort_limit=20)
+    assert row.n == 10   # filter-before-LIMIT kept all 10 aplus, dropped watch
 ```
 
-- [ ] **Step 2: Run -- verify it fails** (the public fn does not yet apply the filter). Run: `python -m pytest tests/web/view_models/patterns/test_review_form_aplus_isolation.py -q`.
+- [ ] **Step 2: Run -- verify it fails** (current code returns `n == 20`). Run: `python -m pytest tests/web/view_models/patterns/test_review_form_aplus_isolation.py -q`. Expected: FAIL (`assert 20 == 10`).
 
 - [ ] **Step 3: Implement.** In the cohort CTE (`review_form.py:340-349`), add the predicate as the final WHERE clause inside the CTE, BEFORE `ORDER BY pe.id DESC LIMIT ?`:
 
@@ -565,22 +578,38 @@ from swing.patterns.active_learning import prioritize_candidates
 from tests.evaluation.test_pe_origin_ladder import _run, _cand, _pe, _pde  # noqa
 
 
+def _pe_geom(conn, run_id, ticker, geom):
+    # _pe variant pinning geometric_score so _classify_priority fires
+    # (criterion 1 borderline_geometric: abs(geom-0.5) < BORDERLINE band).
+    return conn.execute(
+        "INSERT INTO pattern_evaluations (pipeline_run_id, ticker, "
+        "pattern_class, detector_version, geometric_score, geometric_score_json, "
+        "composite_score, structural_evidence_json, feature_distribution_log_json, "
+        "window_start_date, window_end_date, created_at) VALUES "
+        "(?,?, 'vcp', 'v1', ?, '{}', 0.7, '{}', '{}', '2026-05-01','2026-05-20',"
+        "'2026-05-20T18:00:00')", (run_id, ticker, geom)).lastrowid
+
+
 def test_queue_excludes_watch_origin(tmp_path):
     conn = sqlite3.connect(tmp_path / "t.db")
     conn.execute("PRAGMA foreign_keys=ON")
     run_migrations(conn, target_version=EXPECTED_SCHEMA_VERSION, backup_dir=tmp_path)
     _run(conn, 1, eval_run_id=1, asof="2026-05-19", session="2026-05-20",
          finished_ts="2026-05-20T18:30:00")
-    _cand(conn, 1, "AAA", "aplus"); _pe(conn, 1, "AAA")
-    for i in range(30):
-        _cand(conn, 1, f"W{i}", "watch"); _pe(conn, 1, f"W{i}"); _pde(conn, 1, f"W{i}", "watch")
+    # geometric_score=0.5 -> classifiable (borderline_geometric), so the queue
+    # is NON-empty post-isolation (Codex R1 MINOR #2: avoid the vacuous pass).
+    _cand(conn, 1, "AAA", "aplus"); _pe_geom(conn, 1, "AAA", 0.5)
+    for i in range(30):  # watch flood, also classifiable (geom 0.5)
+        _cand(conn, 1, f"W{i}", "watch"); _pe_geom(conn, 1, f"W{i}", 0.5)
+        _pde(conn, 1, f"W{i}", "watch")
     conn.commit()
     out = prioritize_candidates(conn, top_k=50)
     tickers = {c.ticker for c in out}
-    # Post-isolation: queue holds at most the aplus-origin row (priority rules
-    # may further filter). Pre-isolation: up to 31 rows including watch flood.
-    assert all(t == "AAA" for t in tickers)
-    assert "W0" not in tickers
+    # Post-isolation: queue == {AAA} (the watch flood is filtered at the SQL
+    # source). Pre-isolation: up to 31 rows including the watch flood. The
+    # `"AAA" in tickers` assert makes this NON-vacuous (the queue is non-empty).
+    assert "AAA" in tickers
+    assert tickers == {"AAA"}
 ```
 
 - [ ] **Step 2: Run -- verify it fails** (watch tickers present).
@@ -613,7 +642,9 @@ git commit -m "feat(pool-widening): isolate active_learning queue to aplus-origi
 **Files:**
 - Test ONLY: `tests/web/view_models/test_pe_backlink_keep.py` (NO production change -- this guards that a future over-eager isolation does NOT break the backlinks)
 
-- [ ] **Step 1: Write the test.** Seed a run with a WATCH candidate + its watch PE. Resolve the entry-form PE anchor for that ticker; assert it resolves to the watch PE (NOT None).
+**Codex R1 MAJOR #3:** the guard MUST call REAL kept-backlink callsites (not re-implement SQL), so it fails if those callsites were blanket-isolated. The two unit-testable kept callsites: (a) `swing.data.repos.pattern_evaluations.get_evaluation_by_id` (the by-id repo primitive, `pattern_evaluations.py:100-110`); (b) the entry-form PE-anchor -> candidate chain query in `swing/trades/entry.py:331-339` (`SELECT pr.evaluation_run_id FROM pattern_evaluations pe JOIN pipeline_runs pr ... WHERE pe.id = ?`).
+
+- [ ] **Step 1: Write the test.** Seed a run with a WATCH candidate + its watch PE. Resolve the watch PE via the real repo getter AND verify the entry chain resolves its candidate; assert both succeed (NOT None).
 
 ```python
 # tests/web/view_models/test_pe_backlink_keep.py
@@ -621,15 +652,16 @@ from __future__ import annotations
 import sqlite3
 import pytest
 from swing.data.db import EXPECTED_SCHEMA_VERSION, run_migrations
+from swing.data.repos.pattern_evaluations import get_evaluation_by_id
 from tests.evaluation.test_pe_origin_ladder import _run, _cand, _pe  # noqa
 
 
-def test_watch_ticker_backlink_resolves(tmp_path):
-    """A trade entered on a WATCH ticker must auto-link to its detection's PE
-    row (an IMPROVEMENT; changes no displayed statistic). Blanket-isolating
-    the backlinks would return None (broken linkage) -- this test fails ONLY
-    such a regression; it passes both before AND after the aggregate/queue
-    isolation (Tasks 2-4)."""
+def test_watch_ticker_backlink_resolves_via_real_callsites(tmp_path):
+    """A trade entered on a WATCH ticker must still auto-link to its detection's
+    PE row (an IMPROVEMENT; changes no displayed statistic). This test drives
+    the REAL kept-backlink callsites, so a future blanket-isolation that wrongly
+    filtered them to aplus-only would FAIL here. It passes both before AND after
+    the aggregate/queue isolation (Tasks 2-4) -- axis: intended-exception."""
     conn = sqlite3.connect(tmp_path / "t.db")
     conn.execute("PRAGMA foreign_keys=ON")
     run_migrations(conn, target_version=EXPECTED_SCHEMA_VERSION, backup_dir=tmp_path)
@@ -637,18 +669,22 @@ def test_watch_ticker_backlink_resolves(tmp_path):
          finished_ts="2026-05-20T18:30:00")
     _cand(conn, 1, "WCH", "watch"); pe_id = _pe(conn, 1, "WCH", pattern_class="vcp")
     conn.commit()
-    # The by-(run, ticker, pattern_class) backlink query (dashboard.py:787-792)
-    # is NOT filtered by origin. Mirror it directly to assert the KEEP:
-    row = conn.execute(
-        "SELECT id FROM pattern_evaluations WHERE pipeline_run_id = ? "
-        "AND ticker = ? AND pattern_class = ? LIMIT 1",
-        (1, "WCH", "vcp")).fetchone()
-    assert row is not None and row[0] == pe_id
+    # (a) The by-id repo primitive resolves the watch PE (NOT None).
+    got = get_evaluation_by_id(conn, pe_id)
+    assert got is not None and got.ticker == "WCH"
+    # (b) The entry-form anchor->candidate chain (entry.py:331-339) resolves the
+    #     watch PE's evaluation_run_id (NOT None) -> proves the watch trade can
+    #     still bind its candidate. Mirror the production chain query verbatim:
+    chain = conn.execute(
+        "SELECT pr.evaluation_run_id FROM pattern_evaluations pe "
+        "JOIN pipeline_runs pr ON pr.id = pe.pipeline_run_id WHERE pe.id = ?",
+        (pe_id,)).fetchone()
+    assert chain is not None and chain[0] == 1
 ```
 
-- [ ] **Step 2: Run -- verify it passes** (the backlink is NOT isolated). Run: `python -m pytest tests/web/view_models/test_pe_backlink_keep.py -q`. Expected: PASS.
+- [ ] **Step 2: Run -- verify it passes** (the backlinks are NOT isolated). Run: `python -m pytest tests/web/view_models/test_pe_backlink_keep.py -q`. Expected: PASS.
 
-> This is a guard, not a TDD red->green. It documents OQ-7 (KEEP) and will fail loudly if a later change wrongly isolates the by-ticker/by-id backlinks.
+> This is a guard, not a TDD red->green. It documents OQ-7 (KEEP) and fails loudly if a later change wrongly isolates the by-id repo getter or the entry-form anchor chain. (NOTE: `get_evaluation_by_id` is the by-id primitive shared by the entry/dashboard/journal backlinks; the by-(run,ticker,class) dashboard resolver at `dashboard.py:787-792` is inline in a heavy VM builder -- the repo getter is its de-facto unit; if a stricter end-to-end guard is wanted, drive the dashboard VM builder at exec.)
 
 - [ ] **Step 3: Commit**
 
@@ -721,8 +757,7 @@ from tests.pipeline.conftest_temporal import (  # noqa
 
 def test_detect_pool_includes_watch_not_skip(tmp_db_v22, tmp_path):
     conn, cfg, lease, eval_run_id, tickers = \
-        _seed_aplus_watch_skip_candidates_and_run((conn_, _path) := tmp_db_v22) \
-        if False else _seed_aplus_watch_skip_candidates_and_run(tmp_db_v22)
+        _seed_aplus_watch_skip_candidates_and_run(tmp_db_v22)
     bars = {t: _build_bars() for t in tickers}
     cache = _StubOhlcvCache(bars)
     warnings: list[dict] = []
@@ -737,8 +772,6 @@ def test_detect_pool_includes_watch_not_skip(tmp_db_v22, tmp_path):
     assert "SKP" not in got
     assert len(got) == 3 and len(got) > 1   # > the aplus-only count of 1
 ```
-
-(Clean up the stray walrus line at exec -- the canonical call is `_seed_aplus_watch_skip_candidates_and_run(tmp_db_v22)`.)
 
 - [ ] **Step 3: Run -- verify it fails** (`got == {"AAA"}`). Run: `python -m pytest tests/pipeline/test_pattern_pool_widen.py::test_detect_pool_includes_watch_not_skip -q`.
 
@@ -1019,6 +1052,8 @@ git commit -m "feat(pool-widening): dormant Lever 1 detect-pool cap + #27 cap au
 
 **Lever 2 = IMMEDIATE relief (a shorter watch-origin observation horizon). The mechanism is a PRE-FETCH SKIP, NOT an `expired` transition** (a no-fetch expiry is impossible without a schema change -- `ohlc_today_json` is NOT NULL). For a watch-origin detection (bucket read from `det.finviz_screen_state`) whose `sessions_since_detection` exceeds the shortened horizon: SKIP -- no fetch, no observation row, no terminal state. `_sessions_since(det.data_asof_date, observation_date)` is computable BEFORE the fetch (it needs only those two dates). Repeated runs cheaply re-skip (no fetch). **NO per-night COUNT cap in V1** (would starve later detections -- deferred to V2).
 
+**The shed horizon is STATUS-AWARE (Codex R1 MAJOR #4 -- mirrors `_advance_status`'s expiry logic at `runner.py:2398-2423`):** a detection whose latest observation status is `pending` (or which has no observation yet) sheds past the **watch PENDING window** alone (`observe_max_pending_window_sessions_watch`, falling back to the aplus `max_pending`); a `triggered_open` detection sheds past **watch pending + watch post-trigger** (`+ observe_max_post_trigger_window_sessions_watch`, falling back to aplus `max_post`). `prev` (the latest observation) is already read in the loop (`prev = latest.get(det.detection_id)`, `runner.py:2541`) BEFORE the fetch -- read `prev.status` for the branch. So setting `observe_max_pending_window_sessions_watch=5` sheds a PENDING watch detection at `sessions > 5` (NOT 65).
+
 - [ ] **Step 1: Write the failing tests** (dormant-default + active-shed + repeated-runs-no-refetch).
 
 ```python
@@ -1029,18 +1064,28 @@ def test_lever2_dormant_default_no_shed(tmp_db_v22, tmp_path):
     #  a stub cache; assert an observation row IS written, no shed audit.)
     ...
 
-def test_lever2_active_shed_audit_and_no_fetch(tmp_db_v22, tmp_path, monkeypatch):
-    # Set observe_max_pending_window_sessions_watch = 5; plant a watch-origin
-    # detection at sessions_since_detection > 5; spy on _bar_for_date.
+def test_lever2_active_shed_pending_state(tmp_db_v22, tmp_path, monkeypatch):
+    # Set observe_max_pending_window_sessions_watch = 5; plant a PENDING
+    # watch-origin detection at sessions_since_detection > 5 (e.g.
+    # data_asof_date 10 business days before observation_date, no prior obs);
+    # spy on _bar_for_date.
     calls = []
     import swing.pipeline.runner as R
     real = R._bar_for_date
     monkeypatch.setattr(R, "_bar_for_date",
-                        lambda *a, **k: calls.append(a) or real(*a, **k))
+                        lambda *a, **k: calls.append(a[2]) or real(*a, **k))
     # ... drive observe; assert:
     #   - NO observation row appended for the shed detection
-    #   - _bar_for_date NOT called for it (calls excludes its ticker)
+    #   - the shed ticker is NOT in `calls` (no fetch)
     #   - a {"step":"pattern_observe","shed_count":1,"reason":...} audit entry
+    ...
+
+def test_lever2_triggered_open_uses_pending_plus_post_horizon(tmp_db_v22, tmp_path):
+    # Set pending_watch=5 + post_watch=5 (horizon 10 for triggered_open). Plant
+    # a watch detection whose LATEST observation status is 'triggered_open' at
+    # sessions_since_detection == 8 (> pending 5 but < pending+post 10): assert
+    # it is NOT shed (status-aware horizon, Codex R1 MAJOR #4). At sessions 12
+    # (> 10): assert it IS shed.
     ...
 
 def test_lever2_repeated_runs_do_not_refetch_shed(tmp_db_v22, tmp_path, monkeypatch):
@@ -1049,7 +1094,7 @@ def test_lever2_repeated_runs_do_not_refetch_shed(tmp_db_v22, tmp_path, monkeypa
     ...
 ```
 
-(The `...` bodies are filled at exec using the observe harness in `tests/pipeline/test_step_pattern_observe.py` -- which already plants detections + drives `_step_pattern_observe` with a stub cache + a `resolve_ohlcv_window` stub. Mirror its setup; add a watch `finviz_screen_state` to the planted detection via `_plant_detection` extended with a `bucket="watch"` arg.)
+(The `...` bodies are filled at exec using the observe harness in `tests/pipeline/test_step_pattern_observe.py` -- which already plants detections + drives `_step_pattern_observe` with a stub cache + a `resolve_ohlcv_window` stub. Mirror its setup; extend `conftest_temporal._plant_detection` with a `bucket="watch"` arg so the planted detection's `finviz_screen_state` carries the watch bucket, and seed a prior `pattern_forward_observations` row with `status='triggered_open'` for the triggered-state test.)
 
 - [ ] **Step 2: Run -- verify they fail.**
 
@@ -1071,8 +1116,12 @@ def test_lever2_repeated_runs_do_not_refetch_shed(tmp_db_v22, tmp_path, monkeypa
                         _bucket = None
                 if _bucket == "watch":
                     _sess = _sessions_since(det.data_asof_date, observation_date)
-                    _horizon = ((_pend_w if _pend_w is not None else max_pending)
-                                + (_post_w if _post_w is not None else max_post))
+                    _prev_status = prev.status if prev is not None else "pending"
+                    if _prev_status == "triggered_open":
+                        _horizon = ((_pend_w if _pend_w is not None else max_pending)
+                                    + (_post_w if _post_w is not None else max_post))
+                    else:  # pending / no observation yet
+                        _horizon = (_pend_w if _pend_w is not None else max_pending)
                     if _sess > _horizon:
                         _shed_count += 1
                         continue   # no fetch, no observation row, no terminal state
@@ -1104,21 +1153,36 @@ git commit -m "feat(pool-widening): dormant Lever 2 observe pre-fetch shed + #27
 ### Task 12: The observe-load net-new-fetch instrumentation + observe-scaling
 
 **Files:**
-- Modify: `swing/pipeline/runner.py:2503-2564` (`_step_pattern_observe`: a #27-compliant counter distinguishing in-pool cache-hit vs rotated-out net-new fetch)
+- Modify: `swing/web/ohlcv_cache.py` (`OhlcvCache`: a thread-safe telemetry counter at the real fetch boundary)
+- Modify: `swing/pipeline/runner.py:2503-2564` (`_step_pattern_observe`: drain the cache telemetry + emit a #27-shaped `pattern_observe` metrics entry)
 - Test: `tests/pipeline/test_observe_load_instrumentation.py`
 
-The measurement probe must distinguish (a) in-pool watch tickers (cache hit -- their bars are kept fresh by `_step_ohlcv`) from (b) rotated-out watch tickers (net-new ~400-day yfinance fetch). Implement as a counter accumulated in the observe loop and emitted as a `pattern_observe` metrics entry (NOT a per-detection warning -- it is informational, but #27-shaped: it states expected vs actual). The net-new signal: `_bar_for_date` cache-hit vs fetch is observable by whether the ticker is in the current run's `candidates` set (in-pool) -- query `candidates` for the run's `evaluation_run_id`.
+**Codex R1 MAJOR #5: candidate membership is a PROXY, not the truth.** An in-pool ticker can miss the in-memory cache; a rotated-out ticker can hit the on-disk archive. The TRUTHFUL net-new signal lives at the actual fetch boundary. `OhlcvCache.get_or_fetch` (`ohlcv_cache.py:166`) serves either from its in-memory `_bars_store` TTL hit (`:211`, NO consult) or via `_fetch_bars_window` (`:222`, which consults `read_or_fetch_archive` -> archive-hit OR a real `_yf_download_window` network call in `swing/data/ohlcv_archive.py:140`). So:
+- **Production instrumentation (#27-shaped, ships):** add a thread-safe telemetry pair to `OhlcvCache` -- `_telemetry = {"in_memory_hit": 0, "fetch_window": 0}` incremented at the `:211` hit branch and the `:222` fetch branch respectively, with a `drain_telemetry()` that returns + zeroes the counts. The observe step drains it after the loop and emits one metrics entry. `fetch_window` is the per-night count of `get_or_fetch` calls that consulted the archive/network (the binding cost the spec cares about: rotated-out tickers re-fetched across the ~90-session window, since the in-memory cache is cold each fresh nightly process).
+- **Dev measurement (Task 13, NOT shipped):** additionally monkeypatch `swing.data.ohlcv_archive._yf_download_window` to count TRUE yfinance network calls -- the exact net-new-fetch number. Candidate membership is kept ONLY as an auxiliary `rotated_out` annotation, NEVER the net_new truth source.
 
 - [ ] **Step 1: Write the failing test.**
 
 ```python
 # tests/pipeline/test_observe_load_instrumentation.py
-def test_observe_emits_net_new_fetch_counter(tmp_db_v22, tmp_path):
-    # Plant 2 open detections: one whose ticker IS in the current candidate set
-    # (in-pool), one whose ticker is NOT (rotated out). Drive observe; assert a
-    # {"step":"pattern_observe", "observed": N, "net_new_fetch": M,
-    #  "in_pool_cache_hit": K} metrics entry with the rotated-out one counted
-    #  as net_new.
+def test_ohlcv_cache_telemetry_counts_hit_vs_fetch(tmp_path):
+    # Unit-test the truthful counter at its source. First get_or_fetch for a
+    # ticker is a fetch_window; an immediate second call (within TTL) is an
+    # in_memory_hit. Use a stub ladder fetcher so no real network is hit.
+    from swing.web.ohlcv_cache import OhlcvCache
+    import pandas as pd
+    # ... construct OhlcvCache(cfg); set_ladder_bars_fetcher to a stub returning
+    #     a non-empty frame; call get_or_fetch twice for "AAA":
+    #   t = cache.drain_telemetry()
+    #   assert t["fetch_window"] == 1 and t["in_memory_hit"] == 1
+    #   assert cache.drain_telemetry() == {"in_memory_hit": 0, "fetch_window": 0}
+    ...
+
+def test_observe_emits_fetch_telemetry_metrics_entry(tmp_db_v22, tmp_path):
+    # Plant 2 open detections; drive _step_pattern_observe with a stub cache that
+    # increments its telemetry; assert a {"step":"pattern_observe",
+    # "metric":"observe_load", "observed": 2, "fetch_window": F,
+    # "in_memory_hit": H} entry is emitted (F + H == get_or_fetch calls).
     ...
 
 def test_observe_scaling_one_obs_per_open_detection(tmp_db_v22, tmp_path):
@@ -1130,15 +1194,57 @@ def test_observe_scaling_one_obs_per_open_detection(tmp_db_v22, tmp_path):
 
 - [ ] **Step 2: Run -- verify they fail.**
 
-- [ ] **Step 3: Implement the counter** in `_step_pattern_observe`: accumulate `observed`, `net_new_fetch`, `in_pool_cache_hit` (in-pool = the detection's ticker is in the current run's candidate set), and emit one metrics entry to `run_warnings` after the loop. Keep it #27-shaped (expected vs actual; no silent zero-work). ASCII strings.
+- [ ] **Step 3a: Implement the OhlcvCache telemetry** (`swing/web/ohlcv_cache.py`):
+
+```python
+    # in __init__ (after self._bars_store init):
+        self._telemetry = {"in_memory_hit": 0, "fetch_window": 0}
+        self._telemetry_lock = threading.Lock()
+    # in get_or_fetch, the in-memory TTL hit branch (currently ~:212, before
+    # `return hit[0].copy()`):
+            if hit is not None and (now - hit[1]) <= self._ttl:
+                with self._telemetry_lock:
+                    self._telemetry["in_memory_hit"] += 1
+                return hit[0].copy()
+    # immediately before the `bars = self._fetch_bars_window(...)` call (~:222):
+        with self._telemetry_lock:
+            self._telemetry["fetch_window"] += 1
+        bars = self._fetch_bars_window(...)
+    # new method:
+    def drain_telemetry(self) -> dict[str, int]:
+        """Return + zero the fetch-vs-hit counters since the last drain."""
+        with self._telemetry_lock:
+            out = dict(self._telemetry)
+            self._telemetry = {"in_memory_hit": 0, "fetch_window": 0}
+            return out
+```
+
+- [ ] **Step 3b: Emit the metrics entry** in `_step_pattern_observe` after the loop (drain the cache; #27-shaped -- states what was observed vs fetched; ASCII strings):
+
+```python
+        # Observe-load instrumentation (truthful fetch-vs-hit at the cache
+        # boundary; Codex R1 MAJOR #5). drain_telemetry() may be absent on a
+        # bare stub cache -> default to zeros (best-effort, never crash observe).
+        _tele = (ohlcv_cache.drain_telemetry()
+                 if hasattr(ohlcv_cache, "drain_telemetry") else {})
+        run_warnings.append({
+            "step": "pattern_observe",
+            "metric": "observe_load",
+            "observed": _observed_count,        # observation rows written this run
+            "fetch_window": _tele.get("fetch_window", 0),   # archive/network consults
+            "in_memory_hit": _tele.get("in_memory_hit", 0), # TTL cache hits
+        })
+```
+
+(`_observed_count` is a counter incremented after each successful `insert_observation`. Units: `observed` = rows written; `fetch_window` = get_or_fetch calls that consulted archive/network; `in_memory_hit` = TTL hits. Expansion #8.)
 
 - [ ] **Step 4: Run -- verify they pass** + ruff.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd <worktree> && git add swing/pipeline/runner.py tests/pipeline/test_observe_load_instrumentation.py
-git commit -m "feat(pool-widening): observe-load net-new-fetch instrumentation + scaling test"
+cd <worktree> && git add swing/web/ohlcv_cache.py swing/pipeline/runner.py tests/pipeline/test_observe_load_instrumentation.py
+git commit -m "feat(pool-widening): truthful OhlcvCache fetch telemetry + observe-load metrics + scaling"
 ```
 
 ### Task 13: The observe-load MEASUREMENT RUN (executing-plans runbook -- NOT a code task)
@@ -1146,7 +1252,7 @@ git commit -m "feat(pool-widening): observe-load net-new-fetch instrumentation +
 **This task produces NO commit; it produces the NUMBERS the operator judges at the OQ-4 gate.** It runs at executing-plans on a SEEDED / isolated DB (NEVER the operator's live DB).
 
 - [ ] **Step 1:** Build a seeded measurement DB mirroring the study snapshot: ~3 aplus + ~249 watch candidates (use `_seed_aplus_watch_skip_candidates_and_run` scaled up, or a dedicated seed script under `scripts/` that is NOT committed to production paths). Each ticker gets a `_build_bars()` frame in the stub cache; for the rotated-out projection, plant N watch detections whose tickers are NOT in the next run's candidate set.
-- [ ] **Step 2:** Measure (a) detect-step wall-clock aplus-only vs aplus+watch; (b) observe-step wall-clock + per-night `get_or_fetch` count + the net-new-fetch count from Task 12's counter; (c) the steady-state projection over a ~90-session window (model the daily observe `get_or_fetch` volume + net-new fraction, not just night 1); (d) state + validate the OHLCV cache-hit assumption (in-pool watch -> cached at `window_days=400`; one fetch serves both detect's 400-day window and observe's date-anchored read -- the "return full archive / consumers slice" gotcha).
+- [ ] **Step 2:** Measure (a) detect-step wall-clock aplus-only vs aplus+watch; (b) observe-step wall-clock + per-night `get_or_fetch` count (= Task 12's `fetch_window` + `in_memory_hit`) + the TRUE net-new yfinance count (monkeypatch `swing.data.ohlcv_archive._yf_download_window` and count real calls -- Codex R1 MAJOR #5; candidate membership is only an auxiliary `rotated_out` annotation); (c) the steady-state projection over a ~90-session window (model the daily observe `fetch_window` volume + net-new fraction, not just night 1); (d) state + validate the OHLCV cache-hit assumption (in-pool watch -> archive-fresh at `window_days=400`; one fetch serves both detect's 400-day window and observe's date-anchored read -- the "return full archive / consumers slice" gotcha).
 - [ ] **Step 3:** Present the numbers to the operator and judge against the **acceptance criterion (OQ-1, operator-confirmed):** ACCEPT UNCAPPED iff (a) the nightly pipeline runtime delta (detect+observe) is under the operator budget (proposed default: < ~5 min added on the representative set) AND (b) the steady-state net-new yfinance fetch volume stays under the `OhlcvCache` sliding-window breaker thresholds (no breaker trip on a representative night). If EITHER fails, the operator flips the matching dormant lever (Lever 1 for growth, Lever 2 for an existing backlog) WITH its #27 audit -- never a silent cap.
 
 ---
