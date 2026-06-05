@@ -17,7 +17,12 @@ The tool only ever **PULLS + LOCKS regular-session, completed-trading-day data.*
 
 The Phase-14 temporal observation log (`pattern_forward_observations`) is **append-only with lock-at-observation**: `ohlc_today_json` is `NOT NULL`, locked the moment an observation is written, and **never re-fetched** (migration 0022 NORMATIVE invariant). A locked bar is *permanent* -- there is no post-facto correction path. The `#23` pool-widening (2026-06-04) put the nightly pipeline into the business of locking forward-walk data **every night** for the ~83x watch population.
 
-Therefore: **the data pulled + locked MUST be completed-regular-session, enforced at the PULL stage -- before the lock -- or it is permanently wrong.** This arc does not loosen the lock; it makes the lock *unable* to capture a partial or extended-hours bar.
+Therefore: **the data pulled + locked MUST be completed-regular-session, enforced at the PULL stage -- before the lock -- or it is permanently wrong.** This arc does not loosen the lock. It closes the two contamination axes (1.2) with a clean **division of responsibility** (made explicit because conflating them is a design trap, per Codex chain #1 C2):
+
+- **Extended-hours cleanliness** is guaranteed ONLY at the **pull stage** (regular-session pull parameters, 4) plus **archive cleanliness/remediation** (5.2, 5.4). It is NOT enforceable from a bar's OHLC values -- nothing in `{open,high,low,close,volume}` reveals that a `high` came from a post-market print. The lock-guard CANNOT and does NOT validate ext-hours provenance.
+- **Completed-day cleanliness** is guaranteed by the `last_completed_session` anchor (5.1), the write-barrier strip (5.2), AND the lock-guard (6) as a date-only backstop.
+
+So "the lock can never capture a partial/extended bar" decomposes into: the lock-guard makes the lock unable to capture a *non-completed-DATE* bar; the pull-stage + archive cleanliness make it unable to capture an *extended-hours* bar. Neither alone is sufficient; together they close both axes.
 
 ### 1.2 Two contamination axes
 
@@ -42,10 +47,11 @@ The arc HARDENS + uniformly ENFORCES these helpers. It does NOT rewrite the date
 |---|---|---|
 | `swing/integrations/schwab/marketdata.py` | Schwab `price_history` wrapper | Add `needExtendedHoursData=False` + `needPreviousClose` |
 | `swing/integrations/schwab/mappers.py` | quote mapper | Read `regularMarket*` fields |
-| `swing/integrations/schwab/marketdata_ladder.py` | window ladder + archive persist | Strip in-progress bar at write barrier; classify `SchwabBarConsistencyError` |
-| `swing/integrations/schwab/models.py` | `OhlcvBar` invariant | Float epsilon on low/high checks |
+| `swing/integrations/schwab/marketdata_ladder.py` | window ladder + archive persist | classify `SchwabBarConsistencyError` (the strip lives in `write_window`, below) |
+| `swing/integrations/schwab/models.py` | `OhlcvBar` invariant | UNCHANGED -- stays strict (no epsilon); float noise normalized in the mapper |
+| `swing/integrations/schwab/mappers.py` | price-history mapper | Round provider floats before `OhlcvBar`; re-raise per-bar `ValueError` as `SchwabBarConsistencyError`; quote regular-session fields |
 | `swing/integrations/schwab/client.py` (or errors module) | error taxonomy | New typed `SchwabBarConsistencyError` |
-| `swing/data/ohlcv_archive.py` / `swing/web/ohlcv_cache.py` | archive write-through | In-progress-bar strip at write barrier |
+| `swing/data/ohlcv_archive.py` (`write_window`) | lowest-level archive persist | In-progress-bar strip (cutoff = `last_completed_session`) on the merged frame -- the single chokepoint |
 | `swing/pipeline/runner.py` (`_bar_for_date`) | observe-lock bar select | Completed-day assert |
 | `swing/pipeline/temporal_metadata.py` (`build_ohlc_today_json`) | lock serializer | Completed-day assert |
 | `swing/evaluation/dates.py` (new helper) | topbar anchor | `topbar_session_date(page_kind)` classifier |
@@ -142,28 +148,28 @@ return client.price_history(
 
 ### 4.2 `quotes` -- regular-session fields
 
-**Change:** [`mappers.py:706-720`](../../../swing/integrations/schwab/mappers.py), `map_quotes_to_price_cache_entries`. The Schwab `/quotes` response carries BOTH `lastPrice` (the ext-hours last trade during pre/post-market) AND `regularMarketLastPrice` + `regularMarketTradeTime`. Switch the primary read to the regular-session fields:
+**Change:** [`mappers.py:706-720`](../../../swing/integrations/schwab/mappers.py), `map_quotes_to_price_cache_entries`. The Schwab `/quotes` response carries BOTH `lastPrice` (the ext-hours last trade during pre/post-market) AND `regularMarketLastPrice` + `regularMarketTradeTime`. **Require the regular-session field; do NOT fall back to `lastPrice` (Codex chain #1 M1: a `lastPrice` fallback re-admits ext-hours during pre/post-market -> direct L1 violation).** When `regularMarketLastPrice` is absent, treat the symbol exactly like the existing missing-field path -- DROP it from the mapper output so the ladder falls back to yfinance (regular-session daily):
 
 ```python
 last_price = body.get("regularMarketLastPrice")
 if last_price is None:
-    last_price = body.get("lastPrice")      # fallback only when regular absent
-if last_price is None:
-    last_price = body.get("last_price")     # snake_case forward-compat
-# quote_time prefers regularMarketTradeTime
+    last_price = body.get("regular_market_last_price")  # snake_case forward-compat ONLY
+# NO lastPrice fallback -- lastPrice carries the ext-hours print (L1).
+# quote_time uses the regular-session trade time:
 quote_time_raw = (
     body.get("regularMarketTradeTime")
-    or body.get("quoteTimeInLong")
-    or body.get("quoteTime")
-    or body.get("quote_time")
+    or body.get("regular_market_trade_time")
 )
+# ... the existing `if last_price is None: drop + continue` path now also
+# fires when only the ext-hours lastPrice is present -> symbol dropped ->
+# yfinance fallback at the ladder (L1-clean).
 ```
 
-`bid`/`ask` remain as-is (bid/ask are quotes, not trades; there is no "regular-market bid" distinct field in the daily-bar sense -- but document that during extended hours the bid/ask reflect the extended book; acceptable because the quote is display-only).
+`bid`/`ask` remain as-is structurally, but note: during extended hours Schwab's `bidPrice`/`askPrice` reflect the extended book. Because the existing mapper REQUIRES `bid` and `ask` to emit a quote, the simplest L1-clean rule is uniform: **a Schwab quote is emitted ONLY when `regularMarketLastPrice` is present** (i.e. regular-session data is available); otherwise the symbol drops to yfinance. This avoids emitting an ext-hours bid/ask alongside a regular last.
 
-**Stakes (Q3):** quotes feed ONLY ephemeral display + the CLI `--verify-marketdata` path ([`cli_schwab.py:1067`](../../../swing/cli_schwab.py)) -> `PriceSnapshot` -> the ephemeral price cache. **No locked surface consumes a quote.** The change is made anyway to honor the L1 blanket policy and to future-proof (if a quote ever feeds a locked surface, it is already clean). The spec documents the display-only scope so writing-plans does not over-engineer a locked-surface guard here.
+**Stakes (Q3):** quotes feed ONLY ephemeral display + the CLI `--verify-marketdata` path ([`cli_schwab.py:1067`](../../../swing/cli_schwab.py)) -> `PriceSnapshot` -> the ephemeral price cache. **No locked surface consumes a quote.** The change still honors the L1 blanket policy (no ext-hours value ever surfaces from a Schwab quote) and future-proofs a locked-surface consumer.
 
-**OQ for writing-plans:** re-validate `regularMarketLastPrice`/`regularMarketTradeTime` field availability against a live quote or a recorded cassette (Schwab quote schema varies by `fields=` selection). If the regular fields are absent under the project's quote-field selection, the plan must either add the field selection or fall back gracefully (the `or lastPrice` chain already does). See §13 OQ-3.
+**OQ for writing-plans (OQ-3):** re-validate `regularMarketLastPrice`/`regularMarketTradeTime` availability against a live quote or a recorded cassette (the Schwab quote schema varies by `fields=` selection). If the regular fields are NOT returned under the project's current `fields=` selection, the drop-to-yfinance rule above means EVERY Schwab quote silently falls back to yfinance -- functionally correct (L1-clean) but it nullifies the Schwab quote path. In that case writing-plans must widen the `fields=` selection so `regularMarket*` is returned. The plan MUST confirm the field selection before shipping, or the Schwab quote path becomes dead.
 
 ---
 
@@ -175,29 +181,49 @@ quote_time_raw = (
 
 `data_asof_date = last_completed_session(run_now)` at lease acquisition ([`runner.py:541`](../../../swing/pipeline/runner.py)). Every pipeline lock (L-A, L-B) anchors on it. `last_completed_session` correctly returns the prior session before today's close (it checks `ny_ts_utc >= close_ts`, HST->ET aware). **No change to the anchor computation.** The arc adds a regression test asserting `data_asof_date` is a completed session for representative clocks (pre-open, mid-session, post-close, weekend, holiday) -- see §10.
 
-### 5.2 Write-barrier strip (the single chokepoint)
+### 5.2 Write-barrier strip -- the single LOWEST-LEVEL chokepoint
 
-**Where:** the archive write-through -- `_persist_window_to_archive` ([`marketdata_ladder.py`](../../../swing/integrations/schwab/marketdata_ladder.py)) and the `OhlcvCache` write path ([`swing/web/ohlcv_cache.py`](../../../swing/web/ohlcv_cache.py)) / `ohlcv_archive.py`.
+**Where (mandated):** the strip lives inside **`write_window(ticker, window, provider, *, cache_dir)`** ([`ohlcv_archive.py:281`](../../../swing/data/ohlcv_archive.py)) -- the single lowest-level archive persist function that ALL write paths funnel through (the ladder's `_persist_window_to_archive`, the `OhlcvCache` write-through, the `--verify-marketdata` write). `write_window` already owns the merge-by-`asof_date` (`keep='last'`) + atomic write. Putting the strip here means **every caller inherits it** -- there is no second place to get it wrong. (Codex chain #1 M2: the "single chokepoint" claim is only honest if the strip is at the one lowest-level writer, not replicated across callers.)
 
-**What:** before persisting a window, drop any bar whose `asof_date` is **>= the current in-progress session**. "Current in-progress session" = the NYSE session date for `now` when `now` is before that session's close; equivalently, any date strictly after `last_completed_session(now)`. Implementation: `cutoff = last_completed_session(now)`; keep bars with `asof_date <= cutoff`.
+**What (filters BOTH incoming AND the merged result -- Codex chain #1 M3):** `cutoff = last_completed_session(now)` (the NYSE-session-aware completed-day boundary; "current in-progress session" = any date strictly after `cutoff`). After the existing concat-of-(existing + incoming) and BEFORE the dedup/write, drop every row with `asof_date > cutoff`. This is critical: filtering only the *incoming* window would leave a pre-existing partial/current-day row already on disk in place (M3). The filter applies to the **merged frame**, so the archive can never retain a row dated after the last completed session, regardless of how it got there.
 
-**Why a write barrier (not just consumer slicing):** the archive is the *shared* surface read by both the observe-lock (`_bar_for_date` selects an exact date) and the detect step. A partial current-day bar that lands in the archive is a latent hazard for any future reader. Stripping at write means **no partial bar is ever persisted**, so the append-only lock cannot read one. (This also respects the F6 write-through-archive empty-result rule: if stripping leaves the window empty, treat as transient -- do NOT overwrite existing cached content with emptiness; retain prior + leave stale metadata so the next call retries.)
+**Empty-result interaction (F6 + the existing guard):** `write_window` already returns without touching disk on an empty/None incoming window (the transient-empty guard). The cutoff strip composes safely: if the *incoming* window is entirely current-day and strips to empty, the function still must not blank the archive -- but because the strip now also filters the *merged* frame, the result is "existing rows <= cutoff" (which is correct and non-destructive), NOT an empty overwrite. If the merged frame itself is empty (no historical rows at all and only a stripped current-day row), fall through to the existing no-write guard (retain prior file untouched; next call retries). Never write a frame, and never leave a frame on disk, containing a row > cutoff.
 
-**Defense-in-depth (consumer slice):** keep the existing `_slice_to_asof(bars, asof=data_asof_date)` on the detect/metadata path ([`temporal_metadata.py`](../../../swing/pipeline/temporal_metadata.py)) and the exact-date select in `_bar_for_date`. If a partial bar somehow lands (e.g., a write path the strip missed), the consumer still cannot lock it.
+**Why a write barrier (not just consumer slicing):** the archive is the *shared* surface read by both the observe-lock (`_bar_for_date` selects an exact date) and the detect step. A partial current-day bar that lands in the archive is a latent hazard for any future reader. Stripping at the lowest writer means **no partial bar is ever persisted**, so the append-only lock cannot read one.
 
-**Shared-infrastructure caveat (CLAUDE.md gotcha):** the write-barrier strip must NOT pre-truncate the *historical depth* of the window -- it only drops the trailing in-progress bar. Consumers slice their own windows; the archive returns full history minus the partial tail.
+**Defense-in-depth (consumer slice):** keep the existing `_slice_to_asof(bars, asof=data_asof_date)` on the detect/metadata path ([`temporal_metadata.py`](../../../swing/pipeline/temporal_metadata.py)) and the exact-date select in `_bar_for_date`. If a partial bar somehow lands, the consumer still cannot lock it.
+
+**Shared-infrastructure caveat (CLAUDE.md gotcha):** the strip must NOT pre-truncate the *historical depth* of the window -- it only drops rows dated `> cutoff` (the trailing in-progress tail). Consumers slice their own windows; the archive returns full history minus the partial tail.
+
+**Verification (was OQ-2, now a design requirement):** writing-plans MUST confirm that every archive write path funnels through `write_window` (grep `to_parquet` / `_write_archive_atomic` / direct parquet writers in `swing/data/ohlcv_archive.py` + `swing/web/ohlcv_cache.py`). Any writer that bypasses `write_window` MUST be routed through it (or given the same strip). The "single chokepoint" guarantee is only valid once that audit is complete.
 
 ### 5.3 Legacy `PriceCache` last-close strip
 
 `_step_evaluate`'s last-close computation already strips the in-progress bar per the CLAUDE.md yfinance gotcha. The arc adds a regression test asserting the strip keys on `last_completed_session(datetime.now())` (the exchange-session helper), NOT `date.today()` (HST lags ET 5h -> `date.today()` can name tomorrow's session pre-midnight ET or mis-handle the post-close window). No behavior change expected; the test pins the contract.
 
+### 5.4 Pre-fix archive remediation -- contaminated bars NOT yet locked (Codex chain #1 C1)
+
+**The gap.** The L1 pull fix (4.1) is forward-only: it cleans *future* Schwab fetches. But the OHLCV archive on disk already holds Schwab-provider parquet rows fetched BEFORE the fix shipped, whose `high`/`low` fold extended-hours prints. These rows are **completed-DATE** bars, so the lock-guard (6) passes them. They are NOT "already-locked temporal facts" (15 out-of-scope covers only already-*locked* `ohlc_today_json`); they are *cache/source* material. A future observe run for a detection whose `observation_date` matches one of these stale dates would have `_bar_for_date` read the contaminated bar and **permanently lock it**. This is the one path by which the arc could still lock an ext-hours bar after ship. It MUST be closed.
+
+**The mechanism (already mostly present).** `_bar_for_date` ([`runner.py:2466-2491`](../../../swing/pipeline/runner.py)) calls `ohlcv_cache.get_or_fetch(ticker, window_days=400)` **before** the date-anchored read. Once the L1 fix is live, that populate re-fetches the trailing ~400-day window with `needExtendedHoursData=False`; `write_window`'s `keep='last'` merge then **overwrites** the contaminated `observation_date` row with the clean regular-session bar before the read selects it. Remediation is therefore *automatic per ticker at observe time* -- PROVIDED the populate actually performs a fresh Schwab fetch and does not short-circuit on a stale-cache hit.
+
+**The design requirement.** The observe-path populate MUST re-fetch the bar for `observation_date` (and the recent tail) on each observe run post-L1, so the clean bar overwrites any pre-fix contaminated bar before the lock reads it. Two acceptable implementations (writing-plans picks one):
+- **(a) Refetch-overwrite (recommended, no migration):** ensure `get_or_fetch` on the observe path is NOT satisfied by a stale-cache no-op for the trailing window -- it must hit Schwab so `keep='last'` overwrites. If `get_or_fetch` has a freshness gate that can skip the fetch when the archive already covers the date range, the observe path must bypass that gate for the trailing window (a `force_refresh`/`min_asof` parameter), so a pre-fix contaminated row is always overwritten. This is the gotcha-#24 "prefer-fresher" family; scope it narrowly to the observe populate.
+- **(b) One-time purge:** a one-shot maintenance step that deletes Schwab-provider parquet rows dated before the L1 ship date, forcing a clean refetch on next access. Heavier; only if (a) proves infeasible.
+
+**Why this does NOT violate L3.** Archive parquet rows are cache/source material, freely re-fetchable -- NOT append-only locked facts. Overwriting a stale archive bar with a fresh clean one is re-fetching SOURCE, not regenerating a LOCKED observation. The append-only `ohlc_today_json` rows are never touched.
+
+**OQ-1b (writing-plans):** determine `get_or_fetch`'s freshness behavior for the trailing window (does it always refetch, or short-circuit on coverage?). The answer decides whether implementation (a) needs a new `force_refresh` parameter or is already satisfied. A test must prove: a pre-fix contaminated archive row for `observation_date` is overwritten by the clean refetch before `_bar_for_date` returns it.
+
 ---
 
-## 6. The lock-guard (L3) -- the one-way-door backstop
+## 6. The lock-guard (L3) -- the completed-DAY one-way-door backstop
 
-**Decision (Q4):** completed-day assert at BOTH `build_ohlc_today_json` AND `_bar_for_date`.
+**Decision (Q4):** completed-DAY assert at BOTH `build_ohlc_today_json` AND `_bar_for_date`.
 
-The lock-guard cannot detect *value-based* ext-hours contamination from OHLC alone (there is no field that says "this high was a post-market print"). So pull-stage cleanliness (§4, §5) is **primary**. The guard is the hard backstop against the *current/partial-day* axis -- a defense against a future wiring regression that supplies a current-day `observation_date` or a partial bar.
+**Scope of the guard (explicit -- Codex chain #1 C2):** this guard enforces the **completed-DAY** axis ONLY. It rejects a bar whose `observation_date` is not strictly a completed session. It **cannot and does not** detect extended-hours contamination -- a completed-DATE bar whose `high`/`low` came from a post-market print PASSES this guard, because OHLC values carry no ext-hours provenance. Ext-hours prevention is owned entirely by the pull stage (4) + archive cleanliness/remediation (5.2, 5.4). Do not mistake this guard for value-provenance validation. A dedicated test (10.2) plants a completed-DATE ext-hours-contaminated bar and asserts the guard PASSES it -- documenting the boundary so a future reader does not over-trust the guard.
+
+Pull-stage cleanliness (§4, §5) is therefore **primary** for ext-hours; this guard is the hard backstop against the *current/partial-day* axis -- a defense against a future wiring regression that supplies a current-day `observation_date` or a partial bar.
 
 ### 6.1 `_bar_for_date` ([`runner.py:2466`](../../../swing/pipeline/runner.py))
 
@@ -269,6 +295,8 @@ Every base-layout VM sets `session_date=topbar_session_date(<kind>, datetime.now
 - **FORWARD_PLANNING:** `DashboardVM`, `WatchlistVM`.
 - **HISTORY_ANALYSIS:** `JournalVM` (+ drill-downs), the reviews VMs, patterns queue/exemplars/review-form, the metrics overview + all 9 tile VMs, `PipelineVM`, `ConfigVM`, the reconcile VM/route, the schwab status/setup routes, the account route, `PageErrorVM` (default).
 
+**Authoritative registry (Codex chain #1 M4 -- not a grep-derived "~20 VMs").** The "~20 VMs" in §2.3 is the brainstorm's grep-derived snapshot; it is NOT authoritative for the test. Writing-plans MUST derive the **authoritative base-layout VM inventory** mechanically: every VM that renders through `base.html.j2` (i.e. every route returning a `TemplateResponse` whose template extends the base layout, OR -- cleaner -- every VM that carries the base-layout `session_date`/`stale_banner` banner fields, today the 5-VM `base.html.j2` family plus the metrics `BaseLayoutVM` subclasses and the patterns VMs). The mechanism: make `PageKind` a **required** field on the base-layout VM mixin (no default), so a VM that fails to declare it does not construct. The cross-VM test (10.5) then parameterizes from the registry of all base-layout VM classes (e.g. `BaseLayoutVM.__subclasses__()` + the non-subclass banner VMs enumerated explicitly) and asserts each declares a `PageKind` and routes its `session_date` through `topbar_session_date`. A new base-layout page added later cannot evade the policy: it must declare a `PageKind` to render, and the registry test will include it automatically.
+
 **Why metrics are backward:** every metrics tile analyzes *completed* trade history. `CapitalFrictionVM` already computes its DATA off `last_completed_session` (line 100, §A.15 LOCK: "Forward-looking action_session_for_run MUST NOT be used here -- would create the session-anchor read/write mismatch family"). The topbar showing `action_session` while the data is `last_completed_session` is exactly the Issue #5 seam. Aligning the topbar to backward makes the page internally consistent.
 
 ### 7.3 Session-anchor read/write discipline (CLAUDE.md gotcha family)
@@ -320,19 +348,14 @@ Today an OHLC-consistency `ValueError` from `OhlcvBar.__post_init__` propagates 
 - `OhlcvBar.__post_init__` keeps raising `ValueError` (it is a pure dataclass with no Schwab dependency). The **mapper** (`map_price_history_to_window`) catches the per-bar `ValueError` and re-raises it as `SchwabBarConsistencyError(asof_date, detail)` so the audit row records `error_message='OHLC consistency: <detail>'` and `/schwab/status` reads honestly ("N bar-consistency errors" instead of "N unexpected errors").
 - The `schwab_api_calls` audit close uses the typed classification (`_classify_schwab_error`) so the status page's success/error mix is truthful.
 
-### 9.3 Tiny float epsilon
+### 9.3 Float-representation noise -- normalize in the mapper, keep the model strict (Codex chain #1 M5)
 
-Add a small absolute epsilon to the low/high comparisons in `OhlcvBar.__post_init__` to absorb float-representation noise (e.g., a close that prints `12.340000000001` vs a high of `12.34`):
+The original proposal (a global absolute epsilon on `OhlcvBar.__post_init__`) is **rejected**: it loosens a strict model invariant globally for a Schwab-mapping concern, and an absolute `1e-6` is not provably harmless for very-low-priced or finer-tick instruments. Instead:
 
-```python
-_OHLC_EPS = 1e-6
-if self.low > oc_min + _OHLC_EPS:
-    raise ValueError(...)
-if self.high < oc_max - _OHLC_EPS:
-    raise ValueError(...)
-```
+- **Keep `OhlcvBar.__post_init__` strict** (no epsilon) -- the model invariant stays exact for ALL providers and consumers.
+- **Normalize/round the provider floats at the mapper boundary** -- in `map_price_history_to_window` ([`mappers.py:835-851`](../../../swing/integrations/schwab/mappers.py)), round each of `open/high/low/close` to a fixed sane precision (e.g. 4 decimal places, finer than any equity tick) **before** constructing `OhlcvBar`. This collapses float-representation noise (`12.340000000001 -> 12.34`) at the source so the strict model never sees sub-ulp inconsistency, without changing the invariant or affecting genuinely-inconsistent ext-hours bars (those differ by cents-to-dollars and survive rounding).
 
-Epsilon is absolute and tiny (sub-cent); it does NOT mask a genuine ext-hours violation (those are cents-to-dollars outside the envelope). A regression test asserts: (a) a `12.340000000001`-style noise bar passes; (b) a genuine `high = 12.00, close = 12.50` violation still raises.
+The rounding precision is a single mapper constant. A regression test asserts: (a) a candle with `high=12.34, close=12.340000000001` maps cleanly (post-round `12.34 == 12.34`, no raise); (b) a genuine `high=12.00, close=12.50` candle still raises `SchwabBarConsistencyError` (rounding does not rescue a cents-level violation). This resolves OQ-6 (no global invariant change; precision is finer than any tick the tool trades).
 
 ---
 
@@ -344,8 +367,12 @@ Epsilon is absolute and tiny (sub-cent); it does NOT mask a genuine ext-hours vi
 ### 10.2 Regression-arithmetic (CLAUDE.md `feedback_verify_regression_test_arithmetic`)
 For each behavioral value, compute it under BOTH the old path AND the new path and assert the test distinguishes them:
 - A synthetic price-history payload with an ext-hours print that raises the high: assert the OLD call (no kwarg) would fold it; assert the NEW wrapper passes `needExtendedHoursData=False` (mock asserts kwarg present).
-- A window containing a current-day partial bar: assert the OLD archive write persists it; assert the NEW write-barrier strips it (cutoff = `last_completed_session`).
+- A window containing a current-day partial bar AND a pre-existing on-disk current-day row: assert the OLD `write_window` persists/retains them; assert the NEW `write_window` strips BOTH from the merged frame (cutoff = `last_completed_session`), so the archive holds no row `> cutoff` (covers M3).
 - A `build_ohlc_today_json`/`_bar_for_date` call with a current-day `observation_date`: OLD locks it; NEW raises.
+- **Guard-boundary proof (C2):** a completed-DATE bar whose `high` is an ext-hours print (e.g. `high` above the regular high but still `>= max(open,close)`) PASSES both lock-guards -- asserting the guard is date-only and does NOT validate ext-hours provenance (documents the boundary; reviewers must not over-trust the guard).
+- **Pre-fix archive remediation (C1):** seed a contaminated Schwab-provider archive row for `observation_date`; run the observe populate with the L1 fix live; assert the clean refetch overwrites it (`keep='last'`) before `_bar_for_date` returns, so the locked `ohlc_today_json` carries the clean OHLC.
+- **Quote L1 (M1):** a quote payload with only `lastPrice` (no `regularMarketLastPrice`) is DROPPED (yfinance fallback), never emitted; a payload with `regularMarketLastPrice` emits the regular value.
+- **Float normalization (M5):** see 9.3 -- noise rounds clean; a cents-level inconsistency still raises `SchwabBarConsistencyError`.
 
 ### 10.3 Completed-day anchor tests
 `data_asof_date` and `topbar_session_date` for representative clocks: pre-open ET, mid-session, 1 min post-close, weekend, NYSE holiday, and the HST-evening edge (where `date.today()` in HST names tomorrow's ET session). Assert the completed-day helpers never name the in-progress session.
@@ -377,24 +404,25 @@ Fast suite green on the merged HEAD (isolate known xdist date-flakes per `feedba
 
 A single copowers cycle, sliced into mergeable units in dependency order:
 
-1. **Slice A -- the ext-hours pull fix (L1, highest value).** `price_history` `needExtendedHoursData=False` + signature-pin + the typed `SchwabBarConsistencyError` + the OhlcvBar epsilon (§4.1, §9). Independently shippable; directly kills the ~16% error rate. Gated by the live re-fetch gate (§10.4).
-2. **Slice B -- quotes regular-session (L1).** `regularMarket*` mapping + test (§4.2). Small; depends on the OQ-3 field-availability re-validation.
-3. **Slice C -- completed-day write-barrier + lock-guard (L2/L3).** The archive write-barrier strip + the `_bar_for_date`/`build_ohlc_today_json` asserts + the anchor regression tests (§5, §6). The core lock-integrity work.
-4. **Slice D -- uniform topbar policy (L6, Issue #5).** The `topbar_session_date` helper + routing every base-layout VM + the cross-VM test (§7). Presentation-only; operator browser gate.
+1. **Slice A -- the ext-hours pull fix (L1, highest value).** `price_history` `needExtendedHoursData=False` + signature-pin + the typed `SchwabBarConsistencyError` + the mapper float-normalization (§4.1, §9). Independently shippable; directly kills the ~16% error rate. Gated by the live re-fetch gate (§10.4).
+2. **Slice B -- quotes regular-session (L1).** Require `regularMarket*`, drop-to-yfinance when absent + test (§4.2). Small; depends on the OQ-3 field-availability re-validation FIRST (else the Schwab quote path goes dead).
+3. **Slice C -- completed-day write-barrier + lock-guard + archive remediation (L2/L3).** The `write_window` cutoff strip (filtering the merged frame) + the `_bar_for_date`/`build_ohlc_today_json` date-guards + the §5.4 pre-fix refetch-overwrite + the anchor regression tests (§5, §6). The core lock-integrity work; the keystone. Depends on Slice A (the clean refetch in §5.4 requires the L1 pull fix live).
+4. **Slice D -- uniform topbar policy (L6, Issue #5).** The `topbar_session_date` helper + the required `PageKind` on the base-layout VM mixin + routing every base-layout VM + the registry-parameterized cross-VM test (§7). Presentation-only; operator browser gate. Independent of A/B/C.
 
-Slices A and D are independent and could parallelize; B depends on A's error taxonomy landing first only if sharing the errors module; C is the keystone. Recommend A -> C -> (B, D) or A -> B -> C -> D linear if the implementer prefers one chain.
+Dependency order: **A -> C** (C's remediation needs A live), with **B** after its OQ-3 re-validation, and **D** parallelizable anytime. Recommend A -> C -> B -> D, or run D alongside.
 
 ---
 
 ## 13. Open questions (flagged for the operator at writing-plans)
 
-- **OQ-1 (resolved at brainstorm, restated):** enforcement locus = write-barrier strip + consumer slice. Confirm no consumer relies on a persisted current-day bar (grep `asof_date ==` / `iloc[-1]` archive reads; the audit found only `_bar_for_date`'s exact-date select, which is safe).
-- **OQ-2:** the exact set of `OhlcvCache`/archive write paths that need the strip (P3 + L-C). Writing-plans must enumerate every write-through entry point (`_persist_window_to_archive`, `OhlcvCache.get_or_fetch` write, any direct `ohlcv_archive` writer) so the chokepoint is complete -- a missed write path defeats the "single chokepoint" guarantee.
-- **OQ-3:** `quotes` regular-session field availability. Re-validate `regularMarketLastPrice`/`regularMarketTradeTime` exist under the project's quote `fields=` selection against a live quote or cassette. If absent, decide: widen the field selection vs rely on the `lastPrice` fallback (which re-admits ext-hours -> would violate L1 during pre/post-market). Operator call.
+- **OQ-1 (resolved at brainstorm, restated):** enforcement locus = write-barrier strip (in `write_window`) + consumer slice. Confirm no consumer relies on a persisted current-day bar (grep `asof_date ==` / `iloc[-1]` archive reads; the audit found only `_bar_for_date`'s exact-date select, which is safe).
+- **OQ-1b (writing-plans -- the C1 remediation, see §5.4):** determine `get_or_fetch`'s freshness behavior for the trailing window (always refetch vs short-circuit on coverage). Decides whether the observe-path populate needs a `force_refresh`/`min_asof` parameter to guarantee a pre-fix contaminated archive row is overwritten before `_bar_for_date` reads it.
+- **OQ-2 (RESOLVED in §5.2):** the strip lives in the lowest-level `write_window`; writing-plans MUST audit that every archive write funnels through it (and route any bypass through it). No longer an open design question -- it is a required verification step.
+- **OQ-3:** `quotes` regular-session field availability (see §4.2). Re-validate `regularMarketLastPrice`/`regularMarketTradeTime` are returned under the project's quote `fields=` selection. If absent, the drop-to-yfinance rule makes EVERY Schwab quote fall back -- writing-plans must widen the `fields=` selection so `regularMarket*` is returned, or the Schwab quote path goes dead. (No `lastPrice` fallback -- that would re-admit ext-hours, violating L1.)
 - **OQ-4:** `SchwabBarConsistencyError` placement in the exception hierarchy -- subclass of `SchwabApiError` (caught by the ladder's existing clause -> clean yfinance fallback) vs a sibling needing a new `except` branch. Recommend subclass for minimal ladder churn; confirm it does not change the audit `_classify_schwab_error` mapping unexpectedly.
 - **OQ-5:** Issue #3 -- confirm the OUT disposition + whether to open the separate `_count_open_at_run` metrics-fix brief now or bank it.
-- **OQ-6:** the epsilon magnitude (`1e-6` absolute). Confirm it is below the smallest meaningful price tick (sub-cent) for all instruments the tool trades.
-- **OQ-7:** already-locked ext-hours bars. Per §4 out-of-scope, V1 is forward-only (clean from ship date). Confirm the operator accepts the already-locked historical observations as an L6-style limitation (no backfill/re-lock -- the lock is append-only).
+- **OQ-6 (RESOLVED in §9.3):** no global epsilon. Float-representation noise is normalized (rounded to a fixed sub-tick precision) in the mapper before `OhlcvBar` construction; the model invariant stays strict. The rounding precision (e.g. 4 dp) is finer than any equity tick; writing-plans confirms the constant.
+- **OQ-7:** already-LOCKED ext-hours observations (rows already in `pattern_forward_observations`). Distinct from already-PERSISTED archive bars -- those are remediated by §5.4. Per §15 out-of-scope, V1 does NOT backfill/re-lock already-*locked* `ohlc_today_json` (the lock is append-only). Confirm the operator accepts the already-locked historical observations as an L6-style limitation.
 
 ---
 
@@ -417,10 +445,10 @@ Slices A and D are independent and could parallelize; B depends on A's error tax
 - A rewrite of the date/session machinery (L4 -- harden + enforce the existing helpers only).
 - Integration-review Issue #2 (non-uniform empty-state messaging) + Issue #4 (Schwab nav link) -- the separate polish batch.
 - Issue #3's fix (the `_count_open_at_run` metrics predicate) -- audited here, routed to a separate small brief (§8).
-- Historical backfill / re-locking of already-locked temporal-log bars (append-only; V1 forward-only -- clean from ship date; already-locked ext-hours observations are an accepted L6-style limitation).
+- Historical backfill / re-locking of already-LOCKED temporal-log bars (`ohlc_today_json` rows already written; append-only; V1 forward-only -- already-locked ext-hours observations are an accepted L6-style limitation). NOTE: already-PERSISTED-but-not-yet-locked *archive* bars are NOT in this exclusion -- they are remediated by §5.4 (archive is re-fetchable cache, not a locked fact).
 - Intraday/sub-day precision (the tool is daily-bar; "current-day" means the in-progress daily session).
 - Recording regular-session/completed-day provenance as schema data (Q7 -- it is an invariant, not data).
 
 ---
 
-*End of design spec. Regular-session + completed-day data integrity: no extended-hours on any Schwab call (`price_history needExtendedHoursData=False` + quotes `regularMarket*`); discount the current/partial day via the write-barrier strip anchored on `last_completed_session`; a completed-day lock-guard at `_bar_for_date` + `build_ohlc_today_json` so the append-only temporal log can never lock a partial/extended bar; a uniform `topbar_session_date(page_kind)` policy across all base-layout VMs (Issue #5). Harden the existing machinery, don't rebuild it. No schema change. Issue #3 audited (metrics-predicate bug) and routed out.*
+*End of design spec. Regular-session + completed-day data integrity, closing two contamination axes with a clean division of responsibility: extended-hours cleanliness is enforced at the PULL stage (`price_history needExtendedHoursData=False` + quotes require `regularMarket*`, no `lastPrice` fallback) plus archive cleanliness/remediation (the `write_window` strip + the pre-fix refetch-overwrite); completed-day cleanliness is enforced by the `last_completed_session` anchor, the `write_window` cutoff strip (filtering the merged frame), AND the date-only lock-guard at `_bar_for_date` + `build_ohlc_today_json`. The guard is date-only -- it does NOT validate ext-hours provenance (a proof-test documents the boundary). A uniform `topbar_session_date(page_kind)` policy with a required `PageKind` declaration across an authoritative base-layout VM registry (Issue #5). `OhlcvBar` stays strict; float noise is normalized in the mapper. Harden the existing machinery, don't rebuild it. No schema change. Issue #3 audited (a metrics historical-reconstruction predicate bug) and routed out.*
