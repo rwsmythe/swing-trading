@@ -1526,16 +1526,20 @@ def _step_pattern_detect(
         if read_conn is not None:
             read_conn.close()
 
-    # Pool predicate: Stage-2-filtered + RS-rank-filtered candidates =
-    # aplus bucket (mirrors _step_recommendations line 1211).
-    aplus_tickers: list[str] = [
-        c.ticker for c in candidates if c.bucket == "aplus"
+    # Pool predicate (pool-widening 2026-06-04): Stage-2-filtered +
+    # RS-rank-filtered candidates = aplus|watch buckets (Stage-2 passers;
+    # watch differs only in VCP-tightness). The observation log accumulates
+    # the ~83x watch population as forward-walk data; the widen is kept
+    # invisible to operator-facing surfaces via the provable-aplus consumer
+    # isolation (swing/evaluation/pe_origin.py).
+    detect_pool_tickers: list[str] = [
+        c.ticker for c in candidates if c.bucket in ("aplus", "watch")
     ]
 
-    if not aplus_tickers:
+    if not detect_pool_tickers:
         log.info(
-            "pattern_detect: no candidate windows -- zero aplus tickers; "
-            "skipping (no writes)"
+            "pattern_detect: no candidate windows -- zero detect-pool "
+            "(aplus|watch) tickers; skipping (no writes)"
         )
         # Gotcha #27: an empty-pool early-return inside a best-effort step
         # must emit a warnings_json audit entry (expected vs actual pool +
@@ -1613,8 +1617,8 @@ def _step_pattern_detect(
     # Codex R1 Major #3 + R2 Major #2: ``composite_scores`` is seeded
     # from existing rows (Option B) then appended during pass 1.
     universe_context: dict = {
-        "universe_size": len(aplus_tickers),
-        "stage_2_pass_rate": 1.0,  # aplus bucket implies Stage 2 pass.
+        "universe_size": len(detect_pool_tickers),
+        "stage_2_pass_rate": 1.0,  # aplus|watch buckets imply Stage 2 pass.
         "rs_rank_distribution": {},
         "verdict_counts_per_pattern_class": {},
         "smoothing_params": {},
@@ -1662,7 +1666,7 @@ def _step_pattern_detect(
         detector_read_conn = getattr(lease, "_conn", None)
 
     try:
-        for ticker in aplus_tickers:
+        for ticker in detect_pool_tickers:
             # Fetch bars (per-ticker failure: log + continue).
             try:
                 bars = ohlcv_cache.get_or_fetch(ticker=ticker, window_days=400)
@@ -1827,9 +1831,9 @@ def _step_pattern_detect(
     if not emit_queue:
         log.info(
             "pattern_detect: wrote %d pattern_evaluations rows across %d "
-            "aplus tickers (%d skipped idempotent)",
+            "detect-pool tickers (%d skipped idempotent)",
             rows_written,
-            len(aplus_tickers),
+            len(detect_pool_tickers),
             rows_skipped_idempotent,
         )
         return
@@ -2331,9 +2335,9 @@ def _step_pattern_detect(
 
     log.info(
         "pattern_detect: wrote %d pattern_evaluations rows across %d "
-        "aplus tickers (%d skipped idempotent)",
+        "detect-pool tickers (%d skipped idempotent)",
         rows_written,
-        len(aplus_tickers),
+        len(detect_pool_tickers),
         rows_skipped_idempotent,
     )
 

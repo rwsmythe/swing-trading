@@ -202,6 +202,45 @@ def _seed_run_with_zero_aplus(db):
     return conn, _cfg(db_path.parent, db_path), _FakeLease(db_path, 1, "2026-05-19"), eval_run_id
 
 
+def _seed_aplus_watch_skip_candidates_and_run(
+    db, *, aplus=("AAA",), watch=("WAT1", "WAT2"), skip=("SKP",),
+    data_asof_date="2026-05-19", action_session_date="2026-05-20"):
+    """Seed a run + EvaluationRun + candidates across buckets; return
+    (conn, cfg, lease, eval_run_id, all_tickers)."""
+    conn, db_path = db
+    from swing.data.repos.candidates import insert_candidates, insert_evaluation_run
+    from swing.data.models import Candidate, EvaluationRun
+    conn.execute(
+        "INSERT INTO pipeline_runs (id, started_ts, trigger, data_asof_date, "
+        "action_session_date, lease_token, state) VALUES "
+        "(1, ?, 'manual', ?, ?, 'tok-test-1', 'running')",
+        ("2026-05-20T18:00:00", data_asof_date, action_session_date))
+    eval_run_id = insert_evaluation_run(conn, EvaluationRun(
+        id=None, run_ts="2026-05-20T18:00:00", data_asof_date=data_asof_date,
+        action_session_date=action_session_date, finviz_csv_path=None,
+        tickers_evaluated=len(aplus) + len(watch) + len(skip),
+        aplus_count=len(aplus), watch_count=len(watch), skip_count=len(skip),
+        excluded_count=0, error_count=0))
+    def _mk(ticker, bucket):
+        return Candidate(
+            ticker=ticker, bucket=bucket, close=15.0, pivot=15.1,
+            initial_stop=13.5, adr_pct=2.5, tight_streak=3, pullback_pct=5.0,
+            prior_trend_pct=40.0, rs_rank=85, rs_return_12w_vs_spy=12.0,
+            rs_method="universe", pattern_tag=None, notes=None,
+            criteria=tuple(), sector="", industry="")
+    rows = ([_mk(t, "aplus") for t in aplus] + [_mk(t, "watch") for t in watch]
+            + [_mk(t, "skip") for t in skip])
+    insert_candidates(conn, eval_run_id, rows)
+    # Codex R2 MINOR: link pipeline_runs.evaluation_run_id (the provable-aplus
+    # fast path joins pipeline_runs -> candidates on it; production-faithful).
+    conn.execute("UPDATE pipeline_runs SET evaluation_run_id = ? WHERE id = 1",
+                 (eval_run_id,))
+    conn.commit()
+    cfg = _cfg(db_path.parent, db_path)
+    lease = _FakeLease(db_path, run_id=1, data_asof=data_asof_date)
+    return conn, cfg, lease, eval_run_id, tuple(aplus) + tuple(watch) + tuple(skip)
+
+
 def _drive_detect(conn, cfg, lease, eval_run_id, ohlcv_cache, run_warnings):
     """Drive the real _step_pattern_detect with the extension args."""
     from swing.pipeline.runner import _step_pattern_detect
