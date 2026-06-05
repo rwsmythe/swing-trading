@@ -229,13 +229,18 @@ class FinvizClient:
         return out.getvalue()
 
     def compute_signature_hash(self, body: bytes) -> str:
-        """Deterministic SHA256 hash of canonicalized signature payload.
+        """Deterministic SHA256 hash of the canonicalized screen-DEFINITION.
 
-        Signature payload: JSON-encoded dict {column_set: sorted, first_row:
-        [Ticker, Sector, Industry]} with sort_keys=True + UTF-8.
+        Signature payload: JSON-encoded dict {column_set: sorted} with
+        sort_keys=True + UTF-8. The signature reflects ONLY the canonicalized
+        column set (the screen-definition fingerprint); the screen RESULT (the
+        data rows / the #1 ticker) does NOT affect it.
 
-        Drift detection: same screen returns same hash; column-set change OR
-        first-row-Ticker/Sector/Industry change → different hash.
+        Drift detection: same column set returns the same hash; a column-set
+        change (add / remove / rename a column) → different hash. The volatile
+        top result is intentionally excluded so the "operator may have edited
+        the saved screen" warning fires ONLY on a real definition change, not
+        on routine market-driven top-result drift (signature-provenance fix).
 
         Tolerates BOM-prefixed bodies (utf-8-sig) and leading blank lines per
         plan §A.5/§E.4 "first non-blank line is the header" (Codex R1 Major-1).
@@ -258,19 +263,8 @@ class FinvizClient:
         if header is None:
             return hashlib.sha256(b"<empty>").hexdigest()
         header_cleaned = sorted(h.strip() for h in header)
-        first_row: list[str] = []
-        for row in reader:
-            if not row or all(not c.strip() for c in row):
-                continue
-            mapping = dict(zip([h.strip() for h in header], row, strict=False))
-            first_row = [
-                str(mapping.get("Ticker", "")),
-                str(mapping.get("Sector", "")),
-                str(mapping.get("Industry", "")),
-            ]
-            break
         payload = json.dumps(
-            {"column_set": header_cleaned, "first_row": first_row},
+            {"column_set": header_cleaned},
             sort_keys=True,
         ).encode("utf-8")
         return hashlib.sha256(payload).hexdigest()
