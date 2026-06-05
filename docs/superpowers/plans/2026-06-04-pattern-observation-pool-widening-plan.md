@@ -1415,6 +1415,10 @@ git commit -m "test(pool-widening): re-baseline detect/observe fixtures for aplu
 
 ---
 
+## 6b. Adversarial review provenance
+
+Single WSL-Codex chain, run to convergence (`feedback_codex_round_limit_suspended` -- the ~5-round cap is suspended): R1 (5 majors + 2 minors) -> R2 (2 majors + 2 minors) -> R3 (1 major: the `MIN(pipeline_run_id)` boundary leaked under `ON DELETE SET NULL` run-pruning) -> R4 (1 major: spec/plan boundary drift + 1 minor: stale comments) -> **R5 `NO_NEW_CRITICAL_MAJOR`**. ZERO Codex majors carried unaddressed into the final plan. The provable-aplus ladder SQL (section 4) was empirically verified against a migrated v24 tmp DB at writing-plans across all six ladder branches + the no-widen, NULL-`finished_ts`, run-pruning, and first-widened-session-edge cases. Transcript: `.copowers-findings.md` (gitignored).
+
 ## 7. Execution handoff
 
 **Plan complete and saved to `docs/superpowers/plans/2026-06-04-pattern-observation-pool-widening-plan.md`.**
