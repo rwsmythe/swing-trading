@@ -1749,6 +1749,29 @@ _REPRESENTATIVES: dict = {
 }
 
 
+class _FrozenNow(datetime):
+    """A datetime subclass whose .now() is pinned to NOW; preserves every other
+    datetime behavior (construction, arithmetic) so patching it into a module is
+    safe."""
+    @classmethod
+    def now(cls, tz=None):
+        return NOW
+
+
+def _freeze_web_clock(monkeypatch):
+    """Deterministically freeze EVERY swing.web callsite's clock (Codex R4/R5
+    MAJOR): VMs call `datetime.now()` in their OWN module then pass it into
+    topbar_session_date(now_local), so patching swing.evaluation.dates does
+    nothing. Patch each already-imported swing.web module's `datetime` symbol
+    (the `from datetime import datetime` name) to _FrozenNow."""
+    import sys
+    for name, mod in list(sys.modules.items()):
+        if not name.startswith("swing.web"):
+            continue
+        if getattr(mod, "datetime", None) is datetime:
+            monkeypatch.setattr(mod, "datetime", _FrozenNow)
+
+
 def test_representatives_registry_is_non_vacuous():
     """Guard: the behavioral test cannot pass with an empty/one-sided registry."""
     kinds = {MANIFEST[c] for c in _REPRESENTATIVES}
@@ -1770,9 +1793,7 @@ def test_representative_renders_its_declared_anchor(cls, monkeypatch):
     forward = action_session_for_run(NOW).isoformat()
     backward = last_completed_session(NOW).isoformat()
     assert forward != backward
-    import swing.evaluation.dates as dates
-    monkeypatch.setattr(dates, "datetime",
-                        type("D", (), {"now": staticmethod(lambda: NOW)}))
+    _freeze_web_clock(monkeypatch)   # freezes every swing.web callsite's now()
     vm = _REPRESENTATIVES[cls]()
     expected = forward if MANIFEST[cls] is PageKind.FORWARD_PLANNING else backward
     wrong = backward if MANIFEST[cls] is PageKind.FORWARD_PLANNING else forward
@@ -1780,7 +1801,7 @@ def test_representative_renders_its_declared_anchor(cls, monkeypatch):
     assert vm.session_date != wrong
 ```
 
-> **Implementer note (binding):** `import pytest` at the top of the file. The `MANIFEST` is the D2 inventory IN FULL -- no ellipsis. If `test_manifest_is_complete_and_exact` FAILS, the AST discovery found a base-layout VM the manifest omits or a stale entry -- fix the import + the MANIFEST entry until discovery and manifest agree exactly. **Wire `_REPRESENTATIVES`** to the project's real VM builders/fixtures (grep `tests/web/` for how each is constructed); `test_representatives_registry_is_non_vacuous` FAILS until you wire >=6 covering both families + >=1 metrics + >=1 non-metrics, so the behavioral proof cannot be skipped. The completeness + PAGE_KIND tests run with zero construction; the parametrized render test is the binding behavioral proof that the PageKind ARGUMENT at each callsite matches the VM's intent.
+> **Implementer note (binding):** `import pytest` at the top of the file. The `MANIFEST` is the D2 inventory IN FULL -- no ellipsis. If `test_manifest_is_complete_and_exact` FAILS, the AST discovery found a base-layout VM the manifest omits or a stale entry -- fix the import + the MANIFEST entry until discovery and manifest agree exactly. **Wire `_REPRESENTATIVES`** to the project's real VM builders/fixtures (grep `tests/web/` for how each is constructed); `test_representatives_registry_is_non_vacuous` FAILS until you wire >=6 covering both families + >=1 metrics + >=1 non-metrics, so the behavioral proof cannot be skipped. The completeness + PAGE_KIND tests run with zero construction; the parametrized render test is the binding behavioral proof that the PageKind ARGUMENT at each callsite matches the VM's intent. `_freeze_web_clock` patches the `datetime` name in every imported `swing.web` module (covers both VM-module and route-built callsites); if a representative's module uses `import datetime` + `datetime.datetime.now()` instead of `from datetime import datetime`, extend the freeze to patch that module's `datetime` module attribute too (or have its builder accept an injectable `now`). Verify each wired builder's rendered `session_date` actually reflects NOW (a builder that bypasses the frozen clock would silently equal wall-clock -- assert `!= wrong` catches a forward/backward mixup but add a sanity `assert vm.session_date in (forward, backward)` if a builder reads an unfrozen clock).
 
 - [ ] **Step 2: Run + Commit**
 
