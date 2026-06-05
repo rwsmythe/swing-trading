@@ -58,3 +58,18 @@ def test_build_ohlc_today_json_allows_completed_day():
     out = build_ohlc_today_json(bar, observation_date="2026-06-04",
                                 cutoff=_date(2026, 6, 4))
     assert '"open": 10.0' in out
+
+
+def test_guard_passes_completed_date_ext_hours_contaminated_bar():
+    """C2 boundary doc-test: a COMPLETED-DATE bar whose high is an ext-hours
+    print (above the regular high but still >= max(open,close)) PASSES both
+    lock-guards. The guard is DATE-ONLY -- it cannot and does not validate
+    ext-hours provenance (that is owned by the pull stage + archive
+    cleanliness). Reviewers must not over-trust the guard."""
+    # high=13.0 is an ext-hours-inflated extreme, but the bar is internally
+    # consistent (low <= min(o,c) <= max(o,c) <= high) and dated <= cutoff.
+    bar = {"open": 10.0, "high": 13.0, "low": 9.0, "close": 10.5,
+           "volume": 100.0, "provider": "schwab_api"}
+    out = build_ohlc_today_json(bar, observation_date="2026-06-04",
+                                cutoff=_date(2026, 6, 4))
+    assert '"high": 13.0' in out  # the guard PASSES it (date-only)
