@@ -334,7 +334,8 @@ def write_window(
             is_empty = len(incoming) == 0
         except TypeError:
             raise TypeError(
-                f"write_window expects pd.DataFrame, got {type(window).__name__}")
+                f"write_window expects pd.DataFrame, got {type(window).__name__}"
+            ) from None
         if is_empty:
             incoming = None
         else:
@@ -362,9 +363,12 @@ def write_window(
         return
 
     # cheap no-op: empty incoming + existing already has no > cutoff rows.
-    if incoming is None and existing is not None and "asof_date" in existing.columns:
-        if len(_strip_incomplete_sessions(existing, cutoff_iso)) == len(existing):
-            return
+    if (
+        incoming is None and existing is not None
+        and "asof_date" in existing.columns
+        and len(_strip_incomplete_sessions(existing, cutoff_iso)) == len(existing)
+    ):
+        return
 
     frames = [f for f in (existing, incoming)
               if f is not None and "asof_date" in f.columns]

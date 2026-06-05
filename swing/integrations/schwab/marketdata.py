@@ -51,8 +51,9 @@ import logging
 import sqlite3
 import threading
 import time
+from collections.abc import Callable
 from datetime import datetime
-from typing import Any, Callable
+from typing import Any
 
 from swing.integrations.schwab import audit_service
 from swing.integrations.schwab.client import (
