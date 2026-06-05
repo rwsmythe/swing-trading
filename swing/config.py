@@ -169,6 +169,21 @@ class PipelineConfig:
     # most ~(pending + post_trigger) = ~90 sessions.
     observe_max_pending_window_sessions: int = 30
     observe_max_post_trigger_window_sessions: int = 60
+    # Pool-widening (2026-06-04) DORMANT relief levers (default None = OFF;
+    # accept-and-measure -- a silent cap is forbidden, any drop emits a #27
+    # audit). Lever 1: cap the watch detect pool (a future-growth limiter;
+    # aplus is NEVER capped; >=1 when set). Lever 2: shorten the watch-origin
+    # observe horizon (pending + post-trigger), falling back to the aplus
+    # windows when None.
+    detect_watch_pool_cap: int | None = None
+    observe_max_pending_window_sessions_watch: int | None = None
+    observe_max_post_trigger_window_sessions_watch: int | None = None
+
+    def __post_init__(self) -> None:
+        if (self.detect_watch_pool_cap is not None
+                and self.detect_watch_pool_cap < 1):
+            raise ValueError(
+                "detect_watch_pool_cap must be >= 1 when set (None = uncapped)")
 
 
 @dataclass(frozen=True)

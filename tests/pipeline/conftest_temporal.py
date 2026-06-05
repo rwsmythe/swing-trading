@@ -106,6 +106,11 @@ class _Cfg:
     class _Pipeline:
         observe_max_pending_window_sessions = 30
         observe_max_post_trigger_window_sessions = 60
+        # Pool-widening dormant relief levers (default OFF; tests mutate the
+        # instance attr to activate -- bypasses the frozen-config __post_init__).
+        detect_watch_pool_cap = None
+        observe_max_pending_window_sessions_watch = None
+        observe_max_post_trigger_window_sessions_watch = None
 
     def __init__(self, db_path, cache_dir):
         self.paths = self._Paths(db_path, cache_dir)
