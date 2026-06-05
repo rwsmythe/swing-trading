@@ -29,7 +29,7 @@ from datetime import datetime
 
 from swing.config import Config
 from swing.data.db import connect
-from swing.evaluation.dates import action_session_for_run
+from swing.evaluation.dates import PageKind, topbar_session_date
 from swing.metrics.discrepancies import (
     count_recent_multi_leg_auto_corrections,
     count_unresolved_material,
@@ -98,7 +98,7 @@ def build_deviation_outcome_vm(
         if own_conn:
             conn.close()
     return DeviationOutcomeVM(
-        session_date=action_session_for_run(datetime.now()).isoformat(),
+        session_date=topbar_session_date(PageKind.HISTORY_ANALYSIS, datetime.now()).isoformat(),
         unresolved_material_discrepancies_count=unresolved,
         recent_multi_leg_auto_correction_count=recent_multi_leg,
         banner_resolve_link=banner_resolve_link,

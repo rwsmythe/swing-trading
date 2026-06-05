@@ -30,7 +30,7 @@ from swing.data.repos.fills import list_fills_for_trade
 from swing.data.repos.hypothesis_status_history import (
     list_history_for_hypothesis,
 )
-from swing.evaluation.dates import action_session_for_run
+from swing.evaluation.dates import PageKind, topbar_session_date
 from swing.metrics.cohort import list_closed_trades_for_cohort
 from swing.metrics.discrepancies import (
     count_recent_multi_leg_auto_corrections,
@@ -427,7 +427,7 @@ def build_hypothesis_progress_card_vm(
         if own_conn:
             conn.close()
     return HypothesisProgressCardVM(
-        session_date=action_session_for_run(datetime.now()).isoformat(),
+        session_date=topbar_session_date(PageKind.HISTORY_ANALYSIS, datetime.now()).isoformat(),
         unresolved_material_discrepancies_count=unresolved,
         recent_multi_leg_auto_correction_count=recent_multi_leg,
         banner_resolve_link=banner_resolve_link,

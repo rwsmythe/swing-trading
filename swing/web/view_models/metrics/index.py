@@ -15,7 +15,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 
 from swing.config import Config
-from swing.evaluation.dates import action_session_for_run
+from swing.evaluation.dates import PageKind, topbar_session_date
 from swing.metrics.capital import TREND_MIN_RUNS as _CAPITAL_TREND_MIN_RUNS
 from swing.metrics.discrepancies import (
     count_recent_multi_leg_auto_corrections,
@@ -434,7 +434,7 @@ def build_metrics_index_vm(cfg: Config, conn: sqlite3.Connection) -> MetricsInde
     ``action_session_for_run(now)`` (the navigator topbar date, as before).
     Each surface card is enriched read-only from the existing per-surface
     output; a single surface's failure degrades only that card."""
-    session_date = action_session_for_run(datetime.now()).isoformat()
+    session_date = topbar_session_date(PageKind.HISTORY_ANALYSIS, datetime.now()).isoformat()
     enriched = tuple(
         _enrich_surface(base, cfg, conn, session_date) for base in _SURFACES
     )

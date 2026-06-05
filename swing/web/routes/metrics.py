@@ -244,13 +244,14 @@ def metrics_pattern_outcomes(request: Request):
     """
     from datetime import datetime
 
-    from swing.evaluation.dates import action_session_for_run
+    from swing.evaluation.dates import PageKind, topbar_session_date
     db_path = request.app.state.cfg.paths.db_path
     conn = sqlite3.connect(db_path)
     try:
         vm = build_pattern_outcomes_vm(
             conn,
-            session_date=action_session_for_run(datetime.now()).isoformat(),
+            session_date=topbar_session_date(
+                PageKind.HISTORY_ANALYSIS, datetime.now()).isoformat(),
         )
     finally:
         conn.close()

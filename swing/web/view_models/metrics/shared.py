@@ -23,6 +23,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from swing.evaluation.dates import PageKind
+
 
 @dataclass(frozen=True)
 class BaseLayoutVM:
@@ -38,6 +40,11 @@ class BaseLayoutVM:
     surface VMs). Existing 6 base-layout VMs retrofit in Sub-bundle E
     T-E.3 (cross-bundle pin via the skipped regression test in T-A.7).
     """
+
+    # Issue #5 topbar policy: every base-layout (metrics/account/patterns-
+    # queue) page is HISTORY_ANALYSIS (about the last completed session).
+    # Class-level (NOT a dataclass field); subclasses override only if forward.
+    PAGE_KIND = PageKind.HISTORY_ANALYSIS
 
     session_date: str
     stale_banner: str | None = None

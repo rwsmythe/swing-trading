@@ -25,7 +25,7 @@ from datetime import datetime
 
 from swing.config import Config
 from swing.data.db import connect
-from swing.evaluation.dates import action_session_for_run, last_completed_session
+from swing.evaluation.dates import PageKind, last_completed_session, topbar_session_date
 from swing.metrics.capital import (
     CapitalFrictionResult,
     compute_capital_friction,
@@ -103,7 +103,7 @@ def build_capital_friction_vm(
         if own_conn:
             conn.close()
     return CapitalFrictionVM(
-        session_date=action_session_for_run(datetime.now()).isoformat(),
+        session_date=topbar_session_date(PageKind.HISTORY_ANALYSIS, datetime.now()).isoformat(),
         unresolved_material_discrepancies_count=unresolved,
         recent_multi_leg_auto_correction_count=recent_multi_leg,
         banner_resolve_link=banner_resolve_link,

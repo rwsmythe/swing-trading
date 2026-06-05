@@ -34,7 +34,7 @@ from swing.data.db import connect
 from swing.data.models import DETECTOR_PATTERN_CLASSES, PatternExemplar
 from swing.data.repos import pattern_evaluations as evals_repo
 from swing.data.repos import pattern_exemplars as exemplars_repo
-from swing.evaluation.dates import last_completed_session
+from swing.evaluation.dates import PageKind, topbar_session_date
 from swing.web.view_models.patterns.exemplars import (
     build_patterns_exemplars_vm,
 )
@@ -82,7 +82,7 @@ def _session_date_str() -> str:
     ``.replace(tzinfo=ZoneInfo('Pacific/Honolulu'))`` internally — passing
     a UTC-aware datetime would double-localize.
     """
-    return last_completed_session(datetime.now()).isoformat()
+    return topbar_session_date(PageKind.HISTORY_ANALYSIS, datetime.now()).isoformat()
 
 
 @router.get("/patterns/exemplars", response_class=HTMLResponse)
