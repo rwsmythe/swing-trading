@@ -440,7 +440,7 @@ Dependency order: **A -> C** (C's remediation needs A live), with **B** after it
 ## 14. Cumulative discipline (BINDING)
 
 - **Session-anchor read/write mismatch family:** read the WRITER's anchor before locking a read predicate; the classifier enforces it. Issue #5 is the instance.
-- **yfinance partial-bar strip + OHLCV-fetch-scope + F6 write-through-archive empty-result rule:** the write-barrier strip must retain prior cached content if stripping empties the window (never blank).
+- **yfinance partial-bar strip + OHLCV-fetch-scope + F6 write-through-archive empty-result rule:** the F6 "never blank on transient empty" rule is HONORED via the §5.2 filtered-union invariant -- prior cached content is preserved ONLY when the cutoff-filtered union retains valid (`<= cutoff`) rows; an empty filtered union (no completed-session rows anywhere) writes empty/removes so no `> cutoff` partial row survives. F6 protects valid history against a transient empty fetch; it does NOT license retaining a partial-only file (see §5.2 step 3 -- the binding statement; this line defers to it).
 - **Schwab camelCase signature-pin:** re-validate `needExtendedHoursData` on 3.0.5; the price_history minute-default footgun stays handled (callers still pass `periodType=year/month, frequencyType=daily`); sandbox-vs-production domain-row gating preserved (market-data ladder falls through to yfinance under sandbox -> the ext-hours fix is production-relevant; sandbox already uses yfinance).
 - **Append-only / lock-at-observation invariant (L3):** the guard adds rejection, never re-fetch/regeneration.
 - **`feedback_verify_regression_test_arithmetic`:** every test value under both the old (ext-hours/current-day) and new (regular-session/completed-day) paths.
