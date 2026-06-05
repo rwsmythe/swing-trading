@@ -17,6 +17,8 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Literal
 
+from swing.evaluation.pe_origin import PROVABLE_APLUS_PE_PREDICATE
+
 # Constants per spec section 5.10 lines 796-801 LOCK. Canonical site —
 # do NOT redefine inline anywhere downstream (per L1 + Expansion #1 hardcoded-
 # duplicate audit discipline).
@@ -239,9 +241,10 @@ def prioritize_candidates(
     latest_run_id = int(latest_run_row[0])
 
     rows = conn.execute(
-        "SELECT id, ticker, pattern_class, geometric_score, "
-        "composite_score, template_match_score FROM pattern_evaluations "
-        "WHERE pipeline_run_id = ?",
+        f"SELECT pe.id, pe.ticker, pe.pattern_class, pe.geometric_score, "
+        f"pe.composite_score, pe.template_match_score "
+        f"FROM pattern_evaluations pe "
+        f"WHERE pe.pipeline_run_id = ? AND {PROVABLE_APLUS_PE_PREDICATE}",
         (latest_run_id,),
     ).fetchall()
     if not rows:
