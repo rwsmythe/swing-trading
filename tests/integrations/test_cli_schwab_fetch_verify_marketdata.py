@@ -83,9 +83,9 @@ def _make_quotes_payload(symbols: list[str]) -> dict:
     return {
         s: {
             "quote": {
-                "lastPrice": 100.0 + i,
-                "bidPrice": 99.0 + i,
-                "askPrice": 101.0 + i,
+                "regularMarketLastPrice": 100.0 + i,
+                "regularMarketBidPrice": 99.0 + i,
+                "regularMarketAskPrice": 101.0 + i,
                 "mark": 100.0 + i,
                 "quoteTime": "2026-05-14T15:30:00Z",
                 "delayed": False,
@@ -327,7 +327,7 @@ def test_c5_05_verify_marketdata_partial_quotes_surfaces_in_output(
     quotes_resp.json.return_value = {
         "AAPL": {
             "quote": {
-                "lastPrice": 100.0, "bidPrice": 99.0, "askPrice": 101.0,
+                "regularMarketLastPrice": 100.0, "regularMarketBidPrice": 99.0, "regularMarketAskPrice": 101.0,
                 "mark": 100.0, "quoteTime": "2026-05-14T15:30:00Z",
                 "delayed": False,
             },

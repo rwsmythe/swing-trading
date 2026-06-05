@@ -1349,11 +1349,11 @@ def test_26_marketdata_quotes_partial_response_per_symbol_breakdown_redacted(
     ok_resp.json.return_value = {
         "AAPL": {
             "quote": {
-                "lastPrice": 150.0,
-                "bidPrice": 149.95,
-                "askPrice": 150.05,
+                "regularMarketLastPrice": 150.0,
+                "regularMarketBidPrice": 149.95,
+                "regularMarketAskPrice": 150.05,
                 "mark": 150.0,
-                "quoteTimeInLong": 1700000000000,
+                "regularMarketTradeTime": 1700000000000,
                 "delayed": False,
             },
         },
@@ -1687,11 +1687,11 @@ def test_27_marketdata_quotes_sentinel_emitted_from_inside_call_is_redacted(
         resp.json.return_value = {
             "AAPL": {
                 "quote": {
-                    "lastPrice": 100.0,
-                    "bidPrice": 99.5,
-                    "askPrice": 100.5,
+                    "regularMarketLastPrice": 100.0,
+                    "regularMarketBidPrice": 99.5,
+                    "regularMarketAskPrice": 100.5,
                     "mark": 100.0,
-                    "quoteTimeInLong": 1715692800000,
+                    "regularMarketTradeTime": 1715692800000,
                     "delayed": False,
                 },
             },

@@ -113,11 +113,11 @@ def _mock_quote_response(symbol: str, last_price: float = 150.0) -> MagicMock:
     resp.json.return_value = {
         symbol: {
             "quote": {
-                "lastPrice": last_price,
-                "bidPrice": last_price - 0.5,
-                "askPrice": last_price + 0.5,
+                "regularMarketLastPrice": last_price,
+                "regularMarketBidPrice": last_price - 0.5,
+                "regularMarketAskPrice": last_price + 0.5,
                 "mark": last_price,
-                "quoteTimeInLong": 1715692800000,
+                "regularMarketTradeTime": 1715692800000,
                 "delayed": False,
             },
         },

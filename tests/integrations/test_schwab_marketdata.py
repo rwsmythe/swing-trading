@@ -285,21 +285,21 @@ def test_03_map_quotes_happy_path_all_ok():
     response = {
         "AAPL": {
             "quote": {
-                "lastPrice": 150.0,
-                "bidPrice": 149.5,
-                "askPrice": 150.5,
+                "regularMarketLastPrice": 150.0,
+                "regularMarketBidPrice": 149.5,
+                "regularMarketAskPrice": 150.5,
                 "mark": 150.0,
-                "quoteTimeInLong": 1715692800000,  # epoch ms
+                "regularMarketTradeTime": 1715692800000,  # epoch ms
                 "delayed": False,
             },
         },
         "MSFT": {
             "quote": {
-                "lastPrice": 420.0,
-                "bidPrice": 419.5,
-                "askPrice": 420.5,
+                "regularMarketLastPrice": 420.0,
+                "regularMarketBidPrice": 419.5,
+                "regularMarketAskPrice": 420.5,
                 "mark": 420.0,
-                "quoteTimeInLong": 1715692800000,
+                "regularMarketTradeTime": 1715692800000,
                 "delayed": False,
             },
         },
@@ -322,10 +322,10 @@ def test_04_map_quotes_partial_response_drops_error_symbols():
     response = {
         "AAPL": {
             "quote": {
-                "lastPrice": 150.0,
-                "bidPrice": 149.5,
-                "askPrice": 150.5,
-                "quoteTimeInLong": 1715692800000,
+                "regularMarketLastPrice": 150.0,
+                "regularMarketBidPrice": 149.5,
+                "regularMarketAskPrice": 150.5,
+                "regularMarketTradeTime": 1715692800000,
             },
         },
         # Error envelope shapes per spec §E.4 — three variants:
@@ -348,10 +348,10 @@ def test_05_map_quotes_top_level_quote_keys_also_supported():
 
     response = {
         "AAPL": {
-            "lastPrice": 150.0,
-            "bidPrice": 149.5,
-            "askPrice": 150.5,
-            "quoteTimeInLong": 1715692800000,
+            "regularMarketLastPrice": 150.0,
+            "regularMarketBidPrice": 149.5,
+            "regularMarketAskPrice": 150.5,
+            "regularMarketTradeTime": 1715692800000,
         },
     }
     result = map_quotes_to_price_cache_entries(response)
@@ -502,10 +502,10 @@ def test_09_get_quotes_batch_happy_path_audit_lifecycle(v18_conn):
         {
             "AAPL": {
                 "quote": {
-                    "lastPrice": 150.0,
-                    "bidPrice": 149.5,
-                    "askPrice": 150.5,
-                    "quoteTimeInLong": 1715692800000,
+                    "regularMarketLastPrice": 150.0,
+                    "regularMarketBidPrice": 149.5,
+                    "regularMarketAskPrice": 150.5,
+                    "regularMarketTradeTime": 1715692800000,
                     "delayed": False,
                 },
             },

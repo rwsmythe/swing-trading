@@ -175,11 +175,11 @@ def _make_quotes_response(symbols: list[str]):
     return _mock_response({
         s: {
             "quote": {
-                "lastPrice": 100.0 + i,
-                "bidPrice": 99.0 + i,
-                "askPrice": 101.0 + i,
+                "regularMarketLastPrice": 100.0 + i,
+                "regularMarketBidPrice": 99.0 + i,
+                "regularMarketAskPrice": 101.0 + i,
                 "mark": 100.0 + i,
-                "quoteTime": "2026-05-14T15:30:00Z",
+                "regularMarketTradeTime": "2026-05-14T15:30:00Z",
                 "delayed": False,
             },
         }

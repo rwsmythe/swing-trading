@@ -709,30 +709,31 @@ def map_quotes_to_price_cache_entries(
             )
             continue
 
-        # Defensive dual-lookup per recon §3.2 — camelCase Schwab convention
-        # primary, snake_case alternates accepted for forward-compat.
-        last_price = body.get("lastPrice")
+        # L1: require regular-session provenance. NEVER read lastPrice/
+        # bidPrice/askPrice -- they carry the ext-hours book during pre/post
+        # market. A missing regular field drops the symbol -> yfinance fallback.
+        last_price = body.get("regularMarketLastPrice")
         if last_price is None:
-            last_price = body.get("last_price")
-        bid = body.get("bidPrice")
+            last_price = body.get("regular_market_last_price")  # snake_case fwd-compat
+        bid = body.get("regularMarketBidPrice")
         if bid is None:
-            bid = body.get("bid")
-        ask = body.get("askPrice")
+            bid = body.get("regular_market_bid_price")
+        ask = body.get("regularMarketAskPrice")
         if ask is None:
-            ask = body.get("ask")
+            ask = body.get("regular_market_ask_price")
         mark = body.get("mark")
         quote_time_raw = (
-            body.get("quoteTimeInLong")
-            or body.get("quoteTime")
-            or body.get("quote_time")
+            body.get("regularMarketTradeTime")
+            or body.get("regular_market_trade_time")
         )
         delayed_raw = body.get("delayed")
 
-        # Tolerate absent fields by dropping the symbol — partial response.
+        # Drop the symbol unless full regular-session provenance is present
+        # (last AND bid AND ask). No ext-hours value ever surfaces (L1).
         if last_price is None or bid is None or ask is None:
             _log.info(
                 "map_quotes_to_price_cache_entries: dropping %s "
-                "(missing last/bid/ask)",
+                "(missing regular-session last/bid/ask)",
                 symbol,
             )
             continue
