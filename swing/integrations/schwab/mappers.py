@@ -27,6 +27,7 @@ from typing import Any
 
 from swing.integrations.schwab.client import (
     SchwabApiError,
+    SchwabBarConsistencyError,
     SchwabSchemaParityError,
 )
 from swing.integrations.schwab.models import (
@@ -40,6 +41,13 @@ from swing.integrations.schwab.models import (
 )
 
 _log = logging.getLogger(__name__)
+
+# OQ-6: round provider floats to a fixed sub-tick precision BEFORE OhlcvBar
+# construction so float-representation noise (12.34 vs 12.340000000001) never
+# trips the strict invariant. 4 dp is finer than any equity tick the tool
+# trades; a genuine ext-hours violation differs by cents-to-dollars and
+# survives rounding.
+_OHLC_ROUND_DP = 4
 
 
 def _has_non_placeholder_leg(activities: object) -> bool:
@@ -832,23 +840,29 @@ def map_price_history_to_window(
                     f"{dt_ms!r}: {type(exc).__name__}"
                 ) from exc
 
-            open_v = float(_require(c, "open", ctx=f"candles[{i}]"))
-            high_v = float(_require(c, "high", ctx=f"candles[{i}]"))
-            low_v = float(_require(c, "low", ctx=f"candles[{i}]"))
-            close_v = float(_require(c, "close", ctx=f"candles[{i}]"))
+            open_v = round(float(_require(c, "open", ctx=f"candles[{i}]")), _OHLC_ROUND_DP)
+            high_v = round(float(_require(c, "high", ctx=f"candles[{i}]")), _OHLC_ROUND_DP)
+            low_v = round(float(_require(c, "low", ctx=f"candles[{i}]")), _OHLC_ROUND_DP)
+            close_v = round(float(_require(c, "close", ctx=f"candles[{i}]")), _OHLC_ROUND_DP)
             volume_raw = c.get("volume", 0)
             volume_v = int(volume_raw) if volume_raw is not None else 0
         except SchwabSchemaParityError:
             raise
 
-        bars.append(OhlcvBar(
-            asof_date=asof_date,
-            open=open_v,
-            high=high_v,
-            low=low_v,
-            close=close_v,
-            volume=volume_v,
-        ))
+        try:
+            bars.append(OhlcvBar(
+                asof_date=asof_date,
+                open=open_v,
+                high=high_v,
+                low=low_v,
+                close=close_v,
+                volume=volume_v,
+            ))
+        except ValueError as exc:
+            # OQ-4: a post-round invariant failure is a genuine bar-consistency
+            # problem (typically ext-hours-folded extremes). Re-raise typed so
+            # the audit row reads honestly and the ladder falls back cleanly.
+            raise SchwabBarConsistencyError(asof_date, str(exc)) from exc
 
     # Defensive sort — Schwab returns oldest-first but we enforce.
     bars.sort(key=lambda b: b.asof_date)
