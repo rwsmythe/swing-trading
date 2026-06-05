@@ -14,8 +14,8 @@
 
 | OQ | Resolution (operator-paired 2026-06-05) |
 |---|---|
-| **OQ-1b** archive remediation freshness | The Schwab ladder has NO archive-coverage short-circuit -- `fetch_window_via_ladder` re-fetches Schwab on every call; in a fresh pipeline process the in-memory TTL is empty, so the detect step (or observe's own populate) re-fetches with the L1 fix and `keep='last'` overwrites the contaminated `schwab_api` row before `resolve_ohlcv_window` reads it. **NO `force_refresh`/`min_asof` parameter is added.** Belt against the narrow "Schwab fails on the observe run -> stale contaminated row wins on precedence" edge: a **one-time operator-run CLI purge** (`swing schwab purge-marketdata-archive`) that deletes `*.schwab_api.parquet` once post-L1-ship (Task C8). |
-| **OQ-2** write-barrier chokepoint audit | RESOLVED by grounding. `write_window` is the Schwab-persist chokepoint (the ladder persists through it). `read_or_fetch_archive` (yfinance) is independently completed-day-safe -- it anchors writes on `_last_completed_session_today()` and never persists a `> cutoff` bar (Task C2 pins this). `_backward_compat_rename` only re-writes already-archived content. The strip lives in `write_window` (Task C1); a regression test pins read_or_fetch_archive's safety (Task C2). |
+| **OQ-1b** archive remediation freshness | The Schwab ladder has NO archive-coverage short-circuit -- `fetch_window_via_ladder` re-fetches Schwab on every call; in a fresh pipeline process the in-memory TTL is empty, so the detect step (or observe's own populate) re-fetches with the L1 fix and `keep='last'` overwrites the contaminated `schwab_api` row before `resolve_ohlcv_window` reads it. **NO `force_refresh`/`min_asof` parameter is added.** BUT the auto-overwrite only covers the Schwab-SUCCESS observe run; the TTL-hit / ladder-disabled/sandbox / Schwab-failure cases leave the stale contaminated `schwab_api` row, which wins on read-precedence and (being a completed-DATE row) is selected by `_bar_for_date` and locked (the date-only guard cannot catch ext-hours). Therefore the **one-time CLI purge** (`swing schwab purge-marketdata-archive`, Task C8) is **a REQUIRED post-L1 gate step, not an optional belt** (Codex R1 MAJOR #3) -- it deterministically removes the pre-fix contamination so no failure-case observe run can lock a stale ext-hours row. C7 tests `_bar_for_date` across success/failure/post-purge. |
+| **OQ-2** write-barrier chokepoint audit | RESOLVED (corrected by Codex R1 CRITICAL #1). The strip lives in **`_write_archive_atomic`** (the single lowest writer ALL four Shape-A write paths funnel through: `write_window`, `read_or_fetch_archive` 235/248, `_backward_compat_rename` 660/737). A `write_window`-only strip is UNSOUND because `resolve_ohlcv_window` runs `_backward_compat_rename` on every read (410) and `read_or_fetch_archive` persists the untrimmed fetched frame -- both would resurrect a `> cutoff` row. `write_window` keeps the F6/M3 merge logic on top of the atomic barrier (Task C1). Tests cover all four write paths. |
 | **OQ-3** quote regular-session fields | Implement Slice B, **gated on a live-quote cassette validation** (Task B1, operator-run): widen `fields=` to a selection documented to return `regularMarket*`, record a live cassette, grep-assert `regularMarketLastPrice`/`regularMarketTradeTime`/regular bid/ask appear. If a symbol lacks regular-session provenance it drops to yfinance (L1-clean). No `lastPrice`/ext-hours fallback ever. |
 | **OQ-4** `SchwabBarConsistencyError` placement | **Subclass `SchwabApiError`** (Task A3). It is then caught by `_call_endpoint`'s `except SchwabApiError` (marketdata.py:628) -> audit `status="error"` + `_redacted_excerpt(exc)` -> re-raised AS-IS -> the ladder's `except (SchwabAuthError, SchwabRateLimitError, SchwabApiError)` (marketdata_ladder.py:447) catches it -> clean yfinance fallback (NOT the opaque catch-all). Needs a custom `__init__` because `SchwabApiError.__init__(status_code, body_excerpt)` is positional. There is NO global `_classify_schwab_error`; classification is `_classify_http_failure(http_status)` (HTTP-only) + the explicit mapper except-chain -- the typed error needs no change there. |
 | **OQ-5** Issue #3 (`_count_open_at_run`) | **OUT of this arc; banked.** Root cause confirmed: `_count_open_at_run` (capital.py:418) keys "still open at run time" on `last_fill_at >= started_ts`, but `last_fill_at` is the most-recent fill of ANY action (entry/trim/exit/stop), so a trade filled before the run but still open is wrongly excluded. The `trades` table has NO exit/terminal timestamp column; the correct fix derives `exited_at` from `fills WHERE action='exit'`. It reads ONLY `trades` (never `account_equity_snapshots` -- the integration-review hypothesis was wrong). Recorded in the OUT-of-scope note; a separate small metrics-fix brief opens AFTER this arc ships. |
@@ -29,7 +29,7 @@
 - The price-history mapper `OhlcvBar` construction is at **mappers.py:835-851**; the per-bar field extraction is wrapped in `try/except SchwabSchemaParityError` (817-841) but the `OhlcvBar(...)` append (844-851) is OUTSIDE that try -- so its `ValueError` currently propagates raw and is wrapped as `SchwabSchemaParityError` by `_call_endpoint`'s `except (ValueError, TypeError, KeyError)` (663) -> the ladder catch-all (456) "unexpected error from T-C.1 wrapper". This is the opaque-logging path the arc fixes.
 - `OhlcvBar.__post_init__` invariant is at **models.py:539-551** (`low > min(open,close)` and `high < max(open,close)` raise "OhlcvBar invariant violated").
 - The Schwab error taxonomy lives in **client.py:264-393** (`SchwabApiError(RuntimeError)` with `__init__(status_code, body_excerpt)`; `SchwabRateLimitError`/`SchwabAuthError` subclass it). **No global `_classify_schwab_error`** -- only `_classify_http_failure` (marketdata.py:196-209, HTTP-only).
-- **write_window vs the true chokepoint:** `write_window` (ohlcv_archive.py:281-370) is the Schwab-persist path (via `_persist_window_to_archive` marketdata_ladder.py:186). The literal single lowest writer is `_write_archive_atomic` (ohlcv_archive.py:99), but `read_or_fetch_archive` (yfinance; lines 235/248) writes through it directly AND is already completed-day-safe (anchors on `_last_completed_session_today()`), so it is not a contamination source. The strip belongs in `write_window`; C2 pins read_or_fetch_archive's safety.
+- **The true write barrier is `_write_archive_atomic`, NOT `write_window` (Codex R1 CRITICAL #1).** `write_window` (ohlcv_archive.py:281-370) is only the Schwab-ladder-persist path. THREE OTHER write paths bypass it and call `_write_archive_atomic` (ohlcv_archive.py:99) directly: `read_or_fetch_archive` full-refresh (235) + incremental (248), and `_backward_compat_rename` (660, 737) -- and `_backward_compat_rename` is run by `resolve_ohlcv_window` on EVERY read (line 410), so a write_window-only strip can be undone (clean the yfinance parquet, then a read merges the legacy `{T}.parquet` back into Shape A, reintroducing a partial row). `read_or_fetch_archive` writes the raw `fetched`/`combined` frame WITHOUT trimming the in-progress tail before persist (only its RETURN is sliced). Therefore the hard `> cutoff` strip MUST live in `_write_archive_atomic` -- the literal single lowest writer that ALL four paths funnel through -- so every write inherits it (Task C1). `write_window` keeps the F6/M3 merge logic on top.
 - **OhlcvCache freshness (OQ-1b):** `get_or_fetch` (ohlcv_cache.py:175-211) has an in-memory TTL gate only (3600s), NO archive-coverage gate, NO `force_refresh` param. `_fetch_bars_window` (ohlcv_cache.py:253-311) branches: `if self._ladder_bars_fetcher is not None:` -> Schwab ladder (writes `schwab_api.parquet`); `else:` -> `read_or_fetch_archive` (yfinance). The pipeline installs `_ladder_bars_fetcher` (runner.py:468) so detect/observe DO use the ladder. The ladder is active by default (`environment="production"` + `marketdata_ladder_enabled=True`).
 - `_SOURCE_PRECEDENCE_MARKET_DATA = {"schwab_api": 0, "yfinance": 1}` (ohlcv_archive.py:56-59) -> schwab_api wins on read.
 - **Slice D inventory is 33 VMs**, split into two populations: the metrics family + `AccountSnapshotFormVM` SUBCLASS `BaseLayoutVM` (view_models/metrics/shared.py:28); the rest (Dashboard, Watchlist, Journal+drilldown, Config, Pipeline, PageError, the reviews/reconcile/schwab VMs) each INDEPENDENTLY declare the 8 banner fields. The template renders `{{ vm.session_date }}` (base.html.j2:69). Full inventory in Task D2.
@@ -60,7 +60,7 @@
 - Test: `tests/integrations/schwab/test_mapper_float_normalization.py` (new)
 
 **Slice C**
-- Modify: `swing/data/ohlcv_archive.py` (`write_window` strip + `_strip_incomplete_sessions`)
+- Modify: `swing/data/ohlcv_archive.py` (`_strip_incomplete_sessions` + the strip inside `_write_archive_atomic` [the universal barrier] + `write_window` F6/M3 merge)
 - Modify: `swing/pipeline/runner.py:2466` (`_bar_for_date` guard) + `:2641` (observe caller wiring)
 - Modify: `swing/pipeline/temporal_metadata.py:149` (`build_ohlc_today_json` signature)
 - Modify: `swing/cli_schwab.py` (+ `purge-marketdata-archive` command)
@@ -417,69 +417,78 @@ git add swing/integrations/schwab/mappers.py tests/integrations/schwab/test_mapp
 git commit -m "feat(schwab): normalize mapper float noise + raise typed SchwabBarConsistencyError"
 ```
 
-### Task A5: Integration -- the typed error flows to a clean yfinance fallback + honest audit
+### Task A5: Integration -- a contaminated candle drives the REAL wrapper -> typed error + honest audit + clean fallback
 
 **Files:**
-- Test: `tests/integrations/schwab/test_bar_consistency_ladder_fallback.py` (new)
+- Test: `tests/integrations/schwab/test_bar_consistency_production_path.py` (new)
+
+**Why the real path (Codex R1 MAJOR #4):** the binding behavior is that `_call_endpoint` catches `SchwabApiError` (marketdata.py:628) BEFORE the `except (ValueError, TypeError, KeyError)` clause (663), so the typed error is recorded `status='error'` and re-raised AS-IS (not re-wrapped as `SchwabSchemaParityError`). A test that monkeypatches `get_price_history` to raise directly would bypass `_call_endpoint` entirely and could not detect a future re-wrap regression. So drive the REAL `get_price_history` wrapper with a fake client whose candle is ext-hours-inconsistent.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# tests/integrations/schwab/test_bar_consistency_ladder_fallback.py
-"""Integration: a SchwabBarConsistencyError raised by the price-history mapper
-must (1) close the schwab_api_calls audit row with status='error' + a readable
-message BEFORE re-raise, and (2) be caught by the ladder's typed except-clause
-so the fetch falls back to yfinance (NOT the opaque catch-all)."""
-import sqlite3
-import pandas as pd
+# tests/integrations/schwab/test_bar_consistency_production_path.py
+"""A genuinely inconsistent candle (high below max(open,close)) fed through the
+REAL get_price_history wrapper must: (1) raise SchwabBarConsistencyError (proving
+_call_endpoint caught it as SchwabApiError, NOT re-wrapped as
+SchwabSchemaParityError); (2) close the schwab_api_calls audit row with
+status='error' + a message containing 'OHLC consistency'."""
+import pytest
 
-from swing.integrations.schwab.marketdata_ladder import fetch_window_via_ladder
+from swing.integrations.schwab.client import (
+    SchwabBarConsistencyError, SchwabSchemaParityError,
+)
+from swing.integrations.schwab.marketdata import get_price_history
+from swing.data.db import connect, run_migrations  # project's DB helpers
 
 
-def test_bar_consistency_error_triggers_yfinance_fallback(tmp_path, monkeypatch):
-    # Force get_price_history to raise the typed error (as the mapper would).
-    from swing.integrations.schwab.client import SchwabBarConsistencyError
-    import swing.integrations.schwab.marketdata_ladder as ladder
+class _FakeClient:
+    """Returns a single ext-hours-inconsistent candle (high 12.00 < close 12.50)."""
+    def price_history(self, symbol, **kwargs):
+        class _Resp:
+            status_code = 200
+            def json(self):
+                return {"candles": [{"datetime": 1_700_000_000_000,
+                                     "open": 12.00, "high": 12.00,
+                                     "low": 11.50, "close": 12.50,
+                                     "volume": 1000}], "empty": False,
+                        "symbol": symbol}
+        return _Resp()
 
-    def _boom(*a, **k):
-        raise SchwabBarConsistencyError("2026-06-04", "high (12.0) < max (12.5)")
-    monkeypatch.setattr(ladder, "get_price_history", _boom)
 
-    yf_called = {}
-
-    def _yf(ticker, start, end):
-        yf_called["hit"] = True
-        return pd.DataFrame({"asof_date": ["2026-06-04"], "open": [10.0],
-                             "high": [11.0], "low": [9.0], "close": [10.5],
-                             "volume": [100]})
-
-    window, provider = fetch_window_via_ladder(
-        ladder._build_dummy_client() if hasattr(ladder, "_build_dummy_client") else object(),
-        sqlite3.connect(":memory:"),
-        "AAPL",
-        period_type="year", period=1, frequency_type="daily", frequency=1,
-        start=None, end=None,
-        yfinance_fallback_fn=_yf,
-        cache_dir=tmp_path,
-        surface="cli",
-        pipeline_run_id=None,
-    )
-    assert provider == "yfinance"
-    assert yf_called.get("hit") is True
+def test_contaminated_candle_raises_typed_and_audits(tmp_path):
+    db = tmp_path / "swing.db"
+    conn = connect(db)
+    run_migrations(conn)  # provides schwab_api_calls
+    with pytest.raises(SchwabBarConsistencyError) as ei:
+        get_price_history(
+            _FakeClient(), conn, "AAPL",
+            period_type="year", period=1, frequency_type="daily", frequency=1,
+            start_dt=None, end_dt=None,
+            surface="cli", environment="production", pipeline_run_id=None,
+        )
+    assert not isinstance(ei.value, SchwabSchemaParityError)  # NOT re-wrapped
+    row = conn.execute(
+        "SELECT status, error_message FROM schwab_api_calls "
+        "ORDER BY id DESC LIMIT 1").fetchone()
+    assert row[0] == "error"
+    assert "OHLC consistency" in (row[1] or "")
 ```
 
-> **Implementer note:** match the real `fetch_window_via_ladder` signature (grounded at marketdata_ladder.py ~432) -- adapt the call kwargs to the actual parameter names. The binding assertions are `provider == "yfinance"` and the yfinance fn was invoked. If the audit DB is required, pass a real connection with the `schwab_api_calls` schema (use the project's `connect` + migrate helper) and additionally assert the latest `schwab_api_calls` row has `status='error'`.
+> **Implementer note:** match `get_price_history`'s real parameter names + the `connect`/migration helper names (grounded: `get_price_history(client, conn, ticker, *, period_type, period, frequency_type, frequency, start_dt, end_dt, surface, environment, pipeline_run_id)`; DB helpers per `swing/data/db.py`). If the wrapper requires a non-None `start_dt`/`end_dt`, pass valid datetimes. The binding assertions: the raised type is `SchwabBarConsistencyError` and NOT `SchwabSchemaParityError`; the audit row is `status='error'` with an "OHLC consistency" message.
 
-- [ ] **Step 2: Run test to verify it fails / then implement nothing new**
+- [ ] **Step 2: Run test to verify it passes** (A4 made the mapper raise the typed error; A3 made it a `SchwabApiError` subclass so `_call_endpoint` catches it first)
 
-Run: `cd .worktrees/data-integrity-arc-writing-plans && python -m pytest tests/integrations/schwab/test_bar_consistency_ladder_fallback.py -v`
-Expected: PASS without new production code (A3 made the error a `SchwabApiError` subclass, which marketdata_ladder.py:447 already catches). If it FAILS because the error reaches the catch-all instead, verify A3's subclassing. This task is a wiring-proof, not a new feature.
+Run: `cd .worktrees/data-integrity-arc-writing-plans && python -m pytest tests/integrations/schwab/test_bar_consistency_production_path.py -v`
+Expected: PASS. If it FAILS with `SchwabSchemaParityError`, the except-clause ORDER is wrong -- verify `except SchwabApiError` precedes `except (ValueError, TypeError, KeyError)` and that `SchwabBarConsistencyError` subclasses `SchwabApiError` (A3).
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 3: (Optional) ladder fallback proof** -- a small separate test asserting that when `get_price_history` raises `SchwabBarConsistencyError`, `fetch_window_via_ladder` returns `provider == "yfinance"` (the ladder's `except (..., SchwabApiError)` at 447 catches it). Match the real `fetch_window_via_ladder` signature; assert `provider == "yfinance"` + the yfinance fn was invoked.
+
+- [ ] **Step 4: Commit**
 
 ```bash
-git add tests/integrations/schwab/test_bar_consistency_ladder_fallback.py
-git commit -m "test(schwab): prove typed bar-consistency error -> clean yfinance fallback"
+git add tests/integrations/schwab/test_bar_consistency_production_path.py
+git commit -m "test(schwab): contaminated candle -> typed error + honest audit via the real wrapper"
 ```
 
 ---
@@ -488,13 +497,15 @@ git commit -m "test(schwab): prove typed bar-consistency error -> clean yfinance
 
 **Depends on:** Slice A (the §5.4 remediation overwrite requires the L1 pull fix live). The keystone.
 
-### Task C1: Write-barrier strip in `write_window` (the completed-day chokepoint)
+### Task C1: Completed-day write barrier in `_write_archive_atomic` (the TRUE chokepoint) + `write_window` merge logic
 
 **Files:**
-- Modify: `swing/data/ohlcv_archive.py:281-370` (`write_window`) + a new `_strip_incomplete_sessions` helper
+- Modify: `swing/data/ohlcv_archive.py` -- new `_strip_incomplete_sessions` helper; apply it inside `_write_archive_atomic` (the universal barrier); rewrite `write_window` (281-370) with the F6/M3 merge logic on top.
 - Test: `tests/data/test_write_window_completed_day.py`
 
-- [ ] **Step 1: Write the failing tests**
+**Design (Codex R1 CRITICAL #1):** the hard `> cutoff` strip lives in `_write_archive_atomic` (ohlcv_archive.py:99) -- the single lowest writer that `write_window`, `read_or_fetch_archive` (235/248), AND `_backward_compat_rename` (660/737) all funnel through. This makes it impossible for ANY write path (including the legacy-rename run on every `resolve_ohlcv_window` read) to persist or resurrect a `> cutoff` row. `write_window` keeps the merge-by-asof_date + F6/M3 logic on TOP of the barrier (it still must rewrite existing on an empty-incoming call so a pre-existing on-disk partial is stripped).
+
+- [ ] **Step 1: Write the failing tests** (cover the barrier across ALL write paths)
 
 ```python
 # tests/data/test_write_window_completed_day.py
@@ -503,13 +514,15 @@ import pandas as pd
 import pytest
 
 import swing.data.ohlcv_archive as arch
-from swing.data.ohlcv_archive import write_window, resolve_ohlcv_window
+from swing.data.ohlcv_archive import (
+    write_window, resolve_ohlcv_window, _write_archive_atomic, _shape_a_path,
+)
 
 
 @pytest.fixture
 def fixed_cutoff(monkeypatch):
     """Freeze the completed-session cutoff at 2026-06-04 (so 2026-06-05 is the
-    'current in-progress' session)."""
+    'current in-progress' session) for BOTH the helper and any lazy import."""
     monkeypatch.setattr(arch, "_last_completed_session_today",
                         lambda: date(2026, 6, 4))
     return date(2026, 6, 4)
@@ -520,11 +533,35 @@ def _frame(rows):
                                        "close", "volume"])
 
 
+def test_atomic_writer_strips_after_cutoff_universal(tmp_path, fixed_cutoff):
+    """The hard barrier: _write_archive_atomic itself drops > cutoff rows, so
+    EVERY write path (write_window, read_or_fetch_archive, _backward_compat_
+    rename) inherits it -- a > cutoff row can never land on disk."""
+    path = _shape_a_path(tmp_path, "AAPL", "schwab_api")
+    _write_archive_atomic(path, _frame([
+        ["2026-06-04", 10, 11, 9, 10.5, 100],
+        ["2026-06-05", 10, 12, 9, 11.0, 200],  # > cutoff -> stripped
+    ]))
+    on_disk = pd.read_parquet(path)
+    assert list(on_disk["asof_date"]) == ["2026-06-04"]
+
+
+def test_atomic_writer_strips_date_indexed_frame(tmp_path, fixed_cutoff):
+    """Shape-agnostic: a DatetimeIndex frame (the read_or_fetch_archive shape)
+    is also stripped on > cutoff."""
+    path = _shape_a_path(tmp_path, "AAPL", "yfinance")
+    idx = pd.to_datetime(["2026-06-04", "2026-06-05"])
+    _write_archive_atomic(path, pd.DataFrame(
+        {"open": [10, 10], "high": [11, 12], "low": [9, 9],
+         "close": [10.5, 11], "volume": [100, 200]}, index=idx))
+    on_disk = pd.read_parquet(path)
+    assert on_disk.index.max().date() == date(2026, 6, 4)
+
+
 def test_incoming_current_day_row_is_stripped(tmp_path, fixed_cutoff):
-    """A current-day (> cutoff) row in the incoming window is never persisted."""
     win = _frame([
-        ["2026-06-04", 10, 11, 9, 10.5, 100],   # completed -> keep
-        ["2026-06-05", 10, 12, 9, 11.0, 200],   # in-progress -> strip
+        ["2026-06-04", 10, 11, 9, 10.5, 100],
+        ["2026-06-05", 10, 12, 9, 11.0, 200],
     ])
     write_window("AAPL", win, "schwab_api", cache_dir=tmp_path)
     df, _ = resolve_ohlcv_window("AAPL", start="2026-06-01", end="2026-06-30",
@@ -533,19 +570,21 @@ def test_incoming_current_day_row_is_stripped(tmp_path, fixed_cutoff):
 
 
 def test_preexisting_on_disk_current_day_row_stripped_on_empty_incoming(
-        tmp_path, fixed_cutoff):
+        tmp_path, fixed_cutoff, monkeypatch):
     """M3: a > cutoff row already on disk is stripped even when the incoming
-    window is empty (filtering only incoming would leave it)."""
-    seed = _frame([
+    window is empty. (Simulate a pre-fix raw file by writing it with the
+    atomic strip DISABLED, then prove write_window cleans it.)"""
+    path = _shape_a_path(tmp_path, "AAPL", "schwab_api")
+    # Write a raw pre-fix file WITH a partial, bypassing the strip:
+    monkeypatch.setattr(arch, "_strip_incomplete_sessions",
+                        lambda df, _c: df)  # disable strip for the raw seed
+    _write_archive_atomic(path, _frame([
         ["2026-06-04", 10, 11, 9, 10.5, 100],
-        ["2026-06-05", 10, 12, 9, 11.0, 200],   # pre-existing partial
-    ])
-    write_window("AAPL", seed, "schwab_api", cache_dir=tmp_path)  # also strips,
-    # but assert via a SECOND empty-incoming call that the partial cannot survive:
-    # re-seed the raw partial by writing directly through the atomic writer to
-    # simulate a pre-fix file, then call write_window with empty incoming.
-    path = arch._shape_a_path(tmp_path, "AAPL", "schwab_api")
-    arch._write_archive_atomic(path, seed)  # raw pre-fix file WITH the partial
+        ["2026-06-05", 10, 12, 9, 11.0, 200],
+    ]))
+    monkeypatch.undo()  # re-enable the real strip
+    monkeypatch.setattr(arch, "_last_completed_session_today",
+                        lambda: date(2026, 6, 4))
     write_window("AAPL", _frame([]), "schwab_api", cache_dir=tmp_path)
     df, _ = resolve_ohlcv_window("AAPL", start="2026-06-01", end="2026-06-30",
                                  cache_dir=tmp_path)
@@ -558,42 +597,61 @@ def test_transient_empty_incoming_preserves_valid_history(tmp_path, fixed_cutoff
     seed = _frame([["2026-06-03", 10, 11, 9, 10.5, 100],
                    ["2026-06-04", 10, 11, 9, 10.5, 100]])
     write_window("AAPL", seed, "schwab_api", cache_dir=tmp_path)
-    write_window("AAPL", None, "schwab_api", cache_dir=tmp_path)  # transient empty
+    write_window("AAPL", None, "schwab_api", cache_dir=tmp_path)
     df, _ = resolve_ohlcv_window("AAPL", start="2026-06-01", end="2026-06-30",
                                  cache_dir=tmp_path)
     assert list(df["asof_date"]) == ["2026-06-03", "2026-06-04"]
-
-
-def test_partial_only_archive_is_cleaned(tmp_path, fixed_cutoff):
-    """Step 3: if existing + incoming hold ONLY > cutoff rows, write empty so
-    no partial survives (no valid history exists to protect -- not F6)."""
-    path = arch._shape_a_path(tmp_path, "AAPL", "schwab_api")
-    arch._write_archive_atomic(path, _frame([["2026-06-05", 10, 12, 9, 11, 200]]))
-    write_window("AAPL", _frame([]), "schwab_api", cache_dir=tmp_path)
-    df, _ = resolve_ohlcv_window("AAPL", start="2026-06-01", end="2026-06-30",
-                                 cache_dir=tmp_path)
-    assert df.empty
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `cd .worktrees/data-integrity-arc-writing-plans && python -m pytest tests/data/test_write_window_completed_day.py -v`
-Expected: FAIL (current `write_window` early-returns on empty incoming and does not strip `> cutoff` rows).
+Expected: FAIL (`_write_archive_atomic` does not strip; `write_window` early-returns on empty incoming).
 
-- [ ] **Step 3: Implement** -- add the helper + rewrite `write_window` in `swing/data/ohlcv_archive.py`:
+- [ ] **Step 3a: Implement the helper + the atomic barrier** in `swing/data/ohlcv_archive.py`:
 
 ```python
 def _strip_incomplete_sessions(df: pd.DataFrame, cutoff_iso: str) -> pd.DataFrame:
-    """Drop Shape-A rows dated AFTER the last completed session (cutoff_iso =
-    ISO YYYY-MM-DD). asof_date is an ISO-string column, so lexical `<=` is a
-    valid date comparison. Returns a new frame (may be empty). Frames lacking
-    the asof_date key are returned unchanged (the caller handles them)."""
-    if "asof_date" not in df.columns:
-        return df
-    return df[df["asof_date"].astype(str) <= cutoff_iso]
+    """Drop archive rows dated AFTER the last completed session (cutoff_iso =
+    ISO YYYY-MM-DD). Shape-agnostic: Shape-A frames carry an `asof_date` string
+    column (lexical `<=` is a valid ISO-date comparison); legacy/yfinance
+    frames are DatetimeIndex'd (compare `index.date`). Returns a new frame
+    (may be empty). A frame with neither shape is returned unchanged."""
+    if "asof_date" in df.columns:
+        return df[df["asof_date"].astype(str) <= cutoff_iso]
+    if isinstance(df.index, pd.DatetimeIndex):
+        cutoff = date.fromisoformat(cutoff_iso)
+        return df[df.index.date <= cutoff]
+    return df
 ```
 
-Replace the body of `write_window` (281-370) with:
+Then wrap `_write_archive_atomic` (99-114) so the strip fires on EVERY write:
+
+```python
+def _write_archive_atomic(parquet_path: Path, df: pd.DataFrame) -> None:
+    # Completed-day write barrier (L2, the single chokepoint): no archive write
+    # path may persist a row dated after the last completed session. Applied
+    # here -- the one function ALL Shape-A writers funnel through (write_window,
+    # read_or_fetch_archive, _backward_compat_rename) -- so none can bypass it.
+    df = _strip_incomplete_sessions(df, _last_completed_session_today().isoformat())
+    cache_dir = parquet_path.parent
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(cache_dir), prefix=f"{parquet_path.stem}.", suffix=".parquet.tmp")
+    os.close(fd)
+    tmp_path = Path(tmp_name)
+    try:
+        df.to_parquet(tmp_path)
+        os.replace(tmp_path, parquet_path)
+    except Exception:
+        if tmp_path.exists():
+            with contextlib.suppress(OSError):
+                tmp_path.unlink()
+        raise
+```
+
+> `date` is already imported in ohlcv_archive.py (used by `_last_completed_session_today`'s callers). `_last_completed_session_today` is module-level (164-169). Confirm no callsite passes a frame that legitimately needs a future-dated row written (none do -- the archive is strictly historical).
+
+- [ ] **Step 3b: Rewrite `write_window` (281-370)** with the F6/M3 merge logic ON TOP of the barrier:
 
 ```python
 def write_window(
@@ -603,14 +661,12 @@ def write_window(
     *,
     cache_dir: Path,
 ) -> None:
-    """Atomically write a Shape A window to
-    `{cache_dir}/{TICKER}.{PROVIDER}.parquet`, merging with any pre-existing
-    rows by `asof_date` (keep='last'), AND enforcing the completed-day write
-    barrier: NO row dated after `last_completed_session(now)` is ever
-    persisted (L2). The filter applies to the merged (existing + incoming)
-    frame, so a pre-existing partial row already on disk is also removed (M3),
-    while valid (<= cutoff) history is never blanked by a transient empty
-    incoming window (F6)."""
+    """Atomically write a Shape A window, merging with any pre-existing rows by
+    `asof_date` (keep='last'). The hard completed-day strip lives in
+    `_write_archive_atomic` (every write inherits it); this function adds the
+    merge + the M3 guarantee (rewrite existing on an empty incoming so a
+    pre-existing on-disk partial is stripped) + F6 (never blank valid history
+    on a transient empty fetch)."""
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
     path = _shape_a_path(cache_dir, ticker, provider)
@@ -623,18 +679,16 @@ def write_window(
             is_empty = len(incoming) == 0
         except TypeError:
             raise TypeError(
-                f"write_window expects pd.DataFrame, got {type(window).__name__}"
-            )
+                f"write_window expects pd.DataFrame, got {type(window).__name__}")
         if is_empty:
             incoming = None
         else:
             raise TypeError(
-                f"write_window expects pd.DataFrame, got {type(window).__name__}"
-            )
+                f"write_window expects pd.DataFrame, got {type(window).__name__}")
     if isinstance(incoming, pd.DataFrame) and incoming.empty:
         incoming = None
 
-    # --- read existing (if any) ---
+    # --- read existing ---
     existing: pd.DataFrame | None = None
     if path.exists():
         try:
@@ -643,62 +697,57 @@ def write_window(
             log.warning("write_window: failed to read existing %s (%s)", path, exc)
             existing = None
 
-    # --- nothing on either side ---
     if incoming is None and existing is None:
         return
 
-    # --- legacy REPLACE for non-Shape-A incoming (no asof_date key) ---
+    # legacy REPLACE for non-Shape-A incoming (dedup needs the asof_date key);
+    # the atomic strip still fires inside _write_archive_atomic.
     if incoming is not None and "asof_date" not in incoming.columns:
         _write_archive_atomic(path, incoming)
         return
 
-    # --- cheap no-op: empty incoming + existing already has no > cutoff rows ---
+    # cheap no-op: empty incoming + existing already has no > cutoff rows.
     if incoming is None and existing is not None and "asof_date" in existing.columns:
         if len(_strip_incomplete_sessions(existing, cutoff_iso)) == len(existing):
             return
-    # (if existing read failed AND incoming is None, nothing safe to do)
-    if incoming is None and existing is None:
-        return
 
-    # --- filtered-union completed-day write barrier ---
     frames = [f for f in (existing, incoming)
               if f is not None and "asof_date" in f.columns]
     if not frames:
         return
     union = pd.concat(frames) if len(frames) > 1 else frames[0]
-    merged = _strip_incomplete_sessions(union, cutoff_iso)
-    merged = merged.drop_duplicates(subset=["asof_date"], keep="last")
+    merged = union.drop_duplicates(subset=["asof_date"], keep="last")
     merged = merged.sort_values("asof_date").reset_index(drop=True)
-    # Non-empty -> write merged (F6: valid history preserved). Empty -> write
-    # clean so no > cutoff partial survives on disk (step 3).
+    # The atomic writer applies the > cutoff strip; an all-partial union writes
+    # clean (no > cutoff survives), a valid union preserves <= cutoff history.
     _write_archive_atomic(path, merged)
 ```
-
-> Keep the existing `log` module logger and `_shape_a_path`/`_write_archive_atomic`/`_last_completed_session_today` references (all already in the module).
 
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `cd .worktrees/data-integrity-arc-writing-plans && python -m pytest tests/data/test_write_window_completed_day.py -v`
-Expected: PASS (all four).
+Expected: PASS (all five).
 
-- [ ] **Step 5: Run the existing archive suite for no regression**
+- [ ] **Step 5: Run the existing archive suite for no regression** (the atomic strip now fires on every write -- confirm no existing test seeds a future-dated archive row it then expects back)
 
-Run: `cd .worktrees/data-integrity-arc-writing-plans && python -m pytest tests/data/ -q -k "archive or ohlcv or write_window"`
-Expected: PASS (the merge-by-asof_date + F6 behaviors are preserved; only `> cutoff` stripping is added).
+Run: `cd .worktrees/data-integrity-arc-writing-plans && python -m pytest tests/data/ -q -k "archive or ohlcv or write_window or backward_compat"`
+Expected: PASS. If a pre-existing test seeds a `> last_completed_session(now)` row and expects it persisted, it was relying on the (now-closed) hole -- update it to a `<= cutoff` date or `monkeypatch` `_last_completed_session_today` to cover the seeded date.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add swing/data/ohlcv_archive.py tests/data/test_write_window_completed_day.py
-git commit -m "feat(data): completed-day write barrier in write_window (strip in-progress bars)"
+git commit -m "feat(data): completed-day write barrier in _write_archive_atomic (universal strip)"
 ```
 
-### Task C2: Pin `read_or_fetch_archive` completed-day write-safety (L4 contract)
+### Task C2: Prove the barrier covers the yfinance `read_or_fetch_archive` path
 
 **Files:**
 - Test: `tests/data/test_read_or_fetch_archive_completed_day.py`
 
-- [ ] **Step 1: Write the test** (pins existing behavior -- no production change expected)
+**Why a real regression (Codex R1 MAJOR #2):** `read_or_fetch_archive` writes the raw `fetched`/`combined` frame WITHOUT trimming the in-progress tail (only its RETURN is sliced) -- so before C1 it WOULD persist a current-day yfinance bar. After C1, the atomic-writer strip removes it. This test distinguishes old (partial persisted) from new (stripped).
+
+- [ ] **Step 1: Write the test**
 
 ```python
 # tests/data/test_read_or_fetch_archive_completed_day.py
@@ -709,43 +758,41 @@ import swing.data.ohlcv_archive as arch
 from swing.data.ohlcv_archive import read_or_fetch_archive, _shape_a_path
 
 
-def test_yfinance_archive_never_persists_after_cutoff(tmp_path, monkeypatch):
-    """read_or_fetch_archive anchors `today` on last_completed_session, so even
-    if yfinance returns an in-progress bar, the persisted archive holds no
-    row > cutoff. Pins the L4 contract (OQ-2: yfinance path is not a
-    contamination source)."""
+def test_yfinance_fetch_never_persists_after_cutoff(tmp_path, monkeypatch):
+    """Even when yfinance returns an in-progress (> cutoff) bar, the atomic
+    barrier (Task C1) strips it before persist. OLD: read_or_fetch_archive
+    persisted the raw fetched frame incl. the 06-05 bar. NEW: the on-disk
+    archive holds no row > cutoff."""
     monkeypatch.setattr(arch, "_last_completed_session_today",
                         lambda: date(2026, 6, 4))
 
     def _fake_yf(ticker, *, start, end):
-        # yfinance returns through the in-progress 06-05 bar; the function must
-        # bound to `end` (= cutoff) and never persist 06-05.
         idx = pd.to_datetime(["2026-06-03", "2026-06-04", "2026-06-05"])
         return pd.DataFrame({"open": [10, 10, 10], "high": [11, 11, 12],
                              "low": [9, 9, 9], "close": [10.5, 10.5, 11],
                              "volume": [100, 100, 200]}, index=idx)
     monkeypatch.setattr(arch, "_yf_download_window", _fake_yf)
 
-    out = read_or_fetch_archive("AAPL", end_date=date(2026, 6, 4),
-                                cache_dir=tmp_path, archive_history_days=400)
-    assert out is not None
-    # On-disk archive must hold no > cutoff row.
+    read_or_fetch_archive("AAPL", end_date=date(2026, 6, 4),
+                          cache_dir=tmp_path, archive_history_days=400)
     on_disk = pd.read_parquet(_shape_a_path(tmp_path, "AAPL", "yfinance"))
-    assert on_disk.index.max().date() <= date(2026, 6, 4)
+    last = (on_disk.index.max().date() if isinstance(on_disk.index, pd.DatetimeIndex)
+            else date.fromisoformat(str(on_disk["asof_date"].max())))
+    assert last <= date(2026, 6, 4)
 ```
 
-> **Implementer note:** confirm the yfinance archive is written as the `yfinance` Shape-A path and indexed by date (grounded). If `read_or_fetch_archive` writes a date-indexed frame (not an `asof_date` column), assert on `on_disk.index.max().date()` as above; if it normalizes to an `asof_date` column, assert on `on_disk["asof_date"].max()`. Match the actual on-disk shape -- the binding assertion is "no row dated after the cutoff."
+> **Implementer note:** match `_yf_download_window`'s real keyword signature (grounded: `(ticker, *, start, end)`) and the on-disk shape (DatetimeIndex per grounding). The binding assertion: no on-disk row dated after the cutoff.
 
 - [ ] **Step 2: Run test**
 
 Run: `cd .worktrees/data-integrity-arc-writing-plans && python -m pytest tests/data/test_read_or_fetch_archive_completed_day.py -v`
-Expected: PASS (existing anchor already enforces this). If it FAILS, the yfinance path leaks a partial bar -> escalate (a deeper bug than this arc scoped).
+Expected: PASS (via the C1 atomic strip).
 
 - [ ] **Step 3: Commit**
 
 ```bash
 git add tests/data/test_read_or_fetch_archive_completed_day.py
-git commit -m "test(data): pin read_or_fetch_archive completed-day write-safety"
+git commit -m "test(data): prove the atomic barrier strips the yfinance fetch path"
 ```
 
 ### Task C3: Date-only lock-guard at `_bar_for_date`
@@ -1006,60 +1053,106 @@ git add tests/evaluation/test_completed_day_anchors.py
 git commit -m "test(evaluation): completed-day anchor regression across representative clocks"
 ```
 
-### Task C7: Pre-fix remediation -- automatic ladder refetch-overwrite proof (OQ-1b primary)
+### Task C7: Pre-fix remediation -- `_bar_for_date` across Schwab success / failure / post-purge (OQ-1b)
 
 **Files:**
 - Test: `tests/pipeline/test_observe_remediation.py`
 
-- [ ] **Step 1: Write the test**
+**The honest model (Codex R1 MAJOR #3):** `_bar_for_date` calls `ohlcv_cache.get_or_fetch(...)` (a best-effort populate), then reads the date-anchored bar via `resolve_ohlcv_window`. The remediation has TWO regimes:
+- **Schwab-SUCCESS observe run:** the ladder re-fetches Schwab with the L1 fix and `keep='last'` overwrites the contaminated `schwab_api` row BEFORE the read -> clean lock. (Proven by `test_success_path` below.)
+- **TTL-hit / ladder-disabled / Schwab-FAILURE run:** no fresh Schwab overwrite happens; the stale contaminated `schwab_api` row remains and wins on read-precedence (schwab_api=0 > yfinance=1) -> `_bar_for_date` returns the CONTAMINATED bar (the date-only guard cannot catch ext-hours). This residual gap is closed deterministically by the one-time purge (Task C8): after purge, `resolve_ohlcv_window` has no `schwab_api` row and falls to the clean yfinance row. (Proven by `test_failure_path_then_purge` below.)
+
+- [ ] **Step 1: Write the tests**
 
 ```python
 # tests/pipeline/test_observe_remediation.py
-"""OQ-1b primary: a pre-fix contaminated schwab_api archive row for the
-observation_date is overwritten by the clean (L1) refetch before _bar_for_date
-returns it, so the locked ohlc_today_json carries the clean OHLC. The ladder
-re-fetches Schwab on every call (no archive-coverage short-circuit); keep='last'
-in write_window overwrites the stale row."""
 from datetime import date
 import pandas as pd
 
 import swing.data.ohlcv_archive as arch
-from swing.data.ohlcv_archive import write_window, resolve_ohlcv_window
+from swing.data.ohlcv_archive import (
+    write_window, resolve_ohlcv_window, _write_archive_atomic, _shape_a_path,
+)
+import swing.pipeline.runner as runner
+
+COLS = ["asof_date", "open", "high", "low", "close", "volume"]
 
 
-def test_clean_refetch_overwrites_contaminated_schwab_row(tmp_path, monkeypatch):
+def _seed_contaminated_schwab(tmp_path):
+    # a pre-fix ext-hours-inflated (high=99) schwab_api row for the obs date.
+    _write_archive_atomic(_shape_a_path(tmp_path, "AAPL", "schwab_api"),
+                          pd.DataFrame([["2026-06-04", 10, 99, 9, 10.5, 100]],
+                                       columns=COLS))
+
+
+def _cfg(tmp_path):
+    return runner_cfg_stub(tmp_path)  # supplies paths.prices_cache_dir = tmp_path
+
+
+def test_success_path_overwrites_contaminated_before_lock(tmp_path, monkeypatch):
+    """Schwab-success: the populate refetches clean (L1) -> keep='last'
+    overwrites -> _bar_for_date returns the clean bar."""
     monkeypatch.setattr(arch, "_last_completed_session_today",
                         lambda: date(2026, 6, 4))
-    cols = ["asof_date", "open", "high", "low", "close", "volume"]
-    # 1. Seed a contaminated schwab_api row (ext-hours-inflated high=99) for
-    #    the observation_date.
-    contaminated = pd.DataFrame([["2026-06-04", 10, 99, 9, 10.5, 100]], columns=cols)
-    arch._write_archive_atomic(arch._shape_a_path(tmp_path, "AAPL", "schwab_api"),
-                               contaminated)
-    # 2. The clean refetch (L1) writes the regular-session bar via write_window.
-    clean = pd.DataFrame([["2026-06-04", 10, 11, 9, 10.5, 100]], columns=cols)
-    write_window("AAPL", clean, "schwab_api", cache_dir=tmp_path)
-    # 3. The observe read selects the clean bar.
-    df, prov = resolve_ohlcv_window("AAPL", start="2026-06-01", end="2026-06-04",
-                                    cache_dir=tmp_path)
-    row = df[df["asof_date"] == "2026-06-04"].iloc[-1]
-    assert row["high"] == 11   # clean, not 99
-    assert prov["2026-06-04"] == "schwab_api"
+    monkeypatch.setattr(runner, "last_completed_session",
+                        lambda *_a, **_k: date(2026, 6, 4))
+    _seed_contaminated_schwab(tmp_path)
+
+    class _Cache:
+        def get_or_fetch(self, *, ticker, window_days):
+            # emulate the ladder's clean L1 Schwab refetch + persist.
+            write_window(ticker, pd.DataFrame(
+                [["2026-06-04", 10, 11, 9, 10.5, 100]], columns=COLS),
+                "schwab_api", cache_dir=tmp_path)
+            return pd.DataFrame()  # return value unused by _bar_for_date's read
+    bar = runner._bar_for_date(_cfg(tmp_path), _Cache(), "AAPL", "2026-06-04")
+    assert bar is not None and bar["high"] == 11   # clean, not 99
+    assert bar["provider"] == "schwab_api"
+
+
+def test_failure_path_then_purge_falls_to_clean_yfinance(tmp_path, monkeypatch):
+    """Schwab-failure/TTL-hit: the populate does NOT overwrite; the stale
+    contaminated schwab_api row wins on precedence -> _bar_for_date returns it
+    (the residual gap). After the C8 purge removes *.schwab_api.parquet,
+    _bar_for_date falls to the clean yfinance row."""
+    monkeypatch.setattr(arch, "_last_completed_session_today",
+                        lambda: date(2026, 6, 4))
+    monkeypatch.setattr(runner, "last_completed_session",
+                        lambda *_a, **_k: date(2026, 6, 4))
+    _seed_contaminated_schwab(tmp_path)
+    # a clean yfinance row also exists (lower precedence).
+    write_window("AAPL", pd.DataFrame([["2026-06-04", 10, 11, 9, 10.5, 100]],
+                                      columns=COLS), "yfinance", cache_dir=tmp_path)
+
+    class _NoOpCache:
+        def get_or_fetch(self, *, ticker, window_days):
+            return pd.DataFrame()  # Schwab failed / TTL hit -> no overwrite
+    # BEFORE purge: contaminated schwab_api wins.
+    bar = runner._bar_for_date(_cfg(tmp_path), _NoOpCache(), "AAPL", "2026-06-04")
+    assert bar["high"] == 99   # documents the residual gap
+    # purge (the C8 belt) -> schwab_api gone -> clean yfinance wins.
+    _shape_a_path(tmp_path, "AAPL", "schwab_api").unlink()
+    bar2 = runner._bar_for_date(_cfg(tmp_path), _NoOpCache(), "AAPL", "2026-06-04")
+    assert bar2["high"] == 11 and bar2["provider"] == "yfinance"
 ```
 
-- [ ] **Step 2: Run test**
+> **Implementer note:** reuse the project's `runner_cfg_stub`/`cfg` fixture (Task C3). The two tests pin the BINDING contract: success auto-overwrites; failure leaves the stale row that ONLY the purge clears. This makes the purge (C8) a required remediation step, not cosmetic.
+
+- [ ] **Step 2: Run tests**
 
 Run: `cd .worktrees/data-integrity-arc-writing-plans && python -m pytest tests/pipeline/test_observe_remediation.py -v`
-Expected: PASS (the `keep='last'` merge in write_window overwrites the contaminated row).
+Expected: PASS (both regimes).
 
 - [ ] **Step 3: Commit**
 
 ```bash
 git add tests/pipeline/test_observe_remediation.py
-git commit -m "test(pipeline): prove clean refetch overwrites contaminated archive row before lock"
+git commit -m "test(pipeline): remediation regimes -- success auto-overwrite + failure needs purge"
 ```
 
-### Task C8: One-time CLI purge belt (`swing schwab purge-marketdata-archive`) (OQ-1b belt)
+### Task C8: One-time CLI purge -- REQUIRED post-L1 remediation gate (`swing schwab purge-marketdata-archive`)
+
+> **NOT optional** (Codex R1 MAJOR #3): the auto-overwrite (C7) only covers the Schwab-success observe run. The purge is the deterministic remediation for the TTL-hit / ladder-disabled / Schwab-failure cases where a stale contaminated `schwab_api` row would otherwise win on precedence and be locked. It runs ONCE post-L1-ship as a binding gate step (§Gate step 3).
 
 **Files:**
 - Modify: `swing/cli_schwab.py` (+ a `purge-marketdata-archive` click command)
@@ -1442,7 +1535,7 @@ git commit -m "feat(evaluation): topbar_session_date(PageKind) classifier"
 | PatternQueueVM | routes/patterns.py:117 (`_session_date_str`) | last_completed_session | HISTORY_ANALYSIS (keep) |
 | PatternReviewFormVM | routes/patterns.py:385 (`_session_date_str`) | last_completed_session | HISTORY_ANALYSIS (keep) |
 
-> The remaining rows from the 33-count are drill-down/error VMs sharing one of the above setters -- when you touch the setter, they inherit the fix. Grep `session_date=` and `"session_date"` across `swing/web/` to confirm none are missed (Task D4 enforces this).
+> The remaining rows from the 33-count are drill-down/error VMs sharing one of the above setters -- when you touch the setter, they inherit the fix. **Before coding, re-grep `session_date` across `swing/web/` and reconcile against this table** -- Codex flagged a standalone base-layout-fields declaration at `view_models/reconcile.py:100` that must be in the manifest. The D3 completeness test (`MANIFEST ⊇ all BaseLayoutVM subclasses`) + the D4 AST lint enforce that nothing is missed; add any newly-found VM to the D3 MANIFEST and route its setter.
 
 - [ ] **Step 1: For EACH row, replace the anchor expression with the helper.** The mechanical edit, per callsite:
 
@@ -1457,6 +1550,8 @@ session_date = topbar_session_date(PageKind.HISTORY_ANALYSIS, datetime.now()).is
 ```
 
 For VMs that currently build the value inline in a dataclass field or a banner dict (e.g. journal's `_base_banner_fields`, the metrics `BaseLayoutVM` subclasses' constructors, the patterns `_session_date_str`), set the same expression at that site. Preserve any existing `try/except -> "n/a"` fallback wrappers (PageErrorVM, the error VMs) -- wrap the helper call, not replace the fallback.
+
+**Intermediate-variable callsites (Codex R1 MAJOR #5):** where a VM computes an anchor into a local var first (e.g. Dashboard `action_session = action_session_for_run(now)` then `session_date=action_session.isoformat()` at dashboard.py:1534), route the LOCAL VAR through the helper: `action_session = topbar_session_date(PageKind.FORWARD_PLANNING, datetime.now())`. This keeps any data-side use of that var consistent AND satisfies the D4 AST provenance lint. Do NOT leave a raw `action_session_for_run(...)`/`last_completed_session(...)` feeding `session_date` even via a variable.
 
 - [ ] **Step 2: Add a `PAGE_KIND` class attribute to each base-layout VM** (for the registry test in D3). Example:
 
@@ -1482,74 +1577,99 @@ git commit -m "refactor(web): route metrics VM topbar dates through topbar_sessi
 # ... repeat per cluster ...
 ```
 
-### Task D3: Registry-parameterized cross-VM consistency test
+### Task D3: Explicit-manifest cross-VM consistency test (Codex R1 MAJOR #5)
 
 **Files:**
 - Test: `tests/web/test_topbar_cross_vm_consistency.py`
+
+**Why a manifest, not `__subclasses__()` alone:** `BaseLayoutVM.__subclasses__()` only sees modules already imported, and the standalone VMs (Dashboard, Journal, reconcile's standalone-banner VM at view_models/reconcile.py:100, etc.) do NOT subclass it. So the test uses an EXPLICIT MANIFEST (the D2 inventory) imported at the top -- which both forces every VM module to load AND lets a completeness assertion verify the manifest covers every discovered `BaseLayoutVM` subclass (a new metrics subclass that is not added to the manifest fails the test).
 
 - [ ] **Step 1: Write the test**
 
 ```python
 # tests/web/test_topbar_cross_vm_consistency.py
-"""Issue #5: at a single frozen `now`, all same-kind base-layout pages report
-the SAME topbar session_date, and NO VM reports a naive date.today()/now().date()
-when those differ from both anchors. Freeze `now` at a post-close evening on a
-session day so the three families diverge."""
+"""Issue #5: at a single frozen `now`, same-kind base-layout pages agree on the
+topbar session_date, and the naive date.today()/now().date() family is gone.
+NOW is a post-close evening on a session day so forward != backward."""
 from datetime import datetime
 
 from swing.evaluation.dates import (
     PageKind, action_session_for_run, last_completed_session,
 )
+# Force-import EVERY base-layout VM module (also makes __subclasses__ complete):
 from swing.web.view_models.metrics.shared import BaseLayoutVM
+from swing.web.view_models.dashboard import DashboardVM
+from swing.web.view_models.watchlist import WatchlistVM
+from swing.web.view_models.journal import JournalVM
+from swing.web.view_models.config import ConfigPageVM
+from swing.web.view_models.pipeline import PipelineVM
+from swing.web.view_models.trades import (
+    ReviewVM, ReviewsPendingVM, CadenceCompleteVM,
+)
+# ... import the remaining standalone + metrics + patterns VMs from D2 ...
 
 NOW = datetime(2026, 6, 4, 20, 0)  # post-close ET evening on a session day
 
+# The AUTHORITATIVE manifest -- every base-layout VM + its declared PageKind.
+# Mirror the D2 inventory table EXACTLY (33 entries).
+MANIFEST = {
+    DashboardVM: PageKind.FORWARD_PLANNING,
+    WatchlistVM: PageKind.FORWARD_PLANNING,
+    JournalVM: PageKind.HISTORY_ANALYSIS,
+    ConfigPageVM: PageKind.HISTORY_ANALYSIS,
+    PipelineVM: PageKind.HISTORY_ANALYSIS,
+    ReviewVM: PageKind.HISTORY_ANALYSIS,
+    ReviewsPendingVM: PageKind.HISTORY_ANALYSIS,
+    CadenceCompleteVM: PageKind.HISTORY_ANALYSIS,
+    # ... the full 33 from D2 (metrics, patterns, reconcile, schwab, account,
+    #     PageErrorVM, journal drill-down if a distinct class) ...
+}
 
-def _all_base_layout_vm_classes():
-    """The authoritative registry: every BaseLayoutVM subclass + the explicit
-    standalone-banner VMs. A new base-layout page MUST be added here (D4's lint
-    test backstops omissions)."""
-    subs = set(BaseLayoutVM.__subclasses__())
-    # transitively include sub-subclasses
-    seen = set()
-    stack = list(subs)
+
+def _all_base_layout_subclasses():
+    seen, stack = set(), list(BaseLayoutVM.__subclasses__())
     while stack:
         c = stack.pop()
-        if c in seen:
-            continue
-        seen.add(c)
-        stack.extend(c.__subclasses__())
-    from swing.web.view_models.dashboard import DashboardVM
-    from swing.web.view_models.watchlist import WatchlistVM
-    from swing.web.view_models.journal import JournalVM
-    from swing.web.view_models.config import ConfigPageVM
-    from swing.web.view_models.pipeline import PipelineVM
-    from swing.web.view_models.trades import ReviewVM, ReviewsPendingVM
-    # ... import the rest of the standalone VMs enumerated in D2 ...
-    standalone = {DashboardVM, WatchlistVM, JournalVM, ConfigPageVM, PipelineVM,
-                  ReviewVM, ReviewsPendingVM}  # extend to the full D2 list
-    return seen | standalone
+        if c not in seen:
+            seen.add(c)
+            stack.extend(c.__subclasses__())
+    return seen
 
 
-def test_every_base_layout_vm_declares_a_page_kind():
-    for cls in _all_base_layout_vm_classes():
-        assert hasattr(cls, "PAGE_KIND"), f"{cls.__name__} missing PAGE_KIND"
-        assert isinstance(cls.PAGE_KIND, PageKind)
+def test_manifest_covers_every_base_layout_subclass():
+    """Completeness: any BaseLayoutVM subclass (post force-import) MUST be in
+    the manifest -- a new metrics tile cannot evade the policy."""
+    missing = _all_base_layout_subclasses() - set(MANIFEST)
+    assert not missing, f"base-layout VMs missing from MANIFEST: {missing}"
 
 
-def test_same_kind_pages_agree_and_no_naive_date():
+def test_every_vm_declares_matching_page_kind():
+    for cls, kind in MANIFEST.items():
+        assert getattr(cls, "PAGE_KIND", None) is kind, \
+            f"{cls.__name__} PAGE_KIND != {kind}"
+
+
+def test_representative_vms_render_the_right_anchor(monkeypatch):
+    """Construct one VM per family at frozen NOW and assert the rendered
+    session_date matches the declared kind's anchor (not a naive date)."""
     forward = action_session_for_run(NOW).isoformat()
     backward = last_completed_session(NOW).isoformat()
-    assert forward != backward  # the families diverge at NOW
-    for cls in _all_base_layout_vm_classes():
-        expected = forward if cls.PAGE_KIND is PageKind.FORWARD_PLANNING else backward
-        # Each VM's PAGE_KIND must map to the matching anchor; the naive
-        # date.today() third family is eliminated by construction.
-        assert expected in (forward, backward)
-        assert expected != datetime.now().date().isoformat() or expected in (forward, backward)
+    assert forward != backward
+    # Freeze now in dates.py so topbar_session_date resolves against NOW.
+    import swing.evaluation.dates as dates
+    monkeypatch.setattr(dates, "datetime",
+                        type("D", (), {"now": staticmethod(lambda: NOW)}))
+    # Build the representatives via their real constructors/builders (use the
+    # project's VM test fixtures). Example shape:
+    #   dash = build_dashboard_vm(...);  assert dash.session_date == forward
+    #   journ = build_journal_vm(...);   assert journ.session_date == backward
+    #   metric = build_metrics_index_vm(...); assert metric.session_date == backward
+    # Assert each != datetime.now().date().isoformat() unless it equals an anchor.
+    # (Construct at least: Dashboard [forward], Journal + a metrics VM + a
+    #  reviews VM + Pipeline [backward].)
 ```
 
-> **Implementer note:** the strongest assertion is to actually CONSTRUCT each VM at `NOW` (monkeypatch `datetime.now` in each VM module to return `NOW`) and assert the rendered `vm.session_date == expected`. That requires per-VM construction fixtures (some VMs need DB rows). If full construction is too heavy for all 33, assert the `PAGE_KIND` declaration (above) PLUS a targeted construction of the 5-6 representative VMs (one per family: Dashboard forward; Journal, a metrics VM, a reviews VM, Pipeline backward) with `datetime.now` frozen, asserting `vm.session_date == expected`. Keep both layers.
+> **Implementer note:** complete the imports + `MANIFEST` to the full 33 from D2. For `test_representative_vms_render_the_right_anchor`, monkeypatch each VM module's `datetime.now` (or `dates.datetime`) to return `NOW` and build 5-6 representatives via the project's existing VM builders/fixtures (grep `tests/web/` for how each is constructed). The completeness + PAGE_KIND tests run with zero construction; the representative render test is the behavioral proof.
 
 - [ ] **Step 2: Run + Commit**
 
@@ -1558,55 +1678,104 @@ Expected: PASS.
 
 ```bash
 git add tests/web/test_topbar_cross_vm_consistency.py
-git commit -m "test(web): registry-parameterized topbar cross-VM consistency"
+git commit -m "test(web): explicit-manifest topbar cross-VM consistency + completeness"
 ```
 
-### Task D4: Structural lint -- no naive/raw anchor assigned to `session_date`
+### Task D4: AST provenance lint -- `session_date` must originate from `topbar_session_date`
 
 **Files:**
-- Test: `tests/web/test_topbar_no_naive_anchor_lint.py`
+- Test: `tests/web/test_topbar_provenance_lint.py`
+
+**Why AST, not regex (Codex R1 MAJOR #5):** the regex misses the intermediate-variable pattern that ALREADY exists (Dashboard computes `action_session = action_session_for_run(...)` then `session_date=action_session` at dashboard.py:1534). An AST pass resolves the local-variable provenance of each `session_date` assignment and flags any whose value does not trace to a `topbar_session_date(...)` call.
 
 - [ ] **Step 1: Write the test**
 
 ```python
-# tests/web/test_topbar_no_naive_anchor_lint.py
-"""Backstop: a new base-layout page cannot evade the uniform policy by
-assigning a raw anchor to session_date. Every `session_date=` assignment in
-the web layer must route through topbar_session_date(...). Greps source text
-(cheap, no construction)."""
-import re
+# tests/web/test_topbar_provenance_lint.py
+"""Backstop: every `session_date` value assigned in the web layer must trace to
+a topbar_session_date(...) call -- directly OR through a local variable bound in
+the same function. Catches the intermediate-variable evasion the regex missed."""
+import ast
 from pathlib import Path
 
 WEB = Path(__file__).resolve().parents[2] / "swing" / "web"
-# Lines assigning session_date directly from a banned raw source.
-_BANNED = re.compile(
-    r"session_date\s*=\s*(date\.today\(\)|datetime\.now\(\)\.date\(\)|"
-    r"action_session_for_run\(|last_completed_session\()"
-)
-# Allow the helper + .isoformat() chains off it.
-_ALLOWED_HINT = "topbar_session_date("
+_BANNED_CALLS = {"action_session_for_run", "last_completed_session"}
+_BANNED_NAIVE = {"today"}  # date.today()
+_GOOD = "topbar_session_date"
 
 
-def test_no_raw_anchor_assigned_to_session_date():
+def _call_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Call):
+        f = node.func
+        if isinstance(f, ast.Name):
+            return f.id
+        if isinstance(f, ast.Attribute):
+            return f.attr
+    return None
+
+
+def _provenance_ok(value: ast.AST, local_defs: dict[str, ast.AST]) -> bool:
+    """True if `value` (the RHS assigned to session_date, possibly .isoformat()
+    chained) traces to topbar_session_date, resolving one level of local var."""
+    # unwrap `.isoformat()` / attribute calls to the base call/name
+    node = value
+    while isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+        node = node.func.value
+    if _call_name(node) == _GOOD:
+        return True
+    if isinstance(node, ast.Name):
+        bound = local_defs.get(node.id)
+        if bound is not None:
+            return _provenance_ok(bound, {})  # one resolution hop
+    return False
+
+
+def _offenders_in(path: Path) -> list[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    out = []
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        local_defs = {}
+        for stmt in ast.walk(fn):
+            if isinstance(stmt, ast.Assign):
+                for t in stmt.targets:
+                    if isinstance(t, ast.Name):
+                        local_defs[t.id] = stmt.value
+        for stmt in ast.walk(fn):
+            # session_date as a keyword (VM(...session_date=X)) or assignment
+            kwvals = []
+            if isinstance(stmt, ast.Call):
+                kwvals += [kw.value for kw in stmt.keywords
+                           if kw.arg == "session_date"]
+            if isinstance(stmt, ast.Assign):
+                for t in stmt.targets:
+                    if isinstance(t, ast.Name) and t.id == "session_date":
+                        kwvals.append(stmt.value)
+            for v in kwvals:
+                if not _provenance_ok(v, local_defs):
+                    out.append(f"{path.name}:{getattr(v,'lineno','?')}")
+    return out
+
+
+def test_session_date_traces_to_topbar_helper():
     offenders = []
     for path in WEB.rglob("*.py"):
-        for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-            if _BANNED.search(line) and _ALLOWED_HINT not in line:
-                offenders.append(f"{path.relative_to(WEB)}:{i}: {line.strip()}")
-    assert not offenders, "session_date must route through topbar_session_date:\n" + \
-        "\n".join(offenders)
+        offenders += _offenders_in(path)
+    assert not offenders, (
+        "session_date must trace to topbar_session_date(...):\n" + "\n".join(offenders))
 ```
 
-> **Implementer note:** if a legitimate non-topbar use of `last_completed_session(`/`action_session_for_run(` on a `session_date=` line exists (e.g. a DATA field that happens to be named session_date), either rename that field or add a narrow inline `# noqa: topbar` exception the regex skips. The intent: the TOPBAR session_date is uniform; adjust the regex to the real callsites so it is green after D2 and red if a raw anchor is reintroduced.
+> **Implementer note:** this AST scan is a heuristic; tune it against the REAL post-D2 callsites until green (the import-time `"n/a"` fallbacks in PageErrorVM/error VMs wrap the helper -- ensure `_provenance_ok` accepts a `topbar_session_date(...)` inside a `try` or a ternary; extend the unwrap to handle those shapes). The intent is binding: no `session_date` value may originate from a raw anchor or naive date. Where a VM has a genuinely non-topbar field literally named `session_date` (none found in the D2 inventory), rename it. Keep the simpler text-regex lint from the prior draft as an ADDITIONAL cheap layer if desired.
 
 - [ ] **Step 2: Run + Commit**
 
-Run: `cd .worktrees/data-integrity-arc-writing-plans && python -m pytest tests/web/test_topbar_no_naive_anchor_lint.py -v`
-Expected: PASS (after D2 routes every site through the helper).
+Run: `cd .worktrees/data-integrity-arc-writing-plans && python -m pytest tests/web/test_topbar_provenance_lint.py -v`
+Expected: PASS (after D2 routes every site through the helper, including the Dashboard intermediate-variable case -- which D2 changes to `action_session = topbar_session_date(PageKind.FORWARD_PLANNING, now)`).
 
 ```bash
-git add tests/web/test_topbar_no_naive_anchor_lint.py
-git commit -m "test(web): lint that session_date routes through topbar_session_date"
+git add tests/web/test_topbar_provenance_lint.py
+git commit -m "test(web): AST provenance lint -- session_date originates from topbar_session_date"
 ```
 
 ---
@@ -1632,7 +1801,7 @@ git commit -m "test(web): lint that session_date routes through topbar_session_d
 
 1. **Fast suite green on the MERGED HEAD** -- re-run on main after merge; isolate the known xdist date-flakes (`feedback_no_false_green_claim`). Never carry a branch pass-count forward.
 2. **Operator browser gate (Slice D)** -- topbar consistency across pages, light + dark; the D3 cross-VM test backs it. Witness one page per family agreeing on the date.
-3. **Operator-witnessed LIVE Schwab re-fetch (post-merge; like schwabdev GATE-B)** -- after Slice A, confirm on `/schwab/status` the `OhlcvBar invariant violated` / bar-consistency rate collapses from ~16% toward ~0%, AND witness the UNSEEDED normal pipeline run (`feedback_seeded_gate_masks_default_state`). Then run `swing schwab purge-marketdata-archive` ONCE (C8) and confirm the next pipeline run repopulates clean.
+3. **Operator-witnessed LIVE Schwab re-fetch (post-merge; like schwabdev GATE-B)** -- after Slice A, confirm on `/schwab/status` the `OhlcvBar invariant violated` / bar-consistency rate collapses from ~16% toward ~0%, AND witness the UNSEEDED normal pipeline run (`feedback_seeded_gate_masks_default_state`). **REQUIRED remediation step:** run `swing schwab purge-marketdata-archive` ONCE (C8) post-L1 to clear pre-fix contaminated `schwab_api` rows the failure-case observe runs would otherwise lock; confirm the next pipeline run repopulates clean. This is binding, not optional (Codex R1 MAJOR #3).
 4. **Slice B precondition** -- the operator records the live quote cassette (B1) and confirms `regularMarket*` appear before B2/B3 are trusted in production.
 
 The implementer does NOT run the live fetch against the operator's DB -- it is the operator's gate.
