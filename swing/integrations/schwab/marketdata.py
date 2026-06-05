@@ -285,7 +285,7 @@ def get_quotes_batch(
     surface: str,
     environment: str,
     pipeline_run_id: int | None = None,
-    fields: str | None = None,
+    fields: str | None = "quote",   # ensure regularMarket* block is returned (OQ-3)
 ) -> dict[str, SchwabQuoteResponse]:
     """Fetch `Client.quotes(symbols=symbols, fields=fields)`. Returns mapped dict.
 
