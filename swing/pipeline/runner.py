@@ -2474,9 +2474,21 @@ def _bar_for_date(cfg, ohlcv_cache, ticker: str, observation_date: str):
     observation_date (NOT iloc[-1]); freezes it; never re-reads it later
     (#26 elimination honest).
     """
-    from datetime import date, timedelta
+    from datetime import date, datetime, timedelta
 
     from swing.data.ohlcv_archive import resolve_ohlcv_window
+
+    # L3 date-only guard: never select a bar for the current in-progress
+    # session. observation_date MUST be <= last_completed_session(now). In
+    # normal operation observation_date == data_asof_date == the completed
+    # session, so this never fires; it catches a wiring regression.
+    cutoff = last_completed_session(datetime.now())
+    if date.fromisoformat(observation_date) > cutoff:
+        raise ValueError(
+            f"_bar_for_date: observation_date {observation_date} is not a "
+            f"completed session (cutoff {cutoff.isoformat()}); refusing to "
+            f"select a partial/in-progress bar for the append-only log"
+        )
     # 1. Populate the archive (write-through; the same call detect makes).
     #    Best-effort by design (Codex chain #1 Major #6): the date-anchored
     #    archive read in step 2 is AUTHORITATIVE. A get_or_fetch failure here
