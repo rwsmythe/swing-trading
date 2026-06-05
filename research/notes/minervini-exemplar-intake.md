@@ -7,8 +7,8 @@
 > books are electronic + agent-readable (`reference/books-corpus-index.md`), so **Claude
 > extracts candidate exemplars and the operator curates** (accept / reject / adjust).
 >
-> **Status: intake schema + workflow only.** The arc is NOT commissioned yet — see
-> [`docs/minervini-exemplar-recall-commissioning-brief.md`](../../docs/minervini-exemplar-recall-commissioning-brief.md) *(pending)*.
+> **Status: intake schema + workflow only.** The arc is NOT commissioned yet — full scope in
+> [`docs/minervini-exemplar-recall-commissioning-brief.md`](../../docs/minervini-exemplar-recall-commissioning-brief.md).
 
 ---
 
