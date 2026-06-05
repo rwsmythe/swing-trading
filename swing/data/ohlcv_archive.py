@@ -96,7 +96,26 @@ def _read_archive(parquet_path: Path) -> pd.DataFrame | None:
     return pd.read_parquet(parquet_path)
 
 
+def _strip_incomplete_sessions(df: pd.DataFrame, cutoff_iso: str) -> pd.DataFrame:
+    """Drop archive rows dated AFTER the last completed session (cutoff_iso =
+    ISO YYYY-MM-DD). Shape-agnostic: Shape-A frames carry an `asof_date` string
+    column (lexical `<=` is a valid ISO-date comparison); legacy/yfinance
+    frames are DatetimeIndex'd (compare `index.date`). Returns a new frame
+    (may be empty). A frame with neither shape is returned unchanged."""
+    if "asof_date" in df.columns:
+        return df[df["asof_date"].astype(str) <= cutoff_iso]
+    if isinstance(df.index, pd.DatetimeIndex):
+        cutoff = date.fromisoformat(cutoff_iso)
+        return df[df.index.date <= cutoff]
+    return df
+
+
 def _write_archive_atomic(parquet_path: Path, df: pd.DataFrame) -> None:
+    # Completed-day write barrier (L2, the single chokepoint): no archive write
+    # path may persist a row dated after the last completed session. Applied
+    # here -- the one function ALL Shape-A writers funnel through (write_window,
+    # read_or_fetch_archive, _backward_compat_rename) -- so none can bypass it.
+    df = _strip_incomplete_sessions(df, _last_completed_session_today().isoformat())
     cache_dir = parquet_path.parent
     fd, tmp_name = tempfile.mkstemp(
         dir=str(cache_dir), prefix=f"{parquet_path.stem}.", suffix=".parquet.tmp"
@@ -285,88 +304,78 @@ def write_window(
     *,
     cache_dir: Path,
 ) -> None:
-    """Atomically write a Shape A window to
-    `{cache_dir}/{TICKER}.{PROVIDER}.parquet`, **merging with any pre-existing
-    rows by `asof_date`** (Codex R2 Major #2).
+    """Atomically write a Shape A window, merging with any pre-existing rows by
+    `asof_date` (keep='last'). The hard completed-day strip lives in
+    `_write_archive_atomic` (every write inherits it); this function adds the
+    merge + the M3 guarantee (rewrite existing on an empty incoming so a
+    pre-existing on-disk partial is stripped) + F6 (never blank valid history
+    on a transient empty fetch).
 
     Merge semantics: the incoming window is concatenated with the existing
-    parquet (if any), deduped on `asof_date` with `keep='last'` (NEW rows
-    win on conflict), sorted ascending by `asof_date`, then atomically
-    written back. This preserves rows OUTSIDE the fetched window — e.g. a
-    pre-existing 1260-row archive is NOT clobbered when a 60-row Schwab
-    ladder fetch writes a small window.
+    parquet (if any), deduped on `asof_date` with `keep='last'` (NEW rows win
+    on conflict), sorted ascending, then atomically written back -- preserving
+    rows OUTSIDE the fetched window (e.g. a 1260-row archive is not clobbered
+    by a 60-row ladder fetch).
 
-    Pre-R2 (REPLACE semantics): `_atomic_parquet_write` overwrote the entire
-    file with `window`, silently truncating archive history whenever the
-    incoming window was smaller than the existing file. Scenario:
-    `swing schwab fetch --verify-marketdata --symbols AAPL` triggers a
-    ladder fetch with a tiny verification window → existing 5-year archive
-    replaced with 1-row file → data loss.
-
-    Empty-window guard (Codex R1 Major #7 + CLAUDE.md "External-API
-    empty-result must be treated as transient"): if `window` is `None` or
-    has zero rows, return WITHOUT touching disk. This prevents the ladder
-    from clobbering a populated parquet when a transient Schwab call
-    returns no candles. The caller (ladder) records the audit row with
-    `status='error'`; this function's contract is "non-empty windows only".
-
-    Defense-in-depth: caller MUST ensure non-empty windows in normal flow;
-    the guard exists so a future regression cannot blank the archive.
+    F6 (CLAUDE.md "External-API empty-result must be treated as transient"): an
+    empty/None incoming window NEVER blanks valid (<= cutoff) history. It only
+    triggers a rewrite when the on-disk file still carries a > cutoff partial
+    (M3) -- the rewrite re-runs the atomic strip and drops that partial.
     """
-    if window is None:
-        return
-    # `len()` on a DataFrame returns row count; an explicit `.empty` check
-    # tolerates non-DataFrame falsy inputs the caller might pass in error.
-    try:
-        n_rows = len(window)
-    except TypeError:
-        return
-    if n_rows == 0:
-        return
-
-    # Codex R3 Minor #2: type-guard non-DataFrame inputs before subsequent
-    # `.columns` access (merge branch below). The empty/None paths above
-    # accept any falsy or `len`-able object so the early-exit contract is
-    # forgiving; here we surface a clear error for the genuine-non-empty
-    # type-mismatch case rather than failing with a cryptic
-    # ``AttributeError: 'str' object has no attribute 'columns'``.
-    if not isinstance(window, pd.DataFrame):
-        raise TypeError(
-            f"write_window expects pd.DataFrame, got {type(window).__name__}"
-        )
-
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
     path = _shape_a_path(cache_dir, ticker, provider)
+    cutoff_iso = _last_completed_session_today().isoformat()
 
-    # Codex R2 Major #2: merge-by-asof_date semantics. If the parquet
-    # already exists, concat existing + new, dedupe keep='last' (new wins on
-    # conflict), sort ascending. Defense-in-depth around missing `asof_date`
-    # column in the incoming window (caller bug) — fall back to REPLACE in
-    # that case after logging, since merging without the dedup key is
-    # ambiguous.
-    if path.exists() and "asof_date" in window.columns:
+    # --- normalize incoming to a DataFrame-or-None ---
+    incoming: pd.DataFrame | None = window
+    if incoming is not None and not isinstance(incoming, pd.DataFrame):
+        try:
+            is_empty = len(incoming) == 0
+        except TypeError:
+            raise TypeError(
+                f"write_window expects pd.DataFrame, got {type(window).__name__}")
+        if is_empty:
+            incoming = None
+        else:
+            raise TypeError(
+                f"write_window expects pd.DataFrame, got {type(window).__name__}")
+    if isinstance(incoming, pd.DataFrame) and incoming.empty:
+        incoming = None
+
+    # --- read existing ---
+    existing: pd.DataFrame | None = None
+    if path.exists():
         try:
             existing = pd.read_parquet(path)
-        except (OSError, ValueError) as exc:  # pragma: no cover — defensive
-            log.warning(
-                "write_window: failed to read existing %s for merge "
-                "(%s); falling back to REPLACE", path, exc,
-            )
+        except (OSError, ValueError) as exc:  # pragma: no cover - defensive
+            log.warning("write_window: failed to read existing %s (%s)", path, exc)
             existing = None
-        if existing is not None and "asof_date" in existing.columns:
-            merged = pd.concat([existing, window]).drop_duplicates(
-                subset=["asof_date"], keep="last"
-            )
-            merged = merged.sort_values("asof_date").reset_index(drop=True)
-            _write_archive_atomic(path, merged)
+
+    if incoming is None and existing is None:
+        return
+
+    # legacy REPLACE for non-Shape-A incoming (dedup needs the asof_date key);
+    # the atomic strip still fires inside _write_archive_atomic.
+    if incoming is not None and "asof_date" not in incoming.columns:
+        _write_archive_atomic(path, incoming)
+        return
+
+    # cheap no-op: empty incoming + existing already has no > cutoff rows.
+    if incoming is None and existing is not None and "asof_date" in existing.columns:
+        if len(_strip_incomplete_sessions(existing, cutoff_iso)) == len(existing):
             return
 
-    # Either path doesn't exist (first write), or the incoming/existing
-    # frame lacks `asof_date` — preserve the prior REPLACE semantics so we
-    # don't drop the write. The dedup-by-asof_date merge requires the
-    # dedup key on both sides.
-    _write_archive_atomic(path, window)
+    frames = [f for f in (existing, incoming)
+              if f is not None and "asof_date" in f.columns]
+    if not frames:
+        return
+    union = pd.concat(frames) if len(frames) > 1 else frames[0]
+    merged = union.drop_duplicates(subset=["asof_date"], keep="last")
+    merged = merged.sort_values("asof_date").reset_index(drop=True)
+    # The atomic writer applies the > cutoff strip; an all-partial union writes
+    # clean (no > cutoff survives), a valid union preserves <= cutoff history.
+    _write_archive_atomic(path, merged)
 
 
 def resolve_ohlcv_window(
