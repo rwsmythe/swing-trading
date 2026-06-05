@@ -27,6 +27,7 @@ import sqlite3
 from dataclasses import dataclass
 
 from swing.data.models import DETECTOR_PATTERN_CLASSES, RiskPolicy
+from swing.evaluation.pe_origin import PROVABLE_APLUS_PE_PREDICATE
 from swing.metrics.honesty import (
     HonestyClass,
     WilsonCI,
@@ -83,7 +84,7 @@ def _count_reached_1r_hit_stop(
     trades.
     """
     row = conn.execute(
-        """
+        f"""
         SELECT COUNT(DISTINCT pe.id) AS denominator,
                COUNT(DISTINCT CASE
                    WHEN t.id IS NOT NULL
@@ -122,6 +123,7 @@ def _count_reached_1r_hit_stop(
            AND (t.pattern_evaluation_id IS NULL
                 OR t.pattern_evaluation_id = pe.id)
         WHERE pe.pattern_class = ?
+          AND {PROVABLE_APLUS_PE_PREDICATE}
         """,
         (pattern_class,),
     ).fetchone()

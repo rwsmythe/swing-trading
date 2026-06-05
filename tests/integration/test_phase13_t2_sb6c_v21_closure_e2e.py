@@ -378,15 +378,14 @@ def test_phase13_t2_sb6c_v21_closure_happy_path_e2e(seeded_db):
     )
     body = resp_metrics.text
 
-    # The cumulative §1.5.4 closure ships the Wilson CI substring on
-    # populated cells. The plan §G.5 Step 1 reference text
-    # "(V1: trade backlink not yet resolved)" is hypothetical; the actual
-    # template at swing/web/templates/metrics/pattern_outcomes.html.j2:39+55
-    # renders "(suppressed: no trade pairing or n<5)" when the cell is
-    # suppressed. The Gap B.5 closure populates the reached_1r_n cell
-    # for the VCP row's cohort, so the SUPPRESSED marker for VCP's
-    # reached_1r cell must be ABSENT and the Wilson CI badge must be
-    # PRESENT.
+    # POOL-WIDENING RE-BASELINE (2026-06-04): pre-widen, the populated
+    # reached_1r cell rendered the "Wilson CI" badge. Post-isolation this
+    # all-watch cohort is excluded from the aplus-only reached_1r
+    # denominator, so that cell renders the suppressed placeholder instead
+    # (the template at swing/web/templates/metrics/pattern_outcomes.html.j2
+    # renders "(suppressed: ...)" when the cell is None). The triggering
+    # cell (exemplar-sourced n=5) still renders its "95pct CI" text -- the
+    # row is present, only the reached_1r/hit_stop cells are suppressed.
     #
     # Locate the VCP row by data-attribute marker for tolerance.
     vcp_row_start = body.find('data-pattern-class="vcp"')
@@ -395,16 +394,32 @@ def test_phase13_t2_sb6c_v21_closure_happy_path_e2e(seeded_db):
     # tr-bounded substring. We extend a generous slice (~1500 chars) to
     # span the row including reached_1r + hit_stop cells.
     vcp_row_slice = body[vcp_row_start:vcp_row_start + 1500]
-    assert "Wilson CI" in vcp_row_slice, (
-        "§1.5.4 WilsonCI surfacing closure: VCP cohort with n>=5 must "
-        "render 'Wilson CI' substring inline. Render slice: "
-        f"{vcp_row_slice[:500]}"
+    # The triggering cell still surfaces its CI text (widen-independent).
+    assert "95pct CI" in vcp_row_slice, (
+        "triggering cell (exemplar-sourced) must still render its CI text. "
+        f"Render slice: {vcp_row_slice[:500]}"
+    )
+    # The watch-origin reached_1r cell is now suppressed (aplus-isolation).
+    assert "suppressed" in vcp_row_slice, (
+        "pool-widening isolation: the watch-origin reached_1r cell must "
+        f"render the suppressed placeholder. Render slice: {vcp_row_slice[:500]}"
     )
 
-    # Defense-in-depth assertion via the VM directly: Gap B.5 closure
-    # populates reached_1r_n + reached_1r_ci on the VCP row's
-    # PatternOutcomeRow dataclass (the existing T2.SB6b stub-None state
-    # is LIVE post-T-A.6c.4). Verify via the builder.
+    # Defense-in-depth assertion via the VM directly. POOL-WIDENING
+    # RE-BASELINE (2026-06-04): this E2E's cohort (CVGI + the 4 COHE
+    # padders) is entirely WATCH-origin (bucket='watch'; the watch-hyp-recs
+    # entry path under test). The pool-widening arc isolates the B.5
+    # reached_1r/hit_stop denominator (`_count_reached_1r_hit_stop`) to
+    # PROVABLY-aplus-origin PEs so the widen stays invisible to this
+    # operator-facing tile. A watch-origin traded pattern therefore does
+    # NOT populate the aplus-only reached_1r cell -- denom_b5 == 0 ->
+    # reached_1r_n is None (the curated tile excludes it; the trade's
+    # outcome is captured via the KEPT trade<->PE backlink [asserted in
+    # Step 3 above, OQ-7] + the temporal observation log, not this tile).
+    # The triggering `n` is exemplar-sourced (widen-independent) so the VCP
+    # row still renders with its triggered Wilson CI (asserted above). The
+    # POSITIVE aplus reached_1r surfacing is covered by the B.5 unit tests
+    # in test_phase13_t2_sb6c_t_a_6c_4.py.
     conn = connect(cfg.paths.db_path)
     try:
         from swing.data.repos.risk_policy import get_active_policy
@@ -416,13 +431,14 @@ def test_phase13_t2_sb6c_v21_closure_happy_path_e2e(seeded_db):
         conn.close()
     vcp = next((r for r in rows if r.pattern_class == "vcp"), None)
     assert vcp is not None, "VCP row missing from pattern outcomes"
-    assert vcp.reached_1r_n is not None, (
-        "Gap B.5 closure: vcp.reached_1r_n must be populated post-trade "
-        "(was V1 STUB None per T2.SB6b)"
+    # Triggering n is exemplar-sourced (unaffected by the aplus-isolation).
+    assert vcp.n >= 5, "triggering denominator (exemplar-sourced) unchanged"
+    # reached_1r is isolated to aplus-origin: this all-watch cohort is
+    # EXCLUDED (denom_b5 == 0 -> None). Pre-widen (no isolation) this was
+    # populated >= 1; the discriminating axis is the watch-origin exclusion.
+    assert vcp.reached_1r_n is None, (
+        "pool-widening isolation: watch-origin traded pattern must NOT "
+        "populate the aplus-only B.5 reached_1r cell"
     )
-    assert vcp.reached_1r_n >= 1, (
-        "Gap B.5 closure: at least the 1.5R trade should bump reached_1r_n"
-    )
-    assert vcp.reached_1r_ci is not None, (
-        "§1.5.4 WilsonCI: reached_1r_ci must be populated at n>=5"
-    )
+    assert vcp.reached_1r_ci is None
+    assert vcp.hit_stop_n is None

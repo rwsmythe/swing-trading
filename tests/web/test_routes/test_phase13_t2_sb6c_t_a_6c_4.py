@@ -672,8 +672,13 @@ def _seed_b5_pattern_class_cohort(
     cand_ids: list[int] = []
     for i in range(n_evaluations):
         ticker = f"X{pattern_class[:2].upper()}{i:02d}"
+        # Pool-widening (2026-06-04): the pattern-outcomes denominator is now
+        # isolated to aplus-origin PEs (invisible-widen). Seed aplus so the B.5
+        # counting-mechanics assertions still exercise counted rows (pre-widen
+        # this seeder used the bucket="watch" default, which is now correctly
+        # excluded from the operator-facing tile).
         cand_id = _seed_candidate(
-            conn, evaluation_run_id=eval_run_id, ticker=ticker,
+            conn, evaluation_run_id=eval_run_id, ticker=ticker, bucket="aplus",
         )
         ev_id = _seed_evaluation(
             conn, pipeline_run_id=pipeline_run_id, ticker=ticker,
@@ -1701,9 +1706,12 @@ def test_f4_codex_r1_major4_b5_metric_tile_honors_pattern_evaluation_id_backlink
             pipeline_run_id = _seed_pipeline_run(
                 conn, evaluation_run_id=eval_run_id,
             )
-            # Single candidate (and corresponding ticker).
+            # Single candidate (and corresponding ticker). aplus-origin so the
+            # pool-widening aplus-isolation counts it (was bucket="watch"
+            # default; now excluded from the operator-facing B.5 tile).
             shared_cand = _seed_candidate(
                 conn, evaluation_run_id=eval_run_id, ticker="MULTI",
+                bucket="aplus",
             )
             # Two PE rows for the same (ticker, pipeline_run_id) but
             # different pattern_class. Per spec, this is the multi-
@@ -1746,7 +1754,7 @@ def test_f4_codex_r1_major4_b5_metric_tile_honors_pattern_evaluation_id_backlink
                     pad_ticker = f"P{cls[:2].upper()}{i:02d}"
                     _seed_candidate(
                         conn, evaluation_run_id=eval_run_id,
-                        ticker=pad_ticker,
+                        ticker=pad_ticker, bucket="aplus",
                     )
                     _seed_evaluation(
                         conn, pipeline_run_id=pipeline_run_id,
