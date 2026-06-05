@@ -1,151 +1,131 @@
 # Minervini SEPA Sell-side Rules
 
-**Source:** *Trade Like a Stock Market Wizard*, Mark Minervini, McGraw Hill 2013 (TLSMW; physical copy).
-**Reviewed:** 2026-05-10 by Reid Smythe.
-**Status:** ~ PARTIAL — 1/7 rules CONFIRMED-with-quantitative-anchor; 5/7 rules BRIEF-MENTION-OR-ABSENT in TLSMW; 1/7 rule NOT-PRESENT-IN-AVAILABLE-SOURCES.
+**Sources:** *Trade Like a Stock Market Wizard*, Mark Minervini, McGraw Hill 2013 (TLSMW) · *Think & Trade Like a Champion*, Mark Minervini, Access Publishing 2017 (TTLC).
+**Reviewed:** 2026-05-10 by Reid Smythe (TLSMW only). **Think & Trade verification added 2026-06-04** (TTLC transcribed + now agent-readable — see `reference/books-corpus-index.md`).
+**Status:** ✓ substantially COMPLETE across the two primary Minervini works — M.2 CONFIRMED (both books); **M.3, M.5, M.6 UPGRADED to CONFIRMED-QUANTITATIVE by TTLC**; M.1 clarified (the "1.25" traces to TTLC's 1.25–2.5% risk-per-trade sizing, not an expectancy backstop); M.7 BRIEF-MENTION (TTLC frames gap-down as a sizing/risk argument, not a discrete sell trigger); **M.4 (7-week time-stop) NOT-PRESENT in EITHER primary book** (community attribution unsupported by the two primary texts).
+
+> **2026-06-04 provenance correction.** This file previously stated *Think & Trade Like a Champion* was "NOT AVAILABLE to operator" and left M.1/M.4/M.5/M.6 unverifiable on that premise. **That premise was false** — TTLC is transcribed at `reference/Books/mark-minervini-think-trade-like-a-champion-access-publishing-group-2017/`. The TTLC verification layer below resolves those gaps. (TTLC line refs are to the transcribed `.md`.) This is a **source-verification update only**; any production-code change it motivates still routes through the V2.1 §VII.F source-of-truth correction protocol.
 
 ---
 
 ## Provenance + scope
 
-This file captures operator's review of *Trade Like a Stock Market Wizard* (TLSMW, 2013) for sell-side content. Operator finding 2026-05-10: TLSMW is **primarily an entry-side text** (the trend-template, VCP, RS, leadership, fundamentals). Sell-side content is sparse — only "sell into strength" (M.2 in Ch 13 "Selling at a Profit") gets dedicated discussion. Other sell-side topics get brief mentions without quantitative detail.
+TLSMW (2013) is **primarily an entry-side text** (trend-template, VCP, RS, leadership, fundamentals); its sole dedicated sell-side passage is "sell into strength" (Ch 13). **TTLC (2017) is where Minervini's structured sell-side discipline actually lives** — it contains explicit, often quantitative, sell rules: post-breakout "violations" (20-day/50-day MA closes), the climax-top / selling-into-strength framework, staggered stops, position-sizing risk bounds, and the 50/80 rule.
 
-**Other Minervini works (NOT available to operator per CLAUDE.md memory + 2026-05-10 confirmation):**
-- *Think & Trade Like a Champion* (2017) — anecdotally where the 7-week rule (M.4) and more sell-side specifics appear
-- *Mindset Secrets for Winning* (2019)
+**Third work, still NOT transcribed:** *Mindset Secrets for Winning* (2019) — present as `reference/Books/mind-secrets-for-winning-mark-minervini/`; primarily psychology, low sell-rule density (not re-reviewed here).
 
-These books are **NOT-AVAILABLE** for verification. Rules attributed to Minervini that don't appear in TLSMW remain `[UNVERIFIED]` against the source CLAUDE.md auto-memory designates — they are unverifiable for now (not "pending check"). Operator may revisit if they acquire the second/third books.
-
-**Implication for 3e.8 §6.4 [UNVERIFIED] M-flag triage:** the 3e.8 investigation cited "M.x" rules as Minervini doctrine without specifying which Minervini work. Some claims (especially M.4 7-week rule + M.5 parabolic thresholds + M.6 volume-confirmed-close) may be from the unavailable Think & Trade or from secondhand community paraphrase rather than from TLSMW directly. Where TLSMW is silent AND no other source is available, those rules remain unverifiable.
-
-For each rule below, status is one of:
-- **CONFIRMED-QUANTITATIVE** — TLSMW provides a specific quantitative anchor
-- **CONFIRMED-QUALITATIVE** — TLSMW articulates the principle without specific thresholds
-- **BRIEF-MENTION-NO-DETAIL** — TLSMW touches on the topic but provides no actionable specifics
-- **NOT-PRESENT-IN-AVAILABLE-SOURCES** — absent from TLSMW; verification source not available to operator
+Status taxonomy per rule:
+- **CONFIRMED-QUANTITATIVE** — a Minervini text provides a specific quantitative anchor.
+- **CONFIRMED-QUALITATIVE** — the principle is articulated without specific thresholds.
+- **BRIEF-MENTION-NO-DETAIL** — touched on, no actionable specifics.
+- **NOT-PRESENT** — absent from both transcribed primary works (TLSMW + TTLC).
 
 ---
 
 ## M.1 — 1.25× backstop expectancy heuristic
 
-**Source citation:** TLSMW — BRIEF-MENTION-NO-DETAIL or NOT-PRESENT per operator review 2026-05-10.
+**Status:** NOT-PRESENT *as framed* — neither TLSMW nor TTLC contains a "1.25× backstop expectancy" multiple.
 
-**Status:** NOT-PRESENT-IN-AVAILABLE-SOURCES — TLSMW does not contain a specific 1.25× backstop expectancy figure. Likely community-derived or from another Minervini work.
-
-**Operator notes:** The 3e.8 investigation cited a "1.25× backstop expectancy heuristic" as Minervini doctrine. TLSMW discusses expectancy generally but no specific 1.25× figure was found. Provenance unknown.
+**TTLC verification (2026-06-04):** TTLC's only "1.25" is a **position-sizing risk bound**, not an expectancy backstop: *"your maximum risk should be no more than 1.25 to 2.5 percent of your equity on any one trade"* (TTLC §"HOW MUCH RISK IS TOO MUCH?" / §8 sizing, md ~L2135, L2153, L2195). The 3e.8 "1.25× backstop expectancy heuristic" attribution appears to be a **conflation/garble of this 1.25–2.5%-of-equity risk-per-trade rule** — which IS Minervini doctrine, but is a sizing rule, not an exit/expectancy rule. **Disposition:** retire the "1.25× backstop expectancy" label; if the intent was the risk-per-trade floor, cite TTLC's 1.25–2.5% equity-risk band instead.
 
 ---
 
 ## M.2 — Sell into strength
 
-**Source citation:** TLSMW Ch 13, p. 296, "Selling at a Profit" section.
+**Status:** CONFIRMED-QUANTITATIVE (TLSMW) — **reinforced by TTLC.**
 
-**Status:** CONFIRMED-QUANTITATIVE — TLSMW articulates a quantitative R-multiple-of-stop-loss anchor PLUS a qualitative selling-into-strength principle.
+**TLSMW Ch 13, p. 296 (verbatim, operator-transcribed 2026-05-10):**
 
-**Transcription (verbatim):**
+> Once a stock amasses a percentage gain that is a multiple of your stop loss, you should rarely allow that position to turn into a loss. For instance, let's say your stop loss is set at 7 percent. If you have a 20 percent gain in a stock, you shouldn't allow that position to give up all that profit and produce a loss. To guard against that, you could move up your stop loss to breakeven or trail a stop to lock in the majority of the gain. … There are two ways you can sell: -Into strength … -Into weakness … Selling into strength is a learned practice of professional traders. It's important to recognize when a stock is running up rapidly and may be exhausting itself. … You need to have a plan for both selling into strength and selling into weakness.
 
-> Selling at a Profit
->
-> Once a stock amasses a percentage gain that is a multiple of your stop loss, you should rarely allow that position to turn into a loss. For instance, let's say your stop loss is set at 7 percent. If you have a 20 percent gain in a stock, you shouldn't allow that position to give up all that profit and produce a loss. To guard against that, you could move up your stop loss to breakeven or trail a stop to lock in the majority of the gain. You may feel foolish breaking even on a position that was previously a decent gain; however, you will feel even worse if you let a nice gain turn into a loss.
->     At some point you have to close out a trade. There are two ways you can sell:
->     
->     -Into strength, which means cashing out shares while the share price is rising
->     -Into weakness, which means selling while the share price is declining
->     
->     Selling into strength is a learned practice of professional traders. It's important to recognize when a stock is running up rapidly and may be exhausting itself. You can unload your position easily when buyers are plentiful. Or you could sell into the first signs of weakness immediately after such a price run has broken down. You need to have a plan for both selling into strength and selling into weakness.
+**TTLC verification (2026-06-04):** TTLC restates and expands this. The breakeven anchor is named the **"breakeven or better rule"** (TTLC index p.196–197) and §"NEVER LET A GOOD-SIZE GAIN TURN INTO A LOSS" (md ~L1417). Selling-into-strength gets a dedicated treatment (md ~L2229–2231, L2495: *"you still want to learn how to sell into strength … you don't want to give a stock the chance to break and give back a large portion of your profits"*). Confirms the two anchors: (1) quantitative R-multiple-of-stop ("once gain is a multiple of stop loss, never let it turn into a loss → breakeven or trail"); (2) qualitative sell-into-strength discipline.
 
-**Operator notes (operator-supplied):** No specifics provided, just general strategies for ensuring a profit does not turn into a loss.
-
-**Orchestrator interpretation (additional):** the quote ACTUALLY contains TWO anchors:
-
-1. **Quantitative R-multiple anchor (operationally significant):** "Once a stock amasses a percentage gain that is a multiple of your stop loss" → in the framework's R-multiple terms, this is "once `r_so_far` ≥ K" (where K is the multiple). The 7%/20% example = 20/7 = ~2.86R. The principle: **at some R-multiple of stop loss, never let the position turn into a loss.** Recommended action: move stop to breakeven OR trail to lock in majority of gain.
-
-2. **Qualitative selling-into-strength principle:** match what operator described — directional discipline + recognition of exhaustion + having a plan for both strength + weakness exits.
-
-**Critical implication for §3e.8 §4.B vs §4.A:** M.2's recommended ACTION is **stop-tightening (breakeven or trail)**, NOT trim-into-strength (the §3e.8 §4.B framing). M.2 is therefore a doctrine anchor for **§3e.8 §4.A** (trail-MA tightening), NOT for §4.B (trim). The two recommendations actually address different doctrinal threads:
-- M.2 quantitative anchor → §4.A trail-tightening (breakeven-once-multiple-of-stop-reached)
-- DST D.2 qualitative trim discipline → §4.B trim-into-strength
-
-The 3e.8 investigation conflated these by framing both under "sell-into-strength." Worth re-examining the §4.A and §4.B implementation briefs separately.
-
-**Cross-reference:** §3e.8 §4.A (trail-MA gating; deferred) AND §4.B (trim/sell-into-strength advisory; commissioned in implementation bundle 2). M.2 strengthens the doctrinal basis for an §4.A-equivalent rule that triggers stop-tightening when `r_so_far ≥ K` (some configurable R-multiple, e.g., 2R or 3R per the TLSMW example).
+**Cross-reference (unchanged):** M.2's recommended ACTION is **stop-tightening (breakeven/trail)**, the doctrine anchor for §3e.8 §4.A — NOT §4.B trim (DST D.2 remains the trim anchor). TTLC corroborates the stop-tightening framing.
 
 ---
 
 ## M.3 — Sell on close below N-day MA (specific N values)
 
-**Source citation:** TLSMW — BRIEF-MENTION-NO-DETAIL per operator review 2026-05-10.
+**Status:** **UPGRADED BRIEF-MENTION → CONFIRMED-QUANTITATIVE by TTLC.** TLSMW used MAs entry-side only; TTLC gives explicit MA-violation **sell** signals.
 
-**Status:** BRIEF-MENTION-NO-DETAIL — TLSMW emphasizes moving averages on the entry side (50/150/200 day per the trend-template). Sell-side use of MAs is implied by the trend-template's definition of uptrend but not given as a specific sell-rule with thresholds.
+**TTLC verification (2026-06-04)** — §"IF THINGS DON'T GO AS PLANNED" / "Violations Soon After a Breakout" / "WATCH FOR MULTIPLE VIOLATIONS" (md ~L515–575, L597) and §9 trailing use (md ~L2441):
 
-**Operator notes:** No quantitative threshold or specific MA-period sell-rule found in TLSMW. May be in unavailable Think & Trade.
+> Once a stock breaks out of a proper base … it should hold above its 20-day moving average; I don't want to see the price close below its 20-day line soon after a breakout. … after a stock breaks out of a proper VCP, if it closes below its 20-day moving average shortly thereafter, the probability of it being successful before stopping you out is cut in about half. If the stock closes below the 50-day line on heavy volume, it's an even worse sign. … a close below the 20-day moving average is not significant on its own; it's when it occurs soon after a stock breaks out of a proper base … particularly if additional violations are triggered.
 
-**Cross-reference:** Existing framework rules `exit_below_10ma` / `exit_below_20ma` / `exit_below_50ma` are operator-policy choices, not directly TLSMW-anchored. DST D.3 (10DSMA primary trail per peoplewish/Qullamaggie) is the closest doctrine anchor; it covers 10/20/50 by stock-speed.
+Explicit "violations" list (md ~L573–575): **a close below the 20-day MA** · **a close below the 50-day MA on heavy volume** · full retracement of a good-size gain. Trailing use (md ~L2441): *"Some leaders can go an amazing distance before they close below the 50-day line."*
+
+**Important nuance:** TTLC treats the 20-day close as **probability-reducing + context-dependent (soon-after-breakout) + judgment-call within a multi-violation confluence**, NOT a hard single-trigger sell (*"I won't necessarily sell just for that reason alone"*; *"I'll either reduce my position or get out entirely"* depending on how many violations stack). The 50-day close is a stronger, trailing-stop-grade signal.
+
+**Cross-reference:** the framework's `exit_below_10ma`/`exit_below_20ma`/`exit_below_50ma` now have a **real Minervini doctrine anchor** (20-day soon-after-breakout; 50-day-on-volume as trail) — previously "operator-policy only." Note the doctrine-faithful framing is multi-violation/judgment, not single-trigger; any production alignment routes through §VII.F.
 
 ---
 
 ## M.4 — 7-week rule (time-stop)
 
-**Source citation:** TLSMW — NOT-PRESENT per operator review 2026-05-10. **Likely in Think & Trade Like a Champion (2017), but that book is NOT AVAILABLE to operator** per CLAUDE.md memory + 2026-05-10 confirmation.
+**Status:** **NOT-PRESENT — confirmed absent from BOTH TLSMW and TTLC.**
 
-**Status:** NOT-PRESENT-IN-AVAILABLE-SOURCES — confirmed absent from TLSMW; secondary verification source not available.
+**TTLC verification (2026-06-04):** Targeted search of TTLC for "7 week / seven week / 49 day / time stop / time-based" found **no time-based exit rule.** ("27-week" hits refer to Netflix's *base* duration, entry-side.) The nearest related concept is **opportunity-cost / turnover** (TTLC §4 "TURNOVER AND OPPORTUNITY COST", md ~L1121) — a rationale for rotating out of dead-money positions, but NOT a quantified 7-week/49-day time-stop. **The widely community-attributed "7-week rule" is unsupported by either primary Minervini text.** If a time-stop is desired, it remains a non-Minervini choice (Qullamaggie Q.1's 3–5 day window is the only doctrine anchor, and is far more aggressive).
 
-**Operator notes:** 7-week / 49-day time-stop rule is widely community-attributed to Minervini but does not appear in TLSMW. Without Think & Trade, this rule remains unverifiable from Minervini sources.
-
-**Cross-reference:** §3e.8 §4.C / §4.C.bis (time-stop discipline) deferral is REINFORCED — neither TLSMW nor DST contains a time-stop rule. The sole remaining doctrine source for time-stop is Qullamaggie's Q.1 (3-5 day window), which is much more aggressive than the 10-day framework default. Without Minervini's 7-week rule confirmed, the doctrine landscape on time-stops favors the AGGRESSIVE end (Q.1 3-5 day) — operator may want to reconsider whether the 10-day default is too lenient rather than too aggressive.
+**Cross-reference (reinforced):** §3e.8 §4.C/§4.C.bis time-stop deferral stands; the doctrine landscape (no Minervini time-stop; only aggressive Q.1) suggests any default change would TIGHTEN, not loosen.
 
 ---
 
-## M.5 — Parabolic / blow-off-top extension thresholds
+## M.5 — Parabolic / blow-off-top (climax) extension thresholds
 
-**Source citation:** TLSMW — BRIEF-MENTION-NO-DETAIL per operator review 2026-05-10.
+**Status:** **UPGRADED BRIEF-MENTION → CONFIRMED-QUANTITATIVE by TTLC.** This corrects the prior doc's claim that "Minervini provides no quantitative anchor." TTLC's §"THE CLIMAX TOP" is an explicit, quantified climax-detection framework.
 
-**Status:** BRIEF-MENTION-NO-DETAIL — TLSMW discusses parabolic / blow-off-top patterns as recognizable end-of-move signals; per operator review, no specific quantitative thresholds (e.g., "X% in Y days" or "above N×ATR from the MA") were found. Recognition of parabolic is treated as a chart-pattern recognition skill, not a quantitative trigger.
+**TTLC verification (2026-06-04)** — §"THE CLIMAX TOP" (md ~L2315–2391):
 
-**Operator notes:** No specific N/M/K thresholds in TLSMW for parabolic detection.
+- **Climax-top magnitude/velocity:** *"A climax top occurs when the stock price runs up 25 to 50 percent or more over the course of one to three weeks. Some can advance 70 to 80 percent in just 5 or 10 days."* (md L2321; sell-signal list L2361.)
+- **Up/down-day count:** *"Look for 70 percent or more up days versus down days over a 7- to 15-day period (example: 7 of 10 days are up)."* … *"once the stock is extended, look for 6 to 10 days of accelerated advance, with only 2 or 3 days being down."* (md L2355.)
+- **Last-blast / spread / gaps:** look for the **largest up day and/or widest daily spread since the move began**, plus **recent exhaustion gaps** (md L2355, L2371).
+- **Worked examples:** QCOM 1999 +80% in 9 days then +73% in 6 days (+260% in 2 months, then −88%) (md L2323, L2329); TSLA 2014 doubled in 30 days, +51% in 14 days on 3 gaps, 10 of 14 up (md L2345); GMCR 2007 "classic exhaustive sell signals" (md L2389).
 
-**Cross-reference:** §3e.8 §4.D (parabolic-extension detector) commissioned in implementation bundle 2. The doctrinal anchor for §4.D's quantitative thresholds is **DST D.7** (Realsimpleariel's >7x ADR above 50SMA) — NOT Minervini. Worth re-anchoring §4.D's defaults in the implementation brief from arbitrary 25%/5d/15% to D.7's >7x ADR above 50SMA framework.
+**Cross-reference (CORRECTION):** §3e.8 §4.D parabolic detector now has a **Minervini quantitative anchor** (the climax-top thresholds above), in addition to DST D.7 (>7× ADR above 50SMA). The prior disposition ("Minervini provides no quantitative anchor → DST D.7 sole anchor") is **superseded.** §4.D defaults could be re-anchored to the TTLC climax thresholds (25–50%/1–3wk or 70–80%/5–10d; ≥70% up-days over 7–15d; widest-spread + exhaustion-gap) — via §VII.F.
 
 ---
 
 ## M.6 — Violated MA on volume
 
-**Source citation:** TLSMW — BRIEF-MENTION-NO-DETAIL per operator review 2026-05-10.
+**Status:** **UPGRADED BRIEF-MENTION → CONFIRMED-QUALITATIVE-PLUS by TTLC** (specific MA + volume-as-distribution; "heavy" is relative, not a single numeric threshold).
 
-**Status:** BRIEF-MENTION-NO-DETAIL — TLSMW emphasizes volume confirmation generally (heavy volume on breakout = strength; heavy volume on breakdown = weakness) but per operator review, no specific quantitative volume threshold for the close-below-MA case was found. The volume-as-confirmation principle is doctrine-correct; the specific threshold is not specified.
+**TTLC verification (2026-06-04):** the **close below the 50-day MA on heavy volume** is an explicitly-listed violation and "an even worse sign" than the 20-day close (md ~L519, L575). During a run-up, *"the day with the heaviest volume … Does the heavy volume come on a down day? If so, then you are seeing large investors liquidating their positions"* (md ~L2375) — heavy down-volume = distribution. So the volume-confirmation principle is doctrine-correct AND tied to a specific MA (50-day); what remains unspecified is a numeric volume multiple ("heavy" is judged relative to the advance).
 
-**Operator notes:** Qualitative volume principle present; no quantitative threshold.
-
-**Cross-reference:** §3e.8 §4.I (volume-confirmed close-below-MA overlay) deferred-with-§4.G-completion-gate-trichotomy. **Trichotomy resolves to OUTCOME 2 (qualitative without threshold → escalate to second-source gate).** §4.I now joins §4.H + §4.J in the second-source-gate bucket — revisit only if a doctrine-confluent volume-threshold rule surfaces from another doctrine source.
+**Cross-reference:** §3e.8 §4.I (volume-confirmed close-below-MA) — the gate-trichotomy "OUTCOME 2 (qualitative, no threshold)" should be revised: TTLC supplies the **specific MA (50-day) + qualitative heavy-volume** anchor, even if not a numeric multiple. Revisit whether §4.I can now be doctrine-anchored at 50-day-on-heavy-volume rather than parked in the second-source-gate bucket (via §VII.F).
 
 ---
 
 ## M.7 — Gap-down on news
 
-**Source citation:** TLSMW — BRIEF-MENTION-NO-DETAIL per operator review 2026-05-10.
+**Status:** BRIEF-MENTION-NO-DETAIL (both books) — **TTLC frames gap-down as a sizing/risk argument, not a standalone exit trigger.**
 
-**Status:** BRIEF-MENTION-NO-DETAIL — TLSMW discusses gap risk and news-driven moves generally but per operator review, no specific gap-down-on-news exit rule was articulated as a standalone discipline.
-
-**Operator notes:** No standalone gap-down-on-news rule in TLSMW.
+**TTLC verification (2026-06-04):** gap-down-on-news appears as (a) **contingency/"disaster plan"** content (*"the stock you bought yesterday is set to gap down huge because the company is being investigated by the SEC…"* — md ~L379) and (b) a **position-sizing rationale**: an overnight 50% gap makes a 5–10% stop "worthless" — *"There is nothing but dead air…"* — so don't overconcentrate (md ~L2193, L1525). No discrete "sell on gap-down-on-news" rule; the doctrine is "size so a gap can't ruin you + have a contingency plan," not a quantified exit.
 
 ---
 
-## Footnotes / qualifiers (as printed)
+## Additional TTLC sell-side rules now available (beyond the original M.1–M.7 taxonomy)
 
-TLSMW frames sell discipline as a chapter-end aside (Ch 13 "Selling at a Profit") rather than a structured rule set. The book's primary contribution is the entry-side framework (trend-template + VCP + leadership). Sell-side material is treated as "the other half of the equation" but with significantly less detail than the buy-side.
+These surfaced during the 2026-06-04 TTLC review and are candidates for the "Minervini + body-of-knowledge reference review" backlog item:
+
+- **The 50/80 Rule** (TTLC §5, md ~L1271) — late-stage probability heuristic on tops.
+- **Breakeven-or-better rule** (TTLC index p.196–197) — quantified version of M.2's breakeven anchor.
+- **Staggered stops** + **"adding exposure without adding risk"** (TTLC §3, md ~L897, L937) — exposure/stop management.
+- **Reversal recovery vs. violation** distinction (TTLC §1 "SQUATS AND REVERSAL RECOVERIES", md ~L577–597) — give a new position a week or two within stop confines; distinguish recoverable squats from genuine violations.
 
 ---
 
-## Usage notes (not from source — interpretive)
+## Footnotes / qualifiers
 
-- This file is **reference material only**. Do not edit production code to "match" the rules above without routing the change through the research-branch promotion cycle per V2 Addendum Addition 2 (source-of-truth correction protocol).
-- Of the seven 3e.8 M-flag claims: only M.2 (sell-into-strength) is CONFIRMED-QUANTITATIVE in TLSMW; M.3, M.5, M.6, M.7 are BRIEF-MENTION-NO-DETAIL; M.1 + M.4 are NOT-PRESENT-IN-AVAILABLE-SOURCES. Verification of M.1 + M.4 (and possible additional detail on M.3/M.5/M.6/M.7) would require Think & Trade Like a Champion, which is NOT available to operator.
-- The 3e.8 investigation's "M.x" attributions appear to have conflated TLSMW + likely Think & Trade and possibly community paraphrase. The disposition above represents the maximum verification possible from sources currently available.
-- **Operationally-significant disposition reinforcements** from this round:
-  - **§4.A trail-tightening doctrine anchor STRENGTHENED** — M.2's quantitative R-multiple-of-stop-loss anchor ("once gain is a multiple of stop loss, never let position turn into a loss; move stop to breakeven OR trail") is a doctrine basis for §4.A. The 3e.8 framing of §4.A as "trail-MA SUPPRESSION based on maturity_stage" is operationally equivalent to M.2 only via project-policy interpretation; a more doctrine-faithful framing would be "tighten stop (breakeven or trail) when r_so_far reaches a configurable R-multiple threshold." Worth re-thinking §4.A's mechanism.
-  - **§4.B trim doctrine anchor REMAINS DST-only** — M.2 articulates the principle qualitatively but its recommended action is stop-tightening, NOT trim. DST D.2 (50% on Day 3-5) is the sole quantitative trim anchor. The 3e.8 §4.B's R-multiple-trigger + 25%-trim default is operator-policy hybrid; consider switching to DST D.2-faithful Day-3-5 50% trigger OR keeping the 3e.8 hybrid but acknowledging it's not directly doctrine-anchored.
-  - **§4.C / §4.C.bis time-stop deferral REINFORCED** — TLSMW has no time-stop; DST has no time-stop; M.4 7-week unverifiable. Only Q.1 (3-5 day, AGGRESSIVE) remains as anchor. If operator wants to commission a default change, the Q.1 anchor would TIGHTEN the default (e.g., from 10-day to 5-day), not loosen it. Worth re-thinking the 3e.8 §3.C "framework default 10/0.5 may be too aggressive" framing — with M.4 NOT-PRESENT, the doctrine landscape suggests the OPPOSITE direction.
-  - **§4.D parabolic detector defaults** — Minervini provides no quantitative anchor; DST D.7 (>7x ADR above 50SMA per Realsimpleariel) becomes the sole doctrine anchor. Worth re-anchoring §4.D defaults in implementation brief from arbitrary 25%/5d/15% to D.7's >7x ADR above 50SMA framework.
-  - **§4.I volume-confirmed exit gate-trichotomy resolves to OUTCOME 2** — M.6 qualitative without threshold → escalate to second-source gate. §4.I now in same bucket as §4.H + §4.J.
-- Status flips from `~ PARTIAL` to `✓ COMPLETE` only if operator extends transcription to other Minervini works (or explicitly closes the M-rule set with TLSMW-only as the ground-truth surface).
-- Rule labels (M.1-M.7) are project-internal taxonomy from the 3e.8 investigation, not Minervini's own numbering.
+TLSMW frames sell discipline as a chapter-end aside; **TTLC is the structured sell-side text** (post-breakout violations, climax-top selling, staggered stops, the 50/80 rule). Together the two primary works now give a substantially-complete picture of Minervini sell-side doctrine.
+
+## Usage notes (interpretive — not source)
+
+- **Reference material only.** Do not edit production code to "match" these rules without routing through the research-branch promotion cycle (V2.1 §VII.F source-of-truth correction protocol).
+- **2026-06-04 net result of the TTLC verification:** of the seven 3e.8 M-flags — M.2 CONFIRMED (both books, reinforced); **M.3 + M.5 + M.6 upgraded to CONFIRMED-QUANTITATIVE/QUALITATIVE-PLUS** (real Minervini anchors now exist for MA-violation exits and parabolic/climax detection); M.7 BRIEF-MENTION (sizing/risk framing); M.1 retired-as-framed (1.25 → risk-per-trade %); **M.4 NOT-PRESENT in either primary book** (community-attributed 7-week rule unsupported).
+- **Disposition reversals to fold into the relevant §3e.8 briefs (each via §VII.F):**
+  - **§4.D parabolic detector** — now HAS a Minervini quantitative anchor (TTLC climax-top thresholds); the "DST D.7 is the sole anchor" disposition is superseded.
+  - **§4.I volume-confirmed exit** — now has a TTLC anchor (50-day close on heavy volume); reconsider moving it out of the second-source-gate bucket.
+  - **exit_below_20ma / exit_below_50ma** — now doctrine-anchored (20-day soon-after-breakout; 50-day-on-volume), with the multi-violation/judgment nuance.
+  - **§4.A trail-tightening** — M.2 anchor reinforced by TTLC's "breakeven-or-better rule."
+  - **§4.C time-stop** — reinforced ABSENT (no Minervini 7-week rule in either book).
+- Rule labels (M.1–M.7) are project-internal taxonomy from the 3e.8 investigation, not Minervini's numbering.
