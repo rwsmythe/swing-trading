@@ -109,6 +109,17 @@ tests/fixtures/finviz/suggested-diffs-*.yaml
 # Research harness smoke-test output (regenerated; not tracked)
 research/harness/*/smoke-out/
 
+# Tiingo raw EOD bars -- vendor "Internal Use Only" license; do NOT commit or
+# redistribute the raw bars (derived results are fine). Local-only like reference/Books/.
+research/data/tiingo/
+# Local API keys / secrets -- never commit (use env var TIINGO_API_KEY).
+*.key
+.env.local
+# Regenerable QA chart images (the qa/README.md pairing manifest IS tracked).
+research/data/qa/*.png
+# Bulk vendor data dumps (local-only) -- e.g. the Stooq d_us_txt download.
+reference/d_us_txt.zip
+
 # Pytest / orchestrator scratch directories (regenerated; not tracked).
 # Covers per-phase (.tmp-phase4/ etc.) and per-verify (.tmp-orchestrator-verify/,
 # .tmp-mathtext-verify/, .tmp-manual/, etc.) variants under one glob.
