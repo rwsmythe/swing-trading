@@ -72,14 +72,20 @@ While you are clicking through the charts + metrics, jot anything that looks lik
 
 ---
 
-## Issues log (operator fills; orchestrator triages each into a follow-up)
+## Issues log -- REVIEW COMPLETED 2026-06-05 (operator + orchestrator)
 
-| # | Surface / route | What's wrong | Light/Dark | Severity (your gut) |
+**Verdict: the Phase-14 sub-bundles COHERE WELL.** Strong positives: the #23 invisible-widen is doubly confirmed live (pattern-outcomes tile n=3 not 55 + the review queue correctly empty); the #22 process-grade-trend small-multiples are legible incl. dark mode (the gate-fix held); the #21 B-7 failure-mode field is present in the review form; thumbnails are faithful, charts legible, dark-mode uniform everywhere, cross-links resolve, one-trade-one-set-of-numbers holds (SKYT consistent); the Schwab status page is healthy (5-day token) and honestly surfaces the success/error call mix. The forward/backward session-anchor split is correct on the forward pages + reviews.
+
+**4 findings to triage:**
+
+| # | Sev | Surface | Finding | Disposition |
 |---|---|---|---|---|
-| 1 | | | | |
-| 2 | | | | |
+| **5** | med | topbar (all pages) | **Topbar date inconsistent across base-layout VMs at ONE moment** -- dash/watchlist/journal/metrics show `action_session` (6/5); reviews/patterns-queue show `last_completed_session` (6/4). Two backward pages disagree (journal 6/5 vs reviews 6/4). Contradicts the #22 premise that every base-layout VM uses `last_completed_session`. | **-> data-integrity arc** (same session-anchor discipline; uniform topbar-date policy) |
+| **3** | med | `/metrics/capital-friction` | **Position count = 0 for Run #89 (6/4)** but SKYT is open since 5/28 (state `managing`); internally contradicts the same row's non-zero 9.63% capital + 0.76% open risk. Likely `account_equity_snapshots` (Schwab-sourced) recorded 0 positions, diverging from the local trade ledger. | **scope** (snapshot-read fix vs Schwab-account work) |
+| **2** | low-med | `/metrics/pattern-outcomes` (+ A.3 dashboard hyp-recs, + `/patterns/queue`) | **Empty/under-floor messaging is not uniform** -- a raw bracketed internal string `[pattern_outcomes_flat_base_triggered: n too low (current: 1, need: >=3)]` vs a clean `(suppressed: no trade pairing or n<5)`; hyp-recs table absent (no "none" message); queue says "populate pattern_evaluations" when PEs ARE populated (all watch-origin/excluded). | **one consolidated polish fix** (with #4) |
+| **4** | low | topbar nav | **`/schwab/status` + `/schwab/setup` are not nav-linked** -- reachable only by typing the URL (the v3 arc removed the topbar badge; no nav link replaced it). | **polish fix** (nav or Config-page link; with #2) |
 
-*(Add rows as needed. Tag data-integrity sightings `[data-recon]`. When you're done, hand the filled log back -- the orchestrator converts each coherence issue into a small fix and parks the `[data-recon]` notes for the data-integrity arc.)*
+**[data-recon] for the data-integrity arc:** the dashboard daily-mgmt As-of (6/4) + the Schwab status recent-calls confirm the ext-hours `marketdata.pricehistory` error pattern (~16% OhlcvBar-invariant failures) we already diagnosed. No new chart-level stale-bar sightings flagged by the operator.
 
 ---
 
