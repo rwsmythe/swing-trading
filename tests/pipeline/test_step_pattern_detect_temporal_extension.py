@@ -192,5 +192,8 @@ def test_empty_aplus_pool_warns_and_writes_nothing(tmp_db_v22):
     _drive_detect(conn, cfg, lease, eval_run_id, _StubOhlcvCache({}), run_warnings)
     assert conn.execute("SELECT COUNT(*) FROM pattern_detection_events").fetchone()[0] == 0
     entry = next(w for w in run_warnings if w["step"] == "pattern_detect")
-    assert entry["actual_aplus_pool"] == 0
-    assert entry["reason"] == "zero aplus candidates"
+    # Pool-widening: the #27 empty-pool audit now uses the standardized
+    # vocabulary (actual_pool replaces the removed actual_aplus_pool).
+    assert entry["actual_pool"] == 0
+    assert "actual_aplus_pool" not in entry
+    assert entry["reason"] == "zero aplus|watch candidates"

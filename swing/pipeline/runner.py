@@ -1545,11 +1545,16 @@ def _step_pattern_detect(
         # must emit a warnings_json audit entry (expected vs actual pool +
         # reason) so a zero-work completion is not silent.
         if run_warnings is not None:
+            _aplus_n = sum(1 for c in candidates if c.bucket == "aplus")
+            _watch_n = sum(1 for c in candidates if c.bucket == "watch")
             run_warnings.append({
                 "step": "pattern_detect",
                 "expected_pool": len(candidates),
-                "actual_aplus_pool": 0,
-                "reason": "zero aplus candidates",
+                "expected_detect_pool": _aplus_n + _watch_n,
+                "expected_pool_by_bucket": {"aplus": _aplus_n, "watch": _watch_n},
+                "actual_pool": len(detect_pool_tickers),
+                "actual_pool_by_bucket": {"aplus": _aplus_n, "watch": _watch_n},
+                "reason": "zero aplus|watch candidates",
             })
         return
 
