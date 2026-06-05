@@ -30,6 +30,8 @@ The project follows a bifurcated architecture (research branch + operational tra
 
 Source-of-truth methodology references live in `reference/methodology/`. These are reference-only; any production change driven by a methodology reference must route through the source-of-truth correction protocol (V2.1 §VII.F), not a direct patch.
 
+**Transcribed book corpus** (the underlying source frameworks — Minervini, O'Neil disciples, Weinstein stage analysis, Qullamaggie, Schwager, psychology): full electronic `.md` + figures under `reference/Books/<slug>/`, gitignored/local-only + regenerable via [`scripts/convert_books_pdf_to_md.py`](scripts/convert_books_pdf_to_md.py). Indexed (titles, paths, what-each-is-for) at [`reference/books-corpus-index.md`](reference/books-corpus-index.md) — consult it before assuming a source is unavailable.
+
 The research branch lives at `research/` (created Tranche B-research, 2026-04-23). Method records in `research/method-records/` follow the V2.1 §IV.B minimum viable field list; studies in `research/studies/` follow the format established by `earnings-proximity-exclusion.md`. Phase 0 tasks in `research/phase-0-tasks.md`. No runtime code is under `research/` as of this writing — it is pure documentation and study artifacts.
 
 Older strategy documents are archived at `reference/Future Work/archive/`.

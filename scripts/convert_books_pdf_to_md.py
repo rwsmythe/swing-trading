@@ -2,8 +2,6 @@
 
 Outputs to reference/Books/<slug>/<slug>.md + reference/Books/<slug>/figures/.
 Skips files where the target markdown already exists (idempotent re-runs).
-Skips the Minervini "Think & Trade Like a Champion" duplicate that was
-previously converted to reference/minervini/.
 """
 
 from __future__ import annotations
@@ -16,10 +14,11 @@ import time
 import pymupdf4llm
 
 BOOKS_DIR = pathlib.Path("reference/Books")
-# Already converted to reference/minervini/ — skip the duplicate copy here.
-SKIP_FILENAMES = {
-    "Mark Minervini - Think & Trade Like a Champion-Access Publishing Group (2017).pdf",
-}
+# No filenames are special-cased; the idempotent skip (target .md already exists)
+# handles re-runs. Think & Trade Like a Champion is now consolidated under
+# reference/Books/<slug>/ like every other book (it formerly lived in
+# reference/minervini/, which now retains only the non-book strategy-notes .txt).
+SKIP_FILENAMES: set[str] = set()
 
 
 def slugify(name: str) -> str:
