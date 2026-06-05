@@ -2,12 +2,31 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from enum import Enum
 from zoneinfo import ZoneInfo
 
 import exchange_calendars as xcals
 import pandas as pd
 
 _NYSE = xcals.get_calendar("XNYS")
+
+
+class PageKind(Enum):
+    """Topbar-date intent for a base-layout page."""
+    FORWARD_PLANNING = "forward"   # what to do at the next session
+    HISTORY_ANALYSIS = "backward"  # what happened through the last completed session
+
+
+def topbar_session_date(page_kind: PageKind, now_local: datetime) -> date:
+    """The single source of truth for a base-layout topbar date (L6/Issue #5).
+
+    FORWARD_PLANNING -> action_session_for_run (the next session).
+    HISTORY_ANALYSIS -> last_completed_session (the last closed session).
+    Eliminates the naive date.today()/datetime.now().date() third family.
+    """
+    if page_kind is PageKind.FORWARD_PLANNING:
+        return action_session_for_run(now_local)
+    return last_completed_session(now_local)
 
 
 def data_asof_from_ohlcv_max(df: pd.DataFrame) -> date:
