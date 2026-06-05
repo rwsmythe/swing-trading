@@ -1,0 +1,2704 @@
+You are an adversarial code reviewer (Codex) performing ROUND 2 of the FINAL review
+of the Swing Trading data-integrity arc (executing-plans phase). DO NOT run git or
+shell commands -- review ONLY the unified diff embedded below (baseline d2c380ec ->
+current HEAD, which now INCLUDES the Round-1 fixes).
+
+ARC (4 slices, A->C->B->D): A=ext-hours pull fix (needExtendedHoursData=False +
+mapper 4dp float round + typed SchwabBarConsistencyError); C=completed-day write
+barrier in `_write_archive_atomic` (the single chokepoint) + date-only lock-guards
+(_bar_for_date, build_ohlc_today_json) + remediation (auto-overwrite + REQUIRED
+one-time CLI purge); B=quote mapper requires regularMarket* (drops to yfinance);
+D=uniform topbar_session_date(PageKind) across 30 base-layout VMs + AST manifest/
+behavioral/provenance-lint tests.
+
+BINDING LOCKS: NO schema (v24); L3 append-only (guards add rejection only); F6
+(empty external result never blanks valid <=cutoff history); backward cutoff =
+last_completed_session(now), strict `>` strip; no global float epsilon; zero new
+Schwab REST endpoints.
+
+ROUND-1 FINDINGS + DISPOSITIONS (verify the fixes in this diff):
+- R1 MAJOR #1 (_strip_incomplete_sessions fail-open on unknown shape): FIXED -- it
+  now FAILS CLOSED, raising ValueError on a NON-EMPTY frame with neither asof_date
+  column nor DatetimeIndex; an EMPTY frame passes through. Test added.
+- R1 MAJOR #2 (write_window empty-incoming didn't strip a DatetimeIndex existing):
+  FIXED -- the empty-incoming branch is now shape-agnostic: it rewrites `existing`
+  (any shape) through the barrier iff a > cutoff partial is present, else no-op
+  (F6 preserved). Test added.
+- R1 MAJOR #3 (Slice B not verified against live API): ACCEPTED BY DESIGN, NOT a
+  code defect. B1's live cassette is the OPERATOR GATE (the implementer does not
+  record it; the slow test only asserts the cassette exists). B2 is L1-correct
+  either way -- a missing regularMarket* field drops the symbol to yfinance
+  (safe; ext-hours values NEVER surface). No code change is in scope here.
+- R1 MINOR #1 (lexical asof_date vs Timestamp strings): FIXED -- asof_date is now
+  normalized via pd.to_datetime(...).dt.date before comparison. Test added.
+- R1 MINOR #2 (stale error.py comment): FIXED.
+
+TASK: verify the R1 fixes are correct and complete, and hunt for any NEW CRITICAL
+or MAJOR issue introduced by them OR anywhere else in the arc (correctness, missed
+edge cases, lock violations, redaction, test gaps that don't distinguish the fix,
+any residual way a partial/ext-hours bar could enter the locked log or a priced
+surface). Classify findings CRITICAL/MAJOR/MINOR with file:line. If and only if you
+find ZERO new CRITICAL or MAJOR issues, end with the EXACT line:
+NO_NEW_CRITICAL_MAJOR
+
+UNIFIED DIFF (baseline d2c380ec -> arc HEAD, post-R1-fixes):
+==================================================================
+diff --git a/swing/cli_schwab.py b/swing/cli_schwab.py
+index ef3ccacb..5aa37c0e 100644
+--- a/swing/cli_schwab.py
++++ b/swing/cli_schwab.py
+@@ -983,6 +983,37 @@ def _check_pipeline_not_running(conn: sqlite3.Connection) -> None:
+         )
+ 
+ 
++@schwab_group.command("purge-marketdata-archive")
++@click.option("--yes", is_flag=True, help="Skip the confirmation prompt.")
++@click.pass_context
++def purge_marketdata_archive(ctx: click.Context, yes: bool) -> None:
++    """One-time belt (OQ-1b): delete every `*.schwab_api.parquet` so the next
++    access re-fetches clean (regular-session) Schwab bars. Use ONCE after the
++    L1 ext-hours fix ships, to clear pre-fix ext-hours-contaminated archive
++    rows that read-precedence would otherwise keep serving. L3-safe: the
++    archive is re-fetchable cache, NOT append-only locked facts; the
++    pattern_forward_observations log is untouched."""
++    from swing.config_overrides import apply_overrides
++    cfg = apply_overrides(ctx.obj["config"])   # the real CLI cfg pattern
++    conn = connect(cfg.paths.db_path)
++    try:
++        _check_pipeline_not_running(conn)      # raises SchwabPipelineActiveError
++    finally:
++        conn.close()
++    cache_dir = Path(cfg.paths.prices_cache_dir)
++    targets = sorted(cache_dir.glob("*.schwab_api.parquet"))
++    if not targets:
++        click.echo("No *.schwab_api.parquet files to purge.")
++        return
++    if not yes:
++        click.confirm(f"Delete {len(targets)} schwab_api archive file(s)?",
++                      abort=True)
++    for p in targets:
++        p.unlink()
++    click.echo(f"Purged {len(targets)} schwab_api archive file(s); next access "
++               f"re-fetches clean.")
++
++
+ def _verify_marketdata_path(
+     *,
+     ctx: click.Context,
+diff --git a/swing/data/ohlcv_archive.py b/swing/data/ohlcv_archive.py
+index 9fed7ac6..552c87bc 100644
+--- a/swing/data/ohlcv_archive.py
++++ b/swing/data/ohlcv_archive.py
+@@ -96,7 +96,39 @@ def _read_archive(parquet_path: Path) -> pd.DataFrame | None:
+     return pd.read_parquet(parquet_path)
+ 
+ 
++def _strip_incomplete_sessions(df: pd.DataFrame, cutoff_iso: str) -> pd.DataFrame:
++    """Drop archive rows dated AFTER the last completed session (cutoff_iso =
++    ISO YYYY-MM-DD). Shape-agnostic: Shape-A frames carry an `asof_date` column
++    (string OR Timestamp -- both normalized to date before comparison so a
++    `2026-06-04 00:00:00` value cannot lexically out-sort the cutoff day);
++    legacy/yfinance frames are DatetimeIndex'd (compare `index.date`). Returns a
++    new frame (may be empty).
++
++    Codex R1 MAJOR #1: this is the single write-barrier chokepoint, so it FAILS
++    CLOSED -- a NON-EMPTY frame carrying neither recognized shape raises (it
++    must never silently persist a possibly-`> cutoff` row). An EMPTY frame of
++    any shape passes through unchanged (nothing to strip)."""
++    cutoff = date.fromisoformat(cutoff_iso)
++    if "asof_date" in df.columns:
++        asof = pd.to_datetime(df["asof_date"]).dt.date
++        return df[asof <= cutoff]
++    if isinstance(df.index, pd.DatetimeIndex):
++        return df[df.index.date <= cutoff]
++    if len(df) == 0:
++        return df
++    raise ValueError(
++        "_strip_incomplete_sessions: unrecognized frame shape (no 'asof_date' "
++        "column and non-DatetimeIndex index); refusing to persist to avoid "
++        "leaking a row dated after the last completed session"
++    )
++
++
+ def _write_archive_atomic(parquet_path: Path, df: pd.DataFrame) -> None:
++    # Completed-day write barrier (L2, the single chokepoint): no archive write
++    # path may persist a row dated after the last completed session. Applied
++    # here -- the one function ALL Shape-A writers funnel through (write_window,
++    # read_or_fetch_archive, _backward_compat_rename) -- so none can bypass it.
++    df = _strip_incomplete_sessions(df, _last_completed_session_today().isoformat())
+     cache_dir = parquet_path.parent
+     fd, tmp_name = tempfile.mkstemp(
+         dir=str(cache_dir), prefix=f"{parquet_path.stem}.", suffix=".parquet.tmp"
+@@ -285,88 +317,85 @@ def write_window(
+     *,
+     cache_dir: Path,
+ ) -> None:
+-    """Atomically write a Shape A window to
+-    `{cache_dir}/{TICKER}.{PROVIDER}.parquet`, **merging with any pre-existing
+-    rows by `asof_date`** (Codex R2 Major #2).
++    """Atomically write a Shape A window, merging with any pre-existing rows by
++    `asof_date` (keep='last'). The hard completed-day strip lives in
++    `_write_archive_atomic` (every write inherits it); this function adds the
++    merge + the M3 guarantee (rewrite existing on an empty incoming so a
++    pre-existing on-disk partial is stripped) + F6 (never blank valid history
++    on a transient empty fetch).
+ 
+     Merge semantics: the incoming window is concatenated with the existing
+-    parquet (if any), deduped on `asof_date` with `keep='last'` (NEW rows
+-    win on conflict), sorted ascending by `asof_date`, then atomically
+-    written back. This preserves rows OUTSIDE the fetched window — e.g. a
+-    pre-existing 1260-row archive is NOT clobbered when a 60-row Schwab
+-    ladder fetch writes a small window.
+-
+-    Pre-R2 (REPLACE semantics): `_atomic_parquet_write` overwrote the entire
+-    file with `window`, silently truncating archive history whenever the
+-    incoming window was smaller than the existing file. Scenario:
+-    `swing schwab fetch --verify-marketdata --symbols AAPL` triggers a
+-    ladder fetch with a tiny verification window → existing 5-year archive
+-    replaced with 1-row file → data loss.
+-
+-    Empty-window guard (Codex R1 Major #7 + CLAUDE.md "External-API
+-    empty-result must be treated as transient"): if `window` is `None` or
+-    has zero rows, return WITHOUT touching disk. This prevents the ladder
+-    from clobbering a populated parquet when a transient Schwab call
+-    returns no candles. The caller (ladder) records the audit row with
+-    `status='error'`; this function's contract is "non-empty windows only".
+-
+-    Defense-in-depth: caller MUST ensure non-empty windows in normal flow;
+-    the guard exists so a future regression cannot blank the archive.
++    parquet (if any), deduped on `asof_date` with `keep='last'` (NEW rows win
++    on conflict), sorted ascending, then atomically written back -- preserving
++    rows OUTSIDE the fetched window (e.g. a 1260-row archive is not clobbered
++    by a 60-row ladder fetch).
++
++    F6 (CLAUDE.md "External-API empty-result must be treated as transient"): an
++    empty/None incoming window NEVER blanks valid (<= cutoff) history. It only
++    triggers a rewrite when the on-disk file still carries a > cutoff partial
++    (M3) -- the rewrite re-runs the atomic strip and drops that partial.
+     """
+-    if window is None:
+-        return
+-    # `len()` on a DataFrame returns row count; an explicit `.empty` check
+-    # tolerates non-DataFrame falsy inputs the caller might pass in error.
+-    try:
+-        n_rows = len(window)
+-    except TypeError:
+-        return
+-    if n_rows == 0:
+-        return
+-
+-    # Codex R3 Minor #2: type-guard non-DataFrame inputs before subsequent
+-    # `.columns` access (merge branch below). The empty/None paths above
+-    # accept any falsy or `len`-able object so the early-exit contract is
+-    # forgiving; here we surface a clear error for the genuine-non-empty
+-    # type-mismatch case rather than failing with a cryptic
+-    # ``AttributeError: 'str' object has no attribute 'columns'``.
+-    if not isinstance(window, pd.DataFrame):
+-        raise TypeError(
+-            f"write_window expects pd.DataFrame, got {type(window).__name__}"
+-        )
+-
+     cache_dir = Path(cache_dir)
+     cache_dir.mkdir(parents=True, exist_ok=True)
+     path = _shape_a_path(cache_dir, ticker, provider)
++    cutoff_iso = _last_completed_session_today().isoformat()
+ 
+-    # Codex R2 Major #2: merge-by-asof_date semantics. If the parquet
+-    # already exists, concat existing + new, dedupe keep='last' (new wins on
+-    # conflict), sort ascending. Defense-in-depth around missing `asof_date`
+-    # column in the incoming window (caller bug) — fall back to REPLACE in
+-    # that case after logging, since merging without the dedup key is
+-    # ambiguous.
+-    if path.exists() and "asof_date" in window.columns:
++    # --- normalize incoming to a DataFrame-or-None ---
++    incoming: pd.DataFrame | None = window
++    if incoming is not None and not isinstance(incoming, pd.DataFrame):
++        try:
++            is_empty = len(incoming) == 0
++        except TypeError:
++            raise TypeError(
++                f"write_window expects pd.DataFrame, got {type(window).__name__}"
++            ) from None
++        if is_empty:
++            incoming = None
++        else:
++            raise TypeError(
++                f"write_window expects pd.DataFrame, got {type(window).__name__}")
++    if isinstance(incoming, pd.DataFrame) and incoming.empty:
++        incoming = None
++
++    # --- read existing ---
++    existing: pd.DataFrame | None = None
++    if path.exists():
+         try:
+             existing = pd.read_parquet(path)
+-        except (OSError, ValueError) as exc:  # pragma: no cover — defensive
+-            log.warning(
+-                "write_window: failed to read existing %s for merge "
+-                "(%s); falling back to REPLACE", path, exc,
+-            )
++        except (OSError, ValueError) as exc:  # pragma: no cover - defensive
++            log.warning("write_window: failed to read existing %s (%s)", path, exc)
+             existing = None
+-        if existing is not None and "asof_date" in existing.columns:
+-            merged = pd.concat([existing, window]).drop_duplicates(
+-                subset=["asof_date"], keep="last"
+-            )
+-            merged = merged.sort_values("asof_date").reset_index(drop=True)
+-            _write_archive_atomic(path, merged)
+-            return
+-
+-    # Either path doesn't exist (first write), or the incoming/existing
+-    # frame lacks `asof_date` — preserve the prior REPLACE semantics so we
+-    # don't drop the write. The dedup-by-asof_date merge requires the
+-    # dedup key on both sides.
+-    _write_archive_atomic(path, window)
++
++    if incoming is None and existing is None:
++        return
++
++    # Empty incoming: the only work is M3 -- strip a pre-existing on-disk
++    # partial. SHAPE-AGNOSTIC (Codex R1 MAJOR #2): handle a DatetimeIndex/legacy
++    # `existing` too, not just Shape-A. F6: an empty fetch NEVER blanks valid
++    # (<= cutoff) history -- rewrite ONLY when a > cutoff partial is present.
++    if incoming is None:
++        assert existing is not None  # the both-None case returned above
++        if len(_strip_incomplete_sessions(existing, cutoff_iso)) == len(existing):
++            return  # no partial -> no-op
++        _write_archive_atomic(path, existing)  # the barrier strips the partial
++        return
++
++    # legacy REPLACE for non-Shape-A incoming (dedup needs the asof_date key);
++    # the atomic strip still fires inside _write_archive_atomic.
++    if "asof_date" not in incoming.columns:
++        _write_archive_atomic(path, incoming)
++        return
++
++    frames = [f for f in (existing, incoming)
++              if f is not None and "asof_date" in f.columns]
++    if not frames:
++        return
++    union = pd.concat(frames) if len(frames) > 1 else frames[0]
++    merged = union.drop_duplicates(subset=["asof_date"], keep="last")
++    merged = merged.sort_values("asof_date").reset_index(drop=True)
++    # The atomic writer applies the > cutoff strip; an all-partial union writes
++    # clean (no > cutoff survives), a valid union preserves <= cutoff history.
++    _write_archive_atomic(path, merged)
+ 
+ 
+ def resolve_ohlcv_window(
+diff --git a/swing/evaluation/dates.py b/swing/evaluation/dates.py
+index 5791398e..c1495982 100644
+--- a/swing/evaluation/dates.py
++++ b/swing/evaluation/dates.py
+@@ -2,6 +2,7 @@
+ from __future__ import annotations
+ 
+ from datetime import date, datetime
++from enum import Enum
+ from zoneinfo import ZoneInfo
+ 
+ import exchange_calendars as xcals
+@@ -10,6 +11,24 @@ import pandas as pd
+ _NYSE = xcals.get_calendar("XNYS")
+ 
+ 
++class PageKind(Enum):
++    """Topbar-date intent for a base-layout page."""
++    FORWARD_PLANNING = "forward"   # what to do at the next session
++    HISTORY_ANALYSIS = "backward"  # what happened through the last completed session
++
++
++def topbar_session_date(page_kind: PageKind, now_local: datetime) -> date:
++    """The single source of truth for a base-layout topbar date (L6/Issue #5).
++
++    FORWARD_PLANNING -> action_session_for_run (the next session).
++    HISTORY_ANALYSIS -> last_completed_session (the last closed session).
++    Eliminates the naive date.today()/datetime.now().date() third family.
++    """
++    if page_kind is PageKind.FORWARD_PLANNING:
++        return action_session_for_run(now_local)
++    return last_completed_session(now_local)
++
++
+ def data_asof_from_ohlcv_max(df: pd.DataFrame) -> date:
+     """Most recent bar date in an OHLCV DataFrame (indexed by date)."""
+     idx_max = df.index.max()
+diff --git a/swing/integrations/schwab/client.py b/swing/integrations/schwab/client.py
+index 75056d94..44b46254 100644
+--- a/swing/integrations/schwab/client.py
++++ b/swing/integrations/schwab/client.py
+@@ -392,6 +392,28 @@ class SchwabPipelineActiveError(_RedactedMessageError):
+     definition. `__str__` redacts hash-shaped substrings."""
+ 
+ 
++class SchwabBarConsistencyError(SchwabApiError):
++    """Raised when a mapped Schwab daily candle violates the OhlcvBar
++    invariant (low/high vs open/close) -- typically an extended-hours print
++    folded into a regular-session candle. Subclasses SchwabApiError so the
++    market-data ladder's existing `except (SchwabAuthError,
++    SchwabRateLimitError, SchwabApiError)` clause catches it and falls back to
++    yfinance CLEANLY (not via the opaque catch-all). Carries a readable
++    message: OHLC detail (dates + prices) contains no account_hash, so it is
++    redaction-safe to echo (unlike the base class, which hides the body)."""
++
++    def __init__(self, asof_date: str, detail: str) -> None:
++        self.asof_date = asof_date
++        self.detail = detail
++        self.status_code = 422  # Unprocessable Entity -- bar failed validation
++        self.body_excerpt = ""
++        # Bypass SchwabApiError.__init__'s byte-length-only message; build a
++        # readable, redaction-safe one directly on RuntimeError.
++        RuntimeError.__init__(
++            self, f"OHLC consistency: {detail} (date={asof_date})"
++        )
++
++
+ # ---------- SchwabClient wrapper ----------
+ 
+ _VALID_ENVIRONMENTS = ("sandbox", "production")
+diff --git a/swing/integrations/schwab/mappers.py b/swing/integrations/schwab/mappers.py
+index b8c82cba..f65f45ef 100644
+--- a/swing/integrations/schwab/mappers.py
++++ b/swing/integrations/schwab/mappers.py
+@@ -27,6 +27,7 @@ from typing import Any
+ 
+ from swing.integrations.schwab.client import (
+     SchwabApiError,
++    SchwabBarConsistencyError,
+     SchwabSchemaParityError,
+ )
+ from swing.integrations.schwab.models import (
+@@ -41,6 +42,13 @@ from swing.integrations.schwab.models import (
+ 
+ _log = logging.getLogger(__name__)
+ 
++# OQ-6: round provider floats to a fixed sub-tick precision BEFORE OhlcvBar
++# construction so float-representation noise (12.34 vs 12.340000000001) never
++# trips the strict invariant. 4 dp is finer than any equity tick the tool
++# trades; a genuine ext-hours violation differs by cents-to-dollars and
++# survives rounding.
++_OHLC_ROUND_DP = 4
++
+ 
+ def _has_non_placeholder_leg(activities: object) -> bool:
+     """Return True if any leg in EXECUTION activities has a non-zero price.
+@@ -701,30 +709,31 @@ def map_quotes_to_price_cache_entries(
+             )
+             continue
+ 
+-        # Defensive dual-lookup per recon §3.2 — camelCase Schwab convention
+-        # primary, snake_case alternates accepted for forward-compat.
+-        last_price = body.get("lastPrice")
++        # L1: require regular-session provenance. NEVER read lastPrice/
++        # bidPrice/askPrice -- they carry the ext-hours book during pre/post
++        # market. A missing regular field drops the symbol -> yfinance fallback.
++        last_price = body.get("regularMarketLastPrice")
+         if last_price is None:
+-            last_price = body.get("last_price")
+-        bid = body.get("bidPrice")
++            last_price = body.get("regular_market_last_price")  # snake_case fwd-compat
++        bid = body.get("regularMarketBidPrice")
+         if bid is None:
+-            bid = body.get("bid")
+-        ask = body.get("askPrice")
++            bid = body.get("regular_market_bid_price")
++        ask = body.get("regularMarketAskPrice")
+         if ask is None:
+-            ask = body.get("ask")
++            ask = body.get("regular_market_ask_price")
+         mark = body.get("mark")
+         quote_time_raw = (
+-            body.get("quoteTimeInLong")
+-            or body.get("quoteTime")
+-            or body.get("quote_time")
++            body.get("regularMarketTradeTime")
++            or body.get("regular_market_trade_time")
+         )
+         delayed_raw = body.get("delayed")
+ 
+-        # Tolerate absent fields by dropping the symbol — partial response.
++        # Drop the symbol unless full regular-session provenance is present
++        # (last AND bid AND ask). No ext-hours value ever surfaces (L1).
+         if last_price is None or bid is None or ask is None:
+             _log.info(
+                 "map_quotes_to_price_cache_entries: dropping %s "
+-                "(missing last/bid/ask)",
++                "(missing regular-session last/bid/ask)",
+                 symbol,
+             )
+             continue
+@@ -832,23 +841,29 @@ def map_price_history_to_window(
+                     f"{dt_ms!r}: {type(exc).__name__}"
+                 ) from exc
+ 
+-            open_v = float(_require(c, "open", ctx=f"candles[{i}]"))
+-            high_v = float(_require(c, "high", ctx=f"candles[{i}]"))
+-            low_v = float(_require(c, "low", ctx=f"candles[{i}]"))
+-            close_v = float(_require(c, "close", ctx=f"candles[{i}]"))
++            open_v = round(float(_require(c, "open", ctx=f"candles[{i}]")), _OHLC_ROUND_DP)
++            high_v = round(float(_require(c, "high", ctx=f"candles[{i}]")), _OHLC_ROUND_DP)
++            low_v = round(float(_require(c, "low", ctx=f"candles[{i}]")), _OHLC_ROUND_DP)
++            close_v = round(float(_require(c, "close", ctx=f"candles[{i}]")), _OHLC_ROUND_DP)
+             volume_raw = c.get("volume", 0)
+             volume_v = int(volume_raw) if volume_raw is not None else 0
+         except SchwabSchemaParityError:
+             raise
+ 
+-        bars.append(OhlcvBar(
+-            asof_date=asof_date,
+-            open=open_v,
+-            high=high_v,
+-            low=low_v,
+-            close=close_v,
+-            volume=volume_v,
+-        ))
++        try:
++            bars.append(OhlcvBar(
++                asof_date=asof_date,
++                open=open_v,
++                high=high_v,
++                low=low_v,
++                close=close_v,
++                volume=volume_v,
++            ))
++        except ValueError as exc:
++            # OQ-4: a post-round invariant failure is a genuine bar-consistency
++            # problem (typically ext-hours-folded extremes). Re-raise typed so
++            # the audit row reads honestly and the ladder falls back cleanly.
++            raise SchwabBarConsistencyError(asof_date, str(exc)) from exc
+ 
+     # Defensive sort — Schwab returns oldest-first but we enforce.
+     bars.sort(key=lambda b: b.asof_date)
+diff --git a/swing/integrations/schwab/marketdata.py b/swing/integrations/schwab/marketdata.py
+index dd0e3b45..61491ff4 100644
+--- a/swing/integrations/schwab/marketdata.py
++++ b/swing/integrations/schwab/marketdata.py
+@@ -51,6 +51,7 @@ import logging
+ import sqlite3
+ import threading
+ import time
++from collections.abc import Callable
+ from datetime import datetime
+ from typing import Any
+ 
+@@ -285,7 +286,7 @@ def get_quotes_batch(
+     surface: str,
+     environment: str,
+     pipeline_run_id: int | None = None,
+-    fields: str | None = None,
++    fields: str | None = "quote",   # ensure regularMarket* block is returned (OQ-3)
+ ) -> dict[str, SchwabQuoteResponse]:
+     """Fetch `Client.quotes(symbols=symbols, fields=fields)`. Returns mapped dict.
+ 
+@@ -375,6 +376,36 @@ def get_quotes_batch(
+     )
+ 
+ 
++def _build_price_history_client_method(
++    client: Any,
++    symbol: str,
++    period_type: str | None,
++    period: int | None,
++    frequency_type: str | None,
++    frequency: int | None,
++    start_dt: Any,
++    end_dt: Any,
++) -> Callable[[], Any]:
++    """Build the price_history call thunk. **camelCase BINDING -- see module
++    docstring + signature-pin test.** needExtendedHoursData=False (L1:
++    regular-session candles only); needPreviousClose=False (explicit -- we
++    never consume previousClose; flip this kwarg alone if a future consumer
++    needs it -- it does not affect candle OHLC)."""
++    def _client_method() -> Any:
++        return client.price_history(
++            symbol,
++            periodType=period_type,
++            period=period,
++            frequencyType=frequency_type,
++            frequency=frequency,
++            startDate=start_dt,
++            endDate=end_dt,
++            needExtendedHoursData=False,
++            needPreviousClose=False,
++        )
++    return _client_method
++
++
+ def get_price_history(
+     client: Any,
+     conn: sqlite3.Connection,
+@@ -423,17 +454,10 @@ def get_price_history(
+             0, "get_price_history: symbol must be non-empty str"
+         )
+ 
+-    def _client_method() -> Any:
+-        # **camelCase BINDING — see module docstring + signature-pin test.**
+-        return client.price_history(
+-            symbol,
+-            periodType=period_type,
+-            period=period,
+-            frequencyType=frequency_type,
+-            frequency=frequency,
+-            startDate=start_dt,
+-            endDate=end_dt,
+-        )
++    _client_method = _build_price_history_client_method(
++        client, symbol,
++        period_type, period, frequency_type, frequency, start_dt, end_dt,
++    )
+ 
+     def _mapper(payload: Any) -> SchwabPriceHistoryWindow:
+         return map_price_history_to_window(payload, ticker=symbol)
+diff --git a/swing/pipeline/runner.py b/swing/pipeline/runner.py
+index a4faad21..9c4e2a76 100644
+--- a/swing/pipeline/runner.py
++++ b/swing/pipeline/runner.py
+@@ -2474,9 +2474,21 @@ def _bar_for_date(cfg, ohlcv_cache, ticker: str, observation_date: str):
+     observation_date (NOT iloc[-1]); freezes it; never re-reads it later
+     (#26 elimination honest).
+     """
+-    from datetime import date, timedelta
++    from datetime import date, datetime, timedelta
+ 
+     from swing.data.ohlcv_archive import resolve_ohlcv_window
++
++    # L3 date-only guard: never select a bar for the current in-progress
++    # session. observation_date MUST be <= last_completed_session(now). In
++    # normal operation observation_date == data_asof_date == the completed
++    # session, so this never fires; it catches a wiring regression.
++    cutoff = last_completed_session(datetime.now())
++    if date.fromisoformat(observation_date) > cutoff:
++        raise ValueError(
++            f"_bar_for_date: observation_date {observation_date} is not a "
++            f"completed session (cutoff {cutoff.isoformat()}); refusing to "
++            f"select a partial/in-progress bar for the append-only log"
++        )
+     # 1. Populate the archive (write-through; the same call detect makes).
+     #    Best-effort by design (Codex chain #1 Major #6): the date-anchored
+     #    archive read in step 2 is AUTHORITATIVE. A get_or_fetch failure here
+@@ -2556,6 +2568,9 @@ def _step_pattern_observe(*, cfg, lease, ohlcv_cache, run_warnings):
+     from swing.pipeline.temporal_metadata import build_ohlc_today_json
+ 
+     observation_date = lease_data_asof(cfg, lease)  # run DATA cutoff (R2 M#1)
++    # L3 completed-day guard cutoff: passed to build_ohlc_today_json so a
++    # non-completed-session bar can never enter the append-only log.
++    observe_cutoff = last_completed_session(_dt.now())
+     max_pending = cfg.pipeline.observe_max_pending_window_sessions
+     max_post = cfg.pipeline.observe_max_post_trigger_window_sessions
+ 
+@@ -2638,7 +2653,9 @@ def _step_pattern_observe(*, cfg, lease, ohlcv_cache, run_warnings):
+             insert_observation(conn, PatternForwardObservation(
+                 observation_id=None, detection_id=det.detection_id,
+                 observation_date=observation_date,
+-                ohlc_today_json=build_ohlc_today_json(bar),  # validated shape + provider domain
++                ohlc_today_json=build_ohlc_today_json(
++                    bar, observation_date=observation_date, cutoff=observe_cutoff,
++                ),  # validated shape + provider domain + completed-day guard
+                 status=status, status_change_event=change,
+                 sessions_since_detection=sessions,
+                 created_at=datetime.now(UTC).isoformat(),
+diff --git a/swing/pipeline/temporal_metadata.py b/swing/pipeline/temporal_metadata.py
+index 9a6b0d60..28c8e570 100644
+--- a/swing/pipeline/temporal_metadata.py
++++ b/swing/pipeline/temporal_metadata.py
+@@ -146,12 +146,19 @@ _OHLC_TODAY_PROVIDERS = ("schwab_api", "yfinance")
+ _OHLC_TODAY_KEYS = ("open", "high", "low", "close", "volume", "provider")
+ 
+ 
+-def build_ohlc_today_json(bar: dict) -> str:
+-    """Validated serializer for ohlc_today_json (Codex chain #2 Major #6 --
+-    construction barrier for the observation JSON shape so the substrate's
+-    provider provenance is guaranteed, not convention). Rejects a missing key
+-    or an out-of-domain provider so a bad shape never enters the append-only
+-    log. The observe step uses THIS instead of a bare json.dumps."""
++def build_ohlc_today_json(
++    bar: dict, *, observation_date: str, cutoff: date,
++) -> str:
++    """Validated serializer for ohlc_today_json. Construction-barrier guard:
++    refuses to serialize a bar for a non-completed session (date-only; L3) so
++    no partial/in-progress bar enters the append-only log. Then validates the
++    key set + provider domain as before (Codex chain #2 Major #6 -- the
++    substrate's provider provenance is guaranteed, not convention)."""
++    if date.fromisoformat(observation_date) > cutoff:
++        raise ValueError(
++            f"ohlc_today_json: refusing to lock a non-completed-session bar "
++            f"({observation_date} > {cutoff.isoformat()})"
++        )
+     missing = [k for k in _OHLC_TODAY_KEYS if k not in bar]
+     if missing:
+         raise ValueError(f"ohlc_today_json missing keys: {missing}")
+diff --git a/swing/web/app.py b/swing/web/app.py
+index 192618f6..c8fb414f 100644
+--- a/swing/web/app.py
++++ b/swing/web/app.py
+@@ -501,10 +501,11 @@ def create_app(cfg: Config, cfg_path: Path | None = None) -> FastAPI:
+         if request.method == "GET" and "text/html" in accept_header:
+             from datetime import datetime
+ 
+-            from swing.evaluation.dates import action_session_for_run
++            from swing.evaluation.dates import PageKind, topbar_session_date
+             from swing.web.view_models.error import PageErrorVM
+             try:
+-                session_date = action_session_for_run(datetime.now()).isoformat()
++                session_date = topbar_session_date(
++                    PageKind.HISTORY_ANALYSIS, datetime.now()).isoformat()
+             except Exception:
+                 session_date = "n/a"
+             vm = PageErrorVM(
+diff --git a/swing/web/routes/account.py b/swing/web/routes/account.py
+index 2f65212e..5e117b39 100644
+--- a/swing/web/routes/account.py
++++ b/swing/web/routes/account.py
+@@ -33,8 +33,9 @@ from fastapi import APIRouter, Request
+ from fastapi.responses import HTMLResponse, RedirectResponse, Response
+ 
+ from swing.evaluation.dates import (
+-    action_session_for_run,
++    PageKind,
+     last_completed_session,
++    topbar_session_date,
+ )
+ from swing.metrics.discrepancies import (
+     count_recent_multi_leg_auto_corrections,
+@@ -62,7 +63,7 @@ def _render_form(
+     status_code: int = 200,
+ ) -> Response:
+     """Render the snapshot form with the server-stamped session_date."""
+-    session_date = action_session_for_run(datetime.now()).isoformat()
++    session_date = topbar_session_date(PageKind.HISTORY_ANALYSIS, datetime.now()).isoformat()
+     vm = AccountSnapshotFormVM(
+         session_date=session_date,
+         unresolved_material_discrepancies_count=unresolved_count,
+diff --git a/swing/web/routes/metrics.py b/swing/web/routes/metrics.py
+index e4d8cc32..b8b0366b 100644
+--- a/swing/web/routes/metrics.py
++++ b/swing/web/routes/metrics.py
+@@ -244,13 +244,14 @@ def metrics_pattern_outcomes(request: Request):
+     """
+     from datetime import datetime
+ 
+-    from swing.evaluation.dates import action_session_for_run
++    from swing.evaluation.dates import PageKind, topbar_session_date
+     db_path = request.app.state.cfg.paths.db_path
+     conn = sqlite3.connect(db_path)
+     try:
+         vm = build_pattern_outcomes_vm(
+             conn,
+-            session_date=action_session_for_run(datetime.now()).isoformat(),
++            session_date=topbar_session_date(
++                PageKind.HISTORY_ANALYSIS, datetime.now()).isoformat(),
+         )
+     finally:
+         conn.close()
+diff --git a/swing/web/routes/patterns.py b/swing/web/routes/patterns.py
+index 991bf4f1..26d80eed 100644
+--- a/swing/web/routes/patterns.py
++++ b/swing/web/routes/patterns.py
+@@ -34,7 +34,7 @@ from swing.data.db import connect
+ from swing.data.models import DETECTOR_PATTERN_CLASSES, PatternExemplar
+ from swing.data.repos import pattern_evaluations as evals_repo
+ from swing.data.repos import pattern_exemplars as exemplars_repo
+-from swing.evaluation.dates import last_completed_session
++from swing.evaluation.dates import PageKind, topbar_session_date
+ from swing.web.view_models.patterns.exemplars import (
+     build_patterns_exemplars_vm,
+ )
+@@ -82,7 +82,7 @@ def _session_date_str() -> str:
+     ``.replace(tzinfo=ZoneInfo('Pacific/Honolulu'))`` internally — passing
+     a UTC-aware datetime would double-localize.
+     """
+-    return last_completed_session(datetime.now()).isoformat()
++    return topbar_session_date(PageKind.HISTORY_ANALYSIS, datetime.now()).isoformat()
+ 
+ 
+ @router.get("/patterns/exemplars", response_class=HTMLResponse)
+diff --git a/swing/web/routes/reconcile.py b/swing/web/routes/reconcile.py
+index 1fe029e5..16ca86cd 100644
+--- a/swing/web/routes/reconcile.py
++++ b/swing/web/routes/reconcile.py
+@@ -42,7 +42,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
+ 
+ from swing.config_overrides import apply_overrides
+ from swing.data.repos.reconciliation import get_discrepancy
+-from swing.evaluation.dates import action_session_for_run
++from swing.evaluation.dates import PageKind, topbar_session_date
+ from swing.metrics.discrepancies import (
+     count_recent_multi_leg_auto_corrections,
+     count_unresolved_material,
+@@ -86,7 +86,7 @@ def _render_error(
+     (and T-2.6 will extend with anchor_mismatch + service_error +
+     db_unavailable branches)."""
+     try:
+-        session_date = action_session_for_run(datetime.now()).isoformat()
++        session_date = topbar_session_date(PageKind.HISTORY_ANALYSIS, datetime.now()).isoformat()
+     except Exception:  # pragma: no cover - defensive
+         session_date = "n/a"
+     vm = ReconcileDiscrepancyErrorVM(
+diff --git a/swing/web/routes/schwab.py b/swing/web/routes/schwab.py
+index b381b8a3..10358cdb 100644
+--- a/swing/web/routes/schwab.py
++++ b/swing/web/routes/schwab.py
+@@ -41,7 +41,7 @@ from fastapi import APIRouter, Request
+ from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
+ 
+ from swing.config_overrides import apply_overrides
+-from swing.evaluation.dates import action_session_for_run
++from swing.evaluation.dates import PageKind, topbar_session_date
+ from swing.integrations.schwab.auth import (
+     _redacted_excerpt,
+     _resolve_tokens_db_path,
+@@ -162,7 +162,7 @@ def _render_error(
+     banner_resolve_link: str | None = None,
+ ) -> Response:
+     try:
+-        session_date = action_session_for_run(datetime.now()).isoformat()
++        session_date = topbar_session_date(PageKind.HISTORY_ANALYSIS, datetime.now()).isoformat()
+     except Exception:  # pragma: no cover - defensive
+         session_date = "n/a"
+     vm = SchwabSetupErrorVM(
+@@ -221,7 +221,7 @@ def _build_form_vm(
+     except Exception:  # pragma: no cover - defensive
+         existing_db = False
+     try:
+-        session_date = action_session_for_run(datetime.now()).isoformat()
++        session_date = topbar_session_date(PageKind.HISTORY_ANALYSIS, datetime.now()).isoformat()
+     except Exception:  # pragma: no cover
+         session_date = "n/a"
+     return SchwabSetupVM(
+@@ -562,7 +562,7 @@ def schwab_status_get(
+     )
+     banner_resolve_link = _fetch_banner_resolve_link(cfg.paths.db_path)
+ 
+-    session_date = action_session_for_run(datetime.now()).isoformat()
++    session_date = topbar_session_date(PageKind.HISTORY_ANALYSIS, datetime.now()).isoformat()
+     vm = build_schwab_status_vm(
+         cfg=cfg,
+         env=env,
+diff --git a/swing/web/view_models/config.py b/swing/web/view_models/config.py
+index 1f08609a..f10e4106 100644
+--- a/swing/web/view_models/config.py
++++ b/swing/web/view_models/config.py
+@@ -2,7 +2,7 @@
+ from __future__ import annotations
+ 
+ from dataclasses import dataclass
+-from datetime import date
++from datetime import datetime
+ from typing import Any
+ 
+ from swing.config import Config
+@@ -12,6 +12,7 @@ from swing.config_validation import (
+     FieldSpec,
+     mask_sensitive_value,
+ )
++from swing.evaluation.dates import PageKind, topbar_session_date
+ 
+ 
+ @dataclass(frozen=True)
+@@ -31,6 +32,7 @@ class ConfigFieldRow:
+ 
+ @dataclass(frozen=True)
+ class ConfigPageVM:
++    PAGE_KIND = PageKind.HISTORY_ANALYSIS  # Issue #5 topbar (backward)
+     rows: list[ConfigFieldRow]
+     saved: bool                                # set by ?saved=1 redirect-back
+     # Base-layout banner fields (CLAUDE.md base.html.j2 5-VM rule check —
+@@ -167,7 +169,7 @@ def build_config_vm(
+     return ConfigPageVM(
+         rows=rows,
+         saved=saved,
+-        session_date=date.today().isoformat(),
++        session_date=topbar_session_date(PageKind.HISTORY_ANALYSIS, datetime.now()).isoformat(),
+         risk_policy_divergence=divergence,
+         unresolved_material_discrepancies_count=unresolved_count,
+         recent_multi_leg_auto_correction_count=recent_multi_leg_count,
+diff --git a/swing/web/view_models/dashboard.py b/swing/web/view_models/dashboard.py
+index 0a1eb83b..f21b60a7 100644
+--- a/swing/web/view_models/dashboard.py
++++ b/swing/web/view_models/dashboard.py
+@@ -21,7 +21,7 @@ from swing.data.repos.risk_policy import NoActivePolicyError
+ from swing.data.repos.trades import list_closed_trades, list_open_trades
+ from swing.data.repos.watchlist import list_active_watchlist
+ from swing.data.repos.weather import get_latest
+-from swing.evaluation.dates import action_session_for_run
++from swing.evaluation.dates import PageKind, action_session_for_run, topbar_session_date
+ from swing.journal.stats import HypothesisProgress
+ from swing.metrics.equity_resolver import (
+     resolve_live_capital_denominator_dollars,
+@@ -316,6 +316,7 @@ class CadenceCardVM:
+ 
+ @dataclass(frozen=True)
+ class DashboardVM:
++    PAGE_KIND = PageKind.FORWARD_PLANNING  # Issue #5 topbar (forward)
+     generated_at: str
+     session_date: str
+     stale_banner: str | None
+@@ -1531,7 +1532,7 @@ def build_dashboard(
+     degraded_until = cache.degraded_until()
+     return DashboardVM(
+         generated_at=now.isoformat(timespec="seconds"),
+-        session_date=action_session,
++        session_date=topbar_session_date(PageKind.FORWARD_PLANNING, now).isoformat(),
+         stale_banner=stale_banner,
+         status_strip=status_strip,
+         today_decisions=today_decisions,
+diff --git a/swing/web/view_models/error.py b/swing/web/view_models/error.py
+index ad6d9c1b..01588a45 100644
+--- a/swing/web/view_models/error.py
++++ b/swing/web/view_models/error.py
+@@ -3,6 +3,8 @@ from __future__ import annotations
+ 
+ from dataclasses import dataclass
+ 
++from swing.evaluation.dates import PageKind
++
+ 
+ @dataclass(frozen=True)
+ class PageErrorVM:
+@@ -10,7 +12,9 @@ class PageErrorVM:
+     dereferences vm.session_date, vm.stale_banner, and vm.price_source_degraded
+     on every render; this VM supplies base-layout-compatible defaults so an
+     error page doesn't turn into a 500 via UndefinedError. Spec §3.2."""
+-    session_date: str                     # today's action_session_for_run() value, or "n/a"
++
++    PAGE_KIND = PageKind.HISTORY_ANALYSIS  # Issue #5 topbar (backward)
++    session_date: str                     # topbar_session_date(HISTORY_ANALYSIS) value, or "n/a"
+     stale_banner: None = None             # never stale on an error page
+     price_source_degraded: bool = False   # degraded-cache banner not shown
+     status_code: int = 400
+diff --git a/swing/web/view_models/journal.py b/swing/web/view_models/journal.py
+index f6472920..547db874 100644
+--- a/swing/web/view_models/journal.py
++++ b/swing/web/view_models/journal.py
+@@ -3,7 +3,7 @@ from __future__ import annotations
+ 
+ import logging
+ from dataclasses import dataclass, field
+-from datetime import date
++from datetime import date, datetime
+ from typing import Literal
+ 
+ from swing.config import Config
+@@ -16,6 +16,7 @@ from swing.data.repos.trades import (
+     list_open_trades,
+ )
+ from swing.data.repos.weather import list_weather_runs
++from swing.evaluation.dates import PageKind, topbar_session_date
+ from swing.journal.flags import BehavioralFlag, compute_flags
+ from swing.journal.stats import JournalStats, compute_stats, period_filter
+ from swing.trades.review import compute_actual_realized_R_effective
+@@ -176,6 +177,7 @@ class JournalRowVM:
+ 
+ @dataclass(frozen=True)
+ class JournalVM:
++    PAGE_KIND = PageKind.HISTORY_ANALYSIS  # Issue #5 topbar (backward)
+     period: str
+     stats: JournalStats
+     flags: list[BehavioralFlag]
+@@ -249,7 +251,7 @@ def _base_banner_fields(conn, cfg: Config) -> dict:
+     )
+ 
+     return {
+-        "session_date": date.today().isoformat(),
++        "session_date": topbar_session_date(PageKind.HISTORY_ANALYSIS, datetime.now()).isoformat(),
+         "stale_banner": None,
+         "price_source_degraded": False,
+         "price_source_degraded_until": None,
+@@ -581,6 +583,8 @@ class TradeDrilldownVM:
+     thesis: str | None = None
+     why_now: str | None = None
+     invalidation_condition: str | None = None
++    PAGE_KIND = PageKind.HISTORY_ANALYSIS  # Issue #5 topbar (backward)
++
+     # base-banner fields (populated via _base_banner_fields):
+     session_date: str = ""
+     stale_banner: str | None = None
+diff --git a/swing/web/view_models/metrics/capital_friction.py b/swing/web/view_models/metrics/capital_friction.py
+index c2ac5229..b1cb46e4 100644
+--- a/swing/web/view_models/metrics/capital_friction.py
++++ b/swing/web/view_models/metrics/capital_friction.py
+@@ -25,7 +25,7 @@ from datetime import datetime
+ 
+ from swing.config import Config
+ from swing.data.db import connect
+-from swing.evaluation.dates import action_session_for_run, last_completed_session
++from swing.evaluation.dates import PageKind, last_completed_session, topbar_session_date
+ from swing.metrics.capital import (
+     CapitalFrictionResult,
+     compute_capital_friction,
+@@ -103,7 +103,7 @@ def build_capital_friction_vm(
+         if own_conn:
+             conn.close()
+     return CapitalFrictionVM(
+-        session_date=action_session_for_run(datetime.now()).isoformat(),
++        session_date=topbar_session_date(PageKind.HISTORY_ANALYSIS, datetime.now()).isoformat(),
+         unresolved_material_discrepancies_count=unresolved,
+         recent_multi_leg_auto_correction_count=recent_multi_leg,
+         banner_resolve_link=banner_resolve_link,
+diff --git a/swing/web/view_models/metrics/deviation_outcome.py b/swing/web/view_models/metrics/deviation_outcome.py
+index df0d7d02..f5ace4b0 100644
+--- a/swing/web/view_models/metrics/deviation_outcome.py
++++ b/swing/web/view_models/metrics/deviation_outcome.py
+@@ -29,7 +29,7 @@ from datetime import datetime
+ 
+ from swing.config import Config
+ from swing.data.db import connect
+-from swing.evaluation.dates import action_session_for_run
++from swing.evaluation.dates import PageKind, topbar_session_date
+ from swing.metrics.discrepancies import (
+     count_recent_multi_leg_auto_corrections,
+     count_unresolved_material,
+@@ -98,7 +98,7 @@ def build_deviation_outcome_vm(
+         if own_conn:
+             conn.close()
+     return DeviationOutcomeVM(
+-        session_date=action_session_for_run(datetime.now()).isoformat(),
++        session_date=topbar_session_date(PageKind.HISTORY_ANALYSIS, datetime.now()).isoformat(),
+         unresolved_material_discrepancies_count=unresolved,
+         recent_multi_leg_auto_correction_count=recent_multi_leg,
+         banner_resolve_link=banner_resolve_link,
+diff --git a/swing/web/view_models/metrics/hypothesis_progress_card.py b/swing/web/view_models/metrics/hypothesis_progress_card.py
+index af6c3ec0..8bca7289 100644
+--- a/swing/web/view_models/metrics/hypothesis_progress_card.py
++++ b/swing/web/view_models/metrics/hypothesis_progress_card.py
+@@ -30,7 +30,7 @@ from swing.data.repos.fills import list_fills_for_trade
+ from swing.data.repos.hypothesis_status_history import (
+     list_history_for_hypothesis,
+ )
+-from swing.evaluation.dates import action_session_for_run
++from swing.evaluation.dates import PageKind, topbar_session_date
+ from swing.metrics.cohort import list_closed_trades_for_cohort
+ from swing.metrics.discrepancies import (
+     count_recent_multi_leg_auto_corrections,
+@@ -427,7 +427,7 @@ def build_hypothesis_progress_card_vm(
+         if own_conn:
+             conn.close()
+     return HypothesisProgressCardVM(
+-        session_date=action_session_for_run(datetime.now()).isoformat(),
++        session_date=topbar_session_date(PageKind.HISTORY_ANALYSIS, datetime.now()).isoformat(),
+         unresolved_material_discrepancies_count=unresolved,
+         recent_multi_leg_auto_correction_count=recent_multi_leg,
+         banner_resolve_link=banner_resolve_link,
+diff --git a/swing/web/view_models/metrics/identification_funnel.py b/swing/web/view_models/metrics/identification_funnel.py
+index 47fc15e2..18d50dcc 100644
+--- a/swing/web/view_models/metrics/identification_funnel.py
++++ b/swing/web/view_models/metrics/identification_funnel.py
+@@ -21,7 +21,7 @@ from datetime import datetime
+ 
+ from swing.config import Config
+ from swing.data.db import connect
+-from swing.evaluation.dates import action_session_for_run, last_completed_session
++from swing.evaluation.dates import PageKind, last_completed_session, topbar_session_date
+ from swing.metrics.discrepancies import (
+     count_recent_multi_leg_auto_corrections,
+     count_unresolved_material,
+@@ -81,7 +81,7 @@ def build_identification_funnel_vm(
+         if own_conn:
+             conn.close()
+     return IdentificationFunnelVM(
+-        session_date=action_session_for_run(datetime.now()).isoformat(),
++        session_date=topbar_session_date(PageKind.HISTORY_ANALYSIS, datetime.now()).isoformat(),
+         unresolved_material_discrepancies_count=unresolved,
+         recent_multi_leg_auto_correction_count=recent_multi_leg,
+         banner_resolve_link=banner_resolve_link,
+diff --git a/swing/web/view_models/metrics/index.py b/swing/web/view_models/metrics/index.py
+index 8997fe1c..693f7142 100644
+--- a/swing/web/view_models/metrics/index.py
++++ b/swing/web/view_models/metrics/index.py
+@@ -15,7 +15,7 @@ from dataclasses import dataclass, field, replace
+ from datetime import datetime
+ 
+ from swing.config import Config
+-from swing.evaluation.dates import action_session_for_run
++from swing.evaluation.dates import PageKind, topbar_session_date
+ from swing.metrics.capital import TREND_MIN_RUNS as _CAPITAL_TREND_MIN_RUNS
+ from swing.metrics.discrepancies import (
+     count_recent_multi_leg_auto_corrections,
+@@ -434,7 +434,7 @@ def build_metrics_index_vm(cfg: Config, conn: sqlite3.Connection) -> MetricsInde
+     ``action_session_for_run(now)`` (the navigator topbar date, as before).
+     Each surface card is enriched read-only from the existing per-surface
+     output; a single surface's failure degrades only that card."""
+-    session_date = action_session_for_run(datetime.now()).isoformat()
++    session_date = topbar_session_date(PageKind.HISTORY_ANALYSIS, datetime.now()).isoformat()
+     enriched = tuple(
+         _enrich_surface(base, cfg, conn, session_date) for base in _SURFACES
+     )
+diff --git a/swing/web/view_models/metrics/maturity_stage.py b/swing/web/view_models/metrics/maturity_stage.py
+index 80e6b670..48ea86e1 100644
+--- a/swing/web/view_models/metrics/maturity_stage.py
++++ b/swing/web/view_models/metrics/maturity_stage.py
+@@ -21,7 +21,7 @@ from datetime import datetime
+ 
+ from swing.config import Config
+ from swing.data.db import connect
+-from swing.evaluation.dates import action_session_for_run, last_completed_session
++from swing.evaluation.dates import PageKind, last_completed_session, topbar_session_date
+ from swing.metrics.discrepancies import (
+     count_recent_multi_leg_auto_corrections,
+     count_unresolved_material,
+@@ -77,7 +77,7 @@ def build_maturity_stage_vm(
+         if own_conn:
+             conn.close()
+     return MaturityStageVM(
+-        session_date=action_session_for_run(datetime.now()).isoformat(),
++        session_date=topbar_session_date(PageKind.HISTORY_ANALYSIS, datetime.now()).isoformat(),
+         unresolved_material_discrepancies_count=unresolved,
+         recent_multi_leg_auto_correction_count=recent_multi_leg,
+         banner_resolve_link=banner_resolve_link,
+diff --git a/swing/web/view_models/metrics/process_grade_trend.py b/swing/web/view_models/metrics/process_grade_trend.py
+index fe8a52c9..bc8590f1 100644
+--- a/swing/web/view_models/metrics/process_grade_trend.py
++++ b/swing/web/view_models/metrics/process_grade_trend.py
+@@ -26,7 +26,7 @@ from datetime import datetime
+ 
+ from swing.config import Config
+ from swing.data.db import connect
+-from swing.evaluation.dates import action_session_for_run
++from swing.evaluation.dates import PageKind, topbar_session_date
+ from swing.metrics.discrepancies import (
+     count_recent_multi_leg_auto_corrections,
+     count_unresolved_material,
+@@ -662,7 +662,7 @@ def build_process_grade_trend_vm(
+     )
+ 
+     return ProcessGradeTrendVM(
+-        session_date=action_session_for_run(datetime.now()).isoformat(),
++        session_date=topbar_session_date(PageKind.HISTORY_ANALYSIS, datetime.now()).isoformat(),
+         unresolved_material_discrepancies_count=unresolved,
+         recent_multi_leg_auto_correction_count=recent_multi_leg,
+         banner_resolve_link=banner_resolve_link,
+diff --git a/swing/web/view_models/metrics/shared.py b/swing/web/view_models/metrics/shared.py
+index c83e2b1c..5aaaf86e 100644
+--- a/swing/web/view_models/metrics/shared.py
++++ b/swing/web/view_models/metrics/shared.py
+@@ -23,6 +23,8 @@ from __future__ import annotations
+ 
+ from dataclasses import dataclass
+ 
++from swing.evaluation.dates import PageKind
++
+ 
+ @dataclass(frozen=True)
+ class BaseLayoutVM:
+@@ -39,6 +41,11 @@ class BaseLayoutVM:
+     T-E.3 (cross-bundle pin via the skipped regression test in T-A.7).
+     """
+ 
++    # Issue #5 topbar policy: every base-layout (metrics/account/patterns-
++    # queue) page is HISTORY_ANALYSIS (about the last completed session).
++    # Class-level (NOT a dataclass field); subclasses override only if forward.
++    PAGE_KIND = PageKind.HISTORY_ANALYSIS
++
+     session_date: str
+     stale_banner: str | None = None
+     price_source_degraded: bool = False
+diff --git a/swing/web/view_models/metrics/tier_comparison.py b/swing/web/view_models/metrics/tier_comparison.py
+index f84ab362..07ebeea5 100644
+--- a/swing/web/view_models/metrics/tier_comparison.py
++++ b/swing/web/view_models/metrics/tier_comparison.py
+@@ -28,7 +28,7 @@ from datetime import datetime
+ 
+ from swing.config import Config
+ from swing.data.db import connect
+-from swing.evaluation.dates import action_session_for_run
++from swing.evaluation.dates import PageKind, topbar_session_date
+ from swing.metrics.discrepancies import (
+     count_recent_multi_leg_auto_corrections,
+     count_unresolved_material,
+@@ -100,7 +100,7 @@ def build_tier_comparison_vm(
+         if own_conn:
+             conn.close()
+     return TierComparisonVM(
+-        session_date=action_session_for_run(datetime.now()).isoformat(),
++        session_date=topbar_session_date(PageKind.HISTORY_ANALYSIS, datetime.now()).isoformat(),
+         unresolved_material_discrepancies_count=unresolved,
+         recent_multi_leg_auto_correction_count=recent_multi_leg,
+         banner_resolve_link=banner_resolve_link,
+diff --git a/swing/web/view_models/metrics/trade_process_card.py b/swing/web/view_models/metrics/trade_process_card.py
+index da9bc635..6d60a8c9 100644
+--- a/swing/web/view_models/metrics/trade_process_card.py
++++ b/swing/web/view_models/metrics/trade_process_card.py
+@@ -26,7 +26,7 @@ from datetime import datetime
+ 
+ from swing.config import Config
+ from swing.data.db import connect
+-from swing.evaluation.dates import action_session_for_run
++from swing.evaluation.dates import PageKind, topbar_session_date
+ from swing.metrics.cohort import count_per_cohort
+ from swing.metrics.discrepancies import (
+     count_recent_multi_leg_auto_corrections,
+@@ -188,7 +188,7 @@ def build_trade_process_card_vm(
+             conn.close()
+ 
+     return TradeProcessCardVM(
+-        session_date=action_session_for_run(datetime.now()).isoformat(),
++        session_date=topbar_session_date(PageKind.HISTORY_ANALYSIS, datetime.now()).isoformat(),
+         unresolved_material_discrepancies_count=unresolved,
+         recent_multi_leg_auto_correction_count=recent_multi_leg,
+         banner_resolve_link=banner_resolve_link,
+diff --git a/swing/web/view_models/pipeline.py b/swing/web/view_models/pipeline.py
+index a7a66a7f..fde222db 100644
+--- a/swing/web/view_models/pipeline.py
++++ b/swing/web/view_models/pipeline.py
+@@ -8,11 +8,13 @@ from swing.config import Config
+ from swing.data.db import connect
+ from swing.data.models import PipelineRun
+ from swing.data.repos.pipeline import find_active_run, list_recent_runs
++from swing.evaluation.dates import PageKind, topbar_session_date
+ from swing.pipeline.staleness import is_stale_eligible
+ 
+ 
+ @dataclass(frozen=True)
+ class PipelineVM:
++    PAGE_KIND = PageKind.HISTORY_ANALYSIS  # Issue #5 topbar (backward)
+     session_date: str
+     recent_runs: list[PipelineRun]
+     stale_run: PipelineRun | None = None
+@@ -68,7 +70,7 @@ def build_pipeline(*, cfg: Config, limit: int = 10, ohlcv_degraded: bool = False
+     finally:
+         conn.close()
+     return PipelineVM(
+-        session_date=datetime.now().date().isoformat(),
++        session_date=topbar_session_date(PageKind.HISTORY_ANALYSIS, datetime.now()).isoformat(),
+         recent_runs=list(runs),
+         stale_run=stale,
+         ohlcv_source_degraded=ohlcv_degraded,            # NEW (Phase 3d §3.4)
+diff --git a/swing/web/view_models/reconcile.py b/swing/web/view_models/reconcile.py
+index 3b7435da..81dc1535 100644
+--- a/swing/web/view_models/reconcile.py
++++ b/swing/web/view_models/reconcile.py
+@@ -45,7 +45,7 @@ from typing import Any
+ 
+ from swing.data.models import ReconciliationDiscrepancy
+ from swing.data.repos.reconciliation import get_discrepancy
+-from swing.evaluation.dates import action_session_for_run
++from swing.evaluation.dates import PageKind, topbar_session_date
+ from swing.metrics.discrepancies import (
+     count_recent_multi_leg_auto_corrections,
+     count_unresolved_material,
+@@ -192,6 +192,8 @@ class ReconcileDiscrepancyResolveVM:
+     operator input across the round-trip).
+     """
+ 
++    PAGE_KIND = PageKind.HISTORY_ANALYSIS  # Issue #5 topbar (backward)
++
+     # Base-layout fields (8 standalone, mirror BaseLayoutVM shape).
+     session_date: str
+     stale_banner: str | None = None
+@@ -779,7 +781,7 @@ def build_reconcile_discrepancy_resolve_vm(
+         conn,
+     )
+ 
+-    session_date = action_session_for_run(datetime.now()).isoformat()
++    session_date = topbar_session_date(PageKind.HISTORY_ANALYSIS, datetime.now()).isoformat()
+ 
+     return ReconcileDiscrepancyResolveVM(
+         session_date=session_date,
+@@ -868,6 +870,8 @@ class ReconcileDiscrepancyErrorVM:
+     already-green call sites whose contract permits empty.
+     """
+ 
++    PAGE_KIND = PageKind.HISTORY_ANALYSIS  # Issue #5 topbar (backward)
++
+     # Base-layout fields (8 standalone, mirror BaseLayoutVM shape).
+     session_date: str
+     error_kind: str
+diff --git a/swing/web/view_models/schwab.py b/swing/web/view_models/schwab.py
+index 4b2e7a82..490f787b 100644
+--- a/swing/web/view_models/schwab.py
++++ b/swing/web/view_models/schwab.py
+@@ -26,6 +26,8 @@ from __future__ import annotations
+ from dataclasses import dataclass
+ from typing import Literal
+ 
++from swing.evaluation.dates import PageKind
++
+ # Local minimal base-layout fields. Phase 10 introduced ``BaseLayoutVM`` in
+ # ``swing.web.view_models.metrics.shared`` for metrics-page VMs; non-metrics
+ # VMs (DashboardVM, PipelineVM, ConfigVM, AccountSnapshotFormVM, etc.) all
+@@ -67,6 +69,8 @@ class SchwabSetupVM:
+             the form after a failed POST.
+     """
+ 
++    PAGE_KIND = PageKind.HISTORY_ANALYSIS  # Issue #5 topbar (backward)
++
+     # Base-layout fields (required-first, default-second per dataclass
+     # convention; matches PageErrorVM shape).
+     session_date: str
+@@ -224,6 +228,8 @@ class SchwabStatusVM:
+     count`` helper at the route handler entry per Phase 10 T-E.3 retrofit.
+     """
+ 
++    PAGE_KIND = PageKind.HISTORY_ANALYSIS  # Issue #5 topbar (backward)
++
+     # CLI-mirror fields.
+     session_date: str
+     environment: Literal["production", "sandbox"]
+@@ -585,6 +591,8 @@ class SchwabSetupErrorVM:
+     + a redacted operator-actionable error message + a remediation hint.
+     """
+ 
++    PAGE_KIND = PageKind.HISTORY_ANALYSIS  # Issue #5 topbar (backward)
++
+     session_date: str
+     status_code: int
+     error_message: str
+diff --git a/swing/web/view_models/trades.py b/swing/web/view_models/trades.py
+index 2330608b..3e3501ba 100644
+--- a/swing/web/view_models/trades.py
++++ b/swing/web/view_models/trades.py
+@@ -20,6 +20,7 @@ from swing.data.repos.trades import (
+     list_trades_with_activity_in_period,
+ )
+ from swing.data.repos.watchlist import list_active_watchlist
++from swing.evaluation.dates import PageKind, topbar_session_date
+ from swing.recommendations.sizing import compute_shares
+ from swing.trades.entry import entry_rationale_options
+ from swing.trades.equity import current_equity
+@@ -1137,6 +1138,7 @@ def _total_risk_dollars(trade) -> float | None:
+ 
+ @dataclass(frozen=True)
+ class ReviewVM:
++    PAGE_KIND = PageKind.HISTORY_ANALYSIS  # Issue #5 topbar (backward)
+     trade: Trade
+     actual_realized_R_effective: float  # noqa: N815
+ 
+@@ -1244,7 +1246,6 @@ def build_review_vm(
+     """
+     from datetime import datetime as _dt
+ 
+-    from swing.evaluation.dates import last_completed_session
+     from swing.metrics.discrepancies import (
+         count_recent_multi_leg_auto_corrections,
+         count_unresolved_material,
+@@ -1348,7 +1349,7 @@ def build_review_vm(
+     # ``last_completed_session(now())`` (CLAUDE.md session-anchor read/
+     # write mismatch gotcha family — backward-looking anchor matches the
+     # period-helpers' read predicate at T-B.3.4).
+-    session_date = last_completed_session(_dt.now()).isoformat()
++    session_date = topbar_session_date(PageKind.HISTORY_ANALYSIS, _dt.now()).isoformat()
+ 
+     # Phase 10 T-B.7 elective (per electives amendment §2): derive per-trade
+     # mistake_cost_R + lucky_violation_R via Phase 6 helpers. Both surface
+@@ -1400,6 +1401,7 @@ def build_review_vm(
+ 
+ @dataclass(frozen=True)
+ class CadenceCompleteVM:
++    PAGE_KIND = PageKind.HISTORY_ANALYSIS  # Issue #5 topbar (backward)
+     review: ReviewLog
+     n_closed_trades_in_period: int
+     # 3e.16 — per-trade activity summaries for the review's period
+@@ -1453,6 +1455,7 @@ class CadenceCompleteVM:
+ 
+ @dataclass(frozen=True)
+ class ReviewsPendingVM:
++    PAGE_KIND = PageKind.HISTORY_ANALYSIS  # Issue #5 topbar (backward)
+     trades: tuple[Trade, ...]
+     window_days: int
+     # 5-VM existing-fields safe defaults:
+@@ -1489,7 +1492,6 @@ class ReviewsPendingVM:
+ 
+ def build_reviews_pending_vm(*, cfg: Config) -> ReviewsPendingVM:
+     from swing.data.repos.review_log import list_unreviewed_closed_trades
+-    from swing.evaluation.dates import last_completed_session
+     from swing.metrics.discrepancies import (
+         count_recent_multi_leg_auto_corrections,
+         count_unresolved_material,
+@@ -1520,7 +1522,7 @@ def build_reviews_pending_vm(*, cfg: Config) -> ReviewsPendingVM:
+         # the backward-looking anchor, mirroring build_review_vm and avoiding the
+         # forward-looking action_session_for_run weekend/evening silent-blank
+         # (CLAUDE.md session-anchor read/write gotcha family).
+-        session_date=last_completed_session(datetime.now()).isoformat(),
++        session_date=topbar_session_date(PageKind.HISTORY_ANALYSIS, datetime.now()).isoformat(),
+     )
+ 
+ 
+@@ -1649,6 +1651,9 @@ class TradeDetailVM:
+     existing call sites green (callers that build the VM without
+     ``cache``/``executor``/``ohlcv_cache`` see no advisories).
+     """
++
++    PAGE_KIND = PageKind.HISTORY_ANALYSIS  # Issue #5 topbar (backward)
++
+     trade: Trade
+     state: str
+     state_badge_label: str
+diff --git a/swing/web/view_models/watchlist.py b/swing/web/view_models/watchlist.py
+index 3ec72d75..320b35fe 100644
+--- a/swing/web/view_models/watchlist.py
++++ b/swing/web/view_models/watchlist.py
+@@ -13,7 +13,7 @@ from swing.data.repos.pattern_classifications import (
+     list_classifications_for_run,
+ )
+ from swing.data.repos.watchlist import list_active_watchlist
+-from swing.evaluation.dates import action_session_for_run
++from swing.evaluation.dates import PageKind, topbar_session_date
+ from swing.web.chart_scope import (
+     CHART_REASON_MESSAGES,
+     latest_completed_pipeline_run,
+@@ -30,6 +30,7 @@ from swing.web.view_models.dashboard import (
+ 
+ @dataclass(frozen=True)
+ class WatchlistVM:
++    PAGE_KIND = PageKind.FORWARD_PLANNING  # Issue #5 topbar (forward)
+     session_date: str
+     rows: list[WatchlistEntry]
+     watchlist_last_prices: Mapping[str, PriceSnapshot]
+@@ -214,7 +215,7 @@ def build_watchlist(*, cfg: Config, cache: PriceCache, executor) -> WatchlistVM:
+     )
+     degraded_until = cache.degraded_until()
+     return WatchlistVM(
+-        session_date=action_session_for_run(now).isoformat(),
++        session_date=topbar_session_date(PageKind.FORWARD_PLANNING, now).isoformat(),
+         rows=list(rows),
+         watchlist_last_prices={r.ticker: prices[r.ticker] for r in rows if r.ticker in prices},
+         flag_tags=flag_tags,
+diff --git a/tests/cli/test_purge_marketdata_archive.py b/tests/cli/test_purge_marketdata_archive.py
+new file mode 100644
+index 00000000..6a68bd2b
+--- /dev/null
++++ b/tests/cli/test_purge_marketdata_archive.py
+@@ -0,0 +1,40 @@
++# tests/cli/test_purge_marketdata_archive.py
++from types import SimpleNamespace
++
++import swing.config_overrides as _config_overrides
++from click.testing import CliRunner
++
++from swing.cli import main as cli  # the root click group
++from swing.data.db import ensure_schema
++
++
++def test_purge_deletes_only_schwab_api_parquets(tmp_path, monkeypatch):
++    """Deterministic belt: deletes *.schwab_api.parquet so a later access
++    re-fetches clean; leaves yfinance parquets untouched. L3-safe (archive is
++    re-fetchable cache, not locked facts)."""
++    cache = tmp_path / "prices"
++    cache.mkdir()
++    (cache / "AAPL.schwab_api.parquet").write_bytes(b"x")
++    (cache / "MSFT.schwab_api.parquet").write_bytes(b"x")
++    (cache / "AAPL.yfinance.parquet").write_bytes(b"y")
++
++    # A real migrated DB so the command's pipeline-active guard (connect +
++    # _check_pipeline_not_running) works without touching the operator's DB.
++    db_path = tmp_path / "swing.db"
++    ensure_schema(db_path).close()
++
++    stub_cfg = SimpleNamespace(
++        paths=SimpleNamespace(prices_cache_dir=cache, db_path=db_path))
++    # The command does `from swing.config_overrides import apply_overrides`
++    # at call time, so patching the source module's attribute injects our cfg
++    # (mirrors tests/cli/test_reconcile_backfill_cli.py).
++    monkeypatch.setattr(_config_overrides, "apply_overrides",
++                        lambda _cfg: stub_cfg)
++
++    runner = CliRunner()
++    result = runner.invoke(cli, ["schwab", "purge-marketdata-archive", "--yes"])
++    assert result.exit_code == 0, result.output
++    assert not (cache / "AAPL.schwab_api.parquet").exists()
++    assert not (cache / "MSFT.schwab_api.parquet").exists()
++    assert (cache / "AAPL.yfinance.parquet").exists()  # yfinance preserved
++    assert "2" in result.output  # reports the count deleted
+diff --git a/tests/data/test_read_or_fetch_archive_completed_day.py b/tests/data/test_read_or_fetch_archive_completed_day.py
+new file mode 100644
+index 00000000..6953a809
+--- /dev/null
++++ b/tests/data/test_read_or_fetch_archive_completed_day.py
+@@ -0,0 +1,31 @@
++# tests/data/test_read_or_fetch_archive_completed_day.py
++from datetime import date
++
++import pandas as pd
++
++import swing.data.ohlcv_archive as arch
++from swing.data.ohlcv_archive import read_or_fetch_archive
++
++
++def test_yfinance_fetch_never_persists_after_cutoff(tmp_path, monkeypatch):
++    """Even when yfinance returns an in-progress (> cutoff) bar, the atomic
++    barrier (Task C1) strips it before persist. OLD: read_or_fetch_archive
++    persisted the raw fetched frame incl. the 06-05 bar. NEW: the on-disk
++    archive holds no row > cutoff. NOTE: read_or_fetch_archive writes the
++    LEGACY `{ticker}.parquet` path (date-indexed), NOT the Shape-A yfinance
++    parquet -- the legacy file is migrated to `{ticker}.yfinance.parquet`
++    later, on read, by _backward_compat_rename (which ALSO inherits the strip)."""
++    monkeypatch.setattr(arch, "_last_completed_session_today",
++                        lambda: date(2026, 6, 4))
++
++    def _fake_yf(ticker, *, start, end):
++        idx = pd.to_datetime(["2026-06-03", "2026-06-04", "2026-06-05"])
++        return pd.DataFrame({"open": [10, 10, 10], "high": [11, 11, 12],
++                             "low": [9, 9, 9], "close": [10.5, 10.5, 11],
++                             "volume": [100, 100, 200]}, index=idx)
++    monkeypatch.setattr(arch, "_yf_download_window", _fake_yf)
++
++    read_or_fetch_archive("AAPL", end_date=date(2026, 6, 4),
++                          cache_dir=tmp_path, archive_history_days=400)
++    on_disk = pd.read_parquet(tmp_path / "AAPL.parquet")  # legacy path (_archive_paths)
++    assert on_disk.index.max().date() <= date(2026, 6, 4)
+diff --git a/tests/data/test_write_window_completed_day.py b/tests/data/test_write_window_completed_day.py
+new file mode 100644
+index 00000000..e8fb7b16
+--- /dev/null
++++ b/tests/data/test_write_window_completed_day.py
+@@ -0,0 +1,146 @@
++# tests/data/test_write_window_completed_day.py
++from datetime import date
++
++import pandas as pd
++import pytest
++
++import swing.data.ohlcv_archive as arch
++from swing.data.ohlcv_archive import (
++    _shape_a_path,
++    _write_archive_atomic,
++    resolve_ohlcv_window,
++    write_window,
++)
++
++
++@pytest.fixture
++def fixed_cutoff(monkeypatch):
++    """Freeze the completed-session cutoff at 2026-06-04 (so 2026-06-05 is the
++    'current in-progress' session) for BOTH the helper and any lazy import."""
++    monkeypatch.setattr(arch, "_last_completed_session_today",
++                        lambda: date(2026, 6, 4))
++    return date(2026, 6, 4)
++
++
++def _frame(rows):
++    return pd.DataFrame(rows, columns=["asof_date", "open", "high", "low",
++                                       "close", "volume"])
++
++
++def test_atomic_writer_strips_after_cutoff_universal(tmp_path, fixed_cutoff):
++    """The hard barrier: _write_archive_atomic itself drops > cutoff rows, so
++    EVERY write path (write_window, read_or_fetch_archive, _backward_compat_
++    rename) inherits it -- a > cutoff row can never land on disk."""
++    path = _shape_a_path(tmp_path, "AAPL", "schwab_api")
++    _write_archive_atomic(path, _frame([
++        ["2026-06-04", 10, 11, 9, 10.5, 100],
++        ["2026-06-05", 10, 12, 9, 11.0, 200],  # > cutoff -> stripped
++    ]))
++    on_disk = pd.read_parquet(path)
++    assert list(on_disk["asof_date"]) == ["2026-06-04"]
++
++
++def test_atomic_writer_strips_date_indexed_frame(tmp_path, fixed_cutoff):
++    """Shape-agnostic: a DatetimeIndex frame (the read_or_fetch_archive shape)
++    is also stripped on > cutoff."""
++    path = _shape_a_path(tmp_path, "AAPL", "yfinance")
++    idx = pd.to_datetime(["2026-06-04", "2026-06-05"])
++    _write_archive_atomic(path, pd.DataFrame(
++        {"open": [10, 10], "high": [11, 12], "low": [9, 9],
++         "close": [10.5, 11], "volume": [100, 200]}, index=idx))
++    on_disk = pd.read_parquet(path)
++    assert on_disk.index.max().date() == date(2026, 6, 4)
++
++
++def test_incoming_current_day_row_is_stripped(tmp_path, fixed_cutoff):
++    win = _frame([
++        ["2026-06-04", 10, 11, 9, 10.5, 100],
++        ["2026-06-05", 10, 12, 9, 11.0, 200],
++    ])
++    write_window("AAPL", win, "schwab_api", cache_dir=tmp_path)
++    df, _ = resolve_ohlcv_window("AAPL", start="2026-06-01", end="2026-06-30",
++                                 cache_dir=tmp_path)
++    assert list(df["asof_date"]) == ["2026-06-04"]
++
++
++def test_preexisting_on_disk_current_day_row_stripped_on_empty_incoming(
++        tmp_path, fixed_cutoff, monkeypatch):
++    """M3: a > cutoff row already on disk is stripped even when the incoming
++    window is empty. (Simulate a pre-fix raw file by writing it with the
++    atomic strip DISABLED, then prove write_window cleans it.)"""
++    path = _shape_a_path(tmp_path, "AAPL", "schwab_api")
++    # Write a raw pre-fix file WITH a partial, bypassing the strip:
++    monkeypatch.setattr(arch, "_strip_incomplete_sessions",
++                        lambda df, _c: df)  # disable strip for the raw seed
++    _write_archive_atomic(path, _frame([
++        ["2026-06-04", 10, 11, 9, 10.5, 100],
++        ["2026-06-05", 10, 12, 9, 11.0, 200],
++    ]))
++    monkeypatch.undo()  # re-enable the real strip
++    monkeypatch.setattr(arch, "_last_completed_session_today",
++                        lambda: date(2026, 6, 4))
++    write_window("AAPL", _frame([]), "schwab_api", cache_dir=tmp_path)
++    df, _ = resolve_ohlcv_window("AAPL", start="2026-06-01", end="2026-06-30",
++                                 cache_dir=tmp_path)
++    assert "2026-06-05" not in list(df["asof_date"])
++    assert "2026-06-04" in list(df["asof_date"])
++
++
++def test_transient_empty_incoming_preserves_valid_history(tmp_path, fixed_cutoff):
++    """F6: an empty incoming window must NOT blank valid (<= cutoff) history."""
++    seed = _frame([["2026-06-03", 10, 11, 9, 10.5, 100],
++                   ["2026-06-04", 10, 11, 9, 10.5, 100]])
++    write_window("AAPL", seed, "schwab_api", cache_dir=tmp_path)
++    write_window("AAPL", None, "schwab_api", cache_dir=tmp_path)
++    df, _ = resolve_ohlcv_window("AAPL", start="2026-06-01", end="2026-06-30",
++                                 cache_dir=tmp_path)
++    assert list(df["asof_date"]) == ["2026-06-03", "2026-06-04"]
++
++
++def test_strip_raises_on_unrecognized_nonempty_frame(fixed_cutoff):
++    """Codex R1 MAJOR #1: the barrier FAILS CLOSED -- a non-empty frame with
++    neither an asof_date column nor a DatetimeIndex raises rather than silently
++    persisting a possibly-> cutoff row."""
++    weird = pd.DataFrame({"open": [10], "high": [11], "low": [9], "close": [10.5]})
++    with pytest.raises(ValueError, match="unrecognized frame shape"):
++        arch._strip_incomplete_sessions(weird, fixed_cutoff.isoformat())
++
++
++def test_strip_passes_empty_unrecognized_frame(fixed_cutoff):
++    """An EMPTY frame of any shape passes through (nothing to strip)."""
++    empty = pd.DataFrame({"open": [], "high": [], "low": [], "close": []})
++    out = arch._strip_incomplete_sessions(empty, fixed_cutoff.isoformat())
++    assert len(out) == 0
++
++
++def test_empty_incoming_strips_preexisting_datetimeindex_partial(
++        tmp_path, fixed_cutoff, monkeypatch):
++    """Codex R1 MAJOR #2: write_window with empty incoming strips a pre-existing
++    on-disk partial even when `existing` is a DatetimeIndex (legacy-shape) frame
++    at the Shape-A path, not only an asof_date frame."""
++    path = _shape_a_path(tmp_path, "AAPL", "schwab_api")
++    # Seed a DatetimeIndex partial bypassing the strip.
++    monkeypatch.setattr(arch, "_strip_incomplete_sessions", lambda df, _c: df)
++    idx = pd.to_datetime(["2026-06-04", "2026-06-05"])
++    _write_archive_atomic(path, pd.DataFrame(
++        {"open": [10, 10], "high": [11, 12], "low": [9, 9],
++         "close": [10.5, 11], "volume": [100, 200]}, index=idx))
++    monkeypatch.undo()
++    monkeypatch.setattr(arch, "_last_completed_session_today",
++                        lambda: date(2026, 6, 4))
++    write_window("AAPL", None, "schwab_api", cache_dir=tmp_path)
++    on_disk = pd.read_parquet(path)
++    assert on_disk.index.max().date() == date(2026, 6, 4)  # 06-05 stripped
++
++
++def test_timestamp_string_asof_date_keeps_cutoff_day(tmp_path, fixed_cutoff):
++    """Codex R1 MINOR #1: an asof_date carrying a full Timestamp string
++    (`2026-06-04 00:00:00`) must NOT be lexically stripped at cutoff 2026-06-04
++    -- the value is normalized to a date before comparison."""
++    df = pd.DataFrame(
++        [["2026-06-04 00:00:00", 10, 11, 9, 10.5, 100],
++         ["2026-06-05 00:00:00", 10, 12, 9, 11.0, 200]],
++        columns=["asof_date", "open", "high", "low", "close", "volume"])
++    out = arch._strip_incomplete_sessions(df, fixed_cutoff.isoformat())
++    kept = [str(v)[:10] for v in out["asof_date"]]
++    assert kept == ["2026-06-04"]  # cutoff day kept, 06-05 dropped
+diff --git a/tests/evaluation/test_completed_day_anchors.py b/tests/evaluation/test_completed_day_anchors.py
+new file mode 100644
+index 00000000..47ce70ee
+--- /dev/null
++++ b/tests/evaluation/test_completed_day_anchors.py
+@@ -0,0 +1,30 @@
++# tests/evaluation/test_completed_day_anchors.py
++from datetime import datetime
++
++from swing.evaluation.dates import action_session_for_run, last_completed_session
++
++
++def _hst(y, m, d, hh, mm):
++    # naive local HST datetime as the helpers expect (tz applied internally).
++    return datetime(y, m, d, hh, mm)
++
++
++def test_last_completed_session_never_names_in_progress():
++    # 2026-06-04 is a Thursday (NYSE session). HST is ET-6 (DST) / -5; the
++    # helper converts internally. Pre-open ET -> prior session; post-close ->
++    # today; weekend -> Friday.
++    pre_open = last_completed_session(_hst(2026, 6, 4, 2, 0))    # ~08:00 ET (before close)
++    assert pre_open.isoformat() < "2026-06-04"
++    post_close = last_completed_session(_hst(2026, 6, 4, 12, 0))  # ~18:00 ET (after close)
++    assert post_close.isoformat() == "2026-06-04"
++    # 2026-06-06 is a Saturday; the last completed session is Friday 2026-06-05.
++    weekend = last_completed_session(_hst(2026, 6, 6, 12, 0))
++    assert weekend.isoformat() == "2026-06-05"
++
++
++def test_action_vs_completed_diverge_post_close():
++    """Post-close on a session day, action (forward) names the NEXT session
++    while completed (backward) names today -- the divergence Slice D relies
++    on."""
++    t = _hst(2026, 6, 4, 12, 0)  # post-close ET
++    assert action_session_for_run(t) != last_completed_session(t)
+diff --git a/tests/evaluation/test_topbar_session_date.py b/tests/evaluation/test_topbar_session_date.py
+new file mode 100644
+index 00000000..5cc362db
+--- /dev/null
++++ b/tests/evaluation/test_topbar_session_date.py
+@@ -0,0 +1,21 @@
++# tests/evaluation/test_topbar_session_date.py
++from datetime import datetime
++
++from swing.evaluation.dates import (
++    PageKind,
++    action_session_for_run,
++    last_completed_session,
++    topbar_session_date,
++)
++
++
++def test_forward_planning_uses_action_session():
++    now = datetime(2026, 6, 4, 12, 0)  # post-close ET so the families diverge
++    assert topbar_session_date(PageKind.FORWARD_PLANNING, now) == \
++        action_session_for_run(now)
++
++
++def test_history_analysis_uses_last_completed_session():
++    now = datetime(2026, 6, 4, 12, 0)
++    assert topbar_session_date(PageKind.HISTORY_ANALYSIS, now) == \
++        last_completed_session(now)
+diff --git a/tests/integration/test_pipeline_marketdata_ladder_integration.py b/tests/integration/test_pipeline_marketdata_ladder_integration.py
+index 62e81794..aa45f424 100644
+--- a/tests/integration/test_pipeline_marketdata_ladder_integration.py
++++ b/tests/integration/test_pipeline_marketdata_ladder_integration.py
+@@ -111,11 +111,11 @@ def _mock_quote_resp(symbol: str, last_price: float = 150.0) -> MagicMock:
+     resp.json.return_value = {
+         symbol: {
+             "quote": {
+-                "lastPrice": last_price,
+-                "bidPrice": last_price - 0.5,
+-                "askPrice": last_price + 0.5,
++                "regularMarketLastPrice": last_price,
++                "regularMarketBidPrice": last_price - 0.5,
++                "regularMarketAskPrice": last_price + 0.5,
+                 "mark": last_price,
+-                "quoteTimeInLong": 1715692800000,
++                "regularMarketTradeTime": 1715692800000,
+                 "delayed": False,
+             },
+         },
+diff --git a/tests/integration/test_schwab_full_happy_path.py b/tests/integration/test_schwab_full_happy_path.py
+index 46cfd45a..887437e1 100644
+--- a/tests/integration/test_schwab_full_happy_path.py
++++ b/tests/integration/test_schwab_full_happy_path.py
+@@ -175,11 +175,11 @@ def _make_quotes_response(symbols: list[str]):
+     return _mock_response({
+         s: {
+             "quote": {
+-                "lastPrice": 100.0 + i,
+-                "bidPrice": 99.0 + i,
+-                "askPrice": 101.0 + i,
++                "regularMarketLastPrice": 100.0 + i,
++                "regularMarketBidPrice": 99.0 + i,
++                "regularMarketAskPrice": 101.0 + i,
+                 "mark": 100.0 + i,
+-                "quoteTime": "2026-05-14T15:30:00Z",
++                "regularMarketTradeTime": "2026-05-14T15:30:00Z",
+                 "delayed": False,
+             },
+         }
+diff --git a/tests/integrations/schwab/test_bar_consistency_error.py b/tests/integrations/schwab/test_bar_consistency_error.py
+new file mode 100644
+index 00000000..a9799f32
+--- /dev/null
++++ b/tests/integrations/schwab/test_bar_consistency_error.py
+@@ -0,0 +1,25 @@
++# tests/integrations/schwab/test_bar_consistency_error.py
++from swing.integrations.schwab.client import (
++    SchwabApiError,
++    SchwabBarConsistencyError,
++)
++
++
++def test_bar_consistency_error_is_schwab_api_error():
++    """OQ-4: subclass SchwabApiError so the ladder's
++    `except (SchwabAuthError, SchwabRateLimitError, SchwabApiError)` catches
++    it (clean yfinance fallback, not the opaque catch-all)."""
++    exc = SchwabBarConsistencyError("2026-06-04", "low (12.5) must be <= min(...)")
++    assert isinstance(exc, SchwabApiError)
++
++
++def test_bar_consistency_error_carries_readable_message_and_attrs():
++    exc = SchwabBarConsistencyError("2026-06-04", "high (12.0) < max(open,close) (12.5)")
++    assert exc.asof_date == "2026-06-04"
++    # str must be readable for the audit error_message (OHLC detail carries no
++    # account_hash, so a readable message is redaction-safe).
++    assert "OHLC consistency" in str(exc)
++    assert "2026-06-04" in str(exc)
++    # SchwabApiError consumers may read these attributes.
++    assert exc.status_code == 422
++    assert exc.body_excerpt == ""
+diff --git a/tests/integrations/schwab/test_bar_consistency_production_path.py b/tests/integrations/schwab/test_bar_consistency_production_path.py
+new file mode 100644
+index 00000000..593c41ac
+--- /dev/null
++++ b/tests/integrations/schwab/test_bar_consistency_production_path.py
+@@ -0,0 +1,47 @@
++# tests/integrations/schwab/test_bar_consistency_production_path.py
++"""A genuinely inconsistent candle (high below max(open,close)) fed through the
++REAL get_price_history wrapper must: (1) raise SchwabBarConsistencyError (proving
++_call_endpoint caught it as SchwabApiError, NOT re-wrapped as
++SchwabSchemaParityError); (2) close the schwab_api_calls audit row with
++status='error' + a message containing 'OHLC consistency'."""
++import pytest
++
++from swing.data.db import ensure_schema  # builds + migrates a fresh DB (returns conn)
++from swing.integrations.schwab.client import (
++    SchwabBarConsistencyError,
++    SchwabSchemaParityError,
++)
++from swing.integrations.schwab.marketdata import get_price_history
++
++
++class _FakeClient:
++    """Returns a single ext-hours-inconsistent candle (high 12.00 < close 12.50)."""
++
++    def price_history(self, symbol, **kwargs):
++        class _Resp:
++            status_code = 200
++
++            def json(self):
++                return {"candles": [{"datetime": 1_700_000_000_000,
++                                     "open": 12.00, "high": 12.00,
++                                     "low": 11.50, "close": 12.50,
++                                     "volume": 1000}], "empty": False,
++                        "symbol": symbol}
++        return _Resp()
++
++
++def test_contaminated_candle_raises_typed_and_audits(tmp_path):
++    conn = ensure_schema(tmp_path / "swing.db")  # creates + migrates; has schwab_api_calls
++    with pytest.raises(SchwabBarConsistencyError) as ei:
++        get_price_history(
++            _FakeClient(), conn, "AAPL",
++            period_type="year", period=1, frequency_type="daily", frequency=1,
++            start_dt=None, end_dt=None,
++            surface="cli", environment="production", pipeline_run_id=None,
++        )
++    assert not isinstance(ei.value, SchwabSchemaParityError)  # NOT re-wrapped
++    row = conn.execute(
++        "SELECT status, error_message FROM schwab_api_calls "
++        "ORDER BY call_id DESC LIMIT 1").fetchone()
++    assert row[0] == "error"
++    assert "OHLC consistency" in (row[1] or "")
+diff --git a/tests/integrations/schwab/test_mapper_float_normalization.py b/tests/integrations/schwab/test_mapper_float_normalization.py
+new file mode 100644
+index 00000000..4c6ce6d4
+--- /dev/null
++++ b/tests/integrations/schwab/test_mapper_float_normalization.py
+@@ -0,0 +1,32 @@
++# tests/integrations/schwab/test_mapper_float_normalization.py
++import pytest
++
++from swing.integrations.schwab.client import SchwabBarConsistencyError
++from swing.integrations.schwab.mappers import map_price_history_to_window
++
++
++def _envelope(open_, high, low, close):
++    return {"candles": [{"datetime": 1_700_000_000_000, "open": open_,
++                         "high": high, "low": low, "close": close,
++                         "volume": 1000}], "empty": False, "symbol": "AAPL"}
++
++
++def test_float_noise_rounds_clean():
++    """M5: sub-ulp float noise must round clean (no raise). high=12.34,
++    close=12.340000000001 -> post-round 12.34 == 12.34."""
++    win = map_price_history_to_window(
++        _envelope(12.30, 12.34, 12.29, 12.340000000001), "AAPL")
++    assert win is not None
++    bar = win.bars[0]
++    assert bar.high == 12.34
++    assert bar.close == 12.34
++
++
++def test_cents_level_inconsistency_still_raises_typed():
++    """A genuine ext-hours violation (high below max(open,close) by cents)
++    must STILL raise -- as the typed SchwabBarConsistencyError, not a raw
++    ValueError or SchwabSchemaParityError."""
++    with pytest.raises(SchwabBarConsistencyError) as ei:
++        map_price_history_to_window(_envelope(12.00, 12.00, 11.50, 12.50), "AAPL")
++    assert ei.value.asof_date  # date populated
++    assert "OHLC consistency" in str(ei.value)
+diff --git a/tests/integrations/schwab/test_price_history_ext_hours.py b/tests/integrations/schwab/test_price_history_ext_hours.py
+new file mode 100644
+index 00000000..fee165f8
+--- /dev/null
++++ b/tests/integrations/schwab/test_price_history_ext_hours.py
+@@ -0,0 +1,44 @@
++# tests/integrations/schwab/test_price_history_ext_hours.py
++import inspect
++
++import schwabdev
++
++
++def test_price_history_signature_accepts_ext_hours_kwargs():
++    """L5 signature-pin: schwabdev 3.0.5's price_history MUST accept
++    needExtendedHoursData + needPreviousClose, or our wrapper's kwargs would
++    raise TypeError at runtime (cassettes stub the call and won't catch it)."""
++    sig = inspect.signature(schwabdev.Client.price_history)
++    params = set(sig.parameters)
++    assert "needExtendedHoursData" in params
++    assert "needPreviousClose" in params
++
++
++def test_wrapper_passes_need_extended_hours_false(monkeypatch):
++    """The wrapper's _client_method MUST forward needExtendedHoursData=False
++    (and needPreviousClose=False). OLD path omitted both -> Schwab server
++    default needExtendedHoursData=true folds ext-hours prints. NEW path pins
++    them off."""
++    import swing.integrations.schwab.marketdata as md
++
++    captured = {}
++
++    class _FakeClient:
++        def price_history(self, symbol, **kwargs):
++            captured.update(kwargs)
++            captured["symbol"] = symbol
++            # Return a minimal candle envelope the mapper would accept.
++            return type("Resp", (), {"status_code": 200, "json": lambda self: {
++                "candles": [{"datetime": 0, "open": 10.0, "high": 11.0,
++                             "low": 9.0, "close": 10.5, "volume": 100}],
++                "empty": False}})()
++
++    # Drive only the inner _client_method closure: assert the kwargs reach it.
++    md_call = md._build_price_history_client_method(
++        _FakeClient(), "AAPL",
++        period_type="year", period=1, frequency_type="daily", frequency=1,
++        start_dt=0, end_dt=1,
++    )
++    md_call()
++    assert captured["needExtendedHoursData"] is False
++    assert captured["needPreviousClose"] is False
+diff --git a/tests/integrations/schwab/test_quote_fields_live.py b/tests/integrations/schwab/test_quote_fields_live.py
+new file mode 100644
+index 00000000..1a0ea144
+--- /dev/null
++++ b/tests/integrations/schwab/test_quote_fields_live.py
+@@ -0,0 +1,23 @@
++# tests/integrations/schwab/test_quote_fields_live.py
++import pytest
++
++pytestmark = pytest.mark.slow
++
++
++def test_recorded_quote_carries_regular_session_fields():
++    """OQ-3 validation: a recorded live quote (cassette) MUST contain ALL FOUR
++    regular-session fields the B2 mapper consumes -- regularMarketLastPrice,
++    regularMarketTradeTime, regularMarketBidPrice, regularMarketAskPrice. B2
++    requires last AND bid AND ask, so if bid/ask are absent the mapper drops
++    EVERY Schwab quote to yfinance (the path goes dead). Widen fields= until
++    all four appear, OR (operator decision per OQ-3) accept the yfinance-drop."""
++    from pathlib import Path
++    cassette = Path(__file__).parent / "cassettes" / "quote_regular_fields.yaml"
++    assert cassette.exists(), "record the live quote cassette first (runbook)"
++    text = cassette.read_text()
++    for field in ("regularMarketLastPrice", "regularMarketTradeTime",
++                  "regularMarketBidPrice", "regularMarketAskPrice"):
++        assert field in text, (
++            f"{field} absent under the chosen fields= selection -- B2 would "
++            f"drop every Schwab quote to yfinance. Widen fields= or accept "
++            f"the drop (OQ-3 operator decision).")
+diff --git a/tests/integrations/schwab/test_quote_regular_session.py b/tests/integrations/schwab/test_quote_regular_session.py
+new file mode 100644
+index 00000000..e8425fca
+--- /dev/null
++++ b/tests/integrations/schwab/test_quote_regular_session.py
+@@ -0,0 +1,41 @@
++# tests/integrations/schwab/test_quote_regular_session.py
++from swing.integrations.schwab.mappers import map_quotes_to_price_cache_entries
++
++
++def _resp(symbol, body):
++    return {symbol: {"symbol": symbol, "quote": body}}  # match the real envelope
++
++
++def test_only_ext_hours_lastprice_is_dropped():
++    """M1: a quote with ONLY lastPrice (no regularMarketLastPrice) is DROPPED
++    (yfinance fallback) -- lastPrice is the ext-hours print (L1). A sentinel
++    lastPrice that, if surfaced, would fail the assertion."""
++    out = map_quotes_to_price_cache_entries(_resp("AAPL", {
++        "lastPrice": 999.99,  # ext-hours sentinel -- must NEVER surface
++        "bidPrice": 999.0, "askPrice": 1000.0,
++    }))
++    assert "AAPL" not in out  # dropped
++
++
++def test_regular_last_with_regular_bid_ask_emits_regular_value():
++    out = map_quotes_to_price_cache_entries(_resp("AAPL", {
++        "lastPrice": 999.99,  # ext-hours -- must be ignored
++        "regularMarketLastPrice": 150.25,
++        "regularMarketTradeTime": 1_700_000_000_000,
++        "regularMarketBidPrice": 150.20, "regularMarketAskPrice": 150.30,
++    }))
++    assert "AAPL" in out
++    entry = out["AAPL"]
++    assert entry.last_price == 150.25     # regular, not 999.99
++    assert entry.last_price != 999.99
++
++
++def test_regular_last_but_ext_hours_bid_ask_is_dropped():
++    """A regular last present but NO regular bid/ask provenance -> drop (do not
++    surface the extended-book bid/ask). See spec 4.2."""
++    out = map_quotes_to_price_cache_entries(_resp("AAPL", {
++        "regularMarketLastPrice": 150.25,
++        "regularMarketTradeTime": 1_700_000_000_000,
++        "bidPrice": 149.0, "askPrice": 151.0,  # ext-hours book only
++    }))
++    assert "AAPL" not in out  # dropped (no regular bid/ask)
+diff --git a/tests/integrations/test_cli_schwab_fetch_verify_marketdata.py b/tests/integrations/test_cli_schwab_fetch_verify_marketdata.py
+index f05b6f36..6a5a5134 100644
+--- a/tests/integrations/test_cli_schwab_fetch_verify_marketdata.py
++++ b/tests/integrations/test_cli_schwab_fetch_verify_marketdata.py
+@@ -83,9 +83,9 @@ def _make_quotes_payload(symbols: list[str]) -> dict:
+     return {
+         s: {
+             "quote": {
+-                "lastPrice": 100.0 + i,
+-                "bidPrice": 99.0 + i,
+-                "askPrice": 101.0 + i,
++                "regularMarketLastPrice": 100.0 + i,
++                "regularMarketBidPrice": 99.0 + i,
++                "regularMarketAskPrice": 101.0 + i,
+                 "mark": 100.0 + i,
+                 "quoteTime": "2026-05-14T15:30:00Z",
+                 "delayed": False,
+@@ -327,7 +327,7 @@ def test_c5_05_verify_marketdata_partial_quotes_surfaces_in_output(
+     quotes_resp.json.return_value = {
+         "AAPL": {
+             "quote": {
+-                "lastPrice": 100.0, "bidPrice": 99.0, "askPrice": 101.0,
++                "regularMarketLastPrice": 100.0, "regularMarketBidPrice": 99.0, "regularMarketAskPrice": 101.0,
+                 "mark": 100.0, "quoteTime": "2026-05-14T15:30:00Z",
+                 "delayed": False,
+             },
+@@ -481,3 +481,57 @@ def test_c5_07_verify_marketdata_empty_symbols_rejected(
+     # No schwabdev calls.
+     assert mc.quotes.call_count == 0
+     assert mc.price_history.call_count == 0
++
++
++def test_c5_07_verify_marketdata_ext_hours_only_symbol_drops_to_yfinance(
++    isolated_db, invoke_cli, monkeypatch,
++):
++    """B3 (L1 regression): a symbol carrying ONLY ext-hours fields (lastPrice/
++    bidPrice/askPrice, NO regularMarket* provenance) is DROPPED by the mapper
++    (-> yfinance fallback) and is NEVER surfaced with its ext-hours print.
++    A regular-session symbol in the same batch surfaces normally."""
++    cfg = _make_cfg(db_path=isolated_db, environment="production")
++    mc = MagicMock()
++    mc.tokens.access_token = "stub_access_token"
++    mc.tokens.refresh_token = "stub_refresh_token"
++    quotes_resp = MagicMock()
++    quotes_resp.json.return_value = {
++        # AAPL: full regular-session provenance -> surfaces.
++        "AAPL": {
++            "quote": {
++                "regularMarketLastPrice": 100.0, "regularMarketBidPrice": 99.0,
++                "regularMarketAskPrice": 101.0, "mark": 100.0,
++                "regularMarketTradeTime": "2026-05-14T15:30:00Z",
++                "delayed": False,
++            },
++        },
++        # XYZ: ext-hours book ONLY (the 999.99 sentinel must NEVER surface).
++        "XYZ": {
++            "quote": {
++                "lastPrice": 999.99, "bidPrice": 998.0, "askPrice": 1000.0,
++                "mark": 999.0, "delayed": False,
++            },
++        },
++    }
++    quotes_resp.status_code = 200
++    quotes_resp.headers = {}
++    mc.quotes.return_value = quotes_resp
++
++    ph_resp = MagicMock()
++    ph_resp.json.return_value = _make_price_history_payload()
++    ph_resp.status_code = 200
++    ph_resp.headers = {}
++    mc.price_history.return_value = ph_resp
++
++    import schwabdev
++    monkeypatch.setattr(schwabdev, "Client", MagicMock(return_value=mc))
++
++    result = invoke_cli(
++        cfg, "fetch", "--verify-marketdata", "--symbols", "AAPL,XYZ",
++    )
++    assert result.exit_code == 0, result.output
++    # XYZ dropped (no regular provenance) -> partial summary; AAPL OK.
++    assert "1/2 OK" in result.output
++    assert "XYZ" in result.output
++    # The ext-hours sentinel last price never reaches operator output.
++    assert "999.99" not in result.output
+diff --git a/tests/integrations/test_schwab_marketdata.py b/tests/integrations/test_schwab_marketdata.py
+index 62250386..857d5fbf 100644
+--- a/tests/integrations/test_schwab_marketdata.py
++++ b/tests/integrations/test_schwab_marketdata.py
+@@ -285,21 +285,21 @@ def test_03_map_quotes_happy_path_all_ok():
+     response = {
+         "AAPL": {
+             "quote": {
+-                "lastPrice": 150.0,
+-                "bidPrice": 149.5,
+-                "askPrice": 150.5,
++                "regularMarketLastPrice": 150.0,
++                "regularMarketBidPrice": 149.5,
++                "regularMarketAskPrice": 150.5,
+                 "mark": 150.0,
+-                "quoteTimeInLong": 1715692800000,  # epoch ms
++                "regularMarketTradeTime": 1715692800000,  # epoch ms
+                 "delayed": False,
+             },
+         },
+         "MSFT": {
+             "quote": {
+-                "lastPrice": 420.0,
+-                "bidPrice": 419.5,
+-                "askPrice": 420.5,
++                "regularMarketLastPrice": 420.0,
++                "regularMarketBidPrice": 419.5,
++                "regularMarketAskPrice": 420.5,
+                 "mark": 420.0,
+-                "quoteTimeInLong": 1715692800000,
++                "regularMarketTradeTime": 1715692800000,
+                 "delayed": False,
+             },
+         },
+@@ -322,10 +322,10 @@ def test_04_map_quotes_partial_response_drops_error_symbols():
+     response = {
+         "AAPL": {
+             "quote": {
+-                "lastPrice": 150.0,
+-                "bidPrice": 149.5,
+-                "askPrice": 150.5,
+-                "quoteTimeInLong": 1715692800000,
++                "regularMarketLastPrice": 150.0,
++                "regularMarketBidPrice": 149.5,
++                "regularMarketAskPrice": 150.5,
++                "regularMarketTradeTime": 1715692800000,
+             },
+         },
+         # Error envelope shapes per spec §E.4 — three variants:
+@@ -348,10 +348,10 @@ def test_05_map_quotes_top_level_quote_keys_also_supported():
+ 
+     response = {
+         "AAPL": {
+-            "lastPrice": 150.0,
+-            "bidPrice": 149.5,
+-            "askPrice": 150.5,
+-            "quoteTimeInLong": 1715692800000,
++            "regularMarketLastPrice": 150.0,
++            "regularMarketBidPrice": 149.5,
++            "regularMarketAskPrice": 150.5,
++            "regularMarketTradeTime": 1715692800000,
+         },
+     }
+     result = map_quotes_to_price_cache_entries(response)
+@@ -502,10 +502,10 @@ def test_09_get_quotes_batch_happy_path_audit_lifecycle(v18_conn):
+         {
+             "AAPL": {
+                 "quote": {
+-                    "lastPrice": 150.0,
+-                    "bidPrice": 149.5,
+-                    "askPrice": 150.5,
+-                    "quoteTimeInLong": 1715692800000,
++                    "regularMarketLastPrice": 150.0,
++                    "regularMarketBidPrice": 149.5,
++                    "regularMarketAskPrice": 150.5,
++                    "regularMarketTradeTime": 1715692800000,
+                     "delayed": False,
+                 },
+             },
+diff --git a/tests/integrations/test_schwab_marketdata_ladder.py b/tests/integrations/test_schwab_marketdata_ladder.py
+index 1c81dde1..86edc209 100644
+--- a/tests/integrations/test_schwab_marketdata_ladder.py
++++ b/tests/integrations/test_schwab_marketdata_ladder.py
+@@ -113,11 +113,11 @@ def _mock_quote_response(symbol: str, last_price: float = 150.0) -> MagicMock:
+     resp.json.return_value = {
+         symbol: {
+             "quote": {
+-                "lastPrice": last_price,
+-                "bidPrice": last_price - 0.5,
+-                "askPrice": last_price + 0.5,
++                "regularMarketLastPrice": last_price,
++                "regularMarketBidPrice": last_price - 0.5,
++                "regularMarketAskPrice": last_price + 0.5,
+                 "mark": last_price,
+-                "quoteTimeInLong": 1715692800000,
++                "regularMarketTradeTime": 1715692800000,
+                 "delayed": False,
+             },
+         },
+diff --git a/tests/integrations/test_schwab_token_redaction_audit.py b/tests/integrations/test_schwab_token_redaction_audit.py
+index 8b2e7407..756d6497 100644
+--- a/tests/integrations/test_schwab_token_redaction_audit.py
++++ b/tests/integrations/test_schwab_token_redaction_audit.py
+@@ -1349,11 +1349,11 @@ def test_26_marketdata_quotes_partial_response_per_symbol_breakdown_redacted(
+     ok_resp.json.return_value = {
+         "AAPL": {
+             "quote": {
+-                "lastPrice": 150.0,
+-                "bidPrice": 149.95,
+-                "askPrice": 150.05,
++                "regularMarketLastPrice": 150.0,
++                "regularMarketBidPrice": 149.95,
++                "regularMarketAskPrice": 150.05,
+                 "mark": 150.0,
+-                "quoteTimeInLong": 1700000000000,
++                "regularMarketTradeTime": 1700000000000,
+                 "delayed": False,
+             },
+         },
+@@ -1687,11 +1687,11 @@ def test_27_marketdata_quotes_sentinel_emitted_from_inside_call_is_redacted(
+         resp.json.return_value = {
+             "AAPL": {
+                 "quote": {
+-                    "lastPrice": 100.0,
+-                    "bidPrice": 99.5,
+-                    "askPrice": 100.5,
++                    "regularMarketLastPrice": 100.0,
++                    "regularMarketBidPrice": 99.5,
++                    "regularMarketAskPrice": 100.5,
+                     "mark": 100.0,
+-                    "quoteTimeInLong": 1715692800000,
++                    "regularMarketTradeTime": 1715692800000,
+                     "delayed": False,
+                 },
+             },
+diff --git a/tests/pipeline/test_lock_guard_completed_day.py b/tests/pipeline/test_lock_guard_completed_day.py
+new file mode 100644
+index 00000000..d1b78d23
+--- /dev/null
++++ b/tests/pipeline/test_lock_guard_completed_day.py
+@@ -0,0 +1,75 @@
++# tests/pipeline/test_lock_guard_completed_day.py
++from datetime import date
++from datetime import date as _date
++
++import pytest
++
++import swing.pipeline.runner as runner
++from swing.pipeline.temporal_metadata import build_ohlc_today_json
++from tests.pipeline.conftest_temporal import _cfg
++
++
++def runner_cfg_stub(tmp_path):
++    """Minimal cfg exposing paths.prices_cache_dir (+ db_path), reusing the
++    project's temporal-test cfg factory."""
++    return _cfg(tmp_path, tmp_path / "swing.db")
++
++
++def test_bar_for_date_rejects_current_day(monkeypatch, tmp_path):
++    """L3 date-only guard: _bar_for_date must refuse an observation_date that
++    is not <= last_completed_session(now). Catches a wiring regression that
++    would lock a partial/in-progress bar."""
++    monkeypatch.setattr(runner, "last_completed_session",
++                        lambda *_a, **_k: date(2026, 6, 4))
++
++    class _Cache:
++        def get_or_fetch(self, **k):
++            raise AssertionError("must raise BEFORE any fetch")
++
++    cfg = runner_cfg_stub(tmp_path)  # minimal cfg with paths.prices_cache_dir
++    with pytest.raises(ValueError, match="not a completed session"):
++        runner._bar_for_date(cfg, _Cache(), "AAPL", "2026-06-05")
++
++
++def test_bar_for_date_allows_completed_day(monkeypatch, tmp_path):
++    monkeypatch.setattr(runner, "last_completed_session",
++                        lambda *_a, **_k: date(2026, 6, 4))
++    # A completed-day observation_date passes the guard (then proceeds to the
++    # normal archive read, which returns None for an empty cache -> acceptable).
++    cfg = runner_cfg_stub(tmp_path)
++
++    class _Cache:
++        def get_or_fetch(self, **k):
++            return None
++    assert runner._bar_for_date(cfg, _Cache(), "AAPL", "2026-06-04") is None
++
++
++def test_build_ohlc_today_json_rejects_non_completed_day():
++    bar = {"open": 10.0, "high": 11.0, "low": 9.0, "close": 10.5,
++           "volume": 100.0, "provider": "schwab_api"}
++    with pytest.raises(ValueError, match="non-completed-session"):
++        build_ohlc_today_json(bar, observation_date="2026-06-05",
++                              cutoff=_date(2026, 6, 4))
++
++
++def test_build_ohlc_today_json_allows_completed_day():
++    bar = {"open": 10.0, "high": 11.0, "low": 9.0, "close": 10.5,
++           "volume": 100.0, "provider": "schwab_api"}
++    out = build_ohlc_today_json(bar, observation_date="2026-06-04",
++                                cutoff=_date(2026, 6, 4))
++    assert '"open": 10.0' in out
++
++
++def test_guard_passes_completed_date_ext_hours_contaminated_bar():
++    """C2 boundary doc-test: a COMPLETED-DATE bar whose high is an ext-hours
++    print (above the regular high but still >= max(open,close)) PASSES both
++    lock-guards. The guard is DATE-ONLY -- it cannot and does not validate
++    ext-hours provenance (that is owned by the pull stage + archive
++    cleanliness). Reviewers must not over-trust the guard."""
++    # high=13.0 is an ext-hours-inflated extreme, but the bar is internally
++    # consistent (low <= min(o,c) <= max(o,c) <= high) and dated <= cutoff.
++    bar = {"open": 10.0, "high": 13.0, "low": 9.0, "close": 10.5,
++           "volume": 100.0, "provider": "schwab_api"}
++    out = build_ohlc_today_json(bar, observation_date="2026-06-04",
++                                cutoff=_date(2026, 6, 4))
++    assert '"high": 13.0' in out  # the guard PASSES it (date-only)
+diff --git a/tests/pipeline/test_observe_remediation.py b/tests/pipeline/test_observe_remediation.py
+new file mode 100644
+index 00000000..214855c7
+--- /dev/null
++++ b/tests/pipeline/test_observe_remediation.py
+@@ -0,0 +1,81 @@
++# tests/pipeline/test_observe_remediation.py
++from datetime import date
++
++import pandas as pd
++
++import swing.data.ohlcv_archive as arch
++import swing.pipeline.runner as runner
++from swing.data.ohlcv_archive import (
++    _shape_a_path,
++    _write_archive_atomic,
++    write_window,
++)
++from tests.pipeline.conftest_temporal import _cfg
++
++COLS = ["asof_date", "open", "high", "low", "close", "volume"]
++
++
++def runner_cfg_stub(tmp_path):
++    return _cfg(tmp_path, tmp_path / "swing.db")
++
++
++def _seed_contaminated_schwab(tmp_path):
++    # a pre-fix ext-hours-inflated (high=99) schwab_api row for the obs date.
++    _write_archive_atomic(_shape_a_path(tmp_path, "AAPL", "schwab_api"),
++                          pd.DataFrame([["2026-06-04", 10, 99, 9, 10.5, 100]],
++                                       columns=COLS))
++
++
++def _cfg_for(tmp_path):
++    return runner_cfg_stub(tmp_path)  # supplies paths.prices_cache_dir = tmp_path/ohlcv
++
++
++def test_success_path_overwrites_contaminated_before_lock(tmp_path, monkeypatch):
++    """Schwab-success: the populate refetches clean (L1) -> keep='last'
++    overwrites -> _bar_for_date returns the clean bar."""
++    cfg = _cfg_for(tmp_path)
++    cache = cfg.paths.prices_cache_dir
++    monkeypatch.setattr(arch, "_last_completed_session_today",
++                        lambda: date(2026, 6, 4))
++    monkeypatch.setattr(runner, "last_completed_session",
++                        lambda *_a, **_k: date(2026, 6, 4))
++    _seed_contaminated_schwab(cache)
++
++    class _Cache:
++        def get_or_fetch(self, *, ticker, window_days):
++            # emulate the ladder's clean L1 Schwab refetch + persist.
++            write_window(ticker, pd.DataFrame(
++                [["2026-06-04", 10, 11, 9, 10.5, 100]], columns=COLS),
++                "schwab_api", cache_dir=cache)
++            return pd.DataFrame()  # return value unused by _bar_for_date's read
++    bar = runner._bar_for_date(cfg, _Cache(), "AAPL", "2026-06-04")
++    assert bar is not None and bar["high"] == 11   # clean, not 99
++    assert bar["provider"] == "schwab_api"
++
++
++def test_failure_path_then_purge_falls_to_clean_yfinance(tmp_path, monkeypatch):
++    """Schwab-failure/TTL-hit: the populate does NOT overwrite; the stale
++    contaminated schwab_api row wins on precedence -> _bar_for_date returns it
++    (the residual gap). After the C8 purge removes *.schwab_api.parquet,
++    _bar_for_date falls to the clean yfinance row."""
++    cfg = _cfg_for(tmp_path)
++    cache = cfg.paths.prices_cache_dir
++    monkeypatch.setattr(arch, "_last_completed_session_today",
++                        lambda: date(2026, 6, 4))
++    monkeypatch.setattr(runner, "last_completed_session",
++                        lambda *_a, **_k: date(2026, 6, 4))
++    _seed_contaminated_schwab(cache)
++    # a clean yfinance row also exists (lower precedence).
++    write_window("AAPL", pd.DataFrame([["2026-06-04", 10, 11, 9, 10.5, 100]],
++                                      columns=COLS), "yfinance", cache_dir=cache)
++
++    class _NoOpCache:
++        def get_or_fetch(self, *, ticker, window_days):
++            return pd.DataFrame()  # Schwab failed / TTL hit -> no overwrite
++    # BEFORE purge: contaminated schwab_api wins.
++    bar = runner._bar_for_date(cfg, _NoOpCache(), "AAPL", "2026-06-04")
++    assert bar["high"] == 99   # documents the residual gap
++    # purge (the C8 belt) -> schwab_api gone -> clean yfinance wins.
++    _shape_a_path(cache, "AAPL", "schwab_api").unlink()
++    bar2 = runner._bar_for_date(cfg, _NoOpCache(), "AAPL", "2026-06-04")
++    assert bar2["high"] == 11 and bar2["provider"] == "yfinance"
+diff --git a/tests/pipeline/test_temporal_metadata.py b/tests/pipeline/test_temporal_metadata.py
+index 7d96c331..3a7173cd 100644
+--- a/tests/pipeline/test_temporal_metadata.py
++++ b/tests/pipeline/test_temporal_metadata.py
+@@ -90,13 +90,18 @@ def test_atr_pct_squeezes_2d_single_ticker_columns():
+ def test_build_ohlc_today_json_validates_shape_and_provider():
+     # Codex chain #2 Major #6: the observation JSON construction barrier.
+     import json as _j
++    from datetime import date as _date
+     from swing.pipeline.temporal_metadata import build_ohlc_today_json
+     good = {"open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5,
+             "volume": 1e6, "provider": "yfinance"}
+-    out = _j.loads(build_ohlc_today_json(good))
++    _obs = "2026-05-28"
++    _cut = _date(2026, 5, 28)
++    out = _j.loads(build_ohlc_today_json(good, observation_date=_obs, cutoff=_cut))
+     assert out["provider"] == "yfinance"
+     assert set(out) == {"open", "high", "low", "close", "volume", "provider"}
+     with pytest.raises(ValueError, match="provider"):
+-        build_ohlc_today_json({**good, "provider": "bogus"})
++        build_ohlc_today_json({**good, "provider": "bogus"},
++                              observation_date=_obs, cutoff=_cut)
+     with pytest.raises(ValueError, match="missing keys"):
+-        build_ohlc_today_json({"open": 1.0})  # incomplete
++        build_ohlc_today_json({"open": 1.0},
++                              observation_date=_obs, cutoff=_cut)  # incomplete
+diff --git a/tests/web/test_topbar_cross_vm_consistency.py b/tests/web/test_topbar_cross_vm_consistency.py
+new file mode 100644
+index 00000000..f10fefd5
+--- /dev/null
++++ b/tests/web/test_topbar_cross_vm_consistency.py
+@@ -0,0 +1,249 @@
++# tests/web/test_topbar_cross_vm_consistency.py
++"""Issue #5: at a single frozen `now`, same-kind base-layout pages agree on the
++topbar session_date, and the naive date.today()/now().date() family is gone.
++NOW is a post-close evening on a session day so forward != backward."""
++import ast
++from datetime import datetime
++from pathlib import Path
++from unittest.mock import MagicMock
++
++import pytest
++
++from swing.config import load
++from swing.data.db import ensure_schema
++from swing.evaluation.dates import (
++    PageKind,
++    action_session_for_run,
++    last_completed_session,
++)
++
++# Import every base-layout VM from its DEFINING module (the home modules verified
++# on this checkout). The COMPLETENESS check below is pure-AST and import-
++# independent; these imports only make PAGE_KIND readable + force module load.
++from swing.web.view_models.account import AccountSnapshotFormVM
++from swing.web.view_models.config import ConfigPageVM, build_config_vm
++from swing.web.view_models.dashboard import DashboardVM
++from swing.web.view_models.error import PageErrorVM
++from swing.web.view_models.journal import JournalVM, TradeDrilldownVM
++from swing.web.view_models.metrics.capital_friction import (
++    CapitalFrictionVM,
++    build_capital_friction_vm,
++)
++from swing.web.view_models.metrics.deviation_outcome import DeviationOutcomeVM
++from swing.web.view_models.metrics.hypothesis_progress_card import HypothesisProgressCardVM
++from swing.web.view_models.metrics.identification_funnel import (
++    IdentificationFunnelVM,
++    build_identification_funnel_vm,
++)
++from swing.web.view_models.metrics.index import MetricsIndexVM
++from swing.web.view_models.metrics.maturity_stage import (
++    MaturityStageVM,
++    build_maturity_stage_vm,
++)
++from swing.web.view_models.metrics.process_grade_trend import ProcessGradeTrendVM
++from swing.web.view_models.metrics.shared import BaseLayoutVM  # noqa: F401
++from swing.web.view_models.metrics.tier_comparison import TierComparisonVM
++from swing.web.view_models.metrics.trade_process_card import TradeProcessCardVM
++from swing.web.view_models.patterns.exemplars import PatternExemplarsVM
++from swing.web.view_models.patterns.outcomes_card import PatternOutcomesVM
++from swing.web.view_models.patterns.queue import PatternQueueVM
++from swing.web.view_models.patterns.review_form import PatternReviewFormVM
++from swing.web.view_models.pipeline import PipelineVM, build_pipeline
++from swing.web.view_models.reconcile import (
++    ReconcileDiscrepancyErrorVM,
++    ReconcileDiscrepancyResolveVM,
++)
++from swing.web.view_models.schwab import (
++    SchwabSetupErrorVM,
++    SchwabSetupVM,
++    SchwabStatusVM,
++)
++from swing.web.view_models.trades import (
++    CadenceCompleteVM,
++    ReviewsPendingVM,
++    ReviewVM,
++    TradeDetailVM,
++)
++from swing.web.view_models.watchlist import WatchlistVM, build_watchlist
++
++NOW = datetime(2026, 6, 4, 20, 0)  # post-close ET evening on a session day
++WEB = Path(__file__).resolve().parents[2] / "swing" / "web"
++# The abstract shared base carries the session_date field but is NOT a page;
++# exclude it from discovery.
++_DISCOVERY_EXCLUDE = {"BaseLayoutVM"}
++
++# The AUTHORITATIVE manifest -- every base-layout VM + its declared PageKind.
++# NO ellipsis: the completeness test below mechanically (AST) discovers every
++# base-layout VM class in swing/web and asserts this manifest equals that set,
++# so an incomplete manifest FAILS the suite (it cannot ship silently).
++MANIFEST = {
++    DashboardVM: PageKind.FORWARD_PLANNING,
++    WatchlistVM: PageKind.FORWARD_PLANNING,
++    JournalVM: PageKind.HISTORY_ANALYSIS,
++    ConfigPageVM: PageKind.HISTORY_ANALYSIS,
++    PipelineVM: PageKind.HISTORY_ANALYSIS,
++    PageErrorVM: PageKind.HISTORY_ANALYSIS,
++    ReviewVM: PageKind.HISTORY_ANALYSIS,
++    ReviewsPendingVM: PageKind.HISTORY_ANALYSIS,
++    CadenceCompleteVM: PageKind.HISTORY_ANALYSIS,
++    TradeDetailVM: PageKind.HISTORY_ANALYSIS,
++    TradeDrilldownVM: PageKind.HISTORY_ANALYSIS,
++    ReconcileDiscrepancyResolveVM: PageKind.HISTORY_ANALYSIS,
++    ReconcileDiscrepancyErrorVM: PageKind.HISTORY_ANALYSIS,
++    SchwabSetupVM: PageKind.HISTORY_ANALYSIS,
++    SchwabStatusVM: PageKind.HISTORY_ANALYSIS,
++    SchwabSetupErrorVM: PageKind.HISTORY_ANALYSIS,
++    AccountSnapshotFormVM: PageKind.HISTORY_ANALYSIS,
++    MetricsIndexVM: PageKind.HISTORY_ANALYSIS,
++    CapitalFrictionVM: PageKind.HISTORY_ANALYSIS,
++    DeviationOutcomeVM: PageKind.HISTORY_ANALYSIS,
++    HypothesisProgressCardVM: PageKind.HISTORY_ANALYSIS,
++    IdentificationFunnelVM: PageKind.HISTORY_ANALYSIS,
++    MaturityStageVM: PageKind.HISTORY_ANALYSIS,
++    ProcessGradeTrendVM: PageKind.HISTORY_ANALYSIS,
++    TierComparisonVM: PageKind.HISTORY_ANALYSIS,
++    TradeProcessCardVM: PageKind.HISTORY_ANALYSIS,
++    PatternExemplarsVM: PageKind.HISTORY_ANALYSIS,
++    PatternOutcomesVM: PageKind.HISTORY_ANALYSIS,
++    PatternQueueVM: PageKind.HISTORY_ANALYSIS,
++    PatternReviewFormVM: PageKind.HISTORY_ANALYSIS,
++}
++
++
++def _discover_base_layout_vm_names() -> set[str]:
++    """Pure-AST discovery (no imports) of EVERY base-layout VM class across
++    swing/web -- BOTH populations: (a) classes whose bases include
++    BaseLayoutVM (the metrics + account family); (b) classes that DECLARE a
++    `session_date` annotated field (the standalone family). Import-independent,
++    so an unimported module cannot hide a class."""
++    names: set[str] = set()
++    for path in WEB.rglob("*.py"):
++        tree = ast.parse(path.read_text(encoding="utf-8"))
++        for node in ast.walk(tree):
++            if not isinstance(node, ast.ClassDef):
++                continue
++            base_names = {b.id for b in node.bases if isinstance(b, ast.Name)} | \
++                {b.attr for b in node.bases if isinstance(b, ast.Attribute)}
++            declares_session_date = any(
++                isinstance(s, ast.AnnAssign) and isinstance(s.target, ast.Name)
++                and s.target.id == "session_date" for s in node.body)
++            if node.name in _DISCOVERY_EXCLUDE:
++                continue  # the abstract shared base, not a page
++            if "BaseLayoutVM" in base_names or declares_session_date:
++                names.add(node.name)
++    return names
++
++
++def test_manifest_is_complete_and_exact():
++    """Mechanical authority: the manifest must equal the AST-discovered set of
++    base-layout VM classes -- no missing (an evading page) and no stale extras."""
++    discovered = _discover_base_layout_vm_names()
++    manifest_names = {c.__name__ for c in MANIFEST}
++    assert discovered == manifest_names, (
++        f"missing from MANIFEST: {discovered - manifest_names}; "
++        f"stale in MANIFEST: {manifest_names - discovered}")
++
++
++def test_every_vm_declares_matching_page_kind():
++    for cls, kind in MANIFEST.items():
++        assert getattr(cls, "PAGE_KIND", None) is kind, \
++            f"{cls.__name__} PAGE_KIND != {kind}"
++
++
++class _FakeCache:
++    """Minimal PriceCache stand-in for build_watchlist on an empty universe."""
++
++    def get_many(self, *args, **kwargs):
++        return {}
++
++    def degraded_until(self):
++        return None
++
++    def is_degraded(self):
++        return False
++
++
++# Per-VM builders wired to the project's real builders. Each value is a
++# one-arg callable(cfg) returning a constructed VM at the monkeypatched `now`.
++# This registry is the BEHAVIORAL proof: it catches a wrong PageKind ARGUMENT
++# at a callsite (a metrics builder mistakenly calling
++# topbar_session_date(PageKind.FORWARD_PLANNING, ...) would render `forward`,
++# failing the assertion below even though its PAGE_KIND attr says backward).
++# Covers both families + >=1 metrics VM + >=1 standalone VM.
++_REPRESENTATIVES: dict = {
++    WatchlistVM: lambda cfg: build_watchlist(
++        cfg=cfg, cache=_FakeCache(), executor=MagicMock()),     # forward
++    PipelineVM: lambda cfg: build_pipeline(cfg=cfg),            # backward (non-metrics)
++    ConfigPageVM: lambda cfg: build_config_vm(cfg),            # backward (non-metrics)
++    CapitalFrictionVM: lambda cfg: build_capital_friction_vm(cfg=cfg),     # backward metrics
++    MaturityStageVM: lambda cfg: build_maturity_stage_vm(cfg=cfg),         # backward metrics
++    IdentificationFunnelVM: lambda cfg: build_identification_funnel_vm(cfg=cfg),  # backward metrics
++}
++
++
++class _FrozenNow(datetime):
++    """A datetime subclass whose .now() is pinned to NOW; preserves every other
++    datetime behavior (construction, arithmetic) so patching it into a module is
++    safe."""
++    @classmethod
++    def now(cls, tz=None):
++        return NOW
++
++
++def _freeze_web_clock(monkeypatch):
++    """Deterministically freeze EVERY swing.web callsite's clock: VMs call
++    `datetime.now()` in their OWN module then pass it into
++    topbar_session_date(now_local), so patching swing.evaluation.dates does
++    nothing. Patch each already-imported swing.web module's `datetime` symbol
++    (the `from datetime import datetime` name) to _FrozenNow."""
++    import sys
++    for name, mod in list(sys.modules.items()):
++        if not name.startswith("swing.web"):
++            continue
++        if getattr(mod, "datetime", None) is datetime:
++            monkeypatch.setattr(mod, "datetime", _FrozenNow)
++
++
++def test_representatives_registry_is_non_vacuous():
++    """Guard: the behavioral test cannot pass with an empty/one-sided registry."""
++    kinds = {MANIFEST[c] for c in _REPRESENTATIVES}
++    assert len(_REPRESENTATIVES) >= 6, "wire at least 6 representative builders"
++    assert kinds == {PageKind.FORWARD_PLANNING, PageKind.HISTORY_ANALYSIS}, \
++        "representatives must cover BOTH PageKinds"
++    metrics = {MetricsIndexVM, CapitalFrictionVM, DeviationOutcomeVM,
++               HypothesisProgressCardVM, IdentificationFunnelVM, MaturityStageVM,
++               ProcessGradeTrendVM, TierComparisonVM, TradeProcessCardVM}
++    assert _REPRESENTATIVES.keys() & metrics, "include >=1 metrics VM"
++    assert _REPRESENTATIVES.keys() - metrics, "include >=1 non-metrics VM"
++
++
++@pytest.fixture
++def rep_cfg(tmp_path):
++    """A migrated, empty-DB cfg the representative builders can read."""
++    from tests.cli.test_cli_eval import _minimal_config
++    project = tmp_path / "project"
++    project.mkdir()
++    home = tmp_path / "home"
++    home.mkdir()
++    cfg_path = _minimal_config(project, home)
++    cfg = load(cfg_path)
++    ensure_schema(cfg.paths.db_path).close()
++    return cfg
++
++
++@pytest.mark.parametrize("cls", list(_REPRESENTATIVES))
++def test_representative_renders_its_declared_anchor(cls, monkeypatch, rep_cfg):
++    """Build the VM at frozen NOW; its rendered session_date MUST equal the
++    anchor for its DECLARED kind and DIFFER from the other kind -- catching a
++    wrong PageKind argument at the construction callsite."""
++    forward = action_session_for_run(NOW).isoformat()
++    backward = last_completed_session(NOW).isoformat()
++    assert forward != backward
++    _freeze_web_clock(monkeypatch)   # freezes every swing.web callsite's now()
++    vm = _REPRESENTATIVES[cls](rep_cfg)
++    expected = forward if MANIFEST[cls] is PageKind.FORWARD_PLANNING else backward
++    wrong = backward if MANIFEST[cls] is PageKind.FORWARD_PLANNING else forward
++    assert vm.session_date in (forward, backward), \
++        f"{cls.__name__} read an unfrozen clock"
++    assert vm.session_date == expected, f"{cls.__name__} rendered the wrong anchor"
++    assert vm.session_date != wrong
+diff --git a/tests/web/test_topbar_provenance_lint.py b/tests/web/test_topbar_provenance_lint.py
+new file mode 100644
+index 00000000..99923990
+--- /dev/null
++++ b/tests/web/test_topbar_provenance_lint.py
+@@ -0,0 +1,88 @@
++# tests/web/test_topbar_provenance_lint.py
++"""Backstop: every `session_date` value assigned in the web layer must trace to
++a topbar_session_date(...) call -- directly OR through a local variable bound in
++the same function. Catches the intermediate-variable evasion the regex missed."""
++import ast
++from pathlib import Path
++
++WEB = Path(__file__).resolve().parents[2] / "swing" / "web"
++_GOOD = "topbar_session_date"
++
++# `session_date=` kwargs passed to these functions are NOT base-layout topbar
++# dates -- they are daily-management data keys, deliberately anchored on
++# ``last_completed_session(now)`` per the daily_management session-anchor
++# contract (Codex R1 Major #1). The topbar-provenance lint scopes to VM render
++# dates, so it excludes these known non-topbar consumers.
++_NON_TOPBAR_CONSUMERS = {"has_update_today_for_trades"}
++
++
++def _call_name(node: ast.AST) -> str | None:
++    if isinstance(node, ast.Call):
++        f = node.func
++        if isinstance(f, ast.Name):
++            return f.id
++        if isinstance(f, ast.Attribute):
++            return f.attr
++    return None
++
++
++def _banned_source(value: ast.AST, local_defs: dict[str, ast.AST]) -> str | None:
++    """DENYLIST: return a reason if `value` traces to a RAW anchor (banned),
++    else None. Resolves `.isoformat()`/`.date()` chains + one local-var hop. A
++    string literal (the deliberate "n/a" fallback) and a topbar_session_date(...)
++    call are NOT banned -- so the
++    `try: session_date = topbar(...); except: session_date = "n/a"` shape does
++    not false-positive."""
++    node = value
++    while isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
++        if node.func.attr == "today":
++            return "date.today()"
++        if node.func.attr == "date":
++            return "datetime.now().date()"
++        node = node.func.value  # unwrap .isoformat() etc.
++    name = _call_name(node)
++    if name in {"action_session_for_run", "last_completed_session"}:
++        return f"{name}(...)"
++    if name == _GOOD:
++        return None  # explicitly OK
++    if isinstance(node, ast.Name):
++        bound = local_defs.get(node.id)
++        if bound is not None:
++            return _banned_source(bound, {})  # one resolution hop
++    return None  # literals / unknowns are not raw anchors
++
++
++def _offenders_in(path: Path) -> list[str]:
++    tree = ast.parse(path.read_text(encoding="utf-8"))
++    out = []
++    for fn in ast.walk(tree):
++        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
++            continue
++        local_defs = {}
++        for stmt in ast.walk(fn):
++            if isinstance(stmt, ast.Assign):
++                for t in stmt.targets:
++                    if isinstance(t, ast.Name):
++                        local_defs[t.id] = stmt.value
++        for stmt in ast.walk(fn):
++            vals = []
++            if isinstance(stmt, ast.Call) and _call_name(stmt) not in _NON_TOPBAR_CONSUMERS:
++                vals += [kw.value for kw in stmt.keywords if kw.arg == "session_date"]
++            if isinstance(stmt, ast.Assign):
++                for t in stmt.targets:
++                    if isinstance(t, ast.Name) and t.id == "session_date":
++                        vals.append(stmt.value)
++            for v in vals:
++                reason = _banned_source(v, local_defs)
++                if reason:
++                    out.append(f"{path.name}:{getattr(v, 'lineno', '?')} ({reason})")
++    return out
++
++
++def test_session_date_never_from_raw_anchor():
++    offenders = []
++    for path in WEB.rglob("*.py"):
++        offenders += _offenders_in(path)
++    assert not offenders, (
++        "session_date must NOT come from a raw anchor (use topbar_session_date):\n"
++        + "\n".join(offenders))

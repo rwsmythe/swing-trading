@@ -39,3 +39,28 @@ def test_regular_last_but_ext_hours_bid_ask_is_dropped():
         "bidPrice": 149.0, "askPrice": 151.0,  # ext-hours book only
     }))
     assert "AAPL" not in out  # dropped (no regular bid/ask)
+
+
+def test_ext_hours_mark_never_surfaces():
+    """Codex R2 MAJOR: the bare ext-hours `mark` must NEVER surface. With full
+    regular last/bid/ask but only an ext-hours `mark` (no regularMarketMark),
+    the emitted entry.mark is None -- not the ext-hours sentinel."""
+    out = map_quotes_to_price_cache_entries(_resp("AAPL", {
+        "regularMarketLastPrice": 150.25,
+        "regularMarketTradeTime": 1_700_000_000_000,
+        "regularMarketBidPrice": 150.20, "regularMarketAskPrice": 150.30,
+        "mark": 999.99,  # ext-hours mark sentinel -- must NOT surface
+    }))
+    assert "AAPL" in out
+    assert out["AAPL"].mark is None
+    assert out["AAPL"].mark != 999.99
+
+
+def test_regular_market_mark_surfaces():
+    out = map_quotes_to_price_cache_entries(_resp("AAPL", {
+        "regularMarketLastPrice": 150.25,
+        "regularMarketTradeTime": 1_700_000_000_000,
+        "regularMarketBidPrice": 150.20, "regularMarketAskPrice": 150.30,
+        "regularMarketMark": 150.26, "mark": 999.99,
+    }))
+    assert out["AAPL"].mark == 150.26  # regular, not the ext-hours 999.99

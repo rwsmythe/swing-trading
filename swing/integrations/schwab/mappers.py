@@ -721,7 +721,13 @@ def map_quotes_to_price_cache_entries(
         ask = body.get("regularMarketAskPrice")
         if ask is None:
             ask = body.get("regular_market_ask_price")
-        mark = body.get("mark")
+        # L1 (Codex R2 MAJOR): NEVER read the bare `mark` -- during pre/post
+        # market it carries the extended-hours mark. Use the regular-session
+        # variant only; None (an allowed value) when Schwab omits it, rather
+        # than leaking an ext-hours value onto a priced surface.
+        mark = body.get("regularMarketMark")
+        if mark is None:
+            mark = body.get("regular_market_mark")
         quote_time_raw = (
             body.get("regularMarketTradeTime")
             or body.get("regular_market_trade_time")
