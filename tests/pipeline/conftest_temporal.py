@@ -124,18 +124,25 @@ def _cfg(tmp_path, db_path):
 
 
 def _plant_detection(conn, *, ticker="AAA", data_asof_date="2026-05-28",
-                     pivot=10.0, invalidation=8.0) -> int:
-    """Insert one vcp PatternDetectionEvent via the repo; return detection_id."""
+                     pivot=10.0, invalidation=8.0, bucket=None,
+                     detection_date="2026-05-29") -> int:
+    """Insert one vcp PatternDetectionEvent via the repo; return detection_id.
+
+    `bucket` (pool-widening): when set, the detection's finviz_screen_state
+    JSON carries {"bucket": bucket} so the Lever-2 watch-origin shed can read
+    the LOCKED origin off the detection (never recomputed)."""
     from swing.data.repos.pattern_detection_events import insert_detection_event
     anchors = json.dumps({"window": {}, "evidence": {
         "pivot_price": pivot, "base_top_price": pivot,
         "contractions": [{"low": invalidation}]}})
+    fss = json.dumps({"bucket": bucket}) if bucket is not None else None
     with conn:
         return insert_detection_event(conn, PatternDetectionEvent(
-            detection_id=None, ticker=ticker, detection_date="2026-05-29",
+            detection_id=None, ticker=ticker, detection_date=detection_date,
             data_asof_date=data_asof_date, pattern_class="vcp",
             structural_anchors_json=anchors, composite_score=0.7,
             detector_version="vcp_v1", source="pipeline",
+            finviz_screen_state=fss,
             per_pattern_metadata_json="{}", created_at="2026-05-29T00:00:00Z"))
 
 

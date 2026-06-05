@@ -2575,11 +2575,45 @@ def _step_pattern_observe(*, cfg, lease, ohlcv_cache, run_warnings):
         })
         return
 
+    _pend_w = getattr(cfg.pipeline,
+                      "observe_max_pending_window_sessions_watch", None)
+    _post_w = getattr(cfg.pipeline,
+                      "observe_max_post_trigger_window_sessions_watch", None)
+    _shed_count = 0
     with lease.fenced_write() as conn:
         for det in open_dets:
             prev = latest.get(det.detection_id)
             if prev is not None and prev.observation_date == observation_date:
                 continue  # idempotent: already observed today
+            # Dormant Lever 2 (pool-widening 2026-06-04): watch-origin pre-fetch
+            # shed. A no-fetch SKIP (NOT an `expired` transition -- a no-fetch
+            # expiry is impossible without a schema change; ohlc_today_json is
+            # NOT NULL). The bucket is read from the LOCKED finviz_screen_state
+            # (never recomputed). The horizon is STATUS-AWARE (mirrors
+            # _advance_status): a pending/unobserved watch detection sheds past
+            # the watch pending window; a triggered_open one sheds past watch
+            # pending + watch post-trigger (each falling back to the aplus
+            # window when its knob is None). Repeated runs cheaply re-skip.
+            if _pend_w is not None or _post_w is not None:
+                _bucket = None
+                if det.finviz_screen_state:
+                    try:
+                        _bucket = json.loads(det.finviz_screen_state).get("bucket")
+                    except (ValueError, TypeError):
+                        _bucket = None
+                if _bucket == "watch":
+                    _sess = _sessions_since(det.data_asof_date, observation_date)
+                    _prev_status = prev.status if prev is not None else "pending"
+                    if _prev_status == "triggered_open":
+                        _horizon = (
+                            (_pend_w if _pend_w is not None else max_pending)
+                            + (_post_w if _post_w is not None else max_post))
+                    else:  # pending / no observation yet
+                        _horizon = (
+                            _pend_w if _pend_w is not None else max_pending)
+                    if _sess > _horizon:
+                        _shed_count += 1
+                        continue  # no fetch, no observation row, no terminal
             bar = _bar_for_date(cfg, ohlcv_cache, det.ticker, observation_date)
             if bar is None:
                 run_warnings.append({
@@ -2601,6 +2635,15 @@ def _step_pattern_observe(*, cfg, lease, ohlcv_cache, run_warnings):
                 sessions_since_detection=sessions,
                 created_at=datetime.now(UTC).isoformat(),
             ))
+
+    # Lever 2 #27 audit: any shed is recorded (a silent shed is forbidden).
+    if _shed_count > 0:
+        run_warnings.append({
+            "step": "pattern_observe",
+            "shed_count": _shed_count,
+            "reason": ("watch observe window shortened "
+                       "(cfg.pipeline.observe_max_*_watch)"),
+        })
 
 
 def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data_asof: str,
