@@ -21,7 +21,7 @@ from swing.data.repos.risk_policy import NoActivePolicyError
 from swing.data.repos.trades import list_closed_trades, list_open_trades
 from swing.data.repos.watchlist import list_active_watchlist
 from swing.data.repos.weather import get_latest
-from swing.evaluation.dates import PageKind, topbar_session_date
+from swing.evaluation.dates import PageKind, action_session_for_run, topbar_session_date
 from swing.journal.stats import HypothesisProgress
 from swing.metrics.equity_resolver import (
     resolve_live_capital_denominator_dollars,
@@ -843,7 +843,7 @@ def build_dashboard(
     from swing.web.view_models.trades import STATE_BADGE_LABELS
 
     now = datetime.now()
-    action_session = topbar_session_date(PageKind.FORWARD_PLANNING, now).isoformat()
+    action_session = action_session_for_run(now).isoformat()
 
     conn = connect(cfg.paths.db_path)
     try:
@@ -1532,7 +1532,7 @@ def build_dashboard(
     degraded_until = cache.degraded_until()
     return DashboardVM(
         generated_at=now.isoformat(timespec="seconds"),
-        session_date=action_session,
+        session_date=topbar_session_date(PageKind.FORWARD_PLANNING, now).isoformat(),
         stale_banner=stale_banner,
         status_strip=status_strip,
         today_decisions=today_decisions,

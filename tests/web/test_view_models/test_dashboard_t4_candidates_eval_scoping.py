@@ -97,7 +97,7 @@ def test_dashboard_candidates_bound_to_pipeline_eval(seeded_db, monkeypatch):
         conn.close()
 
     monkeypatch.setattr(
-        "swing.evaluation.dates.action_session_for_run",
+        "swing.web.view_models.dashboard.action_session_for_run",
         lambda now: __import__("datetime").date(2026, 4, 20),
     )
 
@@ -151,7 +151,7 @@ def test_dashboard_candidates_falls_back_to_latest_eval_when_no_pipeline(
         conn.close()
 
     monkeypatch.setattr(
-        "swing.evaluation.dates.action_session_for_run",
+        "swing.web.view_models.dashboard.action_session_for_run",
         lambda now: __import__("datetime").date(2026, 4, 20),
     )
 
@@ -206,7 +206,7 @@ def test_dashboard_candidates_legacy_null_fk_uses_latest_eval(
         conn.close()
 
     monkeypatch.setattr(
-        "swing.evaluation.dates.action_session_for_run",
+        "swing.web.view_models.dashboard.action_session_for_run",
         lambda now: __import__("datetime").date(2026, 4, 20),
     )
 
