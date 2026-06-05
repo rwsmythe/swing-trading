@@ -482,12 +482,24 @@ is a PROVABLE-aplus ladder, evaluated in order:
    (migration 0022), so an OLD aplus PE row may have no PDE to read AND a pruned
    candidate. Such a row is aplus-origin BY CONSTRUCTION (every pre-widen pipeline PE
    was aplus-only). INCLUDE it iff its run is **strictly before the FIRST widened
-   pipeline run** (Codex R4 MINOR -- a date-only boundary would wrongly exclude a
-   pre-widen run that shares the rollout calendar date). Define the boundary by the
-   first widened `pipeline_run_id` (or its `finished_ts`) where available, falling
-   back to `action_session_date < rollout_date` only for legacy rows lacking a precise
-   timestamp. This clause is NOT optional -- it satisfies the historical-preservation
-   requirement (Sec 7.1 test #5) without leaking any post-widen row.
+   session**. **BOUNDARY = `MIN(detection_date)` among watch-origin PDEs, compared to
+   the PE run's `action_session_date` (DURABLE-COLUMN ordering -- writing-plans Codex
+   R3 supersession).** Both `detection_date` (PDE) and `action_session_date`
+   (pipeline_runs) are NOT NULL and SURVIVE run pruning. **NOTE (supersedes the
+   brainstorm-phase proposal above):** the earlier "first widened `pipeline_run_id` /
+   `finished_ts`" boundary was proven UNSOUND at writing-plans -- `PDE.pipeline_run_id`
+   is `ON DELETE SET NULL` (0022:41-42), so pruning the first widened run NULLs its
+   surviving watch PDE's run id and ADVANCES a `MIN(pipeline_run_id)` boundary, leaking
+   gap-run watch rows; and a `MIN(finished_ts)` boundary collapses to NULL when the
+   first widened run's `finished_ts` is still NULL. The durable `detection_date`
+   boundary moves with neither pruning nor unfinished runs. When NO watch-origin PDE
+   exists (no widen shipped yet), INCLUDE. No first-widened-session edge: a watch PE on
+   the first widened session has `action_session_date == boundary`, so `< boundary` is
+   false -> EXCLUDE. Residual (accepted): a same-merge-calendar-date double-run could
+   under-count (DIP) a pre-merge aplus PE that lost both its candidate and PDE -- never
+   a watch leak. This clause is NOT optional -- it satisfies the historical-preservation
+   requirement (Sec 7.1 test #5) without leaking any post-widen row. The plan pins the
+   exact SQL + a `test_ladder_survives_run_pruning_null_pde_run_id` regression.
 4. **Otherwise (post-widen, unprovable): EXCLUDE.** A post-rollout PE row that cannot
    be PROVEN aplus is omitted -- it can never leak a watch row.
 

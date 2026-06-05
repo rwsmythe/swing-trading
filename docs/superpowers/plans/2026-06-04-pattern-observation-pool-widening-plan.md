@@ -325,7 +325,8 @@ def _included_ids(conn) -> set[int]:
 def test_ladder_all_six_branches(tmp_path):
     conn = _db(tmp_path)
     # A widen has shipped: run 2 (a later session) emitted a watch PDE, so the
-    # historical boundary is run 2's finished_ts.
+    # durable historical boundary is MIN(detection_date) over watch PDEs =
+    # run 2's action_session_date (2026-06-03).
     _run(conn, 1, eval_run_id=1, asof="2026-05-19", session="2026-05-20",
          finished_ts="2026-05-20T18:30:00")   # pre-widen run
     _run(conn, 2, eval_run_id=2, asof="2026-06-02", session="2026-06-03",
@@ -371,8 +372,10 @@ def test_ladder_no_widen_yet_includes_historical(tmp_path):
 def test_ladder_first_widened_run_finished_ts_null_excludes_unprovable(tmp_path):
     # Codex R1 MAJOR #1 regression: the first widened run's finished_ts is still
     # NULL (run crashed / in progress) but it HAS a watch PDE. An unprovable
-    # same-run PE (no candidate, no PDE) must be EXCLUDED (the run-id boundary is
-    # NULL-safe; a finished_ts-MIN boundary would collapse to NULL and leak).
+    # same-run PE (no candidate, no PDE) must be EXCLUDED. The durable boundary
+    # (action_session_date < MIN(detection_date)) does NOT use finished_ts at
+    # all, so a NULL finished_ts is irrelevant; the same-session PE is excluded
+    # because its action_session_date == the boundary (not strictly before).
     conn = _db(tmp_path)
     _run(conn, 1, eval_run_id=1, asof="2026-05-19", session="2026-05-20",
          finished_ts="2026-05-20T18:30:00")          # pre-widen, finished
