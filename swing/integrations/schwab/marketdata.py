@@ -378,7 +378,6 @@ def get_quotes_batch(
 def _build_price_history_client_method(
     client: Any,
     symbol: str,
-    *,
     period_type: str | None,
     period: int | None,
     frequency_type: str | None,
@@ -456,9 +455,7 @@ def get_price_history(
 
     _client_method = _build_price_history_client_method(
         client, symbol,
-        period_type=period_type, period=period,
-        frequency_type=frequency_type, frequency=frequency,
-        start_dt=start_dt, end_dt=end_dt,
+        period_type, period, frequency_type, frequency, start_dt, end_dt,
     )
 
     def _mapper(payload: Any) -> SchwabPriceHistoryWindow:
