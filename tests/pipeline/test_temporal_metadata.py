@@ -90,13 +90,18 @@ def test_atr_pct_squeezes_2d_single_ticker_columns():
 def test_build_ohlc_today_json_validates_shape_and_provider():
     # Codex chain #2 Major #6: the observation JSON construction barrier.
     import json as _j
+    from datetime import date as _date
     from swing.pipeline.temporal_metadata import build_ohlc_today_json
     good = {"open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5,
             "volume": 1e6, "provider": "yfinance"}
-    out = _j.loads(build_ohlc_today_json(good))
+    _obs = "2026-05-28"
+    _cut = _date(2026, 5, 28)
+    out = _j.loads(build_ohlc_today_json(good, observation_date=_obs, cutoff=_cut))
     assert out["provider"] == "yfinance"
     assert set(out) == {"open", "high", "low", "close", "volume", "provider"}
     with pytest.raises(ValueError, match="provider"):
-        build_ohlc_today_json({**good, "provider": "bogus"})
+        build_ohlc_today_json({**good, "provider": "bogus"},
+                              observation_date=_obs, cutoff=_cut)
     with pytest.raises(ValueError, match="missing keys"):
-        build_ohlc_today_json({"open": 1.0})  # incomplete
+        build_ohlc_today_json({"open": 1.0},
+                              observation_date=_obs, cutoff=_cut)  # incomplete

@@ -2568,6 +2568,9 @@ def _step_pattern_observe(*, cfg, lease, ohlcv_cache, run_warnings):
     from swing.pipeline.temporal_metadata import build_ohlc_today_json
 
     observation_date = lease_data_asof(cfg, lease)  # run DATA cutoff (R2 M#1)
+    # L3 completed-day guard cutoff: passed to build_ohlc_today_json so a
+    # non-completed-session bar can never enter the append-only log.
+    observe_cutoff = last_completed_session(_dt.now())
     max_pending = cfg.pipeline.observe_max_pending_window_sessions
     max_post = cfg.pipeline.observe_max_post_trigger_window_sessions
 
@@ -2650,7 +2653,9 @@ def _step_pattern_observe(*, cfg, lease, ohlcv_cache, run_warnings):
             insert_observation(conn, PatternForwardObservation(
                 observation_id=None, detection_id=det.detection_id,
                 observation_date=observation_date,
-                ohlc_today_json=build_ohlc_today_json(bar),  # validated shape + provider domain
+                ohlc_today_json=build_ohlc_today_json(
+                    bar, observation_date=observation_date, cutoff=observe_cutoff,
+                ),  # validated shape + provider domain + completed-day guard
                 status=status, status_change_event=change,
                 sessions_since_detection=sessions,
                 created_at=datetime.now(UTC).isoformat(),

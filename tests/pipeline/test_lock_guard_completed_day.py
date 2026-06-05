@@ -1,9 +1,11 @@
 # tests/pipeline/test_lock_guard_completed_day.py
 from datetime import date
+from datetime import date as _date
 
 import pytest
 
 import swing.pipeline.runner as runner
+from swing.pipeline.temporal_metadata import build_ohlc_today_json
 from tests.pipeline.conftest_temporal import _cfg
 
 
@@ -40,3 +42,19 @@ def test_bar_for_date_allows_completed_day(monkeypatch, tmp_path):
         def get_or_fetch(self, **k):
             return None
     assert runner._bar_for_date(cfg, _Cache(), "AAPL", "2026-06-04") is None
+
+
+def test_build_ohlc_today_json_rejects_non_completed_day():
+    bar = {"open": 10.0, "high": 11.0, "low": 9.0, "close": 10.5,
+           "volume": 100.0, "provider": "schwab_api"}
+    with pytest.raises(ValueError, match="non-completed-session"):
+        build_ohlc_today_json(bar, observation_date="2026-06-05",
+                              cutoff=_date(2026, 6, 4))
+
+
+def test_build_ohlc_today_json_allows_completed_day():
+    bar = {"open": 10.0, "high": 11.0, "low": 9.0, "close": 10.5,
+           "volume": 100.0, "provider": "schwab_api"}
+    out = build_ohlc_today_json(bar, observation_date="2026-06-04",
+                                cutoff=_date(2026, 6, 4))
+    assert '"open": 10.0' in out

@@ -146,12 +146,19 @@ _OHLC_TODAY_PROVIDERS = ("schwab_api", "yfinance")
 _OHLC_TODAY_KEYS = ("open", "high", "low", "close", "volume", "provider")
 
 
-def build_ohlc_today_json(bar: dict) -> str:
-    """Validated serializer for ohlc_today_json (Codex chain #2 Major #6 --
-    construction barrier for the observation JSON shape so the substrate's
-    provider provenance is guaranteed, not convention). Rejects a missing key
-    or an out-of-domain provider so a bad shape never enters the append-only
-    log. The observe step uses THIS instead of a bare json.dumps."""
+def build_ohlc_today_json(
+    bar: dict, *, observation_date: str, cutoff: date,
+) -> str:
+    """Validated serializer for ohlc_today_json. Construction-barrier guard:
+    refuses to serialize a bar for a non-completed session (date-only; L3) so
+    no partial/in-progress bar enters the append-only log. Then validates the
+    key set + provider domain as before (Codex chain #2 Major #6 -- the
+    substrate's provider provenance is guaranteed, not convention)."""
+    if date.fromisoformat(observation_date) > cutoff:
+        raise ValueError(
+            f"ohlc_today_json: refusing to lock a non-completed-session bar "
+            f"({observation_date} > {cutoff.isoformat()})"
+        )
     missing = [k for k in _OHLC_TODAY_KEYS if k not in bar]
     if missing:
         raise ValueError(f"ohlc_today_json missing keys: {missing}")
