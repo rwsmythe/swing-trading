@@ -983,6 +983,37 @@ def _check_pipeline_not_running(conn: sqlite3.Connection) -> None:
         )
 
 
+@schwab_group.command("purge-marketdata-archive")
+@click.option("--yes", is_flag=True, help="Skip the confirmation prompt.")
+@click.pass_context
+def purge_marketdata_archive(ctx: click.Context, yes: bool) -> None:
+    """One-time belt (OQ-1b): delete every `*.schwab_api.parquet` so the next
+    access re-fetches clean (regular-session) Schwab bars. Use ONCE after the
+    L1 ext-hours fix ships, to clear pre-fix ext-hours-contaminated archive
+    rows that read-precedence would otherwise keep serving. L3-safe: the
+    archive is re-fetchable cache, NOT append-only locked facts; the
+    pattern_forward_observations log is untouched."""
+    from swing.config_overrides import apply_overrides
+    cfg = apply_overrides(ctx.obj["config"])   # the real CLI cfg pattern
+    conn = connect(cfg.paths.db_path)
+    try:
+        _check_pipeline_not_running(conn)      # raises SchwabPipelineActiveError
+    finally:
+        conn.close()
+    cache_dir = Path(cfg.paths.prices_cache_dir)
+    targets = sorted(cache_dir.glob("*.schwab_api.parquet"))
+    if not targets:
+        click.echo("No *.schwab_api.parquet files to purge.")
+        return
+    if not yes:
+        click.confirm(f"Delete {len(targets)} schwab_api archive file(s)?",
+                      abort=True)
+    for p in targets:
+        p.unlink()
+    click.echo(f"Purged {len(targets)} schwab_api archive file(s); next access "
+               f"re-fetches clean.")
+
+
 def _verify_marketdata_path(
     *,
     ctx: click.Context,
