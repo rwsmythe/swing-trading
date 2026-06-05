@@ -392,6 +392,28 @@ class SchwabPipelineActiveError(_RedactedMessageError):
     definition. `__str__` redacts hash-shaped substrings."""
 
 
+class SchwabBarConsistencyError(SchwabApiError):
+    """Raised when a mapped Schwab daily candle violates the OhlcvBar
+    invariant (low/high vs open/close) -- typically an extended-hours print
+    folded into a regular-session candle. Subclasses SchwabApiError so the
+    market-data ladder's existing `except (SchwabAuthError,
+    SchwabRateLimitError, SchwabApiError)` clause catches it and falls back to
+    yfinance CLEANLY (not via the opaque catch-all). Carries a readable
+    message: OHLC detail (dates + prices) contains no account_hash, so it is
+    redaction-safe to echo (unlike the base class, which hides the body)."""
+
+    def __init__(self, asof_date: str, detail: str) -> None:
+        self.asof_date = asof_date
+        self.detail = detail
+        self.status_code = 422  # Unprocessable Entity -- bar failed validation
+        self.body_excerpt = ""
+        # Bypass SchwabApiError.__init__'s byte-length-only message; build a
+        # readable, redaction-safe one directly on RuntimeError.
+        RuntimeError.__init__(
+            self, f"OHLC consistency: {detail} (date={asof_date})"
+        )
+
+
 # ---------- SchwabClient wrapper ----------
 
 _VALID_ENVIRONMENTS = ("sandbox", "production")
