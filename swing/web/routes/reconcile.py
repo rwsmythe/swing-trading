@@ -42,7 +42,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from swing.config_overrides import apply_overrides
 from swing.data.repos.reconciliation import get_discrepancy
-from swing.evaluation.dates import action_session_for_run
+from swing.evaluation.dates import PageKind, topbar_session_date
 from swing.metrics.discrepancies import (
     count_recent_multi_leg_auto_corrections,
     count_unresolved_material,
@@ -86,7 +86,7 @@ def _render_error(
     (and T-2.6 will extend with anchor_mismatch + service_error +
     db_unavailable branches)."""
     try:
-        session_date = action_session_for_run(datetime.now()).isoformat()
+        session_date = topbar_session_date(PageKind.HISTORY_ANALYSIS, datetime.now()).isoformat()
     except Exception:  # pragma: no cover - defensive
         session_date = "n/a"
     vm = ReconcileDiscrepancyErrorVM(

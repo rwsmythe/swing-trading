@@ -41,7 +41,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
 
 from swing.config_overrides import apply_overrides
-from swing.evaluation.dates import action_session_for_run
+from swing.evaluation.dates import PageKind, topbar_session_date
 from swing.integrations.schwab.auth import (
     _redacted_excerpt,
     _resolve_tokens_db_path,
@@ -162,7 +162,7 @@ def _render_error(
     banner_resolve_link: str | None = None,
 ) -> Response:
     try:
-        session_date = action_session_for_run(datetime.now()).isoformat()
+        session_date = topbar_session_date(PageKind.HISTORY_ANALYSIS, datetime.now()).isoformat()
     except Exception:  # pragma: no cover - defensive
         session_date = "n/a"
     vm = SchwabSetupErrorVM(
@@ -221,7 +221,7 @@ def _build_form_vm(
     except Exception:  # pragma: no cover - defensive
         existing_db = False
     try:
-        session_date = action_session_for_run(datetime.now()).isoformat()
+        session_date = topbar_session_date(PageKind.HISTORY_ANALYSIS, datetime.now()).isoformat()
     except Exception:  # pragma: no cover
         session_date = "n/a"
     return SchwabSetupVM(
@@ -562,7 +562,7 @@ def schwab_status_get(
     )
     banner_resolve_link = _fetch_banner_resolve_link(cfg.paths.db_path)
 
-    session_date = action_session_for_run(datetime.now()).isoformat()
+    session_date = topbar_session_date(PageKind.HISTORY_ANALYSIS, datetime.now()).isoformat()
     vm = build_schwab_status_vm(
         cfg=cfg,
         env=env,

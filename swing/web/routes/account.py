@@ -33,8 +33,9 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from swing.evaluation.dates import (
-    action_session_for_run,
+    PageKind,
     last_completed_session,
+    topbar_session_date,
 )
 from swing.metrics.discrepancies import (
     count_recent_multi_leg_auto_corrections,
@@ -62,7 +63,7 @@ def _render_form(
     status_code: int = 200,
 ) -> Response:
     """Render the snapshot form with the server-stamped session_date."""
-    session_date = action_session_for_run(datetime.now()).isoformat()
+    session_date = topbar_session_date(PageKind.HISTORY_ANALYSIS, datetime.now()).isoformat()
     vm = AccountSnapshotFormVM(
         session_date=session_date,
         unresolved_material_discrepancies_count=unresolved_count,

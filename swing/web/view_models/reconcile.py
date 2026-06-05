@@ -45,7 +45,7 @@ from typing import Any
 
 from swing.data.models import ReconciliationDiscrepancy
 from swing.data.repos.reconciliation import get_discrepancy
-from swing.evaluation.dates import action_session_for_run
+from swing.evaluation.dates import PageKind, topbar_session_date
 from swing.metrics.discrepancies import (
     count_recent_multi_leg_auto_corrections,
     count_unresolved_material,
@@ -191,6 +191,8 @@ class ReconcileDiscrepancyResolveVM:
     re-rendering after a 400 validation failure (so the form preserves
     operator input across the round-trip).
     """
+
+    PAGE_KIND = PageKind.HISTORY_ANALYSIS  # Issue #5 topbar (backward)
 
     # Base-layout fields (8 standalone, mirror BaseLayoutVM shape).
     session_date: str
@@ -779,7 +781,7 @@ def build_reconcile_discrepancy_resolve_vm(
         conn,
     )
 
-    session_date = action_session_for_run(datetime.now()).isoformat()
+    session_date = topbar_session_date(PageKind.HISTORY_ANALYSIS, datetime.now()).isoformat()
 
     return ReconcileDiscrepancyResolveVM(
         session_date=session_date,
@@ -867,6 +869,8 @@ class ReconcileDiscrepancyErrorVM:
     a non-empty validator at T-2.10 would risk breaking T-2.5 / T-2.6
     already-green call sites whose contract permits empty.
     """
+
+    PAGE_KIND = PageKind.HISTORY_ANALYSIS  # Issue #5 topbar (backward)
 
     # Base-layout fields (8 standalone, mirror BaseLayoutVM shape).
     session_date: str

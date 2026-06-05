@@ -26,6 +26,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from swing.evaluation.dates import PageKind
+
 # Local minimal base-layout fields. Phase 10 introduced ``BaseLayoutVM`` in
 # ``swing.web.view_models.metrics.shared`` for metrics-page VMs; non-metrics
 # VMs (DashboardVM, PipelineVM, ConfigVM, AccountSnapshotFormVM, etc.) all
@@ -66,6 +68,8 @@ class SchwabSetupVM:
         error_message: optional banner text rendered when re-displaying
             the form after a failed POST.
     """
+
+    PAGE_KIND = PageKind.HISTORY_ANALYSIS  # Issue #5 topbar (backward)
 
     # Base-layout fields (required-first, default-second per dataclass
     # convention; matches PageErrorVM shape).
@@ -223,6 +227,8 @@ class SchwabStatusVM:
     Base-layout fields (5) populate via the ``_fetch_unresolved_material_
     count`` helper at the route handler entry per Phase 10 T-E.3 retrofit.
     """
+
+    PAGE_KIND = PageKind.HISTORY_ANALYSIS  # Issue #5 topbar (backward)
 
     # CLI-mirror fields.
     session_date: str
@@ -584,6 +590,8 @@ class SchwabSetupErrorVM:
     Same base-layout shape as SchwabSetupVM. Carries an HTTP status code
     + a redacted operator-actionable error message + a remediation hint.
     """
+
+    PAGE_KIND = PageKind.HISTORY_ANALYSIS  # Issue #5 topbar (backward)
 
     session_date: str
     status_code: int
