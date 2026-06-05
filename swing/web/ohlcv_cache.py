@@ -143,6 +143,15 @@ class OhlcvCache:
         # (recon §4.B).
         self._bars_lock = threading.Lock()
         self._bars_store: dict[tuple[str, int], tuple[Any, float]] = {}
+        # Pool-widening (2026-06-04): truthful fetch-vs-hit telemetry at the
+        # real fetch boundary (Codex R1 MAJOR #5 -- candidate membership is a
+        # PROXY, not the truth). ``fetch_window`` counts get_or_fetch calls that
+        # consulted the archive/network (the binding observe-load cost across
+        # the ~90-session window, since each fresh nightly process starts cold);
+        # ``in_memory_hit`` counts TTL cache hits. drain_telemetry() returns +
+        # zeroes the counts at the observe-step boundary.
+        self._telemetry_lock = threading.Lock()
+        self._telemetry = {"in_memory_hit": 0, "fetch_window": 0}
 
     def set_ladder_bars_fetcher(
         self,
@@ -218,7 +227,11 @@ class OhlcvCache:
                 # within the TTL window. Copy-on-read is the cheapest
                 # safety net; copy-on-write at store-time is also defended
                 # below for the same reason.
+                with self._telemetry_lock:
+                    self._telemetry["in_memory_hit"] += 1
                 return hit[0].copy()
+        with self._telemetry_lock:
+            self._telemetry["fetch_window"] += 1
         bars = self._fetch_bars_window(
             ticker=ticker_upper, window_days=int(window_days),
         )
@@ -229,6 +242,13 @@ class OhlcvCache:
             # this call cannot reach back into the cached value.
             self._bars_store[key] = (bars.copy(), time.monotonic())
         return bars
+
+    def drain_telemetry(self) -> dict[str, int]:
+        """Return + zero the fetch-vs-hit counters since the last drain."""
+        with self._telemetry_lock:
+            out = dict(self._telemetry)
+            self._telemetry = {"in_memory_hit": 0, "fetch_window": 0}
+            return out
 
     def _fetch_bars_window(
         self, *, ticker: str, window_days: int,

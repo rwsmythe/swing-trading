@@ -2580,6 +2580,7 @@ def _step_pattern_observe(*, cfg, lease, ohlcv_cache, run_warnings):
     _post_w = getattr(cfg.pipeline,
                       "observe_max_post_trigger_window_sessions_watch", None)
     _shed_count = 0
+    _observed_count = 0
     with lease.fenced_write() as conn:
         for det in open_dets:
             prev = latest.get(det.detection_id)
@@ -2635,6 +2636,7 @@ def _step_pattern_observe(*, cfg, lease, ohlcv_cache, run_warnings):
                 sessions_since_detection=sessions,
                 created_at=datetime.now(UTC).isoformat(),
             ))
+            _observed_count += 1
 
     # Lever 2 #27 audit: any shed is recorded (a silent shed is forbidden).
     if _shed_count > 0:
@@ -2644,6 +2646,21 @@ def _step_pattern_observe(*, cfg, lease, ohlcv_cache, run_warnings):
             "reason": ("watch observe window shortened "
                        "(cfg.pipeline.observe_max_*_watch)"),
         })
+
+    # Observe-load instrumentation (truthful fetch-vs-hit at the cache
+    # boundary; Codex R1 MAJOR #5). drain_telemetry() may be absent on a bare
+    # stub cache -> default to zeros (best-effort, never crash observe). Units:
+    # observed = rows written; fetch_window = get_or_fetch calls that consulted
+    # archive/network; in_memory_hit = TTL hits.
+    _tele = (ohlcv_cache.drain_telemetry()
+             if hasattr(ohlcv_cache, "drain_telemetry") else {})
+    run_warnings.append({
+        "step": "pattern_observe",
+        "metric": "observe_load",
+        "observed": _observed_count,
+        "fetch_window": _tele.get("fetch_window", 0),
+        "in_memory_hit": _tele.get("in_memory_hit", 0),
+    })
 
 
 def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data_asof: str,
