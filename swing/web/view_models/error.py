@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from swing.evaluation.dates import PageKind
+
 
 @dataclass(frozen=True)
 class PageErrorVM:
@@ -10,6 +12,8 @@ class PageErrorVM:
     dereferences vm.session_date, vm.stale_banner, and vm.price_source_degraded
     on every render; this VM supplies base-layout-compatible defaults so an
     error page doesn't turn into a 500 via UndefinedError. Spec §3.2."""
+
+    PAGE_KIND = PageKind.HISTORY_ANALYSIS  # Issue #5 topbar (backward)
     session_date: str                     # today's action_session_for_run() value, or "n/a"
     stale_banner: None = None             # never stale on an error page
     price_source_degraded: bool = False   # degraded-cache banner not shown

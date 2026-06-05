@@ -135,7 +135,7 @@ def test_today_decisions_bug7_regression_pipeline_eval_wins(
     # Mock action_session_for_run to return 2026-04-20 so the seed dates
     # match. (Real datetime.now() may shift before/after midnight.)
     monkeypatch.setattr(
-        "swing.web.view_models.dashboard.action_session_for_run",
+        "swing.evaluation.dates.action_session_for_run",
         lambda now: __import__("datetime").date(2026, 4, 20),
     )
 
@@ -179,7 +179,7 @@ def test_today_decisions_legacy_pipeline_run_falls_back_to_date_filter(
         conn.close()
 
     monkeypatch.setattr(
-        "swing.web.view_models.dashboard.action_session_for_run",
+        "swing.evaluation.dates.action_session_for_run",
         lambda now: __import__("datetime").date(2026, 4, 20),
     )
 
@@ -215,7 +215,7 @@ def test_today_decisions_no_pipeline_run_falls_back_to_date_filter(
         conn.close()
 
     monkeypatch.setattr(
-        "swing.web.view_models.dashboard.action_session_for_run",
+        "swing.evaluation.dates.action_session_for_run",
         lambda now: __import__("datetime").date(2026, 4, 20),
     )
 
@@ -267,7 +267,7 @@ def test_today_decisions_subset_of_chart_targets_when_pipeline_present(
         conn.close()
 
     monkeypatch.setattr(
-        "swing.web.view_models.dashboard.action_session_for_run",
+        "swing.evaluation.dates.action_session_for_run",
         lambda now: __import__("datetime").date(2026, 4, 20),
     )
 

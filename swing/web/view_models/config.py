@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import datetime
 from typing import Any
 
 from swing.config import Config
@@ -12,6 +12,7 @@ from swing.config_validation import (
     FieldSpec,
     mask_sensitive_value,
 )
+from swing.evaluation.dates import PageKind, topbar_session_date
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,7 @@ class ConfigFieldRow:
 
 @dataclass(frozen=True)
 class ConfigPageVM:
+    PAGE_KIND = PageKind.HISTORY_ANALYSIS  # Issue #5 topbar (backward)
     rows: list[ConfigFieldRow]
     saved: bool                                # set by ?saved=1 redirect-back
     # Base-layout banner fields (CLAUDE.md base.html.j2 5-VM rule check —
@@ -167,7 +169,7 @@ def build_config_vm(
     return ConfigPageVM(
         rows=rows,
         saved=saved,
-        session_date=date.today().isoformat(),
+        session_date=topbar_session_date(PageKind.HISTORY_ANALYSIS, datetime.now()).isoformat(),
         risk_policy_divergence=divergence,
         unresolved_material_discrepancies_count=unresolved_count,
         recent_multi_leg_auto_correction_count=recent_multi_leg_count,

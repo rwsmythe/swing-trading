@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from typing import Literal
 
 from swing.config import Config
@@ -16,6 +16,7 @@ from swing.data.repos.trades import (
     list_open_trades,
 )
 from swing.data.repos.weather import list_weather_runs
+from swing.evaluation.dates import PageKind, topbar_session_date
 from swing.journal.flags import BehavioralFlag, compute_flags
 from swing.journal.stats import JournalStats, compute_stats, period_filter
 from swing.trades.review import compute_actual_realized_R_effective
@@ -176,6 +177,7 @@ class JournalRowVM:
 
 @dataclass(frozen=True)
 class JournalVM:
+    PAGE_KIND = PageKind.HISTORY_ANALYSIS  # Issue #5 topbar (backward)
     period: str
     stats: JournalStats
     flags: list[BehavioralFlag]
@@ -249,7 +251,7 @@ def _base_banner_fields(conn, cfg: Config) -> dict:
     )
 
     return {
-        "session_date": date.today().isoformat(),
+        "session_date": topbar_session_date(PageKind.HISTORY_ANALYSIS, datetime.now()).isoformat(),
         "stale_banner": None,
         "price_source_degraded": False,
         "price_source_degraded_until": None,
@@ -581,6 +583,8 @@ class TradeDrilldownVM:
     thesis: str | None = None
     why_now: str | None = None
     invalidation_condition: str | None = None
+    PAGE_KIND = PageKind.HISTORY_ANALYSIS  # Issue #5 topbar (backward)
+
     # base-banner fields (populated via _base_banner_fields):
     session_date: str = ""
     stale_banner: str | None = None

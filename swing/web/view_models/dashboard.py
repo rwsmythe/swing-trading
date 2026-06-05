@@ -21,7 +21,7 @@ from swing.data.repos.risk_policy import NoActivePolicyError
 from swing.data.repos.trades import list_closed_trades, list_open_trades
 from swing.data.repos.watchlist import list_active_watchlist
 from swing.data.repos.weather import get_latest
-from swing.evaluation.dates import action_session_for_run
+from swing.evaluation.dates import PageKind, topbar_session_date
 from swing.journal.stats import HypothesisProgress
 from swing.metrics.equity_resolver import (
     resolve_live_capital_denominator_dollars,
@@ -316,6 +316,7 @@ class CadenceCardVM:
 
 @dataclass(frozen=True)
 class DashboardVM:
+    PAGE_KIND = PageKind.FORWARD_PLANNING  # Issue #5 topbar (forward)
     generated_at: str
     session_date: str
     stale_banner: str | None
@@ -842,7 +843,7 @@ def build_dashboard(
     from swing.web.view_models.trades import STATE_BADGE_LABELS
 
     now = datetime.now()
-    action_session = action_session_for_run(now).isoformat()
+    action_session = topbar_session_date(PageKind.FORWARD_PLANNING, now).isoformat()
 
     conn = connect(cfg.paths.db_path)
     try:

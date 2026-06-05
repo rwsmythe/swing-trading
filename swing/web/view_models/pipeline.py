@@ -8,11 +8,13 @@ from swing.config import Config
 from swing.data.db import connect
 from swing.data.models import PipelineRun
 from swing.data.repos.pipeline import find_active_run, list_recent_runs
+from swing.evaluation.dates import PageKind, topbar_session_date
 from swing.pipeline.staleness import is_stale_eligible
 
 
 @dataclass(frozen=True)
 class PipelineVM:
+    PAGE_KIND = PageKind.HISTORY_ANALYSIS  # Issue #5 topbar (backward)
     session_date: str
     recent_runs: list[PipelineRun]
     stale_run: PipelineRun | None = None
@@ -68,7 +70,7 @@ def build_pipeline(*, cfg: Config, limit: int = 10, ohlcv_degraded: bool = False
     finally:
         conn.close()
     return PipelineVM(
-        session_date=datetime.now().date().isoformat(),
+        session_date=topbar_session_date(PageKind.HISTORY_ANALYSIS, datetime.now()).isoformat(),
         recent_runs=list(runs),
         stale_run=stale,
         ohlcv_source_degraded=ohlcv_degraded,            # NEW (Phase 3d §3.4)

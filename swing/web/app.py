@@ -501,10 +501,11 @@ def create_app(cfg: Config, cfg_path: Path | None = None) -> FastAPI:
         if request.method == "GET" and "text/html" in accept_header:
             from datetime import datetime
 
-            from swing.evaluation.dates import action_session_for_run
+            from swing.evaluation.dates import PageKind, topbar_session_date
             from swing.web.view_models.error import PageErrorVM
             try:
-                session_date = action_session_for_run(datetime.now()).isoformat()
+                session_date = topbar_session_date(
+                    PageKind.HISTORY_ANALYSIS, datetime.now()).isoformat()
             except Exception:
                 session_date = "n/a"
             vm = PageErrorVM(

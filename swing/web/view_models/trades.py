@@ -20,6 +20,7 @@ from swing.data.repos.trades import (
     list_trades_with_activity_in_period,
 )
 from swing.data.repos.watchlist import list_active_watchlist
+from swing.evaluation.dates import PageKind, topbar_session_date
 from swing.recommendations.sizing import compute_shares
 from swing.trades.entry import entry_rationale_options
 from swing.trades.equity import current_equity
@@ -1137,6 +1138,7 @@ def _total_risk_dollars(trade) -> float | None:
 
 @dataclass(frozen=True)
 class ReviewVM:
+    PAGE_KIND = PageKind.HISTORY_ANALYSIS  # Issue #5 topbar (backward)
     trade: Trade
     actual_realized_R_effective: float  # noqa: N815
 
@@ -1244,7 +1246,6 @@ def build_review_vm(
     """
     from datetime import datetime as _dt
 
-    from swing.evaluation.dates import last_completed_session
     from swing.metrics.discrepancies import (
         count_recent_multi_leg_auto_corrections,
         count_unresolved_material,
@@ -1348,7 +1349,7 @@ def build_review_vm(
     # ``last_completed_session(now())`` (CLAUDE.md session-anchor read/
     # write mismatch gotcha family — backward-looking anchor matches the
     # period-helpers' read predicate at T-B.3.4).
-    session_date = last_completed_session(_dt.now()).isoformat()
+    session_date = topbar_session_date(PageKind.HISTORY_ANALYSIS, _dt.now()).isoformat()
 
     # Phase 10 T-B.7 elective (per electives amendment §2): derive per-trade
     # mistake_cost_R + lucky_violation_R via Phase 6 helpers. Both surface
@@ -1400,6 +1401,7 @@ def build_review_vm(
 
 @dataclass(frozen=True)
 class CadenceCompleteVM:
+    PAGE_KIND = PageKind.HISTORY_ANALYSIS  # Issue #5 topbar (backward)
     review: ReviewLog
     n_closed_trades_in_period: int
     # 3e.16 — per-trade activity summaries for the review's period
@@ -1453,6 +1455,7 @@ class CadenceCompleteVM:
 
 @dataclass(frozen=True)
 class ReviewsPendingVM:
+    PAGE_KIND = PageKind.HISTORY_ANALYSIS  # Issue #5 topbar (backward)
     trades: tuple[Trade, ...]
     window_days: int
     # 5-VM existing-fields safe defaults:
@@ -1489,7 +1492,6 @@ class ReviewsPendingVM:
 
 def build_reviews_pending_vm(*, cfg: Config) -> ReviewsPendingVM:
     from swing.data.repos.review_log import list_unreviewed_closed_trades
-    from swing.evaluation.dates import last_completed_session
     from swing.metrics.discrepancies import (
         count_recent_multi_leg_auto_corrections,
         count_unresolved_material,
@@ -1520,7 +1522,7 @@ def build_reviews_pending_vm(*, cfg: Config) -> ReviewsPendingVM:
         # the backward-looking anchor, mirroring build_review_vm and avoiding the
         # forward-looking action_session_for_run weekend/evening silent-blank
         # (CLAUDE.md session-anchor read/write gotcha family).
-        session_date=last_completed_session(datetime.now()).isoformat(),
+        session_date=topbar_session_date(PageKind.HISTORY_ANALYSIS, datetime.now()).isoformat(),
     )
 
 
@@ -1649,6 +1651,9 @@ class TradeDetailVM:
     existing call sites green (callers that build the VM without
     ``cache``/``executor``/``ohlcv_cache`` see no advisories).
     """
+
+    PAGE_KIND = PageKind.HISTORY_ANALYSIS  # Issue #5 topbar (backward)
+
     trade: Trade
     state: str
     state_badge_label: str

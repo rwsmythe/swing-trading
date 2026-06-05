@@ -13,7 +13,7 @@ from swing.data.repos.pattern_classifications import (
     list_classifications_for_run,
 )
 from swing.data.repos.watchlist import list_active_watchlist
-from swing.evaluation.dates import action_session_for_run
+from swing.evaluation.dates import PageKind, topbar_session_date
 from swing.web.chart_scope import (
     CHART_REASON_MESSAGES,
     latest_completed_pipeline_run,
@@ -30,6 +30,7 @@ from swing.web.view_models.dashboard import (
 
 @dataclass(frozen=True)
 class WatchlistVM:
+    PAGE_KIND = PageKind.FORWARD_PLANNING  # Issue #5 topbar (forward)
     session_date: str
     rows: list[WatchlistEntry]
     watchlist_last_prices: Mapping[str, PriceSnapshot]
@@ -214,7 +215,7 @@ def build_watchlist(*, cfg: Config, cache: PriceCache, executor) -> WatchlistVM:
     )
     degraded_until = cache.degraded_until()
     return WatchlistVM(
-        session_date=action_session_for_run(now).isoformat(),
+        session_date=topbar_session_date(PageKind.FORWARD_PLANNING, now).isoformat(),
         rows=list(rows),
         watchlist_last_prices={r.ticker: prices[r.ticker] for r in rows if r.ticker in prices},
         flag_tags=flag_tags,
