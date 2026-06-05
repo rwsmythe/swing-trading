@@ -481,3 +481,57 @@ def test_c5_07_verify_marketdata_empty_symbols_rejected(
     # No schwabdev calls.
     assert mc.quotes.call_count == 0
     assert mc.price_history.call_count == 0
+
+
+def test_c5_07_verify_marketdata_ext_hours_only_symbol_drops_to_yfinance(
+    isolated_db, invoke_cli, monkeypatch,
+):
+    """B3 (L1 regression): a symbol carrying ONLY ext-hours fields (lastPrice/
+    bidPrice/askPrice, NO regularMarket* provenance) is DROPPED by the mapper
+    (-> yfinance fallback) and is NEVER surfaced with its ext-hours print.
+    A regular-session symbol in the same batch surfaces normally."""
+    cfg = _make_cfg(db_path=isolated_db, environment="production")
+    mc = MagicMock()
+    mc.tokens.access_token = "stub_access_token"
+    mc.tokens.refresh_token = "stub_refresh_token"
+    quotes_resp = MagicMock()
+    quotes_resp.json.return_value = {
+        # AAPL: full regular-session provenance -> surfaces.
+        "AAPL": {
+            "quote": {
+                "regularMarketLastPrice": 100.0, "regularMarketBidPrice": 99.0,
+                "regularMarketAskPrice": 101.0, "mark": 100.0,
+                "regularMarketTradeTime": "2026-05-14T15:30:00Z",
+                "delayed": False,
+            },
+        },
+        # XYZ: ext-hours book ONLY (the 999.99 sentinel must NEVER surface).
+        "XYZ": {
+            "quote": {
+                "lastPrice": 999.99, "bidPrice": 998.0, "askPrice": 1000.0,
+                "mark": 999.0, "delayed": False,
+            },
+        },
+    }
+    quotes_resp.status_code = 200
+    quotes_resp.headers = {}
+    mc.quotes.return_value = quotes_resp
+
+    ph_resp = MagicMock()
+    ph_resp.json.return_value = _make_price_history_payload()
+    ph_resp.status_code = 200
+    ph_resp.headers = {}
+    mc.price_history.return_value = ph_resp
+
+    import schwabdev
+    monkeypatch.setattr(schwabdev, "Client", MagicMock(return_value=mc))
+
+    result = invoke_cli(
+        cfg, "fetch", "--verify-marketdata", "--symbols", "AAPL,XYZ",
+    )
+    assert result.exit_code == 0, result.output
+    # XYZ dropped (no regular provenance) -> partial summary; AAPL OK.
+    assert "1/2 OK" in result.output
+    assert "XYZ" in result.output
+    # The ext-hours sentinel last price never reaches operator output.
+    assert "999.99" not in result.output
