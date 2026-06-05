@@ -439,7 +439,7 @@ from swing.integrations.schwab.client import (
     SchwabBarConsistencyError, SchwabSchemaParityError,
 )
 from swing.integrations.schwab.marketdata import get_price_history
-from swing.data.db import connect, run_migrations  # project's DB helpers
+from swing.data.db import ensure_schema  # builds + migrates a fresh DB (returns conn)
 
 
 class _FakeClient:
@@ -457,9 +457,7 @@ class _FakeClient:
 
 
 def test_contaminated_candle_raises_typed_and_audits(tmp_path):
-    db = tmp_path / "swing.db"
-    conn = connect(db)
-    run_migrations(conn)  # provides schwab_api_calls
+    conn = ensure_schema(tmp_path / "swing.db")  # creates + migrates; has schwab_api_calls
     with pytest.raises(SchwabBarConsistencyError) as ei:
         get_price_history(
             _FakeClient(), conn, "AAPL",
@@ -475,7 +473,7 @@ def test_contaminated_candle_raises_typed_and_audits(tmp_path):
     assert "OHLC consistency" in (row[1] or "")
 ```
 
-> **Implementer note:** match `get_price_history`'s real parameter names + the `connect`/migration helper names (grounded: `get_price_history(client, conn, ticker, *, period_type, period, frequency_type, frequency, start_dt, end_dt, surface, environment, pipeline_run_id)`; DB helpers per `swing/data/db.py`). If the wrapper requires a non-None `start_dt`/`end_dt`, pass valid datetimes. The binding assertions: the raised type is `SchwabBarConsistencyError` and NOT `SchwabSchemaParityError`; the audit row is `status='error'` with an "OHLC consistency" message.
+> **Implementer note:** use `ensure_schema(tmp_path / "swing.db")` to build a migrated conn (grounded -- `connect()` REFUSES a missing DB at db.py:1153-1158, so it cannot bootstrap; `ensure_schema` is what the existing Schwab tests use). Match `get_price_history`'s real parameter names (grounded: `get_price_history(client, conn, ticker, *, period_type, period, frequency_type, frequency, start_dt, end_dt, surface, environment, pipeline_run_id)`) and confirm the wrapper calls `.json()` on the client response (adapt `_FakeClient._Resp` to whatever the wrapper actually reads -- `.json()` vs `.text`). If the wrapper requires non-None `start_dt`/`end_dt`, pass valid datetimes. Binding assertions: the raised type is `SchwabBarConsistencyError` and NOT `SchwabSchemaParityError`; the audit row is `status='error'` with an "OHLC consistency" message.
 
 - [ ] **Step 2: Run test to verify it passes** (A4 made the mapper raise the typed error; A3 made it a `SchwabApiError` subclass so `_call_endpoint` catches it first)
 
@@ -755,14 +753,17 @@ from datetime import date
 import pandas as pd
 
 import swing.data.ohlcv_archive as arch
-from swing.data.ohlcv_archive import read_or_fetch_archive, _shape_a_path
+from swing.data.ohlcv_archive import read_or_fetch_archive
 
 
 def test_yfinance_fetch_never_persists_after_cutoff(tmp_path, monkeypatch):
     """Even when yfinance returns an in-progress (> cutoff) bar, the atomic
     barrier (Task C1) strips it before persist. OLD: read_or_fetch_archive
     persisted the raw fetched frame incl. the 06-05 bar. NEW: the on-disk
-    archive holds no row > cutoff."""
+    archive holds no row > cutoff. NOTE: read_or_fetch_archive writes the
+    LEGACY `{ticker}.parquet` path (date-indexed), NOT the Shape-A yfinance
+    parquet -- the legacy file is migrated to `{ticker}.yfinance.parquet`
+    later, on read, by _backward_compat_rename (which ALSO inherits the strip)."""
     monkeypatch.setattr(arch, "_last_completed_session_today",
                         lambda: date(2026, 6, 4))
 
@@ -775,13 +776,11 @@ def test_yfinance_fetch_never_persists_after_cutoff(tmp_path, monkeypatch):
 
     read_or_fetch_archive("AAPL", end_date=date(2026, 6, 4),
                           cache_dir=tmp_path, archive_history_days=400)
-    on_disk = pd.read_parquet(_shape_a_path(tmp_path, "AAPL", "yfinance"))
-    last = (on_disk.index.max().date() if isinstance(on_disk.index, pd.DatetimeIndex)
-            else date.fromisoformat(str(on_disk["asof_date"].max())))
-    assert last <= date(2026, 6, 4)
+    on_disk = pd.read_parquet(tmp_path / "AAPL.parquet")  # legacy path (_archive_paths)
+    assert on_disk.index.max().date() <= date(2026, 6, 4)
 ```
 
-> **Implementer note:** match `_yf_download_window`'s real keyword signature (grounded: `(ticker, *, start, end)`) and the on-disk shape (DatetimeIndex per grounding). The binding assertion: no on-disk row dated after the cutoff.
+> **Implementer note:** `read_or_fetch_archive` persists to `{cache_dir}/{ticker}.parquet` via `_archive_paths` (ohlcv_archive.py:62-63, written at 235/248), NOT `_shape_a_path`. Read THAT file. Match `_yf_download_window`'s real keyword signature (grounded: `(ticker, *, start, end)`). Binding assertion: no on-disk row dated after the cutoff.
 
 - [ ] **Step 2: Run test**
 
@@ -1282,17 +1281,22 @@ pytestmark = pytest.mark.slow
 
 
 def test_recorded_quote_carries_regular_session_fields():
-    """OQ-3 validation: a recorded live quote (cassette) MUST contain
-    regularMarketLastPrice + regularMarketTradeTime (+ regular bid/ask). If
-    absent under the chosen fields= selection, Slice B's drop-to-yfinance rule
-    makes EVERY Schwab quote fall back to yfinance -- widen fields= until they
-    appear, or the Schwab quote path is dead."""
+    """OQ-3 validation: a recorded live quote (cassette) MUST contain ALL FOUR
+    regular-session fields the B2 mapper consumes -- regularMarketLastPrice,
+    regularMarketTradeTime, regularMarketBidPrice, regularMarketAskPrice. B2
+    requires last AND bid AND ask, so if bid/ask are absent the mapper drops
+    EVERY Schwab quote to yfinance (the path goes dead). Widen fields= until
+    all four appear, OR (operator decision per OQ-3) accept the yfinance-drop."""
     from pathlib import Path
     cassette = Path(__file__).parent / "cassettes" / "quote_regular_fields.yaml"
     assert cassette.exists(), "record the live quote cassette first (runbook)"
     text = cassette.read_text()
-    assert "regularMarketLastPrice" in text
-    assert "regularMarketTradeTime" in text
+    for field in ("regularMarketLastPrice", "regularMarketTradeTime",
+                  "regularMarketBidPrice", "regularMarketAskPrice"):
+        assert field in text, (
+            f"{field} absent under the chosen fields= selection -- B2 would "
+            f"drop every Schwab quote to yfinance. Widen fields= or accept "
+            f"the drop (OQ-3 operator decision).")
 ```
 
 - [ ] **Step 3: Gate note (operator).** Recording the cassette requires a LIVE Schwab quote (operator's env) -- it is a Slice-B precondition, run like the live re-fetch gate. The implementer does NOT record it against the live env; the operator records it and confirms `regularMarket*` appear, then the cassette is committed. Until the cassette confirms the fields, Slice B's B2/B3 ship behind this validation (B2 is L1-correct either way -- it just drops to yfinance more often if the fields are absent).
@@ -1596,51 +1600,107 @@ from datetime import datetime
 from swing.evaluation.dates import (
     PageKind, action_session_for_run, last_completed_session,
 )
-# Force-import EVERY base-layout VM module (also makes __subclasses__ complete):
+import ast
+from pathlib import Path
+
+# Force-import the metrics base + the standalone VM modules so PAGE_KIND is
+# readable; the COMPLETENESS check below is pure-AST and import-independent.
 from swing.web.view_models.metrics.shared import BaseLayoutVM
 from swing.web.view_models.dashboard import DashboardVM
 from swing.web.view_models.watchlist import WatchlistVM
 from swing.web.view_models.journal import JournalVM
 from swing.web.view_models.config import ConfigPageVM
 from swing.web.view_models.pipeline import PipelineVM
-from swing.web.view_models.trades import (
-    ReviewVM, ReviewsPendingVM, CadenceCompleteVM,
+from swing.web.view_models.trades import ReviewVM, ReviewsPendingVM, CadenceCompleteVM
+from swing.web.view_models.reconcile import (
+    ReconcileDiscrepancyResolveVM, ReconcileDiscrepancyErrorVM,
 )
-# ... import the remaining standalone + metrics + patterns VMs from D2 ...
+from swing.web.routes.schwab import SchwabSetupVM, SchwabStatusVM, SchwabSetupErrorVM
+from swing.web.routes.account import AccountSnapshotFormVM
+from swing.web.app import PageErrorVM
+from swing.web.view_models.metrics.index import MetricsIndexVM
+from swing.web.view_models.metrics.capital_friction import CapitalFrictionVM
+from swing.web.view_models.metrics.deviation_outcome import DeviationOutcomeVM
+from swing.web.view_models.metrics.hypothesis_progress_card import HypothesisProgressCardVM
+from swing.web.view_models.metrics.identification_funnel import IdentificationFunnelVM
+from swing.web.view_models.metrics.maturity_stage import MaturityStageVM
+from swing.web.view_models.metrics.process_grade_trend import ProcessGradeTrendVM
+from swing.web.view_models.metrics.tier_comparison import TierComparisonVM
+from swing.web.view_models.metrics.trade_process_card import TradeProcessCardVM
+from swing.web.view_models.patterns.exemplars import PatternExemplarsVM
+from swing.web.view_models.patterns.outcomes_card import PatternOutcomesVM
+from swing.web.routes.patterns import PatternQueueVM, PatternReviewFormVM
 
 NOW = datetime(2026, 6, 4, 20, 0)  # post-close ET evening on a session day
+WEB = Path(__file__).resolve().parents[2] / "swing" / "web"
 
 # The AUTHORITATIVE manifest -- every base-layout VM + its declared PageKind.
-# Mirror the D2 inventory table EXACTLY (33 entries).
+# NO ellipsis: the completeness test below mechanically (AST) discovers every
+# base-layout VM class in swing/web and asserts this manifest equals that set,
+# so an incomplete manifest FAILS the suite (it cannot ship silently).
 MANIFEST = {
     DashboardVM: PageKind.FORWARD_PLANNING,
     WatchlistVM: PageKind.FORWARD_PLANNING,
     JournalVM: PageKind.HISTORY_ANALYSIS,
     ConfigPageVM: PageKind.HISTORY_ANALYSIS,
     PipelineVM: PageKind.HISTORY_ANALYSIS,
+    PageErrorVM: PageKind.HISTORY_ANALYSIS,
     ReviewVM: PageKind.HISTORY_ANALYSIS,
     ReviewsPendingVM: PageKind.HISTORY_ANALYSIS,
     CadenceCompleteVM: PageKind.HISTORY_ANALYSIS,
-    # ... the full 33 from D2 (metrics, patterns, reconcile, schwab, account,
-    #     PageErrorVM, journal drill-down if a distinct class) ...
+    ReconcileDiscrepancyResolveVM: PageKind.HISTORY_ANALYSIS,
+    ReconcileDiscrepancyErrorVM: PageKind.HISTORY_ANALYSIS,
+    SchwabSetupVM: PageKind.HISTORY_ANALYSIS,
+    SchwabStatusVM: PageKind.HISTORY_ANALYSIS,
+    SchwabSetupErrorVM: PageKind.HISTORY_ANALYSIS,
+    AccountSnapshotFormVM: PageKind.HISTORY_ANALYSIS,
+    MetricsIndexVM: PageKind.HISTORY_ANALYSIS,
+    CapitalFrictionVM: PageKind.HISTORY_ANALYSIS,
+    DeviationOutcomeVM: PageKind.HISTORY_ANALYSIS,
+    HypothesisProgressCardVM: PageKind.HISTORY_ANALYSIS,
+    IdentificationFunnelVM: PageKind.HISTORY_ANALYSIS,
+    MaturityStageVM: PageKind.HISTORY_ANALYSIS,
+    ProcessGradeTrendVM: PageKind.HISTORY_ANALYSIS,
+    TierComparisonVM: PageKind.HISTORY_ANALYSIS,
+    TradeProcessCardVM: PageKind.HISTORY_ANALYSIS,
+    PatternExemplarsVM: PageKind.HISTORY_ANALYSIS,
+    PatternOutcomesVM: PageKind.HISTORY_ANALYSIS,
+    PatternQueueVM: PageKind.HISTORY_ANALYSIS,
+    PatternReviewFormVM: PageKind.HISTORY_ANALYSIS,
 }
 
 
-def _all_base_layout_subclasses():
-    seen, stack = set(), list(BaseLayoutVM.__subclasses__())
-    while stack:
-        c = stack.pop()
-        if c not in seen:
-            seen.add(c)
-            stack.extend(c.__subclasses__())
-    return seen
+def _discover_base_layout_vm_names() -> set[str]:
+    """Pure-AST discovery (no imports) of EVERY base-layout VM class across
+    swing/web -- BOTH populations: (a) classes whose bases include
+    BaseLayoutVM (the metrics + account family); (b) classes that DECLARE a
+    `session_date` annotated field (the standalone family). Import-independent,
+    so an unimported module cannot hide a class."""
+    names: set[str] = set()
+    for path in WEB.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ClassDef):
+                continue
+            base_names = {b.id for b in node.bases if isinstance(b, ast.Name)} | \
+                {b.attr for b in node.bases if isinstance(b, ast.Attribute)}
+            declares_session_date = any(
+                isinstance(s, ast.AnnAssign) and isinstance(s.target, ast.Name)
+                and s.target.id == "session_date" for s in node.body)
+            if "BaseLayoutVM" in base_names or declares_session_date:
+                names.add(node.name)
+    return names
 
 
-def test_manifest_covers_every_base_layout_subclass():
-    """Completeness: any BaseLayoutVM subclass (post force-import) MUST be in
-    the manifest -- a new metrics tile cannot evade the policy."""
-    missing = _all_base_layout_subclasses() - set(MANIFEST)
-    assert not missing, f"base-layout VMs missing from MANIFEST: {missing}"
+def test_manifest_is_complete_and_exact():
+    """Mechanical authority (Codex R2 MAJOR #3): the manifest must equal the
+    AST-discovered set of base-layout VM classes -- no missing (an evading
+    page) and no stale extras."""
+    discovered = _discover_base_layout_vm_names()
+    manifest_names = {c.__name__ for c in MANIFEST}
+    assert discovered == manifest_names, (
+        f"missing from MANIFEST: {discovered - manifest_names}; "
+        f"stale in MANIFEST: {manifest_names - discovered}")
 
 
 def test_every_vm_declares_matching_page_kind():
@@ -1655,21 +1715,20 @@ def test_representative_vms_render_the_right_anchor(monkeypatch):
     forward = action_session_for_run(NOW).isoformat()
     backward = last_completed_session(NOW).isoformat()
     assert forward != backward
-    # Freeze now in dates.py so topbar_session_date resolves against NOW.
     import swing.evaluation.dates as dates
     monkeypatch.setattr(dates, "datetime",
                         type("D", (), {"now": staticmethod(lambda: NOW)}))
-    # Build the representatives via their real constructors/builders (use the
-    # project's VM test fixtures). Example shape:
-    #   dash = build_dashboard_vm(...);  assert dash.session_date == forward
-    #   journ = build_journal_vm(...);   assert journ.session_date == backward
+    # Build the representatives via the project's real VM builders/fixtures:
+    #   dash = build_dashboard_vm(...);   assert dash.session_date == forward
+    #   journ = build_journal_vm(...);    assert journ.session_date == backward
     #   metric = build_metrics_index_vm(...); assert metric.session_date == backward
-    # Assert each != datetime.now().date().isoformat() unless it equals an anchor.
-    # (Construct at least: Dashboard [forward], Journal + a metrics VM + a
-    #  reviews VM + Pipeline [backward].)
+    #   review = build_reviews_pending_vm(...); assert review.session_date == backward
+    #   pipe = build_pipeline_vm(...);    assert pipe.session_date == backward
+    # Each must differ from a naive datetime.now().date().isoformat() unless it
+    # legitimately equals an anchor.
 ```
 
-> **Implementer note:** complete the imports + `MANIFEST` to the full 33 from D2. For `test_representative_vms_render_the_right_anchor`, monkeypatch each VM module's `datetime.now` (or `dates.datetime`) to return `NOW` and build 5-6 representatives via the project's existing VM builders/fixtures (grep `tests/web/` for how each is constructed). The completeness + PAGE_KIND tests run with zero construction; the representative render test is the behavioral proof.
+> **Implementer note (binding):** the `MANIFEST` above is the D2 inventory written out IN FULL -- no ellipsis. If `test_manifest_is_complete_and_exact` FAILS, the AST discovery found a base-layout VM the manifest omits (e.g. the standalone-fields class Codex flagged at `view_models/reconcile.py:100` -- add it with its PageKind) or a stale entry (remove it). Fix the import + the MANIFEST entry until the discovery and the manifest agree exactly. Confirm the `BaseLayoutVM`/`PageErrorVM`/`SchwabStatusVM` import paths against the real modules (grounded above; adjust if a class moved). For `test_representative_vms_render_the_right_anchor`, build 5-6 representatives via the project's VM builders (grep `tests/web/` for each). The completeness + PAGE_KIND tests run with zero construction; the representative render test is the behavioral proof.
 
 - [ ] **Step 2: Run + Commit**
 
