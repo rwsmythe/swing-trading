@@ -31,8 +31,18 @@ transaction service is the project convention.
 from __future__ import annotations
 
 import sqlite3
+import threading
 
 from swing.data.repos import schwab_api_calls as repo
+
+# SQLite lock-contention arc (OQ-C): serialize ALL audit-row transactions within
+# a process. With the shared pipeline audit connection this guarantees at most
+# ONE BEGIN IMMEDIATE is active at a time (a single sqlite3 connection cannot run
+# two concurrent transactions); it also removes audit-vs-audit write-lock
+# contention even for distinct connections. Held only for the sub-ms INSERT/UPDATE
+# -- NEVER across the HTTP call (start releases it before the HTTP; finish
+# re-acquires).
+_AUDIT_WRITE_LOCK = threading.Lock()
 
 # Phase 13 T2.SB1 (migration 0020) — surface CHECK widening per spec §3.4 +
 # §6.4 + plan §A.14 paired-atomic-landing LOCK. Schema CHECK on
@@ -83,38 +93,43 @@ def record_call_start(
     Raises:
         CallerHeldTransactionError: caller holds an open transaction.
     """
-    if conn.in_transaction:
-        raise CallerHeldTransactionError(
-            "record_call_start owns its own transaction; caller MUST NOT "
-            "hold an open transaction. See CLAUDE.md gotcha 'Service-layer "
-            "with conn:' + 'in_transaction auto-detect outer transaction "
-            "guards re-introduce the very race the explicit lock was meant "
-            "to close'."
-        )
-
     # Phase 13 T2.SB1 (migration 0020) — Python-side surface enum validation
     # mirroring schema CHECK widening per plan §A.14 paired-atomic-landing
     # LOCK. Mirrors the migration 0020 CHECK on ``schwab_api_calls.surface``.
+    # Pure input validation -> stays OUTSIDE the audit write lock.
     if surface not in _SCHWAB_API_SURFACE_VALUES:
         raise ValueError(
             "surface must be one of "
             f"{_SCHWAB_API_SURFACE_VALUES}, got {surface!r}"
         )
 
-    conn.execute("BEGIN IMMEDIATE")
-    try:
-        call_id = repo.insert_in_flight(
-            conn,
-            ts=ts,
-            endpoint=endpoint,
-            pipeline_run_id=pipeline_run_id,
-            surface=surface,
-            environment=environment,
-        )
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
+    with _AUDIT_WRITE_LOCK:
+        # in_transaction is checked INSIDE the lock: a shared audit connection is
+        # transiently in-tx while another serialized writer holds it; checking
+        # outside would false-positive. Inside the lock the prior holder has
+        # committed/rolled back, so a genuine caller-held tx is still rejected.
+        if conn.in_transaction:
+            raise CallerHeldTransactionError(
+                "record_call_start owns its own transaction; caller MUST NOT "
+                "hold an open transaction. See CLAUDE.md gotcha 'Service-layer "
+                "with conn:' + 'in_transaction auto-detect outer transaction "
+                "guards re-introduce the very race the explicit lock was meant "
+                "to close'."
+            )
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            call_id = repo.insert_in_flight(
+                conn,
+                ts=ts,
+                endpoint=endpoint,
+                pipeline_run_id=pipeline_run_id,
+                surface=surface,
+                environment=environment,
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
     return call_id
 
 
@@ -139,31 +154,31 @@ def record_call_finish(
     Raises:
         CallerHeldTransactionError: caller holds an open transaction.
     """
-    if conn.in_transaction:
-        raise CallerHeldTransactionError(
-            "record_call_finish owns its own transaction; caller MUST NOT "
-            "hold an open transaction. See CLAUDE.md gotcha 'Service-layer "
-            "with conn:' + 'in_transaction auto-detect outer transaction "
-            "guards re-introduce the very race the explicit lock was meant "
-            "to close'."
-        )
-
-    conn.execute("BEGIN IMMEDIATE")
-    try:
-        repo.update_call_outcome(
-            conn,
-            call_id=call_id,
-            http_status=http_status,
-            response_time_ms=response_time_ms,
-            rate_limit_remaining=rate_limit_remaining,
-            signature_hash=signature_hash,
-            status=status,
-            error_message=error_message,
-        )
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
+    with _AUDIT_WRITE_LOCK:
+        if conn.in_transaction:
+            raise CallerHeldTransactionError(
+                "record_call_finish owns its own transaction; caller MUST NOT "
+                "hold an open transaction. See CLAUDE.md gotcha 'Service-layer "
+                "with conn:' + 'in_transaction auto-detect outer transaction "
+                "guards re-introduce the very race the explicit lock was meant "
+                "to close'."
+            )
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            repo.update_call_outcome(
+                conn,
+                call_id=call_id,
+                http_status=http_status,
+                response_time_ms=response_time_ms,
+                rate_limit_remaining=rate_limit_remaining,
+                signature_hash=signature_hash,
+                status=status,
+                error_message=error_message,
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
 
 def link_snapshot_and_stamp_account_hash(
@@ -194,29 +209,29 @@ def link_snapshot_and_stamp_account_hash(
     Raises:
         CallerHeldTransactionError: caller holds an open transaction.
     """
-    if conn.in_transaction:
-        raise CallerHeldTransactionError(
-            "link_snapshot_and_stamp_account_hash owns its own transaction; "
-            "caller MUST NOT hold an open transaction. See CLAUDE.md gotcha "
-            "'Service-layer with conn:' + 'in_transaction auto-detect outer "
-            "transaction guards re-introduce the very race the explicit "
-            "lock was meant to close'."
-        )
-
-    conn.execute("BEGIN IMMEDIATE")
-    try:
-        repo.update_call_linked_snapshot(
-            conn,
-            call_id=call_id,
-            snapshot_id=snapshot_id,
-        )
-        _stamp_account_hash_on_snapshot(
-            conn, snapshot_id=snapshot_id, account_hash=account_hash,
-        )
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
+    with _AUDIT_WRITE_LOCK:
+        if conn.in_transaction:
+            raise CallerHeldTransactionError(
+                "link_snapshot_and_stamp_account_hash owns its own transaction; "
+                "caller MUST NOT hold an open transaction. See CLAUDE.md gotcha "
+                "'Service-layer with conn:' + 'in_transaction auto-detect outer "
+                "transaction guards re-introduce the very race the explicit "
+                "lock was meant to close'."
+            )
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            repo.update_call_linked_snapshot(
+                conn,
+                call_id=call_id,
+                snapshot_id=snapshot_id,
+            )
+            _stamp_account_hash_on_snapshot(
+                conn, snapshot_id=snapshot_id, account_hash=account_hash,
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
 
 def _stamp_account_hash_on_snapshot(
@@ -254,26 +269,26 @@ def link_reconciliation_run(
     Raises:
         CallerHeldTransactionError: caller holds an open transaction.
     """
-    if conn.in_transaction:
-        raise CallerHeldTransactionError(
-            "link_reconciliation_run owns its own transaction; caller MUST "
-            "NOT hold an open transaction. See CLAUDE.md gotcha 'Service-"
-            "layer with conn:' + 'in_transaction auto-detect outer "
-            "transaction guards re-introduce the very race the explicit "
-            "lock was meant to close'."
-        )
-
-    conn.execute("BEGIN IMMEDIATE")
-    try:
-        repo.update_call_linked_reconciliation_run(
-            conn,
-            call_id=call_id,
-            reconciliation_run_id=reconciliation_run_id,
-        )
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
+    with _AUDIT_WRITE_LOCK:
+        if conn.in_transaction:
+            raise CallerHeldTransactionError(
+                "link_reconciliation_run owns its own transaction; caller MUST "
+                "NOT hold an open transaction. See CLAUDE.md gotcha 'Service-"
+                "layer with conn:' + 'in_transaction auto-detect outer "
+                "transaction guards re-introduce the very race the explicit "
+                "lock was meant to close'."
+            )
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            repo.update_call_linked_reconciliation_run(
+                conn,
+                call_id=call_id,
+                reconciliation_run_id=reconciliation_run_id,
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
 
 __all__ = [
