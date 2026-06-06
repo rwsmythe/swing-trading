@@ -322,13 +322,15 @@ def fetch_quote_via_ladder(
         )
         entry = yfinance_fallback_fn(ticker)
         return (entry, "yfinance")
-    except Exception:  # pragma: no cover — defensive
+    except Exception as exc:
         # Any unexpected exception from the wrapper is treated as a failure
-        # → yfinance fallback. The wrapper has already logged + written its
-        # audit row.
+        # → yfinance fallback. Log the exception class+message (NOT exc_info:
+        # traceback frames bypass message-level redaction) so a silent degrade
+        # (e.g. an audit `database is locked`) is diagnosable.
         log.warning(
             "fetch_quote_via_ladder: unexpected error from T-C.1 wrapper for "
-            "%s; falling back to yfinance", ticker,
+            "%s: %s: %s; falling back to yfinance",
+            ticker, type(exc).__name__, exc,
         )
         entry = yfinance_fallback_fn(ticker)
         return (entry, "yfinance")
@@ -453,10 +455,13 @@ def fetch_window_via_ladder(
         window = yfinance_fallback_fn(ticker, start, end)
         _persist_window_to_archive(ticker, window, "yfinance", cache_dir)
         return (window, "yfinance")
-    except Exception:  # pragma: no cover — defensive
+    except Exception as exc:
+        # Log the exception class+message (NOT exc_info: traceback frames bypass
+        # message-level redaction) so a silent degrade is diagnosable.
         log.warning(
-            "fetch_window_via_ladder: unexpected error from T-C.1 wrapper "
-            "for %s; falling back to yfinance", ticker,
+            "fetch_window_via_ladder: unexpected error from T-C.1 wrapper for "
+            "%s: %s: %s; falling back to yfinance",
+            ticker, type(exc).__name__, exc,
         )
         window = yfinance_fallback_fn(ticker, start, end)
         _persist_window_to_archive(ticker, window, "yfinance", cache_dir)
