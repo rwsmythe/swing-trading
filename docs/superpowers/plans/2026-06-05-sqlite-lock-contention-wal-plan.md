@@ -66,7 +66,7 @@
 **Why this over batching:** batching `record_call_start`/`record_call_finish` would defer the `start` commit and **break the in-flight-row visibility contract** (the `start` row MUST commit before the HTTP call so a mid-call crash leaves an `in_flight` row — `marketdata.py:551`). The serialized-connection mechanism preserves that contract exactly (each write still commits independently). Rejected: batching.
 
 **The two cooperating pieces:**
-1. **Module lock (`audit_service._AUDIT_WRITE_LOCK`)** — serializes all audit transactions *within a process*. At most ONE audit `BEGIN IMMEDIATE` is ever active → eliminates audit-vs-audit SQLite write-lock contention regardless of how many connections exist. The pipeline and the web app run in *separate processes* (pipeline is a spawned subprocess under the lease), so each has its own lock instance; the contention being fixed is the 16 threads *inside the pipeline subprocess*.
+1. **Module lock (`audit_service._AUDIT_WRITE_LOCK`)** — serializes all audit transactions *within a process*. **It wraps EVERY transaction-owning function in `audit_service`** — `record_call_start`, `record_call_finish`, `link_snapshot_and_stamp_account_hash` (`audit_service.py:206`), and `link_reconciliation_run` (`audit_service.py:266`) — not just start/finish (Codex R1 major #2: otherwise the "all audit transactions serialized" claim is false and a `link_*` write on a shared conn could collide). At most ONE audit `BEGIN IMMEDIATE` is ever active → eliminates audit-vs-audit SQLite write-lock contention regardless of how many connections exist. The pipeline and the web app run in *separate processes* (pipeline is a spawned subprocess under the lease), so each has its own lock instance; the contention being fixed is the 16 threads *inside the pipeline subprocess*. (The `link_*` functions run only in the low-concurrency reconciliation/snapshot flow, never on the shared pipeline conn, but are wrapped for a uniform invariant + future-proofing.)
 2. **Shared connection (pipeline hooks)** — collapses the 16 per-hook connections to ONE, so the only remaining swing.db write contention is between this single audit connection and the *other* pipeline writers (candidates / archive / evaluate) — a drop from 16+ contenders to ~2. The 30 s `busy_timeout` covers that residual.
 
 **Binding constraints preserved:**
@@ -76,7 +76,7 @@
 
 **HTTP stays concurrent:** the lock is held only for the sub-ms INSERT/UPDATE, never across the HTTP call.
 
-**Lock-wait telemetry (G2', kept):** measure the wall-clock of the `BEGIN IMMEDIATE` acquisition; log AFTER releasing the lock (never inside the critical section — Codex R2 major #3); emit for slow successes (≥1 s) AND failed acquisitions (busy_timeout exhausted). Durations + ints only (redaction-irrelevant). The first instrumented live run reveals whether the bump+reduction sufficed (OQ-C is now shipped, but the telemetry still validates it). **Note (spec R2 minor #3 — banked, non-blocking):** the telemetry attributes the *audit victim*, not the *blocker*; instrumenting the dominant non-audit writers (candidates/archive/evaluate) with the same timed-`BEGIN IMMEDIATE` WARNING would localize the true contender. Deferred as an optional same-pattern extension for the first-live-run follow-on (out of V1 scope to bound blast radius).
+**Lock-wait telemetry (G2', kept):** measure the wall-clock of the `BEGIN IMMEDIATE` acquisition; log AFTER releasing the lock (never inside the critical section — Codex R2 major #3); emit for slow successes (≥1 s) AND failed acquisitions (busy_timeout exhausted). Durations + ints only (redaction-irrelevant). **The configured `busy_timeout` value is captured INSIDE the lock (conn idle, owned by this thread) and passed to the logger as a plain int — the after-lock logger NEVER touches the connection** (Codex R1 major #1: a `PRAGMA busy_timeout` read on the shared `check_same_thread=False` conn after releasing the lock would race a concurrent writer). The first instrumented live run reveals whether the bump+reduction sufficed (OQ-C is now shipped, but the telemetry still validates it). **Note (spec R2 minor #3 — banked, non-blocking):** the telemetry attributes the *audit victim*, not the *blocker*; instrumenting the dominant non-audit writers (candidates/archive/evaluate) with the same timed-`BEGIN IMMEDIATE` WARNING would localize the true contender. Deferred as an optional same-pattern extension for the first-live-run follow-on (out of V1 scope to bound blast radius).
 
 ---
 
@@ -85,7 +85,7 @@
 **Modify:**
 - `swing/data/db.py` — add `DEFAULT_BUSY_TIMEOUT_MS = 30000` + `open_connection(...)`; route `connect()` (new `busy_timeout_ms` keyword) + `ensure_schema()` through it; route the 9 pre-migration backup `src_conn` opens through it.
 - `swing/config.py` — add `db_busy_timeout_ms: int = 30000` to the `Web` dataclass.
-- `swing/integrations/schwab/audit_service.py` — `_AUDIT_WRITE_LOCK` + lock-wrapped txns (in_transaction check moved inside the lock) + `_maybe_log_audit_lock_wait` G2' telemetry.
+- `swing/integrations/schwab/audit_service.py` — `_AUDIT_WRITE_LOCK` wrapping ALL FOUR transaction-owning functions (`record_call_start`, `record_call_finish`, `link_snapshot_and_stamp_account_hash`, `link_reconciliation_run`; in_transaction check moved inside the lock in each) + `_maybe_log_audit_lock_wait` G2' telemetry (start/finish only; `configured_ms` captured inside the lock).
 - `swing/pipeline/runner.py` — open ONE shared audit connection in `_install_pipeline_marketdata_caches`; hooks use it instead of per-call `connect()`; return it as a 3rd element; close it at the run's `finally`.
 - `swing/integrations/schwab/marketdata_ladder.py` — bind `exc` + log class+message (no `exc_info`) in both `except Exception` catch-alls; drop `# pragma: no cover`.
 - `swing/data/backup.py` — route the `src` open through `open_connection` (preserve `mode=rw`).
@@ -459,7 +459,7 @@ git commit -m "feat(config): add web.db_busy_timeout_ms knob (default 30000)"
 ## Task 4: Serialized audit writes — module lock in `audit_service`
 
 **Files:**
-- Modify: `swing/integrations/schwab/audit_service.py:1-60` (imports + module lock) and `:86-118` (`record_call_start`), `:142-167` (`record_call_finish`)
+- Modify: `swing/integrations/schwab/audit_service.py:1-60` (imports + module lock) and `:86-118` (`record_call_start`), `:142-167` (`record_call_finish`), `:169-219` (`link_snapshot_and_stamp_account_hash`), `:244-276` (`link_reconciliation_run`)
 - Test: `tests/integrations/schwab/test_audit_serialized_writer.py`
 
 - [ ] **Step 1: Write the failing tests**
@@ -642,10 +642,59 @@ Rewrite `record_call_finish` the same way (move `in_transaction` inside `with _A
             raise
 ```
 
+- [ ] **Step 3b: Wrap the other two transaction-owning audit functions (Codex R1 major #2)**
+
+`link_snapshot_and_stamp_account_hash` (~`audit_service.py:169`, `BEGIN IMMEDIATE` at ~206) and `link_reconciliation_run` (~`:244`, `BEGIN IMMEDIATE` at ~266) ALSO own transactions. Wrap each `BEGIN IMMEDIATE … COMMIT/ROLLBACK` in `with _AUDIT_WRITE_LOCK:` and move its `if conn.in_transaction: raise CallerHeldTransactionError(...)` check INSIDE the lock — identical structure to start/finish, MINUS the G2' timing (these run only in the low-concurrency reconciliation/snapshot flow, not on the contended pipeline conn). Example for `link_reconciliation_run`:
+
+```python
+    with _AUDIT_WRITE_LOCK:
+        if conn.in_transaction:
+            raise CallerHeldTransactionError(
+                "link_reconciliation_run owns its own transaction; caller MUST "
+                "NOT hold an open transaction. ..."  # keep the existing message verbatim
+            )
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            repo.update_call_linked_reconciliation_run(
+                conn, call_id=call_id, reconciliation_run_id=reconciliation_run_id,
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+```
+
+Apply the same wrap to `link_snapshot_and_stamp_account_hash` (its body is a TWO-UPDATE combined transaction — wrap the WHOLE `BEGIN IMMEDIATE`/both-UPDATEs/COMMIT/ROLLBACK in the lock; move the `in_transaction` check inside; the inline helper `_stamp_account_hash_on_snapshot` has no own tx → leave it). Leave the verbatim docstrings/messages unchanged.
+
+- [ ] **Step 3c: Add a regression test that a link-function still rejects a caller-held tx under the lock**
+
+Add to `tests/integrations/schwab/test_audit_serialized_writer.py`:
+
+```python
+def test_link_reconciliation_run_still_rejects_caller_held_tx(tmp_path):
+    db = _db(tmp_path)
+    conn = connect(db)
+    try:
+        call_id = audit_service.record_call_start(
+            conn, ts="2026-06-06T00:00:00Z", endpoint="accounts",
+            pipeline_run_id=None, surface="cli", environment="production",
+        )
+        conn.execute("BEGIN IMMEDIATE")  # caller holds a tx
+        with pytest.raises(CallerHeldTransactionError):
+            audit_service.link_reconciliation_run(
+                conn, call_id=call_id, reconciliation_run_id=1,
+            )
+    finally:
+        conn.rollback()
+        conn.close()
+```
+
+(Adapt `surface`/`endpoint`/`reconciliation_run_id` to whatever the existing `link_reconciliation_run` tests use; the assertion is that the caller-held-tx rejection survives the move inside the lock.)
+
 - [ ] **Step 4: Run to verify pass**
 
 Run: `python -m pytest tests/integrations/schwab/test_audit_serialized_writer.py -q`
-Expected: PASS (3).
+Expected: PASS (4).
 
 - [ ] **Step 5: Run the existing audit_service suite (caller-held-tx + single-tx behavior unchanged)**
 
@@ -771,31 +820,32 @@ Ensure `import time` and `import logging` + a module `log = logging.getLogger(__
 _SLOW_ACQUIRE_WARN_THRESHOLD_S = 1.0
 
 
-def _maybe_log_audit_lock_wait(conn, op, waited_s, busy_failed):
+def _maybe_log_audit_lock_wait(op, waited_s, busy_failed, configured_ms):
     """G2' lock-wait visibility. Called AFTER the lock is released (never inside
-    the critical section -- logging I/O would extend the contention window).
-    Emits a WARNING for failed acquisitions (busy_timeout exhausted) and for slow
-    successful ones (>= threshold). Durations + ints only -> redaction-irrelevant.
+    the critical section -- logging I/O would extend the contention window). The
+    `configured_ms` busy_timeout value is captured by the CALLER while still
+    holding the lock and passed in as a plain int -- this function NEVER touches
+    the connection (Codex R1 major #1: a PRAGMA read on the shared
+    check_same_thread=False conn after lock release would race a concurrent
+    writer). Emits a WARNING for failed acquisitions (busy_timeout exhausted) and
+    for slow successful ones (>= threshold). Durations + ints only -> redaction-
+    irrelevant.
     """
     if not busy_failed and (waited_s is None or waited_s < _SLOW_ACQUIRE_WARN_THRESHOLD_S):
         return
-    try:
-        configured = conn.execute("PRAGMA busy_timeout").fetchone()[0]
-    except Exception:  # noqa: BLE001 -- diagnostic only
-        configured = None
     if busy_failed:
         log.warning(
             "audit %s: BEGIN IMMEDIATE FAILED (database is locked) after %.3fs "
-            "(busy_timeout=%sms)", op, waited_s or 0.0, configured,
+            "(busy_timeout=%sms)", op, waited_s or 0.0, configured_ms,
         )
     else:
         log.warning(
             "audit %s: slow BEGIN IMMEDIATE acquisition %.3fs (busy_timeout=%sms)",
-            op, waited_s, configured,
+            op, waited_s, configured_ms,
         )
 ```
 
-Wrap the timing in `record_call_start` (and identically in `record_call_finish`, with `op="record_call_finish"`):
+Wrap the timing in `record_call_start` (and identically in `record_call_finish`, with `op="record_call_finish"`). **`configured_ms` is read INSIDE the lock, before the `in_transaction` check (conn idle, owned by this thread), so the after-lock logger never touches the connection:**
 
 ```python
     if surface not in _SCHWAB_API_SURFACE_VALUES:   # (start only) stays outside lock
@@ -803,8 +853,13 @@ Wrap the timing in `record_call_start` (and identically in `record_call_finish`,
 
     waited_s = None
     busy_failed = False
+    configured_ms = None
     try:
         with _AUDIT_WRITE_LOCK:
+            try:
+                configured_ms = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+            except Exception:  # noqa: BLE001 -- diagnostic only
+                configured_ms = None
             if conn.in_transaction:
                 raise CallerHeldTransactionError(...)
             _t0 = time.monotonic()
@@ -822,11 +877,11 @@ Wrap the timing in `record_call_start` (and identically in `record_call_finish`,
                 conn.rollback()
                 raise
     finally:
-        _maybe_log_audit_lock_wait(conn, "record_call_start", waited_s, busy_failed)
+        _maybe_log_audit_lock_wait("record_call_start", waited_s, busy_failed, configured_ms)
     return call_id
 ```
 
-(For `record_call_finish`, the same structure with `repo.update_call_outcome` and `op="record_call_finish"`; it has no `return` value. `CallerHeldTransactionError` raised inside the `with` leaves `waited_s=None` so the `finally` logs nothing.)
+(For `record_call_finish`, the same structure with `repo.update_call_outcome` and `op="record_call_finish"`; it has no `return` value. `CallerHeldTransactionError` raised inside the `with` leaves `waited_s=None`/`busy_failed=False` so the `finally` logs nothing. The two `link_*` functions from Task 4 Step 3b do NOT get this timing — they are off the contended path.)
 
 Confirm `import sqlite3` is present in the module (it is — used in type hints).
 
@@ -1382,6 +1437,14 @@ import re
 from pathlib import Path
 import pytest
 
+# ALIAS-AWARE pattern (Codex R1 major #3): catches BOTH `sqlite3.connect(` AND the
+# `import sqlite3 as _sqlite3` alias `_sqlite3.connect(` used in app.py / cli.py.
+# `\b` before the optional `_` so we don't match a longer identifier ending in
+# "sqlite3".
+_RAW_CONNECT = re.compile(r"(?<![\w.])_?sqlite3\.connect\(")
+
+# These files have ZERO legitimate raw opens after routing — every open is a
+# live swing.db open that must go through open_connection.
 _LIVE_OPEN_FILES = [
     "swing/web/routes/account.py",
     "swing/web/routes/config.py",
@@ -1394,24 +1457,38 @@ _LIVE_OPEN_FILES = [
 ]
 
 
-@pytest.mark.parametrize("rel", _LIVE_OPEN_FILES)
-def test_no_bare_sqlite3_connect_for_live_db(rel):
-    # Every live-swing.db open routes through open_connection (busy_timeout).
-    # Bare sqlite3.connect(...) for the live DB is the regression we forbid.
+def _raw_call_sites(rel):
     text = Path(rel).read_text(encoding="utf-8")
-    # Allow the import line + comments; forbid call-site `sqlite3.connect(`
-    call_sites = [
+    return [
         ln for ln in text.splitlines()
-        if re.search(r"(?<![\w.])sqlite3\.connect\(", ln)
-        and not ln.lstrip().startswith("#")
+        if _RAW_CONNECT.search(ln) and not ln.lstrip().startswith("#")
     ]
-    assert call_sites == [], f"{rel} still has bare sqlite3.connect: {call_sites}"
+
+
+@pytest.mark.parametrize("rel", _LIVE_OPEN_FILES)
+def test_no_raw_sqlite3_connect_for_live_db(rel):
+    # Every live-swing.db open routes through open_connection (busy_timeout).
+    # A raw sqlite3.connect / _sqlite3.connect for the live DB is the regression.
+    sites = _raw_call_sites(rel)
+    assert sites == [], f"{rel} still has raw sqlite3 connect: {sites}"
+
+
+def test_cli_remaining_raw_connect_are_backup_dest_only():
+    # cli.py legitimately KEEPS the db-migrate backup DESTINATION open
+    # (dst = _sqlite3.connect(backup_path)). EVERY OTHER raw open (the divergence
+    # check :149, the db-migrate src :211, the version probe :227, the two
+    # diagnose --db opens :5160/:5201) must route through open_connection. So the
+    # ONLY raw connect remaining must reference `backup_path`; anything else is an
+    # unrouted live open and fails here.
+    sites = _raw_call_sites("swing/cli.py")
+    offenders = [ln for ln in sites if "backup_path" not in ln]
+    assert offenders == [], f"unrouted live open(s) in cli.py: {offenders}"
 ```
 
 - [ ] **Step 2: Run to verify it fails**
 
 Run: `python -m pytest tests/web/test_live_opens_routed.py -q`
-Expected: FAIL — each route file still contains bare `sqlite3.connect(...)`.
+Expected: FAIL — each route file still contains a raw `sqlite3.connect(`/`_sqlite3.connect(`, and `cli.py` has raw live opens (`:149/:211/:227/:5160/:5201`) that don't reference `backup_path`.
 
 - [ ] **Step 3: Mechanical replacement**
 
