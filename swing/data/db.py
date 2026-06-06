@@ -357,7 +357,7 @@ def _create_pre_migration_backup(
     dest_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     backup_path = dest_dir / f"swing-pre-phase7-migration-{timestamp}.db"
-    src_conn = sqlite3.connect(src_path)
+    src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
     try:
         dest_conn = sqlite3.connect(backup_path)
         try:
@@ -490,7 +490,7 @@ def _create_pre_phase8_migration_backup(
     dest_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     backup_path = dest_dir / f"swing-pre-phase8-migration-{timestamp}.db"
-    src_conn = sqlite3.connect(src_path)
+    src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
     try:
         dest_conn = sqlite3.connect(backup_path)
         try:
@@ -514,7 +514,7 @@ def _create_pre_phase9_migration_backup(
     dest_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     backup_path = dest_dir / f"swing-pre-phase9-migration-{timestamp}.db"
-    src_conn = sqlite3.connect(src_path)
+    src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
     try:
         dest_conn = sqlite3.connect(backup_path)
         try:
@@ -539,7 +539,7 @@ def _create_pre_phase12_bundle_c_migration_backup(
     dest_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     backup_path = dest_dir / f"swing-pre-phase12-bundle-c-migration-{timestamp}.db"
-    src_conn = sqlite3.connect(src_path)
+    src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
     try:
         dest_conn = sqlite3.connect(backup_path)
         try:
@@ -564,7 +564,7 @@ def _create_pre_phase13_migration_backup(
     dest_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     backup_path = dest_dir / f"swing-pre-phase13-migration-{timestamp}.db"
-    src_conn = sqlite3.connect(src_path)
+    src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
     try:
         dest_conn = sqlite3.connect(backup_path)
         try:
@@ -591,7 +591,7 @@ def _create_pre_phase13_sb6c_migration_backup(
     backup_path = (
         dest_dir / f"swing-pre-phase13-sb6c-migration-{timestamp}.db"
     )
-    src_conn = sqlite3.connect(src_path)
+    src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
     try:
         dest_conn = sqlite3.connect(backup_path)
         try:
@@ -618,7 +618,7 @@ def _create_pre_phase14_sb3_migration_backup(
     backup_path = (
         dest_dir / f"swing-pre-phase14-sb3-migration-{timestamp}.db"
     )
-    src_conn = sqlite3.connect(src_path)
+    src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
     try:
         dest_conn = sqlite3.connect(backup_path)
         try:
@@ -641,7 +641,7 @@ def _create_pre_b7_migration_backup(
     dest_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     backup_path = dest_dir / f"swing-pre-b7-migration-{timestamp}.db"
-    src_conn = sqlite3.connect(src_path)
+    src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
     try:
         dest_conn = sqlite3.connect(backup_path)
         try:
@@ -669,7 +669,7 @@ def _create_pre_phase14_migration_backup(
     backup_path = (
         dest_dir / f"swing-pre-phase14-migration-{timestamp}.db"
     )
-    src_conn = sqlite3.connect(src_path)
+    src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
     try:
         dest_conn = sqlite3.connect(backup_path)
         try:

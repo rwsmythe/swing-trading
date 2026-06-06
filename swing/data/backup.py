@@ -64,7 +64,13 @@ def do_backup(db_path: Path, dest_dir: Path, *, now: datetime | None = None) -> 
     # url-quote the path so '#' / '?' / etc. in any future config path don't
     # corrupt the URI.
     src_uri = "file:" + urllib.parse.quote(db_path.as_posix(), safe="/:") + "?mode=rw"
-    src = sqlite3.connect(src_uri, uri=True)
+    # Route the SOURCE open through the centralized opener so a weekly backup
+    # taken mid-pipeline doesn't fail fast on the 5 s default. mode=rw fail-closed
+    # semantics are PRESERVED (uri=True forwards the ?mode=rw URI). The online
+    # backup() API stays WAL-safe + unchanged. Function-local import: db.py does
+    # not import backup at module level, but keep it local to be cycle-proof.
+    from swing.data.db import DEFAULT_BUSY_TIMEOUT_MS, open_connection
+    src = open_connection(src_uri, uri=True, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
 
     # Source open succeeded — now stage the destination.
     dest_dir.mkdir(parents=True, exist_ok=True)
