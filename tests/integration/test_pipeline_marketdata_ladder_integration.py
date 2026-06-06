@@ -215,6 +215,8 @@ def test_warm_under_production_writes_pipeline_audit_rows(
         )
     finally:
         fresh_conn.close()
+        if _audit_conn is not None:
+            _audit_conn.close()
 
 
 # ============================================================================
@@ -270,6 +272,8 @@ def test_warm_under_sandbox_writes_zero_audit_rows(
         )
     finally:
         fresh_conn.close()
+        if _audit_conn is not None:
+            _audit_conn.close()
 
 
 # ============================================================================
@@ -328,6 +332,8 @@ def test_warm_twice_within_ttl_only_fires_ladder_once_per_ticker(
         )
     finally:
         fresh_conn.close()
+        if _audit_conn is not None:
+            _audit_conn.close()
 
 
 # ============================================================================

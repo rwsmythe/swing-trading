@@ -200,6 +200,8 @@ def test_bars_hook_invokes_ladder_with_daily_period_frequency_kwargs(
         f"_bars_hook MUST pass frequency=1 (only valid value for "
         f"frequency_type='daily'). Actual kwargs: {recorded_kwargs!r}"
     )
+    if _audit_conn is not None:
+        _audit_conn.close()
 
 
 def test_bars_hook_production_path_returns_daily_shaped_frame_no_duplicate_dates(
@@ -306,3 +308,5 @@ def test_bars_hook_production_path_returns_daily_shaped_frame_no_duplicate_dates
     # SECONDARY: at least 1 row, sane shape.
     assert not bars_df.empty
     assert list(bars_df.columns) == ["Open", "High", "Low", "Close", "Volume"]
+    if _audit_conn is not None:
+        _audit_conn.close()

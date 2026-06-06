@@ -159,8 +159,10 @@ def record_call_start(
                     "to close'."
                 )
             _t0 = time.monotonic()
+            begun = False
             try:
                 conn.execute("BEGIN IMMEDIATE")
+                begun = True
                 waited_s = time.monotonic() - _t0
                 call_id = repo.insert_in_flight(
                     conn,
@@ -172,8 +174,13 @@ def record_call_start(
                 )
                 conn.commit()
             except sqlite3.OperationalError:
-                waited_s = time.monotonic() - _t0
-                busy_failed = True
+                # busy_failed is the BEGIN IMMEDIATE lock-acquisition failure
+                # ONLY (Codex R1 minor): a later OperationalError (insert/commit)
+                # would mislabel the lock-wait telemetry, so only record it when
+                # the transaction never began.
+                if not begun:
+                    waited_s = time.monotonic() - _t0
+                    busy_failed = True
                 conn.rollback()
                 raise
             except Exception:
@@ -225,8 +232,10 @@ def record_call_finish(
                     "to close'."
                 )
             _t0 = time.monotonic()
+            begun = False
             try:
                 conn.execute("BEGIN IMMEDIATE")
+                begun = True
                 waited_s = time.monotonic() - _t0
                 repo.update_call_outcome(
                     conn,
@@ -240,8 +249,13 @@ def record_call_finish(
                 )
                 conn.commit()
             except sqlite3.OperationalError:
-                waited_s = time.monotonic() - _t0
-                busy_failed = True
+                # busy_failed is the BEGIN IMMEDIATE lock-acquisition failure
+                # ONLY (Codex R1 minor): a later OperationalError (update/commit)
+                # would mislabel the lock-wait telemetry, so only record it when
+                # the transaction never began.
+                if not begun:
+                    waited_s = time.monotonic() - _t0
+                    busy_failed = True
                 conn.rollback()
                 raise
             except Exception:

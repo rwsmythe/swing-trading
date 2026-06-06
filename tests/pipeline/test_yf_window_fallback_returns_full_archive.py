@@ -145,3 +145,5 @@ def test_yf_window_fallback_returns_full_archive_not_60_row_truncation(
         f"some rows past cutoff {cutoff}"
     )
     assert all(d.date() <= end.date() for d in df.index)
+    if _audit_conn is not None:
+        _audit_conn.close()
