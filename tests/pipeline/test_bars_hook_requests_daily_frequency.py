@@ -95,6 +95,7 @@ def _make_pipeline_cfg(db_path: Path, tmp_path: Path):
         ohlcv_cache_ttl_seconds=3600,
         max_concurrent_ohlcv_fetches=4,
         circuit_breaker_cooldown_seconds=60,
+        db_busy_timeout_ms=30000,
     )
     archive_ns = SimpleNamespace(archive_history_days=1260)
     return SimpleNamespace(
@@ -160,7 +161,7 @@ def test_bars_hook_invokes_ladder_with_daily_period_frequency_kwargs(
         _fake_fetch_window_via_ladder,
     )
 
-    price_cache, ohlcv_cache = _install_pipeline_marketdata_caches(
+    price_cache, ohlcv_cache, _audit_conn = _install_pipeline_marketdata_caches(
         cfg=cfg,
         schwab_client=schwab,
         pipeline_run_id=42,
@@ -278,7 +279,7 @@ def test_bars_hook_production_path_returns_daily_shaped_frame_no_duplicate_dates
         _shape_aware_fetch_window_via_ladder,
     )
 
-    price_cache, ohlcv_cache = _install_pipeline_marketdata_caches(
+    price_cache, ohlcv_cache, _audit_conn = _install_pipeline_marketdata_caches(
         cfg=cfg,
         schwab_client=schwab,
         pipeline_run_id=42,

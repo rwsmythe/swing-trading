@@ -122,7 +122,7 @@ def test_yf_window_fallback_returns_full_archive_not_60_row_truncation(
     # Construct a mock Schwab client so _install_pipeline_marketdata_caches
     # installs the ladder hook (otherwise it returns (None, None)).
     mock_client = MagicMock()
-    price_cache, ohlcv_cache = _install_pipeline_marketdata_caches(
+    price_cache, ohlcv_cache, _audit_conn = _install_pipeline_marketdata_caches(
         cfg, mock_client, pipeline_run_id=1,
     )
     assert price_cache is not None

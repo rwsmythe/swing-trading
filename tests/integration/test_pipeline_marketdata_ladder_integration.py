@@ -95,6 +95,7 @@ def _make_cfg(
         ohlcv_cache_ttl_seconds=3600,
         max_concurrent_ohlcv_fetches=8,
         circuit_breaker_cooldown_seconds=60,
+        db_busy_timeout_ms=30000,
     )
     paths_ns = SimpleNamespace(
         db_path=db_path, prices_cache_dir=prices_cache_dir,
@@ -188,7 +189,7 @@ def test_warm_under_production_writes_pipeline_audit_rows(
     # pipeline_run_id=None avoids FK violation against pipeline_runs table
     # in the unit-test seam — production callsite passes lease.run_id which
     # always exists (lease.acquire INSERTs the row).
-    price_cache, _ = _install_pipeline_marketdata_caches(
+    price_cache, _, _audit_conn = _install_pipeline_marketdata_caches(
         cfg, schwab_client=schwab, pipeline_run_id=None,
     )
     assert price_cache is not None
@@ -241,7 +242,7 @@ def test_warm_under_sandbox_writes_zero_audit_rows(
     # pipeline_run_id=None avoids FK violation against pipeline_runs table
     # in the unit-test seam — production callsite passes lease.run_id which
     # always exists (lease.acquire INSERTs the row).
-    price_cache, _ = _install_pipeline_marketdata_caches(
+    price_cache, _, _audit_conn = _install_pipeline_marketdata_caches(
         cfg, schwab_client=schwab, pipeline_run_id=None,
     )
     assert price_cache is not None
@@ -296,7 +297,7 @@ def test_warm_twice_within_ttl_only_fires_ladder_once_per_ticker(
     schwab = MagicMock()
     schwab.quotes.return_value = _mock_quote_resp("AAPL", 150.0)
 
-    price_cache, _ = _install_pipeline_marketdata_caches(
+    price_cache, _, _audit_conn = _install_pipeline_marketdata_caches(
         cfg, schwab_client=schwab, pipeline_run_id=None,
     )
     assert price_cache is not None
@@ -369,11 +370,12 @@ def test_install_caches_with_none_client_returns_none_pair():
     existing PriceFetcher/yfinance path; ZERO `schwab_api_calls` rows
     written."""
     cfg = SimpleNamespace()  # cfg not even consulted when client is None
-    price_cache, ohlcv_cache = _install_pipeline_marketdata_caches(
+    price_cache, ohlcv_cache, audit_conn = _install_pipeline_marketdata_caches(
         cfg, schwab_client=None, pipeline_run_id=None,
     )
     assert price_cache is None
     assert ohlcv_cache is None
+    assert audit_conn is None
 
 
 # ============================================================================

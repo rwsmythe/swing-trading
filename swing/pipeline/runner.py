@@ -15,7 +15,7 @@ from pathlib import Path
 
 from swing.config import Config
 from swing.data.backup import do_backup, prune_old_backups, should_backup
-from swing.data.db import connect
+from swing.data.db import connect, open_connection
 
 # Phase 13 T2.SB6c T-A.6c.2 §1.5.1 amendment — chart_renders cache
 # write-through helpers + Theme 1 SVG renderers. Imported at module top
@@ -306,7 +306,7 @@ def _construct_pipeline_schwab_client(cfg) -> object | None:
 
 def _install_pipeline_marketdata_caches(
     cfg, schwab_client: object | None, pipeline_run_id: int | None,
-) -> tuple[object | None, object | None]:
+) -> tuple[object | None, object | None, object | None]:
     """Construct PriceCache + OhlcvCache + install Schwab-market-data ladder hooks.
 
     Per Phase 11 Sub-bundle C T-C.6 dispatch brief §0.5 pre-emption #5 +
@@ -336,7 +336,9 @@ def _install_pipeline_marketdata_caches(
     via captured closures. No duplicate construction.
 
     Returns:
-        ``(price_cache, ohlcv_cache)`` — both ``None`` when no client.
+        ``(price_cache, ohlcv_cache, audit_conn)`` — all ``None`` when no
+        client. ``audit_conn`` is the single shared serialized audit-writer
+        connection (OQ-C); the caller MUST close it in the run ``finally``.
 
     Consumer surfaces (post-Phase-13 T1.SB0): PriceCache is consumed by
     ``_step_evaluate`` (open-trade-ticker warm); OhlcvCache is consumed by
@@ -345,7 +347,7 @@ def _install_pipeline_marketdata_caches(
     share the same ``schwab_client`` via captured closures.
     """
     if schwab_client is None:
-        return None, None
+        return None, None, None
 
     from swing.integrations.schwab.marketdata_ladder import (
         fetch_quote_via_ladder,
@@ -356,6 +358,19 @@ def _install_pipeline_marketdata_caches(
 
     price_cache = PriceCache(cfg)
     ohlcv_cache = OhlcvCache(cfg)
+
+    # SQLite lock-contention arc (OQ-C): ONE shared serialized audit-writer
+    # connection for ALL pipeline market-data audit writes, replacing the
+    # <=16 per-hook connect()/close() pairs. check_same_thread=False because the
+    # executor runs the hooks on worker threads; audit_service._AUDIT_WRITE_LOCK
+    # serializes every BEGIN IMMEDIATE on it. The market-data path uses `conn`
+    # ONLY for audit (record_call_start/finish), so this is safe.
+    audit_conn = open_connection(
+        cfg.paths.db_path,
+        busy_timeout_ms=cfg.web.db_busy_timeout_ms,
+        reaffirm_wal=False,
+        check_same_thread=False,
+    )
 
     def _yf_quote_fallback(ticker: str):
         # Best-effort yfinance fallback for the ladder. The cache layer
@@ -375,19 +390,17 @@ def _install_pipeline_marketdata_caches(
         # PriceCache `set_ladder_fetcher` contract: (price, provider).
         # The cache stamps `source='live'` itself; we only return the
         # numeric price + provider tag.
-        conn = connect(cfg.paths.db_path)
-        try:
-            snap, provider_tag = fetch_quote_via_ladder(
-                ticker,
-                cfg=cfg,
-                schwab_client=schwab_client,
-                yfinance_fallback_fn=_yf_quote_fallback,
-                conn=conn,
-                surface="pipeline",
-                pipeline_run_id=pipeline_run_id,
-            )
-        finally:
-            conn.close()
+        # OQ-C: use the single shared serialized audit connection (closed by the
+        # run finally); audit_service._AUDIT_WRITE_LOCK serializes its writes.
+        snap, provider_tag = fetch_quote_via_ladder(
+            ticker,
+            cfg=cfg,
+            schwab_client=schwab_client,
+            yfinance_fallback_fn=_yf_quote_fallback,
+            conn=audit_conn,
+            surface="pipeline",
+            pipeline_run_id=pipeline_run_id,
+        )
         return (snap.price, provider_tag)
 
     def _yf_window_fallback(ticker: str, start, end):
@@ -436,24 +449,22 @@ def _install_pipeline_marketdata_caches(
         # `(month, 1, daily, 1)` - both are valid daily-bar specs; the
         # year/5 choice maximizes archive coverage in one call so the
         # Shape A parquet's first write captures full history.
-        conn = connect(cfg.paths.db_path)
-        try:
-            window, provider_tag = fetch_window_via_ladder(
-                ticker,
-                start=None, end=None,
-                cfg=cfg,
-                schwab_client=schwab_client,
-                yfinance_fallback_fn=_yf_window_fallback,
-                conn=conn,
-                surface="pipeline",
-                pipeline_run_id=pipeline_run_id,
-                period_type="year",
-                period=5,
-                frequency_type="daily",
-                frequency=1,
-            )
-        finally:
-            conn.close()
+        # OQ-C: use the single shared serialized audit connection (closed by the
+        # run finally); audit_service._AUDIT_WRITE_LOCK serializes its writes.
+        window, provider_tag = fetch_window_via_ladder(
+            ticker,
+            start=None, end=None,
+            cfg=cfg,
+            schwab_client=schwab_client,
+            yfinance_fallback_fn=_yf_window_fallback,
+            conn=audit_conn,
+            surface="pipeline",
+            pipeline_run_id=pipeline_run_id,
+            period_type="year",
+            period=5,
+            frequency_type="daily",
+            frequency=1,
+        )
         # When provider='yfinance', `window` is whatever the yfinance
         # fallback returned (bars DataFrame). When provider='schwab_api',
         # `window` is a SchwabPriceHistoryWindow — convert to bars-shape
@@ -467,7 +478,7 @@ def _install_pipeline_marketdata_caches(
     price_cache.set_ladder_fetcher(_quote_hook)
     ohlcv_cache.set_ladder_bars_fetcher(_bars_hook)
 
-    return price_cache, ohlcv_cache
+    return price_cache, ohlcv_cache, audit_conn
 
 
 def _warm_pipeline_marketdata(
@@ -564,6 +575,10 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
         archive_history_days=cfg.archive.archive_history_days,
     )
     eval_run_id = 0
+    # OQ-C: the single shared serialized audit-writer connection (opened in
+    # _install_pipeline_marketdata_caches when a Schwab client exists). Init to
+    # None so the run finally can close it unconditionally.
+    audit_conn = None
     try:
         # Finviz selection/validation under the lease. Ensure the inbox
         # dir exists (first-run bootstrap; mirrors `_step_finviz_fetch`
@@ -781,7 +796,7 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
             # legacy `PriceFetcher.get` path — verified by the T-T1.SB0.2
             # shape-parity test).
             schwab_client = _construct_pipeline_schwab_client(cfg)
-            price_cache, ohlcv_cache = _install_pipeline_marketdata_caches(
+            price_cache, ohlcv_cache, audit_conn = _install_pipeline_marketdata_caches(
                 cfg, schwab_client, pipeline_run_id=lease.run_id,
             )
             if ohlcv_cache is None:
@@ -1013,6 +1028,9 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
             )
     finally:
         hb.stop()
+        # OQ-C: close the single shared serialized audit-writer connection.
+        if audit_conn is not None:
+            audit_conn.close()
 
     return RunResult(run_id=lease.run_id, state="complete", error_message=None)
 
