@@ -385,8 +385,10 @@ def create_app(cfg: Config, cfg_path: Path | None = None) -> FastAPI:
     # Pre-v17 / no-active-policy DBs silently return (cfg, None) — the helper
     # tolerates fresh / partially-migrated test fixtures without crashing.
     import sqlite3 as _sqlite3
+
+    from swing.data.db import open_connection
     try:
-        _conn = _sqlite3.connect(cfg.paths.db_path)
+        _conn = open_connection(cfg.paths.db_path, busy_timeout_ms=cfg.web.db_busy_timeout_ms)
     except _sqlite3.OperationalError:
         # DB path doesn't exist or can't be opened — defer to the connect()
         # gate at run_server / first request. Use raw cfg here so the app

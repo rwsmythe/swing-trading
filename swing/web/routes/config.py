@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import copy as _copy
 import logging
-import sqlite3
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -19,6 +18,7 @@ from swing.config_validation import (
     coerce_value,
     validate_all,
 )
+from swing.data.db import open_connection
 from swing.web.view_models.config import build_config_vm
 
 log = logging.getLogger(__name__)
@@ -68,7 +68,7 @@ def config_page(request: Request, saved: int = 0):
     # §3.1.3 R3 Minor #2 ("yellow-banner warning until resolved"). The
     # connection is closed before TemplateResponse renders.
     db_path = request.app.state.cfg.paths.db_path
-    conn = sqlite3.connect(db_path)
+    conn = open_connection(db_path, busy_timeout_ms=request.app.state.cfg.web.db_busy_timeout_ms)
     try:
         vm = build_config_vm(cfg, saved=bool(saved), conn=conn)
     finally:
@@ -138,7 +138,10 @@ async def config_save(request: Request):
         )
         from swing.trades.risk_policy import supersede_active_policy
 
-        cascade_conn = sqlite3.connect(base_cfg.paths.db_path)
+        cascade_conn = open_connection(
+            base_cfg.paths.db_path,
+            busy_timeout_ms=base_cfg.web.db_busy_timeout_ms,
+        )
         try:
             # Codex R4 M#1 fix: skip cascade when EVERY would-be value
             # already matches the active policy (avoids no-op audit-chain
@@ -221,7 +224,10 @@ async def config_reset(request: Request, field_path: str):
         section, attr = field_path.split(".")
         post_reset_value = getattr(getattr(post_reset_cfg, section), attr)
         policy_field = _RISK_POLICY_CASCADE_MAP[field_path]
-        cascade_conn = sqlite3.connect(post_reset_cfg.paths.db_path)
+        cascade_conn = open_connection(
+            post_reset_cfg.paths.db_path,
+            busy_timeout_ms=post_reset_cfg.web.db_busy_timeout_ms,
+        )
         try:
             # Codex R3 M#3 fix: skip cascade when post-reset value already
             # matches active policy (avoid no-op audit-chain pollution).

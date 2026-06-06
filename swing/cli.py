@@ -33,7 +33,7 @@ import pandas as pd
 from swing.cli_config import config_group
 from swing.cli_schwab import schwab_group
 from swing.config import load as load_config
-from swing.data.db import connect, ensure_schema
+from swing.data.db import connect, ensure_schema, open_connection
 from swing.data.models import Candidate, EvaluationRun
 from swing.data.repos.candidates import insert_candidates, insert_evaluation_run
 from swing.evaluation.context import BatchContext, CandidateContext, MarketContext
@@ -146,7 +146,7 @@ def _apply_toml_divergence_check(ctx: click.Context) -> None:
     if not db_path.exists():
         # Pre-migrate state — divergence check has nothing to compare against.
         return
-    conn = sqlite3.connect(db_path)
+    conn = open_connection(db_path, busy_timeout_ms=cfg.web.db_busy_timeout_ms)
     try:
         new_cfg, divergence = check_and_reconcile_toml_divergence(conn, cfg)
     finally:
@@ -208,7 +208,7 @@ def db_migrate(ctx: click.Context) -> None:
         cfg.paths.backups_dir.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%dT%H%M%S")
         backup_path = cfg.paths.backups_dir / f"swing-{ts}.db"
-        src = _sqlite3.connect(db_path)
+        src = open_connection(db_path, busy_timeout_ms=cfg.web.db_busy_timeout_ms)
         dst = _sqlite3.connect(backup_path)
         try:
             src.backup(dst)
@@ -224,7 +224,7 @@ def db_migrate(ctx: click.Context) -> None:
     # db-migrate invocations leave the active policy alone.
     pre_version = 0
     if db_path.exists():
-        _probe = _sqlite3.connect(db_path)
+        _probe = open_connection(db_path, busy_timeout_ms=cfg.web.db_busy_timeout_ms)
         try:
             _row = _probe.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' "
@@ -5157,7 +5157,7 @@ def diagnose_metrics_wiring(db_path: Path, output_path: Path) -> None:
     # friendly error before sqlite3.connect auto-creates an empty file.
     _validate_diagnose_db_path(db_path)
     try:
-        conn = _sqlite3.connect(str(db_path))
+        conn = open_connection(str(db_path))
         try:
             write_metrics_wiring_audit_markdown(conn, output_path)
         finally:
@@ -5198,7 +5198,7 @@ def diagnose_prune_chart_cache(db_path: Path, older_than_days: int) -> None:
     # friendly error before sqlite3.connect auto-creates an empty file.
     _validate_diagnose_db_path(db_path)
     try:
-        conn = _sqlite3.connect(str(db_path))
+        conn = open_connection(str(db_path))
         try:
             with conn:
                 deleted = prune_chart_renders_older_than(

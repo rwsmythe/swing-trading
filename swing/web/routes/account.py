@@ -26,12 +26,12 @@ Per electives amendment §2 + plan §A.18 + CLAUDE.md gotcha family:
 from __future__ import annotations
 
 import logging
-import sqlite3
 from datetime import datetime
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
+from swing.data.db import open_connection
 from swing.evaluation.dates import (
     PageKind,
     last_completed_session,
@@ -86,7 +86,7 @@ def _render_form(
 def account_snapshot_form(request: Request) -> Response:
     """GET — render the snapshot capture form."""
     db_path = request.app.state.cfg.paths.db_path
-    conn = sqlite3.connect(db_path)
+    conn = open_connection(db_path, busy_timeout_ms=request.app.state.cfg.web.db_busy_timeout_ms)
     try:
         unresolved = count_unresolved_material(conn)
         recent_multi_leg = count_recent_multi_leg_auto_corrections(conn)
@@ -117,7 +117,7 @@ async def account_snapshot_post(request: Request) -> Response:
     note_raw = (form.get("note") or "").strip() or None
     equity_raw = (form.get("equity_dollars") or "").strip()
 
-    conn = sqlite3.connect(db_path)
+    conn = open_connection(db_path, busy_timeout_ms=request.app.state.cfg.web.db_busy_timeout_ms)
     try:
         unresolved = count_unresolved_material(conn)
         recent_multi_leg = count_recent_multi_leg_auto_corrections(conn)
@@ -146,7 +146,7 @@ async def account_snapshot_post(request: Request) -> Response:
     # REJECTS caller-held transactions. We MUST NOT wrap the call in our
     # own ``with conn:`` block (Phase 8 R3→R4 lesson + CLAUDE.md "Service-
     # layer with conn:" gotcha + Phase 9 reject-caller-held-tx contract).
-    conn = sqlite3.connect(db_path)
+    conn = open_connection(db_path, busy_timeout_ms=request.app.state.cfg.web.db_busy_timeout_ms)
     try:
         record_snapshot(
             conn,

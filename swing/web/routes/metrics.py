@@ -10,11 +10,10 @@ HTML — NO HTMX OOB-swap, NO HX-Redirect, NO embedded forms.
 
 from __future__ import annotations
 
-import sqlite3
-
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import HTMLResponse
 
+from swing.data.db import open_connection
 from swing.web.view_models.metrics.capital_friction import (
     build_capital_friction_vm,
 )
@@ -51,7 +50,7 @@ router = APIRouter()
 def metrics_index(request: Request):
     """9-card overview navigator for Phase 10 metrics surfaces (P14.N5)."""
     cfg = request.app.state.cfg
-    conn = sqlite3.connect(cfg.paths.db_path)
+    conn = open_connection(cfg.paths.db_path, busy_timeout_ms=cfg.web.db_busy_timeout_ms)
     try:
         vm = build_metrics_index_vm(cfg, conn)
     finally:
@@ -246,7 +245,7 @@ def metrics_pattern_outcomes(request: Request):
 
     from swing.evaluation.dates import PageKind, topbar_session_date
     db_path = request.app.state.cfg.paths.db_path
-    conn = sqlite3.connect(db_path)
+    conn = open_connection(db_path, busy_timeout_ms=request.app.state.cfg.web.db_busy_timeout_ms)
     try:
         vm = build_pattern_outcomes_vm(
             conn,

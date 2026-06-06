@@ -2,12 +2,12 @@
 from __future__ import annotations
 
 import logging
-import sqlite3
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
 from swing.config_overrides import apply_overrides
+from swing.data.db import open_connection
 from swing.web.chart_jit import get_or_render_surface
 from swing.web.chart_scope import latest_completed_pipeline_run
 from swing.web.view_models.watchlist import (
@@ -77,7 +77,7 @@ def _resolve_jit_chart_bytes(
         )
         return None
 
-    conn = sqlite3.connect(str(cfg.paths.db_path))
+    conn = open_connection(str(cfg.paths.db_path), busy_timeout_ms=cfg.web.db_busy_timeout_ms)
     try:
         if pipeline_run_id is not None and data_asof_date is not None:
             resolved_run_id = pipeline_run_id

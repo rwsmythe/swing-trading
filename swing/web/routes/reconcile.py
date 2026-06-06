@@ -41,6 +41,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from swing.config_overrides import apply_overrides
+from swing.data.db import open_connection
 from swing.data.repos.reconciliation import get_discrepancy
 from swing.evaluation.dates import PageKind, topbar_session_date
 from swing.metrics.discrepancies import (
@@ -144,7 +145,7 @@ def reconcile_discrepancy_resolve_form(
     # finally: conn.close() here -- conn was never created if connect
     # raised. The existing inner try/finally handles close on success.
     try:
-        conn = sqlite3.connect(cfg.paths.db_path)
+        conn = open_connection(cfg.paths.db_path, busy_timeout_ms=cfg.web.db_busy_timeout_ms)
     except sqlite3.OperationalError as exc:
         log.warning("sqlite3.OperationalError (connect): %s", exc)
         return _render_error(
@@ -434,7 +435,7 @@ def _reread_discrepancy_resolution(
     the concurrent commit. Returns the post-race resolution string, or
     None if the row vanished (defensive).
     """
-    fresh = sqlite3.connect(db_path)
+    fresh = open_connection(db_path)
     try:
         row = fresh.execute(
             "SELECT resolution FROM reconciliation_discrepancies "
@@ -510,7 +511,7 @@ async def reconcile_discrepancy_resolve_post(  # noqa: PLR0911, PLR0912, PLR0915
     # finally: conn.close() here -- conn was never created if connect
     # raised. The existing inner try/finally handles close on success.
     try:
-        conn = sqlite3.connect(cfg.paths.db_path)
+        conn = open_connection(cfg.paths.db_path, busy_timeout_ms=cfg.web.db_busy_timeout_ms)
     except sqlite3.OperationalError as exc:
         log.warning("sqlite3.OperationalError (connect): %s", exc)
         return _render_error(

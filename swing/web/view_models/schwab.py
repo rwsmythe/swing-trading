@@ -411,7 +411,6 @@ def build_schwab_status_vm(
     # Local imports avoid circular-import at module load (CLI module
     # imports schwabdev which is heavyweight; web module load shouldn't
     # eagerly pull it).
-    import sqlite3
     from datetime import UTC, datetime, timedelta
 
     from swing.cli_schwab import (
@@ -423,6 +422,7 @@ def build_schwab_status_vm(
         _read_tokens_metadata,
     )
     from swing.config_user import _user_home
+    from swing.data.db import open_connection
     from swing.data.repos.schwab_api_calls import list_recent_calls
 
     if now is None:
@@ -443,7 +443,7 @@ def build_schwab_status_vm(
     except ValueError:
         tokens_db_path_display = str(tokens_path)
 
-    conn = sqlite3.connect(db_path)
+    conn = open_connection(db_path)
     try:
         # State + reason (multi-signal predicate; mirrors CLI per spec
         # §7.4 OQ-D 1:1 LOCK).

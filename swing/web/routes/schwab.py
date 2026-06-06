@@ -34,13 +34,13 @@ friendliness-executing-plans-dispatch-brief.md`` §3 T-B.4 + §0 STEP 0.
 from __future__ import annotations
 
 import logging
-import sqlite3
 from datetime import datetime
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
 
 from swing.config_overrides import apply_overrides
+from swing.data.db import open_connection
 from swing.evaluation.dates import PageKind, topbar_session_date
 from swing.integrations.schwab.auth import (
     _redacted_excerpt,
@@ -88,7 +88,7 @@ def _fetch_unresolved_material_count(db_path) -> int:
     populate ``unresolved_material_discrepancies_count`` so the banner
     fires when discrepancies exist.
     """
-    conn = sqlite3.connect(db_path)
+    conn = open_connection(db_path)
     try:
         return count_unresolved_material(conn)
     finally:
@@ -103,7 +103,7 @@ def _fetch_recent_multi_leg_auto_correction_count(db_path) -> int:
     ``vm.recent_multi_leg_auto_correction_count`` without
     ``UndefinedError``.
     """
-    conn = sqlite3.connect(db_path)
+    conn = open_connection(db_path)
     try:
         return count_recent_multi_leg_auto_corrections(conn)
     finally:
@@ -118,7 +118,7 @@ def _fetch_banner_resolve_link(db_path) -> str | None:
     ``vm.banner_resolve_link`` field via the Pattern-B (db_path-shape)
     helper convention used by ``swing/web/routes/schwab.py``.
     """
-    conn = sqlite3.connect(db_path)
+    conn = open_connection(db_path)
     try:
         return fetch_first_pending_ambiguity_resolve_link_path(conn)
     finally:
@@ -393,7 +393,7 @@ async def schwab_setup_post(request: Request) -> Response:
         return _render_form(request, vm=vm, status_code=400)
 
     db_path = cfg.paths.db_path
-    conn = sqlite3.connect(db_path)
+    conn = open_connection(db_path, busy_timeout_ms=cfg.web.db_busy_timeout_ms)
     try:
         summary = setup_paste_flow_with_callback_url(
             cfg,
