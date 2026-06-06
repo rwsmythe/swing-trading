@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from swing.config import load
+from swing.config import Web, load
 
 
 def _write_default_toml(path: Path, *, db_path_override: str | None = None) -> Path:
@@ -164,3 +164,21 @@ def test_archive_config_honors_toml_override(tmp_path: Path, monkeypatch):
 
     cfg = load(cfg_file)
     assert cfg.archive.archive_history_days == 504
+
+
+def test_web_db_busy_timeout_default():
+    # SQLite lock-contention arc (OQ-A): the runtime-tunable busy_timeout knob.
+    assert Web().db_busy_timeout_ms == 30000
+
+
+def test_web_db_busy_timeout_from_toml(tmp_path: Path, monkeypatch):
+    # The template has no [web] table (load uses raw.get("web", {})); append one
+    # carrying the knob, mirroring the [archive] append-and-load pattern above.
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    cfg_file = _write_default_toml(tmp_path / "swing.config.toml")
+    with cfg_file.open("a", encoding="utf-8") as fh:
+        fh.write("\n[web]\ndb_busy_timeout_ms = 12000\n")
+
+    cfg = load(cfg_file)
+    assert cfg.web.db_busy_timeout_ms == 12000

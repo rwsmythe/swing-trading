@@ -388,6 +388,13 @@ class Web:
     # its pipeline_runs row (acquire its lease). Python 3.14 + heavy imports
     # on Windows regularly exceed 2s cold-start; 5s gives comfortable headroom.
     pipeline_lease_wait_seconds: float = 5.0
+    # SQLite lock-contention arc (OQ-A): per-connection busy_timeout (ms) for
+    # all swing.db opens. 30 s default; runtime-tunable WITHOUT importing cfg
+    # into swing/data/db.py (db.py owns the module-level DEFAULT_BUSY_TIMEOUT_MS;
+    # this knob feeds open_connection's keyword override at the pipeline/web
+    # callsites). Raising it helps the no-deadline OHLCV path; it cannot exceed
+    # the 6 s quote-path caller deadline usefully.
+    db_busy_timeout_ms: int = 30000
     # Spec §3.8: filters watchlist flag-tag rendering. Default 0.0 = show every
     # detected flag (V1 — no labeled-example calibration data exists yet).
     # Operator dials up after operational experience reveals which confidence
