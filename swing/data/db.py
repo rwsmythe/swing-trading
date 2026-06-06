@@ -1170,10 +1170,9 @@ def run_migrations(
 def ensure_schema(db_path: Path) -> sqlite3.Connection:
     """Create or upgrade the DB schema. Use from the CLI migrate command, NOT from app startup."""
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-
+    conn = open_connection(db_path, reaffirm_wal=True)
+    # busy_timeout + foreign_keys + WAL are applied by open_connection (WAL FIRST
+    # covered by busy_timeout).
     current = _current_version(conn)
     if current == EXPECTED_SCHEMA_VERSION:
         return conn
@@ -1192,14 +1191,21 @@ def ensure_schema(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
-def connect(db_path: Path) -> sqlite3.Connection:
-    """Open a connection for normal app use. Raises if schema is not current."""
+def connect(
+    db_path: Path, *, busy_timeout_ms: int = DEFAULT_BUSY_TIMEOUT_MS
+) -> sqlite3.Connection:
+    """Open a connection for normal app use. Raises if schema is not current.
+
+    WAL is NOT reaffirmed here -- the DB only reaches a current schema via
+    ensure_schema, which sets WAL persistently (file-header property), so every
+    DB connect() ever opens is already WAL. Reaffirming on the hot path buys
+    nothing and adds a lock point (OQ-0 / R1 major #1).
+    """
     if not db_path.exists():
         raise SchemaVersionMismatchError(
             f"DB not found at {db_path}. Run: swing db-migrate"
         )
-    conn = sqlite3.connect(db_path)
-    conn.execute("PRAGMA foreign_keys=ON")
+    conn = open_connection(db_path, busy_timeout_ms=busy_timeout_ms, reaffirm_wal=False)
     current = _current_version(conn)
     if current != EXPECTED_SCHEMA_VERSION:
         conn.close()
