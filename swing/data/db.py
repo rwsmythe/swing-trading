@@ -51,6 +51,48 @@ from pathlib import Path
 EXPECTED_SCHEMA_VERSION = 24
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
+DEFAULT_BUSY_TIMEOUT_MS = 30000
+"""Default per-connection SQLite busy_timeout (ms). 30 s is safe and fully
+effective for the no-deadline OHLCV fetch path (the #23-amplified bulk of the
+lock-contention degrade); it cannot rescue the 6 s-deadline quote path on its
+own (see the serialized audit-writer mechanism). busy_timeout is per-connection
+(NOT persistent like WAL), so it MUST be set on every connection."""
+
+
+def open_connection(
+    db_path_or_uri,
+    *,
+    busy_timeout_ms: int = DEFAULT_BUSY_TIMEOUT_MS,
+    reaffirm_wal: bool = False,
+    uri: bool = False,
+    check_same_thread: bool = True,
+) -> sqlite3.Connection:
+    """Public swing.db opener. Every swing.db connection routes through here so
+    the busy_timeout is uniform (OQ-B). Applies, in THIS order:
+
+      1. busy_timeout  : FIRST -- so any subsequent lock acquisition (a WAL
+                         reaffirm, a BEGIN IMMEDIATE) is covered by the handler.
+      2. foreign_keys=ON
+      3. journal_mode=WAL : ONLY when reaffirm_wal=True (the ensure_schema path).
+                         NOT on the hot connect() path -- the live DB is already
+                         WAL (persistent in the file header); reaffirming per-open
+                         is needless overhead and a needless lock point.
+
+    ``uri=True`` forwards to ``sqlite3.connect(..., uri=True)`` so callers can
+    pass a ``file:...?mode=rw`` URI and KEEP fail-closed semantics (backup source).
+    ``check_same_thread=False`` is for the single shared serialized audit-writer
+    connection (guarded by audit_service._AUDIT_WRITE_LOCK); do NOT use a shared
+    connection across threads without that lock.
+    """
+    conn = sqlite3.connect(
+        db_path_or_uri, uri=uri, check_same_thread=check_same_thread
+    )
+    conn.execute(f"PRAGMA busy_timeout={int(busy_timeout_ms)}")
+    conn.execute("PRAGMA foreign_keys=ON")
+    if reaffirm_wal:
+        conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
 # Phase 7 backup gate (spec §12.1): when migrating to schema_version >= 14,
 # the runner takes a SQLite-native Connection.backup() snapshot of the source
 # DB and verifies it against this table set BEFORE applying any migration.
