@@ -30,10 +30,14 @@ transaction service is the project convention.
 """
 from __future__ import annotations
 
+import logging
 import sqlite3
 import threading
+import time
 
 from swing.data.repos import schwab_api_calls as repo
+
+log = logging.getLogger(__name__)
 
 # SQLite lock-contention arc (OQ-C): serialize ALL audit-row transactions within
 # a process. With the shared pipeline audit connection this guarantees at most
@@ -43,6 +47,33 @@ from swing.data.repos import schwab_api_calls as repo
 # -- NEVER across the HTTP call (start releases it before the HTTP; finish
 # re-acquires).
 _AUDIT_WRITE_LOCK = threading.Lock()
+
+_SLOW_ACQUIRE_WARN_THRESHOLD_S = 1.0
+
+
+def _maybe_log_audit_lock_wait(op, waited_s, busy_failed, configured_ms):
+    """G2' lock-wait visibility. Called AFTER the lock is released (never inside
+    the critical section -- logging I/O would extend the contention window). The
+    ``configured_ms`` busy_timeout value is captured by the CALLER while still
+    holding the lock and passed in as a plain int -- this function NEVER touches
+    the connection (Codex R1 major #1: a PRAGMA read on the shared
+    check_same_thread=False conn after lock release would race a concurrent
+    writer). Emits a WARNING for failed acquisitions (busy_timeout exhausted) and
+    for slow successful ones (>= threshold). Durations + ints only -> redaction-
+    irrelevant.
+    """
+    if not busy_failed and (waited_s is None or waited_s < _SLOW_ACQUIRE_WARN_THRESHOLD_S):
+        return
+    if busy_failed:
+        log.warning(
+            "audit %s: BEGIN IMMEDIATE FAILED (database is locked) after %.3fs "
+            "(busy_timeout=%sms)", op, waited_s or 0.0, configured_ms,
+        )
+    else:
+        log.warning(
+            "audit %s: slow BEGIN IMMEDIATE acquisition %.3fs (busy_timeout=%sms)",
+            op, waited_s, configured_ms,
+        )
 
 # Phase 13 T2.SB1 (migration 0020) — surface CHECK widening per spec §3.4 +
 # §6.4 + plan §A.14 paired-atomic-landing LOCK. Schema CHECK on
@@ -103,33 +134,55 @@ def record_call_start(
             f"{_SCHWAB_API_SURFACE_VALUES}, got {surface!r}"
         )
 
-    with _AUDIT_WRITE_LOCK:
-        # in_transaction is checked INSIDE the lock: a shared audit connection is
-        # transiently in-tx while another serialized writer holds it; checking
-        # outside would false-positive. Inside the lock the prior holder has
-        # committed/rolled back, so a genuine caller-held tx is still rejected.
-        if conn.in_transaction:
-            raise CallerHeldTransactionError(
-                "record_call_start owns its own transaction; caller MUST NOT "
-                "hold an open transaction. See CLAUDE.md gotcha 'Service-layer "
-                "with conn:' + 'in_transaction auto-detect outer transaction "
-                "guards re-introduce the very race the explicit lock was meant "
-                "to close'."
-            )
-        conn.execute("BEGIN IMMEDIATE")
-        try:
-            call_id = repo.insert_in_flight(
-                conn,
-                ts=ts,
-                endpoint=endpoint,
-                pipeline_run_id=pipeline_run_id,
-                surface=surface,
-                environment=environment,
-            )
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
+    waited_s = None
+    busy_failed = False
+    configured_ms = None
+    try:
+        with _AUDIT_WRITE_LOCK:
+            # configured_ms is read INSIDE the lock (conn idle, owned by this
+            # thread) so the after-lock logger never touches the connection.
+            try:
+                configured_ms = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+            except Exception:  # noqa: BLE001 -- diagnostic only
+                configured_ms = None
+            # in_transaction is checked INSIDE the lock: a shared audit connection
+            # is transiently in-tx while another serialized writer holds it;
+            # checking outside would false-positive. Inside the lock the prior
+            # holder has committed/rolled back, so a genuine caller-held tx is
+            # still rejected.
+            if conn.in_transaction:
+                raise CallerHeldTransactionError(
+                    "record_call_start owns its own transaction; caller MUST NOT "
+                    "hold an open transaction. See CLAUDE.md gotcha 'Service-layer "
+                    "with conn:' + 'in_transaction auto-detect outer transaction "
+                    "guards re-introduce the very race the explicit lock was meant "
+                    "to close'."
+                )
+            _t0 = time.monotonic()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                waited_s = time.monotonic() - _t0
+                call_id = repo.insert_in_flight(
+                    conn,
+                    ts=ts,
+                    endpoint=endpoint,
+                    pipeline_run_id=pipeline_run_id,
+                    surface=surface,
+                    environment=environment,
+                )
+                conn.commit()
+            except sqlite3.OperationalError:
+                waited_s = time.monotonic() - _t0
+                busy_failed = True
+                conn.rollback()
+                raise
+            except Exception:
+                conn.rollback()
+                raise
+    finally:
+        _maybe_log_audit_lock_wait(
+            "record_call_start", waited_s, busy_failed, configured_ms
+        )
     return call_id
 
 
@@ -154,31 +207,50 @@ def record_call_finish(
     Raises:
         CallerHeldTransactionError: caller holds an open transaction.
     """
-    with _AUDIT_WRITE_LOCK:
-        if conn.in_transaction:
-            raise CallerHeldTransactionError(
-                "record_call_finish owns its own transaction; caller MUST NOT "
-                "hold an open transaction. See CLAUDE.md gotcha 'Service-layer "
-                "with conn:' + 'in_transaction auto-detect outer transaction "
-                "guards re-introduce the very race the explicit lock was meant "
-                "to close'."
-            )
-        conn.execute("BEGIN IMMEDIATE")
-        try:
-            repo.update_call_outcome(
-                conn,
-                call_id=call_id,
-                http_status=http_status,
-                response_time_ms=response_time_ms,
-                rate_limit_remaining=rate_limit_remaining,
-                signature_hash=signature_hash,
-                status=status,
-                error_message=error_message,
-            )
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
+    waited_s = None
+    busy_failed = False
+    configured_ms = None
+    try:
+        with _AUDIT_WRITE_LOCK:
+            try:
+                configured_ms = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+            except Exception:  # noqa: BLE001 -- diagnostic only
+                configured_ms = None
+            if conn.in_transaction:
+                raise CallerHeldTransactionError(
+                    "record_call_finish owns its own transaction; caller MUST NOT "
+                    "hold an open transaction. See CLAUDE.md gotcha 'Service-layer "
+                    "with conn:' + 'in_transaction auto-detect outer transaction "
+                    "guards re-introduce the very race the explicit lock was meant "
+                    "to close'."
+                )
+            _t0 = time.monotonic()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                waited_s = time.monotonic() - _t0
+                repo.update_call_outcome(
+                    conn,
+                    call_id=call_id,
+                    http_status=http_status,
+                    response_time_ms=response_time_ms,
+                    rate_limit_remaining=rate_limit_remaining,
+                    signature_hash=signature_hash,
+                    status=status,
+                    error_message=error_message,
+                )
+                conn.commit()
+            except sqlite3.OperationalError:
+                waited_s = time.monotonic() - _t0
+                busy_failed = True
+                conn.rollback()
+                raise
+            except Exception:
+                conn.rollback()
+                raise
+    finally:
+        _maybe_log_audit_lock_wait(
+            "record_call_finish", waited_s, busy_failed, configured_ms
+        )
 
 
 def link_snapshot_and_stamp_account_hash(
