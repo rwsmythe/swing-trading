@@ -361,10 +361,14 @@ def _install_pipeline_marketdata_caches(
 
     # SQLite lock-contention arc (OQ-C): ONE shared serialized audit-writer
     # connection for ALL pipeline market-data audit writes, replacing the
-    # <=16 per-hook connect()/close() pairs. check_same_thread=False because the
-    # executor runs the hooks on worker threads; audit_service._AUDIT_WRITE_LOCK
-    # serializes every BEGIN IMMEDIATE on it. The market-data path uses `conn`
-    # ONLY for audit (record_call_start/finish), so this is safe.
+    # <=16 per-hook connect()/close() pairs. The pipeline invokes the hooks
+    # SYNCHRONOUSLY on this thread (PriceCache.get / OhlcvCache.get_or_fetch run
+    # the hook inline -- the abandonable PriceCache.get_many executor path is
+    # web-only and never used here), so the run `finally` closes audit_conn only
+    # after all hook calls have returned. check_same_thread=False +
+    # audit_service._AUDIT_WRITE_LOCK are forward-defensive: they keep audit
+    # writes correct if a future caller ever invokes a hook from a worker thread.
+    # The market-data path uses `conn` ONLY for audit (record_call_start/finish).
     audit_conn = open_connection(
         cfg.paths.db_path,
         busy_timeout_ms=cfg.web.db_busy_timeout_ms,
