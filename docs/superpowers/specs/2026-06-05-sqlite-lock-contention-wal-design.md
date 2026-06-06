@@ -215,18 +215,19 @@ true wait distribution and decides whether write-pressure reduction (OQ-C) is al
 
 ### §4.2 The centralized low-level opener (revised per Codex R1 majors #1, #2, #5)
 
-Introduce ONE low-level opener in [`swing/data/db.py`](../../../swing/data/db.py) that every
-swing.db open routes through. **Plumbing model (resolves R1 major #2 — no `cfg` in `db.py`, no
-import cycle, no `connect()` signature blast radius):** a module-level default constant +
-keyword override; callers that have `cfg` may pass the tuned value, callers that don't get the
-default.
+Introduce ONE opener in [`swing/data/db.py`](../../../swing/data/db.py) that every swing.db open
+routes through. Because it is imported by other modules (web routes, cli, backup), it is a
+**public** helper with a documented contract (Codex R2 minor #1 — not a leading-underscore
+private). **Plumbing model (resolves R1 major #2 — no `cfg` in `db.py`, no import cycle, no
+`connect()` signature blast radius):** a module-level default constant + keyword override; callers
+with `cfg` may pass the tuned value, callers without get the default.
 
 ```
 DEFAULT_BUSY_TIMEOUT_MS = 30000   # module-level; see OQ-A for value derivation
 
-def _open_sqlite(db_path, *, busy_timeout_ms: int = DEFAULT_BUSY_TIMEOUT_MS,
-                 reaffirm_wal: bool = False):
-    """Low-level swing.db opener. Applies, in THIS order:
+def open_connection(db_path_or_uri, *, busy_timeout_ms: int = DEFAULT_BUSY_TIMEOUT_MS,
+                    reaffirm_wal: bool = False, uri: bool = False):
+    """Public swing.db opener. Applies, in THIS order:
       1. busy_timeout  : FIRST — so any subsequent lock acquisition (incl. a
                          WAL reaffirm, BEGIN IMMEDIATE) is covered by the handler.
       2. foreign_keys=ON : existing invariant, unchanged.
@@ -234,26 +235,47 @@ def _open_sqlite(db_path, *, busy_timeout_ms: int = DEFAULT_BUSY_TIMEOUT_MS,
                            NOT on the hot connect() path — the live DB is already
                            WAL (persistent), reaffirming it per-open is needless
                            overhead and a needless lock point (R1 major #1).
+    `uri=True` forwards to sqlite3.connect(..., uri=True) so a caller can pass a
+    `file:...?mode=rw` URI and KEEP fail-closed semantics (R2 major #1).
     busy_timeout is per-connection, NOT persistent (unlike WAL), so it MUST be
     set on EVERY connection — applying it once is insufficient.
     """
 ```
+
+**Backup fail-closed preserved (R2 major #1).** `do_backup` opens the *source* with a
+`file:...?mode=rw` URI (backup.py:66–67) **specifically so a missing DB is NOT silently created**
+(the default `rwc` would fabricate empty garbage). The opener MUST preserve this: the backup
+source either calls `open_connection(src_uri, uri=True, busy_timeout_ms=...)` (mode=rw retained)
+OR keeps its existing `sqlite3.connect(src_uri, uri=True)` and simply adds a `PRAGMA busy_timeout`
+after open. Either way **fail-closed `mode=rw` is non-negotiable** — the busy_timeout is additive,
+not a replacement for the open semantics.
+
+**Explicit raw-open inventory is a writing-plans deliverable (R2 major #2).** "All swing.db opens"
+is only enforceable with a complete classified list. Writing-plans MUST produce a `grep`-derived
+inventory of every `sqlite3.connect` in `swing/` and classify each as: (a) **live swing.db** →
+route through `open_connection` (busy_timeout); (b) **backup DESTINATION** (a fresh file, e.g.
+db.py:320/453/… `dest_conn`) → leave (busy_timeout irrelevant on a private fresh file); (c)
+**backup SOURCE** (db.py:318/451/… `src_conn`, backup.py:67) → add busy_timeout, preserve open
+semantics; (d) **probe / create** (cli.py friendly-error probes) → case-by-case; (e) **temp DB**
+(auth.py:1665) → leave; (f) **separate tokens DB** (auth.py:729/2327, cli_schwab.py:495) → leave.
+The §5 table is the starting set; the inventory makes it exhaustive.
 
 **Ordering is load-bearing (R1 major #1):** set `busy_timeout` **before** any operation that can
 take a lock. SQLite's busy handler, once installed, also covers the journal-mode pragma and
 `BEGIN IMMEDIATE`. So even in `ensure_schema` (the only WAL-reaffirm site) a concurrent writer
 holding the lock won't make the WAL pragma raise immediately — it waits under the handler.
 
-**WAL is NOT reaffirmed on the hot path.** `connect()` calls `_open_sqlite(..., reaffirm_wal=False)`.
+**WAL is NOT reaffirmed on the hot path.** `connect()` calls `open_connection(..., reaffirm_wal=False)`.
 Rationale: `connect()` raises on any non-current DB (db.py:1155–1167), so it only ever opens a DB
 that already went through `ensure_schema` → already WAL persistently. Reaffirming WAL on every one
 of the ≤16 concurrent hot-path opens buys nothing and adds a lock point. `ensure_schema` keeps
-`reaffirm_wal=True` (covers a genuinely fresh DB). Optionally `connect()` may do a **lock-free**
-`PRAGMA journal_mode` *read* (no arg = query, takes no lock) as a cheap assertion that it really
-is `wal`, raising a clear error if not — a guard, not a mutation (BANK / OQ-B sub-decision).
+`reaffirm_wal=True` (covers a genuinely fresh DB). A no-arg `PRAGMA journal_mode` *read* as a
+"is-it-really-WAL" guard is an **optional diagnostic only** (Codex R2 minor #2 — do NOT treat it
+as a hot-path invariant or claim it is provably lock-free against an active writer); BANK / OQ-B
+sub-decision.
 
 **Call-site routing (R1 major #5 — make "centralized" true).** Every **swing.db** open that can
-run concurrently with the nightly pipeline routes through `_open_sqlite`:
+run concurrently with the nightly pipeline routes through `open_connection`:
 
 - `connect()` (db.py:1159) and `ensure_schema()` (db.py:1128) — core.
 - The web-route / view-model / cli direct opens on `cfg.paths.db_path` — `web/routes/schwab.py`,
@@ -261,7 +283,7 @@ run concurrently with the nightly pipeline routes through `_open_sqlite`:
   `web/routes/config.py`, `web/routes/metrics.py`, `web/routes/watchlist.py`,
   `web/view_models/schwab.py`, `web/app.py:389`, and the `cli.py` swing.db opens. These retain the
   5 s default today and **can** contend with the pipeline (operator browsing while the nightly run
-  is active) — route them through `_open_sqlite` so the busy_timeout is uniform.
+  is active) — route them through `open_connection` so the busy_timeout is uniform.
 - **Backup source open** (`backup.py:67`, the migration pre-backup at db.py:304+) — apply
   busy_timeout to the *source* connection (hygiene vs a live writer); the online backup API stays
   WAL-safe and unchanged.
@@ -293,13 +315,23 @@ distinguish "the busy_timeout bump fixed it" from "a residual slow-drain is stil
 lightweight wait visibility so the first live run is self-diagnosing:
 
 - In the audit-service write path (`record_call_start` / `record_call_finish`,
-  audit_service.py:104/151), measure the wall-clock around the `BEGIN IMMEDIATE` acquisition and,
-  when it exceeds a threshold (e.g. ≥ 1 s, well under the 30 s budget), emit a WARNING with the
-  elapsed wait + the connection's configured `busy_timeout` (read via lock-free `PRAGMA
-  busy_timeout`). This is the single targeted diagnostic Codex asked for — it turns a future
-  slow-drain from invisible into a logged signal, and it is the data that resolves OQ-C.
+  audit_service.py:104/151), measure the wall-clock of the `BEGIN IMMEDIATE` acquisition and store
+  the duration **locally**. **Do the logging AFTER the lock is released (post commit/rollback), NOT
+  while holding the writer lock (Codex R2 major #3)** — emitting a WARNING inside the critical
+  section would extend the exact contention window we are fixing (logging I/O can be slow). Emit
+  when the stored duration exceeds a threshold (e.g. ≥ 1 s, well under the 30 s budget), with the
+  elapsed wait + the configured `busy_timeout`.
+- **Also log FAILED acquisitions, not only slow successful ones (R2 major #3):** when the
+  `BEGIN IMMEDIATE` itself raises `OperationalError` (busy_timeout exhausted), log the elapsed wait
+  + busy_timeout on the way out (in the `except`/rollback path, after releasing). The failure case
+  is the most diagnostic of all.
 - Keep it cheap and redaction-irrelevant (durations + integers, no secrets). Exact threshold +
   placement (wrap vs. a small timed-BEGIN helper) finalized in writing-plans.
+- **Interpretation caveat (R2 minor #3):** the telemetry shows *that* an audit write waited, not
+  *which* writer held the lock. The blocker may be a lease-fenced pipeline writer (candidates /
+  archive / evaluate), not audit pressure. Writing-plans should consider whether the dominant
+  non-audit pipeline writers also warrant the same timed-acquisition WARNING so the first live run
+  localizes the true contender, not only the audit victim.
 
 This is the fix the opaque banked T-C.1 issue always needed; it is what made the live root cause
 discoverable only by hand-instrumentation.
@@ -330,9 +362,9 @@ The DB connection is touched by many call sites; a naive change has wide blast r
 
 | Surface | Finding (grounded) | Decision |
 |---|---|---|
-| **`connect()`** db.py:1159 | No busy_timeout / no `timeout=`; the contended pipeline path. | **IN SCOPE — `_open_sqlite(reaffirm_wal=False)`.** busy_timeout only; NO hot-path WAL reaffirm (R1 major #1). The live fix. |
-| **`ensure_schema()`** db.py:1128 | Already sets WAL; no busy_timeout. | **IN SCOPE — `_open_sqlite(reaffirm_wal=True)`** (busy_timeout FIRST, then WAL — the only WAL site). |
-| **Direct `sqlite3.connect(cfg.paths.db_path)` in web routes / cli / `app.py:389` / `view_models`** | Bypass `connect()`; retain Python's 5 s default; inherit persistent WAL. **CAN contend** with the nightly pipeline (operator browsing during the run) — R1 major #5. | **IN SCOPE (V1) — route through `_open_sqlite`.** Uniform busy_timeout across all swing.db opens; this is what makes "centralized" true. Exact list finalized in writing-plans. |
+| **`connect()`** db.py:1159 | No busy_timeout / no `timeout=`; the contended pipeline path. | **IN SCOPE — `open_connection(reaffirm_wal=False)`.** busy_timeout only; NO hot-path WAL reaffirm (R1 major #1). The live fix. |
+| **`ensure_schema()`** db.py:1128 | Already sets WAL; no busy_timeout. | **IN SCOPE — `open_connection(reaffirm_wal=True)`** (busy_timeout FIRST, then WAL — the only WAL site). |
+| **Direct `sqlite3.connect(cfg.paths.db_path)` in web routes / cli / `app.py:389` / `view_models`** | Bypass `connect()`; retain Python's 5 s default; inherit persistent WAL. **CAN contend** with the nightly pipeline (operator browsing during the run) — R1 major #5. | **IN SCOPE (V1) — route through `open_connection`.** Uniform busy_timeout across all swing.db opens; this is what makes "centralized" true. Exact list finalized in writing-plans. |
 | **Schwab tokens-DB opens** (`auth.py:729/2327`, `cli_schwab.py:495`) | Target a **separate** file `schwab-tokens.{env}.db`, own `timeout=1.0`. | **OUT — different file, cannot contend with swing.db.** Unchanged. |
 | **Migration runner** (`run_migrations`, `executescript`, `foreign_keys=OFF`) | Runs single-connection under `ensure_schema`. WAL + `executescript` interplay: `executescript` issues implicit COMMIT — already handled by the explicit `BEGIN`/COMMIT discipline (CLAUDE.md #9). WAL is orthogonal. | **No change** beyond the `ensure_schema` helper. Confirm migration tests stay green. |
 | **Backup (weekly + pre-migration)** backup.py:67 / db.py:304+ | Uses WAL-safe online `Connection.backup()` API + `PRAGMA integrity_check`; already WAL-aware. | **Backup API unchanged** (stays WAL-safe). **Apply busy_timeout to the *source* open** so a weekly backup taken mid-pipeline doesn't fail fast on the 5 s default (R1 major #5 hygiene). |
@@ -383,9 +415,17 @@ The regression must **distinguish** pre-fix from post-fix. Two layers:
    between the start and finish writes (so each worker holds the start/finish window open like the
    real HTTP call does), **plus** one or more *other* concurrent `BEGIN IMMEDIATE` writers
    (simulating candidates/archive/evaluate writers), against a shared on-disk DB opened via the
-   production opener. Assert: pre-fix (tiny busy_timeout) → at least one `database is locked`
-   surfaces in the catch-all (and a yfinance fallback with NO audit row results); post-fix
-   (30 s busy_timeout) → all Schwab attempts complete, audit rows land, no degrade.
+   production opener. Post-fix (30 s busy_timeout) → all Schwab attempts complete, audit rows land,
+   no degrade.
+   - **Split the pre-fix assertion by failure point (Codex R2 major #4 — the "no audit row"
+     assumption is not universal).** `record_call_start` **commits before** the HTTP call
+     (marketdata.py:551), so the audit-row state depends on WHERE the lock fails:
+     - **forced-start-lock case** (the contended write is `record_call_start`): the INSERT never
+       commits → assert **no audit row** + yfinance fallback.
+     - **forced-finish-lock case** (start already committed, the contended write is
+       `record_call_finish`): assert an **in-flight audit row remains** (status still in-flight,
+       never finalized) + yfinance fallback. This is the more realistic invisibility mode and the
+       "no row" assertion would be WRONG here.
    - **Quote-path deadline variant:** run the same stress under the `get_many` 6 s caller deadline
      (price_cache.py:369) with injected lock-hold latency to characterize where the busy_timeout
      bump stops helping (feeds the OQ-C decision). This need not be a hard pass/fail gate — it can
@@ -422,7 +462,7 @@ The regression must **distinguish** pre-fix from post-fix. Two layers:
   import cycle; a `cfg.web.db_busy_timeout_ms` knob can feed the override at the pipeline callsite
   if the operator wants runtime tuning).
 - **OQ-B (refined per R1 major #5).** Centralization scope. **Recommend V1 = route ALL swing.db
-  opens through `_open_sqlite`** (connect, ensure_schema, the web-route/cli/view-model direct
+  opens through `open_connection`** (connect, ensure_schema, the web-route/cli/view-model direct
   opens, the backup source), since the web opens CAN contend with the nightly run. The
   schwab-tokens.db opens are a separate file → excluded. Sub-decision: also add the lock-free
   `PRAGMA journal_mode` read-guard in `connect()`? (recommend optional.)
@@ -476,19 +516,23 @@ This spec is execution-ready for `copowers:writing-plans` once OQ-0 / OQ-A / OQ-
 confirmed (OQ-D / OQ-E carry recommendations that can stand as defaults). The implementation is
 small and well-bounded:
 
-1. `swing/data/db.py` — add the `_open_sqlite(db_path, *, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS,
-   reaffirm_wal=False)` low-level opener + the `DEFAULT_BUSY_TIMEOUT_MS = 30000` constant;
-   busy_timeout applied FIRST; `connect()` → `reaffirm_wal=False`; `ensure_schema()` →
-   `reaffirm_wal=True`. **No `cfg` import in `db.py`** (module constant + keyword override only).
-2. Route the swing.db direct opens (web routes / view-models / cli / `app.py:389` / backup source)
-   through `_open_sqlite` (OQ-B scope; exact list confirmed by the §5 audit). Optionally add a
+1. `swing/data/db.py` — add the public `open_connection(db_path_or_uri, *,
+   busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS, reaffirm_wal=False, uri=False)` opener + the
+   `DEFAULT_BUSY_TIMEOUT_MS = 30000` constant; busy_timeout applied FIRST; `uri=True` preserves
+   `file:...?mode=rw` fail-closed semantics; `connect()` → `reaffirm_wal=False`; `ensure_schema()`
+   → `reaffirm_wal=True`. **No `cfg` import in `db.py`** (module constant + keyword override only).
+2. **Produce the classified raw-open inventory (R2 major #2)** then route the **live-swing.db**
+   direct opens (web routes / view-models / cli / `app.py:389`) through `open_connection`; add
+   `PRAGMA busy_timeout` to the backup **source** open while preserving its `mode=rw` URI (R2
+   major #1); leave backup destinations / temp DBs / tokens DB unchanged. Optionally add a
    `cfg.web.db_busy_timeout_ms` knob feeding the keyword override at the pipeline callsite.
 3. `swing/integrations/schwab/marketdata_ladder.py` — bind `exc` + log class+message
    (redaction-safe, no `exc_info`) in both catch-alls; drop the `# pragma: no cover`.
-4. `swing/integrations/schwab/audit_service.py` — G2' lock-wait WARNING on slow `BEGIN IMMEDIATE`.
+4. `swing/integrations/schwab/audit_service.py` — G2' timed `BEGIN IMMEDIATE`; **log AFTER lock
+   release** (never inside the critical section); log slow successes AND failed acquisitions.
 5. Tests — the five layers in §6 (config assertion, concurrency reproduction, **production-path
-   stress**, observability + redaction + G2' wait, backup-under-WAL); plus the §5 test-audit grep
-   (`journal_mode`/`PRAGMA` assertions; sidecar cleanup).
+   stress split by failure point**, observability + redaction + G2' wait, backup-under-WAL); plus
+   the §5 test-audit grep (`journal_mode`/`PRAGMA` assertions; sidecar cleanup).
 6. `.gitignore` — OPTIONAL `*.db-wal` / `*.db-shm` / `*.db-journal` (non-blocking).
 
 No new files, no schema, no migration. The expected test-suite impact is **small/none** (WAL is
