@@ -464,8 +464,9 @@ The regression must **distinguish** pre-fix from post-fix. Two layers:
 - **OQ-B (refined per R1 major #5).** Centralization scope. **Recommend V1 = route ALL swing.db
   opens through `open_connection`** (connect, ensure_schema, the web-route/cli/view-model direct
   opens, the backup source), since the web opens CAN contend with the nightly run. The
-  schwab-tokens.db opens are a separate file → excluded. Sub-decision: also add the lock-free
-  `PRAGMA journal_mode` read-guard in `connect()`? (recommend optional.)
+  schwab-tokens.db opens are a separate file → excluded. Sub-decision: also add an OPTIONAL
+  `PRAGMA journal_mode` read-guard in `connect()` (a diagnostic, not a hot-path invariant — see
+  §4.2 / R2 minor #2)? (recommend optional.)
 - **OQ-C (ELEVATED per R1 major #3 — no longer a pure "bank").** Is busy_timeout sufficient, or
   is write-pressure reduction also needed? **V1 ships busy_timeout + the G2' lock-wait telemetry;
   the FIRST instrumented live run decides:** if waits are short-but-starved → busy_timeout
