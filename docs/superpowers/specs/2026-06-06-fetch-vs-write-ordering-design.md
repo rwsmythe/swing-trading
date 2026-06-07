@@ -149,9 +149,11 @@ A missed locus = a residual deadlock, so this enumerates **all 18**.
     computed from that internally-consistent snapshot (membership == prefetched bars).
   - **In-fence guard (cheap, no bars/network):** inside the fence, re-read just the eligible
     exemplar **IDs** (`SELECT id ... WHERE final_decision IN ('confirmed','watch')`) and compare
-    to the snapshot's ID set. If they differ (a web/CLI writer mutated the corpus mid-run), emit
-    a **#27 `warnings_json`** divergence entry (`step=pattern_detect`,
-    `reason="exemplar corpus changed mid-run; run used Pass-2-entry snapshot"`,
+    to the snapshot's ID set. If the **eligible-ID membership** differs (a row added/removed from
+    the eligible set mid-run — Codex R3 MINOR: this guard detects ID-set membership changes, NOT
+    same-ID `confirmed`↔`watch` decision flips, which do not change scoring membership anyway),
+    emit a **#27 `warnings_json`** divergence entry (`step=pattern_detect`,
+    `reason="exemplar eligible-ID membership changed mid-run; run used Pass-2-entry snapshot"`,
     `added`/`removed` counts). Scoring still proceeds from the snapshot (no in-fence fetch, no
     silent change).
   - **Staleness contract:** a mid-run-added exemplar is picked up by the **NEXT** run, not
