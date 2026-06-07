@@ -87,12 +87,11 @@ A missed locus = a residual deadlock, so this enumerates **all 18**.
   Codex R1 MAJOR #2. It performs **yfinance** network I/O (`read_or_fetch_archive` →
   `_yf_download_window`) inside the per-trade fence, but does **not** fire the Schwab market-data
   ladder, so it writes **no** audit row on `audit_conn` during the held tx → it does **not**
-  deadlock today (nothing else writes during this step's sequential fence). It is nonetheless a
-  *fetch-vs-write-ordering* violation of the same bug class and the spec's universal rule (§4), so
-  it is brought in-scope as a third, surgical, lower-severity reorder (§4.3) to make "no network
-  inside any fence" uniform + future-proof (e.g. if `read_or_fetch_archive` ever gains audit
-  writes, or daily-management ever shares a run with a Schwab writer). Severable at QA if the
-  operator prefers to bank it.
+  deadlock today (nothing else writes during this step's sequential fence). It is a
+  *fetch-vs-write-ordering* violation of the same bug class, but a correct fix needs an
+  archive-API read-only split (a spec-locked-signature refactor; Codex R2 MAJOR #2 showed
+  "warm-before-fence" alone cannot guarantee no in-fence re-fetch). Per **OQ-D** it is **BANKED**
+  as a focused follow-up (§8) to keep this deadlock-fix arc surgical; row #16 stays flagged 🟡.
 - **`_step_charts` is NOT a locus** — a refinement of the commission brief's hypothesis. Every
   `get_or_fetch` in charts already runs *outside* the fence (fetch-first, then a short
   status/render write inside the fence). This is the exact target shape; the two real loci
@@ -134,15 +133,40 @@ A missed locus = a residual deadlock, so this enumerates **all 18**.
   Resolution: read the exemplar corpus rows **once**, immediately before the fence; build the
   bar dict from that exact snapshot; pass BOTH the snapshot rows and the bars into the fence and
   build `exemplar_bundles_by_class` from the snapshot (drop the second, in-fence
-  `list_exemplars` read). Membership == bars by construction, so no divergence and no silent
-  score change is possible. This is sound for §5.7 because `pattern_exemplars` is a **dev-time
-  silver-label corpus** (Phase 13 L1 LOCK: no run-time inferencing) with **no writer during a
-  nightly run** — so the "reflects in-flight commits" concern the in-fence read defended against
-  cannot occur in production. Reading the corpus a few milliseconds before the fence vs inside it
-  retrieves the identical set. A since-deleted exemplar (impossible under single-writer) would at
-  worst contribute a match from valid historical data — harmless. **Net: §5.7 retrieval
-  semantics are preserved more faithfully than the original mechanism, and the deadlock is
-  removed.**
+  `list_exemplars` read for *bar sourcing*). Membership == bars by construction, so no silent
+  score-lowering path exists (R1 MAJOR #1 closed).
+
+- **OQ-E — mid-run corpus mutation (Codex R2 MAJOR #1): OBSERVABLE SNAPSHOT + audited
+  divergence.** The original "no writer during a run" rationale is **FALSE** — `pattern_exemplars`
+  has live writers *outside* the pipeline lease: web routes
+  ([`swing/web/routes/patterns.py`](../../../swing/web/routes/patterns.py)), CLI labeling
+  ([`swing/patterns/labeling.py`](../../../swing/patterns/labeling.py)), and backfill
+  ([`swing/cli.py`](../../../swing/cli.py)) (repo: [`pattern_exemplars.py`](../../../swing/data/repos/pattern_exemplars.py)).
+  The pipeline lease blocks concurrent *pipeline* runs but not these. So the deadlock fix (which
+  *requires* sourcing exemplar bars outside the fence) must define an **honest, enforceable**
+  consistency contract rather than assume immutability:
+  - **The run's corpus is the snapshot taken at detect-Pass-2 entry.** Scoring for this run is
+    computed from that internally-consistent snapshot (membership == prefetched bars).
+  - **In-fence guard (cheap, no bars/network):** inside the fence, re-read just the eligible
+    exemplar **IDs** (`SELECT id ... WHERE final_decision IN ('confirmed','watch')`) and compare
+    to the snapshot's ID set. If they differ (a web/CLI writer mutated the corpus mid-run), emit
+    a **#27 `warnings_json`** divergence entry (`step=pattern_detect`,
+    `reason="exemplar corpus changed mid-run; run used Pass-2-entry snapshot"`,
+    `added`/`removed` counts). Scoring still proceeds from the snapshot (no in-fence fetch, no
+    silent change).
+  - **Staleness contract:** a mid-run-added exemplar is picked up by the **NEXT** run, not
+    retroactively this one (≤ 1-run staleness) — benign for a forward-walk observation substrate,
+    and now *audited* rather than silent. This is the "enforceable guard, not an operational
+    assertion" Codex required; a heavier run-wide corpus lock (blocking operator labeling during
+    a run) was considered and rejected as disproportionate for V1.
+
+- **OQ-D — daily-management network-under-fence (Codex R2 MAJOR #2): BANK as a follow-up.** It is
+  NOT a deadlock (no Schwab audit write during its sequential step) and "warm-before-fence" alone
+  cannot *guarantee* no in-fence re-fetch (warm-failure / transient-empty / gap-fill all re-enter
+  `_yf_download_window`). A correct fix requires splitting `read_or_fetch_archive` into a
+  fetch-capable warm path + a pure read-only path (a spec-locked-signature refactor). To keep
+  this deadlock-fix arc surgical, locus #3 is **banked** (§8) with its robust design documented;
+  §2 row #16 stays flagged 🟡.
 
 ---
 
@@ -151,7 +175,9 @@ A missed locus = a residual deadlock, so this enumerates **all 18**.
 The universal rule: **fetch (network/ladder/audit-writing) happens with NO held
 `fenced_write`; the fence wraps only fast SQLite reads + the persist.** A pre-warmed/-collected
 bar value reached inside the fence MUST be served from memory (cache hit or a passed-in dict);
-on a miss it MUST be audit-skipped (#27), never fetched.
+on a miss it MUST be audit-skipped (#27), never fetched. This arc applies the rule to the two
+**audit-writing-fetch deadlock** loci below; the one remaining plain-yfinance violation
+(`_step_daily_management`, not a deadlock) is banked per OQ-D (§8).
 
 ### 4.1 Locus #1 — `_step_pattern_detect` Pass-2 ([runner.py:1898-2024](../../../swing/pipeline/runner.py))
 
@@ -162,9 +188,10 @@ on a miss it MUST be audit-skipped (#27), never fetched.
   INSERT loop (@2036-end).
 
 **Moves OUT (before `with lease.fenced_write()` @1898):**
-- The exemplar **corpus row read** (`list_exemplars`) — relocated from in-fence @1977 to a
-  read-only snapshot just before the fence (OQ-C refinement; §3). It becomes the authoritative
-  membership.
+- The exemplar **corpus row read for bar sourcing** (`list_exemplars` @1977) — relocated to a
+  read-only snapshot just before the fence (OQ-C refinement; §3). This snapshot is the run's
+  authoritative scoring membership. *(A cheap in-fence ID-only re-read remains for the OQ-E
+  divergence guard — see step 2; it does NOT source bars and does NOT fetch.)*
 - The exemplar **bar fetch** currently at @1994 (`ohlcv_cache.get_or_fetch(ticker=ex_row.ticker,
   window_days=400)`).
 
@@ -183,20 +210,25 @@ on a miss it MUST be audit-skipped (#27), never fetched.
    empty-slice is isolated (try/except / `size==0` → skip that exemplar, continue), exactly as
    the current @2008-2021 isolation; a skipped exemplar emits a #27 `warnings_json` entry
    (`step=pattern_detect`, `exemplar_ticker`, `reason="exemplar bars unavailable"`).
-2. **Inside** the fence, **drop** the second `list_exemplars(conn)` read and the @1994
-   `get_or_fetch`; consume the pre-built `exemplar_bundles_by_class` directly in the
-   `match_forward` loop (@2036+). The in-fence body is now pure SQLite reads (`canonical_existing`)
-   + pure compute (`match_forward`, `compute_composite_score`) + the INSERT loop. **No fetch, no
-   second corpus read, in-fence.**
+2. **Inside** the fence, consume the pre-built `exemplar_bundles_by_class` directly in the
+   `match_forward` loop (@2036+) — **drop** the @1994 `get_or_fetch`. Add the OQ-E **observable
+   consistency guard**: a CHEAP in-fence re-read of the eligible exemplar **IDs only**
+   (`SELECT id FROM pattern_exemplars WHERE final_decision IN ('confirmed','watch')` — no bars,
+   no network) compared to the snapshot ID set; on any difference, emit a #27 `warnings_json`
+   divergence entry (added/removed counts). Scoring still uses the snapshot bundles. The in-fence
+   body is otherwise pure SQLite reads (`canonical_existing` + the cheap ID re-read) + pure
+   compute (`match_forward`, `compute_composite_score`) + the INSERT loop. **No fetch in-fence.**
 
-Because membership == the prefetched bundles by construction, there is **no** silent
+Because scoring membership == the prefetched bundles by construction, there is **no** silent
 score-divergence path (Codex R1 MAJOR #1 closed): every exemplar that contributes to a
 `composite_score` had its bars successfully prefetched, and every exemplar whose bars failed is
-uniformly absent from BOTH the universe and the match (and is #27-audited).
+uniformly absent from BOTH the universe and the match (and is #27-audited). Mid-run corpus
+mutation by a concurrent web/CLI writer (Codex R2 MAJOR #1) is bounded to ≤ 1-run staleness and
+**audited** by the in-fence ID guard, never silent (OQ-E).
 
 **Invariants preserved:** #5 (Pass-1 `bars_by_ticker` candidate bars still reused unchanged;
 exemplars fetched once, outside the fence, never re-fetched); #28/#29 (same `window_days=400`);
-spec §5.7 (single authoritative corpus snapshot; dev-time-only corpus → no in-run writer, §3);
+spec §5.7 (single authoritative corpus snapshot + in-fence ID-divergence audit per OQ-E §3);
 reconcile-before-serialize architecture (the `canonical_existing` re-read stays in-fence,
 untouched); audit single-tx (the in-fence transaction now does zero competing-connection work).
 
@@ -230,37 +262,7 @@ reset at entry @2626 unchanged); the append-only log's completed-day guard; sing
 discipline (one short fence around the inserts instead of a long fence across all fetches —
 strictly less lock contention).
 
-### 4.3 Locus #3 (hygiene) — `_step_daily_management` ([runner.py:3707-3742](../../../swing/pipeline/runner.py))
-
-*(Brought in-scope by Codex R1 MAJOR #2; lower severity — a network-under-fence ordering
-violation that does not currently deadlock. Severable at QA.)*
-
-The per-trade fence @3709 wraps `compute_daily_approximate_snapshot(conn, ...,
-ohlcv_archive_dir=...)`, which calls `read_or_fetch_archive`
-([daily_management.py:510](../../../swing/trades/daily_management.py)) → `_yf_download_window`
-([ohlcv_archive.py:254/273](../../../swing/data/ohlcv_archive.py)) — a yfinance network fetch on
-the weekly full-refresh or the daily gap-fill path — **while holding the fence**.
-
-**Reorder (warm-the-archive-before-the-fence — mirrors `_bar_for_date`'s populate/read split):**
-1. **Before** the per-trade fence loop, warm the archive for each open-trade ticker once:
-   `read_or_fetch_archive(ticker, end_date=asof_session, cache_dir=..., archive_history_days=...)`
-   outside any fence (best-effort per-ticker try/except; a warm failure is non-fatal — the
-   in-fence read remains authoritative and a no-data path already logs + `continue`s @3727-3733).
-   After this warm, the archive's `last_full_refresh_date` is today and `latest_stored == today`,
-   so the in-fence `read_or_fetch_archive` sees `needs_full_refresh=False` + no gap → **no
-   network**.
-2. **Inside** the per-trade fence, leave the loop as-is: `compute_daily_approximate_snapshot`
-   (now a warm archive read) + `upsert_snapshot` + `state_transition`. The
-   `LeaseRevokedError`-reraise + per-trade failure isolation (@3743-3750) are unchanged.
-
-**Invariants preserved:** the idempotent `upsert_snapshot` (SELECT-then-UPDATE-or-INSERT on
-`(trade_id, data_asof_session, mfe_mae_precision_level)`), the FK discipline (Codex R1 Critical 1:
-`pipeline_run_id=lease.run_id`), the `entered→managing` transition, the #26 immutable-archive
-semantics (the warm uses the same `read_or_fetch_archive` write-through), and gap-flagged policy.
-If the operator descopes this at QA, §2 row #16 stays flagged 🟡 and the universal rule (§4) is
-documented as "audit-writing fetches only" for this arc.
-
-### 4.4 Stopgap revert (OQ-B — executing phase, after the loci land)
+### 4.3 Stopgap revert (OQ-B — executing phase, after the loci land)
 
 In [`swing.config.toml`](../../../swing.config.toml) `[web]`, restore the safe value:
 either set `db_busy_timeout_ms = 30000` or delete the key (falls back to
@@ -293,8 +295,9 @@ with a one-line pointer noting the deadlock was structurally removed by this arc
 - Audit single-tx discipline (audit rows on `audit_conn`, serialized by `_AUDIT_WRITE_LOCK`).
 - **#5 no-re-fetch / L2 LOCK:** Pass-1 `bars_by_ticker` reused; exemplar bars fetched exactly
   once (now outside the fence); no new re-fetch introduced.
-- **#27 silent-skip-audit:** every new early-return / skip path (exemplar pre-fetch miss;
-  unchanged observe no-bar + shed) emits a `warnings_json` entry.
+- **#27 silent-skip-audit:** every new early-return / skip path (exemplar bar-fetch failure;
+  exemplar-corpus mid-run divergence per OQ-E; unchanged observe no-bar + shed) emits a
+  `warnings_json` entry.
 - **#28/#29 exemplar OHLCV depth:** preserved by reusing the identical
   `get_or_fetch(window_days=400)` call params at the moved-out site.
 - The data-integrity arc barriers + the just-merged lock-contention arc keepers remain intact.
@@ -343,12 +346,12 @@ pre-fix code and passes on the post-fix code**.
    shed #27 audit, the no-bar #27 audit, and `observe_load` telemetry
    (`fetch_window`/`in_memory_hit`) are **identical** to the pre-fix step for the same inputs
    (behavior-preserving reorder), while #1/#2 above prove the fetch moved out of the fence.
-6. **Daily-management network-under-fence (locus #3, if in-scope).** With a spy archive layer
-   that records whether `read_or_fetch_archive`/`_yf_download_window` is invoked while a
-   `fenced_write` is held: pre-fix observes a network call under the fence; post-fix the warm
-   happens before the per-trade fence and the in-fence `compute_daily_approximate_snapshot`
-   triggers no network (assert the in-fence archive read is a warm hit). Assert `upsert_snapshot`
-   + the `entered→managing` transition are unchanged.
+6. **Exemplar mid-run corpus divergence audit (OQ-E, detect Pass-2).** Seed a snapshot corpus,
+   then simulate a concurrent web/CLI write between the snapshot and the in-fence ID re-read
+   (add/remove an eligible exemplar row). Assert: (a) scoring used the **snapshot** bundles
+   (composite scores unchanged vs the no-divergence run); (b) a #27 `warnings_json` divergence
+   entry is emitted with the correct added/removed counts; (c) **no** in-fence fetch occurred.
+   The no-divergence control run emits **no** divergence warning.
 7. **Stopgap revert.** Assert `cfg.web.db_busy_timeout_ms == 30000` (or, if the key is deleted,
    that the resolved default is 30000 via `DEFAULT_BUSY_TIMEOUT_MS`) and that the `audit_conn`
    is opened with 30000.
@@ -358,6 +361,21 @@ pre-fix code and passes on the post-fix code**.
 
 ## 8. Out of scope (explicit)
 
+- **BANKED follow-up — `_step_daily_management` network-under-fence (locus #3; OQ-D).** Surfaced
+  by Codex R2 MAJOR #2. `_step_daily_management`'s per-trade fence @3709 wraps
+  `compute_daily_approximate_snapshot` → `read_or_fetch_archive`
+  ([daily_management.py:510](../../../swing/trades/daily_management.py)) → `_yf_download_window`
+  ([ohlcv_archive.py:254/273](../../../swing/data/ohlcv_archive.py)), a yfinance fetch under the
+  fence. It is **not a deadlock** (no Schwab audit write during this sequential step → no
+  competing `audit_conn` writer), and "warm-before-fence" alone cannot *guarantee* no in-fence
+  re-fetch (a warm failure / transient-empty leaves stale meta → the in-fence call re-enters
+  `_yf_download_window`; same for gap-fill when `latest_stored < today`). **Robust banked design:**
+  split the archive API into a fetch-capable warm path (called OUTSIDE the fence per open-trade
+  ticker) and a pure **read-only** path (a parquet read with NO yfinance fallback — e.g. via
+  `resolve_ohlcv_window`, as `_bar_for_date` already does); change
+  `compute_daily_approximate_snapshot` (a spec-locked signature) to consume pre-warmed bars / the
+  read-only path so the in-fence phase **skips + #27-logs** rather than re-fetches. Deferred to
+  its own focused arc to keep this deadlock fix surgical; §2 row #16 remains flagged 🟡 until then.
 - The `OhlcvBar` bad-bar issue (its own queued arc).
 - The banked non-audit-writer telemetry extension (revisit post-fix if any residual contention
   shows).
@@ -376,19 +394,17 @@ pre-fix code and passes on the post-fix code**.
 ## 9. Acceptance criteria (executing-ready)
 
 - [ ] `_step_pattern_detect` Pass-2: exemplar corpus rows snapshotted + bars pre-fetched ONCE
-      before the fence (the snapshot is authoritative membership); the in-fence second
-      `list_exemplars(conn)` + the @1994 `get_or_fetch` are removed; `canonical_existing` re-read
-      + `match_forward` + INSERT loop remain in-fence; composite-score parity proven; exemplar
-      bar-failure uniformly absent from match+universe with a #27 audit.
+      before the fence (the snapshot is authoritative scoring membership); the in-fence @1994
+      `get_or_fetch` is removed; a cheap in-fence exemplar-ID re-read drives the OQ-E #27
+      divergence audit; `canonical_existing` re-read + `match_forward` + INSERT loop remain
+      in-fence; composite-score parity proven; exemplar bar-failure uniformly absent from
+      match+universe with a #27 audit.
 - [ ] `_step_pattern_observe`: compute pass (idempotency/shed/`_bar_for_date`/`_advance_status`/
       row-build) outside the fence; single fence wraps only the `insert_observation` loop;
       idempotency + shed #27 + no-bar #27 + telemetry preserved.
-- [ ] `_step_daily_management` (locus #3, unless descoped at QA): archive warmed per open-trade
-      ticker before the per-trade fence; in-fence `compute_daily_approximate_snapshot` triggers
-      no network; upsert + state-transition unchanged.
-- [ ] No `get_or_fetch` / `price_cache.get` / Schwab-ladder call executes inside ANY held
-      `fenced_write` in `runner.py`, AND (locus #3 in-scope) no `read_or_fetch_archive`/yfinance
-      network call either (re-run the §2 audit on the post-fix tree; the table must be all-✅).
+- [ ] No `get_or_fetch` / `price_cache.get` / Schwab-ladder (audit-writing) call executes inside
+      ANY held `fenced_write` in `runner.py` (re-run the §2 audit on the post-fix tree; the two
+      deadlock loci flip to ✅; locus #16 daily-management stays 🟡-banked per §8).
 - [ ] `swing.config.toml [web] db_busy_timeout_ms` reverted to 30000 (recommended: key deleted →
       `DEFAULT_BUSY_TIMEOUT_MS`) + the `TEMPORARY STOPGAP` comment block removed.
 - [ ] Tests §7.1–§7.8 land TDD (fail→pass) + full fast suite green + ruff clean.
@@ -402,8 +418,8 @@ pre-fix code and passes on the post-fix code**.
 |---|----------|
 | 1 | Confirmed root cause + deadlock mechanism + cache-miss explanation |
 | 2 | **Complete 18-block `fenced_write` audit table** + findings (2 active deadlock loci + 1 latent hygiene locus; charts already safe) |
-| 3 | OQ-A/B/C decisions (operator-resolved; OQ-C refined post-Codex R1) |
-| 4 | Per-locus reorder design (detect Pass-2 snapshot; observe; daily-management hygiene) + stopgap revert |
+| 3 | OQ-A/B/C/D/E decisions (operator-resolved; OQ-C refined + OQ-D/E added post-Codex R1/R2) |
+| 4 | Per-locus reorder design (detect Pass-2 snapshot + OQ-E divergence guard; observe) + stopgap revert |
 | 5 | Keepers (what stays) |
 | 6 | Locks/invariants (schema NONE) |
 | 7 | Discriminating TDD test strategy |
