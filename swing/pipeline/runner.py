@@ -2712,64 +2712,78 @@ def _step_pattern_observe(*, cfg, lease, ohlcv_cache, run_warnings):
     # fetches. Best-effort (a bare stub cache has no drain_telemetry).
     if hasattr(ohlcv_cache, "drain_telemetry"):
         ohlcv_cache.drain_telemetry()
-    with lease.fenced_write() as conn:
-        for det in open_dets:
-            prev = latest.get(det.detection_id)
-            if prev is not None and prev.observation_date == observation_date:
-                continue  # idempotent: already observed today
-            # Dormant Lever 2 (pool-widening 2026-06-04): watch-origin pre-fetch
-            # shed. A no-fetch SKIP (NOT an `expired` transition -- a no-fetch
-            # expiry is impossible without a schema change; ohlc_today_json is
-            # NOT NULL). The bucket is read from the LOCKED finviz_screen_state
-            # (never recomputed). The horizon is STATUS-AWARE (mirrors
-            # _advance_status): a pending/unobserved watch detection sheds past
-            # the watch pending window; a triggered_open one sheds past watch
-            # pending + watch post-trigger (each falling back to the aplus
-            # window when its knob is None). Repeated runs cheaply re-skip.
-            if _pend_w is not None or _post_w is not None:
-                _bucket = None
-                if det.finviz_screen_state:
-                    try:
-                        _bucket = json.loads(det.finviz_screen_state).get("bucket")
-                    except (ValueError, TypeError):
-                        _bucket = None
-                if _bucket == "watch":
-                    _sess = _sessions_since(det.data_asof_date, observation_date)
-                    _prev_status = prev.status if prev is not None else "pending"
-                    if _prev_status == "triggered_open":
-                        _horizon = (
-                            (_pend_w if _pend_w is not None else max_pending)
-                            + (_post_w if _post_w is not None else max_post))
-                    else:  # pending / no observation yet
-                        _horizon = (
-                            _pend_w if _pend_w is not None else max_pending)
-                    if _sess > _horizon:
-                        _shed_count += 1
-                        continue  # no fetch, no observation row, no terminal
-            bar = _bar_for_date(cfg, ohlcv_cache, det.ticker, observation_date)
-            if bar is None:
-                run_warnings.append({
-                    "step": "pattern_observe", "ticker": det.ticker,
-                    "observation_date": observation_date,
-                    "reason": "no bar for observation_date",
-                })
-                continue
-            sessions = _sessions_since(det.data_asof_date, observation_date)
-            status, change = _advance_status(
-                det, prev=prev, bar=bar,
-                sessions_since_detection=sessions,
-                max_pending=max_pending, max_post_trigger=max_post)
-            insert_observation(conn, PatternForwardObservation(
-                observation_id=None, detection_id=det.detection_id,
-                observation_date=observation_date,
-                ohlc_today_json=build_ohlc_today_json(
-                    bar, observation_date=observation_date, cutoff=observe_cutoff,
-                ),  # validated shape + provider domain + completed-day guard
-                status=status, status_change_event=change,
-                sessions_since_detection=sessions,
-                created_at=datetime.now(UTC).isoformat(),
-            ))
-            _observed_count += 1
+    # Fetch-vs-write-ordering fix (locus #9): COMPUTE PASS outside the fence.
+    # The per-detection body (idempotency skip, watch-shed, _bar_for_date fetch,
+    # _advance_status, row-build) is fence-independent; only insert_observation
+    # needs the lease. Running _bar_for_date (-> get_or_fetch -> audit-writing
+    # market-data ladder) here means it never executes under a held write lock
+    # (Run-92 deadlock removed). Shed is evaluated BEFORE _bar_for_date, so shed
+    # tickers are still never fetched (OQ-A; identical Schwab quota to today).
+    to_insert: list[PatternForwardObservation] = []
+    for det in open_dets:
+        prev = latest.get(det.detection_id)
+        if prev is not None and prev.observation_date == observation_date:
+            continue  # idempotent: already observed today
+        # Dormant Lever 2 (pool-widening 2026-06-04): watch-origin pre-fetch
+        # shed. A no-fetch SKIP (NOT an `expired` transition -- a no-fetch
+        # expiry is impossible without a schema change; ohlc_today_json is
+        # NOT NULL). The bucket is read from the LOCKED finviz_screen_state
+        # (never recomputed). The horizon is STATUS-AWARE (mirrors
+        # _advance_status): a pending/unobserved watch detection sheds past
+        # the watch pending window; a triggered_open one sheds past watch
+        # pending + watch post-trigger (each falling back to the aplus
+        # window when its knob is None). Repeated runs cheaply re-skip.
+        if _pend_w is not None or _post_w is not None:
+            _bucket = None
+            if det.finviz_screen_state:
+                try:
+                    _bucket = json.loads(det.finviz_screen_state).get("bucket")
+                except (ValueError, TypeError):
+                    _bucket = None
+            if _bucket == "watch":
+                _sess = _sessions_since(det.data_asof_date, observation_date)
+                _prev_status = prev.status if prev is not None else "pending"
+                if _prev_status == "triggered_open":
+                    _horizon = (
+                        (_pend_w if _pend_w is not None else max_pending)
+                        + (_post_w if _post_w is not None else max_post))
+                else:  # pending / no observation yet
+                    _horizon = (
+                        _pend_w if _pend_w is not None else max_pending)
+                if _sess > _horizon:
+                    _shed_count += 1
+                    continue  # no fetch, no observation row, no terminal
+        bar = _bar_for_date(cfg, ohlcv_cache, det.ticker, observation_date)
+        if bar is None:
+            run_warnings.append({
+                "step": "pattern_observe", "ticker": det.ticker,
+                "observation_date": observation_date,
+                "reason": "no bar for observation_date",
+            })
+            continue
+        sessions = _sessions_since(det.data_asof_date, observation_date)
+        status, change = _advance_status(
+            det, prev=prev, bar=bar,
+            sessions_since_detection=sessions,
+            max_pending=max_pending, max_post_trigger=max_post)
+        to_insert.append(PatternForwardObservation(
+            observation_id=None, detection_id=det.detection_id,
+            observation_date=observation_date,
+            ohlc_today_json=build_ohlc_today_json(
+                bar, observation_date=observation_date, cutoff=observe_cutoff,
+            ),  # validated shape + provider domain + completed-day guard
+            status=status, status_change_event=change,
+            sessions_since_detection=sessions,
+            created_at=datetime.now(UTC).isoformat(),
+        ))
+
+    # WRITE PASS: a single short fence wraps ONLY the inserts (the lease-fencing
+    # contract is preserved; the write still happens inside fenced_write).
+    if to_insert:
+        with lease.fenced_write() as conn:
+            for row in to_insert:
+                insert_observation(conn, row)
+                _observed_count += 1
 
     # Lever 2 #27 audit: any shed is recorded (a silent shed is forbidden).
     if _shed_count > 0:

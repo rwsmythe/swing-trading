@@ -265,3 +265,40 @@ def test_detect_pass2_no_divergence_no_audit(tmp_db_v22, tmp_path):
         w for w in warnings
         if "membership changed mid-run" in (w.get("reason") or "")
     ]
+
+
+def test_observe_bar_fetch_runs_outside_fence_no_deadlock(tmp_db_v22, tmp_path):
+    """BINDING (spec 7.1, locus #9). Pre-fix: _bar_for_date -> get_or_fetch @2525
+    runs inside the held fence @2628 -> second-conn BEGIN IMMEDIATE deadlocks.
+    Post-fix: the compute pass (incl. the fetch) runs before the insert fence."""
+    conn, db_path = tmp_db_v22
+    _plant_detection(conn, ticker="AAA", data_asof_date="2026-05-28")
+    cfg = _cfg(tmp_path, db_path)
+    cache = _DeadlockProbeCache(db_path, {"AAA": _build_bars()})
+    warnings: list[dict] = []
+    _drive_observe(cfg, _FakeLease(db_path, 1, _OBS), cache, warnings)
+    # Anti-false-pass: a non-idempotent, non-shed detection MUST have fetched.
+    assert "AAA" in cache.calls
+    assert len(cache.calls) >= 1
+    # The bar fetch ran with NO held fence -> no second-conn deadlock.
+    assert cache.deadlock_observed is False
+
+
+def test_observe_split_preserves_idempotency_and_observed_count(
+        tmp_db_v22, tmp_path):
+    """spec 7.5: the split is behavior-preserving. First drive observes the open
+    detection (1 row); a same-day re-drive is idempotent (still 1 row)."""
+    from swing.data.repos.pattern_forward_observations import (
+        get_observations_for_detection)
+    conn, db_path = tmp_db_v22
+    det_id = _plant_detection(conn, ticker="AAA", data_asof_date="2026-05-28")
+    cfg = _cfg(tmp_path, db_path)
+    cache = _DeadlockProbeCache(db_path, {"AAA": _build_bars()})
+    _drive_observe(cfg, _FakeLease(db_path, 1, _OBS), cache, [])
+    assert len(get_observations_for_detection(conn, det_id)) == 1
+    # Idempotent re-drive: still 1 (the idempotency skip runs in the compute
+    # pass, before the fetch -> no second fetch, no duplicate row).
+    cache2 = _DeadlockProbeCache(db_path, {"AAA": _build_bars()})
+    _drive_observe(cfg, _FakeLease(db_path, 2, _OBS), cache2, [])
+    assert len(get_observations_for_detection(conn, det_id)) == 1
+    assert cache2.calls == []  # idempotent -> never fetched
