@@ -2074,6 +2074,42 @@ def _step_pattern_detect(
         # and ``snapshot_eligible_ids`` are built there from the Pass-2-entry
         # snapshot; the in-fence path no longer reads the corpus or fetches bars.
 
+        # OQ-E observable-divergence guard (spec section 3). pattern_exemplars
+        # has live writers OUTSIDE the pipeline lease (web routes, CLI labeling,
+        # backfill), so the corpus can change mid-run. Scoring uses the
+        # Pass-2-entry snapshot (<=1-run staleness, benign for a forward-walk
+        # substrate); a CHEAP in-fence re-read of just the eligible IDs (no bars,
+        # no network) detects a membership change and AUDITS it (#27) rather than
+        # silently. This detects ID-set membership changes, NOT same-ID
+        # confirmed<->watch decision flips (which do not change scoring
+        # membership). Scoring still proceeds from the snapshot bundles.
+        try:
+            _infence_eligible_ids = {
+                int(_r[0]) for _r in conn.execute(
+                    "SELECT id FROM pattern_exemplars "
+                    "WHERE final_decision IN ('confirmed','watch')"
+                ).fetchall()
+            }
+        except Exception as exc:
+            log.warning(
+                "pattern_detect: in-fence exemplar-ID re-read failed "
+                "(continuing; divergence guard skipped): %s",
+                exc,
+            )
+            _infence_eligible_ids = snapshot_eligible_ids
+        _eligible_added = _infence_eligible_ids - snapshot_eligible_ids
+        _eligible_removed = snapshot_eligible_ids - _infence_eligible_ids
+        if (_eligible_added or _eligible_removed) and run_warnings is not None:
+            run_warnings.append({
+                "step": "pattern_detect",
+                "reason": (
+                    "exemplar eligible-ID membership changed mid-run; "
+                    "run used Pass-2-entry snapshot"
+                ),
+                "added": len(_eligible_added),
+                "removed": len(_eligible_removed),
+            })
+
         # Resolve each emit's template_match_score + nearest_ids +
         # composite_score per spec section 5.8 formula.
         # ``resolved_emit_list`` extends the tuple shape with:

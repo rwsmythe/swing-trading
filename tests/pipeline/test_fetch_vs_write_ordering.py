@@ -194,3 +194,74 @@ def test_detect_pass2_list_exemplars_read_exactly_once(tmp_db_v22, tmp_path):
     with patch.object(_pe, "list_exemplars", _counting):
         _drive_detect(conn, cfg, lease, eval_run_id, cache, [])
     assert count["n"] == 1
+
+
+def _insert_extra_eligible_exemplar(db_path):
+    """Concurrent web/CLI-style write: add an eligible exemplar on a SEPARATE
+    committed connection (simulates a mid-run corpus mutation)."""
+    c = sqlite3.connect(str(db_path))
+    try:
+        c.execute("PRAGMA foreign_keys=ON")
+        from swing.data.models import PatternExemplar
+        from swing.data.repos.pattern_exemplars import insert_exemplar
+        with c:
+            insert_exemplar(c, PatternExemplar(
+                id=None, ticker="MIDRUN", timeframe="daily",
+                start_date="2025-11-15", end_date="2025-11-25",
+                proposed_pattern_class="vcp", final_decision="confirmed",
+                label_source="curated_gold", structural_evidence_json="{}",
+                created_at="2025-07-20T00:00:00", created_by="operator",
+                quality_grade=5, gold_validated_at="2025-07-20T00:00:00",
+                geometric_score_json="{}", labeler_evidence_json="{}"))
+    finally:
+        c.close()
+
+
+def test_detect_pass2_midrun_corpus_divergence_emits_27_audit(
+        tmp_db_v22, tmp_path):
+    """OQ-E (spec 7.6): a concurrent eligible-exemplar write between the snapshot
+    and the in-fence ID re-read emits a #27 divergence audit (added=1, removed=0)
+    WITHOUT an in-fence fetch; scoring still uses the snapshot."""
+    conn, db_path = tmp_db_v22
+    conn, cfg, lease, eval_run_id = _seed_aplus_candidate_and_run((conn, db_path))
+    _seed_confirmed_exemplar(conn, ticker="HIST", pattern_class="vcp")
+    conn.commit()
+    # The injected insert commits DURING the EXEMPLAR pre-fetch (inject_on="HIST"
+    # fires after the snapshot list_exemplars, before the fence) -> the in-fence
+    # ID re-read sees the extra eligible ID. (Pass-1 candidate fetches, e.g. AAA,
+    # precede the snapshot, so injecting there would land before the snapshot and
+    # produce NO divergence -- hence inject_on the exemplar ticker.)
+    cache = _DeadlockProbeCache(
+        db_path, {"AAA": _build_bars(), "HIST": _build_bars()},
+        inject_on="HIST",
+        on_inject=lambda: _insert_extra_eligible_exemplar(db_path))
+    warnings: list[dict] = []
+    _drive_detect(conn, cfg, lease, eval_run_id, cache, warnings)
+    divergence = [
+        w for w in warnings
+        if w.get("step") == "pattern_detect"
+        and "membership changed mid-run" in (w.get("reason") or "")
+    ]
+    assert len(divergence) == 1, warnings
+    assert divergence[0]["added"] == 1
+    assert divergence[0]["removed"] == 0
+    # MIDRUN was added after the snapshot -> never fetched (scoring used the
+    # snapshot corpus only).
+    assert "MIDRUN" not in cache.calls
+    assert cache.deadlock_observed is False
+
+
+def test_detect_pass2_no_divergence_no_audit(tmp_db_v22, tmp_path):
+    """OQ-E control: a stable corpus emits NO divergence warning."""
+    conn, db_path = tmp_db_v22
+    conn, cfg, lease, eval_run_id = _seed_aplus_candidate_and_run((conn, db_path))
+    _seed_confirmed_exemplar(conn, ticker="HIST", pattern_class="vcp")
+    conn.commit()
+    cache = _DeadlockProbeCache(
+        db_path, {"AAA": _build_bars(), "HIST": _build_bars()})
+    warnings: list[dict] = []
+    _drive_detect(conn, cfg, lease, eval_run_id, cache, warnings)
+    assert not [
+        w for w in warnings
+        if "membership changed mid-run" in (w.get("reason") or "")
+    ]
