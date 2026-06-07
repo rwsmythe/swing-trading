@@ -74,14 +74,25 @@ A missed locus = a residual deadlock, so this enumerates **all 18**.
 | 13 | 2954 | `_step_charts` (`_refresh_one`) | `refresh_chart_render` | No — `_bars_or_none`→`get_or_fetch` @2922 + @3054 ran OUTSIDE before `_refresh_one` | ✅ safe |
 | 14 | 3661 | `_step_review_log_cadence` | `insert_pre_create` × cadences | No | ✅ safe |
 | 15 | 3705 | `_step_daily_management` | `list_open_trades(conn)` | No — a read | ✅ safe |
-| 16 | 3709 | `_step_daily_management` (per-trade) | `compute_daily_approximate_snapshot` + `upsert_snapshot` + `state_transition` | No — `compute_*` reads the OHLCV **archive file** (`ohlcv_archive_dir`), NOT the audit-writing ladder (`swing/trades/daily_management.py` has zero `get_or_fetch`/ladder calls) | ✅ safe |
+| **16** | **3709** | **`_step_daily_management` (per-trade)** | `compute_daily_approximate_snapshot` + `upsert_snapshot` + `state_transition` | **No Schwab-audit fetch** (zero `get_or_fetch`/ladder calls) — but `compute_daily_approximate_snapshot` → `read_or_fetch_archive` ([daily_management.py:510](../../../swing/trades/daily_management.py)) → `_yf_download_window` ([ohlcv_archive.py:254/273](../../../swing/data/ohlcv_archive.py)) can do **yfinance network I/O under the fence** | 🟡 **HYGIENE #3** (network-under-fence; not a Schwab-audit deadlock) |
 | 17 | 4024 | `_step_finviz_fetch` | `get_latest_signature_hash` read + CSV shadow/promote (filesystem) | No — the Finviz network fetch (`_finviz_fetch_core`) ran @4015 OUTSIDE | ✅ safe |
 | 18 | 4054 | `_step_finviz_fetch` | `insert_call` (finviz audit row) | No — fetch already done | ✅ safe |
 
 ### 2.1 Findings
 
-- **Exactly TWO deadlock loci:** `_step_pattern_detect` Pass-2 (#8, exemplar bars) and
-  `_step_pattern_observe` (#9, detection-ticker bars).
+- **TWO active Schwab-audit deadlock loci:** `_step_pattern_detect` Pass-2 (#8, exemplar bars)
+  and `_step_pattern_observe` (#9, detection-ticker bars). These are the cause of the Run-92
+  `BEGIN IMMEDIATE FAILED (database is locked)` audit telemetry.
+- **ONE latent network-under-fence hygiene locus (#16, `_step_daily_management`)** — surfaced by
+  Codex R1 MAJOR #2. It performs **yfinance** network I/O (`read_or_fetch_archive` →
+  `_yf_download_window`) inside the per-trade fence, but does **not** fire the Schwab market-data
+  ladder, so it writes **no** audit row on `audit_conn` during the held tx → it does **not**
+  deadlock today (nothing else writes during this step's sequential fence). It is nonetheless a
+  *fetch-vs-write-ordering* violation of the same bug class and the spec's universal rule (§4), so
+  it is brought in-scope as a third, surgical, lower-severity reorder (§4.3) to make "no network
+  inside any fence" uniform + future-proof (e.g. if `read_or_fetch_archive` ever gains audit
+  writes, or daily-management ever shares a run with a Schwab writer). Severable at QA if the
+  operator prefers to bank it.
 - **`_step_charts` is NOT a locus** — a refinement of the commission brief's hypothesis. Every
   `get_or_fetch` in charts already runs *outside* the fence (fetch-first, then a short
   status/render write inside the fence). This is the exact target shape; the two real loci
@@ -108,12 +119,30 @@ A missed locus = a residual deadlock, so this enumerates **all 18**.
   the key → `db.py DEFAULT_BUSY_TIMEOUT_MS = 30000`) as a task in the executing phase, once
   both loci are reordered. The deadlock is structurally removed, so 30s is again the correct
   safe value, and config stays truthful with code.
-- **OQ-C — exemplar corpus consistency (spec §5.7): KEEP `list_exemplars(conn)` in-fence;
-  pre-fetch bars; skip-on-miss.** Corpus *membership* consistency is the **row** read, which
-  stays inside the fence. Exemplar **bar** data is immutable historical OHLCV — fetching it
-  outside the fence cannot violate membership semantics. Any exemplar present in the in-fence
-  row read but absent from the pre-fetched bar dict (a rare row-list race) is **audit-skipped
-  (#27)**, never fetched in-fence.
+- **OQ-C — exemplar corpus consistency (spec §5.7): SNAPSHOT the corpus rows ONCE just before
+  the fence; that snapshot is the authoritative membership for BOTH the bar pre-fetch AND the
+  in-fence matching.** *(Refined post-Codex R1 MAJOR #1 — see below; supersedes the originally
+  approved "keep `list_exemplars(conn)` in-fence + skip-on-miss" mechanism.)*
+
+  The operator's resolved INTENT for OQ-C was "preserve §5.7 corpus consistency." Codex R1
+  MAJOR #1 showed the literal "keep the row read in-fence, source bars from an outside prefetch
+  dict, skip-on-miss" mechanism *violates* that intent: an exemplar present in the in-fence
+  `list_exemplars(conn)` membership read but absent from the outside prefetch dict (a row-list
+  race) would be excluded from `match_forward` → a **silently lower** `template_match_score` /
+  `composite_score` *persisted this run*. That is a scoring change, not just an audit gap.
+
+  Resolution: read the exemplar corpus rows **once**, immediately before the fence; build the
+  bar dict from that exact snapshot; pass BOTH the snapshot rows and the bars into the fence and
+  build `exemplar_bundles_by_class` from the snapshot (drop the second, in-fence
+  `list_exemplars` read). Membership == bars by construction, so no divergence and no silent
+  score change is possible. This is sound for §5.7 because `pattern_exemplars` is a **dev-time
+  silver-label corpus** (Phase 13 L1 LOCK: no run-time inferencing) with **no writer during a
+  nightly run** — so the "reflects in-flight commits" concern the in-fence read defended against
+  cannot occur in production. Reading the corpus a few milliseconds before the fence vs inside it
+  retrieves the identical set. A since-deleted exemplar (impossible under single-writer) would at
+  worst contribute a match from valid historical data — harmless. **Net: §5.7 retrieval
+  semantics are preserved more faithfully than the original mechanism, and the deadlock is
+  removed.**
 
 ---
 
@@ -128,36 +157,48 @@ on a miss it MUST be audit-skipped (#27), never fetched.
 
 **Stays inside the fence (consistency-critical — do NOT move):**
 - `canonical_existing` re-read @1920 — the Pass-2 reconcile-before-serialize re-read (Codex R4
-  architecture); MUST observe in-flight commits.
-- `list_exemplars(conn)` @1977 — corpus **membership** read (spec §5.7); OQ-C keeps it in-fence.
+  architecture); MUST observe in-flight `pattern_evaluations` commits.
 - `match_forward` composite derivation + the `insert_evaluation` / detection-event-append
   INSERT loop (@2036-end).
 
 **Moves OUT (before `with lease.fenced_write()` @1898):**
+- The exemplar **corpus row read** (`list_exemplars`) — relocated from in-fence @1977 to a
+  read-only snapshot just before the fence (OQ-C refinement; §3). It becomes the authoritative
+  membership.
 - The exemplar **bar fetch** currently at @1994 (`ohlcv_cache.get_or_fetch(ticker=ex_row.ticker,
   window_days=400)`).
 
 **Reorder:**
-1. **Before** the fence, read exemplar rows read-only (a fresh `connect(cfg.paths.db_path)` in
-   the cfg path; the cfg=None test-stub path reuses `getattr(lease, "_conn", None)` WITHOUT
-   entering `fenced_write` — mirroring the existing `detector_read_conn` discipline at
+1. **Before** the fence, read the exemplar corpus rows **once** read-only — `exemplar_rows =
+   list_exemplars(read_conn)` on a fresh `connect(cfg.paths.db_path)` (cfg path); the cfg=None
+   test-stub path reuses `getattr(lease, "_conn", None)` WITHOUT entering `fenced_write`
+   (mirroring the existing `detector_read_conn` discipline at
    [runner.py:1714-1723](../../../swing/pipeline/runner.py)). Filter to the
-   `("confirmed","watch")` decisions (same filter as @1989). For each surviving ticker, call
-   `ohlcv_cache.get_or_fetch(ticker=..., window_days=400)` — **identical** params to the
-   current in-fence call so #28/#29 historical depth is byte-for-byte preserved — and collect
-   results into `exemplar_bars_by_ticker: dict[str, pd.DataFrame]`. Per-exemplar failure is
-   isolated (try/except → skip that ticker, continue), exactly as the current @2013 isolation.
-2. **Inside** the fence, keep `list_exemplars(conn)` @1977 (membership). Replace the @1994
-   `get_or_fetch` with `ex_bars = exemplar_bars_by_ticker.get(ex_row.ticker)`. If `ex_bars is
-   None` (not pre-fetched — failed fetch OR row-list race), **audit-skip**: `continue` + append
-   a `run_warnings` / `warnings_json` entry (#27) recording `step=pattern_detect`,
-   `exemplar_ticker`, `reason="exemplar bars unavailable (pre-fetch miss/skip)"`. **No fetch
-   in-fence.**
+   `("confirmed","watch")` decisions (the same filter as @1989). This snapshot is the
+   authoritative corpus membership for the run. For each surviving exemplar, fetch its bars via
+   `ohlcv_cache.get_or_fetch(ticker=ex_row.ticker, window_days=400)` — **identical** params to
+   the current in-fence call so #28/#29 historical depth is byte-for-byte preserved — slice to
+   `[start_date, end_date]`, and build `TemplateMatchExemplar` bundles into
+   `exemplar_bundles_by_class: dict[str, list[TemplateMatchExemplar]]`. Per-exemplar failure /
+   empty-slice is isolated (try/except / `size==0` → skip that exemplar, continue), exactly as
+   the current @2008-2021 isolation; a skipped exemplar emits a #27 `warnings_json` entry
+   (`step=pattern_detect`, `exemplar_ticker`, `reason="exemplar bars unavailable"`).
+2. **Inside** the fence, **drop** the second `list_exemplars(conn)` read and the @1994
+   `get_or_fetch`; consume the pre-built `exemplar_bundles_by_class` directly in the
+   `match_forward` loop (@2036+). The in-fence body is now pure SQLite reads (`canonical_existing`)
+   + pure compute (`match_forward`, `compute_composite_score`) + the INSERT loop. **No fetch, no
+   second corpus read, in-fence.**
+
+Because membership == the prefetched bundles by construction, there is **no** silent
+score-divergence path (Codex R1 MAJOR #1 closed): every exemplar that contributes to a
+`composite_score` had its bars successfully prefetched, and every exemplar whose bars failed is
+uniformly absent from BOTH the universe and the match (and is #27-audited).
 
 **Invariants preserved:** #5 (Pass-1 `bars_by_ticker` candidate bars still reused unchanged;
 exemplars fetched once, outside the fence, never re-fetched); #28/#29 (same `window_days=400`);
-spec §5.7 (membership row read in-fence); reconcile-before-serialize architecture (untouched);
-audit single-tx (the in-fence transaction now does zero competing-connection work).
+spec §5.7 (single authoritative corpus snapshot; dev-time-only corpus → no in-run writer, §3);
+reconcile-before-serialize architecture (the `canonical_existing` re-read stays in-fence,
+untouched); audit single-tx (the in-fence transaction now does zero competing-connection work).
 
 ### 4.2 Locus #2 — `_step_pattern_observe` ([runner.py:2628-2685](../../../swing/pipeline/runner.py))
 
@@ -189,7 +230,37 @@ reset at entry @2626 unchanged); the append-only log's completed-day guard; sing
 discipline (one short fence around the inserts instead of a long fence across all fetches —
 strictly less lock contention).
 
-### 4.3 Stopgap revert (OQ-B — executing phase, after both loci land)
+### 4.3 Locus #3 (hygiene) — `_step_daily_management` ([runner.py:3707-3742](../../../swing/pipeline/runner.py))
+
+*(Brought in-scope by Codex R1 MAJOR #2; lower severity — a network-under-fence ordering
+violation that does not currently deadlock. Severable at QA.)*
+
+The per-trade fence @3709 wraps `compute_daily_approximate_snapshot(conn, ...,
+ohlcv_archive_dir=...)`, which calls `read_or_fetch_archive`
+([daily_management.py:510](../../../swing/trades/daily_management.py)) → `_yf_download_window`
+([ohlcv_archive.py:254/273](../../../swing/data/ohlcv_archive.py)) — a yfinance network fetch on
+the weekly full-refresh or the daily gap-fill path — **while holding the fence**.
+
+**Reorder (warm-the-archive-before-the-fence — mirrors `_bar_for_date`'s populate/read split):**
+1. **Before** the per-trade fence loop, warm the archive for each open-trade ticker once:
+   `read_or_fetch_archive(ticker, end_date=asof_session, cache_dir=..., archive_history_days=...)`
+   outside any fence (best-effort per-ticker try/except; a warm failure is non-fatal — the
+   in-fence read remains authoritative and a no-data path already logs + `continue`s @3727-3733).
+   After this warm, the archive's `last_full_refresh_date` is today and `latest_stored == today`,
+   so the in-fence `read_or_fetch_archive` sees `needs_full_refresh=False` + no gap → **no
+   network**.
+2. **Inside** the per-trade fence, leave the loop as-is: `compute_daily_approximate_snapshot`
+   (now a warm archive read) + `upsert_snapshot` + `state_transition`. The
+   `LeaseRevokedError`-reraise + per-trade failure isolation (@3743-3750) are unchanged.
+
+**Invariants preserved:** the idempotent `upsert_snapshot` (SELECT-then-UPDATE-or-INSERT on
+`(trade_id, data_asof_session, mfe_mae_precision_level)`), the FK discipline (Codex R1 Critical 1:
+`pipeline_run_id=lease.run_id`), the `entered→managing` transition, the #26 immutable-archive
+semantics (the warm uses the same `read_or_fetch_archive` write-through), and gap-flagged policy.
+If the operator descopes this at QA, §2 row #16 stays flagged 🟡 and the universal rule (§4) is
+documented as "audit-writing fetches only" for this arc.
+
+### 4.4 Stopgap revert (OQ-B — executing phase, after the loci land)
 
 In [`swing.config.toml`](../../../swing.config.toml) `[web]`, restore the safe value:
 either set `db_busy_timeout_ms = 30000` or delete the key (falls back to
@@ -235,15 +306,20 @@ with a one-line pointer noting the deadlock was structurally removed by this arc
 Per `feedback_regression_test_arithmetic`: each test below is constructed so it **fails on the
 pre-fix code and passes on the post-fix code**.
 
-1. **Gold-standard deadlock-reproduction (both loci).** Drive the real step against a real
-   SQLite DB with a spy `ohlcv_cache` whose `get_or_fetch` attempts a `BEGIN IMMEDIATE` on a
-   **second** connection to the same DB (short busy_timeout, e.g. 200ms) and records whether it
-   **succeeded**.
+1. **Gold-standard deadlock-reproduction (both loci).** Drive the real step against a **real
+   file-backed** SQLite DB with a spy `ohlcv_cache` whose `get_or_fetch` attempts a
+   `BEGIN IMMEDIATE` on a **second** connection to the same DB (short busy_timeout, e.g. 200ms)
+   and records both whether it **succeeded** and the **call count**.
    - Pre-fix: `get_or_fetch` is invoked while the step's `fenced_write` is held → the
      second-connection `BEGIN IMMEDIATE` times out (`database is locked`) → spy records
      `deadlock_observed=True` → **assert fails**.
    - Post-fix: `get_or_fetch` runs with no held fence → second-conn `BEGIN IMMEDIATE` succeeds
      → `deadlock_observed=False` → **assert passes**.
+   - **Anti-false-pass (Codex R1 MINOR #2):** the fixture MUST seed the conditions that make
+     the fetch fire — at least one valid `confirmed|watch` exemplar row (detect Pass-2) / at
+     least one observable detection that is neither same-day-idempotent nor watch-shed (observe)
+     — and each test MUST **assert `get_or_fetch` was called ≥ 1 time**, so "no deadlock
+     observed" cannot pass vacuously on a fixture that never reached the fetch.
    - One test for `_step_pattern_detect` Pass-2 (exemplar fetch), one for
      `_step_pattern_observe` (detection fetch). This is the binding regression — it reproduces
      the Run-92 mechanism in-process, not a proxy.
@@ -252,21 +328,31 @@ pre-fix code and passes on the post-fix code**.
    set on `__enter__` / cleared on `__exit__`). Assert every `get_or_fetch` observed
    `in_fenced_write is False`.
 3. **#5 no-re-fetch preserved (detect Pass-2).** Assert candidate tickers fetched in Pass-1 are
-   NOT re-fetched in Pass-2 (the Pass-2 reorder only adds exemplar pre-fetch); assert each
+   NOT re-fetched in Pass-2 (the Pass-2 reorder only adds the exemplar pre-fetch); assert each
    exemplar ticker's `get_or_fetch` is called exactly once.
-4. **#27 audit on exemplar pre-fetch miss (detect Pass-2).** Inject an exemplar row whose bars
-   fail to pre-fetch (or appear only in the in-fence `list_exemplars` row read, not the
-   pre-fetch dict); assert the verdict is skipped AND a `warnings_json` entry is emitted; assert
-   **no** in-fence fetch was attempted for it.
+4. **Composite-score parity + #27 audit on exemplar bar failure (detect Pass-2).** (a) For a
+   fixed exemplar corpus whose bars all pre-fetch successfully, assert the persisted
+   `composite_score` / `template_match_score` values are **identical** pre- and post-reorder
+   (the snapshot-membership design must NOT change scoring — closes Codex R1 MAJOR #1). (b)
+   Inject an exemplar whose bar fetch fails; assert it is uniformly absent from BOTH the match
+   AND the universe histogram, a `warnings_json` (#27) entry is emitted, and **no** in-fence
+   fetch is attempted. (c) Assert `list_exemplars` is read exactly **once** per run (the
+   snapshot), not twice.
 5. **Observe parity.** With a seeded mix of (a) same-day-already-observed (idempotent skip), (b)
    watch-shed, (c) no-bar, (d) normal detections: assert `_observed_count`, `_shed_count`, the
    shed #27 audit, the no-bar #27 audit, and `observe_load` telemetry
    (`fetch_window`/`in_memory_hit`) are **identical** to the pre-fix step for the same inputs
    (behavior-preserving reorder), while #1/#2 above prove the fetch moved out of the fence.
-6. **Stopgap revert.** Assert `cfg.web.db_busy_timeout_ms == 30000` (or, if the key is deleted,
+6. **Daily-management network-under-fence (locus #3, if in-scope).** With a spy archive layer
+   that records whether `read_or_fetch_archive`/`_yf_download_window` is invoked while a
+   `fenced_write` is held: pre-fix observes a network call under the fence; post-fix the warm
+   happens before the per-trade fence and the in-fence `compute_daily_approximate_snapshot`
+   triggers no network (assert the in-fence archive read is a warm hit). Assert `upsert_snapshot`
+   + the `entered→managing` transition are unchanged.
+7. **Stopgap revert.** Assert `cfg.web.db_busy_timeout_ms == 30000` (or, if the key is deleted,
    that the resolved default is 30000 via `DEFAULT_BUSY_TIMEOUT_MS`) and that the `audit_conn`
    is opened with 30000.
-7. **Full fast suite** green (~7128 baseline) + `ruff check swing/`.
+8. **Full fast suite** green (~7128 baseline) + `ruff check swing/`.
 
 ---
 
@@ -289,18 +375,23 @@ pre-fix code and passes on the post-fix code**.
 
 ## 9. Acceptance criteria (executing-ready)
 
-- [ ] `_step_pattern_detect` Pass-2: exemplar bars pre-fetched before the fence; in-fence
-      `get_or_fetch` @1994 replaced by a dict lookup; skip-on-miss with #27 audit;
-      `list_exemplars(conn)` + `canonical_existing` re-read remain in-fence.
+- [ ] `_step_pattern_detect` Pass-2: exemplar corpus rows snapshotted + bars pre-fetched ONCE
+      before the fence (the snapshot is authoritative membership); the in-fence second
+      `list_exemplars(conn)` + the @1994 `get_or_fetch` are removed; `canonical_existing` re-read
+      + `match_forward` + INSERT loop remain in-fence; composite-score parity proven; exemplar
+      bar-failure uniformly absent from match+universe with a #27 audit.
 - [ ] `_step_pattern_observe`: compute pass (idempotency/shed/`_bar_for_date`/`_advance_status`/
       row-build) outside the fence; single fence wraps only the `insert_observation` loop;
       idempotency + shed #27 + no-bar #27 + telemetry preserved.
-- [ ] No `get_or_fetch` / `price_cache.get` / ladder call executes inside ANY held
-      `fenced_write` in `runner.py` (re-run the §2 audit on the post-fix tree; the table must be
-      all-✅).
-- [ ] `swing.config.toml [web] db_busy_timeout_ms` reverted to 30000 (or key deleted) + stopgap
-      comment removed.
-- [ ] Tests §7.1–§7.6 land TDD (fail→pass) + full fast suite green + ruff clean.
+- [ ] `_step_daily_management` (locus #3, unless descoped at QA): archive warmed per open-trade
+      ticker before the per-trade fence; in-fence `compute_daily_approximate_snapshot` triggers
+      no network; upsert + state-transition unchanged.
+- [ ] No `get_or_fetch` / `price_cache.get` / Schwab-ladder call executes inside ANY held
+      `fenced_write` in `runner.py`, AND (locus #3 in-scope) no `read_or_fetch_archive`/yfinance
+      network call either (re-run the §2 audit on the post-fix tree; the table must be all-✅).
+- [ ] `swing.config.toml [web] db_busy_timeout_ms` reverted to 30000 (recommended: key deleted →
+      `DEFAULT_BUSY_TIMEOUT_MS`) + the `TEMPORARY STOPGAP` comment block removed.
+- [ ] Tests §7.1–§7.8 land TDD (fail→pass) + full fast suite green + ruff clean.
 - [ ] Schema unchanged (v24); ZERO `Co-Authored-By`; conventional commits.
 
 ---
@@ -310,9 +401,9 @@ pre-fix code and passes on the post-fix code**.
 | § | Contents |
 |---|----------|
 | 1 | Confirmed root cause + deadlock mechanism + cache-miss explanation |
-| 2 | **Complete 18-block `fenced_write` audit table** + findings (2 loci; charts already safe) |
-| 3 | OQ-A/B/C decisions (operator-resolved) |
-| 4 | Per-locus reorder design (detect Pass-2; observe) + stopgap revert |
+| 2 | **Complete 18-block `fenced_write` audit table** + findings (2 active deadlock loci + 1 latent hygiene locus; charts already safe) |
+| 3 | OQ-A/B/C decisions (operator-resolved; OQ-C refined post-Codex R1) |
+| 4 | Per-locus reorder design (detect Pass-2 snapshot; observe; daily-management hygiene) + stopgap revert |
 | 5 | Keepers (what stays) |
 | 6 | Locks/invariants (schema NONE) |
 | 7 | Discriminating TDD test strategy |
