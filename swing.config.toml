@@ -124,9 +124,3 @@ timeout_seconds = 30.0
 # price-history) in Sub-bundle C consumer; pipeline + reconciliation still
 # use Schwab account data when this is false.
 marketdata_ladder_enabled = true
-
-[web]
-# db_busy_timeout_ms intentionally OMITTED -- single source of truth is the
-# 30000ms default (config.py + db.py DEFAULT_BUSY_TIMEOUT_MS). The 2026-06-06
-# Run-92 stopgap (5000ms) was reverted once the fetch-vs-write-ordering fix arc
-# structurally removed the OHLCV-fetch-inside-held-fence deadlock.
