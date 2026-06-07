@@ -126,12 +126,7 @@ timeout_seconds = 30.0
 marketdata_ladder_enabled = true
 
 [web]
-# TEMPORARY STOPGAP (2026-06-06, Run-92 live gate). The SQLite lock-contention
-# arc set the audit-connection busy_timeout to 30000ms, but the TRUE root cause
-# (OHLCV fetch inside a held lease.fenced_write -- runner.py:1898/1994 + the
-# charts/observe steps) is NOT yet fixed, so deadlocked audit writes now wait the
-# full 30s before falling back to yfinance (slower nightly pipeline). Lowered to
-# 5000ms (the old effective wait) until the fetch-vs-write-ordering fix arc ships.
-# REVERT to 30000 (or delete this key -> db.py DEFAULT_BUSY_TIMEOUT_MS=30000)
-# once that fix lands.
-db_busy_timeout_ms = 5000
+# db_busy_timeout_ms intentionally OMITTED -- single source of truth is the
+# 30000ms default (config.py + db.py DEFAULT_BUSY_TIMEOUT_MS). The 2026-06-06
+# Run-92 stopgap (5000ms) was reverted once the fetch-vs-write-ordering fix arc
+# structurally removed the OHLCV-fetch-inside-held-fence deadlock.

@@ -302,3 +302,22 @@ def test_observe_split_preserves_idempotency_and_observed_count(
     _drive_observe(cfg, _FakeLease(db_path, 2, _OBS), cache2, [])
     assert len(get_observations_for_detection(conn, det_id)) == 1
     assert cache2.calls == []  # idempotent -> never fetched
+
+
+def test_stopgap_reverted_busy_timeout_resolves_to_30000():
+    """OQ-B (spec 7.7): the [web] db_busy_timeout_ms stopgap key is deleted from
+    the tracked swing.config.toml; the resolved value falls back to the dataclass
+    default (30000). Discriminating: pre-fix the toml override is 5000."""
+    import tomllib
+    from pathlib import Path
+
+    from swing.config import Config
+
+    cfg = Config.from_defaults()
+    assert cfg.web.db_busy_timeout_ms == 30000
+    # Lock the "delete the key" decision: the tracked toml [web] section must not
+    # carry the stopgap override at all (single source of truth = the default).
+    project_root = Path(__file__).resolve().parents[2]
+    with open(project_root / "swing.config.toml", "rb") as f:
+        raw = tomllib.load(f)
+    assert "db_busy_timeout_ms" not in raw.get("web", {})
