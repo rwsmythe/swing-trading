@@ -254,6 +254,23 @@ In `swing/pipeline/runner.py`, between the `if not emit_queue:` early-return blo
                     exc,
                 )
                 snapshot_exemplar_rows = []
+        else:
+            # Defensive edge (Codex R1 MINOR): cfg is None AND the lease exposes
+            # no shared _conn. Read the corpus via a SHORT lease.fenced_write() --
+            # a PURE READ (no audit-writing fetch inside, so deadlock-safe) --
+            # mirroring the pre-fix in-fence list_exemplars so this unreachable
+            # stub path does not silently degrade to an empty corpus. Bars are
+            # still pre-fetched OUTSIDE any fence below.
+            try:
+                with lease.fenced_write() as _snap_conn:
+                    snapshot_exemplar_rows = list_exemplars(_snap_conn)
+            except Exception as exc:
+                log.warning(
+                    "pattern_detect: exemplar corpus snapshot via lease fence "
+                    "failed (continuing with empty corpus): %s",
+                    exc,
+                )
+                snapshot_exemplar_rows = []
     finally:
         if cfg is not None and exemplar_snapshot_conn is not None:
             exemplar_snapshot_conn.close()
