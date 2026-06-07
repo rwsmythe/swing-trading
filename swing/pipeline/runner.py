@@ -1895,6 +1895,112 @@ def _step_pattern_detect(
         )
         return
 
+    # ----------------------------------------------------------------------
+    # Fetch-vs-write-ordering fix (locus #8): snapshot the exemplar corpus +
+    # pre-fetch its bars OUTSIDE the lease.fenced_write() transaction. The
+    # exemplar bar fetch is an audit-writing network call (Schwab market-data
+    # ladder -> audit_conn BEGIN IMMEDIATE) that MUST NOT run under a held
+    # fence, or audit_conn deadlocks on the lease's write lock (Run-92).
+    #
+    # OQ-A/C: this snapshot is the run's AUTHORITATIVE scoring membership.
+    # Membership == prefetched bars BY CONSTRUCTION, so there is no silent
+    # score-lowering path (Codex R1 MAJOR #1): every exemplar that contributes
+    # to a composite had its bars prefetched; every exemplar whose bars failed
+    # is uniformly absent from BOTH the match and the universe (and #27-audited).
+    # The cfg=None test-stub path reuses lease._conn WITHOUT entering
+    # fenced_write (mirrors the detector_read_conn discipline ~1714-1723) so the
+    # snapshot read stays lock-free.
+    exemplar_snapshot_conn = (
+        connect(cfg.paths.db_path) if cfg is not None
+        else getattr(lease, "_conn", None)
+    )
+    snapshot_exemplar_rows: list = []
+    try:
+        if exemplar_snapshot_conn is not None:
+            try:
+                snapshot_exemplar_rows = list_exemplars(exemplar_snapshot_conn)
+            except Exception as exc:
+                log.warning(
+                    "pattern_detect: exemplar corpus snapshot failed "
+                    "(continuing with empty corpus; template_match_score "
+                    "will be NULL): %s",
+                    exc,
+                )
+                snapshot_exemplar_rows = []
+        else:
+            # Defensive edge (Codex R1 MINOR): cfg is None AND the lease exposes
+            # no shared _conn. Read the corpus via a SHORT lease.fenced_write() --
+            # a PURE READ (no audit-writing fetch inside, so deadlock-safe) --
+            # mirroring the pre-fix in-fence list_exemplars so this unreachable
+            # stub path does not silently degrade to an empty corpus. Bars are
+            # still pre-fetched OUTSIDE any fence below.
+            try:
+                with lease.fenced_write() as _snap_conn:
+                    snapshot_exemplar_rows = list_exemplars(_snap_conn)
+            except Exception as exc:
+                log.warning(
+                    "pattern_detect: exemplar corpus snapshot via lease fence "
+                    "failed (continuing with empty corpus): %s",
+                    exc,
+                )
+                snapshot_exemplar_rows = []
+    finally:
+        if cfg is not None and exemplar_snapshot_conn is not None:
+            exemplar_snapshot_conn.close()
+
+    # Build the exemplar bundles from the snapshot (filter confirmed+watch only,
+    # the same filter previously at @1989). snapshot_eligible_ids is the
+    # authoritative eligible-ID set for the OQ-E in-fence divergence guard
+    # (Task 2). Per-exemplar bar-fetch failure / empty-slice is isolated and
+    # #27-audited (silent-skip-without-audit is forbidden).
+    exemplar_bundles_by_class: dict[str, list[TemplateMatchExemplar]] = {}
+    snapshot_eligible_ids: set[int] = set()
+    _valid_exemplar_decisions = ("confirmed", "watch")
+    for ex_row in snapshot_exemplar_rows:
+        if ex_row.final_decision not in _valid_exemplar_decisions:
+            continue
+        snapshot_eligible_ids.add(int(ex_row.id))
+        try:
+            # window_days=400 IDENTICAL to the prior in-fence call (#28/#29
+            # historical depth preserved byte-for-byte).
+            ex_bars = ohlcv_cache.get_or_fetch(
+                ticker=ex_row.ticker, window_days=400
+            )
+            _ex_start = pd.Timestamp(ex_row.start_date)
+            _ex_end = pd.Timestamp(ex_row.end_date)
+            _mask = (ex_bars.index >= _ex_start) & (ex_bars.index <= _ex_end)
+            _ex_close = ex_bars.loc[_mask, "Close"]
+            if hasattr(_ex_close, "ndim") and _ex_close.ndim == 2:
+                _ex_close = _ex_close.iloc[:, 0]
+            ex_close_arr = _np_pd_inner.asarray(_ex_close.values, dtype=float)
+            if ex_close_arr.size == 0:
+                if run_warnings is not None:
+                    run_warnings.append({
+                        "step": "pattern_detect",
+                        "exemplar_ticker": ex_row.ticker,
+                        "reason": "exemplar bars unavailable",
+                    })
+                continue
+            bundle = TemplateMatchExemplar(
+                exemplar=ex_row, close_prices=ex_close_arr
+            )
+        except Exception as exc:
+            log.info(
+                "pattern_detect: exemplar bars pre-fetch failed for "
+                "exemplar_id=%s ticker=%s (continuing): %s",
+                ex_row.id, ex_row.ticker, exc,
+            )
+            if run_warnings is not None:
+                run_warnings.append({
+                    "step": "pattern_detect",
+                    "exemplar_ticker": ex_row.ticker,
+                    "reason": "exemplar bars unavailable",
+                })
+            continue
+        exemplar_bundles_by_class.setdefault(
+            ex_row.proposed_pattern_class, []
+        ).append(bundle)
+
     with lease.fenced_write() as conn:
         # Codex R4 Major #1 + #2: Pass-2 final-universe semantics +
         # reconciliation-before-serialize. The prior R3 fix (per-recheck-hit
@@ -1963,65 +2069,10 @@ def _step_pattern_detect(
                 continue
             final_emit_list.append(tup)
 
-        # T2.SB5 T-A.5.4: load pattern_exemplars corpus + slice
-        # close-price series per exemplar. Pre-index by pattern_class so
-        # match_forward iterates only same-class bundles (Pruning #1).
-        # Load happens INSIDE the lease-fenced read so the corpus
-        # reflects any in-flight commits (per spec section 5.7 retrieval
-        # contract; pass-2 reconcile-before-serialize architecture per
-        # T2.SB3 R4).
-        exemplar_bundles_by_class: dict[
-            str, list[TemplateMatchExemplar]
-        ] = {}
-        try:
-            exemplar_rows = list_exemplars(conn)
-        except Exception as exc:
-            log.warning(
-                "pattern_detect: list_exemplars failed (continuing with "
-                "empty corpus; template_match_score will be NULL): %s",
-                exc,
-            )
-            exemplar_rows = []
-
-        # Filter to confirmed + watch only (rejected exemplars are not
-        # valid positive templates per spec section 5.9 step 5; also
-        # only labeled exemplars carry usable structural evidence).
-        _valid_exemplar_decisions = ("confirmed", "watch")
-        for ex_row in exemplar_rows:
-            if ex_row.final_decision not in _valid_exemplar_decisions:
-                continue
-            try:
-                ex_bars = ohlcv_cache.get_or_fetch(
-                    ticker=ex_row.ticker, window_days=400
-                )
-                _ex_start = pd.Timestamp(ex_row.start_date)
-                _ex_end = pd.Timestamp(ex_row.end_date)
-                _mask = (ex_bars.index >= _ex_start) & (
-                    ex_bars.index <= _ex_end
-                )
-                _ex_close = ex_bars.loc[_mask, "Close"]
-                if hasattr(_ex_close, "ndim") and _ex_close.ndim == 2:
-                    _ex_close = _ex_close.iloc[:, 0]
-                ex_close_arr = _np_pd_inner.asarray(
-                    _ex_close.values, dtype=float
-                )
-                if ex_close_arr.size == 0:
-                    continue
-                bundle = TemplateMatchExemplar(
-                    exemplar=ex_row, close_prices=ex_close_arr
-                )
-            except Exception as exc:
-                log.info(
-                    "pattern_detect: exemplar bars fetch failed for "
-                    "exemplar_id=%s ticker=%s (continuing): %s",
-                    ex_row.id,
-                    ex_row.ticker,
-                    exc,
-                )
-                continue
-            exemplar_bundles_by_class.setdefault(
-                ex_row.proposed_pattern_class, []
-            ).append(bundle)
+        # Exemplar corpus snapshot + bars pre-fetched OUTSIDE this fence
+        # (fetch-vs-write-ordering fix locus #8, above). ``exemplar_bundles_by_class``
+        # and ``snapshot_eligible_ids`` are built there from the Pass-2-entry
+        # snapshot; the in-fence path no longer reads the corpus or fetches bars.
 
         # Resolve each emit's template_match_score + nearest_ids +
         # composite_score per spec section 5.8 formula.
