@@ -66,11 +66,12 @@ def find_fig_png(md_path: Path, tok: str | None) -> str | None:
         return None
     lines = md_path.read_text(encoding="utf-8").splitlines()
     cap = re.compile(r"Figure\s+" + re.escape(tok) + r"(?!\d)")
+    tkr = re.compile(r"\([A-Z]{1,6}\)")
     img = re.compile(r"!\[\]\(([^)]+\.png)\)")
-    for i, line in enumerate(lines):
-        if not cap.search(line):
-            continue
-        for j in range(i, max(-1, i - 9), -1):
+    matches = [i for i, ln in enumerate(lines) if cap.search(ln)]
+    # captions carry a "(TICKER)"; in-text references don't -> prefer captions
+    for i in [k for k in matches if tkr.search(lines[k])] or matches:
+        for j in range(i, max(-1, i - 8), -1):
             m = img.search(lines[j])
             if m:
                 p = m.group(1)
