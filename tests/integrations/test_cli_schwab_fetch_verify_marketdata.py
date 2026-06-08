@@ -82,14 +82,12 @@ def _make_quotes_payload(symbols: list[str]) -> dict:
     """Construct a Schwab-style quotes response payload."""
     return {
         s: {
-            "quote": {
+            "quote": {"lastPrice": 900.0 + i},  # ext-hours -- ignored (L1)
+            "regular": {
                 "regularMarketLastPrice": 100.0 + i,
-                "regularMarketBidPrice": 99.0 + i,
-                "regularMarketAskPrice": 101.0 + i,
-                "mark": 100.0 + i,
-                "quoteTime": "2026-05-14T15:30:00Z",
-                "delayed": False,
+                "regularMarketTradeTime": 1715692800000,
             },
+            "delayed": False,
         }
         for i, s in enumerate(symbols)
     }
@@ -326,11 +324,12 @@ def test_c5_05_verify_marketdata_partial_quotes_surfaces_in_output(
     quotes_resp = MagicMock()
     quotes_resp.json.return_value = {
         "AAPL": {
-            "quote": {
-                "regularMarketLastPrice": 100.0, "regularMarketBidPrice": 99.0, "regularMarketAskPrice": 101.0,
-                "mark": 100.0, "quoteTime": "2026-05-14T15:30:00Z",
-                "delayed": False,
+            "quote": {"lastPrice": 900.0},  # ext-hours -- ignored (L1)
+            "regular": {
+                "regularMarketLastPrice": 100.0,
+                "regularMarketTradeTime": 1715692800000,
             },
+            "delayed": False,
         },
         "XYZ": {"errors": [{"code": "404", "message": "symbol not found"}]},
     }
@@ -496,16 +495,17 @@ def test_c5_07_verify_marketdata_ext_hours_only_symbol_drops_to_yfinance(
     mc.tokens.refresh_token = "stub_refresh_token"
     quotes_resp = MagicMock()
     quotes_resp.json.return_value = {
-        # AAPL: full regular-session provenance -> surfaces.
+        # AAPL: regular-session provenance in the `regular` block -> surfaces.
         "AAPL": {
-            "quote": {
-                "regularMarketLastPrice": 100.0, "regularMarketBidPrice": 99.0,
-                "regularMarketAskPrice": 101.0, "mark": 100.0,
-                "regularMarketTradeTime": "2026-05-14T15:30:00Z",
-                "delayed": False,
+            "quote": {"lastPrice": 900.0},  # ext-hours -- ignored (L1)
+            "regular": {
+                "regularMarketLastPrice": 100.0,
+                "regularMarketTradeTime": 1715692800000,
             },
+            "delayed": False,
         },
-        # XYZ: ext-hours book ONLY (the 999.99 sentinel must NEVER surface).
+        # XYZ: ext-hours book ONLY, NO `regular` block (the 999.99 sentinel must
+        # NEVER surface; the symbol drops to yfinance).
         "XYZ": {
             "quote": {
                 "lastPrice": 999.99, "bidPrice": 998.0, "askPrice": 1000.0,

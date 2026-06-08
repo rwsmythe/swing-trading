@@ -256,18 +256,17 @@ the recorded cassette:
 --environment production` reports `LIVE`; re-auth via `swing schwab setup` or
 `/schwab/setup` if not), creds resolved (env vars OR
 `~/swing-data/user-config.toml [integrations.schwab]`), and **regular market
-hours** (the `regularMarket*` block only populates with bid/ask during the
-regular session). You are on this worktree branch.
+hours** (the `regular` sub-block only populates during the regular session).
+You are on this worktree branch.
 
 ```powershell
-# Step 1 -- record during regular hours with live production tokens:
+# Step 1 -- record during regular hours with live production tokens (the
+# recorder defaults to --fields all, the only selection that ships the
+# `regular` sub-block):
 python scripts/record_schwab_quote_cassette.py --environment production
-
-# OQ-3 recovery: if the script reports a missing bid/ask field, widen fields:
-python scripts/record_schwab_quote_cassette.py --environment production --fields all
 ```
 
-The script, for the single `client.quotes(symbols=["AAPL"], fields="quote")`
+The script, for the single `client.quotes(symbols=["AAPL"], fields="all")`
 call:
 
 1. Opens `vcr.use_cassette(<gate-path>, record_mode='new_episodes', ...)` with
@@ -276,15 +275,18 @@ call:
    record with an incomplete filter).
 2. **Deletes any existing cassette first** so the result is a single-interaction
    cassette.
-3. **Post-record validation** against the persisted file: all 4 `regularMarket*`
-   fields present? If not → cassette **DELETED** + non-zero exit + the OQ-3
-   message.
+3. **Post-record validation** against the persisted file: both `regularMarket*`
+   fields the B2 mapper consumes (`regularMarketLastPrice` +
+   `regularMarketTradeTime`) present? If not → cassette **DELETED** + non-zero
+   exit + the OQ-3 message. (There is NO `regularMarketBidPrice`/`AskPrice` in
+   the Schwab schema — bid/ask are left `None` by the mapper; only
+   `last_price` is consumed downstream.)
 4. **Sentinel-leak audit** (reused `_scan_cassette_for_sentinel_leak` catalog):
    any unsanitized accountHash / token / accountNumber substring? If so →
    cassette **DELETED** + non-zero exit.
 
 ```powershell
-# Step 2 -- confirm the printout shows the 4 regularMarket* fields + leak-clean,
+# Step 2 -- confirm the printout shows the regularMarket* fields + leak-clean,
 # then visually diff the cassette for anything you'd recognize as sensitive:
 git diff tests/integrations/schwab/cassettes/quote_regular_fields.yaml
 git add tests/integrations/schwab/cassettes/quote_regular_fields.yaml
@@ -295,11 +297,14 @@ python -m pytest tests/integrations/schwab/test_quote_fields_live.py
 
 ### The OQ-3 decision (operator's, at record time)
 
-If bid/ask are **absent** under `fields="quote"`, you have two L1-correct
-options — the recorder surfaces this, it does not pre-decide:
+If `regularMarketLastPrice`/`regularMarketTradeTime` are **absent** (e.g. you
+recorded outside regular hours, or with a `fields=` selection that excludes the
+`regular` block), you have two L1-correct options — the recorder surfaces this,
+it does not pre-decide:
 
-1. **Re-run with `--fields all`** to widen the selection until all 4 fields
-   appear, then commit.
+1. **Re-record during regular hours with the default `--fields all`** (the only
+   selection that ships the `regular` sub-block) until both fields appear, then
+   commit.
 2. **Accept the yfinance-drop:** B2 stays L1-correct (it simply routes Schwab
    quotes to yfinance). Do NOT commit a partial cassette; leave the slow gate
    test skipped-by-absence.

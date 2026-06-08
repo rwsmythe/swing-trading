@@ -405,21 +405,25 @@ class SchwabQuoteResponse:
     Fields:
       symbol: ticker symbol (e.g., 'AAPL').
       last_price: primary consumed field; written to PriceCache via ladder.
-      bid: best bid at quote_time.
-      ask: best ask at quote_time.
-      mark: midpoint or Schwab-computed mark; may be None.
-      quote_time: ISO ms string (mapper converts from `quoteTimeInLong` epoch
-        ms OR `quoteTime` ISO string).
+        Sourced from the regular-session `regularMarketLastPrice` (L1).
+      bid: best bid; optional/None -- Schwab has NO regular-session bid and the
+        mapper never surfaces the ext-hours-tainted bare `quote.bidPrice` (L1).
+        Unused downstream.
+      ask: best ask; optional/None for the same reason as `bid`.
+      mark: midpoint or Schwab-computed mark; may be None (no regular-session
+        variant; never the ext-hours bare `mark`).
+      quote_time: ISO ms string (mapper converts from `regularMarketTradeTime`
+        epoch ms).
       delayed: informational; default-tier accounts receive 15-min-delayed
         quotes per spec §A.1 Q12 default disposition.
     """
 
     symbol: str
     last_price: float
-    bid: float
-    ask: float
-    mark: float | None
-    quote_time: str
+    bid: float | None = None
+    ask: float | None = None
+    mark: float | None = None
+    quote_time: str = ""
     delayed: bool = False
 
     def __post_init__(self) -> None:
@@ -445,14 +449,16 @@ class SchwabQuoteResponse:
                 f"got {self.last_price!r}"
             )
         for fname, fval in (("bid", self.bid), ("ask", self.ask)):
+            if fval is None:
+                continue  # bid/ask optional -- Schwab has no regular-session variant (L1)
             if not isinstance(fval, (int, float)) or isinstance(fval, bool):
                 raise ValueError(
-                    f"SchwabQuoteResponse.{fname} must be number; "
+                    f"SchwabQuoteResponse.{fname} must be number or None; "
                     f"got {type(fval).__name__}"
                 )
             if not math.isfinite(float(fval)):
                 raise ValueError(
-                    f"SchwabQuoteResponse.{fname} must be finite (not "
+                    f"SchwabQuoteResponse.{fname} must be finite or None (not "
                     f"NaN/inf); got {fval!r}"
                 )
         if self.mark is not None:

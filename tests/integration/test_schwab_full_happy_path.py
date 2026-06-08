@@ -174,14 +174,12 @@ def _make_quotes_response(symbols: list[str]):
     """Schwab-style quotes payload — one entry per symbol, all OK."""
     return _mock_response({
         s: {
-            "quote": {
+            "quote": {"lastPrice": 900.0 + i},  # ext-hours -- ignored (L1)
+            "regular": {
                 "regularMarketLastPrice": 100.0 + i,
-                "regularMarketBidPrice": 99.0 + i,
-                "regularMarketAskPrice": 101.0 + i,
-                "mark": 100.0 + i,
-                "regularMarketTradeTime": "2026-05-14T15:30:00Z",
-                "delayed": False,
+                "regularMarketTradeTime": 1715692800000,
             },
+            "delayed": False,
         }
         for i, s in enumerate(symbols)
     })

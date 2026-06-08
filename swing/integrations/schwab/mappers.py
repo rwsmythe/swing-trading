@@ -709,37 +709,46 @@ def map_quotes_to_price_cache_entries(
             )
             continue
 
-        # L1: require regular-session provenance. NEVER read lastPrice/
-        # bidPrice/askPrice -- they carry the ext-hours book during pre/post
-        # market. A missing regular field drops the symbol -> yfinance fallback.
-        last_price = body.get("regularMarketLastPrice")
+        # L1: regular-session provenance lives in the `regular` sub-block -- a
+        # SIBLING of `quote` in the per-symbol payload, returned only under
+        # fields="all". Per the captured spec
+        # reference/schwab-api/market-data-specification.md:102-104 the block is
+        # {regularMarketLastPrice, regularMarketLastSize, regularMarketNetChange,
+        #  regularMarketPercentChange, regularMarketTradeTime} -- there is NO
+        # regularMarketBidPrice/AskPrice/Mark. Source last_price + quote_time
+        # from it; NEVER read the bare quote.lastPrice/bidPrice/askPrice/mark
+        # (they carry the ext-hours book during pre/post market). A payload
+        # lacking the `regular` block (a fields="quote"-only or ext-hours-only
+        # response) has no regular-session provenance -> drop -> yfinance.
+        regular = payload.get("regular")
+        if not isinstance(regular, dict):
+            # Flat-form fallback: a genuine flat payload carries regularMarket*
+            # at the top level; a nested fields="quote"-only payload has neither
+            # a `regular` block NOR top-level regularMarket* fields -> yields
+            # None below -> drop. NEVER fall back to the ext-hours `quote` body.
+            regular = payload
+        last_price = regular.get("regularMarketLastPrice")
         if last_price is None:
-            last_price = body.get("regular_market_last_price")  # snake_case fwd-compat
-        bid = body.get("regularMarketBidPrice")
-        if bid is None:
-            bid = body.get("regular_market_bid_price")
-        ask = body.get("regularMarketAskPrice")
-        if ask is None:
-            ask = body.get("regular_market_ask_price")
-        # L1 (Codex R2 MAJOR): NEVER read the bare `mark` -- during pre/post
-        # market it carries the extended-hours mark. Use the regular-session
-        # variant only; None (an allowed value) when Schwab omits it, rather
-        # than leaking an ext-hours value onto a priced surface.
-        mark = body.get("regularMarketMark")
-        if mark is None:
-            mark = body.get("regular_market_mark")
+            last_price = regular.get("regular_market_last_price")  # snake_case fwd-compat
         quote_time_raw = (
-            body.get("regularMarketTradeTime")
-            or body.get("regular_market_trade_time")
+            regular.get("regularMarketTradeTime")
+            or regular.get("regular_market_trade_time")
         )
+        # bid/ask/mark: Schwab has NO regular-session variant of these, and the
+        # bare quote/extended values carry the ext-hours book (L1). They are
+        # unused downstream (only last_price feeds the price-cache entry via the
+        # ladder), so leave them None rather than leaking an ext-hours value.
+        bid = None
+        ask = None
+        mark = None
         delayed_raw = body.get("delayed")
 
-        # Drop the symbol unless full regular-session provenance is present
-        # (last AND bid AND ask). No ext-hours value ever surfaces (L1).
-        if last_price is None or bid is None or ask is None:
+        # Drop the symbol unless regular-session provenance is present
+        # (regularMarketLastPrice). No ext-hours value ever surfaces (L1).
+        if last_price is None:
             _log.info(
                 "map_quotes_to_price_cache_entries: dropping %s "
-                "(missing regular-session last/bid/ask)",
+                "(missing regular-session lastPrice)",
                 symbol,
             )
             continue
@@ -748,9 +757,9 @@ def map_quotes_to_price_cache_entries(
             entry = SchwabQuoteResponse(
                 symbol=str(symbol),
                 last_price=float(last_price),
-                bid=float(bid),
-                ask=float(ask),
-                mark=float(mark) if mark is not None else None,
+                bid=bid,
+                ask=ask,
+                mark=mark,
                 quote_time=_coerce_quote_time(quote_time_raw),
                 delayed=bool(delayed_raw) if delayed_raw is not None else False,
             )

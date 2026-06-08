@@ -281,34 +281,35 @@ def test_03_map_quotes_happy_path_all_ok():
         map_quotes_to_price_cache_entries,
     )
 
-    # camelCase shape (Schwab REST convention).
+    # Real Schwab shape: regularMarket* live in the `regular` sub-block (a
+    # SIBLING of `quote`), returned under fields="all". bid/ask are NOT sourced
+    # (no regular-session variant; never the ext-hours `quote` book -- L1).
     response = {
         "AAPL": {
-            "quote": {
-                "regularMarketLastPrice": 150.0,
-                "regularMarketBidPrice": 149.5,
-                "regularMarketAskPrice": 150.5,
-                "mark": 150.0,
-                "regularMarketTradeTime": 1715692800000,  # epoch ms
-                "delayed": False,
+            "quote": {  # ext-hours book -- must never surface
+                "lastPrice": 999.99, "bidPrice": 998.0, "askPrice": 1000.0,
+                "mark": 999.99,
             },
+            "regular": {
+                "regularMarketLastPrice": 150.0,
+                "regularMarketTradeTime": 1715692800000,  # epoch ms
+            },
+            "delayed": False,
         },
         "MSFT": {
-            "quote": {
+            "quote": {"lastPrice": 999.99},
+            "regular": {
                 "regularMarketLastPrice": 420.0,
-                "regularMarketBidPrice": 419.5,
-                "regularMarketAskPrice": 420.5,
-                "mark": 420.0,
                 "regularMarketTradeTime": 1715692800000,
-                "delayed": False,
             },
+            "delayed": False,
         },
     }
     result = map_quotes_to_price_cache_entries(response)
     assert set(result.keys()) == {"AAPL", "MSFT"}
     assert result["AAPL"].last_price == 150.0
-    assert result["AAPL"].bid == 149.5
-    assert result["AAPL"].ask == 150.5
+    assert result["AAPL"].bid is None
+    assert result["AAPL"].ask is None
     assert result["AAPL"].delayed is False
 
 
@@ -321,10 +322,8 @@ def test_04_map_quotes_partial_response_drops_error_symbols():
 
     response = {
         "AAPL": {
-            "quote": {
+            "regular": {
                 "regularMarketLastPrice": 150.0,
-                "regularMarketBidPrice": 149.5,
-                "regularMarketAskPrice": 150.5,
                 "regularMarketTradeTime": 1715692800000,
             },
         },
@@ -497,17 +496,17 @@ def test_09_get_quotes_batch_happy_path_audit_lifecycle(v18_conn):
     from swing.integrations.schwab.marketdata import get_quotes_batch
 
     client = MagicMock()
-    # Realistic Schwab shape: nested under "quote" key inside per-symbol dict.
+    # Real Schwab shape: regularMarket* in the `regular` sub-block (sibling of
+    # `quote`), returned under fields="all".
     client.quotes.return_value = _mock_response(
         {
             "AAPL": {
-                "quote": {
+                "quote": {"lastPrice": 999.99},  # ext-hours -- ignored (L1)
+                "regular": {
                     "regularMarketLastPrice": 150.0,
-                    "regularMarketBidPrice": 149.5,
-                    "regularMarketAskPrice": 150.5,
                     "regularMarketTradeTime": 1715692800000,
-                    "delayed": False,
                 },
+                "delayed": False,
             },
         },
     )

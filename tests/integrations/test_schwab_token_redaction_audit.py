@@ -1348,14 +1348,12 @@ def test_26_marketdata_quotes_partial_response_per_symbol_breakdown_redacted(
     ok_resp = _MagicMock()
     ok_resp.json.return_value = {
         "AAPL": {
-            "quote": {
+            "quote": {"lastPrice": 999.99},  # ext-hours -- ignored (L1)
+            "regular": {
                 "regularMarketLastPrice": 150.0,
-                "regularMarketBidPrice": 149.95,
-                "regularMarketAskPrice": 150.05,
-                "mark": 150.0,
                 "regularMarketTradeTime": 1700000000000,
-                "delayed": False,
             },
+            "delayed": False,
         },
         # The failed symbol's NAME is sentinel-derived; the failed-symbol
         # list goes into the audit error_message excerpt.
@@ -1686,14 +1684,12 @@ def test_27_marketdata_quotes_sentinel_emitted_from_inside_call_is_redacted(
         # Return a populated quote so the wrapper's success path runs end-to-end.
         resp.json.return_value = {
             "AAPL": {
-                "quote": {
+                "quote": {"lastPrice": 999.99},  # ext-hours -- ignored (L1)
+                "regular": {
                     "regularMarketLastPrice": 100.0,
-                    "regularMarketBidPrice": 99.5,
-                    "regularMarketAskPrice": 100.5,
-                    "mark": 100.0,
                     "regularMarketTradeTime": 1715692800000,
-                    "delayed": False,
                 },
+                "delayed": False,
             },
         }
         resp.elapsed = _MagicMock()

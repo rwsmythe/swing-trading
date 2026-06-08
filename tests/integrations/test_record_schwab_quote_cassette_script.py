@@ -4,8 +4,9 @@ Phase 15 / data-integrity arc Slice-B Gate 4. The recorder produces the
 sanitized VCR cassette `tests/integrations/schwab/cassettes/quote_regular_fields.yaml`
 from one live `client.quotes(...)` call so the slow gate test
 `tests/integrations/schwab/test_quote_fields_live.py` (a pure substring grep
-for the 4 `regularMarket*` fields) passes after the operator's market-open
-recording step.
+for the two `regularMarket*` fields the B2 mapper consumes --
+regularMarketLastPrice + regularMarketTradeTime) passes after the operator's
+market-open recording step.
 
 These tests are MOCK-based: they NEVER make a live Schwab call. The full
 `vcr.use_cassette` + `client.quotes` live recording is the operator's
@@ -31,8 +32,6 @@ _GATE_RELPATH = Path("tests/integrations/schwab/cassettes/quote_regular_fields.y
 _REGULAR_FIELDS = (
     "regularMarketLastPrice",
     "regularMarketTradeTime",
-    "regularMarketBidPrice",
-    "regularMarketAskPrice",
 )
 
 
@@ -140,27 +139,27 @@ def test_shared_vcr_filter_dict_is_reused_canonical() -> None:
     assert "accountNumber" in cfg["filter_query_parameters"]
 
 
-# --- Test 4 & 5: 4-field validation (discriminating pair) ------------------
-def test_validate_all_four_fields_present_passes(tmp_path: Path) -> None:
+# --- Test 4 & 5: regular-field validation (discriminating pair) ------------
+def test_validate_all_regular_fields_present_passes(tmp_path: Path) -> None:
     mod = _load_module()
     cassette = tmp_path / "quote_regular_fields.yaml"
     cassette.write_text(_yaml_cassette_with_fields(_REGULAR_FIELDS), encoding="utf-8")
     ok, msg = mod._validate_quote_cassette_has_regular_fields(cassette)
-    assert ok is True, f"all 4 fields present should pass; msg={msg!r}"
+    assert ok is True, f"both regular fields present should pass; msg={msg!r}"
     assert msg == ""
 
 
-def test_validate_missing_bid_field_fails_with_oq3_message(tmp_path: Path) -> None:
+def test_validate_missing_field_fails_with_oq3_message(tmp_path: Path) -> None:
     """One missing field -> (False, actionable OQ-3 message naming the field +
     the fields=all / yfinance-drop decision). Distinguishes from the all-present
     pass above (feedback_regression_test_arithmetic)."""
     mod = _load_module()
-    present = tuple(f for f in _REGULAR_FIELDS if f != "regularMarketBidPrice")
+    present = tuple(f for f in _REGULAR_FIELDS if f != "regularMarketTradeTime")
     cassette = tmp_path / "quote_regular_fields.yaml"
     cassette.write_text(_yaml_cassette_with_fields(present), encoding="utf-8")
     ok, msg = mod._validate_quote_cassette_has_regular_fields(cassette)
     assert ok is False
-    assert "regularMarketBidPrice" in msg
+    assert "regularMarketTradeTime" in msg
     assert "OQ-3" in msg
     assert "all" in msg and "fields" in msg.lower()
 
@@ -290,7 +289,7 @@ def test_record_deletes_cassette_when_field_missing(
     mod = _load_module()
     _install_fake_vcr(monkeypatch)
     cassette = tmp_path / "quote_regular_fields.yaml"
-    present = tuple(f for f in _REGULAR_FIELDS if f != "regularMarketAskPrice")
+    present = tuple(f for f in _REGULAR_FIELDS if f != "regularMarketTradeTime")
     text = _yaml_cassette_with_fields(present)
 
     def _quotes(**kwargs):
@@ -313,7 +312,7 @@ def test_record_deletes_cassette_on_leak(
     mod = _load_module()
     _install_fake_vcr(monkeypatch)
     cassette = tmp_path / "quote_regular_fields.yaml"
-    # A valid single quotes interaction with all 4 fields BUT an unsanitized
+    # A valid single quotes interaction with both regular fields BUT an unsanitized
     # token leaked in the (double-quoted JSON) response body -- the shape a real
     # cassette leak takes. Field + single-interaction checks pass; the leak-scan
     # must still delete the cassette.

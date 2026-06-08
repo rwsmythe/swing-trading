@@ -2,10 +2,11 @@
 
 Phase 15 / data-integrity arc Slice-B Gate 4. Produces the sanitized VCR
 cassette ``tests/integrations/schwab/cassettes/quote_regular_fields.yaml`` from
-ONE live ``client.quotes(symbols=[...], fields="quote")`` call so the slow gate
+ONE live ``client.quotes(symbols=[...], fields="all")`` call so the slow gate
 test ``tests/integrations/schwab/test_quote_fields_live.py`` (a pure substring
-grep for the 4 ``regularMarket*`` fields the B2 mapper consumes) passes after
-the operator's market-open recording step.
+grep for the two ``regularMarket*`` fields the B2 mapper consumes --
+``regularMarketLastPrice`` + ``regularMarketTradeTime``) passes after the
+operator's market-open recording step.
 
 Operator workflow (runbook ``docs/runbooks/schwab-cassette-recording.md``
 section "Quote cassette (Gate 4 / OQ-3)"):
@@ -26,13 +27,14 @@ helpers in ``scripts/record_schwab_cassettes.py``:
 - ``_scan_cassette_for_sentinel_leak`` — the leak-audit regex catalog.
 - ``_resolve_repo_root`` / ``_safe_delete_cassette`` — path + cleanup helpers.
 
-OQ-3 decision (operator's, at record time): under ``fields="quote"`` Schwab may
-omit bid/ask. The B2 mapper requires last AND bid AND ask, so if either is
-absent every Schwab quote drops to yfinance (the path goes dead). The recorder
-SURFACES this -- it does not pre-decide. On a missing field the cassette is
-deleted + the script exits non-zero with an actionable message: re-run with
-``--fields all`` to widen, OR accept the yfinance-drop (B2 stays L1-correct
-either way) and do NOT commit the cassette.
+OQ-3 (A-lite, operator-approved 2026-06-08): the regular-session fields live in
+the ``regular`` sub-block (a SIBLING of ``quote``), which ships ONLY under
+``fields="all"`` -- under ``fields="quote"`` the block is absent, so the B2
+mapper drops every Schwab quote to yfinance (the path goes dead). The recorder
+defaults to ``--fields all`` so the ``regular`` block is captured. On a missing
+field the cassette is deleted + the script exits non-zero with an actionable
+message: confirm ``--fields all``, OR accept the yfinance-drop (B2 stays
+L1-correct either way) and do NOT commit the cassette.
 """
 from __future__ import annotations
 
@@ -55,13 +57,14 @@ DELETE_FAILED_CODE = 6
 
 _log = logging.getLogger("scripts.record_schwab_quote_cassette")
 
-# The 4 regular-session quote fields the B2 mapper consumes; the gate test
-# greps the cassette text for ALL of these.
+# The regular-session quote fields the B2 mapper consumes; the gate test greps
+# the cassette text for ALL of these. Per the captured spec
+# reference/schwab-api/market-data-specification.md:102-104 the `regular`
+# sub-block carries NO bid/ask (there is no regularMarketBidPrice/AskPrice) --
+# only these two are real + consumed.
 REGULAR_SESSION_FIELDS: tuple[str, ...] = (
     "regularMarketLastPrice",
     "regularMarketTradeTime",
-    "regularMarketBidPrice",
-    "regularMarketAskPrice",
 )
 
 # The EXACT cassette path the gate test asserts on
@@ -192,11 +195,13 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
-            "OQ-3: under --fields quote Schwab may omit bid/ask; the B2 mapper "
-            "needs last AND bid AND ask. On a missing field the cassette is "
-            "deleted + the script exits non-zero -- re-run with --fields all "
-            "to widen, OR accept the yfinance-drop (B2 stays L1-correct) and "
-            "do NOT commit the cassette. --environment is REQUIRED."
+            "OQ-3: the `regular` sub-block (regularMarketLastPrice/TradeTime) "
+            "ships ONLY under --fields all; under --fields quote it is absent "
+            "and the B2 mapper drops every quote to yfinance. On a missing "
+            "field the cassette is deleted + the script exits non-zero -- the "
+            "default --fields all should carry the regular block; otherwise "
+            "accept the yfinance-drop (B2 stays L1-correct) and do NOT commit "
+            "the cassette. --environment is REQUIRED."
         ),
     )
     parser.add_argument(
@@ -215,11 +220,11 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--fields",
-        default="quote",
+        default="all",
         help=(
-            "schwabdev quotes `fields` selection. Default: quote (the "
-            "regularMarket* block). Re-run with `all` per OQ-3 if bid/ask are "
-            "absent under `quote`."
+            "schwabdev quotes `fields` selection. Default: all -- the `regular` "
+            "sub-block (regularMarketLastPrice/TradeTime) ships ONLY under "
+            "fields=all; under fields=quote it is absent (OQ-3)."
         ),
     )
     parser.add_argument(
@@ -269,13 +274,14 @@ def _validate_quote_cassette_has_regular_fields(
     if not missing:
         return True, ""
     msg = (
-        f"FAILED: cassette {cassette_path} is missing regular-session quote "
-        f"field(s): {', '.join(missing)}. Under fields=\"quote\" the Schwab "
-        f"response did not carry bid/ask. The B2 mapper requires last AND bid "
-        f"AND ask, so every Schwab quote would drop to yfinance (the path goes "
-        f"dead). Operator decision (OQ-3): re-run with --fields all to widen "
-        f"the selection, OR accept the yfinance-drop (B2 stays L1-correct "
-        f"either way) and do NOT commit this cassette."
+        f"FAILED (OQ-3): cassette {cassette_path} is missing regular-session "
+        f"quote field(s): {', '.join(missing)}. The `regular` sub-block (which "
+        f"carries regularMarketLastPrice/TradeTime) ships ONLY under "
+        f"fields=\"all\" -- under fields=\"quote\" the block is absent, so the "
+        f"B2 mapper drops every Schwab quote to yfinance (the path goes dead). "
+        f"Re-run with --fields all to widen the selection, OR accept the "
+        f"yfinance-drop (B2 stays L1-correct either way) and do NOT commit this "
+        f"cassette."
     )
     return False, msg
 
