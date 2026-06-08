@@ -8,15 +8,25 @@ from datetime import date
 import pandas as pd
 
 from swing.patterns.foundation import CandidateWindow, generate_candidate_windows
-from swing.pipeline.runner import _pattern_detect_registry
 
 from .constants import H2_MIN_BARS
 from .exemplar_reader import ExemplarRow
 from .ohlcv_reader import slice_to
 
+
+def _lazy_pattern_detect_registry():
+    """Deferred import of _pattern_detect_registry to keep swing.pipeline.runner (and its
+    swing.data.ohlcv_archive transitive import) OUT of the module-level import graph.
+    L2 LOCK: swing.data.ohlcv_archive must NOT appear in sys.modules when the evaluator
+    modules are imported (test_l2_lock.py). Tests monkeypatch _REGISTRY before calling
+    _resolve_registry(); the lazy default is never invoked in that path."""
+    from swing.pipeline.runner import _pattern_detect_registry  # noqa: PLC0415
+    return _pattern_detect_registry()
+
+
 # Module-level so tests can monkeypatch with a fake registry. The production path
-# resolves the real 5 detectors lazily on first call.
-_REGISTRY = _pattern_detect_registry
+# resolves the real 5 detectors lazily on first call via _lazy_pattern_detect_registry.
+_REGISTRY = _lazy_pattern_detect_registry
 
 _ANCHOR_MODE_LIMITED_CLASSES = frozenset({"cup_with_handle", "high_tight_flag"})
 _SKIP_REASONS = frozenset(
