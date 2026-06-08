@@ -3822,6 +3822,14 @@ def _step_daily_management(
                 )
                 if archive_df is None or archive_df.empty:
                     miss_reason = "warm_empty_or_stale"
+            except LeaseRevokedError:
+                # Structural force-clear guard (Codex R2 MAJOR): LeaseRevokedError
+                # subclasses Exception, so the catch-all below would otherwise
+                # downgrade a revoke to warm_raised+skip. read_or_fetch_archive is
+                # lease-free today, but this guard keeps force-clear authority
+                # structural -- a revoke from the warm path propagates, matching
+                # the outer per-trade discipline.
+                raise
             except Exception as warm_exc:  # noqa: BLE001 -- best-effort warm; miss funnels to #27
                 log.warning(
                     "daily_management warm fetch failed for trade %s "

@@ -489,10 +489,16 @@ def compute_daily_approximate_snapshot(  # noqa: PLR0913  -- spec-locked signatu
 ) -> SnapshotComputeResult:
     """Spec §4.1 step body — emit a daily_approximate snapshot row's field dict.
 
-    Returns a dict suitable for ``upsert_snapshot``, OR ``None`` if the
-    OHLCV archive returns no data for this ticker (operator-actionable
-    signal that the ticker is delisted/invalid; pipeline runner logs and
-    skips per the cadence-step semantics).
+    Pure compute (spec §4.1, fetch-hoist 2026-06-07): consumes the pre-warmed
+    ``archive_df`` (the runner warms ``read_or_fetch_archive`` OUTSIDE the fence)
+    and returns a ``SnapshotComputeResult``. ``result.fields`` is a dict suitable
+    for ``upsert_snapshot`` on success, OR ``None`` on a skip — in which case
+    ``result.miss_reason`` carries the authoritative cause
+    (``ticker_changed`` when the in-fence trade ticker no longer matches
+    ``expected_ticker``; ``warm_empty_or_stale`` when ``archive_df`` is
+    ``None``/empty; ``no_eligible_window`` when the warmed frame has no usable
+    rows for ``[anchor, asof_session]``). The pipeline runner logs + skips +
+    #27-audits per the cadence-step semantics.
 
     Caller responsibilities:
       * Pass ``run_now`` from a session-anchored helper. Both naive and

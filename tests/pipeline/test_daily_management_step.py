@@ -573,3 +573,32 @@ def test_step_no_eligible_window_miss_reason(synthetic_lease_and_trades, monkeyp
         "SELECT COUNT(*) FROM daily_management_records "
         "WHERE record_type = 'daily_snapshot'"
     ).fetchone()[0] == 0
+
+
+def test_step_warm_lease_revoked_propagates(synthetic_lease_and_trades, monkeypatch):
+    """Structural force-clear guard (Codex R2 MAJOR): a LeaseRevokedError raised
+    from the WARM path MUST propagate out of _step_daily_management, NOT be caught
+    by the warm's best-effort `except Exception` and downgraded to warm_raised+skip.
+    read_or_fetch_archive is lease-free today, but the guard must be structural so
+    a future lease-touching change cannot silently swallow a revoke.
+
+    EXACT pre-fix (warm catch-all only): no exception; warm_raised skip + #27 entry.
+    EXACT post-fix: LeaseRevokedError propagates out; no warm_raised #27 entry."""
+    from swing.pipeline.lease import LeaseRevokedError
+    lease, conn = synthetic_lease_and_trades
+
+    def revoke_warm(*a, **kw):
+        raise LeaseRevokedError("synthetic-revoke-during-warm")
+    monkeypatch.setattr("swing.pipeline.runner.read_or_fetch_archive", revoke_warm)
+
+    run_warnings: list[dict] = []
+    with pytest.raises(LeaseRevokedError, match="synthetic-revoke-during-warm"):
+        _step_daily_management(
+            lease=lease, run_now=datetime(2026, 5, 7, 18, 0, 0),
+            eval_run_id=99, archive_history_days=120,
+            ohlcv_archive_dir=Path("/dev/null"),
+            capital_floor_dollars=7500.0, trail_MA_period_days_default=21,
+            run_warnings=run_warnings,
+        )
+    # The revoke was NOT downgraded to a #27 warm_raised entry:
+    assert not any(e.get("miss_reason") == "warm_raised" for e in run_warnings)
