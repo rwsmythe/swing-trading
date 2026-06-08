@@ -65,6 +65,10 @@ def test_warm_never_runs_under_a_held_fence(tmp_path: Path, monkeypatch):
                 current_avg_cost=100.0, current_size=50.0, current_stop=92.0,
                 pre_trade_locked_at="2026-05-01T09:30:00")
     base.commit()
+    # Close the seeding connection so no stray file handle survives into tmp
+    # cleanup (Windows handle-leak hygiene; Codex R3 MINOR). WAL mode is a
+    # persistent DB property -- the lease's own connections still see it.
+    base.close()
 
     df = pd.DataFrame({
         "High":  [105.0, 115.0, 110.0],
