@@ -151,6 +151,8 @@ swing-pre-phase11-schwab-migration-*.db
 .codex-prompt.txt
 .copowers-findings.md
 .copowers-session-*.json
+.copowers-review-*
+.copowers-review-prompt.txt
 
 # SQLite WAL sidecars (any in-repo dev/test DB; the live DB is outside the repo)
 *.db-wal
