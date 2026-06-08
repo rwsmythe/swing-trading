@@ -65,14 +65,29 @@ def _load_module() -> types.ModuleType:
     return mod
 
 
-def _yaml_cassette_with_fields(fields: tuple[str, ...]) -> str:
-    """Build a minimal cassette-shaped text containing the given quote fields."""
-    quote_obj = ", ".join(f'"{f}": 1' for f in fields)
+_QUOTES_URI = (
+    "https://api.schwabapi.com/marketdata/v1/quotes?symbols=AAPL&fields=quote"
+)
+
+
+def _yaml_cassette_with_fields(
+    fields: tuple[str, ...], *, extra_body: str = "", uri: str = _QUOTES_URI,
+) -> str:
+    """Build a minimal single-interaction vcrpy cassette text.
+
+    One interaction whose request targets the quotes endpoint + whose response
+    body carries the given quote fields. `extra_body` injects extra JSON into
+    the outer object (used to plant an unsanitized token for the leak test)."""
+    quote_fields = ", ".join(f'"{f}": 1' for f in fields)
+    body = '{"AAPL": {"quote": {' + quote_fields + "}}" + extra_body + "}"
     return (
         "interactions:\n"
-        "- response:\n"
+        "- request:\n"
+        "    method: GET\n"
+        f"    uri: {uri}\n"
+        "  response:\n"
         "    body:\n"
-        f'      string: \'{{"AAPL": {{"quote": {{{quote_obj}}}}}}}\'\n'
+        f"      string: '{body}'\n"
         "version: 1\n"
     )
 
@@ -159,6 +174,53 @@ def test_validate_absent_cassette_fails(tmp_path: Path) -> None:
     assert "FAILED" in msg
 
 
+# --- single-interaction guard (Codex R1 MAJOR fix) -------------------------
+def test_single_interaction_guard_passes_for_one_quote_interaction(
+    tmp_path: Path,
+) -> None:
+    mod = _load_module()
+    cassette = tmp_path / "quote_regular_fields.yaml"
+    cassette.write_text(_yaml_cassette_with_fields(_REGULAR_FIELDS), encoding="utf-8")
+    ok, msg = mod._validate_quote_cassette_single_interaction(cassette)
+    assert ok is True, f"single quotes interaction should pass; msg={msg!r}"
+    assert msg == ""
+
+
+def test_single_interaction_guard_fails_on_multiple_interactions(
+    tmp_path: Path,
+) -> None:
+    """A stale-token OAuth refresh captured alongside the quote -> 2 interactions
+    -> reject with an actionable 'refresh' message (distinguishes from the
+    single-interaction pass above)."""
+    mod = _load_module()
+    cassette = tmp_path / "quote_regular_fields.yaml"
+    # Quote interaction + a second (refresh-like) interaction, both under the
+    # interactions: list (well-formed vcrpy shape).
+    quote_fields = ", ".join(f'"{f}": 1' for f in _REGULAR_FIELDS)
+    quote_body = '{"AAPL": {"quote": {' + quote_fields + "}}}"
+    cassette.write_text(
+        "interactions:\n"
+        "- request:\n"
+        "    method: GET\n"
+        f"    uri: {_QUOTES_URI}\n"
+        "  response:\n"
+        "    body:\n"
+        f"      string: '{quote_body}'\n"
+        "- request:\n"
+        "    method: POST\n"
+        "    uri: https://api.schwabapi.com/v1/oauth/token\n"
+        "  response:\n"
+        "    body:\n"
+        "      string: '{\"access_token\": \"x\"}'\n"
+        "version: 1\n",
+        encoding="utf-8",
+    )
+    ok, msg = mod._validate_quote_cassette_single_interaction(cassette)
+    assert ok is False
+    assert "2 interaction" in msg
+    assert "refresh" in msg.lower()
+
+
 # --- Test 6: leak-scan reuses the canonical catalog ------------------------
 def test_leak_scan_flags_unsanitized_token(tmp_path: Path) -> None:
     mod = _load_module()
@@ -234,16 +296,13 @@ def test_record_deletes_cassette_on_leak(
     mod = _load_module()
     _install_fake_vcr(monkeypatch)
     cassette = tmp_path / "quote_regular_fields.yaml"
-    # All 4 fields present BUT an unsanitized token leaked in the (double-quoted
-    # JSON) response body -- the shape a real cassette leak takes. Leak-scan
-    # must delete the cassette even though field-validation passes.
-    leaked = (
-        "interactions:\n- response:\n    body:\n      string: '"
-        '{"AAPL": {"quote": {'
-        '"regularMarketLastPrice": 1, "regularMarketTradeTime": 1, '
-        '"regularMarketBidPrice": 1, "regularMarketAskPrice": 1}}, '
-        '"access_token": "untouched-token-value-foo-bar-baz-quux"}'
-        "'\nversion: 1\n"
+    # A valid single quotes interaction with all 4 fields BUT an unsanitized
+    # token leaked in the (double-quoted JSON) response body -- the shape a real
+    # cassette leak takes. Field + single-interaction checks pass; the leak-scan
+    # must still delete the cassette.
+    leaked = _yaml_cassette_with_fields(
+        _REGULAR_FIELDS,
+        extra_body=', "access_token": "untouched-token-value-foo-bar-baz-quux"',
     )
 
     def _quotes(**kwargs):

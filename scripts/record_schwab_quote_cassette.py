@@ -245,6 +245,61 @@ def _validate_quote_cassette_has_regular_fields(
     return False, msg
 
 
+def _validate_quote_cassette_single_interaction(
+    cassette_path: Path,
+) -> tuple[bool, str]:
+    """Enforce the single-quote-interaction contract on the persisted cassette.
+
+    schwabdev v3 refreshes tokens synchronously per request; if the access
+    token is stale at record time the first `client.quotes(...)` call triggers
+    an OAuth token-refresh HTTP exchange that `vcr.use_cassette` would ALSO
+    capture -- yielding a 2-interaction cassette (refresh + quote). The shared
+    sanitization + leak-scan scrub the refresh tokens, but the recorder's
+    contract is a SINGLE clean quote interaction. Reject anything else so a
+    stray OAuth-refresh interaction is never committed.
+
+    Returns (True, '') for exactly one interaction whose request targets the
+    quotes endpoint; (False, '<operator-actionable msg>') otherwise.
+    """
+    try:
+        import yaml as _yaml
+    except ImportError:
+        return False, (
+            f"FAILED: PyYAML unavailable; cannot verify {cassette_path} is a "
+            f"single quote interaction. Install the dev extra + re-run."
+        )
+    if not cassette_path.exists():
+        return False, f"FAILED: cassette {cassette_path} was not written."
+    try:
+        with cassette_path.open(encoding="utf-8") as fh:
+            cassette = _yaml.safe_load(fh)
+    except (OSError, _yaml.YAMLError) as exc:
+        return False, f"FAILED: cannot parse cassette {cassette_path}: {exc!r}"
+    interactions = (cassette or {}).get("interactions", []) or []
+    if len(interactions) != 1:
+        return False, (
+            f"FAILED: cassette {cassette_path} has {len(interactions)} "
+            f"interaction(s); expected exactly 1 (the quote call). A stale-token "
+            f"OAuth refresh was likely captured alongside the quote. Run "
+            f"`swing schwab refresh` (or confirm `swing schwab status "
+            f"--environment <env>` reports LIVE) BEFORE recording so the "
+            f"cassette is a single clean quote interaction, then re-run."
+        )
+    uri = ""
+    first = interactions[0]
+    if isinstance(first, dict):
+        request = first.get("request")
+        if isinstance(request, dict):
+            uri = str(request.get("uri", "") or "")
+    if "quote" not in uri.lower():
+        return False, (
+            f"FAILED: the sole recorded interaction in {cassette_path} does not "
+            f"target the quotes endpoint (uri={uri!r}). Confirm tokens are LIVE "
+            f"+ re-run so the quote call is the only captured interaction."
+        )
+    return True, ""
+
+
 def _count_quote_symbols(resp: Any) -> int:
     """Best-effort count of symbols in a quotes response (for the printout)."""
     data = resp
@@ -303,6 +358,12 @@ def _record_quote_cassette(
         _safe_delete_cassette(cassette_path)
         sys.stderr.write(msg + "\n")
         return 3
+
+    ok, msg = _validate_quote_cassette_single_interaction(cassette_path)
+    if not ok:
+        _safe_delete_cassette(cassette_path)
+        sys.stderr.write(msg + "\n")
+        return 5
 
     leaks = _scan_cassette_for_sentinel_leak(cassette_path)
     if leaks:
