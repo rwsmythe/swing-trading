@@ -25,6 +25,7 @@ from swing.evaluation.criteria.risk_feasibility import NAME as RISK_FEAS_NAME
 from swing.metrics.capital import (
     EXPECTED_CRITERIA_NAMES,
     CapitalFrictionResult,
+    _count_open_at_run,
     compute_capital_friction,
 )
 
@@ -802,3 +803,213 @@ def test_dataclass_post_init_rejects_nan_or_inf():
         CapitalFrictionResult(
             **{**base_kwargs, "capital_denominator_badge": "FOO"}
         )
+
+
+# ---------------------------------------------------------------------------
+# Issue #3 — _count_open_at_run state-based predicate (spec
+# docs/superpowers/specs/2026-06-07-count-open-at-run-predicate-design.md).
+#
+# The E1-E11 edge-case matrix (spec §4). The fix gates the terminal
+# ``last_fill_at`` clause behind ``state NOT IN ('closed','reviewed')`` so a
+# still-open trade entered before the run (whose only fill is its entry,
+# ``last_fill_at < started_ts``) is no longer wrongly excluded.
+#
+# E1/E4/E5 are the discriminating regressions: asserted under BOTH the
+# pre-fix (buggy) predicate and the shipped predicate per
+# feedback_regression_test_arithmetic.
+# ---------------------------------------------------------------------------
+
+# Chosen historical run-start instant for the whole E-matrix.
+_R = "2026-05-10T13:00:00"
+
+
+def _old_predicate_count(conn: sqlite3.Connection, started_ts: str) -> int:
+    """The PRE-FIX (buggy) predicate, reproduced verbatim.
+
+    Treats ``last_fill_at`` as a close time for EVERY trade
+    (``last_fill_at IS NULL OR last_fill_at = '' OR last_fill_at >= ?``),
+    with NO ``state`` gate. Used by the E1/E4/E5 discriminating tests to
+    prove the fixture genuinely exercises the difference between the old and
+    new predicate (feedback_regression_test_arithmetic), not just the new
+    behavior.
+    """
+    row = conn.execute(
+        "SELECT COUNT(*) FROM trades "
+        "WHERE pre_trade_locked_at IS NOT NULL "
+        "AND pre_trade_locked_at <> '' "
+        "AND pre_trade_locked_at <= ? "
+        "AND (last_fill_at IS NULL OR last_fill_at = '' "
+        "     OR last_fill_at >= ?)",
+        (started_ts, started_ts),
+    ).fetchone()
+    return int(row[0])
+
+
+def _seed_trade_row(
+    conn: sqlite3.Connection,
+    *,
+    trade_id: int,
+    ticker: str,
+    state: str,
+    pre_trade_locked_at: str | None,
+    last_fill_at: str | None,
+) -> None:
+    """Minimal trade row carrying only the columns ``_count_open_at_run``
+    reads: ``state``, ``pre_trade_locked_at``, ``last_fill_at``. Other
+    columns are filled with COUNT-irrelevant placeholders."""
+    conn.execute(
+        "INSERT INTO trades (id, ticker, entry_date, entry_price, "
+        "initial_shares, initial_stop, current_stop, state, sector, "
+        "industry, trade_origin, pre_trade_locked_at, current_size, "
+        "current_avg_cost, last_fill_at) VALUES (?, ?, '2026-05-01', 10.0, "
+        "100, 9.0, 9.0, ?, 'S', 'I', 'manual_off_pipeline', ?, 100, 10.0, ?)",
+        (trade_id, ticker, state, pre_trade_locked_at, last_fill_at),
+    )
+
+
+# --- E1/E4/E5: discriminating regressions (old=0, new=1) -------------------
+
+def test_e1_still_open_entered_before_run_skyt(conn):
+    """E1 (SKYT): non-terminal trade entered before R whose only fill is the
+    entry (``last_fill_at < R``, non-NULL). Old predicate WRONGLY excludes
+    (→0); new predicate counts (→1)."""
+    _seed_trade_row(conn, trade_id=1, ticker="SKYT", state="managing",
+                    pre_trade_locked_at="2026-05-05T09:30:00",
+                    last_fill_at="2026-05-05T09:30:00")
+    assert _old_predicate_count(conn, _R) == 0  # pre-fix: wrongly excluded
+    assert _count_open_at_run(conn, started_ts=_R) == 1  # fixed: counted
+
+
+def test_e4_partial_stop_still_open(conn):
+    """E4: a partial STOP fill (``action='stop'``) sits on a still-open
+    ``partial_exited`` trade; its ``last_fill_at`` is the pre-run stop fill.
+    The G2 partial-stop hazard — old predicate excludes (→0); new counts
+    (→1) by keying on state, not the fill timestamp."""
+    _seed_trade_row(conn, trade_id=1, ticker="PSTP", state="partial_exited",
+                    pre_trade_locked_at="2026-05-05T09:30:00",
+                    last_fill_at="2026-05-08T15:30:00")
+    assert _old_predicate_count(conn, _R) == 0  # pre-fix: wrongly excluded
+    assert _count_open_at_run(conn, started_ts=_R) == 1  # fixed: counted
+
+
+def test_e5_trim_then_still_open(conn):
+    """E5: a partial TRIM scale-out on a still-open ``partial_exited`` trade;
+    ``last_fill_at`` is the pre-run trim fill. Old predicate excludes (→0);
+    new counts (→1)."""
+    _seed_trade_row(conn, trade_id=1, ticker="TRIM", state="partial_exited",
+                    pre_trade_locked_at="2026-05-05T09:30:00",
+                    last_fill_at="2026-05-08T15:30:00")
+    assert _old_predicate_count(conn, _R) == 0  # pre-fix: wrongly excluded
+    assert _count_open_at_run(conn, started_ts=_R) == 1  # fixed: counted
+
+
+# --- E2/E3/E6/E7/E9/E10: agreement / behavior cases ------------------------
+
+def test_e2_stop_closed_before_run(conn):
+    """E2: ``closed`` trade whose closing fill is before R → not open at R
+    → 0 (old and new agree)."""
+    _seed_trade_row(conn, trade_id=1, ticker="E2", state="closed",
+                    pre_trade_locked_at="2026-05-05T09:30:00",
+                    last_fill_at="2026-05-08T15:30:00")
+    assert _count_open_at_run(conn, started_ts=_R) == 0
+
+
+def test_e3_closed_at_or_after_run_start(conn):
+    """E3: ``closed`` trade whose closing fill is at/after R → was open at R
+    → 1 (old and new agree)."""
+    _seed_trade_row(conn, trade_id=1, ticker="E3", state="closed",
+                    pre_trade_locked_at="2026-05-05T09:30:00",
+                    last_fill_at="2026-05-11T15:30:00")
+    assert _count_open_at_run(conn, started_ts=_R) == 1
+
+
+def test_e6_entered_after_run(conn):
+    """E6: trade locked AFTER R → excluded by the outer entry guard → 0."""
+    _seed_trade_row(conn, trade_id=1, ticker="E6", state="managing",
+                    pre_trade_locked_at="2026-05-15T09:30:00",
+                    last_fill_at=None)
+    assert _count_open_at_run(conn, started_ts=_R) == 0
+
+
+def test_e7_reviewed_closed_before_run(conn):
+    """E7: ``reviewed`` (terminal, treated identically to ``closed``) whose
+    last fill is before R → 0."""
+    _seed_trade_row(conn, trade_id=1, ticker="E7", state="reviewed",
+                    pre_trade_locked_at="2026-05-05T09:30:00",
+                    last_fill_at="2026-05-08T15:30:00")
+    assert _count_open_at_run(conn, started_ts=_R) == 0
+
+
+def test_e8_closed_null_last_fill_degrades_to_count(conn):
+    """E8: anomalous ``closed`` row with NULL ``last_fill_at`` →
+    degrade-to-count (preserves the NULL-permissive branch) → 1."""
+    _seed_trade_row(conn, trade_id=1, ticker="E8", state="closed",
+                    pre_trade_locked_at="2026-05-05T09:30:00",
+                    last_fill_at=None)
+    assert _count_open_at_run(conn, started_ts=_R) == 1
+
+
+def test_e9_boundary_closed_exactly_at_run_start_inclusive(conn):
+    """E9: ``closed`` with ``last_fill_at == R`` → ``>=`` inclusive boundary
+    (OQ-2) counts it → 1."""
+    _seed_trade_row(conn, trade_id=1, ticker="E9", state="closed",
+                    pre_trade_locked_at="2026-05-05T09:30:00",
+                    last_fill_at=_R)
+    assert _count_open_at_run(conn, started_ts=_R) == 1
+
+
+def test_e10_empty_pre_trade_locked_at_excluded(conn):
+    """E10: rows with empty ``pre_trade_locked_at`` → excluded by the
+    unchanged outer ``<> ''`` guard → 0.
+
+    Note: the live schema declares ``pre_trade_locked_at TEXT NOT NULL``
+    (migration 0014:163), so an actual NULL is unseedable; the predicate's
+    ``IS NOT NULL`` clause is a defensive guard (mirrors the holding-period
+    query style) and only the empty-string case is reachable here.
+    """
+    _seed_trade_row(conn, trade_id=1, ticker="E10E", state="managing",
+                    pre_trade_locked_at="", last_fill_at=None)
+    assert _count_open_at_run(conn, started_ts=_R) == 0
+
+
+# --- E11: degrade-safe malformed-timestamp test ----------------------------
+
+def test_e11_malformed_last_fill_at_degrades_safely(conn):
+    """E11 (degrade-safe, spec §4 + G4 caveat): a ``closed`` row whose
+    ``last_fill_at`` is a malformed/non-ISO string (a correction-path or
+    legacy artifact) MUST NOT crash the COUNT query. Since the predicate is
+    pure SQL string comparison (no ``datetime.fromisoformat`` parse), the
+    malformed value simply sorts lexicographically.
+
+    The query is a ``COUNT(*)`` so per-row contribution is unobservable;
+    instead assert (a) the call returns an ``int`` and does not raise; and
+    (b) the DETERMINISTIC delta — count N well-formed rows, re-count after
+    adding exactly one malformed-``last_fill_at`` closed row, assert the
+    difference equals that row's explicitly-specified lexicographic outcome.
+
+    Chosen malformed value: ``"garbage-not-iso"``. SQLite TEXT columns use
+    the default BINARY collation, so this compares byte-wise: ``'g'``
+    (0x67) > ``'2'`` (0x32), hence ``"garbage-not-iso" >= started_ts`` is
+    TRUE → the closed row counts → delta = +1. (A meaningless-but-bounded
+    over-order; never an exception.)
+    """
+    # N=2 well-formed still-open rows → known baseline count.
+    _seed_trade_row(conn, trade_id=1, ticker="WF1", state="managing",
+                    pre_trade_locked_at="2026-05-05T09:30:00",
+                    last_fill_at="2026-05-05T09:30:00")
+    _seed_trade_row(conn, trade_id=2, ticker="WF2", state="managing",
+                    pre_trade_locked_at="2026-05-06T09:30:00",
+                    last_fill_at="2026-05-06T09:30:00")
+    baseline = _count_open_at_run(conn, started_ts=_R)
+    assert baseline == 2
+
+    # Add exactly one closed row with a malformed last_fill_at.
+    _seed_trade_row(conn, trade_id=3, ticker="BADTS", state="closed",
+                    pre_trade_locked_at="2026-05-05T09:30:00",
+                    last_fill_at="garbage-not-iso")
+    after = _count_open_at_run(conn, started_ts=_R)
+
+    # (a) no crash, returns an int.
+    assert isinstance(after, int)
+    # (b) deterministic delta = +1 (lexicographic outcome above).
+    assert after - baseline == 1

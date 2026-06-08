@@ -418,15 +418,41 @@ def _capital_cycle_time_days(conn: sqlite3.Connection) -> float | None:
 def _count_open_at_run(
     conn: sqlite3.Connection, *, started_ts: str,
 ) -> int:
-    """Plan §A.0.1 Codex R3 Major #2 (relocated to capital-friction): proxy
-    "open at run time" via ``pre_trade_locked_at <= started_ts AND
-    (last_fill_at IS NULL OR last_fill_at >= started_ts)``."""
+    """Count trades that were open at a historical run's start instant
+    (Issue #3 state-based predicate; spec
+    ``docs/superpowers/specs/2026-06-07-count-open-at-run-predicate-design.md``).
+
+    A trade was open during run R iff it was entered at/before ``started_ts``
+    (``pre_trade_locked_at <= started_ts``) AND not yet closed at that
+    instant. "Not yet closed" keys on STATE, not on a fill-derived timestamp:
+
+    - a NON-terminal trade (``entered``/``managing``/``partial_exited``) was
+      open at any R after its entry, so it counts whenever entered <=
+      ``started_ts`` — regardless of ``last_fill_at`` (which, for a still-open
+      trade, is its ENTRY fill, < ``started_ts``);
+    - a TERMINAL trade (``closed``/``reviewed``) was open at R iff it closed
+      at/after ``started_ts``, which by G1 is ``last_fill_at >= started_ts``
+      (``>=`` inclusive per OQ-2; a NULL/empty close ts degrades to count).
+
+    The prior predicate applied the ``last_fill_at >= started_ts`` terminal
+    clause to EVERY trade, wrongly excluding a still-open pre-run trade whose
+    only fill is its entry (Issue #3: SKYT, capital-friction
+    ``concurrent_open_positions = 0`` for Run #89 despite an open position).
+
+    Best-effort caveats (spec §2 G1/G4): ``last_fill_at`` is the MAX fill
+    datetime, a valid close proxy for well-formed terminal rows; a
+    correction-path or legacy ``last_fill_at`` in a divergent shape may sort
+    lexicographically out of chronological order. The predicate is pure SQL
+    string comparison (no parse), so a malformed value degrades safely (the
+    one row is mis-ordered, never an exception) — see test E11.
+    """
     row = conn.execute(
         "SELECT COUNT(*) FROM trades "
         "WHERE pre_trade_locked_at IS NOT NULL "
         "AND pre_trade_locked_at <> '' "
         "AND pre_trade_locked_at <= ? "
-        "AND (last_fill_at IS NULL OR last_fill_at = '' "
+        "AND (state NOT IN ('closed', 'reviewed') "
+        "     OR last_fill_at IS NULL OR last_fill_at = '' "
         "     OR last_fill_at >= ?)",
         (started_ts, started_ts),
     ).fetchone()
