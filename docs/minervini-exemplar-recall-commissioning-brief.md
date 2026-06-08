@@ -81,11 +81,19 @@ small recall scorecard:
 
 Run each exemplar in **two modes** and report together:
 
-- **Single-session** — strict evaluation at the entry-crossing session (derived from `buy_point_price`
-  where documented: first session after `base_start_date` with High ≥ buy point; else the documented
-  `entry_date`).
+- **Single-session** — strict evaluation at the **entry-crossing session** (see the entry rule below).
 - **Window-sweep** — evaluate across a span of sessions from `base_start_date` into the entry; record
   the **best bucket / detector-fired state** reached + per-session detail.
+
+**Entry rule (operator-locked 2026-06-07): the entry-crossing session is the FIRST CLOSE ABOVE THE
+PIVOT** (the base/handle high) on expanding volume — Minervini's pivot buy point ("the point at which
+you want to buy is when the stock moves above the pivot point on expanding volume"). NOT the first
+intraday `High ≥ pivot` touch, and NOT a later high-volume follow-through. Worked example (NFLX 2009):
+the Apr–Sep base pivot ≈ $0.71; 2009-10-14 closed $0.687 (below pivot → no buy), 2009-10-15 closed
+$0.719 on 2.3× volume (**first close above pivot → buy**), and 10-23 was only the follow-through.
+**Every curated `entry_date` is already pinned to this rule** — the day-precision dates from the
+operator visual gate are each the first-close-above-pivot bar; the single-session mode anchors on that
+date and the window-sweep brackets it.
 
 **Rationale:** our VCP gate is designed to fire *during the tight consolidation before* the breakout
 (proximity-to-20MA ≤5%, tightness ≤0.67×ADR). At the breakout bar the stock is extended/wide-range,
