@@ -221,6 +221,23 @@ def test_single_interaction_guard_fails_on_multiple_interactions(
     assert "refresh" in msg.lower()
 
 
+def test_single_interaction_guard_rejects_non_quotes_path(tmp_path: Path) -> None:
+    """Codex R2 MINOR: a single interaction whose request PATH is not the quotes
+    endpoint (but whose query string happens to carry `fields=quote`) must be
+    rejected -- the predicate parses the URI path, not a loose substring."""
+    mod = _load_module()
+    cassette = tmp_path / "quote_regular_fields.yaml"
+    bad_uri = (
+        "https://api.schwabapi.com/marketdata/v1/chains?symbols=AAPL&fields=quote"
+    )
+    cassette.write_text(
+        _yaml_cassette_with_fields(_REGULAR_FIELDS, uri=bad_uri), encoding="utf-8",
+    )
+    ok, msg = mod._validate_quote_cassette_single_interaction(cassette)
+    assert ok is False
+    assert "quotes endpoint" in msg
+
+
 # --- Test 6: leak-scan reuses the canonical catalog ------------------------
 def test_leak_scan_flags_unsanitized_token(tmp_path: Path) -> None:
     mod = _load_module()
@@ -317,6 +334,62 @@ def test_record_deletes_cassette_on_leak(
     )
     assert rc != 0
     assert not cassette.exists(), "leaking cassette must be deleted, not committed"
+
+
+def test_record_reports_delete_failure_loudly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture,
+) -> None:
+    """Codex R2 MAJOR: if a failing cassette cannot be deleted (delegated delete
+    swallows OSError / file locked), the recorder must NOT claim success -- it
+    returns the distinct DELETE_FAILED_CODE + prints 'DELETE FAILED' + the file
+    remains for the operator to remove by hand."""
+    mod = _load_module()
+    _install_fake_vcr(monkeypatch)
+    # Make every delete a no-op so the leaking cassette survives the attempt.
+    monkeypatch.setattr(mod, "_safe_delete_cassette", lambda p: None, raising=True)
+    cassette = tmp_path / "quote_regular_fields.yaml"
+    leaked = _yaml_cassette_with_fields(
+        _REGULAR_FIELDS,
+        extra_body=', "access_token": "untouched-token-value-foo-bar-baz-quux"',
+    )
+
+    def _quotes(**kwargs):
+        cassette.write_text(leaked, encoding="utf-8")
+        return {}
+
+    client = mock.MagicMock()
+    client.quotes.side_effect = _quotes
+    rc = mod._record_quote_cassette(
+        client=client, symbols=["AAPL"], fields="quote",
+        cassette_path=cassette, vcr_kwargs={},
+    )
+    assert rc == mod.DELETE_FAILED_CODE
+    assert "DELETE FAILED" in capsys.readouterr().err
+    assert cassette.exists(), "no-op delete leaves the file; operator must remove it"
+
+
+def test_record_reraises_baseexception_and_deletes_partial(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex R2 MAJOR: a KeyboardInterrupt/SystemExit during the vcr block (VCR
+    may flush a partial cassette on __exit__) must delete the partial cassette
+    and RE-RAISE, never silently swallow the interruption."""
+    mod = _load_module()
+    _install_fake_vcr(monkeypatch)
+    cassette = tmp_path / "quote_regular_fields.yaml"
+
+    def _quotes(**kwargs):
+        cassette.write_text("partial-unvalidated-content\n", encoding="utf-8")
+        raise KeyboardInterrupt
+
+    client = mock.MagicMock()
+    client.quotes.side_effect = _quotes
+    with pytest.raises(KeyboardInterrupt):
+        mod._record_quote_cassette(
+            client=client, symbols=["AAPL"], fields="quote",
+            cassette_path=cassette, vcr_kwargs={},
+        )
+    assert not cassette.exists(), "partial cassette must be deleted on interruption"
 
 
 # --- Test 10: bootstrap delegation forwards args ---------------------------

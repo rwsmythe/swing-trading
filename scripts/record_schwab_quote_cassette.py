@@ -44,6 +44,11 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
+
+# Distinct exit code: a failing-cassette cleanup could not delete the file (it
+# may carry unsanitized data). Surfaced so the operator removes it by hand.
+DELETE_FAILED_CODE = 6
 
 # Defer heavy imports (vcr, swing.config, the order-recorder module) until they
 # are needed so `--help` stays snappy, mirroring the order recorder.
@@ -139,6 +144,36 @@ def _safe_delete_cassette(cassette_path: Path) -> None:
 def _resolve_repo_root() -> Path:
     """Delegate to the order recorder's repo-root resolver (single source)."""
     return _order_module()._resolve_repo_root()
+
+
+def _delete_cassette_verifying(cassette_path: Path) -> bool:
+    """Delete the cassette + VERIFY it is gone.
+
+    The delegated `_safe_delete_cassette` swallows `OSError` (e.g. a Windows
+    file lock) and never confirms removal, so a failed delete on a leaking /
+    invalid cassette could otherwise pass silently. Returns True if the file is
+    gone afterwards (or never existed), False if it still exists.
+    """
+    _safe_delete_cassette(cassette_path)
+    return not cassette_path.exists()
+
+
+def _fail_and_clean(cassette_path: Path, msg: str, code: int) -> int:
+    """Emit `msg`, delete the cassette, and verify removal.
+
+    On a verified delete returns `code`. If the cassette cannot be deleted,
+    escalate loudly (it may carry unsanitized data) + return the distinct
+    DELETE-FAILED code so the operator removes it by hand before committing.
+    """
+    sys.stderr.write(msg + "\n")
+    if _delete_cassette_verifying(cassette_path):
+        return code
+    sys.stderr.write(
+        f"CRITICAL: could not delete {cassette_path} -- DELETE FAILED. The "
+        f"cassette may contain unsanitized data; remove it MANUALLY before "
+        f"committing.\n",
+    )
+    return DELETE_FAILED_CODE
 
 
 # ---------------------------------------------------------------------------
@@ -291,11 +326,15 @@ def _validate_quote_cassette_single_interaction(
         request = first.get("request")
         if isinstance(request, dict):
             uri = str(request.get("uri", "") or "")
-    if "quote" not in uri.lower():
+    # Require the request PATH (not the query string) to be the quotes
+    # endpoint, so an unrelated URI carrying `?fields=quote` cannot pass.
+    path = urlparse(uri).path.rstrip("/")
+    if not path.endswith("/quotes"):
         return False, (
             f"FAILED: the sole recorded interaction in {cassette_path} does not "
-            f"target the quotes endpoint (uri={uri!r}). Confirm tokens are LIVE "
-            f"+ re-run so the quote call is the only captured interaction."
+            f"target the Schwab quotes endpoint (uri={uri!r}). Confirm tokens "
+            f"are LIVE + re-run so the quote call is the only captured "
+            f"interaction."
         )
     return True, ""
 
@@ -347,34 +386,35 @@ def _record_quote_cassette(
             resp = client.quotes(symbols=symbols, fields=fields)
         symbol_count = _count_quote_symbols(resp)
     except Exception as exc:  # noqa: BLE001 -- surface + clean up, never leak
-        _safe_delete_cassette(cassette_path)
-        sys.stderr.write(
-            f"FAILED: recording exception: {type(exc).__name__}: {exc}\n",
+        return _fail_and_clean(
+            cassette_path,
+            f"FAILED: recording exception: {type(exc).__name__}: {exc}",
+            2,
         )
-        return 2
+    except BaseException:
+        # KeyboardInterrupt / SystemExit etc: VCR may have flushed a partial,
+        # un-validated cassette on __exit__. Delete it (best effort) then
+        # re-raise so the interruption is never silently swallowed.
+        _safe_delete_cassette(cassette_path)
+        raise
 
     ok, msg = _validate_quote_cassette_has_regular_fields(cassette_path)
     if not ok:
-        _safe_delete_cassette(cassette_path)
-        sys.stderr.write(msg + "\n")
-        return 3
+        return _fail_and_clean(cassette_path, msg, 3)
 
     ok, msg = _validate_quote_cassette_single_interaction(cassette_path)
     if not ok:
-        _safe_delete_cassette(cassette_path)
-        sys.stderr.write(msg + "\n")
-        return 5
+        return _fail_and_clean(cassette_path, msg, 5)
 
     leaks = _scan_cassette_for_sentinel_leak(cassette_path)
     if leaks:
-        _safe_delete_cassette(cassette_path)
-        sys.stderr.write(
+        return _fail_and_clean(
+            cassette_path,
             f"FAILED: sentinel-leak audit found unsanitized substrings in "
-            f"{cassette_path}: {leaks}. Cassette DELETED to prevent commit. "
-            f"Operator action: extend tests/conftest.py:vcr_config filters + "
-            f"re-run.\n",
+            f"{cassette_path}: {leaks}. Operator action: extend "
+            f"tests/conftest.py:vcr_config filters + re-run.",
+            4,
         )
-        return 4
 
     rel: Path = cassette_path
     with contextlib.suppress(ValueError):
