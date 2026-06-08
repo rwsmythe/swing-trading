@@ -84,7 +84,7 @@ The same `low (4.65)` candle re-surfaces **23 times** across ~19 days. Because e
 - **(c) Request-side avoid.** §2 Finding 4 rules this out — no param avoids the specific corrupt candles. **Not viable.**
 - **(d) Accept-the-fallback.** No code; formalize "Schwab bad bar → whole-window yfinance is acceptable" + document. **Rejected on cost/benefit:** cheap, but forfeits Schwab-as-primary for ~2-4 tickers/run indefinitely and leaves the #24/#26 yfinance-freshness exposure. The incremental cost of (a) is small and the win (Schwab primary restored, zero gap in practice) is real.
 
-**Recommendation: (a) with the §4 coverage guarantee.** The per-date merge (§4.2) heals the common recurring case to **zero visible gap**; the coverage-or-fallback rule (§4.2) makes safety **structural** for every other case, so the design does not rest on the unprovable "deep-historical ⇒ safe" inference (Codex R1 MAJOR-1/2/4).
+**Recommendation: (a) with the §4 coverage guarantee.** The ladder returns a normalized **contiguous** in-memory series (splicing the clean alternate row per dropped date) to the hot path, and falls back whole-window when no clean row exists (§4.2) — so safety is **structural** on all three read substrates, not resting on the unprovable "deep-historical ⇒ safe" inference (Codex R1 MAJOR-1/2/4 + R2). For the common recurring case the dropped date's yfinance row is already archived → **zero visible gap**, Schwab primary.
 
 ---
 
