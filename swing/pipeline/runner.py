@@ -838,6 +838,7 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
                     lease=lease, run_now=run_now, eval_run_id=eval_run_id,
                     archive_history_days=cfg.archive.archive_history_days,
                     ohlcv_archive_dir=cfg.paths.prices_cache_dir,
+                    run_warnings=run_warnings,
                 )
             except LeaseRevokedError:
                 raise
@@ -3776,6 +3777,7 @@ def _step_daily_management(
     archive_history_days: int, ohlcv_archive_dir,
     capital_floor_dollars: float = 7500.0,
     trail_MA_period_days_default: int = 21,  # noqa: N803  -- name locked by spec §6.6
+    run_warnings: list[dict] | None = None,
 ) -> None:
     """Spec §4.1 step body — emit a daily_approximate snapshot per open trade.
 
@@ -3808,11 +3810,27 @@ def _step_daily_management(
     for trade in trades:
         try:
             # --- WARM, OUTSIDE the fence (yfinance I/O here, lock-free) ---
-            archive_df = read_or_fetch_archive(
-                trade.ticker, end_date=asof_session,
-                cache_dir=ohlcv_archive_dir,
-                archive_history_days=archive_history_days,
-            )
+            # read_or_fetch_archive is lease-free (touches no lease/lock), so it
+            # cannot raise LeaseRevokedError; a warm error degrades to
+            # archive_df=None -> the single #27 skip branch below.
+            miss_reason: str | None = None
+            try:
+                archive_df = read_or_fetch_archive(
+                    trade.ticker, end_date=asof_session,
+                    cache_dir=ohlcv_archive_dir,
+                    archive_history_days=archive_history_days,
+                )
+                if archive_df is None or archive_df.empty:
+                    miss_reason = "warm_empty_or_stale"
+            except Exception as warm_exc:  # noqa: BLE001 -- best-effort warm; miss funnels to #27
+                log.warning(
+                    "daily_management warm fetch failed for trade %s "
+                    "(ticker=%s): %s -- proceeding to skip path",
+                    trade.id, trade.ticker, warm_exc,
+                )
+                archive_df = None
+                miss_reason = "warm_raised"
+
             # --- FENCE: fast SQLite read + compute + persist (no network) ---
             with lease.fenced_write() as conn:
                 res = _dm.compute_daily_approximate_snapshot(
@@ -3833,11 +3851,23 @@ def _step_daily_management(
                     trail_MA_period_days_default=trail_MA_period_days_default,
                 )
                 if res.fields is None:
+                    # All miss causes funnel here. The warm pre-set miss_reason
+                    # (warm_raised / warm_empty_or_stale) wins when set; otherwise
+                    # the warm succeeded and the typed return is authoritative for
+                    # the in-fence cause (ticker_changed / no_eligible_window).
+                    if miss_reason is None:
+                        miss_reason = res.miss_reason
                     log.warning(
                         "daily_management snapshot skipped for trade %s "
-                        "(ticker=%s): %s",
-                        trade.id, trade.ticker, res.miss_reason,
+                        "(ticker=%s): %s", trade.id, trade.ticker, miss_reason,
                     )
+                    if run_warnings is not None:   # #27 audit (gotcha #27)
+                        run_warnings.append({
+                            "step": "daily_management",
+                            "ticker": trade.ticker,
+                            "reason": "archive unavailable for asof_session",
+                            "miss_reason": miss_reason,
+                        })
                     continue
                 upsert_snapshot(
                     conn, trade_id=trade.id, snapshot_fields=res.fields,

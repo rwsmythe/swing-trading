@@ -348,3 +348,41 @@ def test_step_re_raises_LeaseRevoked(synthetic_lease_and_trades, monkeypatch):
             ohlcv_archive_dir=Path("/dev/null"),
             capital_floor_dollars=7500.0, trail_MA_period_days_default=21,
         )
+
+
+def test_step_emits_27_audit_on_warm_empty(synthetic_lease_and_trades, monkeypatch):
+    """#27 silent-skip-audit: when the warm returns None/empty, every open trade
+    is skipped with a run_warnings entry carrying miss_reason='warm_empty_or_stale'
+    -- no in-fence fetch.
+
+    EXACT pre-fix (Task 1 state: plain log.warning, no run_warnings param):
+    _step_daily_management(run_warnings=[...]) raises TypeError (no such param);
+    even called without it, run_warnings stays empty (0 entries).
+    EXACT post-fix: run_warnings gains one entry per open trade (2: DHC, ZZ),
+    each {step:'daily_management', miss_reason:'warm_empty_or_stale'}."""
+    lease, conn = synthetic_lease_and_trades
+    # Override the fixture's frame-returning warm with a None-returning one:
+    monkeypatch.setattr(
+        "swing.pipeline.runner.read_or_fetch_archive",
+        lambda *a, **kw: None,
+    )
+    run_warnings: list[dict] = []
+    _step_daily_management(
+        lease=lease, run_now=datetime(2026, 5, 7, 18, 0, 0),
+        eval_run_id=99, archive_history_days=120,
+        ohlcv_archive_dir=Path("/dev/null"),
+        capital_floor_dollars=7500.0, trail_MA_period_days_default=21,
+        run_warnings=run_warnings,
+    )
+    assert len(run_warnings) == 2
+    for entry in run_warnings:
+        assert entry["step"] == "daily_management"
+        assert entry["miss_reason"] == "warm_empty_or_stale"
+        assert entry["ticker"] in {"DHC", "ZZ"}
+        assert "reason" in entry
+    # No snapshot persisted (skip path):
+    rows = conn.execute(
+        "SELECT COUNT(*) FROM daily_management_records "
+        "WHERE record_type = 'daily_snapshot'"
+    ).fetchone()[0]
+    assert rows == 0
