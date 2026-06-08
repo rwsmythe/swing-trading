@@ -145,3 +145,42 @@ def _seven_pass_tt():
     from swing.data.models import CriterionResult
     res = ["pass"] * 7 + ["fail"]
     return tuple(CriterionResult(f"TT{i+1}", "trend_template", res[i]) for i in range(8))
+
+
+def test_expected_detector_error_surfaced_not_silent(monkeypatch, tmp_path):
+    # The documented (expected-class) detector RAISES while another detector returns a positive
+    # score. The verdict must surface the error as a distinct skip_reason, NOT silently record a
+    # geometry miss (Codex executing-plans R1 major; gotcha #27 never-silent).
+    from dataclasses import dataclass
+
+    from research.harness.minervini_exemplar_recall import detector_eval, stage_db
+    from research.harness.minervini_exemplar_recall.exemplar_reader import ExemplarRow
+
+    @dataclass(frozen=True)
+    class _Ev:
+        geometric_score: float
+
+    def _raise_vcp(bars, window, *, conn=None, ticker=None, asof_date=None):
+        raise ValueError("vcp detector blew up")
+
+    def _ok_flat(bars, window, *, conn=None, ticker=None, asof_date=None):
+        return _Ev(1.0)
+
+    # expected class 'vcp' RAISES; 'flat_base' fires -> failures(1) < attempts(2), so the old code
+    # would leave skip_reason None and fired_expected_class False (a SILENT miss).
+    monkeypatch.setattr(
+        detector_eval,
+        "_REGISTRY",
+        ((_raise_vcp, "vcp", "fake@v1"), (_ok_flat, "flat_base", "fake@v1")),
+    )
+    bars = _uptrend_bars()
+    session = bars.index[-1].date()
+    ex = ExemplarRow("id", "AAA", "AAA", "VCP", "vcp", session, "day", None, "S", "P", "n")
+    conn = stage_db.build_stage_db(tmp_path / "iso.db")
+    stage_db.seed_session(
+        conn, ticker="AAA", session=session, tt_results=_forced_fail_tt(), mode="isolated"
+    )
+    v = detector_eval.evaluate_h2(exemplar=ex, session=session, exemplar_full=bars, stage_conn=conn)
+    # WRONG-PATH (silent): skip_reason None.  RIGHT-PATH: distinct expected_detector_error.
+    assert v.skip_reason == "expected_detector_error"
+    assert v.fired_expected_class is False

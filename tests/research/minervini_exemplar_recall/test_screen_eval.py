@@ -109,3 +109,51 @@ def test_compute_gate_passes_distinguishes_each_layer():
     # 3 vcp fails -> vcp gate False; 2 would be True.
     assert compute_gate_passes(_tt({}) + _vcp(3) + _risk("pass"), cfg)["vcp"] is False
     assert compute_gate_passes(_tt({}) + _vcp(2) + _risk("pass"), cfg)["vcp"] is True
+
+
+def _flat_bars(n: int, start="2009-01-02"):
+    idx = pd.bdate_range(start=start, periods=n)
+    return pd.DataFrame(
+        {"Open": [10.0] * n, "High": [10.0] * n, "Low": [10.0] * n,
+         "Close": [10.0] * n, "Volume": [1_000] * n},
+        index=idx,
+    )
+
+
+def test_below_floor_short_circuits_without_calling_evaluate_one(monkeypatch):
+    # Codex executing-plans R1 major: below the screenable floor, evaluate_h1 must NOT call
+    # evaluate_one (the old broad except would mask a genuine evaluator failure as attrition).
+    from research.harness.minervini_exemplar_recall import screen_eval
+
+    def _boom(ctx):
+        raise RuntimeError("evaluate_one must NOT be called below the screenable floor")
+
+    monkeypatch.setattr(screen_eval, "evaluate_one", _boom)
+    cfg = Config.from_defaults()  # floor 221
+    bars = _flat_bars(50)  # < 221 -> below floor
+    res = screen_eval.evaluate_h1(
+        ticker="AAA", exemplar_full=bars, spy_full=None, session=bars.index[-1].date(), config=cfg
+    )
+    # WRONG-PATH (old broad except swallows the boom): also skip_insufficient_history, masking the
+    # bug. RIGHT-PATH: the short-circuit returns BEFORE evaluate_one, so _boom never fires.
+    assert res.outcome == "skip_insufficient_history"
+    assert len(res.tt_criteria) == 8
+    assert all(c.result == "na" for c in res.tt_criteria)
+
+
+def test_above_floor_evaluate_one_raise_propagates(monkeypatch):
+    # At/above the floor a raise from evaluate_one is a genuine bug and MUST propagate (never
+    # silently swallowed as attrition).
+    from research.harness.minervini_exemplar_recall import screen_eval
+
+    def _boom(ctx):
+        raise RuntimeError("genuine evaluator bug above the floor")
+
+    monkeypatch.setattr(screen_eval, "evaluate_one", _boom)
+    cfg = Config.from_defaults()
+    bars = _flat_bars(260)  # > 221 -> above floor
+    with pytest.raises(RuntimeError, match="genuine evaluator bug"):
+        screen_eval.evaluate_h1(
+            ticker="AAA", exemplar_full=bars, spy_full=None,
+            session=bars.index[-1].date(), config=cfg,
+        )

@@ -34,7 +34,8 @@ PER_SESSION_HEADER = (
     "bucket",
     "fired_faithful_expected",
     "fired_isolated_expected",
-    "fired_classes",
+    "fired_classes_faithful",
+    "fired_classes_isolated",
 )
 
 H2_ALL_WINDOWS_HEADER = (

@@ -148,7 +148,10 @@ def run_harness(
                 "fired_classes_faithful": fired_faithful, "fired_classes_isolated": fired_isolated,
                 "rs_path": rs_path,
                 "data_source": data_source,
-                "n_bars": str(res.sessions[-1].screen.n_sliced if res.sessions else 0),
+                # n_bars from the SAME representative (best-outcome) session that backs h1_outcome,
+                # rs_path and gate_passes -- not sessions[-1] (the entry+5bd tail of a sweep), which
+                # would make the row internally inconsistent (Codex executing-plans R1 minor).
+                "n_bars": str(_best_session(res).screen.n_sliced if res.sessions else 0),
                 "screenable": str(res.best_h1_outcome not in _ATTRITION),
                 "h2_anchor_mode_limited_possible": str(anchor_limited),
                 "h2_anchor_mode_limited_reason": (
@@ -163,7 +166,8 @@ def run_harness(
                     "bucket": se.screen.bucket or "",
                     "fired_faithful_expected": str(se.h2_faithful.fired_expected_class),
                     "fired_isolated_expected": str(se.h2_isolated.fired_expected_class),
-                    "fired_classes": ";".join(se.h2_isolated.fired_classes),
+                    "fired_classes_faithful": ";".join(se.h2_faithful.fired_classes),
+                    "fired_classes_isolated": ";".join(se.h2_isolated.fired_classes),
                 })
             if mode == "window_sweep":
                 per_exemplar_provenance.append({

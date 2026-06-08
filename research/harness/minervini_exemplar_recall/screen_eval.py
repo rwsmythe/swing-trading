@@ -140,6 +140,17 @@ def evaluate_h1(
     proxy = rs_proxy.build_batch(
         ticker=ticker, exemplar_sliced=sliced, spy_full=spy_full, session=session, config=config
     )
+    if n < floor:
+        # Below the screenable floor the H1 outcome is skip_insufficient_history regardless of
+        # merit: TT3 (200MA-rising) needs >=221 bars, so until then it is an UNALLOWED na and
+        # bucket_for forces skip; the faithful H2 stage likewise can never reach 8/8 TT pass ->
+        # undefined either way. Return the intentional insufficient-history result with 8 synthetic
+        # NA TT rows WITHOUT calling evaluate_one, so a genuine evaluator/data-quality failure on a
+        # young slice is never masked as attrition (Codex executing-plans R1 major; gotcha #27
+        # never-silent). Spec section 5 ("ALWAYS returns the 8 trend_template criteria").
+        return ScreenResult(
+            "skip_insufficient_history", None, n, proxy.rs_path, _na_tt_criteria(), None, None
+        )
     ctx = CandidateContext(
         ticker=ticker,
         ohlcv=sliced,
@@ -148,20 +159,9 @@ def evaluate_h1(
         market=MarketContext(),
         current_equity=EQUITY_FLOOR_SURROGATE,
     )
-    try:
-        candidate = evaluate_one(ctx)
-    except Exception:  # noqa: BLE001
-        # The youngest names' earliest sweep sessions slice to a handful of bars; evaluate_one is
-        # hardened for liquid finviz candidates, not 1-bar input. Below the screenable floor an
-        # exception is invariably too-few-bars -> classify insufficient_history, but STILL return 8
-        # synthetic NA TT rows so the faithful H2 stage seeds to undefined (not coverage_skip), per
-        # spec section 5 ("ALWAYS returns the 8 trend_template criteria"). At/above the
-        # floor a raise is a genuine bug and must NOT be swallowed.
-        if n < floor:
-            return ScreenResult(
-                "skip_insufficient_history", None, n, proxy.rs_path, _na_tt_criteria(), None, None
-            )
-        raise
+    # At/above the floor a raise from evaluate_one is a genuine bug and MUST propagate (never
+    # silently swallowed) so a real data-quality/evaluator regression surfaces loudly.
+    candidate = evaluate_one(ctx)
     tt = tuple(c for c in candidate.criteria if c.layer == "trend_template")
     outcome = classify_h1_outcome(has_bars=True, n_sliced=n, bucket=candidate.bucket, floor=floor)
     attrib = (

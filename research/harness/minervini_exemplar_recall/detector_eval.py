@@ -30,7 +30,13 @@ _REGISTRY = _lazy_pattern_detect_registry
 
 _ANCHOR_MODE_LIMITED_CLASSES = frozenset({"cup_with_handle", "high_tight_flag"})
 _SKIP_REASONS = frozenset(
-    {"coverage_skip", "window_generation_error", "no_windows", "detector_error_all"}
+    {
+        "coverage_skip",
+        "window_generation_error",
+        "no_windows",
+        "detector_error_all",
+        "expected_detector_error",
+    }
 )
 
 
@@ -96,6 +102,7 @@ def evaluate_h2(
 
     window = select_window(windows)
     geometric_by_class: dict[str, float] = {}
+    errored_classes: list[str] = []
     attempts = 0
     failures = 0
     for detector_fn, pattern_class, _version in _resolve_registry():
@@ -107,10 +114,17 @@ def evaluate_h2(
             geometric_by_class[pattern_class] = float(getattr(evidence, "geometric_score", 0.0))
         except Exception:  # noqa: BLE001 - isolate one bad detector, continue the others
             failures += 1
+            errored_classes.append(pattern_class)
             continue
 
     if attempts > 0 and failures == attempts:
         return _skip_verdict("detector_error_all", expected)
+    if expected != "unmapped" and expected in errored_classes:
+        # The documented detector for THIS exemplar raised (vs returning a 0 geometric score).
+        # Surface it as a distinct skip/error verdict rather than silently recording a non-fire,
+        # which would bias H2 recall downward and hide the error (Codex executing-plans R1 major;
+        # gotcha #27 never-silent). run.py's skip_reason_counts then audits it.
+        return _skip_verdict("expected_detector_error", expected)
 
     fired_classes = tuple(sorted(c for c, s in geometric_by_class.items() if s > 0.0))
     fired_any = len(fired_classes) > 0
