@@ -35,7 +35,6 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime
-from pathlib import Path
 from typing import Any, Literal
 
 import pandas as pd
@@ -462,18 +461,32 @@ def resolve_thesis_status(
 # ---------------------------------------------------------------------------
 
 
-def compute_daily_approximate_snapshot(  # noqa: PLR0913  -- spec-locked signature
+@dataclass(frozen=True)
+class SnapshotComputeResult:
+    """Typed return for ``compute_daily_approximate_snapshot`` (spec §4.2,
+    operator-resolved 2026-06-07). ``fields`` is the upsert-ready dict, OR
+    ``None`` on a skip; ``miss_reason`` is the authoritative skip cause when
+    ``fields is None`` (one of ``warm_empty_or_stale`` / ``ticker_changed`` /
+    ``no_eligible_window`` from this function; the runner additionally sets
+    ``warm_raised`` for a warm that threw). ``miss_reason`` is ``None`` on
+    success."""
+
+    fields: dict[str, Any] | None
+    miss_reason: str | None
+
+
+def compute_daily_approximate_snapshot(  # noqa: PLR0913  -- spec-locked signature (§6.6, amended 2026-06-07)
     conn: sqlite3.Connection,
     *,
     trade_id: int,
     asof_session: date,
     run_now: datetime,
-    ohlcv_archive_dir: Path,
-    archive_history_days: int,
+    archive_df: pd.DataFrame | None,         # NEW — pre-warmed bars (rows <= asof_session)
+    expected_ticker: str,                    # NEW — identity guard (spec §4.1)
     pipeline_run_id: int | None,
     capital_floor_dollars: float = 7500.0,
     trail_MA_period_days_default: int = 21,  # noqa: N803  -- name locked by spec §6.6
-) -> dict[str, Any] | None:
+) -> SnapshotComputeResult:
     """Spec §4.1 step body — emit a daily_approximate snapshot row's field dict.
 
     Returns a dict suitable for ``upsert_snapshot``, OR ``None`` if the
@@ -499,22 +512,28 @@ def compute_daily_approximate_snapshot(  # noqa: PLR0913  -- spec-locked signatu
             full-path computation; defensive guard for refactor-time
             regressions).
     """
-    # Lazy imports to avoid circular references at module load time:
-    from swing.data.ohlcv_archive import read_or_fetch_archive
+    # Lazy import to avoid circular references at module load time:
     from swing.data.repos.trades import get_trade
 
     trade = get_trade(conn, trade_id)
     if trade is None:
         raise ValueError(f"trade {trade_id} not found")
 
-    df = read_or_fetch_archive(
-        trade.ticker,
-        end_date=asof_session,
-        cache_dir=ohlcv_archive_dir,
-        archive_history_days=archive_history_days,
-    )
+    # Identity guard (spec §4.1 / Codex R1 MAJOR #1): the bars were warmed for
+    # ``expected_ticker`` OUTSIDE the fence; the trade row is re-read fresh
+    # in-fence here. Skip (never re-fetch) if the trade's ticker changed between
+    # warm and fence so old-ticker bars are never combined with a newly read
+    # trade row. ``trades.ticker`` IS live-mutable (rarely) via a concurrent
+    # tier-3 reconciliation override (reconciliation_auto_correct.py:1215;
+    # validate_trade_correction gates only current_stop/state). The pipeline
+    # lease blocks concurrent *pipeline* runs but NOT CLI/web reconciliation, so
+    # this is a REAL (if uncommon) audited skip.
+    if trade.ticker != expected_ticker:
+        return SnapshotComputeResult(fields=None, miss_reason="ticker_changed")
+
+    df = archive_df
     if df is None or df.empty:
-        return None
+        return SnapshotComputeResult(fields=None, miss_reason="warm_empty_or_stale")
 
     # Slice to >= pre_trade_locked_at_session (the anchor for MFE/MAE running
     # extrema) AND <= asof_session.
@@ -522,12 +541,12 @@ def compute_daily_approximate_snapshot(  # noqa: PLR0913  -- spec-locked signatu
     window_mask = (df.index.date >= anchor) & (df.index.date <= asof_session)
     window = df.loc[window_mask]
     if window.empty:
-        return None
+        return SnapshotComputeResult(fields=None, miss_reason="no_eligible_window")
 
     asof_mask = df.index.date == asof_session
     asof_rows = df.loc[asof_mask]
     if asof_rows.empty:
-        return None
+        return SnapshotComputeResult(fields=None, miss_reason="no_eligible_window")
 
     current_price = float(asof_rows["Close"].iloc[-1])
     intraday_high = float(asof_rows["High"].iloc[-1])
@@ -651,7 +670,7 @@ def compute_daily_approximate_snapshot(  # noqa: PLR0913  -- spec-locked signatu
             f"compute_daily_approximate_snapshot missing required fields: {missing}"
         )
 
-    return fields
+    return SnapshotComputeResult(fields=fields, miss_reason=None)
 
 
 # ---------------------------------------------------------------------------

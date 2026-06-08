@@ -120,24 +120,18 @@ def test_compute_daily_approximate_snapshot_full_path(
         "Close": [104.0, 113.0, 108.0],
     }, index=pd.to_datetime(["2026-05-05", "2026-05-06", "2026-05-07"]))
 
-    def fake_read_or_fetch_archive(*args: object, **kwargs: object) -> pd.DataFrame:
-        return df
-
-    monkeypatch.setattr(
-        "swing.data.ohlcv_archive.read_or_fetch_archive",
-        fake_read_or_fetch_archive,
-    )
-
-    fields = compute_daily_approximate_snapshot(
+    res = compute_daily_approximate_snapshot(
         conn, trade_id=1,
         asof_session=date(2026, 5, 7),
         run_now=datetime(2026, 5, 7, 18, 0, 0),
-        ohlcv_archive_dir=tmp_path / "ohlcv",
-        archive_history_days=120,
+        archive_df=df,
+        expected_ticker="DHC",
         pipeline_run_id=1,
         capital_floor_dollars=7500.0,
         trail_MA_period_days_default=21,
     )
+    fields = res.fields
+    assert res.miss_reason is None
     assert fields is not None
     assert fields["mfe_mae_precision_level"] == "daily_approximate"
     assert fields["data_asof_session"] == "2026-05-07"
@@ -193,24 +187,20 @@ def test_compute_daily_approximate_snapshot_canonicalizes_aware_run_now_to_naive
         "Low":   [98.0,  100.0],
         "Close": [104.0, 108.0],
     }, index=pd.to_datetime(["2026-05-06", "2026-05-07"]))
-    monkeypatch.setattr(
-        "swing.data.ohlcv_archive.read_or_fetch_archive",
-        lambda *a, **kw: df,
-    )
-
     HST = timezone(timedelta(hours=-10))
     run_now_aware_hst = datetime(2026, 5, 7, 18, 0, 0, tzinfo=HST)
 
-    fields = compute_daily_approximate_snapshot(
+    res = compute_daily_approximate_snapshot(
         conn, trade_id=1,
         asof_session=date(2026, 5, 7),
         run_now=run_now_aware_hst,
-        ohlcv_archive_dir=tmp_path / "ohlcv",
-        archive_history_days=120,
+        archive_df=df,
+        expected_ticker="DHC",
         pipeline_run_id=1,
         capital_floor_dollars=7500.0,
         trail_MA_period_days_default=21,
     )
+    fields = res.fields
     assert fields is not None
     # Naive (no offset suffix), and timestamp converted to UTC:
     assert "+" not in fields["created_at"]
@@ -230,21 +220,18 @@ def test_compute_daily_approximate_snapshot_returns_None_on_empty_archive(  # no
         current_avg_cost=100.0, current_size=50.0,
         current_stop=92.0, pre_trade_locked_at="2026-05-01T09:30:00",
     )
-    monkeypatch.setattr(
-        "swing.data.ohlcv_archive.read_or_fetch_archive",
-        lambda *a, **kw: None,
-    )
-    result = compute_daily_approximate_snapshot(
+    res = compute_daily_approximate_snapshot(
         conn, trade_id=1,
         asof_session=date(2026, 5, 7),
         run_now=datetime(2026, 5, 7, 18, 0, 0),
-        ohlcv_archive_dir=tmp_path / "ohlcv",
-        archive_history_days=120,
+        archive_df=None,
+        expected_ticker="ZZZZ",
         pipeline_run_id=1,
         capital_floor_dollars=7500.0,
         trail_MA_period_days_default=21,
     )
-    assert result is None
+    assert res.fields is None
+    assert res.miss_reason == "warm_empty_or_stale"
 
 
 def test_compute_daily_approximate_snapshot_returns_None_on_no_asof_row(  # noqa: N802
@@ -265,21 +252,18 @@ def test_compute_daily_approximate_snapshot_returns_None_on_no_asof_row(  # noqa
         "Low":   [98.0,  102.0],
         "Close": [104.0, 113.0],
     }, index=pd.to_datetime(["2026-05-05", "2026-05-06"]))  # no 2026-05-07
-    monkeypatch.setattr(
-        "swing.data.ohlcv_archive.read_or_fetch_archive",
-        lambda *a, **kw: df,
-    )
-    result = compute_daily_approximate_snapshot(
+    res = compute_daily_approximate_snapshot(
         conn, trade_id=1,
         asof_session=date(2026, 5, 7),  # not in df
         run_now=datetime(2026, 5, 7, 18, 0, 0),
-        ohlcv_archive_dir=tmp_path / "ohlcv",
-        archive_history_days=120,
+        archive_df=df,
+        expected_ticker="DHC",
         pipeline_run_id=1,
         capital_floor_dollars=7500.0,
         trail_MA_period_days_default=21,
     )
-    assert result is None
+    assert res.fields is None
+    assert res.miss_reason == "no_eligible_window"
 
 
 def test_compute_daily_approximate_snapshot_unknown_trade_raises_ValueError(  # noqa: N802
@@ -287,17 +271,13 @@ def test_compute_daily_approximate_snapshot_unknown_trade_raises_ValueError(  # 
 ) -> None:
     """Defensive: passing trade_id that doesn't exist raises ValueError;
     callers (pipeline runner) should not silently swallow."""
-    monkeypatch.setattr(
-        "swing.data.ohlcv_archive.read_or_fetch_archive",
-        lambda *a, **kw: None,
-    )
     with pytest.raises(ValueError, match="trade 999 not found"):
         compute_daily_approximate_snapshot(
             conn, trade_id=999,
             asof_session=date(2026, 5, 7),
             run_now=datetime(2026, 5, 7, 18, 0, 0),
-            ohlcv_archive_dir=tmp_path / "ohlcv",
-            archive_history_days=120,
+            archive_df=None,
+            expected_ticker="DHC",
             pipeline_run_id=1,
         )
 
@@ -323,22 +303,19 @@ def test_compute_daily_approximate_snapshot_stamps_trail_MA_period_days_when_win
         "Low":   [98.0] * 25,
         "Close": [100.0 + i * 0.1 for i in range(25)],  # monotone increasing
     }, index=sessions)
-    monkeypatch.setattr(
-        "swing.data.ohlcv_archive.read_or_fetch_archive",
-        lambda *a, **kw: df,
-    )
 
     asof = sessions[-1].date()
-    fields = compute_daily_approximate_snapshot(
+    res = compute_daily_approximate_snapshot(
         conn, trade_id=1,
         asof_session=asof,
         run_now=datetime(2026, 5, 7, 18, 0, 0),
-        ohlcv_archive_dir=tmp_path / "ohlcv",
-        archive_history_days=120,
+        archive_df=df,
+        expected_ticker="DHC",
         pipeline_run_id=1,
         capital_floor_dollars=7500.0,
         trail_MA_period_days_default=21,
     )
+    fields = res.fields
     assert fields is not None
     # Coherent pair: both populated when archive history sufficient:
     assert fields["trail_MA_period_days"] == 21
@@ -346,6 +323,72 @@ def test_compute_daily_approximate_snapshot_stamps_trail_MA_period_days_when_win
     # SMA mean of last 21 closes: closes[4..24] starting at 100.4 step 0.1 →
     # mean = (100.4 + 102.4) / 2 = 101.4
     assert fields["trail_MA_candidate_price"] == pytest.approx(101.4)
+
+
+def test_compute_daily_approximate_snapshot_ticker_guard_skips_on_mismatch(  # noqa: N802
+    conn: sqlite3.Connection,
+) -> None:
+    """Identity guard (spec §4.1 / Codex R1 MAJOR #1): bars warmed for
+    expected_ticker but the in-fence trade row reports a different ticker ->
+    skip (never combine old-ticker bars with the newly read trade row).
+
+    EXACT pre-fix (no guard, if the param existed): a fully-populated field
+    dict computed from DHC's bars (res.fields is a dict).
+    EXACT post-fix: res.fields is None, res.miss_reason == 'ticker_changed'."""
+    _seed_trade(
+        conn, trade_id=1, ticker="DHC", entry_price=100.0,
+        initial_stop=90.0, initial_shares=50,
+        current_avg_cost=100.0, current_size=50.0,
+        current_stop=92.0, pre_trade_locked_at="2026-05-01T09:30:00",
+    )
+    df = pd.DataFrame({
+        "High":  [105.0, 115.0, 110.0],
+        "Low":   [98.0,  102.0, 100.0],
+        "Close": [104.0, 113.0, 108.0],
+    }, index=pd.to_datetime(["2026-05-05", "2026-05-06", "2026-05-07"]))
+    res = compute_daily_approximate_snapshot(
+        conn, trade_id=1,
+        asof_session=date(2026, 5, 7),
+        run_now=datetime(2026, 5, 7, 18, 0, 0),
+        archive_df=df,
+        expected_ticker="OLDTICKER",   # != the seeded "DHC"
+        pipeline_run_id=1,
+    )
+    assert res.fields is None
+    assert res.miss_reason == "ticker_changed"
+
+
+def test_compute_daily_approximate_snapshot_empty_anchor_window_miss_reason(  # noqa: N802
+    conn: sqlite3.Connection,
+) -> None:
+    """no_eligible_window sub-case B (Codex R3): frame has rows but NONE in
+    [anchor, asof_session] (all rows predate the anchor) -> empty anchor window
+    @daily_management.py:524.
+
+    EXACT pre-fix: res is None (no reason).
+    EXACT post-fix: res.fields is None, res.miss_reason == 'no_eligible_window'."""
+    _seed_trade(
+        conn, trade_id=1, ticker="DHC", entry_price=100.0,
+        initial_stop=90.0, initial_shares=50,
+        current_avg_cost=100.0, current_size=50.0,
+        current_stop=92.0, pre_trade_locked_at="2026-05-01T09:30:00",
+    )
+    # All rows < anchor (2026-05-01) -> window_mask selects nothing:
+    df = pd.DataFrame({
+        "High":  [105.0, 115.0],
+        "Low":   [98.0,  102.0],
+        "Close": [104.0, 113.0],
+    }, index=pd.to_datetime(["2026-04-25", "2026-04-28"]))
+    res = compute_daily_approximate_snapshot(
+        conn, trade_id=1,
+        asof_session=date(2026, 5, 7),
+        run_now=datetime(2026, 5, 7, 18, 0, 0),
+        archive_df=df,
+        expected_ticker="DHC",
+        pipeline_run_id=1,
+    )
+    assert res.fields is None
+    assert res.miss_reason == "no_eligible_window"
 
 
 def test_tier_upgrade_to_intraday_stubbed_for_V2(  # noqa: N802

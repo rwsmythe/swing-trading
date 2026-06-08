@@ -3807,13 +3807,20 @@ def _step_daily_management(
         trades = list_open_trades(conn)
     for trade in trades:
         try:
+            # --- WARM, OUTSIDE the fence (yfinance I/O here, lock-free) ---
+            archive_df = read_or_fetch_archive(
+                trade.ticker, end_date=asof_session,
+                cache_dir=ohlcv_archive_dir,
+                archive_history_days=archive_history_days,
+            )
+            # --- FENCE: fast SQLite read + compute + persist (no network) ---
             with lease.fenced_write() as conn:
-                fields = _dm.compute_daily_approximate_snapshot(
+                res = _dm.compute_daily_approximate_snapshot(
                     conn, trade_id=trade.id,
                     asof_session=asof_session,
                     run_now=run_now,
-                    ohlcv_archive_dir=ohlcv_archive_dir,
-                    archive_history_days=archive_history_days,
+                    archive_df=archive_df,
+                    expected_ticker=trade.ticker,  # the snapshot ticker, NOT a re-read
                     # Codex R1 Critical 1 fix: snapshot.pipeline_run_id is
                     # FK to pipeline_runs(id), NOT evaluation_runs(id).
                     # ``lease.run_id`` is the pipeline_runs.id (set during
@@ -3825,20 +3832,20 @@ def _step_daily_management(
                     capital_floor_dollars=capital_floor_dollars,
                     trail_MA_period_days_default=trail_MA_period_days_default,
                 )
-                if fields is None:
+                if res.fields is None:
                     log.warning(
                         "daily_management snapshot skipped for trade %s "
-                        "(ticker=%s): archive returned None",
-                        trade.id, trade.ticker,
+                        "(ticker=%s): %s",
+                        trade.id, trade.ticker, res.miss_reason,
                     )
                     continue
                 upsert_snapshot(
-                    conn, trade_id=trade.id, snapshot_fields=fields,
+                    conn, trade_id=trade.id, snapshot_fields=res.fields,
                 )
                 if trade.state == "entered":
                     state_transition(
                         conn, trade_id=trade.id, new_state="managing",
-                        event_ts=fields["created_at"],
+                        event_ts=res.fields["created_at"],
                         rationale="first_daily_management_record",
                     )
         except LeaseRevokedError:

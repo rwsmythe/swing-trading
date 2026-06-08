@@ -10,6 +10,7 @@ import pytest
 
 from swing.data.db import ensure_schema
 from swing.pipeline.runner import _step_daily_management
+from swing.trades.daily_management import SnapshotComputeResult
 
 
 def _seed_trade(
@@ -102,12 +103,11 @@ def synthetic_lease_and_trades(tmp_path: Path, monkeypatch):
         "2026-05-05", "2026-05-06", "2026-05-07",
         "2026-05-08", "2026-05-10", "2026-05-11",
     ]))
-    # Monkeypatch the source module — daily_management.compute_*
-    # imports it lazily inside the function, so the SOURCE-module
-    # name is what gets bound at call time. This matches the
-    # existing tests/trades/test_daily_management_service.py convention.
+    # Patch the runner's module-level binding (the warm), NOT the source
+    # module: compute_daily_approximate_snapshot no longer fetches; the warm
+    # at swing.pipeline.runner.read_or_fetch_archive is the only fetch now.
     monkeypatch.setattr(
-        "swing.data.ohlcv_archive.read_or_fetch_archive",
+        "swing.pipeline.runner.read_or_fetch_archive",
         lambda *a, **kw: df,
     )
 
@@ -280,25 +280,27 @@ def test_step_failure_does_not_abort_pipeline(
     def fail_for_trade_1(conn_inner, *, trade_id, **kwargs):
         if trade_id == 1:
             raise RuntimeError("synthetic-trade-1-failure")
-        # For trade_id != 1, return a minimal valid snapshot dict:
-        return {
-            "review_date": "2026-05-07", "data_asof_session": "2026-05-07",
-            "created_at": "2026-05-07T18:00:00",
-            "mfe_mae_precision_level": "daily_approximate",
-            "pipeline_run_id": kwargs.get("pipeline_run_id"),
-            "current_price": 50.0, "current_stop": 45.0,
-            "current_size": 100.0, "current_avg_cost": 50.0,
-            "open_R_effective": 0.0, "open_MFE_R_to_date": 0.0,
-            "open_MAE_R_to_date": 0.0, "intraday_high": 51.0,
-            "intraday_low": 49.0,
-            "position_capital_utilization_pct": 0.667,
-            "position_capital_denominator_dollars": 7500.0,
-            "position_portfolio_heat_contribution_dollars": 500.0,
-            "maturity_stage": "pre_+1.5R",
-            "trail_MA_candidate_price": None,
-            "trail_MA_period_days": None,
-            "trail_MA_eligibility_flag": None,
-        }
+        return SnapshotComputeResult(
+            fields={
+                "review_date": "2026-05-07", "data_asof_session": "2026-05-07",
+                "created_at": "2026-05-07T18:00:00",
+                "mfe_mae_precision_level": "daily_approximate",
+                "pipeline_run_id": kwargs.get("pipeline_run_id"),
+                "current_price": 50.0, "current_stop": 45.0,
+                "current_size": 100.0, "current_avg_cost": 50.0,
+                "open_R_effective": 0.0, "open_MFE_R_to_date": 0.0,
+                "open_MAE_R_to_date": 0.0, "intraday_high": 51.0,
+                "intraday_low": 49.0,
+                "position_capital_utilization_pct": 0.667,
+                "position_capital_denominator_dollars": 7500.0,
+                "position_portfolio_heat_contribution_dollars": 500.0,
+                "maturity_stage": "pre_+1.5R",
+                "trail_MA_candidate_price": None,
+                "trail_MA_period_days": None,
+                "trail_MA_eligibility_flag": None,
+            },
+            miss_reason=None,
+        )
     monkeypatch.setattr(
         "swing.trades.daily_management.compute_daily_approximate_snapshot",
         fail_for_trade_1,

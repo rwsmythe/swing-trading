@@ -191,11 +191,11 @@ def synthetic_pipeline_env(tmp_path: Path, monkeypatch):
         lambda self, ticker, lookback_days, *, as_of_date=None: _synthetic_ohlcv(),
     )
 
-    # The OHLCV archive read inside compute_daily_approximate_snapshot is
-    # imported lazily — patch the SOURCE module so the binding is resolved
-    # at call time. Per CLAUDE.md gotcha + plan §4.1 lazy-import note.
+    # The OHLCV archive warm for daily-management now runs in the runner
+    # (outside the per-trade fence); patch the runner's module-level binding
+    # so the step's warm is stubbed. Per plan §4.1 fetch-hoist.
     monkeypatch.setattr(
-        "swing.data.ohlcv_archive.read_or_fetch_archive",
+        "swing.pipeline.runner.read_or_fetch_archive",
         lambda *a, **kw: _archive_ohlcv(),
     )
 
