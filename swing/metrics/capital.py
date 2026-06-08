@@ -97,9 +97,10 @@ class CapitalFrictionTrendPoint:
 
     Per plan §A.0.1: historical points compute against CURRENT trade
     state (best-effort) for capital fields; ``concurrent_open_positions``
-    uses the ``pre_trade_locked_at <= started_ts AND (last_fill_at IS NULL
-    OR last_fill_at >= started_ts)`` proxy (Codex R3 Major #2 relocation
-    to capital-friction surface).
+    uses the state-based open-at-run predicate (Issue #3): a trade counts
+    when ``pre_trade_locked_at <= started_ts`` AND it is either non-terminal
+    or (terminal with ``last_fill_at`` NULL/empty or ``>= started_ts``). See
+    ``_count_open_at_run``.
     """
 
     pipeline_run_id: int
@@ -428,8 +429,9 @@ def _count_open_at_run(
 
     - a NON-terminal trade (``entered``/``managing``/``partial_exited``) was
       open at any R after its entry, so it counts whenever entered <=
-      ``started_ts`` — regardless of ``last_fill_at`` (which, for a still-open
-      trade, is its ENTRY fill, < ``started_ts``);
+      ``started_ts`` — regardless of ``last_fill_at`` (for a still-open trade
+      that is its latest fill: the entry fill, or a pre-run partial trim/stop
+      fill on a ``partial_exited`` trade — typically < ``started_ts``);
     - a TERMINAL trade (``closed``/``reviewed``) was open at R iff it closed
       at/after ``started_ts``, which by G1 is ``last_fill_at >= started_ts``
       (``>=`` inclusive per OQ-2; a NULL/empty close ts degrades to count).
