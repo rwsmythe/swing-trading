@@ -38,10 +38,12 @@ class ScreenResult:
     rs_path: str | None
     tt_criteria: tuple[CriterionResult, ...]  # the 8 trend_template results (for stage seeding)
     gate_attribution: GateAttribution | None
-    gate_passes: dict[str, bool] | None = None  # per-gate pass over the SCREENABLE subset (else None)
+    # per-gate pass over the SCREENABLE subset (else None)
+    gate_passes: dict[str, bool] | None = None
 
 
-# The 8 trend_template criterion names (mirrors swing.evaluation.criteria.trend_template.CHECK_NAMES).
+# The 8 trend_template criterion names (mirrors
+# swing.evaluation.criteria.trend_template.CHECK_NAMES).
 # A test (test_screen_eval.py::test_tt_names_match_production) asserts parity so this never drifts.
 _TT_NAMES = (
     "TT1_above_150_200",
@@ -153,8 +155,8 @@ def evaluate_h1(
         # hardened for liquid finviz candidates, not 1-bar input. Below the screenable floor an
         # exception is invariably too-few-bars -> classify insufficient_history, but STILL return 8
         # synthetic NA TT rows so the faithful H2 stage seeds to undefined (not coverage_skip), per
-        # spec section 5 ("ALWAYS returns the 8 trend_template criteria"). At/above the floor a raise
-        # is a genuine bug and must NOT be swallowed.
+        # spec section 5 ("ALWAYS returns the 8 trend_template criteria"). At/above the
+        # floor a raise is a genuine bug and must NOT be swallowed.
         if n < floor:
             return ScreenResult(
                 "skip_insufficient_history", None, n, proxy.rs_path, _na_tt_criteria(), None, None

@@ -5,7 +5,7 @@ import argparse
 import hashlib
 import tempfile
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from swing.config import Config
@@ -47,7 +47,9 @@ def _best_session(mode_result):
     """The highest-outcome (most representative) session, or None."""
     best = None
     for se in mode_result.sessions:
-        if best is None or _OUTCOME_RANK.get(se.screen.outcome, 0) > _OUTCOME_RANK.get(best.screen.outcome, 0):
+        cur_rank = _OUTCOME_RANK.get(se.screen.outcome, 0)
+        best_rank = _OUTCOME_RANK.get(best.screen.outcome, 0) if best is not None else -1
+        if best is None or cur_rank > best_rank:
             best = se
     return best
 
@@ -92,7 +94,7 @@ def run_harness(
         exemplars = [e for e in exemplars_all if e.exemplar_id in wanted]
     spy_full = _load_full_safe("SPY", Path(tiingo_dir))
 
-    iso = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    iso = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     run_dir = Path(output_dir) / f"minervini-exemplar-recall-{iso}"
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -123,11 +125,18 @@ def run_harness(
         for mode, res in modes.items():
             faith = res.h2_faithful_fired_expected if ex.detector_class != "unmapped" else None
             isod = res.h2_isolated_fired_expected if ex.detector_class != "unmapped" else None
-            fired_faithful = ";".join(sorted({c for se in res.sessions for c in se.h2_faithful.fired_classes}))
-            fired_isolated = ";".join(sorted({c for se in res.sessions for c in se.h2_isolated.fired_classes}))
-            anchor_limited = any(se.h2_isolated.h2_anchor_mode_limited_possible for se in res.sessions)
+            fired_faithful = ";".join(
+                sorted({c for se in res.sessions for c in se.h2_faithful.fired_classes})
+            )
+            fired_isolated = ";".join(
+                sorted({c for se in res.sessions for c in se.h2_isolated.fired_classes})
+            )
+            anchor_limited = any(
+                se.h2_isolated.h2_anchor_mode_limited_possible for se in res.sessions
+            )
             rs_path = _rep_rs_path(res)  # representative (best-outcome) session, not sessions[0]
-            for se in res.sessions:  # coverage/skip-reason counters across BOTH variants (never silent)
+            # coverage/skip-reason counters across BOTH variants (never silent)
+            for se in res.sessions:
                 for verdict in (se.h2_faithful, se.h2_isolated):
                     if verdict.skip_reason:
                         skip_reason_counts[verdict.skip_reason] += 1
@@ -160,7 +169,9 @@ def run_harness(
                 per_exemplar_provenance.append({
                     "exemplar_id": ex.exemplar_id, "data_source": data_source,
                     "rs_path": rs_path,  # representative session
-                    "rs_paths_all": sorted({se.screen.rs_path for se in res.sessions if se.screen.rs_path}),
+                    "rs_paths_all": sorted(
+                        {se.screen.rs_path for se in res.sessions if se.screen.rs_path}
+                    ),
                 })
             summaries[mode].append(ExemplarSummary(
                 ex.exemplar_id, ex.ticker, ex.detector_class, res.best_h1_outcome,
@@ -176,7 +187,8 @@ def run_harness(
         if full is not None:
             anchors = control_cohort.sample_control_anchors(
                 full, ex.entry_anchor, k=control_k, window_back=window_back, window_fwd=window_fwd,
-                screenable_floor=screenable_floor(config), base_seed=DEFAULT_CONTROL_SEED, exemplar_index=idx,
+                screenable_floor=screenable_floor(config), base_seed=DEFAULT_CONTROL_SEED,
+                exemplar_index=idx,
             )
             for anchor in anchors:
                 cmodes = control_cohort.evaluate_control(
@@ -198,7 +210,7 @@ def run_harness(
     }
 
     n_screenable = sum(1 for e in summaries["window_sweep"] if e.h1_outcome not in _ATTRITION)
-    finished_iso = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    finished_iso = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
     results_path = run_dir / "results.csv"
     per_session_path = run_dir / "per_session.csv"
@@ -227,7 +239,9 @@ def _summary_lines(cards, exemplars) -> list[str]:
     lines = ["# Minervini Exemplar Recall - summary", ""]
     lines.append(f"Exemplars evaluated (curated=yes): {len(exemplars)}")
     lines.append("")
-    lines.append("NOTE: the negative-control cohort is a SAME-TICKER temporal-specificity contrast,")
+    lines.append(
+        "NOTE: the negative-control cohort is a SAME-TICKER temporal-specificity contrast,"
+    )
     lines.append("NOT a population false-fire base rate (spec section 8/12.10).")
     lines.append("")
     for mode, card in cards.items():
@@ -235,9 +249,13 @@ def _summary_lines(cards, exemplars) -> list[str]:
         lines.append(f"- screening recall (full set): {card.screening_recall_full:.3f}")
         lines.append(f"- screening recall (screenable): {card.screening_recall_screenable:.3f}")
         w = card.screening_wilson_screenable
-        lines.append(f"- Wilson 95pct (screenable, PRIMARY): [{w.lower:.3f}, {w.upper:.3f}] n={w.n}")
+        lines.append(
+            f"- Wilson 95pct (screenable, PRIMARY): [{w.lower:.3f}, {w.upper:.3f}] n={w.n}"
+        )
         b = card.screening_bootstrap_screenable
-        lines.append(f"- ticker-clustered bootstrap 95pct (EXPLORATORY): [{b.lower:.3f}, {b.upper:.3f}]")
+        lines.append(
+            f"- ticker-clustered bootstrap 95pct (EXPLORATORY): [{b.lower:.3f}, {b.upper:.3f}]"
+        )
         lines.append(f"- bucket distribution: {card.bucket_distribution}")
         lines.append(f"- first-rejecting-gate histogram: {card.gate_attribution_hist}")
         lines.append(f"- per-gate pass rate (screenable): {card.per_gate_pass_rate_screenable}")
@@ -267,7 +285,8 @@ def _h2_all_windows_rows(ex, full, *, window_back, window_fwd) -> list[dict]:
             for mode, sessions in modes.items():
                 for session in sessions:
                     stage_db.seed_session(
-                        conn, ticker=ex.tiingo_symbol, session=session, tt_results=(), mode="isolated"
+                        conn, ticker=ex.tiingo_symbol, session=session,
+                        tt_results=(), mode="isolated"
                     )
                     for row in detector_eval.evaluate_h2_all_windows(
                         exemplar=ex, session=session, exemplar_full=full, stage_conn=conn
@@ -330,7 +349,8 @@ def main(argv: list[str] | None = None) -> int:
     only = tuple(s.strip() for s in args.only.split(",") if s.strip()) if args.only else None
     try:
         results, per_session, summary, manifest = run_harness(
-            exemplars_csv=args.exemplars_csv, tiingo_dir=args.tiingo_dir, output_dir=args.output_dir,
+            exemplars_csv=args.exemplars_csv, tiingo_dir=args.tiingo_dir,
+            output_dir=args.output_dir,
             window_back=args.window_back, window_fwd=args.window_fwd, control_k=args.control_k,
             bootstrap_b=args.bootstrap_b, h2_all_windows=args.h2_all_windows, only=only,
         )

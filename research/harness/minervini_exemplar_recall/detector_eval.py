@@ -164,7 +164,8 @@ def evaluate_h2_all_windows(
         for detector_fn, pattern_class, _v in _resolve_registry():
             try:
                 ev = detector_fn(
-                    sliced, window, conn=stage_conn, ticker=exemplar.tiingo_symbol, asof_date=session
+                    sliced, window, conn=stage_conn,
+                    ticker=exemplar.tiingo_symbol, asof_date=session
                 )
                 if float(getattr(ev, "geometric_score", 0.0)) > 0.0:
                     fired.append(pattern_class)

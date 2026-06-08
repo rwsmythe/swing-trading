@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import math
 import random
+from collections import Counter
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Callable, Sequence
 
 _SURFACED = {"surfaced_aplus", "surfaced_watch"}
 _ATTRITION = {"skip_insufficient_history", "no_data"}
@@ -79,7 +80,6 @@ def screening_recall(outcomes: Sequence[str]) -> tuple[float, float]:
 
 
 # --- aggregate (appended to research/harness/minervini_exemplar_recall/scorecard.py) ---
-from collections import Counter
 
 
 @dataclass(frozen=True)
@@ -91,7 +91,8 @@ class ExemplarSummary:
     first_rejecting_gate: str | None
     h2_faithful_fired_expected: bool | None  # None for unmapped
     h2_isolated_fired_expected: bool | None
-    gate_passes: dict[str, bool] | None = None  # per-gate pass at the representative screenable session
+    # per-gate pass at the representative screenable session
+    gate_passes: dict[str, bool] | None = None
 
 
 @dataclass(frozen=True)
@@ -137,14 +138,20 @@ def _detector_recall(exemplars: list[ExemplarSummary]) -> DetectorRecall:
     delta: dict[str, float] = {}
     of_f = oi_f = of_i = oi_i = 0
     for cls in classes:
-        mapped = [e for e in exemplars if e.detector_class == cls and e.h2_faithful_fired_expected is not None]
+        mapped = [
+            e for e in exemplars
+            if e.detector_class == cls and e.h2_faithful_fired_expected is not None
+        ]
         denom = len(mapped)
         fired_f = sum(1 for e in mapped if e.h2_faithful_fired_expected)
         fired_i = sum(1 for e in mapped if e.h2_isolated_fired_expected)
         per_f[cls] = (fired_f, denom)
         per_i[cls] = (fired_i, denom)
         delta[cls] = _rate(fired_i, denom) - _rate(fired_f, denom)
-        of_f += fired_f; oi_f += denom; of_i += fired_i; oi_i += denom
+        of_f += fired_f
+        oi_f += denom
+        of_i += fired_i
+        oi_i += denom
     return DetectorRecall(per_f, per_i, (of_f, oi_f), (of_i, oi_i), delta)
 
 
@@ -176,8 +183,8 @@ def build_scorecard(
             if e.h1_outcome == "skip_gate_rejection" and e.first_rejecting_gate
         )
     )
-    # Per-gate pass rate over the FULL screenable subset (spec section 9 -> histogram AND pass rate).
-    # Denominator = every screenable exemplar; a screenable row missing gate_passes is a threading
+    # Per-gate pass rate over the FULL screenable subset (spec section 9 -> histogram AND
+    # pass rate). Denominator = every screenable exemplar; a screenable row missing gate_passes is a
     # bug (evaluate_h1 ALWAYS sets gate_passes for surfaced/gate_rejection outcomes) -> raise loudly
     # rather than silently shrink the denominator and overstate pass rates (Codex R2).
     screenable_ex = [e for e in exemplars if e.h1_outcome not in _ATTRITION]
@@ -196,8 +203,12 @@ def build_scorecard(
     mapped_controls = [c for c in controls if c.detector_class != "unmapped"]
     spec = {
         "control_surfaced_rate": _rate(sum(1 for c in controls if c.surfaced), len(controls)),
-        "control_fired_faithful_rate": _rate(sum(1 for c in mapped_controls if c.fired_faithful), len(mapped_controls)),
-        "control_fired_isolated_rate": _rate(sum(1 for c in mapped_controls if c.fired_isolated), len(mapped_controls)),
+        "control_fired_faithful_rate": _rate(
+            sum(1 for c in mapped_controls if c.fired_faithful), len(mapped_controls)
+        ),
+        "control_fired_isolated_rate": _rate(
+            sum(1 for c in mapped_controls if c.fired_isolated), len(mapped_controls)
+        ),
         "control_n": float(len(controls)),
         "control_n_mapped": float(len(mapped_controls)),
     }

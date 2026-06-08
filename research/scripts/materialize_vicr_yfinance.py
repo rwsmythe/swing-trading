@@ -6,7 +6,7 @@ standalone process:  python -m research.scripts.materialize_vicr_yfinance
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pandas as pd
@@ -34,7 +34,8 @@ def materialize(*, out_csv: Path = _DEFAULT_OUT, start: str = "1990-01-01") -> P
     df.columns = ["date" if c == "date" else str(c).lower() for c in df.columns]
     out = pd.DataFrame({
         "date": pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d"),
-        "close": df["close"], "high": df["high"], "low": df["low"], "open": df["open"], "volume": df["volume"],
+        "close": df["close"], "high": df["high"], "low": df["low"],
+        "open": df["open"], "volume": df["volume"],
         "adjClose": df["close"], "adjHigh": df["high"], "adjLow": df["low"],
         "adjOpen": df["open"], "adjVolume": df["volume"],
     })
@@ -44,7 +45,7 @@ def materialize(*, out_csv: Path = _DEFAULT_OUT, start: str = "1990-01-01") -> P
 
     provenance = (
         f"VICR.csv materialized from yfinance (auto_adjust=True) start={start}\n"
-        f"generated_utc={datetime.now(timezone.utc).isoformat()}\n"
+        f"generated_utc={datetime.now(UTC).isoformat()}\n"
         f"rows={len(out)} first={out['date'].iloc[0]} last={out['date'].iloc[-1]}\n"
         "Source: Yahoo Finance via yfinance. Replaces the shallow 1991-11 Tiingo pull.\n"
     )
