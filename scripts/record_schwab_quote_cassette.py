@@ -374,10 +374,20 @@ def _record_quote_cassette(
     import vcr
 
     cassette_path.parent.mkdir(parents=True, exist_ok=True)
-    # Delete any existing cassette FIRST: record_mode="new_episodes" APPENDS,
-    # so a rerun would leave the stale prior interaction in interactions[0].
-    # Force a single-interaction cassette (mirrors the order recorder's R3 fix).
-    _safe_delete_cassette(cassette_path)
+    # Delete any existing cassette FIRST and VERIFY it is gone:
+    # record_mode="new_episodes" records AGAINST an existing file, so a stale
+    # cassette that survives a silently-swallowed delete could be matched/
+    # reported as a fresh one-live-call recording. Refuse to proceed if it
+    # cannot be removed (mirrors the order recorder's force-single-interaction
+    # intent + the R2 delete-verification guarantee).
+    if not _delete_cassette_verifying(cassette_path):
+        sys.stderr.write(
+            f"CRITICAL: could not delete a pre-existing cassette at "
+            f"{cassette_path} -- DELETE FAILED. A stale cassette would be "
+            f"recorded against (record_mode=new_episodes) and could be "
+            f"mistaken for a fresh recording. Remove it MANUALLY + re-run.\n",
+        )
+        return DELETE_FAILED_CODE
 
     try:
         with vcr.use_cassette(
@@ -393,9 +403,15 @@ def _record_quote_cassette(
         )
     except BaseException:
         # KeyboardInterrupt / SystemExit etc: VCR may have flushed a partial,
-        # un-validated cassette on __exit__. Delete it (best effort) then
-        # re-raise so the interruption is never silently swallowed.
-        _safe_delete_cassette(cassette_path)
+        # un-validated cassette on __exit__. Delete it + VERIFY removal, warn
+        # loudly if it cannot be removed, then re-raise so the interruption is
+        # never silently swallowed.
+        if not _delete_cassette_verifying(cassette_path):
+            sys.stderr.write(
+                f"CRITICAL: could not delete the partial cassette at "
+                f"{cassette_path} after an interruption -- DELETE FAILED. It "
+                f"may contain unsanitized / partial data; remove it MANUALLY.\n",
+            )
         raise
 
     ok, msg = _validate_quote_cassette_has_regular_fields(cassette_path)

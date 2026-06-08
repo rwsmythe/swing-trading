@@ -392,6 +392,66 @@ def test_record_reraises_baseexception_and_deletes_partial(
     assert not cassette.exists(), "partial cassette must be deleted on interruption"
 
 
+def test_record_bails_if_preexisting_cassette_cannot_be_deleted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture,
+) -> None:
+    """Codex R3 MAJOR: the pre-record delete is verified. If a stale cassette
+    survives a swallowed delete, recording against it (record_mode=new_episodes)
+    could be mistaken for a fresh recording. The recorder must bail with code 6
+    + 'DELETE FAILED' BEFORE making the live call."""
+    mod = _load_module()
+    _install_fake_vcr(monkeypatch)
+    monkeypatch.setattr(mod, "_safe_delete_cassette", lambda p: None, raising=True)
+    cassette = tmp_path / "quote_regular_fields.yaml"
+    # A pre-existing, superficially-valid cassette that the no-op delete leaves.
+    cassette.write_text(_yaml_cassette_with_fields(_REGULAR_FIELDS), encoding="utf-8")
+
+    client = mock.MagicMock()
+    rc = mod._record_quote_cassette(
+        client=client, symbols=["AAPL"], fields="quote",
+        cassette_path=cassette, vcr_kwargs={},
+    )
+    assert rc == mod.DELETE_FAILED_CODE
+    assert "DELETE FAILED" in capsys.readouterr().err
+    client.quotes.assert_not_called()  # never reach the live call against stale data
+
+
+def test_record_baseexception_delete_failure_warns_and_reraises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture,
+) -> None:
+    """Codex R3 MAJOR: the BaseException cleanup arm also verifies removal. If
+    the partial cassette cannot be deleted on interruption, emit 'DELETE FAILED'
+    + still re-raise."""
+    mod = _load_module()
+    _install_fake_vcr(monkeypatch)
+    cassette = tmp_path / "quote_regular_fields.yaml"
+    # The pre-record delete must succeed (file absent), but the post-interrupt
+    # delete must be a no-op. Swap the helper to no-op only after the first call.
+    real_delete = mod._safe_delete_cassette
+    calls = {"n": 0}
+
+    def _delete(path):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            real_delete(path)  # pre-record delete works (file absent anyway)
+
+    monkeypatch.setattr(mod, "_safe_delete_cassette", _delete, raising=True)
+
+    def _quotes(**kwargs):
+        cassette.write_text("partial-unvalidated-content\n", encoding="utf-8")
+        raise KeyboardInterrupt
+
+    client = mock.MagicMock()
+    client.quotes.side_effect = _quotes
+    with pytest.raises(KeyboardInterrupt):
+        mod._record_quote_cassette(
+            client=client, symbols=["AAPL"], fields="quote",
+            cassette_path=cassette, vcr_kwargs={},
+        )
+    assert "DELETE FAILED" in capsys.readouterr().err
+    assert cassette.exists(), "no-op post-interrupt delete leaves the partial file"
+
+
 # --- Test 10: bootstrap delegation forwards args ---------------------------
 def test_bootstrap_delegation_forwards_args(monkeypatch: pytest.MonkeyPatch) -> None:
     mod = _load_module()
