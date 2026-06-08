@@ -15,9 +15,11 @@ Implementer notes (per Task 4.0 hand-off):
   * Per-trade lease-fenced transaction isolation is intentional: a
     single-trade failure must not roll back the batch. T4.1's failure
     isolation test asserts trade 2 emits even when trade 1 raises.
-  * The OHLCV archive monkeypatch targets the SOURCE module
-    (``swing.data.ohlcv_archive.read_or_fetch_archive``) per the lazy-import
-    convention in ``compute_daily_approximate_snapshot``.
+  * The OHLCV archive monkeypatch targets the runner's module-level binding
+    (``swing.pipeline.runner.read_or_fetch_archive``): after the 2026-06-07
+    fetch-hoist, ``_step_daily_management`` performs the archive warm OUTSIDE
+    the per-trade fence, so the warm resolves via the runner symbol (the pure
+    ``compute_daily_approximate_snapshot`` no longer fetches).
 """
 from __future__ import annotations
 
