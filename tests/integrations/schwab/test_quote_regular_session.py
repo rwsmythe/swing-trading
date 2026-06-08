@@ -74,6 +74,29 @@ def test_regular_block_snake_case_forward_compat():
     assert out["AAPL"].last_price == 150.25
 
 
+def test_flat_form_top_level_regular_fields_map_ignoring_ext_hours():
+    """A genuine flat payload (regularMarket* at the per-symbol top level, no
+    `quote`/`regular` sub-blocks) maps via the flat-form fallback; the top-level
+    ext-hours lastPrice/bidPrice/askPrice/mark are NEVER surfaced (L1)."""
+    out = map_quotes_to_price_cache_entries({
+        "AAPL": {
+            "symbol": "AAPL",
+            "regularMarketLastPrice": 150.25,
+            "regularMarketTradeTime": 1_700_000_000_000,
+            # bare ext-hours fields at the top level -- must be ignored
+            "lastPrice": 999.99, "bidPrice": 999.0, "askPrice": 1000.0,
+            "mark": 999.99,
+        },
+    })
+    assert "AAPL" in out
+    entry = out["AAPL"]
+    assert entry.last_price == 150.25
+    assert entry.last_price != 999.99
+    assert entry.bid is None
+    assert entry.ask is None
+    assert entry.mark is None
+
+
 def test_fields_quote_only_no_regular_block_is_dropped():
     """A `fields="quote"`-only payload (a `quote` block, NO `regular` block) ->
     DROPPED to yfinance: no regular-session provenance, and the bare

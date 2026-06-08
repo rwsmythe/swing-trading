@@ -741,7 +741,11 @@ def map_quotes_to_price_cache_entries(
         bid = None
         ask = None
         mark = None
-        delayed_raw = body.get("delayed")
+        # `delayed` is a per-symbol top-level field in the real response; fall
+        # back to the `quote` body for the legacy/flat shape.
+        delayed_raw = payload.get("delayed")
+        if delayed_raw is None:
+            delayed_raw = body.get("delayed")
 
         # Drop the symbol unless regular-session provenance is present
         # (regularMarketLastPrice). No ext-hours value ever surfaces (L1).
