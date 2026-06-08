@@ -222,6 +222,99 @@ merge (orchestrator-owned per brief §1.4) folds them into `main`.
 
 ---
 
+## §8 Quote cassette (Gate 4 / OQ-3)
+
+> **Scope:** Phase 15 data-integrity arc Slice-B **Gate 4**. This is a SEPARATE,
+> later workflow from the order-cassette session above (§2-§6). It records ONE
+> sanitized live-quote cassette so the slow gate test
+> `tests/integrations/schwab/test_quote_fields_live.py` passes, fully closing
+> the data-integrity arc.
+>
+> **Recorder:** `scripts/record_schwab_quote_cassette.py` (reuses the order
+> recorder's fail-closed sanitization + leak-scan + auth bootstrap; it does NOT
+> duplicate them).
+> **Cassette path:** `tests/integrations/schwab/cassettes/quote_regular_fields.yaml`
+> (note `schwab/cassettes` — the REVERSE of the order recorder's
+> `cassettes/schwab`).
+
+### Why a quote cassette
+
+The B2 Schwab quote mapper requires **last AND bid AND ask**. If any of the 4
+`regularMarket*` fields the mapper consumes is absent from a live quote, the
+mapper drops EVERY Schwab quote to yfinance (the Schwab quote path goes dead).
+The gate test is a pure substring grep asserting all 4 field names appear in
+the recorded cassette:
+
+- `regularMarketLastPrice`
+- `regularMarketTradeTime`
+- `regularMarketBidPrice`
+- `regularMarketAskPrice`
+
+### Market-open workflow (3 steps)
+
+**Pre-conditions:** valid production refresh-token (`swing schwab status
+--environment production` reports `LIVE`; re-auth via `swing schwab setup` or
+`/schwab/setup` if not), creds resolved (env vars OR
+`~/swing-data/user-config.toml [integrations.schwab]`), and **regular market
+hours** (the `regularMarket*` block only populates with bid/ask during the
+regular session). You are on this worktree branch.
+
+```powershell
+# Step 1 -- record during regular hours with live production tokens:
+python scripts/record_schwab_quote_cassette.py --environment production
+
+# OQ-3 recovery: if the script reports a missing bid/ask field, widen fields:
+python scripts/record_schwab_quote_cassette.py --environment production --fields all
+```
+
+The script, for the single `client.quotes(symbols=["AAPL"], fields="quote")`
+call:
+
+1. Opens `vcr.use_cassette(<gate-path>, record_mode='new_episodes', ...)` with
+   the shared sanitization filter dict imported from `tests/conftest.py:vcr_config`
+   (fail-closed — if that import fails the script REFUSES to run rather than
+   record with an incomplete filter).
+2. **Deletes any existing cassette first** so the result is a single-interaction
+   cassette.
+3. **Post-record validation** against the persisted file: all 4 `regularMarket*`
+   fields present? If not → cassette **DELETED** + non-zero exit + the OQ-3
+   message.
+4. **Sentinel-leak audit** (reused `_scan_cassette_for_sentinel_leak` catalog):
+   any unsanitized accountHash / token / accountNumber substring? If so →
+   cassette **DELETED** + non-zero exit.
+
+```powershell
+# Step 2 -- confirm the printout shows the 4 regularMarket* fields + leak-clean,
+# then visually diff the cassette for anything you'd recognize as sensitive:
+git diff tests/integrations/schwab/cassettes/quote_regular_fields.yaml
+git add tests/integrations/schwab/cassettes/quote_regular_fields.yaml
+
+# Step 3 -- the slow gate test now passes (data-integrity arc closes):
+python -m pytest tests/integrations/schwab/test_quote_fields_live.py
+```
+
+### The OQ-3 decision (operator's, at record time)
+
+If bid/ask are **absent** under `fields="quote"`, you have two L1-correct
+options — the recorder surfaces this, it does not pre-decide:
+
+1. **Re-run with `--fields all`** to widen the selection until all 4 fields
+   appear, then commit.
+2. **Accept the yfinance-drop:** B2 stays L1-correct (it simply routes Schwab
+   quotes to yfinance). Do NOT commit a partial cassette; leave the slow gate
+   test skipped-by-absence.
+
+### Sanitization guarantee
+
+The committed cassette carries **zero** accountHash / tokens / account numbers:
+the shared `tests/conftest.py:vcr_config` scrubs request URIs + response bodies
+at record time, and the leak-scan is the belt that deletes the cassette before
+it can be committed if anything slips through. A recording that leaks secrets
+is a critical failure — the fail-closed loader + leak-scan exist precisely to
+prevent it.
+
+---
+
 ## §7 Cross-references
 
 - **Spec:** `docs/superpowers/specs/2026-05-17-schwab-mapper-execution-grain-widening-design.md` §6.5 OQ-E LOCK + §10 worked examples.
@@ -229,5 +322,8 @@ merge (orchestrator-owned per brief §1.4) folds them into `main`.
 - **Brief:** `docs/post-phase12-schwab-mapper-bundle-1-execution-grain-widening-executing-plans-dispatch-brief.md` §0.7 (mid-dispatch operator pause).
 - **CLAUDE.md gotchas:** "Schwab cassette runbook is V2 PLANNED" (this runbook supersedes); "Schwab OAuth web setup flow" (re-auth path); "schwabdev camelCase kwarg discipline" (the script honors); "schwabdev silent-failure-mode discipline" (`construct_authenticated_client` raises on silent failure).
 - **Sanitization filter source:** `tests/conftest.py:vcr_config` (single source of truth; recording script imports the same dict).
-- **Recording script:** `scripts/record_schwab_cassettes.py`.
-- **Tests for the recording script:** `tests/integrations/test_record_schwab_cassettes_script.py`.
+- **Recording script (orders):** `scripts/record_schwab_cassettes.py`.
+- **Tests for the order recording script:** `tests/integrations/test_record_schwab_cassettes_script.py`.
+- **Recording script (quote / Gate 4, §8):** `scripts/record_schwab_quote_cassette.py` (reuses the order recorder's helpers).
+- **Tests for the quote recording script:** `tests/integrations/test_record_schwab_quote_cassette_script.py`.
+- **Quote gate test (slow):** `tests/integrations/schwab/test_quote_fields_live.py` (substring grep for the 4 `regularMarket*` fields).
