@@ -4894,6 +4894,41 @@ def diagnose_aplus_sensitivity_v2(
     click.echo(f"CSV:      {csv_path}")
 
 
+@diagnose_group.command("minervini-recall")
+@click.option("--exemplars-csv", "exemplars_csv", type=click.Path(path_type=Path),
+              default=Path("research/data/minervini-exemplars.csv"), show_default=True)
+@click.option("--tiingo-dir", "tiingo_dir", type=click.Path(path_type=Path),
+              default=Path("research/data/tiingo"), show_default=True)
+@click.option("--output-dir", "output_dir", type=click.Path(path_type=Path),
+              default=Path("exports/research"), show_default=True)
+@click.option("--window-back", type=int, default=60, show_default=True)
+@click.option("--window-fwd", type=int, default=5, show_default=True)
+@click.option("--control-k", type=int, default=5, show_default=True)
+@click.option("--bootstrap-b", type=int, default=2000, show_default=True)
+@click.option("--h2-all-windows", is_flag=True, default=False,
+              help="Off by default. Writes a separate non-production diagnostic CSV.")
+@click.option("--only", type=str, default=None, help="Comma-separated exemplar_id filter.")
+def diagnose_minervini_recall(exemplars_csv, tiingo_dir, output_dir, window_back, window_fwd,
+                              control_k, bootstrap_b, h2_all_windows, only):
+    """Minervini correct-entry exemplar-recall harness (H1 screen + H2 detector recall).
+
+    No --db: H1 is pure, equity is the $7500 floor surrogate, stage is synthetic."""
+    from research.harness.minervini_exemplar_recall.run import run_harness  # deferred import
+
+    only_tuple = tuple(s.strip() for s in only.split(",") if s.strip()) if only else None
+    try:
+        results, per_session, summary, manifest = run_harness(
+            exemplars_csv=exemplars_csv, tiingo_dir=tiingo_dir, output_dir=output_dir,
+            window_back=window_back, window_fwd=window_fwd, control_k=control_k,
+            bootstrap_b=bootstrap_b, h2_all_windows=h2_all_windows, only=only_tuple,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"results.csv:     {results}")
+    click.echo(f"summary.md:      {summary}")
+    click.echo(f"manifest.json:   {manifest}")
+
+
 @diagnose_group.command("pattern-cohort-detect")
 @click.option(
     "--cohort-csv", "cohort_csv", type=click.Path(path_type=Path), default=None,
