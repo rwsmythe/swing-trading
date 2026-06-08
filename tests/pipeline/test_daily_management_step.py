@@ -386,3 +386,190 @@ def test_step_emits_27_audit_on_warm_empty(synthetic_lease_and_trades, monkeypat
         "WHERE record_type = 'daily_snapshot'"
     ).fetchone()[0]
     assert rows == 0
+
+
+def test_step_parity_persists_expected_fields_from_fixed_frame(synthetic_lease_and_trades):
+    """Deterministic parity (spec §7.3): a fixed warmed frame -> the persisted
+    snapshot fields are exactly the documented compute outputs. Isolates the
+    compute from any live-archive timing.
+
+    EXACT post-fix (DHC, asof 2026-05-07, the fixture's frame): current_price
+    108.0, intraday_high 110.0, intraday_low 100.0, open_MFE_R_to_date 1.5,
+    open_MAE_R_to_date 0.2, maturity_stage '+1.5R_to_+2R',
+    position_capital_utilization_pct 0.72,
+    position_portfolio_heat_contribution_dollars 400.0,
+    trail_MA_candidate_price NULL (only 6 sessions < 21)."""
+    lease, conn = synthetic_lease_and_trades   # fixture warm returns the fixed df
+    _step_daily_management(
+        lease=lease, run_now=datetime(2026, 5, 7, 18, 0, 0),
+        eval_run_id=99, archive_history_days=120,
+        ohlcv_archive_dir=Path("/dev/null"),
+        capital_floor_dollars=7500.0, trail_MA_period_days_default=21,
+        run_warnings=[],
+    )
+    row = conn.execute(
+        "SELECT current_price, intraday_high, intraday_low, open_MFE_R_to_date, "
+        "open_MAE_R_to_date, maturity_stage, position_capital_utilization_pct, "
+        "position_portfolio_heat_contribution_dollars, trail_MA_candidate_price "
+        "FROM daily_management_records WHERE trade_id = 1 "
+        "AND record_type = 'daily_snapshot'"
+    ).fetchone()
+    assert row[0] == 108.0
+    assert row[1] == 110.0
+    assert row[2] == 100.0
+    assert row[3] == 1.5
+    assert row[4] == 0.2
+    assert row[5] == "+1.5R_to_+2R"
+    assert row[6] == pytest.approx(0.72)
+    assert row[7] == 400.0
+    assert row[8] is None
+
+
+def test_step_warm_raised_miss_reason(synthetic_lease_and_trades, monkeypatch):
+    """Warm raises -> archive_df=None -> miss_reason='warm_raised', skipped, #27.
+
+    EXACT post-fix: run_warnings has 2 entries, each miss_reason='warm_raised';
+    0 snapshots persisted."""
+    lease, conn = synthetic_lease_and_trades
+
+    def boom(*a, **kw):
+        raise RuntimeError("synthetic-yf-network-error")
+    monkeypatch.setattr("swing.pipeline.runner.read_or_fetch_archive", boom)
+
+    run_warnings: list[dict] = []
+    _step_daily_management(
+        lease=lease, run_now=datetime(2026, 5, 7, 18, 0, 0),
+        eval_run_id=99, archive_history_days=120,
+        ohlcv_archive_dir=Path("/dev/null"),
+        capital_floor_dollars=7500.0, trail_MA_period_days_default=21,
+        run_warnings=run_warnings,
+    )
+    assert len(run_warnings) == 2
+    assert all(e["miss_reason"] == "warm_raised" for e in run_warnings)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM daily_management_records "
+        "WHERE record_type = 'daily_snapshot'"
+    ).fetchone()[0] == 0
+
+
+def test_step_ticker_changed_miss_reason(synthetic_lease_and_trades, monkeypatch):
+    """The warm succeeds for the snapshot ticker, but the in-fence trade row's
+    ticker was mutated (simulating a concurrent tier-3 reconciliation override)
+    -> ticker guard fires -> miss_reason='ticker_changed', skipped, #27.
+
+    EXACT post-fix: trade 1's run_warnings entry has miss_reason='ticker_changed';
+    no snapshot for trade 1."""
+    lease, conn = synthetic_lease_and_trades
+    # The warm captures trade.ticker ("DHC") from the up-front list_open_trades
+    # snapshot and warms bars for it; expected_ticker="DHC" is threaded in. We
+    # make the in-fence get_trade report a DIFFERENT ticker so the guard fires
+    # (simulating a concurrent tier-3 reconciliation override). compute_* imports
+    # get_trade LAZILY from swing.data.repos.trades (daily_management.py:503-504),
+    # so the patch target is the SOURCE module the lazy import binds at call time
+    # -- NOT a swing.trades.daily_management attribute.
+    import dataclasses
+
+    import swing.data.repos.trades as trades_repo
+    real_get_trade = trades_repo.get_trade
+
+    def get_trade_with_renamed_t1(conn_inner, trade_id):
+        t = real_get_trade(conn_inner, trade_id)
+        if trade_id == 1 and t is not None:
+            return dataclasses.replace(t, ticker="RENAMED")
+        return t
+    monkeypatch.setattr(
+        "swing.data.repos.trades.get_trade", get_trade_with_renamed_t1,
+    )
+
+    run_warnings: list[dict] = []
+    _step_daily_management(
+        lease=lease, run_now=datetime(2026, 5, 7, 18, 0, 0),
+        eval_run_id=99, archive_history_days=120,
+        ohlcv_archive_dir=Path("/dev/null"),
+        capital_floor_dollars=7500.0, trail_MA_period_days_default=21,
+        run_warnings=run_warnings,
+    )
+    t1 = [e for e in run_warnings if e["ticker"] == "DHC"]
+    assert t1 and t1[0]["miss_reason"] == "ticker_changed"
+    assert conn.execute(
+        "SELECT COUNT(*) FROM daily_management_records WHERE trade_id = 1 "
+        "AND record_type = 'daily_snapshot'"
+    ).fetchone()[0] == 0
+
+
+def test_step_warm_empty_wins_over_concurrent_ticker_change(
+    synthetic_lease_and_trades, monkeypatch,
+):
+    """Precedence lock (Codex R1 MAJOR #3): when the warm returns None AND the
+    in-fence ticker also changed, the #27 entry reports the ROOT cause
+    'warm_empty_or_stale' (warm-layer wins), NOT 'ticker_changed'. compute_*'s
+    guard evaluates ticker first and would return ticker_changed, but the runner
+    keeps the warm-pre-set reason because there are no usable bars regardless of
+    identity.
+
+    EXACT post-fix: trade 1's #27 entry miss_reason == 'warm_empty_or_stale'
+    (NOT 'ticker_changed')."""
+    import dataclasses
+
+    import swing.data.repos.trades as trades_repo
+    lease, conn = synthetic_lease_and_trades
+
+    # Warm returns None (empty) -> runner pre-sets warm_empty_or_stale:
+    monkeypatch.setattr(
+        "swing.pipeline.runner.read_or_fetch_archive", lambda *a, **kw: None,
+    )
+    # AND the in-fence ticker also changed (would yield ticker_changed if the
+    # typed result were consulted):
+    real_get_trade = trades_repo.get_trade
+
+    def renamed_t1(conn_inner, trade_id):
+        t = real_get_trade(conn_inner, trade_id)
+        if trade_id == 1 and t is not None:
+            return dataclasses.replace(t, ticker="RENAMED")
+        return t
+    monkeypatch.setattr("swing.data.repos.trades.get_trade", renamed_t1)
+
+    run_warnings: list[dict] = []
+    _step_daily_management(
+        lease=lease, run_now=datetime(2026, 5, 7, 18, 0, 0),
+        eval_run_id=99, archive_history_days=120,
+        ohlcv_archive_dir=Path("/dev/null"),
+        capital_floor_dollars=7500.0, trail_MA_period_days_default=21,
+        run_warnings=run_warnings,
+    )
+    t1 = [e for e in run_warnings if e["ticker"] == "DHC"]
+    assert t1 and t1[0]["miss_reason"] == "warm_empty_or_stale"
+
+
+def test_step_no_eligible_window_miss_reason(synthetic_lease_and_trades, monkeypatch):
+    """Warm succeeds with a non-empty frame that has NO row for asof_session
+    (2026-05-07) -> compute returns no_eligible_window (in-fence, authoritative)
+    -> #27 entry. miss_reason is None at the runner pre-set (warm succeeded), so
+    res.miss_reason is used.
+
+    EXACT post-fix: run_warnings entries carry miss_reason='no_eligible_window';
+    0 snapshots persisted."""
+    lease, conn = synthetic_lease_and_trades
+    # Frame has rows in [anchor, asof) but NOT the asof_session 2026-05-07:
+    df_no_asof = pd.DataFrame({
+        "High":  [105.0, 115.0],
+        "Low":   [98.0,  102.0],
+        "Close": [104.0, 113.0],
+    }, index=pd.to_datetime(["2026-05-05", "2026-05-06"]))
+    monkeypatch.setattr(
+        "swing.pipeline.runner.read_or_fetch_archive", lambda *a, **kw: df_no_asof,
+    )
+    run_warnings: list[dict] = []
+    _step_daily_management(
+        lease=lease, run_now=datetime(2026, 5, 7, 18, 0, 0),
+        eval_run_id=99, archive_history_days=120,
+        ohlcv_archive_dir=Path("/dev/null"),
+        capital_floor_dollars=7500.0, trail_MA_period_days_default=21,
+        run_warnings=run_warnings,
+    )
+    assert run_warnings, "expected at least one no_eligible_window skip"
+    assert all(e["miss_reason"] == "no_eligible_window" for e in run_warnings)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM daily_management_records "
+        "WHERE record_type = 'daily_snapshot'"
+    ).fetchone()[0] == 0
