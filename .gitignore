@@ -116,7 +116,7 @@ research/data/tiingo/
 *.key
 .env.local
 # Regenerable QA chart images (the qa/README.md pairing manifest IS tracked).
-research/data/qa/*.png
+research/data/qa/**/*.png
 # Bulk vendor data dumps (local-only) -- e.g. the Stooq d_us_txt download.
 reference/d_us_txt.zip
 
