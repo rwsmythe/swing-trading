@@ -49,6 +49,14 @@ def tiingo_symbol(book_ticker: str) -> str:
     return SYMBOL_OVERRIDE.get(book_ticker.upper(), book_ticker.upper())
 
 
+def unique_symbols(rows) -> list[str]:
+    """Deduped, sorted Tiingo symbol set for the fetch loop. ALWAYS includes SPY
+    (the fallback_spy RS benchmark) even though no exemplar row carries it."""
+    syms = {tiingo_symbol(r["ticker"]) for r in rows}
+    syms.add("SPY")
+    return sorted(syms)
+
+
 def entry_anchor(entry: str) -> date:
     """Parse YYYY / YYYY-MM / YYYY-MM-DD to a concrete date (mid-period defaults)."""
     p = entry.split("-")
@@ -114,7 +122,7 @@ def main() -> int:
         rows = list(csv.DictReader(fh))
     plan = [(r["exemplar_id"], r["ticker"], tiingo_symbol(r["ticker"]), r["entry_date"])
             for r in rows]
-    uniq = sorted({sym for _, _, sym, _ in plan})
+    uniq = unique_symbols(rows)
     archive = Path(args.archive)
     print(f"{len(rows)} exemplars -> {len(uniq)} unique Tiingo symbols; archive={archive}")
 
