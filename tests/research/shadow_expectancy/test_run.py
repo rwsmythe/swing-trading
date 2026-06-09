@@ -248,3 +248,35 @@ def test_excluded_multidetection_group_collapsed_count(tmp_path):
     assert (dl["unique_signals"] + dl["collapsed_duplicate_detection"]
             == dl["total_detections"])
     assert f["unattributed"]["no_candidate_join"] == 1
+
+
+def _seed_inverted_initial_stop_winner(conn, ticker="INV"):
+    # An aplus candidate whose candidate.initial_stop is ABOVE the pivot (10.5 > 10.0) -- a
+    # stale/inverted production stop. The mechanical trade ignores it (stop = entry_bar.low),
+    # so this MUST still simulate, not be excluded as invalid_ohlc.
+    eval_id = insert_candidate(conn, ticker=ticker, bucket="aplus", pivot=10.0,
+                               initial_stop=10.5, close=10.0)
+    pr_id = insert_pipeline_run(conn, eval_id)
+    det_id = insert_detection(conn, ticker=ticker, pipeline_run_id=pr_id, pivot=10.0,
+                              data_asof_date="2026-05-28", detection_date="2026-05-29")
+    insert_observation(conn, det_id, "2026-06-01", o=10.0, h=10.4, l=9.6, c=10.2,
+                       status="triggered_open", event="entry_fired")
+    insert_observation(conn, det_id, "2026-06-02", o=8.5, h=8.6, l=8.0, c=8.2,
+                       status="triggered_open")  # stops out -> closed
+    conn.commit()
+
+
+def test_inverted_candidate_initial_stop_not_excluded(tmp_path):
+    # Codex R2-M1: a candidate whose initial_stop >= pivot used to be screened out as
+    # invalid_ohlc by the candidate-level validator, silently dropping a mechanically-valid
+    # shadow trade. The validator no longer consults candidate.initial_stop, so the signal
+    # simulates normally (H1 closed), NOT excluded.
+    conn = make_db(tmp_path)
+    _seed_inverted_initial_stop_winner(conn)
+    out = tmp_path / "out"
+    _, _, _, manifest = run_harness(db_path=tmp_path / "t.db", output_dir=out,
+                                    source="pipeline")
+    f = json.loads(Path(manifest).read_text(encoding="utf-8"))["funnel"]
+    h1 = f["per_hypothesis"]["A+ baseline"]
+    assert h1["closed"] == 1                       # simulated, not excluded
+    assert h1["excluded"].get("invalid_ohlc", 0) == 0

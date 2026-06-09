@@ -23,14 +23,21 @@ def test_parse_bar_reads_lowercase_keys():
 
 
 def test_candidate_levels_ok():
-    assert validate_candidate_levels(pivot=10.0, initial_stop=9.0) is None
+    assert validate_candidate_levels(pivot=10.0) is None
 
 
-@pytest.mark.parametrize("pivot,stop", [
-    (0.0, -1.0), (-5.0, -6.0), (float("nan"), 1.0), (10.0, 10.0), (9.0, 10.0),
-])
-def test_candidate_levels_reject(pivot, stop):
-    assert validate_candidate_levels(pivot=pivot, initial_stop=stop) == "invalid_ohlc"
+@pytest.mark.parametrize("pivot", [0.0, -5.0, float("nan"), None])
+def test_candidate_levels_reject(pivot):
+    # Codex R2-M1: ONLY the pivot gates eligibility (it is the sole candidate field the
+    # mechanical trade consumes). pivot non-finite / <= 0 / None -> invalid_ohlc.
+    assert validate_candidate_levels(pivot=pivot) == "invalid_ohlc"
+
+
+def test_candidate_initial_stop_does_not_gate_eligibility():
+    # Codex R2-M1: candidate.initial_stop is irrelevant to eligibility -- it is not even a
+    # parameter anymore. A valid pivot is accepted regardless of any (stale / inverted)
+    # candidate stop, because the mechanical trade stop is entry_bar.low (C1/D6).
+    assert validate_candidate_levels(pivot=10.0) is None
 
 
 def test_bars_reject_high_lt_low():
@@ -52,5 +59,7 @@ def test_bars_reject_non_chronological_and_duplicate():
 
 def test_validate_signal_chains_levels_then_bars():
     good = [Bar("2026-05-29", 10.0, 11.0, 9.5, 10.5)]
-    assert validate_signal(pivot=10.0, initial_stop=9.0, bars=good) is None
-    assert validate_signal(pivot=10.0, initial_stop=10.0, bars=good) == "invalid_ohlc"
+    bad_bar = [Bar("2026-05-29", 10.0, 9.0, 11.0, 9.5)]  # high < low
+    assert validate_signal(pivot=10.0, bars=good) is None
+    assert validate_signal(pivot=0.0, bars=good) == "invalid_ohlc"   # bad pivot -> levels reject
+    assert validate_signal(pivot=10.0, bars=bad_bar) == "invalid_ohlc"  # bad bar -> bars reject

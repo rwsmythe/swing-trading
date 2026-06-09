@@ -169,11 +169,10 @@ def run_harness(*, db_path, output_dir, source=c.SOURCE,
         forward_bars = [io.parse_bar(o.ohlc_today_json, session=o.observation_date)
                         for o in forward]
 
-        # validate: candidate-level SANITY (pivot/initial_stop finite etc.; C1 -- the trade
-        # stop is entry_bar.low, NOT candidate.initial_stop) + every bar on the path. A
-        # failure on this ATTRIBUTED signal routes PER-HYPOTHESIS (Codex M5), not unattributed.
-        reason = validate_signal(pivot=candidate.pivot, initial_stop=candidate.initial_stop,
-                                 bars=[entry_bar, *forward_bars])
+        # validate: candidate PIVOT sanity (C1/R2-M1 -- candidate.initial_stop is NOT consulted;
+        # the trade stop is entry_bar.low) + every bar on the path. A failure on this ATTRIBUTED
+        # signal routes PER-HYPOTHESIS (Codex M5), not unattributed.
+        reason = validate_signal(pivot=candidate.pivot, bars=[entry_bar, *forward_bars])
         if reason is not None:
             for h in hyps:
                 signal_outcomes.append(SignalOutcome(h, "excluded", reason))
