@@ -326,14 +326,26 @@ path."
 
 ### 5.3 Persistence — migration `0025`, v24 → v25
 
-The `0025_phase16_pipeline_step_timings.sql` file contains **PURE DDL only** — no `BEGIN`/`COMMIT`
-in the file. Transaction control + the `foreign_keys=OFF` toggle are provided by the existing runner
-`_apply_migration` ([swing/data/db.py:252-295](../../../swing/data/db.py)), which already does
-`executescript(sql)` + `commit()` + `rollback()` on failure, with FK toggled OFF for the duration and
-restored after. (Embedding `BEGIN`/`COMMIT` in the file would conflict with that wrapper — do NOT.)
+> **AMENDED 2026-06-09 (writing-plans phase, Codex round 6 + gotcha #9).** The original text below
+> claimed the file should be "PURE DDL only — no `BEGIN`/`COMMIT`" because `_apply_migration` "wraps
+> the transaction." **That is incorrect:** `_apply_migration` ([swing/data/db.py:252-295]) calls
+> `conn.executescript(sql)` + `conn.commit()` and does **NOT** open a `BEGIN` — `executescript` runs
+> statements in **autocommit**, so without an in-file `BEGIN`, a mid-script failure (e.g. the version
+> bump failing after the `CREATE TABLE` committed) cannot be rolled back. That is exactly the **gotcha
+> #9** hazard. The two most recent migrations — `0023` and `0024` — both carry explicit
+> `BEGIN; ... COMMIT;` for this reason. **Corrected guidance: `0025` MUST carry `BEGIN; ... COMMIT;`
+> wrapping the `CREATE TABLE` + the mandatory `UPDATE schema_version SET version = 25;`** (mirroring
+> `0023`/`0024`); the runner's FK-OFF toggle + try/except `rollback()` still wrap it.
+
+The `0025_phase16_pipeline_step_timings.sql` file carries an explicit `BEGIN; ... COMMIT;` (gotcha #9,
+mirroring `0023`/`0024`) around the `CREATE TABLE` and the mandatory `UPDATE schema_version SET version
+= 25;`. The runner `_apply_migration` ([swing/data/db.py:252-295](../../../swing/data/db.py)) supplies
+the `foreign_keys=OFF` toggle (restored after) + a try/except `rollback()` on failure; the in-file
+`BEGIN`/`COMMIT` is what makes a mid-script failure atomically roll back.
 
 ```sql
--- 0025_phase16_pipeline_step_timings.sql  (pure DDL; runner wraps the transaction)
+-- 0025_phase16_pipeline_step_timings.sql  (explicit BEGIN/COMMIT per gotcha #9; mirrors 0023/0024)
+BEGIN;
 CREATE TABLE pipeline_step_timings (
   id          INTEGER PRIMARY KEY,
   run_id      INTEGER NOT NULL REFERENCES pipeline_runs(id) ON DELETE CASCADE,
@@ -346,6 +358,8 @@ CREATE TABLE pipeline_step_timings (
 );
 -- No separate run_id index (R2-Minor-3): the UNIQUE(run_id, ordinal) constraint already
 -- creates an index with run_id as the leading column, which SQLite uses for run_id lookups.
+UPDATE schema_version SET version = 25;
+COMMIT;
 ```
 
 - **`finished_ts` / `duration_ms` are `NOT NULL`** (Minor-1 resolution): the flush ALWAYS closes the
@@ -364,8 +378,11 @@ CREATE TABLE pipeline_step_timings (
   re-flush (a second `Lease` object for the same `run_id`, a process retry) cannot raise a UNIQUE
   IntegrityError — the first write wins, the table stays append-only. A test asserts a repeated flush
   against existing rows is a harmless no-op.
-- **Migration-runner discipline (#9):** the `0025` file is pure DDL; `_apply_migration` supplies the
-  explicit transaction + `rollback()` + FK toggle. Do NOT bare-`executescript` from elsewhere.
+- **Migration-runner discipline (#9):** the `0025` file carries explicit `BEGIN; ... COMMIT;`
+  (mirroring `0023`/`0024`), because `_apply_migration` runs `executescript` in autocommit and does NOT
+  open its own `BEGIN` (see the AMENDED note above). `_apply_migration` supplies the FK toggle +
+  try/except `rollback()`; the in-file `BEGIN`/`COMMIT` provides the atomic boundary. Do NOT
+  bare-`executescript` from elsewhere.
 - **Backup gate (Major-8 resolution) — a backup TRIGGER, not a block.** Add a new
   `_phase16_backup_gate(conn, *, current_version, target_version, backup_dir)` mirroring the
   established per-phase shape ([_b7_backup_gate, db.py:1029-1066](../../../swing/data/db.py)): fire
