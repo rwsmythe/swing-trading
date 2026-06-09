@@ -49,16 +49,29 @@ do the 1c yfinance call-timing audit. See §9.
   replaced it, redacts records whose logger name starts with the schwabdev prefix (capital-S
   `"Schwabdev"`). The pipeline subprocess makes Schwab calls (`schwab_snapshot`, `schwab_orders`
   steps) → `pipeline.log` could leak token/accountHash without it installed.
-- **Step model:** **13** `lease.step(name)` transitions in
-  [`swing/pipeline/runner.py`](../../../swing/pipeline/runner.py):
+- **Step model:** **13 distinct step names across 14 `lease.step()` call sites** (`finviz_fetch`
+  fires from two sites — see below) in [`swing/pipeline/runner.py`](../../../swing/pipeline/runner.py):
   `finviz_fetch, weather, evaluate, daily_management, watchlist, recommendations, pattern_detect,
   pattern_observe, schwab_snapshot, schwab_orders, charts, export, complete`. `lease.step()`
   ([`swing/pipeline/lease.py:53-62`](../../../swing/pipeline/lease.py)) opens its OWN connection +
   `with conn:` transaction and calls `update_step(...)`, rewriting `pipeline_runs.current_step` +
   `last_step_progress_ts` (overwritten each transition — never captured).
-  - **`finviz_fetch` fires from TWO sites** for one run ([runner.py:634](../../../swing/pipeline/runner.py)
-    and [runner.py:638's neighborhood](../../../swing/pipeline/runner.py); see also L758) — the
-    capture mechanism MUST be idempotent against same-step re-fire (no double-row).
+  - **`finviz_fetch` fires from TWO NON-CONSECUTIVE sites**, and `weather` runs BETWEEN them:
+    **site-1** ([runner.py:634](../../../swing/pipeline/runner.py)) is **conditional** — it fires only
+    inside the `except NoFilesError` inbox-empty branch, *before* the inline `_step_finviz_fetch`;
+    **site-2** ([runner.py:758](../../../swing/pipeline/runner.py)) fires **unconditionally**, *after*
+    `weather` ([runner.py:723](../../../swing/pipeline/runner.py)), and its body is **skipped (~0ms)
+    when `finviz_fetched_inline=True`** (i.e. site-1 already ran the fetch). (The code comment at
+    L632 says "L638" — that is **stale**; the real site-2 is L758.) Real per-path sequences:
+    - **inbox-empty** (a normal first-run-of-day): `finviz_fetch`(634, real fetch) → `weather`(723) →
+      `finviz_fetch`(758, skip ~0ms) → `evaluate` → …
+    - **inbox-non-empty**: site-1 never fires → `weather`(723) → `finviz_fetch`(758, real fetch) →
+      `evaluate` → …
+    Consequences the timing design MUST respect: the two `finviz_fetch` calls are **never
+    consecutive**; **ordinals are path-dependent** (empty: finviz_fetch=0, weather=1, finviz_fetch=2;
+    non-empty: weather=0, finviz_fetch=1); and `(run_id, step_name)` is **not unique** (`finviz_fetch`
+    can yield two rows). See §5.1 for the adopted semantic (record both as genuine intervals; aggregate
+    `duration_ms` by `step_name`).
 - **`_now_iso()`** ([lease.py:28-29](../../../swing/pipeline/lease.py)) =
   `datetime.now().isoformat(timespec="seconds")` — **seconds-precision wall-clock**, too coarse to
   be the *duration* source; durations come from a monotonic clock (§5).
@@ -200,34 +213,45 @@ persisted per transition):
 - `_next_ordinal: int` (0-based).
 - `_timings_flushed: bool` (flush-once guard).
 
-**Semantic contract (binding — writing-plans must audit all 13 call sites against it):**
-`lease.step(name)` is called **at the start of `name`'s work**, immediately before that step's body.
-The captured duration of step `name` is the wall-clock/monotonic interval from its `step(name)` call
-to the **next distinct** `step(...)` call (or to flush, for the final step). Therefore the table
-records **step-boundary intervals**, not isolated step bodies — any gap (cleanup, between-step
-overhead) is attributed to the step that owns the *preceding* boundary. Pre-first-step bootstrap
-(lease acquisition, finviz inbox `mkdir`, `select_csv` at [runner.py:593-634](../../../swing/pipeline/runner.py))
-runs **before** the first `step("finviz_fetch")` and is intentionally **outside** step timing — it is
-sub-second startup, not pipeline work, and the ~570s attribution problem lives entirely inside the
-step sequence. (If a future need arises to time bootstrap, that is a separate concern, not this arc.)
+**Semantic contract (binding):** `lease.step(name)` is called **at the start of `name`'s work**,
+immediately before that step's body. The captured duration of an open ledger entry is the
+wall-clock/monotonic interval from its `step()` call to the **next `step()` call (of ANY name)** —
+or to flush, for the final entry. Therefore the table records **step-boundary intervals**, not
+isolated step bodies — any gap (cleanup, between-step overhead) is attributed to the entry that owns
+the *preceding* boundary. The **first** `step()` call is **path-dependent** (inbox-empty:
+`finviz_fetch`; inbox-non-empty: `weather`); pre-first-step bootstrap (lease acquisition, finviz inbox
+`mkdir`, `select_csv` at [runner.py:593-634](../../../swing/pipeline/runner.py), and on the non-empty
+path the finviz `select_csv` itself) runs **before** the first `step()` and is intentionally
+**outside** step timing — sub-second startup, not the ~570s of work the arc targets.
 
-`lease.step(name)` (its existing `update_step` DB write is **unchanged**) additionally:
+`ordinal` is the **monotonic step-open counter** (0-based, increments on every entry opened) —
+it is the chronological ordering key and is unique per run. `step_name` is the **aggregation key**
+and is **NOT unique** per run: `finviz_fetch` legitimately appears as **two** entries (§2). The
+perf-analysis consumer therefore **orders by `ordinal` and aggregates `duration_ms` by `step_name`
+(summing)** — so the two `finviz_fetch` rows sum to the true finviz time (§5.5).
 
-1. **Consecutive same-step collapse:** if `_pending` exists and `_pending.step_name == name` →
-   **ledger no-op** (still performs the existing idempotent `update_step`). This rule is intentionally
-   narrow: it collapses **consecutive duplicate marker calls for the currently-open step** (the known
-   `finviz_fetch` double-fire at [runner.py:634/758](../../../swing/pipeline/runner.py), where the
-   actual fetch happens between/around the two markers — collapsing yields ONE correct
-   `finviz_fetch` interval spanning all the work). The pipeline is **strictly linear** — no step is
-   re-entered after a *different* step runs — so this rule never hides legitimately-separate work.
-   A future step needing sub-step timing is out of scope (would use its own intra-step instrument,
-   not this boundary ledger).
-2. Else (a distinct new step): **close** `_pending` (`finished_ts = _now_iso()`,
+`lease.step(name)` (its existing `update_step` DB write is **unchanged**, and remains idempotent)
+additionally, on **every** call:
+
+1. **Close** the current `_pending` if one exists (`finished_ts = _now_iso()`,
    `duration_ms = int((monotonic_now − _pending.monotonic_start) * 1000)` — integer truncation, not
-   `round()`, to keep duration arithmetic unsurprising at sub-ms/0ms boundaries), append to
-   `_timings`; **open** a new `_pending = (ordinal=_next_ordinal++, name, started_ts=_now_iso(),
+   `round()`, to keep duration arithmetic unsurprising at sub-ms/0ms boundaries) and append it to
+   `_timings`.
+2. **Open** a new `_pending = (ordinal=_next_ordinal++, name, started_ts=_now_iso(),
    monotonic_start=monotonic_now)`.
-3. On close, emit the **per-step log line** (see §5.4).
+3. On close (step 1), emit the **per-step log line** (see §5.4).
+
+> **No same-name collapse rule (corrected).** A prior draft proposed collapsing "consecutive
+> duplicate `step(name)` calls" to merge the `finviz_fetch` double-fire. **A call-site audit of all
+> 14 `lease.step()` invocations (13 distinct names) disproves the premise:** `finviz_fetch` is the
+> only repeated name, and its two calls are **never consecutive** — `weather` always sits between
+> them on the inbox-empty path, and only site-2 fires on the non-empty path. So a consecutive-collapse
+> rule would be **inert** (never triggered) and gave false confidence; it is **removed**. The two
+> `finviz_fetch` entries are recorded as **genuine step-boundary intervals** (ordinals 0 and 2 on the
+> empty path); the second is the skip branch (`finviz_fetched_inline=True` → ~0ms) and is harmless
+> because the consumer sums `duration_ms` by `step_name`. No step has legitimately-separate work
+> hidden by this design. (A future step needing sub-step timing is out of scope — it would use its
+> own intra-step instrument, not this boundary ledger.)
 
 The ledger fields are initialized in `Lease.__init__` (empty `_timings`, `_pending=None`,
 `_next_ordinal=0`, `_timings_flushed=False`), so the ledger always exists for any constructed `Lease`.
@@ -256,6 +280,14 @@ sentinel + `if lease is not None:` guard.)
   DO NOTHING` (R3-Minor-2 clarification) is therefore NOT about partial commits within one
   transaction — it guards a re-flush by a **separate** `Lease`/process for the same `run_id` (already
   committed rows present) against a UNIQUE IntegrityError. Empty ledger → no-op (returns immediately).
+- **Flush sequence (ordering is load-bearing, R5-Major-1):** (1) close the final `_pending` using
+  "now"; (2) emit the final entry's per-step `INFO` line + the **aggregate-by-`step_name` summary
+  line** (§5.4) — i.e. **before** any DB connection/write; (3) open `connect()` and batch-INSERT all
+  rows. Because steps 1-2 precede the fallible DB write, both the per-step lines and the summed totals
+  are already in `pipeline.log` if step 3 fails. (A future in-process re-flush after a failed insert
+  may re-emit the summary line; that is tolerated — it is a harmless log-fallback duplicate, and the
+  production design calls flush exactly once from the finally, so duplicates do not arise in practice.
+  No separate summary-emitted guard is required.)
 - **Closes the final `_pending`** using "now", then writes **all** ledger rows. `complete` is the
   final `lease.step` and IS a real boundary interval: its duration measures the post-`export`
   finalization work — `_step_review_log_cadence` ([runner.py:1014-1020](../../../swing/pipeline/runner.py))
@@ -275,11 +307,13 @@ sentinel + `if lease is not None:` guard.)
   `try: lease.flush_step_timings() except Exception as exc: log.error("step-timing flush failed: %s",
   exc)` — it **never re-raises from the finally** (so it cannot mask an in-flight exception
   propagating through the finally) and it **never blocks** run finalization (which already happened
-  via `lease.release()`). The durable fallback is the **per-step log lines** (§5.4) already written to
-  `pipeline.log` during the run — so even if DB persistence is lost (lock-timeout exhausted,
-  disk-full, FK/connection error), the human-readable per-step attribution survives in the log. The
-  test suite exercises a flush-failure (e.g. an unwritable/locked DB) and asserts (a) the original
-  run outcome is unchanged, (b) an error is logged, (c) the per-step log lines are present.
+  via `lease.release()`). The durable fallback is the **per-step log lines PLUS the aggregate-by-name
+  summary line** (§5.4), already written to `pipeline.log` during the run and at flush-before-DB-write
+  (§5.2 flush sequence) — so even if DB persistence is lost (lock-timeout exhausted, disk-full,
+  FK/connection error), both the human-readable per-step attribution and the summed per-name totals
+  survive in the log. The test suite exercises a flush-failure (e.g. an unwritable/locked DB) and
+  asserts (a) the original run outcome is unchanged, (b) an error is logged, (c) the per-step log
+  lines AND the aggregate summary line are present.
 - **force_cleared safety:** the `finally` runs even when the lease was revoked. The flush uses a
   fresh `connect()` (no lease token needed) and the `pipeline_runs` FK-target row still exists
   (`force_clear` sets state, does not delete) → partial timings persist. If the run never reached the
@@ -350,8 +384,14 @@ CREATE TABLE pipeline_step_timings (
 ### 5.4 Slow-step log lines — promote charts-only warning to all steps
 
 On each ledger close (§5.1 step 3) and the final flush close, **always** emit an `INFO` per-step line
-via the pipeline logger, e.g. `INFO  step {step_name} took {duration_ms} ms` — this is the durable
-human-readable attribution (and the fallback if DB flush fails, §5.2). Additionally, a **single
+via the pipeline logger. **The line MUST include `ordinal`** (R4-Major-1) so the two `finviz_fetch`
+entries are distinguishable in the log — e.g. `INFO  step ordinal=2 name=finviz_fetch took
+{duration_ms} ms` — this is the durable human-readable attribution (and the fallback if DB flush
+fails, §5.2). **At flush, after closing the final pending entry but BEFORE the fallible DB write
+(R5-Major-1), emit one aggregate-by-`step_name` summary line** (e.g. `INFO  step totals:
+finviz_fetch=…ms weather=…ms …`) — emitting it before the insert guarantees the summed per-name
+totals reach `pipeline.log` exactly in the DB-flush-failure case that needs the fallback. (Emitting
+the summary is part of the flush sequence in §5.2.) Additionally, a **single
 coarse advisory soft-budget** (default the charts 60s shape) emits a `WARN` when a step exceeds it —
 purely informational, NOT a control-flow gate and NOT an error. Rationale for advisory-only (Minor-3
 resolution): some steps are naturally long (`charts`, `export`, `evaluate`), so a uniform hard-ERROR
@@ -368,6 +408,15 @@ additive, not a replacement.
   batch insert; `list_step_timings(conn, run_id) -> list[StepTiming]` (with an explicit
   `ORDER BY ordinal ASC` — R2-Minor-2; SQLite does not guarantee row order otherwise) for the perf
   follow-on + tests.
+- **Reader/consumer contract — aggregate `duration_ms` by `step_name`.** Because `(run_id,
+  step_name)` is NOT unique (`finviz_fetch` yields two rows, §2/§5.1), any "time spent in step X"
+  computation MUST **sum `duration_ms` grouped by `step_name`** (the rows are already chronological by
+  `ordinal`). `list_step_timings` returns the raw per-ordinal rows (preserving the two `finviz_fetch`
+  entries for forensic ordering); the per-`step_name` rollup is the consumer's responsibility. A
+  helper `step_durations_by_name(conn, run_id) -> dict[str, int]` **IS provided** (mandatory —
+  R4-Minor-1; `conn`-first to match the `insert_step_timings(conn, …)` / `list_step_timings(conn, …)`
+  repo style — R5-Minor-1) doing the `SUM(duration_ms) GROUP BY step_name` so no consumer hand-rolls
+  (and forgets) the aggregation. Do NOT assume one row per `step_name`.
 - New `StepTiming` dataclass (frozen) + `_row_to_step_timing` mapper, landing in the same task as the
   repo (read-path/write-path together).
 
@@ -394,16 +443,34 @@ Each is a binding contract for writing-plans; TDD per task.
    `duration_ms` values **distinguish** them (slow.ordinal duration > fast.ordinal duration by the
    injected margin) — NOT merely "a row exists." Compute the expected ordering under both a correct
    and a naive (overwrite/last-wins) implementation to confirm the test fails on the naive one.
-3. **Idempotent same-step re-fire:** a `Lease` that receives `step("finviz_fetch")` twice in a row
-   produces **one** `finviz_fetch` ledger row, not two (the double-fire at runner.py:634/638).
+3. **Real non-consecutive `finviz_fetch` double-fire (production-shaped, NOT synthetic).** Drive the
+   **actual inbox-empty sequence** `finviz_fetch`(634) → `weather`(723) → `finviz_fetch`(758, skip) →
+   `evaluate` … through a runner-shaped / `Lease` harness that replays the production `step()` order
+   (NOT a synthetic two-in-a-row call). Assert: **two** `finviz_fetch` ledger rows exist at **ordinals
+   0 and 2** with `weather` at ordinal 1; and `step_durations_by_name` / `SUM(duration_ms) GROUP BY
+   step_name` yields a single aggregated `finviz_fetch` total equal to the sum of the two rows.
+   (Do NOT assert the ordinal-2 entry's absolute `duration_ms` is "near-zero" — R4-Major-2: the
+   boundary-interval runs from site-2 `step()` to the next `step()` call, which by design includes any
+   between-step overhead before `evaluate`, not just the skipped body. Drive durations deterministically
+   via a monotonic stub if a magnitude assertion is wanted; otherwise assert only ordering, the two
+   rows, and aggregation correctness.) **Rationale (binding):** the
+   earlier draft tested a *synthetic consecutive* double-fire that never occurs in production — exactly
+   the **synthetic-fixture-vs-production-shape drift** this project has been repeatedly bitten by
+   (CLAUDE.md §Gotchas). The test MUST exercise the real interleaved order.
+3b. **Path-dependent ordinals (inbox-non-empty).** Drive the non-empty sequence `weather`(723) →
+   `finviz_fetch`(758, real) → `evaluate` … and assert `weather` is **ordinal 0**, `finviz_fetch` is
+   **ordinal 1** (site-1 never fired), and there is exactly **one** `finviz_fetch` row on this path.
+   Proves ordinals are path-dependent and the consumer must not assume `finviz_fetch == ordinal 0`.
 4. **Terminal-state coverage:** a run that ends `failed` mid-step **and** one force_cleared mid-step
    each persist partial timings (flush in `finally`). force_cleared: assert rows written via the
    fresh `connect()` despite lease revocation.
 4b. **Flush-failure degrades cleanly (Major-5):** with the timings table made unwritable (e.g. a
    stubbed flush that raises, or a locked DB), assert (a) the run's `RunResult` outcome is unchanged
    (flush failure does not alter completion/failure), (b) an error is logged, (c) the original
-   in-flight exception — if any — is NOT masked by the flush exception, and (d) the per-step `INFO`
-   log lines are still present in `pipeline.log`.
+   in-flight exception — if any — is NOT masked by the flush exception, (d) the per-step `INFO`
+   log lines are still present in `pipeline.log`, and (e) the **aggregate-by-`step_name` summary
+   line is also present** (R5-Major-1: it is emitted before the fallible DB write, so a flush failure
+   must NOT lose it).
 4c. **Idempotent re-flush (Major-9):** calling the flush twice for the same `run_id` (second time via
    a fresh `Lease`/ledger replaying the same ordinals) inserts no duplicate rows and raises no
    IntegrityError (`ON CONFLICT(run_id, ordinal) DO NOTHING`).
@@ -430,15 +497,17 @@ swing pipeline run  (subprocess; web-spawned w/ DEVNULL, or direct CLI)
        └─ run_pipeline
             └─ run()
                  ├─ acquire_lease  → Lease (with empty ledger)
-                 ├─ lease.step("finviz_fetch") … "complete"   ── each transition:
+                 ├─ lease.step(<name>) × ~13-14 (finviz_fetch may fire twice,  ── on each call:
+                 │     non-consecutively; weather between — see §2/§5.1)
                  │     • existing update_step DB write (unchanged)
-                 │     • ledger: close prev (duration_ms via monotonic), open new
+                 │     • ledger: close prev (duration_ms via monotonic), open new (ordinal++)
                  │     • INFO per-step duration line (+ advisory WARN if over soft-budget)
                  ├─ lease.release(...)  (happy/failed)         ── pipeline_runs finalize (unchanged)
                  └─ finally:
-                       └─ lease.flush_step_timings()           ── ONE plain-conn txn:
+                       └─ lease.flush_step_timings()           ── flush sequence:
                              • close final pending
-                             • batch INSERT all rows → pipeline_step_timings
+                             • emit final INFO line + aggregate-by-name summary (BEFORE DB write)
+                             • ONE plain-conn txn: batch INSERT all rows → pipeline_step_timings
                              (covers complete / failed / force_cleared / exception; idempotent)
 ```
 
@@ -499,6 +568,13 @@ wiring (subprocess file presence + redaction).
   (`_step_review_log_cadence` + `release` + teardown). It is small but real — the table records
   step-boundary intervals, and `complete` is one of the 13. Document in the plan that a brief
   `complete` duration is expected, not a bug; do NOT special-case or drop it.
+- **Path-dependent ordinals + non-unique `step_name` (§2/§5.1):** the call-site audit is DONE —
+  `finviz_fetch` is the only repeated step (sites L634 conditional + L758 unconditional, `weather`
+  between), never consecutive; the consecutive-collapse rule was removed as inert. Writing-plans must
+  (a) keep the two `finviz_fetch` rows as genuine intervals, (b) ensure every timing consumer
+  aggregates `duration_ms` by `step_name` (provide `step_durations_by_name`), and (c) NOT reintroduce
+  any `finviz_fetch == ordinal 0` or one-row-per-`step_name` assumption. The two production-shaped
+  tests (§6.3 empty-path, §6.3b non-empty-path) are binding.
 - **Repo home:** decide new `swing/data/repos/pipeline_step_timings.py` vs folding into
   `swing/data/repos/pipeline.py` (lean: separate file for a focused unit).
 ```
