@@ -1,0 +1,253 @@
+{
+  "bootstrap_b": 2000,
+  "config_snapshot": {
+    "allowed_miss_names": [
+      "TT8_rs_rank"
+    ],
+    "fallback_extreme_pct": 20.0,
+    "horizon_weeks": 12,
+    "min_passes": 7,
+    "rising_ma_period_days": 21,
+    "rs_rank_min_pass": 70,
+    "screenable_floor": 221
+  },
+  "control_k": 5,
+  "control_seed": 20260608,
+  "exemplar_set_sha256": "70bc2e9ed1533c97aa6c92580d3bf89528a1f71eb9437ec5766d353805abf564",
+  "finished_iso_utc": "20260609T022839Z",
+  "harness_version": "0.1.0",
+  "l2_lock_preserved": true,
+  "n_excluded": 7,
+  "n_screenable": 20,
+  "n_total": 27,
+  "n_unmapped": 8,
+  "only_filter": null,
+  "per_exemplar_provenance": [
+    {
+      "data_source": "tiingo",
+      "exemplar_id": "twosmw-fig10-34-crus",
+      "rs_path": "P0",
+      "rs_paths_all": [
+        "P0"
+      ]
+    },
+    {
+      "data_source": "tiingo",
+      "exemplar_id": "twosmw-gra-2004",
+      "rs_path": "P0",
+      "rs_paths_all": [
+        "P0"
+      ]
+    },
+    {
+      "data_source": "tiingo",
+      "exemplar_id": "twosmw-pcyc-2010",
+      "rs_path": "P0",
+      "rs_paths_all": [
+        "P0"
+      ]
+    },
+    {
+      "data_source": "tiingo",
+      "exemplar_id": "twosmw-affy-2012",
+      "rs_path": "P0",
+      "rs_paths_all": [
+        "P0"
+      ]
+    },
+    {
+      "data_source": "tiingo",
+      "exemplar_id": "twosmw-fig10-40-lulu",
+      "rs_path": "P0",
+      "rs_paths_all": [
+        "P0"
+      ]
+    },
+    {
+      "data_source": "tiingo",
+      "exemplar_id": "ttlc-nflx-2009",
+      "rs_path": "P0",
+      "rs_paths_all": [
+        "P0"
+      ]
+    },
+    {
+      "data_source": "tiingo",
+      "exemplar_id": "twosmw-tasr-2004",
+      "rs_path": "P0",
+      "rs_paths_all": [
+        "P0"
+      ]
+    },
+    {
+      "data_source": "tiingo",
+      "exemplar_id": "ttlc-fig10-1-body",
+      "rs_path": "P1",
+      "rs_paths_all": [
+        "P0",
+        "P1"
+      ]
+    },
+    {
+      "data_source": "tiingo",
+      "exemplar_id": "twosmw-fig10-44-syk",
+      "rs_path": "P0",
+      "rs_paths_all": [
+        "P0"
+      ]
+    },
+    {
+      "data_source": "tiingo",
+      "exemplar_id": "twosmw-fig10-62-bby",
+      "rs_path": "P0",
+      "rs_paths_all": [
+        "P0"
+      ]
+    },
+    {
+      "data_source": "tiingo",
+      "exemplar_id": "twosmw-fig10-61-qsii",
+      "rs_path": "P1",
+      "rs_paths_all": [
+        "P1"
+      ]
+    },
+    {
+      "data_source": "tiingo",
+      "exemplar_id": "twosmw-fig10-29-amsc",
+      "rs_path": "P0",
+      "rs_paths_all": [
+        "P0"
+      ]
+    },
+    {
+      "data_source": "tiingo",
+      "exemplar_id": "twosmw-fig10-30-ipxl",
+      "rs_path": "P0",
+      "rs_paths_all": [
+        "P0"
+      ]
+    },
+    {
+      "data_source": "tiingo",
+      "exemplar_id": "twosmw-fig10-24-vci",
+      "rs_path": "P0",
+      "rs_paths_all": [
+        "P0"
+      ]
+    },
+    {
+      "data_source": "tiingo",
+      "exemplar_id": "twosmw-fig10-33-meli",
+      "rs_path": "P1",
+      "rs_paths_all": [
+        "P0",
+        "P1"
+      ]
+    },
+    {
+      "data_source": "tiingo",
+      "exemplar_id": "twosmw-fig10-63-arna",
+      "rs_path": "P0",
+      "rs_paths_all": [
+        "P0"
+      ]
+    },
+    {
+      "data_source": "tiingo",
+      "exemplar_id": "twosmw-fig10-59-swn",
+      "rs_path": "P0",
+      "rs_paths_all": [
+        "P0"
+      ]
+    },
+    {
+      "data_source": "tiingo",
+      "exemplar_id": "ttlc-fig7-3-amzn",
+      "rs_path": "P0",
+      "rs_paths_all": [
+        "P0"
+      ]
+    },
+    {
+      "data_source": "tiingo",
+      "exemplar_id": "twosmw-fig11-1-amzn",
+      "rs_path": "P1",
+      "rs_paths_all": [
+        "P0",
+        "P1"
+      ]
+    },
+    {
+      "data_source": "tiingo",
+      "exemplar_id": "twosmw-fig11-7-jnpr",
+      "rs_path": "P1",
+      "rs_paths_all": [
+        "P1"
+      ]
+    },
+    {
+      "data_source": "tiingo",
+      "exemplar_id": "twosmw-fig11-3-yhoo",
+      "rs_path": "P0",
+      "rs_paths_all": [
+        "P0"
+      ]
+    },
+    {
+      "data_source": "tiingo",
+      "exemplar_id": "ttlc-fig7-4-ebay",
+      "rs_path": "P0",
+      "rs_paths_all": [
+        "P0"
+      ]
+    },
+    {
+      "data_source": "tiingo",
+      "exemplar_id": "twosmw-fig9-13-aapl",
+      "rs_path": "P0",
+      "rs_paths_all": [
+        "P0"
+      ]
+    },
+    {
+      "data_source": "tiingo",
+      "exemplar_id": "twosmw-fig10-39-fwlt",
+      "rs_path": "P0",
+      "rs_paths_all": [
+        "P0"
+      ]
+    },
+    {
+      "data_source": "vicr_yfinance",
+      "exemplar_id": "twosmw-vicr-1991",
+      "rs_path": "P1",
+      "rs_paths_all": [
+        "P1"
+      ]
+    },
+    {
+      "data_source": "tiingo",
+      "exemplar_id": "twosmw-fig11-6-dks",
+      "rs_path": "P1",
+      "rs_paths_all": [
+        "P0",
+        "P1"
+      ]
+    },
+    {
+      "data_source": "tiingo",
+      "exemplar_id": "twosmw-fig10-56-hook",
+      "rs_path": "P0",
+      "rs_paths_all": [
+        "P0"
+      ]
+    }
+  ],
+  "skip_reason_counts": {
+    "coverage_skip": 412
+  },
+  "started_iso_utc": "20260609T021301Z",
+  "window_back": 60,
+  "window_fwd": 5
+}
