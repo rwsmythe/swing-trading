@@ -41,19 +41,42 @@ def test_ohlcv_reader_re_export_identity():
     IDENTICALLY the V2 OHLCV evaluator's symbols (same object, not a
     re-implementation). Catches accidental shadow re-implementation that
     would bypass V2's existing 5 BINDING discriminating tests.
+
+    Order-hardening: sibling L2 tests in the research suite mutate ``sys.modules``
+    (raw ``del`` of harness packages, then re-import) to exercise the import graph.
+    Under ``-n auto`` (``--dist load``, where ``xdist_group`` is inert) one of those
+    can run earlier on the same worker and leave ``pattern_cohort``'s re-export bound
+    to a now-stale ``aplus_v2`` module object, intermittently breaking the ``is``
+    check for reasons unrelated to a real re-implementation. We reconcile BOTH
+    readers from one fresh import here so the identity assertion is deterministic
+    regardless of prior-test ordering, then restore the pre-test ``sys.modules``
+    entries so this test has no side effects of its own.
     """
-    from research.harness.aplus_v2_ohlcv_evaluator import (
-        ohlcv_reader as v2_reader,
+    import importlib
+    import sys
+
+    names = (
+        "research.harness.aplus_v2_ohlcv_evaluator.ohlcv_reader",
+        "research.harness.pattern_cohort_evaluator.ohlcv_reader",
     )
-    from research.harness.pattern_cohort_evaluator import (
-        ohlcv_reader as pc_reader,
-    )
-    assert pc_reader.read_yfinance_shape_a is v2_reader.read_yfinance_shape_a
-    assert (
-        pc_reader.read_yfinance_shape_a_sliced
-        is v2_reader.read_yfinance_shape_a_sliced
-    )
-    assert pc_reader.BothExistDiagnostic is v2_reader.BothExistDiagnostic
+    saved = {name: sys.modules.get(name) for name in names}
+    try:
+        for name in names:
+            sys.modules.pop(name, None)
+        v2_reader = importlib.import_module(names[0])
+        pc_reader = importlib.import_module(names[1])
+        assert pc_reader.read_yfinance_shape_a is v2_reader.read_yfinance_shape_a
+        assert (
+            pc_reader.read_yfinance_shape_a_sliced
+            is v2_reader.read_yfinance_shape_a_sliced
+        )
+        assert pc_reader.BothExistDiagnostic is v2_reader.BothExistDiagnostic
+    finally:
+        for name, module in saved.items():
+            if module is not None:
+                sys.modules[name] = module
+            else:
+                sys.modules.pop(name, None)
 
 
 # ---------------------------------------------------------------------------
