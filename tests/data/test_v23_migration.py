@@ -112,7 +112,7 @@ def _chart_renders_ddl(conn) -> str:
 
 
 def test_expected_schema_version_is_23():
-    assert EXPECTED_SCHEMA_VERSION == 24
+    assert EXPECTED_SCHEMA_VERSION == 25
 
 
 def test_v23_migration_renames_existing_chart_renders_rows(tmp_path):
