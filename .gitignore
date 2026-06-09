@@ -115,6 +115,14 @@ exports/research/primary-base-recall-*/*
 !exports/research/primary-base-recall-*/results.csv
 !exports/research/primary-base-recall-*/per_session.csv
 
+# Shadow-expectancy engine harness outputs: keep summary/manifest/results/per_session.
+!exports/research/shadow-expectancy-*
+exports/research/shadow-expectancy-*/*
+!exports/research/shadow-expectancy-*/summary.md
+!exports/research/shadow-expectancy-*/manifest.json
+!exports/research/shadow-expectancy-*/results.csv
+!exports/research/shadow-expectancy-*/per_session.csv
+
 # Broker statements (personal financial data)
 thinkorswim/
 
