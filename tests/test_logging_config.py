@@ -7,6 +7,7 @@ from logging.handlers import TimedRotatingFileHandler
 import pytest
 
 from swing.logging_config import DEFAULT_LOG_FORMAT, configure_logging
+from swing.pipeline import lease as lease_mod
 
 
 @pytest.fixture
@@ -81,3 +82,37 @@ def test_supplied_formatter_installs_on_preexisting_handler(clean_root, tmp_path
     configure_logging(tmp_path, surface="pipeline", formatter=marker)
     assert len(_file_handlers(clean_root, target)) == 1  # still deduped
     assert handler.formatter is marker
+
+
+def test_new_log_strings_are_ascii():
+    # New operator-facing log strings must be ASCII (cp1252 stdout footgun).
+    from swing.data.repos.pipeline_step_timings import StepTiming
+    t = StepTiming(2, "finviz_fetch", "2026-06-09T00:00:00", "2026-06-09T00:00:01", 70000)
+    import io
+    buf = io.StringIO()
+    h = logging.StreamHandler(buf)
+    h.setFormatter(logging.Formatter("%(message)s"))
+    lg = logging.getLogger("swing.pipeline.lease")
+    saved_level = lg.level
+    lg.addHandler(h)
+    lg.setLevel(logging.INFO)  # else INFO _emit_step_line/_emit_totals_line are suppressed
+    try:
+        lease_mod._emit_step_line(t)          # INFO + WARN (70000 > 60000)
+        lease_mod._emit_totals_line({"finviz_fetch": 70000})
+    finally:
+        lg.removeHandler(h)
+        lg.setLevel(saved_level)
+    out = buf.getvalue()
+    assert "took" in out and "totals" in out  # confirm INFO lines were captured
+    out.encode("ascii")  # raises UnicodeEncodeError if any non-ASCII slipped in
+
+
+def test_pipeline_handler_is_utf8(clean_root, tmp_path):
+    from swing.logging_config import configure_logging
+    configure_logging(tmp_path, surface="pipeline")
+    h = next(
+        x for x in logging.getLogger().handlers
+        if isinstance(x, TimedRotatingFileHandler)
+        and x.baseFilename == str(tmp_path / "pipeline.log")
+    )
+    assert h.encoding == "utf-8"
