@@ -75,6 +75,10 @@ def run_harness(
     positive_control_rows: list[tuple[str, bool, str]] = []
     # history_excluded_rows entries: (exemplar_id, bars_through_anchor).
     history_excluded_rows: list[tuple[str, int]] = []
+    # Names whose Tiingo archive is absent (data_source == "no_data"). Reported SEPARATELY so a
+    # data-availability failure is never mistaken for a substantive below-history-floor finding
+    # (Codex EP-R1 M1).
+    no_data_rows: list[str] = []
 
     for idx, rm in enumerate(resolved):
         row = rm.row
@@ -167,8 +171,16 @@ def run_harness(
             positive_control_rows.append((row.exemplar_id, pc_fired, pc_reject))
         # JNPR-style history-exclusion reported separately (Codex WP-R1 M2): a sub_floor name below
         # the history floor is NOT a screen miss -- it is below Minervini's own >=2-month minimum.
-        if rm.member.role == "sub_floor" and bars_through_anchor < MIN_HISTORY_BARS:
+        # The `full is not None` guard (Codex EP-R1 M1) keeps a MISSING archive (bars=0) out of this
+        # bucket -- a no_data name is a data-availability gap, not a below-floor finding.
+        if (
+            rm.member.role == "sub_floor"
+            and full is not None
+            and bars_through_anchor < MIN_HISTORY_BARS
+        ):
             history_excluded_rows.append((row.exemplar_id, bars_through_anchor))
+        if full is None:
+            no_data_rows.append(row.exemplar_id)
 
         # Precision controls (own pre-filtered young-window sampler) -- PERSISTED + scored (C1).
         control_single_flags: list[bool] = []
@@ -232,7 +244,7 @@ def run_harness(
     output.write_summary_md(
         _summary_lines(
             sweep_recall_rows, sweep_bootstrap_rows, single_recall_rows, sweep_miss_rows,
-            positive_control_rows, history_excluded_rows, precision_rows, bootstrap_b,
+            positive_control_rows, history_excluded_rows, no_data_rows, precision_rows, bootstrap_b,
         ),
         summary_path,
     )
@@ -267,7 +279,7 @@ def run_harness(
 
 def _summary_lines(
     sweep_rows, sweep_bootstrap_rows, single_rows, miss_rows, positive_control_rows,
-    history_excluded_rows, precision_rows, bootstrap_b,
+    history_excluded_rows, no_data_rows, precision_rows, bootstrap_b,
 ) -> list[str]:
     lines = ["# Minervini primary-base recall - summary", ""]
     lines.append("NOTE: n~3 proof-of-concept. Raw fractions are PRIMARY; Wilson + bootstrap are")
@@ -321,6 +333,17 @@ def _summary_lines(
     if history_excluded_rows:
         for eid, bars in history_excluded_rows:
             lines.append(f"- {eid}: history-excluded ({bars} bars < MIN_HISTORY_BARS)")
+    else:
+        lines.append("- (none)")
+    lines.append("")
+    lines.append(
+        "## Data unavailable (no Tiingo archive; NOT a screen miss, NOT below-minimum)"
+    )
+    if no_data_rows:
+        for eid in no_data_rows:
+            lines.append(
+                f"- {eid}: data_source=no_data (archive absent; excluded from denominators)"
+            )
     else:
         lines.append("- (none)")
     lines.append("")

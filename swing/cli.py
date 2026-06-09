@@ -4958,6 +4958,7 @@ def diagnose_primary_base_recall(exemplars_csv, tiingo_dir, output_dir, window_b
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
     click.echo(f"results.csv:     {results}")
+    click.echo(f"per_session.csv: {per_session}")
     click.echo(f"summary.md:      {summary}")
     click.echo(f"manifest.json:   {manifest}")
 

@@ -72,6 +72,11 @@ L1..L7 per spec section 10 (tiny n~3 proof-of-concept; thresholds are operationa
 prose; same-ticker control only; #24/#26 archive temporal mutation; research-only; zigzag
 parameterization + constructive-consolidation-near-ATH gap; single-session vs window estimand
 separation).
+L8 (month-precision evaluability anchor): evaluable/history-excluded classification is keyed to
+bars_through_anchor at the parsed first-of-month anchor while recall sweeps the full documented
+month; correct for the current cohort (AMZN 75 / DKS 115 bars, both >> 40), an edge only for a
+future month-precision exemplar with <40 bars at month-start; revisit in corpus expansion. A missing
+Tiingo archive is reported as data-unavailable (its own summary stratum), never as below-minimum.
 
 ## Validation notes
 [grows as status advances]

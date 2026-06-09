@@ -38,6 +38,10 @@ def _identify_base(sliced: pd.DataFrame) -> _BaseId | None:
     swings = extract_zigzag_swings(sliced, initial_threshold_pct=ZIGZAG_THRESHOLD_PCT)
     if not swings:
         return None
+    # Daily Tiingo bars carry a unique tz-naive DatetimeIndex (one bar per session) and the swings
+    # derive from this same index, so `sw.end_date` is always a present, unique key (Codex EP-R1
+    # minor 2): collapsing by `.date()` is lossless here and the `pos_by_date[...]` lookups below
+    # cannot KeyError on the contract this pure-on-bars screen is fed.
     pos_by_date = {ts.date(): i for i, ts in enumerate(sliced.index)}
     closes = sliced["Close"].to_numpy()
     best: _BaseId | None = None

@@ -53,6 +53,14 @@ L1..L7 per the method record / spec section 10 (tiny n~3 proof-of-concept; thres
 operationalizations of Ch.11 prose; same-ticker control only; #24/#26 archive temporal mutation;
 research-only -> V2.1 SVII.F; zigzag parameterization + constructive-consolidation-near-ATH V1 gap;
 single-session vs window estimand separation).
+L8 (month-precision evaluability anchor): for month-precision exemplars, evaluable/history-excluded
+classification is keyed to bars_through_anchor at the PARSED first-of-month anchor (the spec R1.m2
+bar count), while recall sweeps the full documented month. For the current cohort this is correct
+(AMZN-1997 75 bars, DKS 115 bars -- both far above the 40-bar floor). The only divergent case is a
+hypothetical future month-precision exemplar with <40 bars on the 1st but >=40 later in the
+documented month; it would be classified history-excluded despite a screenable sweep. None such
+exists in the cohort; the strongly-advised corpus-expansion sequel should revisit the stratification
+anchor if it adds a name IPO'd ~2 months before its documented month.
 
 ## Conclusion
 [PLACEHOLDER - populate after the run. Expected framing: mechanism-validation proof-of-concept, NOT a

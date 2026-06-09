@@ -150,3 +150,62 @@ def test_run_harness_raises_value_error_for_missing_csv(tmp_path):
         run_harness(
             exemplars_csv=tmp_path / "nope.csv", tiingo_dir=tmp_path, output_dir=tmp_path / "o"
         )
+
+
+def _section(summary_text: str, heading: str) -> str:
+    """The block of lines under `heading` up to the next `## ` heading (heading-exclusive)."""
+    lines = summary_text.splitlines()
+    out: list[str] = []
+    grabbing = False
+    for ln in lines:
+        if ln.startswith("## "):
+            if grabbing:
+                break
+            grabbing = ln.startswith(heading)
+            continue
+        if grabbing:
+            out.append(ln)
+    return "\n".join(out)
+
+
+def test_missing_sub_floor_archive_is_data_unavailable_not_history_excluded(tmp_path):
+    # Codex EP-R1 M1: a sub_floor name whose Tiingo archive is MISSING (full=None,
+    # bars_through_anchor=0) must be reported as DATA-UNAVAILABLE, NOT as below Minervini's history
+    # floor -- otherwise a data-availability failure masquerades as a substantive Ch.11 finding and
+    # corrupts the stratified denominator. WRONG-PATH (gate only on bars < MIN_HISTORY_BARS) lists
+    # the missing name under "## Below-minimum"; RIGHT-PATH (also gate on full is not None) lists it
+    # under "## Data unavailable" and NOT under "## Below-minimum".
+    ex = tmp_path / "ex.csv"
+    _exemplar_csv(
+        ex,
+        [
+            "twosmw-fig11-1-amzn,AMZN,pb,unmapped,1997-09,,,,,month,T,p,claude,yes,n",
+            "ttlc-fig10-1-body,BODY,pb,vcp,2011-01-05,,,,,day,T,p,claude,yes,n",
+            "twosmw-fig11-6-dks,DKS,pb,double_bottom_w,2003-04,,,,,month,T,p,claude,yes,n",
+            "twosmw-fig11-7-jnpr,JNPR,pb,unmapped,1999-07-30,,,,,day,T,p,claude,yes,n",
+            "twosmw-fig11-3-yhoo,YHOO,pb,unmapped,1997-06-20,,,,,day,T,p,claude,yes,n",
+        ],
+    )
+    tdir = tmp_path / "tiingo"
+    # DKS (sub_floor, month) archive DELIBERATELY OMITTED -> data_source == "no_data".
+    _write_tiingo_csv(tdir, "AMZN", [10.0 + i * 0.01 for i in range(800)], date(1997, 1, 2))
+    _write_tiingo_csv(tdir, "BODY", [10.0 + i * 0.01 for i in range(1500)], date(2010, 10, 15))
+    _write_tiingo_csv(tdir, "JNPR", [10.0 + i * 0.01 for i in range(30)], date(1999, 6, 25))
+    _write_tiingo_csv(tdir, "YHOO", [10.0 + i * 0.01 for i in range(900)], date(1996, 4, 12))
+
+    _r, _ps, summary, manifest = run_harness(
+        exemplars_csv=ex, tiingo_dir=tdir, output_dir=tmp_path / "out", bootstrap_b=10
+    )
+    summary_text = Path(summary).read_text(encoding="utf-8")
+    assert "## Data unavailable" in summary_text
+    data_unavail = _section(summary_text, "## Data unavailable")
+    below_min = _section(summary_text, "## Below-minimum")
+    assert "twosmw-fig11-6-dks" in data_unavail
+    assert "twosmw-fig11-6-dks" not in below_min
+    # JNPR (present, 30 bars < 40) stays a genuine history-exclusion (NOT data-unavailable).
+    assert "twosmw-fig11-7-jnpr" in below_min
+    assert "twosmw-fig11-7-jnpr" not in data_unavail
+    # Manifest still records the missing name with data_source == "no_data".
+    data = json.loads(Path(manifest).read_text(encoding="utf-8"))
+    dks = next(e for e in data["per_exemplar"] if e["exemplar_id"] == "twosmw-fig11-6-dks")
+    assert dks["data_source"] == "no_data"
