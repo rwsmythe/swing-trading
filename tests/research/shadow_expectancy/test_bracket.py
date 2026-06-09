@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import pytest
-
 from research.harness.shadow_expectancy.bracket import (
-    ma_exit_fill, price_stop_fill,
+    ma_exit_fill,
+    price_stop_fill,
 )
 
 

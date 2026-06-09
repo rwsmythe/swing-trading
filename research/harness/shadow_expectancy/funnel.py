@@ -4,7 +4,9 @@ from collections import defaultdict
 from dataclasses import dataclass
 
 from research.harness.shadow_expectancy.constants import (
-    ATTRIBUTED_EXCLUDED_REASONS, UNATTRIBUTED_REASONS)
+    ATTRIBUTED_EXCLUDED_REASONS,
+    UNATTRIBUTED_REASONS,
+)
 from research.harness.shadow_expectancy.exceptions import ShadowExpectancyError
 
 
@@ -87,7 +89,9 @@ def build_funnel(detection: DetectionLevel, *, signal_outcomes) -> dict:
                     f"(one of {sorted(ATTRIBUTED_EXCLUDED_REASONS)}); got reason={o.reason!r} "
                     f"(hypothesis={o.hypothesis!r}) -- UNATTRIBUTED_REASONS are rejected here")
             card["excluded"][o.reason] += 1
-        else:  # writing-plans R4-M1: an unknown terminal on an attributed signal is a contract violation
+        else:
+            # writing-plans R4-M1: an unknown terminal on an attributed signal is a
+            # contract violation.
             raise ShadowExpectancyError(
                 f"unknown terminal status {o.terminal!r} for attributed signal "
                 f"hypothesis={o.hypothesis!r}")

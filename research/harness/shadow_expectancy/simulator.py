@@ -6,7 +6,9 @@ from research.harness.shadow_expectancy.bracket import ma_exit_fill, price_stop_
 from research.harness.shadow_expectancy.constants import BRACKET_ARMS
 from research.harness.shadow_expectancy.io import Bar
 from swing.trades.derived_metrics import (
-    initial_risk_per_share, r_multiple, realized_pnl,
+    initial_risk_per_share,
+    r_multiple,
+    realized_pnl,
 )
 
 

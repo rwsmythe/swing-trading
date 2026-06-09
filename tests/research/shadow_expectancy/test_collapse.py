@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from research.harness.shadow_expectancy.collapse import (
-    collapse_detections, normalize_tick,
+    collapse_detections,
 )
 
 
@@ -19,7 +19,7 @@ def _det(did, pivot, series=(("2026-06-01", 9.6, 10.2, 9.5, 10.1),), trig="2026-
     return _Det(did, pivot, tuple(series), trig)
 
 
-def test_canonical_is_pivot_match_and_collapses_ALL_non_canonical():
+def test_canonical_is_pivot_match_and_collapses_all_non_canonical():
     # Codex C4: the group is ALL detections for (run, ticker). The canonical is the
     # pivot-matching one (tie-broken by lowest id); collapsed_ids covers EVERY other
     # detection in the group -- INCLUDING the non-pivot-matching det 9 -- as long as the
@@ -60,7 +60,7 @@ def test_divergent_forward_series_excludes():
     assert res.exclusion_reason == "inconsistent_detection_series"
 
 
-def test_NON_pivot_matching_divergent_series_still_excludes():
+def test_non_pivot_matching_divergent_series_still_excludes():
     # Codex C4: a non-pivot-matching detection whose frozen series DIVERGES from the
     # canonical's MUST exclude the whole signal -- the old code only checked the pivot-
     # matching subset and would have missed this.

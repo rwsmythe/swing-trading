@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import math
 
 import pytest
 
@@ -13,7 +12,7 @@ from research.harness.shadow_expectancy.validate import (
 )
 
 
-def _ohlc(o, h, l, c, v=1000.0, provider="yfinance"):
+def _ohlc(o, h, l, c, v=1000.0, provider="yfinance"):  # noqa: E741
     return json.dumps({"open": o, "high": h, "low": l, "close": c,
                        "volume": v, "provider": provider})
 

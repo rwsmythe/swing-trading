@@ -5,7 +5,9 @@ import pytest
 from research.harness.shadow_expectancy.collapse import collapse_detections
 from research.harness.shadow_expectancy.exceptions import ShadowExpectancyError
 from research.harness.shadow_expectancy.funnel import (
-    DetectionLevel, SignalOutcome, build_funnel,
+    DetectionLevel,
+    SignalOutcome,
+    build_funnel,
 )
 
 
@@ -47,9 +49,9 @@ def test_unattributed_reasons_vs_per_hypothesis():
     assert f["unattributed"]["no_canonical_detection"] == 1          # M4
     assert f["unattributed"]["inconsistent_detection_series"] == 1
     assert f["unattributed"]["matched_no_hypothesis"] == 1           # reason WITHIN unattributed
-    assert f["unattributed"]["multi_match"] == 1                     # R3-M1 reason WITHIN unattributed
+    assert f["unattributed"]["multi_match"] == 1   # R3-M1 reason WITHIN unattributed
     assert "matched_no_hypothesis" not in f                          # NOT a top-level bucket (M1)
-    assert "multi_match" not in f                                    # NOT a top-level bucket (R3-M1)
+    assert "multi_match" not in f                                    # NOT a top-level bucket
     h1 = f["per_hypothesis"]["A+ baseline"]
     assert h1["closed"] == 1 and h1["open_at_horizon"] == 1
     assert h1["excluded"]["degenerate_risk"] == 1
@@ -134,7 +136,7 @@ def test_build_funnel_accepts_valid_attributed_exclusion_reasons():
         "missing_observations": 1, "lifecycle": 1}
 
 
-def test_detection_reconciliation_from_REAL_collapse_output():
+def test_detection_reconciliation_from_real_collapse_output():
     # Codex M8: drive the detection-level reconciliation from the REAL collapser over an
     # actual multi-detection group, NOT a hand-built consistent object, so a C4 undercount
     # would surface. Three detections for one (run,ticker): a pivot-10 canonical, a duplicate

@@ -3,11 +3,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
 from research.harness.shadow_expectancy.run import run_harness
 from tests.research.shadow_expectancy.testkit import (
-    insert_candidate, insert_detection, insert_observation, insert_pipeline_run,
+    insert_candidate,
+    insert_detection,
+    insert_observation,
+    insert_pipeline_run,
     make_db,
 )
 

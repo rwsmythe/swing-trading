@@ -70,7 +70,7 @@ def insert_detection(conn, *, ticker, pipeline_run_id, pivot, data_asof_date,
     return int(cur.lastrowid)
 
 
-def insert_observation(conn, detection_id, observation_date, *, o, h, l, c,
+def insert_observation(conn, detection_id, observation_date, *, o, h, l, c,  # noqa: E741
                        status, event=None, sessions_since=0, v=1000.0,
                        provider="yfinance"):
     ohlc = json.dumps({"open": o, "high": h, "low": l, "close": c, "volume": v,

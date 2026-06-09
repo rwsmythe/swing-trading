@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from research.harness.shadow_expectancy.attribution import attribute_hypotheses
-from tests.research.shadow_expectancy.testkit import make_db
 from swing.data.models import Candidate, CriterionResult
 from swing.data.repos.hypothesis import list_hypotheses
+from tests.research.shadow_expectancy.testkit import make_db
 
 
 def _cand(bucket, criteria):
@@ -64,7 +64,7 @@ def test_watch_risk_feasibility_only_maps_to_h4(tmp_path):
     assert "Sub-A+ VCP-not-formed" not in names   # risk_feasibility is not a VCP trigger
 
 
-def test_SKIP_risk_feasibility_only_maps_to_h4(tmp_path):
+def test_skip_risk_feasibility_only_maps_to_h4(tmp_path):
     # C-review M5 + spec 6.1: production _capital_blocked_match accepts bucket in
     # ("watch", "skip") for a risk_feasibility-ONLY miss -- and `skip` is in fact the
     # production-realized bucket (risk_feasibility is a hard pre-filter that drives

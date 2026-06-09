@@ -7,15 +7,18 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from research.harness.shadow_expectancy import constants as C
+from research.harness.shadow_expectancy import constants as c
 from research.harness.shadow_expectancy import io, output
 from research.harness.shadow_expectancy.attribution import attribute_hypotheses
 from research.harness.shadow_expectancy.collapse import collapse_detections
 from research.harness.shadow_expectancy.funnel import (
-    DetectionLevel, SignalOutcome, build_funnel,
+    DetectionLevel,
+    SignalOutcome,
+    build_funnel,
 )
 from research.harness.shadow_expectancy.scorecard import (
-    ShadowTrade, build_hypothesis_scorecard,
+    ShadowTrade,
+    build_hypothesis_scorecard,
 )
 from research.harness.shadow_expectancy.simulator import SimParams, simulate
 from research.harness.shadow_expectancy.validate import validate_signal
@@ -49,10 +52,10 @@ def _series_key(chain):
     return tuple((o.observation_date,) + _ohlc_tuple(o.ohlc_today_json) for o in chain)
 
 
-def run_harness(*, db_path, output_dir, source=C.SOURCE,
-                partial_session_n=C.PARTIAL_SESSION_N,
-                breakeven_r=C.BREAKEVEN_R_TRIGGER,
-                horizon_sessions=C.HORIZON_SESSIONS, only=None):
+def run_harness(*, db_path, output_dir, source=c.SOURCE,
+                partial_session_n=c.PARTIAL_SESSION_N,
+                breakeven_r=c.BREAKEVEN_R_TRIGGER,
+                horizon_sessions=c.HORIZON_SESSIONS, only=None):
     conn = io.open_ro(db_path)
     registry = list_hypotheses(conn, status_filter="active")
     detections = io.list_pipeline_detections(conn, source=source)
@@ -75,10 +78,10 @@ def run_harness(*, db_path, output_dir, source=C.SOURCE,
     ledger_rows: list[dict] = []
 
     params = SimParams(
-        initial_shares=C.INITIAL_SHARES, partial_session_n=partial_session_n,
-        partial_pct=C.PARTIAL_PCT, breakeven_r_trigger=breakeven_r,
-        maturity_fast_ma_r=C.MATURITY_FAST_MA_R, ma_fast_period=C.MA_FAST_PERIOD,
-        ma_slow_period=C.MA_SLOW_PERIOD, horizon_sessions=horizon_sessions)
+        initial_shares=c.INITIAL_SHARES, partial_session_n=partial_session_n,
+        partial_pct=c.PARTIAL_PCT, breakeven_r_trigger=breakeven_r,
+        maturity_fast_ma_r=c.MATURITY_FAST_MA_R, ma_fast_period=c.MA_FAST_PERIOD,
+        ma_slow_period=c.MA_SLOW_PERIOD, horizon_sessions=horizon_sessions)
 
     for (pipeline_run_id, ticker), dets in sorted(groups.items(),
                                                   key=lambda kv: (kv[0][0] or -1, kv[0][1])):
@@ -198,8 +201,8 @@ def run_harness(*, db_path, output_dir, source=C.SOURCE,
         DetectionLevel(total_detections, collapsed_duplicate, unique_signals),
         signal_outcomes=signal_outcomes)
     scorecard = build_hypothesis_scorecard(
-        shadow_trades, sample_floor_mean=C.SAMPLE_FLOOR_MEAN,
-        sample_floor_rate=C.SAMPLE_FLOOR_RATE, profit_factor_floor=C.PROFIT_FACTOR_FLOOR)
+        shadow_trades, sample_floor_mean=c.SAMPLE_FLOOR_MEAN,
+        sample_floor_rate=c.SAMPLE_FLOOR_RATE, profit_factor_floor=c.PROFIT_FACTOR_FLOOR)
 
     results_path = run_dir / "results.csv"
     per_session_path = run_dir / "per_session.csv"
@@ -209,10 +212,10 @@ def run_harness(*, db_path, output_dir, source=C.SOURCE,
     output.write_per_session_csv(ledger_rows, per_session_path)
     output.write_summary_md(_summary_lines(funnel, scorecard), summary_path)
     output.write_manifest_json({
-        "harness_version": C.HARNESS_VERSION, "source": source,
+        "harness_version": c.HARNESS_VERSION, "source": source,
         "params": {"partial_session_n": partial_session_n, "breakeven_r": breakeven_r,
                    "horizon_sessions": horizon_sessions,
-                   "ma_staging": [C.MA_FAST_PERIOD, C.MA_SLOW_PERIOD]},
+                   "ma_staging": [c.MA_FAST_PERIOD, c.MA_SLOW_PERIOD]},
         "funnel": funnel, "scorecard": scorecard,
         "started_iso_utc": iso, "l2_lock_preserved": True,
     }, manifest_path)
@@ -235,7 +238,7 @@ def _summary_lines(funnel, scorecard) -> list[str]:
     # so the section shape is stable across runs and a missing-reason regression is visible.
     lines.append("## Unattributed signals (pre-/non-attribution; spec 7.1)")
     unattributed = funnel["unattributed"]
-    for reason in C.UNATTRIBUTED_REASONS:
+    for reason in c.UNATTRIBUTED_REASONS:
         lines.append(f"  {reason}={unattributed.get(reason, 0)}")
     lines.append(f"  total_unattributed={sum(unattributed.values())}")
     lines.append("")
@@ -267,10 +270,10 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="shadow-expectancy")
     p.add_argument("--db", dest="db_path", type=Path, required=True)
     p.add_argument("--output-dir", type=Path, default=Path("exports/research"))
-    p.add_argument("--source", type=str, default=C.SOURCE)
-    p.add_argument("--partial-session-n", type=int, default=C.PARTIAL_SESSION_N)
-    p.add_argument("--breakeven-r", type=float, default=C.BREAKEVEN_R_TRIGGER)
-    p.add_argument("--horizon-sessions", type=int, default=C.HORIZON_SESSIONS)
+    p.add_argument("--source", type=str, default=c.SOURCE)
+    p.add_argument("--partial-session-n", type=int, default=c.PARTIAL_SESSION_N)
+    p.add_argument("--breakeven-r", type=float, default=c.BREAKEVEN_R_TRIGGER)
+    p.add_argument("--horizon-sessions", type=int, default=c.HORIZON_SESSIONS)
     p.add_argument("--only", type=str, default=None)
     a = p.parse_args(argv)
     only = tuple(s.strip() for s in a.only.split(",") if s.strip()) if a.only else None

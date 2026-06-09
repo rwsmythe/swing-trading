@@ -6,7 +6,11 @@ import pytest
 
 from research.harness.shadow_expectancy import io
 from tests.research.shadow_expectancy.testkit import (  # built in this task
-    insert_candidate, insert_detection, insert_observation, insert_pipeline_run, make_db,
+    insert_candidate,
+    insert_detection,
+    insert_observation,
+    insert_pipeline_run,
+    make_db,
 )
 
 

@@ -26,7 +26,7 @@ def _mean(vals):
     return sum(vals) / len(vals) if vals else 0.0
 
 
-def _scenario_value(trade: "ShadowTrade", scenario: str, arm: str):
+def _scenario_value(trade: ShadowTrade, scenario: str, arm: str):
     """Codex C3: the per-trade contribution to a scenario mean.
 
     A CLOSED trade contributes its realized R in ALL FOUR scenarios (identical).

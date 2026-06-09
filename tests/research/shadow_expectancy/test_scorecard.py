@@ -3,7 +3,8 @@ from __future__ import annotations
 import math
 
 from research.harness.shadow_expectancy.scorecard import (
-    ShadowTrade, build_hypothesis_scorecard,
+    ShadowTrade,
+    build_hypothesis_scorecard,
 )
 
 

@@ -32,7 +32,7 @@ def test_golden_a_gap_up_entry_single_fill_ambiguity_flag():
     assert math.isclose(res.risk_per_share, 0.3)    # 10.5 - 10.2
 
 
-def test_golden_b_gap_down_stop_blows_through_1R():
+def test_golden_b_gap_down_stop_blows_through_1r():
     # entry_fill 10.0, MECHANICAL initial stop = entry_bar.low = 9.0 (rps = 1.0).
     # Next bar gaps down: open 8.5 (< stop), low 8.0. realistic fills at min(stop,open)=8.5
     # -> single-leg R = (8.5-10.0)*100 / (1.0*100) = -1.5; favorable fills at stop 9.0 -> -1R.
@@ -59,7 +59,7 @@ def test_golden_f_degenerate_risk_excluded():
     assert res.realized_r is None
 
 
-def test_golden_e_not_in_profit_at_N_no_partial():
+def test_golden_e_not_in_profit_at_n_no_partial():
     # entry_fill 10.0, mechanical stop = entry_bar.low = 9.0. session 3 close 9.8
     # (< entry_fill) -> NO partial. (lows kept >= 9.0 so no stop-out before s3.)
     entry_bar = Bar("2026-06-01", 10.0, 10.4, 9.0, 10.1)
@@ -87,7 +87,7 @@ def test_partial_fires_at_session_3_when_in_profit():
     assert len(partials) == 1 and partials[0].qty == 50.0 and partials[0].price == 11.2
 
 
-def test_breakeven_raises_stop_to_entry_after_1R():
+def test_breakeven_raises_stop_to_entry_after_1r():
     # entry_fill 10.0, mechanical stop = entry_bar.low = 9.0 (rps 1). s1 close 11.2 ->
     # r_so_far >= 1 -> stop -> 10.0. s2 low 9.9 <= BE stop 10.0 (and > old 9.0) -> BE exit.
     entry_bar = Bar("2026-06-01", 10.0, 10.4, 9.0, 10.1)
@@ -115,7 +115,7 @@ def test_precedence_stop_wins_over_partial_and_ma_same_bar():
     assert all(leg.action != "partial" for leg in res.legs)  # stop terminated before partial
 
 
-def test_multi_leg_r_uses_fixed_denominator_golden_1p6R():
+def test_multi_leg_r_uses_fixed_denominator_golden_1p6r():
     # Codex C2 golden: assert the multi-leg R helper directly (the load-bearing denominator
     # math). Two 50-share legs at +1.2R-equiv (11.2) and +2.0R-equiv (12.0); entry_fill 10.0,
     # rps 1.0, initial_shares 100. FIXED denominator: total_pnl = (11.2-10)*50 + (12.0-10)*50
@@ -201,3 +201,20 @@ def test_golden_d_horizon_censored_runner_four_scenarios():
     assert res.forced_exit_collapsed_to_mtm is True
     assert math.isclose(sc["forced_exit_at_horizon_open"]["realistic"],
                         sc["mtm_at_horizon"]["realistic"])
+
+
+@pytest.mark.parametrize("stop,fwd_open,fwd_low", [
+    (9.0, 8.5, 8.0),   # gap-down stop -> favorable -1R, realistic < -1R
+    (9.0, 9.4, 8.9),   # no-gap stop -> equal arms (both at stop)
+])
+def test_bracket_bound_favorable_ge_realistic_fixed_denominator(stop, fwd_open, fwd_low):
+    # C1: the mechanical stop is entry_bar.low, so set the entry bar's low to the
+    # parametrized stop level (NOT a candidate input). entry_fill = max(pivot, open) = 10.0.
+    entry_bar = Bar("2026-06-01", 10.0, 10.4, stop, 10.2)   # entry_bar.low == stop
+    fwd = [Bar("2026-06-02", fwd_open, fwd_open + 0.3, fwd_low, fwd_open + 0.1)]
+    res = simulate(pivot=10.0, entry_bar=entry_bar, forward_bars=fwd,
+                   params=_params(horizon_sessions=1))
+    assert res.initial_stop == stop
+    assert res.realized_r["favorable_reprice"] >= res.realized_r["realistic"]
+    # identical denominator across arms: risk_per_share is single-entry-fill derived.
+    assert res.risk_per_share == 10.0 - stop  # entry_fill == max(pivot, open) == 10.0
