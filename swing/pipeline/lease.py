@@ -5,7 +5,7 @@ import logging
 import sqlite3
 import time
 from collections.abc import Iterator
-from contextlib import contextmanager, suppress
+from contextlib import closing, contextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -21,7 +21,7 @@ from swing.data.repos.pipeline import (
     update_status_columns,
     update_step,
 )
-from swing.data.repos.pipeline_step_timings import StepTiming
+from swing.data.repos.pipeline_step_timings import StepTiming, insert_step_timings
 
 log = logging.getLogger(__name__)
 
@@ -134,6 +134,24 @@ class Lease:
         self._timings.append(timing)
         self._pending = None
         return timing
+
+    def flush_step_timings(self) -> None:
+        """Flush the ledger ONCE, from run()'s finally. Sequence is load-bearing:
+        (1) close the final pending; (2) emit the final per-step line + the
+        aggregate-by-name summary BEFORE any DB write (so both survive a DB
+        failure); (3) one batch transaction on a fresh connect(). The flush-once
+        guard is set True ONLY after commit, so a transient failure does not
+        disable a later retry while the in-memory ledger still holds the data."""
+        if self._timings_flushed:
+            return
+        if self._pending is not None:
+            _emit_step_line(self._close_pending(_monotonic()))
+        if not self._timings:
+            return  # empty ledger (run never called step()) -> no-op
+        _emit_totals_line(_aggregate_by_name(self._timings))
+        with closing(connect(self.db_path)) as conn, conn:
+            insert_step_timings(conn, self.run_id, self._timings)
+        self._timings_flushed = True
 
     def status(self, **cols: str) -> None:
         conn = connect(self.db_path)

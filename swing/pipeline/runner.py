@@ -1033,6 +1033,10 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
             )
     finally:
         hb.stop()
+        try:
+            lease.flush_step_timings()
+        except Exception as exc:
+            log.error("step-timing flush failed: %s", exc)
         # OQ-C: close the single shared serialized audit-writer connection.
         if audit_conn is not None:
             audit_conn.close()
