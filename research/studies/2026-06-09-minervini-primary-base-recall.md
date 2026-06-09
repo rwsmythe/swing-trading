@@ -2,7 +2,7 @@
 # Minervini primary-base (young-name) screen recall (2026-06-09)
 
 **Method record:** ../method-records/minervini-primary-base-recall.md
-**Status:** SHIPPED - awaiting operator smoke run (Results/Interpretation/Conclusion are placeholders).
+**Status:** COMPLETE - smoke run executed 2026-06-09 (run `...-20260609T102009Z`).
 **Target duration:** per V2.1 SIII.7 time budget.
 
 ## Question
@@ -39,14 +39,53 @@ young-window precision contrast (single-session per-anchor primary estimand; win
   bootstrap exploratory-only.
 
 ## Results
-[PLACEHOLDER - populate from exports/research/primary-base-recall-<ISO>/summary.md after the operator
-smoke run. Report: sub-floor sweep recall RAW fraction (x/3) + the fired/missed ids; day-precision
-single-session BODY-only yes/no; YHOO positive-control fire; JNPR history-exclusion note; per-
-criterion first-rejection histogram; same-ticker precision contrast (single-session per-anchor vs
-window best-of, never conflated); per-exemplar bar counts + eligible_control_count_before_sampling.]
+Run: `exports/research/primary-base-recall-20260609T102009Z/` (2026-06-09; local Tiingo archive).
+
+**Recall (sub-floor evaluable {AMZN-1997, BODY, DKS}).**
+- sub-floor window-sweep recall (RAW): **3/3** — all fired (AMZN-1997, BODY, DKS); none missed.
+  Wilson 95% [0.438, 1.000] (mechanical at n=3); ticker-clustered bootstrap [1.000, 1.000] (exploratory).
+- day-precision single-session (BODY-only, n=1): **1/1**.
+- sweep first-rejecting-criterion histogram: `{}` (no sub-floor misses).
+
+**Positive control (YHOO, sufficient-history documented primary base).**
+- window-sweep **fired = False**, `first_rejecting_criterion = depth` — the screen **missed** a known
+  documented primary base, rejecting it because the base's correction exceeded the graduated depth cap.
+
+**Below-minimum (reported, not a screen miss).** JNPR `history`-excluded (25 bars < 40, below
+Minervini's own ≥2-month floor). **Data unavailable:** none.
+
+**Precision (same-ticker young-window control; single-session per-anchor PRIMARY, window SEPARATE).**
+
+| exemplar | role | control single (PRIMARY) | control window (SEPARATE) | k / eligible | exemplar single / window |
+|---|---|---|---|---|---|
+| AMZN-1997 | sub_floor | 0.000 | 0.000 | 5 / 309 | None (month) / True |
+| BODY | sub_floor | 0.000 | 0.000 | 5 / 328 | True / True |
+| DKS | sub_floor | 0.000 | 0.000 | 5 / 270 | None (month) / True |
+| YHOO | positive_control | 0.000 | 0.000 | 5 / 226 | False / False |
+
+**Control fire rate = 0.000 across every name, both estimands** — the screen fired at the documented
+emergences (3/3 sub-floor) and at **none** of the random young-window control sessions.
 
 ## Interpretation
-[PLACEHOLDER - populate after the run.]
+1. **The mechanism validates on the sub-floor cohort, with perfect same-ticker specificity.** The
+   Ch.11 primary-base criteria, operationalized point-in-time, fired on **all 3** evaluable sub-floor
+   documented primary bases (AMZN-1997, BODY, DKS) at their documented emergences — and on **zero**
+   of the same-ticker young-window control sessions (control fire 0.000, single AND window, all four
+   names). So on this tiny set the screen is both sensitive (3/3) and highly selective (0% control
+   fire): it recognizes the documented primary-base emergence and does not fire at random other young
+   sessions of the same names. That is the core proof-of-concept result.
+2. **The positive control (YHOO) FAILED on `depth` — the most important diagnostic.** YHOO 1997 is a
+   documented *sufficient-history* primary base (Fig 11.3), the sanity check that the screen fires on
+   a known full-history primary base. It did **not** — rejected because the base's correction exceeded
+   the graduated depth cap. Either the **depth-cap ladder is mis-calibrated** for YHOO's base (its
+   documented correction was deeper than the cap allowed at its duration bucket — Minervini permits up
+   to ~50% for ~1yr bases, so the bar→duration→cap mapping may under-allow), or the **base-bounding**
+   picked the wrong `base_high`/`base_low`. At n=1 it is a single data point, but it is a real flag:
+   the screen's depth operationalization rejects at least one documented primary base. This is exactly
+   the calibration signal the corpus-expansion sequel is for.
+3. **n is tiny (3 sub-floor + 1 control).** 3/3 + 0% specificity is encouraging but **illustrative** —
+   Wilson [0.44, 1.00] at n=3 is uninformative as an interval. The deliverable is mechanism-validation
+   + the YHOO depth flag, not a powered recall estimate.
 
 ## Limitations
 L1..L7 per the method record / spec section 10 (tiny n~3 proof-of-concept; thresholds are
@@ -63,13 +102,24 @@ exists in the cohort; the strongly-advised corpus-expansion sequel should revisi
 anchor if it adds a name IPO'd ~2 months before its documented month.
 
 ## Conclusion
-[PLACEHOLDER - populate after the run. Expected framing: mechanism-validation proof-of-concept, NOT a
-deployable ruleset change (V2.1 SIV.D promotion gate N/A); corpus expansion
-(Google/Starbucks/Reebok/MSFT/Intel/Rambus/RIMM Ch.11 primary bases) is the strongly-advised
-immediate sequel.]
-Per docs/research-director-context.md (P2), this screen's output is UNVALIDATED until a P1 shadow-
-expectancy engine can price its expectancy -- so the deployable recommendation is "expand the corpus +
-price via P1," not "deploy."
+**Verdict (proof-of-concept; n≈3).** The Ch.11 primary-base screen MECHANISM-VALIDATES: it fired on
+all 3 evaluable sub-floor documented primary bases with **perfect same-ticker specificity** (0% control
+fire, both estimands). The one negative — the **YHOO positive control rejected on `depth`** — is the
+load-bearing finding: it shows the depth-cap ladder (or base-bounding) is **not yet calibrated** and
+misses at least one documented sufficient-history primary base. So the screen works in principle and is
+selective, but its thresholds need tuning before any recall claim generalizes.
+
+**NOT a deployable ruleset change** (V2.1 §IV.D promotion gate N/A). Forward, routed through V2.1
+§VII.F: (1) **corpus expansion** (Google/Starbucks/Reebok/MSFT/Intel/Rambus/RIMM Ch.11 primary bases)
+is the strongly-advised immediate sequel — it both firms n AND supplies the documented bases needed to
+**calibrate the depth ladder** (the YHOO miss is the first calibration signal). (2) Per
+`docs/research-director-context.md` (P2), this screen's output is **UNVALIDATED until a P1
+shadow-expectancy engine can price its expectancy** — so the deployable recommendation is "expand the
+corpus + calibrate depth + price via P1," **not "deploy."**
 
 ## Amendments
 - 2026-06-09: shipped with placeholder Results/Interpretation/Conclusion pending the operator run.
+- 2026-06-09: operator/orchestrator smoke run executed (run `...-20260609T102009Z`, local Tiingo
+  archive); Results/Interpretation/Conclusion populated. Headline: 3/3 sub-floor recall + 0% control
+  fire (mechanism validates + specific); YHOO positive control rejected on `depth` (depth-ladder
+  calibration flag); n≈3 proof-of-concept.

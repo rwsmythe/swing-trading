@@ -1,0 +1,9 @@
+exemplar_id,ticker,role,timing_mode,fired,first_rejecting_criterion,base_start_date,base_high,correction_depth_pct,base_duration_bars,emergence_close,data_source,bars_through_anchor,date_precision
+twosmw-fig11-1-amzn,AMZN,sub_floor,window_sweep,True,,1997-07-30,0.1240,0.1765,25,0.1276,tiingo,75,month
+ttlc-fig10-1-body,BODY,sub_floor,single_session,True,,2010-12-06,15.3600,0.1100,21,15.6300,tiingo,57,day
+ttlc-fig10-1-body,BODY,sub_floor,window_sweep,True,,2010-12-06,15.3600,0.1100,21,15.6300,tiingo,57,day
+twosmw-fig11-6-dks,DKS,sub_floor,window_sweep,True,,2002-12-03,3.8543,0.2325,54,4.0407,tiingo,115,month
+twosmw-fig11-7-jnpr,JNPR,sub_floor,single_session,False,history,,,,,,tiingo,25,day
+twosmw-fig11-7-jnpr,JNPR,sub_floor,window_sweep,False,history,,,,,,tiingo,25,day
+twosmw-fig11-3-yhoo,YHOO,positive_control,single_session,False,depth,1997-01-27,1.5208,0.3800,101,,tiingo,302,day
+twosmw-fig11-3-yhoo,YHOO,positive_control,window_sweep,False,depth,1997-01-27,1.5208,0.3800,106,,tiingo,302,day

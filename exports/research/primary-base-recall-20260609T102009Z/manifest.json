@@ -1,0 +1,80 @@
+{
+  "bootstrap_b": 2000,
+  "control_params": {
+    "control_k": 5,
+    "control_seed": 20260608,
+    "max_control_age_bars": 504,
+    "window_back": 60,
+    "window_fwd": 5
+  },
+  "finished_iso_utc": "20260609T102017Z",
+  "harness_version": "0.1.0",
+  "l2_lock_preserved": true,
+  "n_evaluable": 3,
+  "n_total": 5,
+  "only_filter": null,
+  "per_exemplar": [
+    {
+      "bars_through_anchor": 75,
+      "book_citation": "TWoSMW Ch.11 Fig 11.1 (AMZN-1997)",
+      "data_source": "tiingo",
+      "date_precision": "month",
+      "eligible_control_count_before_sampling": 309,
+      "exemplar_id": "twosmw-fig11-1-amzn",
+      "role": "sub_floor",
+      "ticker": "AMZN"
+    },
+    {
+      "bars_through_anchor": 57,
+      "book_citation": "TWoSMW Ch.11 Fig 11.5 / TTLC Fig 10-1 (BODY)",
+      "data_source": "tiingo",
+      "date_precision": "day",
+      "eligible_control_count_before_sampling": 328,
+      "exemplar_id": "ttlc-fig10-1-body",
+      "role": "sub_floor",
+      "ticker": "BODY"
+    },
+    {
+      "bars_through_anchor": 115,
+      "book_citation": "TWoSMW Ch.11 Fig 11.6 (DKS)",
+      "data_source": "tiingo",
+      "date_precision": "month",
+      "eligible_control_count_before_sampling": 270,
+      "exemplar_id": "twosmw-fig11-6-dks",
+      "role": "sub_floor",
+      "ticker": "DKS"
+    },
+    {
+      "bars_through_anchor": 25,
+      "book_citation": "TWoSMW Ch.11 Fig 11.7 (JNPR, history-excluded)",
+      "data_source": "tiingo",
+      "date_precision": "day",
+      "eligible_control_count_before_sampling": 360,
+      "exemplar_id": "twosmw-fig11-7-jnpr",
+      "role": "sub_floor",
+      "ticker": "JNPR"
+    },
+    {
+      "bars_through_anchor": 302,
+      "book_citation": "TWoSMW Ch.11 Fig 11.3 (YHOO)",
+      "data_source": "tiingo",
+      "date_precision": "day",
+      "eligible_control_count_before_sampling": 226,
+      "exemplar_id": "twosmw-fig11-3-yhoo",
+      "role": "positive_control",
+      "ticker": "YHOO"
+    }
+  ],
+  "started_iso_utc": "20260609T102009Z",
+  "thresholds": {
+    "MIN_BASE_BARS": 15,
+    "MIN_HISTORY_BARS": 40,
+    "YOUNG_NAME_CEILING_BARS": 221,
+    "ZIGZAG_THRESHOLD_PCT": 3.0,
+    "depth_caps": {
+      "26-200": 0.35,
+      "<=25": 0.25,
+      ">200": 0.5
+    }
+  }
+}
