@@ -187,11 +187,10 @@ def test_missing_sub_floor_archive_is_data_unavailable_not_history_excluded(tmp_
         ],
     )
     tdir = tmp_path / "tiingo"
-    # DKS (sub_floor, month) archive DELIBERATELY OMITTED -> data_source == "no_data".
+    # DKS (sub_floor, month) AND YHOO (positive_control) archives DELIBERATELY OMITTED -> no_data.
     _write_tiingo_csv(tdir, "AMZN", [10.0 + i * 0.01 for i in range(800)], date(1997, 1, 2))
     _write_tiingo_csv(tdir, "BODY", [10.0 + i * 0.01 for i in range(1500)], date(2010, 10, 15))
     _write_tiingo_csv(tdir, "JNPR", [10.0 + i * 0.01 for i in range(30)], date(1999, 6, 25))
-    _write_tiingo_csv(tdir, "YHOO", [10.0 + i * 0.01 for i in range(900)], date(1996, 4, 12))
 
     _r, _ps, summary, manifest = run_harness(
         exemplars_csv=ex, tiingo_dir=tdir, output_dir=tmp_path / "out", bootstrap_b=10
@@ -200,12 +199,24 @@ def test_missing_sub_floor_archive_is_data_unavailable_not_history_excluded(tmp_
     assert "## Data unavailable" in summary_text
     data_unavail = _section(summary_text, "## Data unavailable")
     below_min = _section(summary_text, "## Below-minimum")
+    pos_control = _section(summary_text, "## Positive control")
+    precision = _section(summary_text, "## Precision")
+    # DKS (sub_floor) missing -> data-unavailable, NOT below-minimum.
     assert "twosmw-fig11-6-dks" in data_unavail
     assert "twosmw-fig11-6-dks" not in below_min
     # JNPR (present, 30 bars < 40) stays a genuine history-exclusion (NOT data-unavailable).
     assert "twosmw-fig11-7-jnpr" in below_min
     assert "twosmw-fig11-7-jnpr" not in data_unavail
-    # Manifest still records the missing name with data_source == "no_data".
+    # Codex EP-R2 M1: a missing archive must NOT leak into positive-control or precision strata as a
+    # false fired=False line. YHOO (the only positive control) is missing -> data-unavailable, and
+    # the positive-control section shows "(none)" rather than a fired=False YHOO row.
+    assert "twosmw-fig11-3-yhoo" in data_unavail
+    assert "twosmw-fig11-3-yhoo" not in pos_control
+    assert "fired=False" not in pos_control
+    # No-data rows (DKS, YHOO) are absent from the precision contrast entirely.
+    assert "twosmw-fig11-6-dks" not in precision
+    assert "twosmw-fig11-3-yhoo" not in precision
+    # Manifest still records the missing names with data_source == "no_data".
     data = json.loads(Path(manifest).read_text(encoding="utf-8"))
     dks = next(e for e in data["per_exemplar"] if e["exemplar_id"] == "twosmw-fig11-6-dks")
     assert dks["data_source"] == "no_data"

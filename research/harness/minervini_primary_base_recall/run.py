@@ -161,8 +161,10 @@ def run_harness(
                 single_recall_rows.append(
                     (row.exemplar_id, bool(single.fired) if single else False)
                 )
-        # YHOO positive control reported separately (Codex WP-R1 M2).
-        if rm.member.role == "positive_control":
+        # YHOO positive control reported separately (Codex WP-R1 M2). The `full is not None` guard
+        # (Codex EP-R2 M1) keeps a MISSING positive-control archive out of this stratum -- it would
+        # otherwise render as a false `fired=False` line instead of a data-availability gap.
+        if rm.member.role == "positive_control" and full is not None:
             sweep = modes.get("window_sweep")
             pc_fired = bool(sweep.fired) if sweep else False
             pc_reject = ""
@@ -203,22 +205,27 @@ def run_harness(
                     control_single_flags.append(cres.single_session_fired)
                     control_window_flags.append(cres.window_fired)
         # Exemplar side of the contrast: single-session is meaningful ONLY for day/exact rows (None
-        # for month -> sweep-only). window best-of applies to all rows.
-        ex_single_fired = (
-            bool(modes["single_session"].fired)
-            if (row.date_precision in ("day", "exact") and "single_session" in modes)
-            else None
-        )
-        ex_window_fired = bool(modes["window_sweep"].fired) if "window_sweep" in modes else False
-        precision_rows.append({
-            "exemplar_id": row.exemplar_id, "role": rm.member.role,
-            "eligible_control_count": eligible_count, "k_controls": len(control_single_flags),
-            "contrast": scorecard.precision_contrast(
-                exemplar_single_fired=ex_single_fired, exemplar_window_fired=ex_window_fired,
-                control_single_flags=control_single_flags,
-                control_window_flags=control_window_flags,
-            ),
-        })
+        # for month -> sweep-only). window best-of applies to all rows. A no_data row is NOT emitted
+        # to the precision stratum (Codex EP-R2 M1) -- it would otherwise show a false
+        # exemplar_window_fired=False against NA controls; it lives in the data-unavailable stratum.
+        if full is not None:
+            ex_single_fired = (
+                bool(modes["single_session"].fired)
+                if (row.date_precision in ("day", "exact") and "single_session" in modes)
+                else None
+            )
+            ex_window_fired = (
+                bool(modes["window_sweep"].fired) if "window_sweep" in modes else False
+            )
+            precision_rows.append({
+                "exemplar_id": row.exemplar_id, "role": rm.member.role,
+                "eligible_control_count": eligible_count, "k_controls": len(control_single_flags),
+                "contrast": scorecard.precision_contrast(
+                    exemplar_single_fired=ex_single_fired, exemplar_window_fired=ex_window_fired,
+                    control_single_flags=control_single_flags,
+                    control_window_flags=control_window_flags,
+                ),
+            })
 
         per_exemplar.append({
             "exemplar_id": row.exemplar_id, "ticker": row.ticker, "role": rm.member.role,
@@ -288,7 +295,11 @@ def _summary_lines(
     )
     lines.append("same-ticker temporal-specificity contrast, NOT a population base rate.")
     lines.append("")
-    lines.append("## Recall (sub-floor evaluable {AMZN-1997, BODY, DKS})")
+    # Derive the evaluable-id label from the ACTUAL sweep rows (Codex EP-R2 minor 2) so a
+    # data-unavailable name or an --only-filtered run never shows a misleading static cohort.
+    evaluable_ids = [eid for eid, _fired in sweep_rows]
+    label = "{" + ", ".join(evaluable_ids) + "}" if evaluable_ids else "(none)"
+    lines.append(f"## Recall (sub-floor evaluable {label})")
     sweep = scorecard.recall_fraction(sweep_rows)
     lines.append(
         f"sub-floor sweep recall (RAW): {sweep.successes}/{sweep.n} "
