@@ -121,7 +121,8 @@ def test_failed_breakout_then_reset_recross_does_not_fire():
     # (no_emergence), the first-fire replay is never reached -> the result is no_emergence (not
     # not_primary), even though an earlier session (asof-2) would itself fire 1-5.
     pad = [40.0] * 40
-    rise = [50.0 + (101.0 - 50.0) * i / 11 for i in range(12)]   # closed up-swing, peak 101 @ pos 51
+    # closed up-swing, peak 101 @ pos 51:
+    rise = [50.0 + (101.0 - 50.0) * i / 11 for i in range(12)]
     drop = [99.0, 97.0, 95.0, 96.0, 95.0, 96.0, 95.0, 96.0]   # -3.96% at 97 closes up-swing; low 95
     # Developing recovery up-leg from the 95 low: monotone up to 102 (asof-2), small dip to 100.5
     # (asof-1, -1.5% -> leg keeps developing), then 102.5 (asof). It never reverses >=3% so it is
@@ -143,11 +144,16 @@ def test_second_base_after_an_earlier_qualifying_base_is_not_primary():
     pad = [40.0] * 40
     # First base + emergence (peak 100, base, fresh cross to 101) ...
     rise1 = [50.0 + (100.0 - 50.0) * i / 9 for i in range(10)]
-    base1 = [92.0, 88.0, 90.0, 91.0, 93.0, 90.0, 92.0, 94.0, 91.0, 93.0, 95.0, 92.0, 94.0, 96.0, 95.0]
+    base1 = [
+        92.0, 88.0, 90.0, 91.0, 93.0, 90.0, 92.0, 94.0, 91.0, 93.0, 95.0, 92.0, 94.0, 96.0, 95.0,
+    ]
     cross1 = [99.0, 101.0]
     # ... then a deeper pullback forming a SECOND base (new peak 130) + fresh cross to 131.
     rise2 = [102.0 + (130.0 - 102.0) * i / 9 for i in range(10)]
-    base2 = [120.0, 116.0, 118.0, 119.0, 121.0, 118.0, 120.0, 122.0, 119.0, 121.0, 123.0, 120.0, 122.0, 124.0, 123.0]
+    base2 = [
+        120.0, 116.0, 118.0, 119.0, 121.0, 118.0, 120.0, 122.0, 119.0, 121.0, 123.0, 120.0,
+        122.0, 124.0, 123.0,
+    ]
     cross2 = [129.0, 131.0]
     bars = _frame(pad + rise1 + base1 + cross1 + rise2 + base2 + cross2)
     # Screen at the FINAL session (the second emergence).

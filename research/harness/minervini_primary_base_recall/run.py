@@ -4,8 +4,8 @@ import argparse
 from datetime import UTC, datetime
 from pathlib import Path
 
-from research.harness.minervini_exemplar_recall.ohlcv_reader import read_full, slice_to
 from research.harness.minervini_exemplar_recall.exceptions import TiingoArchiveMissingError
+from research.harness.minervini_exemplar_recall.ohlcv_reader import read_full, slice_to
 
 from . import output, precision_control, scorecard, timing
 from .cohort import resolve_cohort
@@ -61,21 +61,25 @@ def run_harness(
     results_rows: list[dict] = []
     per_session_rows: list[dict] = []
     per_exemplar: list[dict] = []
-    # recall rows: (exemplar_id, fired), only over sub_floor evaluable members (bars >= MIN_HISTORY).
+    # recall rows: (exemplar_id, fired), only over sub_floor evaluable members
+    # (bars >= MIN_HISTORY).
     sweep_recall_rows: list[tuple[str, bool]] = []
-    # bootstrap rows are keyed by TICKER (row[0]) per the frozen ticker_clustered_bootstrap contract,
-    # kept SEPARATE from the exemplar_id-keyed recall display rows (Codex WP-R2 M2).
+    # bootstrap rows are keyed by TICKER (row[0]) per the frozen ticker_clustered_bootstrap
+    # contract, kept SEPARATE from the exemplar_id-keyed recall display rows (Codex WP-R2 M2).
     sweep_bootstrap_rows: list[tuple[str, bool]] = []
     single_recall_rows: list[tuple[str, bool]] = []
     sweep_miss_rows: list[tuple[str, str | None]] = []
     # stratified diagnostics + precision (Codex WP-R1 C1/M2/M6).
     precision_rows: list[dict] = []
-    positive_control_rows: list[tuple[str, bool, str]] = []  # (exemplar_id, sweep_fired, first_reject)
-    history_excluded_rows: list[tuple[str, int]] = []        # (exemplar_id, bars_through_anchor)
+    # positive_control_rows entries: (exemplar_id, sweep_fired, first_reject).
+    positive_control_rows: list[tuple[str, bool, str]] = []
+    # history_excluded_rows entries: (exemplar_id, bars_through_anchor).
+    history_excluded_rows: list[tuple[str, int]] = []
 
     for idx, rm in enumerate(resolved):
         row = rm.row
-        symbol = row.tiingo_symbol   # populated by read_exemplars (Codex WP-R1 M5: no tiingo_symbol import)
+        # row.tiingo_symbol is populated by read_exemplars (WP-R1 M5: no tiingo_symbol import).
+        symbol = row.tiingo_symbol
         full = _load_full_safe(symbol, Path(tiingo_dir))
         data_source = "tiingo" if full is not None else "no_data"
         bars_through_anchor = (
@@ -109,13 +113,21 @@ def run_harness(
                 "exemplar_id": row.exemplar_id, "ticker": row.ticker, "role": rm.member.role,
                 "timing_mode": mode, "fired": str(fired),
                 "first_rejecting_criterion": (v.first_rejecting_criterion if v else "") or "",
-                "base_start_date": (v.base_start_date.isoformat() if v and v.base_start_date else ""),
+                "base_start_date": (
+                    v.base_start_date.isoformat() if v and v.base_start_date else ""
+                ),
                 "base_high": (f"{v.base_high:.4f}" if v and v.base_high is not None else ""),
                 "correction_depth_pct": (
-                    f"{v.correction_depth_pct:.4f}" if v and v.correction_depth_pct is not None else ""
+                    f"{v.correction_depth_pct:.4f}"
+                    if v and v.correction_depth_pct is not None
+                    else ""
                 ),
-                "base_duration_bars": (str(v.base_duration_bars) if v and v.base_duration_bars is not None else ""),
-                "emergence_close": (f"{v.emergence_close:.4f}" if v and v.emergence_close is not None else ""),
+                "base_duration_bars": (
+                    str(v.base_duration_bars) if v and v.base_duration_bars is not None else ""
+                ),
+                "emergence_close": (
+                    f"{v.emergence_close:.4f}" if v and v.emergence_close is not None else ""
+                ),
                 "data_source": data_source,
                 "bars_through_anchor": str(bars_through_anchor),
                 "date_precision": row.date_precision,
@@ -142,7 +154,9 @@ def run_harness(
             # Single-session recall ONLY for day-precision evaluable (BODY-only, n=1).
             if row.date_precision in ("day", "exact"):
                 single = modes.get("single_session")
-                single_recall_rows.append((row.exemplar_id, bool(single.fired) if single else False))
+                single_recall_rows.append(
+                    (row.exemplar_id, bool(single.fired) if single else False)
+                )
         # YHOO positive control reported separately (Codex WP-R1 M2).
         if rm.member.role == "positive_control":
             sweep = modes.get("window_sweep")
@@ -189,7 +203,8 @@ def run_harness(
             "eligible_control_count": eligible_count, "k_controls": len(control_single_flags),
             "contrast": scorecard.precision_contrast(
                 exemplar_single_fired=ex_single_fired, exemplar_window_fired=ex_window_fired,
-                control_single_flags=control_single_flags, control_window_flags=control_window_flags,
+                control_single_flags=control_single_flags,
+                control_window_flags=control_window_flags,
             ),
         })
 
@@ -232,7 +247,9 @@ def run_harness(
                 "MIN_HISTORY_BARS": MIN_HISTORY_BARS, "MIN_BASE_BARS": MIN_BASE_BARS,
                 "ZIGZAG_THRESHOLD_PCT": ZIGZAG_THRESHOLD_PCT,
                 "YOUNG_NAME_CEILING_BARS": YOUNG_NAME_CEILING_BARS,
-                "depth_caps": {"<=25": depth_cap(25), "26-200": depth_cap(26), ">200": depth_cap(201)},
+                "depth_caps": {
+                    "<=25": depth_cap(25), "26-200": depth_cap(26), ">200": depth_cap(201),
+                },
             },
             "control_params": {
                 "control_k": control_k, "control_seed": DEFAULT_CONTROL_SEED,
@@ -254,7 +271,9 @@ def _summary_lines(
 ) -> list[str]:
     lines = ["# Minervini primary-base recall - summary", ""]
     lines.append("NOTE: n~3 proof-of-concept. Raw fractions are PRIMARY; Wilson + bootstrap are")
-    lines.append("MECHANICAL/EXPLORATORY at this n, NOT evidence of stable performance. Precision is a")
+    lines.append(
+        "MECHANICAL/EXPLORATORY at this n, NOT evidence of stable performance. Precision is a"
+    )
     lines.append("same-ticker temporal-specificity contrast, NOT a population base rate.")
     lines.append("")
     lines.append("## Recall (sub-floor evaluable {AMZN-1997, BODY, DKS})")
@@ -267,14 +286,18 @@ def _summary_lines(
     lines.append(f"  Wilson 95pct (MECHANICAL at n={w.n}): [{w.lower:.3f}, {w.upper:.3f}]")
     # Exploratory ticker-clustered bootstrap (Codex WP-R1 M6) over the TICKER-keyed rows (WP-R2 M2).
     # Guard the zero-row case (WP-R2 M1): emit NA rather than a meaningless [0.000, 0.000] interval
-    # (the frozen primitive does not crash on empty input -- the resampler's comprehension is empty --
-    # but a degenerate interval would mislead). The empty path is exercised by the CLI no-Tiingo test.
+    # (the frozen primitive does not crash on empty input -- the resampler's comprehension is
+    # empty -- but a degenerate interval would mislead). The empty path is exercised by the CLI
+    # no-Tiingo test.
     if sweep.n == 0:
         lines.append("  ticker-clustered bootstrap (EXPLORATORY): NA (no evaluable rows)")
     else:
-        boot = scorecard.bootstrap(sweep_bootstrap_rows, b=bootstrap_b, base_seed=DEFAULT_CONTROL_SEED)
+        boot = scorecard.bootstrap(
+            sweep_bootstrap_rows, b=bootstrap_b, base_seed=DEFAULT_CONTROL_SEED
+        )
         lines.append(
-            f"  ticker-clustered bootstrap 95pct (EXPLORATORY): [{boot.lower:.3f}, {boot.upper:.3f}]"
+            f"  ticker-clustered bootstrap 95pct (EXPLORATORY): "
+            f"[{boot.lower:.3f}, {boot.upper:.3f}]"
         )
     single = scorecard.recall_fraction(single_rows)
     lines.append(
@@ -292,14 +315,18 @@ def _summary_lines(
     else:
         lines.append("- (none)")
     lines.append("")
-    lines.append("## Below-minimum (reported, NOT a screen miss -- below Minervini's >=2-month floor)")
+    lines.append(
+        "## Below-minimum (reported, NOT a screen miss -- below Minervini's >=2-month floor)"
+    )
     if history_excluded_rows:
         for eid, bars in history_excluded_rows:
             lines.append(f"- {eid}: history-excluded ({bars} bars < MIN_HISTORY_BARS)")
     else:
         lines.append("- (none)")
     lines.append("")
-    lines.append("## Precision (same-ticker young-window control; single-session per-anchor PRIMARY)")
+    lines.append(
+        "## Precision (same-ticker young-window control; single-session per-anchor PRIMARY)"
+    )
     for pr in precision_rows:
         c = pr["contrast"]
         single_rate = "NA" if c.control_single_rate is None else f"{c.control_single_rate:.3f}"
@@ -328,7 +355,8 @@ def main(argv: list[str] | None = None) -> int:
     only = tuple(s.strip() for s in args.only.split(",") if s.strip()) if args.only else None
     try:
         results, per_session, summary, manifest = run_harness(
-            exemplars_csv=args.exemplars_csv, tiingo_dir=args.tiingo_dir, output_dir=args.output_dir,
+            exemplars_csv=args.exemplars_csv, tiingo_dir=args.tiingo_dir,
+            output_dir=args.output_dir,
             window_back=args.window_back, window_fwd=args.window_fwd, control_k=args.control_k,
             bootstrap_b=args.bootstrap_b, only=only,
         )

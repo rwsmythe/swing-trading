@@ -38,7 +38,9 @@ def test_manifest_has_spec_required_fields(tmp_path):
                  "eligible_control_count_before_sampling": 309},
             ],
             "thresholds": {"MIN_HISTORY_BARS": 40},
-            "control_params": {"control_k": 5, "control_seed": 20260608, "max_control_age_bars": 504},
+            "control_params": {
+                "control_k": 5, "control_seed": 20260608, "max_control_age_bars": 504,
+            },
             "started_iso_utc": "20260609T000000Z", "finished_iso_utc": "20260609T000100Z",
         },
         path,

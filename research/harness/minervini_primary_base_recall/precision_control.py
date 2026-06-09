@@ -58,7 +58,8 @@ def screen_control_anchor(
     bars: pd.DataFrame, anchor: ControlAnchor, *, window_back: int, window_fwd: int
 ) -> ControlScreenResult:
     """Single-session per-anchor fire (PRIMARY estimand) + window best-of fire (reported
-    separately, never conflated -- R1.M9). Controls are evaluated day-precision (a calendar date)."""
+    separately, never conflated -- R1.M9). Controls are evaluated day-precision (a calendar
+    date)."""
     single = screen_at(bars, anchor.session).fired
     start = max(0, anchor.session_pos - window_back)
     end = min(len(bars) - 1, anchor.session_pos + window_fwd)

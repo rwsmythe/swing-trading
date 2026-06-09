@@ -65,7 +65,7 @@ def test_sample_is_deterministic_and_capped_at_k():
 
 def test_single_session_per_anchor_is_the_primary_estimand():
     # screen_control_anchor returns BOTH a single-session fire and a window best-of fire; the
-    # single-session per-anchor flag is the documented primary estimand (R1.M9), reported separately.
+    # single-session per-anchor flag is the documented primary estimand (R1.M9), reported apart.
     bars = _frame(900)
     anchor = ControlAnchor(session=bars.index[300].date(), session_pos=300)
     res = pc.screen_control_anchor(bars, anchor, window_back=60, window_fwd=5)
@@ -79,7 +79,8 @@ def test_single_session_per_anchor_is_the_primary_estimand():
 def test_month_precision_control_exclusion_uses_full_documented_month_window():
     # Codex WP-R1 M7: the control sampler must exclude the FULL documented-month sweep window for a
     # month-precision exemplar, NOT the parsed-first-of-month [entry-60bd, entry+5bd]. This ties the
-    # composition run.py uses: timing.sweep_bounds(month) -> precision_control.eligible_control_positions.
+    # composition run.py uses: timing.sweep_bounds(month) ->
+    # precision_control.eligible_control_positions.
     from datetime import date
 
     from research.harness.minervini_primary_base_recall import timing
@@ -96,7 +97,7 @@ def test_month_precision_control_exclusion_uses_full_documented_month_window():
     assert bounds is not None
     sweep_start, sweep_end = bounds
     # A LATE-September-1997 position (the last documented-month trading day) -- this is INSIDE the
-    # full-month window but OUTSIDE the WRONG-PATH parsed-first-of-month [first+(-60), first+5] tail.
+    # full-month window but OUTSIDE the WRONG-PATH parsed-first-of-month [first-60, first+5] tail.
     sept = [i for i, ts in enumerate(bars.index) if ts.year == 1997 and ts.month == 9]
     last_sept_pos = sept[-1]
     entry_pos = sept[0]  # first trading day of the documented month ~= the parsed-anchor position

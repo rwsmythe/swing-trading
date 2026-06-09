@@ -40,7 +40,8 @@ def _write_tiingo_csv(tiingo_dir: Path, symbol: str, closes: list[float], start:
 def _exemplar_csv(path: Path, rows: list[str]) -> None:
     header = (
         "exemplar_id,ticker,setup_label,detector_class,entry_date,buy_point_price,"
-        "stop_price,base_start_date,base_end_date,date_precision,source,page,extracted_by,curated,notes"
+        "stop_price,base_start_date,base_end_date,date_precision,source,page,extracted_by,"
+        "curated,notes"
     )
     path.write_text(header + "\n" + "\n".join(rows) + "\n", encoding="utf-8")
 
@@ -146,4 +147,6 @@ def test_run_planted_body_primary_base_fires_and_wires_recall_precision(tmp_path
 
 def test_run_harness_raises_value_error_for_missing_csv(tmp_path):
     with pytest.raises(ValueError):
-        run_harness(exemplars_csv=tmp_path / "nope.csv", tiingo_dir=tmp_path, output_dir=tmp_path / "o")
+        run_harness(
+            exemplars_csv=tmp_path / "nope.csv", tiingo_dir=tmp_path, output_dir=tmp_path / "o"
+        )

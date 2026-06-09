@@ -31,14 +31,19 @@ def _entry_pos(bars: pd.DataFrame, entry_anchor: date) -> int | None:
 
 def _month_bounds(bars: pd.DataFrame, anchor: date) -> tuple[int, int] | None:
     """Positions of the first and last in-frame trading day of anchor's calendar month."""
-    in_month = [i for i, ts in enumerate(bars.index) if ts.year == anchor.year and ts.month == anchor.month]
+    in_month = [
+        i
+        for i, ts in enumerate(bars.index)
+        if ts.year == anchor.year and ts.month == anchor.month
+    ]
     if not in_month:
         return None
     return in_month[0], in_month[-1]
 
 
 def sweep_bounds(
-    bars: pd.DataFrame, entry_anchor: date, date_precision: str, *, window_back: int, window_fwd: int
+    bars: pd.DataFrame, entry_anchor: date, date_precision: str, *,
+    window_back: int, window_fwd: int,
 ) -> tuple[int, int] | None:
     """The positional [start, end] of the recall sweep window for this exemplar (inclusive)."""
     if date_precision == "month":
@@ -54,7 +59,8 @@ def sweep_bounds(
 
 
 def sweep_sessions(
-    bars: pd.DataFrame, entry_anchor: date, date_precision: str, *, window_back: int, window_fwd: int
+    bars: pd.DataFrame, entry_anchor: date, date_precision: str, *,
+    window_back: int, window_fwd: int,
 ) -> list[date]:
     bounds = sweep_bounds(
         bars, entry_anchor, date_precision, window_back=window_back, window_fwd=window_fwd
@@ -80,7 +86,8 @@ def _result(mode: str, bars: pd.DataFrame, sessions: list[date]) -> TimingResult
 
 
 def evaluate_exemplar(
-    bars: pd.DataFrame, entry_anchor: date, date_precision: str, *, window_back: int, window_fwd: int
+    bars: pd.DataFrame, entry_anchor: date, date_precision: str, *,
+    window_back: int, window_fwd: int,
 ) -> dict[str, TimingResult]:
     return {
         "single_session": _result(

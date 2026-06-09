@@ -29,8 +29,8 @@ class _NoImportSentinel:
 
 def test_evaluator_modules_do_not_import_forbidden(monkeypatch):
     # HARDENED pattern (per the 2026-06-09 xdist module-identity gotcha): use monkeypatch.delitem /
-    # setitem so sys.modules is RESTORED at teardown -- NEVER raw `del sys.modules[...]` (which leaks
-    # deletions across xdist workers and makes sibling identity tests order-fragile).
+    # setitem so sys.modules is RESTORED at teardown -- NEVER raw `del sys.modules[...]` (which
+    # leaks deletions across xdist workers and makes sibling identity tests order-fragile).
     for name in list(sys.modules):
         if name.startswith("research.harness.minervini_primary_base_recall") or name in _FORBIDDEN:
             monkeypatch.delitem(sys.modules, name, raising=False)
@@ -51,7 +51,8 @@ def test_evaluator_sources_contain_no_forbidden_import_lines():
         "import yfinance", "from yfinance",
         "import schwabdev", "from schwabdev",
         "from swing.integrations.schwab", "swing.integrations.schwab.",
-        "from swing.data.ohlcv_archive", "swing.data.ohlcv_archive.", "import swing.data.ohlcv_archive",
+        "from swing.data.ohlcv_archive", "swing.data.ohlcv_archive.",
+        "import swing.data.ohlcv_archive",
     )
     for mod in _EVALUATOR_MODULES:
         src = (pkg_dir / f"{mod}.py").read_text(encoding="utf-8")

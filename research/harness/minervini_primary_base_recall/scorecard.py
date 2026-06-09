@@ -31,7 +31,7 @@ def recall_fraction(rows: Sequence[tuple[str, bool]]) -> RecallFraction:
 
 
 def wilson(successes: int, n: int) -> WilsonInterval:
-    """A MECHANICAL interval at n~3 (NOT evidence of stable performance) -- labeled in summary.md."""
+    """A MECHANICAL interval at n~3 (NOT evidence of stable performance); labeled in summary.md."""
     return wilson_interval(successes, n)
 
 
@@ -52,7 +52,8 @@ def first_rejection_histogram(rows: Sequence[tuple[str, str | None]]) -> dict[st
 
 @dataclass(frozen=True)
 class PrecisionContrast:
-    exemplar_single_fired: bool | None  # None for month-precision rows (sweep-only; no single-session)
+    # exemplar_single_fired is None for month-precision rows (sweep-only; no single-session).
+    exemplar_single_fired: bool | None
     exemplar_window_fired: bool
     control_single_rate: float | None
     control_window_rate: float | None
