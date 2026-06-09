@@ -205,10 +205,11 @@ def run_harness(
                     control_single_flags.append(cres.single_session_fired)
                     control_window_flags.append(cres.window_fired)
         # Exemplar side of the contrast: single-session is meaningful ONLY for day/exact rows (None
-        # for month -> sweep-only). window best-of applies to all rows. A no_data row is NOT emitted
-        # to the precision stratum (Codex EP-R2 M1) -- it would otherwise show a false
-        # exemplar_window_fired=False against NA controls; it lives in the data-unavailable stratum.
-        if full is not None:
+        # for month -> sweep-only). window best-of applies to all rows. Only SCREENABLE names get a
+        # precision contrast: a no_data row (Codex EP-R2 M1) lives in the data-unavailable stratum,
+        # and a history-excluded row (data present but < MIN_HISTORY_BARS, e.g. JNPR; Codex EP-R3
+        # M1) lives in the below-minimum stratum -- neither belongs in precision as a false False.
+        if full is not None and bars_through_anchor >= MIN_HISTORY_BARS:
             ex_single_fired = (
                 bool(modes["single_session"].fired)
                 if (row.date_precision in ("day", "exact") and "single_session" in modes)

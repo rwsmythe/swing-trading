@@ -106,6 +106,9 @@ def test_run_harness_writes_four_artifacts_and_manifest_fields(tmp_path):
     assert "## Positive control" in summary_text and "twosmw-fig11-3-yhoo" in summary_text
     assert "## Below-minimum" in summary_text and "twosmw-fig11-7-jnpr" in summary_text
     assert "EXPLORATORY" in summary_text  # ticker-clustered bootstrap line
+    # Codex EP-R3 M1: JNPR (data present, 30 bars < 40 -> history-excluded) must NOT appear in the
+    # precision stratum as a false contrast -- only screenable names get a precision row.
+    assert "twosmw-fig11-7-jnpr" not in _section(summary_text, "## Precision")
 
 
 def test_run_planted_body_primary_base_fires_and_wires_recall_precision(tmp_path):
