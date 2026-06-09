@@ -1,10 +1,12 @@
 """Lease — wraps pipeline_runs repo with token-bound mutations."""
 from __future__ import annotations
 
+import logging
 import sqlite3
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -19,6 +21,14 @@ from swing.data.repos.pipeline import (
     update_status_columns,
     update_step,
 )
+from swing.data.repos.pipeline_step_timings import StepTiming
+
+log = logging.getLogger(__name__)
+
+# Advisory soft budget (spec §5.4) -- WARN only, never a control-flow gate.
+# Defaults to the existing charts 60s shape; a constant, so per-step budgets can
+# be tuned later without schema churn.
+STEP_SOFT_BUDGET_MS = 60_000
 
 
 class ConcurrentRunBlockedError(Exception):
@@ -27,6 +37,43 @@ class ConcurrentRunBlockedError(Exception):
 
 def _now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
+
+
+def _monotonic() -> float:
+    """Indirection so tests can stub a deterministic clock (mirrors _now_iso)."""
+    return time.monotonic()
+
+
+@dataclass(frozen=True)
+class _PendingStep:
+    ordinal: int
+    step_name: str
+    started_ts: str
+    monotonic_start: float
+
+
+def _aggregate_by_name(timings) -> dict[str, int]:
+    """In-memory SUM(duration_ms) GROUP BY step_name, first-appearance order.
+    Mirrors the repo's step_durations_by_name for the flush summary line (the
+    ledger is summarized BEFORE the DB write)."""
+    totals: dict[str, int] = {}
+    for t in timings:
+        totals[t.step_name] = totals.get(t.step_name, 0) + t.duration_ms
+    return totals
+
+
+def _emit_step_line(t: StepTiming) -> None:
+    log.info("step ordinal=%d name=%s took %d ms", t.ordinal, t.step_name, t.duration_ms)
+    if t.duration_ms > STEP_SOFT_BUDGET_MS:
+        log.warning(
+            "step ordinal=%d name=%s exceeded soft budget: %d ms > %d ms",
+            t.ordinal, t.step_name, t.duration_ms, STEP_SOFT_BUDGET_MS,
+        )
+
+
+def _emit_totals_line(totals: dict[str, int]) -> None:
+    parts = " ".join(f"{name}={ms}ms" for name, ms in totals.items())
+    log.info("step totals: %s", parts)
 
 
 def _heartbeat_age_seconds(now: datetime, ts: str) -> float:
@@ -38,6 +85,10 @@ class Lease:
     db_path: Path
     run_id: int
     token: str
+    _timings: list[StepTiming] = field(default_factory=list, init=False, repr=False)
+    _pending: _PendingStep | None = field(default=None, init=False, repr=False)
+    _next_ordinal: int = field(default=0, init=False, repr=False)
+    _timings_flushed: bool = field(default=False, init=False, repr=False)
 
     def heartbeat(self) -> None:
         conn = connect(self.db_path)
@@ -60,6 +111,29 @@ class Lease:
                 )
         finally:
             conn.close()
+        self._record_step_boundary(name)
+
+    def _record_step_boundary(self, name: str) -> None:
+        now_mono = _monotonic()
+        if self._pending is not None:
+            closed = self._close_pending(now_mono)
+            _emit_step_line(closed)
+        self._pending = _PendingStep(
+            ordinal=self._next_ordinal, step_name=name,
+            started_ts=_now_iso(), monotonic_start=now_mono,
+        )
+        self._next_ordinal += 1
+
+    def _close_pending(self, now_mono: float) -> StepTiming:
+        p = self._pending
+        timing = StepTiming(
+            ordinal=p.ordinal, step_name=p.step_name,
+            started_ts=p.started_ts, finished_ts=_now_iso(),
+            duration_ms=int((now_mono - p.monotonic_start) * 1000),  # truncate, not round
+        )
+        self._timings.append(timing)
+        self._pending = None
+        return timing
 
     def status(self, **cols: str) -> None:
         conn = connect(self.db_path)
