@@ -61,6 +61,27 @@
 
 ---
 
+## Arc 4 — Account-equity not reconciling: dashboard balance ≠ live Schwab balance [BUG + design gap]
+
+**Symptom (operator-reported 2026-06-08):** the dashboard balance does not match the actual Schwab account balance, **even with all positions closed** (verified: 0 open trades — 1 `closed` + 15 `reviewed`).
+
+**Investigation (orchestrator, 2026-06-08 — characterized, not fixed):**
+- **What the dashboard shows.** The capital denominator is `resolve_live_capital_denominator_dollars` ([metrics/equity_resolver.py](../swing/metrics/equity_resolver.py)): it returns the **latest `account_equity_snapshots` row with `snapshot_date <= asof_date`** (`LIVE`), else the ~$7500 `capital_floor_constant_dollars` (`PROVISIONAL`). Latest snapshot = **`2027.44`, snapshot_date 2026-06-08, source `schwab_api`** (snapshots run ~daily, $2027–$2087 over the past week).
+- **What the snapshot captures.** `map_account_details_to_equity_snapshot_inputs` ([mappers.py:210](../swing/integrations/schwab/mappers.py)) sets `equity_dollars` ← Schwab **`currentBalances.liquidationValue` (Net Liquidation Value)** — with fallbacks to `currentBalances.equity` then `aggregateBalance.liquidationValue`. It ALSO reads `cashBalance` + `buyingPower` into `SchwabAccountResponse`, but **only NLV is persisted as `equity_dollars`.**
+- **When it fires (answers "when should that fire?").** The equity SNAPSHOT fires (a) **nightly in the pipeline** via `_step_schwab_snapshot` ([runner.py:946](../swing/pipeline/runner.py); production env + a Schwab client), and (b) **on-demand** via `swing schwab fetch --snapshot`. It only *records a point-in-time NLV*; the dashboard then displays the most recent one ≤ asof_date. **There is NO account-equity RECONCILIATION** — nothing compares the displayed equity to the *live* Schwab balance or flags/corrects divergence (the Phase-9/12 reconciliation is TRADE/fill reconciliation, not equity). So the displayed balance is only ever as fresh + as correct as the last snapshot.
+
+**Candidate root causes (the arc decides which — possibly several):**
+1. **Field-semantics mismatch (most likely; the banked "cash-basis vs Net-Liq" ambiguity).** The snapshot persists **NLV**; the operator's "actual balance" may be cash-available / settled-cash / total-account-value, which diverge from `liquidationValue` — especially right after closing positions (unsettled proceeds). This is the long-standing banked item ("`account_equity_snapshots` cash-basis vs net-liq formalization — add a `kind` discriminator"). With 0 positions, NLV *should* ≈ cash, so a persistent gap points at the WRONG field or unsettled-cash handling.
+2. **Staleness — no live reconciliation.** The dashboard shows the last *snapshot*, not the live balance; if the operator closed the final position(s) after the last snapshot (or is comparing to the live Schwab app now), they diverge until the next snapshot fires. There is no divergence alert.
+3. **Resolver date resolution.** `get_latest_snapshot_on_or_before(asof_date)` — if the dashboard's `asof_date` lags (the session-anchor family), it could pick an older snapshot than the freshest one.
+4. **Snapshot timing vs settlement** on the recent closes (NLV at snapshot time included a not-yet-settled amount).
+
+- [ ] **4a — Determine the actual cause.** Compare the displayed `2027.44` (NLV, 06-08) to the operator's live Schwab figure (which field — cash, NLV, total account value?), check the snapshot's source call (`schwab_api:call/757`) payload (cash vs liquidationValue vs buyingPower), and confirm the resolver's asof_date picks the freshest snapshot. Pin which of the 4 causes is operative.
+- [ ] **4b — Decide the intended trigger + whether to add equity reconciliation.** Define when the displayed balance SHOULD update (every pipeline run is current; consider an on-dashboard "refresh balance from Schwab" action) and whether to add an **account-equity reconciliation/divergence check** (flag when the displayed snapshot diverges from a live Schwab fetch beyond a tolerance — the equity analogue of the trade reconciliation). The operator's "the account is not reconciling" maps directly to this gap.
+- [ ] **4c — Cash-basis vs Net-Liq formalization (the banked item, now load-bearing).** Add a `kind` discriminator (or distinct columns) to `account_equity_snapshots` so the displayed value's basis is explicit + matches what the operator expects to see; reconcile the sizing-denominator semantics (the risk floor uses `max($7500, actual)` per `[[project_capital_risk_floor]]`). **Schema change** (a migration) — the only Phase-16 item that likely touches schema.
+
+---
+
 ## Sequencing (operator's call)
 
 - **Arc 1** is the highest-leverage + smallest (1a + 1b alone would have answered the #96 question) — likely a focused executing-with-Codex, possibly folding 1a+1b into one cycle.
