@@ -62,16 +62,23 @@ def _identify_base(sliced: pd.DataFrame) -> _BaseId | None:
     return best
 
 
-def screen_at(bars: pd.DataFrame, asof_date: date) -> PrimaryBaseVerdict:
-    """Minervini Ch.11 primary-base screen, point-in-time at asof_date (no lookahead)."""
-    sliced = slice_to(bars, asof_date)
-    # Criterion 1: history.
+@dataclass(frozen=True)
+class _Partial:
+    fired_1_to_5: bool
+    first_rejecting: str | None
+    base_start_date: date | None = None
+    base_high: float | None = None
+    correction_depth_pct: float | None = None
+    base_duration_bars: int | None = None
+    emergence_close: float | None = None
+
+
+def _eval_1_to_5(sliced: pd.DataFrame) -> _Partial:
     if len(sliced) < MIN_HISTORY_BARS:
-        return PrimaryBaseVerdict(False, "history")
-    # Criterion 2: base identification.
+        return _Partial(False, "history")
     base = _identify_base(sliced)
     if base is None:
-        return PrimaryBaseVerdict(False, "no_base")
+        return _Partial(False, "no_base")
     asof_pos = len(sliced) - 1
     base_duration_bars = asof_pos - base.base_start_pos
     correction_depth_pct = (
@@ -83,11 +90,36 @@ def screen_at(bars: pd.DataFrame, asof_date: date) -> PrimaryBaseVerdict:
         correction_depth_pct=correction_depth_pct,
         base_duration_bars=base_duration_bars,
     )
-    # Criterion 3: duration (in BARS).
     if base_duration_bars < MIN_BASE_BARS:
-        return PrimaryBaseVerdict(False, "duration", **diag)
-    # Criterion 4: graduated correction depth.
+        return _Partial(False, "duration", **diag)
     if correction_depth_pct > depth_cap(base_duration_bars):
-        return PrimaryBaseVerdict(False, "depth", **diag)
-    # Criteria 5-6 land in Task 3. Until then this is incomplete; Task 3 replaces the tail.
-    return PrimaryBaseVerdict(False, "no_emergence", **diag)
+        return _Partial(False, "depth", **diag)
+    closes = sliced["Close"].to_numpy()
+    emergence_close = float(closes[asof_pos])
+    fresh_cross = closes[asof_pos - 1] <= base.base_high < closes[asof_pos]
+    first_cross = closes[base.base_start_pos:asof_pos].max() <= base.base_high
+    if not (fresh_cross and first_cross):
+        return _Partial(False, "no_emergence", **diag)
+    return _Partial(True, None, emergence_close=emergence_close, **diag)
+
+
+def screen_at(bars: pd.DataFrame, asof_date: date) -> PrimaryBaseVerdict:
+    """Minervini Ch.11 primary-base screen, point-in-time at asof_date (no lookahead)."""
+    sliced = slice_to(bars, asof_date)
+    partial = _eval_1_to_5(sliced)
+    diag = dict(
+        base_start_date=partial.base_start_date,
+        base_high=partial.base_high,
+        correction_depth_pct=partial.correction_depth_pct,
+        base_duration_bars=partial.base_duration_bars,
+        emergence_close=partial.emergence_close,
+    )
+    if not partial.fired_1_to_5:
+        return PrimaryBaseVerdict(False, partial.first_rejecting, **diag)
+    # Criterion 6: primary = first base. Replay 1-5 over every prior session; if any earlier
+    # session fires, asof is a LATER base -> not_primary. No lookahead (each replay reads <= s).
+    asof_pos = len(sliced) - 1
+    for s_pos in range(MIN_HISTORY_BARS - 1, asof_pos):
+        if _eval_1_to_5(sliced.iloc[: s_pos + 1]).fired_1_to_5:
+            return PrimaryBaseVerdict(False, "not_primary", **diag)
+    return PrimaryBaseVerdict(True, None, **diag)
