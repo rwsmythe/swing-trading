@@ -1,10 +1,74 @@
-# phase3e-todo Phase-14-close Scrub -- Audit Record (2026-06-02)
+# phase3e-todo Scrub Log -- Audit Record
 
-**What this is:** the durable record of the Phase-14-close scrub of `docs/phase3e-todo.md`
+**What this is:** the durable, cumulative record of the phase-close scrubs of
+`docs/phase3e-todo.md` + `docs/phase3e-todo-archive.md`. One entry per scrub, newest first.
+The repeatable process (operator-requested at each phase close): re-anchor to current HEAD,
+read every open-bearing section, **verify-then-close stragglers against the codebase** (close
+items that shipped without being marked), byte-exact migrate the dated SHIPPED records to the
+archive, rewrite the Standing Open Backlog to a forward-looking shape, preserve any inline
+arc narrative that lacks a dated record, ASCII-clean new content (gotcha #32), verify
+(counts / content-preservation / seam), commit on main. Git-tracked.
+
+---
+
+## Entry 2 -- Phase-15-close scrub (2026-06-08, HEAD `f892199b`)
+
+**Trigger:** operator "Phase 15 has been closed out ... repeat the same process in anticipation
+of commissioning phase 16."
+
+| File | Before | After |
+|---|---|---|
+| `docs/phase3e-todo.md` (live) | 193 lines | 68 lines |
+| `docs/phase3e-todo-archive.md` | 7354 lines | 7508 lines |
+
+**What moved:** all dated records -- the Phase-15 per-arc records `#20`-`#23` + the Phase-14
+`#19` CLOSED record + the `#5` close-out punch-list -- migrated byte-exact to the archive's
+"Appended 2026-06-08 Phase 15-close scrub" section. The pre-scrub Section A had narrated the
+data-integrity arc + its spin-outs (SQLite-lock / fetch-vs-write / daily-mgmt #16 / Issue #3 /
+Gate-4 quote cassette / bad-bar accept-and-document) INLINE with no dated `##` record;
+that 24-line block was preserved verbatim to the archive ("Phase-15 inline-arc narrative" sub-section)
+so the forensic detail stays grep-able.
+
+**Section A rewritten** to a compact Phase-15-CLOSED / Phase-16-ACTIVE pointer + the two
+genuinely-new items banked during Phase 15 (see below). Sections B-E carried forward unchanged
+from the 2026-06-02 scrub.
+
+**Straggler sweep (CLOSED -- Phase 15 shipped these):** schwabdev v3+Fernet (`#20`, schema
+re-anchor `9d05a8f`, the FIRST L2-LOCK re-anchor); B-7 `failure_mode` (`#21`, migration `0024`,
+schema v24, `FAILURE_MODES` frozenset present); PGT small-multiples redesign + reviews nav-date
+(`#22`); pattern-observation pool widening (`#23`); the whole data-integrity arc + spin-outs
+(ext-hours `needExtendedHoursData=False` @marketdata.py:390; busy_timeout=30000 @db.py:54;
+fetch-vs-write reorder; #16 fetch-hoist; Issue #3; Gate-4 cassette `56e14988`, Schwab LIVE for
+quotes). All verified against the codebase at `f892199b`.
+
+**Surviving Section-A open items (the genuinely-new bankings):**
+- **Reconciliation trade-field allowlist** -- `validate_trade_correction` gates only
+  `current_stop`/`state`; a tier-3 override can mutate any `trades` column. Own future arc; low priority.
+- **Reconciliation/legacy `fill_datetime` normalization gap** -- correction-path fills not
+  re-normalized; defended by Issue-#3 test E11, not fixed. `swing/trades/` data-hygiene candidate.
+
+**Where the rest went:** the active phase moved to its own tracker
+[`docs/phase16-todo.md`](phase16-todo.md) (Arcs 1-4; opened 2026-06-08); the applied-research
+set (B-1..B-8 + the SHIPPED+CLOSED Minervini recall + banked VCP calibration) lives in
+`research/phase-0-tasks.md`. Neither is duplicated into phase3e-todo.md -- Section A just points.
+
+**Notes for the next scrub:**
+- Sections B-E are now 2 scrubs stale (unchanged since 2026-06-02) -- at the next pass, spot-check
+  a few against the codebase in case Phase 16 incidentally closed any (e.g. the logging overhaul
+  could touch the ruff-baseline doc-staleness item, or the `cash_movements` work could touch the
+  account-equity formalization).
+- Archive is 7508 lines. The "Archive-split trigger" reconsiders hierarchical decomposition at
+  ~80k tokens/file -- getting closer; evaluate at the Phase-16 close.
+
+---
+
+## Entry 1 -- Phase-14-close scrub (2026-06-02, HEAD `420b0ff`)
+
+**What this was:** the durable record of the Phase-14-close scrub of `docs/phase3e-todo.md`
 + `docs/phase3e-todo-archive.md`, performed 2026-06-02 at HEAD `420b0ff` (operator-requested,
-"very thorough scrub of both the live file and the archive"). Supersedes the earlier
+"very thorough scrub of both the live file and the archive"). Superseded the earlier
 `phase3e-todo-scrub-inventory-20260530.md` (an untracked pre-scrub open-list that was swept
-in the Phase-14-close branch/scratch cleanup). This file is git-tracked.
+in the Phase-14-close branch/scratch cleanup). Git-tracked.
 
 ---
 
