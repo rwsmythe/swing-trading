@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from research.harness.shadow_expectancy.bracket import price_stop_fill
+from research.harness.shadow_expectancy.bracket import ma_exit_fill, price_stop_fill
 from research.harness.shadow_expectancy.constants import BRACKET_ARMS
 from research.harness.shadow_expectancy.io import Bar
 from swing.trades.derived_metrics import (
@@ -80,6 +80,18 @@ def _running_r(entry_fill, rps, price) -> float:
     return (price - entry_fill) / rps  # mirrors equity.r_so_far formula
 
 
+def _sma(closes: list[float], period: int) -> float | None:
+    if len(closes) < period:
+        return None
+    return sum(closes[-period:]) / period
+
+
+def _trail_ma_period(running_r: float, params: SimParams) -> int:
+    """Maturity-staged 10/20 proxy (D12): >=+2R -> 10MA else 20MA."""
+    return params.ma_fast_period if running_r >= params.maturity_fast_ma_r \
+        else params.ma_slow_period
+
+
 def simulate(*, pivot, entry_bar: Bar, forward_bars, params: SimParams):
     # C1 / spec 5.2 / D6: mechanical stop = entry_bar.low (derived, not candidate-supplied).
     entry_fill = _entry_fill(pivot, entry_bar)
@@ -126,8 +138,44 @@ def simulate(*, pivot, entry_bar: Bar, forward_bars, params: SimParams):
                              holding_sessions=session_index, legs=legs,
                              terminal_fill=dict(terminal_legs_by_arm))  # m3: both arms
 
+        # 5.0 step 2a: MA-trail close-below (evaluated BEFORE the partial; terminates EOD).
+        closes_so_far = [b.close for b in forward_bars[: i + 1]]
+        running_r = _running_r(entry_fill, rps, bar.close)
+        period = _trail_ma_period(running_r, params)
+        sma = _sma(closes_so_far, period)
+        if sma is not None and bar.close < sma:
+            # schedule a full exit at NEXT session open (5.6); Codex M2: if NO next session
+            # exists (i+1 >= horizon), exit at the SIGNAL close instead -- this is a genuine
+            # MA exit, NOT a censored open trade.
+            if i + 1 < horizon:
+                nxt = forward_bars[i + 1]
+                next_open = nxt.open
+                exit_session = nxt.session
+                holding = i + 2
+            else:
+                next_open = bar.close          # M2 edge: no next open -> fill at signal close
+                exit_session = bar.session
+                holding = i + 1
+            realized = {}
+            terminal_by_arm = {}
+            for arm in BRACKET_ARMS:
+                fill = ma_exit_fill(arm, signal_close=bar.close, next_open=next_open)
+                terminal_by_arm[arm] = fill
+                priced = [(q, p) for (_a, q, p, _s) in closed_legs] + \
+                         [(shares_remaining, fill)]
+                realized[arm] = _r_for_legs(entry_fill, rps, shares, priced)
+            legs = [Leg(a, q, p, s) for (a, q, p, s) in closed_legs]
+            legs.append(Leg("exit", shares_remaining,
+                            terminal_by_arm["realistic"], exit_session))
+            return SimResult(entry_fill=entry_fill, initial_stop=initial_stop,
+                             risk_per_share=rps, entry_bar_ambiguous=ambiguous,
+                             degenerate=False, exit_reason="ma_close_below",
+                             open_at_horizon=False, realized_r=realized,
+                             holding_sessions=holding, legs=legs,
+                             terminal_fill=dict(terminal_by_arm))  # m3: both arms
+
         # 5.0 step 2: EOD signals on bar.close, fixed order.
-        # (a) MA-trail close-below lands in Task 9; (b) Day-N partial; (c) breakeven.
+        # (b) Day-N partial; (c) breakeven.
         if (session_index == params.partial_session_n
                 and bar.close > entry_fill and shares_remaining == params.initial_shares):
             qty = params.initial_shares * params.partial_pct
@@ -138,7 +186,8 @@ def simulate(*, pivot, entry_bar: Bar, forward_bars, params: SimParams):
                 and current_stop < entry_fill):
             current_stop = entry_fill
 
-    # horizon reached: open-at-horizon MTM placeholder (Task 9 computes 4 scenarios).
+    # horizon reached: open-at-horizon. Compute four censoring scenarios over the OPEN
+    # remainder (D10 / Codex M3).
     last_close = forward_bars[horizon - 1].close if horizon else entry_fill
     realized = {}
     for arm in BRACKET_ARMS:
@@ -147,7 +196,46 @@ def simulate(*, pivot, entry_bar: Bar, forward_bars, params: SimParams):
     legs = [Leg(a, q, p, s) for (a, q, p, s) in closed_legs]
     legs.append(Leg("mtm", shares_remaining, last_close,
                     forward_bars[horizon - 1].session if horizon else entry_bar.session))
+
+    def _scenarios():
+        closed_priced = [(q, p) for (_a, q, p, _s) in closed_legs]
+        # closed_only (PER-TRADE grain; m3): the realized R from THIS trade's already-closed
+        # legs only (e.g. a Day-3 partial), dropping the still-open remainder. NOTE this is a
+        # DIFFERENT grain from the scorecard's aggregate `closed_only` SCENARIO (Task 10),
+        # which EXCLUDES a still-open trade entirely from the closed-only mean. Here we report
+        # what this one open trade has realized so far; the scorecard chooses NOT to fold that
+        # partial realization into its headline closed-only population. Same label, two grains
+        # -- documented in both tasks (m3).
+        closed_only = (_r_for_legs(entry_fill, rps, shares, closed_priced)
+                       if closed_priced else 0.0)
+        mtm = _r_for_legs(entry_fill, rps, shares,
+                          closed_priced + [(shares_remaining, last_close)])
+        # forced-exit at the next available open AFTER the horizon (5.7 / M3). If the log has
+        # no post-horizon bar, collapse to MTM (last close) and annotate.
+        if len(forward_bars) > horizon:
+            forced_price = forward_bars[horizon].open
+            collapsed = False
+        else:
+            forced_price = last_close
+            collapsed = True
+        forced = _r_for_legs(entry_fill, rps, shares,
+                             closed_priced + [(shares_remaining, forced_price)])
+        stop_adv = _r_for_legs(entry_fill, rps, shares,
+                               closed_priced + [(shares_remaining, current_stop)])
+
+        def arms(v):  # realistic == favorable for an open trade (5.8)
+            return {"realistic": v, "favorable_reprice": v}
+        return {
+            "closed_only": arms(closed_only),
+            "mtm_at_horizon": arms(mtm),
+            "forced_exit_at_horizon_open": arms(forced),
+            "stop_level_adverse": arms(stop_adv),
+        }, collapsed
+    scenarios, forced_collapsed = _scenarios()
+
     return SimResult(entry_fill=entry_fill, initial_stop=initial_stop, risk_per_share=rps,
                      entry_bar_ambiguous=ambiguous, degenerate=False,
                      exit_reason="horizon_mtm", open_at_horizon=True,
-                     realized_r=realized, holding_sessions=horizon, legs=legs)
+                     realized_r=realized, holding_sessions=horizon, legs=legs,
+                     censoring_scenarios=scenarios,
+                     forced_exit_collapsed_to_mtm=forced_collapsed)

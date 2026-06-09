@@ -127,3 +127,77 @@ def test_multi_leg_r_uses_fixed_denominator_golden_1p6R():
     assert math.isclose(total, 1.6)
     per_leg_buggy = (11.2 - 10.0) * 50 / (1.0 * 50) + (12.0 - 10.0) * 50 / (1.0 * 50)
     assert math.isclose(per_leg_buggy, 3.2) and per_leg_buggy != total
+
+
+def test_golden_c_partial_then_ma_close_below_trail_winner():
+    # Codex M1: construct so ONLY ma_close_below can fire. entry_fill 10.0, mechanical stop
+    # = entry_bar.low = 9.0 (rps 1.0); after the s1 +1R close the BE stop raises to 10.0, and
+    # EVERY post-entry low is kept >= 10.5 (> the BE stop) so no price-stop can pre-empt. A
+    # steadily-rising series sits ABOVE its own SMA, so the trail only fires on the engineered
+    # drop bar (i=20), which closes BELOW the SMA while its LOW (10.5) stays above the stop.
+    # i=21 exists as the next bar so the realistic MA fill is its open (next-session open).
+    from datetime import date, timedelta
+    entry_bar = Bar("2026-06-01", 10.0, 10.4, 9.0, 10.5)   # entry_fill 10.0, stop 9.0
+    closes = [10.6 + 0.1 * i for i in range(22)]           # steady rise, all closes >= 10.6
+    d = date(2026, 6, 2)
+    fwd = [Bar((d + timedelta(days=i)).isoformat(), c - 0.05, c + 0.2, c - 0.1, c)
+           for i, c in enumerate(closes)]                  # lows = c - 0.1 >= 10.5 > stop 10.0
+    # engineer the MA-exit on bar i=20 (NOT the last bar): close drops below the trailing MA
+    # but the low stays at 10.6 (> BE stop 10.0). i=21 remains as the next bar (next-open fill).
+    drop = fwd[20]
+    fwd[20] = Bar(drop.session, drop.open, drop.high, 10.6, 11.0)  # close 11.0 < SMA; low 10.6
+    res = simulate(pivot=10.0, entry_bar=entry_bar, forward_bars=fwd,
+                   params=_params(horizon_sessions=22))
+    assert res.exit_reason == "ma_close_below"            # EXACTLY -- no stop pre-empts (M1)
+    assert any(leg.action == "partial" for leg in res.legs)   # multi-leg: partial at s3
+    # realistic terminal fill is the NEXT bar's open (5.6); favorable >= realistic.
+    assert res.realized_r["favorable_reprice"] >= res.realized_r["realistic"]
+
+
+def test_ma_close_below_at_horizon_edge_exits_at_signal_close():
+    # Codex M2: the MA-close-below fires on the LAST available bar (no next session). The exit
+    # must fill at the SIGNAL close (realistic) / favorable per 5.6 -- NOT silently censor.
+    from datetime import date, timedelta
+    entry_bar = Bar("2026-06-01", 10.0, 10.4, 9.0, 10.5)
+    closes = [10.6 + 0.1 * i for i in range(21)]
+    d = date(2026, 6, 2)
+    fwd = [Bar((d + timedelta(days=i)).isoformat(), c - 0.05, c + 0.2, c - 0.1, c)
+           for i, c in enumerate(closes)]
+    drop = fwd[-1]                                          # the LAST bar fires the trail
+    fwd[-1] = Bar(drop.session, drop.open, drop.high, 10.6, 11.0)
+    res = simulate(pivot=10.0, entry_bar=entry_bar, forward_bars=fwd,
+                   params=_params(horizon_sessions=21))
+    assert res.exit_reason == "ma_close_below"             # NOT horizon_mtm / censored
+    assert res.open_at_horizon is False
+    # signal-close fill on the edge: realistic == favorable (both at the signal close, no
+    # next open to gap) -- 11.0 is the terminal leg price.
+    term = [leg for leg in res.legs if leg.action == "exit"][-1]
+    assert term.price == 11.0
+
+
+def test_golden_d_horizon_censored_runner_four_scenarios():
+    # A monotonic runner that never stops/MA-exits within a SHORT horizon -> open_at_horizon.
+    from datetime import date, timedelta
+    entry_bar = Bar("2026-06-01", 10.0, 10.2, 9.0, 10.1)   # stop = low = 9.0
+    d = date(2026, 6, 2)
+    fwd = [Bar((d + timedelta(days=i)).isoformat(), 10.1 + i, 10.3 + i, 10.0 + i, 10.2 + i)
+           for i in range(5)]
+    res = simulate(pivot=10.0, entry_bar=entry_bar, forward_bars=fwd,
+                   params=_params(horizon_sessions=5))
+    assert res.open_at_horizon is True
+    sc = res.censoring_scenarios
+    assert set(sc) == {"closed_only", "mtm_at_horizon",
+                       "forced_exit_at_horizon_open", "stop_level_adverse"}
+    # This runner takes the s3 50% partial at close 12.2 (= +1.1R-equiv on the 50-share leg,
+    # = (12.2-10.0)*50/(1.0*100) = 1.1R). closed_only counts ONLY that realized partial leg
+    # (the still-open 50-share remainder is EXCLUDED): closed_only == 1.1R.
+    assert math.isclose(sc["closed_only"]["realistic"], 1.1)
+    # realistic == favorable for an open trade under MTM/forced/stop-adverse (5.8).
+    for scenario in ("mtm_at_horizon", "forced_exit_at_horizon_open", "stop_level_adverse"):
+        assert sc[scenario]["realistic"] == sc[scenario]["favorable_reprice"]
+    # stop_level_adverse marks the open remainder at the current (breakeven-raised) stop.
+    assert sc["stop_level_adverse"]["realistic"] <= sc["mtm_at_horizon"]["realistic"]
+    # this log has NO post-horizon bar -> forced-exit collapses to MTM (5.7 / M3), annotated.
+    assert res.forced_exit_collapsed_to_mtm is True
+    assert math.isclose(sc["forced_exit_at_horizon_open"]["realistic"],
+                        sc["mtm_at_horizon"]["realistic"])
