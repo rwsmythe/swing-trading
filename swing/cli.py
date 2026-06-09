@@ -5062,6 +5062,43 @@ def diagnose_pattern_cohort_detect(
     click.echo(f"Manifest:    {manifest_json}")
 
 
+@diagnose_group.command("shadow-expectancy")
+@click.option("--db", "db_path", required=True, type=click.Path(path_type=Path))
+@click.option("--output-dir", "output_dir", type=click.Path(path_type=Path),
+              default=Path("exports/research"), show_default=True)
+@click.option("--source", type=str, default="pipeline", show_default=True,
+              help="temporal-log detection source filter")
+@click.option("--partial-session-n", type=int, default=3, show_default=True)
+@click.option("--breakeven-r", type=float, default=1.0, show_default=True)
+@click.option("--horizon-sessions", type=int, default=126, show_default=True)
+@click.option("--only", type=str, default=None, help="Comma-separated ticker filter.")
+def diagnose_shadow_expectancy(db_path, output_dir, source, partial_session_n,
+                               breakeven_r, horizon_sessions, only):
+    """Mechanical shadow-expectancy engine over the frozen v22 temporal log.
+
+    Read-only: forward-walks every emitted signal through one fixed ruleset to a
+    realized R-multiple, accumulating per-hypothesis expectancy evidence. Writes a
+    per-run artifact (funnel + four-scenario scorecard + ledger + manifest). NOT an
+    operator trading surface; never co-mingled with live hand-traded counts."""
+    _validate_diagnose_db_path(db_path)
+    from research.harness.shadow_expectancy.run import run_harness  # deferred import
+
+    only_tuple = tuple(s.strip() for s in only.split(",") if s.strip()) if only else None
+    try:
+        results, per_session, summary, manifest = run_harness(
+            db_path=db_path, output_dir=output_dir, source=source,
+            partial_session_n=partial_session_n, breakeven_r=breakeven_r,
+            horizon_sessions=horizon_sessions, only=only_tuple)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    except sqlite3.OperationalError as exc:
+        raise click.ClickException(f"Database error reading {db_path}: {exc}") from exc
+    click.echo(f"results.csv:     {results}")
+    click.echo(f"per_session.csv: {per_session}")
+    click.echo(f"summary.md:      {summary}")
+    click.echo(f"manifest.json:   {manifest}")
+
+
 @diagnose_group.command("double-bottom-w-backtest")
 @click.option(
     "--results-csv", "results_csv", type=click.Path(path_type=Path), default=None,
