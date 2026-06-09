@@ -3218,6 +3218,21 @@ def pipeline_run_cmd(ctx, manual):
     # screen_query) propagate when the web layer spawns this CLI subprocess.
     # Discriminating test for the propagation contract lives in Task 7.
     cfg = apply_overrides(ctx.obj["config"])
+    # Pipeline observability (Arc-1): make this subprocess self-contained.
+    # Belt A FIRST (process-global factory, before any handler attach or emit),
+    # then Belt B (RedactingFormatter on the pipeline.log handler). Works for
+    # both the web-spawned (DEVNULL parent) and direct `swing pipeline run`.
+    from swing.integrations.schwab.client import (
+        RedactingFormatter,
+        ensure_schwab_log_redaction_factory_installed,
+    )
+    from swing.logging_config import DEFAULT_LOG_FORMAT, configure_logging
+
+    ensure_schwab_log_redaction_factory_installed()
+    configure_logging(
+        cfg.paths.logs_dir, surface="pipeline",
+        formatter=RedactingFormatter(DEFAULT_LOG_FORMAT),
+    )
     result = run_pipeline(cfg=cfg, trigger="manual" if manual else "scheduled")
     click.echo(f"Run id {result.run_id}: state={result.state}")
     if result.error_message:

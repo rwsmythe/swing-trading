@@ -131,6 +131,41 @@ def _make_redactor_from_global() -> Callable[[str], str]:
     return redact
 
 
+def _make_full_redactor_from_global() -> Callable[[str], str]:
+    """Like _make_redactor_from_global but WITHOUT the 500-char excerpt -- for
+    full log lines (Belt B / RedactingFormatter). Reads _GLOBAL_KNOWN_SECRETS at
+    each call so late-registered/rotated secrets are still redacted (R2-Major-1)."""
+    def redact(message: str) -> str:
+        if not message:
+            return message
+        with _GLOBAL_FILTER_LOCK:
+            secrets = list(_GLOBAL_KNOWN_SECRETS)
+        secrets.sort(key=len, reverse=True)  # longest-first; substring safety
+        out = message
+        for s in secrets:
+            out = out.replace(s, "<REDACTED>")
+        out = re.sub(r"[a-fA-F0-9]{32,}", "<REDACTED>", out)
+        out = re.sub(r"[A-Za-z0-9+/=]{24,}", "<REDACTED>", out)
+        return out
+    return redact
+
+
+class RedactingFormatter(logging.Formatter):
+    """A logging.Formatter that redacts the FULLY RENDERED line (no truncation).
+
+    Belt B for pipeline.log: super().format(record) renders message +
+    interpolated args + traceback + stack-info into one string; the live full-line
+    content-redactor then scrubs it regardless of logger name. The redactor is
+    rebuilt from the global secret set on EVERY call (R2-Major-1), so a secret
+    registered/rotated after handler attach is still redacted.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        rendered = super().format(record)
+        redactor = _make_full_redactor_from_global()
+        return redactor(rendered)
+
+
 def _redact_error_message_for_audit(message: str) -> str:
     """Layer-1-only redactor for code paths without runtime-context registry.
 
