@@ -11,6 +11,7 @@ from research.harness.shadow_expectancy import constants as c
 from research.harness.shadow_expectancy import io, output
 from research.harness.shadow_expectancy.attribution import attribute_hypotheses
 from research.harness.shadow_expectancy.collapse import collapse_detections
+from research.harness.shadow_expectancy.exceptions import ShadowExpectancyError
 from research.harness.shadow_expectancy.funnel import (
     DetectionLevel,
     SignalOutcome,
@@ -59,6 +60,11 @@ def run_harness(*, db_path, output_dir, source=c.SOURCE,
     conn = io.open_ro(db_path)
     registry = list_hypotheses(conn, status_filter="active")
     detections = io.list_pipeline_detections(conn, source=source)
+    # Codex R1-M2: apply the --only ticker filter UP FRONT so total_detections,
+    # unique_signals, and collapsed_duplicate all derive from the same filtered set
+    # (the detection-level funnel must reconcile under --only too).
+    if only:
+        detections = [d for d in detections if d.ticker in only]
 
     # group detections by (pipeline_run_id, ticker).
     groups: dict[tuple, list] = defaultdict(list)
@@ -85,8 +91,8 @@ def run_harness(*, db_path, output_dir, source=c.SOURCE,
 
     for (pipeline_run_id, ticker), dets in sorted(groups.items(),
                                                   key=lambda kv: (kv[0][0] or -1, kv[0][1])):
-        if only and ticker not in only:
-            continue
+        # (the --only filter is applied to `detections` up front; every remaining group
+        # is a real unique signal.)
         unique_signals += 1
         candidate = io.resolve_candidate(conn, pipeline_run_id=pipeline_run_id, ticker=ticker)
         # build detection views (chain + trigger session) for collapse.
@@ -101,7 +107,14 @@ def run_harness(*, db_path, output_dir, source=c.SOURCE,
                                   entry.observation_date if entry else None))
         cand_pivot = candidate.pivot if candidate is not None else None
         res = collapse_detections(views, candidate_pivot=cand_pivot)
-        collapsed_duplicate += len(res.collapsed_ids)
+        # Codex R1-M3: every (pipeline_run_id, ticker) group collapses its detections to ONE
+        # unique signal, so it contributes len(dets) - 1 duplicate detections REGARDLESS of
+        # whether the group is excluded. On the success path this equals len(res.collapsed_ids);
+        # on an exclusion path (no_candidate_join / no_canonical_detection / inconsistent_*)
+        # collapse returns collapsed_ids=[], so counting len(dets) - 1 here keeps the
+        # detection-level reconciliation (total == unique + collapsed) exact for excluded
+        # multi-detection groups too.
+        collapsed_duplicate += len(dets) - 1
         if res.exclusion_reason is not None:
             # JOIN/COLLAPSE-level (pre-attribution) state -> the `unattributed` bucket as a
             # per-reason counter (C-review M1/M4): no_candidate_join / no_canonical_detection
@@ -140,6 +153,15 @@ def run_harness(*, db_path, output_dir, source=c.SOURCE,
             for h in hyps:
                 signal_outcomes.append(
                     SignalOutcome(h, "never_triggered", "never_triggered"))
+                # Codex R1-M1: a never-triggered ATTRIBUTED signal is still a SIGNAL for that
+                # hypothesis -- it MUST contribute to the scorecard's signal denominator
+                # (trigger rate over len(group); per-signal expectancy counts it as 0R; D11).
+                # Emit a non-triggered ShadowTrade so the scorecard population matches the
+                # funnel's per-hypothesis terminal-status counts (which already count it).
+                shadow_trades.append(ShadowTrade(
+                    hypothesis=h, triggered=False, open_at_horizon=False,
+                    realized_r=None, entry_bar_ambiguous=False,
+                    holding_sessions=0, censoring_scenarios=None))
             continue
         entry_bar = io.parse_bar(entry.ohlc_today_json, session=entry.observation_date)
         # FULL forward chain (NOT pre-truncated) so the simulator can read the post-horizon
@@ -200,6 +222,21 @@ def run_harness(*, db_path, output_dir, source=c.SOURCE,
     funnel = build_funnel(
         DetectionLevel(total_detections, collapsed_duplicate, unique_signals),
         signal_outcomes=signal_outcomes)
+    # Codex R1-M4: enforce the reconciliation invariant at the PRODUCER (run_harness emits
+    # exactly one terminal SignalOutcome per unique signal). build_funnel itself stays a pure
+    # structural aggregator (it is legitimately called with partial detection-level data in the
+    # unit tests), so the invariant is checked HERE, against the harness's own emitted counts,
+    # before any artifact is written.
+    _unattr_total = sum(funnel["unattributed"].values())
+    _per_hyp_total = sum(
+        card["closed"] + card["open_at_horizon"] + card["never_triggered"]
+        + sum(card["excluded"].values())
+        for card in funnel["per_hypothesis"].values())
+    if _unattr_total + _per_hyp_total != unique_signals:
+        raise ShadowExpectancyError(
+            "funnel reconciliation invariant violated: "
+            f"unattributed({_unattr_total}) + per_hypothesis_terminals({_per_hyp_total}) "
+            f"!= unique_signals({unique_signals})")
     scorecard = build_hypothesis_scorecard(
         shadow_trades, sample_floor_mean=c.SAMPLE_FLOOR_MEAN,
         sample_floor_rate=c.SAMPLE_FLOOR_RATE, profit_factor_floor=c.PROFIT_FACTOR_FLOOR)
