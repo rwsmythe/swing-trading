@@ -76,47 +76,78 @@ def _r_for_legs(entry_fill, rps, initial_shares, legs_priced) -> float:
                       quantity=initial_shares)
 
 
+def _running_r(entry_fill, rps, price) -> float:
+    return (price - entry_fill) / rps  # mirrors equity.r_so_far formula
+
+
 def simulate(*, pivot, entry_bar: Bar, forward_bars, params: SimParams):
-    # C1 / spec 5.2 / D6: the MECHANICAL initial stop is the entry bar's low-of-day,
-    # derived internally -- NOT passed from the candidate. risk_per_share = entry_fill
-    # - entry_bar.low; degenerate gate = entry_fill <= entry_bar.low.
+    # C1 / spec 5.2 / D6: mechanical stop = entry_bar.low (derived, not candidate-supplied).
     entry_fill = _entry_fill(pivot, entry_bar)
     initial_stop = entry_bar.low
     rps = initial_risk_per_share(entry_price=entry_fill, initial_stop=initial_stop)
     ambiguous = entry_bar.low < entry_fill
-    if entry_fill <= initial_stop:  # spec 5.2 / D6 -> non-positive denominator
+    if entry_fill <= initial_stop:
         return SimResult(entry_fill=entry_fill, initial_stop=initial_stop,
                          risk_per_share=rps, entry_bar_ambiguous=ambiguous,
                          degenerate=True, exit_reason="degenerate_risk",
                          open_at_horizon=False, realized_r=None)
+
     current_stop = initial_stop
     shares = params.initial_shares
+    shares_remaining = shares
     horizon = min(params.horizon_sessions, len(forward_bars))
-    # Core (Task 7): stop test only. Partial/breakeven/MA land in Tasks 8-9.
+    # legs carry an ARM-INDEPENDENT price for partials (a close, identical across arms)
+    # and an ARM-DEPENDENT price only for the terminal stop/MA exit (computed at exit).
+    closed_legs: list[tuple[str, float, float, str]] = []  # (action, qty, price, session)
+
     for i in range(horizon):
         bar = forward_bars[i]
-        # 5.0 precedence step 1: intrabar price-level stop test on prior close stop.
+        session_index = i + 1  # 1-based sessions after entry
+
+        # 5.0 step 1: intrabar price-level stop on the PRIOR session's close stop.
         if bar.low <= current_stop:
+            exit_reason = "breakeven_stop" if current_stop >= entry_fill else "initial_stop"
             realized = {}
-            terminal_by_arm = {}
+            terminal_legs_by_arm = {}
             for arm in BRACKET_ARMS:
                 fill = price_stop_fill(arm, stop=current_stop, bar_open=bar.open)
-                terminal_by_arm[arm] = fill
-                realized[arm] = _r_for_legs(entry_fill, rps, shares, [(shares, fill)])
+                priced = [(q, p) for (_a, q, p, _s) in closed_legs] + \
+                         [(shares_remaining, fill)]
+                # FIXED denominator: rps * initial_shares (C2), NOT per-leg.
+                realized[arm] = _r_for_legs(entry_fill, rps, shares, priced)
+                terminal_legs_by_arm[arm] = fill
+            legs = [Leg(a, q, p, s) for (a, q, p, s) in closed_legs]
+            legs.append(Leg("exit", shares_remaining,
+                            terminal_legs_by_arm["realistic"], bar.session))
             return SimResult(entry_fill=entry_fill, initial_stop=initial_stop,
                              risk_per_share=rps, entry_bar_ambiguous=ambiguous,
-                             degenerate=False, exit_reason="initial_stop",
+                             degenerate=False, exit_reason=exit_reason,
                              open_at_horizon=False, realized_r=realized,
-                             holding_sessions=i + 1,
-                             legs=[Leg("exit", shares, terminal_by_arm["realistic"],
-                                       bar.session)],
-                             terminal_fill=dict(terminal_by_arm))
-    # Reached horizon with no exit -> open-at-horizon (scenarios computed in scorecard;
-    # Task 9 fills the four censoring numbers). Placeholder MTM for the core task.
+                             holding_sessions=session_index, legs=legs,
+                             terminal_fill=dict(terminal_legs_by_arm))  # m3: both arms
+
+        # 5.0 step 2: EOD signals on bar.close, fixed order.
+        # (a) MA-trail close-below lands in Task 9; (b) Day-N partial; (c) breakeven.
+        if (session_index == params.partial_session_n
+                and bar.close > entry_fill and shares_remaining == params.initial_shares):
+            qty = params.initial_shares * params.partial_pct
+            closed_legs.append(("partial", qty, bar.close, bar.session))
+            shares_remaining -= qty
+        # (c) breakeven raise for NEXT session (5.4): once r_so_far >= trigger and stop<entry.
+        if (_running_r(entry_fill, rps, bar.close) >= params.breakeven_r_trigger
+                and current_stop < entry_fill):
+            current_stop = entry_fill
+
+    # horizon reached: open-at-horizon MTM placeholder (Task 9 computes 4 scenarios).
     last_close = forward_bars[horizon - 1].close if horizon else entry_fill
-    realized = {arm: _r_for_legs(entry_fill, rps, shares, [(shares, last_close)])
-                for arm in BRACKET_ARMS}
+    realized = {}
+    for arm in BRACKET_ARMS:
+        priced = [(q, p) for (_a, q, p, _s) in closed_legs] + [(shares_remaining, last_close)]
+        realized[arm] = _r_for_legs(entry_fill, rps, shares, priced)
+    legs = [Leg(a, q, p, s) for (a, q, p, s) in closed_legs]
+    legs.append(Leg("mtm", shares_remaining, last_close,
+                    forward_bars[horizon - 1].session if horizon else entry_bar.session))
     return SimResult(entry_fill=entry_fill, initial_stop=initial_stop, risk_per_share=rps,
                      entry_bar_ambiguous=ambiguous, degenerate=False,
                      exit_reason="horizon_mtm", open_at_horizon=True,
-                     realized_r=realized, holding_sessions=horizon)
+                     realized_r=realized, holding_sessions=horizon, legs=legs)
