@@ -107,6 +107,14 @@ exports/research/minervini-exemplar-recall-*/*
 !exports/research/minervini-exemplar-recall-*/results.csv
 !exports/research/minervini-exemplar-recall-*/per_session.csv
 
+# Minervini primary-base-recall harness outputs: keep the small summary/manifest/results.
+!exports/research/primary-base-recall-*
+exports/research/primary-base-recall-*/*
+!exports/research/primary-base-recall-*/summary.md
+!exports/research/primary-base-recall-*/manifest.json
+!exports/research/primary-base-recall-*/results.csv
+!exports/research/primary-base-recall-*/per_session.csv
+
 # Broker statements (personal financial data)
 thinkorswim/
 
