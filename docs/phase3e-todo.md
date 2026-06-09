@@ -14,7 +14,7 @@
 
 > The genuinely-open forward work, consolidated from the pre-scrub scattered sections. Each item is terse; the cited archive section (grep `docs/phase3e-todo-archive.md`) holds the full original entry. Nothing here is a commitment -- it is a trackable list. **Verified at scrub time:** the close-out straggler sweep CLOSED several long-standing items that had shipped without being marked -- `warnings_json` silent-skip visibility (SB2 FB-N6, `runner.py:1541`), sector/industry tamper hardening (Phase 9, `trades.py` cached_sector + `sector_tamper`), `_bulz_*`->`_rr_*` rename (A-4), 3e.9 market-weather chart, cleanup-script `-DeregisterFirst`, pytest-xdist `-n auto`, the E501 ruff residual (now `ruff check swing/` = "All checks passed"), and the trade-exit "Phase 7 will auto-derive" promise (now real display-only auto-derivation). Those are NOT listed below.
 
-### A. Phase 15 (IN PROGRESS -- first arc SHIPPED 2026-06-03) -- the headline forward arc
+### A. Phase 15 -- CLOSED 2026-06-08 (all arcs shipped; data-integrity arc fully closed, Gate 4 passed, Schwab live for quotes). **PHASE 16 (Observability & Logging) is now the active phase -- live todo: [`docs/phase16-todo.md`](phase16-todo.md); handoff: [`docs/orchestrator-handoff-2026-06-08-phase16.md`](orchestrator-handoff-2026-06-08-phase16.md).** The per-arc Phase-15 records below + `#20`-`#23` are the canonical history.
 
 Full enumeration in the `#19` PHASE 14 CLOSED record + the `#5` punch-list below. Summary:
 
