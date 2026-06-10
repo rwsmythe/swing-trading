@@ -441,3 +441,79 @@ def test_warm_all_nan_ticker_lands_in_fallback_archive_unchanged(tmp_path, monke
     assert (tmp_path / "GAP1.parquet").read_bytes() == before
     assert (tmp_path / "GAP1.meta.json").read_bytes() == before_meta
     mod._full_refresh_stagger_enabled.cache_clear()
+
+
+def test_warm_on_off_archive_parity_including_deep_gap(tmp_path, monkeypatch):
+    """Warm-ON archives are data-content-identical (value-level assert_frame_equal)
+    to serial-path archives over the same fixtures. Discriminating: a deep-gap
+    ticker stays INCREMENTAL (no meta, old bar retained) — a promotion bug
+    (rejected R2-Major-1) would diverge meta + drop the old bar."""
+    from datetime import timedelta
+    import json
+
+    FIXED = date(2026, 6, 10)
+    monkeypatch.setattr(mod, "_last_completed_session_today", lambda: FIXED)
+    monkeypatch.setattr(mod, "_load_archive_config_for_stagger", lambda: False)
+    mod._full_refresh_stagger_enabled.cache_clear()
+
+    warm_dir = tmp_path / "warm"
+    serial_dir = tmp_path / "serial"
+    warm_dir.mkdir(); serial_dir.mkdir()
+
+    def seed(d):
+        # DEEP: deep gap (latest 200d ago, full refresh only 2d ago -> NOT full-refresh-due).
+        deep = pd.DataFrame(
+            {"Open": [9.0], "High": [9.0], "Low": [9.0], "Close": [9.0], "Volume": [99]},
+            index=pd.to_datetime([FIXED - timedelta(days=200)]),
+        )
+        deep.to_parquet(d / "DEEP.parquet")
+        (d / "DEEP.meta.json").write_text(
+            json.dumps({"last_full_refresh_date": (FIXED - timedelta(days=2)).isoformat()})
+        )
+    seed(warm_dir); seed(serial_dir)
+
+    def fake_download(arg, **kwargs):
+        # Codex R1 Major #1: the two paths call yf.download with DIFFERENT shapes.
+        #   - WARM: list input  -> ticker-major group_by='ticker' MultiIndex batch.
+        #   - SERIAL: str input -> flat single-ticker frame (the _yf_download_window
+        #     shape that _squeeze_multiindex + the OHLCV select consume).
+        # Both deliver the SAME DEEP bar at FIXED (Close 100, Volume 1000) so the
+        # merged archives are value-identical.
+        if isinstance(arg, str):
+            return pd.DataFrame(
+                {"Open": [100.0], "High": [100.0], "Low": [100.0], "Close": [100.0],
+                 "Adj Close": [100.0], "Volume": [1000.0]},
+                index=pd.to_datetime([FIXED]),
+            )
+        return _mk_batch_frame({"DEEP": [FIXED]})  # include_adj=True by default
+
+    monkeypatch.setattr(mod.yf, "download", fake_download)
+
+    # WARM path:
+    mod.warm_archives_batch(["DEEP"], cache_dir=warm_dir,
+                            archive_history_days=1260, end_date=FIXED)
+    # SERIAL path (no warm):
+    mod.read_or_fetch_archive("DEEP", end_date=FIXED, cache_dir=serial_dir,
+                              archive_history_days=1260)
+
+    warm_arch = pd.read_parquet(warm_dir / "DEEP.parquet").sort_index()
+    serial_arch = pd.read_parquet(serial_dir / "DEEP.parquet").sort_index()
+    # DATA-CONTENT parity: value-level frame equality (canonical column order +
+    # sorted index). check_dtype=False because batch-vs-single yfinance returns can
+    # differ in int/float Volume dtype — data-content parity is about VALUES, not
+    # the parquet bytes (which are fragile across pandas write ordering).
+    cols = ["Open", "High", "Low", "Close", "Volume"]
+    pd.testing.assert_frame_equal(
+        warm_arch[cols], serial_arch[cols], check_dtype=False, check_freq=False,
+    )
+    # The deep 200d bar is retained (NOT overwritten) and today's bar merged —
+    # the C1 lock + the rejected-promotion foil (a full-refresh promotion would
+    # tail(N) the single fetched bar, dropping the 200d bar, AND write meta).
+    assert (FIXED - timedelta(days=200)) in [d.date() for d in warm_arch.index]
+    assert FIXED in [d.date() for d in warm_arch.index]
+    # Meta UNCHANGED under both (incremental gap writes no meta).
+    warm_meta = json.loads((warm_dir / "DEEP.meta.json").read_text())
+    serial_meta = json.loads((serial_dir / "DEEP.meta.json").read_text())
+    assert warm_meta == serial_meta
+    assert warm_meta["last_full_refresh_date"] == (FIXED - timedelta(days=2)).isoformat()
+    mod._full_refresh_stagger_enabled.cache_clear()
