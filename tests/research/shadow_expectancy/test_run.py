@@ -45,9 +45,11 @@ def test_run_harness_emits_four_artifacts(tmp_path):
     # losses are externally visible, not buried in the manifest.
     assert "## Unattributed signals" in summary_text
     for reason in ("no_candidate_join", "matched_no_hypothesis", "multi_match",
-                   "no_canonical_detection", "inconsistent_detection_series",
-                   "inconsistent_trigger_state"):
+                   "inconsistent_detection_series"):
         assert f"{reason}=" in summary_text
+    # the retired reasons must NOT render anywhere in the summary.
+    assert "no_canonical_detection" not in summary_text
+    assert "inconsistent_trigger_state" not in summary_text
 
 
 def test_reproducible_canonical_manifest(tmp_path):

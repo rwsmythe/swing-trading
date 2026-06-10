@@ -29,8 +29,6 @@ def test_unattributed_reasons_vs_per_hypothesis():
     outs = [
         SignalOutcome(hypothesis=None, terminal="unattributed", reason="no_candidate_join"),
         SignalOutcome(hypothesis=None, terminal="unattributed",
-                      reason="no_canonical_detection"),
-        SignalOutcome(hypothesis=None, terminal="unattributed",
                       reason="inconsistent_detection_series"),
         SignalOutcome(hypothesis=None, terminal="unattributed",
                       reason="matched_no_hypothesis"),
@@ -42,11 +40,10 @@ def test_unattributed_reasons_vs_per_hypothesis():
         SignalOutcome(hypothesis="A+ baseline", terminal="never_triggered",
                       reason="never_triggered"),
     ]
-    det = DetectionLevel(total_detections=10, collapsed_duplicate=0, unique_signals=10)
+    det = DetectionLevel(total_detections=9, collapsed_duplicate=0, unique_signals=9)
     f = build_funnel(det, signal_outcomes=outs)
     # ONE unattributed bucket; matched_no_hypothesis + multi_match are counters WITHIN it (M1).
     assert f["unattributed"]["no_candidate_join"] == 1
-    assert f["unattributed"]["no_canonical_detection"] == 1          # M4
     assert f["unattributed"]["inconsistent_detection_series"] == 1
     assert f["unattributed"]["matched_no_hypothesis"] == 1           # reason WITHIN unattributed
     assert f["unattributed"]["multi_match"] == 1   # R3-M1 reason WITHIN unattributed
