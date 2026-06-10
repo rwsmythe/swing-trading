@@ -25,7 +25,7 @@ from swing.data.db import connect, open_connection
 # so test fixtures may monkeypatch `swing.pipeline.runner.render_*`
 # per F6 transient-empty discriminating test pattern.
 from swing.data.models import Candidate, ChartRender, EvaluationRun
-from swing.data.ohlcv_archive import read_or_fetch_archive
+from swing.data.ohlcv_archive import read_or_fetch_archive, warm_archives_batch
 from swing.data.repos.candidates import insert_candidates, insert_evaluation_run
 from swing.data.repos.cash import list_cash
 from swing.data.repos.chart_renders import refresh_chart_render
@@ -825,6 +825,7 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
                     run_now=run_now, action_session=action_session,
                     lease=lease,
                     price_cache=price_cache,
+                    run_warnings=run_warnings,
                 )
                 lease.status(evaluation_status="ok")
             except LeaseRevokedError:
@@ -1296,10 +1297,65 @@ def _step_shadow_expectancy(*, cfg, run_warnings: list[dict]) -> None:
     _prune_shadow_expectancy_artifacts(output_root)
 
 
+def _prewarm_evaluate_archives(
+    *, cfg, candidate_tickers: list[str], universe_tickers: list[str],
+    run_now, run_warnings: list[dict] | None,
+) -> None:
+    """Arc 6: ONE batched gap pre-warm before the serial evaluate loops, so each
+    of the three serial fetch loops hits the cache-hit branch (zero per-ticker
+    round-trips). PURE ACCELERATOR — any miss falls through to the serial path;
+    a wholesale failure is caught + #27-audited, never sinks evaluate.
+
+    `run_now` is accepted for the documented end_date symmetry (the warm anchors
+    writes on _last_completed_session_today() internally — see warm_archives_batch
+    docstring; end_date is a signature-contract value the warm does not use for
+    writes); pass None in unit tests."""
+    from datetime import datetime
+
+    from swing.evaluation.dates import last_completed_session
+    warm_set = [cfg.rs.benchmark_ticker, *candidate_tickers, *universe_tickers]
+    try:
+        end_date = last_completed_session(run_now if run_now is not None else datetime.now())
+        report = warm_archives_batch(
+            warm_set,
+            cache_dir=cfg.paths.prices_cache_dir,
+            archive_history_days=cfg.archive.archive_history_days,
+            end_date=end_date,
+        )
+    except Exception as exc:  # noqa: BLE001 — warm is best-effort; never sink evaluate
+        log.warning("evaluate warm failed wholesale (serial loops will refetch): %s", exc)
+        if run_warnings is not None:
+            run_warnings.append({
+                "step": "evaluate_warm",
+                "reason": "warm raised wholesale: " + " ".join(str(exc).split())[:200],
+            })
+        return
+    # Always-on cohort telemetry (Arc 6 §6 R1 Minor #1) — a misbucketing bug that
+    # looks "clean" (zero fallbacks) is still visible as an anomalous distribution.
+    log.info(
+        "evaluate warm: cache_hit=%d gap=%d deep_gap=%d full_refresh=%d "
+        "chunks=%d chunk_failures=%d fallback=%d wall=%.1fs",
+        report.cache_hit, report.gap, report.deep_gap, report.full_refresh,
+        report.chunks_attempted, report.chunk_failures, len(report.fallback),
+        report.wall_seconds,
+    )
+    if report.degraded and run_warnings is not None:
+        run_warnings.append({
+            "step": "evaluate_warm",
+            "reason": "warm degraded; affected tickers re-fetched serially",
+            "fallback_count": len(report.fallback),
+            "chunk_failures": report.chunk_failures,
+            "cache_hit": report.cache_hit,
+            "gap": report.gap,
+            "deep_gap": report.deep_gap,
+            "full_refresh": report.full_refresh,
+        })
+
+
 def _step_evaluate(
     *, cfg, fetcher, csv_path: Path, universe, universe_hash: str,
     run_now: _dt, action_session: _date, lease: Lease,
-    price_cache=None,
+    price_cache=None, run_warnings: list[dict] | None = None,
 ) -> int:
     lease.verify_held()
     import pandas as pd
@@ -1354,6 +1410,12 @@ def _step_evaluate(
     # change; minimal additive call at the existing held_tickers boundary.
     _warm_pipeline_marketdata(
         cfg=cfg, price_cache=price_cache, held_tickers=held_tickers,
+    )
+
+    # Arc 6: batched gap pre-warm before the three serial fetch loops.
+    _prewarm_evaluate_archives(
+        cfg=cfg, candidate_tickers=tickers, universe_tickers=universe.tickers,
+        run_now=run_now, run_warnings=run_warnings,
     )
 
     spy_return = 0.0
