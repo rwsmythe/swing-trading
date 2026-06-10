@@ -45,6 +45,12 @@ def run_harness(*, db_path, output_dir, source=c.SOURCE,
                 partial_session_n=c.PARTIAL_SESSION_N,
                 breakeven_r=c.BREAKEVEN_R_TRIGGER,
                 horizon_sessions=c.HORIZON_SESSIONS, only=None):
+    # V1 LIMITATION (spec 2.2 / 7.5): entry uses a plain threshold high >= candidate.pivot with
+    # NO close-confirmation gate. This admits intraday-touch entries (a bar that tips the pivot
+    # then closes weak still enters); such entries are flagged via entry_bar_weak_close
+    # (annotation only) so the operator can discount the headline. Candidate-frame close
+    # confirmation is a possible V2 hardening. The geometric structural_low is deliberately NOT
+    # reintroduced (it is the per-pattern geometry this correction abandons).
     conn = io.open_ro(db_path)
     registry = list_hypotheses(conn, status_filter="active")
     detections = io.list_pipeline_detections(conn, source=source)
