@@ -109,6 +109,22 @@
 
 ---
 
+## Arc 7 — Watchlist pin + hypothesis-labeling effectiveness [research-director-commissioned 2026-06-10, operator-approved; QUEUED — not yet dispatched]
+
+**Commission:** [`docs/phase16-watchlist-pin-and-labeling-effectiveness-commissioning-brief.md`](phase16-watchlist-pin-and-labeling-effectiveness-commissioning-brief.md) — requirements **R1-R6 are BINDING** (operator-elicited 2026-06-10). Two coupled features making hypothesis labeling effective in the web-first workflow:
+- **R1/R2 — watchlist pin:** per-ticker `pinned` flag + `pin_note` (+ optional `pinned_at`), settable/clearable from the watchlist row (HTMX — the full gotcha family applies; **operator-witnessed browser gate BINDING**). Pin blocks REMOVAL ONLY (streaks/requalification keep counting; unpin → accumulated state applies next nightly). Additive `watchlist`-table migration (NUMBER TAKEN AT BRANCH TIME — the in-flight P0 tuition-vs-error arc will likely take 0027; expect the #11 version-pin sweep again).
+- **R3 — the prefill amendment (GOVERNANCE GRANTED):** `lookup_active_recommendation_label` passes `include_baseline=True` — that ONE call site only → web/CLI entry prefill yields narrow-first (structural) else `Broad-watch baseline (watch); failed: …`. MUST ship a dated ADDENDUM to the 0026 spec (re-classifying the single-ticker prefill as an attribution surface; dashboard call sites stay default-False with a regression test asserting no broad-watch rows reach the hyp-recs panel). Labels mirror shadow attribution — tags/pins do NOT drive labels.
+- **R4 — per-row cohort hint** on the watchlist page (matcher-per-row vs precomputed — brainstorm decides; affordance, not a metrics surface). **R5 — soft-warn round-trip integrity** (the new prefill VALUE survives confirm + `force=true` — hidden-anchor family). **R6 — locks:** registry rows, matcher two-phase gate + dashboard defaults, `tier.py`, the measurement chain, the 16 historical labels, `mistake_tags`/`process_grade` ALL untouched; the `label_match.py` 3-rule contract tested.
+- Brainstorm resolves §2: the pin-veto seam in `compute_watchlist_changes` (keep the service pure; a `suppressed_removes` lane), the absent-from-candidates stale-pinned-row display, the #27 archive/audit trace, the R4 data path.
+- **Coordination:** shares `trade_entry_form.html.j2` + `routes/trades.py` with the in-flight P0 arc — land in either order, small merge reconciliation expected. **Sequencing:** dispatch after Arc 6 (evaluate-perf) returns/merges, grounding the dispatch brief fresh at that point (P0 may have landed `entry_intent` + 0027 by then).
+- Done criteria (brief §3): full copowers cycle; the 0026 addendum (research director QAs its language post-merge); the operator-witnessed browser gate (pin survives a removing run → unpin ages off; the entry form renders the server-stamped broad-watch label — form-render + TestClient persist suffice, no real trade required); regression evidence on the hyp-recs panel.
+
+- [ ] **7a — Brainstorm** (full copowers; NOT yet dispatched).
+- [ ] **7b — writing-plans → executing.**
+- [ ] **7c — Operator browser gate + the 0026-addendum research-director QA.**
+
+---
+
 ## Sequencing (operator's call)
 
 - **Arc 1** is the highest-leverage + smallest (1a + 1b alone would have answered the #96 question) — likely a focused executing-with-Codex, possibly folding 1a+1b into one cycle.
