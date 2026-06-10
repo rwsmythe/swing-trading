@@ -123,6 +123,11 @@ def build_hypothesis_scorecard(trades, *, sample_floor_mean, sample_floor_rate,
         card["median_holding_sessions"] = (
             statistics.median([t.holding_sessions for t in triggered]) if triggered else None)
 
+        # 2.2 (annotation only): count triggered entries that broke out intraday but closed
+        # below candidate.pivot. No effect on any expectancy/win-rate computation.
+        card["entry_bar_weak_close_count"] = sum(
+            1 for t in triggered if t.entry_bar_weak_close)
+
         # same-bar-adverse sensitivity (D9): on the CLOSED-only basis, ambiguous trades -> -1R.
         ambiguous = [t for t in closed if t.entry_bar_ambiguous]
         card["ambiguous_count"] = len(ambiguous)

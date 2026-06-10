@@ -370,3 +370,30 @@ def test_null_candidate_pivot_routes_per_hypothesis_excluded(tmp_path):
     assert h2["excluded"].get("no_candidate_pivot", 0) == 1
     # it was attributed first (per-hypothesis), NOT dropped to the unattributed bucket.
     assert "no_candidate_pivot" not in f["unattributed"]
+
+
+def _seed_weak_close_winner(conn, ticker="WEAK"):
+    # entry bar breaks out intraday (high 10.5 >= pivot 10.0) but closes weak (9.8 < 10.0).
+    # A clean forward bar keeps it open at horizon=1 -> a TRIGGERED trade carrying weak_close.
+    eval_id = insert_candidate(conn, ticker=ticker, bucket="aplus", pivot=10.0,
+                               initial_stop=9.0, close=10.0)
+    pr_id = insert_pipeline_run(conn, eval_id)
+    det_id = insert_detection(conn, ticker=ticker, pipeline_run_id=pr_id, pivot=10.0,
+                              data_asof_date="2026-05-28", detection_date="2026-05-29")
+    insert_observation(conn, det_id, "2026-06-01", o=10.0, h=10.5, l=9.7, c=9.8,
+                       status="triggered_open", event="entry_fired")
+    insert_observation(conn, det_id, "2026-06-02", o=9.8, h=10.0, l=9.75, c=9.9,
+                       status="triggered_open")
+    conn.commit()
+
+
+def test_entry_bar_weak_close_flagged_and_counted(tmp_path):
+    conn = make_db(tmp_path)
+    _seed_weak_close_winner(conn)
+    out = tmp_path / "out"
+    _, _, summary, manifest = run_harness(db_path=tmp_path / "t.db", output_dir=out,
+                                          source="pipeline", horizon_sessions=1)
+    card = json.loads(Path(manifest).read_text(encoding="utf-8"))["scorecard"]["A+ baseline"]
+    assert card["entry_bar_weak_close_count"] == 1
+    summary_text = Path(summary).read_text(encoding="utf-8")
+    assert "entry_bar_weak_close" in summary_text

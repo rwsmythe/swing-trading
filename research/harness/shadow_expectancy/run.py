@@ -277,6 +277,8 @@ def _summary_lines(funnel, scorecard) -> list[str]:
         tr = card["trigger_rate"]
         lines.append(f"trigger rate {tr['triggered']}/{tr['signals']}; "
                      f"per-signal expectancy [realistic]={ps['realistic']:.3f}")
+        lines.append(f"entry_bar_weak_close (intraday-touch entries) "
+                     f"= {card['entry_bar_weak_close_count']}")
         lines.append("")
     return lines
 

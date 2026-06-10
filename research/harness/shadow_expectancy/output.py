@@ -8,7 +8,7 @@ from pathlib import Path
 RESULTS_HEADER = (
     "ticker", "detection_date", "run_id", "hypothesis", "bucket",
     "realistic_r", "favorable_r", "exit_reason", "open_at_horizon",
-    "entry_bar_ambiguous",
+    "entry_bar_ambiguous", "entry_bar_weak_close",
 )
 PER_SESSION_HEADER = ("ticker", "hypothesis", "action", "qty", "price",
                       "price_favorable", "session")  # m3: both arms for terminal legs
