@@ -5436,5 +5436,109 @@ def _parse_allowlist(raw: str) -> tuple[str, ...] | None:
     return tuple(t.strip().upper() for t in raw.split(",") if t.strip())
 
 
+@main.group("logs")
+def logs_group() -> None:
+    """Operator log maintenance (one-time, gated)."""
+
+
+def _refuse_if_pipeline_running(cfg) -> None:
+    """Refuse while a pipeline run is active; FAIL-CLOSED if the DB cannot be
+    opened/queried (R4-minor-1). Mirrors the existing CLI concurrency-exclusion
+    discipline (SchwabPipelineActiveError / FinvizPipelineActiveError family)."""
+    import sqlite3
+    db_path = cfg.paths.db_path
+    if not db_path.exists() or db_path.is_dir():
+        raise click.ClickException(
+            f"Cannot open the DB at {db_path} to check pipeline state; refusing."
+        )
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM pipeline_runs WHERE state = 'running' LIMIT 1"
+            ).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        raise click.ClickException(
+            f"Cannot query pipeline state ({exc}); refusing."
+        ) from exc
+    if row:
+        raise click.ClickException(
+            "A pipeline run is active (state='running'); refusing. "
+            "Try again after it finishes."
+        )
+
+
+@logs_group.command("cleanup")
+@click.option("--yes", is_flag=True, help="Skip the confirmation prompt (scripted use).")
+@click.option(
+    "--include-current", is_flag=True,
+    help="Also reclaim oversized CURRENT/rotated managed files (app-stopped scope).",
+)
+@click.option(
+    "--web-stopped", is_flag=True,
+    help="Attest the web server is stopped (REQUIRED with --include-current).",
+)
+@click.pass_context
+def logs_cleanup_cmd(ctx, yes, include_current, web_stopped) -> None:
+    """Compress legacy dated log files content-preservingly (one-time, gated).
+
+    Default scope: legacy dated artifacts ({surface}.log.<DATE>) only. With
+    --include-current (+ --web-stopped) it also reclaims oversized current/rotated
+    managed files. Verified gzip; verify-before-unlink; never auto-runs.
+    """
+    from swing.logs_maintenance import (
+        LogsCleanupLockHeldError,
+        acquire_single_instance_lock,
+        compress_log_file,
+        select_legacy_dated_logs,
+        select_oversized_current_logs,
+    )
+
+    cfg = ctx.obj["config"]
+    logs_dir = cfg.paths.logs_dir
+    if not logs_dir.exists():
+        click.echo("No logs directory; nothing to do.")
+        return
+
+    _refuse_if_pipeline_running(cfg)
+
+    try:
+        lock = acquire_single_instance_lock(logs_dir)
+    except LogsCleanupLockHeldError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    try:
+        candidates = select_legacy_dated_logs(logs_dir)
+        if include_current:
+            if not web_stopped:
+                raise click.ClickException(
+                    "--include-current requires --web-stopped "
+                    "(attest the web server is stopped)."
+                )
+            candidates = candidates + select_oversized_current_logs(logs_dir)
+
+        if not candidates:
+            click.echo("No legacy log files to compress.")
+            return
+
+        total = sum(p.stat().st_size for p in candidates)
+        click.echo("Files to compress (content-preserving gzip):")
+        for p in candidates:
+            click.echo(f"  {p.name} ({p.stat().st_size} bytes)")
+        click.echo(f"Total to reclaim: {total} bytes")
+
+        if not yes:
+            click.confirm("Proceed?", abort=True)
+
+        for p in candidates:
+            target = compress_log_file(p, logs_dir)
+            click.echo(f"Compressed {p.name} -> {target.name}")
+        click.echo("Done.")
+    finally:
+        lock.release()
+
+
 if __name__ == "__main__":  # pragma: no cover
     main()
