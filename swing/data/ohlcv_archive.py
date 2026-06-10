@@ -493,6 +493,136 @@ def _write_full_refresh_subframe(
     _write_meta_atomic(meta_path, {"last_full_refresh_date": today_session.isoformat()})
 
 
+def warm_archives_batch(
+    tickers: list[str],
+    *,
+    cache_dir: Path,
+    archive_history_days: int,
+    end_date: date,
+    chunk_size: int = DEFAULT_CHUNK_SIZE,
+    inter_chunk_pause_s: float = 0.0,
+    dry_run: bool = False,
+) -> WarmReport:
+    """Pre-warm per-ticker archives with batched multi-ticker yf.download calls
+    so the serial read_or_fetch_archive loops all hit the cache-hit branch
+    (Arc 6 §3). PURE ACCELERATOR: any per-ticker or per-chunk failure routes to
+    `WarmReport.fallback`; the serial path re-fetches those. Never raises for a
+    data problem.
+
+    SESSION ANCHOR (Codex R1 Critical #2 — clarified). The warm has NO return
+    slice (it returns a WarmReport, not bars), so `end_date` is accepted for
+    signature parity with the spec §3 contract but is intentionally UNUSED for
+    the write anchor: archives are always warmed to
+    `today_session = _last_completed_session_today()`, the SAME source function
+    the serial write path (`read_or_fetch_archive` + `_write_archive_atomic`'s
+    completed-day strip) uses. The §4.1 invariant is "same SOURCE FUNCTION", not
+    a single value threaded through `_write_archive_atomic` (a Shape-A shared
+    writer outside this arc's carve-out). Resolving `today_session` once here and
+    passing it to the classifier + writers means the warm introduces NO new
+    divergence surface beyond what already exists — the three serial fetch loops
+    in `_step_evaluate` each call `_last_completed_session_today()` independently
+    today. A session-boundary race remains theoretically possible (warm vs serial
+    crossing ~16:00 ET mid-run) but is identical in kind to that pre-existing
+    inter-loop race and acceptable for a single-operator nightly that runs well
+    after the close. Callers MUST pass `end_date` (signature contract); pass
+    `last_completed_session(run_now)` from the runner for documentation symmetry.
+
+    dry_run=True: classify + return cohort counts with ZERO yf.download calls.
+    """
+    import time
+    started = time.monotonic()
+    cache_dir = Path(cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    today_session = _last_completed_session_today()
+    stagger_enabled = _full_refresh_stagger_enabled()
+
+    deduped = sorted({t.upper() for t in tickers})
+    cohorts = _classify_warm_cohorts(
+        deduped, cache_dir=cache_dir, today_session=today_session,
+        archive_history_days=archive_history_days, stagger_enabled=stagger_enabled,
+    )
+    gap_count = sum(len(v) for v in cohorts["gap_bands"].values())
+    report = WarmReport(
+        cache_hit=len(cohorts["cache_hit"]),
+        gap=gap_count,
+        deep_gap=len(cohorts["deep_gap"]),
+        full_refresh=len(cohorts["full_refresh"]),
+        dry_run=dry_run,
+    )
+    if dry_run:
+        report.wall_seconds = time.monotonic() - started
+        return report
+
+    # --- gap bands: each distinct latest_stored band gets its own window ---
+    for band_latest, band_tickers in cohorts["gap_bands"].items():
+        _warm_one_window(
+            band_tickers, start=band_latest + timedelta(days=1), end=today_session,
+            cohort="gap", cache_dir=cache_dir, today_session=today_session,
+            archive_history_days=archive_history_days, chunk_size=chunk_size,
+            inter_chunk_pause_s=inter_chunk_pause_s, report=report,
+        )
+
+    # --- deep-gap band: ONE widest window (still INCREMENTAL — no meta) ---
+    if cohorts["deep_gap"]:
+        deep_latest = min(
+            _read_archive(_archive_paths(cache_dir, t)[0]).index.max().date()
+            for t in cohorts["deep_gap"]
+        )
+        _warm_one_window(
+            cohorts["deep_gap"], start=deep_latest + timedelta(days=1), end=today_session,
+            cohort="gap", cache_dir=cache_dir, today_session=today_session,
+            archive_history_days=archive_history_days, chunk_size=chunk_size,
+            inter_chunk_pause_s=inter_chunk_pause_s, report=report,
+        )
+
+    # --- full-refresh cohort: one deep window, writes meta ---
+    if cohorts["full_refresh"]:
+        full_start = today_session - timedelta(
+            days=_calendar_window_for_trading_days(archive_history_days)
+        )
+        _warm_one_window(
+            cohorts["full_refresh"], start=full_start, end=today_session,
+            cohort="full_refresh", cache_dir=cache_dir, today_session=today_session,
+            archive_history_days=archive_history_days, chunk_size=chunk_size,
+            inter_chunk_pause_s=inter_chunk_pause_s, report=report,
+        )
+
+    report.wall_seconds = time.monotonic() - started
+    return report
+
+
+def _warm_one_window(
+    tickers: list[str], *, start: date, end: date, cohort: str,
+    cache_dir: Path, today_session: date, archive_history_days: int,
+    chunk_size: int, inter_chunk_pause_s: float, report: WarmReport,
+) -> None:
+    """Fetch one uniform [start, end] window for a set of tickers in chunks;
+    merge each extracted subframe per the cohort's write rule. Mutates `report`
+    counters + fallback list. cohort in {'gap', 'full_refresh'}."""
+    import time
+    chunks = _chunk_tickers(tickers, chunk_size=chunk_size)
+    for i, chunk in enumerate(chunks):
+        report.chunks_attempted += 1
+        extracted, failed, chunk_failed = _fetch_chunk(chunk, start=start, end=end)
+        if chunk_failed:
+            report.chunk_failures += 1   # whole-chunk download failure ONLY (Codex R1 Major #6)
+        report.fallback.extend(failed)
+        for ticker, sub in extracted.items():
+            try:
+                if cohort == "gap":
+                    _merge_gap_subframe(cache_dir, ticker, sub,
+                                        archive_history_days=archive_history_days)
+                else:
+                    _write_full_refresh_subframe(
+                        cache_dir, ticker, sub, today_session=today_session,
+                        archive_history_days=archive_history_days)
+            except Exception as exc:  # noqa: BLE001 — per-ticker merge fault -> fallback
+                log.warning("warm merge failed for %s -> fallback: %s", ticker, exc)
+                report.fallback.append(ticker)
+        if inter_chunk_pause_s and i < len(chunks) - 1:
+            time.sleep(inter_chunk_pause_s)
+
+
 def read_or_fetch_archive(
     ticker: str,
     *,

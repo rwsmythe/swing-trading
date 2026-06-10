@@ -362,3 +362,82 @@ def test_write_full_refresh_writes_meta(tmp_path, monkeypatch):
     meta = json.loads((tmp_path / "NEWBIE.meta.json").read_text())
     assert meta["last_full_refresh_date"] == FIXED.isoformat()
     assert (tmp_path / "NEWBIE.parquet").exists()
+
+
+def test_warm_dry_run_does_no_fetch(tmp_path, monkeypatch):
+    from datetime import timedelta
+    FIXED = date(2026, 6, 10)
+    monkeypatch.setattr(mod, "_last_completed_session_today", lambda: FIXED)
+    monkeypatch.setattr(mod, "_load_archive_config_for_stagger", lambda: False)
+    mod._full_refresh_stagger_enabled.cache_clear()
+    _write_archive(tmp_path, "GAP1", FIXED - timedelta(days=1), FIXED - timedelta(days=2))
+
+    def boom(*a, **k):
+        raise AssertionError("dry_run must NOT call yf.download")
+    monkeypatch.setattr(mod.yf, "download", boom)
+
+    report = mod.warm_archives_batch(
+        ["GAP1", "NEWBIE"], cache_dir=tmp_path, archive_history_days=1260,
+        end_date=FIXED, dry_run=True,
+    )
+    assert report.dry_run is True
+    assert report.gap == 1
+    assert report.full_refresh == 1
+    mod._full_refresh_stagger_enabled.cache_clear()
+
+
+def test_warm_populates_gap_so_serial_is_cache_hit(tmp_path, monkeypatch):
+    """End-to-end: warm fills the gap, then read_or_fetch_archive does NO fetch."""
+    from datetime import timedelta
+    FIXED = date(2026, 6, 10)
+    monkeypatch.setattr(mod, "_last_completed_session_today", lambda: FIXED)
+    monkeypatch.setattr(mod, "_load_archive_config_for_stagger", lambda: False)
+    mod._full_refresh_stagger_enabled.cache_clear()
+    _write_archive(tmp_path, "GAP1", FIXED - timedelta(days=1), FIXED - timedelta(days=2))
+
+    def fake_download(chunk, **kwargs):
+        return _mk_batch_frame({"GAP1": [FIXED]})
+
+    monkeypatch.setattr(mod.yf, "download", fake_download)
+    report = mod.warm_archives_batch(
+        ["GAP1"], cache_dir=tmp_path, archive_history_days=1260, end_date=FIXED,
+    )
+    assert report.gap == 1
+    assert report.fallback == []
+    # Now the serial read must NOT fetch.
+    def boom(*a, **k):
+        raise AssertionError("serial read should be a cache-hit after warm")
+    monkeypatch.setattr(mod.yf, "download", boom)
+    df = mod.read_or_fetch_archive("GAP1", end_date=FIXED, cache_dir=tmp_path,
+                                   archive_history_days=1260)
+    assert df is not None and FIXED in [d.date() for d in df.index]
+    mod._full_refresh_stagger_enabled.cache_clear()
+
+
+def test_warm_all_nan_ticker_lands_in_fallback_archive_unchanged(tmp_path, monkeypatch):
+    """F6 end-to-end: an all-NaN ticker -> WarmReport.fallback, archive+meta
+    byte-unchanged."""
+    from datetime import timedelta
+    import json
+    FIXED = date(2026, 6, 10)
+    monkeypatch.setattr(mod, "_last_completed_session_today", lambda: FIXED)
+    monkeypatch.setattr(mod, "_load_archive_config_for_stagger", lambda: False)
+    mod._full_refresh_stagger_enabled.cache_clear()
+    _write_archive(tmp_path, "GAP1", FIXED - timedelta(days=1), FIXED - timedelta(days=2))
+    before = (tmp_path / "GAP1.parquet").read_bytes()
+    before_meta = (tmp_path / "GAP1.meta.json").read_bytes()
+
+    def fake_download(chunk, **kwargs):
+        # GAP1 present-but-all-NaN (F6 shape) — dates=[FIXED] so it has a real
+        # all-NaN row, exercising the F6 per-ticker path (not the empty-frame
+        # whole-chunk-failure path) — Codex R2 M1.
+        return _mk_batch_frame({}, missing=("GAP1",), dates=[FIXED])
+
+    monkeypatch.setattr(mod.yf, "download", fake_download)
+    report = mod.warm_archives_batch(
+        ["GAP1"], cache_dir=tmp_path, archive_history_days=1260, end_date=FIXED,
+    )
+    assert "GAP1" in report.fallback
+    assert (tmp_path / "GAP1.parquet").read_bytes() == before
+    assert (tmp_path / "GAP1.meta.json").read_bytes() == before_meta
+    mod._full_refresh_stagger_enabled.cache_clear()
