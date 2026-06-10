@@ -86,6 +86,17 @@
 
 ---
 
+## Arc 5 — Shadow-expectancy drumbeat integration [research-director-commissioned 2026-06-09, operator-approved]
+
+**Commission:** [`docs/phase16-shadow-expectancy-drumbeat-integration-commissioning-brief.md`](phase16-shadow-expectancy-drumbeat-integration-commissioning-brief.md) — run the shadow-expectancy engine automatically in the nightly pipeline so evidence accrues every session without manual invocation. **Binding placement:** a new best-effort step `shadow_expectancy` AFTER `_step_export`, BEFORE `complete`, inside the lease (subprocess of the installed `swing diagnose shadow-expectancy` CLI — NOT an in-process `research/` import; the bifurcation boundary holds). NO schema (the engine is read-only; outputs are file artifacts; step timing rides the Arc-1 `pipeline_step_timings` ledger for free).
+
+**Orchestrator grounding (2026-06-09, accepted):** CLI verified @[cli.py:5087](../swing/cli.py) (turnkey since `31e7441c`); harness opens `mode=ro` URI ([research/harness/shadow_expectancy/io.py:40-42](../research/harness/shadow_expectancy/io.py)); **`manifest.json` already carries the funnel machine-readably** (`funnel.detection_level.total_detections/unique_signals` + `unattributed`) → the step parses it for the pipeline.log summary + the #27 zero-signal warning with NO engine change (the §3 route-back risk is closed). Cycle shape: single focused executing-with-Codex (sanctioned by the commission; design space small).
+
+- [ ] **5a — The `shadow_expectancy` pipeline step** (runner.py + tests): best-effort subprocess invocation, manifest-parsed summary line + #27 warning semantics, timeout/kill + cp1252-safe capture, keep-last-N artifact retention, always-on (no knob). Independent of the broad-watch-baseline arc (interim `matched_no_hypothesis` output is correct, not a blocker).
+- [ ] **5b — Operator gate:** one witnessed live nightly run showing the step breadcrumb + the `pipeline_step_timings` row + pipeline.log summary line(s) + the artifact dir. Research director QAs the honesty surfaces (warning/empty semantics) at the next evaluation session.
+
+---
+
 ## Sequencing (operator's call)
 
 - **Arc 1** is the highest-leverage + smallest (1a + 1b alone would have answered the #96 question) — likely a focused executing-with-Codex, possibly folding 1a+1b into one cycle.
