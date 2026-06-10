@@ -40,6 +40,7 @@ import logging
 import math
 import os
 import tempfile
+import zlib
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -199,6 +200,35 @@ def _last_completed_session_today() -> date:
     Imports lazily to avoid circular references at module load time."""
     from swing.evaluation.dates import last_completed_session
     return last_completed_session(datetime.now())
+
+
+def _full_refresh_due(
+    ticker: str,
+    last_full_refresh: date,
+    today_session: date,
+    *,
+    stagger_enabled: bool,
+) -> bool:
+    """PURE predicate — the single source of full-refresh-due truth, called by
+    BOTH read_or_fetch_archive AND warm_archives_batch with the SAME
+    stagger_enabled value (resolved once by _full_refresh_stagger_enabled).
+
+    `last_full_refresh` is a real date; callers with no parseable meta MUST
+    NOT call this (they are full-refresh-due unconditionally via the
+    archive-missing / meta-missing arms of the classifier).
+
+    stagger_enabled=False  -> exact legacy `days_since >= 7` cliff.
+    stagger_enabled=True   -> fire on the ticker's own crc32 bucket day once
+    `>= 7` due, with a `>= 13` hard ceiling bounding worst-case staleness.
+    crc32 (NOT Python hash()) for cross-process determinism — hash(str) is
+    randomized by PYTHONHASHSEED.
+    """
+    days_since_full = (today_session - last_full_refresh).days
+    if not stagger_enabled:
+        return days_since_full >= 7
+    bucket = zlib.crc32(ticker.encode()) % 7
+    day_idx = today_session.toordinal() % 7
+    return (days_since_full >= 7 and bucket == day_idx) or (days_since_full >= 13)
 
 
 def read_or_fetch_archive(
