@@ -10,6 +10,7 @@ from __future__ import annotations
 from swing.data.models import Candidate, CriterionResult, HypothesisRegistryEntry
 from swing.recommendations.hypothesis import (
     DOCTRINE_DEFENSIBLE_MISS_SET,
+    H_BROAD_WATCH_BASELINE,
     HypothesisMatch,
     match_candidate_to_hypotheses,
 )
@@ -369,3 +370,106 @@ def test_match_returns_priority_hint():
     )
     assert len(matches) == 1
     assert isinstance(matches[0].priority_hint, (int, float))
+
+
+def _registry_with_baseline(*, h3_status: str = "active"):
+    """The 4 v0.1 rows + the migration-0026 baseline row (active).
+    h3_status lets a test close H3 to exercise the active-set complement."""
+    reg = _registry()
+    for i, h in enumerate(reg):
+        if h.name == "Sub-A+ VCP-not-formed":
+            reg[i] = HypothesisRegistryEntry(
+                id=h.id, name=h.name, statement=h.statement,
+                target_sample_size=h.target_sample_size,
+                decision_criteria=h.decision_criteria, status=h3_status,
+                consecutive_loss_tripwire=h.consecutive_loss_tripwire,
+                absolute_loss_tripwire_pct=h.absolute_loss_tripwire_pct,
+                created_at=h.created_at,
+            )
+    reg.append(HypothesisRegistryEntry(
+        id=5, name="Broad-watch baseline",
+        statement="x", target_sample_size=30,
+        decision_criteria="x", status="active",
+        consecutive_loss_tripwire=5, absolute_loss_tripwire_pct=5.0,
+        created_at="2026-06-09",
+    ))
+    return reg
+
+
+def test_broad_watch_name_constant():
+    assert H_BROAD_WATCH_BASELINE == "Broad-watch baseline"
+
+
+def test_baseline_fires_only_with_opt_in_for_pure_watch():
+    # Fixture 5 (spec §9.1.5): a real {adr} watch miss (no H2/H3/H4 fit).
+    cand = _candidate("watch", [("adr", "vcp", "fail")])
+    reg = _registry_with_baseline()
+    # default include_baseline=False -> live path -> ZERO matches (containment).
+    assert match_candidate_to_hypotheses(cand, registry=reg) == []
+    # opt-in -> exactly the baseline.
+    matches = match_candidate_to_hypotheses(cand, registry=reg, include_baseline=True)
+    assert [m.hypothesis_name for m in matches] == ["Broad-watch baseline"]
+
+
+def test_baseline_silent_when_narrow_rule_fires_h2():
+    # Fixture 2 (spec §9.1.2): anti-cannibalization. {proximity_20ma} -> H2 ONLY.
+    cand = _candidate("watch", [("proximity_20ma", "trend_template", "fail")])
+    matches = match_candidate_to_hypotheses(
+        cand, registry=_registry_with_baseline(), include_baseline=True)
+    names = [m.hypothesis_name for m in matches]
+    assert names == ["Near-A+ defensible: extension test"]   # len==1, NO baseline
+
+
+def test_baseline_silent_when_narrow_rule_fires_h4():
+    # Fixture 3 (spec §9.1.3): {risk_feasibility} watch -> H4 ONLY.
+    cand = _candidate("watch", [("risk_feasibility", "risk", "fail")])
+    matches = match_candidate_to_hypotheses(
+        cand, registry=_registry_with_baseline(), include_baseline=True)
+    assert [m.hypothesis_name for m in matches] == [
+        "Capital-blocked: smaller-position test"]
+
+
+def test_baseline_membership_flips_on_h3_active_status():
+    # Fixture 4 (spec §9.1.4): the dominant real shape {tightness, vcp_volume_contraction}.
+    cand = _candidate("watch", [("tightness", "vcp", "fail"),
+                                ("vcp_volume_contraction", "vcp", "fail")])
+    # H3 ACTIVE -> H3 claims it; baseline silent.
+    m_active = match_candidate_to_hypotheses(
+        cand, registry=_registry_with_baseline(h3_status="active"),
+        include_baseline=True)
+    assert [m.hypothesis_name for m in m_active] == ["Sub-A+ VCP-not-formed"]
+    # H3 CLOSED (today's live state) -> falls to the baseline.
+    m_closed = match_candidate_to_hypotheses(
+        cand, registry=_registry_with_baseline(h3_status="closed-target-met"),
+        include_baseline=True)
+    assert [m.hypothesis_name for m in m_closed] == ["Broad-watch baseline"]
+
+
+def test_baseline_does_not_fire_for_non_watch_even_opted_in():
+    # Baseline requires bucket=='watch'. A skip miss stays unmatched (keeps the
+    # matched_no_hypothesis funnel reason reachable). Spec §9.1 / §7.2.
+    cand = _candidate("skip", [("tightness", "vcp", "fail")])
+    assert match_candidate_to_hypotheses(
+        cand, registry=_registry_with_baseline(), include_baseline=True) == []
+
+
+def test_baseline_absent_from_registry_yields_no_match_even_opted_in():
+    # If the baseline row is not present+active (e.g. pre-0026), the gate cannot
+    # synthesize a match (no id) -> []. Order-robust by construction.
+    cand = _candidate("watch", [("adr", "vcp", "fail")])
+    assert match_candidate_to_hypotheses(
+        cand, registry=_registry(), include_baseline=True) == []
+
+
+def test_broad_watch_name_no_prefix_collision_both_directions():
+    # Spec §6: 3-rule delimiter-aware contract; no prefix collision either way.
+    from swing.metrics.label_match import label_matches_hypothesis
+    others = ["A+ baseline", "Near-A+ defensible: extension test",
+              "Sub-A+ VCP-not-formed", "Capital-blocked: smaller-position test"]
+    labelled = "Broad-watch baseline (watch); failed: adr"
+    for other in others:
+        assert label_matches_hypothesis(labelled, other) is False
+        assert label_matches_hypothesis(f"{other} (watch); failed: x",
+                                        "Broad-watch baseline") is False
+    # exact-name still matches itself.
+    assert label_matches_hypothesis("Broad-watch baseline", "Broad-watch baseline")

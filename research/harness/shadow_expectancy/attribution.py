@@ -15,5 +15,7 @@ def attribute_hypotheses(
     A signal with zero matches is the caller's responsibility to bucket
     (unattributed is a FUNNEL concern, decided in funnel.py / run.py).
     """
-    matches = match_candidate_to_hypotheses(candidate, registry=list(registry))
+    matches = match_candidate_to_hypotheses(
+        candidate, registry=list(registry), include_baseline=True,
+    )
     return [m.hypothesis_name for m in matches]

@@ -128,6 +128,7 @@ H_APLUS_BASELINE = "A+ baseline"
 H_NEAR_APLUS_EXTENSION = "Near-A+ defensible: extension test"
 H_SUB_APLUS_VCP = "Sub-A+ VCP-not-formed"
 H_CAPITAL_BLOCKED = "Capital-blocked: smaller-position test"
+H_BROAD_WATCH_BASELINE = "Broad-watch baseline"
 
 
 @dataclass(frozen=True)
@@ -256,6 +257,13 @@ def _capital_blocked_match(candidate: Candidate) -> bool:
     return _non_pass_criterion_names(candidate) == {"risk_feasibility"}
 
 
+def _broad_watch_baseline_match(candidate: Candidate) -> bool:
+    """Watch bucket, any non-pass set. The fallback gate (caller-side, on
+    `not matches`) -- NOT this predicate -- enforces the complement semantics
+    (spec §3.1). Fires only when the caller opts in AND no narrow rule matched."""
+    return candidate.bucket == "watch"
+
+
 def _descriptive_label(
     candidate: Candidate, hypothesis_name: str,
 ) -> str:
@@ -298,6 +306,7 @@ def match_candidate_to_hypotheses(
     *,
     doctrine_defensible_set: frozenset[str] = DOCTRINE_DEFENSIBLE_MISS_SET,
     registry: Iterable[HypothesisRegistryEntry],
+    include_baseline: bool = False,
 ) -> list[HypothesisMatch]:
     """Return zero-or-more `HypothesisMatch` rows for this candidate.
 
@@ -331,6 +340,22 @@ def match_candidate_to_hypotheses(
             priority_hint=_priority_hint_for(candidate),
             candidate_ticker=candidate.ticker,
         ))
+
+    # Baseline phase (spec §3.1): the broad-watch fallback fires iff the caller
+    # opted in AND the narrow phase returned ZERO matches. Order-robust -- gated
+    # on the emptiness of `matches`, not on list position. Requires the row to
+    # be active+present (mirrors the narrow rules; the engine loads status=='active'
+    # only). The ONLY opt-in caller is the shadow-expectancy attribution wrapper.
+    if include_baseline and not matches:
+        h = active_by_name.get(H_BROAD_WATCH_BASELINE)
+        if h is not None and _broad_watch_baseline_match(candidate):
+            matches.append(HypothesisMatch(
+                hypothesis_id=h.id,
+                hypothesis_name=h.name,
+                suggested_label_descriptive=_descriptive_label(candidate, h.name),
+                priority_hint=_priority_hint_for(candidate),
+                candidate_ticker=candidate.ticker,
+            ))
     return matches
 
 

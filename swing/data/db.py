@@ -48,7 +48,7 @@ from pathlib import Path
 #   'ticker_detail' via an id-preserving single-table rebuild. NO new tables,
 #   NO column-shape change, NO candlestick change. Atomic BEGIN/COMMIT
 #   discipline preserved (gotcha #9).
-EXPECTED_SCHEMA_VERSION = 25
+EXPECTED_SCHEMA_VERSION = 26
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 DEFAULT_BUSY_TIMEOUT_MS = 30000
@@ -223,6 +223,15 @@ B7_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
 # failure_mode COLUMN (no new tables), so the v24 table set equals the B7 set.
 PHASE16_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
     B7_PRE_MIGRATION_EXPECTED_TABLES
+)
+
+# Broad-watch-baseline (migration 0026) backup gate: migrating v25 -> v26
+# snapshots the live v25 DB. 0026 adds NO table (additive registry row only), so
+# the v26 table set equals the v25 set. The v25 set = the v24 set PLUS
+# pipeline_step_timings (created by 0025) -- PHASE16_PRE_MIGRATION_EXPECTED_TABLES
+# is the v24 set, so derive the v25 set from it for auditable provenance.
+BROAD_WATCH_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
+    PHASE16_PRE_MIGRATION_EXPECTED_TABLES | {"pipeline_step_timings"}
 )
 
 
@@ -668,6 +677,27 @@ def _create_pre_phase16_migration_backup(
     dest_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     backup_path = dest_dir / f"swing-pre-phase16-migration-{timestamp}.db"
+    src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
+    try:
+        dest_conn = sqlite3.connect(backup_path)
+        try:
+            src_conn.backup(dest_conn)
+        finally:
+            dest_conn.close()
+    finally:
+        src_conn.close()
+    return backup_path
+
+
+def _create_pre_broad_watch_migration_backup(
+    src_path: Path, *, dest_dir: Path,
+) -> Path:
+    """Broad-watch-baseline (0026) mirror. SQLite-native Connection.backup()
+    before the 0026 migration. Backup file pattern
+    ``swing-pre-broad-watch-baseline-migration-<ISO>.db``."""
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    backup_path = dest_dir / f"swing-pre-broad-watch-baseline-migration-{timestamp}.db"
     src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
     try:
         dest_conn = sqlite3.connect(backup_path)
@@ -1130,6 +1160,44 @@ def _phase16_backup_gate(
         ) from exc
 
 
+def _broad_watch_baseline_backup_gate(
+    conn: sqlite3.Connection,
+    *,
+    current_version: int,
+    target_version: int,
+    backup_dir: Path | None,
+) -> None:
+    """Broad-watch-baseline (0026) backup-before-migrate gate.
+
+    Fires ONLY when ``current_version == 25 AND target_version >= 26`` -- a real
+    production v25 DB about to cross v26. STRICT EQUALITY on pre_version per the
+    ``pre_version == (target - 1)`` gotcha (NOT ``<=``); multi-version jumps from
+    pre-v25 baselines bypass this gate by design.
+    """
+    if target_version < 26 or current_version != 25:
+        return
+    src_path = _resolve_main_db_path(conn)
+    if src_path is None:
+        raise MigrationBackupRequiredException(
+            "pre-broad-watch backup gate requires a file-backed source DB; "
+            "in-memory connections cannot be snapshotted."
+        )
+    if backup_dir is None:
+        backup_dir = src_path.parent
+    try:
+        backup_path = _create_pre_broad_watch_migration_backup(
+            src_path, dest_dir=backup_dir)
+        _verify_backup_integrity(
+            backup_path, expected_tables=BROAD_WATCH_PRE_MIGRATION_EXPECTED_TABLES,
+        )
+    except MigrationBackupRequiredException:
+        raise
+    except (OSError, sqlite3.Error) as exc:
+        raise MigrationBackupRequiredException(
+            f"pre-broad-watch backup failed: {exc}"
+        ) from exc
+
+
 def run_migrations(
     conn: sqlite3.Connection,
     *,
@@ -1209,6 +1277,12 @@ def run_migrations(
         backup_dir=backup_dir,
     )
     _phase16_backup_gate(
+        conn,
+        current_version=current,
+        target_version=target_version,
+        backup_dir=backup_dir,
+    )
+    _broad_watch_baseline_backup_gate(
         conn,
         current_version=current,
         target_version=target_version,

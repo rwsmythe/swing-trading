@@ -10,7 +10,7 @@ from swing.data.db import run_migrations
 def make_db(tmp_path: Path) -> sqlite3.Connection:
     c = sqlite3.connect(tmp_path / "t.db")
     c.execute("PRAGMA foreign_keys=ON")
-    run_migrations(c, target_version=24, backup_dir=tmp_path)
+    run_migrations(c, target_version=26, backup_dir=tmp_path)
     return c
 
 

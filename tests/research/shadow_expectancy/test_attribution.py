@@ -77,10 +77,46 @@ def test_skip_risk_feasibility_only_maps_to_h4(tmp_path):
     assert "Sub-A+ VCP-not-formed" not in names
 
 
-def test_no_match_returns_empty(tmp_path):
-    # 'orderliness' is neither a VCP trigger nor proximity/risk-only, so no hypothesis
-    # fires -> empty list -> the caller buckets this as the matched_no_hypothesis REASON
-    # WITHIN the unattributed funnel bucket (C-review M1).
+def test_unmatched_watch_falls_to_baseline(tmp_path):
+    # Renamed from test_no_match_returns_empty: with the engine opted in
+    # (include_baseline=True via attribute_hypotheses) and the v26 testkit
+    # seeding the active baseline row, a watch/{orderliness} miss now attributes
+    # to the broad-watch baseline (the honest complement). Spec §7.2.
     conn = make_db(tmp_path)
     cand = _cand("watch", [("orderliness", "vcp", "fail")])
+    assert attribute_hypotheses(cand, registry=_active_registry(conn)) == [
+        "Broad-watch baseline"]
+
+
+def test_non_watch_unmatched_stays_empty(tmp_path):
+    # Preserve a genuine empty-match (matched_no_hypothesis stays reachable):
+    # baseline requires bucket=='watch', so a skip/{tightness} miss matches NOTHING
+    # even opted in. Spec §7.2 / §9.1.
+    conn = make_db(tmp_path)
+    cand = _cand("skip", [("tightness", "vcp", "fail")])
     assert attribute_hypotheses(cand, registry=_active_registry(conn)) == []
+
+
+def test_h2_exact_does_not_cannibalize_to_baseline(tmp_path):
+    # Fixture 2 at the attribution level: {proximity_20ma} -> H2 ONLY.
+    conn = make_db(tmp_path)
+    cand = _cand("watch", [("proximity_20ma", "trend_template", "fail")])
+    assert attribute_hypotheses(cand, registry=_active_registry(conn)) == [
+        "Near-A+ defensible: extension test"]
+
+
+def test_h3_flip_active_vs_closed(tmp_path):
+    # Fixture 4: the dominant {tightness, vcp_volume_contraction} shape.
+    conn = make_db(tmp_path)
+    cand = _cand("watch", [("tightness", "vcp", "fail"),
+                           ("vcp_volume_contraction", "vcp", "fail")])
+    # Fresh testkit -> H3 active -> H3 claims it.
+    assert attribute_hypotheses(cand, registry=_active_registry(conn)) == [
+        "Sub-A+ VCP-not-formed"]
+    # Close H3 (mirror the live DB) -> falls to the baseline.
+    conn.execute(
+        "UPDATE hypothesis_registry SET status='closed-target-met' "
+        "WHERE name='Sub-A+ VCP-not-formed'")
+    conn.commit()
+    assert attribute_hypotheses(cand, registry=_active_registry(conn)) == [
+        "Broad-watch baseline"]

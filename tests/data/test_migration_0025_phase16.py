@@ -26,7 +26,7 @@ def _migrate_to(db_path: Path, version: int, backup_dir: Path | None = None):
 
 
 def test_expected_schema_version_is_25():
-    assert EXPECTED_SCHEMA_VERSION == 25
+    assert EXPECTED_SCHEMA_VERSION == 26
 
 
 def test_migrate_to_25_creates_table(tmp_path):
@@ -97,13 +97,20 @@ def test_run_migrations_wires_phase16_gate(tmp_path):
     assert len(list(v24_backups.glob("swing-pre-phase16-migration-*.db"))) == 1
     conn.close()
 
-    # v24 -> v26 through the REAL runner: gate fires (crossing v25); apply_ceiling =
-    # min(26, EXPECTED_SCHEMA_VERSION=25) = 25, so it advances to 25 and backs up.
+    # v24 -> v26 through the REAL runner: the phase16 gate fires (crossing v25);
+    # apply_ceiling = min(26, EXPECTED_SCHEMA_VERSION=26) = 26 now, so the walk
+    # applies 0025 then 0026 and reaches 26 (no longer ceiling-clamped at 25 --
+    # the ceiling now equals the target). The broad-watch gate is INERT here
+    # because the runner evaluates gates once against the ORIGINAL current=24
+    # (not 25), so only the phase16 backup is written.
     v26_backups = tmp_path / "v26b"
     db26 = tmp_path / "swing26.db"
     _migrate_to(db26, 24).close()
     conn26 = open_connection(db26, reaffirm_wal=True)
     run_migrations(conn26, target_version=26, backup_dir=v26_backups)
-    assert _current_version(conn26) == 25  # ceiling-clamped to EXPECTED_SCHEMA_VERSION
+    assert _current_version(conn26) == 26  # ceiling now equals the target (v26)
     assert len(list(v26_backups.glob("swing-pre-phase16-migration-*.db"))) == 1
+    # the broad-watch gate is INERT in this v24->v26 walk (gates evaluate against
+    # the ORIGINAL current=24, not 25), so it must have written NO backup.
+    assert list(v26_backups.glob("swing-pre-broad-watch-baseline-migration-*.db")) == []
     conn26.close()
