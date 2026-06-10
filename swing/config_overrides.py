@@ -7,10 +7,11 @@ feed those caches, so the mismatch is benign. See plan §C.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import is_dataclass, replace
 from typing import Any, Literal
 
-from swing.config import Config
+from swing.config import Config, _parse_logging_config
 from swing.config_user import load_user_overrides
 
 # V1 field paths — keep in lockstep with config_validation.FIELD_REGISTRY.
@@ -149,12 +150,42 @@ def apply_overrides(base_cfg: Config) -> Config:
             schwab=new_schwab,
         )
 
+    new_logging = base_cfg.logging
+    raw_logging = _get(overrides, "logging")
+    if isinstance(raw_logging, dict):
+        # Re-validate via the same parser over a merged dict so malformed
+        # overrides degrade identically (level name round-trips via getLevelName).
+        merged = {
+            "level": logging.getLevelName(base_cfg.logging.level),
+            "max_bytes": base_cfg.logging.max_bytes,
+            "backup_count": base_cfg.logging.backup_count,
+        }
+        merged.update(raw_logging)
+        parsed = _parse_logging_config(merged)
+        # Preserve tracked-parse warnings + append overlay warnings.
+        new_logging = replace(
+            parsed, warnings=base_cfg.logging.warnings + parsed.warnings,
+        )
+    elif not isinstance(raw_logging, _Missing):
+        # Present but NOT a table (e.g. user-config `logging = "INFO"`): keep the
+        # base values + collect a warning (symmetry with load()'s non-dict guard;
+        # malformed-degrades-never-crashes applies to user-config too).
+        new_logging = replace(
+            base_cfg.logging,
+            warnings=base_cfg.logging.warnings
+            + (
+                f"[logging] user-config section must be a table; got "
+                f"{type(raw_logging).__name__!r}; ignored",
+            ),
+        )
+
     return replace(
         base_cfg,
         web=new_web,
         pipeline=new_pipeline,
         account=new_account,
         integrations=new_integrations,
+        logging=new_logging,
     )
 
 

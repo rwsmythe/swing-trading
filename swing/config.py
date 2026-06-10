@@ -1,6 +1,7 @@
 """Config loader — reads swing.config.toml into dataclasses, resolves paths."""
 from __future__ import annotations
 
+import logging
 import os
 import tomllib
 from dataclasses import dataclass, field
@@ -410,6 +411,72 @@ class Web:
     chase_factor: float = 0.01
 
 
+_LEVEL_NAMES = {
+    "CRITICAL": logging.CRITICAL,
+    "ERROR": logging.ERROR,
+    "WARNING": logging.WARNING,
+    "INFO": logging.INFO,
+    "DEBUG": logging.DEBUG,
+}
+
+
+@dataclass(frozen=True)
+class LoggingConfig:
+    """Slice-1 logging knobs (spec §4.5). ``warnings`` carries parse-time
+    diagnostics that install_logging replays AFTER the redacted handler attaches
+    (the chicken-and-egg fix, R1-major-4) -- they are NEVER logged at parse time."""
+    level: int = logging.INFO
+    max_bytes: int = 10 * 1024 * 1024
+    backup_count: int = 5
+    warnings: tuple[str, ...] = ()
+
+
+def _parse_logging_config(raw: object) -> LoggingConfig:
+    """Parse a ``[logging]`` table; malformed values (incl. a non-table ``raw``)
+    degrade to defaults + collect a diagnostic (never crash). ``raw`` is typed
+    ``object`` because a malformed TOML section may not be a dict at all."""
+    if not isinstance(raw, dict):
+        # A non-table [logging] value (e.g. `logging = "INFO"`) must not crash load().
+        return LoggingConfig(
+            warnings=(
+                f"[logging] section must be a table; got "
+                f"{type(raw).__name__!r}; using all defaults",
+            ),
+        )
+    warnings: list[str] = []
+
+    level = logging.INFO
+    raw_level = raw.get("level", "INFO")
+    if isinstance(raw_level, str) and raw_level.upper() in _LEVEL_NAMES:
+        level = _LEVEL_NAMES[raw_level.upper()]
+    else:
+        warnings.append(f"[logging] level {raw_level!r} invalid; using INFO")
+
+    max_bytes = 10 * 1024 * 1024
+    raw_mb = raw.get("max_bytes", max_bytes)
+    if isinstance(raw_mb, int) and not isinstance(raw_mb, bool) and raw_mb > 0:
+        max_bytes = raw_mb
+    else:
+        warnings.append(f"[logging] max_bytes {raw_mb!r} invalid; using {max_bytes}")
+
+    backup_count = 5
+    raw_bc = raw.get("backup_count", backup_count)
+    # Require >= 1: with backupCount=0 RotatingFileHandler keeps NO rotated
+    # backups and provides no (backup_count+1)*max_bytes retention set, defeating
+    # the retention narrative -> treat <1 as invalid and degrade to the default.
+    if isinstance(raw_bc, int) and not isinstance(raw_bc, bool) and raw_bc >= 1:
+        backup_count = raw_bc
+    else:
+        warnings.append(
+            f"[logging] backup_count {raw_bc!r} invalid; using {backup_count}"
+        )
+
+    return LoggingConfig(
+        level=level, max_bytes=max_bytes, backup_count=backup_count,
+        warnings=tuple(warnings),
+    )
+
+
 @dataclass(frozen=True)
 class Config:
     paths: Paths
@@ -431,6 +498,7 @@ class Config:
     archive: ArchiveConfig = field(default_factory=ArchiveConfig)
     review: ReviewConfig = field(default_factory=ReviewConfig)
     integrations: IntegrationsConfig = field(default_factory=IntegrationsConfig)
+    logging: LoggingConfig = field(default_factory=LoggingConfig)
 
     @classmethod
     def from_defaults(cls) -> Config:
@@ -555,4 +623,5 @@ def load(config_path: Path) -> Config:
             finviz=FinvizIntegrationConfig(**raw_finviz),
             schwab=SchwabIntegrationConfig(**raw_schwab),
         ),
+        logging=_parse_logging_config(raw.get("logging", {})),
     )

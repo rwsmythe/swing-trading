@@ -16,6 +16,12 @@ finviz_inbox_dir = "data/finviz-inbox"
 exports_dir = "exports"
 rs_universe_path = "reference/rs-universe.csv"
 
+[logging]
+level = "INFO"
+max_bytes = 10485760   # 10 MB
+backup_count = 5
+# [logging.loggers]   # per-logger overrides -- Slice 2 (built empty by default)
+
 [account]
 starting_equity = 1200.0
 starting_date = "2026-03-16"
