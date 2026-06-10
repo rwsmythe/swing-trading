@@ -30,7 +30,17 @@
 - [x] **1b — Per-step duration logging + DB persistence. DONE.** A monotonic in-memory ledger on `Lease` closes/opens a boundary interval per `lease.step()`, emits an `INFO step ordinal=N name=… took … ms` line (+ advisory `WARN` over `STEP_SOFT_BUDGET_MS=60_000`), and flushes ONCE in `run_pipeline_internal`'s `finally` (summary line BEFORE the fallible DB write; never re-raises) into the new `pipeline_step_timings` child table (migration `0025`, v25; `_phase16_backup_gate` STRICT `==24`). **Corrected timing semantic (QA-caught):** `finviz_fetch` fires NON-consecutively (inbox-empty: finviz_fetch→weather→finviz_fetch) → two rows; `ordinal` unique, `step_name` non-unique; consumers `SUM(duration_ms) GROUP BY step_name` (`step_durations_by_name`).
 - [ ] **1c — (optional) yfinance call-timing audit. DEFERRED** (not built this cycle). Mirror `schwab_api_calls` for yfinance fetches so the dominant ~570s fetch cost is quantified per-step, not inferred. Schema if persisted; could start as log-only. The 1b per-step `duration_ms` for the yfinance-bound steps (`weather`/`evaluate`/`charts`) is what *enables* deciding whether 1c is needed.
 
-**Follow-on (linked, separate arc): pipeline PERF — NOW UNBLOCKED by 1b.** Once a slow run's `pipeline_step_timings` confirms the bottleneck, the likely lever is the #23-widened detect/observe yfinance load — cap/parallelize the exemplar + forward-observation fetches, cache exemplar bars across runs (#28/#29 exemplars are re-fetched every run; 34 exemplars w/ deep `period="max"` history is slow), or batch them. Gated on Arc 1's timing data — do NOT guess the fix before measuring.
+**Follow-on → COMMISSIONED as Arc 6 (2026-06-10).** Run #98 settled the measurement question — and **falsified the original hypothesis**: the bottleneck is NOT the #23-widened detect/observe load (12s/21s) but **`evaluate` = 522s ≈ 91%** — ~580 serial yfinance round-trips (63 candidates @400d + the 516-ticker RS universe @120d + SPY, each ~0.9s through `read_or_fetch_archive`'s per-ticker incremental gap fetch), plus the un-staggered weekly 1260-day full-refresh storm. See **Arc 6** below.
+
+---
+
+## Arc 6 — Evaluate-step performance (the Arc-1 perf follow-on) [commissioned 2026-06-10]
+
+**Brief:** [`docs/arc6-evaluate-perf-brainstorming-dispatch-brief.md`](arc6-evaluate-perf-brainstorming-dispatch-brief.md). Baseline: run #98 cold-nightly `evaluate=522s` (warm #97: 37s). Candidate levers: a batched gap pre-warm (`yf.download` multi-ticker, per-ticker F6-guarded writes through the existing atomic path — the lean), bounded-parallel fetches, hybrid; + staggering the weekly full-refresh. Acceptance target proposed: cold-nightly evaluate ≤ 90s (stretch 60s), verified via `pipeline_step_timings` on the gate run. NO schema (v26 holds); requires an EXPLICIT `swing/data/ohlcv_archive.py` phase-isolation carve-out in the spec; archive-integrity locks (F6, full-archive-return, atomic writes, #24) are hard walls; universe-scope/staleness changes are METHODOLOGY (out unless operator-decided).
+
+- [ ] **6a — Brainstorm** (full copowers cycle; dispatched 2026-06-10).
+- [ ] **6b — writing-plans → executing** (incl. an in-cycle benchmark vs the real universe).
+- [ ] **6c — Operator gate:** a live cold nightly with `pipeline_step_timings` showing evaluate ≤ target; data-content parity preserved.
 
 ---
 
