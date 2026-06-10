@@ -5,7 +5,6 @@ from logging.handlers import RotatingFileHandler
 
 import pytest
 
-from swing.integrations.schwab.client import RedactingFormatter
 from swing.logging_setup import install_logging
 
 
@@ -33,10 +32,10 @@ def clean_root_and_secrets():
 
 
 def _cfg(tmp_path, **logging_kwargs):
-    from tests.cli.test_cli_eval import _minimal_config
-    from swing.config import load
     from dataclasses import replace
-    from swing.config import LoggingConfig
+
+    from swing.config import load
+    from tests.cli.test_cli_eval import _minimal_config
     project = tmp_path / "project"; project.mkdir()
     home = tmp_path / "home"; home.mkdir()
     cfg = load(_minimal_config(project, home))
@@ -46,6 +45,12 @@ def _cfg(tmp_path, **logging_kwargs):
 
 
 def test_install_logging_attaches_redacting_rotating_handler(clean_root_and_secrets, tmp_path):
+    # Resolve RedactingFormatter FRESHLY here (not the module-top import): a sibling
+    # research L2-lock test on this xdist worker may `del sys.modules` + re-import
+    # swing.integrations.schwab.client, replacing the class object. install_logging
+    # resolves the class via a lazy import at call time, so the assertion must match
+    # the CURRENT module attribute or isinstance falsely fails (reload-fragility gotcha).
+    from swing.integrations.schwab.client import RedactingFormatter as _RedactingFormatter
     cfg = _cfg(tmp_path)
     install_logging(cfg, surface="web")
     target = str(cfg.paths.logs_dir / "web.log")
@@ -54,7 +59,7 @@ def test_install_logging_attaches_redacting_rotating_handler(clean_root_and_secr
         if isinstance(h, RotatingFileHandler) and h.baseFilename == target
     ]
     assert len(handlers) == 1
-    assert isinstance(handlers[0].formatter, RedactingFormatter)  # Belt B by construction
+    assert isinstance(handlers[0].formatter, _RedactingFormatter)  # Belt B by construction
     assert handlers[0].maxBytes == cfg.logging.max_bytes
     assert handlers[0].backupCount == cfg.logging.backup_count
 

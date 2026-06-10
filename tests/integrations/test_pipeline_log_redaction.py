@@ -162,7 +162,11 @@ def test_pipeline_run_cmd_writes_pipeline_log(tmp_path, monkeypatch):
             and h.baseFilename == str(logs_dir / "pipeline.log")
         ]
         assert cli_handlers, "CLI did not attach a pipeline.log handler"
-        assert isinstance(cli_handlers[0].formatter, RedactingFormatter)
+        # Resolve RedactingFormatter FRESHLY (reload-fragility gotcha): pipeline_run_cmd
+        # routes through install_logging's lazy schwab import, so match the CURRENT
+        # module attribute rather than a possibly-stale module-top class object.
+        from swing.integrations.schwab.client import RedactingFormatter as _RedactingFormatter
+        assert isinstance(cli_handlers[0].formatter, _RedactingFormatter)
         for h in cli_handlers:
             h.flush()
         text = (logs_dir / "pipeline.log").read_text(encoding="utf-8")
@@ -202,11 +206,16 @@ def web_logging(tmp_path):
 
 
 def test_web_handler_carries_redacting_formatter_at_attach(web_logging):
+    # Resolve RedactingFormatter FRESHLY (reload-fragility gotcha): a sibling
+    # research L2-lock test on this worker may have re-imported the schwab client,
+    # so the module-top class object can be stale vs the one the shim's lazy import
+    # uses. Match the CURRENT module attribute.
+    from swing.integrations.schwab.client import RedactingFormatter as _RedactingFormatter
     handlers = [
         h for h in logging.getLogger().handlers if isinstance(h, RotatingFileHandler)
     ]
     # No unredacted window: the formatter is a RedactingFormatter at attach time.
-    assert any(isinstance(h.formatter, RedactingFormatter) for h in handlers)
+    assert any(isinstance(h.formatter, _RedactingFormatter) for h in handlers)
 
 
 def test_web_non_schwabdev_logger_line_is_redacted(web_logging):
