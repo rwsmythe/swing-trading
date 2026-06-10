@@ -212,6 +212,13 @@ class ArchiveConfig:
     (`swing/data/ohlcv_archive.py`). 1260 = 5y trading days; bounds the
     full-history fetch window invoked by weekly refresh + new-ticker paths.
 
+    `stagger_full_refresh` (Arc 6 §5): when True (default), the weekly
+    full-refresh trigger is spread across the week via a stateless
+    crc32 hash-bucket (≤13-day hard ceiling) instead of a bare `>= 7`
+    cliff, preventing the weekly-storm where large batches of the
+    universe re-download deep history on the same night. Setting it
+    False restores the exact legacy `>= 7` cadence with no code change.
+
     Toml-shadowing audit (per locked decision §2.5 of the OHLCV archive
     consolidation plan): no override should appear in `swing.config.toml`
     unless the operator explicitly wants a different retention. The
@@ -219,6 +226,7 @@ class ArchiveConfig:
     runtime if a tracked toml override exists.
     """
     archive_history_days: int = 1260
+    stagger_full_refresh: bool = True
 
 
 @dataclass(frozen=True)
