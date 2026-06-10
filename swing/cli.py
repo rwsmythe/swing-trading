@@ -5452,7 +5452,12 @@ def _refuse_if_pipeline_running(cfg) -> None:
             f"Cannot open the DB at {db_path} to check pipeline state; refusing."
         )
     try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        # Route through the sanctioned opener (uniform busy_timeout; live-open
+        # guard test). mode=ro never creates a DB, preserving fail-closed.
+        conn = open_connection(
+            f"file:{db_path}?mode=ro", uri=True,
+            busy_timeout_ms=cfg.web.db_busy_timeout_ms,
+        )
         try:
             row = conn.execute(
                 "SELECT 1 FROM pipeline_runs WHERE state = 'running' LIMIT 1"
