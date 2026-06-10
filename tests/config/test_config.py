@@ -83,7 +83,7 @@ def test_load_reads_toml_file(tmp_path: Path, monkeypatch):
     assert cfg.rs.benchmark_ticker == "SPY"
 
 
-def test_paths_resolves_relative_to_user_home(tmp_path: Path, monkeypatch):
+def test_paths_resolves_relative_to_user_home(tmp_path: Path, monkeypatch, real_user_home):
     """Relative paths in [paths] are resolved against USERPROFILE (Win) or HOME (Unix)."""
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setenv("HOME", str(tmp_path))

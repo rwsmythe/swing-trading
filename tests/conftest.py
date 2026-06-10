@@ -8,7 +8,57 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+import swing.config as _swing_config_module
 from swing.data.models import Fill, Trade
+
+# Captured at conftest IMPORT (before any fixture patches the module attribute):
+# the genuine env-reading _user_home implementation. Tests that validate
+# USERPROFILE/HOME resolution itself opt back into it via the `real_user_home`
+# fixture (the autouse D1 redirect below stubs the module attribute).
+_REAL_USER_HOME = _swing_config_module._user_home
+
+
+@pytest.fixture(scope="session")
+def _suite_home(tmp_path_factory):
+    """One stable temp home per pytest session (so relative-path resolution is
+    consistent across tests within a session)."""
+    return tmp_path_factory.mktemp("suite_home")
+
+
+@pytest.fixture(autouse=True)
+def _redirect_home_away_from_real_swing_data(_suite_home, monkeypatch):
+    """Stop the suite leaking into the operator's REAL ~/swing-data/logs.
+
+    The leak (spec §2.1 / OQ-7): swing.config.load() resolves the relative
+    ``logs_dir = "swing-data/logs"`` against ``_user_home()`` (the real
+    $USERPROFILE), and create_app() attaches a ROOT-logger web.log handler there
+    at construction time -- so a single leaking test poisons the whole process
+    (33.6 K httpx lines + synthetic tracebacks land in the real web.log).
+
+    Fix (D1): redirect ``swing.config._user_home`` AND $USERPROFILE/$HOME to a
+    session-stable temp home for every test. Tests passing ABSOLUTE tmp logs_dir
+    (the _minimal_config family) are unaffected (absolute short-circuits
+    _resolve_path); the redaction/rotation tests pass explicit absolute tmp paths
+    too, so the production wiring stays exercised (not masked).
+    """
+    import swing.config as config_mod
+
+    monkeypatch.setenv("USERPROFILE", str(_suite_home))
+    monkeypatch.setenv("HOME", str(_suite_home))
+    monkeypatch.setattr(config_mod, "_user_home", lambda: _suite_home)
+    yield
+
+
+@pytest.fixture
+def real_user_home(_redirect_home_away_from_real_swing_data, monkeypatch):
+    """Opt back into the genuine ``swing.config._user_home`` (env-reading) for
+    tests that validate USERPROFILE/HOME path resolution itself. Depends on the
+    autouse redirect so this restore is applied AFTER it (its setattr wins);
+    the test then sets its own USERPROFILE/HOME and exercises the real resolver."""
+    import swing.config as config_mod
+
+    monkeypatch.setattr(config_mod, "_user_home", _REAL_USER_HOME)
+    return _REAL_USER_HOME
 
 # ============================================================================
 # Schwab API cassette filter (T-A.10 — plan §G.3)

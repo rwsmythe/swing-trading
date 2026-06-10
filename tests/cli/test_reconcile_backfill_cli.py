@@ -1224,6 +1224,26 @@ def test_cli_renders_partial_summary_on_mid_iteration_abort(
         lambda c, e, cid, csec: _FakeClient(),
     )
 
+    # Configure account_hash via the cfg-cascade (user-config.toml under the test
+    # home), mirroring test_apply_constructs_schwab_client_via_cli_schwab_helpers.
+    # Previously this test relied on the operator's REAL ~/swing-data/user-config.toml
+    # account_hash being present; the Slice-1 autouse home-redirect (D1) closes that
+    # read-side leak, so the test now provisions its own account_hash explicitly.
+    from pathlib import Path as _Path
+    home = _Path(cfg).parent.parent / "home"
+    user_config = home / "swing-data" / "user-config.toml"
+    user_config.parent.mkdir(parents=True, exist_ok=True)
+    user_config.write_text(
+        "[integrations.schwab]\n"
+        "environment = \"production\"\n"
+        "account_hash = \"AAAAAAAA1234567890\"\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("SCHWAB_CLIENT_ID", raising=False)
+    monkeypatch.delenv("SCHWAB_CLIENT_SECRET", raising=False)
+
     r = runner.invoke(
         main, [
             "--config", str(cfg), "journal", "reconcile-backfill",
