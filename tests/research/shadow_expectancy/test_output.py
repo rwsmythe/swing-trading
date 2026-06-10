@@ -38,3 +38,9 @@ def test_write_summary_and_manifest(tmp_path):
     output.write_manifest_json({"harness_version": "0.1.0"}, tmp_path / "m.json")
     m = json.loads((tmp_path / "m.json").read_text(encoding="utf-8"))
     assert m["l2_lock_preserved"] is True
+
+
+def test_results_header_includes_entry_bar_weak_close():
+    from research.harness.shadow_expectancy.output import RESULTS_HEADER
+    assert "entry_bar_weak_close" in RESULTS_HEADER
+    assert RESULTS_HEADER[-1] == "entry_bar_weak_close"   # appended (additive)

@@ -37,22 +37,22 @@ def test_reason_vocabularies_are_frozen_tuples():
     assert "invalid_ohlc" in c.FUNNEL_REASONS
     assert "degenerate_risk" in c.FUNNEL_REASONS
     assert "inconsistent_detection_series" in c.FUNNEL_REASONS
-    assert "inconsistent_trigger_state" in c.FUNNEL_REASONS
     assert "never_triggered" in c.FUNNEL_REASONS
-    assert "matched_no_hypothesis" in c.FUNNEL_REASONS  # C-review M1: a reason WITHIN unattributed
-    assert "no_canonical_detection" in c.FUNNEL_REASONS  # C-review M4: present, no pivot match
-    assert "multi_match" in c.FUNNEL_REASONS             # R3-M1: defensive >1-hypothesis guard
-    # The unattributed bucket's six PRE-/NON-attribution reasons (spec 7.1; C-review M1/M4 +
-    # R3-M1 multi_match -- a signal matching >1 hypothesis is excluded here, NOT counted in
-    # each, so the reconciliation invariant stays exact).
+    assert "matched_no_hypothesis" in c.FUNNEL_REASONS
+    assert "multi_match" in c.FUNNEL_REASONS
+    assert "no_candidate_pivot" in c.FUNNEL_REASONS          # correction: split from invalid_ohlc
+    # retired by the entry/join correction (spec 3.1): no geometric pivot match remains.
+    assert "no_canonical_detection" not in c.FUNNEL_REASONS
+    assert "inconsistent_trigger_state" not in c.FUNNEL_REASONS
+    # unattributed = pre-/non-attribution states only (spec 3.4): four reasons.
     assert set(c.UNATTRIBUTED_REASONS) == {
-        "no_candidate_join", "matched_no_hypothesis", "no_canonical_detection",
-        "multi_match", "inconsistent_detection_series", "inconsistent_trigger_state",
+        "no_candidate_join", "matched_no_hypothesis", "multi_match",
+        "inconsistent_detection_series",
     }
-    # writing-plans R5: post-attribution `excluded` reasons, DISJOINT from the unattributed set.
+    # post-attribution per-hypothesis excluded reasons (spec 3.5): no_candidate_pivot added.
     assert set(c.ATTRIBUTED_EXCLUDED_REASONS) == {
-        "invalid_ohlc", "degenerate_risk", "insufficient_forward_depth",
-        "missing_observations", "lifecycle",
+        "no_candidate_pivot", "invalid_ohlc", "degenerate_risk",
+        "insufficient_forward_depth", "missing_observations", "lifecycle",
     }
     assert set(c.ATTRIBUTED_EXCLUDED_REASONS).isdisjoint(set(c.UNATTRIBUTED_REASONS))
     assert set(c.EXIT_REASONS) == {

@@ -3,50 +3,57 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from research.harness.shadow_expectancy.constants import PRICE_TICK_DECIMALS
-
-
-def normalize_tick(price: float) -> float:
-    return round(float(price), PRICE_TICK_DECIMALS)
-
 
 @dataclass(frozen=True)
 class CollapseResult:
-    canonical: Any | None
+    canonical: Any | None        # canonical detection view (longest chain), or None on exclusion
     collapsed_ids: list[int]
-    # no_candidate_join (no candidate row) | no_canonical_detection (candidate present, no
-    # pivot match; C-review M4) | inconsistent_detection_series | inconsistent_trigger_state
-    # | None
+    # 'inconsistent_detection_series' (strict-prefix invariant violated) | None.
+    # no_candidate_join is decided in run.py (candidate is None), NOT here.
     exclusion_reason: str | None
 
 
-def collapse_detections(detections, candidate_pivot) -> CollapseResult:
-    """Spec 6 / Codex C4: one shadow-trade per unique (run, ticker). The group is
-    ALL detections for that (run, ticker). The canonical detection is the one whose
-    pivot == candidate.pivot (tick-normalized), tie-broken by lowest detection_id.
-    The consistency gates run over the WHOLE group (NOT just the pivot-matching
-    subset): EVERY detection in the group MUST share an identical frozen forward
-    series AND an identical first triggered_open session, else exclude. The collapsed
-    set is every non-canonical detection in the group, so collapsed_duplicate ==
-    group_size - 1 (covering non-pivot-matching detections too).
+def _sorted_bars(detection) -> tuple:
+    """The detection's frozen bars sorted date-ascending. Each bar is
+    (observation_date, open, high, low, close)."""
+    return tuple(sorted(detection.bars, key=lambda b: b[0]))
+
+
+def collapse_detections(detections) -> CollapseResult:
+    """spec 2.3 (entry/join correction): one shadow signal per (run, ticker) group. The
+    canonical detection is a PURE BAR SOURCE -- the geometric detection.pivot is no longer
+    consulted. Canonical = the LONGEST frozen observation chain (most bars), tie-broken by
+    lowest detection_id.
+
+    The `inconsistent_detection_series` gate enforces the STRICT date-prefix invariant the
+    longest-chain rule relies on (Codex R1-#1): after sorting each chain by observation_date,
+    every non-canonical chain's date list MUST equal canonical_dates[:len(chain)] (a true
+    prefix -- no missing interior sessions, no divergent dates) AND its OHLC on every shared
+    date MUST match the canonical's. ANY violation -> exclude. This is NOT an overlap-only
+    check (which would silently accept a gappy A=[d1,d3] vs B=[d1,d2,d3]).
+
+    collapsed_ids = every non-canonical detection in the group (group_size - 1), preserving the
+    detection-level reconciliation invariant on both the success and exclusion paths.
     """
-    if candidate_pivot is None:
-        return CollapseResult(None, [], "no_candidate_join")
     group = sorted(detections, key=lambda d: d.detection_id)
-    target = normalize_tick(candidate_pivot)
-    matching = [d for d in group if normalize_tick(d.pivot) == target]
-    if not matching:
-        # C-review M4: the candidate row EXISTS (candidate_pivot is not None) but NO
-        # detection pivot matches it -> a canonical-detection / collapse integrity fault,
-        # NOT a missing candidate. Distinct reason `no_canonical_detection`, routed to the
-        # unattributed bucket like `inconsistent_*` (a substrate-integrity exclusion).
-        return CollapseResult(None, [], "no_canonical_detection")
-    # Consistency gates across the ENTIRE group (Codex C4 + R5-M1), keyed off the
-    # canonical's frozen series / first trigger.
-    canonical = matching[0]  # group is id-sorted, so this is the lowest-id pivot match
-    if any(d.forward_series_key != canonical.forward_series_key for d in group):
-        return CollapseResult(None, [], "inconsistent_detection_series")
-    if any(d.first_trigger_session != canonical.first_trigger_session for d in group):
-        return CollapseResult(None, [], "inconsistent_trigger_state")
+    # longest chain, tie low id: max over (len(bars), -detection_id).
+    canonical = max(group, key=lambda d: (len(_sorted_bars(d)), -d.detection_id))
+    canonical_bars = _sorted_bars(canonical)
+    canonical_dates = [b[0] for b in canonical_bars]
+    canonical_by_date = {b[0]: b for b in canonical_bars}
+
+    for d in group:
+        if d.detection_id == canonical.detection_id:
+            continue
+        dbars = _sorted_bars(d)
+        ddates = [b[0] for b in dbars]
+        # strict date-prefix: dates must be exactly the canonical's leading dates.
+        if ddates != canonical_dates[: len(ddates)]:
+            return CollapseResult(None, [], "inconsistent_detection_series")
+        # OHLC on every shared date must match the canonical (full tuple equality).
+        for b in dbars:
+            if b != canonical_by_date[b[0]]:
+                return CollapseResult(None, [], "inconsistent_detection_series")
+
     collapsed = [d.detection_id for d in group if d.detection_id != canonical.detection_id]
     return CollapseResult(canonical, collapsed, None)

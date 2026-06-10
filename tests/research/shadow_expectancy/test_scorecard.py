@@ -91,3 +91,28 @@ def test_same_bar_adverse_sensitivity_only_over_ambiguous():
     assert math.isclose(card["headline_realistic_closed_only"], 1.5)
     assert math.isclose(card["same_bar_adverse_mean_r"]["realistic"], 0.0)
     assert card["ambiguous_count"] == 1
+
+
+def test_entry_bar_weak_close_count_is_additive():
+    from research.harness.shadow_expectancy.scorecard import (
+        ShadowTrade,
+        build_hypothesis_scorecard,
+    )
+    rr = {"realistic": 1.0, "favorable_reprice": 1.0}
+    trades = [
+        ShadowTrade(hypothesis="H", triggered=True, open_at_horizon=False, realized_r=rr,
+                    entry_bar_ambiguous=False, holding_sessions=2, censoring_scenarios=None,
+                    entry_bar_weak_close=True),
+        ShadowTrade(hypothesis="H", triggered=True, open_at_horizon=False, realized_r=rr,
+                    entry_bar_ambiguous=False, holding_sessions=2, censoring_scenarios=None,
+                    entry_bar_weak_close=False),
+        # a never-triggered signal never contributes a weak-close (no entry bar).
+        ShadowTrade(hypothesis="H", triggered=False, open_at_horizon=False, realized_r=None,
+                    entry_bar_ambiguous=False, holding_sessions=0, censoring_scenarios=None,
+                    entry_bar_weak_close=False),
+    ]
+    card = build_hypothesis_scorecard(
+        trades, sample_floor_mean=5, sample_floor_rate=5, profit_factor_floor=5)["H"]
+    assert card["entry_bar_weak_close_count"] == 1
+    # additive: the headline expectancy is unchanged by the flag.
+    assert card["headline_realistic_closed_only"] == 1.0

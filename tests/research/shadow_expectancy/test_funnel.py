@@ -29,8 +29,6 @@ def test_unattributed_reasons_vs_per_hypothesis():
     outs = [
         SignalOutcome(hypothesis=None, terminal="unattributed", reason="no_candidate_join"),
         SignalOutcome(hypothesis=None, terminal="unattributed",
-                      reason="no_canonical_detection"),
-        SignalOutcome(hypothesis=None, terminal="unattributed",
                       reason="inconsistent_detection_series"),
         SignalOutcome(hypothesis=None, terminal="unattributed",
                       reason="matched_no_hypothesis"),
@@ -42,11 +40,10 @@ def test_unattributed_reasons_vs_per_hypothesis():
         SignalOutcome(hypothesis="A+ baseline", terminal="never_triggered",
                       reason="never_triggered"),
     ]
-    det = DetectionLevel(total_detections=10, collapsed_duplicate=0, unique_signals=10)
+    det = DetectionLevel(total_detections=9, collapsed_duplicate=0, unique_signals=9)
     f = build_funnel(det, signal_outcomes=outs)
     # ONE unattributed bucket; matched_no_hypothesis + multi_match are counters WITHIN it (M1).
     assert f["unattributed"]["no_candidate_join"] == 1
-    assert f["unattributed"]["no_canonical_detection"] == 1          # M4
     assert f["unattributed"]["inconsistent_detection_series"] == 1
     assert f["unattributed"]["matched_no_hypothesis"] == 1           # reason WITHIN unattributed
     assert f["unattributed"]["multi_match"] == 1   # R3-M1 reason WITHIN unattributed
@@ -137,34 +134,27 @@ def test_build_funnel_accepts_valid_attributed_exclusion_reasons():
 
 
 def test_detection_reconciliation_from_real_collapse_output():
-    # Codex M8: drive the detection-level reconciliation from the REAL collapser over an
-    # actual multi-detection group, NOT a hand-built consistent object, so a C4 undercount
-    # would surface. Three detections for one (run,ticker): a pivot-10 canonical, a duplicate
-    # pivot-10, and a non-pivot-matching pivot-11 -- all sharing an identical frozen series +
-    # trigger -> 1 unique signal + 2 collapsed.
+    # Drive the detection-level reconciliation from the REAL collapser over an actual
+    # multi-detection group: three detections for one (run, ticker) sharing an identical frozen
+    # series -> 1 unique signal + 2 collapsed (group_size - 1).
     from dataclasses import dataclass
 
     @dataclass
     class _Det:
         detection_id: int
-        pivot: float
-        forward_series_key: tuple
-        first_trigger_session: str | None
+        bars: tuple
 
     series = (("2026-06-01", 9.6, 10.2, 9.5, 10.1),)
-    dets = [_Det(5, 10.0, series, "2026-06-01"),
-            _Det(2, 10.0, series, "2026-06-01"),
-            _Det(9, 11.0, series, "2026-06-01")]
-    res = collapse_detections(dets, candidate_pivot=10.0)
+    dets = [_Det(5, series), _Det(2, series), _Det(9, series)]
+    res = collapse_detections(dets)
     assert res.exclusion_reason is None
     total_detections = len(dets)
     collapsed_duplicate = len(res.collapsed_ids)
-    unique_signals = 1   # this one (run,ticker) group collapsed to a single canonical signal
+    unique_signals = 1
     det = DetectionLevel(total_detections, collapsed_duplicate, unique_signals)
     f = build_funnel(det, signal_outcomes=[
         SignalOutcome(hypothesis="A+ baseline", terminal="closed", reason=None)])
     dl = f["detection_level"]
-    # the C4 reconciliation: total == unique + collapsed (the group fully reconciles).
     assert (dl["unique_signals"] + dl["collapsed_duplicate_detection"]
             == dl["total_detections"] == 3)
-    assert collapsed_duplicate == 2   # group_size - 1 (C4), NOT just the pivot-matching subset
+    assert collapsed_duplicate == 2   # group_size - 1

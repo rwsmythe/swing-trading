@@ -17,42 +17,29 @@ SAMPLE_FLOOR_MEAN = 5           # mean-R suppression floor
 SAMPLE_FLOOR_RATE = 5           # win-rate Wilson floor (still reported, annotated)
 PROFIT_FACTOR_FLOOR = 5         # profit-factor suppressed below this n
 
-# --- Funnel reason vocabulary (7.1) ---
+# --- Funnel reason vocabulary (7.1; entry/join correction 3.1-3.5) ---
 FUNNEL_REASONS = (
     "no_candidate_join", "matched_no_hypothesis", "multi_match",
-    "no_canonical_detection", "invalid_ohlc", "inconsistent_detection_series",
-    "inconsistent_trigger_state", "degenerate_risk", "insufficient_forward_depth",
+    "no_candidate_pivot", "invalid_ohlc", "inconsistent_detection_series",
+    "degenerate_risk", "insufficient_forward_depth",
     "missing_observations", "lifecycle", "never_triggered",
 )
-# Reasons reported WITHIN the unattributed bucket (PRE-/NON-attribution states only;
-# Codex R4-m1 + C-review M1/M2/M4 + R3-M1, spec 7.1). Under the join -> attribute ->
-# validate -> simulate order, the unattributed states are the JOIN/COLLAPSE-stage ones
-# below PLUS matched_no_hypothesis (candidate joined + valid but matched ZERO hypotheses)
-# PLUS multi_match (candidate matched >1 hypothesis). All six are REASONS within the
-# single `unattributed` bucket -- each reported with its own counter in the reason
-# breakdown; there is NO separate top-level matched_no_hypothesis / multi_match bucket
-# (C-review M1). matched_no_hypothesis is DISTINCT from no_candidate_join (candidate row
-# missing) and from no_canonical_detection (candidate present but no detection pivot
-# matches it -- a collapse/substrate-integrity fault; C-review M4). multi_match (R3-M1)
-# is a DEFENSIVE reason: the 4 seeded hypotheses are mutually exclusive by their
-# exact-miss-set definitions, so it should be ~0 today, but excluding a >1-match signal
-# here (rather than emitting one outcome PER matched hypothesis) keeps the reconciliation
-# invariant -- Sum(unattributed reason counts) + Sum(per-hypothesis terminal-status
-# counts) == unique_signals -- exact for a future non-exclusive hypothesis.
-# Validation/simulation failures on an ATTRIBUTED (exactly-one-match) signal (invalid_ohlc
-# / degenerate_risk) are caught AFTER attribution and reported PER-HYPOTHESIS in that
-# hypothesis's excluded[...], NOT unattributed (spec 7.1).
+# Reasons reported WITHIN the unattributed bucket (PRE-/NON-attribution states only; spec 3.4).
+# The retired no_canonical_detection / inconsistent_trigger_state are GONE (the geometric
+# detection.pivot is no longer consulted for entry or collapse). matched_no_hypothesis and
+# multi_match are reasons WITHIN this single bucket, not separate top-level buckets. A
+# post-attribution data-quality fault (no_candidate_pivot / invalid_ohlc / degenerate_risk) is
+# reported PER-HYPOTHESIS in ATTRIBUTED_EXCLUDED_REASONS, never here.
 UNATTRIBUTED_REASONS = (
     "no_candidate_join", "matched_no_hypothesis", "multi_match",
-    "no_canonical_detection", "inconsistent_detection_series",
-    "inconsistent_trigger_state",
+    "inconsistent_detection_series",
 )
-# writing-plans R5: the ONLY reasons a POST-attribution (per-hypothesis) `excluded` terminal may
-# carry. DISJOINT from UNATTRIBUTED_REASONS by construction, so an unattributed-only reason can
-# never be silently miscounted under a hypothesis (build_funnel rejects it).
+# The ONLY reasons a POST-attribution (per-hypothesis) `excluded` terminal may carry. DISJOINT
+# from UNATTRIBUTED_REASONS by construction. no_candidate_pivot (spec 3.2) joins + attributes,
+# then is excluded at validate -> per-hypothesis, exactly like invalid_ohlc / degenerate_risk.
 ATTRIBUTED_EXCLUDED_REASONS = (
-    "invalid_ohlc", "degenerate_risk", "insufficient_forward_depth",
-    "missing_observations", "lifecycle",
+    "no_candidate_pivot", "invalid_ohlc", "degenerate_risk",
+    "insufficient_forward_depth", "missing_observations", "lifecycle",
 )
 
 EXIT_REASONS = (
