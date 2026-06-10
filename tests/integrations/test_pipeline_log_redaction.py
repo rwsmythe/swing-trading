@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from logging.handlers import TimedRotatingFileHandler
+from logging.handlers import RotatingFileHandler
 
 import pytest
 
@@ -39,7 +39,7 @@ def pipeline_logging(tmp_path):
     )
     yield tmp_path / "pipeline.log"
     for h in list(root.handlers):
-        if isinstance(h, TimedRotatingFileHandler):
+        if isinstance(h, RotatingFileHandler):
             h.close()
         root.removeHandler(h)
     for h in saved:
@@ -52,7 +52,7 @@ def pipeline_logging(tmp_path):
 
 def _read(path):
     for h in logging.getLogger().handlers:
-        if isinstance(h, TimedRotatingFileHandler):
+        if isinstance(h, RotatingFileHandler):
             h.flush()
     return path.read_text(encoding="utf-8")
 
@@ -60,7 +60,7 @@ def _read(path):
 def test_handler_carries_redacting_formatter_at_attach(pipeline_logging):
     handlers = [
         h for h in logging.getLogger().handlers
-        if isinstance(h, TimedRotatingFileHandler)
+        if isinstance(h, RotatingFileHandler)
     ]
     assert any(isinstance(h.formatter, RedactingFormatter) for h in handlers)
 
@@ -146,7 +146,7 @@ def test_pipeline_run_cmd_writes_pipeline_log(tmp_path, monkeypatch):
 
     # Snapshot/restore root handlers AND level so this test's pipeline.log handler
     # + the INFO level set by configure_logging do not bleed into sibling tests.
-    from logging.handlers import TimedRotatingFileHandler
+    from logging.handlers import RotatingFileHandler
     root = logging.getLogger()
     saved = list(root.handlers)
     saved_level = root.level
@@ -158,7 +158,7 @@ def test_pipeline_run_cmd_writes_pipeline_log(tmp_path, monkeypatch):
         # The CLI-installed pipeline.log handler must carry Belt B at attach time.
         cli_handlers = [
             h for h in root.handlers
-            if isinstance(h, TimedRotatingFileHandler)
+            if isinstance(h, RotatingFileHandler)
             and h.baseFilename == str(logs_dir / "pipeline.log")
         ]
         assert cli_handlers, "CLI did not attach a pipeline.log handler"
@@ -170,7 +170,7 @@ def test_pipeline_run_cmd_writes_pipeline_log(tmp_path, monkeypatch):
         assert SENTINEL not in text                # Belt B wired by the CLI
     finally:
         for h in list(root.handlers):
-            if h not in saved and isinstance(h, TimedRotatingFileHandler):
+            if h not in saved and isinstance(h, RotatingFileHandler):
                 h.close()
                 root.removeHandler(h)
         root.setLevel(saved_level)

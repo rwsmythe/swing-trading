@@ -121,7 +121,7 @@ def test_configure_web_logging_is_idempotent(tmp_path):
     fixtures; handler leakage causes every log line in later tests to be
     duplicated N times (R2 Minor 2)."""
     import logging
-    from logging.handlers import TimedRotatingFileHandler
+    from logging.handlers import RotatingFileHandler
 
     from swing.web.middleware.request_id import configure_web_logging
 
@@ -130,7 +130,7 @@ def test_configure_web_logging_is_idempotent(tmp_path):
     root = logging.getLogger()
     baseline = sum(
         1 for h in root.handlers
-        if isinstance(h, TimedRotatingFileHandler)
+        if isinstance(h, RotatingFileHandler)
         and h.baseFilename == str(logs / "web.log")
     )
     configure_web_logging(logs)
@@ -138,7 +138,7 @@ def test_configure_web_logging_is_idempotent(tmp_path):
     configure_web_logging(logs)
     after = sum(
         1 for h in root.handlers
-        if isinstance(h, TimedRotatingFileHandler)
+        if isinstance(h, RotatingFileHandler)
         and h.baseFilename == str(logs / "web.log")
     )
     assert after - baseline == 1, (
