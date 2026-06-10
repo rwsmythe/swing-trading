@@ -128,6 +128,19 @@ def run_harness(*, db_path, output_dir, source=c.SOURCE,
         all_bars = [io.parse_bar(o.ohlc_today_json, session=o.observation_date)
                     for o in canonical_chain]
 
+        # zero frozen observations on the canonical chain -> missing_observations (per-hypothesis;
+        # the reason reserved in ATTRIBUTED_EXCLUDED_REASONS for exactly this). Checked BEFORE
+        # validate/recompute: with no bars there is nothing to price and nothing that justifies
+        # calling the signal `never_triggered` -- routing an attributed zero-observation signal to
+        # never_triggered would silently seat a phantom 0R non-trigger in the scorecard
+        # denominator (a honesty bug; Codex executing-review R1-major). Precedence note: an empty
+        # chain is classified as a data-DEPTH fault here even if the pivot is also null/<=0; with
+        # no bars the depth fault is the primary, more-informative classification.
+        if not all_bars:
+            for h in hyps:
+                signal_outcomes.append(SignalOutcome(h, "excluded", "missing_observations"))
+            continue
+
         # validate BEFORE the recompute (Codex M5 order): a null/<=0 pivot is caught as
         # no_candidate_pivot before the recompute dereferences it; bad frozen bars -> invalid_ohlc.
         # Both route PER-HYPOTHESIS (post-attribution), in ATTRIBUTED_EXCLUDED_REASONS.

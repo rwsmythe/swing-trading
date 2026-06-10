@@ -27,10 +27,10 @@ class SignalOutcome:
 
 def build_funnel(detection: DetectionLevel, *, signal_outcomes) -> dict:
     # C-review M1 + R3-M1: ONE `unattributed` bucket whose value is a per-reason breakdown. The
-    # six PRE-/NON-attribution reasons (no_candidate_join, matched_no_hypothesis, multi_match,
-    # no_canonical_detection, inconsistent_detection_series, inconsistent_trigger_state) are
-    # COUNTERS inside it -- matched_no_hypothesis and multi_match are reasons WITHIN
-    # unattributed, NOT separate top-level buckets.
+    # four PRE-/NON-attribution reasons (no_candidate_join, matched_no_hypothesis, multi_match,
+    # inconsistent_detection_series) are COUNTERS inside it -- matched_no_hypothesis and
+    # multi_match are reasons WITHIN unattributed, NOT separate top-level buckets. (The
+    # entry/join correction retired no_canonical_detection / inconsistent_trigger_state.)
     unattributed: dict[str, int] = defaultdict(int)
     per_hyp: dict[str, dict] = {}
 
@@ -42,12 +42,11 @@ def build_funnel(detection: DetectionLevel, *, signal_outcomes) -> dict:
         is_unattr_terminal = o.terminal == "unattributed"
         is_no_hypothesis = o.hypothesis is None
         if is_unattr_terminal or is_no_hypothesis:
-            # A PRE-/NON-attribution state (Codex R4-m1 / writing-plans R4-M1): one of the six
+            # A PRE-/NON-attribution state (Codex R4-m1 / writing-plans R4-M1): one of the four
             # UNATTRIBUTED_REASONS (no_candidate_join, matched_no_hypothesis, multi_match,
-            # no_canonical_detection, inconsistent_detection_series, inconsistent_trigger_state)
-            # -> a per-reason counter inside `unattributed`, never a hypothesis. (invalid_ohlc /
-            # degenerate_risk on an ATTRIBUTED signal are per-hypothesis -- the branch below --
-            # so they never reach here.)
+            # inconsistent_detection_series) -> a per-reason counter inside `unattributed`, never a
+            # hypothesis. (invalid_ohlc / degenerate_risk / no_candidate_pivot on an ATTRIBUTED
+            # signal are per-hypothesis -- the branch below -- so they never reach here.)
             #
             # Defensive integrity (writing-plans R4-M1): a VALID unattributed outcome must
             # satisfy ALL THREE -- hypothesis is None AND terminal == "unattributed" AND reason in

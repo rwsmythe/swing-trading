@@ -340,6 +340,41 @@ def test_zero_forward_depth_routes_insufficient_and_skips_simulate(tmp_path, mon
     assert h1["closed"] == 0 and h1["never_triggered"] == 0
 
 
+def _seed_attributed_zero_observations(conn, ticker="NOOBS"):
+    # An aplus candidate (-> H1) whose detection has ZERO frozen forward observations at all
+    # (no observation rows). The canonical chain is empty.
+    eval_id = insert_candidate(conn, ticker=ticker, bucket="aplus", pivot=10.0,
+                               initial_stop=9.0, close=10.0)
+    pr_id = insert_pipeline_run(conn, eval_id)
+    insert_detection(conn, ticker=ticker, pipeline_run_id=pr_id, pivot=10.0,
+                     data_asof_date="2026-05-28", detection_date="2026-05-29")
+    conn.commit()
+
+
+def test_zero_observations_routes_missing_observations_not_never_triggered(tmp_path, monkeypatch):
+    # Codex executing-review R1-major: an ATTRIBUTED signal whose canonical chain has zero frozen
+    # observations must route per-hypothesis to missing_observations (a data-depth fault), NOT
+    # never_triggered (which would seat a phantom 0R non-trigger in the scorecard denominator).
+    # simulate() must not be called either.
+    import research.harness.shadow_expectancy.run as run_mod
+
+    def _boom(*a, **k):
+        raise AssertionError("simulate must not be called for a zero-observation signal")
+
+    monkeypatch.setattr(run_mod, "simulate", _boom)
+    conn = make_db(tmp_path)
+    _seed_attributed_zero_observations(conn)
+    out = tmp_path / "out"
+    _, _, _, manifest = run_mod.run_harness(db_path=tmp_path / "t.db", output_dir=out,
+                                            source="pipeline")
+    f = json.loads(Path(manifest).read_text(encoding="utf-8"))["funnel"]
+    h1 = f["per_hypothesis"]["A+ baseline"]
+    assert h1["excluded"].get("missing_observations", 0) == 1
+    assert h1["never_triggered"] == 0 and h1["closed"] == 0
+    # not dropped to the unattributed bucket -- it was attributed first.
+    assert "missing_observations" not in f["unattributed"]
+
+
 def _seed_null_pivot_attributed(conn, ticker="NPV"):
     # spec 3.2: an attributed candidate whose screening pivot is 0.0 still JOINS and ATTRIBUTES
     # (bucket + criteria are independent of pivot), then is excluded at VALIDATE -> per-hypothesis
