@@ -43,9 +43,22 @@ def cfg(tmp_path):
     return _Cfg(db, exports)
 
 
+def _card(*, closed=0, open_at_horizon=0, never_triggered=0, excluded=None):
+    """A REAL per_hypothesis card: nested dict, NOT a bare int
+    (research/harness/shadow_expectancy/funnel.py:_blank). ``excluded`` is a
+    per-reason breakdown dict."""
+    return {
+        "closed": closed,
+        "open_at_horizon": open_at_horizon,
+        "never_triggered": never_triggered,
+        "excluded": excluded if excluded is not None else {},
+    }
+
+
 def _manifest_payload(*, total=210, unique=42, per_hypothesis=None, unattributed=None):
-    """Mirror the REAL manifest funnel shape (verified against the operator's
-    manual-run artifact shadow-expectancy-20260609T174447Z)."""
+    """Mirror the REAL manifest funnel shape (verified against funnel.py's
+    build_funnel return: per_hypothesis maps name -> nested card; unattributed
+    is a flat {reason: int} bucket with current UNATTRIBUTED_REASONS keys)."""
     return {
         "funnel": {
             "detection_level": {
@@ -55,7 +68,7 @@ def _manifest_payload(*, total=210, unique=42, per_hypothesis=None, unattributed
             },
             "per_hypothesis": per_hypothesis if per_hypothesis is not None else {},
             "unattributed": (
-                unattributed if unattributed is not None else {"no_canonical_detection": unique}
+                unattributed if unattributed is not None else {"matched_no_hypothesis": unique}
             ),
         },
         "harness_version": "0.1.0",
@@ -155,6 +168,52 @@ def test_nonzero_unique_signals_does_not_warn(cfg, monkeypatch):
     runner._step_shadow_expectancy(cfg=cfg, run_warnings=warnings)
 
     assert warnings == []
+
+
+def test_attributed_summed_across_real_nested_cards(cfg, monkeypatch, caplog):
+    # The REAL per_hypothesis card is a nested dict, not an int. attributed must
+    # sum the leaf counts (incl. the excluded per-reason breakdown) across cards.
+    # Pre-fix `sum(per_hypothesis.values())` would TypeError here; post-fix logs
+    # attributed=8. Discriminating per the regression-test-arithmetic discipline.
+    per_hyp = {
+        "broad_watch_baseline": _card(
+            closed=3, open_at_horizon=2, never_triggered=1,
+            excluded={"invalid_ohlc": 1},  # 3+2+1+1 = 7
+        ),
+        "other_hyp": _card(closed=1),  # 1
+    }
+    manifest = _write_artifact(cfg, total=50, unique=10, per_hypothesis=per_hyp,
+                               unattributed={"matched_no_hypothesis": 2})
+    _patch_run(monkeypatch, returns=_FakeProc(0, _cli_stdout(manifest)))
+
+    warnings: list[dict] = []
+    with caplog.at_level("INFO", logger="swing.pipeline.runner"):
+        runner._step_shadow_expectancy(cfg=cfg, run_warnings=warnings)
+
+    summary = [
+        r.message for r in caplog.records
+        if "shadow_expectancy: total_detections" in r.message
+    ]
+    assert summary, "expected the one-line funnel summary in the log"
+    assert "attributed=8" in summary[0]
+    assert "unattributed=2" in summary[0]
+    assert warnings == []  # 10 unique signals -> no #27 warning
+
+
+def test_unexpected_funnel_shape_is_warned(cfg, monkeypatch):
+    # Manifest parses but funnel is the wrong type (a future producer change) ->
+    # warned shape failure inside the step (gotcha #27), never an uncaught error.
+    art = cfg.paths.exports_dir / "research" / "shadow-expectancy-weird"
+    art.mkdir(parents=True)
+    manifest = art / "manifest.json"
+    manifest.write_text(json.dumps({"funnel": "not-a-dict"}), encoding="utf-8")
+    _patch_run(monkeypatch, returns=_FakeProc(0, _cli_stdout(manifest)))
+
+    warnings: list[dict] = []
+    runner._step_shadow_expectancy(cfg=cfg, run_warnings=warnings)
+
+    assert len(warnings) == 1
+    assert "funnel shape unexpected" in warnings[0]["reason"]
 
 
 # ---------------------------------------------------------------------------

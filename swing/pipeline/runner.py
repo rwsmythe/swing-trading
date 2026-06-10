@@ -1027,7 +1027,16 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
             except LeaseRevokedError:
                 raise
             except Exception as exc:
+                # The step self-audits its expected failure modes to
+                # run_warnings; this catches any UNEXPECTED programming error and
+                # still surfaces it in the run envelope (gotcha #27), never
+                # failing the run.
                 log.warning("shadow_expectancy failed: %s", exc)
+                run_warnings.append({
+                    "step": "shadow_expectancy",
+                    "reason": "unexpected step error",
+                    "detail": _shadow_expectancy_tail(str(exc)),
+                })
 
             lease.step("complete")
             try:
@@ -1089,6 +1098,27 @@ def _shadow_expectancy_tail(text, *, limit: int = 512) -> str:
     if not text:
         return ""
     return " ".join(str(text).split())[-limit:]
+
+
+def _attributed_card_count(card) -> int:
+    """Sum the leaf signal counts of one ``per_hypothesis`` card.
+
+    The real producer (research/harness/shadow_expectancy/funnel.py) emits each
+    hypothesis card as a nested dict
+    ``{closed, open_at_horizon, never_triggered, excluded: {reason: int}}`` --
+    NOT a bare int. The flat keys are counts; ``excluded`` is itself a per-reason
+    breakdown. Tolerant of unexpected key shapes (skip non-numeric leaves)."""
+    if not isinstance(card, dict):
+        return 0
+    total = 0
+    for key, value in card.items():
+        if key == "excluded" and isinstance(value, dict):
+            total += sum(int(v) for v in value.values())
+        elif isinstance(value, bool):
+            continue
+        elif isinstance(value, (int, float)):
+            total += int(value)
+    return total
 
 
 def _parse_shadow_manifest_path(stdout) -> Path | None:
@@ -1219,12 +1249,34 @@ def _step_shadow_expectancy(*, cfg, run_warnings: list[dict]) -> None:
         })
         return
 
-    funnel = manifest.get("funnel", {}) or {}
-    detection = funnel.get("detection_level", {}) or {}
-    total = int(detection.get("total_detections", 0) or 0)
-    unique = int(detection.get("unique_signals", 0) or 0)
-    attributed = sum((funnel.get("per_hypothesis", {}) or {}).values())
-    unattributed = sum((funnel.get("unattributed", {}) or {}).values())
+    try:
+        funnel = manifest.get("funnel", {}) or {}
+        detection = funnel.get("detection_level", {}) or {}
+        total = int(detection.get("total_detections", 0) or 0)
+        unique = int(detection.get("unique_signals", 0) or 0)
+        # The REAL per_hypothesis value is a nested card
+        # {closed, open_at_horizon, never_triggered, excluded:{reason:int}}
+        # (research/harness/shadow_expectancy/funnel.py) -- NOT a bare int.
+        # Sum the leaf counts (excluded is itself a per-reason breakdown).
+        attributed = sum(
+            _attributed_card_count(c)
+            for c in (funnel.get("per_hypothesis", {}) or {}).values()
+        )
+        # unattributed is a flat {reason: int} bucket -> sum its values.
+        unattributed = sum(
+            int(v) for v in (funnel.get("unattributed", {}) or {}).values()
+        )
+    except (AttributeError, TypeError, ValueError) as exc:
+        # Manifest parsed but the funnel shape is not what we expect (e.g. a
+        # future producer change). Surface it (gotcha #27) rather than letting
+        # an uncaught error escape to a log-only outer wrapper.
+        log.warning("shadow_expectancy: manifest funnel shape unexpected: %s", exc)
+        run_warnings.append({
+            "step": "shadow_expectancy",
+            "reason": "manifest funnel shape unexpected",
+            "detail": _shadow_expectancy_tail(str(exc)),
+        })
+        return
     log.info(
         "shadow_expectancy: total_detections=%d unique_signals=%d "
         "attributed=%d unattributed=%d artifact=%s",
