@@ -264,3 +264,62 @@ def test_parse_manifest_path_returns_none_when_absent():
     assert runner._parse_shadow_manifest_path("results.csv: foo\n") is None
     assert runner._parse_shadow_manifest_path("") is None
     assert runner._parse_shadow_manifest_path(None) is None
+
+
+# ---------------------------------------------------------------------------
+# Retention: keep-last-90 prune of shadow-expectancy-* only (brief §3.4)
+# ---------------------------------------------------------------------------
+def _mkdirs(root, names):
+    for n in names:
+        (root / n).mkdir(parents=True, exist_ok=True)
+
+
+def test_prune_keeps_newest_90_shadow_dirs_only(tmp_path):
+    root = tmp_path / "research"
+    # 92 shadow dirs with sortable UTC-basic timestamps (lexical == chrono).
+    shadow = [f"shadow-expectancy-202603{d:02d}T120000Z" for d in range(1, 93)]
+    _mkdirs(root, shadow)
+    # Other research exports that MUST never be touched.
+    others = ["double-bottom-w-backtest-20260101T000000Z",
+              "pattern-cohort-detection-20260101T000000Z",
+              "minervini-exemplar-recall-20260101T000000Z"]
+    _mkdirs(root, others)
+
+    runner._prune_shadow_expectancy_artifacts(root)
+
+    remaining = sorted(p.name for p in root.glob("shadow-expectancy-*"))
+    assert len(remaining) == 90
+    # The two OLDEST (lowest timestamps) were pruned; the newest 90 kept.
+    assert remaining == sorted(shadow)[2:]
+    # Non-shadow exports untouched.
+    for o in others:
+        assert (root / o).is_dir()
+
+
+def test_prune_noop_when_at_or_below_keep(tmp_path):
+    root = tmp_path / "research"
+    names = [f"shadow-expectancy-202603{d:02d}T120000Z" for d in range(1, 91)]  # exactly 90
+    _mkdirs(root, names)
+
+    runner._prune_shadow_expectancy_artifacts(root)
+
+    assert sorted(p.name for p in root.glob("shadow-expectancy-*")) == sorted(names)
+
+
+def test_successful_run_prunes_after_summary(cfg, monkeypatch):
+    # End-to-end: a healthy run triggers the prune. Plant 91 stale dirs + the
+    # one this run "wrote"; assert the oldest is pruned to keep-90.
+    research = cfg.paths.exports_dir / "research"
+    research.mkdir(parents=True, exist_ok=True)
+    stale = [f"shadow-expectancy-202603{d:02d}T120000Z" for d in range(1, 92)]  # 91
+    _mkdirs(research, stale)
+    manifest = _write_artifact(cfg, name="shadow-expectancy-20260401T120000Z")  # 92nd, newest
+    _patch_run(monkeypatch, returns=_FakeProc(0, _cli_stdout(manifest)))
+
+    warnings: list[dict] = []
+    runner._step_shadow_expectancy(cfg=cfg, run_warnings=warnings)
+
+    remaining = sorted(p.name for p in research.glob("shadow-expectancy-*"))
+    assert len(remaining) == 90
+    assert "shadow-expectancy-20260301T120000Z" not in remaining  # oldest pruned
+    assert "shadow-expectancy-20260401T120000Z" in remaining  # this run's artifact kept
