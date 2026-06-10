@@ -45,13 +45,14 @@ def test_migration_0008_seeds_four_active_hypotheses(tmp_db: Path):
             "consecutive_loss_tripwire, absolute_loss_tripwire_pct "
             "FROM hypothesis_registry ORDER BY id"
         ).fetchall()
-        assert len(rows) == 4
+        assert len(rows) == 5
         names = [r[0] for r in rows]
         assert names == [
             "A+ baseline",
             "Near-A+ defensible: extension test",
             "Sub-A+ VCP-not-formed",
             "Capital-blocked: smaller-position test",
+            "Broad-watch baseline",
         ]
         # All seeded as active
         assert all(r[2] == "active" for r in rows)
@@ -103,10 +104,10 @@ def test_migration_0008_idempotent_on_re_apply(tmp_db: Path):
         n = conn.execute(
             "SELECT COUNT(*) FROM hypothesis_registry"
         ).fetchone()[0]
-        assert n == 4, f"expected 4 seed rows, got {n}"
+        assert n == 5, f"expected 5 seed rows, got {n}"
     finally:
         conn.close()
 
 
 def test_expected_schema_version_is_19():
-    assert EXPECTED_SCHEMA_VERSION == 25
+    assert EXPECTED_SCHEMA_VERSION == 26

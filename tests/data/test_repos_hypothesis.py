@@ -32,13 +32,14 @@ def test_list_hypotheses_returns_all_seeded(tmp_db: Path):
     conn = _conn(tmp_db)
     try:
         rows = list_hypotheses(conn)
-        assert len(rows) == 4
+        assert len(rows) == 5
         assert all(isinstance(r, HypothesisRegistryEntry) for r in rows)
         assert {r.name for r in rows} == {
             "A+ baseline",
             "Near-A+ defensible: extension test",
             "Sub-A+ VCP-not-formed",
             "Capital-blocked: smaller-position test",
+            "Broad-watch baseline",
         }
         # All seeded as active and ordered by id
         ids = [r.id for r in rows]
@@ -51,7 +52,7 @@ def test_list_hypotheses_filter_by_status(tmp_db: Path):
     conn = _conn(tmp_db)
     try:
         active = list_hypotheses(conn, status_filter="active")
-        assert len(active) == 4
+        assert len(active) == 5
         paused = list_hypotheses(conn, status_filter="paused")
         assert paused == []
     finally:

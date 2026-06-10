@@ -156,6 +156,7 @@ def test_count_per_cohort_returns_all_4_cohorts_even_when_zero(
         "Near-A+ defensible: extension test",
         "Sub-A+ VCP-not-formed",
         "Capital-blocked: smaller-position test",
+        "Broad-watch baseline",
     }
     for name, count in result.items():
         assert count == 0, f"{name}: expected 0 got {count}"

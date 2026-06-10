@@ -126,13 +126,14 @@ def test_vm_renders_4_cohorts_always(cfg) -> None:
     vm = build_hypothesis_progress_card_vm(cfg=cfg)
     assert isinstance(vm, HypothesisProgressCardVM)
     assert isinstance(vm, BaseLayoutVM)
-    assert len(vm.cohorts) == 4
+    assert len(vm.cohorts) == 5
     names = [c.cohort_name for c in vm.cohorts]
     assert names == [
         "A+ baseline",
         "Near-A+ defensible: extension test",
         "Sub-A+ VCP-not-formed",
         "Capital-blocked: smaller-position test",
+        "Broad-watch baseline",
     ]
 
 

@@ -216,7 +216,7 @@ def test_hypothesis_progress_headline_counts_registered_cohorts(high_data_cfg_co
     card = _extract_hypothesis_progress(cfg, conn, "2026-05-30")
     assert card.sparkline_kind == "none"
     assert card.headline_caption == "registered cohorts"
-    assert card.headline_stat_text == "4"  # 4 TAXONOMY_COHORTS registered
+    assert card.headline_stat_text == "5"  # 5 registered hypothesis-progress cohorts (H1-H4 + broad-watch baseline)
 
 
 def test_maturity_headline_is_open_position_count(high_data_cfg_conn):

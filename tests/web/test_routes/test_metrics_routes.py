@@ -143,12 +143,13 @@ def test_trade_process_renders_all_5_tabs_in_html_body(seeded_db):
     with TestClient(app) as client:
         r = client.get("/metrics/trade-process")
     assert r.status_code == 200
-    # All 4 registered cohort names + the "All closed trades" toggle label.
+    # All 5 registered cohort names + the "All closed trades" toggle label.
     for label in (
         "A+ baseline",
         "Near-A+ defensible: extension test",
         "Sub-A+ VCP-not-formed",
         "Capital-blocked: smaller-position test",
+        "Broad-watch baseline",
         "All closed trades",
     ):
         assert label in r.text, f"missing cohort tab label: {label}"
@@ -228,6 +229,7 @@ def test_hypothesis_progress_renders_all_4_cohorts(seeded_db):
         "Near-A+ defensible: extension test",
         "Sub-A+ VCP-not-formed",
         "Capital-blocked: smaller-position test",
+        "Broad-watch baseline",
     ):
         assert label in r.text, f"missing cohort cell: {label}"
 

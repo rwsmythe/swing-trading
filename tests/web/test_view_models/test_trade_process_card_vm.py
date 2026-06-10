@@ -78,16 +78,17 @@ def test_vm_renders_4_cohort_tabs_plus_all_toggle(cfg, conn_factory) -> None:
     """4 hypothesis_registry cohorts + 1 All toggle = 5 tabs."""
     vm = build_trade_process_card_vm(cfg=cfg)
     assert isinstance(vm, TradeProcessCardVM)
-    assert len(vm.cohort_tabs) == 5
+    assert len(vm.cohort_tabs) == 6
     keys = [t.cohort_key for t in vm.cohort_tabs]
     assert ALL_COHORTS_KEY in keys
-    # The 4 registered names appear in the tabs.
+    # The 5 registered names appear in the tabs.
     registered = {t.cohort_key for t in vm.cohort_tabs if t.cohort_key != ALL_COHORTS_KEY}
     assert registered == {
         "A+ baseline",
         "Near-A+ defensible: extension test",
         "Sub-A+ VCP-not-formed",
         "Capital-blocked: smaller-position test",
+        "Broad-watch baseline",
     }
 
 

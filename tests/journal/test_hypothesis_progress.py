@@ -108,7 +108,7 @@ def test_breakdown_has_one_row_per_hypothesis(tmp_db: Path):
     conn = _setup(tmp_db)
     try:
         rows = compute_hypothesis_progress_breakdown(conn, starting_equity=7500.0)
-        assert len(rows) == 4
+        assert len(rows) == 5
         assert all(isinstance(r, HypothesisProgress) for r in rows)
         names = [r.name for r in rows]
         assert names == [
@@ -116,6 +116,7 @@ def test_breakdown_has_one_row_per_hypothesis(tmp_db: Path):
             "Near-A+ defensible: extension test",
             "Sub-A+ VCP-not-formed",
             "Capital-blocked: smaller-position test",
+            "Broad-watch baseline",
         ]
     finally:
         conn.close()
