@@ -4795,6 +4795,23 @@ def _validate_diagnose_db_path(db_path: Path) -> None:
         )
 
 
+def _ensure_research_importable() -> None:
+    """Prepend the source-tree root to sys.path so deferred `research.harness.*` imports resolve
+    from the `swing` entry point (research/ is not an installed package). Idempotent; verifies
+    the located root actually contains research/harness before inserting (R2-#2), so it is a safe
+    no-op when the source tree is absent rather than silently shadowing site-packages."""
+    import sys
+    from pathlib import Path
+    here = Path(__file__).resolve()
+    for root in here.parents:
+        if (root / "research" / "harness").is_dir():
+            if str(root) not in sys.path:
+                sys.path.insert(0, str(root))
+            return
+    # No source tree on disk (true non-editable install): nothing to add; the deferred import
+    # will raise its normal ModuleNotFoundError, which is the honest outcome.
+
+
 @diagnose_group.command("aplus-sensitivity")
 @click.option(
     "--db", "db_path", required=True, type=click.Path(path_type=Path),
@@ -4819,6 +4836,7 @@ def diagnose_aplus_sensitivity(
     # friendly error before the harness opens any sqlite3 connection.
     _validate_diagnose_db_path(db_path)
     try:
+        _ensure_research_importable()
         from research.harness.aplus_sensitivity.run import run_harness
 
         md_path, csv_path = run_harness(
@@ -4880,6 +4898,7 @@ def diagnose_aplus_sensitivity_v2(
     # Codex R1 m#2 precedent: pre-validate --db existence so a typo surfaces
     # as a friendly error before the harness opens any sqlite3 connection.
     _validate_diagnose_db_path(db_path)
+    _ensure_research_importable()
     from research.harness.aplus_v2_ohlcv_evaluator.run import run_harness
 
     filter_tuple: tuple[str, ...] | None = None
@@ -4928,6 +4947,7 @@ def diagnose_minervini_recall(exemplars_csv, tiingo_dir, output_dir, window_back
     """Minervini correct-entry exemplar-recall harness (H1 screen + H2 detector recall).
 
     No --db: H1 is pure, equity is the $7500 floor surrogate, stage is synthetic."""
+    _ensure_research_importable()
     from research.harness.minervini_exemplar_recall.run import run_harness  # deferred import
 
     only_tuple = tuple(s.strip() for s in only.split(",") if s.strip()) if only else None
@@ -4961,6 +4981,7 @@ def diagnose_primary_base_recall(exemplars_csv, tiingo_dir, output_dir, window_b
     """Minervini Ch.11 primary-base (young-name) screen recall/precision harness.
 
     No DB flag: the screen is pure on bars (no equity, no stage)."""
+    _ensure_research_importable()
     from research.harness.minervini_primary_base_recall.run import run_harness  # deferred import
 
     only_tuple = tuple(s.strip() for s in only.split(",") if s.strip()) if only else None
@@ -5025,6 +5046,7 @@ def diagnose_pattern_cohort_detect(
     loosened-A+ cohorts. See research/method-records/pattern-cohort-detection.md.
     """
     _validate_diagnose_db_path(db_path)
+    _ensure_research_importable()
     from research.harness.pattern_cohort_evaluator.exceptions import (
         BothCohortModesSuppliedError,
         NeitherCohortModeSuppliedError,
@@ -5081,6 +5103,7 @@ def diagnose_shadow_expectancy(db_path, output_dir, source, partial_session_n,
     per-run artifact (funnel + four-scenario scorecard + ledger + manifest). NOT an
     operator trading surface; never co-mingled with live hand-traded counts."""
     _validate_diagnose_db_path(db_path)
+    _ensure_research_importable()
     from research.harness.shadow_expectancy.run import run_harness  # deferred import
 
     only_tuple = tuple(s.strip() for s in only.split(",") if s.strip()) if only else None
@@ -5157,6 +5180,7 @@ def diagnose_double_bottom_w_backtest(
         raise click.ClickException(
             "Exactly one of --results-csv or --cohort-fixture must be supplied"
         )
+    _ensure_research_importable()
     from research.harness.double_bottom_w_backtest.run import main as backtest_main
 
     argv: list[str] = []
@@ -5235,6 +5259,7 @@ def diagnose_w_bottom_ruleset_comparison(
         raise click.ClickException(
             "Exactly one of --results-csv or --cohort-fixture must be supplied"
         )
+    _ensure_research_importable()
     from research.harness.w_bottom_ruleset_comparison.run import main as backtest_main
 
     argv: list[str] = []
