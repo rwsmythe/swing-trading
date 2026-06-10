@@ -445,6 +445,54 @@ def _fetch_chunk(
     return extracted, failed, False
 
 
+def _merge_gap_subframe(
+    cache_dir: Path, ticker: str, sub: pd.DataFrame, *, archive_history_days: int,
+) -> None:
+    """Merge a gap subframe into the existing archive — data-content-identical to
+    the serial read_or_fetch_archive incremental-gap branch (lines ~277-281):
+    concat, dedup keep='last', sort, tail(N), atomic write. NO meta write (gap).
+
+    Codex R1 Critical #1 (deep-band overlap): the deep-gap band collapses tickers
+    with DIFFERENT latest_stored into ONE wide window, so a ticker's subframe can
+    carry rows AT-OR-BEFORE its own latest_stored (rows another, staler band member
+    needed). The serial gap branch fetches ONLY `[latest+1, today]`, so it NEVER
+    rewrites a pre-existing archived bar. To match that outcome we slice the
+    incoming sub to `index.date > latest_stored` before concat — dropping the
+    overlap so existing bars are untouched (a re-fetch of an old bar yfinance may
+    have re-stated must NOT overwrite the archived value; that is the serial
+    behavior and the #26-temporal-mutation parity requirement). Harmless for
+    ordinary bands (all members share latest_stored → zero overlap)."""
+    parquet_path, _ = _archive_paths(Path(cache_dir), ticker.upper())
+    archive = _read_archive(parquet_path)
+    if archive is None or archive.empty:
+        # Defensive: a gap-classified ticker should have an archive; if it
+        # vanished, write the sub alone (still no meta) and let the serial path
+        # re-derive on next read. Tail to retention.
+        combined = sub.tail(archive_history_days)
+        _write_archive_atomic(parquet_path, combined)
+        return
+    latest_stored = archive.index.max().date()
+    # Drop any incoming row dated <= latest_stored so existing bars are never
+    # overwritten (byte-parity with the serial `[latest+1, today]` gap fetch).
+    fresh = sub.loc[sub.index.date > latest_stored]
+    combined = pd.concat([archive, fresh])
+    combined = combined[~combined.index.duplicated(keep="last")].sort_index()
+    combined = combined.tail(archive_history_days)
+    _write_archive_atomic(parquet_path, combined)
+
+
+def _write_full_refresh_subframe(
+    cache_dir: Path, ticker: str, sub: pd.DataFrame, *,
+    today_session: date, archive_history_days: int,
+) -> None:
+    """Write a full-refresh subframe — data-content-identical to the serial
+    full-refresh branch (lines ~266-268): tail(N), atomic write, THEN write meta."""
+    parquet_path, meta_path = _archive_paths(Path(cache_dir), ticker.upper())
+    fetched = sub.tail(archive_history_days)
+    _write_archive_atomic(parquet_path, fetched)
+    _write_meta_atomic(meta_path, {"last_full_refresh_date": today_session.isoformat()})
+
+
 def read_or_fetch_archive(
     ticker: str,
     *,

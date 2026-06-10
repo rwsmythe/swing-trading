@@ -294,3 +294,71 @@ def test_fetch_chunk_all_nan_response_is_not_a_chunk_failure(monkeypatch):
     assert extracted == {}
     assert set(failed) == {"AAA", "BBB"}
     assert chunk_failed is False
+
+
+def test_merge_gap_writes_no_meta_and_concats(tmp_path, monkeypatch):
+    from datetime import timedelta
+    FIXED = date(2026, 6, 10)
+    monkeypatch.setattr(mod, "_last_completed_session_today", lambda: FIXED)
+    _write_archive(tmp_path, "AAPL", FIXED - timedelta(days=1), FIXED - timedelta(days=2))
+    sub = pd.DataFrame(
+        {"Open": [2.0], "High": [2.0], "Low": [2.0], "Close": [2.0], "Volume": [20]},
+        index=pd.to_datetime([FIXED]),
+    )
+    mod._merge_gap_subframe(tmp_path, "AAPL", sub, archive_history_days=1260)
+    written = pd.read_parquet(tmp_path / "AAPL.parquet")
+    assert FIXED in [d.date() for d in written.index]  # gap bar merged
+    assert (FIXED - timedelta(days=1)) in [d.date() for d in written.index]  # old bar kept
+    # Gap cohort writes NO meta (Arc 6 §4.4) — the file may exist from setup but
+    # _merge_gap_subframe must NOT rewrite/refresh it. Assert content unchanged:
+    import json
+    meta = json.loads((tmp_path / "AAPL.meta.json").read_text())
+    assert meta["last_full_refresh_date"] == (FIXED - timedelta(days=2)).isoformat()
+
+
+def test_merge_gap_overlap_does_not_overwrite_existing_bars(tmp_path, monkeypatch):
+    """Codex R1 Critical #1: a deep-band-style sub that overlaps existing
+    archived rows (because the band window is wider than this ticker's own gap)
+    must NOT overwrite those existing bars — only `> latest_stored` rows merge.
+    Discriminating: the overlapping row carries a DIFFERENT Close than the
+    archive; the archived value must survive (byte-parity with the serial
+    `[latest+1, today]` gap fetch which never re-fetches the old bar).
+    """
+    from datetime import timedelta
+    FIXED = date(2026, 6, 10)
+    monkeypatch.setattr(mod, "_last_completed_session_today", lambda: FIXED)
+    # Archive has two real bars; latest_stored = FIXED - 2.
+    archive = pd.DataFrame(
+        {"Open": [1.0, 1.0], "High": [1.0, 1.0], "Low": [1.0, 1.0],
+         "Close": [50.0, 51.0], "Volume": [10, 11]},
+        index=pd.to_datetime([FIXED - timedelta(days=3), FIXED - timedelta(days=2)]),
+    )
+    archive.to_parquet(tmp_path / "DEEP.parquet")
+    # Wide-band sub: re-states the FIXED-2 bar (Close 999 — must be IGNORED) AND
+    # adds the genuinely-new FIXED bar (Close 52 — must merge).
+    sub = pd.DataFrame(
+        {"Open": [9.0, 9.0], "High": [9.0, 9.0], "Low": [9.0, 9.0],
+         "Close": [999.0, 52.0], "Volume": [99, 12]},
+        index=pd.to_datetime([FIXED - timedelta(days=2), FIXED]),
+    )
+    mod._merge_gap_subframe(tmp_path, "DEEP", sub, archive_history_days=1260)
+    written = pd.read_parquet(tmp_path / "DEEP.parquet").sort_index()
+    by_date = {d.date(): c for d, c in written["Close"].items()}
+    assert by_date[FIXED - timedelta(days=2)] == 51.0  # existing bar UNCHANGED (not 999)
+    assert by_date[FIXED] == 52.0                       # new bar merged
+    assert (FIXED - timedelta(days=3)) in by_date       # old bar retained
+
+
+def test_write_full_refresh_writes_meta(tmp_path, monkeypatch):
+    FIXED = date(2026, 6, 10)
+    monkeypatch.setattr(mod, "_last_completed_session_today", lambda: FIXED)
+    sub = pd.DataFrame(
+        {"Open": [2.0], "High": [2.0], "Low": [2.0], "Close": [2.0], "Volume": [20]},
+        index=pd.to_datetime([FIXED]),
+    )
+    mod._write_full_refresh_subframe(tmp_path, "NEWBIE", sub, today_session=FIXED,
+                                     archive_history_days=1260)
+    import json
+    meta = json.loads((tmp_path / "NEWBIE.meta.json").read_text())
+    assert meta["last_full_refresh_date"] == FIXED.isoformat()
+    assert (tmp_path / "NEWBIE.parquet").exists()
