@@ -110,3 +110,69 @@ def test_read_or_fetch_archive_full_refresh_uses_shared_predicate(tmp_path, monk
     expected = FIXED - timedelta(days=mod._calendar_window_for_trading_days(1260))
     assert called["full_start"] == expected
     mod._full_refresh_stagger_enabled.cache_clear()
+
+
+def _write_archive(tmp_path, ticker, last_date, last_full_refresh_date=None):
+    import json
+    import pandas as pd
+    df = pd.DataFrame(
+        {"Open": [1.0], "High": [1.0], "Low": [1.0], "Close": [1.0], "Volume": [10]},
+        index=pd.to_datetime([last_date]),
+    )
+    df.to_parquet(tmp_path / f"{ticker}.parquet")
+    if last_full_refresh_date is not None:
+        (tmp_path / f"{ticker}.meta.json").write_text(
+            json.dumps({"last_full_refresh_date": last_full_refresh_date.isoformat()})
+        )
+
+
+def test_classify_cohorts_cache_hit_gap_full(tmp_path, monkeypatch):
+    from datetime import timedelta
+    FIXED = date(2026, 6, 10)
+    monkeypatch.setattr(mod, "_last_completed_session_today", lambda: FIXED)
+    mod._full_refresh_stagger_enabled.cache_clear()
+    monkeypatch.setattr(mod, "_load_archive_config_for_stagger", lambda: False)
+
+    # FRESH: latest == today, recent full refresh -> cache-hit.
+    _write_archive(tmp_path, "FRESH", FIXED, FIXED - timedelta(days=2))
+    # GAP1: latest == today-1, recent full refresh -> gap, band latest=today-1.
+    _write_archive(tmp_path, "GAP1", FIXED - timedelta(days=1), FIXED - timedelta(days=2))
+    # NEWBIE: no archive on disk -> full-refresh cohort.
+    # (no file written for NEWBIE)
+    # STALEFULL: latest==today but meta 8 days old -> full-refresh (>= 7 legacy).
+    _write_archive(tmp_path, "STALEFULL", FIXED, FIXED - timedelta(days=8))
+
+    report = mod._classify_warm_cohorts(
+        ["FRESH", "GAP1", "NEWBIE", "STALEFULL"],
+        cache_dir=tmp_path, today_session=FIXED, archive_history_days=1260,
+        stagger_enabled=False,
+    )
+    assert report["cache_hit"] == ["FRESH"]
+    assert "GAP1" in report["gap_bands"][FIXED - timedelta(days=1)]
+    assert set(report["full_refresh"]) == {"NEWBIE", "STALEFULL"}
+    mod._full_refresh_stagger_enabled.cache_clear()
+
+
+def test_classify_gap_banding_deep_band_collapse(tmp_path, monkeypatch):
+    """Tickers staler than GAP_DEEP_BAND_TRADING_DAYS collapse into ONE deep band."""
+    from datetime import timedelta
+    FIXED = date(2026, 6, 10)
+    monkeypatch.setattr(mod, "_last_completed_session_today", lambda: FIXED)
+    monkeypatch.setattr(mod, "_load_archive_config_for_stagger", lambda: False)
+    mod._full_refresh_stagger_enabled.cache_clear()
+
+    # Two near-current gaps (distinct bands) + two very-stale (collapse to deep band).
+    _write_archive(tmp_path, "NEAR1", FIXED - timedelta(days=1), FIXED - timedelta(days=2))
+    _write_archive(tmp_path, "NEAR2", FIXED - timedelta(days=2), FIXED - timedelta(days=2))
+    _write_archive(tmp_path, "DEEP1", FIXED - timedelta(days=200), FIXED - timedelta(days=2))
+    _write_archive(tmp_path, "DEEP2", FIXED - timedelta(days=300), FIXED - timedelta(days=2))
+
+    report = mod._classify_warm_cohorts(
+        ["NEAR1", "NEAR2", "DEEP1", "DEEP2"],
+        cache_dir=tmp_path, today_session=FIXED, archive_history_days=1260,
+        stagger_enabled=False,
+    )
+    # NEAR1 + NEAR2 in their own per-latest bands; DEEP1+DEEP2 in the single deep band.
+    assert "DEEP1" in report["deep_gap"] and "DEEP2" in report["deep_gap"]
+    assert "NEAR1" not in report["deep_gap"] and "NEAR2" not in report["deep_gap"]
+    mod._full_refresh_stagger_enabled.cache_clear()

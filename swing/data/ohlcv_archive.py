@@ -42,6 +42,7 @@ import math
 import os
 import tempfile
 import zlib
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -59,6 +60,31 @@ _SOURCE_PRECEDENCE_MARKET_DATA: dict[str, int] = {
     "schwab_api": 0,
     "yfinance": 1,
 }
+
+# Arc 6 warm-batch tunables (module constants, NOT config — benchmark-pinned).
+DEFAULT_CHUNK_SIZE = 75          # benchmark sweeps 50-100; §8 reliability-constrained
+GAP_DEEP_BAND_TRADING_DAYS = 30  # gaps staler than this collapse into ONE deep band
+
+
+@dataclass
+class WarmReport:
+    """Lightweight result of warm_archives_batch — counts + the fallback list.
+    Carries NO DB rows and NO schema (Arc 6 §6). `degraded` is True whenever
+    any ticker fell through to the serial path (per-ticker miss or whole-chunk
+    failure), so _step_evaluate can decide whether to emit a #27 warning."""
+    cache_hit: int = 0
+    gap: int = 0
+    deep_gap: int = 0
+    full_refresh: int = 0
+    chunks_attempted: int = 0
+    chunk_failures: int = 0
+    fallback: list[str] = field(default_factory=list)
+    wall_seconds: float = 0.0
+    dry_run: bool = False
+
+    @property
+    def degraded(self) -> bool:
+        return bool(self.fallback) or self.chunk_failures > 0
 
 
 def _archive_paths(cache_dir: Path, ticker: str) -> tuple[Path, Path]:
@@ -258,6 +284,74 @@ def _full_refresh_stagger_enabled() -> bool:
     except Exception:  # noqa: BLE001 — any failure -> safe default
         log.warning("could not resolve [archive].stagger_full_refresh; defaulting to True")
         return True
+
+
+def _classify_warm_cohorts(
+    tickers: list[str],
+    *,
+    cache_dir: Path,
+    today_session: date,
+    archive_history_days: int,
+    stagger_enabled: bool,
+) -> dict:
+    """Bucket each ticker into cache-hit / gap-bands / deep-gap / full-refresh
+    using the EXACT read_or_fetch_archive predicates (Arc 6 §4.1). Local I/O
+    only — reads archive + meta from disk, performs ZERO yf.download calls.
+
+    Returns a dict:
+      {"cache_hit": [t...],
+       "gap_bands": {latest_date: [t...], ...},   # near-current bands
+       "deep_gap": [t...],                          # collapsed deep band
+       "full_refresh": [t...]}
+    """
+    cache_dir = Path(cache_dir)
+    cache_hit: list[str] = []
+    gap_bands: dict[date, list[str]] = {}
+    deep_gap: list[str] = []
+    full_refresh: list[str] = []
+
+    for raw in tickers:
+        ticker = raw.upper()
+        parquet_path, meta_path = _archive_paths(cache_dir, ticker)
+        archive = _read_archive(parquet_path)
+        meta = _read_meta(meta_path)
+
+        last_full_refresh: date | None = None
+        last_full_str = meta.get("last_full_refresh_date")
+        if last_full_str:
+            try:
+                last_full_refresh = date.fromisoformat(last_full_str)
+            except ValueError:
+                last_full_refresh = None
+
+        # Archive-missing / empty / meta-missing -> full-refresh (NO bucket gate),
+        # mirroring read_or_fetch_archive's needs_full_refresh arms.
+        if archive is None or archive.empty or last_full_refresh is None:
+            full_refresh.append(ticker)
+            continue
+        if _full_refresh_due(ticker, last_full_refresh, today_session,
+                             stagger_enabled=stagger_enabled):
+            full_refresh.append(ticker)
+            continue
+
+        latest_stored = archive.index.max().date()
+        if latest_stored >= today_session:
+            cache_hit.append(ticker)
+            continue
+
+        # Gap cohort — band by latest_stored; collapse very-stale into deep band.
+        staleness_days = (today_session - latest_stored).days
+        if staleness_days > _calendar_window_for_trading_days(GAP_DEEP_BAND_TRADING_DAYS):
+            deep_gap.append(ticker)
+        else:
+            gap_bands.setdefault(latest_stored, []).append(ticker)
+
+    return {
+        "cache_hit": cache_hit,
+        "gap_bands": gap_bands,
+        "deep_gap": deep_gap,
+        "full_refresh": full_refresh,
+    }
 
 
 def read_or_fetch_archive(
