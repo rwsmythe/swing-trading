@@ -9,7 +9,8 @@ from pathlib import Path
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
-from swing.logging_config import configure_logging
+from swing.logging_config import DEFAULT_LOG_FORMAT, configure_logging
+from swing.logging_setup import install_logging
 
 _access_log = logging.getLogger("swing.web.access")
 
@@ -30,6 +31,30 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
         return response
 
 
-def configure_web_logging(logs_dir: Path) -> None:
-    """Thin shim over the shared seam (no formatter override -> default formatter)."""
-    configure_logging(logs_dir, surface="web")
+def configure_web_logging(logs_dir: Path, cfg=None) -> None:
+    """Back-compat shim over the redacted/bounded web logging path (Arc-1 lock:
+    RETAINED, not removed). With ``cfg`` it forwards to the composition root;
+    without it (legacy logs_dir-only callers) it constructs a minimal default
+    LoggingConfig and routes through the SAME redaction + rotation wiring.
+    Either way web.log behavior is preserved AND redaction is now added
+    (strictly additive)."""
+    if cfg is not None:
+        install_logging(cfg, surface="web")   # module-level symbol -> monkeypatchable
+        return
+    # Legacy path: default knobs + the same belts.
+    from swing.config import LoggingConfig
+    from swing.integrations.schwab.client import (
+        RedactingFormatter,
+        ensure_schwab_log_redaction_factory_installed,
+    )
+
+    default = LoggingConfig()
+    configure_logging(
+        logs_dir,
+        surface="web",
+        level=default.level,
+        formatter=RedactingFormatter(DEFAULT_LOG_FORMAT),
+        max_bytes=default.max_bytes,
+        backup_count=default.backup_count,
+        install_record_factory=ensure_schwab_log_redaction_factory_installed,
+    )

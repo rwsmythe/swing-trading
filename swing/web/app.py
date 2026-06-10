@@ -23,12 +23,10 @@ from swing.integrations.schwab.auth import (
     resolve_credentials_env_or_prompt,
 )
 from swing.integrations.schwab.client import SchwabConfigMissingError
+from swing.logging_setup import install_logging
 from swing.web.middleware.body_size import MaxBodySizeMiddleware
 from swing.web.middleware.origin_guard import OriginGuardMiddleware
-from swing.web.middleware.request_id import (
-    RequestIdMiddleware,
-    configure_web_logging,
-)
+from swing.web.middleware.request_id import RequestIdMiddleware
 from swing.web.ohlcv_cache import OhlcvCache
 from swing.web.price_cache import PriceCache
 
@@ -438,7 +436,7 @@ def create_app(cfg: Config, cfg_path: Path | None = None) -> FastAPI:
     # so 403 responses from OriginGuard still get X-Request-ID stamped.
     app.add_middleware(RequestIdMiddleware)
 
-    configure_web_logging(cfg.paths.logs_dir)
+    install_logging(cfg, surface="web")
     _register_exception_handlers(app)
 
     @app.exception_handler(StarletteHTTPException)

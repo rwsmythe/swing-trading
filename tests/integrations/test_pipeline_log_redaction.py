@@ -174,3 +174,46 @@ def test_pipeline_run_cmd_writes_pipeline_log(tmp_path, monkeypatch):
                 h.close()
                 root.removeHandler(h)
         root.setLevel(saved_level)
+
+
+@pytest.fixture
+def web_logging(tmp_path):
+    """Same shape as ``pipeline_logging`` but for the web surface, via the shim."""
+    root = logging.getLogger()
+    saved = list(root.handlers)
+    saved_level = root.level
+    saved_secrets = set(schwab_client._GLOBAL_KNOWN_SECRETS)
+    saved_factory = logging.getLogRecordFactory()
+    for h in list(root.handlers):
+        root.removeHandler(h)
+    from swing.web.middleware.request_id import configure_web_logging
+    configure_web_logging(tmp_path)  # no-cfg shim -> Belt A + Belt B by construction
+    yield tmp_path / "web.log"
+    for h in list(root.handlers):
+        if isinstance(h, RotatingFileHandler):
+            h.close()
+        root.removeHandler(h)
+    for h in saved:
+        root.addHandler(h)
+    root.setLevel(saved_level)
+    logging.setLogRecordFactory(saved_factory)
+    schwab_client._GLOBAL_KNOWN_SECRETS.clear()
+    schwab_client._GLOBAL_KNOWN_SECRETS.update(saved_secrets)
+
+
+def test_web_handler_carries_redacting_formatter_at_attach(web_logging):
+    handlers = [
+        h for h in logging.getLogger().handlers if isinstance(h, RotatingFileHandler)
+    ]
+    # No unredacted window: the formatter is a RedactingFormatter at attach time.
+    assert any(isinstance(h.formatter, RedactingFormatter) for h in handlers)
+
+
+def test_web_non_schwabdev_logger_line_is_redacted(web_logging):
+    # A non-Schwabdev logger -- Belt A's prefix check would NOT cover it; only
+    # Belt B (now wired into web.log) redacts it. Discriminator: against the CURRENT
+    # plain shim (no formatter) the SENTINEL SURVIVES -> assertion FAILS; the shim
+    # rewrite (Step 3) attaches RedactingFormatter -> SENTINEL redacted -> PASS.
+    logging.getLogger("swing.web.access").warning("leaked token=%s", SENTINEL)
+    text = _read(web_logging)
+    assert SENTINEL not in text

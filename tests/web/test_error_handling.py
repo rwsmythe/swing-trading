@@ -146,6 +146,67 @@ def test_configure_web_logging_is_idempotent(tmp_path):
     )
 
 
+def test_configure_web_logging_no_cfg_attaches_redacting_handler(tmp_path):
+    # Back-compat shim (Arc-1 lock): legacy logs_dir-only callers still work AND
+    # now get redaction (strictly additive). Discriminator: pre-Slice-1 the shim
+    # attached a plain default formatter -> this isinstance check would FAIL.
+    import logging
+    import os
+    from logging.handlers import RotatingFileHandler
+    import swing.integrations.schwab.client as schwab_client
+    from swing.integrations.schwab.client import RedactingFormatter
+    from swing.web.middleware.request_id import configure_web_logging
+
+    root = logging.getLogger()
+    saved = list(root.handlers)
+    # configure_web_logging now ALSO sets root level + installs the global Schwab
+    # LogRecord factory + may register secrets -> snapshot/restore ALL of them so a
+    # large suite is not contaminated (matches the pipeline_logging fixture).
+    saved_level = root.level
+    saved_factory = logging.getLogRecordFactory()
+    saved_secrets = set(schwab_client._GLOBAL_KNOWN_SECRETS)
+    for h in list(root.handlers):
+        root.removeHandler(h)
+    try:
+        configure_web_logging(tmp_path)
+        target = os.path.abspath(tmp_path / "web.log")
+        handlers = [
+            h for h in root.handlers
+            if isinstance(h, RotatingFileHandler) and h.baseFilename == target
+        ]
+        assert len(handlers) == 1
+        assert isinstance(handlers[0].formatter, RedactingFormatter)
+        # Idempotent.
+        configure_web_logging(tmp_path)
+        assert len([
+            h for h in root.handlers
+            if isinstance(h, RotatingFileHandler) and h.baseFilename == target
+        ]) == 1
+    finally:
+        for h in list(root.handlers):
+            if isinstance(h, RotatingFileHandler):
+                h.close()
+            root.removeHandler(h)
+        for h in saved:
+            root.addHandler(h)
+        root.setLevel(saved_level)
+        logging.setLogRecordFactory(saved_factory)
+        schwab_client._GLOBAL_KNOWN_SECRETS.clear()
+        schwab_client._GLOBAL_KNOWN_SECRETS.update(saved_secrets)
+
+
+def test_configure_web_logging_with_cfg_delegates_to_install_logging(tmp_path, monkeypatch):
+    import swing.web.middleware.request_id as rid
+    captured = {}
+    monkeypatch.setattr(
+        rid, "install_logging",
+        lambda cfg, *, surface: captured.update(surface=surface, cfg=cfg),
+    )
+    sentinel_cfg = object()
+    rid.configure_web_logging(tmp_path, cfg=sentinel_cfg)
+    assert captured == {"surface": "web", "cfg": sentinel_cfg}
+
+
 def test_request_log_line_emitted_per_request(seeded_db, caplog):
     """Verify the spec §5.2 contract: method/path/status/duration/request_id."""
     cfg, cfg_path = seeded_db
