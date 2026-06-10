@@ -28,6 +28,39 @@ def _seed_one_aplus_winner(conn):
     conn.commit()
 
 
+def _seed_baseline_watch_priced(conn, ticker="WBL"):
+    # Fixture 1: a real broad-watch signal ({adr} miss; 15/400 live) that triggers
+    # then stops out -> baseline priced, closed terminal (a priced LOSER, not a
+    # winner -- the name reflects "reaches a priced row", not the sign of R).
+    # {adr} has no VCP trigger
+    # and is not proximity/risk-only, so it routes to the baseline even with H3 active.
+    eval_id = insert_candidate(conn, ticker=ticker, bucket="watch", pivot=10.0,
+                               initial_stop=9.0, close=10.0,
+                               criteria=[("adr", "vcp", "fail")])
+    pr_id = insert_pipeline_run(conn, eval_id)
+    det_id = insert_detection(conn, ticker=ticker, pipeline_run_id=pr_id, pivot=10.0,
+                              data_asof_date="2026-05-28", detection_date="2026-05-29")
+    insert_observation(conn, det_id, "2026-06-01", o=10.0, h=10.4, l=9.6, c=10.2,
+                       status="triggered_open", event="entry_fired")
+    insert_observation(conn, det_id, "2026-06-02", o=8.5, h=8.6, l=8.0, c=8.2,
+                       status="triggered_open")  # stops out -> closed
+    conn.commit()
+
+
+def test_broad_watch_baseline_prices_end_to_end(tmp_path):
+    # Fixture 1 (spec §9.1.1): the baseline cohort reaches a priced scorecard row.
+    conn = make_db(tmp_path)
+    _seed_baseline_watch_priced(conn)
+    out = tmp_path / "out"
+    _, _, _, manifest = run_harness(db_path=tmp_path / "t.db", output_dir=out,
+                                    source="pipeline")
+    m = json.loads(Path(manifest).read_text(encoding="utf-8"))
+    card = m["per_hypothesis"] if "per_hypothesis" in m else m["funnel"]["per_hypothesis"]
+    assert card["Broad-watch baseline"]["closed"] == 1
+    sc = m["scorecard"]["Broad-watch baseline"]
+    assert sc["scenarios"]["closed_only"]["n"] >= 1   # a priced row exists
+
+
 def test_run_harness_emits_four_artifacts(tmp_path):
     conn = make_db(tmp_path)        # creates + migrates tmp_path/t.db
     _seed_one_aplus_winner(conn)    # writes candidate/detection/observations into it
