@@ -110,4 +110,7 @@ def test_run_migrations_wires_phase16_gate(tmp_path):
     run_migrations(conn26, target_version=26, backup_dir=v26_backups)
     assert _current_version(conn26) == 26  # ceiling now equals the target (v26)
     assert len(list(v26_backups.glob("swing-pre-phase16-migration-*.db"))) == 1
+    # the broad-watch gate is INERT in this v24->v26 walk (gates evaluate against
+    # the ORIGINAL current=24, not 25), so it must have written NO backup.
+    assert list(v26_backups.glob("swing-pre-broad-watch-baseline-migration-*.db")) == []
     conn26.close()
