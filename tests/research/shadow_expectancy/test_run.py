@@ -282,3 +282,91 @@ def test_inverted_candidate_initial_stop_not_excluded(tmp_path):
     h1 = f["per_hypothesis"]["A+ baseline"]
     assert h1["closed"] == 1                       # simulated, not excluded
     assert h1["excluded"].get("invalid_ohlc", 0) == 0
+
+
+def _seed_never_triggers_above_pivot(conn, ticker="ZZZ"):
+    # candidate.pivot 10.0; the single forward bar's high (9.8) never reaches it -> never_triggered
+    # via the RECOMPUTE (not via absence of an entry_fired event).
+    eval_id = insert_candidate(conn, ticker=ticker, bucket="aplus", pivot=10.0,
+                               initial_stop=9.0, close=10.0)
+    pr_id = insert_pipeline_run(conn, eval_id)
+    det_id = insert_detection(conn, ticker=ticker, pipeline_run_id=pr_id, pivot=10.0,
+                              data_asof_date="2026-05-28", detection_date="2026-05-29")
+    insert_observation(conn, det_id, "2026-06-01", o=9.0, h=9.8, l=8.9, c=9.5,
+                       status="pending")
+    conn.commit()
+
+
+def test_recompute_never_triggered_when_no_high_reaches_pivot(tmp_path):
+    conn = make_db(tmp_path)
+    _seed_never_triggers_above_pivot(conn)
+    out = tmp_path / "out"
+    _, _, _, manifest = run_harness(db_path=tmp_path / "t.db", output_dir=out,
+                                    source="pipeline")
+    funnel = json.loads(Path(manifest).read_text(encoding="utf-8"))["funnel"]
+    assert funnel["per_hypothesis"]["A+ baseline"]["never_triggered"] == 1
+
+
+def _seed_trigger_on_last_bar(conn, ticker="LAST"):
+    # candidate.pivot 10.0; the trigger fires on the LAST (only) bar -> forward_bars empty ->
+    # insufficient_forward_depth (per-hypothesis excluded); simulate must NOT be called.
+    eval_id = insert_candidate(conn, ticker=ticker, bucket="aplus", pivot=10.0,
+                               initial_stop=9.0, close=10.0)
+    pr_id = insert_pipeline_run(conn, eval_id)
+    det_id = insert_detection(conn, ticker=ticker, pipeline_run_id=pr_id, pivot=10.0,
+                              data_asof_date="2026-05-28", detection_date="2026-05-29")
+    insert_observation(conn, det_id, "2026-06-01", o=10.0, h=10.4, l=9.6, c=10.2,
+                       status="triggered_open", event="entry_fired")
+    conn.commit()
+
+
+def test_zero_forward_depth_routes_insufficient_and_skips_simulate(tmp_path, monkeypatch):
+    # Codex R1-#3: a trigger on the last bar excludes under insufficient_forward_depth and
+    # simulate() is NEVER called with empty forward_bars.
+    import research.harness.shadow_expectancy.run as run_mod
+
+    def _boom(*a, **k):
+        raise AssertionError("simulate must not be called for zero-forward-depth")
+
+    monkeypatch.setattr(run_mod, "simulate", _boom)
+    conn = make_db(tmp_path)
+    _seed_trigger_on_last_bar(conn)
+    out = tmp_path / "out"
+    _, _, _, manifest = run_mod.run_harness(db_path=tmp_path / "t.db", output_dir=out,
+                                            source="pipeline")
+    f = json.loads(Path(manifest).read_text(encoding="utf-8"))["funnel"]
+    h1 = f["per_hypothesis"]["A+ baseline"]
+    assert h1["excluded"].get("insufficient_forward_depth", 0) == 1
+    assert h1["closed"] == 0 and h1["never_triggered"] == 0
+
+
+def _seed_null_pivot_attributed(conn, ticker="NPV"):
+    # spec 3.2: an attributed candidate whose screening pivot is 0.0 still JOINS and ATTRIBUTES
+    # (bucket + criteria are independent of pivot), then is excluded at VALIDATE -> per-hypothesis
+    # no_candidate_pivot. Watch + proximity_20ma -> H2. This is the END-TO-END proof of the
+    # attribute -> validate -> per-hyp-excluded ordering (the route a unit test on
+    # validate_candidate_levels alone cannot exercise).
+    eval_id = insert_candidate(conn, ticker=ticker, bucket="watch", pivot=0.0,
+                               initial_stop=9.0, close=10.0,
+                               criteria=[("proximity_20ma", "trend_template", "fail")])
+    pr_id = insert_pipeline_run(conn, eval_id)
+    det_id = insert_detection(conn, ticker=ticker, pipeline_run_id=pr_id, pivot=49.89,
+                              data_asof_date="2026-05-28", detection_date="2026-05-29")
+    insert_observation(conn, det_id, "2026-06-01", o=10.0, h=10.4, l=9.6, c=10.2,
+                       status="pending")
+    insert_observation(conn, det_id, "2026-06-02", o=10.3, h=10.6, l=10.1, c=10.5,
+                       status="pending")
+    conn.commit()
+
+
+def test_null_candidate_pivot_routes_per_hypothesis_excluded(tmp_path):
+    conn = make_db(tmp_path)
+    _seed_null_pivot_attributed(conn)
+    out = tmp_path / "out"
+    _, _, _, manifest = run_harness(db_path=tmp_path / "t.db", output_dir=out,
+                                    source="pipeline")
+    f = json.loads(Path(manifest).read_text(encoding="utf-8"))["funnel"]
+    h2 = f["per_hypothesis"]["Near-A+ defensible: extension test"]
+    assert h2["excluded"].get("no_candidate_pivot", 0) == 1
+    # it was attributed first (per-hypothesis), NOT dropped to the unattributed bucket.
+    assert "no_candidate_pivot" not in f["unattributed"]

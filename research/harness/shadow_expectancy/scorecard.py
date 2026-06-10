@@ -16,6 +16,7 @@ class ShadowTrade:
     entry_bar_ambiguous: bool
     holding_sessions: int
     censoring_scenarios: dict | None = None
+    entry_bar_weak_close: bool = False   # 2.2: entry_bar.close < candidate.pivot (annotation only)
 
 
 _SCENARIO_NAMES = ("closed_only", "mtm_at_horizon",

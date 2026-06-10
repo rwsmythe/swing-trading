@@ -29,19 +29,7 @@ from swing.data.repos.hypothesis import list_hypotheses
 @dataclass
 class _DetView:
     detection_id: int
-    pivot: float
-    forward_series_key: tuple
-    first_trigger_session: str | None
-
-
-def _entry_and_forward(chain):
-    """Return (entry_obs, forward_obs[]) -- entry = first triggered_open+entry_fired."""
-    entry_idx = next((i for i, o in enumerate(chain)
-                      if o.status == "triggered_open"
-                      and o.status_change_event == "entry_fired"), None)
-    if entry_idx is None:
-        return None, []
-    return chain[entry_idx], chain[entry_idx + 1:]
+    bars: tuple   # date-ascending ((observation_date, open, high, low, close), ...)
 
 
 def _ohlc_tuple(j):
@@ -91,94 +79,86 @@ def run_harness(*, db_path, output_dir, source=c.SOURCE,
 
     for (pipeline_run_id, ticker), dets in sorted(groups.items(),
                                                   key=lambda kv: (kv[0][0] or -1, kv[0][1])):
-        # (the --only filter is applied to `detections` up front; every remaining group
-        # is a real unique signal.)
         unique_signals += 1
-        candidate = io.resolve_candidate(conn, pipeline_run_id=pipeline_run_id, ticker=ticker)
-        # build detection views (chain + trigger session) for collapse.
+        # every group collapses len(dets) detections to ONE signal -> len(dets) - 1 duplicates,
+        # REGARDLESS of the terminal path (preserves total == unique + collapsed). Counted once
+        # here so excluded/unattributed multi-detection groups reconcile too (Codex R1-M3).
+        collapsed_duplicate += len(dets) - 1
+
+        # collapse = pure BAR-SOURCE choice (longest chain, tie low id); strict date-prefix gate.
         views = []
         chains = {}
         for d in dets:
             chain = io.read_observation_chain(conn, d.detection_id)
             chains[d.detection_id] = chain
-            entry, _fwd = _entry_and_forward(chain)
-            pivot = json.loads(d.structural_anchors_json)["evidence"].get("pivot_price")
-            views.append(_DetView(d.detection_id, pivot, _series_key(chain),
-                                  entry.observation_date if entry else None))
-        cand_pivot = candidate.pivot if candidate is not None else None
-        res = collapse_detections(views, candidate_pivot=cand_pivot)
-        # Codex R1-M3: every (pipeline_run_id, ticker) group collapses its detections to ONE
-        # unique signal, so it contributes len(dets) - 1 duplicate detections REGARDLESS of
-        # whether the group is excluded. On the success path this equals len(res.collapsed_ids);
-        # on an exclusion path (no_candidate_join / no_canonical_detection / inconsistent_*)
-        # collapse returns collapsed_ids=[], so counting len(dets) - 1 here keeps the
-        # detection-level reconciliation (total == unique + collapsed) exact for excluded
-        # multi-detection groups too.
-        collapsed_duplicate += len(dets) - 1
+            views.append(_DetView(d.detection_id, _series_key(chain)))
+        res = collapse_detections(views)
         if res.exclusion_reason is not None:
-            # JOIN/COLLAPSE-level (pre-attribution) state -> the `unattributed` bucket as a
-            # per-reason counter (C-review M1/M4): no_candidate_join / no_canonical_detection
-            # (candidate present, no pivot match) / inconsistent_detection_series /
-            # inconsistent_trigger_state.
+            # inconsistent_detection_series (substrate-integrity) -> unattributed bucket.
             signal_outcomes.append(
                 SignalOutcome(None, "unattributed", res.exclusion_reason))
             continue
 
-        # ORDER (Codex M5): join (done) -> ATTRIBUTE -> validate -> simulate.
+        # join: candidate row absent -> no_candidate_join (decided HERE, not in collapse; 3.3).
+        candidate = io.resolve_candidate(conn, pipeline_run_id=pipeline_run_id, ticker=ticker)
+        if candidate is None:
+            signal_outcomes.append(
+                SignalOutcome(None, "unattributed", "no_candidate_join"))
+            continue
+
+        # attribute.
         hyps = attribute_hypotheses(candidate, registry=registry)
         if not hyps:
-            # C-review M1: candidate joined + present but matched zero hypotheses. This is the
-            # `matched_no_hypothesis` REASON WITHIN the `unattributed` bucket (NOT a separate
-            # top-level bucket), distinct from no_candidate_join. Excluded from per-hypothesis
-            # means.
             signal_outcomes.append(
                 SignalOutcome(None, "unattributed", "matched_no_hypothesis"))
             continue
         if len(hyps) > 1:
-            # R3-M1 (reconciliation safety): the 4 seeded hypotheses are mutually exclusive by
-            # their exact-miss-set definitions, so this is ~0 today -- but a future non-exclusive
-            # hypothesis would otherwise emit ONE outcome PER matched hypothesis, counting the
-            # SAME signal in multiple per-hypothesis terminal buckets and BREAKING the
-            # reconciliation invariant (Sum(unattributed) + Sum(per-hyp terminal-status) ==
-            # unique_signals) with no test failing. Defensively exclude the multi-matching signal
-            # under the `multi_match` REASON WITHIN the single `unattributed` bucket; do NOT
-            # simulate or emit per-hypothesis outcomes. Exactly-one match flows on below.
             signal_outcomes.append(
                 SignalOutcome(None, "unattributed", "multi_match"))
             continue
 
-        chain = chains[res.canonical.detection_id]
-        entry, forward = _entry_and_forward(chain)
-        if entry is None:
-            for h in hyps:
-                signal_outcomes.append(
-                    SignalOutcome(h, "never_triggered", "never_triggered"))
-                # Codex R1-M1: a never-triggered ATTRIBUTED signal is still a SIGNAL for that
-                # hypothesis -- it MUST contribute to the scorecard's signal denominator
-                # (trigger rate over len(group); per-signal expectancy counts it as 0R; D11).
-                # Emit a non-triggered ShadowTrade so the scorecard population matches the
-                # funnel's per-hypothesis terminal-status counts (which already count it).
-                shadow_trades.append(ShadowTrade(
-                    hypothesis=h, triggered=False, open_at_horizon=False,
-                    realized_r=None, entry_bar_ambiguous=False,
-                    holding_sessions=0, censoring_scenarios=None))
-            continue
-        entry_bar = io.parse_bar(entry.ohlc_today_json, session=entry.observation_date)
-        # FULL forward chain (NOT pre-truncated) so the simulator can read the post-horizon
-        # open for the forced-exit scenario (Codex M3).
-        forward_bars = [io.parse_bar(o.ohlc_today_json, session=o.observation_date)
-                        for o in forward]
+        # canonical bar series (longest chain), date-ascending, parsed.
+        canonical_chain = chains[res.canonical.detection_id]
+        all_bars = [io.parse_bar(o.ohlc_today_json, session=o.observation_date)
+                    for o in canonical_chain]
 
-        # validate: candidate PIVOT sanity (C1/R2-M1 -- candidate.initial_stop is NOT consulted;
-        # the trade stop is entry_bar.low) + every bar on the path. A failure on this ATTRIBUTED
-        # signal routes PER-HYPOTHESIS (Codex M5), not unattributed.
-        reason = validate_signal(pivot=candidate.pivot, bars=[entry_bar, *forward_bars])
+        # validate BEFORE the recompute (Codex M5 order): a null/<=0 pivot is caught as
+        # no_candidate_pivot before the recompute dereferences it; bad frozen bars -> invalid_ohlc.
+        # Both route PER-HYPOTHESIS (post-attribution), in ATTRIBUTED_EXCLUDED_REASONS.
+        reason = validate_signal(pivot=candidate.pivot, bars=all_bars)
         if reason is not None:
             for h in hyps:
                 signal_outcomes.append(SignalOutcome(h, "excluded", reason))
             continue
 
-        # C1: simulate derives the mechanical stop from entry_bar.low internally.
+        # entry RECOMPUTE (spec 2.1): first canonical bar whose high >= candidate.pivot.
+        entry_idx = next((i for i, b in enumerate(all_bars)
+                          if b.high >= candidate.pivot), None)
+        if entry_idx is None:
+            # no forward bar reaches the screening pivot -> never_triggered (attributed terminal;
+            # contributes 0R to per-signal expectancy; D11). Emit a non-triggered ShadowTrade so
+            # the scorecard denominator matches the funnel's never_triggered count.
+            for h in hyps:
+                signal_outcomes.append(
+                    SignalOutcome(h, "never_triggered", "never_triggered"))
+                shadow_trades.append(ShadowTrade(
+                    hypothesis=h, triggered=False, open_at_horizon=False,
+                    realized_r=None, entry_bar_ambiguous=False,
+                    holding_sessions=0, censoring_scenarios=None,
+                    entry_bar_weak_close=False))
+            continue
+        if entry_idx == len(all_bars) - 1:
+            # zero-forward-depth (Codex R1-#3): trigger on the last bar -> forward_bars empty.
+            # Exclude per-hypothesis; do NOT call simulate (it would fabricate a 0R MTM).
+            for h in hyps:
+                signal_outcomes.append(
+                    SignalOutcome(h, "excluded", "insufficient_forward_depth"))
+            continue
+
+        entry_bar = all_bars[entry_idx]
+        forward_bars = all_bars[entry_idx + 1:]
+        entry_bar_weak_close = entry_bar.close < candidate.pivot   # 2.2 annotation only
+
         sim = simulate(pivot=candidate.pivot, entry_bar=entry_bar,
                        forward_bars=forward_bars, params=params)
         if sim.degenerate:
@@ -195,7 +175,8 @@ def run_harness(*, db_path, output_dir, source=c.SOURCE,
                 open_at_horizon=sim.open_at_horizon, realized_r=sim.realized_r,
                 entry_bar_ambiguous=sim.entry_bar_ambiguous,
                 holding_sessions=sim.holding_sessions,
-                censoring_scenarios=sim.censoring_scenarios))
+                censoring_scenarios=sim.censoring_scenarios,
+                entry_bar_weak_close=entry_bar_weak_close))
             results_rows.append({
                 "ticker": ticker, "detection_date": detection_date,
                 "run_id": pipeline_run_id, "hypothesis": h,
@@ -204,11 +185,9 @@ def run_harness(*, db_path, output_dir, source=c.SOURCE,
                 "favorable_r": f"{sim.realized_r['favorable_reprice']:.4f}",
                 "exit_reason": sim.exit_reason,
                 "open_at_horizon": str(sim.open_at_horizon),
-                "entry_bar_ambiguous": str(sim.entry_bar_ambiguous)})
+                "entry_bar_ambiguous": str(sim.entry_bar_ambiguous),
+                "entry_bar_weak_close": str(entry_bar_weak_close)})
             for leg in sim.legs:
-                # m3: record BOTH arm fills. Non-terminal legs (partials) are arm-independent
-                # (price_favorable == price); the terminal exit leg carries the favorable fill
-                # from sim.terminal_fill so the [realistic, favorable] bracket reconstructs.
                 fav = (sim.terminal_fill["favorable_reprice"]
                        if (sim.terminal_fill is not None and leg.action == "exit")
                        else leg.price)
