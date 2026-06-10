@@ -106,3 +106,45 @@ def test_diagnostics_bypass_high_root_level(clean_root_and_secrets, tmp_path):
             h.flush()
     text = target.read_text(encoding="utf-8")
     assert "max_bytes 'huge' invalid" in text
+
+
+def test_diagnostics_replay_is_idempotent(clean_root_and_secrets, tmp_path):
+    # Codex R1 MINOR: a second install_logging with the SAME warning-bearing cfg
+    # hits the dedup-refresh path (same handler object) and must NOT re-emit the
+    # diagnostics. Discriminator: without the replayed-tag guard the count is 2.
+    cfg = _cfg(tmp_path, warnings=("[logging] level 'LOUD' invalid; using INFO",))
+    install_logging(cfg, surface="pipeline")
+    install_logging(cfg, surface="pipeline")
+    target = cfg.paths.logs_dir / "pipeline.log"
+    for h in clean_root_and_secrets.handlers:
+        if isinstance(h, RotatingFileHandler):
+            h.flush()
+    text = target.read_text(encoding="utf-8")
+    assert text.count("level 'LOUD' invalid") == 1
+
+
+def test_diagnostics_replay_ignores_foreign_same_path_handler(clean_root_and_secrets, tmp_path):
+    # Codex R1 MAJOR: a foreign (non-swing-tagged) RotatingFileHandler sharing the
+    # same baseFilename must NOT intercept the diagnostic replay -- only the
+    # swing-tagged surface handler (with Belt B + NOTSET) may. Discriminator: the
+    # foreign handler stamps a FOREIGN marker; routing through it would put FOREIGN
+    # in the file. With the surface-tag predicate the swing handler handles it instead.
+    import os
+
+    cfg = _cfg(tmp_path, warnings=("[logging] level 'LOUD' invalid; using INFO",))
+    target = os.path.abspath(cfg.paths.logs_dir / "pipeline.log")
+    cfg.paths.logs_dir.mkdir(parents=True, exist_ok=True)
+    foreign = RotatingFileHandler(target, delay=True)
+    foreign.setFormatter(logging.Formatter("FOREIGN %(message)s"))  # NOT a RedactingFormatter
+    clean_root_and_secrets.addHandler(foreign)
+    try:
+        install_logging(cfg, surface="pipeline")
+        for h in clean_root_and_secrets.handlers:
+            if isinstance(h, RotatingFileHandler):
+                h.flush()
+        text = (cfg.paths.logs_dir / "pipeline.log").read_text(encoding="utf-8")
+        assert "level 'LOUD' invalid" in text
+        assert "FOREIGN" not in text  # the foreign handler never received the replay
+    finally:
+        clean_root_and_secrets.removeHandler(foreign)
+        foreign.close()

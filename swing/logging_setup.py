@@ -48,14 +48,26 @@ def _replay_logging_diagnostics(cfg: Config, *, surface: str) -> None:
     if not warnings:
         return
     target = os.path.abspath(cfg.paths.logs_dir / f"{surface}.log")  # match baseFilename
+    # Require the SWING-tagged handler for THIS surface (Codex R1 MAJOR): a foreign
+    # RotatingFileHandler sharing the same baseFilename must never intercept the
+    # replay -- routing through it could bypass Belt B (RedactingFormatter) or be
+    # swallowed by a non-NOTSET foreign handler level. The seam tags only its own.
     handler = next(
         (
             h for h in logging.getLogger().handlers
-            if isinstance(h, RotatingFileHandler) and h.baseFilename == target
+            if isinstance(h, RotatingFileHandler)
+            and getattr(h, "_swing_surface", None) == surface
+            and h.baseFilename == target
         ),
         None,
     )
     if handler is None:
+        return
+    # Idempotent (Codex R1 MINOR): the dedup-refresh path returns the SAME handler
+    # object across repeated install_logging calls, so guard against re-emitting the
+    # same parse diagnostics. (Config is read once per process, so this is belt-and-
+    # suspenders against a config-reload / test re-install.)
+    if getattr(handler, "_swing_diagnostics_replayed", False):
         return
     for msg in warnings:
         record = logging.LogRecord(
@@ -63,3 +75,4 @@ def _replay_logging_diagnostics(cfg: Config, *, surface: str) -> None:
             pathname=__file__, lineno=0, msg="%s", args=(msg,), exc_info=None,
         )
         handler.handle(record)
+    handler._swing_diagnostics_replayed = True  # type: ignore[attr-defined]
