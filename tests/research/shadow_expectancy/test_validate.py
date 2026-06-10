@@ -27,10 +27,10 @@ def test_candidate_levels_ok():
 
 
 @pytest.mark.parametrize("pivot", [0.0, -5.0, float("nan"), None])
-def test_candidate_levels_reject(pivot):
-    # Codex R2-M1: ONLY the pivot gates eligibility (it is the sole candidate field the
-    # mechanical trade consumes). pivot non-finite / <= 0 / None -> invalid_ohlc.
-    assert validate_candidate_levels(pivot=pivot) == "invalid_ohlc"
+def test_candidate_levels_reject_with_no_candidate_pivot(pivot):
+    # spec 3.2: a null / non-finite / <=0 screening pivot is a COMMON expected state, not a
+    # corrupt bar -> its OWN reason `no_candidate_pivot`, split from invalid_ohlc.
+    assert validate_candidate_levels(pivot=pivot) == "no_candidate_pivot"
 
 
 def test_candidate_initial_stop_does_not_gate_eligibility():
@@ -61,5 +61,7 @@ def test_validate_signal_chains_levels_then_bars():
     good = [Bar("2026-05-29", 10.0, 11.0, 9.5, 10.5)]
     bad_bar = [Bar("2026-05-29", 10.0, 9.0, 11.0, 9.5)]  # high < low
     assert validate_signal(pivot=10.0, bars=good) is None
-    assert validate_signal(pivot=0.0, bars=good) == "invalid_ohlc"   # bad pivot -> levels reject
-    assert validate_signal(pivot=10.0, bars=bad_bar) == "invalid_ohlc"  # bad bar -> bars reject
+    # bad pivot -> levels reject with the pivot-specific reason
+    assert validate_signal(pivot=0.0, bars=good) == "no_candidate_pivot"
+    # bad bar -> bars reject with invalid_ohlc
+    assert validate_signal(pivot=10.0, bars=bad_bar) == "invalid_ohlc"
