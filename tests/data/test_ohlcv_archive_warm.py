@@ -53,3 +53,60 @@ def test_full_refresh_due_not_due_under_7_days_either_mode():
     today = date(2026, 6, 10)
     assert mod._full_refresh_due("AAPL", date(2026, 6, 5), today, stagger_enabled=True) is False
     assert mod._full_refresh_due("AAPL", date(2026, 6, 5), today, stagger_enabled=False) is False
+
+
+def test_stagger_resolver_returns_true_when_config_unreadable(monkeypatch):
+    """_full_refresh_stagger_enabled returns True on any config exception."""
+    mod._full_refresh_stagger_enabled.cache_clear()
+
+    def boom():
+        raise RuntimeError("no config")
+
+    monkeypatch.setattr(mod, "_load_archive_config_for_stagger", boom)
+    assert mod._full_refresh_stagger_enabled() is True
+    mod._full_refresh_stagger_enabled.cache_clear()
+
+
+def test_stagger_resolver_reads_config_value(monkeypatch):
+    mod._full_refresh_stagger_enabled.cache_clear()
+    monkeypatch.setattr(mod, "_load_archive_config_for_stagger", lambda: False)
+    assert mod._full_refresh_stagger_enabled() is False
+    mod._full_refresh_stagger_enabled.cache_clear()
+
+
+def test_read_or_fetch_archive_full_refresh_uses_shared_predicate(tmp_path, monkeypatch):
+    """With stagger DISABLED, an 8-day-old meta still triggers full refresh
+    (legacy `>= 7` preserved through the shared predicate)."""
+    import json
+    from datetime import timedelta
+    import pandas as pd
+
+    FIXED = date(2026, 6, 10)
+    monkeypatch.setattr(mod, "_last_completed_session_today", lambda: FIXED)
+    mod._full_refresh_stagger_enabled.cache_clear()
+    monkeypatch.setattr(mod, "_load_archive_config_for_stagger", lambda: False)
+
+    archive = pd.DataFrame(
+        {"Open": [1.0], "High": [1.0], "Low": [1.0], "Close": [1.0], "Volume": [10]},
+        index=pd.to_datetime([FIXED - timedelta(days=1)]),
+    )
+    archive.to_parquet(tmp_path / "AAPL.parquet")
+    (tmp_path / "AAPL.meta.json").write_text(
+        json.dumps({"last_full_refresh_date": (FIXED - timedelta(days=8)).isoformat()})
+    )
+
+    called = {"full_start": None}
+
+    def fake_download(ticker, **kwargs):
+        called["full_start"] = kwargs.get("start")
+        return pd.DataFrame(
+            {"Open": [2.0], "High": [2.0], "Low": [2.0], "Close": [2.0], "Volume": [20]},
+            index=pd.to_datetime([FIXED]),
+        )
+
+    monkeypatch.setattr(mod.yf, "download", fake_download)
+    mod.read_or_fetch_archive("AAPL", end_date=FIXED, cache_dir=tmp_path, archive_history_days=1260)
+    # full-refresh window start == today - calendar(1260); a gap fetch would use latest+1.
+    expected = FIXED - timedelta(days=mod._calendar_window_for_trading_days(1260))
+    assert called["full_start"] == expected
+    mod._full_refresh_stagger_enabled.cache_clear()

@@ -35,6 +35,7 @@ defensively.
 from __future__ import annotations
 
 import contextlib
+import functools
 import json
 import logging
 import math
@@ -231,6 +232,34 @@ def _full_refresh_due(
     return (days_since_full >= 7 and bucket == day_idx) or (days_since_full >= 13)
 
 
+def _load_archive_config_for_stagger() -> bool:
+    """Read [archive].stagger_full_refresh from the tracked project config.
+
+    Isolated so tests can monkeypatch the config read without touching disk.
+    Lazy import avoids any import cycle (swing.config imports only stdlib).
+    """
+    from swing.config import Config
+    return Config.from_defaults().archive.stagger_full_refresh
+
+
+@functools.lru_cache(maxsize=1)
+def _full_refresh_stagger_enabled() -> bool:
+    """Single source of the stagger kill-switch, cached at module level.
+
+    Returns True (stagger ON) if the config is unreadable for any reason —
+    the safe default that prevents the weekly storm. Cached for the process
+    lifetime: the nightly pipeline (a fresh process) always reads current
+    config; a long-lived `swing web` server holds the value until restart
+    (call `_full_refresh_stagger_enabled.cache_clear()` to force a re-read,
+    or restart the server — Arc 6 §5 R3 Minor #2).
+    """
+    try:
+        return bool(_load_archive_config_for_stagger())
+    except Exception:  # noqa: BLE001 — any failure -> safe default
+        log.warning("could not resolve [archive].stagger_full_refresh; defaulting to True")
+        return True
+
+
 def read_or_fetch_archive(
     ticker: str,
     *,
@@ -274,12 +303,13 @@ def read_or_fetch_archive(
         except ValueError:
             last_full_refresh = None
 
-    needs_full_refresh = (
-        archive is None
-        or archive.empty
-        or last_full_refresh is None
-        or (today - last_full_refresh).days >= 7
-    )
+    if archive is None or archive.empty or last_full_refresh is None:
+        needs_full_refresh = True
+    else:
+        needs_full_refresh = _full_refresh_due(
+            ticker, last_full_refresh, today,
+            stagger_enabled=_full_refresh_stagger_enabled(),
+        )
 
     if needs_full_refresh:
         full_calendar_days = _calendar_window_for_trading_days(archive_history_days)

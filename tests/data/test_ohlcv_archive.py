@@ -186,6 +186,12 @@ def test_weekly_full_refresh_triggers_when_meta_is_8_days_old(tmp_path, monkeypa
     """
     from swing.data import ohlcv_archive as mod
 
+    # Arc 6 §5: read_or_fetch_archive now routes through the staggered
+    # full-refresh predicate (default ON). Disable the stagger to preserve
+    # this test's legacy `>= 7`-cadence intent (an 8-day-stale ticker fires
+    # full-refresh regardless of its crc32 bucket).
+    monkeypatch.setattr(mod, "_full_refresh_stagger_enabled", lambda: False)
+
     end_date = date(2026, 4, 28)
     archive = _mk_yf_frame([end_date - timedelta(days=1), end_date])
     archive.to_parquet(tmp_path / "AAPL.parquet")
