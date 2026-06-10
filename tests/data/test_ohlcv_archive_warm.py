@@ -176,3 +176,121 @@ def test_classify_gap_banding_deep_band_collapse(tmp_path, monkeypatch):
     assert "DEEP1" in report["deep_gap"] and "DEEP2" in report["deep_gap"]
     assert "NEAR1" not in report["deep_gap"] and "NEAR2" not in report["deep_gap"]
     mod._full_refresh_stagger_enabled.cache_clear()
+
+
+import pandas as pd
+
+
+def _mk_batch_frame(tickers_dates: dict, *, missing: tuple = (), include_adj=True,
+                    dates: list | None = None):
+    """Build a probe-shaped group_by='ticker' MultiIndex batch frame.
+
+    tickers_dates: {ticker: [date, ...]} for present (valid) tickers.
+    missing: tickers that are PRESENT-BUT-ALL-NAN (the probe-confirmed F6 shape).
+    include_adj: include an 'Adj Close' column (present-and-dropped on the real path).
+    dates: explicit index dates — REQUIRED when tickers_dates is empty (a
+        missing-only frame) so the frame has ROWS (Codex R2 Major #1: a 0-row
+        frame is `.empty`, which `_fetch_chunk` treats as a whole-chunk failure
+        BEFORE per-ticker all-NaN extraction can run; passing `dates` gives the
+        all-NaN frame a real dated index so it exercises the F6 path, not the
+        empty-response path).
+    """
+    all_tickers = list(tickers_dates.keys()) + list(missing)
+    # Union of all dates (yfinance aligns the batch on a shared index), plus any
+    # explicit `dates` so a missing-only frame still has rows.
+    all_dates = sorted(
+        {d for ds in tickers_dates.values() for d in ds} | set(dates or [])
+    )
+    index = pd.to_datetime(all_dates)
+    fields = ["Open", "High", "Low", "Close", "Volume"]
+    if include_adj:
+        fields = ["Open", "High", "Low", "Close", "Adj Close", "Volume"]
+    cols = pd.MultiIndex.from_product([all_tickers, fields])
+    df = pd.DataFrame(index=index, columns=cols, dtype=float)
+    for t, ds in tickers_dates.items():
+        present = pd.to_datetime(ds)
+        for f in fields:
+            df.loc[present, (t, f)] = 100.0 if f != "Volume" else 1000.0
+    # `missing` tickers stay all-NaN (present-but-all-NaN — F6 shape).
+    return df
+
+
+def test_extract_valid_subframe_drops_adj_close_and_tz(monkeypatch):
+    from datetime import date as _date
+    frame = _mk_batch_frame({"AAPL": [_date(2026, 6, 10)]}, include_adj=True)
+    sub = mod._extract_ticker_subframe(frame, "AAPL")
+    assert sub is not None
+    assert list(sub.columns) == ["Open", "High", "Low", "Close", "Volume"]  # Adj Close dropped
+    assert "Adj Close" not in sub.columns
+
+
+def test_extract_missing_ticker_is_all_nan_returns_none(monkeypatch):
+    """F6: present-but-all-NaN subframe -> fallback (None), NOT a write."""
+    from datetime import date as _date
+    frame = _mk_batch_frame({"AAPL": [_date(2026, 6, 10)]}, missing=("ZZZZINVALID",))
+    assert mod._extract_ticker_subframe(frame, "ZZZZINVALID") is None
+
+
+def test_extract_missing_ohlcv_column_returns_none():
+    """A subframe lacking a required OHLCV column -> fallback."""
+    from datetime import date as _date
+    idx = pd.to_datetime([_date(2026, 6, 10)])
+    # AAPL present but with NO 'Close' column (only Open/High/Low/Volume).
+    cols = pd.MultiIndex.from_product([["AAPL"], ["Open", "High", "Low", "Volume"]])
+    frame = pd.DataFrame(100.0, index=idx, columns=cols)
+    assert mod._extract_ticker_subframe(frame, "AAPL") is None
+
+
+def test_extract_single_ticker_flat_frame_remnant():
+    """A size-1 chunk may return a FLAT (non-MultiIndex) frame -> treat as that
+    ticker's subframe (Codex R1 Minor #3)."""
+    from datetime import date as _date
+    idx = pd.to_datetime([_date(2026, 6, 10)])
+    flat = pd.DataFrame(
+        {"Open": [1.0], "High": [1.0], "Low": [1.0], "Close": [1.0],
+         "Adj Close": [1.0], "Volume": [10]}, index=idx,
+    )
+    sub = mod._extract_ticker_subframe(flat, "AAPL")
+    assert sub is not None
+    assert list(sub.columns) == ["Open", "High", "Low", "Close", "Volume"]
+
+
+def test_chunk_tickers_folds_lone_remnant():
+    """Chunking avoids a trailing size-1 chunk by folding it into the previous."""
+    chunks = mod._chunk_tickers([f"T{i}" for i in range(7)], chunk_size=3)
+    # 7 / 3 would naively give [3,3,1]; fold the lone remnant -> [3,4] (no size-1 tail).
+    assert all(len(c) > 1 for c in chunks) or len(chunks) == 1
+    assert sum(len(c) for c in chunks) == 7
+
+
+def test_fetch_chunk_whole_failure_routes_all_to_fallback(monkeypatch):
+    """A yf.download raise -> every ticker in the chunk failed + chunk_failed=True,
+    zero writes."""
+    def boom(*a, **k):
+        raise RuntimeError("rate limited")
+    monkeypatch.setattr(mod.yf, "download", boom)
+    from datetime import date as _date
+    extracted, failed, chunk_failed = mod._fetch_chunk(
+        ["AAA", "BBB"], start=_date(2026, 6, 9), end=_date(2026, 6, 10),
+    )
+    assert extracted == {}
+    assert set(failed) == {"AAA", "BBB"}
+    assert chunk_failed is True
+
+
+def test_fetch_chunk_all_nan_response_is_not_a_chunk_failure(monkeypatch):
+    """Codex R1 Major #6: a VALID response where every ticker is present-but-all-NaN
+    -> tickers in `failed` but chunk_failed=False (NOT a download failure). This
+    keeps the #27 chunk_failures counter honest."""
+    from datetime import date as _date
+    def all_nan(arg, **k):
+        # dates=[...] so the frame has a real dated row of all-NaN (NOT a 0-row
+        # .empty frame, which would hit the whole-chunk-failure guard) — Codex R2 M1.
+        return _mk_batch_frame({}, missing=("AAA", "BBB"), dates=[_date(2026, 6, 10)])
+    monkeypatch.setattr(mod.yf, "download", all_nan)
+    extracted, failed, chunk_failed = mod._fetch_chunk(
+        ["AAA", "BBB"], start=_date(2026, 6, 9), end=_date(2026, 6, 10),
+    )
+    assert extracted == {}
+    assert set(failed) == {"AAA", "BBB"}
+    assert chunk_failed is False

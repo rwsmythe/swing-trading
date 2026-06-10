@@ -354,6 +354,97 @@ def _classify_warm_cohorts(
     }
 
 
+def _chunk_tickers(tickers: list[str], *, chunk_size: int) -> list[list[str]]:
+    """Split into chunks of chunk_size, folding a trailing lone remnant into the
+    previous chunk so no size-1 chunk is sent (the single-ticker-remnant shape
+    is still handled by _extract_ticker_subframe — this just avoids it where we
+    can). Returns [] for empty input."""
+    if not tickers:
+        return []
+    chunks = [tickers[i:i + chunk_size] for i in range(0, len(tickers), chunk_size)]
+    if len(chunks) > 1 and len(chunks[-1]) == 1:
+        lone = chunks.pop()
+        chunks[-1] = chunks[-1] + lone
+    return chunks
+
+
+def _extract_ticker_subframe(frame: pd.DataFrame, ticker: str) -> pd.DataFrame | None:
+    """Extract + validate one ticker's OHLCV subframe from a group_by='ticker'
+    batch response (Arc 6 §4.3 validation ladder). Returns the normalized
+    subframe ([Open,High,Low,Close,Volume], tz-stripped) on success, or None on
+    ANY gate failure (-> caller routes the ticker to fallback). Wrapped so a
+    malformed shape degrades to None rather than crashing the chunk."""
+    try:
+        ticker = ticker.upper()
+        # (a) subframe present. Flat (non-MultiIndex) frame == single-ticker remnant.
+        if isinstance(frame.columns, pd.MultiIndex):
+            level0 = {str(c).upper(): c for c in frame.columns.get_level_values(0)}
+            if ticker not in level0:
+                return None
+            sub = frame[level0[ticker]]
+            if isinstance(sub, pd.Series):  # degenerate single-column
+                return None
+        else:
+            sub = frame  # flat remnant -> already this ticker's OHLCV
+        sub = sub.copy()
+        # case-insensitive column resolution
+        col_map = {str(c).lower(): c for c in sub.columns}
+        # (b) required OHLCV columns present
+        required = ["open", "high", "low", "close", "volume"]
+        if not all(r in col_map for r in required):
+            return None
+        keep = sub[[col_map[r] for r in required]]
+        keep.columns = ["Open", "High", "Low", "Close", "Volume"]  # canonical (Adj Close dropped)
+        # (c) non-empty after dropna(how="all") — F6: present-but-all-NaN -> fallback
+        keep = keep.dropna(how="all")
+        if keep.empty:
+            return None
+        # (d) index parseable to DatetimeIndex
+        if not isinstance(keep.index, pd.DatetimeIndex):
+            keep.index = pd.to_datetime(keep.index)
+        if getattr(keep.index, "tz", None) is not None:
+            keep.index = keep.index.tz_localize(None)
+        return keep
+    except Exception:  # noqa: BLE001 — any unforeseen shape error -> fallback
+        return None
+
+
+def _fetch_chunk(
+    chunk: list[str], *, start: date, end: date,
+) -> tuple[dict[str, pd.DataFrame], list[str], bool]:
+    """Fetch ONE chunk with a single multi-ticker yf.download (threads=False,
+    group_by='ticker'), mirroring _yf_download_window's kwargs + the inclusive-end
+    `+1 day` convention. Returns (extracted, failed, chunk_failed):
+      - extracted: {ticker: valid_subframe}
+      - failed: tickers that did not extract (per-ticker miss OR whole-chunk)
+      - chunk_failed: True ONLY when the whole call failed (yf.download raised, or
+        an empty/None response) — a WHOLE-CHUNK download failure (Arc 6 §6). A
+        VALID response in which every ticker is present-but-all-NaN sets
+        chunk_failed=False (those are per-ticker misses), so the #27
+        chunk_failures counter is not corrupted (Codex R1 Major #6)."""
+    try:
+        raw = yf.download(
+            chunk, start=start, end=end + timedelta(days=1),
+            group_by="ticker", threads=False, progress=False,
+            auto_adjust=False, actions=False,
+        )
+    except Exception as exc:  # noqa: BLE001 — whole chunk -> serial fallback
+        log.warning("warm chunk yf.download failed (%d tickers -> fallback): %s",
+                    len(chunk), exc)
+        return {}, list(chunk), True
+    if raw is None or raw.empty:
+        return {}, list(chunk), True
+    extracted: dict[str, pd.DataFrame] = {}
+    failed: list[str] = []
+    for t in chunk:
+        sub = _extract_ticker_subframe(raw, t)
+        if sub is None:
+            failed.append(t.upper())
+        else:
+            extracted[t.upper()] = sub
+    return extracted, failed, False
+
+
 def read_or_fetch_archive(
     ticker: str,
     *,
