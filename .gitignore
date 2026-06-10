@@ -184,3 +184,6 @@ swing-pre-phase11-schwab-migration-*.db
 *.db-wal
 *.db-shm
 *.db-journal
+
+# Arc 6 benchmark output (operator-run; not an artifact)
+scripts/benchmark_evaluate_warm_results*.csv
