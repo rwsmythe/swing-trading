@@ -5,7 +5,10 @@ import base64
 import json
 import logging
 import os
+import shutil
 import sqlite3
+import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from datetime import UTC
@@ -1010,6 +1013,22 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
                 log.warning("export failed: %s", exc)
                 lease.status(export_status="failed")
 
+            # Phase 16 Arc 5 -- shadow-expectancy drumbeat (commission
+            # docs/phase16-shadow-expectancy-drumbeat-integration-commissioning-brief.md).
+            # Last functional step: run the read-only engine over the
+            # just-completed session so expectancy evidence accrues every
+            # nightly run unattended. Best-effort (mirrors weather/observe):
+            # re-raise LeaseRevokedError, warn on any other programming error
+            # -- never fails the run. lease.step() first for the free Arc-1
+            # pipeline_step_timings row + breadcrumb.
+            lease.step("shadow_expectancy")
+            try:
+                _step_shadow_expectancy(cfg=cfg, run_warnings=run_warnings)
+            except LeaseRevokedError:
+                raise
+            except Exception as exc:
+                log.warning("shadow_expectancy failed: %s", exc)
+
             lease.step("complete")
             try:
                 _step_review_log_cadence(lease=lease)
@@ -1054,6 +1073,175 @@ def lease_data_asof(cfg: Config, lease: Lease) -> str:
         return row[0]
     finally:
         conn.close()
+
+
+# Phase 16 Arc 5 — shadow-expectancy drumbeat tunables.
+SHADOW_EXPECTANCY_TIMEOUT_S = 300
+_SHADOW_EXPECTANCY_KEEP = 90
+
+
+def _shadow_expectancy_tail(text, *, limit: int = 512) -> str:
+    """Collapse newlines + cap length for a redaction-safe run_warnings detail.
+
+    The engine handles no secrets, but we mirror the combined-message tail
+    pattern used elsewhere (cap ~512 + single-space collapse) so a noisy
+    stderr cannot bloat the warnings envelope."""
+    if not text:
+        return ""
+    return " ".join(str(text).split())[-limit:]
+
+
+def _parse_shadow_manifest_path(stdout) -> Path | None:
+    """Extract the manifest path the CLI echoes (``manifest.json:   <path>``).
+
+    Locked artifact-dir mechanism (dispatch brief §3.3): the CLI emits the
+    absolute manifest path on stdout deterministically, so we read it directly
+    rather than racing the filesystem for the newest dir (robust to a
+    concurrent manual run). ``split(":", 1)`` is drive-letter safe on Windows."""
+    if not stdout:
+        return None
+    for line in str(stdout).splitlines():
+        if line.startswith("manifest.json:"):
+            rest = line.split(":", 1)[1].strip()
+            if rest:
+                return Path(rest)
+    return None
+
+
+def _prune_shadow_expectancy_artifacts(
+    output_root: Path, *, keep: int = _SHADOW_EXPECTANCY_KEEP
+) -> None:
+    """Keep-last-N prune of ``shadow-expectancy-*`` dirs only (brief §3.4).
+
+    Best-effort: a prune failure logs + returns, never fails the step. The UTC
+    basic-timestamp dir names sort lexically == chronologically, so a reverse
+    name-sort is newest-first. Matches ONLY the ``shadow-expectancy-*`` prefix
+    (never any other research export)."""
+    try:
+        dirs = sorted(
+            (p for p in output_root.glob("shadow-expectancy-*") if p.is_dir()),
+            key=lambda p: p.name, reverse=True,
+        )
+        for stale in dirs[keep:]:
+            shutil.rmtree(stale, ignore_errors=True)
+    except OSError as exc:
+        log.warning("shadow_expectancy: artifact prune failed: %s", exc)
+
+
+def _step_shadow_expectancy(*, cfg, run_warnings: list[dict]) -> None:
+    """Best-effort drumbeat: run the read-only shadow-expectancy engine over the
+    just-completed session and relay a one-line funnel summary into pipeline.log.
+
+    Last functional step (after export, before complete) so a slow/failed shadow
+    run never delays or damages the briefing/charts/export chain (commission §1).
+    The installed CLI is invoked as a subprocess via the interpreter
+    (``-m swing.cli``) -- robust to PATH in the spawned-pipeline context, NOT
+    relying on ``swing.exe`` -- against ``cfg.paths.db_path``, writing to the
+    project-root ``exports/research`` (where the operator's manual runs land).
+
+    The engine opens the DB read-only (``mode=ro`` URI) under WAL, so a
+    concurrent lease heartbeat write does not block it; any residual transient
+    lock surfaces as a nonzero exit -> a warned failure. NO retry machinery
+    (locked design resolution §3.1).
+
+    Failure tolerance (gotcha #27): nonzero exit / timeout / spawn error /
+    missing-or-unparseable manifest -> ``log.warning`` + a ``run_warnings`` entry;
+    NEVER fails the run. Zero unique signals -> a ``run_warnings`` entry
+    (expected-vs-actual honest-empty audit). LeaseRevokedError is NOT caught here
+    (the subprocess except clause is targeted, not broad) -> it propagates to the
+    runner wiring which re-raises it (standard best-effort shape)."""
+    output_root = cfg.paths.exports_dir / "research"
+    try:
+        output_root.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        log.warning("shadow_expectancy: output dir %s unavailable: %s", output_root, exc)
+        run_warnings.append({
+            "step": "shadow_expectancy",
+            "reason": "output dir unavailable",
+            "detail": _shadow_expectancy_tail(str(exc)),
+        })
+        return
+
+    argv = [
+        sys.executable, "-m", "swing.cli", "diagnose", "shadow-expectancy",
+        "--db", str(cfg.paths.db_path),
+        "--output-dir", str(output_root),
+    ]
+    try:
+        proc = subprocess.run(
+            argv, capture_output=True, encoding="utf-8", errors="replace",
+            timeout=SHADOW_EXPECTANCY_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired as exc:
+        log.warning("shadow_expectancy: timed out after %ss (child killed)",
+                    SHADOW_EXPECTANCY_TIMEOUT_S)
+        run_warnings.append({
+            "step": "shadow_expectancy",
+            "reason": "engine timed out",
+            "detail": _shadow_expectancy_tail(exc.stderr),
+        })
+        return
+    except OSError as exc:
+        log.warning("shadow_expectancy: subprocess spawn failed: %s", exc)
+        run_warnings.append({
+            "step": "shadow_expectancy",
+            "reason": "subprocess spawn failed",
+            "detail": _shadow_expectancy_tail(str(exc)),
+        })
+        return
+
+    if proc.returncode != 0:
+        log.warning("shadow_expectancy: engine exited %s", proc.returncode)
+        run_warnings.append({
+            "step": "shadow_expectancy",
+            "reason": f"engine exited {proc.returncode}",
+            "detail": _shadow_expectancy_tail(proc.stderr),
+        })
+        return
+
+    manifest_path = _parse_shadow_manifest_path(proc.stdout)
+    if manifest_path is None or not manifest_path.is_file():
+        log.warning("shadow_expectancy: manifest missing after zero-exit run")
+        run_warnings.append({
+            "step": "shadow_expectancy",
+            "reason": "manifest missing after zero-exit run",
+            "detail": _shadow_expectancy_tail(proc.stdout),
+        })
+        return
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        log.warning("shadow_expectancy: manifest unparseable: %s", exc)
+        run_warnings.append({
+            "step": "shadow_expectancy",
+            "reason": "manifest unparseable",
+            "detail": _shadow_expectancy_tail(str(exc)),
+        })
+        return
+
+    funnel = manifest.get("funnel", {}) or {}
+    detection = funnel.get("detection_level", {}) or {}
+    total = int(detection.get("total_detections", 0) or 0)
+    unique = int(detection.get("unique_signals", 0) or 0)
+    attributed = sum((funnel.get("per_hypothesis", {}) or {}).values())
+    unattributed = sum((funnel.get("unattributed", {}) or {}).values())
+    log.info(
+        "shadow_expectancy: total_detections=%d unique_signals=%d "
+        "attributed=%d unattributed=%d artifact=%s",
+        total, unique, attributed, unattributed, manifest_path.parent.name,
+    )
+    if unique == 0:
+        # Gotcha #27: the engine ran fine but produced an empty funnel --
+        # honest output, surfaced not silent. A zero-PRICED (but nonzero-signal)
+        # run is NOT warned -- that is the honest funnel.
+        run_warnings.append({
+            "step": "shadow_expectancy",
+            "reason": "engine produced zero unique signals",
+            "total_detections": total,
+            "unique_signals": unique,
+        })
+
+    _prune_shadow_expectancy_artifacts(output_root)
 
 
 def _step_evaluate(
