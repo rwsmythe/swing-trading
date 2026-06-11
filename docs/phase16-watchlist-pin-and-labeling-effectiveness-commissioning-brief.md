@@ -10,6 +10,34 @@ yours via your normal copowers cycle.
 **Prepared:** 2026-06-10 by the research-director/evaluator instance (operator-commissioned; tag-shape /
 label-source / pin-semantics / arc-scope decisions confirmed by the operator this session).
 
+> **AMENDMENT 2026-06-10 (supersedes parts of R2/R4 below; read BEFORE the Codex rounds).** The operator corrected a
+> miscommunication in this brief and the research director has QA'd the Arc-7 pre-Codex spec's two flagged
+> deviations. Binding rulings:
+>
+> 1. **R2's absent-from-candidates "stale-display" framing is SUPERSEDED.** The pin's purpose includes tracking
+>    names that fall off the finviz screen entirely ("potential future companies to keep an eye on which may not,
+>    currently, be tracked"). The corrected model (operator-authorized): **pinned tickers are unioned into the
+>    `_step_evaluate` fetch universe** at the established held-ticker injection seam (`runner.py` ~L1389-1400) and —
+>    unlike held tickers — flow through `evaluate_batch` to get REAL criteria/bucket/streak rows. The carve-out
+>    expansion into `_step_evaluate` is **APPROVED** (deviation a).
+> 2. **Deviation (b) — the R4 cohort hint computed via `match_candidate_to_hypotheses(..., include_baseline=True)`
+>    at watchlist render — APPROVED**, with two required strengthenings: (i) the 0026-spec addendum (R3 governance)
+>    must enumerate **BOTH** opt-in call sites (the entry-form/CLI prefill AND the watchlist cohort-hint builder) as
+>    attribution surfaces — not just the prefill; (ii) add an **opt-in call-site inventory guard test** asserting
+>    the ONLY `include_baseline=True` call sites are those two in `swing/` plus the engine's
+>    `research/harness/shadow_expectancy/attribution.py` — so future opt-ins cannot creep in silently.
+> 3. **Measurement-universe ruling (research-director lane; nobody had flagged it).** A pin-injected ticker that
+>    evaluates to `bucket=watch` enters the #23 pattern detect/observe pool → the v22 temporal log → the
+>    shadow-engine broad-watch measurement population. **ACCEPTED**: pins are part of the operator's intentional
+>    universe, and the frozen hypothesis statement defines the cohort as "the population the temporal log contains
+>    and the operator actually trades" — pinned names literally are that. Two REQUIRED riders: (i) the arc's spec +
+>    the 0026 addendum document that the evaluated universe is **screen + pinned** (universe-composition note);
+>    (ii) per-run auditability — when pin-injection occurs, emit a `warnings_json`/pipeline.log line listing the
+>    injected tickers (count + symbols) so screen-vs-pin provenance is decomposable from run logs. No schema.
+> 4. **Edge for Codex to probe:** a pinned ticker with no fetchable data (delisted/empty) must route through the
+>    existing F6/error handling without blanking the watchlist row — the pin keeps the row; the run-warning
+>    surfaces the degradation.
+
 ---
 
 ## 0. Read first
