@@ -147,6 +147,22 @@
           <span>{{ vm.hypothesis_label or "(none)" }}</span>
           <input type="hidden" name="hypothesis_label" value="{{ vm.hypothesis_label or '' }}">
         </div>
+        {#- Tuition-vs-error design-intent (Task 3 / spec §5 + §7.3). The
+            selected option is the draft when a draft exists (incl. an
+            explicit ""), else the advisory suggestion -- `is not none` is the
+            discriminator, NOT truthiness, so an explicit Unclassified ("")
+            survives a force resubmit instead of silently re-suggesting. The
+            persisted value is whatever this <select> submits (server-stamp);
+            the advisory only seeds the default. -#}
+        {% set selected_intent = vm.draft_entry_intent if vm.draft_entry_intent is not none else vm.suggested_entry_intent %}
+        <div><label for="entry_intent">Design intent:</label>
+          <select id="entry_intent" name="entry_intent">
+            <option value=""{% if not selected_intent %} selected{% endif %}>(unclassified)</option>
+            {% for value, label in vm.entry_intent_choices %}
+            <option value="{{ value }}"{% if selected_intent == value %} selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </div>
         <div><label>Trade origin:</label>
           {#- Display-only; auto-derived in record_entry. The hidden form
               field is intentionally NOT emitted — record_entry derives

@@ -43,6 +43,7 @@ def _seed_trade(
     mistake_tags: str | None = None,
     process_grade: str | None = None,
     disqualifying_process_violation: int | None = None,
+    entry_intent: str | None = None,
 ) -> None:
     conn.execute(
         "INSERT INTO trades (id, ticker, entry_date, entry_price, "
@@ -50,16 +51,16 @@ def _seed_trade(
         "industry, trade_origin, pre_trade_locked_at, current_size, "
         "hypothesis_label, risk_policy_id_at_lock, last_fill_at, "
         "realized_R_if_plan_followed, reviewed_at, mistake_tags, "
-        "process_grade, disqualifying_process_violation) VALUES "
+        "process_grade, disqualifying_process_violation, entry_intent) VALUES "
         "(?, ?, ?, ?, ?, ?, ?, ?, 'S', 'I', 'manual_off_pipeline', ?, "
-        "?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             trade_id, ticker, "2026-04-01",
             entry_price, initial_shares, initial_stop, initial_stop, state,
             pre_trade_locked_at, initial_shares, hypothesis_label,
             risk_policy_id_at_lock, last_fill_at,
             realized_R_if_plan_followed, reviewed_at, mistake_tags,
-            process_grade, disqualifying_process_violation,
+            process_grade, disqualifying_process_violation, entry_intent,
         ),
     )
     conn.commit()
@@ -103,6 +104,7 @@ def _seed_full_trade(
     mistake_tags: str | None = None,
     process_grade: str | None = None,
     disqualifying_process_violation: int | None = None,
+    entry_intent: str | None = None,
 ) -> None:
     """Helper: seed trade + entry fill + exit fill so the cohort
     aggregator computes realized_R correctly."""
@@ -120,6 +122,7 @@ def _seed_full_trade(
         mistake_tags=mistake_tags,
         process_grade=process_grade,
         disqualifying_process_violation=disqualifying_process_violation,
+        entry_intent=entry_intent,
     )
     _seed_fill(
         conn, trade_id=trade_id, fill_datetime=pre_trade_locked_at,
@@ -834,3 +837,61 @@ def test_failure_mode_excluded_from_mistake_tag_frequency_metric(
     assert "execution_error" not in freq
     assert set(freq.keys()).isdisjoint(FAILURE_MODES)
     assert "SOLD_TOO_EARLY" in freq  # the real mistake tag still counts
+
+
+# ---------------------------------------------------------------------------
+# Task 6 — entry_intent faceting (regression arithmetic)
+# ---------------------------------------------------------------------------
+
+def test_compute_trade_process_metrics_intent_filter(
+    conn: sqlite3.Connection,
+) -> None:
+    """Fixture: 2 standard + 3 by_design closed-reviewed + 1 NULL
+    closed-NOT-reviewed. Regression arithmetic distinguishes the filtered
+    slice from the unfiltered aggregate."""
+    # 2 standard, reviewed.
+    for i in (1, 2):
+        _seed_full_trade(
+            conn, trade_id=i, ticker=f"STD{i}",
+            entry_price=10.0, initial_stop=9.0, initial_shares=100,
+            exit_price=12.0, hypothesis_label=None,
+            reviewed_at="2026-04-10T09:00:00", entry_intent="standard",
+        )
+    # 3 by_design, reviewed.
+    for i in (3, 4, 5):
+        _seed_full_trade(
+            conn, trade_id=i, ticker=f"BD{i}",
+            entry_price=10.0, initial_stop=9.0, initial_shares=100,
+            exit_price=12.0, hypothesis_label=None,
+            reviewed_at="2026-04-10T09:00:00",
+            entry_intent="hypothesis_test_by_design",
+        )
+    # 1 NULL intent, closed but NOT reviewed.
+    _seed_full_trade(
+        conn, trade_id=6, ticker="NULL6",
+        entry_price=10.0, initial_stop=9.0, initial_shares=100,
+        exit_price=12.0, hypothesis_label=None,
+        reviewed_at=None, entry_intent=None,
+    )
+
+    all_m = compute_trade_process_metrics(conn, hypothesis_label=None)
+    std_m = compute_trade_process_metrics(
+        conn, hypothesis_label=None, entry_intent="standard")
+    bd_m = compute_trade_process_metrics(
+        conn, hypothesis_label=None,
+        entry_intent="hypothesis_test_by_design")
+    unc_m = compute_trade_process_metrics(
+        conn, hypothesis_label=None, entry_intent="__unclassified__")
+
+    assert all_m.n_reviewed == 5
+    assert std_m.n_reviewed == 2
+    assert bd_m.n_reviewed == 3
+    assert unc_m.n_reviewed == 0
+    # n_closed mirrors the slice: all 6, std 2, bd 3, unc 1.
+    assert all_m.n_closed == 6
+    assert std_m.n_closed == 2
+    assert bd_m.n_closed == 3
+    assert unc_m.n_closed == 1
+    # no-filter equals omitting the param entirely.
+    assert all_m.n_reviewed == compute_trade_process_metrics(
+        conn, hypothesis_label=None).n_reviewed

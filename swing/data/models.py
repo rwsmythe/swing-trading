@@ -193,6 +193,14 @@ FAILURE_MODES: frozenset[str] = frozenset({
     "other",
 })
 
+# Tuition-vs-error instrument (migration 0027 / v27) -- the schema-CHECK enum
+# for trades.entry_intent. Co-located with FAILURE_MODES (the schema-enum home)
+# so the Trade dataclass __post_init__ can validate without an upward import
+# from swing/trades/ (the same import-cycle reason FAILURE_MODES lives here).
+# NULL = unclassified (a distinct third facet; never coerced to 'standard').
+# Asserted identical to the migration 0027 CHECK by the 0027 schema test.
+ENTRY_INTENTS: frozenset[str] = frozenset({"standard", "hypothesis_test_by_design"})
+
 
 @dataclass(frozen=True)
 class Trade:
@@ -287,6 +295,11 @@ class Trade:
     # failure mode, and an unclassified loss stays NULL. Validated against
     # FAILURE_MODES in __post_init__ (Literal[...] is NOT runtime-enforced).
     failure_mode: str | None = None
+    # Tuition-vs-error instrument (migration 0027 / v27). Operator's stated
+    # design intent for the entry, ORTHOGONAL to execution quality. Set at entry,
+    # correctable at review, backfillable by CLI. NULL = unclassified. Validated
+    # against ENTRY_INTENTS in __post_init__ (Literal[...] is NOT runtime-enforced).
+    entry_intent: str | None = None
 
     def __post_init__(self) -> None:
         # B-7 (#11 paired-atomic-landing validator): the failure_mode value, when
@@ -296,6 +309,13 @@ class Trade:
             raise ValueError(
                 f"failure_mode must be one of {sorted(FAILURE_MODES)} or None, "
                 f"got {self.failure_mode!r}")
+        # entry_intent (#11 paired-atomic-landing validator): when set, MUST be a
+        # member of ENTRY_INTENTS. Mirrors the migration 0027 CHECK so the model
+        # rejects exactly what the schema rejects.
+        if self.entry_intent is not None and self.entry_intent not in ENTRY_INTENTS:
+            raise ValueError(
+                f"entry_intent must be one of {sorted(ENTRY_INTENTS)} or None, "
+                f"got {self.entry_intent!r}")
 
 
 @dataclass(frozen=True)

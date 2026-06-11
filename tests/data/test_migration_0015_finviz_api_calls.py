@@ -15,7 +15,7 @@ def test_migration_0015_creates_finviz_api_calls_table(tmp_path: Path) -> None:
         assert fk == 1, "ensure_schema must enable foreign_keys=ON"
 
         version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 26, f"expected v24 after ensure_schema walks to HEAD, got v{version}"
+        assert version == 27, f"expected v24 after ensure_schema walks to HEAD, got v{version}"
 
         cols = {
             r[1]: r[2]
@@ -56,4 +56,4 @@ def test_migration_0015_creates_finviz_api_calls_table(tmp_path: Path) -> None:
 def test_expected_schema_version_is_19() -> None:
     """Schema-version pin: this test trips when a new migration lands AND drift
     detection catches accidental skips of the migration version constant."""
-    assert EXPECTED_SCHEMA_VERSION == 26
+    assert EXPECTED_SCHEMA_VERSION == 27

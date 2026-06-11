@@ -22,6 +22,22 @@
   <section class="metrics-active-cohort" data-cohort-key="{{ active.cohort_key }}">
     <h2>{{ active.label }} <span class="muted">({{ active.n_closed }} closed)</span></h2>
 
+    {#- Intent-facet selector (Task 6 / spec §7.1 D6) — All tab only.
+        Server-rendered <a> links carrying ?cohort=__all__&intent=<value>;
+        NO HTMX. The card body re-faces by intent; the execution-discipline
+        panel below is invariant to it (the orthogonality guarantee). -#}
+    {% if active.cohort_key == "__all__" %}
+    <nav class="intent-facet-selector" aria-label="Entry-intent facet">
+      <span class="muted">Entry intent:</span>
+      {% for value, label in vm.intent_facets %}
+        {% set is_active = (value == (vm.active_entry_intent or "")) %}
+        <a href="?cohort=__all__{% if value %}&amp;intent={{ value }}{% endif %}"
+           class="intent-facet{% if is_active %} active{% endif %}"
+           {% if is_active %}aria-current="true"{% endif %}>{{ label }}</a>
+      {% endfor %}
+    </nav>
+    {% endif %}
+
     {% if active.metrics.legacy_trades_count > 0 %}
     <p class="muted legacy-annotation">
       {{ active.metrics.legacy_trades_count }} legacy pre-Phase-9 trade(s)
@@ -110,6 +126,32 @@
     </table>
     {% else %}
     <p class="muted">No mistake tags recorded yet for this cohort.</p>
+    {% endif %}
+
+    {#- Always-on cross-intent execution-discipline panel (Task 6 / spec §7.1).
+        Computed over the cohort's reviewed trades WITHOUT the intent filter
+        (the orthogonality guarantee — invariant to the facet above), and
+        restricted to the risk + reconciliation tag set. Its denominator is
+        the intent-UNFILTERED reviewed count, NOT the (possibly faceted)
+        n_reviewed. -#}
+    <h3>Execution discipline (cross-intent — risk + reconciliation slips)</h3>
+    <p class="muted">
+      Over {{ active.metrics.execution_discipline_n_reviewed }} reviewed
+      trade(s) in this cohort (intent-unfiltered). This panel is invariant to
+      the entry-intent facet — a genuine risk/reconciliation slip cannot be
+      hidden behind an intent.
+    </p>
+    {% if active.metrics.execution_discipline_tag_frequency %}
+    <table class="metric-grid execution-discipline-panel">
+      <thead><tr><th>Tag</th><th>k / n</th><th>Rate</th><th>Lower</th><th>Upper</th><th>Badges</th></tr></thead>
+      <tbody>
+        {% for tag, cell in active.metrics.execution_discipline_tag_frequency.items() %}
+        {% include "metrics/partials/metric_row_a.html.j2" %}
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="muted">No risk or reconciliation slips recorded yet for this cohort.</p>
     {% endif %}
   </section>
   {% endif %}

@@ -53,6 +53,9 @@
       <text x="{{ 360 + loop.index0 * 105 + 14 }}" y="15"
             class="muted">{{ series.metric_name.split('_grade_')[0] }}</text>
       {% endfor %}
+      {# Marker intent annotation legend (spec 7.2) - ASCII only (#16/#32). #}
+      <text x="6" y="15" class="muted"
+            data-marker="grades-intent-legend">intent: standard / by-design / unclassified</text>
     </g>
     {# Per-trade markers — always rendered for trades with a grade letter. #}
     {% for marker in vm.per_trade_markers %}
@@ -63,7 +66,8 @@
               data-trade-id="{{ marker.trade_id }}"
               data-grade="{{ marker.process_grade_letter }}"
               data-disqualifying="{{ marker.disqualifying }}"
-              class="process-grade-marker">
+              data-entry-intent="{{ marker.entry_intent_css_class }}"
+              class="process-grade-marker intent-{{ marker.entry_intent_css_class }}">
         <title>{{ marker.ticker }} ({{ marker.review_date }}) — grade {{ marker.process_grade_letter }} = {{ "%.1f"|format(marker.process_grade_numeric) }}</title>
       </circle>
       {% endif %}

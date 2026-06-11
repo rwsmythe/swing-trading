@@ -34,6 +34,7 @@ def list_trades_for_cohort(
     *,
     hypothesis_label: str | None,
     state_filter: tuple[str, ...] | None = None,
+    entry_intent: str | None = None,
 ) -> list[Trade]:
     """Return trades matching the cohort filter.
 
@@ -43,6 +44,10 @@ def list_trades_for_cohort(
         state_filter: optional tuple of states to filter on (e.g.,
           ``('closed', 'reviewed')``). When ``None``, no state filter
           applied.
+        entry_intent: optional intent-facet predicate (Task 6 / spec §7.1).
+          Sentinel convention: ``None`` = no predicate (today's behavior);
+          ``'__unclassified__'`` = ``entry_intent IS NULL``; any other
+          value = ``entry_intent = ?`` equality.
 
     Per plan §A.11.1: include ALL trades labeled with the cohort regardless
     of cohort status (active / paused / closed). Paused intervals do NOT
@@ -70,6 +75,12 @@ def list_trades_for_cohort(
         placeholders = ",".join("?" for _ in state_filter)
         where_clauses.append(f"state IN ({placeholders})")
         params.extend(state_filter)
+    if entry_intent is not None:
+        if entry_intent == "__unclassified__":
+            where_clauses.append("entry_intent IS NULL")
+        else:
+            where_clauses.append("entry_intent = ?")
+            params.append(entry_intent)
 
     cols = _trade_select_cols(conn)
     sql = f"SELECT {cols} FROM trades"  # noqa: S608
@@ -83,16 +94,19 @@ def list_trades_for_cohort(
 
 def list_closed_trades_for_cohort(
     conn: sqlite3.Connection, *, hypothesis_label: str | None,
+    entry_intent: str | None = None,
 ) -> list[Trade]:
     """Return trades in 'closed' or 'reviewed' state for the cohort.
 
     Convenience wrapper over :func:`list_trades_for_cohort` with the
-    closed-state tuple pre-filled.
+    closed-state tuple pre-filled. ``entry_intent`` threads the Task 6
+    intent-facet predicate (see :func:`list_trades_for_cohort`).
     """
     return list_trades_for_cohort(
         conn,
         hypothesis_label=hypothesis_label,
         state_filter=("closed", "reviewed"),
+        entry_intent=entry_intent,
     )
 
 

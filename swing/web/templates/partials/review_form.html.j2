@@ -123,6 +123,22 @@
   </fieldset>
 
   <fieldset>
+    <legend>Design intent (tuition vs error - optional)</legend>
+    <label>
+      Entry intent
+      <select name="entry_intent">
+        <option value=""{% if vm.entry_intent_selected is none %} selected{% endif %}>- (unclassified) -</option>
+        {% for value, label in vm.entry_intent_choices %}
+          <option value="{{ value }}"{% if value == vm.entry_intent_selected %} selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <p><small>Was this a standard signal-driven entry or a by-design hypothesis
+       test? Correct it here if the entry-time classification was wrong; leave
+       it unclassified to clear it.</small></p>
+  </fieldset>
+
+  <fieldset>
     <legend>Counterfactual (optional)</legend>
     <label>
       Realized R if plan followed

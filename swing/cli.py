@@ -606,6 +606,13 @@ def trade_group() -> None:
 @click.option("--hypothesis", "hypothesis", default=None,
               help="Optional free-text pre-trade hypothesis label. Frozen at "
                    "entry time; aggregated by `swing journal review`.")
+@click.option("--entry-intent", "entry_intent",
+              type=click.Choice(["standard", "hypothesis_test_by_design"]),
+              default=None,
+              help="Design intent for this entry (tuition-vs-error "
+                   "instrument). The advisory suggestion shown in the web "
+                   "form is NOT auto-applied here. Omit -> unclassified "
+                   "(NULL); pass a value to set it.")
 @click.option("--chart-pattern-operator", "chart_pattern_operator",
               default=None,
               help="Operator override for chart pattern (free text per "
@@ -698,7 +705,7 @@ def trade_group() -> None:
 @click.pass_context
 def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
                     watchlist_target, watchlist_stop, rationale, notes,
-                    hypothesis, chart_pattern_operator,
+                    hypothesis, entry_intent, chart_pattern_operator,
                     entry_path, thesis, why_now, invalidation,
                     expected_scenario, premortem_technical,
                     premortem_market_sector, premortem_execution,
@@ -819,6 +826,10 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
             # (web routes, scripts) get the same normalization. CLI passes
             # raw user input through unchanged.
             hypothesis_label=hypothesis,
+            # Tuition-vs-error (Task 3): persisted AS-IS. None when the flag
+            # is omitted (advisory suggestion NOT auto-applied on the CLI);
+            # click.Choice already rejects an invalid value (exit 2).
+            entry_intent=entry_intent,
             chart_pattern_operator=chart_pattern_operator,
             chart_pattern_algo=cp_algo,
             chart_pattern_algo_confidence=cp_conf,
@@ -1159,6 +1170,8 @@ def _render_trade_analysis(a) -> list[str]:
         f"Current stop: ${a.current_stop:.2f}"
     )
     lines.append(f"Hypothesis: {a.hypothesis_label or '(none)'}")
+    from swing.trades.intent import entry_intent_label
+    lines.append(f"Intent: {entry_intent_label(a.entry_intent) or 'Unclassified'}")
     lines.append(f"Notes: {a.notes or '(none)'}")
     lines.append("")
 
@@ -1360,12 +1373,17 @@ def _render_trade_analysis(a) -> list[str]:
                    "thesis_invalidated, normal_volatility_stop, "
                    "market_regime_shift, adverse_event_shock, execution_error, "
                    "failed_to_advance, other. Omit for a winner / unattributed.")
+@click.option("--entry-intent", "entry_intent",
+              type=click.Choice(["standard", "hypothesis_test_by_design"]),
+              default=None,
+              help="Optional correction of the trade's design intent. Omit to "
+                   "leave the persisted value unchanged; pass a value to set it.")
 @click.pass_context
 def trade_review_cmd(
     ctx, list_mode, window_days, trade_id, mistake_tags,
     entry_grade, management_grade, exit_grade,
     disqualifying_process_violation, realized_r_if_plan_followed,
-    mistake_cost_confidence, lesson_learned, failure_mode,
+    mistake_cost_confidence, lesson_learned, failure_mode, entry_intent,
 ):
     """Post-trade review surface — log mistakes, process grade, and outcome attribution."""
     import json
@@ -1495,6 +1513,22 @@ def trade_review_cmd(
             # surfaces as a clean ClickException, not a traceback. Production is
             # v24 so this is the belt to the membership check's suspenders.
             raise click.ClickException(str(exc)) from exc
+
+        # Task 4 (tuition-vs-error): correct entry_intent at review. Optional --
+        # an omitted flag leaves the persisted value untouched (no call). When
+        # passed, persist via the dedicated update_entry_intent writer in its
+        # OWN transaction (entry_intent is independent of review state, so it is
+        # NOT folded into complete_trade_review -- L2/L5 lock). click.Choice
+        # already constrains the value; the ValueError wrap is the belt.
+        if entry_intent is not None:
+            from swing.data.repos.trades import update_entry_intent
+            try:
+                with conn:
+                    update_entry_intent(
+                        conn, trade_id=trade_id, entry_intent=entry_intent,
+                    )
+            except ValueError as exc:
+                raise click.ClickException(str(exc)) from exc
     finally:
         conn.close()
 
@@ -1502,6 +1536,68 @@ def trade_review_cmd(
         f"Review recorded for trade #{trade_id} ({trade.ticker}). "
         f"Process grade: {process_grade}."
         + (f" Failure mode: {failure_mode}." if failure_mode else ""))
+
+
+@trade_group.command("backfill-intent")
+@click.option("--trade-id", type=int, default=None,
+              help="Re-target a single trade (re-prompts even if already set).")
+@click.option("--force", is_flag=True,
+              help="Re-prompt trades whose entry_intent is already set "
+                   "(the correction path).")
+@click.pass_context
+def trade_backfill_intent_cmd(ctx, trade_id, force):
+    """Classify each trade's design intent (entry_intent). Idempotent: already-set
+    rows are skipped unless --trade-id or --force. 'skip' leaves a row NULL
+    (renders 'Unclassified'). The re-runnable command + its summary ARE the audit
+    (no provenance table for V1)."""
+    from swing.config_overrides import apply_overrides
+    from swing.data.repos.trades import update_entry_intent
+    from swing.trades.intent import entry_intent_label, suggest_entry_intent
+
+    cfg = apply_overrides(ctx.obj["config"])
+    conn = connect(cfg.paths.db_path)
+    n_set = n_skipped_set = n_skipped_op = 0
+    try:
+        # Select target trades: by id, or all rows; the IS-NULL/--force gate is
+        # applied per-row so the summary counts are exact.
+        if trade_id is not None:
+            rows = conn.execute(
+                "SELECT id, ticker, entry_date, hypothesis_label, process_grade, "
+                "mistake_tags, entry_intent FROM trades WHERE id = ?",
+                (trade_id,)).fetchall()
+            if not rows:
+                raise click.ClickException(f"trade {trade_id} not found")
+        else:
+            rows = conn.execute(
+                "SELECT id, ticker, entry_date, hypothesis_label, process_grade, "
+                "mistake_tags, entry_intent FROM trades "
+                "ORDER BY entry_date, ticker, id").fetchall()
+        for tid, ticker, edate, hyp, pg, tags, current in rows:
+            already_set = current is not None
+            if already_set and trade_id is None and not force:
+                n_skipped_set += 1
+                continue
+            suggestion = suggest_entry_intent(hyp)
+            sug_label = entry_intent_label(suggestion) or "(no suggestion)"
+            click.echo(f"#{tid} {ticker} {edate} | label={hyp or '(none)'} | "
+                       f"grade={pg or '-'} | tags={tags or '-'} | "
+                       f"current={current or 'NULL'} | suggested={sug_label}")
+            choice = click.prompt(
+                "  intent [standard / hypothesis_test_by_design / skip]",
+                default=(suggestion or "skip"), show_default=True).strip()
+            if choice in ("skip", ""):
+                n_skipped_op += 1
+                continue
+            try:
+                with conn:
+                    update_entry_intent(conn, trade_id=tid, entry_intent=choice)
+            except ValueError as exc:
+                raise click.ClickException(str(exc)) from exc
+            n_set += 1
+        click.echo(f"{n_set} set, {n_skipped_set} skipped-already-set, "
+                   f"{n_skipped_op} skipped-by-operator")
+    finally:
+        conn.close()
 
 
 @main.group("review")

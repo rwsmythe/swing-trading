@@ -64,6 +64,7 @@ def _seed_reviewed_trade(
     initial_stop: float = 9.0,
     reviewed_at: str = "2026-04-01T16:00:00",
     last_fill_at: str = "2026-04-01T15:30:00",
+    entry_intent: str | None = None,
 ) -> None:
     """Seed a reviewed trade with stored Phase 6 grades.
 
@@ -77,10 +78,10 @@ def _seed_reviewed_trade(
         "industry, trade_origin, pre_trade_locked_at, current_size, "
         "process_grade, entry_grade, management_grade, exit_grade, "
         "disqualifying_process_violation, realized_R_if_plan_followed, "
-        "reviewed_at, last_fill_at) VALUES "
+        "reviewed_at, last_fill_at, entry_intent) VALUES "
         "(?, ?, '2026-03-15', ?, ?, ?, ?, 'reviewed', 'S', 'I', "
         "'manual_off_pipeline', '2026-03-15T09:30:00', ?, ?, ?, ?, ?, "
-        "?, ?, ?, ?)",
+        "?, ?, ?, ?, ?)",
         (
             trade_id, ticker, entry_price, initial_shares, initial_stop,
             initial_stop, 0,  # current_size=0 (fully exited)
@@ -88,7 +89,7 @@ def _seed_reviewed_trade(
             management_grade or process_grade,
             exit_grade or process_grade,
             disqualifying, realized_R_if_plan_followed,
-            reviewed_at, last_fill_at,
+            reviewed_at, last_fill_at, entry_intent,
         ),
     )
     conn.execute(
@@ -330,6 +331,30 @@ def test_below_line_floor_suppresses(
     assert isinstance(series.suppressed, SuppressedMetric)
     # markers always render even when rolling line is suppressed
     assert len(result.per_trade_markers) == 4
+
+
+# ---------------------------------------------------------------------------
+# Task 7 — per-trade marker entry_intent annotation (#22 hooks preserved)
+# ---------------------------------------------------------------------------
+
+def test_marker_carries_entry_intent(conn: sqlite3.Connection) -> None:
+    """A reviewed trade with entry_intent='standard' surfaces the raw token
+    on its per-trade marker (spec §7.2)."""
+    _seed_reviewed_trade(
+        conn, trade_id=1, ticker="STD", process_grade="B",
+        entry_intent="standard",
+    )
+    result = compute_process_grade_trend(conn)
+    assert any(
+        m.entry_intent == "standard" for m in result.per_trade_markers
+    )
+
+
+def test_marker_entry_intent_none_when_unset(conn: sqlite3.Connection) -> None:
+    """A reviewed trade with no entry_intent leaves the marker field None."""
+    _seed_reviewed_trade(conn, trade_id=1, ticker="UNC", process_grade="B")
+    result = compute_process_grade_trend(conn)
+    assert result.per_trade_markers[0].entry_intent is None
 
 
 # ---------------------------------------------------------------------------

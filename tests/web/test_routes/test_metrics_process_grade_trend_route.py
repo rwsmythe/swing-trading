@@ -84,6 +84,85 @@ def _seed_n_reviewed_trades(
         conn.close()
 
 
+def _seed_intent_reviewed_trades(db_path) -> None:
+    """Seed reviewed trades carrying entry_intent for the marker-annotation
+    route tests (one standard, one by-design, one unclassified)."""
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = (
+            (1, "STD", "standard", "2026-04-01"),
+            (2, "BYD", "hypothesis_test_by_design", "2026-04-02"),
+            (3, "UNC", None, "2026-04-03"),
+        )
+        for trade_id, ticker, intent, day in rows:
+            ts = f"{day}T16:00:00"
+            fill_ts = f"{day}T15:30:00"
+            conn.execute(
+                "INSERT INTO trades (id, ticker, entry_date, entry_price, "
+                "initial_shares, initial_stop, current_stop, state, sector, "
+                "industry, trade_origin, pre_trade_locked_at, current_size, "
+                "process_grade, entry_grade, management_grade, exit_grade, "
+                "disqualifying_process_violation, realized_R_if_plan_followed, "
+                "reviewed_at, last_fill_at, entry_intent) VALUES "
+                "(?, ?, '2026-03-15', 10.0, 100, 9.0, 9.0, 'reviewed', 'S', "
+                "'I', 'manual_off_pipeline', '2026-03-15T09:30:00', 0, 'B', "
+                "'B', 'B', 'B', 0, 1.0, ?, ?, ?)",
+                (trade_id, ticker, ts, fill_ts, intent),
+            )
+            conn.execute(
+                "INSERT INTO fills (trade_id, fill_datetime, action, quantity, "
+                "price, reconciliation_status) VALUES "
+                "(?, '2026-03-15T09:30:00', 'entry', 100, 10.0, 'unreconciled')",
+                (trade_id,),
+            )
+            conn.execute(
+                "INSERT INTO fills (trade_id, fill_datetime, action, quantity, "
+                "price, reconciliation_status) VALUES "
+                "(?, ?, 'exit', 100, 11.0, 'unreconciled')",
+                (trade_id, fill_ts),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_pgt_template_emits_intent_css_hook(seeded_db):
+    """Marker circles carry the normalized data-entry-intent hook (spec §7.2);
+    the by-design marker uses the `by-design` token, NOT the raw enum value
+    (Codex R1-Major-2)."""
+    cfg, cfg_path = seeded_db
+    _seed_intent_reviewed_trades(cfg.paths.db_path)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/process-grade-trend")
+    assert r.status_code == 200
+    assert "data-entry-intent=" in r.text
+    grades = _panel(r.text, "grades")
+    assert 'data-entry-intent="standard"' in grades
+    assert 'data-entry-intent="by-design"' in grades
+    assert 'data-entry-intent="unclassified"' in grades
+    # The raw token must NOT leak as a CSS class / attribute.
+    assert "hypothesis_test_by_design" not in grades
+
+
+def test_pgt_rolling_series_byte_stable_and_hooks_preserved(seeded_db):
+    """L5 LOCK: every #22 rolling-series + panel hook stays present after the
+    additive marker-intent annotation. Seed n=5 so the rolling line is
+    drawable (polyline floor) AND mark the cohort with entry_intent."""
+    cfg, cfg_path = seeded_db
+    _seed_n_reviewed_trades(cfg.paths.db_path, n=5)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/process-grade-trend")
+    assert r.status_code == 200
+    for hook in (
+        'data-panel="grades"', 'data-panel="rate"', 'data-panel="cost"',
+        'data-series=', '<polyline', '<circle', 'A=4', 'F=0',
+        'data-marker="grades-legend"',
+    ):
+        assert hook in r.text, f"missing #22 hook: {hook}"
+
+
 def test_process_grade_trend_endpoint_returns_200(seeded_db):
     cfg, cfg_path = seeded_db
     app = create_app(cfg, cfg_path)

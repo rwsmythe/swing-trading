@@ -700,3 +700,32 @@ def test_c12_analyze_trade_excludes_entry_fills_from_exits(tmp_path):
     )
     assert a.exits[0].reason == "trim"
     assert a.exits[0].shares == 4
+
+
+# --- Task 8: entry_intent field carried through TradeAnalysis -----------------
+
+
+def test_trade_analysis_carries_entry_intent(tmp_path):
+    """TradeAnalysis.entry_intent mirrors trade.entry_intent.
+
+    Discriminating: before Task 8 the field does not exist on TradeAnalysis;
+    after Task 8 it is present and carries the value set at insert time.
+    """
+    conn = _conn(tmp_path)
+    tid = _trade(
+        conn, ticker="AAPL", entry_date="2026-04-20",
+        entry_price=150.0, shares=5, initial_stop=140.0,
+        # entry_intent set to "standard" via the underlying Trade field
+    )
+    # Patch the trade row so entry_intent='standard' after insert (the _trade
+    # helper does not yet expose entry_intent as a kwarg -- drive it via SQL to
+    # keep the test self-contained and avoid modifying the helper).
+    with conn:
+        conn.execute(
+            "UPDATE trades SET entry_intent='standard' WHERE id=?", (tid,),
+        )
+    a = analyze_trade(conn, tid)
+    assert a.entry_intent == "standard", (
+        f"expected a.entry_intent='standard'; got {a.entry_intent!r} — "
+        "TradeAnalysis must carry trade.entry_intent (Task 8)"
+    )

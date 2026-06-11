@@ -495,6 +495,13 @@ def entry_post(
     # the field. Whitelist-coerced via _coerce_origin to defend against
     # tampered POSTs (XSS / open-redirect into the rendered Cancel target).
     origin: str = Form("watchlist"),
+    # Tuition-vs-error (Task 3 / spec §5 + §7.3). The operator's explicit
+    # design-intent <select>. Default "" (unselected / bare cURL) is coerced
+    # to None at the EntryRequest construction below via `... or None`
+    # (the nullability gotcha — empty string would trip the CHECK enum). This
+    # is a server-stamp: the value flows straight to record_entry/Trade and
+    # is NEVER re-derived from the label.
+    entry_intent: str = Form(""),
     # Phase 7 Sub-C C.3 — 18 pre-trade required fields (spec §1, §3.5.1).
     # All `Form(None)` so legacy callers (existing tests, bare cURL) keep
     # working until C.4 wires the operator-facing fieldset; the
@@ -605,6 +612,29 @@ def entry_post(
                 f"stop must be < entry; got entry={entry_price}, "
                 f"stop={initial_stop}"
             ),
+            origin=origin_coerced,
+            submitted_schwab_source_value_json=schwab_source_value_json,
+            submitted_auto_fill_audit_at=auto_fill_audit_at,
+            submitted_fill_origin_at_form_render=fill_origin_at_form_render,
+        )
+
+    # Tuition-vs-error (Codex R1 Major): early-validate entry_intent at the
+    # request boundary, mirroring the stop>=entry idiom above. EntryRequest
+    # .__post_init__ raises ValueError for a non-member value, and that
+    # construction (~L1258) is intentionally NOT inside a ValueError catch
+    # (we validate operator-input boundaries here, not via a blanket catch —
+    # see `test_post_entry_stop_ge_entry_unhandled_value_error_still_500`).
+    # entry_intent is Form("") so empty == unclassified == VALID; only a
+    # NON-EMPTY non-member is rejected. Re-rendering WITHOUT the bad anchor
+    # clears it (4-tier-ladder behavior).
+    from swing.data.models import ENTRY_INTENTS
+    if entry_intent and entry_intent not in ENTRY_INTENTS:
+        return _rerender_entry_form_with_error(
+            request=request, templates=templates, cfg=cfg, cache=cache,
+            executor=executor, ticker=ticker, entry_date=entry_date,
+            entry_price=entry_price, shares=shares, initial_stop=initial_stop,
+            rationale=rationale, notes=notes,
+            error_message=f"invalid entry_intent {entry_intent!r}",
             origin=origin_coerced,
             submitted_schwab_source_value_json=schwab_source_value_json,
             submitted_auto_fill_audit_at=auto_fill_audit_at,
@@ -1308,6 +1338,11 @@ def entry_post(
         # re-derived pattern_evaluation_id from the 5-tier ladder
         # above (NOT operator-submitted hidden input verbatim).
         pattern_evaluation_id=resolved_pe_id,
+        # Tuition-vs-error (Task 3): server-stamp the operator's explicit
+        # design-intent. `... or None` coerces an unselected "" to NULL so
+        # the trades.entry_intent CHECK enum isn't tripped (nullability
+        # gotcha). NEVER a trusted hidden input / never label-derived.
+        entry_intent=entry_intent or None,
         gap_risk_present=gap_risk_present,
         gap_risk_handling=gap_risk_handling or None,
         emotional_state_pre_trade=emo_json,
@@ -1385,6 +1420,13 @@ def entry_post(
                         catalyst_other_description or ""
                     ),
                     missing_fields=frozenset(exc.missing_fields),
+                    # Tuition-vs-error (Task 3): round-trip the SUBMITTED
+                    # design-intent verbatim (possibly "") so the re-rendered
+                    # <select> pre-selects the operator's choice -- NOT the
+                    # suggestion. An explicit "" (Unclassified) survives the
+                    # force resubmit because the template discriminates on
+                    # `is not none` (Codex R1-Major-1: NULL != standard).
+                    draft_entry_intent=entry_intent,
                     # Phase 13 T3.SB1 Codex R1 Major #3 fix — preserve
                     # the submitted auto-fill anchors so the
                     # MissingPreTradeFieldsException re-render carries
@@ -1511,6 +1553,15 @@ def entry_post(
                 # silently dropping the snapshot. Multi-path-data-
                 # ingestion lesson 2026-04-29.
                 "hypothesis_label": hypothesis_label,
+                # Tuition-vs-error (Task 3): entry_intent must round-trip
+                # through the soft-warn confirm so a force=true resubmit
+                # persists the operator's design-intent choice (and an
+                # explicit Unclassified "" stays "" -> NULL, never re-
+                # suggested). Verbatim submitted string; the confirm
+                # template's form_values.items() loop auto-emits the hidden
+                # input (recurring CLAUDE.md gotcha: hidden anchors driving
+                # POST-time behavior MUST round-trip through form_values).
+                "entry_intent": entry_intent,
                 # Task 8 (R4-Major-1) — origin must round-trip through the
                 # soft-warn confirm so (a) the force=true resubmit's POST
                 # carries origin back; (b) the confirm partial's colspan +
@@ -2667,7 +2718,7 @@ def review_chart_fragment(request: Request, trade_id: int):
 
 
 @router.post("/trades/{trade_id}/review")
-def review_post(
+async def review_post(
     request: Request, trade_id: int,
     entry_grade: str = Form(...),
     management_grade: str = Form(...),
@@ -2678,6 +2729,7 @@ def review_post(
     mistake_cost_confidence: str = Form(""),
     mistake_tags: list[str] = Form(default=[]),  # noqa: B008
     failure_mode: str | None = Form(None),
+    entry_intent: str | None = Form(None),
 ):
     """Phase 6: persist a post-trade review.
 
@@ -2765,6 +2817,42 @@ def review_post(
             request, "partials/review_form.html.j2",
             {"vm": vm, "error_message": fm_err}, status_code=400)
 
+    # Task 4 (tuition-vs-error): correct entry_intent at review. The 4-tier
+    # rejection ladder mirrors the failure_mode gate. Codex R1 Major:
+    # PRESENCE-gated (absence != clear). entry_intent is Form(None):
+    #   - field ABSENT (None) -> skip the ladder AND the update writer entirely
+    #     -> the persisted operator-stamped intent is PRESERVED (symmetric with
+    #     the CLI's omitted --entry-intent). Absence is not a correction.
+    #   - field present + "" (operator chose Unclassified) -> ei=None ->
+    #     explicit clear to NULL (the ``... or None`` nullability gotcha).
+    #   - field present + a member -> set it.
+    #   - field present + a non-member token -> 400 + re-rendered review form
+    #     with the bad anchor CLEARED (the rebuilt VM reads the still-
+    #     persisted value, so "foo" never re-renders -> operator not trapped).
+    # Persisted via the dedicated update_entry_intent writer BELOW (its OWN
+    # transaction) -- complete_trade_review is NOT widened.
+    from swing.data.models import ENTRY_INTENTS
+    # FastAPI collapses a present-but-empty form field ("") to the Form(None)
+    # default, making it indistinguishable from an ABSENT field at the
+    # parameter level. To honor absence != clear (Codex R1 Major), detect
+    # field PRESENCE from the raw form body: a present field (even "") means
+    # the operator submitted a deliberate choice; an absent field is a
+    # legacy/bare POST that must preserve the persisted intent (CLI-symmetric).
+    raw_form = await request.form()
+    entry_intent_present = "entry_intent" in raw_form
+    ei = entry_intent or None  # ... or None: empty string -> NULL (nullable CHECK)
+    if entry_intent_present and ei is not None and ei not in ENTRY_INTENTS:
+        from swing.web.view_models.trades import build_review_vm
+        vm = build_review_vm(trade_id=trade_id, cfg=cfg)
+        ei_err = f"Invalid entry_intent {ei!r}"
+        if vm is None:
+            return templates.TemplateResponse(
+                request, "partials/trade_form_error.html.j2",
+                {"error_message": ei_err}, status_code=400)
+        return templates.TemplateResponse(
+            request, "partials/review_form.html.j2",
+            {"vm": vm, "error_message": ei_err}, status_code=400)
+
     conn = connect(cfg.paths.db_path)
     try:
         trade = get_trade(conn, trade_id)
@@ -2806,6 +2894,20 @@ def review_post(
             event_ts=review_ts,
             rationale=None,
         )
+        # Task 4: persist the (optional) entry_intent correction via the
+        # dedicated writer in its OWN transaction. entry_intent is independent
+        # of review state, so it is NOT folded into complete_trade_review (L2/L5
+        # lock). complete_trade_review opened + committed its OWN ``with conn:``
+        # above; this is a SEPARATE ``with conn:`` AFTER it returned (the
+        # service-tx-nesting gotcha: never nest update_entry_intent inside an
+        # outer tx).
+        # Codex R1 Major: PRESENCE-gated. Only touch the persisted intent
+        # when the field was actually submitted -- an absent field preserves
+        # the operator-stamped value (symmetric with the CLI).
+        if entry_intent_present:
+            from swing.data.repos.trades import update_entry_intent
+            with conn:
+                update_entry_intent(conn, trade_id=trade_id, entry_intent=ei)
     finally:
         conn.close()
     # code-review I3 (operator-witnessed S5): /trades is unrouted — htmx.js

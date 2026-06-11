@@ -312,3 +312,61 @@ def test_analyze_non_int_trade_id_rejected(tmp_path: Path):
         assert cnt is not None
     finally:
         conn.close()
+
+
+# --- Task 8: entry_intent displayed in rendered output -------------------------
+
+
+def test_render_trade_analysis_prints_intent(tmp_path: Path):
+    """_render_trade_analysis renders 'Intent: Hypothesis test (by design)' when
+    entry_intent='hypothesis_test_by_design'.
+
+    Discriminating: before Task 8 the Intent line is absent from the output;
+    after Task 8 it must appear with the correct display label.
+    """
+    from swing.journal.analyze import TradeAnalysis
+    from swing.cli import _render_trade_analysis
+
+    a = TradeAnalysis(
+        trade_id=1, ticker="TST", entry_date="2026-04-20",
+        entry_price=100.0, initial_shares=5, initial_stop=90.0,
+        current_stop=90.0, state="entered", status="open",
+        hypothesis_label="sub-A+ test", notes=None,
+        recommendations=(), exits=(),
+        days_rec_to_entry=None, pct_above_pivot=None, stop_dev_pct=None,
+        realized_pnl_total=0.0, r_multiple_avg=None,
+        entry_intent="hypothesis_test_by_design",
+    )
+    lines = _render_trade_analysis(a)
+    joined = "\n".join(lines)
+    assert "Intent: Hypothesis test (by design)" in joined, (
+        f"expected 'Intent: Hypothesis test (by design)' in rendered lines; "
+        f"got:\n{joined}"
+    )
+
+
+def test_render_trade_analysis_null_intent_unclassified(tmp_path: Path):
+    """_render_trade_analysis renders 'Intent: Unclassified' when entry_intent
+    is None.
+
+    Discriminating: before Task 8 the Intent line is absent; after Task 8 it
+    must appear with the 'Unclassified' fallback label.
+    """
+    from swing.journal.analyze import TradeAnalysis
+    from swing.cli import _render_trade_analysis
+
+    a = TradeAnalysis(
+        trade_id=2, ticker="TST", entry_date="2026-04-20",
+        entry_price=100.0, initial_shares=5, initial_stop=90.0,
+        current_stop=90.0, state="entered", status="open",
+        hypothesis_label=None, notes=None,
+        recommendations=(), exits=(),
+        days_rec_to_entry=None, pct_above_pivot=None, stop_dev_pct=None,
+        realized_pnl_total=0.0, r_multiple_avg=None,
+        entry_intent=None,
+    )
+    lines = _render_trade_analysis(a)
+    joined = "\n".join(lines)
+    assert "Intent: Unclassified" in joined, (
+        f"expected 'Intent: Unclassified' in rendered lines; got:\n{joined}"
+    )

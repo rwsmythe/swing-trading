@@ -1006,3 +1006,159 @@ def test_identification_funnel_no_watch_take_rate_field_in_body(seeded_db):
     body = r.text.lower()
     assert "watch_take_rate" not in body
     assert "watch-take-rate" not in body
+
+
+# ---------------------------------------------------------------------------
+# Task 6 — intent facet selector + always-on execution-discipline panel
+# ---------------------------------------------------------------------------
+
+def _seed_reviewed_trade(
+    conn, *, trade_id, ticker, entry_intent, mistake_tags,
+):
+    import json as _json
+    conn.execute(
+        "INSERT INTO trades (id, ticker, entry_date, entry_price, "
+        "initial_shares, initial_stop, current_stop, state, sector, "
+        "industry, trade_origin, pre_trade_locked_at, current_size, "
+        "hypothesis_label, last_fill_at, reviewed_at, mistake_tags, "
+        "entry_intent) VALUES "
+        "(?, ?, '2026-04-01', 10.0, 100, 9.0, 9.0, 'closed', 'S', 'I', "
+        "'manual_off_pipeline', '2026-04-01T09:30:00', 100, NULL, "
+        "'2026-04-08T15:30:00', '2026-04-10T09:00:00', ?, ?)",
+        (trade_id, ticker, _json.dumps(mistake_tags), entry_intent),
+    )
+    conn.execute(
+        "INSERT INTO fills (trade_id, fill_datetime, action, quantity, price, "
+        "reconciliation_status) VALUES "
+        "(?, '2026-04-01T09:30:00', 'entry', 100, 10.0, 'unreconciled')",
+        (trade_id,),
+    )
+    conn.execute(
+        "INSERT INTO fills (trade_id, fill_datetime, action, quantity, price, "
+        "reconciliation_status) VALUES "
+        "(?, '2026-04-08T15:30:00', 'exit', 100, 12.0, 'unreconciled')",
+        (trade_id,),
+    )
+    conn.commit()
+
+
+def _seed_intent_trades(cfg):
+    from swing.data.db import connect
+    conn = connect(cfg.paths.db_path)
+    try:
+        _seed_reviewed_trade(
+            conn, trade_id=1, ticker="VIR",
+            entry_intent="hypothesis_test_by_design",
+            mistake_tags=["NO_STOP", "STOP_NOT_PLACED"])
+        _seed_reviewed_trade(
+            conn, trade_id=2, ticker="STD1",
+            entry_intent="standard", mistake_tags=["CHASED"])
+        _seed_reviewed_trade(
+            conn, trade_id=3, ticker="STD2",
+            entry_intent="standard", mistake_tags=["CHASED"])
+    finally:
+        conn.close()
+
+
+def _extract_discipline_panel(html: str) -> str:
+    marker = "<h3>Execution discipline"
+    idx = html.index(marker)
+    end = html.index("</section>", idx)
+    return html[idx:end]
+
+
+def test_trade_process_all_tab_renders_intent_facet_selector(seeded_db):
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/trade-process", params={"cohort": "__all__"})
+    assert r.status_code == 200
+    assert 'class="intent-facet-selector"' in r.text
+    # Facet links carry ?cohort=__all__&intent=<value>.
+    assert "intent=standard" in r.text
+    assert "intent=hypothesis_test_by_design" in r.text
+    assert "intent=__unclassified__" in r.text
+
+
+def test_trade_process_unknown_intent_normalizes_to_all(seeded_db):
+    """Codex R1 Minor: an arbitrary ?intent=foo (not in the valid set) must
+    normalize to None (the All facet) -- NOT pass through to the filter and
+    render an empty no-facet aggregate. The facet selector is still present
+    and the page renders 200 (the All view)."""
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r_foo = client.get(
+            "/metrics/trade-process",
+            params={"cohort": "__all__", "intent": "foo"})
+        r_all = client.get(
+            "/metrics/trade-process", params={"cohort": "__all__"})
+    assert r_foo.status_code == 200
+    # Renders the All view (facet selector present, no crash, not empty state).
+    assert 'class="intent-facet-selector"' in r_foo.text
+    # Byte-identical to the no-intent All view (foo -> None == All).
+    assert r_foo.text == r_all.text
+
+
+def test_trade_process_valid_intent_still_filters(seeded_db):
+    """Guard: a VALID ?intent=standard is NOT normalized away -- it still
+    faces the standard slice (distinct from the All view)."""
+    cfg, cfg_path = seeded_db
+    _seed_intent_trades(cfg)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r_std = client.get(
+            "/metrics/trade-process",
+            params={"cohort": "__all__", "intent": "standard"})
+        r_all = client.get(
+            "/metrics/trade-process", params={"cohort": "__all__"})
+    assert r_std.status_code == 200
+    # The standard slice re-faces the body (distinct from All).
+    assert r_std.text != r_all.text
+
+
+def test_trade_process_non_all_tab_omits_facet_selector(seeded_db):
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get(
+            "/metrics/trade-process", params={"cohort": "A+ baseline"})
+    assert r.status_code == 200
+    assert 'class="intent-facet-selector"' not in r.text
+
+
+def test_trade_process_renders_execution_discipline_panel(seeded_db):
+    cfg, cfg_path = seeded_db
+    _seed_intent_trades(cfg)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/trade-process", params={"cohort": "__all__"})
+    assert r.status_code == 200
+    assert "Execution discipline" in r.text
+    panel = _extract_discipline_panel(r.text)
+    assert "execution_discipline_NO_STOP" in panel
+    assert "execution_discipline_STOP_NOT_PLACED" in panel
+    # The entry-category tuition tag is NOT in the discipline panel.
+    assert "execution_discipline_CHASED" not in panel
+
+
+def test_trade_process_panel_byte_identical_across_intent_facet(seeded_db):
+    """Toggling ?intent=standard re-faces the card body but the
+    execution-discipline panel is byte-identical (orthogonality)."""
+    cfg, cfg_path = seeded_db
+    _seed_intent_trades(cfg)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r_all = client.get(
+            "/metrics/trade-process", params={"cohort": "__all__"})
+        r_std = client.get(
+            "/metrics/trade-process",
+            params={"cohort": "__all__", "intent": "standard"})
+    assert r_all.status_code == 200
+    assert r_std.status_code == 200
+    # The discipline panel is byte-identical across the facet states.
+    assert _extract_discipline_panel(r_all.text) == _extract_discipline_panel(
+        r_std.text)
+    # But the card body DID re-face: the standard slice is smaller (n_closed
+    # differs between All=3 and standard=2), so the full pages differ.
+    assert r_all.text != r_std.text

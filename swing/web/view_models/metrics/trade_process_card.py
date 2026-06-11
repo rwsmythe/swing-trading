@@ -45,6 +45,16 @@ from swing.web.view_models.metrics.shared import BaseLayoutVM
 # orphan-label surfacing).
 ALL_COHORTS_KEY: str = "__all__"
 
+# Intent-facet (value, label) tuple for the All-aggregate selector (Task 6 /
+# spec §7.1 D6). ``value`` of "" = All (no filter); the sentinel
+# "__unclassified__" maps to ``entry_intent IS NULL`` at the metrics layer.
+INTENT_FACETS: tuple[tuple[str, str], ...] = (
+    ("", "All"),
+    ("standard", "Standard"),
+    ("hypothesis_test_by_design", "Hypothesis test (by design)"),
+    ("__unclassified__", "Unclassified"),
+)
+
 
 @dataclass(frozen=True)
 class CohortTabVM:
@@ -96,6 +106,11 @@ class TradeProcessCardVM(BaseLayoutVM):
 
     cohort_tabs: tuple[CohortTabVM, ...] = field(default_factory=tuple)
     active_cohort_key: str = ""
+    # Intent-facet selector (Task 6 / spec §7.1 D6): surfaced on the All tab.
+    intent_facets: tuple[tuple[str, str], ...] = field(
+        default_factory=lambda: INTENT_FACETS,
+    )
+    active_entry_intent: str | None = None
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -123,12 +138,20 @@ class TradeProcessCardVM(BaseLayoutVM):
 def build_trade_process_card_vm(
     *, cfg: Config, conn: sqlite3.Connection | None = None,
     active_cohort_key: str | None = None,
+    active_entry_intent: str | None = None,
 ) -> TradeProcessCardVM:
     """Factory per plan §A.18: populate every metrics-VM field eagerly.
 
     ``active_cohort_key`` is the operator-supplied query-string parameter
     selecting which tab is rendered as active. When ``None`` or unknown,
     falls back to the FIRST cohort tab (NOT the All tab) per spec §4.1.
+
+    ``active_entry_intent`` (Task 6 / spec §7.1 D6) faces the
+    All-aggregate metrics by intent. It is threaded to the All-aggregate
+    call ONLY; per-cohort tabs stay UNFILTERED. ``None`` / ``""`` = no
+    filter (All). The always-on execution-discipline panel is invariant to
+    this facet (the orthogonality guarantee enforced in
+    :func:`compute_trade_process_metrics`).
     """
     own_conn = conn is None
     if own_conn:
@@ -172,8 +195,13 @@ def build_trade_process_card_vm(
                     is_active=(name == active_key),
                 ),
             )
-        # All-cohorts toggle: aggregate over hypothesis_label=None.
-        all_metrics = compute_trade_process_metrics(conn, hypothesis_label=None)
+        # All-cohorts toggle: aggregate over hypothesis_label=None, faceted
+        # by the operator-selected intent (Task 6 / D6 — facet on All only).
+        # Normalize the All-sentinel "" to None (no filter).
+        intent_filter = active_entry_intent or None
+        all_metrics = compute_trade_process_metrics(
+            conn, hypothesis_label=None, entry_intent=intent_filter,
+        )
         tabs.append(
             CohortTabVM(
                 cohort_key=ALL_COHORTS_KEY,
@@ -194,4 +222,5 @@ def build_trade_process_card_vm(
         banner_resolve_link=banner_resolve_link,
         cohort_tabs=tuple(tabs),
         active_cohort_key=active_key,
+        active_entry_intent=active_entry_intent,
     )
