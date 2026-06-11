@@ -132,3 +132,31 @@ closeness_to_pivot = 0.50
 adr = 0.25
 prior_trend = 0.25
 '''
+
+
+def test_cli_group_install_writes_cli_log_under_tmp_not_real_home(tmp_path):
+    # The Slice-2 group-callback cli.log install must resolve under the redirected
+    # (tmp) home, never the operator's real ~/swing-data/logs. Uses a RELATIVE
+    # logs_dir (the real leak shape) so it discriminates the redirect -- an absolute
+    # tmp logs_dir would short-circuit _resolve_path and prove nothing.
+    import logging
+    from logging.handlers import RotatingFileHandler
+
+    from click.testing import CliRunner
+
+    import swing.cli as cli
+    from swing.config import _user_home
+
+    cfg_path = tmp_path / "swing.config.toml"
+    cfg_path.write_text(_RELATIVE_LOGS_TOML, encoding="utf-8")
+    result = CliRunner().invoke(cli.main, ["--config", str(cfg_path), "config", "show"])
+    assert result.exit_code == 0, result.output
+    real_cli_log = _REAL_HOME / "swing-data" / "logs" / "cli.log"
+    targets = [
+        h.baseFilename for h in logging.getLogger().handlers
+        if isinstance(h, RotatingFileHandler) and getattr(h, "_swing_surface", None) == "cli"
+    ]
+    assert targets, "no cli.log handler attached by the group callback"
+    for t in targets:
+        assert str(real_cli_log) != t
+        assert str(_user_home()) in t  # resolved under the redirected (tmp) home

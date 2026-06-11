@@ -184,6 +184,16 @@ def main(ctx: click.Context, config_path: str) -> None:
     ctx.ensure_object(dict)
     ctx.obj["config"] = load_config(Path(config_path))
     ctx.obj["config_path"] = Path(config_path)
+    # CLI observability (Arc-2 Slice-2): route every command through cli.log
+    # (Belt A + Belt B + bounded rotation + correlation, by construction) EXCEPT
+    # the `pipeline` subgroup. `pipeline_run_cmd` is the sole installer for the
+    # pipeline path (surface="pipeline"); skipping the generic cli install here
+    # guarantees a pipeline-surface process NEVER writes cli.log -- even when a
+    # malformed [logging] value would make install_logging replay a diagnostic
+    # the instant the handler attaches (the rely-on-replacement hazard, R1-major-1).
+    if ctx.invoked_subcommand != "pipeline":
+        from swing.logging_setup import install_logging
+        install_logging(ctx.obj["config"], surface="cli")
     if ctx.invoked_subcommand not in _DIVERGENCE_HOOK_SKIP_SUBCOMMANDS:
         _apply_toml_divergence_check(ctx)
 
@@ -3299,8 +3309,16 @@ def tos_import_cmd(ctx, csv_path, dry_run, auto_confirm, verbose):
 
 
 @main.group("pipeline")
-def pipeline_group() -> None:
+@click.pass_context
+def pipeline_group(ctx: click.Context) -> None:
     """Nightly orchestrator: run, list, force-clear."""
+    # `main` skipped the generic cli.log install for the whole pipeline subgroup
+    # (so `pipeline run` never touches cli.log). Re-add it here for the NON-run
+    # subcommands so `pipeline list` / `force-clear` log to cli.log per spec §5.1.
+    # `pipeline run` is the sole pipeline.log installer (pipeline_run_cmd).
+    if ctx.invoked_subcommand != "run":
+        from swing.logging_setup import install_logging
+        install_logging(ctx.obj["config"], surface="cli")
 
 
 @pipeline_group.command("run")

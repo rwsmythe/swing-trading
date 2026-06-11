@@ -60,6 +60,62 @@ def real_user_home(_redirect_home_away_from_real_swing_data, monkeypatch):
     monkeypatch.setattr(config_mod, "_user_home", _REAL_USER_HOME)
     return _REAL_USER_HOME
 
+
+@pytest.fixture(autouse=True)
+def _isolate_root_logging_state():
+    """Snapshot/restore root logging handlers, root level, AND every existing
+    logger's level around each test.
+
+    Slice 2 makes the CLI group callback install a cli.log handler (+ root level)
+    on EVERY `swing` invocation, AND the [logging.loggers] override path mutates
+    named loggers' levels (httpx/yfinance/swing.logging_config). The ~373
+    CliRunner(main) tests + the override tests would otherwise leak that state
+    into sibling tests (xdist-order-fragile per the research-L2 gotcha family).
+    This contains it: any handler a test adds is closed + removed afterward, the
+    root level is restored, and every logger level is restored (newly-created
+    loggers reset to NOTSET). (The home-redirect autouse fixture already routes
+    logs_dir to tmp, so no real-home write occurs.)
+
+    DELIBERATELY NOT restored (would over-reach and break pre-existing
+    order-dependent Schwab tests, which is NOT a Slice-2 concern):
+    - the process-global LogRecord factory: install_logging installs the SAME
+      Belt-A schwab factory production uses; leaving it installed matches the
+      pre-Slice-2 baseline (the schwab tests already leak it), and restoring it
+      would desync the factory from schwab.client's module-level install-once
+      guard, breaking test_refresh_rewraps_factory_when_third_party_replaced_it.
+    - the Schwab `_GLOBAL_KNOWN_SECRETS` set: install_logging registers NO
+      secrets, so the cli.log install never mutates it; clearing it would wipe a
+      sentinel a sibling success-path test registered and a later same-file
+      redaction test relies on (test_setup_auth_failure_..._sentinel_redaction).
+    Tests that genuinely need factory/secret isolation own their own
+    snapshot/restore (e.g. clean_root_and_secrets, the pipeline_logging fixture)."""
+    import logging
+    from logging.handlers import RotatingFileHandler
+
+    root = logging.getLogger()
+    saved_handlers = list(root.handlers)
+    saved_level = root.level
+    # Snapshot the level of every logger that currently exists (R1-major-4).
+    saved_logger_levels = {
+        name: lg.level
+        for name, lg in logging.Logger.manager.loggerDict.items()
+        if isinstance(lg, logging.Logger)
+    }
+    yield
+    for h in list(root.handlers):
+        if h not in saved_handlers:
+            if isinstance(h, RotatingFileHandler):
+                h.close()
+            root.removeHandler(h)
+    for h in saved_handlers:
+        if h not in root.handlers:
+            root.addHandler(h)
+    root.setLevel(saved_level)
+    # Restore pre-existing logger levels; reset loggers created during the test.
+    for name, lg in logging.Logger.manager.loggerDict.items():
+        if isinstance(lg, logging.Logger):
+            lg.setLevel(saved_logger_levels.get(name, logging.NOTSET))
+
 # ============================================================================
 # Schwab API cassette filter (T-A.10 — plan §G.3)
 # ============================================================================
