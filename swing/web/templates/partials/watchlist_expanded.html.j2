@@ -38,6 +38,13 @@
        SVG and SUPPRESS the PNG fallback + chart-unavailable banner
        (single source of truth — operator sees ONE chart artifact, not
        SVG plus banner). #}
+    <form hx-post="/watchlist/{{ expanded.ticker }}/pin"
+          hx-target="#watchlist-row-{{ expanded.ticker }}" hx-swap="outerHTML"
+          hx-headers='{"HX-Request": "true"}'>
+      <label><input type="checkbox" name="pinned" {% if expanded.entry.pinned %}checked{% endif %}> Pinned</label>
+      <textarea name="pin_note" rows="2">{{ expanded.entry.pin_note or "" }}</textarea>
+      <button type="submit">Save pin</button>
+    </form>
     {% if expanded.watchlist_expanded_chart_svg_bytes %}
       <div class="watchlist-expanded-chart">{{ expanded.watchlist_expanded_chart_svg_bytes.decode('utf-8') | safe }}</div>
     {% elif expanded.chart_reason is none and expanded.data_asof_date %}

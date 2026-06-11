@@ -22,7 +22,7 @@
       <span class="watchlist-thumbnail">{{ _thumb_bytes.decode('utf-8') | safe }}</span>
     {% endif %}
   </td>
-  <td>{{ w.ticker }}</td>
+  <td>{{ w.ticker }}{% if w.pinned %}<span class="watchlist-pin-badge" title="{{ (w.pin_note or '')|truncate(60) }}">&#x1F4CC;</span>{% endif %}</td>
   <td>
     {% if price %}
       ${{ '%.2f' | format(price.price) }}

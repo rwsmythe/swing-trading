@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
 from swing.config_overrides import apply_overrides
 from swing.data.db import open_connection
+from swing.data.repos.watchlist import WatchlistEntryNotFoundError, set_watchlist_pin
 from swing.web.chart_jit import get_or_render_surface
 from swing.web.chart_scope import latest_completed_pipeline_run
 from swing.web.view_models.watchlist import (
@@ -173,25 +175,17 @@ def watchlist_row(request: Request, ticker: str):
     )
 
 
-@router.get("/watchlist/{ticker}/expand", response_class=HTMLResponse)
-def watchlist_expand(request: Request, ticker: str):
-    """Render the expanded watchlist row.
+def _render_expanded_row(request: Request, cfg, ticker: str) -> HTMLResponse:
+    """Shared helper: build the expanded VM, attach JIT chart bytes, return
+    the TemplateResponse.  Called by both ``watchlist_expand`` and
+    ``watchlist_pin`` so both routes return an identical expanded fragment.
 
-    Phase 13 T-T4.SB.3 (Item 5): populates
-    ``WatchlistExpandedVM.watchlist_expanded_chart_svg_bytes`` via the JIT
-    helper (surface='ticker_detail' per spec §B.5 — both the hyp-recs route
-    and the watchlist expanded route share the SAME surface for
-    cache-key reuse).
-
-    Renderer-kwargs uniformity LOCK: ``pattern_evaluation=None`` matches
-    the hyp-recs route's call (per Codex R4 M#3 cache-collision
-    avoidance).
+    ``ticker`` MUST already be uppercased by the caller.
     """
-    cfg = apply_overrides(request.app.state.cfg)
     cache = request.app.state.price_cache
     executor = request.app.state.price_fetch_executor
     expanded = build_watchlist_expanded(
-        cfg=cfg, cache=cache, ticker=ticker.upper(), executor=executor,
+        cfg=cfg, cache=cache, ticker=ticker, executor=executor,
     )
     if expanded is None:
         raise HTTPException(status_code=404, detail=f"ticker {ticker} not on watchlist")
@@ -214,7 +208,7 @@ def watchlist_expand(request: Request, ticker: str):
     # attach new-run chart bytes to a VM whose ``chart_reason='no-run'``
     # banner is already in flight (mixed anchors across one response).
     chart_bytes = _resolve_jit_chart_bytes(
-        request, ticker=ticker.upper(), surface="ticker_detail",
+        request, ticker=ticker, surface="ticker_detail",
         pipeline_run_id=expanded.pipeline_run_id,
         data_asof_date=expanded.data_asof_date,
         resolve_latest_if_missing=False,
@@ -229,3 +223,53 @@ def watchlist_expand(request: Request, ticker: str):
     return request.app.state.templates.TemplateResponse(
         request, "partials/watchlist_expanded.html.j2", {"expanded": expanded},
     )
+
+
+@router.get("/watchlist/{ticker}/expand", response_class=HTMLResponse)
+def watchlist_expand(request: Request, ticker: str):
+    """Render the expanded watchlist row.
+
+    Phase 13 T-T4.SB.3 (Item 5): populates
+    ``WatchlistExpandedVM.watchlist_expanded_chart_svg_bytes`` via the JIT
+    helper (surface='ticker_detail' per spec §B.5 — both the hyp-recs route
+    and the watchlist expanded route share the SAME surface for
+    cache-key reuse).
+
+    Renderer-kwargs uniformity LOCK: ``pattern_evaluation=None`` matches
+    the hyp-recs route's call (per Codex R4 M#3 cache-collision
+    avoidance).
+    """
+    cfg = apply_overrides(request.app.state.cfg)
+    return _render_expanded_row(request, cfg, ticker.upper())
+
+
+@router.post("/watchlist/{ticker}/pin", response_class=HTMLResponse)
+def watchlist_pin(
+    request: Request, ticker: str,
+    pinned: str | None = Form(None),
+    pin_note: str | None = Form(None),
+):
+    """Persist the operator's pin decision and return the re-rendered
+    expanded row (200, outerHTML swap — same shape as the expand route).
+
+    Server-stamps ``pinned_at`` — no hidden input trusted from the form.
+    Empty ``pin_note`` textarea persists as NULL (not empty string).
+    """
+    cfg = apply_overrides(request.app.state.cfg)
+    is_pinned = pinned is not None
+    note = (pin_note or "").strip() or None       # empty textarea -> NULL
+    pinned_at = datetime.now().isoformat(timespec="seconds") if is_pinned else None
+    conn = open_connection(
+        str(cfg.paths.db_path), busy_timeout_ms=cfg.web.db_busy_timeout_ms,
+    )
+    try:
+        with conn:
+            set_watchlist_pin(
+                conn, ticker.upper(),
+                pinned=is_pinned, pin_note=note, pinned_at=pinned_at,
+            )
+    except WatchlistEntryNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"ticker {ticker} not on watchlist") from exc
+    finally:
+        conn.close()
+    return _render_expanded_row(request, cfg, ticker.upper())
