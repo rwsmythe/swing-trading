@@ -48,7 +48,7 @@ from pathlib import Path
 #   'ticker_detail' via an id-preserving single-table rebuild. NO new tables,
 #   NO column-shape change, NO candlestick change. Atomic BEGIN/COMMIT
 #   discipline preserved (gotcha #9).
-EXPECTED_SCHEMA_VERSION = 27
+EXPECTED_SCHEMA_VERSION = 28
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 DEFAULT_BUSY_TIMEOUT_MS = 30000
@@ -240,6 +240,12 @@ BROAD_WATCH_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
 # (true-v25) set for auditable provenance.
 ENTRY_INTENT_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
     BROAD_WATCH_PRE_MIGRATION_EXPECTED_TABLES
+)
+
+# 0028 (watchlist pin) adds columns to `watchlist` only — no new table — so the
+# pre-v28 (v27) table set is identical to the entry_intent pre-migration set.
+WATCHLIST_PIN_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
+    ENTRY_INTENT_PRE_MIGRATION_EXPECTED_TABLES
 )
 
 
@@ -726,6 +732,26 @@ def _create_pre_entry_intent_migration_backup(
     dest_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     backup_path = dest_dir / f"swing-pre-entry-intent-migration-{timestamp}.db"
+    src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
+    try:
+        dest_conn = sqlite3.connect(backup_path)
+        try:
+            src_conn.backup(dest_conn)
+        finally:
+            dest_conn.close()
+    finally:
+        src_conn.close()
+    return backup_path
+
+
+def _create_pre_watchlist_pin_migration_backup(
+    src_path: Path, *, dest_dir: Path,
+) -> Path:
+    """watchlist-pin (0028) mirror. SQLite-native Connection.backup() before the
+    0028 migration. Backup file ``swing-pre-watchlist-pin-migration-<ISO>.db``."""
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    backup_path = dest_dir / f"swing-pre-watchlist-pin-migration-{timestamp}.db"
     src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
     try:
         dest_conn = sqlite3.connect(backup_path)
@@ -1264,6 +1290,44 @@ def _entry_intent_backup_gate(
         ) from exc
 
 
+def _watchlist_pin_backup_gate(
+    conn: sqlite3.Connection,
+    *,
+    current_version: int,
+    target_version: int,
+    backup_dir: Path | None,
+) -> None:
+    """watchlist-pin (0028) backup-before-migrate gate.
+
+    Fires ONLY when ``current_version == 27 AND target_version >= 28`` -- a real
+    production v27 DB about to cross v28. STRICT EQUALITY on pre_version per the
+    ``pre_version == (target - 1)`` gotcha (NOT ``<=``); multi-version jumps from
+    pre-v27 baselines bypass this gate by design.
+    """
+    if target_version < 28 or current_version != 27:
+        return
+    src_path = _resolve_main_db_path(conn)
+    if src_path is None:
+        raise MigrationBackupRequiredException(
+            "pre-watchlist-pin backup gate requires a file-backed source DB; "
+            "in-memory connections cannot be snapshotted."
+        )
+    if backup_dir is None:
+        backup_dir = src_path.parent
+    try:
+        backup_path = _create_pre_watchlist_pin_migration_backup(
+            src_path, dest_dir=backup_dir)
+        _verify_backup_integrity(
+            backup_path, expected_tables=WATCHLIST_PIN_PRE_MIGRATION_EXPECTED_TABLES,
+        )
+    except MigrationBackupRequiredException:
+        raise
+    except (OSError, sqlite3.Error) as exc:
+        raise MigrationBackupRequiredException(
+            f"pre-watchlist-pin backup failed: {exc}"
+        ) from exc
+
+
 def run_migrations(
     conn: sqlite3.Connection,
     *,
@@ -1355,6 +1419,12 @@ def run_migrations(
         backup_dir=backup_dir,
     )
     _entry_intent_backup_gate(
+        conn,
+        current_version=current,
+        target_version=target_version,
+        backup_dir=backup_dir,
+    )
+    _watchlist_pin_backup_gate(
         conn,
         current_version=current,
         target_version=target_version,
