@@ -340,8 +340,16 @@ def _classify_warm_cohorts(
             continue
 
         # Gap cohort — band by latest_stored; collapse very-stale into deep band.
-        staleness_days = (today_session - latest_stored).days
-        if staleness_days > _calendar_window_for_trading_days(GAP_DEEP_BAND_TRADING_DAYS):
+        # Codex R1 Major #3: measure staleness in TRADING days (spec §4.2 locks the
+        # collapse at "> 30 trading days"), NOT calendar days through
+        # _calendar_window_for_trading_days (which adds a +30 fetch buffer -> ~74
+        # calendar days ~= 53 trading days, far looser than the spec). bdate_range
+        # counts business days (a holiday-agnostic trading-session proxy, same order
+        # of approximation as the existing helper).
+        gap_sessions = pd.bdate_range(
+            latest_stored + timedelta(days=1), today_session
+        ).size
+        if gap_sessions > GAP_DEEP_BAND_TRADING_DAYS:
             deep_gap.append(ticker)
         else:
             gap_bands.setdefault(latest_stored, []).append(ticker)
@@ -465,12 +473,17 @@ def _merge_gap_subframe(
     parquet_path, _ = _archive_paths(Path(cache_dir), ticker.upper())
     archive = _read_archive(parquet_path)
     if archive is None or archive.empty:
-        # Defensive: a gap-classified ticker should have an archive; if it
-        # vanished, write the sub alone (still no meta) and let the serial path
-        # re-derive on next read. Tail to retention.
-        combined = sub.tail(archive_history_days)
-        _write_archive_atomic(parquet_path, combined)
-        return
+        # Codex R1 Critical #2: a gap-classified ticker had a non-empty archive at
+        # classify time; if it vanished by merge time (TOCTOU), writing the gap
+        # sub ALONE would truncate retained history AND — with a surviving recent
+        # meta — let the serial path serve the stub as a cache-hit, masking the
+        # loss. Pure accelerator: write NOTHING and raise so _warm_one_window
+        # routes the ticker to WarmReport.fallback; the serial read_or_fetch_archive
+        # (archive-missing -> full-refresh) stays authoritative and self-heals.
+        raise RuntimeError(
+            f"gap-classified {ticker} archive missing/empty at merge time; "
+            "routing to serial fallback (no truncated write)"
+        )
     latest_stored = archive.index.max().date()
     # Drop any incoming row dated <= latest_stored so existing bars are never
     # overwritten (byte-parity with the serial `[latest+1, today]` gap fetch).

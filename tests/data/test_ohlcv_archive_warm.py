@@ -517,3 +517,76 @@ def test_warm_on_off_archive_parity_including_deep_gap(tmp_path, monkeypatch):
     assert warm_meta == serial_meta
     assert warm_meta["last_full_refresh_date"] == (FIXED - timedelta(days=2)).isoformat()
     mod._full_refresh_stagger_enabled.cache_clear()
+
+
+def test_merge_gap_missing_archive_raises_no_truncated_write(tmp_path, monkeypatch):
+    """Codex R1 Critical #2: if a gap-classified ticker's archive vanished by merge
+    time, _merge_gap_subframe must NOT write a truncated sub-only archive (which
+    the serial path could then serve as a cache-hit, masking data loss). Pure
+    accelerator: raise so _warm_one_window routes the ticker to fallback and the
+    serial path stays authoritative."""
+    FIXED = date(2026, 6, 10)
+    monkeypatch.setattr(mod, "_last_completed_session_today", lambda: FIXED)
+    sub = pd.DataFrame(
+        {"Open": [2.0], "High": [2.0], "Low": [2.0], "Close": [2.0], "Volume": [20]},
+        index=pd.to_datetime([FIXED]),
+    )
+    # No GONE.parquet on disk (archive missing at merge time).
+    import pytest
+    with pytest.raises(Exception):
+        mod._merge_gap_subframe(tmp_path, "GONE", sub, archive_history_days=1260)
+    assert not (tmp_path / "GONE.parquet").exists()  # NOTHING written
+
+
+def test_warm_gap_archive_vanished_routes_to_fallback(tmp_path, monkeypatch):
+    """End-to-end: a ticker classified as gap whose parquet is deleted before the
+    merge lands in WarmReport.fallback, with NO truncated archive written."""
+    from datetime import timedelta
+    FIXED = date(2026, 6, 10)
+    monkeypatch.setattr(mod, "_last_completed_session_today", lambda: FIXED)
+    monkeypatch.setattr(mod, "_load_archive_config_for_stagger", lambda: False)
+    mod._full_refresh_stagger_enabled.cache_clear()
+    _write_archive(tmp_path, "GAP1", FIXED - timedelta(days=1), FIXED - timedelta(days=2))
+
+    real_extract = mod._extract_ticker_subframe
+
+    def deleting_extract(frame, ticker):
+        # Simulate the parquet vanishing between classify and merge.
+        (tmp_path / "GAP1.parquet").unlink(missing_ok=True)
+        return real_extract(frame, ticker)
+
+    monkeypatch.setattr(mod, "_extract_ticker_subframe", deleting_extract)
+    monkeypatch.setattr(mod.yf, "download", lambda *a, **k: _mk_batch_frame({"GAP1": [FIXED]}))
+    report = mod.warm_archives_batch(
+        ["GAP1"], cache_dir=tmp_path, archive_history_days=1260, end_date=FIXED,
+    )
+    assert "GAP1" in report.fallback
+    assert not (tmp_path / "GAP1.parquet").exists()  # no truncated archive resurrected
+    mod._full_refresh_stagger_enabled.cache_clear()
+
+
+def test_classify_deep_band_threshold_is_trading_days_not_calendar(tmp_path, monkeypatch):
+    """Codex R1 Major #3: the deep-gap collapse must trigger at > 30 TRADING days
+    (spec §4.2), not at _calendar_window_for_trading_days(30) (~74 calendar days,
+    because that helper adds a +30 fetch buffer). A ticker ~50 calendar days stale
+    (~36 trading days) is DEEP under the spec but would stay a per-latest gap band
+    under the calendar-buffer threshold."""
+    from datetime import timedelta
+    FIXED = date(2026, 6, 10)
+    monkeypatch.setattr(mod, "_last_completed_session_today", lambda: FIXED)
+    monkeypatch.setattr(mod, "_load_archive_config_for_stagger", lambda: False)
+    mod._full_refresh_stagger_enabled.cache_clear()
+
+    # ~50 calendar days (~36 trading days) stale -> DEEP under the trading-day rule.
+    _write_archive(tmp_path, "MIDDEEP", FIXED - timedelta(days=50), FIXED - timedelta(days=2))
+    # ~14 calendar days (~10 trading days) stale -> NEAR (own gap band).
+    _write_archive(tmp_path, "NEARISH", FIXED - timedelta(days=14), FIXED - timedelta(days=2))
+
+    report = mod._classify_warm_cohorts(
+        ["MIDDEEP", "NEARISH"], cache_dir=tmp_path, today_session=FIXED,
+        archive_history_days=1260, stagger_enabled=False,
+    )
+    assert "MIDDEEP" in report["deep_gap"], "50-cal-day (~36 trading-day) stale must be DEEP"
+    assert "NEARISH" not in report["deep_gap"]
+    assert (FIXED - timedelta(days=14)) in report["gap_bands"]  # NEARISH banded by latest
+    mod._full_refresh_stagger_enabled.cache_clear()
