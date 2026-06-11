@@ -197,6 +197,35 @@ def _calendar_window_for_trading_days(trading_days: int) -> int:
     return int(math.ceil(trading_days * 365.25 / 252)) + 30
 
 
+def _trim_trailing_ragged(df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+    """Arc 8 — drop trailing rows where ANY of Open/High/Low/Close is NaN.
+
+    Iterates from the END, removing rows while the newest remaining row has a
+    NaN in any OHLC field; stops at the first clean row. Returns the trimmed
+    frame plus the number of rows dropped.
+
+    Scope (LOCKED, run-#99 evidence base):
+    - Guards ONLY the incoming TRAILING bar(s) — the run-#99 class is yfinance
+      returning the newest bar with NaN `Close` while O/H/L/V are present (the
+      adjusted-close derivation artifact). Trimming it leaves the meta/archive
+      stale so the next fetch retries a settled bar (the F6-transient posture).
+    - INTERIOR ragged rows are PRESERVED — the Phase-15 bad-bar-accept posture
+      for HISTORICAL bars is explicitly unchanged; this barrier never reaches
+      past the first clean trailing row.
+    - Volume-NaN ALONE does NOT trim (legitimately volume-less bars exist).
+    """
+    ohlc = [c for c in ("Open", "High", "Low", "Close") if c in df.columns]
+    if df.empty or not ohlc:
+        return df, 0
+    n = len(df)
+    cut = n
+    while cut > 0 and bool(df.iloc[cut - 1][ohlc].isna().any()):
+        cut -= 1
+    if cut == n:
+        return df, 0
+    return df.iloc[:cut], n - cut
+
+
 def _yf_download_window(ticker: str, *, start: date, end: date) -> pd.DataFrame:
     """Wrap yf.download with the project's gotcha-resistant kwargs.
     `start` is inclusive, `end` is exclusive in yfinance — we always pass
@@ -218,7 +247,18 @@ def _yf_download_window(ticker: str, *, start: date, end: date) -> pd.DataFrame:
     df = df[keep_cols]
     if hasattr(df.index, "tz") and df.index.tz is not None:
         df.index = df.index.tz_localize(None)
-    return df
+    # Arc 8 trailing-bar NaN-Close barrier — covers BOTH serial branches (the
+    # full-refresh tail->write @~709 and the gap concat->write @~722). A frame
+    # trimmed to empty composes with the existing `if fetched.empty` /
+    # `if not gap.empty` guards (no write, meta stays stale, retry next call).
+    trimmed_df, n_trimmed = _trim_trailing_ragged(df)
+    if n_trimmed:
+        dropped = [d.date().isoformat() for d in df.index[len(trimmed_df):]]
+        log.warning(
+            "serial trailing-ragged trim (%s): dropped %d trailing NaN-OHLC "
+            "bar(s) %s (retry next fetch)", ticker, n_trimmed, dropped,
+        )
+    return trimmed_df
 
 
 def _last_completed_session_today() -> date:
