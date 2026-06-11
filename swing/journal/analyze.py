@@ -102,6 +102,7 @@ class TradeAnalysis:
     stop_dev_pct: float | None
     realized_pnl_total: float
     r_multiple_avg: float | None
+    entry_intent: str | None = None
 
 
 def _fetch_recommendations(
@@ -325,4 +326,5 @@ def analyze_trade(conn: sqlite3.Connection, trade_id: int) -> TradeAnalysis:
         stop_dev_pct=stop_dev_pct,
         realized_pnl_total=sum(e.realized_pnl for e in exits),
         r_multiple_avg=_shares_weighted_r(exits),
+        entry_intent=trade.entry_intent,
     )
