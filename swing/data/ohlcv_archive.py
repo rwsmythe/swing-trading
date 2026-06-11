@@ -81,6 +81,8 @@ class WarmReport:
     fallback: list[str] = field(default_factory=list)
     wall_seconds: float = 0.0
     dry_run: bool = False
+    # Arc 8: trailing NaN-OHLC bars dropped at the warm write barrier (#27 audit).
+    trailing_nan_trimmed: int = 0
 
     @property
     def degraded(self) -> bool:
@@ -667,6 +669,24 @@ def _warm_one_window(
             report.chunk_failures += 1   # whole-chunk download failure ONLY (Codex R1 Major #6)
         report.fallback.extend(failed)
         for ticker, sub in extracted.items():
+            # Arc 8 trailing-bar NaN-Close barrier — trim here (the single locus
+            # feeding BOTH warm cohorts: gap-merge and full-refresh) rather than
+            # inside _extract_ticker_subframe, because this site has the `report`
+            # for the #27 count and lets a trim-to-empty SKIP-without-fallback.
+            # Chosen over fallback-to-serial (the brief's option a) because the
+            # serial path would re-fetch the SAME ragged bar and trim it to the
+            # SAME no-op — wasteful on an event night (134 archives, run #99);
+            # archives end byte-identical either way. The skip leaves the archive
+            # + meta stale so the next call retries a settled bar.
+            sub, trimmed = _trim_trailing_ragged(sub)
+            if trimmed:
+                report.trailing_nan_trimmed += trimmed
+                log.warning(
+                    "warm trailing-ragged trim (%s): dropped %d trailing "
+                    "NaN-OHLC bar(s) (retry next fetch)", ticker, trimmed,
+                )
+            if sub.empty:
+                continue
             try:
                 if cohort == "gap":
                     _merge_gap_subframe(cache_dir, ticker, sub,

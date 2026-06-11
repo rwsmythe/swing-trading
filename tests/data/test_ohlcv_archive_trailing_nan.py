@@ -241,3 +241,124 @@ def test_full_refresh_trim_to_empty_falls_back(tmp_path, monkeypatch):
     assert (tmp_path / "AAA.parquet").read_bytes() == before_bytes
     assert (tmp_path / "AAA.meta.json").read_text() == before_meta
     mod._full_refresh_stagger_enabled.cache_clear()
+
+
+# ----- warm batch path --------------------------------------------------------
+
+def _batch_frame(per_ticker: dict) -> pd.DataFrame:
+    """{ticker: {date: (o,h,l,c,v)}} -> group_by='ticker' MultiIndex batch frame
+    with an Adj Close column (the real yf.download batch shape)."""
+    all_dates = sorted({d for rows in per_ticker.values() for d in rows})
+    idx = pd.to_datetime(all_dates)
+    fields = ["Open", "High", "Low", "Close", "Adj Close", "Volume"]
+    cols = pd.MultiIndex.from_product([list(per_ticker), fields])
+    df = pd.DataFrame(index=idx, columns=cols, dtype=float)
+    for t, rows in per_ticker.items():
+        for d, (o, h, l, c, v) in rows.items():
+            ts = pd.Timestamp(d)
+            df.loc[ts, (t, "Open")] = o
+            df.loc[ts, (t, "High")] = h
+            df.loc[ts, (t, "Low")] = l
+            df.loc[ts, (t, "Close")] = c
+            df.loc[ts, (t, "Adj Close")] = c
+            df.loc[ts, (t, "Volume")] = v
+    return df
+
+
+def test_warm_report_has_trailing_nan_trimmed_field():
+    """(h) additive field defaults to 0."""
+    assert mod.WarmReport().trailing_nan_trimmed == 0
+
+
+def _seed_gap(d, ticker, FIXED):
+    """Seed `ticker` as a NOT-due gap cohort member (archive 3d old, refreshed 1d)."""
+    seed = _flat_frame({FIXED - timedelta(days=3): (8.0, 8.0, 8.0, 8.0, 50)})
+    seed.to_parquet(d / f"{ticker}.parquet")
+    (d / f"{ticker}.meta.json").write_text(
+        json.dumps({"last_full_refresh_date": (FIXED - timedelta(days=1)).isoformat()})
+    )
+
+
+def test_warm_gap_trims_trailing_ragged(tmp_path, monkeypatch):
+    """A warm gap subframe with a trailing ragged row -> trimmed before merge;
+    archive gets the clean prefix, NOT the ragged row; report counts the trim;
+    the ticker is NOT routed to fallback."""
+    FIXED = date(2026, 6, 10)
+    monkeypatch.setattr(mod, "_last_completed_session_today", lambda: FIXED)
+    monkeypatch.setattr(mod, "_load_archive_config_for_stagger", lambda: False)
+    mod._full_refresh_stagger_enabled.cache_clear()
+    _seed_gap(tmp_path, "AAA", FIXED)
+    batch = _batch_frame({"AAA": {
+        FIXED - timedelta(days=2): (10.0, 11.0, 9.0, 10.5, 1000),
+        FIXED - timedelta(days=1): (10.2, 11.2, 9.5, 10.6, 1100),
+        FIXED: (10.5, 11.5, 10.0, NAN, 1200),  # trailing ragged
+    }})
+    monkeypatch.setattr(mod.yf, "download", lambda *a, **k: batch)
+    report = mod.warm_archives_batch(["AAA"], cache_dir=tmp_path,
+                                     archive_history_days=1260, end_date=FIXED)
+    arch = pd.read_parquet(tmp_path / "AAA.parquet")
+    arch_dates = [d.date() for d in arch.index]
+    assert FIXED not in arch_dates
+    assert (FIXED - timedelta(days=1)) in arch_dates
+    assert report.trailing_nan_trimmed == 1
+    assert "AAA" not in report.fallback
+    mod._full_refresh_stagger_enabled.cache_clear()
+
+
+def test_warm_trim_to_empty_skips_without_fallback(tmp_path, monkeypatch):
+    """A warm gap subframe whose ONLY new row is ragged -> trims to empty ->
+    skip-without-fallback: no merge, archive unchanged, ticker NOT in fallback,
+    trim counted."""
+    FIXED = date(2026, 6, 10)
+    monkeypatch.setattr(mod, "_last_completed_session_today", lambda: FIXED)
+    monkeypatch.setattr(mod, "_load_archive_config_for_stagger", lambda: False)
+    mod._full_refresh_stagger_enabled.cache_clear()
+    _seed_gap(tmp_path, "AAA", FIXED)
+    before = (tmp_path / "AAA.parquet").read_bytes()
+    batch = _batch_frame({"AAA": {FIXED: (10.5, 11.5, 10.0, NAN, 1200)}})
+    monkeypatch.setattr(mod.yf, "download", lambda *a, **k: batch)
+    report = mod.warm_archives_batch(["AAA"], cache_dir=tmp_path,
+                                     archive_history_days=1260, end_date=FIXED)
+    assert (tmp_path / "AAA.parquet").read_bytes() == before
+    assert "AAA" not in report.fallback
+    assert report.trailing_nan_trimmed == 1
+    mod._full_refresh_stagger_enabled.cache_clear()
+
+
+def test_warm_serial_parity_with_ragged_tail(tmp_path, monkeypatch):
+    """(g) warm-ON archives are data-content-identical to serial-path archives
+    over a fixture whose tail is ragged — the trim fires identically on both."""
+    FIXED = date(2026, 6, 10)
+    monkeypatch.setattr(mod, "_last_completed_session_today", lambda: FIXED)
+    monkeypatch.setattr(mod, "_load_archive_config_for_stagger", lambda: False)
+    mod._full_refresh_stagger_enabled.cache_clear()
+    warm_dir = tmp_path / "warm"
+    serial_dir = tmp_path / "serial"
+    warm_dir.mkdir(); serial_dir.mkdir()
+    _seed_gap(warm_dir, "AAA", FIXED)
+    _seed_gap(serial_dir, "AAA", FIXED)
+
+    rows = {
+        FIXED - timedelta(days=2): (10.0, 11.0, 9.0, 10.5, 1000),
+        FIXED - timedelta(days=1): (10.2, 11.2, 9.5, 10.6, 1100),
+        FIXED: (10.5, 11.5, 10.0, NAN, 1200),  # ragged tail
+    }
+
+    def fake_download(arg, **kwargs):
+        if isinstance(arg, str):
+            return _flat_yf_frame(rows)            # serial single-ticker shape
+        return _batch_frame({"AAA": rows})          # warm batch shape
+
+    monkeypatch.setattr(mod.yf, "download", fake_download)
+    mod.warm_archives_batch(["AAA"], cache_dir=warm_dir,
+                            archive_history_days=1260, end_date=FIXED)
+    mod.read_or_fetch_archive("AAA", end_date=FIXED, cache_dir=serial_dir,
+                              archive_history_days=1260)
+    cols = ["Open", "High", "Low", "Close", "Volume"]
+    warm_arch = pd.read_parquet(warm_dir / "AAA.parquet").sort_index()
+    serial_arch = pd.read_parquet(serial_dir / "AAA.parquet").sort_index()
+    pd.testing.assert_frame_equal(
+        warm_arch[cols], serial_arch[cols], check_dtype=False, check_freq=False,
+    )
+    assert FIXED not in [d.date() for d in warm_arch.index]
+    mod._full_refresh_stagger_enabled.cache_clear()
