@@ -41,6 +41,7 @@ class WatchlistDelta:
     requalifies: list[WatchlistEntry] = field(default_factory=list)
     streak_increments: list[WatchlistEntry] = field(default_factory=list)
     removes: list[WatchlistArchiveEntry] = field(default_factory=list)
+    suppressed_removes: list[WatchlistArchiveEntry] = field(default_factory=list)
 
 
 def _stable_passes(c: Candidate) -> bool:
@@ -54,9 +55,16 @@ def _missing_dynamic(c: Candidate) -> str | None:
     return ";".join(misses) if misses else None
 
 
+def _has_fresh_price(c: Candidate) -> bool:
+    """A not-qualifies candidate carries no usable price data when it is an
+    error bucket or has no close (F6 / Codex R1-Critical). Such a candidate
+    must NOT overwrite last_*/missing_criteria — carry `existing` forward."""
+    return c.bucket != "error" and c.close is not None
+
+
 def compute_watchlist_changes(
     *, prior: Iterable[WatchlistEntry], today_candidates: Iterable[Candidate],
-    data_asof_date: str,
+    data_asof_date: str, pinned_tickers: frozenset[str] = frozenset(),
 ) -> WatchlistDelta:
     prior_by_ticker = {e.ticker: e for e in prior}
     today_by_ticker = {c.ticker: c for c in today_candidates}
@@ -119,20 +127,52 @@ def compute_watchlist_changes(
                     last_stop=candidate.initial_stop,
                     last_adr_pct=candidate.adr_pct,
                     missing_criteria=missing_dyn, notes=existing.notes,
+                    pinned=existing.pinned, pin_note=existing.pin_note,
+                    pinned_at=existing.pinned_at,
                 ))
         else:
             if existing is None:
                 continue
             new_streak = existing.not_qualified_streak + 1
+            fresh = _has_fresh_price(candidate)
+            # F6 / R1-Critical: degraded candidate carries forward prior values.
+            last_close = candidate.close if fresh else existing.last_close
+            last_pivot = candidate.pivot if fresh else existing.last_pivot
+            last_stop = candidate.initial_stop if fresh else existing.last_stop
+            last_adr_pct = candidate.adr_pct if fresh else existing.last_adr_pct
+            missing = _missing_dynamic(candidate) if fresh else existing.missing_criteria
+
             if new_streak >= AGING_STREAK_THRESHOLD:
-                delta.removes.append(WatchlistArchiveEntry(
+                archive = WatchlistArchiveEntry(
                     id=None, ticker=ticker, added_date=existing.added_date,
                     removed_date=data_asof_date,
                     reason=f"aged out (failed stable {new_streak} consecutive runs)",
                     qualification_count=existing.qualification_count,
                     last_data_asof_date=data_asof_date,
                     notes=existing.notes,
-                ))
+                )
+                if ticker in pinned_tickers:
+                    # Pin vetoes the age-off. Keep the streak HONEST (R2: streak
+                    # counting continues) by persisting the incremented streak,
+                    # AND record the suppression for audit (#27 — see _step_watchlist).
+                    delta.suppressed_removes.append(archive)
+                    delta.streak_increments.append(WatchlistEntry(
+                        ticker=ticker, added_date=existing.added_date,
+                        last_qualified_date=existing.last_qualified_date,
+                        status=existing.status,
+                        qualification_count=existing.qualification_count,
+                        not_qualified_streak=new_streak,
+                        last_data_asof_date=data_asof_date,
+                        entry_target=existing.entry_target,
+                        initial_stop_target=existing.initial_stop_target,
+                        last_close=last_close, last_pivot=last_pivot,
+                        last_stop=last_stop, last_adr_pct=last_adr_pct,
+                        missing_criteria=missing, notes=existing.notes,
+                        pinned=True, pin_note=existing.pin_note,
+                        pinned_at=existing.pinned_at,
+                    ))
+                else:
+                    delta.removes.append(archive)
             else:
                 delta.streak_increments.append(WatchlistEntry(
                     ticker=ticker, added_date=existing.added_date,
@@ -143,9 +183,10 @@ def compute_watchlist_changes(
                     last_data_asof_date=data_asof_date,
                     entry_target=existing.entry_target,
                     initial_stop_target=existing.initial_stop_target,
-                    last_close=candidate.close, last_pivot=candidate.pivot,
-                    last_stop=candidate.initial_stop,
-                    last_adr_pct=candidate.adr_pct,
-                    missing_criteria=_missing_dynamic(candidate), notes=existing.notes,
+                    last_close=last_close, last_pivot=last_pivot,
+                    last_stop=last_stop, last_adr_pct=last_adr_pct,
+                    missing_criteria=missing, notes=existing.notes,
+                    pinned=existing.pinned, pin_note=existing.pin_note,
+                    pinned_at=existing.pinned_at,
                 ))
     return delta
