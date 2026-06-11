@@ -175,6 +175,7 @@ swing-data/schwab-tokens.*.db-wal
 swing-pre-phase11-schwab-migration-*.db
 .codex-prompt-*.md
 .codex-prompt.txt
+.codex-diff.txt
 .copowers-findings.md
 .copowers-session-*.json
 .copowers-review-*
