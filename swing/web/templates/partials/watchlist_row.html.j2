@@ -42,6 +42,9 @@
       {%- if tags %} · {% endif -%}
       <span class="tag tag-pattern">{{ pattern_tag }}</span>
     {%- endif %}
+    {%- if cohort_hint is defined and cohort_hint %}
+      <span class="tag tag-cohort">{{ cohort_hint }}</span>
+    {%- endif %}
   </td>
   <td>
     <button onclick="event.stopPropagation()"

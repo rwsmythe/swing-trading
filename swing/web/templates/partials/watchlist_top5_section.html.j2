@@ -8,6 +8,7 @@
       {% set price = vm.watchlist_last_prices.get(w.ticker) %}
       {% set tags = vm.flag_tags.get(w.ticker, ()) %}
       {% set pattern_tag = vm.pattern_tags.get(w.ticker) %}
+      {% set cohort_hint = vm.cohort_hints.get(w.ticker) %}
       {% set current_pivot = vm.candidates_by_ticker[w.ticker].pivot if w.ticker in vm.candidates_by_ticker else None %}
       {# Phase 13 T-T4.SB.5 Item 6 Option 6B: explicit param pass. #}
       {% set chart_svg_bytes_for_row = vm.watchlist_chart_svg_bytes.get(w.ticker) if vm.watchlist_chart_svg_bytes else None %}

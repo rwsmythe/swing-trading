@@ -350,6 +350,11 @@ class DashboardVM:
     # consuming VMs (DashboardVM + WatchlistVM) — other base-layout VMs
     # (PipelineVM, JournalVM, PageErrorVM) need not propagate.
     pattern_tags: Mapping[str, str] = field(default_factory=dict)
+    # Arc 7 Task 6 — per-ticker cohort-hint preview chips for the watchlist
+    # top-5 section. SIBLING to pattern_tags; referenced ONLY inside
+    # watchlist_row.html.j2 via `{% set %}`, so (like pattern_tags) it does
+    # NOT propagate to other base-layout VMs. Default empty dict.
+    cohort_hints: Mapping[str, str] = field(default_factory=dict)
     # Phase 6 Task 13: needs-review badge + cadence cards.
     # Default 0 / None so any ad-hoc VM construction (tests, fixtures outside
     # the phase-6 test files) remains valid without supplying these fields.
@@ -1094,6 +1099,11 @@ def build_dashboard(
             banner_resolve_link = (
                 fetch_first_pending_ambiguity_resolve_link_path(conn)
             )
+            # Arc 7 Task 6 — registry for the watchlist top-5 cohort-hint
+            # preview chips. Loaded unconditionally (the hyp-recs `registry`
+            # at L1050 is scoped inside the `if hyp_recs_candidates:` block).
+            from swing.data.repos.hypothesis import list_hypotheses
+            _registry = list_hypotheses(conn)
     finally:
         conn.close()
 
@@ -1117,6 +1127,15 @@ def build_dashboard(
     top5 = watch_sorted[:5]
     active_tickers.update(w.ticker for w in top5)
     active_tickers.update(r.candidate_ticker for r in top_recommendations)
+    # Arc 7 Task 6 — per-ticker cohort-hint preview for the dashboard top-5.
+    # FUNCTION-LOCAL import breaks the dashboard<->watchlist module cycle
+    # (watchlist.py imports helpers from dashboard.py at module level).
+    from swing.web.view_models.watchlist import cohort_hint_for
+    cohort_hints: dict[str, str] = {}
+    for w in top5:
+        hint = cohort_hint_for(candidates_by_ticker.get(w.ticker), _registry)
+        if hint:
+            cohort_hints[w.ticker] = hint
     prices = cache.get_many(
         sorted(active_tickers),
         deadline_seconds=cfg.web.price_fetch_deadline_seconds,
@@ -1555,6 +1574,7 @@ def build_dashboard(
         open_trade_rows=open_trade_rows,
         active_recommendations=active_recommendations,
         pattern_tags=pattern_tags,
+        cohort_hints=cohort_hints,
         needs_review_count=needs_review,
         daily_card=cadence_cards["daily"],
         weekly_card=cadence_cards["weekly"],

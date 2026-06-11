@@ -9,6 +9,7 @@ from swing.config import Config
 from swing.data.db import connect
 from swing.data.models import Candidate, WatchlistEntry
 from swing.data.repos.candidates import fetch_candidates_for_run
+from swing.data.repos.hypothesis import list_hypotheses
 from swing.data.repos.pattern_classifications import (
     list_classifications_for_run,
 )
@@ -26,6 +27,25 @@ from swing.web.view_models.dashboard import (
     _sort_watchlist,
     latest_evaluation_run_id,
 )
+
+
+def cohort_hint_for(candidate, registry) -> str | None:
+    """Render-time attribution PREVIEW chip: the narrow hypothesis name (abbrev)
+    a candidate WOULD attribute as on entry, or 'broad-watch', or None. Read-only
+    — surfaces no recommendation row, drives no ranking. Opt-in site #2 (0026 ADDENDUM)."""
+    if candidate is None:
+        return None
+    from swing.recommendations.hypothesis import match_candidate_to_hypotheses
+    matches = match_candidate_to_hypotheses(candidate, registry=registry, include_baseline=True)
+    if not matches:
+        return None
+    return _hint_label(matches[0].hypothesis_name)
+
+
+def _hint_label(name: str) -> str:
+    if name == "Broad-watch baseline":
+        return "broad-watch"
+    return name.split()[0] if name else name
 
 
 @dataclass(frozen=True)
@@ -60,6 +80,13 @@ class WatchlistVM:
     watchlist_chart_svg_bytes: Mapping[str, bytes] = field(
         default_factory=dict,
     )
+    # Arc 7 Task 6 — per-ticker cohort-hint preview chip. Read-only
+    # attribution PREVIEW ('broad-watch' or an abbreviated narrow
+    # hypothesis name) keyed by ticker. Referenced ONLY inside
+    # watchlist_row.html.j2 via `{% set %}` (like pattern_tags) so it does
+    # NOT propagate to base-layout VMs. Default empty dict for graceful
+    # render outside the builder.
+    cohort_hints: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.banner_resolve_link is not None:
@@ -111,6 +138,9 @@ class WatchlistRowVM:
     # route MUST skip JIT entirely in that case (NOT fall back to latest).
     pipeline_run_id: int | None = None
     data_asof_date: str | None = None
+    # Arc 7 Task 6 — render-time cohort-hint preview chip for this row.
+    # None matches the template's `{% if cohort_hint %}` guard.
+    cohort_hint: str | None = None
 
 
 @dataclass(frozen=True)
@@ -182,6 +212,8 @@ def build_watchlist(*, cfg: Config, cache: PriceCache, executor) -> WatchlistVM:
             banner_resolve_link = (
                 fetch_first_pending_ambiguity_resolve_link_path(conn)
             )
+            # Arc 7 Task 6 — registry for the per-row cohort-hint preview.
+            registry = list_hypotheses(conn)
             # Phase 13 T2.SB6b T-A.6.6 — pull cached watchlist row chart
             # bytes from the chart_renders cache (T2.SB6a substrate
             # verbatim). Empty dict when no pipeline run / no cache rows.
@@ -206,6 +238,12 @@ def build_watchlist(*, cfg: Config, cache: PriceCache, executor) -> WatchlistVM:
         classifications,
         display_threshold=cfg.web.flag_pattern_display_threshold,
     )
+    # Arc 7 Task 6 — per-ticker cohort-hint preview (read-only).
+    cohort_hints: dict[str, str] = {}
+    for r in rows:
+        hint = cohort_hint_for(by_ticker.get(r.ticker), registry)
+        if hint:
+            cohort_hints[r.ticker] = hint
     # Sort outside `with conn:` is safe — `_sort_watchlist` is pure (no DB).
     rows = _sort_watchlist(list(rows), flag_tags)
     prices = cache.get_many(
@@ -230,6 +268,7 @@ def build_watchlist(*, cfg: Config, cache: PriceCache, executor) -> WatchlistVM:
         recent_multi_leg_auto_correction_count=recent_multi_leg,
         banner_resolve_link=banner_resolve_link,
         watchlist_chart_svg_bytes=watchlist_chart_svg_bytes,
+        cohort_hints=cohort_hints,
     )
 
 
@@ -270,6 +309,8 @@ def build_watchlist_row(
                 row_classifications = list_classifications_for_run(
                     conn, pipeline_run_id=pipeline_run_id,
                 )
+            # Arc 7 Task 6 — registry for the cohort-hint preview chip.
+            registry = list_hypotheses(conn)
     finally:
         conn.close()
     by_ticker = {c.ticker: c for c in candidates}
@@ -294,6 +335,7 @@ def build_watchlist_row(
         # threads the SAME anchor used for classification tags + pivot.
         pipeline_run_id=pipeline_run_id,
         data_asof_date=(binding.data_asof_date if binding is not None else None),
+        cohort_hint=cohort_hint_for(by_ticker.get(ticker), registry),
     )
 
 
