@@ -430,18 +430,21 @@ _LEVEL_NAMES = {
 
 @dataclass(frozen=True)
 class LoggingConfig:
-    """Slice-1 logging knobs (spec §4.5). ``warnings`` carries parse-time
+    """Logging knobs (spec §4.5 + §5.3). ``warnings`` carries parse-time
     diagnostics that install_logging replays AFTER the redacted handler attaches
-    (the chicken-and-egg fix, R1-major-4) -- they are NEVER logged at parse time."""
+    (R1-major-4) -- they are NEVER logged at parse time. ``logger_levels`` is the
+    resolved [logging.loggers] override map (name -> level int), parsed at load
+    time so malformed entries flow through ``warnings``."""
     level: int = logging.INFO
     max_bytes: int = 10 * 1024 * 1024
     backup_count: int = 5
+    logger_levels: dict[str, int] = field(default_factory=dict)
     warnings: tuple[str, ...] = ()
 
     def resolved_logger_levels(self) -> dict[str, int]:
-        """Per-logger override map (name -> level int). Task 8 wires the parse;
-        the Slice-1 default is an empty map (no overrides)."""
-        return {}
+        """Return a COPY of the per-logger override map (defensive against caller
+        mutation)."""
+        return dict(self.logger_levels)
 
 
 def _parse_logging_config(raw: object) -> LoggingConfig:
@@ -484,9 +487,25 @@ def _parse_logging_config(raw: object) -> LoggingConfig:
             f"[logging] backup_count {raw_bc!r} invalid; using {backup_count}"
         )
 
+    logger_levels: dict[str, int] = {}
+    raw_loggers = raw.get("loggers", {})
+    if isinstance(raw_loggers, dict):
+        for name, lvl in raw_loggers.items():
+            if isinstance(lvl, str) and lvl.upper() in _LEVEL_NAMES:
+                logger_levels[name] = _LEVEL_NAMES[lvl.upper()]
+            else:
+                warnings.append(
+                    f"[logging.loggers] {name!r} level {lvl!r} invalid; skipping"
+                )
+    elif "loggers" in raw:
+        warnings.append(
+            f"[logging.loggers] must be a table; got "
+            f"{type(raw_loggers).__name__!r}; ignoring"
+        )
+
     return LoggingConfig(
         level=level, max_bytes=max_bytes, backup_count=backup_count,
-        warnings=tuple(warnings),
+        logger_levels=logger_levels, warnings=tuple(warnings),
     )
 
 

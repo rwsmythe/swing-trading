@@ -195,3 +195,38 @@ def test_install_emits_correlated_record_to_file(clean_root_and_secrets, tmp_pat
     assert "req=rid-emit" in text
     assert "run=7" in text
     assert "a step happened" in text
+
+
+def test_override_diagnostic_replayed_bypassing_thresholds(clean_root_and_secrets, tmp_path):
+    # A junk per-logger override + a VALID high root level + an override that
+    # silences the diagnostics logger itself: the diagnostic STILL lands (replayed
+    # via handler.handle, bypassing root level + any per-logger filter).
+    from dataclasses import replace
+    from logging.handlers import RotatingFileHandler
+
+    from swing.config import _parse_logging_config, load
+    from tests.cli.test_cli_eval import _minimal_config
+
+    project = tmp_path / "project"; project.mkdir()
+    home = tmp_path / "home"; home.mkdir()
+    base = load(_minimal_config(project, home))
+    parsed = _parse_logging_config({
+        "level": "ERROR",
+        "loggers": {"swing.logging_config": "CRITICAL", "httpx": "NOPE"},
+    })
+    cfg = replace(base, logging=parsed)
+    install_logging(cfg, surface="pipeline")
+    assert clean_root_and_secrets.level == logging.ERROR
+    for h in clean_root_and_secrets.handlers:
+        if isinstance(h, RotatingFileHandler):
+            h.flush()
+    text = (cfg.paths.logs_dir / "pipeline.log").read_text(encoding="utf-8")
+    assert "httpx" in text and "NOPE" in text  # the override diagnostic landed
+
+
+def test_logger_override_applied_to_named_logger(clean_root_and_secrets, tmp_path):
+    from dataclasses import replace
+    cfg = _cfg(tmp_path)
+    cfg = replace(cfg, logging=replace(cfg.logging, logger_levels={"httpx": logging.WARNING}))
+    install_logging(cfg, surface="cli")
+    assert logging.getLogger("httpx").level == logging.WARNING
