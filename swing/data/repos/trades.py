@@ -73,7 +73,31 @@ _TRADE_SELECT_COLS = """
     gap_risk_present, gap_risk_handling, emotional_state_pre_trade,
     market_regime, catalyst, catalyst_other_description,
     planned_target_R,
-    candidate_id, pattern_evaluation_id, failure_mode
+    candidate_id, pattern_evaluation_id, failure_mode, entry_intent
+"""
+
+# v24-v26 era (failure_mode present, entry_intent absent): real failure_mode +
+# NULL AS entry_intent. MUST NOT null failure_mode (the four-era trap).
+_TRADE_SELECT_COLS_V24_TO_V26 = """
+    id, ticker, entry_date, entry_price, initial_shares, initial_stop,
+    current_stop, state, watchlist_entry_target,
+    watchlist_initial_stop, notes, hypothesis_label,
+    chart_pattern_algo, chart_pattern_algo_confidence,
+    chart_pattern_operator, chart_pattern_classification_pipeline_run_id,
+    sector, industry,
+    reviewed_at, mistake_tags, entry_grade, management_grade,
+    exit_grade, process_grade, disqualifying_process_violation,
+    realized_R_if_plan_followed, mistake_cost_confidence, lesson_learned,
+    trade_origin, pre_trade_locked_at, current_size, current_avg_cost,
+    last_fill_at,
+    thesis, why_now, invalidation_condition, expected_scenario,
+    premortem_technical, premortem_market_sector, premortem_execution,
+    premortem_additional,
+    event_risk_present, event_handling, event_type, event_date,
+    gap_risk_present, gap_risk_handling, emotional_state_pre_trade,
+    market_regime, catalyst, catalyst_other_description,
+    planned_target_R,
+    candidate_id, pattern_evaluation_id, failure_mode, NULL AS entry_intent
 """
 
 # v21-v23 era (candidate_id/pattern_evaluation_id present, failure_mode absent):
@@ -98,7 +122,7 @@ _TRADE_SELECT_COLS_V21_TO_V23 = """
     gap_risk_present, gap_risk_handling, emotional_state_pre_trade,
     market_regime, catalyst, catalyst_other_description,
     planned_target_R,
-    candidate_id, pattern_evaluation_id, NULL AS failure_mode
+    candidate_id, pattern_evaluation_id, NULL AS failure_mode, NULL AS entry_intent
 """
 
 # Legacy (pre-v21) SELECT column list — substitutes NULL placeholders for
@@ -123,27 +147,31 @@ _TRADE_SELECT_COLS_PRE_V21 = """
     gap_risk_present, gap_risk_handling, emotional_state_pre_trade,
     market_regime, catalyst, catalyst_other_description,
     planned_target_R,
-    NULL AS candidate_id, NULL AS pattern_evaluation_id, NULL AS failure_mode
+    NULL AS candidate_id, NULL AS pattern_evaluation_id, NULL AS failure_mode, NULL AS entry_intent
 """
 
 
 def _trade_select_cols(conn: sqlite3.Connection) -> str:
     """Return the schema-era-appropriate SELECT-cols projection.
 
-    THREE eras (B-7 migration 0024 added a third):
-      * v24+ (failure_mode present)  -> full projection incl. failure_mode.
+    FOUR eras (migration 0027 added a fourth):
+      * v27+ (entry_intent present)  -> full projection incl. entry_intent.
+      * v24-v26 (failure_mode present, entry_intent absent) -> real failure_mode
+        + NULL AS entry_intent.
       * v21-v23 (candidate_id present, failure_mode absent) -> real backlinks +
-        NULL AS failure_mode. MUST preserve the real backlinks (the era trap).
-      * pre-v21 (none present) -> NULL backlinks + NULL failure_mode.
-    Detect failure_mode AND the v21 columns INDEPENDENTLY, then compose. Keeps
-    _row_to_trade positional + agnostic across all eras (~140 pre-v21 fixtures).
+        NULL AS failure_mode + NULL AS entry_intent.
+      * pre-v21 (none present) -> NULL backlinks + NULL failure_mode + NULL intent.
+    Detect entry_intent / failure_mode / the v21 columns INDEPENDENTLY, then
+    compose. Keeps _row_to_trade positional + agnostic across all eras.
     """
     cols = {
         r[1] for r in conn.execute("PRAGMA table_info(trades)").fetchall()
     }
     has_v21 = "candidate_id" in cols and "pattern_evaluation_id" in cols
-    if "failure_mode" in cols:  # v24 implies v21 columns exist
+    if "entry_intent" in cols:   # v27 implies failure_mode + v21 columns exist
         return _TRADE_SELECT_COLS
+    if "failure_mode" in cols:
+        return _TRADE_SELECT_COLS_V24_TO_V26
     if has_v21:
         return _TRADE_SELECT_COLS_V21_TO_V23
     return _TRADE_SELECT_COLS_PRE_V21
@@ -210,7 +238,67 @@ def insert_trade_with_event(
     cols = {
         r[1] for r in conn.execute("PRAGMA table_info(trades)").fetchall()
     }
-    if "candidate_id" in cols and "pattern_evaluation_id" in cols:
+    if "entry_intent" in cols:
+        # v27+ : v21 backlinks + entry_intent set-at-entry.
+        cur = conn.execute(
+            """
+            INSERT INTO trades
+                (ticker, entry_date, entry_price, initial_shares, initial_stop,
+                 current_stop, state, watchlist_entry_target,
+                 watchlist_initial_stop, notes, hypothesis_label,
+                 chart_pattern_algo, chart_pattern_algo_confidence,
+                 chart_pattern_operator,
+                 chart_pattern_classification_pipeline_run_id,
+                 sector, industry,
+                 trade_origin, pre_trade_locked_at, current_size,
+                 current_avg_cost, last_fill_at,
+                 thesis, why_now, invalidation_condition, expected_scenario,
+                 premortem_technical, premortem_market_sector,
+                 premortem_execution, premortem_additional,
+                 event_risk_present, event_handling, event_type, event_date,
+                 gap_risk_present, gap_risk_handling,
+                 emotional_state_pre_trade, market_regime, catalyst,
+                 catalyst_other_description,
+                 planned_target_R,
+                 candidate_id, pattern_evaluation_id, entry_intent)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?,
+                    ?, ?, ?, ?,
+                    ?, ?, ?, ?,
+                    ?, ?,
+                    ?, ?, ?, ?,
+                    ?,
+                    ?, ?, ?)
+            """,
+            (
+                trade.ticker, trade.entry_date, trade.entry_price,
+                trade.initial_shares, trade.initial_stop, trade.current_stop,
+                trade.state,
+                trade.watchlist_entry_target, trade.watchlist_initial_stop,
+                trade.notes, trade.hypothesis_label,
+                trade.chart_pattern_algo, trade.chart_pattern_algo_confidence,
+                trade.chart_pattern_operator,
+                trade.chart_pattern_classification_pipeline_run_id,
+                trade.sector, trade.industry,
+                trade.trade_origin, trade.pre_trade_locked_at,
+                trade.current_size,
+                trade.current_avg_cost, trade.last_fill_at,
+                trade.thesis, trade.why_now, trade.invalidation_condition,
+                trade.expected_scenario,
+                trade.premortem_technical, trade.premortem_market_sector,
+                trade.premortem_execution, trade.premortem_additional,
+                trade.event_risk_present, trade.event_handling,
+                trade.event_type, trade.event_date,
+                trade.gap_risk_present, trade.gap_risk_handling,
+                trade.emotional_state_pre_trade, trade.market_regime,
+                trade.catalyst, trade.catalyst_other_description,
+                trade.planned_target_R,
+                trade.candidate_id, trade.pattern_evaluation_id,
+                trade.entry_intent,
+            ),
+        )
+    elif "candidate_id" in cols and "pattern_evaluation_id" in cols:
         cur = conn.execute(
             """
             INSERT INTO trades
@@ -529,6 +617,7 @@ def _row_to_trade(row: tuple) -> Trade:
       52:candidate_id (Phase 13 T2.SB6c / migration 0021)
       53:pattern_evaluation_id (Phase 13 T2.SB6c / migration 0021)
       54:failure_mode (B-7 / migration 0024)
+      55:entry_intent (migration 0027)
     """
     dpv = row[24]
     return Trade(
@@ -579,6 +668,7 @@ def _row_to_trade(row: tuple) -> Trade:
         candidate_id=row[52],
         pattern_evaluation_id=row[53],
         failure_mode=row[54],
+        entry_intent=row[55],
     )
 
 
@@ -642,6 +732,49 @@ def update_trade_review_fields(
     params.append(trade_id)
     cur = conn.execute(
         f"UPDATE trades SET {', '.join(set_clauses)} WHERE id = ?", params)
+    if cur.rowcount == 0:
+        raise ValueError(f"trade {trade_id} not found")
+
+
+def update_entry_intent(
+    conn: sqlite3.Connection, *, trade_id: int, entry_intent: str | None,
+) -> None:
+    """UPDATE trades.entry_intent ONLY. Caller wraps in `with conn:`.
+
+    The dedicated review-time-correction + backfill writer (spec §4.4). Touches
+    NO review field and does NOT transition state -- entry_intent is an entry
+    attribute, independent of review state (SKYT id 15 is closed-not-reviewed
+    yet carries a deliberate intent). Kept separate from the 11-field
+    update_trade_review_fields to preserve that writer's focus.
+
+    PRAGMA-aware: a non-None entry_intent against a pre-v27 schema raises a clean
+    ValueError (NOT a leaked OperationalError). Validates against ENTRY_INTENTS
+    (Literal is not runtime-enforced). `... or None` nullability respected by the
+    caller; NULL is a legal value (the backfill `skip` path). Missing trade_id
+    raises ValueError.
+    """
+    from swing.data.models import ENTRY_INTENTS
+
+    if entry_intent is not None and entry_intent not in ENTRY_INTENTS:
+        raise ValueError(
+            f"entry_intent must be one of {sorted(ENTRY_INTENTS)} or None, "
+            f"got {entry_intent!r}")
+    has_col = "entry_intent" in {
+        r[1] for r in conn.execute("PRAGMA table_info(trades)").fetchall()
+    }
+    if entry_intent is not None and not has_col:
+        raise ValueError(
+            "entry_intent requires schema v27+ (the trades.entry_intent column "
+            "is absent on this DB)")
+    if not has_col:
+        # pre-v27 + entry_intent is None -> no-op write target; still verify the
+        # row exists so the contract (missing -> ValueError) holds.
+        cur = conn.execute("SELECT 1 FROM trades WHERE id = ?", (trade_id,))
+        if cur.fetchone() is None:
+            raise ValueError(f"trade {trade_id} not found")
+        return
+    cur = conn.execute(
+        "UPDATE trades SET entry_intent = ? WHERE id = ?", (entry_intent, trade_id))
     if cur.rowcount == 0:
         raise ValueError(f"trade {trade_id} not found")
 

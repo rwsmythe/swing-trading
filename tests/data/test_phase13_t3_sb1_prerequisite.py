@@ -51,7 +51,7 @@ def test_schema_version_is_20(tmp_path: Path) -> None:
     corresponding tests in test_migration_0017.py etc. follow the same
     stale-name-but-current-assertion pattern).
     """
-    assert EXPECTED_SCHEMA_VERSION == 26, (
+    assert EXPECTED_SCHEMA_VERSION == 27, (
         f"Worktree branched off wrong SHA - expected v23 schema, "
         f"got v{EXPECTED_SCHEMA_VERSION}. Re-create worktree off the "
         f"current head SHA."
@@ -196,7 +196,7 @@ def test_sqlite_connect_smoke(tmp_path: Path) -> None:
         assert row is not None
         version = row[0]
         assert isinstance(version, int)
-        assert version == EXPECTED_SCHEMA_VERSION == 26
+        assert version == EXPECTED_SCHEMA_VERSION == 27
         # Verify fills table is queryable with the new columns.
         # (Should succeed even with zero rows.)
         conn.execute(

@@ -22,8 +22,8 @@ def _migrate(tmp_path: Path, version: int, backup_dir: Path | None = None):
     return conn
 
 
-def test_expected_schema_version_is_26():
-    assert EXPECTED_SCHEMA_VERSION == 26
+def test_expected_schema_version_is_27():
+    assert EXPECTED_SCHEMA_VERSION == 27
 
 
 def test_migrate_to_26_seeds_broad_watch_row(tmp_path):
