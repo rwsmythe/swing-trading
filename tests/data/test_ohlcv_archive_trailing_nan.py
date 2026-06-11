@@ -362,3 +362,22 @@ def test_warm_serial_parity_with_ragged_tail(tmp_path, monkeypatch):
     )
     assert FIXED not in [d.date() for d in warm_arch.index]
     mod._full_refresh_stagger_enabled.cache_clear()
+
+
+def test_merge_gap_fresh_empty_does_not_write(tmp_path, monkeypatch):
+    """Codex R1 MAJOR — when a trailing trim leaves a warm gap subframe with
+    ONLY overlap rows (<= latest_stored), nothing is fresh; _merge_gap_subframe
+    must NOT rewrite the archive, matching the serial gap path's
+    no-write-when-nothing-fresh (the trim-to-empty parity-by-construction)."""
+    FIXED = date(2026, 6, 10)
+    archive = _flat_frame({
+        FIXED - timedelta(days=3): (1.0, 1.0, 1.0, 50.0, 10),
+        FIXED - timedelta(days=2): (1.0, 1.0, 1.0, 51.0, 11),
+    })
+    archive.to_parquet(tmp_path / "DEEP.parquet")
+    calls: list[int] = []
+    monkeypatch.setattr(mod, "_write_archive_atomic", lambda *a, **k: calls.append(1))
+    # sub carries ONLY an overlap row (<= latest_stored FIXED-2); nothing fresh.
+    sub = _flat_frame({FIXED - timedelta(days=2): (9.0, 9.0, 9.0, 999.0, 99)})
+    mod._merge_gap_subframe(tmp_path, "DEEP", sub, archive_history_days=1260)
+    assert calls == []  # no write when nothing is fresh

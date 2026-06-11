@@ -536,6 +536,14 @@ def _merge_gap_subframe(
     # Drop any incoming row dated <= latest_stored so existing bars are never
     # overwritten (byte-parity with the serial `[latest+1, today]` gap fetch).
     fresh = sub.loc[sub.index.date > latest_stored]
+    # Arc 8 (Codex R1 MAJOR): the trailing-ragged trim can leave a sub with ONLY
+    # overlap rows (<= latest_stored) — e.g. a deep-gap band whose only post-
+    # latest_stored row was today's ragged bar. With nothing fresh, the serial
+    # gap path no-ops (its `[latest+1, today]` fetch trims to empty -> no write);
+    # match that here so warm leaves the archive untouched too (trim-to-empty
+    # parity by construction; no needless rewrite).
+    if fresh.empty:
+        return
     combined = pd.concat([archive, fresh])
     combined = combined[~combined.index.duplicated(keep="last")].sort_index()
     combined = combined.tail(archive_history_days)
@@ -678,13 +686,15 @@ def _warm_one_window(
             # SAME no-op — wasteful on an event night (134 archives, run #99);
             # archives end byte-identical either way. The skip leaves the archive
             # + meta stale so the next call retries a settled bar.
-            sub, trimmed = _trim_trailing_ragged(sub)
+            trimmed_sub, trimmed = _trim_trailing_ragged(sub)
             if trimmed:
                 report.trailing_nan_trimmed += trimmed
+                dropped = [d.date().isoformat() for d in sub.index[len(trimmed_sub):]]
                 log.warning(
                     "warm trailing-ragged trim (%s): dropped %d trailing "
-                    "NaN-OHLC bar(s) (retry next fetch)", ticker, trimmed,
+                    "NaN-OHLC bar(s) %s (retry next fetch)", ticker, trimmed, dropped,
                 )
+            sub = trimmed_sub
             if sub.empty:
                 continue
             try:
