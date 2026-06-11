@@ -14,7 +14,16 @@ from collections.abc import Callable
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-DEFAULT_LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+# Correlation fields (Arc-2 Slice-2) are made ALWAYS-PRESENT via Formatter
+# defaults= so a record that never passed through CorrelationFilter renders the
+# placeholder instead of KeyError. CorrelationFilter overrides these when context
+# is present. EVERY formatter construction site that uses DEFAULT_LOG_FORMAT MUST
+# pass defaults=CORRELATION_LOG_DEFAULTS (see the 4-site enumeration in the plan).
+CORRELATION_LOG_DEFAULTS = {"web_request_id": "-", "pipeline_run_id": "-"}
+DEFAULT_LOG_FORMAT = (
+    "%(asctime)s [%(levelname)s] %(name)s "
+    "[req=%(web_request_id)s run=%(pipeline_run_id)s]: %(message)s"
+)
 
 # Slice-2 widens the live routing to all three; the seam accepts "cli" now so
 # the signature is forward-stable (no Slice-2 seam re-touch).
@@ -119,7 +128,8 @@ def configure_logging(
     handler.setLevel(logging.NOTSET)  # R4-major-1: thresholding lives on root, not here
     # Formatter BEFORE addHandler -> no unredacted window.
     handler.setFormatter(
-        formatter if formatter is not None else logging.Formatter(DEFAULT_LOG_FORMAT)
+        formatter if formatter is not None
+        else logging.Formatter(DEFAULT_LOG_FORMAT, defaults=CORRELATION_LOG_DEFAULTS)
     )
     if record_filter is not None:
         _replace_swing_filter(handler, record_filter)

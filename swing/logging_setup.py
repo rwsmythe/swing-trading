@@ -13,7 +13,11 @@ import os
 from logging.handlers import RotatingFileHandler
 
 from swing.config import Config
-from swing.logging_config import DEFAULT_LOG_FORMAT, configure_logging
+from swing.logging_config import (
+    CORRELATION_LOG_DEFAULTS,
+    DEFAULT_LOG_FORMAT,
+    configure_logging,
+)
 
 
 def install_logging(cfg: Config, *, surface: str) -> None:
@@ -27,7 +31,8 @@ def install_logging(cfg: Config, *, surface: str) -> None:
         cfg.paths.logs_dir,
         surface=surface,
         level=log_cfg.level,
-        formatter=RedactingFormatter(DEFAULT_LOG_FORMAT),     # Belt B, every surface
+        # Belt B (every surface) carries defaults= so correlation fields are always present.
+        formatter=RedactingFormatter(DEFAULT_LOG_FORMAT, defaults=CORRELATION_LOG_DEFAULTS),
         max_bytes=log_cfg.max_bytes,
         backup_count=log_cfg.backup_count,
         install_record_factory=ensure_schwab_log_redaction_factory_installed,  # Belt A

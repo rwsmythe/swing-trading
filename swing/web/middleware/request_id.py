@@ -9,7 +9,11 @@ from pathlib import Path
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
-from swing.logging_config import DEFAULT_LOG_FORMAT, configure_logging
+from swing.logging_config import (
+    CORRELATION_LOG_DEFAULTS,
+    DEFAULT_LOG_FORMAT,
+    configure_logging,
+)
 from swing.logging_setup import install_logging
 
 _access_log = logging.getLogger("swing.web.access")
@@ -53,7 +57,7 @@ def configure_web_logging(logs_dir: Path, cfg=None) -> None:
         logs_dir,
         surface="web",
         level=default.level,
-        formatter=RedactingFormatter(DEFAULT_LOG_FORMAT),
+        formatter=RedactingFormatter(DEFAULT_LOG_FORMAT, defaults=CORRELATION_LOG_DEFAULTS),
         max_bytes=default.max_bytes,
         backup_count=default.backup_count,
         install_record_factory=ensure_schwab_log_redaction_factory_installed,

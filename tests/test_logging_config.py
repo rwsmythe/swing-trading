@@ -262,3 +262,25 @@ def test_formatter_is_set_before_add_to_root(clean_root, tmp_path, monkeypatch):
     monkeypatch.setattr(clean_root, "addHandler", spy_add)
     configure_logging(tmp_path, surface="pipeline", formatter=marker)
     assert seen.get("fmt_at_add") is marker
+
+
+def test_default_format_carries_correlation_fields():
+    from swing.logging_config import DEFAULT_LOG_FORMAT
+    assert "%(web_request_id)s" in DEFAULT_LOG_FORMAT
+    assert "%(pipeline_run_id)s" in DEFAULT_LOG_FORMAT
+
+
+def test_no_formatter_fallback_renders_placeholders_no_keyerror(clean_root, tmp_path):
+    # A record with NO correlation context, formatted by the no-formatter fallback,
+    # must render "-"/"-" via defaults= -- NOT raise/swallow a KeyError. Discriminator:
+    # without defaults= on the fallback Formatter, super().format() raises KeyError on
+    # %(web_request_id)s, logging calls handleError, and the line is DROPPED -> the
+    # file would not contain the message and this assertion FAILS.
+    import logging
+    configure_logging(tmp_path, surface="pipeline")  # no formatter supplied -> fallback
+    h = _file_handlers(clean_root, tmp_path / "pipeline.log")[0]
+    rendered = h.formatter.format(
+        logging.LogRecord("n", logging.INFO, __file__, 1, "hello-msg", None, None)
+    )
+    assert "hello-msg" in rendered
+    assert "-" in rendered  # the placeholder fields rendered, no KeyError

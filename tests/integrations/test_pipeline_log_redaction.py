@@ -12,7 +12,11 @@ from swing.integrations.schwab.client import (
     ensure_schwab_log_redaction_factory_installed,
     register_schwab_secrets,
 )
-from swing.logging_config import DEFAULT_LOG_FORMAT, configure_logging
+from swing.logging_config import (
+    CORRELATION_LOG_DEFAULTS,
+    DEFAULT_LOG_FORMAT,
+    configure_logging,
+)
 
 # A token-shaped sentinel the 32+hex heuristic redactor will catch by shape.
 SENTINEL = "deadbeef" * 8  # 64 hex chars
@@ -35,7 +39,8 @@ def pipeline_logging(tmp_path):
     ensure_schwab_log_redaction_factory_installed()  # Belt A first
     configure_logging(
         tmp_path, surface="pipeline",
-        formatter=RedactingFormatter(DEFAULT_LOG_FORMAT),  # Belt B
+        # Belt B
+        formatter=RedactingFormatter(DEFAULT_LOG_FORMAT, defaults=CORRELATION_LOG_DEFAULTS),
     )
     yield tmp_path / "pipeline.log"
     for h in list(root.handlers):
@@ -226,3 +231,14 @@ def test_web_non_schwabdev_logger_line_is_redacted(web_logging):
     logging.getLogger("swing.web.access").warning("leaked token=%s", SENTINEL)
     text = _read(web_logging)
     assert SENTINEL not in text
+
+
+def test_web_logging_shim_renders_correlation_placeholders(web_logging):
+    # R3-major-1: the legacy configure_web_logging(cfg=None) shim must construct its
+    # RedactingFormatter with defaults= so a no-context record renders req=-/run=-
+    # instead of KeyError-dropping (the substring redaction tests would MASK that).
+    import logging
+    logging.getLogger("swing.web.access").info("shim line present")
+    text = _read(web_logging)
+    assert "shim line present" in text
+    assert "req=- run=-" in text
