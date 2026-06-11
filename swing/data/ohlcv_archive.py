@@ -420,9 +420,15 @@ def _extract_ticker_subframe(frame: pd.DataFrame, ticker: str) -> pd.DataFrame |
 def _fetch_chunk(
     chunk: list[str], *, start: date, end: date,
 ) -> tuple[dict[str, pd.DataFrame], list[str], bool]:
-    """Fetch ONE chunk with a single multi-ticker yf.download (threads=False,
+    """Fetch ONE chunk with a single multi-ticker yf.download (threads=True,
     group_by='ticker'), mirroring _yf_download_window's kwargs + the inclusive-end
-    `+1 day` convention. Returns (extracted, failed, chunk_failed):
+    `+1 day` convention. threads=True is the Arc-6 spec §8 stretch lever,
+    OPERATOR-AUTHORIZED 2026-06-10 after the 6c cold gate measured threads=False
+    at 207.5s warm (evaluate 220s vs the <=90s target); the serial-fallback
+    safety net (proven live, run #99) bounds the rate-limit downside to a slower
+    night, never a broken one. The SINGLE-ticker path (_yf_download_window)
+    keeps threads=False per the original gotcha. Revert = this one kwarg.
+    Returns (extracted, failed, chunk_failed):
       - extracted: {ticker: valid_subframe}
       - failed: tickers that did not extract (per-ticker miss OR whole-chunk)
       - chunk_failed: True ONLY when the whole call failed (yf.download raised, or
@@ -433,7 +439,7 @@ def _fetch_chunk(
     try:
         raw = yf.download(
             chunk, start=start, end=end + timedelta(days=1),
-            group_by="ticker", threads=False, progress=False,
+            group_by="ticker", threads=True, progress=False,
             auto_adjust=False, actions=False,
         )
     except Exception as exc:  # noqa: BLE001 — whole chunk -> serial fallback
