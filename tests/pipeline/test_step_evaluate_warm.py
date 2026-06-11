@@ -103,3 +103,37 @@ def test_step_evaluate_wires_prewarm_before_fetch_loops():
         f"pre-warm call (offset {call_match.start()}) must precede the first "
         f"fetcher.get (offset {fetch_idx}); the warm must run BEFORE the serial loops."
     )
+
+
+def test_prewarm_trim_appends_27_warning_even_when_clean(monkeypatch):
+    """Arc 8: trailing-ragged trims emit a #27 warning entry even when the warm
+    is otherwise clean (no fallback, no chunk failures)."""
+    monkeypatch.setattr(
+        rmod, "warm_archives_batch",
+        lambda tickers, **k: WarmReport(cache_hit=5, gap=2, trailing_nan_trimmed=3),
+    )
+    run_warnings: list[dict] = []
+    rmod._prewarm_evaluate_archives(
+        cfg=_Cfg(), candidate_tickers=["AAPL"], universe_tickers=["MSFT"],
+        run_now=None, run_warnings=run_warnings,
+    )
+    trim_entries = [w for w in run_warnings if w.get("trailing_nan_trimmed")]
+    assert len(trim_entries) == 1
+    assert trim_entries[0]["step"] == "evaluate_warm"
+    assert trim_entries[0]["trailing_nan_trimmed"] == 3
+
+
+def test_prewarm_info_line_includes_trim_count(monkeypatch, caplog):
+    """Arc 8: the always-on warm telemetry INFO line surfaces the trim count."""
+    import logging
+    monkeypatch.setattr(
+        rmod, "warm_archives_batch",
+        lambda tickers, **k: WarmReport(cache_hit=5, trailing_nan_trimmed=2),
+    )
+    with caplog.at_level(logging.INFO, logger=rmod.log.name):
+        rmod._prewarm_evaluate_archives(
+            cfg=_Cfg(), candidate_tickers=["AAPL"], universe_tickers=[],
+            run_now=None, run_warnings=[],
+        )
+    info = [r.message for r in caplog.records if "evaluate warm:" in r.message]
+    assert info and "trimmed=2" in info[0]

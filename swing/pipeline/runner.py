@@ -1334,11 +1334,21 @@ def _prewarm_evaluate_archives(
     # looks "clean" (zero fallbacks) is still visible as an anomalous distribution.
     log.info(
         "evaluate warm: cache_hit=%d gap=%d deep_gap=%d full_refresh=%d "
-        "chunks=%d chunk_failures=%d fallback=%d wall=%.1fs",
+        "chunks=%d chunk_failures=%d fallback=%d trimmed=%d wall=%.1fs",
         report.cache_hit, report.gap, report.deep_gap, report.full_refresh,
         report.chunks_attempted, report.chunk_failures, len(report.fallback),
-        report.wall_seconds,
+        report.trailing_nan_trimmed, report.wall_seconds,
     )
+    # Arc 8 (#27): trailing-ragged trims at the warm write barrier are a state
+    # event worth surfacing even when the warm is otherwise clean — a yfinance
+    # raggedness night should leave an audit trail, not vanish.
+    if report.trailing_nan_trimmed > 0 and run_warnings is not None:
+        run_warnings.append({
+            "step": "evaluate_warm",
+            "reason": "trailing-ragged bars trimmed at warm write barrier "
+                      "(retried next fetch)",
+            "trailing_nan_trimmed": report.trailing_nan_trimmed,
+        })
     if report.degraded and run_warnings is not None:
         run_warnings.append({
             "step": "evaluate_warm",
