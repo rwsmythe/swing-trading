@@ -72,6 +72,15 @@ GRADE_AXIS_LABELS: tuple[tuple[float, str], ...] = (
     (0.0, "F=0"),
 )
 
+# Normalized CSS-class hooks for PGT marker intent annotation (spec §7.2).
+# The raw `hypothesis_test_by_design` enum token MUST NOT be used directly as a
+# CSS class — it normalizes to `by-design` (Codex R1-Major-2).
+_INTENT_CSS_CLASS: dict[str | None, str] = {
+    "standard": "standard",
+    "hypothesis_test_by_design": "by-design",
+    None: "unclassified",
+}
+
 
 @dataclass(frozen=True)
 class RollingSeriesDisplay:
@@ -128,6 +137,11 @@ class PerTradeMarkerDisplay:
     svg_x: float
     svg_y: float | None  # None when grade letter is None
     disqualifying: int
+    # Tuition-vs-error marker annotation (spec §7.2). `entry_intent` is the raw
+    # stored enum value (NULL → None); `entry_intent_css_class` is the normalized
+    # `standard`/`by-design`/`unclassified` hook (NOT the raw token).
+    entry_intent: str | None = None
+    entry_intent_css_class: str = "unclassified"
 
 
 @dataclass(frozen=True)
@@ -543,6 +557,10 @@ def _build_marker_display(
         svg_x=x,
         svg_y=y,
         disqualifying=marker.disqualifying,
+        entry_intent=marker.entry_intent,
+        entry_intent_css_class=_INTENT_CSS_CLASS.get(
+            marker.entry_intent, "unclassified"
+        ),
     )
 
 

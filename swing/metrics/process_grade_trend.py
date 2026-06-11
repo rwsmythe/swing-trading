@@ -97,6 +97,7 @@ class ProcessGradeTrendPoint:
     exit_grade_numeric: float | None
     disqualifying: int          # 0 or 1
     mistake_cost_R: float       # noqa: N815 — Phase 6 v1.2 §8.8 convention
+    entry_intent: str | None = None  # tuition-vs-error marker annotation (spec §7.2)
 
     def __post_init__(self) -> None:
         if self.ordinal < 0:
@@ -323,6 +324,7 @@ def _build_per_trade_point(
         exit_grade_numeric=_gnum(trade.exit_grade),
         disqualifying=int(bool(trade.disqualifying_process_violation)),
         mistake_cost_R=mistake_cost_R,
+        entry_intent=trade.entry_intent,
     )
 
 

@@ -51,6 +51,7 @@ def _seed_reviewed_trade(
     exit_price: float = 11.0,
     reviewed_at: str = "2026-04-01T16:00:00",
     last_fill_at: str = "2026-04-01T15:30:00",
+    entry_intent: str | None = None,
 ) -> None:
     conn.execute(
         "INSERT INTO trades (id, ticker, entry_date, entry_price, "
@@ -58,15 +59,15 @@ def _seed_reviewed_trade(
         "industry, trade_origin, pre_trade_locked_at, current_size, "
         "process_grade, entry_grade, management_grade, exit_grade, "
         "disqualifying_process_violation, realized_R_if_plan_followed, "
-        "reviewed_at, last_fill_at) VALUES "
+        "reviewed_at, last_fill_at, entry_intent) VALUES "
         "(?, ?, '2026-03-15', 10.0, 100, 9.0, 9.0, 'reviewed', 'S', 'I', "
         "'manual_off_pipeline', '2026-03-15T09:30:00', 0, ?, ?, ?, ?, ?, "
-        "?, ?, ?)",
+        "?, ?, ?, ?)",
         (
             trade_id, ticker,
             process_grade, process_grade, process_grade, process_grade,
             disqualifying, realized_R_if_plan_followed,
-            reviewed_at, last_fill_at,
+            reviewed_at, last_fill_at, entry_intent,
         ),
     )
     conn.execute(
@@ -176,6 +177,43 @@ def test_per_trade_markers_render_for_disqualifying_trade(cfg) -> None:
     vm = build_process_grade_trend_vm(cfg=cfg)
     assert len(vm.per_trade_markers) == 1
     assert vm.per_trade_markers[0].disqualifying == 1
+
+
+# ---------------------------------------------------------------------------
+# Task 7 — marker entry_intent normalized CSS-class hook (#22 preserved)
+# ---------------------------------------------------------------------------
+
+def test_marker_carries_normalized_intent_css_class(cfg) -> None:
+    """The raw hypothesis_test_by_design token normalizes to the spec §7.2
+    `by-design` CSS hook (Codex R1-Major-2 — NOT the raw token)."""
+    conn = sqlite3.connect(cfg.paths.db_path)
+    try:
+        _seed_reviewed_trade(
+            conn, trade_id=1, ticker="STD", process_grade="B",
+            entry_intent="standard",
+        )
+        _seed_reviewed_trade(
+            conn, trade_id=2, ticker="BYD", process_grade="B",
+            entry_intent="hypothesis_test_by_design",
+            reviewed_at="2026-04-02T16:00:00",
+            last_fill_at="2026-04-02T15:30:00",
+        )
+        _seed_reviewed_trade(
+            conn, trade_id=3, ticker="UNC", process_grade="B",
+            reviewed_at="2026-04-03T16:00:00",
+            last_fill_at="2026-04-03T15:30:00",
+        )
+    finally:
+        conn.close()
+    vm = build_process_grade_trend_vm(cfg=cfg)
+    by_id = {m.trade_id: m for m in vm.per_trade_markers}
+    assert by_id[1].entry_intent == "standard"
+    assert by_id[1].entry_intent_css_class == "standard"
+    # Raw token normalizes to `by-design`, NOT `hypothesis_test_by_design`.
+    assert by_id[2].entry_intent == "hypothesis_test_by_design"
+    assert by_id[2].entry_intent_css_class == "by-design"
+    assert by_id[3].entry_intent is None
+    assert by_id[3].entry_intent_css_class == "unclassified"
 
 
 # ---------------------------------------------------------------------------
