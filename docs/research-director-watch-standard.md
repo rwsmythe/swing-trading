@@ -34,14 +34,39 @@ read (catch-up discipline).
 
 ## §2 The weekly glance (operator-executable, mechanical)
 
+### §2.1 Execution procedure (added same-day 2026-06-10, operator-requested)
+
+From the repo root:
+
+```
+python scripts/weekly_glance.py
+```
+
+Read-only (artifacts + `mode=ro` DB); ~5 seconds. It prints the last ~7 nightly runs (detections / signals /
+unattributed / trigger rate), the newest-artifact age, this week's live entries with their intent labels, and any
+risk/reconciliation or `CHASED`/`NO_SETUP` tags on `standard`-intent trades — then either `WEEKLY GLANCE: all clear`
+or `ATTENTION` lines pre-mapped to the §4 tripwire IDs (T1/T2/T3/T6/T7). T2 fires on the NEWEST run only (older
+artifacts may legitimately predate a registry amendment — e.g. the pre-0026 runs honestly show 42/42 unattributed
+forever; they are history, not a regression). Any `ATTENTION` line → message the research director with the output;
+do not wait for the monthly read. `T7 check` lines on `by_design` entries are self-checks (legitimate only for
+H2/H4 program fires).
+
+The manual fallback (if the script is unavailable) remains:
+
 1. The newest `exports/research/shadow-expectancy-*/summary.md` is from the last trading session (drumbeat alive).
-2. In it: `total_unattributed = 0` (any nonzero → §4 T2).
+2. In it: `total_unattributed = 0` (nonzero on the NEWEST run → §4 T2).
 3. `unique_signals` is moving across the week (the log is accruing).
 4. Trigger rate numerator: still `0/N`, or has the FIRST breakout priced? (nonzero → §4 T3 — good news, but gated.)
 5. If any live trade was entered this week: it carries the intent label per the epoch contract (charter §7) and no
    risk/reconciliation tag landed on a `standard` trade (else → §4 T6).
 
-Anything anomalous → message the research director with the artifact path; do not wait for the monthly read.
+### §2.2 T3 status note (2026-06-10)
+
+The first-priced-trade golden gate is **DONE** — run `20260611T041306Z` priced the first 5 signals (2 unique names);
+the research director hand-walked BOTH names against raw forward bars (WULF: entry 27.47 / stop 24.095 / stop-out
+−1.0000R `initial_stop`; VECO: entry 65.03 / stop 61.86 / +0.2871R `horizon_mtm`) — exact match on fills, stops,
+R-arithmetic, and the `entry_bar_weak_close` diagnostics (charter §7, 2026-06-10). Per §4 T3, the remaining
+obligation is spot-checking ~1-in-5 NEW priced trades until N=10, then trust the machinery.
 
 ---
 
@@ -58,7 +83,10 @@ never carried forward from a prior read, a return report, or memory (`feedback_n
 2. **Funnel:** detections / unique signals / unattributed breakdown vs the last read's logged numbers. Unattributed
    must be 0; the signal count's growth rate is the accrual pulse.
 3. **Pricing progress:** trigger rate (n triggered / n attributed-reaching-simulation), priced terminal count per
-   censoring scenario, **priced N vs the broad-watch N≥30 decision gate**. First priced trade → §4 T3 if not yet done.
+   censoring scenario, **priced N vs the broad-watch N≥30 decision gate** — tracked at BOTH the signal level (the
+   spec's unit) **and the unique-name level** (re-detections of the same name across runs walk identical bars →
+   identical R → correlated samples; the first priced batch was 5 signals / 2 names). The T4 decision read must
+   report both counts. First priced trade → §4 T3 if not yet done.
 4. **Log maturity:** oldest detection date → newest observation date (the longest forward window, in sessions);
    distinct pattern count vs the **N≥100 B-backlog gate**.
 5. **Live record, new epoch only:** trades entered since the last read — intent labels vs the epoch contract
@@ -77,7 +105,7 @@ never carried forward from a prior read, a return report, or memory (`feedback_n
 ### YYYY-MM-DD — monthly watch read #N (standard vN)
 - Drumbeat: <sessions covered>/<expected>; gaps: <none|list>.
 - Funnel (newest): <detections> -> <signals> -> <unattributed> unattributed. Delta since read #N-1: <+signals>.
-- Pricing: trigger <k>/<n>; priced N=<n> (gate 30); scenarios <closed_only n / mtm n / forced n / adverse n>.
+- Pricing: trigger <k>/<n>; priced N=<n> signals / <m> unique names (gate 30); scenarios <closed_only n / mtm n / forced n / adverse n>.
 - Log maturity: longest window <S> sessions; pattern count <P> (gate 100).
 - Live epoch record: <T> new trades; intent contract: <held|violated (detail)>; discipline panel: <clean|tags>.
 - Hypothesis progress: H1 <x>/20, H2 <x>/10, H4 <x>/10, broad-watch priced <x>/30.
