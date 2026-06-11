@@ -1371,12 +1371,17 @@ def _render_trade_analysis(a) -> list[str]:
                    "thesis_invalidated, normal_volatility_stop, "
                    "market_regime_shift, adverse_event_shock, execution_error, "
                    "failed_to_advance, other. Omit for a winner / unattributed.")
+@click.option("--entry-intent", "entry_intent",
+              type=click.Choice(["standard", "hypothesis_test_by_design"]),
+              default=None,
+              help="Optional correction of the trade's design intent. Omit to "
+                   "leave the persisted value unchanged; pass a value to set it.")
 @click.pass_context
 def trade_review_cmd(
     ctx, list_mode, window_days, trade_id, mistake_tags,
     entry_grade, management_grade, exit_grade,
     disqualifying_process_violation, realized_r_if_plan_followed,
-    mistake_cost_confidence, lesson_learned, failure_mode,
+    mistake_cost_confidence, lesson_learned, failure_mode, entry_intent,
 ):
     """Post-trade review surface — log mistakes, process grade, and outcome attribution."""
     import json
@@ -1506,6 +1511,22 @@ def trade_review_cmd(
             # surfaces as a clean ClickException, not a traceback. Production is
             # v24 so this is the belt to the membership check's suspenders.
             raise click.ClickException(str(exc)) from exc
+
+        # Task 4 (tuition-vs-error): correct entry_intent at review. Optional --
+        # an omitted flag leaves the persisted value untouched (no call). When
+        # passed, persist via the dedicated update_entry_intent writer in its
+        # OWN transaction (entry_intent is independent of review state, so it is
+        # NOT folded into complete_trade_review -- L2/L5 lock). click.Choice
+        # already constrains the value; the ValueError wrap is the belt.
+        if entry_intent is not None:
+            from swing.data.repos.trades import update_entry_intent
+            try:
+                with conn:
+                    update_entry_intent(
+                        conn, trade_id=trade_id, entry_intent=entry_intent,
+                    )
+            except ValueError as exc:
+                raise click.ClickException(str(exc)) from exc
     finally:
         conn.close()
 

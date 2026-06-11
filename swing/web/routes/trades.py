@@ -2706,6 +2706,7 @@ def review_post(
     mistake_cost_confidence: str = Form(""),
     mistake_tags: list[str] = Form(default=[]),  # noqa: B008
     failure_mode: str | None = Form(None),
+    entry_intent: str | None = Form(None),
 ):
     """Phase 6: persist a post-trade review.
 
@@ -2793,6 +2794,27 @@ def review_post(
             request, "partials/review_form.html.j2",
             {"vm": vm, "error_message": fm_err}, status_code=400)
 
+    # Task 4 (tuition-vs-error): correct entry_intent at review. The 4-tier
+    # rejection ladder mirrors the failure_mode gate: empty -> NULL (the
+    # ``... or None`` nullability gotcha); a non-member token -> 400 +
+    # re-rendered review form with the bad anchor CLEARED (the rebuilt VM reads
+    # the still-persisted/NULL value, so "foo" never re-renders -> operator is
+    # not trapped). Persisted via the dedicated update_entry_intent writer
+    # BELOW (its OWN transaction) -- complete_trade_review is NOT widened.
+    from swing.data.models import ENTRY_INTENTS
+    ei = entry_intent or None  # ... or None: empty string -> NULL (nullable CHECK)
+    if ei is not None and ei not in ENTRY_INTENTS:
+        from swing.web.view_models.trades import build_review_vm
+        vm = build_review_vm(trade_id=trade_id, cfg=cfg)
+        ei_err = f"Invalid entry_intent {ei!r}"
+        if vm is None:
+            return templates.TemplateResponse(
+                request, "partials/trade_form_error.html.j2",
+                {"error_message": ei_err}, status_code=400)
+        return templates.TemplateResponse(
+            request, "partials/review_form.html.j2",
+            {"vm": vm, "error_message": ei_err}, status_code=400)
+
     conn = connect(cfg.paths.db_path)
     try:
         trade = get_trade(conn, trade_id)
@@ -2834,6 +2856,16 @@ def review_post(
             event_ts=review_ts,
             rationale=None,
         )
+        # Task 4: persist the (optional) entry_intent correction via the
+        # dedicated writer in its OWN transaction. entry_intent is independent
+        # of review state, so it is NOT folded into complete_trade_review (L2/L5
+        # lock). complete_trade_review opened + committed its OWN ``with conn:``
+        # above; this is a SEPARATE ``with conn:`` AFTER it returned (the
+        # service-tx-nesting gotcha: never nest update_entry_intent inside an
+        # outer tx).
+        from swing.data.repos.trades import update_entry_intent
+        with conn:
+            update_entry_intent(conn, trade_id=trade_id, entry_intent=ei)
     finally:
         conn.close()
     # code-review I3 (operator-witnessed S5): /trades is unrouted — htmx.js

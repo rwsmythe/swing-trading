@@ -1186,6 +1186,15 @@ class ReviewVM:
     # other base-layout VM change).
     failure_mode_choices: tuple[tuple[str, str], ...] = ()
 
+    # Task 4 (tuition-vs-error) — ordered (value, label) pairs for the
+    # entry_intent <select> + the pre-populated selection. entry_intent_selected
+    # is the PERSISTED value; on NULL it falls back to the advisory suggestion
+    # (suggest_entry_intent(hypothesis_label)). Referenced ONLY in
+    # review_form.html.j2 (no base-layout deref). Safe defaults keep the VM
+    # constructible (5-VM existing-fields rule needs no other change).
+    entry_intent_choices: tuple[tuple[str, str], ...] = ()
+    entry_intent_selected: str | None = None
+
     # Phase 5 lesson — base.html.j2 dereferences these. New page VMs MUST
     # carry safe defaults (5-VM existing-fields rule; brief §6.2 watch item 8).
     session_date: str = ""
@@ -1425,6 +1434,14 @@ def build_review_vm(
         total_risk_dollars=total_risk_dollars,
         review_chart_url=f"/trades/{trade_id}/review/chart",
         failure_mode_choices=failure_mode_display_choices(),
+        entry_intent_choices=entry_intent_display_choices(),
+        # NULL persisted -> advisory suggestion default; a persisted value is
+        # shown AS-IS (the ``is not None`` discriminator: NULL != standard).
+        entry_intent_selected=(
+            trade.entry_intent
+            if trade.entry_intent is not None
+            else suggest_entry_intent(trade.hypothesis_label)
+        ),
     )
 
 
