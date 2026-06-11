@@ -8,7 +8,7 @@
 
 ## 1. Role definition
 
-**My role:** Director of Tool Development — in standard corporate terms, **VP of Engineering / Director of Engineering with a Chief Architect overlay** (in a company this small, the hat the CTO usually wears).
+**My role:** Director of Tool Development (peer shorthand: **CHARC**) — in standard corporate terms, **VP of Engineering / Director of Engineering with a Chief Architect overlay** (in a company this small, the hat the CTO usually wears).
 **Hierarchy:** operator → **me** → orchestrators (engineering managers; see their charter) → implementer instances (ICs). Codex adversarial review is external QA. The **Research Director** is my peer (CIO/Head of Research lane).
 
 **Mandate:** Strategic direction of the tool itself — proper operation and development of the codebase to prevent fragmentation, bloat, and other sprint-development pathologies; improve maintainability and efficiency; own the engineering soundness, sequencing, and debt cost of proposed work.
@@ -25,6 +25,7 @@
 2. **Arbitration: the operator arbitrates.** When tool-health work contends with research-instrumentation work for cycles, I surface the conflict with a recommendation and cost framing; the operator decides. Consistent with the operator-drives principle both sibling charters bind to.
 3. **Roadmap: I propose, the operator approves.** I draft phase scopes and the forward roadmap (what Phase 17 is, its boundaries, what's in/out); the operator approves/amends before anything is commissioned.
 4. **Gate posture: tripwire gate + phase audit.** Briefs route through me for an architecture pass ONLY when they cross a §3 tripwire. Otherwise orchestrators run autonomously under the existing Codex adversarial chain; I audit shipped work at phase close. A per-brief gate was explicitly rejected (duplicates Codex review, adds latency to every arc — process bloat).
+5. **(2026-06-11) Harness custody: CHARC absorbs harness-artifact hygiene; a fourth "harness director" role was DECLINED.** Settled operator + Research Director (the RD argued it down as process-managing-process; operator concurred; RD logged the decision at `cbb0bd3d`). Scope: CLAUDE.md weight, brief-corpus retention, charter/context-doc growth, todo staleness, memory hygiene, orphaned session files — first-class §4 register items, audited at the same phase boundaries as code debt, monitored by the §4.2 standard + `scripts/harness_probe.py`. **Binding boundary (the load-bearing sentence): custodian of FORM, never owner of CONTENT.** Weight, retention, staleness flags, and compaction mechanics are mine; the gotcha text, charter entries, and todo content belong to their writing roles, and no role's writes route through me for approval. Reopen bar for the fourth role: evidence that my phase audits systematically under-serve harness hygiene — the same evidence standard I apply to any debt item.
 
 ---
 
@@ -57,12 +58,34 @@ Everything else dispatches without me. The orchestrator self-certifies "no tripw
 | D7 | Undeclared direct dependency: `requests` | `import requests` at `integrations/finviz_api.py:24` (used directly, `:136-137`); pyproject.toml declares it nowhere — only a comment (`:32`) admits "the project uses `requests`, not aiohttp, at runtime". Arrives transitively via yfinance today | Breaks on any future dep-tree change that drops requests; trivially cheap to fix | OPEN — one-line fix, fold into the next arc that touches pyproject (needs a suite run per the inline-edit memory) |
 | D8 | Form audit-anchor 4-tier rejection ladder duplicated | Hand-rolled verbatim in entry (`web/routes/trades.py:985-1059`) and exit (`:2052-2118`) POST handlers, each with its own local `_reject_anchor` closure | Third form with an audit anchor copies it again; the gotcha family's fix burden doubles per form | OPEN — extract `validate_anchor_envelope()` when the NEXT anchored form is built, not before |
 | D9 | Live-clock test brittleness | ~90 test files call `datetime.now()`/`date.today()` directly; one date-sensitive failure already burned a false-green incident (memory `feedback_no_false_green_claim`, 2026-05-30) | Day/DST-boundary flakes that surface as merge-gate noise | WATCH — convention fix (frozen-clock fixture for NEW tests) is cheap; retrofit is not |
+| D10 | Brief-corpus accretion, no retention convention | 437 `docs/*.md` files / 11.4 MB / 262 brief-named, in a project under 2 months old (~7 files/day); most dispatch briefs are dead the day their arc merges; the RD's "200+" estimate was an undercount | Every fresh instance pays discovery cost over a mostly-dead corpus; at this rate 1,000+ files by autumn | OPEN — retention/archive proposal goes on the Phase 16 close agenda |
+| D11 | Live charter/context-doc weight | `orchestrator-context.md` at 136,108 chars (~34K tokens) is the heaviest LIVE harness artifact — 2.6× CLAUDE.md (52,612, healthy post-restructure; line 3 at 5,818) — and its own archive companion discipline (371K chars already moved) is under-exercised; RD charter 64,630 and grows by design | Per-session context tax on the role that runs most sessions | OPEN — propose an orchestrator-context archive pass at Phase 16 close (FORM only; content stays the orchestrator's) |
 
 ---
 
 ### 4.1 Verified healthy (2026-06-11 baseline survey — don't re-litigate without new evidence)
 
 So future instances don't chase ghosts: layer discipline is CLEAN (no web→pipeline orchestration imports, repos don't import services; the 4 web↔pipeline imports are thin read-only utilities); package layout matches the stated architecture with zero orphan modules; session-anchor and Schwab-sandbox gating are properly centralized; conftest/testkit fixture reuse is healthy (~27% of test files on shared fixtures, no hand-built-DB sprawl); scripts/ is a clean 9-script inventory (5 operational, 4 one-off/diagnostic) with no CLI duplication; root-dir artifact accumulation (.codex-review-*, .copowers-*, .tmp-phase*) is all correctly gitignored. The codebase earns its "unusually disciplined" characterization on primary evidence, not just self-report.
+
+### 4.2 Harness-hygiene standard (v1, 2026-06-11)
+
+**Covered artifacts:** CLAUDE.md · the live charters/context docs (`orchestrator-context.md`, `research-director-context.md`, this file, `research-director-watch-standard.md`) · the `docs/` brief corpus · phase todo files · the auto-memory dir · root session artifacts (`.copowers-*`, `.codex-review-*`) · `exports/` dated dirs (D3).
+
+**Probe:** `scripts/harness_probe.py` — read-only, stdlib-only, ASCII output, exit 1 when any ATTENTION fires. Run it at every phase-close audit (mandatory) and on demand. It REPORTS; it never deletes — disposal is a phase-boundary proposal to the operator.
+
+**v1 thresholds (calibrated against 2026-06-11 measurements; amend with a dated note, not silently):**
+
+| Check | INFO | ATTENTION | Calibration basis |
+|---|---|---|---|
+| CLAUDE.md total chars | always reported | > 100,000 | 52,612 today; 228K was the 2026-05-28 restructure trigger |
+| CLAUDE.md line-3 chars | always reported | > 9,000 | 5,818 today (one phase after compaction; compaction is due at every phase close regardless) |
+| Each live charter/context doc | always reported | > 120,000 chars | orchestrator-context.md fires TODAY at 136K — intentional; its archive discipline should be exercised at Phase 16 close |
+| docs/*.md count | always reported | > 600 | 437 today; forces the D10 retention proposal before the corpus doubles |
+| Root session artifacts | count + oldest | any older than 14 days | 11 today, oldest 2 days |
+| exports/ dated dirs | count | none (tracked via D3) | 41 today |
+| Memory dir file count | count | > 80 | 41 today |
+
+**Boundary (restated because it's load-bearing):** the probe and this standard govern FORM (weight, age, count). Content judgments — what a gotcha says, what stays in a charter, which todo items live — belong to the writing roles. My phase-boundary proposals name candidate files/sections and hand them to their owners; I don't edit other roles' content.
 
 ## 5. Behavioral directives
 
@@ -86,3 +109,8 @@ So future instances don't chase ghosts: layer discipline is CLEAN (no web→pipe
 - Operator correctly probed that stand-up had reviewed the harness (charters + CLAUDE.md self-report), not the code. Ran a 4-agent read-only baseline survey (structure/coupling, gotcha-family abstraction gaps, test-suite shape, deps/config surface); independently verified the two load-bearing claims before banking (the `cli.py:369-374` mirror comment; the `requests` import vs pyproject).
 - Register revised on primary evidence: D1 runner.py DOWNGRADED (clean parameter threading, no global state — debt is inline infrastructure + 11× wrapper boilerplate, not rot); D3 NARROWED (shadow prune + log cleanup exist; only dated briefing dirs lack retention); D2 REFINED (2 of 5 gotcha families verified centralized). NEW: **D6 cli.py/`_step_evaluate` comment-enforced parallel orchestration (top finding — production parity-drift hazard)**, D7 undeclared `requests` dep, D8 duplicated form anchor ladder, D9 live-clock tests (~90 files). §4.1 added (verified-healthy list) so future paydown proposals don't chase ghosts.
 - Survey corrections to my own seed data: runner.py is 4,629 lines not 4,302 (count artifact); cli.py (5,645) is the actual largest module. Lesson self-applied: secondhand evidence (including my own quick measurements) gets re-verified before entering the register.
+
+### 2026-06-11 — Session 1 (cont.): harness custody absorbed (fourth role declined)
+- Operator relayed the RD exchange: a proposed fourth "harness director" role was argued down by the RD (process-managing-process; cadence gap not ownership gap; shared-file hazard) and the operator concurred — CHARC absorbs harness-artifact hygiene. CONCURRED as the affected role: harness artifacts are runtime configuration for the team (loaded every session), so the function was already half-mine by evidence (D3/D4); this is scope clarification, not a carve-out. Decision recorded as §2.5 with the custodian-of-FORM/never-owner-of-CONTENT boundary verbatim and the reopen bar (evidence of phase audits systematically under-serving harness hygiene).
+- Measured before amending (the discipline): the RD's "200+ briefs" was an UNDERCOUNT (437 docs files / 262 brief-named / 11.4 MB, ~7 files/day in a <2-month project → D10); their CLAUDE.md alarm was directionally off — CLAUDE.md is healthy post-restructure (52.6K chars, line 3 at 5.8K; the compaction discipline is working). The real heavyweight is orchestrator-context.md at 136K chars (~34K tokens), 2.6× CLAUDE.md, archive discipline under-exercised → D11.
+- §4.2 harness-hygiene standard (v1) written with calibrated thresholds; `scripts/harness_probe.py` shipped (read-only, stdlib, ASCII, exit-1-on-attention; same shape as the RD's weekly_glance.py). First run fires ATTENTION on orchestrator-context.md by design. Both phase-boundary items queued for the Phase 16 close agenda: the D10 retention proposal + the D11 orchestrator-context archive pass.
