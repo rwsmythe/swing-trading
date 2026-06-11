@@ -32,6 +32,9 @@ def test_missing_env_falls_back_to_placeholder(monkeypatch):
 
 @pytest.mark.parametrize("forged", [
     "has space", "new\nline", "tab\tchar", "x" * 65, "", "semi;colon", "slash/y",
+    # TRAILING newline/carriage-return: re.match + `$` would ACCEPT "abc\n" (the
+    # `$`-before-final-newline gap); fullmatch rejects it. These guard that gap.
+    "abc\n", "abc\r", "abc\n\n", "abc\r\n",
 ])
 def test_forged_env_token_rejected(monkeypatch, forged):
     monkeypatch.setenv("SWING_WEB_REQUEST_ID", forged)

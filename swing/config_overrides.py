@@ -155,12 +155,26 @@ def apply_overrides(base_cfg: Config) -> Config:
     if isinstance(raw_logging, dict):
         # Re-validate via the same parser over a merged dict so malformed
         # overrides degrade identically (level name round-trips via getLevelName).
+        base_loggers = {
+            name: logging.getLevelName(lvl)
+            for name, lvl in base_cfg.logging.logger_levels.items()
+        }
         merged = {
             "level": logging.getLevelName(base_cfg.logging.level),
             "max_bytes": base_cfg.logging.max_bytes,
             "backup_count": base_cfg.logging.backup_count,
         }
         merged.update(raw_logging)
+        # Per-logger overrides cascade like every other field: a user [logging]
+        # override (even one that only touches max_bytes) must NOT silently erase
+        # the base [logging.loggers] table (Codex R1-minor). Merge per key (user
+        # wins); a non-dict override "loggers" falls through unchanged so the
+        # parser emits its "must be a table" diagnostic.
+        override_loggers = raw_logging.get("loggers")
+        if isinstance(override_loggers, dict):
+            merged["loggers"] = {**base_loggers, **override_loggers}
+        elif "loggers" not in raw_logging:
+            merged["loggers"] = base_loggers
         parsed = _parse_logging_config(merged)
         # Preserve tracked-parse warnings + append overlay warnings.
         new_logging = replace(

@@ -148,3 +148,41 @@ def test_apply_overrides_short_circuits_on_non_dataclass_cfg():
     result = apply_overrides(stub)
     # Same identity — short-circuit returned the stub unchanged.
     assert result is stub
+
+
+def test_logging_override_preserves_base_logger_levels(base_cfg):
+    # Codex R1-minor: a user [logging] override that touches only max_bytes must
+    # NOT erase the base [logging.loggers] table. Seed base loggers, override an
+    # unrelated logging field, assert the per-logger levels survive.
+    import logging
+    from dataclasses import replace
+
+    seeded = replace(
+        base_cfg,
+        logging=replace(base_cfg.logging, logger_levels={"httpx": logging.WARNING}),
+    )
+    write_user_overrides({"logging": {"max_bytes": 1234567}})
+    eff = apply_overrides(seeded)
+    assert eff.logging.max_bytes == 1234567
+    assert eff.logging.resolved_logger_levels() == {"httpx": logging.WARNING}
+
+
+def test_logging_override_merges_logger_levels_per_key(base_cfg):
+    # An override [logging.loggers] table merges onto the base per key (user wins).
+    import logging
+    from dataclasses import replace
+
+    seeded = replace(
+        base_cfg,
+        logging=replace(
+            base_cfg.logging,
+            logger_levels={"httpx": logging.WARNING, "yfinance": logging.ERROR},
+        ),
+    )
+    write_user_overrides({"logging": {"loggers": {"httpx": "DEBUG", "urllib3": "ERROR"}}})
+    eff = apply_overrides(seeded)
+    assert eff.logging.resolved_logger_levels() == {
+        "httpx": logging.DEBUG,        # user override wins
+        "yfinance": logging.ERROR,     # base preserved
+        "urllib3": logging.ERROR,      # user addition
+    }

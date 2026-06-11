@@ -24,7 +24,10 @@ PLACEHOLDER = "-"
 # alnum+hyphen set, length 1..64. Anything with whitespace/newlines/punctuation
 # or over-length is REJECTED to a placeholder (defends against an inherited or
 # forged env var injecting newlines / misleading content into log lines).
-_VALID_TOKEN = re.compile(r"^[A-Za-z0-9-]{1,64}$")
+# NB: matched with re.fullmatch (NOT re.match), because re.match anchored with `$`
+# still accepts a SINGLE trailing newline ("abc\n") -- `$` matches before a final
+# "\n" -- which would inject a newline into a log line. fullmatch has no such gap.
+_VALID_TOKEN = re.compile(r"[A-Za-z0-9-]{1,64}")
 
 _lock = threading.Lock()
 _web_request_id: str = PLACEHOLDER          # validated env value or "-"
@@ -32,7 +35,7 @@ _pipeline_run_id: str | None = None         # None until the lease is held
 
 
 def _validate_token(raw: str | None) -> str:
-    if raw is not None and _VALID_TOKEN.match(raw):
+    if raw is not None and _VALID_TOKEN.fullmatch(raw):
         return raw
     return PLACEHOLDER
 
