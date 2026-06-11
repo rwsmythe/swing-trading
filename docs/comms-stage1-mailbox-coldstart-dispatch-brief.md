@@ -90,7 +90,7 @@ Add a comms section: per-role unread count (INFO); ATTENTION when any unread mes
 
 ### 2.6 Orchestrator convention — `docs/orchestrator-context.md` amendment
 
-Add a short dated subsection under §"Triage of return reports": after relaying a return report to the operator in chat (UNCHANGED — the operator's control point stays), the orchestrator ALSO posts the same return report via `role_mail.py post --from orchestrator --to charc,rd --type return_report ...`. Dispatch-direction traffic (briefs, implementer prompts, approvals) remains operator-hand-carried — state this explicitly in the amendment. Do NOT touch `docs/research-director-context.md` (peer-owned content; the RD records their own side).
+Add a short dated subsection under §"Triage of return reports": after relaying a return report to the operator in chat (UNCHANGED — the operator's control point stays), the orchestrator ALSO posts the same return report via `role_mail.py post --from orchestrator --to charc,rd --type return_report ...`. Additionally, orchestrators post LIFECYCLE events as `--type status` to both directors: copowers-phase transitions (brainstorm/plan/execute dispatched or returned), generational handoff (with the handoff-brief path), and phase close — so directors track arc state without operator relay. Dispatch-direction traffic (briefs, implementer prompts, approvals) remains operator-hand-carried — state this explicitly in the amendment. Do NOT touch `docs/research-director-context.md` (peer-owned content; the RD records their own side).
 
 ---
 
@@ -98,7 +98,7 @@ Add a short dated subsection under §"Triage of return reports": after relaying 
 
 - **T1** — `.gitignore` entry (`comms/`) + `tests/scripts/__init__.py` scaffolding if needed. Commit.
 - **T2** — `role_mail.py` via TDD: tests in `tests/scripts/test_role_mail.py` using `tmp_path` + `--comms-root` (NEVER the real `comms/`; tests touching home dirs must monkeypatch BOTH `USERPROFILE` and `HOME` per CLAUDE.md). Required coverage: post/list/read/peek round-trip; multi-recipient post; L1 enforcement (`decision_request` to `rd` → exit 1 + no file written); invalid role/type rejection; filename collision suffix; unread→read move; ASCII-only console output (assert `out.encode("cp1252")` does not raise).
-- **T3** — the two bootstrap prompt files.
+- **T3** — the two director bootstrap prompt files, PLUS `scripts/orchestrator_bootstrap.md`: the standardized paste-in spin-up prompt for a NEW orchestrator generation in VS Code (NOT launcher-driven; the operator pastes it into a fresh chat). Content: read `docs/orchestrator-context.md` end-to-end; read the most recent `docs/orchestrator-handoff-*.md` if the predecessor left one; `git log --oneline -20` + `git status`; post a `--type status` message to both directors announcing the new generation; report state and await the operator.
 - **T4** — `start_directors.ps1` per §2.4. No automated test (PowerShell + interactive); acceptance is the operator gate (§5) plus the preflight self-checks.
 - **T5** — probe extension per §2.5 + the one-row §4.2 table update.
 - **T6** — orchestrator-context amendment per §2.6.
