@@ -413,6 +413,9 @@ class WatchlistEntry:
     last_adr_pct: float | None
     missing_criteria: str | None
     notes: str | None
+    pinned: bool = False
+    pin_note: str | None = None
+    pinned_at: str | None = None
 
 
 @dataclass(frozen=True)

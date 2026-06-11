@@ -13,8 +13,8 @@ def upsert_watchlist_entry(conn: sqlite3.Connection, e: WatchlistEntry) -> None:
             (ticker, added_date, last_qualified_date, status, qualification_count,
              not_qualified_streak, last_data_asof_date, entry_target,
              initial_stop_target, last_close, last_pivot, last_stop, last_adr_pct,
-             missing_criteria, notes)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             missing_criteria, notes, pinned, pin_note, pinned_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(ticker) DO UPDATE SET
             last_qualified_date = excluded.last_qualified_date,
             status = excluded.status,
@@ -28,11 +28,14 @@ def upsert_watchlist_entry(conn: sqlite3.Connection, e: WatchlistEntry) -> None:
             missing_criteria = excluded.missing_criteria,
             notes = excluded.notes
             -- entry_target / initial_stop_target are FROZEN — never overwritten
+            -- pinned / pin_note / pinned_at are FROZEN — operator-owned, never
+            -- overwritten by nightly upserts
         """,
         (e.ticker, e.added_date, e.last_qualified_date, e.status,
          e.qualification_count, e.not_qualified_streak, e.last_data_asof_date,
          e.entry_target, e.initial_stop_target, e.last_close, e.last_pivot,
-         e.last_stop, e.last_adr_pct, e.missing_criteria, e.notes),
+         e.last_stop, e.last_adr_pct, e.missing_criteria, e.notes,
+         1 if e.pinned else 0, e.pin_note, e.pinned_at),
     )
 
 
@@ -42,7 +45,7 @@ def get_watchlist_entry(conn: sqlite3.Connection, ticker: str) -> WatchlistEntry
         SELECT ticker, added_date, last_qualified_date, status, qualification_count,
                not_qualified_streak, last_data_asof_date, entry_target,
                initial_stop_target, last_close, last_pivot, last_stop, last_adr_pct,
-               missing_criteria, notes
+               missing_criteria, notes, pinned, pin_note, pinned_at
         FROM watchlist WHERE ticker = ?
         """,
         (ticker,),
@@ -56,7 +59,7 @@ def list_active_watchlist(conn: sqlite3.Connection) -> list[WatchlistEntry]:
         SELECT ticker, added_date, last_qualified_date, status, qualification_count,
                not_qualified_streak, last_data_asof_date, entry_target,
                initial_stop_target, last_close, last_pivot, last_stop, last_adr_pct,
-               missing_criteria, notes
+               missing_criteria, notes, pinned, pin_note, pinned_at
         FROM watchlist
         ORDER BY ticker
         """,
@@ -126,6 +129,20 @@ def list_archive(
     ]
 
 
+def set_watchlist_pin(
+    conn: sqlite3.Connection, ticker: str, *,
+    pinned: bool, pin_note: str | None, pinned_at: str | None,
+) -> None:
+    """Authoritative pin write. The UPDATE rowcount IS the existence check —
+    rowcount != 1 raises (no SELECT-then-UPDATE race). Caller wraps in `with conn:`."""
+    cur = conn.execute(
+        "UPDATE watchlist SET pinned = ?, pin_note = ?, pinned_at = ? WHERE ticker = ?",
+        (1 if pinned else 0, pin_note, pinned_at, ticker),
+    )
+    if cur.rowcount != 1:
+        raise WatchlistEntryNotFoundError(ticker)
+
+
 def _row_to_entry(row: tuple) -> WatchlistEntry:
     return WatchlistEntry(
         ticker=row[0], added_date=row[1], last_qualified_date=row[2],
@@ -133,5 +150,5 @@ def _row_to_entry(row: tuple) -> WatchlistEntry:
         last_data_asof_date=row[6], entry_target=row[7],
         initial_stop_target=row[8], last_close=row[9], last_pivot=row[10],
         last_stop=row[11], last_adr_pct=row[12], missing_criteria=row[13],
-        notes=row[14],
+        notes=row[14], pinned=bool(row[15]), pin_note=row[16], pinned_at=row[17],
     )
