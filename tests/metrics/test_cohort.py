@@ -27,15 +27,16 @@ def _seed_trade(
     state: str,
     hypothesis_label: str | None,
     entry_date: str = "2026-05-12",
+    entry_intent: str | None = None,
 ) -> None:
     conn.execute(
         "INSERT INTO trades (id, ticker, entry_date, entry_price, "
         "initial_shares, initial_stop, current_stop, state, sector, "
         "industry, trade_origin, pre_trade_locked_at, current_size, "
-        "hypothesis_label) VALUES (?, ?, ?, 10.0, 100, 9.0, 9.0, ?, "
-        "'S', 'I', 'manual_off_pipeline', ?, 100, ?)",
+        "hypothesis_label, entry_intent) VALUES (?, ?, ?, 10.0, 100, 9.0, 9.0, ?, "
+        "'S', 'I', 'manual_off_pipeline', ?, 100, ?, ?)",
         (trade_id, ticker, entry_date, state,
-         entry_date + "T09:00:00.000", hypothesis_label),
+         entry_date + "T09:00:00.000", hypothesis_label, entry_intent),
     )
     conn.commit()
 
@@ -189,3 +190,58 @@ def test_count_per_cohort_includes_orphan_labels(conn: sqlite3.Connection):
     assert result["orphan-cohort"] == 1
     # The 4 registry cohorts still present (with 0):
     assert result["A+ baseline"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Task 6 — entry_intent predicate (sentinel convention)
+# ---------------------------------------------------------------------------
+
+def test_list_closed_trades_for_cohort_intent_predicate(
+    conn: sqlite3.Connection,
+) -> None:
+    """Sentinel convention: None=no filter; '__unclassified__'=IS NULL;
+    member value = equality. Verified across closed trades carrying
+    entry_intent in {standard, hypothesis_test_by_design, NULL}."""
+    _seed_trade(conn, trade_id=1, ticker="STD1", state="closed",
+                hypothesis_label=None, entry_intent="standard")
+    _seed_trade(conn, trade_id=2, ticker="STD2", state="closed",
+                hypothesis_label=None, entry_intent="standard")
+    _seed_trade(conn, trade_id=3, ticker="BD1", state="closed",
+                hypothesis_label=None,
+                entry_intent="hypothesis_test_by_design")
+    _seed_trade(conn, trade_id=4, ticker="NULL1", state="closed",
+                hypothesis_label=None, entry_intent=None)
+
+    std = list_closed_trades_for_cohort(
+        conn, hypothesis_label=None, entry_intent="standard")
+    assert {t.entry_intent for t in std} == {"standard"}
+    assert {t.ticker for t in std} == {"STD1", "STD2"}
+
+    bd = list_closed_trades_for_cohort(
+        conn, hypothesis_label=None,
+        entry_intent="hypothesis_test_by_design")
+    assert {t.entry_intent for t in bd} == {"hypothesis_test_by_design"}
+
+    unc = list_closed_trades_for_cohort(
+        conn, hypothesis_label=None, entry_intent="__unclassified__")
+    assert all(t.entry_intent is None for t in unc)
+    assert {t.ticker for t in unc} == {"NULL1"}
+
+    nofilter = list_closed_trades_for_cohort(conn, hypothesis_label=None)
+    # no-filter == today's behavior (all four closed trades).
+    assert len(nofilter) == 4
+    assert len(nofilter) >= len(std)
+
+
+def test_list_trades_for_cohort_intent_predicate_with_state(
+    conn: sqlite3.Connection,
+) -> None:
+    """entry_intent predicate composes with the state_filter clause."""
+    _seed_trade(conn, trade_id=1, ticker="OPEN_STD", state="entered",
+                hypothesis_label=None, entry_intent="standard")
+    _seed_trade(conn, trade_id=2, ticker="CLOSED_STD", state="closed",
+                hypothesis_label=None, entry_intent="standard")
+    closed_std = list_trades_for_cohort(
+        conn, hypothesis_label=None, state_filter=("closed",),
+        entry_intent="standard")
+    assert [t.ticker for t in closed_std] == ["CLOSED_STD"]

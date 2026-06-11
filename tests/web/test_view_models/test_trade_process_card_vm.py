@@ -1,6 +1,7 @@
 """Phase 10 Sub-bundle B T-B.2 — TradeProcessCardVM tests."""
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import replace as dc_replace
 from pathlib import Path
@@ -13,6 +14,7 @@ from swing.metrics.honesty import SuppressedMetric
 from swing.web.view_models.metrics.shared import BaseLayoutVM
 from swing.web.view_models.metrics.trade_process_card import (
     ALL_COHORTS_KEY,
+    INTENT_FACETS,
     CohortTabVM,
     TradeProcessCardVM,
     build_trade_process_card_vm,
@@ -47,18 +49,23 @@ def _seed_full_trade(
     state: str = "closed",
     pre_trade_locked_at: str = "2026-04-01T09:30:00",
     last_fill_at: str = "2026-04-08T15:30:00",
+    reviewed_at: str | None = None,
+    mistake_tags: str | None = None,
+    entry_intent: str | None = None,
 ) -> None:
     conn.execute(
         "INSERT INTO trades (id, ticker, entry_date, entry_price, "
         "initial_shares, initial_stop, current_stop, state, sector, "
         "industry, trade_origin, pre_trade_locked_at, current_size, "
-        "hypothesis_label, last_fill_at) VALUES "
+        "hypothesis_label, last_fill_at, reviewed_at, mistake_tags, "
+        "entry_intent) VALUES "
         "(?, ?, '2026-04-01', ?, ?, ?, ?, ?, 'S', 'I', "
-        "'manual_off_pipeline', ?, ?, ?, ?)",
+        "'manual_off_pipeline', ?, ?, ?, ?, ?, ?, ?)",
         (
             trade_id, ticker, entry_price, initial_shares, initial_stop,
             initial_stop, state, pre_trade_locked_at, initial_shares,
-            hypothesis_label, last_fill_at,
+            hypothesis_label, last_fill_at, reviewed_at, mistake_tags,
+            entry_intent,
         ),
     )
     conn.execute(
@@ -214,3 +221,98 @@ def test_vm_unresolved_material_discrepancies_count_populated(
 
     vm = build_trade_process_card_vm(cfg=cfg)
     assert vm.unresolved_material_discrepancies_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Task 6 — intent facet (D6: All tab only) + orthogonal discipline panel
+# ---------------------------------------------------------------------------
+
+def test_vm_cohort_tab_count_unchanged_with_facet(cfg, conn_factory) -> None:
+    """No new cohort tab: the facet is a sub-selector on the All aggregate."""
+    vm = build_trade_process_card_vm(
+        cfg=cfg, active_cohort_key=ALL_COHORTS_KEY,
+        active_entry_intent="standard",
+    )
+    assert len(vm.cohort_tabs) == 6  # 5 registry + All, unchanged
+
+
+def test_vm_exposes_intent_facets_and_active_intent(cfg, conn_factory) -> None:
+    """The VM surfaces the (value, label) facet tuple + the active value."""
+    vm = build_trade_process_card_vm(
+        cfg=cfg, active_cohort_key=ALL_COHORTS_KEY,
+        active_entry_intent="standard",
+    )
+    assert vm.intent_facets == INTENT_FACETS
+    assert vm.active_entry_intent == "standard"
+    # The four facet values are the All-sentinel + 2 members + unclassified.
+    assert {v for v, _ in vm.intent_facets} == {
+        "", "standard", "hypothesis_test_by_design", "__unclassified__",
+    }
+
+
+def test_vm_facet_only_filters_all_tab_not_per_cohort(cfg, conn_factory) -> None:
+    """D6: the intent facet faces the All aggregate ONLY; per-cohort tabs
+    stay UNFILTERED regardless of the active intent."""
+    conn = conn_factory()
+    with conn:
+        # 2 standard + 1 by_design closed trades, all in A+ baseline.
+        _seed_full_trade(
+            conn, trade_id=1, ticker="S1", hypothesis_label="A+ baseline",
+            exit_price=12.0, entry_intent="standard")
+        _seed_full_trade(
+            conn, trade_id=2, ticker="S2", hypothesis_label="A+ baseline",
+            exit_price=12.0, entry_intent="standard")
+        _seed_full_trade(
+            conn, trade_id=3, ticker="B1", hypothesis_label="A+ baseline",
+            exit_price=12.0, entry_intent="hypothesis_test_by_design")
+    conn.close()
+
+    vm = build_trade_process_card_vm(
+        cfg=cfg, active_cohort_key=ALL_COHORTS_KEY,
+        active_entry_intent="standard",
+    )
+    all_tab = next(t for t in vm.cohort_tabs if t.cohort_key == ALL_COHORTS_KEY)
+    aplus_tab = next(t for t in vm.cohort_tabs if t.cohort_key == "A+ baseline")
+    # The All aggregate is faceted to standard -> 2 closed.
+    assert all_tab.metrics.n_closed == 2
+    # The per-cohort tab stays unfiltered -> all 3 closed.
+    assert aplus_tab.metrics.n_closed == 3
+
+
+def test_vm_discipline_panel_invariant_to_facet(cfg, conn_factory) -> None:
+    """The execution-discipline panel on the All tab is byte-identical
+    across every intent facet (the orthogonality guarantee at the VM layer)."""
+    conn = conn_factory()
+    with conn:
+        _seed_full_trade(
+            conn, trade_id=1, ticker="VIR", hypothesis_label="A+ baseline",
+            exit_price=12.0, entry_intent="hypothesis_test_by_design",
+            reviewed_at="2026-04-10T09:00:00",
+            mistake_tags=json.dumps(["NO_STOP", "STOP_NOT_PLACED"]))
+        _seed_full_trade(
+            conn, trade_id=2, ticker="S1", hypothesis_label="A+ baseline",
+            exit_price=12.0, entry_intent="standard",
+            reviewed_at="2026-04-10T09:00:00",
+            mistake_tags=json.dumps(["CHASED"]))
+    conn.close()
+
+    def _all_panel(intent):
+        vm = build_trade_process_card_vm(
+            cfg=cfg, active_cohort_key=ALL_COHORTS_KEY,
+            active_entry_intent=intent)
+        tab = next(t for t in vm.cohort_tabs if t.cohort_key == ALL_COHORTS_KEY)
+        return tab.metrics
+
+    base = _all_panel(None)
+    std = _all_panel("standard")
+    bd = _all_panel("hypothesis_test_by_design")
+    for m in (std, bd):
+        assert (
+            m.execution_discipline_n_reviewed
+            == base.execution_discipline_n_reviewed == 2
+        )
+        assert set(m.execution_discipline_tag_frequency) == set(
+            base.execution_discipline_tag_frequency)
+    assert "NO_STOP" in base.execution_discipline_tag_frequency
+    assert "STOP_NOT_PLACED" in base.execution_discipline_tag_frequency
+    assert "CHASED" not in base.execution_discipline_tag_frequency

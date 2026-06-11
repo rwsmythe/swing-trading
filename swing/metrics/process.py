@@ -58,11 +58,20 @@ from swing.metrics.policy import (
 )
 from swing.trades.derived_metrics import initial_risk_per_share
 from swing.trades.review import (
+    MISTAKE_TAGS,
     compute_lucky_violation_R,
     compute_mistake_cost_R,
 )
 
 _ONE_DAY = timedelta(days=1)
+
+# Execution-discipline panel tag set (spec §7.1): the risk + reconciliation
+# categories ONLY (genuine slips). DERIVED from MISTAKE_TAGS so it never drifts
+# from the vocabulary; entry-category tuition tags (CHASED / NO_SETUP / ...),
+# management, and psychology tags are EXCLUDED.
+_EXECUTION_DISCIPLINE_TAGS: frozenset[str] = frozenset(
+    MISTAKE_TAGS["risk"],
+) | frozenset(MISTAKE_TAGS["reconciliation"])
 
 
 # ---------------------------------------------------------------------------
@@ -456,10 +465,21 @@ class TradeProcessMetricsResult:
         default_factory=dict,
     )
 
+    # Always-on cross-intent execution-discipline panel (spec §7.1 / Task 6).
+    # Computed over the cohort's reviewed trades WITHOUT the intent filter
+    # applied + restricted to the risk/reconciliation tag set, so a genuine
+    # risk/reconciliation slip can NEVER be hidden by an intent facet (the
+    # orthogonality guarantee). Its denominator is the SEPARATE,
+    # intent-UNFILTERED reviewed count below — NOT ``n_reviewed``.
+    execution_discipline_tag_frequency: dict[str, MetricCellA] = field(
+        default_factory=dict,
+    )
+    execution_discipline_n_reviewed: int = 0  # intent-UNFILTERED reviewed count
+
     def __post_init__(self) -> None:
         for fname in (
             "n_closed", "n_wins", "n_losses", "n_scratches", "n_reviewed",
-            "legacy_trades_count",
+            "legacy_trades_count", "execution_discipline_n_reviewed",
         ):
             v = getattr(self, fname)
             if not isinstance(v, int) or v < 0:
@@ -547,20 +567,37 @@ def compute_trade_process_metrics(  # noqa: PLR0915 — orchestrator function ov
     conn: sqlite3.Connection,
     *,
     hypothesis_label: str | None,
+    entry_intent: str | None = None,
 ) -> TradeProcessMetricsResult:
     """Compute the §3.1 trade-process metric aggregate for ``hypothesis_label``.
 
     ``hypothesis_label`` of ``None`` aggregates over ALL closed trades
     (the "all" toggle per spec §4.1 + plan §E Task B.2).
 
+    ``entry_intent`` (Task 6 / spec §7.1) faces the METRICS cohort by
+    intent: ``None`` = no filter (today's behavior); ``'__unclassified__'``
+    = ``entry_intent IS NULL``; a member value = equality. The always-on
+    execution-discipline panel is ALWAYS computed over the intent-UNFILTERED
+    reviewed set (the orthogonality guarantee — see the panel block below),
+    so toggling this facet can never change the panel.
+
     Per plan §A.5: per-trade win/loss/scratch classification uses the
     AT-TRADE-TIME ``scratch_epsilon_R`` stamp. LIVE policy is used for
     suppression-floor + confidence-floor decisions per §A.7 decoupling.
     """
     live_policy = read_live_policy(conn)
-    trades = list_closed_trades_for_cohort(
+    # Panel source: the cohort's trades WITHOUT the intent filter (spec §7.1).
+    cohort_trades = list_closed_trades_for_cohort(
         conn, hypothesis_label=hypothesis_label,
     )
+    # Metrics cohort: the intent-filtered slice (spec §7.1). When no intent
+    # filter is supplied, the slice IS the full cohort (today's behavior).
+    if entry_intent is None:
+        trades = cohort_trades
+    else:
+        trades = list_closed_trades_for_cohort(
+            conn, hypothesis_label=hypothesis_label, entry_intent=entry_intent,
+        )
 
     inputs: list[_TradeMetricInputs] = [
         _prepare_trade_inputs(conn, t) for t in trades
@@ -767,6 +804,45 @@ def compute_trade_process_metrics(  # noqa: PLR0915 — orchestrator function ov
         for tag, count in sorted(tag_counts.items())
     }
 
+    # --------- Always-on execution-discipline panel (spec §7.1) ---------
+    # The orthogonality guarantee: this panel is computed over the cohort's
+    # reviewed trades WITHOUT the intent filter applied (``cohort_trades``),
+    # restricted to ``_EXECUTION_DISCIPLINE_TAGS`` (risk + reconciliation),
+    # with a SEPARATE denominator. The metrics cohort above used the
+    # intent-FILTERED ``trades`` slice; this panel uses the UNFILTERED set, so
+    # toggling the intent facet cannot change the panel. When ``entry_intent``
+    # is None the slice IS the cohort, so we reuse the already-prepared
+    # ``reviewed_trades`` to avoid a redundant ``_prepare_trade_inputs`` pass.
+    if entry_intent is None:
+        panel_reviewed = reviewed_trades
+    else:
+        panel_inputs = [_prepare_trade_inputs(conn, t) for t in cohort_trades]
+        panel_reviewed = [
+            x for x in panel_inputs if x.trade.reviewed_at is not None
+        ]
+    execution_discipline_n_reviewed = len(panel_reviewed)
+    disc_tag_counts: dict[str, int] = {}
+    for x in panel_reviewed:
+        if not x.trade.mistake_tags:
+            continue
+        try:
+            disc_tags = json.loads(x.trade.mistake_tags)
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(disc_tags, list):
+            continue
+        for tag in disc_tags:
+            if not isinstance(tag, str) or tag not in _EXECUTION_DISCIPLINE_TAGS:
+                continue
+            disc_tag_counts[tag] = disc_tag_counts.get(tag, 0) + 1
+    execution_discipline_tag_frequency = {
+        tag: _render_class_a_cell(
+            name=f"execution_discipline_{tag}",
+            k=count, n=execution_discipline_n_reviewed, policy=live_policy,
+        )
+        for tag, count in sorted(disc_tag_counts.items())
+    }
+
     # --------- Class B (mean) cell construction ---------
     realized_R_cell = _render_class_b_cell(  # noqa: N806
         name="realized_R", samples=list(realized_R_samples), policy=live_policy,
@@ -868,6 +944,8 @@ def compute_trade_process_metrics(  # noqa: PLR0915 — orchestrator function ov
         ),
         process_grade_distribution=process_grade_distribution,
         mistake_tag_frequency=mistake_tag_frequency,
+        execution_discipline_tag_frequency=execution_discipline_tag_frequency,
+        execution_discipline_n_reviewed=execution_discipline_n_reviewed,
     )
 
 

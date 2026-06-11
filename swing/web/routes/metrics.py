@@ -64,15 +64,25 @@ def metrics_index(request: Request):
 def metrics_trade_process(
     request: Request,
     cohort: str | None = Query(default=None),
+    intent: str | None = Query(default=None),
 ):
     """Spec §4.1 trade-process card — Sub-bundle B Task T-B.3.
 
     Renders 5 cohort tabs (4 registry cohorts + "All closed trades").
     The active tab is operator-selected via ``?cohort=<name>``;
     default-active is the FIRST cohort per spec §4.1 binding.
+
+    ``?intent=<value>`` (Task 6 / spec §7.1 D6) faces the All-aggregate
+    metrics by entry intent. Absent / empty normalizes to ``None`` (All).
+    The always-on execution-discipline panel is invariant to this facet.
     """
     cfg = request.app.state.cfg
-    vm = build_trade_process_card_vm(cfg=cfg, active_cohort_key=cohort)
+    # Normalize "" / absent -> None (the All facet).
+    active_entry_intent = intent or None
+    vm = build_trade_process_card_vm(
+        cfg=cfg, active_cohort_key=cohort,
+        active_entry_intent=active_entry_intent,
+    )
     return request.app.state.templates.TemplateResponse(
         request, "metrics/trade_process_card.html.j2", {"vm": vm},
     )
