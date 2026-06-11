@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from swing.data.db import run_migrations
+from swing.data.db import EXPECTED_SCHEMA_VERSION, run_migrations
 from swing.trades.entry import record_entry
 from swing.trades.risk_policy import supersede_active_policy
 from tests.trades.test_entry import _full_req, _seed_v14
@@ -26,11 +26,15 @@ from tests.trades.test_entry import _full_req, _seed_v14
 
 @pytest.fixture
 def conn(tmp_path: Path):
-    """v17 DB (Phase 9 schema seeded with policy_id=1)."""
+    """HEAD DB seeded with policy_id=1 (the v16->v17 risk_policy
+    ratification still single-fires when walking 0->HEAD). Walks to
+    EXPECTED_SCHEMA_VERSION (not v17) because record_entry's widened
+    watchlist read needs the v28 pin columns (#11 migrate-pre-version-
+    fixtures; Phase 16 / Arc 7)."""
     import sqlite3
     db = tmp_path / "test.db"
     c = sqlite3.connect(db)
-    run_migrations(c, target_version=17, backup_dir=tmp_path)
+    run_migrations(c, target_version=EXPECTED_SCHEMA_VERSION, backup_dir=tmp_path)
     return c
 
 

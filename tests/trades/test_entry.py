@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from swing.data.db import ensure_schema, run_migrations
+from swing.data.db import EXPECTED_SCHEMA_VERSION, ensure_schema, run_migrations
 from swing.data.models import Trade, WatchlistEntry
 from swing.data.repos.fills import list_fills_for_trade
 from swing.data.repos.trades import get_trade, list_open_trades
@@ -85,13 +85,18 @@ def _seed_v14(tmp_path: Path) -> sqlite3.Connection:
 
     Phase 9 T-A.7 (2026-05-12): bumped target_version 16 → 17 so
     record_entry's risk_policy_id_at_lock stamp UPDATE finds the
-    risk_policy table created by migration 0017. The fixture name kept as
+    risk_policy table created by migration 0017. Phase 16 / Arc 7
+    (2026-06-10): now walks to EXPECTED_SCHEMA_VERSION (HEAD) — the
+    widened watchlist read-path (`get_watchlist_entry` SELECTs the new
+    pinned/pin_note/pinned_at columns) requires the v28 schema, so a
+    sub-HEAD seed feeding record_entry must be migrated to HEAD (#11
+    "migrate all pre-version fixtures"). The fixture name kept as
     `_seed_v14` for legacy compatibility (renaming would churn ~50 call
     sites).
     """
     db = tmp_path / "test.db"
     conn = sqlite3.connect(db)
-    run_migrations(conn, target_version=17, backup_dir=tmp_path)
+    run_migrations(conn, target_version=EXPECTED_SCHEMA_VERSION, backup_dir=tmp_path)
     return conn
 
 
