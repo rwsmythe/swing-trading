@@ -148,3 +148,50 @@ def test_diagnostics_replay_ignores_foreign_same_path_handler(clean_root_and_sec
     finally:
         clean_root_and_secrets.removeHandler(foreign)
         foreign.close()
+
+
+def test_install_attaches_correlation_filter(clean_root_and_secrets, tmp_path, monkeypatch):
+    import swing.log_correlation as lc
+    from logging.handlers import RotatingFileHandler
+    monkeypatch.setenv("SWING_WEB_REQUEST_ID", "rid-install")
+    cfg = _cfg(tmp_path)
+    install_logging(cfg, surface="pipeline")
+    target = str(cfg.paths.logs_dir / "pipeline.log")
+    handler = next(
+        h for h in clean_root_and_secrets.handlers
+        if isinstance(h, RotatingFileHandler) and h.baseFilename == target
+    )
+    swing_filters = [
+        f for f in handler.filters if isinstance(f, lc.CorrelationFilter)
+    ]
+    assert len(swing_filters) == 1
+    # reset-at-install seeded web_request_id from the env.
+    assert lc.get_web_request_id() == "rid-install"
+    assert lc.get_pipeline_run_id() == "-"
+
+
+def test_install_resets_stale_run_id(clean_root_and_secrets, tmp_path, monkeypatch):
+    import swing.log_correlation as lc
+    monkeypatch.delenv("SWING_WEB_REQUEST_ID", raising=False)
+    lc.set_pipeline_run_id(123)  # stale run id from a prior in-process run
+    cfg = _cfg(tmp_path)
+    install_logging(cfg, surface="pipeline")
+    assert lc.get_pipeline_run_id() == "-"  # reset-at-install cleared it
+
+
+def test_install_emits_correlated_record_to_file(clean_root_and_secrets, tmp_path, monkeypatch):
+    import logging
+    from logging.handlers import RotatingFileHandler
+    monkeypatch.setenv("SWING_WEB_REQUEST_ID", "rid-emit")
+    cfg = _cfg(tmp_path)
+    install_logging(cfg, surface="pipeline")
+    import swing.log_correlation as lc
+    lc.set_pipeline_run_id(7)
+    logging.getLogger("swing.pipeline.lease").info("a step happened")
+    for h in clean_root_and_secrets.handlers:
+        if isinstance(h, RotatingFileHandler):
+            h.flush()
+    text = (cfg.paths.logs_dir / "pipeline.log").read_text(encoding="utf-8")
+    assert "req=rid-emit" in text
+    assert "run=7" in text
+    assert "a step happened" in text

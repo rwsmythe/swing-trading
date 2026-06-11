@@ -13,6 +13,7 @@ import os
 from logging.handlers import RotatingFileHandler
 
 from swing.config import Config
+from swing.log_correlation import CorrelationFilter, reset_correlation_from_env
 from swing.logging_config import (
     CORRELATION_LOG_DEFAULTS,
     DEFAULT_LOG_FORMAT,
@@ -26,19 +27,23 @@ def install_logging(cfg: Config, *, surface: str) -> None:
         ensure_schwab_log_redaction_factory_installed,
     )
 
+    # Reset BEFORE seeding (spec R3-minor-3): clears any stale pipeline_run_id and
+    # re-reads + validates SWING_WEB_REQUEST_ID for this process.
+    reset_correlation_from_env()
     log_cfg = cfg.logging
     configure_logging(
         cfg.paths.logs_dir,
         surface=surface,
         level=log_cfg.level,
-        # Belt B (every surface) carries defaults= so correlation fields are always present.
+        # Belt B carries the SAME defaults= so the correlation fields are always
+        # present even on a record that bypasses the filter.
         formatter=RedactingFormatter(DEFAULT_LOG_FORMAT, defaults=CORRELATION_LOG_DEFAULTS),
         max_bytes=log_cfg.max_bytes,
         backup_count=log_cfg.backup_count,
         install_record_factory=ensure_schwab_log_redaction_factory_installed,  # Belt A
+        logger_levels=log_cfg.resolved_logger_levels(),                        # 2f overrides
+        record_filter=CorrelationFilter(),                                     # 2d correlation
     )
-    # Slice 2 will add logger_levels=log_cfg.resolved_logger_levels() and
-    # record_filter=_correlation_filter(surface) here; the seam already accepts both.
     _replay_logging_diagnostics(cfg, surface=surface)
 
 

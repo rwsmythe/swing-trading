@@ -438,6 +438,11 @@ class LoggingConfig:
     backup_count: int = 5
     warnings: tuple[str, ...] = ()
 
+    def resolved_logger_levels(self) -> dict[str, int]:
+        """Per-logger override map (name -> level int). Task 8 wires the parse;
+        the Slice-1 default is an empty map (no overrides)."""
+        return {}
+
 
 def _parse_logging_config(raw: object) -> LoggingConfig:
     """Parse a ``[logging]`` table; malformed values (incl. a non-table ``raw``)
