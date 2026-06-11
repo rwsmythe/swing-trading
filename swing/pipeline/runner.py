@@ -66,6 +66,7 @@ from swing.integrations.schwab.auth import (
 from swing.integrations.schwab.client import (
     SchwabConfigMissingError,
 )
+from swing.log_correlation import set_pipeline_run_id
 from swing.metrics.discrepancies import count_recent_multi_leg_auto_corrections
 from swing.patterns.composite import compute_composite_score
 from swing.patterns.template_matching import (
@@ -573,6 +574,12 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
     except ConcurrentRunBlockedError as exc:
         log.warning("blocked: %s", exc)
         return RunResult(run_id=0, state="blocked", error_message=str(exc))
+
+    # Correlation (Arc-2 Slice-2): stamp the run id on every subsequent log record
+    # in this process. CorrelationFilter reads it at filter() time from any thread
+    # (incl. the price-fetch executor + threaded steps). The lease row is already
+    # inserted at this point (acquire_lease returned).
+    set_pipeline_run_id(lease.run_id)
 
     hb = Heartbeat(lease=lease, interval_seconds=cfg.pipeline.heartbeat_interval_seconds)
     hb.start()
