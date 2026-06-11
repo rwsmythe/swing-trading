@@ -110,6 +110,30 @@ def test_entry_post_omitted_intent_persists_null(seeded_db, monkeypatch):
     assert _read_entry_intent(cfg.paths.db_path, "ZZZ") is None
 
 
+def test_entry_post_tampered_intent_returns_400_not_500(seeded_db, monkeypatch):
+    """Codex R1 Major: a tampered/curl POST with a non-member entry_intent
+    must early-validate at the route boundary -> 400 + re-rendered entry
+    form, NOT bubble EntryRequest.__post_init__'s ValueError to the generic
+    500 handler. The bad anchor is NOT re-rendered (cleared)."""
+    cfg, cfg_path = seeded_db
+    _price_patch(monkeypatch, "ZZZ", 100.0)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = client.post("/trades/entry", data=full_phase7_entry_payload(
+            ticker="ZZZ", entry_date="2026-04-15", entry_price="100.0",
+            shares="1", initial_stop="90.0", rationale="vcp-breakout",
+            sector="", industry="", origin="watchlist",
+            entry_intent="foo",
+        ), headers={"HX-Request": "true"})
+    assert resp.status_code == 400, resp.text
+    # The entry form re-rendered (not the generic 500 fragment).
+    assert 'name="rationale"' in resp.text or "entry_intent" in resp.text.lower()
+    # The bad anchor is cleared (never re-rendered as a selected option).
+    assert 'value="foo"' not in resp.text
+    # Nothing persisted.
+    assert _read_entry_intent(cfg.paths.db_path, "ZZZ") is None
+
+
 def test_entry_softwarn_roundtrips_intent(seeded_db, monkeypatch):
     """A submission that trips the missing-pre-trade-fields re-render must
     re-render the <select> pre-selected to the SUBMITTED intent

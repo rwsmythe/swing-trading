@@ -147,6 +147,43 @@ def test_review_post_empty_intent_persists_null(tmp_path: Path) -> None:
     assert _intent(app) is None
 
 
+def test_review_post_omitted_intent_preserves_persisted(tmp_path: Path) -> None:
+    """Codex R1 Major: a review POST that OMITS entry_intent entirely
+    (legacy/bare POST) must PRESERVE the persisted operator-stamped intent
+    -- absence != clear (symmetric with the CLI's omitted --entry-intent).
+    """
+    app = _make_app(tmp_path, entry_intent="standard")
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/1/review",
+            data={"entry_grade": "A", "management_grade": "A", "exit_grade": "A",
+                  "lesson_learned": "clean", "mistake_tags": ["none_observed"]},
+            headers={"HX-Request": "true"}, follow_redirects=False)
+    assert r.status_code == 204
+    assert r.headers.get("HX-Redirect") == "/reviews/pending"
+    # The field was absent -> persisted 'standard' is preserved, NOT cleared.
+    assert _intent(app) == "standard"
+    # The review still completed.
+    _, _, reviewed_at = _grades(app)
+    assert reviewed_at is not None
+
+
+def test_review_post_present_empty_clears_persisted(tmp_path: Path) -> None:
+    """When entry_intent IS present but empty ("" = operator chose
+    Unclassified), the persisted intent is explicitly cleared to NULL."""
+    app = _make_app(tmp_path, entry_intent="standard")
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/1/review",
+            data={"entry_grade": "A", "management_grade": "A", "exit_grade": "A",
+                  "lesson_learned": "clean", "mistake_tags": ["none_observed"],
+                  "entry_intent": ""},
+            headers={"HX-Request": "true"}, follow_redirects=False)
+    assert r.status_code == 204
+    # Present-empty -> explicit clear to NULL.
+    assert _intent(app) is None
+
+
 def test_review_post_bad_intent_rejected_400_and_clears(tmp_path: Path) -> None:
     import inspect
     from swing.web.routes.trades import review_post

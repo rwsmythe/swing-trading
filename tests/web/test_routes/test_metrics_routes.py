@@ -1080,6 +1080,43 @@ def test_trade_process_all_tab_renders_intent_facet_selector(seeded_db):
     assert "intent=__unclassified__" in r.text
 
 
+def test_trade_process_unknown_intent_normalizes_to_all(seeded_db):
+    """Codex R1 Minor: an arbitrary ?intent=foo (not in the valid set) must
+    normalize to None (the All facet) -- NOT pass through to the filter and
+    render an empty no-facet aggregate. The facet selector is still present
+    and the page renders 200 (the All view)."""
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r_foo = client.get(
+            "/metrics/trade-process",
+            params={"cohort": "__all__", "intent": "foo"})
+        r_all = client.get(
+            "/metrics/trade-process", params={"cohort": "__all__"})
+    assert r_foo.status_code == 200
+    # Renders the All view (facet selector present, no crash, not empty state).
+    assert 'class="intent-facet-selector"' in r_foo.text
+    # Byte-identical to the no-intent All view (foo -> None == All).
+    assert r_foo.text == r_all.text
+
+
+def test_trade_process_valid_intent_still_filters(seeded_db):
+    """Guard: a VALID ?intent=standard is NOT normalized away -- it still
+    faces the standard slice (distinct from the All view)."""
+    cfg, cfg_path = seeded_db
+    _seed_intent_trades(cfg)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r_std = client.get(
+            "/metrics/trade-process",
+            params={"cohort": "__all__", "intent": "standard"})
+        r_all = client.get(
+            "/metrics/trade-process", params={"cohort": "__all__"})
+    assert r_std.status_code == 200
+    # The standard slice re-faces the body (distinct from All).
+    assert r_std.text != r_all.text
+
+
 def test_trade_process_non_all_tab_omits_facet_selector(seeded_db):
     cfg, cfg_path = seeded_db
     app = create_app(cfg, cfg_path)

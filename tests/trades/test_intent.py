@@ -38,7 +38,11 @@ def test_label_maps_and_passes_through():
      "hypothesis_test_by_design"),
     ("Near-A+ defensible: extension test (watch); failed: proximity_20ma",
      "hypothesis_test_by_design"),
-    ("DHC sub-A+ VCP-not-formed test", "hypothesis_test_by_design"),
+    # Real live labels (data-shape discipline): the DHC + SKYT by-design rows.
+    ("sub-A+ VCP-not-formed test (proximity_20ma + tightness fails)",
+     "hypothesis_test_by_design"),
+    ("Sub-A+ VCP-not-formed (watch); failed: TT8_rs_rank, proximity_20ma, "
+     "tightness", "hypothesis_test_by_design"),
     # no confident suggestion (spec §1 note + §5.1 last row)
     ("inaugural trade test", None),     # VIR id 1
     (None, None),                       # VSAT / PTEN NULL labels
