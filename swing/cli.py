@@ -606,6 +606,13 @@ def trade_group() -> None:
 @click.option("--hypothesis", "hypothesis", default=None,
               help="Optional free-text pre-trade hypothesis label. Frozen at "
                    "entry time; aggregated by `swing journal review`.")
+@click.option("--entry-intent", "entry_intent",
+              type=click.Choice(["standard", "hypothesis_test_by_design"]),
+              default=None,
+              help="Design intent for this entry (tuition-vs-error "
+                   "instrument). The advisory suggestion shown in the web "
+                   "form is NOT auto-applied here. Omit -> unclassified "
+                   "(NULL); pass a value to set it.")
 @click.option("--chart-pattern-operator", "chart_pattern_operator",
               default=None,
               help="Operator override for chart pattern (free text per "
@@ -698,7 +705,7 @@ def trade_group() -> None:
 @click.pass_context
 def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
                     watchlist_target, watchlist_stop, rationale, notes,
-                    hypothesis, chart_pattern_operator,
+                    hypothesis, entry_intent, chart_pattern_operator,
                     entry_path, thesis, why_now, invalidation,
                     expected_scenario, premortem_technical,
                     premortem_market_sector, premortem_execution,
@@ -819,6 +826,10 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
             # (web routes, scripts) get the same normalization. CLI passes
             # raw user input through unchanged.
             hypothesis_label=hypothesis,
+            # Tuition-vs-error (Task 3): persisted AS-IS. None when the flag
+            # is omitted (advisory suggestion NOT auto-applied on the CLI);
+            # click.Choice already rejects an invalid value (exit 2).
+            entry_intent=entry_intent,
             chart_pattern_operator=chart_pattern_operator,
             chart_pattern_algo=cp_algo,
             chart_pattern_algo_confidence=cp_conf,

@@ -172,6 +172,24 @@ class EntryRequest:
     # working — record_entry's candidate-id resolution still fires.
     pattern_evaluation_id: int | None = None
     candidate_id: int | None = None
+    # Tuition-vs-error instrument (spec §7.3). The operator's explicit
+    # design-intent selection at entry; default None -> NULL (omitted CLI
+    # flag / unselected web <select>). Validated against ENTRY_INTENTS in
+    # __post_init__ (Literal[...] is NOT runtime-enforced); NEVER derived
+    # from hypothesis_label here -- record_entry persists it AS-IS
+    # (server-stamp / spec §5 SINGLE PREFILL RULE).
+    entry_intent: str | None = None
+
+    def __post_init__(self) -> None:
+        from swing.data.models import ENTRY_INTENTS
+        if (
+            self.entry_intent is not None
+            and self.entry_intent not in ENTRY_INTENTS
+        ):
+            raise ValueError(
+                f"EntryRequest.entry_intent must be None or one of "
+                f"{sorted(ENTRY_INTENTS)}; got {self.entry_intent!r}"
+            )
 
 
 @dataclass(frozen=True)
@@ -404,6 +422,9 @@ def record_entry(
         # handler's 5-tier rejection ladder (T3.SB3 R1 M#2 LOCK).
         candidate_id=resolved_candidate_id,
         pattern_evaluation_id=req.pattern_evaluation_id,
+        # Tuition-vs-error: persisted AS-IS from the operator's explicit
+        # choice (server-stamp); NEVER suggested from the label here (spec §5).
+        entry_intent=req.entry_intent,
     )
 
     archived = False

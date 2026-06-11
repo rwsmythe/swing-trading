@@ -495,6 +495,13 @@ def entry_post(
     # the field. Whitelist-coerced via _coerce_origin to defend against
     # tampered POSTs (XSS / open-redirect into the rendered Cancel target).
     origin: str = Form("watchlist"),
+    # Tuition-vs-error (Task 3 / spec §5 + §7.3). The operator's explicit
+    # design-intent <select>. Default "" (unselected / bare cURL) is coerced
+    # to None at the EntryRequest construction below via `... or None`
+    # (the nullability gotcha — empty string would trip the CHECK enum). This
+    # is a server-stamp: the value flows straight to record_entry/Trade and
+    # is NEVER re-derived from the label.
+    entry_intent: str = Form(""),
     # Phase 7 Sub-C C.3 — 18 pre-trade required fields (spec §1, §3.5.1).
     # All `Form(None)` so legacy callers (existing tests, bare cURL) keep
     # working until C.4 wires the operator-facing fieldset; the
@@ -1308,6 +1315,11 @@ def entry_post(
         # re-derived pattern_evaluation_id from the 5-tier ladder
         # above (NOT operator-submitted hidden input verbatim).
         pattern_evaluation_id=resolved_pe_id,
+        # Tuition-vs-error (Task 3): server-stamp the operator's explicit
+        # design-intent. `... or None` coerces an unselected "" to NULL so
+        # the trades.entry_intent CHECK enum isn't tripped (nullability
+        # gotcha). NEVER a trusted hidden input / never label-derived.
+        entry_intent=entry_intent or None,
         gap_risk_present=gap_risk_present,
         gap_risk_handling=gap_risk_handling or None,
         emotional_state_pre_trade=emo_json,
@@ -1385,6 +1397,13 @@ def entry_post(
                         catalyst_other_description or ""
                     ),
                     missing_fields=frozenset(exc.missing_fields),
+                    # Tuition-vs-error (Task 3): round-trip the SUBMITTED
+                    # design-intent verbatim (possibly "") so the re-rendered
+                    # <select> pre-selects the operator's choice -- NOT the
+                    # suggestion. An explicit "" (Unclassified) survives the
+                    # force resubmit because the template discriminates on
+                    # `is not none` (Codex R1-Major-1: NULL != standard).
+                    draft_entry_intent=entry_intent,
                     # Phase 13 T3.SB1 Codex R1 Major #3 fix — preserve
                     # the submitted auto-fill anchors so the
                     # MissingPreTradeFieldsException re-render carries
@@ -1511,6 +1530,15 @@ def entry_post(
                 # silently dropping the snapshot. Multi-path-data-
                 # ingestion lesson 2026-04-29.
                 "hypothesis_label": hypothesis_label,
+                # Tuition-vs-error (Task 3): entry_intent must round-trip
+                # through the soft-warn confirm so a force=true resubmit
+                # persists the operator's design-intent choice (and an
+                # explicit Unclassified "" stays "" -> NULL, never re-
+                # suggested). Verbatim submitted string; the confirm
+                # template's form_values.items() loop auto-emits the hidden
+                # input (recurring CLAUDE.md gotcha: hidden anchors driving
+                # POST-time behavior MUST round-trip through form_values).
+                "entry_intent": entry_intent,
                 # Task 8 (R4-Major-1) — origin must round-trip through the
                 # soft-warn confirm so (a) the force=true resubmit's POST
                 # carries origin back; (b) the confirm partial's colspan +

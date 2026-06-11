@@ -25,6 +25,10 @@ from swing.recommendations.sizing import compute_shares
 from swing.trades.entry import entry_rationale_options
 from swing.trades.equity import current_equity
 from swing.trades.exit import ExitReason
+from swing.trades.intent import (
+    entry_intent_display_choices,
+    suggest_entry_intent,
+)
 from swing.trades.review import ReviewPriors
 from swing.trades.stop_adjust import stop_adjust_rationale_options
 from swing.web.chart_scope import latest_completed_pipeline_run
@@ -378,6 +382,23 @@ class TradeEntryFormVM:
     pattern_evaluation_id: int | None = None
     claimed_pattern_evaluation_anchor: bool = False
     pipeline_run_id_at_form_render: int | None = None
+    # Tuition-vs-error instrument (Task 3 / spec §5 + §7.3). The entry-form
+    # design-intent <select>:
+    #   - entry_intent_choices: ordered (value, label) pairs for the options.
+    #   - suggested_entry_intent: the advisory default seeded ONLY on a fresh
+    #     GET (suggest_entry_intent(resolved_hypothesis_label)); None when the
+    #     label yields no keyword match.
+    #   - draft_entry_intent: the soft-warn round-trip carrier. None = "no
+    #     draft (fresh GET)" -> the template falls back to the suggestion;
+    #     "" = "the operator explicitly chose Unclassified on a submit" ->
+    #     the template KEEPS "" (does NOT re-suggest). A bare ``str = ""``
+    #     default would conflate the two and silently re-suggest on a force
+    #     resubmit (Codex R1-Major-1: NULL != standard) -- so it is
+    #     ``str | None = None`` and the template discriminates via
+    #     ``is not none``.
+    entry_intent_choices: tuple[tuple[str, str], ...] = ()
+    suggested_entry_intent: str | None = None
+    draft_entry_intent: str | None = None
 
 
 def build_entry_form_vm(
@@ -815,6 +836,14 @@ def build_entry_form_vm(
         pipeline_run_id_at_form_render=(
             pattern_evaluation_anchor_pipeline_run_id
         ),
+        # Tuition-vs-error (Task 3): seed the design-intent <select> choices +
+        # advisory default. ``suggest_entry_intent`` is consulted ONLY here at
+        # form-render (advisory); the persisted value is whatever the operator
+        # submits (server-stamp). ``draft_entry_intent`` stays None on the
+        # fresh-GET path; the POST handler's soft-warn re-render injects the
+        # submitted string via dc_replace.
+        entry_intent_choices=entry_intent_display_choices(),
+        suggested_entry_intent=suggest_entry_intent(resolved_hypothesis_label),
     )
 
 

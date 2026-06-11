@@ -826,3 +826,60 @@ def test_record_entry_emits_exactly_one_entry_event(tmp_path):
         f"got {len(entry_events)}: {entry_events}. Pre-hotfix value would be "
         f"2 (insert_trade_with_event + insert_fill_with_event both emitted)."
     )
+
+
+# ---------------------------------------------------------------------------
+# Tuition-vs-error instrument (Task 3 / spec §5.2 + §7.3): entry_intent is
+# the operator's explicit design-intent choice, server-stamped AS-IS by
+# record_entry (NEVER derived from the hypothesis_label). The column lands
+# at migration 0027 (schema v27), so these tests migrate to HEAD.
+# ---------------------------------------------------------------------------
+def _v27_conn(tmp_path: Path) -> sqlite3.Connection:
+    """Schema migrated through HEAD (v27) so trades.entry_intent exists.
+
+    Mirrors ``_seed_v14`` but bumps target_version to the migration-0027
+    schema (v27) that introduces the entry_intent column + CHECK.
+    """
+    from swing.data.db import EXPECTED_SCHEMA_VERSION
+    db = tmp_path / "test_v27.db"
+    conn = sqlite3.connect(db)
+    run_migrations(conn, target_version=EXPECTED_SCHEMA_VERSION,
+                   backup_dir=tmp_path)
+    return conn
+
+
+def _minimal_entry_request(**overrides) -> EntryRequest:
+    """Minimal-but-gate-passing EntryRequest for entry_intent tests.
+
+    Reuses ``_full_req``'s spec-compliant pre-trade defaults; the
+    entry_intent kwarg (default None) flows through overrides.
+    """
+    return _full_req(ticker="AAA", **overrides)
+
+
+def test_entry_request_validates_entry_intent():
+    with pytest.raises(ValueError, match="entry_intent"):
+        _minimal_entry_request(entry_intent="foo")
+
+
+def test_record_entry_persists_entry_intent(tmp_path):
+    conn = _v27_conn(tmp_path)
+    req = _minimal_entry_request(entry_intent="standard")
+    result = record_entry(conn, req, soft_warn=99, hard_cap=99, force=False)
+    trade = get_trade(conn, result.trade_id)
+    assert trade.entry_intent == "standard"
+
+
+def test_record_entry_persists_by_design_entry_intent(tmp_path):
+    conn = _v27_conn(tmp_path)
+    req = _minimal_entry_request(entry_intent="hypothesis_test_by_design")
+    result = record_entry(conn, req, soft_warn=99, hard_cap=99, force=False)
+    trade = get_trade(conn, result.trade_id)
+    assert trade.entry_intent == "hypothesis_test_by_design"
+
+
+def test_record_entry_omitted_intent_persists_null(tmp_path):
+    conn = _v27_conn(tmp_path)
+    req = _minimal_entry_request()  # no entry_intent -> default None
+    result = record_entry(conn, req, soft_warn=99, hard_cap=99, force=False)
+    assert get_trade(conn, result.trade_id).entry_intent is None
