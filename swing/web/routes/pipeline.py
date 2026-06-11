@@ -35,6 +35,16 @@ router = APIRouter()
 log = logging.getLogger(__name__)
 
 
+def _build_subprocess_env(request_id: str) -> dict[str, str]:
+    """Child env for the pipeline subprocess: inherit the parent env + the one
+    justified correlation touch (SWING_WEB_REQUEST_ID). A COPY -- never mutate
+    os.environ. The child's install_logging validates the value and falls back
+    to "-" if it is malformed (defence-in-depth at the read side)."""
+    env = dict(os.environ)
+    env["SWING_WEB_REQUEST_ID"] = request_id
+    return env
+
+
 @router.get("/pipeline", response_class=HTMLResponse)
 def pipeline_page(request: Request):
     cfg = apply_overrides(request.app.state.cfg)
@@ -123,13 +133,18 @@ def pipeline_run(request: Request):
         "--config", str(cfg_path),
         "pipeline", "run", "--manual",
     ]
-    log.info("spawning pipeline subprocess: %s", cmd)
+    request_id = getattr(request.state, "request_id", "-")
+    # The ONE justified touch to the DEVNULL spawn (spec OQ-5): carry the web's
+    # request id into the child env so pipeline.log records correlate back to
+    # this web.log line. DEVNULL + start_new_session + close_fds are unchanged.
+    log.info("spawning pipeline subprocess request_id=%s: %s", request_id, cmd)
     proc = subprocess.Popen(
         cmd, close_fds=True,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         start_new_session=True,
+        env=_build_subprocess_env(request_id),
     )
-    log.info("pipeline subprocess started: pid=%d", proc.pid)
+    log.info("pipeline subprocess started: pid=%d request_id=%s", proc.pid, request_id)
 
     # Wait for the child to acquire its lease. Configurable because Python 3.14
     # + heavy imports on Windows regularly exceed a 2s cold-start — 5s default
