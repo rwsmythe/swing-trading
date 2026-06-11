@@ -119,7 +119,7 @@
 - **Coordination:** shares `trade_entry_form.html.j2` + `routes/trades.py` with the in-flight P0 arc — land in either order, small merge reconciliation expected. **Sequencing:** dispatch after Arc 6 (evaluate-perf) returns/merges, grounding the dispatch brief fresh at that point (P0 may have landed `entry_intent` + 0027 by then).
 - Done criteria (brief §3): full copowers cycle; the 0026 addendum (research director QAs its language post-merge); the operator-witnessed browser gate (pin survives a removing run → unpin ages off; the entry form renders the server-stamped broad-watch label — form-render + TestClient persist suffice, no real trade required); regression evidence on the hyp-recs panel.
 
-- [ ] **7a — Brainstorm** (full copowers; NOT yet dispatched).
+- [ ] **7a — Brainstorm** (full copowers; **DISPATCHED 2026-06-10** — brief: [`docs/arc7-watchlist-pin-labeling-brainstorming-dispatch-brief.md`](arc7-watchlist-pin-labeling-brainstorming-dispatch-brief.md); 6c gate decision: cold run on threads=False FIRST, lever decided on real evidence).
 - [ ] **7b — writing-plans → executing.**
 - [ ] **7c — Operator browser gate + the 0026-addendum research-director QA.**
 
