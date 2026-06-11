@@ -860,7 +860,7 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
             try:
                 _step_watchlist(cfg=cfg, eval_run_id=eval_run_id,
                                 data_asof_date=lease_data_asof(cfg, lease),
-                                lease=lease)
+                                lease=lease, run_warnings=run_warnings)
                 lease.status(watchlist_status="ok")
             except LeaseRevokedError:
                 raise
@@ -1399,6 +1399,29 @@ def _step_evaluate(
             tickers.append(t)
             seen.add(t)
 
+    # Arc 7: union PINNED watchlist tickers into the evaluated universe so a
+    # name the operator is tracking stays fetched + fully evaluated even when it
+    # has fallen off the finviz screen. Unlike held tickers (added to `excluded`
+    # below → close-only), pinned tickers flow through evaluate_batch and get a
+    # REAL criteria/bucket/streak every night. A pinned ticker already in `seen`
+    # (screen-native or held) is NOT re-injected.
+    pin_conn = connect(cfg.paths.db_path)
+    try:
+        pinned_eval_tickers = sorted({
+            e.ticker.upper() for e in list_active_watchlist(pin_conn) if e.pinned
+        })
+    finally:
+        pin_conn.close()
+    injected_pins = [t for t in pinned_eval_tickers if t not in seen]
+    for t in injected_pins:
+        tickers.append(t)
+        seen.add(t)
+    if injected_pins and run_warnings is not None:
+        run_warnings.append({
+            "step": "evaluate", "kind": "pin_injection",
+            "count": len(injected_pins), "tickers": injected_pins,
+        })
+
     # Phase 11 Sub-bundle C T-C.6 — invoke the market-data ladder for each
     # open-trade ticker via the (optional) installed PriceCache. When
     # `price_cache is None` (no schwab_client constructed), this is a no-op
@@ -1511,6 +1534,13 @@ def _step_evaluate(
             rs_rank=None, rs_return_12w_vs_spy=None, rs_method="unavailable",
             pattern_tag=None, notes=notes, criteria=(),
         ))
+    # Codex R1-Major: a held/blocklisted ticker (in `excluded`) whose fetch also
+    # failed lands in error_tickers too; compute_watchlist_changes collapses
+    # today_candidates last-write-wins, so the error row (appended last) would
+    # win and blank the excluded row. De-dupe so an excluded ticker never also
+    # emits an error candidate. A pinned-but-NOT-held failing ticker is NOT in
+    # `excluded` → it still gets its single error candidate (the §5.1 path).
+    error_tickers = [t for t in error_tickers if t not in excluded]
     for t in error_tickers:
         candidates.append(Candidate(
             ticker=t, bucket="error",
@@ -1564,6 +1594,7 @@ def _step_evaluate(
 
 def _step_watchlist(
     *, cfg, eval_run_id: int, data_asof_date: str, lease: Lease,
+    run_warnings: list[dict] | None = None,
 ) -> None:
     from swing.data.repos.candidates import fetch_candidates_for_run
     # Read phase (no fence — reading is idempotent).
@@ -1573,9 +1604,14 @@ def _step_watchlist(
         candidates = fetch_candidates_for_run(read_conn, eval_run_id)
     finally:
         read_conn.close()
+    # Arc 7: pinned tickers veto the nightly age-off. Derive the pin set from
+    # the live watchlist and pass it to the service so a pinned removal-grade
+    # ticker is diverted into suppressed_removes + a streak_increment instead
+    # of an archive (the archive would DELETE the live row the operator pinned).
+    pinned_tickers = frozenset(e.ticker for e in prior if e.pinned)
     delta = compute_watchlist_changes(
         prior=prior, today_candidates=candidates,
-        data_asof_date=data_asof_date,
+        data_asof_date=data_asof_date, pinned_tickers=pinned_tickers,
     )
     # Write phase (lease-fenced — atomic with lease verification).
     with lease.fenced_write() as conn:
@@ -1587,6 +1623,19 @@ def _step_watchlist(
             upsert_watchlist_entry(conn, entry)
         for archive in delta.removes:
             archive_watchlist_entry(conn, archive)
+    # #27: a suppressed removal is NOT archived (that would delete the live
+    # row); emit a per-ticker run-warning so the pin veto is auditable, not
+    # silent. The archive reason is
+    # "aged out (failed stable {new_streak} consecutive runs)" so
+    # sup.reason.split()[-3] == the streak int.
+    if run_warnings is not None:
+        for sup in delta.suppressed_removes:
+            run_warnings.append({
+                "step": "watchlist", "kind": "pin_suppressed_removal",
+                "ticker": sup.ticker,
+                "streak": int(sup.reason.split()[-3]) if sup.reason else None,
+                "detail": "pin prevented age-off",
+            })
 
 
 def _step_recommendations(*, cfg, eval_run_id: int,
