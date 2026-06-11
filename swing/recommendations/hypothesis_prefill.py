@@ -52,7 +52,7 @@ def lookup_active_recommendation_label(
         return None
 
     registry = list_hypotheses(conn)
-    matches = match_candidate_to_hypotheses(cand, registry=registry)
+    matches = match_candidate_to_hypotheses(cand, registry=registry, include_baseline=True)
     if not matches:
         return None
 
