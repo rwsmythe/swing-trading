@@ -1536,6 +1536,68 @@ def trade_review_cmd(
         + (f" Failure mode: {failure_mode}." if failure_mode else ""))
 
 
+@trade_group.command("backfill-intent")
+@click.option("--trade-id", type=int, default=None,
+              help="Re-target a single trade (re-prompts even if already set).")
+@click.option("--force", is_flag=True,
+              help="Re-prompt trades whose entry_intent is already set "
+                   "(the correction path).")
+@click.pass_context
+def trade_backfill_intent_cmd(ctx, trade_id, force):
+    """Classify each trade's design intent (entry_intent). Idempotent: already-set
+    rows are skipped unless --trade-id or --force. 'skip' leaves a row NULL
+    (renders 'Unclassified'). The re-runnable command + its summary ARE the audit
+    (no provenance table for V1)."""
+    from swing.config_overrides import apply_overrides
+    from swing.data.repos.trades import update_entry_intent
+    from swing.trades.intent import entry_intent_label, suggest_entry_intent
+
+    cfg = apply_overrides(ctx.obj["config"])
+    conn = connect(cfg.paths.db_path)
+    n_set = n_skipped_set = n_skipped_op = 0
+    try:
+        # Select target trades: by id, or all rows; the IS-NULL/--force gate is
+        # applied per-row so the summary counts are exact.
+        if trade_id is not None:
+            rows = conn.execute(
+                "SELECT id, ticker, entry_date, hypothesis_label, process_grade, "
+                "mistake_tags, entry_intent FROM trades WHERE id = ?",
+                (trade_id,)).fetchall()
+            if not rows:
+                raise click.ClickException(f"trade {trade_id} not found")
+        else:
+            rows = conn.execute(
+                "SELECT id, ticker, entry_date, hypothesis_label, process_grade, "
+                "mistake_tags, entry_intent FROM trades "
+                "ORDER BY entry_date, ticker, id").fetchall()
+        for tid, ticker, edate, hyp, pg, tags, current in rows:
+            already_set = current is not None
+            if already_set and trade_id is None and not force:
+                n_skipped_set += 1
+                continue
+            suggestion = suggest_entry_intent(hyp)
+            sug_label = entry_intent_label(suggestion) or "(no suggestion)"
+            click.echo(f"#{tid} {ticker} {edate} | label={hyp or '(none)'} | "
+                       f"grade={pg or '-'} | tags={tags or '-'} | "
+                       f"current={current or 'NULL'} | suggested={sug_label}")
+            choice = click.prompt(
+                "  intent [standard / hypothesis_test_by_design / skip]",
+                default=(suggestion or "skip"), show_default=True).strip()
+            if choice in ("skip", ""):
+                n_skipped_op += 1
+                continue
+            try:
+                with conn:
+                    update_entry_intent(conn, trade_id=tid, entry_intent=choice)
+            except ValueError as exc:
+                raise click.ClickException(str(exc)) from exc
+            n_set += 1
+        click.echo(f"{n_set} set, {n_skipped_set} skipped-already-set, "
+                   f"{n_skipped_op} skipped-by-operator")
+    finally:
+        conn.close()
+
+
 @main.group("review")
 def review_group() -> None:
     """Cadence review — complete daily / weekly / monthly Review_Log entries."""
