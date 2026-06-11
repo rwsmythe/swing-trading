@@ -501,3 +501,54 @@ Golden fixtures (TDD targets for the plan):
   `docs/phase16-shadow-expectancy-drumbeat-integration-commissioning-brief.md`).
 - TDD posture for the eventual writing-plans → executing-plans dispatches; this phase produces the SPEC only.
 ```
+
+---
+
+### ADDENDUM 2026-06-10 — Arc 7 attribution-surface re-classification (V2.1 §VII.F governance)
+
+**Context.** Phase 16 / Arc 7 (`docs/superpowers/specs/2026-06-10-watchlist-pin-labeling-design.md`) makes
+hypothesis labeling effective in the web-first workflow. It introduces TWO production callers that opt into the
+broad-watch baseline via `match_candidate_to_hypotheses(..., include_baseline=True)`. This addendum amends the LETTER
+of §3.2 + §5.1 of this spec (which listed `hypothesis_prefill.py:55` among the CONTAINED, default-`False` surfaces) —
+NOT its spirit. The containment of the *recommendation flood* surfaces is preserved exactly.
+
+**Re-classification.** The following two surfaces are re-classified from "contained recommendation surface" to
+**attribution surface** — they opt into `include_baseline=True`:
+
+1. **`swing/recommendations/hypothesis_prefill.py` — `lookup_active_recommendation_label`** (the entry-form/CLI
+   server-stamped label prefill). Rationale: it fires ONLY for a ticker the operator has ALREADY chosen to enter and
+   it recommends nothing — it labels an entry for downstream shadow attribution. The §3.2 flood rationale ("cannot put
+   a recommendation row on every watch ticker") never applied to it: it surfaces exactly one label for one
+   operator-selected ticker. Labeling watch trades with `Broad-watch baseline` is the PERMITTED secondary use already
+   sanctioned in §5.3.
+2. **`swing/web/view_models/watchlist.py` — the per-row cohort-hint helper** (`cohort_hint_for`, the LONE
+   `include_baseline=True` for the hint). Rationale: an affordance that tells the operator what a name WOULD attribute
+   as on entry (narrow name | `broad-watch` | none). It is read-only, surfaces no recommendation row, and drives no
+   ranking — it is an attribution *preview*, not a recommendation. It does not call `prioritize_recommendations`. The
+   helper is consumed by THREE read-only render sites — the standalone watchlist page (`build_watchlist`), the
+   `/watchlist/{ticker}/row` collapse route, and the dashboard top-5 section (`build_dashboard`, which imports it) —
+   all of which render the same chip and none of which produce a recommendation row. Because the literal opt-in lives
+   in this single helper, the inventory guard's "exactly 3 files" invariant holds.
+
+**Still CONTAINED (unchanged, default `include_baseline=False`).** The live *recommendation* surfaces remain contained:
+`swing/web/view_models/dashboard.py` (~L540 + ~L1061, the recommendations build + the 2nd matcher call) and
+`prioritize_recommendations`. The broad-watch rule never fires for them, so it cannot put a recommendation row on every
+watch ticker nor outrank H2/H4 via `distance_to_target`. **Enforced by a regression test** asserting the dashboard call
+sites do NOT pass `include_baseline` (kwargs assertion) and that no broad-watch rows reach the hyp-recs panel.
+
+**Bounded opt-in set.** The COMPLETE set of `include_baseline=True` call sites is now exactly THREE: the two above plus
+the engine's `research/harness/shadow_expectancy/attribution.py` (the original §4 opt-in). An **opt-in call-site
+inventory guard test** (Arc 7 §10.3) asserts this set verbatim; any future opt-in fails the test and requires a
+governance amendment (this addendum's path).
+
+**Measurement-universe note (research-director ruling, AMENDMENT 2026-06-10).** The watchlist pin unions pinned
+tickers into the `_step_evaluate` evaluated universe, so the evaluated universe is **screen ∪ pinned (∪ held)**. A
+pin-injected ticker that evaluates to `bucket=watch` enters the #23 detect/observe pool → the v22 temporal log → the
+shadow-engine broad-watch measurement population. This is ACCEPTED and coherent: the FROZEN hypothesis statement
+already defines the cohort as "the population the temporal log contains and the operator actually trades," and pinned
+names literally are that population (the operator's intentional forward-watch universe). Per-run auditability is
+preserved by the pin-injection `warnings_json`/`pipeline.log` line (Arc 7 §5) listing the injected tickers (count +
+symbols), so screen-vs-pin provenance stays decomposable from run logs. No schema change; the frozen registry row and
+the matcher gate are untouched.
+
+---
