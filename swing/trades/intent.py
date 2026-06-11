@@ -1,14 +1,13 @@
 """Tuition-vs-error instrument: entry_intent presentation + advisory prefill.
 
 PURE (no I/O). The schema-CHECK enum ENTRY_INTENTS lives in swing.data.models
-(the schema-enum home, to avoid an upward import); this module imports it
-downward and owns the display/advisory helpers. NEVER consulted by the
-service/persist layer for the stored value -- suggest_entry_intent only seeds
-the visible form control's default (spec §5: THE SINGLE PREFILL RULE).
+(the schema-enum home, to avoid an upward import); this module owns the
+display/advisory helpers. The no-drift test asserts ENTRY_INTENT_DISPLAY's
+values equal ENTRY_INTENTS. NEVER consulted by the service/persist layer for
+the stored value -- suggest_entry_intent only seeds the visible form control's
+default (spec §5: THE SINGLE PREFILL RULE).
 """
 from __future__ import annotations
-
-from swing.data.models import ENTRY_INTENTS
 
 # Ordered (value, label) for the form <select> + display (mirrors
 # review.FAILURE_MODE_DISPLAY). ASCII-only labels (#16 cp1252 stdout + parity).
