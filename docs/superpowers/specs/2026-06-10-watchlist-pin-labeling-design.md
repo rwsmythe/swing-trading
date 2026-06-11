@@ -123,9 +123,11 @@ COMMIT;
   regression test pins a ticker, runs a nightly upsert (requalify + streak_increment), and asserts `pinned`/`pin_note`/
   `pinned_at` survive unchanged.
 - **New writer `set_watchlist_pin(conn, ticker, *, pinned, pin_note, pinned_at)`** — a targeted `UPDATE watchlist SET
-  pinned=?, pin_note=?, pinned_at=? WHERE ticker=?` with a SELECT-first existence check that raises
-  `WatchlistEntryNotFoundError` when the ticker is not on the active watchlist (an audit-honest writer; you cannot pin
-  a row that isn't there). Caller wraps in `with conn:`.
+  pinned=?, pin_note=?, pinned_at=? WHERE ticker=?`. **The UPDATE itself is authoritative (Codex R2-Minor): require
+  `cur.rowcount == 1`, else raise `WatchlistEntryNotFoundError`** (mapped to 404 by the route) — do NOT rely on a
+  separate SELECT-first check, which opens a SELECT-then-UPDATE race where a concurrent archive/delete leaves the
+  caller believing the write succeeded. (`UPDATE … RETURNING` is an acceptable equivalent.) Caller wraps in
+  `with conn:`.
 
 ---
 
@@ -166,16 +168,41 @@ NOT touched** — the "open-trade tickers ONLY" gotcha stands; this injection is
 decomposable from run logs. No schema. A pinned ticker already in the finviz screen is NOT "injected" (it's
 screen-native) and is not listed — only the off-screen additions are.
 
+**Bucket precedence / duplicate-row hardening (Codex R1-Major).** The candidate-assembly loops can emit BOTH an
+`excluded` candidate AND an `error` candidate for the same ticker in one run: a held/blocklisted ticker (in `excluded`)
+whose fetch also failed lands in `error_tickers` too (`runner.py:1497` then `runner.py:1514`), and
+`compute_watchlist_changes` collapses `today_candidates` into `{c.ticker: c}` **last-write-wins**
+(`service.py:62`) — the `error` row (appended last) would win. This is a latent pre-existing hazard the pin injection
+makes load-bearing (a pinned-AND-held ticker is the live case). **Fix (in this arc, since it touches the assembly):**
+de-dupe `error_tickers` against `excluded` before the error-append loop — `error_tickers = [t for t in error_tickers
+if t not in excluded]` — so an excluded ticker never also emits an `error` row. A pinned-but-NOT-held ticker that fails
+fetch is correctly NOT in `excluded` → it still gets its single `error` candidate (the §5.1 path). Test: a ticker that
+is both held and fetch-failing yields exactly ONE candidate row (the `excluded` one), not two.
+
 ### 5.1 Delisted / unfetchable pinned ticker (rider d — Codex probe target)
 
 A pinned ticker whose fetch fails goes to `error_tickers` (`runner.py:1440-1441`) and is appended as a `bucket='error'`
-candidate (`runner.py:1514-1521`). It is therefore **present** in `today_candidates` (not absent) → flows through
-`compute_watchlist_changes` → `_stable_passes` is False on empty criteria → not-qualifies → streak increments (or, at
-threshold, the pin-veto path, §6) → **the watchlist row is retained, never blanked**. The existing F6 write-through
-discipline (`ohlcv_archive.py`: empty external result is transient, never overwrites cached content) means a transient
-empty fetch does not blank the archive. The web row renders a small "data unavailable" / degraded indicator for an
-`error`-bucket pinned ticker (§9), and the pin-injection + error are visible in the run warnings. The pin holds the
-row; the operator unpins manually if the name is genuinely dead.
+candidate (`runner.py:1514-1521`) with `close=pivot=initial_stop=adr_pct=None` and empty `criteria`. It is therefore
+**present** in `today_candidates` (not absent) → flows through `compute_watchlist_changes` → `_stable_passes` is False
+on empty criteria → not-qualifies → streak increments (or, at threshold, the pin-veto path, §6) → **the watchlist
+*row* is retained, never deleted**.
+
+**CRITICAL data-preservation rule (Codex R1-Critical — the row must not be silently BLANKED either).** The
+streak-increment / requalify path copies `candidate.close/pivot/last_stop/adr_pct` into the persisted
+`WatchlistEntry`, and `upsert_watchlist_entry`'s `DO UPDATE` sets `last_close/last_pivot/last_stop/last_adr_pct` from
+those values (`repos/watchlist.py:24-28`). For an `error` candidate those are all `None` → the upsert would overwrite
+the row's last-known-good values with `NULL`, blanking the displayed numbers — which directly violates the **F6**
+write-through discipline (empty/error external results are transient and MUST NOT overwrite cached content) that this
+spec itself relies on. **Fix:** `compute_watchlist_changes` PRESERVES the existing `last_close`/`last_pivot`/
+`last_stop`/`last_adr_pct` **and `missing_criteria`** (carries them forward from `existing`) whenever the candidate
+carries no fresh price data (`candidate.bucket == "error"` OR `candidate.close is None`), rather than copying the
+`None`s / the synthetic all-missing set `_missing_dynamic` would produce on empty error criteria (Codex R2-Minor —
+`repos/watchlist.py:28` persists `missing_criteria`, so it is in the same blanking family). The degradation is
+carried separately — via the `bucket='error'` candidate row, the run-warning, and the web row's degraded indicator
+(§9) — NOT by blanking the watchlist row's last-known values. The web row then shows the last-known numbers with a
+small "data unavailable (last seen <last_data_asof_date>)" indicator. Test: a pinned ticker that fails fetch keeps its
+prior `last_close`/`last_adr_pct` (NOT `NULL`) after the nightly upsert, and the streak still increments under the
+veto. The pin holds the row; the operator unpins manually if the name is genuinely dead.
 
 ---
 
@@ -212,6 +239,12 @@ Consequences (all tested):
   requalifies / streak_increments → copied from `existing`) so a requalify or streak_increment never silently clears a
   pin. (Belt-and-suspenders: the upsert's DO-UPDATE excludes the pin columns anyway, §4.1 — so even an unthreaded value
   could not clobber the DB. Both defenses hold.)
+- The **last_*-preservation rule (§5.1, F6)** applies to EVERY `WatchlistEntry` the service builds for a not-qualifies
+  candidate (streak_increment AND the pinned veto's streak_increment): when `candidate.bucket == "error"` or
+  `candidate.close is None`, the entry carries `existing.last_close/last_pivot/last_stop/last_adr_pct` AND
+  `existing.missing_criteria` forward instead of the candidate's `None`s / the synthetic all-missing dynamic set
+  (Codex R2-Minor). (Qualifying candidates always have fresh price data — `service.py:91` already guards
+  `candidate.pivot is None` — so this rule only bites the degraded not-qualifies path.)
 
 The service remains a pure function on `(prior, today_candidates, data_asof_date, pinned_tickers)` — no DB, no I/O.
 
@@ -269,21 +302,58 @@ for r in rows:
 
 `_hint_label` maps the matched hypothesis name to a short chip: the narrow name (abbreviated) for H1–H4, or
 `broad-watch` for `Broad-watch baseline`. The matcher is a **pure** function; running it per row at render is cheap and
-requires **no schema column**. The hint is an affordance (a chip in a new small column / appended to the tags cell),
-NOT a metrics surface. Tickers absent from the latest eval (error-edge only, since pinned tickers are now always
-evaluated) show no hint.
+requires **no schema column**. `list_hypotheses` is called ONCE per page (registry loaded once, not per row); the
+per-row work is just the pure matcher. Tickers absent from the latest eval (error-edge only, since pinned tickers are
+now always evaluated) show no hint.
 
-This is the SECOND production `include_baseline=True` opt-in site and is enumerated as an attribution surface in the
-addendum (§13) and bounded by the inventory guard test (§10).
+**Propagation to ALL THREE render sites (Codex R2-Major) — mirror the existing `pattern_tag` threading exactly.**
+`watchlist_row.html.j2` is shared by three sites and `pattern_tag` already demonstrates the pattern: a **guarded scalar
+param** to the partial, supplied per-site. The cohort hint follows it identically:
+- A single shared helper `cohort_hint_for(candidate, registry) -> str | None` lives in
+  `swing/web/view_models/watchlist.py` (the enumerated attribution surface; it holds the LONE `include_baseline=True`
+  for the hint, so the inventory guard's literal-opt-in count stays at 3 even though two builders call it).
+- `WatchlistVM.cohort_hints: Mapping[str, str]` (standalone page), `DashboardVM.cohort_hints: Mapping[str, str]`
+  (dashboard top-5 section), and `WatchlistRowVM.cohort_hint: str | None` (the `/watchlist/{ticker}/row` collapse
+  route) are each populated by their builder calling `cohort_hint_for`. **`build_dashboard` imports the helper with a
+  FUNCTION-LOCAL import (Codex R3-Major)** — `view_models/watchlist.py:21` already imports
+  `_flag_tags`/`_pattern_tags`/`_sort_watchlist`/`latest_evaluation_run_id` from `dashboard.py` at module level, so a
+  module-level `from swing.web.view_models.watchlist import cohort_hint_for` in `dashboard.py` would complete a
+  `dashboard → watchlist → dashboard` cycle at import time. The deferred function-local import (the exact pattern
+  `hypothesis_prefill.py:35` already uses to import `dashboard` "to avoid any future circular-import risk") breaks the
+  cycle. This does NOT make the dashboard a recommendation opt-in: the hint is a read-only preview chip, it does not
+  become a
+  `prioritize_recommendations` row, and the dashboard's two `match_candidate_to_hypotheses` calls stay
+  `include_baseline=False` (§7, regression-tested). Like `pattern_tags` (`dashboard.py:348` comment), `cohort_hints`
+  is referenced only inside `watchlist_row.html.j2` via `{% set %}`, NOT as `vm.cohort_hints` in `base.html.j2` — so
+  it stays scoped to `DashboardVM` + `WatchlistVM` and does NOT need adding to the other base-layout VMs.
+- The template reads a guarded scalar: `{% if cohort_hint is defined and cohort_hint %}<span class="tag tag-cohort">
+  {{ cohort_hint }}</span>{% endif %}` (same guard shape as `pattern_tag`). The page templates
+  (`watchlist.html.j2`, `watchlist_top5_section.html.j2`) do `{% set cohort_hint = vm.cohort_hints.get(w.ticker) %}`
+  before the include; the `/row` route passes `cohort_hint=row_vm.cohort_hint` in the `TemplateResponse` context. So
+  expand→collapse keeps the chip and all three sites render it identically.
+
+This is the SECOND production `include_baseline=True` opt-in site (the helper in `view_models/watchlist.py`) and is
+enumerated as an attribution surface in the addendum (§13) and bounded by the inventory guard test (§10).
 
 ---
 
 ## 9. Pin UI (all controls in the expanded detail row — operator's Q1 choice)
 
-**Compact row** (`templates/partials/watchlist_row.html.j2`): a small **📌 pin badge** rendered when `w.pinned`
-(with the abbreviated `pin_note` as the `title=` tooltip). NO button in the compact row — keeps it clean. The badge is
-plain HTML/UTF-8 (no cp1252-stdout or matplotlib-mathtext exposure — it is a template, not a `print()` or a rendered
-PNG). The cohort-hint chip (§8) also renders here.
+**Column-contract constraint (Codex R1-Major).** The watchlist table contract is already loose: the header
+(`watchlist.html.j2:6`) renders **7** `<th>` (the action/Enter column has no header), the compact row
+(`watchlist_row.html.j2`) renders **8** `<td>`, and the expanded row (`watchlist_expanded.html.j2:3`) uses
+`colspan="7"`. To avoid making HTMX row swaps + layout less deterministic, this arc **adds NO new column**: the pin
+badge renders inside the existing **Ticker cell** (next to the symbol) and the cohort-hint chip (§8) renders inside the
+existing **Tags cell**. Header `<th>` count, compact `<td>` count, and the expanded `colspan` are therefore all
+UNCHANGED. (Normalizing the pre-existing 7-vs-8 header/colspan mismatch is explicitly OUT of scope — noted so the
+implementer does not "fix" it mid-arc and perturb the swap shape; if touched at all, only as a separate, witnessed
+change.) All three render sites (`watchlist.html.j2`, `watchlist_top5_section.html.j2`, the `/row` route) must show the
+badge + chip identically since they share `watchlist_row.html.j2`.
+
+**Compact row** (`templates/partials/watchlist_row.html.j2`): a small **📌 pin badge** in the Ticker cell when
+`w.pinned` (with the abbreviated `pin_note` as the `title=` tooltip). NO button in the compact row — keeps it clean.
+The badge is plain HTML/UTF-8 (no cp1252-stdout or matplotlib-mathtext exposure — it is a template, not a `print()` or
+a rendered PNG). The cohort-hint chip (§8) renders in the Tags cell.
 
 **Expanded row** (`templates/partials/watchlist_expanded.html.j2`): an embedded pin form —
 
@@ -348,15 +418,21 @@ allowlist; the shadow engine + temporal log + measurement chain; the 16 historic
    'Broad-watch baseline')` is True under `label_match.py`'s 3-rule contract, and is False against each of the other
    four registry names (both directions). (The 0026 spec §6 already proved no prefix collision; this re-asserts it at
    the persisted-label layer.)
-2. **Dashboard containment regression** — assert `dashboard.py`'s `match_candidate_to_hypotheses` calls do NOT pass
-   `include_baseline` (call-site kwargs assertion, not just behavior) → no broad-watch rows reach the hyp-recs panel.
-   A behavioral companion: build the dashboard VM with a pure-watch candidate and assert zero broad-watch
-   recommendation rows.
-3. **Opt-in call-site inventory guard (rider b-ii)** — a test that statically scans `swing/` + `research/` for
-   `include_baseline=True` occurrences and asserts the set of call sites is EXACTLY:
+2. **Dashboard containment regression — BEHAVIORAL is the real defense (Codex R1-Major).** The static inventory guard
+   (test 3) is a tripwire, not sufficient governance on its own: it cannot catch a future shared helper that opts in
+   being called transitively by a recommendation builder. So the LOAD-BEARING containment test is BEHAVIORAL — build
+   the dashboard recommendations VM with an **active** `Broad-watch baseline` registry row AND a pure-watch candidate
+   (non-pass set matching no narrow hypothesis) and assert **zero** broad-watch rows reach the hyp-recs panel / appear
+   in `prioritize_recommendations` output. Companion: assert `dashboard.py`'s two `match_candidate_to_hypotheses` calls
+   do NOT pass `include_baseline` (call-site kwargs assertion). Both together: the behavioral test proves containment
+   even if the call graph changes; the kwargs assertion localizes a regression to the call site.
+3. **Opt-in call-site inventory guard (rider b-ii) — a TRIPWIRE, not the sole defense.** A test that statically scans
+   `swing/` + `research/` for `include_baseline=True` occurrences and asserts the set of call sites is EXACTLY:
    `swing/recommendations/hypothesis_prefill.py` (prefill), `swing/web/view_models/watchlist.py` (cohort hint), and
-   `research/harness/shadow_expectancy/attribution.py` (engine). Any new opt-in fails the test → forces a governance
-   touch. (Implementation: grep the source tree, normalize, compare to the frozen allowlist set.)
+   `research/harness/shadow_expectancy/attribution.py` (engine). Any new literal opt-in fails the test → forces a
+   governance touch. Its limitation (a transitive opt-in via a shared helper would still pass) is explicitly covered by
+   the behavioral test (2); the guard's job is to make a NEW direct opt-in impossible-to-add-silently, not to prove
+   containment by itself.
 4. **Pin-preserved-across-upsert** — pin a ticker, run a nightly upsert (requalify + streak_increment), assert the
    three pin columns survive (§4.1).
 5. **Pin-veto semantics** — a pinned ticker with a removal-grade streak stays (no `removes`, a `streak_increment` with
@@ -365,8 +441,19 @@ allowlist; the shadow engine + temporal log + measurement chain; the 16 historic
    distinguishes the veto.
 6. **Universe injection** — `_step_evaluate` with a pinned off-screen ticker fetches + evaluates it (real candidate
    row, not `excluded`), and emits the pin-injection audit line; a pinned open-trade ticker stays `excluded`.
-7. **Delisted-pin edge** — a pinned ticker with an unfetchable fetch → `error`-bucket candidate → row retained (not
-   blanked), streak increments under the veto, run-warning surfaces the degradation (§5.1).
+7. **Delisted-pin edge (Codex R1-Critical)** — a pinned ticker with an unfetchable fetch → `error`-bucket candidate →
+   row retained AND its `last_close`/`last_pivot`/`last_stop`/`last_adr_pct` PRESERVED (asserted **not** `NULL` after
+   the nightly upsert, per the §5.1 F6 rule), streak increments under the veto, run-warning surfaces the degradation.
+8. **Held+error dedup (Codex R1-Major)** — a ticker that is both held (in `excluded`) and fetch-failing yields EXACTLY
+   ONE `candidates` row for the run (the `excluded` one), not a duplicate `error` row (§5 dedup).
+9. **Cohort-hint three-site propagation (Codex R2-Major)** — the chip renders identically at all three sites sharing
+   `watchlist_row.html.j2`: assert the rendered standalone watchlist page, the dashboard top-5 section, and the
+   `/watchlist/{ticker}/row` collapse response all carry the same `cohort_hint` chip for a given ticker (a watch
+   candidate → `broad-watch`; a narrow-matching candidate → the narrow name). A site with no candidate (error-edge)
+   renders no chip (guarded scalar).
+10. **`set_watchlist_pin` 404 on absent ticker (Codex R2-Minor)** — calling it for a ticker not on the active watchlist
+    raises `WatchlistEntryNotFoundError` via the `rowcount != 1` authority (no separate SELECT), and the route maps it
+    to 404.
 
 ---
 
@@ -378,12 +465,17 @@ allowlist; the shadow engine + temporal log + measurement chain; the 16 historic
 - `swing/data/models.py` — `WatchlistEntry` gains 3 fields (defaults).
 - `swing/data/repos/watchlist.py` — `_row_to_entry` + SELECTs widened; `upsert` INSERT widened / DO-UPDATE excludes pin
   cols; new `set_watchlist_pin` writer.
-- `swing/watchlist/service.py` — `pinned_tickers` param + `suppressed_removes` lane + the veto branch (pure).
-- `swing/pipeline/runner.py` — `_step_evaluate` pinned-universe injection + audit line; `_step_watchlist` passes
-  `pinned_tickers` + emits suppressed-remove warnings.
+- `swing/watchlist/service.py` — `pinned_tickers` param + `suppressed_removes` lane + the veto branch + the
+  last_*-preservation rule for error/None-data not-qualifies candidates (§5.1/§6) — all pure.
+- `swing/pipeline/runner.py` — `_step_evaluate` pinned-universe injection + audit line + the `error_tickers`-vs-
+  `excluded` dedup (§5); `_step_watchlist` passes `pinned_tickers` + emits suppressed-remove warnings.
 - `swing/recommendations/hypothesis_prefill.py` — `include_baseline=True` (one line).
-- `swing/web/view_models/watchlist.py` — `cohort_hints` builder (`include_baseline=True`) + `WatchlistVM.cohort_hints`.
-- `swing/web/routes/watchlist.py` — `POST /watchlist/{ticker}/pin`.
+- `swing/web/view_models/watchlist.py` — the shared `cohort_hint_for(candidate, registry)` helper (the LONE hint
+  `include_baseline=True`) + `WatchlistVM.cohort_hints` + `WatchlistRowVM.cohort_hint`.
+- `swing/web/view_models/dashboard.py` — `DashboardVM.cohort_hints` populated via a FUNCTION-LOCAL import of
+  `cohort_hint_for` (avoids the `dashboard → watchlist → dashboard` cycle, §8; top-5 chip; NOT a recommendation opt-in
+  — dashboard's two matcher calls stay `include_baseline=False`).
+- `swing/web/routes/watchlist.py` — `POST /watchlist/{ticker}/pin`; the `/row` route passes `cohort_hint` in context.
 - `swing/web/templates/partials/watchlist_row.html.j2` + `watchlist_expanded.html.j2` — badge + hint chip + pin form.
 - Tests (§10) + this spec doc + the 0026 addendum (§13).
 
@@ -430,10 +522,14 @@ NOT its spirit. The containment of the *recommendation flood* surfaces is preser
    a recommendation row on every watch ticker") never applied to it: it surfaces exactly one label for one
    operator-selected ticker. Labeling watch trades with `Broad-watch baseline` is the PERMITTED secondary use already
    sanctioned in §5.3.
-2. **`swing/web/view_models/watchlist.py` — the per-row cohort-hint builder** (`build_watchlist`). Rationale: an
-   affordance that tells the operator what a name WOULD attribute as on entry (narrow name | `broad-watch` | none). It
-   is read-only, surfaces no recommendation row, and drives no ranking — it is an attribution *preview*, not a
-   recommendation. It does not call `prioritize_recommendations`.
+2. **`swing/web/view_models/watchlist.py` — the per-row cohort-hint helper** (`cohort_hint_for`, the LONE
+   `include_baseline=True` for the hint). Rationale: an affordance that tells the operator what a name WOULD attribute
+   as on entry (narrow name | `broad-watch` | none). It is read-only, surfaces no recommendation row, and drives no
+   ranking — it is an attribution *preview*, not a recommendation. It does not call `prioritize_recommendations`. The
+   helper is consumed by THREE read-only render sites — the standalone watchlist page (`build_watchlist`), the
+   `/watchlist/{ticker}/row` collapse route, and the dashboard top-5 section (`build_dashboard`, which imports it) —
+   all of which render the same chip and none of which produce a recommendation row. Because the literal opt-in lives
+   in this single helper, the inventory guard's "exactly 3 files" invariant holds.
 
 **Still CONTAINED (unchanged, default `include_baseline=False`).** The live *recommendation* surfaces remain contained:
 `swing/web/view_models/dashboard.py` (~L540 + ~L1061, the recommendations build + the 2nd matcher call) and
