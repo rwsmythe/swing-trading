@@ -138,6 +138,16 @@
 
 ---
 
+## Arc 9 — Cadence-review watch-standard references [research-director-commissioned 2026-06-10, operator-approved; QUEUED LAST per operator sequencing]
+
+**Commission:** [`docs/phase16-cadence-watch-references-commissioning-brief.md`](phase16-cadence-watch-references-commissioning-brief.md) — a deliberately SMALL arc: static watch-standard references on the cadence-review pages so the operator's review ritual carries the watch ritual. **R1** weekly page → run `python scripts/weekly_glance.py` (standard §2.1; escalate `ATTENTION` lines to the research director). **R2** monthly page → the monthly evaluator read is due (§3) + every 3rd read = the quarterly strategic evaluation (§1). **R3** static text ONLY (Jinja conditionals on `review_type` fine; NO schema; no new VM fields unless unavoidable; ASCII; **pointer-not-fork** — cite `docs/research-director-watch-standard.md`, never duplicate its content). **R4** TestClient per-type text-isolation assertions + a LIGHT browser witness (full-page renders — the heavy HTMX gate discipline does not apply). **R5** placement latitude (`cadence_complete.html.j2` is the grounded hook [renders `review_type`; route @trades.py:2939]; `reviews_pending` optional additional home).
+**Orchestrator grounding (2026-06-10, accepted):** all anchors verified on disk (the template renders `review_type` at L2/L4; the route at 2939; the standard doc + `scripts/weekly_glance.py` exist). **Cycle shape: ONE focused-executing dispatch** (commission-sanctioned; the design space is exact-text + placement). Dispatch brief authored fresh at dispatch time (re-ground trades.py line anchors — Arc 7's executing touches that file).
+
+- [ ] **9a — Focused executing** (dispatch LAST — after Arc 7 lands + Arc 8; on operator go).
+- [ ] **9b — Light operator browser witness** (one look at each page type) + the research-director rendered-text QA at their next read.
+
+---
+
 ## Sequencing (operator's call)
 
 - **Arc 1** is the highest-leverage + smallest (1a + 1b alone would have answered the #96 question) — likely a focused executing-with-Codex, possibly folding 1a+1b into one cycle.
