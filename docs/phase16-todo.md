@@ -125,6 +125,19 @@
 
 ---
 
+## Arc 8 — Trailing-bar NaN-Close write barrier [operator-approved 2026-06-10; QUEUED — not yet dispatched]
+
+**Origin:** the run-#99 (Arc 6c gate) data event — 134 archives took a trailing NaN-Close bar from unsettled yfinance adjustment data (pattern uniformly `('Close',)` with O/H/L/V present; SPY's written by the SERIAL path; 8 instances predate Arc 6 → a recurring, path-independent failure mode). The gap fetch never re-pulls a stored day, so ragged trailing bars persist (NaN-poisoning SMAs/weather/eval) until each ticker's ≤13-day staggered full refresh — run #99 needed a manual 134-archive repair. The operator concurred 2026-06-10 with the flagged follow-up.
+
+**Mandate:** treat the NEWEST (trailing) bar's NaN-Close as **F6-transient at the archive write barrier** — do NOT append the ragged bar (trim it from the fetched window; append any clean prefix); leave meta stale so the next call retries; emit a #27 audit line when the barrier fires (count + tickers). **One shared predicate covering BOTH write paths** (the serial gap/full-refresh path AND the Arc-6 warm batch path — the Arc-6 `_full_refresh_due` shared-predicate lesson: two implementations WILL diverge). **Explicitly scoped against the Phase-15 bad-bar-accept decision:** that posture governs HISTORICAL bad bars (accept-and-document, gotcha #26 family) and is UNCHANGED; this barrier guards only the incoming trailing bar, where retry-tomorrow is cheap and strictly better (run #99 is the evidence). Consumers degrade gracefully: weather classifies off the prior completed bar instead of crashing on NULL.
+
+**Constraints:** NO schema (v26). Footprint: `swing/data/ohlcv_archive.py` (+ tests) — the established Arc-6 carve-out territory. Tests built from the REAL run-#99 shape (NaN-Close-only rows, multi-day gap windows where only the tail is ragged). Likely a focused executing-with-Codex (small, empirically-characterized design space) — cycle shape is the orchestrator's call at dispatch. Post-ship: a CLAUDE.md F6-family gotcha addendum.
+
+- [ ] **8a — Dispatch** (on operator go; minimal conflict surface — Arc 7 is watchlist/web; Arc 6 is merged).
+- [ ] **8b — Verification:** the next yfinance raggedness event (or a synthetic-injected run) shows the barrier firing + the audit line + NO ragged archive rows + weather/charts surviving.
+
+---
+
 ## Sequencing (operator's call)
 
 - **Arc 1** is the highest-leverage + smallest (1a + 1b alone would have answered the #96 question) — likely a focused executing-with-Codex, possibly folding 1a+1b into one cycle.
