@@ -72,6 +72,7 @@ def record_snapshot(
     source_artifact_path: str | None = None,
     recorded_by: str = "operator",
     notes: str | None = None,
+    basis: str = "net_liq",
 ) -> AccountEquitySnapshot:
     """Record (insert or upsert) an account equity snapshot.
 
@@ -125,6 +126,7 @@ def record_snapshot(
         recorded_at=recorded_at,
         recorded_by=recorded_by,
         notes=notes,
+        basis=basis,
     )
 
     # Single transaction: BEGIN IMMEDIATE / upsert / COMMIT.
@@ -139,6 +141,7 @@ def record_snapshot(
             recorded_at=candidate.recorded_at,
             recorded_by=candidate.recorded_by,
             notes=candidate.notes,
+            basis=candidate.basis,
         )
         conn.commit()
     except Exception:
@@ -155,6 +158,7 @@ def record_snapshot(
         recorded_at=candidate.recorded_at,
         recorded_by=candidate.recorded_by,
         notes=candidate.notes,
+        basis=candidate.basis,
     )
 
 

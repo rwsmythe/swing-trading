@@ -427,8 +427,10 @@ def run_tos_reconciliation(
         )
         account_equity_journal: float | None = None
         if period_end_str is not None:
+            # NLV-only read (spec §7.2): the TOS net-liq compare must never
+            # pick up a future cash-basis snapshot (migration 0029).
             journal_snap = get_latest_snapshot_on_or_before(
-                conn, asof_date=period_end_str,
+                conn, asof_date=period_end_str, basis="net_liq",
             )
             if journal_snap is not None:
                 account_equity_journal = journal_snap.equity_dollars

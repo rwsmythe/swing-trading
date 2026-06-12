@@ -373,6 +373,7 @@ def _step_schwab_snapshot(
         source_artifact_path=f"schwab_api:call/{call_id}",
         recorded_by="schwab_api",
         notes=None,
+        basis="net_liq",  # Schwab NLV is definitionally net-liq (migration 0029).
     )
     snapshot_id = snapshot.snapshot_id
 

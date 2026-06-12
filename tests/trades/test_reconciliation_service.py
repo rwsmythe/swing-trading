@@ -1077,6 +1077,7 @@ def _seed_equity_snapshot(
         recorded_at=now_ms(),
         recorded_by="operator",
         notes=None,
+    basis="net_liq",
     )
     conn.commit()
 
@@ -1249,16 +1250,19 @@ def test_equity_delta_uses_source_ladder_for_journal_snapshot(
         conn, snapshot_date="2026-05-12", equity_dollars=1300.0,
         source="manual", source_artifact_path=None,
         recorded_at=now_ms(), recorded_by="operator", notes=None,
+    basis="net_liq",
     )
     insert_snapshot(
         conn, snapshot_date="2026-05-12", equity_dollars=1320.0,
         source="tos_csv", source_artifact_path=None,
         recorded_at=now_ms(), recorded_by="operator", notes=None,
+    basis="net_liq",
     )
     insert_snapshot(
         conn, snapshot_date="2026-05-12", equity_dollars=1350.0,
         source="schwab_api", source_artifact_path=None,
         recorded_at=now_ms(), recorded_by="operator", notes=None,
+    basis="net_liq",
     )
     conn.commit()
 

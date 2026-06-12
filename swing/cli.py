@@ -3790,6 +3790,7 @@ def account_snapshot_cmd(
                 equity_dollars=equity_dollars,
                 snapshot_date=snapshot_date_str,
                 notes=notes,
+                basis="net_liq",  # operator account-value reading (migration 0029).
             )
         except ValueError as exc:
             raise click.ClickException(str(exc)) from exc

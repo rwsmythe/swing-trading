@@ -40,7 +40,7 @@ _TRADE_STATES = (
     "closed",
     "reviewed",
 )
-_CASH_MOVEMENT_KINDS = ("deposit", "withdraw")
+_CASH_MOVEMENT_KINDS = ("deposit", "withdraw", "interest", "dividend", "fee")
 _SNAPSHOT_SOURCES = ("manual", "schwab_api", "tos_csv")
 
 

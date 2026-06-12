@@ -162,6 +162,7 @@ def test_live_when_account_equity_snapshot_covers_data_asof_session(
                 recorded_at=datetime.now().isoformat(timespec="seconds"),
                 recorded_by="test",
                 notes="P14.N3 LIVE fixture",
+            basis="net_liq",
             )
     finally:
         conn.close()
@@ -222,6 +223,7 @@ def test_effective_pct_recomputed_via_compute_position_capital_utilization_when_
                 recorded_at=datetime.now().isoformat(timespec="seconds"),
                 recorded_by="test",
                 notes="P14.N3 divergent-denom fixture",
+            basis="net_liq",
             )
     finally:
         conn.close()

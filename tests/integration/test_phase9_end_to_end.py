@@ -446,6 +446,7 @@ def test_phase9_bundle_c_e2e_account_snapshot_and_hypothesis_audit(
             recorded_at=now_ms(),
             recorded_by="operator",
             notes=None,
+        basis="net_liq",
         )
         insert_snapshot(
             conn,
@@ -456,6 +457,7 @@ def test_phase9_bundle_c_e2e_account_snapshot_and_hypothesis_audit(
             recorded_at=now_ms(),
             recorded_by="operator",
             notes=None,
+        basis="net_liq",
         )
         conn.commit()
         result = get_latest_snapshot_on_or_before(

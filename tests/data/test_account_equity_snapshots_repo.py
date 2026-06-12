@@ -54,6 +54,7 @@ def test_insert_snapshot_returns_assigned_snapshot_id(
         recorded_at=now_ms(),
         recorded_by="operator",
         notes=None,
+    basis="net_liq",
     )
     assert isinstance(sid, int)
     assert sid >= 1
@@ -72,6 +73,7 @@ def test_insert_snapshot_persists_all_fields(
         recorded_at=recorded,
         recorded_by="operator",
         notes="test note",
+    basis="net_liq",
     )
     row = conn.execute(
         "SELECT snapshot_date, equity_dollars, source, source_artifact_path, "
@@ -98,6 +100,7 @@ def test_upsert_snapshot_first_call_inserts(conn: sqlite3.Connection) -> None:
         recorded_at=now_ms(),
         recorded_by="operator",
         notes=None,
+    basis="net_liq",
     )
     assert sid >= 1
     row = conn.execute(
@@ -123,6 +126,7 @@ def test_upsert_snapshot_second_call_updates_same_pk(
         recorded_at="2026-05-12T10:00:00.000",
         recorded_by="operator",
         notes=None,
+    basis="net_liq",
     )
     second = upsert_snapshot(
         conn,
@@ -133,6 +137,7 @@ def test_upsert_snapshot_second_call_updates_same_pk(
         recorded_at="2026-05-12T11:00:00.000",
         recorded_by="operator",
         notes="updated",
+    basis="net_liq",
     )
     assert first == second, (
         "PK must be preserved on re-record (no DELETE+INSERT semantics)"
@@ -159,6 +164,7 @@ def test_upsert_snapshot_distinct_sources_for_same_date_are_separate_rows(
         recorded_at=now_ms(),
         recorded_by="operator",
         notes=None,
+    basis="net_liq",
     )
     tos_id = upsert_snapshot(
         conn,
@@ -169,6 +175,7 @@ def test_upsert_snapshot_distinct_sources_for_same_date_are_separate_rows(
         recorded_at=now_ms(),
         recorded_by="operator",
         notes=None,
+    basis="net_liq",
     )
     schwab_id = upsert_snapshot(
         conn,
@@ -179,6 +186,7 @@ def test_upsert_snapshot_distinct_sources_for_same_date_are_separate_rows(
         recorded_at=now_ms(),
         recorded_by="operator",
         notes=None,
+    basis="net_liq",
     )
     assert len({manual_id, tos_id, schwab_id}) == 3
     rows = conn.execute(
@@ -208,6 +216,7 @@ def test_get_latest_returns_only_snapshot(conn: sqlite3.Connection) -> None:
         recorded_at=now_ms(),
         recorded_by="operator",
         notes=None,
+    basis="net_liq",
     )
     result = get_latest_snapshot_on_or_before(conn, asof_date="2026-05-12")
     assert isinstance(result, AccountEquitySnapshot)
@@ -225,6 +234,7 @@ def test_get_latest_skips_dates_after_asof(conn: sqlite3.Connection) -> None:
         recorded_at=now_ms(),
         recorded_by="operator",
         notes=None,
+    basis="net_liq",
     )
     insert_snapshot(
         conn,
@@ -235,6 +245,7 @@ def test_get_latest_skips_dates_after_asof(conn: sqlite3.Connection) -> None:
         recorded_at=now_ms(),
         recorded_by="operator",
         notes=None,
+    basis="net_liq",
     )
     result = get_latest_snapshot_on_or_before(conn, asof_date="2026-05-15")
     assert result is not None
@@ -257,6 +268,7 @@ def test_get_latest_source_ladder_schwab_beats_tos_beats_manual(
         recorded_at="2026-05-12T10:00:00.000",
         recorded_by="operator",
         notes=None,
+    basis="net_liq",
     )
     insert_snapshot(
         conn,
@@ -267,6 +279,7 @@ def test_get_latest_source_ladder_schwab_beats_tos_beats_manual(
         recorded_at="2026-05-12T11:00:00.000",
         recorded_by="operator",
         notes=None,
+    basis="net_liq",
     )
     insert_snapshot(
         conn,
@@ -277,6 +290,7 @@ def test_get_latest_source_ladder_schwab_beats_tos_beats_manual(
         recorded_at="2026-05-12T12:00:00.000",
         recorded_by="operator",
         notes=None,
+    basis="net_liq",
     )
     result = get_latest_snapshot_on_or_before(conn, asof_date="2026-05-12")
     assert result is not None
@@ -296,6 +310,7 @@ def test_get_latest_source_ladder_tos_beats_manual_when_no_schwab(
         recorded_at="2026-05-12T10:00:00.000",
         recorded_by="operator",
         notes=None,
+    basis="net_liq",
     )
     insert_snapshot(
         conn,
@@ -306,6 +321,7 @@ def test_get_latest_source_ladder_tos_beats_manual_when_no_schwab(
         recorded_at="2026-05-12T11:00:00.000",
         recorded_by="operator",
         notes=None,
+    basis="net_liq",
     )
     result = get_latest_snapshot_on_or_before(conn, asof_date="2026-05-12")
     assert result is not None
@@ -330,6 +346,7 @@ def test_get_latest_with_provenance_returns_winner_and_suppressed(
         recorded_at="2026-05-12T10:00:00.000",
         recorded_by="operator",
         notes=None,
+    basis="net_liq",
     )
     insert_snapshot(
         conn,
@@ -340,6 +357,7 @@ def test_get_latest_with_provenance_returns_winner_and_suppressed(
         recorded_at="2026-05-12T11:00:00.000",
         recorded_by="operator",
         notes=None,
+    basis="net_liq",
     )
     insert_snapshot(
         conn,
@@ -350,6 +368,7 @@ def test_get_latest_with_provenance_returns_winner_and_suppressed(
         recorded_at="2026-05-12T12:00:00.000",
         recorded_by="operator",
         notes=None,
+    basis="net_liq",
     )
     result = get_latest_snapshot_on_or_before(
         conn, asof_date="2026-05-12", with_provenance=True,
@@ -373,6 +392,7 @@ def test_get_latest_with_provenance_empty_suppressed_for_single_source(
         recorded_at=now_ms(),
         recorded_by="operator",
         notes=None,
+    basis="net_liq",
     )
     result = get_latest_snapshot_on_or_before(
         conn, asof_date="2026-05-12", with_provenance=True,
@@ -409,6 +429,7 @@ def test_get_latest_source_ladder_only_within_same_date(
         recorded_at=now_ms(),
         recorded_by="operator",
         notes=None,
+    basis="net_liq",
     )
     insert_snapshot(
         conn,
@@ -419,6 +440,7 @@ def test_get_latest_source_ladder_only_within_same_date(
         recorded_at=now_ms(),
         recorded_by="operator",
         notes=None,
+    basis="net_liq",
     )
     result = get_latest_snapshot_on_or_before(conn, asof_date="2026-05-12")
     assert result is not None
@@ -444,6 +466,7 @@ def test_list_snapshots_returns_newest_date_first(
             recorded_at=now_ms(),
             recorded_by="operator",
             notes=None,
+        basis="net_liq",
         )
     rows = list_snapshots(conn)
     dates = [r.snapshot_date for r in rows]
@@ -461,6 +484,7 @@ def test_list_snapshots_respects_limit(conn: sqlite3.Connection) -> None:
             recorded_at=now_ms(),
             recorded_by="operator",
             notes=None,
+        basis="net_liq",
         )
     rows = list_snapshots(conn, limit=2)
     assert len(rows) == 2
@@ -485,6 +509,7 @@ def test_repo_does_not_commit(conn: sqlite3.Connection) -> None:
         recorded_at=now_ms(),
         recorded_by="operator",
         notes=None,
+    basis="net_liq",
     )
     assert conn.in_transaction is True, (
         "repo function must NOT commit the caller's transaction"

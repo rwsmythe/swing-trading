@@ -153,6 +153,7 @@ async def account_snapshot_post(request: Request) -> Response:
             equity_dollars=equity_dollars,
             snapshot_date=snapshot_date,
             notes=note_raw,
+            basis="net_liq",  # operator account-value reading (migration 0029).
         )
     except ValueError as exc:
         return _render_form(

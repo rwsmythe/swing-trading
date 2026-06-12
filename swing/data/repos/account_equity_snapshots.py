@@ -27,7 +27,7 @@ from swing.data.models import AccountEquitySnapshot
 
 _SELECT_COLUMNS = (
     "snapshot_id, snapshot_date, equity_dollars, source, "
-    "source_artifact_path, recorded_at, recorded_by, notes"
+    "source_artifact_path, recorded_at, recorded_by, notes, basis"
 )
 
 # Source-ladder precedence: lower integer wins under MIN(precedence).
@@ -52,6 +52,7 @@ def _row_to_model(row: tuple) -> AccountEquitySnapshot:
         recorded_at=row[5],
         recorded_by=row[6],
         notes=row[7],
+        basis=row[8],
     )
 
 
@@ -65,15 +66,20 @@ def insert_snapshot(
     recorded_at: str,
     recorded_by: str,
     notes: str | None,
+    basis: str,
 ) -> int:
-    """Pure INSERT inside caller's transaction. Returns assigned snapshot_id."""
+    """Pure INSERT inside caller's transaction. Returns assigned snapshot_id.
+
+    ``basis`` (net_liq/cash, migration 0029) has NO default -- every writer
+    stamps it explicitly (#11 write-path discipline).
+    """
     cur = conn.execute(
         "INSERT INTO account_equity_snapshots ("
         "snapshot_date, equity_dollars, source, source_artifact_path, "
-        "recorded_at, recorded_by, notes"
-        ") VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "recorded_at, recorded_by, notes, basis"
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (snapshot_date, equity_dollars, source, source_artifact_path,
-         recorded_at, recorded_by, notes),
+         recorded_at, recorded_by, notes, basis),
     )
     return int(cur.lastrowid)
 
@@ -88,21 +94,26 @@ def upsert_snapshot(
     recorded_at: str,
     recorded_by: str,
     notes: str | None,
+    basis: str,
 ) -> int:
-    """SELECT-then-UPDATE-or-INSERT keyed on (snapshot_date, source).
+    """SELECT-then-UPDATE-or-INSERT keyed on (snapshot_date, source, basis).
 
     PK preservation is the binding contract — re-record for the same
-    ``(snapshot_date, source)`` UPDATEs the existing row's mutable columns
-    in place; never DELETE+INSERT. Per CLAUDE.md SQLite gotcha, the
+    ``(snapshot_date, source, basis)`` UPDATEs the existing row's mutable
+    columns in place; never DELETE+INSERT. Per CLAUDE.md SQLite gotcha, the
     ``REPLACE`` shorthand would CASCADE-WIPE any child FK referrers +
     reissue a new PK. The UPSERT path here defends against both.
+
+    The conflict key includes ``basis`` (migration 0029 widened the
+    uniqueness index to ``(snapshot_date, source, basis)``) so a net_liq and
+    a cash snapshot for the same date+source coexist as distinct rows.
 
     Returns: snapshot_id of the row (existing if updated, new if inserted).
     """
     row = conn.execute(
         "SELECT snapshot_id FROM account_equity_snapshots "
-        "WHERE snapshot_date = ? AND source = ?",
-        (snapshot_date, source),
+        "WHERE snapshot_date = ? AND source = ? AND basis = ?",
+        (snapshot_date, source, basis),
     ).fetchone()
     if row is not None:
         existing_id = int(row[0])
@@ -124,6 +135,7 @@ def upsert_snapshot(
         recorded_at=recorded_at,
         recorded_by=recorded_by,
         notes=notes,
+        basis=basis,
     )
 
 
@@ -131,6 +143,7 @@ def get_latest_snapshot_on_or_before(
     conn: sqlite3.Connection,
     *,
     asof_date: str,
+    basis: str | None = None,
     with_provenance: bool = False,
 ) -> (
     AccountEquitySnapshot
@@ -142,25 +155,44 @@ def get_latest_snapshot_on_or_before(
     Source-ladder tiebreaker (spec §3.5 + §11.4): when multiple sources
     coexist at the SAME snapshot_date, schwab_api > tos_csv > manual.
 
+    When ``basis`` is non-None (migration 0029), the read is restricted to
+    that basis (net_liq/cash) in BOTH the MAX-date subquery and the row
+    SELECT — so an NLV-only consumer (equity_resolver, the §6.2 tile line,
+    the reconciliation snapshot read) never sees a cash-basis row.
+
     With ``with_provenance=True`` (per spec §3.5 R4 Minor #3): returns
     a tuple ``(winner, suppressed)`` where ``suppressed`` is the list of
     rows at the winning snapshot_date that LOST the precedence contest
     (for operator-meaningful UI rendering).
     """
     # Step 1: find the most-recent snapshot_date <= asof_date.
-    max_date = conn.execute(
-        "SELECT MAX(snapshot_date) FROM account_equity_snapshots "
-        "WHERE snapshot_date <= ?",
-        (asof_date,),
-    ).fetchone()[0]
+    if basis is None:
+        max_date = conn.execute(
+            "SELECT MAX(snapshot_date) FROM account_equity_snapshots "
+            "WHERE snapshot_date <= ?",
+            (asof_date,),
+        ).fetchone()[0]
+    else:
+        max_date = conn.execute(
+            "SELECT MAX(snapshot_date) FROM account_equity_snapshots "
+            "WHERE snapshot_date <= ? AND basis = ?",
+            (asof_date, basis),
+        ).fetchone()[0]
     if max_date is None:
         return None
-    # Step 2: fetch ALL rows at that date.
-    rows = conn.execute(
-        f"SELECT {_SELECT_COLUMNS} FROM account_equity_snapshots "
-        "WHERE snapshot_date = ?",
-        (max_date,),
-    ).fetchall()
+    # Step 2: fetch ALL rows at that date (optionally basis-filtered).
+    if basis is None:
+        rows = conn.execute(
+            f"SELECT {_SELECT_COLUMNS} FROM account_equity_snapshots "
+            "WHERE snapshot_date = ?",
+            (max_date,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            f"SELECT {_SELECT_COLUMNS} FROM account_equity_snapshots "
+            "WHERE snapshot_date = ? AND basis = ?",
+            (max_date, basis),
+        ).fetchall()
     if not rows:
         # Defensive: should not happen given step 1's MAX existed.
         return None

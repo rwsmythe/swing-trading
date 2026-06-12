@@ -49,7 +49,7 @@ def resolve_live_capital_denominator_dollars(
     raw value + the LIVE/PROVISIONAL discriminator.
     """
     snapshot = get_latest_snapshot_on_or_before(
-        conn, asof_date=asof_date.isoformat(),
+        conn, asof_date=asof_date.isoformat(), basis="net_liq",
     )
     if snapshot is not None:
         # `get_latest_snapshot_on_or_before` without `with_provenance` returns

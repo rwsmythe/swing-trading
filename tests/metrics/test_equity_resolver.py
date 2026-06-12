@@ -33,6 +33,7 @@ def _insert(
         recorded_at=snapshot_date + "T00:00:00.000",
         recorded_by="test",
         notes=None,
+    basis="net_liq",
     )
     conn.commit()
 
