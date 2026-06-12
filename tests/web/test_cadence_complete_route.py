@@ -300,6 +300,7 @@ def test_weekly_review_shows_glance_reference_not_monthly(tmp_path: Path):
     assert _WEEKLY_MARKER in r.text
     assert _WEEKLY_ESCALATION in r.text
     assert "research-director-watch-standard.md" in r.text
+    assert "section 2.1" in r.text
     # ...and NOT the monthly-specific text.
     assert _MONTHLY_MARKER not in r.text
     assert _MONTHLY_DUE not in r.text
@@ -314,6 +315,8 @@ def test_monthly_review_shows_monthly_reference_not_weekly(tmp_path: Path):
     assert _MONTHLY_DUE in r.text
     assert _MONTHLY_MARKER in r.text
     assert "research-director-watch-standard.md" in r.text
+    assert "section 3" in r.text
+    assert "section 1" in r.text
     # ...and NOT the weekly glance command or escalation reminder.
     assert _WEEKLY_MARKER not in r.text
     assert _WEEKLY_ESCALATION not in r.text
@@ -351,5 +354,6 @@ def test_cadence_references_are_ascii_only(tmp_path: Path):
             r.text, re.DOTALL,
         )
         assert m is not None, f"{review_type}: reference section not rendered"
-        # The reference block must encode cleanly as ASCII (no '§', em-dash...).
-        m.group(1).encode("ascii")
+        # The whole reference block (opening tag included) must encode cleanly
+        # as ASCII (no '§', em-dash, smart quotes...).
+        m.group(0).encode("ascii")
