@@ -1454,7 +1454,29 @@ def run_schwab_reconciliation(
         # V2 widening (operator may post-hoc the cash_movement after running
         # reconciliation).
         _matched_schwab_tx: set = set()
+        # Arc 4b (Codex R8) — PASS 1: exact transactionId-in-ref reservations
+        # (spec §4.1 "Primary dedup = transactionId exact"; §4.4 "freshly-ingested
+        # rows match their own source transaction by ref"). Done across ALL rows
+        # FIRST so a ref-backed row always claims its own (unique) transaction
+        # before any same-date/same-amount ref-less manual row can steal it via
+        # the heuristic — and a ref-backed row whose tx sits outside the ±4d
+        # window still matches.
+        _ref_matched_cm_ids: set = set()
         for cm in journal_cash_in_period:
+            if not cm.ref:
+                continue
+            for idx, tx in enumerate(schwab_transactions):
+                if idx in _matched_schwab_tx:
+                    continue
+                if str(tx.transaction_id) == cm.ref:
+                    _matched_schwab_tx.add(idx)
+                    if cm.id is not None:
+                        _ref_matched_cm_ids.add(cm.id)
+                    break
+        # PASS 2: heuristic for the rows not matched by exact ref.
+        for cm in journal_cash_in_period:
+            if cm.id is not None and cm.id in _ref_matched_cm_ids:
+                continue  # already matched by exact transactionId in pass 1
             j_amount = abs(float(cm.amount))
             # Arc 4b Task 7 — the 5-kind kind->type map (interest/dividend/fee
             # ride DIVIDEND_OR_INTEREST; sign disambiguates). Unknown kinds
@@ -1476,8 +1498,8 @@ def run_schwab_reconciliation(
                     or (not want_sign_positive and tx.net_amount >= 0)
                 ):
                     continue
-                # Arc 4b Task 7 — ±4-day shared window predicate (was an exact-
-                # date equality; the brittleness that produced the live 66/67).
+                # Arc 4b Task 7 — ±4-day shared window predicate (was an
+                # exact-date equality; the brittleness that produced 66/67).
                 if not _within_cash_match_window(
                     tx.transaction_date, cm.date, days=4,
                 ):
