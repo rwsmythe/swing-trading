@@ -16,6 +16,10 @@ swing-data/
 .DS_Store
 Thumbs.db
 
+# Inter-role file mailbox (comms Stage 1) — operational coordination traffic,
+# never tracked. The durable record of decisions remains charters/briefs.
+comms/
+
 # Legacy — archived for reference but not tracked
 reference/archive/
 legacy/
