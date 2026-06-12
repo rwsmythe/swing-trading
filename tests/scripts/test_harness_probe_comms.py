@@ -75,6 +75,14 @@ def test_fractional_over_7_days_is_stale(comms):
     assert any(level == "ATTENTION" for level, _ in rows)
 
 
+def test_ceil_day_display_rounds_up_just_over_7d(comms):
+    # 7 days + 1 second must display as "8d", never "7d (>7d)".
+    _make_msg(comms, "charc", NOW - timedelta(days=7, seconds=1))
+    rows = harness_probe._scan_comms(comms, NOW)
+    attn = [line for level, line in rows if level == "ATTENTION"]
+    assert any("8d" in line for line in attn)
+
+
 def test_operator_line_when_nonzero(comms):
     _make_msg(comms, "operator", NOW - timedelta(hours=1), slug="approve")
     rows = harness_probe._scan_comms(comms, NOW)

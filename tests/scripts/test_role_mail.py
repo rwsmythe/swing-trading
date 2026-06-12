@@ -326,3 +326,32 @@ def test_multi_recipient_post_is_atomic_on_failure(comms, monkeypatch):
     assert rc == 1
     # partial delivery must not happen: no final .md anywhere.
     assert list(Path(comms).rglob("*.md")) == []
+
+
+def test_multi_recipient_replace_failure_rolls_back(comms, monkeypatch):
+    calls = {"n": 0}
+    orig = role_mail.os.replace
+
+    def boom(src, dst):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise OSError("simulated replace failure")
+        return orig(src, dst)
+
+    monkeypatch.setattr(role_mail.os, "replace", boom)
+    rc = _post(comms, **{"from": "orchestrator", "to": "charc,rd",
+                         "type": "status", "subject": "rollback", "body": "x"})
+    assert rc == 1
+    # the first recipient's final must be rolled back, no temps left behind.
+    assert list(Path(comms).rglob("*.md")) == []
+    assert list(Path(comms).rglob("*.tmp")) == []
+
+
+def test_error_output_ascii_with_unicode_input(comms, capsys):
+    # a non-cp1252 --from value must not crash the error path itself.
+    rc = role_mail.main(["post", "--comms-root", str(comms),
+                         "--from", "\U0001F680nihon", "--to", "rd",
+                         "--type", "fyi", "--subject", "s", "--body", "x"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    err.encode("cp1252")  # must not raise

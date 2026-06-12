@@ -255,8 +255,23 @@ def cmd_post(args: argparse.Namespace) -> int:
         raise MailError(
             f"post failed while staging ({exc}); nothing was delivered."
         ) from exc
-    for tmp, final in staged:
-        os.replace(str(tmp), str(final))
+    committed: list[Path] = []
+    try:
+        for tmp, final in staged:
+            os.replace(str(tmp), str(final))
+            committed.append(final)
+    except OSError as exc:
+        # Partial delivery: roll back the finals we already committed and drop
+        # any temps not yet replaced, so the post stays all-or-nothing.
+        for final in committed:
+            with contextlib.suppress(OSError):
+                final.unlink()
+        for tmp, _ in staged:
+            with contextlib.suppress(OSError):
+                tmp.unlink()
+        raise MailError(
+            f"post failed during delivery ({exc}); rolled back, nothing delivered."
+        ) from exc
 
     for final, _ in targets:
         print(f"posted -> {final.parent.parent.name}/inbox/{final.name}")
@@ -409,7 +424,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return args.func(args)
     except MailError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        # Sanitize: the message can echo raw user input (sender/role values).
+        print(f"error: {_ascii(str(exc))}", file=sys.stderr)
         return 1
 
 

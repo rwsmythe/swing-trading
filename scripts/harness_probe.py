@@ -17,6 +17,7 @@ Usage: python scripts/harness_probe.py [--root PATH] [--memory-dir PATH]
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -83,8 +84,9 @@ def _scan_comms(comms_dir: Path, now: datetime) -> list[tuple[str, str]]:
         if posts:
             oldest_td = now - min(posts)
             if oldest_td > threshold:  # strictly older than 7 days
-                # ceil-days display so 7d12h reads as "8d", never "7d (>7d)".
-                disp = -(-int(oldest_td.total_seconds()) // 86_400)
+                # ceil-days display so 7d12h reads as "8d", never "7d (>7d)";
+                # ceil on the float so 7d+0.5s also rounds up.
+                disp = math.ceil(oldest_td.total_seconds() / 86_400)
                 rows.append((
                     "ATTENTION",
                     f"comms {role}: oldest unread is {disp}d old "
