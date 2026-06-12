@@ -106,10 +106,11 @@ def _apply_equity_snapshot_table(db_path: Path) -> None:
             source_artifact_path TEXT,
             recorded_at TEXT NOT NULL,
             recorded_by TEXT NOT NULL,
-            notes TEXT
+            notes TEXT,
+            basis TEXT NOT NULL DEFAULT 'net_liq' CHECK (basis IN ('net_liq','cash'))
         );
-        CREATE UNIQUE INDEX IF NOT EXISTS ux_account_equity_snapshots_date_source
-            ON account_equity_snapshots (snapshot_date, source);
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_account_equity_snapshots_date_source_basis
+            ON account_equity_snapshots (snapshot_date, source, basis);
     """)
     conn.close()
 

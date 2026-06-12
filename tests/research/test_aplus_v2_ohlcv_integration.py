@@ -107,7 +107,8 @@ _INTEGRATION_DDL = [
          source_artifact_path TEXT,
          recorded_at TEXT,
          recorded_by TEXT,
-         notes TEXT
+         notes TEXT,
+         basis TEXT NOT NULL DEFAULT 'net_liq'
        )""",
 ]
 
