@@ -116,15 +116,21 @@ def _ensure_tree(root: Path) -> None:
         (root / role / "read").mkdir(parents=True, exist_ok=True)
 
 
-def _parse_recipients(raw: str) -> list[str]:
-    recips = [r.strip() for r in raw.split(",") if r.strip()]
+def _validate_recipients(recipients: list[str]) -> list[str]:
+    """Validate + de-dupe a recipient list (shared by the CLI and the UI seam).
+
+    Strips blanks, rejects an empty result and any role not in VALID_TO, and
+    de-dupes preserving order. Raises MailError on the first problem.
+    """
+    recips = [r.strip() for r in recipients if r and r.strip()]
     if not recips:
-        raise MailError("--to is empty; give one or more of: " + "|".join(VALID_TO))
+        raise MailError(
+            "no recipients given; valid roles: " + "|".join(VALID_TO))
     bad = [r for r in recips if r not in VALID_TO]
     if bad:
         raise MailError(
             "invalid recipient(s) " + ",".join(bad)
-            + "; valid --to roles: " + "|".join(VALID_TO)
+            + "; valid roles: " + "|".join(VALID_TO)
         )
     # de-dupe, preserve order
     seen: list[str] = []
@@ -132,6 +138,10 @@ def _parse_recipients(raw: str) -> list[str]:
         if r not in seen:
             seen.append(r)
     return seen
+
+
+def _parse_recipients(raw: str) -> list[str]:
+    return _validate_recipients(raw.split(","))
 
 
 def _resolve_body(args: argparse.Namespace) -> str:
@@ -209,43 +219,59 @@ def _read_frontmatter(path: Path) -> dict[str, str]:
     return fm
 
 
-# --- subcommands -----------------------------------------------------------
+# --- pure mail operations (the single write path; CLI + UI both go here) ----
 
-def cmd_post(args: argparse.Namespace) -> int:
-    root = _comms_root(args)
-    sender = args.__dict__["from"]
+def post_message(
+    root: Path,
+    sender: str,
+    recipients: list[str],
+    mtype: str,
+    subject: str,
+    body: str,
+    thread: str | None = None,
+) -> list[Path]:
+    """Validate, governance-lock, and atomically deliver one message.
+
+    The single write path for posting mail: the CLI (cmd_post) and the mail UI
+    both call THIS. Validation order is preserved from the original cmd_post
+    (sender -> type -> CR/LF guard -> recipients -> L1 lock) so CLI behavior is
+    byte-identical. Multi-recipient delivery is all-or-nothing (stage temps in
+    each destination dir, then os.replace each into place only once every temp
+    wrote cleanly; a failure rolls back). Raises MailError on any
+    validation/governance/IO failure; nothing partial is left behind. Returns
+    the list of committed final Paths (recipient order).
+    """
     if sender not in VALID_FROM:
         raise MailError(
             "invalid --from " + repr(sender)
             + "; valid senders: " + "|".join(VALID_FROM)
         )
-    if args.type not in VALID_TYPES:
+    if mtype not in VALID_TYPES:
         raise MailError(
-            "invalid --type " + repr(args.type)
+            "invalid --type " + repr(mtype)
             + "; valid types: " + "|".join(VALID_TYPES)
         )
     # Reject CR/LF in line-oriented frontmatter fields (frontmatter injection).
-    for label, value in (("subject", args.subject), ("thread", args.thread)):
+    for label, value in (("subject", subject), ("thread", thread)):
         if value is not None and ("\n" in value or "\r" in value):
             raise MailError(
-                f"--{label} may not contain newlines (frontmatter injection). "
+                f"{label} may not contain newlines (frontmatter injection). "
                 "Nothing was written."
             )
-    recipients = _parse_recipients(args.to)
+    recipients = _validate_recipients(recipients)
     # L1 governance lock: decision_request must address ONLY the operator.
-    if args.type == "decision_request" and any(r != "operator" for r in recipients):
+    if mtype == "decision_request" and any(r != "operator" for r in recipients):
         raise MailError(
             "L1: type 'decision_request' may be addressed ONLY to operator "
             "(role->role traffic is fyi|status|query|return_report). "
             "Nothing was written."
         )
-    body = _resolve_body(args)
     _ensure_tree(root)
 
     now = _now()
     stamp = now.strftime("%Y%m%dT%H%M%SZ")
     posted = now.strftime("%Y-%m-%dT%H:%M:%SZ")
-    slug = _slugify(args.subject)
+    slug = _slugify(subject)
 
     # Precompute every (final path, content) BEFORE writing anything so a
     # multi-recipient post delivers all-or-nothing (atomicity): stage temps in
@@ -254,7 +280,7 @@ def cmd_post(args: argparse.Namespace) -> int:
     targets = [
         (
             _unique_path(root / r / "inbox", stamp, sender, slug),
-            _compose(sender, r, args.type, args.subject, posted, args.thread, body),
+            _compose(sender, r, mtype, subject, posted, thread, body),
         )
         for r in recipients
     ]
@@ -298,7 +324,46 @@ def cmd_post(args: argparse.Namespace) -> int:
             f"post failed during delivery ({exc}); rolled back, nothing delivered."
         ) from exc
 
-    for final, _ in targets:
+    return committed
+
+
+def ack_message(root: Path, role: str, filename: str) -> Path:
+    """Ack one message: move root/<role>/inbox/<filename> -> read/ (returns it).
+
+    The single ack path (the CLI's cmd_read and the UI both call THIS). Uses
+    _unique_dest so an archived message of the same name is never overwritten
+    (ack must never delete history). filename MUST be a bare basename --
+    traversal attempts are rejected (L3 mail custody: the ack can never reach
+    outside the role's own inbox). Raises MailError on invalid role, traversal,
+    or a missing inbox file (the already-drained case the UI renders friendly).
+    """
+    if role not in VALID_TO:
+        raise MailError(
+            "invalid role " + repr(role) + "; valid roles: " + "|".join(VALID_TO))
+    if filename != Path(filename).name or "/" in filename or "\\" in filename:
+        raise MailError(f"refusing non-basename filename {filename!r}")
+    src = root / role / "inbox" / filename
+    if not src.is_file():
+        raise MailError(
+            f"no inbox message named {filename!r} for role {role}")
+    read_dir = root / role / "read"
+    read_dir.mkdir(parents=True, exist_ok=True)
+    dest = _unique_dest(read_dir, src.name)
+    src.rename(dest)
+    return dest
+
+
+# --- subcommands -----------------------------------------------------------
+
+def cmd_post(args: argparse.Namespace) -> int:
+    root = _comms_root(args)
+    sender = args.__dict__["from"]
+    body = _resolve_body(args)
+    # Split here; post_message validates (the single write path owns the rules).
+    recipients = [r.strip() for r in args.to.split(",") if r.strip()]
+    finals = post_message(
+        root, sender, recipients, args.type, args.subject, body, args.thread)
+    for final in finals:
         print(f"posted -> {final.parent.parent.name}/inbox/{final.name}")
     return 0
 
@@ -362,11 +427,9 @@ def cmd_read(args: argparse.Namespace) -> int:
     if not targets:
         print(f"inbox for {args.role} is empty; nothing to read.")
         return 0
-    read_dir = root / args.role / "read"
-    read_dir.mkdir(parents=True, exist_ok=True)
     for path in targets:
         _print_message(path)
-        path.rename(_unique_dest(read_dir, path.name))
+        ack_message(root, args.role, path.name)
     print(f"acked {len(targets)} message(s); moved inbox -> read.")
     return 0
 

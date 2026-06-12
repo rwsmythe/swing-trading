@@ -367,3 +367,153 @@ def test_argparse_error_output_is_ascii(capsys):
                         "--bogus\U0001F680flag"])
     captured = capsys.readouterr()
     (captured.out + captured.err).encode("cp1252")  # must not raise
+
+
+# --- pure functions: post_message / ack_message (T1, the single-write-path) --
+# These are the seam the mail UI writes through. The CLI is now a thin adapter
+# over them; the governance/atomicity guarantees must hold at THIS layer, not
+# only through argparse.
+
+def test_post_message_returns_committed_paths_and_writes_file(comms):
+    paths = role_mail.post_message(
+        comms, "charc", ["rd"], "status", "Arc 1 shipped", "All green.")
+    assert isinstance(paths, list)
+    assert len(paths) == 1
+    assert paths[0].is_file()
+    assert paths[0] == _inbox(comms, "rd")[0]
+    text = paths[0].read_text(encoding="utf-8")
+    assert "from: charc" in text
+    assert "to: rd" in text
+    assert "type: status" in text
+    assert "subject: Arc 1 shipped" in text
+    assert "All green." in text
+
+
+def test_post_message_multi_recipient(comms):
+    paths = role_mail.post_message(
+        comms, "orchestrator", ["charc", "rd"], "return_report",
+        "Stage 1 done", "report body")
+    assert len(paths) == 2
+    assert len(_inbox(comms, "charc")) == 1
+    assert len(_inbox(comms, "rd")) == 1
+
+
+def test_post_message_l1_lock_direct_non_operator_rejected(comms):
+    # The L1 governance lock must hold at the pure-function layer (the UI never
+    # offers decision_request, but the seam itself stays load-bearing).
+    with pytest.raises(role_mail.MailError):
+        role_mail.post_message(
+            comms, "charc", ["rd"], "decision_request", "approve?", "x")
+    assert list(Path(comms).rglob("*.md")) == []
+
+
+def test_post_message_l1_lock_direct_mixed_recipients_rejected(comms):
+    with pytest.raises(role_mail.MailError):
+        role_mail.post_message(
+            comms, "charc", ["operator", "charc"], "decision_request",
+            "approve?", "x")
+    assert list(Path(comms).rglob("*.md")) == []
+
+
+def test_post_message_l1_lock_direct_operator_allowed(comms):
+    paths = role_mail.post_message(
+        comms, "charc", ["operator"], "decision_request", "approve?", "x")
+    assert len(paths) == 1
+    assert len(_inbox(comms, "operator")) == 1
+
+
+def test_post_message_crlf_subject_rejected(comms):
+    with pytest.raises(role_mail.MailError):
+        role_mail.post_message(
+            comms, "charc", ["rd"], "fyi", "ok\ntype: decision_request", "x")
+    assert list(Path(comms).rglob("*.md")) == []
+
+
+def test_post_message_crlf_thread_rejected(comms):
+    with pytest.raises(role_mail.MailError):
+        role_mail.post_message(
+            comms, "charc", ["rd"], "fyi", "ok", "x", thread="a\nb")
+    assert list(Path(comms).rglob("*.md")) == []
+
+
+def test_post_message_invalid_sender_rejected(comms):
+    with pytest.raises(role_mail.MailError):
+        role_mail.post_message(comms, "bogus", ["rd"], "fyi", "s", "x")
+    assert list(Path(comms).rglob("*.md")) == []
+
+
+def test_post_message_invalid_recipient_rejected(comms):
+    with pytest.raises(role_mail.MailError):
+        role_mail.post_message(comms, "charc", ["bogus"], "fyi", "s", "x")
+    assert list(Path(comms).rglob("*.md")) == []
+
+
+def test_post_message_empty_recipients_rejected(comms):
+    with pytest.raises(role_mail.MailError):
+        role_mail.post_message(comms, "charc", [], "fyi", "s", "x")
+    assert list(Path(comms).rglob("*.md")) == []
+
+
+def test_post_message_invalid_type_rejected(comms):
+    with pytest.raises(role_mail.MailError):
+        role_mail.post_message(comms, "charc", ["rd"], "bogus", "s", "x")
+    assert list(Path(comms).rglob("*.md")) == []
+
+
+def test_post_message_dedupes_recipients(comms):
+    paths = role_mail.post_message(
+        comms, "charc", ["rd", "rd"], "fyi", "dupe", "x")
+    assert len(paths) == 1
+    assert len(_inbox(comms, "rd")) == 1
+
+
+def test_ack_message_moves_inbox_to_read_and_returns_dest(comms):
+    role_mail.post_message(comms, "charc", ["operator"], "fyi", "ack me", "body")
+    fname = _inbox(comms, "operator")[0].name
+    dest = role_mail.ack_message(comms, "operator", fname)
+    assert dest.is_file()
+    assert dest.parent.name == "read"
+    assert len(_inbox(comms, "operator")) == 0
+    assert len(_read_dir(comms, "operator")) == 1
+
+
+def test_ack_message_missing_file_raises(comms):
+    # The "already acked / drained via CLI in parallel" case: the UI catches
+    # this and renders a friendly flash rather than 500ing.
+    role_mail._ensure_tree(comms)
+    with pytest.raises(role_mail.MailError):
+        role_mail.ack_message(comms, "operator", "nonexistent-file.md")
+
+
+def test_ack_message_invalid_role_raises(comms):
+    with pytest.raises(role_mail.MailError):
+        role_mail.ack_message(comms, "bogus", "x.md")
+
+
+def test_ack_message_rejects_path_traversal(comms):
+    # Defense-in-depth (L3): a filename must be a bare basename; a traversal
+    # attempt must never reach outside the role's own inbox.
+    role_mail.post_message(comms, "charc", ["charc"], "fyi", "victim", "x")
+    victim = _inbox(comms, "charc")[0].name
+    role_mail._ensure_tree(comms)
+    for bad in (f"../charc/inbox/{victim}", "..\\charc\\inbox\\x.md",
+                "sub/dir.md"):
+        with pytest.raises(role_mail.MailError):
+            role_mail.ack_message(comms, "operator", bad)
+    # the charc inbox file is untouched
+    assert len(_inbox(comms, "charc")) == 1
+
+
+def test_ack_message_archive_not_overwritten_on_collision(comms, monkeypatch):
+    fixed = datetime(2026, 6, 11, 12, 0, 0, tzinfo=UTC)
+    monkeypatch.setattr(role_mail, "_now", lambda: fixed)
+    role_mail.post_message(comms, "charc", ["operator"], "fyi", "same", "AAA")
+    f1 = _inbox(comms, "operator")[0].name
+    role_mail.ack_message(comms, "operator", f1)
+    role_mail.post_message(comms, "charc", ["operator"], "fyi", "same", "BBB")
+    f2 = _inbox(comms, "operator")[0].name
+    role_mail.ack_message(comms, "operator", f2)
+    archived = _read_dir(comms, "operator")
+    assert len(archived) == 2
+    bodies = "".join(p.read_text(encoding="utf-8") for p in archived)
+    assert "AAA" in bodies and "BBB" in bodies
