@@ -186,7 +186,9 @@ _PAGE = """<!doctype html>
   details.msg .from { font-weight: 600; }
   details.msg .type { color: #555; font-size: 0.85rem; }
   details.msg .subject { flex: 1; }
+  .msg-row.decision-request details.msg,
   details.msg.decision-request { border-color: #c0392b; background: #fdecea; }
+  .msg-row.decision-request .type,
   details.msg.decision-request .type { color: #c0392b; font-weight: 700; }
   details.msg.stale { border-color: #e67e22; }
   details.msg .age { color: #e67e22; font-size: 0.8rem; }
@@ -235,19 +237,34 @@ _INBOX_PANE = """
 {%- if operator_unread %} ({{ operator_unread }}){% endif -%}
 </title>
 {%- endif %}
-<h2>Operator inbox -- {{ inbox_messages|length }} unread</h2>
+{% if flash %}<div class="flash {{ flash.cls }}">{{ flash.msg }}</div>{% endif %}
+<h2>Operator inbox -- {{ inbox_messages|length }} unread
+  {% if inbox_messages %}
+  <form hx-post="/ack-all" hx-target="#inbox-pane" hx-swap="innerHTML"
+        style="display:inline">
+    <button type="submit">Ack all</button>
+  </form>
+  {% endif %}
+</h2>
 {% if not inbox_messages %}<p class="empty">(inbox empty)</p>{% endif %}
 {% for m in inbox_messages %}
-<details class="msg
+<div class="msg-row
   {%- if m.is_decision_request %} decision-request{% endif %}">
-  <summary>
-    <span class="posted">{{ m.posted }}</span>
-    <span class="from">{{ m.frm }}</span>
-    <span class="type">{{ m.mtype }}</span>
-    <span class="subject">{{ m.subject }}</span>
-  </summary>
-  <pre class="body">{{ m.body }}</pre>
-</details>
+  <details class="msg">
+    <summary>
+      <span class="posted">{{ m.posted }}</span>
+      <span class="from">{{ m.frm }}</span>
+      <span class="type">{{ m.mtype }}</span>
+      <span class="subject">{{ m.subject }}</span>
+      <form hx-post="/ack" hx-target="#inbox-pane" hx-swap="innerHTML"
+            style="display:inline" hx-on:click="event.stopPropagation()">
+        <input type="hidden" name="filename" value="{{ m.filename }}">
+        <button type="submit">Ack</button>
+      </form>
+    </summary>
+    <pre class="body">{{ m.body }}</pre>
+  </details>
+</div>
 {% endfor %}
 """
 
@@ -403,6 +420,33 @@ def create_app(comms_root: Path, allow_launch: bool = True) -> FastAPI:
             return _flash("err", str(exc), 400)
         names = ", ".join(p.parent.parent.name for p in finals)
         return _flash("ok", f"posted to {names}" if names else "posted", 200)
+
+    def _inbox_fragment(flash: dict | None) -> HTMLResponse:
+        ctx = {**_inbox_ctx(), "oob": True, "flash": flash}
+        return HTMLResponse(env.get_template("inbox_pane.html").render(**ctx))
+
+    @app.post("/ack", response_class=HTMLResponse)
+    def ack(filename: str = Form(...)) -> HTMLResponse:
+        # Operator inbox ONLY (role hardcoded) -- the UI can never ack a
+        # director's mail (L3). An already-moved file (drained via CLI in
+        # parallel) is idempotent: a friendly flash + refreshed pane, never 500.
+        try:
+            role_mail.ack_message(comms_root, "operator", filename)
+            flash = {"cls": "ok", "msg": f"acked {filename}"}
+        except role_mail.MailError as exc:
+            flash = {"cls": "err", "msg": f"already acked or missing ({exc})"}
+        return _inbox_fragment(flash)
+
+    @app.post("/ack-all", response_class=HTMLResponse)
+    def ack_all() -> HTMLResponse:
+        acked = 0
+        for m in _inbox_messages(comms_root, "operator", _now()):
+            try:
+                role_mail.ack_message(comms_root, "operator", m.filename)
+                acked += 1
+            except role_mail.MailError:
+                continue  # a concurrent drain is fine; keep going
+        return _inbox_fragment({"cls": "ok", "msg": f"acked {acked} message(s)"})
 
     @app.get("/panes/inbox", response_class=HTMLResponse)
     def pane_inbox() -> HTMLResponse:

@@ -313,6 +313,91 @@ def test_compose_form_outside_polled_region(client):
     assert 'hx-post="/compose"' in page
 
 
+# --- ack endpoints (T4; operator inbox ONLY) -------------------------------
+
+def test_ack_moves_operator_message_to_read(client, comms):
+    _post(comms, "charc", ["operator"], "fyi", "ack me", "x")
+    fname = role_mail._list_inbox(comms, "operator")[0].name
+    r = client.post("/ack", data={"filename": fname}, headers=_SAME_ORIGIN)
+    assert r.status_code == 200
+    assert len(role_mail._list_inbox(comms, "operator")) == 0
+    assert len(role_mail._list_read(comms, "operator")) == 1
+
+
+def test_ack_returns_refreshed_inbox_fragment(client, comms):
+    _post(comms, "charc", ["operator"], "fyi", "a", "x")
+    _post(comms, "rd", ["operator"], "fyi", "b", "y")
+    fname = role_mail._list_inbox(comms, "operator")[0].name
+    r = client.post("/ack", data={"filename": fname}, headers=_SAME_ORIGIN)
+    # the OOB title reflects the now-1 remaining unread count
+    assert "hx-swap-oob" in r.text
+    assert "Operator inbox -- 1 unread" in r.text
+
+
+def test_ack_already_moved_is_idempotent_not_500(client, comms):
+    # the operator drained via CLI in parallel -> a friendly flash, never a 500
+    role_mail._ensure_tree(comms)
+    r = client.post("/ack", data={"filename": "20260101T000000Z-charc-gone.md"},
+                    headers=_SAME_ORIGIN)
+    assert r.status_code == 200
+    assert "flash" in r.text
+
+
+def test_ack_all_drains_operator_inbox(client, comms):
+    for i in range(3):
+        _post(comms, "charc", ["operator"], "fyi", f"m{i}", "x")
+    r = client.post("/ack-all", data={}, headers=_SAME_ORIGIN)
+    assert r.status_code == 200
+    assert len(role_mail._list_inbox(comms, "operator")) == 0
+    assert len(role_mail._list_read(comms, "operator")) == 3
+
+
+def test_ack_never_touches_a_director_mailbox(client, comms):
+    # L3 mail custody: the ack endpoint is operator-only. A charc filename
+    # posted to /ack must leave charc's inbox completely untouched.
+    _post(comms, "operator", ["charc"], "fyi", "director-mail", "x")
+    charc_file = role_mail._list_inbox(comms, "charc")[0].name
+    r = client.post("/ack", data={"filename": charc_file}, headers=_SAME_ORIGIN)
+    assert r.status_code == 200  # idempotent miss against operator inbox
+    assert len(role_mail._list_inbox(comms, "charc")) == 1  # untouched
+    assert len(role_mail._list_read(comms, "charc")) == 0
+
+
+def test_no_role_parameterized_ack_route(client):
+    # there is NO ack route that takes a role (the UI can never ack a director)
+    paths = [getattr(r, "path", "") for r in client.app.routes]
+    ack_paths = [p for p in paths if "ack" in p]
+    assert set(ack_paths) <= {"/ack", "/ack-all"}
+    assert not any("{" in p for p in ack_paths)  # no {role} template
+
+
+def test_viewing_inbox_never_acks(client, comms):
+    _post(comms, "charc", ["operator"], "fyi", "stay", "x")
+    client.get("/panes/inbox")
+    client.get("/panes/inbox")
+    assert len(role_mail._list_inbox(comms, "operator")) == 1  # NOT moved
+
+
+def test_inbox_pane_renders_ack_controls(client, comms):
+    _post(comms, "charc", ["operator"], "fyi", "ackable", "x")
+    body = client.get("/panes/inbox").text
+    assert 'hx-post="/ack"' in body
+    assert 'hx-post="/ack-all"' in body
+
+
+def test_ack_goes_through_ack_message_seam(client, comms, monkeypatch):
+    # L4: ack goes through role_mail.ack_message on the operator mailbox only.
+    calls = []
+
+    def spy(root, role, filename):
+        calls.append((role, filename))
+        return root / role / "read" / filename
+
+    monkeypatch.setattr(comms_ui.role_mail, "ack_message", spy)
+    client.post("/ack", data={"filename": "x.md"}, headers=_SAME_ORIGIN)
+    assert calls == [("operator", "x.md")]
+
+
 # --- never touches the real comms ------------------------------------------
 
 def test_factory_uses_given_root_not_real_comms(comms):
