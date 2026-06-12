@@ -157,6 +157,20 @@
 
 ---
 
+## THE COMBINED GATE RUN — #100, 2026-06-12 (web-triggered cold nightly; operator go; orchestrator-driven) — ALL SIX ARCS VERIFIED
+
+Run #100: complete in **2m20s** (vs #96/#99's ~10min), cold (454 gaps + 63 staggered refreshes + 2 sessions' staleness), web-triggered (req `058fb843`).
+- **ARC 6 — GATE PASSED → FULLY CLOSED.** `evaluate` = **52,662ms ≤ 90,000ms target** (9.9× vs the 522s baseline) on `threads=True`; warm wall 42.1s (cohort 510 gap + 69 refresh; 1 chunk_failure/3 fallbacks = the delisted family, correctly serial-retried). Side note: `pattern_observe` (54.6s) is now the slowest step — immaterial at a 2m20s total; banked as a someday-perf observation.
+- **ARC 7-A — SURVIVAL WITNESSED.** `pin_injection` (TROX, count=1, the screen-absent ticker pulled back into evaluation); streak kept counting 2→**3**; `pin_suppressed_removal` ("pin prevented age-off"); the row survives pinned. REMAINING: operator browser-look (badge) → unpin → the NEXT nightly ages it off naturally → Arc 7 fully closes.
+- **ARC 2-S2 GATES 2-3 — PASSED.** pipeline.log records carry `[req=058fb843-… run=100]` (43 correlated lines) — the web.log ↔ pipeline.log ↔ pipeline_runs join works end-to-end; pipeline.log content otherwise unchanged.
+- **ARC 3 GATE — PASSED.** The run-100 `watchlist_row` thumbnails carry the honest content hash with **bars=207** (XMAX `crc=54295071`; identical bar count to the detail path) vs run-99's static `chart_jit_v1`. NOTE banked: a third surface (`theme2_annotated` detection-capture, 40 rows) still stamps a static `detection_capture_v1` literal — outside Arc 3's commissioned scope (research-capture, not operator-facing thumbnail/detail); candidate one-line cleanup someday.
+- **ARC 4 — ENVELOPE VERIFIED.** `cash_ingest_summary` emitted every-run (#27): 22 transactions checked → 2 cash candidates → 1 matched-by-ref + 1 matched-by-fallback (the ref-less 4a row matched by the ±4-day window!) → 0 ingested / 0 flagged — the honest ledger-complete state. The flat-night coherence check ran silent (within tolerance). REMAINING: the 66/67 web disposition + the tile/badge browser look.
+- **ARC 8 — IDLE-VERIFIED.** The warm telemetry now carries `trimmed=0` (the barrier engaged on settled data; zero trims; the WarmReport field flows).
+
+REMAINING OPERATOR WITNESSES (the web server is UP at 127.0.0.1:8080): (1) watchlist page — TROX badge + rich XMAX/TDAY thumbnails; (2) the cadence pages (Arc 9, one look per type); (3) the 66/67 disposition (web tier-2 flow); (4) unpin TROX (then the next nightly ages it off → Arc 7 closes).
+
+---
+
 ## Sequencing (operator's call)
 
 - **Arc 1** is the highest-leverage + smallest (1a + 1b alone would have answered the #96 question) — likely a focused executing-with-Codex, possibly folding 1a+1b into one cycle.
