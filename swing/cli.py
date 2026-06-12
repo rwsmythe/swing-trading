@@ -1789,23 +1789,47 @@ def journal_review_cmd(ctx, period, today):
 @journal_group.command("cash")
 @click.option("--deposit", "deposit", type=float, default=None)
 @click.option("--withdraw", "withdraw", type=float, default=None)
+@click.option("--interest", "interest", type=float, default=None)
+@click.option("--dividend", "dividend", type=float, default=None)
+@click.option("--fee", "fee", type=float, default=None)
 @click.option("--date", "date_str", required=True, help="YYYY-MM-DD")
 @click.option("--ref", default=None)
 @click.option("--note", default=None)
 @click.pass_context
-def journal_cash_cmd(ctx, deposit, withdraw, date_str, ref, note):
-    """Log a cash movement."""
+def journal_cash_cmd(ctx, deposit, withdraw, interest, dividend, fee, date_str, ref, note):
+    """Log a cash movement (deposit/withdraw/interest/dividend/fee)."""
+    from datetime import date as _date
+
     from swing.data.db import connect
     from swing.data.models import CashMovement
     from swing.data.repos.cash import insert_cash
 
-    if (deposit is None) == (withdraw is None):
-        raise click.ClickException("Specify exactly one of --deposit or --withdraw")
-    kind = "deposit" if deposit is not None else "withdraw"
-    amount = deposit if deposit is not None else withdraw
-    if amount <= 0:
+    _kinds = {
+        "deposit": deposit, "withdraw": withdraw,
+        "interest": interest, "dividend": dividend, "fee": fee,
+    }
+    supplied = {k: v for k, v in _kinds.items() if v is not None}
+    if len(supplied) != 1:
         raise click.ClickException(
-            f"--{kind} amount must be > 0; got {amount}"
+            "Specify exactly one of "
+            "--deposit/--withdraw/--interest/--dividend/--fee"
+        )
+    kind, amount = next(iter(supplied.items()))
+    if amount <= 0:
+        raise click.ClickException(f"--{kind} amount must be > 0; got {amount}")
+
+    # ISO date validation (migration 0029's GLOB CHECK + the CashMovement
+    # validator reject non-ISO; surface a clean ClickException, not a raw
+    # IntegrityError / ValueError traceback).
+    _ok = len(date_str) == 10 and date_str[4] == "-" and date_str[7] == "-"
+    if _ok:
+        try:
+            _date.fromisoformat(date_str)
+        except ValueError:
+            _ok = False
+    if not _ok:
+        raise click.ClickException(
+            f"--date must be a valid YYYY-MM-DD; got {date_str!r}"
         )
 
     cfg = ctx.obj["config"]
