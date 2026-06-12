@@ -944,6 +944,7 @@ def _ingest_cash_transactions(
 
     cc = _empty_cash_counters()
     claimed_ids: set[int] = set()
+    ingested_rows: list[dict] = []
 
     for tx in schwab_transactions:
         cc["cash_transactions_checked"] += 1
@@ -1021,6 +1022,24 @@ def _ingest_cash_transactions(
             id=None, date=tx.transaction_date, kind=disp.kind,
             amount=target, ref=tx_id, note=note))
         cc["cash_ingested_count"] += 1
+        # Redaction-safe per-row metadata (date/kind/amount ONLY — NO
+        # description prose; spec §8) for the #27 work-happened envelope.
+        ingested_rows.append(
+            {"date": tx.transaction_date, "kind": disp.kind, "amount": target})
+
+    # #27 discipline (spec §8, Codex R6): emit a cash-reconciliation summary
+    # envelope EVERY run — work or no-work — so a silent no-op is distinguishable
+    # from a dead path. Rides the warnings_json channel; carries the expected-vs-
+    # actual counters always, plus the per-row (date,kind,amount) when work
+    # happened. No descriptions (they can carry bank-account prose).
+    summary_entry: dict[str, Any] = {
+        "step": "schwab_orders",
+        "reason": "cash_ingest_summary",
+        **cc,
+    }
+    if ingested_rows:
+        summary_entry["ingested_rows"] = ingested_rows
+    cash_warnings.append(summary_entry)
 
     return cc
 
