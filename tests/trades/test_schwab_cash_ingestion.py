@@ -157,27 +157,29 @@ def test_two_unmatched_in_one_run_emit_two_rows(cash_recon_run):
     assert n == 2  # dedup_key_override prevents the {"matched":null} collision
 
 
-def test_cash_ingest_summary_envelope_emitted_every_run(cash_recon_run):
-    # Codex R6 / spec §8 — a cash_ingest_summary envelope is appended EVERY run
-    # (the #27 "not a dead path" signal), even on a zero-transaction no-op.
-    conn, run_id = cash_recon_run
-    warnings = []
-    _ingest_cash_transactions(conn, run_id=run_id, schwab_transactions=[],
-                              price_tolerance=0.01, cash_warnings=warnings)
-    summary = [w for w in warnings if w.get("reason") == "cash_ingest_summary"]
+def test_cash_ingest_summary_envelope_emitted_every_run(cash_recon_full):
+    # Codex R6+R7 / spec §8 — a cash_ingest_summary envelope is in the persisted
+    # run summary EVERY run (the #27 "not a dead path" signal), even on a
+    # zero-transaction no-op, and is built at the run level (after step 7) so the
+    # shared cash_pending_suppressed_count is final.
+    conn, run = cash_recon_full(
+        starting_equity=1000.0, journal_cash=[], schwab_txs=[],
+        nlv=1000.0, open_trades=0)
+    cw = json.loads(run.summary_json)["cash_warnings"]
+    summary = [w for w in cw if w.get("reason") == "cash_ingest_summary"]
     assert len(summary) == 1
     assert summary[0]["cash_transactions_checked"] == 0
+    assert "cash_pending_suppressed_count" in summary[0]
     assert "ingested_rows" not in summary[0]  # no work -> no per-row block
 
 
-def test_cash_ingest_summary_carries_per_row_when_work_happened(cash_recon_run):
-    conn, run_id = cash_recon_run
-    warnings = []
-    _ingest_cash_transactions(
-        conn, run_id=run_id,
-        schwab_transactions=[_tx(900088, "2026-06-01", "ACH_RECEIPT", 100.0)],
-        price_tolerance=0.01, cash_warnings=warnings)
-    summary = next(w for w in warnings if w.get("reason") == "cash_ingest_summary")
+def test_cash_ingest_summary_carries_per_row_when_work_happened(cash_recon_full):
+    conn, run = cash_recon_full(
+        starting_equity=1000.0, journal_cash=[],
+        schwab_txs=[("ACH_RECEIPT", "2026-06-01", 100.0, "900088")],
+        nlv=1100.0, open_trades=0)
+    cw = json.loads(run.summary_json)["cash_warnings"]
+    summary = next(w for w in cw if w.get("reason") == "cash_ingest_summary")
     assert summary["cash_ingested_count"] == 1
     assert summary["ingested_rows"] == [
         {"date": "2026-06-01", "kind": "deposit", "amount": 100.0}]

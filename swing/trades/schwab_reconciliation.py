@@ -930,9 +930,14 @@ def _ingest_cash_transactions(
     cash_warnings: list[dict],
     dedup_seen: set | None = None,
     counters: dict | None = None,
+    ingested_rows: list[dict] | None = None,
 ) -> dict[str, int]:
     """The ref-idempotent, append-only ingestion ladder (spec §4.2). Returns a
-    cash-counters dict. Runs INSIDE the caller's transaction (step 6.5)."""
+    cash-counters dict. Runs INSIDE the caller's transaction (step 6.5).
+
+    ``ingested_rows`` (optional accumulator): per-INSERT redaction-safe
+    (date,kind,amount) dicts the caller folds into the #27 cash_ingest_summary
+    envelope AFTER step 7 (so the shared suppressed counter is final — Codex R7)."""
     from swing.data.models import CashMovement
     from swing.data.repos.cash import find_by_ref, insert_cash
 
@@ -941,10 +946,11 @@ def _ingest_cash_transactions(
     if counters is None:
         # Standalone use (unit tests): a throwaway run-counter for _emit.
         counters = {"discrepancies_count": 0, "unresolved_discrepancies_count": 0}
+    if ingested_rows is None:
+        ingested_rows = []
 
     cc = _empty_cash_counters()
     claimed_ids: set[int] = set()
-    ingested_rows: list[dict] = []
 
     for tx in schwab_transactions:
         cc["cash_transactions_checked"] += 1
@@ -1023,25 +1029,32 @@ def _ingest_cash_transactions(
             amount=target, ref=tx_id, note=note))
         cc["cash_ingested_count"] += 1
         # Redaction-safe per-row metadata (date/kind/amount ONLY — NO
-        # description prose; spec §8) for the #27 work-happened envelope.
+        # description prose; spec §8). The caller folds these into the #27
+        # cash_ingest_summary envelope after step 7 (Codex R7).
         ingested_rows.append(
             {"date": tx.transaction_date, "kind": disp.kind, "amount": target})
 
-    # #27 discipline (spec §8, Codex R6): emit a cash-reconciliation summary
-    # envelope EVERY run — work or no-work — so a silent no-op is distinguishable
-    # from a dead path. Rides the warnings_json channel; carries the expected-vs-
-    # actual counters always, plus the per-row (date,kind,amount) when work
-    # happened. No descriptions (they can carry bank-account prose).
+    return cc
+
+
+def _append_cash_ingest_summary(
+    cash_warnings: list[dict],
+    cash_counters: dict[str, int],
+    ingested_rows: list[dict],
+) -> None:
+    """#27 discipline (spec §8, Codex R6+R7): append the cash-reconciliation
+    summary envelope EVERY run — work or no-work — so a silent no-op is
+    distinguishable from a dead path. Built AFTER step 7 so the shared
+    cash_pending_suppressed_count is final. Counters always; per-row
+    (date,kind,amount) when work happened; NO descriptions (redaction-safe)."""
     summary_entry: dict[str, Any] = {
         "step": "schwab_orders",
         "reason": "cash_ingest_summary",
-        **cc,
+        **cash_counters,
     }
     if ingested_rows:
         summary_entry["ingested_rows"] = ingested_rows
     cash_warnings.append(summary_entry)
-
-    return cc
 
 
 def run_schwab_reconciliation(
@@ -1411,6 +1424,7 @@ def run_schwab_reconciliation(
         # mean step 7 + the equity check (Task 8) RE-READ list_cash afterwards.
         _detect_coverage_gap(
             conn, period_start=period_start, cash_warnings=cash_warnings)
+        cash_ingested_rows: list[dict] = []
         cash_counters = _ingest_cash_transactions(
             conn,
             run_id=run_id,
@@ -1419,6 +1433,7 @@ def run_schwab_reconciliation(
             cash_warnings=cash_warnings,
             dedup_seen=dedup_seen,
             counters=counters,
+            ingested_rows=cash_ingested_rows,
         )
         # Re-read journal cash after ingestion so step 7 scans the updated
         # ledger (freshly-ingested rows match their own source tx by ref).
@@ -1506,6 +1521,12 @@ def run_schwab_reconciliation(
                 )
             else:
                 _matched_schwab_tx.add(match_idx)
+
+        # #27 cash_ingest_summary envelope — built HERE (after step 7) so the
+        # shared cash_pending_suppressed_count reflects BOTH the ingest belt and
+        # the journal-direction suppression above (Codex R7). Every run.
+        _append_cash_ingest_summary(
+            cash_warnings, cash_counters, cash_ingested_rows)
 
         # --- 8. Equity coherence (Arc 4b Task 8) — ledger-vs-NLV, flat-only ---
         # Compute the LEDGER equity AFTER ingestion (the same function + inputs
