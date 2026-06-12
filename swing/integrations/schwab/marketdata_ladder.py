@@ -480,12 +480,14 @@ def resolve_full_archive_bars(
     provider_tag: str,
     *,
     yfinance_window_fn: Callable[[str, Any, Any], Any],
-) -> Any:
+) -> tuple[Any, str]:
     """Full-archive-return contract for the OhlcvCache ladder bars hooks
     (Phase 16 Arc 3). Shared by the pipeline hook
     (``swing/pipeline/runner.py:_install_pipeline_marketdata_caches``) and the
     web hook (``swing/web/app.py:_install_web_marketdata_caches``) so the fix
     cannot drift between the two duplicated closures.
+
+    Returns ``(bars, effective_provider)``.
 
     On a ``schwab_api`` SUCCESS the ladder's ``window`` is only the
     freshly-fetched Schwab sub-window, which for a short-listed ticker (XMAX =
@@ -495,24 +497,33 @@ def resolve_full_archive_bars(
     — the SAME read the no-ladder path uses (``yfinance_window_fn`` →
     ``read_or_fetch_archive``) — so every surface converges on identical bar
     counts. The ladder has ALREADY persisted the Schwab bars to the Shape-A
-    archive (audit + provenance preserved by ``fetch_window_via_ladder``), so
-    nothing is lost.
+    archive + written its ``schwab_api_calls`` audit row inside
+    ``fetch_window_via_ladder``, so nothing is lost. Because the returned bars
+    now originate from the archive (yfinance/legacy), the effective provider is
+    reported as ``"yfinance"`` — honest provenance for ``OhlcvBundle.provider``.
+
+    Cost note: ``read_or_fetch_archive`` is archive-first — in the pipeline the
+    chart-target archives are already warmed by ``_step_ohlcv``/``_step_evaluate``
+    so this is a pure cache read; in the web JIT path it is the SAME read the
+    no-ladder (``should_use_schwab() is False``) branch already performs, so
+    convergence adds no fetch the no-ladder path did not already do.
 
     Fall back to the Schwab window ONLY when the archive read yields nothing — a
     Schwab-only / yfinance-empty ticker with no legacy archive — so we never
-    regress such a ticker from a (sparse) render to no render at all.
+    regress such a ticker from a (sparse) render to no render at all; the
+    effective provider then stays ``"schwab_api"`` (those bars ARE Schwab's).
 
     The yfinance-fallback path already returns the full archive, so it passes
     through unchanged.
     """
     if provider_tag != "schwab_api":
-        return window
+        return window, provider_tag
     full = yfinance_window_fn(ticker, None, None)
     if full is not None and not getattr(full, "empty", False):
-        return full
+        return full, "yfinance"
     if hasattr(window, "to_dataframe"):
-        return window.to_dataframe()
-    return window
+        return window.to_dataframe(), "schwab_api"
+    return window, "schwab_api"
 
 
 __all__ = [

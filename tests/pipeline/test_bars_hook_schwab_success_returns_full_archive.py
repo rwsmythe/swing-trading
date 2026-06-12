@@ -233,7 +233,12 @@ def test_bars_hook_schwab_only_no_legacy_archive_falls_back_to_window(
     _price, ladder_cache, audit_conn = _install_pipeline_marketdata_caches(
         cfg, MagicMock(), pipeline_run_id=1,
     )
-    # Must NOT raise / return empty — falls back to the 16-bar Schwab window.
+    # The hook falls back to the Schwab window and keeps the 'schwab_api'
+    # provenance (those bars ARE Schwab's).
+    hook_bars, hook_provider = ladder_cache._ladder_bars_fetcher("NEWLY")
+    assert hook_provider == "schwab_api"
+    assert len(hook_bars) == 16
+    # And get_or_fetch must NOT raise / return empty — no regression to None.
     df = ladder_cache.get_or_fetch(ticker="NEWLY", window_days=300)
     assert not df.empty
     assert len(df) == 16

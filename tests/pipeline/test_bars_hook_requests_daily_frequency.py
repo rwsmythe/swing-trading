@@ -194,8 +194,10 @@ def test_bars_hook_invokes_ladder_with_daily_period_frequency_kwargs(
     bars_df, provider_tag = result
 
     # The schwab path returned the full archive (non-empty); the ladder still
-    # ran with daily kwargs (asserted below). Provider tag stays 'schwab_api'.
-    assert provider_tag == "schwab_api"
+    # ran with daily kwargs (asserted below). Because the returned bars now
+    # originate from the archive, the effective provider is 'yfinance' (honest
+    # provenance); the Schwab call + audit row still happened.
+    assert provider_tag == "yfinance"
     assert isinstance(bars_df, pd.DataFrame)
     assert not bars_df.empty
 

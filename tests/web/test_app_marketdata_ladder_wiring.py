@@ -148,7 +148,8 @@ def test_web_bars_hook_schwab_success_returns_full_archive(
 
     app = _install_hooks(cfg, monkeypatch, MagicMock(), tmp_path)
     bars_df, provider_tag = app.state.ohlcv_cache._ladder_bars_fetcher("AAA")
-    assert provider_tag == "schwab_api"
+    # Bars originate from the archive now → honest provenance is 'yfinance'.
+    assert provider_tag == "yfinance"
     # NOT the 16-bar Schwab window — the full archive.
     assert len(bars_df) == 200
 

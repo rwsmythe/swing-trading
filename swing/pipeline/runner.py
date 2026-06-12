@@ -497,12 +497,13 @@ def _install_pipeline_marketdata_caches(
         # FULL archive; consumers slice"). On the schwab_api success path the
         # ladder's `window` is only the short freshly-fetched Schwab sub-window
         # (XMAX = 16 daily bars); the shared helper re-reads the full archive so
-        # the pipeline thumbnail converges with the no-ladder ticker_detail path.
-        bars = resolve_full_archive_bars(
+        # the pipeline thumbnail converges with the no-ladder ticker_detail path
+        # and reports the effective provider of the returned bars.
+        bars, effective_provider = resolve_full_archive_bars(
             ticker, window, provider_tag,
             yfinance_window_fn=_yf_window_fallback,
         )
-        return (bars, provider_tag)
+        return (bars, effective_provider)
 
     price_cache.set_ladder_fetcher(_quote_hook)
     ohlcv_cache.set_ladder_bars_fetcher(_bars_hook)
