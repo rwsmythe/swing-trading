@@ -45,21 +45,20 @@ def _chars(path: Path) -> int:
     return len(path.read_text(encoding="utf-8", errors="replace"))
 
 
-def _msg_age_days(path: Path, now: datetime) -> int | None:
-    """Age in days from the leading UTC stamp in a role_mail filename.
+def _msg_posted(path: Path) -> datetime | None:
+    """Posted time from the leading UTC stamp in a role_mail filename.
 
     Filenames are '<yyyymmddTHHMMSSZ>-<from>-<slug>.md'. Falls back to mtime
     if the stamp cannot be parsed. Returns None only when both fail.
     """
     stamp = path.name.split("-", 1)[0]
     try:
-        posted = datetime.strptime(stamp, "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
+        return datetime.strptime(stamp, "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
     except ValueError:
         try:
-            posted = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
+            return datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
         except OSError:
             return None
-    return (now - posted).days
 
 
 def _scan_comms(comms_dir: Path, now: datetime) -> list[tuple[str, str]]:
@@ -79,14 +78,18 @@ def _scan_comms(comms_dir: Path, now: datetime) -> list[tuple[str, str]]:
         read_n = len(sorted(read_dir.glob("*.md"))) if read_dir.is_dir() else 0
         rows.append(
             ("INFO", f"comms {role}: {len(msgs)} unread, {read_n} read"))
-        ages = [a for a in (_msg_age_days(m, now) for m in msgs) if a is not None]
-        oldest = max(ages) if ages else 0
-        if oldest > COMMS_UNREAD_AGE_DAYS_MAX:
-            rows.append((
-                "ATTENTION",
-                f"comms {role}: oldest unread is {oldest}d old "
-                f"(>{COMMS_UNREAD_AGE_DAYS_MAX}d) -- drain or relay it",
-            ))
+        posts = [p for p in (_msg_posted(m) for m in msgs) if p is not None]
+        threshold = timedelta(days=COMMS_UNREAD_AGE_DAYS_MAX)
+        if posts:
+            oldest_td = now - min(posts)
+            if oldest_td > threshold:  # strictly older than 7 days
+                # ceil-days display so 7d12h reads as "8d", never "7d (>7d)".
+                disp = -(-int(oldest_td.total_seconds()) // 86_400)
+                rows.append((
+                    "ATTENTION",
+                    f"comms {role}: oldest unread is {disp}d old "
+                    f"(>{COMMS_UNREAD_AGE_DAYS_MAX}d) -- drain or relay it",
+                ))
         if role == "operator" and msgs:
             rows.append((
                 "INFO",

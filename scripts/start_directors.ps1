@@ -107,8 +107,12 @@ function Invoke-Preflight {
     try { $help = (claude --help | Out-String) }
     catch { throw "could not run 'claude --help': $($_.Exception.Message)" }
 
-    if (-not ($help -match '--name')) {
-        throw "this claude CLI ($version) does not advertise --name (-n) in --help; refusing to launch with a guessed flag. Update the launcher to match the installed CLI."
+    # Verify the EXACT flags this launcher uses: '-n' (fresh launch) and
+    # '--resume'. Checking only '--name' would let a CLI that advertises
+    # '--name' but not the '-n' short form pass preflight and then fail at
+    # launch. The help line is '  -n, --name <name>'.
+    if (-not ($help -match '(?m)(^|\s)-n[,\s]')) {
+        throw "this claude CLI ($version) does not advertise the -n flag in --help (fresh launch uses 'claude -n'); refusing to launch with a guessed flag. Update the launcher to match the installed CLI."
     }
     if (-not ($help -match '--resume')) {
         throw "this claude CLI ($version) does not advertise --resume in --help; refusing to launch with a guessed flag."

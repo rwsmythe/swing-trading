@@ -67,6 +67,14 @@ def test_boundary_7_days_not_stale(comms):
     assert all(level == "INFO" for level, _ in rows)
 
 
+def test_fractional_over_7_days_is_stale(comms):
+    # 7 days + 12 hours is strictly older than 7 days -> ATTENTION (the int
+    # .days floor would miss this; the fix compares timedeltas).
+    _make_msg(comms, "charc", NOW - timedelta(days=7, hours=12))
+    rows = harness_probe._scan_comms(comms, NOW)
+    assert any(level == "ATTENTION" for level, _ in rows)
+
+
 def test_operator_line_when_nonzero(comms):
     _make_msg(comms, "operator", NOW - timedelta(hours=1), slug="approve")
     rows = harness_probe._scan_comms(comms, NOW)

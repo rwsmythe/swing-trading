@@ -28,8 +28,11 @@ Layout (auto-created on first use):
 from __future__ import annotations
 
 import argparse
+import contextlib
+import os
 import re
 import sys
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -51,6 +54,33 @@ class MailError(Exception):
 def _now() -> datetime:
     """UTC clock seam (monkeypatched in tests for deterministic stamps)."""
     return datetime.now(UTC)
+
+
+def _ascii(text: str) -> str:
+    """Make text safe for Windows cp1252 stdout (backslash-escape non-ASCII).
+
+    Console output ONLY -- message files stay UTF-8. A subject or body with
+    emoji / CJK must never crash list/read/peek on a cp1252 console.
+    """
+    return text.encode("ascii", "backslashreplace").decode("ascii")
+
+
+def _write_temp(final: Path, content: str) -> Path:
+    """Write content to a temp file in final's directory; return the temp path.
+
+    Same-directory temp keeps the later os.replace on one filesystem (the
+    Windows os.replace cross-volume gotcha). Cleans up on write failure.
+    """
+    final.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=str(final.parent), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(content)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_name)
+        raise
+    return Path(tmp_name)
 
 
 def _slugify(subject: str) -> str:
@@ -109,6 +139,25 @@ def _unique_path(inbox: Path, stamp: str, sender: str, slug: str) -> Path:
     return candidate
 
 
+def _unique_dest(dest_dir: Path, filename: str) -> Path:
+    """A non-colliding path in dest_dir for filename (suffix -2, -3, ...).
+
+    Used when acking inbox -> read so an archived message with the same name
+    (same stamp+sender+slug posted twice across an empty inbox) is never
+    overwritten -- ack must never delete history.
+    """
+    candidate = dest_dir / filename
+    if not candidate.exists():
+        return candidate
+    stem = filename[:-3] if filename.endswith(".md") else filename
+    suffix = 2
+    while True:
+        candidate = dest_dir / f"{stem}-{suffix}.md"
+        if not candidate.exists():
+            return candidate
+        suffix += 1
+
+
 def _compose(sender: str, recipient: str, mtype: str, subject: str,
              posted: str, thread: str | None, body: str) -> str:
     lines = [
@@ -140,7 +189,9 @@ def _read_frontmatter(path: Path) -> dict[str, str]:
             break
         if ":" in line:
             key, _, val = line.partition(":")
-            fm[key.strip()] = val.strip()
+            key = key.strip()
+            if key not in fm:  # first occurrence wins; ignore injected dupes
+                fm[key] = val.strip()
     return fm
 
 
@@ -159,6 +210,13 @@ def cmd_post(args: argparse.Namespace) -> int:
             "invalid --type " + repr(args.type)
             + "; valid types: " + "|".join(VALID_TYPES)
         )
+    # Reject CR/LF in line-oriented frontmatter fields (frontmatter injection).
+    for label, value in (("subject", args.subject), ("thread", args.thread)):
+        if value is not None and ("\n" in value or "\r" in value):
+            raise MailError(
+                f"--{label} may not contain newlines (frontmatter injection). "
+                "Nothing was written."
+            )
     recipients = _parse_recipients(args.to)
     # L1 governance lock: decision_request must address ONLY the operator.
     if args.type == "decision_request" and any(r != "operator" for r in recipients):
@@ -175,17 +233,33 @@ def cmd_post(args: argparse.Namespace) -> int:
     posted = now.strftime("%Y-%m-%dT%H:%M:%SZ")
     slug = _slugify(args.subject)
 
-    written: list[Path] = []
-    for recipient in recipients:
-        inbox = root / recipient / "inbox"
-        path = _unique_path(inbox, stamp, sender, slug)
-        content = _compose(sender, recipient, args.type, args.subject,
-                           posted, args.thread, body)
-        path.write_text(content, encoding="utf-8")
-        written.append(path)
+    # Precompute every (final path, content) BEFORE writing anything so a
+    # multi-recipient post delivers all-or-nothing (atomicity): stage temps in
+    # each destination dir, then os.replace each into place only once every
+    # temp wrote cleanly. A failure mid-stage removes the temps -> no partial.
+    targets = [
+        (
+            _unique_path(root / r / "inbox", stamp, sender, slug),
+            _compose(sender, r, args.type, args.subject, posted, args.thread, body),
+        )
+        for r in recipients
+    ]
+    staged: list[tuple[Path, Path]] = []  # (temp, final)
+    try:
+        for final, content in targets:
+            staged.append((_write_temp(final, content), final))
+    except Exception as exc:
+        for tmp, _ in staged:
+            with contextlib.suppress(OSError):
+                tmp.unlink()
+        raise MailError(
+            f"post failed while staging ({exc}); nothing was delivered."
+        ) from exc
+    for tmp, final in staged:
+        os.replace(str(tmp), str(final))
 
-    for path in written:
-        print(f"posted -> {path.parent.parent.name}/inbox/{path.name}")
+    for final, _ in targets:
+        print(f"posted -> {final.parent.parent.name}/inbox/{final.name}")
     return 0
 
 
@@ -217,16 +291,16 @@ def cmd_list(args: argparse.Namespace) -> int:
     for path in inbox:
         fm = _read_frontmatter(path)
         print("  {:20} {:12} {:15} {}".format(
-            fm.get("posted", "?"), fm.get("from", "?"),
-            fm.get("type", "?"), fm.get("subject", path.name)))
+            _ascii(fm.get("posted", "?")), _ascii(fm.get("from", "?")),
+            _ascii(fm.get("type", "?")), _ascii(fm.get("subject", path.name))))
     return 0
 
 
 def _print_message(path: Path) -> None:
     print("=" * 72)
-    print(f"file: {path.name}")
+    print(f"file: {_ascii(path.name)}")
     print("-" * 72)
-    print(path.read_text(encoding="utf-8").rstrip("\n"))
+    print(_ascii(path.read_text(encoding="utf-8").rstrip("\n")))
     print()
 
 
@@ -252,7 +326,7 @@ def cmd_read(args: argparse.Namespace) -> int:
     read_dir.mkdir(parents=True, exist_ok=True)
     for path in targets:
         _print_message(path)
-        path.rename(read_dir / path.name)
+        path.rename(_unique_dest(read_dir, path.name))
     print(f"acked {len(targets)} message(s); moved inbox -> read.")
     return 0
 

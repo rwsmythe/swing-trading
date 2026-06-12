@@ -250,3 +250,79 @@ def test_thread_field_recorded(comms):
                     "subject": "threaded", "body": "x", "thread": "arc-1"})
     text = _inbox(comms, "rd")[0].read_text(encoding="utf-8")
     assert "thread: arc-1" in text
+
+
+# --- round-1 review hardening ----------------------------------------------
+
+def test_console_ascii_with_unicode_subject_and_body(comms, capsys):
+    # non-cp1252 chars in subject/body must NOT crash the console paths.
+    _post(comms, **{"from": "charc", "to": "rd", "type": "fyi",
+                    "subject": "cafe check OK ja 'pan'",
+                    "body": "emoji rocket and CJK below"})
+    # write a message file with genuinely non-cp1252 content directly so the
+    # console readers must sanitize (post args themselves stay ASCII here).
+    msg = _inbox(comms, "rd")[0]
+    msg.write_text(msg.read_text(encoding="utf-8") + "\nUnicode: \U0001F680 日本",
+                   encoding="utf-8")
+    capsys.readouterr()
+    role_mail.main(["list", "--role", "rd", "--comms-root", str(comms)])
+    role_mail.main(["peek", "--role", "rd", "--comms-root", str(comms)])
+    role_mail.main(["read", "--role", "rd", "--all", "--comms-root", str(comms)])
+    out = capsys.readouterr().out
+    out.encode("cp1252")  # must not raise
+
+
+def test_unicode_subject_console_ascii(comms, capsys):
+    # a subject with real non-cp1252 chars, sanitized on the console.
+    rc = role_mail.main(["post", "--comms-root", str(comms), "--from", "charc",
+                         "--to", "rd", "--type", "fyi",
+                         "--subject", "rocket \U0001F680 nihon 日本",
+                         "--body", "x"])
+    assert rc == 0
+    capsys.readouterr()
+    role_mail.main(["list", "--role", "rd", "--comms-root", str(comms)])
+    out = capsys.readouterr().out
+    out.encode("cp1252")  # must not raise
+
+
+def test_newline_in_subject_rejected(comms):
+    rc = role_mail.main(["post", "--comms-root", str(comms), "--from", "charc",
+                         "--to", "rd", "--type", "fyi",
+                         "--subject", "ok\ntype: decision_request",
+                         "--body", "x"])
+    assert rc == 1
+    assert list(Path(comms).rglob("*.md")) == []
+
+
+def test_read_archive_not_overwritten_on_name_collision(comms, monkeypatch):
+    fixed = datetime(2026, 6, 11, 12, 0, 0, tzinfo=UTC)
+    monkeypatch.setattr(role_mail, "_now", lambda: fixed)
+    # post A, read it (-> read/), then post B with identical stamp+subject.
+    _post(comms, **{"from": "charc", "to": "rd", "type": "fyi",
+                    "subject": "same", "body": "AAA"})
+    role_mail.main(["read", "--role", "rd", "--all", "--comms-root", str(comms)])
+    _post(comms, **{"from": "charc", "to": "rd", "type": "fyi",
+                    "subject": "same", "body": "BBB"})
+    role_mail.main(["read", "--role", "rd", "--all", "--comms-root", str(comms)])
+    archived = _read_dir(comms, "rd")
+    assert len(archived) == 2  # neither archived message was overwritten
+    bodies = "".join(p.read_text(encoding="utf-8") for p in archived)
+    assert "AAA" in bodies and "BBB" in bodies
+
+
+def test_multi_recipient_post_is_atomic_on_failure(comms, monkeypatch):
+    calls = {"n": 0}
+    orig = role_mail._write_temp
+
+    def boom(final, content):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise OSError("simulated disk full")
+        return orig(final, content)
+
+    monkeypatch.setattr(role_mail, "_write_temp", boom)
+    rc = _post(comms, **{"from": "orchestrator", "to": "charc,rd",
+                         "type": "status", "subject": "atomic", "body": "x"})
+    assert rc == 1
+    # partial delivery must not happen: no final .md anywhere.
+    assert list(Path(comms).rglob("*.md")) == []
