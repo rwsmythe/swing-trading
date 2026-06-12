@@ -442,6 +442,48 @@ def test_step_charts_chart_renders_write_through_is_idempotent(pipeline_db):
 # ===========================================================================
 
 
+def test_step_charts_stamps_content_derived_source_data_hash(pipeline_db):
+    """Phase 16 Arc 3 (3c): `_step_charts` MUST stamp a content-derived
+    ``source_data_hash`` (bar count + first/last asof_date) on the persisted
+    chart_renders row, NOT the legacy static literal ``"step_charts_v1"``.
+
+    Discriminator: the watchlist_row stub returns a known 130-bar frame; the
+    persisted hash must equal ``compute_chart_source_hash`` of that frame and
+    encode its bar count. Pre-fix the row carried ``"step_charts_v1"``.
+    """
+    from swing.web.charts import compute_chart_source_hash
+
+    cfg, run_id, eval_run_id = pipeline_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            _seed_watchlist_row(conn, ticker="HSH1")
+    finally:
+        conn.close()
+
+    bars = _make_bars(periods=130)
+    _run_step_charts(
+        cfg=cfg, run_id=run_id, eval_run_id=eval_run_id,
+        ohlcv_cache=_StubOhlcvCache(frames={"HSH1": bars}),
+    )
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        rows = list_chart_renders(
+            conn, ticker="HSH1", surface="watchlist_row",
+            pipeline_run_id=run_id,
+        )
+    finally:
+        conn.close()
+    assert len(rows) == 1
+    persisted = rows[0].source_data_hash
+    assert persisted != "step_charts_v1", (
+        "source_data_hash is still the static literal; 3c not applied"
+    )
+    assert persisted == compute_chart_source_hash(bars)
+    assert "bars=130" in persisted
+
+
 def test_step_charts_populates_three_pregen_surfaces_in_one_run(pipeline_db):
     """§1.5.1 amended by Phase 13 T-T4.SB.3 OQ-5.3 LOCK: `_step_charts`
     pre-gens THREE surfaces (market_weather + watchlist_row +

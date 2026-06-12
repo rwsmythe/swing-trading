@@ -41,6 +41,7 @@ from swing.data.repos.chart_renders import (
     refresh_chart_render,
 )
 from swing.web.charts import (
+    compute_chart_source_hash,
     render_market_weather_svg,
     render_position_detail_svg,
     render_ticker_detail_svg,
@@ -196,13 +197,22 @@ def get_or_render_surface(
         )
         return None
 
+    # Phase 16 Arc 3 (3c): stamp a content-derived hash (bar count + first/last
+    # asof_date) instead of the static ``source_data_hash`` default so the cache
+    # row's provenance changes on data growth. Falls back to the passed literal
+    # only if hashing fails (defensive — never block the write-through).
+    try:
+        computed_hash = compute_chart_source_hash(bars)
+    except Exception:  # noqa: BLE001 — provenance is best-effort
+        computed_hash = source_data_hash
+
     try:
         chart_render = ChartRender(
             id=None,
             ticker=ticker,
             surface=surface,
             chart_svg_bytes=svg_bytes,
-            source_data_hash=source_data_hash,
+            source_data_hash=computed_hash,
             rendered_at=datetime.now(UTC).strftime(
                 "%Y-%m-%dT%H:%M:%SZ",
             ),

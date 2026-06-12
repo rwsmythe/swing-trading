@@ -127,6 +127,47 @@ def test_get_or_render_surface_cache_miss_renders_via_ohlcv_and_writes_through(
     assert bytes(cached[0]) == b"<svg>rendered</svg>"
 
 
+def test_get_or_render_surface_stamps_content_derived_source_data_hash(
+    conn: sqlite3.Connection, pipeline_run_id: int,
+) -> None:
+    """Phase 16 Arc 3 (3c): the JIT write-through stamps a content-derived
+    ``source_data_hash`` (bar count + first/last asof_date) instead of the
+    static ``chart_jit_v1`` default, so the cached row's provenance changes on
+    data growth."""
+    from swing.web.charts import compute_chart_source_hash
+
+    bars = _planted_bars_df()
+    ohlcv_cache = MagicMock()
+    ohlcv_cache.get_or_fetch.return_value = bars
+    import swing.web.chart_jit as mod
+
+    mod._RENDERERS["ticker_detail"] = MagicMock(
+        return_value=b"<svg>rendered</svg>",
+    )
+    try:
+        get_or_render_surface(
+            conn=conn, ohlcv_cache=ohlcv_cache,
+            surface="ticker_detail", ticker="UCTT",
+            pipeline_run_id=pipeline_run_id,
+            data_asof_date="2026-05-22",
+        )
+    finally:
+        importlib.reload(mod)
+
+    row = conn.execute(
+        "SELECT source_data_hash FROM chart_renders "
+        "WHERE surface = 'ticker_detail' AND ticker = 'UCTT' "
+        "  AND pipeline_run_id = ?",
+        (pipeline_run_id,),
+    ).fetchone()
+    assert row is not None
+    assert row[0] != "chart_jit_v1", (
+        "JIT write-through still stamps the static literal; 3c not applied"
+    )
+    assert row[0] == compute_chart_source_hash(bars)
+    assert "bars=60" in row[0]
+
+
 def test_get_or_render_surface_fetches_min_calendar_days_for_ma200(
     conn: sqlite3.Connection, pipeline_run_id: int,
 ) -> None:

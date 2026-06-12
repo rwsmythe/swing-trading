@@ -109,6 +109,7 @@ from swing.trades.advisory import AdvisoryContext, compute_all_suggestions
 from swing.trades.equity import current_equity, sizing_equity
 from swing.watchlist.service import compute_watchlist_changes
 from swing.web.charts import (
+    compute_chart_source_hash,
     render_market_weather_svg,
     render_position_detail_svg,
     render_watchlist_thumbnail_svg,
@@ -3422,14 +3423,14 @@ def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data_asof: str,
 
     def _refresh_one(*, ticker: str, surface: str,
                      pipeline_run_id: int | None, pattern_class: str | None,
-                     bytes_: bytes) -> None:
+                     bytes_: bytes, source_data_hash: str) -> None:
         try:
             chart_render = ChartRender(
                 id=None,
                 ticker=ticker,
                 surface=surface,
                 chart_svg_bytes=bytes_,
-                source_data_hash="step_charts_v1",
+                source_data_hash=source_data_hash,
                 rendered_at=_now_iso,
                 data_asof_date=data_asof,
                 pipeline_run_id=pipeline_run_id,
@@ -3486,6 +3487,7 @@ def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data_asof: str,
             ticker=ticker, surface="watchlist_row",
             pipeline_run_id=lease.run_id, pattern_class=None,
             bytes_=svg_bytes,
+            source_data_hash=compute_chart_source_hash(bars),
         )
 
     # ticker_detail surface — Phase 13 T-T4.SB.3 (OQ-5.3 LOCK): pre-gen
@@ -3527,6 +3529,7 @@ def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data_asof: str,
                 ticker=ticker, surface="position_detail",
                 pipeline_run_id=None, pattern_class=None,
                 bytes_=svg_bytes,
+                source_data_hash=compute_chart_source_hash(bars),
             )
 
     # market_weather surface — cfg.rs.benchmark_ticker per Codex R2 MAJOR #4
@@ -3584,6 +3587,7 @@ def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data_asof: str,
                 ticker=benchmark_ticker, surface="market_weather",
                 pipeline_run_id=lease.run_id, pattern_class=None,
                 bytes_=svg_bytes,
+                source_data_hash=compute_chart_source_hash(display_bars),
             )
 
     # End-of-step summary. Denominator is classifier attempts (success +
