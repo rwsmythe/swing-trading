@@ -46,6 +46,11 @@
       * "--continue" and "--session-id" are DELIBERATELY NOT USED: --continue
         grabs the most-recently-touched session (wrong when two roles share this
         project dir); --session-id is unreliable interactively.
+      * "--model <model>", "--effort <level>" (low, medium, high, xhigh, max)
+        and "--permission-mode <mode>" (incl. "auto") EXIST. Directors launch
+        with '--model fable --effort xhigh --permission-mode auto' on BOTH
+        fresh and resume (operator directives 2026-06-11); every flag and
+        value is preflight-verified before launch.
       * Auto-submit vs pre-fill of the positional [prompt]: documentation is
         ambiguous and this is version-dependent. The bootstrap prompts are
         SELF-CONTAINED, so either behavior works -- if claude pre-fills the
@@ -80,6 +85,12 @@ $BootstrapFiles = @{
     'rd'    = Join-Path $ScriptDir 'director_bootstrap_rd.md'
 }
 $RoleTitles = @{ 'charc' = 'CHARC'; 'rd' = 'RD' }
+
+# Directors run on Fable at extra-high effort in auto permission mode
+# (operator directives 2026-06-11). Applied to BOTH fresh and resume launches;
+# preflight verifies each flag and value against the installed CLI before any
+# window opens.
+$LaunchArgs = @('--model', 'fable', '--effort', 'xhigh', '--permission-mode', 'auto')
 
 # Short, quoting-safe directive prompts (no newlines, quotes, or semicolons --
 # the full multi-line prompt content lives in the bootstrap files to keep the
@@ -116,6 +127,21 @@ function Invoke-Preflight {
     }
     if (-not ($help -match '--resume')) {
         throw "this claude CLI ($version) does not advertise --resume in --help; refusing to launch with a guessed flag."
+    }
+    if (-not ($help -match '--model')) {
+        throw "this claude CLI ($version) does not advertise --model in --help (directors launch with '--model fable'); refusing to launch with a guessed flag."
+    }
+    if (-not ($help -match '--effort')) {
+        throw "this claude CLI ($version) does not advertise --effort in --help (directors launch with '--effort xhigh'); refusing to launch with a guessed flag."
+    }
+    if (-not ($help -match 'xhigh')) {
+        throw "this claude CLI ($version) does not list 'xhigh' as an effort level in --help; update the launcher's `$LaunchArgs to a level the installed CLI accepts."
+    }
+    if (-not ($help -match '--permission-mode')) {
+        throw "this claude CLI ($version) does not advertise --permission-mode in --help (directors launch with '--permission-mode auto'); refusing to launch with a guessed flag."
+    }
+    if (-not ($help -match '"auto"')) {
+        throw "this claude CLI ($version) does not list 'auto' as a --permission-mode choice in --help; update the launcher's `$LaunchArgs to a mode the installed CLI accepts."
     }
     return $version
 }
@@ -181,7 +207,7 @@ function Start-Fresh($role, $map) {
         throw "bootstrap file missing for $role at $bootstrap"
     }
     $prompt = [string]::Format($FreshPromptFmt, "scripts/$([System.IO.Path]::GetFileName($bootstrap))")
-    $argList = @('-n', "`"$name`"", "`"$prompt`"")
+    $argList = $LaunchArgs + @('-n', "`"$name`"", "`"$prompt`"")
     Write-Info "fresh $role -> session name '$name'"
     Write-Info "  cmd: $(Format-Cmd $argList)"
     if ($DryRun) { return $map }
@@ -203,7 +229,7 @@ function Start-Resume($role, $map) {
         return $map
     }
     $prompt = [string]::Format($ResumePrompt, $role)
-    $argList = @('--resume', "`"$name`"", "`"$prompt`"")
+    $argList = $LaunchArgs + @('--resume', "`"$name`"", "`"$prompt`"")
     Write-Info "resume $role -> session name '$name'"
     Write-Info "  cmd: $(Format-Cmd $argList)"
     Write-Info "  (--resume opens the /resume picker filtered to this name; select it to re-enter.)"
