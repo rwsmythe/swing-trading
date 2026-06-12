@@ -24,5 +24,32 @@
 <p class="muted">No trade activity in this period.</p>
 {% endif %}
 
+{# Phase 16 Arc 9 -- watch-standard references (static, pointer-not-fork). #}
+{# The standard at docs/research-director-watch-standard.md is the single #}
+{# source of truth; this is a per-review-type reminder, not a copy of it. #}
+{% if vm.review.review_type == "weekly" %}
+<section class="watch-standard-reference">
+  <h2>Watch-standard reminder (weekly)</h2>
+  <p>Before closing this weekly review, run the data-collection weekly glance
+     from the repo root:</p>
+  <pre>python scripts/weekly_glance.py</pre>
+  <p>It is read-only and takes about 5 seconds. Escalate any ATTENTION lines to
+     the research director right away rather than waiting for the monthly read.</p>
+  <p class="muted">Reference: docs/research-director-watch-standard.md section 2.1
+     (the weekly glance).</p>
+</section>
+{% elif vm.review.review_type == "monthly" %}
+<section class="watch-standard-reference">
+  <h2>Watch-standard reminder (monthly)</h2>
+  <p>The monthly research-director read is due in the first trading week of the
+     month -- the binding evaluator cadence (the substantive read of accrual
+     trends, epoch integrity, and hypothesis progress).</p>
+  <p>Every 3rd monthly read is the quarterly strategic evaluation: a top-to-bottom
+     re-validation of the standing recommendations, folded into that month's read.</p>
+  <p class="muted">Reference: docs/research-director-watch-standard.md section 3
+     (the monthly read) and section 1 (the cadence table / quarterly tier).</p>
+</section>
+{% endif %}
+
 {% include "partials/cadence_complete_form.html.j2" %}
 {% endblock %}

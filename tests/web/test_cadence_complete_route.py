@@ -246,3 +246,97 @@ def test_3e16_renders_empty_state_when_no_activity(tmp_path: Path):
     assert r.status_code == 200
     assert "Trade activity during this period" in r.text
     assert "No trade activity in this period." in r.text
+
+
+# ---------------------------------------------------------------------------
+# Phase 16 Arc 9 — cadence-review watch-standard references (R1/R2/R4).
+# Static, pointer-not-fork text conditional on review_type. The weekly page
+# shows the weekly-glance reference and NOT the monthly text; the monthly page
+# shows the monthly-read + quarterly reference and NOT the weekly text.
+# ---------------------------------------------------------------------------
+
+# Unique per-type sentinels (test isolation markers).
+_WEEKLY_MARKER = "scripts/weekly_glance.py"
+_MONTHLY_MARKER = "quarterly strategic evaluation"
+
+
+def _app_with_pending_review_of_type(tmp_path: Path, review_type: str):
+    """FastAPI app with a single pending review of the given cadence type."""
+    from dataclasses import replace as dc_replace
+
+    from swing.config import load
+    from swing.data.db import connect, ensure_schema
+    from swing.data.repos.review_log import insert_pre_create
+    from swing.web.app import create_app
+
+    db_path = tmp_path / f"phase16_{review_type}.db"
+    ensure_schema(db_path).close()
+    conn = connect(db_path)
+    try:
+        with conn:
+            insert_pre_create(
+                conn, review_type=review_type,
+                period_start="2026-06-01", period_end="2026-06-07",
+                scheduled_date="2026-06-08",
+            )
+    finally:
+        conn.close()
+
+    base_cfg = load(Path("swing.config.toml"))
+    cfg = dc_replace(base_cfg, paths=dc_replace(base_cfg.paths, db_path=db_path))
+    return create_app(cfg)
+
+
+def test_weekly_review_shows_glance_reference_not_monthly(tmp_path: Path):
+    app = _app_with_pending_review_of_type(tmp_path, "weekly")
+    with TestClient(app) as client:
+        r = client.get("/reviews/1/complete")
+    assert r.status_code == 200
+    # Weekly page shows the §2.1 glance reference + the pointer to the standard.
+    assert _WEEKLY_MARKER in r.text
+    assert "research-director-watch-standard.md" in r.text
+    # ...and NOT the monthly-specific text.
+    assert _MONTHLY_MARKER not in r.text
+
+
+def test_monthly_review_shows_monthly_reference_not_weekly(tmp_path: Path):
+    app = _app_with_pending_review_of_type(tmp_path, "monthly")
+    with TestClient(app) as client:
+        r = client.get("/reviews/1/complete")
+    assert r.status_code == 200
+    # Monthly page shows the §3 monthly-read + §1 quarterly reference.
+    assert _MONTHLY_MARKER in r.text
+    assert "research-director-watch-standard.md" in r.text
+    # ...and NOT the weekly glance command.
+    assert _WEEKLY_MARKER not in r.text
+
+
+def test_daily_review_shows_neither_cadence_reference(test_app_with_pending_daily):
+    """The references are weekly/monthly only; a daily review shows neither."""
+    with TestClient(test_app_with_pending_daily) as client:
+        r = client.get("/reviews/1/complete")
+    assert r.status_code == 200
+    assert _WEEKLY_MARKER not in r.text
+    assert _MONTHLY_MARKER not in r.text
+
+
+def test_cadence_references_are_ascii_only(tmp_path: Path):
+    """R3 — the static reference block must be ASCII-only (no '§' glyph etc.).
+
+    Scoped to the watch-standard reference ``<section>`` (the rest of the
+    page legitimately carries a non-ASCII en-dash in the period line).
+    """
+    import re
+
+    for review_type in ("weekly", "monthly"):
+        app = _app_with_pending_review_of_type(tmp_path, review_type)
+        with TestClient(app) as client:
+            r = client.get("/reviews/1/complete")
+        assert r.status_code == 200
+        m = re.search(
+            r'<section class="watch-standard-reference">(.*?)</section>',
+            r.text, re.DOTALL,
+        )
+        assert m is not None, f"{review_type}: reference section not rendered"
+        # The reference block must encode cleanly as ASCII (no '§', em-dash...).
+        m.group(1).encode("ascii")
