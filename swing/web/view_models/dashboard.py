@@ -12,13 +12,12 @@ from swing.data.db import connect
 from swing.data.models import Candidate, Trade, WatchlistEntry
 from swing.data.repos.candidates import fetch_candidates_for_run
 from swing.data.repos.cash import list_cash
-from swing.data.repos.fills import list_all_fills
 from swing.data.repos.pattern_classifications import (
     list_classifications_for_run,
 )
 from swing.data.repos.recommendations import list_for_session
 from swing.data.repos.risk_policy import NoActivePolicyError
-from swing.data.repos.trades import list_closed_trades, list_open_trades
+from swing.data.repos.trades import list_open_trades
 from swing.data.repos.watchlist import list_active_watchlist
 from swing.data.repos.weather import get_latest
 from swing.evaluation.dates import PageKind, action_session_for_run, topbar_session_date
@@ -30,90 +29,23 @@ from swing.metrics.policy import read_live_policy
 from swing.recommendations.sizing import SizingResult, compute_shares
 from swing.trades.advisory import AdvisoryContext, compute_all_suggestions
 from swing.trades.daily_management import compute_position_capital_utilization
-from swing.trades.equity import current_equity, sizing_equity, total_current_risk
+from swing.trades.equity import (
+    current_equity,
+    list_all_exitshape_via_fills,
+    sizing_equity,
+    total_current_risk,
+)
 from swing.web.chart_scope import (
     latest_completed_pipeline_run,
     resolve_chart_scope,
 )
 from swing.web.price_cache import PriceCache, PriceSnapshot
 
-
-@dataclass(frozen=True)
-class _ExitShape:
-    """Local adapter mirroring legacy Exit shape for ExitLike-consuming
-    APIs (current_equity, total_current_risk, dashboard remaining-shares
-    grouping). Mirrors swing/web/view_models/trades.py's _ExitShape — both
-    die in C.10 when equity.py refactors to consume fills directly. Single
-    source of math truth: swing.trades.derived_metrics.
-    """
-    trade_id: int
-    exit_date: str
-    exit_price: float
-    shares: int
-    reason: str | None
-    realized_pnl: float | None
-    r_multiple: float | None
-
-
-def _list_all_exitshape_via_fills(conn) -> list[_ExitShape]:
-    """C.9 migration helper: produces the ExitLike collection that
-    ``list_all_exits(conn)`` previously returned, but sourced from
-    ``fills`` filtered to non-entry actions. Per-fill realized_pnl + r
-    derive on the fly from the parent trade's entry_price/initial_stop
-    via ``swing.trades.derived_metrics`` — single source of math truth.
-    Sort matches the legacy shim: (fill_datetime ASC, fill_id ASC) by
-    way of ``list_all_fills``'s ORDER BY.
-    """
-    from swing.trades.derived_metrics import (
-        initial_risk_per_share,
-        r_multiple,
-        realized_pnl,
-    )
-
-    trades_by_id: dict[int, Trade] = {}
-    for t in list_open_trades(conn):
-        if t.id is not None:
-            trades_by_id[t.id] = t
-    for t in list_closed_trades(conn):
-        if t.id is not None:
-            trades_by_id[t.id] = t
-
-    out: list[_ExitShape] = []
-    for f in list_all_fills(conn):
-        if f.action == "entry":
-            continue
-        trade = trades_by_id.get(f.trade_id)
-        if trade is None:
-            continue  # orphan fill — skip (parent trade missing)
-        rps = initial_risk_per_share(
-            entry_price=trade.entry_price, initial_stop=trade.initial_stop,
-        )
-        pnl = realized_pnl(
-            entry_price=trade.entry_price, exit_price=f.price,
-            quantity=f.quantity,
-        )
-        rmult: float | None
-        if rps == 0 or f.quantity == 0:
-            rmult = None
-        else:
-            rmult = r_multiple(
-                realized_pnl=pnl, initial_risk_per_share=rps,
-                quantity=f.quantity,
-            )
-        exit_date = (
-            f.fill_datetime.split("T")[0]
-            if "T" in f.fill_datetime else f.fill_datetime
-        )
-        out.append(_ExitShape(
-            trade_id=f.trade_id,
-            exit_date=exit_date,
-            exit_price=float(f.price),
-            shares=int(f.quantity),
-            reason=f.reason,
-            realized_pnl=pnl,
-            r_multiple=rmult,
-        ))
-    return out
+# Arc 4b Task 4: _ExitShape + list_all_exitshape_via_fills were LIFTED into
+# swing/trades/equity.py (the schwab equity-coherence check now shares the same
+# adapter). The underscored alias is preserved because tests + nearby code
+# reference the historical private name.
+_list_all_exitshape_via_fills = list_all_exitshape_via_fills
 
 
 @dataclass(frozen=True)
@@ -923,7 +855,7 @@ def build_dashboard(
             # per-trade remaining-shares grouping below (no N+1 queries).
             # C.9: now sourced from fills (non-entry) via local adapter;
             # C.10 will refactor equity.py to consume Fill directly.
-            all_exits = _list_all_exitshape_via_fills(conn)
+            all_exits = list_all_exitshape_via_fills(conn)
             equity = current_equity(
                 starting_equity=cfg.account.starting_equity,
                 exits=all_exits,

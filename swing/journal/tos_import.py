@@ -372,9 +372,15 @@ def extract_cash_movements(rows: Iterable[dict]) -> list[CashMovement]:
         # because `=` was at the boundary instead of `"`.
         ref_raw = (row.get("REF #") or "").strip().strip("=").strip('"')
         ref = ref_raw or None
+        # NOTE (Arc 4b #11 audit): TOS-CSV cash rows are pure deposit/withdraw
+        # by sign — intentionally narrow; never emits interest/dividend/fee.
         kind = "deposit" if amount > 0 else "withdraw"
+        # Normalize the TOS M/D/YY date to ISO (migration 0029's ISO GLOB CHECK
+        # + the CashMovement validator reject non-ISO; the live M/D/YY rows 1-3
+        # were this writer's pre-0029 output). Mirrors the fills path's
+        # _normalize_date usage.
         out.append(CashMovement(
-            id=None, date=(row.get("DATE") or "").strip(),
+            id=None, date=_normalize_date(row.get("DATE") or ""),
             kind=kind, amount=abs(amount), ref=ref,
             note=(row.get("DESCRIPTION") or "").strip() or None,
         ))
