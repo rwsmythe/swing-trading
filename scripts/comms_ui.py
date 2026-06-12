@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse
 from jinja2 import DictLoader, Environment, select_autoescape
 
@@ -209,7 +209,7 @@ _PAGE = """<!doctype html>
   {% include "inbox_pane.html" %}
 </section>
 
-{% block compose %}{% endblock %}
+{% include "compose_form.html" %}
 
 <section id="bus-pane" hx-get="/panes/bus" hx-trigger="every 5s"
          hx-swap="innerHTML">
@@ -288,6 +288,36 @@ _HISTORY_PANE = """
 {% endfor %}
 """
 
+# Compose is operator-identity ONLY (no sender field rendered; the server stamps
+# from=operator). decision_request is NOT offered (L1 belt). The form sits
+# OUTSIDE every polled region so a 5s refresh never clobbers half-typed input.
+_COMPOSE_FORM = """<section class="strip" id="compose">
+<h2>Compose (from operator)</h2>
+<form class="compose" hx-post="/compose" hx-target="#compose-flash"
+      hx-swap="innerHTML"
+      hx-on::after-request="if(event.detail.successful) this.reset()">
+  <div id="compose-flash"></div>
+  <fieldset>
+    <legend>to (one or more)</legend>
+    <label><input type="checkbox" name="to" value="charc"> charc</label>
+    <label><input type="checkbox" name="to" value="rd"> rd</label>
+  </fieldset>
+  <label>type
+    <select name="type">
+      {% for t in compose_types %}<option value="{{ t }}">{{ t }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>subject <input type="text" name="subject" required></label>
+  <label>thread (optional) <input type="text" name="thread"></label>
+  <label>body<br><textarea name="body" rows="4" cols="60"></textarea></label>
+  <button type="submit">Send</button>
+</form>
+</section>
+"""
+
+_FLASH = """<div class="flash {{ cls }}">{{ msg }}</div>"""
+
 
 def _make_env() -> Environment:
     return Environment(
@@ -296,6 +326,8 @@ def _make_env() -> Environment:
             "inbox_pane.html": _INBOX_PANE,
             "bus_pane.html": _BUS_PANE,
             "history_pane.html": _HISTORY_PANE,
+            "compose_form.html": _COMPOSE_FORM,
+            "flash.html": _FLASH,
         }),
         autoescape=select_autoescape(["html"], default_for_string=True),
     )
@@ -336,10 +368,41 @@ def create_app(comms_root: Path, allow_launch: bool = True) -> FastAPI:
         msgs.sort(key=lambda m: m.filename, reverse=True)
         return {"history_messages": msgs[:HISTORY_CAP]}
 
+    def _flash(cls: str, msg: str, status: int) -> HTMLResponse:
+        html = env.get_template("flash.html").render(cls=cls, msg=msg)
+        return HTMLResponse(html, status_code=status)
+
     @app.get("/", response_class=HTMLResponse)
     def index(request: Request) -> HTMLResponse:
-        ctx = {**_inbox_ctx(), **_bus_ctx(), **_history_ctx(), "oob": False}
+        ctx = {
+            **_inbox_ctx(), **_bus_ctx(), **_history_ctx(),
+            "compose_types": list(COMPOSE_TYPES), "oob": False,
+        }
         return HTMLResponse(env.get_template("page.html").render(**ctx))
+
+    @app.post("/compose", response_class=HTMLResponse)
+    def compose(
+        to: list[str] = Form(default=[]),  # noqa: B008
+        mtype: str = Form(alias="type"),
+        subject: str = Form(...),
+        body: str = Form(default=""),
+        thread: str = Form(default=""),
+    ) -> HTMLResponse:
+        # L1 belt: only the four role->role types compose from the UI;
+        # decision_request (or any other value) is refused before the write
+        # path -- the sender can NEVER manufacture an authority message here.
+        if mtype not in COMPOSE_TYPES:
+            return _flash("err", f"type {mtype!r} is not allowed from the UI", 400)
+        try:
+            # Sender is ALWAYS operator (server-stamped); a client-supplied
+            # 'from' field, if present in the POST, is never read (L1).
+            finals = role_mail.post_message(
+                comms_root, "operator", to, mtype, subject, body,
+                thread or None)
+        except role_mail.MailError as exc:
+            return _flash("err", str(exc), 400)
+        names = ", ".join(p.parent.parent.name for p in finals)
+        return _flash("ok", f"posted to {names}" if names else "posted", 200)
 
     @app.get("/panes/inbox", response_class=HTMLResponse)
     def pane_inbox() -> HTMLResponse:

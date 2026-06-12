@@ -48,6 +48,11 @@ def _post(comms, sender, recipients, mtype, subject, body, thread=None):
         comms, sender, recipients, mtype, subject, body, thread)
 
 
+# Same-origin header so POST tests survive the T5 origin guard (TestClient's
+# own origin is http://testserver). A POST with no Origin/Referer is rejected.
+_SAME_ORIGIN = {"Origin": "http://testserver"}
+
+
 # --- factory + binding -----------------------------------------------------
 
 def test_host_is_loopback_only():
@@ -192,6 +197,120 @@ def test_malformed_frontmatter_renders_filename_fallback(client, comms):
     r = client.get("/panes/inbox")
     assert r.status_code == 200
     assert "broken" in r.text  # filename shown as fallback
+
+
+# --- compose POST (T3) -----------------------------------------------------
+
+def test_compose_delivers_via_post_message(client, comms):
+    r = client.post("/compose", data={"to": "charc", "type": "status",
+                                       "subject": "from the UI", "body": "hi"},
+                    headers=_SAME_ORIGIN)
+    assert r.status_code == 200
+    files = role_mail._list_inbox(comms, "charc")
+    assert len(files) == 1
+    text = files[0].read_text(encoding="utf-8")
+    assert "from: operator" in text
+    assert "subject: from the UI" in text
+
+
+def test_compose_server_stamps_operator_ignoring_client_from(client, comms):
+    # a crafted 'from' field must be IGNORED; the sender is always operator.
+    r = client.post("/compose",
+                    data={"from": "charc", "to": "rd", "type": "fyi",
+                          "subject": "spoof", "body": "x"},
+                    headers=_SAME_ORIGIN)
+    assert r.status_code == 200
+    text = role_mail._list_inbox(comms, "rd")[0].read_text(encoding="utf-8")
+    assert "from: operator" in text
+    assert "from: charc" not in text
+
+
+def test_compose_multi_recipient(client, comms):
+    r = client.post("/compose",
+                    data={"to": ["charc", "rd"], "type": "status",
+                          "subject": "both", "body": "x"},
+                    headers=_SAME_ORIGIN)
+    assert r.status_code == 200
+    assert len(role_mail._list_inbox(comms, "charc")) == 1
+    assert len(role_mail._list_inbox(comms, "rd")) == 1
+
+
+def test_compose_rejects_decision_request_type(client, comms):
+    # the L1 belt: decision_request is never composable from the UI, even via a
+    # crafted POST -- 400 flash, nothing written.
+    r = client.post("/compose",
+                    data={"to": "operator", "type": "decision_request",
+                          "subject": "approve?", "body": "x"},
+                    headers=_SAME_ORIGIN)
+    assert r.status_code == 400
+    assert list(comms.rglob("*.md")) == []
+
+
+def test_compose_rejects_unknown_type(client, comms):
+    r = client.post("/compose",
+                    data={"to": "charc", "type": "bogus",
+                          "subject": "s", "body": "x"},
+                    headers=_SAME_ORIGIN)
+    assert r.status_code == 400
+    assert list(comms.rglob("*.md")) == []
+
+
+def test_compose_empty_recipients_is_400(client, comms):
+    r = client.post("/compose",
+                    data={"type": "fyi", "subject": "s", "body": "x"},
+                    headers=_SAME_ORIGIN)
+    assert r.status_code == 400
+    assert "flash" in r.text
+    assert list(comms.rglob("*.md")) == []
+
+
+def test_compose_mailerror_renders_flash_400(client, comms):
+    # a CR/LF subject (frontmatter injection) surfaces as a 400 flash, not a 500.
+    r = client.post("/compose",
+                    data={"to": "charc", "type": "fyi",
+                          "subject": "ok\ntype: decision_request", "body": "x"},
+                    headers=_SAME_ORIGIN)
+    assert r.status_code == 400
+    assert "flash" in r.text
+    assert list(comms.rglob("*.md")) == []
+
+
+def test_compose_goes_through_post_message_seam(client, comms, monkeypatch):
+    # L4: the UI's single write path is role_mail.post_message. Spy on the
+    # instance comms_ui actually uses and prove sender is server-stamped.
+    calls = []
+
+    def spy(root, sender, recipients, mtype, subject, body, thread=None):
+        calls.append((sender, recipients, mtype, subject, thread))
+        return []
+
+    monkeypatch.setattr(comms_ui.role_mail, "post_message", spy)
+    r = client.post("/compose",
+                    data={"from": "charc", "to": ["charc", "rd"],
+                          "type": "query", "subject": "seam", "body": "b"},
+                    headers=_SAME_ORIGIN)
+    assert r.status_code == 200
+    assert len(calls) == 1
+    sender, recipients, mtype, subject, _ = calls[0]
+    assert sender == "operator"            # server-stamped, never the client's
+    assert recipients == ["charc", "rd"]
+    assert mtype == "query"
+    assert subject == "seam"
+
+
+def test_compose_form_has_no_decision_request_option(client):
+    page = client.get("/").text
+    assert 'value="decision_request"' not in page
+    # the four role->role types ARE offered
+    for t in ("fyi", "status", "query", "return_report"):
+        assert f'value="{t}"' in page
+
+
+def test_compose_form_outside_polled_region(client):
+    # a 5s refresh must never clobber half-typed input -> the compose form is
+    # not inside any hx-trigger="every 5s" section.
+    page = client.get("/").text
+    assert 'hx-post="/compose"' in page
 
 
 # --- never touches the real comms ------------------------------------------
