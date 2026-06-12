@@ -161,3 +161,15 @@
 - The **perf follow-on** is gated on Arc 1's data.
 
 *(Cross-refs: the Run #96 diagnosis is in this session's orchestrator transcript; the `#23` pool-widening + the data-integrity/deadlock/#16 arcs that shifted load to yfinance are recorded in `docs/phase3e-todo.md` §A + CLAUDE.md line-3. The Schwab redaction gotcha is in CLAUDE.md §Gotchas/Schwab.)*
+
+---
+
+### Arc 4b/4c post-merge operator-gated runbook (NOT auto-executed)
+
+Shipped at schema **v29** (migration `0029`). These steps are operator-driven after the orchestrator merges the arc; they fold into the phase's combined gate run.
+
+1. **Migrate the live DB (backup-gated):** `swing db-migrate` (fires the v28→v29 `_cash_recon_backup_gate`; verify a `swing-pre-cash-recon-migration-*.db` was written next to `swing.db`). Confirm `cash_movements` rows 1-3 are ISO (`2026-03-30`/`2026-04-29`/`2026-05-10`) + row 1's ref no longer has a leading quote (`115520131470`); `account_equity_snapshots` all show `basis='net_liq'`.
+2. **REAL dividend/interest marker capture (Task 6 §item-2 — operator chose empty-default 2026-06-11):** the marker frozensets shipped EMPTY (no live DIVIDEND_OR_INTEREST history at the epoch); every such transaction flags tier-2 (the safe default) and the `@pytest.mark.skip` test marks the deferral. When the account first earns a dividend/interest, run one supervised `swing schwab fetch --verify-marketdata` (or inspect the latest `schwab_api_calls` body), record the real `DIVIDEND_OR_INTEREST` `description` strings, file a follow-up to seed `_DIVIDEND_MARKERS`/`_INTEREST_MARKERS` in `swing/trades/schwab_reconciliation.py`, and unskip `test_dividend_marker_set_is_real_payload_sourced`. NEVER invent marker strings.
+3. **Dispose live pendings 66/67 ONCE:** via the existing web tier-2 resolve flow (`/reconcile/discrepancy/66/resolve`, `/67`). These are journal-direction rows (`cash_movement_id=4`) — pre-fix audit history. After the ±4d widening ships, the 2026-05-28 row matches its Schwab transaction and no new mismatch is emitted; resolve the two old pendings, do NOT bulk-edit or migrate them away.
+4. **Coverage-gap catch-up (only if a gap warning fires):** if `pipeline.log` shows `coverage_gap: <prev_end> .. <start>`, bump `lookback_days` in `~/swing-data/user-config.toml`, run the on-demand `swing schwab fetch` once to re-scan the uncovered span, then restore `lookback_days=30`.
+5. **First-live-run gate:** confirm the next nightly run writes the `cash ingest: ...` summary line to `pipeline.log`, persists `cash_warnings` into `pipeline_runs.warnings_json`, and (at the next flat night) the ACCOUNT tile shows the ledger headline + the "Schwab NLV $X (MM-DD)" secondary line with the cash-coherence badge reflecting any pending/coherence breach.
