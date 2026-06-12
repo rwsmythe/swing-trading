@@ -49,12 +49,16 @@ from swing.metrics.discrepancies import (
     count_unresolved_material,
     fetch_first_pending_ambiguity_resolve_link_path,
 )
-from swing.trades.reconciliation_ambiguity_choices import get_choice_menu
+from swing.trades.reconciliation_ambiguity_choices import (
+    choice_menu_for_discrepancy,
+)
 from swing.trades.reconciliation_auto_correct import (
     AlreadySupersededError,
     CallerHeldTransactionError,
     InvalidOverrideComboError,
+    SourceResolutionRejected,
     ValidatorRejectedError,
+    apply_source_direction_resolution,
     apply_tier2_resolution,
 )
 from swing.web.view_models.reconcile import (
@@ -650,8 +654,10 @@ async def reconcile_discrepancy_resolve_post(  # noqa: PLR0911, PLR0912, PLR0915
                 prior_ambiguity_kind_at_render=prior_ambiguity_kind_at_render,
             )
 
-        # Step 4f — static-menu validation
-        menu = get_choice_menu(disc.ambiguity_kind)
+        # Step 4f — static-menu validation. Arc 4b: source-direction rows
+        # (field_name='missing_journal_row') route to the no-FK-safe menu; all
+        # other rows fall through to the ambiguity_kind-keyed menu (superset).
+        menu = choice_menu_for_discrepancy(disc)
         static_codes = {item.code for item in menu}
         is_parametric_pick = (
             disc.ambiguity_kind == "multi_match_within_window"
@@ -810,14 +816,39 @@ async def reconcile_discrepancy_resolve_post(  # noqa: PLR0911, PLR0912, PLR0915
             "production",
         )
         try:
-            result = apply_tier2_resolution(
+            if disc.field_name == "missing_journal_row":
+                # Arc 4b §4.3 — no-FK-safe source-direction resolver (returns
+                # None; success path below handles the missing correction_id).
+                apply_source_direction_resolution(
+                    conn,
+                    discrepancy_id=discrepancy_id,
+                    choice_code=choice_code,
+                    operator_reason=resolution_reason,
+                    operator_custom_payload=custom_payload,
+                )
+                result = None
+            else:
+                result = apply_tier2_resolution(
+                    conn,
+                    discrepancy_id=discrepancy_id,
+                    choice_code=choice_code,
+                    operator_custom_payload=custom_payload,
+                    operator_reason=resolution_reason,
+                    resolved_by_override="operator_web",  # F2 LOCK
+                    environment=environment,
+                )
+        except SourceResolutionRejected as exc:
+            # MUST precede the generic `except ValueError` below (subclass).
+            return _render_form_with_error(
+                request,
                 conn,
-                discrepancy_id=discrepancy_id,
-                choice_code=choice_code,
-                operator_custom_payload=custom_payload,
-                operator_reason=resolution_reason,
-                resolved_by_override="operator_web",  # F2 LOCK
-                environment=environment,
+                discrepancy_id,
+                error_band_message=str(exc),
+                error_band_field_hint="custom_value",
+                prior_choice_code=prior_choice_code,
+                prior_custom_value_raw=prior_custom_value_raw,
+                prior_resolution_reason=prior_resolution_reason,
+                prior_ambiguity_kind_at_render=prior_ambiguity_kind_at_render,
             )
         except CallerHeldTransactionError as exc:
             log.warning("CallerHeldTransactionError")
@@ -974,11 +1005,12 @@ async def reconcile_discrepancy_resolve_post(  # noqa: PLR0911, PLR0912, PLR0915
     finally:
         conn.close()
 
-    # Step 7 — success path. F5 LOCK on HTMX.
-    correction_id = result.correction_id
-    redirect_target = (
-        f"/dashboard?reconcile_resolved={correction_id}"
-    )
+    # Step 7 — success path. F5 LOCK on HTMX. Arc 4b: source-direction
+    # resolutions return None (no correction_id) — surface the discrepancy id.
+    if result is not None:
+        redirect_target = f"/dashboard?reconcile_resolved={result.correction_id}"
+    else:
+        redirect_target = f"/dashboard?reconcile_resolved=disc-{discrepancy_id}"
     if request.headers.get("HX-Request") == "true":
         return Response(
             status_code=204,

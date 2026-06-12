@@ -51,7 +51,9 @@ from swing.metrics.discrepancies import (
     count_unresolved_material,
     fetch_first_pending_ambiguity_resolve_link_path,
 )
-from swing.trades.reconciliation_ambiguity_choices import get_choice_menu
+from swing.trades.reconciliation_ambiguity_choices import (
+    choice_menu_for_discrepancy,
+)
 from swing.trades.reconciliation_render import build_compared_pairs
 
 
@@ -390,6 +392,21 @@ def _render_pre_resolution_context_cash_movement_mismatch(
     expected: dict[str, Any],
     actual: dict[str, Any],
 ) -> ReconcilePreResolutionContext:
+    # Arc 4b §4.3 — source-direction rows (field_name='missing_journal_row')
+    # carry the Schwab transaction envelope (net_amount + transactionId +
+    # flag_reason), NOT a journal-side {"amount": ...}. Branch so the existing
+    # journal-direction render (which reads expected["amount"]) never KeyErrors.
+    if disc.field_name == "missing_journal_row" or "amount" not in expected:
+        net_amount = expected.get("net_amount")
+        return ReconcilePreResolutionContext(
+            **_base_context_kwargs(disc),
+            journal_side_label="Journal",
+            journal_side_value="(no matching journal row)",
+            schwab_side_label="Schwab amount",
+            schwab_side_value=_format_price(net_amount),
+            delta_label="Flag reason",
+            delta_value=str(expected.get("flag_reason", "")),
+        )
     journal_amount = expected["amount"]
     schwab_amount = actual.get("amount")
     return ReconcilePreResolutionContext(
@@ -752,7 +769,9 @@ def build_reconcile_discrepancy_resolve_vm(
 
     pre_context = _render_pre_resolution_context(disc)
 
-    static_menu = get_choice_menu(disc.ambiguity_kind)
+    # Arc 4b §4.3 — source-direction rows route to the no-FK-safe menu; other
+    # rows fall through to the ambiguity_kind-keyed menu (superset).
+    static_menu = choice_menu_for_discrepancy(disc)
     static_choices = tuple(
         ReconcileChoiceFormItem(
             code=item.code,

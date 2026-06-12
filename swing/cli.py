@@ -2400,7 +2400,7 @@ def discrepancy_show_ambiguity_cmd(ctx, discrepancy_id):
     from swing.data.repos.reconciliation import get_discrepancy
     from swing.trades.reconciliation_ambiguity_choices import (
         ChoiceMenuItem,
-        get_choice_menu,
+        choice_menu_for_discrepancy,
     )
     from swing.trades.reconciliation_render import (
         build_compared_pairs,
@@ -2470,7 +2470,7 @@ def discrepancy_show_ambiguity_cmd(ctx, discrepancy_id):
         )
         return
 
-    menu = get_choice_menu(d.ambiguity_kind)
+    menu = choice_menu_for_discrepancy(d)
 
     # multi_match_within_window: prepend parametric pick_schwab_record_<N>
     # entries derived best-effort from resolution_reason text. V1 source
@@ -2633,12 +2633,13 @@ def discrepancy_resolve_ambiguity_cmd(
     from swing.data.db import connect
     from swing.data.repos.reconciliation import get_discrepancy
     from swing.trades.reconciliation_ambiguity_choices import (
-        get_choice_menu,
+        choice_menu_for_discrepancy,
     )
     from swing.trades.reconciliation_auto_correct import (
         AlreadySupersededError,
         CallerHeldTransactionError,
         ValidatorRejectedError,
+        apply_source_direction_resolution,
         apply_tier2_resolution,
     )
     from swing.trades.risk_policy import read_active_policy
@@ -2701,7 +2702,9 @@ def discrepancy_resolve_ambiguity_cmd(
         # access to the actual candidate count via its handler-key
         # parametric-prefix dispatch); here we only enforce the static
         # member list + the per-choice --custom-value requirement.
-        menu = get_choice_menu(d.ambiguity_kind)
+        # Arc 4b: source-direction rows (field_name='missing_journal_row') route
+        # to the no-FK-safe menu; others fall through (superset).
+        menu = choice_menu_for_discrepancy(d)
         static_codes = {it.code for it in menu}
         # Per-choice --custom-value enforcement requires the
         # `requires_custom_value` flag from the menu entry; record it.
@@ -2758,15 +2761,27 @@ def discrepancy_resolve_ambiguity_cmd(
         active_policy = read_active_policy(conn)
 
         try:
-            result = apply_tier2_resolution(
-                conn,
-                discrepancy_id=discrepancy_id,
-                choice_code=choice_code,
-                operator_custom_payload=parsed_payload,
-                operator_reason=reason,
-                risk_policy_id=active_policy.policy_id,
-                schwab_api_call_id=schwab_api_call_id,
-            )
+            if d.field_name == "missing_journal_row":
+                # Arc 4b §4.3 — no-FK-safe source-direction resolver (returns
+                # None; the back-link + correction_id echo below guard on it).
+                apply_source_direction_resolution(
+                    conn,
+                    discrepancy_id=discrepancy_id,
+                    choice_code=choice_code,
+                    operator_reason=reason,
+                    operator_custom_payload=parsed_payload,
+                )
+                result = None
+            else:
+                result = apply_tier2_resolution(
+                    conn,
+                    discrepancy_id=discrepancy_id,
+                    choice_code=choice_code,
+                    operator_custom_payload=parsed_payload,
+                    operator_reason=reason,
+                    risk_policy_id=active_policy.policy_id,
+                    schwab_api_call_id=schwab_api_call_id,
+                )
             # The C.C tier-2 handlers stamp the forward FK
             # (reconciliation_corrections.schwab_api_call_id) but only
             # the tier-1 path invokes `_back_link_schwab_api_call`. To
@@ -2776,7 +2791,8 @@ def discrepancy_resolve_ambiguity_cmd(
             # service returned a sandbox-style no-op (correction_id is
             # None) or no --schwab-api-call-id was supplied, skip.
             if (
-                schwab_api_call_id is not None
+                result is not None
+                and schwab_api_call_id is not None
                 and result.correction_id is not None
             ):
                 from swing.data.repos.schwab_api_calls import (
@@ -2814,10 +2830,16 @@ def discrepancy_resolve_ambiguity_cmd(
     finally:
         conn.close()
 
-    click.echo(
-        f"resolved discrepancy {discrepancy_id} via choice "
-        f"{choice_code!r}; correction_id={result.correction_id}"
-    )
+    if result is not None:
+        click.echo(
+            f"resolved discrepancy {discrepancy_id} via choice "
+            f"{choice_code!r}; correction_id={result.correction_id}"
+        )
+    else:
+        click.echo(
+            f"resolved discrepancy {discrepancy_id} via source-direction "
+            f"choice {choice_code!r} (terminal; no correction row)"
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -102,6 +102,14 @@ class InvalidOverrideComboError(ValueError):
     """
 
 
+class SourceResolutionRejected(ValueError):  # noqa: N818 — spec §4.3 name (no Error suffix); subclass of ValueError for the CLI wrap
+    """Arc 4b §4.3 — a source-direction (missing_journal_row) resolution was
+    rejected: the verifying choice (record_journal_row / matched_existing_row)
+    could not confirm the operator's claim against the ledger. Subclass of
+    ``ValueError`` so the CLI boundary's generic ValueError→ClickException wrap
+    still surfaces it cleanly."""
+
+
 class _SandboxAutoRedirectShortCircuit(Exception):  # noqa: N818 — spec-locked sentinel name; see docstring
     """Phase 12.5 #1 T-1.6 + spec §7.6.1 — sandbox short-circuit sentinel
     raised by :func:`_apply_tier2_resolution_inner` when the auto-redirect
@@ -384,6 +392,155 @@ def apply_tier2_resolution(
         )
         conn.commit()
         return result
+    except Exception:
+        with contextlib.suppress(sqlite3.Error):
+            conn.rollback()
+        raise
+
+
+def _admitted_kinds_for_source_flag(*, net_amount: float, flag_reason: str) -> set[str]:
+    """Arc 4b §4.3(b) — the journal kinds a record_journal_row resolution may
+    link, given the flagged transaction's sign + flag_reason."""
+    if flag_reason == "unrecognized_income_description" and net_amount > 0:
+        return {"interest", "dividend"}
+    if flag_reason == "negative_income_amount" or net_amount < 0:
+        return {"fee", "withdraw"}
+    if net_amount > 0:
+        return {"deposit", "interest", "dividend"}
+    return {"withdraw", "fee"}
+
+
+_KIND_TO_CLI_FLAG = {
+    "deposit": "--deposit", "withdraw": "--withdraw", "interest": "--interest",
+    "dividend": "--dividend", "fee": "--fee",
+}
+
+
+def apply_source_direction_resolution(
+    conn: sqlite3.Connection,
+    *,
+    discrepancy_id: int,
+    choice_code: str,
+    operator_reason: str,
+    operator_custom_payload: Any = None,
+) -> None:
+    """Arc 4b §4.3 — resolve a source-direction (missing_journal_row) pending.
+
+    A no-FK-safe terminal resolver: it NEVER calls ``_resolve_affected_target``
+    (which raises on all-NULL FK). Owns BEGIN IMMEDIATE / COMMIT / ROLLBACK;
+    rejects caller-held tx. Three choices (spec §4.3):
+
+      - acknowledge_not_journal_event -> acknowledged_immaterial (ambiguity_kind
+        nulled to satisfy the resolution<->ambiguity_kind CHECK).
+      - record_journal_row -> VERIFYING: requires find_by_ref(transactionId) to
+        return a row whose kind is direction-compatible, amount within $0.01, and
+        date within ±4d of the envelope; else SourceResolutionRejected.
+      - matched_existing_row -> requires {"cash_movement_id": N} where N is in
+        the envelope's candidate list AND the row still exists with matching
+        kind/amount; else SourceResolutionRejected.
+    """
+    from datetime import date as _date
+
+    from swing.data.datetime_helpers import now_ms
+    from swing.data.repos.cash import find_by_ref
+    from swing.data.repos.reconciliation import get_discrepancy
+
+    if conn.in_transaction:
+        raise CallerHeldTransactionError(
+            "apply_source_direction_resolution owns its own transaction; "
+            "caller MUST NOT hold an open transaction."
+        )
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        disc = get_discrepancy(conn, discrepancy_id=discrepancy_id)
+        if disc is None:
+            raise SourceResolutionRejected(
+                f"discrepancy {discrepancy_id} not found")
+        if disc.field_name != "missing_journal_row":
+            raise SourceResolutionRejected(
+                f"discrepancy {discrepancy_id} is not a source-direction "
+                f"(missing_journal_row) row")
+        envelope = json.loads(disc.expected_value_json or "{}")
+        tx_id = str(envelope.get("transactionId"))
+        net_amount = float(envelope.get("net_amount", 0.0))
+        iso_date = envelope.get("date")
+        flag_reason = envelope.get("flag_reason", "")
+        now = now_ms()
+
+        def _terminal(resolution: str, reason: str, *, null_kind: bool) -> None:
+            if null_kind:
+                conn.execute(
+                    "UPDATE reconciliation_discrepancies SET resolution=?, "
+                    "ambiguity_kind=NULL, resolution_reason=?, resolved_at=?, "
+                    "resolved_by='operator' WHERE discrepancy_id=?",
+                    (resolution, reason, now, discrepancy_id))
+            else:
+                conn.execute(
+                    "UPDATE reconciliation_discrepancies SET resolution=?, "
+                    "resolution_reason=?, resolved_at=?, resolved_by='operator' "
+                    "WHERE discrepancy_id=?",
+                    (resolution, reason, now, discrepancy_id))
+
+        if choice_code == "acknowledge_not_journal_event":
+            _terminal("acknowledged_immaterial", operator_reason, null_kind=True)
+
+        elif choice_code == "record_journal_row":
+            row = find_by_ref(conn, ref=tx_id)
+            admitted = _admitted_kinds_for_source_flag(
+                net_amount=net_amount, flag_reason=flag_reason)
+            if row is None:
+                kind_hint = sorted(admitted)[0]
+                flag = _KIND_TO_CLI_FLAG.get(kind_hint, "--deposit")
+                raise SourceResolutionRejected(
+                    "no journal row carries this transactionId yet; record it "
+                    f"first: swing journal cash {flag} {abs(net_amount):.2f} "
+                    f"--date {iso_date} --ref {tx_id}")
+            if row.kind not in admitted:
+                raise SourceResolutionRejected(
+                    f"journal row kind {row.kind!r} is not direction-compatible "
+                    f"with the transaction (admitted: {sorted(admitted)})")
+            if abs(abs(float(row.amount)) - abs(net_amount)) > 0.01:
+                raise SourceResolutionRejected(
+                    f"journal row amount {row.amount} does not match the "
+                    f"transaction net_amount {net_amount}")
+            if iso_date and abs(
+                (_date.fromisoformat(row.date) - _date.fromisoformat(iso_date)).days
+            ) > 4:
+                raise SourceResolutionRejected(
+                    f"journal row date {row.date} is outside ±4d of {iso_date}")
+            _terminal(
+                "operator_resolved_ambiguity",
+                f"verified journal row id={row.id} ref={tx_id}: {operator_reason}",
+                null_kind=False)
+
+        elif choice_code == "matched_existing_row":
+            payload = operator_custom_payload or {}
+            cm_id = payload.get("cash_movement_id")
+            candidates = envelope.get("candidate_cash_movement_ids") or []
+            if cm_id is None or int(cm_id) not in [int(c) for c in candidates]:
+                raise SourceResolutionRejected(
+                    f"cash_movement_id {cm_id} is not in the envelope's "
+                    f"candidate list {sorted(candidates)}")
+            r = conn.execute(
+                "SELECT id, kind, amount FROM cash_movements WHERE id=?",
+                (int(cm_id),)).fetchone()
+            if r is None:
+                raise SourceResolutionRejected(
+                    f"candidate cash_movement {cm_id} no longer exists")
+            if abs(abs(float(r[2])) - abs(net_amount)) > 0.01:
+                raise SourceResolutionRejected(
+                    f"candidate cash_movement {cm_id} amount {r[2]} does not "
+                    f"match the transaction net_amount {net_amount}")
+            _terminal(
+                "operator_resolved_ambiguity",
+                f"matched_existing_cash_movement_id={cm_id}: {operator_reason}",
+                null_kind=False)
+        else:
+            raise SourceResolutionRejected(
+                f"unknown source-direction choice {choice_code!r}")
+
+        conn.commit()
     except Exception:
         with contextlib.suppress(sqlite3.Error):
             conn.rollback()

@@ -248,6 +248,38 @@ _AMBIGUITY_CHOICE_MENUS: dict[str, list[ChoiceMenuItem]] = {
             requires_custom_value=False,
         ),
     ],
+    # Arc 4b §4.3 — the source→journal direction (a Schwab cash transaction with
+    # no matching journal row; field_name='missing_journal_row', all FK NULL).
+    # These rows are STAMPED ambiguity_kind='schwab_returned_no_match' by the
+    # pivot but resolve through this 3-choice menu (NOT the FK-requiring
+    # mark_unmatched/operator_truth menu, which raises on all-NULL FK).
+    "source_without_journal": [
+        ChoiceMenuItem(
+            code="acknowledge_not_journal_event",
+            description=(
+                "The broker transaction genuinely should not be in the "
+                "ledger; terminal, no journal mutation."
+            ),
+            requires_custom_value=False,
+        ),
+        ChoiceMenuItem(
+            code="record_journal_row",
+            description=(
+                "Confirm the ledger now carries a verified matching row "
+                "(by transactionId ref); terminal only when verified."
+            ),
+            requires_custom_value=False,
+        ),
+        ChoiceMenuItem(
+            code="matched_existing_row",
+            description=(
+                "Declare the transaction is already represented by an "
+                "existing ref-less journal row from the candidate list."
+            ),
+            requires_custom_value=True,
+            expected_payload_shape_description='{"cash_movement_id": N}',
+        ),
+    ],
 }
 
 
@@ -266,3 +298,12 @@ def get_choice_menu(ambiguity_kind: str) -> list[ChoiceMenuItem]:
     no dedicated ``candidate_choices_json`` column per §I.13 V2).
     """
     return list(_AMBIGUITY_CHOICE_MENUS.get(ambiguity_kind, []))
+
+
+def choice_menu_for_discrepancy(disc: object) -> list[ChoiceMenuItem]:
+    """Arc 4b §4.3 — route source-direction rows (field_name=
+    'missing_journal_row') to the no-FK-safe ``source_without_journal`` menu;
+    everything else falls through to the ambiguity_kind-keyed menu."""
+    if getattr(disc, "field_name", None) == "missing_journal_row":
+        return list(_AMBIGUITY_CHOICE_MENUS["source_without_journal"])
+    return get_choice_menu(getattr(disc, "ambiguity_kind", "") or "")

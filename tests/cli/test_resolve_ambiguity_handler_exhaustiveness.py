@@ -55,11 +55,18 @@ EXPECTED_PARAMETRIC_PAIRS: set[tuple[str, str]] = {
 }
 
 
+# Arc 4b §4.3 — the source_without_journal menu is NOT a tier-2 handler entry
+# (it routes through apply_source_direction_resolution, the no-FK-safe resolver).
+# It is intentionally excluded from the spec §6.2.1 tier-2 exhaustiveness checks.
+_NON_TIER2_MENUS = {"source_without_journal"}
+
+
 def test_menu_matches_spec_6_2_1_exact_keys() -> None:
     """Every spec §6.2.1 exact-key entry appears in the static menu helper."""
     actual = {
         (kind, item.code)
         for kind, items in _AMBIGUITY_CHOICE_MENUS.items()
+        if kind not in _NON_TIER2_MENUS
         for item in items
     }
     assert actual == EXPECTED_EXACT_KEY_PAIRS, (
@@ -91,6 +98,8 @@ def test_total_binding_contract_entries_is_18() -> None:
 def test_no_orphan_menu_entries() -> None:
     """Every static menu entry has a corresponding (kind, code) handler."""
     for kind, items in _AMBIGUITY_CHOICE_MENUS.items():
+        if kind in _NON_TIER2_MENUS:
+            continue  # Arc 4b — source-direction menu uses a separate resolver.
         for item in items:
             assert (kind, item.code) in _TIER2_HANDLERS, (
                 f"menu entry ({kind!r}, {item.code!r}) has no handler "
