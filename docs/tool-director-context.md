@@ -70,7 +70,7 @@ So future instances don't chase ghosts: layer discipline is CLEAN (no web→pipe
 
 ### 4.2 Harness-hygiene standard (v1, 2026-06-11)
 
-**Covered artifacts:** CLAUDE.md · the live charters/context docs (`orchestrator-context.md`, `research-director-context.md`, this file, `research-director-watch-standard.md`) · the `docs/` brief corpus · phase todo files · the auto-memory dir · root session artifacts (`.copowers-*`, `.codex-review-*`) · `exports/` dated dirs (D3).
+**Covered artifacts:** CLAUDE.md · the live charters/context docs (`orchestrator-context.md`, `research-director-context.md`, this file, `research-director-watch-standard.md`) · the `docs/` brief corpus · phase todo files · the auto-memory dir · root session artifacts (`.copowers-*`, `.codex-review-*`) · `exports/` dated dirs (D3) · the comms mailbox (`comms/<role>/inbox`, added 2026-06-11 with comms Stage 1).
 
 **Probe:** `scripts/harness_probe.py` — read-only, stdlib-only, ASCII output, exit 1 when any ATTENTION fires. Run it at every phase-close audit (mandatory) and on demand. It REPORTS; it never deletes — disposal is a phase-boundary proposal to the operator.
 
@@ -85,6 +85,7 @@ So future instances don't chase ghosts: layer discipline is CLEAN (no web→pipe
 | Root session artifacts | count + oldest | any older than 14 days | 11 today, oldest 2 days |
 | exports/ dated dirs | count | none (tracked via D3) | 41 today |
 | Memory dir file count | count | > 80 | 41 today |
+| Comms mailbox unread (per role) | per-role count + nonzero operator inbox as its own line | any unread older than 7 days | added 2026-06-11 (comms Stage 1); 0 today (mailbox not yet in live use). Operator-inbox decisions surface but do NOT fire ATTENTION; only >7d staleness does |
 
 **Boundary (restated because it's load-bearing):** the probe and this standard govern FORM (weight, age, count). Content judgments — what a gotcha says, what stays in a charter, which todo items live — belong to the writing roles. My phase-boundary proposals name candidate files/sections and hand them to their owners; I don't edit other roles' content.
 

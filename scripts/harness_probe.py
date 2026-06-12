@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 # v1 thresholds -- keep in sync with tool-director-context.md section 4.2.
@@ -28,6 +28,9 @@ CONTEXT_DOC_CHARS_MAX = 120_000
 DOCS_MD_COUNT_MAX = 600
 SESSION_ARTIFACT_AGE_DAYS_MAX = 14
 MEMORY_FILE_COUNT_MAX = 80
+# Comms mailbox (Stage 1): unread older than this many days -> ATTENTION.
+COMMS_UNREAD_AGE_DAYS_MAX = 7
+COMMS_ROLES = ("charc", "rd", "operator")
 
 CONTEXT_DOCS = (
     "docs/orchestrator-context.md",
@@ -40,6 +43,57 @@ SESSION_ARTIFACT_GLOBS = (".copowers*", ".codex-review*")
 
 def _chars(path: Path) -> int:
     return len(path.read_text(encoding="utf-8", errors="replace"))
+
+
+def _msg_age_days(path: Path, now: datetime) -> int | None:
+    """Age in days from the leading UTC stamp in a role_mail filename.
+
+    Filenames are '<yyyymmddTHHMMSSZ>-<from>-<slug>.md'. Falls back to mtime
+    if the stamp cannot be parsed. Returns None only when both fail.
+    """
+    stamp = path.name.split("-", 1)[0]
+    try:
+        posted = datetime.strptime(stamp, "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
+    except ValueError:
+        try:
+            posted = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
+        except OSError:
+            return None
+    return (now - posted).days
+
+
+def _scan_comms(comms_dir: Path, now: datetime) -> list[tuple[str, str]]:
+    """Report rows (level, line) for the comms mailbox; pure + testable.
+
+    Per-role unread counts are INFO; any unread older than
+    COMMS_UNREAD_AGE_DAYS_MAX days fires ATTENTION; a nonzero operator inbox
+    always gets its own awaiting-operator line. Missing comms/ -> single INFO.
+    """
+    if not comms_dir.is_dir():
+        return [("INFO", "comms/: missing (skipped)")]
+    rows: list[tuple[str, str]] = []
+    for role in COMMS_ROLES:
+        inbox = comms_dir / role / "inbox"
+        msgs = sorted(inbox.glob("*.md")) if inbox.is_dir() else []
+        read_dir = comms_dir / role / "read"
+        read_n = len(sorted(read_dir.glob("*.md"))) if read_dir.is_dir() else 0
+        rows.append(
+            ("INFO", f"comms {role}: {len(msgs)} unread, {read_n} read"))
+        ages = [a for a in (_msg_age_days(m, now) for m in msgs) if a is not None]
+        oldest = max(ages) if ages else 0
+        if oldest > COMMS_UNREAD_AGE_DAYS_MAX:
+            rows.append((
+                "ATTENTION",
+                f"comms {role}: oldest unread is {oldest}d old "
+                f"(>{COMMS_UNREAD_AGE_DAYS_MAX}d) -- drain or relay it",
+            ))
+        if role == "operator" and msgs:
+            rows.append((
+                "INFO",
+                f"comms operator inbox: {len(msgs)} message(s) awaiting the "
+                "operator's decision",
+            ))
+    return rows
 
 
 def main() -> int:
@@ -140,6 +194,10 @@ def main() -> int:
         report(level, f"memory dir: {len(mem_files)} files (max {MEMORY_FILE_COUNT_MAX})")
     else:
         report("INFO", f"memory dir not found at {memory_dir} (skipped)")
+
+    # Comms mailbox (Stage 1) -- pure helper, UTC clock for the stamp ages.
+    for level, line in _scan_comms(root / "comms", datetime.now(UTC)):
+        report(level, line)
 
     print("-" * 72)
     if attention:
