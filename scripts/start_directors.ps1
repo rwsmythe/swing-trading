@@ -192,19 +192,32 @@ function Build-LaunchCommand($role, $argList) {
     return "`$env:SWING_ROLE='$role'; Set-Location '$RepoRoot'; claude " + ($argList -join ' ')
 }
 
+function Get-EncodedCommand($inner) {
+    # Base64(UTF-16LE) payload for 'powershell -EncodedCommand'. This is the
+    # ROBUST way to hand a multi-statement command to a window. wt.exe parses
+    # ';' on its OWN command line as a tab delimiter, so passing
+    # '-Command "a; b; c"' through 'wt new-tab' splits it into THREE tabs (the
+    # SWING_ROLE assignment, a bogus 'Set-Location' executable tab, and claude
+    # WITHOUT SWING_ROLE) -- which silently defeated the unread hook. An
+    # EncodedCommand blob carries no ';' or quotes for wt to misparse, so the
+    # whole command reaches one shell intact. Used on BOTH paths (no divergence).
+    return [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($inner))
+}
+
 function Start-RoleWindow($role, $title, $argList) {
     # $argList is the claude argument array (everything after 'claude'); the
     # spawned shell sets SWING_ROLE so the director's UserPromptSubmit hook fires.
     $inner = Build-LaunchCommand $role $argList
+    $encoded = Get-EncodedCommand $inner
     $useWT = (-not $NoWT) -and ($null -ne (Get-Command wt.exe -ErrorAction SilentlyContinue))
     if ($useWT) {
-        $wtArgs = @('-w', '0', 'new-tab', '--title', $title, '-d', $RepoRoot, 'powershell', '-NoExit', '-Command', $inner)
+        $wtArgs = @('-w', '0', 'new-tab', '--title', $title, '-d', $RepoRoot, 'powershell', '-NoExit', '-EncodedCommand', $encoded)
         Start-Process -FilePath 'wt.exe' -ArgumentList $wtArgs
     }
     else {
         if ($NoWT) { Write-Info "launching $title in a plain window (-NoWT)." }
         else { Write-Info "wt.exe not found; launching $title in a plain window." }
-        Start-Process -FilePath 'powershell' -ArgumentList @('-NoExit', '-Command', $inner)
+        Start-Process -FilePath 'powershell' -ArgumentList @('-NoExit', '-EncodedCommand', $encoded)
     }
 }
 
@@ -225,6 +238,7 @@ function Start-Fresh($role, $map) {
     Write-Info "fresh $role -> session name '$name'"
     Write-Info "  cmd: $(Format-Cmd $argList)"
     Write-Info "  launch: $(Build-LaunchCommand $role $argList)"
+    Write-Info "  spawn : powershell -NoExit -EncodedCommand $(Get-EncodedCommand (Build-LaunchCommand $role $argList))"
     if ($DryRun) { return $map }
 
     $map[$role] = @{ session_name = $name; session_id = $null; created = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') }
@@ -248,6 +262,7 @@ function Start-Resume($role, $map) {
     Write-Info "resume $role -> session name '$name'"
     Write-Info "  cmd: $(Format-Cmd $argList)"
     Write-Info "  launch: $(Build-LaunchCommand $role $argList)"
+    Write-Info "  spawn : powershell -NoExit -EncodedCommand $(Get-EncodedCommand (Build-LaunchCommand $role $argList))"
     Write-Info "  (--resume opens the /resume picker filtered to this name; select it to re-enter.)"
     if ($DryRun) { return $map }
     Start-RoleWindow $role $RoleTitles[$role] $argList
