@@ -12,7 +12,7 @@ def test_expected_schema_version_unchanged() -> None:
     # B-7 (Phase 15) arc subsequently bumped HEAD to v24 (migration 0024 adds the
     # nullable failure_mode column); this guard tracks the current HEAD so the
     # schwabdev-arc invariant (it added nothing of its own) stays auditable.
-    assert EXPECTED_SCHEMA_VERSION == 28
+    assert EXPECTED_SCHEMA_VERSION == 29
 
 
 def test_no_new_migration_file_added() -> None:
@@ -22,4 +22,4 @@ def test_no_new_migration_file_added() -> None:
     # phase16 0025, broad-watch 0026, entry_intent 0027, watchlist_pin 0028). A higher
     # number means an unaccounted migration file slipped in.
     versions = sorted(int(p.name[:4]) for p in MIG.glob("[0-9][0-9][0-9][0-9]_*.sql"))
-    assert versions[-1] <= 28, f"a new migration file was added: {versions[-1]} (L3 violation)"
+    assert versions[-1] <= 29, f"a new migration file was added: {versions[-1]} (L3 violation)"

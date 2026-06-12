@@ -139,6 +139,9 @@ _AES_EXPECTED_COLS: frozenset[str] = frozenset({
     # consumer-side contract retained (the 8 originals still present); new
     # column is additive.
     "schwab_account_hash",
+    # Phase 16 Arc 4 (migration 0029) ALTER ADD COLUMN: basis TEXT NOT NULL
+    # DEFAULT 'net_liq' (net_liq/cash discriminator). Additive.
+    "basis",
 })
 
 
@@ -152,8 +155,9 @@ def test_account_equity_snapshots_has_eight_columns_for_consumer(
         f"Bundle C consumer schema drift on account_equity_snapshots; "
         f"missing={_AES_EXPECTED_COLS - cols}; extra={cols - _AES_EXPECTED_COLS}"
     )
-    # Phase 11 (migration 0018) added schwab_account_hash → 9 columns.
-    assert len(cols) == 9
+    # Phase 11 (migration 0018) added schwab_account_hash → 9 columns;
+    # Phase 16 Arc 4 (migration 0029) added basis → 10 columns.
+    assert len(cols) == 10
 
 
 def test_account_equity_snapshots_pk_is_snapshot_id_autoincrement(
@@ -172,12 +176,14 @@ def test_account_equity_snapshots_unique_date_source_index(
         "AND tbl_name='account_equity_snapshots'"
     ).fetchall()
     by_name = {r[0]: r[1] for r in idx_rows}
-    assert "ux_account_equity_snapshots_date_source" in by_name
+    # Phase 16 Arc 4 (migration 0029) renamed the uniqueness index to include basis.
+    assert "ux_account_equity_snapshots_date_source_basis" in by_name
     assert "ix_account_equity_snapshots_date" in by_name
-    unique_sql = (by_name["ux_account_equity_snapshots_date_source"] or "").upper()
+    unique_sql = (by_name["ux_account_equity_snapshots_date_source_basis"] or "").upper()
     assert "UNIQUE" in unique_sql
     assert "SNAPSHOT_DATE" in unique_sql
     assert "SOURCE" in unique_sql
+    assert "BASIS" in unique_sql
 
 
 def test_account_equity_snapshots_source_enum_v1_v2_reserved(

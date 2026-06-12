@@ -40,13 +40,13 @@ def conn(tmp_path: Path) -> sqlite3.Connection:
 
 
 def test_expected_schema_version_constant_is_19() -> None:
-    # ensure_schema walks to HEAD; Phase 14 Sub-bundle 3 migration 0023 advanced to 23 (was 22 post-SB2).
-    assert EXPECTED_SCHEMA_VERSION == 28
+    # ensure_schema walks to HEAD; constant tracks the current HEAD migration.
+    assert EXPECTED_SCHEMA_VERSION == 29
 
 
 def test_schema_version_row_is_19(conn: sqlite3.Connection) -> None:
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row[0] == 28
+    assert row[0] == 29
 
 
 # ============================================================================
@@ -534,6 +534,8 @@ _AES_EXPECTED_COLS: frozenset[str] = frozenset({
     "source_artifact_path", "recorded_at", "recorded_by", "notes",
     # Phase 11 (migration 0018) ALTER ADD: schwab_account_hash TEXT NULLABLE.
     "schwab_account_hash",
+    # Phase 16 Arc 4 (migration 0029) ALTER ADD: basis TEXT NOT NULL DEFAULT 'net_liq'.
+    "basis",
 })
 
 
@@ -548,7 +550,7 @@ def test_account_equity_snapshots_table_exists_with_8_columns(
         f"column drift; missing {_AES_EXPECTED_COLS - cols}; "
         f"extra {cols - _AES_EXPECTED_COLS}"
     )
-    assert len(cols) == 9  # Phase 11: 8 -> 9 (schwab_account_hash ALTER)
+    assert len(cols) == 10  # Phase 11: 8 -> 9 (schwab_account_hash); Phase 16: 9 -> 10 (basis)
 
 
 def test_account_equity_snapshots_unique_date_source(
@@ -610,7 +612,8 @@ def test_account_equity_snapshots_indexes_present(
         "AND tbl_name='account_equity_snapshots' ORDER BY name"
     ).fetchall()
     names = {r[0] for r in rows}
-    assert "ux_account_equity_snapshots_date_source" in names
+    # Phase 16 Arc 4 (migration 0029) renamed the uniqueness index to include basis.
+    assert "ux_account_equity_snapshots_date_source_basis" in names
     assert "ix_account_equity_snapshots_date" in names
 
 

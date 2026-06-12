@@ -23,7 +23,7 @@ def _migrate(tmp_path: Path, version: int, backup_dir: Path | None = None):
 
 
 def test_expected_schema_version_is_27():
-    assert EXPECTED_SCHEMA_VERSION == 28
+    assert EXPECTED_SCHEMA_VERSION == 29
 
 
 def test_migrate_to_26_seeds_broad_watch_row(tmp_path):
