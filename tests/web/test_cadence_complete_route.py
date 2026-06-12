@@ -255,9 +255,12 @@ def test_3e16_renders_empty_state_when_no_activity(tmp_path: Path):
 # shows the monthly-read + quarterly reference and NOT the weekly text.
 # ---------------------------------------------------------------------------
 
-# Unique per-type sentinels (test isolation markers).
+# Unique per-type sentinels (test isolation markers). Two per type so the tests
+# pin BOTH halves of each required reminder and catch a weekly/monthly block swap.
 _WEEKLY_MARKER = "scripts/weekly_glance.py"
+_WEEKLY_ESCALATION = "ATTENTION lines"
 _MONTHLY_MARKER = "quarterly strategic evaluation"
+_MONTHLY_DUE = "monthly research-director read is due"
 
 
 def _app_with_pending_review_of_type(tmp_path: Path, review_type: str):
@@ -292,11 +295,14 @@ def test_weekly_review_shows_glance_reference_not_monthly(tmp_path: Path):
     with TestClient(app) as client:
         r = client.get("/reviews/1/complete")
     assert r.status_code == 200
-    # Weekly page shows the §2.1 glance reference + the pointer to the standard.
+    # Weekly page shows the §2.1 glance reference (command + the escalation
+    # reminder) + the pointer to the standard.
     assert _WEEKLY_MARKER in r.text
+    assert _WEEKLY_ESCALATION in r.text
     assert "research-director-watch-standard.md" in r.text
     # ...and NOT the monthly-specific text.
     assert _MONTHLY_MARKER not in r.text
+    assert _MONTHLY_DUE not in r.text
 
 
 def test_monthly_review_shows_monthly_reference_not_weekly(tmp_path: Path):
@@ -304,11 +310,13 @@ def test_monthly_review_shows_monthly_reference_not_weekly(tmp_path: Path):
     with TestClient(app) as client:
         r = client.get("/reviews/1/complete")
     assert r.status_code == 200
-    # Monthly page shows the §3 monthly-read + §1 quarterly reference.
+    # Monthly page shows the §3 monthly-read-due + §1 quarterly reference.
+    assert _MONTHLY_DUE in r.text
     assert _MONTHLY_MARKER in r.text
     assert "research-director-watch-standard.md" in r.text
-    # ...and NOT the weekly glance command.
+    # ...and NOT the weekly glance command or escalation reminder.
     assert _WEEKLY_MARKER not in r.text
+    assert _WEEKLY_ESCALATION not in r.text
 
 
 def test_daily_review_shows_neither_cadence_reference(test_app_with_pending_daily):
@@ -317,7 +325,9 @@ def test_daily_review_shows_neither_cadence_reference(test_app_with_pending_dail
         r = client.get("/reviews/1/complete")
     assert r.status_code == 200
     assert _WEEKLY_MARKER not in r.text
+    assert _WEEKLY_ESCALATION not in r.text
     assert _MONTHLY_MARKER not in r.text
+    assert _MONTHLY_DUE not in r.text
 
 
 def test_cadence_references_are_ascii_only(tmp_path: Path):
