@@ -87,6 +87,72 @@ def _install_hooks(cfg, monkeypatch, fake_client, tmp_path):
     return app
 
 
+def test_web_bars_hook_schwab_success_returns_full_archive(
+    seeded_db, monkeypatch, tmp_path,
+):
+    """Phase 16 Arc 3 (Codex R2 MAJOR #1): the WEB app's ladder bars hook had
+    the same `window.to_dataframe()` truncation as the pipeline hook. For a
+    short-listed ticker the ticker_detail JIT path (which uses the web app's
+    `ohlcv_cache.get_or_fetch`) would render from the short Schwab window. The
+    shared `resolve_full_archive_bars` helper must make the web hook return the
+    FULL archive too — converging every surface.
+    """
+    import pandas as pd
+
+    from swing.integrations.schwab.models import (
+        OhlcvBar,
+        SchwabPriceHistoryWindow,
+    )
+
+    cfg, _ = seeded_db
+    _seed_open_trade(cfg, "AAA")  # open trade → scope gate ATTEMPTS Schwab
+
+    end = pd.Timestamp("2026-06-08")
+    full_archive = pd.DataFrame(
+        {
+            "Open": [100.0 + i for i in range(200)],
+            "High": [101.0 + i for i in range(200)],
+            "Low": [99.0 + i for i in range(200)],
+            "Close": [100.5 + i for i in range(200)],
+            "Volume": [1000 + i for i in range(200)],
+        },
+        index=pd.bdate_range(end=end, periods=200),
+    )
+    short_schwab = SchwabPriceHistoryWindow(
+        ticker="AAA",
+        bars=[
+            OhlcvBar(asof_date=d.date().isoformat(), open=1.0, high=1.0,
+                     low=1.0, close=1.0, volume=1)
+            for d in pd.bdate_range(end=end, periods=16)
+        ],
+        provider="schwab_api",
+    )
+
+    monkeypatch.setattr(
+        "swing.integrations.schwab.marketdata_ladder.fetch_window_via_ladder",
+        lambda ticker, **_k: (short_schwab, "schwab_api"),
+    )
+    # The web hook's _yf_window_fallback imports these locally → patch source.
+    monkeypatch.setattr(
+        "swing.data.ohlcv_archive.read_or_fetch_archive",
+        lambda ticker, *, end_date, cache_dir, archive_history_days: (
+            full_archive.loc[full_archive.index.date <= end_date].copy()
+        ),
+    )
+    monkeypatch.setattr(
+        "swing.evaluation.dates.last_completed_session", lambda _n: end.date(),
+    )
+    monkeypatch.setattr(
+        "swing.web.ohlcv_cache.last_completed_session", lambda _n: end.date(),
+    )
+
+    app = _install_hooks(cfg, monkeypatch, MagicMock(), tmp_path)
+    bars_df, provider_tag = app.state.ohlcv_cache._ladder_bars_fetcher("AAA")
+    assert provider_tag == "schwab_api"
+    # NOT the 16-bar Schwab window — the full archive.
+    assert len(bars_df) == 200
+
+
 def test_bars_hook_passes_explicit_daily_kwargs(seeded_db, monkeypatch, tmp_path):
     cfg, _ = seeded_db
     captured = {}

@@ -357,6 +357,7 @@ def _install_pipeline_marketdata_caches(
     from swing.integrations.schwab.marketdata_ladder import (
         fetch_quote_via_ladder,
         fetch_window_via_ladder,
+        resolve_full_archive_bars,
     )
     from swing.web.ohlcv_cache import OhlcvCache
     from swing.web.price_cache import PriceCache
@@ -492,25 +493,15 @@ def _install_pipeline_marketdata_caches(
         # so both surfaces converge on identical bar counts. The yfinance
         # fallback path already returns the full archive (`_yf_window_fallback`
         # → read_or_fetch_archive), so this unifies both provider paths.
-        if provider_tag == "schwab_api":
-            # Re-read the full archive (the SAME read the no-ladder/ticker_detail
-            # path uses) so both surfaces converge. Fall back to the Schwab
-            # window ONLY when the archive read yields nothing — a Schwab-only /
-            # yfinance-empty ticker with no legacy archive — so we never regress
-            # such a ticker from a (sparse) render to no render at all. (For that
-            # degenerate case the no-ladder detail path is also empty, so the
-            # divergence the fix targets — a FULL legacy archive vs a short
-            # Schwab window — does not apply.)
-            full = _yf_window_fallback(ticker, None, None)
-            if full is not None and not full.empty:
-                bars = full
-            elif hasattr(window, "to_dataframe"):
-                bars = window.to_dataframe()
-            else:
-                bars = window
-        else:
-            # yfinance fallback: `window` is already the full archive frame.
-            bars = window
+        # Full-archive-return contract (CLAUDE.md: "cache hooks must return the
+        # FULL archive; consumers slice"). On the schwab_api success path the
+        # ladder's `window` is only the short freshly-fetched Schwab sub-window
+        # (XMAX = 16 daily bars); the shared helper re-reads the full archive so
+        # the pipeline thumbnail converges with the no-ladder ticker_detail path.
+        bars = resolve_full_archive_bars(
+            ticker, window, provider_tag,
+            yfinance_window_fn=_yf_window_fallback,
+        )
         return (bars, provider_tag)
 
     price_cache.set_ladder_fetcher(_quote_hook)

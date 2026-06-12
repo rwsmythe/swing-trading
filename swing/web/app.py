@@ -281,6 +281,7 @@ def _install_web_marketdata_caches(cfg, price_cache, ohlcv_cache) -> object | No
     from swing.integrations.schwab.marketdata_ladder import (
         fetch_quote_via_ladder,
         fetch_window_via_ladder,
+        resolve_full_archive_bars,
     )
 
     state = _WebLadderState(cfg)
@@ -338,10 +339,15 @@ def _install_web_marketdata_caches(cfg, price_cache, ohlcv_cache) -> object | No
         finally:
             conn.close()
         state.note_provider(provider_tag)
-        if provider_tag == "schwab_api" and hasattr(window, "to_dataframe"):
-            bars = window.to_dataframe()
-        else:
-            bars = window
+        # Full-archive-return contract (Phase 16 Arc 3): on a schwab_api success
+        # the short Schwab sub-window would truncate the ticker_detail / JIT
+        # render for a short-listed ticker (XMAX). The shared helper re-reads the
+        # full archive so this web hook converges with the pipeline hook + the
+        # no-ladder path. Mirrors swing/pipeline/runner.py:_bars_hook.
+        bars = resolve_full_archive_bars(
+            ticker, window, provider_tag,
+            yfinance_window_fn=_yf_window_fallback,
+        )
         return (bars, provider_tag)
 
     price_cache.set_ladder_fetcher(_quote_hook)

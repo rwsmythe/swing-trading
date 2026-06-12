@@ -107,7 +107,11 @@ def compute_chart_source_hash(bars: Any) -> str:
     close_crc = 0
     if "Close" in getattr(bars, "columns", []):
         try:
-            close_bytes = bars["Close"].to_numpy(dtype="float64").tobytes()
+            # Big-endian normalization so the CRC is identical across platforms
+            # of differing native float byte order (cross-process determinism).
+            close_bytes = (
+                bars["Close"].to_numpy(dtype="float64").astype(">f8").tobytes()
+            )
             close_crc = zlib.crc32(close_bytes) & 0xFFFFFFFF
         except Exception:  # noqa: BLE001 — provenance is best-effort; degrade to count/window
             close_crc = 0

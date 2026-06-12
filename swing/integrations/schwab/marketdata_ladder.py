@@ -474,7 +474,49 @@ def fetch_window_via_ladder(
     return (schwab_window, "schwab_api")
 
 
+def resolve_full_archive_bars(
+    ticker: str,
+    window: Any,
+    provider_tag: str,
+    *,
+    yfinance_window_fn: Callable[[str, Any, Any], Any],
+) -> Any:
+    """Full-archive-return contract for the OhlcvCache ladder bars hooks
+    (Phase 16 Arc 3). Shared by the pipeline hook
+    (``swing/pipeline/runner.py:_install_pipeline_marketdata_caches``) and the
+    web hook (``swing/web/app.py:_install_web_marketdata_caches``) so the fix
+    cannot drift between the two duplicated closures.
+
+    On a ``schwab_api`` SUCCESS the ladder's ``window`` is only the
+    freshly-fetched Schwab sub-window, which for a short-listed ticker (XMAX =
+    16 daily Schwab bars, TDAY = 138 — vs a ~1260-row legacy archive) truncated
+    the watchlist thumbnail / ticker-detail render while the no-ladder read
+    stayed rich for the SAME ``data_asof_date``. Return the FULL archive instead
+    — the SAME read the no-ladder path uses (``yfinance_window_fn`` →
+    ``read_or_fetch_archive``) — so every surface converges on identical bar
+    counts. The ladder has ALREADY persisted the Schwab bars to the Shape-A
+    archive (audit + provenance preserved by ``fetch_window_via_ladder``), so
+    nothing is lost.
+
+    Fall back to the Schwab window ONLY when the archive read yields nothing — a
+    Schwab-only / yfinance-empty ticker with no legacy archive — so we never
+    regress such a ticker from a (sparse) render to no render at all.
+
+    The yfinance-fallback path already returns the full archive, so it passes
+    through unchanged.
+    """
+    if provider_tag != "schwab_api":
+        return window
+    full = yfinance_window_fn(ticker, None, None)
+    if full is not None and not getattr(full, "empty", False):
+        return full
+    if hasattr(window, "to_dataframe"):
+        return window.to_dataframe()
+    return window
+
+
 __all__ = [
     "fetch_quote_via_ladder",
     "fetch_window_via_ladder",
+    "resolve_full_archive_bars",
 ]
