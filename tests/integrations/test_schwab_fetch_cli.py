@@ -57,6 +57,9 @@ def _make_cfg(*, db_path: Path, environment: str = "production",
             ),
             finviz=SimpleNamespace(token="", screen_query="", timeout_seconds=30),
         ),
+        # Arc 4b Task 8: the schwab reconciliation step reads
+        # cfg.account.starting_equity for the ledger-vs-NLV coherence check.
+        account=SimpleNamespace(starting_equity=0.0),
     )
 
 

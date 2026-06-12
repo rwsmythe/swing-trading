@@ -64,6 +64,8 @@ def _make_cfg(*, environment: str) -> SimpleNamespace:
                 callback_url="https://127.0.0.1",
             ),
         ),
+        # Arc 4b Task 8: ledger-vs-NLV coherence reads cfg.account.starting_equity.
+        account=SimpleNamespace(starting_equity=0.0),
     )
 
 

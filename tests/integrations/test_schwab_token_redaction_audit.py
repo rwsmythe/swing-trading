@@ -1129,6 +1129,8 @@ def test_23d_reconciliation_run_audit_link_does_not_leak_sentinel(tmp_path):
                 callback_url="https://127.0.0.1",
             ),
         ),
+        # Arc 4b Task 8: ledger-vs-NLV coherence reads cfg.account.starting_equity.
+        account=SimpleNamespace(starting_equity=0.0),
     )
     result = _step_schwab_orders(
         conn, cfg, pipeline_run_id=None, client=sd_client,
