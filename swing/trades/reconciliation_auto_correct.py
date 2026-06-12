@@ -539,18 +539,21 @@ def apply_source_direction_resolution(
             if r is None:
                 raise SourceResolutionRejected(
                     f"candidate cash_movement {cm_id} no longer exists")
-            # Re-validate the candidate row's KIND at resolve time (spec §4.3(c)
-            # "the row still exists with matching kind/amount"; Codex R1 MAJOR):
-            # the envelope ids were filtered same-kind at ingest, but a stale id
-            # whose direction no longer matches the transaction must not
-            # terminally suppress it.
-            admitted = _admitted_kinds_for_source_flag(
-                net_amount=net_amount, flag_reason=flag_reason)
-            if r[1] not in admitted:
+            # Re-validate the candidate row's EXACT classified KIND at resolve
+            # time (spec §4.3(c) "matching kind/amount"; Codex R1+R3 MAJOR).
+            # matched_existing_row resolves ONLY fallback_multi_match rows, whose
+            # candidates were ingested via `WHERE ref IS NULL AND kind = <disp>`
+            # — and the fallback never handles income/fee, so the determinate
+            # kind is deposit (net>0) or withdraw (net<0). Requiring the EXACT
+            # kind (not just sign-compatibility) stops a stale same-amount
+            # interest/dividend row from suppressing an ACH deposit. The
+            # envelope's persisted expected_kind is preferred when present.
+            expected_kind = envelope.get("expected_kind") or (
+                "deposit" if net_amount > 0 else "withdraw")
+            if r[1] != expected_kind:
                 raise SourceResolutionRejected(
-                    f"candidate cash_movement {cm_id} kind {r[1]!r} is not "
-                    f"direction-compatible with the transaction "
-                    f"(admitted: {sorted(admitted)})")
+                    f"candidate cash_movement {cm_id} kind {r[1]!r} does not "
+                    f"match the transaction's classified kind {expected_kind!r}")
             if abs(abs(float(r[2])) - abs(net_amount)) > 0.01:
                 raise SourceResolutionRejected(
                     f"candidate cash_movement {cm_id} amount {r[2]} does not "

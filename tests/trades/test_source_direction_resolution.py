@@ -134,8 +134,53 @@ def test_matched_existing_rejects_wrong_kind_candidate(tmp_path):
         conn, flag_reason="fallback_multi_match", net_amount=5.0,
         candidate_ids=[bad_id])
     conn.commit()
-    with pytest.raises(SourceResolutionRejected, match="direction-compatible"):
+    with pytest.raises(SourceResolutionRejected, match="classified kind"):
         apply_source_direction_resolution(
             conn, discrepancy_id=disc_id, choice_code="matched_existing_row",
             operator_custom_payload={"cash_movement_id": bad_id},
             operator_reason="x")
+
+
+def test_matched_existing_rejects_same_sign_wrong_kind(tmp_path):
+    # Codex R3 MAJOR — a SAME-SIGN but wrong-KIND candidate (interest row vs a
+    # positive ACH deposit transaction, both positive) must be REJECTED: the
+    # fallback's classified kind is exactly 'deposit', not the broad positive
+    # set {deposit,interest,dividend}.
+    conn = ensure_schema(tmp_path / "ss.db")
+    bad_id = int(conn.execute(
+        "INSERT INTO cash_movements (date, kind, amount, ref, note) "
+        "VALUES ('2026-06-01','interest',5.0,NULL,'same-sign-wrong-kind')").lastrowid)
+    disc_id = _make_pending(
+        conn, flag_reason="fallback_multi_match", net_amount=5.0,
+        candidate_ids=[bad_id])
+    conn.commit()
+    with pytest.raises(SourceResolutionRejected, match="classified kind"):
+        apply_source_direction_resolution(
+            conn, discrepancy_id=disc_id, choice_code="matched_existing_row",
+            operator_custom_payload={"cash_movement_id": bad_id},
+            operator_reason="x")
+
+
+def test_matched_existing_accepts_exact_kind_candidate(tmp_path):
+    # Positive control: a deposit candidate (exact classified kind) with matching
+    # amount + a persisted expected_kind envelope resolves terminally.
+    conn = ensure_schema(tmp_path / "ok.db")
+    good_id = int(conn.execute(
+        "INSERT INTO cash_movements (date, kind, amount, ref, note) "
+        "VALUES ('2026-06-01','deposit',5.0,NULL,'a')").lastrowid)
+    disc_id = _make_pending(
+        conn, flag_reason="fallback_multi_match", net_amount=5.0,
+        candidate_ids=[good_id])
+    # Persist expected_kind on the envelope (the production emit now does this).
+    conn.execute(
+        "UPDATE reconciliation_discrepancies SET expected_value_json="
+        "json_set(expected_value_json, '$.expected_kind', 'deposit') "
+        "WHERE discrepancy_id=?", (disc_id,))
+    conn.commit()
+    apply_source_direction_resolution(
+        conn, discrepancy_id=disc_id, choice_code="matched_existing_row",
+        operator_custom_payload={"cash_movement_id": good_id},
+        operator_reason="already represented")
+    res = conn.execute("SELECT resolution FROM reconciliation_discrepancies "
+                       "WHERE discrepancy_id=?", (disc_id,)).fetchone()[0]
+    assert res == "operator_resolved_ambiguity"

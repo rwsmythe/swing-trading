@@ -836,12 +836,17 @@ def _emit_source_direction_cash(
     counters: dict,
     dedup_seen: set,
     candidate_cash_movement_ids: list[int] | None = None,
+    expected_kind: str | None = None,
 ) -> int:
     """Emit a source→journal cash_movement_mismatch (field_name=
     'missing_journal_row', all FK NULL). actual_value_json is EXACTLY
     {"matched": null} (the sole-key shape is LOAD-BEARING — _extract_source_
     payload maps it to None → the classifier routes schwab_returned_no_match).
-    The flag_reason lives in expected_value_json, never in actual."""
+    The flag_reason lives in expected_value_json, never in actual.
+
+    ``expected_kind`` (fallback_multi_match only): the candidate transaction's
+    classified deposit/withdraw kind, persisted so the matched_existing_row
+    resolver can require an EXACT kind match (Codex R3) rather than re-deriving."""
     expected: dict[str, Any] = {
         "transactionId": str(tx.transaction_id),
         "date": tx.transaction_date,
@@ -852,6 +857,8 @@ def _emit_source_direction_cash(
     }
     if candidate_cash_movement_ids is not None:
         expected["candidate_cash_movement_ids"] = sorted(candidate_cash_movement_ids)
+    if expected_kind is not None:
+        expected["expected_kind"] = expected_kind
     return _emit(
         conn,
         run_id=run_id,
@@ -999,7 +1006,7 @@ def _ingest_cash_transactions(
             _emit_source_direction_cash(
                 conn, run_id=run_id, tx=tx, flag_reason="fallback_multi_match",
                 counters=counters, dedup_seen=dedup_seen,
-                candidate_cash_movement_ids=cands)
+                candidate_cash_movement_ids=cands, expected_kind=disp.kind)
             cc["cash_flagged_count"] += 1
             continue
         # 4. No match → INSERT (append-only; ref = the idempotency key).

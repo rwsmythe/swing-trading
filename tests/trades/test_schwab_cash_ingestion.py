@@ -122,6 +122,8 @@ def test_multi_candidate_fallback_flags_tier2_no_write(cash_recon_run):
     assert act == {"matched": None}  # sole-key shape (load-bearing)
     assert exp["flag_reason"] == "fallback_multi_match"
     assert sorted(exp["candidate_cash_movement_ids"])  # candidate ids carried
+    # Codex R3 — the classified kind is persisted for the exact-kind resolver check.
+    assert exp["expected_kind"] == "deposit"
 
 
 def test_two_unmatched_in_one_run_emit_two_rows(cash_recon_run):
