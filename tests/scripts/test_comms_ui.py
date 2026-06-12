@@ -398,6 +398,148 @@ def test_ack_goes_through_ack_message_seam(client, comms, monkeypatch):
     assert calls == [("operator", "x.md")]
 
 
+# --- origin guard (T5; all POSTs) ------------------------------------------
+
+def test_post_with_foreign_origin_is_403(client, comms):
+    r = client.post("/compose",
+                    data={"to": "charc", "type": "fyi", "subject": "s",
+                          "body": "x"},
+                    headers={"Origin": "http://evil.example"})
+    assert r.status_code == 403
+    assert list(comms.rglob("*.md")) == []  # nothing written
+
+
+def test_post_with_no_origin_or_referer_is_403(client, comms):
+    # TestClient sends neither Origin nor Referer by default -> rejected.
+    r = client.post("/compose",
+                    data={"to": "charc", "type": "fyi", "subject": "s",
+                          "body": "x"})
+    assert r.status_code == 403
+    assert list(comms.rglob("*.md")) == []
+
+
+def test_post_with_matching_referer_is_allowed(client, comms):
+    r = client.post("/compose",
+                    data={"to": "charc", "type": "fyi", "subject": "ref",
+                          "body": "x"},
+                    headers={"Referer": "http://testserver/"})
+    assert r.status_code == 200
+    assert len(role_mail._list_inbox(comms, "charc")) == 1
+
+
+def test_get_is_not_origin_guarded(client):
+    # GETs carry no foreign-origin risk; they must work with no Origin header.
+    assert client.get("/").status_code == 200
+    assert client.get("/panes/inbox").status_code == 200
+
+
+# --- launch endpoint (T5; exact argv, subprocess mocked) -------------------
+
+def _mock_run(monkeypatch, returncode=0, stdout="launched", stderr=""):
+    calls = []
+
+    def fake(argv, **kwargs):
+        calls.append((argv, kwargs))
+        from types import SimpleNamespace
+        return SimpleNamespace(returncode=returncode, stdout=stdout,
+                               stderr=stderr)
+
+    monkeypatch.setattr(comms_ui.subprocess, "run", fake)
+    return calls
+
+
+def _launcher_argv(role, resume):
+    argv = ["powershell", "-NoProfile", "-File",
+            str(comms_ui._SCRIPTS_DIR / "start_directors.ps1"), "-Role", role]
+    if resume:
+        argv.append("-Resume")
+    return argv
+
+
+def test_launch_fresh_runs_exact_argv(client, monkeypatch):
+    calls = _mock_run(monkeypatch)
+    r = client.post("/directors/launch", data={"role": "both", "mode": "fresh"},
+                    headers=_SAME_ORIGIN)
+    assert r.status_code == 200
+    assert len(calls) == 1
+    assert calls[0][0] == _launcher_argv("both", resume=False)
+
+
+def test_launch_resume_appends_resume_flag(client, monkeypatch):
+    calls = _mock_run(monkeypatch)
+    client.post("/directors/launch", data={"role": "charc", "mode": "resume"},
+                headers=_SAME_ORIGIN)
+    assert calls[0][0] == _launcher_argv("charc", resume=True)
+
+
+def test_launch_rejects_invalid_role(client, monkeypatch):
+    calls = _mock_run(monkeypatch)
+    r = client.post("/directors/launch",
+                    data={"role": "operator", "mode": "fresh"},
+                    headers=_SAME_ORIGIN)
+    assert r.status_code == 400
+    assert calls == []  # subprocess NEVER reached
+
+
+def test_launch_rejects_invalid_mode(client, monkeypatch):
+    calls = _mock_run(monkeypatch)
+    r = client.post("/directors/launch",
+                    data={"role": "both", "mode": "nuke"},
+                    headers=_SAME_ORIGIN)
+    assert r.status_code == 400
+    assert calls == []
+
+
+def test_launch_nonzero_exit_is_error_flash_not_500(client, monkeypatch):
+    _mock_run(monkeypatch, returncode=1, stdout="", stderr="boom")
+    r = client.post("/directors/launch", data={"role": "both", "mode": "fresh"},
+                    headers=_SAME_ORIGIN)
+    assert r.status_code == 200  # not a 500
+    assert "flash" in r.text
+    assert "err" in r.text
+
+
+def test_launch_subprocess_timeout_is_flash_not_500(client, monkeypatch):
+    import subprocess as _sp
+
+    def boom(argv, **kwargs):
+        raise _sp.TimeoutExpired(argv, 30)
+
+    monkeypatch.setattr(comms_ui.subprocess, "run", boom)
+    r = client.post("/directors/launch", data={"role": "both", "mode": "fresh"},
+                    headers=_SAME_ORIGIN)
+    assert r.status_code == 200
+    assert "flash" in r.text
+
+
+def test_launch_disabled_refuses_without_subprocess(comms, monkeypatch):
+    app = comms_ui.create_app(comms_root=comms, allow_launch=False)
+    calls = _mock_run(monkeypatch)
+    with TestClient(app) as c:
+        r = c.post("/directors/launch", data={"role": "both", "mode": "fresh"},
+                   headers=_SAME_ORIGIN)
+    assert r.status_code == 400
+    assert calls == []
+
+
+# --- orchestrator bootstrap copy button (T5) -------------------------------
+
+def test_orchestrator_bootstrap_served_verbatim(client):
+    r = client.get("/orchestrator-bootstrap")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/plain")
+    expected = (comms_ui._SCRIPTS_DIR / "orchestrator_bootstrap.md").read_text(
+        encoding="utf-8")
+    assert r.text == expected
+
+
+def test_directors_strip_renders_controls(client, comms):
+    page = client.get("/").text
+    assert 'hx-post="/directors/launch"' in page
+    assert "orchestrator" in page.lower()  # the copy button
+    assert "/orchestrator-bootstrap" in page  # the copy fetch target
+
+
 # --- never touches the real comms ------------------------------------------
 
 def test_factory_uses_given_root_not_real_comms(comms):

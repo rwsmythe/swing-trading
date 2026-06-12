@@ -23,17 +23,21 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import math
+import subprocess
 import sys
 import threading
 import webbrowser
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, Response
 from jinja2 import DictLoader, Environment, select_autoescape
+from starlette.middleware.base import BaseHTTPMiddleware
 
 # Import role_mail the not-a-package way the tests do (scripts/ is not a
 # package); role_mail.post_message / ack_message are the single write path (L4).
@@ -52,6 +56,11 @@ BUS_ROLES = ("charc", "rd")  # the director bus (read-only)
 HISTORY_CAP = 50
 # compose type allowlist -- decision_request is DELIBERATELY ABSENT (L1 belt)
 COMPOSE_TYPES = ("fyi", "status", "query", "return_report")
+# director-launch enums (L5): nothing user-typed reaches the command line
+LAUNCH_ROLES = ("both", "charc", "rd")
+LAUNCH_MODES = ("fresh", "resume")
+LAUNCHER = "start_directors.ps1"  # in _SCRIPTS_DIR
+BOOTSTRAP_FILE = "orchestrator_bootstrap.md"  # in _SCRIPTS_DIR, served verbatim
 
 
 # --- message model ---------------------------------------------------------
@@ -157,6 +166,51 @@ def _read_messages(root: Path, role: str, now: datetime) -> list[Message]:
     return [_message_from_path(p, role, now) for p in paths]
 
 
+def _recorded_sessions(root: Path) -> dict[str, bool]:
+    """Which director roles have an entry in comms/.sessions.json (presence).
+
+    The launcher writes this map (role -> {session_name, ...}). Read-only here;
+    a missing/unreadable/garbage file yields all-False (never raises).
+    """
+    path = root / ".sessions.json"
+    result = {role: False for role in BUS_ROLES}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return result
+    if isinstance(data, dict):
+        for role in BUS_ROLES:
+            result[role] = bool(data.get(role))
+    return result
+
+
+class OriginGuard(BaseHTTPMiddleware):
+    """Reject cross-origin POSTs (localhost servers are CSRF-able).
+
+    Any webpage can blind-POST to 127.0.0.1:<port>; the launch endpoint spawns
+    token-burning Claude windows. Every POST must carry an Origin (or, failing
+    that, a Referer) whose origin matches this app's own; a POST with NEITHER
+    header is also refused. GETs are unguarded (no state change).
+    """
+
+    async def dispatch(self, request: Request, call_next):  # noqa: ANN001
+        if request.method == "POST":
+            expected = f"{request.url.scheme}://{request.headers.get('host', '')}"
+            origin = request.headers.get("origin")
+            referer = request.headers.get("referer")
+            if origin is not None:
+                ok = origin == expected
+            elif referer is not None:
+                parts = urlsplit(referer)
+                ok = f"{parts.scheme}://{parts.netloc}" == expected
+            else:
+                ok = False  # neither header -> refuse
+            if not ok:
+                return PlainTextResponse(
+                    "403 cross-origin POST refused", status_code=403)
+        return await call_next(request)
+
+
 # --- templates (embedded; one reviewable file, no template dir) ------------
 
 _PAGE = """<!doctype html>
@@ -174,6 +228,29 @@ _PAGE = """<!doctype html>
     {code: "[23].*", swap: true},
     {code: "[45].*", swap: true, error: true},
   ];
+</script>
+<script>
+  // Copy the orchestrator spin-up prompt to the clipboard (localhost is a
+  // secure context). On clipboard denial, reveal the text for manual copy
+  // instead of failing silently.
+  function copyOrchestratorBootstrap() {
+    var flash = document.getElementById('directors-flash');
+    fetch('/orchestrator-bootstrap').then(function (r) { return r.text(); })
+      .then(function (text) {
+        navigator.clipboard.writeText(text).then(
+          function () { flash.innerHTML = '<div class="flash ok">copied</div>'; },
+          function () {
+            var pre = document.getElementById('bootstrap-fallback');
+            pre.textContent = text; pre.style.display = 'block';
+            flash.innerHTML =
+              '<div class="flash err">copy denied -- copy manually below</div>';
+          });
+      })
+      .catch(function () {
+        flash.innerHTML =
+          '<div class="flash err">could not fetch bootstrap text</div>';
+      });
+  }
 </script>
 <style>
   body { font-family: system-ui, sans-serif; margin: 1rem; max-width: 70rem; }
@@ -226,7 +303,7 @@ _PAGE = """<!doctype html>
   </section>
 </details>
 
-{% block directors %}{% endblock %}
+{% include "directors_strip.html" %}
 </body>
 </html>
 """
@@ -335,6 +412,38 @@ _COMPOSE_FORM = """<section class="strip" id="compose">
 
 _FLASH = """<div class="flash {{ cls }}">{{ msg }}</div>"""
 
+# The directors strip sits OUTSIDE every polled region (like compose). It shows
+# per-role unread + recorded-session presence, the launch controls, and the
+# orchestrator spin-up copy button. Launch is L5-fixed-argv; copy is read-only.
+_DIRECTORS_STRIP = """<section class="strip" id="directors">
+<h2>Directors</h2>
+<ul>
+{% for role in director_roles %}
+  <li>{{ role }}: {{ director_counts[role] }} unread --
+    session {{ "recorded" if director_sessions[role] else "none" }}</li>
+{% endfor %}
+</ul>
+<div id="directors-flash"></div>
+{% if allow_launch %}
+<form hx-post="/directors/launch" hx-target="#directors-flash"
+      hx-swap="innerHTML">
+  <label>role
+    <select name="role">
+      {% for r in launch_roles %}<option value="{{ r }}">{{ r }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <button type="submit" name="mode" value="fresh">Start fresh</button>
+  <button type="submit" name="mode" value="resume">Resume</button>
+</form>
+{% else %}<p class="empty">(launch disabled)</p>{% endif %}
+<hr>
+<button type="button" onclick="copyOrchestratorBootstrap()">
+  Copy orchestrator spin-up</button>
+<pre id="bootstrap-fallback" style="display:none"></pre>
+</section>
+"""
+
 
 def _make_env() -> Environment:
     return Environment(
@@ -344,6 +453,7 @@ def _make_env() -> Environment:
             "bus_pane.html": _BUS_PANE,
             "history_pane.html": _HISTORY_PANE,
             "compose_form.html": _COMPOSE_FORM,
+            "directors_strip.html": _DIRECTORS_STRIP,
             "flash.html": _FLASH,
         }),
         autoescape=select_autoescape(["html"], default_for_string=True),
@@ -363,9 +473,23 @@ def create_app(comms_root: Path, allow_launch: bool = True) -> FastAPI:
     app = FastAPI(title="comms mail UI")
     app.state.comms_root = comms_root
     app.state.allow_launch = allow_launch
+    # OriginGuard is the only middleware, so it wraps every route (the
+    # add-middleware-LAST-to-wrap-everything discipline holds trivially here).
+    app.add_middleware(OriginGuard)
 
     def _now() -> datetime:
         return datetime.now(UTC)
+
+    def _directors_ctx() -> dict:
+        now = _now()
+        counts = {r: len(_inbox_messages(comms_root, r, now)) for r in BUS_ROLES}
+        return {
+            "director_counts": counts,
+            "director_sessions": _recorded_sessions(comms_root),
+            "director_roles": list(BUS_ROLES),
+            "launch_roles": list(LAUNCH_ROLES),
+            "allow_launch": allow_launch,
+        }
 
     def _inbox_ctx() -> dict:
         msgs = _inbox_messages(comms_root, "operator", _now())
@@ -392,7 +516,7 @@ def create_app(comms_root: Path, allow_launch: bool = True) -> FastAPI:
     @app.get("/", response_class=HTMLResponse)
     def index(request: Request) -> HTMLResponse:
         ctx = {
-            **_inbox_ctx(), **_bus_ctx(), **_history_ctx(),
+            **_inbox_ctx(), **_bus_ctx(), **_history_ctx(), **_directors_ctx(),
             "compose_types": list(COMPOSE_TYPES), "oob": False,
         }
         return HTMLResponse(env.get_template("page.html").render(**ctx))
@@ -447,6 +571,40 @@ def create_app(comms_root: Path, allow_launch: bool = True) -> FastAPI:
             except role_mail.MailError:
                 continue  # a concurrent drain is fine; keep going
         return _inbox_fragment({"cls": "ok", "msg": f"acked {acked} message(s)"})
+
+    @app.post("/directors/launch", response_class=HTMLResponse)
+    def directors_launch(
+        role: str = Form(...),
+        mode: str = Form(...),
+    ) -> HTMLResponse:
+        if not allow_launch:
+            return _flash("err", "launch is disabled for this server", 400)
+        # L5: enum-validate BEFORE building argv so nothing user-typed can ever
+        # reach the command line; reject invalid input as a 400 flash.
+        if role not in LAUNCH_ROLES:
+            return _flash("err", f"invalid role {role!r}", 400)
+        if mode not in LAUNCH_MODES:
+            return _flash("err", f"invalid mode {mode!r}", 400)
+        argv = ["powershell", "-NoProfile", "-File",
+                str(_SCRIPTS_DIR / LAUNCHER), "-Role", role]
+        if mode == "resume":
+            argv.append("-Resume")
+        try:
+            result = subprocess.run(  # noqa: S603 (fixed argv, enum-validated)
+                argv, capture_output=True, text=True, timeout=30)
+        except (subprocess.SubprocessError, OSError) as exc:
+            return _flash("err", f"launcher failed to run: {role_mail._ascii(str(exc))}", 200)
+        out = role_mail._ascii(((result.stdout or "") + (result.stderr or "")).strip())
+        if result.returncode != 0:
+            return _flash(
+                "err", f"launcher exit {result.returncode}: {out}"[:800], 200)
+        return _flash("ok", f"launched ({role}/{mode}): {out}"[:800] or "launched", 200)
+
+    @app.get("/orchestrator-bootstrap", response_class=PlainTextResponse)
+    def orchestrator_bootstrap() -> Response:
+        # Served verbatim for the copy button (read-only repo file, no guard).
+        text = (_SCRIPTS_DIR / BOOTSTRAP_FILE).read_text(encoding="utf-8")
+        return PlainTextResponse(text)
 
     @app.get("/panes/inbox", response_class=HTMLResponse)
     def pane_inbox() -> HTMLResponse:
