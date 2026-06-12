@@ -264,6 +264,33 @@ _PAGE = """<!doctype html>
   ];
 </script>
 <script>
+  // Preserve expanded <details> across the 5s poll swap. The innerHTML swap
+  // rebuilds the pane and would otherwise collapse any open message. Keyed by
+  // the message filename (data-key), scoped to the swapped pane by its id so
+  // panes never cross-restore.
+  (function () {
+    var openByPane = {};
+    document.body.addEventListener("htmx:beforeSwap", function (e) {
+      var t = e.detail && e.detail.target;
+      if (!t || !t.id) { return; }
+      var keys = [];
+      t.querySelectorAll("details.msg[open]").forEach(function (d) {
+        if (d.dataset.key) { keys.push(d.dataset.key); }
+      });
+      openByPane[t.id] = keys;
+    });
+    document.body.addEventListener("htmx:afterSwap", function (e) {
+      var t = e.detail && e.detail.target;
+      if (!t || !t.id) { return; }
+      var keys = openByPane[t.id];
+      if (!keys || !keys.length) { return; }
+      t.querySelectorAll("details.msg").forEach(function (d) {
+        if (keys.indexOf(d.dataset.key) !== -1) { d.open = true; }
+      });
+    });
+  })();
+</script>
+<script>
   // Copy the orchestrator spin-up prompt to the clipboard (localhost is a
   // secure context). On clipboard denial, reveal the text for manual copy
   // instead of failing silently.
@@ -361,7 +388,7 @@ _INBOX_PANE = """
 {% for m in inbox_messages %}
 <div class="msg-row
   {%- if m.is_decision_request %} decision-request{% endif %}">
-  <details class="msg">
+  <details class="msg" data-key="{{ m.filename }}">
     <summary>
       <span class="posted">{{ m.posted }}</span>
       <span class="from">{{ m.frm }}</span>
@@ -387,7 +414,7 @@ _BUS_PANE = """<h2>Director bus (read-only)</h2>
 {% for m in bus[role] %}
 <details class="msg
   {%- if m.is_decision_request %} decision-request{% endif %}
-  {%- if m.stale %} stale{% endif %}">
+  {%- if m.stale %} stale{% endif %}" data-key="{{ m.filename }}">
   <summary>
     <span class="posted">{{ m.posted }}</span>
     <span class="from">{{ m.frm }}</span>
@@ -404,7 +431,7 @@ _BUS_PANE = """<h2>Director bus (read-only)</h2>
 _HISTORY_PANE = """
 {%- if not history_messages %}<p class="empty">(no archived messages)</p>{% endif %}
 {% for m in history_messages %}
-<details class="msg">
+<details class="msg" data-key="{{ m.filename }}">
   <summary>
     <span class="posted">{{ m.posted }}</span>
     <span class="from">{{ m.frm }}</span>

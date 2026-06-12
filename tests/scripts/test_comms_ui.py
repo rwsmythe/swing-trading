@@ -132,6 +132,39 @@ def test_inbox_pane_shows_body_for_expand(client, comms):
     assert "the-expandable-body" in body  # body present in-place for expand
 
 
+def test_inbox_rows_carry_data_key_for_poll_preserve(client, comms):
+    # F1: the 5s poll innerHTML-swaps the pane and would collapse an expanded
+    # message; each <details> carries a stable data-key so the page script can
+    # re-open it after the swap. (Runtime re-open is a browser-gate witness.)
+    _post(comms, "charc", ["operator"], "fyi", "subj", "x")
+    frag = client.get("/panes/inbox").text
+    assert "<details" in frag
+    assert 'data-key="' in frag
+
+
+def test_bus_rows_carry_data_key_for_poll_preserve(client, comms):
+    _post(comms, "operator", ["charc"], "fyi", "bus-msg", "x")
+    frag = client.get("/panes/bus").text
+    assert "bus-msg" in frag
+    assert 'data-key="' in frag
+
+
+def test_history_rows_carry_data_key_for_poll_preserve(client, comms):
+    _post(comms, "operator", ["charc"], "fyi", "hist-msg", "x")
+    fname = next((comms / "charc" / "inbox").glob("*.md")).name
+    role_mail.ack_message(comms, "charc", fname)  # -> charc/read/, the history src
+    frag = client.get("/panes/history").text
+    assert "hist-msg" in frag
+    assert 'data-key="' in frag
+
+
+def test_page_wires_details_preserve_across_poll_swap(client):
+    page = client.get("/").text
+    assert "htmx:beforeSwap" in page
+    assert "htmx:afterSwap" in page
+    assert "details.msg" in page  # the script targets the message <details>
+
+
 def test_inbox_pane_flags_decision_request(client, comms):
     _post(comms, "charc", ["operator"], "decision_request", "approve?", "x")
     body = client.get("/panes/inbox").text
