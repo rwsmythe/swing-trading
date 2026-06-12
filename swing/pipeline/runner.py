@@ -492,13 +492,25 @@ def _install_pipeline_marketdata_caches(
         # so both surfaces converge on identical bar counts. The yfinance
         # fallback path already returns the full archive (`_yf_window_fallback`
         # → read_or_fetch_archive), so this unifies both provider paths.
-        # schwab_api → re-read the full archive (above); yfinance → `window` is
-        # already the full archive frame from `_yf_window_fallback`.
-        bars = (
-            _yf_window_fallback(ticker, None, None)
-            if provider_tag == "schwab_api"
-            else window
-        )
+        if provider_tag == "schwab_api":
+            # Re-read the full archive (the SAME read the no-ladder/ticker_detail
+            # path uses) so both surfaces converge. Fall back to the Schwab
+            # window ONLY when the archive read yields nothing — a Schwab-only /
+            # yfinance-empty ticker with no legacy archive — so we never regress
+            # such a ticker from a (sparse) render to no render at all. (For that
+            # degenerate case the no-ladder detail path is also empty, so the
+            # divergence the fix targets — a FULL legacy archive vs a short
+            # Schwab window — does not apply.)
+            full = _yf_window_fallback(ticker, None, None)
+            if full is not None and not full.empty:
+                bars = full
+            elif hasattr(window, "to_dataframe"):
+                bars = window.to_dataframe()
+            else:
+                bars = window
+        else:
+            # yfinance fallback: `window` is already the full archive frame.
+            bars = window
         return (bars, provider_tag)
 
     price_cache.set_ladder_fetcher(_quote_hook)

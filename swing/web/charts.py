@@ -32,6 +32,7 @@ import json
 import logging
 import math
 import threading
+import zlib
 from dataclasses import dataclass
 from datetime import date
 from typing import Any
@@ -89,6 +90,12 @@ def compute_chart_source_hash(bars: Any) -> str:
 
     ``bars`` is the legacy yfinance-shape frame (DatetimeIndex + capitalized
     OHLCV) the renderers consume. None / empty → a stable sentinel.
+
+    The value combines bar count + first/last asof_date with a CRC32 over the
+    Close column so two frames with the same count + endpoints but different
+    bar VALUES (e.g. a yfinance re-fetch that drifts historical bars per the
+    archive temporal-mutation gotcha) do NOT collide — making the field a
+    genuine content token, not just a count/window token.
     """
     if bars is None or len(bars) == 0:
         return "bars=0"
@@ -97,7 +104,14 @@ def compute_chart_source_hash(bars: Any) -> str:
     last = bars.index[-1]
     first_iso = first.date().isoformat() if hasattr(first, "date") else str(first)
     last_iso = last.date().isoformat() if hasattr(last, "date") else str(last)
-    return f"bars={n};first={first_iso};last={last_iso}"
+    close_crc = 0
+    if "Close" in getattr(bars, "columns", []):
+        try:
+            close_bytes = bars["Close"].to_numpy(dtype="float64").tobytes()
+            close_crc = zlib.crc32(close_bytes) & 0xFFFFFFFF
+        except Exception:  # noqa: BLE001 — provenance is best-effort; degrade to count/window
+            close_crc = 0
+    return f"bars={n};first={first_iso};last={last_iso};crc={close_crc:08x}"
 
 
 # Process-wide matplotlib render lock. charts.py renders through pyplot GLOBAL

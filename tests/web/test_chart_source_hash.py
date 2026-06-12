@@ -61,3 +61,15 @@ def test_empty_frame_is_stable_and_distinct():
 def test_hash_is_not_the_old_static_literal():
     h = compute_chart_source_hash(_frame("2026-06-08", 207))
     assert h not in ("step_charts_v1", "chart_jit_v1")
+
+
+def test_same_count_and_dates_but_different_values_do_not_collide():
+    """A yfinance re-fetch can drift historical bar VALUES without changing the
+    bar count or window endpoints (the archive temporal-mutation gotcha). The
+    CRC over Close must distinguish them so the hash is a genuine content
+    token, not just a count/window token."""
+    a = _frame("2026-06-08", 120)
+    b = _frame("2026-06-08", 120)
+    b = b.copy()
+    b.iloc[60, b.columns.get_loc("Close")] += 5.0  # mutate one interior close
+    assert compute_chart_source_hash(a) != compute_chart_source_hash(b)

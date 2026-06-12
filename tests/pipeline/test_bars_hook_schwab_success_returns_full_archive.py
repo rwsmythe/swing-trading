@@ -193,3 +193,49 @@ def test_bars_hook_schwab_success_returns_full_archive_not_short_window(
     )
     if audit_conn is not None:
         audit_conn.close()
+
+
+def test_bars_hook_schwab_only_no_legacy_archive_falls_back_to_window(
+    tmp_path: Path, monkeypatch,
+):
+    """Regression guard (Codex R1 MAJOR #1): for a Schwab-only ticker with NO
+    legacy archive and an empty yfinance read, the full-archive read yields
+    nothing — the hook MUST fall back to the Schwab window rather than return
+    None (which would fail get_or_fetch and render no thumbnail at all). The
+    fix must not regress a previously-rendering ticker to no render.
+    """
+    from swing.pipeline.runner import _install_pipeline_marketdata_caches
+
+    db_path = tmp_path / "arc3-only.db"
+    ensure_schema(db_path).close()
+    cfg = _make_pipeline_cfg(db_path, tmp_path)
+    end = pd.Timestamp("2026-06-08")
+
+    # The full-archive read returns NOTHING (no legacy archive, yfinance empty).
+    def _empty_archive(ticker, *, end_date, cache_dir, archive_history_days):
+        return None
+
+    monkeypatch.setattr(
+        "swing.pipeline.runner.read_or_fetch_archive", _empty_archive,
+    )
+    monkeypatch.setattr(
+        "swing.pipeline.runner.last_completed_session", lambda _n: end.date(),
+    )
+    monkeypatch.setattr(
+        "swing.web.ohlcv_cache.last_completed_session", lambda _n: end.date(),
+    )
+    monkeypatch.setattr(
+        "swing.integrations.schwab.marketdata_ladder.fetch_window_via_ladder",
+        lambda ticker, **_k: (_short_schwab_window(ticker, end=end, n_days=16),
+                              "schwab_api"),
+    )
+
+    _price, ladder_cache, audit_conn = _install_pipeline_marketdata_caches(
+        cfg, MagicMock(), pipeline_run_id=1,
+    )
+    # Must NOT raise / return empty — falls back to the 16-bar Schwab window.
+    df = ladder_cache.get_or_fetch(ticker="NEWLY", window_days=300)
+    assert not df.empty
+    assert len(df) == 16
+    if audit_conn is not None:
+        audit_conn.close()

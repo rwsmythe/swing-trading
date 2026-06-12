@@ -203,7 +203,11 @@ def get_or_render_surface(
     # only if hashing fails (defensive — never block the write-through).
     try:
         computed_hash = compute_chart_source_hash(bars)
-    except Exception:  # noqa: BLE001 — provenance is best-effort
+    except Exception as exc:  # noqa: BLE001 — provenance is best-effort
+        logger.warning(
+            "chart_jit: compute_chart_source_hash failed for %s/%s: %s; "
+            "falling back to %r", surface, ticker, exc, source_data_hash,
+        )
         computed_hash = source_data_hash
 
     try:

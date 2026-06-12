@@ -161,6 +161,24 @@ def test_bars_hook_invokes_ladder_with_daily_period_frequency_kwargs(
         _fake_fetch_window_via_ladder,
     )
 
+    # Phase 16 Arc 3: the schwab-success bars path now re-reads the FULL archive
+    # (full-archive-return contract). Stub that read + the session anchor so the
+    # hook stays HERMETIC (no network) and returns a controlled non-empty daily
+    # frame. The provider tag stays 'schwab_api' (the ladder returned schwab).
+    _archive = pd.DataFrame(
+        {"Open": [1.0, 2.0], "High": [1.0, 2.0], "Low": [1.0, 2.0],
+         "Close": [1.0, 2.0], "Volume": [10, 20]},
+        index=pd.to_datetime(["2026-05-10", "2026-05-11"]),
+    )
+    monkeypatch.setattr(
+        "swing.pipeline.runner.read_or_fetch_archive",
+        lambda ticker, *, end_date, cache_dir, archive_history_days: _archive.copy(),
+    )
+    monkeypatch.setattr(
+        "swing.pipeline.runner.last_completed_session",
+        lambda _now: pd.Timestamp("2026-05-11").date(),
+    )
+
     price_cache, ohlcv_cache, _audit_conn = _install_pipeline_marketdata_caches(
         cfg=cfg,
         schwab_client=schwab,
@@ -175,7 +193,8 @@ def test_bars_hook_invokes_ladder_with_daily_period_frequency_kwargs(
     result = ohlcv_cache._ladder_bars_fetcher("AAPL")
     bars_df, provider_tag = result
 
-    # The schwab path produced a window (the stub returns daily Schwab data).
+    # The schwab path returned the full archive (non-empty); the ladder still
+    # ran with daily kwargs (asserted below). Provider tag stays 'schwab_api'.
     assert provider_tag == "schwab_api"
     assert isinstance(bars_df, pd.DataFrame)
     assert not bars_df.empty
@@ -232,18 +251,44 @@ def test_bars_hook_production_path_returns_daily_shaped_frame_no_duplicate_dates
     returns daily bars → mapper produces N OhlcvBar rows with N unique
     asof_dates → DataFrame index has no duplicates.
 
-    We can't faithfully replay the pre-fix bug because the test stub
-    can't know what kwargs the production code sent (the bug IS the
-    kwargs). So we structure the assertion to verify the POST-FIX
-    invariant directly: the stub records the kwargs + returns daily OR
-    intraday based on what kwargs it received. Post-fix kwargs include
-    daily → stub returns daily → cache passes daily frame through. If
-    the production code regresses to all-None kwargs, the stub returns
-    intraday → cache returns frame with duplicate index dates → test
-    fails.
+    Phase 16 Arc 3 update: the schwab-success bars path now re-reads the FULL
+    archive (full-archive-return contract) rather than returning the Schwab
+    window verbatim, so the intraday-contaminated Schwab window can no longer
+    reach ``get_or_fetch``'s render output at all. The daily-kwargs guarantee
+    (the actual gate-fix invariant) is asserted by the sibling test
+    ``test_bars_hook_invokes_ladder_with_daily_period_frequency_kwargs``; here
+    we keep the hermetic ``get_or_fetch`` shape contract (a unique-index daily
+    DataFrame) by stubbing ``read_or_fetch_archive`` to a controlled daily
+    archive.
     """
     cfg = _make_pipeline_cfg(v18_db, tmp_path)
     schwab = MagicMock()
+
+    # Arc 3: stub the full-archive read (+ session anchor) the schwab-success
+    # path now consults, so the test is hermetic and the returned frame is a
+    # controlled unique-index daily archive.
+    _archive = pd.DataFrame(
+        {
+            "Open": [100.0, 101.0, 102.0],
+            "High": [101.0, 102.0, 103.0],
+            "Low": [99.0, 100.0, 101.0],
+            "Close": [100.5, 101.5, 102.5],
+            "Volume": [1000, 1100, 1200],
+        },
+        index=pd.to_datetime(["2026-05-13", "2026-05-14", "2026-05-15"]),
+    )
+    monkeypatch.setattr(
+        "swing.pipeline.runner.read_or_fetch_archive",
+        lambda ticker, *, end_date, cache_dir, archive_history_days: _archive.copy(),
+    )
+    monkeypatch.setattr(
+        "swing.pipeline.runner.last_completed_session",
+        lambda _now: pd.Timestamp("2026-05-15").date(),
+    )
+    monkeypatch.setattr(
+        "swing.web.ohlcv_cache.last_completed_session",
+        lambda _now: pd.Timestamp("2026-05-15").date(),
+    )
 
     def _shape_aware_fetch_window_via_ladder(ticker, **kwargs):
         """Production-shaped stub: return daily window IF caller passes
