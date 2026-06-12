@@ -202,3 +202,8 @@ scripts/benchmark_evaluate_warm_results*.csv
 .codex-r*-out.txt
 .codex-r*-err.txt
 .codex-prompt*.txt
+
+# Implementer worktrees (convention: all worktrees live at <repo>/.worktrees/<name>;
+# sibling-of-repo dirs are deprecated). Moved here from .git/info/exclude 2026-06-12
+# so the ignore is tracked + visible to review, not per-clone-local.
+.worktrees/
