@@ -375,14 +375,43 @@ class Fill:
 # regression test in ``tests/data/test_phase7_shim_removal.py``.
 
 
+# Mirror of migration 0029's cash_movements.kind CHECK
+# IN ('deposit','withdraw','interest','dividend','fee').
+_CASH_MOVEMENT_KINDS = ("deposit", "withdraw", "interest", "dividend", "fee")
+
+
 @dataclass(frozen=True)
 class CashMovement:
     id: int | None
     date: str
-    kind: str  # 'deposit' | 'withdraw'
+    kind: str  # 'deposit' | 'withdraw' | 'interest' | 'dividend' | 'fee'
     amount: float
     ref: str | None
     note: str | None
+
+    def __post_init__(self) -> None:
+        from datetime import date as _date
+
+        if self.kind not in _CASH_MOVEMENT_KINDS:
+            raise ValueError(
+                f"kind must be one of {_CASH_MOVEMENT_KINDS}; got {self.kind!r}"
+            )
+        # Mirror the migration-0029 SQL GLOB '[0-9]{4}-[0-9]{2}-[0-9]{2}' AND
+        # calendar validity. date.fromisoformat rejects single-digit months,
+        # non-digit chars, and out-of-range month/day -- a strict superset of
+        # the GLOB, so it NEVER accepts a value the DB CHECK would reject.
+        if (
+            len(self.date) != 10
+            or self.date[4] != "-"
+            or self.date[7] != "-"
+        ):
+            raise ValueError(f"date must be YYYY-MM-DD; got {self.date!r}")
+        try:
+            _date.fromisoformat(self.date)
+        except ValueError as exc:
+            raise ValueError(
+                f"date must be a valid YYYY-MM-DD; got {self.date!r}"
+            ) from exc
 
 
 @dataclass(frozen=True)
@@ -1411,6 +1440,9 @@ class ReconciliationCorrection:
 
 _AES_SOURCES = ("manual", "tos_csv", "schwab_api")
 
+# Mirror of migration 0029's account_equity_snapshots.basis CHECK.
+_AES_BASES = ("net_liq", "cash")
+
 # Mirror of `hypothesis_registry.status` enum + migration 0017 CHECK.
 _HYPOTHESIS_STATUSES = (
     "active",
@@ -1438,10 +1470,18 @@ class AccountEquitySnapshot:
     recorded_at: str  # ISO datetime, naive-UTC, ms-precision
     recorded_by: str
     notes: str | None
+    # Phase 16 Arc 4: net_liq/cash discriminator (migration 0029). Default
+    # 'net_liq' so positional construction at existing call sites stays valid;
+    # new domain writers stamp it explicitly.
+    basis: str = "net_liq"
 
     def __post_init__(self) -> None:
         import math
 
+        if self.basis not in _AES_BASES:
+            raise ValueError(
+                f"basis must be one of {_AES_BASES}; got {self.basis!r}"
+            )
         if self.source not in _AES_SOURCES:
             raise ValueError(
                 f"source must be one of {_AES_SOURCES}; got {self.source!r}"

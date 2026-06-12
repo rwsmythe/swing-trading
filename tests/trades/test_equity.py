@@ -7,8 +7,11 @@ import pytest
 
 from swing.data.models import CashMovement, Trade
 from swing.trades.equity import (
-    current_equity, sizing_equity, shares_remaining,
-    risk_per_share, r_so_far, net_cash_movements,
+    current_equity,
+    r_so_far,
+    risk_per_share,
+    shares_remaining,
+    sizing_equity,
     total_current_risk,
 )
 
@@ -108,12 +111,12 @@ def test_r_so_far_zero_rps_returns_zero():
     assert r_so_far(t, current_price=200.0) == 0.0
 
 
-def test_net_cash_movements_unknown_kind_ignored():
-    cm = [
-        CashMovement(id=1, date="2026-04-01", kind="deposit", amount=100.0, ref=None, note=None),
-        CashMovement(id=2, date="2026-04-02", kind="weird", amount=50.0, ref=None, note=None),
-    ]
-    assert net_cash_movements(cm) == 100.0
+# NOTE (Arc 4b Task 2/4): the former test_net_cash_movements_unknown_kind_ignored
+# was removed. CashMovement.__post_init__ now rejects unknown kinds at
+# construction (migration 0029 widened the CHECK to 5 kinds), and
+# net_cash_movements RAISES on an unknown kind (the silent-ignore drift hazard
+# is gone). The replacement is test_net_cash_movements_unknown_kind_raises in
+# tests/trades/test_equity_five_kind.py (Task 4).
 
 
 # -----------------------------------------------------------------------------
