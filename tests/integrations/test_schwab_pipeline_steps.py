@@ -1319,10 +1319,14 @@ def test_b4_23_reconciliation_emits_cash_movement_mismatch(v18_conn):
 
 def test_b4_24_reconciliation_cash_movement_matched_NOT_emitted(v18_conn):
     """Counter-example to test_b4_23 — matched cash_movement does NOT emit."""
+    # Arc 4b: a Schwab-sourced journal row carries the transactionId in ref
+    # (the idempotency contract — step 6.5's primary dedup is ref==transactionId;
+    # the live rows 1-3 carry Schwab transactionIds in ref). With ref==txid the
+    # ingest ref-hits (no duplicate) and step 7 still matches -> no emit.
     v18_conn.execute(
         "INSERT INTO cash_movements (date, kind, amount, ref, note) "
         "VALUES (?, ?, ?, ?, ?)",
-        ("2026-05-12", "deposit", 500.0, "ACH_REF_123", None),
+        ("2026-05-12", "deposit", 500.0, "T100", None),
     )
     v18_conn.commit()
 
@@ -1367,10 +1371,13 @@ def test_b4_26_cash_movement_matcher_sign_based_for_ambiguous_types(v18_conn):
     cash_movement_mismatch. Post-fix: matched via sign-based direction
     check; NO discrepancy emitted.
     """
+    # Arc 4b: ref==transactionId (the idempotency contract) so step 6.5 ref-hits
+    # without ingesting; the step-7 sign-based matcher is still exercised on the
+    # journal withdraw row vs the negative ELECTRONIC_FUND.
     v18_conn.execute(
         "INSERT INTO cash_movements (date, kind, amount, ref, note) "
         "VALUES (?, ?, ?, ?, ?)",
-        ("2026-05-12", "withdraw", 500.0, "EFT_REF_456", None),
+        ("2026-05-12", "withdraw", 500.0, "T200", None),
     )
     v18_conn.commit()
 

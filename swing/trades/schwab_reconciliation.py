@@ -40,6 +40,8 @@ import functools as _functools
 import json
 import logging
 import sqlite3
+from dataclasses import dataclass
+from datetime import date as _date
 from typing import Any
 
 from swing.data.datetime_helpers import now_ms
@@ -90,6 +92,94 @@ _SCHWAB_DEPOSIT_TYPES = frozenset({
 _SCHWAB_WITHDRAW_TYPES = frozenset({
     "ACH_DISBURSEMENT", "WIRE_OUT", "CASH_DISBURSEMENT", "ELECTRONIC_FUND",
 })
+
+
+# ===========================================================================
+# Arc 4b — auto-ingestion classifier + dedup ladder (step 6.5).
+# ===========================================================================
+
+# Deterministic deposit/withdraw Schwab types (sign-independent direction).
+_CASH_DEPOSIT_TX_TYPES = frozenset({"ACH_RECEIPT", "WIRE_IN", "CASH_RECEIPT"})
+_CASH_WITHDRAW_TX_TYPES = frozenset(
+    {"ACH_DISBURSEMENT", "WIRE_OUT", "CASH_DISBURSEMENT"}
+)
+# Sign-disambiguated types (direction follows net_amount sign).
+_CASH_SIGNED_TX_TYPES = frozenset({"ELECTRONIC_FUND", "JOURNAL"})
+# Skip BY DESIGN — trade cash already enters the ledger via realized P&L.
+_CASH_SKIP_TX_TYPES = frozenset(
+    {"TRADE", "RECEIVE_AND_DELIVER", "TRADE_CORRECTION"}
+)
+# Skip but WARN when net_amount != 0 (visibility without guessing).
+_CASH_SKIP_WARN_TX_TYPES = frozenset(
+    {"MEMORANDUM", "MARGIN_CALL", "MONEY_MARKET", "SMA_ADJUSTMENT"}
+)
+
+# DIVIDEND_OR_INTEREST description markers. EMPTY by operator decision
+# (2026-06-11): the live account has no dividend/interest history at the epoch,
+# so every DIVIDEND_OR_INTEREST flags tier-2 (the safe default, spec §4.1). Real
+# markers are seeded post-merge from a captured live payload (Task 11 runbook
+# step 2) — NEVER invent strings (feedback_adversarial_review_verify_data_shapes).
+_DIVIDEND_MARKERS: frozenset[str] = frozenset()
+_INTEREST_MARKERS: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True)
+class CashDisposition:
+    """Pure-classifier result. ``action`` ∈ {candidate, skip, flag, skip_warn}.
+
+    ``kind`` is set only for ``candidate`` (the 5-kind vocabulary value);
+    ``flag_reason`` is set only for ``flag`` (the source-direction enum).
+    """
+    action: str
+    kind: str | None = None
+    flag_reason: str | None = None
+
+
+def _classify_cash_transaction(tx: Any) -> CashDisposition:
+    """Map a SchwabTransactionResponse to a cash disposition (PURE — no DB, no
+    Schwab calls; the Phase-12 classifier discipline). Spec §4.1 table."""
+    ttype = tx.type
+    net = float(tx.net_amount)
+    if ttype in _CASH_DEPOSIT_TX_TYPES:
+        return CashDisposition(action="candidate", kind="deposit")
+    if ttype in _CASH_WITHDRAW_TX_TYPES:
+        return CashDisposition(action="candidate", kind="withdraw")
+    if ttype in _CASH_SIGNED_TX_TYPES:
+        if net > 0:
+            return CashDisposition(action="candidate", kind="deposit")
+        if net < 0:
+            return CashDisposition(action="candidate", kind="withdraw")
+        return CashDisposition(action="skip")  # zero-amount is not a movement
+    if ttype == "DIVIDEND_OR_INTEREST":
+        if net < 0:
+            return CashDisposition(action="flag", flag_reason="negative_income_amount")
+        desc = (tx.description or "").upper()
+        if any(m in desc for m in _DIVIDEND_MARKERS):
+            return CashDisposition(action="candidate", kind="dividend")
+        if any(m in desc for m in _INTEREST_MARKERS):
+            return CashDisposition(action="candidate", kind="interest")
+        return CashDisposition(
+            action="flag", flag_reason="unrecognized_income_description")
+    if ttype in _CASH_SKIP_TX_TYPES:
+        return CashDisposition(action="skip")
+    if ttype in _CASH_SKIP_WARN_TX_TYPES:
+        if net != 0:
+            return CashDisposition(action="skip_warn")
+        return CashDisposition(action="skip")
+    # Unknown type — visibility without guessing (skip_warn on nonzero).
+    return CashDisposition(action="skip_warn" if net != 0 else "skip")
+
+
+def _within_cash_match_window(date_a_iso: str, date_b_iso: str, *, days: int = 4) -> bool:
+    """True when two ISO dates are within ``days`` calendar days INCLUSIVE.
+
+    THE shared cash date-window predicate — used by BOTH the Task-6 ref-less
+    fallback AND the Task-7 journal→source scan (the Arc-6 shared-predicate
+    lesson: two implementations WILL diverge).
+    """
+    a = _date.fromisoformat(date_a_iso)
+    b = _date.fromisoformat(date_b_iso)
+    return abs((a - b).days) <= days
 
 
 # Price-tolerance for fill matching (matches Phase 9 Sub-bundle B default).
@@ -270,16 +360,25 @@ def _emit(
     expected_value_json: str | None = None,
     actual_value_json: str | None = None,
     delta_text: str | None = None,
+    dedup_key_override: tuple | None = None,
 ) -> int:
     """Phase 9 Sub-bundle B emit pattern — MATERIAL_BY_TYPE lookup at INSERT
     time + within-run dedup tuple (orphan-fill payload disambiguator).
+
+    ``dedup_key_override`` (Arc 4b) REPLACES the ``payload_key`` slot of the
+    within-run dedup tuple. Source-direction cash emits all carry the CONSTANT
+    ``actual_value_json = {"matched": null}`` so the default payload_key would
+    collide; passing ``("missing_journal_row", transaction_id)`` keeps two
+    distinct unmatched transactions in one run as two rows (spec §4.3).
     """
     if discrepancy_type not in DISCREPANCY_TYPES:
         raise ValueError(
             f"emit: unknown discrepancy_type {discrepancy_type!r}"
         )
-    payload_key: str | None = None
-    if fill_id is None and cash_movement_id is None:
+    payload_key: tuple | str | None = None
+    if dedup_key_override is not None:
+        payload_key = dedup_key_override
+    elif fill_id is None and cash_movement_id is None:
         payload_key = actual_value_json
     key = (
         trade_id, discrepancy_type, field_name, ticker,
@@ -680,6 +779,225 @@ def _pivot_classify_and_dispatch_for_run(
             counters["tier_errored_count"] += 1
 
 
+# ===========================================================================
+# Arc 4b — ingestion helpers (source-direction emit, suppression, coverage-gap,
+# the dedup-ladder ingest). All run INSIDE run_schwab_reconciliation's BEGIN.
+# ===========================================================================
+
+# Resolution states that make a source-direction transactionId terminal-or-
+# pending (durably suppressed). A terminal disposition is FINAL for the txid.
+_SOURCE_SUPPRESSION_STATES = (
+    "pending_ambiguity_resolution",
+    "operator_resolved_ambiguity",
+    "operator_overridden",
+    "acknowledged_immaterial",
+)
+
+
+def _source_direction_suppressed(conn: sqlite3.Connection, tx_id: str) -> bool:
+    """True when a pending-or-terminal source-direction discrepancy already
+    exists for this transactionId (spec §4.3 cross-run suppression belt)."""
+    placeholders = ",".join("?" * len(_SOURCE_SUPPRESSION_STATES))
+    row = conn.execute(
+        "SELECT 1 FROM reconciliation_discrepancies "
+        "WHERE discrepancy_type='cash_movement_mismatch' "
+        "AND field_name='missing_journal_row' "
+        "AND json_extract(expected_value_json, '$.transactionId') = ? "
+        f"AND resolution IN ({placeholders}) LIMIT 1",
+        (str(tx_id), *_SOURCE_SUPPRESSION_STATES),
+    ).fetchone()
+    return row is not None
+
+
+def _emit_source_direction_cash(
+    conn: sqlite3.Connection,
+    *,
+    run_id: int,
+    tx: Any,
+    flag_reason: str,
+    counters: dict,
+    dedup_seen: set,
+    candidate_cash_movement_ids: list[int] | None = None,
+) -> int:
+    """Emit a source→journal cash_movement_mismatch (field_name=
+    'missing_journal_row', all FK NULL). actual_value_json is EXACTLY
+    {"matched": null} (the sole-key shape is LOAD-BEARING — _extract_source_
+    payload maps it to None → the classifier routes schwab_returned_no_match).
+    The flag_reason lives in expected_value_json, never in actual."""
+    expected: dict[str, Any] = {
+        "transactionId": str(tx.transaction_id),
+        "date": tx.transaction_date,
+        "type": tx.type,
+        "net_amount": float(tx.net_amount),
+        "description": tx.description,
+        "flag_reason": flag_reason,
+    }
+    if candidate_cash_movement_ids is not None:
+        expected["candidate_cash_movement_ids"] = sorted(candidate_cash_movement_ids)
+    return _emit(
+        conn,
+        run_id=run_id,
+        discrepancy_type="cash_movement_mismatch",
+        field_name="missing_journal_row",
+        counters=counters,
+        dedup_seen=dedup_seen,
+        expected_value_json=json.dumps(expected, sort_keys=True),
+        actual_value_json=json.dumps({"matched": None}, sort_keys=True),
+        dedup_key_override=("missing_journal_row", str(tx.transaction_id)),
+    )
+
+
+def _detect_coverage_gap(
+    conn: sqlite3.Connection, *, period_start: str, cash_warnings: list[dict],
+) -> None:
+    """Spec §4.5 — read the most-recent COMPLETED schwab_api run's period_end;
+    if older than the current run's period_start, a window was never scanned →
+    warn. First-ever run emits an informational note (not a warning). The
+    current run's own row is state='running' so it is excluded by construction.
+    """
+    row = conn.execute(
+        "SELECT period_end FROM reconciliation_runs "
+        "WHERE source='schwab_api' AND state='completed' "
+        "AND finished_ts IS NOT NULL "
+        "ORDER BY finished_ts DESC LIMIT 1"
+    ).fetchone()
+    if row is None or row[0] is None:
+        cash_warnings.append({
+            "step": "schwab_orders",
+            "reason": "coverage_first_run",
+            "detail": "coverage_first_run: no prior completed schwab_api run",
+        })
+        return
+    prior_period_end = row[0]
+    if prior_period_end < period_start:  # ISO string compare valid for ISO dates
+        cash_warnings.append({
+            "step": "schwab_orders",
+            "reason": "coverage_gap",
+            "detail": f"coverage_gap: {prior_period_end} .. {period_start}",
+        })
+        log.warning(
+            "cash coverage gap: %s .. %s never scanned",
+            prior_period_end, period_start,
+        )
+
+
+def _empty_cash_counters() -> dict[str, int]:
+    return {
+        "cash_transactions_checked": 0,
+        "cash_candidates": 0,
+        "cash_ingested_count": 0,
+        "cash_matched_by_ref_count": 0,
+        "cash_matched_by_fallback_count": 0,
+        "cash_flagged_count": 0,
+        "cash_skipped_trade_count": 0,
+        "cash_pending_suppressed_count": 0,
+    }
+
+
+def _ingest_cash_transactions(
+    conn: sqlite3.Connection,
+    *,
+    run_id: int,
+    schwab_transactions: list[Any],
+    price_tolerance: float,
+    cash_warnings: list[dict],
+    dedup_seen: set | None = None,
+    counters: dict | None = None,
+) -> dict[str, int]:
+    """The ref-idempotent, append-only ingestion ladder (spec §4.2). Returns a
+    cash-counters dict. Runs INSIDE the caller's transaction (step 6.5)."""
+    from swing.data.models import CashMovement
+    from swing.data.repos.cash import find_by_ref, insert_cash
+
+    if dedup_seen is None:
+        dedup_seen = set()
+    if counters is None:
+        # Standalone use (unit tests): a throwaway run-counter for _emit.
+        counters = {"discrepancies_count": 0, "unresolved_discrepancies_count": 0}
+
+    cc = _empty_cash_counters()
+    claimed_ids: set[int] = set()
+
+    for tx in schwab_transactions:
+        cc["cash_transactions_checked"] += 1
+        disp = _classify_cash_transaction(tx)
+
+        if disp.action == "skip":
+            if tx.type in ("TRADE", "RECEIVE_AND_DELIVER", "TRADE_CORRECTION"):
+                cc["cash_skipped_trade_count"] += 1
+            continue
+        if disp.action == "skip_warn":
+            cash_warnings.append({
+                "step": "schwab_orders",
+                "reason": "skipped_nonzero_noncash",
+                "detail": (
+                    f"skipped {tx.type} netAmount={float(tx.net_amount):+.2f} "
+                    f"(non-cash type)"
+                ),
+            })
+            continue
+        if disp.action == "flag":
+            # Income flags (unrecognized / negative). Suppression-belt first.
+            if _source_direction_suppressed(conn, str(tx.transaction_id)):
+                cc["cash_pending_suppressed_count"] += 1
+                continue
+            _emit_source_direction_cash(
+                conn, run_id=run_id, tx=tx, flag_reason=disp.flag_reason,
+                counters=counters, dedup_seen=dedup_seen)
+            cc["cash_flagged_count"] += 1
+            continue
+
+        # --- candidate: the dedup ladder ---
+        cc["cash_candidates"] += 1
+        tx_id = str(tx.transaction_id)
+        # 1. Primary: transactionId-in-ref.
+        if find_by_ref(conn, ref=tx_id) is not None:
+            cc["cash_matched_by_ref_count"] += 1
+            continue
+        # 2. Cross-run suppression belt.
+        if _source_direction_suppressed(conn, tx_id):
+            cc["cash_pending_suppressed_count"] += 1
+            continue
+        # 3. Ref-less fallback among same-kind journal rows in the ±4d window.
+        target = abs(float(tx.net_amount))
+        cands: list[int] = []
+        for r in conn.execute(
+            "SELECT id, date, amount FROM cash_movements "
+            "WHERE ref IS NULL AND kind = ?", (disp.kind,),
+        ).fetchall():
+            cid, cdate, camount = r[0], r[1], r[2]
+            if cid in claimed_ids:
+                continue
+            if abs(float(camount) - target) > price_tolerance:
+                continue
+            if not _within_cash_match_window(cdate, tx.transaction_date, days=4):
+                continue
+            cands.append(cid)
+        if len(cands) == 1:
+            claimed_ids.add(cands[0])
+            cc["cash_matched_by_fallback_count"] += 1
+            continue
+        if len(cands) >= 2:
+            _emit_source_direction_cash(
+                conn, run_id=run_id, tx=tx, flag_reason="fallback_multi_match",
+                counters=counters, dedup_seen=dedup_seen,
+                candidate_cash_movement_ids=cands)
+            cc["cash_flagged_count"] += 1
+            continue
+        # 4. No match → INSERT (append-only; ref = the idempotency key).
+        desc = tx.description
+        note = (
+            f"auto-ingested from Schwab: {desc} [reconciliation run {run_id}]"
+            if desc else f"auto-ingested from Schwab [reconciliation run {run_id}]"
+        )
+        insert_cash(conn, CashMovement(
+            id=None, date=tx.transaction_date, kind=disp.kind,
+            amount=target, ref=tx_id, note=note))
+        cc["cash_ingested_count"] += 1
+
+    return cc
+
+
 def run_schwab_reconciliation(
     conn: sqlite3.Connection,
     *,
@@ -778,6 +1096,8 @@ def run_schwab_reconciliation(
         "fills_reconciled_count": 0,
     }
     dedup_seen: set = set()
+    cash_warnings: list[dict] = []  # Arc 4b — #27 channel (Task 9 surfaces it)
+    cash_counters: dict[str, int] = _empty_cash_counters()
 
     # Outer transaction. We INSERT the run row, emit discrepancies, then
     # UPDATE state='completed' (or UPDATE state='failed' on mid-emit error).
@@ -1037,6 +1357,29 @@ def run_schwab_reconciliation(
                         ),
                     )
 
+        # --- 6.5. Arc 4b auto-ingestion (runs INSIDE this BEGIN, BEFORE the
+        # step-7 journal->source scan). Coverage-gap detection first, then the
+        # ref-idempotent append-only ingest ladder. INSERTs into cash_movements
+        # mean step 7 + the equity check (Task 8) RE-READ list_cash afterwards.
+        _detect_coverage_gap(
+            conn, period_start=period_start, cash_warnings=cash_warnings)
+        cash_counters = _ingest_cash_transactions(
+            conn,
+            run_id=run_id,
+            schwab_transactions=schwab_transactions,
+            price_tolerance=price_tolerance,
+            cash_warnings=cash_warnings,
+            dedup_seen=dedup_seen,
+            counters=counters,
+        )
+        # Re-read journal cash after ingestion so step 7 scans the updated
+        # ledger (freshly-ingested rows match their own source tx by ref).
+        all_journal_cash = list_cash(conn)
+        journal_cash_in_period = [
+            cm for cm in all_journal_cash
+            if (cm.date and period_start <= cm.date <= period_end)
+        ]
+
         # --- 7. Cash-movement mismatch (Codex R1 M#6 fix) ---
         # For each journal cash_movement in the period, try to match against
         # a Schwab transaction by (date, amount within tolerance) + the
@@ -1169,6 +1512,9 @@ def run_schwab_reconciliation(
             "tier2_pending_count": counters.get("tier2_pending_count", 0),
             "tier3_overridden_count": 0,  # always 0 — tier-3 is post-run operator-initiated
             "tier_errored_count": counters.get("tier_errored_count", 0),
+            # Arc 4b — auto-ingestion counters + the #27 cash_warnings channel.
+            **cash_counters,
+            "cash_warnings": cash_warnings,
         }
         repo.update_run_completed(
             conn,
