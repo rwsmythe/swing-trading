@@ -194,6 +194,23 @@ When a return report comes back, triage in this order:
 5. **Capture lessons.** Process insights go into this file or into memory.
 6. **Propose next moves.** Don't decide unilaterally; offer options with recommendation.
 
+#### Posting to the directors via the comms mailbox (added 2026-06-11, comms Stage 1)
+
+After you relay a return report to the operator in chat (UNCHANGED — that is the operator's control point and it stays), ALSO post the same report to both directors via the file mailbox so they track arc state without the operator hand-relaying it:
+
+```
+python scripts/role_mail.py post --from orchestrator --to charc,rd \
+  --type return_report --subject "<arc>: <one line>" --body-file <return-report.md>
+```
+
+Additionally, post LIFECYCLE events as `--type status` to both directors as they happen, so the directors follow arc state in real time:
+
+- copowers-phase transitions: brainstorm / writing-plans / executing-plans **dispatched** or **returned**.
+- generational handoff: include the handoff-brief path in the body.
+- phase close.
+
+What does NOT go through the mailbox (stays operator-hand-carried by design — the information-vs-authority line): **dispatch-direction traffic** — commissioning briefs, implementer dispatch prompts, and approvals. The mailbox carries *information* (status, queries, return reports) between roles; *authority* (decisions, commissions, dispatch) remains operator-mediated. `decision_request` is the operator's type only; `role_mail.py` refuses to route it to a director (the L1 lock). There is no orchestrator inbox in V1 — you POST to directors and receive direction FROM the operator in chat. Bootstrap a fresh orchestrator generation with `scripts/orchestrator_bootstrap.md`.
+
 ### Bug-fix briefs and operator-confirmation gate
 
 For bug-fix briefs where the mechanism is not yet diagnosed (scope: "Investigation comes first; fix comes second"), require an explicit **operator-confirmation gate** between the investigation phase and the fix phase. This prevents the failure mode demonstrated by Bug 2 (2026-04-25) — implementer assumes a plausible mechanism, builds a fix that's internally correct but addresses a different path than the one operator is hitting.
