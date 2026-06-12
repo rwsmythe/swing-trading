@@ -328,6 +328,9 @@ def test_daily_review_shows_neither_cadence_reference(test_app_with_pending_dail
     assert _WEEKLY_ESCALATION not in r.text
     assert _MONTHLY_MARKER not in r.text
     assert _MONTHLY_DUE not in r.text
+    # No watch-standard section at all on daily (catches unconditional render).
+    assert "watch-standard-reference" not in r.text
+    assert "research-director-watch-standard.md" not in r.text
 
 
 def test_cadence_references_are_ascii_only(tmp_path: Path):
