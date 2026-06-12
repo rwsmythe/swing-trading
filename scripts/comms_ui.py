@@ -280,7 +280,9 @@ _PAGE = """<!doctype html>
       if (d.open) { openKeys.add(d.dataset.key); }
       else { openKeys.delete(d.dataset.key); }
     }, true);
-    document.body.addEventListener("htmx:afterSwap", function () {
+    // NB: bind to `document`, not `document.body` -- this script runs in <head>
+    // where document.body is still null; htmx events bubble to document anyway.
+    document.addEventListener("htmx:afterSwap", function () {
       document.querySelectorAll("details.msg[data-key]").forEach(function (d) {
         if (openKeys.has(d.dataset.key)) { d.open = true; }
       });

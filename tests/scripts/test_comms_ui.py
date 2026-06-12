@@ -164,6 +164,11 @@ def test_page_wires_details_preserve_across_poll_swap(client):
     assert "htmx:afterSwap" in page    # re-opens them after each poll swap
     assert "details.msg" in page       # the script targets the message <details>
     assert "openKeys" in page
+    # The script runs in <head> where document.body is null -- the afterSwap
+    # listener MUST bind to document, not document.body, or it throws and never
+    # registers (the original F1 retest failure).
+    assert 'document.addEventListener("htmx:afterSwap"' in page
+    assert 'document.body.addEventListener("htmx' not in page
 
 
 def test_inbox_pane_flags_decision_request(client, comms):
