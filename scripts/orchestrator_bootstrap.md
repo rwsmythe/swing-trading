@@ -16,6 +16,12 @@ Do this, in order:
        (look for docs/orchestrator-handoff-*.md ; read the newest by date)
    If none exists, skip this step.
 
+   The handoff describes the PRIOR generation's work, not necessarily yours.
+   Multiple orchestrator generations can run concurrently on different arcs.
+   Do NOT assume the in-flight phase work is your assignment; your scope comes
+   from the operator's first instruction or the dispatch brief you are pointed
+   at, and your bootstrap report should claim only that scope.
+
 3. Orient to the live state:
        git log --oneline -20
        git status
