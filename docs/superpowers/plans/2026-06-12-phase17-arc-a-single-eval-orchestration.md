@@ -161,7 +161,7 @@ def orchestrate_evaluation(
 - `augmentation` — the held/pin union (DIVERGENCE-1/2). Pipeline supplies computed sets; CLI supplies `UniverseAugmentation()` unless a §4 ruling says otherwise.
 - `current_equity` — D-EQUITY. Pipeline supplies `sizing_equity(...)`; CLI supplies `cfg.account.starting_equity`. Kept a parameter so either §4 ruling is honorable.
 - `behavior` — the error-path/synthesis-row policy (D-SPY-GUARD / D-ERROR-DEDUP / D-EXCLUDED-CLOSE). Pipeline supplies the default (`raise`/dedup/preserve); CLI supplies `EvaluationBehaviorPolicy(spy_failure_mode="warn_and_zero", dedup_error_rows=<ruling>, preserve_held_close=<ruling>)` per the §4 rulings. **This seam set ELABORATES the three §3-named seam categories (universe / output / conn-fetcher) — it is the §4 mechanism surfacing more genuinely-different concerns, NOT a structural departure (still one orchestration function + adapters; no schema, no dependency). Flagged for CHARC/operator in the return report.**
-- `pre_fetch_hook` — LOCK #16. Pipeline passes the warm+prewarm closure (fired at the held-tickers boundary, exact arg order); CLI passes `None`.
+- `pre_fetch_hook` — LOCK #16. The orchestrator calls `pre_fetch_hook(merged_tickers)` ONCE at the held-tickers boundary (after held+pin augmentation, before the SPY/per-ticker fetch loops), where `merged_tickers` is the full screen∪held∪pins set. **CRITICAL (Codex R2): the warm and the prewarm take DIFFERENT argument sets** — the pipeline closure must reproduce the EXACT current call sites verbatim: `_warm_pipeline_marketdata(cfg=cfg, price_cache=price_cache, held_tickers=held_tickers)` (the captured HELD set, NOT the merged set) THEN `_prewarm_evaluate_archives(cfg=cfg, candidate_tickers=merged_tickers, universe_tickers=universe.tickers, run_now=run_now, run_warnings=run_warnings)` (the merged set as `candidate_tickers`, `universe.tickers` separately). CLI passes `None`.
 - `output` — the click.echo-vs-run-warnings channel. CLI: `info→echo`, `warn→echo(err=True)`, `note_pin_injection→no-op`. Pipeline: `info/warn→no-op`(or log), `note_pin_injection→run_warnings.append({step,kind,count,tickers})`.
 - `persist` — LOCK #1. CLI: plain `with conn:` insert run+candidates → run_id. Pipeline: `lease.fenced_write()` insert run+candidates + `set_evaluation_run_id` → run_id.
 - `as_of_date` — D-ASOF. CLI threads its flag; pipeline passes `None`.
@@ -538,7 +538,7 @@ git commit -m "test(evaluation): Task 0.5 — characterize the SPY-failure diver
 | DIVERGENCE-2 | Pipeline injects pinned off-screen tickers for full evaluation; CLI omits them. | Unify (CLI gains pin injection) or intentional pipeline-only seam? |
 | DIVERGENCE-EQUITY | `current_equity`: pipeline `sizing_equity(real_equity…)` vs CLI `starting_equity`. | Unify on real-equity sizing, or keep CLI on `starting_equity` (intentional)? Only matters for persisted columns if the diff showed any. |
 | DIVERGENCE-ERROR-DEDUP | Pipeline de-dupes error vs excluded (one row); CLI may emit two. | Unify on dedup (intentional only if a reason exists). |
-| DIVERGENCE-EXCLUDED-CLOSE | Pipeline preserves held close on excluded rows. | Follows DIVERGENCE-1's ruling. |
+| DIVERGENCE-EXCLUDED-CLOSE | Pipeline preserves held close on excluded rows; CLI writes `close=None`. | **INDEPENDENT ruling whenever held rows exist in BOTH paths** (Codex R2): if DIVERGENCE-1 is ruled "unify", the operator STILL must choose "preserve fetched close" vs "`close=None`" for the unified held rows — do NOT let it default silently to `preserve_held_close=True`. If DIVERGENCE-1 is ruled "intentional pipeline-only" (CLI has no held rows), this collapses to moot for the CLI and the pipeline keeps `preserve_held_close=True`. Either way, a post-ruling assertion distinguishes the two outcomes. |
 | DIVERGENCE-SPY-GUARD | CLI tolerates SPY fetch failure (warn + 0.0); pipeline raises (fails the step). | Unify on the guarded path, or keep pipeline hard-failing (intentional seam)? Success-path identical. |
 
 **Each ruling resolves to ONE of:**
@@ -643,18 +643,28 @@ git commit -m "feat(evaluation): Task 1.2 — orchestrate_evaluation body with e
 - [ ] **Step 2: Rewrite `_step_evaluate` as the adapter** — `lease.verify_held()`, then assemble the seam values and call the orchestrator:
   - compute `held_tickers` (the `list_open_trades` block, `runner.py:1416-1427`) and `pinned_inject` (the `list_active_watchlist` block, `runner.py:1435-1445`) → `UniverseAugmentation(held_tickers=tuple(held), pinned_inject=tuple(pins))`.
   - compute `sizing_eq` (the `current_equity`/`sizing_equity` block, `runner.py:1514-1525`) → pass as `current_equity`.
-  - build the `pre_fetch_hook` closure capturing `cfg`, `price_cache`, `held_tickers`, `universe`, `run_now`, `run_warnings` and calling `_warm_pipeline_marketdata(...)` + `_prewarm_evaluate_archives(...)` in the SAME order with the SAME args (LOCK #16).
+  - **FIRST read the EXACT current warm/prewarm call sites** (`runner.py:1461-1469`) and copy their argument construction verbatim (Codex R2). Build the `pre_fetch_hook` closure capturing `cfg`, `price_cache`, `held_tickers`, `universe`, `run_now`, `run_warnings`. Its body, given the orchestrator's `merged_tickers` argument:
+    ```python
+    def hook(merged_tickers):
+        _warm_pipeline_marketdata(cfg=cfg, price_cache=price_cache, held_tickers=held_tickers)
+        _prewarm_evaluate_archives(cfg=cfg, candidate_tickers=merged_tickers,
+                                   universe_tickers=universe.tickers, run_now=run_now,
+                                   run_warnings=run_warnings)
+    ```
+    The warm gets the captured `held_tickers` (NOT `merged_tickers`); the prewarm gets `merged_tickers` as `candidate_tickers` + `universe.tickers` separately. Do NOT collapse these to one ticker set (LOCK #16 — silently changing the warmed/prewarmed scope, especially around Arc-7 pins, is exactly the regression this lock guards). **Verify the orchestrator's `merged_tickers` equals the runner's pre-refactor `tickers` value at the prewarm call site** (screen∪held∪pins, in the same insertion order).
   - build `OrchestrationOutput(note_pin_injection=lambda tickers: run_warnings.append({"step":"evaluate","kind":"pin_injection","count":len(tickers),"tickers":tickers}) if run_warnings is not None else None)` — reproduce the exact warning dict (`runner.py:1446-1450`).
   - build the `persist` closure: `with lease.fenced_write() as conn: run_id = insert_evaluation_run(conn, run); insert_candidates(conn, run_id, candidates); set_evaluation_run_id(conn, pipeline_run_id=lease.run_id, evaluation_run_id=run_id); return run_id` (LOCK #1 — lease stays here).
   - pass `behavior=EvaluationBehaviorPolicy()` (the defaults ARE the current pipeline behavior: `raise`/dedup/preserve) — explicit, so the pipeline's error-path semantics are pinned at the call site.
   - `result = orchestrate_evaluation(cfg=cfg, csv_path=csv_path, universe=universe, universe_hash=universe_hash, run_now=run_now, fetcher=fetcher, current_equity=sizing_eq, persist=persist, as_of_date=None, augmentation=aug, pre_fetch_hook=hook, output=out, behavior=EvaluationBehaviorPolicy())`; `return result.run_id`.
 
-- [ ] **Step 3: Run the Phase-0 harness + the existing `tests/pipeline/test_step_evaluate_*.py` → ALL GREEN** (byte-identical persisted rows + warnings). Run: `python -m pytest tests/pipeline/test_step_evaluate_pin_injection.py tests/pipeline/test_step_evaluate_warm.py tests/evaluation/test_orchestration_parity_golden.py -v`. Expected: PASS. If any differ, the extraction changed pipeline behavior — fix the adapter, do not edit the golden.
+- [ ] **Step 3: Add a LOCK #16 warm/prewarm-scope regression test (Codex R2).** Before/after the refactor, assert the warm + prewarm receive the EXACT ticker sets: monkeypatch `_warm_pipeline_marketdata` + `_prewarm_evaluate_archives` to record their kwargs, run `_step_evaluate` through the Phase-0 fixtures (with a held + pinned ticker seeded), and assert `_warm_pipeline_marketdata` got `held_tickers == [HELD_TICKER]` and `_prewarm_evaluate_archives` got `candidate_tickers == screen∪held∪pins` (same order) + `universe_tickers == universe.tickers`. This test must pass identically on the pre-refactor HEAD and the post-refactor adapter (write it FIRST against current code, see it green, then keep it green through the swap).
 
-- [ ] **Step 4: Commit.**
+- [ ] **Step 4: Run the Phase-0 harness + the LOCK #16 test + the existing `tests/pipeline/test_step_evaluate_*.py` → ALL GREEN** (byte-identical persisted rows + warnings + warm/prewarm scope). Run: `python -m pytest tests/pipeline/test_step_evaluate_pin_injection.py tests/pipeline/test_step_evaluate_warm.py tests/evaluation/test_orchestration_parity_golden.py -v`. Expected: PASS. If any differ, the extraction changed pipeline behavior — fix the adapter, do not edit the golden.
+
+- [ ] **Step 5: Commit.**
 ```bash
-git add swing/pipeline/runner.py
-git commit -m "refactor(pipeline): Task 1.3 — _step_evaluate delegates to orchestrate_evaluation; lease/fence + warm/prewarm stay in the adapter"
+git add swing/pipeline/runner.py tests/pipeline/
+git commit -m "refactor(pipeline): Task 1.3 — _step_evaluate delegates to orchestrate_evaluation; lease/fence + warm/prewarm scope stay in the adapter"
 ```
 
 ---
