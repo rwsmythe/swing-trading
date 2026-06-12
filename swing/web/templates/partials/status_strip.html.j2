@@ -18,7 +18,11 @@
   {% endif %}
   {% if vm.cash_coherence_badge %}
     <div class="cash-coherence-badge">
-      <a href="/reconcile">⚠ cash review</a>
+      {%- if vm.cash_badge_link_path %}
+      <a href="{{ vm.cash_badge_link_path }}">&#9888; cash review</a>
+      {%- else %}
+      <span>&#9888; cash review</span>
+      {%- endif %}
     </div>
   {% endif %}
   <div class="rationale">

@@ -51,6 +51,23 @@ from swing.web.price_cache import PriceCache, PriceSnapshot
 _list_all_exitshape_via_fills = list_all_exitshape_via_fills
 
 
+def _first_pending_cash_resolve_link_path(conn) -> str | None:
+    """Gate-run #100 witness fix: the cash badge's link target. Mirrors
+    _compute_cash_coherence_badge's PENDING clause exactly (the count and the
+    link must agree); oldest-first per the banner-link precedent. None when
+    the badge lights on the equity_delta clause alone (nothing pending to
+    resolve -> the template renders the badge unlinked)."""
+    row = conn.execute(
+        "SELECT discrepancy_id FROM reconciliation_discrepancies "
+        "WHERE discrepancy_type='cash_movement_mismatch' "
+        "AND resolution='pending_ambiguity_resolution' "
+        "ORDER BY discrepancy_id ASC LIMIT 1"
+    ).fetchone()
+    if row is None:
+        return None
+    return f"/reconcile/discrepancy/{int(row[0])}/resolve"
+
+
 def _compute_cash_coherence_badge(conn) -> bool:
     """Arc 4b §6.2 — the ACCOUNT-tile cash-coherence badge predicate. True when
     EITHER (1) any cash_movement_mismatch pending exists (any run), OR (2) the
@@ -366,6 +383,9 @@ class DashboardVM:
     # so the base.html.j2 shared-VM gotcha is NOT triggered — the badge block
     # lives inside the dashboard-only ACCOUNT-tile region). Default falsy.
     cash_coherence_badge: bool = False
+    # Gate-run #100 fix: the badge's per-discrepancy link target (None ->
+    # unlinked render). DashboardVM-only, same rationale as the badge flag.
+    cash_badge_link_path: str | None = None
 
     def __post_init__(self) -> None:
         if self.banner_resolve_link is not None:
@@ -1079,6 +1099,10 @@ def build_dashboard(
             # Arc 4b §6.2 — cash-coherence badge + the latest net_liq snapshot
             # for the ACCOUNT-tile secondary line (computed under this snapshot).
             cash_coherence_badge = _compute_cash_coherence_badge(conn)
+            cash_badge_link_path = (
+                _first_pending_cash_resolve_link_path(conn)
+                if cash_coherence_badge else None
+            )
             _nlv_snap = get_latest_snapshot_on_or_before(
                 conn, asof_date=action_session, basis="net_liq")
             schwab_nlv = (
@@ -1572,6 +1596,7 @@ def build_dashboard(
         watchlist_chart_svg_bytes=watchlist_chart_svg_bytes_by_ticker,
         position_chart_svg_bytes=position_chart_svg_bytes_by_ticker,
         cash_coherence_badge=cash_coherence_badge,
+        cash_badge_link_path=cash_badge_link_path,
     )
 
 

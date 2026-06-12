@@ -274,6 +274,14 @@ def _pairs_cash_movement_mismatch(
     expected: dict[str, Any],
     actual: dict[str, Any],
 ) -> list[tuple[str, Any, Any]]:
+    # Arc 4b source-direction rows (field_name='missing_journal_row') carry the
+    # Schwab transaction envelope (net_amount), NOT a journal {"amount": ...} --
+    # mirror the VM-side guard (view_models/reconcile.py) so the resolve page's
+    # SECOND render path cannot KeyError (found by the gate-run #100 witness:
+    # the badge-link 200 test rendered the full page for a source-direction row
+    # for the first time).
+    if "amount" not in expected:
+        return [("amount", None, expected.get("net_amount"))]
     return [("amount", expected["amount"], actual.get("amount"))]
 
 
