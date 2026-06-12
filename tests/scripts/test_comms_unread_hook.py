@@ -65,7 +65,11 @@ def test_notice_counts_unread(comms):
     line = hook.unread_notice("charc", comms)
     assert line is not None
     assert "2 unread for charc" in line
-    assert "scripts/role_mail.py read --role charc --all" in line
+    # The recovery command must survive a foreign session cwd (the 2026-06-12
+    # blocked-prompt incident): absolute quoted path, never a relative one.
+    role_mail_abs = str(_DIR / "role_mail.py")
+    assert f'python "{role_mail_abs}" read --role charc --all' in line
+    assert "run: python scripts/" not in line
 
 
 def test_notice_counts_decision_request(comms):

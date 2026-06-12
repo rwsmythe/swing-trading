@@ -67,9 +67,13 @@ def unread_notice(role: str, comms_root: Path) -> str | None:
         return None
     dr = sum(1 for m in msgs if _is_decision_request(m))
     dr_note = f" ({dr} decision_request)" if dr else ""
+    # Absolute quoted path: the recovery command must work from ANY session
+    # cwd (the 2026-06-12 blocked-prompt incident -- a persistent bash cd had
+    # moved the session cwd and the relative form failed alongside the hook).
+    role_mail = Path(__file__).resolve().parent / "role_mail.py"
     return (
         f"[comms] {len(msgs)} unread for {role}{dr_note} -- run: "
-        f"python scripts/role_mail.py read --role {role} --all"
+        f'python "{role_mail}" read --role {role} --all'
     )
 
 
