@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python scripts/comms_unread_hook.py"
+            "command": "python \"C:/Users/rwsmy/swing-trading/scripts/comms_unread_hook.py\""
           }
         ]
       }
