@@ -187,6 +187,29 @@ def test_cash_ingest_summary_carries_per_row_when_work_happened(cash_recon_full)
     assert "description" not in summary["ingested_rows"][0]
 
 
+def test_sandbox_does_not_write_cash_movements(cash_recon_full):
+    # Codex R9 — cash_movements is a DOMAIN row; under environment='sandbox' the
+    # ingest insert is short-circuited (production-only domain writes lock).
+    conn, run = cash_recon_full(
+        environment="sandbox", journal_cash=[],
+        schwab_txs=[("ACH_RECEIPT", "2026-06-01", 100.0, "SBX1")],
+        nlv=1000.0, open_trades=0)
+    assert conn.execute("SELECT COUNT(*) FROM cash_movements").fetchone()[0] == 0
+    summary = json.loads(run.summary_json)
+    assert summary["cash_ingested_count"] == 0
+    assert summary["cash_sandbox_skipped_insert_count"] == 1
+
+
+def test_production_does_write_cash_movements(cash_recon_full):
+    # Control: the same ACH under production DOES write the ledger row.
+    conn, run = cash_recon_full(
+        environment="production", journal_cash=[],
+        schwab_txs=[("ACH_RECEIPT", "2026-06-01", 100.0, "PRD1")],
+        nlv=1100.0, open_trades=0)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM cash_movements WHERE ref='PRD1'").fetchone()[0] == 1
+
+
 def test_trade_with_nonzero_amount_creates_no_row(cash_recon_run):
     conn, run_id = cash_recon_run
     txs = [_tx(900007, "2026-06-01", "TRADE", -134.85)]

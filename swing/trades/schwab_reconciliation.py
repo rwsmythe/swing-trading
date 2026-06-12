@@ -918,6 +918,7 @@ def _empty_cash_counters() -> dict[str, int]:
         "cash_flagged_count": 0,
         "cash_skipped_trade_count": 0,
         "cash_pending_suppressed_count": 0,
+        "cash_sandbox_skipped_insert_count": 0,
     }
 
 
@@ -931,6 +932,7 @@ def _ingest_cash_transactions(
     dedup_seen: set | None = None,
     counters: dict | None = None,
     ingested_rows: list[dict] | None = None,
+    environment: str | None = None,
 ) -> dict[str, int]:
     """The ref-idempotent, append-only ingestion ladder (spec §4.2). Returns a
     cash-counters dict. Runs INSIDE the caller's transaction (step 6.5).
@@ -1019,6 +1021,14 @@ def _ingest_cash_transactions(
             cc["cash_flagged_count"] += 1
             continue
         # 4. No match → INSERT (append-only; ref = the idempotency key).
+        # Sandbox gate (Codex R9): cash_movements is a DOMAIN row — under sandbox
+        # the insert is short-circuited (audit-rows-only / production-only domain
+        # writes lock), mirroring the tier-1 correction sandbox short-circuit. The
+        # classification + dedup still ran (counters/flags reflect the decision);
+        # the would-be insert is counted separately, not as a real ingest.
+        if environment == "sandbox":
+            cc["cash_sandbox_skipped_insert_count"] += 1
+            continue
         desc = tx.description
         note = (
             f"auto-ingested from Schwab: {desc} [reconciliation run {run_id}]"
@@ -1434,6 +1444,7 @@ def run_schwab_reconciliation(
             dedup_seen=dedup_seen,
             counters=counters,
             ingested_rows=cash_ingested_rows,
+            environment=environment,
         )
         # Re-read journal cash after ingestion so step 7 scans the updated
         # ledger (freshly-ingested rows match their own source tx by ref).
@@ -1469,8 +1480,25 @@ def run_schwab_reconciliation(
                 if idx in _matched_schwab_tx:
                     continue
                 if str(tx.transaction_id) == cm.ref:
+                    # Reserve the (unique) tx so a ref-less heuristic row can't
+                    # steal it. But still VALIDATE the row's value against its
+                    # referenced tx (Codex R9): the exact-ref reservation must NOT
+                    # silently hide value drift (the pre-Arc-4 matcher used amount
+                    # as a criterion). A clean ref+value match is excluded from
+                    # pass 2 (no emit); a ref-match with a WRONG amount/kind/sign
+                    # is left for pass 2 — where, the tx now consumed, it emits a
+                    # journal-direction cash_movement_mismatch surfacing the drift.
                     _matched_schwab_tx.add(idx)
-                    if cm.id is not None:
+                    expected_types = _CASH_KIND_TO_SCHWAB_TYPES.get(
+                        cm.kind, frozenset())
+                    want_pos = cm.kind in _CASH_KIND_SIGN_POSITIVE
+                    kind_ok = tx.type in expected_types
+                    sign_ok = (tx.net_amount > 0) if want_pos else (tx.net_amount < 0)
+                    amount_ok = (
+                        abs(abs(tx.net_amount) - abs(float(cm.amount)))
+                        <= price_tolerance
+                    )
+                    if cm.id is not None and kind_ok and sign_ok and amount_ok:
                         _ref_matched_cm_ids.add(cm.id)
                     break
         # PASS 2: heuristic for the rows not matched by exact ref.

@@ -61,6 +61,21 @@ def test_step7_ref_backed_row_claims_its_own_tx_not_stolen_by_refless(cash_recon
     assert ids["NULL"] in flagged          # the ref-less manual row is the unmatched one
 
 
+def test_step7_ref_match_with_wrong_amount_still_emits_drift(cash_recon_full):
+    # Codex R9 — an exact transactionId-in-ref match must NOT silently hide value
+    # drift: a ref-backed row (ref='T1', $200) referencing a Schwab tx 'T1' that
+    # is actually $150 reserves the tx but still emits a cash_movement_mismatch.
+    conn, _ = cash_recon_full(
+        journal_cash=[("2026-05-10", "deposit", 200.0, "T1")],
+        schwab_txs=[("ACH_RECEIPT", "2026-05-10", 150.0, "T1")],
+        nlv=1000.0, open_trades=0)
+    n = conn.execute(
+        "SELECT COUNT(*) FROM reconciliation_discrepancies "
+        "WHERE discrepancy_type='cash_movement_mismatch' "
+        "AND field_name='net_amount'").fetchone()[0]
+    assert n == 1  # drift surfaced, not hidden by the ref reservation
+
+
 def test_step7_income_kind_matches_dividend_or_interest(cash_recon_full):
     # An operator-entered interest row matches a positive DIVIDEND_OR_INTEREST
     # within ±4d (the widened kind->type map) -> no mismatch.

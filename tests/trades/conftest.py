@@ -99,6 +99,7 @@ def cash_recon_full(tmp_path):
         prior_completed_period_end: str | None = None,
         period_start: str = "2026-05-01",
         period_end: str = "2026-05-31",
+        environment: str = "production",
     ):
         conn = ensure_schema(tmp_path / "cash_recon_full.db")
         # Seed journal cash rows.
@@ -144,7 +145,7 @@ def cash_recon_full(tmp_path):
             schwab_orders=[],
             schwab_transactions=txs,
             schwab_account=account,
-            environment="production",
+            environment=environment,
             **_extra,
         )
         return conn, run
