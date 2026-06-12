@@ -461,6 +461,17 @@ def apply_source_direction_resolution(
             raise SourceResolutionRejected(
                 f"discrepancy {discrepancy_id} is not a source-direction "
                 f"(missing_journal_row) row")
+        # Pending-state precondition (Codex R2 MAJOR; the SELECT-first terminal-
+        # state discipline): the service is self-protecting — a terminal source
+        # row (already operator_resolved_ambiguity / acknowledged_immaterial)
+        # must NOT be re-resolved, which would rewrite the terminal audit state
+        # without a correction row. The web/CLI surfaces also gate on this, but
+        # the service enforces it independently.
+        if disc.resolution != "pending_ambiguity_resolution":
+            raise SourceResolutionRejected(
+                f"discrepancy {discrepancy_id} is not pending "
+                f"(resolution={disc.resolution!r}); cannot re-resolve a "
+                f"terminal source-direction row")
         envelope = json.loads(disc.expected_value_json or "{}")
         tx_id = str(envelope.get("transactionId"))
         net_amount = float(envelope.get("net_amount", 0.0))

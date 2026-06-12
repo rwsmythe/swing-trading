@@ -105,6 +105,20 @@ def test_matched_existing_rejects_id_outside_candidate_list(source_dir_pending):
             operator_reason="x")
 
 
+def test_terminal_row_cannot_be_re_resolved(source_dir_pending):
+    # Codex R2 MAJOR — once a source-direction row is terminal, the service
+    # itself rejects re-resolution (rewriting the terminal audit state).
+    conn, disc_id = source_dir_pending(flag_reason="unrecognized_income_description")
+    apply_source_direction_resolution(
+        conn, discrepancy_id=disc_id,
+        choice_code="acknowledge_not_journal_event", operator_reason="first")
+    # Second attempt (e.g. flipping to a different terminal state) is rejected.
+    with pytest.raises(SourceResolutionRejected, match="not pending"):
+        apply_source_direction_resolution(
+            conn, discrepancy_id=disc_id,
+            choice_code="acknowledge_not_journal_event", operator_reason="again")
+
+
 def test_matched_existing_rejects_wrong_kind_candidate(tmp_path):
     # Codex R1 MAJOR — a candidate id in the envelope list whose amount matches
     # but whose KIND is direction-incompatible must be REJECTED at resolve time
