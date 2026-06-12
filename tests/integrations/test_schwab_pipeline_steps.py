@@ -538,6 +538,31 @@ def test_b4_01_orders_happy_path_production_writes_recon_run(v18_conn):
         assert r[0] == result["reconciliation_run_id"]
 
 
+def test_b4_28_step_result_carries_cash_warnings(v18_conn):
+    """Arc 4b #27 — the step result dict surfaces the run's cash_warnings (the
+    summary_json indirection) so the runner can extend run_warnings."""
+    import json as _json
+
+    cfg = _make_cfg(environment="production")
+    client = MagicMock()
+    client.account_orders.return_value = _make_orders_response([])
+    client.transactions.return_value = _make_transactions_response([])
+    client.account_details.return_value = _make_account_details_response()
+
+    result = _step_schwab_orders(
+        v18_conn, cfg, pipeline_run_id=None, client=client,
+    )
+    assert result["status"] == "completed"
+    assert isinstance(result["warnings"], list)
+    # The first-ever schwab_api run emits a coverage_first_run informational note.
+    assert any(w.get("reason") == "coverage_first_run" for w in result["warnings"])
+    # And the step result mirrors the persisted summary_json cash_warnings.
+    summary = _json.loads(v18_conn.execute(
+        "SELECT summary_json FROM reconciliation_runs WHERE run_id = ?",
+        (result["reconciliation_run_id"],)).fetchone()[0])
+    assert result["warnings"] == summary["cash_warnings"]
+
+
 def test_b4_02_orders_sandbox_short_circuits_reconciliation(v18_conn):
     """Sandbox: 3 audit rows + ZERO reconciliation_runs."""
     cfg = _make_cfg(environment="sandbox")

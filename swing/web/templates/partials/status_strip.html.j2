@@ -7,6 +7,20 @@
 <div class="tile" id="account-tile">
   <div class="label">Account</div>
   <div class="value">${{ '%.0f' | format(vm.status_strip.equity) }}</div>
+  {# Arc 4b - secondary Schwab NLV line + cash-coherence badge (DashboardVM-only). #}
+  {% if vm.status_strip.schwab_nlv is not none %}
+    <div class="schwab-nlv">
+      Schwab NLV ${{ '%.2f' | format(vm.status_strip.schwab_nlv) }}
+      {%- if vm.status_strip.schwab_nlv_date %} ({{ vm.status_strip.schwab_nlv_date[5:] }}){%- endif %}
+    </div>
+  {% else %}
+    <div class="schwab-nlv muted">Schwab NLV: no snapshot</div>
+  {% endif %}
+  {% if vm.cash_coherence_badge %}
+    <div class="cash-coherence-badge">
+      <a href="/reconcile">⚠ cash review</a>
+    </div>
+  {% endif %}
   <div class="rationale">
     {{ vm.status_strip.open_count }} / {{ vm.status_strip.soft_warn }}
     (hard cap {{ vm.status_strip.hard_cap }})

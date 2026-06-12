@@ -1594,6 +1594,23 @@ def run_schwab_reconciliation(
             account_equity_source_dollars=source_nlv,
             equity_delta_dollars=coherence_delta,
         )
+        # Arc 4b — one INFO cash summary line (rides the pipeline.log seam; the
+        # two-belt redactor scrubs any description prose). #27: every run emits
+        # the expected-vs-actual envelope so a silent no-op is distinguishable.
+        log.info(
+            "cash ingest: checked=%d candidates=%d ingested=%d "
+            "matched_ref=%d matched_fallback=%d flagged=%d skipped_trade=%d "
+            "suppressed=%d warnings=%d",
+            cash_counters["cash_transactions_checked"],
+            cash_counters["cash_candidates"],
+            cash_counters["cash_ingested_count"],
+            cash_counters["cash_matched_by_ref_count"],
+            cash_counters["cash_matched_by_fallback_count"],
+            cash_counters["cash_flagged_count"],
+            cash_counters["cash_skipped_trade_count"],
+            cash_counters["cash_pending_suppressed_count"],
+            len(cash_warnings),
+        )
         conn.commit()
     except CallerHeldTransactionError:
         raise

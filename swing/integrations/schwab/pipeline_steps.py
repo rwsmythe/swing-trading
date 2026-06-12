@@ -51,6 +51,7 @@ the current call fills in the NULL via combined-tx2 stamp.
 """
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 from datetime import datetime
@@ -616,10 +617,20 @@ def _step_schwab_orders(
         "audit_call_ids=%s",
         reconciliation_run.run_id, call_ids,
     )
+    # Arc 4b #27 plumbing — surface the run's cash_warnings up to the runner's
+    # run_warnings channel (the summary_json indirection per spec §8).
+    cash_warnings: list[dict] = []
+    try:
+        if reconciliation_run.summary_json:
+            summary = json.loads(reconciliation_run.summary_json)
+            cash_warnings = summary.get("cash_warnings", []) or []
+    except (TypeError, ValueError):
+        cash_warnings = []
     return {
         "status": "completed",
         "call_ids": call_ids,
         "reconciliation_run_id": reconciliation_run.run_id,
+        "warnings": cash_warnings,
         "error": None,
     }
 

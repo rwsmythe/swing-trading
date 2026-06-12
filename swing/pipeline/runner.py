@@ -981,10 +981,15 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
                 # T-A.3 same fix family — wire schwab_client through.
                 _conn = connect(cfg.paths.db_path)
                 try:
-                    _step_schwab_orders(
+                    _schwab_result = _step_schwab_orders(
                         _conn, cfg, pipeline_run_id=lease.run_id,
                         client=schwab_client, surface="pipeline",
                     )
+                    # Arc 4b #27 — the step's cash_warnings reach the run-level
+                    # run_warnings channel (persisted to pipeline_runs.warnings_json).
+                    _schwab_warnings = (_schwab_result or {}).get("warnings") or []
+                    if _schwab_warnings:
+                        run_warnings.extend(_schwab_warnings)
                 finally:
                     _conn.close()
             except LeaseRevokedError:

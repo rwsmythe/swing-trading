@@ -10,6 +10,9 @@ from datetime import date, datetime
 from swing.config import Config
 from swing.data.db import connect
 from swing.data.models import Candidate, Trade, WatchlistEntry
+from swing.data.repos.account_equity_snapshots import (
+    get_latest_snapshot_on_or_before,
+)
 from swing.data.repos.candidates import fetch_candidates_for_run
 from swing.data.repos.cash import list_cash
 from swing.data.repos.pattern_classifications import (
@@ -48,6 +51,33 @@ from swing.web.price_cache import PriceCache, PriceSnapshot
 _list_all_exitshape_via_fills = list_all_exitshape_via_fills
 
 
+def _compute_cash_coherence_badge(conn) -> bool:
+    """Arc 4b §6.2 — the ACCOUNT-tile cash-coherence badge predicate. True when
+    EITHER (1) any cash_movement_mismatch pending exists (any run), OR (2) the
+    most-recent completed schwab_api run has an unresolved equity_delta."""
+    pending = conn.execute(
+        "SELECT COUNT(*) FROM reconciliation_discrepancies "
+        "WHERE discrepancy_type='cash_movement_mismatch' "
+        "AND resolution='pending_ambiguity_resolution'"
+    ).fetchone()[0]
+    if pending and int(pending) > 0:
+        return True
+    latest = conn.execute(
+        "SELECT run_id FROM reconciliation_runs "
+        "WHERE source='schwab_api' AND state='completed' "
+        "ORDER BY finished_ts DESC LIMIT 1"
+    ).fetchone()
+    if latest is None:
+        return False
+    delta = conn.execute(
+        "SELECT COUNT(*) FROM reconciliation_discrepancies "
+        "WHERE run_id = ? AND discrepancy_type='equity_delta' "
+        "AND resolution='unresolved'",
+        (int(latest[0]),),
+    ).fetchone()[0]
+    return bool(delta and int(delta) > 0)
+
+
 @dataclass(frozen=True)
 class StatusStripVM:
     weather_status: str       # "Bullish" | "Caution" | "Bearish" | "STALE"
@@ -70,6 +100,10 @@ class StatusStripVM:
     # template renders "(N of M priced)" suffix when this is < open_count.
     unrealized_pnl: float | None = None
     unrealized_priced_count: int = 0
+    # Arc 4b — secondary "Schwab NLV $X (MM-DD)" line on the ACCOUNT tile.
+    # None → template renders a graceful "no snapshot" state.
+    schwab_nlv: float | None = None
+    schwab_nlv_date: str | None = None
 
 
 @dataclass(frozen=True)
@@ -326,6 +360,12 @@ class DashboardVM:
     position_chart_svg_bytes: Mapping[str, bytes] = field(
         default_factory=dict,
     )
+    # Arc 4b §6.2 — cash-coherence badge. True when a cash_movement_mismatch
+    # pending exists (any run) OR the most-recent completed schwab_api run has an
+    # unresolved equity_delta. DashboardVM-ONLY (not on other base-layout VMs,
+    # so the base.html.j2 shared-VM gotcha is NOT triggered — the badge block
+    # lives inside the dashboard-only ACCOUNT-tile region). Default falsy.
+    cash_coherence_badge: bool = False
 
     def __post_init__(self) -> None:
         if self.banner_resolve_link is not None:
@@ -1036,6 +1076,17 @@ def build_dashboard(
             # at L1050 is scoped inside the `if hyp_recs_candidates:` block).
             from swing.data.repos.hypothesis import list_hypotheses
             _registry = list_hypotheses(conn)
+            # Arc 4b §6.2 — cash-coherence badge + the latest net_liq snapshot
+            # for the ACCOUNT-tile secondary line (computed under this snapshot).
+            cash_coherence_badge = _compute_cash_coherence_badge(conn)
+            _nlv_snap = get_latest_snapshot_on_or_before(
+                conn, asof_date=action_session, basis="net_liq")
+            schwab_nlv = (
+                _nlv_snap.equity_dollars if _nlv_snap is not None else None
+            )
+            schwab_nlv_date = (
+                _nlv_snap.snapshot_date if _nlv_snap is not None else None
+            )
     finally:
         conn.close()
 
@@ -1218,6 +1269,8 @@ def build_dashboard(
         open_risk_all_above_breakeven=open_risk_all_above_be,
         unrealized_pnl=unrealized_pnl,
         unrealized_priced_count=priced_count,
+        schwab_nlv=schwab_nlv,
+        schwab_nlv_date=schwab_nlv_date,
     )
 
 
@@ -1518,6 +1571,7 @@ def build_dashboard(
         dashboard_weather_chart_svg_bytes=dashboard_weather_chart_svg_bytes,
         watchlist_chart_svg_bytes=watchlist_chart_svg_bytes_by_ticker,
         position_chart_svg_bytes=position_chart_svg_bytes_by_ticker,
+        cash_coherence_badge=cash_coherence_badge,
     )
 
 
