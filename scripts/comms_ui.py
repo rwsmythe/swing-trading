@@ -184,13 +184,36 @@ def _recorded_sessions(root: Path) -> dict[str, bool]:
     return result
 
 
+LOOPBACK_HOSTNAMES = ("127.0.0.1", "localhost", "::1")
+
+
+def _loopback_host_ok(host: str) -> bool:
+    """True only if the Host header's hostname is a loopback name.
+
+    Defeats DNS rebinding: an attacker who rebinds attacker.example -> 127.0.0.1
+    makes the victim's browser send Host: attacker.example (matching its own
+    Origin), which would pass a naive same-origin check. The server binds
+    loopback ONLY, so the sole legitimate Host hostnames are loopback names;
+    anything else is refused before the Origin/Referer comparison. Port-agnostic
+    (a non-listening port could never have connected).
+    """
+    if not host:
+        return False
+    if host.startswith("["):  # bracketed IPv6, e.g. [::1]:8765
+        hostname = host[1:host.index("]")] if "]" in host else host
+    else:
+        hostname = host.split(":", 1)[0]
+    return hostname in LOOPBACK_HOSTNAMES
+
+
 class OriginGuard(BaseHTTPMiddleware):
     """Reject cross-origin POSTs (localhost servers are CSRF-able).
 
     Any webpage can blind-POST to 127.0.0.1:<port>; the launch endpoint spawns
-    token-burning Claude windows. Every POST must carry an Origin (or, failing
-    that, a Referer) whose origin matches this app's own; a POST with NEITHER
-    header is also refused. GETs are unguarded (no state change).
+    token-burning Claude windows. Every POST must (a) carry a loopback Host (so
+    a DNS-rebound attacker hostname can't masquerade as same-origin) and (b)
+    carry an Origin (or, failing that, a Referer) whose origin matches this
+    app's own; a POST with NEITHER header is also refused. GETs are unguarded.
     """
 
     async def dispatch(self, request: Request, call_next):  # noqa: ANN001
@@ -198,10 +221,8 @@ class OriginGuard(BaseHTTPMiddleware):
             host = request.headers.get("host", "")
             origin = request.headers.get("origin")
             referer = request.headers.get("referer")
-            # A missing Host makes `expected` degenerate to "http://", which a
-            # crafted Origin: "http://" could match -- reject outright first.
-            if not host:
-                ok = False
+            if not _loopback_host_ok(host):
+                ok = False  # missing/non-loopback Host (DNS-rebinding defense)
             else:
                 expected = f"{request.url.scheme}://{host}"
                 if origin is not None:

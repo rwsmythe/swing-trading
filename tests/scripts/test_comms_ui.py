@@ -37,10 +37,15 @@ def comms(tmp_path):
     return tmp_path / "comms"
 
 
+# Drive the client at the real loopback origin so Host/Origin mirror production
+# (the OriginGuard requires a loopback Host -- the DNS-rebinding defense).
+_BASE_URL = "http://127.0.0.1:8765"
+
+
 @pytest.fixture
 def client(comms):
     app = comms_ui.create_app(comms_root=comms)
-    return TestClient(app)
+    return TestClient(app, base_url=_BASE_URL)
 
 
 def _post(comms, sender, recipients, mtype, subject, body, thread=None):
@@ -48,9 +53,10 @@ def _post(comms, sender, recipients, mtype, subject, body, thread=None):
         comms, sender, recipients, mtype, subject, body, thread)
 
 
-# Same-origin header so POST tests survive the T5 origin guard (TestClient's
-# own origin is http://testserver). A POST with no Origin/Referer is rejected.
-_SAME_ORIGIN = {"Origin": "http://testserver"}
+# Same-origin header for POST tests (the client is driven at _BASE_URL, so the
+# app's own origin is the loopback origin). A POST with no Origin/Referer is
+# rejected; a non-loopback Host is rejected (DNS-rebinding defense).
+_SAME_ORIGIN = {"Origin": _BASE_URL}
 
 
 # --- factory + binding -----------------------------------------------------
@@ -422,9 +428,43 @@ def test_post_with_matching_referer_is_allowed(client, comms):
     r = client.post("/compose",
                     data={"to": "charc", "type": "fyi", "subject": "ref",
                           "body": "x"},
-                    headers={"Referer": "http://testserver/"})
+                    headers={"Referer": _BASE_URL + "/"})
     assert r.status_code == 200
     assert len(role_mail._list_inbox(comms, "charc")) == 1
+
+
+def test_post_with_dns_rebound_host_and_matching_origin_is_403(client, comms):
+    # DNS rebinding: attacker.example -> 127.0.0.1 makes the browser send a
+    # matching Host+Origin of the ATTACKER's domain. The loopback-Host check
+    # refuses it before the same-origin comparison can be fooled.
+    r = client.post("/compose",
+                    data={"to": "charc", "type": "fyi", "subject": "s",
+                          "body": "x"},
+                    headers={"Host": "attacker.example:8765",
+                             "Origin": "http://attacker.example:8765"})
+    assert r.status_code == 403
+    assert list(comms.rglob("*.md")) == []
+
+
+def test_post_with_dns_rebound_host_and_matching_referer_is_403(client, comms):
+    r = client.post("/compose",
+                    data={"to": "charc", "type": "fyi", "subject": "s",
+                          "body": "x"},
+                    headers={"Host": "attacker.example:8765",
+                             "Referer": "http://attacker.example:8765/x"})
+    assert r.status_code == 403
+    assert list(comms.rglob("*.md")) == []
+
+
+def test_loopback_host_allowlist():
+    ok = comms_ui._loopback_host_ok
+    assert ok("127.0.0.1:8765")
+    assert ok("localhost:8765")
+    assert ok("127.0.0.1")
+    assert ok("[::1]:8765")
+    assert not ok("attacker.example:8765")
+    assert not ok("")
+    assert not ok("evil.127.0.0.1.nip.io:8765")
 
 
 def test_get_is_not_origin_guarded(client):
@@ -529,7 +569,7 @@ def test_launch_subprocess_timeout_is_flash_not_500(client, monkeypatch):
 def test_launch_disabled_refuses_without_subprocess(comms, monkeypatch):
     app = comms_ui.create_app(comms_root=comms, allow_launch=False)
     calls = _mock_run(monkeypatch)
-    with TestClient(app) as c:
+    with TestClient(app, base_url=_BASE_URL) as c:
         r = c.post("/directors/launch", data={"role": "both", "mode": "fresh"},
                    headers=_SAME_ORIGIN)
     assert r.status_code == 400
