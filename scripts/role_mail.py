@@ -51,6 +51,20 @@ class MailError(Exception):
     """A validation / governance error to surface as exit 1 with a message."""
 
 
+class _AsciiArgumentParser(argparse.ArgumentParser):
+    """ArgumentParser whose own usage/error output is cp1252-safe.
+
+    argparse writes its messages (which can echo raw non-ASCII argv) directly
+    to stderr before main()'s handler runs; sanitize them here so a bad value
+    cannot UnicodeEncodeError on a Windows cp1252 console. Subparsers inherit
+    this class via add_subparsers' default parser_class.
+    """
+
+    def _print_message(self, message, file=None):  # noqa: ANN001
+        if message:
+            super()._print_message(_ascii(message), file)
+
+
 def _now() -> datetime:
     """UTC clock seam (monkeypatched in tests for deterministic stamps)."""
     return datetime.now(UTC)
@@ -262,13 +276,24 @@ def cmd_post(args: argparse.Namespace) -> int:
             committed.append(final)
     except OSError as exc:
         # Partial delivery: roll back the finals we already committed and drop
-        # any temps not yet replaced, so the post stays all-or-nothing.
+        # any temps not yet replaced, so the post stays all-or-nothing. Report
+        # honestly if a committed final could not be removed (don't claim a
+        # clean rollback when one isn't).
+        unremoved: list[Path] = []
         for final in committed:
-            with contextlib.suppress(OSError):
+            try:
                 final.unlink()
+            except OSError:
+                unremoved.append(final)
         for tmp, _ in staged:
             with contextlib.suppress(OSError):
                 tmp.unlink()
+        if unremoved:
+            raise MailError(
+                f"post failed during delivery ({exc}); rollback INCOMPLETE -- "
+                "these were delivered and could not be removed: "
+                + ", ".join(p.name for p in unremoved)
+            ) from exc
         raise MailError(
             f"post failed during delivery ({exc}); rolled back, nothing delivered."
         ) from exc
@@ -373,7 +398,7 @@ def _add_comms_root(p: argparse.ArgumentParser) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = _AsciiArgumentParser(
         description="Inter-role file mailbox (comms Stage 1).")
     parser.add_argument(
         "--comms-root", default=None,

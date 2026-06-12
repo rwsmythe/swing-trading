@@ -355,3 +355,15 @@ def test_error_output_ascii_with_unicode_input(comms, capsys):
     assert rc == 1
     err = capsys.readouterr().err
     err.encode("cp1252")  # must not raise
+
+
+def test_argparse_error_output_is_ascii(capsys):
+    # argparse's OWN error path (unrecognized non-cp1252 arg) must stay
+    # cp1252-safe -- it runs before main()'s handler, so the parser subclass
+    # sanitizes it.
+    with pytest.raises(SystemExit):
+        role_mail.main(["post", "--from", "charc", "--to", "rd", "--type",
+                        "fyi", "--subject", "s", "--body", "x",
+                        "--bogus\U0001F680flag"])
+    captured = capsys.readouterr()
+    (captured.out + captured.err).encode("cp1252")  # must not raise
