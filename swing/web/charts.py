@@ -74,6 +74,32 @@ except ImportError as exc:  # pragma: no cover - install gate
 
 logger = logging.getLogger(__name__)
 
+
+def compute_chart_source_hash(bars: Any) -> str:
+    """Content-derived value for ``chart_renders.source_data_hash``.
+
+    Phase 16 Arc 3 (3c): the pipeline + JIT write sites previously stamped a
+    STATIC literal (``"step_charts_v1"`` / ``"chart_jit_v1"``) which does not
+    encode the underlying data, so the field never changed when a chart's bar
+    history grew (e.g. a sparse 16-bar XMAX thumbnail vs a rich 207-bar render)
+    or its window shifted. Keying on (bar count + first/last asof_date) makes
+    the value honest: data growth → a different hash. VALUE-only change (no
+    schema). The field remains a provenance/audit tag today; an honest value is
+    the substrate for any future read-time hash-compare invalidation.
+
+    ``bars`` is the legacy yfinance-shape frame (DatetimeIndex + capitalized
+    OHLCV) the renderers consume. None / empty → a stable sentinel.
+    """
+    if bars is None or len(bars) == 0:
+        return "bars=0"
+    n = len(bars)
+    first = bars.index[0]
+    last = bars.index[-1]
+    first_iso = first.date().isoformat() if hasattr(first, "date") else str(first)
+    last_iso = last.date().isoformat() if hasattr(last, "date") else str(last)
+    return f"bars={n};first={first_iso};last={last_iso}"
+
+
 # Process-wide matplotlib render lock. charts.py renders through pyplot GLOBAL
 # state (matplotlib.pyplot as plt, mpf.plot, plt.subplots, plt.close) which is
 # NOT thread-safe and has no other serialization. Every top-level web render
