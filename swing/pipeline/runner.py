@@ -476,29 +476,12 @@ def _install_pipeline_marketdata_caches(
             frequency=1,
         )
         # Full-archive-return contract (CLAUDE.md: "cache hooks must return the
-        # FULL archive; consumers slice"). Phase 16 Arc 3 fix — the symmetric
-        # sibling of the Phase 13 R3 Major #1 yfinance-fallback fix.
-        #
-        # On the schwab_api SUCCESS path `window` is ONLY the freshly-fetched
-        # Schwab sub-window. For a ticker whose Schwab listing history is short
-        # (XMAX = 16 daily Schwab bars; TDAY = 138 — vs a ~1260-row legacy
-        # archive), `window.to_dataframe()` returned just those bars, so
-        # `OhlcvCache._fetch_bars_window` sliced an already-short frame and the
-        # pipeline-rendered watchlist THUMBNAIL drew a handful of sparse points
-        # while the web `ticker_detail` path (no ladder → read_or_fetch_archive)
-        # stayed rich for the SAME data_asof_date. The ladder has ALREADY
-        # persisted the fetched Schwab bars to the Shape-A archive (audit +
-        # provenance preserved by `fetch_window_via_ladder`); here we return the
-        # FULL archive — the SAME read the no-ladder/ticker_detail path uses —
-        # so both surfaces converge on identical bar counts. The yfinance
-        # fallback path already returns the full archive (`_yf_window_fallback`
-        # → read_or_fetch_archive), so this unifies both provider paths.
-        # Full-archive-return contract (CLAUDE.md: "cache hooks must return the
         # FULL archive; consumers slice"). On the schwab_api success path the
         # ladder's `window` is only the short freshly-fetched Schwab sub-window
         # (XMAX = 16 daily bars); the shared helper re-reads the full archive so
         # the pipeline thumbnail converges with the no-ladder ticker_detail path
-        # and reports the effective provider of the returned bars.
+        # and reports the effective provider of the returned bars. Full rationale
+        # in resolve_full_archive_bars' docstring.
         bars, effective_provider = resolve_full_archive_bars(
             ticker, window, provider_tag,
             yfinance_window_fn=_yf_window_fallback,

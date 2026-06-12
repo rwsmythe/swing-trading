@@ -164,7 +164,8 @@ def test_bars_hook_invokes_ladder_with_daily_period_frequency_kwargs(
     # Phase 16 Arc 3: the schwab-success bars path now re-reads the FULL archive
     # (full-archive-return contract). Stub that read + the session anchor so the
     # hook stays HERMETIC (no network) and returns a controlled non-empty daily
-    # frame. The provider tag stays 'schwab_api' (the ladder returned schwab).
+    # frame. The effective provider is then 'yfinance' (bars came from the
+    # archive); the Schwab call still ran with daily kwargs (asserted below).
     _archive = pd.DataFrame(
         {"Open": [1.0, 2.0], "High": [1.0, 2.0], "Low": [1.0, 2.0],
          "Close": [1.0, 2.0], "Volume": [10, 20]},
