@@ -103,3 +103,25 @@ def test_matched_existing_rejects_id_outside_candidate_list(source_dir_pending):
             conn, discrepancy_id=disc_id, choice_code="matched_existing_row",
             operator_custom_payload={"cash_movement_id": 999},
             operator_reason="x")
+
+
+def test_matched_existing_rejects_wrong_kind_candidate(tmp_path):
+    # Codex R1 MAJOR — a candidate id in the envelope list whose amount matches
+    # but whose KIND is direction-incompatible must be REJECTED at resolve time
+    # (spec §4.3(c): the row must still exist with matching kind/amount).
+    conn = ensure_schema(tmp_path / "wk.db")
+    # WRONG-direction candidate row: a 'withdraw' with a matching amount. The
+    # transaction is a positive DIVIDEND_OR_INTEREST (net_amount=5.0) so the
+    # admitted kinds are {deposit,interest,dividend}; 'withdraw' is invalid.
+    bad_id = int(conn.execute(
+        "INSERT INTO cash_movements (date, kind, amount, ref, note) "
+        "VALUES ('2026-06-01','withdraw',5.0,NULL,'wrong-dir')").lastrowid)
+    disc_id = _make_pending(
+        conn, flag_reason="fallback_multi_match", net_amount=5.0,
+        candidate_ids=[bad_id])
+    conn.commit()
+    with pytest.raises(SourceResolutionRejected, match="direction-compatible"):
+        apply_source_direction_resolution(
+            conn, discrepancy_id=disc_id, choice_code="matched_existing_row",
+            operator_custom_payload={"cash_movement_id": bad_id},
+            operator_reason="x")
