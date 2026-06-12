@@ -43,6 +43,9 @@ reference/images/
 !.claude/agents/
 .claude/agents/*
 !.claude/agents/*.md
+# The comms unread-hook wiring is tracked (committed so every checkout gets the
+# UserPromptSubmit hook); same negation shape as the agents/ exception above.
+!.claude/settings.json
 
 # Pipeline outputs (regenerated each run; not tracked)
 # Exception: exports/diagnostics/*.{csv,md} are committed as research ledger

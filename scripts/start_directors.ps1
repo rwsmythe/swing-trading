@@ -179,17 +179,31 @@ function New-SessionName($role) {
     return "director-$role-$stamp"
 }
 
-function Start-RoleWindow($title, $argList) {
-    # $argList is the claude argument array (everything after 'claude').
+function Build-LaunchCommand($role, $argList) {
+    # The inner shell command for a spawned director window. Setting
+    # $env:SWING_ROLE HERE (inside the spawned shell) is load-bearing: the
+    # wt.exe new-tab path hands the tab to an ALREADY-RUNNING Windows Terminal
+    # process, which spawns its shell from ITS OWN environment -- a
+    # launcher-set $env:SWING_ROLE would NOT reliably propagate. So BOTH the wt
+    # path and the -NoWT fallback wrap claude in a 'powershell -NoExit -Command'
+    # shell that sets the role first. The backtick escapes the '$' so the OUTER
+    # (launcher) shell passes '$env:SWING_ROLE' through literally while it DOES
+    # expand $role and $RepoRoot.
+    return "`$env:SWING_ROLE='$role'; Set-Location '$RepoRoot'; claude " + ($argList -join ' ')
+}
+
+function Start-RoleWindow($role, $title, $argList) {
+    # $argList is the claude argument array (everything after 'claude'); the
+    # spawned shell sets SWING_ROLE so the director's UserPromptSubmit hook fires.
+    $inner = Build-LaunchCommand $role $argList
     $useWT = (-not $NoWT) -and ($null -ne (Get-Command wt.exe -ErrorAction SilentlyContinue))
     if ($useWT) {
-        $wtArgs = @('-w', '0', 'new-tab', '--title', $title, '-d', $RepoRoot, 'claude') + $argList
+        $wtArgs = @('-w', '0', 'new-tab', '--title', $title, '-d', $RepoRoot, 'powershell', '-NoExit', '-Command', $inner)
         Start-Process -FilePath 'wt.exe' -ArgumentList $wtArgs
     }
     else {
         if ($NoWT) { Write-Info "launching $title in a plain window (-NoWT)." }
         else { Write-Info "wt.exe not found; launching $title in a plain window." }
-        $inner = "Set-Location '$RepoRoot'; claude " + ($argList -join ' ')
         Start-Process -FilePath 'powershell' -ArgumentList @('-NoExit', '-Command', $inner)
     }
 }
@@ -210,11 +224,12 @@ function Start-Fresh($role, $map) {
     $argList = $LaunchArgs + @('-n', "`"$name`"", "`"$prompt`"")
     Write-Info "fresh $role -> session name '$name'"
     Write-Info "  cmd: $(Format-Cmd $argList)"
+    Write-Info "  launch: $(Build-LaunchCommand $role $argList)"
     if ($DryRun) { return $map }
 
     $map[$role] = @{ session_name = $name; session_id = $null; created = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') }
     Save-SessionMap $map
-    Start-RoleWindow $RoleTitles[$role] $argList
+    Start-RoleWindow $role $RoleTitles[$role] $argList
     return $map
 }
 
@@ -232,9 +247,10 @@ function Start-Resume($role, $map) {
     $argList = $LaunchArgs + @('--resume', "`"$name`"", "`"$prompt`"")
     Write-Info "resume $role -> session name '$name'"
     Write-Info "  cmd: $(Format-Cmd $argList)"
+    Write-Info "  launch: $(Build-LaunchCommand $role $argList)"
     Write-Info "  (--resume opens the /resume picker filtered to this name; select it to re-enter.)"
     if ($DryRun) { return $map }
-    Start-RoleWindow $RoleTitles[$role] $argList
+    Start-RoleWindow $role $RoleTitles[$role] $argList
     return $map
 }
 
