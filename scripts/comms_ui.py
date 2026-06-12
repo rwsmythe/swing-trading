@@ -195,16 +195,23 @@ class OriginGuard(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):  # noqa: ANN001
         if request.method == "POST":
-            expected = f"{request.url.scheme}://{request.headers.get('host', '')}"
+            host = request.headers.get("host", "")
             origin = request.headers.get("origin")
             referer = request.headers.get("referer")
-            if origin is not None:
-                ok = origin == expected
-            elif referer is not None:
-                parts = urlsplit(referer)
-                ok = f"{parts.scheme}://{parts.netloc}" == expected
+            # A missing Host makes `expected` degenerate to "http://", which a
+            # crafted Origin: "http://" could match -- reject outright first.
+            if not host:
+                ok = False
             else:
-                ok = False  # neither header -> refuse
+                expected = f"{request.url.scheme}://{host}"
+                if origin is not None:
+                    ok = origin == expected
+                elif referer is not None:
+                    parts = urlsplit(referer)
+                    ok = bool(parts.netloc) and (
+                        f"{parts.scheme}://{parts.netloc}" == expected)
+                else:
+                    ok = False  # neither header -> refuse
             if not ok:
                 return PlainTextResponse(
                     "403 cross-origin POST refused", status_code=403)
@@ -585,13 +592,17 @@ def create_app(comms_root: Path, allow_launch: bool = True) -> FastAPI:
             return _flash("err", f"invalid role {role!r}", 400)
         if mode not in LAUNCH_MODES:
             return _flash("err", f"invalid mode {mode!r}", 400)
+        # L5: the EXACT argv from the brief (literal relative script path); cwd
+        # is pinned to the repo root so the relative -File resolves regardless
+        # of where the operator launched the UI process.
         argv = ["powershell", "-NoProfile", "-File",
-                str(_SCRIPTS_DIR / LAUNCHER), "-Role", role]
+                f"scripts/{LAUNCHER}", "-Role", role]
         if mode == "resume":
             argv.append("-Resume")
         try:
             result = subprocess.run(  # noqa: S603 (fixed argv, enum-validated)
-                argv, capture_output=True, text=True, timeout=30)
+                argv, capture_output=True, text=True, timeout=30,
+                cwd=str(_SCRIPTS_DIR.parent))
         except (subprocess.SubprocessError, OSError) as exc:
             return _flash("err", f"launcher failed to run: {role_mail._ascii(str(exc))}", 200)
         out = role_mail._ascii(((result.stdout or "") + (result.stderr or "")).strip())

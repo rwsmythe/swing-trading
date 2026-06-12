@@ -433,6 +433,17 @@ def test_get_is_not_origin_guarded(client):
     assert client.get("/panes/inbox").status_code == 200
 
 
+def test_post_with_empty_host_and_matching_origin_is_403(client, comms):
+    # Defense-in-depth: with no Host the expected origin degenerates to
+    # "http://"; a crafted Origin "http://" must NOT slip past the guard.
+    r = client.post("/compose",
+                    data={"to": "charc", "type": "fyi", "subject": "s",
+                          "body": "x"},
+                    headers={"Host": "", "Origin": "http://"})
+    assert r.status_code == 403
+    assert list(comms.rglob("*.md")) == []
+
+
 # --- launch endpoint (T5; exact argv, subprocess mocked) -------------------
 
 def _mock_run(monkeypatch, returncode=0, stdout="launched", stderr=""):
@@ -449,8 +460,9 @@ def _mock_run(monkeypatch, returncode=0, stdout="launched", stderr=""):
 
 
 def _launcher_argv(role, resume):
+    # L5: the EXACT argv -- literal relative script path (the locked contract).
     argv = ["powershell", "-NoProfile", "-File",
-            str(comms_ui._SCRIPTS_DIR / "start_directors.ps1"), "-Role", role]
+            "scripts/start_directors.ps1", "-Role", role]
     if resume:
         argv.append("-Resume")
     return argv
@@ -463,6 +475,8 @@ def test_launch_fresh_runs_exact_argv(client, monkeypatch):
     assert r.status_code == 200
     assert len(calls) == 1
     assert calls[0][0] == _launcher_argv("both", resume=False)
+    # cwd is pinned to the repo root so the relative -File path resolves
+    assert calls[0][1].get("cwd") == str(comms_ui._SCRIPTS_DIR.parent)
 
 
 def test_launch_resume_appends_resume_flag(client, monkeypatch):
