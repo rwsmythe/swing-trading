@@ -1348,6 +1348,18 @@ def _resolve_affected_target(
     )
 
 
+def _cash_column_for_field(field_name: str) -> str:
+    """Map a cash discrepancy's field_name to the LEDGER column.
+
+    Gate-run #100 witness fix: the journal-direction cash emitter writes
+    field_name='net_amount' (the honest Schwab-envelope semantic name; live
+    rows 66/67 carry it), but the cash_movements ledger column is `amount`.
+    The fills/trades field_names ARE column names, so the generic helpers
+    assumed identity -- for the CASH branch the envelope name must translate.
+    Any other field_name passes through unchanged."""
+    return "amount" if field_name == "net_amount" else field_name
+
+
 def _read_journal_value(
     conn: sqlite3.Connection,
     affected_table: str,
@@ -1360,7 +1372,10 @@ def _read_journal_value(
     elif affected_table == _AFFECTED_TABLE_TRADES:
         sql = f"SELECT {field_name} FROM trades WHERE id = ?"
     elif affected_table == _AFFECTED_TABLE_CASH:
-        sql = f"SELECT {field_name} FROM cash_movements WHERE id = ?"
+        sql = (
+            f"SELECT {_cash_column_for_field(field_name)} "
+            f"FROM cash_movements WHERE id = ?"
+        )
     elif affected_table == _AFFECTED_TABLE_SNAPSHOTS:
         sql = (
             f"SELECT {field_name} FROM account_equity_snapshots "
@@ -1398,7 +1413,10 @@ def _update_journal_field(
     elif affected_table == _AFFECTED_TABLE_TRADES:
         sql = f"UPDATE trades SET {field_name} = ? WHERE id = ?"
     elif affected_table == _AFFECTED_TABLE_CASH:
-        sql = f"UPDATE cash_movements SET {field_name} = ? WHERE id = ?"
+        sql = (
+            f"UPDATE cash_movements SET {_cash_column_for_field(field_name)} = ? "
+            f"WHERE id = ?"
+        )
     elif affected_table == _AFFECTED_TABLE_SNAPSHOTS:
         sql = (
             f"UPDATE account_equity_snapshots SET {field_name} = ? "

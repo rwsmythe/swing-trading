@@ -61,3 +61,18 @@ def test_bare_reconcile_path_is_not_a_registered_route(seeded_db):
     cfg, cfg_path = seeded_db
     with TestClient(create_app(cfg, cfg_path)) as client:
         assert client.get("/reconcile").status_code == 404
+
+
+def test_lock_error_predicate_distinguishes_contention_from_sql_defects():
+    """Gate-run #100: 'no such column: net_amount' was mislabeled as
+    'Database is busy' by the broad OperationalError catches. Only genuine
+    contention may render the retry page; defects must surface as 500s."""
+    import sqlite3 as s
+    from swing.web.routes.reconcile import _is_transient_lock_error
+    assert _is_transient_lock_error(s.OperationalError("database is locked"))
+    assert _is_transient_lock_error(s.OperationalError("database is busy"))
+    assert _is_transient_lock_error(
+        s.OperationalError("unable to open database file"))
+    assert not _is_transient_lock_error(
+        s.OperationalError("no such column: net_amount"))
+    assert not _is_transient_lock_error(s.OperationalError("syntax error"))

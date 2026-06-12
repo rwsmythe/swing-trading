@@ -72,6 +72,20 @@ log = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _is_transient_lock_error(exc: sqlite3.OperationalError) -> bool:
+    """True only for genuine contention ('database is locked' / 'database is
+    busy') -- the cases where the 503 retry-in-a-moment page is HONEST. Any
+    other OperationalError (e.g. a SQL defect like the gate-run #100
+    'no such column: net_amount') must surface as a 500, not masquerade as
+    transient contention and tell the operator to retry forever."""
+    msg = str(exc).lower()
+    # 'unable to open database file' is connect-level transient infrastructure
+    # (Windows file locks / AV) -- the existing 503 contract covers it (the
+    # *_returns_503_on_db_locked_during_connect tests).
+    return "locked" in msg or "busy" in msg or "unable to open" in msg
+
+
+
 def _render_error(
     request: Request,
     *,
@@ -151,6 +165,8 @@ def reconcile_discrepancy_resolve_form(
     try:
         conn = open_connection(cfg.paths.db_path, busy_timeout_ms=cfg.web.db_busy_timeout_ms)
     except sqlite3.OperationalError as exc:
+        if not _is_transient_lock_error(exc):
+            raise
         log.warning("sqlite3.OperationalError (connect): %s", exc)
         return _render_error(
             request,
@@ -178,6 +194,9 @@ def reconcile_discrepancy_resolve_form(
             # Codex R1 Major #2 — pre-flight OperationalError (DB locked /
             # busy during count_* helpers or get_discrepancy) routes to the
             # canonical db_unavailable 503 template instead of bubbling 500.
+            # Gate-run #100 fix: ONLY genuine contention gets the retry page.
+            if not _is_transient_lock_error(exc):
+                raise
             log.warning("sqlite3.OperationalError (pre-flight): %s", exc)
             return _render_error(
                 request,
@@ -230,6 +249,9 @@ def reconcile_discrepancy_resolve_form(
         except sqlite3.OperationalError as exc:
             # Codex R1 Major #2 — VM builder is also a read-side surface
             # consuming ``conn``; cover its OperationalError too.
+            # Gate-run #100 fix: ONLY genuine contention gets the retry page.
+            if not _is_transient_lock_error(exc):
+                raise
             log.warning("sqlite3.OperationalError (builder): %s", exc)
             return _render_error(
                 request,
@@ -393,6 +415,8 @@ def _render_form_with_error(
             error_band_field_hint=error_band_field_hint,
         )
     except sqlite3.OperationalError as exc:
+        if not _is_transient_lock_error(exc):
+            raise
         log.warning("sqlite3.OperationalError (re-render builder): %s", exc)
         return _render_error(
             request,
@@ -517,6 +541,8 @@ async def reconcile_discrepancy_resolve_post(  # noqa: PLR0911, PLR0912, PLR0915
     try:
         conn = open_connection(cfg.paths.db_path, busy_timeout_ms=cfg.web.db_busy_timeout_ms)
     except sqlite3.OperationalError as exc:
+        if not _is_transient_lock_error(exc):
+            raise
         log.warning("sqlite3.OperationalError (connect): %s", exc)
         return _render_error(
             request,
@@ -546,6 +572,9 @@ async def reconcile_discrepancy_resolve_post(  # noqa: PLR0911, PLR0912, PLR0915
             # Codex R1 Major #2 — pre-flight OperationalError (DB locked /
             # busy during count_* helpers or get_discrepancy) routes to the
             # canonical db_unavailable 503 template instead of bubbling 500.
+            # Gate-run #100 fix: ONLY genuine contention gets the retry page.
+            if not _is_transient_lock_error(exc):
+                raise
             log.warning("sqlite3.OperationalError (pre-flight): %s", exc)
             return _render_error(
                 request,
@@ -927,6 +956,8 @@ async def reconcile_discrepancy_resolve_post(  # noqa: PLR0911, PLR0912, PLR0915
                     str(cfg.paths.db_path), discrepancy_id,
                 )
             except sqlite3.OperationalError as inner_exc:
+                if not _is_transient_lock_error(inner_exc):
+                    raise
                 log.warning(
                     "sqlite3.OperationalError (race re-read): %s",
                     inner_exc,
@@ -975,6 +1006,8 @@ async def reconcile_discrepancy_resolve_post(  # noqa: PLR0911, PLR0912, PLR0915
                 prior_ambiguity_kind_at_render=prior_ambiguity_kind_at_render,
             )
         except sqlite3.OperationalError as exc:
+            if not _is_transient_lock_error(exc):
+                raise
             log.warning("sqlite3.OperationalError: %s", exc)
             return _render_error(
                 request,
