@@ -46,15 +46,12 @@ from typing import Any
 
 from swing.data.datetime_helpers import now_ms
 from swing.data.repos import reconciliation as repo
-from swing.data.repos.account_equity_snapshots import (
-    get_latest_snapshot_on_or_before,
-)
 from swing.data.repos.cash import list_cash
 from swing.data.repos.fills import list_fills_for_trade
 from swing.data.repos.trades import list_open_trades
+from swing.trades.equity import current_equity, list_all_exitshape_via_fills
 from swing.trades.reconciliation import (
     DISCREPANCY_TYPES,
-    EQUITY_DELTA_EMIT_THRESHOLD_DOLLARS,
     MATERIAL_BY_TYPE,
 )
 from swing.trades.reconciliation_auto_correct import (
@@ -195,6 +192,12 @@ def _within_cash_match_window(date_a_iso: str, date_b_iso: str, *, days: int = 4
     a = _date.fromisoformat(date_a_iso)
     b = _date.fromisoformat(date_b_iso)
     return abs((a - b).days) <= days
+
+
+def _cash_coherence_tolerance(nlv: float) -> float:
+    """The equity-coherence emit tolerance: ``max($5.00, 0.5% × |NLV|)`` (Arc 4b
+    Task 8). Supersedes EQUITY_DELTA_EMIT_THRESHOLD_DOLLARS on the schwab path."""
+    return max(5.00, 0.005 * abs(float(nlv)))
 
 
 # Price-tolerance for fill matching (matches Phase 9 Sub-bundle B default).
@@ -1026,8 +1029,14 @@ def run_schwab_reconciliation(
     schwab_api_call_id: int | None = None,
     price_tolerance: float = _PRICE_TOLERANCE_DEFAULT,
     environment: str | None = None,
+    starting_equity: float = 0.0,
 ) -> Any:
     """Reconcile Schwab API responses against the journal.
+
+    ``starting_equity`` (Arc 4b Task 8): the account starting equity used by the
+    ledger-vs-NLV coherence check (step 8). The production caller
+    (``_step_schwab_orders``) passes ``cfg.account.starting_equity``; the default
+    is for test ergonomics only.
 
     Algorithm:
       1. Reject caller-held tx.
@@ -1071,22 +1080,15 @@ def run_schwab_reconciliation(
 
     started_ts = now_ms()
 
-    # Pre-compute snapshot fields BEFORE BEGIN so any read-side helpers that
-    # might open their own implicit auto-tx don't conflict with our BEGIN.
+    # Pre-compute the FRESH broker NLV BEFORE BEGIN. Arc 4b Task 8: the old
+    # pre-BEGIN journal_snap read (broker-vs-broker compare) is DROPPED — the
+    # authoritative journal equity is the LEDGER, computed AFTER ingestion
+    # inside the txn (step 8). The run row's journal-equity/delta columns are
+    # stamped at completion with the ledger value, not a stale snapshot.
     source_nlv: float | None = (
         float(schwab_account.net_liquidating_value)
         if schwab_account is not None else None
     )
-    journal_snap = get_latest_snapshot_on_or_before(
-        conn, asof_date=period_end,
-    )
-    journal_equity: float | None = (
-        journal_snap.equity_dollars if journal_snap is not None else None
-    )
-    equity_delta: float | None = None
-    if source_nlv is not None and journal_equity is not None:
-        # Sign convention per Phase 9 Sub-bundle C T-C.6 = journal MINUS source.
-        equity_delta = journal_equity - source_nlv
 
     # Pre-read open trades + their fills + journal cash_movements (read-side;
     # uses implicit auto-tx if any but won't conflict because we haven't
@@ -1140,9 +1142,12 @@ def run_schwab_reconciliation(
             source_artifact_sha256=None,
             period_start=period_start,
             period_end=period_end,
-            account_equity_journal_dollars=journal_equity,
+            # Arc 4b Task 8: the authoritative ledger equity + coherence delta
+            # are computed POST-ingestion and stamped at completion (below);
+            # the run row starts with them NULL.
+            account_equity_journal_dollars=None,
             account_equity_source_dollars=source_nlv,
-            equity_delta_dollars=equity_delta,
+            equity_delta_dollars=None,
             schwab_api_call_id=schwab_api_call_id,
         )
 
@@ -1474,8 +1479,39 @@ def run_schwab_reconciliation(
             else:
                 _matched_schwab_tx.add(match_idx)
 
-        # --- 8. Equity delta ---
-        if equity_delta is not None and abs(equity_delta) > EQUITY_DELTA_EMIT_THRESHOLD_DOLLARS:
+        # --- 8. Equity coherence (Arc 4b Task 8) — ledger-vs-NLV, flat-only ---
+        # Compute the LEDGER equity AFTER ingestion (the same function + inputs
+        # the dashboard tile uses) and compare it to the FRESH broker NLV. This
+        # REPLACES the old broker-vs-broker compare. The check fires at full
+        # strength ONLY when flat on BOTH sides (zero journal open trades AND an
+        # empty broker positions list); a journal-flat-but-broker-position case
+        # is suppressed + warned (orphan position is a position smell, §6.1).
+        ledger_equity = current_equity(
+            starting_equity=starting_equity,
+            exits=list_all_exitshape_via_fills(conn),
+            cash_movements=list_cash(conn),
+        )
+        coherence_delta: float | None = (
+            ledger_equity - source_nlv if source_nlv is not None else None
+        )
+        journal_flat = len(open_trades) == 0
+        broker_flat = len(schwab_positions) == 0
+        if journal_flat and not broker_flat:
+            cash_warnings.append({
+                "step": "schwab_orders",
+                "reason": "orphan_broker_position",
+                "detail": (
+                    "equity-coherence check suppressed: journal flat but broker "
+                    f"holds {len(schwab_positions)} position(s)"
+                ),
+            })
+        elif (
+            journal_flat
+            and broker_flat
+            and source_nlv is not None
+            and coherence_delta is not None
+            and abs(coherence_delta) > _cash_coherence_tolerance(source_nlv)
+        ):
             _emit(
                 conn,
                 run_id=run_id,
@@ -1484,12 +1520,14 @@ def run_schwab_reconciliation(
                 counters=counters,
                 dedup_seen=dedup_seen,
                 expected_value_json=json.dumps(
-                    {"equity_dollars": journal_equity}, sort_keys=True,
+                    {"equity_dollars": ledger_equity, "basis": "ledger"},
+                    sort_keys=True,
                 ),
                 actual_value_json=json.dumps(
-                    {"equity_dollars": source_nlv}, sort_keys=True,
+                    {"equity_dollars": source_nlv, "basis": "net_liq"},
+                    sort_keys=True,
                 ),
-                delta_text=f"${equity_delta:+.2f} (journal minus source)",
+                delta_text=f"${coherence_delta:+.2f} (ledger minus net_liq)",
             )
 
         # --- 8.5. PHASE 12 C.C PIVOT: classify + dispatch per discrepancy ---
@@ -1550,9 +1588,11 @@ def run_schwab_reconciliation(
             discrepancies_count=counters["discrepancies_count"],
             unresolved_discrepancies_count=counters["unresolved_discrepancies_count"],
             summary_json=json.dumps(summary, sort_keys=True),
-            account_equity_journal_dollars=journal_equity,
+            # Arc 4b Task 8: stamp the LEDGER equity + coherence delta (computed
+            # post-ingestion), not a stale pre-run snapshot.
+            account_equity_journal_dollars=ledger_equity,
             account_equity_source_dollars=source_nlv,
-            equity_delta_dollars=equity_delta,
+            equity_delta_dollars=coherence_delta,
         )
         conn.commit()
     except CallerHeldTransactionError:

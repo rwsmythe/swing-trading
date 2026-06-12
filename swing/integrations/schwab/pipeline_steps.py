@@ -585,6 +585,9 @@ def _step_schwab_orders(
             schwab_account=details,
             pipeline_run_id=pipeline_run_id,
             schwab_api_call_id=primary_audit_call_id,
+            # Arc 4b Task 8: the ledger-vs-NLV coherence check needs the account
+            # starting equity (same input the dashboard tile uses).
+            starting_equity=cfg.account.starting_equity,
         )
     except Exception as exc:
         log.warning(

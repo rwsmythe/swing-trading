@@ -100,6 +100,9 @@ def _make_cfg(*, environment: str = "production",
                 callback_url="https://127.0.0.1",
             ),
         ),
+        # Arc 4b Task 8: _step_schwab_orders reads cfg.account.starting_equity
+        # for the ledger-vs-NLV coherence check.
+        account=SimpleNamespace(starting_equity=0.0),
     )
 
 
@@ -638,7 +641,12 @@ def test_b4_05_run_schwab_reconciliation_rejects_caller_held_tx(v18_conn):
 
 
 def test_b4_06_run_schwab_reconciliation_clean_no_open_trades(v18_conn):
-    """No open trades → ZERO discrepancies; run state='completed'."""
+    """No open trades → ZERO discrepancies; run state='completed'.
+
+    Arc 4b Task 8: flat-on-both-sides now runs the ledger-vs-NLV coherence
+    check, so starting_equity is set to match NLV (ledger == NLV → delta 0 →
+    no equity_delta) to assert the genuinely-clean case.
+    """
     schwab_account = SimpleNamespace(
         account_hash="abc", net_liquidating_value=2000.0, positions=[],
         cash=0.0, buying_power=0.0,
@@ -651,6 +659,7 @@ def test_b4_06_run_schwab_reconciliation_clean_no_open_trades(v18_conn):
         schwab_orders=[],
         schwab_transactions=[],
         schwab_account=schwab_account,
+        starting_equity=2000.0,
     )
     assert out.state == "completed"
     assert out.source == "schwab_api"
@@ -834,18 +843,15 @@ def test_b4_10_reconciliation_equity_delta_emitted_above_threshold(v18_conn):
 
 
 def test_b4_11_reconciliation_equity_delta_NOT_emitted_below_threshold(v18_conn):
-    """delta <= $10 → equity_delta discrepancy NOT emitted (strict greater-than)."""
-    v18_conn.execute(
-        "INSERT INTO account_equity_snapshots ("
-        "snapshot_date, equity_dollars, source, source_artifact_path, "
-        "recorded_at, recorded_by, notes"
-        ") VALUES (?, ?, ?, ?, ?, ?, ?)",
-        ("2026-05-14", 2000.0, "manual", None, "2026-05-14T12:00:00", "operator", None),
-    )
-    v18_conn.commit()
+    """delta within tolerance → equity_delta NOT emitted.
+
+    Arc 4b Task 8: the check is now ledger-vs-NLV (the snapshot is no longer
+    consulted). ledger = starting_equity 2000; NLV 2005 → |delta|=$5;
+    tolerance = max($5, 0.5%×2005=$10.03) = $10.03; 5 < 10.03 → no emit.
+    """
     schwab_account = SimpleNamespace(
         account_hash="abc",
-        net_liquidating_value=2005.0,  # delta = -5, below threshold
+        net_liquidating_value=2005.0,  # |ledger - NLV| = 5, below tolerance
         positions=[],
         cash=0.0, buying_power=0.0,
     )
@@ -857,6 +863,7 @@ def test_b4_11_reconciliation_equity_delta_NOT_emitted_below_threshold(v18_conn)
         schwab_orders=[],
         schwab_transactions=[],
         schwab_account=schwab_account,
+        starting_equity=2000.0,
     )
     rows = v18_conn.execute(
         "SELECT discrepancy_type FROM reconciliation_discrepancies "
@@ -1500,15 +1507,12 @@ def test_b4_25_mapper_resilience_orders_without_legs_skipped_not_raised(v18_conn
 
 
 def test_b4_20_reconciliation_persists_account_equity_columns(v18_conn):
-    """run row carries account_equity_journal_dollars + source_dollars + delta."""
-    v18_conn.execute(
-        "INSERT INTO account_equity_snapshots ("
-        "snapshot_date, equity_dollars, source, source_artifact_path, "
-        "recorded_at, recorded_by, notes"
-        ") VALUES (?, ?, ?, ?, ?, ?, ?)",
-        ("2026-05-14", 2000.0, "manual", None, "2026-05-14T12:00:00", "operator", None),
-    )
-    v18_conn.commit()
+    """run row carries account_equity_journal_dollars + source_dollars + delta.
+
+    Arc 4b Task 8: account_equity_journal_dollars is now the LEDGER equity
+    (starting + realized + net cash), computed post-ingestion — NOT the stale
+    snapshot. ledger = starting_equity 2000; NLV 2050; delta = ledger - NLV.
+    """
     schwab_account = SimpleNamespace(
         account_hash="abc", net_liquidating_value=2050.0, positions=[],
         cash=0.0, buying_power=0.0,
@@ -1521,7 +1525,8 @@ def test_b4_20_reconciliation_persists_account_equity_columns(v18_conn):
         schwab_orders=[],
         schwab_transactions=[],
         schwab_account=schwab_account,
+        starting_equity=2000.0,
     )
-    assert out.account_equity_journal_dollars == 2000.0
+    assert out.account_equity_journal_dollars == 2000.0  # ledger
     assert out.account_equity_source_dollars == 2050.0
-    assert out.equity_delta_dollars == -50.0  # journal MINUS source per Phase 9 sign convention
+    assert out.equity_delta_dollars == -50.0  # ledger MINUS net_liq
