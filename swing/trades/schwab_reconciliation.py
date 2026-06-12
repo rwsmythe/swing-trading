@@ -114,6 +114,21 @@ _CASH_SKIP_WARN_TX_TYPES = frozenset(
     {"MEMORANDUM", "MARGIN_CALL", "MONEY_MARKET", "SMA_ADJUSTMENT"}
 )
 
+# Journal-cash kind -> the Schwab transaction types that can match it (step-7
+# journal→source scan, Arc 4b Task 7). interest/dividend/fee all ride
+# DIVIDEND_OR_INTEREST; the SIGN of net_amount disambiguates income (+) vs
+# fee (−). deposit/withdraw reuse the existing direction sets (which carry the
+# sign-ambiguous ELECTRONIC_FUND in both).
+_CASH_KIND_TO_SCHWAB_TYPES: dict[str, frozenset[str]] = {
+    "deposit": _SCHWAB_DEPOSIT_TYPES,
+    "withdraw": _SCHWAB_WITHDRAW_TYPES,
+    "interest": frozenset({"DIVIDEND_OR_INTEREST"}),
+    "dividend": frozenset({"DIVIDEND_OR_INTEREST"}),
+    "fee": frozenset({"DIVIDEND_OR_INTEREST"}),
+}
+# Kinds whose matching Schwab net_amount must be POSITIVE (income/inflow).
+_CASH_KIND_SIGN_POSITIVE = frozenset({"deposit", "interest", "dividend"})
+
 # DIVIDEND_OR_INTEREST description markers. EMPTY by operator decision
 # (2026-06-11): the live account has no dividend/interest history at the epoch,
 # so every DIVIDEND_OR_INTEREST flags tier-2 (the safe default, spec §4.1). Real
@@ -1393,39 +1408,49 @@ def run_schwab_reconciliation(
         _matched_schwab_tx: set = set()
         for cm in journal_cash_in_period:
             j_amount = abs(float(cm.amount))
-            expected_types = (
-                _SCHWAB_DEPOSIT_TYPES if cm.kind == "deposit"
-                else _SCHWAB_WITHDRAW_TYPES
-            )
-            # Codex R2 M#3 — sign-based direction validation. Schwab's
-            # `ELECTRONIC_FUND` (and potentially future ambiguous types)
-            # appears in BOTH deposit + withdraw sets; the sign of
-            # tx.net_amount disambiguates: positive = inflow (deposit
-            # candidate); negative = outflow (withdraw candidate).
-            want_sign_positive = (cm.kind == "deposit")
+            # Arc 4b Task 7 — the 5-kind kind->type map (interest/dividend/fee
+            # ride DIVIDEND_OR_INTEREST; sign disambiguates). Unknown kinds
+            # cannot occur (the CHECK + validator constrain to the 5).
+            expected_types = _CASH_KIND_TO_SCHWAB_TYPES.get(cm.kind, frozenset())
+            # Sign: deposit/interest/dividend match a POSITIVE net_amount;
+            # withdraw/fee match a NEGATIVE one. Disambiguates the sign-
+            # ambiguous ELECTRONIC_FUND + the income/fee split on DIVIDEND_OR_
+            # INTEREST. Strict inequalities — zero net_amount matches neither.
+            want_sign_positive = cm.kind in _CASH_KIND_SIGN_POSITIVE
             match_idx = None
             for idx, tx in enumerate(schwab_transactions):
                 if idx in _matched_schwab_tx:
                     continue
                 if tx.type not in expected_types:
                     continue
-                # Sign validation for ambiguous types. Strict inequalities
-                # per Codex R3 m#3 — zero net_amount cannot satisfy either
-                # direction (a zero-amount Schwab transaction is not a
-                # valid deposit or withdraw match).
                 if (
                     (want_sign_positive and tx.net_amount <= 0)
                     or (not want_sign_positive and tx.net_amount >= 0)
                 ):
                     continue
-                # Schwab transaction_date is normalized to YYYY-MM-DD.
-                if tx.transaction_date != cm.date:
+                # Arc 4b Task 7 — ±4-day shared window predicate (was an exact-
+                # date equality; the brittleness that produced the live 66/67).
+                if not _within_cash_match_window(
+                    tx.transaction_date, cm.date, days=4,
+                ):
                     continue
                 if abs(abs(tx.net_amount) - j_amount) > price_tolerance:
                     continue
                 match_idx = idx
                 break
             if match_idx is None:
+                # Journal-direction pending-only suppression (spec §4.3): skip
+                # the emit when an OPEN pending already exists for this cm.id
+                # (counted, so the run record still shows the condition).
+                if cm.id is not None and conn.execute(
+                    "SELECT 1 FROM reconciliation_discrepancies "
+                    "WHERE discrepancy_type='cash_movement_mismatch' "
+                    "AND cash_movement_id = ? "
+                    "AND resolution='pending_ambiguity_resolution' LIMIT 1",
+                    (int(cm.id),),
+                ).fetchone() is not None:
+                    cash_counters["cash_pending_suppressed_count"] += 1
+                    continue
                 _emit(
                     conn,
                     run_id=run_id,
