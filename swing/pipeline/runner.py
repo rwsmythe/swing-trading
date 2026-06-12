@@ -473,14 +473,31 @@ def _install_pipeline_marketdata_caches(
             frequency_type="daily",
             frequency=1,
         )
-        # When provider='yfinance', `window` is whatever the yfinance
-        # fallback returned (bars DataFrame). When provider='schwab_api',
-        # `window` is a SchwabPriceHistoryWindow — convert to bars-shape
-        # via the T-C.1 mapper's `to_dataframe()` helper.
-        if provider_tag == "schwab_api" and hasattr(window, "to_dataframe"):
-            bars = window.to_dataframe()
-        else:
-            bars = window
+        # Full-archive-return contract (CLAUDE.md: "cache hooks must return the
+        # FULL archive; consumers slice"). Phase 16 Arc 3 fix — the symmetric
+        # sibling of the Phase 13 R3 Major #1 yfinance-fallback fix.
+        #
+        # On the schwab_api SUCCESS path `window` is ONLY the freshly-fetched
+        # Schwab sub-window. For a ticker whose Schwab listing history is short
+        # (XMAX = 16 daily Schwab bars; TDAY = 138 — vs a ~1260-row legacy
+        # archive), `window.to_dataframe()` returned just those bars, so
+        # `OhlcvCache._fetch_bars_window` sliced an already-short frame and the
+        # pipeline-rendered watchlist THUMBNAIL drew a handful of sparse points
+        # while the web `ticker_detail` path (no ladder → read_or_fetch_archive)
+        # stayed rich for the SAME data_asof_date. The ladder has ALREADY
+        # persisted the fetched Schwab bars to the Shape-A archive (audit +
+        # provenance preserved by `fetch_window_via_ladder`); here we return the
+        # FULL archive — the SAME read the no-ladder/ticker_detail path uses —
+        # so both surfaces converge on identical bar counts. The yfinance
+        # fallback path already returns the full archive (`_yf_window_fallback`
+        # → read_or_fetch_archive), so this unifies both provider paths.
+        # schwab_api → re-read the full archive (above); yfinance → `window` is
+        # already the full archive frame from `_yf_window_fallback`.
+        bars = (
+            _yf_window_fallback(ticker, None, None)
+            if provider_tag == "schwab_api"
+            else window
+        )
         return (bars, provider_tag)
 
     price_cache.set_ladder_fetcher(_quote_hook)
