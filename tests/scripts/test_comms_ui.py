@@ -101,6 +101,21 @@ def test_response_handling_override_present(client):
     assert "responseHandling" in body
 
 
+def test_htmx_is_vendored_not_cdn(client):
+    # this privileged control surface must NOT trust a remote CDN for htmx
+    page = client.get("/").text
+    assert "unpkg" not in page
+    assert "cdn" not in page.lower()
+    assert 'src="/static/htmx.min.js"' in page
+
+
+def test_htmx_served_locally(client):
+    r = client.get("/static/htmx.min.js")
+    assert r.status_code == 200
+    assert "javascript" in r.headers["content-type"]
+    assert "htmx" in r.text
+
+
 # --- operator inbox pane ---------------------------------------------------
 
 def test_inbox_pane_lists_operator_messages(client, comms):

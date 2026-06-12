@@ -47,6 +47,12 @@ _RM_SPEC = importlib.util.spec_from_file_location(
 role_mail = importlib.util.module_from_spec(_RM_SPEC)
 _RM_SPEC.loader.exec_module(role_mail)
 
+# HTMX is VENDORED + served locally (NOT from a CDN): this origin holds POST
+# authority over compose/ack/launch, so a CDN compromise would gain same-origin
+# write capability and an offline operator would lose every control. Own copy
+# (do not reference swing/ -- L2); matches the swing/web vendored-htmx pattern.
+_ASSETS_DIR = _SCRIPTS_DIR / "comms_ui_assets"
+
 # --- constants -------------------------------------------------------------
 
 HOST = "127.0.0.1"  # loopback ONLY (hardcoded; never bind a routable address)
@@ -247,7 +253,7 @@ _PAGE = """<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title id="page-title">comms{% if operator_unread %} ({{ operator_unread }}){% endif %}</title>
-<script src="https://unpkg.com/htmx.org@2.0.4"></script>
+<script src="/static/htmx.min.js"></script>
 <script>
   // 4xx fragments must swap (the known htmx gotcha) -- validation errors render
   // as fragments in this standalone app too.
@@ -637,6 +643,13 @@ def create_app(comms_root: Path, allow_launch: bool = True) -> FastAPI:
         # Served verbatim for the copy button (read-only repo file, no guard).
         text = (_SCRIPTS_DIR / BOOTSTRAP_FILE).read_text(encoding="utf-8")
         return PlainTextResponse(text)
+
+    # Vendored HTMX served from THIS origin (no CDN trust, works offline).
+    _htmx_js = (_ASSETS_DIR / "htmx.min.js").read_text(encoding="utf-8")
+
+    @app.get("/static/htmx.min.js")
+    def htmx_js() -> Response:
+        return Response(_htmx_js, media_type="application/javascript")
 
     @app.get("/panes/inbox", response_class=HTMLResponse)
     def pane_inbox() -> HTMLResponse:
