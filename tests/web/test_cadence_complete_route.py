@@ -349,11 +349,15 @@ def test_cadence_references_are_ascii_only(tmp_path: Path):
         with TestClient(app) as client:
             r = client.get("/reviews/1/complete")
         assert r.status_code == 200
-        m = re.search(
-            r'<section class="watch-standard-reference">(.*?)</section>',
+        sections = re.findall(
+            r'<section class="watch-standard-reference">.*?</section>',
             r.text, re.DOTALL,
         )
-        assert m is not None, f"{review_type}: reference section not rendered"
-        # The whole reference block (opening tag included) must encode cleanly
-        # as ASCII (no '§', em-dash, smart quotes...).
-        m.group(0).encode("ascii")
+        # Exactly one watch-standard section per cadence page (no double render).
+        assert len(sections) == 1, (
+            f"{review_type}: expected 1 reference section, got {len(sections)}"
+        )
+        # Every matched block (opening tag included) must encode cleanly as
+        # ASCII (no '§', em-dash, smart quotes...).
+        for section in sections:
+            section.encode("ascii")
