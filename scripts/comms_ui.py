@@ -265,27 +265,24 @@ _PAGE = """<!doctype html>
 </script>
 <script>
   // Preserve expanded <details> across the 5s poll swap. The innerHTML swap
-  // rebuilds the pane and would otherwise collapse any open message. Keyed by
-  // the message filename (data-key), scoped to the swapped pane by its id so
-  // panes never cross-restore.
+  // rebuilds the pane and would otherwise collapse any open message. We track
+  // which rows are open in a live set keyed by data-key (the message filename),
+  // updated on the <details> 'toggle' event -- which does NOT bubble, so it is
+  // captured at the document root -- and re-open the matching rows after EVERY
+  // htmx swap anywhere on the page (covers all three polled panes).
   (function () {
-    var openByPane = {};
-    document.body.addEventListener("htmx:beforeSwap", function (e) {
-      var t = e.detail && e.detail.target;
-      if (!t || !t.id) { return; }
-      var keys = [];
-      t.querySelectorAll("details.msg[open]").forEach(function (d) {
-        if (d.dataset.key) { keys.push(d.dataset.key); }
-      });
-      openByPane[t.id] = keys;
-    });
-    document.body.addEventListener("htmx:afterSwap", function (e) {
-      var t = e.detail && e.detail.target;
-      if (!t || !t.id) { return; }
-      var keys = openByPane[t.id];
-      if (!keys || !keys.length) { return; }
-      t.querySelectorAll("details.msg").forEach(function (d) {
-        if (keys.indexOf(d.dataset.key) !== -1) { d.open = true; }
+    var openKeys = new Set();
+    document.addEventListener("toggle", function (e) {
+      var d = e.target;
+      if (!d || !d.matches || !d.matches("details.msg") || !d.dataset.key) {
+        return;
+      }
+      if (d.open) { openKeys.add(d.dataset.key); }
+      else { openKeys.delete(d.dataset.key); }
+    }, true);
+    document.body.addEventListener("htmx:afterSwap", function () {
+      document.querySelectorAll("details.msg[data-key]").forEach(function (d) {
+        if (openKeys.has(d.dataset.key)) { d.open = true; }
       });
     });
   })();

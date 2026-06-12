@@ -160,9 +160,10 @@ def test_history_rows_carry_data_key_for_poll_preserve(client, comms):
 
 def test_page_wires_details_preserve_across_poll_swap(client):
     page = client.get("/").text
-    assert "htmx:beforeSwap" in page
-    assert "htmx:afterSwap" in page
-    assert "details.msg" in page  # the script targets the message <details>
+    assert '"toggle"' in page          # tracks open rows on the toggle event
+    assert "htmx:afterSwap" in page    # re-opens them after each poll swap
+    assert "details.msg" in page       # the script targets the message <details>
+    assert "openKeys" in page
 
 
 def test_inbox_pane_flags_decision_request(client, comms):
