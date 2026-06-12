@@ -102,10 +102,12 @@ _CASH_WITHDRAW_TX_TYPES = frozenset(
 )
 # Sign-disambiguated types (direction follows net_amount sign).
 _CASH_SIGNED_TX_TYPES = frozenset({"ELECTRONIC_FUND", "JOURNAL"})
-# Skip BY DESIGN — trade cash already enters the ledger via realized P&L.
-_CASH_SKIP_TX_TYPES = frozenset(
-    {"TRADE", "RECEIVE_AND_DELIVER", "TRADE_CORRECTION"}
-)
+# Skip BY DESIGN — trade cash already enters the ledger via realized P&L. ONLY
+# the two types the spec §4.1 table authorizes; TRADE_CORRECTION is NOT here
+# (Codex R5): the reference is silent on its semantics, so Arc 4 must not assume
+# it is trade-cash-realized-P&L — a nonzero TRADE_CORRECTION falls through to the
+# unknown-type skip_warn branch (surfaced, never silently swallowed).
+_CASH_SKIP_TX_TYPES = frozenset({"TRADE", "RECEIVE_AND_DELIVER"})
 # Skip but WARN when net_amount != 0 (visibility without guessing).
 _CASH_SKIP_WARN_TX_TYPES = frozenset(
     {"MEMORANDUM", "MARGIN_CALL", "MONEY_MARKET", "SMA_ADJUSTMENT"}
@@ -948,7 +950,7 @@ def _ingest_cash_transactions(
         disp = _classify_cash_transaction(tx)
 
         if disp.action == "skip":
-            if tx.type in ("TRADE", "RECEIVE_AND_DELIVER", "TRADE_CORRECTION"):
+            if tx.type in ("TRADE", "RECEIVE_AND_DELIVER"):
                 cc["cash_skipped_trade_count"] += 1
             continue
         if disp.action == "skip_warn":

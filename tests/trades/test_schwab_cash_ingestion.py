@@ -65,6 +65,25 @@ def test_classifier_memorandum_nonzero_skip_warns():
     assert d.action == "skip_warn"
 
 
+def test_classifier_trade_correction_nonzero_skip_warns_not_silent():
+    # Codex R5 — TRADE_CORRECTION is NOT granted silent trade-skip (the spec §4.1
+    # table covers only TRADE + RECEIVE_AND_DELIVER); a nonzero one surfaces.
+    d = _classify_cash_transaction(_tx(1, "2026-06-01", "TRADE_CORRECTION", -12.0))
+    assert d.action == "skip_warn"
+
+
+def test_ingest_trade_correction_nonzero_warns_no_trade_count(cash_recon_run):
+    conn, run_id = cash_recon_run
+    warnings = []
+    c = _ingest_cash_transactions(
+        conn, run_id=run_id,
+        schwab_transactions=[_tx(900042, "2026-06-01", "TRADE_CORRECTION", -12.0)],
+        price_tolerance=0.01, cash_warnings=warnings)
+    assert c["cash_skipped_trade_count"] == 0  # NOT counted as a trade skip
+    assert c["cash_ingested_count"] == 0
+    assert any(w.get("reason") == "skipped_nonzero_noncash" for w in warnings)
+
+
 # --- dedup ladder ----------------------------------------------------------
 
 
