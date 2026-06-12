@@ -76,6 +76,24 @@ def test_step7_ref_match_with_wrong_amount_still_emits_drift(cash_recon_full):
     assert n == 1  # drift surfaced, not hidden by the ref reservation
 
 
+def test_step7_ref_drift_not_hidden_by_a_different_same_amount_tx(cash_recon_full):
+    # Codex R10 — a ref-mismatch row (ref=T1 $200; T1 is $150) must NOT be allowed
+    # to heuristically match a DIFFERENT same-date/same-amount tx (T2 $200), which
+    # would re-hide the drift. It goes straight to the emit path.
+    conn, _ = cash_recon_full(
+        journal_cash=[("2026-05-10", "deposit", 200.0, "T1")],
+        schwab_txs=[
+            ("ACH_RECEIPT", "2026-05-10", 150.0, "T1"),   # the referenced tx (drift)
+            ("ACH_RECEIPT", "2026-05-10", 200.0, "T2"),   # a same-amount decoy
+        ],
+        nlv=1000.0, open_trades=0)
+    n = conn.execute(
+        "SELECT COUNT(*) FROM reconciliation_discrepancies "
+        "WHERE discrepancy_type='cash_movement_mismatch' "
+        "AND field_name='net_amount'").fetchone()[0]
+    assert n == 1  # the ref=T1 row is flagged; it did NOT silently match T2
+
+
 def test_step7_income_kind_matches_dividend_or_interest(cash_recon_full):
     # An operator-entered interest row matches a positive DIVIDEND_OR_INTEREST
     # within ±4d (the widened kind->type map) -> no mismatch.

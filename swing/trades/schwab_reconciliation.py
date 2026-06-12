@@ -1473,6 +1473,7 @@ def run_schwab_reconciliation(
         # the heuristic — and a ref-backed row whose tx sits outside the ±4d
         # window still matches.
         _ref_matched_cm_ids: set = set()
+        _ref_mismatch_cm_ids: set = set()
         for cm in journal_cash_in_period:
             if not cm.ref:
                 continue
@@ -1485,9 +1486,10 @@ def run_schwab_reconciliation(
                     # referenced tx (Codex R9): the exact-ref reservation must NOT
                     # silently hide value drift (the pre-Arc-4 matcher used amount
                     # as a criterion). A clean ref+value match is excluded from
-                    # pass 2 (no emit); a ref-match with a WRONG amount/kind/sign
-                    # is left for pass 2 — where, the tx now consumed, it emits a
-                    # journal-direction cash_movement_mismatch surfacing the drift.
+                    # pass 2 (no emit). A ref-match with a WRONG amount/kind/sign
+                    # is FORCED straight to the emit path in pass 2 (Codex R10:
+                    # it must NOT be allowed to heuristically match a DIFFERENT
+                    # same-date/same-amount tx, which would re-hide the drift).
                     _matched_schwab_tx.add(idx)
                     expected_types = _CASH_KIND_TO_SCHWAB_TYPES.get(
                         cm.kind, frozenset())
@@ -1498,8 +1500,11 @@ def run_schwab_reconciliation(
                         abs(abs(tx.net_amount) - abs(float(cm.amount)))
                         <= price_tolerance
                     )
-                    if cm.id is not None and kind_ok and sign_ok and amount_ok:
-                        _ref_matched_cm_ids.add(cm.id)
+                    if cm.id is not None:
+                        if kind_ok and sign_ok and amount_ok:
+                            _ref_matched_cm_ids.add(cm.id)
+                        else:
+                            _ref_mismatch_cm_ids.add(cm.id)
                     break
         # PASS 2: heuristic for the rows not matched by exact ref.
         for cm in journal_cash_in_period:
@@ -1516,7 +1521,14 @@ def run_schwab_reconciliation(
             # INTEREST. Strict inequalities — zero net_amount matches neither.
             want_sign_positive = cm.kind in _CASH_KIND_SIGN_POSITIVE
             match_idx = None
+            # Codex R10 — a ref-match that FAILED value validation goes STRAIGHT
+            # to the emit path: it must not heuristically match a DIFFERENT
+            # same-date/same-amount tx (which would re-hide the drift). Its own
+            # referenced tx is already consumed in pass 1.
+            ref_mismatch = cm.id is not None and cm.id in _ref_mismatch_cm_ids
             for idx, tx in enumerate(schwab_transactions):
+                if ref_mismatch:
+                    break  # force the emit path; skip the heuristic entirely
                 if idx in _matched_schwab_tx:
                     continue
                 if tx.type not in expected_types:
