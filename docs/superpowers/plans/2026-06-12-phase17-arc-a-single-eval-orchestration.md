@@ -42,7 +42,8 @@ The brief's §2 anchors were re-verified against the live tree (branch `arc17a-p
 ## Binding conventions (this arc)
 
 - **TDD, per task:** write failing test → run → see fail → minimal impl → run → see pass → commit. Conventional commits (`feat(evaluation):`, `test(evaluation):`, `refactor(pipeline):`, `refactor(cli):`). **ZERO `Co-Authored-By`**, no `--no-verify`, no `git commit --amend`. The final `-m` paragraph is **plain prose** (the trailer-parse hazard — a paragraph starting `Word:` pollutes `%(trailers)`).
-- **Frozen-clock convention (R2 rider / D9, `docs/orchestrator-context.md` §Binding conventions, added 2026-06-12):** EVERY new test in this arc touches dates (`datetime.now()`, `action_session_for_run`, archive freshness). Each new test MUST pin the clock via a frozen-clock fixture (monkeypatch `datetime.now` in BOTH `swing.cli` and `swing.pipeline.runner` to a fixed `run_now`), never the live wall clock. NO retrofit of existing tests.
+- **Codex review-response persistence (Codex R1 M4; brief §"Cycle shape"):** the executing-plans phase runs Codex adversarial review to convergence after all tasks. Each round's RESPONSE (verdicts/findings, incl. the final `NO_NEW_CRITICAL_MAJOR` line) MUST be persisted to a gitignored on-disk file — convention `.codex-review-arc17a-exec.md` at the executing worktree root (verify `git check-ignore` covers it; the project's `.codex-review-*.md` glob does). This is the artifact the orchestrator reads to independently verify convergence at QA. (This writing-plans review is already persisted to `.codex-review-arc17a-plan.md`.)
+- **Frozen-clock convention (R2 rider / D9):** the convention LINE **already landed** in `docs/orchestrator-context.md` §Binding conventions at commit **`c7eeed4a`** (2026-06-12, orchestrator-lane, shipped WITH this dispatch — re-verified on disk at branch start). This arc does NOT re-edit that file (Codex R1 M3 proposed an edit task; rejected with evidence — it would duplicate an existing line). The plan's obligation is to USE the convention: EVERY new test in this arc touches dates (`datetime.now()`, `action_session_for_run`, archive freshness), so each new test MUST pin the clock via a frozen-clock fixture (monkeypatch the captured-`now` source in BOTH `swing.cli` and `swing.pipeline.runner` to a fixed `run_now`), never the live wall clock. NO retrofit of existing tests.
 - **Phase isolation:** this arc is read-and-write through existing public repo/service functions only. NO `swing/data/` or `swing/trades/` carve-out. NO migration. If a task appears to need a schema change, a new dependency, or a departure from the §3 module shape below — **STOP and route back through CHARC**; do not absorb it silently.
 - **Behavior-preserving locks (§3), itemized for QA:**
   1. `_step_evaluate`'s lease/fence discipline (`lease.verify_held()`, `lease.fenced_write()`, `set_evaluation_run_id(conn, pipeline_run_id=lease.run_id, evaluation_run_id=run_id)`) stays ENTIRELY in the runner adapter — the orchestrator never imports `Lease` or touches a lease.
@@ -113,6 +114,29 @@ class OrchestrationResult:
     candidates: list[Candidate]
 
 
+@dataclass(frozen=True)
+class EvaluationBehaviorPolicy:
+    """Error-path / synthesis-row behaviors that the §4 operator rulings decide.
+
+    Declared as a seam NOW (Codex R1 C4) so any "intentional difference" ruling
+    is honorable WITHOUT mutating the canonical signature mid-extraction. Defaults
+    reproduce the PIPELINE behavior (the gate-bearing path); the CLI adapter passes
+    whatever its rulings dictate. Each field maps 1:1 to a harness-observed
+    divergence — see the DIVERGENCES inventory (Task 0.5).
+
+    spy_failure_mode:  "raise" (pipeline: SPY fetch exception fails the step) |
+                       "warn_and_zero" (CLI: warn + spy_return=0.0, continue).
+    dedup_error_rows:  True (pipeline: a ticker in `excluded` never also emits an
+                       `error` row) | False (CLI: may emit both).
+    preserve_held_close: True (pipeline: held excluded row keeps its fetched close)
+                       | False (CLI: excluded rows always close=None). Moot when
+                       `augmentation.held_tickers` is empty.
+    """
+    spy_failure_mode: str = "raise"
+    dedup_error_rows: bool = True
+    preserve_held_close: bool = True
+
+
 def orchestrate_evaluation(
     *,
     cfg,
@@ -127,6 +151,7 @@ def orchestrate_evaluation(
     augmentation: UniverseAugmentation = UniverseAugmentation(),
     pre_fetch_hook: Callable[[list[str]], None] | None = None,
     output: OrchestrationOutput | None = None,
+    behavior: EvaluationBehaviorPolicy = EvaluationBehaviorPolicy(),
 ) -> OrchestrationResult:
     ...
 ```
@@ -135,6 +160,7 @@ def orchestrate_evaluation(
 
 - `augmentation` — the held/pin union (DIVERGENCE-1/2). Pipeline supplies computed sets; CLI supplies `UniverseAugmentation()` unless a §4 ruling says otherwise.
 - `current_equity` — D-EQUITY. Pipeline supplies `sizing_equity(...)`; CLI supplies `cfg.account.starting_equity`. Kept a parameter so either §4 ruling is honorable.
+- `behavior` — the error-path/synthesis-row policy (D-SPY-GUARD / D-ERROR-DEDUP / D-EXCLUDED-CLOSE). Pipeline supplies the default (`raise`/dedup/preserve); CLI supplies `EvaluationBehaviorPolicy(spy_failure_mode="warn_and_zero", dedup_error_rows=<ruling>, preserve_held_close=<ruling>)` per the §4 rulings. **This seam set ELABORATES the three §3-named seam categories (universe / output / conn-fetcher) — it is the §4 mechanism surfacing more genuinely-different concerns, NOT a structural departure (still one orchestration function + adapters; no schema, no dependency). Flagged for CHARC/operator in the return report.**
 - `pre_fetch_hook` — LOCK #16. Pipeline passes the warm+prewarm closure (fired at the held-tickers boundary, exact arg order); CLI passes `None`.
 - `output` — the click.echo-vs-run-warnings channel. CLI: `info→echo`, `warn→echo(err=True)`, `note_pin_injection→no-op`. Pipeline: `info/warn→no-op`(or log), `note_pin_injection→run_warnings.append({step,kind,count,tickers})`.
 - `persist` — LOCK #1. CLI: plain `with conn:` insert run+candidates → run_id. Pipeline: `lease.fenced_write()` insert run+candidates + `set_evaluation_run_id` → run_id.
@@ -221,7 +247,26 @@ def _seed_archive(cache_dir: Path, ticker: str, frame: pd.DataFrame) -> None:
     )
 ```
 
-> **Implementer investigation (do this in Step 1, before writing assertions):** confirm the EXACT on-disk parquet shape `read_or_fetch_archive` expects by reading `swing/data/ohlcv_archive.py` (`_strip_incomplete_sessions` recognizes a `date` index vs an `asof_date` column — Shape-A). Seed whichever shape the live reader consumes so the REAL reader serves it. If the reader rejects the seeded shape, the fetch falls to network → the test will try to hit yfinance and fail deterministically — that failure IS the signal the seed shape is wrong; fix the seed, do not stub the fetcher. If after investigation the archive genuinely cannot be seeded to serve offline through the production reader, **STOP and flag for CHARC** (the production-derivation precondition would be unmet — a §4-scope problem, not an implementer workaround).
+> **Implementer investigation (do this in Step 1, before writing assertions):** confirm the EXACT on-disk parquet shape `read_or_fetch_archive` expects by reading `swing/data/ohlcv_archive.py` (`_strip_incomplete_sessions` recognizes a `date` index vs an `asof_date` column — Shape-A). Seed whichever shape the live reader consumes so the REAL reader serves it. If after investigation the archive genuinely cannot be seeded to serve offline through the production reader, **STOP and flag for CHARC** (the production-derivation precondition would be unmet — a §4-scope problem, not an implementer workaround).
+
+- [ ] **Step 1b: Pin the network boundary explicitly (Codex R1 C2).** A seeded+fresh archive means `read_or_fetch_archive` serves from disk and NEVER calls the downloader — but a mis-seed (or the deliberately-failing `BLOCKLIST_FAIL` ticker) would otherwise fall through to yfinance, making Phase 0 flaky/non-deterministic. Pin the SOCKET, not the derivation: monkeypatch the module-level yfinance download function in `swing.data.ohlcv_archive` (identify the exact symbol — `_yf_download_window` / the `yf.download` reference / `_fetch_chunk`; read the module) to RAISE for any ticker. This is legitimate (the byte-parity gotcha forbids stubbing the FETCHER OBJECT / the derivation chain — `read_or_fetch_archive`, `evaluate_batch` all stay real; only the network egress is pinned). Two effects: (1) every served ticker is PROVEN to come from the seeded archive (a wrong seed now fails loudly offline instead of silently hitting the network), and (2) `BLOCKLIST_FAIL` (left unseeded) reaches the pinned downloader → deterministic offline fetch failure exercising the real `error_tickers` path.
+
+```python
+@pytest.fixture
+def pin_network(monkeypatch):
+    """Make ALL network egress deterministic+offline. Seeded-fresh archives
+    serve from disk (downloader never called); unseeded tickers raise here."""
+    def _raise(*a, **k):
+        raise RuntimeError("network pinned offline in Phase-0 harness")
+    # Patch the EXACT downloader symbol in swing.data.ohlcv_archive (read the
+    # module to confirm the name; e.g. monkeypatch.setattr(archive_mod,
+    # "_yf_download_window", _raise) AND/OR the module's `yf.download`).
+    import swing.data.ohlcv_archive as archive_mod
+    monkeypatch.setattr(archive_mod, "_yf_download_window", _raise, raising=False)
+    return _raise
+```
+
+> Every harness test takes BOTH `frozen_clock` and `pin_network`. If the smoke test (Step 5) tries to reach the network despite a seeded archive, the seed shape or freshness gate is wrong — fix the seed; do not relax `pin_network`.
 
 - [ ] **Step 2: Add a `_build_inputs(tmp_path)` helper** that writes: a real finviz CSV (`No.,Ticker,Sector,Industry,Price` columns, rows for `SCREEN_TICKERS` + `BLOCKLIST_FAIL` with real Sector/Industry strings), a real RS-universe file (the `# version:` / `# columns: ticker` header shape from `tests/cli/test_cli_eval.py:_minimal_universe`), and a seeded archive dir with `_uptrend_frame()` for every ticker EXCEPT `BLOCKLIST_FAIL` (left unseeded so its fetch raises → exercises the error path). Seed `SPY` too. Return a `SimpleNamespace(csv_path, universe_path, cache_dir, db_path)`.
 
@@ -246,11 +291,11 @@ def frozen_clock(monkeypatch):
 - [ ] **Step 5: Smoke test — fixtures load, archive serves offline.**
 
 ```python
-def test_seeded_archive_serves_without_network(tmp_path, frozen_clock):
+def test_seeded_archive_serves_without_network(tmp_path, frozen_clock, pin_network):
     inputs = _build_inputs(tmp_path)
     from swing.prices import PriceFetcher
     f = PriceFetcher(cache_dir=inputs.cache_dir, archive_history_days=1260)
-    df = f.get("AAA", lookback_days=400, as_of_date=None)
+    df = f.get("AAA", lookback_days=400, as_of_date=None)   # served from disk; pin_network proves no egress
     assert not df.empty
     assert df.index.max().date() == SESSION
 ```
@@ -268,7 +313,7 @@ git commit -m "test(evaluation): Task 0.1 — Phase-0 parity harness scaffolding
 **Files:**
 - Modify: `tests/evaluation/test_orchestration_parity_golden.py`
 
-- [ ] **Step 1: Add `_run_cli_path(tmp_path, inputs, cfg_path)` → list of candidate dicts.** Use `CliRunner` to invoke `["--config", str(cfg_path), "eval", "--csv", str(inputs.csv_path)]` against a fresh migrated DB seeded with an open trade for `HELD_TICKER` and a pinned watchlist entry for `PINNED_TICKER` (identical seed to the runner path — Task 0.3). Read `candidates` joined to its run via `evaluation_runs` (the LATEST run). Return rows as dicts keyed by ticker, with EVERY persisted column.
+- [ ] **Step 1: Add `_run_cli_path(tmp_path, inputs, cfg_path)` → `list[dict]` of candidate rows.** Use `CliRunner` to invoke `["--config", str(cfg_path), "eval", "--csv", str(inputs.csv_path)]` against a fresh migrated DB seeded with an open trade for `HELD_TICKER` and a pinned watchlist entry for `PINNED_TICKER` (identical seed to the runner path — Task 0.3). Read `candidates` joined to its run via `evaluation_runs` (the LATEST run). **Return a LIST of per-row dicts, NOT a ticker-keyed dict (Codex R1 C1)** — duplicate rows for the same ticker (the D-ERROR-DEDUP case) MUST stay observable. Provide a helper `_rows_by_ticker(rows) -> dict[str, list[dict]]` for multimap lookups and `_one(rows, ticker)` that asserts exactly one row and returns it.
 
 ```python
 def _seed_open_and_pins(db_path: Path) -> None:
@@ -287,26 +332,27 @@ def _seed_open_and_pins(db_path: Path) -> None:
 
 > Use the REAL repo helpers to seed (`upsert_watchlist_entry`, the open-trade/fills insert path used by `tests/pipeline/test_step_evaluate_pin_injection.py`) — do NOT hand-write INSERTs that could drift from the production row shape (the synthetic-fixture-vs-production-emitter gotcha). Crib the exact seed calls from `test_step_evaluate_pin_injection.py`.
 
-- [ ] **Step 2: Add `_read_candidates(db_path)`** that selects all columns from `candidates` for the latest `evaluation_runs.id`, returns `{ticker: {col: val, ...}}`. Include `bucket, close, pivot, initial_stop, adr_pct, tight_streak, pullback_pct, prior_trend_pct, rs_rank, rs_return_12w_vs_spy, rs_method, pattern_tag, notes, sector, industry` and the criteria join if persisted separately.
+- [ ] **Step 2: Add `_read_candidates(db_path) -> list[dict]`** that selects all columns from `candidates` for the latest `evaluation_runs.id` and returns ONE dict per row (LIST, order-stable by `ticker, bucket`). Include `ticker, bucket, close, pivot, initial_stop, adr_pct, tight_streak, pullback_pct, prior_trend_pct, rs_rank, rs_return_12w_vs_spy, rs_method, pattern_tag, notes, sector, industry` and the criteria join if persisted separately. **Investigate first:** does `candidates` have a UNIQUE(run_id, ticker) constraint? If so, the CLI double-row (D-ERROR-DEDUP) cannot persist and the dedup is moot at the DB layer — record THAT finding for Task C (a constraint that silently de-dupes is itself the answer). If NOT, both rows persist and the multiplicity is observable.
 
-- [ ] **Step 3: Characterization assertion — pin the CLI row-set.**
+- [ ] **Step 3: Characterization assertion — pin the CLI row-set + ZZZ multiplicity.**
 
 ```python
-def test_cli_path_persists_screen_rows(tmp_path, frozen_clock):
+def test_cli_path_persists_screen_rows(tmp_path, frozen_clock, pin_network):
     inputs = _build_inputs(tmp_path)
     cfg_path = _make_config(tmp_path, inputs)
     _seed_open_and_pins(inputs.db_path)
     rows = _run_cli_path(tmp_path, inputs, cfg_path)
+    by_t = _rows_by_ticker(rows)
     # CLI evaluates the finviz screen only. HELD/PINNED are absent (DIVERGENCE-1/2).
-    assert HELD_TICKER not in rows
-    assert PINNED_TICKER not in rows
-    # ZZZ is blocklisted AND fetch-fails → CLI emits TWO rows? (D-ERROR-DEDUP)
-    # Pin whatever the CURRENT code does (count rows for ZZZ across buckets).
-    zzz = [t for t in rows if t == BLOCKLIST_FAIL]
-    # record the observed multiplicity in the assertion (e.g. excluded + error)
+    assert HELD_TICKER not in by_t
+    assert PINNED_TICKER not in by_t
+    # ZZZ is blocklisted AND fetch-fails (pin_network → deterministic offline raise).
+    # Pin the OBSERVED multiplicity + buckets (run it, read it, write the assert):
+    zzz_buckets = sorted(r["bucket"] for r in by_t.get(BLOCKLIST_FAIL, []))
+    assert zzz_buckets == OBSERVED_CLI_ZZZ_BUCKETS   # e.g. ["excluded", "error"] OR ["excluded"]
 ```
 
-> The assertion text MUST encode the OBSERVED current behavior (run it, read the rows, write the assertion to match). This is characterization, not aspiration. If `candidates` enforces a single row per (run, ticker) and the double-row can't persist, record THAT (the dedup may be moot) — and note it for the §4 checkpoint.
+> The assertion MUST encode the OBSERVED current behavior (run it, read the rows, write the assertion to match). This is characterization, not aspiration. `OBSERVED_CLI_ZZZ_BUCKETS` is a module constant pinned from the actual run.
 
 - [ ] **Step 4: Run + see pass; Commit.**
 ```bash
@@ -328,17 +374,16 @@ git commit -m "test(evaluation): Task 0.2 — pin the standalone swing eval pers
 - [ ] **Step 3: Characterization assertion — pin the pipeline row-set + the pin-injection warning.**
 
 ```python
-def test_pipeline_path_persists_screen_plus_augmentation(tmp_path, frozen_clock):
+def test_pipeline_path_persists_screen_plus_augmentation(tmp_path, frozen_clock, pin_network):
     inputs = _build_inputs(tmp_path)
     cfg = ...  # Config.load(_make_config(...))
     _seed_open_and_pins(inputs.db_path)
     rows, warnings = _run_pipeline_path(tmp_path, inputs, cfg)
-    # DIVERGENCE-1: held ticker present as excluded close-only.
-    assert rows[HELD_TICKER]["bucket"] == "excluded"
-    assert rows[HELD_TICKER]["close"] is not None        # D-EXCLUDED-CLOSE: preserved
-    # DIVERGENCE-2: pinned off-screen ticker fully evaluated (real bucket).
-    assert PINNED_TICKER in rows
-    assert rows[PINNED_TICKER]["bucket"] in {"aplus", "watch", "skip"}
+    held = _one(rows, HELD_TICKER)                        # DIVERGENCE-1: present as excluded close-only
+    assert held["bucket"] == "excluded"
+    assert held["close"] is not None                     # D-EXCLUDED-CLOSE: preserved
+    pinned = _one(rows, PINNED_TICKER)                    # DIVERGENCE-2: fully evaluated
+    assert pinned["bucket"] in {"aplus", "watch", "skip"}
     assert any(w["kind"] == "pin_injection" for w in warnings)
 ```
 
@@ -353,56 +398,135 @@ git commit -m "test(evaluation): Task 0.3 — pin the pipeline _step_evaluate pe
 **Files:**
 - Modify: `tests/evaluation/test_orchestration_parity_golden.py`
 
-- [ ] **Step 1: Add the diff test** that runs BOTH paths on identical inputs/seed and computes the row-set + per-column delta.
+- [ ] **Step 1: Define the SINGLE-SOURCE divergence inventory (Codex R1 M2)** — one module-level list that BOTH the harness assertions and Task C consume, so no divergence can be scattered/omitted:
 
 ```python
-def test_golden_parity_divergences_are_pinned(tmp_path, frozen_clock):
-    inputs = _build_inputs(tmp_path)
-    cfg_path = _make_config(tmp_path, inputs)
-    cfg = ...  # the same Config object both paths consume
-    # Two independent fresh DBs, IDENTICAL seed, IDENTICAL inputs.
-    cli_rows = _run_cli_path(...)
-    pipe_rows = _run_pipeline_path(...)
+from dataclasses import dataclass
 
-    cli_only = set(cli_rows) - set(pipe_rows)
-    pipe_only = set(pipe_rows) - set(cli_rows)
-    shared = set(cli_rows) & set(pipe_rows)
+@dataclass(frozen=True)
+class Divergence:
+    tag: str            # "DIVERGENCE-1" ...
+    summary: str        # one line
+    pipeline_side: str  # what the pipeline does
+    cli_side: str       # what the CLI does
+    persisted_effect: str  # how it shows in the candidates diff (or "error-path only")
+    operator_question: str
 
-    # DIVERGENCE-1 (open-trades union): held ticker is pipeline-only, excluded.
-    assert HELD_TICKER in pipe_only
-    # DIVERGENCE-2 (Arc-7 pin injection): pinned ticker is pipeline-only.
-    assert PINNED_TICKER in pipe_only
-    # DIVERGENCE-3 (D-ERROR-DEDUP): the blocklist-fail ticker's row multiplicity
-    #   differs (assert the observed counts on each side).
-    # The SHARED screen tickers (AAA/BBB/CCC) MUST be column-identical EXCEPT for
-    #   any column perturbed by D-EQUITY — diff every column and assert the set of
-    #   differing columns is EXACTLY the pinned expected set (empty if equity does
-    #   not perturb persisted columns).
+DIVERGENCES: list[Divergence] = [
+    Divergence("DIVERGENCE-1", "open-trades (held) union",
+               "held tickers added as excluded close-only rows", "omitted",
+               "held ticker is pipeline-only in the row-set",
+               "Should standalone eval include held tickers (unify) or pipeline-only (intentional)?"),
+    Divergence("DIVERGENCE-2", "Arc-7 pin injection",
+               "pinned off-screen tickers fully evaluated + pin_injection warning", "omitted",
+               "pinned ticker is pipeline-only in the row-set",
+               "Unify (CLI gains pins) or intentional pipeline-only?"),
+    Divergence("DIVERGENCE-EQUITY", "current_equity source",
+               "sizing_equity(real_equity...)", "cfg.account.starting_equity",
+               "shared-row columns that differ (observed set; may be {})",
+               "Unify on real-equity sizing, or keep CLI on starting_equity?"),
+    Divergence("DIVERGENCE-ERROR-DEDUP", "error vs excluded dedup",
+               "one row (dedup)", "may emit excluded + error",
+               "ZZZ row multiplicity differs", "Unify on dedup?"),
+    Divergence("DIVERGENCE-EXCLUDED-CLOSE", "held excluded-row close",
+               "preserves fetched close", "close=None",
+               "follows DIVERGENCE-1 row-presence", "Follows DIVERGENCE-1's ruling."),
+    Divergence("DIVERGENCE-SPY-GUARD", "SPY fetch failure handling",
+               "raises → step fails", "warn + 0.0, continue",
+               "error-path only (success-path identical)", "Unify on guarded, or keep pipeline hard-failing?"),
+]
+```
+
+- [ ] **Step 2: Add the diff test** that runs BOTH paths on TWO INDEPENDENT freshly-migrated DBs with IDENTICAL seeds + IDENTICAL fixture contents (Codex R1 M1) and computes the row-set + per-column + multiplicity delta.
+
+```python
+def test_golden_parity_divergences_are_pinned(tmp_path, frozen_clock, pin_network):
+    # Codex R1 M1: two separate DB paths, identical seeds, shared CSV/universe/archive.
+    cli_in = _build_inputs(tmp_path / "cli")
+    pipe_in = _build_inputs(tmp_path / "pipe")
+    cli_cfg = _make_config(tmp_path / "cli", cli_in)
+    pipe_cfg_path = _make_config(tmp_path / "pipe", pipe_in)
+    _seed_open_and_pins(cli_in.db_path)
+    _seed_open_and_pins(pipe_in.db_path)
+
+    cli_rows = _run_cli_path(tmp_path / "cli", cli_in, cli_cfg)
+    pipe_rows, _warnings = _run_pipeline_path(tmp_path / "pipe", pipe_in, Config.load(pipe_cfg_path))
+
+    cli_by, pipe_by = _rows_by_ticker(cli_rows), _rows_by_ticker(pipe_rows)
+    pipe_only = set(pipe_by) - set(cli_by)
+    shared = set(cli_by) & set(pipe_by)
+
+    assert HELD_TICKER in pipe_only      # DIVERGENCE-1
+    assert PINNED_TICKER in pipe_only    # DIVERGENCE-2
+    # DIVERGENCE-ERROR-DEDUP: ZZZ multiplicity per side (observed).
+    assert sorted(r["bucket"] for r in cli_by.get(BLOCKLIST_FAIL, [])) == OBSERVED_CLI_ZZZ_BUCKETS
+    assert sorted(r["bucket"] for r in pipe_by.get(BLOCKLIST_FAIL, [])) == OBSERVED_PIPE_ZZZ_BUCKETS
+    # DIVERGENCE-EQUITY: shared SINGLE-row tickers must be column-identical except
+    # the pinned expected set. (Tickers with >1 row per side are handled above.)
     differing = {}
     for t in sorted(shared):
-        for col in cli_rows[t]:
-            if cli_rows[t][col] != pipe_rows[t][col]:
+        if len(cli_by[t]) != 1 or len(pipe_by[t]) != 1:
+            continue
+        c, p = cli_by[t][0], pipe_by[t][0]
+        for col in c:
+            if c[col] != p[col]:
                 differing.setdefault(t, set()).add(col)
-    # Pin the observed `differing` map verbatim (DIVERGENCE-EQUITY if non-empty;
-    # {} if equity is sizing-only and never reaches a persisted candidate column).
-    assert differing == EXPECTED_SHARED_COLUMN_DIVERGENCES
+    assert differing == EXPECTED_SHARED_COLUMN_DIVERGENCES   # {} if equity is sizing-only
 ```
 
-- [ ] **Step 2: Define `EXPECTED_SHARED_COLUMN_DIVERGENCES`** as a module constant whose value is whatever the run OBSERVES (characterization). Tag each entry with the `DIVERGENCE-n` label in a comment so the §4 checkpoint can enumerate them mechanically.
+- [ ] **Step 3: Pin the observed constants** (`OBSERVED_CLI_ZZZ_BUCKETS`, `OBSERVED_PIPE_ZZZ_BUCKETS`, `EXPECTED_SHARED_COLUMN_DIVERGENCES`) from the actual run — characterization, not aspiration.
 
-- [ ] **Step 3: Run the FULL new file + see all pass on CURRENT (un-refactored) code.** Run: `python -m pytest tests/evaluation/test_orchestration_parity_golden.py -v`. Expected: ALL PASS. This is the green-against-current precondition.
+- [ ] **Step 4: Add an inventory-completeness guard** asserting every harness-observed divergence has a matching `DIVERGENCES` entry (Codex R1 M2):
 
-- [ ] **Step 4: Commit.**
+```python
+def test_divergence_inventory_is_complete():
+    tags = {d.tag for d in DIVERGENCES}
+    # Every divergence the harness asserts above is enumerated for Task C.
+    assert tags == {"DIVERGENCE-1","DIVERGENCE-2","DIVERGENCE-EQUITY",
+                    "DIVERGENCE-ERROR-DEDUP","DIVERGENCE-EXCLUDED-CLOSE","DIVERGENCE-SPY-GUARD"}
+```
+
+- [ ] **Step 5: Run the FULL new file + see all pass on CURRENT (un-refactored) code.** Run: `python -m pytest tests/evaluation/test_orchestration_parity_golden.py -v`. Expected: ALL PASS. This is the green-against-current precondition.
+
+- [ ] **Step 6: Commit.**
 ```bash
 git add tests/evaluation/test_orchestration_parity_golden.py
-git commit -m "test(evaluation): Task 0.4 — golden parity diff pins every divergence between the two eval paths"
+git commit -m "test(evaluation): Task 0.4 — golden parity diff pins every divergence; single-source inventory for the operator checkpoint"
 ```
 
-- [ ] **Step 5: Produce the DIVERGENCE INVENTORY artifact for the operator** — append a fenced block at the top of the test file (or a sibling `docs/`-free comment) enumerating every pinned `DIVERGENCE-n` with: which side has it, the persisted-row effect, and the open question for the operator. This is the input to Task C.
+## Task 0.5: Characterize the SPY-failure divergence through the production path (Codex R1 C3)
 
----
+> DIVERGENCE-SPY-GUARD is an error-path difference the success-path diff (Task 0.4) cannot observe. The brief requires divergences to be CONFIRMED by the harness before routing — so characterize it directly with the network-boundary pin, rather than from code-reading alone.
 
-# === CHECKPOINT — HARD STOP (§4) — DO NOT PROCEED TO PHASE 1 ===
+**Files:**
+- Modify: `tests/evaluation/test_orchestration_parity_golden.py`
+
+- [ ] **Step 1: Add a SPY-failure characterization test.** Drive both production paths with the SPY archive UNSEEDED (so `fetcher.get("SPY", ...)` reaches the pinned downloader → deterministic offline raise). Pin the OBSERVED behaviors:
+
+```python
+def test_spy_failure_divergence_is_characterized(tmp_path, frozen_clock, pin_network):
+    # Build inputs but DO NOT seed the SPY archive → SPY fetch raises offline.
+    cli_in = _build_inputs(tmp_path / "cli", seed_spy=False)
+    pipe_in = _build_inputs(tmp_path / "pipe", seed_spy=False)
+    _seed_open_and_pins(cli_in.db_path); _seed_open_and_pins(pipe_in.db_path)
+    # CLI: SPY failure is caught → warning on stderr + a persisted run (0.0 spy_return), exit 0.
+    cli_result = _invoke_cli(cli_in, _make_config(tmp_path / "cli", cli_in))
+    assert cli_result.exit_code == 0
+    assert "SPY" in cli_result.output or "benchmark" in cli_result.output  # observed warning text
+    # Pipeline: SPY failure propagates → _step_evaluate RAISES (the step fails).
+    with pytest.raises(Exception):
+        _run_pipeline_path(tmp_path / "pipe", pipe_in, Config.load(_make_config(tmp_path / "pipe", pipe_in)))
+```
+
+> Add the `seed_spy: bool = True` parameter to `_build_inputs` in Task 0.1's helper. Pin the exact observed CLI warning substring from the real run. If the pipeline does NOT raise (e.g. SPY fetch is wrapped somewhere upstream), record THAT — the divergence may be narrower than the re-grounding suggested; update the `DIVERGENCES` entry accordingly.
+
+- [ ] **Step 2: Run + see pass on CURRENT code. Commit.**
+```bash
+git add tests/evaluation/test_orchestration_parity_golden.py
+git commit -m "test(evaluation): Task 0.5 — characterize the SPY-failure divergence (CLI tolerates, pipeline raises) through the pinned network boundary"
+```
+
+- [ ] **Step 3: Produce the DIVERGENCE INVENTORY artifact for the operator** — render the `DIVERGENCES` list (Task 0.4) into a human-readable block (a gitignored `.arc17a-divergence-inventory.md`, or a fenced comment block in the test file) with each tag's observed effect + open question. This is the input to Task C.
 
 ## Task C: Operator divergence rulings
 
@@ -435,18 +559,32 @@ git commit -m "test(evaluation): Task 0.4 — golden parity diff pins every dive
 - Create: `swing/evaluation/orchestration.py`
 - Test: `tests/evaluation/test_orchestration.py`
 
-- [ ] **Step 1: Write a failing unit test** asserting the dataclasses + function import with the canonical signature and that an empty `UniverseAugmentation()` has empty `held_tickers`/`pinned_inject`.
+- [ ] **Step 1: Write a failing unit test** that verifies the FULL canonical public surface (Codex R1 Mn1): the dataclass defaults AND every `orchestrate_evaluation` parameter name via `inspect.signature`.
 
 ```python
-def test_universe_augmentation_default_empty():
-    from swing.evaluation.orchestration import UniverseAugmentation
-    a = UniverseAugmentation()
-    assert a.held_tickers == () and a.pinned_inject == ()
+import inspect
+
+def test_orchestration_public_surface():
+    from swing.evaluation.orchestration import (
+        UniverseAugmentation, OrchestrationOutput, OrchestrationResult,
+        EvaluationBehaviorPolicy, orchestrate_evaluation,
+    )
+    assert UniverseAugmentation().held_tickers == () and UniverseAugmentation().pinned_inject == ()
+    bp = EvaluationBehaviorPolicy()
+    assert (bp.spy_failure_mode, bp.dedup_error_rows, bp.preserve_held_close) == ("raise", True, True)
+    params = set(inspect.signature(orchestrate_evaluation).parameters)
+    assert params == {
+        "cfg", "csv_path", "universe", "universe_hash", "run_now", "fetcher",
+        "current_equity", "persist", "as_of_date", "augmentation",
+        "pre_fetch_hook", "output", "behavior",
+    }
+    # OrchestrationOutput defaults are no-op callables; OrchestrationResult carries run_id/run/candidates.
+    assert callable(OrchestrationOutput().info) and callable(OrchestrationOutput().note_pin_injection)
 ```
 
-- [ ] **Step 2: Run → fail (module missing).** `python -m pytest tests/evaluation/test_orchestration.py::test_universe_augmentation_default_empty -v` → FAIL `ModuleNotFoundError`.
+- [ ] **Step 2: Run → fail (module missing).** `python -m pytest tests/evaluation/test_orchestration.py::test_orchestration_public_surface -v` → FAIL `ModuleNotFoundError`.
 
-- [ ] **Step 3: Create `swing/evaluation/orchestration.py`** with the EXACT dataclasses + `orchestrate_evaluation` signature from the canonical API block above, body `raise NotImplementedError` for now.
+- [ ] **Step 3: Create `swing/evaluation/orchestration.py`** with the EXACT dataclasses (`UniverseAugmentation`, `OrchestrationOutput`, `OrchestrationResult`, `EvaluationBehaviorPolicy`) + `orchestrate_evaluation` signature from the canonical API block above, body `raise NotImplementedError` for now.
 
 - [ ] **Step 4: Run → pass. Commit.**
 ```bash
@@ -473,21 +611,21 @@ git commit -m "feat(evaluation): Task 1.1 — orchestration module seam dataclas
   1. `finviz_df = pd.read_csv(csv_path)`; `Ticker` guard → `ValueError`; tickers list; `sector_industry_by_ticker` map (identical loop).
   2. `tickers` augmentation: `seen = set(tickers)`; append `augmentation.held_tickers` (not in seen); compute `injected_pins = [t for t in augmentation.pinned_inject if t not in seen]`, append; if `injected_pins`: `output.note_pin_injection(injected_pins)`.
   3. `if pre_fetch_hook is not None: pre_fetch_hook(list(tickers))` — at the held-tickers boundary (LOCK #16 — the hook IS the warm+prewarm in the pipeline adapter; called with the same merged set the runner currently passes).
-  4. SPY fetch — implement the GUARDED (CLI) form by default IF the operator ruled DIVERGENCE-SPY-GUARD → unify; else keep straight-line and add an `on_spy_error` seam per the ruling. `as_of_date` threaded into `fetcher.get`.
+  4. SPY fetch — branch on `behavior.spy_failure_mode`: `"warn_and_zero"` wraps the fetch in try/except (warn via `output.warn` + `spy_return=0.0`, the CLI form); `"raise"` runs straight-line (the pipeline form — an exception propagates). `as_of_date` threaded into `fetcher.get`. NO hand-waved `on_spy_error` — the seam is `behavior.spy_failure_mode` (Codex R1 C4).
   5. per-ticker OHLCV fetch + universe returns (identical loops; `as_of_date` threaded).
   6. `BatchContext(...)` (identical).
   7. `data_asof = max(max_dates).date() if max_dates else last_completed_session(run_now)`; `action_session = action_session_for_run(run_now)`.
   8. `excluded = set(cfg.etf_exclusion.manual_block) | set(augmentation.held_tickers)`; build `contexts` with `current_equity=current_equity` (the seam) — identical loop.
   9. `candidates = evaluate_batch(contexts)`.
-  10. synthesize excluded rows — preserve close for held (per DIVERGENCE-EXCLUDED-CLOSE ruling); `notes = "open position" if t in held_set else "ETF/fund blocklist"`.
-  11. `error_tickers` dedup vs excluded (per DIVERGENCE-ERROR-DEDUP ruling) — gated so the CLI behavior is honored if the ruling is "intentional".
+  10. synthesize excluded rows — preserve close for held when `behavior.preserve_held_close` (else `close=None`); `notes = "open position" if t in held_set else "ETF/fund blocklist"`.
+  11. `error_tickers` dedup vs excluded WHEN `behavior.dedup_error_rows` (else no dedup — the CLI form); gated on the policy so each §4 ruling is honored.
   12. synthesize error rows.
   13. sector/industry `_dc_replace` plumb (identical).
   14. build `EvaluationRun(...)` (identical counts).
   15. `run_id = persist(run, candidates)`.
   16. `return OrchestrationResult(run_id=run_id, run=run, candidates=candidates)`.
 
-> Every divergence-bearing branch (steps 4/8/10/11) is written to honor the Task-C ruling: if "unify", the branch is unconditional shared code; if "intentional", the branch is gated on the seam value (`augmentation`, `current_equity`, or a dedicated flag) so the CLI adapter reproduces its prior behavior exactly. Do NOT hardcode the pipeline behavior into shared code where the ruling said "intentional difference."
+> Every divergence-bearing branch (steps 4/8/10/11) is written to honor the Task-C ruling: if "unify", the branch is unconditional shared code; if "intentional", the branch is gated on the seam value (`augmentation`, `current_equity`, or a `behavior` policy field — `spy_failure_mode`/`dedup_error_rows`/`preserve_held_close`) so the CLI adapter reproduces its prior behavior exactly. Do NOT hardcode the pipeline behavior into shared code where the ruling said "intentional difference."
 
 - [ ] **Step 4: Run the new unit tests → pass. Run the Phase-0 harness → STILL GREEN** (the orchestrator isn't wired into either path yet, so this just confirms no import-time breakage). Commit.
 ```bash
@@ -508,7 +646,8 @@ git commit -m "feat(evaluation): Task 1.2 — orchestrate_evaluation body with e
   - build the `pre_fetch_hook` closure capturing `cfg`, `price_cache`, `held_tickers`, `universe`, `run_now`, `run_warnings` and calling `_warm_pipeline_marketdata(...)` + `_prewarm_evaluate_archives(...)` in the SAME order with the SAME args (LOCK #16).
   - build `OrchestrationOutput(note_pin_injection=lambda tickers: run_warnings.append({"step":"evaluate","kind":"pin_injection","count":len(tickers),"tickers":tickers}) if run_warnings is not None else None)` — reproduce the exact warning dict (`runner.py:1446-1450`).
   - build the `persist` closure: `with lease.fenced_write() as conn: run_id = insert_evaluation_run(conn, run); insert_candidates(conn, run_id, candidates); set_evaluation_run_id(conn, pipeline_run_id=lease.run_id, evaluation_run_id=run_id); return run_id` (LOCK #1 — lease stays here).
-  - `result = orchestrate_evaluation(cfg=cfg, csv_path=csv_path, universe=universe, universe_hash=universe_hash, run_now=run_now, fetcher=fetcher, current_equity=sizing_eq, persist=persist, as_of_date=None, augmentation=aug, pre_fetch_hook=hook, output=out)`; `return result.run_id`.
+  - pass `behavior=EvaluationBehaviorPolicy()` (the defaults ARE the current pipeline behavior: `raise`/dedup/preserve) — explicit, so the pipeline's error-path semantics are pinned at the call site.
+  - `result = orchestrate_evaluation(cfg=cfg, csv_path=csv_path, universe=universe, universe_hash=universe_hash, run_now=run_now, fetcher=fetcher, current_equity=sizing_eq, persist=persist, as_of_date=None, augmentation=aug, pre_fetch_hook=hook, output=out, behavior=EvaluationBehaviorPolicy())`; `return result.run_id`.
 
 - [ ] **Step 3: Run the Phase-0 harness + the existing `tests/pipeline/test_step_evaluate_*.py` → ALL GREEN** (byte-identical persisted rows + warnings). Run: `python -m pytest tests/pipeline/test_step_evaluate_pin_injection.py tests/pipeline/test_step_evaluate_warm.py tests/evaluation/test_orchestration_parity_golden.py -v`. Expected: PASS. If any differ, the extraction changed pipeline behavior — fix the adapter, do not edit the golden.
 
@@ -547,6 +686,7 @@ git commit -m "test(cli): Task 2.1 — characterize swing eval stdout + exit cod
   - `augmentation` per the Task-C ruling: `UniverseAugmentation()` if DIVERGENCE-1/2 ruled intentional-pipeline-only; or compute held/pins (mirroring the runner) if ruled unify.
   - `current_equity` per the DIVERGENCE-EQUITY ruling: `cfg.account.starting_equity` (intentional) or `sizing_equity(...)` (unify).
   - `output = OrchestrationOutput(info=click.echo, warn=lambda m: click.echo(m, err=True))` (note_pin_injection defaults to no-op unless DIVERGENCE-2 ruled unify).
+  - `behavior` per the §4 rulings: `EvaluationBehaviorPolicy(spy_failure_mode="warn_and_zero", dedup_error_rows=<DIVERGENCE-ERROR-DEDUP ruling>, preserve_held_close=<DIVERGENCE-EXCLUDED-CLOSE ruling>)`. The CLI's CURRENT behavior is `spy_failure_mode="warn_and_zero"`, `dedup_error_rows=False`, `preserve_held_close=False`; pass exactly that unless a ruling unifies a field. The Phase-0 CLI golden + Task-2.1 UX test enforce byte-identity, so a wrong policy value fails immediately.
   - `persist` closure: `conn = connect(cfg.paths.db_path); try: with conn: run_id = insert_evaluation_run(conn, run); insert_candidates(conn, run_id, candidates); finally: conn.close(); return run_id` (plain transaction — no lease).
   - emit the `Evaluating N tickers` line via `output.info` BEFORE the call (preserve ordering) — or pass it through and let the orchestrator emit; choose whichever keeps the Task-2.1 UX test byte-identical. **Simplest faithful choice:** keep the two human-facing echo lines (`Evaluating…`, the `Run … / Data as of …` summary) in the adapter, computed from `result` — the orchestrator's `output.info` carries only shared progress text, if any.
   - `result = orchestrate_evaluation(...); ` then echo the summary from `result.run`/`result.run_id`.
@@ -570,7 +710,7 @@ git commit -m "refactor(cli): Task 2.2 — eval_cmd delegates to orchestrate_eva
 
 - [ ] **Step 1: Delete the mirror prose** at `cli.py:379-388` ("Mirrors the `_step_evaluate` plumbing … persist classification identically") and replace with one line: `# Sector/Industry + classification orchestration is shared: swing.evaluation.orchestration.orchestrate_evaluation (consumed by both eval_cmd and pipeline _step_evaluate).` Remove any now-stale reciprocal comment in `runner.py`.
 
-- [ ] **Step 2: Grep to confirm the mirror is dead.** Run: `grep -rn "persist classification identically\|hand-mirror\|Mirrors the .*_step_evaluate\|Mirrors the runner" swing/`. Expected: no matches (or only the new pointer line).
+- [ ] **Step 2: Search to confirm the mirror is dead.** Run: `rg "persist classification identically|hand-mirror|Mirrors the .*_step_evaluate|Mirrors the runner" swing/` (the project's ripgrep preference). Expected: no matches (or only the new pointer line).
 
 - [ ] **Step 3: Run the Phase-0 harness once more → green. Commit.**
 ```bash
