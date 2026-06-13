@@ -458,16 +458,18 @@ def test_runner_threads_schwab_client_into_snapshot_and_orders_steps() -> None:
     # appears in the runner's pipeline_steps callsite vicinity. (We allow
     # client=None as a default in helper signatures elsewhere, but the
     # runner's two pipeline-step callsites must NOT use the hardcoded-None
-    # form.) Search bounded to the function body of run_pipeline_internal
-    # by anchoring on the surrounding lease.step("schwab_*") calls.
+    # form.) Search bounded to the function body of run_pipeline_internal by
+    # anchoring on the schwab_snapshot step site (post-Arc-17-B this is the
+    # `step_guard(lease, "schwab_snapshot", ...)` wrapper) through the still-
+    # explicit lease.step("charts") site.
     schwab_block_match = re.search(
-        r"lease\.step\(\"schwab_snapshot\"\).*?lease\.step\(\"charts\"\)",
+        r"step_guard\(\s*lease,\s*\"schwab_snapshot\".*?lease\.step\(\"charts\"\)",
         source,
         re.DOTALL,
     )
     assert schwab_block_match is not None, (
         "could not locate Schwab pipeline-steps block between "
-        'lease.step("schwab_snapshot") and lease.step("charts") — '
+        'step_guard(lease, "schwab_snapshot", ...) and lease.step("charts") — '
         "test setup error, not a fix regression"
     )
     schwab_block = schwab_block_match.group(0)

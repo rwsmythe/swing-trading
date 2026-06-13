@@ -410,6 +410,7 @@ def test_pipeline_step_ordering_unchanged_post_tc6():
     MUST match the pre-T-C.6 sequence exactly.
     """
     import inspect
+    import re
 
     from swing.pipeline import runner
 
@@ -429,13 +430,19 @@ def test_pipeline_step_ordering_unchanged_post_tc6():
         "export",
         "complete",
     ]
-    # Naive substring-presence + in-order check via cumulative .index().
+    # Substring-presence + in-order check via a cursor. Post-Arc-17-B the 9
+    # best-effort sites moved from `lease.step("X")` to
+    # `step_guard(lease, "X", ...)`; the explicit sites stay `lease.step("X")`.
+    # Either form anchors the step's position, so the ORDERING invariant this
+    # test guards is unchanged — only the call shape of some sites differs.
     cursor = 0
     for step in expected:
-        marker = f'lease.step("{step}")'
-        found_at = src.find(marker, cursor)
-        assert found_at != -1, (
-            f"missing or out-of-order lease.step({step!r}) in "
+        marker = re.compile(
+            rf'(?:lease\.step\("{step}"\)|step_guard\(\s*lease,\s*"{step}")'
+        )
+        m = marker.search(src, cursor)
+        assert m is not None, (
+            f"missing or out-of-order step {step!r} in "
             f"run_pipeline_internal source"
         )
-        cursor = found_at + len(marker)
+        cursor = m.end()
