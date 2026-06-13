@@ -99,6 +99,7 @@ from swing.pipeline.ohlcv import compute_smas as _compute_smas
 from swing.pipeline.ohlcv import previous_close as _previous_close
 from swing.pipeline.recovery import sweep_stale_artifacts
 from swing.pipeline.staging import StagingDir, promote_staging
+from swing.pipeline.step_guard import step_guard
 from swing.prices import PriceFetcher
 from swing.recommendations.build import BuildContext, build_recommendations
 from swing.rendering.briefing import BriefingInputs, build_briefing_view_model
@@ -739,8 +740,7 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
             conn.close()
 
         try:
-            lease.step("weather")
-            try:
+            with step_guard(lease, "weather", status_key="weather_status", logger=log):
                 from swing.data.models import WeatherRun
                 from swing.data.repos.weather import upsert_weather_run
                 from swing.weather.classifier import classify_weather
@@ -767,12 +767,6 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
                         slope10_5bar=classification.slope10_5bar,
                         rationale=classification.rationale,
                     ))
-                lease.status(weather_status="ok")
-            except LeaseRevokedError:
-                raise
-            except Exception as exc:
-                log.warning("weather failed: %s", exc)
-                lease.status(weather_status="failed")
 
             lease.step("finviz_fetch")
             # Phase 12.5 finviz-inbox-auto-fetch-fix: ``finviz_fetched_inline``
@@ -872,30 +866,17 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
                     exc,
                 )
 
-            lease.step("watchlist")
-            try:
+            with step_guard(lease, "watchlist", status_key="watchlist_status", logger=log):
                 _step_watchlist(cfg=cfg, eval_run_id=eval_run_id,
                                 data_asof_date=lease_data_asof(cfg, lease),
                                 lease=lease, run_warnings=run_warnings)
-                lease.status(watchlist_status="ok")
-            except LeaseRevokedError:
-                raise
-            except Exception as exc:
-                log.warning("watchlist failed: %s", exc)
-                lease.status(watchlist_status="failed")
 
-            lease.step("recommendations")
-            try:
+            with step_guard(lease, "recommendations",
+                            status_key="recommendations_status", logger=log):
                 _step_recommendations(cfg=cfg, eval_run_id=eval_run_id,
                                        action_session=action_session,
                                        data_asof=lease_data_asof(cfg, lease),
                                        lease=lease)
-                lease.status(recommendations_status="ok")
-            except LeaseRevokedError:
-                raise
-            except Exception as exc:
-                log.warning("recommendations failed: %s", exc)
-                lease.status(recommendations_status="failed")
 
             # Phase 13 T2.SB3 (plan section G.4 T-A.3.6) — pattern detect step.
             # Recon at docs/phase13-t2-sb3-recon.md section 2 binds the
@@ -1021,19 +1002,12 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
                 log.warning("charts failed: %s", exc)
                 lease.status(charts_status="failed")
 
-            lease.step("export")
-            try:
+            with step_guard(lease, "export", status_key="export_status", logger=log):
                 _step_export(cfg=cfg, lease=lease, eval_run_id=eval_run_id,
                              action_session=action_session,
                              data_asof=lease_data_asof(cfg, lease),
                              chart_paths=chart_paths,
                              fetcher=fetcher)
-                lease.status(export_status="ok")
-            except LeaseRevokedError:
-                raise
-            except Exception as exc:
-                log.warning("export failed: %s", exc)
-                lease.status(export_status="failed")
 
             # Phase 16 Arc 5 -- shadow-expectancy drumbeat (commission
             # docs/phase16-shadow-expectancy-drumbeat-integration-commissioning-brief.md).
