@@ -6,6 +6,7 @@ from __future__ import annotations
 import inspect
 import sqlite3
 from dataclasses import MISSING, fields
+from datetime import date
 
 import pytest
 
@@ -57,8 +58,8 @@ def test_orchestration_public_surface():
     assert sig.parameters["behavior"].default is inspect.Parameter.empty
     assert set(sig.parameters) == {
         "cfg", "csv_path", "universe", "universe_hash", "run_now", "fetcher",
-        "current_equity", "persist", "as_of_date", "augmentation",
-        "pre_fetch_hook", "output", "behavior",
+        "current_equity", "persist", "as_of_date", "action_session",
+        "augmentation", "pre_fetch_hook", "output", "behavior",
     }
 
     # OrchestrationOutput defaults are no-op callables.
@@ -203,3 +204,30 @@ def test_orchestrator_pre_fetch_hook_called_once_with_merged(tmp_path, frozen_cl
     assert len(seen_args) == 1
     # screen ∪ held ∪ pins, in insertion order.
     assert seen_args[0] == [*SCREEN_TICKERS, HELD_TICKER, PINNED_TICKER]
+
+
+def test_orchestrator_honors_passed_action_session(tmp_path, frozen_clock, pin_network):
+    """Codex R1 Major #1: the orchestrator persists the EXPLICITLY-passed
+    action_session (the pipeline adapter forwards the run-level value it captured),
+    not a recomputed one -- byte-faithful to the pre-refactor _step_evaluate."""
+    from swing.evaluation.orchestration import orchestrate_evaluation
+    inputs = _build_inputs(tmp_path)
+    cfg = _make_config(tmp_path, inputs)
+    _migrate(inputs.db_path).close()
+    distinct = date(2026, 7, 1)  # NOT action_session_for_run(RUN_NOW) (= 2026-06-12)
+    result = orchestrate_evaluation(
+        **_orch_kwargs(inputs, cfg), action_session=distinct
+    )
+    assert result.run.action_session_date == distinct.isoformat()
+
+
+def test_orchestrator_derives_action_session_when_none(tmp_path, frozen_clock, pin_network):
+    """When no action_session is supplied (the CLI adapter), the orchestrator
+    derives it from run_now via action_session_for_run -- the CLI's prior
+    self-computation."""
+    from swing.evaluation.orchestration import orchestrate_evaluation
+    inputs = _build_inputs(tmp_path)
+    cfg = _make_config(tmp_path, inputs)
+    _migrate(inputs.db_path).close()
+    result = orchestrate_evaluation(**_orch_kwargs(inputs, cfg))  # action_session defaults None
+    assert result.run.action_session_date == date(2026, 6, 12).isoformat()

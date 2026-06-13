@@ -109,6 +109,7 @@ def orchestrate_evaluation(
     current_equity: float,
     persist: Callable[[EvaluationRun, list[Candidate]], int],
     as_of_date: date | None = None,
+    action_session: date | None = None,
     augmentation: UniverseAugmentation = _EMPTY_AUGMENTATION,
     pre_fetch_hook: Callable[[list[str]], None] | None = None,
     output: OrchestrationOutput | None = None,
@@ -232,7 +233,12 @@ def orchestrate_evaluation(
         data_asof = as_of_date
     else:
         data_asof = last_completed_session(run_now)
-    action_session = action_session_for_run(run_now)
+    # Honor an explicitly-supplied action_session (the pipeline adapter passes the
+    # run-level value it captured); otherwise derive it from run_now (the CLI's
+    # prior self-computation). run_pipeline passes action_session_for_run(run_now),
+    # so production is byte-identical either way.
+    if action_session is None:
+        action_session = action_session_for_run(run_now)
 
     # 8. Build contexts. Held + ETF blocklist are excluded from evaluation;
     #    current_equity is the injected sizing equity (DIVERGENCE-EQUITY unified).

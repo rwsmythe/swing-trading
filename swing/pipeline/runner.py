@@ -1484,7 +1484,11 @@ def _step_evaluate(
     result = orchestrate_evaluation(
         cfg=cfg, csv_path=csv_path, universe=universe, universe_hash=universe_hash,
         run_now=run_now, fetcher=fetcher, current_equity=sizing_eq,
-        persist=_persist, as_of_date=None, augmentation=augmentation,
+        persist=_persist, as_of_date=None,
+        # Honor the run-level action_session the caller captured (byte-faithful to
+        # the pre-refactor _step_evaluate, which persisted the passed value).
+        action_session=action_session,
+        augmentation=augmentation,
         pre_fetch_hook=_pre_fetch_hook, output=output,
         # DIVERGENCE-SPY-GUARD ruled intentional: the pipeline hard-fails on a
         # SPY fetch exception (RS rankings are meaningless without SPY).

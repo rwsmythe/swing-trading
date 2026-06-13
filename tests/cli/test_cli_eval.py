@@ -297,3 +297,22 @@ def test_cli_eval_ux_surface_is_pinned(tmp_path, frozen_clock, pin_network):
     assert "Run 1: A+=0 watch=3 skip=0 excluded=0 error=0" in out
     assert "Data as of: 2026-06-11" in out
     assert "Action session: 2026-06-12" in out
+
+
+def test_cli_eval_malformed_csv_is_a_clean_click_error(tmp_path: Path):
+    """Arc 17-A Codex R1 minor #1: a CSV missing the Ticker column surfaces as a
+    clean click error (exit != 0, ClickException -> SystemExit), NOT an uncaught
+    traceback. The orchestrator raises ValueError; the CLI adapter wraps it."""
+    project_dir = tmp_path / "project"
+    home_dir = tmp_path / "home"
+    project_dir.mkdir()
+    home_dir.mkdir()
+    cfg_path = _minimal_config(project_dir, home_dir)
+    bad_csv = project_dir / "bad.csv"
+    bad_csv.write_text("No.,Symbol,Price\n1,AAPL,200\n", encoding="utf-8")  # no Ticker
+    runner = CliRunner()
+    runner.invoke(main, ["--config", str(cfg_path), "db-migrate"])
+    result = runner.invoke(main, ["--config", str(cfg_path), "eval", "--csv", str(bad_csv)])
+    assert result.exit_code != 0
+    assert isinstance(result.exception, SystemExit)  # clean ClickException, not a raw raise
+    assert "Ticker" in result.output
