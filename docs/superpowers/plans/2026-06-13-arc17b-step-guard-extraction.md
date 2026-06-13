@@ -10,6 +10,19 @@
 
 ---
 
+## ⚠ BLOCKING PRECONDITION — CHARC ratification of a SECOND fatal site (resolve BEFORE Task 0)
+
+Re-grounding surfaced a **second genuinely-fatal control-flow site beyond `evaluate`**: the inline empty-inbox recovery branch `finviz_fetch` **site-1** (`runner.py:653-669`) catches a non-revoke `Exception`, `log.error`s, calls `lease.release(state="failed")`, and `return`s a failed `RunResult` — i.e. it ABORTS the run, exactly like `evaluate`. The commissioning brief §2/§3 (and this engineer's dispatch) instruct: *"If the engineer finds a second genuinely-fatal step in the §4 enumeration, STOP and route to CHARC — the variant set would have changed."*
+
+**This engineer's analysis (for CHARC's ruling, surfaced in the writing-plans return report — execution is NOT authorized to begin until CHARC rules):**
+- Site-1 does **NOT** change the `step_guard` variant set. It stays **EXPLICIT and untouched**, exactly like `evaluate`; the guard still handles only BS + B. No new module, no schema, no dependency, no §3 abstraction change.
+- The brief already anticipated TWO `finviz_fetch` sites and asked for both to be enumerated/tagged; site-1's *fatality* (vs site-2's best-effort) is the new fact.
+- Recommendation: **ratify as-is, no brief amendment needed** — the §3 design holds because site-1 is never wrapped. But this is CHARC's call, not the engineer's to absorb.
+
+**Execution gate:** the executing-plans cycle (Tasks 0–5) MUST NOT begin until CHARC ratifies this finding (or amends the brief). The orchestrator routes this via the return report. Everything below is correct under the "site-1 stays explicit" disposition; if CHARC rules differently (e.g. wants site-1 folded into a fatal-capable guard), this plan is re-opened.
+
+---
+
 ## Background — re-grounding (verified on disk at branch start, HEAD `43e9a5e8`, `runner.py` 4,529 lines)
 
 `run_pipeline_internal` (`swing/pipeline/runner.py:544`; reached via the public `run_pipeline` at `swing/pipeline/__init__.py:14`) contains **15 `lease.step("…")` breadcrumb call sites** plus **one breadcrumb-less guarded call** (`_step_review_log_cadence`). `LeaseRevokedError` is `class LeaseRevokedError(Exception)` (`swing/data/repos/pipeline.py:15`) — a plain `Exception` subclass, so an `except LeaseRevokedError: raise` placed BEFORE `except Exception:` is what makes revoke propagate; a bare `except Exception:` with no prior `LeaseRevokedError` clause SWALLOWS it. The runner logger is `log = logging.getLogger(__name__)` → records emit on `"swing.pipeline.runner"` (`runner.py:122`). `lease.step(name: str)` and `lease.status(**cols: str)` (`swing/pipeline/lease.py:104,156`); the allowed `*_status` columns are EXACTLY `weather_status, evaluation_status, watchlist_status, recommendations_status, charts_status, export_status` (`swing/data/repos/pipeline.py:97-98`).
