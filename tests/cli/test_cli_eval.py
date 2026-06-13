@@ -261,3 +261,39 @@ def test_cli_eval_persists_sector_industry_from_finviz_csv(tmp_path: Path, monke
 
     assert by_ticker["AAPL"] == ("Healthcare", "Pharmaceuticals")
     assert by_ticker["ZZZB"] == ("Energy", "Oil & Gas E&P")
+
+
+# --------------------------------------------------------------------------- #
+# Arc 17-A Task 2.1: characterize the `swing eval` UX surface (stdout text +
+# exit code) through the Phase-0 offline-archive fixtures, frozen clock. This
+# pins the operator-gate surface (commissioning brief section 6) BEFORE the CLI
+# adapter swap, so a wrong adapter wiring fails loudly.
+# --------------------------------------------------------------------------- #
+# ruff: noqa: F811 -- pytest fixtures imported from the Phase-0 harness module are
+# re-bound as test-function parameters; that is the intended pytest pattern.
+from tests.evaluation.test_orchestration_parity_golden import (  # noqa: E402
+    _build_inputs as _arc17a_build_inputs,
+)
+from tests.evaluation.test_orchestration_parity_golden import (  # noqa: E402
+    _invoke_cli as _arc17a_invoke_cli,
+)
+from tests.evaluation.test_orchestration_parity_golden import (  # noqa: E402
+    _make_config as _arc17a_make_config,
+)
+from tests.evaluation.test_orchestration_parity_golden import (  # noqa: E402, F401
+    frozen_clock,
+    pin_network,
+)
+
+
+def test_cli_eval_ux_surface_is_pinned(tmp_path, frozen_clock, pin_network):
+    inputs = _arc17a_build_inputs(tmp_path)
+    _arc17a_make_config(tmp_path, inputs)
+    result = _arc17a_invoke_cli(inputs, tmp_path)
+    assert result.exit_code == 0, (result.output, repr(result.exception))
+    out = result.output
+    # The three human-facing lines (cli.py:400 / 557-561).
+    assert "Evaluating 3 tickers from finviz.csv" in out
+    assert "Run 1: A+=0 watch=3 skip=0 excluded=0 error=0" in out
+    assert "Data as of: 2026-06-11" in out
+    assert "Action session: 2026-06-12" in out
