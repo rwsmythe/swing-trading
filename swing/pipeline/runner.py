@@ -846,24 +846,21 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
                 lease.release(state="failed", error_message=str(exc))
                 return RunResult(run_id=lease.run_id, state="failed", error_message=str(exc))
 
-            lease.step("daily_management")
-            try:
+            # Cadence-step semantics: per-trade failures are already logged +
+            # swallowed inside _step_daily_management. The guard's log_failure
+            # catches programming errors (KeyError, ImportError, etc.) — pipeline
+            # must continue regardless (byte-identical "programming error
+            # (continuing)" warning text preserved via log_failure).
+            with step_guard(
+                lease, "daily_management", logger=log,
+                log_failure=lambda lg, name, exc: lg.warning(
+                    "daily_management step programming error (continuing): %s", exc),
+            ):
                 _step_daily_management(
                     lease=lease, run_now=run_now, eval_run_id=eval_run_id,
                     archive_history_days=cfg.archive.archive_history_days,
                     ohlcv_archive_dir=cfg.paths.prices_cache_dir,
                     run_warnings=run_warnings,
-                )
-            except LeaseRevokedError:
-                raise
-            except Exception as exc:
-                # Cadence-step semantics: per-trade failures are already
-                # logged + swallowed inside _step_daily_management. This
-                # catches programming errors (KeyError, ImportError, etc.)
-                # — pipeline must continue regardless.
-                log.warning(
-                    "daily_management step programming error (continuing): %s",
-                    exc,
                 )
 
             with step_guard(lease, "watchlist", status_key="watchlist_status", logger=log):
@@ -919,8 +916,12 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
             # breadcrumb name `schwab_snapshot` / `schwab_orders` to
             # surface "step executed but silent-skipped". V2 adds a
             # dedicated lease status column.
-            lease.step("schwab_snapshot")
-            try:
+            with step_guard(
+                lease, "schwab_snapshot", logger=log,
+                log_failure=lambda lg, name, exc: lg.warning(
+                    "schwab_snapshot failed (continuing pipeline): %s",
+                    type(exc).__name__),
+            ):
                 from swing.integrations.schwab.pipeline_steps import (
                     _step_schwab_snapshot,
                 )
@@ -940,16 +941,13 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
                     )
                 finally:
                     _conn.close()
-            except LeaseRevokedError:
-                raise
-            except Exception as exc:
-                log.warning(
-                    "schwab_snapshot failed (continuing pipeline): %s",
-                    type(exc).__name__,
-                )
 
-            lease.step("schwab_orders")
-            try:
+            with step_guard(
+                lease, "schwab_orders", logger=log,
+                log_failure=lambda lg, name, exc: lg.warning(
+                    "schwab_orders failed (continuing pipeline): %s",
+                    type(exc).__name__),
+            ):
                 from swing.integrations.schwab.pipeline_steps import (
                     _step_schwab_orders,
                 )
@@ -967,13 +965,6 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
                         run_warnings.extend(_schwab_warnings)
                 finally:
                     _conn.close()
-            except LeaseRevokedError:
-                raise
-            except Exception as exc:
-                log.warning(
-                    "schwab_orders failed (continuing pipeline): %s",
-                    type(exc).__name__,
-                )
 
             lease.step("charts")
             chart_paths: dict[str, Path] = {}
