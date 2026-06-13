@@ -215,12 +215,12 @@ def _stub_prices(monkeypatch):
 # schwab [client=None silent-skip], review_log_cadence) run for real on the
 # synthetic fixture. _step_evaluate must return an int eval_run_id.
 _HEAVY_STUBS: dict[str, object] = {
-    "swing.pipeline.runner._step_evaluate": lambda **kw: 1,
-    "swing.pipeline.runner._step_pattern_detect": lambda **kw: None,
-    "swing.pipeline.runner._step_pattern_observe": lambda **kw: None,
-    "swing.pipeline.runner._step_charts": lambda **kw: {},
-    "swing.pipeline.runner._step_export": lambda **kw: None,
-    "swing.pipeline.runner._step_shadow_expectancy": lambda **kw: None,
+    "swing.pipeline.runner._step_evaluate": lambda *a, **k: 1,
+    "swing.pipeline.runner._step_pattern_detect": lambda *a, **k: None,
+    "swing.pipeline.runner._step_pattern_observe": lambda *a, **k: None,
+    "swing.pipeline.runner._step_charts": lambda *a, **k: {},
+    "swing.pipeline.runner._step_export": lambda *a, **k: None,
+    "swing.pipeline.runner._step_shadow_expectancy": lambda *a, **k: None,
 }
 
 
@@ -234,24 +234,27 @@ def _apply_default_stubs(monkeypatch, *, skip: str | None):
 def _step_timings(cfg) -> list[str]:
     conn = sqlite3.connect(cfg.paths.db_path)
     try:
+        # Order by `ordinal` (the repo's canonical ordering -- see
+        # pipeline_step_timings.py:58 / list_step_timings), NOT by `id`.
+        # (Codex R1 #4.)
         return [
             r[0] for r in conn.execute(
-                "SELECT step_name FROM pipeline_step_timings ORDER BY id"
+                "SELECT step_name FROM pipeline_step_timings ORDER BY ordinal ASC"
             ).fetchall()
         ]
     finally:
         conn.close()
 ```
 
-Note: confirm the `pipeline_step_timings` column name (`step_name`) against `swing/data/repos/pipeline_step_timings.py` when landing this; adjust the `SELECT` if the column differs. This is the first thing Phase-0 will surface.
+Note: confirm the `pipeline_step_timings` column names (`step_name`, `ordinal`) against `swing/data/repos/pipeline_step_timings.py` when landing this; prefer calling the repo's `list_step_timings` helper if it returns rows in `ordinal` order. This is the first thing Phase-0 will surface.
 
 - [ ] **Step 2: Write the happy-path breadcrumb completeness assertion**
 
 ```python
 def test_happy_path_fires_every_breadcrumb(tmp_path, monkeypatch):
-    """All 15 lease.step breadcrumbs fire (in order) on a clean run.
-    finviz_fetch appears ONCE (site-2; site-1's empty-inbox path is not taken
-    when a CSV is present)."""
+    """All 14 CSV-path breadcrumbs fire in order on a clean run. finviz_fetch
+    appears ONCE here (site-2); site-1's empty-inbox breadcrumb is covered
+    separately (it fires only when the inbox is empty)."""
     cfg = _make_cfg(tmp_path, inbox="csv")
     _stub_prices(monkeypatch)
     _apply_default_stubs(monkeypatch, skip=None)
@@ -285,7 +288,11 @@ def test_injected_exception_contract(site, tmp_path, monkeypatch):
     _stub_prices(monkeypatch)
     _apply_default_stubs(monkeypatch, skip=site.inject)
 
-    def _boom(**kwargs):
+    # *args too: several targets are called POSITIONALLY -- classify_weather(ohlcv)
+    # (runner.py:750), _step_schwab_snapshot(_conn, cfg, ...) (runner.py:966),
+    # _step_schwab_orders(_conn, cfg, ...) (runner.py:988). A **kwargs-only
+    # injector would raise TypeError BEFORE our exception and false-pass. (Codex R1 #2.)
+    def _boom(*args, **kwargs):
         raise RuntimeError(f"injected into {site.name}")
 
     monkeypatch.setattr(site.inject, _boom)
@@ -317,7 +324,8 @@ def test_planted_lease_revoked_propagation(site, tmp_path, monkeypatch):
     _stub_prices(monkeypatch)
     _apply_default_stubs(monkeypatch, skip=site.inject)
 
-    def _revoke(**kwargs):
+    # *args too -- see Codex R1 #2 note above (positionally-called targets).
+    def _revoke(*args, **kwargs):
         raise LeaseRevokedError(f"planted revoke at {site.name}")
 
     monkeypatch.setattr(site.inject, _revoke)
@@ -347,7 +355,7 @@ def test_evaluate_is_fatal(tmp_path, monkeypatch):
     _apply_default_stubs(monkeypatch, skip="swing.pipeline.runner._step_evaluate")
     monkeypatch.setattr(
         "swing.pipeline.runner._step_evaluate",
-        lambda **kw: (_ for _ in ()).throw(RuntimeError("eval boom")),
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("eval boom")),
     )
     result = run_pipeline(cfg=cfg, trigger="manual")
     assert result.state == "failed"
@@ -360,7 +368,7 @@ def test_finviz_site1_empty_inbox_is_fatal(tmp_path, monkeypatch):
     _stub_prices(monkeypatch)
     monkeypatch.setattr(
         "swing.pipeline.runner._step_finviz_fetch",
-        lambda **kw: (_ for _ in ()).throw(RuntimeError("fetch boom")),
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("fetch boom")),
     )
     result = run_pipeline(cfg=cfg, trigger="manual")
     assert result.state == "failed"
@@ -376,7 +384,7 @@ def test_charts_unavailable_sets_skipped(tmp_path, monkeypatch):
     _apply_default_stubs(monkeypatch, skip="swing.pipeline.runner._step_charts")
     monkeypatch.setattr(
         "swing.pipeline.runner._step_charts",
-        lambda **kw: (_ for _ in ()).throw(ChartingUnavailableError("no mpl")),
+        lambda *a, **k: (_ for _ in ()).throw(ChartingUnavailableError("no mpl")),
     )
     result = run_pipeline(cfg=cfg, trigger="manual")
     assert result.state == "complete"
@@ -409,8 +417,12 @@ def _runner_step_site_literals() -> list[str]:
                 and isinstance(node.args[0], ast.Constant)
                 and isinstance(node.args[0].value, str)):
             names.append(node.args[0].value)
-        # step_guard(lease, "X", ...)
-        elif (getattr(func, "id", None) == "step_guard"
+        # step_guard(lease, "X", ...) -- match a bare name `step_guard` OR an
+        # attribute access `<mod>.step_guard` (Codex R1 #5: don't miss an
+        # attribute-qualified call). Aliasing the import is forbidden by the
+        # Task-2 implementation note, so a bare-name match is the common case.
+        elif ((getattr(func, "id", None) == "step_guard"
+               or getattr(func, "attr", None) == "step_guard")
                 and len(node.args) >= 2
                 and isinstance(node.args[1], ast.Constant)
                 and isinstance(node.args[1].value, str)):
@@ -535,6 +547,25 @@ def test_other_exception_swallowed_no_status_key(caplog):
     assert "pattern_detect failed: boom" in caplog.text
 
 
+def test_exception_from_ok_status_write_is_caught_not_propagated(caplog):
+    """Byte-identical to the inline sites: the success ``lease.status(ok)`` is
+    INSIDE the guarded try, so if it raises a non-revoke Exception the guard
+    logs + writes 'failed' + swallows (does NOT propagate). (Codex R1 #1.)"""
+    class OkRaisesLease(FakeLease):
+        def status(self, **cols: str) -> None:
+            if cols.get("weather_status") == "ok":
+                raise RuntimeError("ok-write boom")
+            super().status(**cols)
+
+    lease = OkRaisesLease()
+    log = logging.getLogger("swing.pipeline.runner")
+    with caplog.at_level(logging.WARNING, logger="swing.pipeline.runner"):
+        with step_guard(lease, "weather", status_key="weather_status", logger=log):
+            pass  # clean body; the failure comes from the ok-status write
+    assert lease.statuses == {"weather_status": "failed"}
+    assert "weather failed: ok-write boom" in caplog.text
+
+
 def test_custom_log_failure_callable_preserves_exact_text():
     lease = FakeLease()
     captured = []
@@ -618,6 +649,15 @@ def step_guard(
     lease.step(name)
     try:
         yield
+        # The success status write lives INSIDE the try (not an `else:`) so it
+        # has byte-identical behavior to the inline runner sites, where
+        # `lease.status(<key>="ok")` sits inside the step `try` (e.g. weather
+        # runner.py:770, watchlist:880, recommendations:893, export:1031): if
+        # the "ok" write itself raises a non-revoke Exception, the current code
+        # logs the warning + writes "failed" + continues. An `else:` clause
+        # would let that exception PROPAGATE -- a behavior change. (Codex R1 #1.)
+        if status_key is not None:
+            lease.status(**{status_key: "ok"})
     except LeaseRevokedError:
         raise
     except Exception as exc:  # noqa: BLE001 -- best-effort swallow by design
@@ -627,9 +667,6 @@ def step_guard(
             logger.warning("%s failed: %s", name, exc)
         if status_key is not None:
             lease.status(**{status_key: "failed"})
-    else:
-        if status_key is not None:
-            lease.status(**{status_key: "ok"})
 ```
 
 - [ ] **Step 4: Run the tests to verify they pass**
@@ -722,7 +759,7 @@ Keep every line of the inline body byte-identical; only the wrapper changes. Del
 
 - [ ] **Step 5: Add the `step_guard` import to runner.py**
 
-Add near the other `swing.pipeline` imports (top of file):
+Add near the other `swing.pipeline` imports (top of file). Import the symbol DIRECTLY by its real name — do NOT alias it (`as sg`) and do NOT call it attribute-qualified (`mod.step_guard(...)`); the AST completeness guard counts bare-name and attribute calls but the no-alias rule keeps the matcher unambiguous (Codex R1 #5):
 
 ```python
 from swing.pipeline.step_guard import step_guard
