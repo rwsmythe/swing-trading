@@ -81,7 +81,7 @@ Full detail: `reference/Future Work/QuantEcon/2026-04-24-quant-econ-companion-tr
 
 ### Currently in-flight: PHASE 16 CLOSED (2026-06-12) — no active phase; awaiting the operator's next commission
 
-Phase 16 (Observability & Logging + the operator-added effectiveness arcs) closed 2026-06-12 with all nine arcs shipped + gated (schema v29, ~8053 green, the pipeline 2m20s). Canonical history: `docs/phase16-todo.md`; the close-out handoff: `docs/orchestrator-handoff-2026-06-12-phase16-close.md`. Trailing: the TROX age-off check (next nightly; expectation FROZEN-not-removed — screen-absent + unpinned), the dividend-marker capture (organic), the research-director QAs.
+Phase 16 (Observability & Logging + the operator-added effectiveness arcs) closed 2026-06-12 with all nine arcs shipped + gated (schema v29, ~8053 green, the pipeline 2m20s). Canonical history: `docs/phase16-todo.md`; the close-out handoff: `docs/archive/phase16/orchestrator-handoff-2026-06-12-phase16-close.md`. Trailing: the TROX age-off check (next nightly; expectation FROZEN-not-removed — screen-absent + unpinned), the dividend-marker capture (organic), the research-director QAs.
 
 #### (superseded close record) PHASE 15 CLOSED (2026-06-08) → PHASE 16 was opened
 

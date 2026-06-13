@@ -10,7 +10,7 @@
 
 ## Phase 16 trailing items (tracked HERE — their tracker, the P16 orchestrator, was decommissioned 2026-06-12)
 
-> Each item stays until checked off with evidence; the Phase 17 close audit sweeps this section. Verification specs live in [`docs/orchestrator-handoff-2026-06-12-phase16-close.md`](orchestrator-handoff-2026-06-12-phase16-close.md).
+> Each item stays until checked off with evidence; the Phase 17 close audit sweeps this section. Verification specs live in [`docs/archive/phase16/orchestrator-handoff-2026-06-12-phase16-close.md`](archive/phase16/orchestrator-handoff-2026-06-12-phase16-close.md).
 
 - [ ] **T16-1 TROX frozen-not-removed check** — after the NEXT nightly. Expectation (handoff, stated precisely): screen-absent + unpinned → the absent-skip contract; NO injection/suppression audit entries; streak holds at 3; removal fires only on a screen re-entry. Owner: operator or any role with DB read access (read-only query); the first Phase 17 orchestrator session inherits it if still open.
 - [ ] **T16-2 Dividend-marker capture** — ORGANIC trigger: the account's first `DIVIDEND_OR_INTEREST` transaction. Action: capture the real description string(s), seed the marker frozensets, UNSKIP `tests/trades/test_schwab_cash_ingestion.py:246` (`test_dividend_marker_set_is_real_payload_sourced`) and make it assert the real-sourced markers. Until then every such transaction tier-2 flags (the safe default — a flag arriving IS the trigger firing).
