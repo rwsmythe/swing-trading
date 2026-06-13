@@ -134,6 +134,10 @@ def orchestrate_evaluation(
         ind = "" if pd.isna(ind) else str(ind)
         sector_industry_by_ticker[ticker_key] = (sec, ind)
 
+    # Progress line via the output seam (CLI: click.echo; pipeline: no-op). Count
+    # is the SCREEN tickers, before augmentation -- matches the standalone CLI.
+    out.info(f"Evaluating {len(tickers)} tickers from {csv_path.name}")
+
     # 2. Universe augmentation: held (close-only) then pins (full eval).
     #    DIVERGENCE-1/2 (intentional): the pipeline supplies these sets; the CLI
     #    supplies an empty UniverseAugmentation.

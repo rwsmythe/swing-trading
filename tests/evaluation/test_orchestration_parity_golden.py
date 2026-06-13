@@ -469,24 +469,26 @@ def test_cli_path_persists_screen_rows(tmp_path, frozen_clock, pin_network):
     assert _one(rows, "BBB")["rs_method"] == "fallback_spy"
 
 
-def test_cli_path_crashes_on_blocklist_and_fetch_fail(tmp_path, frozen_clock, pin_network):
-    """DIVERGENCE-ERROR-DEDUP, CLI side. A ticker that is BOTH ETF-blocklisted AND
-    fetch-failing yields an `excluded` row AND an `error` row (the CLI does NOT
-    dedup). Because candidates has UNIQUE(evaluation_run_id, ticker) and
-    insert_candidates uses a plain INSERT, the second row raises IntegrityError
-    -> the `with conn:` transaction rolls back -> the whole eval FAILS with
-    exit 1 and NOTHING persists. (The constraint does NOT silently de-dupe; it
-    crashes. The pipeline's dedup actively prevents this.)"""
-    import sqlite3 as _sqlite3
+def test_cli_path_dedups_blocklist_and_fetch_fail(tmp_path, frozen_clock, pin_network):
+    """DIVERGENCE-ERROR-DEDUP, CLI side -- POST-Task-C ruling: UNIFY on dedup.
+
+    MIGRATED from the pre-extraction characterization (which pinned the CLI CRASH:
+    a blocklisted-AND-fetch-failing ticker produced excluded+error rows that hit
+    the candidates UNIQUE(evaluation_run_id, ticker) constraint -> IntegrityError
+    -> the whole eval rolled back, exit 1). The operator ruled this UNIFY, so the
+    shared orchestrator de-dupes unconditionally and the CLI now matches the
+    pipeline: ONE excluded row, exit 0, no crash (compare
+    test_pipeline_path_dedups_blocklist_and_fetch_fail -- a parity assertion)."""
     inputs = _build_inputs(tmp_path, include_blocklist_fail=True)
     _make_config(tmp_path, inputs)
     result = _invoke_cli(inputs, tmp_path)
-    assert result.exit_code == 1
-    assert isinstance(result.exception, _sqlite3.IntegrityError)
-    assert "UNIQUE constraint failed" in str(result.exception)
-    assert "candidates" in str(result.exception)
-    # Rolled back -> no candidates persisted at all.
-    assert _read_candidates(inputs.db_path) == []
+    assert result.exit_code == 0, (result.output, repr(result.exception))
+    rows = _read_candidates(inputs.db_path)
+    zzz = [r for r in rows if r["ticker"] == BLOCKLIST_FAIL]
+    assert len(zzz) == 1
+    assert zzz[0]["bucket"] == "excluded"
+    assert zzz[0]["close"] is None
+    assert zzz[0]["notes"] == "ETF/fund blocklist"
 
 
 # --------------------------------------------------------------------------- #

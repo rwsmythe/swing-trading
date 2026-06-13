@@ -28,20 +28,26 @@ except (AttributeError, _io.UnsupportedOperation):
     pass
 
 import click
-import pandas as pd
 
 from swing.cli_config import config_group
 from swing.cli_schwab import schwab_group
 from swing.config import load as load_config
 from swing.data.db import connect, ensure_schema, open_connection
-from swing.data.models import Candidate, EvaluationRun
 from swing.data.repos.candidates import insert_candidates, insert_evaluation_run
-from swing.evaluation.context import BatchContext, CandidateContext, MarketContext
-from swing.evaluation.dates import action_session_for_run, last_completed_session
-from swing.evaluation.evaluator import evaluate_batch
+from swing.evaluation.orchestration import (
+    EvaluationBehaviorPolicy,
+    OrchestrationOutput,
+    UniverseAugmentation,
+    orchestrate_evaluation,
+)
 from swing.evaluation.rs import load_universe, universe_version_hash
 from swing.prices import PriceFetcher
 from swing.recommendations.hypothesis_prefill import lookup_active_recommendation_label
+from swing.trades.equity import (
+    current_equity,
+    list_all_exitshape_via_fills,
+    sizing_equity,
+)
 
 
 @dataclass(frozen=True)
@@ -367,195 +373,72 @@ def eval_cmd(ctx: click.Context, csv_path: str, as_of_date_str: str | None) -> N
     # session boundary (e.g., NYSE close happening between calls).
     run_now = datetime.now()
 
-    # 1. Read tickers — require a `Ticker` column; fail fast on malformed CSV
-    finviz_df = pd.read_csv(csv_file)
-    if "Ticker" not in finviz_df.columns:
-        raise click.ClickException(
-            f"{csv_file.name}: required column 'Ticker' not found. "
-            f"Got columns: {list(finviz_df.columns)}"
-        )
-    tickers = finviz_df["Ticker"].dropna().astype(str).str.upper().tolist()
-
-    # Sector/Industry passthrough from Finviz CSV -> candidate rows. Mirrors
-    # the `_step_evaluate` plumbing in swing/pipeline/runner.py so standalone
-    # `swing eval` and the pipeline persist classification identically. The
-    # downstream `latest_evaluation_run_id()` helper falls back to standalone
-    # evaluation_runs when no pipeline-bound eval exists, so this is the
-    # only place classification can land for an operator running eval-only.
-    # eval_cmd does NOT enforce finviz_schema.REQUIRED_COLUMNS — `Sector`
-    # and `Industry` may be absent; `.get(..., "")` degrades to empty
-    # strings (same default as the dataclass) without raising.
-    sector_industry_by_ticker: dict[str, tuple[str, str]] = {}
-    for _, fv_row in finviz_df.iterrows():
-        t_raw = fv_row.get("Ticker")
-        if pd.isna(t_raw):
-            continue
-        ticker_key = str(t_raw).upper()
-        sec = fv_row.get("Sector", "")
-        ind = fv_row.get("Industry", "")
-        sec = "" if pd.isna(sec) else str(sec)
-        ind = "" if pd.isna(ind) else str(ind)
-        sector_industry_by_ticker[ticker_key] = (sec, ind)
-
-    click.echo(f"Evaluating {len(tickers)} tickers from {csv_file.name}")
-
-    # 2. Load RS universe
+    # Arc 17-A: this is the CLI adapter over the shared orchestrator
+    # (swing.evaluation.orchestration.orchestrate_evaluation); the nightly
+    # pipeline (_step_evaluate) is the sibling adapter. The standalone-eval
+    # universe is the finviz screen ONLY -- held union + pin injection are
+    # intentionally pipeline-only (DIVERGENCE-1/2). See
+    # docs/phase17-arc-a-task-c-divergence-rulings.md.
     universe = load_universe(cfg.paths.rs_universe_path)
     universe_hash = universe_version_hash(cfg.paths.rs_universe_path)
-
     fetcher = PriceFetcher(
         cache_dir=cfg.paths.prices_cache_dir,
         archive_history_days=cfg.archive.archive_history_days,
     )
 
-    # 3. Fetch SPY benchmark
-    spy_return = 0.0
+    # DIVERGENCE-EQUITY (ruled unify): the CLI now honors the capital-floor
+    # convention (real-equity sizing) like the pipeline. No persisted effect
+    # (equity feeds position sizing only) but keeps the two paths consistent.
+    from swing.data.repos.cash import list_cash
+    eq_conn = connect(cfg.paths.db_path)
     try:
-        spy_df = fetcher.get(cfg.rs.benchmark_ticker, lookback_days=365, as_of_date=as_of_date)
-        spy_closes = spy_df["Close"]
-        weeks = cfg.rs.horizon_weeks
-        if len(spy_closes) > weeks * 5:
-            bars = weeks * 5
-            spy_return = float((spy_closes.iloc[-1] / spy_closes.iloc[-bars - 1]) - 1)
-        else:
-            click.echo(
-                f"Warning: SPY has only {len(spy_closes)} bars, need {weeks * 5 + 1}. Using 0.0.",
-                err=True,
-            )
-    except Exception as exc:
-        click.echo(f"Warning: SPY benchmark fetch failed ({exc}), using 0.0", err=True)
-
-    # 4. Fetch OHLCV per ticker
-    returns_12w: dict[str, float] = {}
-    ohlcv_by_ticker: dict[str, pd.DataFrame] = {}
-    error_tickers: list[str] = []
-    bars_needed = cfg.rs.horizon_weeks * 5
-
-    for t in tickers:
-        try:
-            df = fetcher.get(t, lookback_days=400, as_of_date=as_of_date)
-            ohlcv_by_ticker[t] = df
-            closes = df["Close"]
-            if len(closes) > bars_needed:
-                returns_12w[t] = float((closes.iloc[-1] / closes.iloc[-bars_needed - 1]) - 1)
-        except Exception as exc:
-            click.echo(f"  {t}: fetch error - {exc}", err=True)
-            error_tickers.append(t)
-
-    # Fetch universe returns for RS ranking
-    for t in universe.tickers:
-        if t in returns_12w:
-            continue
-        try:
-            df = fetcher.get(t, lookback_days=120, as_of_date=as_of_date)
-            closes = df["Close"]
-            if len(closes) > bars_needed:
-                returns_12w[t] = float((closes.iloc[-1] / closes.iloc[-bars_needed - 1]) - 1)
-        except Exception:
-            pass
-
-    batch = BatchContext(
-        returns_12w_by_ticker=returns_12w,
-        universe_tickers=universe.tickers,
-        universe_version=universe.version,
-        universe_hash=universe_hash,
-        spy_return_12w=spy_return,
-    )
-
-    # 5. Determine dates
-    max_dates = [df.index.max() for df in ohlcv_by_ticker.values() if not df.empty]
-    if max_dates:
-        data_asof = max(max_dates).date()
-    elif as_of_date is not None:
-        data_asof = as_of_date
-    else:
-        # All fetches failed — fall back to the last completed NYSE session (not
-        # wall-clock today, which could be a weekend/holiday or mid-session).
-        data_asof = last_completed_session(run_now)
-    action_session = action_session_for_run(run_now)
-
-    # 6. Build contexts
-    contexts: list[CandidateContext] = []
-    excluded = set(cfg.etf_exclusion.manual_block)
-    excluded_tickers: list[str] = []
-    for t in tickers:
-        if t in excluded:
-            excluded_tickers.append(t)
-            continue
-        if t not in ohlcv_by_ticker:
-            continue
-        contexts.append(CandidateContext(
-            ticker=t,
-            ohlcv=ohlcv_by_ticker[t],
-            config=cfg,
-            batch=batch,
-            market=MarketContext(),
-            current_equity=cfg.account.starting_equity,
-        ))
-
-    # 7. Evaluate
-    candidates = evaluate_batch(contexts)
-
-    # 8. Add excluded + error rows (spec §4.3 — 5 buckets)
-    for t in excluded_tickers:
-        candidates.append(Candidate(
-            ticker=t, bucket="excluded",
-            close=None, pivot=None, initial_stop=None,
-            adr_pct=None, tight_streak=None, pullback_pct=None, prior_trend_pct=None,
-            rs_rank=None, rs_return_12w_vs_spy=None, rs_method="unavailable",
-            pattern_tag=None, notes="ETF/fund blocklist", criteria=(),
-        ))
-    for t in error_tickers:
-        candidates.append(Candidate(
-            ticker=t, bucket="error",
-            close=None, pivot=None, initial_stop=None,
-            adr_pct=None, tight_streak=None, pullback_pct=None, prior_trend_pct=None,
-            rs_rank=None, rs_return_12w_vs_spy=None, rs_method="unavailable",
-            pattern_tag=None, notes="OHLCV fetch failed", criteria=(),
-        ))
-
-    # Plumb Sector/Industry uniformly across every bucket — applied AFTER
-    # both the evaluate_batch result and the synthesized excluded/error rows
-    # so any candidate whose ticker is in the CSV gets classification, and
-    # any ticker not in the CSV (defensive — eval_cmd only sources tickers
-    # from finviz_df, so this should be empty in practice) defaults to the
-    # ('', '') dataclass default. Mirrors the runner._step_evaluate pattern.
-    from dataclasses import replace as _dc_replace
-    candidates = [
-        _dc_replace(
-            c,
-            sector=sector_industry_by_ticker.get(c.ticker, ("", ""))[0],
-            industry=sector_industry_by_ticker.get(c.ticker, ("", ""))[1],
+        sizing_eq = sizing_equity(
+            real_equity=current_equity(
+                starting_equity=cfg.account.starting_equity,
+                exits=list_all_exitshape_via_fills(eq_conn),
+                cash_movements=list_cash(eq_conn),
+            ),
+            floor=cfg.account.risk_equity_floor,
         )
-        for c in candidates
-    ]
-
-    # 9. Persist atomically — run row + candidates + criteria in a single transaction
-    conn = connect(cfg.paths.db_path)
-    run = EvaluationRun(
-        id=None,
-        run_ts=run_now.isoformat(timespec="seconds"),
-        data_asof_date=data_asof.isoformat(),
-        action_session_date=action_session.isoformat(),
-        finviz_csv_path=str(csv_file),
-        tickers_evaluated=len(candidates),
-        aplus_count=sum(1 for c in candidates if c.bucket == "aplus"),
-        watch_count=sum(1 for c in candidates if c.bucket == "watch"),
-        skip_count=sum(1 for c in candidates if c.bucket == "skip"),
-        excluded_count=len(excluded_tickers),
-        error_count=len(error_tickers),
-        rs_universe_version=universe.version,
-        rs_universe_hash=universe_hash,
-    )
-    try:
-        with conn:  # `with conn:` commits on success, rolls back on exception
-            run_id = insert_evaluation_run(conn, run)
-            insert_candidates(conn, run_id, candidates)
     finally:
-        conn.close()
+        eq_conn.close()
 
+    # Output seam: progress + warnings to the operator's terminal.
+    output = OrchestrationOutput(
+        info=click.echo,
+        warn=lambda msg: click.echo(msg, err=True),
+    )
+
+    # Persist seam: a plain single-transaction insert (no lease).
+    def _persist(run, candidates) -> int:
+        conn = connect(cfg.paths.db_path)
+        try:
+            with conn:  # commits on success, rolls back on exception
+                run_id = insert_evaluation_run(conn, run)
+                insert_candidates(conn, run_id, candidates)
+        finally:
+            conn.close()
+        return run_id
+
+    try:
+        result = orchestrate_evaluation(
+            cfg=cfg, csv_path=csv_file, universe=universe,
+            universe_hash=universe_hash, run_now=run_now, fetcher=fetcher,
+            current_equity=sizing_eq, persist=_persist, as_of_date=as_of_date,
+            # screen-only universe (DIVERGENCE-1/2 ruled intentional pipeline-only).
+            augmentation=UniverseAugmentation(),
+            pre_fetch_hook=None,  # no warm/prewarm in the standalone CLI
+            output=output,
+            # DIVERGENCE-SPY-GUARD ruled intentional: the CLI tolerates a SPY
+            # fetch failure (warn + spy_return=0.0, continue).
+            behavior=EvaluationBehaviorPolicy(spy_failure_mode="warn_and_zero"),
+        )
+    except ValueError as exc:  # e.g. malformed CSV (missing Ticker column)
+        raise click.ClickException(str(exc)) from exc
+
+    run = result.run
     click.echo(
-        f"Run {run_id}: A+={run.aplus_count} watch={run.watch_count} "
+        f"Run {result.run_id}: A+={run.aplus_count} watch={run.watch_count} "
         f"skip={run.skip_count} excluded={run.excluded_count} error={run.error_count}"
     )
     click.echo(f"Data as of: {run.data_asof_date}  Action session: {run.action_session_date}")
