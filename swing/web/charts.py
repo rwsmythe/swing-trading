@@ -841,12 +841,21 @@ def render_market_weather_svg(
     """
     _assert_ascii_only(trend_template_state, field="trend_template_state")
     df = _normalize_ohlc_for_mpf(bars)
-    fig, price_ax, _vol_ax = _render_candles_fig(
+    fig, price_ax, vol_ax = _render_candles_fig(
         df,
-        ma_windows=(50, 200),
+        ma_windows=(20, 50, 200),  # 17-D.5: add the 20MA line (palette has 20)
         figsize=_figsize_inches(_MARKET_WEATHER_SIZE_PX),
         volume=True,
     )
+    # 17-D.5: declutter the cramped 400x150 mini-chart -- drop the mpf-default
+    # axis labels that overlap the rotated date ticks. "Price" (price panel)
+    # and "Volume  $10^{6}$" (volume panel; the $10^{6}$ scale-factor is part
+    # of the one ylabel string) both go. Empty-string ylabels are ASCII-safe.
+    # Weather chart ONLY -- ticker_detail / position_detail keep their explicit
+    # "Price (USD)"/"Volume" labels.
+    price_ax.set_ylabel("")
+    if vol_ax is not None:
+        vol_ax.set_ylabel("")
     price_ax.text(
         0.02, 0.88, f"trend: {trend_template_state}",
         transform=price_ax.transAxes,
