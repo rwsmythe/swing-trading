@@ -19,6 +19,8 @@ import contextlib
 import sys
 from types import ModuleType
 
+_MISSING = object()
+
 
 def _swing_module_snapshot() -> dict[str, ModuleType]:
     """Snapshot the current ``swing.*`` entries in ``sys.modules`` (incl. the
@@ -69,7 +71,12 @@ def _restore_swing_modules(snapshot: dict[str, ModuleType]) -> None:
         # non-module parent here is one this fixture must leave alone.
         if not isinstance(parent, ModuleType):
             continue
-        if getattr(parent, child, None) is not original:
+        # Read the CURRENT attribute via ``__dict__`` rather than ``getattr`` so a
+        # module-level ``__getattr__`` (PEP 562) hook -- which fires only for
+        # attributes ABSENT from ``__dict__`` and could raise (a misbehaving lazy
+        # module, or a module-shaped test sentinel) -- is never executed during
+        # teardown.
+        if vars(parent).get(child, _MISSING) is not original:
             # A read-only attribute cannot be reset; the sys.modules restore in
             # pass 1 is the load-bearing repair, so the attribute fix is
             # best-effort.

@@ -218,3 +218,40 @@ def test_restore_skips_non_module_parent_slot_without_raising():
     finally:
         sys.modules.pop(child_name, None)
         sys.modules.pop(parent_name, None)
+
+
+def test_restore_does_not_trigger_module_getattr_hook():
+    """pass-2 must not execute a module-level ``__getattr__`` (PEP 562) hook.
+
+    A real lazy module -- or a module-shaped test sentinel -- can define
+    ``__getattr__`` that raises for absent attributes. Reading the current
+    attribute with ``getattr`` would fire that hook and crash teardown; the
+    fixture reads via ``__dict__`` instead.
+
+    Non-vacuous: with the prior ``getattr(parent, child, None)`` the hook fires
+    (``child`` is absent from the parent's ``__dict__``) and raises; with the
+    ``__dict__`` read it does not, and the child is still restored.
+    """
+    parent_name = "swing.fake_pep562_17d4"
+    child_name = parent_name + ".child"
+
+    parent_mod = types.ModuleType(parent_name)
+
+    def _raising_getattr(attr):  # PEP 562 module __getattr__
+        raise AssertionError(
+            f"module __getattr__ must not be triggered during restore: {attr!r}"
+        )
+
+    parent_mod.__getattr__ = _raising_getattr  # type: ignore[attr-defined]
+    original_child = types.ModuleType(child_name)
+
+    sys.modules[parent_name] = parent_mod
+    sys.modules[child_name] = object()  # != original -> pass 1 restores it
+    try:
+        _restore_swing_modules({child_name: original_child})  # must NOT raise
+        assert sys.modules[child_name] is original_child
+        # pass 2 set the parent attribute without firing __getattr__.
+        assert vars(parent_mod).get("child") is original_child
+    finally:
+        sys.modules.pop(child_name, None)
+        sys.modules.pop(parent_name, None)
