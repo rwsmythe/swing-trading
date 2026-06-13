@@ -61,9 +61,17 @@ def _restore_swing_modules(snapshot: dict[str, ModuleType]) -> None:
         if not parent_name:
             continue
         parent = sys.modules.get(parent_name)
-        if parent is not None and getattr(parent, child, None) is not original:
-            # A non-package parent (or read-only attribute) cannot carry the
-            # submodule attribute; the sys.modules restore in pass 1 is the
-            # load-bearing repair, so the attribute fix is best-effort.
+        # Only repair attributes on a genuine module object. The parent slot may
+        # hold a test sentinel / ``None`` placeholder (e.g. an L2-LOCK test plants
+        # a ``_NoImportSentinel`` whose ``__getattr__`` raises on ANY access, which
+        # ``getattr(parent, child, None)`` would NOT swallow) -- pass 1 already put
+        # the original module back for every ``swing.*`` snapshot key, so a
+        # non-module parent here is one this fixture must leave alone.
+        if not isinstance(parent, ModuleType):
+            continue
+        if getattr(parent, child, None) is not original:
+            # A read-only attribute cannot be reset; the sys.modules restore in
+            # pass 1 is the load-bearing repair, so the attribute fix is
+            # best-effort.
             with contextlib.suppress(AttributeError, TypeError):
                 setattr(parent, child, original)

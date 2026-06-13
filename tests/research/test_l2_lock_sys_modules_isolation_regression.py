@@ -34,6 +34,7 @@ from __future__ import annotations
 import importlib
 import subprocess
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -186,3 +187,34 @@ def test_restore_repairs_parent_attr_even_when_sys_modules_already_original():
         "restore must repair a stale parent attribute even when sys.modules was "
         "already restored to the original by another teardown (Codex R2 Major #1)"
     )
+
+
+def test_restore_skips_non_module_parent_slot_without_raising():
+    """pass-2 parent-attribute repair must tolerate a non-module parent slot.
+
+    Models an L2-LOCK test that plants a ``_NoImportSentinel`` (``__getattr__``
+    raises on ANY access) at a ``swing.*`` parent slot. ``getattr(parent, child,
+    None)`` does NOT swallow that ``AssertionError``, so pass 2 would crash the
+    research test's teardown. The fixture must skip non-module parents.
+
+    Non-vacuous: without the ``isinstance(parent, ModuleType)`` guard, the
+    sentinel's ``__getattr__`` raises and this test errors; with it, restore is a
+    no-op for that entry and the child is still restored in pass 1.
+    """
+    class _Raiser:
+        def __getattr__(self, attr):  # noqa: D401 - sentinel
+            raise AssertionError(f"banned access: {attr!r}")
+
+    child_name = "swing.fake_pkg_17d4.child"
+    parent_name = "swing.fake_pkg_17d4"
+    original_child = types.ModuleType(child_name)
+    sys.modules[child_name] = object()      # != original -> pass 1 restores it
+    sys.modules[parent_name] = _Raiser()    # non-module parent -> pass 2 must skip
+    try:
+        # parent_name intentionally absent from the snapshot, so pass 1 does not
+        # replace the sentinel before pass 2 reads it.
+        _restore_swing_modules({child_name: original_child})
+        assert sys.modules[child_name] is original_child
+    finally:
+        sys.modules.pop(child_name, None)
+        sys.modules.pop(parent_name, None)
