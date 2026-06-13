@@ -13,8 +13,9 @@ NOT handled here (left explicit in runner.py): the FATAL ``evaluate`` step
 ``finviz_fetch`` branches, ``charts`` (a three-way typed handler), the
 ``shadow_expectancy`` failure-side run_warnings append (gotcha #27 keeps
 run_warnings in the SITE, never the guard), ``complete``, and
-``review_log_cadence`` (a bare-except site that deliberately swallows
-LeaseRevokedError).
+``review_log_cadence`` (kept inline: it runs under the ``complete`` breadcrumb
+with no breadcrumb of its own, and -- per 17-D.3 -- re-raises LeaseRevokedError
+then swallows only ordinary Exceptions, like every other guarded step).
 
 LOCK invariants (Arc 17-B brief §5): lease.step fires in __enter__ at the same
 point as today (#25); LeaseRevokedError ALWAYS re-raises (#4); the failure log
