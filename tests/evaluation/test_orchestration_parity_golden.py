@@ -27,12 +27,14 @@ from types import SimpleNamespace
 
 import pandas as pd
 import pytest
+from click.testing import CliRunner
 
 import swing.cli as cli_mod
 import swing.config as swing_config
 import swing.data.ohlcv_archive as archive_mod
 import swing.pipeline.runner as runner_mod
 import swing.prices as prices_mod
+from swing.cli import main
 from swing.data.db import EXPECTED_SCHEMA_VERSION, run_migrations
 from swing.data.models import WatchlistEntry
 from swing.data.repos.watchlist import upsert_watchlist_entry
@@ -293,6 +295,135 @@ def _seed_open_and_pins(db_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Path drivers + row readers
+# --------------------------------------------------------------------------- #
+class _FakeLease:
+    """Minimal Lease: run_id + verify_held()/step() no-ops + a fenced_write()
+    yielding a BEGIN IMMEDIATE conn to the same file DB. Cribbed verbatim from
+    tests/pipeline/test_step_evaluate_pin_injection.py."""
+
+    def __init__(self, db_path, run_id: int):
+        self.db_path = db_path
+        self.run_id = run_id
+
+    def verify_held(self) -> None:
+        pass
+
+    def step(self, name: str) -> None:
+        pass
+
+    @contextmanager
+    def fenced_write(self):
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA foreign_keys=ON")
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+
+def _seed_running_run(db_path: Path, run_id: int) -> None:
+    """Seed the pipeline_runs row matching the lease run_id so
+    set_evaluation_run_id has a row to UPDATE."""
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "INSERT INTO pipeline_runs (id, started_ts, trigger, data_asof_date, "
+            "action_session_date, lease_token, state) VALUES "
+            "(?, '2026-06-11T18:00:00', 'manual', '2026-06-11', '2026-06-12', 'tok', 'running')",
+            (run_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# Full persisted candidate-column set (every column the orchestration writes).
+_CAND_COLS = (
+    "ticker", "bucket", "close", "pivot", "initial_stop", "adr_pct",
+    "tight_streak", "pullback_pct", "prior_trend_pct", "rs_rank",
+    "rs_return_12w_vs_spy", "rs_method", "pattern_tag", "notes", "sector", "industry",
+)
+
+
+def _read_candidates(db_path: Path) -> list[dict]:
+    """All candidate columns for the LATEST evaluation_runs.id, ONE dict per row
+    (a LIST, order-stable by (ticker, bucket)). A LIST (not a ticker-keyed dict)
+    so duplicate rows per ticker stay observable (Codex R1 C1)."""
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        rid = conn.execute("SELECT MAX(id) FROM evaluation_runs").fetchone()[0]
+        if rid is None:
+            return []
+        sql = (
+            "SELECT " + ", ".join(_CAND_COLS) + " FROM candidates "
+            "WHERE evaluation_run_id = ? ORDER BY ticker, bucket"
+        )
+        return [dict(r) for r in conn.execute(sql, (rid,)).fetchall()]
+    finally:
+        conn.close()
+
+
+def _rows_by_ticker(rows: list[dict]) -> dict[str, list[dict]]:
+    out: dict[str, list[dict]] = {}
+    for r in rows:
+        out.setdefault(r["ticker"], []).append(r)
+    return out
+
+
+def _one(rows: list[dict], ticker: str) -> dict:
+    matches = [r for r in rows if r["ticker"] == ticker]
+    assert len(matches) == 1, f"expected exactly one {ticker} row, got {len(matches)}"
+    return matches[0]
+
+
+def _invoke_cli(inputs: SimpleNamespace, cfg_dir: Path, *, catch: bool = True):
+    """Invoke `swing eval` via CliRunner against a fresh migrated + seeded DB.
+    Returns the raw click Result (so error/exit-code paths stay observable)."""
+    runner = CliRunner()
+    cfg_arg = str(cfg_dir / "swing.config.toml")
+    runner.invoke(main, ["--config", cfg_arg, "db-migrate"])
+    _seed_open_and_pins(inputs.db_path)
+    return runner.invoke(
+        main, ["--config", cfg_arg, "eval", "--csv", str(inputs.csv_path)],
+        catch_exceptions=catch,
+    )
+
+
+def _run_cli_path(cfg_dir: Path, inputs: SimpleNamespace) -> list[dict]:
+    """Drive the CLI path to completion and return persisted candidate rows."""
+    result = _invoke_cli(inputs, cfg_dir)
+    assert result.exit_code == 0, (result.output, repr(result.exception))
+    return _read_candidates(inputs.db_path)
+
+
+def _run_pipeline_path(inputs: SimpleNamespace, cfg) -> tuple[list[dict], list[dict]]:
+    """Drive the REAL _step_evaluate (fresh migrated + seeded DB, real
+    PriceFetcher on the seeded archive, _FakeLease). Returns (rows, run_warnings)."""
+    from swing.prices import PriceFetcher
+    _seed_open_and_pins(inputs.db_path)
+    _seed_running_run(inputs.db_path, 1)
+    universe = load_universe(cfg.paths.rs_universe_path)
+    universe_hash = universe_version_hash(cfg.paths.rs_universe_path)
+    fetcher = PriceFetcher(
+        cache_dir=inputs.cache_dir, archive_history_days=cfg.archive.archive_history_days
+    )
+    run_warnings: list[dict] = []
+    runner_mod._step_evaluate(
+        cfg=cfg, fetcher=fetcher, csv_path=inputs.csv_path, universe=universe,
+        universe_hash=universe_hash, run_now=RUN_NOW, action_session=SESSION,
+        lease=_FakeLease(inputs.db_path, 1), price_cache=None, run_warnings=run_warnings,
+    )
+    return _read_candidates(inputs.db_path), run_warnings
+
+
+# --------------------------------------------------------------------------- #
 # Task 0.1 smoke test: fixtures load, archive serves offline.
 # --------------------------------------------------------------------------- #
 def test_seeded_archive_serves_without_network(tmp_path, frozen_clock, pin_network):
@@ -309,3 +440,48 @@ def test_frozen_clock_session_anchors(frozen_clock):
     from swing.evaluation.dates import action_session_for_run, last_completed_session
     assert last_completed_session(RUN_NOW) == SESSION
     assert action_session_for_run(RUN_NOW) == date(2026, 6, 12)
+
+
+# --------------------------------------------------------------------------- #
+# Task 0.2: pin the standalone `swing eval` persisted row-set.
+# --------------------------------------------------------------------------- #
+def test_cli_path_persists_screen_rows(tmp_path, frozen_clock, pin_network):
+    inputs = _build_inputs(tmp_path)
+    _make_config(tmp_path, inputs)
+    rows = _run_cli_path(tmp_path, inputs)
+    by_t = _rows_by_ticker(rows)
+
+    # CLI evaluates the finviz screen ONLY -- HELD/PINNED are absent (DIVERGENCE-1/2).
+    assert set(by_t) == set(SCREEN_TICKERS)
+    assert HELD_TICKER not in by_t
+    assert PINNED_TICKER not in by_t
+    # Every screen ticker -> exactly one 'watch' row (observed); close preserved.
+    for t in SCREEN_TICKERS:
+        row = _one(rows, t)
+        assert row["bucket"] == "watch"
+        assert row["close"] == pytest.approx(35.14)
+        assert row["sector"] == "Technology" and row["industry"] == "Software"
+    # AAA is in the RS universe -> rs_method 'universe' with a rank; BBB/CCC fall back.
+    assert _one(rows, "AAA")["rs_method"] == "universe"
+    assert _one(rows, "AAA")["rs_rank"] == 99
+    assert _one(rows, "BBB")["rs_method"] == "fallback_spy"
+
+
+def test_cli_path_crashes_on_blocklist_and_fetch_fail(tmp_path, frozen_clock, pin_network):
+    """DIVERGENCE-ERROR-DEDUP, CLI side. A ticker that is BOTH ETF-blocklisted AND
+    fetch-failing yields an `excluded` row AND an `error` row (the CLI does NOT
+    dedup). Because candidates has UNIQUE(evaluation_run_id, ticker) and
+    insert_candidates uses a plain INSERT, the second row raises IntegrityError
+    -> the `with conn:` transaction rolls back -> the whole eval FAILS with
+    exit 1 and NOTHING persists. (The constraint does NOT silently de-dupe; it
+    crashes. The pipeline's dedup actively prevents this.)"""
+    import sqlite3 as _sqlite3
+    inputs = _build_inputs(tmp_path, include_blocklist_fail=True)
+    _make_config(tmp_path, inputs)
+    result = _invoke_cli(inputs, tmp_path)
+    assert result.exit_code == 1
+    assert isinstance(result.exception, _sqlite3.IntegrityError)
+    assert "UNIQUE constraint failed" in str(result.exception)
+    assert "candidates" in str(result.exception)
+    # Rolled back -> no candidates persisted at all.
+    assert _read_candidates(inputs.db_path) == []
