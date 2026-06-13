@@ -231,6 +231,16 @@ def _apply_default_stubs(monkeypatch, *, skip: str | None):
         monkeypatch.setattr(target, fn)
 
 
+def _find_run(cfg, run_id):
+    # Closes the connection (sqlite3's `with conn` manages the TRANSACTION, not
+    # close). (Codex R2 #2 -- avoid leaking connections in the assertions.)
+    conn = sqlite3.connect(cfg.paths.db_path)
+    try:
+        return find_run(conn, run_id)
+    finally:
+        conn.close()
+
+
 def _step_timings(cfg) -> list[str]:
     conn = sqlite3.connect(cfg.paths.db_path)
     try:
@@ -302,7 +312,7 @@ def test_injected_exception_contract(site, tmp_path, monkeypatch):
     if site.breadcrumb is not None:
         assert site.breadcrumb in _step_timings(cfg)
     if site.status_key is not None and site.state_on_exc == "complete":
-        run = find_run(sqlite3.connect(cfg.paths.db_path), result.run_id)
+        run = _find_run(cfg, result.run_id)
         assert getattr(run, site.status_key) == "failed"
 ```
 
@@ -338,6 +348,11 @@ def test_planted_lease_revoked_propagation(site, tmp_path, monkeypatch):
 
     result = run_pipeline(cfg=cfg, trigger="manual")
     if site.revoke_propagates:
+        # The planted LeaseRevokedError propagates to the outer handler
+        # (runner.py:1075), which RETURNS RunResult(state="force_cleared").
+        # NOTE: the planted path does not itself force-clear the pipeline_runs
+        # row (no real force_clear mutation occurs); we assert on RunResult.state
+        # only. (Codex R2 #3.)
         assert result.state == "force_cleared"
     else:
         # review_log_cadence: bare `except Exception` swallows LeaseRevokedError.
@@ -359,7 +374,7 @@ def test_evaluate_is_fatal(tmp_path, monkeypatch):
     )
     result = run_pipeline(cfg=cfg, trigger="manual")
     assert result.state == "failed"
-    run = find_run(sqlite3.connect(cfg.paths.db_path), result.run_id)
+    run = _find_run(cfg, result.run_id)
     assert run.evaluation_status == "failed"
 
 
@@ -388,7 +403,7 @@ def test_charts_unavailable_sets_skipped(tmp_path, monkeypatch):
     )
     result = run_pipeline(cfg=cfg, trigger="manual")
     assert result.state == "complete"
-    run = find_run(sqlite3.connect(cfg.paths.db_path), result.run_id)
+    run = _find_run(cfg, result.run_id)
     assert run.charts_status == "skipped"
 ```
 
@@ -611,7 +626,10 @@ LeaseRevokedError).
 LOCK invariants (Arc 17-B brief §5): lease.step fires in __enter__ at the same
 point as today (#25); LeaseRevokedError ALWAYS re-raises (#4); the failure log
 emits on the caller-supplied ``logger`` so records keep the runner logger name
-(#5); the guard never touches run_warnings (#27).
+-> the RENDERED log line, logger name, level, and message are byte-identical and
+redaction routing + the [logging.loggers] override table are unaffected (#5; see
+the Round-2 caller-metadata caveat in the plan's design notes); the guard never
+touches run_warnings (#27).
 """
 from __future__ import annotations
 
@@ -945,7 +963,8 @@ Expected: clean working tree (all edits committed in Tasks 0–4). If the verifi
 ## Design notes — faithfulness to §3 and the explicit-site decisions (for QA / CHARC visibility)
 
 - **The guard handles ONLY BS + B** (the settled §3 shape). It is a `@contextmanager`, independently unit-tested (Task 1), pipeline-internal (`swing/pipeline/`), no new dependency, no schema, no `swing/data`/`swing/trades`/config/pyproject touch.
-- **`logger` is a required keyword param.** §3's illustration (`step_guard(lease, "watchlist", status_key=...)`) is schematic. The `logger` param exists solely to keep failure-warning records on `"swing.pipeline.runner"` (LOCK #5 byte-identical log surface) rather than a new `"swing.pipeline.step_guard"` logger. This is a mechanical realization of "preserve the log surface," not a §3 abstraction change. Phase-0 pins `record.name == "swing.pipeline.runner"`.
+- **`logger` is a required keyword param.** §3's illustration (`step_guard(lease, "watchlist", status_key=...)`) is schematic. The `logger` param exists solely to keep failure-warning records on `"swing.pipeline.runner"` (LOCK #5) rather than a new `"swing.pipeline.step_guard"` logger. This is a mechanical realization of "preserve the log surface," not a §3 abstraction change. Phase-0 pins `record.name == "swing.pipeline.runner"`.
+- **LOCK #5 log-surface claim, scoped precisely (Codex R2 #1).** "Byte-identical log surface" means the RENDERED log line, the logger **name**, the **level**, and the **message** are unchanged — which is exactly what the active formatter emits (`logging_config.py:23` = `%(name)s … %(message)s`, no caller metadata) and what redaction-by-construction + the `[logging.loggers]` override table key on. The `LogRecord` **caller-metadata** fields (`pathname`/`filename`/`module`/`funcName`/`lineno`) DO shift — for the 6 default-path sites the warning now emits from `step_guard.py`; for the 3 custom-`log_failure` sites it emits from the lambda defined in `runner.py`. This is **acceptable**: no formatter, no test, and no operator surface in the repo consumes those fields (the Phase-0 characterization asserts `record.name` + message text, not `funcName`/`lineno`). We deliberately do NOT chase `stacklevel` gymnastics through the contextmanager frame for V1 — it would not even resolve to the `with`-site reliably and buys nothing the rendered line shows.
 - **`log_failure` is a callable, not a plain message string.** §3 sanctions "an overridable message/level param to preserve a step's exact current log text." A plain string is insufficient because `schwab_snapshot`/`schwab_orders` log `type(exc).__name__` (a per-exception dynamic value), not `exc`. A `(logger, name, exc) -> None` callable is the minimal faithful realization. Only 3 sites use it.
 - **`charts` stays EXPLICIT** (not wrapped). Its handler is a THREE-way branch (`ChartingUnavailableError`→`charts_status="skipped"` with NO warning; else→`"failed"`). Forcing the guard to support a typed exception→status mapping would add a `skip_statuses`-style param for ONE site — net-negative by the exact §3 logic that keeps `evaluate` explicit ("contorting the guard … for ONE site"). Rejected alternative: a `skip_statuses: Mapping[type, str]` param. Left explicit; Phase-0 pins both its `failed` and `skipped` branches.
 - **`shadow_expectancy` stays EXPLICIT.** Its failure handler appends to `run_warnings` (gotcha #27). LOCK #2 forbids the guard from touching `run_warnings`; the failure-side append can only happen after the exception is caught (inside a handler), so it must stay in the site. Wrapping it would either drop the warning entry or leak `run_warnings` into the guard.
