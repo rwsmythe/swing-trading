@@ -643,3 +643,55 @@ def test_divergence_inventory_is_complete():
         "DIVERGENCE-1", "DIVERGENCE-2", "DIVERGENCE-EQUITY",
         "DIVERGENCE-ERROR-DEDUP", "DIVERGENCE-EXCLUDED-CLOSE", "DIVERGENCE-SPY-GUARD",
     }
+
+
+# --------------------------------------------------------------------------- #
+# Task 0.5: characterize the SPY-failure divergence through the pinned boundary.
+# --------------------------------------------------------------------------- #
+def test_spy_failure_divergence_is_characterized(tmp_path, frozen_clock, pin_network):
+    """DIVERGENCE-SPY-GUARD is an error-path difference the success-path diff
+    cannot observe. With SPY UNSEEDED, fetcher.get('SPY') reaches the pinned
+    downloader -> deterministic offline raise.
+
+    CLI: catches it -> warns on stderr + persists a run (spy_return 0.0), exit 0.
+    Pipeline: runs SPY straight-line -> the fetch exception propagates -> the step
+    RAISES (nothing persisted)."""
+    cli_in = _build_inputs(tmp_path / "cli", seed_spy=False)
+    _make_config(tmp_path / "cli", cli_in)
+    cli_result = _invoke_cli(cli_in, tmp_path / "cli")
+    assert cli_result.exit_code == 0
+    # Observed warning text (cli.py:426): "Warning: SPY benchmark fetch failed ..."
+    assert "SPY" in cli_result.output
+    assert "benchmark" in cli_result.output
+    # The run still persisted the screen rows (spy_return fell back to 0.0).
+    assert set(_rows_by_ticker(_read_candidates(cli_in.db_path))) == set(SCREEN_TICKERS)
+
+    pipe_in = _build_inputs(tmp_path / "pipe", seed_spy=False)
+    pipe_cfg = _make_config(tmp_path / "pipe", pipe_in)
+    with pytest.raises(Exception):
+        _run_pipeline_path(pipe_in, pipe_cfg)
+
+
+# --------------------------------------------------------------------------- #
+# Task 0.5 Step 3: the human-readable divergence inventory artifact (the input
+# to the Task-C operator checkpoint). Rendered from the single-source DIVERGENCES
+# list so it cannot drift.
+# --------------------------------------------------------------------------- #
+def render_divergence_inventory() -> str:
+    lines = ["# Arc 17-A divergence inventory (Phase-0, harness-observed)\n"]
+    for d in DIVERGENCES:
+        lines.append(
+            f"## {d.tag} -- {d.summary}\n"
+            f"- pipeline: {d.pipeline_side}\n"
+            f"- cli: {d.cli_side}\n"
+            f"- persisted effect: {d.persisted_effect}\n"
+            f"- ruling needed: {d.operator_question}\n"
+        )
+    return "\n".join(lines)
+
+
+def test_divergence_inventory_artifact_covers_all_tags():
+    text = render_divergence_inventory()
+    for d in DIVERGENCES:
+        assert d.tag in text
+        assert d.operator_question in text
