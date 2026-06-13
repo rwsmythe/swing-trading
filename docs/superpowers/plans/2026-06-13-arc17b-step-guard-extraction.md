@@ -10,7 +10,9 @@
 
 ---
 
-## ⚠ BLOCKING PRECONDITION — CHARC ratification of a SECOND fatal site (resolve BEFORE Task 0)
+## ✅ RESOLVED PRECONDITION — CHARC ratified the SECOND fatal site (2026-06-13)
+
+**RESOLVED 2026-06-13 — CHARC RATIFIED AS-IS, no brief amendment** (operator-relayed). CHARC's ruling: the second fatal site (finviz site-1) stays EXPLICIT and untouched exactly like `evaluate` — a context manager cannot `return RunResult` from `run_pipeline`, so BOTH fatal sites must stay explicit regardless of count; the count going 1→2 introduces no new variant KIND and does not change the guard's shape. CHARC also ratified the WIDER explicit set (wrapped = 9 clean best-effort sites only; the 7 special-shape / fatal / terminal sites stay explicit — the conservative correct call, since the guard must only absorb sites it can make byte-identical). NO new module / schema / dependency / §3-shape change. **Execution is AUTHORIZED.** (Original blocking analysis preserved below for the record.)
 
 Re-grounding surfaced a **second genuinely-fatal control-flow site beyond `evaluate`**: the inline empty-inbox recovery branch `finviz_fetch` **site-1** (`runner.py:653-669`) catches a non-revoke `Exception`, `log.error`s, calls `lease.release(state="failed")`, and `return`s a failed `RunResult` — i.e. it ABORTS the run, exactly like `evaluate`. The commissioning brief §2/§3 (and this engineer's dispatch) instruct: *"If the engineer finds a second genuinely-fatal step in the §4 enumeration, STOP and route to CHARC — the variant set would have changed."*
 
