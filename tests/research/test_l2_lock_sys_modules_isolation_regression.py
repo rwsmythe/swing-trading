@@ -26,14 +26,22 @@ child ``-n 0`` process:
      ``SchwabPipelineActiveError``; the route's ``except`` must still catch it.
 
 PRE-FIX this child run reds (the victim gets 500, not 409). POST-FIX the
-``tests/research`` ``_restore_sys_modules_identity`` autouse fixture restores the
+``tests/research`` ``_restore_swing_sys_modules_identity`` autouse fixture restores the
 deleted module's identity at the L2-LOCK test's teardown, so step 3 passes.
 """
 from __future__ import annotations
 
+import importlib
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
+
+from tests.research._sys_modules_isolation import (
+    _restore_swing_modules,
+    _swing_module_snapshot,
+)
 
 # Repo root = three levels up from this file (tests/research/<this file>).
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -56,15 +64,29 @@ def test_research_l2lock_del_does_not_break_web_route_exception_identity():
     it passes. The child runs ``-n 0`` so the ordering is fixed and the bug is
     reproduced deterministically rather than chased under ``-n auto``.
     """
-    proc = subprocess.run(
-        [
-            sys.executable, "-m", "pytest", *_REPRO_NODES,
-            "-n", "0", "-p", "no:cacheprovider", "-q",
-        ],
-        cwd=str(_REPO_ROOT),
-        capture_output=True,
-        text=True,
-    )
+    try:
+        proc = subprocess.run(
+            [
+                sys.executable, "-m", "pytest", *_REPRO_NODES,
+                "-n", "0", "-p", "no:cacheprovider", "-q",
+            ],
+            cwd=str(_REPO_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+    except subprocess.TimeoutExpired as exc:
+        out = (exc.stdout or b"")
+        err = (exc.stderr or b"")
+        if isinstance(out, bytes):
+            out = out.decode("utf-8", "replace")
+        if isinstance(err, bytes):
+            err = err.decode("utf-8", "replace")
+        pytest.fail(
+            "17-D.4 regression child run timed out after 300s (deadlock?).\n"
+            "----- child stdout (tail) -----\n" + out[-3000:]
+            + "\n----- child stderr (tail) -----\n" + err[-2000:]
+        )
     assert proc.returncode == 0, (
         "17-D.4 regression: a research L2-LOCK sys.modules deletion leaked into "
         "the web schwab route's exception-class identity (victim returned 500 "
@@ -74,4 +96,93 @@ def test_research_l2lock_del_does_not_break_web_route_exception_identity():
         + proc.stdout[-3000:]
         + "\n----- child stderr (tail) -----\n"
         + proc.stderr[-2000:]
+    )
+
+
+def test_restore_swing_modules_repairs_sys_modules_and_parent_attr():
+    """Unit test of the restore semantics (closes Codex R1 Major #2).
+
+    Directly exercises the ``tests/research`` fixture's restore helper against
+    the exact polluter shape -- a RAW delete + re-import of a ``swing.*`` module
+    -- and asserts BOTH halves of the repair: the ``sys.modules`` entry AND the
+    parent-package attribute are returned to the ORIGINAL object.
+
+    Non-vacuous: it first proves the re-import genuinely produced a NEW object and
+    repointed the parent attribute (the pollution), then proves the helper undoes
+    both. A restore that only fixed ``sys.modules`` (the pre-Major-#1 version)
+    fails the parent-attribute assertion.
+    """
+    target = "swing.data.ohlcv_archive"
+    importlib.import_module(target)  # ensure cached
+    parent_name, _, child = target.rpartition(".")
+
+    snapshot = _swing_module_snapshot()
+    original = sys.modules[target]
+    parent = sys.modules[parent_name]
+    assert getattr(parent, child) is original
+
+    # Simulate the polluter: RAW delete + re-import -> NEW object, and the import
+    # machinery repoints the parent attribute at the NEW submodule.
+    del sys.modules[target]
+    new_mod = importlib.import_module(target)
+    assert new_mod is not original, "re-import did not produce a new object"
+    assert sys.modules[target] is new_mod
+    assert getattr(parent, child) is new_mod, (
+        "precondition: re-import must repoint the parent attribute"
+    )
+
+    # Repair.
+    _restore_swing_modules(snapshot)
+
+    assert sys.modules[target] is original, (
+        "restore must return the sys.modules entry to the original object"
+    )
+    assert getattr(parent, child) is original, (
+        "restore must also return the parent-package attribute to the original "
+        "object (Codex R1 Major #1)"
+    )
+
+
+def test_restore_repairs_parent_attr_even_when_sys_modules_already_original():
+    """Parent-attribute repair must not depend on this helper restoring
+    sys.modules (closes Codex R2 Major #1).
+
+    Models the ``monkeypatch.delitem`` teardown ordering: another teardown has
+    already put ``sys.modules[target]`` back to the original, but a re-import
+    earlier in the test left the parent-package attribute pointing at the
+    now-discarded new module. The restore helper must still repair that stale
+    attribute.
+
+    Non-vacuous: a pass-2 that only iterated entries IT restored in pass 1 (the
+    pre-R2 implementation) would skip ``target`` here -- ``sys.modules[target]``
+    already equals the original -- and leave the parent attribute stale, failing
+    the final assertion.
+    """
+    target = "swing.data.ohlcv_archive"
+    importlib.import_module(target)  # ensure cached
+    parent_name, _, child = target.rpartition(".")
+
+    snapshot = _swing_module_snapshot()
+    original = sys.modules[target]
+    parent = sys.modules[parent_name]
+
+    # Re-import repoints the parent attribute at a NEW module...
+    del sys.modules[target]
+    new_mod = importlib.import_module(target)
+    assert new_mod is not original
+    assert getattr(parent, child) is new_mod
+    # ...but sys.modules[target] is independently restored first (the ordering
+    # this test exists to cover). Now ONLY the parent attribute is stale.
+    sys.modules[target] = original
+    assert getattr(parent, child) is new_mod, (
+        "precondition: parent attribute must still be stale while sys.modules "
+        "is already original"
+    )
+
+    _restore_swing_modules(snapshot)
+
+    assert sys.modules[target] is original
+    assert getattr(parent, child) is original, (
+        "restore must repair a stale parent attribute even when sys.modules was "
+        "already restored to the original by another teardown (Codex R2 Major #1)"
     )

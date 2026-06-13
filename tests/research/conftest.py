@@ -21,20 +21,21 @@ as NON-DETERMINISTIC web-route failures (17-D.4: ``test_hyp_recs_expand_route`` 
 ``test_schwab_setup_route``, both clean in isolation).
 
 This autouse fixture makes the research suite hermetic with respect to the
-PRODUCTION (``swing.*``) modules it drops: it snapshots ``sys.modules`` before
-each research test and, at teardown, restores the original object for any
-``swing.*`` key that the test deleted or replaced. Modules first imported DURING
-the test (genuinely new keys) are left in place so normal import caching is
-unaffected -- only deletions and identity replacements of already-cached
-``swing.*`` modules are healed.
+PRODUCTION (``swing.*``) modules it drops. It snapshots ``sys.modules`` before
+each research test and, at teardown, for any ``swing.*`` key the test deleted or
+replaced, restores BOTH the ``sys.modules`` entry (so ``import x.y.z`` /
+``from x.y.z import ...`` see the original object again) AND the corresponding
+attribute on the parent package object (so attribute-style access agrees with
+``sys.modules``). The snapshot/restore helpers live in
+``tests/research/_sys_modules_isolation.py`` so tests can exercise them directly.
 
 Scope is deliberately limited to ``swing.*``:
 
   * Healing ``swing.integrations.schwab.*`` and ``swing.data.ohlcv_archive`` (the
-    only production modules these L2-LOCK tests drop) closes the entire class of
-    web-route victims -- every module that bound one of their classes/exceptions
-    earlier in the process -- not just the two observed routes, and it covers
-    future research tests that forget to restore.
+    only production modules these L2-LOCK tests drop) repairs every web-route
+    victim that bound one of their classes/exceptions earlier in the process --
+    not just the two observed routes -- and covers future research tests that
+    forget to restore.
   * It must NOT restore the ``research.harness.*`` package tree: those tests
     intentionally re-import their own subpackages, and blindly restoring a parent
     package object to a pre-test snapshot drops submodule attributes (e.g.
@@ -50,28 +51,23 @@ boundary.
 """
 from __future__ import annotations
 
-import sys
-
 import pytest
+
+from tests.research._sys_modules_isolation import (
+    _restore_swing_modules,
+    _swing_module_snapshot,
+)
 
 
 @pytest.fixture(autouse=True)
 def _restore_swing_sys_modules_identity():
     """Restore any ``swing.*`` ``sys.modules`` entry a research test dropped.
 
-    Snapshot at setup; at teardown, for every ``swing.*`` key present in the
-    snapshot whose current value is no longer the original object (deleted ->
-    absent, or replaced -> different object), put the original object back. Keys
-    added during the test, and all non-``swing.*`` keys (notably the
-    ``research.harness.*`` package tree), are left untouched.
+    Snapshot at setup; restore (sys.modules entries + parent-package attributes)
+    at teardown. See module docstring for why scope is limited to ``swing.*``.
     """
-    snapshot = {
-        name: mod for name, mod in sys.modules.items()
-        if name == "swing" or name.startswith("swing.")
-    }
+    snapshot = _swing_module_snapshot()
     try:
         yield
     finally:
-        for name, original in snapshot.items():
-            if sys.modules.get(name) is not original:
-                sys.modules[name] = original
+        _restore_swing_modules(snapshot)
