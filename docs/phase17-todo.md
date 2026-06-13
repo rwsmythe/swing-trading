@@ -52,6 +52,10 @@ Surfaced 2026-06-12 at the Arc 17-A Task-C divergence sitting (a side-find of th
 
 Operator-requested 2026-06-12. Add a dark-mode theme to the comms mail UI (`scripts/comms_ui.py` — the on-demand localhost FastAPI/HTMX view at 127.0.0.1:8765). Scope at dispatch: a CSS dark theme + a toggle (client-side-persisted); NO new dependency. `scripts/comms_ui.py` is CHARC-custody harness tooling, but this crosses no §3 tripwire (existing script; no new module/schema/dependency/standing process) so it dispatches without an architecture gate.
 
+### 17-D.3 — `review_log_cadence` swallows `LeaseRevokedError` (latent bug — CHARC-found 2026-06-13)
+
+CHARC-found during the 17-B architecture pass; orchestrator-verified on disk (`runner.py:1063-1070`, the `lease.step("complete")` block): `_step_review_log_cadence(lease=lease)` is wrapped in a **bare `except Exception: log.warning(…continuing…)`** with **no** preceding `except LeaseRevokedError: raise`. Every other guarded step re-raises revoke first; this one does not → a `LeaseRevokedError` raised at the cadence step is **swallowed** and the run proceeds to `lease.release(state="complete")`. Likely an oversight (the comment justifies swallowing ordinary auxiliary failures but is silent on revoke), not deliberate; impact NARROW (the last auxiliary step before completion). **Fix:** add `except LeaseRevokedError: raise` before the bare `except Exception` — one line; make it behave like every other step. **Cross-arc coupling (governs the order):** 17-B's Phase-0 characterization PINS `review_log_cadence` as the one site where revoke is swallowed (`test_step_failure_characterization` planted-revoke test asserts `revoke_propagates=False` for this site). The 17-D.3 fix MUST flip that assertion to `revoke_propagates=True` in the same change — so it lands AFTER 17-B (or updates 17-B's characterization test as part of the fix). Operator-relayed from CHARC 2026-06-13.
+
 ## Riders (fold-ins, not arcs)
 
 - **R1 (P4/D7):** declare `requests` in `[project] dependencies` — fold into the FIRST arc that touches pyproject; fast suite required on the change (the inline-edit memory).
