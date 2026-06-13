@@ -485,3 +485,47 @@ def test_cli_path_crashes_on_blocklist_and_fetch_fail(tmp_path, frozen_clock, pi
     assert "candidates" in str(result.exception)
     # Rolled back -> no candidates persisted at all.
     assert _read_candidates(inputs.db_path) == []
+
+
+# --------------------------------------------------------------------------- #
+# Task 0.3: pin the pipeline _step_evaluate persisted row-set + pin_injection.
+# --------------------------------------------------------------------------- #
+def test_pipeline_path_persists_screen_plus_augmentation(tmp_path, frozen_clock, pin_network):
+    inputs = _build_inputs(tmp_path)
+    cfg = _make_config(tmp_path, inputs)
+    rows, warnings = _run_pipeline_path(inputs, cfg)
+    by_t = _rows_by_ticker(rows)
+
+    # Screen rows present (same three as the CLI).
+    assert set(SCREEN_TICKERS).issubset(set(by_t))
+
+    # DIVERGENCE-1: held ticker present as an excluded close-only row.
+    held = _one(rows, HELD_TICKER)
+    assert held["bucket"] == "excluded"
+    assert held["notes"] == "open position"
+    # DIVERGENCE-EXCLUDED-CLOSE: held excluded row PRESERVES its fetched close.
+    assert held["close"] == pytest.approx(35.14)
+
+    # DIVERGENCE-2: pinned off-screen ticker is FULLY evaluated (not excluded).
+    pinned = _one(rows, PINNED_TICKER)
+    assert pinned["bucket"] in {"aplus", "watch", "skip"}
+    # ... and the pin_injection run-warning fires once with the exact dict shape.
+    pin_lines = [w for w in warnings if w.get("kind") == "pin_injection"]
+    assert len(pin_lines) == 1
+    assert pin_lines[0] == {
+        "step": "evaluate", "kind": "pin_injection", "count": 1, "tickers": [PINNED_TICKER],
+    }
+
+
+def test_pipeline_path_dedups_blocklist_and_fetch_fail(tmp_path, frozen_clock, pin_network):
+    """DIVERGENCE-ERROR-DEDUP, pipeline side. The pipeline de-dupes error vs
+    excluded, so a blocklisted-AND-fetch-failing ticker yields EXACTLY ONE row
+    (excluded), close=None -- no IntegrityError (contrast the CLI crash)."""
+    inputs = _build_inputs(tmp_path, include_blocklist_fail=True)
+    cfg = _make_config(tmp_path, inputs)
+    rows, _warnings = _run_pipeline_path(inputs, cfg)
+    zzz = [r for r in rows if r["ticker"] == BLOCKLIST_FAIL]
+    assert len(zzz) == 1
+    assert zzz[0]["bucket"] == "excluded"
+    assert zzz[0]["close"] is None
+    assert zzz[0]["notes"] == "ETF/fund blocklist"
