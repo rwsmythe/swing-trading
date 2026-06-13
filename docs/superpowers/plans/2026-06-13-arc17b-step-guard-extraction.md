@@ -1052,7 +1052,7 @@ git commit -m "refactor(pipeline): route daily_management and schwab steps throu
 
 Durable check (permanent regression): `python -m pytest tests/pipeline/test_step_failure_characterization.py::test_explicit_sites_never_wrapped_in_step_guard -v` — asserts `evaluate`, both `finviz_fetch` sites, `charts`, `shadow_expectancy`, and `complete` stay direct `lease.step("X")` calls and are never wrapped by `step_guard`.
 
-Manual cross-check (one-time): `git diff HEAD~4 -- swing/pipeline/runner.py | grep -n "lease.step(\"evaluate\")\|lease.step(\"charts\")\|lease.step(\"shadow_expectancy\")\|lease.step(\"complete\")\|_step_review_log_cadence\|finviz_fetch"`
+Manual cross-check (OPTIONAL — the durable test above is the binding regression; this is a one-time eyeball only): `git diff HEAD~4 -- swing/pipeline/runner.py | grep -n "lease.step(\"evaluate\")\|lease.step(\"charts\")\|lease.step(\"shadow_expectancy\")\|lease.step(\"complete\")\|_step_review_log_cadence\|finviz_fetch"`
 Expected: the `evaluate`, `charts`, `shadow_expectancy`, `complete`, `review_log_cadence`, and both `finviz_fetch` blocks show NO change for their wrapper logic. Visually confirm the FATAL `evaluate` path still returns `RunResult(state="failed")` inline and `shadow_expectancy` still appends to `run_warnings` in its handler (also pinned by `test_shadow_expectancy_failure_appends_run_warning`).
 
 - [ ] **Step 2: Re-run the AST completeness guard**
