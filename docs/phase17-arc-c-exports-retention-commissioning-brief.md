@@ -1,5 +1,7 @@
 # Phase 17 Arc 17-C — Exports retention (`swing exports cleanup`) — Commissioning / Spec Brief
 
+> **⚠ CLOSED 2026-06-13 — NOT BUILT. DO NOT DISPATCH.** This brief's founding premise was FALSE: dated-`exports/<date>/` retention already exists via `swing/rendering/retention.py:archive_old_exports` (zip→delete at 90d, inside `_step_export` every pipeline run). The proposed command would be redundant at 90d and data-unsafe at shorter windows. Caught at writing-plans (the implementer grounded the brief against live code). D3/P5 = resolved-by-pre-existing-mechanism. See [`phase17-todo.md`](phase17-todo.md) §"Arc 17-C — CLOSED". Retained only as a record of the mis-scoped commission + the brief-premise lesson. The brief body below is preserved verbatim for that record.
+
 **Audience:** A fresh Claude Code instance with no prior conversation context, dispatched to run the **copowers writing-plans** phase for this arc (and, on a later dispatch, executing-plans). This brief IS the spec — turn it into an implementation plan.
 
 **Mission:** Add an operator-gated, age-based retention command `swing exports cleanup` that prunes stale dated nightly export directories (`exports/<YYYY-MM-DD>/`), mirroring the safety-rail + ergonomics shape of the shipped `swing logs cleanup`. Deletion, not compression. Dry-run by default.
