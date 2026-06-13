@@ -140,9 +140,10 @@ def _capture_fig_via_serialize_spy(monkeypatch, render_call):
 
     Monkeypatches ``swing.web.charts._svg_bytes_from_fig`` (the module-level
     name the renderer resolves at call time) with a spy that snapshots the
-    fig's axis ylabels + price-axis line count BEFORE delegating to the real
-    impl (which serializes and ``plt.close``s the fig). This exercises the
-    actual production wiring inside ``render_*_svg``.
+    role-resolved price/volume ylabels, ALL axis ylabels, and the price-axis
+    line colors + count BEFORE delegating to the real impl (which serializes
+    and ``plt.close``s the fig). This exercises the actual production wiring
+    inside ``render_*_svg``.
     """
     import swing.web.charts as charts
 
