@@ -102,6 +102,8 @@ the AST completeness guard (bottom of file) fails if runner.py grows a
 from __future__ import annotations
 
 import ast
+import json
+import logging
 import shutil
 import sqlite3
 from dataclasses import dataclass
@@ -449,6 +451,41 @@ def test_charts_unavailable_sets_skipped(tmp_path, monkeypatch):
     assert run.charts_status == "skipped"
 ```
 
+- [ ] **Step 6b: Pin the `shadow_expectancy` failure-side `run_warnings` append**
+
+`shadow_expectancy` stays EXPLICIT precisely BECAUSE its failure handler appends to `run_warnings` (runner.py:1057-1061) — an observable the generic injection test does not check (`expected_warning=None`). Pin it so an accidental wrap/drop of the append is caught (Codex R5 #2).
+
+```python
+def test_shadow_expectancy_failure_appends_run_warning(tmp_path, monkeypatch):
+    """A RuntimeError in _step_shadow_expectancy: run completes AND a
+    run_warnings entry is persisted to pipeline_runs.warnings_json with
+    step='shadow_expectancy', reason='unexpected step error', bounded detail."""
+    cfg = _make_cfg(tmp_path, inbox="csv")
+    _stub_prices(monkeypatch)
+    _apply_default_stubs(
+        monkeypatch, skip="swing.pipeline.runner._step_shadow_expectancy")
+    monkeypatch.setattr(
+        "swing.pipeline.runner._step_shadow_expectancy",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("shadow boom")),
+    )
+    result = run_pipeline(cfg=cfg, trigger="manual")
+    assert result.state == "complete", result.error_message
+
+    conn = sqlite3.connect(cfg.paths.db_path)
+    try:
+        row = conn.execute(
+            "SELECT warnings_json FROM pipeline_runs WHERE id=?", (result.run_id,)
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None and row[0] is not None, "warnings_json should be set"
+    warnings = json.loads(row[0])
+    shadow = [w for w in warnings if w.get("step") == "shadow_expectancy"]
+    assert len(shadow) == 1, f"expected one shadow warning, got {warnings!r}"
+    assert shadow[0]["reason"] == "unexpected step error"
+    assert shadow[0].get("detail")  # bounded, non-empty
+```
+
 - [ ] **Step 7: Write the AST completeness guard (the DIVERGENCES-inventory pattern)**
 
 Mirrors `tests/integration/test_include_baseline_inventory_guard.py`: an AST scan of `runner.py` enumerates every `lease.step(<string literal>)` call; the multiset of names MUST equal the inventory's expectation. A site added later without an inventory entry fails this test.
@@ -478,9 +515,14 @@ def _runner_step_site_literals() -> list[str]:
         # attribute access `<mod>.step_guard` (Codex R1 #5: don't miss an
         # attribute-qualified call). Aliasing the import is forbidden by the
         # Task-2 implementation note, so a bare-name match is the common case.
+        # Require the receiver arg to be literally `lease` (Codex R5 #3) so a
+        # `step_guard(other_lease, "weather", ...)` cannot falsely satisfy the
+        # runner-breadcrumb inventory.
         elif ((getattr(func, "id", None) == "step_guard"
                or getattr(func, "attr", None) == "step_guard")
                 and len(node.args) >= 2
+                and isinstance(node.args[0], ast.Name)
+                and node.args[0].id == "lease"
                 and isinstance(node.args[1], ast.Constant)
                 and isinstance(node.args[1].value, str)):
             names.append(node.args[1].value)
@@ -503,6 +545,44 @@ def test_runner_step_sites_match_inventory():
         f"runner.py step-site breadcrumbs drifted from the inventory.\n"
         f"actual={dict(actual)}\nexpected={dict(expected)}"
     )
+
+
+# The bespoke/fatal/terminal sites that MUST stay direct lease.step("X") calls
+# and must NEVER be folded into step_guard(...). finviz_fetch covers BOTH the
+# fatal site-1 and the best-effort site-2 (both stay explicit).
+EXPLICIT_BREADCRUMB_NAMES = {
+    "finviz_fetch", "evaluate", "charts", "shadow_expectancy", "complete",
+}
+
+
+def test_explicit_sites_never_wrapped_in_step_guard():
+    """Durable regression (Codex R5 #4): the explicit/fatal sites stay direct
+    lease.step("X") calls and never appear as step_guard(lease, "X", ...).
+    Replaces the manual git-diff grep with a permanent AST assertion."""
+    tree = ast.parse(RUNNER.read_text(encoding="utf-8"))
+    lease_step_names: set[str] = set()
+    step_guard_names: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if (getattr(func, "attr", None) == "step"
+                and getattr(getattr(func, "value", None), "id", None) == "lease"
+                and node.args and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)):
+            lease_step_names.add(node.args[0].value)
+        elif ((getattr(func, "id", None) == "step_guard"
+               or getattr(func, "attr", None) == "step_guard")
+                and len(node.args) >= 2
+                and isinstance(node.args[1], ast.Constant)
+                and isinstance(node.args[1].value, str)):
+            step_guard_names.add(node.args[1].value)
+    # Each explicit/fatal name stays a direct lease.step call ...
+    missing = EXPLICIT_BREADCRUMB_NAMES - lease_step_names
+    assert not missing, f"explicit sites no longer direct lease.step calls: {missing}"
+    # ... and is NEVER wrapped by step_guard.
+    wrapped = EXPLICIT_BREADCRUMB_NAMES & step_guard_names
+    assert not wrapped, f"explicit/fatal sites wrongly wrapped in step_guard: {wrapped}"
 ```
 
 - [ ] **Step 8: Run the full Task-0 suite GREEN against the CURRENT (un-refactored) code**
@@ -970,8 +1050,10 @@ git commit -m "refactor(pipeline): route daily_management and schwab steps throu
 
 - [ ] **Step 1: Confirm the explicit sites were NOT touched**
 
-Run: `git diff HEAD~4 -- swing/pipeline/runner.py | grep -n "lease.step(\"evaluate\")\|lease.step(\"charts\")\|lease.step(\"shadow_expectancy\")\|lease.step(\"complete\")\|_step_review_log_cadence\|finviz_fetch"`
-Expected: the `evaluate`, `charts`, `shadow_expectancy`, `complete`, `review_log_cadence`, and both `finviz_fetch` blocks show NO change (they appear only as unchanged context, not as `+`/`-` lines for their wrapper logic). Visually confirm the FATAL `evaluate` path still returns `RunResult(state="failed")` inline and `shadow_expectancy` still appends to `run_warnings` in its handler.
+Durable check (permanent regression): `python -m pytest tests/pipeline/test_step_failure_characterization.py::test_explicit_sites_never_wrapped_in_step_guard -v` — asserts `evaluate`, both `finviz_fetch` sites, `charts`, `shadow_expectancy`, and `complete` stay direct `lease.step("X")` calls and are never wrapped by `step_guard`.
+
+Manual cross-check (one-time): `git diff HEAD~4 -- swing/pipeline/runner.py | grep -n "lease.step(\"evaluate\")\|lease.step(\"charts\")\|lease.step(\"shadow_expectancy\")\|lease.step(\"complete\")\|_step_review_log_cadence\|finviz_fetch"`
+Expected: the `evaluate`, `charts`, `shadow_expectancy`, `complete`, `review_log_cadence`, and both `finviz_fetch` blocks show NO change for their wrapper logic. Visually confirm the FATAL `evaluate` path still returns `RunResult(state="failed")` inline and `shadow_expectancy` still appends to `run_warnings` in its handler (also pinned by `test_shadow_expectancy_failure_appends_run_warning`).
 
 - [ ] **Step 2: Re-run the AST completeness guard**
 
