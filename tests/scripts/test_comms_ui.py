@@ -655,6 +655,13 @@ def test_page_has_theme_toggle_button(client):
     page = client.get("/").text
     assert 'onclick="toggleTheme()"' in page
     assert "<button" in page
+    # 17-D.2 follow-up: the button mirrors swing web's theme-toggle iconography
+    # (id, moon/sun glyph, aria-label) rather than a "Toggle theme" text label.
+    assert 'id="theme-toggle"' in page
+    assert "\N{CRESCENT MOON}" in page  # light default shows the moon
+    assert 'aria-label="Switch to dark theme"' in page
+    # the sun glyph + the label flip are wired in JS for the dark state
+    assert "_applyThemeIcon" in page
 
 
 def test_page_has_early_theme_script(client):

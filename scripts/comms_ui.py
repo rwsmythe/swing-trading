@@ -265,6 +265,18 @@ _PAGE = """<!doctype html>
       }
     } catch (e) { /* localStorage unavailable -> stay on the light default */ }
   })();
+  // The toggle button mirrors the swing web theme control's iconography
+  // (base.html.j2): a moon glyph when light is active, a sun when dark is, with
+  // the aria-label flipped to match. Swap it on toggle AND on load (the head
+  // no-flash script may have applied dark before the button existed). 17-D.2
+  // follow-up per the operator gate (icon parity with swing web).
+  function _applyThemeIcon(isDark) {
+    var btn = document.getElementById("theme-toggle");
+    if (!btn) { return; }
+    btn.textContent = isDark ? "☀️" : "🌙";  // sun : moon
+    btn.setAttribute("aria-label",
+      isDark ? "Switch to light theme" : "Switch to dark theme");
+  }
   // Flip dark<->light and persist. The CSS custom properties live on :root, so
   // flipping data-theme there re-themes every pane -- including fragments that
   // the 5s htmx innerHTML poll swaps in (they reuse the same classes).
@@ -275,11 +287,17 @@ _PAGE = """<!doctype html>
       // "no stored value == light" stays the single source of truth.
       delete root.dataset.theme;
       try { localStorage.removeItem("comms-theme"); } catch (e) { /* ignore */ }
+      _applyThemeIcon(false);
     } else {
       root.dataset.theme = "dark";
       try { localStorage.setItem("comms-theme", "dark"); } catch (e) { /* ignore */ }
+      _applyThemeIcon(true);
     }
   }
+  // Sync the icon to the active theme once the button is in the DOM.
+  document.addEventListener("DOMContentLoaded", function () {
+    _applyThemeIcon(document.documentElement.dataset.theme === "dark");
+  });
 </script>
 <script src="/static/htmx.min.js"></script>
 <script>
@@ -423,8 +441,8 @@ _PAGE = """<!doctype html>
 </head>
 <body>
 <h1>comms
-  <button type="button" class="theme-toggle" onclick="toggleTheme()">
-    Toggle theme</button>
+  <button type="button" id="theme-toggle" class="theme-toggle"
+          onclick="toggleTheme()" aria-label="Switch to dark theme">🌙</button>
 </h1>
 
 <section id="inbox-pane" hx-get="/panes/inbox" hx-trigger="every 5s"
