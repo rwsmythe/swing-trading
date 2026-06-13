@@ -253,6 +253,29 @@ _PAGE = """<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title id="page-title">comms{% if operator_unread %} ({{ operator_unread }}){% endif %}</title>
+<script>
+  // Theme: apply the persisted choice AS EARLY AS POSSIBLE (before first paint)
+  // so a dark reload never flashes light. Light is the default (no stored
+  // value). Pure client-side -- the server holds NO theme state, sets NO
+  // cookie, and exposes NO theme route (the stateless-server invariant + L2).
+  (function () {
+    try {
+      if (localStorage.getItem("comms-theme") === "dark") {
+        document.documentElement.dataset.theme = "dark";
+      }
+    } catch (e) { /* localStorage unavailable -> stay on the light default */ }
+  })();
+  // Flip dark<->light and persist. The CSS custom properties live on :root, so
+  // flipping data-theme there re-themes every pane -- including fragments that
+  // the 5s htmx innerHTML poll swaps in (they reuse the same classes).
+  function toggleTheme() {
+    var root = document.documentElement;
+    var next = root.dataset.theme === "dark" ? "light" : "dark";
+    if (next === "dark") { root.dataset.theme = "dark"; }
+    else { delete root.dataset.theme; }
+    try { localStorage.setItem("comms-theme", next); } catch (e) { /* ignore */ }
+  }
+</script>
 <script src="/static/htmx.min.js"></script>
 <script>
   // 4xx fragments must swap (the known htmx gotcha) -- validation errors render
@@ -313,35 +336,89 @@ _PAGE = """<!doctype html>
   }
 </script>
 <style>
-  body { font-family: system-ui, sans-serif; margin: 1rem; max-width: 70rem; }
+  /* All colors are CSS custom properties on :root (light defaults). The dark
+     palette is the :root[data-theme="dark"] override below -- flipping the
+     attribute on <html> re-themes the whole page. Variables cascade from :root,
+     so the 5s htmx innerHTML pane swaps (which reuse .msg/.flash/etc.) inherit
+     the active theme automatically with zero per-fragment work. */
+  :root {
+    --bg: #ffffff;
+    --fg: #1a1a1a;
+    --posted-fg: #666;
+    --type-fg: #555;
+    --msg-border: #ddd;
+    --code-bg: #f7f7f7;
+    --strip-border: #ccc;
+    --empty-fg: #888;
+    --dr-fg: #c0392b;      /* decision-request accent (red) */
+    --dr-bg: #fdecea;
+    --dr-border: #c0392b;
+    --stale-fg: #e67e22;   /* stale accent (orange) */
+    --stale-border: #e67e22;
+    --flash-ok-bg: #eafaf1;
+    --flash-ok-border: #2ecc71;
+    --flash-err-bg: #fdecea;
+    --flash-err-border: #c0392b;
+  }
+  :root[data-theme="dark"] {
+    --bg: #1e1e1e;
+    --fg: #e0e0e0;
+    --posted-fg: #9aa0a6;
+    --type-fg: #b0b0b0;
+    --msg-border: #444;
+    --code-bg: #2a2a2a;
+    --strip-border: #444;
+    --empty-fg: #8a8a8a;
+    --dr-fg: #ff6b5e;      /* red hue kept, lightened for dark legibility */
+    --dr-bg: #3a1f1c;
+    --dr-border: #c0392b;
+    --stale-fg: #f0a050;   /* orange hue kept, lightened for dark legibility */
+    --stale-border: #e67e22;
+    --flash-ok-bg: #14301f;
+    --flash-ok-border: #2ecc71;
+    --flash-err-bg: #3a1f1c;
+    --flash-err-border: #c0392b;
+  }
+  body { font-family: system-ui, sans-serif; margin: 1rem; max-width: 70rem;
+         background: var(--bg); color: var(--fg); }
+  h1 { display: flex; align-items: baseline; gap: 0.8rem; }
   h2 { margin: 1.2rem 0 0.4rem; font-size: 1.05rem; }
-  details.msg { border: 1px solid #ddd; border-radius: 4px; margin: 0.25rem 0;
-                padding: 0.3rem 0.5rem; }
+  .theme-toggle { margin-left: auto; font-size: 0.8rem; cursor: pointer;
+                  padding: 0.2rem 0.6rem; }
+  details.msg { border: 1px solid var(--msg-border); border-radius: 4px;
+                margin: 0.25rem 0; padding: 0.3rem 0.5rem; }
   details.msg summary { cursor: pointer; display: flex; gap: 0.8rem;
                         flex-wrap: wrap; align-items: baseline; }
-  details.msg .posted { color: #666; font-variant-numeric: tabular-nums; }
+  details.msg .posted { color: var(--posted-fg);
+                        font-variant-numeric: tabular-nums; }
   details.msg .from { font-weight: 600; }
-  details.msg .type { color: #555; font-size: 0.85rem; }
+  details.msg .type { color: var(--type-fg); font-size: 0.85rem; }
   details.msg .subject { flex: 1; }
   .msg-row.decision-request details.msg,
-  details.msg.decision-request { border-color: #c0392b; background: #fdecea; }
+  details.msg.decision-request { border-color: var(--dr-border);
+                                 background: var(--dr-bg); }
   .msg-row.decision-request .type,
-  details.msg.decision-request .type { color: #c0392b; font-weight: 700; }
-  details.msg.stale { border-color: #e67e22; }
-  details.msg .age { color: #e67e22; font-size: 0.8rem; }
-  pre.body { white-space: pre-wrap; background: #f7f7f7; padding: 0.5rem;
+  details.msg.decision-request .type { color: var(--dr-fg); font-weight: 700; }
+  details.msg.stale { border-color: var(--stale-border); }
+  details.msg .age { color: var(--stale-fg); font-size: 0.8rem; }
+  pre.body { white-space: pre-wrap; background: var(--code-bg); padding: 0.5rem;
              border-radius: 4px; margin: 0.4rem 0 0.1rem; }
   .flash { padding: 0.4rem 0.6rem; border-radius: 4px; margin: 0.3rem 0; }
-  .flash.ok { background: #eafaf1; border: 1px solid #2ecc71; }
-  .flash.err { background: #fdecea; border: 1px solid #c0392b; }
+  .flash.ok { background: var(--flash-ok-bg);
+              border: 1px solid var(--flash-ok-border); }
+  .flash.err { background: var(--flash-err-bg);
+               border: 1px solid var(--flash-err-border); }
   form.compose label { display: block; margin: 0.3rem 0; }
-  .empty { color: #888; font-style: italic; }
-  .strip { border: 1px solid #ccc; border-radius: 4px; padding: 0.6rem;
-           margin: 0.6rem 0; }
+  .empty { color: var(--empty-fg); font-style: italic; }
+  .strip { border: 1px solid var(--strip-border); border-radius: 4px;
+           padding: 0.6rem; margin: 0.6rem 0; }
 </style>
 </head>
 <body>
-<h1>comms</h1>
+<h1>comms
+  <button type="button" class="theme-toggle" onclick="toggleTheme()">
+    Toggle theme</button>
+</h1>
 
 <section id="inbox-pane" hx-get="/panes/inbox" hx-trigger="every 5s"
          hx-swap="innerHTML">

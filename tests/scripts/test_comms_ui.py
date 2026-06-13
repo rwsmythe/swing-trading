@@ -648,6 +648,53 @@ def test_directors_strip_renders_controls(client, comms):
     assert "/orchestrator-bootstrap" in page  # the copy fetch target
 
 
+# --- dark mode theme (17-D.2) ----------------------------------------------
+
+def test_page_has_theme_toggle_button(client):
+    # a header control that flips the theme, client-side only (no form/POST)
+    page = client.get("/").text
+    assert 'onclick="toggleTheme()"' in page
+    assert "<button" in page
+
+
+def test_page_has_early_theme_script(client):
+    # the no-flash apply: read localStorage "comms-theme" + set data-theme on
+    # the root element AS EARLY AS POSSIBLE (so a dark reload never flashes light)
+    page = client.get("/").text
+    assert 'localStorage.getItem("comms-theme")' in page
+    assert "document.documentElement.dataset.theme" in page
+    assert "function toggleTheme()" in page
+
+
+def test_page_persists_theme_to_localstorage(client):
+    # toggleTheme writes the new value back so the choice survives a reload
+    page = client.get("/").text
+    assert 'localStorage.setItem("comms-theme"' in page
+
+
+def test_style_uses_css_variables_on_root(client):
+    # colors are CSS custom properties on :root so the 5s innerHTML pane swaps
+    # (which reuse .msg/.flash classes) inherit the active theme automatically
+    page = client.get("/").text
+    assert ":root" in page
+    assert "var(--" in page
+
+
+def test_page_has_dark_theme_override_block(client):
+    # the dark palette is a [data-theme="dark"] override of the :root defaults
+    page = client.get("/").text
+    assert '[data-theme="dark"]' in page
+
+
+def test_default_theme_is_light(client):
+    # light is the default: the server-rendered <html> carries NO data-theme
+    # attribute; dark is applied only client-side from a stored preference
+    page = client.get("/").text
+    assert '<html lang="en">' in page
+    # the only data-theme occurrences are inside the CSS/JS, never the <html> tag
+    assert "<html lang=\"en\" data-theme" not in page
+
+
 # --- never touches the real comms ------------------------------------------
 
 def test_factory_uses_given_root_not_real_comms(comms):
