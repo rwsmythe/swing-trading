@@ -40,6 +40,10 @@
 
 Standing arc for defects found between Phase 17 commissioning and closeout. Each fix gets its own focused dispatch (TDD; review depth proportional to blast radius — the orchestrator's call, tripwire rules apply as everywhere); entries accumulate here with commit SHAs so the close audit has one place to look. Empty at open — that's the goal state too.
 
+### 17-D.1 — `swing eval` persisted runs may displace the nightly's enriched "latest" run (latent risk / open design question — NOT a confirmed defect)
+
+Surfaced 2026-06-12 at the Arc 17-A Task-C divergence sitting (a side-find of the D6 parity work, not 17-A scope). With the operator's rulings **D1 (held-ticker union) and D2 (Arc-7 pin injection) = INTENTIONAL pipeline-only**, an ad-hoc `swing eval` persists an `evaluation_run` *without* the held-union or pin-injection enrichment. If such a run can become "latest" and feed the dashboard / watchlist "latest `evaluation_run`" reads, an interactive `swing eval` could transiently displace the nightly's enriched run (stale held closes; pins not refreshed). **Pre-existing behavior, NOT introduced by 17-A.** Open question for triage before any fix is scoped: should `swing eval` runs be "latest"-eligible, or marked non-displacing (e.g. a run source/kind flag the "latest" query filters on)? Operator-directed landing 2026-06-12; fyi sent to CHARC (who may reclassify or veto — "let CHARC say no").
+
 ## Riders (fold-ins, not arcs)
 
 - **R1 (P4/D7):** declare `requests` in `[project] dependencies` — fold into the FIRST arc that touches pyproject; fast suite required on the change (the inline-edit memory).
