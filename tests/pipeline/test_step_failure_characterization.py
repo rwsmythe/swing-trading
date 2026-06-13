@@ -456,3 +456,43 @@ def test_explicit_sites_never_wrapped_in_step_guard():
     # ... and is NEVER wrapped by step_guard.
     wrapped = EXPLICIT_BREADCRUMB_NAMES & step_guard_names
     assert not wrapped, f"explicit/fatal sites wrongly wrapped in step_guard: {wrapped}"
+
+
+def _runner_step_guard_names() -> set[str]:
+    """Every ``step_guard(lease, "X", ...)`` breadcrumb literal in runner.py."""
+    tree = ast.parse(RUNNER.read_text(encoding="utf-8"))
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if ((getattr(func, "id", None) == "step_guard"
+             or getattr(func, "attr", None) == "step_guard")
+                and len(node.args) >= 2
+                and isinstance(node.args[0], ast.Name)
+                and node.args[0].id == "lease"
+                and isinstance(node.args[1], ast.Constant)
+                and isinstance(node.args[1].value, str)):
+            names.add(node.args[1].value)
+    return names
+
+
+def test_wrapped_sites_routed_through_step_guard():
+    """Positive inventory regression (Codex exec R1 minor #1): the nine
+    wrapped=True sites ARE implemented as ``step_guard(lease, "X", ...)`` and the
+    explicit sites are NOT. The completeness guard accepts EITHER call form (so
+    breadcrumb coverage is invariant across the extraction); this test
+    additionally pins the wrapped-vs-explicit SPLIT, so a future revert of a
+    wrapped site back to an inline ``try/except`` (that kept its breadcrumb)
+    is caught."""
+    step_guard_names = _runner_step_guard_names()
+    wrapped = {s.breadcrumb for s in SITES if s.wrapped and s.breadcrumb is not None}
+    assert wrapped == {
+        "weather", "daily_management", "watchlist", "recommendations",
+        "pattern_detect", "pattern_observe", "schwab_snapshot",
+        "schwab_orders", "export",
+    }
+    missing = wrapped - step_guard_names
+    assert not missing, f"wrapped sites not routed through step_guard: {missing}"
+    leaked = EXPLICIT_BREADCRUMB_NAMES & step_guard_names
+    assert not leaked, f"explicit/fatal sites wrongly wrapped in step_guard: {leaked}"
