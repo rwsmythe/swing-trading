@@ -431,7 +431,8 @@ def test_seeded_archive_serves_without_network(tmp_path, frozen_clock, pin_netwo
     inputs = _build_inputs(tmp_path)
     from swing.prices import PriceFetcher
     f = PriceFetcher(cache_dir=inputs.cache_dir, archive_history_days=1260)
-    df = f.get("AAA", lookback_days=400, as_of_date=None)  # served from disk; pin_network proves no egress
+    # Served from disk; pin_network proves no network egress.
+    df = f.get("AAA", lookback_days=400, as_of_date=None)
     assert not df.empty
     assert df.index.max().date() == SESSION
 
@@ -569,7 +570,8 @@ DIVERGENCES: list[Divergence] = [
         "cfg.account.starting_equity == 1200.0",
         "NONE -- shared screen rows are column-identical (equity feeds position "
         "sizing only, which is not a persisted candidate column)",
-        "Unify on real-equity sizing, or keep CLI on starting_equity? (no persisted effect either way)",
+        "Unify on real-equity sizing, or keep CLI on starting_equity? "
+        "(no persisted effect either way)",
     ),
     Divergence(
         "DIVERGENCE-ERROR-DEDUP", "error vs excluded dedup",
@@ -668,7 +670,9 @@ def test_spy_failure_divergence_is_characterized(tmp_path, frozen_clock, pin_net
 
     pipe_in = _build_inputs(tmp_path / "pipe", seed_spy=False)
     pipe_cfg = _make_config(tmp_path / "pipe", pipe_in)
-    with pytest.raises(Exception):
+    # The pinned downloader raises RuntimeError; the pipeline propagates it
+    # (straight-line SPY fetch, no try/except) -> the step fails.
+    with pytest.raises(RuntimeError):
         _run_pipeline_path(pipe_in, pipe_cfg)
 
 
