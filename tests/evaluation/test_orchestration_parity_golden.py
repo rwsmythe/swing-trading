@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -529,3 +530,116 @@ def test_pipeline_path_dedups_blocklist_and_fetch_fail(tmp_path, frozen_clock, p
     assert zzz[0]["bucket"] == "excluded"
     assert zzz[0]["close"] is None
     assert zzz[0]["notes"] == "ETF/fund blocklist"
+
+
+# --------------------------------------------------------------------------- #
+# Task 0.4: single-source divergence inventory + column-by-column parity diff.
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class Divergence:
+    tag: str
+    summary: str
+    pipeline_side: str
+    cli_side: str
+    persisted_effect: str
+    operator_question: str
+
+
+# SINGLE SOURCE OF TRUTH (Codex R1 M2): every divergence the harness asserts is
+# enumerated here; the Task-C operator checkpoint + the return report consume it.
+# The persisted_effect strings are the HARNESS-OBSERVED reality (not code-read).
+DIVERGENCES: list[Divergence] = [
+    Divergence(
+        "DIVERGENCE-1", "open-trades (held) union",
+        "held tickers added as excluded close-only rows (HHH observed)",
+        "omitted (no held union)",
+        "held ticker is pipeline-only in the persisted row-set",
+        "Should standalone eval include held tickers (unify) or stay pipeline-only (intentional)?",
+    ),
+    Divergence(
+        "DIVERGENCE-2", "Arc-7 pin injection",
+        "pinned off-screen tickers fully evaluated (PPP watch) + pin_injection warning",
+        "omitted (predates Arc-7)",
+        "pinned ticker is pipeline-only in the persisted row-set",
+        "Unify (CLI gains pin injection) or intentional pipeline-only?",
+    ),
+    Divergence(
+        "DIVERGENCE-EQUITY", "current_equity source",
+        "sizing_equity(real_equity=current_equity(...), floor) == 7500.0 in fixture",
+        "cfg.account.starting_equity == 1200.0",
+        "NONE -- shared screen rows are column-identical (equity feeds position "
+        "sizing only, which is not a persisted candidate column)",
+        "Unify on real-equity sizing, or keep CLI on starting_equity? (no persisted effect either way)",
+    ),
+    Divergence(
+        "DIVERGENCE-ERROR-DEDUP", "error vs excluded dedup",
+        "de-dupes -> ONE excluded row for a blocklisted-AND-failing ticker (ZZZ)",
+        "no dedup -> excluded + error rows -> UNIQUE-constraint IntegrityError -> "
+        "whole eval rolls back (exit 1, nothing persisted)",
+        "ZZZ: pipeline=1 excluded row; CLI=crash. The pipeline dedup PREVENTS the crash.",
+        "Unify on dedup? (the CLI's non-dedup is a latent crash, not just extra rows)",
+    ),
+    Divergence(
+        "DIVERGENCE-EXCLUDED-CLOSE", "held excluded-row close",
+        "preserves the fetched close on a held excluded row (HHH close=35.14)",
+        "always close=None on excluded rows",
+        "follows DIVERGENCE-1: held rows are pipeline-only, so the CLI has no held "
+        "row to compare; blocklist excluded rows are close=None on BOTH sides",
+        "If held rows are unified into the CLI, preserve fetched close or write None?",
+    ),
+    Divergence(
+        "DIVERGENCE-SPY-GUARD", "SPY fetch failure handling",
+        "runs SPY fetch straight-line -> a fetch exception RAISES and fails the step",
+        "wraps SPY fetch in try/except -> warns + spy_return=0.0, continues (exit 0)",
+        "error-path only (success-path spy_return is identical)",
+        "Unify on the guarded path, or keep the pipeline hard-failing (intentional)?",
+    ),
+]
+
+# Pinned from the actual run (characterization, not aspiration).
+EXPECTED_PIPE_ONLY = {HELD_TICKER, PINNED_TICKER}
+EXPECTED_SHARED_COLUMN_DIVERGENCES: dict[str, set[str]] = {}  # equity is sizing-only
+
+
+def test_golden_parity_divergences_are_pinned(tmp_path, frozen_clock, pin_network):
+    """Run BOTH paths on TWO INDEPENDENT freshly-migrated DBs with IDENTICAL seeds
+    + IDENTICAL fixture contents (Codex R1 M1) and compute the row-set + per-column
+    delta. Uses the CLEAN fixture (no ZZZ): the blocklist-AND-fail collision is
+    characterized separately (it crashes the CLI), so it cannot share a diff run."""
+    cli_in = _build_inputs(tmp_path / "cli")
+    pipe_in = _build_inputs(tmp_path / "pipe")
+    _make_config(tmp_path / "cli", cli_in)
+    pipe_cfg = _make_config(tmp_path / "pipe", pipe_in)
+
+    cli_rows = _run_cli_path(tmp_path / "cli", cli_in)
+    pipe_rows, _warnings = _run_pipeline_path(pipe_in, pipe_cfg)
+
+    cli_by, pipe_by = _rows_by_ticker(cli_rows), _rows_by_ticker(pipe_rows)
+    pipe_only = set(pipe_by) - set(cli_by)
+    shared = set(cli_by) & set(pipe_by)
+
+    # DIVERGENCE-1/2: held + pinned are pipeline-only.
+    assert pipe_only == EXPECTED_PIPE_ONLY
+    assert HELD_TICKER in pipe_only
+    assert PINNED_TICKER in pipe_only
+
+    # DIVERGENCE-EQUITY: shared single-row tickers must be column-identical except
+    # the pinned expected set (which is empty -> equity has no persisted effect).
+    differing: dict[str, set[str]] = {}
+    for t in sorted(shared):
+        if len(cli_by[t]) != 1 or len(pipe_by[t]) != 1:
+            continue
+        c, p = cli_by[t][0], pipe_by[t][0]
+        for col in c:
+            if c[col] != p[col]:
+                differing.setdefault(t, set()).add(col)
+    assert differing == EXPECTED_SHARED_COLUMN_DIVERGENCES
+
+
+def test_divergence_inventory_is_complete():
+    """Every divergence the harness asserts is enumerated for Task C (Codex R1 M2)."""
+    tags = {d.tag for d in DIVERGENCES}
+    assert tags == {
+        "DIVERGENCE-1", "DIVERGENCE-2", "DIVERGENCE-EQUITY",
+        "DIVERGENCE-ERROR-DEDUP", "DIVERGENCE-EXCLUDED-CLOSE", "DIVERGENCE-SPY-GUARD",
+    }
