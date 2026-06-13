@@ -270,10 +270,15 @@ _PAGE = """<!doctype html>
   // the 5s htmx innerHTML poll swaps in (they reuse the same classes).
   function toggleTheme() {
     var root = document.documentElement;
-    var next = root.dataset.theme === "dark" ? "light" : "dark";
-    if (next === "dark") { root.dataset.theme = "dark"; }
-    else { delete root.dataset.theme; }
-    try { localStorage.setItem("comms-theme", next); } catch (e) { /* ignore */ }
+    if (root.dataset.theme === "dark") {
+      // back to the light DEFAULT -> clear the attribute and the stored key so
+      // "no stored value == light" stays the single source of truth.
+      delete root.dataset.theme;
+      try { localStorage.removeItem("comms-theme"); } catch (e) { /* ignore */ }
+    } else {
+      root.dataset.theme = "dark";
+      try { localStorage.setItem("comms-theme", "dark"); } catch (e) { /* ignore */ }
+    }
   }
 </script>
 <script src="/static/htmx.min.js"></script>
@@ -342,6 +347,7 @@ _PAGE = """<!doctype html>
      so the 5s htmx innerHTML pane swaps (which reuse .msg/.flash/etc.) inherit
      the active theme automatically with zero per-fragment work. */
   :root {
+    color-scheme: light;   /* themes native controls (inputs/selects/buttons) */
     --bg: #ffffff;
     --fg: #1a1a1a;
     --posted-fg: #666;
@@ -361,6 +367,7 @@ _PAGE = """<!doctype html>
     --flash-err-border: #c0392b;
   }
   :root[data-theme="dark"] {
+    color-scheme: dark;    /* native controls follow the dark theme too */
     --bg: #1e1e1e;
     --fg: #e0e0e0;
     --posted-fg: #9aa0a6;
