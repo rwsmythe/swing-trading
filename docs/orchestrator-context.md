@@ -207,6 +207,8 @@ python scripts/role_mail.py post --from orchestrator --to charc,rd \
   --type return_report --subject "<arc>: <one line>" --body-file <return-report.md>
 ```
 
+**The IMPLEMENTER never posts to the mailbox — the ORCHESTRATOR does, and only AFTER QA.** Return reports flow: implementer → orchestrator (the implementer's final chat message, operator-relayed) → orchestrator QA against disk → THEN the orchestrator posts the QA'd report to the directors. A dispatch / executing-plans prompt MUST NOT instruct the implementer to run `role_mail.py post` (and NEVER `--from orchestrator` — that impersonates this role and bypasses the QA gate). The implementer's final brief step is always "return report as your final chat message," nothing more. (Caught 2026-06-12: the Arc 17-A executing prompt's Step 9 told the implementer to post its `return_report` straight to charc+operator, skipping QA — a brief-template defect, not an implementer deviation. A brief §8 / dispatch step that says "return report via the mailbox" must be read as the orchestrator's post-QA action, and dispatch prompts must be authored accordingly.)
+
 Additionally, post LIFECYCLE events as `--type status` to both directors as they happen, so the directors follow arc state in real time:
 
 - copowers-phase transitions: brainstorm / writing-plans / executing-plans **dispatched** or **returned**.
