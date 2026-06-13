@@ -123,6 +123,11 @@ class Site:
     # is `name`; review_log_cadence runs under the "complete" breadcrumb so it
     # has NO breadcrumb of its own.
     breadcrumb: str | None
+    # The EXACT warning line the runner emits when the body raises
+    # RuntimeError(f"injected into {name}"). Set for the 9 wrapped sites so the
+    # characterization pins the production warning text byte-identically pre- AND
+    # post-extraction (Codex R3 #2). None for non-wrapped/fatal/terminal sites.
+    expected_warning: str | None = None
 
 
 # THE SINGLE SOURCE OF TRUTH. Order mirrors execution order in run_pipeline.
@@ -132,7 +137,8 @@ SITES: list[Site] = [
          "failed", True, "finviz_fetch"),
     Site("weather", "weather_status", True,
          "swing.weather.classifier.classify_weather", "csv",
-         "complete", True, "weather"),
+         "complete", True, "weather",
+         expected_warning="weather failed: injected into weather"),
     Site("finviz_fetch_site2", None, False,
          "swing.pipeline.runner._step_finviz_fetch", "csv",
          "complete", True, "finviz_fetch"),
@@ -141,31 +147,40 @@ SITES: list[Site] = [
          "failed", True, "evaluate"),
     Site("daily_management", None, True,
          "swing.pipeline.runner._step_daily_management", "csv",
-         "complete", True, "daily_management"),
+         "complete", True, "daily_management",
+         expected_warning=("daily_management step programming error "
+                           "(continuing): injected into daily_management")),
     Site("watchlist", "watchlist_status", True,
          "swing.pipeline.runner._step_watchlist", "csv",
-         "complete", True, "watchlist"),
+         "complete", True, "watchlist",
+         expected_warning="watchlist failed: injected into watchlist"),
     Site("recommendations", "recommendations_status", True,
          "swing.pipeline.runner._step_recommendations", "csv",
-         "complete", True, "recommendations"),
+         "complete", True, "recommendations",
+         expected_warning="recommendations failed: injected into recommendations"),
     Site("pattern_detect", None, True,
          "swing.pipeline.runner._step_pattern_detect", "csv",
-         "complete", True, "pattern_detect"),
+         "complete", True, "pattern_detect",
+         expected_warning="pattern_detect failed: injected into pattern_detect"),
     Site("pattern_observe", None, True,
          "swing.pipeline.runner._step_pattern_observe", "csv",
-         "complete", True, "pattern_observe"),
+         "complete", True, "pattern_observe",
+         expected_warning="pattern_observe failed: injected into pattern_observe"),
     Site("schwab_snapshot", None, True,
          "swing.integrations.schwab.pipeline_steps._step_schwab_snapshot", "csv",
-         "complete", True, "schwab_snapshot"),
+         "complete", True, "schwab_snapshot",
+         expected_warning="schwab_snapshot failed (continuing pipeline): RuntimeError"),
     Site("schwab_orders", None, True,
          "swing.integrations.schwab.pipeline_steps._step_schwab_orders", "csv",
-         "complete", True, "schwab_orders"),
+         "complete", True, "schwab_orders",
+         expected_warning="schwab_orders failed (continuing pipeline): RuntimeError"),
     Site("charts", "charts_status", False,
          "swing.pipeline.runner._step_charts", "csv",
          "complete", True, "charts"),
     Site("export", "export_status", True,
          "swing.pipeline.runner._step_export", "csv",
-         "complete", True, "export"),
+         "complete", True, "export",
+         expected_warning="export failed: injected into export"),
     Site("shadow_expectancy", None, False,
          "swing.pipeline.runner._step_shadow_expectancy", "csv",
          "complete", True, "shadow_expectancy"),
@@ -290,10 +305,12 @@ _EXC_SITES = [
 
 
 @pytest.mark.parametrize("site", _EXC_SITES, ids=lambda s: s.name)
-def test_injected_exception_contract(site, tmp_path, monkeypatch):
+def test_injected_exception_contract(site, tmp_path, monkeypatch, caplog):
     """A raised Exception in each best-effort/explicit step: run CONTINUES,
-    the *_status flips to 'failed' (BS sites) or stays absent (B sites), and
-    the step's breadcrumb still fired (lease.step ran before the body)."""
+    the *_status flips to 'failed' (BS sites) or stays absent (B sites), the
+    step's breadcrumb still fired (lease.step ran before the body), AND the
+    PRODUCTION warning text is byte-identical (Codex R3 #2 -- pins the real
+    runner site, not a synthetic lambda)."""
     cfg = _make_cfg(tmp_path, inbox=site.inbox)
     _stub_prices(monkeypatch)
     _apply_default_stubs(monkeypatch, skip=site.inject)
@@ -306,7 +323,8 @@ def test_injected_exception_contract(site, tmp_path, monkeypatch):
         raise RuntimeError(f"injected into {site.name}")
 
     monkeypatch.setattr(site.inject, _boom)
-    result = run_pipeline(cfg=cfg, trigger="manual")
+    with caplog.at_level(logging.WARNING, logger="swing.pipeline.runner"):
+        result = run_pipeline(cfg=cfg, trigger="manual")
 
     assert result.state == site.state_on_exc, result.error_message
     if site.breadcrumb is not None:
@@ -314,7 +332,18 @@ def test_injected_exception_contract(site, tmp_path, monkeypatch):
     if site.status_key is not None and site.state_on_exc == "complete":
         run = _find_run(cfg, result.run_id)
         assert getattr(run, site.status_key) == "failed"
+    if site.expected_warning is not None:
+        msgs = [
+            r.getMessage() for r in caplog.records
+            if r.name == "swing.pipeline.runner"
+        ]
+        assert site.expected_warning in msgs, (
+            f"expected warning not emitted on swing.pipeline.runner: "
+            f"{site.expected_warning!r}; got {msgs!r}"
+        )
 ```
+
+> **Phase-0 robustness note:** if the pipeline's `install_logging` composition root detaches propagation to the root logger (so `caplog` sees nothing), assert against the rendered `pipeline.log` file under the tmp config instead (the existing redaction tests `tests/integrations/test_pipeline_log_redaction.py` read that surface) — that is an even more faithful LOCK #5 check (the actual rendered line). Resolve this when landing Task 0 green; the `expected_warning` strings are unchanged either way. The same byte-identical strings must still hold AFTER the extraction (Tasks 2/4) — that is the whole point of pinning them now.
 
 Note on the two excluded names: `evaluate` (FATAL → `state="failed"`, asserted separately in Step 5) and `finviz_fetch_site1` (FATAL + needs the empty-inbox fixture, asserted separately in Step 5). `charts`'s generic-Exception branch IS exercised here (`charts_status == "failed"`); its `ChartingUnavailableError`→`"skipped"` branch is pinned in Step 6.
 
@@ -634,9 +663,8 @@ touches run_warnings (#27).
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from typing import Iterator
 
 from swing.data.repos.pipeline import LeaseRevokedError
 
