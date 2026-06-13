@@ -1,6 +1,6 @@
 # Phase 17 — 17-D.5: Weather mini-chart polish — axis-label declutter + 20MA line (FIX-DIRECT)
 
-> **DISPATCH HELD (operator, 2026-06-13):** do NOT dispatch this yet. Per the 17-D dispatch posture, bug-container items are registered + briefed on report but dispatched as a batch when the operator activates the 17-D arc. This brief is dispatch-ready and waiting.
+> **ACTIVE (17-D arc activated by the operator 2026-06-13)** — part of the quick-wins batch (.3 / .5 / .2). Dispatch-ready.
 
 **Audience:** A fresh Claude Code instance with no prior conversation context. This is a small, operator-specified bug fix in the 17-D bug container — one renderer, a few lines + regression tests + an operator visual gate. Known mechanism; no investigation phase.
 
