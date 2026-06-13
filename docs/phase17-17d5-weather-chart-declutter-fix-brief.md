@@ -1,8 +1,10 @@
-# Phase 17 — 17-D.5: Weather mini-chart axis-label declutter (FIX-DIRECT)
+# Phase 17 — 17-D.5: Weather mini-chart polish — axis-label declutter + 20MA line (FIX-DIRECT)
 
-**Audience:** A fresh Claude Code instance with no prior conversation context. This is a small, operator-specified bug fix in the 17-D bug container — one renderer, ~2 lines + a regression test + an operator visual gate. Known mechanism; no investigation phase.
+> **DISPATCH HELD (operator, 2026-06-13):** do NOT dispatch this yet. Per the 17-D dispatch posture, bug-container items are registered + briefed on report but dispatched as a batch when the operator activates the 17-D arc. This brief is dispatch-ready and waiting.
 
-**Mission:** Remove the overlapping axis labels from the "Market weather (SP500 daily)" mini-chart: drop the **"Price"** ylabel, the **"Volume"** ylabel, and the **"10^6"** scale-factor — on the weather chart ONLY. Leave everything else (candlesticks, MA line, the `trend: stage_2` badge, the left/right price ticks, volume bars, date axis).
+**Audience:** A fresh Claude Code instance with no prior conversation context. This is a small, operator-specified bug fix in the 17-D bug container — one renderer, a few lines + regression tests + an operator visual gate. Known mechanism; no investigation phase.
+
+**Mission:** Two operator-specified tweaks to the "Market weather (SP500 daily)" mini-chart (`render_market_weather_svg`), weather chart ONLY: (1) **declutter** — drop the **"Price"** ylabel, the **"Volume"** ylabel, and the **"10^6"** scale-factor that overlap the rotated date ticks; (2) **add the 20-day MA line**. Leave everything else (candlesticks, existing MA lines, the `trend: stage_2` badge, the left/right price ticks, volume bars, date axis).
 
 **Expected duration:** ~30–45 min including the visual gate.
 
@@ -23,11 +25,11 @@
 `_render_candles_fig` resolves and returns `vol_ax` (its internal `_resolve_volume_ax` runs during the build), so clearing the ylabels **after** the call is safe and does not break volume-axis resolution.
 
 ## §2 The fix (scoped to `render_market_weather_svg` ONLY)
-In `render_market_weather_svg`, capture the volume axis (currently discarded as `_vol_ax`) and clear both ylabels after `_render_candles_fig` returns:
+In `render_market_weather_svg`: (a) add `20` to `ma_windows`; (b) capture the volume axis (currently discarded as `_vol_ax`) and clear both ylabels after `_render_candles_fig` returns:
 
 ```python
 fig, price_ax, vol_ax = _render_candles_fig(
-    df, ma_windows=(50, 200),
+    df, ma_windows=(20, 50, 200),   # 17-D.5: add the 20MA line (palette already has 20)
     figsize=_figsize_inches(_MARKET_WEATHER_SIZE_PX), volume=True,
 )
 # 17-D.5: declutter the cramped 400x150 mini-chart — drop the mpf-default
@@ -48,6 +50,8 @@ Add a test to `tests/web/test_charts_volume_yticks_stripped.py` (or a sibling) t
 
 **LOCK:** the test must exercise `render_market_weather_svg`, NOT rebuild via `_render_candles_fig` directly — a builder-rebuild asserts the wrong path and FALSE-PASSES (the builder still carries the mpf-default labels; the fix lives in the renderer). Add/keep an assertion that `render_ticker_detail_svg` still yields a `"Price (USD)"`/`"Volume"`-labelled chart (the existing `test_render_ticker_detail_preserves_volume_ylabel` covers ticker_detail's volume ylabel — confirm it stays green).
 
+**20MA test:** assert the weather chart now draws three MA addplots (20/50/200) — e.g. via the captured fig, count the MA line artists on `price_ax` (the existing palette/MA test patterns in `tests/web/test_charts.py` show how MA lines are asserted), or assert the 20-window rolling-mean line is present. With a sufficiently long synthetic `bars` series (≥200 bars so none are skipped), all three render.
+
 ## §4 Binding conventions
 - Branch `main`; conventional commit (`fix(web): 17-D.5 — declutter weather mini-chart axis labels`); **NO `Co-Authored-By`, NO `--no-verify`, NO amend.** Verify `git log -1 --format='%(trailers)'` empty.
 - Fast suite `python -m pytest -m "not slow" -q` green on the merged head; `ruff check swing/` zero new violations.
@@ -56,7 +60,7 @@ Add a test to `tests/web/test_charts_volume_yticks_stripped.py` (or a sibling) t
 ## §5 Done criteria + GATE
 - The two-line fix + the production-path regression test land; existing chart tests (incl. the volume-ytick-strip + ticker_detail-ylabel-preserve guards) stay green; ruff clean; trailers `[]`.
 - `copowers:review` converged (responses persisted).
-- **Operator-witnessed visual gate (BINDING):** the operator opens the web dashboard, regenerates/refreshes the Market-weather chart, and confirms "Price", "Volume", and "10^6" are gone and nothing else (candles, MA, trend badge, price ticks, volume bars, dates) regressed. This is the real confidence source — string/structural tests are necessary but not sufficient for rendered chart text.
+- **Operator-witnessed visual gate (BINDING):** the operator opens the web dashboard, regenerates/refreshes the Market-weather chart, and confirms (a) "Price", "Volume", and "10^6" are gone; (b) the 20MA line is now drawn alongside the 50/200; (c) nothing else (candles, existing MAs, trend badge, price ticks, volume bars, dates) regressed. This is the real confidence source — string/structural tests are necessary but not sufficient for rendered chart text.
 
 ## §6 Return report (your final chat message ONLY)
 Report: the commit SHA; the test added (name + the spy mechanism + why it hits the production path); the `copowers:review` verdict + persisted-findings path; confirmation the scope-LOCK guards (ticker_detail/position_detail labels) stayed green; the exact steps for the operator to drive the visual gate. **Do NOT post to the mailbox or any director** — that is the orchestrator's post-QA action.
