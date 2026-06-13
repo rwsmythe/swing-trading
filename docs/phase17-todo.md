@@ -44,6 +44,10 @@ Standing arc for defects found between Phase 17 commissioning and closeout. Each
 
 Surfaced 2026-06-12 at the Arc 17-A Task-C divergence sitting (a side-find of the D6 parity work, not 17-A scope). With the operator's rulings **D1 (held-ticker union) and D2 (Arc-7 pin injection) = INTENTIONAL pipeline-only**, an ad-hoc `swing eval` persists an `evaluation_run` *without* the held-union or pin-injection enrichment. If such a run can become "latest" and feed the dashboard / watchlist "latest `evaluation_run`" reads, an interactive `swing eval` could transiently displace the nightly's enriched run (stale held closes; pins not refreshed). **Pre-existing behavior, NOT introduced by 17-A.** Open question for triage before any fix is scoped: should `swing eval` runs be "latest"-eligible, or marked non-displacing (e.g. a run source/kind flag the "latest" query filters on)? Operator-directed landing 2026-06-12; fyi sent to CHARC (who may reclassify or veto — "let CHARC say no").
 
+### 17-D.2 — Dark mode for the comms GUI (enhancement, not a defect)
+
+Operator-requested 2026-06-12. Add a dark-mode theme to the comms mail UI (`scripts/comms_ui.py` — the on-demand localhost FastAPI/HTMX view at 127.0.0.1:8765). Scope at dispatch: a CSS dark theme + a toggle (client-side-persisted); NO new dependency. `scripts/comms_ui.py` is CHARC-custody harness tooling, but this crosses no §3 tripwire (existing script; no new module/schema/dependency/standing process) so it dispatches without an architecture gate.
+
 ## Riders (fold-ins, not arcs)
 
 - **R1 (P4/D7):** declare `requests` in `[project] dependencies` — fold into the FIRST arc that touches pyproject; fast suite required on the change (the inline-edit memory).
