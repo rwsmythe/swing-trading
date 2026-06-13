@@ -1018,10 +1018,12 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
             lease.step("complete")
             try:
                 _step_review_log_cadence(lease=lease)
+            except LeaseRevokedError:
+                raise
             except Exception as exc:
                 # Cadence pre-create is auxiliary — its failure must NOT roll back the
                 # primary value chain (briefing emission). Log + continue. Brief §6.2
-                # watch item 13.
+                # watch item 13. (17-D.3: revoke now propagates like every other step.)
                 log.warning("review_log cadence step failed (continuing): %s", exc)
             lease.release(
                 state="complete",

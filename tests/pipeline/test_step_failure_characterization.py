@@ -111,7 +111,7 @@ SITES: list[Site] = [
          "complete", False, "complete"),
     Site("review_log_cadence", None, False,
          "swing.pipeline.runner._step_review_log_cadence", "csv",
-         "complete", False, None),  # revoke_propagates=False: bare except swallows it
+         "complete", True, None),  # revoke_propagates=True (17-D.3): re-raises like other steps
 ]
 
 BY_NAME = {s.name: s for s in SITES}
@@ -264,9 +264,9 @@ _REVOKE_SITES = [s for s in SITES if s.inject is not None]
 @pytest.mark.parametrize("site", _REVOKE_SITES, ids=lambda s: s.name)
 def test_planted_lease_revoked_propagation(site, tmp_path, monkeypatch):
     """A planted LeaseRevokedError ABORTS the run (state='force_cleared')
-    for every guarded site EXCEPT review_log_cadence (bare except swallows it
-    -> run completes) and finviz_fetch_site1 (outside the L741 try -> raises
-    out of run_pipeline)."""
+    for every guarded site EXCEPT finviz_fetch_site1 (outside the L741 try ->
+    raises out of run_pipeline). review_log_cadence now re-raises revoke like
+    every other step (17-D.3), so it too propagates to force_cleared."""
     cfg = _make_cfg(tmp_path, inbox=site.inbox)
     _stub_prices(monkeypatch)
     _apply_default_stubs(monkeypatch, skip=site.inject)
@@ -292,7 +292,8 @@ def test_planted_lease_revoked_propagation(site, tmp_path, monkeypatch):
         # only. (Codex R2 #3.)
         assert result.state == "force_cleared"
     else:
-        # review_log_cadence: bare `except Exception` swallows LeaseRevokedError.
+        # No site currently swallows revoke; this branch is retained only for
+        # the (now-unused) revoke_propagates=False contract.
         assert result.state == "complete"
 
 
