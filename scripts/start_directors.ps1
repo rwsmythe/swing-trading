@@ -48,9 +48,12 @@
         project dir); --session-id is unreliable interactively.
       * "--model <model>", "--effort <level>" (low, medium, high, xhigh, max)
         and "--permission-mode <mode>" (incl. "auto") EXIST. Directors launch
-        with '--model fable --effort xhigh --permission-mode auto' on BOTH
-        fresh and resume (operator directives 2026-06-11); every flag and
-        value is preflight-verified before launch.
+        with '--model opus --effort xhigh --permission-mode auto' on BOTH
+        fresh and resume (operator directives 2026-06-11; model switched
+        fable -> opus 2026-06-13 when Fable access was secured/conserved);
+        every flag is preflight-verified before launch. The model alias is
+        NOT value-checked against --help (aliases fable|opus|sonnet rotate as
+        new models ship; an invalid alias fails fast at launch, not silently).
       * Auto-submit vs pre-fill of the positional [prompt]: documentation is
         ambiguous and this is version-dependent. The bootstrap prompts are
         SELF-CONTAINED, so either behavior works -- if claude pre-fills the
@@ -86,11 +89,12 @@ $BootstrapFiles = @{
 }
 $RoleTitles = @{ 'charc' = 'CHARC'; 'rd' = 'RD' }
 
-# Directors run on Fable at extra-high effort in auto permission mode
-# (operator directives 2026-06-11). Applied to BOTH fresh and resume launches;
-# preflight verifies each flag and value against the installed CLI before any
-# window opens.
-$LaunchArgs = @('--model', 'fable', '--effort', 'xhigh', '--permission-mode', 'auto')
+# Directors run on Opus 4.8 at extra-high effort in auto permission mode
+# (operator directives 2026-06-11; model switched fable -> opus 2026-06-13).
+# Applied to BOTH fresh and resume launches; preflight verifies each flag and
+# the effort/permission VALUES against the installed CLI before any window opens
+# (the --model alias is not value-checked -- aliases rotate as models ship).
+$LaunchArgs = @('--model', 'opus', '--effort', 'xhigh', '--permission-mode', 'auto')
 
 # Short, quoting-safe directive prompts (no newlines, quotes, or semicolons --
 # the full multi-line prompt content lives in the bootstrap files to keep the
@@ -129,7 +133,7 @@ function Invoke-Preflight {
         throw "this claude CLI ($version) does not advertise --resume in --help; refusing to launch with a guessed flag."
     }
     if (-not ($help -match '--model')) {
-        throw "this claude CLI ($version) does not advertise --model in --help (directors launch with '--model fable'); refusing to launch with a guessed flag."
+        throw "this claude CLI ($version) does not advertise --model in --help (directors launch with '--model opus'); refusing to launch with a guessed flag."
     }
     if (-not ($help -match '--effort')) {
         throw "this claude CLI ($version) does not advertise --effort in --help (directors launch with '--effort xhigh'); refusing to launch with a guessed flag."
