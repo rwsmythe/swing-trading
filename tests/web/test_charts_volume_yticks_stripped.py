@@ -14,6 +14,8 @@ from __future__ import annotations
 import matplotlib.pyplot as plt
 import pandas as pd
 
+from swing.data.models import Fill, Trade
+
 
 def _make_bars(n: int = 90) -> pd.DataFrame:
     idx = pd.bdate_range(start="2024-01-01", periods=n)
@@ -154,6 +156,17 @@ def _capture_fig_via_serialize_spy(monkeypatch, render_call):
         captured["vol_ylabel"] = (
             vol_ax.get_ylabel() if vol_ax is not None else None
         )
+        # ALL axis ylabels (price panel, its twin, volume panel, volume twin).
+        # Asserting against the full set sidesteps the _resolve_volume_ax
+        # twin/panel ambiguity: it proves NO axis carries an mpf-default
+        # "Price"/"Volume ..." label, not merely the role-resolved one.
+        captured["all_ylabels"] = [ax.get_ylabel() for ax in fig.axes]
+        # MA addplots render as Line2D on the price axis (candles are drawn as
+        # collections, not lines). Capture colors so the test can assert the
+        # SPECIFIC 20/50/200 MA lines, not just a line count.
+        captured["price_line_colors"] = [
+            ln.get_color() for ln in price_ax.get_lines()
+        ]
         captured["n_price_lines"] = len(price_ax.get_lines())
         return real(fig)
 
@@ -185,9 +198,18 @@ def test_render_market_weather_strips_axis_ylabels_production_path(monkeypatch):
         "17-D.5: weather volume ylabel must be cleared; got "
         f"{captured['vol_ylabel']!r}"
     )
-    # Belt-and-suspenders: the volume label must no longer start with "Volume"
-    # (the mpf default + its $10^{6}$ scale-factor suffix).
-    assert not (captured["vol_ylabel"] or "").startswith("Volume")
+    # Robust against the _resolve_volume_ax twin/panel ambiguity: NO axis on
+    # the figure may carry the mpf-default "Price" label or a "Volume"-prefixed
+    # label (mpf appends a "$10^{6}$" scale-factor suffix to the volume one).
+    for ylabel in captured["all_ylabels"]:
+        assert ylabel != "Price", (
+            f"17-D.5: an axis still carries the 'Price' label; got "
+            f"{captured['all_ylabels']!r}"
+        )
+        assert not ylabel.startswith("Volume"), (
+            f"17-D.5: an axis still carries a 'Volume' label; got "
+            f"{captured['all_ylabels']!r}"
+        )
 
 
 def test_render_market_weather_draws_three_ma_lines_production_path(monkeypatch):
@@ -198,6 +220,8 @@ def test_render_market_weather_draws_three_ma_lines_production_path(monkeypatch)
     With >=200 bars none are skipped, so post-fix the price axis carries
     exactly 3 Line2D artists (candles are drawn as collections, not lines).
     """
+    from swing.web.charts import _MA_COLORS
+
     captured = _capture_fig_via_serialize_spy(
         monkeypatch,
         lambda charts: charts.render_market_weather_svg(
@@ -208,6 +232,15 @@ def test_render_market_weather_draws_three_ma_lines_production_path(monkeypatch)
         "17-D.5: weather chart must draw 3 MA lines (20/50/200); got "
         f"{captured['n_price_lines']}"
     )
+    # Assert the SPECIFIC 20/50/200 MA lines are present (a count alone would
+    # pass a (10,50,200) regression). MA lines carry the per-window palette
+    # color; match case-insensitively (matplotlib may normalize hex case).
+    colors = {c.lower() for c in captured["price_line_colors"]}
+    for window in (20, 50, 200):
+        assert _MA_COLORS[window].lower() in colors, (
+            f"17-D.5: MA{window} line (color {_MA_COLORS[window]}) missing; "
+            f"got {captured['price_line_colors']!r}"
+        )
 
 
 def test_render_ticker_detail_preserves_ylabels_production_path(monkeypatch):
@@ -219,6 +252,35 @@ def test_render_ticker_detail_preserves_ylabels_production_path(monkeypatch):
         monkeypatch,
         lambda charts: charts.render_ticker_detail_svg(
             ticker="AAPL", bars=_make_bars(n=220),
+        ),
+    )
+    assert captured["price_ylabel"] == "Price (USD)"
+    assert captured["vol_ylabel"] == "Volume"
+
+
+def _make_position_trade() -> Trade:
+    return Trade(
+        id=1, ticker="ABC", entry_date="2024-02-10", entry_price=120.50,
+        initial_shares=100, initial_stop=115.00, current_stop=118.00,
+        state="managing", watchlist_entry_target=None,
+        watchlist_initial_stop=None, notes=None, planned_target_R=None,
+    )
+
+
+def test_render_position_detail_preserves_ylabels_production_path(monkeypatch):
+    """17-D.5 scope LOCK: the weather-only declutter must NOT bleed into
+    render_position_detail_svg, which keeps its explicit 'Price (USD)' /
+    'Volume' ylabels. Production-path guard (passes pre- and post-fix).
+    """
+    fills = [
+        Fill(fill_id=None, trade_id=1, fill_datetime="2024-02-10T09:30:00",
+             action="entry", quantity=100, price=120.50),
+    ]
+    captured = _capture_fig_via_serialize_spy(
+        monkeypatch,
+        lambda charts: charts.render_position_detail_svg(
+            ticker="ABC", bars=_make_bars(n=220), trade=_make_position_trade(),
+            fills=fills, current_stop=118.00,
         ),
     )
     assert captured["price_ylabel"] == "Price (USD)"

@@ -829,8 +829,10 @@ def render_market_weather_svg(
 ) -> bytes:
     """Phase 14 SB3 T-3.4 (§C.4): 400x150 candlestick market-weather chart.
 
-    Candlesticks (volume=True) with MA50 + MA200 from the uniform palette
-    via the shared :func:`_render_candles_fig` builder (gridlines per
+    Candlesticks (volume=True) with MA20 + MA50 + MA200 from the uniform
+    palette via the shared :func:`_render_candles_fig` builder (the price +
+    volume ylabels are cleared post-build to declutter the 400x150 mini-chart;
+    17-D.5) (gridlines per
     P14.N8 come from the helper). The trend-template state renders as an
     ASCII body-text badge via ``ax.text`` (underscore is LITERAL outside
     mathtext, so ``trend: stage_2`` is SAFE in body text — it would NOT be
