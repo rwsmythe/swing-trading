@@ -1391,10 +1391,12 @@ def _step_evaluate(
     # Arc 17-A: this is the PIPELINE adapter over the shared orchestrator
     # (swing.evaluation.orchestration.orchestrate_evaluation). It assembles the
     # genuinely-pipeline-specific seams and delegates; the CLI (swing eval) is a
-    # sibling adapter over the same orchestrator. `action_session` is accepted for
-    # caller-signature compatibility but recomputed inside the orchestrator from
-    # `run_now` (run_pipeline passes action_session_for_run(run_now), so the value
-    # is byte-identical). See docs/phase17-arc-a-task-c-divergence-rulings.md.
+    # sibling adapter over the same orchestrator. The run-level `action_session`
+    # captured by the caller is FORWARDED to the orchestrator (which derives it
+    # from run_now only when None -- the CLI path). run_pipeline passes
+    # action_session_for_run(run_now), so production is byte-identical; do NOT
+    # drop the forward (a direct caller may pass a different session). See
+    # docs/phase17-arc-a-task-c-divergence-rulings.md.
     lease.verify_held()
 
     # --- Universe augmentation: held (close-only) + pinned (full eval). ---
