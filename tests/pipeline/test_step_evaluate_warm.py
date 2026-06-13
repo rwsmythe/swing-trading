@@ -83,24 +83,37 @@ def test_prewarm_wholesale_failure_warns_not_raises(monkeypatch):
 
 
 def test_step_evaluate_wires_prewarm_before_fetch_loops():
-    """Codex R2 Major #2: source-text wiring contract — `_step_evaluate` CALLS
-    `_prewarm_evaluate_archives`, and the call site precedes the first serial
-    `fetcher.get(` so the pre-warm runs before the loops it accelerates. Mirrors
-    the existing `test_step_finviz_fetch_invoked_before_step_evaluate` idiom; pins
-    the wiring durably without the heavy `_step_evaluate` runtime fixture (an
-    impl could add a correct helper and never call it — the 4 helper tests would
-    still pass; this one would not)."""
+    """Codex R2 Major #2: source-text wiring contract — the pre-warm runs BEFORE
+    the serial fetch loops it accelerates.
+
+    Arc 17-A split this across two functions: the PIPELINE adapter
+    (`_step_evaluate`) calls `_prewarm_evaluate_archives` inside its
+    `pre_fetch_hook` closure and hands that hook to `orchestrate_evaluation`; the
+    ORCHESTRATOR invokes `pre_fetch_hook(...)` BEFORE its first `fetcher.get(`.
+    The contract is preserved across both: (1) the adapter wires the prewarm into
+    the hook + passes it; (2) the orchestrator calls the hook before any fetch."""
     import inspect
     import re
-    src = inspect.getsource(rmod._step_evaluate)
-    # Regex for an actual CALL at line start (Codex R3 Minor #1 — a comment or
-    # docstring mention of the name must not satisfy the contract).
-    call_match = re.search(r"^\s*_prewarm_evaluate_archives\(", src, re.MULTILINE)
-    fetch_idx = src.find("fetcher.get(")
-    assert call_match, "_step_evaluate does not CALL _prewarm_evaluate_archives(...)"
-    assert fetch_idx > -1, "_step_evaluate has no fetcher.get( call (harness drift?)"
-    assert call_match.start() < fetch_idx, (
-        f"pre-warm call (offset {call_match.start()}) must precede the first "
+
+    from swing.evaluation import orchestration as omod
+
+    # (1) The adapter wires the prewarm into the pre_fetch_hook + passes the hook.
+    adapter_src = inspect.getsource(rmod._step_evaluate)
+    assert re.search(r"^\s*_prewarm_evaluate_archives\(", adapter_src, re.MULTILINE), (
+        "_step_evaluate does not CALL _prewarm_evaluate_archives(...)"
+    )
+    assert re.search(r"pre_fetch_hook\s*=", adapter_src), (
+        "_step_evaluate does not pass pre_fetch_hook= to the orchestrator"
+    )
+
+    # (2) The orchestrator calls the hook before the first fetcher.get( loop.
+    orch_src = inspect.getsource(omod.orchestrate_evaluation)
+    hook_match = re.search(r"^\s*pre_fetch_hook\(", orch_src, re.MULTILINE)
+    fetch_idx = orch_src.find("fetcher.get(")
+    assert hook_match, "orchestrate_evaluation does not CALL pre_fetch_hook(...)"
+    assert fetch_idx > -1, "orchestrate_evaluation has no fetcher.get( call (harness drift?)"
+    assert hook_match.start() < fetch_idx, (
+        f"pre_fetch_hook call (offset {hook_match.start()}) must precede the first "
         f"fetcher.get (offset {fetch_idx}); the warm must run BEFORE the serial loops."
     )
 

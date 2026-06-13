@@ -24,7 +24,7 @@ from swing.data.db import connect, open_connection
 # write-through helpers + Theme 1 SVG renderers. Imported at module top
 # so test fixtures may monkeypatch `swing.pipeline.runner.render_*`
 # per F6 transient-empty discriminating test pattern.
-from swing.data.models import Candidate, ChartRender, EvaluationRun
+from swing.data.models import ChartRender
 from swing.data.ohlcv_archive import read_or_fetch_archive, warm_archives_batch
 from swing.data.repos.candidates import insert_candidates, insert_evaluation_run
 from swing.data.repos.cash import list_cash
@@ -44,7 +44,6 @@ from swing.data.repos.watchlist import (
     upsert_watchlist_entry,
 )
 from swing.data.repos.weather import get_latest_for_date
-from swing.evaluation.context import BatchContext, CandidateContext, MarketContext
 
 # Phase 14 close-out follow-on (F-2): module-top import so the pipeline
 # call-site test may monkeypatch ``swing.pipeline.runner.structural_stage``.
@@ -53,7 +52,12 @@ from swing.evaluation.context import BatchContext, CandidateContext, MarketConte
 # trend_template imports only swing.evaluation.{context,criteria._base,rs}.
 from swing.evaluation.criteria.trend_template import structural_stage
 from swing.evaluation.dates import action_session_for_run, last_completed_session
-from swing.evaluation.evaluator import evaluate_batch
+from swing.evaluation.orchestration import (
+    EvaluationBehaviorPolicy,
+    OrchestrationOutput,
+    UniverseAugmentation,
+    orchestrate_evaluation,
+)
 from swing.evaluation.patterns.flag_classifier import (
     FlagClassificationResult,
     classify_flag,
@@ -1384,35 +1388,19 @@ def _step_evaluate(
     run_now: _dt, action_session: _date, lease: Lease,
     price_cache=None, run_warnings: list[dict] | None = None,
 ) -> int:
+    # Arc 17-A: this is the PIPELINE adapter over the shared orchestrator
+    # (swing.evaluation.orchestration.orchestrate_evaluation). It assembles the
+    # genuinely-pipeline-specific seams and delegates; the CLI (swing eval) is a
+    # sibling adapter over the same orchestrator. `action_session` is accepted for
+    # caller-signature compatibility but recomputed inside the orchestrator from
+    # `run_now` (run_pipeline passes action_session_for_run(run_now), so the value
+    # is byte-identical). See docs/phase17-arc-a-task-c-divergence-rulings.md.
     lease.verify_held()
-    import pandas as pd
-    finviz_df = pd.read_csv(csv_path)
-    if "Ticker" not in finviz_df.columns:
-        raise ValueError(f"finviz CSV missing 'Ticker' column: {list(finviz_df.columns)}")
-    tickers = finviz_df["Ticker"].dropna().astype(str).str.upper().tolist()
 
-    # Sector/Industry passthrough from Finviz CSV -> candidate rows. Built
-    # from the same DataFrame we just read so row-index-vs-ticker binding
-    # matches the CSV exactly. NaN cells become empty strings; tickers not
-    # in the CSV (held-position tickers appended via the loop below;
-    # ETF-blocklist rows synthesized post-evaluate_batch) default to ('','').
-    sector_industry_by_ticker: dict[str, tuple[str, str]] = {}
-    for _, fv_row in finviz_df.iterrows():
-        t_raw = fv_row.get("Ticker")
-        if pd.isna(t_raw):
-            continue
-        ticker_key = str(t_raw).upper()
-        sec = fv_row.get("Sector", "")
-        ind = fv_row.get("Industry", "")
-        sec = "" if pd.isna(sec) else str(sec)
-        ind = "" if pd.isna(ind) else str(ind)
-        sector_industry_by_ticker[ticker_key] = (sec, ind)
-
-    # Include open-trade tickers in the OHLCV fetch so their fresh close lands
-    # in candidates.close. PriceCache._last_close reads that table; without
-    # this, an open position whose ticker has rotated out of the finviz
-    # screener keeps showing whatever close was captured the last time it
-    # appeared in finviz (potentially days stale on the dashboard).
+    # --- Universe augmentation: held (close-only) + pinned (full eval). ---
+    # Open-trade tickers keep their fresh close in candidates.close
+    # (PriceCache._last_close reads that table; a position rotated off the finviz
+    # screen would otherwise show a stale close on the dashboard).
     open_conn = connect(cfg.paths.db_path)
     try:
         held_tickers: list[str] = sorted({
@@ -1420,18 +1408,9 @@ def _step_evaluate(
         })
     finally:
         open_conn.close()
-    seen = set(tickers)
-    for t in held_tickers:
-        if t not in seen:
-            tickers.append(t)
-            seen.add(t)
-
-    # Arc 7: union PINNED watchlist tickers into the evaluated universe so a
-    # name the operator is tracking stays fetched + fully evaluated even when it
-    # has fallen off the finviz screen. Unlike held tickers (added to `excluded`
-    # below → close-only), pinned tickers flow through evaluate_batch and get a
-    # REAL criteria/bucket/streak every night. A pinned ticker already in `seen`
-    # (screen-native or held) is NOT re-injected.
+    # Arc 7: union PINNED watchlist tickers so a tracked name stays fetched +
+    # fully evaluated even off-screen. The orchestrator de-dupes pins already in
+    # the screen∪held set and fires the pin_injection warning for the remainder.
     pin_conn = connect(cfg.paths.db_path)
     try:
         pinned_eval_tickers = sorted({
@@ -1439,78 +1418,12 @@ def _step_evaluate(
         })
     finally:
         pin_conn.close()
-    injected_pins = [t for t in pinned_eval_tickers if t not in seen]
-    for t in injected_pins:
-        tickers.append(t)
-        seen.add(t)
-    if injected_pins and run_warnings is not None:
-        run_warnings.append({
-            "step": "evaluate", "kind": "pin_injection",
-            "count": len(injected_pins), "tickers": injected_pins,
-        })
-
-    # Phase 11 Sub-bundle C T-C.6 — invoke the market-data ladder for each
-    # open-trade ticker via the (optional) installed PriceCache. When
-    # `price_cache is None` (no schwab_client constructed), this is a no-op
-    # and the existing PriceFetcher / yfinance path continues to populate
-    # candidates.close downstream. When the cache IS installed AND
-    # env='production' AND ladder_enabled=True, the ladder fires + writes
-    # `surface='pipeline'` audit rows. Sandbox short-circuit at ladder
-    # layer → ZERO audit rows. NO new pipeline step; NO step-ordering
-    # change; minimal additive call at the existing held_tickers boundary.
-    _warm_pipeline_marketdata(
-        cfg=cfg, price_cache=price_cache, held_tickers=held_tickers,
+    augmentation = UniverseAugmentation(
+        held_tickers=tuple(held_tickers),
+        pinned_inject=tuple(pinned_eval_tickers),
     )
 
-    # Arc 6: batched gap pre-warm before the three serial fetch loops.
-    _prewarm_evaluate_archives(
-        cfg=cfg, candidate_tickers=tickers, universe_tickers=universe.tickers,
-        run_now=run_now, run_warnings=run_warnings,
-    )
-
-    spy_return = 0.0
-    spy_df = fetcher.get(cfg.rs.benchmark_ticker, lookback_days=365, as_of_date=None)
-    spy_closes = spy_df["Close"]
-    weeks = cfg.rs.horizon_weeks
-    if len(spy_closes) > weeks * 5:
-        bars = weeks * 5
-        spy_return = float((spy_closes.iloc[-1] / spy_closes.iloc[-bars - 1]) - 1)
-
-    returns_12w: dict[str, float] = {}
-    ohlcv_by_ticker: dict[str, pd.DataFrame] = {}
-    error_tickers: list[str] = []
-    bars_needed = cfg.rs.horizon_weeks * 5
-    for t in tickers:
-        try:
-            df = fetcher.get(t, lookback_days=400, as_of_date=None)
-            ohlcv_by_ticker[t] = df
-            closes = df["Close"]
-            if len(closes) > bars_needed:
-                returns_12w[t] = float((closes.iloc[-1] / closes.iloc[-bars_needed - 1]) - 1)
-        except Exception:
-            error_tickers.append(t)
-    for t in universe.tickers:
-        if t in returns_12w:
-            continue
-        try:
-            df = fetcher.get(t, lookback_days=120, as_of_date=None)
-            closes = df["Close"]
-            if len(closes) > bars_needed:
-                returns_12w[t] = float((closes.iloc[-1] / closes.iloc[-bars_needed - 1]) - 1)
-        except Exception:
-            pass
-
-    batch = BatchContext(
-        returns_12w_by_ticker=returns_12w,
-        universe_tickers=universe.tickers,
-        universe_version=universe.version,
-        universe_hash=universe_hash,
-        spy_return_12w=spy_return,
-    )
-
-    max_dates = [df.index.max() for df in ohlcv_by_ticker.values() if not df.empty]
-    data_asof = max(max_dates).date() if max_dates else last_completed_session(run_now)
-
+    # --- current_equity: real-equity sizing (DIVERGENCE-EQUITY, ruled unify). ---
     eq_conn = connect(cfg.paths.db_path)
     try:
         sizing_eq = sizing_equity(
@@ -1524,99 +1437,60 @@ def _step_evaluate(
     finally:
         eq_conn.close()
 
-    # Held positions are locally-excluded from evaluation (they're already in
-    # our portfolio — no buy/watch decision needed) but we still want their
-    # fresh close in candidates.close for the dashboard price fallback.
-    held_set = set(held_tickers)
-    excluded = set(cfg.etf_exclusion.manual_block) | held_set
-    excluded_tickers: list[str] = []
-    contexts: list[CandidateContext] = []
-    for t in tickers:
-        if t in excluded:
-            excluded_tickers.append(t)
-            continue
-        if t not in ohlcv_by_ticker:
-            continue
-        contexts.append(CandidateContext(
-            ticker=t, ohlcv=ohlcv_by_ticker[t], config=cfg,
-            batch=batch, market=MarketContext(),
-            current_equity=sizing_eq,
-        ))
-
-    candidates = evaluate_batch(contexts)
-    for t in excluded_tickers:
-        # Preserve the ticker's close so PriceCache._last_close returns a
-        # fresh value. ETF blocklist rows intentionally have no OHLCV fetch,
-        # so they'll still carry close=None.
-        close = None
-        if t in ohlcv_by_ticker:
-            df = ohlcv_by_ticker[t]
-            if not df.empty:
-                close = float(df["Close"].iloc[-1])
-        notes = "open position" if t in held_set else "ETF/fund blocklist"
-        candidates.append(Candidate(
-            ticker=t, bucket="excluded",
-            close=close, pivot=None, initial_stop=None,
-            adr_pct=None, tight_streak=None, pullback_pct=None, prior_trend_pct=None,
-            rs_rank=None, rs_return_12w_vs_spy=None, rs_method="unavailable",
-            pattern_tag=None, notes=notes, criteria=(),
-        ))
-    # Codex R1-Major: a held/blocklisted ticker (in `excluded`) whose fetch also
-    # failed lands in error_tickers too; compute_watchlist_changes collapses
-    # today_candidates last-write-wins, so the error row (appended last) would
-    # win and blank the excluded row. De-dupe so an excluded ticker never also
-    # emits an error candidate. A pinned-but-NOT-held failing ticker is NOT in
-    # `excluded` → it still gets its single error candidate (the §5.1 path).
-    error_tickers = [t for t in error_tickers if t not in excluded]
-    for t in error_tickers:
-        candidates.append(Candidate(
-            ticker=t, bucket="error",
-            close=None, pivot=None, initial_stop=None,
-            adr_pct=None, tight_streak=None, pullback_pct=None, prior_trend_pct=None,
-            rs_rank=None, rs_return_12w_vs_spy=None, rs_method="unavailable",
-            pattern_tag=None, notes="OHLCV fetch failed", criteria=(),
-        ))
-
-    # Apply Sector/Industry uniformly across all candidate buckets (aplus /
-    # watch / skip / error / excluded). evaluate_batch returns dataclasses
-    # without these fields populated; held-position + ETF-blocklist + error
-    # tickers were appended above in this function. Tickers in the CSV pull
-    # from the lookup; tickers NOT in the CSV (held-position rows whose
-    # symbol rotated out of finviz) default to ('','') -- graceful degradation
-    # mirrors hypothesis_label free-text behavior.
-    from dataclasses import replace as _dc_replace
-    candidates = [
-        _dc_replace(
-            c,
-            sector=sector_industry_by_ticker.get(c.ticker, ("", ""))[0],
-            industry=sector_industry_by_ticker.get(c.ticker, ("", ""))[1],
+    # --- LOCK #16: warm + prewarm fire at the held-tickers boundary. The warm
+    # gets the captured HELD set; the prewarm gets the merged screen∪held∪pins
+    # set (the orchestrator's argument) as candidate_tickers + universe.tickers
+    # separately -- the two take DIFFERENT argument sets (Codex R2), reproduced
+    # verbatim. ---
+    def _pre_fetch_hook(merged_tickers: list[str]) -> None:
+        # Phase 11 Sub-bundle C T-C.6 — market-data ladder per open-trade ticker
+        # via the (optional) installed PriceCache; a no-op when price_cache is
+        # None. Sandbox short-circuit at the ladder layer → ZERO audit rows.
+        _warm_pipeline_marketdata(
+            cfg=cfg, price_cache=price_cache, held_tickers=held_tickers,
         )
-        for c in candidates
-    ]
+        # Arc 6: batched gap pre-warm before the serial fetch loops.
+        _prewarm_evaluate_archives(
+            cfg=cfg, candidate_tickers=merged_tickers,
+            universe_tickers=universe.tickers, run_now=run_now,
+            run_warnings=run_warnings,
+        )
 
-    run = EvaluationRun(
-        id=None, run_ts=run_now.isoformat(timespec="seconds"),
-        data_asof_date=data_asof.isoformat(),
-        action_session_date=action_session.isoformat(),
-        finviz_csv_path=str(csv_path),
-        tickers_evaluated=len(candidates),
-        aplus_count=sum(1 for c in candidates if c.bucket == "aplus"),
-        watch_count=sum(1 for c in candidates if c.bucket == "watch"),
-        skip_count=sum(1 for c in candidates if c.bucket == "skip"),
-        excluded_count=len(excluded_tickers), error_count=len(error_tickers),
-        rs_universe_version=universe.version, rs_universe_hash=universe_hash,
+    # --- output seam: emit the pin_injection run-warning (exact dict shape). ---
+    def _note_pin_injection(injected: list[str]) -> None:
+        if run_warnings is not None:
+            run_warnings.append({
+                "step": "evaluate", "kind": "pin_injection",
+                "count": len(injected), "tickers": injected,
+            })
+
+    output = OrchestrationOutput(note_pin_injection=_note_pin_injection)
+
+    # --- persist seam (LOCK #1): lease/fence + eval-run binding stay HERE; the
+    # orchestrator never imports Lease. ---
+    def _persist(run, candidates) -> int:
+        with lease.fenced_write() as conn:
+            run_id = insert_evaluation_run(conn, run)
+            insert_candidates(conn, run_id, candidates)
+            # Tranche C T2: bind this pipeline_runs row to its OWN eval row in
+            # the same transaction. Replaces the chart_scope resolver's
+            # data_asof + run_ts heuristic for new runs (drift mode A); legacy
+            # rows fall back to the heuristic when evaluation_run_id IS NULL.
+            set_evaluation_run_id(
+                conn, pipeline_run_id=lease.run_id, evaluation_run_id=run_id,
+            )
+        return run_id
+
+    result = orchestrate_evaluation(
+        cfg=cfg, csv_path=csv_path, universe=universe, universe_hash=universe_hash,
+        run_now=run_now, fetcher=fetcher, current_equity=sizing_eq,
+        persist=_persist, as_of_date=None, augmentation=augmentation,
+        pre_fetch_hook=_pre_fetch_hook, output=output,
+        # DIVERGENCE-SPY-GUARD ruled intentional: the pipeline hard-fails on a
+        # SPY fetch exception (RS rankings are meaningless without SPY).
+        behavior=EvaluationBehaviorPolicy(spy_failure_mode="raise"),
     )
-    with lease.fenced_write() as conn:
-        run_id = insert_evaluation_run(conn, run)
-        insert_candidates(conn, run_id, candidates)
-        # Tranche C T2: bind this pipeline_runs row to its OWN eval row in
-        # the same transaction. Replaces the chart_scope resolver's
-        # data_asof + run_ts heuristic for new runs (drift mode A); legacy
-        # rows fall back to the heuristic when evaluation_run_id IS NULL.
-        set_evaluation_run_id(
-            conn, pipeline_run_id=lease.run_id, evaluation_run_id=run_id,
-        )
-    return run_id
+    return result.run_id
 
 
 def _step_watchlist(

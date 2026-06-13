@@ -1,4 +1,6 @@
 """Unit tests for the shared evaluation orchestrator (Arc 17-A)."""
+# ruff: noqa: F811 -- pytest fixtures imported from the Phase-0 harness module are
+# re-bound as test-function parameters; that is the intended pytest pattern.
 from __future__ import annotations
 
 import inspect
@@ -74,7 +76,9 @@ def test_orchestration_public_surface():
 def _orch_kwargs(inputs, cfg, *, augmentation=None, output=None, pre_fetch_hook=None,
                  persist=None, spy_failure_mode="warn_and_zero"):
     from swing.evaluation.orchestration import (
-        EvaluationBehaviorPolicy, OrchestrationOutput, UniverseAugmentation,
+        EvaluationBehaviorPolicy,
+        OrchestrationOutput,
+        UniverseAugmentation,
     )
     universe = load_universe(cfg.paths.rs_universe_path)
     uhash = universe_version_hash(cfg.paths.rs_universe_path)
@@ -108,7 +112,7 @@ def _plain_persist(db_path):
 
 
 def test_orchestrator_empty_augmentation_screen_only(tmp_path, frozen_clock, pin_network):
-    from swing.evaluation.orchestration import orchestrate_evaluation, OrchestrationOutput
+    from swing.evaluation.orchestration import OrchestrationOutput, orchestrate_evaluation
     inputs = _build_inputs(tmp_path)
     cfg = _make_config(tmp_path, inputs)
     _migrate(inputs.db_path).close()
@@ -124,7 +128,11 @@ def test_orchestrator_empty_augmentation_screen_only(tmp_path, frozen_clock, pin
 
 
 def test_orchestrator_held_excluded_close_preserved(tmp_path, frozen_clock, pin_network):
-    from swing.evaluation.orchestration import orchestrate_evaluation, OrchestrationOutput, UniverseAugmentation
+    from swing.evaluation.orchestration import (
+        OrchestrationOutput,
+        UniverseAugmentation,
+        orchestrate_evaluation,
+    )
     inputs = _build_inputs(tmp_path)
     cfg = _make_config(tmp_path, inputs)
     _migrate(inputs.db_path).close()
@@ -143,7 +151,11 @@ def test_orchestrator_held_excluded_close_preserved(tmp_path, frozen_clock, pin_
 
 
 def test_orchestrator_pin_injected_fully_evaluated(tmp_path, frozen_clock, pin_network):
-    from swing.evaluation.orchestration import orchestrate_evaluation, OrchestrationOutput, UniverseAugmentation
+    from swing.evaluation.orchestration import (
+        OrchestrationOutput,
+        UniverseAugmentation,
+        orchestrate_evaluation,
+    )
     inputs = _build_inputs(tmp_path)
     cfg = _make_config(tmp_path, inputs)
     _migrate(inputs.db_path).close()
@@ -176,14 +188,16 @@ def test_orchestrator_persist_invoked_once(tmp_path, frozen_clock, pin_network):
 
 
 def test_orchestrator_pre_fetch_hook_called_once_with_merged(tmp_path, frozen_clock, pin_network):
-    from swing.evaluation.orchestration import orchestrate_evaluation, UniverseAugmentation
+    from swing.evaluation.orchestration import UniverseAugmentation, orchestrate_evaluation
     inputs = _build_inputs(tmp_path)
     cfg = _make_config(tmp_path, inputs)
     _migrate(inputs.db_path).close()
     seen_args: list[list[str]] = []
     orchestrate_evaluation(**_orch_kwargs(
         inputs, cfg,
-        augmentation=UniverseAugmentation(held_tickers=(HELD_TICKER,), pinned_inject=(PINNED_TICKER,)),
+        augmentation=UniverseAugmentation(
+            held_tickers=(HELD_TICKER,), pinned_inject=(PINNED_TICKER,)
+        ),
         pre_fetch_hook=lambda merged: seen_args.append(list(merged)),
     ))
     assert len(seen_args) == 1
