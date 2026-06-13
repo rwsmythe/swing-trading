@@ -883,8 +883,7 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
             # insertion point: AFTER _step_recommendations + BEFORE the
             # Schwab snapshot block. Best-effort failure shape mirrors
             # _step_watchlist / _step_recommendations / _step_charts.
-            lease.step("pattern_detect")
-            try:
+            with step_guard(lease, "pattern_detect", logger=log):
                 _step_pattern_detect(
                     cfg=cfg,
                     lease=lease,
@@ -892,26 +891,17 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
                     ohlcv_cache=ohlcv_cache,
                     run_warnings=run_warnings,
                 )
-            except LeaseRevokedError:
-                raise
-            except Exception as exc:
-                log.warning("pattern_detect failed: %s", exc)
 
             # Phase 14 Sub-bundle 2 (T-2.5): forward-walk observe step. Appends
             # one pattern_forward_observations row per OPEN detection (today's
             # bar + lifecycle status). Best-effort failure shape mirrors
             # _step_pattern_detect (re-raise LeaseRevokedError; log.warning
             # others). Inserted AFTER pattern_detect, BEFORE schwab_snapshot.
-            lease.step("pattern_observe")
-            try:
+            with step_guard(lease, "pattern_observe", logger=log):
                 _step_pattern_observe(
                     cfg=cfg, lease=lease, ohlcv_cache=ohlcv_cache,
                     run_warnings=run_warnings,
                 )
-            except LeaseRevokedError:
-                raise
-            except Exception as exc:
-                log.warning("pattern_observe failed: %s", exc)
 
             # Phase 11 Sub-bundle B (T-B.3 + T-B.4 + Codex R1 M#1 + R2 M#1 +
             # R3 M#1 + M#2 fix) — Schwab snapshot + orders pipeline steps
