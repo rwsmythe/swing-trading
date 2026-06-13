@@ -45,6 +45,7 @@ The brief's §2 anchors were re-verified against the live tree (branch `arc17a-p
 - **Codex review-response persistence (Codex R1 M4; brief §"Cycle shape"):** the executing-plans phase runs Codex adversarial review to convergence after all tasks. Each round's RESPONSE (verdicts/findings, incl. the final `NO_NEW_CRITICAL_MAJOR` line) MUST be persisted to a gitignored on-disk file — convention `.codex-review-arc17a-exec.md` at the executing worktree root (verify `git check-ignore` covers it; the project's `.codex-review-*.md` glob does). This is the artifact the orchestrator reads to independently verify convergence at QA. (This writing-plans review is already persisted to `.codex-review-arc17a-plan.md`.)
 - **Frozen-clock convention (R2 rider / D9):** the convention LINE **already landed** in `docs/orchestrator-context.md` §Binding conventions at commit **`c7eeed4a`** (2026-06-12, orchestrator-lane, shipped WITH this dispatch — re-verified on disk at branch start). This arc does NOT re-edit that file (Codex R1 M3 proposed an edit task; rejected with evidence — it would duplicate an existing line). The plan's obligation is to USE the convention: EVERY new test in this arc touches dates (`datetime.now()`, `action_session_for_run`, archive freshness), so each new test MUST pin the clock via a frozen-clock fixture (monkeypatch the captured-`now` source in BOTH `swing.cli` and `swing.pipeline.runner` to a fixed `run_now`), never the live wall clock. NO retrofit of existing tests.
 - **Phase isolation:** this arc is read-and-write through existing public repo/service functions only. NO `swing/data/` or `swing/trades/` carve-out. NO migration. If a task appears to need a schema change, a new dependency, or a departure from the §3 module shape below — **STOP and route back through CHARC**; do not absorb it silently.
+- **C3 — CONTAINMENT (CHARC ratification 2026-06-12, `docs/phase17-arc-a-charc-ratification.md`, verbatim):** `EvaluationBehaviorPolicy` stays a FLAT dataclass of scalar policy flags passed as ONE parameter to the single orchestration function; **shared code branches ONLY on the policy value (adapters never special-case around it)**; no strategy/handler hierarchy, no registry, no new module beyond the sanctioned `orchestration.py`, no additional seam categories. Anything beyond a flat policy dataclass (new module, new seam category, schema, dependency) → **STOP and route back to CHARC; the tripwire is not spent.**
 - **Behavior-preserving locks (§3), itemized for QA:**
   1. `_step_evaluate`'s lease/fence discipline (`lease.verify_held()`, `lease.fenced_write()`, `set_evaluation_run_id(conn, pipeline_run_id=lease.run_id, evaluation_run_id=run_id)`) stays ENTIRELY in the runner adapter — the orchestrator never imports `Lease` or touches a lease.
   2. The #16 fetch-hoist locus (the held-tickers boundary where `_warm_pipeline_marketdata` + `_prewarm_evaluate_archives` fire) stays in the runner adapter via the `pre_fetch_hook` seam — same call order, same arguments.
@@ -118,11 +119,22 @@ class OrchestrationResult:
 class EvaluationBehaviorPolicy:
     """Error-path / synthesis-row behaviors that the §4 operator rulings decide.
 
-    Declared as a seam NOW (Codex R1 C4) so any "intentional difference" ruling
-    is honorable WITHOUT mutating the canonical signature mid-extraction. Defaults
-    reproduce the PIPELINE behavior (the gate-bearing path); the CLI adapter passes
-    whatever its rulings dictate. Each field maps 1:1 to a harness-observed
-    divergence — see the DIVERGENCES inventory (Task 0.5).
+    Declared as a seam (Codex R1 C4) so any "intentional difference" ruling is
+    honorable WITHOUT mutating the canonical signature mid-extraction. Each field
+    maps 1:1 to a harness-observed divergence — see the DIVERGENCES inventory
+    (Task 0.5).
+
+    C1 — EXPLICIT CONSTRUCTION, NO DEFAULTS (CHARC ratification 2026-06-12,
+    `docs/phase17-arc-a-charc-ratification.md`): EVERY field is REQUIRED with NO
+    default value; BOTH adapters construct the policy explicitly, stating every
+    field at the call site (never `EvaluationBehaviorPolicy()`). A defaulted field
+    is a silent-inheritance channel — exactly the disease this arc exists to cure,
+    reborn as configuration. Task 1.1's test asserts the dataclass has no field
+    defaults (cheap and binding).
+
+    C2 — the three fields below are the CANDIDATE (pre-ruling) set. After Task C
+    the dataclass is pruned to EXACTLY the operator-ruled-INTENTIONAL divergences
+    (see the post-block pruning note); UNIFY-ruled fields are DELETED.
 
     spy_failure_mode:  "raise" (pipeline: SPY fetch exception fails the step) |
                        "warn_and_zero" (CLI: warn + spy_return=0.0, continue).
@@ -132,9 +144,9 @@ class EvaluationBehaviorPolicy:
                        | False (CLI: excluded rows always close=None). Moot when
                        `augmentation.held_tickers` is empty.
     """
-    spy_failure_mode: str = "raise"
-    dedup_error_rows: bool = True
-    preserve_held_close: bool = True
+    spy_failure_mode: str
+    dedup_error_rows: bool
+    preserve_held_close: bool
 
 
 def orchestrate_evaluation(
@@ -151,16 +163,40 @@ def orchestrate_evaluation(
     augmentation: UniverseAugmentation = UniverseAugmentation(),
     pre_fetch_hook: Callable[[list[str]], None] | None = None,
     output: OrchestrationOutput | None = None,
-    behavior: EvaluationBehaviorPolicy = EvaluationBehaviorPolicy(),
+    behavior: EvaluationBehaviorPolicy,   # C1: REQUIRED keyword arg, no default instance
 ) -> OrchestrationResult:
     ...
 ```
+
+> **POST-TASK-C PRUNING (C2 — CHARC ratification 2026-06-12).** The three
+> `EvaluationBehaviorPolicy` fields above are the CANDIDATE (pre-ruling) set; the
+> canonical block is the maximal declaration. **Scope note:** these three fields map
+> 1:1 to exactly THREE divergences — `spy_failure_mode`←DIVERGENCE-SPY-GUARD,
+> `dedup_error_rows`←DIVERGENCE-ERROR-DEDUP, `preserve_held_close`←DIVERGENCE-EXCLUDED-CLOSE.
+> The other divergences (DIVERGENCE-1/2 → the `augmentation` seam, DIVERGENCE-EQUITY →
+> the `current_equity` parameter) are NOT policy fields and are NOT pruned here (their
+> seams remain parameters regardless of ruling). C2 pruning below applies ONLY to the
+> three policy fields. After the Task-C operator rulings the policy's FINAL field set
+> equals EXACTLY the policy-field divergences ruled **intentional**:
+> - **Unify-ruled** (a policy field) → the field is **DELETED** from the dataclass; its
+>   behavior becomes unconditional shared code in the orchestrator; its `DIVERGENCE-n`
+>   harness assertion is migrated to a parity assertion **in the same task**.
+> - **Intentional-ruled** (a policy field) → the field **stays** (required, no default —
+>   C1) with a 1:1 discriminating test naming the ruling.
+> - **No-policy-fields-survive edge case (encode explicitly):** if EVERY
+>   `EvaluationBehaviorPolicy` candidate field (all three policy-field divergences) is
+>   ruled unify, `EvaluationBehaviorPolicy` is empty and is **removed entirely** — the
+>   `behavior` parameter of `orchestrate_evaluation` goes away and every former policy
+>   branch is unconditional shared code. This trigger is INDEPENDENT of the
+>   augmentation/current_equity rulings (the all-six-divergences-unify case is a subset).
+> The return report carries the complete policy field-to-ruling map PLUS the separate
+> rulings for the non-policy divergences (DIVERGENCE-1/2/EQUITY).
 
 **Seam contract (each maps to a re-grounding divergence or a §3 lock):**
 
 - `augmentation` — the held/pin union (DIVERGENCE-1/2). Pipeline supplies computed sets; CLI supplies `UniverseAugmentation()` unless a §4 ruling says otherwise.
 - `current_equity` — D-EQUITY. Pipeline supplies `sizing_equity(...)`; CLI supplies `cfg.account.starting_equity`. Kept a parameter so either §4 ruling is honorable.
-- `behavior` — the error-path/synthesis-row policy (D-SPY-GUARD / D-ERROR-DEDUP / D-EXCLUDED-CLOSE). Pipeline supplies the default (`raise`/dedup/preserve); CLI supplies `EvaluationBehaviorPolicy(spy_failure_mode="warn_and_zero", dedup_error_rows=<ruling>, preserve_held_close=<ruling>)` per the §4 rulings. **This seam set ELABORATES the three §3-named seam categories (universe / output / conn-fetcher) — it is the §4 mechanism surfacing more genuinely-different concerns, NOT a structural departure (still one orchestration function + adapters; no schema, no dependency). Flagged for CHARC/operator in the return report.**
+- `behavior` — the error-path/synthesis-row policy (D-SPY-GUARD / D-ERROR-DEDUP / D-EXCLUDED-CLOSE). **C1 (CHARC 2026-06-12): both adapters construct the policy EXPLICITLY, stating every surviving field — never `EvaluationBehaviorPolicy()`.** TEMPLATE forms (shown for the all-three-policy-fields-survive case; pass `<surviving policy fields only>` otherwise): Pipeline supplies `EvaluationBehaviorPolicy(spy_failure_mode="raise", dedup_error_rows=True, preserve_held_close=True)`; CLI supplies `EvaluationBehaviorPolicy(spy_failure_mode="warn_and_zero", dedup_error_rows=<ruling>, preserve_held_close=<ruling>)` per the §4 rulings. **C2: the field set is pruned to the operator-ruled-intentional POLICY-field set after Task C (unify → the policy field is deleted, behavior unconditional shared code); if every `EvaluationBehaviorPolicy` candidate field (all three policy-field divergences) is ruled unify — independent of the augmentation/current_equity rulings — the policy + this `behavior` parameter are removed entirely.** (DIVERGENCE-1/2/EQUITY are the `augmentation`/`current_equity` seams, NOT policy fields — they are not pruned here.) This seam set ELABORATES the three §3-named seam categories (universe / output / conn-fetcher) — it is the §4 mechanism surfacing more genuinely-different concerns, NOT a structural departure (still one orchestration function + adapters; no schema, no dependency). **RATIFIED by CHARC 2026-06-12 (`docs/phase17-arc-a-charc-ratification.md`) under conditions C1/C2/C3; the field-to-ruling map is carried in the return report.**
 - `pre_fetch_hook` — LOCK #16. The orchestrator calls `pre_fetch_hook(merged_tickers)` ONCE at the held-tickers boundary (after held+pin augmentation, before the SPY/per-ticker fetch loops), where `merged_tickers` is the full screen∪held∪pins set. **CRITICAL (Codex R2): the warm and the prewarm take DIFFERENT argument sets** — the pipeline closure must reproduce the EXACT current call sites verbatim: `_warm_pipeline_marketdata(cfg=cfg, price_cache=price_cache, held_tickers=held_tickers)` (the captured HELD set, NOT the merged set) THEN `_prewarm_evaluate_archives(cfg=cfg, candidate_tickers=merged_tickers, universe_tickers=universe.tickers, run_now=run_now, run_warnings=run_warnings)` (the merged set as `candidate_tickers`, `universe.tickers` separately). CLI passes `None`.
 - `output` — the click.echo-vs-run-warnings channel. CLI: `info→echo`, `warn→echo(err=True)`, `note_pin_injection→no-op`. Pipeline: `info/warn→no-op`(or log), `note_pin_injection→run_warnings.append({step,kind,count,tickers})`.
 - `persist` — LOCK #1. CLI: plain `with conn:` insert run+candidates → run_id. Pipeline: `lease.fenced_write()` insert run+candidates + `set_evaluation_run_id` → run_id.
@@ -541,9 +577,14 @@ git commit -m "test(evaluation): Task 0.5 — characterize the SPY-failure diver
 | DIVERGENCE-EXCLUDED-CLOSE | Pipeline preserves held close on excluded rows; CLI writes `close=None`. | **INDEPENDENT ruling whenever held rows exist in BOTH paths** (Codex R2): if DIVERGENCE-1 is ruled "unify", the operator STILL must choose "preserve fetched close" vs "`close=None`" for the unified held rows — do NOT let it default silently to `preserve_held_close=True`. If DIVERGENCE-1 is ruled "intentional pipeline-only" (CLI has no held rows), this collapses to moot for the CLI and the pipeline keeps `preserve_held_close=True`. Either way, a post-ruling assertion distinguishes the two outcomes. |
 | DIVERGENCE-SPY-GUARD | CLI tolerates SPY fetch failure (warn + 0.0); pipeline raises (fails the step). | Unify on the guarded path, or keep pipeline hard-failing (intentional seam)? Success-path identical. |
 
-**Each ruling resolves to ONE of:**
-- **(a) Unify** → the behavior is shared code in the orchestrator; the harness's `DIVERGENCE-n` assertion is **MIGRATED** to a parity assertion (both paths now identical on that dimension) IN THE SAME TASK that implements the unification, keeping the harness green.
-- **(b) Intentional** → the difference is kept as an injected-seam parameter and TESTED as intentional (the harness asserts the seam value drives the difference). No silent preservation.
+**Each ruling resolves to ONE of (C2 — CHARC ratification 2026-06-12). The seam each divergence touches determines HOW the ruling is honored:**
+
+*Map of divergence → seam:* DIVERGENCE-SPY-GUARD/ERROR-DEDUP/EXCLUDED-CLOSE → the three `EvaluationBehaviorPolicy` fields (`spy_failure_mode`/`dedup_error_rows`/`preserve_held_close`); DIVERGENCE-1/2 → the `augmentation` seam (`UniverseAugmentation`, + `output.note_pin_injection` for the pin warning); DIVERGENCE-EQUITY → the `current_equity` parameter.
+
+- **(a) Unify** → the behavior becomes unconditional shared code; the harness's `DIVERGENCE-n` assertion is **MIGRATED** to a parity assertion (both paths now identical on that dimension) **IN THE SAME TASK** that implements the unification, keeping the harness green. **For a POLICY-field divergence ONLY**, unify ALSO means the corresponding `EvaluationBehaviorPolicy` field is **DELETED** from the dataclass (NOT kept as unconditional-but-present, NOT defaulted). For a NON-policy divergence (DIVERGENCE-1/2/EQUITY) there is no policy field to delete — both adapters feed the `augmentation`/`current_equity` seam the same value (e.g. the CLI computes held/pins, or both use `sizing_equity`); the seam stays a parameter.
+- **(b) Intentional** → the difference is carried by the seam value and TESTED as intentional with a **1:1 discriminating test naming its ruling** (the harness asserts the seam value drives the difference). **For a POLICY-field divergence**, the field **STAYS** in the policy (required, no default — C1). For a non-policy divergence, the `augmentation`/`current_equity` seam carries the difference (CLI supplies `UniverseAugmentation()` / `starting_equity`). No silent preservation.
+
+**After Task C the `EvaluationBehaviorPolicy` FINAL field set equals EXACTLY the policy-field divergences ruled intentional.** Each unify migrates its DIVERGENCE-n assertion to a parity assertion in the same task; each intentional keeps its field/seam with a 1:1 ruling-named test. **Edge case — encode explicitly:** if EVERY `EvaluationBehaviorPolicy` candidate field (all three policy-field divergences) is ruled unify, the policy dataclass is empty and **the seam is removed entirely** — the `orchestrate_evaluation` `behavior` parameter goes away and every former policy branch is unconditional shared code. This trigger is INDEPENDENT of the augmentation/current_equity rulings (all-six-unify is a subset). The **return report MUST carry the complete policy field-to-ruling map** (each candidate field → unify|intentional → deleted-and-shared, or kept-and-seam-tested) **PLUS the separate rulings for the non-policy divergences** (DIVERGENCE-1/2/EQUITY → unify|intentional → how honored).
 
 > Record each ruling inline in the plan (or a `docs/`-tracked decision note) before Phase 1. **No silent unification, no silent preservation.** If a ruling demands a schema change or a new dependency to honor → STOP and route to CHARC.
 
@@ -559,10 +600,13 @@ git commit -m "test(evaluation): Task 0.5 — characterize the SPY-failure diver
 - Create: `swing/evaluation/orchestration.py`
 - Test: `tests/evaluation/test_orchestration.py`
 
-- [ ] **Step 1: Write a failing unit test** that verifies the FULL canonical public surface (Codex R1 Mn1): the dataclass defaults AND every `orchestrate_evaluation` parameter name via `inspect.signature`.
+- [ ] **Step 1: Write a failing unit test** that verifies the FULL canonical public surface (Codex R1 Mn1): C1's NO-field-defaults invariant on the policy AND every `orchestrate_evaluation` parameter name via `inspect.signature`. **The old `EvaluationBehaviorPolicy() == ("raise", True, True)` assertion is DROPPED — under C1 the dataclass cannot even be constructed zero-arg.**
 
 ```python
 import inspect
+from dataclasses import MISSING, fields
+
+import pytest
 
 def test_orchestration_public_surface():
     from swing.evaluation.orchestration import (
@@ -570,9 +614,18 @@ def test_orchestration_public_surface():
         EvaluationBehaviorPolicy, orchestrate_evaluation,
     )
     assert UniverseAugmentation().held_tickers == () and UniverseAugmentation().pinned_inject == ()
-    bp = EvaluationBehaviorPolicy()
-    assert (bp.spy_failure_mode, bp.dedup_error_rows, bp.preserve_held_close) == ("raise", True, True)
-    params = set(inspect.signature(orchestrate_evaluation).parameters)
+    # C1 (CHARC 2026-06-12): EvaluationBehaviorPolicy has NO field defaults — every
+    # field is required, so a zero-arg construction must be impossible.
+    assert all(
+        f.default is MISSING and f.default_factory is MISSING
+        for f in fields(EvaluationBehaviorPolicy)
+    )
+    with pytest.raises(TypeError):
+        EvaluationBehaviorPolicy()        # cannot construct without stating every field
+    # `behavior` is a REQUIRED keyword arg of orchestrate_evaluation (no default instance — C1).
+    sig = inspect.signature(orchestrate_evaluation)
+    assert sig.parameters["behavior"].default is inspect.Parameter.empty
+    params = set(sig.parameters)
     assert params == {
         "cfg", "csv_path", "universe", "universe_hash", "run_now", "fetcher",
         "current_equity", "persist", "as_of_date", "augmentation",
@@ -581,6 +634,8 @@ def test_orchestration_public_surface():
     # OrchestrationOutput defaults are no-op callables; OrchestrationResult carries run_id/run/candidates.
     assert callable(OrchestrationOutput().info) and callable(OrchestrationOutput().note_pin_injection)
 ```
+
+> **C2 field-set / no-policy-fields-survive edge case (read before writing the test).** The three candidate fields above (`spy_failure_mode`/`dedup_error_rows`/`preserve_held_close`) are the PRE-Task-C maximal set and map 1:1 to the three POLICY-field divergences (SPY-GUARD/ERROR-DEDUP/EXCLUDED-CLOSE); DIVERGENCE-1/2/EQUITY are NON-policy seams and never appear as policy fields. By Phase 1 the Task-C rulings are known: declare `EvaluationBehaviorPolicy` with EXACTLY the intentional-ruled POLICY fields (each required, no default), and the no-field-defaults assertion holds over whatever fields survive. If a policy field was ruled unify, drop it from the dataclass (its behavior is unconditional shared code). **If EVERY `EvaluationBehaviorPolicy` candidate field was ruled unify (all three policy-field divergences) — INDEPENDENT of the augmentation/current_equity rulings — do NOT create `EvaluationBehaviorPolicy` at all and do NOT add a `behavior` parameter** — remove `EvaluationBehaviorPolicy` from the import and `"behavior"` from the params-set assertion (the seam is gone). The no-field-defaults invariant is binding for every policy field that survives.
 
 - [ ] **Step 2: Run → fail (module missing).** `python -m pytest tests/evaluation/test_orchestration.py::test_orchestration_public_surface -v` → FAIL `ModuleNotFoundError`.
 
@@ -611,21 +666,24 @@ git commit -m "feat(evaluation): Task 1.1 — orchestration module seam dataclas
   1. `finviz_df = pd.read_csv(csv_path)`; `Ticker` guard → `ValueError`; tickers list; `sector_industry_by_ticker` map (identical loop).
   2. `tickers` augmentation: `seen = set(tickers)`; append `augmentation.held_tickers` (not in seen); compute `injected_pins = [t for t in augmentation.pinned_inject if t not in seen]`, append; if `injected_pins`: `output.note_pin_injection(injected_pins)`.
   3. `if pre_fetch_hook is not None: pre_fetch_hook(list(tickers))` — at the held-tickers boundary (LOCK #16 — the hook IS the warm+prewarm in the pipeline adapter; called with the same merged set the runner currently passes).
-  4. SPY fetch — branch on `behavior.spy_failure_mode`: `"warn_and_zero"` wraps the fetch in try/except (warn via `output.warn` + `spy_return=0.0`, the CLI form); `"raise"` runs straight-line (the pipeline form — an exception propagates). `as_of_date` threaded into `fetcher.get`. NO hand-waved `on_spy_error` — the seam is `behavior.spy_failure_mode` (Codex R1 C4).
+  4. SPY fetch — **conditional template (C2): IF `spy_failure_mode` survived as an intentional policy field**, branch on `behavior.spy_failure_mode`: `"warn_and_zero"` wraps the fetch in try/except (warn via `output.warn` + `spy_return=0.0`, the CLI form); `"raise"` runs straight-line (the pipeline form — an exception propagates). **IF DIVERGENCE-SPY-GUARD was ruled unify**, the field was deleted (Task 1.1) → implement the chosen unified behavior as unconditional shared code (no branch) and migrate the DIVERGENCE-SPY-GUARD assertion to parity IN THIS task. `as_of_date` threaded into `fetcher.get`. NO hand-waved `on_spy_error` — the seam (when it survives) is `behavior.spy_failure_mode` (Codex R1 C4).
   5. per-ticker OHLCV fetch + universe returns (identical loops; `as_of_date` threaded).
   6. `BatchContext(...)` (identical).
   7. `data_asof = max(max_dates).date() if max_dates else last_completed_session(run_now)`; `action_session = action_session_for_run(run_now)`.
   8. `excluded = set(cfg.etf_exclusion.manual_block) | set(augmentation.held_tickers)`; build `contexts` with `current_equity=current_equity` (the seam) — identical loop.
   9. `candidates = evaluate_batch(contexts)`.
-  10. synthesize excluded rows — preserve close for held when `behavior.preserve_held_close` (else `close=None`); `notes = "open position" if t in held_set else "ETF/fund blocklist"`.
-  11. `error_tickers` dedup vs excluded WHEN `behavior.dedup_error_rows` (else no dedup — the CLI form); gated on the policy so each §4 ruling is honored.
+  10. synthesize excluded rows — **conditional template (C2): IF `preserve_held_close` survived as an intentional policy field**, preserve close for held when `behavior.preserve_held_close` (else `close=None`); **IF DIVERGENCE-EXCLUDED-CLOSE was ruled unify**, the field was deleted → apply the chosen unified close-handling as unconditional shared code + migrate its assertion to parity in this task. `notes = "open position" if t in held_set else "ETF/fund blocklist"`.
+  11. `error_tickers` dedup vs excluded — **conditional template (C2): IF `dedup_error_rows` survived as an intentional policy field**, dedup WHEN `behavior.dedup_error_rows` (else no dedup — the CLI form); **IF DIVERGENCE-ERROR-DEDUP was ruled unify**, the field was deleted → apply the chosen unified dedup behavior as unconditional shared code + migrate its assertion to parity in this task. (If no policy field survives at all, the body neither accepts nor references `behavior`.)
   12. synthesize error rows.
   13. sector/industry `_dc_replace` plumb (identical).
   14. build `EvaluationRun(...)` (identical counts).
   15. `run_id = persist(run, candidates)`.
   16. `return OrchestrationResult(run_id=run_id, run=run, candidates=candidates)`.
 
-> Every divergence-bearing branch (steps 4/8/10/11) is written to honor the Task-C ruling: if "unify", the branch is unconditional shared code; if "intentional", the branch is gated on the seam value (`augmentation`, `current_equity`, or a `behavior` policy field — `spy_failure_mode`/`dedup_error_rows`/`preserve_held_close`) so the CLI adapter reproduces its prior behavior exactly. Do NOT hardcode the pipeline behavior into shared code where the ruling said "intentional difference."
+> Every divergence-bearing branch honors the Task-C ruling (C2), but HOW depends on whether the divergence is a POLICY field or a non-policy seam:
+> - **POLICY-field steps (4 → `spy_failure_mode`, 10 → `preserve_held_close`, 11 → `dedup_error_rows`):** if **"unify"**, the corresponding `EvaluationBehaviorPolicy` field was DELETED (Task 1.1) and the branch is unconditional shared code — and the `DIVERGENCE-n` assertion is migrated to a parity assertion IN THIS SAME task; if **"intentional"**, the branch is gated on the surviving `behavior.<field>` so the CLI adapter reproduces its prior behavior exactly, with a 1:1 discriminating test naming the ruling.
+> - **NON-policy step (8 → the `augmentation`/`current_equity` seams; DIVERGENCE-1/2/EQUITY):** if **"unify"**, both adapters feed the seam the SAME value (e.g. CLI computes held/pins, or both use `sizing_equity`) — NO policy field is deleted; if **"intentional"**, the `augmentation`/`current_equity` seam carries the difference. Either way migrate (unify) or add a discriminating test (intentional) in the same task.
+> Do NOT hardcode the pipeline behavior into shared code where the ruling said "intentional difference"; do NOT branch on a policy field that was ruled unify (it no longer exists). **If EVERY `EvaluationBehaviorPolicy` candidate field (all three policy-field divergences) is ruled unify — INDEPENDENT of the augmentation/current_equity rulings — there is no `behavior` parameter at all and every policy step here is unconditional shared code.** Per C3, shared code branches ONLY on the policy value — adapters never special-case around it.
 
 - [ ] **Step 4: Run the new unit tests → pass. Run the Phase-0 harness → STILL GREEN** (the orchestrator isn't wired into either path yet, so this just confirms no import-time breakage). Commit.
 ```bash
@@ -654,8 +712,8 @@ git commit -m "feat(evaluation): Task 1.2 — orchestrate_evaluation body with e
     The warm gets the captured `held_tickers` (NOT `merged_tickers`); the prewarm gets `merged_tickers` as `candidate_tickers` + `universe.tickers` separately. Do NOT collapse these to one ticker set (LOCK #16 — silently changing the warmed/prewarmed scope, especially around Arc-7 pins, is exactly the regression this lock guards). **Verify the orchestrator's `merged_tickers` equals the runner's pre-refactor `tickers` value at the prewarm call site** (screen∪held∪pins, in the same insertion order).
   - build `OrchestrationOutput(note_pin_injection=lambda tickers: run_warnings.append({"step":"evaluate","kind":"pin_injection","count":len(tickers),"tickers":tickers}) if run_warnings is not None else None)` — reproduce the exact warning dict (`runner.py:1446-1450`).
   - build the `persist` closure: `with lease.fenced_write() as conn: run_id = insert_evaluation_run(conn, run); insert_candidates(conn, run_id, candidates); set_evaluation_run_id(conn, pipeline_run_id=lease.run_id, evaluation_run_id=run_id); return run_id` (LOCK #1 — lease stays here).
-  - pass `behavior=EvaluationBehaviorPolicy()` (the defaults ARE the current pipeline behavior: `raise`/dedup/preserve) — explicit, so the pipeline's error-path semantics are pinned at the call site.
-  - `result = orchestrate_evaluation(cfg=cfg, csv_path=csv_path, universe=universe, universe_hash=universe_hash, run_now=run_now, fetcher=fetcher, current_equity=sizing_eq, persist=persist, as_of_date=None, augmentation=aug, pre_fetch_hook=hook, output=out, behavior=EvaluationBehaviorPolicy())`; `return result.run_id`.
+  - construct the policy stating EVERY surviving field explicitly (C1) — **NEVER `EvaluationBehaviorPolicy()`**. The TEMPLATE form `EvaluationBehaviorPolicy(spy_failure_mode="raise", dedup_error_rows=True, preserve_held_close=True)` is shown **only for the case where all three policy fields survived as intentional**; these three values ARE the current pipeline behavior. Per C2, pass ONLY the fields that survived Task-C pruning — drop any field ruled unify (it no longer exists), i.e. `EvaluationBehaviorPolicy(<surviving policy fields only>)`. **If every policy field was ruled unify, the `behavior` argument is gone entirely** (the parameter was removed).
+  - `result = orchestrate_evaluation(cfg=cfg, csv_path=csv_path, universe=universe, universe_hash=universe_hash, run_now=run_now, fetcher=fetcher, current_equity=sizing_eq, persist=persist, as_of_date=None, augmentation=aug, pre_fetch_hook=hook, output=out, behavior=EvaluationBehaviorPolicy(<surviving policy fields only>))`; `return result.run_id`. (TEMPLATE: the surviving-field set = the intentional policy fields; if all three survive that's `spy_failure_mode="raise", dedup_error_rows=True, preserve_held_close=True`; drop `behavior=` entirely if no policy field survives.)
 
 - [ ] **Step 3: Add a LOCK #16 warm/prewarm-scope regression test (Codex R2).** Before/after the refactor, assert the warm + prewarm receive the EXACT ticker sets: monkeypatch `_warm_pipeline_marketdata` + `_prewarm_evaluate_archives` to record their kwargs, run `_step_evaluate` through the Phase-0 fixtures (with a held + pinned ticker seeded), and assert `_warm_pipeline_marketdata` got `held_tickers == [HELD_TICKER]` and `_prewarm_evaluate_archives` got `candidate_tickers == screen∪held∪pins` (same order) + `universe_tickers == universe.tickers`. This test must pass identically on the pre-refactor HEAD and the post-refactor adapter (write it FIRST against current code, see it green, then keep it green through the swap).
 
@@ -696,7 +754,7 @@ git commit -m "test(cli): Task 2.1 — characterize swing eval stdout + exit cod
   - `augmentation` per the Task-C ruling: `UniverseAugmentation()` if DIVERGENCE-1/2 ruled intentional-pipeline-only; or compute held/pins (mirroring the runner) if ruled unify.
   - `current_equity` per the DIVERGENCE-EQUITY ruling: `cfg.account.starting_equity` (intentional) or `sizing_equity(...)` (unify).
   - `output = OrchestrationOutput(info=click.echo, warn=lambda m: click.echo(m, err=True))` (note_pin_injection defaults to no-op unless DIVERGENCE-2 ruled unify).
-  - `behavior` per the §4 rulings: `EvaluationBehaviorPolicy(spy_failure_mode="warn_and_zero", dedup_error_rows=<DIVERGENCE-ERROR-DEDUP ruling>, preserve_held_close=<DIVERGENCE-EXCLUDED-CLOSE ruling>)`. The CLI's CURRENT behavior is `spy_failure_mode="warn_and_zero"`, `dedup_error_rows=False`, `preserve_held_close=False`; pass exactly that unless a ruling unifies a field. The Phase-0 CLI golden + Task-2.1 UX test enforce byte-identity, so a wrong policy value fails immediately.
+  - `behavior` per the §4 rulings, stating every surviving field EXPLICITLY (C1 — never `EvaluationBehaviorPolicy()`). TEMPLATE (shown for the all-three-policy-fields-survive case): `EvaluationBehaviorPolicy(spy_failure_mode="warn_and_zero", dedup_error_rows=<DIVERGENCE-ERROR-DEDUP ruling>, preserve_held_close=<DIVERGENCE-EXCLUDED-CLOSE ruling>)`. The CLI's CURRENT behavior is `spy_failure_mode="warn_and_zero"`, `dedup_error_rows=False`, `preserve_held_close=False`; pass exactly that unless a ruling unifies a field. Per C2, a unify-ruled field was DELETED from the policy — drop it from this call (its behavior is now unconditional shared code), i.e. `EvaluationBehaviorPolicy(<surviving policy fields only>)`; **if every policy field was ruled unify the `behavior` argument is gone entirely** (the parameter was removed). The Phase-0 CLI golden + Task-2.1 UX test enforce byte-identity, so a wrong policy value fails immediately.
   - `persist` closure: `conn = connect(cfg.paths.db_path); try: with conn: run_id = insert_evaluation_run(conn, run); insert_candidates(conn, run_id, candidates); finally: conn.close(); return run_id` (plain transaction — no lease).
   - emit the `Evaluating N tickers` line via `output.info` BEFORE the call (preserve ordering) — or pass it through and let the orchestrator emit; choose whichever keeps the Task-2.1 UX test byte-identical. **Simplest faithful choice:** keep the two human-facing echo lines (`Evaluating…`, the `Run … / Data as of …` summary) in the adapter, computed from `result` — the orchestrator's `output.info` carries only shared progress text, if any.
   - `result = orchestrate_evaluation(...); ` then echo the summary from `result.run`/`result.run_id`.
@@ -745,7 +803,10 @@ git commit -m "refactor(cli): Task 3.1 — delete the comment-enforced eval mirr
 ## Done criteria
 
 - [ ] Phase-0 golden-parity harness exists, drives BOTH paths through the production derivation chain (offline-seeded archive, NOT a stubbed fetcher), and is GREEN on the final head as the permanent parity regression.
-- [ ] Every divergence the harness found was ruled by the operator at Task C; each ruling is either unified (assertion migrated) or intentional (seam-tested). No silent unification/preservation.
+- [ ] Every divergence the harness found was ruled by the operator at Task C. POLICY-field rulings (SPY-GUARD/ERROR-DEDUP/EXCLUDED-CLOSE): unify → field DELETED + assertion migrated to parity IN THE SAME TASK, or intentional → field kept + 1:1 ruling-named test. NON-policy rulings (DIVERGENCE-1/2/EQUITY → augmentation/current_equity seams): unify → shared + assertion migrated, or intentional → seam carries it + discriminating test. No silent unification/preservation.
+- [ ] **C1 (when any policy field survives):** `EvaluationBehaviorPolicy` declares every surviving field REQUIRED with NO defaults; Task 1.1's no-field-defaults test (`fields(...)` → `MISSING` + zero-arg `TypeError`) is green; `behavior` is a required keyword arg of `orchestrate_evaluation`; BOTH adapters construct the policy stating every field explicitly — **zero `EvaluationBehaviorPolicy()` zero-arg construction anywhere in `swing/`.** **Alternate success (no policy fields survive):** `EvaluationBehaviorPolicy` is ABSENT, the `behavior` parameter is ABSENT, and there are ZERO references to either anywhere in `swing/`.
+- [ ] **C2:** the `EvaluationBehaviorPolicy` final field set == the operator-ruled-intentional POLICY-field set; the return report carries the COMPLETE policy field-to-ruling map (each candidate field → unify|intentional → disposition) PLUS the non-policy divergence rulings; the no-policy-fields-survive edge case (empty policy + `behavior` parameter removed, INDEPENDENT of the augmentation/equity rulings) is handled if it arises.
+- [ ] **C3:** when present, `EvaluationBehaviorPolicy` is a FLAT dataclass of scalar flags passed as ONE parameter; shared code branches ONLY on the policy value (adapters never special-case around it); no strategy/handler hierarchy, registry, new module, or new seam category was introduced (else it was routed to CHARC).
 - [ ] `swing/evaluation/orchestration.py` is the single shared orchestration path; `eval_cmd` and `_step_evaluate` are thin adapters.
 - [ ] LOCKS verified: lease/fence + `set_evaluation_run_id` only in the runner adapter; `_warm_pipeline_marketdata`+`_prewarm_evaluate_archives` fire at the same #16 boundary with the same args; Arc-7 pin/held semantics + `pin_injection` warning byte-identical; `evaluate_batch` untouched; no step boundary added/moved (#25 timings intact); NO schema, NO new dependency, no pyproject/config edit.
 - [ ] The mirror comment is gone, replaced by a one-line pointer; `grep` confirms no mirror prose remains.
@@ -767,6 +828,9 @@ git commit -m "refactor(cli): Task 3.1 — delete the comment-enforced eval mirr
 - `_warm_pipeline_marketdata`/`_prewarm_evaluate_archives` call order + args unchanged (LOCK #16).
 - Every new test pins the clock (R2/D9) — no live `datetime.now()` in a new test.
 - The orchestrator must not be hardcoded to pipeline behavior where a ruling said "intentional CLI difference" (gate on the seam, don't bake the pipeline branch into shared code).
+- **C1:** when any policy field survives — `EvaluationBehaviorPolicy` has NO field defaults (the `fields(...)`→`MISSING` + zero-arg `TypeError` test is present and green); `behavior` is a required keyword arg; NO `EvaluationBehaviorPolicy()` zero-arg construction anywhere in `swing/` (both adapters state every field explicitly). When NO policy field survives — `EvaluationBehaviorPolicy` and `behavior` are absent, zero references in `swing/`.
+- **C2:** UNIFY-ruled POLICY fields were DELETED from the policy (not kept as defaulted/unconditional fields); the final policy field set == the intentional POLICY-field set; the C2 delete/keep rule was applied ONLY to the three policy fields, NOT to the augmentation/current_equity divergences (DIVERGENCE-1/2/EQUITY); each unify migrated its DIVERGENCE-n assertion to a parity assertion in the SAME task; the COMPLETE policy field-to-ruling map PLUS the non-policy rulings are in the return report; the no-policy-fields-survive → empty/removed-policy edge case (independent of augmentation/equity rulings) is handled (no orphan `behavior` parameter).
+- **C3:** the policy stayed a flat scalar-flag dataclass on ONE parameter; shared code branches only on the policy value (no adapter special-casing around it); no new module/seam/registry/hierarchy crept in.
 - Final fast-suite count read off the merged/ final head, never carried forward.
 
 **Executing worktree:** `<repo>/.worktrees/arc17a-exec` (this plan was authored in `<repo>/.worktrees/arc17a-plan`).
