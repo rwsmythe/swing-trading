@@ -49,6 +49,8 @@ from pathlib import Path
 import pandas as pd
 import yfinance as yf
 
+from swing.data.ohlcv_finiteness import is_finite_ohlc
+
 log = logging.getLogger(__name__)
 
 # Shape A persistence (Schwab API Sub-bundle C T-C.2 / plan §A.8 + §H.6.3):
@@ -200,7 +202,13 @@ def _calendar_window_for_trading_days(trading_days: int) -> int:
 
 
 def _trim_trailing_ragged(df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
-    """Arc 8 — drop trailing rows where ANY of Open/High/Low/Close is NaN.
+    """Arc 8 — drop trailing rows where ANY of Open/High/Low/Close is non-finite.
+
+    Phase 18 18-A: the finiteness test is the shared ``is_finite_ohlc`` (the ONE
+    predicate also used by the temporal-log writer; C1) — ``math.isfinite``, so
+    a trailing +/-inf row is trimmed too (a strict superset of the prior
+    ``isna()`` NaN-only check, aligning with the engine gate's finiteness
+    definition). Volume is excluded from ``ohlc`` so Volume-only-NaN never trims.
 
     Iterates from the END, removing rows while the newest remaining row has a
     NaN in any OHLC field; stops at the first clean row. Returns the trimmed
@@ -221,7 +229,7 @@ def _trim_trailing_ragged(df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
         return df, 0
     n = len(df)
     cut = n
-    while cut > 0 and bool(df.iloc[cut - 1][ohlc].isna().any()):
+    while cut > 0 and not is_finite_ohlc(*df.iloc[cut - 1][ohlc]):
         cut -= 1
     if cut == n:
         return df, 0
@@ -257,8 +265,8 @@ def _yf_download_window(ticker: str, *, start: date, end: date) -> pd.DataFrame:
     if n_trimmed:
         dropped = [d.date().isoformat() for d in df.index[len(trimmed_df):]]
         log.warning(
-            "serial trailing-ragged trim (%s): dropped %d trailing NaN-OHLC "
-            "bar(s) %s (retry next fetch)", ticker, n_trimmed, dropped,
+            "serial trailing-ragged trim (%s): dropped %d trailing non-finite "
+            "OHLC bar(s) %s (retry next fetch)", ticker, n_trimmed, dropped,
         )
     return trimmed_df
 
@@ -692,7 +700,7 @@ def _warm_one_window(
                 dropped = [d.date().isoformat() for d in sub.index[len(trimmed_sub):]]
                 log.warning(
                     "warm trailing-ragged trim (%s): dropped %d trailing "
-                    "NaN-OHLC bar(s) %s (retry next fetch)", ticker, trimmed, dropped,
+                    "non-finite OHLC bar(s) %s (retry next fetch)", ticker, trimmed, dropped,
                 )
             sub = trimmed_sub
             if sub.empty:

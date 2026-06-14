@@ -112,6 +112,21 @@ def test_trim_clean_frame_unchanged():
     pd.testing.assert_frame_equal(trimmed, df)
 
 
+def test_trim_trailing_inf_close_phase18():
+    """Phase 18 18-A: a trailing +inf Close is NON-FINITE -> trimmed. The shared
+    is_finite_ohlc uses math.isfinite (matching the engine gate), a strict
+    superset of the old isna()-only check, which would have KEPT the inf row.
+    Locks the beneficial broadening; the NaN cases above still pass identically."""
+    d1, d2 = date(2026, 6, 9), date(2026, 6, 10)
+    df = _flat_frame({
+        d1: (10.0, 11.0, 9.0, 10.5, 1000),
+        d2: (10.5, 11.5, 10.0, float("inf"), 1200),  # trailing non-finite (inf)
+    })
+    trimmed, n = mod._trim_trailing_ragged(df)
+    assert n == 1
+    assert [d.date() for d in trimmed.index] == [d1]
+
+
 def test_trim_empty_frame_is_noop():
     df = pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
     trimmed, n = mod._trim_trailing_ragged(df)
