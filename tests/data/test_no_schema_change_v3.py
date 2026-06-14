@@ -12,7 +12,7 @@ def test_expected_schema_version_unchanged() -> None:
     # B-7 (Phase 15) arc subsequently bumped HEAD to v24 (migration 0024 adds the
     # nullable failure_mode column); this guard tracks the current HEAD so the
     # schwabdev-arc invariant (it added nothing of its own) stays auditable.
-    assert EXPECTED_SCHEMA_VERSION == 29
+    assert EXPECTED_SCHEMA_VERSION == 30
 
 
 def test_no_new_migration_file_added() -> None:
@@ -20,6 +20,7 @@ def test_no_new_migration_file_added() -> None:
     # This is a HEAD-tracking ceiling guard: the highest migration on disk must
     # not exceed the current EXPECTED_SCHEMA_VERSION (v28 today: B-7 0024,
     # phase16 0025, broad-watch 0026, entry_intent 0027, watchlist_pin 0028). A higher
-    # number means an unaccounted migration file slipped in.
+    # number means an unaccounted migration file slipped in. Phase 18 Arc 18-C
+    # adds 0030 (yfinance_calls audit), so the ceiling is now 30.
     versions = sorted(int(p.name[:4]) for p in MIG.glob("[0-9][0-9][0-9][0-9]_*.sql"))
-    assert versions[-1] <= 29, f"a new migration file was added: {versions[-1]} (L3 violation)"
+    assert versions[-1] <= 30, f"a new migration file was added: {versions[-1]} (L3 violation)"

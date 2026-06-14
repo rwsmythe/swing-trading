@@ -22,7 +22,7 @@ def _migrate(tmp_path: Path, version: int, backup_dir: Path | None = None) -> sq
 
 
 def test_expected_schema_version_is_28():
-    assert EXPECTED_SCHEMA_VERSION == 29
+    assert EXPECTED_SCHEMA_VERSION == 30
 
 
 def test_migrate_to_28_adds_three_pin_columns(tmp_path):

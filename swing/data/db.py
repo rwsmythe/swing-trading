@@ -48,7 +48,7 @@ from pathlib import Path
 #   'ticker_detail' via an id-preserving single-table rebuild. NO new tables,
 #   NO column-shape change, NO candlestick change. Atomic BEGIN/COMMIT
 #   discipline preserved (gotcha #9).
-EXPECTED_SCHEMA_VERSION = 29
+EXPECTED_SCHEMA_VERSION = 30
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 DEFAULT_BUSY_TIMEOUT_MS = 30000
@@ -253,6 +253,15 @@ WATCHLIST_PIN_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
 # identical to the watchlist-pin pre-migration set.
 CASH_RECON_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
     WATCHLIST_PIN_PRE_MIGRATION_EXPECTED_TABLES
+)
+
+# Phase 18 Arc 18-C (0030) pre-migration table set. The pre-v30 (v29) table set
+# EQUALS the pre-v29 (cash-recon) set: 0029 adds NO new table (it rebuilds
+# cash_movements + ALTERs account_equity_snapshots), so the cash-recon alias
+# chain (which already includes pipeline_step_timings added by 0025) is the
+# correct expected-tables baseline. 0030 is the first NEW table since 0025.
+PHASE18_ARC_C_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
+    CASH_RECON_PRE_MIGRATION_EXPECTED_TABLES
 )
 
 
@@ -780,6 +789,27 @@ def _create_pre_cash_recon_migration_backup(
     dest_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     backup_path = dest_dir / f"swing-pre-cash-recon-migration-{timestamp}.db"
+    src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
+    try:
+        dest_conn = sqlite3.connect(backup_path)
+        try:
+            src_conn.backup(dest_conn)
+        finally:
+            dest_conn.close()
+    finally:
+        src_conn.close()
+    return backup_path
+
+
+def _create_pre_phase18_arc_c_migration_backup(
+    src_path: Path, *, dest_dir: Path,
+) -> Path:
+    """Phase 18 Arc 18-C (0030) mirror. SQLite-native Connection.backup()
+    before the 0030 migration. Backup file
+    ``swing-pre-phase18-arc-c-migration-<ISO>.db``."""
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    backup_path = dest_dir / f"swing-pre-phase18-arc-c-migration-{timestamp}.db"
     src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
     try:
         dest_conn = sqlite3.connect(backup_path)
@@ -1394,6 +1424,44 @@ def _cash_recon_backup_gate(
         ) from exc
 
 
+def _phase18_arc_c_backup_gate(
+    conn: sqlite3.Connection,
+    *,
+    current_version: int,
+    target_version: int,
+    backup_dir: Path | None,
+) -> None:
+    """Phase 18 Arc 18-C (0030) backup-before-migrate gate.
+
+    Fires ONLY when ``current_version == 29 AND target_version >= 30`` -- a real
+    production v29 DB about to cross v30. STRICT EQUALITY on pre_version per the
+    ``pre_version == (target - 1)`` gotcha (NOT ``<=``); multi-version jumps from
+    pre-v29 baselines bypass this gate by design.
+    """
+    if target_version < 30 or current_version != 29:
+        return
+    src_path = _resolve_main_db_path(conn)
+    if src_path is None:
+        raise MigrationBackupRequiredException(
+            "pre-phase18-arc-c backup gate requires a file-backed source DB; "
+            "in-memory connections cannot be snapshotted."
+        )
+    if backup_dir is None:
+        backup_dir = src_path.parent
+    try:
+        backup_path = _create_pre_phase18_arc_c_migration_backup(
+            src_path, dest_dir=backup_dir)
+        _verify_backup_integrity(
+            backup_path, expected_tables=PHASE18_ARC_C_PRE_MIGRATION_EXPECTED_TABLES,
+        )
+    except MigrationBackupRequiredException:
+        raise
+    except (OSError, sqlite3.Error) as exc:
+        raise MigrationBackupRequiredException(
+            f"pre-phase18-arc-c backup failed: {exc}"
+        ) from exc
+
+
 def run_migrations(
     conn: sqlite3.Connection,
     *,
@@ -1497,6 +1565,12 @@ def run_migrations(
         backup_dir=backup_dir,
     )
     _cash_recon_backup_gate(
+        conn,
+        current_version=current,
+        target_version=target_version,
+        backup_dir=backup_dir,
+    )
+    _phase18_arc_c_backup_gate(
         conn,
         current_version=current,
         target_version=target_version,

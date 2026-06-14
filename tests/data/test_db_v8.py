@@ -110,4 +110,4 @@ def test_migration_0008_idempotent_on_re_apply(tmp_db: Path):
 
 
 def test_expected_schema_version_is_19():
-    assert EXPECTED_SCHEMA_VERSION == 29
+    assert EXPECTED_SCHEMA_VERSION == 30

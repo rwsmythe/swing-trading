@@ -719,7 +719,7 @@ def test_expected_schema_version_constant_is_21_post_sb6c() -> None:
     Test name preserved (stale-name-but-current-assertion) per cumulative
     discipline; Phase 14 Sub-bundle 3 migration 0023 bumps HEAD from 22 to 23.
     """
-    assert EXPECTED_SCHEMA_VERSION == 29, (
+    assert EXPECTED_SCHEMA_VERSION == 30, (
         f"EXPECTED_SCHEMA_VERSION must be 23, got {EXPECTED_SCHEMA_VERSION}"
     )
 
@@ -784,7 +784,7 @@ def test_schema_version_reaches_21_after_v21_migration(
     conn = _v21_conn(tmp_path)
     try:
         ver = conn.execute("SELECT version FROM schema_version").fetchone()
-        assert ver[0] == 29, f"schema_version != 24, got {ver[0]}"
+        assert ver[0] == 30, f"schema_version != HEAD, got {ver[0]}"
     finally:
         conn.close()
 

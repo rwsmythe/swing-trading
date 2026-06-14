@@ -2263,3 +2263,136 @@ class WatchlistCloseTrackFlagEvent:
                 "surface must be one of "
                 f"{_FLAG_SURFACE_VALUES}, got {self.surface!r}"
             )
+
+
+# ============================================================================
+# Phase 18 Arc 18-C (migration 0030) — yfinance_calls audit row.
+#
+# Mirrors schwab_api_calls (0018) for yfinance fetch observability. The
+# #11-atomic enum-sweep LOCK: the _YFINANCE_VALID_* frozensets/tuple below +
+# the __post_init__ validators below + the read-path _row_to_model in
+# swing/data/repos/yfinance_calls.py are the ONLY Python mirrors of the SQL
+# CHECKs in migration 0030, and they all land in the SAME commit.
+#
+# Section-9 LOCK (operator/director, 2026-06-14): there is NO dataclass
+# run-linkage validator. The FK uses ON DELETE SET NULL, so a pipeline row's
+# pipeline_run_id can become NULL on a parent-run delete; _row_to_model MUST
+# round-trip that legitimately-NULLed pipeline row, so a pipeline+None-run-id
+# YfinanceCall constructs cleanly. The run-linkage invariant lives ONLY at the
+# context-install layer (swing/data/yfinance_audit_context.py), which catches a
+# context-install bug at the SOURCE and never sees the post-delete state.
+# ============================================================================
+
+_YFINANCE_VALID_STATUSES = frozenset({
+    "in_flight", "success", "empty", "error",
+})
+_YFINANCE_VALID_CALL_TYPES = frozenset({
+    "download_single", "download_batch", "download_intraday",
+})
+_YFINANCE_VALID_SURFACES = frozenset({
+    "pipeline", "cli", "web",
+})
+
+
+@dataclass(frozen=True)
+class YfinanceCall:
+    """Audit row for one yfinance fetch (migration 0030, Phase 18 Arc 18-C).
+
+    Defense-in-depth on top of the SQL CHECK constraints in 0030. ``empty`` is
+    a FIRST-CLASS status DISTINCT from ``error`` (CLAUDE.md F6). There is NO
+    ``environment`` column (yfinance is the always-on, environment-agnostic
+    fetcher) and NO run-linkage validator (the FK is ON DELETE SET NULL; the
+    guard lives at the context-install layer).
+
+    Shape invariant (mirrors the SQL shape CHECK): ``download_batch`` carries
+    ``ticker_count`` (``ticker`` NULL); ``download_single``/``download_intraday``
+    carry ``ticker`` (``ticker_count`` NULL).
+    """
+
+    call_id: int | None  # None pre-INSERT.
+    ts: str  # ISO 8601 naive.
+    call_type: str
+    ticker: str | None
+    ticker_count: int | None
+    response_time_ms: int | None
+    status: str
+    rows_returned: int | None
+    error_message: str | None
+    pipeline_run_id: int | None
+    surface: str
+
+    def __post_init__(self) -> None:
+        if self.call_type not in _YFINANCE_VALID_CALL_TYPES:
+            raise ValueError(
+                f"call_type must be in {sorted(_YFINANCE_VALID_CALL_TYPES)}, "
+                f"got {self.call_type!r}"
+            )
+        if self.status not in _YFINANCE_VALID_STATUSES:
+            raise ValueError(
+                f"status must be in {sorted(_YFINANCE_VALID_STATUSES)}, "
+                f"got {self.status!r}"
+            )
+        if self.surface not in _YFINANCE_VALID_SURFACES:
+            raise ValueError(
+                f"surface must be in {sorted(_YFINANCE_VALID_SURFACES)}, "
+                f"got {self.surface!r}"
+            )
+        # bool is an int subclass; reject it explicitly for EVERY integer field
+        # (Codex R17). Non-int values raise a controlled ValueError instead of a
+        # TypeError on the comparison below.
+        for fname, fval in (
+            ("response_time_ms", self.response_time_ms),
+            ("rows_returned", self.rows_returned),
+            ("ticker_count", self.ticker_count),
+            ("pipeline_run_id", self.pipeline_run_id),
+        ):
+            if fval is None:
+                continue
+            if isinstance(fval, bool) or not isinstance(fval, int):
+                raise ValueError(
+                    f"{fname} must be None or int (not bool), "
+                    f"got {type(fval).__name__}"
+                )
+        if self.response_time_ms is not None and self.response_time_ms < 0:
+            raise ValueError(
+                f"response_time_ms must be None or >= 0, got {self.response_time_ms}"
+            )
+        if self.rows_returned is not None and self.rows_returned < 0:
+            raise ValueError(
+                f"rows_returned must be None or >= 0, got {self.rows_returned}"
+            )
+        if self.ticker_count is not None and self.ticker_count <= 0:
+            raise ValueError(
+                f"ticker_count must be None or > 0, got {self.ticker_count}"
+            )
+        if self.pipeline_run_id is not None and self.pipeline_run_id <= 0:
+            raise ValueError(
+                f"pipeline_run_id must be None or positive int, "
+                f"got {self.pipeline_run_id}"
+            )
+        # Non-empty / non-whitespace ticker (mirrors length(trim(ticker)) > 0).
+        if self.ticker is not None and (
+            not isinstance(self.ticker, str) or not self.ticker.strip()
+        ):
+            raise ValueError(
+                f"ticker must be None or non-empty/non-whitespace str, "
+                f"got {self.ticker!r}"
+            )
+        # Shape invariant (mirrors the SQL shape CHECK).
+        if self.call_type == "download_batch":
+            if self.ticker_count is None or self.ticker is not None:
+                raise ValueError(
+                    "download_batch requires ticker_count set + ticker NULL, "
+                    f"got ticker={self.ticker!r}, ticker_count={self.ticker_count!r}"
+                )
+        else:  # download_single / download_intraday
+            if self.ticker is None or self.ticker_count is not None:
+                raise ValueError(
+                    f"{self.call_type} requires ticker set + ticker_count NULL, "
+                    f"got ticker={self.ticker!r}, ticker_count={self.ticker_count!r}"
+                )
+        if self.error_message is not None and not isinstance(self.error_message, str):
+            raise ValueError(
+                f"error_message must be None or str, "
+                f"got {type(self.error_message).__name__}"
+            )
