@@ -73,3 +73,44 @@ def test_guard_passes_completed_date_ext_hours_contaminated_bar():
     out = build_ohlc_today_json(bar, observation_date="2026-06-04",
                                 cutoff=_date(2026, 6, 4))
     assert '"high": 13.0' in out  # the guard PASSES it (date-only)
+
+
+def test_build_ohlc_today_json_rejects_non_finite_close():
+    """Phase 18 18-A: the REAL 06-10 shape (completed session, keys present,
+    provider yfinance, Close=NaN, O/H/L/V finite) is REJECTED by the serializer
+    belt. PRE-FIX this returned a JSON string containing the `NaN` token (no
+    raise); POST-FIX it raises ValueError."""
+    bar = {"open": 10.0, "high": 11.0, "low": 9.0, "close": float("nan"),
+           "volume": 1_000_000.0, "provider": "yfinance"}
+    with pytest.raises(ValueError, match="non-finite"):
+        build_ohlc_today_json(bar, observation_date="2026-06-04",
+                              cutoff=_date(2026, 6, 4))
+
+
+def test_build_ohlc_today_json_rejects_inf_high():
+    bar = {"open": 10.0, "high": float("inf"), "low": 9.0, "close": 10.5,
+           "volume": 1_000_000.0, "provider": "yfinance"}
+    with pytest.raises(ValueError, match="non-finite"):
+        build_ohlc_today_json(bar, observation_date="2026-06-04",
+                              cutoff=_date(2026, 6, 4))
+
+
+def test_build_ohlc_today_json_rejects_all_nan_ohlc():
+    """The all-NaN F6 case at the serializer belt -> raises (same barrier)."""
+    nan = float("nan")
+    bar = {"open": nan, "high": nan, "low": nan, "close": nan,
+           "volume": 1_000_000.0, "provider": "yfinance"}
+    with pytest.raises(ValueError, match="non-finite"):
+        build_ohlc_today_json(bar, observation_date="2026-06-04",
+                              cutoff=_date(2026, 6, 4))
+
+
+def test_build_ohlc_today_json_allows_volume_only_nan():
+    """Volume-only-NaN is EXEMPT (Arc-8 reconciliation): finite OHLC -> serialized
+    even though volume is NaN. A discriminator: an impl that gated volume would
+    FAIL this. validate_bars ignores volume too, so the NaN volume is inert."""
+    bar = {"open": 10.0, "high": 11.0, "low": 9.0, "close": 10.5,
+           "volume": float("nan"), "provider": "yfinance"}
+    out = build_ohlc_today_json(bar, observation_date="2026-06-04",
+                                cutoff=_date(2026, 6, 4))
+    assert '"close": 10.5' in out
