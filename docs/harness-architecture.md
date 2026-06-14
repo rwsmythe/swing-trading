@@ -41,6 +41,8 @@ The role mailbox (`scripts/role_mail.py`, `comms/<role>/{inbox,read}/`) enforces
 
 The comms system is staged: **Stage 1** = the durable file mailbox + cold-start launcher + the unread hook; **Stage 1.5** = the optional operator GUI; **Stage 2** (push/MCP bus) only if Stage 1 chafes; **Stage 3** (autonomous wake) gated on evidence Stages 1–2 under-serve. Staging detail + the Stage-2/3 reference design: `tool-director-context.md` §2.5 + `docs/comms-stage2-push-research.md`. Friction-evidence accrues against the Stage-2 bar.
 
+**The mailbox is TRANSPORT, not a TRACKER (convention, operator-approved 2026-06-13).** A `read`/ack moves a message to `read/` and clears it from the active surface — so anything that must PERSIST until a future event (deferred watch-items, gate checklists, action items owed at a later return) does NOT live only in a mailbox message. It is transcribed into a durable tracker (the arc dispatch brief / a gate checklist / the phase todo); the mailbox message carries a POINTER to that tracker, not the must-persist payload. (Origin: 2026-06-13, RD's executing-return watch-items lived only in an acked reply and were nearly lost — friction instance #2.)
+
 ## 4. Role scope-limitation + flag-vs-comply (canonical)
 
 A scope-limited role (orchestrator, implementer) owes the operator **informed consent within its lane**, not silent obedience and not re-litigation:
