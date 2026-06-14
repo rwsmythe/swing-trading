@@ -116,3 +116,13 @@ def test_install_cli_web_with_run_id_raises(surface):
 def test_install_unknown_surface_raises():
     with pytest.raises(ValueError):
         set_yfinance_audit_base_context(db_path="x.db", pipeline_run_id=None, surface="mobile")
+
+
+def test_install_bool_run_id_raises():
+    # bool is an int subclass; a True run id must NOT bind as 1 (Codex executing-R1).
+    with pytest.raises(ValueError):
+        set_yfinance_audit_base_context(
+            db_path="x.db", pipeline_run_id=True, surface="pipeline")
+    with pytest.raises(ValueError):
+        with yfinance_audit_scope(db_path="x.db", pipeline_run_id=True, surface="pipeline"):
+            pass

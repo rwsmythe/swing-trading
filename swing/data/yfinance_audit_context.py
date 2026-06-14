@@ -68,6 +68,16 @@ def _validate_install(*, surface: str, pipeline_run_id: int | None) -> None:
         raise ValueError(
             f"surface must be in {sorted(_YFINANCE_VALID_SURFACES)}, got {surface!r}"
         )
+    # bool is an int subclass; reject it explicitly (Codex executing-R1 MINOR) so
+    # an accidental True does NOT bind to SQLite as a pipeline_run_id of 1 (mirrors
+    # the YfinanceCall dataclass bool-is-int discipline).
+    if pipeline_run_id is not None and (
+        isinstance(pipeline_run_id, bool) or not isinstance(pipeline_run_id, int)
+    ):
+        raise ValueError(
+            "pipeline_run_id must be None or int (not bool), "
+            f"got {type(pipeline_run_id).__name__}"
+        )
     if surface == "pipeline" and pipeline_run_id is None:
         raise ValueError(
             "surface='pipeline' requires a pipeline_run_id (run-linkage invariant)"
