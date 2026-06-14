@@ -116,6 +116,14 @@ class ToolHealthStatus:
         # object.__setattr__.
         if not isinstance(self.checks, tuple):
             object.__setattr__(self, "checks", tuple(self.checks))
+        # Codex R2 MINOR: enforce the locked invariant overall == worst_of(checks)
+        # so an inconsistent envelope cannot be constructed/serialized.
+        expected = worst_of([c.status for c in self.checks])
+        if self.overall != expected:
+            raise ValueError(
+                f"ToolHealthStatus.overall {self.overall!r} != worst_of(checks)"
+                f" {expected!r}; the envelope contract requires overall=worst-of"
+            )
 
     def to_dict(self) -> dict:
         return {

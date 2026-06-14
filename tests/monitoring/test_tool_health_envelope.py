@@ -105,3 +105,13 @@ def test_status_checks_coerced_to_immutable_tuple():
     # the envelope itself exposes no .append (it's a tuple).
     with pytest.raises(AttributeError):
         status.checks.append(ToolHealthCheck(key="k3", status="red", summary="x"))
+
+
+def test_status_rejects_overall_inconsistent_with_checks():
+    # Codex R2 MINOR: the envelope requires overall == worst_of(checks). A
+    # green overall with a red check is an invalid envelope -> ValueError.
+    with pytest.raises(ValueError):
+        ToolHealthStatus(
+            overall="green",
+            checks=[ToolHealthCheck(key="k", status="red", summary="bad")],
+        )
