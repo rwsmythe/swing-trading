@@ -18,8 +18,11 @@ from swing.data.repos.pipeline import (
     force_clear,
     insert_pipeline_run,
 )
-from swing.evaluation.dates import action_session_for_run
+import os
+
+from swing.evaluation.dates import action_session_for_run, last_completed_session
 from swing.monitoring.tool_health import (
+    _check_data_freshness,
     _check_pipeline_run,
     _check_schwab_token,
 )
@@ -420,3 +423,202 @@ def test_schwab_now_uses_local_tz_not_utc(_home):
     _write_tokens_db(_home, "production", refresh_token_issued=issued)
     check = _check_schwab_token(cfg=_SchwabStub(), now=now_local)[0]
     assert check.status == "green"
+
+
+# ----------------------------- data freshness ------------------------------
+
+
+def _ohlcv_check(checks):
+    return _check_by_key(checks, "ohlcv_freshness")
+
+
+def _weather_check(checks):
+    return _check_by_key(checks, "weather_freshness")
+
+
+def _set_mtime_days_ago(path, now_local, *, days=0, hours=0):
+    """Set path mtime so the Hawaii-local age == days+hours from now_local."""
+    from zoneinfo import ZoneInfo
+    now_utc = now_local.replace(tzinfo=ZoneInfo("Pacific/Honolulu"))
+    target = now_utc - timedelta(days=days, hours=hours)
+    ts = target.timestamp()
+    os.utime(path, (ts, ts))
+
+
+def _seed_weather(conn, *, asof_date, run_ts="2026-06-17T05:00:00", ticker="QQQ"):
+    from swing.data.models import WeatherRun
+    from swing.data.repos.weather import upsert_weather_run
+    upsert_weather_run(conn, WeatherRun(
+        id=None, run_ts=run_ts, asof_date=asof_date, ticker=ticker,
+        status="Bullish", close=400.0, sma10=None, sma20=None, sma50=None,
+        slope20_5bar=None, slope10_5bar=None, rationale=None,
+    ))
+
+
+# OHLCV (WRITE-recency only -- NOT bar freshness):
+
+
+def test_ohlcv_green_when_cache_dir_none(tmp_path):
+    conn = _seeded_conn(tmp_path)
+    check = _ohlcv_check(_check_data_freshness(
+        conn, prices_cache_dir=None, now=_now_local()))
+    assert check.status == "green"
+    assert "n/a" in check.summary.lower()
+
+
+def test_ohlcv_green_when_no_parquet(tmp_path):
+    conn = _seeded_conn(tmp_path)
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    check = _ohlcv_check(_check_data_freshness(
+        conn, prices_cache_dir=cache, now=_now_local()))
+    assert check.status == "green"
+    assert "n/a" in check.summary.lower()
+
+
+def test_ohlcv_green_when_recently_written(tmp_path):
+    conn = _seeded_conn(tmp_path)
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    p = cache / "AAPL.parquet"
+    p.write_bytes(b"x")
+    now = _now_local()
+    _set_mtime_days_ago(p, now, days=1)  # age 1d <= 4 -> green
+    check = _ohlcv_check(_check_data_freshness(
+        conn, prices_cache_dir=cache, now=now))
+    assert check.status == "green"
+
+
+def test_ohlcv_yellow_when_write_stale(tmp_path):
+    conn = _seeded_conn(tmp_path)
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    p = cache / "AAPL.parquet"
+    p.write_bytes(b"x")
+    now = _now_local()
+    _set_mtime_days_ago(p, now, days=5)  # 4 < 5 <= 7 -> yellow
+    check = _ohlcv_check(_check_data_freshness(
+        conn, prices_cache_dir=cache, now=now))
+    assert check.status == "yellow"
+
+
+def test_ohlcv_red_when_write_very_stale(tmp_path):
+    conn = _seeded_conn(tmp_path)
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    p = cache / "AAPL.parquet"
+    p.write_bytes(b"x")
+    now = _now_local()
+    _set_mtime_days_ago(p, now, days=9)  # > 7 -> red
+    check = _ohlcv_check(_check_data_freshness(
+        conn, prices_cache_dir=cache, now=now))
+    assert check.status == "red"
+
+
+def test_ohlcv_mtime_age_is_host_tz_independent(tmp_path):
+    # Codex R5 MAJOR #1. Set mtime to a fixed ABSOLUTE instant chosen so the two
+    # interpretations STRADDLE the 4d yellow boundary (HST = UTC-10):
+    #   Hawaii age   = 4d + 3h  = 4.125d -> YELLOW (>4)   [the CORRECT result]
+    #   UTC-host age = 4.125d - 10h = ~3.708d -> green (<=4)  [the BUG: a UTC host
+    #     reads mtime_dt 10h LATER, shrinking the age below the boundary]
+    # The explicit-Hawaii impl must return yellow regardless of host tz; a bare
+    # datetime.fromtimestamp(mtime) (host-local) on a UTC box returns green.
+    from zoneinfo import ZoneInfo
+    conn = _seeded_conn(tmp_path)
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    p = cache / "AAPL.parquet"
+    p.write_bytes(b"x")
+    now = _now_local()
+    now_aware = now.replace(tzinfo=ZoneInfo("Pacific/Honolulu"))
+    target = now_aware - timedelta(days=4, hours=3)  # = 4.125d before
+    ts = target.timestamp()
+    os.utime(p, (ts, ts))
+    # Hawaii-correct age (the pinned impl):
+    hawaii_mtime = datetime.fromtimestamp(ts, ZoneInfo("Pacific/Honolulu")).replace(tzinfo=None)
+    hawaii_age = (now - hawaii_mtime).total_seconds() / 86400
+    # Simulated host-local (UTC) age (the bug):
+    utc_mtime = datetime.fromtimestamp(ts, UTC).replace(tzinfo=None)
+    utc_age = (now - utc_mtime).total_seconds() / 86400
+    assert utc_age <= 4 < hawaii_age  # the discriminator is live (4.125 vs 3.708)
+    check = _ohlcv_check(_check_data_freshness(
+        conn, prices_cache_dir=cache, now=now))
+    assert check.status == "yellow"
+
+
+# Weather (asof_date keyed; backward last_completed_session anchor):
+
+
+def test_weather_red_when_absent(tmp_path):
+    conn = _seeded_conn(tmp_path)  # schema present, empty weather_runs
+    check = _weather_check(_check_data_freshness(
+        conn, prices_cache_dir=None, now=_now_local()))
+    assert check.status == "red"
+    assert "no weather run" in check.summary.lower()
+
+
+def test_weather_green_when_current(tmp_path):
+    now = datetime(2026, 6, 17, 21, 0)  # Wed post-close -> last_completed = Wed 06-17
+    anchor = last_completed_session(now)
+    conn = _seeded_conn(tmp_path)
+    with conn:
+        _seed_weather(conn, asof_date=anchor.isoformat())
+    check = _weather_check(_check_data_freshness(
+        conn, prices_cache_dir=None, now=now))
+    assert check.status == "green"
+
+
+def test_weather_yellow_one_behind(tmp_path):
+    # last_completed(Wed 06-17 postclose) = 06-17; prior session = Tue 06-16 -> 1.
+    now = datetime(2026, 6, 17, 21, 0)
+    conn = _seeded_conn(tmp_path)
+    with conn:
+        _seed_weather(conn, asof_date="2026-06-16")
+    check = _weather_check(_check_data_freshness(
+        conn, prices_cache_dir=None, now=now))
+    assert check.status == "yellow"
+
+
+def test_weather_red_two_behind(tmp_path):
+    # last_completed = 06-17; two sessions behind = Mon 06-15 -> red.
+    now = datetime(2026, 6, 17, 21, 0)
+    conn = _seeded_conn(tmp_path)
+    with conn:
+        _seed_weather(conn, asof_date="2026-06-15")
+    check = _weather_check(_check_data_freshness(
+        conn, prices_cache_dir=None, now=now))
+    assert check.status == "red"
+
+
+def test_weather_yellow_one_behind_across_weekend(tmp_path):
+    # frozen_now = Mon 06-15 post-close -> last_completed_session = Mon 06-15
+    # (backward anchor; Monday's close has passed); prior session = Fri 06-12.
+    # sessions_behind(Mon 06-15, Fri 06-12) == 1 across the weekend -> yellow.
+    now = datetime(2026, 6, 15, 21, 0)
+    assert last_completed_session(now) == date(2026, 6, 15)
+    conn = _seeded_conn(tmp_path)
+    with conn:
+        _seed_weather(conn, asof_date="2026-06-12")
+    check = _weather_check(_check_data_freshness(
+        conn, prices_cache_dir=None, now=now))
+    assert check.status == "yellow"
+
+
+def test_weather_missing_table_degrades_yellow_not_crash():
+    conn = sqlite3.connect(":memory:")  # no weather_runs table
+    checks = _check_data_freshness(conn, prices_cache_dir=None, now=_now_local())
+    wc = _weather_check(checks)
+    assert wc.status == "yellow"
+    assert "schema unavailable" in wc.summary.lower()
+
+
+def test_weather_non_schema_operational_error_reraises(tmp_path, monkeypatch):
+    now = datetime(2026, 6, 17, 21, 0)
+    conn = _seeded_conn(tmp_path)
+
+    def boom(_conn, **_kw):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr("swing.data.repos.weather.get_latest", boom)
+    with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+        _check_data_freshness(conn, prices_cache_dir=None, now=now)

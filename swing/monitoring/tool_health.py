@@ -29,6 +29,13 @@ _PIPELINE_FRESH_RED_SESSIONS = 2
 _PIPELINE_RECENT_RUNS_WINDOW = 5
 # Pipeline run states counted as a recent failure.
 _PIPELINE_FAILURE_STATES = ("failed", "force_cleared")
+# OHLCV archive WRITE recency (calendar days; 4 tolerates a normal weekend,
+# matching weekly_glance.T1_MAX_AGE_DAYS). >4 -> yellow; >7 -> red.
+_OHLCV_FRESH_YELLOW_DAYS = 4
+_OHLCV_FRESH_RED_DAYS = 7
+# Weather freshness in NYSE sessions behind last_completed_session.
+_WEATHER_FRESH_YELLOW_SESSIONS = 1
+_WEATHER_FRESH_RED_SESSIONS = 2
 
 
 def _schema_unavailable(exc: sqlite3.OperationalError) -> bool:
@@ -344,3 +351,90 @@ def _check_schwab_token(*, cfg, now: datetime) -> list[ToolHealthCheck]:
     days = int(delta_seconds // 86400)
     return [ToolHealthCheck(
         key=key, status="green", summary=f"Schwab token valid for {days} day(s)")]
+
+
+def _check_data_freshness(
+    conn: sqlite3.Connection, *, prices_cache_dir, now: datetime
+) -> list[ToolHealthCheck]:
+    """OHLCV archive WRITE-recency + weather asof_date freshness.
+
+    OHLCV: the newest *.parquet mtime in prices_cache_dir (stdlib os.stat; NO
+    pandas -- this is WRITE-recency, "is the archive being written", NOT bar
+    freshness). The mtime (an absolute POSIX timestamp) is converted to
+    naive-Hawaii-local BEFORE subtracting from the naive-Hawaii-local `now`
+    (Codex R5 MAJOR #1 -- host-tz independence). A missing cache dir / no parquet
+    degrades to green/"n/a".
+
+    Weather: get_latest(conn).asof_date (a DATA-session date -- the
+    weather-keyed-by-data_asof_date gotcha) vs last_completed_session(now),
+    counted in NYSE sessions via sessions_behind. No weather row -> red; a
+    missing weather_runs table -> yellow schema-unavailable (any other
+    OperationalError re-raises).
+    """
+    from zoneinfo import ZoneInfo
+
+    from swing.evaluation.dates import last_completed_session, sessions_behind
+
+    checks: list[ToolHealthCheck] = []
+    hst = ZoneInfo("Pacific/Honolulu")
+
+    # (a) OHLCV archive write-recency
+    if prices_cache_dir is None or not prices_cache_dir.exists():
+        checks.append(ToolHealthCheck(
+            key="ohlcv_freshness", status="green",
+            summary="OHLCV archive freshness n/a (cache dir unavailable)"))
+    else:
+        parquets = list(prices_cache_dir.glob("*.parquet"))
+        if not parquets:
+            checks.append(ToolHealthCheck(
+                key="ohlcv_freshness", status="green",
+                summary="OHLCV archive freshness n/a (no archives written yet)"))
+        else:
+            newest = max(p.stat().st_mtime for p in parquets)
+            mtime_dt = datetime.fromtimestamp(newest, hst).replace(tzinfo=None)
+            age_days = (now - mtime_dt).total_seconds() / 86400
+            if age_days <= _OHLCV_FRESH_YELLOW_DAYS:
+                status = "green"
+            elif age_days <= _OHLCV_FRESH_RED_DAYS:
+                status = "yellow"
+            else:
+                status = "red"
+            checks.append(ToolHealthCheck(
+                key="ohlcv_freshness", status=status,
+                summary=f"OHLCV archive last WRITTEN {age_days:.1f} day(s) ago",
+                detail=f"newest parquet mtime {mtime_dt.isoformat(timespec='seconds')}"))
+
+    # (b) weather asof_date freshness
+    try:
+        from swing.data.repos.weather import get_latest
+        latest = get_latest(conn)
+    except sqlite3.OperationalError as exc:
+        if _schema_unavailable(exc):
+            checks.append(ToolHealthCheck(
+                key="weather_freshness", status="yellow",
+                summary="weather schema unavailable",
+                detail="weather_runs table missing; run swing db-migrate"))
+            return checks
+        raise
+
+    if latest is None:
+        checks.append(ToolHealthCheck(
+            key="weather_freshness", status="red",
+            summary="no weather run recorded"))
+    else:
+        from datetime import date as _date
+        anchor = last_completed_session(now)
+        behind = sessions_behind(anchor, _date.fromisoformat(latest.asof_date))
+        if behind <= 0:
+            status = "green"
+        elif behind <= _WEATHER_FRESH_YELLOW_SESSIONS:
+            status = "yellow"
+        else:
+            status = "red"
+        checks.append(ToolHealthCheck(
+            key="weather_freshness", status=status,
+            summary=(f"weather current as of {latest.asof_date}"
+                     f" ({behind} session(s) behind)"),
+            detail=f"pipeline ran {latest.run_ts}"))
+
+    return checks
