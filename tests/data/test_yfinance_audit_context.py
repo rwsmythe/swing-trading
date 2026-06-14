@@ -126,3 +126,12 @@ def test_install_bool_run_id_raises():
     with pytest.raises(ValueError):
         with yfinance_audit_scope(db_path="x.db", pipeline_run_id=True, surface="pipeline"):
             pass
+
+
+@pytest.mark.parametrize("bad", [0, -1])
+def test_install_non_positive_run_id_raises(bad):
+    # 0/negative run id must be rejected (Codex executing-R3) so a bad install
+    # cannot silently produce FK-orphaned audit rows.
+    with pytest.raises(ValueError):
+        set_yfinance_audit_base_context(
+            db_path="x.db", pipeline_run_id=bad, surface="pipeline")

@@ -78,6 +78,12 @@ def _validate_install(*, surface: str, pipeline_run_id: int | None) -> None:
             "pipeline_run_id must be None or int (not bool), "
             f"got {type(pipeline_run_id).__name__}"
         )
+    if pipeline_run_id is not None and pipeline_run_id <= 0:
+        # Reject 0/negative (Codex executing-R3 MINOR) so a bad install cannot
+        # silently produce FK-orphaned audit rows; matches the model validator.
+        raise ValueError(
+            f"pipeline_run_id must be None or positive int, got {pipeline_run_id}"
+        )
     if surface == "pipeline" and pipeline_run_id is None:
         raise ValueError(
             "surface='pipeline' requires a pipeline_run_id (run-linkage invariant)"
