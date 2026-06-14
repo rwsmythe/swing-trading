@@ -19,7 +19,10 @@ from swing.data.repos.pipeline import (
     insert_pipeline_run,
 )
 from swing.evaluation.dates import action_session_for_run
-from swing.monitoring.tool_health import _check_pipeline_run
+from swing.monitoring.tool_health import (
+    _check_pipeline_run,
+    _check_schwab_token,
+)
 
 
 def _seeded_conn(tmp_path):
@@ -247,3 +250,173 @@ def test_pipeline_non_schema_operational_error_reraises(tmp_path, monkeypatch):
     )
     with pytest.raises(sqlite3.OperationalError, match="database is locked"):
         _check_pipeline_run(conn, cfg=None, now=now)
+
+
+# ------------------------------ schwab check -------------------------------
+
+from datetime import UTC  # noqa: E402
+
+_TTL = 7 * 24 * 3600
+_WARN = 24 * 3600
+_ERROR = 2 * 3600
+
+
+class _SchwabStub:
+    """Minimal cfg exposing only integrations.schwab.{environment,client_id}."""
+
+    class _Schwab:
+        def __init__(self, environment, client_id):
+            self.environment = environment
+            self.client_id = client_id
+
+    class _Integrations:
+        def __init__(self, schwab):
+            self.schwab = schwab
+
+    def __init__(self, *, environment="production", client_id="abc123"):
+        self.integrations = self._Integrations(self._Schwab(environment, client_id))
+
+
+def _tokens_path(home, env):
+    return home / "swing-data" / f"schwab-tokens.{env}.db"
+
+
+def _write_tokens_db(home, env, *, refresh_token_issued, table=True):
+    """Build a v3-shape schwabdev tokens DB the production _read_tokens_metadata
+    SELECTs (access_token_issued, refresh_token_issued, expires_in, refresh_token)."""
+    path = _tokens_path(home, env)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path))
+    try:
+        if table:
+            conn.execute(
+                "CREATE TABLE schwabdev (access_token_issued TEXT, "
+                "refresh_token_issued TEXT, expires_in INTEGER, refresh_token TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO schwabdev VALUES (?, ?, ?, ?)",
+                ("2026-06-14T00:00:00+00:00", refresh_token_issued, 1800,
+                 "enc:secret-bytes"),
+            )
+        else:
+            # no schwabdev table -> _read_tokens_metadata returns (None, <msg>).
+            conn.execute("CREATE TABLE other (x INTEGER)")
+        conn.commit()
+    finally:
+        conn.close()
+    return path
+
+
+@pytest.fixture
+def _home(tmp_path, monkeypatch):
+    # Monkeypatch BOTH USERPROFILE and HOME (the write_user_overrides gotcha) so
+    # _user_home() resolves to tmp_path; no leak to the operator's real home.
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    return tmp_path
+
+
+def _now_local():
+    # naive Hawaii-local now (the aggregator's contract); fixed for determinism.
+    return datetime(2026, 6, 14, 9, 0, 0)
+
+
+def _now_utc_of(now_local):
+    from zoneinfo import ZoneInfo
+    return now_local.replace(tzinfo=ZoneInfo("Pacific/Honolulu")).astimezone(UTC)
+
+
+def test_schwab_green_when_cfg_none(_home):
+    checks = _check_schwab_token(cfg=None, now=_now_local())
+    assert len(checks) == 1
+    assert checks[0].status == "green"
+    assert "n/a" in checks[0].summary.lower()
+
+
+def test_schwab_green_when_client_id_empty(_home):
+    cfg = _SchwabStub(client_id="")
+    check = _check_schwab_token(cfg=cfg, now=_now_local())[0]
+    assert check.status == "green"
+    assert "n/a" in check.summary.lower()
+
+
+def test_schwab_green_when_tokens_absent(_home):
+    cfg = _SchwabStub(client_id="abc")
+    check = _check_schwab_token(cfg=cfg, now=_now_local())[0]
+    assert check.status == "green"
+    assert "n/a" in check.summary.lower()
+
+
+def test_schwab_yellow_at_24h_boundary(_home):
+    # delta == WARN == 86400 exactly -> yellow (inclusive upper bound).
+    # issued_utc = now_utc + WARN - TTL = now_utc - 6 days.
+    now_local = _now_local()
+    now_utc = _now_utc_of(now_local)
+    issued = (now_utc - timedelta(seconds=_TTL - _WARN)).isoformat()
+    _write_tokens_db(_home, "production", refresh_token_issued=issued)
+    check = _check_schwab_token(cfg=_SchwabStub(), now=now_local)[0]
+    assert check.status == "yellow"
+
+
+def test_schwab_red_at_2h_boundary(_home):
+    # delta == ERROR == 7200 exactly -> red (inclusive).
+    now_local = _now_local()
+    now_utc = _now_utc_of(now_local)
+    issued = (now_utc - timedelta(seconds=_TTL - _ERROR)).isoformat()
+    _write_tokens_db(_home, "production", refresh_token_issued=issued)
+    check = _check_schwab_token(cfg=_SchwabStub(), now=now_local)[0]
+    assert check.status == "red"
+
+
+def test_schwab_red_when_expired(_home):
+    now_local = _now_local()
+    now_utc = _now_utc_of(now_local)
+    issued = (now_utc - timedelta(days=8)).isoformat()  # > 7d TTL -> expired
+    _write_tokens_db(_home, "production", refresh_token_issued=issued)
+    check = _check_schwab_token(cfg=_SchwabStub(), now=now_local)[0]
+    assert check.status == "red"
+    assert "expired" in check.summary.lower()
+
+
+def test_schwab_green_when_healthy(_home):
+    # issued = now - 1d -> delta = 6d -> int(delta//86400) == 6 -> "6 day(s)".
+    now_local = _now_local()
+    now_utc = _now_utc_of(now_local)
+    issued = (now_utc - timedelta(days=1)).isoformat()
+    _write_tokens_db(_home, "production", refresh_token_issued=issued)
+    check = _check_schwab_token(cfg=_SchwabStub(), now=now_local)[0]
+    assert check.status == "green"
+    assert "6 day(s)" in check.summary
+
+
+def test_schwab_yellow_when_unreadable(_home):
+    now_local = _now_local()
+    _write_tokens_db(_home, "production", refresh_token_issued="x", table=False)
+    check = _check_schwab_token(cfg=_SchwabStub(), now=now_local)[0]
+    assert check.status == "yellow"
+    assert "unreadable" in check.summary.lower()
+
+
+def test_schwab_aware_iso_timestamp(_home):
+    # Codex R1 MAJOR #1: the LIVE tokens file writes aware-UTC timestamps; pass a
+    # NAIVE now. A naive-subtract impl raises TypeError; normalize-both returns.
+    now_local = _now_local()  # naive
+    issued = (datetime.now(UTC) - timedelta(days=1)).isoformat()  # aware
+    _write_tokens_db(_home, "production", refresh_token_issued=issued)
+    check = _check_schwab_token(cfg=_SchwabStub(), now=now_local)[0]
+    assert check.status in {"green", "yellow", "red"}  # did not raise
+
+
+def test_schwab_now_uses_local_tz_not_utc(_home):
+    # Codex R2 MAJOR #1 (~10h shift). HST is UTC-10. Choose issued so the true
+    # delta (now treated Hawaii-local) is JUST over 24h, but if now were wrongly
+    # treated as UTC the delta would drop ~10h under 24h and flip green->yellow.
+    #   true:   delta = TTL - (TTL - WARN - 5h) = WARN + 5h = 29h  -> green (>24h)
+    #   wrong:  now_as_utc is 10h LATER than the true now_utc, so delta = 29h-10h
+    #           = 19h -> yellow (<=24h).
+    now_local = _now_local()
+    now_utc = _now_utc_of(now_local)
+    issued = (now_utc - timedelta(seconds=_TTL - _WARN - 5 * 3600)).isoformat()
+    _write_tokens_db(_home, "production", refresh_token_issued=issued)
+    check = _check_schwab_token(cfg=_SchwabStub(), now=now_local)[0]
+    assert check.status == "green"

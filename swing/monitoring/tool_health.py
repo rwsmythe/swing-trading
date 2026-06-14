@@ -259,3 +259,88 @@ def _check_pipeline_run(
         )
 
     return checks
+
+
+def _check_schwab_token(*, cfg, now: datetime) -> list[ToolHealthCheck]:
+    """Schwab refresh-token TTL via the cli_schwab severity tiers (no re-derive).
+
+    LAZY-imports the TTL + threshold constants + readers from swing.cli_schwab
+    (the schwabdev-import hazard). The tokens file writes aware-UTC timestamps,
+    so `_parse_iso_datetime` returns an AWARE dt; `now` is naive-Hawaii-local.
+    The two operands need DIFFERENT normalize rules (a naive `now` is NOT UTC --
+    treating it as UTC mis-shifts by ~10h and can flip the 24h/2h boundary):
+      - now -> UTC: attach Pacific/Honolulu then convert (NOT replace(tzinfo=UTC)).
+      - issued -> UTC: replace(tzinfo=UTC) for naive (token timestamps ARE UTC).
+    Absence of Schwab (no cfg, empty client_id, or no tokens DB) is green/"n/a".
+    """
+    from datetime import UTC, timedelta
+    from zoneinfo import ZoneInfo
+
+    from swing.cli_schwab import (
+        _REFRESH_TOKEN_ERROR_THRESHOLD_SECONDS,
+        _REFRESH_TOKEN_TTL_SECONDS,
+        _REFRESH_TOKEN_WARN_THRESHOLD_SECONDS,
+        _parse_iso_datetime,
+        _read_tokens_metadata,
+    )
+    from swing.config_user import _user_home
+
+    key = "schwab_token_ttl"
+
+    if cfg is None or cfg.integrations.schwab.client_id == "":
+        return [ToolHealthCheck(key=key, status="green",
+                                summary="Schwab not configured (n/a)")]
+
+    env = cfg.integrations.schwab.environment
+    tokens_path = _user_home() / "swing-data" / f"schwab-tokens.{env}.db"
+    if not tokens_path.exists():
+        return [ToolHealthCheck(key=key, status="green",
+                                summary="Schwab tokens not present (n/a)")]
+
+    meta, error_message = _read_tokens_metadata(tokens_path)
+    if meta is None and error_message is None:
+        return [ToolHealthCheck(key=key, status="green",
+                                summary="Schwab tokens not present (n/a)")]
+    if meta is None:
+        return [ToolHealthCheck(key=key, status="yellow",
+                                summary="Schwab tokens unreadable",
+                                detail=str(error_message))]
+
+    issued_iso = meta.get("refresh_token_issued")
+    issued_dt = _parse_iso_datetime(issued_iso) if issued_iso else None
+    if issued_dt is None:
+        return [ToolHealthCheck(
+            key=key, status="yellow",
+            summary="Schwab token issue date unknown; run swing schwab status")]
+
+    def _now_to_utc(n: datetime) -> datetime:
+        if n.tzinfo is not None:
+            return n.astimezone(UTC)
+        return n.replace(tzinfo=ZoneInfo("Pacific/Honolulu")).astimezone(UTC)
+
+    def _issued_to_utc(i: datetime) -> datetime:
+        if i.tzinfo is not None:
+            return i.astimezone(UTC)
+        return i.replace(tzinfo=UTC)
+
+    now_utc = _now_to_utc(now)
+    expires_utc = _issued_to_utc(issued_dt) + timedelta(
+        seconds=_REFRESH_TOKEN_TTL_SECONDS)
+    delta_seconds = (expires_utc - now_utc).total_seconds()
+
+    if delta_seconds <= 0:
+        days_ago = int((-delta_seconds) // 86400)
+        return [ToolHealthCheck(
+            key=key, status="red",
+            summary=f"Schwab token EXPIRED {days_ago} day(s) ago; swing schwab setup")]
+    if delta_seconds <= _REFRESH_TOKEN_ERROR_THRESHOLD_SECONDS:
+        return [ToolHealthCheck(
+            key=key, status="red",
+            summary="Schwab token expires in <2h; swing schwab setup")]
+    if delta_seconds <= _REFRESH_TOKEN_WARN_THRESHOLD_SECONDS:
+        return [ToolHealthCheck(
+            key=key, status="yellow",
+            summary="Schwab token expires in <1 day; swing schwab setup")]
+    days = int(delta_seconds // 86400)
+    return [ToolHealthCheck(
+        key=key, status="green", summary=f"Schwab token valid for {days} day(s)")]
