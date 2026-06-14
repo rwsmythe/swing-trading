@@ -134,6 +134,64 @@ def test_trim_empty_frame_is_noop():
     assert trimmed.empty
 
 
+# ----- Phase 18 18-B: shape-agnostic column tuple (lowercase Shape-A) ----------
+
+def test_trim_lowercase_shape_a_trailing_nan_phase18b():
+    """Phase 18 18-B: the Shape-A (ladder) frame uses LOWERCASE open/high/low/close.
+    The generalized barrier trims a trailing Close=NaN row (the 06-10 artifact)
+    when handed the lowercase column tuple, via the SAME is_finite_ohlc predicate.
+    PRE-FIX (capitalized-only detection) the lowercase frame's ohlc list is EMPTY
+    -> the barrier no-ops -> n == 0 (the NaN row survives)."""
+    df = pd.DataFrame({
+        "asof_date": ["2026-06-09", "2026-06-10"],
+        "open": [10.0, 10.5], "high": [11.0, 11.5], "low": [9.0, 10.0],
+        "close": [10.5, float("nan")], "volume": [1000, 1200],
+    })
+    trimmed, n = mod._trim_trailing_ragged(
+        df, columns=("open", "high", "low", "close"))
+    assert n == 1
+    assert list(trimmed["asof_date"]) == ["2026-06-09"]
+
+
+def test_trim_lowercase_shape_a_interior_nan_preserved_phase18b():
+    """LOCK 4: interior non-finite bar PRESERVED; only trailing trimmed."""
+    df = pd.DataFrame({
+        "asof_date": ["2026-06-08", "2026-06-09", "2026-06-10"],
+        "open": [10.0, float("nan"), 10.5], "high": [11.0, 11.0, 11.5],
+        "low": [9.0, 9.0, 10.0], "close": [10.5, 10.6, 10.7], "volume": [1, 2, 3],
+    })
+    trimmed, n = mod._trim_trailing_ragged(
+        df, columns=("open", "high", "low", "close"))
+    assert n == 0  # trailing row is finite -> nothing trimmed; interior NaN kept
+    assert len(trimmed) == 3
+
+
+def test_trim_lowercase_shape_a_volume_only_nan_exempt_phase18b():
+    """Volume-only-NaN trailing row is NOT trimmed (volume excluded from the tuple)."""
+    df = pd.DataFrame({
+        "asof_date": ["2026-06-09", "2026-06-10"],
+        "open": [10.0, 10.5], "high": [11.0, 11.5], "low": [9.0, 10.0],
+        "close": [10.5, 10.7], "volume": [1000, float("nan")],
+    })
+    trimmed, n = mod._trim_trailing_ragged(
+        df, columns=("open", "high", "low", "close"))
+    assert n == 0
+    assert len(trimmed) == 2
+
+
+def test_trim_capitalized_default_unchanged_phase18b():
+    """Behavior-preserving: existing capitalized callers (default arg) still work
+    with NO columns= passed -> identical to the pre-18-B barrier."""
+    d1, d2 = date(2026, 6, 9), date(2026, 6, 10)
+    df = _flat_frame({
+        d1: (10.0, 11.0, 9.0, 10.5, 1000),
+        d2: (10.5, 11.5, 10.0, float("nan"), 1200),
+    })
+    trimmed, n = mod._trim_trailing_ragged(df)  # no columns= -> capitalized default
+    assert n == 1
+    assert [d.date() for d in trimmed.index] == [d1]
+
+
 # ----- serial path integration ------------------------------------------------
 
 def _flat_yf_frame(rows: dict) -> pd.DataFrame:

@@ -201,14 +201,27 @@ def _calendar_window_for_trading_days(trading_days: int) -> int:
     return int(math.ceil(trading_days * 365.25 / 252)) + 30
 
 
-def _trim_trailing_ragged(df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
-    """Arc 8 -- drop trailing rows where ANY of Open/High/Low/Close is non-finite.
+def _trim_trailing_ragged(
+    df: pd.DataFrame,
+    *,
+    columns: tuple[str, ...] = ("Open", "High", "Low", "Close"),
+) -> tuple[pd.DataFrame, int]:
+    """Arc 8 -- drop trailing rows where ANY of the OHLC columns is non-finite.
 
     Phase 18 18-A: the finiteness test is the shared ``is_finite_ohlc`` (the ONE
     predicate also used by the temporal-log writer; C1) -- ``math.isfinite``, so
     a trailing +/-inf row is trimmed too (a strict superset of the prior
     ``isna()`` NaN-only check, aligning with the engine gate's finiteness
-    definition). Volume is excluded from ``ohlc`` so Volume-only-NaN never trims.
+    definition). Volume is excluded from ``columns`` so Volume-only-NaN never
+    trims.
+
+    Phase 18 18-B: ``columns`` parameterizes the OHLC column NAMES so the SAME
+    barrier serves both the legacy capitalized frame (default
+    ``("Open","High","Low","Close")``) AND the Shape-A ladder frame
+    (lowercase ``("open","high","low","close")``) WITHOUT a second finiteness
+    copy. The finiteness logic is unchanged (one ``is_finite_ohlc`` call); only
+    the column-name list is parameterized. Default arg preserves every existing
+    caller's behavior.
 
     Iterates from the END, removing rows while the newest remaining row has a
     NaN in any OHLC field; stops at the first clean row. Returns the trimmed
@@ -224,7 +237,7 @@ def _trim_trailing_ragged(df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
       past the first clean trailing row.
     - Volume-NaN ALONE does NOT trim (legitimately volume-less bars exist).
     """
-    ohlc = [c for c in ("Open", "High", "Low", "Close") if c in df.columns]
+    ohlc = [c for c in columns if c in df.columns]
     if df.empty or not ohlc:
         return df, 0
     n = len(df)
