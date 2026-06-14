@@ -34,6 +34,7 @@ from swing.cli_schwab import schwab_group
 from swing.config import load as load_config
 from swing.data.db import connect, ensure_schema, open_connection
 from swing.data.repos.candidates import insert_candidates, insert_evaluation_run
+from swing.data.yfinance_audit_context import set_yfinance_audit_base_context
 from swing.evaluation.orchestration import (
     EvaluationBehaviorPolicy,
     OrchestrationOutput,
@@ -180,6 +181,26 @@ _DIVERGENCE_HOOK_SKIP_SUBCOMMANDS: frozenset[str] = frozenset({
     "db-backup",
 })
 
+# Phase 18 Arc 18-C: subcommands that must NOT install the surface='cli' yfinance
+# audit base. db-migrate/db-backup never reach PriceFetcher/read_or_fetch_archive;
+# the pipeline subgroup relies SOLELY on yfinance_audit_scope(surface='pipeline')
+# (a cli base in a pipeline process is unnecessary + could misattribute a stray
+# post-scope call). A SINGLE install point in the group callback covers any
+# future archive-touching command BY CONSTRUCTION (Codex R13/R17).
+_YFINANCE_AUDIT_CLI_SKIP_SUBCOMMANDS: frozenset[str] = frozenset({
+    "db-migrate",
+    "db-backup",
+    "pipeline",
+})
+
+
+def install_yfinance_cli_audit_context(cfg) -> None:
+    """Install the persistent surface='cli' yfinance audit base from cfg.
+    Shared so every archive-touching CLI command is audited by construction."""
+    set_yfinance_audit_base_context(
+        db_path=cfg.paths.db_path, pipeline_run_id=None, surface="cli",
+    )
+
 
 @click.group()
 @click.option("--config", "config_path", default="swing.config.toml",
@@ -202,6 +223,13 @@ def main(ctx: click.Context, config_path: str) -> None:
         install_logging(ctx.obj["config"], surface="cli")
     if ctx.invoked_subcommand not in _DIVERGENCE_HOOK_SKIP_SUBCOMMANDS:
         _apply_toml_divergence_check(ctx)
+    # Phase 18 Arc 18-C: install the surface='cli' yfinance audit base once at the
+    # top-level group callback (AFTER any cfg correction) so every archive-touching
+    # command (eval, weather, pattern label, ...) records yfinance rows by
+    # construction. Excludes db-migrate/db-backup (no archive reach) + pipeline
+    # (it uses the surface='pipeline' scope).
+    if ctx.invoked_subcommand not in _YFINANCE_AUDIT_CLI_SKIP_SUBCOMMANDS:
+        install_yfinance_cli_audit_context(ctx.obj["config"])
 
 
 main.add_command(config_group)

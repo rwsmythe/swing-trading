@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import json
 import logging
 import os
@@ -44,6 +45,10 @@ from swing.data.repos.watchlist import (
     upsert_watchlist_entry,
 )
 from swing.data.repos.weather import get_latest_for_date
+from swing.data.yfinance_audit_context import (
+    yfinance_audit_disabled,
+    yfinance_audit_scope,
+)
 
 # Phase 14 close-out follow-on (F-2): module-top import so the pipeline
 # call-site test may monkeypatch ``swing.pipeline.runner.structural_stage``.
@@ -542,6 +547,34 @@ def _warm_pipeline_marketdata(
             )
 
 
+@contextlib.contextmanager
+def _pipeline_yfinance_audit_scope(cfg: Config, lease):
+    """Enter the pipeline-surface yfinance audit scope for the run body (Phase 18
+    Arc 18-C). NO-RAISE production entry: if the scope guard rejects (a stray
+    stale/overlapping scope), DEGRADE to the disabled overlay instead of
+    stranding the lease OR misattributing rows to the stale context. An audit-
+    context problem must NEVER wedge a pipeline lease nor misattribute its rows
+    (Codex R10/R12)."""
+    try:
+        cm = yfinance_audit_scope(
+            db_path=cfg.paths.db_path, pipeline_run_id=lease.run_id,
+            surface="pipeline",
+        )
+        cm.__enter__()
+    except Exception:  # noqa: BLE001 -- scope entry failed -> degrade to disabled
+        log.warning(
+            "yfinance audit scope entry failed for run %s; recording disabled "
+            "for this run (no misattribution)", lease.run_id, exc_info=True,
+        )
+        with yfinance_audit_disabled():
+            yield
+        return
+    try:
+        yield
+    finally:
+        cm.__exit__(None, None, None)
+
+
 def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
     """Synchronous pipeline run. Caller owns the process — heartbeat is in this thread."""
     _maybe_weekly_backup(cfg)
@@ -591,464 +624,466 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
     # inserted at this point (acquire_lease returned).
     set_pipeline_run_id(lease.run_id)
 
-    hb = Heartbeat(lease=lease, interval_seconds=cfg.pipeline.heartbeat_interval_seconds)
-    hb.start()
+    # Phase 18 Arc 18-C: tag every post-lease yfinance call surface='pipeline'
+    with _pipeline_yfinance_audit_scope(cfg, lease):
+        hb = Heartbeat(lease=lease, interval_seconds=cfg.pipeline.heartbeat_interval_seconds)
+        hb.start()
 
-    fetcher = PriceFetcher(
-        cache_dir=cfg.paths.prices_cache_dir,
-        archive_history_days=cfg.archive.archive_history_days,
-    )
-    eval_run_id = 0
-    # OQ-C: the single shared serialized audit-writer connection (opened in
-    # _install_pipeline_marketdata_caches when a Schwab client exists). Init to
-    # None so the run finally can close it unconditionally.
-    audit_conn = None
-    try:
-        # Finviz selection/validation under the lease. Ensure the inbox
-        # dir exists (first-run bootstrap; mirrors `_step_finviz_fetch`
-        # mkdir at L1832 per Codex R1 Major-2 fix family). Without this,
-        # `select_csv` on a non-existent dir raises a misleading
-        # `NoFilesError("No CSV files in <dir>")` because Path.glob on
-        # a missing directory returns empty silently.
+        fetcher = PriceFetcher(
+            cache_dir=cfg.paths.prices_cache_dir,
+            archive_history_days=cfg.archive.archive_history_days,
+        )
+        eval_run_id = 0
+        # OQ-C: the single shared serialized audit-writer connection (opened in
+        # _install_pipeline_marketdata_caches when a Schwab client exists). Init to
+        # None so the run finally can close it unconditionally.
+        audit_conn = None
         try:
-            cfg.paths.finviz_inbox_dir.mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
-            log.error("Finviz inbox dir create failed: %s", exc)
-            lease.release(state="failed", error_message=f"finviz inbox mkdir: {exc}")
-            return RunResult(
-                run_id=lease.run_id,
-                state="failed",
-                error_message=f"finviz inbox mkdir: {exc}",
-            )
-        # Phase 12.5 finviz-inbox-auto-fetch-fix: split the catch so an empty
-        # inbox (NoFilesError) triggers ONE inline auto-fetch attempt via
-        # ``_step_finviz_fetch`` BEFORE bailing — fresh worktrees always start
-        # empty and previously crashed here before site-2's pipeline-step ever
-        # ran. AmbiguousInboxError stays fail-fast (operator manual-override
-        # misconfiguration; auto-fetch wouldn't help). Site-2 honors the
-        # ``finviz_fetched_inline`` flag to avoid a double-fire on the same
-        # run (which would write 2 ``finviz_api_calls`` audit rows).
-        finviz_fetched_inline = False
-        try:
-            csv_path = select_csv(cfg.paths.finviz_inbox_dir)
-        except AmbiguousInboxError as exc:
-            log.error("Finviz inbox: %s", exc)
-            lease.release(state="failed", error_message=str(exc))
-            return RunResult(run_id=lease.run_id, state="failed", error_message=str(exc))
-        except NoFilesError as exc_initial:
-            log.info(
-                "Finviz inbox empty; attempting inline auto-fetch via "
-                "_step_finviz_fetch (one attempt; no exponential retry)"
-            )
-            # Codex R2 Major #1: snapshot MAX(call_id) BEFORE the inline
-            # _step_finviz_fetch call so the follow-up diagnostic read
-            # (in the retry-failed path) is causally scoped to rows
-            # inserted by THIS call — eliminates the R1 "latest globally"
-            # misattribution risk under multi-surface concurrency.
-            pre_call_max_id = _read_finviz_call_max_id_snapshot(cfg)
-            # Codex R1 Major #3: mark the active step BEFORE the inline
-            # _step_finviz_fetch call so ``swing pipeline status`` /
-            # stale-run diagnosis attributes the API call to the correct
-            # step. The site-2 ``lease.step("finviz_fetch")`` at L638 still
-            # fires (lease-step tracking is the same UPDATE; idempotent).
-            lease.step("finviz_fetch")
+            # Finviz selection/validation under the lease. Ensure the inbox
+            # dir exists (first-run bootstrap; mirrors `_step_finviz_fetch`
+            # mkdir at L1832 per Codex R1 Major-2 fix family). Without this,
+            # `select_csv` on a non-existent dir raises a misleading
+            # `NoFilesError("No CSV files in <dir>")` because Path.glob on
+            # a missing directory returns empty silently.
             try:
-                _step_finviz_fetch(cfg=cfg, lease=lease)
-                finviz_fetched_inline = True
-            except LeaseRevokedError:
-                raise
-            except Exception as exc_fetch:
-                msg = (
-                    f"inbox empty + auto-fetch failed: "
-                    f"{type(exc_fetch).__name__}: {exc_fetch} "
-                    f"(initial: {exc_initial})"
-                )
-                log.error("Finviz inbox auto-fetch: %s", msg)
-                lease.release(state="failed", error_message=msg)
+                cfg.paths.finviz_inbox_dir.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                log.error("Finviz inbox dir create failed: %s", exc)
+                lease.release(state="failed", error_message=f"finviz inbox mkdir: {exc}")
                 return RunResult(
-                    run_id=lease.run_id, state="failed", error_message=msg,
+                    run_id=lease.run_id,
+                    state="failed",
+                    error_message=f"finviz inbox mkdir: {exc}",
                 )
+            # Phase 12.5 finviz-inbox-auto-fetch-fix: split the catch so an empty
+            # inbox (NoFilesError) triggers ONE inline auto-fetch attempt via
+            # ``_step_finviz_fetch`` BEFORE bailing — fresh worktrees always start
+            # empty and previously crashed here before site-2's pipeline-step ever
+            # ran. AmbiguousInboxError stays fail-fast (operator manual-override
+            # misconfiguration; auto-fetch wouldn't help). Site-2 honors the
+            # ``finviz_fetched_inline`` flag to avoid a double-fire on the same
+            # run (which would write 2 ``finviz_api_calls`` audit rows).
+            finviz_fetched_inline = False
             try:
                 csv_path = select_csv(cfg.paths.finviz_inbox_dir)
-            except (NoFilesError, AmbiguousInboxError) as exc_retry:
-                # Codex R1 Major #1 + R2 Major #1: _step_finviz_fetch does
-                # NOT raise for expected Finviz API failures (missing token,
-                # auth, rate limit, schema parity) — _finviz_fetch_core
-                # returns status='error' + the audit row is inserted but
-                # the function returns normally. Surface that audit row's
-                # status + error_message in the combined report so the
-                # operator sees the real "why" rather than a redundant
-                # "No CSV files". The diagnostic read is causally scoped
-                # via the pre-call_id snapshot (R2 M#1).
-                fetch_status, fetch_err = _read_latest_finviz_call_diagnostic(
-                    cfg, after_call_id=pre_call_max_id,
-                )
-                # Codex R2 Minor #2 + R3 Minor #2 defenses: cap the
-                # embedded error to 512 chars to bound combined-message
-                # size, and collapse embedded newlines/carriage-returns
-                # to single spaces so the combined message stays on one
-                # log line (operator scan-ability). The source-of-truth
-                # audit row itself already truncates at 1024 + is
-                # untouched.
-                if fetch_err:
-                    fetch_err = fetch_err.replace("\r", " ").replace("\n", " ")
-                    if len(fetch_err) > 512:
-                        fetch_err = fetch_err[:512] + "..."
-                fetch_detail = (
-                    f" [auto-fetch audit: status={fetch_status!r}"
-                    + (f", error={fetch_err}" if fetch_err else "")
-                    + "]"
-                    if fetch_status is not None
-                    else ""
-                )
-                msg = (
-                    f"inbox empty + auto-fetch did not produce a CSV: "
-                    f"{exc_retry} (initial: {exc_initial}){fetch_detail}"
-                )
-                log.error("Finviz inbox auto-fetch: %s", msg)
-                lease.release(state="failed", error_message=msg)
-                return RunResult(
-                    run_id=lease.run_id, state="failed", error_message=msg,
-                )
-
-        val = validate_csv(csv_path)
-        if not val.is_valid:
-            rejected_dir = cfg.paths.finviz_inbox_dir / "rejected"
-            reject_csv(csv_path, val, rejected_dir=rejected_dir)
-            msg = f"Finviz CSV rejected: {val.reasons}"
-            lease.release(state="failed", error_message=msg)
-            return RunResult(run_id=lease.run_id, state="failed", error_message=msg)
-
-        # Record the selected CSV path on the pipeline_runs row, lease-fenced.
-        # Zero-row UPDATE means the lease was revoked between acquire and now;
-        # raise explicitly rather than silently proceeding (adversarial review
-        # Batch 4 Round 2 Major 1).
-        conn = connect(cfg.paths.db_path)
-        try:
-            cur = conn.execute(
-                "UPDATE pipeline_runs SET finviz_csv_path = ? "
-                "WHERE id = ? AND lease_token = ? AND state = 'running'",
-                (str(csv_path), lease.run_id, lease.token),
-            )
-            conn.commit()
-            if cur.rowcount == 0:
-                raise LeaseRevokedError(
-                    f"lease revoked before finviz_csv_path update "
-                    f"for run_id={lease.run_id}"
-                )
-        finally:
-            conn.close()
-
-        try:
-            with step_guard(lease, "weather", status_key="weather_status", logger=log):
-                from swing.data.models import WeatherRun
-                from swing.data.repos.weather import upsert_weather_run
-                from swing.weather.classifier import classify_weather
-                ohlcv = fetcher.get(
-                    cfg.rs.benchmark_ticker, lookback_days=180, as_of_date=None,
-                )
-                classification = classify_weather(ohlcv)
-                # Lease-fenced write: BEGIN IMMEDIATE + in-txn lease check +
-                # upsert + COMMIT. A concurrent force_clear either commits
-                # before us (we ROLLBACK) or waits behind our RESERVED lock
-                # (our write lands atomically then force_clear proceeds).
-                with lease.fenced_write() as conn:
-                    upsert_weather_run(conn, WeatherRun(
-                        id=None,
-                        run_ts=_dt.now().isoformat(timespec="seconds"),
-                        asof_date=classification.asof_date,
-                        ticker=cfg.rs.benchmark_ticker,
-                        status=classification.status,
-                        close=classification.close,
-                        sma10=classification.sma10,
-                        sma20=classification.sma20,
-                        sma50=classification.sma50,
-                        slope20_5bar=classification.slope20_5bar,
-                        slope10_5bar=classification.slope10_5bar,
-                        rationale=classification.rationale,
-                    ))
-
-            lease.step("finviz_fetch")
-            # Phase 12.5 finviz-inbox-auto-fetch-fix: ``finviz_fetched_inline``
-            # is True iff site-1's NoFilesError-retry path ran
-            # ``_step_finviz_fetch`` already. Skip the body here to avoid
-            # double-firing (would persist 2 ``finviz_api_calls`` audit rows
-            # for one pipeline run). ``lease.step("finviz_fetch")`` still
-            # fires above for defense-in-depth lease tracking.
-            if finviz_fetched_inline:
+            except AmbiguousInboxError as exc:
+                log.error("Finviz inbox: %s", exc)
+                lease.release(state="failed", error_message=str(exc))
+                return RunResult(run_id=lease.run_id, state="failed", error_message=str(exc))
+            except NoFilesError as exc_initial:
                 log.info(
-                    "finviz_fetch step skipped (already ran inline "
-                    "pre-select_csv on empty inbox)"
+                    "Finviz inbox empty; attempting inline auto-fetch via "
+                    "_step_finviz_fetch (one attempt; no exponential retry)"
                 )
-            else:
+                # Codex R2 Major #1: snapshot MAX(call_id) BEFORE the inline
+                # _step_finviz_fetch call so the follow-up diagnostic read
+                # (in the retry-failed path) is causally scoped to rows
+                # inserted by THIS call — eliminates the R1 "latest globally"
+                # misattribution risk under multi-surface concurrency.
+                pre_call_max_id = _read_finviz_call_max_id_snapshot(cfg)
+                # Codex R1 Major #3: mark the active step BEFORE the inline
+                # _step_finviz_fetch call so ``swing pipeline status`` /
+                # stale-run diagnosis attributes the API call to the correct
+                # step. The site-2 ``lease.step("finviz_fetch")`` at L638 still
+                # fires (lease-step tracking is the same UPDATE; idempotent).
+                lease.step("finviz_fetch")
                 try:
                     _step_finviz_fetch(cfg=cfg, lease=lease)
+                    finviz_fetched_inline = True
+                except LeaseRevokedError:
+                    raise
+                except Exception as exc_fetch:
+                    msg = (
+                        f"inbox empty + auto-fetch failed: "
+                        f"{type(exc_fetch).__name__}: {exc_fetch} "
+                        f"(initial: {exc_initial})"
+                    )
+                    log.error("Finviz inbox auto-fetch: %s", msg)
+                    lease.release(state="failed", error_message=msg)
+                    return RunResult(
+                        run_id=lease.run_id, state="failed", error_message=msg,
+                    )
+                try:
+                    csv_path = select_csv(cfg.paths.finviz_inbox_dir)
+                except (NoFilesError, AmbiguousInboxError) as exc_retry:
+                    # Codex R1 Major #1 + R2 Major #1: _step_finviz_fetch does
+                    # NOT raise for expected Finviz API failures (missing token,
+                    # auth, rate limit, schema parity) — _finviz_fetch_core
+                    # returns status='error' + the audit row is inserted but
+                    # the function returns normally. Surface that audit row's
+                    # status + error_message in the combined report so the
+                    # operator sees the real "why" rather than a redundant
+                    # "No CSV files". The diagnostic read is causally scoped
+                    # via the pre-call_id snapshot (R2 M#1).
+                    fetch_status, fetch_err = _read_latest_finviz_call_diagnostic(
+                        cfg, after_call_id=pre_call_max_id,
+                    )
+                    # Codex R2 Minor #2 + R3 Minor #2 defenses: cap the
+                    # embedded error to 512 chars to bound combined-message
+                    # size, and collapse embedded newlines/carriage-returns
+                    # to single spaces so the combined message stays on one
+                    # log line (operator scan-ability). The source-of-truth
+                    # audit row itself already truncates at 1024 + is
+                    # untouched.
+                    if fetch_err:
+                        fetch_err = fetch_err.replace("\r", " ").replace("\n", " ")
+                        if len(fetch_err) > 512:
+                            fetch_err = fetch_err[:512] + "..."
+                    fetch_detail = (
+                        f" [auto-fetch audit: status={fetch_status!r}"
+                        + (f", error={fetch_err}" if fetch_err else "")
+                        + "]"
+                        if fetch_status is not None
+                        else ""
+                    )
+                    msg = (
+                        f"inbox empty + auto-fetch did not produce a CSV: "
+                        f"{exc_retry} (initial: {exc_initial}){fetch_detail}"
+                    )
+                    log.error("Finviz inbox auto-fetch: %s", msg)
+                    lease.release(state="failed", error_message=msg)
+                    return RunResult(
+                        run_id=lease.run_id, state="failed", error_message=msg,
+                    )
+
+            val = validate_csv(csv_path)
+            if not val.is_valid:
+                rejected_dir = cfg.paths.finviz_inbox_dir / "rejected"
+                reject_csv(csv_path, val, rejected_dir=rejected_dir)
+                msg = f"Finviz CSV rejected: {val.reasons}"
+                lease.release(state="failed", error_message=msg)
+                return RunResult(run_id=lease.run_id, state="failed", error_message=msg)
+
+            # Record the selected CSV path on the pipeline_runs row, lease-fenced.
+            # Zero-row UPDATE means the lease was revoked between acquire and now;
+            # raise explicitly rather than silently proceeding (adversarial review
+            # Batch 4 Round 2 Major 1).
+            conn = connect(cfg.paths.db_path)
+            try:
+                cur = conn.execute(
+                    "UPDATE pipeline_runs SET finviz_csv_path = ? "
+                    "WHERE id = ? AND lease_token = ? AND state = 'running'",
+                    (str(csv_path), lease.run_id, lease.token),
+                )
+                conn.commit()
+                if cur.rowcount == 0:
+                    raise LeaseRevokedError(
+                        f"lease revoked before finviz_csv_path update "
+                        f"for run_id={lease.run_id}"
+                    )
+            finally:
+                conn.close()
+
+            try:
+                with step_guard(lease, "weather", status_key="weather_status", logger=log):
+                    from swing.data.models import WeatherRun
+                    from swing.data.repos.weather import upsert_weather_run
+                    from swing.weather.classifier import classify_weather
+                    ohlcv = fetcher.get(
+                        cfg.rs.benchmark_ticker, lookback_days=180, as_of_date=None,
+                    )
+                    classification = classify_weather(ohlcv)
+                    # Lease-fenced write: BEGIN IMMEDIATE + in-txn lease check +
+                    # upsert + COMMIT. A concurrent force_clear either commits
+                    # before us (we ROLLBACK) or waits behind our RESERVED lock
+                    # (our write lands atomically then force_clear proceeds).
+                    with lease.fenced_write() as conn:
+                        upsert_weather_run(conn, WeatherRun(
+                            id=None,
+                            run_ts=_dt.now().isoformat(timespec="seconds"),
+                            asof_date=classification.asof_date,
+                            ticker=cfg.rs.benchmark_ticker,
+                            status=classification.status,
+                            close=classification.close,
+                            sma10=classification.sma10,
+                            sma20=classification.sma20,
+                            sma50=classification.sma50,
+                            slope20_5bar=classification.slope20_5bar,
+                            slope10_5bar=classification.slope10_5bar,
+                            rationale=classification.rationale,
+                        ))
+
+                lease.step("finviz_fetch")
+                # Phase 12.5 finviz-inbox-auto-fetch-fix: ``finviz_fetched_inline``
+                # is True iff site-1's NoFilesError-retry path ran
+                # ``_step_finviz_fetch`` already. Skip the body here to avoid
+                # double-firing (would persist 2 ``finviz_api_calls`` audit rows
+                # for one pipeline run). ``lease.step("finviz_fetch")`` still
+                # fires above for defense-in-depth lease tracking.
+                if finviz_fetched_inline:
+                    log.info(
+                        "finviz_fetch step skipped (already ran inline "
+                        "pre-select_csv on empty inbox)"
+                    )
+                else:
+                    try:
+                        _step_finviz_fetch(cfg=cfg, lease=lease)
+                    except LeaseRevokedError:
+                        raise
+                    except Exception as exc:
+                        # _step_finviz_fetch is itself error-tolerant; this catches
+                        # programming errors only (KeyError, etc.). Pipeline must
+                        # not abort here either — preserve fallback semantics.
+                        log.warning("finviz_fetch programming error (continuing): %s", exc)
+
+                # Phase 11 Sub-bundle C T-C.6 — construct + install market-data
+                # ladder hooks for pipeline-internal use. Pipeline cannot prompt
+                # for credentials, so `_construct_pipeline_schwab_client` returns
+                # None by default (matches `_step_schwab_snapshot` precedent);
+                # tests monkeypatch the constructor to inject a mock client. When
+                # client is None → caches are None → `_step_evaluate` warm is a
+                # no-op + the existing PriceFetcher/yfinance path remains
+                # authoritative for candidates.close. When client is provided,
+                # the ladder fires under production env + writes `surface=
+                # 'pipeline'` audit rows; sandbox short-circuit lives in the
+                # ladder layer per T-C.3 LOCK.
+                #
+                # Phase 13 T1.SB0 (plan §G.0) — closes the Phase 11 Sub-bundle C
+                # R1 M#5 ACCEPT-WITH-RATIONALE V1 deferral by wiring `ohlcv_cache`
+                # into `_step_charts`. When `_install_pipeline_marketdata_caches`
+                # returns `None` (no Schwab client), a ladder-less `OhlcvCache`
+                # is constructed here so `_step_charts` has a uniform consumer
+                # surface; the ladder-less cache falls through to
+                # `read_or_fetch_archive` directly (identical shape to the
+                # legacy `PriceFetcher.get` path — verified by the T-T1.SB0.2
+                # shape-parity test).
+                schwab_client = _construct_pipeline_schwab_client(cfg)
+                price_cache, ohlcv_cache, audit_conn = _install_pipeline_marketdata_caches(
+                    cfg, schwab_client, pipeline_run_id=lease.run_id,
+                )
+                if ohlcv_cache is None:
+                    from swing.web.ohlcv_cache import OhlcvCache
+                    ohlcv_cache = OhlcvCache(cfg)
+
+                # Phase 14 Sub-bundle 2 (FB-N6): run-level structured warnings
+                # accumulator. Steps append {step, reason, ...} dicts (gotcha #27
+                # silent-skip-without-audit). Serialized to the completion
+                # lease.release(warnings_json=...) below (None when empty, not
+                # "[]" -- audit-envelope-empty-state gotcha).
+                run_warnings: list[dict] = []
+
+                lease.step("evaluate")
+                try:
+                    eval_run_id = _step_evaluate(
+                        cfg=cfg, fetcher=fetcher, csv_path=csv_path,
+                        universe=universe, universe_hash=universe_hash,
+                        run_now=run_now, action_session=action_session,
+                        lease=lease,
+                        price_cache=price_cache,
+                        run_warnings=run_warnings,
+                    )
+                    lease.status(evaluation_status="ok")
                 except LeaseRevokedError:
                     raise
                 except Exception as exc:
-                    # _step_finviz_fetch is itself error-tolerant; this catches
-                    # programming errors only (KeyError, etc.). Pipeline must
-                    # not abort here either — preserve fallback semantics.
-                    log.warning("finviz_fetch programming error (continuing): %s", exc)
+                    log.error("evaluation failed: %s", exc)
+                    lease.status(evaluation_status="failed")
+                    lease.release(state="failed", error_message=str(exc))
+                    return RunResult(run_id=lease.run_id, state="failed", error_message=str(exc))
 
-            # Phase 11 Sub-bundle C T-C.6 — construct + install market-data
-            # ladder hooks for pipeline-internal use. Pipeline cannot prompt
-            # for credentials, so `_construct_pipeline_schwab_client` returns
-            # None by default (matches `_step_schwab_snapshot` precedent);
-            # tests monkeypatch the constructor to inject a mock client. When
-            # client is None → caches are None → `_step_evaluate` warm is a
-            # no-op + the existing PriceFetcher/yfinance path remains
-            # authoritative for candidates.close. When client is provided,
-            # the ladder fires under production env + writes `surface=
-            # 'pipeline'` audit rows; sandbox short-circuit lives in the
-            # ladder layer per T-C.3 LOCK.
-            #
-            # Phase 13 T1.SB0 (plan §G.0) — closes the Phase 11 Sub-bundle C
-            # R1 M#5 ACCEPT-WITH-RATIONALE V1 deferral by wiring `ohlcv_cache`
-            # into `_step_charts`. When `_install_pipeline_marketdata_caches`
-            # returns `None` (no Schwab client), a ladder-less `OhlcvCache`
-            # is constructed here so `_step_charts` has a uniform consumer
-            # surface; the ladder-less cache falls through to
-            # `read_or_fetch_archive` directly (identical shape to the
-            # legacy `PriceFetcher.get` path — verified by the T-T1.SB0.2
-            # shape-parity test).
-            schwab_client = _construct_pipeline_schwab_client(cfg)
-            price_cache, ohlcv_cache, audit_conn = _install_pipeline_marketdata_caches(
-                cfg, schwab_client, pipeline_run_id=lease.run_id,
-            )
-            if ohlcv_cache is None:
-                from swing.web.ohlcv_cache import OhlcvCache
-                ohlcv_cache = OhlcvCache(cfg)
-
-            # Phase 14 Sub-bundle 2 (FB-N6): run-level structured warnings
-            # accumulator. Steps append {step, reason, ...} dicts (gotcha #27
-            # silent-skip-without-audit). Serialized to the completion
-            # lease.release(warnings_json=...) below (None when empty, not
-            # "[]" -- audit-envelope-empty-state gotcha).
-            run_warnings: list[dict] = []
-
-            lease.step("evaluate")
-            try:
-                eval_run_id = _step_evaluate(
-                    cfg=cfg, fetcher=fetcher, csv_path=csv_path,
-                    universe=universe, universe_hash=universe_hash,
-                    run_now=run_now, action_session=action_session,
-                    lease=lease,
-                    price_cache=price_cache,
-                    run_warnings=run_warnings,
-                )
-                lease.status(evaluation_status="ok")
-            except LeaseRevokedError:
-                raise
-            except Exception as exc:
-                log.error("evaluation failed: %s", exc)
-                lease.status(evaluation_status="failed")
-                lease.release(state="failed", error_message=str(exc))
-                return RunResult(run_id=lease.run_id, state="failed", error_message=str(exc))
-
-            # Cadence-step semantics: per-trade failures are already logged +
-            # swallowed inside _step_daily_management. The guard's log_failure
-            # catches programming errors (KeyError, ImportError, etc.) — pipeline
-            # must continue regardless (byte-identical "programming error
-            # (continuing)" warning text preserved via log_failure).
-            with step_guard(
-                lease, "daily_management", logger=log,
-                log_failure=lambda lg, name, exc: lg.warning(
-                    "daily_management step programming error (continuing): %s", exc),
-            ):
-                _step_daily_management(
-                    lease=lease, run_now=run_now, eval_run_id=eval_run_id,
-                    archive_history_days=cfg.archive.archive_history_days,
-                    ohlcv_archive_dir=cfg.paths.prices_cache_dir,
-                    run_warnings=run_warnings,
-                )
-
-            with step_guard(lease, "watchlist", status_key="watchlist_status", logger=log):
-                _step_watchlist(cfg=cfg, eval_run_id=eval_run_id,
-                                data_asof_date=lease_data_asof(cfg, lease),
-                                lease=lease, run_warnings=run_warnings)
-
-            with step_guard(lease, "recommendations",
-                            status_key="recommendations_status", logger=log):
-                _step_recommendations(cfg=cfg, eval_run_id=eval_run_id,
-                                       action_session=action_session,
-                                       data_asof=lease_data_asof(cfg, lease),
-                                       lease=lease)
-
-            # Phase 13 T2.SB3 (plan section G.4 T-A.3.6) — pattern detect step.
-            # Recon at docs/phase13-t2-sb3-recon.md section 2 binds the
-            # insertion point: AFTER _step_recommendations + BEFORE the
-            # Schwab snapshot block. Best-effort failure shape mirrors
-            # _step_watchlist / _step_recommendations / _step_charts.
-            with step_guard(lease, "pattern_detect", logger=log):
-                _step_pattern_detect(
-                    cfg=cfg,
-                    lease=lease,
-                    eval_run_id=eval_run_id,
-                    ohlcv_cache=ohlcv_cache,
-                    run_warnings=run_warnings,
-                )
-
-            # Phase 14 Sub-bundle 2 (T-2.5): forward-walk observe step. Appends
-            # one pattern_forward_observations row per OPEN detection (today's
-            # bar + lifecycle status). Best-effort failure shape mirrors
-            # _step_pattern_detect (re-raise LeaseRevokedError; log.warning
-            # others). Inserted AFTER pattern_detect, BEFORE schwab_snapshot.
-            with step_guard(lease, "pattern_observe", logger=log):
-                _step_pattern_observe(
-                    cfg=cfg, lease=lease, ohlcv_cache=ohlcv_cache,
-                    run_warnings=run_warnings,
-                )
-
-            # Phase 11 Sub-bundle B (T-B.3 + T-B.4 + Codex R1 M#1 + R2 M#1 +
-            # R3 M#1 + M#2 fix) — Schwab snapshot + orders pipeline steps
-            # per plan §H.4.3 ordering: AFTER _step_recommendations, BEFORE
-            # _step_charts. Both are failure-tolerant per plan §3.4.4.
-            #
-            # Pipeline-internal use passes client=None — the step path
-            # falls through to a silent-skip (log only, NO audit row) per
-            # the R2 M#1 + R3 M#1 + M#2 disposition to avoid polluting
-            # degraded-health surfaces with persistent 'error' rows on
-            # every nightly run. V1 design point: pipeline-internal
-            # Schwab fetching is best-effort + opt-in via the `swing
-            # schwab fetch` CLI surface as the primary operator entry
-            # point. Bundle D's status surface uses the lease.step()
-            # breadcrumb name `schwab_snapshot` / `schwab_orders` to
-            # surface "step executed but silent-skipped". V2 adds a
-            # dedicated lease status column.
-            with step_guard(
-                lease, "schwab_snapshot", logger=log,
-                log_failure=lambda lg, name, exc: lg.warning(
-                    "schwab_snapshot failed (continuing pipeline): %s",
-                    type(exc).__name__),
-            ):
-                from swing.integrations.schwab.pipeline_steps import (
-                    _step_schwab_snapshot,
-                )
-                # Phase 12 Sub-bundle A T-A.3 — pass the env-var-constructed
-                # schwab_client (from L640) instead of hardcoded None. When env
-                # vars absent → schwab_client is None → step short-circuits via
-                # the existing client=None silent-skip path (per Sub-bundle B
-                # M#1 surface-aware advisory pattern). When env vars present →
-                # step actually fires + writes audit + domain rows with
-                # surface='pipeline'. Closes the T-A.3 acceptance criterion #4
-                # gap that orchestrator-inline gate-fix caught at S5.
-                _conn = connect(cfg.paths.db_path)
-                try:
-                    _step_schwab_snapshot(
-                        _conn, cfg, pipeline_run_id=lease.run_id,
-                        client=schwab_client, surface="pipeline",
+                # Cadence-step semantics: per-trade failures are already logged +
+                # swallowed inside _step_daily_management. The guard's log_failure
+                # catches programming errors (KeyError, ImportError, etc.) — pipeline
+                # must continue regardless (byte-identical "programming error
+                # (continuing)" warning text preserved via log_failure).
+                with step_guard(
+                    lease, "daily_management", logger=log,
+                    log_failure=lambda lg, name, exc: lg.warning(
+                        "daily_management step programming error (continuing): %s", exc),
+                ):
+                    _step_daily_management(
+                        lease=lease, run_now=run_now, eval_run_id=eval_run_id,
+                        archive_history_days=cfg.archive.archive_history_days,
+                        ohlcv_archive_dir=cfg.paths.prices_cache_dir,
+                        run_warnings=run_warnings,
                     )
-                finally:
-                    _conn.close()
 
-            with step_guard(
-                lease, "schwab_orders", logger=log,
-                log_failure=lambda lg, name, exc: lg.warning(
-                    "schwab_orders failed (continuing pipeline): %s",
-                    type(exc).__name__),
-            ):
-                from swing.integrations.schwab.pipeline_steps import (
-                    _step_schwab_orders,
-                )
-                # T-A.3 same fix family — wire schwab_client through.
-                _conn = connect(cfg.paths.db_path)
-                try:
-                    _schwab_result = _step_schwab_orders(
-                        _conn, cfg, pipeline_run_id=lease.run_id,
-                        client=schwab_client, surface="pipeline",
+                with step_guard(lease, "watchlist", status_key="watchlist_status", logger=log):
+                    _step_watchlist(cfg=cfg, eval_run_id=eval_run_id,
+                                    data_asof_date=lease_data_asof(cfg, lease),
+                                    lease=lease, run_warnings=run_warnings)
+
+                with step_guard(lease, "recommendations",
+                                status_key="recommendations_status", logger=log):
+                    _step_recommendations(cfg=cfg, eval_run_id=eval_run_id,
+                                           action_session=action_session,
+                                           data_asof=lease_data_asof(cfg, lease),
+                                           lease=lease)
+
+                # Phase 13 T2.SB3 (plan section G.4 T-A.3.6) — pattern detect step.
+                # Recon at docs/phase13-t2-sb3-recon.md section 2 binds the
+                # insertion point: AFTER _step_recommendations + BEFORE the
+                # Schwab snapshot block. Best-effort failure shape mirrors
+                # _step_watchlist / _step_recommendations / _step_charts.
+                with step_guard(lease, "pattern_detect", logger=log):
+                    _step_pattern_detect(
+                        cfg=cfg,
+                        lease=lease,
+                        eval_run_id=eval_run_id,
+                        ohlcv_cache=ohlcv_cache,
+                        run_warnings=run_warnings,
                     )
-                    # Arc 4b #27 — the step's cash_warnings reach the run-level
-                    # run_warnings channel (persisted to pipeline_runs.warnings_json).
-                    _schwab_warnings = (_schwab_result or {}).get("warnings") or []
-                    if _schwab_warnings:
-                        run_warnings.extend(_schwab_warnings)
-                finally:
-                    _conn.close()
 
-            lease.step("charts")
-            chart_paths: dict[str, Path] = {}
-            try:
-                chart_paths = _step_charts(
-                    cfg=cfg, lease=lease, eval_run_id=eval_run_id,
-                    data_asof=lease_data_asof(cfg, lease),
-                    ohlcv_cache=ohlcv_cache,
+                # Phase 14 Sub-bundle 2 (T-2.5): forward-walk observe step. Appends
+                # one pattern_forward_observations row per OPEN detection (today's
+                # bar + lifecycle status). Best-effort failure shape mirrors
+                # _step_pattern_detect (re-raise LeaseRevokedError; log.warning
+                # others). Inserted AFTER pattern_detect, BEFORE schwab_snapshot.
+                with step_guard(lease, "pattern_observe", logger=log):
+                    _step_pattern_observe(
+                        cfg=cfg, lease=lease, ohlcv_cache=ohlcv_cache,
+                        run_warnings=run_warnings,
+                    )
+
+                # Phase 11 Sub-bundle B (T-B.3 + T-B.4 + Codex R1 M#1 + R2 M#1 +
+                # R3 M#1 + M#2 fix) — Schwab snapshot + orders pipeline steps
+                # per plan §H.4.3 ordering: AFTER _step_recommendations, BEFORE
+                # _step_charts. Both are failure-tolerant per plan §3.4.4.
+                #
+                # Pipeline-internal use passes client=None — the step path
+                # falls through to a silent-skip (log only, NO audit row) per
+                # the R2 M#1 + R3 M#1 + M#2 disposition to avoid polluting
+                # degraded-health surfaces with persistent 'error' rows on
+                # every nightly run. V1 design point: pipeline-internal
+                # Schwab fetching is best-effort + opt-in via the `swing
+                # schwab fetch` CLI surface as the primary operator entry
+                # point. Bundle D's status surface uses the lease.step()
+                # breadcrumb name `schwab_snapshot` / `schwab_orders` to
+                # surface "step executed but silent-skipped". V2 adds a
+                # dedicated lease status column.
+                with step_guard(
+                    lease, "schwab_snapshot", logger=log,
+                    log_failure=lambda lg, name, exc: lg.warning(
+                        "schwab_snapshot failed (continuing pipeline): %s",
+                        type(exc).__name__),
+                ):
+                    from swing.integrations.schwab.pipeline_steps import (
+                        _step_schwab_snapshot,
+                    )
+                    # Phase 12 Sub-bundle A T-A.3 — pass the env-var-constructed
+                    # schwab_client (from L640) instead of hardcoded None. When env
+                    # vars absent → schwab_client is None → step short-circuits via
+                    # the existing client=None silent-skip path (per Sub-bundle B
+                    # M#1 surface-aware advisory pattern). When env vars present →
+                    # step actually fires + writes audit + domain rows with
+                    # surface='pipeline'. Closes the T-A.3 acceptance criterion #4
+                    # gap that orchestrator-inline gate-fix caught at S5.
+                    _conn = connect(cfg.paths.db_path)
+                    try:
+                        _step_schwab_snapshot(
+                            _conn, cfg, pipeline_run_id=lease.run_id,
+                            client=schwab_client, surface="pipeline",
+                        )
+                    finally:
+                        _conn.close()
+
+                with step_guard(
+                    lease, "schwab_orders", logger=log,
+                    log_failure=lambda lg, name, exc: lg.warning(
+                        "schwab_orders failed (continuing pipeline): %s",
+                        type(exc).__name__),
+                ):
+                    from swing.integrations.schwab.pipeline_steps import (
+                        _step_schwab_orders,
+                    )
+                    # T-A.3 same fix family — wire schwab_client through.
+                    _conn = connect(cfg.paths.db_path)
+                    try:
+                        _schwab_result = _step_schwab_orders(
+                            _conn, cfg, pipeline_run_id=lease.run_id,
+                            client=schwab_client, surface="pipeline",
+                        )
+                        # Arc 4b #27 — the step's cash_warnings reach the run-level
+                        # run_warnings channel (persisted to pipeline_runs.warnings_json).
+                        _schwab_warnings = (_schwab_result or {}).get("warnings") or []
+                        if _schwab_warnings:
+                            run_warnings.extend(_schwab_warnings)
+                    finally:
+                        _conn.close()
+
+                lease.step("charts")
+                chart_paths: dict[str, Path] = {}
+                try:
+                    chart_paths = _step_charts(
+                        cfg=cfg, lease=lease, eval_run_id=eval_run_id,
+                        data_asof=lease_data_asof(cfg, lease),
+                        ohlcv_cache=ohlcv_cache,
+                    )
+                    lease.status(charts_status="ok")
+                except LeaseRevokedError:
+                    raise
+                except ChartingUnavailableError:
+                    lease.status(charts_status="skipped")
+                except Exception as exc:
+                    log.warning("charts failed: %s", exc)
+                    lease.status(charts_status="failed")
+
+                with step_guard(lease, "export", status_key="export_status", logger=log):
+                    _step_export(cfg=cfg, lease=lease, eval_run_id=eval_run_id,
+                                 action_session=action_session,
+                                 data_asof=lease_data_asof(cfg, lease),
+                                 chart_paths=chart_paths,
+                                 fetcher=fetcher)
+
+                # Phase 16 Arc 5 -- shadow-expectancy drumbeat (commission
+                # docs/phase16-shadow-expectancy-drumbeat-integration-commissioning-brief.md).
+                # Last functional step: run the read-only engine over the
+                # just-completed session so expectancy evidence accrues every
+                # nightly run unattended. Best-effort (mirrors weather/observe):
+                # re-raise LeaseRevokedError, warn on any other programming error
+                # -- never fails the run. lease.step() first for the free Arc-1
+                # pipeline_step_timings row + breadcrumb.
+                lease.step("shadow_expectancy")
+                try:
+                    _step_shadow_expectancy(cfg=cfg, run_warnings=run_warnings)
+                except LeaseRevokedError:
+                    raise
+                except Exception as exc:
+                    # The step self-audits its expected failure modes to
+                    # run_warnings; this catches any UNEXPECTED programming error and
+                    # still surfaces it in the run envelope (gotcha #27), never
+                    # failing the run.
+                    log.warning("shadow_expectancy failed: %s", exc)
+                    run_warnings.append({
+                        "step": "shadow_expectancy",
+                        "reason": "unexpected step error",
+                        "detail": _shadow_expectancy_tail(str(exc)),
+                    })
+
+                lease.step("complete")
+                try:
+                    _step_review_log_cadence(lease=lease)
+                except LeaseRevokedError:
+                    raise
+                except Exception as exc:
+                    # Cadence pre-create is auxiliary — its failure must NOT roll back the
+                    # primary value chain (briefing emission). Log + continue. Brief §6.2
+                    # watch item 13. (17-D.3: revoke now propagates like every other step.)
+                    log.warning("review_log cadence step failed (continuing): %s", exc)
+                lease.release(
+                    state="complete",
+                    warnings_json=(json.dumps(run_warnings) if run_warnings else None),
                 )
-                lease.status(charts_status="ok")
-            except LeaseRevokedError:
-                raise
-            except ChartingUnavailableError:
-                lease.status(charts_status="skipped")
-            except Exception as exc:
-                log.warning("charts failed: %s", exc)
-                lease.status(charts_status="failed")
-
-            with step_guard(lease, "export", status_key="export_status", logger=log):
-                _step_export(cfg=cfg, lease=lease, eval_run_id=eval_run_id,
-                             action_session=action_session,
-                             data_asof=lease_data_asof(cfg, lease),
-                             chart_paths=chart_paths,
-                             fetcher=fetcher)
-
-            # Phase 16 Arc 5 -- shadow-expectancy drumbeat (commission
-            # docs/phase16-shadow-expectancy-drumbeat-integration-commissioning-brief.md).
-            # Last functional step: run the read-only engine over the
-            # just-completed session so expectancy evidence accrues every
-            # nightly run unattended. Best-effort (mirrors weather/observe):
-            # re-raise LeaseRevokedError, warn on any other programming error
-            # -- never fails the run. lease.step() first for the free Arc-1
-            # pipeline_step_timings row + breadcrumb.
-            lease.step("shadow_expectancy")
+            except LeaseRevokedError as exc:
+                # Force-cleared mid-run. The pipeline_runs row has already moved to
+                # state='force_cleared'; we cannot lease.release() anymore. Just
+                # log, stop the heartbeat via `finally`, and surface the outcome.
+                log.warning("lease revoked during run: %s", exc)
+                return RunResult(
+                    run_id=lease.run_id, state="force_cleared",
+                    error_message=str(exc),
+                )
+        finally:
+            hb.stop()
             try:
-                _step_shadow_expectancy(cfg=cfg, run_warnings=run_warnings)
-            except LeaseRevokedError:
-                raise
+                lease.flush_step_timings()
             except Exception as exc:
-                # The step self-audits its expected failure modes to
-                # run_warnings; this catches any UNEXPECTED programming error and
-                # still surfaces it in the run envelope (gotcha #27), never
-                # failing the run.
-                log.warning("shadow_expectancy failed: %s", exc)
-                run_warnings.append({
-                    "step": "shadow_expectancy",
-                    "reason": "unexpected step error",
-                    "detail": _shadow_expectancy_tail(str(exc)),
-                })
+                log.error("step-timing flush failed: %s", exc)
+            # OQ-C: close the single shared serialized audit-writer connection.
+            if audit_conn is not None:
+                audit_conn.close()
 
-            lease.step("complete")
-            try:
-                _step_review_log_cadence(lease=lease)
-            except LeaseRevokedError:
-                raise
-            except Exception as exc:
-                # Cadence pre-create is auxiliary — its failure must NOT roll back the
-                # primary value chain (briefing emission). Log + continue. Brief §6.2
-                # watch item 13. (17-D.3: revoke now propagates like every other step.)
-                log.warning("review_log cadence step failed (continuing): %s", exc)
-            lease.release(
-                state="complete",
-                warnings_json=(json.dumps(run_warnings) if run_warnings else None),
-            )
-        except LeaseRevokedError as exc:
-            # Force-cleared mid-run. The pipeline_runs row has already moved to
-            # state='force_cleared'; we cannot lease.release() anymore. Just
-            # log, stop the heartbeat via `finally`, and surface the outcome.
-            log.warning("lease revoked during run: %s", exc)
-            return RunResult(
-                run_id=lease.run_id, state="force_cleared",
-                error_message=str(exc),
-            )
-    finally:
-        hb.stop()
-        try:
-            lease.flush_step_timings()
-        except Exception as exc:
-            log.error("step-timing flush failed: %s", exc)
-        # OQ-C: close the single shared serialized audit-writer connection.
-        if audit_conn is not None:
-            audit_conn.close()
-
-    return RunResult(run_id=lease.run_id, state="complete", error_message=None)
+        return RunResult(run_id=lease.run_id, state="complete", error_message=None)
 
 
 def lease_data_asof(cfg: Config, lease: Lease) -> str:

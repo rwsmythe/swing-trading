@@ -418,6 +418,16 @@ def create_app(cfg: Config, cfg_path: Path | None = None) -> FastAPI:
             )
         app.state.cfg = new_cfg
     app.state.cfg_path = cfg_path
+    # Phase 18 Arc 18-C: install the persistent surface='web' yfinance audit base
+    # FROM the finalized app.state.cfg (post divergence reconciliation — Codex R7;
+    # the audit base is long-lived provenance, so don't bake in a pre-correction
+    # db_path). The web server is a single long-lived process, so a once-set base
+    # tags every web-triggered yfinance call (live-price + chart archive reads)
+    # without per-request scoping. NULL run id (web has no pipeline run).
+    from swing.data.yfinance_audit_context import set_yfinance_audit_base_context
+    set_yfinance_audit_base_context(
+        db_path=app.state.cfg.paths.db_path, pipeline_run_id=None, surface="web",
+    )
     app.state.price_cache = PriceCache(cfg)
     app.state.ohlcv_cache = OhlcvCache(cfg)     # NEW — Phase 3d §3.5
     app.state.schwab_client = _install_web_marketdata_caches(  # NEW -- A-3 / P14.N7
