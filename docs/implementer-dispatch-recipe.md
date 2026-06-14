@@ -28,6 +28,7 @@
 - **Trailer-parse hazard:** keep the FINAL `-m` paragraph plain prose — a paragraph starting `Word:` (e.g. `Fixes:`) is parsed by git as a trailer and pollutes the zero-`Co-Authored-By` audit.
 - **Ruff:** the lint gate is `ruff check swing/` (the `swing/` tree only). Introduce no new violations there. Test-file lint is out of scope unless your brief says otherwise; match each test file's existing style (≤100-char lines, local imports) so you add no new violation.
 - **ASCII discipline:** user-facing strings flowing through stdout/CLI must be ASCII (Windows cp1252 crashes on `§ → ↔ ✓ ✗`, em-dash, fractions). pytest `capsys` hides this — prefer ASCII swaps in added code.
+- **WRITING-PLANS phases commit the plan ONCE at convergence** (added 2026-06-14): a writing-plans dispatch is plan-only — write the plan, run Codex to convergence, then make a SINGLE `docs(plan): …` commit of the converged plan. Do NOT commit the plan once per Codex round (18-C's writing-plans produced 18 per-round commits — verbose history with no value). The converged plan is the deliverable; the round-by-round iteration belongs in `.copowers-findings.md`, not the git history.
 
 ## 3. The WSL-Codex adversarial review (the load-bearing part — verbatim)
 The MCP `codex` tools are dead in this environment; the working transport is the **WSL-native Codex CLI**. The copowers `adversarial-critic` Skill scaffolding may be **absent in a sub-agent** — if so, HAND-RUN the loop exactly as below.
