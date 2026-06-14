@@ -65,6 +65,23 @@ def test_negative_rows_returned_raises():
         YfinanceCall(**_valid_single(rows_returned=-1))
 
 
+def test_call_id_bool_rejected():
+    with pytest.raises(ValueError):
+        YfinanceCall(**_valid_single(call_id=True))
+
+
+def test_call_id_non_positive_rejected():
+    with pytest.raises(ValueError):
+        YfinanceCall(**_valid_single(call_id=0))
+    with pytest.raises(ValueError):
+        YfinanceCall(**_valid_single(call_id=-1))
+
+
+def test_call_id_none_and_positive_ok():
+    YfinanceCall(**_valid_single(call_id=None))
+    YfinanceCall(**_valid_single(call_id=42))
+
+
 @pytest.mark.parametrize("field", [
     "response_time_ms", "rows_returned", "pipeline_run_id", "ticker_count",
 ])

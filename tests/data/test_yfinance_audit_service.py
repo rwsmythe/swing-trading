@@ -102,6 +102,38 @@ def test_sanitize_error_collapses_and_truncates():
     assert len(out) <= 200
 
 
+def test_sanitize_error_total_on_hostile_str():
+    # A hostile __str__ must NOT raise out of _sanitize_error (the error path
+    # re-raises the ORIGINAL fetch exc after this -> a sanitize failure cannot be
+    # allowed to replace it). Falls back to the class name.
+    class HostileStr(Exception):
+        def __str__(self):
+            raise RuntimeError("cannot stringify")
+    out = svc._sanitize_error(HostileStr())
+    assert out == "HostileStr"
+
+
+def test_record_raising_fetch_with_hostile_str_still_reraises_original(db_path):
+    # The fetch raises an exception whose __str__ is hostile -> _record_yf_download
+    # must re-raise THAT original exception (not a sanitize error) + still close
+    # the row error.
+    class HostileStr(RuntimeError):
+        def __str__(self):
+            raise RuntimeError("cannot stringify")
+
+    def boom():
+        raise HostileStr()
+    with pytest.raises(HostileStr):
+        svc._record_yf_download(
+            ctx=_ctx(db_path), call_type="download_single", ticker="AAPL",
+            ticker_count=None, fetch_fn=boom,
+        )
+    conn = sqlite3.connect(db_path)
+    row = conn.execute("SELECT status FROM yfinance_calls").fetchone()
+    conn.close()
+    assert row[0] == "error"
+
+
 # ---- _record_yf_download unit tests (explicit ctx snapshot) ----
 
 def test_record_success(db_path):

@@ -79,8 +79,19 @@ def _now_iso() -> str:
 
 def _sanitize_error(exc: BaseException) -> str:
     """Collapse whitespace + truncate to 200 chars (light redaction; no secret
-    surface). Matches the runner [:200] precedent."""
-    text = re.sub(r"\s+", " ", str(exc)).strip()
+    surface). Matches the runner [:200] precedent.
+
+    TOTAL by construction (Codex executing-R2 MAJOR): a hostile ``exc.__str__``
+    must NEVER raise out of here -- the error path re-raises the ORIGINAL fetch
+    exception after this, so a sanitize failure cannot be allowed to replace it
+    (the no-measurement-change lock). On any failure fall back to the class name."""
+    try:
+        text = re.sub(r"\s+", " ", str(exc)).strip()
+    except Exception:  # noqa: BLE001 -- hostile __str__; never mask the fetch exc
+        try:
+            return type(exc).__name__[:_ERROR_MESSAGE_MAX]
+        except Exception:  # noqa: BLE001 -- truly pathological; last-resort sentinel
+            return "unprintable_exception"
     return text[:_ERROR_MESSAGE_MAX]
 
 

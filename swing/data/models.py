@@ -2338,9 +2338,10 @@ class YfinanceCall:
                 f"got {self.surface!r}"
             )
         # bool is an int subclass; reject it explicitly for EVERY integer field
-        # (Codex R17). Non-int values raise a controlled ValueError instead of a
-        # TypeError on the comparison below.
+        # (Codex R17 + executing-R2 MAJOR: call_id included). Non-int values raise
+        # a controlled ValueError instead of a TypeError on the comparison below.
         for fname, fval in (
+            ("call_id", self.call_id),
             ("response_time_ms", self.response_time_ms),
             ("rows_returned", self.rows_returned),
             ("ticker_count", self.ticker_count),
@@ -2353,6 +2354,11 @@ class YfinanceCall:
                     f"{fname} must be None or int (not bool), "
                     f"got {type(fval).__name__}"
                 )
+        # call_id: None pre-INSERT; positive int post-INSERT.
+        if self.call_id is not None and self.call_id <= 0:
+            raise ValueError(
+                f"call_id must be None or positive int, got {self.call_id}"
+            )
         if self.response_time_ms is not None and self.response_time_ms < 0:
             raise ValueError(
                 f"response_time_ms must be None or >= 0, got {self.response_time_ms}"
