@@ -91,3 +91,17 @@ def test_worst_of_rejects_unknown_status():
     # Codex R1 MINOR #1: unknown status -> ValueError, NOT a bare KeyError.
     with pytest.raises(ValueError):
         worst_of(["grey"])
+
+
+def test_status_checks_coerced_to_immutable_tuple():
+    # Codex R1 MINOR (R1 of the executing review): the locked envelope must not be
+    # mutable post-construction. checks is coerced to a tuple in __post_init__.
+    src = [ToolHealthCheck(key="k", status="green", summary="ok")]
+    status = ToolHealthStatus(overall="green", checks=src)
+    assert isinstance(status.checks, tuple)
+    # mutating the source list after construction does NOT leak into the envelope.
+    src.append(ToolHealthCheck(key="k2", status="red", summary="bad"))
+    assert len(status.checks) == 1
+    # the envelope itself exposes no .append (it's a tuple).
+    with pytest.raises(AttributeError):
+        status.checks.append(ToolHealthCheck(key="k3", status="red", summary="x"))

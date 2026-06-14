@@ -150,6 +150,19 @@ def test_script_output_is_ascii(tmp_path, monkeypatch):
     result.stderr.decode("ascii")
 
 
+def test_script_relative_db_path_does_not_crash(tmp_path, monkeypatch):
+    # Codex R1 MAJOR: a relative --db must NOT raise ValueError from as_uri();
+    # the script expanduser().resolve()s it first.
+    db_path, now = _build_green_db(tmp_path)
+    cache = _fresh_cache(tmp_path, now, days=1)
+    _patch_cfg(monkeypatch, cache)
+    mod = _load_script_module()
+    monkeypatch.setattr(mod, "_resolve_now", lambda: now, raising=False)
+    monkeypatch.chdir(tmp_path)  # so "swing.db" resolves to the seeded DB
+    rc = mod.main(["--db", "swing.db"])  # relative path
+    assert rc in {0, 1}  # ran without ValueError; color depends on the seed
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="cp1252 encoder is Windows-specific")
 def test_script_output_survives_cp1252(tmp_path):
     db_path, _ = _build_green_db(tmp_path)

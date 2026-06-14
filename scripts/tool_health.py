@@ -62,7 +62,10 @@ def main(argv: list[str] | None = None) -> int:
 
     cfg = Config.from_defaults()
 
-    db_path = Path(args.db)
+    # expanduser()+resolve() BEFORE as_uri(): a relative --db (e.g. "swing.db")
+    # otherwise raises ValueError "relative path can't be expressed as a file URI"
+    # (Codex R1 MAJOR -- the usage advertises --db PATH).
+    db_path = Path(args.db).expanduser().resolve()
     if not db_path.exists():
         print(f"DB not found at {db_path} -- ran from the right box?")
         return 1

@@ -110,6 +110,12 @@ class ToolHealthStatus:
                 f"ToolHealthStatus.overall must be one of {sorted(_STATUS_VALUES)};"
                 f" got {self.overall!r}"
             )
+        # Codex R1 MINOR: the envelope is the locked contract -- coerce checks to
+        # a tuple so a caller cannot mutate it post-construction and desync
+        # `overall` from `checks`. The dataclass is frozen, so set via
+        # object.__setattr__.
+        if not isinstance(self.checks, tuple):
+            object.__setattr__(self, "checks", tuple(self.checks))
 
     def to_dict(self) -> dict:
         return {
