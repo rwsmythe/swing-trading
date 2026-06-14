@@ -181,6 +181,7 @@ swing-data/schwab-tokens.*.db-wal
 # Schwab API audit DB backups (created pre-migration by _apply_migration runner)
 swing-pre-phase11-schwab-migration-*.db
 .codex-prompt-*.md
+.codex-prompt.md
 .codex-prompt.txt
 .codex-diff.txt
 .copowers-findings.md
