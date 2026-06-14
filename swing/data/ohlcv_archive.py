@@ -49,9 +49,40 @@ from pathlib import Path
 import pandas as pd
 import yfinance as yf
 
+# DB-FREE import (yfinance_audit_context): imports nothing from swing.data.db /
+# any repo, so this preserves ohlcv_archive's deliberate DB-free-at-import
+# property. The DB-aware _record_yf_download recorder is LAZILY imported inside
+# _audited_fetch ONLY when a context is active (the no-context fast path imports
+# nothing). Codex R2 MAJOR.
 from swing.data.ohlcv_finiteness import is_finite_ohlc
+from swing.data.yfinance_audit_context import get_yfinance_audit_context
 
 log = logging.getLogger(__name__)
+
+
+def _audited_fetch(*, call_type, ticker, ticker_count, fetch_fn):
+    """Bracket a RAW yf.download (Phase 18 Arc 18-C) with a best-effort audit row
+    when an audit context is active; otherwise run ``fetch_fn`` unchanged.
+
+    No-context fast path imports NOTHING (preserves the DB-free-at-import
+    property). The try/except wraps ONLY the lazy import + pre-dispatch (Codex
+    R15 MINOR -- a blanket except around the whole _record_yf_download call could
+    re-call fetch_fn after a post-fetch internal failure -> a DUPLICATE fetch);
+    the _record_yf_download dispatch is OUTSIDE the except (once entered, its
+    INTERNAL isolation calls fetch_fn EXACTLY ONCE)."""
+    ctx = get_yfinance_audit_context()
+    if ctx is None:
+        return fetch_fn()  # no import, no DB, zero new behavior
+    try:
+        from swing.data.yfinance_audit import _record_yf_download
+    except Exception:  # noqa: BLE001 -- import failed -> single raw fetch
+        log.warning("yfinance audit recorder import failed (un-audited fetch)",
+                    exc_info=True)
+        return fetch_fn()
+    return _record_yf_download(
+        ctx=ctx, call_type=call_type, ticker=ticker, ticker_count=ticker_count,
+        fetch_fn=fetch_fn,
+    )
 
 # Shape A persistence (Schwab API Sub-bundle C T-C.2 / plan §A.8 + §H.6.3):
 # parquet-per-(ticker, provider). LOWER integer = HIGHER priority under
@@ -254,15 +285,18 @@ def _yf_download_window(ticker: str, *, start: date, end: date) -> pd.DataFrame:
     `start` is inclusive, `end` is exclusive in yfinance — we always pass
     `end + 1 day` to make the call site's `end_date` semantics inclusive.
     """
-    df = yf.download(
-        ticker,
-        start=start,
-        end=end + timedelta(days=1),
-        progress=False,
-        auto_adjust=False,
-        actions=False,
-        threads=False,
-    )
+    def _fetch():
+        return yf.download(
+            ticker,
+            start=start,
+            end=end + timedelta(days=1),
+            progress=False,
+            auto_adjust=False,
+            actions=False,
+            threads=False,
+        )
+    df = _audited_fetch(call_type="download_single", ticker=ticker,
+                        ticker_count=None, fetch_fn=_fetch)
     if df is None or df.empty:
         return pd.DataFrame()
     df = _squeeze_multiindex(df)
@@ -499,12 +533,15 @@ def _fetch_chunk(
         VALID response in which every ticker is present-but-all-NaN sets
         chunk_failed=False (those are per-ticker misses), so the #27
         chunk_failures counter is not corrupted (Codex R1 Major #6)."""
-    try:
-        raw = yf.download(
+    def _fetch():
+        return yf.download(
             chunk, start=start, end=end + timedelta(days=1),
             group_by="ticker", threads=True, progress=False,
             auto_adjust=False, actions=False,
         )
+    try:
+        raw = _audited_fetch(call_type="download_batch", ticker=None,
+                             ticker_count=len(chunk), fetch_fn=_fetch)
     except Exception as exc:  # noqa: BLE001 — whole chunk -> serial fallback
         log.warning("warm chunk yf.download failed (%d tickers -> fallback): %s",
                     len(chunk), exc)
