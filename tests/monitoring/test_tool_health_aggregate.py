@@ -49,9 +49,20 @@ def _seed_running_wedged(conn, now):
         "WHERE id=?", (hb, step, rid))
 
 
-def _seed_weather(conn, *, asof_date):
+# The live system records weather under cfg.rs.benchmark_ticker == "SPY"; seed
+# under the benchmark so the aggregate exercises the production read shape.
+_BENCHMARK = "SPY"
+
+
+def _cfg_with_benchmark(ticker=_BENCHMARK):
+    cfg = Config.from_defaults()
+    object.__setattr__(cfg.rs, "benchmark_ticker", ticker)
+    return cfg
+
+
+def _seed_weather(conn, *, asof_date, ticker=_BENCHMARK):
     upsert_weather_run(conn, WeatherRun(
-        id=None, run_ts="2026-06-17T05:00:00", asof_date=asof_date, ticker="QQQ",
+        id=None, run_ts="2026-06-17T05:00:00", asof_date=asof_date, ticker=ticker,
         status="Bullish", close=400.0, sma10=None, sma20=None, sma50=None,
         slope20_5bar=None, slope10_5bar=None, rationale=None))
 
@@ -76,9 +87,14 @@ def test_all_green_overall_green(tmp_path):
         _seed_complete_run(conn, action_session_date=action_session_for_run(now).isoformat())
         _seed_weather(conn, asof_date=last_completed_session(now).isoformat())
     cache = _fresh_parquet(tmp_path, now, days=1)
-    status = compute_tool_health(conn, cfg=None, prices_cache_dir=cache, now=now)
+    # cfg present (benchmark SPY) so weather is genuinely exercised green via the
+    # production read path -- NOT degraded to n/a by a None cfg.
+    status = compute_tool_health(
+        conn, cfg=_cfg_with_benchmark(), prices_cache_dir=cache, now=now)
     assert status.overall == "green"
     assert len(status.checks) >= 5
+    by_key = {c.key: c.status for c in status.checks}
+    assert by_key["weather_freshness"] == "green"
 
 
 def test_one_red_makes_overall_red(tmp_path):
@@ -103,15 +119,21 @@ def test_one_yellow_no_red_overall_yellow(tmp_path):
         _seed_complete_run(conn, action_session_date=action_session_for_run(now).isoformat())
         _seed_weather(conn, asof_date=last_completed_session(now).isoformat())
     cache = _fresh_parquet(tmp_path, now, days=5)  # 5d stale -> yellow
-    status = compute_tool_health(conn, cfg=None, prices_cache_dir=cache, now=now)
+    status = compute_tool_health(
+        conn, cfg=_cfg_with_benchmark(), prices_cache_dir=cache, now=now)
     assert status.overall == "yellow"
+    by_key = {c.key: c.status for c in status.checks}
+    assert by_key["weather_freshness"] == "green"  # weather current; ohlcv is the yellow
 
 
 def test_compute_tool_health_bare_conn_call_shape(tmp_path):
     # The sec-3 locked shape compute_tool_health(conn) against a SCHEMA-PRESENT
-    # but EMPTY DB: cfg/cache-dependent checks -> green/"n/a"; operational-DATA
-    # checks -> red. Distinguishes "missing config = green n/a" from
-    # "missing data = red".
+    # but EMPTY DB: cfg-dependent checks (schwab, weather) -> green/"n/a";
+    # cache-dependent (ohlcv) -> green/"n/a"; cfg-INDEPENDENT operational-DATA
+    # checks (pipeline) -> red. Distinguishes "missing config = green n/a" from
+    # "missing data = red". Weather is now cfg-GATED (the benchmark ticker comes
+    # from cfg.rs.benchmark_ticker), so a bare cfg-None call degrades weather to
+    # n/a green rather than false-redding on the QQQ-default miss.
     now = datetime(2026, 6, 17, 21, 0)
     db_path = _build_db(tmp_path)
     conn = connect(db_path)
@@ -122,15 +144,19 @@ def test_compute_tool_health_bare_conn_call_shape(tmp_path):
     assert "n/a" in by_key["schwab_token_ttl"].summary.lower()
     assert by_key["ohlcv_freshness"].status == "green"
     assert "n/a" in by_key["ohlcv_freshness"].summary.lower()
+    assert by_key["weather_freshness"].status == "green"
+    assert "n/a" in by_key["weather_freshness"].summary.lower()
+    # pipeline is cfg-INDEPENDENT operational data -> still red on an empty DB.
     assert by_key["pipeline_freshness"].status == "red"
-    assert by_key["weather_freshness"].status == "red"
 
 
 def test_compute_tool_health_pre_schema_conn_degrades_not_crash():
     # bare :memory: (no ensure_schema -> no tables) does NOT raise; schema-
-    # dependent checks degrade to yellow "schema unavailable".
+    # dependent checks degrade to yellow "schema unavailable". cfg present (the
+    # weather schema-unavailable path is reached only when the benchmark ticker
+    # is known; a None cfg short-circuits weather to n/a green before the query).
     conn = sqlite3.connect(":memory:")
-    status = compute_tool_health(conn)
+    status = compute_tool_health(conn, cfg=_cfg_with_benchmark())
     assert isinstance(status, ToolHealthStatus)
     by_key = {c.key: c for c in status.checks}
     assert any("schema unavailable" in c.summary.lower() for c in status.checks)
@@ -179,8 +205,12 @@ def test_compute_tool_health_normalizes_aware_now(tmp_path):
         _seed_complete_run(conn, action_session_date="2026-06-15")
         # cover the correct last_completed_session (Fri 06-12) so weather is green
         _seed_weather(conn, asof_date="2026-06-12")
-    s_aware = compute_tool_health(conn, now=aware)
-    s_naive = compute_tool_health(conn, now=naive)
+    # cfg present (benchmark SPY) so weather genuinely depends on the normalized
+    # now anchor (a None cfg would degrade weather to n/a and defeat the
+    # color-sensitivity of this discriminator).
+    cfg = _cfg_with_benchmark()
+    s_aware = compute_tool_health(conn, cfg=cfg, now=aware)
+    s_naive = compute_tool_health(conn, cfg=cfg, now=naive)
     aware_map = {c.key: c.status for c in s_aware.checks}
     naive_map = {c.key: c.status for c in s_naive.checks}
     assert aware_map == naive_map

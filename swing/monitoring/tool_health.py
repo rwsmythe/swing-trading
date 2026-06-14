@@ -378,7 +378,7 @@ def _check_schwab_token(*, cfg, now: datetime) -> list[ToolHealthCheck]:
 
 
 def _check_data_freshness(
-    conn: sqlite3.Connection, *, prices_cache_dir, now: datetime
+    conn: sqlite3.Connection, *, cfg, prices_cache_dir, now: datetime
 ) -> list[ToolHealthCheck]:
     """OHLCV archive WRITE-recency + weather asof_date freshness.
 
@@ -387,13 +387,20 @@ def _check_data_freshness(
     freshness). The mtime (an absolute POSIX timestamp) is converted to
     naive-Hawaii-local BEFORE subtracting from the naive-Hawaii-local `now`
     (Codex R5 MAJOR #1 -- host-tz independence). A missing cache dir / no parquet
-    degrades to green/"n/a".
+    degrades to green/"n/a". `cfg` is unused by the OHLCV sub-check.
 
-    Weather: get_latest(conn).asof_date (a DATA-session date -- the
-    weather-keyed-by-data_asof_date gotcha) vs last_completed_session(now),
-    counted in NYSE sessions via sessions_behind. No weather row -> red; a
-    missing weather_runs table -> yellow schema-unavailable (any other
-    OperationalError re-raises).
+    Weather: get_latest(conn, ticker=cfg.rs.benchmark_ticker).asof_date (a
+    DATA-session date -- the weather-keyed-by-data_asof_date gotcha) vs
+    last_completed_session(now), counted in NYSE sessions via sessions_behind.
+    The live system records weather under the BENCHMARK ticker
+    (cfg.rs.benchmark_ticker == "SPY"), NOT get_latest's "QQQ" default -- a
+    bare get_latest(conn) returns None on the live DB and false-REDs a current
+    system (the QA-caught live false-RED). cfg None -> the benchmark ticker is
+    unknown, so weather degrades to green/"n/a" (a missing CONFIG input is
+    green/n/a, NOT red -- the ratified degradation; keeps the bare-call
+    compute_tool_health(conn) valid). No weather row -> red; a missing
+    weather_runs table -> yellow schema-unavailable (any other OperationalError
+    re-raises).
     """
     from zoneinfo import ZoneInfo
 
@@ -429,9 +436,15 @@ def _check_data_freshness(
                 detail=f"newest parquet mtime {mtime_dt.isoformat(timespec='seconds')}"))
 
     # (b) weather asof_date freshness
+    if cfg is None:
+        checks.append(ToolHealthCheck(
+            key="weather_freshness", status="green",
+            summary="weather freshness n/a (benchmark ticker unknown; cfg n/a)"))
+        return checks
+
     try:
         from swing.data.repos.weather import get_latest
-        latest = get_latest(conn)
+        latest = get_latest(conn, ticker=cfg.rs.benchmark_ticker)
     except sqlite3.OperationalError as exc:
         if _schema_unavailable(exc):
             checks.append(ToolHealthCheck(
@@ -510,7 +523,8 @@ def compute_tool_health(
     checks: list[ToolHealthCheck] = []
     checks += _check_pipeline_run(conn, cfg=cfg, now=now)
     checks += _check_schwab_token(cfg=cfg, now=now)
-    checks += _check_data_freshness(conn, prices_cache_dir=prices_cache_dir, now=now)
+    checks += _check_data_freshness(
+        conn, cfg=cfg, prices_cache_dir=prices_cache_dir, now=now)
     overall = worst_of([c.status for c in checks])
     return ToolHealthStatus(
         overall=overall, checks=checks,

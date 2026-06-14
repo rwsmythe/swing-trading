@@ -460,7 +460,19 @@ def _set_mtime_days_ago(path, now_local, *, days=0, hours=0):
     os.utime(path, (ts, ts))
 
 
-def _seed_weather(conn, *, asof_date, run_ts="2026-06-17T05:00:00", ticker="QQQ"):
+# The live system records weather under cfg.rs.benchmark_ticker == "SPY" (NOT
+# get_latest's "QQQ" default); seed under the benchmark and pass a cfg whose
+# benchmark_ticker matches so the tests exercise the production read shape.
+_BENCHMARK = "SPY"
+
+
+def _cfg_with_benchmark(ticker=_BENCHMARK):
+    cfg = Config.from_defaults()
+    object.__setattr__(cfg.rs, "benchmark_ticker", ticker)
+    return cfg
+
+
+def _seed_weather(conn, *, asof_date, run_ts="2026-06-17T05:00:00", ticker=_BENCHMARK):
     from swing.data.models import WeatherRun
     from swing.data.repos.weather import upsert_weather_run
     upsert_weather_run(conn, WeatherRun(
@@ -476,7 +488,7 @@ def _seed_weather(conn, *, asof_date, run_ts="2026-06-17T05:00:00", ticker="QQQ"
 def test_ohlcv_green_when_cache_dir_none(tmp_path):
     conn = _seeded_conn(tmp_path)
     check = _ohlcv_check(_check_data_freshness(
-        conn, prices_cache_dir=None, now=_now_local()))
+        conn, cfg=None, prices_cache_dir=None, now=_now_local()))
     assert check.status == "green"
     assert "n/a" in check.summary.lower()
 
@@ -486,7 +498,7 @@ def test_ohlcv_green_when_no_parquet(tmp_path):
     cache = tmp_path / "cache"
     cache.mkdir()
     check = _ohlcv_check(_check_data_freshness(
-        conn, prices_cache_dir=cache, now=_now_local()))
+        conn, cfg=None, prices_cache_dir=cache, now=_now_local()))
     assert check.status == "green"
     assert "n/a" in check.summary.lower()
 
@@ -500,7 +512,7 @@ def test_ohlcv_green_when_recently_written(tmp_path):
     now = _now_local()
     _set_mtime_days_ago(p, now, days=1)  # age 1d <= 4 -> green
     check = _ohlcv_check(_check_data_freshness(
-        conn, prices_cache_dir=cache, now=now))
+        conn, cfg=None, prices_cache_dir=cache, now=now))
     assert check.status == "green"
 
 
@@ -513,7 +525,7 @@ def test_ohlcv_yellow_when_write_stale(tmp_path):
     now = _now_local()
     _set_mtime_days_ago(p, now, days=5)  # 4 < 5 <= 7 -> yellow
     check = _ohlcv_check(_check_data_freshness(
-        conn, prices_cache_dir=cache, now=now))
+        conn, cfg=None, prices_cache_dir=cache, now=now))
     assert check.status == "yellow"
 
 
@@ -526,7 +538,7 @@ def test_ohlcv_red_when_write_very_stale(tmp_path):
     now = _now_local()
     _set_mtime_days_ago(p, now, days=9)  # > 7 -> red
     check = _ohlcv_check(_check_data_freshness(
-        conn, prices_cache_dir=cache, now=now))
+        conn, cfg=None, prices_cache_dir=cache, now=now))
     assert check.status == "red"
 
 
@@ -557,7 +569,7 @@ def test_ohlcv_mtime_age_is_host_tz_independent(tmp_path):
     utc_age = (now - utc_mtime).total_seconds() / 86400
     assert utc_age <= 4 < hawaii_age  # the discriminator is live (4.125 vs 3.708)
     check = _ohlcv_check(_check_data_freshness(
-        conn, prices_cache_dir=cache, now=now))
+        conn, cfg=None, prices_cache_dir=cache, now=now))
     assert check.status == "yellow"
 
 
@@ -567,7 +579,7 @@ def test_ohlcv_mtime_age_is_host_tz_independent(tmp_path):
 def test_weather_red_when_absent(tmp_path):
     conn = _seeded_conn(tmp_path)  # schema present, empty weather_runs
     check = _weather_check(_check_data_freshness(
-        conn, prices_cache_dir=None, now=_now_local()))
+        conn, cfg=_cfg_with_benchmark(), prices_cache_dir=None, now=_now_local()))
     assert check.status == "red"
     assert "no weather run" in check.summary.lower()
 
@@ -579,7 +591,7 @@ def test_weather_green_when_current(tmp_path):
     with conn:
         _seed_weather(conn, asof_date=anchor.isoformat())
     check = _weather_check(_check_data_freshness(
-        conn, prices_cache_dir=None, now=now))
+        conn, cfg=_cfg_with_benchmark(), prices_cache_dir=None, now=now))
     assert check.status == "green"
 
 
@@ -590,7 +602,7 @@ def test_weather_yellow_one_behind(tmp_path):
     with conn:
         _seed_weather(conn, asof_date="2026-06-16")
     check = _weather_check(_check_data_freshness(
-        conn, prices_cache_dir=None, now=now))
+        conn, cfg=_cfg_with_benchmark(), prices_cache_dir=None, now=now))
     assert check.status == "yellow"
 
 
@@ -601,7 +613,7 @@ def test_weather_red_two_behind(tmp_path):
     with conn:
         _seed_weather(conn, asof_date="2026-06-15")
     check = _weather_check(_check_data_freshness(
-        conn, prices_cache_dir=None, now=now))
+        conn, cfg=_cfg_with_benchmark(), prices_cache_dir=None, now=now))
     assert check.status == "red"
 
 
@@ -615,13 +627,15 @@ def test_weather_yellow_one_behind_across_weekend(tmp_path):
     with conn:
         _seed_weather(conn, asof_date="2026-06-12")
     check = _weather_check(_check_data_freshness(
-        conn, prices_cache_dir=None, now=now))
+        conn, cfg=_cfg_with_benchmark(), prices_cache_dir=None, now=now))
     assert check.status == "yellow"
 
 
 def test_weather_missing_table_degrades_yellow_not_crash():
     conn = sqlite3.connect(":memory:")  # no weather_runs table
-    checks = _check_data_freshness(conn, prices_cache_dir=None, now=_now_local())
+    # cfg present so we reach the weather query (cfg None would short-circuit n/a).
+    checks = _check_data_freshness(
+        conn, cfg=_cfg_with_benchmark(), prices_cache_dir=None, now=_now_local())
     wc = _weather_check(checks)
     assert wc.status == "yellow"
     assert "schema unavailable" in wc.summary.lower()
@@ -636,4 +650,48 @@ def test_weather_non_schema_operational_error_reraises(tmp_path, monkeypatch):
 
     monkeypatch.setattr("swing.data.repos.weather.get_latest", boom)
     with pytest.raises(sqlite3.OperationalError, match="database is locked"):
-        _check_data_freshness(conn, prices_cache_dir=None, now=now)
+        _check_data_freshness(
+            conn, cfg=_cfg_with_benchmark(), prices_cache_dir=None, now=now)
+
+
+def test_weather_uses_cfg_benchmark_ticker_not_qqq_default(tmp_path):
+    """The QA-caught live false-RED regression: weather is recorded under the
+    benchmark ticker (cfg.rs.benchmark_ticker == "SPY"), NOT get_latest's "QQQ"
+    default.
+
+    Seed a CURRENT weather row under "SPY" ONLY (nothing under QQQ) and pass a
+    cfg whose benchmark_ticker is "SPY".
+      - PRE-FIX (get_latest(conn) -> QQQ default): finds no SPY row -> latest is
+        None -> RED "no weather run recorded" -> this test FAILS.
+      - POST-FIX (get_latest(conn, ticker=cfg.rs.benchmark_ticker)): finds the
+        SPY row at a current asof_date -> GREEN -> this test PASSES.
+    """
+    now = datetime(2026, 6, 17, 21, 0)  # Wed post-close -> last_completed = 06-17
+    anchor = last_completed_session(now)
+    conn = _seeded_conn(tmp_path)
+    with conn:
+        _seed_weather(conn, asof_date=anchor.isoformat(), ticker="SPY")
+    cfg = _cfg_with_benchmark("SPY")
+    check = _weather_check(_check_data_freshness(
+        conn, cfg=cfg, prices_cache_dir=None, now=now))
+    assert check.status == "green"
+    assert "current" in check.summary.lower()
+
+
+def test_weather_green_na_when_cfg_none(tmp_path):
+    """cfg None -> the benchmark ticker is unknown, so weather degrades to
+    green/"n/a" (a missing CONFIG input is green/n/a, NOT red -- the ratified
+    degradation that keeps the bare-call compute_tool_health(conn) valid).
+
+    A current SPY weather row IS present, but with cfg None the check must NOT
+    query (and must NOT false-RED on the QQQ-default miss) -- it returns n/a.
+    """
+    now = datetime(2026, 6, 17, 21, 0)
+    anchor = last_completed_session(now)
+    conn = _seeded_conn(tmp_path)
+    with conn:
+        _seed_weather(conn, asof_date=anchor.isoformat(), ticker="SPY")
+    check = _weather_check(_check_data_freshness(
+        conn, cfg=None, prices_cache_dir=None, now=now))
+    assert check.status == "green"
+    assert "n/a" in check.summary.lower()

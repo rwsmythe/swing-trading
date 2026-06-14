@@ -43,9 +43,13 @@ def _build_green_db(tmp_path):
             lease_heartbeat_ts="2026-06-14T00:00:00")
         finalize_run(conn, run_id=rid, lease_token=tok, state="complete",
                      finished_ts="2026-06-14T00:00:00")
+        # The script resolves cfg via Config.from_defaults() -> benchmark "SPY";
+        # seed weather under THAT benchmark ticker (the production read shape),
+        # NOT get_latest's "QQQ" default, or the weather check false-REDs.
         upsert_weather_run(conn, WeatherRun(
             id=None, run_ts="2026-06-17T05:00:00",
-            asof_date=last_completed_session(now).isoformat(), ticker="QQQ",
+            asof_date=last_completed_session(now).isoformat(),
+            ticker=Config.from_defaults().rs.benchmark_ticker,
             status="Bullish", close=400.0, sma10=None, sma20=None, sma50=None,
             slope20_5bar=None, slope10_5bar=None, rationale=None))
     conn.close()
