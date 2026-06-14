@@ -9,7 +9,10 @@ Do this, in order:
    the settled operating decisions in section 2, the architecture-review
    tripwires in section 3, the technical-debt register in section 4, and the
    harness-hygiene standard in section 4.2). This is your working memory --
-   section 6 (Session Log) is append-only.
+   section 6 (Session Log) is append-only. THEN read the shared harness model:
+   docs/harness-architecture.md (CHARC-owned cross-role harness architecture --
+   the role/swimlane model, the content-ownership categories, the comms
+   taxonomy, the scope-limitation + flag-vs-comply rule, the tripwire model).
 
 2. Drain your inbox:
        python scripts/role_mail.py read --role charc --all

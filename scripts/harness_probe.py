@@ -38,6 +38,7 @@ CONTEXT_DOCS = (
     "docs/research-director-context.md",
     "docs/tool-director-context.md",
     "docs/research-director-watch-standard.md",
+    "docs/harness-architecture.md",
 )
 SESSION_ARTIFACT_GLOBS = (".copowers*", ".codex-review*")
 
