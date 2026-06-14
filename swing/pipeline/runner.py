@@ -2887,6 +2887,7 @@ def _step_pattern_observe(*, cfg, lease, ohlcv_cache, run_warnings):
 
     from swing.data.db import connect
     from swing.data.models import PatternForwardObservation
+    from swing.data.ohlcv_finiteness import is_finite_ohlc
     from swing.data.repos.pattern_detection_events import (
         list_observable_detections,
     )
@@ -2979,6 +2980,23 @@ def _step_pattern_observe(*, cfg, lease, ohlcv_cache, run_warnings):
                 "step": "pattern_observe", "ticker": det.ticker,
                 "observation_date": observation_date,
                 "reason": "no bar for observation_date",
+            })
+            continue
+        # Phase 18 Arc 18-A — non-finite OHLC skip-with-warning (mirrors the
+        # bar-is-None branch + Arc-8 "leave the hole; the engine tolerates a
+        # hole, not a NaN"). A completed-session bar whose OHLC is non-finite
+        # (the 2026-06-10 yfinance Close=NaN artifact, O/H/L/V-finite) must NEVER
+        # enter the append-only temporal log. Volume is EXEMPT (not passed) --
+        # validate_bars ignores volume too. Skipping HERE, before _advance_status,
+        # also means a NaN close never drives a phantom status transition. The
+        # one-session interior hole is permanent (not backfilled on later runs);
+        # the engine prices around it. is_finite_ohlc (C1) is the SAME predicate
+        # the Arc-8 archive trim and the serializer belt consume.
+        if not is_finite_ohlc(bar["open"], bar["high"], bar["low"], bar["close"]):
+            run_warnings.append({
+                "step": "pattern_observe", "ticker": det.ticker,
+                "observation_date": observation_date,
+                "reason": "non_finite_ohlc",
             })
             continue
         sessions = _sessions_since(det.data_asof_date, observation_date)

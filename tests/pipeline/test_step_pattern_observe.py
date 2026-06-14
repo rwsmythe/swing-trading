@@ -346,3 +346,62 @@ def test_forward_walk_freezes_past_bar(tmp_db_v22, tmp_path):
     assert obs_N_after == obs_N_before          # FROZEN -- #26 cannot occur
     assert obs_N_after["close"] == 9.00         # NOT the drifted 9.99
     assert chain[1].observation_date == "2026-05-29" and json.loads(chain[1].ohlc_today_json)["close"] == 9.10
+
+
+def test_non_finite_ohlc_skips_with_warning(tmp_db_v22, tmp_path):
+    """Phase 18 18-A PRIMARY regression (the REAL 06-10 shape): a completed-session
+    bar with Close=NaN, O/H/L/V finite, provider=yfinance must be SKIPPED with a
+    `non_finite_ohlc` warning -- NO observation row enters the append-only log.
+
+    PRE-FIX arithmetic: _bar_for_date returns the bar with close=NaN (O/H/L
+    finite). With NO finiteness check, _advance_status sees high=11.0 >= pivot=10.0
+    (the `close < invalidation` arm is `NaN < 8.0` -> False), returning
+    ('triggered_open','entry_fired') -- a NaN-close bar driving a PHANTOM trigger.
+    build_ohlc_today_json then serializes `"close": NaN` -> 1 row inserted, NO
+    warning. POST-FIX: the caller's is_finite_ohlc pre-check skips BEFORE
+    _advance_status -> 0 rows, 1 `non_finite_ohlc` warning. The row-count
+    assertion distinguishes the two paths (and the skip also prevents the phantom
+    trigger)."""
+    conn, db_path = tmp_db_v22
+    det_id = _plant_detection(conn, ticker="AAA", data_asof_date="2026-05-28")  # pivot 10.0
+    cfg = _cfg(tmp_path, db_path)
+    lease = _FakeLease(db_path, run_id=1, data_asof="2026-05-29")
+    warnings: list[dict] = []
+    import pandas as pd
+    # O/H/L/V finite, Close=NaN, provider yfinance (the exact 06-10 artifact).
+    nan_close = (
+        pd.DataFrame([{"asof_date": "2026-05-29", "open": 10.0, "high": 11.0,
+                       "low": 9.0, "close": float("nan"), "volume": 1_000_000.0}]),
+        {"2026-05-29": "yfinance"})
+    with patch("swing.data.ohlcv_archive.resolve_ohlcv_window", return_value=nan_close):
+        with patch("swing.pipeline.runner.lease_data_asof", return_value="2026-05-29"):
+            _step_pattern_observe(cfg=cfg, lease=lease,
+                                  ohlcv_cache=_StubOhlcvCache({"AAA": _build_bars()}),
+                                  run_warnings=warnings)
+    assert get_observations_for_detection(conn, det_id) == []   # no NaN row locked
+    assert any(w.get("reason") == "non_finite_ohlc" and w.get("ticker") == "AAA"
+               for w in warnings)
+
+
+def test_volume_only_nan_still_observed(tmp_db_v22, tmp_path):
+    """Phase 18 18-A discriminator: a completed bar with finite OHLC but NaN
+    volume is NOT skipped (Volume-NaN exemption reconciled -- the caller's
+    is_finite_ohlc gates OHLC only). One row is appended; the engine ignores
+    volume so the NaN volume is inert. An impl that gated volume would FAIL this."""
+    conn, db_path = tmp_db_v22
+    det_id = _plant_detection(conn, ticker="AAA", data_asof_date="2026-05-28")
+    cfg = _cfg(tmp_path, db_path)
+    lease = _FakeLease(db_path, run_id=1, data_asof="2026-05-29")
+    warnings: list[dict] = []
+    import pandas as pd
+    vol_nan = (
+        pd.DataFrame([{"asof_date": "2026-05-29", "open": 9.0, "high": 9.0,
+                       "low": 9.0, "close": 9.0, "volume": float("nan")}]),
+        {"2026-05-29": "yfinance"})
+    with patch("swing.data.ohlcv_archive.resolve_ohlcv_window", return_value=vol_nan):
+        with patch("swing.pipeline.runner.lease_data_asof", return_value="2026-05-29"):
+            _step_pattern_observe(cfg=cfg, lease=lease,
+                                  ohlcv_cache=_StubOhlcvCache({"AAA": _build_bars()}),
+                                  run_warnings=warnings)
+    assert len(get_observations_for_detection(conn, det_id)) == 1
+    assert not any(w.get("reason") == "non_finite_ohlc" for w in warnings)
