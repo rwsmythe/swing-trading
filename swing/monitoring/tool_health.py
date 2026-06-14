@@ -438,3 +438,56 @@ def _check_data_freshness(
             detail=f"pipeline ran {latest.run_ts}"))
 
     return checks
+
+
+# --------------------------------------------------------------------------
+# Aggregator
+# --------------------------------------------------------------------------
+
+
+def _normalize_now_to_naive_local(now: datetime | None) -> datetime:
+    """Normalize `now` to NAIVE Hawaii-local at the compute_tool_health boundary.
+
+    Codex R3 MAJOR #1: the session helpers (action_session_for_run /
+    last_completed_session) do now_local.replace(tzinfo=Pacific/Honolulu), which
+    RELABELS (not converts) an aware datetime -> mis-anchored sessions. Normalize
+    ONCE here so EVERY downstream consumer (the session helpers AND the schwab
+    _now_to_utc) receives a naive-Hawaii-local `now`.
+      - None -> datetime.now(Pacific/Honolulu) naive (Codex R4 MAJOR #1: the
+        Hawaii wall clock, NOT bare datetime.now() which is host-local and
+        mis-anchors on a non-Hawaii box).
+      - aware -> CONVERT the instant to Hawaii-local THEN strip tzinfo.
+      - naive -> pass through (already treated as Hawaii-local by the helpers).
+    """
+    from zoneinfo import ZoneInfo
+
+    if now is None:
+        return datetime.now(ZoneInfo("Pacific/Honolulu")).replace(tzinfo=None)
+    if now.tzinfo is not None:
+        return now.astimezone(ZoneInfo("Pacific/Honolulu")).replace(tzinfo=None)
+    return now
+
+
+def compute_tool_health(
+    conn: sqlite3.Connection,
+    *,
+    cfg=None,
+    prices_cache_dir=None,
+    now: datetime | None = None,
+) -> ToolHealthStatus:
+    """Read-only roll-up of the three data-collection-enabling check families.
+
+    The sec-3 envelope contract; the bare-call compute_tool_health(conn) stays
+    valid (18-F's consumption point). Never writes the DB. A missing CONFIG input
+    degrades a dependent check to green/"n/a"; a missing-TABLE schema degrades to
+    yellow "schema unavailable"; missing operational DATA fires red.
+    """
+    now = _normalize_now_to_naive_local(now)
+    checks: list[ToolHealthCheck] = []
+    checks += _check_pipeline_run(conn, cfg=cfg, now=now)
+    checks += _check_schwab_token(cfg=cfg, now=now)
+    checks += _check_data_freshness(conn, prices_cache_dir=prices_cache_dir, now=now)
+    overall = worst_of([c.status for c in checks])
+    return ToolHealthStatus(
+        overall=overall, checks=checks,
+        generated_ts=now.isoformat(timespec="seconds"))
