@@ -2,7 +2,8 @@
 
 **Opened:** 2026-06-13 (scoped with the operator; CHARC-drafted per charter §2.3, operator-approved). **Theme:** the instrument's *inputs*. Phase 17 consolidated the code; Phase 18 makes the data the tool collects/stores trustworthy and its health visible. Motivated by the RD's 2026-06-13 data-collection audit (one real defect + the monitoring gap) + the operator's request for at-a-glance health.
 **Demand-side:** RD (Briefs 1+2) + operator (tool-health monitor, GUI stoplights). **Supply-side:** CHARC (write-path audit, yfinance audit, boundary hygiene).
-**Status:** OPERATOR-APPROVED 2026-06-13 (overall plan + 18-H added at approval). Nothing commissioned until Phase 17 closes (17-D.4 + the .2 icon recheck) and the operator sequences. Architecture passes for the tripwire-crossing arcs are pre-done or owed by CHARC at commissioning.
+**Status:** ACTIVE 2026-06-13 (Phase 17 closed; operator opened Phase 18). First commission (18-A) waits on the orchestrator's Phase-17 closeout commit landing (avoid mid-ritual context-switch); thereafter the operator sequences per-arc. Architecture passes for the tripwire-crossing arcs are pre-done or owed by CHARC at commissioning.
+**Scope reconciliation (operator-confirmed 2026-06-13):** the Phase-17 closeout recorded "riders R1 + R3 yfinance-audit WAIVED" — that referred to them as Phase-17 leftovers. The operator's authoritative call: **18-C (yfinance call audit) STAYS a Phase-18 arc, and R1 (declare `requests`) CARRIES into Phase 18.** Both are in-scope below. (The orchestrator's closeout "waived" line should be corrected to "carried to Phase 18" before it's committed, so the record isn't self-contradictory.)
 **Baseline at open:** main `98dff618` · schema v29 · (test count confirmed at first-arc branch).
 
 ---
