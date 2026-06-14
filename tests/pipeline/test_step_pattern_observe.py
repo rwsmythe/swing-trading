@@ -379,8 +379,51 @@ def test_non_finite_ohlc_skips_with_warning(tmp_db_v22, tmp_path):
                                   ohlcv_cache=_StubOhlcvCache({"AAA": _build_bars()}),
                                   run_warnings=warnings)
     assert get_observations_for_detection(conn, det_id) == []   # no NaN row locked
-    assert any(w.get("reason") == "non_finite_ohlc" and w.get("ticker") == "AAA"
-               for w in warnings)
+    # CHARC structured-warnings gate + RD watch-item c: lock the EXACT dict shape
+    # arc 18-D will consume (no field/key drift) -- not just reason+ticker (Codex
+    # executing R1 Minor 1).
+    skips = [w for w in warnings if w.get("reason") == "non_finite_ohlc"]
+    assert skips == [{"step": "pattern_observe", "ticker": "AAA",
+                      "observation_date": "2026-05-29", "reason": "non_finite_ohlc"}]
+
+
+def test_non_finite_skip_does_not_misnumber_later_observation(tmp_db_v22, tmp_path):
+    """Phase 18 18-A RD watch-item (a): the one-session hole a non-finite skip
+    creates must NOT mis-number a LATER observation. sessions_since_detection is
+    date-derived (_sessions_since over dates), never recorded-row contiguity, so
+    skipping session N leaves session N+1's count anchored on data_asof_date.
+
+    data_asof_date = 2026-05-22 (Fri). Session N = 2026-05-28 (non-finite close
+    -> SKIPPED, no row). Session N+1 = 2026-05-29 (finite -> 1 row). The N+1
+    row's sessions_since_detection must be the date-derived 5 (business days
+    2026-05-22 excl -> 2026-05-29 incl), NOT 1 (which a contiguity-counting impl
+    that ignored the hole would yield)."""
+    conn, db_path = tmp_db_v22
+    det_id = _plant_detection(conn, ticker="AAA", data_asof_date="2026-05-22")  # Fri
+    cfg = _cfg(tmp_path, db_path)
+    import pandas as pd
+    # Session N: non-finite close -> skip (no row appended).
+    nan_close = (
+        pd.DataFrame([{"asof_date": "2026-05-28", "open": 10.0, "high": 11.0,
+                       "low": 9.0, "close": float("nan"), "volume": 1_000_000.0}]),
+        {"2026-05-28": "yfinance"})
+    with patch("swing.data.ohlcv_archive.resolve_ohlcv_window", return_value=nan_close):
+        with patch("swing.pipeline.runner.lease_data_asof", return_value="2026-05-28"):
+            _step_pattern_observe(cfg=cfg, lease=_FakeLease(db_path, 1, "2026-05-28"),
+                                  ohlcv_cache=_StubOhlcvCache({"AAA": _build_bars()}),
+                                  run_warnings=[])
+    assert get_observations_for_detection(conn, det_id) == []   # N skipped, hole left
+    # Session N+1: finite bar -> 1 row, numbered from data_asof_date (date-derived).
+    finite = _stub_window(9.0, date_="2026-05-29")
+    with patch("swing.data.ohlcv_archive.resolve_ohlcv_window", return_value=finite):
+        with patch("swing.pipeline.runner.lease_data_asof", return_value="2026-05-29"):
+            _step_pattern_observe(cfg=cfg, lease=_FakeLease(db_path, 2, "2026-05-29"),
+                                  ohlcv_cache=_StubOhlcvCache({"AAA": _build_bars()}),
+                                  run_warnings=[])
+    chain = get_observations_for_detection(conn, det_id)
+    assert len(chain) == 1                                  # only N+1 recorded
+    assert chain[0].observation_date == "2026-05-29"
+    assert chain[0].sessions_since_detection == 5           # date-derived, NOT 1
 
 
 def test_volume_only_nan_still_observed(tmp_db_v22, tmp_path):
