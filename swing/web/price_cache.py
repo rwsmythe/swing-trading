@@ -16,6 +16,8 @@ from datetime import UTC, datetime
 
 from swing.config import Config
 from swing.data.db import connect
+from swing.data.yfinance_audit import _record_yf_download
+from swing.data.yfinance_audit_context import get_yfinance_audit_context
 
 log = logging.getLogger(__name__)
 
@@ -203,19 +205,29 @@ class PriceCache:
         to last-close with `is_stale=True, source="last_close"`.
         """
         import yfinance as yf
-        df = yf.download(
-            ticker,
-            period="1d",
-            interval="1m",
-            progress=False,
-            timeout=self._cfg.web.price_fetch_timeout_seconds,
-            auto_adjust=False,
-            group_by="column",
-            threads=False,   # CRITICAL (R3 Major 1): yfinance's internal
-                             # thread pool would bypass app.state.price_fetch_executor's
-                             # max_workers cap. Concurrency must be controlled
-                             # solely by the app-level executor.
-        )
+
+        def _fetch():
+            return yf.download(
+                ticker,
+                period="1d",
+                interval="1m",
+                progress=False,
+                timeout=self._cfg.web.price_fetch_timeout_seconds,
+                auto_adjust=False,
+                group_by="column",
+                threads=False,   # CRITICAL (R3 Major 1): yfinance's internal
+                                 # thread pool would bypass app.state.price_fetch_executor's
+                                 # max_workers cap. Concurrency must be controlled
+                                 # solely by the app-level executor.
+            )
+        ctx = get_yfinance_audit_context()
+        if ctx is None:
+            df = _fetch()
+        else:
+            df = _record_yf_download(
+                ctx=ctx, call_type="download_intraday", ticker=ticker,
+                ticker_count=None, fetch_fn=_fetch,
+            )
         if df is None or df.empty:
             raise RuntimeError(f"yfinance returned no bars for {ticker}")
         # yfinance >= ~0.2.4x returns a MultiIndex column (Price × Ticker)

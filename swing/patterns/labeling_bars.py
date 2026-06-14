@@ -31,6 +31,9 @@ import click
 import pandas as pd
 import yfinance as yf
 
+from swing.data.yfinance_audit import _record_yf_download
+from swing.data.yfinance_audit_context import get_yfinance_audit_context
+
 log = logging.getLogger(__name__)
 
 
@@ -43,15 +46,24 @@ def _yf_download_window_for_labeling(
     `start` inclusive, `end` exclusive in yfinance - we pass `end + 1 day`
     to make the call site's `end_date` semantics inclusive.
     """
-    df = yf.download(
-        ticker,
-        start=start,
-        end=end + timedelta(days=1),
-        progress=False,
-        auto_adjust=False,
-        actions=False,
-        threads=False,
-    )
+    def _fetch():
+        return yf.download(
+            ticker,
+            start=start,
+            end=end + timedelta(days=1),
+            progress=False,
+            auto_adjust=False,
+            actions=False,
+            threads=False,
+        )
+    ctx = get_yfinance_audit_context()
+    if ctx is None:
+        df = _fetch()
+    else:
+        df = _record_yf_download(
+            ctx=ctx, call_type="download_single", ticker=ticker,
+            ticker_count=None, fetch_fn=_fetch,
+        )
     if df is None or df.empty:
         return pd.DataFrame()
     # Squeeze MultiIndex columns defensively per CLAUDE.md yfinance gotcha
