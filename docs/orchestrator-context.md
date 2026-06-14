@@ -195,6 +195,8 @@ Step 4 — Produce the return report per §{N} of the brief as your final messag
 
 Every implementer dispatch MUST be accompanied — in the chat alongside the paste-ready prompt — by an explicit **model** (haiku / sonnet / opus / fable) + **effort-level** (low / med / high / xhigh / max) recommendation for the tasking, with a one-line rationale. This is operator-facing *launch configuration* (the operator sets the knob when spinning up the implementer instance), NOT part of the implementer's in-prompt instructions.
 
+**Ownership (closes a seam, CHARC-flagged 2026-06-13):** the ORCHESTRATOR supplies this recommendation for EVERY dispatch — including arcs commissioned or briefed by CHARC or RD. The brief's author does not supply it; do not assume a director will. The orchestrator owns the launch-config rec because it owns the dispatch.
+
 - **The orchestrator role itself always runs Opus xhigh** (operator default).
 - **For implementers, recommend deliberately** — a blanket "Opus xhigh" adds no value; differentiate by reasoning-density, scope, and downstream leverage:
   - High reasoning-density / high-leverage / must-converge-Codex / touches a critical instrument (design + writing-plans phases, measurement-chain code, anything an RD/CHARC gate blocks) → **Opus, high–xhigh**.
