@@ -191,6 +191,18 @@ Step 3 — Execute the brief directly. {Skill posture summary; key disciplines; 
 Step 4 — Produce the return report per §{N} of the brief as your final message.
 ```
 
+#### Model + effort recommendation (added 2026-06-13, operator-directed)
+
+Every implementer dispatch MUST be accompanied — in the chat alongside the paste-ready prompt — by an explicit **model** (haiku / sonnet / opus / fable) + **effort-level** (low / med / high / xhigh / max) recommendation for the tasking, with a one-line rationale. This is operator-facing *launch configuration* (the operator sets the knob when spinning up the implementer instance), NOT part of the implementer's in-prompt instructions.
+
+- **The orchestrator role itself always runs Opus xhigh** (operator default).
+- **For implementers, recommend deliberately** — a blanket "Opus xhigh" adds no value; differentiate by reasoning-density, scope, and downstream leverage:
+  - High reasoning-density / high-leverage / must-converge-Codex / touches a critical instrument (design + writing-plans phases, measurement-chain code, anything an RD/CHARC gate blocks) → **Opus, high–xhigh**.
+  - Locked-plan disciplined TDD execution of a small change → **Opus high** (economize the effort notch, rarely the model, given the project's Codex-convergence + multi-eyes quality bars).
+  - Genuinely mechanical / low-judgment / large-but-simple volume → consider **sonnet** or a lower effort notch.
+
+Memory: `feedback_dispatch_model_effort_recommendation`.
+
 ### Triage of return reports
 
 When a return report comes back, triage in this order:
