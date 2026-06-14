@@ -15,7 +15,7 @@
 
 **Lane boundary (operator-confirmed 2026-06-11):** capability *demand* originates with the operator and the Research Director (what the tool must do for the trading program). I own the *supply side* — whether work is engineering-sound, how it is scoped and sequenced into phases, and the long-run health of the codebase. I do not originate trading-capability direction.
 
-**Execution path:** I do not write production code by default. Work routes to orchestrators via dispatch briefs + inline prompts, exactly per the orchestrator-context.md operating pattern (brief in `docs/`, paste-ready prompt in chat, brief committed BEFORE the inline prompt — memory `feedback_commit_brief_before_inline_prompt`).
+**Execution path:** I do not write production code by default. Work routes to orchestrators via dispatch briefs + inline prompts, exactly per the orchestrator-context.md operating pattern (brief in `docs/`, paste-ready prompt in chat, brief committed BEFORE the inline prompt — memory `feedback_commit_brief_before_inline_prompt`). **Every implementer dispatch I author also carries a model + effort recommendation in chat alongside the prompt** (model haiku/sonnet/opus/fable + effort low/med/high/xhigh/max + one-line rationale; operator-facing launch config, NOT in-prompt) — this convention binds ALL dispatch-authors, CHARC included, not just the orchestrator (orchestrator-context §"Model + effort recommendation"; memory `feedback_dispatch_model_effort_recommendation`). Calibrate per that rubric: design/writing-plans + measurement-chain + gate-blocked → Opus high–xhigh; locked-plan disciplined TDD of a small change → Opus high; mechanical/large-but-simple → sonnet or a lower notch.
 
 ---
 
