@@ -202,10 +202,10 @@ def _calendar_window_for_trading_days(trading_days: int) -> int:
 
 
 def _trim_trailing_ragged(df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
-    """Arc 8 — drop trailing rows where ANY of Open/High/Low/Close is non-finite.
+    """Arc 8 -- drop trailing rows where ANY of Open/High/Low/Close is non-finite.
 
     Phase 18 18-A: the finiteness test is the shared ``is_finite_ohlc`` (the ONE
-    predicate also used by the temporal-log writer; C1) — ``math.isfinite``, so
+    predicate also used by the temporal-log writer; C1) -- ``math.isfinite``, so
     a trailing +/-inf row is trimmed too (a strict superset of the prior
     ``isna()`` NaN-only check, aligning with the engine gate's finiteness
     definition). Volume is excluded from ``ohlc`` so Volume-only-NaN never trims.

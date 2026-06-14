@@ -1,13 +1,13 @@
 """Shared OHLC finiteness predicate (Phase 18 Arc 18-A).
 
-ONE source of truth for "are these OHLC values finite?" — consumed by BOTH
+ONE source of truth for "are these OHLC values finite?" -- consumed by BOTH
 write barriers that must reject non-finite OHLC before it reaches durable
 storage:
 
-- ``swing.data.ohlcv_archive._trim_trailing_ragged`` (DataFrame-row shape) —
+- ``swing.data.ohlcv_archive._trim_trailing_ragged`` (DataFrame-row shape) --
   the Arc-8 trailing-ragged trim on the per-ticker OHLCV archive.
 - ``swing.pipeline.temporal_metadata.build_ohlc_today_json`` (bar-dict shape)
-  + its caller ``swing.pipeline.runner._step_pattern_observe`` — the
+  + its caller ``swing.pipeline.runner._step_pattern_observe`` -- the
   temporal-log (``pattern_forward_observations``) write path.
 
 Extracting the predicate here (the ``swing/data`` layer) is the C1 fix for the
@@ -37,11 +37,11 @@ def is_finite_ohlc(*values: float) -> bool:
     values to reject), matching ``_trim_trailing_ragged``'s "no OHLC columns ->
     no-op" arm.
 
-    Uses ``math.isfinite`` — the SAME finiteness definition the engine gate
+    Uses ``math.isfinite`` -- the SAME finiteness definition the engine gate
     ``research/harness/shadow_expectancy/validate.py:_finite_nonneg`` uses, so
     the writer's "suspenders" reject exactly the set the engine's "belt"
     rejects (NaN AND inf). The engine additionally enforces ``>= 0``; that stays
-    the engine's job — this predicate is finiteness ONLY (hence the name) and
+    the engine's job -- this predicate is finiteness ONLY (hence the name) and
     adds no over-rejection of legitimate values at the write barrier (LOCK 4).
 
     Inputs MUST be real numbers (float-coercible: Python/NumPy floats). A

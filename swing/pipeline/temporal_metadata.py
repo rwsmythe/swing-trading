@@ -158,7 +158,7 @@ def build_ohlc_today_json(
     substrate's provider provenance is guaranteed, not convention).
 
     Phase 18 18-A: also refuses a non-finite OHLC bar (shared is_finite_ohlc;
-    Volume exempt) — a belt-and-suspenders construction barrier; the shipped
+    Volume exempt) -- a belt-and-suspenders construction barrier; the shipped
     skip-with-warning happens at the caller, which pre-checks before serializing."""
     if date.fromisoformat(observation_date) > cutoff:
         raise ValueError(
@@ -173,9 +173,9 @@ def build_ohlc_today_json(
             f"ohlc_today_json provider must be one of {_OHLC_TODAY_PROVIDERS}, "
             f"got {bar['provider']!r}"
         )
-    # Phase 18 Arc 18-A — finiteness construction-barrier (belt-and-suspenders).
+    # Phase 18 Arc 18-A -- finiteness construction-barrier (belt-and-suspenders).
     # Mirrors the Arc-8 trailing-ragged barrier at this SECOND write path via the
-    # ONE shared predicate (C1). Volume is EXEMPT (not passed) — Arc-8: legit
+    # ONE shared predicate (C1). Volume is EXEMPT (not passed) -- Arc-8: legit
     # volume-less bars exist; validate_bars likewise ignores volume. SHIPPED
     # behavior is skip-with-warning at the caller (_step_pattern_observe), which
     # pre-checks and skips BEFORE reaching this serializer; this raise is the

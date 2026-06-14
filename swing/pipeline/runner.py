@@ -2982,7 +2982,7 @@ def _step_pattern_observe(*, cfg, lease, ohlcv_cache, run_warnings):
                 "reason": "no bar for observation_date",
             })
             continue
-        # Phase 18 Arc 18-A — non-finite OHLC skip-with-warning (mirrors the
+        # Phase 18 Arc 18-A -- non-finite OHLC skip-with-warning (mirrors the
         # bar-is-None branch + Arc-8 "leave the hole; the engine tolerates a
         # hole, not a NaN"). A completed-session bar whose OHLC is non-finite
         # (the 2026-06-10 yfinance Close=NaN artifact, O/H/L/V-finite) must NEVER
