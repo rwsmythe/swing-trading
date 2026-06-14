@@ -294,6 +294,14 @@ def _check_schwab_token(*, cfg, now: datetime) -> list[ToolHealthCheck]:
       - issued -> UTC: replace(tzinfo=UTC) for naive (token timestamps ARE UTC).
     Absence of Schwab (no cfg, empty client_id, or no tokens DB) is green/"n/a".
     """
+    key = "schwab_token_ttl"
+
+    # n/a short-circuit BEFORE importing cli_schwab (Codex R3 MINOR -- keep the
+    # schwabdev stack off the bare-call / unconfigured path; LOCK #4).
+    if cfg is None or cfg.integrations.schwab.client_id == "":
+        return [ToolHealthCheck(key=key, status="green",
+                                summary="Schwab not configured (n/a)")]
+
     from datetime import UTC, timedelta
     from zoneinfo import ZoneInfo
 
@@ -305,12 +313,6 @@ def _check_schwab_token(*, cfg, now: datetime) -> list[ToolHealthCheck]:
         _read_tokens_metadata,
     )
     from swing.config_user import _user_home
-
-    key = "schwab_token_ttl"
-
-    if cfg is None or cfg.integrations.schwab.client_id == "":
-        return [ToolHealthCheck(key=key, status="green",
-                                summary="Schwab not configured (n/a)")]
 
     env = cfg.integrations.schwab.environment
     tokens_path = _user_home() / "swing-data" / f"schwab-tokens.{env}.db"
@@ -326,6 +328,14 @@ def _check_schwab_token(*, cfg, now: datetime) -> list[ToolHealthCheck]:
         return [ToolHealthCheck(key=key, status="yellow",
                                 summary="Schwab tokens unreadable",
                                 detail=str(error_message))]
+
+    # Codex R3 MAJOR: a present row with empty refresh_token bytes means Schwab
+    # CANNOT refresh -- data-present-but-broken, NOT config-absence -> red. The
+    # signal already exists in meta (computed in SQL by _read_tokens_metadata).
+    if not meta.get("refresh_token_present"):
+        return [ToolHealthCheck(
+            key=key, status="red",
+            summary="Schwab refresh token missing/empty; swing schwab setup")]
 
     issued_iso = meta.get("refresh_token_issued")
     issued_dt = _parse_iso_datetime(issued_iso) if issued_iso else None
@@ -357,11 +367,11 @@ def _check_schwab_token(*, cfg, now: datetime) -> list[ToolHealthCheck]:
     if delta_seconds <= _REFRESH_TOKEN_ERROR_THRESHOLD_SECONDS:
         return [ToolHealthCheck(
             key=key, status="red",
-            summary="Schwab token expires in <2h; swing schwab setup")]
+            summary="Schwab token expires in <=2h; swing schwab setup")]
     if delta_seconds <= _REFRESH_TOKEN_WARN_THRESHOLD_SECONDS:
         return [ToolHealthCheck(
             key=key, status="yellow",
-            summary="Schwab token expires in <1 day; swing schwab setup")]
+            summary="Schwab token expires in <=1 day; swing schwab setup")]
     days = int(delta_seconds // 86400)
     return [ToolHealthCheck(
         key=key, status="green", summary=f"Schwab token valid for {days} day(s)")]

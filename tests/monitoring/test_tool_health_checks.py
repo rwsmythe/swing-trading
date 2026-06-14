@@ -284,7 +284,8 @@ def _tokens_path(home, env):
     return home / "swing-data" / f"schwab-tokens.{env}.db"
 
 
-def _write_tokens_db(home, env, *, refresh_token_issued, table=True):
+def _write_tokens_db(home, env, *, refresh_token_issued, table=True,
+                     refresh_token="enc:secret-bytes"):
     """Build a v3-shape schwabdev tokens DB the production _read_tokens_metadata
     SELECTs (access_token_issued, refresh_token_issued, expires_in, refresh_token)."""
     path = _tokens_path(home, env)
@@ -299,7 +300,7 @@ def _write_tokens_db(home, env, *, refresh_token_issued, table=True):
             conn.execute(
                 "INSERT INTO schwabdev VALUES (?, ?, ?, ?)",
                 ("2026-06-14T00:00:00+00:00", refresh_token_issued, 1800,
-                 "enc:secret-bytes"),
+                 refresh_token),
             )
         else:
             # no schwabdev table -> _read_tokens_metadata returns (None, <msg>).
@@ -423,6 +424,20 @@ def test_schwab_now_uses_local_tz_not_utc(_home):
     _write_tokens_db(_home, "production", refresh_token_issued=issued)
     check = _check_schwab_token(cfg=_SchwabStub(), now=now_local)[0]
     assert check.status == "green"
+
+
+def test_schwab_red_when_refresh_token_empty(_home):
+    # Codex R3 MAJOR: a present row with a FRESH issued date but EMPTY refresh
+    # token bytes -> Schwab cannot refresh -> red (data-present-but-broken, NOT
+    # config-absence). A TTL-only impl returns green here -> FAIL.
+    now_local = _now_local()
+    now_utc = _now_utc_of(now_local)
+    issued = (now_utc - timedelta(days=1)).isoformat()  # fresh: 6d remaining
+    _write_tokens_db(_home, "production", refresh_token_issued=issued,
+                     refresh_token="")
+    check = _check_schwab_token(cfg=_SchwabStub(), now=now_local)[0]
+    assert check.status == "red"
+    assert "refresh token" in check.summary.lower()
 
 
 # ----------------------------- data freshness ------------------------------
