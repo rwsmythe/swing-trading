@@ -1,11 +1,12 @@
 """Tests for swing.evaluation.dates."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 
 from swing.evaluation.dates import (
     action_session_for_run,
     data_asof_from_ohlcv_max,
+    sessions_behind,
 )
 
 
@@ -35,3 +36,32 @@ def test_data_asof_from_ohlcv_max(ohlcv_factory):
     result = data_asof_from_ohlcv_max(df)
     # bdate_range starts 2026-04-15 (Wed), next is Thu 4/16, Fri 4/17
     assert result.isoformat() == "2026-04-17"
+
+
+def test_sessions_behind_zero_when_candidate_at_or_after_reference():
+    # candidate == reference -> 0; candidate after reference -> 0 (clamped).
+    assert sessions_behind(date(2026, 6, 17), date(2026, 6, 17)) == 0
+    assert sessions_behind(date(2026, 6, 17), date(2026, 6, 18)) == 0
+
+
+def test_sessions_behind_one_immediate_predecessor():
+    # Wed 06-17 immediate prior NYSE session is Tue 06-16 -> 1 behind.
+    assert sessions_behind(date(2026, 6, 17), date(2026, 6, 16)) == 1
+
+
+def test_sessions_behind_two_sessions_apart():
+    # Thu 06-18 -> prev Wed 06-17 -> prev Tue 06-16 == 2 behind.
+    assert sessions_behind(date(2026, 6, 18), date(2026, 6, 16)) == 2
+
+
+def test_sessions_behind_skips_weekend():
+    # Mon 06-15's immediate prior NYSE session is Fri 06-12 (Sat/Sun skipped).
+    # A calendar-day (ref-cand).days impl would give 3 -> FAIL; sessions == 1.
+    assert sessions_behind(date(2026, 6, 15), date(2026, 6, 12)) == 1
+
+
+def test_sessions_behind_skips_holiday():
+    # July 4 2026 (Sat) observed Fri 07-03 -> NYSE closed; Mon 07-06's immediate
+    # prior session is Thu 07-02. 4 calendar days but ONE session behind.
+    # A calendar-day impl gives 4 -> FAIL; the NYSE-walk impl gives 1.
+    assert sessions_behind(date(2026, 7, 6), date(2026, 7, 2)) == 1

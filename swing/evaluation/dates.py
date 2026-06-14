@@ -37,6 +37,32 @@ def data_asof_from_ohlcv_max(df: pd.DataFrame) -> date:
     return idx_max  # type: ignore[return-value]
 
 
+def sessions_behind(reference: date, candidate: date) -> int:
+    """Count NYSE trading sessions `candidate` is behind `reference`.
+
+    Pure, stdlib `date` in/out (the canonical session-arithmetic home owns
+    `_NYSE`). Returns 0 when `candidate >= reference`; otherwise walks
+    `_NYSE.previous_session` backward from `reference` counting steps until the
+    walk reaches `candidate` (or first passes it). NO calendar-day fallback --
+    a calendar-day count false-counts across weekends/holidays. The walk is
+    bounded so a far-past `candidate` returns a large int rather than looping
+    forever (e.g. a candidate before the calendar's first session).
+    """
+    if candidate >= reference:
+        return 0
+    cursor = pd.Timestamp(reference)
+    target = pd.Timestamp(candidate)
+    count = 0
+    # Bound: NYSE has ~252 sessions/yr; 100k covers ~400yr, far past any real
+    # gap, so a pathological candidate terminates instead of spinning.
+    for _ in range(100_000):
+        cursor = _NYSE.previous_session(cursor)
+        count += 1
+        if cursor <= target:
+            return count
+    return count
+
+
 def last_completed_session(now_local: datetime, *, tz: str = "Pacific/Honolulu") -> date:
     """Most recent NYSE session whose close has already happened at `now_local`.
 
