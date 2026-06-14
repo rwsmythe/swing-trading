@@ -57,7 +57,7 @@ Standing container for defects + small features identified WHILE Phase 18 is wor
 - **R1 (D7):** declare `requests` in `[project] dependencies` — fold into the first arc touching pyproject (likely 18-C); fast suite required (inline-edit memory).
 - **R2 (D9):** frozen-clock convention line in `orchestrator-context.md` — land with the first Phase-18 brief; pairs with any test-determinism work.
 - *(R3 from Phase 17 — the yfinance call-audit — was PROMOTED to full arc 18-C when Phase 18 was scoped; it is no longer a rider.)*
-- **Conditional carry — D14** (`-n auto` web-route polluter): carry ONLY if 17-D.4 (in-flight hunt) doesn't fully close it. Don't double-commission; wait for its return.
+- ~~**Conditional carry — D14** (`-n auto` web-route polluter)~~ — RESOLVED: 17-D.4 (`0867337d`) fully closed D14 (polluter healed at the source, 8132/0 ×2 verified). NO carry to Phase 18.
 
 ## Sequencing (CHARC recommendation; operator's call)
 Dependency chain: **18-A+18-B** (coupled; shared predicate) · **18-C** (yfinance audit; before the monitors) → **18-D + 18-E** (monitors; emit structured JSON) → **18-F** (stoplights; consume both). 18-G + riders slot anytime. D14 conditional on 17-D.4.
