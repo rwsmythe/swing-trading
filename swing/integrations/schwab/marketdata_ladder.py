@@ -188,8 +188,28 @@ def _persist_window_to_archive(
         return
     if df is None:
         return
+    # Phase 18 Arc 18-B -- GAP closure. Mirror the Arc-8 legacy-ingest barrier
+    # (_yf_download_window / _warm_one_window) at THIS second archive writer: trim
+    # a trailing non-finite OHLC bar (the 06-10 yfinance Close=NaN artifact; also
+    # +/-inf) from the INCOMING window BEFORE persisting, via the ONE shared
+    # is_finite_ohlc predicate (C1; reused through _trim_trailing_ragged). Shape-A
+    # frames carry LOWERCASE open/high/low/close, so pass the lowercase column
+    # tuple. Volume EXEMPT (excluded from the tuple); interior bars PRESERVED
+    # (trailing-only, LOCK 4); finiteness-only (no >=0 -- that stays the engine's
+    # validate_bars belt, LOCK 1/2 parity). A trim-to-empty SKIPS the write
+    # (write_window's F6 empty-incoming guard then leaves valid history intact).
+    from swing.data.ohlcv_archive import _trim_trailing_ragged, write_window
+    df, n_trimmed = _trim_trailing_ragged(
+        df, columns=("open", "high", "low", "close"))
+    if n_trimmed:
+        log.warning(
+            "fetch_window_via_ladder: trimmed %d trailing non-finite OHLC "
+            "bar(s) for %s/%s before archive write (retry next fetch)",
+            n_trimmed, ticker, provider,
+        )
+    if df.empty:
+        return
     try:
-        from swing.data.ohlcv_archive import write_window
         write_window(ticker, df, provider, cache_dir=cache_dir)
     except Exception as exc:
         log.warning(
