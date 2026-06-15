@@ -152,7 +152,17 @@ def read_validated_research_envelope() -> tuple[str, dict] | None:
             if parsed.tzinfo is not None
             else datetime.now()
         )
-        if now - parsed > timedelta(days=RESEARCH_ARTIFACT_MAX_AGE_DAYS):
+        age = now - parsed
+        # A FUTURE generated_ts (bad clock / tampered same-monitor artifact)
+        # yields a negative age -> the `age > 7d` stale check is False, so it
+        # would false-green up to 7d past that future time (Codex R1 MAJOR).
+        # Treat a future timestamp as untrusted (like stale) -> grey.
+        if age < timedelta(0):
+            log.warning(
+                "research artifact future-dated/untrusted (%r); grey", raw_ts,
+            )
+            return None
+        if age > timedelta(days=RESEARCH_ARTIFACT_MAX_AGE_DAYS):
             log.warning(
                 "research artifact stale/undated (%r); grey", raw_ts,
             )

@@ -20,6 +20,7 @@ from swing.monitoring.stoplights import (
     _research_stoplight,
     _tool_stoplight,
     health_stoplights,
+    read_validated_research_envelope,
     research_health_artifact_path,
 )
 from swing.monitoring.tool_health import ToolHealthCheck, ToolHealthStatus
@@ -271,6 +272,24 @@ def test_research_stoplight_grey_on_just_over_7_days(artifact_path):
         encoding="utf-8",
     )
     assert _research_stoplight().color == "green"
+
+
+def test_research_stoplight_grey_on_future_generated_ts(artifact_path, caplog):
+    # Codex R1 MAJOR — a FUTURE generated_ts (bad clock / tampered same-monitor
+    # artifact) must NOT false-green. The staleness gate `now - parsed > 7d` is
+    # FALSE for a future ts (negative delta), so a future-dated artifact stays
+    # green up to 7d past that future time without a future-rejection gate.
+    future = (datetime.now() + timedelta(days=30)).isoformat()
+    env = _valid_envelope("green", generated_ts=future)
+    artifact_path.write_text(json.dumps(env), encoding="utf-8")
+    # Both-ways: a no-future-check impl returns green here (false-green);
+    # rejecting `parsed > now` -> grey (correct).
+    with caplog.at_level("WARNING"):
+        s = _research_stoplight()
+    assert s.color == "grey"
+    assert caplog.records
+    # The shared validating reader also rejects (the VM consumes this too).
+    assert read_validated_research_envelope() is None
 
 
 # ---------------------------------------------------------------- Task 4
