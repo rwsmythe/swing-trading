@@ -5,6 +5,7 @@ dirs; the read-only LOCK proof.
 from __future__ import annotations
 
 import sqlite3
+from datetime import date as _date
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -42,6 +43,14 @@ _SESSIONS = tuple(d.isoformat() for d in _SESSION_WINDOW)
 # the detector cutoff = the session BEFORE the first observed session (so the
 # first observed session is the first-expected -> a contiguous full window).
 _ASOF = _XNYS.previous_session(pd.Timestamp(_SESSION_WINDOW[0])).date().isoformat()
+# FIX 1 (18-D): a date STRICTLY AFTER the 2026-06-13 finiteness baseline cutoff
+# AND after _LAST_COMPLETED -- so a NaN observation planted on it is a genuine
+# post-baseline regression (drives finiteness red) regardless of the wall clock,
+# and is non-mature (asof <= last_completed) so it never trips the coverage tail.
+_FINITENESS_CUTOFF = _date(2026, 6, 13)
+_POST_BASELINE_DATE = (
+    max(_FINITENESS_CUTOFF, _LAST_COMPLETED) + timedelta(days=3)
+).isoformat()
 _FINITE_OHLC = '{"open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5, ' \
     '"volume": 100.0, "provider": "yfinance"}'
 
@@ -112,12 +121,13 @@ def test_one_red_makes_overall_red(tmp_path: Path) -> None:
     db = tmp_path / "swing.db"
     conn = ensure_schema(db)
     _seed_green_db(conn)
-    # plant a NaN-Close observation on the EXISTING green detection's last
-    # session via a second (terminal) detection so coverage stays clean and only
-    # finiteness goes red. Use a clock-relative cutoff + the last session.
+    # plant a NaN-Close observation on a POST-baseline date (FIX 1: #1 reds only
+    # on non-finite STRICTLY AFTER the 2026-06-13 18-A boundary) via a second
+    # (terminal) detection so coverage stays clean and only finiteness goes red.
+    # _POST_BASELINE_DATE is well after the cutoff regardless of the wall clock.
     det2 = insert_detection_event(conn, PatternDetectionEvent(
-        detection_id=None, ticker="ZZZ", detection_date=_SESSIONS[-1],
-        data_asof_date=_SESSIONS[-2], pattern_class="vcp",
+        detection_id=None, ticker="ZZZ", detection_date=_POST_BASELINE_DATE,
+        data_asof_date=_POST_BASELINE_DATE, pattern_class="vcp",
         structural_anchors_json="{}", composite_score=1.0, detector_version="t",
         source="synthetic", per_pattern_metadata_json="{}",
         created_at="2026-06-12T00:00:00"))
@@ -125,7 +135,7 @@ def test_one_red_makes_overall_red(tmp_path: Path) -> None:
         "INSERT INTO pattern_forward_observations "
         "(detection_id, observation_date, ohlc_today_json, status, "
         "sessions_since_detection, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-        (det2, _SESSIONS[-1],
+        (det2, _POST_BASELINE_DATE,
          '{"open": 1.0, "high": 2.0, "low": 0.5, "close": NaN, '
          '"volume": 100.0, "provider": "yfinance"}',
          "invalidated", 1, "2026-06-12T00:00:00"))

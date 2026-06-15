@@ -21,24 +21,34 @@ from swing.monitoring.research_health import compute_research_health
 
 _FINITE_OHLC = '{"open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5, ' \
     '"volume": 100.0, "provider": "yfinance"}'
+# FIX 1 (18-D): finiteness #1 reds ONLY on a non-finite obs STRICTLY AFTER the
+# 2026-06-13 18-A baseline. The red seed dates its detection + NaN observation
+# after that barrier (a genuine post-fix regression); the detection's asof is
+# post-baseline too so it stays non-mature -> only finiteness drives the red.
+_POST_CUTOFF_DATE = "2026-06-16"  # strictly after the 2026-06-13 baseline
 
 
 def _seed_db(db_path: Path, *, color: str) -> None:
     conn = ensure_schema(db_path)
+    if color == "red":
+        det_date = asof = obs_date = _POST_CUTOFF_DATE
+        close = "NaN"
+    else:
+        det_date, asof, obs_date = "2026-06-05", "2026-06-04", "2026-06-05"
+        close = "1.5"
     det = insert_detection_event(conn, PatternDetectionEvent(
-        detection_id=None, ticker="AAA", detection_date="2026-06-05",
-        data_asof_date="2026-06-04", pattern_class="vcp",
+        detection_id=None, ticker="AAA", detection_date=det_date,
+        data_asof_date=asof, pattern_class="vcp",
         structural_anchors_json="{}", composite_score=1.0, detector_version="t",
         source="synthetic", per_pattern_metadata_json="{}",
         created_at="2026-06-05T00:00:00"))
-    close = "NaN" if color == "red" else "1.5"
     ohlc = ('{"open": 1.0, "high": 2.0, "low": 0.5, "close": ' + close
             + ', "volume": 100.0, "provider": "yfinance"}')
     conn.execute(
         "INSERT INTO pattern_forward_observations "
         "(detection_id, observation_date, ohlc_today_json, status, "
         "sessions_since_detection, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-        (det, "2026-06-05", ohlc, "invalidated", 1, "2026-06-05T00:00:00"))
+        (det, obs_date, ohlc, "invalidated", 1, "2026-06-05T00:00:00"))
     conn.commit()
     conn.close()
 
