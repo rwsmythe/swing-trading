@@ -774,6 +774,15 @@ def _check_drumbeat_liveness(
             key=key, status="red",
             summary="drumbeat never ran (no engine artifacts on disk)")]
 
+    if age_days < 0:
+        # Codex R7 MAJOR #2: a FUTURE-dated artifact dir (negative age) is NOT
+        # fresh -- it signals producer clock-skew / a tz-frame bug. Escalate
+        # rather than treating it as green (the false-green liveness vector).
+        return [ResearchHealthCheck(
+            key=key, status="yellow",
+            summary="newest engine artifact is future-dated",
+            detail=f"artifact age {age_days} day(s) -- producer clock skew?")]
+
     if age_days > _DRUMBEAT_RED_AGE_DAYS:
         age_status = "red"
     elif age_days > _DRUMBEAT_YELLOW_AGE_DAYS:

@@ -738,6 +738,17 @@ def test_drumbeat_age_uses_injected_now(tmp_path: Path) -> None:
     assert stale.status in ("yellow", "red")  # 11 days old vs much_later
 
 
+def test_drumbeat_yellow_when_artifact_future_dated(tmp_path: Path) -> None:
+    # Codex R7 MAJOR #2: a FUTURE-dated artifact dir (negative age) is NOT fresh
+    # green -- it signals producer clock-skew -> escalate to yellow.
+    _write_manifest(tmp_path, dir_name=_dir_name_days_before(_NOW, -3),  # 3d future
+                    funnel=_funnel(100, {}, unattributed={}))
+    check = _only(_check_drumbeat_liveness(exports_root=tmp_path, now=_NOW),
+                  "drumbeat_liveness")
+    assert check.status == "yellow"
+    assert "future" in check.summary.lower()
+
+
 def test_drumbeat_yellow_when_newest_manifest_corrupt(tmp_path: Path) -> None:
     # FRESH dir (age->green via the dir-name regex) but a malformed manifest ->
     # at-least yellow (unattributed unknown; a corrupt newest is surfaced).

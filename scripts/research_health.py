@@ -127,7 +127,11 @@ def main(argv: list[str] | None = None) -> int:
     conn = None
     try:
         conn = sqlite3.connect(ro_uri, uri=True, timeout=2.0)
-        conn.execute("SELECT 1").fetchone()  # DB-open/readability probe ONLY
+        # Probe sqlite_master (Codex R7 MAJOR #1): SELECT 1 does NOT force SQLite
+        # to read the file header, so a corrupt non-SQLite file would pass it and
+        # then traceback inside a check. Reading sqlite_master forces the header/
+        # schema read -> a corrupt file raises HERE and is handled.
+        conn.execute("SELECT name FROM sqlite_master LIMIT 1").fetchone()
     except sqlite3.DatabaseError as exc:
         if conn is not None:
             conn.close()
