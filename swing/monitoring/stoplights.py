@@ -36,6 +36,10 @@ RESEARCH_MONITOR_ID = "research_measurement"
 RESEARCH_ARTIFACT_MAX_AGE_DAYS = 7
 
 
+# Severity ordering for the overall-vs-checks consistency gate (worst wins).
+_SEVERITY_RANK = {"green": 0, "yellow": 1, "red": 2}
+
+
 def research_health_artifact_path() -> Path:
     """Return the shared research health-artifact path.
 
@@ -43,6 +47,26 @@ def research_health_artifact_path() -> Path:
     without rebinding a module constant; the providers call THIS.
     """
     return RESEARCH_HEALTH_ARTIFACT_PATH
+
+
+def _worst_check_severity(checks) -> str | None:
+    """Return the worst (most severe) status across `checks`, or None when the
+    list is absent/empty/non-list or any check status is not in {green,yellow,
+    red}. A None result means the artifact's `overall` cannot be verified against
+    its checks -> the caller greys (never false-greens on an unverifiable shape).
+    """
+    if not isinstance(checks, list) or not checks:
+        return None
+    worst = "green"
+    for c in checks:
+        if not isinstance(c, dict):
+            return None
+        status = c.get("status")
+        if status not in _SEVERITY_RANK:
+            return None
+        if _SEVERITY_RANK[status] > _SEVERITY_RANK[worst]:
+            worst = status
+    return worst
 
 
 @dataclass(frozen=True)
@@ -165,6 +189,19 @@ def read_validated_research_envelope() -> tuple[str, dict] | None:
         if age > timedelta(days=RESEARCH_ARTIFACT_MAX_AGE_DAYS):
             log.warning(
                 "research artifact stale/undated (%r); grey", raw_ts,
+            )
+            return None
+        # CONSISTENCY gate (Codex R2 MAJOR): the research path ingests raw JSON
+        # (the tool path is protected by ToolHealthStatus.__post_init__). A
+        # same-monitor, fresh, valid-overall envelope whose `overall` is BETTER
+        # than its worst check would false-green the topbar while the drill-down
+        # lists a worse check. Cross-check `overall` against the worst check
+        # severity; reject (grey) any inconsistent or unverifiable artifact.
+        worst = _worst_check_severity(env.get("checks"))
+        if worst is None or worst != overall:
+            log.warning(
+                "research artifact overall (%r) inconsistent with worst check "
+                "(%r); grey", overall, worst,
             )
             return None
         return (overall, env)

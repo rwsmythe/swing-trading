@@ -292,6 +292,41 @@ def test_research_stoplight_grey_on_future_generated_ts(artifact_path, caplog):
     assert read_validated_research_envelope() is None
 
 
+def test_research_stoplight_grey_when_overall_understates_checks(
+    artifact_path, caplog,
+):
+    # Codex R2 MAJOR — a same-monitor, fresh, valid-overall envelope whose
+    # `overall` is BETTER than the worst check is a false-green vector: the
+    # topbar would light green while the drill-down lists a red check. The tool
+    # path is protected by ToolHealthStatus.__post_init__; the research path
+    # ingests raw JSON, so the reader must cross-check overall vs the worst check.
+    env = _valid_envelope("green")
+    env["checks"] = [
+        {"key": "a", "status": "green", "summary": "s", "detail": None},
+        {"key": "b", "status": "red", "summary": "s", "detail": None},  # worst
+    ]
+    artifact_path.write_text(json.dumps(env), encoding="utf-8")
+    # Both-ways: an impl trusting `overall` blindly returns green here (the bug);
+    # a worst-severity cross-check yields grey (reject the inconsistent artifact).
+    with caplog.at_level("WARNING"):
+        s = _research_stoplight()
+    assert s.color == "grey"
+    assert caplog.records
+    assert read_validated_research_envelope() is None
+
+
+def test_research_stoplight_consistent_overall_equals_worst_check(artifact_path):
+    # The complement: when `overall` == the worst check severity, the artifact is
+    # consistent and lights normally (bounds the gate from the trusting side).
+    env = _valid_envelope("yellow")
+    env["checks"] = [
+        {"key": "a", "status": "green", "summary": "s", "detail": None},
+        {"key": "b", "status": "yellow", "summary": "s", "detail": None},  # worst
+    ]
+    artifact_path.write_text(json.dumps(env), encoding="utf-8")
+    assert _research_stoplight().color == "yellow"
+
+
 # ---------------------------------------------------------------- Task 4
 
 
