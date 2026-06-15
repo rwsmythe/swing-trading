@@ -142,8 +142,16 @@ def test_finiteness_green_when_all_finite(tmp_path: Path) -> None:
     assert "0" in check.summary or "no non-finite" in check.summary.lower()
 
 
+# FIX 1 (18-D): the finiteness baseline cutoff is 2026-06-13 (the 18-A
+# writer-fix merge boundary). RED requires a non-finite obs STRICTLY AFTER it; a
+# non-finite obs at-or-before it is accepted-historical (does NOT drive red).
+# The red-shape tests below therefore date the non-finite obs AFTER the cutoff.
+_POST_CUTOFF_DATE = "2026-06-16"  # strictly after the 2026-06-13 baseline
+
+
 def test_finiteness_red_on_nan_close(tmp_path: Path) -> None:
-    # THE motivating-defect test: O/H/L present, close NaN (the 06-10 shape).
+    # THE motivating-defect test: O/H/L present, close NaN (the 06-10 shape),
+    # dated AFTER the baseline so it is a genuine post-fix regression (red).
     conn = _schema_conn(tmp_path)
     det = _seed_detection(conn, ticker="MSFT")
     _seed_observation(conn, det, observation_date="2026-06-05")
@@ -151,12 +159,13 @@ def test_finiteness_red_on_nan_close(tmp_path: Path) -> None:
     nan_json = '{"open": 1.0, "high": 2.0, "low": 0.5, "close": NaN, ' \
         '"volume": 100.0, "provider": "yfinance"}'
     assert json.loads(nan_json)["close"] != json.loads(nan_json)["close"]  # NaN
-    _seed_observation(conn, det, observation_date="2026-06-09", ohlc_today_json=nan_json)
+    _seed_observation(conn, det, observation_date=_POST_CUTOFF_DATE,
+                      ohlc_today_json=nan_json)
     check = _only(_check_temporal_log_finiteness(conn), "temporal_log_finiteness")
     assert check.status == "red"
-    assert "1" in check.summary  # exactly 1 non-finite of 3
+    assert "1" in check.summary  # exactly 1 post-baseline non-finite of 3
     assert "MSFT" in (check.detail or "")
-    assert "2026-06-09" in (check.detail or "")
+    assert _POST_CUTOFF_DATE in (check.detail or "")
 
 
 def test_finiteness_red_on_none_value(tmp_path: Path) -> None:
@@ -164,7 +173,8 @@ def test_finiteness_red_on_none_value(tmp_path: Path) -> None:
     det = _seed_detection(conn)
     null_json = '{"open": 1.0, "high": 2.0, "low": 0.5, "close": null, ' \
         '"volume": 100.0, "provider": "yfinance"}'
-    _seed_observation(conn, det, observation_date="2026-06-05", ohlc_today_json=null_json)
+    _seed_observation(conn, det, observation_date=_POST_CUTOFF_DATE,
+                      ohlc_today_json=null_json)
     check = _only(_check_temporal_log_finiteness(conn), "temporal_log_finiteness")
     assert check.status == "red"  # NOT a TypeError crash
 
@@ -174,7 +184,8 @@ def test_finiteness_red_on_inf(tmp_path: Path) -> None:
     det = _seed_detection(conn)
     inf_json = '{"open": 1.0, "high": 2.0, "low": 0.5, "close": Infinity, ' \
         '"volume": 100.0, "provider": "yfinance"}'
-    _seed_observation(conn, det, observation_date="2026-06-05", ohlc_today_json=inf_json)
+    _seed_observation(conn, det, observation_date=_POST_CUTOFF_DATE,
+                      ohlc_today_json=inf_json)
     check = _only(_check_temporal_log_finiteness(conn), "temporal_log_finiteness")
     assert check.status == "red"
 
@@ -184,7 +195,7 @@ def test_finiteness_red_on_missing_key(tmp_path: Path) -> None:
     det = _seed_detection(conn)
     missing_json = '{"open": 1.0, "high": 2.0, "low": 0.5, ' \
         '"volume": 100.0, "provider": "yfinance"}'  # no close
-    _seed_observation(conn, det, observation_date="2026-06-05",
+    _seed_observation(conn, det, observation_date=_POST_CUTOFF_DATE,
                       ohlc_today_json=missing_json)
     check = _only(_check_temporal_log_finiteness(conn), "temporal_log_finiteness")
     assert check.status == "red"
@@ -213,6 +224,49 @@ def test_finiteness_volume_nan_is_exempt(tmp_path: Path) -> None:
                       ohlc_today_json=vol_nan_json)
     check = _only(_check_temporal_log_finiteness(conn), "temporal_log_finiteness")
     assert check.status == "green"  # Volume EXEMPT (Arc-8)
+
+
+def test_finiteness_baseline_cutoff_both_ways(tmp_path: Path) -> None:
+    """FIX 1 (18-D) both-ways discriminator: #1 reds ONLY on a non-finite obs
+    STRICTLY AFTER the _FINITENESS_BASELINE_CUTOFF (2026-06-13, the 18-A
+    writer-fix boundary); a <=cutoff non-finite is accepted-historical (no red).
+
+    pre-fix code (reds on ANY non-finite): with ONLY the <=cutoff (2026-06-10)
+    non-finite present -> RED (it would still fire on the historical backlog).
+    post-fix code: that same state -> GREEN + an accepted-historical detail note.
+    => the '<=cutoff alone -> GREEN' assertion below FAILS pre-fix, PASSES
+    post-fix (the discriminator).
+    """
+    nan_json = '{"open": 1.0, "high": 2.0, "low": 0.5, "close": NaN, ' \
+        '"volume": 100.0, "provider": "yfinance"}'
+
+    # State A: BOTH a <=cutoff (accepted) AND a >cutoff (regression) non-finite.
+    conn = _schema_conn(tmp_path)
+    det = _seed_detection(conn, ticker="HIST")
+    _seed_observation(conn, det, observation_date="2026-06-10",  # <= cutoff
+                      ohlc_today_json=nan_json)
+    det2 = _seed_detection(conn, ticker="REGR", detection_date="2026-06-15",
+                           data_asof_date="2026-06-14")
+    _seed_observation(conn, det2, observation_date="2026-06-16",  # > cutoff
+                      ohlc_today_json=nan_json)
+    check = _only(_check_temporal_log_finiteness(conn), "temporal_log_finiteness")
+    assert check.status == "red"  # driven by the post-cutoff regression
+    # the detail NAMES the post-cutoff red driver AND surfaces the accepted count.
+    assert "REGR" in (check.detail or "")
+    assert "2026-06-16" in (check.detail or "")
+    assert "accepted historical" in (check.detail or "")
+    assert "1 non-finite" in (check.detail or "")  # the 1 accepted-historical obs
+
+    # State B: REMOVE the post-cutoff obs -> ONLY the <=cutoff non-finite remains.
+    # pre-fix: RED (reds on ANY non-finite). post-fix: GREEN (accepted-historical).
+    conn2 = _schema_conn(tmp_path / "b")
+    det_b = _seed_detection(conn2, ticker="HIST")
+    _seed_observation(conn2, det_b, observation_date="2026-06-10",  # <= cutoff
+                      ohlc_today_json=nan_json)
+    check_b = _only(_check_temporal_log_finiteness(conn2), "temporal_log_finiteness")
+    assert check_b.status == "green"  # THE DISCRIMINATOR (pre-fix would be red)
+    assert "accepted historical" in (check_b.detail or "")
+    assert "1 non-finite" in (check_b.detail or "")
 
 
 # ---------------------------------------------------------------------------
@@ -1215,7 +1269,9 @@ def test_transport_does_not_substitute_for_finiteness(tmp_path: Path) -> None:
     det = _seed_detection(conn)
     nan_json = '{"open": 1.0, "high": 2.0, "low": 0.5, "close": NaN, ' \
         '"volume": 100.0, "provider": "yfinance"}'
-    _seed_observation(conn, det, observation_date="2026-06-05", ohlc_today_json=nan_json)
+    # dated AFTER the 18-A baseline (FIX 1) so the NaN drives finiteness red.
+    _seed_observation(conn, det, observation_date="2026-06-16",
+                      ohlc_today_json=nan_json)
     transport = _only(_check_fetch_transport_health(conn), "fetch_transport_health")
     finiteness = _only(_check_temporal_log_finiteness(conn), "temporal_log_finiteness")
     assert transport.status == "green"

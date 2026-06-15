@@ -29,7 +29,7 @@ import math
 import re
 import sqlite3  # noqa: F401  (used in the per-check signatures below)
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 # LOCK C1 (brief §3 / §6.1): IMPORT the 3 contract constants -- never redeclare.
@@ -235,19 +235,39 @@ def _schema_unavailable(exc: sqlite3.OperationalError) -> bool:
 
 _OHLC_KEYS = ("open", "high", "low", "close")
 
+# FIX 1 (18-D, brief §1): the finiteness BASELINE cutoff = the 18-A writer-fix
+# merge boundary (`c45d8752`, 2026-06-13 -- the temporal-log NaN-writer fix +
+# the shared ohlcv_finiteness predicate). Any non-finite OHLC WRITTEN AFTER that
+# barrier is a GENUINE regression (the writer should never emit one now) -> RED.
+# Any non-finite observation_date <= this cutoff is ACCEPTED-HISTORICAL: the
+# pre-fix backlog the writer-fix could not retro-heal (the withdrawn 06-10
+# NaN-Close cohort) -> surfaced in the detail, but does NOT drive red.
+# GROUNDED against the live DB: the full 1287-row temporal-log scan shows ALL
+# known non-finite is the single 2026-06-10 session, so any cutoff in
+# (06-10, 06-13] isolates exactly that accepted cohort.
+_FINITENESS_BASELINE_CUTOFF = date(2026, 6, 13)
+
 
 def _check_temporal_log_finiteness(
     conn: sqlite3.Connection,
 ) -> list[ResearchHealthCheck]:
     """Data-USABILITY authority (brief §6.2 #1): scan
-    pattern_forward_observations.ohlc_today_json for ANY non-finite OHLC -> RED.
+    pattern_forward_observations.ohlc_today_json for non-finite OHLC. RED only on
+    a non-finite observation whose observation_date is STRICTLY AFTER the 18-A
+    writer-fix baseline (_FINITENESS_BASELINE_CUTOFF) -- a genuine post-fix
+    regression. Non-finite at-or-before the cutoff is ACCEPTED-HISTORICAL (the
+    pre-fix backlog the writer-fix could not retro-heal): SURFACED in the detail
+    but NOT a red driver.
 
     The check that would have caught the 2026-06-10 NaN-Close defect on the day
-    it entered. Reuses the shared is_finite_ohlc predicate (NaN/inf), with a
-    None/missing/non-numeric GUARD before it (the predicate RAISES TypeError on
-    None -- the brief's "reuse the predicate" applies to NaN/inf only). Volume is
-    EXEMPT (Arc-8). Missing table -> yellow; empty table -> green (the log
-    legitimately starts empty); any non-finite hit -> red.
+    it entered (any NEW such defect post-cutoff -> RED). Reuses the shared
+    is_finite_ohlc predicate (NaN/inf), with a None/missing/non-numeric GUARD
+    before it (the predicate RAISES TypeError on None -- the brief's "reuse the
+    predicate" applies to NaN/inf only). Volume is EXEMPT (Arc-8). Missing table
+    -> yellow; empty table -> green (the log legitimately starts empty). A
+    non-finite row with a malformed/None observation_date is treated as
+    post-cutoff (conservative: an undatable non-finite is a red driver, never
+    silently absorbed into the accepted cohort).
     """
     from swing.data.ohlcv_finiteness import is_finite_ohlc
 
@@ -275,8 +295,9 @@ def _check_temporal_log_finiteness(
             key=key, status="green",
             summary="no temporal-log observations yet (0 non-finite)")]
 
-    non_finite = 0
-    sample: list[str] = []
+    post_cutoff = 0          # genuine post-baseline regressions -> drive red
+    accepted_historical = 0  # non-finite at-or-before the baseline -> surfaced only
+    sample: list[str] = []   # the red-driver sample (post-cutoff only)
     for _obs_id, obs_date, ohlc_json, ticker in rows:
         bad = False
         try:
@@ -295,19 +316,48 @@ def _check_temporal_log_finiteness(
                 vals.append(float(v))
             if not bad and not is_finite_ohlc(*vals):
                 bad = True
-        if bad:
-            non_finite += 1
+        if not bad:
+            continue
+        # Classify the non-finite hit by its observation_date vs the baseline.
+        # A malformed/None observation_date cannot be proven historical -> treat
+        # as post-cutoff (conservative; an undatable non-finite drives red).
+        try:
+            is_post_cutoff = (
+                date.fromisoformat(obs_date) > _FINITENESS_BASELINE_CUTOFF
+            )
+        except (TypeError, ValueError):
+            is_post_cutoff = True
+        if is_post_cutoff:
+            post_cutoff += 1
             if len(sample) < 3:
                 sample.append(f"{ticker or '?'}@{obs_date}")
+        else:
+            accepted_historical += 1
 
-    if non_finite == 0:
+    cutoff_iso = _FINITENESS_BASELINE_CUTOFF.isoformat()
+    accepted_note = (
+        f"accepted historical: {accepted_historical} non-finite @ <={cutoff_iso}"
+        " (pre-18A withdrawn backfill)"
+        if accepted_historical else ""
+    )
+
+    if post_cutoff == 0:
+        # No post-baseline regression -> GREEN. Surface the accepted-historical
+        # cohort (if any) in the detail so it stays visible without driving red.
+        summary = f"0 post-baseline non-finite OHLC observations (of {total})"
         return [ResearchHealthCheck(
-            key=key, status="green",
-            summary=f"0 non-finite OHLC observations (of {total})")]
-    detail = "; ".join(sample) if sample else None
+            key=key, status="green", summary=summary,
+            detail=accepted_note or None)]
+
+    # A post-baseline non-finite IS a genuine regression -> RED. Name the
+    # post-cutoff red driver(s) AND surface the accepted-historical cohort.
+    driver = "; ".join(sample) if sample else None
+    detail_parts = [p for p in (driver, accepted_note) if p]
+    detail = "; ".join(detail_parts) if detail_parts else None
     return [ResearchHealthCheck(
         key=key, status="red",
-        summary=f"{non_finite} non-finite OHLC observation(s) of {total}",
+        summary=f"{post_cutoff} post-baseline non-finite OHLC observation(s)"
+                f" of {total} (cutoff {cutoff_iso})",
         detail=detail)]
 
 
