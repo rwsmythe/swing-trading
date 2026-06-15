@@ -265,8 +265,33 @@ def test_finiteness_baseline_cutoff_both_ways(tmp_path: Path) -> None:
                       ohlc_today_json=nan_json)
     check_b = _only(_check_temporal_log_finiteness(conn2), "temporal_log_finiteness")
     assert check_b.status == "green"  # THE DISCRIMINATOR (pre-fix would be red)
-    assert "accepted historical" in (check_b.detail or "")
-    assert "1 non-finite" in (check_b.detail or "")
+    # tighten: the accepted-historical phrase + cutoff marker + count together
+    # (Codex R1 MINOR -- a bare "1 non-finite" could later match another shape).
+    assert "accepted historical: 1 non-finite @ <=2026-06-13" in (check_b.detail or "")
+
+
+def test_finiteness_noncanonical_date_drives_red_not_accepted(tmp_path: Path) -> None:
+    """Codex R1 MAJOR: date.fromisoformat (3.11+) ALSO accepts compact
+    (`20260610`) + ISO week-date forms; the observation_date column has NO format
+    CHECK (migration 0022). A non-finite row whose observation_date is a
+    NON-CANONICAL but fromisoformat-parseable string that resolves <=cutoff must
+    NOT be silently accepted-historical -- it is undatable-in-contract and must
+    drive RED (the conservative branch). pre-fix-of-this-finding: '20260610'
+    parses to 2026-06-10 (<=cutoff) -> wrongly GREEN; post-fix: RED.
+    """
+    conn = _schema_conn(tmp_path)
+    det = _seed_detection(conn, ticker="CMPCT")
+    nan_json = '{"open": 1.0, "high": 2.0, "low": 0.5, "close": NaN, ' \
+        '"volume": 100.0, "provider": "yfinance"}'
+    # compact form resolving to 2026-06-10 (<= the 2026-06-13 cutoff if naively
+    # parsed) -- the canonical-shape gate rejects it -> treated post-cutoff -> red.
+    _seed_observation(conn, det, observation_date="20260610",
+                      ohlc_today_json=nan_json)
+    check = _only(_check_temporal_log_finiteness(conn), "temporal_log_finiteness")
+    assert check.status == "red"
+    assert "CMPCT" in (check.detail or "")
+    # NOT absorbed into the accepted-historical cohort.
+    assert "accepted historical" not in (check.detail or "")
 
 
 # ---------------------------------------------------------------------------

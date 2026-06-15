@@ -246,6 +246,16 @@ _OHLC_KEYS = ("open", "high", "low", "close")
 # known non-finite is the single 2026-06-10 session, so any cutoff in
 # (06-10, 06-13] isolates exactly that accepted cohort.
 _FINITENESS_BASELINE_CUTOFF = date(2026, 6, 13)
+# Canonical ISO date shape `YYYY-MM-DD` (Codex R1 MAJOR). date.fromisoformat on
+# Python 3.11+ ALSO accepts compact (`20260610`) and ISO week-date
+# (`2026-W24-3`) forms -- a non-finite row carrying such a non-canonical date
+# would parse to a value and could land in the ACCEPTED-historical cohort,
+# defeating the conservative "an undatable non-finite drives red" rule. The
+# observation_date column is `TEXT NOT NULL` with NO format CHECK (migration
+# 0022), so a non-canonical string is NOT write-prevented -> require the exact
+# `YYYY-MM-DD` shape BEFORE trusting the parse; anything else is treated as
+# post-cutoff (a red driver), never silently accepted-historical.
+_CANONICAL_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 def _check_temporal_log_finiteness(
@@ -319,13 +329,21 @@ def _check_temporal_log_finiteness(
         if not bad:
             continue
         # Classify the non-finite hit by its observation_date vs the baseline.
-        # A malformed/None observation_date cannot be proven historical -> treat
-        # as post-cutoff (conservative; an undatable non-finite drives red).
-        try:
-            is_post_cutoff = (
-                date.fromisoformat(obs_date) > _FINITENESS_BASELINE_CUTOFF
-            )
-        except (TypeError, ValueError):
+        # A malformed / None / non-canonical observation_date cannot be proven
+        # historical -> treat as post-cutoff (conservative; an undatable
+        # non-finite drives red). Require the EXACT canonical `YYYY-MM-DD` shape
+        # BEFORE trusting date.fromisoformat (Codex R1 MAJOR -- it would else
+        # accept `20260610` / ISO week-dates and could mis-classify a regression
+        # as accepted-historical).
+        if isinstance(obs_date, str) and _CANONICAL_DATE_RE.match(obs_date):
+            try:
+                is_post_cutoff = (
+                    date.fromisoformat(obs_date) > _FINITENESS_BASELINE_CUTOFF
+                )
+            except ValueError:
+                # canonical shape but an invalid calendar date (e.g. 2026-13-40)
+                is_post_cutoff = True
+        else:
             is_post_cutoff = True
         if is_post_cutoff:
             post_cutoff += 1
