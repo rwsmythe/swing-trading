@@ -625,46 +625,50 @@ def _check_coverage_gaps(
     sample: list[str] = []
     for det_id, entry in per_det.items():
         obs = entry["obs"]
-        # Codex R4 MAJOR #1: a malformed/NULL date on a degraded/legacy DB must
-        # NOT crash the whole monitor -- count it as a data-shape defect and
-        # continue. (The schema is NOT NULL, but a degraded DB is the brief's
-        # explicit no-crash contract.)
+        # The detector cutoff drives the WHOLE expected window -- if IT is
+        # malformed/NULL the window is undefined, so the detection is a pure
+        # malformed defect (Codex R4 MAJOR #1: no-crash on a degraded DB).
         try:
             asof = _date.fromisoformat(entry["asof"])
-            observed = {d for d, _s in obs}
-            # Parse EVERY observed date (Codex R11 MINOR): a malformed date that
-            # sorts BETWEEN a valid min/max would be missed by parsing min/max
-            # only. Any parse failure -> a data-shape defect.
-            for d in observed:
-                _date.fromisoformat(d)
-            min_max = (
-                (_date.fromisoformat(min(observed)),
-                 _date.fromisoformat(max(observed)))
-                if observed else None
-            )
         except (TypeError, ValueError):
             malformed += 1
             if len(sample) < 3:
-                sample.append(f"det{det_id}: malformed date")
+                sample.append(f"det{det_id}: malformed data_asof_date")
             continue
-        # Codex R10 MAJOR #1: a DUPLICATE observation_date for a detection is
-        # impossible under the schema UNIQUE(detection_id, observation_date) but
-        # CAN appear on a degraded DB; a late terminal duplicate at the max date
-        # could otherwise suppress a missing tail (set upper=max_obs spuriously).
-        # Surface it as a data-shape defect and skip the tail logic for the row.
-        if len(obs) != len(observed):
+        # Partition observed dates into VALID + count malformed rows (Codex R12
+        # MAJOR #1): a malformed OBSERVED row must NOT skip the whole detection
+        # (that could downgrade a RED missing-tail to a mere yellow malformed) --
+        # count it AND still compute gaps/tail from the VALID observed dates.
+        observed: set[str] = set()
+        row_malformed = 0
+        for d, _s in obs:
+            try:
+                _date.fromisoformat(d)
+            except (TypeError, ValueError):
+                row_malformed += 1
+            else:
+                observed.add(d)
+        if row_malformed:
+            malformed += 1
+            if len(sample) < 3:
+                sample.append(f"det{det_id}: {row_malformed} malformed obs date(s)")
+        # Codex R10 MAJOR #1: a DUPLICATE observation_date (impossible under the
+        # schema UNIQUE but possible on a degraded DB) is a data-shape defect; a
+        # late terminal duplicate could otherwise suppress a missing tail. Count
+        # it but DON'T skip the gap computation from the valid distinct dates.
+        n_valid_rows = len(obs) - row_malformed
+        if n_valid_rows != len(observed):
             malformed += 1
             if len(sample) < 3:
                 sample.append(f"det{det_id}: duplicate observation_date")
-            continue
         # Maturity applied in PYTHON after the parse (Codex R6 MAJOR #3): mature =
         # at least one tradable session since the cutoff. (A SQL string predicate
         # would have lexically dropped a malformed/NULL asof before this point.)
         if asof >= last_completed:
             continue  # not mature -- no completed session since the cutoff
         if not observed:
-            # mature detection with ZERO observations: every expected session
-            # (first-after-cutoff .. last_completed) is missing.
+            # mature detection with ZERO valid observations: every expected
+            # session (first-after-cutoff .. last_completed) is missing.
             first = _first_session_after(asof)
             if first is None:
                 continue  # too fresh -- no session yet to observe (not a defect)
@@ -674,8 +678,13 @@ def _check_coverage_gaps(
                 if len(sample) < 3:
                     sample.append(f"det{det_id}: {missing} missing (never observed)")
             continue
-        latest_status = obs[-1][1]  # last by date order
-        max_obs = min_max[1]
+        # latest status from the VALID-dated rows (Codex R12 MAJOR #1): use the
+        # row whose observation_date is the latest valid date.
+        latest_status = max(
+            (oc for oc in obs if oc[0] in observed),
+            key=lambda oc: oc[0],
+        )[1]
+        max_obs = _date.fromisoformat(max(observed))
         # The expected window STARTS at the first session after the detector's
         # data cutoff (Codex R3 MAJOR #1 -- a LATE first observation, skipping the
         # first expected session, is a real leading/head gap; starting at min_obs
@@ -749,12 +758,16 @@ def _check_structural_integrity(
             " ON d.detection_id = o.detection_id"
             " WHERE d.detection_id IS NULL"
         ).fetchone()[0]
-        pairs = conn.execute(
-            "SELECT MIN(o.observation_date) AS first_obs, d.detection_date"
+        # Fetch EVERY (observation_date, detection_date) pair (Codex R12 MAJOR #2):
+        # a SQL MIN(observation_date) is LEXICAL, so on a degraded DB a malformed
+        # lexicographically-earlier row could mask a real look-ahead in a later
+        # valid row, or a malformed non-min row would never be seen. Parse + check
+        # look-ahead per ROW in Python; count malformed rows.
+        rows = conn.execute(
+            "SELECT o.observation_date, d.detection_date"
             " FROM pattern_forward_observations o"
             " JOIN pattern_detection_events d"
             " ON d.detection_id = o.detection_id"
-            " GROUP BY o.detection_id"
         ).fetchall()
     except sqlite3.OperationalError as exc:
         if _schema_unavailable(exc):
@@ -767,10 +780,10 @@ def _check_structural_integrity(
 
     look_ahead = 0
     malformed = 0
-    for first_obs, detection_date in pairs:
+    for obs_date, detection_date in rows:
         try:
-            if _date.fromisoformat(first_obs) < _date.fromisoformat(detection_date):
-                look_ahead += 1
+            if _date.fromisoformat(obs_date) < _date.fromisoformat(detection_date):
+                look_ahead += 1  # an observation BEFORE its detection_date
         except (TypeError, ValueError):
             malformed += 1
 
@@ -998,6 +1011,15 @@ def _check_fetch_transport_health(
             " ORDER BY ts DESC, call_id DESC LIMIT ?",
             (_TRANSPORT_RECENT_WINDOW,),
         ).fetchall()
+        # The in_flight detail tally MUST be inside the SAME guard (Codex R12
+        # MAJOR #3): a mid-read schema change would otherwise crash here instead
+        # of degrading to yellow "schema unavailable".
+        n_in_flight = conn.execute(
+            "SELECT COUNT(*) FROM ("
+            " SELECT call_id FROM yfinance_calls WHERE status = 'in_flight'"
+            " ORDER BY ts DESC, call_id DESC LIMIT ?)",
+            (_TRANSPORT_RECENT_WINDOW,),
+        ).fetchone()[0]
     except sqlite3.OperationalError as exc:
         if _schema_unavailable(exc):
             return [ResearchHealthCheck(
@@ -1006,17 +1028,10 @@ def _check_fetch_transport_health(
                 detail="yfinance_calls table missing; run swing db-migrate")]
         raise
 
-    # A detail-only recent in_flight tally (Codex R9 MAJOR): in_flight is EXCLUDED
-    # from the rate denominator (stale = unknown, not hung -- the 18-C LOCK), but
-    # SURFACING its count in the detail keeps the observed state visible (so an
-    # all-/mostly-in_flight table is not silently reported as "no fetch audit").
-    # NOT a census, NOT a denominator input, NEVER drives the color.
-    n_in_flight = conn.execute(
-        "SELECT COUNT(*) FROM ("
-        " SELECT call_id FROM yfinance_calls WHERE status = 'in_flight'"
-        " ORDER BY ts DESC, call_id DESC LIMIT ?)",
-        (_TRANSPORT_RECENT_WINDOW,),
-    ).fetchone()[0]
+    # in_flight is EXCLUDED from the rate denominator (stale = unknown, not hung
+    # -- the 18-C LOCK), but its count is SURFACED in the detail (Codex R9 MAJOR)
+    # so an all-/mostly-in_flight table is not silently "no fetch audit". NOT a
+    # census, NOT a denominator input, NEVER drives the color.
     in_flight_note = f"; {n_in_flight} in_flight (excluded)" if n_in_flight else ""
 
     if not rows:

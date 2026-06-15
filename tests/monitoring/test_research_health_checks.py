@@ -656,6 +656,27 @@ def test_coverage_yellow_on_interior_malformed_observation_date(tmp_path: Path) 
     assert "malformed" in (check.detail or "").lower() or check.status != "green"
 
 
+def test_coverage_malformed_obs_row_still_counts_tail_gaps(tmp_path: Path) -> None:
+    # Codex R12 MAJOR #1: a malformed OBSERVED row must NOT skip the whole
+    # detection (downgrading a red missing-tail to a mere yellow). Seed an OPEN
+    # detection with a malformed obs row AND valid obs that STOP early -> the
+    # missing tail is still counted from the valid dates (escalates beyond yellow
+    # if the tail is large).
+    conn = _schema_conn(tmp_path)
+    det = _seed_detection(conn, data_asof_date="2026-05-01")  # far back -> big tail
+    _seed_observation(conn, det, observation_date="2026-05-04", status="pending")
+    conn.execute(
+        "INSERT INTO pattern_forward_observations"
+        " (detection_id, observation_date, ohlc_today_json, status,"
+        " sessions_since_detection, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (det, "bad-date", _FINITE_OHLC, "pending", 1, "2026-05-05T00:00:00"))
+    conn.commit()
+    check = _only(_check_coverage_gaps(conn, now=_NOW), "coverage_gaps")
+    # the huge tail (05-04 .. last_completed) is still counted -> red (not just
+    # a yellow malformed-date report).
+    assert check.status == "red"
+
+
 def test_coverage_escalates_on_unknown_latest_status_with_missing_tail(
     tmp_path: Path,
 ) -> None:
@@ -789,6 +810,24 @@ def test_structural_yellow_on_malformed_date(tmp_path: Path) -> None:
     check = _only(_check_structural_integrity(conn), "structural_integrity")
     assert check.status == "yellow"
     assert "malformed" in check.summary.lower()
+
+
+def test_structural_red_on_lookahead_even_when_earlier_row_malformed(tmp_path: Path) -> None:
+    # Codex R12 MAJOR #2: a malformed lexicographically-earlier obs row must NOT
+    # mask a real look-ahead in a LATER valid row (the per-row Python check, not
+    # SQL MIN). Seed detection_date=2026-06-10 + a malformed obs ('0bad', sorts
+    # first lexically) + a valid look-ahead obs 2026-06-09 (< detection_date).
+    conn = _schema_conn(tmp_path)
+    det = _seed_detection(conn, detection_date="2026-06-10", data_asof_date="2026-06-09")
+    conn.execute(
+        "INSERT INTO pattern_forward_observations"
+        " (detection_id, observation_date, ohlc_today_json, status,"
+        " sessions_since_detection, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (det, "0bad", _FINITE_OHLC, "pending", 1, "2026-06-09T00:00:00"))
+    _seed_observation(conn, det, observation_date="2026-06-09", status="pending")
+    check = _only(_check_structural_integrity(conn), "structural_integrity")
+    assert check.status == "red"  # the valid look-ahead is caught
+    assert "look-ahead" in check.summary.lower()
 
 
 def test_structural_yellow_when_missing_table(tmp_path: Path) -> None:
