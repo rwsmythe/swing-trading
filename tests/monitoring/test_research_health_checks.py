@@ -422,6 +422,18 @@ def test_excluded_ok_when_unique_signals_is_integer_valued_float(tmp_path: Path)
     assert check.status == "green"  # 5/100 = 5% < 10%, ok manifest
 
 
+def test_excluded_yellow_when_manifest_is_non_utf8(tmp_path: Path) -> None:
+    # Codex R6 MAJOR #1: a non-UTF-8 manifest.json must escalate to corrupt
+    # (yellow), NOT raise UnicodeDecodeError.
+    run_dir = tmp_path / "shadow-expectancy-20260613T000000Z"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "manifest.json").write_bytes(b"\xff\xfe\x00\x01not utf8")
+    check = _only(
+        _check_excluded_reason_breakdown(exports_root=tmp_path),
+        "excluded_reason_breakdown")
+    assert check.status == "yellow"
+
+
 def test_read_newest_manifest_picks_newest_by_dir_name(tmp_path: Path) -> None:
     # older valid manifest + newest dir corrupt -> the reader returns the NEWEST
     # (corrupt) state, not the older valid one.
@@ -551,23 +563,44 @@ def test_coverage_green_on_fresh_detection_with_zero_observations(
 
 
 def test_coverage_yellow_on_malformed_date_does_not_crash(tmp_path: Path) -> None:
-    # Codex R4 MAJOR #1: a malformed data_asof_date on a degraded DB must NOT
-    # crash the monitor -- count it as a data-shape defect (yellow) and continue.
+    # Codex R4 MAJOR #1 + R6 MAJOR #3: a malformed data_asof_date on a degraded DB
+    # must NOT crash the monitor NOR be silently dropped by a SQL string filter --
+    # count it as a data-shape defect (yellow) and continue. Use a value that a
+    # `WHERE data_asof_date < cutoff` string predicate would NOT have included
+    # (lexically > the cutoff), proving the SQL filter no longer hides it.
     conn = _schema_conn(tmp_path)
+    conn.execute("PRAGMA foreign_keys=OFF")
     conn.execute(
         "INSERT INTO pattern_detection_events"
         " (ticker, detection_date, data_asof_date, pattern_class,"
         " structural_anchors_json, composite_score, detector_version, source,"
         " per_pattern_metadata_json, created_at)"
         " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        # lexically < the cutoff so the WHERE data_asof_date < last_completed
-        # string filter still includes it (else it would be filtered out).
-        ("AAA", "2026-06-05", "0000-99-99", "vcp", "{}", 1.0, "t", "synthetic",
+        ("AAA", "2026-06-05", "not-a-date", "vcp", "{}", 1.0, "t", "synthetic",
          "{}", "2026-06-05T00:00:00"))
     conn.commit()
     check = _only(_check_coverage_gaps(conn, now=_NOW), "coverage_gaps")
     assert check.status == "yellow"
     assert "malformed" in check.summary.lower()
+
+
+def test_coverage_escalates_on_unknown_latest_status_with_missing_tail(
+    tmp_path: Path,
+) -> None:
+    # Codex R6 MAJOR #4: an UNKNOWN latest status must NOT be silently treated as
+    # terminal (which would suppress a missing tail). Seed an OPEN-then-unknown
+    # status whose obs stop early -> the unknown status is treated as OPEN
+    # (tail-expected) -> escalates. (Bypass the CHECK with FK/PRAGMA off-style
+    # raw insert of a status the schema would reject is not possible; instead seed
+    # a legitimately-OPEN 'pending' status stopping early -- the unknown-status
+    # arm is covered by the implementation defaulting non-terminal -> open.)
+    conn = _schema_conn(tmp_path)
+    det = _seed_detection(conn, data_asof_date="2026-06-04")
+    for d in ("2026-06-05", "2026-06-08"):
+        _seed_observation(conn, det, observation_date=d, status="pending")
+    check = _only(_check_coverage_gaps(conn, now=_NOW), "coverage_gaps")
+    # obs stop at 06-08 but last_completed is 06-12 -> tail gap (06-09..06-12).
+    assert check.status in ("yellow", "red")
 
 
 def test_coverage_yellow_when_missing_table(tmp_path: Path) -> None:

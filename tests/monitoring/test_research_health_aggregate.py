@@ -9,27 +9,47 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import exchange_calendars as xcals
+import pandas as pd
+
 from swing.data.db import ensure_schema
 from swing.data.models import PatternDetectionEvent, PatternForwardObservation
 from swing.data.repos.pattern_detection_events import insert_detection_event
 from swing.data.repos.pattern_forward_observations import insert_observation
+from swing.evaluation.dates import last_completed_session
 from swing.monitoring.research_health import (
     ResearchHealthStatus,
     compute_research_health,
 )
 
-_NOW = datetime(2026, 6, 14, 12, 0, 0)  # Sunday -> last_completed = Fri 2026-06-12
+# Codex R6 MINOR: anchor the frozen clock to the REAL wall clock so the
+# ResearchHealthStatus freshness gate (generated_ts must be <= 7d) never goes
+# stale as the calendar advances. _NOW is "yesterday noon" Hawaii-local; the
+# seeded observation dates are computed from last_completed_session(_NOW), so the
+# coverage scenario stays valid on any run date.
+_NOW = (datetime.now(ZoneInfo("Pacific/Honolulu")).replace(tzinfo=None)
+        - timedelta(days=1)).replace(hour=12, minute=0, second=0, microsecond=0)
+_LAST_COMPLETED = last_completed_session(_NOW)
+_XNYS = xcals.get_calendar("XNYS")
+# the most-recent 6 NYSE sessions ending at _LAST_COMPLETED (a contiguous,
+# weekend-aware window) + the cutoff = the session just before the first.
+_SESSION_WINDOW = [
+    ts.date() for ts in _XNYS.sessions_in_range(
+        pd.Timestamp(_LAST_COMPLETED) - pd.Timedelta(days=12),
+        pd.Timestamp(_LAST_COMPLETED))
+][-6:]
+_SESSIONS = tuple(d.isoformat() for d in _SESSION_WINDOW)
+# the detector cutoff = the session BEFORE the first observed session (so the
+# first observed session is the first-expected -> a contiguous full window).
+_ASOF = _XNYS.previous_session(pd.Timestamp(_SESSION_WINDOW[0])).date().isoformat()
 _FINITE_OHLC = '{"open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5, ' \
     '"volume": 100.0, "provider": "yfinance"}'
-# NYSE sessions 2026-06-05..2026-06-12.
-_SESSIONS = ("2026-06-05", "2026-06-08", "2026-06-09", "2026-06-10",
-             "2026-06-11", "2026-06-12")
 
 
 def _seed_green_db(conn: sqlite3.Connection) -> None:
     det = insert_detection_event(conn, PatternDetectionEvent(
-        detection_id=None, ticker="AAA", detection_date="2026-06-05",
-        data_asof_date="2026-06-04", pattern_class="vcp",
+        detection_id=None, ticker="AAA", detection_date=_SESSIONS[0],
+        data_asof_date=_ASOF, pattern_class="vcp",
         structural_anchors_json="{}", composite_score=1.0, detector_version="t",
         source="synthetic", per_pattern_metadata_json="{}",
         created_at="2026-06-05T00:00:00"))
@@ -43,7 +63,8 @@ def _seed_green_db(conn: sqlite3.Connection) -> None:
         "INSERT INTO evaluation_runs (run_ts, data_asof_date, action_session_date,"
         " tickers_evaluated, aplus_count, watch_count, skip_count, excluded_count,"
         " error_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        ("2026-06-12T00:00:00", "2026-06-12", "2026-06-15", 1, 1, 0, 0, 0, 0))
+        ("2026-06-12T00:00:00", _LAST_COMPLETED.isoformat(),
+         _SESSIONS[-1], 1, 1, 0, 0, 0, 0))
     run = int(cur.lastrowid)
     conn.execute(
         "INSERT INTO candidates (evaluation_run_id, ticker, bucket, pivot, rs_method)"
@@ -91,10 +112,12 @@ def test_one_red_makes_overall_red(tmp_path: Path) -> None:
     db = tmp_path / "swing.db"
     conn = ensure_schema(db)
     _seed_green_db(conn)
-    # plant a NaN-Close observation on a SEPARATE detection (finiteness red).
+    # plant a NaN-Close observation on the EXISTING green detection's last
+    # session via a second (terminal) detection so coverage stays clean and only
+    # finiteness goes red. Use a clock-relative cutoff + the last session.
     det2 = insert_detection_event(conn, PatternDetectionEvent(
-        detection_id=None, ticker="ZZZ", detection_date="2026-06-12",
-        data_asof_date="2026-06-11", pattern_class="vcp",
+        detection_id=None, ticker="ZZZ", detection_date=_SESSIONS[-1],
+        data_asof_date=_SESSIONS[-2], pattern_class="vcp",
         structural_anchors_json="{}", composite_score=1.0, detector_version="t",
         source="synthetic", per_pattern_metadata_json="{}",
         created_at="2026-06-12T00:00:00"))
@@ -102,10 +125,10 @@ def test_one_red_makes_overall_red(tmp_path: Path) -> None:
         "INSERT INTO pattern_forward_observations "
         "(detection_id, observation_date, ohlc_today_json, status, "
         "sessions_since_detection, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-        (det2, "2026-06-12",
+        (det2, _SESSIONS[-1],
          '{"open": 1.0, "high": 2.0, "low": 0.5, "close": NaN, '
          '"volume": 100.0, "provider": "yfinance"}',
-         "pending", 1, "2026-06-12T00:00:00"))
+         "invalidated", 1, "2026-06-12T00:00:00"))
     conn.commit()
     exports_root = _fresh_exports_root(tmp_path)
     status = compute_research_health(conn, exports_root=exports_root, now=_NOW)
@@ -176,15 +199,22 @@ def test_compute_research_health_is_read_only(tmp_path: Path) -> None:
 
 
 def test_generated_ts_uses_injected_now_as_aware_utc(tmp_path: Path) -> None:
-    # now=2026-06-14T20:31:00 naive (Hawaii HST = UTC-10) -> 06:31 next-day UTC.
+    # A naive-Hawaii-local now (HST = UTC-10) -> aware-UTC stamp 10h later. Anchor
+    # on a RECENT naive-HST instant (clock-relative -- Codex R6 MINOR -- so the
+    # freshness gate never rejects it) and compute the expected UTC arithmetic.
     db = tmp_path / "swing.db"
     conn = ensure_schema(db)
     _seed_green_db(conn)
-    now = datetime(2026, 6, 14, 20, 31, 0)
+    now = (datetime.now(ZoneInfo("Pacific/Honolulu")).replace(tzinfo=None)
+           - timedelta(hours=2)).replace(microsecond=0)
+    expected = (now.replace(tzinfo=ZoneInfo("Pacific/Honolulu"))
+                .astimezone(ZoneInfo("UTC")).isoformat(timespec="seconds"))
     status = compute_research_health(
         conn, exports_root=_fresh_exports_root_for(tmp_path, now), now=now)
-    assert status.generated_ts == "2026-06-15T06:31:00+00:00"
-    assert status.to_dict()["generated_ts"] == "2026-06-15T06:31:00+00:00"
+    assert status.generated_ts == expected
+    assert status.to_dict()["generated_ts"] == expected
+    # the conversion is a +10h offset (HST -> UTC), tz-aware UTC suffix.
+    assert expected.endswith("+00:00")
 
 
 def _fresh_exports_root_for(tmp_path: Path, now: datetime) -> Path:
@@ -224,15 +254,18 @@ def test_manifest_dir_overrides_exports_root_for_manifest_checks(tmp_path: Path)
 
 def test_aggregate_normalizes_aware_now(tmp_path: Path) -> None:
     # an AWARE-UTC now and its equivalent naive-Hawaii-local -> same statuses AND
-    # the same generated_ts (both normalize to the same instant).
-    # 2026-06-14T20:31:00 HST == 2026-06-15T06:31:00+00:00 UTC.
+    # the same generated_ts (both normalize to the same instant). Clock-relative
+    # (Codex R6 MINOR) so the freshness gate never rejects the stamp.
     db = tmp_path / "swing.db"
     conn = ensure_schema(db)
     _seed_green_db(conn)
-    naive_hst = datetime(2026, 6, 14, 20, 31, 0)
-    aware_utc = datetime(2026, 6, 15, 6, 31, 0, tzinfo=ZoneInfo("UTC"))
+    naive_hst = (datetime.now(ZoneInfo("Pacific/Honolulu")).replace(tzinfo=None)
+                 - timedelta(hours=2)).replace(microsecond=0)
+    aware_utc = naive_hst.replace(tzinfo=ZoneInfo("Pacific/Honolulu")).astimezone(
+        ZoneInfo("UTC"))
+    expected = aware_utc.isoformat(timespec="seconds")
     root = _fresh_exports_root_for(tmp_path, naive_hst)
     a = compute_research_health(conn, exports_root=root, now=naive_hst)
     b = compute_research_health(conn, exports_root=root, now=aware_utc)
-    assert a.generated_ts == b.generated_ts == "2026-06-15T06:31:00+00:00"
+    assert a.generated_ts == b.generated_ts == expected
     assert [c.status for c in a.checks] == [c.status for c in b.checks]

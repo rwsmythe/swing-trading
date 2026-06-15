@@ -396,7 +396,9 @@ def _read_newest_manifest(exports_root) -> tuple[str, dict | None]:
         return ("corrupt", None)  # crashed-mid-write latest run -- NOT absent
     try:
         parsed = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):
+        # ValueError covers json.JSONDecodeError AND UnicodeDecodeError (Codex R6
+        # MAJOR #1: a non-UTF-8 manifest must escalate to corrupt, not crash).
         return ("corrupt", None)
     if not _manifest_is_well_shaped(parsed):
         return ("corrupt", None)
@@ -484,10 +486,16 @@ def _check_excluded_reason_breakdown(*, exports_root) -> list[ResearchHealthChec
 
 _COVERAGE_YELLOW_GAPS = 1   # any hole -> yellow (a missing forward bar is a real signal)
 _COVERAGE_RED_GAPS = 10     # a large hole count -> red (systemic observe-step failure)
-# A detection whose latest-observation status is in this OPEN set is still in
-# the forward walk (mirror pattern_detection_events._OPEN_STATUSES); a TERMINAL
-# status (invalidated/expired/triggered_closed_*) legitimately stopped.
-_OPEN_STATUSES = ("pending", "triggered_open")
+# The known TERMINAL observation statuses (the walk legitimately stopped -> no
+# tail expected; the complement of pattern_detection_events._OPEN_STATUSES
+# {pending,triggered_open}). An UNKNOWN/NULL latest status is NOT silently
+# treated as terminal (Codex R6 MAJOR #4: that would suppress a missing tail ->
+# false green); it is treated as OPEN (tail-expected, conservative) so a degraded
+# status row surfaces a gap rather than hiding one.
+_TERMINAL_STATUSES = (
+    "invalidated", "expired",
+    "triggered_closed_at_target", "triggered_closed_at_stop",
+)
 
 
 def _check_coverage_gaps(
@@ -514,23 +522,22 @@ def _check_coverage_gaps(
 
     key = "coverage_gaps"
     last_completed = last_completed_session(now)
-    last_completed_iso = last_completed.isoformat()
 
     try:
-        # Drive from mature DETECTIONS, LEFT JOIN observations (Codex R2-rev MAJOR
-        # #4): a mature detection with NO observation row still appears (NULL
-        # observation columns), so a never-observed mature detection is not
-        # invisible.
+        # Drive from ALL DETECTIONS, LEFT JOIN observations (Codex R2-rev MAJOR
+        # #4: a never-observed detection still appears). NO SQL date predicate
+        # (Codex R6 MAJOR #3): a string `WHERE data_asof_date < ?` would lexically
+        # DROP a malformed/NULL data_asof_date BEFORE the Python guard runs ->
+        # false-green on degraded data. Maturity is applied in Python after the
+        # date parse so a malformed date is counted, not silently excluded.
         rows = conn.execute(
             "SELECT d.detection_id, d.data_asof_date,"
             " o.observation_date, o.status, o.observation_id"
             " FROM pattern_detection_events d"
             " LEFT JOIN pattern_forward_observations o"
             " ON o.detection_id = d.detection_id"
-            " WHERE d.data_asof_date < ?"
             " ORDER BY d.detection_id,"
             " o.observation_date ASC, o.observation_id ASC",
-            (last_completed_iso,),
         ).fetchall()
     except sqlite3.OperationalError as exc:
         if _schema_unavailable(exc):
@@ -592,6 +599,11 @@ def _check_coverage_gaps(
             if len(sample) < 3:
                 sample.append(f"det{det_id}: malformed date")
             continue
+        # Maturity applied in PYTHON after the parse (Codex R6 MAJOR #3): mature =
+        # at least one tradable session since the cutoff. (A SQL string predicate
+        # would have lexically dropped a malformed/NULL asof before this point.)
+        if asof >= last_completed:
+            continue  # not mature -- no completed session since the cutoff
         if not observed:
             # mature detection with ZERO observations: every expected session
             # (first-after-cutoff .. last_completed) is missing.
@@ -609,12 +621,16 @@ def _check_coverage_gaps(
         # The expected window STARTS at the first session after the detector's
         # data cutoff (Codex R3 MAJOR #1 -- a LATE first observation, skipping the
         # first expected session, is a real leading/head gap; starting at min_obs
-        # would mask it). For a TERMINAL detection the upper bound is its own
-        # max_obs (it legitimately stopped); for an OPEN one it is last_completed.
+        # would mask it). Upper bound by latest status: a KNOWN TERMINAL status
+        # legitimately stopped -> max_obs (no tail expected); OPEN *or an
+        # UNKNOWN/NULL status* -> last_completed (Codex R6 MAJOR #4: an unknown
+        # status must NOT be silently treated as terminal, which would suppress a
+        # missing tail -> false green).
         first = _first_session_after(asof)
         if first is None:
             continue  # too fresh -- no session yet to observe (not a defect)
-        upper = last_completed if latest_status in _OPEN_STATUSES else max_obs
+        is_terminal = latest_status in _TERMINAL_STATUSES
+        upper = max_obs if is_terminal else last_completed
         expected = _sessions(first, upper)
         missing = len(expected - observed)
         if missing:
