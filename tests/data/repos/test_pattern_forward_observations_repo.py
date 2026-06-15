@@ -31,10 +31,21 @@ def _det(conn, **kw) -> int:
         return insert_detection_event(conn, PatternDetectionEvent(**base))
 
 
+# Production-shaped FINITE OHLC json. build_ohlc_today_json emits all of
+# {open,high,low,close,volume,provider}; the 18-B.1 insert_observation write
+# barrier reads open/high/low/close, so the default fixture must carry the full
+# finite OHLC set. (The prior close-only synthetic shape predates the barrier
+# and would now be rejected as missing OHLC keys.)
+_FINITE_OHLC_JSON = (
+    '{"open":10.0,"high":11.5,"low":9.8,"close":11.0,'
+    '"volume":12345,"provider":"yfinance"}'
+)
+
+
 def _obs(detection_id, date, **kw) -> PatternForwardObservation:
     base = dict(
         observation_id=None, detection_id=detection_id, observation_date=date,
-        ohlc_today_json='{"close":11.0,"provider":"yfinance"}',
+        ohlc_today_json=_FINITE_OHLC_JSON,
         status="pending", sessions_since_detection=1,
         created_at="2026-05-29T00:00:00Z",
     )
@@ -144,3 +155,116 @@ def test_repo_source_has_no_mutating_sql():
     for pat in (r"\bUPDATE\s+\w+\s+SET\b", r"\bDELETE\s+FROM\b",
                 r"\bREPLACE\s+INTO\b", r"\bDROP\s+(TABLE|INDEX)\b"):
         assert re.search(pat, src) is None, f"append-only violated: {pat}"
+
+
+# --- 18-B.1: insert_observation OHLC finiteness write-barrier (C-18B1) ------
+
+# A NON-FINITE bar in the production ohlc_today_json shape (close=NaN, the real
+# #99/06-10 cohort shape: O/H/L present, Close non-finite). JSON has no NaN
+# literal, so it is emitted via json.dumps(..., float("nan")) -> the token
+# `NaN`, which json.loads round-trips back to a Python float('nan').
+import json
+import math
+
+
+def _nonfinite_ohlc_json(*, open_=10.0, high=11.5, low=9.8, close=float("nan")):
+    return json.dumps({
+        "open": open_, "high": high, "low": low, "close": close,
+        "volume": 12345, "provider": "yfinance",
+    })
+
+
+def test_insert_observation_rejects_nonfinite_ohlc_write_barrier(conn):
+    """WRITE-BARRIER (both-ways arithmetic; 18-B.1 FIX 2).
+
+    PRE-FIX (no guard in insert_observation): a non-finite OHLC observation
+    (close=NaN) INSERTs cleanly -- ohlc_today_json is plain `TEXT NOT NULL`
+    with NO finiteness CHECK (migration 0022:69), so NaN reaches durable,
+    append-only storage and permanently poisons the temporal-log finiteness
+    monitor (the 06-10 103-row cohort exactly this way).
+    POST-FIX: insert_observation raises BEFORE the INSERT (fail-loud backstop),
+    so no row is written. The test asserts (a) the raise and (b) that ZERO rows
+    landed -- distinguishing the guard from a post-insert check.
+    """
+    det = _det(conn)
+    obs = _obs(det, "2026-05-29", ohlc_today_json=_nonfinite_ohlc_json())
+    with pytest.raises(ValueError) as exc:
+        with conn:
+            insert_observation(conn, obs)
+    # Names the offending field + observation context (ASCII message).
+    msg = str(exc.value)
+    assert "close" in msg.lower()
+    # Nothing was written -- the barrier is BEFORE the INSERT, not after.
+    assert get_observations_for_detection(conn, det) == []
+
+
+def test_insert_observation_accepts_finite_ohlc_no_false_positive(conn):
+    """A clean FINITE OHLC bar (the default fixture) still inserts -- the guard
+    must not false-positive on good data."""
+    det = _det(conn)
+    with conn:
+        oid = insert_observation(conn, _obs(det, "2026-05-29"))
+    assert oid > 0
+    chain = get_observations_for_detection(conn, det)
+    assert len(chain) == 1
+
+
+def test_insert_observation_accepts_finite_ohlc_with_nan_volume(conn):
+    """Volume is EXEMPT (Arc-8: legit volume-less bars exist). A bar with
+    FINITE OHLC but volume=NaN still inserts cleanly -- the barrier gates OHLC
+    only, never volume."""
+    det = _det(conn)
+    vol_nan = json.dumps({
+        "open": 10.0, "high": 11.5, "low": 9.8, "close": 11.0,
+        "volume": float("nan"), "provider": "yfinance",
+    })
+    # Sanity: volume IS non-finite in this fixture (so the test truly exercises
+    # the exemption, not a finite-volume happy path).
+    assert math.isnan(json.loads(vol_nan)["volume"])
+    with conn:
+        oid = insert_observation(conn, _obs(det, "2026-05-29",
+                                            ohlc_today_json=vol_nan))
+    assert oid > 0
+
+
+def test_read_path_preserves_accepted_nonfinite_historical_rows(conn):
+    """READ-PRESERVATION (encodes the CHARC finding; MANDATORY; 18-B.1).
+
+    Seed a non-finite historical row BYPASSING the new write barrier (raw
+    conn.execute INSERT of the non-finite ohlc_today_json text -- mirrors the
+    monitor plan-Task-2 raw-insert technique), then read it back through every
+    repo reader and assert NO raise. This proves the 103 accepted historical
+    non-finite rows (the immutable 06-10 cohort) still read clean.
+
+    This test is the guard against a future 'consistency-fix' relocating the
+    barrier onto PatternForwardObservation.__post_init__: that fires on the
+    READ mapper _row_to_observation, so a __post_init__-located finiteness guard
+    would RAISE here -> FAIL this test. The barrier MUST stay WRITE-path only.
+    """
+    det = _det(conn)
+    poisoned = _nonfinite_ohlc_json()  # close=NaN, valid status/sessions
+    # Raw INSERT -- bypasses insert_observation's guard entirely (direct SQL).
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO pattern_forward_observations
+                (detection_id, observation_date, ohlc_today_json, status,
+                 status_change_event, sessions_since_detection, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (det, "2026-05-29", poisoned, "pending", None, 1,
+             "2026-05-29T00:00:00Z"),
+        )
+    # Every reader (the mapper _row_to_observation under each) reads it WITHOUT
+    # raising -- the accepted historical rows stay intact.
+    chain = get_observations_for_detection(conn, det)
+    assert len(chain) == 1
+    assert chain[0].ohlc_today_json == poisoned
+
+    latest = get_latest_observation_for_detection(conn, det)
+    assert latest is not None
+    assert latest.ohlc_today_json == poisoned
+
+    batch = get_latest_observations_for_detections(conn, [det])
+    assert det in batch
+    assert batch[det].ohlc_today_json == poisoned
