@@ -45,8 +45,13 @@ _SESSIONS = tuple(d.isoformat() for d in _SESSION_WINDOW)
 _ASOF = _XNYS.previous_session(pd.Timestamp(_SESSION_WINDOW[0])).date().isoformat()
 # FIX 1 (18-D): a date STRICTLY AFTER the 2026-06-13 finiteness baseline cutoff
 # AND after _LAST_COMPLETED -- so a NaN observation planted on it is a genuine
-# post-baseline regression (drives finiteness red) regardless of the wall clock,
-# and is non-mature (asof <= last_completed) so it never trips the coverage tail.
+# post-baseline regression (drives finiteness red) regardless of the wall clock.
+# The carrier detection (test_one_red_makes_overall_red) sets BOTH its
+# detection_date and data_asof_date to this date with a single terminal
+# observation on it, so coverage never expects a tail off it (it is either
+# non-mature, or terminal-with-its-only-session-observed -> zero gaps) -- only
+# finiteness drives the red. (It is a calendar date, not an exchange session;
+# the no-gap property holds via the terminal single-obs shape, not session math.)
 _FINITENESS_CUTOFF = _date(2026, 6, 13)
 _POST_BASELINE_DATE = (
     max(_FINITENESS_CUTOFF, _LAST_COMPLETED) + timedelta(days=3)
