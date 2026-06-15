@@ -24,6 +24,7 @@ from swing.integrations.schwab.auth import (
 )
 from swing.integrations.schwab.client import SchwabConfigMissingError
 from swing.logging_setup import install_logging
+from swing.monitoring.stoplights import health_stoplights
 from swing.web.middleware.body_size import MaxBodySizeMiddleware
 from swing.web.middleware.origin_guard import OriginGuardMiddleware
 from swing.web.middleware.request_id import RequestIdMiddleware
@@ -83,6 +84,35 @@ def _templates_dir() -> Path:
     return Path(__file__).parent / "templates"
 
 
+def _health_stoplights_context_processor(request: Request) -> dict:
+    """Phase 18 Arc 18-F: inject the two health stoplights into EVERY template
+    render via a Starlette context processor (so `base.html.j2` reads them from
+    the render context, NOT a per-VM field — sidestepping the every-base-VM-or-500
+    gotcha for all ~15 base VMs).
+
+    DEFENSIVE (LOCK #2 outer guard): runs on EVERY render INCLUDING the error
+    page, so it MUST NEVER raise — any failure degrades to an empty tuple (zero
+    stoplights rendered, never a 500). Opens+closes a read-only DB connection per
+    render (cheap — the cash-badge precedent; the providers SELECT only).
+    """
+    try:
+        cfg = getattr(request.app.state, "cfg", None)
+        if cfg is None:
+            return {"health_stoplights": ()}
+        from swing.data.db import connect
+        conn = connect(cfg.paths.db_path)
+        try:
+            stoplights = health_stoplights(conn, cfg)
+        finally:
+            conn.close()
+        return {"health_stoplights": stoplights}
+    except Exception as exc:  # noqa: BLE001 (defensive — must never 500 a page)
+        log.warning(
+            "health stoplights context processor degraded to empty: %s", exc,
+        )
+        return {"health_stoplights": ()}
+
+
 def _build_templates(directory: Path) -> Jinja2Templates:
     """Construct Jinja2Templates with unconditional autoescape.
 
@@ -97,7 +127,15 @@ def _build_templates(directory: Path) -> Jinja2Templates:
         loader=jinja2.FileSystemLoader(str(directory)),
         autoescape=True,
     )
-    return Jinja2Templates(env=env)
+    # Register the 18-F health-stoplights context processor INSIDE
+    # _build_templates so EVERY Jinja2Templates instance carries it — both the
+    # long-lived `app.state.templates` AND the FRESH instance the error handler
+    # builds for the 500 page (so the stoplights render on the error page too).
+    # Starlette 1.0.0 accepts `context_processors=` alongside `env=` (verified;
+    # only `directory ^ env` is mutually exclusive).
+    return Jinja2Templates(
+        env=env, context_processors=[_health_stoplights_context_processor],
+    )
 
 
 def _register_exception_handlers(app: FastAPI) -> None:
