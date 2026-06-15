@@ -19,7 +19,9 @@ from swing.data.repos.pattern_detection_events import insert_detection_event
 from swing.data.repos.pattern_forward_observations import insert_observation
 from swing.monitoring.research_health import (
     ResearchHealthCheck,
+    _check_candidate_completeness,
     _check_coverage_gaps,
+    _check_drumbeat_liveness,
     _check_excluded_reason_breakdown,
     _check_structural_integrity,
     _check_temporal_log_finiteness,
@@ -479,3 +481,207 @@ def test_structural_yellow_when_missing_table(tmp_path: Path) -> None:
     conn = sqlite3.connect(":memory:")
     check = _only(_check_structural_integrity(conn), "structural_integrity")
     assert check.status == "yellow"
+
+
+# ---------------------------------------------------------------------------
+# Task 5a: _check_drumbeat_liveness (artifact age + total_unattributed)
+# ---------------------------------------------------------------------------
+
+
+def _now_utc_for(now_naive_local: datetime) -> datetime:
+    """The aggregator converts naive-Hawaii-local now -> UTC by attaching
+    Pacific/Honolulu. Mirror that to compute dir timestamps relative to `now`."""
+    from datetime import UTC
+    from zoneinfo import ZoneInfo
+    return now_naive_local.replace(tzinfo=ZoneInfo("Pacific/Honolulu")).astimezone(UTC)
+
+
+def _dir_name_days_before(now_naive_local: datetime, days: int) -> str:
+    from datetime import timedelta
+    ts = _now_utc_for(now_naive_local) - timedelta(days=days)
+    return "shadow-expectancy-" + ts.strftime("%Y%m%dT%H%M%S") + "Z"
+
+
+def test_drumbeat_green_when_fresh_and_attributed(tmp_path: Path) -> None:
+    _write_manifest(tmp_path, dir_name=_dir_name_days_before(_NOW, 1),
+                    funnel=_funnel(100, {}, unattributed={}))
+    check = _only(_check_drumbeat_liveness(exports_root=tmp_path, now=_NOW),
+                  "drumbeat_liveness")
+    assert check.status == "green"
+
+
+def test_drumbeat_yellow_when_stale(tmp_path: Path) -> None:
+    _write_manifest(tmp_path, dir_name=_dir_name_days_before(_NOW, 5),
+                    funnel=_funnel(100, {}, unattributed={}))
+    check = _only(_check_drumbeat_liveness(exports_root=tmp_path, now=_NOW),
+                  "drumbeat_liveness")
+    assert check.status == "yellow"  # 5 days (>4, <=8)
+
+
+def test_drumbeat_red_when_very_stale(tmp_path: Path) -> None:
+    _write_manifest(tmp_path, dir_name=_dir_name_days_before(_NOW, 9),
+                    funnel=_funnel(100, {}, unattributed={}))
+    check = _only(_check_drumbeat_liveness(exports_root=tmp_path, now=_NOW),
+                  "drumbeat_liveness")
+    assert check.status == "red"  # 9 days (>8)
+
+
+def test_drumbeat_red_when_no_artifacts(tmp_path: Path) -> None:
+    check = _only(_check_drumbeat_liveness(exports_root=tmp_path, now=_NOW),
+                  "drumbeat_liveness")
+    assert check.status == "red"
+    assert "never" in check.summary.lower() or "no " in check.summary.lower()
+
+
+def test_drumbeat_yellow_when_unattributed_nonzero(tmp_path: Path) -> None:
+    # FRESH (1 day) but total_unattributed=42 -> yellow (funnel-honesty escalates
+    # a fresh-but-dishonest run; the worse-of of age-green and unattributed-yellow).
+    _write_manifest(tmp_path, dir_name=_dir_name_days_before(_NOW, 1),
+                    funnel=_funnel(100, {}, unattributed={"matched_no_hypothesis": 42}))
+    check = _only(_check_drumbeat_liveness(exports_root=tmp_path, now=_NOW),
+                  "drumbeat_liveness")
+    assert check.status == "yellow"
+
+
+def test_drumbeat_age_uses_injected_now(tmp_path: Path) -> None:
+    # Two different injected now values produce different colors deterministically.
+    _write_manifest(tmp_path, dir_name=_dir_name_days_before(_NOW, 1),
+                    funnel=_funnel(100, {}, unattributed={}))
+    fresh = _check_drumbeat_liveness(exports_root=tmp_path, now=_NOW)[0]
+    from datetime import timedelta
+    much_later = _NOW + timedelta(days=10)
+    stale = _check_drumbeat_liveness(exports_root=tmp_path, now=much_later)[0]
+    assert fresh.status == "green"
+    assert stale.status in ("yellow", "red")  # 11 days old vs much_later
+
+
+def test_drumbeat_yellow_when_newest_manifest_corrupt(tmp_path: Path) -> None:
+    # FRESH dir (age->green via the dir-name regex) but a malformed manifest ->
+    # at-least yellow (unattributed unknown; a corrupt newest is surfaced).
+    _write_manifest(tmp_path, dir_name=_dir_name_days_before(_NOW, 1),
+                    raw_text="{not valid json")
+    check = _only(_check_drumbeat_liveness(exports_root=tmp_path, now=_NOW),
+                  "drumbeat_liveness")
+    assert check.status in ("yellow", "red")
+
+
+# ---------------------------------------------------------------------------
+# Task 5b: _check_candidate_completeness (sentinel-filtered null pivots + errors)
+# ---------------------------------------------------------------------------
+
+
+def _seed_eval_run(conn: sqlite3.Connection, *, error_count: int = 0) -> int:
+    cur = conn.execute(
+        "INSERT INTO evaluation_runs (run_ts, data_asof_date, action_session_date,"
+        " tickers_evaluated, aplus_count, watch_count, skip_count, excluded_count,"
+        " error_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ("2026-06-12T00:00:00", "2026-06-12", "2026-06-15", 1, 0, 0, 0, 0,
+         error_count),
+    )
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def _seed_candidate(
+    conn: sqlite3.Connection, run_id: int, *, ticker: str, bucket: str,
+    pivot: float | None,
+) -> None:
+    conn.execute(
+        "INSERT INTO candidates (evaluation_run_id, ticker, bucket, pivot, rs_method)"
+        " VALUES (?, ?, ?, ?, ?)",
+        (run_id, ticker, bucket, pivot, "universe"),
+    )
+    conn.commit()
+
+
+def test_candidate_green_when_complete(tmp_path: Path) -> None:
+    conn = _schema_conn(tmp_path)
+    run = _seed_eval_run(conn)
+    _seed_candidate(conn, run, ticker="AAA", bucket="aplus", pivot=10.0)
+    _seed_candidate(conn, run, ticker="BBB", bucket="watch", pivot=20.0)
+    check = _only(_check_candidate_completeness(conn), "candidate_completeness")
+    assert check.status == "green"
+
+
+def test_candidate_red_on_null_actionable_pivot(tmp_path: Path) -> None:
+    conn = _schema_conn(tmp_path)
+    run = _seed_eval_run(conn)
+    _seed_candidate(conn, run, ticker="WWW", bucket="watch", pivot=None)
+    # an excluded null pivot in the SAME run must NOT contribute:
+    _seed_candidate(conn, run, ticker="XXX", bucket="excluded", pivot=None)
+    check = _only(_check_candidate_completeness(conn), "candidate_completeness")
+    assert check.status == "red"
+
+
+def test_candidate_green_when_null_pivot_only_in_sentinel_buckets(tmp_path: Path) -> None:
+    # THE gotcha-#25 test: nulls ONLY in error/excluded (the LIVE-DB shape) -> green.
+    conn = _schema_conn(tmp_path)
+    run = _seed_eval_run(conn)
+    _seed_candidate(conn, run, ticker="AAA", bucket="aplus", pivot=10.0)
+    _seed_candidate(conn, run, ticker="ERR", bucket="error", pivot=None)
+    _seed_candidate(conn, run, ticker="EXC", bucket="excluded", pivot=None)
+    check = _only(_check_candidate_completeness(conn), "candidate_completeness")
+    assert check.status == "green"
+
+
+def test_candidate_yellow_on_error_bucket(tmp_path: Path) -> None:
+    conn = _schema_conn(tmp_path)
+    run = _seed_eval_run(conn)
+    for i in range(10):  # 10 error-bucket (>5, <=25)
+        _seed_candidate(conn, run, ticker=f"E{i}", bucket="error", pivot=None)
+    check = _only(_check_candidate_completeness(conn), "candidate_completeness")
+    assert check.status == "yellow"
+
+
+def test_candidate_red_on_error_spike(tmp_path: Path) -> None:
+    conn = _schema_conn(tmp_path)
+    run = _seed_eval_run(conn)
+    for i in range(30):  # 30 error-bucket (>25)
+        _seed_candidate(conn, run, ticker=f"E{i}", bucket="error", pivot=None)
+    check = _only(_check_candidate_completeness(conn), "candidate_completeness")
+    assert check.status == "red"
+
+
+def test_candidate_green_when_no_eval_run(tmp_path: Path) -> None:
+    conn = _schema_conn(tmp_path)  # no evaluation_runs row
+    check = _only(_check_candidate_completeness(conn), "candidate_completeness")
+    assert check.status == "green"
+    assert "n/a" in check.summary.lower()
+
+
+def test_candidate_yellow_when_missing_table(tmp_path: Path) -> None:
+    conn = sqlite3.connect(":memory:")
+    check = _only(_check_candidate_completeness(conn), "candidate_completeness")
+    assert check.status == "yellow"
+
+
+# Shared 3-state manifest matrix (Codex R4 MAJOR #3): BOTH manifest-consuming
+# checks classify all 3 states consistently.
+@pytest.mark.parametrize(
+    "state",
+    ["no_dir", "dir_without_manifest", "dir_with_malformed_manifest"],
+)
+def test_manifest_three_state_matrix_excluded_and_drumbeat(
+    tmp_path: Path, state: str,
+) -> None:
+    if state == "no_dir":
+        pass  # empty tmp_path
+    elif state == "dir_without_manifest":
+        _write_manifest(tmp_path, dir_name=_dir_name_days_before(_NOW, 1),
+                        omit_manifest=True)
+    else:
+        _write_manifest(tmp_path, dir_name=_dir_name_days_before(_NOW, 1),
+                        raw_text="{bad json")
+    excluded = _only(
+        _check_excluded_reason_breakdown(exports_root=tmp_path),
+        "excluded_reason_breakdown")
+    drumbeat = _only(
+        _check_drumbeat_liveness(exports_root=tmp_path, now=_NOW),
+        "drumbeat_liveness")
+    if state == "no_dir":
+        assert excluded.status == "green"  # absent -> n-a
+        assert drumbeat.status == "red"    # never ran
+    else:
+        assert excluded.status == "yellow"  # corrupt
+        # the dir is FRESH (age green) but the manifest content is corrupt:
+        assert drumbeat.status in ("yellow", "red")

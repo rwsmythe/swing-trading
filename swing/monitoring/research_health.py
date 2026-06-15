@@ -25,6 +25,7 @@ Do NOT consistency-fix it back to naive-local.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3  # noqa: F401  (used in the per-check signatures below)
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -523,3 +524,156 @@ def _check_structural_integrity(
     return [ResearchHealthCheck(
         key=key, status="green",
         summary="0 orphans, 0 look-ahead violations")]
+
+
+# --------------------------------------------------------------------------
+# Drumbeat liveness (artifact age + total_unattributed) + candidate
+# completeness (sentinel-filtered null pivots + error-bucket).
+# --------------------------------------------------------------------------
+
+_DIR_TS_RE = re.compile(r"shadow-expectancy-(\d{8}T\d{6})Z$")
+_DRUMBEAT_YELLOW_AGE_DAYS = 4   # mirrors weekly_glance.T1_MAX_AGE_DAYS (weekend-tolerant)
+_DRUMBEAT_RED_AGE_DAYS = 8      # >1 week with no run -> red
+
+
+def _now_to_utc(n: datetime) -> datetime:
+    """Convert the aggregator's naive-Hawaii-local now to UTC (the 18-E idiom,
+    tool_health.py:347-350). NOT replace(tzinfo=UTC), which mis-shifts a Hawaii
+    instant by ~10h."""
+    if n.tzinfo is not None:
+        return n.astimezone(UTC)
+    return n.replace(tzinfo=ZoneInfo("Pacific/Honolulu")).astimezone(UTC)
+
+
+def _newest_artifact_age_days(exports_root, now: datetime) -> int | None:
+    """Newest shadow-expectancy-* dir age in (floored) days vs `now`, by the
+    dir-name UTC timestamp (the weekly_glance.py:74-78 idiom). None when no dir
+    with a parseable timestamp exists. The age is read from the dir NAME, so it
+    is available even when the manifest is corrupt (a fresh-but-corrupt dir is
+    NOT stale)."""
+    from pathlib import Path
+
+    root = Path(exports_root)
+    if not root.exists():
+        return None
+    dirs = sorted(
+        (p for p in root.glob("shadow-expectancy-*") if p.is_dir()),
+        key=lambda p: p.name, reverse=True,
+    )
+    for d in dirs:
+        m = _DIR_TS_RE.search(d.name)
+        if m:
+            newest = datetime.strptime(m.group(1), "%Y%m%dT%H%M%S").replace(
+                tzinfo=UTC)
+            return (_now_to_utc(now) - newest).days
+    return None
+
+
+def _check_drumbeat_liveness(
+    *, exports_root, now: datetime,
+) -> list[ResearchHealthCheck]:
+    """Engine drumbeat from the artifacts (brief §6.2 #5): (a) newest-artifact
+    age; (b) total_unattributed in the NEWEST manifest. Returns the WORST of the
+    age-color and the manifest-state/unattributed-color. No artifacts -> red
+    "never ran". A CORRUPT newest manifest escalates the unattributed signal to
+    >= yellow (do NOT treat corrupt as unattributed==0/green)."""
+    key = "drumbeat_liveness"
+    age_days = _newest_artifact_age_days(exports_root, now)
+
+    if age_days is None:
+        return [ResearchHealthCheck(
+            key=key, status="red",
+            summary="drumbeat never ran (no engine artifacts on disk)")]
+
+    if age_days > _DRUMBEAT_RED_AGE_DAYS:
+        age_status = "red"
+    elif age_days > _DRUMBEAT_YELLOW_AGE_DAYS:
+        age_status = "yellow"
+    else:
+        age_status = "green"
+
+    # The manifest-content signal (total_unattributed) -- read the 3-state.
+    state, manifest = _read_newest_manifest(exports_root)
+    manifest_note = ""
+    if state == "corrupt":
+        manifest_status = "yellow"
+        manifest_note = "; newest manifest unreadable (unattributed unknown)"
+    elif state == "ok":
+        unattributed = manifest["funnel"].get("unattributed", {})
+        total_unattributed = sum(
+            int(v) for v in unattributed.values()
+            if isinstance(v, (int, float)) and not isinstance(v, bool)
+        )
+        if total_unattributed > 0:
+            manifest_status = "yellow"
+            manifest_note = f"; {total_unattributed} unattributed signal(s)"
+        else:
+            manifest_status = "green"
+    else:  # absent (no dir to read -- but age_days was not None, so a dir with a
+        # parseable name exists yet _read_newest_manifest found no shadow dir;
+        # treat as green for the manifest arm).
+        manifest_status = "green"
+
+    status = worst_of([age_status, manifest_status])
+    return [ResearchHealthCheck(
+        key=key, status=status,
+        summary=f"newest engine artifact {age_days} day(s) old",
+        detail=f"age->{age_status}{manifest_note}")]
+
+
+_ERROR_BUCKET_YELLOW = 5    # a few error-bucket candidates -> yellow
+_ERROR_BUCKET_RED = 25      # an error-bucket SPIKE -> red (systemic eval failure)
+
+
+def _check_candidate_completeness(
+    conn: sqlite3.Connection,
+) -> list[ResearchHealthCheck]:
+    """Two signals from `candidates` at the latest evaluation_run (brief §6.2
+    #6): (a) null pivots in ACTIONABLE buckets aplus/watch (gotcha #25 -- nulls
+    in error/excluded are EXPECTED); (b) error-bucket count. WORST of the two.
+    Latest run = MAX(id) FROM evaluation_runs (the ONE source; both sub-signals
+    read the ACTUAL candidates rows, not the denormalized error_count). Missing
+    table -> yellow; no eval run -> green n/a.
+    """
+    key = "candidate_completeness"
+    try:
+        latest = conn.execute(
+            "SELECT MAX(id) FROM evaluation_runs").fetchone()[0]
+        if latest is None:
+            return [ResearchHealthCheck(
+                key=key, status="green",
+                summary="n/a (no eval run yet)")]
+        null_actionable = conn.execute(
+            "SELECT COUNT(*) FROM candidates"
+            " WHERE evaluation_run_id = ?"
+            " AND bucket IN ('aplus','watch') AND pivot IS NULL",
+            (latest,),
+        ).fetchone()[0]
+        error_bucket = conn.execute(
+            "SELECT COUNT(*) FROM candidates"
+            " WHERE evaluation_run_id = ? AND bucket = 'error'",
+            (latest,),
+        ).fetchone()[0]
+    except sqlite3.OperationalError as exc:
+        if _schema_unavailable(exc):
+            return [ResearchHealthCheck(
+                key=key, status="yellow",
+                summary="candidates schema unavailable",
+                detail="candidates/evaluation_runs table missing;"
+                       " run swing db-migrate")]
+        raise
+
+    null_status = "red" if null_actionable > 0 else "green"
+    if error_bucket > _ERROR_BUCKET_RED:
+        error_status = "red"
+    elif error_bucket > _ERROR_BUCKET_YELLOW:
+        error_status = "yellow"
+    else:
+        error_status = "green"
+
+    status = worst_of([null_status, error_status])
+    return [ResearchHealthCheck(
+        key=key, status=status,
+        summary=(f"run {latest}: {null_actionable} actionable null-pivot(s),"
+                 f" {error_bucket} error-bucket"),
+        detail=None)]
