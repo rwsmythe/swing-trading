@@ -117,13 +117,20 @@ def main(argv: list[str] | None = None) -> int:
     # write consistently (single source).
     exports_root = out_path.parent.parent
 
+    # Codex R3 MAJOR #5: an unreadable/corrupt DB (not just an absent path) must
+    # print a concise operator error + exit 1 WITHOUT writing -- not traceback.
     ro_uri = db_path.as_uri() + "?mode=ro"
-    conn = sqlite3.connect(ro_uri, uri=True, timeout=2.0)
+    conn = None
     try:
+        conn = sqlite3.connect(ro_uri, uri=True, timeout=2.0)
         status = compute_research_health(
             conn, cfg=cfg, exports_root=exports_root, now=_resolve_now())
+    except sqlite3.DatabaseError as exc:
+        print(f"DB at {db_path} is unreadable: {exc} -- ran from the right box?")
+        return 1
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
     # Write the conformant envelope ATOMICALLY in BOTH the ASCII and --json
     # paths (so the stoplight lights regardless of how the operator runs it).

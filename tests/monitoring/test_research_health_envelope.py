@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -93,12 +94,15 @@ def test_to_dict_matches_envelope() -> None:
                 summary="0 orphans, 0 look-ahead",
             ),
         ],
-        generated_ts="2020-06-14T20:31:00+00:00",
+        # a FRESH aware-UTC stamp (the __post_init__ freshness gate rejects an
+        # already-stale construction -- Codex R3 MAJOR #2).
+        generated_ts=datetime.now(UTC).isoformat(timespec="seconds"),
     )
+    fresh_ts = status.generated_ts
     d = status.to_dict()
     assert d == {
         "monitor": "research_measurement",
-        "generated_ts": "2020-06-14T20:31:00+00:00",
+        "generated_ts": fresh_ts,
         "overall": "yellow",
         "checks": [
             {
@@ -134,12 +138,45 @@ def test_monitor_field_is_research_measurement() -> None:
 def test_status_rejects_naive_generated_ts() -> None:
     # Codex R2 MAJOR #3: a naive (tz-less) stamp would false-grey on a non-Hawaii
     # host -> the envelope is non-conformant -> must be unconstructable.
-    with pytest.raises(ValueError, match="AWARE"):
+    with pytest.raises(ValueError, match="aware-UTC"):
         ResearchHealthStatus(
             overall="green",
             checks=[ResearchHealthCheck(key="k", status="green", summary="s")],
             generated_ts="2026-06-14T20:31:00",
         )
+
+
+def test_status_rejects_aware_non_utc_generated_ts() -> None:
+    # Codex R3 MAJOR #3: an aware but NON-UTC offset violates the aware-UTC lock.
+    now_hst = datetime.now(ZoneInfo("Pacific/Honolulu")).isoformat(timespec="seconds")
+    with pytest.raises(ValueError, match="aware-UTC"):
+        ResearchHealthStatus(
+            overall="green",
+            checks=[ResearchHealthCheck(key="k", status="green", summary="s")],
+            generated_ts=now_hst,
+        )
+
+
+def test_status_rejects_stale_generated_ts() -> None:
+    # Codex R3 MAJOR #2: an already-stale (>7d) stamp would grey through the 18-F
+    # reader -> must be unconstructable (the by-construction freshness gate).
+    stale = (datetime.now(UTC) - timedelta(days=8)).isoformat(timespec="seconds")
+    with pytest.raises(ValueError, match="stale"):
+        ResearchHealthStatus(
+            overall="green",
+            checks=[ResearchHealthCheck(key="k", status="green", summary="s")],
+            generated_ts=stale,
+        )
+
+
+def test_check_rejects_non_str_key_summary_detail() -> None:
+    # Codex R3 MAJOR #4: non-string key/summary/detail must be rejected by type.
+    with pytest.raises(ValueError, match="str"):
+        ResearchHealthCheck(key=123, status="green", summary="s")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="str"):
+        ResearchHealthCheck(key="k", status="green", summary={"x": 1})  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="str"):
+        ResearchHealthCheck(key="k", status="green", summary="s", detail=[1])  # type: ignore[arg-type]
 
 
 def test_status_rejects_unparseable_generated_ts() -> None:

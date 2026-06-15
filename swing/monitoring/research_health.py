@@ -29,7 +29,7 @@ import math
 import re
 import sqlite3  # noqa: F401  (used in the per-check signatures below)
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 # LOCK C1 (brief §3 / §6.1): IMPORT the 3 contract constants -- never redeclare.
@@ -46,6 +46,7 @@ from swing.monitoring.stoplights import (  # noqa: F401
 from swing.monitoring.tool_health import worst_of  # noqa: F401
 
 _STATUS_VALUES = frozenset({"green", "yellow", "red"})
+_ZERO_OFFSET = timedelta(0)
 
 
 def _research_now_iso(now_naive_local: datetime | None = None) -> str:
@@ -77,10 +78,16 @@ class ResearchHealthCheck:
                 f" got {self.status!r} (grey is an 18-F render-only state, not"
                 " monitor-emitted)"
             )
-        if not self.key:
-            raise ValueError("ResearchHealthCheck.key must be non-empty")
-        if not self.summary:
-            raise ValueError("ResearchHealthCheck.summary must be non-empty")
+        # Codex R3 MAJOR #4: enforce the 18-F per-check render schema BY TYPE
+        # (key/summary non-empty STR; detail None-or-str), not just truthiness --
+        # a non-string key/summary/detail would serialize into an envelope the
+        # 18-F _worst_check_severity gate then greys.
+        if not isinstance(self.key, str) or not self.key:
+            raise ValueError("ResearchHealthCheck.key must be a non-empty str")
+        if not isinstance(self.summary, str) or not self.summary:
+            raise ValueError("ResearchHealthCheck.summary must be a non-empty str")
+        if self.detail is not None and not isinstance(self.detail, str):
+            raise ValueError("ResearchHealthCheck.detail must be None or a str")
 
     def to_dict(self) -> dict:
         return {
@@ -127,13 +134,17 @@ class ResearchHealthStatus:
                 f"ResearchHealthStatus.overall {self.overall!r} != worst_of(checks)"
                 f" {expected!r}; the envelope contract requires overall=worst-of"
             )
-        # Codex R2 MAJOR #3: generated_ts must be ISO-parseable, AWARE, and NOT
-        # future-dated -- the 18-F reader greys a malformed/naive/future stamp, so
-        # a green-LOOKING envelope carrying one is non-conformant and must be
-        # unconstructable (the "by construction" gate). Staleness (>7d) is NOT
-        # enforced here: the artifact legitimately ages between writes and
-        # staleness is the reader's render-time concern (enforcing it would forbid
-        # a legitimately-old-but-correctly-stamped envelope at construction).
+        # Codex R2 MAJOR #3 + R3 MAJORs #2/#3: generated_ts must be ISO-parseable,
+        # aware-UTC (offset == 0), NOT future-dated, AND NOT already stale at
+        # construction (within RESEARCH_ARTIFACT_MAX_AGE_DAYS). The 18-F reader
+        # greys a malformed/naive/non-UTC/future/stale stamp, so a green-LOOKING
+        # envelope carrying one is non-conformant and must be UNCONSTRUCTABLE (the
+        # "by construction" gate). The aggregator always stamps NOW, so a real
+        # envelope is always fresh-aware-UTC; the on-disk artifact legitimately
+        # ages AFTER it is written (that ageing is on the FILE, not a
+        # re-construction -- the reader greys the stale file). Enforcing freshness
+        # here only forbids constructing an already-stale envelope, never the
+        # legitimate write-then-age path.
         try:
             parsed = datetime.fromisoformat(self.generated_ts)
         except (TypeError, ValueError) as exc:
@@ -141,16 +152,23 @@ class ResearchHealthStatus:
                 f"ResearchHealthStatus.generated_ts must be ISO-8601;"
                 f" got {self.generated_ts!r}"
             ) from exc
-        if parsed.tzinfo is None or parsed.utcoffset() is None:
+        if parsed.tzinfo is None or parsed.utcoffset() != _ZERO_OFFSET:
             raise ValueError(
-                "ResearchHealthStatus.generated_ts must be timezone-AWARE"
-                f" (aware-UTC, the 18-F host-tz-independent gate); got"
+                "ResearchHealthStatus.generated_ts must be aware-UTC"
+                f" (offset +00:00, the 18-F host-tz-independent gate); got"
                 f" {self.generated_ts!r}"
             )
-        if parsed > datetime.now(parsed.tzinfo):
+        age = datetime.now(UTC) - parsed
+        if age < _ZERO_OFFSET:
             raise ValueError(
                 "ResearchHealthStatus.generated_ts must not be future-dated;"
                 f" got {self.generated_ts!r}"
+            )
+        if age > timedelta(days=RESEARCH_ARTIFACT_MAX_AGE_DAYS):
+            raise ValueError(
+                "ResearchHealthStatus.generated_ts must not be already stale at"
+                f" construction (> {RESEARCH_ARTIFACT_MAX_AGE_DAYS}d); got"
+                f" {self.generated_ts!r}"
             )
 
     def to_dict(self) -> dict:
@@ -551,14 +569,18 @@ def _check_coverage_gaps(
                     sample.append(f"det{det_id}: {missing} missing (never observed)")
             continue
         latest_status = obs[-1][1]  # last by date order
-        min_obs = _date.fromisoformat(min(observed))
         max_obs = _date.fromisoformat(max(observed))
+        # The expected window STARTS at the first session after the detector's
+        # data cutoff (Codex R3 MAJOR #1 -- a LATE first observation, skipping the
+        # first expected session, is a real leading/head gap; starting at min_obs
+        # would mask it). For a TERMINAL detection the upper bound is its own
+        # max_obs (it legitimately stopped); for an OPEN one it is last_completed.
+        first = _first_session_after(asof)
+        if first is None:
+            continue  # too fresh -- no session yet to observe (not a defect)
         upper = last_completed if latest_status in _OPEN_STATUSES else max_obs
-        expected = _sessions(min_obs, upper)
+        expected = _sessions(first, upper)
         missing = len(expected - observed)
-        if missing and len(observed) < 2 and upper == max_obs:
-            # an immature/just-detected terminal row with a lone obs -- not a defect
-            continue
         if missing:
             total_missing += missing
             if len(sample) < 3:

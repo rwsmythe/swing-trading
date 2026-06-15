@@ -177,6 +177,23 @@ def test_script_creates_health_dir_when_absent(tmp_path, monkeypatch) -> None:
     assert artifact.exists()
 
 
+def test_script_unreadable_db_exits_one_without_write(tmp_path, monkeypatch, capsys) -> None:
+    # Codex R3 MAJOR #5: a corrupt/non-SQLite file at --db -> concise error + exit
+    # 1, NO traceback, NO artifact write (does not overwrite a prior artifact).
+    bad_db = tmp_path / "swing.db"
+    bad_db.write_bytes(b"this is not a sqlite database at all")
+    artifact = tmp_path / "health" / "latest.json"
+    monkeypatch.setattr(
+        "swing.monitoring.stoplights.research_health_artifact_path",
+        lambda: artifact)
+    mod = _load_script_module()
+    rc = mod.main(["--db", str(bad_db)])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "unreadable" in out.lower()
+    assert not artifact.exists()  # no synthetic envelope written
+
+
 def test_script_output_is_ascii(tmp_path) -> None:
     db = tmp_path / "swing.db"
     _seed_red_db(db)

@@ -463,6 +463,18 @@ def test_coverage_green_on_terminal_detection_stopped_early(tmp_path: Path) -> N
     assert check.status == "green"  # contiguous + terminal -> no tail expected
 
 
+def test_coverage_yellow_on_leading_head_gap(tmp_path: Path) -> None:
+    # Codex R3 MAJOR #1: a LATE first observation -- the detection's first obs is
+    # 06-08 but data_asof=2026-06-04, so 06-05 (the first expected session after
+    # cutoff) is MISSING. An impl that starts the window at min_obs masks it.
+    conn = _schema_conn(tmp_path)
+    det = _seed_detection(conn, data_asof_date="2026-06-04")
+    for d in ("2026-06-08", "2026-06-09", "2026-06-10", "2026-06-11", "2026-06-12"):
+        _seed_observation(conn, det, observation_date=d, status="pending")
+    check = _only(_check_coverage_gaps(conn, now=_NOW), "coverage_gaps")
+    assert check.status in ("yellow", "red")  # 06-05 missing (leading gap)
+
+
 def test_coverage_escalates_on_mature_detection_with_zero_observations(
     tmp_path: Path,
 ) -> None:
