@@ -7,6 +7,9 @@ to grey, never raises (LOCK #2); grey is render-only (LOCK #3).
 """
 from __future__ import annotations
 
+import json
+from datetime import datetime, timedelta
+
 import pytest
 
 from swing.monitoring.stoplights import (
@@ -14,6 +17,7 @@ from swing.monitoring.stoplights import (
     RESEARCH_HEALTH_ARTIFACT_PATH,
     RESEARCH_MONITOR_ID,
     Stoplight,
+    _research_stoplight,
     _tool_stoplight,
     research_health_artifact_path,
 )
@@ -130,3 +134,139 @@ def test_tool_stoplight_passes_prices_cache_dir(monkeypatch):
     _tool_stoplight(None, cfg)
     assert calls["cfg"] is cfg
     assert calls["prices_cache_dir"] == cfg.paths.prices_cache_dir
+
+
+# ---------------------------------------------------------------- Task 3
+
+
+@pytest.fixture
+def artifact_path(tmp_path, monkeypatch):
+    """Point the research-artifact accessor at a tmp file (no real exports/)."""
+    p = tmp_path / "latest.json"
+    monkeypatch.setattr(
+        "swing.monitoring.stoplights.research_health_artifact_path",
+        lambda: p,
+    )
+    return p
+
+
+def _valid_envelope(color="green", generated_ts=None):
+    return {
+        "monitor": RESEARCH_MONITOR_ID,
+        "generated_ts": generated_ts or datetime.now().isoformat(),
+        "overall": color,
+        "checks": [{"key": "k", "status": color, "summary": "s", "detail": None}],
+    }
+
+
+def test_research_stoplight_grey_when_artifact_absent(artifact_path, caplog):
+    # artifact_path file does NOT exist.
+    with caplog.at_level("WARNING"):
+        s = _research_stoplight()  # must NOT raise
+    assert s.color == "grey"
+    assert s.id == "research"
+    assert s.drilldown_path == "/health/research"
+    assert s.label  # non-empty ASCII
+    # absence is the expected pre-18-D state -> NO warning log-spam every render.
+    assert not [r for r in caplog.records if "research" in r.message.lower()]
+
+
+@pytest.mark.parametrize("color", ["green", "yellow", "red"])
+def test_research_stoplight_maps_overall(artifact_path, color):
+    artifact_path.write_text(json.dumps(_valid_envelope(color)), encoding="utf-8")
+    assert _research_stoplight().color == color
+
+
+def test_research_stoplight_grey_on_malformed_json(artifact_path, caplog):
+    artifact_path.write_text("{ not json", encoding="utf-8")
+    with caplog.at_level("WARNING"):
+        s = _research_stoplight()
+    assert s.color == "grey"
+    assert caplog.records
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"monitor": RESEARCH_MONITOR_ID, "checks": []},  # no overall
+        {"monitor": RESEARCH_MONITOR_ID, "overall": "purple",
+         "generated_ts": datetime.now().isoformat()},  # invalid overall
+    ],
+)
+def test_research_stoplight_grey_on_missing_or_invalid_overall(
+    artifact_path, caplog, env,
+):
+    artifact_path.write_text(json.dumps(env), encoding="utf-8")
+    with caplog.at_level("WARNING"):
+        s = _research_stoplight()
+    assert s.color == "grey"
+    assert caplog.records
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"monitor": "shadow_expectancy", "overall": "green",
+         "generated_ts": datetime.now().isoformat(), "checks": []},
+        {},  # no monitor at all
+    ],
+)
+def test_research_stoplight_grey_on_monitor_mismatch(artifact_path, caplog, env):
+    # Both-ways: an impl that maps overall WITHOUT the monitor-id gate returns
+    # green for the first case (a false-green from a wrong object).
+    artifact_path.write_text(json.dumps(env), encoding="utf-8")
+    with caplog.at_level("WARNING"):
+        s = _research_stoplight()
+    assert s.color == "grey"
+    assert caplog.records
+
+
+def test_research_stoplight_grey_on_stale_generated_ts(artifact_path, caplog):
+    stale = (datetime.now() - timedelta(days=30)).isoformat()
+    artifact_path.write_text(
+        json.dumps(_valid_envelope("green", generated_ts=stale)),
+        encoding="utf-8",
+    )
+    with caplog.at_level("WARNING"):
+        s = _research_stoplight()
+    assert s.color == "grey"
+    assert caplog.records
+    # Both-ways: the SAME envelope with a fresh ts returns green.
+    artifact_path.write_text(json.dumps(_valid_envelope("green")), encoding="utf-8")
+    assert _research_stoplight().color == "green"
+
+
+@pytest.mark.parametrize(
+    "ts",
+    [
+        None,  # absent generated_ts
+        "not-a-date",  # unparseable
+    ],
+)
+def test_research_stoplight_grey_on_undated_or_unparseable(artifact_path, ts):
+    env = _valid_envelope("green")
+    if ts is None:
+        env.pop("generated_ts")
+    else:
+        env["generated_ts"] = ts
+    artifact_path.write_text(json.dumps(env), encoding="utf-8")
+    assert _research_stoplight().color == "grey"
+
+
+def test_research_stoplight_grey_on_just_over_7_days(artifact_path):
+    # Codex R3 MAJOR — the `.days`-floor boundary.
+    over = (datetime.now() - timedelta(days=7, hours=23)).isoformat()
+    artifact_path.write_text(
+        json.dumps(_valid_envelope("green", generated_ts=over)),
+        encoding="utf-8",
+    )
+    # Both-ways: a FLOORED `age.days > 7` impl yields 7>7==False -> green (bug);
+    # the EXACT timedelta(days=7) compare yields 7d23h>7d==True -> grey.
+    assert _research_stoplight().color == "grey"
+    # Bound the threshold from below: just under 7 days -> green.
+    under = (datetime.now() - timedelta(days=6, hours=23)).isoformat()
+    artifact_path.write_text(
+        json.dumps(_valid_envelope("green", generated_ts=under)),
+        encoding="utf-8",
+    )
+    assert _research_stoplight().color == "green"

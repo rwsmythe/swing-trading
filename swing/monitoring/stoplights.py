@@ -12,8 +12,10 @@ shared artifact path.
 """
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -90,3 +92,90 @@ def _tool_stoplight(conn, cfg) -> Stoplight:
     except Exception as exc:  # noqa: BLE001 (defensive — must never 500 a page)
         log.warning("tool-health stoplight degraded to grey: %s", exc)
         return grey
+
+
+def _read_research_envelope() -> dict | None:
+    """Read + parse the raw research envelope JSON. Returns None when the file is
+    absent (the expected pre-18-D state); lets JSON errors propagate to the
+    validating caller's except. Identity/staleness validation lives in
+    `read_validated_research_envelope`."""
+    path = research_health_artifact_path()
+    if not path.exists():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def read_validated_research_envelope() -> tuple[str, dict] | None:
+    """The SINGLE identity+staleness-validating reader, shared by both
+    `_research_stoplight` and the drill-down VM (so the false-green gates are
+    defined ONCE — Codex R1 MAJOR #1). Returns `(overall, env)` for a valid,
+    fresh, correctly-identified artifact, else None.
+
+    None when: absent (expected pre-18-D — NO warning); malformed JSON; non-dict;
+    wrong/missing `monitor` id (identity gate); missing/invalid `overall`;
+    absent/unparseable/stale `generated_ts` (staleness gate). Present-but-invalid
+    artifacts log a WARNING. NEVER raises (LOCK #2) and NEVER false-greens.
+    """
+    try:
+        env = _read_research_envelope()
+        if env is None:
+            return None  # absent — expected pre-18-D; no warning
+        # IDENTITY gate (Codex R1 MAJOR #1): a wrong JSON object at the shared
+        # path must not false-green even if it carries a valid `overall`.
+        if not isinstance(env, dict) or env.get("monitor") != RESEARCH_MONITOR_ID:
+            log.warning(
+                "research artifact monitor id mismatch/absent (%r); grey",
+                env.get("monitor") if isinstance(env, dict) else type(env).__name__,
+            )
+            return None
+        overall = env.get("overall")
+        if overall not in {"green", "yellow", "red"}:
+            log.warning(
+                "research artifact overall invalid/absent (%r); grey", overall,
+            )
+            return None
+        # STALENESS gate (Codex R2 + R3 MAJOR): EXACT-duration compare, not
+        # floored `.days`. Normalize BOTH sides to the same frame before
+        # subtracting (host-tz-independent: aware-vs-aware, else naive-vs-naive).
+        raw_ts = env.get("generated_ts")
+        try:
+            parsed = datetime.fromisoformat(raw_ts) if raw_ts else None
+        except (TypeError, ValueError):
+            parsed = None
+        if parsed is None:
+            log.warning(
+                "research artifact stale/undated (%r); grey", raw_ts,
+            )
+            return None
+        now = (
+            datetime.now(parsed.tzinfo)
+            if parsed.tzinfo is not None
+            else datetime.now()
+        )
+        if now - parsed > timedelta(days=RESEARCH_ARTIFACT_MAX_AGE_DAYS):
+            log.warning(
+                "research artifact stale/undated (%r); grey", raw_ts,
+            )
+            return None
+        return (overall, env)
+    except Exception as exc:  # noqa: BLE001 (defensive — never raise to a render)
+        log.warning("research artifact unreadable; grey: %s", exc)
+        return None
+
+
+def _research_stoplight() -> Stoplight:
+    """The research-measurement provider: read 18-D's §3 envelope at the shared
+    path via the validating reader; grey until 18-D writes a conformant fresh
+    artifact (then auto-lights, NO 18-F change — provider-driven, LOCK #3)."""
+    grey = Stoplight(
+        id="research", label="Research monitor", color="grey",
+        drilldown_path="/health/research",
+    )
+    validated = read_validated_research_envelope()
+    if validated is None:
+        return grey
+    overall, _env = validated
+    return Stoplight(
+        id="research", label="Research monitor", color=overall,
+        drilldown_path="/health/research",
+    )
