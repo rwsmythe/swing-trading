@@ -272,13 +272,26 @@ def test_excluded_sums_across_hypotheses(tmp_path: Path) -> None:
 
 
 def test_excluded_green_when_zero_signals(tmp_path: Path) -> None:
+    # 0 signals AND 0 excluded -> green n/a (the legitimate empty-funnel shape).
     _write_manifest(tmp_path, dir_name="shadow-expectancy-20260613T000000Z",
-                    funnel=_funnel(0, {"H": {"excluded": {"invalid_ohlc": 5}}}))
+                    funnel=_funnel(0, {"H": {"excluded": {}}}))
     check = _only(
         _check_excluded_reason_breakdown(exports_root=tmp_path),
         "excluded_reason_breakdown")
     assert check.status == "green"  # no div-by-zero
     assert "n/a" in check.summary.lower()
+
+
+def test_excluded_yellow_when_zero_signals_but_nonzero_excluded(tmp_path: Path) -> None:
+    # Codex R4 MAJOR #2: 0 unique_signals but nonzero attributed excluded is an
+    # internally-inconsistent manifest -> yellow, NOT a green n/a false-green.
+    _write_manifest(tmp_path, dir_name="shadow-expectancy-20260613T000000Z",
+                    funnel=_funnel(0, {"H": {"excluded": {"invalid_ohlc": 5}}}))
+    check = _only(
+        _check_excluded_reason_breakdown(exports_root=tmp_path),
+        "excluded_reason_breakdown")
+    assert check.status == "yellow"
+    assert "inconsistent" in check.summary.lower()
 
 
 def test_excluded_green_when_no_hypotheses(tmp_path: Path) -> None:
@@ -497,6 +510,26 @@ def test_coverage_green_on_fresh_detection_with_zero_observations(
     _seed_detection(conn, data_asof_date="2026-06-12")  # not < last_completed
     check = _only(_check_coverage_gaps(conn, now=_NOW), "coverage_gaps")
     assert check.status == "green"
+
+
+def test_coverage_yellow_on_malformed_date_does_not_crash(tmp_path: Path) -> None:
+    # Codex R4 MAJOR #1: a malformed data_asof_date on a degraded DB must NOT
+    # crash the monitor -- count it as a data-shape defect (yellow) and continue.
+    conn = _schema_conn(tmp_path)
+    conn.execute(
+        "INSERT INTO pattern_detection_events"
+        " (ticker, detection_date, data_asof_date, pattern_class,"
+        " structural_anchors_json, composite_score, detector_version, source,"
+        " per_pattern_metadata_json, created_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        # lexically < the cutoff so the WHERE data_asof_date < last_completed
+        # string filter still includes it (else it would be filtered out).
+        ("AAA", "2026-06-05", "0000-99-99", "vcp", "{}", 1.0, "t", "synthetic",
+         "{}", "2026-06-05T00:00:00"))
+    conn.commit()
+    check = _only(_check_coverage_gaps(conn, now=_NOW), "coverage_gaps")
+    assert check.status == "yellow"
+    assert "malformed" in check.summary.lower()
 
 
 def test_coverage_yellow_when_missing_table(tmp_path: Path) -> None:

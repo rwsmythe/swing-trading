@@ -418,22 +418,34 @@ def _check_excluded_reason_breakdown(*, exports_root) -> list[ResearchHealthChec
 
     funnel = manifest["funnel"]  # _manifest_is_well_shaped guarantees the shape
     unique_signals = funnel["detection_level"]["unique_signals"]
-    if not unique_signals:  # 0 or missing -> avoid div-by-zero
-        return [ResearchHealthCheck(
-            key=key, status="green",
-            summary="n/a (zero signals)")]
-
     per_hypothesis = funnel["per_hypothesis"]
-    if not per_hypothesis:
-        return [ResearchHealthCheck(
-            key=key, status="green",
-            summary="no attributed hypotheses yet (n/a)")]
 
     summed: dict[str, int] = {r: 0 for r in _ATTRIBUTED_EXCLUDED_REASONS}
     for hyp in per_hypothesis.values():
         excluded = hyp.get("excluded", {}) if isinstance(hyp, dict) else {}
         for reason in _ATTRIBUTED_EXCLUDED_REASONS:
             summed[reason] += int(excluded.get(reason, 0) or 0)
+
+    if not unique_signals:  # 0 -> avoid div-by-zero
+        # Codex R4 MAJOR #2: 0 signals + NONZERO attributed excluded is an
+        # internally-inconsistent manifest (you cannot attribute exclusions
+        # against zero signals) -> yellow, NOT a green n/a false-green.
+        if any(summed.values()):
+            return [ResearchHealthCheck(
+                key=key, status="yellow",
+                summary="inconsistent manifest: 0 signals but"
+                        f" {sum(summed.values())} attributed excluded",
+                detail="; ".join(f"{r}={summed[r]}"
+                                 for r in _ATTRIBUTED_EXCLUDED_REASONS
+                                 if summed[r]))]
+        return [ResearchHealthCheck(
+            key=key, status="green",
+            summary="n/a (zero signals)")]
+
+    if not per_hypothesis:
+        return [ResearchHealthCheck(
+            key=key, status="green",
+            summary="no attributed hypotheses yet (n/a)")]
 
     worst_status = "green"
     parts: list[str] = []
@@ -551,11 +563,27 @@ def _check_coverage_gaps(
         return _date.fromisoformat(after[0]) if after else None
 
     total_missing = 0
+    malformed = 0
     sample: list[str] = []
     for det_id, entry in per_det.items():
         obs = entry["obs"]
-        asof = _date.fromisoformat(entry["asof"])
-        observed = {d for d, _s in obs}
+        # Codex R4 MAJOR #1: a malformed/NULL date on a degraded/legacy DB must
+        # NOT crash the whole monitor -- count it as a data-shape defect and
+        # continue. (The schema is NOT NULL, but a degraded DB is the brief's
+        # explicit no-crash contract.)
+        try:
+            asof = _date.fromisoformat(entry["asof"])
+            observed = {d for d, _s in obs}
+            min_max = (
+                (_date.fromisoformat(min(observed)),
+                 _date.fromisoformat(max(observed)))
+                if observed else None
+            )
+        except (TypeError, ValueError):
+            malformed += 1
+            if len(sample) < 3:
+                sample.append(f"det{det_id}: malformed date")
+            continue
         if not observed:
             # mature detection with ZERO observations: every expected session
             # (first-after-cutoff .. last_completed) is missing.
@@ -569,7 +597,7 @@ def _check_coverage_gaps(
                     sample.append(f"det{det_id}: {missing} missing (never observed)")
             continue
         latest_status = obs[-1][1]  # last by date order
-        max_obs = _date.fromisoformat(max(observed))
+        max_obs = min_max[1]
         # The expected window STARTS at the first session after the detector's
         # data cutoff (Codex R3 MAJOR #1 -- a LATE first observation, skipping the
         # first expected session, is a real leading/head gap; starting at min_obs
@@ -585,6 +613,19 @@ def _check_coverage_gaps(
             total_missing += missing
             if len(sample) < 3:
                 sample.append(f"det{det_id}: {missing} missing")
+
+    if malformed:
+        # a malformed-date data-shape defect is a real (yellow) integrity signal,
+        # worst-of'd with the gap count below.
+        gap_status = (
+            "red" if total_missing > _COVERAGE_RED_GAPS
+            else "yellow" if total_missing >= _COVERAGE_YELLOW_GAPS else "green"
+        )
+        return [ResearchHealthCheck(
+            key=key, status=worst_of([gap_status, "yellow"]),
+            summary=f"{total_missing} coverage gap(s),"
+                    f" {malformed} malformed-date detection(s)",
+            detail="; ".join(sample) if sample else None)]
 
     if total_missing == 0:
         return [ResearchHealthCheck(
