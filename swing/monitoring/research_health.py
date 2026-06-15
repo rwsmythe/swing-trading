@@ -677,3 +677,81 @@ def _check_candidate_completeness(
         summary=(f"run {latest}: {null_actionable} actionable null-pivot(s),"
                  f" {error_bucket} error-bucket"),
         detail=None)]
+
+
+# --------------------------------------------------------------------------
+# Fetch-transport health (yfinance_calls TRANSPORT indicator; NEVER substitutes
+# for #1). Transport-health is a SAMPLE/indicator, never a census (18-C
+# boundary). Never alarm on a low row count; a stale in_flight row is unknown,
+# not hung.
+# --------------------------------------------------------------------------
+
+_TRANSPORT_RECENT_WINDOW = 50       # most-recent N terminal rows by ts
+_TRANSPORT_MIN_SAMPLE = 10          # < this many terminal rows -> green n/a (low-count guard)
+_TRANSPORT_YELLOW_ERROR_PCT = 20.0
+_TRANSPORT_RED_ERROR_PCT = 50.0
+_TRANSPORT_YELLOW_EMPTY_PCT = 50.0  # empty is looser than error (transient/weekend)
+_TRANSPORT_TERMINAL = ("success", "empty", "error")
+
+
+def _check_fetch_transport_health(
+    conn: sqlite3.Connection,
+) -> list[ResearchHealthCheck]:
+    """yfinance_calls error+empty RATE over a recent window (brief §6.2 #7).
+    TRANSPORT indicator ONLY -- `success` is transport-not-usability (the
+    all-NaN-Close ragged bar records `success`), so this NEVER substitutes for
+    check #1 (the usability authority). EXCLUDE `in_flight` (stale = unknown, not
+    hung). NEVER alarm on a LOW row count (the §6.2 #7 LOCK -- BINDING): below
+    the sample floor -> green, but the observed rate is SURFACED in the detail
+    (Codex R6 MAJOR #2 -- visible without alarming). Missing table -> yellow;
+    empty table -> green.
+    """
+    key = "fetch_transport_health"
+    try:
+        rows = conn.execute(
+            "SELECT status FROM yfinance_calls ORDER BY ts DESC, call_id DESC"
+            " LIMIT ?",
+            (_TRANSPORT_RECENT_WINDOW + 200,),  # over-read; filter terminal below
+        ).fetchall()
+    except sqlite3.OperationalError as exc:
+        if _schema_unavailable(exc):
+            return [ResearchHealthCheck(
+                key=key, status="yellow",
+                summary="yfinance_calls schema unavailable",
+                detail="yfinance_calls table missing; run swing db-migrate")]
+        raise
+
+    if not rows:
+        return [ResearchHealthCheck(
+            key=key, status="green",
+            summary="n/a (no fetch audit yet)")]
+
+    terminal = [r[0] for r in rows if r[0] in _TRANSPORT_TERMINAL]
+    terminal = terminal[:_TRANSPORT_RECENT_WINDOW]
+    n = len(terminal)
+    n_error = sum(1 for s in terminal if s == "error")
+    n_empty = sum(1 for s in terminal if s == "empty")
+
+    if n < _TRANSPORT_MIN_SAMPLE:
+        # the LOCK: never alarm on a low count. SURFACE the rate in detail.
+        return [ResearchHealthCheck(
+            key=key, status="green",
+            summary="n/a (insufficient sample)",
+            detail=f"{n} terminal rows: {n_error} error, {n_empty} empty"
+                   " (below sample floor)")]
+
+    error_pct = 100.0 * n_error / n
+    empty_pct = 100.0 * n_empty / n
+    if error_pct > _TRANSPORT_RED_ERROR_PCT:
+        error_status = "red"
+    elif error_pct > _TRANSPORT_YELLOW_ERROR_PCT:
+        error_status = "yellow"
+    else:
+        error_status = "green"
+    empty_status = "yellow" if empty_pct > _TRANSPORT_YELLOW_EMPTY_PCT else "green"
+
+    status = worst_of([error_status, empty_status])
+    return [ResearchHealthCheck(
+        key=key, status=status,
+        summary=f"{n} terminal fetches: {error_pct:.0f}% error, {empty_pct:.0f}% empty",
+        detail=f"{n_error} error, {n_empty} empty of {n} terminal rows")]

@@ -23,6 +23,7 @@ from swing.monitoring.research_health import (
     _check_coverage_gaps,
     _check_drumbeat_liveness,
     _check_excluded_reason_breakdown,
+    _check_fetch_transport_health,
     _check_structural_integrity,
     _check_temporal_log_finiteness,
     _read_newest_manifest,
@@ -685,3 +686,125 @@ def test_manifest_three_state_matrix_excluded_and_drumbeat(
         assert excluded.status == "yellow"  # corrupt
         # the dir is FRESH (age green) but the manifest content is corrupt:
         assert drumbeat.status in ("yellow", "red")
+
+
+# ---------------------------------------------------------------------------
+# Task 6: _check_fetch_transport_health (yfinance_calls TRANSPORT indicator)
+# ---------------------------------------------------------------------------
+
+
+def _seed_yf_call(
+    conn: sqlite3.Connection, *, status: str, ts: str = "2026-06-14T00:00:00",
+    ticker: str = "AAA",
+) -> None:
+    from swing.data.repos.yfinance_calls import insert_in_flight, update_call_outcome
+    call_id = insert_in_flight(
+        conn, ts=ts, call_type="download_single", ticker=ticker,
+        ticker_count=None, pipeline_run_id=None, surface="pipeline")
+    if status != "in_flight":
+        update_call_outcome(
+            conn, call_id=call_id, response_time_ms=10, status=status,
+            rows_returned=1 if status == "success" else 0, error_message=None)
+    conn.commit()
+
+
+def _seed_yf_calls(conn: sqlite3.Connection, *, success=0, error=0, empty=0,
+                   in_flight=0) -> None:
+    n = 0
+    for _ in range(success):
+        _seed_yf_call(conn, status="success", ticker=f"S{n}"); n += 1
+    for _ in range(error):
+        _seed_yf_call(conn, status="error", ticker=f"E{n}"); n += 1
+    for _ in range(empty):
+        _seed_yf_call(conn, status="empty", ticker=f"M{n}"); n += 1
+    for _ in range(in_flight):
+        _seed_yf_call(conn, status="in_flight", ticker=f"F{n}"); n += 1
+
+
+def test_transport_green_when_low_sample(tmp_path: Path) -> None:
+    conn = _schema_conn(tmp_path)
+    _seed_yf_calls(conn, success=4)  # the LIVE-DB shape
+    check = _only(_check_fetch_transport_health(conn), "fetch_transport_health")
+    assert check.status == "green"
+    assert "insufficient sample" in check.summary.lower() or "n/a" in check.summary.lower()
+    # surface-don't-suppress (Codex R6 MAJOR #2): the observed count is in detail.
+    assert "4" in (check.detail or "")
+    assert "0 error" in (check.detail or "")
+
+
+def test_transport_sample_floor_boundary_activates_rate_logic(tmp_path: Path) -> None:
+    # 60% error at 9 terminal rows -> green (below the floor of 10); at 10 -> red.
+    conn = _schema_conn(tmp_path)
+    # 9 terminal: 5 error + 4 success = ~55%... use 6 error + 3 success = 9 rows
+    _seed_yf_calls(conn, error=6, success=3)  # 9 terminal, below floor
+    below = _only(_check_fetch_transport_health(conn), "fetch_transport_health")
+    assert below.status == "green"  # below the sample floor -> suppressed
+    # add one more error -> 10 terminal, 7 error = 70% -> red (rate logic active)
+    _seed_yf_call(conn, status="error", ticker="EX")
+    at = _only(_check_fetch_transport_health(conn), "fetch_transport_health")
+    assert at.status == "red"
+
+
+def test_transport_green_when_all_success(tmp_path: Path) -> None:
+    conn = _schema_conn(tmp_path)
+    _seed_yf_calls(conn, success=20)
+    check = _only(_check_fetch_transport_health(conn), "fetch_transport_health")
+    assert check.status == "green"
+
+
+def test_transport_yellow_on_error_rate(tmp_path: Path) -> None:
+    conn = _schema_conn(tmp_path)
+    _seed_yf_calls(conn, success=15, error=5)  # 20 terminal, 25% error
+    check = _only(_check_fetch_transport_health(conn), "fetch_transport_health")
+    assert check.status == "yellow"  # 25% (>20, <50)
+
+
+def test_transport_red_on_high_error_rate(tmp_path: Path) -> None:
+    conn = _schema_conn(tmp_path)
+    _seed_yf_calls(conn, success=8, error=12)  # 20 terminal, 60% error
+    check = _only(_check_fetch_transport_health(conn), "fetch_transport_health")
+    assert check.status == "red"
+
+
+def test_transport_excludes_in_flight_from_rate(tmp_path: Path) -> None:
+    # 15 success + 5 in_flight: terminal_count = 15 (>= floor), error 0% -> green.
+    # Counting in_flight as a problem (5/20) would mis-rate.
+    conn = _schema_conn(tmp_path)
+    _seed_yf_calls(conn, success=15, in_flight=5)
+    check = _only(_check_fetch_transport_health(conn), "fetch_transport_health")
+    assert check.status == "green"
+
+
+def test_transport_yellow_on_empty_rate(tmp_path: Path) -> None:
+    conn = _schema_conn(tmp_path)
+    _seed_yf_calls(conn, success=8, empty=12)  # 20 terminal, 60% empty, 0 error
+    check = _only(_check_fetch_transport_health(conn), "fetch_transport_health")
+    assert check.status == "yellow"  # empty signal at its looser floor (50%)
+
+
+def test_transport_does_not_substitute_for_finiteness(tmp_path: Path) -> None:
+    # ALL success transport WHILE a NaN-Close observation exists -> #7 green,
+    # #1 red on the SAME DB (the load-bearing #7-vs-#1 separation).
+    conn = _schema_conn(tmp_path)
+    _seed_yf_calls(conn, success=20)
+    det = _seed_detection(conn)
+    nan_json = '{"open": 1.0, "high": 2.0, "low": 0.5, "close": NaN, ' \
+        '"volume": 100.0, "provider": "yfinance"}'
+    _seed_observation(conn, det, observation_date="2026-06-05", ohlc_today_json=nan_json)
+    transport = _only(_check_fetch_transport_health(conn), "fetch_transport_health")
+    finiteness = _only(_check_temporal_log_finiteness(conn), "temporal_log_finiteness")
+    assert transport.status == "green"
+    assert finiteness.status == "red"
+
+
+def test_transport_yellow_when_missing_table(tmp_path: Path) -> None:
+    conn = sqlite3.connect(":memory:")
+    check = _only(_check_fetch_transport_health(conn), "fetch_transport_health")
+    assert check.status == "yellow"
+
+
+def test_transport_green_when_empty_table(tmp_path: Path) -> None:
+    conn = _schema_conn(tmp_path)  # schema present, 0 rows
+    check = _only(_check_fetch_transport_health(conn), "fetch_transport_health")
+    assert check.status == "green"
+    assert "n/a" in check.summary.lower()
