@@ -126,6 +126,17 @@ class ResearchHealthStatus:
                 "ResearchHealthStatus.checks must be non-empty (the 18-F reader"
                 " greys an empty-checks artifact)"
             )
+        # Codex R11 MAJOR #2: every check MUST be a ResearchHealthCheck (whose
+        # __post_init__ enforces the per-check render schema). A bare duck-typed
+        # object with a .status could otherwise pass worst_of yet serialize a
+        # check payload the 18-F reader greys -> a non-conformant envelope IS
+        # constructable. Reject non-ResearchHealthCheck entries by construction.
+        for c in self.checks:
+            if not isinstance(c, ResearchHealthCheck):
+                raise ValueError(
+                    "ResearchHealthStatus.checks entries must be"
+                    f" ResearchHealthCheck; got {type(c).__name__}"
+                )
         # Enforce the locked invariant overall == worst_of(checks) (gate 4 by
         # construction) so an inconsistent false-green envelope is unconstructable.
         expected = worst_of([c.status for c in self.checks])
@@ -380,6 +391,23 @@ def _manifest_is_well_shaped(parsed: object) -> bool:
     return all(_is_nonneg_count(v) for v in unattributed.values())
 
 
+def _newest_artifact_dir(exports_root):
+    """The single newest shadow-expectancy-* dir by name across ALL such dirs
+    (Codex R11 MAJOR #1 -- the SHARED selection both the manifest read and the age
+    read use, so they never disagree about which artifact is "newest"). None when
+    no shadow-expectancy-* dir exists at all."""
+    from pathlib import Path
+
+    root = Path(exports_root)
+    if not root.exists():
+        return None
+    dirs = sorted(
+        (p for p in root.glob("shadow-expectancy-*") if p.is_dir()),
+        key=lambda p: p.name, reverse=True,
+    )
+    return dirs[0] if dirs else None
+
+
 def _read_newest_manifest(exports_root) -> tuple[str, dict | None]:
     """Read the NEWEST shadow-expectancy-* manifest.json. 3-state result (Codex
     R1 MAJOR #3 -- distinguish ABSENT from CORRUPT):
@@ -392,25 +420,20 @@ def _read_newest_manifest(exports_root) -> tuple[str, dict | None]:
       - ("ok", <dict>)    -- parsed successfully AND the nested funnel schema is
         present (so downstream sums can rely on those keys).
 
-    Newest by dir-name reverse-sort, restricted to dirs with a PARSEABLE
-    timestamp (Codex R10 MINOR #2 -- the SAME _DIR_TS_RE filter _newest_artifact_
-    age_days uses, so both arms agree on "newest"; a stray non-timestamp
-    shadow-expectancy-* dir cannot become the manifest "newest" while the age arm
-    skips it). Never crashes on the read.
+    The newest dir is selected across ALL shadow-expectancy-* dirs by name (Codex
+    R11 MAJOR #1 -- the SAME selection _newest_artifact_age_days uses, so both
+    arms agree on the SINGLE newest artifact). ABSENT means NO shadow-expectancy-*
+    dir at all; if the newest dir's NAME is not timestamp-parseable (a stray /
+    malformed-name artifact) it is CORRUPT (a dir exists -> not "absent" -> must
+    escalate). Never crashes on the read.
     """
-    from pathlib import Path
-
-    root = Path(exports_root)
-    if not root.exists():
+    newest = _newest_artifact_dir(exports_root)
+    if newest is None:
         return ("absent", None)
-    dirs = sorted(
-        (p for p in root.glob("shadow-expectancy-*")
-         if p.is_dir() and _DIR_TS_RE.search(p.name)),
-        key=lambda p: p.name, reverse=True,
-    )
-    if not dirs:
-        return ("absent", None)
-    newest = dirs[0]
+    if not _DIR_TS_RE.search(newest.name):
+        # the newest artifact dir exists but its name is not a parseable timestamp
+        # -> a malformed/stray latest artifact, NOT "absent" -> corrupt.
+        return ("corrupt", None)
     manifest_path = newest / "manifest.json"
     if not manifest_path.exists():
         return ("corrupt", None)  # crashed-mid-write latest run -- NOT absent
@@ -609,6 +632,11 @@ def _check_coverage_gaps(
         try:
             asof = _date.fromisoformat(entry["asof"])
             observed = {d for d, _s in obs}
+            # Parse EVERY observed date (Codex R11 MINOR): a malformed date that
+            # sorts BETWEEN a valid min/max would be missed by parsing min/max
+            # only. Any parse failure -> a data-shape defect.
+            for d in observed:
+                _date.fromisoformat(d)
             min_max = (
                 (_date.fromisoformat(min(observed)),
                  _date.fromisoformat(max(observed)))
@@ -784,27 +812,22 @@ def _now_to_utc(n: datetime) -> datetime:
 
 
 def _newest_artifact_age_days(exports_root, now: datetime) -> int | None:
-    """Newest shadow-expectancy-* dir age in (floored) days vs `now`, by the
-    dir-name UTC timestamp (the weekly_glance.py:74-78 idiom). None when no dir
-    with a parseable timestamp exists. The age is read from the dir NAME, so it
-    is available even when the manifest is corrupt (a fresh-but-corrupt dir is
-    NOT stale)."""
-    from pathlib import Path
-
-    root = Path(exports_root)
-    if not root.exists():
+    """Age in (floored) days of the SINGLE newest shadow-expectancy-* dir vs
+    `now`, by the dir-name UTC timestamp (the weekly_glance.py:74-78 idiom). Uses
+    the SHARED _newest_artifact_dir selection (Codex R11 MAJOR #1) so the age arm
+    and the manifest arm agree on which dir is "newest". None when no dir exists
+    at all OR the newest dir's NAME is not timestamp-parseable (a stray/malformed
+    newest -- the manifest arm reports that as corrupt). The age is read from the
+    dir NAME, so it is available even when the manifest CONTENT is corrupt (a
+    fresh-but-corrupt dir is NOT stale)."""
+    newest = _newest_artifact_dir(exports_root)
+    if newest is None:
         return None
-    dirs = sorted(
-        (p for p in root.glob("shadow-expectancy-*") if p.is_dir()),
-        key=lambda p: p.name, reverse=True,
-    )
-    for d in dirs:
-        m = _DIR_TS_RE.search(d.name)
-        if m:
-            newest = datetime.strptime(m.group(1), "%Y%m%dT%H%M%S").replace(
-                tzinfo=UTC)
-            return (_now_to_utc(now) - newest).days
-    return None
+    m = _DIR_TS_RE.search(newest.name)
+    if not m:
+        return None  # newest dir name unparseable -> the manifest arm -> corrupt
+    parsed = datetime.strptime(m.group(1), "%Y%m%dT%H%M%S").replace(tzinfo=UTC)
+    return (_now_to_utc(now) - parsed).days
 
 
 def _check_drumbeat_liveness(
@@ -819,9 +842,17 @@ def _check_drumbeat_liveness(
     age_days = _newest_artifact_age_days(exports_root, now)
 
     if age_days is None:
+        # Distinguish NO artifact dir at all (red, never ran) from a newest dir
+        # whose NAME is unparseable (a stray/malformed newest -> the manifest arm
+        # reports corrupt -> yellow), Codex R11 MAJOR #1.
+        if _newest_artifact_dir(exports_root) is None:
+            return [ResearchHealthCheck(
+                key=key, status="red",
+                summary="drumbeat never ran (no engine artifacts on disk)")]
         return [ResearchHealthCheck(
-            key=key, status="red",
-            summary="drumbeat never ran (no engine artifacts on disk)")]
+            key=key, status="yellow",
+            summary="newest engine artifact has a malformed name",
+            detail="cannot read the artifact timestamp; latest run is corrupt")]
 
     if age_days < 0:
         # Codex R7 MAJOR #2: a FUTURE-dated artifact dir (negative age) is NOT

@@ -65,6 +65,20 @@ def test_status_rejects_empty_checks() -> None:
         ResearchHealthStatus(overall="green", checks=[])
 
 
+def test_status_rejects_non_research_health_check_entries() -> None:
+    # Codex R11 MAJOR #2: a duck-typed object with a .status must NOT be accepted
+    # as a check -- only ResearchHealthCheck instances (whose __post_init__
+    # enforces the render schema) may enter the envelope.
+    class _Fake:
+        status = "green"
+        key = "x"
+        summary = "s"
+        detail = None
+
+    with pytest.raises(ValueError, match="ResearchHealthCheck"):
+        ResearchHealthStatus(overall="green", checks=[_Fake()])
+
+
 def test_worst_of() -> None:
     assert worst_of([]) == "green"
     assert worst_of(["green", "green"]) == "green"

@@ -465,18 +465,25 @@ def test_excluded_yellow_when_manifest_is_non_utf8(tmp_path: Path) -> None:
     assert check.status == "yellow"
 
 
-def test_read_newest_manifest_ignores_non_timestamp_dirs(tmp_path: Path) -> None:
-    # Codex R10 MINOR #2: a stray non-timestamp shadow-expectancy-* dir must NOT
-    # become the manifest "newest" (the age arm skips it; both arms must agree).
-    # A valid older timestamped dir with a good manifest + a lexically-LATER
-    # non-timestamp dir -> the reader picks the VALID timestamped one.
+def test_read_newest_manifest_stray_name_newest_is_corrupt(tmp_path: Path) -> None:
+    # Codex R11 MAJOR #1: the newest dir is selected across ALL shadow-expectancy-*
+    # dirs (the SAME selection the age arm uses). A lexically-LATER stray
+    # non-timestamp dir IS the newest -> a malformed-name newest artifact is
+    # CORRUPT (a dir exists -> not "absent"), NOT silently skipped to an older one.
     _write_manifest(tmp_path, dir_name="shadow-expectancy-20260613T000000Z",
                     funnel=_funnel(100, {"H": {"excluded": {"invalid_ohlc": 1}}}))
-    # a lexically-later stray dir (sorts after the timestamped one by name)
-    (tmp_path / "shadow-expectancy-zbad").mkdir()
+    (tmp_path / "shadow-expectancy-zbad").mkdir()  # sorts AFTER -> newest
     state, payload = _read_newest_manifest(tmp_path)
-    assert state == "ok"  # the valid timestamped dir wins, not the stray
-    assert payload is not None
+    assert state == "corrupt"  # the stray newest escalates, not ignored
+    assert payload is None
+
+
+def test_read_newest_manifest_only_stray_dir_is_corrupt_not_absent(tmp_path: Path) -> None:
+    # the ONLY dir is a stray non-timestamp dir -> corrupt (a dir EXISTS), NOT
+    # absent/green (Codex R11 MAJOR #1).
+    (tmp_path / "shadow-expectancy-zbad").mkdir()
+    state, _payload = _read_newest_manifest(tmp_path)
+    assert state == "corrupt"
 
 
 def test_read_newest_manifest_picks_newest_by_dir_name(tmp_path: Path) -> None:
@@ -627,6 +634,26 @@ def test_coverage_yellow_on_malformed_date_does_not_crash(tmp_path: Path) -> Non
     check = _only(_check_coverage_gaps(conn, now=_NOW), "coverage_gaps")
     assert check.status == "yellow"
     assert "malformed" in check.summary.lower()
+
+
+def test_coverage_yellow_on_interior_malformed_observation_date(tmp_path: Path) -> None:
+    # Codex R11 MINOR: a malformed observation_date that sorts BETWEEN valid
+    # min/max must still be caught (every observed date is parsed, not just
+    # min/max).
+    conn = _schema_conn(tmp_path)
+    det = _seed_detection(conn, data_asof_date="2026-06-04")
+    _seed_observation(conn, det, observation_date="2026-06-05", status="pending")
+    # a malformed date lexically between 06-05 and 06-12 (starts with '2026-06-')
+    conn.execute(
+        "INSERT INTO pattern_forward_observations"
+        " (detection_id, observation_date, ohlc_today_json, status,"
+        " sessions_since_detection, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (det, "2026-06-9X", _FINITE_OHLC, "pending", 1, "2026-06-09T00:00:00"))
+    _seed_observation(conn, det, observation_date="2026-06-12", status="pending")
+    conn.commit()
+    check = _only(_check_coverage_gaps(conn, now=_NOW), "coverage_gaps")
+    assert check.status in ("yellow", "red")
+    assert "malformed" in (check.detail or "").lower() or check.status != "green"
 
 
 def test_coverage_escalates_on_unknown_latest_status_with_missing_tail(
