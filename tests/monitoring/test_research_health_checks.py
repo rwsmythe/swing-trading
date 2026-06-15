@@ -489,6 +489,31 @@ def test_read_newest_manifest_rejects_embedded_timestamp_name(tmp_path: Path) ->
     assert state == "corrupt"  # the crafted newest name is rejected -> corrupt
 
 
+def test_read_newest_manifest_invalid_calendar_ts_name_is_corrupt(tmp_path: Path) -> None:
+    # Codex R14 MAJOR: a digit-SHAPED but invalid-calendar dir name (month 13, day
+    # 99, hour 99) passes a bare \d{8}T\d{6} regex but datetime.strptime then
+    # RAISES -> the name parse must validate the CALENDAR, not just the digit
+    # shape, and report corrupt (not "ok") with a present manifest.
+    _write_manifest(tmp_path, dir_name="shadow-expectancy-20261399T999999Z",
+                    funnel=_funnel(100, {"H": {"excluded": {"invalid_ohlc": 1}}}))
+    state, payload = _read_newest_manifest(tmp_path)
+    assert state == "corrupt"  # invalid-calendar name -> not a parseable timestamp
+    assert payload is None
+
+
+def test_drumbeat_invalid_calendar_ts_name_does_not_crash(tmp_path: Path) -> None:
+    # Codex R14 MAJOR (the crash arm): _newest_artifact_age_days must NOT raise
+    # ValueError from strptime on a digit-shaped invalid-calendar name -> the
+    # whole monitor would crash. It must treat it as malformed (None age) ->
+    # drumbeat reports the malformed-name yellow.
+    _write_manifest(tmp_path, dir_name="shadow-expectancy-20261399T999999Z",
+                    funnel=_funnel(100, {}, unattributed={}))
+    check = _only(_check_drumbeat_liveness(exports_root=tmp_path, now=_NOW),
+                  "drumbeat_liveness")
+    assert check.status == "yellow"
+    assert "malformed" in check.summary.lower()
+
+
 def test_read_newest_manifest_only_stray_dir_is_corrupt_not_absent(tmp_path: Path) -> None:
     # the ONLY dir is a stray non-timestamp dir -> corrupt (a dir EXISTS), NOT
     # absent/green (Codex R11 MAJOR #1).

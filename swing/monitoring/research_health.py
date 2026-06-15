@@ -54,6 +54,26 @@ _ZERO_OFFSET = timedelta(0)
 _DIR_TS_RE = re.compile(r"^shadow-expectancy-(\d{8}T\d{6})Z$")
 
 
+def _parse_artifact_dir_ts(name: str) -> datetime | None:
+    """Parse a shadow-expectancy-* dir NAME to its aware-UTC timestamp, or None
+    when the name is not a VALID artifact timestamp (Codex R14 MAJOR -- centralize
+    the parse so BOTH _read_newest_manifest and _newest_artifact_age_days agree).
+
+    The regex `\\d{8}T\\d{6}` validates DIGIT SHAPE only; a digit-shaped but
+    invalid-CALENDAR name (e.g. shadow-expectancy-20261399T999999Z: month 13, day
+    99, hour 99) passes fullmatch yet datetime.strptime RAISES ValueError. So the
+    strptime is wrapped here: a name that fails EITHER the regex OR the calendar
+    parse returns None -> the manifest arm reports corrupt + the age arm reports
+    None (the malformed-name yellow), never an uncaught crash or a false-green."""
+    m = _DIR_TS_RE.fullmatch(name)
+    if not m:
+        return None
+    try:
+        return datetime.strptime(m.group(1), "%Y%m%dT%H%M%S").replace(tzinfo=UTC)
+    except ValueError:
+        return None
+
+
 def _research_now_iso(now_naive_local: datetime | None = None) -> str:
     """Aware-UTC ISO-8601 stamp (Codex R1 MAJOR #1). `now_naive_local` is the
     aggregator's normalized naive-Hawaii-local clock; None -> the Hawaii wall
@@ -435,8 +455,9 @@ def _read_newest_manifest(exports_root) -> tuple[str, dict | None]:
     newest = _newest_artifact_dir(exports_root)
     if newest is None:
         return ("absent", None)
-    if not _DIR_TS_RE.fullmatch(newest.name):
+    if _parse_artifact_dir_ts(newest.name) is None:
         # the newest artifact dir exists but its name is not a parseable timestamp
+        # -- a stray name OR a digit-shaped invalid-CALENDAR name (Codex R14 MAJOR)
         # -> a malformed/stray latest artifact, NOT "absent" -> corrupt.
         return ("corrupt", None)
     manifest_path = newest / "manifest.json"
@@ -860,10 +881,11 @@ def _newest_artifact_age_days(exports_root, now: datetime) -> int | None:
     newest = _newest_artifact_dir(exports_root)
     if newest is None:
         return None
-    m = _DIR_TS_RE.fullmatch(newest.name)
-    if not m:
-        return None  # newest dir name unparseable -> the manifest arm -> corrupt
-    parsed = datetime.strptime(m.group(1), "%Y%m%dT%H%M%S").replace(tzinfo=UTC)
+    parsed = _parse_artifact_dir_ts(newest.name)
+    if parsed is None:
+        # newest dir name unparseable (stray OR digit-shaped invalid-calendar,
+        # Codex R14 MAJOR) -> the manifest arm reports corrupt; never strptime-crash.
+        return None
     return (_now_to_utc(now) - parsed).days
 
 
