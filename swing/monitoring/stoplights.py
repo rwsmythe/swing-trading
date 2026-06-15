@@ -64,3 +64,29 @@ class Stoplight:
             )
         if not self.drilldown_path:
             raise ValueError("Stoplight.drilldown_path must be non-empty")
+
+
+def _tool_stoplight(conn, cfg) -> Stoplight:
+    """The tool-health provider: REUSE 18-E's `compute_tool_health` (lazy import,
+    LOCK #4) and map `.overall` -> the stoplight color. DEFENSIVE: ANY exception
+    (or a missing cfg from which `prices_cache_dir` can't be derived) degrades to
+    grey + a WARNING; NEVER raises (LOCK #2).
+    """
+    grey = Stoplight(
+        id="tool", label="Tool health", color="grey",
+        drilldown_path="/health/tool",
+    )
+    try:
+        if cfg is None:
+            return grey
+        from swing.monitoring.tool_health import compute_tool_health
+        status = compute_tool_health(
+            conn, cfg=cfg, prices_cache_dir=cfg.paths.prices_cache_dir,
+        )
+        return Stoplight(
+            id="tool", label="Tool health", color=status.overall,
+            drilldown_path="/health/tool",
+        )
+    except Exception as exc:  # noqa: BLE001 (defensive — must never 500 a page)
+        log.warning("tool-health stoplight degraded to grey: %s", exc)
+        return grey

@@ -14,8 +14,20 @@ from swing.monitoring.stoplights import (
     RESEARCH_HEALTH_ARTIFACT_PATH,
     RESEARCH_MONITOR_ID,
     Stoplight,
+    _tool_stoplight,
     research_health_artifact_path,
 )
+from swing.monitoring.tool_health import ToolHealthCheck, ToolHealthStatus
+
+
+class _FakeCfg:
+    """Minimal cfg stub exposing `.paths.prices_cache_dir` (the only field the
+    tool provider reads)."""
+
+    class _Paths:
+        prices_cache_dir = "/tmp/prices"
+
+    paths = _Paths()
 
 
 # ---------------------------------------------------------------- Task 1
@@ -62,3 +74,59 @@ def test_research_monitor_id_constant():
 
 def test_research_artifact_max_age_days_constant():
     assert RESEARCH_ARTIFACT_MAX_AGE_DAYS == 7
+
+
+# ---------------------------------------------------------------- Task 2
+
+
+@pytest.mark.parametrize("color", ["green", "yellow", "red"])
+def test_tool_stoplight_maps_overall_to_color(monkeypatch, color):
+    status = ToolHealthStatus(
+        overall=color,
+        checks=[ToolHealthCheck(key="k", status=color, summary="s")],
+    )
+    monkeypatch.setattr(
+        "swing.monitoring.tool_health.compute_tool_health",
+        lambda conn, **kw: status,
+    )
+    s = _tool_stoplight(None, _FakeCfg())
+    assert s.color == color
+    assert s.id == "tool"
+    assert s.drilldown_path == "/health/tool"
+
+
+def test_tool_stoplight_grey_when_compute_raises(monkeypatch, caplog):
+    def _boom(conn, **kw):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(
+        "swing.monitoring.tool_health.compute_tool_health", _boom,
+    )
+    with caplog.at_level("WARNING"):
+        s = _tool_stoplight(None, _FakeCfg())  # must NOT raise
+    assert s.color == "grey"
+    assert any("grey" in r.message.lower() for r in caplog.records)
+
+
+def test_tool_stoplight_grey_when_cfg_none():
+    s = _tool_stoplight(None, None)  # no prices_cache_dir derivable; defensive
+    assert s.color == "grey"
+
+
+def test_tool_stoplight_passes_prices_cache_dir(monkeypatch):
+    calls = {}
+
+    def _record(conn, **kw):
+        calls.update(kw)
+        return ToolHealthStatus(
+            overall="green",
+            checks=[ToolHealthCheck(key="k", status="green", summary="s")],
+        )
+
+    monkeypatch.setattr(
+        "swing.monitoring.tool_health.compute_tool_health", _record,
+    )
+    cfg = _FakeCfg()
+    _tool_stoplight(None, cfg)
+    assert calls["cfg"] is cfg
+    assert calls["prices_cache_dir"] == cfg.paths.prices_cache_dir
