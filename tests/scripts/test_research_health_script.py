@@ -188,9 +188,11 @@ def test_script_unreadable_db_exits_one_without_write(tmp_path, monkeypatch, cap
         lambda: artifact)
     mod = _load_script_module()
     rc = mod.main(["--db", str(bad_db)])
-    out = capsys.readouterr().out
+    captured = capsys.readouterr()
     assert rc == 1
-    assert "unreadable" in out.lower()
+    # Codex R9 MINOR: operational errors go to STDERR (not stdout / --json output)
+    assert "unreadable" in captured.err.lower()
+    assert "unreadable" not in captured.out.lower()
     assert not artifact.exists()  # no synthetic envelope written
 
 

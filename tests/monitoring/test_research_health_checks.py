@@ -1036,6 +1036,22 @@ def test_transport_does_not_substitute_for_finiteness(tmp_path: Path) -> None:
     assert finiteness.status == "red"
 
 
+def test_transport_surfaces_in_flight_count_in_detail(tmp_path: Path) -> None:
+    # Codex R9 MAJOR: in_flight is denominator-EXCLUDED but its count is SURFACED
+    # in the detail (visibility without alarming). An all-in_flight table is NOT
+    # silently "no fetch audit" -- the detail shows the in_flight count.
+    conn = _schema_conn(tmp_path)
+    _seed_yf_calls(conn, in_flight=4)  # no terminal rows
+    check = _only(_check_fetch_transport_health(conn), "fetch_transport_health")
+    assert check.status == "green"  # color unchanged (no terminal rows)
+    assert "4 in_flight" in (check.detail or "")
+    # low-sample path also surfaces in_flight:
+    _seed_yf_calls(conn, success=2)  # 2 terminal (below floor) + 4 in_flight
+    check2 = _only(_check_fetch_transport_health(conn), "fetch_transport_health")
+    assert check2.status == "green"
+    assert "in_flight" in (check2.detail or "")
+
+
 def test_transport_in_flight_does_not_starve_terminal_sample(tmp_path: Path) -> None:
     # Codex R2-rev MAJOR #2: a BURST of newer in_flight rows must NOT bump older
     # terminal failures out of the recent window (the SQL-filter-terminal fix).

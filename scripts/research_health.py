@@ -108,7 +108,10 @@ def main(argv: list[str] | None = None) -> int:
 
     db_path = Path(args.db).expanduser().resolve()
     if not db_path.exists():
-        print(f"DB not found at {db_path} -- ran from the right box?")
+        # Operational errors go to STDERR (Codex R9 MINOR) so they never pollute
+        # a --json stdout consumer.
+        print(f"DB not found at {db_path} -- ran from the right box?",
+              file=sys.stderr)
         return 1
 
     out_path = _resolve_out_path(args)
@@ -135,7 +138,8 @@ def main(argv: list[str] | None = None) -> int:
     except sqlite3.DatabaseError as exc:
         if conn is not None:
             conn.close()
-        print(f"DB at {db_path} is unreadable: {exc} -- ran from the right box?")
+        print(f"DB at {db_path} is unreadable: {exc} -- ran from the right box?",
+              file=sys.stderr)
         return 1
     try:
         status = compute_research_health(

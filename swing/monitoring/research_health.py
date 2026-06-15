@@ -942,10 +942,24 @@ def _check_fetch_transport_health(
                 detail="yfinance_calls table missing; run swing db-migrate")]
         raise
 
+    # A detail-only recent in_flight tally (Codex R9 MAJOR): in_flight is EXCLUDED
+    # from the rate denominator (stale = unknown, not hung -- the 18-C LOCK), but
+    # SURFACING its count in the detail keeps the observed state visible (so an
+    # all-/mostly-in_flight table is not silently reported as "no fetch audit").
+    # NOT a census, NOT a denominator input, NEVER drives the color.
+    n_in_flight = conn.execute(
+        "SELECT COUNT(*) FROM ("
+        " SELECT call_id FROM yfinance_calls WHERE status = 'in_flight'"
+        " ORDER BY ts DESC, call_id DESC LIMIT ?)",
+        (_TRANSPORT_RECENT_WINDOW,),
+    ).fetchone()[0]
+    in_flight_note = f"; {n_in_flight} in_flight (excluded)" if n_in_flight else ""
+
     if not rows:
         return [ResearchHealthCheck(
             key=key, status="green",
-            summary="n/a (no fetch audit yet)")]
+            summary="n/a (no terminal fetch audit yet)",
+            detail=f"0 terminal rows{in_flight_note}")]
 
     terminal = [r[0] for r in rows]
     n = len(terminal)
@@ -958,7 +972,7 @@ def _check_fetch_transport_health(
             key=key, status="green",
             summary="n/a (insufficient sample)",
             detail=f"{n} terminal rows: {n_error} error, {n_empty} empty"
-                   " (below sample floor)")]
+                   f"{in_flight_note} (below sample floor)")]
 
     error_pct = 100.0 * n_error / n
     empty_pct = 100.0 * n_empty / n
