@@ -398,8 +398,6 @@ def _check_coverage_gaps(
     """
     from datetime import date as _date
 
-    import pandas as pd
-
     from swing.evaluation.dates import _NYSE, last_completed_session
 
     key = "coverage_gaps"
@@ -438,9 +436,12 @@ def _check_coverage_gaps(
             summary="no mature detections with observations yet (n/a)")]
 
     def _sessions(start: _date, end: _date) -> set[str]:
+        # sessions_in_range accepts stdlib date / ISO strings directly -- NO
+        # pandas in the monitor's own code (Codex R1 MAJOR: no monitor-owned
+        # pandas). The returned elements are Timestamps; we only read .date().
         if start > end:
             return set()
-        idx = _NYSE.sessions_in_range(pd.Timestamp(start), pd.Timestamp(end))
+        idx = _NYSE.sessions_in_range(start, end)
         return {ts.date().isoformat() for ts in idx}
 
     total_missing = 0
