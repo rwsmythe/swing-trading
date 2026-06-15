@@ -14,9 +14,8 @@ from pathlib import Path
 import pytest
 
 from swing.data.db import ensure_schema
-from swing.data.models import PatternDetectionEvent, PatternForwardObservation
+from swing.data.models import PatternDetectionEvent
 from swing.data.repos.pattern_detection_events import insert_detection_event
-from swing.data.repos.pattern_forward_observations import insert_observation
 from swing.monitoring.research_health import (
     ResearchHealthCheck,
     _check_candidate_completeness,
@@ -73,16 +72,17 @@ def _seed_observation(
     status: str = "pending",
     sessions_since_detection: int = 1,
 ) -> None:
-    obs = PatternForwardObservation(
-        observation_id=None,
-        detection_id=det_id,
-        observation_date=observation_date,
-        ohlc_today_json=ohlc_today_json,
-        status=status,
-        sessions_since_detection=sessions_since_detection,
-        created_at="2026-06-05T00:00:00",
-    )
-    insert_observation(conn, obs)
+    # Plant via a RAW insert (bypassing insert_observation's 18-B.1 finiteness
+    # write-barrier) so the monitor tests can plant the LEGACY-bad NaN/None/
+    # corrupt rows the monitor is designed to DETECT -- those defect rows predate
+    # the barrier, which guards only NEW writes. Mirrors the raw-insert technique
+    # in the structural tests below + the 18-B.1 read-preservation test.
+    conn.execute(
+        "INSERT INTO pattern_forward_observations"
+        " (detection_id, observation_date, ohlc_today_json, status,"
+        " sessions_since_detection, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (det_id, observation_date, ohlc_today_json, status,
+         sessions_since_detection, "2026-06-05T00:00:00"))
     conn.commit()
 
 
