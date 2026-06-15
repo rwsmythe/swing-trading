@@ -284,6 +284,12 @@ def _check_temporal_log_finiteness(
 _ATTRIBUTED_EXCLUDED_REASONS = (
     "invalid_ohlc", "insufficient_forward_depth", "missing_observations",
 )
+# The per-hypothesis terminal counters the engine emits (run.py / funnel.py).
+# Validated as non-negative integer counts for shape-drift defense (Codex R8
+# MAJOR #1, narrow part) -- NOT summed/recomputed (LOCK §4.2 no funnel-fork).
+_PER_HYP_TERMINAL_CARDS = (
+    "closed", "open_at_horizon", "never_triggered",
+)
 # Excluded-reason rate (% of unique_signals) escalation. invalid_ohlc has run
 # ~30% on the live manifest (the 06-10 NaN backlog the engine's belt rejects);
 # these are CONSERVATIVE V1 floors -- the RD tunes them post-build.
@@ -356,6 +362,16 @@ def _manifest_is_well_shaped(parsed: object) -> bool:
             return False
         if not _excluded_is_well_shaped(hyp.get("excluded")):
             return False
+        # Codex R8 MAJOR #1 (narrow part): the per-hypothesis terminal counters
+        # (closed / open_at_horizon / never_triggered), when present, must be
+        # non-negative integer counts -- a TYPE/SHAPE check (consistent with the
+        # _is_nonneg_count discipline), NOT a funnel-sum recompute (that would be
+        # the LOCK §4.2 funnel-fork this monitor must never do). The funnel-sum
+        # invariant + the empty-per_hypothesis "100 signals, 0 attributed" shape
+        # are the ENGINE's accounting, deliberately NOT re-derived here.
+        for card_key in _PER_HYP_TERMINAL_CARDS:
+            if card_key in hyp and not _is_nonneg_count(hyp[card_key]):
+                return False
     # unattributed is a CONSUMED field (drumbeat reads it) -> REQUIRE it present
     # + a dict of integer counts (Codex R5 MAJOR #1).
     unattributed = funnel.get("unattributed")
@@ -806,10 +822,14 @@ def _check_drumbeat_liveness(
             manifest_note = f"; {total_unattributed} unattributed signal(s)"
         else:
             manifest_status = "green"
-    else:  # absent (no dir to read -- but age_days was not None, so a dir with a
-        # parseable name exists yet _read_newest_manifest found no shadow dir;
-        # treat as green for the manifest arm).
-        manifest_status = "green"
+    else:  # "absent"
+        # Codex R8 MAJOR #2: a non-None age means a parseable artifact dir EXISTED
+        # for the age read, yet _read_newest_manifest now sees NO dir -- the
+        # artifact VANISHED between the two filesystem reads (a concurrent prune/
+        # delete). "absent after a fresh age" is NOT a healthy green; escalate to
+        # yellow (the manifest arm cannot confirm a live drumbeat).
+        manifest_status = "yellow"
+        manifest_note = "; newest artifact vanished mid-read (pruned?)"
 
     status = worst_of([age_status, manifest_status])
     return [ResearchHealthCheck(

@@ -422,6 +422,37 @@ def test_excluded_ok_when_unique_signals_is_integer_valued_float(tmp_path: Path)
     assert check.status == "green"  # 5/100 = 5% < 10%, ok manifest
 
 
+def test_excluded_yellow_when_per_hyp_terminal_card_non_integer(tmp_path: Path) -> None:
+    # Codex R8 MAJOR #1 (narrow): a per-hypothesis terminal counter (closed) that
+    # is non-integer is shape-drift -> corrupt -> yellow.
+    _write_manifest(
+        tmp_path, dir_name="shadow-expectancy-20260613T000000Z",
+        raw_text=json.dumps({"funnel": {
+            "detection_level": {"unique_signals": 100},
+            "per_hypothesis": {"H": {"excluded": {"invalid_ohlc": 5},
+                                     "closed": "three"}},
+            "unattributed": {},
+        }}))
+    check = _only(
+        _check_excluded_reason_breakdown(exports_root=tmp_path),
+        "excluded_reason_breakdown")
+    assert check.status == "yellow"
+
+
+def test_excluded_green_when_signals_but_no_attributed_hypotheses(tmp_path: Path) -> None:
+    # Codex R8 MAJOR #1 (the REJECTED funnel-sum part): 100 signals + empty
+    # per_hypothesis + empty unattributed is the LEGITIMATE "no attributed
+    # hypotheses yet" shape, NOT corrupt -- the monitor does NOT recompute the
+    # funnel-sum invariant (LOCK §4.2). Stays green n/a.
+    _write_manifest(tmp_path, dir_name="shadow-expectancy-20260613T000000Z",
+                    funnel=_funnel(100, {}, unattributed={}))
+    check = _only(
+        _check_excluded_reason_breakdown(exports_root=tmp_path),
+        "excluded_reason_breakdown")
+    assert check.status == "green"
+    assert "n/a" in check.summary.lower()
+
+
 def test_excluded_yellow_when_manifest_is_non_utf8(tmp_path: Path) -> None:
     # Codex R6 MAJOR #1: a non-UTF-8 manifest.json must escalate to corrupt
     # (yellow), NOT raise UnicodeDecodeError.
@@ -747,6 +778,21 @@ def test_drumbeat_yellow_when_artifact_future_dated(tmp_path: Path) -> None:
                   "drumbeat_liveness")
     assert check.status == "yellow"
     assert "future" in check.summary.lower()
+
+
+def test_drumbeat_yellow_when_artifact_vanishes_mid_read(tmp_path: Path, monkeypatch) -> None:
+    # Codex R8 MAJOR #2: a fresh age read followed by an "absent" manifest read
+    # (the artifact was pruned between the two filesystem reads) must NOT stay
+    # green -- escalate to yellow. Simulate the race by forcing the manifest read
+    # to "absent" while the age read returns fresh.
+    import swing.monitoring.research_health as rh
+    _write_manifest(tmp_path, dir_name=_dir_name_days_before(_NOW, 1),
+                    funnel=_funnel(100, {}, unattributed={}))
+    monkeypatch.setattr(rh, "_read_newest_manifest", lambda _root: ("absent", None))
+    check = _only(_check_drumbeat_liveness(exports_root=tmp_path, now=_NOW),
+                  "drumbeat_liveness")
+    assert check.status == "yellow"
+    assert "vanish" in (check.detail or "").lower()
 
 
 def test_drumbeat_yellow_when_newest_manifest_corrupt(tmp_path: Path) -> None:
