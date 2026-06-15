@@ -191,9 +191,12 @@ def test_insert_observation_rejects_nonfinite_ohlc_write_barrier(conn):
     with pytest.raises(ValueError) as exc:
         with conn:
             insert_observation(conn, obs)
-    # Names the offending field + observation context (ASCII message).
     msg = str(exc.value)
+    # Names the offending field + the observation context (detection_id).
     assert "close" in msg.lower()
+    assert f"detection_id={det}" in msg
+    # ASCII-safe (Windows cp1252 stdout crashes on non-ASCII glyphs).
+    msg.encode("ascii")
     # Nothing was written -- the barrier is BEFORE the INSERT, not after.
     assert get_observations_for_detection(conn, det) == []
 
@@ -268,3 +271,48 @@ def test_read_path_preserves_accepted_nonfinite_historical_rows(conn):
     batch = get_latest_observations_for_detections(conn, [det])
     assert det in batch
     assert batch[det].ohlc_today_json == poisoned
+
+
+# Each case is a (label, ohlc_today_json) pair the barrier MUST reject -- the
+# genuinely-unconstrained reachable input shapes (no schema CHECK gates them):
+# malformed JSON, JSON decoding to a non-dict, missing OHLC keys, None / bool /
+# string (non-numeric), +/-inf, and a huge int literal that overflows float().
+_REJECTED_SHAPES = [
+    ("malformed_json", "{not valid json"),
+    ("json_non_dict_list", "[1, 2, 3]"),
+    ("json_non_dict_number", "42"),
+    ("json_non_dict_null", "null"),
+    ("missing_open", '{"high":1.0,"low":1.0,"close":1.0,"provider":"yfinance"}'),
+    ("open_is_null",
+     '{"open":null,"high":1.0,"low":1.0,"close":1.0,"provider":"yfinance"}'),
+    ("open_is_bool",
+     '{"open":true,"high":1.0,"low":1.0,"close":1.0,"provider":"yfinance"}'),
+    ("open_is_string",
+     '{"open":"10.0","high":1.0,"low":1.0,"close":1.0,"provider":"yfinance"}'),
+    ("close_is_inf",
+     '{"open":1.0,"high":1.0,"low":1.0,"close":1e9999,"provider":"yfinance"}'),
+    ("close_is_neg_inf",
+     '{"open":1.0,"high":1.0,"low":1.0,"close":-1e9999,"provider":"yfinance"}'),
+    # A huge INTEGER literal: valid JSON, parses to a Python int that passes the
+    # type guard but overflows float() -- the barrier must re-raise ValueError
+    # (not a raw OverflowError). Codex R1 MAJOR.
+    ("open_int_overflows_float",
+     '{"open":' + "9" * 400 + ',"high":1.0,"low":1.0,"close":1.0,'
+     '"provider":"yfinance"}'),
+]
+
+
+@pytest.mark.parametrize("label, bad_json",
+                         _REJECTED_SHAPES,
+                         ids=[c[0] for c in _REJECTED_SHAPES])
+def test_insert_observation_rejects_unconstrained_bad_shapes(conn, label, bad_json):
+    """Every unconstrained reachable bad shape RAISES ValueError BEFORE the
+    INSERT (fail-loud), the message is ASCII-safe, and ZERO rows land. (Codex
+    R1 MINOR coverage + the R1 MAJOR overflow case.)"""
+    det = _det(conn)
+    with pytest.raises(ValueError) as exc:
+        with conn:
+            insert_observation(conn, _obs(det, "2026-05-29",
+                                          ohlc_today_json=bad_json))
+    str(exc.value).encode("ascii")  # ASCII-safe message
+    assert get_observations_for_detection(conn, det) == []

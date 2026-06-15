@@ -68,7 +68,18 @@ def _assert_finite_ohlc_for_write(ohlc_today_json: str, *, detection_id: int) ->
                 f"ohlc_today_json OHLC field {key!r} is missing / None / "
                 f"non-numeric (got {val!r}; detection_id={detection_id})"
             )
-        values.append(float(val))
+        # A huge JSON INTEGER literal parses to a Python int that passes the
+        # type check above but overflows float() (OverflowError) BEFORE
+        # is_finite_ohlc -- re-raise as the contract ValueError so the barrier
+        # stays fail-loud + descriptive. (A huge FLOAT literal, e.g. 1e9999,
+        # instead parses to float('inf') and is caught by is_finite_ohlc below.)
+        try:
+            values.append(float(val))
+        except OverflowError as exc:
+            raise ValueError(
+                f"ohlc_today_json OHLC field {key!r} is not representable as a "
+                f"finite float (got {val!r}; detection_id={detection_id})"
+            ) from exc
     if not is_finite_ohlc(*values):
         o, h, low_, c = values
         raise ValueError(
