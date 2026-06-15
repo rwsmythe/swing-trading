@@ -95,7 +95,11 @@ def test_observable_latest_status_anchored_to_observation_date(conn):
         insert_observation(conn, PatternForwardObservation(
             observation_id=None, detection_id=det_id,
             observation_date="2026-05-30", status="expired",
-            ohlc_today_json='{"close":1.0,"provider":"yfinance"}',
+            # Production-shaped full FINITE OHLC -- the 18-B.1 insert_observation
+            # write barrier reads open/high/low/close (the prior close-only
+            # synthetic shape predates the barrier and is now rejected).
+            ohlc_today_json='{"open":1.0,"high":1.0,"low":1.0,"close":1.0,'
+                            '"volume":1,"provider":"yfinance"}',
             sessions_since_detection=2, created_at="2026-05-30T00:00:00Z",
             status_change_event="observation_horizon_reached"))
     # AS OF D1 = 2026-05-28 the future terminal row is invisible -> observable.
