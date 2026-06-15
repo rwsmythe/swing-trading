@@ -47,6 +47,11 @@ from swing.monitoring.tool_health import worst_of  # noqa: F401
 
 _STATUS_VALUES = frozenset({"green", "yellow", "red"})
 _ZERO_OFFSET = timedelta(0)
+# ANCHORED full-match (Codex R13 MAJOR #1): a bare `.search` with only a trailing
+# `$` would accept a crafted name embedding a valid timestamp at the end (e.g.
+# `shadow-expectancy-z-shadow-expectancy-20260613T000000Z`). fullmatch + ^...$
+# rejects anything but the exact canonical dir name.
+_DIR_TS_RE = re.compile(r"^shadow-expectancy-(\d{8}T\d{6})Z$")
 
 
 def _research_now_iso(now_naive_local: datetime | None = None) -> str:
@@ -430,7 +435,7 @@ def _read_newest_manifest(exports_root) -> tuple[str, dict | None]:
     newest = _newest_artifact_dir(exports_root)
     if newest is None:
         return ("absent", None)
-    if not _DIR_TS_RE.search(newest.name):
+    if not _DIR_TS_RE.fullmatch(newest.name):
         # the newest artifact dir exists but its name is not a parseable timestamp
         # -> a malformed/stray latest artifact, NOT "absent" -> corrupt.
         return ("corrupt", None)
@@ -529,6 +534,13 @@ def _check_excluded_reason_breakdown(*, exports_root) -> list[ResearchHealthChec
 
 _COVERAGE_YELLOW_GAPS = 1   # any hole -> yellow (a missing forward bar is a real signal)
 _COVERAGE_RED_GAPS = 10     # a large hole count -> red (systemic observe-step failure)
+
+
+class _OutOfCalendarError(ValueError):
+    """Raised when a degraded-but-ISO-parseable date falls outside the NYSE
+    calendar bounds (Codex R13 MAJOR #2). A ValueError subclass so the existing
+    malformed-date handling in _check_coverage_gaps treats it as a data-shape
+    defect, not a crash."""
 # The known TERMINAL observation statuses (the walk legitimately stopped -> no
 # tail expected; the complement of pattern_detection_events._OPEN_STATUSES
 # {pending,triggered_open}). An UNKNOWN/NULL latest status is NOT silently
@@ -607,9 +619,16 @@ def _check_coverage_gaps(
         # sessions_in_range accepts stdlib date / ISO strings directly -- NO
         # pandas in the monitor's own code (Codex R1 MAJOR: no monitor-owned
         # pandas). The returned elements are Timestamps; we only read .date().
+        # date.fromisoformat ACCEPTS out-of-calendar dates (e.g. 0001-01-01 / a
+        # far-future year); sessions_in_range then raises OUTSIDE the exchange
+        # calendar bounds (Codex R13 MAJOR #2). Catch + re-raise a typed signal so
+        # the per-detection loop counts it as a malformed-date defect, not a crash.
         if start > end:
             return set()
-        idx = _NYSE.sessions_in_range(start, end)
+        try:
+            idx = _NYSE.sessions_in_range(start, end)
+        except (ValueError, KeyError, OverflowError) as exc:
+            raise _OutOfCalendarError(str(exc)) from exc
         return {ts.date().isoformat() for ts in idx}
 
     def _first_session_after(asof: _date) -> _date | None:
@@ -666,40 +685,46 @@ def _check_coverage_gaps(
         # would have lexically dropped a malformed/NULL asof before this point.)
         if asof >= last_completed:
             continue  # not mature -- no completed session since the cutoff
-        if not observed:
-            # mature detection with ZERO valid observations: every expected
-            # session (first-after-cutoff .. last_completed) is missing.
+        # The gap/tail computation calls the NYSE calendar, which raises
+        # _OutOfCalendarError on a degraded but ISO-parseable out-of-bounds date (Codex
+        # R13 MAJOR #2) -- count it as a malformed defect, never crash.
+        try:
+            if not observed:
+                # mature detection with ZERO valid observations: every expected
+                # session (first-after-cutoff .. last_completed) is missing.
+                first = _first_session_after(asof)
+                if first is None:
+                    continue  # too fresh -- no session yet to observe
+                missing = len(_sessions(first, last_completed))
+                if missing:
+                    total_missing += missing
+                    if len(sample) < 3:
+                        sample.append(
+                            f"det{det_id}: {missing} missing (never observed)")
+                continue
+            # latest status from the VALID-dated rows (Codex R12 MAJOR #1).
+            latest_status = max(
+                (oc for oc in obs if oc[0] in observed),
+                key=lambda oc: oc[0],
+            )[1]
+            max_obs = _date.fromisoformat(max(observed))
+            # The expected window STARTS at the first session after the cutoff
+            # (Codex R3 MAJOR #1 -- a LATE first observation is a real leading
+            # gap). Upper bound by latest status: a KNOWN TERMINAL status stopped
+            # -> max_obs (no tail); OPEN or an UNKNOWN/NULL status -> last_completed
+            # (Codex R6 MAJOR #4: unknown != terminal, else a tail is suppressed).
             first = _first_session_after(asof)
             if first is None:
-                continue  # too fresh -- no session yet to observe (not a defect)
-            missing = len(_sessions(first, last_completed))
-            if missing:
-                total_missing += missing
-                if len(sample) < 3:
-                    sample.append(f"det{det_id}: {missing} missing (never observed)")
+                continue  # too fresh -- no session yet to observe
+            is_terminal = latest_status in _TERMINAL_STATUSES
+            upper = max_obs if is_terminal else last_completed
+            expected = _sessions(first, upper)
+            missing = len(expected - observed)
+        except _OutOfCalendarError:
+            malformed += 1
+            if len(sample) < 3:
+                sample.append(f"det{det_id}: out-of-calendar date")
             continue
-        # latest status from the VALID-dated rows (Codex R12 MAJOR #1): use the
-        # row whose observation_date is the latest valid date.
-        latest_status = max(
-            (oc for oc in obs if oc[0] in observed),
-            key=lambda oc: oc[0],
-        )[1]
-        max_obs = _date.fromisoformat(max(observed))
-        # The expected window STARTS at the first session after the detector's
-        # data cutoff (Codex R3 MAJOR #1 -- a LATE first observation, skipping the
-        # first expected session, is a real leading/head gap; starting at min_obs
-        # would mask it). Upper bound by latest status: a KNOWN TERMINAL status
-        # legitimately stopped -> max_obs (no tail expected); OPEN *or an
-        # UNKNOWN/NULL status* -> last_completed (Codex R6 MAJOR #4: an unknown
-        # status must NOT be silently treated as terminal, which would suppress a
-        # missing tail -> false green).
-        first = _first_session_after(asof)
-        if first is None:
-            continue  # too fresh -- no session yet to observe (not a defect)
-        is_terminal = latest_status in _TERMINAL_STATUSES
-        upper = max_obs if is_terminal else last_completed
-        expected = _sessions(first, upper)
-        missing = len(expected - observed)
         if missing:
             total_missing += missing
             if len(sample) < 3:
@@ -810,7 +835,6 @@ def _check_structural_integrity(
 # completeness (sentinel-filtered null pivots + error-bucket).
 # --------------------------------------------------------------------------
 
-_DIR_TS_RE = re.compile(r"shadow-expectancy-(\d{8}T\d{6})Z$")
 _DRUMBEAT_YELLOW_AGE_DAYS = 4   # mirrors weekly_glance.T1_MAX_AGE_DAYS (weekend-tolerant)
 _DRUMBEAT_RED_AGE_DAYS = 8      # >1 week with no run -> red
 
@@ -836,7 +860,7 @@ def _newest_artifact_age_days(exports_root, now: datetime) -> int | None:
     newest = _newest_artifact_dir(exports_root)
     if newest is None:
         return None
-    m = _DIR_TS_RE.search(newest.name)
+    m = _DIR_TS_RE.fullmatch(newest.name)
     if not m:
         return None  # newest dir name unparseable -> the manifest arm -> corrupt
     parsed = datetime.strptime(m.group(1), "%Y%m%dT%H%M%S").replace(tzinfo=UTC)

@@ -478,6 +478,17 @@ def test_read_newest_manifest_stray_name_newest_is_corrupt(tmp_path: Path) -> No
     assert payload is None
 
 
+def test_read_newest_manifest_rejects_embedded_timestamp_name(tmp_path: Path) -> None:
+    # Codex R13 MAJOR #1: a crafted name embedding a valid timestamp at the end
+    # must NOT pass (anchored fullmatch). The crafted dir sorts AFTER the real one
+    # -> it is the newest -> corrupt (not parsed as a valid timestamp).
+    _write_manifest(tmp_path, dir_name="shadow-expectancy-20260613T000000Z",
+                    funnel=_funnel(100, {"H": {"excluded": {"invalid_ohlc": 1}}}))
+    (tmp_path / "shadow-expectancy-z-shadow-expectancy-20260613T000000Z").mkdir()
+    state, _payload = _read_newest_manifest(tmp_path)
+    assert state == "corrupt"  # the crafted newest name is rejected -> corrupt
+
+
 def test_read_newest_manifest_only_stray_dir_is_corrupt_not_absent(tmp_path: Path) -> None:
     # the ONLY dir is a stray non-timestamp dir -> corrupt (a dir EXISTS), NOT
     # absent/green (Codex R11 MAJOR #1).
@@ -729,6 +740,17 @@ def test_coverage_yellow_on_duplicate_observation_date(tmp_path: Path) -> None:
     check = _only(_check_coverage_gaps(conn, now=_NOW), "coverage_gaps")
     assert check.status in ("yellow", "red")
     assert "duplicate" in (check.detail or "").lower() or check.status != "green"
+
+
+def test_coverage_no_crash_on_out_of_calendar_date(tmp_path: Path) -> None:
+    # Codex R13 MAJOR #2: a date that date.fromisoformat ACCEPTS but is OUTSIDE
+    # the NYSE calendar bounds (0001-01-01) must NOT crash the monitor -- count it
+    # as a malformed/data-shape defect (yellow), never escape.
+    conn = _schema_conn(tmp_path)
+    det = _seed_detection(conn, data_asof_date="0001-01-01")  # ISO-valid, far past
+    _seed_observation(conn, det, observation_date="2026-06-05", status="pending")
+    check = _only(_check_coverage_gaps(conn, now=_NOW), "coverage_gaps")
+    assert check.status in ("yellow", "red")  # no crash; surfaced as a defect
 
 
 def test_coverage_yellow_when_missing_table(tmp_path: Path) -> None:
