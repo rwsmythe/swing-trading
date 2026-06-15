@@ -94,6 +94,26 @@ def test_context_processor_never_raises_when_aggregator_raises(seeded_db, monkey
     assert out == {"health_stoplights": ()}
 
 
+def test_context_processor_applies_config_overrides(seeded_db, monkeypatch):
+    # Codex R1 MAJOR -- the processor MUST apply_overrides(cfg) like the
+    # drill-down routes do (journal.py:157), so the topbar stoplight cannot
+    # diverge from the drill-down page after a live user-config edit.
+    cfg, _ = seeded_db
+    calls = {}
+
+    def _spy_apply_overrides(c):
+        calls["cfg"] = c
+        return c  # identity is fine for the spy
+
+    monkeypatch.setattr("swing.web.app.apply_overrides", _spy_apply_overrides)
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(cfg=cfg)))
+    out = _health_stoplights_context_processor(request)  # must NOT raise
+    # Both-ways: a processor reading raw request.app.state.cfg never calls
+    # apply_overrides -> calls stays empty (the divergence bug).
+    assert calls.get("cfg") is cfg
+    assert "health_stoplights" in out
+
+
 def test_dashboard_renders_with_stoplights_present(seeded_db, monkeypatch):
     cfg, cfg_path = seeded_db
     _seed_minimal_dashboard_state(cfg)

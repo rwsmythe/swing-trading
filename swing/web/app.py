@@ -18,6 +18,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from swing.config import Config
+from swing.config_overrides import apply_overrides
 from swing.integrations.schwab.auth import (
     construct_authenticated_client,
     resolve_credentials_env_or_prompt,
@@ -99,6 +100,12 @@ def _health_stoplights_context_processor(request: Request) -> dict:
         cfg = getattr(request.app.state, "cfg", None)
         if cfg is None:
             return {"health_stoplights": ()}
+        # Apply the live user-config overrides (the journal.py:157 drill-down
+        # precedent) so the topbar stoplight cannot diverge from the drill-down
+        # page after a live user-config.toml edit (Codex R1 MAJOR). Still
+        # DEFENSIVE: any apply_overrides raise is caught by the outer except ->
+        # empty tuple (no stoplights), never a 500.
+        cfg = apply_overrides(cfg)
         from swing.data.db import connect
         conn = connect(cfg.paths.db_path)
         try:
