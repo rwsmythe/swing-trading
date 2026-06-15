@@ -19,7 +19,9 @@ from swing.data.repos.pattern_detection_events import insert_detection_event
 from swing.data.repos.pattern_forward_observations import insert_observation
 from swing.monitoring.research_health import (
     ResearchHealthCheck,
+    _check_coverage_gaps,
     _check_excluded_reason_breakdown,
+    _check_structural_integrity,
     _check_temporal_log_finiteness,
     _read_newest_manifest,
 )
@@ -334,3 +336,146 @@ def test_read_newest_manifest_picks_newest_by_dir_name(tmp_path: Path) -> None:
     state, payload = _read_newest_manifest(tmp_path)
     assert state == "corrupt"
     assert payload is None
+
+
+# ---------------------------------------------------------------------------
+# Task 4a: _check_coverage_gaps (NYSE-aware observation holes incl. missing tail)
+# ---------------------------------------------------------------------------
+
+# Frozen clock: a Sunday, so last_completed_session(NOW) == Fri 2026-06-12.
+_NOW = datetime(2026, 6, 14, 12, 0, 0)
+# NYSE sessions 2026-06-05..2026-06-12: Fri, Mon, Tue, Wed, Thu, Fri (06-06/07
+# weekend excluded).
+_SESSIONS = ("2026-06-05", "2026-06-08", "2026-06-09", "2026-06-10",
+             "2026-06-11", "2026-06-12")
+
+
+def test_coverage_green_when_contiguous(tmp_path: Path) -> None:
+    # OPEN mature detection with obs on EVERY NYSE session up to last_completed;
+    # the weekend (06-06/07) is NOT a gap (calendar-aware).
+    conn = _schema_conn(tmp_path)
+    det = _seed_detection(conn, data_asof_date="2026-06-04")
+    for d in _SESSIONS:
+        _seed_observation(conn, det, observation_date=d, status="pending")
+    check = _only(_check_coverage_gaps(conn, now=_NOW), "coverage_gaps")
+    assert check.status == "green"
+
+
+def test_coverage_yellow_on_one_hole(tmp_path: Path) -> None:
+    # TERMINAL detection (upper bound = max_obs) with an INTERIOR hole: obs on
+    # 06-05, 06-08, 06-10 -- skips the NYSE session 06-09 -> 1 missing.
+    conn = _schema_conn(tmp_path)
+    det = _seed_detection(conn, data_asof_date="2026-06-04")
+    _seed_observation(conn, det, observation_date="2026-06-05", status="pending")
+    _seed_observation(conn, det, observation_date="2026-06-08", status="pending")
+    _seed_observation(conn, det, observation_date="2026-06-10", status="invalidated")
+    check = _only(_check_coverage_gaps(conn, now=_NOW), "coverage_gaps")
+    assert check.status == "yellow"  # 1 hole (06-09)
+
+
+def test_coverage_red_on_many_holes(tmp_path: Path) -> None:
+    # An OPEN mature detection with a single obs far in the past -> the whole
+    # tail (06-08..06-12 etc) is missing -> > _COVERAGE_RED_GAPS.
+    conn = _schema_conn(tmp_path)
+    det = _seed_detection(conn, data_asof_date="2026-05-01")
+    _seed_observation(conn, det, observation_date="2026-05-04", status="pending")
+    check = _only(_check_coverage_gaps(conn, now=_NOW), "coverage_gaps")
+    assert check.status == "red"
+
+
+def test_coverage_green_when_no_mature_detections(tmp_path: Path) -> None:
+    # data_asof_date == last_completed_session -> NOT mature (no tradable session
+    # since its cutoff).
+    conn = _schema_conn(tmp_path)
+    det = _seed_detection(conn, data_asof_date="2026-06-12")
+    _seed_observation(conn, det, observation_date="2026-06-12", status="pending")
+    check = _only(_check_coverage_gaps(conn, now=_NOW), "coverage_gaps")
+    assert check.status == "green"
+    assert "n/a" in check.summary.lower() or "0" in check.summary
+
+
+def test_coverage_yellow_on_missing_tail_for_open_detection(tmp_path: Path) -> None:
+    # OPEN mature detection, CONTIGUOUS obs that STOP 2 NYSE sessions before
+    # last_completed (06-12): obs through 06-10 -> 06-11 + 06-12 missing tail.
+    # An interior-only impl sees 0 holes -> green (the bug). The maturity-boundary
+    # impl counts the 2 tail sessions.
+    conn = _schema_conn(tmp_path)
+    det = _seed_detection(conn, data_asof_date="2026-06-04")
+    for d in ("2026-06-05", "2026-06-08", "2026-06-09", "2026-06-10"):
+        _seed_observation(conn, det, observation_date=d, status="triggered_open")
+    check = _only(_check_coverage_gaps(conn, now=_NOW), "coverage_gaps")
+    assert check.status in ("yellow", "red")  # 2 tail gaps >= 1
+
+
+def test_coverage_green_on_terminal_detection_stopped_early(tmp_path: Path) -> None:
+    # TERMINAL (invalidated) detection whose newest obs is well before
+    # last_completed -> green (it legitimately stopped; NO tail expected).
+    conn = _schema_conn(tmp_path)
+    det = _seed_detection(conn, data_asof_date="2026-06-04")
+    _seed_observation(conn, det, observation_date="2026-06-05", status="pending")
+    _seed_observation(conn, det, observation_date="2026-06-08", status="invalidated")
+    check = _only(_check_coverage_gaps(conn, now=_NOW), "coverage_gaps")
+    assert check.status == "green"  # contiguous + terminal -> no tail expected
+
+
+def test_coverage_yellow_when_missing_table(tmp_path: Path) -> None:
+    conn = sqlite3.connect(":memory:")
+    check = _only(_check_coverage_gaps(conn, now=_NOW), "coverage_gaps")
+    assert check.status == "yellow"
+
+
+# ---------------------------------------------------------------------------
+# Task 4b: _check_structural_integrity (orphans + look-ahead)
+# ---------------------------------------------------------------------------
+
+
+def test_structural_green_when_clean(tmp_path: Path) -> None:
+    conn = _schema_conn(tmp_path)
+    det = _seed_detection(conn, detection_date="2026-06-05", data_asof_date="2026-06-04")
+    _seed_observation(conn, det, observation_date="2026-06-05", status="pending")
+    _seed_observation(conn, det, observation_date="2026-06-08", status="pending")
+    check = _only(_check_structural_integrity(conn), "structural_integrity")
+    assert check.status == "green"
+
+
+def test_structural_red_on_look_ahead(tmp_path: Path) -> None:
+    # first obs (06-09) precedes detection_date (06-10) -> look-ahead.
+    conn = _schema_conn(tmp_path)
+    det = _seed_detection(conn, detection_date="2026-06-10", data_asof_date="2026-06-09")
+    _seed_observation(conn, det, observation_date="2026-06-09", status="pending")
+    check = _only(_check_structural_integrity(conn), "structural_integrity")
+    assert check.status == "red"
+    assert "look" in check.summary.lower() or "ahead" in check.summary.lower()
+
+
+def test_structural_green_on_obs_equal_detection_date(tmp_path: Path) -> None:
+    # first obs == detection_date -> NOT a violation (`<` is strict).
+    conn = _schema_conn(tmp_path)
+    det = _seed_detection(conn, detection_date="2026-06-10", data_asof_date="2026-06-09")
+    _seed_observation(conn, det, observation_date="2026-06-10", status="pending")
+    check = _only(_check_structural_integrity(conn), "structural_integrity")
+    assert check.status == "green"
+
+
+def test_structural_red_on_orphan(tmp_path: Path) -> None:
+    # FK ON DELETE RESTRICT + NOT NULL blocks a normal orphan insert; seed with
+    # FK off (the migration runner runs FK off too) to exercise the probe.
+    conn = _schema_conn(tmp_path)
+    conn.execute("PRAGMA foreign_keys=OFF")
+    conn.execute(
+        "INSERT INTO pattern_forward_observations "
+        "(detection_id, observation_date, ohlc_today_json, status, "
+        "sessions_since_detection, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (99999, "2026-06-05", _FINITE_OHLC, "pending", 1, "2026-06-05T00:00:00"),
+    )
+    conn.commit()
+    check = _only(_check_structural_integrity(conn), "structural_integrity")
+    assert check.status == "red"
+    assert "orphan" in check.summary.lower()
+
+
+def test_structural_yellow_when_missing_table(tmp_path: Path) -> None:
+    conn = sqlite3.connect(":memory:")
+    check = _only(_check_structural_integrity(conn), "structural_integrity")
+    assert check.status == "yellow"

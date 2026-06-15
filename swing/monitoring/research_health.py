@@ -365,3 +365,161 @@ def _check_excluded_reason_breakdown(*, exports_root) -> list[ResearchHealthChec
         key=key, status=worst_status,
         summary=f"excluded reasons vs {unique_signals} signals",
         detail="; ".join(parts))]
+
+
+# --------------------------------------------------------------------------
+# Coverage gaps (NYSE-aware observation holes incl. missing tail) + structural
+# integrity (orphans + look-ahead). Self-contained in this module (Codex R1
+# MAJOR #2): lazy-import the EXISTING _NYSE/last_completed_session read-only;
+# NEVER edit swing/evaluation/dates.py.
+# --------------------------------------------------------------------------
+
+_COVERAGE_YELLOW_GAPS = 1   # any hole -> yellow (a missing forward bar is a real signal)
+_COVERAGE_RED_GAPS = 10     # a large hole count -> red (systemic observe-step failure)
+# A detection whose latest-observation status is in this OPEN set is still in
+# the forward walk (mirror pattern_detection_events._OPEN_STATUSES); a TERMINAL
+# status (invalidated/expired/triggered_closed_*) legitimately stopped.
+_OPEN_STATUSES = ("pending", "triggered_open")
+
+
+def _check_coverage_gaps(
+    conn: sqlite3.Connection, *, now: datetime,
+) -> list[ResearchHealthCheck]:
+    """A MATURE detection whose forward-observation date sequence has HOLES vs
+    the NYSE trading calendar -- including a MISSING TAIL (the observe step
+    stopped early), not just interior gaps (Codex R4 MAJOR #2; brief §6.2 #3).
+
+    Upper bound by latest-observation STATUS: OPEN -> last_completed_session(now)
+    (catches the missing tail); TERMINAL -> the detection's own max_obs (it
+    legitimately stopped; no tail expected). The weekend is NOT a gap
+    (calendar-aware). Mature = data_asof_date < last_completed_session.isoformat().
+    Missing table -> yellow; no mature detections -> green.
+    """
+    from datetime import date as _date
+
+    import pandas as pd
+
+    from swing.evaluation.dates import _NYSE, last_completed_session
+
+    key = "coverage_gaps"
+    last_completed = last_completed_session(now)
+    last_completed_iso = last_completed.isoformat()
+
+    try:
+        rows = conn.execute(
+            "SELECT o.detection_id, o.observation_date, o.status,"
+            " o.observation_id, d.data_asof_date"
+            " FROM pattern_forward_observations o"
+            " JOIN pattern_detection_events d"
+            " ON d.detection_id = o.detection_id"
+            " WHERE d.data_asof_date < ?"
+            " ORDER BY o.detection_id,"
+            " o.observation_date ASC, o.observation_id ASC",
+            (last_completed_iso,),
+        ).fetchall()
+    except sqlite3.OperationalError as exc:
+        if _schema_unavailable(exc):
+            return [ResearchHealthCheck(
+                key=key, status="yellow",
+                summary="temporal-log schema unavailable",
+                detail="pattern_forward_observations table missing;"
+                       " run swing db-migrate")]
+        raise
+
+    # Group observations per detection (preserving date order).
+    per_det: dict[int, list[tuple[str, str]]] = {}
+    for det_id, obs_date, status, _obs_id, _asof in rows:
+        per_det.setdefault(det_id, []).append((obs_date, status))
+
+    if not per_det:
+        return [ResearchHealthCheck(
+            key=key, status="green",
+            summary="no mature detections with observations yet (n/a)")]
+
+    def _sessions(start: _date, end: _date) -> set[str]:
+        if start > end:
+            return set()
+        idx = _NYSE.sessions_in_range(pd.Timestamp(start), pd.Timestamp(end))
+        return {ts.date().isoformat() for ts in idx}
+
+    total_missing = 0
+    sample: list[str] = []
+    for det_id, obs in per_det.items():
+        observed = {d for d, _s in obs}
+        # <2 observations and no expected-window gap -> skip (immature row).
+        latest_status = obs[-1][1]  # last by date order
+        min_obs = _date.fromisoformat(min(observed))
+        max_obs = _date.fromisoformat(max(observed))
+        upper = last_completed if latest_status in _OPEN_STATUSES else max_obs
+        expected = _sessions(min_obs, upper)
+        missing = len(expected - observed)
+        if missing and len(observed) < 2 and upper == max_obs:
+            # an immature/just-detected terminal row with a lone obs -- not a defect
+            continue
+        if missing:
+            total_missing += missing
+            if len(sample) < 3:
+                sample.append(f"det{det_id}: {missing} missing")
+
+    if total_missing == 0:
+        return [ResearchHealthCheck(
+            key=key, status="green",
+            summary="0 observation-coverage gaps")]
+    if total_missing > _COVERAGE_RED_GAPS:
+        status = "red"
+    elif total_missing >= _COVERAGE_YELLOW_GAPS:
+        status = "yellow"
+    else:
+        status = "green"
+    return [ResearchHealthCheck(
+        key=key, status=status,
+        summary=f"{total_missing} observation-coverage gap(s)",
+        detail="; ".join(sample) if sample else None)]
+
+
+def _check_structural_integrity(
+    conn: sqlite3.Connection,
+) -> list[ResearchHealthCheck]:
+    """Two SQL probes, RED on ANY hit (a structural-integrity violation is never
+    tolerable; brief §6.2 #4):
+      - orphan observations (LEFT JOIN with no parent detection);
+      - look-ahead: a detection whose FIRST observation precedes its
+        detection_date (strict `<`).
+    Missing table -> yellow schema-unavailable.
+    """
+    key = "structural_integrity"
+    try:
+        orphans = conn.execute(
+            "SELECT COUNT(*) FROM pattern_forward_observations o"
+            " LEFT JOIN pattern_detection_events d"
+            " ON d.detection_id = o.detection_id"
+            " WHERE d.detection_id IS NULL"
+        ).fetchone()[0]
+        look_ahead = conn.execute(
+            "SELECT COUNT(*) FROM ("
+            " SELECT o.detection_id, MIN(o.observation_date) AS first_obs,"
+            " d.detection_date"
+            " FROM pattern_forward_observations o"
+            " JOIN pattern_detection_events d"
+            " ON d.detection_id = o.detection_id"
+            " GROUP BY o.detection_id"
+            ") WHERE first_obs < detection_date"
+        ).fetchone()[0]
+    except sqlite3.OperationalError as exc:
+        if _schema_unavailable(exc):
+            return [ResearchHealthCheck(
+                key=key, status="yellow",
+                summary="temporal-log schema unavailable",
+                detail="pattern_forward_observations table missing;"
+                       " run swing db-migrate")]
+        raise
+
+    if orphans or look_ahead:
+        return [ResearchHealthCheck(
+            key=key, status="red",
+            summary=f"{orphans} orphan observation(s),"
+                    f" {look_ahead} look-ahead violation(s)",
+            detail="structural-integrity violation in the temporal log")]
+    return [ResearchHealthCheck(
+        key=key, status="green",
+        summary="0 orphans, 0 look-ahead violations")]
