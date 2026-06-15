@@ -10,9 +10,10 @@
 1. Read this recipe, the repo's **`CLAUDE.md`** (load-bearing — it carries the project gotchas + conventions), and your dispatch brief/task in full. Re-ground every file/line anchor against live code before editing (line numbers drift).
 2. Work in an isolated worktree (§1).
 3. Execute the task TDD, one red→green→commit cycle per logical change (§2).
-4. Run the Codex adversarial review to convergence and persist every response (§3) — when your brief calls for it (writing-plans / executing-plans / any code-shipping task).
-5. Return a structured report to the ORCHESTRATOR as your final chat message (§4). Do NOT post to any role mailbox.
-6. Honor the disciplines in §5.
+4. **Run the FULL fast suite to GREEN BEFORE the review** (§2) — the §3 review must converge on a green diff (catches latent global-invariant tests early).
+5. Run the Codex adversarial review to convergence and persist every response (§3) — when your brief calls for it (writing-plans / executing-plans / any code-shipping task).
+6. Return a structured report to the ORCHESTRATOR as your final chat message (§4). Do NOT post to any role mailbox.
+7. Honor the disciplines in §5.
 
 ---
 
@@ -29,6 +30,7 @@
 - **Ruff:** the lint gate is `ruff check swing/` (the `swing/` tree only). Introduce no new violations there. Test-file lint is out of scope unless your brief says otherwise; match each test file's existing style (≤100-char lines, local imports) so you add no new violation.
 - **ASCII discipline:** user-facing strings flowing through stdout/CLI must be ASCII (Windows cp1252 crashes on `§ → ↔ ✓ ✗`, em-dash, fractions). pytest `capsys` hides this — prefer ASCII swaps in added code.
 - **WRITING-PLANS phases commit the plan ONCE at convergence** (added 2026-06-14): a writing-plans dispatch is plan-only — write the plan, run Codex to convergence, then make a SINGLE `docs(plan): …` commit of the converged plan. Do NOT commit the plan once per Codex round (18-C's writing-plans produced 18 per-round commits — verbose history with no value). The converged plan is the deliverable; the round-by-round iteration belongs in `.copowers-findings.md`, not the git history.
+- **Run the FULL fast suite BEFORE the Codex review — fix-to-green first (added 2026-06-15; operator-directed, the 18-F lesson).** After all task-commits land and BEFORE starting the §3 Codex loop, run `python -m pytest -m "not slow" -q` (the WHOLE fast suite, not just the task's tests) and fix any failure to green. WHY: per-task TDD runs only the task's tests; CROSS-CUTTING / global-invariant tests — cross-VM-consistency manifests, theme-token / no-raw-hex CSS contracts, schema-enum mirrors — are NOT exercised per-task and stay LATENT until a full-suite run. If that first full run happens only AFTER Codex convergence (the §4 end-of-run gate), a latent break forces a wasted fix + re-review cycle AND burns Codex rounds (the 18-F cost: the topbar VM-manifest + CSS-theme-token regressions surfaced post-convergence). Running it BEFORE means the review converges on a GREEN diff. This is IN ADDITION to the §4 end-of-run full-suite gate (which catches review-fix-introduced breaks) — the suite runs at BOTH points.
 
 ## 3. The WSL-Codex adversarial review (the load-bearing part — verbatim)
 The MCP `codex` tools are dead in this environment; the working transport is the **WSL-native Codex CLI**. The copowers `adversarial-critic` Skill scaffolding may be **absent in a sub-agent** — if so, HAND-RUN the loop exactly as below.
