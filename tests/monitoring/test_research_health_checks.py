@@ -294,6 +294,51 @@ def test_finiteness_noncanonical_date_drives_red_not_accepted(tmp_path: Path) ->
     assert "accepted historical" not in (check.detail or "")
 
 
+def test_finiteness_corrupt_json_at_historical_date_drives_red(tmp_path: Path) -> None:
+    """Codex R2 MAJOR: the accepted-historical carve-out covers ONLY the known
+    pre-fix NON-FINITE-OHLC backlog. CORRUPT data (unparseable JSON or a non-dict
+    bar) dated <=cutoff is NOT that backlog -> it must ALWAYS drive red, never be
+    absorbed as historical (a false-green for unusable temporal-log data).
+    pre-fix-of-this-finding: corrupt JSON @ 2026-06-10 -> wrongly GREEN; post: RED.
+    """
+    conn = _schema_conn(tmp_path)
+    det = _seed_detection(conn, ticker="CRPT")
+    # unparseable JSON, dated at-or-before the baseline.
+    _seed_observation(conn, det, observation_date="2026-06-10",
+                      ohlc_today_json="{not valid json")
+    check = _only(_check_temporal_log_finiteness(conn), "temporal_log_finiteness")
+    assert check.status == "red"
+    assert "CRPT" in (check.detail or "")
+    assert "accepted historical" not in (check.detail or "")
+
+
+def test_finiteness_nondict_bar_at_historical_date_drives_red(tmp_path: Path) -> None:
+    """A parseable-but-non-dict ohlc_today_json (e.g. a JSON array) dated
+    <=cutoff is corrupt-shape data, NOT the non-finite-OHLC backlog -> red."""
+    conn = _schema_conn(tmp_path)
+    det = _seed_detection(conn, ticker="ARR")
+    _seed_observation(conn, det, observation_date="2026-06-10",
+                      ohlc_today_json="[1, 2, 3]")  # a list, not a dict
+    check = _only(_check_temporal_log_finiteness(conn), "temporal_log_finiteness")
+    assert check.status == "red"
+    assert "accepted historical" not in (check.detail or "")
+
+
+def test_finiteness_invalid_canonical_date_drives_red(tmp_path: Path) -> None:
+    """A canonical-SHAPE but invalid-CALENDAR observation_date (2026-13-40) on a
+    non-finite row cannot be dated -> conservative post-cutoff red (Codex R2
+    MINOR: lock the invalid-canonical branch)."""
+    conn = _schema_conn(tmp_path)
+    det = _seed_detection(conn, ticker="BADCAL")
+    nan_json = '{"open": 1.0, "high": 2.0, "low": 0.5, "close": NaN, ' \
+        '"volume": 100.0, "provider": "yfinance"}'
+    _seed_observation(conn, det, observation_date="2026-13-40",
+                      ohlc_today_json=nan_json)
+    check = _only(_check_temporal_log_finiteness(conn), "temporal_log_finiteness")
+    assert check.status == "red"
+    assert "accepted historical" not in (check.detail or "")
+
+
 # ---------------------------------------------------------------------------
 # Task 3: _check_excluded_reason_breakdown (read the manifest; never recompute)
 # ---------------------------------------------------------------------------

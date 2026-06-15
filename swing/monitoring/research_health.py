@@ -306,36 +306,48 @@ def _check_temporal_log_finiteness(
             summary="no temporal-log observations yet (0 non-finite)")]
 
     post_cutoff = 0          # genuine post-baseline regressions -> drive red
-    accepted_historical = 0  # non-finite at-or-before the baseline -> surfaced only
+    accepted_historical = 0  # non-finite OHLC at-or-before the baseline -> surfaced
     sample: list[str] = []   # the red-driver sample (post-cutoff only)
     for _obs_id, obs_date, ohlc_json, ticker in rows:
-        bad = False
+        # TWO distinct failure classes (Codex R2 MAJOR): the accepted-historical
+        # carve-out covers ONLY the known pre-fix NON-FINITE-OHLC backlog (the
+        # 06-10 NaN cohort the 18-A writer fix could not retro-heal). CORRUPT
+        # data -- unparseable JSON or a non-dict bar -- is NOT that backlog and
+        # is ALWAYS a red driver regardless of date (never absorbed as historical).
+        corrupt = False
+        non_finite_ohlc = False
         try:
             bar = json.loads(ohlc_json)
         except (TypeError, ValueError):
-            bad = True
+            corrupt = True
         else:
-            vals = []
-            for k in _OHLC_KEYS:
-                v = bar.get(k) if isinstance(bar, dict) else None
-                if not isinstance(v, (int, float)) or isinstance(v, bool):
-                    # missing / None / non-numeric -> non-finite hit WITHOUT
-                    # calling the predicate (it raises TypeError on None).
-                    bad = True
-                    break
-                vals.append(float(v))
-            if not bad and not is_finite_ohlc(*vals):
-                bad = True
-        if not bad:
+            if not isinstance(bar, dict):
+                corrupt = True
+            else:
+                vals = []
+                for k in _OHLC_KEYS:
+                    v = bar.get(k)
+                    if not isinstance(v, (int, float)) or isinstance(v, bool):
+                        # missing / None / non-numeric OHLC value -> a non-finite
+                        # hit WITHOUT calling the predicate (it raises on None).
+                        non_finite_ohlc = True
+                        break
+                    vals.append(float(v))
+                if not non_finite_ohlc and not is_finite_ohlc(*vals):
+                    non_finite_ohlc = True
+        if not corrupt and not non_finite_ohlc:
             continue
-        # Classify the non-finite hit by its observation_date vs the baseline.
-        # A malformed / None / non-canonical observation_date cannot be proven
-        # historical -> treat as post-cutoff (conservative; an undatable
+        # Corrupt-data rows ALWAYS drive red (never eligible for the carve-out).
+        # A genuine non-finite-OHLC row is classified by its observation_date vs
+        # the baseline. A malformed / None / non-canonical observation_date cannot
+        # be proven historical -> treat as post-cutoff (conservative; an undatable
         # non-finite drives red). Require the EXACT canonical `YYYY-MM-DD` shape
         # BEFORE trusting date.fromisoformat (Codex R1 MAJOR -- it would else
         # accept `20260610` / ISO week-dates and could mis-classify a regression
         # as accepted-historical).
-        if isinstance(obs_date, str) and _CANONICAL_DATE_RE.match(obs_date):
+        if corrupt:
+            is_post_cutoff = True
+        elif isinstance(obs_date, str) and _CANONICAL_DATE_RE.match(obs_date):
             try:
                 is_post_cutoff = (
                     date.fromisoformat(obs_date) > _FINITENESS_BASELINE_CUTOFF
@@ -348,14 +360,17 @@ def _check_temporal_log_finiteness(
         if is_post_cutoff:
             post_cutoff += 1
             if len(sample) < 3:
-                sample.append(f"{ticker or '?'}@{obs_date}")
+                label = f"{ticker or '?'}@{obs_date}"
+                if corrupt:
+                    label += " (corrupt)"
+                sample.append(label)
         else:
             accepted_historical += 1
 
     cutoff_iso = _FINITENESS_BASELINE_CUTOFF.isoformat()
     accepted_note = (
         f"accepted historical: {accepted_historical} non-finite @ <={cutoff_iso}"
-        " (pre-18A withdrawn backfill)"
+        " (pre-18A-boundary backfill)"
         if accepted_historical else ""
     )
 
