@@ -67,6 +67,13 @@
 <body>
   <nav class="topbar">
     <span class="date">{{ vm.session_date }}</span>
+    <div class="stoplights">
+      {% for s in (health_stoplights | default([])) %}
+      <a class="stoplight stoplight-{{ s.color }}" href="{{ s.drilldown_path }}"
+         title="{{ s.label }}: {{ s.color }}"
+         aria-label="{{ s.label }} status {{ s.color }}"></a>
+      {% endfor %}
+    </div>
     <a href="/">Dashboard</a>
     <a href="/watchlist">Watchlist</a>
     <a href="/journal">Journal</a>

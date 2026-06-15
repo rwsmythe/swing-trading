@@ -196,6 +196,23 @@ body {
   line-height: 1;
 }
 .topbar .theme-toggle:hover { background: var(--bg-elevated); }
+/* Phase 18 Arc 18-F: the topbar health stoplights (colored dots, not glyphs). */
+.stoplights { display: inline-flex; gap: 0.4rem; align-items: center; }
+.stoplight {
+  width: 0.85rem;
+  height: 0.85rem;
+  border-radius: 50%;
+  display: inline-block;
+  border: 1px solid var(--border-strong);
+}
+.stoplight-green { background: #2e7d32; }
+.stoplight-yellow { background: #f9a825; }
+.stoplight-red { background: #c62828; }
+.stoplight-grey { background: #9e9e9e; }
+html.dark .stoplight-green { background: #43a047; }
+html.dark .stoplight-yellow { background: #fbc02d; }
+html.dark .stoplight-red { background: #e53935; }
+html.dark .stoplight-grey { background: #757575; }
 .banner { padding: 0.5rem 1rem; margin: 0.5rem 0; border-radius: 4px; }
 .banner-stale { background: var(--banner-stale-bg); border: 1px solid var(--banner-stale-border); }
 .banner-degraded { background: var(--banner-degraded-bg); border: 1px solid var(--banner-degraded-border); color: var(--banner-degraded-fg); }
