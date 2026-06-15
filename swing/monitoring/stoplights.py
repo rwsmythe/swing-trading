@@ -179,3 +179,34 @@ def _research_stoplight() -> Stoplight:
         id="research", label="Research monitor", color=overall,
         drilldown_path="/health/research",
     )
+
+
+def _safe(provider, fallback_id, fallback_label, fallback_path) -> Stoplight:
+    """Belt-and-suspenders wrapper: even a non-defensive provider can't 500 a
+    page — any exception degrades that slot to grey (LOCK #2)."""
+    try:
+        return provider()
+    except Exception as exc:  # noqa: BLE001 (defensive — never raise to a render)
+        log.warning(
+            "%s stoplight degraded to grey at the aggregator: %s",
+            fallback_id, exc,
+        )
+        return Stoplight(
+            id=fallback_id, label=fallback_label, color="grey",
+            drilldown_path=fallback_path,
+        )
+
+
+def health_stoplights(conn, cfg) -> tuple[Stoplight, ...]:
+    """Aggregate the two independent providers into the ordered render tuple
+    (tool, research). NEVER raises — each provider call is wrapped (LOCK #2 core;
+    the context processor adds one more outer guard)."""
+    tool = _safe(
+        lambda: _tool_stoplight(conn, cfg),
+        "tool", "Tool health", "/health/tool",
+    )
+    research = _safe(
+        lambda: _research_stoplight(),
+        "research", "Research monitor", "/health/research",
+    )
+    return (tool, research)

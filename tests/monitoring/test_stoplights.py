@@ -19,6 +19,7 @@ from swing.monitoring.stoplights import (
     Stoplight,
     _research_stoplight,
     _tool_stoplight,
+    health_stoplights,
     research_health_artifact_path,
 )
 from swing.monitoring.tool_health import ToolHealthCheck, ToolHealthStatus
@@ -270,3 +271,43 @@ def test_research_stoplight_grey_on_just_over_7_days(artifact_path):
         encoding="utf-8",
     )
     assert _research_stoplight().color == "green"
+
+
+# ---------------------------------------------------------------- Task 4
+
+
+def test_health_stoplights_returns_tool_then_research(monkeypatch, artifact_path):
+    # tool -> green via patched compute; research -> grey via absent artifact.
+    status = ToolHealthStatus(
+        overall="green",
+        checks=[ToolHealthCheck(key="k", status="green", summary="s")],
+    )
+    monkeypatch.setattr(
+        "swing.monitoring.tool_health.compute_tool_health",
+        lambda conn, **kw: status,
+    )
+    result = health_stoplights(None, _FakeCfg())
+    assert [s.id for s in result] == ["tool", "research"]
+    assert result[0].color == "green"
+    assert result[1].color == "grey"
+
+
+def test_health_stoplights_never_raises_when_a_provider_raises(monkeypatch):
+    def _boom(conn, cfg):
+        raise RuntimeError("provider defect")
+
+    monkeypatch.setattr("swing.monitoring.stoplights._tool_stoplight", _boom)
+    result = health_stoplights(None, _FakeCfg())  # must NOT raise
+    assert [s.id for s in result] == ["tool", "research"]
+    assert result[0].color == "grey"  # tool slot degraded but present
+
+
+def test_health_stoplights_returns_tuple_not_list(monkeypatch, artifact_path):
+    monkeypatch.setattr(
+        "swing.monitoring.tool_health.compute_tool_health",
+        lambda conn, **kw: ToolHealthStatus(
+            overall="green",
+            checks=[ToolHealthCheck(key="k", status="green", summary="s")],
+        ),
+    )
+    assert isinstance(health_stoplights(None, _FakeCfg()), tuple)
