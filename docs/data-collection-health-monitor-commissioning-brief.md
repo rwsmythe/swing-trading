@@ -43,3 +43,36 @@ A **read-only** integrity monitor whose flags the RD reviews (flags feed RD revi
 
 ## §5 Routing
 New standing process → CHARC architecture pass + Phase 18 sequencing. The script itself is a one-file read-only probe (precedent: `weekly_glance.py`, which RD built directly), so the BUILD can be a focused dispatch; if the nightly-pipeline half is included, that step is the orchestrator lane (coordinate). RD reviews the return and then amends the watch standard to reference it.
+
+---
+
+## §6 COMMISSIONING ADDENDUM — 2026-06-15 (18-D sequenced; post-18-C/18-F reconciliation)
+
+**Status:** the operator has sequenced 18-D NEXT (the last research-lane Phase-18 arc). This addendum brings the 2026-06-13 brief current for the three developments that post-date it and resolves §3's open questions per CHARC's pass. **The §1–§2 problem statement + §4 LOCKS stand unchanged.** CHARC already architecture-passed this brief at **C4** (build the read-only SCRIPT first; DEFER the nightly pipeline-step half to a fast-follow; if nightly is built it MUST use the 17-B `step_guard`, B-shape best-effort, `warnings_json`) and **C5** (`role_mail`-on-ATTENTION endorsed but only with the nightly half). This routes back to CHARC for the **sec-3 (envelope) architecture-pass CONFIRMATION** + the one §6.3 refinement below.
+
+### §6.1 Three developments since 2026-06-13 (all SHIPPED on main)
+- **18-C shipped** → `yfinance_calls` audit table EXISTS (fetch-layer transport observability). Adds a check (§6.2 #7).
+- **18-E shipped** → `swing/monitoring/compute_tool_health(conn, *, cfg, prices_cache_dir, now) -> ToolHealthStatus` + `scripts/tool_health.py` are the **precedent to mirror** (same package, same section-3 envelope, same read-only/ASCII/no-pandas discipline).
+- **18-F shipped** → the research-artifact contract is **LIVE on main** in `swing/monitoring/stoplights.py`: `RESEARCH_HEALTH_ARTIFACT_PATH = exports/research/health/latest.json`, `RESEARCH_MONITOR_ID = "research_measurement"`, `RESEARCH_ARTIFACT_MAX_AGE_DAYS = 7`. 18-D **IMPORTS** all three (C1 single-source; never redeclare) and writes the conformant envelope there.
+
+### §6.2 Architecture + the check set
+- A pure `compute_research_health(conn, ...) -> ResearchHealthStatus` in `swing/monitoring/` (sibling of `compute_tool_health`), emitting the **section-3 envelope** `{monitor, generated_ts, overall, checks:[{key,status,summary,detail}]}` with `monitor="research_measurement"`, `overall=worst_of(checks)`, a fresh `generated_ts`.
+- `scripts/research_health.py` (mirror `scripts/tool_health.py`): prints the ASCII report (RD spin-up review) AND writes the envelope to `latest.json` (§6.3).
+- Checks (the §2 probe set as section-3 checks; each → one `{key,status,summary,detail}`):
+  1. `temporal_log_finiteness` — non-finite OHLC scan of `pattern_forward_observations` (red on any). **The 18-A defect detector; the data-USABILITY authority.**
+  2. `excluded_reason_breakdown` — `invalid_ohlc`/`insufficient_forward_depth`/`missing_observations` from the engine **manifest** (read, do NOT recompute — §4.2); flag on spike.
+  3. `coverage_gaps` — mature-detection observation-date holes vs the trading calendar.
+  4. `structural_integrity` — orphan observations + look-ahead violations.
+  5. `drumbeat_liveness` — newest-artifact age + `total_unattributed > 0`.
+  6. `candidate_completeness` — null pivots + error-bucket spike.
+  7. **NEW (post-18-C) `fetch_transport_health`** — `yfinance_calls` error/empty RATE as a **TRANSPORT indicator ONLY** (the 18-C boundary, LOAD-BEARING): consume `status` best-effort (a stale `in_flight` row = incomplete/unknown, NOT a hung call; drops under contention → treat as a sample/indicator, NEVER a census — do not alarm on a low row count). **`status='success'` is TRANSPORT success, NOT data usability** — the all-NaN-Close ragged bar records `success`; so this check NEVER substitutes for #1. `temporal_log_finiteness` stays the usability authority; the two are complementary.
+
+### §6.3 Cadence — C4 staged, RECONCILED with the 18-F staleness gate (the ONE item for CHARC's sec-3 confirmation)
+- **Script-first (C4):** `scripts/research_health.py` computes + prints ASCII **AND writes the section-3 envelope to `latest.json` on each run.**
+- **REFINEMENT of C5 flagged for CHARC's confirmation:** C5 framed the script-half as persisting "a plain ASCII report" (no artifact). But 18-F's research stoplight (now LIVE) reads `latest.json` and **greys if it is absent or stale**. So the script-first half MUST ALSO write `latest.json` (trivial — the same computed envelope) or the stoplight never lights during the script-first phase. Net: script-first writes BOTH (ASCII for RD + JSON for the stoplight) → the stoplight is green-after-spin-up and greys toward the 7-day edge (an honest "research-health last assessed N days ago"). This refines C5's "ASCII-only script half"; it does not change C4's "defer the nightly STEP."
+- **Nightly fast-follow (C4/C5):** a pipeline step via the 17-B `step_guard` (B-shape best-effort, `warnings_json`) running the SAME `compute_research_health` + writing `latest.json` nightly + `role_mail`-fyi-to-`rd` on ATTENTION (C5). This keeps `latest.json` < 1 day fresh (staleness gate stays green) AND doubles as the GUI drumbeat-liveness signal (>7d with no nightly → stoplight greys = the T1 condition surfaced at the GUI).
+- **The 5 false-green gates the envelope MUST satisfy** (18-F's reader, `read_validated_research_envelope`): (1) `monitor=="research_measurement"`; (2) `overall∈{green,yellow,red}` valid; (3) `overall==worst_of(checks)`; (4) `generated_ts` present + parseable + NOT future-dated; (5) `≤ 7` days. `compute_research_health` satisfies (3) + (4) by construction.
+
+### §6.4 RD merge-blocking gate (measurement-core) + routing
+- **RD is MERGE-BLOCKING on 18-D** (CHARC confirmed: measurement-core). My gate at the executing return, verified on the shipped diff: (a) truly **read-only** — `mode=ro`; never writes the measurement DB (the ONLY writes are `latest.json` + the ASCII report); (b) **no funnel fork** — reads the engine manifest, never recomputes attribution; (c) the **transport-vs-usability boundary** respected (#7 is a transport indicator; #1 is the usability authority); (d) if the nightly half is in scope, it uses `step_guard` B-shape best-effort and **never perturbs the pipeline / measurement steps** (the Arc-5 drumbeat posture). The codex-auto-review A/B re-test rides this executing review (CHARC-lane experiment; does NOT touch my measurement-integrity gate).
+- **Route:** CHARC sec-3 confirmation (envelope conformance + the §6.3 C5 refinement) → operator dispatches writing-plans → executing → RD QA + merge-blocking sign-off. **RD post-build action:** amend `docs/research-director-watch-standard.md` §3.1 to reference the monitor (deliberate, RD-only).
