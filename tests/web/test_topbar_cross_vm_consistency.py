@@ -24,6 +24,7 @@ from swing.web.view_models.account import AccountSnapshotFormVM
 from swing.web.view_models.config import ConfigPageVM, build_config_vm
 from swing.web.view_models.dashboard import DashboardVM
 from swing.web.view_models.error import PageErrorVM
+from swing.web.view_models.health import ResearchHealthPageVM, ToolHealthPageVM
 from swing.web.view_models.journal import JournalVM, TradeDrilldownVM
 from swing.web.view_models.metrics.capital_friction import (
     CapitalFrictionVM,
@@ -107,6 +108,8 @@ MANIFEST = {
     PatternOutcomesVM: PageKind.HISTORY_ANALYSIS,
     PatternQueueVM: PageKind.HISTORY_ANALYSIS,
     PatternReviewFormVM: PageKind.HISTORY_ANALYSIS,
+    ToolHealthPageVM: PageKind.HISTORY_ANALYSIS,
+    ResearchHealthPageVM: PageKind.HISTORY_ANALYSIS,
 }
 
 
