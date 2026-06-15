@@ -204,6 +204,24 @@ def _fresh_exports_root_for(tmp_path: Path, now: datetime) -> Path:
     return root
 
 
+def test_manifest_dir_overrides_exports_root_for_manifest_checks(tmp_path: Path) -> None:
+    # Codex R5 MINOR: manifest_dir is NOT a silent no-op -- it overrides the
+    # engine-artifact root the manifest checks scan. Point exports_root at an
+    # EMPTY dir (manifest absent -> drumbeat red) but manifest_dir at a fresh
+    # root -> drumbeat green.
+    db = tmp_path / "swing.db"
+    conn = ensure_schema(db)
+    _seed_green_db(conn)
+    empty_root = tmp_path / "empty"
+    empty_root.mkdir()
+    fresh_root = _fresh_exports_root(tmp_path)
+    status = compute_research_health(
+        conn, exports_root=empty_root, manifest_dir=fresh_root, now=_NOW)
+    by_key = {c.key: c.status for c in status.checks}
+    assert by_key["drumbeat_liveness"] == "green"  # read from manifest_dir
+    assert by_key["excluded_reason_breakdown"] == "green"
+
+
 def test_aggregate_normalizes_aware_now(tmp_path: Path) -> None:
     # an AWARE-UTC now and its equivalent naive-Hawaii-local -> same statuses AND
     # the same generated_ts (both normalize to the same instant).

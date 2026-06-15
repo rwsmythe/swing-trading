@@ -291,28 +291,36 @@ _EXCL_YELLOW_PCT = 10.0   # any one reason >10% of unique_signals -> yellow
 _EXCL_RED_PCT = 25.0      # any one reason >25% -> red
 
 
-def _is_finite_nonneg_number(v: object) -> bool:
-    """True iff v is a finite, non-negative real number (NOT bool, NOT NaN/inf).
+def _is_nonneg_count(v: object) -> bool:
+    """True iff v is a non-negative INTEGER count (NOT bool, NOT NaN/inf, NOT a
+    FRACTIONAL float).
 
-    JSON parses NaN/Infinity to floats that would silently pass an isinstance
-    check and make every threshold comparison False (a false-green vector --
-    Codex R2 MAJOR #1). Reject them here so a NaN count escalates to corrupt.
+    Manifest counts are producer-owned integer counters. Codex R2 MAJOR #1: JSON
+    NaN/Infinity parse to floats that pass an isinstance check + make every
+    threshold compare False (false-green). Codex R5 MAJOR #2: a FRACTIONAL float
+    (e.g. invalid_ohlc=10.9) would be int()-truncated to 10, dropping it below a
+    boundary -> false-green. So accept an int, or an integer-VALUED float (77.0),
+    and reject NaN/inf/negative/fractional -> shape-drift escalates to corrupt.
     """
-    if isinstance(v, bool) or not isinstance(v, (int, float)):
+    if isinstance(v, bool):
         return False
-    return math.isfinite(v) and v >= 0
+    if isinstance(v, int):
+        return v >= 0
+    if isinstance(v, float):
+        return math.isfinite(v) and v >= 0 and v.is_integer()
+    return False
 
 
 def _excluded_is_well_shaped(excluded: object) -> bool:
     """An `excluded` sub-dict (if present) must be a dict whose CONSUMED reason
-    counts are finite non-negative numbers (Codex R2 MAJOR #1). A list, a
-    non-numeric value, or a NaN count -> shape-drift."""
+    counts are non-negative integer counts (Codex R2 MAJOR #1 + R5 MAJOR #2). A
+    list, a non-numeric value, a NaN, or a fractional count -> shape-drift."""
     if excluded is None:
         return True  # absent excluded -> 0 for every reason (legitimate)
     if not isinstance(excluded, dict):
         return False
     for reason in _ATTRIBUTED_EXCLUDED_REASONS:
-        if reason in excluded and not _is_finite_nonneg_number(excluded[reason]):
+        if reason in excluded and not _is_nonneg_count(excluded[reason]):
             return False
     return True
 
@@ -322,12 +330,13 @@ def _manifest_is_well_shaped(parsed: object) -> bool:
     shape-drift defense, STRICT on every CONSUMED field).
 
     Well-shaped requires: funnel is a dict; funnel.detection_level.unique_signals
-    is a FINITE NON-NEGATIVE number; funnel.per_hypothesis is a dict each of whose
+    is a non-negative integer count; funnel.per_hypothesis is a dict each of whose
     values is a dict whose `excluded` (if present) is a well-shaped reason dict;
-    funnel.unattributed (if present) is a dict whose values are finite non-negative
-    numbers. Anything else -> the caller maps it to "corrupt" (NOT "ok"-then-
-    .get-zeros, which would mask a broken latest run as healthy or crash on a
-    list/non-numeric value).
+    funnel.unattributed is PRESENT (Codex R5 MAJOR #1 -- a consumed field; a
+    missing one is shape-drift, not green) and a dict whose values are
+    non-negative integer counts. Anything else -> the caller maps it to "corrupt"
+    (NOT "ok"-then-.get-zeros, which would mask a broken latest run as healthy or
+    crash on a list/non-numeric value).
     """
     if not isinstance(parsed, dict):
         return False
@@ -337,7 +346,7 @@ def _manifest_is_well_shaped(parsed: object) -> bool:
     detection_level = funnel.get("detection_level")
     if not isinstance(detection_level, dict):
         return False
-    if not _is_finite_nonneg_number(detection_level.get("unique_signals")):
+    if not _is_nonneg_count(detection_level.get("unique_signals")):
         return False
     per_hypothesis = funnel.get("per_hypothesis")
     if not isinstance(per_hypothesis, dict):
@@ -347,13 +356,12 @@ def _manifest_is_well_shaped(parsed: object) -> bool:
             return False
         if not _excluded_is_well_shaped(hyp.get("excluded")):
             return False
+    # unattributed is a CONSUMED field (drumbeat reads it) -> REQUIRE it present
+    # + a dict of integer counts (Codex R5 MAJOR #1).
     unattributed = funnel.get("unattributed")
-    if unattributed is not None:
-        if not isinstance(unattributed, dict):
-            return False
-        if not all(_is_finite_nonneg_number(v) for v in unattributed.values()):
-            return False
-    return True
+    if not isinstance(unattributed, dict):
+        return False
+    return all(_is_nonneg_count(v) for v in unattributed.values())
 
 
 def _read_newest_manifest(exports_root) -> tuple[str, dict | None]:
@@ -764,11 +772,10 @@ def _check_drumbeat_liveness(
         manifest_status = "yellow"
         manifest_note = "; newest manifest unreadable (unattributed unknown)"
     elif state == "ok":
-        unattributed = manifest["funnel"].get("unattributed", {})
-        total_unattributed = sum(
-            int(v) for v in unattributed.values()
-            if isinstance(v, (int, float)) and not isinstance(v, bool)
-        )
+        # _manifest_is_well_shaped guarantees unattributed is a dict of
+        # non-negative integer counts (Codex R5 MAJOR #1/#2).
+        unattributed = manifest["funnel"]["unattributed"]
+        total_unattributed = sum(int(v) for v in unattributed.values())
         if total_unattributed > 0:
             manifest_status = "yellow"
             manifest_note = f"; {total_unattributed} unattributed signal(s)"
@@ -961,20 +968,28 @@ def compute_research_health(
     """Read-only roll-up of the 7 research data-collection-integrity checks into
     the §3 status envelope (monitor="research_measurement", overall=worst_of,
     aware-UTC generated_ts). Never writes the DB. The bare call
-    compute_research_health(conn) stays valid; `cfg`/`manifest_dir` are accepted
-    for signature-parity / future use (V1 checks do not require them).
+    compute_research_health(conn) stays valid; `cfg` is accepted for
+    signature-parity / future use (V1 checks do not require it).
+
+    `manifest_dir` (Codex R5 MINOR) is an EXPLICIT override of the engine-artifact
+    root the manifest-consuming checks (#2 excluded, #5 drumbeat) scan -- it takes
+    precedence over `exports_root` for those checks so the parameter is not a
+    silent no-op. When both are None the default is exports/research/.
     """
     now = _normalize_now_to_naive_local(now)
     if exports_root is None:
         # exports/research/ (RESEARCH_HEALTH_ARTIFACT_PATH is .../research/health/
         # latest.json; .parent.parent is .../research/).
         exports_root = RESEARCH_HEALTH_ARTIFACT_PATH.parent.parent
+    # manifest_dir, when supplied, is the explicit engine-artifact root for the
+    # manifest checks (NOT a silent no-op -- Codex R5 MINOR).
+    manifest_root = manifest_dir if manifest_dir is not None else exports_root
     checks: list[ResearchHealthCheck] = []
     checks += _check_temporal_log_finiteness(conn)
-    checks += _check_excluded_reason_breakdown(exports_root=exports_root)
+    checks += _check_excluded_reason_breakdown(exports_root=manifest_root)
     checks += _check_coverage_gaps(conn, now=now)
     checks += _check_structural_integrity(conn)
-    checks += _check_drumbeat_liveness(exports_root=exports_root, now=now)
+    checks += _check_drumbeat_liveness(exports_root=manifest_root, now=now)
     checks += _check_candidate_completeness(conn)
     checks += _check_fetch_transport_health(conn)
     overall = worst_of([c.status for c in checks])

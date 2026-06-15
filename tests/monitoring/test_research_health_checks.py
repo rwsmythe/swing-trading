@@ -384,6 +384,44 @@ def test_excluded_yellow_when_unique_signals_is_nan(tmp_path: Path) -> None:
     assert check.status == "yellow"
 
 
+def test_excluded_yellow_when_unattributed_field_missing(tmp_path: Path) -> None:
+    # Codex R5 MAJOR #1: unattributed is a CONSUMED field (drumbeat reads it); a
+    # manifest MISSING it is shape-drift -> corrupt -> yellow (NOT ok/green).
+    _write_manifest(
+        tmp_path, dir_name="shadow-expectancy-20260613T000000Z",
+        raw_text=json.dumps({"funnel": {
+            "detection_level": {"unique_signals": 100},
+            "per_hypothesis": {"H": {"excluded": {"invalid_ohlc": 5}}},
+        }}))  # no "unattributed"
+    check = _only(
+        _check_excluded_reason_breakdown(exports_root=tmp_path),
+        "excluded_reason_breakdown")
+    assert check.status == "yellow"
+
+
+def test_excluded_yellow_when_reason_count_is_fractional(tmp_path: Path) -> None:
+    # Codex R5 MAJOR #2: a FRACTIONAL count (10.9) would int()-truncate to 10 ->
+    # false-green at a boundary. A fractional count is shape-drift -> yellow.
+    _write_manifest(
+        tmp_path, dir_name="shadow-expectancy-20260613T000000Z",
+        funnel=_funnel(100, {"H": {"excluded": {"invalid_ohlc": 10.9}}}))
+    check = _only(
+        _check_excluded_reason_breakdown(exports_root=tmp_path),
+        "excluded_reason_breakdown")
+    assert check.status == "yellow"
+
+
+def test_excluded_ok_when_unique_signals_is_integer_valued_float(tmp_path: Path) -> None:
+    # an integer-VALUED float (77.0) is a legitimate integer count -> ok.
+    _write_manifest(
+        tmp_path, dir_name="shadow-expectancy-20260613T000000Z",
+        funnel=_funnel(100.0, {"H": {"excluded": {"invalid_ohlc": 5}}}))
+    check = _only(
+        _check_excluded_reason_breakdown(exports_root=tmp_path),
+        "excluded_reason_breakdown")
+    assert check.status == "green"  # 5/100 = 5% < 10%, ok manifest
+
+
 def test_read_newest_manifest_picks_newest_by_dir_name(tmp_path: Path) -> None:
     # older valid manifest + newest dir corrupt -> the reader returns the NEWEST
     # (corrupt) state, not the older valid one.
