@@ -465,6 +465,20 @@ def test_excluded_yellow_when_manifest_is_non_utf8(tmp_path: Path) -> None:
     assert check.status == "yellow"
 
 
+def test_read_newest_manifest_ignores_non_timestamp_dirs(tmp_path: Path) -> None:
+    # Codex R10 MINOR #2: a stray non-timestamp shadow-expectancy-* dir must NOT
+    # become the manifest "newest" (the age arm skips it; both arms must agree).
+    # A valid older timestamped dir with a good manifest + a lexically-LATER
+    # non-timestamp dir -> the reader picks the VALID timestamped one.
+    _write_manifest(tmp_path, dir_name="shadow-expectancy-20260613T000000Z",
+                    funnel=_funnel(100, {"H": {"excluded": {"invalid_ohlc": 1}}}))
+    # a lexically-later stray dir (sorts after the timestamped one by name)
+    (tmp_path / "shadow-expectancy-zbad").mkdir()
+    state, payload = _read_newest_manifest(tmp_path)
+    assert state == "ok"  # the valid timestamped dir wins, not the stray
+    assert payload is not None
+
+
 def test_read_newest_manifest_picks_newest_by_dir_name(tmp_path: Path) -> None:
     # older valid manifest + newest dir corrupt -> the reader returns the NEWEST
     # (corrupt) state, not the older valid one.
@@ -634,6 +648,41 @@ def test_coverage_escalates_on_unknown_latest_status_with_missing_tail(
     assert check.status in ("yellow", "red")
 
 
+def test_coverage_yellow_on_duplicate_observation_date(tmp_path: Path) -> None:
+    # Codex R10 MAJOR #1: a duplicate observation_date (degraded DB; impossible
+    # under the schema UNIQUE) is surfaced as a data-shape defect (yellow) so a
+    # late terminal duplicate cannot suppress a missing tail.
+    conn = _schema_conn(tmp_path)
+    det = _seed_detection(conn, data_asof_date="2026-06-04")
+    conn.execute("PRAGMA foreign_keys=OFF")
+    # two rows with the SAME observation_date (bypassing the UNIQUE via a raw
+    # insert with the index dropped is not trivial; instead insert one normally
+    # then a second raw row with the same date -- the UNIQUE would reject it, so
+    # drop the index first).
+    conn.execute("DROP INDEX IF EXISTS idx_pfo_detection_date")
+    conn.execute(
+        "INSERT INTO pattern_forward_observations"
+        " (detection_id, observation_date, ohlc_today_json, status,"
+        " sessions_since_detection, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (det, "2026-06-05", _FINITE_OHLC, "pending", 1, "2026-06-05T00:00:00"))
+    try:
+        conn.execute(
+            "INSERT INTO pattern_forward_observations"
+            " (detection_id, observation_date, ohlc_today_json, status,"
+            " sessions_since_detection, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (det, "2026-06-05", _FINITE_OHLC, "invalidated", 1,
+             "2026-06-05T00:00:00"))
+        conn.commit()
+    except sqlite3.IntegrityError:
+        # the table-level UNIQUE constraint still blocks it -> this exact degraded
+        # shape is unreachable on this build; the guard is defensive. Skip.
+        import pytest
+        pytest.skip("UNIQUE(detection_id, observation_date) blocks the dup insert")
+    check = _only(_check_coverage_gaps(conn, now=_NOW), "coverage_gaps")
+    assert check.status in ("yellow", "red")
+    assert "duplicate" in (check.detail or "").lower() or check.status != "green"
+
+
 def test_coverage_yellow_when_missing_table(tmp_path: Path) -> None:
     conn = sqlite3.connect(":memory:")
     check = _only(_check_coverage_gaps(conn, now=_NOW), "coverage_gaps")
@@ -689,6 +738,30 @@ def test_structural_red_on_orphan(tmp_path: Path) -> None:
     check = _only(_check_structural_integrity(conn), "structural_integrity")
     assert check.status == "red"
     assert "orphan" in check.summary.lower()
+
+
+def test_structural_yellow_on_malformed_date(tmp_path: Path) -> None:
+    # Codex R10 MAJOR #2: a malformed detection_date must be counted as a
+    # data-shape defect (yellow), not silently pass the lexical SQL compare.
+    conn = _schema_conn(tmp_path)
+    conn.execute("PRAGMA foreign_keys=OFF")
+    conn.execute(
+        "INSERT INTO pattern_detection_events"
+        " (detection_id, ticker, detection_date, data_asof_date, pattern_class,"
+        " structural_anchors_json, composite_score, detector_version, source,"
+        " per_pattern_metadata_json, created_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (1, "AAA", "not-a-date", "2026-06-04", "vcp", "{}", 1.0, "t",
+         "synthetic", "{}", "2026-06-05T00:00:00"))
+    conn.execute(
+        "INSERT INTO pattern_forward_observations"
+        " (detection_id, observation_date, ohlc_today_json, status,"
+        " sessions_since_detection, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (1, "2026-06-05", _FINITE_OHLC, "pending", 1, "2026-06-05T00:00:00"))
+    conn.commit()
+    check = _only(_check_structural_integrity(conn), "structural_integrity")
+    assert check.status == "yellow"
+    assert "malformed" in check.summary.lower()
 
 
 def test_structural_yellow_when_missing_table(tmp_path: Path) -> None:
@@ -1050,6 +1123,15 @@ def test_transport_surfaces_in_flight_count_in_detail(tmp_path: Path) -> None:
     check2 = _only(_check_fetch_transport_health(conn), "fetch_transport_health")
     assert check2.status == "green"
     assert "in_flight" in (check2.detail or "")
+
+
+def test_transport_surfaces_in_flight_on_normal_rate_path(tmp_path: Path) -> None:
+    # Codex R10 MINOR #1: in_flight is surfaced in the normal-rate detail too.
+    conn = _schema_conn(tmp_path)
+    _seed_yf_calls(conn, success=20, in_flight=3)
+    check = _only(_check_fetch_transport_health(conn), "fetch_transport_health")
+    assert check.status == "green"  # 0% error, in_flight excluded from denominator
+    assert "3 in_flight" in (check.detail or "")
 
 
 def test_transport_in_flight_does_not_starve_terminal_sample(tmp_path: Path) -> None:

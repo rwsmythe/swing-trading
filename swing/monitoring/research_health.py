@@ -392,8 +392,11 @@ def _read_newest_manifest(exports_root) -> tuple[str, dict | None]:
       - ("ok", <dict>)    -- parsed successfully AND the nested funnel schema is
         present (so downstream sums can rely on those keys).
 
-    Newest by dir-name reverse-sort (the weekly_glance.py:49-51 precedent). Never
-    crashes on the read.
+    Newest by dir-name reverse-sort, restricted to dirs with a PARSEABLE
+    timestamp (Codex R10 MINOR #2 -- the SAME _DIR_TS_RE filter _newest_artifact_
+    age_days uses, so both arms agree on "newest"; a stray non-timestamp
+    shadow-expectancy-* dir cannot become the manifest "newest" while the age arm
+    skips it). Never crashes on the read.
     """
     from pathlib import Path
 
@@ -401,8 +404,9 @@ def _read_newest_manifest(exports_root) -> tuple[str, dict | None]:
     if not root.exists():
         return ("absent", None)
     dirs = sorted(
-        (p for p in root.glob("shadow-expectancy-*") if p.is_dir()),
-        reverse=True,
+        (p for p in root.glob("shadow-expectancy-*")
+         if p.is_dir() and _DIR_TS_RE.search(p.name)),
+        key=lambda p: p.name, reverse=True,
     )
     if not dirs:
         return ("absent", None)
@@ -615,6 +619,16 @@ def _check_coverage_gaps(
             if len(sample) < 3:
                 sample.append(f"det{det_id}: malformed date")
             continue
+        # Codex R10 MAJOR #1: a DUPLICATE observation_date for a detection is
+        # impossible under the schema UNIQUE(detection_id, observation_date) but
+        # CAN appear on a degraded DB; a late terminal duplicate at the max date
+        # could otherwise suppress a missing tail (set upper=max_obs spuriously).
+        # Surface it as a data-shape defect and skip the tail logic for the row.
+        if len(obs) != len(observed):
+            malformed += 1
+            if len(sample) < 3:
+                sample.append(f"det{det_id}: duplicate observation_date")
+            continue
         # Maturity applied in PYTHON after the parse (Codex R6 MAJOR #3): mature =
         # at least one tradable session since the cutoff. (A SQL string predicate
         # would have lexically dropped a malformed/NULL asof before this point.)
@@ -686,13 +700,19 @@ def _check_coverage_gaps(
 def _check_structural_integrity(
     conn: sqlite3.Connection,
 ) -> list[ResearchHealthCheck]:
-    """Two SQL probes, RED on ANY hit (a structural-integrity violation is never
+    """Two probes, RED on ANY hit (a structural-integrity violation is never
     tolerable; brief §6.2 #4):
       - orphan observations (LEFT JOIN with no parent detection);
       - look-ahead: a detection whose FIRST observation precedes its
         detection_date (strict `<`).
-    Missing table -> yellow schema-unavailable.
+    The look-ahead comparison is done in PYTHON after date.fromisoformat (Codex
+    R10 MAJOR #2): a lexical SQL `first_obs < detection_date` would silently miss
+    a violation when either date is MALFORMED on a degraded DB -> a malformed
+    date is counted as a data-shape defect (yellow), consistent with the
+    coverage check. Missing table -> yellow schema-unavailable.
     """
+    from datetime import date as _date
+
     key = "structural_integrity"
     try:
         orphans = conn.execute(
@@ -701,16 +721,13 @@ def _check_structural_integrity(
             " ON d.detection_id = o.detection_id"
             " WHERE d.detection_id IS NULL"
         ).fetchone()[0]
-        look_ahead = conn.execute(
-            "SELECT COUNT(*) FROM ("
-            " SELECT o.detection_id, MIN(o.observation_date) AS first_obs,"
-            " d.detection_date"
+        pairs = conn.execute(
+            "SELECT MIN(o.observation_date) AS first_obs, d.detection_date"
             " FROM pattern_forward_observations o"
             " JOIN pattern_detection_events d"
             " ON d.detection_id = o.detection_id"
             " GROUP BY o.detection_id"
-            ") WHERE first_obs < detection_date"
-        ).fetchone()[0]
+        ).fetchall()
     except sqlite3.OperationalError as exc:
         if _schema_unavailable(exc):
             return [ResearchHealthCheck(
@@ -720,11 +737,27 @@ def _check_structural_integrity(
                        " run swing db-migrate")]
         raise
 
+    look_ahead = 0
+    malformed = 0
+    for first_obs, detection_date in pairs:
+        try:
+            if _date.fromisoformat(first_obs) < _date.fromisoformat(detection_date):
+                look_ahead += 1
+        except (TypeError, ValueError):
+            malformed += 1
+
+    if not orphans and not look_ahead and malformed:
+        return [ResearchHealthCheck(
+            key=key, status="yellow",
+            summary=f"{malformed} malformed-date detection(s) in the temporal log",
+            detail="degraded date shape; cannot verify look-ahead for these rows")]
+
     if orphans or look_ahead:
+        extra = f", {malformed} malformed-date" if malformed else ""
         return [ResearchHealthCheck(
             key=key, status="red",
             summary=f"{orphans} orphan observation(s),"
-                    f" {look_ahead} look-ahead violation(s)",
+                    f" {look_ahead} look-ahead violation(s){extra}",
             detail="structural-integrity violation in the temporal log")]
     return [ResearchHealthCheck(
         key=key, status="green",
@@ -988,7 +1021,10 @@ def _check_fetch_transport_health(
     return [ResearchHealthCheck(
         key=key, status=status,
         summary=f"{n} terminal fetches: {error_pct:.0f}% error, {empty_pct:.0f}% empty",
-        detail=f"{n_error} error, {n_empty} empty of {n} terminal rows")]
+        # in_flight surfaced consistently on the normal-rate path too (Codex R10
+        # MINOR #1) -- still denominator-excluded, never color-driving.
+        detail=f"{n_error} error, {n_empty} empty of {n} terminal rows"
+               f"{in_flight_note}")]
 
 
 # --------------------------------------------------------------------------
