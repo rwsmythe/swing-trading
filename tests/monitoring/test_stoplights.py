@@ -327,6 +327,38 @@ def test_research_stoplight_consistent_overall_equals_worst_check(artifact_path)
     assert _research_stoplight().color == "yellow"
 
 
+@pytest.mark.parametrize(
+    "bad_check",
+    [
+        {"status": "green"},  # status-only — no key/summary (the Codex R3 case)
+        {"status": "green", "summary": "s"},  # missing key
+        {"key": "a", "status": "green"},  # missing summary
+        {"key": "", "status": "green", "summary": "s"},  # empty key
+        {"key": "a", "status": "green", "summary": ""},  # empty summary
+        {"key": "a", "status": "green", "summary": 5},  # non-string summary
+        {"key": 5, "status": "green", "summary": "s"},  # non-string key
+        {"key": "a", "status": "green", "summary": "s", "detail": 5},  # bad detail
+    ],
+)
+def test_research_stoplight_grey_on_malformed_check_schema(
+    artifact_path, caplog, bad_check,
+):
+    # Codex R3 MAJOR — a check passing the severity gate (valid `status`) but
+    # missing/invalid the render-contract fields (`key`/`summary`/`detail`) is an
+    # unverifiable artifact; the drill-down would silently drop it while the
+    # topbar lights green. The shared reader must validate the FULL check schema.
+    env = _valid_envelope("green")
+    env["checks"] = [bad_check]
+    artifact_path.write_text(json.dumps(env), encoding="utf-8")
+    # Both-ways: a status-only severity check returns green (the bug); full-schema
+    # validation greys.
+    with caplog.at_level("WARNING"):
+        s = _research_stoplight()
+    assert s.color == "grey"
+    assert caplog.records
+    assert read_validated_research_envelope() is None
+
+
 # ---------------------------------------------------------------- Task 4
 
 

@@ -51,9 +51,16 @@ def research_health_artifact_path() -> Path:
 
 def _worst_check_severity(checks) -> str | None:
     """Return the worst (most severe) status across `checks`, or None when the
-    list is absent/empty/non-list or any check status is not in {green,yellow,
-    red}. A None result means the artifact's `overall` cannot be verified against
-    its checks -> the caller greys (never false-greens on an unverifiable shape).
+    artifact is unverifiable.
+
+    Validates the FULL render-contract schema each check must satisfy (NOT just
+    `status`): the list is non-empty, and every check is a dict with a non-empty
+    string `key`, a `status` in {green,yellow,red}, a non-empty string `summary`,
+    and a `detail` that is None or a string. A None result (absent/empty/non-list,
+    or ANY malformed check) means the caller cannot trust the artifact -> greys.
+    This closes the residual false-green where a severity-only check (e.g.
+    `{"status":"green"}`) would light the topbar green while the drill-down VM
+    silently drops the shapeless check (Codex R3 MAJOR).
     """
     if not isinstance(checks, list) or not checks:
         return None
@@ -63,6 +70,15 @@ def _worst_check_severity(checks) -> str | None:
             return None
         status = c.get("status")
         if status not in _SEVERITY_RANK:
+            return None
+        key = c.get("key")
+        summary = c.get("summary")
+        if not isinstance(key, str) or not key:
+            return None
+        if not isinstance(summary, str) or not summary:
+            return None
+        detail = c.get("detail")
+        if detail is not None and not isinstance(detail, str):
             return None
         if _SEVERITY_RANK[status] > _SEVERITY_RANK[worst]:
             worst = status
