@@ -56,3 +56,20 @@ New web routes + a base-layout change + the `swing/monitoring/` extension → CH
 
 ## 7. Return report
 The ORCHESTRATOR posts to `charc, operator` (+ `rd` FYI) after its QA (the implementer reports up; never a director inbox). Itemize: the chosen base-layout mechanism (injection vs per-VM) + WHY (the viability check result); the defensive-never-raise proof (the raise-→-grey test) + the every-base-route regression test; the two providers + the §3-envelope read at the shared path + the grey-until-18-D behavior; the two drill-down routes; the browser-gate result (operator-witnessed); Codex review (review-strong) rounds + verdict AND the `codex-auto-review` A/B comparison; the sub-agent dispatch notes.
+
+---
+
+## 8. Writing-plans clearance (CHARC architecture seat, 2026-06-14)
+Plan reviewed on disk (branch `phase18-arc-f-plan`, `2917ce18`, off main `fc342511`; 4-round **review-fast**-Codex-converged; orchestrator QA PASS incl. an INDEPENDENT live-install verification). **Plan CLEARED from the CHARC seat; executing = GO on operator authorization.**
+
+**The load-bearing decision RESOLVED + VERIFIED — my recommended base-wide injection was chosen + grounded on the live install (not assumed):** `inspect.getsource` on Starlette 1.0.0 shows `Jinja2Templates.__init__(self, directory=None, *, context_processors=..., env=...)` — `context_processors` is STANDALONE (only `directory ^ env` is mutually exclusive); `TemplateResponse` iterates the processors on every render. So `Jinja2Templates(env=env, context_processors=[...])` is viable with the project's `env=` construction. Registered INSIDE `_build_templates` (app.py:86-100) so EVERY render — `app.state.templates` AND the error handler's FRESH templates (app.py:112) — carries the stoplights. **The 500-risk is SIDESTEPPED, D15 NOT paid** (no per-VM field). The deviation I flagged is adopted + verified.
+
+**Contract HARDENED beyond the brief (review-fast Codex earned its keep):** an IDENTITY gate (`monitor == "research_measurement"` — the other `exports/research/` artifacts can't false-green it; R1) + a STALENESS gate (`generated_ts <= 7d` via the §3 envelope's own field — closes the same-monitor-stale-but-green vector; R2) + an exact-timedelta age compare (R3 precision fix). Shared constants (`RESEARCH_HEALTH_ARTIFACT_PATH` / `RESEARCH_MONITOR_ID` / `RESEARCH_ARTIFACT_MAX_AGE_DAYS`) defined ONCE in `swing/monitoring/` — the one contract 18-D conforms to.
+
+### Executing-gate conditions (CHARC verifies on the SHIPPED DIFF; two-eye + the BINDING operator browser gate)
+- **C-F1** — context processor registered INSIDE `_build_templates` (covers `app.state.templates` + the error-handler fresh templates); `base.html.j2` reads `health_stoplights` from the render context, NOT a per-VM field (D15 not paid).
+- **C-F2** — the defensive-never-raise lock: triply-guarded (provider → aggregator → processor); each failure → grey / empty tuple; the forced-500 error-page test (the REAL `_handle_any` fresh-templates path, `raise_server_exceptions=False`) + the every-base-route regression + per-provider-raise tests present + green.
+- **C-F3** — `grey` is render-only (`Stoplight` admits grey; 18-E rejects grey at construction; the monitors never emit it).
+- **C-F4** — the research contract: shared constants defined ONCE; the IDENTITY gate (`monitor == "research_measurement"`) + the STALENESS gate (`generated_ts <= RESEARCH_ARTIFACT_MAX_AGE_DAYS`) both enforced; grey-until-18-D (provider-driven auto-light).
+- **C-F5** — reuse 18-E `compute_tool_health` (lazy import, no fork); scope clean (NO `swing/data`/`trades`/`pipeline`, NO schema, NO new dependency).
+- **Plus:** the **BINDING operator BROWSER gate** (every base route incl. a deliberately-triggered error page; both stoplights render; research GREY/pending; both drill-downs load; no 500 anywhere) + `review-strong` + the **first `codex-auto-review` A/B** (persist both transcripts; orchestrator reports the comparison; CHARC assesses promotion, gpt-5.5 the fallback). No-false-green merged-head re-run + ruff.
