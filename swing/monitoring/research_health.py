@@ -755,3 +755,63 @@ def _check_fetch_transport_health(
         key=key, status=status,
         summary=f"{n} terminal fetches: {error_pct:.0f}% error, {empty_pct:.0f}% empty",
         detail=f"{n_error} error, {n_empty} empty of {n} terminal rows")]
+
+
+# --------------------------------------------------------------------------
+# Aggregator
+# --------------------------------------------------------------------------
+
+
+def _normalize_now_to_naive_local(now: datetime | None) -> datetime:
+    """Normalize `now` to NAIVE Hawaii-local at the compute_research_health
+    boundary (byte-identical to 18-E tool_health._normalize_now_to_naive_local).
+
+    The session helpers (action_session_for_run / last_completed_session) do
+    now_local.replace(tzinfo=Pacific/Honolulu), which RELABELS (not converts) an
+    aware datetime -> mis-anchored sessions. Normalize ONCE here so every
+    downstream consumer receives a naive-Hawaii-local `now`.
+      - None -> datetime.now(Pacific/Honolulu) naive (the Hawaii wall clock, NOT
+        bare datetime.now() which mis-anchors on a non-Hawaii box).
+      - aware -> CONVERT the instant to Hawaii-local THEN strip tzinfo.
+      - naive -> pass through (already treated as Hawaii-local by the helpers).
+    """
+    if now is None:
+        return datetime.now(ZoneInfo("Pacific/Honolulu")).replace(tzinfo=None)
+    if now.tzinfo is not None:
+        return now.astimezone(ZoneInfo("Pacific/Honolulu")).replace(tzinfo=None)
+    return now
+
+
+def compute_research_health(
+    conn: sqlite3.Connection,
+    *,
+    cfg=None,
+    exports_root=None,
+    manifest_dir=None,
+    now: datetime | None = None,
+) -> ResearchHealthStatus:
+    """Read-only roll-up of the 7 research data-collection-integrity checks into
+    the §3 status envelope (monitor="research_measurement", overall=worst_of,
+    aware-UTC generated_ts). Never writes the DB. The bare call
+    compute_research_health(conn) stays valid; `cfg`/`manifest_dir` are accepted
+    for signature-parity / future use (V1 checks do not require them).
+    """
+    now = _normalize_now_to_naive_local(now)
+    if exports_root is None:
+        # exports/research/ (RESEARCH_HEALTH_ARTIFACT_PATH is .../research/health/
+        # latest.json; .parent.parent is .../research/).
+        exports_root = RESEARCH_HEALTH_ARTIFACT_PATH.parent.parent
+    checks: list[ResearchHealthCheck] = []
+    checks += _check_temporal_log_finiteness(conn)
+    checks += _check_excluded_reason_breakdown(exports_root=exports_root)
+    checks += _check_coverage_gaps(conn, now=now)
+    checks += _check_structural_integrity(conn)
+    checks += _check_drumbeat_liveness(exports_root=exports_root, now=now)
+    checks += _check_candidate_completeness(conn)
+    checks += _check_fetch_transport_health(conn)
+    overall = worst_of([c.status for c in checks])
+    # Codex R1 MAJOR #1: stamp generated_ts AWARE-UTC so the 18-F staleness gate
+    # is host-tz-independent (the deliberate divergence from 18-E's naive stamp).
+    generated_ts = _research_now_iso(now)
+    return ResearchHealthStatus(
+        overall=overall, checks=checks, generated_ts=generated_ts)
