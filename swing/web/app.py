@@ -612,6 +612,9 @@ def create_app(cfg: Config, cfg_path: Path | None = None) -> FastAPI:
         dashboard as dashboard_route,
     )
     from swing.web.routes import (
+        health as health_route,
+    )
+    from swing.web.routes import (
         journal as journal_route,
     )
     from swing.web.routes import (
@@ -652,5 +655,6 @@ def create_app(cfg: Config, cfg_path: Path | None = None) -> FastAPI:
     app.include_router(schwab_route.router)
     app.include_router(reconcile_route.router)
     app.include_router(patterns_route.router)
+    app.include_router(health_route.router)
 
     return app

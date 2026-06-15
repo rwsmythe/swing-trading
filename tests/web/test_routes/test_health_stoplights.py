@@ -7,10 +7,13 @@ operator browser gate is the binding net for DOM/visual regressions (brief §6).
 """
 from __future__ import annotations
 
+import json
+from datetime import datetime
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
+from swing.monitoring.stoplights import RESEARCH_MONITOR_ID
 from swing.web.app import _health_stoplights_context_processor, create_app
 
 
@@ -101,3 +104,92 @@ def test_context_processor_injects_color_classes(seeded_db, monkeypatch):
         r = client.get("/")
     assert r.status_code == 200
     assert r.text.count("stoplight-") >= 2
+
+
+# ---------------------------------------------------------------- Task 7
+
+
+def test_health_tool_route_lists_checks(seeded_db, monkeypatch):
+    cfg, cfg_path = seeded_db
+    _seed_minimal_dashboard_state(cfg)
+    _stub_price_cache(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/health/tool")
+    assert r.status_code == 200
+    assert "pipeline_freshness" in r.text  # a known 18-E check key
+    assert 'class="stoplights"' in r.text  # the drill-down is itself a base page
+
+
+def test_health_research_route_not_deployed_message(seeded_db, monkeypatch, tmp_path):
+    cfg, cfg_path = seeded_db
+    _seed_minimal_dashboard_state(cfg)
+    _stub_price_cache(monkeypatch)
+    monkeypatch.setattr(
+        "swing.monitoring.stoplights.research_health_artifact_path",
+        lambda: tmp_path / "absent.json",
+    )
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/health/research")
+    assert r.status_code == 200
+    assert "18-D" in r.text
+    assert "not yet deployed" in r.text.lower()
+
+
+def test_health_research_route_lists_checks_when_artifact_present(
+    seeded_db, monkeypatch, tmp_path,
+):
+    cfg, cfg_path = seeded_db
+    _seed_minimal_dashboard_state(cfg)
+    _stub_price_cache(monkeypatch)
+    p = tmp_path / "latest.json"
+    p.write_text(
+        json.dumps({
+            "monitor": RESEARCH_MONITOR_ID,
+            "generated_ts": datetime.now().isoformat(),
+            "overall": "yellow",
+            "checks": [
+                {"key": "expectancy_freshness", "status": "yellow",
+                 "summary": "stale shadow run", "detail": "ran 9d ago"},
+            ],
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "swing.monitoring.stoplights.research_health_artifact_path", lambda: p,
+    )
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/health/research")
+    assert r.status_code == 200
+    assert "expectancy_freshness" in r.text
+    assert "stale shadow run" in r.text
+
+
+def test_health_routes_read_only(seeded_db, monkeypatch):
+    from swing.data.db import connect
+    cfg, cfg_path = seeded_db
+    _seed_minimal_dashboard_state(cfg)
+    _stub_price_cache(monkeypatch)
+
+    def _count(conn):
+        return conn.execute(
+            "SELECT COUNT(*) FROM pipeline_runs",
+        ).fetchone()[0]
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        before = _count(conn)
+    finally:
+        conn.close()
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        assert client.get("/health/tool").status_code == 200
+        assert client.get("/health/research").status_code == 200
+    conn = connect(cfg.paths.db_path)
+    try:
+        after = _count(conn)
+    finally:
+        conn.close()
+    assert before == after

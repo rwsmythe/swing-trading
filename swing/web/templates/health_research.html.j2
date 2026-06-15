@@ -1,0 +1,33 @@
+{# Phase 18 Arc 18-F: the research-measurement drill-down. Extends base.html.j2.
+   Shows the 18-D-pending message when the artifact is absent; lists the checks
+   once 18-D writes a conformant envelope. ASCII only (no glyphs/em-dash). #}
+{% extends "base.html.j2" %}
+{% block content %}
+  <h1>Research monitor</h1>
+  {% if not vm.available %}
+  <p class="not-deployed">The research monitor (18-D) is not yet deployed. This
+     stoplight is grey until 18-D writes its health artifact; it will auto-light
+     with no further change.</p>
+  {% else %}
+  <p class="overall">Overall: {{ vm.overall }}{% if vm.generated_ts %} (as of {{ vm.generated_ts }}){% endif %}</p>
+  {% if vm.checks %}
+  <table class="health-checks">
+    <thead>
+      <tr><th>Check</th><th>Status</th><th>Summary</th><th>Detail</th></tr>
+    </thead>
+    <tbody>
+      {% for check in vm.checks %}
+      <tr>
+        <td>{{ check.key }}</td>
+        <td>{{ check.status }}</td>
+        <td>{{ check.summary }}</td>
+        <td>{{ check.detail or '' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p>No research checks are available right now.</p>
+  {% endif %}
+  {% endif %}
+{% endblock %}

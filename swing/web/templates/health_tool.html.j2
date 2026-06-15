@@ -1,0 +1,26 @@
+{# Phase 18 Arc 18-F: the tool-health drill-down. Extends base.html.j2 (so the
+   topbar stoplights render here too). ASCII only (no glyphs/em-dash). #}
+{% extends "base.html.j2" %}
+{% block content %}
+  <h1>Tool health</h1>
+  <p class="overall">Overall: {{ vm.overall }}{% if vm.generated_ts %} (as of {{ vm.generated_ts }}){% endif %}</p>
+  {% if vm.checks %}
+  <table class="health-checks">
+    <thead>
+      <tr><th>Check</th><th>Status</th><th>Summary</th><th>Detail</th></tr>
+    </thead>
+    <tbody>
+      {% for check in vm.checks %}
+      <tr>
+        <td>{{ check.key }}</td>
+        <td>{{ check.status }}</td>
+        <td>{{ check.summary }}</td>
+        <td>{{ check.detail or '' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p>No tool-health checks are available right now.</p>
+  {% endif %}
+{% endblock %}
