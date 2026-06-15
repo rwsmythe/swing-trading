@@ -329,6 +329,48 @@ def test_excluded_yellow_when_newest_dir_missing_manifest(tmp_path: Path) -> Non
     assert check.status == "yellow"  # NOT green/absent
 
 
+def test_excluded_yellow_when_excluded_is_a_list(tmp_path: Path) -> None:
+    # Codex R2-rev MAJOR #1: a hypothesis whose `excluded` is a LIST (not a dict)
+    # is shape-drift -> corrupt -> yellow (NOT an AttributeError crash).
+    _write_manifest(
+        tmp_path, dir_name="shadow-expectancy-20260613T000000Z",
+        raw_text=json.dumps({"funnel": {
+            "detection_level": {"unique_signals": 100},
+            "per_hypothesis": {"H": {"excluded": []}},
+        }}))
+    check = _only(
+        _check_excluded_reason_breakdown(exports_root=tmp_path),
+        "excluded_reason_breakdown")
+    assert check.status == "yellow"
+
+
+def test_excluded_yellow_when_reason_count_non_numeric(tmp_path: Path) -> None:
+    # a non-numeric reason count -> corrupt (NOT a ValueError crash on int()).
+    _write_manifest(
+        tmp_path, dir_name="shadow-expectancy-20260613T000000Z",
+        raw_text=json.dumps({"funnel": {
+            "detection_level": {"unique_signals": 100},
+            "per_hypothesis": {"H": {"excluded": {"invalid_ohlc": "lots"}}},
+        }}))
+    check = _only(
+        _check_excluded_reason_breakdown(exports_root=tmp_path),
+        "excluded_reason_breakdown")
+    assert check.status == "yellow"
+
+
+def test_excluded_yellow_when_unique_signals_is_nan(tmp_path: Path) -> None:
+    # NaN unique_signals (JSON Infinity/NaN) passes isinstance(float) but is not
+    # finite -> corrupt (would otherwise make every comparison False -> green).
+    _write_manifest(
+        tmp_path, dir_name="shadow-expectancy-20260613T000000Z",
+        raw_text='{"funnel": {"detection_level": {"unique_signals": NaN},'
+                 ' "per_hypothesis": {"H": {"excluded": {"invalid_ohlc": 5}}}}}')
+    check = _only(
+        _check_excluded_reason_breakdown(exports_root=tmp_path),
+        "excluded_reason_breakdown")
+    assert check.status == "yellow"
+
+
 def test_read_newest_manifest_picks_newest_by_dir_name(tmp_path: Path) -> None:
     # older valid manifest + newest dir corrupt -> the reader returns the NEWEST
     # (corrupt) state, not the older valid one.
@@ -419,6 +461,30 @@ def test_coverage_green_on_terminal_detection_stopped_early(tmp_path: Path) -> N
     _seed_observation(conn, det, observation_date="2026-06-08", status="invalidated")
     check = _only(_check_coverage_gaps(conn, now=_NOW), "coverage_gaps")
     assert check.status == "green"  # contiguous + terminal -> no tail expected
+
+
+def test_coverage_escalates_on_mature_detection_with_zero_observations(
+    tmp_path: Path,
+) -> None:
+    # Codex R2-rev MAJOR #4: a MATURE detection (data_asof 2026-05-01) with NO
+    # observation row at all must NOT be invisible -- every expected session from
+    # first-after-cutoff .. last_completed is missing -> escalate.
+    conn = _schema_conn(tmp_path)
+    _seed_detection(conn, data_asof_date="2026-05-01")  # no observations seeded
+    check = _only(_check_coverage_gaps(conn, now=_NOW), "coverage_gaps")
+    assert check.status in ("yellow", "red")
+    assert "never observed" in (check.detail or "").lower() or check.status != "green"
+
+
+def test_coverage_green_on_fresh_detection_with_zero_observations(
+    tmp_path: Path,
+) -> None:
+    # a mature-by-cutoff but TOO-FRESH detection (cutoff == last_completed) with
+    # no obs -> no session yet to observe -> green (not a defect).
+    conn = _schema_conn(tmp_path)
+    _seed_detection(conn, data_asof_date="2026-06-12")  # not < last_completed
+    check = _only(_check_coverage_gaps(conn, now=_NOW), "coverage_gaps")
+    assert check.status == "green"
 
 
 def test_coverage_yellow_when_missing_table(tmp_path: Path) -> None:
@@ -795,6 +861,22 @@ def test_transport_does_not_substitute_for_finiteness(tmp_path: Path) -> None:
     finiteness = _only(_check_temporal_log_finiteness(conn), "temporal_log_finiteness")
     assert transport.status == "green"
     assert finiteness.status == "red"
+
+
+def test_transport_in_flight_does_not_starve_terminal_sample(tmp_path: Path) -> None:
+    # Codex R2-rev MAJOR #2: a BURST of newer in_flight rows must NOT bump older
+    # terminal failures out of the recent window (the SQL-filter-terminal fix).
+    # Seed 12 error (terminal) FIRST (older ts), then 60 newer in_flight rows.
+    conn = _schema_conn(tmp_path)
+    for i in range(12):
+        _seed_yf_call(conn, status="error", ts="2026-06-10T00:00:00", ticker=f"E{i}")
+    for i in range(60):
+        _seed_yf_call(conn, status="in_flight", ts="2026-06-14T00:00:00",
+                      ticker=f"F{i}")
+    check = _only(_check_fetch_transport_health(conn), "fetch_transport_health")
+    # 12 terminal, 100% error -> red. A Python-side filter after a 50-row
+    # over-read of in_flight would see 0 terminal -> low-sample green (the bug).
+    assert check.status == "red"
 
 
 def test_transport_yellow_when_missing_table(tmp_path: Path) -> None:

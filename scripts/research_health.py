@@ -3,10 +3,14 @@
 Read-only roll-up of the 7 research data-collection-integrity checks in one
 glance (the integrity SUPERSET of scripts/weekly_glance.py). Mirrors
 scripts/tool_health.py: opens its OWN mode=ro connection, ASCII output, a --json
-machine surface. On every run it ALSO writes the conformant §3 status envelope
-ATOMICALLY to exports/research/health/latest.json -- the artifact 18-F's research
-stoplight consumes (grey until 18-D writes a conformant fresh artifact there).
-ASCII-only (Windows cp1252 stdout). Never writes the measurement DB.
+machine surface. On every SUCCESSFUL run (a readable DB) it ALSO writes the
+conformant §3 status envelope ATOMICALLY to exports/research/health/latest.json
+-- the artifact 18-F's research stoplight consumes (grey until 18-D writes a
+conformant fresh artifact there). A missing/unreadable DB prints an error and
+exits 1 WITHOUT writing (the monitor cannot assess health without the DB; it
+does NOT overwrite a prior artifact with a synthetic state -- the 18-F staleness
+gate greys the stale artifact on its own). ASCII-only (Windows cp1252 stdout).
+Never writes the measurement DB.
 
 Usage (from the repo root):
     python scripts/research_health.py [--db PATH] [--json] [--out PATH]

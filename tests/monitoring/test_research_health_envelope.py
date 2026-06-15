@@ -10,7 +10,7 @@ host-tz-independent staleness fix, Codex R1 MAJOR #1).
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -93,12 +93,12 @@ def test_to_dict_matches_envelope() -> None:
                 summary="0 orphans, 0 look-ahead",
             ),
         ],
-        generated_ts="2026-06-14T20:31:00",
+        generated_ts="2020-06-14T20:31:00+00:00",
     )
     d = status.to_dict()
     assert d == {
         "monitor": "research_measurement",
-        "generated_ts": "2026-06-14T20:31:00",
+        "generated_ts": "2020-06-14T20:31:00+00:00",
         "overall": "yellow",
         "checks": [
             {
@@ -129,6 +129,36 @@ def test_monitor_field_is_research_measurement() -> None:
     assert status.to_dict()["monitor"] == "research_measurement"
     # sourced from the IMPORTED constant, not a redeclared literal (LOCK C1)
     assert status.to_dict()["monitor"] == RESEARCH_MONITOR_ID
+
+
+def test_status_rejects_naive_generated_ts() -> None:
+    # Codex R2 MAJOR #3: a naive (tz-less) stamp would false-grey on a non-Hawaii
+    # host -> the envelope is non-conformant -> must be unconstructable.
+    with pytest.raises(ValueError, match="AWARE"):
+        ResearchHealthStatus(
+            overall="green",
+            checks=[ResearchHealthCheck(key="k", status="green", summary="s")],
+            generated_ts="2026-06-14T20:31:00",
+        )
+
+
+def test_status_rejects_unparseable_generated_ts() -> None:
+    with pytest.raises(ValueError, match="ISO"):
+        ResearchHealthStatus(
+            overall="green",
+            checks=[ResearchHealthCheck(key="k", status="green", summary="s")],
+            generated_ts="not-a-timestamp",
+        )
+
+
+def test_status_rejects_future_generated_ts() -> None:
+    future = (datetime.now(UTC) + timedelta(days=2)).isoformat(timespec="seconds")
+    with pytest.raises(ValueError, match="future"):
+        ResearchHealthStatus(
+            overall="green",
+            checks=[ResearchHealthCheck(key="k", status="green", summary="s")],
+            generated_ts=future,
+        )
 
 
 def test_generated_ts_default_is_aware_utc() -> None:

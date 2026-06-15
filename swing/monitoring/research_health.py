@@ -25,6 +25,7 @@ Do NOT consistency-fix it back to naive-local.
 from __future__ import annotations
 
 import json
+import math
 import re
 import sqlite3  # noqa: F401  (used in the per-check signatures below)
 from dataclasses import dataclass, field
@@ -125,6 +126,31 @@ class ResearchHealthStatus:
             raise ValueError(
                 f"ResearchHealthStatus.overall {self.overall!r} != worst_of(checks)"
                 f" {expected!r}; the envelope contract requires overall=worst-of"
+            )
+        # Codex R2 MAJOR #3: generated_ts must be ISO-parseable, AWARE, and NOT
+        # future-dated -- the 18-F reader greys a malformed/naive/future stamp, so
+        # a green-LOOKING envelope carrying one is non-conformant and must be
+        # unconstructable (the "by construction" gate). Staleness (>7d) is NOT
+        # enforced here: the artifact legitimately ages between writes and
+        # staleness is the reader's render-time concern (enforcing it would forbid
+        # a legitimately-old-but-correctly-stamped envelope at construction).
+        try:
+            parsed = datetime.fromisoformat(self.generated_ts)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"ResearchHealthStatus.generated_ts must be ISO-8601;"
+                f" got {self.generated_ts!r}"
+            ) from exc
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise ValueError(
+                "ResearchHealthStatus.generated_ts must be timezone-AWARE"
+                f" (aware-UTC, the 18-F host-tz-independent gate); got"
+                f" {self.generated_ts!r}"
+            )
+        if parsed > datetime.now(parsed.tzinfo):
+            raise ValueError(
+                "ResearchHealthStatus.generated_ts must not be future-dated;"
+                f" got {self.generated_ts!r}"
             )
 
     def to_dict(self) -> dict:
@@ -247,13 +273,43 @@ _EXCL_YELLOW_PCT = 10.0   # any one reason >10% of unique_signals -> yellow
 _EXCL_RED_PCT = 25.0      # any one reason >25% -> red
 
 
-def _manifest_is_well_shaped(parsed: object) -> bool:
-    """The nested funnel schema gate (Codex R2 MAJOR #3 -- shape-drift defense).
+def _is_finite_nonneg_number(v: object) -> bool:
+    """True iff v is a finite, non-negative real number (NOT bool, NOT NaN/inf).
 
-    A parsed dict is well-shaped ONLY when funnel is a dict AND
-    funnel.detection_level.unique_signals is numeric AND funnel.per_hypothesis
-    is a dict. Anything else is shape-drift -> the caller maps it to "corrupt"
-    (NOT "ok"-then-.get-zeros, which would mask a broken latest run as healthy).
+    JSON parses NaN/Infinity to floats that would silently pass an isinstance
+    check and make every threshold comparison False (a false-green vector --
+    Codex R2 MAJOR #1). Reject them here so a NaN count escalates to corrupt.
+    """
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return False
+    return math.isfinite(v) and v >= 0
+
+
+def _excluded_is_well_shaped(excluded: object) -> bool:
+    """An `excluded` sub-dict (if present) must be a dict whose CONSUMED reason
+    counts are finite non-negative numbers (Codex R2 MAJOR #1). A list, a
+    non-numeric value, or a NaN count -> shape-drift."""
+    if excluded is None:
+        return True  # absent excluded -> 0 for every reason (legitimate)
+    if not isinstance(excluded, dict):
+        return False
+    for reason in _ATTRIBUTED_EXCLUDED_REASONS:
+        if reason in excluded and not _is_finite_nonneg_number(excluded[reason]):
+            return False
+    return True
+
+
+def _manifest_is_well_shaped(parsed: object) -> bool:
+    """The nested funnel schema gate (Codex R2 MAJOR #3 + R2-rev MAJOR #1 --
+    shape-drift defense, STRICT on every CONSUMED field).
+
+    Well-shaped requires: funnel is a dict; funnel.detection_level.unique_signals
+    is a FINITE NON-NEGATIVE number; funnel.per_hypothesis is a dict each of whose
+    values is a dict whose `excluded` (if present) is a well-shaped reason dict;
+    funnel.unattributed (if present) is a dict whose values are finite non-negative
+    numbers. Anything else -> the caller maps it to "corrupt" (NOT "ok"-then-
+    .get-zeros, which would mask a broken latest run as healthy or crash on a
+    list/non-numeric value).
     """
     if not isinstance(parsed, dict):
         return False
@@ -263,10 +319,23 @@ def _manifest_is_well_shaped(parsed: object) -> bool:
     detection_level = funnel.get("detection_level")
     if not isinstance(detection_level, dict):
         return False
-    unique_signals = detection_level.get("unique_signals")
-    if not isinstance(unique_signals, (int, float)) or isinstance(unique_signals, bool):
+    if not _is_finite_nonneg_number(detection_level.get("unique_signals")):
         return False
-    return isinstance(funnel.get("per_hypothesis"), dict)
+    per_hypothesis = funnel.get("per_hypothesis")
+    if not isinstance(per_hypothesis, dict):
+        return False
+    for hyp in per_hypothesis.values():
+        if not isinstance(hyp, dict):
+            return False
+        if not _excluded_is_well_shaped(hyp.get("excluded")):
+            return False
+    unattributed = funnel.get("unattributed")
+    if unattributed is not None:
+        if not isinstance(unattributed, dict):
+            return False
+        if not all(_is_finite_nonneg_number(v) for v in unattributed.values()):
+            return False
+    return True
 
 
 def _read_newest_manifest(exports_root) -> tuple[str, dict | None]:
@@ -388,13 +457,18 @@ def _check_coverage_gaps(
 ) -> list[ResearchHealthCheck]:
     """A MATURE detection whose forward-observation date sequence has HOLES vs
     the NYSE trading calendar -- including a MISSING TAIL (the observe step
-    stopped early), not just interior gaps (Codex R4 MAJOR #2; brief §6.2 #3).
+    stopped early) AND a mature detection with ZERO observations (Codex R2-rev
+    MAJOR #4 -- driven from DETECTIONS, not observations, so a never-observed
+    mature detection is visible); not just interior gaps (Codex R4 MAJOR #2;
+    brief §6.2 #3).
 
-    Upper bound by latest-observation STATUS: OPEN -> last_completed_session(now)
-    (catches the missing tail); TERMINAL -> the detection's own max_obs (it
-    legitimately stopped; no tail expected). The weekend is NOT a gap
-    (calendar-aware). Mature = data_asof_date < last_completed_session.isoformat().
-    Missing table -> yellow; no mature detections -> green.
+    Upper bound by latest-observation STATUS: OPEN (or no observation yet) ->
+    last_completed_session(now) (catches the missing tail + the never-observed
+    detection); TERMINAL -> the detection's own max_obs (it legitimately stopped;
+    no tail expected). The forward walk starts the first session AFTER
+    data_asof_date. The weekend is NOT a gap (calendar-aware). Mature =
+    data_asof_date < last_completed_session.isoformat(). Missing table -> yellow;
+    no mature detections -> green.
     """
     from datetime import date as _date
 
@@ -405,14 +479,18 @@ def _check_coverage_gaps(
     last_completed_iso = last_completed.isoformat()
 
     try:
+        # Drive from mature DETECTIONS, LEFT JOIN observations (Codex R2-rev MAJOR
+        # #4): a mature detection with NO observation row still appears (NULL
+        # observation columns), so a never-observed mature detection is not
+        # invisible.
         rows = conn.execute(
-            "SELECT o.detection_id, o.observation_date, o.status,"
-            " o.observation_id, d.data_asof_date"
-            " FROM pattern_forward_observations o"
-            " JOIN pattern_detection_events d"
-            " ON d.detection_id = o.detection_id"
+            "SELECT d.detection_id, d.data_asof_date,"
+            " o.observation_date, o.status, o.observation_id"
+            " FROM pattern_detection_events d"
+            " LEFT JOIN pattern_forward_observations o"
+            " ON o.detection_id = d.detection_id"
             " WHERE d.data_asof_date < ?"
-            " ORDER BY o.detection_id,"
+            " ORDER BY d.detection_id,"
             " o.observation_date ASC, o.observation_id ASC",
             (last_completed_iso,),
         ).fetchall()
@@ -425,15 +503,17 @@ def _check_coverage_gaps(
                        " run swing db-migrate")]
         raise
 
-    # Group observations per detection (preserving date order).
-    per_det: dict[int, list[tuple[str, str]]] = {}
-    for det_id, obs_date, status, _obs_id, _asof in rows:
-        per_det.setdefault(det_id, []).append((obs_date, status))
+    # Group per detection (preserving obs date order); record the asof.
+    per_det: dict[int, dict] = {}
+    for det_id, asof, obs_date, status, _obs_id in rows:
+        entry = per_det.setdefault(det_id, {"asof": asof, "obs": []})
+        if obs_date is not None:  # NULL when the LEFT JOIN found no observation
+            entry["obs"].append((obs_date, status))
 
     if not per_det:
         return [ResearchHealthCheck(
             key=key, status="green",
-            summary="no mature detections with observations yet (n/a)")]
+            summary="no mature detections yet (n/a)")]
 
     def _sessions(start: _date, end: _date) -> set[str]:
         # sessions_in_range accepts stdlib date / ISO strings directly -- NO
@@ -444,11 +524,32 @@ def _check_coverage_gaps(
         idx = _NYSE.sessions_in_range(start, end)
         return {ts.date().isoformat() for ts in idx}
 
+    def _first_session_after(asof: _date) -> _date | None:
+        # The forward walk starts the first NYSE session strictly after the
+        # detector's data cutoff. None when no session has occurred up to
+        # last_completed (the detection is too fresh to expect any observation).
+        window = _sessions(asof, last_completed)
+        after = sorted(s for s in window if s > asof.isoformat())
+        return _date.fromisoformat(after[0]) if after else None
+
     total_missing = 0
     sample: list[str] = []
-    for det_id, obs in per_det.items():
+    for det_id, entry in per_det.items():
+        obs = entry["obs"]
+        asof = _date.fromisoformat(entry["asof"])
         observed = {d for d, _s in obs}
-        # <2 observations and no expected-window gap -> skip (immature row).
+        if not observed:
+            # mature detection with ZERO observations: every expected session
+            # (first-after-cutoff .. last_completed) is missing.
+            first = _first_session_after(asof)
+            if first is None:
+                continue  # too fresh -- no session yet to observe (not a defect)
+            missing = len(_sessions(first, last_completed))
+            if missing:
+                total_missing += missing
+                if len(sample) < 3:
+                    sample.append(f"det{det_id}: {missing} missing (never observed)")
+            continue
         latest_status = obs[-1][1]  # last by date order
         min_obs = _date.fromisoformat(min(observed))
         max_obs = _date.fromisoformat(max(observed))
@@ -692,7 +793,6 @@ _TRANSPORT_MIN_SAMPLE = 10          # < this many terminal rows -> green n/a (lo
 _TRANSPORT_YELLOW_ERROR_PCT = 20.0
 _TRANSPORT_RED_ERROR_PCT = 50.0
 _TRANSPORT_YELLOW_EMPTY_PCT = 50.0  # empty is looser than error (transient/weekend)
-_TRANSPORT_TERMINAL = ("success", "empty", "error")
 
 
 def _check_fetch_transport_health(
@@ -709,10 +809,15 @@ def _check_fetch_transport_health(
     """
     key = "fetch_transport_health"
     try:
+        # Filter TERMINAL in SQL + LIMIT (Codex R2 MAJOR #2): excluding in_flight
+        # in Python AFTER an N-row over-read lets a burst of newer in_flight rows
+        # STARVE the terminal sample -> false low-sample green. The recent window
+        # must be the most-recent N TERMINAL rows, regardless of in_flight volume.
         rows = conn.execute(
-            "SELECT status FROM yfinance_calls ORDER BY ts DESC, call_id DESC"
-            " LIMIT ?",
-            (_TRANSPORT_RECENT_WINDOW + 200,),  # over-read; filter terminal below
+            "SELECT status FROM yfinance_calls"
+            " WHERE status IN ('success','empty','error')"
+            " ORDER BY ts DESC, call_id DESC LIMIT ?",
+            (_TRANSPORT_RECENT_WINDOW,),
         ).fetchall()
     except sqlite3.OperationalError as exc:
         if _schema_unavailable(exc):
@@ -727,8 +832,7 @@ def _check_fetch_transport_health(
             key=key, status="green",
             summary="n/a (no fetch audit yet)")]
 
-    terminal = [r[0] for r in rows if r[0] in _TRANSPORT_TERMINAL]
-    terminal = terminal[:_TRANSPORT_RECENT_WINDOW]
+    terminal = [r[0] for r in rows]
     n = len(terminal)
     n_error = sum(1 for s in terminal if s == "error")
     n_empty = sum(1 for s in terminal if s == "empty")
