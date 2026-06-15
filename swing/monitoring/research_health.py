@@ -228,3 +228,140 @@ def _check_temporal_log_finiteness(
         key=key, status="red",
         summary=f"{non_finite} non-finite OHLC observation(s) of {total}",
         detail=detail)]
+
+
+# --------------------------------------------------------------------------
+# Engine-manifest reader (shared by check #2 + #5; LOCK §4.2 -- READ, never
+# recompute attribution).
+# --------------------------------------------------------------------------
+
+
+_ATTRIBUTED_EXCLUDED_REASONS = (
+    "invalid_ohlc", "insufficient_forward_depth", "missing_observations",
+)
+# Excluded-reason rate (% of unique_signals) escalation. invalid_ohlc has run
+# ~30% on the live manifest (the 06-10 NaN backlog the engine's belt rejects);
+# these are CONSERVATIVE V1 floors -- the RD tunes them post-build.
+_EXCL_YELLOW_PCT = 10.0   # any one reason >10% of unique_signals -> yellow
+_EXCL_RED_PCT = 25.0      # any one reason >25% -> red
+
+
+def _manifest_is_well_shaped(parsed: object) -> bool:
+    """The nested funnel schema gate (Codex R2 MAJOR #3 -- shape-drift defense).
+
+    A parsed dict is well-shaped ONLY when funnel is a dict AND
+    funnel.detection_level.unique_signals is numeric AND funnel.per_hypothesis
+    is a dict. Anything else is shape-drift -> the caller maps it to "corrupt"
+    (NOT "ok"-then-.get-zeros, which would mask a broken latest run as healthy).
+    """
+    if not isinstance(parsed, dict):
+        return False
+    funnel = parsed.get("funnel")
+    if not isinstance(funnel, dict):
+        return False
+    detection_level = funnel.get("detection_level")
+    if not isinstance(detection_level, dict):
+        return False
+    unique_signals = detection_level.get("unique_signals")
+    if not isinstance(unique_signals, (int, float)) or isinstance(unique_signals, bool):
+        return False
+    return isinstance(funnel.get("per_hypothesis"), dict)
+
+
+def _read_newest_manifest(exports_root) -> tuple[str, dict | None]:
+    """Read the NEWEST shadow-expectancy-* manifest.json. 3-state result (Codex
+    R1 MAJOR #3 -- distinguish ABSENT from CORRUPT):
+
+      - ("absent", None)  -- NO shadow-expectancy-* dir exists at all (the ONLY
+        absent case; the engine has never produced an artifact).
+      - ("corrupt", None) -- the newest dir EXISTS but has NO manifest.json
+        (crashed-mid-write), OR the manifest is unparseable / not a dict /
+        shape-drifted (a real degraded state -> >= yellow; never masked as n-a).
+      - ("ok", <dict>)    -- parsed successfully AND the nested funnel schema is
+        present (so downstream sums can rely on those keys).
+
+    Newest by dir-name reverse-sort (the weekly_glance.py:49-51 precedent). Never
+    crashes on the read.
+    """
+    from pathlib import Path
+
+    root = Path(exports_root)
+    if not root.exists():
+        return ("absent", None)
+    dirs = sorted(
+        (p for p in root.glob("shadow-expectancy-*") if p.is_dir()),
+        reverse=True,
+    )
+    if not dirs:
+        return ("absent", None)
+    newest = dirs[0]
+    manifest_path = newest / "manifest.json"
+    if not manifest_path.exists():
+        return ("corrupt", None)  # crashed-mid-write latest run -- NOT absent
+    try:
+        parsed = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ("corrupt", None)
+    if not _manifest_is_well_shaped(parsed):
+        return ("corrupt", None)
+    return ("ok", parsed)
+
+
+def _check_excluded_reason_breakdown(*, exports_root) -> list[ResearchHealthCheck]:
+    """Read the NEWEST engine manifest; report invalid_ohlc /
+    insufficient_forward_depth / missing_observations each as a count + % of
+    unique_signals (brief §6.2 #2). SUMS each reason across ALL hypotheses'
+    funnel.per_hypothesis.*.excluded sub-dicts / funnel.detection_level
+    .unique_signals (the LIVE shape -- NOT a top-level breakdown). READ, never
+    recompute attribution (LOCK §4.2).
+    """
+    key = "excluded_reason_breakdown"
+    state, manifest = _read_newest_manifest(exports_root)
+    if state == "absent":
+        return [ResearchHealthCheck(
+            key=key, status="green",
+            summary="no engine manifest yet (n/a)")]
+    if state == "corrupt":
+        return [ResearchHealthCheck(
+            key=key, status="yellow",
+            summary="newest engine manifest unreadable",
+            detail="the latest shadow-expectancy run is partial/corrupt/"
+                   "shape-drifted")]
+
+    funnel = manifest["funnel"]  # _manifest_is_well_shaped guarantees the shape
+    unique_signals = funnel["detection_level"]["unique_signals"]
+    if not unique_signals:  # 0 or missing -> avoid div-by-zero
+        return [ResearchHealthCheck(
+            key=key, status="green",
+            summary="n/a (zero signals)")]
+
+    per_hypothesis = funnel["per_hypothesis"]
+    if not per_hypothesis:
+        return [ResearchHealthCheck(
+            key=key, status="green",
+            summary="no attributed hypotheses yet (n/a)")]
+
+    summed: dict[str, int] = {r: 0 for r in _ATTRIBUTED_EXCLUDED_REASONS}
+    for hyp in per_hypothesis.values():
+        excluded = hyp.get("excluded", {}) if isinstance(hyp, dict) else {}
+        for reason in _ATTRIBUTED_EXCLUDED_REASONS:
+            summed[reason] += int(excluded.get(reason, 0) or 0)
+
+    worst_status = "green"
+    parts: list[str] = []
+    for reason in _ATTRIBUTED_EXCLUDED_REASONS:
+        count = summed[reason]
+        pct = 100.0 * count / unique_signals
+        parts.append(f"{reason}={count} ({pct:.1f}%)")
+        if pct > _EXCL_RED_PCT:
+            reason_status = "red"
+        elif pct > _EXCL_YELLOW_PCT:
+            reason_status = "yellow"
+        else:
+            reason_status = "green"
+        worst_status = worst_of([worst_status, reason_status])
+
+    return [ResearchHealthCheck(
+        key=key, status=worst_status,
+        summary=f"excluded reasons vs {unique_signals} signals",
+        detail="; ".join(parts))]
