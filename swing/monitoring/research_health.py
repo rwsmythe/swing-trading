@@ -24,6 +24,7 @@ Do NOT consistency-fix it back to naive-local.
 """
 from __future__ import annotations
 
+import json
 import sqlite3  # noqa: F401  (used in the per-check signatures below)
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -132,3 +133,98 @@ class ResearchHealthStatus:
             "overall": self.overall,
             "checks": [c.to_dict() for c in self.checks],
         }
+
+
+# --------------------------------------------------------------------------
+# Shared degradation helper (mirror 18-E tool_health._schema_unavailable).
+# --------------------------------------------------------------------------
+
+
+def _schema_unavailable(exc: sqlite3.OperationalError) -> bool:
+    """True iff `exc` is a missing-table/column error (degrade-to-yellow). Any
+    OTHER OperationalError re-raises (do not mask real defects -- mirror 18-E)."""
+    msg = str(exc)
+    return "no such table" in msg or "no such column" in msg
+
+
+# --------------------------------------------------------------------------
+# Per-check helpers (lazy-import the reused readers/predicate; NO pandas here).
+# --------------------------------------------------------------------------
+
+
+_OHLC_KEYS = ("open", "high", "low", "close")
+
+
+def _check_temporal_log_finiteness(
+    conn: sqlite3.Connection,
+) -> list[ResearchHealthCheck]:
+    """Data-USABILITY authority (brief §6.2 #1): scan
+    pattern_forward_observations.ohlc_today_json for ANY non-finite OHLC -> RED.
+
+    The check that would have caught the 2026-06-10 NaN-Close defect on the day
+    it entered. Reuses the shared is_finite_ohlc predicate (NaN/inf), with a
+    None/missing/non-numeric GUARD before it (the predicate RAISES TypeError on
+    None -- the brief's "reuse the predicate" applies to NaN/inf only). Volume is
+    EXEMPT (Arc-8). Missing table -> yellow; empty table -> green (the log
+    legitimately starts empty); any non-finite hit -> red.
+    """
+    from swing.data.ohlcv_finiteness import is_finite_ohlc
+
+    key = "temporal_log_finiteness"
+    try:
+        rows = conn.execute(
+            "SELECT o.observation_id, o.observation_date, o.ohlc_today_json,"
+            " d.ticker"
+            " FROM pattern_forward_observations o"
+            " LEFT JOIN pattern_detection_events d"
+            " ON d.detection_id = o.detection_id"
+        ).fetchall()
+    except sqlite3.OperationalError as exc:
+        if _schema_unavailable(exc):
+            return [ResearchHealthCheck(
+                key=key, status="yellow",
+                summary="temporal-log schema unavailable",
+                detail="pattern_forward_observations table missing;"
+                       " run swing db-migrate")]
+        raise
+
+    total = len(rows)
+    if total == 0:
+        return [ResearchHealthCheck(
+            key=key, status="green",
+            summary="no temporal-log observations yet (0 non-finite)")]
+
+    non_finite = 0
+    sample: list[str] = []
+    for _obs_id, obs_date, ohlc_json, ticker in rows:
+        bad = False
+        try:
+            bar = json.loads(ohlc_json)
+        except (TypeError, ValueError):
+            bad = True
+        else:
+            vals = []
+            for k in _OHLC_KEYS:
+                v = bar.get(k) if isinstance(bar, dict) else None
+                if not isinstance(v, (int, float)) or isinstance(v, bool):
+                    # missing / None / non-numeric -> non-finite hit WITHOUT
+                    # calling the predicate (it raises TypeError on None).
+                    bad = True
+                    break
+                vals.append(float(v))
+            if not bad and not is_finite_ohlc(*vals):
+                bad = True
+        if bad:
+            non_finite += 1
+            if len(sample) < 3:
+                sample.append(f"{ticker or '?'}@{obs_date}")
+
+    if non_finite == 0:
+        return [ResearchHealthCheck(
+            key=key, status="green",
+            summary=f"0 non-finite OHLC observations (of {total})")]
+    detail = "; ".join(sample) if sample else None
+    return [ResearchHealthCheck(
+        key=key, status="red",
+        summary=f"{non_finite} non-finite OHLC observation(s) of {total}",
+        detail=detail)]
