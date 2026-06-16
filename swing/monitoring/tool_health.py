@@ -292,7 +292,8 @@ def _check_schwab_token(*, cfg, now: datetime) -> list[ToolHealthCheck]:
     treating it as UTC mis-shifts by ~10h and can flip the 24h/2h boundary):
       - now -> UTC: attach Pacific/Honolulu then convert (NOT replace(tzinfo=UTC)).
       - issued -> UTC: replace(tzinfo=UTC) for naive (token timestamps ARE UTC).
-    Absence of Schwab (no cfg, empty client_id, or no tokens DB) is green/"n/a".
+    Absence of Schwab config (no cfg, or empty client_id) is green/"n/a".
+    Configured but tokens absent/empty is yellow (actionable; run setup).
     """
     key = "schwab_token_ttl"
 
