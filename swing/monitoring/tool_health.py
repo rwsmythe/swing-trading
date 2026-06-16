@@ -316,14 +316,17 @@ def _check_schwab_token(*, cfg, now: datetime) -> list[ToolHealthCheck]:
 
     env = cfg.integrations.schwab.environment
     tokens_path = _user_home() / "swing-data" / f"schwab-tokens.{env}.db"
+    _not_authed_summary = "Schwab configured but not authenticated; run swing schwab setup"
     if not tokens_path.exists():
-        return [ToolHealthCheck(key=key, status="green",
-                                summary="Schwab tokens not present (n/a)")]
+        return [ToolHealthCheck(key=key, status="yellow",
+                                summary=_not_authed_summary,
+                                detail="no tokens DB on disk")]
 
     meta, error_message = _read_tokens_metadata(tokens_path)
     if meta is None and error_message is None:
-        return [ToolHealthCheck(key=key, status="green",
-                                summary="Schwab tokens not present (n/a)")]
+        return [ToolHealthCheck(key=key, status="yellow",
+                                summary=_not_authed_summary,
+                                detail="tokens DB present but empty")]
     if meta is None:
         return [ToolHealthCheck(key=key, status="yellow",
                                 summary="Schwab tokens unreadable",

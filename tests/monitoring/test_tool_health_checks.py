@@ -344,8 +344,44 @@ def test_schwab_green_when_client_id_empty(_home):
     assert "n/a" in check.summary.lower()
 
 
-def test_schwab_green_when_tokens_absent(_home):
+def test_schwab_yellow_when_configured_tokens_absent(_home):
+    # 18-H.1: configured (client_id present) + no tokens DB -> YELLOW "not authed".
+    # PRE-FIX (green "n/a"): check.status == "green" -> FAILS this assertion.
+    # POST-FIX (yellow): check.status == "yellow" -> PASSES.
     cfg = _SchwabStub(client_id="abc")
+    check = _check_schwab_token(cfg=cfg, now=_now_local())[0]
+    assert check.status == "yellow"
+    assert "not authenticated" in check.summary.lower()
+    assert "swing schwab setup" in check.summary.lower()
+
+
+def test_schwab_yellow_when_configured_tokens_db_empty(_home, monkeypatch):
+    # 18-H.1: configured + tokens DB exists but _read_tokens_metadata returns
+    # (None, None) (the empty-row defensive path) -> YELLOW "not authed".
+    # PRE-FIX: green "n/a" -> FAILS. POST-FIX: yellow -> PASSES.
+    # The (None, None) path is unreachable via _read_tokens_metadata in practice
+    # (it returns a non-None error_message for all error cases when path exists);
+    # monkeypatch to reach the dead-but-flipped branch.
+    cfg = _SchwabStub(client_id="abc")
+    env = cfg.integrations.schwab.environment
+    # create the DB so tokens_path.exists() passes the line-319 guard.
+    path = _tokens_path(_home, env)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"x")
+    monkeypatch.setattr(
+        "swing.cli_schwab._read_tokens_metadata",
+        lambda _p: (None, None),
+    )
+    check = _check_schwab_token(cfg=cfg, now=_now_local())[0]
+    assert check.status == "yellow"
+    assert "not authenticated" in check.summary.lower()
+
+
+def test_schwab_green_when_unconfigured_tokens_absent(_home):
+    # 18-H.1 boundary: client_id == "" (never configured) + no tokens DB ->
+    # still GREEN "n/a". Guards against over-flipping the unconfigured case.
+    # Passes BOTH pre-fix and post-fix (pins the boundary unchanged by 18-H.1).
+    cfg = _SchwabStub(client_id="")
     check = _check_schwab_token(cfg=cfg, now=_now_local())[0]
     assert check.status == "green"
     assert "n/a" in check.summary.lower()
