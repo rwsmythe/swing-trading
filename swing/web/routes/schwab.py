@@ -58,6 +58,7 @@ from swing.metrics.discrepancies import (
     count_unresolved_material,
     fetch_first_pending_ambiguity_resolve_link_path,
 )
+from swing.web.app import _construct_web_schwab_client
 from swing.web.view_models.schwab import (
     SchwabSetupErrorVM,
     SchwabSetupVM,
@@ -123,6 +124,66 @@ def _fetch_banner_resolve_link(db_path) -> str | None:
         return fetch_first_pending_ambiguity_resolve_link_path(conn)
     finally:
         conn.close()
+
+
+def _release_long_lived_schwab_client(request: Request) -> None:
+    """18-H.4 — release the long-lived web Schwab client BEFORE the setup flow
+    renames/replaces the tokens DB.
+
+    The long-lived client (``app.state.schwab_client``, built at app startup by
+    ``_install_web_marketdata_caches`` / ``_construct_web_schwab_client``) holds
+    the per-env tokens DB open with ``BEGIN EXCLUSIVE`` for the whole
+    ``swing web`` session. The setup flow's rename-the-stale-DB-aside step
+    (``os.replace`` in ``auth.py:_rename_stale_tokens_db``) cannot rename a file
+    another open handle holds -> ``PermissionError: [WinError 32]`` on Windows
+    (the self-lock). Dropping the ref + ``gc.collect()`` releases the SQLite
+    handle DETERMINISTICALLY (schwabdev's connection has no clean ``.close()``
+    contract -- mirrors the documented ``del client; gc.collect()`` release
+    dance in ``auth.py``).
+
+    No-op when no long-lived client exists (sandbox / ladder inactive ->
+    ``schwab_client`` is None). DEFENSIVE: any failure here is logged and
+    swallowed -- a release hiccup must never crash the setup POST (the token
+    write is independent of the web client; worst case web stays on yfinance).
+    """
+    import gc
+
+    client = getattr(request.app.state, "schwab_client", None)
+    request.app.state.schwab_client = None
+    if client is None:
+        return
+    try:
+        del client
+        gc.collect()
+    except Exception:  # noqa: BLE001 -- release must never crash the POST
+        log.warning(
+            "POST /schwab/setup: long-lived schwab_client release hiccup; "
+            "continuing (web market-data falls back to yfinance).",
+        )
+
+
+def _reconstruct_long_lived_schwab_client(request: Request, cfg) -> None:
+    """18-H.4 — reconstruct the long-lived web Schwab client from the
+    JUST-WRITTEN tokens after a successful setup, via the EXISTING
+    ``_construct_web_schwab_client`` factory (NO new schwabdev construction
+    call site -- L2 LOCK preserved), and store it back in ``app.state`` so web
+    market-data resumes on the new tokens (else the web falls to yfinance until
+    restart).
+
+    DEFENSIVE: the factory already returns None on creds-absent / construction
+    failure (graceful degradation to yfinance). Any unexpected raise here is
+    logged + swallowed and ``schwab_client`` left None -- the setup itself
+    already succeeded; reconstruction is best-effort.
+    """
+    try:
+        request.app.state.schwab_client = _construct_web_schwab_client(cfg)
+    except Exception:  # noqa: BLE001 -- reconstruction is best-effort
+        request.app.state.schwab_client = None
+        log.warning(
+            "POST /schwab/setup: long-lived schwab_client reconstruction "
+            "failed after setup; web market-data falls back to yfinance "
+            "until the next restart.",
+        )
 
 
 def _build_authorize_url(client_id: str, callback_url: str) -> str:
@@ -392,6 +453,13 @@ async def schwab_setup_post(request: Request) -> Response:
         )
         return _render_form(request, vm=vm, status_code=400)
 
+    # 18-H.4 self-lock fix — RELEASE the long-lived web Schwab client BEFORE
+    # the setup flow renames/replaces the tokens DB. The long-lived client
+    # holds the per-env tokens DB open with BEGIN EXCLUSIVE; without this the
+    # rename-aside step (os.replace) fails with WinError 32 (the web app's own
+    # handle holds the file). Reconstructed on the success path below.
+    _release_long_lived_schwab_client(request)
+
     db_path = cfg.paths.db_path
     conn = open_connection(db_path, busy_timeout_ms=cfg.web.db_busy_timeout_ms)
     try:
@@ -477,6 +545,11 @@ async def schwab_setup_post(request: Request) -> Response:
     # by tests to assert the call shape; web route only cares about
     # success-vs-failure).
     _ = summary  # silence unused-variable linters; tests inspect via mocks
+    # 18-H.4 self-lock fix — reconstruct the long-lived web Schwab client from
+    # the just-written tokens (the released client is gone) so web market-data
+    # resumes on the new tokens instead of degrading to yfinance until restart.
+    # Reuses the EXISTING factory (L2 LOCK: no new schwabdev construction site).
+    _reconstruct_long_lived_schwab_client(request, cfg)
     if request.headers.get("HX-Request", "").lower() == "true":
         return Response(
             status_code=204,
