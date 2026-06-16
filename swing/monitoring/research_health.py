@@ -458,6 +458,16 @@ _PER_HYP_TERMINAL_CARDS = (
 # these are CONSERVATIVE V1 floors -- the RD tunes them post-build.
 _EXCL_YELLOW_PCT = 10.0   # any one reason >10% of unique_signals -> yellow
 _EXCL_RED_PCT = 25.0      # any one reason >25% -> red
+# CALIBRATION B (18-D §6.7): invalid_ohlc reflects the engine rejecting the SAME
+# 06-10 non-finite cohort FIX 1 baselined in check #1 -- a known, accepted,
+# PERMANENT ceiling (the immutable temporal log + the 18-B.1 write-barrier mean no
+# NEW non-finite can enter; the count only dilutes as unique_signals grows).
+# GROUNDED against the newest live manifest (shadow-expectancy-20260613T091809Z:
+# invalid_ohlc=23 of 77 unique_signals; plateaued 22->23->23->23 across
+# 06-12..06-13). Red ONLY on a count STRICTLY ABOVE this baseline (a new event = a
+# write-barrier regression). SCOPE LOCK: baselined ONLY for invalid_ohlc; the
+# other two reasons keep their raw _EXCL_*_PCT thresholds.
+_INVALID_OHLC_BASELINE_COUNT = 23
 
 
 def _is_nonneg_count(v: object) -> bool:
@@ -658,13 +668,32 @@ def _check_excluded_reason_breakdown(*, exports_root) -> list[ResearchHealthChec
     for reason in _ATTRIBUTED_EXCLUDED_REASONS:
         count = summed[reason]
         pct = 100.0 * count / unique_signals
-        parts.append(f"{reason}={count} ({pct:.1f}%)")
-        if pct > _EXCL_RED_PCT:
-            reason_status = "red"
-        elif pct > _EXCL_YELLOW_PCT:
-            reason_status = "yellow"
+        if reason == "invalid_ohlc":
+            # CALIBRATION B (the PINNED curve): red ONLY on a count STRICTLY ABOVE
+            # the permanent baseline ceiling; below/at -> green; any excess is
+            # mapped through the SAME thresholds applied to the EXCESS, with a
+            # yellow floor (an excess above a permanent ceiling is never green).
+            over = max(0, count - _INVALID_OHLC_BASELINE_COUNT)
+            parts.append(
+                f"{reason}={count} ({pct:.1f}%, baseline"
+                f" {_INVALID_OHLC_BASELINE_COUNT})")
+            if over == 0:
+                reason_status = "green"
+            else:
+                # > _EXCL_RED_PCT -> red; otherwise yellow (covers > _EXCL_YELLOW_PCT
+                # AND the yellow floor 0 < excess <= 10 -> never green when over>0).
+                excess_pct = 100.0 * over / unique_signals
+                reason_status = "red" if excess_pct > _EXCL_RED_PCT else "yellow"
         else:
-            reason_status = "green"
+            # SCOPE LOCK: the other two reasons keep their existing RAW-count
+            # pct thresholds (NOT baselined).
+            parts.append(f"{reason}={count} ({pct:.1f}%)")
+            if pct > _EXCL_RED_PCT:
+                reason_status = "red"
+            elif pct > _EXCL_YELLOW_PCT:
+                reason_status = "yellow"
+            else:
+                reason_status = "green"
         worst_status = worst_of([worst_status, reason_status])
 
     return [ResearchHealthCheck(
