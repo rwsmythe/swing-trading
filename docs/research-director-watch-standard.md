@@ -148,3 +148,25 @@ never carried forward from a prior read, a return report, or memory (`feedback_n
 3. Log every read in the §3.2 format; the log is append-only.
 4. The default posture is STOP-ENGINEERING + market time; deviations need written justification.
 5. Amend this standard only by a new dated version section, operator-acknowledged.
+
+---
+
+## Version 2 — 2026-06-16 (research-health monitor integration)
+
+**RD-authored 2026-06-16; operator-acknowledged: [pending].** SUPPLEMENTS v1 (the §1 cadence + §4 tripwires + §5 decision points stand unchanged); adds the MECHANIZED data-integrity surface that v1's §2/§3 prescribed in prose. Motivated by + closes the 2026-06-13 RD data-collection audit (the temporal-log NaN defect rode invisible 2+ days because the operator-facing surfaces watched the funnel/intent layer, NOT the data-integrity layer).
+
+**What shipped (Phase 18 audit chain, now fully closed + automated):** `swing/monitoring/research_health.py` (`compute_research_health`) + the operator/RD probe `scripts/research_health.py` + a nightly pipeline step refreshing `exports/research/health/latest.json` every pipeline run + the 18-F GUI research stoplight that reads it. Chain: 18-A writer fix → 18-B consolidation → 18-C yfinance observability → 18-D monitor + FIX-1 baseline + 18-B.1 structural prevention → the nightly half + 2 calibrations.
+
+### §2 supplement (weekly glance)
+The operator runs `PYTHONPATH=. python scripts/research_health.py [--json]` **alongside** `weekly_glance.py`. weekly_glance watches the funnel/trigger/intent layer; the monitor watches the **data-integrity** layer (the 7 checks below). The 18-F research stoplight is the passive glance surface (green/yellow/red, refreshed nightly). Any monitor **RED** → message the RD (same as a glance `ATTENTION`). (The `role_mail`-on-ATTENTION auto-push to the RD inbox is **18-H.7-deferred** — until then the stoplight + the operator's glance ARE the surface.)
+
+### §3.1 supplement (monthly read)
+The monitor MECHANIZES the data-integrity dimension. The 7 checks: **#1** temporal_log_finiteness · **#2** excluded_reason_breakdown · **#3** coverage_gaps · **#4** structural_integrity (orphans/look-ahead) · **#5** drumbeat_liveness · **#6** candidate_completeness · **#7** fetch_transport_health (yfinance_calls TRANSPORT indicator only — best-effort; `success` ≠ data usability; **#1 is the usability authority**, never substitute #7 for it). The monthly read RUNS the monitor + reads its checks — STILL cross-checked against the live DB per the §3 fresh-query evidence discipline (the monitor is a surface, not a substitute for the fresh-query rule).
+
+### >>> CALIBRATION SEMANTICS — a future RD MUST read the monitor through these or misread accepted history as a failure:
+- **#1 GREEN ≠ zero non-finite.** It means zero POST-BASELINE non-finite. The **103 obs @ ≤2026-06-13** (the 06-10 cohort) are the ACCEPTED-historical, withdrawn-backfill set (immutable log; FIX-1 cutoff `_FINITENESS_BASELINE_CUTOFF=date(2026,6,13)` = the 18-A writer-fix boundary) — surfaced in the check DETAIL ("accepted historical: 103 …"), NOT a failure. **A #1 RED = a NEW non-finite (observation_date > 2026-06-13) = a write-barrier REGRESSION** (18-A/18-B/18-B.1 make this impossible by construction — the `insert_observation` guard) → **IMMEDIATE T2-class investigation** (the structural-prevention guarantee broke). A CORRUPT/unparseable obs json is ALWAYS red regardless of date.
+- **#2 invalid_ohlc is BASELINED at 23** (`_INVALID_OHLC_BASELINE_COUNT` — the same 06-10 cohort the engine rejects) → reds only ABOVE 23 (a NEW event). `insufficient_forward_depth` + `missing_observations` are **NOT** baselined (different causes — log-maturity / attribution; they self-heal as the log accrues). **As of the 2026-06-16 first nightly run the overall is honest YELLOW driven by `missing_observations` (~16.3%)** — a self-healing maturity signal, NOT the 06-10 cohort; do NOT relabel it a defect.
+- **#3 coverage_gaps tolerates a TRAILING ≤1-session lag** (`_COVERAGE_TRAILING_GRACE_SESSIONS=1` — the newest completed session not-yet-observed pre-nightly is expected). RED only on a ≥2-session trailing lag OR any INTERIOR/leading gap (a genuine coverage hole, e.g. a future ragged-fetch skip-hole).
+
+### Cadence + tripwire tie-in
+The nightly step refreshes `latest.json` every pipeline run; the 18-F staleness gate greys it if >7d stale (= a drumbeat-dead **T1** signal at the GUI). A **#1 RED** (post-baseline non-finite = a write-barrier regression) is a **T2-class HIGH** (substrate-integrity break) → same-session investigation; the structural prevention means it should never fire, so if it does, a barrier regressed.
