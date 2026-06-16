@@ -2,25 +2,23 @@
 
 > **OVERWRITE this file each session/handoff — do NOT append.** This is the one always-current state pointer for the CHARC (Tool Development Director) role. The dated session log in [`docs/tool-director-context.md`](tool-director-context.md) §6 is APPEND-ONLY history; current state lives HERE only. Bootstrap reads this file FIRST. Convention: [`docs/harness-architecture.md`](harness-architecture.md) §6.
 
-**Last overwritten:** 2026-06-16. **Phase 18 ACTIVE** (data-collection integrity). **Schema v30.** main HEAD `bc8acee6`; ahead of origin, **not pushed** (operator cadence). ZERO `Co-Authored-By` intact. NOTE: `main` HEAD moves under concurrent orchestrator generations — use a `git symbolic-ref --short HEAD == main` guard + pathspec commits (§5.8; a detached-HEAD race dangled a commit earlier this session).
+**Last overwritten:** 2026-06-16. **Phase 18 ACTIVE** (data-collection integrity). **Schema v30.** main HEAD advanced through the 18-H.1 merge (`1a2a774d`); ahead of origin, **not pushed since the last operator-directed push** (operator cadence). ZERO `Co-Authored-By` intact. NOTE: `main` HEAD moves under concurrent orchestrator generations — use a `git symbolic-ref --short HEAD == main` guard + pathspec commits (§5.8).
 
 ---
 
-## ONE live workstream
+## ONE workstream remaining — harness scaffold: ONLY the bootstrap-dry-run + accept left
 
-1. **Harness scaffold — FIX-PASS DISPATCHED (orch-1); awaiting return.**
-   - Build returned + QA'd (branch `scaffold-build` @ `dbac3b2`); review-strong CONVERGED; the separate codex-auto-review surfaced 0C/4M/2m. **CHARC adjudicated** + bundled the operator-directed state-pointer convention into a pre-accept fix-pass. **Brief:** [`docs/harness-scaffold-fixpass-brief.md`](harness-scaffold-fixpass-brief.md) (`5ecd9511`). Dispatched to an `implementer-opus-high` cell.
-   - **Scope:** A1 MAJOR-2 atomic registry write (required) · A2 MAJOR-4 delete vestigial `SUBSTRATE_EXCEPTION_RELPATHS` (**broad guard model RATIFIED**; brief §C2 = durable record) · A3 MAJOR-3 robustness companion (low-pri) · A4 MINOR-2 verify/harden the hook import-before-exit-0-guard · **A5 the `<role>-state.md` convention bundled into the scaffold**. CITED V2: MAJOR-1 + MINOR-1.
-   - **ON RETURN → MY LEG:** build-vs-plan/spec verify (every fix on disk; the C5 convention present + charc-bootstrap reads-state-first; genericity guard green whole-tree; §2.1 manifest 18→19; R1 CRITICAL session_id validation intact) → **operator bootstrap-dry-run witness** (bare clone) → accept (merge `scaffold-build` → master in harness-template). Re-gate before return: review-strong (repo-access, binding) + codex-auto-review.
+- Fix-pass + the AR-MAJOR-1 fold are **fully CHARC-verified end-to-end** (branch `scaffold-build` @ `d8ad5c9`, harness-template). My re-verify PASS on disk: A1-A5 + the `read_entries` `== path.stem` identity-invariant clause (additive AND; R1 `is_valid_session_id` still first → traversal boundary intact) + **168 unittest green (my own run)** + genericity guard green + manifest 19. Both reviewers clean (review-strong R5 NO_NEW_CRITICAL_MAJOR effort=high; codex-auto-review 0/0/0).
+- **REMAINING GATE (the only one):** the **operator bootstrap-dry-run witness on a BARE CLONE** (§5.5 staged guarantee — CHARC reads `charc-state.md` first → charter → comms round-trip on the singular inboxes → hooks load + exit 0 → reaches the application-definition interview, no further setup). CHARC-op, operator-witnessed. Then → **accept** (orch-1 merges `scaffold-build` → master in harness-template).
+- Durable records: fix-pass brief + AR ruling [`docs/harness-scaffold-fixpass-brief.md`](harness-scaffold-fixpass-brief.md) (§C2 = the MAJOR-4 broad-guard ratification; §F = the AR-MAJOR-1 fold ruling). After accept: the new repo's OWN CHARC germinates it (separate, later, NOT in swing).
 
-## CHARC follow-ups surfaced (not yet actioned)
+## CHARC follow-ups (not yet actioned)
 
-- **F1 — codex-auto-review WSL-CRLF phantom-finding noise mode.** Running B via WSL against a Windows CRLF tree recurrently emits a FALSE "repository-wide line-ending rewrite" finding (seen 18-H.4 + 18-H web-polish; the latter's "cli.py 5621-line rewrite" — CHARC-verified false on disk). **Adjudication rule (immediate):** cross-check any B line-ending-churn finding against the Windows-side `git diff --numstat` before treating it as real. **Candidate -H (optional):** a `.gitattributes` normalization policy kills it at the source — but that is itself a non-trivial repo-wide renormalization (its own one-time churn + risk), NOT a quick fix. Adoption-scoring signal for the tool I own.
-- **F2 — deferred Accept-header media-range looseness** (web-polish R2 Minor): `"text/html" in accept_header` would serve HTML to a `text/html;q=0` client; PRE-EXISTING, the new 404 branch mirrors `_handle_validation_error` (brief LOCK). A proper fix is a shared media-range parser touching BOTH handlers — a D8-like two-handler dup; candidate follow-up.
+- **F1 — codex-auto-review WSL-CRLF phantom-finding noise mode** — REFINED: triggers on LARGE/multi-file diffs run via WSL (web-polish "cli.py 5621-line rewrite", 18-H.4 git-status-all-modified — both CHARC-verified false); a SMALL Python-only diff (18-H.1, the harness fold) shows NO phantom. Adjudication rule: cross-check any B line-ending-churn finding vs the Windows-side `git diff --numstat`. Candidate -H: a `.gitattributes` normalization (non-trivial repo-wide renormalization, its own churn). Adoption-scoring signal for the tool I own.
+- **F2 — deferred Accept-header media-range looseness** (web-polish R2 Minor): a shared media-range parser touching BOTH 404/validation handlers; D8-like two-handler dup; candidate follow-up.
 
-## Pending CHARC items (operator-sequenced, behind the fix-pass return)
+## Pending CHARC items (operator-sequenced)
 
-- **18-H.1** — CHARC product-decision (tokens-absent→yellow `_check_schwab_token` contract) BEFORE dispatch.
 - **18-H.6** — orphan broker position = **TRIPWIRE** (schema enum-widen OR `swing/trades`) → CHARC architecture pass at commissioning.
 - **18-H.7** — `role_mail`-on-ATTENTION = CHARC comms-sender ruling + nightly-pipeline-step touch.
 - **18-H.5** — dead-code audit (brief `f3b95d3e`). · **18-G** — brief sweep (D10).
@@ -28,18 +26,18 @@
 
 ## Closed / shipped this session window
 
-- **Web-polish 18-H.2 + 18-H.3 + R1 SHIPPED + CLOSED** (`e53b0886`; close `bc8acee6`; operator browser gate 3/3; 8565 green; ruff clean). CHARC no-block QA verified on disk: 8-file delta, NO cli.py, no CRLF churn, trailers clean; review-strong effort=high confirmed; codex-auto-review B clean of real findings (only the F1 false-positive).
-- **Director current-state-pointer convention SHIPPED** (`fb4b61a9`) — this file + `rd-state.md` scaffold + both bootstrap rewords + `harness-architecture.md` §6. THIS file is the reference instance.
-- **Harness-scaffold codex-auto-review ADJUDICATED** + fix-pass brief committed + dispatched (`5ecd9511`).
-- 18-D nightly half + 2 calibrations (`4d17492b`); 18-H.4/.4.1 Schwab self-lock (`1a916375`); the codex-auto-review A/B → 3 binding harness changes (`00199c51`, adopted, `da22b9d8`); harness brainstorm→spec→writing-plans (`4d148a79`).
+- **18-H.1 SHIPPED + CLOSED** (`1a2a774d`; 8567 green; ruff clean) — `_check_schwab_token` configured-but-tokens-absent → YELLOW; client_id-empty stays GREEN n/a; **operator live-witness 3/3** (green/valid → yellow/logout → green/re-auth — the binding §5.10 net); both reviewers clean. CHARC spot-verified the flip + boundary on main.
+- **Web-polish 18-H.2/.3 + R1 SHIPPED + CLOSED** (`e53b0886`; gate 3/3; 8565 green) — CHARC no-block QA verified on disk (8-file delta, no cli.py, no CRLF churn).
+- **Director current-state-pointer convention SHIPPED** (`fb4b61a9`) — THIS file is the reference instance. **Harness fix-pass adjudicated + dispatched + the AR-MAJOR-1 fold verified** (the brief `5ecd9511`/`64b498ad`).
+- 18-D nightly half (`4d17492b`); 18-H.4/.4.1 (`1a916375`); codex-auto-review A/B → 3 binding harness changes; harness brainstorm→spec→writing-plans (`4d148a79`).
 
 ## Debt register snapshot (§4)
 
-CLOSED D6/D3/D11/D13/D14 · PARTIAL D1 · WATCH D5/D9/D12 · OPEN D7(=R1, now declared — verify at fix-pass/close)/D8(trigger-gated; F2 is a fresh instance)/D10(=18-G)/D15(base-VM base-field hand-duplication ~15 VMs).
+CLOSED D6/D3/D11/D13/D14 · PARTIAL D1 · WATCH D5/D9/D12 · OPEN D7(=R1, now DECLARED in pyproject via web-polish — verify/close at phase close)/D8(trigger-gated; F2 = fresh instance)/D10(=18-G)/D15(base-VM base-field hand-duplication ~15 VMs).
 
 ## Probe / hygiene
 
-Bootstrap probe: all within thresholds, no ATTENTION. INFO: `exports/` 42 dated (+30 research) = D3 (tracked, tiny residual). My inbox: 0 unread.
+Bootstrap probe: all within thresholds, no ATTENTION. INFO: `exports/` 42 dated (+30 research) = D3. My inbox: 0 unread.
 
 ## Behavioral load-bearing (don't relearn the hard way — full text in charter §5)
 
