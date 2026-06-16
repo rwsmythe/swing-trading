@@ -682,6 +682,38 @@ def _check_excluded_reason_breakdown(*, exports_root) -> list[ResearchHealthChec
 
 _COVERAGE_YELLOW_GAPS = 1   # any hole -> yellow (a missing forward bar is a real signal)
 _COVERAGE_RED_GAPS = 10     # a large hole count -> red (systemic observe-step failure)
+# CALIBRATION A (18-D §6.7): tolerate a TRAILING tail of length <= this many
+# sessions -- i.e. only the single NEWEST expected session unobserved is the
+# benign post-close -> pre-nightly window (the nightly observe step has not run
+# yet for that session). A trailing->=2 lag OR ANY interior/leading gap is a real
+# signal and still counts. GROUNDED against the live DB on 2026-06-15: 383
+# detections had a pure trailing-1 hole (the recurring nightly false-red) vs 2
+# real trailing->=2 lags + 0 interior gaps.
+_COVERAGE_TRAILING_GRACE_SESSIONS = 1
+
+
+def _graced_missing_count(missing: set[str], expected: set[str]) -> int:
+    """Return the gap count for one detection after applying the trailing-<=N
+    grace (CALIBRATION A). `missing` = expected-but-unobserved sessions;
+    `expected` = the full expected session set for the detection.
+
+    A detection is GRACED (returns 0) iff its missing set is EXACTLY the single
+    newest expected session and is no longer than the grace bound -- i.e. the only
+    hole is the newest expected session and it is a pure trailing-<=N tail. Any
+    interior/leading hole, OR a trailing tail of length > N, returns the full
+    `len(missing)` (a real signal). When there are no missing sessions -> 0.
+    """
+    if not missing:
+        return 0
+    # GRACED iff the ONLY missing session is the newest expected session and the
+    # hole is no longer than the trailing grace bound (a pure trailing-<=N tail).
+    if (
+        len(missing) <= _COVERAGE_TRAILING_GRACE_SESSIONS
+        and expected
+        and missing == {max(expected)}
+    ):
+        return 0
+    return len(missing)
 
 
 class _OutOfCalendarError(ValueError):
@@ -843,7 +875,10 @@ def _check_coverage_gaps(
                 first = _first_session_after(asof)
                 if first is None:
                     continue  # too fresh -- no session yet to observe
-                missing = len(_sessions(first, last_completed))
+                expected = _sessions(first, last_completed)
+                # CALIBRATION A: a never-observed detection whose ONLY expected
+                # session is the single newest one is equally benign pre-nightly.
+                missing = _graced_missing_count(expected, expected)
                 if missing:
                     total_missing += missing
                     if len(sample) < 3:
@@ -867,7 +902,10 @@ def _check_coverage_gaps(
             is_terminal = latest_status in _TERMINAL_STATUSES
             upper = max_obs if is_terminal else last_completed
             expected = _sessions(first, upper)
-            missing = len(expected - observed)
+            # CALIBRATION A (18-D §6.7): grace a pure trailing-<=1 tail (only the
+            # single newest expected session unobserved = the benign pre-nightly
+            # window); interior/leading holes + trailing->=2 still count.
+            missing = _graced_missing_count(expected - observed, expected)
         except _OutOfCalendarError:
             malformed += 1
             if len(sample) < 3:

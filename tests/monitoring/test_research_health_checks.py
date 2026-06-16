@@ -909,6 +909,47 @@ def test_coverage_yellow_when_missing_table(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# CALIBRATION A (18-D §6.7): #3 coverage trailing-<=1 grace. A pure trailing tail
+# of length <=1 (only the single NEWEST expected session unobserved = the benign
+# post-close->pre-nightly window) contributes NO gap; RED/escalate only on a
+# trailing->=2 lag OR any interior/leading gap.
+# ---------------------------------------------------------------------------
+
+
+def test_coverage_grace_trailing_one_session_not_red(tmp_path: Path) -> None:
+    # NOT-red half: an OPEN mature detection observed contiguously through the
+    # SECOND-newest expected session, missing ONLY the single newest expected
+    # session (06-12 == last_completed_session(_NOW)) -> graced -> GREEN.
+    # Pre-calibration: total_missing=1 -> YELLOW; post-calibration: graced -> GREEN.
+    conn = _schema_conn(tmp_path)
+    det = _seed_detection(conn, data_asof_date="2026-06-04")
+    for d in ("2026-06-05", "2026-06-08", "2026-06-09", "2026-06-10", "2026-06-11"):
+        _seed_observation(conn, det, observation_date=d, status="pending")
+    check = _only(_check_coverage_gaps(conn, now=_NOW), "coverage_gaps")
+    assert check.status == "green"  # only the newest (06-12) hole -> graced
+
+
+def test_coverage_trailing_two_and_interior_gap_red(tmp_path: Path) -> None:
+    # RED half (both vectors): a trailing-2 lag AND an interior gap must NOT be
+    # graced. (a) OPEN detection observed through 06-10, missing 06-11 + 06-12
+    # (trailing-2) -> +2; (b) TERMINAL detection observed 06-05/06-08/06-10
+    # (max_obs=06-10 -> interior 06-09 missing) -> +1; total=3 -> yellow.
+    conn = _schema_conn(tmp_path)
+    det_a = _seed_detection(conn, ticker="AAA", data_asof_date="2026-06-04")
+    for d in ("2026-06-05", "2026-06-08", "2026-06-09", "2026-06-10"):
+        _seed_observation(conn, det_a, observation_date=d, status="triggered_open")
+    det_b = _seed_detection(conn, ticker="BBB", data_asof_date="2026-06-04")
+    _seed_observation(conn, det_b, observation_date="2026-06-05", status="pending")
+    _seed_observation(conn, det_b, observation_date="2026-06-08", status="pending")
+    _seed_observation(conn, det_b, observation_date="2026-06-10", status="invalidated")
+    check = _only(_check_coverage_gaps(conn, now=_NOW), "coverage_gaps")
+    assert check.status in ("yellow", "red")
+    # neither vector was swallowed by the grace -> both detection ids surface.
+    assert f"det{det_a}" in (check.detail or "")
+    assert f"det{det_b}" in (check.detail or "")
+
+
+# ---------------------------------------------------------------------------
 # Task 4b: _check_structural_integrity (orphans + look-ahead)
 # ---------------------------------------------------------------------------
 
