@@ -187,9 +187,12 @@ def _reconstruct_long_lived_schwab_client(request: Request, cfg) -> None:
     ``from swing.web.app import ...`` here could bind against a
     partially-initialized module under a future eager-import refactor. Importing
     inside the function defers the lookup to call time (app fully loaded).
+
+    Codex R2 MAJOR 2 — the lazy import is INSIDE the try so an import/lookup
+    failure also degrades to ``schwab_client = None`` rather than crashing.
     """
-    from swing.web.app import _construct_web_schwab_client
     try:
+        from swing.web.app import _construct_web_schwab_client
         request.app.state.schwab_client = _construct_web_schwab_client(cfg)
     except Exception:  # noqa: BLE001 -- reconstruction is best-effort
         request.app.state.schwab_client = None
@@ -476,9 +479,16 @@ async def schwab_setup_post(request: Request) -> Response:
     # yfinance until restart (Codex R1 MAJOR 2).
     _release_long_lived_schwab_client(request)
 
+    # Codex R2 MAJOR 1 — open_connection is INSIDE the protected try (conn=None,
+    # closed conditionally in finally) so a post-release DB-open failure reaches
+    # the broad except (-> reconstruct -> 500) rather than hard-crashing with
+    # the client dropped and never restored.
     db_path = cfg.paths.db_path
-    conn = open_connection(db_path, busy_timeout_ms=cfg.web.db_busy_timeout_ms)
+    conn = None
     try:
+        conn = open_connection(
+            db_path, busy_timeout_ms=cfg.web.db_busy_timeout_ms,
+        )
         summary = setup_paste_flow_with_callback_url(
             cfg,
             environment,
@@ -562,7 +572,8 @@ async def schwab_setup_post(request: Request) -> Response:
             banner_resolve_link=banner_resolve_link,
         )
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
     # Success path. summary is the service helper's return dict (used
     # by tests to assert the call shape; web route only cares about

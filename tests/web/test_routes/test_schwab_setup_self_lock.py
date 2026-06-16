@@ -272,3 +272,62 @@ def test_post_with_no_long_lived_client_still_succeeds(
         f"setup with no long-lived client must succeed; got "
         f"{r.status_code}: {r.text[:200]}"
     )
+
+
+def test_post_reconstruct_factory_raise_degrades_to_none_not_500(
+    seeded_db, monkeypatch, tmp_path,
+):
+    """Codex R2 MAJOR 2 — when the reconstruction factory itself RAISES (not
+    just returns None; e.g. an import/lookup failure or a construction
+    exception the factory does not catch), the POST must STILL succeed (204)
+    and degrade to app.state.schwab_client = None -- never a hard 500. The
+    token write is independent of the web client."""
+    cfg, _cfg_path = seeded_db
+    _isolate_home(monkeypatch, tmp_path)
+    monkeypatch.setenv("SCHWAB_CLIENT_ID", "selflock_id_value_1234567890")
+    monkeypatch.setenv("SCHWAB_CLIENT_SECRET", "selflock_secret_abc")
+
+    import swing.web.routes.schwab as schwab_route
+
+    def _stub_service(
+        cfg_arg, environment, client_id, client_secret,
+        callback_url_with_code, conn, *, force=False, account_picker=None,
+    ):
+        return {
+            "tokens_path": "/tmp/stub.db",
+            "account_hash": "SELFLOCK",
+            "environment": environment,
+            "call_id_setup": 1,
+            "call_id_account_linked": 2,
+            "num_accounts": 1,
+            "oauth_http_status": 200,
+        }
+
+    def _raising_factory(_cfg):
+        raise RuntimeError("reconstruction factory exploded")
+
+    monkeypatch.setattr(
+        schwab_route, "setup_paste_flow_with_callback_url", _stub_service,
+    )
+
+    app = create_app(cfg, _cfg_path)
+    import swing.web.app as web_app
+    # Patch the factory AFTER create_app's startup install (which also calls
+    # the factory) so ONLY the route's post-setup reconstruction path hits the
+    # raiser -- exercising the reconstruct-failure-degrades guard in isolation.
+    monkeypatch.setattr(
+        web_app, "_construct_web_schwab_client", _raising_factory,
+    )
+    with TestClient(app) as test_client:
+        app.state.schwab_client = _StubLockingClient()
+        r = test_client.post(
+            "/schwab/setup",
+            data={"callback_url": "https://127.0.0.1/?code=abc%40xyz"},
+            headers={"HX-Request": "true"},
+        )
+
+    assert r.status_code == 204, (
+        f"setup must still succeed when the reconstruct factory raises; got "
+        f"{r.status_code}: {r.text[:200]}"
+    )
+    assert app.state.schwab_client is None
