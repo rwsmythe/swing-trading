@@ -299,7 +299,9 @@ class _WebLadderState:
                 self._consecutive_fallbacks = 0
 
 
-def _install_web_marketdata_caches(cfg, price_cache, ohlcv_cache) -> object | None:
+def _install_web_marketdata_caches(
+    cfg, price_cache, ohlcv_cache, app,
+) -> object | None:
     """Install the EXISTING ladder hooks on the web caches (full parity).
 
     Returns the constructed web Schwab client or None (sandbox / no creds /
@@ -307,6 +309,17 @@ def _install_web_marketdata_caches(cfg, price_cache, ohlcv_cache) -> object | No
     (Phase 15: the P14.N7 resilient-checker wrap + liveness sidecar were removed
     with the schwabdev v3 upgrade -- v3 refreshes synchronously per-request, so
     there is no daemon thread to babysit, and the topbar checker badge is gone.)
+
+    18-H.4.1 replaceable-holder refactor: the two ladder closures DO NOT capture
+    the constructed ``client`` by value. They resolve the CURRENT long-lived
+    client from ``app.state.schwab_client`` at CALL time (the mutable holder the
+    /schwab/setup route releases + reconstructs). This makes
+    ``_release_long_lived_schwab_client`` (null the holder + ``gc.collect()``)
+    ACTUALLY finalize the old client (no surviving closure strong-ref) so the
+    tokens-DB handle releases + the setup rename succeeds (the WinError-32 self-
+    lock fix), and the post-setup reconstruct's new client is auto-picked-up by
+    the SAME closures. When the holder is None (the release->reconstruct window,
+    or ladder inactive), the hooks take the yfinance fallback path -- never crash.
     """
     from swing.integrations.schwab.marketdata_ladder import _is_ladder_active
     ladder_active = _is_ladder_active(cfg)
@@ -331,6 +344,18 @@ def _install_web_marketdata_caches(cfg, price_cache, ohlcv_cache) -> object | No
 
     state = _WebLadderState(cfg)
 
+    def _current_client():
+        """Resolve the live long-lived Schwab client at CALL time.
+
+        Reads the mutable ``app.state.schwab_client`` holder rather than closing
+        over the constructed ``client`` -- so the /schwab/setup release (null the
+        holder) leaves NO closure strong-ref to the old client (WinError-32 self-
+        lock fix), and the reconstruct's new client is picked up automatically.
+        Returns None during the release->reconstruct window -> hooks degrade to
+        yfinance.
+        """
+        return getattr(app.state, "schwab_client", None)
+
     def _yf_quote_fallback(ticker: str):
         from datetime import datetime as _dt2
 
@@ -342,13 +367,16 @@ def _install_web_marketdata_caches(cfg, price_cache, ohlcv_cache) -> object | No
         )
 
     def _quote_hook(ticker: str) -> tuple[float, str]:
-        if not state.should_use_schwab(ticker):
-            snap = _yf_quote_fallback(ticker)          # bypass Schwab; NO audit row
+        current_client = _current_client()
+        if current_client is None or not state.should_use_schwab(ticker):
+            # None holder (release->reconstruct window / ladder inactive) OR the
+            # L9 scope gate bypass -> yfinance; never crash (NO audit row).
+            snap = _yf_quote_fallback(ticker)
             return (snap.price, "yfinance")
         conn = connect(cfg.paths.db_path)
         try:
             snap, provider_tag = fetch_quote_via_ladder(
-                ticker, cfg=cfg, schwab_client=client,
+                ticker, cfg=cfg, schwab_client=current_client,
                 yfinance_fallback_fn=_yf_quote_fallback,
                 conn=conn, surface="pipeline", pipeline_run_id=None,
             )
@@ -370,13 +398,16 @@ def _install_web_marketdata_caches(cfg, price_cache, ohlcv_cache) -> object | No
         )
 
     def _bars_hook(ticker: str):
-        if not state.should_use_schwab(ticker):
+        current_client = _current_client()
+        if current_client is None or not state.should_use_schwab(ticker):
+            # None holder (release->reconstruct window / ladder inactive) OR the
+            # L9 scope gate bypass -> yfinance; never crash (NO audit row).
             bars = _yf_window_fallback(ticker, None, None)
-            return (bars, "yfinance")              # bypass Schwab; NO audit row
+            return (bars, "yfinance")
         conn = connect(cfg.paths.db_path)
         try:
             window, provider_tag = fetch_window_via_ladder(
-                ticker, start=None, end=None, cfg=cfg, schwab_client=client,
+                ticker, start=None, end=None, cfg=cfg, schwab_client=current_client,
                 yfinance_fallback_fn=_yf_window_fallback,
                 conn=conn, surface="pipeline", pipeline_run_id=None,
                 period_type="year", period=5, frequency_type="daily", frequency=1,
@@ -476,7 +507,7 @@ def create_app(cfg: Config, cfg_path: Path | None = None) -> FastAPI:
     app.state.price_cache = PriceCache(cfg)
     app.state.ohlcv_cache = OhlcvCache(cfg)     # NEW — Phase 3d §3.5
     app.state.schwab_client = _install_web_marketdata_caches(  # NEW -- A-3 / P14.N7
-        cfg, app.state.price_cache, app.state.ohlcv_cache,
+        cfg, app.state.price_cache, app.state.ohlcv_cache, app,
     )
     app.state.templates_dir = _templates_dir()
     app.state.templates = _build_templates(app.state.templates_dir)

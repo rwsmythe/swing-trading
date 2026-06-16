@@ -32,8 +32,11 @@ def test_create_app_with_overridden_cfg_constructs_and_reaches_install(
 
     install_calls = {}
 
-    def _spy_install(cfg_arg, price_cache, ohlcv_cache):
+    def _spy_install(cfg_arg, price_cache, ohlcv_cache, app):
+        # 18-H.4.1: _install_web_marketdata_caches now also receives `app` (the
+        # mutable holder the ladder closures resolve at call time).
         install_calls["cfg"] = cfg_arg
+        install_calls["app"] = app
         return None  # no real Schwab client in this startup test
 
     monkeypatch.setattr(web_app, "_install_web_marketdata_caches", _spy_install)
@@ -44,5 +47,8 @@ def test_create_app_with_overridden_cfg_constructs_and_reaches_install(
     # _install_web_marketdata_caches was reached with a creds-bearing cfg
     # (create_app passes the RAW cfg, not the reconciled app.state.cfg).
     assert install_calls["cfg"].integrations.schwab.client_id == "cfgid"
+    # 18-H.4.1: install received the app (the mutable schwab_client holder the
+    # ladder closures resolve at call time).
+    assert install_calls["app"] is app
     # app.state.cfg is set (risk-policy reconciliation did not crash).
     assert getattr(app.state, "cfg", None) is not None

@@ -27,9 +27,27 @@ must release it before the rename so the rename succeeds.
 """
 from __future__ import annotations
 
+import dataclasses
+
 from fastapi.testclient import TestClient
 
 from swing.web.app import create_app
+
+
+def _production_ladder_cfg(base_cfg):
+    """Return a cfg with production env + ladder enabled (no live network).
+
+    Mirrors ``tests/web/test_app_marketdata_ladder_wiring.py:_production_cfg`` so
+    ``create_app`` -> ``_install_web_marketdata_caches`` actually CONSTRUCTS the
+    web Schwab client and installs the REAL ladder-fetcher closures (the full
+    production reference graph) instead of the sandbox no-client default.
+    """
+    schwab = dataclasses.replace(
+        base_cfg.integrations.schwab,
+        environment="production", marketdata_ladder_enabled=True,
+    )
+    integ = dataclasses.replace(base_cfg.integrations, schwab=schwab)
+    return dataclasses.replace(base_cfg, integrations=integ)
 
 
 def _isolate_home(monkeypatch, tmp_path) -> None:
@@ -331,3 +349,119 @@ def test_post_reconstruct_factory_raise_degrades_to_none_not_500(
         f"{r.status_code}: {r.text[:200]}"
     )
     assert app.state.schwab_client is None
+
+
+def test_post_release_finalizes_client_through_real_ladder_closures(
+    seeded_db, monkeypatch, tmp_path,
+):
+    """18-H.4.1 binding discriminator -- the FULL production reference graph.
+
+    The 18-H.4 test (``test_post_releases_client_so_rename_succeeds_and_
+    reconstructs``) injected a bare stub into ``app.state.schwab_client`` with NO
+    cache-hook closures. It passed against ``4d8b92bb`` even though the fix was
+    INEFFECTIVE in the only case the bug actually occurs (the ladder-active
+    production case), because the closures that ALSO strong-ref the client lived
+    OUTSIDE the test's reference graph (the synthetic-vs-production-emitter
+    gotcha).
+
+    This test replicates the production reference graph: build the app with a
+    PRODUCTION + ladder-enabled cfg so ``create_app`` ->
+    ``_install_web_marketdata_caches`` constructs the client AND installs the
+    REAL ``_quote_hook`` / ``_bars_hook`` closures over it (price_cache /
+    ohlcv_cache hold them on ``app.state`` for the app's lifetime). The
+    constructed client is a ``_StubLockingClient`` (returned by the patched
+    ``construct_authenticated_client``) so we can observe finalization via its
+    ``locked`` class flag.
+
+    Both-ways arithmetic (proves the test distinguishes 4d8b92bb from the fix):
+      * PRE-FIX (closures capture the local ``client``): the route's release
+        nulls ``app.state.schwab_client`` + ``gc.collect()``, but the two
+        closures STILL strong-ref the stub -> it is NOT finalized -> ``locked``
+        stays True at setup time -> the setup stub raises PermissionError(32)
+        (the WinError-32 self-lock proxy) -> broad except -> 500. The
+        ``status_code == 204`` assertion FAILS (red).
+      * POST-FIX (closures resolve ``app.state.schwab_client`` at call time, NOT
+        a captured ref): nulling the holder leaves NO strong ref from the
+        closures -> ``gc.collect()`` reclaims the stub -> ``__del__`` -> ``locked
+        is False`` -> the setup stub's rename "succeeds" -> 204, and app.state
+        holds the freshly-reconstructed client. PASSES (green).
+    """
+    cfg, _cfg_path = seeded_db
+    _isolate_home(monkeypatch, tmp_path)
+    monkeypatch.setenv("SCHWAB_CLIENT_ID", "selflock_id_value_1234567890")
+    monkeypatch.setenv("SCHWAB_CLIENT_SECRET", "selflock_secret_abc")
+
+    import swing.web.routes.schwab as schwab_route
+
+    def _stub_service(
+        cfg_arg, environment, client_id, client_secret,
+        callback_url_with_code, conn, *, force=False, account_picker=None,
+    ):
+        # The rename-aside step fails iff the long-lived client (incl. via the
+        # ladder closures) still holds the lock at setup time (WinError 32 proxy).
+        if _StubLockingClient.locked:
+            raise PermissionError(
+                32,
+                "The process cannot access the file because it is being "
+                "used by another process",
+            )
+        return {
+            "tokens_path": "/tmp/stub.db",
+            "account_hash": "SELFLOCK",
+            "environment": environment,
+            "call_id_setup": 1,
+            "call_id_account_linked": 2,
+            "num_accounts": 1,
+            "oauth_http_status": 200,
+        }
+
+    monkeypatch.setattr(
+        schwab_route, "setup_paste_flow_with_callback_url", _stub_service,
+    )
+
+    # create_app -> _install_web_marketdata_caches -> _construct_web_schwab_client
+    # -> construct_authenticated_client. Patch the LEAF so the STARTUP install
+    # really constructs the locking stub AND the REAL ladder closures capture/
+    # reference IT (the full production graph). _construct_web_schwab_client stays
+    # UNPATCHED through create_app so this leaf is reached.
+    monkeypatch.setattr(
+        "swing.web.app.construct_authenticated_client",
+        lambda *a, **k: _StubLockingClient(),
+    )
+
+    app = create_app(_production_ladder_cfg(cfg))
+    # The production install really constructed the locking stub AND installed the
+    # real closures over it -- the exact reference graph 18-H.4 missed.
+    assert app.state.schwab_client is not None
+    assert app.state.price_cache._ladder_fetcher is not None
+    assert app.state.ohlcv_cache._ladder_bars_fetcher is not None
+    assert _StubLockingClient.locked is True
+
+    # Reconstruction reuses the EXISTING factory via a lazy import from
+    # swing.web.app; patch at the source AFTER startup so ONLY the post-setup
+    # reconstruct yields a fresh sentinel (no live schwabdev construction) and
+    # the startup install above still builds the real stub + closures.
+    reconstructed = object()
+    import swing.web.app as web_app
+    monkeypatch.setattr(
+        web_app, "_construct_web_schwab_client", lambda _cfg: reconstructed,
+    )
+
+    with TestClient(app) as test_client:
+        r = test_client.post(
+            "/schwab/setup",
+            data={"callback_url": "https://127.0.0.1/?code=abc%40xyz"},
+            headers={"HX-Request": "true"},
+        )
+
+    assert r.status_code == 204, (
+        f"expected 204 (release finalized the client THROUGH the real ladder "
+        f"closures so the rename succeeded); got {r.status_code}: "
+        f"{r.text[:200]} -- the closures still strong-ref the old client "
+        "(WinError 32 self-lock survives in the ladder-active production case)"
+    )
+    assert r.headers.get("HX-Redirect") == "/schwab/status"
+    assert app.state.schwab_client is reconstructed, (
+        "app.state.schwab_client not reconstructed after setup -- web "
+        "market-data would stay on yfinance until restart"
+    )
