@@ -553,6 +553,75 @@ def test_holder_drain_bounded_timeout_does_not_hang():
     t.join(timeout=5.0)
 
 
+def test_scope_bypass_yfinance_path_does_not_borrow_the_client(
+    seeded_db, monkeypatch, tmp_path,
+):
+    """18-H.4.1 R3 MAJOR (Codex) -- the L9 scope-gate-bypass (yfinance-only) path
+    must NOT count as an in-flight borrow. Otherwise a long yfinance fallback for
+    a non-open-trade ticker would hold the Schwab client borrowed and could
+    outlive the setup drain -> WinError 32 even though that path never touches the
+    Schwab client.
+
+    Drive the REAL installed bars hook for a ticker OUTSIDE open-trade scope and
+    assert the shared holder's in-flight count is zero both DURING (probed via a
+    monkeypatched yfinance fallback) and after the call.
+    """
+    import dataclasses
+
+    from unittest.mock import MagicMock
+
+    cfg, _ = seeded_db
+    schwab = dataclasses.replace(
+        cfg.integrations.schwab,
+        environment="production", marketdata_ladder_enabled=True,
+    )
+    integ = dataclasses.replace(cfg.integrations, schwab=schwab)
+    prod_cfg = dataclasses.replace(cfg, integrations=integ)
+
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("SCHWAB_CLIENT_ID", "id-xxxx")
+    monkeypatch.setenv("SCHWAB_CLIENT_SECRET", "secret-xxxx")
+    monkeypatch.setattr(
+        "swing.web.app.construct_authenticated_client", lambda *a, **k: MagicMock(),
+    )
+
+    # No open trades seeded -> should_use_schwab(ticker) is False -> the hook must
+    # take the yfinance branch WITHOUT borrowing the client.
+    app = create_app(prod_cfg)
+    holder = app.state.schwab_client_holder
+    assert holder is not None
+
+    inflight_during = {}
+
+    def _probe_yf_window(ticker, *, end_date, cache_dir, archive_history_days):
+        # Probe the in-flight count from inside the yfinance fallback: it must be
+        # 0 (the scope-bypass path did not borrow the client).
+        inflight_during["n"] = holder._inflight
+        import pandas as pd
+        return pd.DataFrame(
+            {"Open": [1.0], "High": [1.0], "Low": [1.0], "Close": [1.0],
+             "Volume": [1]},
+            index=pd.bdate_range(end=pd.Timestamp("2026-06-08"), periods=1),
+        )
+
+    monkeypatch.setattr(
+        "swing.data.ohlcv_archive.read_or_fetch_archive", _probe_yf_window,
+    )
+    monkeypatch.setattr(
+        "swing.evaluation.dates.last_completed_session",
+        lambda _n: __import__("datetime").date(2026, 6, 8),
+    )
+
+    _bars, provider = app.state.ohlcv_cache._ladder_bars_fetcher("ZZZ")  # not open
+    assert provider == "yfinance"
+    assert inflight_during.get("n") == 0, (
+        "scope-bypass yfinance path borrowed the Schwab client (in-flight "
+        f"count={inflight_during.get('n')}) -- it would outlive the setup drain"
+    )
+    assert holder._inflight == 0
+
+
 def test_drain_timeout_exceeds_configured_schwab_request_timeout(seeded_db):
     """18-H.4.1 R2 MAJOR (Codex) -- the release drain wait MUST outlive a routine
     in-flight Schwab call. Source it from the configured Schwab request timeout +

@@ -469,13 +469,21 @@ def _install_web_marketdata_caches(
         )
 
     def _quote_hook(ticker: str) -> tuple[float, str]:
-        # borrow() counts the client in-flight for the whole fetch so a
-        # concurrent /schwab/setup release drains it before the tokens-DB rename.
+        # L9 scope gate FIRST (outside any borrow): a non-open-trade ticker never
+        # touches the Schwab client, so it must NOT count as an in-flight borrow
+        # (Codex R3 MAJOR -- a long yfinance fallback would otherwise hold the
+        # client borrowed + outlive the setup drain -> WinError 32).
+        if not state.should_use_schwab(ticker):
+            snap = _yf_quote_fallback(ticker)          # bypass Schwab; NO audit row
+            return (snap.price, "yfinance")
+        # borrow() counts a NON-None client in-flight for the duration of the
+        # actual Schwab ladder call so a concurrent /schwab/setup release drains
+        # it before the tokens-DB rename. A None holder (release->reconstruct
+        # window) is NOT counted (borrow yields None) -> the yfinance fallback
+        # below holds no client ref.
         with holder.borrow() as current_client:
-            if current_client is None or not state.should_use_schwab(ticker):
-                # None holder (release->reconstruct window / ladder inactive) OR
-                # the L9 scope gate bypass -> yfinance; never crash (NO audit row).
-                snap = _yf_quote_fallback(ticker)
+            if current_client is None:
+                snap = _yf_quote_fallback(ticker)      # None-window -> yfinance
                 return (snap.price, "yfinance")
             conn = connect(cfg.paths.db_path)
             try:
@@ -502,13 +510,21 @@ def _install_web_marketdata_caches(
         )
 
     def _bars_hook(ticker: str):
-        # borrow() counts the client in-flight for the whole fetch so a
-        # concurrent /schwab/setup release drains it before the tokens-DB rename.
+        # L9 scope gate FIRST (outside any borrow): a non-open-trade ticker never
+        # touches the Schwab client, so it must NOT count as an in-flight borrow
+        # (Codex R3 MAJOR -- a long yfinance fallback would otherwise hold the
+        # client borrowed + outlive the setup drain -> WinError 32).
+        if not state.should_use_schwab(ticker):
+            bars = _yf_window_fallback(ticker, None, None)
+            return (bars, "yfinance")              # bypass Schwab; NO audit row
+        # borrow() counts a NON-None client in-flight for the duration of the
+        # actual Schwab ladder call so a concurrent /schwab/setup release drains
+        # it before the tokens-DB rename. A None holder (release->reconstruct
+        # window) is NOT counted (borrow yields None) -> the yfinance fallback
+        # below holds no client ref.
         with holder.borrow() as current_client:
-            if current_client is None or not state.should_use_schwab(ticker):
-                # None holder (release->reconstruct window / ladder inactive) OR
-                # the L9 scope gate bypass -> yfinance; never crash (NO audit row).
-                bars = _yf_window_fallback(ticker, None, None)
+            if current_client is None:
+                bars = _yf_window_fallback(ticker, None, None)  # None-window -> yf
                 return (bars, "yfinance")
             conn = connect(cfg.paths.db_path)
             try:
