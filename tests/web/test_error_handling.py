@@ -317,6 +317,34 @@ def test_non_htmx_404_json_client_still_gets_json(test_cfg, seeded_db):
     assert r.json() == {"detail": "nothing here"}
 
 
+def test_non_htmx_405_html_page_preserves_allow_header(test_cfg, seeded_db):
+    """18-H.2 Codex R1 Minor: the HTML 4xx branch must preserve exc.headers.
+    A 405 Method Not Allowed carries an `Allow` header; the new page render
+    must NOT strip it (the FastAPI default handler preserves it).
+
+    Both-ways: pre-fix the branch returned TemplateResponse with no headers ->
+    the Allow header would be absent on the rendered 405 page.
+    """
+    cfg, cfg_path = test_cfg
+    app = create_app(cfg, cfg_path)
+
+    @app.post("/_post_only")
+    def _post_only():
+        return {"ok": True}
+
+    with TestClient(app) as client:
+        # GET a POST-only route -> 405 with an Allow header; ask for HTML so the
+        # new page-render branch handles it.
+        r = client.get("/_post_only", headers={"Accept": "text/html"})
+    assert r.status_code == 405
+    assert "text/html" in r.headers.get("content-type", "")
+    # The Allow header survived the page render.
+    assert "allow" in {k.lower() for k in r.headers.keys()}
+    assert "POST" in r.headers.get("allow", "")
+    # Still a base-extending full page (carries the stoplights).
+    assert 'class="stoplights"' in r.text
+
+
 def test_htmx_validation_error_non_trade_path_renders_div_fragment(test_cfg):
     """RequestValidationError (missing field) on a NON-/trades/ HTMX POST →
     http_error_fragment (a <div>) at 400. Proves the 'else' branch of the

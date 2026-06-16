@@ -688,6 +688,7 @@ def create_app(cfg: Config, cfg_path: Path | None = None) -> FastAPI:
         accept_header = request.headers.get("accept", "").lower()
         if request.method == "GET" and "text/html" in accept_header:
             from datetime import datetime
+            from http import HTTPStatus
 
             from swing.evaluation.dates import PageKind, topbar_session_date
             from swing.web.view_models.error import PageErrorVM
@@ -696,15 +697,28 @@ def create_app(cfg: Config, cfg_path: Path | None = None) -> FastAPI:
                     PageKind.HISTORY_ANALYSIS, datetime.now()).isoformat()
             except Exception:
                 session_date = "n/a"
+            # Codex R1 Nit: don't rewrite a legitimately-empty detail, and don't
+            # default a non-404 to "Not found" -- fall back to the status phrase.
+            if exc.detail is not None:
+                detail = exc.detail
+            else:
+                try:
+                    detail = HTTPStatus(exc.status_code).phrase
+                except ValueError:
+                    detail = "Error"
             vm = PageErrorVM(
                 session_date=session_date,
                 status_code=exc.status_code,
-                detail=exc.detail or "Not found",
+                detail=detail,
             )
+            # Codex R1 Minor: preserve exc.headers (e.g. a 405's Allow header)
+            # that the FastAPI default handler would carry; the HTML branch must
+            # not strip them.
             return tpls.TemplateResponse(
                 request, "page_error.html.j2",
                 {"vm": vm},
                 status_code=exc.status_code,
+                headers=getattr(exc, "headers", None),
             )
 
         return await http_exception_handler(request, exc)
