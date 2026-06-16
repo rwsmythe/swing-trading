@@ -67,6 +67,14 @@ A commissioning/dispatch brief routes through CHARC for a pre-dispatch architect
 
 Everything else dispatches without CHARC. The orchestrator **self-certifies** "no tripwire crossed" in the brief; false negatives are caught at phase audit and feed back as a process lesson. **Rationale:** the tripwires are the *mechanism* of the swimlane design — they route exactly the cross-scope judgments a scope-limited role can't make (§4) UP to the role that can. A per-brief gate was rejected as process bloat; the tripwire gate + phase audit is the balance.
 
-## 6. Maintenance
+## 6. Director current-state pointer (cold-start findability)
+
+Each director keeps a single **`docs/<role>-state.md`** (e.g. `charc-state.md`, `rd-state.md`) — the **current-state pointer**, **OVERWRITTEN each session, never appended**. The director **bootstrap reads it FIRST** (deterministic, cheap), then the role charter for stable role/rules context.
+
+The director context-doc **session log is APPEND-ONLY dated history** and must NOT carry "current state / read me first" blocks — current state lives ONLY in `<role>-state.md`.
+
+**Rationale (origin 2026-06-16, a CHARC cold-start):** when the current-state snapshot is appended into the append-only log like history, successive context-exhaustion handoffs accrete duplicate "read me first" snapshots with no deterministic "latest" → the next instance hunts. Separating the mutable pointer (overwrite) from the immutable log (append) makes current state a single cheap deterministic read. This is harness ARCHITECTURE (§2) — it applies to ALL director roles and is baked into the harness-template scaffold (a generic `<role>-state.md`).
+
+## 7. Maintenance
 
 This doc is CHARC-owned harness architecture. Both director bootstraps read it at spinup. Amendments are CHARC's (in dialogue with the operator); other roles consume it and route proposed changes to CHARC. Its weight is monitored alongside the other live harness docs (`harness_probe.py`, §4.2 standard).

@@ -5,14 +5,20 @@ and await the operator -- take no engineering actions beyond the reads below.
 
 Do this, in order:
 
-1. Read your charter in full: docs/tool-director-context.md (role definition,
-   the settled operating decisions in section 2, the architecture-review
-   tripwires in section 3, the technical-debt register in section 4, and the
-   harness-hygiene standard in section 4.2). This is your working memory --
-   section 6 (Session Log) is append-only. THEN read the shared harness model:
-   docs/harness-architecture.md (CHARC-owned cross-role harness architecture --
-   the role/swimlane model, the content-ownership categories, the comms
-   taxonomy, the scope-limitation + flag-vs-comply rule, the tripwire model).
+1. Read docs/charc-state.md FIRST -- the single, always-current state pointer
+   (OVERWRITTEN each session; current arc/phase state lives HERE, not in the
+   charter's session log). THEN read your charter for stable role context:
+   docs/tool-director-context.md (role definition, the settled operating
+   decisions in section 2, the architecture-review tripwires in section 3, the
+   technical-debt register in section 4, and the harness-hygiene standard in
+   section 4.2). This is your working memory -- section 6 (Session Log) is
+   APPEND-ONLY dated history: skim for "how we got here," but do NOT read any
+   dated entry as current (charc-state.md is the only current surface). THEN
+   read the shared harness model: docs/harness-architecture.md (CHARC-owned
+   cross-role harness architecture -- the role/swimlane model, the
+   content-ownership categories, the comms taxonomy, the scope-limitation +
+   flag-vs-comply rule, the tripwire model; the director state-pointer
+   convention is section 6).
 
 2. Drain your inbox:
        python scripts/role_mail.py read --role charc --all

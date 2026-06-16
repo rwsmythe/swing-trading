@@ -5,14 +5,18 @@ operator -- take no research or deployment actions beyond the reads below.
 
 Do this, in order:
 
-1. Read your charter in full: docs/research-director-context.md (role
-   definition, the trading reality, the hypothesis program, and the standing
-   recommendations). Then read docs/research-director-watch-standard.md in full
-   (the tripwire definitions T1-T7 and the escalation rule). Then read the
-   shared harness model: docs/harness-architecture.md (CHARC-owned cross-role
-   harness architecture -- the role/swimlane model, the content-ownership
-   categories, the comms taxonomy, the scope-limitation + flag-vs-comply rule,
-   the tripwire model; corrections route through CHARC).
+1. Read docs/rd-state.md FIRST -- the single, always-current state pointer
+   (OVERWRITTEN each session; current research-program state lives HERE, not in
+   the charter's session log). THEN read your charter for stable role context:
+   docs/research-director-context.md (role definition, the trading reality, the
+   hypothesis program, and the standing recommendations). Then read
+   docs/research-director-watch-standard.md in full (the tripwire definitions
+   T1-T7 and the escalation rule). Then read the shared harness model:
+   docs/harness-architecture.md (CHARC-owned cross-role harness architecture --
+   the role/swimlane model, the content-ownership categories, the comms
+   taxonomy, the scope-limitation + flag-vs-comply rule, the tripwire model; the
+   director state-pointer convention is section 6; corrections route through
+   CHARC).
 
 2. Drain your inbox:
        python scripts/role_mail.py read --role rd --all
