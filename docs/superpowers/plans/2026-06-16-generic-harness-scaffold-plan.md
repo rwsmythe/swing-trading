@@ -20,18 +20,15 @@
 
 **Building the scaffold is `review-strong`, NOT `review-fast`.** Although THIS writing-plans phase is `review-fast` (a plan/doc defect is caught downstream), the *executing* phase ships harness **production code** — the comms CLI, the session registry + lifecycle hooks, and the genericity-guard build test. A missed major in any of those has real blast-radius (a broken registry mis-keys live orchestrator traffic; a hole in the genericity guard lets app/domain content leak into the "generic" scaffold). The executing dispatch MUST run `review-strong` (recipe §3), run-to-`NO_NEW_CRITICAL_MAJOR`, cap suspended. This is stated here so the executing orchestrator cannot tier it down by inertia.
 
-### 0.2 The new-repo logistics — OPERATOR DECISIONS REQUIRED BEFORE EXECUTING
+### 0.2 The new-repo logistics — DECIDED (A + B1 + C all settled)
 
-The plan assumes a NEW git repository, created BEFORE the first executing task runs. Two questions are **operator-owned and must be answered before the executing dispatch is cut** (flagged per brief §5; NOT decided here):
+The plan assumes a NEW git repository, created BEFORE the first executing task runs. The three logistics decisions are now **RESOLVED** (operator + CHARC settled them):
 
-- **DECISION A — repo name + location.** This plan uses the placeholder **`harness-template/`** throughout (the §4 manifest root token). The operator picks the real name (e.g. `harness-template`, `harness-seed`, `agent-harness-scaffold`) and where it lives (a sibling dir of swing-trading, e.g. `C:/Users/rwsmy/harness-template`, vs elsewhere). Every `<harness-template>` token in the spec/plan resolves to that choice.
-- **DECISION B — who runs `git init` and when.** Two options:
-  - **B1 (recommended): the operator inits an empty repo first**, then dispatches the executing implementer pointed at it (the implementer's "isolated workspace" is a branch/worktree of that repo). This keeps the new-repo creation an explicit operator act and gives the implementer a real git root from task 1.
-  - **B2: the executing implementer runs `git init`** as its task-0 (the plan's first task creates the repo). Simpler dispatch, but the implementer creates the repo boundary itself.
-  - Either way, the executing implementer works in an **isolated workspace within the NEW repo** (its own branch / worktree there) — NOT in a swing-trading worktree, and NOT the swing `.worktrees/` path (that path is swing's convention; the new repo carries the same convention via its own copied `dispatch-recipe.md`).
-- **DECISION C (deferred, NOT a bootstrap blocker) — shared-inbox vs per-generation orchestrator addressing.** The spec decides **shared-inbox** as the ship default (§5.1, §9). Per-generation addressing (`orchestrator-<session_id>`) is documented as the first-class upgrade. The plan builds shared-inbox; `comms-orchestrator-registry.md` documents both + the claim rule. No operator action needed unless the operator wants per-generation from day one (then flag back to CHARC — it changes Task Group D's addressing tasks).
+- **DECISION A — repo name + location = DECIDED: `C:/Users/rwsmy/harness-template`.** Every `<harness-template>` token in the spec/plan resolves to this path. (The placeholder token `<harness-template>` is KEPT in the task bodies for portability/readability, but it resolves to `C:/Users/rwsmy/harness-template` — the executing dispatch states the resolved path; the implementer does NOT re-pick it.)
+- **DECISION B — who runs `git init`, when = DECIDED: B1.** The operator inits the empty repo first (at `C:/Users/rwsmy/harness-template`), then dispatches the executing implementer pointed at it (the implementer's "isolated workspace" is a branch/worktree of that repo). This keeps the new-repo creation an explicit operator act and gives the implementer a real git root from task 1. **A.1 populates the operator-init'd repo** (it does NOT run `git init` itself — B2, the implementer-runs-`git init` option, is NOT taken). The executing implementer works in an **isolated workspace within the NEW repo** (its own branch / worktree there) — NOT in a swing-trading worktree, and NOT the swing `.worktrees/` path (that path is swing's convention; the new repo carries the same convention via its own copied `dispatch-recipe.md`).
+- **DECISION C — orchestrator addressing = DECIDED: PER-GENERATION (direction-asymmetric).** The amended spec (§5.1, §9) mandates direction-asymmetric addressing: orchestrator→director SHARED (`--to charc`, unchanged), director→orchestrator PER-GENERATION (`--to orchestrator:<session_id>` explicit, or bare `--to orchestrator` = newest-live resolved against the registry). The plan builds per-generation inboxes + registry-resolved addressing (Task Group D); the prior shared-inbox + atomic-move-claim + handoff model is REMOVED. No operator action is outstanding — C is settled, not deferred.
 
-**Until DECISION A + B land, the executing dispatch cannot start.** They are mechanical (a name + an init), but they gate the first task.
+**A + B1 land before the executing dispatch is cut** (mechanical: a name + an `git init` at `C:/Users/rwsmy/harness-template`); they gate A.1. C is a design decision already realized in this plan.
 
 ---
 
@@ -68,12 +65,12 @@ Ordering rationale (the EXACT task sequence — note F.1 runs BETWEEN A.1 and A.
 
 ### 2.0 EXECUTION PRECONDITION (hard gate on the WHOLE task tree)
 
-**DECISION A (repo name + location) and DECISION B (who runs `git init`, when) — §0.2 — are a HARD PRECONDITION for EVERY task below.** No task can run until the new repo exists, because every task's "Files (new repo)" line assumes a populated `<harness-template>` git root. The dependency is made unambiguous by splitting the tree:
+**DECISION A (repo name + location = `C:/Users/rwsmy/harness-template`) and DECISION B (B1 — the operator runs `git init` first) — §0.2, both DECIDED — are a HARD PRECONDITION for EVERY task below.** No task can run until the new repo exists, because every task's "Files (new repo)" line assumes a populated `<harness-template>` (= `C:/Users/rwsmy/harness-template`) git root. The dependency is made unambiguous by splitting the tree:
 
-- **Repo-bootstrap step (Task A.1):** creates the repo skeleton. Under option **B1** (recommended), the operator has already run `git init` on the empty repo and the executing implementer is dispatched pointed at it — A.1 populates it. Under option **B2**, A.1 itself runs `git init` as its first action. Either way, **A.1 is the boundary between "no repo" and "populated repo."**
+- **Repo-bootstrap step (Task A.1):** populates the repo skeleton. Per the DECIDED B1, the operator has already run `git init` on the empty repo at `C:/Users/rwsmy/harness-template` and the executing implementer is dispatched pointed at it — **A.1 populates it** (A.1 does NOT run `git init`; B2 is not taken). **A.1 is the boundary between "empty operator-init'd repo" and "populated repo."**
 - **Post-init implementation (Task B onward):** every subsequent task operates inside the now-populated repo (the implementer's own branch/worktree there). These tasks have NO meaning until A.1 has run.
 
-So the ordering precondition chain is: **DECISION A + B (operator) → A.1 (repo-bootstrap) → all other tasks.** The executing dispatch states the resolved repo name/location + the chosen B-option in its brief; the implementer does NOT pick them.
+So the ordering precondition chain is: **DECISION A + B1 (operator inits `C:/Users/rwsmy/harness-template`) → A.1 (repo-bootstrap/populate) → all other tasks.** The executing dispatch states the resolved repo path (`C:/Users/rwsmy/harness-template`); the implementer does NOT re-pick it.
 
 ### 2.1 The shipped-scaffold manifest (ONE exact file list) + a separate repository-support appendix
 
@@ -163,20 +160,27 @@ The single most-lifted piece. Swing's `role_mail.py` is **already generic** exce
 
 **Files (new repo):** `scripts/role_mail.py`, `tests/test_role_mail.py` (or the chosen runner's path).
 
-**The taxonomy change (§5.1):**
+**The taxonomy change (§5.1 — DIRECTION-ASYMMETRIC addressing):**
 - `VALID_FROM = ("charc", "orchestrator", "operator")`
-- `VALID_TO = ("charc", "orchestrator", "operator")` — **note: orchestrator IS a recipient here** (the scaffold ships the orchestrator inbox realized; swing's V1 had `orchestrator` send-only / not in `VALID_TO`). This is the spec-mandated divergence from swing (§5.1: "the orchestrator has an inbox … the scaffold ships the extension realized").
+- `VALID_TO = ("charc", "orchestrator", "operator")` — **the BASE role set stays the three roles** (orchestrator addressing resolves PER-GENERATION in the POST/resolution path via the `<session_id>` suffix + a registry lookup — NOT a new role enum). **Note: orchestrator IS a recipient here** (the scaffold ships the orchestrator inbox realized; swing's V1 had `orchestrator` send-only / not in `VALID_TO`). This is the spec-mandated divergence from swing (§5.1: "the orchestrator has an inbox … the scaffold ships the extension realized").
 - `VALID_TYPES = ("fyi", "status", "query", "return_report", "decision_request")` — verbatim.
+- **Direction-asymmetric `--to` resolution (§5.1, operator-decided 2026-06-16):** the POST path parses the `--to` target so that:
+  - `--to charc` (and `--to operator`) → the SHARED single director/operator inbox (`comms/charc/inbox`) — **unchanged** (a director/operator is singular; no ambiguity).
+  - `--to orchestrator:<session_id>` → the EXPLICIT per-generation inbox `comms/orchestrator/<session_id>/inbox`.
+  - `--to orchestrator` (bare) → resolved at SEND TIME to the **newest-live** orchestrator generation (the registry's most-recent-`started_ts` non-stale entry; D.1's `newest_live`), then delivered to that generation's `comms/orchestrator/<session_id>/inbox`. With no live generation, surface a clear no-live-orchestrator error.
+  - This per-generation resolution is the §5.1 + D.5 model; B.1 implements the post-path parsing + the registry-resolved delivery target. The role enum is unchanged — `orchestrator` is one role; the `:<session_id>` suffix + the bare-newest-live resolution are POST-path addressing, not new roles.
 
 **TDD (red→green):**
-1. Failing test: `post_message` with `--to charc` round-trips (post → file appears in `comms/charc/inbox/` with the frontmatter) → implement the taxonomy + the lifted write path → green.
-2. Failing test: posting `--to orchestrator` succeeds (the new inbox recipient) — this test FAILS against a naive swing-copy where `orchestrator` is send-only, proving the divergence is implemented.
-3. Failing test: the **L1 lock** — `decision_request` to any non-operator recipient (incl. `charc`, `orchestrator`) raises/exits-1; `decision_request` to `operator` succeeds. **This is a POLICY test on the EXISTING `VALID_TYPES` set (the information-vs-authority discipline), NOT a new semantic channel** — `decision_request` is one of the five existing types; the lock just restricts WHO it can address. No new message type / channel is introduced. (Distinguishing: compute under both the pre-fix path [no lock → write happens] and post-fix [refused] to prove the test bites.)
-4. Failing test (DISTINCT from item 3): **the orchestrator-inbox accepts the info-only types but the discipline that briefs/approvals never route here is doc-enforced, not enum-enforced.** Assert the POSITIVE: `post_message` to `orchestrator` SUCCEEDS for each of `fyi`/`status`/`query`/`return_report` (the info-only taxonomy the orchestrator inbox is meant to carry — Stage-2 §6 "Taxonomy LOCK") and the file lands in `comms/orchestrator/inbox/`. This is distinct from item 3 (which asserts the NEGATIVE: `decision_request` to orchestrator is refused). Together items 3+4 fully characterize the orchestrator inbox: it carries the four info-only types, refuses `decision_request`. (The further "no briefs/approvals" rule is a human discipline stated in `dispatch-recipe.md` + `orchestrator-context.md`, NOT an enum — there is no message-type for "brief"; the L1 lock + the discipline doc together enforce info-only. No NEW enum needed.)
+1. Failing test: `post_message` with `--to charc` round-trips to the SHARED inbox (post → file appears in `comms/charc/inbox/` with the frontmatter) → implement the taxonomy + the lifted write path → green. (Asserts `--to charc` stays the unchanged shared post.)
+2. Failing test: `post_message --to orchestrator:<session_id>` lands in `comms/orchestrator/<session_id>/inbox` (the explicit per-generation target) — this FAILS against a naive swing-copy where `orchestrator` is send-only OR a shared-inbox copy that writes `comms/orchestrator/inbox`, proving the per-generation divergence is implemented.
+3. Failing test: the **L1 lock** — `decision_request` to any non-operator recipient (incl. `charc`, `orchestrator:<id>`) raises/exits-1; `decision_request` to `operator` succeeds. **This is a POLICY test on the EXISTING `VALID_TYPES` set (the information-vs-authority discipline), NOT a new semantic channel** — `decision_request` is one of the five existing types; the lock just restricts WHO it can address. No new message type / channel is introduced. (Distinguishing: compute under both the pre-fix path [no lock → write happens] and post-fix [refused] to prove the test bites.)
+4. Failing test (DISTINCT from item 3): **bare `--to orchestrator` resolves to the newest-live generation via the registry, and the per-generation orchestrator inbox accepts the info-only types.** Assert the POSITIVE: with a live orchestrator entry registered, `post_message` to bare `--to orchestrator` SUCCEEDS for each of `fyi`/`status`/`query`/`return_report` (the info-only taxonomy the orchestrator inbox carries — Stage-2 §6 "Taxonomy LOCK") and the file lands in the newest-live generation's `comms/orchestrator/<session_id>/inbox/`. This is distinct from item 3 (which asserts the NEGATIVE: `decision_request` to orchestrator is refused) and from item 2 (the explicit-`session_id` form). Together items 2+3+4 fully characterize orchestrator addressing: explicit `:<session_id>` delivery, bare-newest-live resolution, the four info-only types accepted, `decision_request` refused. (The further "no briefs/approvals" rule is a human discipline stated in `dispatch-recipe.md` + `orchestrator-context.md`, NOT an enum — there is no message-type for "brief"; the L1 lock + the discipline doc together enforce info-only. No NEW enum needed.)
 
-**Acceptance check (in addition to TDD green):** the file's module docstring + usage examples name only generic roles (charc/orchestrator/operator); **genericity guard passes** (no `swing`/`rd`/finance terms). Note the role `rd` is REMOVED (swing's research-director has no scaffold analog — §9 "one director"); a guard or grep asserts `rd` does not appear as a role.
+**Acceptance check (in addition to TDD green):** the file's module docstring + usage examples name only generic roles (charc/orchestrator/operator); the `--to` resolver delivers `--to charc` to the shared inbox, `--to orchestrator:<session_id>` to the explicit per-generation inbox, and bare `--to orchestrator` to the newest-live generation's inbox; **genericity guard passes** (no `swing`/`rd`/finance terms). Note the role `rd` is REMOVED (swing's research-director has no scaffold analog — §9 "one director"); a guard or grep asserts `rd` does not appear as a role.
 
-**Commit:** `feat(comms): Task B.1 — generic role_mail taxonomy (charc|orchestrator|operator) + lifted write path`
+**Sequencing note (B depends on D.1 for newest-live):** the bare-`--to orchestrator` resolution calls the registry's `newest_live` (D.1), which is built in Task Group D AFTER B in the execution order (A.1 → F.1 → A.2 → A.3 → B → D). The executing implementer has two equivalent options: (a) implement the `--to` PARSER + the explicit-`:<session_id>` delivery + the `--to charc` shared post in B.1, and wire the bare-`--to orchestrator`→newest-live resolution as a small follow-up once D.1 lands (its TDD item 4 then goes green) — i.e. B.1 ships the parser/explicit form, D.1/D.5 close the newest-live resolution; OR (b) reorder so D.1's `newest_live` is available when B.1's item-4 test runs. Either is fine; the plan does NOT require B and D to be a single commit. The PARSER + explicit `:<session_id>` form + the `--to charc` shared post are fully testable in B.1 standalone; only the bare-newest-live convenience depends on D.1.
+
+**Commit:** `feat(comms): Task B.1 — direction-asymmetric role_mail addressing (shared --to charc; per-generation --to orchestrator[:session_id])`
 
 ### B.2 — `role_mail.py`: list / read / peek + ack-history-preservation
 
@@ -227,9 +231,9 @@ These are lift-and-genericize of swing's `tool-director-context.md` (→ the cha
 - Role + operating pattern: coordinate implementers; the dispatch model (brief → inline/sub-agent dispatch → return report → QA → accept); **operator drives, orchestrator serves**.
 - QA-the-implementer-product (don't trust the self-report; verify against reality).
 - Own the **merge/accept** step (the orchestrator performs the accept across phases).
-- The comms routing: the orchestrator HAS an inbox now (the scaffold realizes it); it posts status/return_report to CHARC; it receives direction from the operator; **the implementer never posts to a mailbox** (reports up in chat) — a discipline, not an enum.
+- The comms routing: the orchestrator HAS an inbox now (the scaffold realizes it) — and it is a **per-generation** inbox `comms/orchestrator/<session_id>/inbox`: this generation drains its OWN inbox (NOT a shared one); it posts status/return_report to CHARC's shared `comms/charc/inbox`; it receives direction from the operator; **the implementer never posts to a mailbox** (reports up in chat) — a discipline, not an enum.
 - A pointer to `dispatch-recipe.md` (the implementer protocol) + `review-gate-seam.md` (the review/gate contract).
-- The concurrent-generations note + a pointer to `comms-orchestrator-registry.md` (the registry is what makes "which orchestrator" addressable).
+- The concurrent-generations note + a pointer to `comms-orchestrator-registry.md`: multiple orchestrator generations can run concurrently; a director addresses a SPECIFIC generation via the registry (`--to orchestrator:<session_id>`, or bare `--to orchestrator` = newest-live), and EACH generation drains its OWN per-generation inbox. The registry is what makes "which orchestrator" addressable.
 
 **Acceptance check:** the doc contains ZERO swing arc/phase content (no Phase-N, no finance, no schema); it names the orchestrator-inbox-realized model (NOT swing's "no orchestrator inbox in V1"); **genericity guard passes** (substrate terms allowed only per the guard's lists — note: this doc is NOT a substrate-exception file, so it must stay mechanism-agnostic about review tooling, deferring to seam 3).
 
@@ -298,79 +302,84 @@ Built from `docs/comms-stage2-orchestrator-inbox-design.md` (promoted from defer
 
 **Contract (§5.1 + Stage-2 §2 table + the unread-hook lift):**
 - Reads the hook-JSON from stdin → extracts `session_id` + `transcript_path` (the documented fields — Stage-2 §8). Reads `HARNESS_ROLE` from env.
-- **Heartbeat + register:** on EVERY prompt, if `HARNESS_ROLE == "orchestrator"`, write/refresh the registry entry (heartbeat `last_seen`; recreate-if-missing rebuilds the full entry from env+payload) — **role-gated** (only orchestrators register).
-- **The unread notice (the swing lift):** the same hook ALSO surfaces unread mailbox count for the session's role (charc OR orchestrator) — one ASCII `[comms] N unread … run: <drain cmd>` line, decision_request subset noted. Silent no-op if the role is unknown / not in the comms roles. ALWAYS exits 0 (a hook failure must never block a prompt — swallow all exceptions).
+- **Heartbeat + register + per-generation inbox:** on EVERY prompt, if `HARNESS_ROLE == "orchestrator"`, write/refresh the registry entry (heartbeat `last_seen`; recreate-if-missing rebuilds the full entry from env+payload) — **role-gated** (only orchestrators register) — AND ensure this generation's per-generation inbox dir `comms/orchestrator/<session_id>/inbox` exists (the §5.1 "created when it registers" — idempotent `mkdir -p`-style; recreate-if-missing also recreates the inbox dir so a pruned-then-re-registered generation has its inbox back).
+- **The unread notice (the swing lift):** the same hook ALSO surfaces unread mailbox count for the session's role — for `charc` the shared `comms/charc/inbox`, for `orchestrator` THIS generation's `comms/orchestrator/<session_id>/inbox` (the per-generation inbox the session drains) — one ASCII `[comms] N unread … run: <drain cmd>` line, decision_request subset noted. Silent no-op if the role is unknown / not in the comms roles. ALWAYS exits 0 (a hook failure must never block a prompt — swallow all exceptions).
 - **Degraded mode (§5.1 Major-6 / Stage-2 §8):** if `session_id` is ABSENT from the payload (a substrate-version change), the registry degrades to a documented single-orchestrator assumption + logs an actionable warning to stderr — never silently mis-keys; a last-resort fallback to the undocumented session env var is permitted but logged as degraded.
 
 **TDD (red→green):**
-1. Failing test: a JSON payload with `session_id`+`transcript_path` and `HARNESS_ROLE=orchestrator` → the registry entry is written/refreshed → green.
-2. Failing test: `HARNESS_ROLE=charc` (a director, not orchestrator) → NO registry entry written (role-gated), but the unread notice still fires for `charc` → green. (Distinguishing: a register-everyone impl writes a charc entry; the test asserts none.)
+1. Failing test: a JSON payload with `session_id`+`transcript_path` and `HARNESS_ROLE=orchestrator` → the registry entry is written/refreshed AND this generation's `comms/orchestrator/<session_id>/inbox` dir exists → green.
+2. Failing test: `HARNESS_ROLE=charc` (a director, not orchestrator) → NO registry entry written + NO per-generation inbox created (role-gated), but the unread notice still fires for the shared `comms/charc/inbox` → green. (Distinguishing: a register-everyone impl writes a charc entry; the test asserts none.)
 3. Failing test: a payload with NO `session_id` → degraded mode (a warning to stderr; no crash; exit 0; the documented single-orchestrator fallback) → green.
 4. Failing test: an internal exception (e.g. unreadable comms dir) → exit 0, prompt never blocked.
-5. Failing test: the unread notice — N messages in `comms/orchestrator/inbox/` → the `[comms] N unread for orchestrator …` ASCII line printed.
+5. Failing test: the unread notice — N messages in THIS generation's `comms/orchestrator/<session_id>/inbox/` → the `[comms] N unread for orchestrator …` ASCII line printed (the per-generation inbox the session drains).
 
 **Acceptance check:** ALWAYS exits 0; degraded mode logged not silent; guard passes (`HARNESS_ROLE` not `SWING_ROLE`; no `rd`).
 
-**Commit:** `feat(registry): Task D.2 — UserPromptSubmit hook (heartbeat + role-gated register + recreate-if-missing + degraded-mode + unread notice)`
+**Commit:** `feat(registry): Task D.2 — UserPromptSubmit hook (heartbeat + role-gated register + per-generation inbox + recreate-if-missing + degraded-mode + unread notice)`
 
 ### D.3 — `SessionStart` hook: create entry + opportunistic prune
 
 **Files:** `.claude/hooks/session_start.py`, `tests/test_session_start_hook.py`.
 
-**Contract (Stage-2 §2 table):** on `SessionStart` (fires + completes BEFORE the first prompt): if `HARNESS_ROLE == "orchestrator"`, **create** the entry (from `session_id`/`transcript_path` + env role). Carries a `source` field (`startup`/`resume`/`clear`/`compact`) — on `resume`, refresh the existing same-`session_id` entry rather than duplicate. ALSO run the **opportunistic prune** (new session prunes stale entries on entry). Exit 0 always.
+**Contract (Stage-2 §2 table):** on `SessionStart` (fires + completes BEFORE the first prompt): if `HARNESS_ROLE == "orchestrator"`, **create** the entry (from `session_id`/`transcript_path` + env role) AND ensure this generation's per-generation inbox dir `comms/orchestrator/<session_id>/inbox` exists (the §5.1 "created when it registers"; idempotent). Carries a `source` field (`startup`/`resume`/`clear`/`compact`) — on `resume`, refresh the existing same-`session_id` entry rather than duplicate (and ensure its inbox dir exists). ALSO run the **opportunistic prune** (new session prunes stale entries on entry — pruning the stale registry ENTRY; note a generation's inbox is drained only by that generation, so a pruned entry's leftover inbox is harmless and best-effort tidied by D.4). Exit 0 always.
 
 **TDD (red→green):**
-1. Failing test: `SessionStart` with `source=startup`, orchestrator role → entry created → green.
-2. Failing test: `source=resume`, same `session_id` already present → refreshed not duplicated (one file, updated `last_seen`) → green.
+1. Failing test: `SessionStart` with `source=startup`, orchestrator role → entry created AND `comms/orchestrator/<session_id>/inbox` dir exists → green.
+2. Failing test: `source=resume`, same `session_id` already present → refreshed not duplicated (one file, updated `last_seen`; inbox dir still present) → green.
 3. Failing test: a pre-existing stale entry → pruned on this SessionStart (opportunistic prune) → green.
-4. Failing test: non-orchestrator role → no entry created, prune still runs → green.
+4. Failing test: non-orchestrator role → no entry created + no per-generation inbox, prune still runs → green.
 
-**Acceptance check:** prune runs regardless of role; create is role-gated; exit 0; guard passes.
+**Acceptance check:** prune runs regardless of role; create + per-generation inbox creation are role-gated; exit 0; guard passes.
 
-**Commit:** `feat(registry): Task D.3 — SessionStart hook (create entry + opportunistic prune; resume-refresh-not-duplicate)`
+**Commit:** `feat(registry): Task D.3 — SessionStart hook (create entry + per-generation inbox + opportunistic prune; resume-refresh-not-duplicate)`
 
 ### D.4 — `SessionEnd` hook: best-effort idempotent tidy
 
 **Files:** `.claude/hooks/session_end.py`, `tests/test_session_end_hook.py`.
 
-**Contract (Stage-2 §2 table):** `SessionEnd` (the termination hook — NOT `Stop`, which fires per-turn): best-effort idempotent tidy-delete of this session's entry. Correctness does NOT depend on it firing (the prune + liveness handle crashes/window-close). Idempotent: deleting an already-gone entry is a no-op, never raises. Exit 0.
+**Contract (Stage-2 §2 table):** `SessionEnd` (the termination hook — NOT `Stop`, which fires per-turn): best-effort idempotent tidy-delete of this session's registry entry AND a best-effort tidy of this generation's per-generation inbox dir `comms/orchestrator/<session_id>/inbox` — but ONLY if it is EMPTY (no undrained messages). A non-empty per-generation inbox is LEFT IN PLACE (do NOT destroy undelivered messages on window-close — the operator can inspect/redirect them). Correctness does NOT depend on the tidy firing (the prune + liveness handle crashes/window-close; a leftover empty inbox dir is harmless). Idempotent: deleting an already-gone entry / already-gone inbox is a no-op, never raises. Exit 0.
 
 **TDD (red→green):**
-1. Failing test: `SessionEnd` deletes `comms/sessions/<id>.json` → green.
+1. Failing test: `SessionEnd` deletes `comms/sessions/<id>.json` AND removes this generation's EMPTY `comms/orchestrator/<session_id>/inbox` → green.
 2. Failing test: `SessionEnd` on an already-pruned entry → no-op, no raise, exit 0 (idempotent).
+3. Failing test: `SessionEnd` with a NON-empty `comms/orchestrator/<session_id>/inbox` (an undrained message) → the registry entry is removed but the non-empty inbox is LEFT IN PLACE (no message destroyed); no raise, exit 0. (Distinguishing: a naive rm -rf of the generation dir would destroy the undrained message; the test asserts it survives.)
 
-**Acceptance check:** idempotent; exit 0; guard passes.
+**Acceptance check:** idempotent; non-empty per-generation inbox preserved (no data loss); exit 0; guard passes.
 
-**Commit:** `feat(registry): Task D.4 — SessionEnd hook (best-effort idempotent tidy)`
+**Commit:** `feat(registry): Task D.4 — SessionEnd hook (best-effort idempotent tidy; non-empty per-generation inbox preserved)`
 
-### D.5 — Addressing + claim semantics (shared inbox + atomic-move claim)
+### D.5 — Addressing: per-generation orchestrator inboxes + registry-resolved target
 
-**Files:** `tests/test_orchestrator_claim.py` (behavior over `role_mail` + the registry; no new module — this asserts the EXISTING atomic-move ack is the claim mechanism), and a doc contribution to `docs/comms-orchestrator-registry.md` (authored in D.7).
+**Files:** `tests/test_orchestrator_addressing.py` (behavior over `role_mail` + the registry — asserts the per-generation inbox layout + the registry-resolved target), and a doc contribution to `docs/comms-orchestrator-registry.md` (authored in D.7).
 
-**Contract (§5.1 Major-1 resolution):**
-- Messages to `orchestrator` land in a single shared `comms/orchestrator/inbox` (the **shared-inbox default**).
-- The existing **atomic inbox→read move** (the `role_mail` ack, `src.rename(dest)`) is the claim rule: two live sessions cannot double-drain — one wins the rename, the other sees it gone (the `MailError` "no inbox message named …").
-- "Current orchestrator" = the **newest-live** registry entry (by `started_ts` among non-stale entries).
-- **The concurrent-generation HANDOFF-WINDOW rule (§5.1 — decomposed explicitly, R6):** in the rare window where an OUTGOING generation overlaps an INCOMING one, the OUTGOING generation **stops draining the shared `orchestrator` inbox once the incoming generation registers** (operator-mediated retirement, as in swing — the operator relays "the new generation is up" and retires the old one). This is a DISCIPLINE (a documented operating rule), NOT a code lock — there is no auto-fence; the registry's `newest_live` + the atomic-move claim make a stray double-drain HARMLESS (one wins the rename) even if the discipline lapses. The rule + its registry-state tie (the incoming entry becomes `newest_live` at its first register; the operator retires the outgoing) is documented in `comms-orchestrator-registry.md` (D.7) and named in `orchestrator-context.md` (C.1, the concurrent-generations note).
+**Contract (§5.1 DIRECTION-ASYMMETRIC addressing, operator-decided 2026-06-16):**
+- **Director → orchestrator is PER-GENERATION (specific addressing).** Because multiple orchestrator generations can be live, "the orchestrator" is not a single target — a message to a specific generation MUST reach THAT generation. Each orchestrator generation owns its OWN inbox `comms/orchestrator/<session_id>/inbox` (created when it registers — D.2/D.3 ensure the per-generation inbox dir exists at register time). A director addresses a generation two ways:
+  - **Explicit:** `--to orchestrator:<session_id>` → delivers to `comms/orchestrator/<session_id>/inbox` for exactly that generation.
+  - **Convenience:** bare `--to orchestrator` → resolved at SEND TIME against the registry to the **newest-live** generation (the most-recent-`started_ts` non-stale registry entry), then delivered to THAT generation's `comms/orchestrator/<session_id>/inbox`.
+  - The registry (session_id-keyed; D.1) is the source of truth for live generations + newest-live. Resolution is in the POST/resolution path (the `<session_id>` suffix + a registry lookup) — NOT a new role enum (the base role set stays the three roles; B.1).
+- **Orchestrator → director is SHARED/UNCHANGED.** `--to charc` (and `--to operator`) deliver to the single director inbox `comms/charc/inbox` — a director is singular, no ambiguity. (B.1 keeps `--to charc` exactly as the lifted shared-inbox post.)
+- **The double-drain race is GONE.** Per-generation inboxes mean each inbox is drained by EXACTLY its own generation — there is no claim contention, no atomic-move claim rule, and **no handoff-stop-draining discipline** (the outgoing generation drains only its own inbox; the incoming generation has a different inbox keyed by its own `session_id`). The prior shared-inbox + atomic-move-claim + handoff-window model is fully REPLACED. A generation drains ONLY its own `comms/orchestrator/<session_id>/inbox`.
 
 **TDD (red→green):**
-1. Failing test: two simulated drains of the same orchestrator-inbox message — only ONE succeeds; the second gets the friendly already-gone path (no double-process). (This is the atomic-move claim; the test proves the ack's `rename` is the dedupe — and that a handoff-window double-drain is harmless.)
-2. Failing test: `newest_live(root, now)` returns the most-recent-`started_ts` non-stale orchestrator entry; returns None when all are stale. (This is the "current = newest-live" selection the handoff rule keys on — the incoming generation becomes `newest_live` at register.)
+1. Failing test: `post_message --to orchestrator:<session_id>` lands in `comms/orchestrator/<session_id>/inbox` for THAT generation (and NOT in any other generation's inbox). (Distinguishing: a shared-inbox impl would write to `comms/orchestrator/inbox`; the test asserts the per-generation path.)
+2. Failing test: with two live orchestrator entries in the registry, bare `--to orchestrator` resolves to the **newest-live** generation (most-recent-`started_ts` non-stale) and the message lands in that generation's `comms/orchestrator/<session_id>/inbox` — NOT the older generation's. (Distinguishing: resolving to the oldest, or to a shared path, fails this test.)
+3. Failing test: `newest_live(root, now)` returns the most-recent-`started_ts` non-stale orchestrator registry entry; returns None when all are stale (and bare `--to orchestrator` with no live generation surfaces a clear no-live-orchestrator error rather than silently writing to a dead inbox).
+4. Failing test: a generation drains ONLY its own inbox — `read --role orchestrator --session <id>` drains `comms/orchestrator/<id>/inbox` and does NOT see another generation's messages (no cross-generation drain; the per-generation isolation that removes the double-drain race).
 
-**Acceptance check (incl. the handoff rule):** no new write path (the claim IS the existing atomic move — assert it, don't reimplement); the handoff-window stop-draining rule is DOCUMENTED in D.7 + C.1 (a discipline, with the registry-state transition — incoming-registers → becomes newest-live → operator retires outgoing — stated) and the double-drain-harmless property is the code backstop (test 1); guard passes.
+**Acceptance check:** the per-generation inbox layout (`comms/orchestrator/<session_id>/inbox`) is the delivery target; bare `--to orchestrator` resolves to newest-live via the registry; `--to orchestrator:<session_id>` delivers to the explicit generation; `--to charc` is the unchanged shared post; each generation drains only its own inbox (no claim/handoff). The newest-live resolution + the by-`session_id` addressing form + the per-generation inbox layout are DOCUMENTED in D.7 + named in C.1 (the concurrent-generations note); guard passes.
 
-**Commit:** `feat(registry): Task D.5 — shared-inbox addressing + atomic-move claim + newest-live + handoff-window stop-draining rule`
+**Commit:** `feat(registry): Task D.5 — per-generation orchestrator inboxes + registry-resolved target (newest-live / by-session_id)`
 
 ### D.6 — Self-heal integration (live-but-idle prune → re-register on next prompt)
 
 **Files:** `tests/test_registry_selfheal.py`.
 
-**Contract (Stage-2 §2 "Self-healing"):** a live-but-idle session pruned during a quiet period re-registers on its NEXT prompt (the D.2 `UserPromptSubmit` recreate-if-missing). End-to-end test of the self-heal: register → prune (simulate overnight) → a fresh `UserPromptSubmit` → entry rebuilt with the full shape.
+**Contract (Stage-2 §2 "Self-healing"):** a live-but-idle session pruned during a quiet period re-registers on its NEXT prompt (the D.2 `UserPromptSubmit` recreate-if-missing). End-to-end test of the self-heal: register → prune (simulate overnight) → a fresh `UserPromptSubmit` → entry rebuilt with the full shape AND this generation's per-generation inbox dir restored.
 
 **TDD (red→green):**
-1. Failing test: register orchestrator → `prune_stale` removes it → a `UserPromptSubmit` payload for the same `session_id` → the entry is rebuilt (full five fields, fresh `last_seen`).
+1. Failing test: register orchestrator → `prune_stale` removes it → a `UserPromptSubmit` payload for the same `session_id` → the entry is rebuilt (full five fields, fresh `last_seen`) and `comms/orchestrator/<session_id>/inbox` exists again.
 
-**Acceptance check:** the rebuilt entry carries the role (proving the hook owns the full entry via env, not a model-written token — Stage-2 §3); guard passes.
+**Acceptance check:** the rebuilt entry carries the role (proving the hook owns the full entry via env, not a model-written token — Stage-2 §3); the per-generation inbox is restored on re-register; guard passes.
 
 **Commit:** `test(registry): Task D.6 — self-heal: idle-prune then re-register on next prompt`
 
@@ -383,13 +392,17 @@ Built from `docs/comms-stage2-orchestrator-inbox-design.md` (promoted from defer
 - Liveness = the hook-written `last_seen` heartbeat; opportunistic prune (reader-as-cleaner + SessionStart); no daemon.
 - Role-gated registration via `HARNESS_ROLE`; recreate-if-missing self-heal; the three hooks' contracts; the `SessionEnd` best-effort idempotent tidy.
 - The hook `session_id` contract + the degraded mode (the required fields; what happens if `session_id` is absent; the logged-degraded last-resort env fallback).
-- Addressing: **shared-inbox default** + the atomic-move claim rule; per-generation addressing (`orchestrator-<session_id>`) documented as the first-class upgrade the registry enables (DECISION C).
-- **The concurrent-generation handoff-window rule (§5.1):** the outgoing generation stops draining once the incoming registers (operator-mediated retirement); the registry-state transition (incoming-registers → becomes `newest_live` → operator retires outgoing); the double-drain-harmless backstop (the atomic-move claim makes a lapse benign).
+- **Addressing — DIRECTION-ASYMMETRIC (§5.1, operator-decided 2026-06-16):**
+  - **The per-generation inbox LAYOUT:** each orchestrator generation owns `comms/orchestrator/<session_id>/inbox`, created when the generation registers (D.2 UserPromptSubmit / D.3 SessionStart). A generation drains ONLY its own inbox.
+  - **The newest-live resolution rule:** bare `--to orchestrator` resolves at send time to the newest-live generation = the registry's most-recent-`started_ts` non-stale entry; the registry is the source of truth for live generations + newest-live. No live generation → a clear no-live-orchestrator error.
+  - **The by-`session_id` addressing form:** `--to orchestrator:<session_id>` delivers to exactly that generation's `comms/orchestrator/<session_id>/inbox`.
+  - **Orchestrator → director stays SHARED:** `--to charc` (and `--to operator`) deliver to the single director/operator inbox (a director is singular) — unchanged.
+  - **The double-drain race + the shared-inbox/claim/handoff model are GONE:** per-generation inboxes mean each inbox is drained by exactly its own generation — no claim contention, no atomic-move claim rule, no handoff-window stop-draining discipline. The prior shared-inbox + atomic-move-claim + handoff model is REPLACED by per-generation inboxes + registry-resolved addressing.
 - The grounding facts (documented vs observed — Stage-2 §8): `session_id` documented; `CLAUDE_CODE_SESSION_ID` observed-only (last-resort fallback); no external live-session enumeration (the registry IS the enumeration).
 
-**Acceptance check:** the doc fully specifies the built registry (not "deferred"); names both addressing options + the claim rule + the handoff-window stop-draining rule; **genericity guard passes** (substrate terms — Claude Code, hook event names — are allowed per the guard's substrate list; `swing`/`rd` absent).
+**Acceptance check:** the doc fully specifies the built registry (not "deferred"); documents the per-generation inbox layout (`comms/orchestrator/<session_id>/inbox`) + the newest-live resolution rule + the by-`session_id` addressing form + the unchanged shared `--to charc`; states the shared-inbox/claim/handoff model is removed; contains NO shared-inbox/atomic-move-claim/handoff prose; **genericity guard passes** (substrate terms — Claude Code, hook event names — are allowed per the guard's substrate list; `swing`/`rd` absent).
 
-**Commit:** `docs(registry): Task D.7 — comms-orchestrator-registry.md (the built design: registry, hooks, claim, addressing, degraded mode)`
+**Commit:** `docs(registry): Task D.7 — comms-orchestrator-registry.md (the built design: registry, hooks, per-generation addressing, degraded mode)`
 
 ---
 
@@ -586,7 +599,7 @@ The kernel (§3) = `charc-charter.md` + `charc-bootstrap.md`. The charter is the
 
 **Content (acceptance checklist — §5.5, Major-2/3 + Minor-5 resolution):** CHARC's literal first session:
 1. Read the charter (`charc-charter.md`).
-2. **Verify comms:** a `role_mail` round-trip (post → read → ack across charc/orchestrator/operator); verify the hook + the optional UI; **verify the orchestrator registry** (it auto-creates; check the `comms/sessions/` tree behavior).
+2. **Verify comms:** a `role_mail` round-trip (post → read → ack across charc/orchestrator/operator — note the orchestrator round-trip targets a per-generation `comms/orchestrator/<session_id>/inbox`); verify the hook + the optional UI; **verify the orchestrator registry** (it auto-creates; check the `comms/sessions/` tree behavior + that a registered generation gets its `comms/orchestrator/<session_id>/inbox`).
 3. **The application-definition interview** with the operator — fill seams 1-3:
    - the app domain → `APPLICATION.md` (seam 1).
    - the domain cells → author from `implementer-template.md` (seam 2).
@@ -598,7 +611,7 @@ The kernel (§3) = `charc-charter.md` + `charc-bootstrap.md`. The charter is the
 2. `.claude/agents/` — author the domain implementer cells from `implementer-template.md` (seam 2).
 3. `review-gate-seam.md` — fill the extension points, or accept the §5.3 defaults, optionally adopting `codex-reviewer.md` (seam 3).
 4. `launch_role.ps1` — (optional) tune the model/effort default (seam 4).
-5. **Bring up the orchestrator** — launch an orchestrator session via `launch_role.ps1 -Role orchestrator` (sets `HARNESS_ROLE=orchestrator` → it registers); CHARC verifies the registry shows it live before commissioning the first arc.
+5. **Bring up the orchestrator** — launch an orchestrator session via `launch_role.ps1 -Role orchestrator` (sets `HARNESS_ROLE=orchestrator` → it registers + gets its own `comms/orchestrator/<session_id>/inbox`); the generation drains `comms/orchestrator/<session_id>/inbox`; CHARC verifies the registry shows it live (and addresses it via `--to orchestrator:<session_id>` or bare `--to orchestrator` = newest-live) before commissioning the first arc.
 
 **The orchestrator bring-up prompt — a FENCED COPY-PASTE BLOCK inside this doc's step-5 section (the §2.1 default; NO separate file).** `charc-bootstrap.md` carries, in its step-5 section, the orchestrator bootstrap prompt as a fenced block the operator pastes into the orchestrator session (the realized-inbox content — see H.3 for the block's contents). This keeps the orchestrator bring-up INSIDE an existing manifest file (no new manifest file — the R5 fix), while still satisfying §5.5 step-5.
 
@@ -614,7 +627,7 @@ The kernel (§3) = `charc-charter.md` + `charc-bootstrap.md`. The charter is the
 
 **Content (acceptance checklist — the orchestrator bring-up block, genericized + inbox-realized):**
 - A new orchestrator generation: read `docs/orchestrator-context.md`; orient to live state; announce online to CHARC via `role_mail`.
-- **The KEY divergence from swing:** swing's bootstrap says "there is no orchestrator inbox in V1 … you POST to directors and receive direction FROM the operator." The scaffold REALIZES the inbox — so the block says the orchestrator HAS an inbox (it can be addressed via the registry), drains it, and the registry registers it on first prompt (the hook). The concurrent-generations note carries (multiple generations can run; the newest-live is "current").
+- **The KEY divergence from swing:** swing's bootstrap says "there is no orchestrator inbox in V1 … you POST to directors and receive direction FROM the operator." The scaffold REALIZES the inbox — so the block says THIS generation has its OWN **per-generation inbox** `comms/orchestrator/<session_id>/inbox` (created on first register), drains ONLY that inbox, and the registry registers it on first prompt (the hook). The concurrent-generations note carries (multiple generations can run; a director addresses a specific generation via the registry — `--to orchestrator:<session_id>` or bare `--to orchestrator` = newest-live; each generation drains its OWN inbox — no shared inbox, no claim, no handoff).
 - Honor the binding conventions (conventional commits, no Co-Authored-By, no --no-verify) — generic.
 
 **Acceptance check:** the bring-up block (inside `charc-bootstrap.md` step-5) reflects the REALIZED inbox (NOT swing's "no inbox in V1"); names `HARNESS_ROLE=orchestrator`; **genericity guard passes**. (No separate file ships by default — the block lives in H.2's deliverable; H.3 has no own commit unless CHARC elects the optional standalone-file alternative.)
@@ -683,7 +696,7 @@ Shipped but OPTIONAL (§4: zero hard deps in the core; the UI is a `[web]` extra
 
 **Files:** `tests/test_registry_suite.py` (aggregates the D-group behaviors as a named suite) + re-run F.2 over the final tree.
 
-**Content (§8):** register-on-prompt, `last_seen` heartbeat, opportunistic prune of a stale entry, recreate-if-missing self-heal, role-gated registration (only orchestrators register), `SessionEnd` idempotent tidy — as a cohesive validation suite. PLUS the genericity guard re-run over the FINAL tracked tree (the binding build gate, F.2) MUST be green.
+**Content (§8):** register-on-prompt, `last_seen` heartbeat, opportunistic prune of a stale entry, recreate-if-missing self-heal, role-gated registration (only orchestrators register), `SessionEnd` idempotent tidy, **per-generation inbox creation on register + the registry-resolved addressing (bare `--to orchestrator` → newest-live; `--to orchestrator:<session_id>` → explicit; each generation drains only its own `comms/orchestrator/<session_id>/inbox`)** — as a cohesive validation suite. PLUS the genericity guard re-run over the FINAL tracked tree (the binding build gate, F.2) MUST be green.
 
 **TDD/acceptance:** the registry suite is green; **the genericity guard passes over the entire final tree** (zero forbidden vocab; every substrate term in-scope). This is the no-app-contamination proof (§1 "zero application contamination").
 
@@ -718,7 +731,7 @@ Shipped but OPTIONAL (§4: zero hard deps in the core; the UI is a `[web]` extra
 | **The ~14-file manifest** (spec §4) | The §2.1 shipped-manifest list IS the §4 manifest exactly (the 18-row table): README (A.2), APPLICATION.md (A.3), comms/.gitkeep (A.1), role_mail.py (B), comms_ui.py (I — HTMX client inlined), launch_role.ps1 (E.1), settings.json (E.2), the 3 hooks (D.2-D.4 — registry logic inlined in session_start.py), implementer-template.md (C.3), charc-charter.md (H.1), charc-bootstrap.md (H.2 — orchestrator bring-up folded into step-5), orchestrator-context.md (C.1), dispatch-recipe.md (C.2), review-gate-seam.md (G.1), codex-reviewer.md (G.2), comms-orchestrator-registry.md (D.7). **The DEFAULT build adds ZERO files beyond the §4 list** (the 3 inline details fold into shipped files). The `tests/**` tree + `pyproject.toml` + `.gitignore` are the §2.1 repository-support APPENDIX — tracked + guard-scanned but NOT scaffold-manifest files (one accounting model; no dual count) |
 | **The four seams** (spec §3) | Seam 1 = APPLICATION.md stub (A.3); Seam 2 = implementer-template.md (C.3) + the bootstrap cell-authoring step (H.2); Seam 3 = review-gate-seam.md contract + default (G.1) + the optional codex-reviewer (G.2); Seam 4 = launch_role.ps1 model/effort tuned default (E.1) — interview-filled 1-3, tuned-default 4 |
 | **Genericity guard (spec §8)** — grep build test, three explicit lists | Task Group F (F.1 the test + the forbidden/allowed-substrate/file-scope-exception lists, self-tested to distinguish; F.2 whole-tree; F.3 wired into the test run); re-gated in J.2 |
-| **Orchestrator inbox + session registry (spec §5.1, from the Stage-2 design)** — session_id-keyed, last_seen heartbeat, opportunistic prune (no daemon), role-gated HARNESS_ROLE registration, recreate-if-missing self-heal, SessionEnd idempotent tidy, shared-inbox default + atomic inbox→read claim, hook session_id contract + degraded mode | Task Group D in full (D.1 data shape + STALE_SECONDS; D.2 UserPromptSubmit heartbeat+register+recreate+degraded; D.3 SessionStart create+prune; D.4 SessionEnd idempotent; D.5 shared-inbox + atomic-move claim + newest-live; D.6 self-heal; D.7 the design doc) + the env contract in E.1 (HARNESS_ROLE) |
+| **Orchestrator inbox + session registry (spec §5.1, from the Stage-2 design)** — session_id-keyed, last_seen heartbeat, opportunistic prune (no daemon), role-gated HARNESS_ROLE registration, recreate-if-missing self-heal, SessionEnd idempotent tidy, **per-generation inboxes (`comms/orchestrator/<session_id>/inbox`) + registry-resolved addressing (newest-live / by-session_id)**, hook session_id contract + degraded mode | Task Group D in full (D.1 data shape + STALE_SECONDS + newest_live; D.2 UserPromptSubmit heartbeat+register+per-generation-inbox+recreate+degraded; D.3 SessionStart create+per-generation-inbox+prune; D.4 SessionEnd idempotent + non-empty-inbox-preserved; D.5 per-generation inboxes + registry-resolved target [newest-live / by-session_id]; D.6 self-heal; D.7 the design doc) + the env contract in E.1 (HARNESS_ROLE) + the `--to` resolver in B.1 |
 | **Review/gate seam (spec §5.3)** — mechanism-agnostic contract + minimal generic DEFAULT (operable minute-one) + optional codex-reviewer (§5.4) framed as ONE replaceable reviewer | G.1 (contract + the §5.3 SEVERITY_RUBRIC/CONVERGENCE_CRITERION/GATE_CHECKS/WITNESS/REVIEWER defaults, marked replaceable starters); G.2 (codex-reviewer optional, framed replaceable); G.3 (minute-one operability) |
 | **The kernel + staged bootstrap (spec §5.5)** — charc-charter + charc-bootstrap + the 5-step checklist; the STAGED guarantee | H.1 (charter kernel); H.2 (bootstrap + the 5-step checklist + the staged guarantee); H.3 (the orchestrator bring-up prompt for step 5) |
 | **Zero hard runtime deps** (core stdlib; UI optional `[web]` extra) | A.1 (the dependency-posture test asserting stdlib-only core); the registry + hooks are stdlib (D); comms_ui is `[web]`-gated + import-isolated (I.1 acceptance) |
@@ -738,11 +751,13 @@ Shipped but OPTIONAL (§4: zero hard deps in the core; the UI is a `[web]` extra
 4. **`SWING_ROLE` → `HARNESS_ROLE`** everywhere (hooks, launcher, settings). D.2, E.1, E.2.
 5. **`.claude/settings.json` uses a portable path**, not swing's hard-coded `C:/Users/rwsmy/...` absolute. E.2.
 6. **The orchestrator bootstrap reflects the realized inbox**, not swing's "no orchestrator inbox in V1." H.3, C.1.
+7. **DIRECTION-ASYMMETRIC orchestrator addressing (per-generation; spec §5.1, operator-decided 2026-06-16) — do NOT "fix" it back to a shared inbox.** Director→orchestrator is PER-GENERATION: each orchestrator generation owns `comms/orchestrator/<session_id>/inbox` (created on register), addressed by `--to orchestrator:<session_id>` or bare `--to orchestrator` = newest-live (registry-resolved). There is NO shared `comms/orchestrator/inbox`, NO atomic-move claim, NO handoff-window stop-draining discipline — the per-generation inbox removes the double-drain race entirely (each inbox is drained by exactly its own generation). Orchestrator→director stays SHARED (`--to charc`). B.1, D.2, D.3, D.4, D.5, D.6, D.7, C.1, H.2, H.3.
 
 ## 6. Open questions / STOP-and-ask items for the orchestrator/operator
 
-- **DECISION A (repo name + location)** and **DECISION B (who runs `git init`, when)** — §0.2. **These gate the executing dispatch and are operator-owned; the executing dispatch cannot start until they land.**
-- **DECISION C (shared-inbox vs per-generation addressing)** — the spec decides shared-inbox as the ship default (§5.1, §9). The plan builds shared-inbox. If the operator wants per-generation from day one, flag back to CHARC (it changes D.5's addressing tasks). No action needed otherwise.
+- **DECISION A (repo name + location) — DECIDED: `C:/Users/rwsmy/harness-template`** (§0.2). Lands before the executing dispatch (the operator inits the empty repo there per B1); the `<harness-template>` token resolves to this path. Not open.
+- **DECISION B (who runs `git init`, when) — DECIDED: B1** (the operator inits the empty repo first, then dispatches the executing implementer pointed at it; A.1 populates it — §0.2). Lands before the executing dispatch. Not open.
+- **DECISION C (orchestrator addressing) — DECIDED: PER-GENERATION (direction-asymmetric)** (§0.2; amended spec §5.1/§9). The plan builds per-generation inboxes + registry-resolved addressing (Task Group D); the shared-inbox + atomic-move-claim + handoff model is REMOVED. Not open — already realized in this plan.
 - **§8 launcher spawn path — RESOLVED IN-PLAN, spec-faithful, no open decision.** The launcher ships a single §8-compliant surface: the plain `powershell -NoExit` role window (PowerShell + Windows are in the §8 allowed-substrate list; `wt.exe` is not, so it is NOT lifted — F.1(d)). This is NOT a gate or an open question — it is the spec-faithful realization of §8. The ONLY future-awareness flag (NOT a blocker): if the operator later wants Windows-Terminal tabs, that is an explicit CHARC §8-list amendment + a follow-on launcher task, OUT of this plan's scope.
 - **Test runner — RESOLVED to stdlib `unittest`** (NOT pytest). The §8 genericity guard forbids `pytest` in the tracked tree, so the scaffold's own suite MUST be `unittest`-based (no pytest dev-dep, no `pytest`-named path). Resolved in §1 "Test substrate"; not an open question — flagged here only so the executing implementer does not reintroduce pytest by habit.
 - **`.claude/settings.json` portable-path mechanism** — whether Claude Code accepts a repo-root-relative hook command on this substrate, or requires an absolute path (→ ship a placeholder + a documented one-line operator substitution). E.2 handles both; the executing implementer verifies the substrate's hook-path requirement against the live Claude Code version (verify-don't-assume).
@@ -753,6 +768,6 @@ Shipped but OPTIONAL (§4: zero hard deps in the core; the UI is a `[web]` extra
 
 - **Tier:** `review-strong` (§0.1) — harness production code; run-to-`NO_NEW_CRITICAL_MAJOR`, cap suspended; persist every Codex response to `.copowers-findings.md`.
 - **Cell recommendation:** `implementer-opus-xhigh` or `implementer-opus-high` — the registry build-from-a-deferred-spec + the genericity-guard regex tuning + the seam contracts are judgment-dense; the doc-lifts are mechanical. (CHARC/orchestrator selects per the cell rubric.)
-- **Workspace:** the NEW repo (DECISION A/B), the implementer's own branch/worktree there — NOT a swing worktree.
+- **Workspace:** the NEW repo at `C:/Users/rwsmy/harness-template` (DECISION A + B1 — operator-init'd), the implementer's own branch/worktree there — NOT a swing worktree.
 - **Suite gate:** run the scaffold's full test suite to green BEFORE the Codex review (the before-AND-after full-suite discipline), and again after review fixes.
 - **The genericity guard is the binding no-app-contamination gate** — it must be green over the whole tree at accept (J.2). A guard hole = a blocking major.
