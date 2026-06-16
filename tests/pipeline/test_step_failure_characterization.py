@@ -107,6 +107,14 @@ SITES: list[Site] = [
     Site("shadow_expectancy", None, False,
          "swing.pipeline.runner._step_shadow_expectancy", "csv",
          "complete", True, "shadow_expectancy"),
+    # 18-D: the read-only research-health roll-up, a WRAPPED bare-B-shape
+    # step_guard site (NO status_key per the O1 ruling) between shadow_expectancy
+    # and complete. Swallows non-revoke exceptions (state stays complete), the
+    # default step_guard warning is "research_health failed: <exc>".
+    Site("research_health", None, True,
+         "swing.pipeline.runner._step_research_health", "csv",
+         "complete", True, "research_health",
+         expected_warning="research_health failed: injected into research_health"),
     Site("complete", None, False, None, "csv",
          "complete", False, "complete"),
     Site("review_log_cadence", None, False,
@@ -159,6 +167,11 @@ _HEAVY_STUBS: dict[str, object] = {
     "swing.pipeline.runner._step_charts": lambda *a, **k: {},
     "swing.pipeline.runner._step_export": lambda *a, **k: None,
     "swing.pipeline.runner._step_shadow_expectancy": lambda *a, **k: None,
+    # 18-D: stub the read-only research-health roll-up to a no-op so the
+    # characterization runs don't open a mode=ro conn / write the contract
+    # latest.json (the real artifact path); the target site is skipped + injected
+    # by the per-test injector for its own failure/revoke cases.
+    "swing.pipeline.runner._step_research_health": lambda *a, **k: None,
 }
 
 
@@ -195,9 +208,10 @@ def _step_timings(cfg) -> list[str]:
 
 
 def test_happy_path_fires_every_breadcrumb(tmp_path, monkeypatch):
-    """All 14 CSV-path breadcrumbs fire in order on a clean run. finviz_fetch
+    """All 15 CSV-path breadcrumbs fire in order on a clean run. finviz_fetch
     appears ONCE here (site-2); site-1's empty-inbox breadcrumb is covered
-    separately (it fires only when the inbox is empty)."""
+    separately (it fires only when the inbox is empty). research_health (18-D)
+    fires between shadow_expectancy and complete."""
     cfg = _make_cfg(tmp_path, inbox="csv")
     _stub_prices(monkeypatch)
     _apply_default_stubs(monkeypatch, skip=None)
@@ -208,7 +222,7 @@ def test_happy_path_fires_every_breadcrumb(tmp_path, monkeypatch):
         "weather", "finviz_fetch", "evaluate", "daily_management",
         "watchlist", "recommendations", "pattern_detect", "pattern_observe",
         "schwab_snapshot", "schwab_orders", "charts", "export",
-        "shadow_expectancy", "complete",
+        "shadow_expectancy", "research_health", "complete",
     ]
     assert fired == expected
 
@@ -482,7 +496,7 @@ def _runner_step_guard_names() -> set[str]:
 
 
 def test_wrapped_sites_routed_through_step_guard():
-    """Positive inventory regression (Codex exec R1 minor #1): the nine
+    """Positive inventory regression (Codex exec R1 minor #1): the ten
     wrapped=True sites ARE implemented as ``step_guard(lease, "X", ...)`` and the
     explicit sites are NOT. The completeness guard accepts EITHER call form (so
     breadcrumb coverage is invariant across the extraction); this test
@@ -494,7 +508,7 @@ def test_wrapped_sites_routed_through_step_guard():
     assert wrapped == {
         "weather", "daily_management", "watchlist", "recommendations",
         "pattern_detect", "pattern_observe", "schwab_snapshot",
-        "schwab_orders", "export",
+        "schwab_orders", "export", "research_health",
     }
     missing = wrapped - step_guard_names
     assert not missing, f"wrapped sites not routed through step_guard: {missing}"
