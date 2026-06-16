@@ -54,18 +54,24 @@ class _StubLockingClient:
     setup stub checks it -> the stub raises PermissionError (the WinError 32
     proxy) -> the broad except renders a 500.
 
-    Using ``__del__`` (rather than the stub merely inspecting app.state) is
-    deliberate: it proves the fix actually DROPS the reference + collects, the
-    same mechanism that releases the real schwabdev SQLite handle (the
-    project's documented ``del client; gc.collect()`` release dance). A fix
-    that set ``app.state.schwab_client = None`` but kept a live reference
-    elsewhere would NOT finalize the object and the test would still fail.
+    Codex R1 MAJOR 4 — the instance deliberately builds a REFERENCE CYCLE
+    (``self._self_ref = self``) so plain CPython refcounting CANNOT finalize
+    it when ``app.state`` drops its reference. Only the cyclic garbage
+    collector reclaims it -> ``__del__`` runs ONLY when the handler actually
+    calls ``gc.collect()`` (the real release dance). A weak fix that merely
+    set ``app.state.schwab_client = None`` WITHOUT ``gc.collect()`` would
+    leave ``locked is True`` at setup time -> the discriminator stays red.
+    This proves the test distinguishes the full release dance, not just the
+    app.state clear.
     """
 
     locked = False
 
     def __init__(self) -> None:
         _StubLockingClient.locked = True
+        # Reference cycle: defeats immediate refcount finalization so only
+        # gc.collect() (the handler's release dance) can reclaim + finalize.
+        self._self_ref = self
 
     def __del__(self) -> None:  # pragma: no cover - finalizer timing
         _StubLockingClient.locked = False
@@ -130,12 +136,13 @@ def test_post_releases_client_so_rename_succeeds_and_reconstructs(
     monkeypatch.setattr(
         schwab_route, "setup_paste_flow_with_callback_url", _stub_service,
     )
-    # The reconstruction reuses the EXISTING factory; stub it at the route
-    # module's import site so we can assert app.state is repopulated without
-    # a live schwabdev construction.
+    # The reconstruction reuses the EXISTING factory via a LAZY import from
+    # swing.web.app (Codex R1 MAJOR 1 — circular-import-safe), so we patch the
+    # factory at its SOURCE module so we can assert app.state is repopulated
+    # without a live schwabdev construction.
+    import swing.web.app as web_app
     monkeypatch.setattr(
-        schwab_route, "_construct_web_schwab_client", _stub_reconstruct,
-        raising=False,
+        web_app, "_construct_web_schwab_client", _stub_reconstruct,
     )
 
     app = create_app(cfg, _cfg_path)
@@ -194,9 +201,9 @@ def test_post_reconstruct_failure_degrades_to_none_not_500(
     monkeypatch.setattr(
         schwab_route, "setup_paste_flow_with_callback_url", _stub_service,
     )
+    import swing.web.app as web_app
     monkeypatch.setattr(
-        schwab_route, "_construct_web_schwab_client", lambda _cfg: None,
-        raising=False,
+        web_app, "_construct_web_schwab_client", lambda _cfg: None,
     )
 
     app = create_app(cfg, _cfg_path)
@@ -246,9 +253,9 @@ def test_post_with_no_long_lived_client_still_succeeds(
     monkeypatch.setattr(
         schwab_route, "setup_paste_flow_with_callback_url", _stub_service,
     )
+    import swing.web.app as web_app
     monkeypatch.setattr(
-        schwab_route, "_construct_web_schwab_client", lambda _cfg: None,
-        raising=False,
+        web_app, "_construct_web_schwab_client", lambda _cfg: None,
     )
 
     app = create_app(cfg, _cfg_path)
