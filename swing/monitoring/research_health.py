@@ -24,12 +24,16 @@ Do NOT consistency-fix it back to naive-local.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import math
+import os
 import re
 import sqlite3  # noqa: F401  (used in the per-check signatures below)
+import tempfile
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 # LOCK C1 (brief §3 / §6.1): IMPORT the 3 contract constants -- never redeclare.
@@ -214,6 +218,46 @@ class ResearchHealthStatus:
             "overall": self.overall,
             "checks": [c.to_dict() for c in self.checks],
         }
+
+
+# --------------------------------------------------------------------------
+# The SINGLE-SOURCE atomic artifact writer (C-NH4): both scripts/research_health.py
+# AND the nightly pipeline step (swing/pipeline/runner.py:_step_research_health)
+# call THIS -- there is NO second copy of the atomic write. Relocated verbatim
+# from the script's former local _write_latest_json_atomic + _resolve_out_path
+# (the same os.replace-same-filesystem gotcha: the tmp lives in the DEST dir).
+# --------------------------------------------------------------------------
+
+
+def write_research_health_artifact(
+    status: ResearchHealthStatus, out_path: Path | None = None,
+) -> Path:
+    """Atomically write `status`'s §3 envelope to `out_path` and return it.
+
+    `out_path=None` resolves via the SHARED accessor
+    stoplights.research_health_artifact_path() (NOT the bare constant -- so a test
+    monkeypatch of the accessor is honored, mirroring the script's
+    _resolve_out_path). Consumes `status.to_dict()` as-is; the dataclass
+    __post_init__ already enforced the envelope contract at construction (LOCK 2 --
+    never re-validate here). Atomic: tmp in the SAME directory (os.replace requires
+    same filesystem -- the Windows OSError 18 gotcha) then os.replace; on ANY
+    BaseException the partial tmp is unlinked and the error re-raised (the prior
+    artifact is never clobbered).
+    """
+    if out_path is None:
+        from swing.monitoring.stoplights import research_health_artifact_path
+        out_path = research_health_artifact_path()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(out_path.parent), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(status.to_dict(), fh, indent=2)
+        os.replace(tmp, out_path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+    return out_path
 
 
 # --------------------------------------------------------------------------

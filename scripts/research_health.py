@@ -18,12 +18,10 @@ Usage (from the repo root):
 from __future__ import annotations
 
 import argparse
-import contextlib
 import json
 import os
 import sqlite3
 import sys
-import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -53,21 +51,6 @@ def _resolve_out_path(args) -> Path:
         return Path(args.out)
     from swing.monitoring import stoplights
     return stoplights.research_health_artifact_path()
-
-
-def _write_latest_json_atomic(envelope: dict, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # tmp in the SAME directory (os.replace requires same filesystem -- the
-    # Windows OSError 18 gotcha) then atomic replace.
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(envelope, fh, indent=2)
-        os.replace(tmp, path)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp)
-        raise
 
 
 def _render_ascii(status) -> str:
@@ -149,7 +132,12 @@ def main(argv: list[str] | None = None) -> int:
 
     # Write the conformant envelope ATOMICALLY in BOTH the ASCII and --json
     # paths (so the stoplight lights regardless of how the operator runs it).
-    _write_latest_json_atomic(status.to_dict(), out_path)
+    # C-NH4 SINGLE-SOURCE: call the SHARED writer via the module attribute (NOT a
+    # bound `from`-import) so a test monkeypatch of
+    # swing.monitoring.research_health.write_research_health_artifact is honored;
+    # the script keeps NO private copy of the atomic write.
+    from swing.monitoring import research_health
+    research_health.write_research_health_artifact(status, out_path=out_path)
 
     if args.json:
         print(json.dumps(status.to_dict(), indent=2))
