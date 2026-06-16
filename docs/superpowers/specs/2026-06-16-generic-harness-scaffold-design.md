@@ -91,7 +91,10 @@ Dogfooded: swing CHARC designs (this spec) → writing-plans → swing orchestra
   - **opportunistic prune** of stale entries (reader-as-cleaner + at `SessionStart`) — no daemon;
   - **role-gated registration** via the launch-time `HARNESS_ROLE` env var (only orchestrators register); **recreate-if-missing self-healing** (the hook owns the full entry);
   - `SessionEnd` best-effort idempotent tidy (correctness does not depend on it firing).
-  - **Addressing + claim semantics (Major-1 resolution):** "current" = the **newest-live** registry entry. Messages to `orchestrator` land in a single shared `comms/orchestrator/inbox`; the existing **atomic inbox→read move** (the role_mail ack) means two live sessions cannot double-drain a message — one wins the move, the other sees it gone. In the rare concurrent-generation **handoff window**, the OUTGOING generation stops draining once the incoming registers (operator-mediated retirement, as in swing). For genuinely-concurrent orchestrator work, **per-generation addressing** (`orchestrator-<session_id>`, which the registry enables) is the first-class upgrade — the build picks shared-inbox (default, simplest) vs per-generation by whether concurrent generations are expected. Both options + the claim rule are specified in `comms-orchestrator-registry.md`.
+  - **Addressing — DIRECTION-ASYMMETRIC (operator-decided 2026-06-16):** the two directions differ because the ambiguity is one-sided.
+    - **Orchestrator → director: SHARED.** A director (charc/operator) has ONE inbox (`comms/charc/inbox`); any orchestrator generation posts to it. No ambiguity (the director is singular). `--to charc`. Unchanged.
+    - **Director → orchestrator: PER-GENERATION (specific addressing).** Because multiple orchestrator generations can be live, "the orchestrator" is not a single target — a message to a specific generation MUST reach THAT generation. So each orchestrator generation owns `comms/orchestrator/<session_id>/inbox` (created when it registers). A director addresses a generation explicitly via `--to orchestrator:<session_id>`, OR via the convenience `--to orchestrator` = the **newest-live** generation (resolved against the registry at send time). The registry (session_id-keyed) is the source of truth for live generations + newest-live.
+    - This **replaces** the shared-inbox-with-atomic-move-claim model: per-generation inboxes eliminate the double-drain race entirely (each inbox is drained by exactly its own generation — no claim contention, no handoff-stop-draining discipline). The registry resolution (newest-live / by-`session_id`) + the per-generation inbox layout are specified in `comms-orchestrator-registry.md`.
   - **Hook contract (Major-6 resolution):** the registry consumes the documented hook-JSON field **`session_id`** (the registry key) under three events — `UserPromptSubmit` (heartbeat + role-gated register + recreate-if-missing), `SessionStart` (prune), `SessionEnd` (tidy). If `session_id` is ABSENT from the payload (a substrate-version change), the registry **degrades** to a documented single-orchestrator assumption + logs an actionable warning — it never silently mis-keys; a last-resort fallback to the undocumented session env var is permitted but logged as degraded. The exact required fields + the degraded mode live in `comms-orchestrator-registry.md`. Orchestrator sessions are launched with `HARNESS_ROLE=orchestrator` via `launch_role.ps1` (the same launcher as CHARC, role-parameterized).
 - **Adding a peer director later** touches a small **enumerated** set — the role sets (`VALID_FROM`/`VALID_TO`), the new inbox (auto-creates), any routing/custody note + authority in the charter, and optionally a launcher default — captured as a checklist in the charter, not built now. (Not literally "two lines.")
 - **Hooks** lift with the env-gate rename (`SWING_ROLE` → `HARNESS_ROLE`); the wt.exe-new-tab env-inheritance wrapper fix and the `.claude/settings.json` minimal-tracked-file pattern carry over unchanged.
@@ -153,7 +156,7 @@ Instantiate (copy repo) → launch CHARC → CHARC reads charter + verifies comm
 - Q2 = **b** (review/gate seam = generic protocol/contract with named extension points; mechanism-agnostic).
 - Approach **A** (authored clean-room repo, dogfooded).
 - **One director** (CHARC); no RD analog (peer-director-add documented).
-- Orchestrator extension **included + built** (inbox + session registry), **shared-inbox** addressing default.
+- Orchestrator extension **included + built** (inbox + session registry); **DIRECTION-ASYMMETRIC addressing** (operator-decided 2026-06-16): shared orchestrator→director, **per-generation** director→orchestrator (`orchestrator:<session_id>` / newest-live).
 - Codex reviewer **included as an optional reference**, not in the seam protocol.
 - Core comms **zero hard deps** (stdlib); UI optional.
 
@@ -161,7 +164,7 @@ Instantiate (copy repo) → launch CHARC → CHARC reads charter + verifies comm
 - Any application, domain, or example content (explicitly: no chess / COA / trading).
 - A second director / RD analog (documented, not built).
 - A config-driven harness "engine" (rejected).
-- Per-generation orchestrator addressing (documented as an upgrade; shared inbox ships).
+- (Per-generation director→orchestrator addressing is now IN scope / SHIPPED — operator-decided 2026-06-16, §5.1 — no longer deferred.)
 - Platform-neutral comms (same-substrate assumption).
 
 ## 11. Open sub-decisions (for writing-plans / build)
