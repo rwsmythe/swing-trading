@@ -19,7 +19,11 @@
       {% for check in vm.checks %}
       <tr>
         <td>{{ check.key }}</td>
-        <td>{{ check.status }}</td>
+        {# 18-H.3: colored dot (reusing the topbar .stoplight-* classes); the
+           status WORD stays in title/aria-label for a11y + test-greppability. #}
+        <td><span class="stoplight stoplight-{{ check.status }}"
+                  title="{{ check.status }}"
+                  aria-label="{{ check.status }}"></span></td>
         <td>{{ check.summary }}</td>
         <td>{{ check.detail or '' }}</td>
       </tr>

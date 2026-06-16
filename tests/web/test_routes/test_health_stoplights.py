@@ -153,6 +153,72 @@ def test_health_tool_route_lists_checks(seeded_db, monkeypatch):
     assert 'class="stoplights"' in r.text  # the drill-down is itself a base page
 
 
+def test_health_tool_drilldown_renders_status_dot_and_word_in_title(
+    seeded_db, monkeypatch,
+):
+    """18-H.3: the tool-health drill-down renders each check's status as a colored
+    `.stoplight-<color>` DOT (reusing the topbar classes) AND keeps the status
+    WORD as the title/aria-label (a11y + the existing word-grep tests).
+
+    Both-ways: pre-fix the row emitted the bare word `green`/`yellow`/`red` in a
+    <td> with NO `stoplight-` class on a per-row dot -> the dot-class assertion
+    inside a status cell FAILS; the word survives in title only post-fix.
+    """
+    cfg, cfg_path = seeded_db
+    _seed_minimal_dashboard_state(cfg)
+    _stub_price_cache(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/health/tool")
+    assert r.status_code == 200
+    # A per-check status dot reusing one of the topbar stoplight classes.
+    assert (
+        'class="stoplight stoplight-green"' in r.text
+        or 'class="stoplight stoplight-yellow"' in r.text
+        or 'class="stoplight stoplight-red"' in r.text
+    ), "expected a per-check .stoplight-<color> dot in the drill-down"
+    # The status WORD survives as a title (tooltip) AND aria-label (a11y).
+    assert ('title="green"' in r.text or 'title="yellow"' in r.text
+            or 'title="red"' in r.text)
+    assert ('aria-label="green"' in r.text or 'aria-label="yellow"' in r.text
+            or 'aria-label="red"' in r.text)
+
+
+def test_health_research_drilldown_renders_status_dot_and_word_in_title(
+    seeded_db, monkeypatch, tmp_path,
+):
+    """18-H.3 sibling for the research drill-down: a present artifact's checks
+    render the dot + the status word in the title/aria-label."""
+    cfg, cfg_path = seeded_db
+    _seed_minimal_dashboard_state(cfg)
+    _stub_price_cache(monkeypatch)
+    p = tmp_path / "latest.json"
+    p.write_text(
+        json.dumps({
+            "monitor": RESEARCH_MONITOR_ID,
+            "generated_ts": datetime.now().isoformat(),
+            "overall": "yellow",
+            "checks": [
+                {"key": "expectancy_freshness", "status": "yellow",
+                 "summary": "stale shadow run", "detail": "ran 9d ago"},
+            ],
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "swing.monitoring.stoplights.research_health_artifact_path", lambda: p,
+    )
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/health/research")
+    assert r.status_code == 200
+    assert 'class="stoplight stoplight-yellow"' in r.text
+    assert 'title="yellow"' in r.text
+    assert 'aria-label="yellow"' in r.text
+    # The status word is still greppable on the page (existing tests rely on it).
+    assert "yellow" in r.text
+
+
 def test_health_research_route_not_deployed_message(seeded_db, monkeypatch, tmp_path):
     cfg, cfg_path = seeded_db
     _seed_minimal_dashboard_state(cfg)
