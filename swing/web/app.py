@@ -659,8 +659,8 @@ def create_app(cfg: Config, cfg_path: Path | None = None) -> FastAPI:
 
     @app.exception_handler(StarletteHTTPException)
     async def _handle_http_exc(request: Request, exc: StarletteHTTPException):
+        tpls = request.app.state.templates
         if request.headers.get("HX-Request", "").lower() == "true":
-            tpls = request.app.state.templates
             # HX-Target-aware: row-prefix targets get <tr>, all other HTMX
             # targets get <div>. Spec §3.3.
             if _is_row_swap_target(request):
@@ -677,6 +677,36 @@ def create_app(cfg: Config, cfg_path: Path | None = None) -> FastAPI:
                 {"status_code": exc.status_code, "detail": exc.detail},
                 status_code=exc.status_code,
             )
+
+        # 18-H.2: non-HTMX GET that accepts HTML -> full-page base-extending
+        # error page (page_error.html.j2), so an address-bar 404/4xx renders
+        # the base layout + the 18-F topbar stoplights (the stoplights arrive
+        # for free via the base-wide _health_stoplights_context_processor; no
+        # per-VM field). Mirrors _handle_validation_error's precedence: API
+        # clients (Accept without text/html) keep the FastAPI default JSON via
+        # fallthrough. Accept media types are case-insensitive (RFC 7231).
+        accept_header = request.headers.get("accept", "").lower()
+        if request.method == "GET" and "text/html" in accept_header:
+            from datetime import datetime
+
+            from swing.evaluation.dates import PageKind, topbar_session_date
+            from swing.web.view_models.error import PageErrorVM
+            try:
+                session_date = topbar_session_date(
+                    PageKind.HISTORY_ANALYSIS, datetime.now()).isoformat()
+            except Exception:
+                session_date = "n/a"
+            vm = PageErrorVM(
+                session_date=session_date,
+                status_code=exc.status_code,
+                detail=exc.detail or "Not found",
+            )
+            return tpls.TemplateResponse(
+                request, "page_error.html.j2",
+                {"vm": vm},
+                status_code=exc.status_code,
+            )
+
         return await http_exception_handler(request, exc)
 
     @app.exception_handler(RequestValidationError)

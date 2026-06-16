@@ -269,6 +269,54 @@ def test_htmx_404_renders_fragment_not_json(test_cfg):
         assert r_json.json() == {"detail": "nothing here"}
 
 
+def test_non_htmx_unknown_route_404_renders_base_page_with_stoplights(test_cfg, seeded_db):
+    """18-H.2: a non-HTMX GET to an unknown route with Accept: text/html (the
+    real-browser path) renders the full-page base-extending error page —
+    page_error.html.j2 — at status 404, carrying the 18-F topbar stoplights via
+    the context processor. NOT the minimal Starlette default.
+
+    Both-ways: pre-fix the non-HTMX HTTPException path falls to
+    http_exception_handler (JSON {"detail": ...}, no <html>, no stoplights) —
+    so the base markers + the `.stoplight-` class assertions FAIL. Post-fix the
+    handler renders page_error.html.j2 (base + stoplights) and they PASS.
+    """
+    cfg, cfg_path = test_cfg
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get(
+            "/this-route-does-not-exist",
+            headers={"Accept": "text/html,application/xhtml+xml,*/*"},
+        )
+    assert r.status_code == 404
+    assert "text/html" in r.headers.get("content-type", "")
+    # Base layout chrome present (full page, not the minimal Starlette default).
+    assert "<html" in r.text.lower()
+    assert "Return to dashboard" in r.text
+    # The 18-F stoplights came for free via the base-wide context processor.
+    assert 'class="stoplights"' in r.text
+    assert "stoplight-" in r.text
+
+
+def test_non_htmx_404_json_client_still_gets_json(test_cfg, seeded_db):
+    """18-H.2 symmetry: an API client (Accept WITHOUT text/html) still gets the
+    FastAPI default JSON 404 — the full-page render is gated on text/html, same
+    precedence as the validation handler. Guards against the page render
+    over-triggering on non-browser clients."""
+    from fastapi import HTTPException
+    cfg, cfg_path = test_cfg
+    app = create_app(cfg, cfg_path)
+
+    @app.get("/_json_missing")
+    def _missing():
+        raise HTTPException(status_code=404, detail="nothing here")
+
+    with TestClient(app) as client:
+        r = client.get("/_json_missing", headers={"Accept": "application/json"})
+    assert r.status_code == 404
+    assert r.headers["content-type"].startswith("application/json")
+    assert r.json() == {"detail": "nothing here"}
+
+
 def test_htmx_validation_error_non_trade_path_renders_div_fragment(test_cfg):
     """RequestValidationError (missing field) on a NON-/trades/ HTMX POST →
     http_error_fragment (a <div>) at 400. Proves the 'else' branch of the
