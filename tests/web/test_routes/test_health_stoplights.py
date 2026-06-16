@@ -177,11 +177,14 @@ def test_health_tool_drilldown_renders_status_dot_and_word_in_title(
         or 'class="stoplight stoplight-yellow"' in r.text
         or 'class="stoplight stoplight-red"' in r.text
     ), "expected a per-check .stoplight-<color> dot in the drill-down"
-    # The status WORD survives as a title (tooltip) AND aria-label (a11y).
+    # role="img" (Codex R2 Major) so the aria-label is a reliable accessible name.
+    assert 'role="img"' in r.text
+    # The status WORD survives as a title (tooltip) AND in the aria-label (a11y).
     assert ('title="green"' in r.text or 'title="yellow"' in r.text
             or 'title="red"' in r.text)
-    assert ('aria-label="green"' in r.text or 'aria-label="yellow"' in r.text
-            or 'aria-label="red"' in r.text)
+    assert ('aria-label="Status: green"' in r.text
+            or 'aria-label="Status: yellow"' in r.text
+            or 'aria-label="Status: red"' in r.text)
 
 
 def test_health_research_drilldown_renders_status_dot_and_word_in_title(
@@ -213,8 +216,9 @@ def test_health_research_drilldown_renders_status_dot_and_word_in_title(
         r = client.get("/health/research")
     assert r.status_code == 200
     assert 'class="stoplight stoplight-yellow"' in r.text
+    assert 'role="img"' in r.text
     assert 'title="yellow"' in r.text
-    assert 'aria-label="yellow"' in r.text
+    assert 'aria-label="Status: yellow"' in r.text
     # The status word is still greppable on the page (existing tests rely on it).
     assert "yellow" in r.text
 

@@ -14,10 +14,13 @@
       <tr>
         <td>{{ check.key }}</td>
         {# 18-H.3: colored dot (reusing the topbar .stoplight-* classes); the
-           status WORD stays in title/aria-label for a11y + test-greppability. #}
+           status WORD stays in title/aria-label for a11y + test-greppability.
+           role="img" (Codex R2 Major) makes the aria-label a reliable accessible
+           name -- a roleless span's aria-label is not robustly exposed. #}
         <td><span class="stoplight stoplight-{{ check.status }}"
+                  role="img"
                   title="{{ check.status }}"
-                  aria-label="{{ check.status }}"></span></td>
+                  aria-label="Status: {{ check.status }}"></span></td>
         <td>{{ check.summary }}</td>
         <td>{{ check.detail or '' }}</td>
       </tr>
