@@ -33,6 +33,7 @@ friendliness-executing-plans-dispatch-brief.md`` §3 T-B.4 + §0 STEP 0.
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 from datetime import datetime
 
@@ -58,7 +59,6 @@ from swing.metrics.discrepancies import (
     count_unresolved_material,
     fetch_first_pending_ambiguity_resolve_link_path,
 )
-from swing.web.app import _construct_web_schwab_client
 from swing.web.view_models.schwab import (
     SchwabSetupErrorVM,
     SchwabSetupVM,
@@ -148,14 +148,20 @@ def _release_long_lived_schwab_client(request: Request) -> None:
     """
     import gc
 
-    client = getattr(request.app.state, "schwab_client", None)
-    request.app.state.schwab_client = None
-    if client is None:
-        return
+    # Codex R1 MAJOR 3 — the ENTIRE read/clear/del/gc sequence is inside the
+    # try so NO step (incl. the app.state mutation) can crash the POST. On any
+    # failure we still best-effort force schwab_client = None (the safe state:
+    # web degrades to yfinance) and swallow.
     try:
+        client = getattr(request.app.state, "schwab_client", None)
+        request.app.state.schwab_client = None
+        if client is None:
+            return
         del client
         gc.collect()
     except Exception:  # noqa: BLE001 -- release must never crash the POST
+        with contextlib.suppress(Exception):
+            request.app.state.schwab_client = None
         log.warning(
             "POST /schwab/setup: long-lived schwab_client release hiccup; "
             "continuing (web market-data falls back to yfinance).",
@@ -174,7 +180,15 @@ def _reconstruct_long_lived_schwab_client(request: Request, cfg) -> None:
     failure (graceful degradation to yfinance). Any unexpected raise here is
     logged + swallowed and ``schwab_client`` left None -- the setup itself
     already succeeded; reconstruction is best-effort.
+
+    Codex R1 MAJOR 1 — the ``_construct_web_schwab_client`` import is LAZY
+    (function-local) to avoid any circular-import fragility: ``swing.web.app``
+    imports the route modules during ``create_app``, so a module-top
+    ``from swing.web.app import ...`` here could bind against a
+    partially-initialized module under a future eager-import refactor. Importing
+    inside the function defers the lookup to call time (app fully loaded).
     """
+    from swing.web.app import _construct_web_schwab_client
     try:
         request.app.state.schwab_client = _construct_web_schwab_client(cfg)
     except Exception:  # noqa: BLE001 -- reconstruction is best-effort
@@ -457,7 +471,9 @@ async def schwab_setup_post(request: Request) -> Response:
     # the setup flow renames/replaces the tokens DB. The long-lived client
     # holds the per-env tokens DB open with BEGIN EXCLUSIVE; without this the
     # rename-aside step (os.replace) fails with WinError 32 (the web app's own
-    # handle holds the file). Reconstructed on the success path below.
+    # handle holds the file). Reconstructed on EVERY post-release path below
+    # (success + each error branch) so a failed setup does not leave the web on
+    # yfinance until restart (Codex R1 MAJOR 2).
     _release_long_lived_schwab_client(request)
 
     db_path = cfg.paths.db_path
@@ -477,6 +493,10 @@ async def schwab_setup_post(request: Request) -> Response:
             account_picker=None,
         )
     except SchwabConfigMissingError as exc:
+        # Codex R1 MAJOR 2 — best-effort reconstruct on EVERY post-release
+        # failure path (not only success), so a validation/transient setup
+        # failure does not leave the web on yfinance until restart.
+        _reconstruct_long_lived_schwab_client(request, cfg)
         return _render_error(
             request,
             status_code=400,
@@ -492,6 +512,7 @@ async def schwab_setup_post(request: Request) -> Response:
             banner_resolve_link=banner_resolve_link,
         )
     except SchwabPipelineActiveError as exc:
+        _reconstruct_long_lived_schwab_client(request, cfg)
         return _render_error(
             request,
             status_code=409,
@@ -505,6 +526,7 @@ async def schwab_setup_post(request: Request) -> Response:
             banner_resolve_link=banner_resolve_link,
         )
     except SchwabAuthError as exc:
+        _reconstruct_long_lived_schwab_client(request, cfg)
         return _render_error(
             request,
             status_code=502,
@@ -526,6 +548,7 @@ async def schwab_setup_post(request: Request) -> Response:
             "POST /schwab/setup unexpected error: %s",
             type(exc).__name__,
         )
+        _reconstruct_long_lived_schwab_client(request, cfg)
         return _render_error(
             request,
             status_code=500,
