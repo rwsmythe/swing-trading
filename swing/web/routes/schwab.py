@@ -145,6 +145,15 @@ def _release_long_lived_schwab_client(request: Request) -> None:
     ``schwab_client`` is None). DEFENSIVE: any failure here is logged and
     swallowed -- a release hiccup must never crash the setup POST (the token
     write is independent of the web client; worst case web stays on yfinance).
+
+    18-H.4.1 — the ladder closures no longer capture the client by value; they
+    resolve it through the shared ``app.state.schwab_client_holder``
+    (:class:`swing.web.app._SchwabClientHolder`). This function DRAINS that holder
+    (clear the slot so new ladder borrows go to yfinance + wait, bounded, for any
+    IN-FLIGHT ladder fetch holding a transient local ref to finish) BEFORE
+    dropping refs + ``gc.collect()``, so the old client truly finalizes and its
+    tokens-DB SQLite handle releases before the setup rename (closing the
+    closure-capture AND the in-flight-fetch self-lock windows).
     """
     import gc
 
@@ -153,11 +162,20 @@ def _release_long_lived_schwab_client(request: Request) -> None:
     # failure we still best-effort force schwab_client = None (the safe state:
     # web degrades to yfinance) and swallow.
     try:
+        holder = getattr(request.app.state, "schwab_client_holder", None)
         client = getattr(request.app.state, "schwab_client", None)
         request.app.state.schwab_client = None
-        if client is None:
+        # 18-H.4.1 — clear the holder slot + drain in-flight ladder borrows so no
+        # closure ref AND no in-flight local ref survives before finalization.
+        drained = holder.drain_and_release() if holder is not None else None
+        if client is None and drained is None:
             return
-        del client
+        # Drop BOTH local strong refs (the app.state copy + the holder's old slot
+        # value) so app.state is the last ref to nothing -> gc finalizes the old
+        # client (releases the BEGIN EXCLUSIVE tokens-DB handle) before the rename.
+        client = None
+        drained = None
+        del client, drained
         gc.collect()
     except Exception:  # noqa: BLE001 -- release must never crash the POST
         with contextlib.suppress(Exception):
@@ -190,17 +208,33 @@ def _reconstruct_long_lived_schwab_client(request: Request, cfg) -> None:
 
     Codex R2 MAJOR 2 — the lazy import is INSIDE the try so an import/lookup
     failure also degrades to ``schwab_client = None`` rather than crashing.
+
+    18-H.4.1 — also push the new client into the shared
+    ``app.state.schwab_client_holder`` so the (unchanged, persistent) ladder
+    closures resolve the freshly-reconstructed client on their next borrow. On
+    failure the holder slot is forced None too (the drain already cleared it; this
+    keeps both refs consistent at None -> yfinance).
     """
+    new_client = None
     try:
         from swing.web.app import _construct_web_schwab_client
-        request.app.state.schwab_client = _construct_web_schwab_client(cfg)
+        new_client = _construct_web_schwab_client(cfg)
+        request.app.state.schwab_client = new_client
     except Exception:  # noqa: BLE001 -- reconstruction is best-effort
+        new_client = None
         request.app.state.schwab_client = None
         log.warning(
             "POST /schwab/setup: long-lived schwab_client reconstruction "
             "failed after setup; web market-data falls back to yfinance "
             "until the next restart.",
         )
+    # Keep the shared holder slot in lockstep with app.state.schwab_client so the
+    # ladder closures resolve the new client (or None -> yfinance). Best-effort:
+    # a holder hiccup must not crash the already-successful setup POST.
+    holder = getattr(request.app.state, "schwab_client_holder", None)
+    if holder is not None:
+        with contextlib.suppress(Exception):
+            holder.set(new_client)
 
 
 def _build_authorize_url(client_id: str, callback_url: str) -> str:

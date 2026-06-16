@@ -28,10 +28,11 @@ must release it before the rename so the rename succeeds.
 from __future__ import annotations
 
 import dataclasses
+import threading
 
 from fastapi.testclient import TestClient
 
-from swing.web.app import create_app
+from swing.web.app import _SchwabClientHolder, create_app
 
 
 def _production_ladder_cfg(base_cfg):
@@ -465,3 +466,88 @@ def test_post_release_finalizes_client_through_real_ladder_closures(
         "app.state.schwab_client not reconstructed after setup -- web "
         "market-data would stay on yfinance until restart"
     )
+
+
+def test_holder_drain_waits_for_inflight_borrow_then_releases():
+    """18-H.4.1 R1 MAJOR (Codex, repo-access round) -- the in-flight-fetch self-
+    lock window.
+
+    A ladder hook that has ALREADY ``borrow()``ed the client and is mid-fetch
+    holds a transient local strong ref to it. If ``/schwab/setup``'s release only
+    cleared the holder slot + gc.collect (ignoring the in-flight borrow), that
+    local ref would keep the tokens-DB SQLite handle open -> the rename re-hits
+    WinError 32. ``drain_and_release`` must WAIT for in-flight borrows to finish
+    before returning so the caller's gc can finalize the client.
+
+    This drives the holder directly (a deterministic two-thread handshake) rather
+    than racing the real executor: a borrow is entered + held, the drain is
+    started on another thread + observed to BLOCK while the borrow is open, then
+    the borrow exits and the drain is observed to COMPLETE and return the client.
+    """
+    sentinel = object()
+    holder = _SchwabClientHolder(sentinel)
+
+    borrow_entered = threading.Event()
+    release_borrow = threading.Event()
+    drain_returned = threading.Event()
+    drained_value = {}
+
+    def _hold_a_borrow():
+        with holder.borrow() as c:
+            assert c is sentinel
+            borrow_entered.set()
+            # Hold the in-flight borrow until the test lets it go.
+            release_borrow.wait(timeout=5.0)
+
+    def _do_drain():
+        drained_value["v"] = holder.drain_and_release(timeout=5.0)
+        drain_returned.set()
+
+    t_borrow = threading.Thread(target=_hold_a_borrow)
+    t_borrow.start()
+    assert borrow_entered.wait(timeout=5.0)
+
+    t_drain = threading.Thread(target=_do_drain)
+    t_drain.start()
+    # While the borrow is still in-flight, the drain MUST NOT have returned.
+    assert not drain_returned.wait(timeout=0.3), (
+        "drain_and_release returned while a ladder borrow was still in-flight "
+        "-- the old client's tokens-DB handle could still be open at rename time"
+    )
+    # New borrows during the drain window resolve None (-> yfinance), never the
+    # released client.
+    with holder.borrow() as c2:
+        assert c2 is None
+
+    # Let the in-flight borrow finish -> the drain unblocks + returns the client.
+    release_borrow.set()
+    assert drain_returned.wait(timeout=5.0)
+    assert drained_value["v"] is sentinel
+    t_borrow.join(timeout=5.0)
+    t_drain.join(timeout=5.0)
+
+
+def test_holder_drain_bounded_timeout_does_not_hang():
+    """A pathologically stuck in-flight borrow must NOT hang the setup POST:
+    ``drain_and_release`` returns after the bounded timeout (the rename then
+    proceeds; a transient WinError is operator-retryable -- never a hang)."""
+    sentinel = object()
+    holder = _SchwabClientHolder(sentinel)
+    stuck_borrow_entered = threading.Event()
+    let_stuck_go = threading.Event()
+
+    def _stuck_borrow():
+        with holder.borrow():
+            stuck_borrow_entered.set()
+            let_stuck_go.wait(timeout=5.0)
+
+    t = threading.Thread(target=_stuck_borrow)
+    t.start()
+    assert stuck_borrow_entered.wait(timeout=5.0)
+
+    # Bounded timeout -> returns despite the still-in-flight borrow.
+    returned = holder.drain_and_release(timeout=0.2)
+    assert returned is sentinel  # the slot value is still returned for gc
+
+    let_stuck_go.set()
+    t.join(timeout=5.0)

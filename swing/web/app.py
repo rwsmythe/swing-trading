@@ -5,7 +5,7 @@ import logging
 import threading
 import time as _time
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 
 import jinja2
@@ -186,6 +186,89 @@ def _register_exception_handlers(app: FastAPI) -> None:
 
 _WEB_OPEN_TRADE_MEMO_TTL_S = 60.0
 _WEB_LADDER_FALLBACK_COOLDOWN_THRESHOLD = 3
+# Bound the /schwab/setup release wait for in-flight ladder fetches to drain so a
+# pathological stuck hook can never block the setup POST indefinitely (it still
+# falls through to gc.collect + the rename; worst case a transient WinError 32
+# the operator retries -- never a hang).
+_WEB_CLIENT_DRAIN_TIMEOUT_S = 10.0
+
+
+class _SchwabClientHolder:
+    """Replaceable, drainable holder for the long-lived web Schwab client.
+
+    18-H.4.1: the ladder closures resolve the CURRENT client through this holder
+    at call time instead of capturing the constructed client by value, so the
+    /schwab/setup release can finalize the old client (the WinError-32 self-lock
+    fix). The holder ALSO tracks IN-FLIGHT borrows (a hook that has already read
+    the client and is mid-fetch holds a transient strong ref via its local), so
+    the release can DRAIN those in-flight fetches before the tokens-DB rename --
+    otherwise an overlapping dashboard fetch's local ref would keep the SQLite
+    handle open and re-trigger WinError 32 (Codex 18-H.4.1 R1 MAJOR).
+
+    Thread-safe: a single ``threading.Condition`` guards the client slot + the
+    in-flight counter. ``borrow()`` captures the client and counts the borrow
+    UNDER the lock, then releases the lock for the (slow, possibly-networked)
+    fetch, then decrements + notifies on exit. ``drain_and_release()`` clears the
+    slot (so NEW borrows resolve None -> yfinance) and waits, bounded, for the
+    in-flight count to reach zero before returning -- after which the caller's
+    ``gc.collect()`` can finalize the old client (no surviving strong ref).
+    """
+
+    def __init__(self, client: object | None = None) -> None:
+        self._cond = threading.Condition()
+        self._client = client
+        self._inflight = 0
+
+    def get(self) -> object | None:
+        with self._cond:
+            return self._client
+
+    def set(self, client: object | None) -> None:
+        with self._cond:
+            self._client = client
+
+    @contextmanager
+    def borrow(self):
+        """Context manager yielding the current client (or None) and counting a
+        non-None client as in-flight so a concurrent ``drain_and_release`` waits
+        for the (possibly-networked) fetch to finish before finalizing it."""
+        with self._cond:
+            client = self._client
+            counted = client is not None
+            if counted:
+                self._inflight += 1
+        try:
+            yield client
+        finally:
+            if counted:
+                with self._cond:
+                    self._inflight -= 1
+                    self._cond.notify_all()
+
+    def drain_and_release(self, timeout: float = _WEB_CLIENT_DRAIN_TIMEOUT_S) -> object | None:
+        """Clear the client slot, wait (bounded) for in-flight borrows to drain,
+        and return the previously-held client (for the caller to ``del`` + gc).
+
+        New borrows after the slot is cleared resolve None (-> yfinance), so the
+        in-flight count is monotonically non-increasing here and the wait
+        terminates. The bounded timeout guarantees the setup POST never hangs on
+        a pathological stuck hook (it proceeds to the rename regardless)."""
+        deadline = _time.monotonic() + timeout
+        with self._cond:
+            old = self._client
+            self._client = None
+            while self._inflight > 0:
+                remaining = deadline - _time.monotonic()
+                if remaining <= 0:
+                    log.warning(
+                        "schwab client drain timed out with %d in-flight ladder "
+                        "fetch(es); proceeding with setup (a transient rename "
+                        "WinError is operator-retryable).",
+                        self._inflight,
+                    )
+                    break
+                self._cond.wait(timeout=remaining)
+        return old
 
 
 def _construct_web_schwab_client(cfg) -> object | None:
@@ -312,14 +395,18 @@ def _install_web_marketdata_caches(
 
     18-H.4.1 replaceable-holder refactor: the two ladder closures DO NOT capture
     the constructed ``client`` by value. They resolve the CURRENT long-lived
-    client from ``app.state.schwab_client`` at CALL time (the mutable holder the
-    /schwab/setup route releases + reconstructs). This makes
-    ``_release_long_lived_schwab_client`` (null the holder + ``gc.collect()``)
-    ACTUALLY finalize the old client (no surviving closure strong-ref) so the
-    tokens-DB handle releases + the setup rename succeeds (the WinError-32 self-
-    lock fix), and the post-setup reconstruct's new client is auto-picked-up by
-    the SAME closures. When the holder is None (the release->reconstruct window,
-    or ladder inactive), the hooks take the yfinance fallback path -- never crash.
+    client through the shared ``app.state.schwab_client_holder``
+    (:class:`_SchwabClientHolder`) at CALL time (the mutable, drainable holder the
+    /schwab/setup route releases + reconstructs). Each hook ``borrow()``s the
+    client for the duration of its fetch so the borrow is counted in-flight; the
+    route's release ``drain_and_release()``s the holder (clear the slot + wait for
+    in-flight borrows to finish) BEFORE the tokens-DB rename, then ``del`` +
+    ``gc.collect()`` finalizes the old client (no surviving closure ref AND no
+    surviving in-flight local ref) so the SQLite handle releases + the rename
+    succeeds (the WinError-32 self-lock fix). The post-setup reconstruct sets the
+    holder's slot, so the SAME closures auto-pick-up the new client. When the
+    holder yields None (the release->reconstruct window, or ladder inactive), the
+    hooks take the yfinance fallback path -- never crash.
     """
     from swing.integrations.schwab.marketdata_ladder import _is_ladder_active
     ladder_active = _is_ladder_active(cfg)
@@ -343,18 +430,12 @@ def _install_web_marketdata_caches(
     )
 
     state = _WebLadderState(cfg)
-
-    def _current_client():
-        """Resolve the live long-lived Schwab client at CALL time.
-
-        Reads the mutable ``app.state.schwab_client`` holder rather than closing
-        over the constructed ``client`` -- so the /schwab/setup release (null the
-        holder) leaves NO closure strong-ref to the old client (WinError-32 self-
-        lock fix), and the reconstruct's new client is picked up automatically.
-        Returns None during the release->reconstruct window -> hooks degrade to
-        yfinance.
-        """
-        return getattr(app.state, "schwab_client", None)
+    # The shared drainable holder both the hooks (borrow) and the /schwab/setup
+    # route (drain_and_release / set) reference. Seeded with the constructed
+    # client; app.state.schwab_client (the caller-set return value) tracks the
+    # same client for /schwab/status + the route's null/reconstruct contract.
+    holder = _SchwabClientHolder(client)
+    app.state.schwab_client_holder = holder
 
     def _yf_quote_fallback(ticker: str):
         from datetime import datetime as _dt2
@@ -367,21 +448,23 @@ def _install_web_marketdata_caches(
         )
 
     def _quote_hook(ticker: str) -> tuple[float, str]:
-        current_client = _current_client()
-        if current_client is None or not state.should_use_schwab(ticker):
-            # None holder (release->reconstruct window / ladder inactive) OR the
-            # L9 scope gate bypass -> yfinance; never crash (NO audit row).
-            snap = _yf_quote_fallback(ticker)
-            return (snap.price, "yfinance")
-        conn = connect(cfg.paths.db_path)
-        try:
-            snap, provider_tag = fetch_quote_via_ladder(
-                ticker, cfg=cfg, schwab_client=current_client,
-                yfinance_fallback_fn=_yf_quote_fallback,
-                conn=conn, surface="pipeline", pipeline_run_id=None,
-            )
-        finally:
-            conn.close()
+        # borrow() counts the client in-flight for the whole fetch so a
+        # concurrent /schwab/setup release drains it before the tokens-DB rename.
+        with holder.borrow() as current_client:
+            if current_client is None or not state.should_use_schwab(ticker):
+                # None holder (release->reconstruct window / ladder inactive) OR
+                # the L9 scope gate bypass -> yfinance; never crash (NO audit row).
+                snap = _yf_quote_fallback(ticker)
+                return (snap.price, "yfinance")
+            conn = connect(cfg.paths.db_path)
+            try:
+                snap, provider_tag = fetch_quote_via_ladder(
+                    ticker, cfg=cfg, schwab_client=current_client,
+                    yfinance_fallback_fn=_yf_quote_fallback,
+                    conn=conn, surface="pipeline", pipeline_run_id=None,
+                )
+            finally:
+                conn.close()
         state.note_provider(provider_tag)
         return (snap.price, provider_tag)
 
@@ -398,22 +481,24 @@ def _install_web_marketdata_caches(
         )
 
     def _bars_hook(ticker: str):
-        current_client = _current_client()
-        if current_client is None or not state.should_use_schwab(ticker):
-            # None holder (release->reconstruct window / ladder inactive) OR the
-            # L9 scope gate bypass -> yfinance; never crash (NO audit row).
-            bars = _yf_window_fallback(ticker, None, None)
-            return (bars, "yfinance")
-        conn = connect(cfg.paths.db_path)
-        try:
-            window, provider_tag = fetch_window_via_ladder(
-                ticker, start=None, end=None, cfg=cfg, schwab_client=current_client,
-                yfinance_fallback_fn=_yf_window_fallback,
-                conn=conn, surface="pipeline", pipeline_run_id=None,
-                period_type="year", period=5, frequency_type="daily", frequency=1,
-            )
-        finally:
-            conn.close()
+        # borrow() counts the client in-flight for the whole fetch so a
+        # concurrent /schwab/setup release drains it before the tokens-DB rename.
+        with holder.borrow() as current_client:
+            if current_client is None or not state.should_use_schwab(ticker):
+                # None holder (release->reconstruct window / ladder inactive) OR
+                # the L9 scope gate bypass -> yfinance; never crash (NO audit row).
+                bars = _yf_window_fallback(ticker, None, None)
+                return (bars, "yfinance")
+            conn = connect(cfg.paths.db_path)
+            try:
+                window, provider_tag = fetch_window_via_ladder(
+                    ticker, start=None, end=None, cfg=cfg, schwab_client=current_client,
+                    yfinance_fallback_fn=_yf_window_fallback,
+                    conn=conn, surface="pipeline", pipeline_run_id=None,
+                    period_type="year", period=5, frequency_type="daily", frequency=1,
+                )
+            finally:
+                conn.close()
         # note_provider drives the consecutive-fallback cooldown — it MUST see
         # the ladder's REAL routing outcome (whether Schwab actually answered),
         # so it is called with the original provider_tag BEFORE the helper
