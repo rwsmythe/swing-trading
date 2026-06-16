@@ -1050,6 +1050,16 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
                         "detail": _shadow_expectancy_tail(str(exc)),
                     })
 
+                # Read-only research data-collection-health roll-up (18-D §6.7):
+                # runs after shadow_expectancy so it reads the freshly-emitted
+                # engine manifest, BEFORE complete. BARE B-shape step_guard (NO
+                # status_key per the O1 ruling -- a status_key would trip
+                # update_status_columns' allowed-set + need a pipeline_runs column):
+                # LeaseRevokedError propagates, all else swallowed+logged, the run
+                # is never failed. Writes ONLY latest.json, NEVER the DB.
+                with step_guard(lease, "research_health", logger=log):
+                    _step_research_health(cfg=cfg)
+
                 lease.step("complete")
                 try:
                     _step_review_log_cadence(lease=lease)
@@ -1308,6 +1318,44 @@ def _step_shadow_expectancy(*, cfg, run_warnings: list[dict]) -> None:
         })
 
     _prune_shadow_expectancy_artifacts(output_root)
+
+
+def _step_research_health(*, cfg) -> None:
+    """Best-effort nightly research-data-collection-health roll-up (18-D §6.7).
+
+    Runs the SAME read-only ``compute_research_health`` the script runs, then
+    single-sources the atomic ``latest.json`` write via
+    ``write_research_health_artifact`` -- the artifact 18-F's research stoplight
+    consumes. Placed immediately AFTER ``_step_shadow_expectancy`` (so it reads
+    the freshly-emitted engine manifest) and BEFORE ``complete``.
+
+    C-NH2 (read-only): opens a SEPARATE ``mode=ro`` URI conn (mirrors
+    scripts/research_health.py) -- NEVER the runner's read-write ``connect()``;
+    only ``latest.json`` is written, NEVER the measurement DB.
+
+    C-NH5 (write-nothing-on-failure): the status is COMPUTED FIRST and only on
+    SUCCESS does the writer run -- any exception in the ``mode=ro`` connect or
+    inside compute propagates to the ``step_guard`` BEFORE any write, leaving the
+    prior ``latest.json`` untouched. The writer is itself atomic (tmp + os.replace)
+    so even a write-time crash never leaves a partial artifact.
+
+    Wrapped at the call site by the BARE B-shape ``step_guard`` (NO status_key --
+    the O1 resolution): ``LeaseRevokedError`` propagates, all other exceptions are
+    swallowed + logged; the step NEVER fails the run.
+    """
+    from swing.monitoring.research_health import (
+        compute_research_health,
+        write_research_health_artifact,
+    )
+    ro_uri = cfg.paths.db_path.as_uri() + "?mode=ro"  # C-NH2 (mirror the script)
+    conn = sqlite3.connect(ro_uri, uri=True, timeout=2.0)
+    try:
+        # default exports_root -> the contract path's parent (exports/research/),
+        # the SAME root the script + the 18-F providers use.
+        status = compute_research_health(conn, cfg=cfg)
+    finally:
+        conn.close()
+    write_research_health_artifact(status)  # C-NH4 default = the contract latest.json
 
 
 def _prewarm_evaluate_archives(
