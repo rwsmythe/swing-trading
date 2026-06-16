@@ -153,7 +153,7 @@ never carried forward from a prior read, a return report, or memory (`feedback_n
 
 ## Version 2 — 2026-06-16 (research-health monitor integration)
 
-**RD-authored 2026-06-16; operator-acknowledged: [pending].** SUPPLEMENTS v1 (the §1 cadence + §4 tripwires + §5 decision points stand unchanged); adds the MECHANIZED data-integrity surface that v1's §2/§3 prescribed in prose. Motivated by + closes the 2026-06-13 RD data-collection audit (the temporal-log NaN defect rode invisible 2+ days because the operator-facing surfaces watched the funnel/intent layer, NOT the data-integrity layer).
+**RD-authored 2026-06-16; operator-acknowledged 2026-06-16 — ADOPTED.** SUPPLEMENTS v1 (the §1 cadence + §4 tripwires + §5 decision points stand unchanged); adds the MECHANIZED data-integrity surface that v1's §2/§3 prescribed in prose. Motivated by + closes the 2026-06-13 RD data-collection audit (the temporal-log NaN defect rode invisible 2+ days because the operator-facing surfaces watched the funnel/intent layer, NOT the data-integrity layer).
 
 **What shipped (Phase 18 audit chain, now fully closed + automated):** `swing/monitoring/research_health.py` (`compute_research_health`) + the operator/RD probe `scripts/research_health.py` + a nightly pipeline step refreshing `exports/research/health/latest.json` every pipeline run + the 18-F GUI research stoplight that reads it. Chain: 18-A writer fix → 18-B consolidation → 18-C yfinance observability → 18-D monitor + FIX-1 baseline + 18-B.1 structural prevention → the nightly half + 2 calibrations.
 
