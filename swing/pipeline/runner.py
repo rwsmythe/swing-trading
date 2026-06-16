@@ -1350,9 +1350,14 @@ def _step_research_health(*, cfg) -> None:
     ro_uri = cfg.paths.db_path.as_uri() + "?mode=ro"  # C-NH2 (mirror the script)
     conn = sqlite3.connect(ro_uri, uri=True, timeout=2.0)
     try:
-        # default exports_root -> the contract path's parent (exports/research/),
-        # the SAME root the script + the 18-F providers use.
-        status = compute_research_health(conn, cfg=cfg)
+        # Read the manifests from EXACTLY the root _step_shadow_expectancy just
+        # wrote to (cfg.paths.exports_dir / "research"), so the #2/#5
+        # manifest-consuming checks see the freshly-emitted run regardless of the
+        # configured exports_dir. In the shipped prod config this equals the
+        # contract default (RESEARCH_HEALTH_ARTIFACT_PATH.parent.parent); passing
+        # it explicitly de-couples correctness from that coincidence (Codex R1).
+        status = compute_research_health(
+            conn, cfg=cfg, exports_root=cfg.paths.exports_dir / "research")
     finally:
         conn.close()
     write_research_health_artifact(status)  # C-NH4 default = the contract latest.json

@@ -30,13 +30,14 @@ _FINITE_OHLC = '{"open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5, ' \
 
 
 class _Paths:
-    def __init__(self, db_path):
+    def __init__(self, db_path, exports_dir):
         self.db_path = db_path
+        self.exports_dir = exports_dir
 
 
 class _Cfg:
-    def __init__(self, db_path):
-        self.paths = _Paths(db_path)
+    def __init__(self, db_path, exports_dir):
+        self.paths = _Paths(db_path, exports_dir)
 
 
 class FakeLease:
@@ -76,27 +77,67 @@ def _patch_artifact(tmp_path: Path, monkeypatch) -> Path:
     return artifact
 
 
+def _seed_fresh_manifest(research_root: Path, *, invalid_ohlc: int = 1) -> None:
+    from datetime import UTC, datetime, timedelta
+    ts = datetime.now(UTC) - timedelta(hours=1)
+    run_dir = research_root / ("shadow-expectancy-" + ts.strftime("%Y%m%dT%H%M%S") + "Z")
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "manifest.json").write_text(json.dumps({"funnel": {
+        "detection_level": {"unique_signals": 100},
+        "per_hypothesis": {"H": {"excluded": {"invalid_ohlc": invalid_ohlc}}},
+        "unattributed": {},
+    }}), encoding="utf-8")
+
+
 def test_step_runs_and_writes_latest_json(tmp_path, monkeypatch) -> None:
     db = tmp_path / "swing.db"
     _seed_green_db(db)
     artifact = _patch_artifact(tmp_path, monkeypatch)
-    # a fresh manifest under exports_root (= artifact.parent.parent) keeps the
-    # manifest-consuming checks (#2/#5) green so the envelope validates fresh.
-    from datetime import UTC, datetime, timedelta
-    ts = datetime.now(UTC) - timedelta(hours=1)
-    run_dir = tmp_path / ("shadow-expectancy-" + ts.strftime("%Y%m%dT%H%M%S") + "Z")
-    run_dir.mkdir(parents=True, exist_ok=True)
-    (run_dir / "manifest.json").write_text(json.dumps({"funnel": {
-        "detection_level": {"unique_signals": 100},
-        "per_hypothesis": {"H": {"excluded": {"invalid_ohlc": 1}}},
-        "unattributed": {},
-    }}), encoding="utf-8")
+    # a fresh manifest under cfg.paths.exports_dir/research (where the shadow step
+    # writes) keeps the manifest-consuming checks (#2/#5) green so the envelope
+    # validates fresh.
+    exports_dir = tmp_path / "exports"
+    _seed_fresh_manifest(exports_dir / "research")
 
-    runner._step_research_health(cfg=_Cfg(db))
+    runner._step_research_health(cfg=_Cfg(db, exports_dir))
 
     assert artifact.exists()
     from swing.monitoring import stoplights
     assert stoplights.read_validated_research_envelope() is not None
+
+
+def test_step_reads_manifest_from_cfg_exports_dir_not_default_root(
+    tmp_path, monkeypatch,
+) -> None:
+    # Codex R1: the health step must read the manifests from EXACTLY the root the
+    # shadow step wrote to (cfg.paths.exports_dir/research), NOT the contract
+    # default root. Seed a FRESH GOOD manifest under the cfg root and a CORRUPT
+    # newest manifest under the default contract root; assert the emitted envelope
+    # reflects the CFG-root manifest (excluded check green/n-a, not the corrupt
+    # yellow). Distinguishing: the pre-fix code (default exports_root) would read
+    # the corrupt default-root manifest -> the excluded check would be yellow.
+    db = tmp_path / "swing.db"
+    _seed_green_db(db)
+    artifact = _patch_artifact(tmp_path, monkeypatch)  # contract default = tmp_path
+    # the DEFAULT contract root (artifact.parent.parent = tmp_path) gets a CORRUPT
+    # NEWEST manifest.
+    from datetime import UTC, datetime, timedelta
+    newest = datetime.now(UTC) - timedelta(minutes=30)
+    corrupt_dir = tmp_path / (
+        "shadow-expectancy-" + newest.strftime("%Y%m%dT%H%M%S") + "Z")
+    corrupt_dir.mkdir(parents=True, exist_ok=True)
+    (corrupt_dir / "manifest.json").write_text("{not valid json", encoding="utf-8")
+    # the CFG exports root gets a FRESH GOOD manifest (a DIFFERENT directory).
+    exports_dir = tmp_path / "configured-exports"
+    _seed_fresh_manifest(exports_dir / "research")
+
+    runner._step_research_health(cfg=_Cfg(db, exports_dir))
+
+    env = json.loads(artifact.read_text(encoding="utf-8"))
+    excluded = next(
+        c for c in env["checks"] if c["key"] == "excluded_reason_breakdown")
+    # the GOOD cfg-root manifest -> the excluded check is NOT the corrupt-yellow.
+    assert excluded["status"] == "green"
 
 
 def test_step_uses_readonly_conn(tmp_path, monkeypatch) -> None:
@@ -133,7 +174,7 @@ def test_step_uses_readonly_conn(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(
         "swing.monitoring.research_health.compute_research_health", _spy)
-    runner._step_research_health(cfg=_Cfg(db))
+    runner._step_research_health(cfg=_Cfg(db, tmp_path / "exports"))
     assert "readonly" in captured.get("readonly_err", "").lower(), (
         "expected a readonly-database error -> conn was NOT opened mode=ro")
 
@@ -161,7 +202,7 @@ def test_failing_compute_does_not_write_and_leaves_prior_artifact(
     # run under the SAME bare B-shape guard the runner uses -> the error is
     # swallowed (no escape).
     with step_guard(lease, "research_health", logger=log):
-        runner._step_research_health(cfg=_Cfg(db))
+        runner._step_research_health(cfg=_Cfg(db, tmp_path / "exports"))
 
     assert artifact.read_bytes() == sentinel  # untouched
     assert not list((tmp_path / "health").glob("*.tmp"))
@@ -190,7 +231,7 @@ def test_step_writes_no_status_column(tmp_path, monkeypatch) -> None:
     # success path
     lease_ok = FakeLease()
     with step_guard(lease_ok, "research_health", logger=log):
-        runner._step_research_health(cfg=_Cfg(db))
+        runner._step_research_health(cfg=_Cfg(db, tmp_path / "exports"))
     assert lease_ok.status_calls == []
 
     # forced-error path
@@ -199,7 +240,7 @@ def test_step_writes_no_status_column(tmp_path, monkeypatch) -> None:
         lambda conn, **kw: (_ for _ in ()).throw(RuntimeError("boom")))
     lease_err = FakeLease()
     with step_guard(lease_err, "research_health", logger=log):
-        runner._step_research_health(cfg=_Cfg(db))
+        runner._step_research_health(cfg=_Cfg(db, tmp_path / "exports"))
     assert lease_err.status_calls == []
 
 
