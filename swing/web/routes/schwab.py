@@ -126,7 +126,7 @@ def _fetch_banner_resolve_link(db_path) -> str | None:
         conn.close()
 
 
-def _release_long_lived_schwab_client(request: Request) -> None:
+def _release_long_lived_schwab_client(request: Request, cfg) -> None:
     """18-H.4 — release the long-lived web Schwab client BEFORE the setup flow
     renames/replaces the tokens DB.
 
@@ -154,8 +154,17 @@ def _release_long_lived_schwab_client(request: Request) -> None:
     dropping refs + ``gc.collect()``, so the old client truly finalizes and its
     tokens-DB SQLite handle releases before the setup rename (closing the
     closure-capture AND the in-flight-fetch self-lock windows).
+
+    18-H.4.1 R2 (Codex MAJOR) — the drain wait is sourced from the configured
+    Schwab request timeout + a margin (``web_client_drain_timeout_seconds(cfg)``)
+    so a ROUTINE slow in-flight ladder call (bounded by
+    ``schwab.timeout_seconds``) always finishes before the wait expires; a hard-
+    coded sub-timeout wait would let a normal slow request outlive the drain and
+    re-trigger WinError 32.
     """
     import gc
+
+    from swing.web.app import web_client_drain_timeout_seconds
 
     # Codex R1 MAJOR 3 — the ENTIRE read/clear/del/gc sequence is inside the
     # try so NO step (incl. the app.state mutation) can crash the POST. On any
@@ -166,8 +175,13 @@ def _release_long_lived_schwab_client(request: Request) -> None:
         client = getattr(request.app.state, "schwab_client", None)
         request.app.state.schwab_client = None
         # 18-H.4.1 — clear the holder slot + drain in-flight ladder borrows so no
-        # closure ref AND no in-flight local ref survives before finalization.
-        drained = holder.drain_and_release() if holder is not None else None
+        # closure ref AND no in-flight local ref survives before finalization. The
+        # drain timeout outlives a routine in-flight Schwab call (R2 MAJOR).
+        drained = (
+            holder.drain_and_release(web_client_drain_timeout_seconds(cfg))
+            if holder is not None
+            else None
+        )
         if client is None and drained is None:
             return
         # Drop BOTH local strong refs (the app.state copy + the holder's old slot
@@ -511,7 +525,7 @@ async def schwab_setup_post(request: Request) -> Response:
     # handle holds the file). Reconstructed on EVERY post-release path below
     # (success + each error branch) so a failed setup does not leave the web on
     # yfinance until restart (Codex R1 MAJOR 2).
-    _release_long_lived_schwab_client(request)
+    _release_long_lived_schwab_client(request, cfg)
 
     # Codex R2 MAJOR 1 — open_connection is INSIDE the protected try (conn=None,
     # closed conditionally in finally) so a post-release DB-open failure reaches

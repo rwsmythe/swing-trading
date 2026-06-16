@@ -551,3 +551,33 @@ def test_holder_drain_bounded_timeout_does_not_hang():
 
     let_stuck_go.set()
     t.join(timeout=5.0)
+
+
+def test_drain_timeout_exceeds_configured_schwab_request_timeout(seeded_db):
+    """18-H.4.1 R2 MAJOR (Codex) -- the release drain wait MUST outlive a routine
+    in-flight Schwab call. Source it from the configured Schwab request timeout +
+    a margin so a normal slow ladder fetch always finishes before the drain
+    expires (a hard-coded sub-timeout would let a routine slow request keep the
+    tokens-DB handle open past the release -> WinError 32 survives)."""
+    import dataclasses
+
+    from swing.web.app import web_client_drain_timeout_seconds
+
+    cfg, _ = seeded_db
+    schwab_timeout = cfg.integrations.schwab.timeout_seconds
+    drain_timeout = web_client_drain_timeout_seconds(cfg)
+    # STRICTLY greater than the Schwab request timeout (a routine in-flight call
+    # is bounded by schwab_timeout, so the drain wait outlives it).
+    assert drain_timeout > schwab_timeout
+
+    # Coupled: a larger configured Schwab timeout yields a larger drain timeout.
+    schwab = dataclasses.replace(
+        cfg.integrations.schwab, timeout_seconds=schwab_timeout + 120.0,
+    )
+    integ = dataclasses.replace(cfg.integrations, schwab=schwab)
+    bigger_cfg = dataclasses.replace(cfg, integrations=integ)
+    assert web_client_drain_timeout_seconds(bigger_cfg) > drain_timeout
+    assert (
+        web_client_drain_timeout_seconds(bigger_cfg)
+        > bigger_cfg.integrations.schwab.timeout_seconds
+    )

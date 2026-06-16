@@ -186,11 +186,32 @@ def _register_exception_handlers(app: FastAPI) -> None:
 
 _WEB_OPEN_TRADE_MEMO_TTL_S = 60.0
 _WEB_LADDER_FALLBACK_COOLDOWN_THRESHOLD = 3
-# Bound the /schwab/setup release wait for in-flight ladder fetches to drain so a
-# pathological stuck hook can never block the setup POST indefinitely (it still
-# falls through to gc.collect + the rename; worst case a transient WinError 32
-# the operator retries -- never a hang).
-_WEB_CLIENT_DRAIN_TIMEOUT_S = 10.0
+# Extra margin (seconds) ADDED to the configured Schwab request timeout to bound
+# the /schwab/setup release wait for in-flight ladder fetches to drain. The drain
+# wait MUST exceed the worst-case in-flight ladder call (a routine slow Schwab
+# request, bounded by cfg.integrations.schwab.timeout_seconds) -- otherwise the
+# release could time out while a worker still holds the old client + its tokens-DB
+# handle -> WinError 32 survives (Codex 18-H.4.1 R2 MAJOR). The margin covers the
+# DB connect + the resolve_full_archive_bars tail beyond the bare Schwab call. A
+# pathological STUCK hook (one that never returns even past the Schwab timeout)
+# still cannot HANG the POST: the bounded wait expires + the release proceeds to
+# gc.collect + the rename (a transient WinError is operator-retryable).
+_WEB_CLIENT_DRAIN_MARGIN_S = 5.0
+# Fallback drain timeout when no cfg-derived value is supplied (defensive; the
+# production caller always passes the cfg-coupled value).
+_WEB_CLIENT_DRAIN_TIMEOUT_S = 35.0
+
+
+def web_client_drain_timeout_seconds(cfg) -> float:
+    """Drain timeout = the configured Schwab request timeout + a margin, so the
+    release wait always outlives a routine in-flight ladder call (Codex R2 MAJOR).
+
+    Defensive: tolerate a missing/!-numeric cfg field -> the fallback constant."""
+    try:
+        schwab_timeout = float(cfg.integrations.schwab.timeout_seconds)
+    except (AttributeError, TypeError, ValueError):
+        return _WEB_CLIENT_DRAIN_TIMEOUT_S
+    return schwab_timeout + _WEB_CLIENT_DRAIN_MARGIN_S
 
 
 class _SchwabClientHolder:
