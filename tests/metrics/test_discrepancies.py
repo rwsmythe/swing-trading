@@ -111,24 +111,26 @@ def test_count_unresolved_material_excludes_immaterial(conn: sqlite3.Connection)
     assert count_unresolved_material(conn) == 1
 
 
-def test_count_unresolved_material_excludes_orphan_emit_no_trade(
+def test_count_unresolved_material_includes_orphan_emit_no_trade(
     conn: sqlite3.Connection,
 ):
-    """V1 LIMITATION (banked V2 candidate at return report §7): discrepancies
-    with NULL trade_id (sector_tamper / equity_delta / cash_movement orphans)
-    are EXCLUDED from this count because the underlying repo helpers JOIN
-    on trade row.
+    """Phase 18 Arc 18-H.6.1 Part 1: the V1 LIMITATION is LIFTED — an
+    unresolved-material ORPHAN row (``trade_id IS NULL``) is now INCLUDED in
+    the count via the additive ``list_unresolved_material_orphans`` UNION arm.
 
-    Discriminating test: emit an orphan-attributed discrepancy + assert it
-    is NOT counted. If the helper is later widened to include orphans, this
-    test will need to be updated.
+    (Pre-18-H.6.1 this asserted ``== 1`` — orphans excluded by the
+    JOIN-on-trade canonical helpers. 18-H.6.1 surfaces the orphan in the
+    topbar material banner so the operator reconciles the untracked broker
+    position.)
+
+    Discriminating test: 1 trade-attributed + 1 material orphan → count 2.
     """
     _seed_trade(conn, trade_id=1, state="entered")
     run_id = _new_run(conn)
     _emit(conn, run_id=run_id, trade_id=1)
     _emit(conn, run_id=run_id, trade_id=None,
           discrepancy_type="equity_delta", material=1)
-    assert count_unresolved_material(conn) == 1
+    assert count_unresolved_material(conn) == 2
 
 
 def test_count_unresolved_material_read_only_no_transaction(

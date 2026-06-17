@@ -32,20 +32,31 @@ from swing.data.repos.reconciliation import (
     _row_to_discrepancy,
     list_unresolved_material_for_active_trades,
     list_unresolved_material_for_closed_trades,
+    list_unresolved_material_orphans,
 )
 
 
 def count_unresolved_material(conn: sqlite3.Connection) -> int:
     """Return the sum of unresolved-material discrepancies attributed to
-    active + closed trades.
+    active + closed trades PLUS unresolved-material ORPHAN rows.
 
     Read-only; opens no transaction; thin wrapper over the Phase 9
     Sub-bundle B canonical query helpers per plan §A.18 + spec §5.1
     CANONICAL #1+#2.
+
+    Phase 18 Arc 18-H.6.1 Part 1: UNIONs the orphan arm
+    (``list_unresolved_material_orphans`` — ``trade_id IS NULL``) so the
+    topbar material banner reflects ``untracked_broker_position`` orphans
+    (18-H.6) that the JOIN-on-``trades`` canonical helpers exclude. The
+    three arms are mutually exclusive (active/closed JOIN requires a
+    ``trade_id``; the orphan arm requires ``trade_id IS NULL``), so the
+    naive sum cannot double-count. C1: the trade-attributed arms are
+    byte-identical.
     """
     active = list_unresolved_material_for_active_trades(conn)
     closed = list_unresolved_material_for_closed_trades(conn)
-    return len(active) + len(closed)
+    orphans = list_unresolved_material_orphans(conn)
+    return len(active) + len(closed) + len(orphans)
 
 
 def list_pending_ambiguities_in_banner_set(
@@ -68,8 +79,17 @@ def list_pending_ambiguities_in_banner_set(
     caller may take ``[0]`` for the first-pending without relying on
     DB-side ordering semantics.
 
-    Orphan-emit discrepancies (``trade_id IS NULL``) are EXCLUDED by
-    construction — the canonical helpers JOIN on the ``trades`` row.
+    Phase 18 Arc 18-H.6.1 Part 1: the banner SET now also includes
+    unresolved-material ORPHAN rows (``untracked_broker_position``,
+    ``trade_id IS NULL``) via ``list_unresolved_material_orphans``, so the
+    banner-link (``fetch_first_pending_ambiguity_resolve_link_path``) can
+    point the operator at an orphan when no trade-attributed
+    pending-ambiguity row exists. Orphans stay ``unresolved`` (Part 3),
+    NOT ``pending_ambiguity_resolution``, so they are added EXPLICITLY here
+    rather than caught by the ``resolution == 'pending_ambiguity_resolution'``
+    filter. C1: the trade-attributed pending-ambiguity behavior is
+    byte-identical — an UNRESOLVED (non-pending) trade-attributed row is
+    still excluded; only the orphan arm is additive.
 
     Read-only; opens no transaction.
     """
@@ -79,7 +99,11 @@ def list_pending_ambiguities_in_banner_set(
     pending = [
         d for d in union if d.resolution == "pending_ambiguity_resolution"
     ]
-    return sorted(pending, key=lambda d: d.discrepancy_id)
+    # 18-H.6.1: additive orphan arm (already filtered to unresolved-material
+    # trade_id IS NULL by the repo reader). Mutually exclusive with the
+    # trade-attributed pending list (those all carry a non-NULL trade_id).
+    orphans = list_unresolved_material_orphans(conn)
+    return sorted(pending + orphans, key=lambda d: d.discrepancy_id)
 
 
 def fetch_first_pending_ambiguity_resolve_link_path(
