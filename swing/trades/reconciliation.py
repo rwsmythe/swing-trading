@@ -190,6 +190,26 @@ class CallerHeldTransactionError(RuntimeError):
     """
 
 
+class DiscrepancyResolutionStateError(ValueError):
+    """Phase 18 Arc 18-H.6.1 Codex R1 Major #2 — raised when
+    ``resolve_discrepancy`` is called with ``require_current_resolution``
+    set AND the row's CURRENT resolution (re-read INSIDE the function's
+    BEGIN IMMEDIATE transaction) does not match the expected value.
+
+    Closes the GET/POST TOCTOU window for callers (e.g. the web orphan
+    resolver) that pre-read the row's state then call this service: a
+    concurrent writer that resolves the row between the caller's pre-read
+    and this BEGIN IMMEDIATE would otherwise be silently overwritten. The
+    check runs under the serializing BEGIN IMMEDIATE, so the loser of the
+    race deterministically raises instead of clobbering audit metadata.
+
+    A ``ValueError`` subclass so existing ``except ValueError`` catch
+    ladders still capture it; callers wanting the 409-vs-400 distinction
+    catch ``DiscrepancyResolutionStateError`` BEFORE the generic
+    ``except ValueError``.
+    """
+
+
 def _sha256_hex(data: bytes) -> str:
     """Return hex digest. Empty input yields the spec'd empty-SHA256
     constant (e3b0c44298fc...); pre-empted Codex finding."""
@@ -554,6 +574,7 @@ def resolve_discrepancy(
     resolved_by: str = _V1_RESOLVED_BY,
     mistake_tag_assigned: str | None = None,
     material_to_review: int | None = None,
+    require_current_resolution: str | None = None,
 ) -> None:
     """Update an existing discrepancy's resolution lifecycle.
 
@@ -570,6 +591,16 @@ def resolve_discrepancy(
           source_treated_canonical / manual_override (acknowledged_immaterial
           allows null per spec §3.3 + dataclass validator).
         - material_to_review override (if provided) restricted to {0, 1}.
+
+    ``require_current_resolution`` (Phase 18 Arc 18-H.6.1 Codex R1 Major
+    #2; default None preserves every existing caller verbatim): when set,
+    the row's CURRENT ``resolution`` is re-read INSIDE this function's
+    ``BEGIN IMMEDIATE`` transaction and MUST equal the expected value, else
+    :class:`DiscrepancyResolutionStateError` is raised (and the tx rolled
+    back). This closes the caller's pre-read → resolve TOCTOU window (e.g.
+    the web orphan resolver's concurrent-POST race) atomically under the
+    serializing lock — without it a race-loser silently overwrites the
+    winner's audit metadata and returns success.
 
     Rejects caller-held transaction (single-transaction service).
     """
@@ -605,6 +636,18 @@ def resolve_discrepancy(
         existing = repo.get_discrepancy(conn, discrepancy_id)
         if existing is None:
             raise ValueError(f"discrepancy_id={discrepancy_id} not found")
+        # 18-H.6.1 Codex R1 Major #2 — atomic state precondition (TOCTOU
+        # close). Checked AFTER BEGIN IMMEDIATE so a concurrent resolver
+        # that committed first is visible here and the loser raises.
+        if (
+            require_current_resolution is not None
+            and existing.resolution != require_current_resolution
+        ):
+            raise DiscrepancyResolutionStateError(
+                f"discrepancy_id={discrepancy_id} is no longer "
+                f"{require_current_resolution!r} (current="
+                f"{existing.resolution!r}); resolution not applied"
+            )
         repo.update_discrepancy_resolution(
             conn,
             discrepancy_id=discrepancy_id,
@@ -644,6 +687,7 @@ def resolve_discrepancy(
 __all__ = [
     "CallerHeldTransactionError",
     "DISCREPANCY_TYPES",
+    "DiscrepancyResolutionStateError",
     "MATERIAL_BY_TYPE",
     "RESOLUTION_TYPES",
     "resolve_discrepancy",

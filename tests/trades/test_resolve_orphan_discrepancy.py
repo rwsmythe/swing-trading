@@ -21,7 +21,10 @@ from swing.data.repos.reconciliation import (
     insert_run,
     list_unresolved_material_orphans,
 )
-from swing.trades.reconciliation import resolve_discrepancy
+from swing.trades.reconciliation import (
+    DiscrepancyResolutionStateError,
+    resolve_discrepancy,
+)
 
 
 @pytest.fixture
@@ -135,6 +138,60 @@ def test_resolve_orphan_decrements_run_unresolved_counter(
         (run_id,),
     ).fetchone()
     assert row[0] == 0
+
+
+def test_require_current_resolution_raises_on_mismatch_no_overwrite(
+    conn: sqlite3.Connection,
+):
+    """Codex R1 Major #2 — when ``require_current_resolution`` does not match
+    the row's CURRENT state, the resolve RAISES (TOCTOU close) and does NOT
+    overwrite the existing audit metadata.
+
+    Distinguishing: simulate the race-loser by first resolving the orphan,
+    then a second resolve with ``require_current_resolution='unresolved'``
+    must raise DiscrepancyResolutionStateError and leave the FIRST
+    resolution's metadata intact (pre-fix: the second resolve silently
+    overwrote resolution_reason/resolved_by and returned success)."""
+    run_id = _new_run(conn)
+    did = _emit_orphan(conn, run_id=run_id)
+    # First (winning) resolve.
+    resolve_discrepancy(
+        conn,
+        discrepancy_id=did,
+        resolution="acknowledged_immaterial",
+        resolution_reason="winner",
+        resolved_by="operator_web",
+    )
+    # Second (losing) resolve with the guard set to the now-stale state.
+    with pytest.raises(DiscrepancyResolutionStateError):
+        resolve_discrepancy(
+            conn,
+            discrepancy_id=did,
+            resolution="acknowledged_immaterial",
+            resolution_reason="loser-should-not-stick",
+            resolved_by="other",
+            require_current_resolution="unresolved",
+        )
+    disc = get_discrepancy(conn, did)
+    # The winner's metadata is intact (no overwrite by the loser).
+    assert disc.resolution == "acknowledged_immaterial"
+    assert disc.resolution_reason == "winner"
+    assert disc.resolved_by == "operator_web"
+
+
+def test_require_current_resolution_match_proceeds(
+    conn: sqlite3.Connection,
+):
+    """When the guard matches the current state, the resolve proceeds."""
+    run_id = _new_run(conn)
+    did = _emit_orphan(conn, run_id=run_id)
+    resolve_discrepancy(
+        conn,
+        discrepancy_id=did,
+        resolution="acknowledged_immaterial",
+        require_current_resolution="unresolved",
+    )
+    assert get_discrepancy(conn, did).resolution == "acknowledged_immaterial"
 
 
 def test_c1_normal_resolve_path_byte_identical(conn: sqlite3.Connection):

@@ -714,7 +714,10 @@ async def reconcile_discrepancy_resolve_post(  # noqa: PLR0911, PLR0912, PLR0915
                     recent_multi_leg_count=recent_multi_leg_count,
                     banner_resolve_link=banner_resolve_link,
                 )
-            from swing.trades.reconciliation import resolve_discrepancy
+            from swing.trades.reconciliation import (
+                DiscrepancyResolutionStateError,
+                resolve_discrepancy,
+            )
             try:
                 resolve_discrepancy(
                     conn,
@@ -724,6 +727,12 @@ async def reconcile_discrepancy_resolve_post(  # noqa: PLR0911, PLR0912, PLR0915
                     # empty submission as None (F6 nullable-text discipline).
                     resolution_reason=(resolution_reason or None),
                     resolved_by="operator_web",  # F2 LOCK — surface attribution
+                    # Codex R1 Major #2 — atomic TOCTOU close: a concurrent
+                    # POST that resolved the orphan first makes THIS call's
+                    # state precondition fail (raised under BEGIN IMMEDIATE)
+                    # instead of silently overwriting the winner's audit
+                    # metadata + returning 204.
+                    require_current_resolution="unresolved",
                 )
             except sqlite3.OperationalError as exc:
                 if not _is_transient_lock_error(exc):
@@ -741,11 +750,35 @@ async def reconcile_discrepancy_resolve_post(  # noqa: PLR0911, PLR0912, PLR0915
                     recent_multi_leg_count=recent_multi_leg_count,
                     banner_resolve_link=banner_resolve_link,
                 )
+            except DiscrepancyResolutionStateError:
+                # Codex R1 Major #2 — concurrent resolver won the race; the
+                # orphan is already terminal. Mirror the tier-2 409 posture.
+                log.warning(
+                    "orphan resolve race: discrepancy %d already resolved",
+                    discrepancy_id,
+                )
+                return _render_error(
+                    request,
+                    status_code=409,
+                    error_kind="already_resolved",
+                    error_message=(
+                        f"Discrepancy {discrepancy_id} (untracked broker "
+                        f"position) was resolved concurrently."
+                    ),
+                    discrepancy_id=discrepancy_id,
+                    disc_resolution="acknowledged_immaterial",
+                    disc_resolved_by=None,
+                    disc_created_at=disc.created_at,
+                    unresolved_count=unresolved_count,
+                    recent_multi_leg_count=recent_multi_leg_count,
+                    banner_resolve_link=banner_resolve_link,
+                )
             except ValueError as exc:
-                # Defensive: a concurrent writer flipped the orphan to a
-                # terminal state between the read above and the resolve (the
-                # service raises on a missing/never-existing row). Re-render
-                # the acknowledge form with the error band.
+                # Defensive: a concurrent writer DELETED the orphan (the
+                # service raises on a missing row) between the read above and
+                # the resolve. Re-render the acknowledge form with the error
+                # band. (DiscrepancyResolutionStateError is a ValueError
+                # subclass but is caught ABOVE for the 409 race disposition.)
                 log.warning("orphan resolve ValueError: %s", exc)
                 return _render_orphan_acknowledge_form(
                     request,
