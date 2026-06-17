@@ -377,12 +377,37 @@ def update_discrepancy_resolution(
     resolved_by: str,
     resolved_at: str,
     mistake_tag_assigned: str | None = None,
+    clear_ambiguity_kind: bool = False,
 ) -> None:
     """UPDATE the resolution-lifecycle columns on an existing row.
 
     UPDATE only — NO ``INSERT OR REPLACE`` per CLAUDE.md gotcha (FK
     references would CASCADE-wipe; resolution UPDATE preserves PK).
+
+    ``clear_ambiguity_kind`` (Phase 18 Arc 18-H.6.1 Codex R2 Major #1;
+    default False preserves every existing caller verbatim): when True,
+    also sets ``ambiguity_kind = NULL`` in the SAME UPDATE. Required when
+    transitioning a row OUT of ``pending_ambiguity_resolution`` /
+    ``operator_resolved_ambiguity`` into a resolution the migration-0031
+    cross-column CHECK requires ``ambiguity_kind IS NULL`` for (e.g. an
+    existing pending-ambiguity ``untracked_broker_position`` orphan being
+    cleared to ``acknowledged_immaterial`` — the live-ID-68 case). Without
+    it the CHECK rejects the transition.
     """
+    if clear_ambiguity_kind:
+        conn.execute(
+            "UPDATE reconciliation_discrepancies SET "
+            "resolution = ?, resolution_reason = ?, "
+            "resolved_at = ?, resolved_by = ?, "
+            "ambiguity_kind = NULL, "
+            "mistake_tag_assigned = COALESCE(?, mistake_tag_assigned) "
+            "WHERE discrepancy_id = ?",
+            (
+                resolution, resolution_reason, resolved_at, resolved_by,
+                mistake_tag_assigned, discrepancy_id,
+            ),
+        )
+        return
     conn.execute(
         "UPDATE reconciliation_discrepancies SET "
         "resolution = ?, resolution_reason = ?, "
@@ -493,8 +518,8 @@ def list_unresolved_material_orphans(
     banner/count (``swing/metrics/discrepancies.py``).
 
     Predicate: ``discrepancy_type = 'untracked_broker_position' AND
-    trade_id IS NULL AND material_to_review = 1 AND resolution =
-    'unresolved'``.
+    trade_id IS NULL AND material_to_review = 1 AND resolution IN
+    ('unresolved', 'pending_ambiguity_resolution')``.
 
     The ``discrepancy_type`` clause is LOAD-BEARING (Codex R1 Major #1):
     ``trade_id IS NULL`` alone is NOT exclusive to this arc's orphan — TOS
@@ -509,10 +534,16 @@ def list_unresolved_material_orphans(
     operator at a 409 page. Scoping to the exact type keeps the reader, the
     count, the banner set, and the web branch on ONE predicate.
 
-    The resolution predicate is STRICTLY ``'unresolved'`` (NOT the
-    trade-helpers' ``IN ('unresolved', 'pending_ambiguity_resolution')``
-    widening): per 18-H.6.1 Part 3 the orphan deliberately stays
-    ``unresolved`` rather than the tier-2 ambiguity limbo.
+    The resolution predicate is ``IN ('unresolved',
+    'pending_ambiguity_resolution')``: NEW orphans stay ``unresolved``
+    (18-H.6.1 Part 3), but an orphan 18-H.6 ALREADY swept into
+    ``pending_ambiguity_resolution`` BEFORE this arc (the live ID-68 SPCX
+    case, Codex R2 Major #1) must ALSO surface in the banner so the
+    operator can reach + clear it. The web orphan branch accepts BOTH
+    states and the resolver NULLs ``ambiguity_kind`` so the cross-column
+    CHECK permits the acknowledged_immaterial transition. The trade-JOINed
+    canonical helpers already EXCLUDE these orphans (JOIN on ``trades``), so
+    this is the sole banner arm for an orphan in either state.
 
     Returns rows ordered by created_at DESC, discrepancy_id DESC (mirrors
     the canonical helpers' newest-first ordering).
@@ -523,7 +554,7 @@ def list_unresolved_material_orphans(
         "WHERE discrepancy_type = 'untracked_broker_position' "
         "  AND trade_id IS NULL "
         "  AND material_to_review = 1 "
-        "  AND resolution = 'unresolved' "
+        "  AND resolution IN ('unresolved', 'pending_ambiguity_resolution') "
         "ORDER BY created_at DESC, discrepancy_id DESC"
     ).fetchall()
     return [_row_to_discrepancy(r) for r in rows]

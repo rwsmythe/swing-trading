@@ -194,6 +194,57 @@ def test_require_current_resolution_match_proceeds(
     assert get_discrepancy(conn, did).resolution == "acknowledged_immaterial"
 
 
+def _emit_pending_ambiguity_orphan(
+    conn: sqlite3.Connection, *, run_id: int,
+) -> int:
+    """Plant an orphan in the LEGACY pending_ambiguity_resolution state (the
+    pre-18-H.6.1 18-H.6 pivot stamped it 'unsupported'). The cross-column
+    CHECK requires ambiguity_kind IS NOT NULL for this resolution, so it is
+    inserted via raw SQL with ambiguity_kind set."""
+    did = conn.execute(
+        "INSERT INTO reconciliation_discrepancies ("
+        "run_id, discrepancy_type, trade_id, fill_id, cash_movement_id, "
+        "ticker, field_name, expected_value_json, actual_value_json, "
+        "delta_text, material_to_review, resolution, ambiguity_kind, "
+        "resolution_reason, created_at"
+        ") VALUES (?, 'untracked_broker_position', NULL, NULL, NULL, "
+        "'SPCX', 'broker_position', '{\"journal_qty\": 0}', "
+        "'{\"qty\": 2.0, \"market_value\": 411.9}', "
+        "'SPCX held at broker, not in journal', 1, "
+        "'pending_ambiguity_resolution', 'unsupported', "
+        "'classifier: no sub-classifier', '2026-06-15T09:00:00')",
+        (run_id,),
+    ).lastrowid
+    conn.commit()
+    return did
+
+
+def test_resolve_legacy_pending_ambiguity_orphan_clears_ambiguity_kind(
+    conn: sqlite3.Connection,
+):
+    """Codex R2 Major #1 — the LIVE-ID-68 case: an orphan 18-H.6 already
+    swept into pending_ambiguity_resolution (ambiguity_kind NOT NULL) MUST
+    be clearable to acknowledged_immaterial. resolve_discrepancy clears
+    ambiguity_kind in the same UPDATE so the migration-0031 cross-column
+    CHECK permits the transition.
+
+    Distinguishing: pre-fix the UPDATE left ambiguity_kind non-NULL ->
+    acknowledged_immaterial + non-NULL ambiguity_kind violates the CHECK ->
+    IntegrityError (the orphan is stuck forever). Post-fix it resolves
+    cleanly + ambiguity_kind is NULL."""
+    run_id = _new_run(conn)
+    did = _emit_pending_ambiguity_orphan(conn, run_id=run_id)
+    resolve_discrepancy(
+        conn,
+        discrepancy_id=did,
+        resolution="acknowledged_immaterial",
+        resolution_reason="Journaled SPCX; clearing the legacy pending orphan.",
+    )
+    disc = get_discrepancy(conn, did)
+    assert disc.resolution == "acknowledged_immaterial"
+    assert disc.ambiguity_kind is None
+
+
 def test_c1_normal_resolve_path_byte_identical(conn: sqlite3.Connection):
     """C1: a normal trade-attributed discrepancy resolves identically."""
     _seed_trade(conn, trade_id=1)

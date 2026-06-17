@@ -648,6 +648,18 @@ def resolve_discrepancy(
                 f"{require_current_resolution!r} (current="
                 f"{existing.resolution!r}); resolution not applied"
             )
+        # 18-H.6.1 Codex R2 Major #1 — the migration-0031 cross-column CHECK
+        # ties ``ambiguity_kind IS NOT NULL`` to ``resolution IN
+        # ('pending_ambiguity_resolution', 'operator_resolved_ambiguity')``.
+        # ``resolve_discrepancy`` only ever sets a NON-pending manual
+        # resolution (the two service-owned pending states are rejected
+        # above), so if the EXISTING row carries a non-NULL ambiguity_kind
+        # (e.g. an orphan 18-H.6 swept into pending_ambiguity_resolution —
+        # the live-ID-68 case) the UPDATE MUST clear ambiguity_kind in the
+        # SAME statement or the CHECK rejects the transition. Cleared
+        # unconditionally when present; for a row already at ambiguity_kind
+        # NULL the extra ``ambiguity_kind = NULL`` is a harmless no-op.
+        clear_ambiguity_kind = existing.ambiguity_kind is not None
         repo.update_discrepancy_resolution(
             conn,
             discrepancy_id=discrepancy_id,
@@ -656,6 +668,7 @@ def resolve_discrepancy(
             resolved_by=resolved_by,
             resolved_at=now_ms(),
             mistake_tag_assigned=mistake_tag_assigned,
+            clear_ambiguity_kind=clear_ambiguity_kind,
         )
         if material_to_review is not None:
             repo.update_discrepancy_material(

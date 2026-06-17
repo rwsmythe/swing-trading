@@ -150,6 +150,27 @@ def test_orphan_reader_excludes_trade_attributed_rows(
     assert list_unresolved_material_orphans(conn) == []
 
 
+def test_orphan_reader_includes_legacy_pending_ambiguity_orphan(
+    conn: sqlite3.Connection,
+):
+    """Codex R2 Major #1 — an orphan 18-H.6 swept into
+    pending_ambiguity_resolution (the live ID-68 case) is ALSO surfaced so
+    the operator can reach + clear it via the banner."""
+    run_id = _new_run(conn)
+    did = conn.execute(
+        "INSERT INTO reconciliation_discrepancies ("
+        "run_id, discrepancy_type, trade_id, ticker, field_name, "
+        "material_to_review, resolution, ambiguity_kind, resolution_reason, "
+        "created_at) VALUES (?, 'untracked_broker_position', NULL, 'SPCX', "
+        "'broker_position', 1, 'pending_ambiguity_resolution', 'unsupported', "
+        "'classifier: no sub-classifier', '2026-05-12T09:00:00.000')",
+        (run_id,),
+    ).lastrowid
+    conn.commit()
+    rows = list_unresolved_material_orphans(conn)
+    assert [r.discrepancy_id for r in rows] == [did]
+
+
 def test_orphan_reader_excludes_non_untracked_trade_id_null_types(
     conn: sqlite3.Connection,
 ):

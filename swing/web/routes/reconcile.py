@@ -132,12 +132,26 @@ def _render_error(
 # ---------------------------------------------------------------------------
 # Phase 18 Arc 18-H.6.1 Part 2 — orphan (untracked_broker_position) branch.
 #
-# An ``untracked_broker_position`` orphan (18-H.6, all-FK-null) stays
+# A NEW ``untracked_broker_position`` orphan (18-H.6, all-FK-null) stays
 # ``unresolved`` (Part 3), so it is NOT a tier-2 ``pending_ambiguity_resolution``
 # row and does NOT route through the FK-requiring tier-2 resolver. Instead the
 # GET renders a no-FK-safe acknowledge form + the POST clears it via
 # ``resolve_discrepancy`` -> ``acknowledged_immaterial`` (C2: no new schema).
+#
+# BACKWARD-COMPAT (Codex R2 Major #1): an orphan that 18-H.6 ALREADY swept
+# into ``pending_ambiguity_resolution`` BEFORE this arc (the live ID-68 SPCX
+# case) must ALSO be clearable here — so the branch accepts BOTH the
+# ``unresolved`` and the legacy ``pending_ambiguity_resolution`` states.
+# resolve_discrepancy clears ``ambiguity_kind`` in the same UPDATE so the
+# migration-0031 cross-column CHECK permits the acknowledged_immaterial
+# transition.
 # ---------------------------------------------------------------------------
+
+
+# Orphan states the acknowledge branch can clear (Codex R2 Major #1 widening).
+_ORPHAN_CLEARABLE_RESOLUTIONS: frozenset[str] = frozenset(
+    {"unresolved", "pending_ambiguity_resolution"}
+)
 
 
 def _is_orphan_discrepancy(disc: object) -> bool:
@@ -286,10 +300,11 @@ def reconcile_discrepancy_resolve_form(
                 banner_resolve_link=banner_resolve_link,
             )
         # 18-H.6.1 Part 2 — orphan branch (BEFORE the tier-2 pending gate).
-        # An unresolved orphan renders the acknowledge form; an
-        # already-resolved orphan returns the canonical 409.
+        # A clearable orphan (unresolved OR the legacy pending_ambiguity_
+        # resolution per Codex R2 Major #1) renders the acknowledge form; a
+        # terminal-state orphan returns the canonical 409.
         if _is_orphan_discrepancy(disc):
-            if disc.resolution != "unresolved":
+            if disc.resolution not in _ORPHAN_CLEARABLE_RESOLUTIONS:
                 return _render_error(
                     request,
                     status_code=409,
@@ -697,7 +712,7 @@ async def reconcile_discrepancy_resolve_post(  # noqa: PLR0911, PLR0912, PLR0915
         # (resolve_discrepancy -> acknowledged_immaterial; C2 reuse, no new
         # schema). NOT the FK-requiring tier-2 apply_tier2_resolution path.
         if _is_orphan_discrepancy(disc):
-            if disc.resolution != "unresolved":
+            if disc.resolution not in _ORPHAN_CLEARABLE_RESOLUTIONS:
                 return _render_error(
                     request,
                     status_code=409,
@@ -731,8 +746,10 @@ async def reconcile_discrepancy_resolve_post(  # noqa: PLR0911, PLR0912, PLR0915
                     # POST that resolved the orphan first makes THIS call's
                     # state precondition fail (raised under BEGIN IMMEDIATE)
                     # instead of silently overwriting the winner's audit
-                    # metadata + returning 204.
-                    require_current_resolution="unresolved",
+                    # metadata + returning 204. Anchored on the state read at
+                    # preflight (unresolved OR the legacy pending_ambiguity_
+                    # resolution per Codex R2 Major #1).
+                    require_current_resolution=disc.resolution,
                 )
             except sqlite3.OperationalError as exc:
                 if not _is_transient_lock_error(exc):
