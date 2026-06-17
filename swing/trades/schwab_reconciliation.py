@@ -54,6 +54,8 @@ from swing.trades.equity import current_equity, list_all_exitshape_via_fills
 from swing.trades.reconciliation import (
     DISCREPANCY_TYPES,
     MATERIAL_BY_TYPE,
+    DiscrepancyResolutionStateError,
+    resolve_discrepancy,
 )
 from swing.trades.reconciliation_auto_correct import (
     InvalidOverrideComboError,
@@ -1081,6 +1083,84 @@ def _append_cash_ingest_summary(
     if ingested_rows:
         summary_entry["ingested_rows"] = ingested_rows
     cash_warnings.append(summary_entry)
+
+
+_OUT_OF_FRAMEWORK_RESOLUTION_PREFIX = "out-of-framework"
+
+
+def resolve_out_of_framework_orphans(
+    conn: sqlite3.Connection,
+    *,
+    out_of_framework_tickers: tuple[str, ...],
+    resolution_reason_prefix: str = _OUT_OF_FRAMEWORK_RESOLUTION_PREFIX,
+) -> int:
+    """Clear EXISTING declared-ticker ``untracked_broker_position`` orphan rows
+    to ``acknowledged_immaterial`` with an audited reason (CHARC C3 / Ruling 3).
+
+    SCOPED to the declared set ONLY (``UPPER(ticker) IN (<set>)``); idempotent
+    (the resolution filter means a second call matches zero rows); atomic per
+    row via the existing :func:`swing.trades.reconciliation.resolve_discrepancy`
+    service (which owns its OWN ``BEGIN IMMEDIATE`` — so this function MUST NOT
+    be called from inside ``run_schwab_reconciliation``'s outer tx; the
+    operator-driven CLI surface is the clean post-COMMIT call site).
+
+    The carve-out (the orphan pass) prevents FUTURE orphans; this clears the
+    banner for rows ALREADY in the DB. ``resolve_discrepancy`` auto-clears a
+    non-NULL ``ambiguity_kind`` (the live-ID-68 ``pending_ambiguity_resolution``
+    path; the 0031 cross-column CHECK would otherwise reject the transition)
+    and decrements the parent run's unresolved counter.
+
+    Args:
+        out_of_framework_tickers: the operator-declared set (empty -> no-op).
+        resolution_reason_prefix: audit-reason prefix.
+
+    Returns:
+        The number of orphan rows resolved.
+    """
+    if conn.in_transaction:
+        raise CallerHeldTransactionError(
+            "resolve_out_of_framework_orphans calls resolve_discrepancy, which "
+            "owns its own BEGIN IMMEDIATE per row; caller MUST NOT hold an open "
+            "transaction (do NOT call this from inside run_schwab_reconciliation)."
+        )
+    declared = sorted({t.upper() for t in out_of_framework_tickers if t})
+    if not declared:
+        return 0
+
+    # Build the dynamic `?` IN-clause (sqlite cannot bind a list to one
+    # placeholder; empty `IN ()` is invalid SQL -> guarded above).
+    placeholders = ",".join("?" * len(declared))
+    candidate_rows = conn.execute(
+        "SELECT discrepancy_id, resolution, ticker FROM "
+        "reconciliation_discrepancies WHERE "
+        "discrepancy_type = 'untracked_broker_position' "
+        f"AND UPPER(ticker) IN ({placeholders}) "
+        "AND resolution IN ('unresolved', 'pending_ambiguity_resolution')",
+        tuple(declared),
+    ).fetchall()
+
+    resolved = 0
+    for discrepancy_id, current_resolution, ticker in candidate_rows:
+        try:
+            resolve_discrepancy(
+                conn,
+                discrepancy_id=int(discrepancy_id),
+                resolution="acknowledged_immaterial",
+                resolution_reason=(
+                    f"{resolution_reason_prefix}: {ticker} declared "
+                    f"out-of-framework"
+                ),
+                require_current_resolution=current_resolution,
+            )
+        except DiscrepancyResolutionStateError:
+            # TOCTOU: a concurrent resolver committed first -> skip this row.
+            log.info(
+                "resolve_out_of_framework_orphans: discrepancy_id=%s no longer "
+                "%r; skipped", discrepancy_id, current_resolution,
+            )
+            continue
+        resolved += 1
+    return resolved
 
 
 def run_schwab_reconciliation(

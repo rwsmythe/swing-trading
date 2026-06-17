@@ -1014,6 +1014,54 @@ def purge_marketdata_archive(ctx: click.Context, yes: bool) -> None:
                f"re-fetches clean.")
 
 
+@schwab_group.command("resolve-out-of-framework")
+@click.pass_context
+def schwab_resolve_out_of_framework(ctx: click.Context) -> None:
+    """Clear EXISTING declared out-of-framework orphan rows (the SPCX carve-out).
+
+    One-shot operator clear: resolves the existing declared-ticker
+    ``untracked_broker_position`` orphan rows (``unresolved`` /
+    ``pending_ambiguity_resolution``) to ``acknowledged_immaterial`` with an
+    audited reason. SCOPED to the declared set
+    (``cfg.reconciliation.out_of_framework_tickers``); idempotent (re-running
+    is a no-op). The orphan-pass carve-out prevents FUTURE orphans; this clears
+    the banner for rows already in the DB.
+
+    Writes domain rows -> refuses while a pipeline run is in flight
+    (SchwabPipelineActiveError), like the other Schwab domain-write subcommands.
+    """
+    from swing.config_overrides import apply_overrides
+    from swing.trades.schwab_reconciliation import (
+        resolve_out_of_framework_orphans,
+    )
+    cfg = apply_overrides(ctx.obj["config"])
+    declared = tuple(
+        getattr(
+            getattr(cfg, "reconciliation", None), "out_of_framework_tickers", ()
+        )
+        or ()
+    )
+    if not declared:
+        click.echo(
+            "No out-of-framework tickers declared "
+            "([reconciliation] out_of_framework_tickers in user-config.toml); "
+            "nothing to resolve."
+        )
+        return
+    conn = connect(cfg.paths.db_path)
+    try:
+        _check_pipeline_not_running(conn)
+        resolved = resolve_out_of_framework_orphans(
+            conn, out_of_framework_tickers=declared,
+        )
+    finally:
+        conn.close()
+    click.echo(
+        f"Resolved {resolved} out-of-framework orphan row(s) for "
+        f"{', '.join(declared)}."
+    )
+
+
 def _verify_marketdata_path(
     *,
     ctx: click.Context,
