@@ -11,8 +11,14 @@ import logging
 from dataclasses import is_dataclass, replace
 from typing import Any, Literal
 
-from swing.config import Config, _parse_logging_config
+from swing.config import (
+    Config,
+    _normalize_out_of_framework_tickers,
+    _parse_logging_config,
+)
 from swing.config_user import load_user_overrides
+
+log = logging.getLogger(__name__)
 
 # V1 field paths — keep in lockstep with config_validation.FIELD_REGISTRY.
 # `integrations.schwab.account_hash` added Sub-bundle A T-A.2 (masked display
@@ -150,6 +156,31 @@ def apply_overrides(base_cfg: Config) -> Config:
             schwab=new_schwab,
         )
 
+    # [reconciliation] out_of_framework_tickers — the SPCX carve-out registry.
+    # Operator-specific (lives in user-config.toml only, like account_hash).
+    # DEFENSIVE: a malformed user-config value (not a list, or non-string
+    # elements) must NOT crash apply_overrides (it runs at every route entry).
+    # TOML is free-form -> this is the genuinely-unconstrained input the recipe
+    # says to STILL guard: log a diagnostic + fall through to the base value
+    # rather than raising. (The tracked-section load path IS strict.)
+    new_reconciliation = base_cfg.reconciliation
+    oof = _get(overrides, "reconciliation.out_of_framework_tickers")
+    if not isinstance(oof, _Missing):
+        try:
+            normalized = _normalize_out_of_framework_tickers(oof)
+        except TypeError:
+            log.warning(
+                "[reconciliation] user-config out_of_framework_tickers is "
+                "malformed (expected a list of ticker strings; got %r); "
+                "ignored, using base value",
+                type(oof).__name__,
+            )
+        else:
+            new_reconciliation = replace(
+                base_cfg.reconciliation,
+                out_of_framework_tickers=normalized,
+            )
+
     new_logging = base_cfg.logging
     raw_logging = _get(overrides, "logging")
     if isinstance(raw_logging, dict):
@@ -199,6 +230,7 @@ def apply_overrides(base_cfg: Config) -> Config:
         pipeline=new_pipeline,
         account=new_account,
         integrations=new_integrations,
+        reconciliation=new_reconciliation,
         logging=new_logging,
     )
 

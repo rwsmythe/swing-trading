@@ -241,6 +241,68 @@ class ReviewConfig:
     review_window_days: int = 7
 
 
+def _normalize_out_of_framework_tickers(value: object) -> tuple[str, ...]:
+    """Normalize a declared out-of-framework ticker list to an uppercased,
+    de-duplicated, sorted ``tuple[str, ...]`` (deterministic set + audit order).
+
+    A non-list / non-iterable-of-strings value raises ``TypeError`` (the
+    tracked-section load path is strict, mirroring ``load()``'s required-section
+    posture). The USER-config layer (``config_overrides.apply_overrides``) does
+    NOT call this on a malformed value — it degrades-never-crashes there (TOML
+    is free-form, the genuinely-unconstrained input).
+    """
+    if isinstance(value, (str, bytes)):
+        raise TypeError(
+            "out_of_framework_tickers must be a list of ticker strings, "
+            f"not a bare {type(value).__name__}"
+        )
+    try:
+        items = list(value)  # type: ignore[arg-type]
+    except TypeError as exc:
+        raise TypeError(
+            "out_of_framework_tickers must be a list of ticker strings; "
+            f"got {type(value).__name__}"
+        ) from exc
+    normalized: set[str] = set()
+    for item in items:
+        if not isinstance(item, str):
+            raise TypeError(
+                "out_of_framework_tickers elements must be strings; "
+                f"got {type(item).__name__}"
+            )
+        token = item.strip().upper()
+        if token:
+            normalized.add(token)
+    return tuple(sorted(normalized))
+
+
+@dataclass(frozen=True)
+class Reconciliation:
+    """Reconciliation-boundary config (SPCX out-of-framework carve-out).
+
+    ``out_of_framework_tickers``: the operator-declared set of tickers held
+    OUTSIDE the swing framework (e.g. a long-term IPO buy-and-hold). The
+    Schwab-driven orphan pass skips emitting an ``untracked_broker_position``
+    for these (the carve-out), surfacing the exclusion as a #27 recon line.
+
+    Toml-shadowing rule (CHARC Ruling 1): the section is OPTIONAL in
+    swing.config.toml and the tracked file MUST stay EMPTY of any declaration
+    — the operator's set lives ONLY in user-config.toml (the same posture as
+    ``integrations.schwab.account_hash`` / the finviz token). Default = empty.
+    """
+    out_of_framework_tickers: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        # Normalize whatever was constructed (load passes a list; replace()
+        # passes a pre-normalized tuple — idempotent). frozen dataclass ->
+        # object.__setattr__.
+        object.__setattr__(
+            self,
+            "out_of_framework_tickers",
+            _normalize_out_of_framework_tickers(self.out_of_framework_tickers),
+        )
+
+
 @dataclass(frozen=True)
 class FinvizIntegrationConfig:
     """Finviz Elite API integration config (Phase 7e — finviz-api-integration plan).
@@ -529,6 +591,7 @@ class Config:
     classifier: ClassifierConfig = field(default_factory=ClassifierConfig)
     archive: ArchiveConfig = field(default_factory=ArchiveConfig)
     review: ReviewConfig = field(default_factory=ReviewConfig)
+    reconciliation: Reconciliation = field(default_factory=Reconciliation)
     integrations: IntegrationsConfig = field(default_factory=IntegrationsConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
 
@@ -651,6 +714,13 @@ def load(config_path: Path) -> Config:
         classifier=ClassifierConfig(**raw.get("classifier", {})),
         archive=ArchiveConfig(**raw.get("archive", {})),
         review=ReviewConfig(**raw.get("review", {})),
+        reconciliation=Reconciliation(
+            out_of_framework_tickers=tuple(
+                raw.get("reconciliation", {}).get(
+                    "out_of_framework_tickers", []
+                )
+            ),
+        ),
         integrations=IntegrationsConfig(
             finviz=FinvizIntegrationConfig(**raw_finviz),
             schwab=SchwabIntegrationConfig(**raw_schwab),
