@@ -115,3 +115,52 @@ def test_apply_overrides_malformed_out_of_framework_does_not_crash(
         "out_of_framework_tickers" in r.message
         for r in caplog.records
     )
+
+
+def test_apply_overrides_toml_table_does_not_silently_activate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Codex R1 MAJOR: a TOML TABLE user-config value (dict) must NOT iterate
+    its keys into a silent carve-out (that would suppress an orphan for a
+    ticker the operator never validly declared, violating C2/L3). It degrades
+    to base () + logs a diagnostic.
+
+    Distinguishing: pre-fix the iterable-accepting normalizer turned
+    {"SPCX": true} into ("SPCX",) (a silent carve-out). Post-fix it raises
+    TypeError -> apply_overrides logs + falls through to ().
+    """
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / "swing-data").mkdir()
+    # A TOML table writes as a nested dict in user-config.toml.
+    write_user_overrides(
+        {"reconciliation": {"out_of_framework_tickers": {"SPCX": True}}}
+    )
+    cfg_path = tmp_path / "swing.config.toml"
+    cfg_path.write_text(_base_cfg_text())
+    base_cfg = load(cfg_path)
+    with caplog.at_level("WARNING"):
+        cfg = apply_overrides(base_cfg)
+    assert cfg.reconciliation.out_of_framework_tickers == ()
+    assert any(
+        "out_of_framework_tickers" in r.message for r in caplog.records
+    )
+
+
+def test_config_reconciliation_tracked_bare_string_rejected(
+    tmp_path: Path,
+) -> None:
+    """Codex R1 MAJOR: a bare-string tracked value is REJECTED (TypeError),
+    NOT char-split into a phantom list by a tuple() pre-wrap.
+
+    Distinguishing: pre-fix tuple("SPCX") == ('S','P','C','X') passed the
+    element-is-str check -> a 4-char phantom carve-out. Post-fix the strict
+    normalizer raises on the bare string.
+    """
+    cfg_text = _base_cfg_text()
+    cfg_text += '\n\n[reconciliation]\nout_of_framework_tickers = "SPCX"\n'
+    cfg_path = tmp_path / "swing.config.toml"
+    cfg_path.write_text(cfg_text)
+    with pytest.raises(TypeError):
+        load(cfg_path)

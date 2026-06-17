@@ -245,26 +245,24 @@ def _normalize_out_of_framework_tickers(value: object) -> tuple[str, ...]:
     """Normalize a declared out-of-framework ticker list to an uppercased,
     de-duplicated, sorted ``tuple[str, ...]`` (deterministic set + audit order).
 
-    A non-list / non-iterable-of-strings value raises ``TypeError`` (the
-    tracked-section load path is strict, mirroring ``load()``'s required-section
-    posture). The USER-config layer (``config_overrides.apply_overrides``) does
-    NOT call this on a malformed value — it degrades-never-crashes there (TOML
-    is free-form, the genuinely-unconstrained input).
+    STRICT (Codex R1 MAJOR): accepts ONLY a ``list``/``tuple`` of strings.
+    Everything else raises ``TypeError`` — explicitly a ``dict``/TOML table (so
+    ``[reconciliation.out_of_framework_tickers] SPCX = true`` does NOT iterate
+    its keys into a silent carve-out), a bare ``str``/``bytes`` (so it is not
+    char-split into a phantom list), a ``set`` (non-deterministic), and any
+    other iterable. The tracked-section ``load()`` path is strict (mirrors
+    ``load()``'s required-section posture); the USER-config layer
+    (``config_overrides.apply_overrides``) catches this ``TypeError`` and
+    degrades-never-crashes (TOML is free-form, the genuinely-unconstrained
+    input — C2/L3: a malformed value must NOT silently activate a carve-out).
     """
-    if isinstance(value, (str, bytes)):
-        raise TypeError(
-            "out_of_framework_tickers must be a list of ticker strings, "
-            f"not a bare {type(value).__name__}"
-        )
-    try:
-        items = list(value)  # type: ignore[arg-type]
-    except TypeError as exc:
+    if not isinstance(value, (list, tuple)):
         raise TypeError(
             "out_of_framework_tickers must be a list of ticker strings; "
             f"got {type(value).__name__}"
-        ) from exc
+        )
     normalized: set[str] = set()
-    for item in items:
+    for item in value:
         if not isinstance(item, str):
             raise TypeError(
                 "out_of_framework_tickers elements must be strings; "
@@ -715,10 +713,11 @@ def load(config_path: Path) -> Config:
         archive=ArchiveConfig(**raw.get("archive", {})),
         review=ReviewConfig(**raw.get("review", {})),
         reconciliation=Reconciliation(
-            out_of_framework_tickers=tuple(
-                raw.get("reconciliation", {}).get(
-                    "out_of_framework_tickers", []
-                )
+            # Pass the raw value through unwrapped: the normalizer is STRICT
+            # (list/tuple of strings only) so a bare-string tracked value is
+            # REJECTED, not char-split by a tuple() pre-wrap (Codex R1 MAJOR).
+            out_of_framework_tickers=raw.get("reconciliation", {}).get(
+                "out_of_framework_tickers", ()
             ),
         ),
         integrations=IntegrationsConfig(
