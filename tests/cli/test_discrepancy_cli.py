@@ -335,6 +335,52 @@ def test_discrepancy_resolve_acknowledged_immaterial_without_reason(
     assert r.exit_code == 0, r.output
 
 
+def test_discrepancy_resolve_orphan_all_fk_null_clears(
+    cli_workspace, tmp_path: Path,
+) -> None:
+    """Phase 18 Arc 18-H.6.1 Part 2 — the CLI manual resolver clears an
+    all-FK-null ``untracked_broker_position`` orphan via
+    ``acknowledged_immaterial`` (no FK access; no new schema). The orphan
+    is seeded directly (it has all FK columns NULL)."""
+    runner, cfg, db_path, project = cli_workspace
+    conn = sqlite3.connect(db_path)
+    try:
+        rid = conn.execute(
+            "INSERT INTO reconciliation_runs (source, started_ts, state) "
+            "VALUES ('schwab_api', '2026-06-15T09:00:00', 'completed')"
+        ).lastrowid
+        did = conn.execute(
+            "INSERT INTO reconciliation_discrepancies ("
+            "run_id, discrepancy_type, trade_id, fill_id, cash_movement_id, "
+            "ticker, field_name, expected_value_json, actual_value_json, "
+            "delta_text, material_to_review, resolution, created_at"
+            ") VALUES (?, 'untracked_broker_position', NULL, NULL, NULL, "
+            "'SPCX', 'broker_position', '{\"journal_qty\": 0}', "
+            "'{\"qty\": 2.0, \"market_value\": 411.9}', "
+            "'SPCX held at broker, not in journal', 1, 'unresolved', "
+            "'2026-06-15T09:00:00')",
+            (rid,),
+        ).lastrowid
+        conn.commit()
+    finally:
+        conn.close()
+    r = runner.invoke(main, [
+        "--config", str(cfg), "journal", "discrepancy", "resolve", str(did),
+        "--resolution", "acknowledged_immaterial",
+    ])
+    assert r.exit_code == 0, r.output
+    conn = sqlite3.connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT resolution FROM reconciliation_discrepancies "
+            "WHERE discrepancy_id=?",
+            (did,),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row[0] == "acknowledged_immaterial"
+
+
 def test_discrepancy_resolve_journal_corrected_requires_reason(
     cli_workspace, tmp_path: Path,
 ) -> None:

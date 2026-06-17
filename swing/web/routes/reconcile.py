@@ -63,6 +63,7 @@ from swing.trades.reconciliation_auto_correct import (
 )
 from swing.web.view_models.reconcile import (
     ReconcileDiscrepancyErrorVM,
+    ReconcileOrphanAcknowledgeVM,
     _parse_parametric_pick_count,
     build_reconcile_discrepancy_resolve_vm,
 )
@@ -123,6 +124,66 @@ def _render_error(
     return request.app.state.templates.TemplateResponse(
         request,
         "reconcile_discrepancy_resolve_error.html.j2",
+        {"vm": vm},
+        status_code=status_code,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase 18 Arc 18-H.6.1 Part 2 — orphan (untracked_broker_position) branch.
+#
+# An ``untracked_broker_position`` orphan (18-H.6, all-FK-null) stays
+# ``unresolved`` (Part 3), so it is NOT a tier-2 ``pending_ambiguity_resolution``
+# row and does NOT route through the FK-requiring tier-2 resolver. Instead the
+# GET renders a no-FK-safe acknowledge form + the POST clears it via
+# ``resolve_discrepancy`` -> ``acknowledged_immaterial`` (C2: no new schema).
+# ---------------------------------------------------------------------------
+
+
+def _is_orphan_discrepancy(disc: object) -> bool:
+    """True for an ``untracked_broker_position`` orphan (``trade_id IS NULL``)."""
+    return (
+        getattr(disc, "discrepancy_type", None) == "untracked_broker_position"
+        and getattr(disc, "trade_id", None) is None
+    )
+
+
+def _render_orphan_acknowledge_form(
+    request: Request,
+    disc: object,
+    *,
+    unresolved_count: int,
+    recent_multi_leg_count: int,
+    banner_resolve_link: str | None,
+    prior_resolution_reason: str = "",
+    error_band_message: str | None = None,
+    status_code: int = 200,
+) -> Response:
+    """Render the orphan acknowledge form (18-H.6.1 Part 2)."""
+    try:
+        session_date = topbar_session_date(
+            PageKind.HISTORY_ANALYSIS, datetime.now()
+        ).isoformat()
+    except Exception:  # pragma: no cover - defensive
+        session_date = "n/a"
+    discrepancy_id = int(disc.discrepancy_id)  # type: ignore[attr-defined]
+    vm = ReconcileOrphanAcknowledgeVM(
+        session_date=session_date,
+        unresolved_material_discrepancies_count=unresolved_count,
+        recent_multi_leg_auto_correction_count=recent_multi_leg_count,
+        banner_resolve_link=banner_resolve_link,
+        discrepancy_id=discrepancy_id,
+        form_action=f"/reconcile/discrepancy/{discrepancy_id}/resolve",
+        ticker=getattr(disc, "ticker", None) or "",
+        delta_text=getattr(disc, "delta_text", None) or "",
+        created_at=getattr(disc, "created_at", None) or "",
+        run_id=int(getattr(disc, "run_id", 0) or 0),
+        prior_resolution_reason=prior_resolution_reason,
+        error_band_message=error_band_message,
+    )
+    return request.app.state.templates.TemplateResponse(
+        request,
+        "reconcile_orphan_acknowledge.html.j2",
         {"vm": vm},
         status_code=status_code,
     )
@@ -220,6 +281,34 @@ def reconcile_discrepancy_resolve_form(
                     f"{discrepancy_id}."
                 ),
                 discrepancy_id=discrepancy_id,
+                unresolved_count=unresolved_count,
+                recent_multi_leg_count=recent_multi_leg_count,
+                banner_resolve_link=banner_resolve_link,
+            )
+        # 18-H.6.1 Part 2 — orphan branch (BEFORE the tier-2 pending gate).
+        # An unresolved orphan renders the acknowledge form; an
+        # already-resolved orphan returns the canonical 409.
+        if _is_orphan_discrepancy(disc):
+            if disc.resolution != "unresolved":
+                return _render_error(
+                    request,
+                    status_code=409,
+                    error_kind="already_resolved",
+                    error_message=(
+                        f"Discrepancy {discrepancy_id} (untracked broker "
+                        f"position) is already resolved."
+                    ),
+                    discrepancy_id=discrepancy_id,
+                    disc_resolution=disc.resolution,
+                    disc_resolved_by=disc.resolved_by,
+                    disc_created_at=disc.created_at,
+                    unresolved_count=unresolved_count,
+                    recent_multi_leg_count=recent_multi_leg_count,
+                    banner_resolve_link=banner_resolve_link,
+                )
+            return _render_orphan_acknowledge_form(
+                request,
+                disc,
                 unresolved_count=unresolved_count,
                 recent_multi_leg_count=recent_multi_leg_count,
                 banner_resolve_link=banner_resolve_link,
@@ -602,6 +691,81 @@ async def reconcile_discrepancy_resolve_post(  # noqa: PLR0911, PLR0912, PLR0915
                 recent_multi_leg_count=recent_multi_leg_count,
                 banner_resolve_link=banner_resolve_link,
             )
+
+        # 18-H.6.1 Part 2 — orphan branch (BEFORE the tier-2 pending gate).
+        # Clear the all-FK-null orphan via the FK-null-safe manual resolver
+        # (resolve_discrepancy -> acknowledged_immaterial; C2 reuse, no new
+        # schema). NOT the FK-requiring tier-2 apply_tier2_resolution path.
+        if _is_orphan_discrepancy(disc):
+            if disc.resolution != "unresolved":
+                return _render_error(
+                    request,
+                    status_code=409,
+                    error_kind="already_resolved",
+                    error_message=(
+                        f"Discrepancy {discrepancy_id} (untracked broker "
+                        f"position) is already resolved."
+                    ),
+                    discrepancy_id=discrepancy_id,
+                    disc_resolution=disc.resolution,
+                    disc_resolved_by=disc.resolved_by,
+                    disc_created_at=disc.created_at,
+                    unresolved_count=unresolved_count,
+                    recent_multi_leg_count=recent_multi_leg_count,
+                    banner_resolve_link=banner_resolve_link,
+                )
+            from swing.trades.reconciliation import resolve_discrepancy
+            try:
+                resolve_discrepancy(
+                    conn,
+                    discrepancy_id=discrepancy_id,
+                    resolution="acknowledged_immaterial",
+                    # acknowledged_immaterial permits a NULL reason; treat an
+                    # empty submission as None (F6 nullable-text discipline).
+                    resolution_reason=(resolution_reason or None),
+                    resolved_by="operator_web",  # F2 LOCK — surface attribution
+                )
+            except sqlite3.OperationalError as exc:
+                if not _is_transient_lock_error(exc):
+                    raise
+                log.warning("sqlite3.OperationalError (orphan resolve): %s", exc)
+                return _render_error(
+                    request,
+                    status_code=503,
+                    error_kind="db_unavailable",
+                    error_message=(
+                        "Database is busy; please retry in a moment."
+                    ),
+                    discrepancy_id=discrepancy_id,
+                    unresolved_count=unresolved_count,
+                    recent_multi_leg_count=recent_multi_leg_count,
+                    banner_resolve_link=banner_resolve_link,
+                )
+            except ValueError as exc:
+                # Defensive: a concurrent writer flipped the orphan to a
+                # terminal state between the read above and the resolve (the
+                # service raises on a missing/never-existing row). Re-render
+                # the acknowledge form with the error band.
+                log.warning("orphan resolve ValueError: %s", exc)
+                return _render_orphan_acknowledge_form(
+                    request,
+                    disc,
+                    unresolved_count=unresolved_count,
+                    recent_multi_leg_count=recent_multi_leg_count,
+                    banner_resolve_link=banner_resolve_link,
+                    prior_resolution_reason=prior_resolution_reason,
+                    error_band_message=str(exc),
+                    status_code=400,
+                )
+            redirect_target = (
+                f"/dashboard?reconcile_resolved=disc-{discrepancy_id}"
+            )
+            if request.headers.get("HX-Request") == "true":
+                return Response(
+                    status_code=204,
+                    headers={"HX-Redirect": redirect_target},
+                )
+            return RedirectResponse(url=redirect_target, status_code=303)
 
         # Step 4b — state guard (terminal or NULL ambiguity_kind)
         if (

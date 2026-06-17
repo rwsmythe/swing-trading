@@ -942,3 +942,95 @@ class ReconcileDiscrepancyErrorVM:
         # Per T-2.10 Codex R3 M#1 LOCK: do NOT validate error_message
         # non-empty — not all error_kinds carry a useful message; keep
         # validator additive-default-pass.
+
+
+# ---------------------------------------------------------------------------
+# Phase 18 Arc 18-H.6.1 Part 2 — orphan (untracked_broker_position) acknowledge
+# VM.
+#
+# An ``untracked_broker_position`` orphan (18-H.6, all-FK-null, stays
+# ``unresolved`` per Part 3) is NOT a tier-2 fill-matching ambiguity, so it
+# does NOT route through the ``pending_ambiguity_resolution``-gated
+# ReconcileDiscrepancyResolveVM. This standalone VM (mirrors SchwabSetupVM /
+# the error VM precedent: 8 base-layout-shaped fields, does NOT inherit
+# BaseLayoutVM) powers the minimal acknowledge form whose POST clears the
+# orphan via ``resolve_discrepancy`` -> ``acknowledged_immaterial`` (C2: no
+# new schema; reuses an existing RESOLUTION_TYPES value).
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ReconcileOrphanAcknowledgeVM:
+    """View-model for the orphan acknowledge form at
+    ``GET /reconcile/discrepancy/{id}/resolve`` (orphan branch).
+
+    Read-only render primitives: the orphan's ticker + persisted delta text +
+    the form action. The POST clears it to ``acknowledged_immaterial`` (the
+    operator's acknowledgment IS the reason; ``resolution_reason`` is
+    optional). ``form_action`` is server-derived + ``__post_init__``-validated
+    to match ``/reconcile/discrepancy/{id}/resolve`` byte-for-byte (mirrors
+    ReconcileDiscrepancyResolveVM).
+    """
+
+    PAGE_KIND = PageKind.HISTORY_ANALYSIS  # Issue #5 topbar (backward)
+
+    # Base-layout fields (8 standalone, mirror BaseLayoutVM shape).
+    session_date: str
+    stale_banner: str | None = None
+    price_source_degraded: bool = False
+    price_source_degraded_until: str | None = None
+    ohlcv_source_degraded: bool = False
+    unresolved_material_discrepancies_count: int = 0
+    recent_multi_leg_auto_correction_count: int = 0
+    banner_resolve_link: str | None = None
+
+    # Page-specific fields.
+    discrepancy_id: int = 0
+    form_action: str = ""
+    ticker: str = ""
+    delta_text: str = ""
+    created_at: str = ""
+    run_id: int = 0
+    prior_resolution_reason: str = ""
+    error_band_message: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.session_date:
+            raise ValueError(
+                "ReconcileOrphanAcknowledgeVM.session_date must be non-empty",
+            )
+        if self.unresolved_material_discrepancies_count < 0:
+            raise ValueError(
+                "ReconcileOrphanAcknowledgeVM."
+                "unresolved_material_discrepancies_count must >= 0; got "
+                f"{self.unresolved_material_discrepancies_count!r}",
+            )
+        if self.recent_multi_leg_auto_correction_count < 0:
+            raise ValueError(
+                "ReconcileOrphanAcknowledgeVM."
+                "recent_multi_leg_auto_correction_count must >= 0; got "
+                f"{self.recent_multi_leg_auto_correction_count!r}",
+            )
+        if self.banner_resolve_link is not None and (
+            not self.banner_resolve_link
+            or not self.banner_resolve_link.startswith("/")
+        ):
+            raise ValueError(
+                "ReconcileOrphanAcknowledgeVM.banner_resolve_link must be "
+                f"None or a non-empty string starting with '/'; got "
+                f"{self.banner_resolve_link!r}",
+            )
+        if self.discrepancy_id <= 0:
+            raise ValueError(
+                "ReconcileOrphanAcknowledgeVM.discrepancy_id must be > 0; "
+                f"got {self.discrepancy_id!r}",
+            )
+        expected_form_action = (
+            f"/reconcile/discrepancy/{self.discrepancy_id}/resolve"
+        )
+        if self.form_action != expected_form_action:
+            raise ValueError(
+                "ReconcileOrphanAcknowledgeVM.form_action must match "
+                f"{expected_form_action!r} (server-derived from "
+                f"discrepancy_id); got {self.form_action!r}",
+            )
