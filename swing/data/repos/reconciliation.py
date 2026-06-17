@@ -483,7 +483,7 @@ def list_unresolved_material_for_active_trades(
 def list_unresolved_material_orphans(
     conn: sqlite3.Connection,
 ) -> list[ReconciliationDiscrepancy]:
-    """Return unresolved material ORPHAN discrepancies (``trade_id IS NULL``).
+    """Return unresolved material ``untracked_broker_position`` ORPHAN rows.
 
     Phase 18 Arc 18-H.6.1 Part 1 — the orphan companion to the two
     trade-JOINed canonical helpers above. An ``untracked_broker_position``
@@ -492,14 +492,27 @@ def list_unresolved_material_orphans(
     reader is the UNION arm that surfaces orphans in the material
     banner/count (``swing/metrics/discrepancies.py``).
 
-    Predicate: ``trade_id IS NULL AND material_to_review = 1 AND
-    resolution = 'unresolved'``. NOTE the resolution predicate is
-    STRICTLY ``'unresolved'`` (NOT the trade-helpers'
-    ``IN ('unresolved', 'pending_ambiguity_resolution')`` widening): per
-    18-H.6.1 Part 3 the orphan deliberately stays ``unresolved`` rather
-    than the tier-2 ambiguity limbo, so an orphan in
-    ``pending_ambiguity_resolution`` would be an off-contract state and is
-    intentionally not surfaced here.
+    Predicate: ``discrepancy_type = 'untracked_broker_position' AND
+    trade_id IS NULL AND material_to_review = 1 AND resolution =
+    'unresolved'``.
+
+    The ``discrepancy_type`` clause is LOAD-BEARING (Codex R1 Major #1):
+    ``trade_id IS NULL`` alone is NOT exclusive to this arc's orphan — TOS
+    reconciliation can emit OTHER material ``trade_id IS NULL`` types
+    (``unmatched_open_fill`` / ``unmatched_close_fill`` / ``equity_delta``)
+    that stay ``unresolved`` under the sandbox pivot-skip. Those are NOT
+    18-H.6.1 orphans: the web orphan-acknowledge branch only handles
+    ``untracked_broker_position`` (every other type routes through the
+    tier-2 ``pending_ambiguity_resolution`` machinery), so surfacing a
+    non-``untracked_broker_position`` row via the banner-LINK
+    (``fetch_first_pending_ambiguity_resolve_link_path``) would point the
+    operator at a 409 page. Scoping to the exact type keeps the reader, the
+    count, the banner set, and the web branch on ONE predicate.
+
+    The resolution predicate is STRICTLY ``'unresolved'`` (NOT the
+    trade-helpers' ``IN ('unresolved', 'pending_ambiguity_resolution')``
+    widening): per 18-H.6.1 Part 3 the orphan deliberately stays
+    ``unresolved`` rather than the tier-2 ambiguity limbo.
 
     Returns rows ordered by created_at DESC, discrepancy_id DESC (mirrors
     the canonical helpers' newest-first ordering).
@@ -507,7 +520,8 @@ def list_unresolved_material_orphans(
     rows = conn.execute(
         f"SELECT {_DISCREPANCY_SELECT_COLUMNS} "
         "FROM reconciliation_discrepancies "
-        "WHERE trade_id IS NULL "
+        "WHERE discrepancy_type = 'untracked_broker_position' "
+        "  AND trade_id IS NULL "
         "  AND material_to_review = 1 "
         "  AND resolution = 'unresolved' "
         "ORDER BY created_at DESC, discrepancy_id DESC"

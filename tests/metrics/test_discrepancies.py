@@ -111,26 +111,44 @@ def test_count_unresolved_material_excludes_immaterial(conn: sqlite3.Connection)
     assert count_unresolved_material(conn) == 1
 
 
-def test_count_unresolved_material_includes_orphan_emit_no_trade(
+def test_count_unresolved_material_includes_untracked_broker_position_orphan(
     conn: sqlite3.Connection,
 ):
-    """Phase 18 Arc 18-H.6.1 Part 1: the V1 LIMITATION is LIFTED — an
-    unresolved-material ORPHAN row (``trade_id IS NULL``) is now INCLUDED in
-    the count via the additive ``list_unresolved_material_orphans`` UNION arm.
+    """Phase 18 Arc 18-H.6.1 Part 1: the V1 LIMITATION is LIFTED for the
+    ``untracked_broker_position`` orphan (``trade_id IS NULL``) — it is now
+    INCLUDED in the count via the additive ``list_unresolved_material_orphans``
+    UNION arm.
 
     (Pre-18-H.6.1 this asserted ``== 1`` — orphans excluded by the
     JOIN-on-trade canonical helpers. 18-H.6.1 surfaces the orphan in the
     topbar material banner so the operator reconciles the untracked broker
     position.)
 
-    Discriminating test: 1 trade-attributed + 1 material orphan → count 2.
+    Discriminating test: 1 trade-attributed + 1 material untracked_broker_
+    position orphan -> count 2.
     """
     _seed_trade(conn, trade_id=1, state="entered")
     run_id = _new_run(conn)
     _emit(conn, run_id=run_id, trade_id=1)
     _emit(conn, run_id=run_id, trade_id=None,
-          discrepancy_type="equity_delta", material=1)
+          discrepancy_type="untracked_broker_position", material=1)
     assert count_unresolved_material(conn) == 2
+
+
+def test_count_excludes_non_untracked_trade_id_null_orphan(
+    conn: sqlite3.Connection,
+):
+    """Codex R1 Major #1: a non-``untracked_broker_position`` material
+    ``trade_id IS NULL`` row (e.g. an ``equity_delta`` orphan) is NOT
+    surfaced by the 18-H.6.1 orphan arm — the reader is scoped to the exact
+    type so the banner-link never points at a row the web orphan branch
+    cannot handle (it would 409). Only the trade-attributed row counts."""
+    _seed_trade(conn, trade_id=1, state="entered")
+    run_id = _new_run(conn)
+    _emit(conn, run_id=run_id, trade_id=1)
+    _emit(conn, run_id=run_id, trade_id=None,
+          discrepancy_type="equity_delta", material=1)
+    assert count_unresolved_material(conn) == 1
 
 
 def test_count_unresolved_material_read_only_no_transaction(

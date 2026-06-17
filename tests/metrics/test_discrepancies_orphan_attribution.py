@@ -150,6 +150,30 @@ def test_orphan_reader_excludes_trade_attributed_rows(
     assert list_unresolved_material_orphans(conn) == []
 
 
+def test_orphan_reader_excludes_non_untracked_trade_id_null_types(
+    conn: sqlite3.Connection,
+):
+    """Codex R1 Major #1: the reader is scoped to
+    ``discrepancy_type='untracked_broker_position'`` — a different material
+    ``trade_id IS NULL`` type (here ``equity_delta``) must NOT leak into the
+    orphan arm (the web orphan branch only handles untracked_broker_position;
+    a leaked row would make the banner-link point at a 409 page)."""
+    run_id = _new_run(conn)
+    insert_discrepancy(
+        conn,
+        run_id=run_id,
+        discrepancy_type="equity_delta",
+        field_name="net_liquidating_value",
+        material_to_review=1,
+        created_at="2026-05-12T09:00:00.000",
+        trade_id=None,
+        ticker=None,
+        resolution="unresolved",
+    )
+    conn.commit()
+    assert list_unresolved_material_orphans(conn) == []
+
+
 # ---------------------------------------------------------------------------
 # Part 1 — UNION into count + banner set
 # ---------------------------------------------------------------------------
