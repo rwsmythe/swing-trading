@@ -88,6 +88,15 @@ def _orphans(conn: sqlite3.Connection, run_id: int) -> list[tuple]:
     ).fetchall()
 
 
+def _orphan_resolution(conn: sqlite3.Connection, run_id: int) -> str | None:
+    row = conn.execute(
+        "SELECT resolution FROM reconciliation_discrepancies WHERE run_id=? "
+        "AND discrepancy_type='untracked_broker_position'",
+        (run_id,),
+    ).fetchone()
+    return row[0] if row else None
+
+
 def test_orphan_with_no_journal_trade_emits_discrepancy(conn):
     # journal flat; broker holds 2 IPO shares (the live instance).
     acct = _SchwabAccount(
@@ -138,6 +147,53 @@ def test_orphan_alongside_open_journal_trades_still_fires(conn):
     rows = _orphans(conn, run.run_id)
     assert len(rows) == 1
     assert rows[0][0] == "IPOX"
+
+
+def test_orphan_stays_unresolved_not_pending_ambiguity(conn):
+    """Phase 18 Arc 18-H.6.1 Part 3: post-recon the orphan stays
+    ``unresolved`` (a real unaddressed finding), NOT
+    ``pending_ambiguity_resolution`` — the classify/dispatch pivot routes
+    ``untracked_broker_position`` PAST the tier-2 ambiguity stamping.
+
+    Distinguishing (feedback_regression_test_arithmetic): pre-fix the type
+    has no sub-classifier -> classify_discrepancy returns tier-2
+    'unsupported' -> the pivot's else-branch stamps
+    ``pending_ambiguity_resolution`` (the limbo). Post-fix the pivot skips
+    the orphan -> it remains ``unresolved``.
+    """
+    acct = _SchwabAccount(
+        net_liquidating_value=2000.0,
+        positions=[_position("IPOX", long_qty=2.0, market_value=51.40)],
+    )
+    run = run_schwab_reconciliation(
+        conn,
+        account_hash="<acct>",
+        period_start="2026-06-15",
+        period_end="2026-06-15",
+        schwab_orders=[],
+        schwab_transactions=[],
+        schwab_account=acct,
+    )
+    assert _orphan_resolution(conn, run.run_id) == "unresolved"
+
+
+def test_orphan_unresolved_counts_unresolved_discrepancies(conn):
+    """The run's unresolved_discrepancies_count INCLUDES the orphan (it
+    stays 'unresolved' after the pivot recompute)."""
+    acct = _SchwabAccount(
+        net_liquidating_value=2000.0,
+        positions=[_position("IPOX", long_qty=2.0, market_value=51.40)],
+    )
+    run = run_schwab_reconciliation(
+        conn,
+        account_hash="<acct>",
+        period_start="2026-06-15",
+        period_end="2026-06-15",
+        schwab_orders=[],
+        schwab_transactions=[],
+        schwab_account=acct,
+    )
+    assert run.unresolved_discrepancies_count == 1
 
 
 def test_matched_position_does_not_orphan(conn):
@@ -279,9 +335,10 @@ def test_orphan_pass_runs_under_sandbox_emit_unchanged(conn):
     # ROW is still written (audit-shaped output); the production-only gate that
     # protects journal MUTATIONS lives at the caller (_step_schwab_orders) +
     # the tier-1 sandbox short-circuit (see test_step_schwab_orders below /
-    # test_run_schwab_reconciliation_pivot). The orphan row classifies tier-2
-    # 'unsupported' (no sub-classifier) -> pending_ambiguity_resolution, with
-    # NO journal mutation either way.
+    # test_run_schwab_reconciliation_pivot). Phase 18 Arc 18-H.6.1 Part 3:
+    # the orphan row is routed PAST the classify/dispatch pivot so it stays
+    # `unresolved` (not the pre-18-H.6.1 pending_ambiguity_resolution limbo),
+    # with NO journal mutation either way under sandbox.
     acct = _SchwabAccount(
         net_liquidating_value=2000.0,
         positions=[_position("IPOX", long_qty=2.0, market_value=51.40)],
@@ -298,3 +355,4 @@ def test_orphan_pass_runs_under_sandbox_emit_unchanged(conn):
     )
     rows = _orphans(conn, run.run_id)
     assert len(rows) == 1
+    assert _orphan_resolution(conn, run.run_id) == "unresolved"
