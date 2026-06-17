@@ -87,7 +87,8 @@ def _mock_response(json_value, *, status_code: int = 200, headers=None):
 
 def _make_cfg(*, environment: str = "production",
               account_hash: str | None = "abc...64charhash",
-              lookback_days: int = 7) -> SimpleNamespace:
+              lookback_days: int = 7,
+              out_of_framework_tickers: tuple[str, ...] = ()) -> SimpleNamespace:
     """Build a minimal cfg.integrations.schwab namespace for tests."""
     return SimpleNamespace(
         integrations=SimpleNamespace(
@@ -103,6 +104,10 @@ def _make_cfg(*, environment: str = "production",
         # Arc 4b Task 8: _step_schwab_orders reads cfg.account.starting_equity
         # for the ledger-vs-NLV coherence check.
         account=SimpleNamespace(starting_equity=0.0),
+        # SPCX carve-out (Task 2): the declared out-of-framework registry.
+        reconciliation=SimpleNamespace(
+            out_of_framework_tickers=out_of_framework_tickers,
+        ),
     )
 
 
@@ -561,6 +566,60 @@ def test_b4_28_step_result_carries_cash_warnings(v18_conn):
         "SELECT summary_json FROM reconciliation_runs WHERE run_id = ?",
         (result["reconciliation_run_id"],)).fetchone()[0])
     assert result["warnings"] == summary["cash_warnings"]
+
+
+def _details_response_with_positions(positions, *, nlv: float = 2014.36):
+    return _mock_response({
+        "securitiesAccount": {
+            "currentBalances": {
+                "liquidationValue": nlv,
+                "cashBalance": 100.0,
+                "buyingPower": 4000.0,
+            },
+            "positions": positions,
+        },
+    })
+
+
+def test_b4_29_step_schwab_orders_threads_declared_set(v18_conn):
+    """SPCX carve-out Task 2 — the caller threads
+    cfg.reconciliation.out_of_framework_tickers into run_schwab_reconciliation,
+    so a declared SPCX broker position emits NO untracked orphan. Exercises the
+    REAL caller->recon wiring (the byte-tests-insufficient lesson).
+
+    Distinguishing: pre-fix (param not threaded at the caller) -> SPCX orphan.
+    Post-fix -> no SPCX orphan; the carve-out surfaces in the run's
+    cash_warnings.
+    """
+    cfg = _make_cfg(environment="production",
+                    out_of_framework_tickers=("SPCX",))
+    client = MagicMock()
+    client.account_orders.return_value = _make_orders_response([])
+    client.transactions.return_value = _make_transactions_response([])
+    client.account_details.return_value = _details_response_with_positions([
+        {
+            "shortQuantity": 0.0,
+            "longQuantity": 2.0,
+            "instrument": {"symbol": "SPCX", "type": "EQUITY"},
+            "marketValue": 412.0,
+        },
+    ])
+
+    result = _step_schwab_orders(
+        v18_conn, cfg, pipeline_run_id=None, client=client,
+    )
+    assert result["status"] == "completed"
+    n_orphans = v18_conn.execute(
+        "SELECT COUNT(*) FROM reconciliation_discrepancies "
+        "WHERE run_id=? AND discrepancy_type='untracked_broker_position' "
+        "AND ticker='SPCX'",
+        (result["reconciliation_run_id"],),
+    ).fetchone()[0]
+    assert n_orphans == 0
+    reasons = {
+        w.get("reason") for w in result["warnings"] if isinstance(w, dict)
+    }
+    assert "out_of_framework_excluded" in reasons
 
 
 def test_b4_02_orders_sandbox_short_circuits_reconciliation(v18_conn):

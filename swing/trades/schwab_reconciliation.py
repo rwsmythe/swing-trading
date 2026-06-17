@@ -1097,6 +1097,7 @@ def run_schwab_reconciliation(
     price_tolerance: float = _PRICE_TOLERANCE_DEFAULT,
     environment: str | None = None,
     starting_equity: float = 0.0,
+    out_of_framework_tickers: tuple[str, ...] = (),
 ) -> Any:
     """Reconcile Schwab API responses against the journal.
 
@@ -1146,6 +1147,16 @@ def run_schwab_reconciliation(
         )
 
     started_ts = now_ms()
+
+    # SPCX out-of-framework carve-out — the operator-declared set of tickers
+    # held OUTSIDE the swing framework. Normalize to an uppercased frozenset
+    # once (O(1) case-insensitive membership against the Schwab symbol). The
+    # orphan pass below SKIPS emitting an `untracked_broker_position` for a
+    # declared ticker and surfaces the exclusion as a #27 cash_warnings line
+    # (never silent). Default empty -> byte-identical to pre-carve-out behavior.
+    out_of_framework_set = frozenset(
+        t.upper() for t in out_of_framework_tickers if t
+    )
 
     # Pre-compute the FRESH broker NLV BEFORE BEGIN. Arc 4b Task 8: the old
     # pre-BEGIN journal_snap read (broker-vs-broker compare) is DROPPED — the
@@ -1344,6 +1355,29 @@ def run_schwab_reconciliation(
             mv_text = (
                 f"${broker_mv:+.2f}" if broker_mv is not None else "MV unknown"
             )
+            # SPCX carve-out (CHARC C1/C2) — a ticker the operator declared
+            # out-of-framework is NOT an orphan to banner: skip the emit and
+            # SURFACE the exclusion as a #27 cash_warnings line (never silent;
+            # the L3 auditability without a registry table). An UNDECLARED
+            # untracked position still falls through to _emit below.
+            if sym.upper() in out_of_framework_set:
+                counters["out_of_framework_excluded_count"] = (
+                    counters.get("out_of_framework_excluded_count", 0) + 1
+                )
+                cash_warnings.append({
+                    "step": "schwab_orders",
+                    "reason": "out_of_framework_excluded",
+                    "detail": (
+                        f"{sym}: {broker_qty:+.2f} sh @ {mv_text} excluded "
+                        f"(operator-declared out-of-framework)"
+                    ),
+                })
+                log.info(
+                    "untracked_broker_position carved out for %s "
+                    "(operator-declared out-of-framework): %+.2f sh @ %s",
+                    sym, broker_qty, mv_text,
+                )
+                continue
             _emit(
                 conn,
                 run_id=run_id,
@@ -1783,6 +1817,12 @@ def run_schwab_reconciliation(
             "tier2_pending_count": counters.get("tier2_pending_count", 0),
             "tier3_overridden_count": 0,  # always 0 — tier-3 is post-run operator-initiated
             "tier_errored_count": counters.get("tier_errored_count", 0),
+            # SPCX carve-out (#27) — count of broker positions skipped because
+            # the operator declared the ticker out-of-framework (the exclusion
+            # detail rides the cash_warnings channel below).
+            "out_of_framework_excluded_count": counters.get(
+                "out_of_framework_excluded_count", 0
+            ),
             # Arc 4b — auto-ingestion counters + the #27 cash_warnings channel.
             **cash_counters,
             "cash_warnings": cash_warnings,

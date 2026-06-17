@@ -574,6 +574,16 @@ def _step_schwab_orders(
     # Production path: run reconciliation.
     from swing.trades.schwab_reconciliation import run_schwab_reconciliation
 
+    # SPCX out-of-framework carve-out — thread the operator-declared set
+    # (cfg.reconciliation.out_of_framework_tickers) so the orphan pass skips
+    # declared holdings. Defensive getattr: a stub cfg without the section
+    # (SimpleNamespace test fixtures) falls back to the empty default rather
+    # than crashing the recon step (the production Config always carries it).
+    reconciliation_cfg = getattr(cfg, "reconciliation", None)
+    out_of_framework_tickers = tuple(
+        getattr(reconciliation_cfg, "out_of_framework_tickers", ()) or ()
+    )
+
     primary_audit_call_id = call_ids[-1]  # the details call (latest semantically)
     try:
         reconciliation_run = run_schwab_reconciliation(
@@ -589,6 +599,7 @@ def _step_schwab_orders(
             # Arc 4b Task 8: the ledger-vs-NLV coherence check needs the account
             # starting equity (same input the dashboard tile uses).
             starting_equity=cfg.account.starting_equity,
+            out_of_framework_tickers=out_of_framework_tickers,
         )
     except Exception as exc:
         log.warning(
