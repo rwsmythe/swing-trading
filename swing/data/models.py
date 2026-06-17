@@ -1058,6 +1058,11 @@ _DISCREPANCY_TYPES = (
     "unmatched_close_fill",
     "entry_price_mismatch",
     "equity_delta",
+    # Phase 18 Arc 18-H.6 — mirrors migration 0031's discrepancy_type CHECK
+    # (a broker holding with no journal trade). The dataclass validator at
+    # ReconciliationDiscrepancy.__post_init__ reads this tuple so reads of
+    # the new rows never raise.
+    "untracked_broker_position",
 )
 _RESOLUTION_VALUES = (
     "journal_corrected",

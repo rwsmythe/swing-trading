@@ -38,7 +38,11 @@ from swing.journal.tos_import import (
     reconcile_tos,
 )
 
-# Spec §3.3 CHECK enum (10 values).
+# Spec §3.3 CHECK enum (11 values).
+# Phase 18 Arc 18-H.6 widened 10 -> 11 (added 'untracked_broker_position' — a
+# broker holding with no journal trade, emitted by the Schwab-driven orphan
+# pass). #11 atomicity: this constant + models._DISCREPANCY_TYPES + the
+# migration 0031 CHECK + MATERIAL_BY_TYPE land in ONE commit.
 DISCREPANCY_TYPES: tuple[str, ...] = (
     "close_price_mismatch",
     "stop_mismatch",
@@ -50,6 +54,7 @@ DISCREPANCY_TYPES: tuple[str, ...] = (
     "unmatched_close_fill",
     "entry_price_mismatch",
     "equity_delta",
+    "untracked_broker_position",
 )
 
 
@@ -102,6 +107,10 @@ MATERIAL_BY_TYPE: dict[str, int] = {
     "unmatched_close_fill": 1,
     "entry_price_mismatch": 1,
     "equity_delta": 0,
+    # Phase 18 Arc 18-H.6 (C5) — an untracked broker position is MATERIAL
+    # (it drifts the ledger-derived equity from the broker NLV by the orphan's
+    # unrealized P&L; the operator must reconcile it).
+    "untracked_broker_position": 1,
 }
 
 

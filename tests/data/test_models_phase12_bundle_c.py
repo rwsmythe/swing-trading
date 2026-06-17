@@ -208,6 +208,32 @@ def test_reconciliation_discrepancy_ambiguity_kind_can_be_set():
 
 
 # ---------------------------------------------------------------------------
+# Phase 18 Arc 18-H.6 — untracked_broker_position validator (#11 mirror)
+# ---------------------------------------------------------------------------
+
+
+def test_discrepancy_validator_accepts_untracked_broker_position():
+    """Post-18-H.6 the dataclass validator accepts the new type (distinguishing
+    — pre-fix _DISCREPANCY_TYPES lacked it and __post_init__ raised)."""
+    d = _make_discrepancy(
+        discrepancy_type="untracked_broker_position",
+        trade_id=None,
+        fill_id=None,
+        field_name="broker_position",
+        expected_value_json='{"journal_qty": 0}',
+        actual_value_json='{"qty": 2.0, "market_value": 50.0}',
+    )
+    assert d.discrepancy_type == "untracked_broker_position"
+
+
+def test_discrepancy_validator_still_rejects_bogus_type():
+    import pytest
+
+    with pytest.raises(ValueError, match="discrepancy_type must be one of"):
+        _make_discrepancy(discrepancy_type="frobnicate")
+
+
+# ---------------------------------------------------------------------------
 # ReviewLog — superseded_by_correction_id extension
 # ---------------------------------------------------------------------------
 
