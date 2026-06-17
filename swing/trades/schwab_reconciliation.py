@@ -39,6 +39,7 @@ import contextlib
 import functools as _functools
 import json
 import logging
+import math
 import sqlite3
 from dataclasses import dataclass
 from datetime import date as _date
@@ -1298,14 +1299,33 @@ def run_schwab_reconciliation(
             long_q = float(p.get("longQuantity", 0) or 0)
             short_q = float(p.get("shortQuantity", 0) or 0)
             broker_qty = long_q - short_q
+            # Codex R1 Major #2 — a non-finite broker qty (NaN/Inf) would
+            # serialize to non-RFC-7159 JSON (`NaN`/`Infinity`) that the
+            # ReconciliationDiscrepancy validator rejects on the pivot's read
+            # -> a failed run with a committed invalid row. Skip the emit + warn
+            # rather than poison the run (the F6-family fail-soft posture).
+            if not math.isfinite(broker_qty):
+                log.warning(
+                    "untracked_broker_position skipped for %s: non-finite "
+                    "broker qty (long=%r short=%r)", sym, long_q, short_q,
+                )
+                continue
             if abs(broker_qty) <= price_tolerance:
                 # A zero-net (fully-closed / sweep-vehicle) broker row is not an
                 # orphan holding; skip.
                 continue
             # marketValue is a top-level numeric field on each Schwab position
             # dict (sibling of `instrument`; account-specification.md L176).
+            # A non-finite MV is carried as None (same as absent) so the JSON
+            # payload stays RFC-7159-valid (Codex R1 Major #2).
             raw_mv = p.get("marketValue")
-            broker_mv = float(raw_mv) if raw_mv is not None else None
+            broker_mv: float | None
+            if raw_mv is None:
+                broker_mv = None
+            else:
+                broker_mv = float(raw_mv)
+                if not math.isfinite(broker_mv):
+                    broker_mv = None
             mv_text = (
                 f"${broker_mv:+.2f}" if broker_mv is not None else "MV unknown"
             )

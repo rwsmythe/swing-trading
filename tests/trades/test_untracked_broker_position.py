@@ -229,6 +229,51 @@ def test_no_equity_delta_emitted_when_broker_has_orphan_position(conn):
     assert eq == 0
 
 
+def test_orphan_non_finite_qty_skipped_run_completes(conn):
+    # Codex R1 Major #2: a non-finite broker qty would serialize to invalid
+    # JSON (NaN/Infinity) the dataclass validator rejects on the pivot's read
+    # -> failed run. The pass must SKIP the emit + the run completes (pre-fix:
+    # the emit would commit an invalid row and fail the run).
+    acct = _SchwabAccount(
+        net_liquidating_value=2000.0,
+        positions=[_position("IPOX", long_qty=float("nan"), market_value=51.40)],
+    )
+    run = run_schwab_reconciliation(
+        conn,
+        account_hash="<acct>",
+        period_start="2026-06-15",
+        period_end="2026-06-15",
+        schwab_orders=[],
+        schwab_transactions=[],
+        schwab_account=acct,
+    )
+    assert _orphans(conn, run.run_id) == []
+    assert run.state == "completed"
+
+
+def test_orphan_non_finite_market_value_carried_as_none(conn):
+    # A non-finite MV is carried as None (keeps the JSON RFC-7159-valid); the
+    # emit still fires (qty is finite).
+    acct = _SchwabAccount(
+        net_liquidating_value=2000.0,
+        positions=[_position("IPOX", long_qty=2.0,
+                             market_value=float("inf"))],
+    )
+    run = run_schwab_reconciliation(
+        conn,
+        account_hash="<acct>",
+        period_start="2026-06-15",
+        period_end="2026-06-15",
+        schwab_orders=[],
+        schwab_transactions=[],
+        schwab_account=acct,
+    )
+    rows = _orphans(conn, run.run_id)
+    assert len(rows) == 1
+    assert json.loads(rows[0][2]) == {"qty": 2.0, "market_value": None}
+    assert run.state == "completed"
+
+
 def test_orphan_pass_runs_under_sandbox_emit_unchanged(conn):
     # Mirror every other `_emit`: under environment='sandbox' the discrepancy
     # ROW is still written (audit-shaped output); the production-only gate that
