@@ -45,16 +45,30 @@ def test_coherence_suppressed_with_open_trade(cash_recon_full):
     assert n == 0  # not flat -> no check
 
 
-def test_coherence_orphan_position_suppresses_and_warns(cash_recon_full):
-    # journal-flat but broker has a position -> suppress check, warn.
+def test_coherence_orphan_position_emits_untracked_discrepancy(cash_recon_full):
+    # Phase 18 Arc 18-H.6: journal-flat but broker has a position -> the
+    # equity_delta check is still suppressed (the both-flat suppression is
+    # preserved), but the old `orphan_broker_position` cash-warning is REPLACED
+    # by a first-class `untracked_broker_position` discrepancy.
     conn, run = cash_recon_full(
         starting_equity=1000.0, journal_cash=[], schwab_txs=[],
         nlv=5000.0, open_trades=0, broker_positions=[("AAPL", 10)])
     n = conn.execute("SELECT COUNT(*) FROM reconciliation_discrepancies "
                      "WHERE discrepancy_type='equity_delta'").fetchone()[0]
     assert n == 0
+    # the new first-class discrepancy fires in the warning's place
+    orphan = conn.execute(
+        "SELECT ticker, actual_value_json FROM reconciliation_discrepancies "
+        "WHERE discrepancy_type='untracked_broker_position'").fetchone()
+    assert orphan is not None
+    assert orphan[0] == "AAPL"
+    assert json.loads(orphan[1]) == {"qty": 10.0, "market_value": None}
+    # the old cash-warning no longer appends
     summary = json.loads(run.summary_json)
-    assert any("orphan" in w.get("reason", "") for w in summary.get("cash_warnings", []))
+    assert not any(
+        "orphan" in w.get("reason", "")
+        for w in summary.get("cash_warnings", [])
+    )
 
 
 def test_equity_delta_render_tolerates_basis_keys():

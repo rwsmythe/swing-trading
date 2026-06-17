@@ -106,7 +106,9 @@ def test_discrepancy_types_match_check_enum() -> None:
     assert "close_price_mismatch" in DISCREPANCY_TYPES
     assert "cash_movement_mismatch" in DISCREPANCY_TYPES
     assert "sector_tamper" in DISCREPANCY_TYPES
-    assert len(DISCREPANCY_TYPES) == 10
+    # Phase 18 Arc 18-H.6 widened 10 -> 11 (untracked_broker_position).
+    assert "untracked_broker_position" in DISCREPANCY_TYPES
+    assert len(DISCREPANCY_TYPES) == 11
 
 
 def test_resolution_types_match_check_enum() -> None:

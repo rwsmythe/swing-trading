@@ -1269,6 +1269,68 @@ def run_schwab_reconciliation(
                     ),
                 )
 
+        # --- 5.1. Untracked broker position (Phase 18 Arc 18-H.6) ---
+        # The SCHWAB-driven orphan pass — the REVERSE of step 5's journal-driven
+        # loop. Step 5 walks the journal's open_trades and looks each up in the
+        # Schwab positions; it NEVER inspects a broker holding that has no
+        # journal trade. So an off-framework purchase (e.g. the operator's IPO
+        # shares) is invisible on the next pull, and the ledger-derived equity
+        # silently drifts from the broker NLV by the orphan's unrealized P&L.
+        #
+        # Here we loop schwab_positions (independent of journal state) and, for
+        # each whose ticker has NO matching journal open_trade, emit a
+        # first-class `untracked_broker_position` discrepancy carrying the
+        # equity impact (qty + market value). Additive-only: the existing
+        # journal-driven checks above are byte-identical. Mirrors every other
+        # `_emit` (the discrepancy row is the reconciliation OUTPUT; the
+        # production-only gate that protects journal MUTATIONS lives at the
+        # caller `_step_schwab_orders` + the tier-1 sandbox short-circuit).
+        journal_open_tickers = {t.ticker for t in open_trades}
+        for p in schwab_positions:
+            if not isinstance(p, dict):
+                continue
+            instr = p.get("instrument") or {}
+            if not isinstance(instr, dict):
+                continue
+            sym = instr.get("symbol")
+            if not sym or sym in journal_open_tickers:
+                continue
+            long_q = float(p.get("longQuantity", 0) or 0)
+            short_q = float(p.get("shortQuantity", 0) or 0)
+            broker_qty = long_q - short_q
+            if abs(broker_qty) <= price_tolerance:
+                # A zero-net (fully-closed / sweep-vehicle) broker row is not an
+                # orphan holding; skip.
+                continue
+            # marketValue is a top-level numeric field on each Schwab position
+            # dict (sibling of `instrument`; account-specification.md L176).
+            raw_mv = p.get("marketValue")
+            broker_mv = float(raw_mv) if raw_mv is not None else None
+            mv_text = (
+                f"${broker_mv:+.2f}" if broker_mv is not None else "MV unknown"
+            )
+            _emit(
+                conn,
+                run_id=run_id,
+                discrepancy_type="untracked_broker_position",
+                field_name="broker_position",
+                counters=counters,
+                dedup_seen=dedup_seen,
+                ticker=sym,
+                trade_id=None,
+                expected_value_json=json.dumps(
+                    {"journal_qty": 0}, sort_keys=True,
+                ),
+                actual_value_json=json.dumps(
+                    {"qty": broker_qty, "market_value": broker_mv},
+                    sort_keys=True,
+                ),
+                delta_text=(
+                    f"{sym}: {broker_qty:+.2f} sh @ {mv_text} held at broker, "
+                    f"not in journal"
+                ),
+            )
+
         # --- 6. Fill matching (price + unmatched) ---
         # Sub-bundle 1 T-1.6: candidate-pool widening via
         # `_is_execution_bearing_candidate` per plan §A.0.1 D4 + Codex R1
@@ -1595,8 +1657,17 @@ def run_schwab_reconciliation(
         # the dashboard tile uses) and compare it to the FRESH broker NLV. This
         # REPLACES the old broker-vs-broker compare. The check fires at full
         # strength ONLY when flat on BOTH sides (zero journal open trades AND an
-        # empty broker positions list); a journal-flat-but-broker-position case
-        # is suppressed + warned (orphan position is a position smell, §6.1).
+        # empty broker positions list).
+        #
+        # Phase 18 Arc 18-H.6 (refinement 2): the old journal-flat-but-broker-
+        # position case used to append an `orphan_broker_position` cash-warning
+        # here; that warning is REPLACED by the first-class
+        # `untracked_broker_position` discrepancy emitted in step 5.1 above
+        # (strictly more informative — it carries qty + market value AND fires
+        # even when journal trades are open, the case the warning missed). The
+        # both-flat equity_delta suppression below is preserved structurally:
+        # the `if` requires journal_flat AND broker_flat, so a broker-position
+        # case still does NOT emit a (mis-attributable) equity_delta.
         ledger_equity = current_equity(
             starting_equity=starting_equity,
             exits=list_all_exitshape_via_fills(conn),
@@ -1607,16 +1678,7 @@ def run_schwab_reconciliation(
         )
         journal_flat = len(open_trades) == 0
         broker_flat = len(schwab_positions) == 0
-        if journal_flat and not broker_flat:
-            cash_warnings.append({
-                "step": "schwab_orders",
-                "reason": "orphan_broker_position",
-                "detail": (
-                    "equity-coherence check suppressed: journal flat but broker "
-                    f"holds {len(schwab_positions)} position(s)"
-                ),
-            })
-        elif (
+        if (
             journal_flat
             and broker_flat
             and source_nlv is not None
