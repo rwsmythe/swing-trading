@@ -199,6 +199,12 @@ def _within_cash_match_window(date_a_iso: str, date_b_iso: str, *, days: int = 4
     return abs((a - b).days) <= days
 
 
+# SPCX §2.4 swing-NLV coherence basis tag — recorded in the fired equity_delta
+# discrepancy's actual_value_json (on a swing-scoped fire) + the coherent LOG
+# line, so the swing-scoping is explicit + auditable.
+_SWING_COHERENCE_BASIS = "net_liq_minus_declared_oof"
+
+
 def _cash_coherence_tolerance(nlv: float) -> float:
     """The equity-coherence emit tolerance: ``max($5.00, 0.5% × |NLV|)`` (Arc 4b
     Task 8). Supersedes EQUITY_DELTA_EMIT_THRESHOLD_DOLLARS on the schwab path."""
@@ -1801,39 +1807,156 @@ def run_schwab_reconciliation(
         _append_cash_ingest_summary(
             cash_warnings, cash_counters, cash_ingested_rows)
 
-        # --- 8. Equity coherence (Arc 4b Task 8) — ledger-vs-NLV, flat-only ---
+        # --- 8. Equity coherence (Arc 4b Task 8; SPCX §2.4 swing-NLV) ---
         # Compute the LEDGER equity AFTER ingestion (the same function + inputs
-        # the dashboard tile uses) and compare it to the FRESH broker NLV. This
-        # REPLACES the old broker-vs-broker compare. The check fires at full
-        # strength ONLY when flat on BOTH sides (zero journal open trades AND an
-        # empty broker positions list).
+        # the dashboard tile uses) and compare it to a SWING-SCOPED broker NLV.
+        #
+        # SPCX §2.4 — "flat for swing", drift-only. The old gate fired only when
+        # flat on BOTH sides where `broker_flat = len(schwab_positions) == 0`. A
+        # declared out-of-framework holding (SPCX) made broker_flat False and
+        # SUPPRESSED the whole check, hiding a real swing-ledger-vs-broker drift
+        # for as long as the declared position was held. §2.4 generalizes the
+        # gate to `broker_flat_swing` (the broker positions MINUS the declared
+        # out-of-framework set is empty) and reconciles the ledger against a
+        # `swing_nlv = source_nlv - Σ(declared marketValue)` taken from the SAME
+        # account snapshot (C1). The check fires when swing is flat-for-swing
+        # even while a declared holding is open.
         #
         # Phase 18 Arc 18-H.6 (refinement 2): the old journal-flat-but-broker-
         # position case used to append an `orphan_broker_position` cash-warning
         # here; that warning is REPLACED by the first-class
-        # `untracked_broker_position` discrepancy emitted in step 5.1 above
-        # (strictly more informative — it carries qty + market value AND fires
-        # even when journal trades are open, the case the warning missed). The
-        # both-flat equity_delta suppression below is preserved structurally:
-        # the `if` requires journal_flat AND broker_flat, so a broker-position
-        # case still does NOT emit a (mis-attributable) equity_delta.
+        # `untracked_broker_position` discrepancy emitted in step 5.1 above. An
+        # UNDECLARED broker position still makes broker_flat_swing False, so a
+        # mis-attributable equity_delta is NOT emitted while it is held.
         ledger_equity = current_equity(
             starting_equity=starting_equity,
             exits=list_all_exitshape_via_fills(conn),
             cash_movements=list_cash(conn),
         )
-        coherence_delta: float | None = (
-            ledger_equity - source_nlv if source_nlv is not None else None
+
+        # The SINGLE normalized broker NLV. The mapper does `float(nlv)` with NO
+        # finiteness check, so a NaN/inf NLV is reachable and would trip
+        # ReconciliationRun.__post_init__'s NaN/inf rejection on the stamped
+        # equity columns at completion read-back -> a crashed run. Normalize
+        # once; a non-finite NLV degrades to None (no fire; None stamps).
+        finite_source_nlv: float | None = (
+            source_nlv
+            if (source_nlv is not None and math.isfinite(source_nlv))
+            else None
         )
+        # RAW columns (§9.4): account_equity_source_dollars stays the raw broker
+        # NLV (finite or None) and equity_delta_dollars stays the raw
+        # `ledger - source_nlv` on EVERY path. The swing-scoped values never
+        # touch these columns.
+        coherence_delta: float | None = (
+            ledger_equity - finite_source_nlv
+            if finite_source_nlv is not None else None
+        )
+
+        # broker_flat_swing := the broker positions MINUS the declared
+        # out-of-framework set is empty. Defined over the SAME schwab_positions
+        # elements legacy `broker_flat = len(schwab_positions) == 0` counts (NO
+        # nonzero-qty filter) so it reduces EXACTLY to broker_flat when the
+        # declared set is empty (C3). REUSES the orphan pass's symbol-upper read.
+        def _declared(p: object) -> bool:
+            if not isinstance(p, dict):
+                return False
+            instr = p.get("instrument") or {}
+            sym = instr.get("symbol", "") if isinstance(instr, dict) else ""
+            return bool(sym) and sym.upper() in out_of_framework_set
+
+        declared_held = [p for p in schwab_positions if _declared(p)]
+        undeclared_positions = [p for p in schwab_positions if not _declared(p)]
+        broker_flat_swing = len(undeclared_positions) == 0
+        # A declared position is actually PRESENT/held in this snapshot (an
+        # un-held declared ticker is simply absent from schwab_positions, so it
+        # never appears in declared_held — §9.3 Σ scope).
+        swing_scope_active = len(declared_held) > 0
         journal_flat = len(open_trades) == 0
-        broker_flat = len(schwab_positions) == 0
+
+        # Σ(declared marketValue) over the PRESENT declared positions, from the
+        # SAME snapshot (C1). C2 — suppress NEVER treat-as-0: any declared MV
+        # that is None / non-numeric / non-finite makes the swing-scoped check
+        # UNAVAILABLE (declared_mv_available=False). Coercing a missing MV to 0
+        # would compute swing_nlv = full NLV -> a FALSE DRIFT of ~the declared MV
+        # (the OTHER L2 direction). Mirrors the orphan pass MV handling.
+        declared_oof_mv = 0.0
+        declared_mv_available = True
+        for p in declared_held:
+            raw_mv = p.get("marketValue") if isinstance(p, dict) else None
+            if raw_mv is None:
+                declared_mv_available = False
+                break
+            try:
+                mv = float(raw_mv)
+            except (TypeError, ValueError):
+                declared_mv_available = False
+                break
+            if not math.isfinite(mv):
+                declared_mv_available = False
+                break
+            declared_oof_mv += mv
+
+        # swing_nlv is computable only on the swing-scoped path with all declared
+        # MVs available AND a finite broker NLV.
+        swing_nlv_computable = (
+            swing_scope_active
+            and declared_mv_available
+            and finite_source_nlv is not None
+        )
+        swing_nlv: float | None = None
+        if swing_nlv_computable:
+            swing_nlv = finite_source_nlv - declared_oof_mv
+            # Belt — both inputs already finite.
+            if not math.isfinite(swing_nlv):
+                swing_nlv = None
+                swing_nlv_computable = False
+
+        # Derive ONE evaluated (eval_nlv, eval_delta, eval_basis) governing the
+        # FIRE decision + the emitted actual_value_json (on fire) + the
+        # swing-scoped LOG (on coherence). It does NOT govern the RAW run-row
+        # columns (§9.4).
+        #   - legacy path (nothing declared/held): eval against finite_source_nlv,
+        #     basis "net_liq" (byte-identical to today; broker_flat_swing ==
+        #     broker_flat here).
+        #   - swing-scoped path (declared held, MVs+NLV available): eval against
+        #     swing_nlv, basis "net_liq_minus_declared_oof".
+        #   - C2 degrade (declared held but MV/NLV unavailable): NEVER fires; no log.
+        if swing_nlv_computable:
+            eval_nlv = swing_nlv
+            eval_delta = ledger_equity - swing_nlv
+            eval_basis = _SWING_COHERENCE_BASIS
+        elif not swing_scope_active:
+            eval_nlv = finite_source_nlv
+            eval_delta = coherence_delta
+            eval_basis = "net_liq"
+        else:
+            # C2 degrade (swing_scope_active but not swing_nlv_computable):
+            # suppress entirely (no fire, no swing-scoped log).
+            eval_nlv = None
+            eval_delta = None
+            eval_basis = None
+
+        fired = False
         if (
             journal_flat
-            and broker_flat
-            and source_nlv is not None
-            and coherence_delta is not None
-            and abs(coherence_delta) > _cash_coherence_tolerance(source_nlv)
+            and broker_flat_swing
+            and eval_nlv is not None
+            and eval_delta is not None
+            and abs(eval_delta) > _cash_coherence_tolerance(eval_nlv)
         ):
+            fired = True
+            if eval_basis == _SWING_COHERENCE_BASIS:
+                actual_payload = {
+                    "swing_nlv": eval_nlv,
+                    "source_nlv": finite_source_nlv,
+                    "declared_oof_mv": declared_oof_mv,
+                    "basis": _SWING_COHERENCE_BASIS,
+                }
+                delta_text = f"${eval_delta:+.2f} (ledger minus swing_nlv)"
+            else:
+                actual_payload = {"equity_dollars": eval_nlv, "basis": "net_liq"}
+                delta_text = f"${eval_delta:+.2f} (ledger minus net_liq)"
             _emit(
                 conn,
                 run_id=run_id,
@@ -1845,11 +1968,32 @@ def run_schwab_reconciliation(
                     {"equity_dollars": ledger_equity, "basis": "ledger"},
                     sort_keys=True,
                 ),
-                actual_value_json=json.dumps(
-                    {"equity_dollars": source_nlv, "basis": "net_liq"},
-                    sort_keys=True,
-                ),
-                delta_text=f"${coherence_delta:+.2f} (ledger minus net_liq)",
+                actual_value_json=json.dumps(actual_payload, sort_keys=True),
+                delta_text=delta_text,
+            )
+
+        # Swing-scoped coherent LOG (§9.4) — the coherent-case artifact + the
+        # operator/test (a) distinguisher. Emitted ONLY on the swing-scoped path
+        # when eligible (journal_flat AND broker_flat_swing AND swing_nlv
+        # computable) and the check did NOT fire (|delta| <= tol -> coherent).
+        # Proves the swing-scoped evaluation RAN and found coherence (a real
+        # drift would have fired). NO log line on the legacy or C2-degrade paths.
+        # The fire/log paths are mutually exclusive. ASCII-only (rides the
+        # pipeline.log seam; mirrors the Arc-4b cash INFO line).
+        if (
+            swing_nlv_computable
+            and journal_flat
+            and broker_flat_swing
+            and not fired
+        ):
+            log.info(
+                "swing-nlv coherence: basis=%s source_nlv=%.2f swing_nlv=%.2f "
+                "declared_oof_mv=%.2f swing_coherence_delta=%+.2f (coherent)",
+                _SWING_COHERENCE_BASIS,
+                finite_source_nlv,
+                swing_nlv,
+                declared_oof_mv,
+                ledger_equity - swing_nlv,
             )
 
         # --- 8.5. PHASE 12 C.C PIVOT: classify + dispatch per discrepancy ---
@@ -1917,9 +2061,15 @@ def run_schwab_reconciliation(
             unresolved_discrepancies_count=counters["unresolved_discrepancies_count"],
             summary_json=json.dumps(summary, sort_keys=True),
             # Arc 4b Task 8: stamp the LEDGER equity + coherence delta (computed
-            # post-ingestion), not a stale pre-run snapshot.
+            # post-ingestion), not a stale pre-run snapshot. SPCX §2.4 §9.4: the
+            # columns STAY RAW — account_equity_source_dollars is the RAW broker
+            # NLV (finite or None on a non-finite NLV; the only behavior change
+            # vs today, closing the latent __post_init__ NaN/inf crash) and
+            # equity_delta_dollars is the RAW `ledger - source_nlv` (NOT
+            # swing-scoped). The swing-scoped values ride the equity_delta
+            # discrepancy's actual_value_json on fire + the coherent LOG line.
             account_equity_journal_dollars=ledger_equity,
-            account_equity_source_dollars=source_nlv,
+            account_equity_source_dollars=finite_source_nlv,
             equity_delta_dollars=coherence_delta,
         )
         # Arc 4b — one INFO cash summary line (rides the pipeline.log seam; the
