@@ -1253,6 +1253,20 @@ def run_schwab_reconciliation(
         float(schwab_account.net_liquidating_value)
         if schwab_account is not None else None
     )
+    # The SINGLE normalized broker NLV (SPCX §2.4 / Codex R1 MAJOR 2). The mapper
+    # does `float(nlv)` with NO finiteness check, so a NaN/inf NLV is reachable.
+    # ReconciliationRun.__post_init__ rejects NaN/inf on the equity columns, so a
+    # raw non-finite NLV stamped to `account_equity_source_dollars` (the run-row
+    # INSERT below + the completion stamp) would crash `get_run`/`list_recent_runs`
+    # on read-back — on EVERY path including a FAILED run (whose preserved row is
+    # read later). Normalize ONCE here so a non-finite NLV degrades to None on the
+    # stamped column everywhere; step 8 reuses this value. §9.4: this is the only
+    # behavior change on the column vs today (finite NLVs are byte-identical).
+    finite_source_nlv: float | None = (
+        source_nlv
+        if (source_nlv is not None and math.isfinite(source_nlv))
+        else None
+    )
 
     # Pre-read open trades + their fills + journal cash_movements (read-side;
     # uses implicit auto-tx if any but won't conflict because we haven't
@@ -1308,9 +1322,13 @@ def run_schwab_reconciliation(
             period_end=period_end,
             # Arc 4b Task 8: the authoritative ledger equity + coherence delta
             # are computed POST-ingestion and stamped at completion (below);
-            # the run row starts with them NULL.
+            # the run row starts with them NULL. Codex R1 MAJOR 2: stamp the
+            # NORMALIZED finite_source_nlv (None on a non-finite NLV) so a FAILED
+            # run (whose row is preserved by update_run_failed without clearing
+            # the equity columns) can never carry a non-finite source value that
+            # crashes __post_init__ on a later read.
             account_equity_journal_dollars=None,
-            account_equity_source_dollars=source_nlv,
+            account_equity_source_dollars=finite_source_nlv,
             equity_delta_dollars=None,
             schwab_api_call_id=schwab_api_call_id,
         )
@@ -1833,24 +1851,29 @@ def run_schwab_reconciliation(
             exits=list_all_exitshape_via_fills(conn),
             cash_movements=list_cash(conn),
         )
-
-        # The SINGLE normalized broker NLV. The mapper does `float(nlv)` with NO
-        # finiteness check, so a NaN/inf NLV is reachable and would trip
-        # ReconciliationRun.__post_init__'s NaN/inf rejection on the stamped
-        # equity columns at completion read-back -> a crashed run. Normalize
-        # once; a non-finite NLV degrades to None (no fire; None stamps).
-        finite_source_nlv: float | None = (
-            source_nlv
-            if (source_nlv is not None and math.isfinite(source_nlv))
-            else None
+        # finite_source_nlv is normalized ONCE pre-BEGIN (above) so the run-row
+        # INSERT + the completion stamp + step 8 all share the single value.
+        # finite_ledger_equity normalizes the LEDGER the same way (Codex R1
+        # MAJOR 1): cfg.account.starting_equity has NO finiteness validator, so a
+        # non-finite starting_equity (or cash/realized component) propagates a
+        # non-finite ledger. A non-finite ledger would (a) make the coherent LOG
+        # emit a spurious "coherent" on a NaN comparison, and (b) crash
+        # ReconciliationRun.__post_init__ on the `account_equity_journal_dollars`
+        # stamp at read-back. Normalize to finite-or-None; the journal column
+        # stamps None on non-finite (raw otherwise) and the fire/log are gated on
+        # a finite ledger (no fire, no coherent log).
+        finite_ledger_equity: float | None = (
+            ledger_equity if math.isfinite(ledger_equity) else None
         )
         # RAW columns (§9.4): account_equity_source_dollars stays the raw broker
         # NLV (finite or None) and equity_delta_dollars stays the raw
         # `ledger - source_nlv` on EVERY path. The swing-scoped values never
-        # touch these columns.
+        # touch these columns. coherence_delta is finite-or-None because both
+        # inputs are normalized to finite-or-None.
         coherence_delta: float | None = (
-            ledger_equity - finite_source_nlv
-            if finite_source_nlv is not None else None
+            finite_ledger_equity - finite_source_nlv
+            if (finite_ledger_equity is not None
+                and finite_source_nlv is not None) else None
         )
 
         # broker_flat_swing := the broker positions MINUS the declared
@@ -1898,11 +1921,13 @@ def run_schwab_reconciliation(
             declared_oof_mv += mv
 
         # swing_nlv is computable only on the swing-scoped path with all declared
-        # MVs available AND a finite broker NLV.
+        # MVs available AND a finite broker NLV AND a finite ledger (Codex R1
+        # MAJOR 1 — a non-finite ledger must not produce a swing-scoped fire/log).
         swing_nlv_computable = (
             swing_scope_active
             and declared_mv_available
             and finite_source_nlv is not None
+            and finite_ledger_equity is not None
         )
         swing_nlv: float | None = None
         if swing_nlv_computable:
@@ -1924,7 +1949,7 @@ def run_schwab_reconciliation(
         #   - C2 degrade (declared held but MV/NLV unavailable): NEVER fires; no log.
         if swing_nlv_computable:
             eval_nlv = swing_nlv
-            eval_delta = ledger_equity - swing_nlv
+            eval_delta = finite_ledger_equity - swing_nlv
             eval_basis = _SWING_COHERENCE_BASIS
         elif not swing_scope_active:
             eval_nlv = finite_source_nlv
@@ -1965,7 +1990,7 @@ def run_schwab_reconciliation(
                 counters=counters,
                 dedup_seen=dedup_seen,
                 expected_value_json=json.dumps(
-                    {"equity_dollars": ledger_equity, "basis": "ledger"},
+                    {"equity_dollars": finite_ledger_equity, "basis": "ledger"},
                     sort_keys=True,
                 ),
                 actual_value_json=json.dumps(actual_payload, sort_keys=True),
@@ -1993,7 +2018,7 @@ def run_schwab_reconciliation(
                 finite_source_nlv,
                 swing_nlv,
                 declared_oof_mv,
-                ledger_equity - swing_nlv,
+                finite_ledger_equity - swing_nlv,
             )
 
         # --- 8.5. PHASE 12 C.C PIVOT: classify + dispatch per discrepancy ---
@@ -2068,7 +2093,10 @@ def run_schwab_reconciliation(
             # equity_delta_dollars is the RAW `ledger - source_nlv` (NOT
             # swing-scoped). The swing-scoped values ride the equity_delta
             # discrepancy's actual_value_json on fire + the coherent LOG line.
-            account_equity_journal_dollars=ledger_equity,
+            # Codex R1 MAJOR 1: stamp finite_ledger_equity (None on a non-finite
+            # ledger) so __post_init__'s NaN/inf rejection on the journal column
+            # never trips at read-back.
+            account_equity_journal_dollars=finite_ledger_equity,
             account_equity_source_dollars=finite_source_nlv,
             equity_delta_dollars=coherence_delta,
         )

@@ -316,6 +316,36 @@ def test_active_holding_nonfinite_nlv_degrades(conn, caplog):
     assert "equity_coherence" not in json.loads(summary_json)
 
 
+def test_nonfinite_ledger_degrades_no_fire_no_log(conn, caplog):
+    """Codex R1 MAJOR 1 — a non-finite ledger (non-finite starting_equity) degrades.
+
+    cfg.account.starting_equity has no finiteness validator, so a non-finite
+    starting_equity propagates a non-finite ledger. finite_ledger_equity is None
+    -> coherence uncomputable -> no fire, NO coherent log, and the
+    account_equity_journal_dollars stamp is NULL so __post_init__'s NaN/inf
+    rejection never trips at read-back.
+
+    Pre-fix (before MAJOR-1 fix): the coherent log emits a spurious "coherent"
+    line on a NaN comparison AND account_equity_journal_dollars = NaN crashes
+    get_run via __post_init__. Post-fix: run COMPLETES, no fire, no log, NULL
+    journal stamp.
+    """
+    with caplog.at_level(logging.INFO, logger=_RECON_LOGGER):
+        run = _run(
+            conn,
+            [_position("SPCX", long_qty=2.0, market_value=392.51)],
+            nlv=1842.51,
+            starting_equity=float("nan"),
+            out_of_framework=("SPCX",),
+        )
+    assert run.state == "completed"
+    assert _equity_deltas(conn, run.run_id) == []
+    assert _swing_log_records(caplog) == []
+    journal_d, _source_d, delta_d, _summary = _run_row(conn, run.run_id)
+    assert journal_d is None
+    assert delta_d is None
+
+
 # --------------------------------------------------------------------------- #
 # Task 3 — C3 regression locks (nothing-declared/held byte-identical) (test (d))
 # --------------------------------------------------------------------------- #
