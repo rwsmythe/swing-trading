@@ -583,19 +583,24 @@ def _pivot_classify_and_dispatch_for_run(
         if disc.resolution != "unresolved":
             continue
 
-        # Phase 18 Arc 18-H.6.1 Part 3 — an `untracked_broker_position`
-        # (18-H.6, all-FK-null orphan) is NOT a fill-matching ambiguity. It
-        # has no sub-classifier, so classify_discrepancy would return tier-2
-        # 'unsupported' -> the else-branch below would stamp
-        # `pending_ambiguity_resolution` (the wrong limbo: there is no
-        # broker-vs-journal RECORD to disposition, only an untracked holding
-        # the operator must journal). Skip the classify/dispatch entirely so
-        # the orphan stays `unresolved` — a real unaddressed finding that
-        # banners (Part 1) and is cleared via the manual resolver
-        # (`resolve_discrepancy` -> `acknowledged_immaterial`, Part 2) once
-        # the operator journals the position. Every OTHER discrepancy type's
+        # Phase 18 Arc 18-H.6.1 Part 3 + the equity_delta limbo-routing fix
+        # (the 18-H.6.1 twin) — neither `untracked_broker_position` (18-H.6,
+        # all-FK-null orphan) nor `equity_delta` (an account-level
+        # ledger-vs-NLV coherence discrepancy) is a fill-matching ambiguity:
+        # there is no broker-vs-journal RECORD to disposition. The orphan has
+        # no sub-classifier (tier-2 'unsupported'); `equity_delta` DOES have a
+        # sub-classifier (`_classify_equity_delta` -> tier-2
+        # 'field_shape_incompatible'); EITHER way the else-branch below would
+        # stamp `pending_ambiguity_resolution` (the wrong, uncleanable limbo).
+        # Skip the classify/dispatch entirely so both stay `unresolved` — real
+        # unaddressed findings that are run-level-counted and cleared via the
+        # manual resolver (`resolve_discrepancy` -> `acknowledged_immaterial`)
+        # once the operator acknowledges them. Every OTHER discrepancy type's
         # classify/dispatch behavior below is byte-identical (C1).
-        if disc.discrepancy_type == "untracked_broker_position":
+        if disc.discrepancy_type in (
+            "untracked_broker_position",
+            "equity_delta",
+        ):
             continue
 
         sp_name = f"correction_sp_{disc.discrepancy_id}"
