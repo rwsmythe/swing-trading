@@ -52,3 +52,14 @@ if disc.discrepancy_type in ("untracked_broker_position", "equity_delta"):
 ## 7. Return report
 
 The **ORCHESTRATOR** posts the executing return to `charc` (+ `rd` fyi) AFTER its QA (the implementer reports up in chat; never posts to a director inbox — comms taxonomy + `feedback_implementer_never_posts_to_directors`).
+
+## 8. Writing-plans grounding corrections + CHARC §0 ruling (2026-06-18) — owned
+
+The writing-plans grounding (plan `3bcc483f`) caught THREE inaccuracies in this brief; all owned, none changes the FIX (the one-line pivot skip), and the plan grounds all three (it is the binding executing spec):
+- **(a) Mechanism (§1):** `equity_delta` HAS a sub-classifier (`_classify_equity_delta` → tier-2 `field_shape_incompatible`), NOT "no sub-classifier → unsupported". The outcome (`pending_ambiguity_resolution` limbo) + the fix (skip) are identical.
+- **(b) §5 "material banner/count" — a brief-internal contradiction (CHARC error):** `equity_delta` is `MATERIAL_BY_TYPE=0` (`reconciliation.py:109`), so it CANNOT enter the global material banner without a `MATERIAL_BY_TYPE` change — which §2/C4 forbids. The "banner" wording carried over from the 18-H.6.1 twin (where `untracked_broker_position` is `material=1`) without checking `equity_delta` is `material=0`.
+- **(c) id-71 (§2):** clearable by the EXISTING resolver (NOT genuinely stuck) → C3 is test-only; the carve-out narrows to `_pivot_classify_and_dispatch_for_run` ONLY (no resolver code).
+
+**CHARC §0 RULING = (A):** the limbo fix's actual ask is CLEANABILITY — route a fired `equity_delta` OUT of the uncleanable `pending_ambiguity_resolution` limbo so it stays `unresolved` + run-level-counted + CLI-clearable. The material-banner exclusion is **correct-by-design** (`equity_delta` has been `material=0` since Phase 9 — acknowledged-not-bannered, like the 4 prior cleared rows). **C2 is satisfied by the run-level unresolved count + the clearable path, NOT the material banner.** No `MATERIAL_BY_TYPE` change; the arc stays the single-line pivot skip. The plan (`3bcc483f`) stands as-merged.
+
+**(B) — the materiality question, surfaced as a SEPARATE deferred decision (NOT this arc):** whether a fired coherence drift SHOULD banner as MATERIAL (`MATERIAL_BY_TYPE["equity_delta"] 0→1`) is a deliberate operator/product decision with real blast radius (it flips ALL `equity_delta`, incl. legacy both-flat, to material alerts; `MATERIAL_BY_TYPE` changes have landed WITH schema/CHECK per #11). Honest visibility note: at `material=0`, a fired swing-scoped `equity_delta` shows in the run-level count + the discrepancy list + the recon log, but NOT the GUI material "needs attention" banner. NOT bundled into the limbo (cleanability) fix; commission separately if wanted.
