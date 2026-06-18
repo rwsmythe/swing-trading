@@ -71,3 +71,15 @@ Generalize the both-flat gate to "flat for swing":
 ## 8. Return report
 
 The **ORCHESTRATOR** posts the executing return report to BOTH `charc` and `rd` AFTER its QA (the implementer reports up to the orchestrator in chat; it never posts to a director inbox — comms taxonomy + memory `feedback_implementer_never_posts_to_directors`). RD's L2 sign-off is merge-blocking; CHARC QAs C1–C5; the operator live-witness + authorization gate the `--ff-only` merge.
+
+## 9. RD L2 checklist — folded 2026-06-18 (BUILD TO THIS; refines §2 / C2 / §6)
+
+RD pre-loaded L2 (thread `swing-nlv-coherence`) and **concurred the design is L2-sound on its face** — with drift-only (no positive surface) the only L2 failure mode is a MISSED drift (false coherence = failing to fire); C1 (same-snapshot MV) + C2 (suppress-on-missing) hit the two canonical vectors; no net-new L2 concern. RD front-loaded its executing-return L2 checklist so writing-plans builds to the gate:
+
+1. **C1 read-path (same snapshot):** `source_nlv` AND the subtracted `marketValue`(s) MUST originate from the SAME account-details call/object (one snapshot) — RD verifies the READ PATH, not just the arithmetic. A cross-snapshot/separately-fetched MV is forbidden.
+2. **C2 — suppress, NEVER treat-as-0 (sharpens C2):** a declared-and-held position with `marketValue=None` must SUPPRESS. Treating it as 0 → `swing_nlv = full NLV` vs the swing-ledger → a FALSE DRIFT of ~the declared MV (the OTHER L2 direction). Test (c) must prove the degrade path RAN (the swing-scoped delta was NOT computed/recorded).
+3. **Σ scope:** `Σ(declared MV)` iterates the positions PRESENT in the payload whose ticker is declared; an un-held declared ticker contributes 0 and must not error.
+4. **Run-row recording — RESOLVED (settles the §2 design point):** the dashboard-read columns STAY RAW — `account_equity_source_dollars` = the RAW broker NLV (the equity tile must NOT under-report the operator's TRUE account value by the declared MV) and `equity_delta_dollars` stays raw (`ledger − source_nlv`). The swing-scoped values (`swing_nlv`, `declared_oof_mv`, `source_nlv`, `basis="net_liq_minus_declared_oof"`) ride ADDITIVELY in the `equity_delta` discrepancy's `actual_value_json` WHEN IT FIRES. **NO new run-row column** (a migration would violate C4/C5). When swing-flat-and-coherent (no fire), the check LOGS its swing-scoped evaluation → that log line is **test (a)'s distinguisher** (the coherent case persists NO swing delta — no fire, no new column; supersedes the §6 test-(a) "run-row delta" distinguisher). RD verifies the equity-tile consumers are unaffected at executing.
+5. **C3 byte-identical** when nothing declared/held (the regression lock).
+
+L1 (zero contamination) + L4 (measurement chain untouched) hold trivially. RD QAs L2 against the shipped diff at the executing return (this checklist + §3/§5), merge-blocking, alongside CHARC C1–C5 + the operator live-witness. Route L2 questions to RD via the operator.
