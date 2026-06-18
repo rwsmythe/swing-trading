@@ -136,3 +136,71 @@ DOWNSTREAM display nicety in a file OUTSIDE the authorized step-8-only scope
 /RD to decide a follow-up (teach `_pairs_equity_delta` the `swing_nlv` key). The
 mandated swing-scoped `actual_value_json` shape (plan §2.4) is correct as shipped;
 this is purely the renderer's pair-extractor not yet knowing the new key.
+
+---
+
+## Fix pass — [P2] equity_dollars (swing-scoped equity_delta payload)
+
+**Date:** 2026-06-17. **Tier:** review-strong (`-c model_reasoning_effort=high`;
+no `review-strong` profile in this cell's `$CODEX_HOME`, so `-p` omitted and
+`model_reasoning_effort=high` forced per recipe). **Header:** `model: gpt-5.5`,
+`reasoning effort: high`, `approval: never`, `sandbox: read-only`. **Repo access:**
+the diff PLUS the two unchanged consumers (`reconciliation_render._pairs_equity_delta`
++ `reconcile._render_pre_resolution_context_equity_delta`/`_format_price`) bundled via
+stdin; Codex additionally grounded itself by reading the live worktree files.
+
+**Scope of this pass:** resolves the originally-FLAGGED MINOR (the swing-scoped fire's
+"actual"/Schwab equity cell rendered blank because the payload dropped the legacy
+`equity_dollars` key) — independently re-flagged as a [P2] by BOTH the executing
+reviewer A (review-strong) and reviewer B (codex-auto-review). Production change =
+ONE additive key in the step-8 swing-scoped `actual_payload`
+(`"equity_dollars": eval_nlv`, which IS `swing_nlv` on that path). The renderer/VM,
+the RAW run-row columns, the log line, and C1/C2/C3 are UNCHANGED.
+
+### Round 1
+
+#### Codex response (verbatim)
+
+```
+OpenAI Codex v0.135.0
+model: gpt-5.5
+sandbox: read-only
+reasoning effort: high
+
+No findings.
+
+I verified the changed branch in schwab_reconciliation.py:1950: when
+swing_nlv_computable is true, eval_nlv = swing_nlv, and the fired swing-scoped
+payload now adds "equity_dollars": eval_nlv alongside "swing_nlv": eval_nlv. The
+legacy net_liq payload remains unchanged at line 1989.
+
+The two consumers still read actual.get("equity_dollars"): CLI pairs in
+reconciliation_render.py:304, and the web VM in reconcile.py:516. With the new
+emitted key, they render swing_nlv instead of None/"-".
+
+The raw run-row columns still stamp finite_source_nlv and raw coherence_delta at
+schwab_reconciliation.py:2105, and the coherent log/C1-C2-C3 gating was not changed.
+The production-emitter test in test_swing_nlv_coherence.py:243 genuinely
+distinguishes pre/post-fix by persisting the real row and passing it through both
+consumers.
+
+I could not run the targeted tests because this shell has neither python nor pytest
+available.
+
+NO_NEW_CRITICAL_MAJOR
+```
+
+#### Adjudication
+
+CONVERGED at Round 1: `NO_NEW_CRITICAL_MAJOR`, ZERO findings. Codex independently
+confirmed (against the live tree) the four invariants the fix had to preserve:
+(1) `eval_nlv == swing_nlv` on the swing-scoped branch, so the new `equity_dollars`
+key carries swing_nlv; (2) both consumers now render swing_nlv (not None/"-");
+(3) the legacy `net_liq` payload + the RAW run-row columns + the coherent LOG +
+C1/C2/C3 gating are all UNCHANGED; (4) the new end-to-end consumer test genuinely
+distinguishes pre/post-fix by persisting the real production row and driving both
+consumers. The implementer separately verified pre/post distinction by `git stash`-ing
+the production fix and re-running the targeted tests (the shape assertion + the
+end-to-end consumer test both FAIL pre-fix, PASS post-fix). Codex's inability to run
+pytest in its sandbox is expected (the implementer ran the full fast suite:
+8652 passed / 5 skipped). No further rounds needed.
