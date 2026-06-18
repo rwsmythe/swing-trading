@@ -1973,6 +1973,12 @@ def run_schwab_reconciliation(
             fired = True
             if eval_basis == _SWING_COHERENCE_BASIS:
                 actual_payload = {
+                    # Legacy key preserved so the existing consumers
+                    # (reconciliation_render._pairs_equity_delta + the
+                    # reconcile resolution VM) render the "actual" equity cell
+                    # as swing_nlv (the value the ledger was compared against),
+                    # NOT blank. On the swing-scoped path eval_nlv IS swing_nlv.
+                    "equity_dollars": eval_nlv,
                     "swing_nlv": eval_nlv,
                     "source_nlv": finite_source_nlv,
                     "declared_oof_mv": declared_oof_mv,

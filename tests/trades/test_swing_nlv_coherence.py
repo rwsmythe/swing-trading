@@ -231,8 +231,64 @@ def test_drift_while_holding_records_swing_scoped_actual_value_json(conn):
     assert act["swing_nlv"] == pytest.approx(1500.0)
     assert act["source_nlv"] == pytest.approx(1892.51)
     assert act["declared_oof_mv"] == pytest.approx(392.51)
+    # Legacy key preserved (== swing_nlv on the swing-scoped path) so the
+    # existing reconcile drill-down + resolution VM render the "actual" equity
+    # cell, not blank (Codex [P2]). Pre-fix: key ABSENT (KeyError -> fail).
+    # Post-fix: present and == swing_nlv.
+    assert act["equity_dollars"] == pytest.approx(1500.0)
     # expected stays the ledger basis.
     assert json.loads(expected)["basis"] == "ledger"
+
+
+def test_swing_scoped_fire_consumers_render_swing_nlv_not_blank(conn):
+    """Codex [P2] — the EXISTING consumers render swing_nlv from the REAL row.
+
+    Drives the actual step-8 production emitter (via `_run`), then feeds the
+    PERSISTED `equity_delta` row through BOTH legacy consumers:
+      - swing/trades/reconciliation_render.build_compared_pairs (CLI table)
+      - swing/web/view_models/reconcile._render_pre_resolution_context (web VM)
+    Both read `actual.get("equity_dollars")`.
+
+    Pre-fix: the swing-scoped `actual_value_json` DROPPED "equity_dollars" ->
+    get(...) None -> CLI Schwab pair == None; web Schwab NLV cell == "-"
+    (BLANK) -> both asserts below FAIL.
+    Post-fix: "equity_dollars" == swing_nlv (1500.0) -> CLI pair == 1500.0;
+    web cell == "1500.00".
+    """
+    from swing.data.repos.reconciliation import list_discrepancies_for_run
+    from swing.trades.reconciliation_render import build_compared_pairs
+    from swing.web.view_models.reconcile import _render_pre_resolution_context
+
+    run = _run(
+        conn,
+        [_position("SPCX", long_qty=2.0, market_value=392.51)],
+        nlv=1892.51,
+        starting_equity=1450.00,
+        out_of_framework=("SPCX",),
+    )
+    discs = [
+        d
+        for d in list_discrepancies_for_run(conn, run.run_id)
+        if d.discrepancy_type == "equity_delta"
+    ]
+    assert len(discs) == 1
+    disc = discs[0]
+
+    # (1) CLI consumer — build_compared_pairs renders swing_nlv on the Schwab side.
+    pairs = build_compared_pairs(
+        disc.discrepancy_type,
+        json.loads(disc.expected_value_json),
+        json.loads(disc.actual_value_json),
+    )
+    assert pairs is not None
+    labels = [p[0] for p in pairs]
+    idx = labels.index("equity dollars")
+    assert pairs[idx][2] == pytest.approx(1500.00)  # pre-fix: None
+
+    # (2) Web resolution VM — Schwab NLV cell renders swing_nlv, NOT "-" blank.
+    ctx = _render_pre_resolution_context(disc)
+    assert ctx.schwab_side_value == "1500.00"  # pre-fix: "-"
+    assert ctx.parse_warning is None
 
 
 def test_missing_declared_mv_suppresses(conn, caplog):

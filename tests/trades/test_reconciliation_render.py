@@ -588,6 +588,38 @@ class TestBuildComparedPairsEquityDelta:
         assert pairs is not None
         assert pairs[0][2] is None
 
+    def test_equity_delta_swing_scoped_actual_renders_swing_nlv(self) -> None:
+        """SPCX swing-scoped fire payload renders swing_nlv on the Schwab side.
+
+        Production swing-scoped actual_value_json shape (schwab_reconciliation.py
+        step-8 fire branch, eval_basis == net_liq_minus_declared_oof):
+          actual = {"equity_dollars": swing_nlv, "swing_nlv": swing_nlv,
+                    "source_nlv": ..., "declared_oof_mv": ..., "basis": ...}
+        Pre-fix (Codex [P2]): the payload DROPPED "equity_dollars" so
+        actual.get("equity_dollars") -> None -> the drill-down equity cell
+        rendered BLANK. Post-fix: "equity_dollars" == swing_nlv (1500.0) so the
+        Schwab side renders swing_nlv, NOT None.
+        """
+        actual_swing_scoped = {
+            "equity_dollars": 1500.00,
+            "swing_nlv": 1500.00,
+            "source_nlv": 1892.51,
+            "declared_oof_mv": 392.51,
+            "basis": "net_liq_minus_declared_oof",
+        }
+        pairs = build_compared_pairs(
+            "equity_delta",
+            {"equity_dollars": 1450.00, "basis": "ledger"},  # journal/ledger side
+            actual_swing_scoped,
+        )
+        assert pairs is not None
+        labels = [p[0] for p in pairs]
+        idx = labels.index("equity dollars")
+        # journal/ledger side
+        assert pairs[idx][1] == 1450.00
+        # Schwab/actual side renders swing_nlv (NOT None/blank, the [P2] bug)
+        assert pairs[idx][2] == 1500.00
+
 
 class TestBuildComparedPairsSectorTamper:
     """sector_tamper — sector + industry pairs."""

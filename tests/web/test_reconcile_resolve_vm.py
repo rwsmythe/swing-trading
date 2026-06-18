@@ -614,6 +614,40 @@ def test_equity_delta_compared_pairs_uses_production_emitter_shape() -> None:
     assert source_val == pytest.approx(2034.78)
 
 
+def test_equity_delta_swing_scoped_renders_swing_nlv_not_blank() -> None:
+    """equity_delta swing-scoped fire: resolution VM renders swing_nlv, not blank.
+
+    Production swing-scoped actual_value_json shape (schwab_reconciliation.py
+    step-8 fire branch, eval_basis == net_liq_minus_declared_oof):
+      actual = {"equity_dollars": swing_nlv, "swing_nlv": swing_nlv,
+                "source_nlv": ..., "declared_oof_mv": ..., "basis": ...}
+    _render_pre_resolution_context_equity_delta reads
+    actual.get("equity_dollars"). Pre-fix (Codex [P2]): the payload DROPPED
+    "equity_dollars" -> get(...) None -> _format_price -> "-" (blank Schwab
+    NLV cell + compared_pairs source None). Post-fix: "equity_dollars" ==
+    swing_nlv (1500.0) -> Schwab NLV renders "1500.00".
+    """
+    disc = _make_discrepancy(
+        discrepancy_type="equity_delta",
+        field_name="net_liquidating_value",
+        expected_value_json='{"equity_dollars": 1450.00, "basis": "ledger"}',
+        actual_value_json=(
+            '{"equity_dollars": 1500.00, "swing_nlv": 1500.00, '
+            '"source_nlv": 1892.51, "declared_oof_mv": 392.51, '
+            '"basis": "net_liq_minus_declared_oof"}'
+        ),
+        fill_id=None,
+    )
+    ctx = _render_pre_resolution_context(disc)
+    # Schwab NLV cell renders swing_nlv, NOT "-" (the [P2] blank-cell bug).
+    assert ctx.schwab_side_value == "1500.00"
+    assert ctx.journal_side_value == "1450.00"
+    assert ctx.parse_warning is None
+    assert ctx.compared_pairs is not None
+    _label, _journal_val, source_val = ctx.compared_pairs[0]
+    assert source_val == pytest.approx(1500.00)
+
+
 def test_sector_tamper_populates_compared_pairs() -> None:
     """sector_tamper render helper sets compared_pairs with 'sector' and 'industry'."""
     disc = _make_discrepancy(
