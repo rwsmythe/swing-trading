@@ -83,3 +83,13 @@ RD pre-loaded L2 (thread `swing-nlv-coherence`) and **concurred the design is L2
 5. **C3 byte-identical** when nothing declared/held (the regression lock).
 
 L1 (zero contamination) + L4 (measurement chain untouched) hold trivially. RD QAs L2 against the shipped diff at the executing return (this checklist + §3/§5), merge-blocking, alongside CHARC C1–C5 + the operator live-witness. Route L2 questions to RD via the operator.
+
+## 10. Operational practice — record an out-of-framework holding's cash outlay (witness-validated 2026-06-18)
+
+The §5.10 live-witness (run 59) exposed that path B recorded SPCX's market-value side but NOT the swing CASH that funded it → the swing ledger overstated swing capital by the ~$372 outlay → a TRUE drift §2.4 correctly fired (RD L2 + CHARC concur; not a false drift). **Interim operational practice (until the cash-recon ROOT fix automates it):** when a declared out-of-framework holding is bought with swing-account cash, record the cash outlay as a swing cash_movement so the swing ledger stays accurate — it is a withdrawal FROM the swing sleeve (a future sale returning proceeds = a deposit, symmetric):
+
+```
+swing journal cash --withdraw <actual purchase cost> --date <purchase date> --ref <stable-ref> --note "<ticker> out-of-framework purchase: swing capital reallocated (path-B cash-side; not a swing trade)"
+```
+
+**L1 stays intact** — a cash_movement never enters `compute_stats`/cohort/hypothesis (the holding is still never a trade); only the swing capital LEDGER is corrected (it is read by position-sizing, so the ledger must be accurate). Witness run 60: ledger 2027.26 → 1654.78 ≈ swing_nlv 1654.96, `swing_coherence_delta=-0.18` (coherent), no fire. **Supersession:** the deferred **cash-recon ROOT fix** (auto-treat a declared-OOF Schwab TRADE-type txn as a swing transfer-out — the recon currently SKIPs TRADE-type assuming journaled-via-P&L, false for an OOF buy) will make this automatic; until it ships, follow the manual practice per OOF purchase.
