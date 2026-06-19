@@ -160,6 +160,46 @@ def test_oof_ref_helper_round_trip_and_collision():
     assert _is_oof_sentinel_ref("") is False
 
 
+def test_oof_ref_predicate_canonical_shape_only(conn):
+    """Codex R1-MAJOR-1: the predicate matches the CANONICAL shape only, NOT a
+    bare `oof:` prefix -- so a manual `journal cash --ref "oof:..."` row that is
+    NOT a real OOF transfer-out is still emitted (Lock 1 byte-unchanged).
+
+    A free-form `ref` can already be written via `journal cash --ref`. A
+    prefix-only predicate would skip ANY `oof:`-prefixed ref as self-sourced,
+    altering a NON-OOF row's emit -> a Lock-1 violation.
+
+    Distinguishes: a non-canonical `oof:manual` ref (no TICKER:DATE shape) MUST
+    still emit cash_movement_mismatch when it has no counterpart; only the
+    canonical oof:<TICKER>:<YYYY-MM-DD> is skipped.
+    """
+    # Unit: canonical recognized; non-canonical oof:-prefixed NOT recognized.
+    assert _is_oof_sentinel_ref("oof:SPCX:2026-06-18") is True
+    assert _is_oof_sentinel_ref("oof:manual") is False
+    assert _is_oof_sentinel_ref("oof:") is False
+    assert _is_oof_sentinel_ref("oof:SPCX") is False          # missing date
+    assert _is_oof_sentinel_ref("oof:SPCX:2026-6-1") is False  # non-ISO date
+    assert _is_oof_sentinel_ref("oof:spcx:2026-06-18") is False  # lower ticker
+
+    # Integration: a manual `oof:manual` withdraw with NO counterpart STILL
+    # emits (it is NOT canonical-OOF-shaped -> not skipped as self-sourced).
+    d = "2026-06-18"
+    _seed_cash(conn, CashMovement(
+        id=None, date=d, kind="withdraw", amount=42.0,
+        ref="oof:manual", note="not a real oof-buy",
+    ))
+    manual_id = conn.execute(
+        "SELECT id FROM cash_movements WHERE ref='oof:manual'"
+    ).fetchone()[0]
+    run = _run(
+        conn, [_position("SPCX", long_qty=2.0, market_value=500.0)],
+        nlv=1450.0, starting_equity=1450.0, out_of_framework=("SPCX",),
+        schwab_transactions=[],
+    )
+    # Lock 1: the non-canonical row is NOT skipped -> it emits as before.
+    assert manual_id in _cash_mismatch_ids(conn, run.run_id)
+
+
 def test_oof_ref_matcher_boundary_numeric_txn_not_caught(conn):
     """C2 matcher boundary: an OOF row is skipped-as-self-sourced AND a numeric
     transaction_id tx is NOT consumed by the OOF row (PASS 1 never ref-matches

@@ -40,6 +40,7 @@ import functools as _functools
 import json
 import logging
 import math
+import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import date as _date
@@ -222,6 +223,17 @@ _SWING_COHERENCE_BASIS = "net_liq_minus_declared_oof"
 #     an OOF ref, and the OOF-skip branch is never True for a numeric id (the
 #     two are mutually exclusive by construction; the C2 discriminator pins it).
 _OOF_REF_PREFIX = "oof:"
+# The CANONICAL OOF sentinel shape: oof:<TICKER>:<YYYY-MM-DD>. The predicate
+# matches this FULL shape, NOT a bare `oof:` prefix (Codex R1-MAJOR-1): the
+# free-form `ref` column also accepts a manual `journal cash --ref "oof:..."`
+# value, and a prefix-only match would skip such a NON-OOF row as self-sourced,
+# altering its emit (a Lock-1 violation). The TICKER segment is the registry-
+# normalized upper [A-Z0-9.\-]+ (tickers contain no colon -> the delimiter is
+# unambiguous); the date segment is the ISO YYYY-MM-DD shape. `_build_oof_ref`
+# only ever produces a canonical-shaped ref, so the OOF command path is
+# unaffected; only a non-canonical `oof:`-prefixed manual ref is (correctly) NOT
+# recognized. Numeric Schwab transaction_ids ([0-9]+) can never match this.
+_OOF_REF_RE = re.compile(r"^oof:[A-Z0-9.\-]+:\d{4}-\d{2}-\d{2}$")
 
 
 def _build_oof_ref(ticker: str, date: str) -> str:
@@ -235,13 +247,16 @@ def _build_oof_ref(ticker: str, date: str) -> str:
 
 
 def _is_oof_sentinel_ref(ref: str | None) -> bool:
-    """True iff ``ref`` is an OOF-buy sentinel (carries the ``oof:`` prefix).
+    """True iff ``ref`` is a CANONICAL OOF-buy sentinel (``oof:<TICKER>:<DATE>``).
 
-    A numeric Schwab ``transaction_id`` can never carry the literal ``oof:``
-    prefix, so this is mutually exclusive with PASS-1's exact-ref match. None /
-    empty -> False (the matcher guards ``cm.ref and _is_oof_sentinel_ref(...)``).
+    Matches the full canonical shape, NOT a bare ``oof:`` prefix (Codex
+    R1-MAJOR-1) -- a manual ``journal cash --ref "oof:..."`` value that is not a
+    real OOF transfer-out must NOT be skipped as self-sourced. A numeric Schwab
+    ``transaction_id`` can never match (no ``oof:`` prefix), so this stays
+    mutually exclusive with PASS-1's exact-ref match. None / empty -> False (the
+    matcher guards ``cm.ref and _is_oof_sentinel_ref(...)``).
     """
-    return bool(ref) and ref.startswith(_OOF_REF_PREFIX)
+    return bool(ref) and _OOF_REF_RE.match(ref) is not None
 
 
 def _cash_coherence_tolerance(nlv: float) -> float:
