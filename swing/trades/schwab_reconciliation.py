@@ -276,6 +276,21 @@ def _is_oof_sentinel_ref(ref: str | None) -> bool:
     return bool(ref) and _OOF_REF_RE.match(ref) is not None
 
 
+def _oof_ref_ticker(ref: str | None) -> str | None:
+    """Return the upper-cased TICKER segment of a CANONICAL OOF ref, else None.
+
+    The canonical ref is ``oof:<TICKER>:<YYYY-MM-DD>``; the ticker contains no
+    colon (the delimiter), so a canonical ref splits into exactly 3 parts. Used
+    by the matcher to gate the self-sourced skip on the ticker being CURRENTLY
+    declared out-of-framework (Codex R5 -- a legitimate OOF transfer-out is only
+    ever for a declared ticker).
+    """
+    if not _is_oof_sentinel_ref(ref):
+        return None
+    # _is_oof_sentinel_ref guaranteed the canonical 3-part shape.
+    return ref.split(":")[1].upper()
+
+
 def _cash_coherence_tolerance(nlv: float) -> float:
     """The equity-coherence emit tolerance: ``max($5.00, 0.5% × |NLV|)`` (Arc 4b
     Task 8). Supersedes EQUITY_DELTA_EMIT_THRESHOLD_DOLLARS on the schwab path."""
@@ -1840,12 +1855,19 @@ def run_schwab_reconciliation(
             #     byte-unchanged heuristic below;
             #   - the canonical-shape predicate (Codex R1-MAJOR-1) means a
             #     non-canonical oof:-prefixed manual ref is NOT skipped;
+            #   - the ticker MUST be CURRENTLY declared out-of-framework (Codex
+            #     R5): a legitimate OOF transfer-out is only ever for a declared
+            #     ticker (the oof-buy registry guard enforces it at write time),
+            #     so an oof:<undeclared>:<date> row is NOT skipped;
             #   - the OOF sentinel ref never ref-matches in PASS 1 (numeric
             #     transaction_id vs the 'oof:' prefix are mutually exclusive).
-            # So every non-OOF row below runs the byte-unchanged existing code
-            # (C3 lock). The only row this skips is a `withdraw` reffed exactly
-            # oof:<TICKER>:<DATE> -- the reserved namespace this command owns.
-            if cm.kind == "withdraw" and cm.ref and _is_oof_sentinel_ref(cm.ref):
+            # Combined with the reserved `oof:` namespace at every free-form-ref
+            # production writer (journal cash rejects, TOS neutralizes, the
+            # Schwab cash-ingest writes numeric refs), `journal oof-buy` is the
+            # SOLE producer of an oof:<declared>:<date> withdraw -> every non-OOF
+            # row below runs the byte-unchanged existing code (C3 lock).
+            _oof_ticker = _oof_ref_ticker(cm.ref) if cm.kind == "withdraw" else None
+            if _oof_ticker is not None and _oof_ticker in out_of_framework_set:
                 cash_counters["cash_oof_self_sourced_count"] += 1
                 continue
             j_amount = abs(float(cm.amount))

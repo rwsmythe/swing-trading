@@ -291,6 +291,45 @@ def test_build_oof_ref_rejects_colon_ticker():
     assert _build_oof_ref("SPCX", "2026-06-18") == "oof:SPCX:2026-06-18"
 
 
+def test_oof_skip_gated_on_currently_declared_ticker(conn):
+    """Codex R5-MAJOR (sub-point A): the self-reconcile skip is gated on the
+    ref's ticker being CURRENTLY in out_of_framework_tickers -- a legitimate OOF
+    transfer-out is only ever for a declared ticker (the oof-buy registry guard
+    enforces it at write time).
+
+    Distinguishes: an oof:AAPL:<d> withdraw in a run where only SPCX is declared
+    is NOT skipped (AAPL not declared) -> it emits as before (Lock 1); an
+    oof:SPCX:<d> withdraw (SPCX declared) IS skipped. Without the
+    ticker-declared gate the AAPL row would be wrongly skipped.
+    """
+    d = "2026-06-18"
+    _seed_cash(
+        conn,
+        # A canonical oof: withdraw for AAPL -- but AAPL is NOT declared OOF.
+        CashMovement(id=None, date=d, kind="withdraw", amount=42.0,
+                     ref=_build_oof_ref("AAPL", d), note="not-declared oof"),
+        # A canonical oof: withdraw for SPCX -- SPCX IS declared.
+        CashMovement(id=None, date=d, kind="withdraw", amount=500.0,
+                     ref=_build_oof_ref("SPCX", d), note="declared oof"),
+    )
+    aapl_id = conn.execute(
+        "SELECT id FROM cash_movements WHERE ref=?", (_build_oof_ref("AAPL", d),)
+    ).fetchone()[0]
+    spcx_id = conn.execute(
+        "SELECT id FROM cash_movements WHERE ref=?", (_build_oof_ref("SPCX", d),)
+    ).fetchone()[0]
+    run = _run(
+        conn, [_position("SPCX", long_qty=2.0, market_value=500.0)],
+        nlv=1450.0, starting_equity=950.0, out_of_framework=("SPCX",),
+        schwab_transactions=[],
+    )
+    emitted = _cash_mismatch_ids(conn, run.run_id)
+    # AAPL is NOT declared -> the oof:AAPL row is NOT self-sourced -> it emits.
+    assert aapl_id in emitted
+    # SPCX IS declared -> the oof:SPCX row is self-sourced -> NOT emitted.
+    assert spcx_id not in emitted
+
+
 def test_oof_ref_matcher_boundary_numeric_txn_not_caught(conn):
     """C2 matcher boundary: an OOF row is skipped-as-self-sourced AND a numeric
     transaction_id tx is NOT consumed by the OOF row (PASS 1 never ref-matches
