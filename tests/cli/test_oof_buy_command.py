@@ -238,3 +238,41 @@ def test_oof_buy_invalid_date_rejected(tmp_path: Path, monkeypatch):
     ])
     assert r.exit_code != 0
     assert _cash_rows(db_path) == []
+
+
+def test_oof_buy_non_positive_cost_rejected(tmp_path: Path, monkeypatch):
+    """--cost <= 0 -> ClickException; no row."""
+    runner, cfg, db_path = _setup(
+        tmp_path, monkeypatch, overrides=_SPCX_OVERRIDES)
+    for bad in ("0", "-5"):
+        r = runner.invoke(main, [
+            "--config", str(cfg), "journal", "oof-buy",
+            "--ticker", "SPCX", "--cost", bad, "--date", "2026-06-18",
+        ])
+        assert r.exit_code != 0, (bad, r.output)
+    assert _cash_rows(db_path) == []
+
+
+def test_oof_buy_non_finite_cost_rejected(tmp_path: Path, monkeypatch):
+    """Codex R1-MAJOR-2 (measurement-core): --cost inf / nan -> ClickException;
+    NO row written.
+
+    Pre-fix: `inf` passes `cost <= 0` (inf not <= 0) AND the SQLite `amount >= 0`
+    CHECK (inf >= 0 is True) -> a non-finite withdraw lands -> current_equity
+    propagates a non-finite ledger -> the coherence eval is SUPPRESSED (the
+    opposite of a trustworthy signal). `nan` fails the SQLite CHECK ->
+    IntegrityError -> the belt mis-reports it as 'already recorded'.
+    Post-fix: an explicit finiteness guard rejects both with a clear message,
+    and nothing is written.
+    """
+    runner, cfg, db_path = _setup(
+        tmp_path, monkeypatch, overrides=_SPCX_OVERRIDES)
+    for bad in ("inf", "nan", "-inf"):
+        r = runner.invoke(main, [
+            "--config", str(cfg), "journal", "oof-buy",
+            "--ticker", "SPCX", "--cost", bad, "--date", "2026-06-18",
+        ])
+        assert r.exit_code != 0, (bad, r.output)
+        # Not mis-reported as a dedup no-op.
+        assert "already recorded" not in r.output.lower(), (bad, r.output)
+    assert _cash_rows(db_path) == []   # nothing written for any non-finite cost

@@ -1776,6 +1776,7 @@ def journal_oof_buy_cmd(ctx, ticker, cost, date_str):
     (a regular swing position is journaled as a normal trade, not an OOF
     transfer-out).
     """
+    import math
     from datetime import date as _date
 
     from swing.config_overrides import apply_overrides
@@ -1812,8 +1813,15 @@ def journal_oof_buy_cmd(ctx, ticker, cost, date_str):
             f"OOF transfer-out. Declared: {list(declared) or '(none)'}."
         )
 
-    if cost <= 0:
-        raise click.ClickException(f"--cost must be > 0; got {cost}")
+    # Reject non-finite OR non-positive cost (Codex R1 Major 2 -- measurement-
+    # core): inf passes `<= 0` AND the SQLite `amount >= 0` CHECK, so a
+    # non-finite withdraw would propagate a non-finite ledger and SUPPRESS the
+    # equity-coherence eval; nan fails the CHECK -> IntegrityError mis-reported
+    # as a dedup no-op. Guard finiteness BEFORE the write.
+    if not math.isfinite(cost) or cost <= 0:
+        raise click.ClickException(
+            f"--cost must be a finite number > 0; got {cost}"
+        )
 
     # 3. Resolve + ISO-validate the date (mirror journal_cash_cmd:1732-1744).
     date_str = date_str or _date.today().isoformat()
