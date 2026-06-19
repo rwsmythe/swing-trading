@@ -205,6 +205,45 @@ def _within_cash_match_window(date_a_iso: str, date_b_iso: str, *, days: int = 4
 _SWING_COHERENCE_BASIS = "net_liq_minus_declared_oof"
 
 
+# OOF-buy sentinel ref (Phase-18 deferred follow-up #1 — `swing journal oof-buy`).
+# The swing cash spent to buy an out-of-framework holding is recorded as a
+# `withdraw` cash_movement marked self-sourced by this deterministic `ref`. The
+# SINGLE source of truth (prefix + constructor + predicate) is defined ONCE here
+# (next to the step-7 matcher that recognizes it) and imported by the CLI
+# command that builds it -- never two hand-duplicated string literals (the Arc-6
+# shared-predicate lesson). Properties (plan §3):
+#   - deterministic + recognizable: the `oof:` PREFIX is the matcher's key.
+#   - idempotent: a deterministic fn of (ticker, date) -> the partial unique
+#     index ux_cash_ref dedups a re-run with the same key.
+#   - can NEVER collide with a real Schwab transaction_id: a transaction_id is a
+#     NUMERIC string ([0-9]+); the sentinel always carries the literal 'oof:'
+#     prefix (lowercase letters + a colon) at position 0, which [0-9]+ can never
+#     contain. So PASS-1's `str(tx.transaction_id) == cm.ref` is never True for
+#     an OOF ref, and the OOF-skip branch is never True for a numeric id (the
+#     two are mutually exclusive by construction; the C2 discriminator pins it).
+_OOF_REF_PREFIX = "oof:"
+
+
+def _build_oof_ref(ticker: str, date: str) -> str:
+    """Build the canonical OOF sentinel ref ``oof:<TICKER>:<YYYY-MM-DD>``.
+
+    UPPER-CASES the ticker (canonical regardless of caller case -- the registry
+    stores tickers upper-cased, so the ref must too, or idempotency silently
+    breaks across case). ``date`` is the already-ISO-validated buy date.
+    """
+    return f"{_OOF_REF_PREFIX}{ticker.strip().upper()}:{date}"
+
+
+def _is_oof_sentinel_ref(ref: str | None) -> bool:
+    """True iff ``ref`` is an OOF-buy sentinel (carries the ``oof:`` prefix).
+
+    A numeric Schwab ``transaction_id`` can never carry the literal ``oof:``
+    prefix, so this is mutually exclusive with PASS-1's exact-ref match. None /
+    empty -> False (the matcher guards ``cm.ref and _is_oof_sentinel_ref(...)``).
+    """
+    return bool(ref) and ref.startswith(_OOF_REF_PREFIX)
+
+
 def _cash_coherence_tolerance(nlv: float) -> float:
     """The equity-coherence emit tolerance: ``max($5.00, 0.5% × |NLV|)`` (Arc 4b
     Task 8). Supersedes EQUITY_DELTA_EMIT_THRESHOLD_DOLLARS on the schwab path."""
