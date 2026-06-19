@@ -1755,6 +1755,132 @@ def journal_cash_cmd(ctx, deposit, withdraw, interest, dividend, fee, date_str, 
     click.echo(f"Cash {kind} #{cid}: ${amount:.2f}{f' ref={ref}' if ref else ''}")
 
 
+@journal_group.command("oof-buy")
+@click.option("--ticker", "ticker", required=True, help="Out-of-framework ticker (e.g. SPCX).")
+@click.option("--cost", "cost", type=float, required=True, help="Swing cash spent (dollars).")
+@click.option("--date", "date_str", default=None, help="YYYY-MM-DD; defaults to today.")
+@click.pass_context
+def journal_oof_buy_cmd(ctx, ticker, cost, date_str):
+    """Record a swing transfer-OUT for cash spent on an out-of-framework holding.
+
+    Swing cash spent to buy an out-of-framework (OOF) holding (e.g. an IPO not in
+    the swing framework) leaves the framework but is otherwise never captured on
+    the swing ledger -> swing-NLV coherence drift. This records the cash outflow
+    as a `withdraw` cash_movement marked self-sourced by a deterministic OOF
+    sentinel ref (oof:<TICKER>:<YYYY-MM-DD>), so (a) the ledger side is corrected
+    and (b) the step-7 reconciliation matcher recognizes the row as self-sourced
+    and never fires a recurring cash_movement_mismatch for it.
+
+    BUY direction only (transfer-OUT) for V1; OOF SELLs are a documented
+    follow-up. The ticker MUST be in [reconciliation] out_of_framework_tickers
+    (a regular swing position is journaled as a normal trade, not an OOF
+    transfer-out).
+    """
+    from datetime import date as _date
+
+    from swing.config_overrides import apply_overrides
+    from swing.data.db import connect
+    from swing.data.models import CashMovement
+    from swing.data.repos.cash import find_by_ref, insert_cash
+    from swing.trades.schwab_reconciliation import _build_oof_ref
+
+    # Control-flow ORDER (plan §1): apply_overrides -> registry guard -> ISO-date
+    # validation -> SELECT-first idempotency -> WRITE-SCOPED sandbox gate ->
+    # insert_cash. Validation ALWAYS precedes the write short-circuit so a
+    # non-OOF ticker is rejected even under sandbox.
+
+    # 1. Materialize the registry + the env (O1: out_of_framework_tickers + the
+    #    schwab environment live in user-config.toml overrides only -- a bare
+    #    ctx.obj['config'] read returns an EMPTY registry on the live system and
+    #    would reject every ticker; the 18-E default-arg-diverges gotcha).
+    cfg = apply_overrides(ctx.obj["config"])
+
+    # 2. Normalize the ticker ONCE at the boundary (case-insensitive) + the
+    #    registry guard -- ALWAYS, regardless of env.
+    ticker = ticker.strip().upper()
+    declared = tuple(
+        getattr(
+            getattr(cfg, "reconciliation", None), "out_of_framework_tickers", ()
+        )
+        or ()
+    )
+    if ticker not in declared:
+        raise click.ClickException(
+            f"{ticker} is not an out-of-framework ticker "
+            f"([reconciliation] out_of_framework_tickers in user-config.toml). "
+            f"A regular swing position is journaled as a normal trade, not an "
+            f"OOF transfer-out. Declared: {list(declared) or '(none)'}."
+        )
+
+    if cost <= 0:
+        raise click.ClickException(f"--cost must be > 0; got {cost}")
+
+    # 3. Resolve + ISO-validate the date (mirror journal_cash_cmd:1732-1744).
+    date_str = date_str or _date.today().isoformat()
+    _ok = len(date_str) == 10 and date_str[4] == "-" and date_str[7] == "-"
+    if _ok:
+        try:
+            _date.fromisoformat(date_str)
+        except ValueError:
+            _ok = False
+    if not _ok:
+        raise click.ClickException(
+            f"--date must be a valid YYYY-MM-DD; got {date_str!r}"
+        )
+
+    ref = _build_oof_ref(ticker, date_str)
+    note = f"out-of-framework buy: {ticker} (swing cash transfer-out)"
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        # 4. SELECT-first idempotency (the partial unique index ux_cash_ref makes
+        #    the ref unique; surface a clean no-op, not an IntegrityError
+        #    traceback). The deterministic ref means a re-run of the same
+        #    (ticker, date) dedups.
+        existing = find_by_ref(conn, ref)
+        if existing is not None:
+            click.echo(
+                f"OOF transfer-out for {ticker} on {date_str} already recorded "
+                f"(#{existing.id}, ref={ref}); no change."
+            )
+            return
+
+        # 5. WRITE-SCOPED sandbox gate (LAST gate before the write; mirror the
+        #    canonical domain-row gate pipeline_steps.py:292). cash_movements is a
+        #    DOMAIN row -> under a non-production env, audit-only (echo advisory,
+        #    no row written).
+        environment = cfg.integrations.schwab.environment
+        if environment != "production":
+            click.echo(
+                f"sandbox (environment={environment!r}): OOF transfer-out for "
+                f"{ticker} (${cost:.2f}) NOT recorded (domain write "
+                f"short-circuited; audit-only)."
+            )
+            return
+
+        # 6. The domain write (production only).
+        try:
+            with conn:
+                cid = insert_cash(conn, CashMovement(
+                    id=None, date=date_str, kind="withdraw", amount=cost,
+                    ref=ref, note=note,
+                ))
+        except sqlite3.IntegrityError:
+            # Belt for a TOCTOU race past the SELECT (ux_cash_ref): report the
+            # same clean no-op rather than an IntegrityError traceback.
+            click.echo(
+                f"OOF transfer-out for {ticker} on {date_str} already recorded "
+                f"(ref={ref}); no change."
+            )
+            return
+    finally:
+        conn.close()
+    click.echo(
+        f"OOF transfer-out #{cid}: {ticker} ${cost:.2f} on {date_str} "
+        f"(ref={ref}). Swing ledger reduced by ${cost:.2f}."
+    )
+
+
 @journal_group.command("reconcile-tos")
 @click.option(
     "--csv-path", "csv_path", required=True,
