@@ -275,6 +275,22 @@ def test_oof_ref_predicate_ticker_domain_matches_builder(conn):
     assert oof_id not in _cash_mismatch_ids(conn, run.run_id)
 
 
+def test_build_oof_ref_rejects_colon_ticker():
+    """Codex R4-MAJOR-2: a ticker containing the colon delimiter is rejected at
+    the builder (raise) so the round-trip stays well-formed.
+
+    The colon is the ref delimiter; a colon-bearing ticker (e.g. 'NYSE:SPCX')
+    would emit oof:NYSE:SPCX:<date> (3 colons) which the [^:]+ predicate cannot
+    match -> the genuine OOF row would not be skipped. Real tickers contain no
+    colon, so this is a pathological registry entry surfaced cleanly.
+    """
+    import pytest as _pytest
+    with _pytest.raises(ValueError):
+        _build_oof_ref("NYSE:SPCX", "2026-06-18")
+    # The normal case still works.
+    assert _build_oof_ref("SPCX", "2026-06-18") == "oof:SPCX:2026-06-18"
+
+
 def test_oof_ref_matcher_boundary_numeric_txn_not_caught(conn):
     """C2 matcher boundary: an OOF row is skipped-as-self-sourced AND a numeric
     transaction_id tx is NOT consumed by the OOF row (PASS 1 never ref-matches

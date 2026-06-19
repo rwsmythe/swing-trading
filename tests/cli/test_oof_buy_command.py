@@ -305,3 +305,23 @@ def test_journal_cash_rejects_oof_prefixed_ref(tmp_path: Path, monkeypatch):
     ])
     assert r2.exit_code == 0, r2.output
     assert len(_cash_rows(db_path)) == 1
+
+
+def test_oof_buy_colon_ticker_surfaces_clickexception(tmp_path: Path, monkeypatch):
+    """Codex R4-MAJOR-2: a registered colon-bearing ticker (pathological but
+    registry-legal) surfaces a clean ClickException, NOT a raw ValueError
+    traceback, and writes nothing. _build_oof_ref raises on the colon (the
+    delimiter); the CLI wraps it."""
+    runner, cfg, db_path = _setup(
+        tmp_path, monkeypatch,
+        overrides={"reconciliation": {"out_of_framework_tickers": ["NYSE:SPCX"]}},
+    )
+    r = runner.invoke(main, [
+        "--config", str(cfg), "journal", "oof-buy",
+        "--ticker", "NYSE:SPCX", "--cost", "500", "--date", "2026-06-18",
+    ])
+    assert r.exit_code != 0
+    # A clean ClickException (click prints 'Error: ...'), not a traceback.
+    assert "Traceback" not in r.output
+    assert "':'" in r.output or "colon" in r.output.lower()
+    assert _cash_rows(db_path) == []

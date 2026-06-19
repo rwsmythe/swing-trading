@@ -246,8 +246,21 @@ def _build_oof_ref(ticker: str, date: str) -> str:
     UPPER-CASES the ticker (canonical regardless of caller case -- the registry
     stores tickers upper-cased, so the ref must too, or idempotency silently
     breaks across case). ``date`` is the already-ISO-validated buy date.
+
+    REJECTS a ticker containing the colon delimiter (Codex R4-MAJOR-2): the
+    registry normalizer accepts any non-empty upper-cased string (a colon-bearing
+    ticker like ``NYSE:SPCX`` is pathological but registry-legal), and a colon in
+    the ticker would emit a 3-colon ref the ``[^:]+`` predicate can't match -> the
+    genuine OOF row would not be skipped. Raising keeps build + predicate domains
+    aligned; the CLI surfaces it as a clean ClickException.
     """
-    return f"{_OOF_REF_PREFIX}{ticker.strip().upper()}:{date}"
+    norm = ticker.strip().upper()
+    if ":" in norm:
+        raise ValueError(
+            f"ticker must not contain ':' (the OOF ref delimiter); got "
+            f"{ticker!r}"
+        )
+    return f"{_OOF_REF_PREFIX}{norm}:{date}"
 
 
 def _is_oof_sentinel_ref(ref: str | None) -> bool:

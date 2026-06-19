@@ -1850,7 +1850,13 @@ def journal_oof_buy_cmd(ctx, ticker, cost, date_str):
             f"--date must be a valid YYYY-MM-DD; got {date_str!r}"
         )
 
-    ref = _build_oof_ref(ticker, date_str)
+    # _build_oof_ref rejects a colon-bearing ticker (R4-MAJOR-2); wrap its
+    # ValueError as a clean ClickException (the service-ValueError-at-the-CLI-
+    # boundary discipline) rather than a raw traceback.
+    try:
+        ref = _build_oof_ref(ticker, date_str)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
     note = f"out-of-framework buy: {ticker} (swing cash transfer-out)"
 
     conn = connect(cfg.paths.db_path)
