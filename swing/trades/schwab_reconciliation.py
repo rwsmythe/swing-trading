@@ -1810,16 +1810,25 @@ def run_schwab_reconciliation(
                 continue  # already matched by exact transactionId in pass 1
             # Phase-18 follow-up #1 (`swing journal oof-buy`) — self-sourced OOF
             # transfer-out skip. The swing cash that bought an out-of-framework
-            # holding is recorded as a `withdraw` cash_movement carrying an OOF
-            # sentinel `ref`. Its Schwab counterpart is a TRADE (skipped at
-            # ingest BY DESIGN, _CASH_SKIP_TX_TYPES) so there is NO cash-side
-            # source transaction to match -- it is self-sourced. Exclude it from
-            # the cash_movement_mismatch emit (treated as matched). ADDITIVE-ONLY:
-            # the OOF sentinel ref (oof:...) never ref-matches in PASS 1 (numeric
-            # transaction_id vs the 'oof:' prefix are mutually exclusive), and
-            # _is_oof_sentinel_ref is False for every non-OOF ref -- so every
-            # non-OOF row below runs the byte-unchanged existing code (C3 lock).
-            if cm.ref and _is_oof_sentinel_ref(cm.ref):
+            # holding is recorded as a `withdraw` cash_movement carrying a
+            # CANONICAL OOF sentinel `ref` (oof:<TICKER>:<YYYY-MM-DD>). Its Schwab
+            # counterpart is a TRADE (skipped at ingest BY DESIGN,
+            # _CASH_SKIP_TX_TYPES) so there is NO cash-side source transaction to
+            # match -- it is self-sourced. Exclude it from the
+            # cash_movement_mismatch emit (treated as matched). ADDITIVE-ONLY:
+            #   - the OOF command ALWAYS writes kind="withdraw", so the
+            #     `cm.kind == "withdraw"` guard (Codex R2-MAJOR-1) means a NON-
+            #     withdraw manual row carrying a canonical-looking oof: ref
+            #     (deposit/interest/dividend/fee) is NOT skipped -- it runs the
+            #     byte-unchanged heuristic below;
+            #   - the canonical-shape predicate (Codex R1-MAJOR-1) means a
+            #     non-canonical oof:-prefixed manual ref is NOT skipped;
+            #   - the OOF sentinel ref never ref-matches in PASS 1 (numeric
+            #     transaction_id vs the 'oof:' prefix are mutually exclusive).
+            # So every non-OOF row below runs the byte-unchanged existing code
+            # (C3 lock). The only row this skips is a `withdraw` reffed exactly
+            # oof:<TICKER>:<DATE> -- the reserved namespace this command owns.
+            if cm.kind == "withdraw" and cm.ref and _is_oof_sentinel_ref(cm.ref):
                 cash_counters["cash_oof_self_sourced_count"] += 1
                 continue
             j_amount = abs(float(cm.amount))

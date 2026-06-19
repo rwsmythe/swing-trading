@@ -200,6 +200,40 @@ def test_oof_ref_predicate_canonical_shape_only(conn):
     assert manual_id in _cash_mismatch_ids(conn, run.run_id)
 
 
+def test_canonical_ref_non_withdraw_row_still_emits(conn):
+    """Codex R2-MAJOR-1: the branch guards on kind=='withdraw' too -- a NON-
+    withdraw row with a CANONICAL-shaped oof: ref is NOT skipped as self-sourced.
+
+    The OOF command ALWAYS writes kind='withdraw', so a genuine OOF row is always
+    a withdraw. A manual `journal cash --deposit ... --ref oof:SPCX:<d>` (a
+    canonical-LOOKING ref on a deposit) must run the normal PASS-2 heuristic and
+    emit if unmatched -- it is NOT an OOF transfer-out.
+
+    Distinguishes: WITHOUT the kind=='withdraw' guard the deposit would be
+    skipped (no emit) -> the assertion FAILS; WITH it the deposit emits. The
+    companion canonical-WITHDRAW arm proves the genuine OOF row is still skipped.
+    """
+    d = "2026-06-18"
+    canonical_ref = _build_oof_ref("SPCX", d)  # oof:SPCX:2026-06-18
+    _seed_cash(
+        conn,
+        # A DEPOSIT carrying a canonical-looking oof: ref (NOT an OOF buy).
+        CashMovement(id=None, date=d, kind="deposit", amount=123.0,
+                     ref=canonical_ref, note="not-a-real-oof-buy deposit"),
+    )
+    deposit_id = conn.execute(
+        "SELECT id FROM cash_movements WHERE ref=? AND kind='deposit'",
+        (canonical_ref,),
+    ).fetchone()[0]
+    run = _run(
+        conn, [_position("SPCX", long_qty=2.0, market_value=500.0)],
+        nlv=1450.0, starting_equity=1450.0, out_of_framework=("SPCX",),
+        schwab_transactions=[],   # no counterpart -> a non-skipped row emits
+    )
+    # The canonical-ref DEPOSIT is NOT skipped (kind != withdraw) -> it emits.
+    assert deposit_id in _cash_mismatch_ids(conn, run.run_id)
+
+
 def test_oof_ref_matcher_boundary_numeric_txn_not_caught(conn):
     """C2 matcher boundary: an OOF row is skipped-as-self-sourced AND a numeric
     transaction_id tx is NOT consumed by the OOF row (PASS 1 never ref-matches
