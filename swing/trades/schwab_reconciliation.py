@@ -224,16 +224,20 @@ _SWING_COHERENCE_BASIS = "net_liq_minus_declared_oof"
 #     two are mutually exclusive by construction; the C2 discriminator pins it).
 _OOF_REF_PREFIX = "oof:"
 # The CANONICAL OOF sentinel shape: oof:<TICKER>:<YYYY-MM-DD>. The predicate
-# matches this FULL shape, NOT a bare `oof:` prefix (Codex R1-MAJOR-1): the
-# free-form `ref` column also accepts a manual `journal cash --ref "oof:..."`
-# value, and a prefix-only match would skip such a NON-OOF row as self-sourced,
-# altering its emit (a Lock-1 violation). The TICKER segment is the registry-
-# normalized upper [A-Z0-9.\-]+ (tickers contain no colon -> the delimiter is
-# unambiguous); the date segment is the ISO YYYY-MM-DD shape. `_build_oof_ref`
-# only ever produces a canonical-shaped ref, so the OOF command path is
-# unaffected; only a non-canonical `oof:`-prefixed manual ref is (correctly) NOT
-# recognized. Numeric Schwab transaction_ids ([0-9]+) can never match this.
-_OOF_REF_RE = re.compile(r"^oof:[A-Z0-9.\-]+:\d{4}-\d{2}-\d{2}$")
+# matches this FULL shape, NOT a bare `oof:` prefix (Codex R1-MAJOR-1): a manual
+# `journal cash --ref "oof:..."` value must NOT be skipped as self-sourced
+# unless it is canonical-shaped (a Lock-1 violation otherwise). The TICKER
+# segment is `[^:]+` -- ANY non-colon run (Codex R3-MAJOR-2): the registry
+# normalizer accepts any non-empty upper-cased string (e.g. `BRK/B` with a
+# slash, `BRK.B`), and `_build_oof_ref` emits exactly that between the colons;
+# tickers contain no colon (the delimiter), so `[^:]+` accepts EXACTLY the
+# domain the builder can emit -- build + predicate agree. The date segment is
+# the ISO YYYY-MM-DD shape. `_build_oof_ref` only ever produces a
+# canonical-shaped ref, so the OOF command path is unaffected; a non-canonical
+# `oof:`-prefixed manual ref (e.g. `oof:manual`, or a non-ISO date) is
+# (correctly) NOT recognized. Numeric Schwab transaction_ids ([0-9]+) can never
+# match (no `oof:` prefix).
+_OOF_REF_RE = re.compile(r"^oof:[^:]+:\d{4}-\d{2}-\d{2}$")
 
 
 def _build_oof_ref(ticker: str, date: str) -> str:

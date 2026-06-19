@@ -173,13 +173,18 @@ def test_oof_ref_predicate_canonical_shape_only(conn):
     still emit cash_movement_mismatch when it has no counterpart; only the
     canonical oof:<TICKER>:<YYYY-MM-DD> is skipped.
     """
-    # Unit: canonical recognized; non-canonical oof:-prefixed NOT recognized.
+    # Unit: the canonical SHAPE (oof:<ticker>:<ISO-date>) is recognized; a
+    # non-canonical oof:-prefixed value is NOT. (Case-normalization is the
+    # BUILDER's job -- _build_oof_ref always upper-cases -- and the `oof:`
+    # namespace is reserved at `journal cash` [R3-MAJOR-1], so a non-OOF row can
+    # never carry an `oof:` ref. The predicate therefore keys on SHAPE only.)
     assert _is_oof_sentinel_ref("oof:SPCX:2026-06-18") is True
     assert _is_oof_sentinel_ref("oof:manual") is False
     assert _is_oof_sentinel_ref("oof:") is False
     assert _is_oof_sentinel_ref("oof:SPCX") is False          # missing date
     assert _is_oof_sentinel_ref("oof:SPCX:2026-6-1") is False  # non-ISO date
-    assert _is_oof_sentinel_ref("oof:spcx:2026-06-18") is False  # lower ticker
+    assert _is_oof_sentinel_ref("oof:SPCX:not-a-date") is False  # bad date shape
+    assert _is_oof_sentinel_ref("oofSPCX2026") is False         # no prefix/colons
 
     # Integration: a manual `oof:manual` withdraw with NO counterpart STILL
     # emits (it is NOT canonical-OOF-shaped -> not skipped as self-sourced).
@@ -232,6 +237,42 @@ def test_canonical_ref_non_withdraw_row_still_emits(conn):
     )
     # The canonical-ref DEPOSIT is NOT skipped (kind != withdraw) -> it emits.
     assert deposit_id in _cash_mismatch_ids(conn, run.run_id)
+
+
+def test_oof_ref_predicate_ticker_domain_matches_builder(conn):
+    """Codex R3-MAJOR-2: the predicate accepts the SAME ticker domain
+    _build_oof_ref can emit. The registry normalizer accepts any non-empty
+    upper-cased string (e.g. 'BRK/B' with a slash); _build_oof_ref emits
+    oof:BRK/B:<date>. The predicate's ticker segment must match it ([^:]+) or a
+    genuine BRK/B OOF withdraw would NOT be skipped and would emit (the OOF-row
+    no-emit requirement violated).
+
+    Distinguishes: a ticker with a non-[A-Z0-9.-] char (the slash) round-trips
+    through build -> predicate; the matcher skips the genuine OOF withdraw.
+    """
+    # Unit: build + predicate agree on a slash-bearing registered ticker.
+    slash_ref = _build_oof_ref("BRK/B", "2026-06-18")
+    assert slash_ref == "oof:BRK/B:2026-06-18"
+    assert _is_oof_sentinel_ref(slash_ref) is True
+    # And the prior R1-MAJOR-1 rejections still hold (non-canonical -> False).
+    assert _is_oof_sentinel_ref("oof:manual") is False
+    assert _is_oof_sentinel_ref("oof:SPCX:2026-6-1") is False  # non-ISO date
+
+    # Integration: a BRK/B OOF withdraw with no counterpart is SKIPPED (no emit).
+    d = "2026-06-18"
+    _seed_cash(conn, CashMovement(
+        id=None, date=d, kind="withdraw", amount=250.0,
+        ref=slash_ref, note="oof brk/b",
+    ))
+    oof_id = conn.execute(
+        "SELECT id FROM cash_movements WHERE ref=?", (slash_ref,)
+    ).fetchone()[0]
+    run = _run(
+        conn, [_position("BRK/B", long_qty=1.0, market_value=250.0)],
+        nlv=1450.0, starting_equity=1450.0, out_of_framework=("BRK/B",),
+        schwab_transactions=[],
+    )
+    assert oof_id not in _cash_mismatch_ids(conn, run.run_id)
 
 
 def test_oof_ref_matcher_boundary_numeric_txn_not_caught(conn):
