@@ -1859,6 +1859,29 @@ def journal_oof_buy_cmd(ctx, ticker, cost, date_str):
         raise click.ClickException(str(exc)) from exc
     note = f"out-of-framework buy: {ticker} (swing cash transfer-out)"
 
+    def _resolve_existing_or_raise(existing) -> None:
+        """Handle an already-present row for this ref: a clean idempotent no-op
+        when the recorded amount matches the requested cost, else a CONFLICT
+        ClickException (codex-auto-review [P2]). Shared by the SELECT-first path
+        AND the IntegrityError belt so a TOCTOU race is handled identically (the
+        belt mustn't report 'already recorded' on a DIFFERENT cost -- that would
+        leave the ledger wrong while reporting success). Compares at cent
+        precision (the price-precision-parity discipline)."""
+        if round(float(existing.amount), 2) != round(cost, 2):
+            raise click.ClickException(
+                f"OOF transfer-out for {ticker} on {date_str} already "
+                f"recorded (#{existing.id}, ref={ref}) at "
+                f"${float(existing.amount):.2f}, which differs from the "
+                f"requested ${cost:.2f}. Refusing to silently keep the old "
+                f"amount. To correct the recorded cost, edit/remove the "
+                f"existing cash_movement; for a separate same-day OOF buy, "
+                f"use a distinct --date."
+            )
+        click.echo(
+            f"OOF transfer-out for {ticker} on {date_str} already recorded "
+            f"(#{existing.id}, ref={ref}); no change."
+        )
+
     conn = connect(cfg.paths.db_path)
     try:
         # 4. SELECT-first idempotency (the partial unique index ux_cash_ref makes
@@ -1867,26 +1890,7 @@ def journal_oof_buy_cmd(ctx, ticker, cost, date_str):
         #    (ticker, date) dedups.
         existing = find_by_ref(conn, ref)
         if existing is not None:
-            # codex-auto-review [P2]: the sentinel ref does NOT encode cost, so a
-            # re-run with a DIFFERENT --cost (a corrected mistype, or a second
-            # same-day OOF buy) must be a CONFLICT, not a silent no-op -- else the
-            # ledger keeps the OLD cost while reporting success (a measurement-core
-            # silent-corruption). Compare at cent precision (the price-precision-
-            # parity discipline). Same cost -> a clean idempotent no-op.
-            if round(float(existing.amount), 2) != round(cost, 2):
-                raise click.ClickException(
-                    f"OOF transfer-out for {ticker} on {date_str} already "
-                    f"recorded (#{existing.id}, ref={ref}) at "
-                    f"${float(existing.amount):.2f}, which differs from the "
-                    f"requested ${cost:.2f}. Refusing to silently keep the old "
-                    f"amount. To correct the recorded cost, edit/remove the "
-                    f"existing cash_movement; for a separate same-day OOF buy, "
-                    f"use a distinct --date."
-                )
-            click.echo(
-                f"OOF transfer-out for {ticker} on {date_str} already recorded "
-                f"(#{existing.id}, ref={ref}); no change."
-            )
+            _resolve_existing_or_raise(existing)
             return
 
         # 5. WRITE-SCOPED sandbox gate (LAST gate before the write; mirror the
@@ -1910,12 +1914,16 @@ def journal_oof_buy_cmd(ctx, ticker, cost, date_str):
                     ref=ref, note=note,
                 ))
         except sqlite3.IntegrityError:
-            # Belt for a TOCTOU race past the SELECT (ux_cash_ref): report the
-            # same clean no-op rather than an IntegrityError traceback.
-            click.echo(
-                f"OOF transfer-out for {ticker} on {date_str} already recorded "
-                f"(ref={ref}); no change."
-            )
+            # Belt for a TOCTOU race past the SELECT (ux_cash_ref): RE-FETCH the
+            # row that won the race and apply the SAME conflict validation (Codex
+            # R7-MAJOR-1) -- a clean no-op only when the amount matches; a
+            # different cost is still a CONFLICT, never a silent 'already
+            # recorded'. If the row is somehow gone, re-raise (not our unique-ref
+            # case).
+            raced = find_by_ref(conn, ref)
+            if raced is None:
+                raise
+            _resolve_existing_or_raise(raced)
             return
     finally:
         conn.close()

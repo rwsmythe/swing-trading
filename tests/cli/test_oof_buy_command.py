@@ -174,6 +174,55 @@ def test_oof_buy_conflicting_cost_replay_rejected(tmp_path: Path, monkeypatch):
     assert rows[0][3] == 500.0   # the ORIGINAL amount is unchanged (not 700)
 
 
+def test_oof_buy_integrityerror_belt_applies_conflict_check(tmp_path: Path, monkeypatch):
+    """Codex R7-MAJOR-1: the IntegrityError belt (the TOCTOU-race fallback) applies
+    the SAME conflict validation as the SELECT-first path -- it must NOT report
+    'already recorded' on a DIFFERENT cost (that would leave the ledger wrong while
+    reporting success).
+
+    Simulate the race: the SELECT-first find_by_ref returns None (the row isn't
+    visible yet), but a conflicting $500 row already exists, so the INSERT hits
+    ux_cash_ref -> IntegrityError -> the belt re-fetches and finds the $500/$700
+    conflict.
+
+    Pre-fix: the belt echoes 'already recorded' + exits 0 (silent corruption).
+    Post-fix: the belt re-fetches and raises the conflict ClickException.
+    """
+    runner, cfg, db_path = _setup(
+        tmp_path, monkeypatch, overrides=_SPCX_OVERRIDES)
+    # Pre-seed the race winner: an existing $500 OOF row for the same ref.
+    r0 = runner.invoke(main, [
+        "--config", str(cfg), "journal", "oof-buy",
+        "--ticker", "SPCX", "--cost", "500", "--date", "2026-06-18",
+    ])
+    assert r0.exit_code == 0, r0.output
+
+    # Force the SELECT-first find_by_ref to MISS once (simulate the race window),
+    # so the command reaches the INSERT (-> IntegrityError -> the belt).
+    import swing.data.repos.cash as _cash_repo
+    _real_find = _cash_repo.find_by_ref
+    calls = {"n": 0}
+
+    def _racing_find(conn, ref):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return None              # SELECT-first miss (the race window)
+        return _real_find(conn, ref)  # the belt re-fetch sees the real row
+
+    monkeypatch.setattr(_cash_repo, "find_by_ref", _racing_find)
+
+    # Request a DIFFERENT cost -> the INSERT collides; the belt must CONFLICT.
+    r = runner.invoke(main, [
+        "--config", str(cfg), "journal", "oof-buy",
+        "--ticker", "SPCX", "--cost", "700", "--date", "2026-06-18",
+    ])
+    assert r.exit_code != 0, r.output      # the belt raised, not exit 0
+    assert "differs" in r.output.lower()   # the conflict message
+    rows = _cash_rows(db_path)
+    assert len(rows) == 1
+    assert rows[0][3] == 500.0             # original unchanged (not 700)
+
+
 def test_oof_buy_idempotent_mixed_case(tmp_path: Path, monkeypatch):
     """I1 mixed-case arm (the Codex R1 MAJOR coverage): `spcx` then `SPCX`, same
     date -> STILL exactly one row (both upper-case to the IDENTICAL canonical
