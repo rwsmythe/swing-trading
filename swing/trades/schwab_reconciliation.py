@@ -987,6 +987,10 @@ def _empty_cash_counters() -> dict[str, int]:
         "cash_skipped_trade_count": 0,
         "cash_pending_suppressed_count": 0,
         "cash_sandbox_skipped_insert_count": 0,
+        # OOF-buy self-sourced rows recognized + excluded from the
+        # cash_movement_mismatch emit at the step-7 PASS-2 top (auditable skip,
+        # consistent with cash_pending_suppressed_count). Phase-18 follow-up #1.
+        "cash_oof_self_sourced_count": 0,
     }
 
 
@@ -1789,6 +1793,20 @@ def run_schwab_reconciliation(
         for cm in journal_cash_in_period:
             if cm.id is not None and cm.id in _ref_matched_cm_ids:
                 continue  # already matched by exact transactionId in pass 1
+            # Phase-18 follow-up #1 (`swing journal oof-buy`) — self-sourced OOF
+            # transfer-out skip. The swing cash that bought an out-of-framework
+            # holding is recorded as a `withdraw` cash_movement carrying an OOF
+            # sentinel `ref`. Its Schwab counterpart is a TRADE (skipped at
+            # ingest BY DESIGN, _CASH_SKIP_TX_TYPES) so there is NO cash-side
+            # source transaction to match -- it is self-sourced. Exclude it from
+            # the cash_movement_mismatch emit (treated as matched). ADDITIVE-ONLY:
+            # the OOF sentinel ref (oof:...) never ref-matches in PASS 1 (numeric
+            # transaction_id vs the 'oof:' prefix are mutually exclusive), and
+            # _is_oof_sentinel_ref is False for every non-OOF ref -- so every
+            # non-OOF row below runs the byte-unchanged existing code (C3 lock).
+            if cm.ref and _is_oof_sentinel_ref(cm.ref):
+                cash_counters["cash_oof_self_sourced_count"] += 1
+                continue
             j_amount = abs(float(cm.amount))
             # Arc 4b Task 7 — the 5-kind kind->type map (interest/dividend/fee
             # ride DIVIDEND_OR_INTEREST; sign disambiguates). Unknown kinds
