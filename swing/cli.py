@@ -1729,6 +1729,20 @@ def journal_cash_cmd(ctx, deposit, withdraw, interest, dividend, fee, date_str, 
     if amount <= 0:
         raise click.ClickException(f"--{kind} amount must be > 0; got {amount}")
 
+    # Reserve the `oof:` ref namespace for `journal oof-buy` (Codex R3 Major 1).
+    # An OOF sentinel ref (oof:<TICKER>:<YYYY-MM-DD>) marks a row self-sourced so
+    # the step-7 reconciliation matcher skips it; if `journal cash` could write
+    # an `oof:` ref, a non-OOF row would be silently skipped (a self-reconcile
+    # Lock-1 hole). Rejecting it here makes `journal oof-buy` the ONLY writer of
+    # `oof:` refs -> a non-OOF row can never carry one.
+    from swing.trades.schwab_reconciliation import _OOF_REF_PREFIX
+    if ref is not None and ref.startswith(_OOF_REF_PREFIX):
+        raise click.ClickException(
+            f"--ref must not start with {_OOF_REF_PREFIX!r} (reserved for "
+            f"`swing journal oof-buy`). Use `swing journal oof-buy` to record "
+            f"an out-of-framework buy, or choose a different ref."
+        )
+
     # ISO date validation (migration 0029's GLOB CHECK + the CashMovement
     # validator reject non-ISO; surface a clean ClickException, not a raw
     # IntegrityError / ValueError traceback).

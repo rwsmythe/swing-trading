@@ -276,3 +276,32 @@ def test_oof_buy_non_finite_cost_rejected(tmp_path: Path, monkeypatch):
         # Not mis-reported as a dedup no-op.
         assert "already recorded" not in r.output.lower(), (bad, r.output)
     assert _cash_rows(db_path) == []   # nothing written for any non-finite cost
+
+
+def test_journal_cash_rejects_oof_prefixed_ref(tmp_path: Path, monkeypatch):
+    """Codex R3-MAJOR-1: the `oof:` ref namespace is RESERVED for `journal
+    oof-buy`. `journal cash --ref oof:...` is rejected -> a non-OOF cash row can
+    never carry an `oof:` ref -> the step-7 self-reconcile branch is provably
+    inert for every row `journal cash` can produce (Lock 1 holds completely).
+
+    Pre-fix: `journal cash --withdraw 123 --ref oof:SPCX:2026-06-18` writes a
+    non-OOF row that the matcher then skips as self-sourced (the Lock-1 hole).
+    Post-fix: the write is rejected with a clear ClickException; nothing written.
+    """
+    runner, cfg, db_path = _setup(tmp_path, monkeypatch)
+    r = runner.invoke(main, [
+        "--config", str(cfg), "journal", "cash",
+        "--withdraw", "123", "--date", "2026-06-18",
+        "--ref", "oof:SPCX:2026-06-18",
+    ])
+    assert r.exit_code != 0, r.output
+    assert "oof:" in r.output            # the message names the reserved prefix
+    assert _cash_rows(db_path) == []     # nothing written
+
+    # A non-oof ref still works (the guard is scoped to the reserved prefix).
+    r2 = runner.invoke(main, [
+        "--config", str(cfg), "journal", "cash",
+        "--withdraw", "123", "--date", "2026-06-18", "--ref", "DEP-X",
+    ])
+    assert r2.exit_code == 0, r2.output
+    assert len(_cash_rows(db_path)) == 1
