@@ -1867,6 +1867,22 @@ def journal_oof_buy_cmd(ctx, ticker, cost, date_str):
         #    (ticker, date) dedups.
         existing = find_by_ref(conn, ref)
         if existing is not None:
+            # codex-auto-review [P2]: the sentinel ref does NOT encode cost, so a
+            # re-run with a DIFFERENT --cost (a corrected mistype, or a second
+            # same-day OOF buy) must be a CONFLICT, not a silent no-op -- else the
+            # ledger keeps the OLD cost while reporting success (a measurement-core
+            # silent-corruption). Compare at cent precision (the price-precision-
+            # parity discipline). Same cost -> a clean idempotent no-op.
+            if round(float(existing.amount), 2) != round(cost, 2):
+                raise click.ClickException(
+                    f"OOF transfer-out for {ticker} on {date_str} already "
+                    f"recorded (#{existing.id}, ref={ref}) at "
+                    f"${float(existing.amount):.2f}, which differs from the "
+                    f"requested ${cost:.2f}. Refusing to silently keep the old "
+                    f"amount. To correct the recorded cost, edit/remove the "
+                    f"existing cash_movement; for a separate same-day OOF buy, "
+                    f"use a distinct --date."
+                )
             click.echo(
                 f"OOF transfer-out for {ticker} on {date_str} already recorded "
                 f"(#{existing.id}, ref={ref}); no change."

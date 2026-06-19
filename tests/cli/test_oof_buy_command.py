@@ -144,6 +144,36 @@ def test_oof_buy_idempotent_same_key(tmp_path: Path, monkeypatch):
     assert "already recorded" in r2.output.lower()
 
 
+def test_oof_buy_conflicting_cost_replay_rejected(tmp_path: Path, monkeypatch):
+    """codex-auto-review [P2]: a re-run for the SAME ticker/date with a DIFFERENT
+    --cost is a CONFLICT (the sentinel ref does not encode cost), NOT a silent
+    'already recorded' no-op -- otherwise the ledger keeps the OLD cost while
+    reporting success (silent coherence corruption on a measurement-core path).
+
+    Pre-fix: the second run reports 'already recorded' and leaves the original
+    $500 row -> the ledger is wrong (the operator believes $700 was recorded).
+    Post-fix: the second run ERRORS (conflict); the original row is unchanged;
+    the operator resolves deliberately.
+    """
+    runner, cfg, db_path = _setup(
+        tmp_path, monkeypatch, overrides=_SPCX_OVERRIDES)
+    r1 = runner.invoke(main, [
+        "--config", str(cfg), "journal", "oof-buy",
+        "--ticker", "SPCX", "--cost", "500", "--date", "2026-06-18",
+    ])
+    assert r1.exit_code == 0, r1.output
+    # Same ticker/date, DIFFERENT cost -> conflict.
+    r2 = runner.invoke(main, [
+        "--config", str(cfg), "journal", "oof-buy",
+        "--ticker", "SPCX", "--cost", "700", "--date", "2026-06-18",
+    ])
+    assert r2.exit_code != 0, r2.output            # a conflict error, not exit 0
+    assert "differs" in r2.output.lower()          # the message explains the conflict
+    rows = _cash_rows(db_path)
+    assert len(rows) == 1
+    assert rows[0][3] == 500.0   # the ORIGINAL amount is unchanged (not 700)
+
+
 def test_oof_buy_idempotent_mixed_case(tmp_path: Path, monkeypatch):
     """I1 mixed-case arm (the Codex R1 MAJOR coverage): `spcx` then `SPCX`, same
     date -> STILL exactly one row (both upper-case to the IDENTICAL canonical
