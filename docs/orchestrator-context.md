@@ -393,6 +393,10 @@ Two pairs of handoff docs:
 
 Bootstrap discipline: fresh-orchestrator session reads only the active files (this one + `docs/phase3e-todo.md`) + `CLAUDE.md` + `git log -20` + `git status`. Archive companions are searchable on demand via Grep / Read.
 
+### Brief-corpus archival at phase close (CHARC-authored — harness convention; canonical text in `tool-director-context.md §4.3`)
+
+At each phase close, the close-housekeeping ritual `git mv`s that phase's DEAD dispatch artifacts — commissioning/dispatch briefs, writing-/executing-plans, implementation plans, orchestrator handoffs, per-arc audits + Codex review transcripts — into `docs/archive/phase<N>/`. **No cooldown** (a merged arc's brief is dead; this differs from the one-phase-cooldown for `phase3e-todo.md` SHIPPED entries below). The live durable docs stay top-level: charters, the `*-state.md` pointers, `harness-architecture.md`, the active-phase `todo`, `implementer-dispatch-recipe.md`, `runbooks/`, comms-design docs, references. This makes the existing `docs/archive/phase16`/`phase17` practice a standing rule. The probe (`harness_probe.py`, §4.2) counts top-level `docs/*.md`, so this archival reduces the tracked corpus. **Phase-18 close = ALSO sweep the one-time pre-phase-16 + Phase-18 backlog (~450 top-level files; bucket by phase where determinable, else a `docs/archive/pre-phase-16/` catch-all).** CHARC's phase-close audit verifies the top-level count dropped.
+
 ### Cooldown rules (when to migrate)
 
 Migration triggers, in order of frequency:
