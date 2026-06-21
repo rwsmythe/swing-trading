@@ -9,6 +9,16 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"C:/Users/rwsmy/swing-trading/scripts/comms_stop_hook.py\""
+          }
+        ]
+      }
     ]
   }
 }
