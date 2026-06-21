@@ -391,6 +391,44 @@ def test_cash_void_invalid_date_rejected(tmp_path: Path, monkeypatch):
     assert _cash_rows(db_path) == before   # no void row
 
 
+def test_cash_void_non_finite_original_amount_rejected(tmp_path: Path, monkeypatch):
+    """Codex R1-MAJOR-2 (measurement-core): voiding an original whose amount is
+    non-finite (inf) is REJECTED with a clear ClickException; NO void row.
+
+    Pre-fix: `journal cash --withdraw inf` passes (`inf <= 0` is False) AND the
+    SQLite `amount >= 0` CHECK (inf >= 0 is True) -> a non-finite withdraw lands.
+    Voiding it copies `original.amount` (inf) into a reversing deposit -> the
+    pair sums to `-inf + inf = NaN` in net_cash_movements -> current_equity is
+    NOT restored and the coherence eval is SUPPRESSED. Post-fix: the void
+    command rejects a non-finite original amount before deriving the reversing
+    row; nothing is written. (The non-finite ORIGINAL is itself a `journal cash`
+    gap flagged separately; the void command's guard closes the void-arc
+    vector.)
+    """
+    runner, cfg, db_path = _setup(tmp_path, monkeypatch)
+    # Seed a non-finite original via a raw insert (journal cash lets inf through
+    # today -- the separate flagged gap; we exercise the void's guard directly).
+    conn = sqlite3.connect(db_path)
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO cash_movements (date, kind, amount, ref, note) "
+                "VALUES (?,?,?,?,?)",
+                ("2026-06-18", "withdraw", float("inf"), None, "bad inf"),
+            )
+            orig_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    finally:
+        conn.close()
+    before = _cash_rows(db_path)
+    r = runner.invoke(main, [
+        "--config", str(cfg), "journal", "cash-void", str(orig_id),
+        "--reason", "x", "--date", "2026-06-18",
+    ])
+    assert r.exit_code != 0, r.output
+    assert "finite" in r.output.lower()
+    assert _cash_rows(db_path) == before   # no void row written
+
+
 # --------------------------------------------------------------------------- #
 # NS-V — the `void:` namespace reservation
 # --------------------------------------------------------------------------- #

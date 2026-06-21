@@ -2104,6 +2104,23 @@ def journal_cash_void_cmd(ctx, cash_movement_id, reason, date_str):
                 f"the ORIGINAL row instead."
             )
 
+        # Reject a non-finite / non-positive ORIGINAL amount (Codex R1-MAJOR-2 --
+        # measurement-core). The 0029 `amount >= 0` CHECK accepts `+inf` and
+        # CashMovement.__post_init__ does not validate the amount, so a poisoned
+        # original (e.g. an inf withdraw that slipped through `journal cash`)
+        # could reach here; copying it into the reversing row would sum the pair
+        # to `-inf + inf = NaN` in net_cash_movements -> current_equity is NOT
+        # restored and the coherence eval is SUPPRESSED (the opposite of a
+        # trustworthy signal). Fail loud BEFORE deriving the reversing row.
+        import math
+        if not math.isfinite(float(original.amount)) or float(original.amount) <= 0:
+            raise click.ClickException(
+                f"cash_movement #{cash_movement_id} has a non-finite or "
+                f"non-positive amount ({original.amount!r}); refusing to void "
+                f"(a reversing entry could not restore current_equity). Correct "
+                f"the underlying row out-of-band first."
+            )
+
         # The reversing kind = the equity NEGATION of the original's sign-class
         # (plan §1 table): an ADD kind (deposit/interest/dividend) reverses with
         # a withdraw; a SUB kind (withdraw/fee) reverses with a deposit. Sourced
