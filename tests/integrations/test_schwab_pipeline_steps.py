@@ -1417,13 +1417,13 @@ def test_b4_24_reconciliation_cash_movement_matched_NOT_emitted(v18_conn):
     v18_conn.execute(
         "INSERT INTO cash_movements (date, kind, amount, ref, note) "
         "VALUES (?, ?, ?, ?, ?)",
-        ("2026-05-12", "deposit", 500.0, "T100", None),
+        ("2026-05-12", "deposit", 500.0, "100", None),
     )
     v18_conn.commit()
 
     from swing.integrations.schwab.models import SchwabTransactionResponse
     schwab_tx = [SchwabTransactionResponse(
-        transaction_id="T100",
+        transaction_id="100",
         transaction_date="2026-05-12",
         type="ACH_RECEIPT",
         net_amount=500.0,
@@ -1468,13 +1468,13 @@ def test_b4_26_cash_movement_matcher_sign_based_for_ambiguous_types(v18_conn):
     v18_conn.execute(
         "INSERT INTO cash_movements (date, kind, amount, ref, note) "
         "VALUES (?, ?, ?, ?, ?)",
-        ("2026-05-12", "withdraw", 500.0, "T200", None),
+        ("2026-05-12", "withdraw", 500.0, "200", None),
     )
     v18_conn.commit()
 
     from swing.integrations.schwab.models import SchwabTransactionResponse
     schwab_tx = [SchwabTransactionResponse(
-        transaction_id="T200",
+        transaction_id="200",
         transaction_date="2026-05-12",
         type="ELECTRONIC_FUND",
         net_amount=-500.0,  # outbound: negative
@@ -1518,7 +1518,7 @@ def test_b4_27_cash_movement_matcher_sign_rejects_wrong_direction(v18_conn):
 
     from swing.integrations.schwab.models import SchwabTransactionResponse
     schwab_tx = [SchwabTransactionResponse(
-        transaction_id="T201",
+        transaction_id="201",
         transaction_date="2026-05-12",
         type="ELECTRONIC_FUND",
         net_amount=500.0,  # positive: inbound, NOT a withdraw match
