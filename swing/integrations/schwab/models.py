@@ -20,7 +20,17 @@ Phase 9 Sub-bundle E real-world fixtures = 22 total).
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass, field
+
+# D20: Schwab transaction ids are integer ($int64) per the account spec, so
+# str(int) is always ^[0-9]+$. Enforcing it at the SchwabTransactionResponse
+# construction barrier makes the oof:/void: self-source collision proofs in
+# swing/trades/schwab_reconciliation.py self-enforcing rather than assumed.
+# fullmatch (NOT match) is mandatory: in Python `$` matches before a trailing
+# newline, so re.match(r"^[0-9]+$", "123\n") would SUCCEED; fullmatch anchors
+# both ends with no newline exception.
+_TXN_ID_RE = re.compile(r"[0-9]+")
 
 # Per `reference/schwabdev/api-calls.md` L124 + Phase 9 Sub-bundle E
 # real-world fixture observation: WAIT_TRG (placed-but-not-yet-armed
@@ -364,6 +374,12 @@ class SchwabTransactionResponse:
         if not isinstance(self.transaction_id, str) or not self.transaction_id:
             raise ValueError(
                 "SchwabTransactionResponse.transaction_id must be non-empty str"
+            )
+        if not _TXN_ID_RE.fullmatch(self.transaction_id):
+            raise ValueError(
+                "SchwabTransactionResponse.transaction_id must match ^[0-9]+$ "
+                "(Schwab transaction ids are integer per spec); "
+                f"got {self.transaction_id!r}"
             )
         if not isinstance(self.transaction_date, str) or len(self.transaction_date) < 10:
             raise ValueError(

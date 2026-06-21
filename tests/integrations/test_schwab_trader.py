@@ -244,7 +244,7 @@ def test_05_get_account_transactions_happy_path(v18_conn):
     client = MagicMock()
     client.transactions.return_value = _mock_response([
         {
-            "transactionId": "T123",
+            "transactionId": "123",
             "transactionDate": "2026-05-12T15:00:00Z",
             "type": "ACH_RECEIPT",
             "netAmount": 500.0,
@@ -262,7 +262,7 @@ def test_05_get_account_transactions_happy_path(v18_conn):
     assert len(txs) == 1
     t = txs[0]
     assert isinstance(t, SchwabTransactionResponse)
-    assert t.transaction_id == "T123"
+    assert t.transaction_id == "123"
     assert t.type == "ACH_RECEIPT"
     assert t.net_amount == 500.0
     # Verify default types arg = full list.
@@ -651,3 +651,77 @@ def test_16_transactions_default_types_is_full_documented_set(v18_conn):
     assert "TRADE" in types_arg
     assert "ACH_RECEIPT" in types_arg
     assert "DIVIDEND_OR_INTEREST" in types_arg
+
+
+# ============================================================================
+# D20 — SchwabTransactionResponse.transaction_id must match ^[0-9]+$
+# (Schwab transaction ids are integer per spec). This makes the oof:/void:
+# self-source collision proofs in schwab_reconciliation.py SELF-ENFORCING at
+# the construction barrier rather than merely assumed.
+# ============================================================================
+
+
+@pytest.mark.parametrize(
+    "bad_id",
+    [
+        "void:6",
+        "oof:SPCX:2026-06-15",
+        "T100",
+        "abc",
+        "12.0",
+        "123\n",  # trailing-newline discriminator: pins fullmatch over match
+        "",       # empty string still rejected (existing non-empty behavior)
+    ],
+)
+def test_transaction_id_non_numeric_raises(bad_id):
+    """A non-^[0-9]+$ transaction_id raises ValueError at construction."""
+    with pytest.raises(ValueError):
+        SchwabTransactionResponse(
+            transaction_id=bad_id,
+            transaction_date="2026-06-15",
+            type="ACH_RECEIPT",
+            net_amount=1.0,
+            description=None,
+        )
+
+
+@pytest.mark.parametrize("good_id", ["123", "0"])
+def test_transaction_id_numeric_constructs(good_id):
+    """A ^[0-9]+$ transaction_id constructs and round-trips ('0' is the edge)."""
+    tx = SchwabTransactionResponse(
+        transaction_id=good_id,
+        transaction_date="2026-06-15",
+        type="ACH_RECEIPT",
+        net_amount=1.0,
+        description=None,
+    )
+    assert tx.transaction_id == good_id
+
+
+def test_transaction_id_message_mentions_pattern():
+    """The raised message carries the human-readable ^[0-9]+$ contract (ASCII)."""
+    with pytest.raises(ValueError) as exc_info:
+        SchwabTransactionResponse(
+            transaction_id="T100",
+            transaction_date="2026-06-15",
+            type="ACH_RECEIPT",
+            net_amount=1.0,
+            description=None,
+        )
+    assert "^[0-9]+$" in str(exc_info.value)
+
+
+def test_void_sentinel_id_cannot_be_constructed():
+    # Proof-closure (brief §5): the PASS-1 find_by_ref(ref="void:6") collision
+    # against a void: sentinel row is unreachable BY CONSTRUCTION -- a Schwab
+    # transaction_id of "void:6" can no longer be built (the ^[0-9]+$ barrier
+    # rejects it). Same for the oof: sentinel.
+    for bad in ("void:6", "oof:SPCX:2026-06-15"):
+        with pytest.raises(ValueError):
+            SchwabTransactionResponse(
+                transaction_id=bad,
+                transaction_date="2026-06-15",
+                type="ACH_RECEIPT",
+                net_amount=1.0,
+                description=None,
+            )
