@@ -379,14 +379,16 @@ def _oof_ref_ticker(ref: str | None) -> str | None:
 # `--force` machinery (the RD course-correction fail-loud is unconditional).
 _VOID_REF_PREFIX = "void:"
 # The CANONICAL VOID sentinel shape: void:<original_id> where <original_id> is
-# the INTEGER cash_movements id. The predicate matches `^void:\d+$` (one-or-more
-# digits after the prefix), NOT a bare `void:` prefix (mirror the OOF
-# R1-MAJOR-1 canonical-shape lesson): a manual `journal cash --ref "void:..."`
-# malformed value must NOT be skipped as self-sourced (a Lock-1 violation). The
-# `void:` namespace is reserved at every free-form-ref writer too (plan §2.8),
-# so a non-void row can never carry a `void:` ref -- the shape-tight predicate
-# is defense-in-depth.
-_VOID_REF_RE = re.compile(r"^void:\d+$")
+# a POSITIVE INTEGER cash_movements id with NO leading zero. The predicate
+# matches `^void:[1-9]\d*$` -- EXACTLY the domain `_build_void_ref` can emit
+# (Codex R2-MINOR): the constructor rejects id<1 and `int()` never emits a
+# leading zero, so `void:0` / `void:0005` (which no writer produces) are NOT
+# recognized -- predicate/constructor domains align (the OOF R1-MAJOR-1
+# canonical-shape lesson: accept EXACTLY what the builder emits, NOT a bare
+# `void:` prefix). The `void:` namespace is reserved at every free-form-ref
+# writer too (plan §2.8), so a non-void row can never carry a `void:` ref -- the
+# shape-tight predicate is defense-in-depth.
+_VOID_REF_RE = re.compile(r"^void:[1-9]\d*$")
 
 
 def _build_void_ref(original_id: int) -> str:
@@ -408,7 +410,7 @@ def _build_void_ref(original_id: int) -> str:
 def _is_void_sentinel_ref(ref: str | None) -> bool:
     """True iff ``ref`` is a CANONICAL VOID sentinel (``void:<original_id>``).
 
-    Matches the full canonical shape (``^void:\\d+$``), NOT a bare ``void:``
+    Matches the full canonical shape (``^void:[1-9]\\d*$``), NOT a bare ``void:``
     prefix (mirror the OOF R1-MAJOR-1 lesson) -- a manual non-canonical
     ``void:``-prefixed ref must NOT be skipped as self-sourced. A numeric Schwab
     ``transaction_id`` can never match (no ``void:`` prefix), and an ``oof:`` ref

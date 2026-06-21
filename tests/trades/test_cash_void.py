@@ -153,6 +153,11 @@ def test_void_ref_helper_round_trip_and_collision():
     assert _is_void_sentinel_ref("void:5x") is False      # trailing non-digit
     assert _is_void_sentinel_ref("void: 5") is False      # space
     assert _is_void_sentinel_ref("void:5:6") is False     # extra segment
+    # Codex R2-MINOR: the predicate accepts EXACTLY the constructor's domain --
+    # _build_void_ref rejects id<1 and int() never emits a leading zero, so a
+    # zero / leading-zero ref must NOT be recognized as self-sourced.
+    assert _is_void_sentinel_ref("void:0") is False       # zero (id<1 rejected)
+    assert _is_void_sentinel_ref("void:0005") is False    # leading zero
     # Collision: a numeric Schwab transaction_id is NEVER a void sentinel.
     assert _is_void_sentinel_ref("115520131470") is False
     assert _is_void_sentinel_ref("5") is False
