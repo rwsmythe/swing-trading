@@ -38,15 +38,15 @@ A plain-`unresolved` discrepancy that is NEITHER — e.g. `cash_movement_mismatc
 
 ---
 
-## §3 — The ONE open design choice (operator-confirm-at-dispatch)
+## §3 — The acknowledge type allowlist (LOCKED — operator 2026-06-21)
 
-**Which discrepancy types get the simple web acknowledge form.** CHARC recommendation:
-- **IN (V1 core — the recurring GUI dead-ends the operator actually hits):** `cash_movement_mismatch`, `equity_delta`.
-- **Optional additions (same material=0 advisory rationale; include or not):** `sector_tamper`, `snapshot_mismatch`.
-- **KEEP:** `untracked_broker_position` (already orphan-acknowledged).
-- **OUT (V1):** the six material=1 mismatch types (`close_price_mismatch`, `stop_mismatch`, `position_qty_mismatch`, `unmatched_open_fill`, `unmatched_close_fill`, `entry_price_mismatch`) — these are real reconciliation issues that warrant a genuine resolution, not a one-click "immaterial" dismiss; keep them CLI / tier-2 only.
+**The discrepancy types that get the simple web acknowledge form (operator-locked):**
+- **IN (V1 — the two recurring GUI dead-ends):** `cash_movement_mismatch`, `equity_delta`. (`equity_delta` is the one the limbo fix routes to `unresolved` expecting an operator acknowledge — adding it here completes that loop with a GUI path.)
+- **KEEP:** `untracked_broker_position` (already orphan-acknowledged — unchanged).
+- **DEFERRED (NOT V1):** `sector_tamper`, `snapshot_mismatch` — same material=0 advisory rationale but rarer; add later ONLY if a GUI dead-end on them ever bites.
+- **OUT (V1):** the six material=1 mismatch types (`close_price_mismatch`, `stop_mismatch`, `position_qty_mismatch`, `unmatched_open_fill`, `unmatched_close_fill`, `entry_price_mismatch`) — real reconciliation issues that warrant a genuine resolution, NOT a one-click "immaterial" dismiss; keep them CLI / tier-2 only.
 
-Rationale: the material=0 boundary is the principled line between "advisory drift the operator acknowledges" and "you should actually reconcile this." **Operator confirms/amends this allowlist before dispatch** (this arc is queued, so there is time).
+Rationale: the material=0 boundary is the principled line between "advisory drift the operator acknowledges" and "you should actually reconcile this." **The implementer builds EXACTLY the two IN types (plus the existing orphan branch) as an explicit enumerated allowlist constant — NOT "all material=0", NOT a `MATERIAL_BY_TYPE`-derived set** (so a future material=0 type isn't silently auto-acknowledgeable).
 
 ---
 
