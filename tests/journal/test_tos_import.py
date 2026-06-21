@@ -139,6 +139,37 @@ def test_extract_cash_movements_neutralizes_reserved_oof_ref():
     assert real.ref == "1006193131983"  # normal numeric ref preserved
 
 
+def test_extract_cash_movements_neutralizes_reserved_void_ref():
+    """cash-void NS-V (TOS arm): the `void:` ref namespace is RESERVED for
+    `journal cash-void`. A TOS REF # that happens to be `void:`-prefixed (a
+    hand-edited CSV; a real broker REF# is never void:-prefixed) must NOT become
+    a self-sourced-skippable row. extract_cash_movements neutralizes it to a
+    ref-less movement -> the row keeps its PRE-arc disposition (the ref-less
+    heuristic), so the step-7 self-reconcile branch never skips a non-void TOS
+    row (Lock 1 holds across the TOS write path too).
+
+    Pre-fix: ref='void:5' would flow to the cash_movement, and the matcher would
+    skip the row as self-sourced. Post-fix: ref is None.
+    """
+    rows = [
+        {
+            "TYPE": "WD", "DATE": "6/18/26", "AMOUNT": "-123.00",
+            "REF #": '="void:5"', "DESCRIPTION": "forged",
+        },
+        # A normal numeric REF# is preserved (the guard is scoped to void:).
+        {
+            "TYPE": "DEP", "DATE": "6/18/26", "AMOUNT": "200.00",
+            "REF #": '="1006193131983"', "DESCRIPTION": "real deposit",
+        },
+    ]
+    movements = list(extract_cash_movements(rows))
+    assert len(movements) == 2
+    forged = next(m for m in movements if m.amount == 123.0)
+    assert forged.ref is None          # reserved void: ref neutralized
+    real = next(m for m in movements if m.amount == 200.0)
+    assert real.ref == "1006193131983"  # normal numeric ref preserved
+
+
 def test_extract_cash_movements_skips_trade_rows_and_accepts_crc():
     """TOS exports include trade settlements in the Cash Balance section as
     negative-amount rows with TYPE='TRD'. These must NOT be classified as

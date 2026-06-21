@@ -1735,12 +1735,29 @@ def journal_cash_cmd(ctx, deposit, withdraw, interest, dividend, fee, date_str, 
     # an `oof:` ref, a non-OOF row would be silently skipped (a self-reconcile
     # Lock-1 hole). Rejecting it here makes `journal oof-buy` the ONLY writer of
     # `oof:` refs -> a non-OOF row can never carry one.
-    from swing.trades.schwab_reconciliation import _OOF_REF_PREFIX
+    from swing.trades.schwab_reconciliation import (
+        _OOF_REF_PREFIX,
+        _VOID_REF_PREFIX,
+    )
     if ref is not None and ref.startswith(_OOF_REF_PREFIX):
         raise click.ClickException(
             f"--ref must not start with {_OOF_REF_PREFIX!r} (reserved for "
             f"`swing journal oof-buy`). Use `swing journal oof-buy` to record "
             f"an out-of-framework buy, or choose a different ref."
+        )
+    # Reserve the `void:` ref namespace for `journal cash-void` (Phase-18 D19).
+    # A void sentinel ref (void:<original_id>) marks a reversing row self-sourced
+    # so the step-7 matcher skips it; if `journal cash` could write a `void:`
+    # ref, a non-void row would be silently skipped (the same Lock-1 hole as the
+    # oof: reservation above). Rejecting it here makes `journal cash-void` the
+    # ONLY writer of `void:` refs -> a non-void row can never carry one. This is
+    # a PREFIX check (blocks ANY void:-prefixed value, malformed or not),
+    # distinct from the matcher's canonical-shape predicate.
+    if ref is not None and ref.startswith(_VOID_REF_PREFIX):
+        raise click.ClickException(
+            f"--ref must not start with {_VOID_REF_PREFIX!r} (reserved for "
+            f"`swing journal cash-void`). Use `swing journal cash-void <id>` to "
+            f"reverse an erroneous cash movement, or choose a different ref."
         )
 
     # ISO date validation (migration 0029's GLOB CHECK + the CashMovement
@@ -1988,6 +2005,184 @@ def journal_oof_buy_cmd(ctx, ticker, cost, date_str, force):
     click.echo(
         f"OOF transfer-out #{cid}: {ticker} ${cost:.2f} on {date_str} "
         f"(ref={ref}). Swing ledger reduced by ${cost:.2f}."
+    )
+
+
+@journal_group.command("cash-void")
+@click.argument("cash_movement_id", type=int)
+@click.option(
+    "--reason", "reason", required=True,
+    help="Why this cash movement is being voided (stored in the void row's "
+         "note; required, non-empty).",
+)
+@click.option(
+    "--date", "date_str", default=None,
+    help="YYYY-MM-DD for the reversing row; defaults to the ORIGINAL row's date.",
+)
+@click.pass_context
+def journal_cash_void_cmd(ctx, cash_movement_id, reason, date_str):
+    """Void an erroneous cash_movement by recording a REVERSING entry.
+
+    `cash_movements` is append-only -- there is no delete. To correct a
+    fat-finger / duplicate / superseded cash movement, this records a REVERSING
+    cash_movement that nets the original to 0 on the swing ledger: a `deposit`
+    reversing a `withdraw`/`fee` (the original SUBTRACTED), or a `withdraw`
+    reversing a `deposit`/`interest`/`dividend` (the original ADDED); same
+    amount; ref `void:<original_id>`; note `VOID #<id>: <reason>`. The original
+    row is NOT deleted (the ledger stays append-only) -- the void is a reversing
+    entry. The step-7 reconciliation matcher recognizes the `void:` ref as
+    self-sourced (a void row has no Schwab counterpart) and never fires a
+    recurring cash_movement_mismatch for it.
+
+    IDEMPOTENCY = FAIL LOUD, FLAT, NO --force (RD course-correction): the ref is
+    a deterministic function of the original id, so a second `cash-void <id>`
+    produces the IDENTICAL ref void:<id> -> the partial unique index ux_cash_ref
+    rejects it. There is NO legitimate double-void of the same id, so voiding an
+    already-voided id is REJECTED with an actionable message naming the existing
+    void row (NOT a silent no-op, NOT an escape hatch). A void-of-a-void (the
+    target is itself a void entry) is rejected too (V1 keeps the chain flat).
+    """
+    from datetime import date as _date
+
+    from swing.config_overrides import apply_overrides
+    from swing.data.db import connect
+    from swing.data.models import CashMovement
+    from swing.data.repos.cash import find_by_id, find_by_ref, insert_cash
+    from swing.trades.equity import _CASH_ADD_KINDS
+    from swing.trades.schwab_reconciliation import (
+        _build_void_ref,
+        _is_void_sentinel_ref,
+    )
+
+    # Control-flow ORDER (plan §1): apply_overrides -> --reason validation ->
+    # --date validation -> find_by_id fetch (not-found / void-of-a-void rejects)
+    # -> SELECT-first idempotency -> WRITE-SCOPED sandbox gate -> insert_cash +
+    # the IntegrityError belt. Validation ALWAYS precedes the write short-circuit
+    # so a not-found / void-of-a-void / empty-reason / already-voided id is
+    # rejected even under sandbox.
+
+    # 1. Materialize the env for the sandbox gate (O2: integrations.schwab.
+    #    environment lives in user-config.toml overrides only -- a bare
+    #    ctx.obj['config'] read returns the base 'production' default and would
+    #    IGNORE a sandbox override -> the gate would write a domain row under
+    #    sandbox; the 18-E default-arg-diverges gotcha). Unlike oof-buy, the env
+    #    read is the ONLY reason this command calls apply_overrides (no registry).
+    cfg = apply_overrides(ctx.obj["config"])
+
+    # 2. --reason non-empty (the audit trail lives in the note) -- ALWAYS.
+    reason_clean = (reason or "").strip()
+    if not reason_clean:
+        raise click.ClickException("--reason must be a non-empty description.")
+
+    # 3. Optional --date ISO validation (mirror journal_cash_cmd) -- ALWAYS. The
+    #    void row's date defaults to the ORIGINAL row's date when omitted (the
+    #    correction belongs with the error's period); resolved after the fetch.
+    if date_str is not None:
+        _ok = len(date_str) == 10 and date_str[4] == "-" and date_str[7] == "-"
+        if _ok:
+            try:
+                _date.fromisoformat(date_str)
+            except ValueError:
+                _ok = False
+        if not _ok:
+            raise click.ClickException(
+                f"--date must be a valid YYYY-MM-DD; got {date_str!r}"
+            )
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        # 4. Fetch the original; reject not-found + void-of-a-void -- ALWAYS.
+        original = find_by_id(conn, cash_movement_id)
+        if original is None:
+            raise click.ClickException(
+                f"no cash_movement with id {cash_movement_id}; nothing to void."
+            )
+        if _is_void_sentinel_ref(original.ref):
+            raise click.ClickException(
+                f"cash_movement #{cash_movement_id} is itself a void entry "
+                f"(ref={original.ref}); a void-of-a-void is not allowed. Void "
+                f"the ORIGINAL row instead."
+            )
+
+        # The reversing kind = the equity NEGATION of the original's sign-class
+        # (plan §1 table): an ADD kind (deposit/interest/dividend) reverses with
+        # a withdraw; a SUB kind (withdraw/fee) reverses with a deposit. Sourced
+        # from equity.py's _CASH_ADD_KINDS partition -- the SAME partition
+        # net_cash_movements applies -- so the negation can never silently
+        # diverge from the equity composition (the Arc-6 shared-predicate
+        # lesson; this is measurement-core). A wrong negation would DOUBLE the
+        # offset (V-KIND distinguishes). The 5-enum CHECK + the CashMovement
+        # validator guarantee original.kind is one of the 5, so the binary
+        # ADD/SUB split is total.
+        reversing_kind = (
+            "withdraw" if original.kind in _CASH_ADD_KINDS else "deposit"
+        )
+        resolved_date = date_str or original.date
+
+        # The CANONICAL void ref. _build_void_ref rejects a non-positive id; wrap
+        # its ValueError as a clean ClickException (the service-ValueError-at-the-
+        # CLI-boundary discipline) rather than a traceback. (A click type=int
+        # positional already constrains the input, but a 0/negative arg reaches
+        # here.)
+        try:
+            void_ref = _build_void_ref(cash_movement_id)
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+        note = f"VOID #{cash_movement_id}: {reason_clean}"
+
+        def _collision_error(existing) -> click.ClickException:
+            """FAIL LOUD on a void-ref collision (the original is ALREADY
+            voided). There is NO legitimate double-void of the same id, so this
+            is FLAT + unconditional -- name the existing void row + ref; NEVER a
+            silent no-op, NEVER an escape hatch. Shared by the SELECT-first path
+            AND the IntegrityError belt so a TOCTOU race fails loud identically.
+            """
+            return click.ClickException(
+                f"cash_movement #{cash_movement_id} is already voided "
+                f"(void row #{existing.id}, ref={void_ref}); nothing was "
+                f"recorded. A cash movement can only be voided once."
+            )
+
+        # 5. SELECT-first idempotency (FAIL LOUD). ux_cash_ref makes void:<id>
+        #    unique; surface a clean rejection, not an IntegrityError traceback.
+        existing = find_by_ref(conn, void_ref)
+        if existing is not None:
+            raise _collision_error(existing)
+
+        # 6. WRITE-SCOPED sandbox gate (the LAST gate before the write; mirror
+        #    the canonical domain-row gate). cash_movements is a DOMAIN row ->
+        #    under a non-production env, audit-only (echo advisory, no row).
+        environment = cfg.integrations.schwab.environment
+        if environment != "production":
+            click.echo(
+                f"sandbox (environment={environment!r}): void of cash_movement "
+                f"#{cash_movement_id} NOT recorded (domain write "
+                f"short-circuited; audit-only)."
+            )
+            return
+
+        # 7. The domain write (production only) + the IntegrityError belt.
+        try:
+            with conn:
+                vid = insert_cash(conn, CashMovement(
+                    id=None, date=resolved_date, kind=reversing_kind,
+                    amount=original.amount, ref=void_ref, note=note,
+                ))
+        except sqlite3.IntegrityError:
+            # Belt for a TOCTOU race past the SELECT-first (ux_cash_ref): re-fetch
+            # the row that won the race + FAIL LOUD with the same collision error
+            # (consistent with the SELECT-first path; NEVER a silent no-op). If
+            # the row is somehow gone (not our unique-ref case), re-raise.
+            raced = find_by_ref(conn, void_ref)
+            if raced is None:
+                raise
+            raise _collision_error(raced) from None
+    finally:
+        conn.close()
+    click.echo(
+        f"Voided cash_movement #{cash_movement_id} ({original.kind} "
+        f"${float(original.amount):.2f}) via {reversing_kind} #{vid} "
+        f"(ref={void_ref}) on {resolved_date}. {reason_clean}"
     )
 
 

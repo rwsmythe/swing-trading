@@ -357,9 +357,12 @@ def extract_cash_movements(rows: Iterable[dict]) -> list[CashMovement]:
     INT, DIV, JNL, FEE, ADJ, etc.) flowing through as before without
     risk of silently dropping a legitimate cash movement.
     """
-    # The reserved OOF ref prefix (Codex R4-MAJOR-1) -- imported lazily to keep
-    # this parser cycle-free of the reconciliation module.
-    from swing.trades.schwab_reconciliation import _OOF_REF_PREFIX
+    # The reserved OOF + VOID ref prefixes -- imported lazily to keep this parser
+    # cycle-free of the reconciliation module (Codex R4-MAJOR-1; Phase-18 D19).
+    from swing.trades.schwab_reconciliation import (
+        _OOF_REF_PREFIX,
+        _VOID_REF_PREFIX,
+    )
 
     out: list[CashMovement] = []
     for row in rows:
@@ -376,13 +379,14 @@ def extract_cash_movements(rows: Iterable[dict]) -> list[CashMovement]:
         # because `=` was at the boundary instead of `"`.
         ref_raw = (row.get("REF #") or "").strip().strip("=").strip('"')
         ref = ref_raw or None
-        # Reserve the `oof:` ref namespace for `journal oof-buy` (Codex
-        # R4-MAJOR-1). A real broker REF# is never `oof:`-prefixed, but a
-        # hand-edited CSV could carry one; letting it through would make the
-        # step-7 reconciliation matcher skip this non-OOF TOS row as
-        # self-sourced (a Lock-1 violation). Neutralize it to ref-less so the
-        # row keeps its pre-arc disposition (the ref-less heuristic).
-        if ref is not None and ref.startswith(_OOF_REF_PREFIX):
+        # Reserve the `oof:` + `void:` ref namespaces for `journal oof-buy` /
+        # `journal cash-void` (Codex R4-MAJOR-1; Phase-18 D19). A real broker
+        # REF# is never `oof:`/`void:`-prefixed, but a hand-edited CSV could
+        # carry one; letting it through would make the step-7 reconciliation
+        # matcher skip this non-self-sourced TOS row as self-sourced (a Lock-1
+        # violation). Neutralize it to ref-less so the row keeps its pre-arc
+        # disposition (the ref-less heuristic).
+        if ref is not None and ref.startswith((_OOF_REF_PREFIX, _VOID_REF_PREFIX)):
             ref = None
         # NOTE (Arc 4b #11 audit): TOS-CSV cash rows are pure deposit/withdraw
         # by sign — intentionally narrow; never emits interest/dividend/fee.
