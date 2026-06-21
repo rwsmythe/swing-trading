@@ -1166,6 +1166,13 @@ def _empty_cash_counters() -> dict[str, int]:
         # cash_movement_mismatch emit at the step-7 PASS-2 top (auditable skip,
         # consistent with cash_pending_suppressed_count). Phase-18 follow-up #1.
         "cash_oof_self_sourced_count": 0,
+        # VOID reversing-entry rows (void:<original_id>) recognized + excluded
+        # from the cash_movement_mismatch emit at the step-7 PASS-2 top
+        # (auditable skip, consistent with cash_oof_self_sourced_count). The gate
+        # is the canonical VOID ref shape ALONE (kind-agnostic, registry-
+        # independent -- plan O1). Phase-18 register D19 (`swing journal
+        # cash-void`).
+        "cash_void_self_sourced_count": 0,
     }
 
 
@@ -1997,6 +2004,32 @@ def run_schwab_reconciliation(
             _oof_ticker = _oof_ref_ticker(cm.ref) if cm.kind == "withdraw" else None
             if _oof_ticker is not None and _oof_ticker in out_of_framework_set:
                 cash_counters["cash_oof_self_sourced_count"] += 1
+                continue
+            # Phase-18 D19 (`swing journal cash-void`) -- self-sourced VOID
+            # reversing-entry skip. A cash-void records a REVERSING
+            # cash_movement (a deposit reversing a withdraw/fee, or a withdraw
+            # reversing a deposit/interest/dividend) carrying a CANONICAL VOID
+            # sentinel `ref` (void:<original_id>). A void row has NO Schwab
+            # counterpart -- it is a pure ledger correction -- so it is
+            # self-sourced. Excluded from the cash_movement_mismatch emit
+            # (treated as matched).
+            #
+            # KEY DIFFERENCE FROM THE OOF BRANCH ABOVE (plan O1): the gate is the
+            # canonical VOID ref SHAPE ALONE -- NOT `cm.kind` and NOT a ticker
+            # registry. A void row is a deposit OR a withdraw (the negation of
+            # the original's sign-class), so a kind=='withdraw' gate (like OOF's)
+            # would FAIL to skip a void-of-a-deposit (a void WITHDRAW) and FAIL
+            # to skip a void-of-a-withdraw (a void DEPOSIT) -> a spurious
+            # cash_movement_mismatch. And there is no ticker in a void ref to
+            # gate on. The canonical-shape predicate (the OOF R1 canonical-shape
+            # lesson) + the reserved `void:` namespace at every free-form-ref
+            # writer (journal cash rejects, TOS neutralizes) make
+            # `journal cash-void` the SOLE producer of a void:<id> ref -> every
+            # non-void row runs the byte-unchanged existing code below (C3-V
+            # lock). The numeric Schwab transaction_id vs the 'void:' prefix are
+            # mutually exclusive, so a void ref never ref-matches in PASS 1.
+            if cm.ref and _is_void_sentinel_ref(cm.ref):
+                cash_counters["cash_void_self_sourced_count"] += 1
                 continue
             j_amount = abs(float(cm.amount))
             # Arc 4b Task 7 — the 5-kind kind->type map (interest/dividend/fee
