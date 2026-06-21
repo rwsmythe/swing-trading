@@ -30,6 +30,21 @@ Two inbox shapes, driven by one asymmetry — directors are stable named targets
 
 ---
 
+## Comms GUI reconciliation (from coa-chess `scripts/comms_ui.py`, 675 lines, reviewed 2026-06-21)
+
+A single-file FastAPI+HTMX localhost mail UI — OPTIONAL (`[web]` extra; the core comms NEVER import it → import-isolation preserves the zero-hard-deps core). 127.0.0.1 only; HTMX VENDORED locally (no CDN — this origin holds POST authority). Locks to KEEP: **L1** (compose never offers `decision_request`; server-stamps `from=operator`), **L3** (acks ONLY `operator/inbox`; read-only on every director/orchestrator file; never deletes), **L4** (all writes via `role_mail`), **L5** (launch runs exactly ONE enum-validated fixed argv — nothing user-typed reaches the command line).
+
+**DIRECTION (operator-confirmed 2026-06-21): swing's GUI is the NEWER source-of-truth; the reconciliation is MOSTLY swing→coa-chess.** coa-chess's `comms_ui.py` is the OLDER stale-snapshot (the B-13 refresh-closes-the-expanded-window bug + no B-11 dark-theme toggle). So: RE-SYNC swing's current GUI → coa-chess/the scaffold (the bulk of the work); the ONE coa-chess→swing item is the orchestrator-bootstrap MECHANISM — **EXTRACT just that** (the launch enum + `launch_role.ps1` + `/orchestrator-bootstrap` + the bus aggregation) **and GRAFT it onto swing's newer GUI base — do NOT adopt coa-chess's older GUI wholesale.**
+
+**The two directions in detail:**
+- **coa-chess → swing (EXTRACT only the orchestrator bootstrap onto swing's newer base):**
+  - `LAUNCH_ROLES = ("both","charc","orchestrator","opsdir")` + `LAUNCH_MODES=("fresh","resume")` — the launch strip STARTS an orchestrator, not just directors, via a role-parameterized `launch_role.ps1` (swing generalizes `start_directors.ps1` → role-parameterized; an orchestrator launch sets `SWING_ROLE=orchestrator` → `session_start` registration). KEEP the L5 enum-validation.
+  - A `/orchestrator-bootstrap` endpoint + a copy-to-clipboard button serving the orchestrator bring-up text (from the bootstrap doc's orchestrator section). **This RESOLVES the topology decision I flagged:** coa-chess supports BOTH launch-as-CC-session AND copy-bootstrap-text-for-a-manually-started session — so swing can offer both (a launch button for CC-session orchestrators + a copy-bootstrap button for the VS-Code-relay pattern; operator picks per case).
+  - Bus aggregation: `BUS_ROLES=("charc","orchestrator","opsdir")`; the per-generation orchestrator inboxes are AGGREGATED read-only (`_orchestrator_inbox_messages` walks `comms/orchestrator/<sid>/inbox` across all gens). Swing's GUI gains the orchestrator bus view.
+- **swing → coa-chess/scaffold (the GUI bug fixes, B-11/B-13):** coa-chess's `comms_ui.py` has NO dark-theme toggle (grep-confirmed) and uses naive `hx-trigger="every 5s"` + `hx-swap="innerHTML"` pane refresh (the B-13 expanded-`<details>`-collapse vector). Swing's CURRENT comms GUI carries the dark-theme toggle (B-11) + the auto-refresh-preserves-expanded fix (B-13) → port those TO the scaffold/coa-chess (the B-13 RE-SYNC).
+
+**Swing GUI delta:** swing HAS a Stage-1.5 comms GUI (with the dark theme + the refresh fix) but it predates the orchestrator inbox → NO orchestrator launch/bootstrap/bus. The arc ADDS the orchestrator launch enum + the `launch_role.ps1` generalization + the `/orchestrator-bootstrap` copy + the orchestrator bus aggregation, KEEPING swing's GUI fixes, the L1/L3/L4/L5 locks, and the optional-`[web]`-extra import-isolation.
+
 ## The ONE real divergence to reconcile — the close-hook
 
 - **swing B-14 (just enabled):** continue-ONCE-per-turn — the `Stop` hook blocks on any unread unless `stop_hook_active` (the loop guard), safe-default-allow-stop on any stdin failure, drain-each-cycle terminates it. STATELESS, loop-safe by construction.
