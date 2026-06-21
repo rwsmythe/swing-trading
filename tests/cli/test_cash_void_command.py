@@ -1,6 +1,6 @@
 """CLI: `swing journal cash-void` (Phase-18 register D19).
 
-Tests (per docs/plans/cash-void-command-plan.md §4):
+Tests (per docs/plans/cash-void-command-plan.md section 4):
   - V-KIND  the reversing-kind negation table (per original kind -> the negating
             reversing kind; current_equity restored to baseline).
   - REJ-V   the reject ladder (non-existent id; void-of-a-void; empty/whitespace
@@ -86,12 +86,12 @@ _SANDBOX_OVERRIDES = {"integrations": {"schwab": {"environment": "sandbox"}}}
 
 
 # --------------------------------------------------------------------------- #
-# V-KIND — the reversing-kind negation table (per-kind)
+# V-KIND -- the reversing-kind negation table (per-kind)
 # --------------------------------------------------------------------------- #
 
 def _negation(kind: str) -> str:
     # withdraw/fee SUBTRACT -> reverse with a deposit; deposit/interest/dividend
-    # ADD -> reverse with a withdraw (plan §1 table).
+    # ADD -> reverse with a withdraw (plan section 1 table).
     return "deposit" if kind in ("withdraw", "fee") else "withdraw"
 
 
@@ -133,7 +133,7 @@ def test_cash_void_reversing_kind_table(tmp_path: Path, monkeypatch):
 
 def test_cash_void_defaults_date_to_original(tmp_path: Path, monkeypatch):
     """The void row's date defaults to the ORIGINAL row's date when --date is
-    omitted (plan §3) -- the correction belongs with the error's period."""
+    omitted (plan section 3) -- the correction belongs with the error's period."""
     runner, cfg, db_path = _setup(tmp_path, monkeypatch)
     _seed_original(runner, cfg, kind="withdraw", amount="100", date="2026-06-10")
     orig_id = _cash_rows(db_path)[0][0]
@@ -147,7 +147,7 @@ def test_cash_void_defaults_date_to_original(tmp_path: Path, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# REJ-V — the reject ladder
+# REJ-V -- the reject ladder
 # --------------------------------------------------------------------------- #
 
 def test_cash_void_non_existent_id_rejected(tmp_path: Path, monkeypatch):
@@ -211,7 +211,7 @@ def test_cash_void_empty_reason_rejected(tmp_path: Path, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# I1-V — idempotency = FAIL LOUD, FLAT, NO --force (RD course-correction)
+# I1-V -- idempotency = FAIL LOUD, FLAT, NO --force (RD course-correction)
 # --------------------------------------------------------------------------- #
 
 def test_cash_void_bare_rerun_fails_loud_no_double(tmp_path: Path, monkeypatch):
@@ -302,7 +302,7 @@ def test_cash_void_integrityerror_belt_fails_loud(tmp_path: Path, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# SB-V — the sandbox test
+# SB-V -- the sandbox test
 # --------------------------------------------------------------------------- #
 
 def test_cash_void_sandbox_writes_no_domain_row(tmp_path: Path, monkeypatch):
@@ -430,7 +430,7 @@ def test_cash_void_non_finite_original_amount_rejected(tmp_path: Path, monkeypat
 
 
 # --------------------------------------------------------------------------- #
-# NS-V — the `void:` namespace reservation
+# NS-V -- the `void:` namespace reservation
 # --------------------------------------------------------------------------- #
 
 def test_journal_cash_rejects_void_prefixed_ref(tmp_path: Path, monkeypatch):

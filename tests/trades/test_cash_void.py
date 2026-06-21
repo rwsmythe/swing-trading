@@ -1,6 +1,6 @@
 """cash-void command (Phase-18 register D19) -- recon-path + ref-helper tests.
 
-Tests (per docs/plans/cash-void-command-plan.md §4):
+Tests (per docs/plans/cash-void-command-plan.md section 4):
   - C2-V   the VOID sentinel ref collision + canonical-shape discriminator
            (Task 1 unit + matcher boundary)
   - S-V    the step-7 self-reconcile `void:` branch distinguisher -- BOTH a
@@ -130,12 +130,12 @@ def _cash_mismatch_ids(conn: sqlite3.Connection, run_id: int) -> list[int]:
 
 
 # --------------------------------------------------------------------------- #
-# C2-V — the VOID sentinel ref collision + canonical-shape discriminator (unit)
+# C2-V -- the VOID sentinel ref collision + canonical-shape discriminator (unit)
 # --------------------------------------------------------------------------- #
 
 def test_void_ref_helper_round_trip_and_collision():
     """C2-V unit: the predicate + constructor are mutually-exclusive with numeric
-    Schwab transaction_ids (the §3 collision proof) AND with the `oof:` prefix.
+    Schwab transaction_ids (the section 3 collision proof) AND with the `oof:` prefix.
 
     A real Schwab transaction_id is a NUMERIC string ([0-9]+); the void sentinel
     always carries the literal 'void:' prefix. A buggy predicate (bare-prefix
@@ -222,7 +222,7 @@ def test_void_ref_matcher_boundary_numeric_txn_not_caught(conn):
 
 
 # --------------------------------------------------------------------------- #
-# S-V — the step-7 self-reconcile `void:` branch distinguisher (BOTH directions)
+# S-V -- the step-7 self-reconcile `void:` branch distinguisher (BOTH directions)
 # --------------------------------------------------------------------------- #
 
 def _sv_fixture(conn) -> tuple[int, int, list[Any]]:
@@ -311,7 +311,7 @@ def test_self_reconcile_branch_disabled_belt_fires(conn, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# C3-V — the additive/guard-only proof (every non-void row byte-unchanged)
+# C3-V -- the additive/guard-only proof (every non-void row byte-unchanged)
 # --------------------------------------------------------------------------- #
 
 def _c3_fixture(conn) -> dict[str, int]:
@@ -380,14 +380,14 @@ def test_c3_non_void_rows_byte_unchanged(conn):
 
 
 # --------------------------------------------------------------------------- #
-# COMP-V — the BINDING composition test (RD, MERGE-BLOCKING measurement artifact)
+# COMP-V -- the BINDING composition test (RD, MERGE-BLOCKING measurement artifact)
 # --------------------------------------------------------------------------- #
 #
-# §2.1 + §2.4 arithmetic (worktree base):
+# section 2.1 + section 2.4 arithmetic (worktree base):
 #   current_equity = starting + realized + net_cash_movements  (equity.py:39)
 #     -- a 'withdraw'/'fee' SUBTRACTS; a 'deposit'/'interest'/'dividend' ADDS.
 #   With no positions: swing_nlv == finite_source_nlv == N == L0.
-#   eval_delta = finite_ledger_equity - swing_nlv  (the §2.4 path).
+#   eval_delta = finite_ledger_equity - swing_nlv  (the section 2.4 path).
 #   fire iff journal_flat and broker_flat_swing and |eval_delta| > tol.
 #   tol = max(5.00, 0.005*|NLV|)  (_cash_coherence_tolerance).
 #

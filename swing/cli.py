@@ -2054,7 +2054,7 @@ def journal_cash_void_cmd(ctx, cash_movement_id, reason, date_str):
         _is_void_sentinel_ref,
     )
 
-    # Control-flow ORDER (plan §1): apply_overrides -> --reason validation ->
+    # Control-flow ORDER (plan section 1): apply_overrides -> --reason validation ->
     # --date validation -> find_by_id fetch (not-found / void-of-a-void rejects)
     # -> SELECT-first idempotency -> WRITE-SCOPED sandbox gate -> insert_cash +
     # the IntegrityError belt. Validation ALWAYS precedes the write short-circuit
@@ -2122,7 +2122,7 @@ def journal_cash_void_cmd(ctx, cash_movement_id, reason, date_str):
             )
 
         # The reversing kind = the equity NEGATION of the original's sign-class
-        # (plan §1 table): an ADD kind (deposit/interest/dividend) reverses with
+        # (plan section 1 table): an ADD kind (deposit/interest/dividend) reverses with
         # a withdraw; a SUB kind (withdraw/fee) reverses with a deposit. Sourced
         # from equity.py's _CASH_ADD_KINDS partition -- the SAME partition
         # net_cash_movements applies -- so the negation can never silently

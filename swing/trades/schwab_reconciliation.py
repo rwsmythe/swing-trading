@@ -361,7 +361,7 @@ def _oof_ref_ticker(ref: str | None) -> str | None:
 # here (next to the step-7 matcher that recognizes it + the OOF helpers it
 # mirrors) and is imported by the CLI command that builds it + the two
 # free-form-ref writers that reserve the prefix -- never hand-duplicated string
-# literals (the Arc-6 shared-predicate lesson). Properties (plan §3):
+# literals (the Arc-6 shared-predicate lesson). Properties (plan section 3):
 #   - deterministic + recognizable: the CANONICAL `void:<id>` shape is the
 #     matcher's key.
 #   - idempotent: a deterministic fn of the original id -> the partial unique
@@ -386,7 +386,7 @@ _VOID_REF_PREFIX = "void:"
 # recognized -- predicate/constructor domains align (the OOF R1-MAJOR-1
 # canonical-shape lesson: accept EXACTLY what the builder emits, NOT a bare
 # `void:` prefix). The `void:` namespace is reserved at every free-form-ref
-# writer too (plan §2.8), so a non-void row can never carry a `void:` ref -- the
+# writer too (plan section 2.8), so a non-void row can never carry a `void:` ref -- the
 # shape-tight predicate is defense-in-depth.
 _VOID_REF_RE = re.compile(r"^void:[1-9]\d*$")
 
