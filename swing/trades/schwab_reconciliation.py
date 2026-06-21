@@ -222,6 +222,9 @@ _SWING_COHERENCE_BASIS = "net_liq_minus_declared_oof"
 #     contain. So PASS-1's `str(tx.transaction_id) == cm.ref` is never True for
 #     an OOF ref, and the OOF-skip branch is never True for a numeric id (the
 #     two are mutually exclusive by construction; the C2 discriminator pins it).
+#     (D20: the numeric [0-9]+ tx-id is now ENFORCED at
+#     SchwabTransactionResponse.__post_init__, so this disjointness is
+#     self-enforcing, not merely assumed.)
 _OOF_REF_PREFIX = "oof:"
 # The CANONICAL OOF sentinel shape: oof:<TICKER>:<YYYY-MM-DD>[#<seq>]. The
 # predicate matches this FULL shape, NOT a bare `oof:` prefix (Codex R1-MAJOR-1):
@@ -373,6 +376,9 @@ def _oof_ref_ticker(ref: str | None) -> str | None:
 #     which [0-9]+ can never contain, and which `_OOF_REF_RE` (the `oof:` prefix)
 #     can never match. Three disjoint ref-prefix domains ([0-9]+, oof:, void:);
 #     the C2-V discriminator pins both directions.
+#     (D20: the numeric [0-9]+ tx-id is now ENFORCED at
+#     SchwabTransactionResponse.__post_init__, so this disjointness is
+#     self-enforcing, not merely assumed.)
 # KEY DIFFERENCE FROM THE OOF SENTINEL (O3): the void key is the original id,
 # which is itself unique -- there is NO legitimate second void of the same id --
 # so the shape is FLAT: `void:<id>` with NO `#<seq>` disambiguator and NO
