@@ -353,6 +353,72 @@ def _oof_ref_ticker(ref: str | None) -> str | None:
     return ref.split(":")[1].upper()
 
 
+# Phase-18 D19 (`swing journal cash-void`) -- the VOID sentinel ref helpers.
+# A cash-void records a REVERSING cash_movement (a deposit reversing a
+# withdraw/fee, or a withdraw reversing a deposit/interest/dividend) carrying a
+# deterministic `ref` keyed on the ORIGINAL row's id: `void:<original_id>`. The
+# SINGLE source of truth (prefix + regex + constructor + predicate) lives ONCE
+# here (next to the step-7 matcher that recognizes it + the OOF helpers it
+# mirrors) and is imported by the CLI command that builds it + the two
+# free-form-ref writers that reserve the prefix -- never hand-duplicated string
+# literals (the Arc-6 shared-predicate lesson). Properties (plan §3):
+#   - deterministic + recognizable: the CANONICAL `void:<id>` shape is the
+#     matcher's key.
+#   - idempotent: a deterministic fn of the original id -> the partial unique
+#     index ux_cash_ref rejects a second void of the same id (the FAIL-LOUD
+#     idempotency; the CLI is SELECT-first with an IntegrityError belt).
+#   - can NEVER collide with a real Schwab transaction_id NOR an `oof:` ref: a
+#     transaction_id is a NUMERIC string ([0-9]+); the sentinel always carries
+#     the literal 'void:' prefix (lowercase letters + a colon) at position 0,
+#     which [0-9]+ can never contain, and which `_OOF_REF_RE` (the `oof:` prefix)
+#     can never match. Three disjoint ref-prefix domains ([0-9]+, oof:, void:);
+#     the C2-V discriminator pins both directions.
+# KEY DIFFERENCE FROM THE OOF SENTINEL (O3): the void key is the original id,
+# which is itself unique -- there is NO legitimate second void of the same id --
+# so the shape is FLAT: `void:<id>` with NO `#<seq>` disambiguator and NO
+# `--force` machinery (the RD course-correction fail-loud is unconditional).
+_VOID_REF_PREFIX = "void:"
+# The CANONICAL VOID sentinel shape: void:<original_id> where <original_id> is
+# the INTEGER cash_movements id. The predicate matches `^void:\d+$` (one-or-more
+# digits after the prefix), NOT a bare `void:` prefix (mirror the OOF
+# R1-MAJOR-1 canonical-shape lesson): a manual `journal cash --ref "void:..."`
+# malformed value must NOT be skipped as self-sourced (a Lock-1 violation). The
+# `void:` namespace is reserved at every free-form-ref writer too (plan §2.8),
+# so a non-void row can never carry a `void:` ref -- the shape-tight predicate
+# is defense-in-depth.
+_VOID_REF_RE = re.compile(r"^void:\d+$")
+
+
+def _build_void_ref(original_id: int) -> str:
+    """Build the canonical VOID sentinel ref ``void:<original_id>``.
+
+    REJECTS a non-positive id (raise ``ValueError``): a well-defined
+    cash_movements id is >= 1. The CLI surfaces it as a clean ClickException
+    (the service-ValueError-at-the-CLI-boundary discipline), though a click
+    ``type=int`` positional already constrains the input.
+    """
+    oid = int(original_id)
+    if oid < 1:
+        raise ValueError(
+            f"cash_movement id must be a positive integer; got {original_id!r}"
+        )
+    return f"{_VOID_REF_PREFIX}{oid}"
+
+
+def _is_void_sentinel_ref(ref: str | None) -> bool:
+    """True iff ``ref`` is a CANONICAL VOID sentinel (``void:<original_id>``).
+
+    Matches the full canonical shape (``^void:\\d+$``), NOT a bare ``void:``
+    prefix (mirror the OOF R1-MAJOR-1 lesson) -- a manual non-canonical
+    ``void:``-prefixed ref must NOT be skipped as self-sourced. A numeric Schwab
+    ``transaction_id`` can never match (no ``void:`` prefix), and an ``oof:`` ref
+    can never match (different prefix), so this stays mutually exclusive with
+    PASS-1's exact-ref match AND the OOF predicate. None / empty -> False (the
+    matcher guards ``cm.ref and _is_void_sentinel_ref(...)``).
+    """
+    return bool(ref) and _VOID_REF_RE.match(ref) is not None
+
+
 def _cash_coherence_tolerance(nlv: float) -> float:
     """The equity-coherence emit tolerance: ``max($5.00, 0.5% × |NLV|)`` (Arc 4b
     Task 8). Supersedes EQUITY_DELTA_EMIT_THRESHOLD_DOLLARS on the schwab path."""
