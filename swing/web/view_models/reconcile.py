@@ -1034,3 +1034,97 @@ class ReconcileOrphanAcknowledgeVM:
                 f"{expected_form_action!r} (server-derived from "
                 f"discrepancy_id); got {self.form_action!r}",
             )
+
+
+# ---------------------------------------------------------------------------
+# Phase 18 — web simple-acknowledge coverage VM.
+#
+# A plain-``unresolved`` advisory discrepancy of an allowlisted type
+# (``cash_movement_mismatch`` / ``equity_delta``) is NOT a tier-2 fill-matching
+# ambiguity and NOT an orphan, so it does NOT route through the
+# ``pending_ambiguity_resolution``-gated ReconcileDiscrepancyResolveVM NOR the
+# orphan VM. This SIBLING VM (mirrors ReconcileOrphanAcknowledgeVM exactly +
+# adds type-appropriate ``heading``/``explanation`` prose fields) powers a thin
+# sibling acknowledge form whose POST clears the row via ``resolve_discrepancy``
+# -> ``acknowledged_immaterial`` (the exact orphan POST path). Keeping the
+# orphan VM byte-unchanged avoids churning the locked orphan path.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ReconcileSimpleAcknowledgeVM:
+    """View-model for the simple acknowledge form at
+    ``GET /reconcile/discrepancy/{id}/resolve`` (simple-acknowledge branch).
+
+    Mirrors ReconcileOrphanAcknowledgeVM's shape (8 standalone base-layout
+    fields + the same page-specific fields + the byte-for-byte ``form_action``
+    validator) and adds type-agnostic ``heading``/``explanation`` prose so a
+    single sibling template serves both allowlisted types without churning the
+    orphan template/VM.
+    """
+
+    PAGE_KIND = PageKind.HISTORY_ANALYSIS  # Issue #5 topbar (backward)
+
+    # Base-layout fields (8 standalone, mirror BaseLayoutVM shape).
+    session_date: str
+    stale_banner: str | None = None
+    price_source_degraded: bool = False
+    price_source_degraded_until: str | None = None
+    ohlcv_source_degraded: bool = False
+    unresolved_material_discrepancies_count: int = 0
+    recent_multi_leg_auto_correction_count: int = 0
+    banner_resolve_link: str | None = None
+
+    # Page-specific fields.
+    discrepancy_id: int = 0
+    form_action: str = ""
+    discrepancy_type: str = ""
+    heading: str = ""
+    explanation: str = ""
+    ticker: str = ""
+    delta_text: str = ""
+    created_at: str = ""
+    run_id: int = 0
+    prior_resolution_reason: str = ""
+    error_band_message: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.session_date:
+            raise ValueError(
+                "ReconcileSimpleAcknowledgeVM.session_date must be non-empty",
+            )
+        if self.unresolved_material_discrepancies_count < 0:
+            raise ValueError(
+                "ReconcileSimpleAcknowledgeVM."
+                "unresolved_material_discrepancies_count must >= 0; got "
+                f"{self.unresolved_material_discrepancies_count!r}",
+            )
+        if self.recent_multi_leg_auto_correction_count < 0:
+            raise ValueError(
+                "ReconcileSimpleAcknowledgeVM."
+                "recent_multi_leg_auto_correction_count must >= 0; got "
+                f"{self.recent_multi_leg_auto_correction_count!r}",
+            )
+        if self.banner_resolve_link is not None and (
+            not self.banner_resolve_link
+            or not self.banner_resolve_link.startswith("/")
+        ):
+            raise ValueError(
+                "ReconcileSimpleAcknowledgeVM.banner_resolve_link must be "
+                f"None or a non-empty string starting with '/'; got "
+                f"{self.banner_resolve_link!r}",
+            )
+        if self.discrepancy_id <= 0:
+            raise ValueError(
+                "ReconcileSimpleAcknowledgeVM.discrepancy_id must be > 0; "
+                f"got {self.discrepancy_id!r}",
+            )
+        expected_form_action = (
+            f"/reconcile/discrepancy/{self.discrepancy_id}/resolve"
+        )
+        if self.form_action != expected_form_action:
+            raise ValueError(
+                "ReconcileSimpleAcknowledgeVM.form_action must match "
+                f"{expected_form_action!r} (server-derived from "
+                f"discrepancy_id); got {self.form_action!r}",
+            )

@@ -1,0 +1,47 @@
+{% extends "base.html.j2" %}
+{% block title %}Acknowledge discrepancy #{{ vm.discrepancy_id }}{% endblock %}
+{% block content %}
+<section class="reconcile-simple-acknowledge" data-simple-acknowledge="true">
+  <h1>{{ vm.heading }} #{{ vm.discrepancy_id }}</h1>
+
+  <section class="pre-resolution-context" data-pre-context="true">
+    <dl class="context-pairs">
+      <dt>Ticker</dt><dd>{{ vm.ticker }}</dd>
+      <dt>Detail</dt><dd>{{ vm.delta_text }}</dd>
+      <dt>Created at</dt><dd>{{ vm.created_at }}</dd>
+      <dt>Reconciliation run</dt><dd>#{{ vm.run_id }}</dd>
+    </dl>
+    <p class="muted">{{ vm.explanation }}</p>
+    <p class="muted">CLI parity: <code>swing journal discrepancy resolve
+      {{ vm.discrepancy_id }} --resolution acknowledged_immaterial</code></p>
+  </section>
+
+  {% if vm.error_band_message %}
+  <section class="error-band">
+    <p>{{ vm.error_band_message }}</p>
+  </section>
+  {% endif %}
+
+  <form
+    method="post"
+    action="{{ vm.form_action }}"
+    hx-post="{{ vm.form_action }}"
+    hx-headers='{"HX-Request": "true"}'
+    hx-target="body"
+    data-simple-acknowledge-form="true">
+
+    <fieldset>
+      <legend>Acknowledge (optional reason)</legend>
+      <textarea name="resolution_reason" rows="3"
+        placeholder="e.g. Recurring monthly deposit; advisory drift known."
+        >{{ vm.prior_resolution_reason }}</textarea>
+      <p class="muted">
+        Clears the finding to <code>acknowledged_immaterial</code>. A reason is
+        optional for this resolution.
+      </p>
+    </fieldset>
+
+    <button type="submit" class="primary">Acknowledge and clear</button>
+  </form>
+</section>
+{% endblock %}

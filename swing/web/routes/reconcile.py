@@ -64,6 +64,7 @@ from swing.trades.reconciliation_auto_correct import (
 from swing.web.view_models.reconcile import (
     ReconcileDiscrepancyErrorVM,
     ReconcileOrphanAcknowledgeVM,
+    ReconcileSimpleAcknowledgeVM,
     _parse_parametric_pick_count,
     build_reconcile_discrepancy_resolve_vm,
 )
@@ -188,6 +189,86 @@ def _is_simple_acknowledgeable_discrepancy(disc: object) -> bool:
     """
     return (
         getattr(disc, "discrepancy_type", None) in _SIMPLE_ACKNOWLEDGEABLE_TYPES
+    )
+
+
+# Resolutions the simple-acknowledge branch can clear. Mirrors the orphan
+# branch's widening (the legacy ``pending_ambiguity_resolution`` case is
+# admitted ONLY when ``ambiguity_kind IS NULL`` -- see the call-site gate -- so
+# a real tier-2 pending row is NOT hijacked away from the choice-menu form).
+_SIMPLE_CLEARABLE_RESOLUTIONS: frozenset[str] = frozenset(
+    {"unresolved", "pending_ambiguity_resolution"}
+)
+
+# Type-appropriate prose for the sibling acknowledge template (ASCII-only --
+# the Windows cp1252 gotcha). Keyed by discrepancy_type; a generic fallback
+# covers any future allowlisted type added without prose.
+_SIMPLE_ACK_PROSE: dict[str, tuple[str, str]] = {
+    "cash_movement_mismatch": (
+        "Cash movement mismatch",
+        "An advisory cash-movement drift (e.g. a recurring monthly deposit "
+        "not yet journaled). Acknowledge here to clear this finding to "
+        "acknowledged_immaterial.",
+    ),
+    "equity_delta": (
+        "Equity delta",
+        "An advisory equity drift between the ledger-derived equity and the "
+        "broker NLV snapshot. Acknowledge here to clear this finding to "
+        "acknowledged_immaterial.",
+    ),
+}
+
+
+def _render_simple_acknowledge_form(
+    request: Request,
+    disc: object,
+    *,
+    unresolved_count: int,
+    recent_multi_leg_count: int,
+    banner_resolve_link: str | None,
+    prior_resolution_reason: str = "",
+    error_band_message: str | None = None,
+    status_code: int = 200,
+) -> Response:
+    """Render the simple acknowledge form (sibling of the orphan form)."""
+    try:
+        session_date = topbar_session_date(
+            PageKind.HISTORY_ANALYSIS, datetime.now()
+        ).isoformat()
+    except Exception:  # pragma: no cover - defensive
+        session_date = "n/a"
+    discrepancy_id = int(disc.discrepancy_id)  # type: ignore[attr-defined]
+    disc_type = getattr(disc, "discrepancy_type", None) or ""
+    heading, explanation = _SIMPLE_ACK_PROSE.get(
+        disc_type,
+        (
+            "Acknowledge discrepancy",
+            "An advisory discrepancy. Acknowledge here to clear this finding "
+            "to acknowledged_immaterial.",
+        ),
+    )
+    vm = ReconcileSimpleAcknowledgeVM(
+        session_date=session_date,
+        unresolved_material_discrepancies_count=unresolved_count,
+        recent_multi_leg_auto_correction_count=recent_multi_leg_count,
+        banner_resolve_link=banner_resolve_link,
+        discrepancy_id=discrepancy_id,
+        form_action=f"/reconcile/discrepancy/{discrepancy_id}/resolve",
+        discrepancy_type=disc_type,
+        heading=heading,
+        explanation=explanation,
+        ticker=getattr(disc, "ticker", None) or "",
+        delta_text=getattr(disc, "delta_text", None) or "",
+        created_at=getattr(disc, "created_at", None) or "",
+        run_id=int(getattr(disc, "run_id", 0) or 0),
+        prior_resolution_reason=prior_resolution_reason,
+        error_band_message=error_band_message,
+    )
+    return request.app.state.templates.TemplateResponse(
+        request,
+        "reconcile_simple_acknowledge.html.j2",
+        {"vm": vm},
+        status_code=status_code,
     )
 
 
@@ -357,10 +438,53 @@ def reconcile_discrepancy_resolve_form(
                 recent_multi_leg_count=recent_multi_leg_count,
                 banner_resolve_link=banner_resolve_link,
             )
+        # Simple-acknowledge branch (AFTER the orphan branch, BEFORE the
+        # tier-2 pending gate). Gates on the allowlisted type AND
+        # ``ambiguity_kind IS NULL`` AND a clearable resolution -- the same
+        # null-ambiguity shape the orphan branch uses (the branch-ordering
+        # LOCK) so a pending-ambiguity row of an allowlisted type (ambiguity_
+        # kind set) is NOT hijacked away from the tier-2 form.
+        if (
+            _is_simple_acknowledgeable_discrepancy(disc)
+            and disc.ambiguity_kind is None
+            and disc.resolution in _SIMPLE_CLEARABLE_RESOLUTIONS
+        ):
+            return _render_simple_acknowledge_form(
+                request,
+                disc,
+                unresolved_count=unresolved_count,
+                recent_multi_leg_count=recent_multi_leg_count,
+                banner_resolve_link=banner_resolve_link,
+            )
         if (
             disc.resolution != "pending_ambiguity_resolution"
             or disc.ambiguity_kind is None
         ):
+            # Honest-copy fix (O1): an UNRESOLVED non-allowlisted (and not the
+            # orphan / not pending-ambiguity) row was NEVER in
+            # pending_ambiguity_resolution -- route it to the honest
+            # ``not_web_acknowledgeable`` error_kind (its own template branch),
+            # NOT the misleading hardcoded ``already_resolved`` copy. A
+            # genuinely-terminal row (resolved out of pending) keeps
+            # ``already_resolved`` -- it IS no longer pending.
+            if disc.resolution == "unresolved":
+                return _render_error(
+                    request,
+                    status_code=409,
+                    error_kind="not_web_acknowledgeable",
+                    error_message=(
+                        f"Discrepancy {discrepancy_id} "
+                        f"({disc.discrepancy_type}) is not web-acknowledgeable; "
+                        f"resolve it via the CLI."
+                    ),
+                    discrepancy_id=discrepancy_id,
+                    disc_resolution=disc.resolution,
+                    disc_resolved_by=disc.resolved_by,
+                    disc_created_at=disc.created_at,
+                    unresolved_count=unresolved_count,
+                    recent_multi_leg_count=recent_multi_leg_count,
+                    banner_resolve_link=banner_resolve_link,
+                )
             return _render_error(
                 request,
                 status_code=409,
@@ -846,7 +970,129 @@ async def reconcile_discrepancy_resolve_post(  # noqa: PLR0911, PLR0912, PLR0915
                 )
             return RedirectResponse(url=redirect_target, status_code=303)
 
-        # Step 4b — state guard (terminal or NULL ambiguity_kind)
+        # Simple-acknowledge branch (AFTER the orphan branch, BEFORE the
+        # tier-2 pending gate). Same null-ambiguity + clearable-resolution
+        # gate as the GET branch (the branch-ordering LOCK), reusing the exact
+        # orphan resolve path (resolve_discrepancy -> acknowledged_immaterial)
+        # with its TOCTOU/require_current_resolution race ladder + the
+        # 204/HX-Redirect / 303-fallback shape.
+        if (
+            _is_simple_acknowledgeable_discrepancy(disc)
+            and disc.ambiguity_kind is None
+            and disc.resolution in _SIMPLE_CLEARABLE_RESOLUTIONS
+        ):
+            from swing.trades.reconciliation import (
+                DiscrepancyResolutionStateError,
+                resolve_discrepancy,
+            )
+            try:
+                resolve_discrepancy(
+                    conn,
+                    discrepancy_id=discrepancy_id,
+                    resolution="acknowledged_immaterial",
+                    # acknowledged_immaterial permits a NULL reason; treat an
+                    # empty submission as None (F6 nullable-text discipline).
+                    resolution_reason=(resolution_reason or None),
+                    resolved_by="operator_web",  # F2 LOCK — surface attribution
+                    # TOCTOU close (mirrors the orphan path): a concurrent
+                    # resolve that won first makes THIS call's state
+                    # precondition fail (raised under BEGIN IMMEDIATE) instead
+                    # of silently overwriting the winner's audit metadata +
+                    # returning 204. Anchored on the preflight state read.
+                    require_current_resolution=disc.resolution,
+                )
+            except sqlite3.OperationalError as exc:
+                if not _is_transient_lock_error(exc):
+                    raise
+                log.warning(
+                    "sqlite3.OperationalError (simple ack resolve): %s", exc
+                )
+                return _render_error(
+                    request,
+                    status_code=503,
+                    error_kind="db_unavailable",
+                    error_message=(
+                        "Database is busy; please retry in a moment."
+                    ),
+                    discrepancy_id=discrepancy_id,
+                    unresolved_count=unresolved_count,
+                    recent_multi_leg_count=recent_multi_leg_count,
+                    banner_resolve_link=banner_resolve_link,
+                )
+            except DiscrepancyResolutionStateError:
+                # Concurrent resolver won the race; the row is already
+                # terminal. Mirror the tier-2 / orphan 409 race posture.
+                log.warning(
+                    "simple ack resolve race: discrepancy %d already resolved",
+                    discrepancy_id,
+                )
+                return _render_error(
+                    request,
+                    status_code=409,
+                    error_kind="already_resolved",
+                    error_message=(
+                        f"Discrepancy {discrepancy_id} was resolved "
+                        f"concurrently."
+                    ),
+                    discrepancy_id=discrepancy_id,
+                    disc_resolution="acknowledged_immaterial",
+                    disc_resolved_by=None,
+                    disc_created_at=disc.created_at,
+                    unresolved_count=unresolved_count,
+                    recent_multi_leg_count=recent_multi_leg_count,
+                    banner_resolve_link=banner_resolve_link,
+                )
+            except ValueError as exc:
+                # Defensive: a concurrent writer DELETED the row (the service
+                # raises on a missing row) between the read above and the
+                # resolve. Re-render the simple acknowledge form with the
+                # error band. (DiscrepancyResolutionStateError is a ValueError
+                # subclass but is caught ABOVE for the 409 race disposition.)
+                log.warning("simple ack resolve ValueError: %s", exc)
+                return _render_simple_acknowledge_form(
+                    request,
+                    disc,
+                    unresolved_count=unresolved_count,
+                    recent_multi_leg_count=recent_multi_leg_count,
+                    banner_resolve_link=banner_resolve_link,
+                    prior_resolution_reason=prior_resolution_reason,
+                    error_band_message=str(exc),
+                    status_code=400,
+                )
+            redirect_target = (
+                f"/dashboard?reconcile_resolved=disc-{discrepancy_id}"
+            )
+            if request.headers.get("HX-Request") == "true":
+                return Response(
+                    status_code=204,
+                    headers={"HX-Redirect": redirect_target},
+                )
+            return RedirectResponse(url=redirect_target, status_code=303)
+
+        # Step 4b — state guard (terminal or NULL ambiguity_kind).
+        # Honest-copy fix (O1): an UNRESOLVED non-allowlisted (and not the
+        # orphan / not pending-ambiguity) row was NEVER in
+        # pending_ambiguity_resolution -- route it to the honest
+        # ``not_web_acknowledgeable`` error_kind, NOT the misleading hardcoded
+        # ``already_resolved`` copy. A genuinely-terminal row (resolved out of
+        # pending) keeps ``already_resolved``.
+        if disc.resolution == "unresolved" and disc.ambiguity_kind is None:
+            return _render_error(
+                request,
+                status_code=409,
+                error_kind="not_web_acknowledgeable",
+                error_message=(
+                    f"Discrepancy {discrepancy_id} ({disc.discrepancy_type}) "
+                    f"is not web-acknowledgeable; resolve it via the CLI."
+                ),
+                discrepancy_id=discrepancy_id,
+                disc_resolution=disc.resolution,
+                disc_resolved_by=disc.resolved_by,
+                disc_created_at=disc.created_at,
+                unresolved_count=unresolved_count,
+                recent_multi_leg_count=recent_multi_leg_count,
+                banner_resolve_link=banner_resolve_link,
+            )
         if (
             disc.resolution != "pending_ambiguity_resolution"
             or disc.ambiguity_kind is None

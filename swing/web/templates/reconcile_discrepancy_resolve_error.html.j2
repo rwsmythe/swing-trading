@@ -15,6 +15,11 @@
     <dt>Created at</dt><dd>{{ vm.disc_created_at or '(unknown)' }}</dd>
   </dl>
   <p><a href="/dashboard">Return to dashboard</a></p>
+  {% elif vm.error_kind == 'not_web_acknowledgeable' %}
+  <h1>Not web-acknowledgeable</h1>
+  <p>Discrepancy <code>{{ vm.discrepancy_id }}</code> is not web-acknowledgeable; resolve it via the CLI.</p>
+  {% if vm.error_message %}<p>{{ vm.error_message }}</p>{% endif %}
+  <p><a href="/dashboard">Return to dashboard</a></p>
   {% elif vm.error_kind == 'anchor_mismatch' %}
   <h1>Form state changed</h1>
   <p>{{ vm.error_message }}</p>

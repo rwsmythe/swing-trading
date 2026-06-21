@@ -116,6 +116,9 @@ def _seed_discrepancy(
         elif resolution not in ("unresolved",):
             resolved_at = "2026-06-18T13:00:00"
             resolved_by = "operator"
+            # The models validator requires a non-empty reason for terminal
+            # resolutions (e.g. journal_corrected).
+            resolution_reason = "operator resolved out of pending"
         dcur = conn.execute(
             """
             INSERT INTO reconciliation_discrepancies (
@@ -179,19 +182,6 @@ def test_get_allowlisted_unresolved_renders_simple_form(
     assert "no longer in pending_ambiguity_resolution" not in r.text
 
 
-def test_get_allowlisted_legacy_pending_renders_simple_form(
-    seeded_db: tuple[Config, Path],
-) -> None:
-    """Mirroring the orphan Codex-R2 widening: an allowlisted type swept into
-    the legacy ``pending_ambiguity_resolution`` state (with a real
-    ambiguity_kind) is NOT hijacked away from tier-2 -- it has ambiguity_kind
-    NOT NULL, so it stays the tier-2 form. (See TIER2-REG below.) This test
-    documents the plain pending->simple is NOT a thing; covered by TIER2-REG."""
-    # No-op placeholder retained for symmetry; the binding assertion is in
-    # TIER2-REG. Kept minimal to avoid a misleading duplicate.
-    assert "cash_movement_mismatch" in _SIMPLE_ACKNOWLEDGEABLE_TYPES
-
-
 # ---------------------------------------------------------------------------
 # POST-CLEAR — POST clears to acknowledged_immaterial; 204+HX-Redirect & 303
 # ---------------------------------------------------------------------------
@@ -227,19 +217,41 @@ def test_post_allowlisted_htmx_clears_204_hx_redirect(
 
 
 def test_post_allowlisted_non_htmx_303_fallback(
-    seeded_db: tuple[Config, Path],
+    seeded_db: tuple[Config, Path], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Non-HTMX arm: 303 redirect; same target; row cleared."""
+    """Non-HTMX arm: 303 redirect; same target; row cleared.
+
+    The production OriginGuard is hardwired strict (``app.py`` ``strict=True``)
+    so a non-HTMX POST is 403'd by the middleware BEFORE the route -- the same
+    reason the orphan/tier-2 POST tests are all HTMX-only. To exercise the
+    route's 303 fallback branch (byte-mirrored from the orphan path for the
+    documented OriginGuard non-strict deployment), force the guard non-strict
+    for this app and send a same-origin (no HX-Request) POST.
+    """
+    import swing.web.app as app_mod
+    from swing.web.middleware.origin_guard import OriginGuardMiddleware
+
+    orig_init = OriginGuardMiddleware.__init__
+
+    def _non_strict_init(self, app, *, bound_host, bound_port, strict=False):
+        orig_init(
+            self, app, bound_host=bound_host, bound_port=bound_port,
+            strict=False,
+        )
+
+    monkeypatch.setattr(
+        app_mod.OriginGuardMiddleware, "__init__", _non_strict_init
+    )
     cfg, cfg_path = seeded_db
     did = _seed_discrepancy(
         cfg.paths.db_path, discrepancy_type="cash_movement_mismatch"
     )
     app = create_app(cfg, cfg_path)
-    with TestClient(app) as client:
+    with TestClient(app, base_url="http://127.0.0.1:8080") as client:
         r = client.post(
             f"/reconcile/discrepancy/{did}/resolve",
             data={"resolution_reason": ""},
-            headers={"HX-Request": "false"},
+            headers={"Origin": "http://127.0.0.1:8080"},
             follow_redirects=False,
         )
     assert r.status_code == 303, r.text[:400]
@@ -362,7 +374,6 @@ def test_post_toctou_concurrent_resolve_returns_409(
     )
     app = create_app(cfg, cfg_path)
 
-    import swing.web.routes.reconcile as reconcile_mod
     from swing.trades.reconciliation import (
         DiscrepancyResolutionStateError,
         resolve_discrepancy as real_resolve,
@@ -387,10 +398,8 @@ def test_post_toctou_concurrent_resolve_returns_409(
             side.close()
         return real_resolve(conn, **kwargs)
 
-    monkeypatch.setattr(reconcile_mod, "resolve_discrepancy", racing_resolve)
-    # Ensure the symbol the route imports inside the branch is patched too:
-    # the route imports resolve_discrepancy from swing.trades.reconciliation
-    # at call time inside the branch, so patch there as well.
+    # The route imports resolve_discrepancy from swing.trades.reconciliation
+    # at call time INSIDE the branch, so patch the symbol THERE.
     import swing.trades.reconciliation as recon_mod
     monkeypatch.setattr(recon_mod, "resolve_discrepancy", racing_resolve)
 
