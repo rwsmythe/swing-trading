@@ -188,6 +188,9 @@ swing-pre-phase11-schwab-migration-*.db
 .copowers-session-*.json
 .copowers-review-*
 .copowers-review-prompt.txt
+# catch-all for codex / codex-auto-review scratch files (subsumes the specific
+# .codex-prompt*/-diff/-review-*/-r*-/-autoreview-* patterns; does NOT match .codex/)
+.codex-*
 .codex-review-*
 .codex-r2-prompt.txt
 .live-db-query.py
