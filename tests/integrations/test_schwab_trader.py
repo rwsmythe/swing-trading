@@ -711,6 +711,20 @@ def test_transaction_id_message_mentions_pattern():
     assert "^[0-9]+$" in str(exc_info.value)
 
 
+def test_transaction_id_rejection_message_is_ascii_for_unicode_id():
+    """Codex R1 MINOR: a non-ASCII rejected id must NOT leak printable Unicode
+    into the message (cp1252 stdout discipline). ascii() escapes it to \\uXXXX."""
+    with pytest.raises(ValueError) as exc_info:
+        SchwabTransactionResponse(
+            transaction_id="１２３",  # fullwidth digits 123
+            transaction_date="2026-06-15",
+            type="ACH_RECEIPT",
+            net_amount=1.0,
+            description=None,
+        )
+    assert str(exc_info.value).isascii()
+
+
 def test_void_sentinel_id_cannot_be_constructed():
     # Proof-closure (brief §5): the PASS-1 find_by_ref(ref="void:6") collision
     # against a void: sentinel row is unreachable BY CONSTRUCTION -- a Schwab

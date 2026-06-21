@@ -376,10 +376,13 @@ class SchwabTransactionResponse:
                 "SchwabTransactionResponse.transaction_id must be non-empty str"
             )
         if not _TXN_ID_RE.fullmatch(self.transaction_id):
+            # ascii() (not !r) so a non-ASCII rejected id (e.g. fullwidth digits)
+            # cannot embed printable Unicode in the message and crash a cp1252
+            # stdout/click.echo path (Codex R1 MINOR; project ASCII discipline).
             raise ValueError(
                 "SchwabTransactionResponse.transaction_id must match ^[0-9]+$ "
                 "(Schwab transaction ids are integer per spec); "
-                f"got {self.transaction_id!r}"
+                f"got {ascii(self.transaction_id)}"
             )
         if not isinstance(self.transaction_date, str) or len(self.transaction_date) < 10:
             raise ValueError(
