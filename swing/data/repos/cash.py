@@ -35,3 +35,15 @@ def find_by_ref(conn: sqlite3.Connection, ref: str) -> CashMovement | None:
     if row is None:
         return None
     return CashMovement(id=row[0], date=row[1], kind=row[2], amount=row[3], ref=row[4], note=row[5])
+
+
+def find_by_id(conn: sqlite3.Connection, cash_movement_id: int) -> CashMovement | None:
+    """Fetch a single cash_movement by primary-key id (the `swing journal
+    cash-void` D19 READ helper; mirrors find_by_ref). Returns None if absent."""
+    row = conn.execute(
+        "SELECT id, date, kind, amount, ref, note FROM cash_movements WHERE id = ?",
+        (cash_movement_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return CashMovement(id=row[0], date=row[1], kind=row[2], amount=row[3], ref=row[4], note=row[5])
