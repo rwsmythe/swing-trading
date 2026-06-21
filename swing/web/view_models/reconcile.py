@@ -828,7 +828,9 @@ def build_reconcile_discrepancy_resolve_vm(
 # 409 paths (T-2.5 stub branches: ``not_found`` + ``already_resolved``). T-2.6
 # extends the template with 3 additional branches (``anchor_mismatch`` /
 # ``service_error`` / ``db_unavailable``); this dataclass carries fields
-# sufficient for all 5 branches so T-2.6 does NOT need to widen it.
+# sufficient for those branches without widening. The Phase-18 web simple-
+# acknowledge coverage arc adds a 6th branch (``not_web_acknowledgeable``),
+# again a free ``error_kind`` value needing no field widening.
 #
 # Per plan §A T-2.5 acceptance + LOCK F11: standalone base-layout fields
 # (does NOT inherit BaseLayoutVM — mirrors ReconcileDiscrepancyResolveVM +
