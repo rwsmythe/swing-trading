@@ -1773,8 +1773,15 @@ def journal_cash_cmd(ctx, deposit, withdraw, interest, dividend, fee, date_str, 
 @click.option("--ticker", "ticker", required=True, help="Out-of-framework ticker (e.g. SPCX).")
 @click.option("--cost", "cost", type=float, required=True, help="Swing cash spent (dollars).")
 @click.option("--date", "date_str", default=None, help="YYYY-MM-DD; defaults to today.")
+@click.option(
+    "--force", "force", is_flag=True, default=False,
+    help="Record a GENUINELY-DISTINCT second same-ticker/same-day OOF buy under a "
+         "distinct ref (an `oof:<TICKER>:<DATE>#<seq>` disambiguator). Without "
+         "--force, a sentinel-ref collision is rejected (so a duplicate re-run is "
+         "never silently dropped from the ledger).",
+)
 @click.pass_context
-def journal_oof_buy_cmd(ctx, ticker, cost, date_str):
+def journal_oof_buy_cmd(ctx, ticker, cost, date_str, force):
     """Record a swing transfer-OUT for cash spent on an out-of-framework holding.
 
     Swing cash spent to buy an out-of-framework (OOF) holding (e.g. an IPO not in
@@ -1784,6 +1791,19 @@ def journal_oof_buy_cmd(ctx, ticker, cost, date_str):
     sentinel ref (oof:<TICKER>:<YYYY-MM-DD>), so (a) the ledger side is corrected
     and (b) the step-7 reconciliation matcher recognizes the row as self-sourced
     and never fires a recurring cash_movement_mismatch for it.
+
+    IDEMPOTENCY = FAIL LOUD (RD course-correction, brief e4ae1459). The sentinel
+    ref is keyed on (ticker, date) only -- it does NOT encode the cost -- so a
+    bare re-run, or a legitimately-distinct second same-ticker/same-day OOF buy,
+    collides on the same ref. A silent "already recorded" no-op would SILENTLY
+    DROP that distinct second buy from the ledger (a measurement-core coherence
+    drift). Instead, a sentinel-ref collision WITHOUT --force is REJECTED with an
+    actionable message (naming the existing row + pointing to --force), so the
+    operator KNOWS nothing was recorded. With --force, the genuinely-distinct
+    second buy is recorded under a DISTINCT disambiguated ref
+    (oof:<TICKER>:<DATE>#<seq>, picking the next free sequence) that the step-7
+    matcher STILL recognizes -> it STILL self-reconciles (no recurring
+    cash_movement_mismatch).
 
     BUY direction only (transfer-OUT) for V1; OOF SELLs are a documented
     follow-up. The ticker MUST be in [reconciliation] out_of_framework_tickers
@@ -1797,7 +1817,7 @@ def journal_oof_buy_cmd(ctx, ticker, cost, date_str):
     from swing.data.db import connect
     from swing.data.models import CashMovement
     from swing.data.repos.cash import find_by_ref, insert_cash
-    from swing.trades.schwab_reconciliation import _build_oof_ref
+    from swing.trades.schwab_reconciliation import _build_oof_ref, _oof_ref_with_seq
 
     # Control-flow ORDER (plan §1): apply_overrides -> registry guard -> ISO-date
     # validation -> SELECT-first idempotency -> WRITE-SCOPED sandbox gate ->
@@ -1850,48 +1870,68 @@ def journal_oof_buy_cmd(ctx, ticker, cost, date_str):
             f"--date must be a valid YYYY-MM-DD; got {date_str!r}"
         )
 
-    # _build_oof_ref rejects a colon-bearing ticker (R4-MAJOR-2); wrap its
-    # ValueError as a clean ClickException (the service-ValueError-at-the-CLI-
-    # boundary discipline) rather than a raw traceback.
+    # The CANONICAL (seq-1, bare) ref. _build_oof_ref rejects a colon-bearing
+    # ticker (R4-MAJOR-2); wrap its ValueError as a clean ClickException (the
+    # service-ValueError-at-the-CLI-boundary discipline) rather than a traceback.
     try:
-        ref = _build_oof_ref(ticker, date_str)
+        canonical_ref = _build_oof_ref(ticker, date_str)
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
     note = f"out-of-framework buy: {ticker} (swing cash transfer-out)"
 
-    def _resolve_existing_or_raise(existing) -> None:
-        """Handle an already-present row for this ref: a clean idempotent no-op
-        when the recorded amount matches the requested cost, else a CONFLICT
-        ClickException (codex-auto-review [P2]). Shared by the SELECT-first path
-        AND the IntegrityError belt so a TOCTOU race is handled identically (the
-        belt mustn't report 'already recorded' on a DIFFERENT cost -- that would
-        leave the ledger wrong while reporting success). Compares at cent
-        precision (the price-precision-parity discipline)."""
-        if round(float(existing.amount), 2) != round(cost, 2):
-            raise click.ClickException(
-                f"OOF transfer-out for {ticker} on {date_str} already "
-                f"recorded (#{existing.id}, ref={ref}) at "
-                f"${float(existing.amount):.2f}, which differs from the "
-                f"requested ${cost:.2f}. Refusing to silently keep the old "
-                f"amount. To correct the recorded cost, edit/remove the "
-                f"existing cash_movement; for a separate same-day OOF buy, "
-                f"use a distinct --date."
-            )
-        click.echo(
-            f"OOF transfer-out for {ticker} on {date_str} already recorded "
-            f"(#{existing.id}, ref={ref}); no change."
+    def _collision_error(existing, *, attempted_ref: str) -> click.ClickException:
+        """FAIL LOUD on a sentinel-ref collision (RD course-correction, brief
+        e4ae1459). The sentinel ref is keyed on (ticker, date) only -- it does
+        NOT encode the cost -- so a bare re-run, OR a legitimately-distinct second
+        same-day buy, collides. A silent 'already recorded' no-op would SILENTLY
+        DROP a distinct second buy from the ledger (a measurement-core coherence
+        drift). Reject with an actionable message: name the existing row + ref and
+        point to --force. Shared by the SELECT-first path AND the IntegrityError
+        belt so a TOCTOU race fails loud identically (NEVER a silent no-op)."""
+        return click.ClickException(
+            f"an oof-buy for {ticker} on {date_str} already exists "
+            f"(#{existing.id}, ref={attempted_ref}, "
+            f"${float(existing.amount):.2f}); nothing was recorded. If this is a "
+            f"distinct second buy, pass --force (records it under a separate ref); "
+            f"otherwise this was a duplicate -- no action needed."
+        )
+
+    def _next_free_ref(conn) -> str:
+        """Pick the next free OOF ref for --force, deterministically: start at the
+        canonical bare ref (seq 1) and increment the #<seq> suffix until a free
+        ref is found. So --force on a FIRST-ever buy uses the canonical bare ref
+        (nothing to disambiguate against); a second --force buy uses #2, a third
+        #3, and so on. The disambiguated ref is STILL a canonical OOF sentinel
+        (recognized by the step-7 matcher) so the row STILL self-reconciles. A
+        bound guards against an unbounded loop (a four-figure ceiling is far
+        beyond any realistic same-day OOF-buy count)."""
+        for seq in range(1, 10_000):
+            candidate = _oof_ref_with_seq(ticker, date_str, seq)
+            if find_by_ref(conn, candidate) is None:
+                return candidate
+        raise click.ClickException(
+            f"too many OOF buys already recorded for {ticker} on {date_str}; "
+            f"refusing to allocate another disambiguated ref."
         )
 
     conn = connect(cfg.paths.db_path)
     try:
-        # 4. SELECT-first idempotency (the partial unique index ux_cash_ref makes
-        #    the ref unique; surface a clean no-op, not an IntegrityError
-        #    traceback). The deterministic ref means a re-run of the same
-        #    (ticker, date) dedups.
-        existing = find_by_ref(conn, ref)
-        if existing is not None:
-            _resolve_existing_or_raise(existing)
-            return
+        # 4. Resolve the target ref + the idempotency policy (FAIL LOUD, amended
+        #    brief §4). The partial unique index ux_cash_ref makes the ref unique;
+        #    surface a clean rejection, not an IntegrityError traceback.
+        if force:
+            # --force: record a genuinely-distinct second same-key buy under the
+            # next free disambiguated ref (no collision possible -- the chosen ref
+            # is provably free).
+            ref = _next_free_ref(conn)
+        else:
+            # No --force: the canonical ref. A collision -> FAIL LOUD (no silent
+            # drop): the operator learns nothing was recorded + how to record a
+            # genuinely-distinct second buy.
+            ref = canonical_ref
+            existing = find_by_ref(conn, ref)
+            if existing is not None:
+                raise _collision_error(existing, attempted_ref=ref)
 
         # 5. WRITE-SCOPED sandbox gate (LAST gate before the write; mirror the
         #    canonical domain-row gate pipeline_steps.py:292). cash_movements is a
@@ -1915,16 +1955,14 @@ def journal_oof_buy_cmd(ctx, ticker, cost, date_str):
                 ))
         except sqlite3.IntegrityError:
             # Belt for a TOCTOU race past the SELECT (ux_cash_ref): RE-FETCH the
-            # row that won the race and apply the SAME conflict validation (Codex
-            # R7-MAJOR-1) -- a clean no-op only when the amount matches; a
-            # different cost is still a CONFLICT, never a silent 'already
-            # recorded'. If the row is somehow gone, re-raise (not our unique-ref
-            # case).
+            # row that won the race and FAIL LOUD with the same actionable
+            # collision error (amended brief §4 item 3) -- consistent with the
+            # SELECT-first path; NEVER a silent no-op. If the row is somehow gone,
+            # re-raise (not our unique-ref case).
             raced = find_by_ref(conn, ref)
             if raced is None:
                 raise
-            _resolve_existing_or_raise(raced)
-            return
+            raise _collision_error(raced, attempted_ref=ref) from None
     finally:
         conn.close()
     click.echo(

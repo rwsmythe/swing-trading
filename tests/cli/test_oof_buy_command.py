@@ -1,13 +1,26 @@
 """CLI: `swing journal oof-buy` (Phase-18 deferred follow-up #1).
 
-Tests (per docs/plans/oof-buy-command-plan.md §4):
+Tests (per docs/plans/oof-buy-command-plan.md §4, AMENDED by brief e4ae1459 --
+the RD fail-loud idempotency course-correction):
   - R1   the registry guard (non-OOF ticker -> ClickException; positive SPCX
          accepted; lower-case accepted with the canonical ref) -- seeded via the
          REAL overrides path (O1: the command reads apply_overrides, NOT bare
          config; a bare-config read would reject EVERY ticker).
-  - I1   idempotency (twice, same key -> one row; mixed-case dedups).
+  - I1   idempotency = FAIL LOUD (amended): a bare re-run (no --force) on a
+         sentinel-ref collision is REJECTED with an actionable message naming the
+         existing row, and STILL exactly one row (no double-record, no silent
+         drop); --force records a genuinely-distinct second same-key buy under a
+         DISTINCT oof: ref that STILL self-reconciles in the step-7 matcher.
   - SB1  sandbox (no domain row written; production writes one; AND a non-OOF
          ticker under sandbox STILL rejects -- the write-scoped gate proof).
+
+The amendment SUPERSEDES the plan's silent-no-op idempotency (the old "same-cost
+no-op vs different-cost conflict" distinction): because the sentinel key is
+ticker+date (NO amount), a legitimately-distinct second same-ticker/same-day OOF
+buy collided on the key and was SILENTLY DROPPED from the ledger (the #27
+silent-ledger-loss class this arc exists to PREVENT). Now ANY collision without
+--force fails loud (so the operator KNOWS nothing was recorded); --force records
+the distinct second buy under a disambiguated ref.
 
 The overrides path is exercised via write_user_overrides with USERPROFILE AND
 HOME monkeypatched (the write_user_overrides gotcha) so apply_overrides
@@ -123,12 +136,22 @@ def test_oof_buy_lower_case_ticker_accepted_canonical_ref(tmp_path: Path, monkey
 
 
 # --------------------------------------------------------------------------- #
-# I1 — idempotency
+# I1 — idempotency = FAIL LOUD (amended brief e4ae1459)
 # --------------------------------------------------------------------------- #
 
-def test_oof_buy_idempotent_same_key(tmp_path: Path, monkeypatch):
-    """I1: run twice with the same key -> exactly one row; the second exits 0
-    with a clean 'already recorded' message (NOT an IntegrityError traceback)."""
+def test_oof_buy_bare_rerun_fails_loud_no_double_record(tmp_path: Path, monkeypatch):
+    """I1 (AMENDED): a bare re-run (no --force) on a sentinel-ref collision is
+    REJECTED with an actionable message naming the existing row, AND there is
+    STILL exactly ONE cash_movements row (no double-record). The operator KNOWS
+    nothing new was recorded.
+
+    PRE-correction (the silent-no-op hole): the second run was a clean exit-0
+    'already recorded' no-op -> a legitimately-distinct second same-day buy was
+    SILENTLY DROPPED from the ledger (the #27 silent-ledger-loss class). So this
+    test's non-zero-exit + actionable-message assertion FAILS against the
+    pre-correction code. POST-correction: a non-zero exit + the actionable
+    message + the escape-hatch pointer. DISTINGUISHES.
+    """
     runner, cfg, db_path = _setup(
         tmp_path, monkeypatch, overrides=_SPCX_OVERRIDES)
     args = [
@@ -138,23 +161,26 @@ def test_oof_buy_idempotent_same_key(tmp_path: Path, monkeypatch):
     r1 = runner.invoke(main, args)
     assert r1.exit_code == 0, r1.output
     assert len(_cash_rows(db_path)) == 1
+    # The bare re-run (identical args) MUST fail loud -- not a silent no-op.
     r2 = runner.invoke(main, args)
-    assert r2.exit_code == 0, r2.output           # clean no-op, not a traceback
-    assert len(_cash_rows(db_path)) == 1          # still exactly one row
-    assert "already recorded" in r2.output.lower()
+    assert r2.exit_code != 0, r2.output                 # rejected, not exit 0
+    assert "already exists" in r2.output.lower()        # actionable collision msg
+    assert "#1" in r2.output                            # names the existing row id
+    assert "--force" in r2.output                       # the escape hatch
+    assert "oof:SPCX:2026-06-18" in r2.output           # names the colliding ref
+    assert len(_cash_rows(db_path)) == 1                # STILL one row (no double)
 
 
-def test_oof_buy_conflicting_cost_replay_rejected(tmp_path: Path, monkeypatch):
-    """codex-auto-review [P2]: a re-run for the SAME ticker/date with a DIFFERENT
-    --cost is a CONFLICT (the sentinel ref does not encode cost), NOT a silent
-    'already recorded' no-op -- otherwise the ledger keeps the OLD cost while
-    reporting success (silent coherence corruption on a measurement-core path).
+def test_oof_buy_bare_rerun_different_cost_also_fails_loud(tmp_path: Path, monkeypatch):
+    """I1 (AMENDED): a bare re-run with a DIFFERENT --cost ALSO fails loud (the
+    amendment removed the same-cost-silent-no-op vs different-cost-conflict
+    distinction -- ANY collision without --force is rejected). The original row
+    is unchanged.
 
-    Pre-fix: the second run reports 'already recorded' and leaves the original
-    $500 row -> the ledger is wrong (the operator believes $700 was recorded).
-    Post-fix: the second run ERRORS (conflict); the original row is unchanged;
-    the operator resolves deliberately.
-    """
+    PRE-correction: a different cost raised a CONFLICT (different message); a SAME
+    cost was a silent no-op. POST-correction: BOTH are the same fail-loud
+    'already exists' rejection (the operator uses --force for a deliberate second
+    buy, or a distinct --date)."""
     runner, cfg, db_path = _setup(
         tmp_path, monkeypatch, overrides=_SPCX_OVERRIDES)
     r1 = runner.invoke(main, [
@@ -162,32 +188,31 @@ def test_oof_buy_conflicting_cost_replay_rejected(tmp_path: Path, monkeypatch):
         "--ticker", "SPCX", "--cost", "500", "--date", "2026-06-18",
     ])
     assert r1.exit_code == 0, r1.output
-    # Same ticker/date, DIFFERENT cost -> conflict.
     r2 = runner.invoke(main, [
         "--config", str(cfg), "journal", "oof-buy",
         "--ticker", "SPCX", "--cost", "700", "--date", "2026-06-18",
     ])
-    assert r2.exit_code != 0, r2.output            # a conflict error, not exit 0
-    assert "differs" in r2.output.lower()          # the message explains the conflict
+    assert r2.exit_code != 0, r2.output
+    assert "already exists" in r2.output.lower()
+    assert "--force" in r2.output
     rows = _cash_rows(db_path)
     assert len(rows) == 1
     assert rows[0][3] == 500.0   # the ORIGINAL amount is unchanged (not 700)
 
 
-def test_oof_buy_integrityerror_belt_applies_conflict_check(tmp_path: Path, monkeypatch):
-    """Codex R7-MAJOR-1: the IntegrityError belt (the TOCTOU-race fallback) applies
-    the SAME conflict validation as the SELECT-first path -- it must NOT report
-    'already recorded' on a DIFFERENT cost (that would leave the ledger wrong while
-    reporting success).
+def test_oof_buy_integrityerror_belt_fails_loud(tmp_path: Path, monkeypatch):
+    """The IntegrityError belt (the TOCTOU-race fallback past the SELECT) ALSO
+    fails loud -- it re-fetches the row that won the race and raises the SAME
+    actionable collision error, consistent with the SELECT-first path. NEVER a
+    silent no-op (amended brief §4 item 3).
 
     Simulate the race: the SELECT-first find_by_ref returns None (the row isn't
-    visible yet), but a conflicting $500 row already exists, so the INSERT hits
-    ux_cash_ref -> IntegrityError -> the belt re-fetches and finds the $500/$700
-    conflict.
+    visible yet), but a row already exists for the ref, so the INSERT hits
+    ux_cash_ref -> IntegrityError -> the belt re-fetches + raises.
 
-    Pre-fix: the belt echoes 'already recorded' + exits 0 (silent corruption).
-    Post-fix: the belt re-fetches and raises the conflict ClickException.
-    """
+    PRE-correction: the belt echoed 'already recorded' + exited 0 on a same cost
+    (silent), only conflicting on a different cost. POST-correction: the belt
+    fails loud on ANY collision."""
     runner, cfg, db_path = _setup(
         tmp_path, monkeypatch, overrides=_SPCX_OVERRIDES)
     # Pre-seed the race winner: an existing $500 OOF row for the same ref.
@@ -198,7 +223,9 @@ def test_oof_buy_integrityerror_belt_applies_conflict_check(tmp_path: Path, monk
     assert r0.exit_code == 0, r0.output
 
     # Force the SELECT-first find_by_ref to MISS once (simulate the race window),
-    # so the command reaches the INSERT (-> IntegrityError -> the belt).
+    # so the command reaches the INSERT (-> IntegrityError -> the belt). (--force
+    # would have re-disambiguated; this is a BARE re-run, so the SELECT-first
+    # would normally catch it -- the patch forces the belt path.)
     import swing.data.repos.cash as _cash_repo
     _real_find = _cash_repo.find_by_ref
     calls = {"n": 0}
@@ -211,41 +238,191 @@ def test_oof_buy_integrityerror_belt_applies_conflict_check(tmp_path: Path, monk
 
     monkeypatch.setattr(_cash_repo, "find_by_ref", _racing_find)
 
-    # Request a DIFFERENT cost -> the INSERT collides; the belt must CONFLICT.
+    # A bare re-run (same cost) -> the INSERT collides; the belt must fail loud.
     r = runner.invoke(main, [
         "--config", str(cfg), "journal", "oof-buy",
-        "--ticker", "SPCX", "--cost", "700", "--date", "2026-06-18",
+        "--ticker", "SPCX", "--cost", "500", "--date", "2026-06-18",
     ])
-    assert r.exit_code != 0, r.output      # the belt raised, not exit 0
-    assert "differs" in r.output.lower()   # the conflict message
+    assert r.exit_code != 0, r.output         # the belt raised, not exit 0
+    assert "already exists" in r.output.lower()
     rows = _cash_rows(db_path)
     assert len(rows) == 1
-    assert rows[0][3] == 500.0             # original unchanged (not 700)
+    assert rows[0][3] == 500.0                # original unchanged (no double)
 
 
-def test_oof_buy_idempotent_mixed_case(tmp_path: Path, monkeypatch):
-    """I1 mixed-case arm (the Codex R1 MAJOR coverage): `spcx` then `SPCX`, same
-    date -> STILL exactly one row (both upper-case to the IDENTICAL canonical
-    ref).
+def test_oof_buy_mixed_case_rerun_fails_loud(tmp_path: Path, monkeypatch):
+    """I1 mixed-case arm (preserved from the R1 fix, adapted to fail-loud): a
+    lower-case re-run of the same key (`spcx` after `SPCX`) STILL collides + fails
+    loud (both upper-case to the IDENTICAL canonical ref oof:SPCX:<d>).
 
-    Pre-fix (no boundary upper-casing): the lower run writes oof:spcx:... and the
-    upper run oof:SPCX:... -> TWO rows -> FAILS. Post-fix: one row.
-    """
+    PRE the R1 case-normalization fix: the lower run would write oof:spcx:... (a
+    SECOND row) -- the case-insensitivity bug. POST-fix (+ this amendment): the
+    lower run normalizes to the same key and is rejected as a collision; STILL
+    one row. DISTINGUISHES the boundary upper-casing AT the fail-loud layer."""
     runner, cfg, db_path = _setup(
         tmp_path, monkeypatch, overrides=_SPCX_OVERRIDES)
     r1 = runner.invoke(main, [
         "--config", str(cfg), "journal", "oof-buy",
+        "--ticker", "SPCX", "--cost", "500", "--date", "2026-06-18",
+    ])
+    assert r1.exit_code == 0, r1.output
+    # Lower-case re-run of the SAME key -> normalizes to oof:SPCX:<d> -> collides.
+    r2 = runner.invoke(main, [
+        "--config", str(cfg), "journal", "oof-buy",
         "--ticker", "spcx", "--cost", "500", "--date", "2026-06-18",
+    ])
+    assert r2.exit_code != 0, r2.output
+    assert "already exists" in r2.output.lower()
+    rows = _cash_rows(db_path)
+    assert len(rows) == 1                     # still ONE row (no case-split double)
+    assert rows[0][4] == "oof:SPCX:2026-06-18"
+
+
+# --------------------------------------------------------------------------- #
+# --force — the escape hatch (amended brief e4ae1459)
+# --------------------------------------------------------------------------- #
+
+def test_oof_buy_force_records_distinct_second_row(tmp_path: Path, monkeypatch):
+    """--force (AMENDED): a genuinely-distinct second same-key OOF buy is recorded
+    under a DISTINCT oof: ref (the #<seq> disambiguator) -> TWO rows for the
+    ticker/date, both withdraw, distinct amounts allowed.
+
+    PRE-correction: there was no --force flag (and the second buy was silently
+    dropped / errored). POST-correction: --force writes the second row under
+    oof:SPCX:2026-06-18#2."""
+    runner, cfg, db_path = _setup(
+        tmp_path, monkeypatch, overrides=_SPCX_OVERRIDES)
+    r1 = runner.invoke(main, [
+        "--config", str(cfg), "journal", "oof-buy",
+        "--ticker", "SPCX", "--cost", "500", "--date", "2026-06-18",
+    ])
+    assert r1.exit_code == 0, r1.output
+    # The distinct second buy (different cost), with --force.
+    r2 = runner.invoke(main, [
+        "--config", str(cfg), "journal", "oof-buy",
+        "--ticker", "SPCX", "--cost", "250", "--date", "2026-06-18", "--force",
+    ])
+    assert r2.exit_code == 0, r2.output
+    rows = _cash_rows(db_path)
+    assert len(rows) == 2                       # TWO rows now (no silent drop)
+    refs = sorted(r[4] for r in rows)
+    assert refs == ["oof:SPCX:2026-06-18", "oof:SPCX:2026-06-18#2"]
+    # The #2 row carries the forced cost.
+    forced = [r for r in rows if r[4] == "oof:SPCX:2026-06-18#2"][0]
+    assert forced[3] == 250.0
+    assert forced[2] == "withdraw"
+    # A THIRD --force buy picks the NEXT free disambiguator (#3) deterministically.
+    r3 = runner.invoke(main, [
+        "--config", str(cfg), "journal", "oof-buy",
+        "--ticker", "SPCX", "--cost", "100", "--date", "2026-06-18", "--force",
+    ])
+    assert r3.exit_code == 0, r3.output
+    refs3 = sorted(r[4] for r in _cash_rows(db_path))
+    assert refs3 == [
+        "oof:SPCX:2026-06-18", "oof:SPCX:2026-06-18#2", "oof:SPCX:2026-06-18#3"]
+
+
+def test_oof_buy_force_first_buy_uses_canonical_ref(tmp_path: Path, monkeypatch):
+    """--force on a FIRST-ever buy (no existing row for the key) writes the
+    canonical BARE ref (the natural seq-1) -- --force is well-defined and
+    harmless when there is nothing to disambiguate against."""
+    runner, cfg, db_path = _setup(
+        tmp_path, monkeypatch, overrides=_SPCX_OVERRIDES)
+    r = runner.invoke(main, [
+        "--config", str(cfg), "journal", "oof-buy",
+        "--ticker", "SPCX", "--cost", "500", "--date", "2026-06-18", "--force",
+    ])
+    assert r.exit_code == 0, r.output
+    rows = _cash_rows(db_path)
+    assert len(rows) == 1
+    assert rows[0][4] == "oof:SPCX:2026-06-18"   # the canonical bare ref
+
+
+def test_oof_buy_force_second_row_self_reconciles(tmp_path: Path, monkeypatch):
+    """--force CRITICAL CONSTRAINT (amended brief §4 item 2a): the --force second
+    row self-reconciles -- its cm.id does NOT fire cash_movement_mismatch across a
+    reconciliation run. WITHOUT this, the disambiguated ref could silently
+    re-introduce the recurring-mismatch bug (the exact bug this arc fixes).
+
+    Records a canonical first buy + a --force second buy (-> oof:SPCX:<d>#2), then
+    runs run_schwab_reconciliation directly against the SAME DB and asserts the
+    #2 row's cm.id is NOT in the cash_movement_mismatch emit set. (The fixture has
+    NO withdraw-typed Schwab counterpart in window, so WITHOUT the matcher
+    recognizing the disambiguated ref the #2 row would emit.)"""
+    from dataclasses import dataclass
+    from typing import Any
+
+    from swing.data.db import connect
+    from swing.trades.schwab_reconciliation import run_schwab_reconciliation
+
+    runner, cfg, db_path = _setup(
+        tmp_path, monkeypatch, overrides=_SPCX_OVERRIDES)
+    d = "2026-06-18"
+    r1 = runner.invoke(main, [
+        "--config", str(cfg), "journal", "oof-buy",
+        "--ticker", "SPCX", "--cost", "500", "--date", d,
     ])
     assert r1.exit_code == 0, r1.output
     r2 = runner.invoke(main, [
         "--config", str(cfg), "journal", "oof-buy",
-        "--ticker", "SPCX", "--cost", "500", "--date", "2026-06-18",
+        "--ticker", "SPCX", "--cost", "250", "--date", d, "--force",
     ])
     assert r2.exit_code == 0, r2.output
-    rows = _cash_rows(db_path)
-    assert len(rows) == 1
-    assert rows[0][4] == "oof:SPCX:2026-06-18"
+
+    @dataclass
+    class _Acct:
+        net_liquidating_value: float | None = None
+        positions: list[Any] | None = None
+
+    @dataclass
+    class _Txn:
+        transaction_id: str
+        transaction_date: str
+        type: str
+        net_amount: float
+        description: str | None = None
+
+    def _position(symbol, *, long_qty, market_value):
+        return {
+            "shortQuantity": 0.0, "longQuantity": long_qty,
+            "instrument": {"symbol": symbol, "type": "EQUITY"},
+            "marketValue": market_value,
+        }
+
+    conn = connect(db_path)
+    try:
+        force_id = conn.execute(
+            "SELECT id FROM cash_movements WHERE ref=?",
+            ("oof:SPCX:2026-06-18#2",),
+        ).fetchone()[0]
+        run = run_schwab_reconciliation(
+            conn,
+            account_hash="<acct>",
+            period_start="2026-06-15",
+            period_end="2026-06-20",
+            schwab_orders=[],
+            # The OOF buys' TRADE counterpart (skipped at ingest); NO
+            # withdraw-typed tx in window -> without the matcher recognizing the
+            # disambiguated ref, the #2 row would emit.
+            schwab_transactions=[_Txn("115520131470", d, "TRADE", -750.0)],
+            schwab_account=_Acct(
+                net_liquidating_value=1450.0,
+                positions=[_position("SPCX", long_qty=3.0, market_value=750.0)],
+            ),
+            out_of_framework_tickers=("SPCX",),
+            starting_equity=700.0,
+        )
+        mismatch_ids = [
+            r[0] for r in conn.execute(
+                "SELECT cash_movement_id FROM reconciliation_discrepancies "
+                "WHERE run_id=? AND discrepancy_type='cash_movement_mismatch'",
+                (run.run_id,),
+            ).fetchall()
+        ]
+    finally:
+        conn.close()
+    # The --force disambiguated row SELF-RECONCILES (recognized by the matcher).
+    assert force_id not in mismatch_ids
 
 
 # --------------------------------------------------------------------------- #
