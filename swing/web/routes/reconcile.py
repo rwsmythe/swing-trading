@@ -162,6 +162,35 @@ def _is_orphan_discrepancy(disc: object) -> bool:
     )
 
 
+# ---------------------------------------------------------------------------
+# Web simple-acknowledge coverage (Phase 18) — plain-unresolved advisory
+# discrepancies the GUI could not clear (the recurring monthly-deposit
+# ``cash_movement_mismatch`` "id 72" + the limbo-fix ``equity_delta``).
+#
+# EXPLICIT ENUMERATED ALLOWLIST (NOT "all material=0", NOT MATERIAL_BY_TYPE-
+# derived) so a FUTURE material=0 type (e.g. ``sector_tamper`` /
+# ``snapshot_mismatch``, DEFERRED) is never SILENTLY auto-acknowledgeable.
+# The orphan ``untracked_broker_position`` keeps its OWN branch (above) +
+# its own wording; this allowlist does NOT include it.
+# ---------------------------------------------------------------------------
+_SIMPLE_ACKNOWLEDGEABLE_TYPES: frozenset[str] = frozenset(
+    {"cash_movement_mismatch", "equity_delta"}
+)
+
+
+def _is_simple_acknowledgeable_discrepancy(disc: object) -> bool:
+    """True for a type in the explicit simple-acknowledge allowlist.
+
+    The resolution/ambiguity_kind gating (clearable resolution AND
+    ``ambiguity_kind IS NULL``) is applied at the call site (mirroring the
+    orphan branch) so a pending-ambiguity row of an allowlisted type is NOT
+    hijacked away from the tier-2 form (the branch-ordering LOCK).
+    """
+    return (
+        getattr(disc, "discrepancy_type", None) in _SIMPLE_ACKNOWLEDGEABLE_TYPES
+    )
+
+
 def _render_orphan_acknowledge_form(
     request: Request,
     disc: object,
