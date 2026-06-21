@@ -31,6 +31,9 @@ from swing.trades.schwab_reconciliation import (
     _build_oof_ref,
     _cash_coherence_tolerance,
     _is_oof_sentinel_ref,
+    _oof_ref_seq,
+    _oof_ref_ticker,
+    _oof_ref_with_seq,
     run_schwab_reconciliation,
 )
 
@@ -289,6 +292,85 @@ def test_build_oof_ref_rejects_colon_ticker():
         _build_oof_ref("NYSE:SPCX", "2026-06-18")
     # The normal case still works.
     assert _build_oof_ref("SPCX", "2026-06-18") == "oof:SPCX:2026-06-18"
+
+
+def test_disambiguated_force_ref_round_trip_and_recognized():
+    """Course-correction (RD fail-loud idempotency, brief e4ae1459): the
+    `--force` disambiguated ref (`oof:<TICKER>:<DATE>#<seq>`, seq>=2) is STILL a
+    canonical OOF sentinel -- recognized by `_is_oof_sentinel_ref` AND
+    `_oof_ref_ticker` returns the SAME ticker -- so the `--force` second row
+    STILL self-reconciles in the step-7 matcher (the CRITICAL correctness
+    constraint: if the disambiguated ref were NOT recognized, the second row
+    would fire a recurring cash_movement_mismatch -- the exact bug this arc
+    fixes). It is also UNIQUE (a distinct string -> ux_cash_ref accepts it) and
+    can NEVER collide with a numeric Schwab transaction_id (the `oof:` prefix +
+    the `#` are absent from `[0-9]+`).
+    """
+    # The constructor emits the canonical `#<seq>` form.
+    assert _oof_ref_with_seq("SPCX", "2026-06-18", 2) == "oof:SPCX:2026-06-18#2"
+    assert _oof_ref_with_seq("spcx", "2026-06-18", 10) == "oof:SPCX:2026-06-18#10"
+    # The disambiguated ref is STILL recognized as a canonical OOF sentinel.
+    assert _is_oof_sentinel_ref("oof:SPCX:2026-06-18#2") is True
+    assert _is_oof_sentinel_ref("oof:SPCX:2026-06-18#10") is True
+    # And the ticker extraction is UNCHANGED (the `#` is in the date segment, so
+    # split(":")[1] is still the ticker) -> the matcher's declared-set gate still
+    # passes for the disambiguated ref.
+    assert _oof_ref_ticker("oof:SPCX:2026-06-18#2") == "SPCX"
+    assert _oof_ref_ticker("oof:BRK/B:2026-06-18#3") == "BRK/B"
+    # The bare canonical ref is the implicit seq-1 (no suffix); it round-trips.
+    assert _oof_ref_with_seq("SPCX", "2026-06-18", 1) == "oof:SPCX:2026-06-18"
+    # A numeric Schwab transaction_id is STILL never an OOF sentinel (C2 holds).
+    assert _is_oof_sentinel_ref("115520131470") is False
+    assert _is_oof_sentinel_ref("20260618") is False
+    # Tight: a bare `#` (no digits) / a double-suffix is NOT canonical.
+    assert _is_oof_sentinel_ref("oof:SPCX:2026-06-18#") is False
+    assert _is_oof_sentinel_ref("oof:SPCX:2026-06-18#0#1") is False
+    # _oof_ref_seq parses the suffix back out (None canonical=1; #N -> N).
+    assert _oof_ref_seq("oof:SPCX:2026-06-18") == 1
+    assert _oof_ref_seq("oof:SPCX:2026-06-18#2") == 2
+    assert _oof_ref_seq("oof:SPCX:2026-06-18#10") == 10
+
+
+def test_disambiguated_force_ref_self_reconciles(conn):
+    """Course-correction: a `--force` disambiguated OOF withdraw row
+    (`oof:SPCX:<d>#2`) self-reconciles -- it does NOT fire cash_movement_mismatch
+    -- exactly like the canonical bare row. This is the critical constraint: the
+    disambiguated ref must STILL be recognized by the matcher (else the escape
+    hatch silently re-introduces the recurring-mismatch bug).
+
+    Distinguishes: WITHOUT the regex widening, `oof:SPCX:<d>#2` would NOT match
+    `_OOF_REF_RE` -> `_oof_ref_ticker` returns None -> the row is NOT skipped ->
+    it runs the PASS-2 heuristic with no withdraw-typed counterpart -> emits
+    cash_movement_mismatch (the bug). WITH the widening it is skipped.
+    """
+    d = "2026-06-18"
+    disambiguated = _oof_ref_with_seq("SPCX", d, 2)  # oof:SPCX:2026-06-18#2
+    assert disambiguated == "oof:SPCX:2026-06-18#2"
+    _seed_cash(
+        conn,
+        # The canonical first OOF buy.
+        CashMovement(id=None, date=d, kind="withdraw", amount=500.0,
+                     ref=_build_oof_ref("SPCX", d), note="oof #1"),
+        # The `--force` second distinct same-key OOF buy (disambiguated ref).
+        CashMovement(id=None, date=d, kind="withdraw", amount=250.0,
+                     ref=disambiguated, note="oof #2 (force)"),
+    )
+    canonical_id = conn.execute(
+        "SELECT id FROM cash_movements WHERE ref=?",
+        (_build_oof_ref("SPCX", d),),
+    ).fetchone()[0]
+    force_id = conn.execute(
+        "SELECT id FROM cash_movements WHERE ref=?", (disambiguated,)
+    ).fetchone()[0]
+    run = _run(
+        conn, [_position("SPCX", long_qty=2.0, market_value=750.0)],
+        nlv=1450.0, starting_equity=700.0, out_of_framework=("SPCX",),
+        schwab_transactions=[],   # no withdraw-typed counterpart in window
+    )
+    mismatch_ids = _cash_mismatch_ids(conn, run.run_id)
+    # BOTH the canonical and the disambiguated rows are skipped-as-self-sourced.
+    assert canonical_id not in mismatch_ids
+    assert force_id not in mismatch_ids
 
 
 def test_oof_skip_gated_on_currently_declared_ticker(conn):

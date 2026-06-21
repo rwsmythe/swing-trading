@@ -223,21 +223,34 @@ _SWING_COHERENCE_BASIS = "net_liq_minus_declared_oof"
 #     an OOF ref, and the OOF-skip branch is never True for a numeric id (the
 #     two are mutually exclusive by construction; the C2 discriminator pins it).
 _OOF_REF_PREFIX = "oof:"
-# The CANONICAL OOF sentinel shape: oof:<TICKER>:<YYYY-MM-DD>. The predicate
-# matches this FULL shape, NOT a bare `oof:` prefix (Codex R1-MAJOR-1): a manual
-# `journal cash --ref "oof:..."` value must NOT be skipped as self-sourced
-# unless it is canonical-shaped (a Lock-1 violation otherwise). The TICKER
-# segment is `[^:]+` -- ANY non-colon run (Codex R3-MAJOR-2): the registry
+# The CANONICAL OOF sentinel shape: oof:<TICKER>:<YYYY-MM-DD>[#<seq>]. The
+# predicate matches this FULL shape, NOT a bare `oof:` prefix (Codex R1-MAJOR-1):
+# a manual `journal cash --ref "oof:..."` value must NOT be skipped as
+# self-sourced unless it is canonical-shaped (a Lock-1 violation otherwise). The
+# TICKER segment is `[^:]+` -- ANY non-colon run (Codex R3-MAJOR-2): the registry
 # normalizer accepts any non-empty upper-cased string (e.g. `BRK/B` with a
-# slash, `BRK.B`), and `_build_oof_ref` emits exactly that between the colons;
+# slash, `BRK.B`), and the builders emit exactly that between the colons;
 # tickers contain no colon (the delimiter), so `[^:]+` accepts EXACTLY the
-# domain the builder can emit -- build + predicate agree. The date segment is
-# the ISO YYYY-MM-DD shape. `_build_oof_ref` only ever produces a
-# canonical-shaped ref, so the OOF command path is unaffected; a non-canonical
-# `oof:`-prefixed manual ref (e.g. `oof:manual`, or a non-ISO date) is
-# (correctly) NOT recognized. Numeric Schwab transaction_ids ([0-9]+) can never
-# match (no `oof:` prefix).
-_OOF_REF_RE = re.compile(r"^oof:[^:]+:\d{4}-\d{2}-\d{2}$")
+# domain the builders can emit -- build + predicate agree. The date segment is
+# the ISO YYYY-MM-DD shape.
+#
+# Course-correction (RD fail-loud idempotency, brief e4ae1459): the date segment
+# carries an OPTIONAL `#<seq>` (seq>=2) disambiguator so the `--force` escape
+# hatch can record a GENUINELY-DISTINCT second same-ticker/same-day OOF buy under
+# a DISTINCT, still-recognized ref. The `#<seq>` is appended to the DATE segment
+# (the 3rd colon-part), NOT a new colon-segment, so:
+#   - `_oof_ref_ticker`'s `split(":")[1]` STILL returns the ticker unchanged ->
+#     the matcher's declared-set gate still passes for a disambiguated ref (the
+#     CRITICAL correctness constraint: the `--force` row STILL self-reconciles);
+#   - a numeric Schwab transaction_id ([0-9]+) can STILL never match (no `oof:`
+#     prefix, no `#`) -> C2 holds in both directions;
+#   - the disambiguated ref is a DISTINCT string -> ux_cash_ref accepts it (no
+#     double-record).
+# `_build_oof_ref` only ever produces the bare (implicit seq-1) canonical ref;
+# `_oof_ref_with_seq` produces the `#<seq>` form for seq>=2. A non-canonical
+# `oof:`-prefixed manual ref (e.g. `oof:manual`, a non-ISO date, a bare `#`, or a
+# double `#` suffix) is (correctly) NOT recognized.
+_OOF_REF_RE = re.compile(r"^oof:[^:]+:\d{4}-\d{2}-\d{2}(?:#\d+)?$")
 
 
 def _build_oof_ref(ticker: str, date: str) -> str:
@@ -263,6 +276,47 @@ def _build_oof_ref(ticker: str, date: str) -> str:
     return f"{_OOF_REF_PREFIX}{norm}:{date}"
 
 
+def _oof_ref_with_seq(ticker: str, date: str, seq: int) -> str:
+    """Build the OOF sentinel ref for the ``seq``-th same-(ticker, date) OOF buy.
+
+    Course-correction (RD fail-loud idempotency, brief e4ae1459) -- the `--force`
+    escape hatch's disambiguator.
+
+    ``seq == 1`` is the canonical BARE ref (``oof:<TICKER>:<YYYY-MM-DD>``, the
+    natural first buy -- identical to ``_build_oof_ref``); ``seq >= 2`` appends a
+    deterministic ``#<seq>`` suffix to the DATE segment
+    (``oof:<TICKER>:<YYYY-MM-DD>#<seq>``). The suffix lives in the 3rd colon-part
+    (the date), NOT a new colon-segment, so the disambiguated ref STILL satisfies
+    ``_is_oof_sentinel_ref`` AND ``_oof_ref_ticker`` returns the same ticker --
+    so the matcher STILL skips it as self-sourced (the critical constraint).
+
+    REJECTS a colon-bearing ticker (delegated to ``_build_oof_ref``) and
+    ``seq < 1`` (a well-defined sequence starts at 1).
+    """
+    if seq < 1:
+        raise ValueError(f"OOF ref sequence must be >= 1; got {seq}")
+    base = _build_oof_ref(ticker, date)  # validates + upper-cases the ticker
+    if seq == 1:
+        return base
+    return f"{base}#{seq}"
+
+
+def _oof_ref_seq(ref: str | None) -> int | None:
+    """Return the 1-based sequence of a CANONICAL OOF ref, else None.
+
+    The bare canonical ref (``oof:<TICKER>:<YYYY-MM-DD>``) is sequence 1; a
+    ``...#<N>`` disambiguated ref is sequence ``N``. Used by the CLI `--force`
+    loop to find the next free disambiguator deterministically.
+    """
+    if not _is_oof_sentinel_ref(ref):
+        return None
+    # _is_oof_sentinel_ref guaranteed the canonical shape; the `#<seq>` (if any)
+    # is the only `#`-delimited tail.
+    if "#" in ref:
+        return int(ref.rsplit("#", 1)[1])
+    return 1
+
+
 def _is_oof_sentinel_ref(ref: str | None) -> bool:
     """True iff ``ref`` is a CANONICAL OOF-buy sentinel (``oof:<TICKER>:<DATE>``).
 
@@ -279,15 +333,19 @@ def _is_oof_sentinel_ref(ref: str | None) -> bool:
 def _oof_ref_ticker(ref: str | None) -> str | None:
     """Return the upper-cased TICKER segment of a CANONICAL OOF ref, else None.
 
-    The canonical ref is ``oof:<TICKER>:<YYYY-MM-DD>``; the ticker contains no
-    colon (the delimiter), so a canonical ref splits into exactly 3 parts. Used
-    by the matcher to gate the self-sourced skip on the ticker being CURRENTLY
-    declared out-of-framework (Codex R5 -- a legitimate OOF transfer-out is only
-    ever for a declared ticker).
+    The canonical ref is ``oof:<TICKER>:<YYYY-MM-DD>[#<seq>]``; the ticker
+    contains no colon (the delimiter) and the optional ``#<seq>`` disambiguator
+    lives in the DATE (3rd) segment, so a canonical ref splits on ``:`` into
+    exactly 3 parts and ``[1]`` is always the ticker (a `--force` disambiguated
+    ref extracts the SAME ticker -- the critical constraint). Used by the matcher
+    to gate the self-sourced skip on the ticker being CURRENTLY declared
+    out-of-framework (Codex R5 -- a legitimate OOF transfer-out is only ever for
+    a declared ticker).
     """
     if not _is_oof_sentinel_ref(ref):
         return None
-    # _is_oof_sentinel_ref guaranteed the canonical 3-part shape.
+    # _is_oof_sentinel_ref guaranteed the canonical 3-colon-part shape; the
+    # optional `#<seq>` rides the date segment, so [1] is still the ticker.
     return ref.split(":")[1].upper()
 
 
