@@ -166,3 +166,107 @@ general-visibility mechanism for the unconstrained-input class.
 No critical or major defects found in this round. Reviewed in context: `schwab_reconciliation.py` (two-pass matcher, OOF skip placement, ref collision behavior, cash counters, swing-NLV arithmetic), `cash.py` (`insert_cash`/`find_by_ref` transaction behavior), `cli.py` (`journal cash`, new `journal oof-buy`, config override read, validation ordering, sandbox gate, idempotency belt), `config_overrides.py` (override materialization), `tos_import.py` (reserved `oof:` neutralization). The matcher branch is additive for production writers: numeric Schwab refs cannot collide with `oof:`, the OOF skip is gated by `withdraw` plus canonical sentinel plus declared ticker, and the OOF row no longer emits `cash_movement_mismatch`. The measurement arithmetic also holds: the cash withdrawal affects ledger equity, while `declared_oof_mv` is summed from broker positions, so both sides exclude the OOF holding after the row is recorded.
 
 NO_NEW_CRITICAL_MAJOR
+
+---
+
+## Course-correction -- RD idempotency-fail-loud (brief e4ae1459)
+
+**What changed:** RD raised a MERGE-BLOCKING measurement concern on the SHIPPED
+idempotency: an existing row for the sentinel ref with the SAME cost was a SILENT
+"already recorded" no-op (exit 0). Because the sentinel key is ticker+date (NO
+amount), a legitimately-distinct second same-ticker/same-day OOF buy collided on
+the key and was SILENTLY DROPPED from the ledger (the #27 silent-ledger-loss class
+this arc exists to PREVENT). CHARC adopted RD's concern + amended brief §4. The
+correction (3 commits off the converged executing HEAD `2c7223d4`):
+- `b4c15480` -- widen `_OOF_REF_RE` for the `--force` disambiguator; add
+  `_oof_ref_with_seq` (constructor) + `_oof_ref_seq` (parser). The `#<seq>` rides
+  the DATE (3rd colon) segment so `_oof_ref_ticker`'s `split(":")[1]` is unchanged
+  -> the disambiguated row STILL self-reconciles (the critical constraint).
+- `d6c92323` -- the CLI now FAILS LOUD on ANY sentinel-ref collision without
+  `--force` (the same-cost silent no-op REMOVED); the `IntegrityError` belt also
+  fails loud; a new `--force` flag records a genuinely-distinct second same-key
+  buy under a distinct `oof:<TICKER>:<DATE>#<seq>` ref (next free seq,
+  deterministic).
+- `82eaa36b` -- the two review-strong R1 MINORs: tighten `_OOF_REF_RE` suffix to
+  `(?:#(?:[2-9]|[1-9]\d+))?` (EXACTLY seq>=2, no leading zero -- predicate aligns
+  with the builder contract); the `--force` belt RE-ALLOCATES + retries once on a
+  lost next-free-seq race rather than nagging "pass --force".
+
+**Tier:** `review-strong` (`-p review-strong`) WITH REPO ACCESS (`-s read-only`,
+worktree cwd; the matcher/step-7 loop are un-changed neighbors the correctness
+depends on) + `codex-auto-review` (repo-access, matched-HIGH effort). Run to
+`NO_NEW_CRITICAL_MAJOR` (cap suspended; never tiered down).
+
+**Outcome:** CONVERGED. review-strong R1 = NO_NEW_CRITICAL_MAJOR (zero crit/major;
+two MINORs, both adopted as cheap contract-tightening); R2 (on the MINOR-fixed
+state) = NO_NEW_CRITICAL_MAJOR with ZERO findings, the MINOR fixes explicitly
+confirmed. codex-auto-review raised exactly the same two issues (the `--force`
+race + the `#0`/`#1` regex looseness) when reviewing the pre-fix commits in
+isolation; both are resolved by `82eaa36b`, and the auto-review of that fix commit
+found no introduced bug -- the two independent reviewers CONVERGED on the same two
+findings, both fixed on the final HEAD.
+
+### Round 1 -- review-strong (repo-access)
+
+#### Codex response (verbatim)
+CRITICAL: none. MAJOR: none.
+MINOR:
+- swing/cli.py: concurrent `--force` runs can both choose the same next ref before
+  either inserts. The loser hits `ux_cash_ref` and fails loud (no silent ledger
+  drop), but the error says "pass --force" even though the operator already did.
+  Consider a force-specific retry/recompute path or force-specific collision text.
+- swing/trades/schwab_reconciliation.py: `_OOF_REF_RE` accepts `#0` and `#1`, while
+  the comments and constructor describe suffixed refs as `seq >= 2`. Current app
+  writers do not emit those values (not a major behavior break), but the
+  predicate/parser are looser than their canonical contract.
+
+The requested load-bearing claims hold: bare sentinel collisions now fail loud in
+the SELECT-first path and the IntegrityError belt; there is no remaining same-cost
+exit-0 no-op. The `#<seq>` suffix stays in the date segment, so
+`_oof_ref_ticker("oof:SPCX:2026-06-18#2")` still returns `SPCX`, pass 1 cannot
+numeric-ref-match it, and pass 2 still skips it when `kind == "withdraw"` and the
+ticker is declared OOF. Numeric transaction IDs, non-OOF refs, `oof:manual`,
+colon-bearing command tickers, non-withdraw rows, and undeclared tickers remain
+gated as before.
+
+NO_NEW_CRITICAL_MAJOR
+
+#### Adjudication (R1)
+Verdict NO_NEW_CRITICAL_MAJOR; the three load-bearing claims independently confirmed
+(repo-access). Both MINORs ADOPTED (cheap contract-tightening, not padding):
+MINOR-1 -> the `--force` belt re-allocates+retries once (`82eaa36b`); MINOR-2 ->
+the `#<seq>` predicate tightened to exactly seq>=2 (`82eaa36b`).
+
+### Round 2 -- review-strong (repo-access), on the MINOR-fixed state
+
+#### Codex response (verbatim)
+No CRITICAL/MAJOR findings. The load-bearing claims hold: the bare collision path
+fails loud (the old `already recorded ... no change` path is gone); the
+IntegrityError belt also fails loud for non-`--force`; `--force` allocates a
+distinct ref deterministically and retries once on a concurrent `--force` race; the
+`#<seq>` suffix rides the date segment so `_oof_ref_ticker` still returns segment
+`[1]` and `oof:SPCX:2026-06-18#2` self-reconciles under the step-7 declared-ticker
+gate; C2/C3 locks remain intact (pass 1 is exact string equality against numeric
+ids, and the OOF branch remains gated by canonical shape, `withdraw`, and currently
+declared ticker); removing the cost comparison is intentional (collision is now
+unconditional). MINOR: none.
+
+NO_NEW_CRITICAL_MAJOR
+
+#### Adjudication (R2)
+CONVERGED. Zero findings of any severity; the two R1 MINOR fixes explicitly
+validated.
+
+### codex-auto-review (repo-access, matched-HIGH effort)
+
+Run per-commit from the MAIN repo (the worktree `.git` is WSL-unresolvable;
+`codex exec review` needs git, which resolves the branch commits from the shared
+object store). `--commit d6c92323` (pre-MINOR-fix CLI) raised [P2] the `--force`
+race; `--commit b4c15480` (pre-MINOR-fix recon) raised [P2] the `#0`/`#1`/`#01`
+regex looseness -- EXACTLY the two review-strong R1 MINORs. `--commit 82eaa36b`
+(the fix commit, the final production-code state): "The force-retry handling and
+tightened OOF ref predicate appear consistent with the command's producer contract
+and affected reconciliation paths. I did not identify a discrete introduced bug."
+Both [P2]s are RESOLVED by `82eaa36b` (a final-state probe confirms `#0`/`#1`/`#01`
+all rejected; `_oof_ref_seq` returns None for them). The complementary second eye
+AGREES with review-strong on the converged final state.
