@@ -849,11 +849,12 @@ class ReconcileDiscrepancyErrorVM:
     ``disc_created_at``).
 
     The 3 ``disc_*`` Optional fields are populated on the
-    ``error_kind='already_resolved'`` branch and unused (left at default
-    ``None``) on the other 4 branches.
+    ``error_kind='already_resolved'`` and ``not_web_acknowledgeable``
+    branches and unused (left at default ``None``) on the other branches.
 
-    Error-kind semantics (5 branches shipped at T-2.5 + T-2.6 with T-2.10
-    polish layered on top):
+    Error-kind semantics (6 branches: the 5 shipped at T-2.5 + T-2.6 with
+    T-2.10 polish, plus ``not_web_acknowledgeable`` added by the Phase-18 web
+    simple-acknowledge coverage arc):
 
     - ``not_found``: ``GET /reconcile/discrepancy/{id}/resolve`` 404 — no
       row exists with the given ``discrepancy_id``. ``error_message`` is
@@ -865,6 +866,14 @@ class ReconcileDiscrepancyErrorVM:
       fields populate the audit-context block (``disc_resolution`` /
       ``disc_resolved_by`` / ``disc_created_at``); ``error_message`` is
       typically empty (template-derived).
+
+    - ``not_web_acknowledgeable``: GET/POST 409 — an UNRESOLVED discrepancy
+      whose type is NOT in the simple-acknowledge allowlist (and is not the
+      orphan, not pending-ambiguity). It was NEVER in
+      ``pending_ambiguity_resolution`` state, so the honest copy points the
+      operator at the CLI instead of the misleading ``already_resolved``
+      wording. ``error_message`` carries the CLI pointer; the template branch
+      renders the honest sentence.
 
     - ``anchor_mismatch``: POST 400 — the operator's submitted
       ``ambiguity_kind_at_render`` hidden anchor does not match the
