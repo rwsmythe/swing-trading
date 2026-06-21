@@ -247,10 +247,14 @@ _OOF_REF_PREFIX = "oof:"
 #   - the disambiguated ref is a DISTINCT string -> ux_cash_ref accepts it (no
 #     double-record).
 # `_build_oof_ref` only ever produces the bare (implicit seq-1) canonical ref;
-# `_oof_ref_with_seq` produces the `#<seq>` form for seq>=2. A non-canonical
-# `oof:`-prefixed manual ref (e.g. `oof:manual`, a non-ISO date, a bare `#`, or a
-# double `#` suffix) is (correctly) NOT recognized.
-_OOF_REF_RE = re.compile(r"^oof:[^:]+:\d{4}-\d{2}-\d{2}(?:#\d+)?$")
+# `_oof_ref_with_seq` produces the `#<seq>` form for seq>=2. The suffix sub-shape
+# is `#(?:[2-9]|[1-9]\d+)` -- EXACTLY an integer >= 2, no leading zero (Codex R1
+# course-correction MINOR-2): the predicate accepts EXACTLY the domain the
+# constructor emits (bare for seq 1; `#2`.. for seq>=2), so `#0`/`#1`/`#01` (which
+# no writer emits) are NOT (mis-)recognized -- predicate/parser align with the
+# contract. A non-canonical `oof:`-prefixed manual ref (e.g. `oof:manual`, a
+# non-ISO date, a bare `#`, or a double `#` suffix) is (correctly) NOT recognized.
+_OOF_REF_RE = re.compile(r"^oof:[^:]+:\d{4}-\d{2}-\d{2}(?:#(?:[2-9]|[1-9]\d+))?$")
 
 
 def _build_oof_ref(ticker: str, date: str) -> str:

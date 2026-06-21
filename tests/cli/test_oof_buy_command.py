@@ -322,6 +322,66 @@ def test_oof_buy_force_records_distinct_second_row(tmp_path: Path, monkeypatch):
         "oof:SPCX:2026-06-18", "oof:SPCX:2026-06-18#2", "oof:SPCX:2026-06-18#3"]
 
 
+def test_oof_buy_force_lost_race_reallocates_and_retries(tmp_path: Path, monkeypatch):
+    """Codex R1 course-correction MINOR-1: when a concurrent --force run wins the
+    next-free seq between _next_free_ref and the INSERT, the belt RE-ALLOCATES the
+    next free ref and retries ONCE -- it does NOT tell the operator to pass --force
+    (they already did). No silent drop; the second buy lands under the next ref.
+
+    Simulate the race: seed a canonical row (#1). The --force resolution picks #2,
+    but a find_by_ref patch makes the FIRST insert collide (as if #2 was taken in
+    the race) -- the belt re-allocates (#3, now that #2 'exists') and retries.
+    """
+    runner, cfg, db_path = _setup(
+        tmp_path, monkeypatch, overrides=_SPCX_OVERRIDES)
+    # Seed #1 (canonical) so the --force resolution's first free pick is #2.
+    r0 = runner.invoke(main, [
+        "--config", str(cfg), "journal", "oof-buy",
+        "--ticker", "SPCX", "--cost", "500", "--date", "2026-06-18",
+    ])
+    assert r0.exit_code == 0, r0.output
+
+    import swing.data.repos.cash as _cash_repo
+    _real_insert = _cash_repo.insert_cash
+    state = {"n": 0}
+
+    def _racing_insert(conn, m):
+        state["n"] += 1
+        if state["n"] == 1:
+            # Simulate a CONCURRENT --force winner taking #2: commit #2 on a
+            # SEPARATE connection (so it survives this transaction's rollback),
+            # then raise IntegrityError so the command's first _insert(#2) sees the
+            # collision -- exactly the lost-race the belt must re-allocate past.
+            import sqlite3 as _sql
+            other = _sql.connect(db_path)
+            try:
+                with other:
+                    other.execute(
+                        "INSERT INTO cash_movements (date, kind, amount, ref, note)"
+                        " VALUES (?,?,?,?,?)",
+                        (m.date, "withdraw", 1.0, "oof:SPCX:2026-06-18#2",
+                         "concurrent winner"),
+                    )
+            finally:
+                other.close()
+            raise _sql.IntegrityError("simulated race on #2")
+        return _real_insert(conn, m)
+
+    monkeypatch.setattr(_cash_repo, "insert_cash", _racing_insert)
+    r = runner.invoke(main, [
+        "--config", str(cfg), "journal", "oof-buy",
+        "--ticker", "SPCX", "--cost", "250", "--date", "2026-06-18", "--force",
+    ])
+    assert r.exit_code == 0, r.output         # re-allocated + retried, not errored
+    assert "Re-run" not in r.output           # not the flag-nag / race-storm error
+    refs = sorted(r[4] for r in _cash_rows(db_path))
+    # #1 (seed), #2 (the simulated concurrent winner), #3 (our re-allocated retry).
+    assert refs == [
+        "oof:SPCX:2026-06-18", "oof:SPCX:2026-06-18#2", "oof:SPCX:2026-06-18#3"]
+    forced = [r for r in _cash_rows(db_path) if r[4] == "oof:SPCX:2026-06-18#3"][0]
+    assert forced[3] == 250.0
+
+
 def test_oof_buy_force_first_buy_uses_canonical_ref(tmp_path: Path, monkeypatch):
     """--force on a FIRST-ever buy (no existing row for the key) writes the
     canonical BARE ref (the natural seq-1) -- --force is well-defined and

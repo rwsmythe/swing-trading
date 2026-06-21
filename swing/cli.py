@@ -1947,22 +1947,42 @@ def journal_oof_buy_cmd(ctx, ticker, cost, date_str, force):
             return
 
         # 6. The domain write (production only).
-        try:
+        def _insert(target_ref: str) -> int:
             with conn:
-                cid = insert_cash(conn, CashMovement(
+                return insert_cash(conn, CashMovement(
                     id=None, date=date_str, kind="withdraw", amount=cost,
-                    ref=ref, note=note,
+                    ref=target_ref, note=note,
                 ))
+
+        try:
+            cid = _insert(ref)
         except sqlite3.IntegrityError:
-            # Belt for a TOCTOU race past the SELECT (ux_cash_ref): RE-FETCH the
-            # row that won the race and FAIL LOUD with the same actionable
-            # collision error (amended brief §4 item 3) -- consistent with the
-            # SELECT-first path; NEVER a silent no-op. If the row is somehow gone,
-            # re-raise (not our unique-ref case).
-            raced = find_by_ref(conn, ref)
-            if raced is None:
-                raise
-            raise _collision_error(raced, attempted_ref=ref) from None
+            # Belt for a TOCTOU race past the resolution step (ux_cash_ref).
+            # Branch by --force (Codex R1 course-correction MINOR-1):
+            #   - --force: the next-free seq was taken between _next_free_ref and
+            #     the insert (a concurrent --force run won). The operator ALREADY
+            #     asked for a distinct second buy, so RE-ALLOCATE the next free ref
+            #     and retry ONCE -- telling them to "pass --force" (which they did)
+            #     would be wrong. A second collision -> fail loud (race storm).
+            #   - no --force: RE-FETCH + FAIL LOUD with the same actionable
+            #     collision error (amended brief §4 item 3) -- consistent with the
+            #     SELECT-first path; NEVER a silent no-op.
+            # If the row is somehow gone (not our unique-ref case), re-raise.
+            if force:
+                ref = _next_free_ref(conn)
+                try:
+                    cid = _insert(ref)
+                except sqlite3.IntegrityError:
+                    raise click.ClickException(
+                        f"could not allocate a distinct OOF ref for {ticker} on "
+                        f"{date_str} (concurrent --force writes); nothing was "
+                        f"recorded. Re-run `swing journal oof-buy ... --force`."
+                    ) from None
+            else:
+                raced = find_by_ref(conn, ref)
+                if raced is None:
+                    raise
+                raise _collision_error(raced, attempted_ref=ref) from None
     finally:
         conn.close()
     click.echo(
