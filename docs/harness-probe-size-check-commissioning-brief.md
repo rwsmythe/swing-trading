@@ -3,7 +3,7 @@
 **Commissioned by:** CHARC (Tool Development Director)
 **Date:** 2026-06-21
 **Arc:** register **D18**, the CHARC-lane FORM half only. The ~1.5 GB research-content *disposition* (delete/retain) is routed SEPARATELY to RD (the content decision; operator-concurred 2026-06-21).
-**Status:** COMMISSIONED — no §3 tripwire (self-certified). Awaiting dispatch.
+**Status:** COMMISSIONED `b5747d21` — **RE-SCOPED 2026-06-21 (operator) to DEFERRED-TO-CLOSE.** The D18 disposition has since reclaimed the ~1.56 GB, so this check is now PURELY a forward-looking guard against future research regrowth (the two dirs now sit at ~1.9M / ~2.9M — quiet at baseline, well under the ceilings). Fold into the Phase-18-close housekeeping; NOT a live competing arc. No §3 tripwire (self-certified).
 **Tripwires crossed:** **NONE.** Amends CHARC's own `scripts/harness_probe.py` (read-only, stdlib-only ASCII probe) + its test. No new schema/module/dependency/standing-process/carve-out. **CHARC-lane FORM** — no RD gate, no operator §5.10 witness (no measurement or user-visible change).
 
 ---
@@ -21,7 +21,7 @@ Add a size check to `scripts/harness_probe.py` that reports the total size of `e
 ## §2 — Design contract
 
 - Compute the total byte size of `exports/research/` and of `research/harness/` via **stdlib `os.walk`/`os.scandir` summing `st_size`** — NO `du` subprocess (cross-platform / Windows-safe). Report each ALWAYS as a human-readable INFO line (MB/GB).
-- **Fire ATTENTION** when either exceeds its v1 ceiling. **v1 calibration (amend with a dated note per §4.2):** `exports/research/` **> 500 MB**; `research/harness/` **> 200 MB**. Both fire at CURRENT levels — **intended**: the probe keeps flagging the live bloat until RD's disposition lands, then goes quiet. (CHARC re-calibrates to RD's retained level after the disposition.)
+- **Fire ATTENTION** when either exceeds its v1 ceiling. **v1 calibration (amend with a dated note per §4.2):** `exports/research/` **> 500 MB**; `research/harness/` **> 200 MB**. (SUPERSEDED 2026-06-21: the disposition has since reclaimed the bloat, so the two dirs now sit at ~1.9M / ~2.9M — well under these ceilings, i.e. QUIET at baseline. The check is therefore a FORWARD-LOOKING guard that fires only on genuine future regrowth; these ceilings stand as the forward thresholds.)
 - **ASCII output only** (the probe contract; the cp1252 gotcha). Keep it FAST: a bounded walk over **those two dirs only** — never the whole repo / `reference/` / `.git` / `.worktrees`.
 - **Never raise:** guard a missing dir (treat as 0 / skip). The probe must stay defensive.
 - Follow the probe's existing check-emission pattern (the `[OK]`/`[INFO]`/ATTENTION lines + the exit-1-on-attention contract).
