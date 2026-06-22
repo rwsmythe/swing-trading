@@ -533,15 +533,30 @@ def test_pipeline_is_a_valid_sender(comms):
 
 
 def test_pipeline_decision_request_to_rd_still_rejects(comms, capsys):
-    # The L1 lock is sender-agnostic: a decision_request from pipeline to rd
-    # STILL rejects. Assert on the L1 error text (NOT the sender gate) so the
-    # test distinguishes the L1 behavior from the pre-fix sender rejection.
+    # A decision_request from pipeline to rd STILL rejects. After the
+    # codex-auto-review fix the automated-emitter type allowlist (status-only)
+    # rejects it BEFORE the L1 gate -- an even stronger guarantee than L1 alone
+    # (pipeline can never post a decision_request, to ANY recipient). The point
+    # the original Task-1 test made -- it is NOT the pre-fix sender gate -- still
+    # holds (the error is not "invalid --from").
     rc = _post(comms, **{"from": "pipeline", "to": "rd",
                          "type": "decision_request", "subject": "x", "body": "y"})
     assert rc == 1
     err = capsys.readouterr().err
-    assert "L1" in err
+    assert "automated emitter" in err
     assert "invalid --from" not in err
+    assert list(Path(comms).rglob("*.md")) == []
+
+
+def test_l1_lock_unchanged_for_human_sender(comms, capsys):
+    # The L1 sender-agnostic lock is UNCHANGED: a human/agent sender's
+    # decision_request to a non-operator recipient still hits the L1 gate (the
+    # allowlist is scoped to automated emitters and does not touch human senders).
+    rc = _post(comms, **{"from": "orchestrator", "to": "rd",
+                         "type": "decision_request", "subject": "x", "body": "y"})
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "L1" in err
     assert list(Path(comms).rglob("*.md")) == []
 
 
@@ -555,3 +570,37 @@ def test_pipeline_to_invalid_recipient_rejects(comms, capsys):
     err = capsys.readouterr().err
     assert "invalid recipient" in err
     assert list(Path(comms).rglob("*.md")) == []
+
+
+def test_pipeline_decision_request_to_operator_rejected(comms, capsys):
+    # codex-auto-review MAJOR: an automated emitter is transport-automation, NOT
+    # authority. The L1 gate alone would ALLOW pipeline->operator decision_request
+    # (operator is the allowed recipient). The automated-emitter type allowlist
+    # rejects it: pipeline may post `status` only. Pre-fix (no allowlist) this
+    # would SUCCEED (rc 0); post-fix it rejects (rc 1) before delivery.
+    rc = _post(comms, **{"from": "pipeline", "to": "operator",
+                         "type": "decision_request", "subject": "x", "body": "y"})
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "automated emitter" in err
+    assert list(Path(comms).rglob("*.md")) == []
+
+
+def test_pipeline_non_status_type_to_rd_rejected(comms, capsys):
+    # The allowlist also blocks pipeline posting fyi/query/return_report -- only
+    # `status` is permitted for the automated emitter.
+    rc = _post(comms, **{"from": "pipeline", "to": "rd", "type": "fyi",
+                         "subject": "x", "body": "y"})
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "automated emitter" in err
+    assert list(Path(comms).rglob("*.md")) == []
+
+
+def test_human_role_keeps_full_type_set(comms):
+    # The allowlist is scoped to automated emitters ONLY: a human/agent role
+    # (charc) keeps the full VALID_TYPES (e.g. it can still post fyi).
+    rc = _post(comms, **{"from": "charc", "to": "rd", "type": "fyi",
+                         "subject": "s", "body": "x"})
+    assert rc == 0
+    assert len(_inbox(comms, "rd")) == 1

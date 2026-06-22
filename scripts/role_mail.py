@@ -42,6 +42,15 @@ VALID_FROM = ("charc", "rd", "operator", "orchestrator", "pipeline")
 # Valid recipients are only the three inbox-holding roles.
 VALID_TO = ("charc", "rd", "operator")
 VALID_TYPES = ("fyi", "status", "query", "return_report", "decision_request")
+# AUTOMATED-EMITTER senders (non-human/agent) are constrained to a NARROW type
+# allowlist -- transport-automation, NEVER authority (an automated emitter must
+# not be able to post a decision_request, even to operator). `pipeline` (the
+# nightly research-health RED notify, 18-H.7) posts `status` only. A human/agent
+# role (charc/rd/operator/orchestrator) is NOT listed here and keeps the full
+# VALID_TYPES. This is a TIGHTENING of the pipeline sender, not a loosening of L1.
+_AUTOMATED_EMITTER_TYPES = {
+    "pipeline": ("status",),
+}
 
 _SLUG_MAX = 40
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -250,6 +259,17 @@ def post_message(
         raise MailError(
             "invalid --type " + repr(mtype)
             + "; valid types: " + "|".join(VALID_TYPES)
+        )
+    # Automated-emitter type allowlist: a non-human/agent sender (e.g. pipeline)
+    # is constrained to its narrow type set so it can never post a
+    # decision_request (authority) -- transport-automation only. Checked BEFORE
+    # delivery so nothing is written on a rejection.
+    allowed_types = _AUTOMATED_EMITTER_TYPES.get(sender)
+    if allowed_types is not None and mtype not in allowed_types:
+        raise MailError(
+            "automated emitter " + repr(sender) + " may post only "
+            + "|".join(allowed_types) + " (transport-automation, not authority);"
+            + " got " + repr(mtype) + ". Nothing was written."
         )
     # Reject CR/LF in line-oriented frontmatter fields (frontmatter injection).
     for label, value in (("subject", subject), ("thread", thread)):
