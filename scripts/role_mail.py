@@ -38,7 +38,7 @@ from pathlib import Path
 
 # Valid senders include orchestrator (which has no inbox in V1 -- directors
 # hand-carry dispatch-direction traffic by design).
-VALID_FROM = ("charc", "rd", "operator", "orchestrator")
+VALID_FROM = ("charc", "rd", "operator", "orchestrator", "pipeline")
 # Valid recipients are only the three inbox-holding roles.
 VALID_TO = ("charc", "rd", "operator")
 VALID_TYPES = ("fyi", "status", "query", "return_report", "decision_request")

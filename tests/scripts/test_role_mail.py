@@ -517,3 +517,41 @@ def test_ack_message_archive_not_overwritten_on_collision(comms, monkeypatch):
     assert len(archived) == 2
     bodies = "".join(p.read_text(encoding="utf-8") for p in archived)
     assert "AAA" in bodies and "BBB" in bodies
+
+
+# --- 18-H.7: the 'pipeline' automated-emitter sender -----------------------
+
+def test_pipeline_is_a_valid_sender(comms):
+    # 18-H.7 Task 1: the nightly pipeline posts a `status` to rd. Pipeline is an
+    # automated-emitter sender (distinct from the human/agent roles).
+    rc = _post(comms, **{"from": "pipeline", "to": "rd", "type": "status",
+                         "subject": "research-health RED", "body": "overall=red"})
+    assert rc == 0
+    files = _inbox(comms, "rd")
+    assert len(files) == 1
+    assert "from: pipeline" in files[0].read_text(encoding="utf-8")
+
+
+def test_pipeline_decision_request_to_rd_still_rejects(comms, capsys):
+    # The L1 lock is sender-agnostic: a decision_request from pipeline to rd
+    # STILL rejects. Assert on the L1 error text (NOT the sender gate) so the
+    # test distinguishes the L1 behavior from the pre-fix sender rejection.
+    rc = _post(comms, **{"from": "pipeline", "to": "rd",
+                         "type": "decision_request", "subject": "x", "body": "y"})
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "L1" in err
+    assert "invalid --from" not in err
+    assert list(Path(comms).rglob("*.md")) == []
+
+
+def test_pipeline_to_invalid_recipient_rejects(comms, capsys):
+    # Widening VALID_FROM did NOT widen VALID_TO: a `--to` outside the allowed
+    # set still rejects at the recipient gate (post-fix the sender passes, so the
+    # recipient-gate text distinguishes the behavior).
+    rc = _post(comms, **{"from": "pipeline", "to": "santa", "type": "status",
+                         "subject": "x", "body": "y"})
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "invalid recipient" in err
+    assert list(Path(comms).rglob("*.md")) == []
