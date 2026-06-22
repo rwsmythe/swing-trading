@@ -25,7 +25,9 @@ Do NOT consistency-fix it back to naive-local.
 from __future__ import annotations
 
 import contextlib
+import importlib.util
 import json
+import logging
 import math
 import os
 import re
@@ -48,6 +50,8 @@ from swing.monitoring.stoplights import (  # noqa: F401
 # worst_of is the canonical red>yellow>green helper (single source); import it
 # rather than redeclaring a second source of truth (plan Task 1, Codex watch).
 from swing.monitoring.tool_health import worst_of  # noqa: F401
+
+log = logging.getLogger(__name__)
 
 _STATUS_VALUES = frozenset({"green", "yellow", "red"})
 _ZERO_OFFSET = timedelta(0)
@@ -258,6 +262,119 @@ def write_research_health_artifact(
             os.unlink(tmp)
         raise
     return out_path
+
+
+# --------------------------------------------------------------------------
+# 18-H.7: the edge-triggered research-health RED -> role_mail push to RD.
+# Additive functions (NO new module): the edge detection + message composition +
+# the path-resilient role_mail post all live here. The nightly _step_research_
+# health reads the PRIOR latest.json's overall (via the SHARED accessor) BEFORE
+# the new write, then calls push_research_health_red_to_rd(current, prior); the
+# push fires only on the green/yellow->red (or absent->red) edge. Best-effort:
+# any failure is swallowed + logged, never raised (the writer must still run).
+# --------------------------------------------------------------------------
+
+# The GUI research-stoplight pointer + the latest.json pointer surfaced in the
+# push body (ASCII; the live web nav path to the research drill-down, grounded
+# against swing/web/routes/health.py's GET /health/research). Module constants so
+# the message text has a single source.
+_RESEARCH_STOPLIGHT_URL = "/health/research"
+_LATEST_JSON_POINTER = "exports/research/health/latest.json"
+
+
+def _default_comms_root() -> Path:
+    """The repo comms/ root (the role_mail mailbox). A MODULE FUNCTION (not an
+    inline expression) so tests can monkeypatch it to a tmp dir -- the seam the
+    runner-wiring end-to-end test drives the REAL helper through without touching
+    the live comms/ tree. <repo> = parents[2] (this module is swing/monitoring/...;
+    matches stoplights.py:28's parents[2])."""
+    return Path(__file__).resolve().parents[2] / "comms"
+
+
+def _read_prior_overall(out_path: Path | None = None) -> str | None:
+    """Read the PRIOR latest.json's `overall` BEFORE it is overwritten.
+
+    `out_path=None` resolves via stoplights.research_health_artifact_path() (the
+    SAME accessor write_research_health_artifact uses, so a test monkeypatch is
+    honored). Returns the prior `overall` string, or None when the artifact is
+    ABSENT or UNPARSEABLE or carries no/non-str `overall` (or is not a dict) ->
+    the caller treats None as non-red, so an absent/corrupt->red is a valid
+    first-ever edge. NEVER raises (best-effort; a read failure must not break the
+    step)."""
+    if out_path is None:
+        from swing.monitoring.stoplights import research_health_artifact_path
+        out_path = research_health_artifact_path()
+    try:
+        env = json.loads(Path(out_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(env, dict):
+        return None
+    overall = env.get("overall")
+    return overall if isinstance(overall, str) else None
+
+
+def _compose_red_push(status: ResearchHealthStatus, run_id: int | None) -> tuple[str, str]:
+    """Build the (subject, body) for the RED push. ASCII-only (the cp1252
+    gotcha): no em-dash, no section glyph, no arrows. The per-check `detail` line
+    is LOAD-BEARING (RD's regression-vs-accepted discriminator) -- always emitted,
+    substituting `(none)` when a red check's detail is None."""
+    red_checks = [c for c in status.checks if c.status == "red"]
+    red_keys = [c.key for c in red_checks]
+    subject = "research-health RED: " + (", ".join(red_keys) if red_keys else "(unnamed)")
+    lines = ["overall=red", "", "RED checks:"]
+    for c in red_checks:
+        lines.append(f"- {c.key}: {c.summary}")
+        lines.append(f"  detail: {c.detail if c.detail is not None else '(none)'}")
+    lines += [
+        "",
+        f"run id: {run_id if run_id is not None else 'unknown'}",
+        f"artifact: {_LATEST_JSON_POINTER}",
+        f"GUI: {_RESEARCH_STOPLIGHT_URL}",
+    ]
+    return subject, "\n".join(lines)
+
+
+def push_research_health_red_to_rd(
+    status: ResearchHealthStatus,
+    *,
+    run_id: int | None,
+    prior_overall: str | None,
+    comms_root: Path | None = None,
+) -> bool:
+    """Edge-triggered RED notify to RD. Returns True iff a message was posted.
+
+    Edge = `status.overall == "red"` AND `prior_overall != "red"` (covers
+    green/yellow->red AND the absent/corrupt(None)->red first-ever-RED case). On a
+    non-edge -> return False, post nothing. On the edge -> compose + post ONE
+    `status` message --from pipeline --to rd, return True.
+
+    `comms_root=None` -> `_default_comms_root()` (the repo comms/); tests pass a
+    tmp dir, OR monkeypatch `_default_comms_root` (the runner-wiring end-to-end
+    test), so they never touch the live comms.
+
+    BEST-EFFORT: any exception (import failure, MailError, IO) is swallowed +
+    logged; returns False. The function owns its own try/except so a push failure
+    never reaches the writer call that follows it in _step_research_health
+    (write-latest.json must still happen)."""
+    if status.overall != "red" or prior_overall == "red":
+        return False
+    try:
+        root = comms_root if comms_root is not None else _default_comms_root()
+        # Path-resilient role_mail import (scripts/ is not on swing's import path;
+        # the comms-hook precedent). Lazy + inside the try so a missing/edited
+        # scripts tree degrades to a logged no-post, never an import-time crash.
+        rm_path = Path(__file__).resolve().parents[2] / "scripts" / "role_mail.py"
+        spec = importlib.util.spec_from_file_location("role_mail", rm_path)
+        role_mail = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(role_mail)
+        subject, body = _compose_red_push(status, run_id)
+        role_mail.post_message(root, "pipeline", ["rd"], "status", subject, body)
+    except Exception as exc:
+        log.warning("research-health RD push failed: %s", exc)
+        return False
+    log.info("research-health RED edge: posted status to rd (run id %s)", run_id)
+    return True
 
 
 # --------------------------------------------------------------------------
