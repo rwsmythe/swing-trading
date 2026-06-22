@@ -1058,7 +1058,7 @@ def run_pipeline_internal(*, cfg: Config, trigger: str) -> RunResult:
                 # LeaseRevokedError propagates, all else swallowed+logged, the run
                 # is never failed. Writes ONLY latest.json, NEVER the DB.
                 with step_guard(lease, "research_health", logger=log):
-                    _step_research_health(cfg=cfg)
+                    _step_research_health(cfg=cfg, run_id=lease.run_id)
 
                 lease.step("complete")
                 try:
@@ -1320,7 +1320,7 @@ def _step_shadow_expectancy(*, cfg, run_warnings: list[dict]) -> None:
     _prune_shadow_expectancy_artifacts(output_root)
 
 
-def _step_research_health(*, cfg) -> None:
+def _step_research_health(*, cfg, run_id: int | None = None) -> None:
     """Best-effort nightly research-data-collection-health roll-up (18-D §6.7).
 
     Runs the SAME read-only ``compute_research_health`` the script runs, then
@@ -1343,10 +1343,11 @@ def _step_research_health(*, cfg) -> None:
     the O1 resolution): ``LeaseRevokedError`` propagates, all other exceptions are
     swallowed + logged; the step NEVER fails the run.
     """
-    from swing.monitoring.research_health import (
-        compute_research_health,
-        write_research_health_artifact,
-    )
+    from swing.monitoring import research_health as _rh
+    # 18-H.7: read the PRIOR latest.json overall BEFORE compute/write (the
+    # green/yellow->red edge baseline; _read_prior_overall never raises). Resolve
+    # via the module so a test monkeypatch of the function is honored.
+    prior_overall = _rh._read_prior_overall()
     ro_uri = cfg.paths.db_path.as_uri() + "?mode=ro"  # C-NH2 (mirror the script)
     conn = sqlite3.connect(ro_uri, uri=True, timeout=2.0)
     try:
@@ -1356,11 +1357,21 @@ def _step_research_health(*, cfg) -> None:
         # configured exports_dir. In the shipped prod config this equals the
         # contract default (RESEARCH_HEALTH_ARTIFACT_PATH.parent.parent); passing
         # it explicitly de-couples correctness from that coincidence (Codex R1).
-        status = compute_research_health(
+        status = _rh.compute_research_health(
             conn, cfg=cfg, exports_root=cfg.paths.exports_dir / "research")
     finally:
         conn.close()
-    write_research_health_artifact(status)  # C-NH4 default = the contract latest.json
+    # 18-H.7: best-effort edge-triggered RED push to RD. The helper owns its own
+    # try/except (returns False on its own failure); the step ALSO wraps the call
+    # defensively (defense-in-depth) so even a helper bug cannot skip the write.
+    try:
+        _rh.push_research_health_red_to_rd(
+            status, run_id=run_id, prior_overall=prior_overall)
+    except Exception as exc:  # belt: the helper already swallows; this is defense
+        log.warning("research-health RD push raised unexpectedly: %s", exc)
+    # C-NH4 default = the contract latest.json. ALWAYS runs (independent of the
+    # push) -- the prior overall was already captured above.
+    _rh.write_research_health_artifact(status)
 
 
 def _prewarm_evaluate_archives(

@@ -259,8 +259,153 @@ def test_runner_invokes_step_via_step_guard_between_shadow_and_complete() -> Non
     # complete. Assert against the runner SOURCE.
     src = Path(runner.__file__).read_text(encoding="utf-8")
     assert 'step_guard(lease, "research_health", logger=log)' in src
-    assert '_step_research_health(cfg=cfg)' in src
+    assert '_step_research_health(cfg=cfg, run_id=lease.run_id)' in src
     shadow_i = src.index('_step_shadow_expectancy(cfg=cfg')
-    research_i = src.index('_step_research_health(cfg=cfg)')
+    research_i = src.index('_step_research_health(cfg=cfg, run_id=lease.run_id)')
     complete_i = src.index('lease.step("complete")')
     assert shadow_i < research_i < complete_i
+
+
+# --- 18-H.7: the RED-edge push wiring --------------------------------------
+
+_POST_BASELINE_DATE = "2026-09-15"  # well after the 2026-06-13 finiteness cutoff
+_NAN_OHLC = ('{"open": 1.0, "high": 2.0, "low": 0.5, "close": NaN, '
+             '"volume": 100.0, "provider": "yfinance"}')
+
+
+def _seed_red_db(db_path: Path) -> None:
+    # A genuine post-baseline non-finite OHLC observation -> finiteness RED ->
+    # overall red. Planted via a RAW insert (the 18-B.1 write-barrier rejects
+    # non-finite through insert_observation; this tests DETECTION of bad data).
+    conn = ensure_schema(db_path)
+    det = insert_detection_event(conn, PatternDetectionEvent(
+        detection_id=None, ticker="ZZZ", detection_date=_POST_BASELINE_DATE,
+        data_asof_date=_POST_BASELINE_DATE, pattern_class="vcp",
+        structural_anchors_json="{}", composite_score=1.0, detector_version="t",
+        source="synthetic", per_pattern_metadata_json="{}",
+        created_at="2026-09-15T00:00:00"))
+    conn.execute(
+        "INSERT INTO pattern_forward_observations "
+        "(detection_id, observation_date, ohlc_today_json, status, "
+        "sessions_since_detection, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (det, _POST_BASELINE_DATE, _NAN_OHLC, "invalidated", 1,
+         "2026-09-15T00:00:00"))
+    conn.commit()
+    conn.close()
+
+
+def _prior_envelope(overall: str) -> str:
+    from datetime import UTC, datetime
+    return json.dumps({
+        "monitor": "research_measurement",
+        "overall": overall,
+        "checks": [{"key": "k", "status": overall, "summary": "s",
+                    "detail": None}],
+        "generated_ts": datetime.now(UTC).isoformat(timespec="seconds"),
+    })
+
+
+def test_step_still_writes_latest_json_when_push_raises(
+    tmp_path, monkeypatch,
+) -> None:
+    # Task 3 double-guard: even when the push RAISES, the step's defensive
+    # try/except catches it and write_research_health_artifact STILL runs ->
+    # latest.json refreshes to the NEW red envelope.
+    db = tmp_path / "swing.db"
+    _seed_red_db(db)
+    artifact = _patch_artifact(tmp_path, monkeypatch)
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text(_prior_envelope("green"), encoding="utf-8")
+
+    def _boom(*a, **k):
+        raise RuntimeError("push boom")
+
+    monkeypatch.setattr(
+        "swing.monitoring.research_health.push_research_health_red_to_rd", _boom)
+
+    runner._step_research_health(cfg=_Cfg(db, tmp_path / "exports"), run_id=104)
+
+    env = json.loads(artifact.read_text(encoding="utf-8"))
+    assert env["overall"] == "red"  # the NEW envelope was written despite the raise
+
+
+def test_step_runtime_ordering_read_prior_then_push_then_write(
+    tmp_path, monkeypatch,
+) -> None:
+    # The PRIMARY behavioral ordering proof (NOT a source-string check): the prior
+    # is read FIRST (and is the previous night's GREEN, not the just-computed red),
+    # the push is called NEXT with that prior + the threaded run_id, write runs LAST.
+    db = tmp_path / "swing.db"
+    _seed_red_db(db)
+    artifact = _patch_artifact(tmp_path, monkeypatch)
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text(_prior_envelope("green"), encoding="utf-8")
+
+    import swing.monitoring.research_health as rh
+
+    calls: list[tuple] = []
+    real_read_prior = rh._read_prior_overall
+
+    def _spy_read_prior(*a, **k):
+        val = real_read_prior(*a, **k)
+        calls.append(("read_prior", val))
+        return val
+
+    def _spy_push(status, *, run_id, prior_overall, comms_root=None):
+        calls.append(("push", prior_overall, run_id))
+        return False
+
+    def _spy_write(status, out_path=None):
+        calls.append(("write",))
+        return artifact
+
+    monkeypatch.setattr(rh, "_read_prior_overall", _spy_read_prior)
+    monkeypatch.setattr(rh, "push_research_health_red_to_rd", _spy_push)
+    monkeypatch.setattr(rh, "write_research_health_artifact", _spy_write)
+
+    runner._step_research_health(cfg=_Cfg(db, tmp_path / "exports"), run_id=104)
+
+    assert calls == [("read_prior", "green"), ("push", "green", 104), ("write",)]
+
+
+def test_step_edge_posts_to_rd_end_to_end(tmp_path, monkeypatch) -> None:
+    # Drives the REAL helper (no push monkeypatch): a prior GREEN + a RED db ->
+    # the edge fires through push_research_health_red_to_rd, posting one status to
+    # the TMP comms tree (via the monkeypatched _default_comms_root seam).
+    db = tmp_path / "swing.db"
+    _seed_red_db(db)
+    artifact = _patch_artifact(tmp_path, monkeypatch)
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text(_prior_envelope("green"), encoding="utf-8")
+    comms = tmp_path / "comms"
+    monkeypatch.setattr(
+        "swing.monitoring.research_health._default_comms_root", lambda: comms)
+
+    runner._step_research_health(cfg=_Cfg(db, tmp_path / "exports"), run_id=104)
+
+    inbox = sorted((comms / "rd" / "inbox").glob("*.md"))
+    assert len(inbox) == 1
+    text = inbox[0].read_text(encoding="utf-8")
+    assert "from: pipeline" in text
+    assert "to: rd" in text
+    assert "type: status" in text
+    assert "temporal_log_finiteness" in text
+    assert "104" in text
+
+
+def test_step_no_edge_when_prior_already_red(tmp_path, monkeypatch) -> None:
+    # prior RED + RED db -> no edge -> no post (but the write still refreshes
+    # latest.json, asserted by the still-writes test).
+    db = tmp_path / "swing.db"
+    _seed_red_db(db)
+    artifact = _patch_artifact(tmp_path, monkeypatch)
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text(_prior_envelope("red"), encoding="utf-8")
+    comms = tmp_path / "comms"
+    monkeypatch.setattr(
+        "swing.monitoring.research_health._default_comms_root", lambda: comms)
+
+    runner._step_research_health(cfg=_Cfg(db, tmp_path / "exports"), run_id=104)
+
+    assert not list((comms / "rd" / "inbox").glob("*.md")) if (
+        comms / "rd" / "inbox").is_dir() else True
