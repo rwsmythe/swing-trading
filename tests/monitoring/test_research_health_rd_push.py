@@ -124,6 +124,25 @@ def test_detail_none_renders_placeholder_not_crash(tmp_path):
     assert "(none)" in text
 
 
+def test_non_ascii_detail_is_sanitized(tmp_path):
+    # Codex R1 MINOR: a non-ASCII detail (a ticker / future value is not
+    # ASCII-constrained at the schema) must not reach the mail body verbatim --
+    # _compose_red_push backslash-escapes it (the cp1252 discipline). Assert the
+    # raw non-ASCII glyph is absent and the message is pure ASCII.
+    comms = tmp_path / "comms"
+    status = ResearchHealthStatus(overall="red", checks=[ResearchHealthCheck(
+        key="temporal_log_finiteness", status="red",
+        summary="non-finite", detail="café — → oops")])
+    posted = push_research_health_red_to_rd(
+        status, run_id=1, prior_overall="green", comms_root=comms)
+    assert posted is True
+    raw = _rd_inbox(comms)[0].read_bytes()
+    assert b"\xc3\xa9" not in raw  # the UTF-8 'e-acute' must not appear
+    body_text = raw.decode("utf-8")
+    # the message content (sans the always-present headers) is ASCII
+    assert body_text.encode("ascii", "strict")  # would raise if non-ASCII
+
+
 def test_subject_names_red_and_check_keys(tmp_path):
     comms = tmp_path / "comms"
     push_research_health_red_to_rd(
@@ -192,6 +211,17 @@ def test_read_prior_overall_explicit_out_path(tmp_path):
     artifact = tmp_path / "latest.json"
     artifact.write_text('{"overall": "yellow"}', encoding="utf-8")
     assert _read_prior_overall(artifact) == "yellow"
+
+
+def test_read_prior_overall_deeply_nested_returns_none(tmp_path):
+    # Codex R1 MAJOR: a deeply-nested JSON makes json.loads raise RecursionError
+    # (a RuntimeError, NOT OSError/ValueError) -> must degrade to None, never
+    # escape (it runs before the writer in _step_research_health). Pre-fix the
+    # (OSError, ValueError)-only except let RecursionError propagate -> this would
+    # raise rather than return None.
+    artifact = tmp_path / "latest.json"
+    artifact.write_text("[" * 5000 + "]" * 5000, encoding="utf-8")
+    assert _read_prior_overall(artifact) is None
 
 
 # --- test-safe -------------------------------------------------------------

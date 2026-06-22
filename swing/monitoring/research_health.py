@@ -300,25 +300,38 @@ def _read_prior_overall(out_path: Path | None = None) -> str | None:
     ABSENT or UNPARSEABLE or carries no/non-str `overall` (or is not a dict) ->
     the caller treats None as non-red, so an absent/corrupt->red is a valid
     first-ever edge. NEVER raises (best-effort; a read failure must not break the
-    step)."""
-    if out_path is None:
-        from swing.monitoring.stoplights import research_health_artifact_path
-        out_path = research_health_artifact_path()
+    step). The whole body is guarded (Codex R1 MAJOR): a deeply-nested malformed
+    latest.json can make json.loads raise RecursionError -- a RuntimeError, NOT an
+    OSError/ValueError -- which would escape BEFORE _step_research_health writes
+    the new artifact, skipping the writer. Catch broadly -> degrade to None."""
     try:
+        if out_path is None:
+            from swing.monitoring.stoplights import research_health_artifact_path
+            out_path = research_health_artifact_path()
         env = json.loads(Path(out_path).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        if not isinstance(env, dict):
+            return None
+        overall = env.get("overall")
+        return overall if isinstance(overall, str) else None
+    except Exception:
         return None
-    if not isinstance(env, dict):
-        return None
-    overall = env.get("overall")
-    return overall if isinstance(overall, str) else None
+
+
+def _ascii(text: str) -> str:
+    """Backslash-escape any non-ASCII so the composed mail stays ASCII-only (the
+    cp1252 gotcha). Codex R1 MINOR: a red check's `key`/`summary`/`detail` is only
+    type-constrained to str -- a DB-backed value (e.g. a ticker) is NOT
+    ASCII-constrained at the schema, so a future/non-canonical value could put a
+    non-ASCII glyph into the subject/body. Sanitize the COMPOSED strings."""
+    return text.encode("ascii", "backslashreplace").decode("ascii")
 
 
 def _compose_red_push(status: ResearchHealthStatus, run_id: int | None) -> tuple[str, str]:
     """Build the (subject, body) for the RED push. ASCII-only (the cp1252
-    gotcha): no em-dash, no section glyph, no arrows. The per-check `detail` line
-    is LOAD-BEARING (RD's regression-vs-accepted discriminator) -- always emitted,
-    substituting `(none)` when a red check's detail is None."""
+    gotcha): no em-dash, no section glyph, no arrows; interpolated check fields
+    are backslash-escaped via _ascii. The per-check `detail` line is LOAD-BEARING
+    (RD's regression-vs-accepted discriminator) -- always emitted, substituting
+    `(none)` when a red check's detail is None."""
     red_checks = [c for c in status.checks if c.status == "red"]
     red_keys = [c.key for c in red_checks]
     subject = "research-health RED: " + (", ".join(red_keys) if red_keys else "(unnamed)")
@@ -332,7 +345,7 @@ def _compose_red_push(status: ResearchHealthStatus, run_id: int | None) -> tuple
         f"artifact: {_LATEST_JSON_POINTER}",
         f"GUI: {_RESEARCH_STOPLIGHT_URL}",
     ]
-    return subject, "\n".join(lines)
+    return _ascii(subject), _ascii("\n".join(lines))
 
 
 def push_research_health_red_to_rd(
