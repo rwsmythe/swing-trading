@@ -6,6 +6,20 @@
 
 ---
 
+## Status (G4 scaffold-revision — the status source for shipped items)
+
+**SHIPPED 2026-06-22 (CHARC-direct, all gate-green [168 tests] in harness-template `master`)** — the doc/charter/config items:
+- **B-1 / B-2 / B-4** (README: concrete CHARC launch, `.\scripts\` form, fresh git history) — `2a10019`
+- **B-5 / B-6 / B-15** (charter + role-model: unprefaced dissent, QA-at-every-boundary, route-through-CHARC + dispatch-prose) — `950f084`
+- **B-10 / B-2-bootstrap / B-4-bootstrap / B-7a** (registry explicit-addressing convention; bootstrap `.\scripts\`/git-history-note/complete-config-rec) — `e2c1356`
+- **B-3 / B-7b-c** (launcher per-role seam-4: CHARC FIXED opus/max, orchestrator a no-baked-value placeholder; preflight verifies --model/--effort) — `7f3f7c0` (AST-parse + DryRun verified)
+
+**STILL OPEN — the CODE arcs (need commissioning/dispatch, NOT this doc pass):** **B-9** (genericity-guard REDESIGN — the keystone; carries the operator stdlib-instance-aware refinement; supersedes **B-8**), **B-12** (peer-director-add code: single-source `SINGULAR_INBOX_ROLES` + instance-surface registration; the §8 wording rode B-15's spirit), **B-16** (role-identity-lost-on-resume), **B-11 + B-13** (comms-UI re-sync — ride **G6**), **B-14** (Stop-hook template-banking — swing-live already at `e8686e0e`; rides **G6**). The cross-repo dispatch mechanics for `harness-template` (no orchestrator) = an OPEN decision.
+
+*(The table below is the design-detail reference; for the items above, THIS ledger is the status of record.)*
+
+---
+
 | # | Item | Detail / fix | Where (in the scaffold) | Status |
 |---|---|---|---|---|
 | **B-1** | README CHARC-launch is abstract while the orchestrator command is concrete | The instantiate section spells out a copy-pasteable `launch_role.ps1 -Role orchestrator` (step 5) but states the FIRST step ("launch CHARC", step 3) abstractly with no concrete command → a human grabs the concrete command and launches the orchestrator **prematurely** (into an undefined app — no `APPLICATION.md`, no cells, no review-gate, no commissioned arc). **Fix:** put the concrete copy-paste command on the step you do FIRST (CHARC launch); de-emphasize the orchestrator command to step 5 where it belongs. | `README.md` (§How to instantiate) | OPEN |
