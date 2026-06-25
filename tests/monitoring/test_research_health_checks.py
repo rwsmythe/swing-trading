@@ -1105,6 +1105,387 @@ def test_coverage_calib_c_whole_missed_run_flips_red_to_green(tmp_path: Path) ->
     assert check.status == "green"
 
 
+def _seed_all_sessions_runs(conn: sqlite3.Connection, sessions, prefix: str) -> None:
+    for j, asd in enumerate(sessions):
+        _seed_pipeline_run(conn, data_asof_date=asd, lease_token=f"{prefix}-{j}")
+
+
+def test_coverage_calib_c_trailing_lag_two_still_red(tmp_path: Path) -> None:
+    # STILL-RED (plan Task 2a, ISOLATED, exact count): a trailing lag >= 2 (the
+    # drumbeat fell behind) must NOT be missed-run-accepted -- the run RAN, the
+    # detection simply stopped being observed. 4 detections observed 06-05,06-08
+    # then stopping (status triggered_open) -> trailing tail 06-09,06-10,06-11,
+    # 06-12 = 4 each. Completed runs for ALL sessions 06-05..06-12 (so none is a
+    # whole-session miss).
+    #
+    # Pre-fix: 4 x 4 trailing missing = 16 -> RED.
+    # Post-fix: each trailing session has NO later observation -> clause-1 fails
+    #          -> C accepts nothing -> residual == missing -> A graces only a
+    #          lone-newest (a 4-tail is not lone) -> counted == 4 each ->
+    #          total_missing == 16 -> still RED.
+    conn = _schema_conn(tmp_path)
+    all_sessions = ("2026-06-05", "2026-06-08", "2026-06-09", "2026-06-10",
+                    "2026-06-11", "2026-06-12")
+    _seed_all_sessions_runs(conn, all_sessions, "tok-c2a")
+    for i in range(4):
+        det = _seed_detection(conn, ticker=f"L{i:03d}", data_asof_date="2026-06-04")
+        for d in ("2026-06-05", "2026-06-08"):
+            _seed_observation(conn, det, observation_date=d, status="triggered_open")
+    check = _only(_check_coverage_gaps(conn, now=_NOW), "coverage_gaps")
+    assert check.status == "red"
+    # exact-count negative control: an over-broad accept would drop below 16.
+    assert "16 observation-coverage gap(s)" in check.summary
+
+
+def test_coverage_calib_c_never_observed_still_red(tmp_path: Path) -> None:
+    # STILL-RED (plan Task 2b, ISOLATED): a recent never-observed mature
+    # detection must stay RED. data_asof_date 2026-05-01, ZERO observations.
+    # Completed runs for the expected sessions (so they are not whole-session
+    # misses). Expected window 05-04..06-12 has > 10 sessions all missing.
+    #
+    # Pre-fix: never-observed -> all expected (> 10) missing -> RED.
+    # Post-fix: empty observed -> C clause-1 vacuously false for every S ->
+    #          accepted empty -> residual == missing -> A graces only a lone
+    #          newest (not lone here) -> counted == len(expected) > 10 -> RED.
+    conn = _schema_conn(tmp_path)
+    det = _seed_detection(conn, ticker="NVR", data_asof_date="2026-05-01")
+    # Seed completed runs for the expected sessions so none is a whole-session
+    # miss. Compute the expected NYSE session count from the module helper.
+    from swing.evaluation.dates import _NYSE
+    expected_sessions = [ts.date().isoformat()
+                         for ts in _NYSE.sessions_in_range("2026-05-04", "2026-06-12")]
+    _seed_all_sessions_runs(conn, expected_sessions, "tok-c2b")
+    check = _only(_check_coverage_gaps(conn, now=_NOW), "coverage_gaps")
+    assert check.status == "red"
+    # exact-count: all expected sessions missing (never-observed not accepted).
+    assert f"{len(expected_sessions)} observation-coverage gap(s)" in check.summary
+    assert det  # silence unused
+
+
+def test_coverage_calib_c_dino_skip_warning_accepted(tmp_path: Path) -> None:
+    # DINO no-bar (plan Task 3): a per-detection interior hole at a session that
+    # DID run (06-10 in run_observed_sessions, a sibling OTH observed it) but
+    # carries a recorded pattern_observe skip-warning for (DINO, 06-10) -> 2b
+    # accepted. DINO observed 06-05,06-08,06-09 MISSING 06-10 then 06-11,06-12.
+    #
+    # Pre-fix: DINO 1 interior missing (06-10) -> total_missing 1 -> YELLOW.
+    # Post-fix: 06-10 in run_observed_sessions (NOT 2a) BUT (DINO,06-10) in
+    #          skip_index AND clause-1 -> 2b accepted -> total_missing 0 -> GREEN.
+    conn = _schema_conn(tmp_path)
+    dino = _seed_detection(conn, ticker="DINO", data_asof_date="2026-06-04")
+    for d in _C_OBSERVED:  # 06-05,06-08,06-09,06-11,06-12 (interior hole at 06-10)
+        _seed_observation(conn, dino, observation_date=d, status="pending")
+    # sibling OTH observed contiguously incl. 06-10 (so 06-10 has observations
+    # globally -> NOT a whole-session miss) -- and on every session so OTH itself
+    # contributes 0 gaps.
+    oth = _seed_detection(conn, ticker="OTH", data_asof_date="2026-06-04")
+    for d in ("2026-06-05", "2026-06-08", "2026-06-09", "2026-06-10",
+              "2026-06-11", "2026-06-12"):
+        _seed_observation(conn, oth, observation_date=d, status="pending")
+    # Completed runs for ALL sessions incl. 06-10 (the run RAN). The 06-10 run
+    # carries the DINO skip-warning (observation_date == data_asof_date == 06-10).
+    for j, asd in enumerate(("2026-06-05", "2026-06-08", "2026-06-09",
+                             "2026-06-11", "2026-06-12")):
+        _seed_pipeline_run(conn, data_asof_date=asd, lease_token=f"tok-c3-{j}")
+    _seed_pipeline_run(
+        conn, data_asof_date="2026-06-10", lease_token="tok-c3-skip",
+        warnings=[{"step": "pattern_observe", "ticker": "DINO",
+                   "observation_date": "2026-06-10",
+                   "reason": "no bar for observation_date"}])
+    check = _only(_check_coverage_gaps(conn, now=_NOW), "coverage_gaps")
+    assert check.status == "green"
+    # the accepted DINO gap is named in the detail (#27 audit).
+    assert f"det{dino}" in (check.detail or "")
+    assert "accepted" in (check.detail or "")
+
+
+def test_coverage_calib_c_unexplained_interior_hole_still_red(tmp_path: Path) -> None:
+    # (b)-DISTINGUISHER (plan Task 4): an UNEXPLAINED interior hole (the run RAN,
+    # the bar existed, the row was dropped with NO skip-warning) -> STILL RED.
+    # 15 tickers each observed 06-05,06-08,06-09 MISSING 06-10 then 06-11,06-12,
+    # a sibling OTH observed 06-10, a completed run for 06-10 (run RAN), but the
+    # run names NO skip-warning for the 15 tickers (a real observe-step bug).
+    #
+    # Pre-fix: 15 unexplained interior holes -> total_missing 15 -> RED.
+    # Post-fix: 06-10 in run_observed_sessions (NOT 2a); no skip-warning (NOT 2b)
+    #          -> NOT accepted -> total_missing 15 -> still RED.
+    # An (a)-style accept-all-interior impl would flip these GREEN -> FAILS.
+    conn = _schema_conn(tmp_path)
+    for i in range(15):
+        det = _seed_detection(conn, ticker=f"U{i:03d}", data_asof_date="2026-06-04")
+        for d in _C_OBSERVED:
+            _seed_observation(conn, det, observation_date=d, status="pending")
+    oth = _seed_detection(conn, ticker="OTH", data_asof_date="2026-06-04")
+    for d in ("2026-06-05", "2026-06-08", "2026-06-09", "2026-06-10",
+              "2026-06-11", "2026-06-12"):
+        _seed_observation(conn, oth, observation_date=d, status="pending")
+    # Completed runs for ALL sessions incl. 06-10 (the run RAN) -- NO skip-warning.
+    _seed_all_sessions_runs(
+        conn, ("2026-06-05", "2026-06-08", "2026-06-09", "2026-06-10",
+               "2026-06-11", "2026-06-12"), "tok-c4")
+    check = _only(_check_coverage_gaps(conn, now=_NOW), "coverage_gaps")
+    assert check.status == "red"
+    assert "15 observation-coverage gap(s)" in check.summary
+
+
+def test_coverage_calib_c_zero_obs_observe_failure_still_red(tmp_path: Path) -> None:
+    # FALSE-GREEN GUARD (plan Task 4b, MAJOR-R1-4): a zero-observation observe
+    # FAILURE (a completed run NAMED 06-10 but wrote zero observation rows) ->
+    # STILL RED. 15 detections missing 06-10, NO sibling observed 06-10 (so 06-10
+    # not in global_observed_sessions, zero obs exist), WHILE a completed run HAS
+    # data_asof_date 06-10. NO skip-warning.
+    #
+    # Pre-fix: each detection 1 missing interior 06-10 -> total_missing 15 -> RED.
+    # Post-fix: is_whole_session_miss requires 06-10 NOT in run_observed_sessions,
+    #          but 06-10 IS in it (the run named it) -> 2a FALSE; no skip -> 2b
+    #          FALSE -> NOT accepted -> still RED. (A weaker observation-only
+    #          predicate would FALSE-GREEN here.)
+    conn = _schema_conn(tmp_path)
+    for i in range(15):
+        det = _seed_detection(conn, ticker=f"Z{i:03d}", data_asof_date="2026-06-04")
+        for d in _C_OBSERVED:  # NO observation for 06-10, no sibling either
+            _seed_observation(conn, det, observation_date=d, status="pending")
+    # Completed runs for ALL sessions INCLUDING 06-10 (the run ran but wrote 0 rows).
+    _seed_all_sessions_runs(
+        conn, ("2026-06-05", "2026-06-08", "2026-06-09", "2026-06-10",
+               "2026-06-11", "2026-06-12"), "tok-c4b")
+    check = _only(_check_coverage_gaps(conn, now=_NOW), "coverage_gaps")
+    assert check.status == "red"
+    assert "15 observation-coverage gap(s)" in check.summary
+
+
+def test_coverage_calib_c_hole_at_observed_session_no_run_row_still_red(
+    tmp_path: Path,
+) -> None:
+    # FALSE-GREEN GUARD (plan Task 4c, MAJOR-R2-1): a hole at a session another
+    # detection WAS observed (06-10 in global_observed_sessions via sibling OTH)
+    # but lacking a completed run-ledger row -> STILL RED. This is the quadrant
+    # that forces the BOTH-signals AND: a run-ledger-ALONE impl would FALSE-GREEN.
+    # Seed completed runs for the OTHER sessions (so _run_observed_sessions is a
+    # NON-empty set, not None) -- omit ONLY 06-10 (MINOR-R3).
+    #
+    # Pre-fix: > 10 unexplained interior holes -> RED.
+    # Post-fix: is_whole_session_miss requires BOTH 06-10 NOT in
+    #          global_observed_sessions (FALSE -- OTH observed it) AND 06-10 NOT
+    #          in run_observed_sessions -> 2a FALSE (global half fails); no skip
+    #          -> 2b FALSE -> NOT accepted -> still RED.
+    conn = _schema_conn(tmp_path)
+    for i in range(15):
+        det = _seed_detection(conn, ticker=f"Q{i:03d}", data_asof_date="2026-06-04")
+        for d in _C_OBSERVED:
+            _seed_observation(conn, det, observation_date=d, status="pending")
+    oth = _seed_detection(conn, ticker="OTH", data_asof_date="2026-06-04")
+    for d in ("2026-06-05", "2026-06-08", "2026-06-09", "2026-06-10",
+              "2026-06-11", "2026-06-12"):
+        _seed_observation(conn, oth, observation_date=d, status="pending")
+    # Completed runs for the OTHER observed sessions -- OMIT 06-10 so the ledger
+    # is non-empty (not None) but lacks 06-10.
+    _seed_all_sessions_runs(
+        conn, ("2026-06-05", "2026-06-08", "2026-06-09",
+               "2026-06-11", "2026-06-12"), "tok-c4c")
+    check = _only(_check_coverage_gaps(conn, now=_NOW), "coverage_gaps")
+    assert check.status == "red"
+    assert "15 observation-coverage gap(s)" in check.summary
+
+
+def test_coverage_calib_c_accepted_gaps_surface_in_detail(tmp_path: Path) -> None:
+    # DETAIL auditability (plan Task 5, #27): the Task 1 whole-missed-run fixture
+    # -> GREEN AND the accepted count appears in the summary AND the detail names
+    # a sample of accepted gaps. Accepted gaps are NEVER silently dropped.
+    conn = _schema_conn(tmp_path)
+    det_ids = []
+    for i in range(15):
+        det = _seed_detection(conn, ticker=f"T{i:03d}", data_asof_date="2026-06-04")
+        det_ids.append(det)
+        for d in _C_OBSERVED:
+            _seed_observation(conn, det, observation_date=d, status="pending")
+    for j, asd in enumerate(_C_OBSERVED):
+        _seed_pipeline_run(conn, data_asof_date=asd, lease_token=f"tok-c5-{j}")
+    check = _only(_check_coverage_gaps(conn, now=_NOW), "coverage_gaps")
+    assert check.status == "green"
+    assert "15 accepted historical" in check.summary
+    # the detail names a sample of the accepted gaps (order-stable, detection-id
+    # iteration order); the first seeded detection appears in the capped sample.
+    assert "accepted:" in (check.detail or "")
+    assert f"det{det_ids[0]}" in (check.detail or "")
+
+
+def test_coverage_calib_c_malformed_branch_carries_accepted_note(tmp_path: Path) -> None:
+    # Auditability in the MALFORMED branch (plan Task 5b, MINOR-R1-5): the Task 1
+    # accepted-missed-run fixture PLUS one detection with a malformed
+    # data_asof_date. The early `if malformed:` return path STILL includes the
+    # accepted-historical note (the accepted count is not silently hidden when
+    # malformed rows coexist) AND its severity is worst_of([gap_status, yellow]).
+    conn = _schema_conn(tmp_path)
+    for i in range(15):
+        det = _seed_detection(conn, ticker=f"T{i:03d}", data_asof_date="2026-06-04")
+        for d in _C_OBSERVED:
+            _seed_observation(conn, det, observation_date=d, status="pending")
+    for j, asd in enumerate(_C_OBSERVED):
+        _seed_pipeline_run(conn, data_asof_date=asd, lease_token=f"tok-c5b-{j}")
+    # a malformed-data_asof_date detection (raw insert, mirroring the existing
+    # malformed-date test): forces the `if malformed:` early-return path.
+    conn.execute(
+        "INSERT INTO pattern_detection_events"
+        " (ticker, detection_date, data_asof_date, pattern_class,"
+        " structural_anchors_json, composite_score, detector_version, source,"
+        " per_pattern_metadata_json, created_at)"
+        " VALUES ('BAD','2026-06-05','not-a-date','vcp','{}',1.0,'t','synthetic',"
+        " '{}','2026-06-05T00:00:00')")
+    conn.commit()
+    check = _only(_check_coverage_gaps(conn, now=_NOW), "coverage_gaps")
+    # total_missing 0 (all 15 accepted) + 1 malformed -> worst_of(green, yellow).
+    assert check.status == "yellow"
+    assert "malformed-date detection(s)" in check.summary
+    assert "15 accepted historical" in check.summary
+
+
+def test_coverage_calib_c_dropped_pipeline_runs_conservative_red(tmp_path: Path) -> None:
+    # DEGRADATION (plan Task 6, MINOR-R3): the Task-4b ZERO-GLOBAL-observation
+    # shape (> 10 detections missing 06-10, NO sibling observed 06-10) with the
+    # pipeline_runs table DROPPED. This exercises the _run_observed_sessions None
+    # conservative-degrade: a BAD None->empty-set degrade would make 2a's
+    # run-ledger half (06-10 not in {}) TRUE and -- combined with the now-true
+    # global-observations half -- ACCEPT every hole -> FALSE-GREEN. The correct
+    # None sentinel keeps 2a FALSE -> still RED.
+    conn = _schema_conn(tmp_path)
+    for i in range(15):
+        det = _seed_detection(conn, ticker=f"D{i:03d}", data_asof_date="2026-06-04")
+        for d in _C_OBSERVED:  # NO observation for 06-10, no sibling -> zero global
+            _seed_observation(conn, det, observation_date=d, status="pending")
+    conn.execute("DROP TABLE pipeline_runs")
+    conn.commit()
+    check = _only(_check_coverage_gaps(conn, now=_NOW), "coverage_gaps")
+    assert check.status == "red"
+    assert "15 observation-coverage gap(s)" in check.summary
+
+
+def test_coverage_calib_c_partition_none_ledger_blocks_2a() -> None:
+    # Direct unit (plan Task 6): the None sentinel blocks clause 2a even with
+    # zero global observations.
+    from swing.monitoring.research_health import _calibration_c_partition
+    accepted, residual = _calibration_c_partition(
+        missing_set={"2026-06-10"}, observed={"2026-06-11"}, ticker="X",
+        global_observed_sessions=set(), run_observed_sessions=None,
+        skip_index=set())
+    assert accepted == set()
+    assert residual == {"2026-06-10"}
+
+
+def test_coverage_calib_c_null_warnings_json_skipped(tmp_path: Path) -> None:
+    # Degradation variant (plan Task 6): a present pipeline_runs with a NULL /
+    # non-JSON / non-list warnings_json row is skipped gracefully (no crash).
+    conn = _schema_conn(tmp_path)
+    det = _seed_detection(conn, ticker="AAA", data_asof_date="2026-06-04")
+    for d in ("2026-06-05", "2026-06-08", "2026-06-09", "2026-06-10",
+              "2026-06-11", "2026-06-12"):
+        _seed_observation(conn, det, observation_date=d, status="pending")
+    _seed_pipeline_run(conn, data_asof_date="2026-06-05", lease_token="tok-c6-null")
+    # NULL warnings_json (warnings=None), non-JSON, and non-list rows:
+    conn.execute(
+        "INSERT INTO pipeline_runs (started_ts, trigger, data_asof_date,"
+        " action_session_date, state, lease_token, warnings_json)"
+        " VALUES ('2026-06-12T20:00:00','manual','2026-06-08','2026-06-08',"
+        " 'complete','tok-c6-bad','{not json')")
+    conn.execute(
+        "INSERT INTO pipeline_runs (started_ts, trigger, data_asof_date,"
+        " action_session_date, state, lease_token, warnings_json)"
+        " VALUES ('2026-06-12T20:00:00','manual','2026-06-09','2026-06-09',"
+        " 'complete','tok-c6-obj','{\"step\":\"x\"}')")
+    conn.commit()
+    # no crash, fully observed detection -> green.
+    check = _only(_check_coverage_gaps(conn, now=_NOW), "coverage_gaps")
+    assert check.status == "green"
+
+
+# ---------------------------------------------------------------------------
+# CALIBRATION C helper unit tests (plan Task 7)
+# ---------------------------------------------------------------------------
+
+
+def test_observe_skip_index_filters_complete_and_date_match(tmp_path: Path) -> None:
+    from swing.monitoring.research_health import _observe_skip_index
+    conn = _schema_conn(tmp_path)
+    # (i) a COMPLETE run with a date-matched pattern_observe no-bar warning -> IN.
+    _seed_pipeline_run(
+        conn, data_asof_date="2026-06-10", lease_token="tok-u1",
+        warnings=[{"step": "pattern_observe", "ticker": "DINO",
+                   "observation_date": "2026-06-10",
+                   "reason": "no bar for observation_date"}])
+    # (ii) a NON-complete (failed) run with an otherwise-valid warning -> EXCLUDED.
+    _seed_pipeline_run(
+        conn, data_asof_date="2026-06-11", state="failed", lease_token="tok-u2",
+        warnings=[{"step": "pattern_observe", "ticker": "FAIL",
+                   "observation_date": "2026-06-11",
+                   "reason": "no bar for observation_date"}])
+    # (iii) a date-MISMATCHED warning (observation_date != data_asof_date) -> EXCLUDED.
+    _seed_pipeline_run(
+        conn, data_asof_date="2026-06-12", lease_token="tok-u3",
+        warnings=[{"step": "pattern_observe", "ticker": "MISMATCH",
+                   "observation_date": "2026-06-05",
+                   "reason": "no bar for observation_date"}])
+    # (iv) other step / other reason -> EXCLUDED.
+    _seed_pipeline_run(
+        conn, data_asof_date="2026-06-09", lease_token="tok-u4",
+        warnings=[{"step": "other_step", "ticker": "X",
+                   "observation_date": "2026-06-09", "reason": "no bar for observation_date"},
+                  {"step": "pattern_observe", "ticker": "Y",
+                   "observation_date": "2026-06-09", "reason": "some other reason"}])
+    idx = _observe_skip_index(conn)
+    assert idx == {("DINO", "2026-06-10")}
+
+
+def test_observe_skip_index_accepts_non_finite_reason(tmp_path: Path) -> None:
+    from swing.monitoring.research_health import _observe_skip_index
+    conn = _schema_conn(tmp_path)
+    _seed_pipeline_run(
+        conn, data_asof_date="2026-06-10", lease_token="tok-nf",
+        warnings=[{"step": "pattern_observe", "ticker": "NFO",
+                   "observation_date": "2026-06-10", "reason": "non_finite_ohlc"}])
+    assert _observe_skip_index(conn) == {("NFO", "2026-06-10")}
+
+
+def test_observe_skip_index_missing_table_empty_set(tmp_path: Path) -> None:
+    from swing.monitoring.research_health import _observe_skip_index
+    conn = _schema_conn(tmp_path)
+    conn.execute("DROP TABLE pipeline_runs")
+    conn.commit()
+    assert _observe_skip_index(conn) == set()
+
+
+def test_run_observed_sessions_complete_only(tmp_path: Path) -> None:
+    from swing.monitoring.research_health import _run_observed_sessions
+    conn = _schema_conn(tmp_path)
+    _seed_pipeline_run(conn, data_asof_date="2026-06-10", lease_token="tok-r1")
+    _seed_pipeline_run(conn, data_asof_date="2026-06-11", lease_token="tok-r2")
+    # a non-complete run's data_asof_date is EXCLUDED.
+    _seed_pipeline_run(conn, data_asof_date="2026-06-12", state="failed",
+                       lease_token="tok-r3")
+    assert _run_observed_sessions(conn) == {"2026-06-10", "2026-06-11"}
+
+
+def test_run_observed_sessions_none_on_missing_table_and_empty(tmp_path: Path) -> None:
+    from swing.monitoring.research_health import _run_observed_sessions
+    conn = _schema_conn(tmp_path)
+    # zero completed runs -> None (conservative-degrade), NOT empty set.
+    assert _run_observed_sessions(conn) is None
+    # missing table -> None.
+    conn.execute("DROP TABLE pipeline_runs")
+    conn.commit()
+    assert _run_observed_sessions(conn) is None
+
+
+def test_global_observed_sessions_distinct(tmp_path: Path) -> None:
+    from swing.monitoring.research_health import _global_observed_sessions
+    conn = _schema_conn(tmp_path)
+    det = _seed_detection(conn, ticker="AAA", data_asof_date="2026-06-04")
+    _seed_observation(conn, det, observation_date="2026-06-05", status="pending")
+    _seed_observation(conn, det, observation_date="2026-06-08", status="pending")
+    det2 = _seed_detection(conn, ticker="BBB", data_asof_date="2026-06-04")
+    _seed_observation(conn, det2, observation_date="2026-06-05", status="pending")
+    assert _global_observed_sessions(conn) == {"2026-06-05", "2026-06-08"}
+
+
 # ---------------------------------------------------------------------------
 # Task 4b: _check_structural_integrity (orphans + look-ahead)
 # ---------------------------------------------------------------------------
