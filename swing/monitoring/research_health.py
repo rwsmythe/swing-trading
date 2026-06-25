@@ -1284,7 +1284,8 @@ def _check_coverage_gaps(
                     accepted_historical += len(accepted)
                     if len(accepted_sample) < 3:
                         accepted_sample.append(
-                            f"det{det_id}: {len(accepted)} accepted")
+                            f"det{det_id}: {len(accepted)} accepted"
+                            f" ({', '.join(sorted(accepted)[:3])})")
                 missing = _graced_missing_count(residual, expected)
                 if missing:
                     total_missing += missing
@@ -1327,7 +1328,8 @@ def _check_coverage_gaps(
                 accepted_historical += len(accepted)
                 if len(accepted_sample) < 3:
                     accepted_sample.append(
-                        f"det{det_id}: {len(accepted)} accepted")
+                        f"det{det_id}: {len(accepted)} accepted"
+                        f" ({', '.join(sorted(accepted)[:3])})")
             missing = _graced_missing_count(residual, expected)
         except _OutOfCalendarError:
             malformed += 1

@@ -1305,9 +1305,11 @@ def test_coverage_calib_c_accepted_gaps_surface_in_detail(tmp_path: Path) -> Non
     assert check.status == "green"
     assert "15 accepted historical" in check.summary
     # the detail names a sample of the accepted gaps (order-stable, detection-id
-    # iteration order); the first seeded detection appears in the capped sample.
+    # iteration order); the first seeded detection appears in the capped sample
+    # WITH the concrete accepted session date (Codex R3 MINOR: count + sample).
     assert "accepted:" in (check.detail or "")
     assert f"det{det_ids[0]}" in (check.detail or "")
+    assert "2026-06-10" in (check.detail or "")  # the accepted session date
 
 
 def test_coverage_calib_c_malformed_branch_carries_accepted_note(tmp_path: Path) -> None:
