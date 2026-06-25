@@ -916,6 +916,21 @@ _TERMINAL_STATUSES = (
 _OBSERVE_SKIP_REASONS = ("no bar for observation_date", "non_finite_ohlc")
 
 
+def _canonical_session(value: object) -> str | None:
+    """Return the canonical YYYY-MM-DD isoformat for a session date string, or
+    None if it is not an ISO-parseable date (Codex R1 MAJOR). date.fromisoformat
+    accepts non-canonical forms (compact 20260611 / week 2026-W24-4); the
+    CALIBRATION C session sets MUST all be canonical so membership/comparison
+    against the canonical `expected` sessions is apples-to-apples and a degraded
+    row cannot masquerade as a later observation / missed-run signal."""
+    if not isinstance(value, str):
+        return None
+    try:
+        return date.fromisoformat(value).isoformat()
+    except ValueError:
+        return None
+
+
 def _observe_skip_index(conn: sqlite3.Connection) -> set[tuple[str, str]]:
     """Return the set of (ticker, observation_date) pairs explained by a
     recorded `pattern_observe` skip-warning in a COMPLETED pipeline run
@@ -962,13 +977,22 @@ def _observe_skip_index(conn: sqlite3.Connection) -> set[tuple[str, str]]:
             obs_date = item.get("observation_date")
             if not isinstance(ticker, str) or not isinstance(obs_date, str):
                 continue
+            # Canonicalize both dates before comparing/indexing (Codex R1 MAJOR):
+            # date.fromisoformat accepts non-canonical forms; comparing raw
+            # strings could both mis-tie the warning AND index a key that never
+            # matches the canonical (ticker, session) lookup. A non-parseable
+            # date on either side -> skip the entry (no explanation, conservative).
+            obs_c = _canonical_session(obs_date)
+            asof_c = _canonical_session(asof)
+            if obs_c is None or asof_c is None:
+                continue
             # Tie the warning to the session the run actually observed: the
             # observe step writes observation_date == data_asof_date, so a
             # date-mismatched warning attached to the wrong run must not explain
             # a hole at an arbitrary session (MAJOR-R2-2).
-            if obs_date != asof:
+            if obs_c != asof_c:
                 continue
-            index.add((ticker, obs_date))
+            index.add((ticker, obs_c))
     return index
 
 
@@ -984,7 +1008,18 @@ def _global_observed_sessions(conn: sqlite3.Connection) -> set[str]:
     rows = conn.execute(
         "SELECT DISTINCT observation_date FROM pattern_forward_observations"
     ).fetchall()
-    return {r[0] for r in rows if isinstance(r[0], str)}
+    # Canonicalize (Codex R1 MAJOR): a non-canonical/unparseable observation_date
+    # is dropped from the global set. Dropping it is the conservative direction
+    # for clause 2a's FIRST half -- a session that ONLY had a degraded-date
+    # observation is treated as globally-unobserved, but acceptance still
+    # requires the run-ledger half (which a true missed run also fails), so a
+    # degraded row never independently drives a false-green accept.
+    sessions: set[str] = set()
+    for (raw,) in rows:
+        canon = _canonical_session(raw)
+        if canon is not None:
+            sessions.add(canon)
+    return sessions
 
 
 def _run_observed_sessions(conn: sqlite3.Connection) -> set[str] | None:
@@ -1012,7 +1047,16 @@ def _run_observed_sessions(conn: sqlite3.Connection) -> set[str] | None:
         if _schema_unavailable(exc):
             return None
         raise
-    sessions = {r[0] for r in rows if isinstance(r[0], str)}
+    # Canonicalize the ledger (Codex R1 MAJOR). If ANY completed-run
+    # data_asof_date is non-canonical/unparseable, the ledger is untrustworthy
+    # for the missed-run test -> return None (disable clause 2a entirely, the
+    # conservative-degrade: an unprovable ledger never accepts a missed run).
+    sessions: set[str] = set()
+    for (raw,) in rows:
+        canon = _canonical_session(raw)
+        if canon is None:
+            return None
+        sessions.add(canon)
     return sessions or None
 
 
@@ -1179,11 +1223,18 @@ def _check_coverage_gaps(
         row_malformed = 0
         for d, _s in obs:
             try:
-                _date.fromisoformat(d)
+                parsed = _date.fromisoformat(d)
             except (TypeError, ValueError):
                 row_malformed += 1
             else:
-                observed.add(d)
+                # Canonicalize to YYYY-MM-DD (Codex R1 MAJOR): date.fromisoformat
+                # accepts compact/week ISO forms (20260611 / 2026-W24-4); the raw
+                # string would not match the canonical `expected` sessions nor the
+                # canonical CALIBRATION C global/run sets -> a degraded row could
+                # masquerade as a "later observation" and drive a false-green
+                # accept. Store the canonical isoformat so all comparisons are
+                # apples-to-apples.
+                observed.add(parsed.isoformat())
         if row_malformed:
             malformed += 1
             if len(sample) < 3:

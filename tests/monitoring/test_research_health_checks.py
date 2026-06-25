@@ -1486,6 +1486,35 @@ def test_global_observed_sessions_distinct(tmp_path: Path) -> None:
     assert _global_observed_sessions(conn) == {"2026-06-05", "2026-06-08"}
 
 
+def test_calib_c_session_sets_canonicalize_iso_forms(tmp_path: Path) -> None:
+    # Codex R1 MAJOR: date.fromisoformat accepts non-canonical forms (compact
+    # 20260605, week 2026-W24-1 == 2026-06-08). The CALIBRATION C session sets
+    # MUST canonicalize so a degraded-date row cannot masquerade as a later
+    # observation / missed-run signal and drive a false-green accept.
+    from swing.monitoring.research_health import (
+        _canonical_session,
+        _global_observed_sessions,
+        _run_observed_sessions,
+    )
+    assert _canonical_session("20260605") == "2026-06-05"
+    assert _canonical_session("2026-W24-1") == "2026-06-08"
+    assert _canonical_session("not-a-date") is None
+    assert _canonical_session(None) is None
+    conn = _schema_conn(tmp_path)
+    det = _seed_detection(conn, ticker="AAA", data_asof_date="2026-06-04")
+    # a non-canonical-but-parseable observation_date string for 2026-06-05 ->
+    # canonicalized in the global set (so it matches the canonical expected set).
+    _seed_observation(conn, det, observation_date="20260605", status="pending")
+    assert _global_observed_sessions(conn) == {"2026-06-05"}
+    # a parseable non-canonical completed-run data_asof_date canonicalizes.
+    _seed_pipeline_run(conn, data_asof_date="20260608", lease_token="tok-canon1")
+    assert _run_observed_sessions(conn) == {"2026-06-08"}
+    # an UNparseable completed-run data_asof_date -> the ledger is untrustworthy
+    # -> _run_observed_sessions returns None (clause 2a disabled, conservative).
+    _seed_pipeline_run(conn, data_asof_date="not-a-date", lease_token="tok-canon2")
+    assert _run_observed_sessions(conn) is None
+
+
 # ---------------------------------------------------------------------------
 # Task 4b: _check_structural_integrity (orphans + look-ahead)
 # ---------------------------------------------------------------------------
