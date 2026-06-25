@@ -1515,6 +1515,25 @@ def test_calib_c_session_sets_canonicalize_iso_forms(tmp_path: Path) -> None:
     assert _run_observed_sessions(conn) is None
 
 
+def test_coverage_calib_c_latest_status_uses_canonical_dates(tmp_path: Path) -> None:
+    # Codex R2 MAJOR: the latest-status selection must filter/compare on the SAME
+    # canonical dates as `observed`. A TERMINAL detection that legitimately
+    # STOPPED early at 06-08 (max_obs < last_completed) where the newest TERMINAL
+    # row is written with a NON-canonical date string (20260608). Under the buggy
+    # `oc[0] in observed` raw filter, the canonicalized terminal row is EXCLUDED
+    # -> the older OPEN status (06-05 pending) wins -> upper = last_completed
+    # (06-12) -> a spurious 4-session tail (06-09..06-12) -> YELLOW. With the
+    # canonical valid_obs selection the TERMINAL status is correctly chosen ->
+    # upper = max_obs (06-08) -> no tail -> GREEN.
+    conn = _schema_conn(tmp_path)
+    det = _seed_detection(conn, ticker="AAA", data_asof_date="2026-06-04")
+    _seed_observation(conn, det, observation_date="2026-06-05", status="pending")
+    # newest row, terminal, with a NON-canonical date string for 2026-06-08.
+    _seed_observation(conn, det, observation_date="20260608", status="invalidated")
+    check = _only(_check_coverage_gaps(conn, now=_NOW), "coverage_gaps")
+    assert check.status == "green"
+
+
 # ---------------------------------------------------------------------------
 # Task 4b: _check_structural_integrity (orphans + look-ahead)
 # ---------------------------------------------------------------------------

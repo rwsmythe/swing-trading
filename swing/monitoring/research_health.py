@@ -1220,8 +1220,14 @@ def _check_coverage_gaps(
         # (that could downgrade a RED missing-tail to a mere yellow malformed) --
         # count it AND still compute gaps/tail from the VALID observed dates.
         observed: set[str] = set()
+        # CANONICAL (date, seq, status) for the VALID-dated rows (Codex R2 MAJOR):
+        # the latest-status selection must filter/compare on the SAME canonical
+        # dates as `observed`, not the raw strings (a non-canonical raw date would
+        # be excluded -> wrong/older status chosen, or max() on empty). `seq` is a
+        # stable tie-breaker mirroring the SQL ORDER BY observation_id ASC.
+        valid_obs: list[tuple[str, int, object]] = []
         row_malformed = 0
-        for d, _s in obs:
+        for seq, (d, status) in enumerate(obs):
             try:
                 parsed = _date.fromisoformat(d)
             except (TypeError, ValueError):
@@ -1234,7 +1240,9 @@ def _check_coverage_gaps(
                 # masquerade as a "later observation" and drive a false-green
                 # accept. Store the canonical isoformat so all comparisons are
                 # apples-to-apples.
-                observed.add(parsed.isoformat())
+                canon = parsed.isoformat()
+                observed.add(canon)
+                valid_obs.append((canon, seq, status))
         if row_malformed:
             malformed += 1
             if len(sample) < 3:
@@ -1284,11 +1292,13 @@ def _check_coverage_gaps(
                         sample.append(
                             f"det{det_id}: {missing} missing (never observed)")
                 continue
-            # latest status from the VALID-dated rows (Codex R12 MAJOR #1).
-            latest_status = max(
-                (oc for oc in obs if oc[0] in observed),
-                key=lambda oc: oc[0],
-            )[1]
+            # latest status from the VALID-dated rows (Codex R12 MAJOR #1),
+            # selected on the CANONICAL date with the seq tie-breaker (Codex R2
+            # MAJOR: filtering raw obs by `oc[0] in observed` would exclude a
+            # canonicalized non-canonical row -> wrong/older status or max() on
+            # empty). valid_obs is non-empty here (the not-observed arm handled
+            # the zero-valid case above).
+            latest_status = max(valid_obs, key=lambda x: (x[0], x[1]))[2]
             max_obs = _date.fromisoformat(max(observed))
             # The expected window STARTS at the first session after the cutoff
             # (Codex R3 MAJOR #1 -- a LATE first observation is a real leading
