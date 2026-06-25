@@ -86,6 +86,31 @@ def _seed_observation(
     conn.commit()
 
 
+def _seed_pipeline_run(
+    conn: sqlite3.Connection,
+    *,
+    data_asof_date: str,
+    action_session_date: str | None = None,
+    state: str = "complete",
+    warnings: list[dict] | None = None,
+    lease_token: str = "tok-test",
+) -> None:
+    # RAW-insert a pipeline_runs row (CALIBRATION C run-ledger + skip-index
+    # source). The run-ledger predicate keys on data_asof_date, so the test
+    # states it directly (MINOR-R2). `state` lets a non-complete row be seeded;
+    # `warnings` -> warnings_json. lease_token is UNIQUE per row (the partial
+    # unique index is state='running'-only, but distinct tokens avoid any
+    # collision -- seed a distinct token per row).
+    asd = action_session_date or data_asof_date
+    wj = json.dumps(warnings) if warnings is not None else None
+    conn.execute(
+        "INSERT INTO pipeline_runs (started_ts, trigger, data_asof_date,"
+        " action_session_date, state, lease_token, warnings_json)"
+        " VALUES (?, 'manual', ?, ?, ?, ?, ?)",
+        ("2026-06-12T20:00:00", data_asof_date, asd, state, lease_token, wj))
+    conn.commit()
+
+
 def _only(checks: list[ResearchHealthCheck], key: str) -> ResearchHealthCheck:
     matches = [c for c in checks if c.key == key]
     assert len(matches) == 1, f"expected exactly one {key}, got {len(matches)}"
@@ -1036,6 +1061,48 @@ def test_coverage_trailing_two_and_interior_gap_red(tmp_path: Path) -> None:
     # neither vector was swallowed by the grace -> both detection ids surface.
     assert f"det{det_a}" in (check.detail or "")
     assert f"det{det_b}" in (check.detail or "")
+
+
+# ---------------------------------------------------------------------------
+# CALIBRATION C (coverage-gaps current-vs-historical, brief sec1/sec2). Fixtures
+# are real-derived from the live-DB 06-22 whole-missed-run + DINO 06-15 no-bar
+# shapes (captured read-only 2026-06-24; plan sec0). The interior missed session
+# on the small _NOW calendar is 2026-06-10 with 06-11/06-12 observed later (the
+# drumbeat moved past), mirroring the live 06-22 interior hole with 06-23/06-24
+# observed.
+# ---------------------------------------------------------------------------
+
+# The NYSE sessions in the _NOW window, split around the interior missed session
+# 06-10 (06-06/07 weekend excluded).
+_C_BEFORE = ("2026-06-05", "2026-06-08", "2026-06-09")
+_C_AFTER = ("2026-06-11", "2026-06-12")
+_C_OBSERVED = _C_BEFORE + _C_AFTER  # every session EXCEPT the missed 06-10
+
+
+def test_coverage_calib_c_whole_missed_run_flips_red_to_green(tmp_path: Path) -> None:
+    # BINDING (plan Task 1): the 06-22 whole-missed-run shape. 15 mature
+    # detections each observed on every NYSE session 06-05..06-12 EXCEPT the
+    # interior 06-10 (ZERO observations exist for 06-10 across ALL of them = a
+    # whole-session miss), with 06-11/06-12 observed (drumbeat moved past). The
+    # run ledger has completed runs for the OBSERVED sessions but NOT 06-10 (a
+    # missed run). 06-22-shape: 06-10 not in completed-run data_asof_dates.
+    #
+    # Pre-fix: 15 detections x 1 interior missing (06-10) -> total_missing=15
+    #          15 > _COVERAGE_RED_GAPS(10) -> RED.
+    # Post-fix: 06-10 not in run_observed_sessions (no completed run named it)
+    #          AND each detection has a later observed session (06-11/06-12) ->
+    #          clause-1 + clause-2a satisfied -> all 15 ACCEPTED ->
+    #          total_missing=0 -> GREEN.
+    conn = _schema_conn(tmp_path)
+    for i in range(15):
+        det = _seed_detection(conn, ticker=f"T{i:03d}", data_asof_date="2026-06-04")
+        for d in _C_OBSERVED:
+            _seed_observation(conn, det, observation_date=d, status="pending")
+    # Completed runs for the OBSERVED sessions only -- NOT 06-10 (the missed run).
+    for j, asd in enumerate(_C_OBSERVED):
+        _seed_pipeline_run(conn, data_asof_date=asd, lease_token=f"tok-c1-{j}")
+    check = _only(_check_coverage_gaps(conn, now=_NOW), "coverage_gaps")
+    assert check.status == "green"
 
 
 # ---------------------------------------------------------------------------

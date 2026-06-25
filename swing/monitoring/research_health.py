@@ -891,6 +891,175 @@ _TERMINAL_STATUSES = (
     "triggered_closed_at_target", "triggered_closed_at_stop",
 )
 
+# CALIBRATION C (coverage-gaps current-vs-historical, brief sec1/sec2;
+# watch-standard sec3.1): red ONLY on a CURRENT/ongoing coverage failure (a
+# trailing lag beyond CALIBRATION A's grace, an UNEXPLAINED interior observe
+# hole, or a zero-observation observe failure). ACCEPT (surface in detail, do
+# NOT drive red) a HISTORICAL hole the drumbeat has provably moved PAST -- a
+# later session for THAT detection IS observed -- when it is benign-explained:
+#   (2a) a WHOLE-SESSION MISSED RUN: the session has ZERO observations anywhere
+#        AND no completed pipeline_runs row named it (keyed on the RUN LEDGER's
+#        data_asof_date, NOT the mere absence of observations -- runner.py writes
+#        observation_date == data_asof_date). BOTH signals are required (the
+#        zero-global-observations AND the no-completed-run-ledger-row): the
+#        run-ledger half keeps a zero-observation observe failure (a run named S
+#        but wrote zero rows) RED; the global-observations half keeps an
+#        unexplained hole at a session another detection WAS observed RED.
+#   (2b) a per-detection hole explained by a recorded pattern_observe
+#        skip-warning (no bar for observation_date / non_finite_ohlc), tied to
+#        the (ticker, session) and to the run that observed that session.
+# An UNEXPLAINED interior hole (the run RAN, the bar existed, the row was
+# dropped with no skip-warning) STAYS RED -- the real observe-step-bug signal.
+# Conservative-degrade: a dropped/empty/unavailable pipeline_runs ledger ->
+# _run_observed_sessions returns None -> clause 2a is FALSE for every session ->
+# nothing is missed-run-accepted (never accept-everything-false-green).
+_OBSERVE_SKIP_REASONS = ("no bar for observation_date", "non_finite_ohlc")
+
+
+def _observe_skip_index(conn: sqlite3.Connection) -> set[tuple[str, str]]:
+    """Return the set of (ticker, observation_date) pairs explained by a
+    recorded `pattern_observe` skip-warning in a COMPLETED pipeline run
+    (CALIBRATION C clause 2b). Reads pipeline_runs.warnings_json (migration
+    0003; runner.py writes the entries at run completion).
+
+    ONLY state='complete' runs (MAJOR-R2-2: a failed/non-complete/stale run's
+    warnings must not explain a hole), and ONLY warnings whose `step` is
+    'pattern_observe', `reason` is in _OBSERVE_SKIP_REASONS, AND whose
+    `observation_date` equals THAT row's data_asof_date (MAJOR-R2-2: tie the
+    free-text warning to the session the run actually observed). DEFENSIVE
+    (read-only monitor, the schema-boundary discipline): a missing pipeline_runs
+    table -> empty set (no explanations -> unexplained holes COUNT, never crash,
+    never false-green). A NULL/non-JSON/non-list/non-dict warnings_json row is
+    skipped gracefully (a general parse-guard, NOT per-value-shape branches).
+    """
+    try:
+        rows = conn.execute(
+            "SELECT data_asof_date, warnings_json FROM pipeline_runs"
+            " WHERE state = 'complete'"
+        ).fetchall()
+    except sqlite3.OperationalError as exc:
+        if _schema_unavailable(exc):
+            return set()
+        raise
+    index: set[tuple[str, str]] = set()
+    for asof, warnings_json in rows:
+        if not warnings_json:
+            continue
+        try:
+            items = json.loads(warnings_json)
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            if item.get("step") != "pattern_observe":
+                continue
+            if item.get("reason") not in _OBSERVE_SKIP_REASONS:
+                continue
+            ticker = item.get("ticker")
+            obs_date = item.get("observation_date")
+            if not isinstance(ticker, str) or not isinstance(obs_date, str):
+                continue
+            # Tie the warning to the session the run actually observed: the
+            # observe step writes observation_date == data_asof_date, so a
+            # date-mismatched warning attached to the wrong run must not explain
+            # a hole at an arbitrary session (MAJOR-R2-2).
+            if obs_date != asof:
+                continue
+            index.add((ticker, obs_date))
+    return index
+
+
+def _global_observed_sessions(conn: sqlite3.Connection) -> set[str]:
+    """Return the set of sessions that have AT LEAST ONE observation anywhere
+    (DISTINCT observation_date), the FIRST half of the whole-session-miss AND
+    (CALIBRATION C clause 2a; MAJOR-R2-1). The parent _check_coverage_gaps has
+    already opened the observations table successfully under its own
+    _schema_unavailable guard, so this read is inside that guarded region; an
+    empty table -> empty set (every session is globally unobserved, which only
+    matters paired with the run-ledger half -> never accepts on its own).
+    """
+    rows = conn.execute(
+        "SELECT DISTINCT observation_date FROM pattern_forward_observations"
+    ).fetchall()
+    return {r[0] for r in rows if isinstance(r[0], str)}
+
+
+def _run_observed_sessions(conn: sqlite3.Connection) -> set[str] | None:
+    """Return the set of sessions a COMPLETED pipeline run actually observed
+    (DISTINCT data_asof_date of state='complete' runs; the observe step writes
+    observation_date == data_asof_date, runner.py). The AUTHORITATIVE missed-run
+    signal (MAJOR-R1-4): a benign whole-session miss is `S NOT IN` this set.
+
+    Returns None (NOT an empty set) when pipeline_runs is UNAVAILABLE
+    (_schema_unavailable) OR when there are zero completed runs -- the
+    CONSERVATIVE-DEGRADE sentinel. With no proven run ledger, clause 2a is FALSE
+    for every S (a missed run cannot be proven), so an interior hole must be
+    skip-warning-explained or it COUNTS. Returning an empty set instead would
+    make `S not in set()` TRUE for every S -> accept-everything false-green.
+    DELIBERATELY NOT the weaker DISTINCT observation_date predicate, which would
+    false-green a genuine zero-observation observe failure (a run that ran for S
+    but wrote zero rows) the moment any later session is observed.
+    """
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT data_asof_date FROM pipeline_runs"
+            " WHERE state = 'complete'"
+        ).fetchall()
+    except sqlite3.OperationalError as exc:
+        if _schema_unavailable(exc):
+            return None
+        raise
+    sessions = {r[0] for r in rows if isinstance(r[0], str)}
+    return sessions or None
+
+
+def _calibration_c_partition(
+    missing_set: set[str],
+    observed: set[str],
+    ticker: str | None,
+    global_observed_sessions: set[str],
+    run_observed_sessions: set[str] | None,
+    skip_index: set[tuple[str, str]],
+) -> tuple[set[str], set[str]]:
+    """Partition a detection's missing sessions into (accepted, residual) per
+    CALIBRATION C. A session S in `missing_set` is ACCEPTED iff clause1 AND
+    clause2:
+      clause1 = bool(observed) and max(observed) > S  (interior/leading -- the
+                drumbeat moved PAST the hole; a TRAILING hole has no later
+                observation and is never accepted here; a never-observed
+                detection has empty observed -> clause1 False for every S).
+      clause2 = is_whole_session_miss OR ((ticker, S) in skip_index), where
+                is_whole_session_miss requires BOTH (S not in
+                global_observed_sessions) AND (run_observed_sessions is not None
+                and S not in run_observed_sessions) (MAJOR-R2-1: the BOTH-signals
+                AND). The `is not None` guard is the conservative-degrade -- a
+                degraded run-ledger never accepts a missed-run hole.
+    `residual = missing_set - accepted` (the caller then applies CALIBRATION A
+    on the residual). A non-str ticker simply never matches skip_index -> the
+    hole falls through to COUNTED (defensive)."""
+    accepted: set[str] = set()
+    has_later = bool(observed)
+    latest_observed = max(observed) if observed else None
+    for session in missing_set:
+        clause1 = has_later and latest_observed is not None and latest_observed > session
+        if not clause1:
+            continue
+        is_whole_session_miss = (
+            session not in global_observed_sessions
+            and run_observed_sessions is not None
+            and session not in run_observed_sessions
+        )
+        skip_explained = (
+            isinstance(ticker, str) and (ticker, session) in skip_index
+        )
+        if is_whole_session_miss or skip_explained:
+            accepted.add(session)
+    residual = missing_set - accepted
+    return accepted, residual
+
 
 def _check_coverage_gaps(
     conn: sqlite3.Connection, *, now: datetime,
@@ -925,7 +1094,7 @@ def _check_coverage_gaps(
         # false-green on degraded data. Maturity is applied in Python after the
         # date parse so a malformed date is counted, not silently excluded.
         rows = conn.execute(
-            "SELECT d.detection_id, d.data_asof_date,"
+            "SELECT d.detection_id, d.data_asof_date, d.ticker,"
             " o.observation_date, o.status, o.observation_id"
             " FROM pattern_detection_events d"
             " LEFT JOIN pattern_forward_observations o"
@@ -942,10 +1111,16 @@ def _check_coverage_gaps(
                        " run swing db-migrate")]
         raise
 
-    # Group per detection (preserving obs date order); record the asof.
+    # CALIBRATION C globals (computed ONCE; read-only). ticker carried per
+    # detection (MAJOR-R1-1: needed for the (ticker, S) skip-warning join).
+    global_observed_sessions = _global_observed_sessions(conn)
+    run_observed_sessions = _run_observed_sessions(conn)
+    skip_index = _observe_skip_index(conn)
+
+    # Group per detection (preserving obs date order); record the asof + ticker.
     per_det: dict[int, dict] = {}
-    for det_id, asof, obs_date, status, _obs_id in rows:
-        entry = per_det.setdefault(det_id, {"asof": asof, "obs": []})
+    for det_id, asof, ticker, obs_date, status, _obs_id in rows:
+        entry = per_det.setdefault(det_id, {"asof": asof, "ticker": ticker, "obs": []})
         if obs_date is not None:  # NULL when the LEFT JOIN found no observation
             entry["obs"].append((obs_date, status))
 
@@ -981,8 +1156,11 @@ def _check_coverage_gaps(
     total_missing = 0
     malformed = 0
     sample: list[str] = []
+    accepted_historical = 0
+    accepted_sample: list[str] = []
     for det_id, entry in per_det.items():
         obs = entry["obs"]
+        det_ticker = entry["ticker"]
         # The detector cutoff drives the WHOLE expected window -- if IT is
         # malformed/NULL the window is undefined, so the detection is a pure
         # malformed defect (Codex R4 MAJOR #1: no-crash on a degraded DB).
@@ -1035,9 +1213,20 @@ def _check_coverage_gaps(
                 if first is None:
                     continue  # too fresh -- no session yet to observe
                 expected = _sessions(first, last_completed)
-                # CALIBRATION A: a never-observed detection whose ONLY expected
-                # session is the single newest one is equally benign pre-nightly.
-                missing = _graced_missing_count(expected, expected)
+                # CALIBRATION C first (observed is EMPTY -> clause-1 is FALSE for
+                # every session -> nothing accepted -> residual == expected); then
+                # CALIBRATION A on the residual (a never-observed detection whose
+                # ONLY expected session is the single newest one is benign
+                # pre-nightly). The never-observed COUNT is thus preserved.
+                accepted, residual = _calibration_c_partition(
+                    expected, observed, det_ticker,
+                    global_observed_sessions, run_observed_sessions, skip_index)
+                if accepted:
+                    accepted_historical += len(accepted)
+                    if len(accepted_sample) < 3:
+                        accepted_sample.append(
+                            f"det{det_id}: {len(accepted)} accepted")
+                missing = _graced_missing_count(residual, expected)
                 if missing:
                     total_missing += missing
                     if len(sample) < 3:
@@ -1061,10 +1250,24 @@ def _check_coverage_gaps(
             is_terminal = latest_status in _TERMINAL_STATUSES
             upper = max_obs if is_terminal else last_completed
             expected = _sessions(first, upper)
-            # CALIBRATION A (18-D §6.7): grace a pure trailing-<=1 tail (only the
-            # single newest expected session unobserved = the benign pre-nightly
-            # window); interior/leading holes + trailing->=2 still count.
-            missing = _graced_missing_count(expected - observed, expected)
+            # CALIBRATION C first (accept interior holes the drumbeat moved past
+            # that are whole-session-missed-runs or skip-warning-explained), then
+            # CALIBRATION A on the residual (18-D sec6.7: grace a pure trailing-<=1
+            # newest-session tail). C-FIRST-A-ON-RESIDUAL is required: A graces
+            # only when missing == {max(expected)}, so a detection with an
+            # accepted interior hole PLUS the benign trailing-1 hole would not be
+            # graced if A ran first. Interior/leading holes + trailing->=2 that
+            # are NOT accepted still count.
+            missing_set = expected - observed
+            accepted, residual = _calibration_c_partition(
+                missing_set, observed, det_ticker,
+                global_observed_sessions, run_observed_sessions, skip_index)
+            if accepted:
+                accepted_historical += len(accepted)
+                if len(accepted_sample) < 3:
+                    accepted_sample.append(
+                        f"det{det_id}: {len(accepted)} accepted")
+            missing = _graced_missing_count(residual, expected)
         except _OutOfCalendarError:
             malformed += 1
             if len(sample) < 3:
@@ -1074,6 +1277,20 @@ def _check_coverage_gaps(
             total_missing += missing
             if len(sample) < 3:
                 sample.append(f"det{det_id}: {missing} missing")
+
+    # CALIBRATION C audit (#27 silent-skip discipline): accepted historical gaps
+    # NEVER silently dropped -- they surface in the summary (count) + detail
+    # (sample) in EVERY return path below, including the malformed branch
+    # (MINOR-R1-5). accepted_sample is built in detection-id iteration order so
+    # the detail is order-stable for tests.
+    accepted_note = (
+        f"; {accepted_historical} accepted historical (missed-run/skip)"
+        if accepted_historical else ""
+    )
+    detail_parts = list(sample)
+    if accepted_sample:
+        detail_parts.append("accepted: " + ", ".join(accepted_sample))
+    combined_detail = "; ".join(detail_parts) if detail_parts else None
 
     if malformed:
         # a malformed-date data-shape defect is a real (yellow) integrity signal,
@@ -1085,13 +1302,14 @@ def _check_coverage_gaps(
         return [ResearchHealthCheck(
             key=key, status=worst_of([gap_status, "yellow"]),
             summary=f"{total_missing} coverage gap(s),"
-                    f" {malformed} malformed-date detection(s)",
-            detail="; ".join(sample) if sample else None)]
+                    f" {malformed} malformed-date detection(s){accepted_note}",
+            detail=combined_detail)]
 
     if total_missing == 0:
         return [ResearchHealthCheck(
             key=key, status="green",
-            summary="0 observation-coverage gaps")]
+            summary=f"0 observation-coverage gaps{accepted_note}",
+            detail=combined_detail)]
     if total_missing > _COVERAGE_RED_GAPS:
         status = "red"
     elif total_missing >= _COVERAGE_YELLOW_GAPS:
@@ -1100,8 +1318,8 @@ def _check_coverage_gaps(
         status = "green"
     return [ResearchHealthCheck(
         key=key, status=status,
-        summary=f"{total_missing} observation-coverage gap(s)",
-        detail="; ".join(sample) if sample else None)]
+        summary=f"{total_missing} observation-coverage gap(s){accepted_note}",
+        detail=combined_detail)]
 
 
 def _check_structural_integrity(
