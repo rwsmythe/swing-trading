@@ -63,7 +63,7 @@ HISTORY_CAP = 50
 # compose type allowlist -- decision_request is DELIBERATELY ABSENT (L1 belt)
 COMPOSE_TYPES = ("fyi", "status", "query", "return_report")
 # director-launch enums (L5): nothing user-typed reaches the command line
-LAUNCH_ROLES = ("both", "charc", "rd")
+LAUNCH_ROLES = ("both", "charc", "rd", "orchestrator")
 LAUNCH_MODES = ("fresh", "resume")
 LAUNCHER = "start_directors.ps1"  # in _SCRIPTS_DIR
 BOOTSTRAP_FILE = "orchestrator_bootstrap.md"  # in _SCRIPTS_DIR, served verbatim

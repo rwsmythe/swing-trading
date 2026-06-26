@@ -580,6 +580,42 @@ def test_launch_resume_appends_resume_flag(client, monkeypatch):
     assert calls[0][0] == _launcher_argv("charc", resume=True)
 
 
+def test_launch_strip_offers_orchestrator(client):
+    # the launch dropdown offers the orchestrator role (specific option markup,
+    # NOT the bare substring the copy button / bootstrap route already emit)
+    page = client.get("/").text
+    assert '<option value="orchestrator">' in page
+
+
+def test_launch_orchestrator_fresh_runs_exact_argv(client, monkeypatch):
+    calls = _mock_run(monkeypatch)
+    r = client.post("/directors/launch",
+                    data={"role": "orchestrator", "mode": "fresh"},
+                    headers=_SAME_ORIGIN)
+    assert r.status_code == 200
+    assert len(calls) == 1
+    assert calls[0][0] == _launcher_argv("orchestrator", resume=False)
+    assert calls[0][1].get("cwd") == str(comms_ui._SCRIPTS_DIR.parent)
+
+
+def test_launch_orchestrator_resume_appends_resume_flag(client, monkeypatch):
+    calls = _mock_run(monkeypatch)
+    client.post("/directors/launch",
+                data={"role": "orchestrator", "mode": "resume"},
+                headers=_SAME_ORIGIN)
+    assert calls[0][0] == _launcher_argv("orchestrator", resume=True)
+
+
+def test_launch_rejects_arbitrary_user_typed_role(client, monkeypatch):
+    # L5: an injection-shaped user-typed role is rejected at the enum BEFORE argv
+    calls = _mock_run(monkeypatch)
+    r = client.post("/directors/launch",
+                    data={"role": "orchestrator; rm -rf /", "mode": "fresh"},
+                    headers=_SAME_ORIGIN)
+    assert r.status_code == 400
+    assert calls == []  # subprocess NEVER reached
+
+
 def test_launch_rejects_invalid_role(client, monkeypatch):
     calls = _mock_run(monkeypatch)
     r = client.post("/directors/launch",
