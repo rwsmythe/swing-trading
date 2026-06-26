@@ -72,7 +72,7 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet('charc', 'rd', 'both')]
+    [ValidateSet('charc', 'rd', 'orchestrator', 'both')]
     [string]$Role = 'both',
     [switch]$Resume,
     [switch]$NoWT,
@@ -88,10 +88,11 @@ $CommsDir = Join-Path $RepoRoot 'comms'
 $SessionsPath = Join-Path $CommsDir '.sessions.json'
 
 $BootstrapFiles = @{
-    'charc' = Join-Path $ScriptDir 'director_bootstrap_charc.md'
-    'rd'    = Join-Path $ScriptDir 'director_bootstrap_rd.md'
+    'charc'        = Join-Path $ScriptDir 'director_bootstrap_charc.md'
+    'rd'           = Join-Path $ScriptDir 'director_bootstrap_rd.md'
+    'orchestrator' = Join-Path $ScriptDir 'orchestrator_bootstrap.md'
 }
-$RoleTitles = @{ 'charc' = 'CHARC'; 'rd' = 'RD' }
+$RoleTitles = @{ 'charc' = 'CHARC'; 'rd' = 'RD'; 'orchestrator' = 'ORCHESTRATOR' }
 
 # Directors run on Opus at MAX effort in auto permission mode (operator
 # directives 2026-06-11 .. 2026-06-13). Top config for the highest-leverage /
