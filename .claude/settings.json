@@ -1,11 +1,29 @@
 {
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"C:/Users/rwsmy/swing-trading/scripts/comms_session_hook.py\" session-start"
+          }
+        ]
+      }
+    ],
     "UserPromptSubmit": [
       {
         "hooks": [
           {
             "type": "command",
             "command": "python \"C:/Users/rwsmy/swing-trading/scripts/comms_unread_hook.py\""
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"C:/Users/rwsmy/swing-trading/scripts/comms_session_hook.py\" heartbeat"
           }
         ]
       }
