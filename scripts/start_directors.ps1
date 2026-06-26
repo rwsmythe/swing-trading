@@ -47,11 +47,13 @@
         grabs the most-recently-touched session (wrong when two roles share this
         project dir); --session-id is unreliable interactively.
       * "--model <model>", "--effort <level>" (low, medium, high, xhigh, max)
-        and "--permission-mode <mode>" (incl. "auto") EXIST. Directors launch
-        with '--model opus --effort max --permission-mode auto' on BOTH fresh
-        and resume (operator directives 2026-06-11 .. 2026-06-13). Directors
-        are the highest-leverage / lowest-volume tier, so they run the top
-        config; cost-curation happens at the implementer tier, not here. Model
+        and "--permission-mode <mode>" (incl. "auto") EXIST. Launches use
+        '--model opus --permission-mode auto' on BOTH fresh and resume
+        (operator directives 2026-06-11 .. 2026-06-13). Effort is ROLE-AWARE
+        ($RoleEffort): directors launch '--effort max' (the highest-leverage /
+        lowest-volume tier runs the top config) and the orchestrator launches
+        '--effort xhigh'; cost-curation happens at the implementer tier, not
+        here. Model
         is opus because FABLE (the 5.x-class model) is currently UNAVAILABLE
         (ITAR restrictions, 2026-06-13) -- revisit directors -> fable/5.x if
         and when it (or another 5.x) becomes available. Every flag is
@@ -94,13 +96,15 @@ $BootstrapFiles = @{
 }
 $RoleTitles = @{ 'charc' = 'CHARC'; 'rd' = 'RD'; 'orchestrator' = 'ORCHESTRATOR' }
 
-# Directors run on Opus at MAX effort in auto permission mode (operator
-# directives 2026-06-11 .. 2026-06-13). Top config for the highest-leverage /
-# lowest-volume tier; opus (not fable) because fable/5.x is ITAR-unavailable as
-# of 2026-06-13 (revisit when a 5.x model returns). Applied to BOTH fresh and
-# resume launches; preflight verifies each flag and the effort/permission
-# VALUES against the installed CLI (the --model alias is not value-checked).
-$LaunchArgs = @('--model', 'opus', '--effort', 'max', '--permission-mode', 'auto')
+# Sessions run on Opus in auto permission mode (operator directives
+# 2026-06-11 .. 2026-06-13). Effort is ROLE-AWARE: orchestrators launch at
+# 'xhigh' (the orchestrator default), directors at 'max' (the top config for
+# the highest-leverage / lowest-volume tier). opus (not fable) because
+# fable/5.x is ITAR-unavailable as of 2026-06-13 (revisit when a 5.x model
+# returns). Applied to BOTH fresh and resume launches; preflight verifies each
+# flag and the effort/permission VALUES against the installed CLI (the --model
+# alias is not value-checked). See Get-LaunchArgs for the per-role assembly.
+$RoleEffort = @{ 'charc' = 'max'; 'rd' = 'max'; 'orchestrator' = 'xhigh' }
 
 # Short, quoting-safe directive prompts (no newlines, quotes, or semicolons --
 # the full multi-line prompt content lives in the bootstrap files to keep the
@@ -112,6 +116,13 @@ $ResumePrompt = 'Resuming your director session: re-read your charter section-of
 
 function Write-Info($msg) { Write-Host "[start-directors] $msg" }
 function Write-Err($msg) { Write-Host "[start-directors] ERROR: $msg" }
+
+function Get-LaunchArgs($role) {
+    # Per-role claude launch flags. Effort is role-aware via $RoleEffort
+    # (orchestrators 'xhigh', directors 'max'); everything else is shared.
+    $effort = $RoleEffort[$role]
+    return @('--model', 'opus', '--effort', $effort, '--permission-mode', 'auto')
+}
 
 function Invoke-Preflight {
     # Verify the claude CLI exists and carries the flags we depend on. Returns
@@ -142,16 +153,21 @@ function Invoke-Preflight {
         throw "this claude CLI ($version) does not advertise --model in --help (directors launch with '--model opus'); refusing to launch with a guessed flag."
     }
     if (-not ($help -match '--effort')) {
-        throw "this claude CLI ($version) does not advertise --effort in --help (directors launch with '--effort max'); refusing to launch with a guessed flag."
+        throw "this claude CLI ($version) does not advertise --effort in --help (launches use '--effort'; orchestrator xhigh, directors max); refusing to launch with a guessed flag."
     }
-    if (-not ($help -match 'max')) {
-        throw "this claude CLI ($version) does not list 'max' as an effort level in --help; update the launcher's `$LaunchArgs to a level the installed CLI accepts."
+    # Verify EVERY effort level the launcher actually uses (role-aware via
+    # $RoleEffort: orchestrator 'xhigh', directors 'max') resolves in --help, so
+    # a CLI that drops a level we use fails preflight instead of at launch.
+    foreach ($lvl in ($RoleEffort.Values | Sort-Object -Unique)) {
+        if (-not ($help -match $lvl)) {
+            throw "this claude CLI ($version) does not list '$lvl' as an effort level in --help; update the launcher's `$RoleEffort to levels the installed CLI accepts."
+        }
     }
     if (-not ($help -match '--permission-mode')) {
         throw "this claude CLI ($version) does not advertise --permission-mode in --help (directors launch with '--permission-mode auto'); refusing to launch with a guessed flag."
     }
     if (-not ($help -match '"auto"')) {
-        throw "this claude CLI ($version) does not list 'auto' as a --permission-mode choice in --help; update the launcher's `$LaunchArgs to a mode the installed CLI accepts."
+        throw "this claude CLI ($version) does not list 'auto' as a --permission-mode choice in --help; update the launcher's launch flags (Get-LaunchArgs) to a mode the installed CLI accepts."
     }
     return $version
 }
@@ -186,6 +202,9 @@ function Save-SessionMap($map) {
 
 function New-SessionName($role) {
     $stamp = (Get-Date).ToString('yyyyMMdd-HHmm')
+    # The orchestrator is not a director -- give it its own non-'director-'
+    # display name; directors keep the established 'director-<role>-<stamp>'.
+    if ($role -eq 'orchestrator') { return "orchestrator-$stamp" }
     return "director-$role-$stamp"
 }
 
@@ -244,7 +263,7 @@ function Start-Fresh($role, $map) {
         throw "bootstrap file missing for $role at $bootstrap"
     }
     $prompt = [string]::Format($FreshPromptFmt, "scripts/$([System.IO.Path]::GetFileName($bootstrap))")
-    $argList = $LaunchArgs + @('-n', "`"$name`"", "`"$prompt`"")
+    $argList = (Get-LaunchArgs $role) + @('-n', "`"$name`"", "`"$prompt`"")
     Write-Info "fresh $role -> session name '$name'"
     Write-Info "  cmd: $(Format-Cmd $argList)"
     Write-Info "  launch: $(Build-LaunchCommand $role $argList)"
@@ -268,7 +287,7 @@ function Start-Resume($role, $map) {
         return $map
     }
     $prompt = [string]::Format($ResumePrompt, $role)
-    $argList = $LaunchArgs + @('--resume', "`"$name`"", "`"$prompt`"")
+    $argList = (Get-LaunchArgs $role) + @('--resume', "`"$name`"", "`"$prompt`"")
     Write-Info "resume $role -> session name '$name'"
     Write-Info "  cmd: $(Format-Cmd $argList)"
     Write-Info "  launch: $(Build-LaunchCommand $role $argList)"

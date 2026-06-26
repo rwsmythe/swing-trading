@@ -62,6 +62,62 @@ def test_dryrun_orchestrator_sets_role_and_prints_command():
     assert r.returncode == 0
     out = r.stdout + r.stderr
     assert "$env:SWING_ROLE='orchestrator'" in out        # role set inside the shell
-    assert "claude --model opus --effort max --permission-mode auto" in out
+    # Task 4 / Issue 1: the orchestrator launches at xhigh, NOT max (directors
+    # stay max). This assertion CODIFIED the bug before Task 4 -- it asserted max.
+    assert "claude --model opus --effort xhigh --permission-mode auto" in out
     assert "orchestrator_bootstrap.md" in out             # the bootstrap in the prompt
     assert "DRY RUN" in out                                # no window launched
+
+
+# --- Task 4: role-aware launch effort + role-aware session name ------------
+
+# Issue 1 static-content distinguisher (always runs): the launcher wires the
+# per-role effort map -- orchestrator xhigh, directors max.
+
+def test_roleeffort_map_is_role_aware():
+    text = _script_text()
+    assert "$RoleEffort" in text
+    assert "'orchestrator' = 'xhigh'" in text
+    assert "'charc' = 'max'" in text
+    assert "'rd' = 'max'" in text
+
+
+# Issue 2 static-content distinguisher (always runs): New-SessionName gives the
+# orchestrator a non-'director-' display name; directors keep their scheme.
+
+def test_orchestrator_session_name_not_director_prefixed():
+    text = _script_text()
+    assert 'return "orchestrator-$stamp"' in text       # orchestrator gets its own name
+    assert 'return "director-$role-$stamp"' in text     # directors UNCHANGED
+
+
+# Issue 1 behavioral -DryRun (skip-guarded): directors stay max + keep the
+# 'director-<role>-<stamp>' name.
+
+def test_dryrun_charc_keeps_max_effort_and_director_name():
+    if shutil.which("powershell") is None or shutil.which("claude") is None:
+        pytest.skip("powershell + claude CLI required for the behavioral DryRun")
+    r = subprocess.run(
+        ["powershell", "-NoProfile", "-File", str(_SCRIPT),
+         "-Role", "charc", "-DryRun"],
+        capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0
+    out = r.stdout + r.stderr
+    assert "claude --model opus --effort max --permission-mode auto" in out  # directors stay max
+    assert "session name 'director-charc-" in out                            # director naming unchanged
+
+
+# Issue 2 behavioral -DryRun (skip-guarded): the orchestrator's session name is
+# 'orchestrator-<stamp>', NOT 'director-orchestrator-<stamp>'.
+
+def test_dryrun_orchestrator_session_name_not_director_prefixed():
+    if shutil.which("powershell") is None or shutil.which("claude") is None:
+        pytest.skip("powershell + claude CLI required for the behavioral DryRun")
+    r = subprocess.run(
+        ["powershell", "-NoProfile", "-File", str(_SCRIPT),
+         "-Role", "orchestrator", "-DryRun"],
+        capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0
+    out = r.stdout + r.stderr
+    assert "session name 'orchestrator-" in out          # non-director display name
+    assert "director-orchestrator-" not in out           # the 'director-' wart is gone
