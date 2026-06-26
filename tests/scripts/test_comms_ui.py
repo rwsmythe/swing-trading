@@ -219,6 +219,90 @@ def test_bus_pane_styles_stale_over_7_days(client, comms):
     assert "stale" in body
 
 
+# --- orchestrator bus (per-generation, READ-ONLY) -------------------------
+
+def _seed_orch_msg(comms, sid, fname, frm="orchestrator", to=None,
+                   mtype="status", subject="s", body="b"):
+    # RAW per-gen inbox write (like test_bus_pane_styles_stale_over_7_days) --
+    # independent of role_mail's orchestrator :<sid> send path.
+    inbox = comms / "orchestrator" / sid / "inbox"
+    inbox.mkdir(parents=True, exist_ok=True)
+    to = to or f"orchestrator:{sid}"
+    (inbox / fname).write_text(
+        f"---\nfrom: {frm}\nto: {to}\ntype: {mtype}\nsubject: {subject}\n"
+        f"posted: 2026-06-20T00:00:00Z\n---\n\n{body}\n", encoding="utf-8")
+
+
+def test_orchestrator_bus_aggregates_across_generations(client, comms):
+    _seed_orch_msg(comms, "gen-aaa", "20260619T010000Z-charc-a.md",
+                   subject="hello-aaa")
+    _seed_orch_msg(comms, "gen-bbb", "20260620T010000Z-rd-b.md",
+                   subject="hello-bbb")
+    _seed_orch_msg(comms, "gen-bbb", "20260620T020000Z-operator-c.md",
+                   subject="hello-bbb2")
+    body = client.get("/panes/bus").text
+    assert "Orchestrator bus" in body
+    assert "hello-aaa" in body
+    assert "hello-bbb" in body
+    assert "hello-bbb2" in body
+    assert "gen-aaa" in body and "gen-bbb" in body  # grouped by generation
+
+
+def test_orchestrator_bus_most_recently_messaged_generation_first(client, comms):
+    # THREE gens, recency NON-MONOTONIC in sid: the middle-sid gen carries the
+    # newest message -> distinguishes recency from BOTH name-sort directions.
+    _seed_orch_msg(comms, "gen-aaa", "20260301T010000Z-charc-a.md",
+                   subject="mid-gen")
+    _seed_orch_msg(comms, "gen-bbb", "20260620T010000Z-rd-b.md",
+                   subject="new-gen")
+    _seed_orch_msg(comms, "gen-ccc", "20260101T010000Z-charc-c.md",
+                   subject="old-gen")
+    body = client.get("/panes/bus").text
+    # recency (newest msg first) = [bbb (Jun), aaa (Mar), ccc (Jan)] -- which
+    # equals NEITHER ascending-sid [aaa,bbb,ccc] NOR descending-sid [ccc,bbb,aaa]
+    assert body.index("gen-bbb") < body.index("gen-aaa") < body.index("gen-ccc")
+
+
+def test_orchestrator_bus_empty_state_when_absent(client, comms):
+    # no comms/orchestrator/ at all -> the dedicated empty marker, never a 500
+    r = client.get("/panes/bus")
+    assert r.status_code == 200
+    assert "(no orchestrator generations)" in r.text
+
+
+def test_orchestrator_bus_degrades_on_malformed(client, comms):
+    base = comms / "orchestrator"
+    base.mkdir(parents=True, exist_ok=True)
+    (base / "stray-file.md").write_text("not a generation dir\n",
+                                        encoding="utf-8")  # a FILE child
+    (base / "bad name").mkdir()              # invalid session_id (space) -> skip
+    _seed_orch_msg(comms, "gen-ok", "20260620T010000Z-charc-a.md",
+                   subject="good-msg")
+    # a malformed MESSAGE (no frontmatter) in the good gen -> filename fallback
+    (base / "gen-ok" / "inbox" / "20260620T020000Z-rd-broken.md").write_text(
+        "no frontmatter at all\n", encoding="utf-8")
+    r = client.get("/panes/bus")
+    assert r.status_code == 200          # never a 500
+    assert "good-msg" in r.text          # the valid gen still renders
+    assert "broken" in r.text            # malformed message -> filename fallback
+
+
+def test_orchestrator_bus_has_no_ack_affordance(client, comms):
+    _seed_orch_msg(comms, "gen-x", "20260620T010000Z-charc-a.md", subject="x")
+    body = client.get("/panes/bus").text
+    assert "/ack" not in body            # L3: never acks any orchestrator gen
+    assert "hx-post" not in body         # no write control in the bus pane
+
+
+def test_viewing_orchestrator_bus_never_mutates(client, comms):
+    _seed_orch_msg(comms, "gen-x", "20260620T010000Z-charc-a.md", subject="x")
+    before = sorted((comms / "orchestrator").rglob("*.md"))
+    client.get("/panes/bus")
+    client.get("/panes/bus")
+    after = sorted((comms / "orchestrator").rglob("*.md"))
+    assert before == after               # read-only: no move/delete/create
+
+
 # --- history pane ----------------------------------------------------------
 
 def test_history_pane_shows_read_messages(client, comms):
