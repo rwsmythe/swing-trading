@@ -36,11 +36,16 @@ import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
-# Valid senders include orchestrator (which has no inbox in V1 -- directors
-# hand-carry dispatch-direction traffic by design).
+# Valid senders include orchestrator + the automated pipeline emitter.
 VALID_FROM = ("charc", "rd", "operator", "orchestrator", "pipeline")
-# Valid recipients are only the three inbox-holding roles.
-VALID_TO = ("charc", "rd", "operator")
+# Valid recipients. orchestrator is a ROTATING per-generation recipient (G6 Arc
+# A): bare `--to orchestrator` resolves to the newest-live generation at send
+# time; `--to orchestrator:<session_id>` addresses a specific generation
+# (registry-independent). The other three are SINGULAR fixed-inbox roles.
+VALID_TO = ("charc", "rd", "operator", "orchestrator")
+# The fixed-inbox roles (comms/<role>/{inbox,read}); orchestrator is NOT here --
+# it has a per-generation inbox owned by the registry module, not a singular one.
+SINGULAR_INBOX_ROLES = ("charc", "rd", "operator")
 VALID_TYPES = ("fyi", "status", "query", "return_report", "decision_request")
 # AUTOMATED-EMITTER senders (non-human/agent) are constrained to a NARROW type
 # allowlist -- transport-automation, NEVER authority (an automated emitter must
@@ -58,6 +63,47 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 class MailError(Exception):
     """A validation / governance error to surface as exit 1 with a message."""
+
+
+class NoLiveOrchestratorError(MailError):
+    """No live orchestrator generation to receive a bare `--to orchestrator`.
+
+    A CLEAR error (never a silent drop): the caller must address a specific
+    generation with `--to orchestrator:<session_id>` or bring one up.
+    """
+
+
+# Lazy single-source registry loader (G6 Arc A). role_mail DELEGATES newest-live
+# resolution + session_id safety + the per-generation path shape to
+# comms_session_registry -- it NEVER re-implements them (lessons-learned guard
+# #4). Imported lazily + ONLY on an orchestrator-path operation, so a broken /
+# absent registry can never break singular (charc/rd/operator) mail.
+_REGISTRY_MOD = None
+
+
+def _registry():
+    """Import + cache comms_session_registry; MailError if unavailable.
+
+    Robust to BOTH the script-run path (scripts/ on sys.path) AND the test
+    loader (role_mail loaded via spec_from_file_location, scripts/ NOT on path).
+    """
+    global _REGISTRY_MOD
+    if _REGISTRY_MOD is not None:
+        return _REGISTRY_MOD
+    try:
+        import comms_session_registry as mod
+    except Exception:  # noqa: BLE001 -- fall back to a by-path load
+        try:
+            import importlib.util
+            path = _REPO_ROOT / "scripts" / "comms_session_registry.py"
+            spec = importlib.util.spec_from_file_location(
+                "comms_session_registry", path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+        except Exception as exc:  # noqa: BLE001
+            raise MailError(f"registry module unavailable: {exc}") from exc
+    _REGISTRY_MOD = mod
+    return mod
 
 
 class _AsciiArgumentParser(argparse.ArgumentParser):
@@ -93,6 +139,11 @@ def _write_temp(final: Path, content: str) -> Path:
 
     Same-directory temp keeps the later os.replace on one filesystem (the
     Windows os.replace cross-volume gotcha). Cleans up on write failure.
+
+    INTENTIONAL COPY -- keep in sync; twin in
+    comms_session_registry.py:_atomic_write_text (same same-dir mkstemp +
+    os.replace pattern). The registry keeps a LOCAL copy (not a cross-import) to
+    preserve THIS core-mail path's isolation from the registry module.
     """
     final.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(dir=str(final.parent), suffix=".tmp")
@@ -120,7 +171,10 @@ def _comms_root(args: argparse.Namespace) -> Path:
 
 
 def _ensure_tree(root: Path) -> None:
-    for role in VALID_TO:
+    # Iterate the SINGULAR roles only -- orchestrator's per-generation inboxes
+    # are bootstrapped lazily by _write_temp (send) / ensure_per_generation_inbox
+    # (the hook), so we must NOT auto-create a singular comms/orchestrator/inbox.
+    for role in SINGULAR_INBOX_ROLES:
         (root / role / "inbox").mkdir(parents=True, exist_ok=True)
         (root / role / "read").mkdir(parents=True, exist_ok=True)
 
@@ -151,6 +205,116 @@ def _validate_recipients(recipients: list[str]) -> list[str]:
 
 def _parse_recipients(raw: str) -> list[str]:
     return _validate_recipients(raw.split(","))
+
+
+# --- orchestrator addressing (G6 Arc A) ------------------------------------
+
+def _split_target(token: str) -> tuple[str, str | None]:
+    """Parse one recipient token into (role, session_id_or_None).
+
+    No ':' -> (role, None) if role is a valid recipient, else MailError. With a
+    ':' -> only `orchestrator` may carry a `:<session_id>` suffix; the session_id
+    must be non-empty and pass the registry's safety rule (fail-LOUD, never a
+    silent accept). The singular roles reject any suffix.
+    """
+    if ":" not in token:
+        if token in VALID_TO:
+            return (token, None)
+        raise MailError(
+            "invalid recipient " + repr(token)
+            + "; valid roles: " + "|".join(VALID_TO))
+    role, _, sid = token.partition(":")
+    if role != "orchestrator":
+        raise MailError(
+            "only 'orchestrator' may carry a :<session_id> suffix; the singular "
+            "roles are " + "|".join(SINGULAR_INBOX_ROLES) + " (got " + repr(token)
+            + ")")
+    if not sid:
+        raise MailError("empty session_id in recipient " + repr(token))
+    if not _registry().is_valid_session_id(sid):
+        raise MailError("refusing unsafe session_id " + repr(sid))
+    return ("orchestrator", sid)
+
+
+def _parse_recipient_pairs(recipients: list[str]) -> list[tuple[str, str | None]]:
+    """Validate + de-dupe recipient tokens into (role, sid) pairs (order kept)."""
+    toks = [r.strip() for r in recipients if r and r.strip()]
+    if not toks:
+        raise MailError(
+            "no recipients given; valid roles: " + "|".join(VALID_TO))
+    pairs: list[tuple[str, str | None]] = []
+    for tok in toks:
+        pair = _split_target(tok)
+        if pair not in pairs:
+            pairs.append(pair)
+    return pairs
+
+
+def _recipient_label(role: str, sid: str | None) -> str:
+    """The `to:` frontmatter label: orchestrator:<sid> for a resolved gen."""
+    if role == "orchestrator" and sid:
+        return f"orchestrator:{sid}"
+    return role
+
+
+def _inbox_for_target(root: Path, role: str, sid: str | None,
+                      now: datetime | None = None) -> Path:
+    """The concrete inbox dir for (role, sid). DELEGATES the per-gen path shape.
+
+    Singular roles -> root/<role>/inbox (role_mail owns the singular shape only).
+    orchestrator -> resolve sid (bare = newest_live at send; None -> a CLEAR
+    NoLiveOrchestratorError, never a silent drop), re-validate the resolved sid
+    (belt -- never trust a resolved value into a path), then return the
+    registry's per_generation_inbox (the single owner of the per-gen path).
+    """
+    if role in SINGULAR_INBOX_ROLES:
+        return root / role / "inbox"
+    if role == "orchestrator":
+        eff = sid
+        if eff is None:
+            entry = _registry().newest_live(root, now if now is not None else _now())
+            if not entry:
+                raise NoLiveOrchestratorError(
+                    "no live orchestrator generation to receive a bare "
+                    "'--to orchestrator'. Address a specific generation with "
+                    "'--to orchestrator:<session_id>', or bring an orchestrator "
+                    "generation up first. Nothing was written.")
+            eff = entry.get("session_id")
+        if not _registry().is_valid_session_id(eff):
+            raise MailError("refusing unsafe session_id " + repr(eff))
+        return _registry().per_generation_inbox(root, eff)
+    raise MailError(
+        "invalid recipient " + repr(role) + "; valid roles: " + "|".join(VALID_TO))
+
+
+def _role_inbox_dir(root: Path, role: str, sid: str | None) -> Path:
+    """The inbox dir for a read/list/peek/ack op (singular or per-generation)."""
+    if role in SINGULAR_INBOX_ROLES:
+        return root / role / "inbox"
+    if role == "orchestrator":
+        if not sid:
+            raise MailError(
+                "reading an orchestrator inbox requires --session <session_id>")
+        if not _registry().is_valid_session_id(sid):
+            raise MailError("refusing unsafe session_id " + repr(sid))
+        return _registry().per_generation_inbox(root, sid)
+    raise MailError(
+        "invalid role " + repr(role) + "; valid roles: " + "|".join(VALID_TO))
+
+
+def _role_read_dir(root: Path, role: str, sid: str | None) -> Path:
+    """The read (ack archive) dir for a role (singular or per-generation)."""
+    if role in SINGULAR_INBOX_ROLES:
+        return root / role / "read"
+    if role == "orchestrator":
+        if not sid:
+            raise MailError(
+                "an orchestrator ack requires --session <session_id>")
+        if not _registry().is_valid_session_id(sid):
+            raise MailError("refusing unsafe session_id " + repr(sid))
+        return _registry().per_generation_read(root, sid)
+    raise MailError(
+        "invalid role " + repr(role) + "; valid roles: " + "|".join(VALID_TO))
 
 
 def _resolve_body(args: argparse.Namespace) -> str:
@@ -278,9 +442,12 @@ def post_message(
                 f"{label} may not contain newlines (frontmatter injection). "
                 "Nothing was written."
             )
-    recipients = _validate_recipients(recipients)
-    # L1 governance lock: decision_request must address ONLY the operator.
-    if mtype == "decision_request" and any(r != "operator" for r in recipients):
+    # Parse recipients to (role, sid) pairs (orchestrator may carry :<sid>).
+    pairs = _parse_recipient_pairs(recipients)
+    # L1 governance lock: decision_request must address ONLY the operator. Fires
+    # on the PARSED role BEFORE any inbox resolution, so decision_request to
+    # orchestrator / orchestrator:<sid> is refused here regardless of liveness.
+    if mtype == "decision_request" and any(role != "operator" for role, _ in pairs):
         raise MailError(
             "L1: type 'decision_request' may be addressed ONLY to operator "
             "(role->role traffic is fyi|status|query|return_report). "
@@ -293,16 +460,34 @@ def post_message(
     posted = now.strftime("%Y-%m-%dT%H:%M:%SZ")
     slug = _slugify(subject)
 
+    # Resolve each pair to its concrete inbox (a NoLiveOrchestratorError fires
+    # HERE, before any temp is staged -> all-or-nothing). De-dupe by the RESOLVED
+    # inbox path so bare `orchestrator` + `orchestrator:<newest_sid>` collapse to
+    # one delivery. The orchestrator label records the concrete generation.
+    resolved: list[tuple[Path, str]] = []
+    seen_inboxes: set[str] = set()
+    for role, sid in pairs:
+        inbox = _inbox_for_target(root, role, sid, now=now)
+        key = str(inbox)
+        if key in seen_inboxes:
+            continue
+        seen_inboxes.add(key)
+        if role == "orchestrator":
+            label = _recipient_label(role, inbox.parent.name)
+        else:
+            label = role
+        resolved.append((inbox, label))
+
     # Precompute every (final path, content) BEFORE writing anything so a
     # multi-recipient post delivers all-or-nothing (atomicity): stage temps in
     # each destination dir, then os.replace each into place only once every
     # temp wrote cleanly. A failure mid-stage removes the temps -> no partial.
     targets = [
         (
-            _unique_path(root / r / "inbox", stamp, sender, slug),
-            _compose(sender, r, mtype, subject, posted, thread, body),
+            _unique_path(inbox, stamp, sender, slug),
+            _compose(sender, label, mtype, subject, posted, thread, body),
         )
-        for r in recipients
+        for inbox, label in resolved
     ]
     staged: list[tuple[Path, Path]] = []  # (temp, final)
     try:
@@ -347,26 +532,32 @@ def post_message(
     return committed
 
 
-def ack_message(root: Path, role: str, filename: str) -> Path:
-    """Ack one message: move root/<role>/inbox/<filename> -> read/ (returns it).
+def ack_message(root: Path, role: str, filename: str,
+                session_id: str | None = None) -> Path:
+    """Ack one message: move <inbox>/<filename> -> <read>/ (returns the dest).
 
     The single ack path (the CLI's cmd_read and the UI both call THIS). Uses
     _unique_dest so an archived message of the same name is never overwritten
     (ack must never delete history). filename MUST be a bare basename --
     traversal attempts are rejected (L3 mail custody: the ack can never reach
-    outside the role's own inbox). Raises MailError on invalid role, traversal,
-    or a missing inbox file (the already-drained case the UI renders friendly).
+    outside the role's own inbox). `session_id` (default None, back-compat for
+    the GUI + singular reads) is REQUIRED for orchestrator and selects the
+    per-generation inbox/read dirs (delegated to the registry). The per-gen
+    read/ dir is created lazily here, so an explicit-:<sid> round-trip works even
+    for a generation that never ran session-start. Raises MailError on invalid
+    role, traversal, a missing session for orchestrator, or a missing file.
     """
     if role not in VALID_TO:
         raise MailError(
             "invalid role " + repr(role) + "; valid roles: " + "|".join(VALID_TO))
     if filename != Path(filename).name or "/" in filename or "\\" in filename:
         raise MailError(f"refusing non-basename filename {filename!r}")
-    src = root / role / "inbox" / filename
+    inbox_dir = _role_inbox_dir(root, role, session_id)
+    read_dir = _role_read_dir(root, role, session_id)
+    src = inbox_dir / filename
     if not src.is_file():
         raise MailError(
             f"no inbox message named {filename!r} for role {role}")
-    read_dir = root / role / "read"
     read_dir.mkdir(parents=True, exist_ok=True)
     dest = _unique_dest(read_dir, src.name)
     src.rename(dest)
@@ -388,13 +579,13 @@ def cmd_post(args: argparse.Namespace) -> int:
     return 0
 
 
-def _list_inbox(root: Path, role: str) -> list[Path]:
-    inbox = root / role / "inbox"
+def _list_inbox(root: Path, role: str, sid: str | None = None) -> list[Path]:
+    inbox = _role_inbox_dir(root, role, sid)
     return sorted(inbox.glob("*.md")) if inbox.is_dir() else []
 
 
-def _list_read(root: Path, role: str) -> list[Path]:
-    rd = root / role / "read"
+def _list_read(root: Path, role: str, sid: str | None = None) -> list[Path]:
+    rd = _role_read_dir(root, role, sid)
     return sorted(rd.glob("*.md")) if rd.is_dir() else []
 
 
@@ -405,8 +596,9 @@ def cmd_list(args: argparse.Namespace) -> int:
             "invalid --role " + repr(args.role)
             + "; valid roles: " + "|".join(VALID_TO)
         )
-    inbox = _list_inbox(root, args.role)
-    read_count = len(_list_read(root, args.role))
+    sid = getattr(args, "session", None)
+    inbox = _list_inbox(root, args.role, sid)
+    read_count = len(_list_read(root, args.role, sid))
     print(f"inbox for {args.role}: {len(inbox)} unread, {read_count} read")
     if not inbox:
         print("  (inbox empty)")
@@ -436,7 +628,8 @@ def cmd_read(args: argparse.Namespace) -> int:
             "invalid --role " + repr(args.role)
             + "; valid roles: " + "|".join(VALID_TO)
         )
-    inbox = _list_inbox(root, args.role)
+    sid = getattr(args, "session", None)
+    inbox = _list_inbox(root, args.role, sid)
     if args.id:
         targets = [p for p in inbox if p.name == args.id]
         if not targets:
@@ -449,7 +642,7 @@ def cmd_read(args: argparse.Namespace) -> int:
         return 0
     for path in targets:
         _print_message(path)
-        ack_message(root, args.role, path.name)
+        ack_message(root, args.role, path.name, session_id=sid)
     print(f"acked {len(targets)} message(s); moved inbox -> read.")
     return 0
 
@@ -461,7 +654,8 @@ def cmd_peek(args: argparse.Namespace) -> int:
             "invalid --role " + repr(args.role)
             + "; valid roles: " + "|".join(VALID_TO)
         )
-    inbox = _list_inbox(root, args.role)
+    sid = getattr(args, "session", None)
+    inbox = _list_inbox(root, args.role, sid)
     if not inbox:
         print(f"inbox for {args.role} is empty.")
         return 0
@@ -492,8 +686,10 @@ def build_parser() -> argparse.ArgumentParser:
     _add_comms_root(p_post)
     p_post.add_argument("--from", required=True, dest="from",
                         help="sender: " + "|".join(VALID_FROM))
-    p_post.add_argument("--to", required=True,
-                        help="recipient(s), comma-separated: " + "|".join(VALID_TO))
+    p_post.add_argument(
+        "--to", required=True,
+        help="recipient(s), comma-separated: " + "|".join(VALID_TO)
+        + " (orchestrator = newest-live; orchestrator:<session_id> = a gen)")
     p_post.add_argument("--type", required=True,
                         help="message type: " + "|".join(VALID_TYPES))
     p_post.add_argument("--subject", required=True)
@@ -503,9 +699,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_post.add_argument("--thread", default=None, help="optional thread slug")
     p_post.set_defaults(func=cmd_post)
 
+    _SESSION_HELP = "orchestrator generation session_id (required for --role orchestrator)"
+
     p_list = sub.add_parser("list", help="list a role's inbox")
     _add_comms_root(p_list)
     p_list.add_argument("--role", required=True, help="|".join(VALID_TO))
+    p_list.add_argument("--session", default=None, help=_SESSION_HELP)
     p_list.add_argument("--unread-only", action="store_true",
                         help="(default already lists only the inbox)")
     p_list.set_defaults(func=cmd_list)
@@ -513,6 +712,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_read = sub.add_parser("read", help="print + ack message(s) (inbox -> read)")
     _add_comms_root(p_read)
     p_read.add_argument("--role", required=True, help="|".join(VALID_TO))
+    p_read.add_argument("--session", default=None, help=_SESSION_HELP)
     g = p_read.add_mutually_exclusive_group()
     g.add_argument("--all", action="store_true", help="read+ack the whole inbox")
     g.add_argument("--id", default=None, help="read+ack one message by filename")
@@ -521,6 +721,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_peek = sub.add_parser("peek", help="print unread WITHOUT acking")
     _add_comms_root(p_peek)
     p_peek.add_argument("--role", required=True, help="|".join(VALID_TO))
+    p_peek.add_argument("--session", default=None, help=_SESSION_HELP)
     p_peek.set_defaults(func=cmd_peek)
 
     return parser
