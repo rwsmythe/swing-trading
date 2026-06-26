@@ -251,9 +251,9 @@ def test_registry_imports_are_stdlib_only():
         if isinstance(node, ast.Import):
             for alias in node.names:
                 roots.add(alias.name.split(".")[0])
-        elif isinstance(node, ast.ImportFrom):
-            if node.level == 0 and node.module:
-                roots.add(node.module.split(".")[0])
+        elif (isinstance(node, ast.ImportFrom)
+              and node.level == 0 and node.module):
+            roots.add(node.module.split(".")[0])
     roots.discard("__future__")
     nonstdlib = roots - set(sys.stdlib_module_names)
     assert nonstdlib == set(), f"non-stdlib imports: {nonstdlib}"

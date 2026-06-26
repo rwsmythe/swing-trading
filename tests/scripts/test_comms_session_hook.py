@@ -171,20 +171,18 @@ def test_main_internal_raise_exits_zero(monkeypatch):
     assert hook.main(["session-start"]) == 0
 
 
-def test_subprocess_no_swing_role_exits_zero_no_registration(tmp_path):
+def test_subprocess_no_swing_role_exits_zero_no_registration():
     # The quiet default (no SWING_ROLE) -- witness it, the seeded-gate-masks-
-    # default discipline. Runs the hook as a real subprocess via stdin.
+    # default discipline. Runs the hook as a real subprocess via stdin. Inherit
+    # the real env (so the interpreter starts) but with SWING_ROLE removed.
+    import os
+    env = {k: v for k, v in os.environ.items() if k != "SWING_ROLE"}
     proc = subprocess.run(
         [sys.executable, str(_HOOK_PATH), "session-start"],
         input=b'{"session_id":"g1"}',
-        capture_output=True, env={"SystemRoot": _system_root()},
+        capture_output=True, env=env, check=False,
     )
     assert proc.returncode == 0
-
-
-def _system_root():
-    import os
-    return os.environ.get("SystemRoot", "C:\\Windows")
 
 
 def _force_last_seen(root, sid, value):

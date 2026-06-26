@@ -472,10 +472,8 @@ def post_message(
         if key in seen_inboxes:
             continue
         seen_inboxes.add(key)
-        if role == "orchestrator":
-            label = _recipient_label(role, inbox.parent.name)
-        else:
-            label = role
+        label = (_recipient_label(role, inbox.parent.name)
+                 if role == "orchestrator" else role)
         resolved.append((inbox, label))
 
     # Precompute every (final path, content) BEFORE writing anything so a
@@ -699,12 +697,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_post.add_argument("--thread", default=None, help="optional thread slug")
     p_post.set_defaults(func=cmd_post)
 
-    _SESSION_HELP = "orchestrator generation session_id (required for --role orchestrator)"
+    session_help = ("orchestrator generation session_id "
+                    "(required for --role orchestrator)")
 
     p_list = sub.add_parser("list", help="list a role's inbox")
     _add_comms_root(p_list)
     p_list.add_argument("--role", required=True, help="|".join(VALID_TO))
-    p_list.add_argument("--session", default=None, help=_SESSION_HELP)
+    p_list.add_argument("--session", default=None, help=session_help)
     p_list.add_argument("--unread-only", action="store_true",
                         help="(default already lists only the inbox)")
     p_list.set_defaults(func=cmd_list)
@@ -712,7 +711,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_read = sub.add_parser("read", help="print + ack message(s) (inbox -> read)")
     _add_comms_root(p_read)
     p_read.add_argument("--role", required=True, help="|".join(VALID_TO))
-    p_read.add_argument("--session", default=None, help=_SESSION_HELP)
+    p_read.add_argument("--session", default=None, help=session_help)
     g = p_read.add_mutually_exclusive_group()
     g.add_argument("--all", action="store_true", help="read+ack the whole inbox")
     g.add_argument("--id", default=None, help="read+ack one message by filename")
@@ -721,7 +720,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_peek = sub.add_parser("peek", help="print unread WITHOUT acking")
     _add_comms_root(p_peek)
     p_peek.add_argument("--role", required=True, help="|".join(VALID_TO))
-    p_peek.add_argument("--session", default=None, help=_SESSION_HELP)
+    p_peek.add_argument("--session", default=None, help=session_help)
     p_peek.set_defaults(func=cmd_peek)
 
     return parser
