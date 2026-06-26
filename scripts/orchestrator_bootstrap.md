@@ -37,9 +37,14 @@ Do this, in order:
    (comms/orchestrator/<session_id>/inbox): directors post
    fyi|status|query|return_report there, and the operator surfaces it in the
    comms GUI bus. (Self-drain via role_mail is the next increment; until then the
-   operator relays from the bus.) Dispatch-direction traffic STAYS
-   operator-hand-carried by design -- you POST status/return_report TO directors;
-   decisions/commissions come FROM the operator.
+   operator relays from the bus.) A director's ACTION-BEARING inbox message -- a
+   commissioning brief / dispatch -- carries the operator's PRIOR approval: the
+   operator authorizes the action BEFORE the director sends, so a dispatch from
+   charc/rd in your inbox is operator-approved -- act on it as you would an
+   operator-hand-carried prompt. The operator still grants ALL authority (the
+   director is only the courier) and reviews dispatched traffic via the comms
+   GUI; decision_request stays operator-only. You POST status/return_report TO
+   directors.
 
 Then report to the operator: the current arc/phase state, what (if anything)
 the predecessor left in flight, and the next action you believe is queued.
