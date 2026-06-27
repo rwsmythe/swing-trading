@@ -7,6 +7,7 @@ monkeypatch is needed here (kept in mind per the CLAUDE.md gotcha).
 
 from __future__ import annotations
 
+import argparse
 import importlib.util
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -830,3 +831,107 @@ def test_ack_message_three_arg_still_works(comms):
     dest = role_mail.ack_message(comms, "operator", fname)  # 3-arg, no session
     assert dest.is_file()
     assert len(_inbox(comms, "operator")) == 0
+
+
+# --- G6 B.1: orchestrator newest-live self-read (read/list/peek no-session) -
+
+def _set_started_ts(comms_root, sid, started):
+    """Rewrite a seeded gen's started_ts so multi-gen newest is deterministic."""
+    import json
+    reg = role_mail._registry()
+    path = reg.entry_path(Path(comms_root), sid)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["started_ts"] = started.isoformat()
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+
+# T1a -- read no-session resolves newest-live AND acks THAT gen (read+ack
+# consistency: the .md moves from the resolved gen's inbox/ -> read/).
+def test_orchestrator_read_no_session_resolves_newest_live_and_acks_that_gen(
+        comms, monkeypatch, capsys):
+    _seed_live_orch(comms, "g1", monkeypatch)
+    role_mail.post_message(comms, "charc", ["orchestrator:g1"], "fyi", "m", "BODY")
+    capsys.readouterr()
+    rc = role_mail.main(["read", "--role", "orchestrator", "--all",
+                         "--comms-root", str(comms)])
+    assert rc == 0
+    assert "BODY" in capsys.readouterr().out
+    assert len(_per_gen_inbox(comms, "g1")) == 0
+    assert len(_per_gen_read(comms, "g1")) == 1
+
+
+# T1c (GUARD) -- explicit --session targets a SPECIFIC, non-newest gen;
+# newest-live must NOT override an explicit --session. Passes pre- and post-fix.
+def test_orchestrator_read_explicit_session_targets_specific_non_newest_gen(
+        comms, monkeypatch, capsys):
+    _seed_live_orch(comms, "g1", monkeypatch)
+    _seed_live_orch(comms, "g2", monkeypatch)
+    _set_started_ts(comms, "g1", _FIXED - timedelta(hours=1))  # older
+    _set_started_ts(comms, "g2", _FIXED)                        # newest-live
+    role_mail.post_message(comms, "charc", ["orchestrator:g1"], "fyi", "m", "g1msg")
+    role_mail.post_message(comms, "charc", ["orchestrator:g2"], "fyi", "m", "g2msg")
+    capsys.readouterr()
+    rc = role_mail.main(["read", "--role", "orchestrator", "--session", "g1",
+                         "--all", "--comms-root", str(comms)])
+    assert rc == 0
+    assert len(_per_gen_inbox(comms, "g1")) == 0
+    assert len(_per_gen_read(comms, "g1")) == 1
+    assert len(_per_gen_inbox(comms, "g2")) == 1   # newer gen UNTOUCHED
+
+
+# T1d -- list no-session resolves newest-live, NO ack (observational).
+def test_orchestrator_list_no_session_resolves_newest_live_no_ack(
+        comms, monkeypatch, capsys):
+    _seed_live_orch(comms, "g1", monkeypatch)
+    role_mail.post_message(comms, "charc", ["orchestrator:g1"], "fyi", "m", "x")
+    capsys.readouterr()
+    rc = role_mail.main(["list", "--role", "orchestrator",
+                         "--comms-root", str(comms)])
+    assert rc == 0
+    assert "1 unread" in capsys.readouterr().out
+    assert len(_per_gen_inbox(comms, "g1")) == 1   # not acked
+
+
+# T1e -- peek no-session resolves newest-live, NO ack (peek never acks).
+def test_orchestrator_peek_no_session_resolves_newest_live_no_ack(
+        comms, monkeypatch, capsys):
+    _seed_live_orch(comms, "g1", monkeypatch)
+    role_mail.post_message(comms, "charc", ["orchestrator:g1"], "fyi", "m", "PEEKBODY")
+    capsys.readouterr()
+    rc = role_mail.main(["peek", "--role", "orchestrator",
+                         "--comms-root", str(comms)])
+    assert rc == 0
+    assert "PEEKBODY" in capsys.readouterr().out
+    assert len(_per_gen_inbox(comms, "g1")) == 1   # peek never acks
+
+
+# T1f -- read no-session, MULTIPLE live gens -> drains the NEWEST only
+# (the documented edge + read+ack consistency on the resolved gen).
+def test_orchestrator_read_no_session_multi_gen_drains_newest_only(
+        comms, monkeypatch, capsys):
+    _seed_live_orch(comms, "g1", monkeypatch)
+    _seed_live_orch(comms, "g2", monkeypatch)
+    _set_started_ts(comms, "g1", _FIXED - timedelta(hours=1))  # older
+    _set_started_ts(comms, "g2", _FIXED)                        # newest-live
+    role_mail.post_message(comms, "charc", ["orchestrator:g1"], "fyi", "m", "g1msg")
+    role_mail.post_message(comms, "charc", ["orchestrator:g2"], "fyi", "m", "g2msg")
+    capsys.readouterr()
+    rc = role_mail.main(["read", "--role", "orchestrator", "--all",
+                         "--comms-root", str(comms)])
+    assert rc == 0
+    assert len(_per_gen_read(comms, "g2")) == 1    # newest drained + acked
+    assert len(_per_gen_inbox(comms, "g2")) == 0
+    assert len(_per_gen_inbox(comms, "g1")) == 1   # older UNTOUCHED
+
+
+# T1g -- the --session help text is newest-live-aware, NOT "required".
+def test_session_help_is_newest_live_aware_not_required():
+    parser = role_mail.build_parser()
+    sub = [a for a in parser._actions
+           if isinstance(a, argparse._SubParsersAction)][0]
+    read_parser = sub.choices["read"]
+    session_action = [a for a in read_parser._actions
+                      if "--session" in getattr(a, "option_strings", [])][0]
+    help_text = session_action.help
+    assert "required" not in help_text
+    assert "newest-live" in help_text

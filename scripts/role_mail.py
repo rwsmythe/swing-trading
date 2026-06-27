@@ -73,6 +73,16 @@ class NoLiveOrchestratorError(MailError):
     """
 
 
+class NoLiveOrchestratorReadError(MailError):
+    """No live orchestrator generation to read a bare `--role orchestrator`.
+
+    The read-side twin of NoLiveOrchestratorError (a CLEAR error, NEVER the old
+    "requires --session"): a bare `read|list|peek --role orchestrator` resolves
+    to the newest-live generation, and when none is live the caller addresses a
+    specific generation with `--session <session_id>` or brings one up.
+    """
+
+
 # Lazy single-source registry loader (G6 Arc A). role_mail DELEGATES newest-live
 # resolution + session_id safety + the per-generation path shape to
 # comms_session_registry -- it NEVER re-implements them (lessons-learned guard
@@ -285,6 +295,41 @@ def _inbox_for_target(root: Path, role: str, sid: str | None,
         return _registry().per_generation_inbox(root, eff)
     raise MailError(
         "invalid recipient " + repr(role) + "; valid roles: " + "|".join(VALID_TO))
+
+
+def _effective_read_session(root: Path, role: str, sid: str | None,
+                            now: datetime | None = None) -> str | None:
+    """The session_id a read/list/peek op should use (resolve newest-live ONCE).
+
+    The read side is TWO operations (list the inbox + ack each message) that
+    MUST agree on ONE generation, so resolution is hoisted ABOVE both (here, at
+    the cmd_* layer) and the resolved value is threaded into both -- read+ack
+    consistency by construction. Mirrors the SEND side's single resolution at
+    _inbox_for_target, delegating newest-live to the registry (single-source,
+    guard #4).
+
+    - Singular role (charc/rd/operator): returns sid unchanged (the singular
+      path ignores it) -> ZERO behavior change.
+    - orchestrator WITH an explicit sid: returns it unchanged (a specific,
+      possibly non-newest / pruned gen) -> ZERO behavior change (back-compat).
+    - orchestrator with NO sid (the self-read): resolve the newest-live
+      generation via the registry. No live gen -> a CLEAR read-side error
+      (NoLiveOrchestratorReadError), NOT the old "requires --session". The
+      resolved sid is re-validated via is_valid_session_id BEFORE it is returned
+      into any path (the same belt the send side uses).
+    """
+    if role != "orchestrator" or sid is not None:
+        return sid
+    entry = _registry().newest_live(root, now if now is not None else _now())
+    if not entry:
+        raise NoLiveOrchestratorReadError(
+            "no live orchestrator generation to read. Address a specific "
+            "generation with '--session <session_id>', or bring an orchestrator "
+            "generation up first.")
+    eff = entry.get("session_id")
+    if not _registry().is_valid_session_id(eff):
+        raise MailError("refusing unsafe session_id " + repr(eff))
+    return eff
 
 
 def _role_inbox_dir(root: Path, role: str, sid: str | None) -> Path:
@@ -594,7 +639,7 @@ def cmd_list(args: argparse.Namespace) -> int:
             "invalid --role " + repr(args.role)
             + "; valid roles: " + "|".join(VALID_TO)
         )
-    sid = getattr(args, "session", None)
+    sid = _effective_read_session(root, args.role, getattr(args, "session", None))
     inbox = _list_inbox(root, args.role, sid)
     read_count = len(_list_read(root, args.role, sid))
     print(f"inbox for {args.role}: {len(inbox)} unread, {read_count} read")
@@ -626,7 +671,7 @@ def cmd_read(args: argparse.Namespace) -> int:
             "invalid --role " + repr(args.role)
             + "; valid roles: " + "|".join(VALID_TO)
         )
-    sid = getattr(args, "session", None)
+    sid = _effective_read_session(root, args.role, getattr(args, "session", None))
     inbox = _list_inbox(root, args.role, sid)
     if args.id:
         targets = [p for p in inbox if p.name == args.id]
@@ -652,7 +697,7 @@ def cmd_peek(args: argparse.Namespace) -> int:
             "invalid --role " + repr(args.role)
             + "; valid roles: " + "|".join(VALID_TO)
         )
-    sid = getattr(args, "session", None)
+    sid = _effective_read_session(root, args.role, getattr(args, "session", None))
     inbox = _list_inbox(root, args.role, sid)
     if not inbox:
         print(f"inbox for {args.role} is empty.")
@@ -697,8 +742,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_post.add_argument("--thread", default=None, help="optional thread slug")
     p_post.set_defaults(func=cmd_post)
 
-    session_help = ("orchestrator generation session_id "
-                    "(required for --role orchestrator)")
+    session_help = ("orchestrator generation session_id; omit to target the "
+                    "newest-live generation (pass it for a specific/non-newest gen)")
 
     p_list = sub.add_parser("list", help="list a role's inbox")
     _add_comms_root(p_list)
