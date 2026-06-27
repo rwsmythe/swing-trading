@@ -935,3 +935,65 @@ def test_session_help_is_newest_live_aware_not_required():
     help_text = session_action.help
     assert "required" not in help_text
     assert "newest-live" in help_text
+
+
+# T2a -- the READ path delegates newest-live resolution to the registry (it
+# does NOT hand-roll resolution off the filesystem). Read+ack route through the
+# stub's per-generation dirs.
+def test_role_mail_read_delegates_resolution_to_registry(comms, monkeypatch):
+    sentinel_inbox = Path(comms) / "STUBBED" / "inbox"
+    sentinel_read = Path(comms) / "STUBBED" / "read"
+    sentinel_inbox.mkdir(parents=True, exist_ok=True)
+    (sentinel_inbox / "20260625T120000Z-charc-m.md").write_text(
+        "---\nfrom: charc\nto: orchestrator:STUB\ntype: fyi\n---\n\nbody\n",
+        encoding="utf-8")
+
+    class _Stub:
+        STALE_SECONDS = 2700
+
+        @staticmethod
+        def is_valid_session_id(sid):
+            return True
+
+        @staticmethod
+        def newest_live(root, now, stale_seconds=2700):
+            return {"session_id": "STUB"}
+
+        @staticmethod
+        def per_generation_inbox(root, sid):
+            return sentinel_inbox
+
+        @staticmethod
+        def per_generation_read(root, sid):
+            return sentinel_read
+
+    monkeypatch.setattr(role_mail, "_registry", lambda: _Stub())
+    monkeypatch.setattr(role_mail, "_now", lambda: _FIXED)
+    rc = role_mail.main(["read", "--role", "orchestrator", "--all",
+                         "--comms-root", str(comms)])
+    assert rc == 0
+    # read + ack routed through the STUB's per-generation dirs -> delegation
+    assert sorted(sentinel_inbox.glob("*.md")) == []
+    assert len(sorted(sentinel_read.glob("*.md"))) == 1
+
+
+# T2c -- cmd_read/list/peek resolve EXACTLY ONCE through the single
+# _effective_read_session seam (the read+ack consistency guarantee depends on
+# it). A spy returns the raw sid unchanged so behavior is preserved.
+def test_read_commands_route_through_effective_read_session(comms, monkeypatch):
+    calls = []
+
+    def _spy(root, role, sid, now=None):
+        calls.append((root, role, sid))
+        return sid
+
+    monkeypatch.setattr(role_mail, "_effective_read_session", _spy)
+    for cmd in ("read", "list", "peek"):
+        calls.clear()
+        argv = [cmd, "--role", "charc", "--comms-root", str(comms)]
+        if cmd == "read":
+            argv.append("--all")
+        rc = role_mail.main(argv)
+        assert rc == 0
+        assert len(calls) == 1
+        assert calls[0] == (Path(comms), "charc", None)
