@@ -110,7 +110,7 @@ $RoleEffort = @{ 'charc' = 'max'; 'rd' = 'max'; 'orchestrator' = 'xhigh' }
 # the full multi-line prompt content lives in the bootstrap files to keep the
 # command line robust through wt.exe / Start-Process).
 $FreshPromptFmt = 'Read and follow {0} -- it is your role bootstrap. Begin now.'
-$ResumePrompt = 'Resuming your director session: re-read your charter section-of-record, run python scripts/role_mail.py read --role {0} --all to drain your inbox, then report current state and await the operator.'
+$ResumePrompt = 'Resuming your session: re-read your role section-of-record, run python scripts/role_mail.py read --role {0} --all to drain your inbox, then report current state and await the operator.'
 
 # --- helpers ---------------------------------------------------------------
 

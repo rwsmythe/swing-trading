@@ -50,6 +50,22 @@ def test_roletitles_maps_orchestrator():
     assert "'ORCHESTRATOR'" in text
 
 
+# --- G6 B.1 Task 4: role-neutral resume prompt -----------------------------
+
+def test_resume_prompt_is_role_neutral():
+    text = _script_text()
+    line = next((ln for ln in text.splitlines() if "$ResumePrompt" in ln), None)
+    assert line is not None, "no $ResumePrompt line found in the launcher"
+    # both director-framed terms gone (FULL role-neutrality, not just clause 1)
+    assert "director" not in line
+    assert "charter" not in line
+    # the role-neutral replacement is present
+    assert "Resuming your session" in line
+    assert "section-of-record" in line
+    # the self-drain command is preserved (with the {0} role substitution)
+    assert "read --role {0} --all" in line
+
+
 # --- Task 1b: behavioral -DryRun (skip-guarded) ----------------------------
 
 def test_dryrun_orchestrator_sets_role_and_prints_command():
