@@ -771,12 +771,19 @@ def test_orchestrator_read_list_peek_session_round_trip(comms, capsys):
     assert len(_per_gen_read(comms, "g1")) == 1
 
 
-def test_orchestrator_read_without_session_errors(comms, capsys):
+# T1b -- read no-session with NO live gen -> the CLEAR read-side error (the FLIP
+# of the old Arc-A test_orchestrator_read_without_session_errors, which codified
+# the now-reversed "requires --session" contract). The OLD message is gone.
+def test_orchestrator_read_no_session_no_live_gen_clear_error(comms, monkeypatch,
+                                                              capsys):
+    monkeypatch.setattr(role_mail, "_now", lambda: _FIXED)  # empty registry
     rc = role_mail.main(["read", "--role", "orchestrator", "--all",
                          "--comms-root", str(comms)])
     assert rc == 1
     err = capsys.readouterr().err
-    assert "session" in err.lower()
+    assert "no live orchestrator" in err.lower()
+    assert "requires --session" not in err
+    assert list(Path(comms).rglob("*.md")) == []
 
 
 # 4g -- single-sourced reader: behavioral delegation + structural backstop
