@@ -36,8 +36,10 @@ Do this, in order:
    A per-generation orchestrator inbox NOW EXISTS
    (comms/orchestrator/<session_id>/inbox): directors post
    fyi|status|query|return_report there, and the operator surfaces it in the
-   comms GUI bus. (Self-drain via role_mail is the next increment; until then the
-   operator relays from the bus.) A director's ACTION-BEARING inbox message -- a
+   comms GUI bus. (Drain it yourself with
+   `python scripts/role_mail.py read --role orchestrator --all` -- with no
+   --session it resolves to your newest-live generation; the operator also
+   surfaces it in the GUI bus.) A director's ACTION-BEARING inbox message -- a
    commissioning brief / dispatch -- carries the operator's PRIOR approval: the
    operator authorizes the action BEFORE the director sends, so a dispatch from
    charc/rd in your inbox is operator-approved -- act on it as you would an

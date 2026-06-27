@@ -761,6 +761,14 @@ def test_orchestrator_bootstrap_served_verbatim(client):
     assert r.text == expected
 
 
+# B.1: the self-drain shipped, so the bootstrap no longer says it is pending.
+def test_orchestrator_bootstrap_self_drain_is_current():
+    text = (comms_ui._SCRIPTS_DIR / "orchestrator_bootstrap.md").read_text(
+        encoding="utf-8")
+    assert "next increment" not in text
+    assert "read --role orchestrator --all" in text
+
+
 def test_directors_strip_renders_controls(client, comms):
     page = client.get("/").text
     assert 'hx-post="/directors/launch"' in page
