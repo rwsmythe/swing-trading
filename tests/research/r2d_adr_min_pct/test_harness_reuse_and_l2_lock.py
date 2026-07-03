@@ -178,7 +178,7 @@ def test_r2d_cohort_selection_method_documented_in_brief() -> None:
     """
     brief = (
         REPO_ROOT
-        / "docs/r2d-adr-min-pct-cohort-backtest-dispatch-brief.md"
+        / "docs/archive/pre-phase-16/r2d-adr-min-pct-cohort-backtest-dispatch-brief.md"
     )
     assert brief.exists(), f"R2-D dispatch brief missing at {brief}"
     text = brief.read_text(encoding="utf-8")
@@ -199,7 +199,7 @@ def test_r2d_brief_documents_variable_distinction_from_r2a() -> None:
     tightness_days_required)."""
     brief = (
         REPO_ROOT
-        / "docs/r2d-adr-min-pct-cohort-backtest-dispatch-brief.md"
+        / "docs/archive/pre-phase-16/r2d-adr-min-pct-cohort-backtest-dispatch-brief.md"
     )
     text = brief.read_text(encoding="utf-8")
     assert "vcp.adr_min_pct" in text

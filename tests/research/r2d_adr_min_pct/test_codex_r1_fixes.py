@@ -41,7 +41,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 SOURCE_MD = REPO_ROOT / "exports/diagnostics/aplus-sensitivity-v2-20260524T205849Z.md"
 AUDIT_JSON = REPO_ROOT / "exports/research/cohorts/r2d_adr_min_pct_sp2_0.flips_audit.json"
 COHORT_FIXTURE = REPO_ROOT / "tests/fixtures/research/r2d_adr_min_pct/cohort.json"
-BRIEF = REPO_ROOT / "docs/r2d-adr-min-pct-cohort-backtest-dispatch-brief.md"
+BRIEF = REPO_ROOT / "docs/archive/pre-phase-16/r2d-adr-min-pct-cohort-backtest-dispatch-brief.md"
 
 
 # ---------------------------------------------------------------------------

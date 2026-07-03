@@ -172,7 +172,7 @@ def test_r2a_cohort_selection_method_documented_in_brief() -> None:
     documentation drift)."""
     brief = (
         REPO_ROOT
-        / "docs/r2a-vcp-tightness-days-required-cohort-backtest-dispatch-brief.md"
+        / "docs/archive/pre-phase-16/r2a-vcp-tightness-days-required-cohort-backtest-dispatch-brief.md"
     )
     assert brief.exists(), f"R2-A dispatch brief missing at {brief}"
     text = brief.read_text(encoding="utf-8")
