@@ -36,8 +36,14 @@ class _Paths:
 
 
 class _Cfg:
-    def __init__(self, db_path, exports_dir):
+    def __init__(self, db_path, exports_dir, project_root=None):
         self.paths = _Paths(db_path, exports_dir)
+        # 19-B: _comms_root_for(cfg) -> config_project_root RAISES without this.
+        # Default to exports_dir.parent (a tmp root) so _comms_root_for resolves a
+        # tmp comms in tests (belt with the autouse comms seam-guard).
+        self.project_root = (
+            project_root if project_root is not None
+            else Path(exports_dir).parent)
 
 
 class FakeLease:
@@ -70,10 +76,13 @@ def _seed_green_db(db_path: Path) -> None:
 
 
 def _patch_artifact(tmp_path: Path, monkeypatch) -> Path:
+    # 19-B: the accessor now takes an optional `cfg`; the lambda accepts+ignores it
+    # so the runner's research_health_artifact_path(cfg) call resolves to this tmp
+    # path (the seam still intercepts the cfg-derived resolution for these tests).
     artifact = tmp_path / "health" / "latest.json"
     monkeypatch.setattr(
         "swing.monitoring.stoplights.research_health_artifact_path",
-        lambda: artifact)
+        lambda cfg=None: artifact)
     return artifact
 
 
@@ -259,9 +268,11 @@ def test_runner_invokes_step_via_step_guard_between_shadow_and_complete() -> Non
     # complete. Assert against the runner SOURCE.
     src = Path(runner.__file__).read_text(encoding="utf-8")
     assert 'step_guard(lease, "research_health", logger=log)' in src
-    assert '_step_research_health(cfg=cfg, run_id=lease.run_id)' in src
-    shadow_i = src.index('_step_shadow_expectancy(cfg=cfg')
-    research_i = src.index('_step_research_health(cfg=cfg, run_id=lease.run_id)')
+    # 19-B: the call threads run_id + shadow_manifest_path + run_warnings.
+    assert 'shadow_manifest_path=shadow_manifest' in src
+    assert 'run_id=lease.run_id' in src
+    shadow_i = src.index('_step_shadow_expectancy(')
+    research_i = src.index('shadow_manifest_path=shadow_manifest')
     complete_i = src.index('lease.step("complete")')
     assert shadow_i < research_i < complete_i
 
@@ -290,6 +301,19 @@ def _seed_red_db(db_path: Path) -> None:
         "sessions_since_detection, created_at) VALUES (?, ?, ?, ?, ?, ?)",
         (det, _POST_BASELINE_DATE, _NAN_OHLC, "invalidated", 1,
          "2026-09-15T00:00:00"))
+    conn.commit()
+    conn.close()
+
+
+def _seed_pipeline_run(db_path: Path, run_id: int) -> None:
+    # 19-B: a real pipeline_runs row so pipeline_run_exists(conn, run_id) is True
+    # (the lease-verification proof for the push gate).
+    conn = ensure_schema(db_path)
+    conn.execute(
+        "INSERT INTO pipeline_runs (id, started_ts, trigger, data_asof_date,"
+        " action_session_date, state, lease_token) VALUES"
+        " (?, '2026-09-15T00:00:00', 'manual', '2026-09-14', '2026-09-15',"
+        " 'running', 'tok')", (run_id,))
     conn.commit()
     conn.close()
 
@@ -351,11 +375,12 @@ def test_step_runtime_ordering_read_prior_then_push_then_write(
         calls.append(("read_prior", val))
         return val
 
-    def _spy_push(status, *, run_id, prior_overall, comms_root=None):
+    def _spy_push(status, *, run_id, prior_overall, lease_verified=False,
+                  comms_root=None):
         calls.append(("push", prior_overall, run_id))
         return False
 
-    def _spy_write(status, out_path=None):
+    def _spy_write(status, out_path=None, *, extra=None):
         calls.append(("write",))
         return artifact
 
@@ -369,17 +394,18 @@ def test_step_runtime_ordering_read_prior_then_push_then_write(
 
 
 def test_step_edge_posts_to_rd_end_to_end(tmp_path, monkeypatch) -> None:
-    # Drives the REAL helper (no push monkeypatch): a prior GREEN + a RED db ->
-    # the edge fires through push_research_health_red_to_rd, posting one status to
-    # the TMP comms tree (via the monkeypatched _default_comms_root seam).
+    # Drives the REAL helper (no push monkeypatch): a prior GREEN + a RED db + a
+    # REAL pipeline_runs row (lease_verified) -> the edge fires through
+    # push_research_health_red_to_rd, posting one status to the cfg-derived tmp
+    # comms tree (_comms_root_for(cfg) = cfg.project_root/comms).
     db = tmp_path / "swing.db"
     _seed_red_db(db)
+    _seed_pipeline_run(db, 104)  # 19-B: lease_verified proof
     artifact = _patch_artifact(tmp_path, monkeypatch)
     artifact.parent.mkdir(parents=True, exist_ok=True)
     artifact.write_text(_prior_envelope("green"), encoding="utf-8")
+    # cfg.project_root = (tmp_path/"exports").parent = tmp_path -> comms = tmp/comms
     comms = tmp_path / "comms"
-    monkeypatch.setattr(
-        "swing.monitoring.research_health._default_comms_root", lambda: comms)
 
     runner._step_research_health(cfg=_Cfg(db, tmp_path / "exports"), run_id=104)
 
@@ -409,3 +435,196 @@ def test_step_no_edge_when_prior_already_red(tmp_path, monkeypatch) -> None:
 
     assert not list((comms / "rd" / "inbox").glob("*.md")) if (
         comms / "rd" / "inbox").is_dir() else True
+
+
+# --- 19-B Task 6: anchor consistency + lease gate + broken-context guard -----
+
+from swing.monitoring.stoplights import (  # noqa: E402
+    RESEARCH_HEALTH_ARTIFACT_PATH,
+)
+
+
+def _cfg_artifact(exports_dir: Path) -> Path:
+    return Path(exports_dir) / "research" / "health" / "latest.json"
+
+
+def _prior_envelope_with_count(overall: str, detection_count: int) -> str:
+    from datetime import UTC, datetime
+    return json.dumps({
+        "monitor": "research_measurement",
+        "overall": overall,
+        "checks": [{"key": "k", "status": overall, "summary": "s",
+                    "detail": None}],
+        "generated_ts": datetime.now(UTC).isoformat(timespec="seconds"),
+        "detection_count": detection_count,
+    })
+
+
+def test_step_writes_to_cfg_derived_artifact_path(tmp_path) -> None:
+    # ANCHOR CONSISTENCY (no monkeypatch): the runner resolves the artifact via
+    # research_health_artifact_path(cfg) -> cfg.paths.exports_dir path, NOT the
+    # __file__ constant. Pre-fix: write_research_health_artifact(status) -> __file__.
+    db = tmp_path / "swing.db"
+    _seed_green_db(db)
+    exports_dir = tmp_path / "exports"
+    _seed_fresh_manifest(exports_dir / "research")
+
+    runner._step_research_health(cfg=_Cfg(db, exports_dir))
+
+    got = _cfg_artifact(exports_dir)
+    assert got.exists()
+    assert got != RESEARCH_HEALTH_ARTIFACT_PATH
+    env = json.loads(got.read_text(encoding="utf-8"))
+    assert env["monitor"] == "research_measurement"
+
+
+def test_step_pushes_to_cfg_derived_comms_root(tmp_path) -> None:
+    # The push lands under cfg.project_root/comms (config-derived), NOT the real
+    # comms. Combined with the autouse seam-guard the tmp comms passes through.
+    db = tmp_path / "swing.db"
+    _seed_red_db(db)
+    _seed_pipeline_run(db, 104)
+    exports_dir = tmp_path / "exports"
+    _seed_fresh_manifest(exports_dir / "research")
+    proj = tmp_path / "proj"
+    artifact = _cfg_artifact(exports_dir)
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text(_prior_envelope("green"), encoding="utf-8")
+
+    runner._step_research_health(
+        cfg=_Cfg(db, exports_dir, project_root=proj), run_id=104)
+
+    inbox = sorted((proj / "comms" / "rd" / "inbox").glob("*.md"))
+    assert len(inbox) == 1
+
+
+def test_step_skips_push_when_run_id_not_in_pipeline_runs(tmp_path) -> None:
+    # lease-or-silent: a RED edge with run_id=999 that is NOT a pipeline_runs row
+    # -> NO push, but the artifact STILL writes. Pre-fix (run_id-not-None only):
+    # the push fires. Post-fix: pipeline_run_exists False -> lease_verified False.
+    db = tmp_path / "swing.db"
+    _seed_red_db(db)  # NO pipeline_runs row seeded
+    exports_dir = tmp_path / "exports"
+    _seed_fresh_manifest(exports_dir / "research")
+    proj = tmp_path / "proj"
+    artifact = _cfg_artifact(exports_dir)
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text(_prior_envelope("green"), encoding="utf-8")
+
+    runner._step_research_health(
+        cfg=_Cfg(db, exports_dir, project_root=proj), run_id=999)
+
+    assert not (proj / "comms" / "rd" / "inbox").exists() or not list(
+        (proj / "comms" / "rd" / "inbox").glob("*.md"))
+    assert json.loads(artifact.read_text(encoding="utf-8"))["overall"] == "red"
+
+
+def test_step_pushes_when_run_id_is_real_pipeline_run(tmp_path) -> None:
+    # The gate is not over-tight: a real pipeline_runs row -> the push fires.
+    db = tmp_path / "swing.db"
+    _seed_red_db(db)
+    _seed_pipeline_run(db, 999)
+    exports_dir = tmp_path / "exports"
+    _seed_fresh_manifest(exports_dir / "research")
+    proj = tmp_path / "proj"
+    artifact = _cfg_artifact(exports_dir)
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text(_prior_envelope("green"), encoding="utf-8")
+
+    runner._step_research_health(
+        cfg=_Cfg(db, exports_dir, project_root=proj), run_id=999)
+
+    assert len(list((proj / "comms" / "rd" / "inbox").glob("*.md"))) == 1
+
+
+def test_step_suppresses_on_broken_context_empty_db(tmp_path) -> None:
+    # BROKEN-CONTEXT (empty-DB vector): prior artifact records detections>0, the DB
+    # is empty (0 detections), shadow_manifest_path=None -> write NOTHING (prior
+    # byte-identical), no push. Pre-fix (no guard): compute overwrites the prior.
+    db = tmp_path / "swing.db"
+    ensure_schema(db).close()  # schema, ZERO detections
+    exports_dir = tmp_path / "exports"
+    _seed_fresh_manifest(exports_dir / "research")
+    artifact = _cfg_artifact(exports_dir)
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    sentinel = _prior_envelope_with_count("green", 5)
+    artifact.write_text(sentinel, encoding="utf-8")
+
+    runner._step_research_health(
+        cfg=_Cfg(db, exports_dir), run_id=104, shadow_manifest_path=None)
+
+    assert artifact.read_text(encoding="utf-8") == sentinel  # untouched
+
+
+def test_step_suppresses_on_shadow_manifest_invisible(tmp_path) -> None:
+    # BROKEN-CONTEXT (invisible-manifest vector): shadow wrote a manifest but the
+    # cfg exports/research scan root is empty -> anchor divergence -> suppress.
+    db = tmp_path / "swing.db"
+    _seed_green_db(db)
+    exports_dir = tmp_path / "exports"  # NO shadow dir seeded under research/
+    artifact = _cfg_artifact(exports_dir)
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    sentinel = _prior_envelope("green")
+    artifact.write_text(sentinel, encoding="utf-8")
+
+    runner._step_research_health(
+        cfg=_Cfg(db, exports_dir), run_id=104,
+        shadow_manifest_path=tmp_path / "elsewhere" / "manifest.json")
+
+    assert artifact.read_text(encoding="utf-8") == sentinel  # untouched
+
+
+def test_step_writes_on_genuine_empty(tmp_path) -> None:
+    # GENUINE-EMPTY: empty DB + prior ABSENT -> NOT suppressed -> writes the honest
+    # envelope carrying detection_count: 0 (never over-suppress a fresh system).
+    db = tmp_path / "swing.db"
+    ensure_schema(db).close()  # schema, ZERO detections
+    exports_dir = tmp_path / "exports"
+    _seed_fresh_manifest(exports_dir / "research")
+    artifact = _cfg_artifact(exports_dir)
+
+    runner._step_research_health(
+        cfg=_Cfg(db, exports_dir), run_id=104,
+        shadow_manifest_path=exports_dir / "research" / "m.json")
+
+    assert artifact.exists()
+    assert json.loads(artifact.read_text(encoding="utf-8"))["detection_count"] == 0
+
+
+def test_step_emits_run_warning_on_suppress_empty_db_vector(tmp_path) -> None:
+    # RD 8.1(b): a suppress emits a run_warnings entry (step=research_health) so the
+    # recurrence surfaces in the run ledger + GUI, not only pipeline.log.
+    db = tmp_path / "swing.db"
+    ensure_schema(db).close()
+    exports_dir = tmp_path / "exports"
+    _seed_fresh_manifest(exports_dir / "research")
+    artifact = _cfg_artifact(exports_dir)
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text(_prior_envelope_with_count("green", 5), encoding="utf-8")
+    warns: list[dict] = []
+
+    runner._step_research_health(
+        cfg=_Cfg(db, exports_dir), run_id=104, shadow_manifest_path=None,
+        run_warnings=warns)
+
+    assert any(w["step"] == "research_health" for w in warns)
+
+
+def test_step_emits_run_warning_on_suppress_invisible_manifest_vector(
+    tmp_path,
+) -> None:
+    # RD 8.1(b) -- the OTHER suppress vector also emits the run-warning.
+    db = tmp_path / "swing.db"
+    _seed_green_db(db)
+    exports_dir = tmp_path / "exports"  # empty scan root
+    artifact = _cfg_artifact(exports_dir)
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text(_prior_envelope("green"), encoding="utf-8")
+    warns: list[dict] = []
+
+    runner._step_research_health(
+        cfg=_Cfg(db, exports_dir), run_id=104,
+        shadow_manifest_path=tmp_path / "elsewhere" / "m.json",
+        run_warnings=warns)
+
+    assert any(w["step"] == "research_health" for w in warns)
