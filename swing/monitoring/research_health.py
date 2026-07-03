@@ -895,11 +895,12 @@ _TERMINAL_STATUSES = (
 # watch-standard sec3.1): red ONLY on a CURRENT/ongoing coverage failure (a
 # trailing lag beyond CALIBRATION A's grace, an UNEXPLAINED interior observe
 # hole, or a zero-observation observe failure). ACCEPT (surface in detail, do
-# NOT drive red) a HISTORICAL hole the drumbeat has provably moved PAST -- a
-# later session for THAT detection IS observed -- when it is benign-explained:
-#   (2a) a WHOLE-SESSION MISSED RUN: the session has ZERO observations anywhere
-#        AND no completed pipeline_runs row named it (keyed on the RUN LEDGER's
-#        data_asof_date, NOT the mere absence of observations -- runner.py writes
+# NOT drive red) a hole that is benign-explained by EITHER:
+#   (2a) a WHOLE-SESSION MISSED RUN, ACCEPTED ONLY when the drumbeat has
+#        provably moved PAST it (a later session for THAT detection IS observed):
+#        the session has ZERO observations anywhere AND no completed
+#        pipeline_runs row named it (keyed on the RUN LEDGER's data_asof_date,
+#        NOT the mere absence of observations -- runner.py writes
 #        observation_date == data_asof_date). BOTH signals are required (the
 #        zero-global-observations AND the no-completed-run-ledger-row): the
 #        run-ledger half keeps a zero-observation observe failure (a run named S
@@ -907,7 +908,11 @@ _TERMINAL_STATUSES = (
 #        unexplained hole at a session another detection WAS observed RED.
 #   (2b) a per-detection hole explained by a recorded pattern_observe
 #        skip-warning (no bar for observation_date / non_finite_ohlc), tied to
-#        the (ticker, session) and to the run that observed that session.
+#        the (ticker, session) and to the run that observed that session. This is
+#        DIRECT evidence of a benign no-bar and is accepted whether the hole is
+#        interior, leading, OR TRAILING -- it is NOT gated by the "drumbeat moved
+#        past" test (19-A: the delisting fix; a delisted/acquired ticker's holes
+#        are trailing, so 2b must fire independent of a later observation).
 # An UNEXPLAINED interior hole (the run RAN, the bar existed, the row was
 # dropped with no skip-warning) STAYS RED -- the real observe-step-bug signal.
 # Conservative-degrade: a dropped/empty/unavailable pipeline_runs ledger ->
@@ -1069,14 +1074,22 @@ def _calibration_c_partition(
     skip_index: set[tuple[str, str]],
 ) -> tuple[set[str], set[str]]:
     """Partition a detection's missing sessions into (accepted, residual) per
-    CALIBRATION C. A session S in `missing_set` is ACCEPTED iff clause1 AND
-    clause2:
-      clause1 = bool(observed) and max(observed) > S  (interior/leading -- the
-                drumbeat moved PAST the hole; a TRAILING hole has no later
-                observation and is never accepted here; a never-observed
-                detection has empty observed -> clause1 False for every S).
-      clause2 = is_whole_session_miss OR ((ticker, S) in skip_index), where
-                is_whole_session_miss requires BOTH (S not in
+    CALIBRATION C. A session S in `missing_set` is ACCEPTED iff:
+        skip_explained (clause-2b, INDEPENDENT of clause1)
+        OR (clause1 AND is_whole_session_miss (clause-2a)).
+      clause-2b = ((ticker, S) in skip_index): a per-(ticker, S) recorded
+                pattern_observe skip-warning is DIRECT evidence of a benign
+                no-bar (e.g. a delisted/acquired ticker with no further bars),
+                so it is accepted whether the hole is interior, leading, OR
+                TRAILING -- it is NOT gated by clause1 (19-A: the delisting fix;
+                a trailing OR never-observed hole is accepted when, and only
+                when, it is skip-warning-explained).
+      clause1 = bool(observed) and max(observed) > S  (the drumbeat moved PAST
+                the hole; a TRAILING/never-observed hole has no later
+                observation -> clause1 False). clause1 gates ONLY clause-2a: a
+                trailing whole-session miss with NO skip-warning stays COUNTED
+                (a real drumbeat-behind failure -- the T2/T3 safety locks).
+      clause-2a = is_whole_session_miss, requiring BOTH (S not in
                 global_observed_sessions) AND (run_observed_sessions is not None
                 and S not in run_observed_sessions) (MAJOR-R2-1: the BOTH-signals
                 AND). The `is not None` guard is the conservative-degrade -- a
@@ -1088,6 +1101,21 @@ def _calibration_c_partition(
     has_later = bool(observed)
     latest_observed = max(observed) if observed else None
     for session in missing_set:
+        # clause-2b (skip-warning-explained): DIRECT per-(ticker, session)
+        # evidence of a benign no-bar (delisting / no-quote), legitimate whether
+        # the hole is interior, leading, OR trailing -> evaluated INDEPENDENT of
+        # clause-1. (19-A: a delisted ticker's holes are trailing, so clause-1 is
+        # False and 2b must not be gated behind it.)
+        skip_explained = (
+            isinstance(ticker, str) and (ticker, session) in skip_index
+        )
+        if skip_explained:
+            accepted.add(session)
+            continue
+        # clause-2a (whole-session missed run) STAYS clause-1-gated: a trailing
+        # whole-session miss (no later observation) is a real drumbeat-behind
+        # failure and must stay COUNTED (RED). clause1 = the drumbeat moved PAST
+        # this hole (a later session for THIS detection is observed).
         clause1 = has_later and latest_observed is not None and latest_observed > session
         if not clause1:
             continue
@@ -1096,10 +1124,7 @@ def _calibration_c_partition(
             and run_observed_sessions is not None
             and session not in run_observed_sessions
         )
-        skip_explained = (
-            isinstance(ticker, str) and (ticker, session) in skip_index
-        )
-        if is_whole_session_miss or skip_explained:
+        if is_whole_session_miss:
             accepted.add(session)
     residual = missing_set - accepted
     return accepted, residual
@@ -1272,11 +1297,14 @@ def _check_coverage_gaps(
                 if first is None:
                     continue  # too fresh -- no session yet to observe
                 expected = _sessions(first, last_completed)
-                # CALIBRATION C first (observed is EMPTY -> clause-1 is FALSE for
-                # every session -> nothing accepted -> residual == expected); then
-                # CALIBRATION A on the residual (a never-observed detection whose
-                # ONLY expected session is the single newest one is benign
-                # pre-nightly). The never-observed COUNT is thus preserved.
+                # CALIBRATION C first: observed is EMPTY -> clause-1 is FALSE for
+                # every session, so clause-2a accepts nothing -- BUT clause-2b can
+                # still fire per-session (a never-observed detection whose expected
+                # sessions carry recorded skip-warnings: the immediate-delisting-
+                # after-detection case, 19-A consequence #2). residual == expected
+                # ONLY when NO expected session is skip-explained. Then CALIBRATION
+                # A on the residual (a never-observed detection whose ONLY residual
+                # session is the single newest one is benign pre-nightly).
                 accepted, residual = _calibration_c_partition(
                     expected, observed, det_ticker,
                     global_observed_sessions, run_observed_sessions, skip_index)
@@ -1312,8 +1340,10 @@ def _check_coverage_gaps(
             is_terminal = latest_status in _TERMINAL_STATUSES
             upper = max_obs if is_terminal else last_completed
             expected = _sessions(first, upper)
-            # CALIBRATION C first (accept interior holes the drumbeat moved past
-            # that are whole-session-missed-runs or skip-warning-explained), then
+            # CALIBRATION C first: accept interior/leading holes the drumbeat
+            # moved past that are whole-session missed-runs (clause-2a,
+            # clause-1-gated) OR any skip-warning-explained hole (clause-2b,
+            # interior/leading/TRAILING -- not gated by clause-1). Then
             # CALIBRATION A on the residual (18-D sec6.7: grace a pure trailing-<=1
             # newest-session tail). C-FIRST-A-ON-RESIDUAL is required: A graces
             # only when missing == {max(expected)}, so a detection with an
