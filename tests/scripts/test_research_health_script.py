@@ -250,6 +250,31 @@ def test_script_suppresses_broken_context_empty_db(tmp_path, monkeypatch, capsys
     assert "declined" in capsys.readouterr().err.lower()
 
 
+def test_script_json_suppress_still_emits_parseable_json(
+    tmp_path, monkeypatch, capsys,
+):
+    # Codex R1 MAJOR: on a broken-context suppress the --json surface must STILL
+    # emit parseable JSON to stdout (contract: always valid JSON + exit 0) so a
+    # json.loads(stdout) consumer never crashes / mis-reads an empty success.
+    db = tmp_path / "swing.db"
+    ensure_schema(db).close()  # empty DB
+    artifact = tmp_path / "health" / "latest.json"
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    sentinel = _prior_with_count("green", 5)
+    artifact.write_text(sentinel, encoding="utf-8")
+    monkeypatch.setattr(
+        "swing.monitoring.stoplights.research_health_artifact_path",
+        lambda cfg=None: artifact)
+    mod = _load_script_module()
+    rc = mod.main(["--db", str(db), "--json"])
+    cap = capsys.readouterr()
+    assert rc == 0
+    assert artifact.read_text(encoding="utf-8") == sentinel  # NOT overwritten
+    parsed = json.loads(cap.out)  # parseable JSON on stdout (would raise if empty)
+    assert parsed["monitor"] == "research_measurement"
+    assert "declined" in cap.err.lower()
+
+
 def test_script_writes_on_genuine_fresh(tmp_path, monkeypatch):
     # Prior ABSENT + empty DB -> NOT suppressed -> writes an artifact carrying
     # detection_count: 0 (never over-suppress a genuinely-fresh system).

@@ -148,6 +148,13 @@ def main(argv: list[str] | None = None) -> int:
         # diagnostics go to STDERR so a --json consumer's stdout stays clean.
         print(f"research-health write declined (broken context): {reason}",
               file=sys.stderr)
+        # Codex R1 MAJOR: the --json machine surface MUST stay parseable (its
+        # contract is "always valid JSON + exit 0"); emit the computed envelope to
+        # stdout even on decline (the artifact write is still skipped; the stderr
+        # line is the out-of-band broken-context flag) so a `json.loads(stdout)`
+        # consumer never crashes / mis-reads an empty success.
+        if args.json:
+            print(json.dumps(status.to_dict(), indent=2))
         return 0
 
     # Write the conformant envelope ATOMICALLY in BOTH the ASCII and --json
