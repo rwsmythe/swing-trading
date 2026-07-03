@@ -127,9 +127,9 @@ def test_script_invokes_shared_writer(tmp_path: Path, monkeypatch) -> None:
     calls: list[tuple] = []
     real_writer = rh.write_research_health_artifact
 
-    def _spy(status, out_path=None):
+    def _spy(status, out_path=None, *, extra=None):
         calls.append((status, out_path))
-        return real_writer(status, out_path=out_path)
+        return real_writer(status, out_path=out_path, extra=extra)
 
     monkeypatch.setattr(rh, "write_research_health_artifact", _spy)
 
