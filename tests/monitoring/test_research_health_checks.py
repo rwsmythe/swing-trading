@@ -1199,6 +1199,39 @@ def test_coverage_calib_c_dino_skip_warning_accepted(tmp_path: Path) -> None:
     assert "accepted" in (check.detail or "")
 
 
+def test_coverage_calib_c_trailing_delisting_skip_accepted(tmp_path: Path) -> None:
+    # 19-A T1 (trailing delisting, the fix): a detection observed contiguously
+    # through 06-10 then TWO TRAILING holes 06-11,06-12, each carrying a recorded
+    # pattern_observe no-bar skip-warning (a delisted/acquired ticker with no
+    # further bars -- CNTA's real 2-session trailing shape). The holes are
+    # TRAILING so clause-1 is false for both.
+    #
+    # Pre-fix: clause-1 gates BOTH clauses -> 2b never consulted -> both counted
+    #          -> total_missing 2 -> YELLOW.
+    # Post-fix: 2b (skip_explained) evaluated INDEPENDENT of clause-1 -> both
+    #          accepted -> total_missing 0 -> GREEN, accepted_historical == 2.
+    # (2a cannot accept these: 06-11/06-12 ARE in run_observed_sessions, so this
+    # discriminates a wrong "un-gate 2a only" fix too.)
+    conn = _schema_conn(tmp_path)
+    cnta = _seed_detection(conn, ticker="CNTA", data_asof_date="2026-06-04")
+    for d in ("2026-06-05", "2026-06-08", "2026-06-09", "2026-06-10"):
+        _seed_observation(conn, cnta, observation_date=d, status="pending")
+    # Two completed runs at 06-11/06-12, each carrying the (CNTA, that session)
+    # no-bar skip-warning (observation_date == data_asof_date satisfies the tie).
+    for asd in ("2026-06-11", "2026-06-12"):
+        _seed_pipeline_run(
+            conn, data_asof_date=asd, lease_token=f"tok-t1-{asd}",
+            warnings=[{"step": "pattern_observe", "ticker": "CNTA",
+                       "observation_date": asd,
+                       "reason": "no bar for observation_date"}])
+    check = _only(_check_coverage_gaps(conn, now=_NOW), "coverage_gaps")
+    assert check.status == "green"
+    assert "0 observation-coverage gaps" in check.summary
+    assert "2 accepted historical" in check.summary
+    assert f"det{cnta}" in (check.detail or "")
+    assert "accepted" in (check.detail or "")
+
+
 def test_coverage_calib_c_unexplained_interior_hole_still_red(tmp_path: Path) -> None:
     # (b)-DISTINGUISHER (plan Task 4): an UNEXPLAINED interior hole (the run RAN,
     # the bar existed, the row was dropped with NO skip-warning) -> STILL RED.
