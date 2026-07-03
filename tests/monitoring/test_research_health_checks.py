@@ -1469,6 +1469,33 @@ def test_coverage_calib_c_partition_none_ledger_blocks_2a() -> None:
     assert residual == {"2026-06-10"}
 
 
+def test_calibration_c_partition_trailing_whole_session_miss_stays_gated() -> None:
+    # 19-A T3 (the over-eager-fix lock): clause-2a (is_whole_session_miss) STAYS
+    # clause-1-gated. A TRAILING whole-session miss (S is absent from global
+    # observations AND from the completed-run ledger, WITH NO skip-warning) and
+    # NO later observation must NOT be accepted -- it is a real drumbeat-behind
+    # failure and stays COUNTED. Direct partition unit (calendar-independent).
+    #
+    # 06-15: clause1 = max(observed)=06-05 > 06-15 -> False (trailing);
+    #        skip_explained = False; is_whole_session_miss = True (not in global,
+    #        run non-None WITHOUT 06-15).
+    # Pre-fix AND correct post-fix: 2b false -> fall through; clause1 false -> 2a
+    #        gated -> accepted == set(). An "un-gate both clauses" mutant (move the
+    #        is_whole_session_miss acceptance ahead of the clause-1 gate) would
+    #        accept 06-15 -> accepted == {"2026-06-15"} -> FAIL.
+    from swing.monitoring.research_health import _calibration_c_partition
+    accepted, residual = _calibration_c_partition(
+        missing_set={"2026-06-15"},
+        observed={"2026-06-05"},
+        ticker="X",
+        global_observed_sessions={"2026-06-05"},
+        run_observed_sessions={"2026-06-05"},
+        skip_index=set(),
+    )
+    assert accepted == set()
+    assert residual == {"2026-06-15"}
+
+
 def test_coverage_calib_c_null_warnings_json_skipped(tmp_path: Path) -> None:
     # Degradation variant (plan Task 6): a present pipeline_runs with a NULL /
     # non-JSON / non-list warnings_json row is skipped gracefully (no crash).
