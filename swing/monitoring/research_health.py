@@ -235,6 +235,7 @@ class ResearchHealthStatus:
 
 def write_research_health_artifact(
     status: ResearchHealthStatus, out_path: Path | None = None,
+    *, extra: dict | None = None,
 ) -> Path:
     """Atomically write `status`'s §3 envelope to `out_path` and return it.
 
@@ -243,19 +244,29 @@ def write_research_health_artifact(
     monkeypatch of the accessor is honored, mirroring the script's
     _resolve_out_path). Consumes `status.to_dict()` as-is; the dataclass
     __post_init__ already enforced the envelope contract at construction (LOCK 2 --
-    never re-validate here). Atomic: tmp in the SAME directory (os.replace requires
-    same filesystem -- the Windows OSError 18 gotcha) then os.replace; on ANY
-    BaseException the partial tmp is unlinked and the error re-raised (the prior
+    never re-validate here).
+
+    `extra` (19-B Task 5) is an OPTIONAL top-level merge (e.g.
+    `{"detection_count": N}`) applied AFTER `status.to_dict()` -- an ADDITIVE
+    extension of THIS single writer (never a second writer; the single-source LOCK
+    preserved). The 18-F reader gates only on monitor/overall/generated_ts/checks,
+    so an extra top-level key is ignored on read (the machine-readable guard
+    witness for the NEXT run). Atomic: tmp in the SAME directory (os.replace
+    requires same filesystem -- the Windows OSError 18 gotcha) then os.replace; on
+    ANY BaseException the partial tmp is unlinked and the error re-raised (the prior
     artifact is never clobbered).
     """
     if out_path is None:
         from swing.monitoring.stoplights import research_health_artifact_path
         out_path = research_health_artifact_path()
+    payload = status.to_dict()
+    if extra:
+        payload = {**payload, **extra}
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=str(out_path.parent), suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(status.to_dict(), fh, indent=2)
+            json.dump(payload, fh, indent=2)
         os.replace(tmp, out_path)
     except BaseException:
         with contextlib.suppress(OSError):
@@ -334,6 +345,23 @@ def _read_prior_overall(out_path: Path | None = None) -> str | None:
             return None
         overall = env.get("overall")
         return overall if isinstance(overall, str) else None
+    except Exception:
+        return None
+
+
+def _read_prior_env(out_path: Path | None = None) -> dict | None:
+    """Read the PRIOR latest.json as a raw dict BEFORE it is overwritten (19-B
+    Task 5 -- the guard's machine-readable witness source). Mirrors
+    `_read_prior_overall`'s broad guard: returns the parsed dict, or None when the
+    artifact is ABSENT / UNPARSEABLE / not a dict. NEVER raises (best-effort; incl.
+    a deeply-nested RecursionError -> None), so it can run before the writer in
+    _step_research_health without ever skipping the write."""
+    try:
+        if out_path is None:
+            from swing.monitoring.stoplights import research_health_artifact_path
+            out_path = research_health_artifact_path()
+        env = json.loads(Path(out_path).read_text(encoding="utf-8"))
+        return env if isinstance(env, dict) else None
     except Exception:
         return None
 
@@ -457,6 +485,82 @@ def pipeline_run_exists(conn: sqlite3.Connection, run_id: int | None) -> bool:
         if _schema_unavailable(exc):
             return False
         raise
+
+
+# --------------------------------------------------------------------------
+# 19-B Task 5: the broken-context write-suppression guard (RD-reviewed
+# distinguisher). Machine-readable signals ONLY -- a direct DB COUNT for the
+# current read + a machine-readable `detection_count` stamped into the prior
+# artifact envelope for the "the live system had data" witness. NO English-string
+# coupling; the measurement computation (compute_research_health) is untouched.
+# --------------------------------------------------------------------------
+
+
+def db_detection_count(conn: sqlite3.Connection) -> int:
+    """Machine-readable current-empty signal: COUNT of the detection log. Zero
+    detections is the canonical empty-DB signal (a forward observation cannot
+    exist without a parent detection via the FK, so zero detections => zero
+    observations). Degrade-gracefully: a missing table (schema not yet applied) ->
+    -1 (a sentinel the caller's `== 0` treats as False -> NEVER suppress on a
+    pre-schema DB). Any OTHER OperationalError re-raises."""
+    try:
+        (n,) = conn.execute(
+            "SELECT COUNT(*) FROM pattern_detection_events").fetchone()
+        return int(n)
+    except sqlite3.OperationalError as exc:
+        if _schema_unavailable(exc):
+            return -1
+        raise
+
+
+def _prior_env_had_detections(prior_env) -> bool:
+    """The machine-readable 'the live system had data' witness (19-B Task 5). True
+    iff the prior valid research_measurement envelope carries a machine-readable
+    `detection_count` int > 0. A missing/None/non-int/bool `detection_count` (an
+    OLD pre-19-B artifact, or a non-conformant envelope) -> False -> CONSERVATIVE
+    no-suppress (never false-suppress a genuinely-fresh system). The prior artifact
+    lives under the config-anchored exports (decoupled from the HOME-anchored DB),
+    so on a wrong-HOME empty-DB read with a correct cwd the good prior artifact
+    witnesses the loss."""
+    if not isinstance(prior_env, dict) or prior_env.get("monitor") != RESEARCH_MONITOR_ID:
+        return False
+    dc = prior_env.get("detection_count")
+    return isinstance(dc, int) and not isinstance(dc, bool) and dc > 0
+
+
+def should_suppress_broken_context_write(
+    *, current_detection_count, exports_root, shadow_manifest_path, prior_env,
+) -> tuple[bool, str | None]:
+    """Return (suppress, reason). Suppress the write when the read looks broken-
+    context-empty on EITHER signal (19-B Task 5). A PURE function of machine-
+    readable inputs (an int count + a dir-scan + the prior envelope dict); the
+    caller queries db_detection_count(conn) while the conn is open and passes it
+    as current_detection_count.
+
+    Signal (i) -- anchor divergence: shadow SUCCEEDED this run (wrote a manifest)
+    but the health scan root shows NO engine artifacts -> read/write anchors
+    diverged or the just-written manifest is invisible. Gated on shadow SUCCESS
+    (manifest_path not None) so a genuine shadow FAILURE / first-ever run still
+    writes its honest drumbeat-RED (a real never-ran / engine-down state is NOT
+    hidden).
+
+    Signal (ii) -- wrong-HOME empty read: the CURRENT DB read is detection-empty
+    (a machine COUNT == 0) AND a prior valid artifact witnesses the system
+    PREVIOUSLY HAD detections (its machine-readable detection_count > 0) -> the DB
+    lost its data (db_path is HOME-anchored). The append-only invariant (no DELETE
+    FROM pattern_detection_events in swing/) makes a >0 -> 0 transition on the SAME
+    correct DB impossible by construction, so this fires only on a different
+    (wrong-HOME) DB or a deliberate research-log reset (for which leave-prior +
+    staleness-grey is the correct self-healing outcome)."""
+    if shadow_manifest_path is not None and _newest_artifact_dir(exports_root) is None:
+        return True, (
+            "shadow wrote a manifest but the health scan root is empty "
+            "(anchor divergence)")
+    if current_detection_count == 0 and _prior_env_had_detections(prior_env):
+        return True, (
+            "DB read is detection-empty but the prior artifact recorded "
+            "detections>0 (wrong-HOME empty read?)")
+    return False, None
 
 
 # --------------------------------------------------------------------------
