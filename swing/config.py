@@ -592,6 +592,13 @@ class Config:
     reconciliation: Reconciliation = field(default_factory=Reconciliation)
     integrations: IntegrationsConfig = field(default_factory=IntegrationsConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
+    # 19-B: the config-derived project root (= config_path.parent.resolve() at
+    # load()). The ONE canonical source the comms root derives from -- so a
+    # worktree/mis-cwd run's push tracks its OWN launch context, not the editable-
+    # installed MAIN repo. Trailing + defaulted so every existing Config(...)
+    # construction (all keyword) stays valid; load()/from_defaults() always
+    # populate it.
+    project_root: Path | None = None
 
     @classmethod
     def from_defaults(cls) -> Config:
@@ -725,4 +732,20 @@ def load(config_path: Path) -> Config:
             schwab=SchwabIntegrationConfig(**raw_schwab),
         ),
         logging=_parse_logging_config(raw.get("logging", {})),
+        project_root=project_root,  # 19-B: the config-derived launch-context root
     )
+
+
+def config_project_root(cfg) -> Path:
+    """The config-derived project root -- the ONE canonical source the research-
+    health comms root derives from (19-B). REQUIRES ``cfg.project_root`` (set by
+    ``load()``/``from_defaults()``); RAISES ``ValueError`` if it is unset, so
+    production can NEVER silently re-derive comms from a divergent
+    ``exports_dir.parent`` (Codex R5 MAJOR -- no silent-divergence fallback).
+    Every production cfg comes from ``load()`` and carries it; a test double that
+    reaches this must set ``project_root`` explicitly."""
+    root = getattr(cfg, "project_root", None)
+    if root is None:
+        raise ValueError(
+            "Config.project_root is unset; load()/from_defaults() must set it")
+    return root

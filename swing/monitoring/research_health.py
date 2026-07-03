@@ -301,6 +301,17 @@ def _effective_comms_root(comms_root: Path | None) -> Path:
     return comms_root if comms_root is not None else _default_comms_root()
 
 
+def _comms_root_for(cfg) -> Path:
+    """The config-derived comms root (19-B Task 4): ``cfg.project_root/comms``.
+    Derived from the EXPLICIT ``cfg.project_root`` (= config_path.parent.resolve()
+    stored on Config at load()) via ``config_project_root`` -- NOT the fragile
+    ``exports_dir.parent`` inference, so a relocated/absolute exports_dir cannot
+    re-split the anchor. A worktree run's cfg carries the worktree root; a MAIN
+    run's carries MAIN -> comms tracks the true launch context."""
+    from swing.config import config_project_root
+    return config_project_root(cfg) / "comms"
+
+
 def _read_prior_overall(out_path: Path | None = None) -> str | None:
     """Read the PRIOR latest.json's `overall` BEFORE it is overwritten.
 
