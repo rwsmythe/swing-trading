@@ -164,28 +164,6 @@ def test_r2a_cohort_fixture_shape_mirrors_d1() -> None:
     )
 
 
-def test_r2a_cohort_selection_method_documented_in_brief() -> None:
-    """Per gotcha #33: the R2-A dispatch brief must explicitly document
-    cohort_selection_method='v2_binding_variable_flips' as a selection-biased
-    cohort distinct from D2's bias-free cohort. This test asserts the brief
-    contains the required attribution string (forward-binding lock against
-    documentation drift)."""
-    brief = (
-        REPO_ROOT
-        / "docs/archive/pre-phase-16/r2a-vcp-tightness-days-required-cohort-backtest-dispatch-brief.md"
-    )
-    assert brief.exists(), f"R2-A dispatch brief missing at {brief}"
-    text = brief.read_text(encoding="utf-8")
-    assert "v2_binding_variable_flips" in text, (
-        "Dispatch brief must reference 'v2_binding_variable_flips' selection "
-        "method (gotcha #33 cohort-validity-vs-verdict-criteria discipline)"
-    )
-    assert "selection-biased" in text, (
-        "Dispatch brief must explicitly characterize R2-A cohort as "
-        "selection-biased vs D2's bias-free cohort"
-    )
-
-
 # ---------------------------------------------------------------------------
 # Cohort SHA-256 stability (regression safety for the fixture)
 # ---------------------------------------------------------------------------

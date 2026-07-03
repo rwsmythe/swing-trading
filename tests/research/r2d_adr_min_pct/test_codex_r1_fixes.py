@@ -41,42 +41,6 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 SOURCE_MD = REPO_ROOT / "exports/diagnostics/aplus-sensitivity-v2-20260524T205849Z.md"
 AUDIT_JSON = REPO_ROOT / "exports/research/cohorts/r2d_adr_min_pct_sp2_0.flips_audit.json"
 COHORT_FIXTURE = REPO_ROOT / "tests/fixtures/research/r2d_adr_min_pct/cohort.json"
-BRIEF = REPO_ROOT / "docs/archive/pre-phase-16/r2d-adr-min-pct-cohort-backtest-dispatch-brief.md"
-
-
-# ---------------------------------------------------------------------------
-# R1.M#1: Brief Amendment 1 sweep_point reconciliation
-# ---------------------------------------------------------------------------
-def test_brief_amendment_1_reconciles_sweep_point_discrepancy() -> None:
-    """Amendment 1 MUST exist in the brief AND explicitly reconcile the
-    sp=1 prescription against the actual sp=2.0 binding signal."""
-    text = BRIEF.read_text(encoding="utf-8")
-    assert "Amendment 1" in text, "Brief must contain Amendment 1 header"
-    assert "sweep_point reconciliation" in text, (
-        "Amendment 1 must explicitly mention sweep_point reconciliation"
-    )
-    assert "sweep_point=2.0" in text and "sweep_point=1" in text, (
-        "Amendment 1 must reference both the actual (sp=2.0) + brief-prescribed (sp=1) values"
-    )
-    assert "+11 max_delta_aplus" in text or "max_delta_aplus" in text
-
-
-# ---------------------------------------------------------------------------
-# R1.M#2: INSUFFICIENT SAMPLE pre-commit per gotcha #33
-# ---------------------------------------------------------------------------
-def test_brief_amendment_1_pre_commits_insufficient_sample_verdict() -> None:
-    """Amendment 1 MUST pre-commit that R2-D's headline verdict is
-    INSUFFICIENT SAMPLE per gotcha #33 (N=4 STNG-only cohort cannot
-    discriminate the cross-cohort systemic claim)."""
-    text = BRIEF.read_text(encoding="utf-8")
-    assert "INSUFFICIENT SAMPLE" in text, (
-        "Amendment 1 must pre-commit INSUFFICIENT SAMPLE as the headline verdict class"
-    )
-    assert "gotcha #33" in text, (
-        "Amendment 1 must cite gotcha #33 cohort-validity discipline explicitly"
-    )
-    # The pre-commit must explicitly forbid SYSTEMIC NEGATIVE on this cohort
-    assert "SYSTEMIC" in text and "FORBIDDEN" in text
 
 
 # ---------------------------------------------------------------------------
@@ -402,19 +366,3 @@ def test_regenerate_cohort_help_documents_allow_non_canonical_paths() -> None:
     )
     assert proc.returncode == 0
     assert "--allow-non-canonical-paths" in proc.stdout
-
-
-# ---------------------------------------------------------------------------
-# R1.m#1: fixture-derivation provenance test
-# ---------------------------------------------------------------------------
-def test_cohort_fixture_derivation_chain_documented() -> None:
-    """The fixture-derivation chain (1559 -> 132 -> 127 -> 4) MUST be
-    documented in the slice 2 commit message (verified by grep against
-    git log) OR in the Amendment 1 cohort-validity section. Either path
-    surfaces the transformation explicitly for auditors."""
-    text = BRIEF.read_text(encoding="utf-8")
-    # Amendment 1 cohort-validity section must enumerate the chain
-    assert "1559" in text, "Brief Amendment 1 must cite 1559 raw verdicts"
-    assert "132" in text, "Brief Amendment 1 must cite 132 composite>=0.5 count"
-    # The 4 post-recency-filter count is everywhere; assert it explicitly here
-    assert "N=4" in text

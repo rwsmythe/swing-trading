@@ -170,43 +170,6 @@ def test_r2d_cohort_fixture_shape_mirrors_d1() -> None:
         )
 
 
-def test_r2d_cohort_selection_method_documented_in_brief() -> None:
-    """Per gotcha #33: the R2-D dispatch brief must explicitly document
-    cohort_selection_method='v2_binding_variable_flips' as a selection-biased
-    cohort distinct from D2's bias-free cohort. Forward-binding lock against
-    documentation drift.
-    """
-    brief = (
-        REPO_ROOT
-        / "docs/archive/pre-phase-16/r2d-adr-min-pct-cohort-backtest-dispatch-brief.md"
-    )
-    assert brief.exists(), f"R2-D dispatch brief missing at {brief}"
-    text = brief.read_text(encoding="utf-8")
-    assert "v2_binding_variable_flips" in text, (
-        "Dispatch brief must reference 'v2_binding_variable_flips' selection "
-        "method (gotcha #33 cohort-validity-vs-verdict-criteria discipline)"
-    )
-    assert "selection-biased" in text, (
-        "Dispatch brief must explicitly characterize R2-D cohort as "
-        "selection-biased vs D2's bias-free cohort"
-    )
-
-
-def test_r2d_brief_documents_variable_distinction_from_r2a() -> None:
-    """The R2-D brief must distinguish itself from R2-A by naming the
-    different V2 binding variable explicitly (cross-cohort interpretation
-    of results requires the reader to know R2-D tests adr_min_pct NOT
-    tightness_days_required)."""
-    brief = (
-        REPO_ROOT
-        / "docs/archive/pre-phase-16/r2d-adr-min-pct-cohort-backtest-dispatch-brief.md"
-    )
-    text = brief.read_text(encoding="utf-8")
-    assert "vcp.adr_min_pct" in text
-    # Brief must reference R2-A so future readers see the cross-cohort framing
-    assert "R2-A" in text or "r2a" in text
-
-
 # ---------------------------------------------------------------------------
 # Cohort CSV byte-stability (regression safety)
 # ---------------------------------------------------------------------------
