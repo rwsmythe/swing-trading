@@ -1232,6 +1232,40 @@ def test_coverage_calib_c_trailing_delisting_skip_accepted(tmp_path: Path) -> No
     assert "accepted" in (check.detail or "")
 
 
+def test_coverage_calib_c_never_observed_fully_skip_explained_accepted(
+    tmp_path: Path,
+) -> None:
+    # 19-A T5 (consequence #2, made explicit): an immediate-delisting-after-
+    # detection case -- a mature detection NEVER observed (empty observed) whose
+    # every expected session carries a recorded (ticker, session) no-bar
+    # skip-warning. Empty observed -> clause-1 is false for every session, so
+    # clause-2a accepts nothing; only clause-2b can fire.
+    #
+    # Pre-fix: clause-1 gates 2b -> nothing accepted -> residual == expected (6)
+    #          -> total_missing 6 -> YELLOW.
+    # Post-fix: each session skip_explained -> all 6 accepted -> total_missing 0
+    #          -> GREEN, accepted_historical == 6. (is_whole_session_miss is False
+    #          for every session -- each IS in run_observed_sessions -- so a wrong
+    #          "un-gate 2a only" fix would leave these counted; the accept is
+    #          demonstrably clause-2b.)
+    conn = _schema_conn(tmp_path)
+    newco = _seed_detection(conn, ticker="NEWCO", data_asof_date="2026-06-04")
+    expected = ("2026-06-05", "2026-06-08", "2026-06-09", "2026-06-10",
+                "2026-06-11", "2026-06-12")
+    for asd in expected:
+        _seed_pipeline_run(
+            conn, data_asof_date=asd, lease_token=f"tok-t5-{asd}",
+            warnings=[{"step": "pattern_observe", "ticker": "NEWCO",
+                       "observation_date": asd,
+                       "reason": "no bar for observation_date"}])
+    check = _only(_check_coverage_gaps(conn, now=_NOW), "coverage_gaps")
+    assert check.status == "green"
+    assert "0 observation-coverage gaps" in check.summary
+    assert "6 accepted historical" in check.summary
+    assert f"det{newco}" in (check.detail or "")
+    assert "accepted" in (check.detail or "")
+
+
 def test_coverage_calib_c_unexplained_interior_hole_still_red(tmp_path: Path) -> None:
     # (b)-DISTINGUISHER (plan Task 4): an UNEXPLAINED interior hole (the run RAN,
     # the bar existed, the row was dropped with NO skip-warning) -> STILL RED.
