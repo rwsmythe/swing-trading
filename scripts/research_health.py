@@ -124,20 +124,41 @@ def main(argv: list[str] | None = None) -> int:
         print(f"DB at {db_path} is unreadable: {exc} -- ran from the right box?",
               file=sys.stderr)
         return 1
+    from swing.monitoring import research_health
     try:
         status = compute_research_health(
             conn, cfg=cfg, exports_root=exports_root, now=_resolve_now())
+        # 19-B: query the machine-readable guard input WHILE the ro conn is open.
+        det_count = research_health.db_detection_count(conn)
     finally:
         conn.close()
+
+    # 19-B BROKEN-CONTEXT GUARD (single-sourced -- the SAME predicate the nightly
+    # step uses): decline to overwrite a good prior artifact with a suspicious
+    # empty read. The probe runs against the correct HOME DB + writes its own tree,
+    # so its broken-context risk is low; shadow_manifest_path=None -> signal (i)
+    # never fires here; signal (ii) still applies as a belt. The script NEVER
+    # pushes, so requirement #2 (lease-or-silent) is satisfied without change.
+    suppress, reason = research_health.should_suppress_broken_context_write(
+        current_detection_count=det_count, exports_root=exports_root,
+        shadow_manifest_path=None,
+        prior_env=research_health._read_prior_env(out_path))
+    if suppress:
+        # Declined to overwrite -- NOT an operational error (return 0). Operator
+        # diagnostics go to STDERR so a --json consumer's stdout stays clean.
+        print(f"research-health write declined (broken context): {reason}",
+              file=sys.stderr)
+        return 0
 
     # Write the conformant envelope ATOMICALLY in BOTH the ASCII and --json
     # paths (so the stoplight lights regardless of how the operator runs it).
     # C-NH4 SINGLE-SOURCE: call the SHARED writer via the module attribute (NOT a
     # bound `from`-import) so a test monkeypatch of
     # swing.monitoring.research_health.write_research_health_artifact is honored;
-    # the script keeps NO private copy of the atomic write.
-    from swing.monitoring import research_health
-    research_health.write_research_health_artifact(status, out_path=out_path)
+    # the script keeps NO private copy of the atomic write. 19-B: stamp the
+    # machine-readable detection_count witness (same single-source as the runner).
+    research_health.write_research_health_artifact(
+        status, out_path=out_path, extra={"detection_count": det_count})
 
     if args.json:
         print(json.dumps(status.to_dict(), indent=2))

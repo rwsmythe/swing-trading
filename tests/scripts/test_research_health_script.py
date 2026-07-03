@@ -216,3 +216,51 @@ def test_script_output_is_ascii(tmp_path) -> None:
     # stdout must decode as ASCII (the cp1252 gotcha; capsys is insufficient).
     result.stdout.decode("ascii")
     assert out_path.exists()  # landed at the tmp path, NOT the live path
+
+
+# --- 19-B Task 8: the single-sourced broken-context guard -------------------
+
+def _prior_with_count(overall: str, detection_count: int) -> str:
+    return json.dumps({
+        "monitor": "research_measurement",
+        "overall": overall,
+        "checks": [{"key": "k", "status": overall, "summary": "s",
+                    "detail": None}],
+        "generated_ts": datetime.now(UTC).isoformat(timespec="seconds"),
+        "detection_count": detection_count,
+    })
+
+
+def test_script_suppresses_broken_context_empty_db(tmp_path, monkeypatch, capsys):
+    # A prior artifact recording detections>0 + an EMPTY DB -> the script declines
+    # to overwrite (prior byte-identical) + a stderr warning + exit 0.
+    db = tmp_path / "swing.db"
+    ensure_schema(db).close()  # schema, ZERO detections
+    artifact = tmp_path / "health" / "latest.json"
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    sentinel = _prior_with_count("green", 5)
+    artifact.write_text(sentinel, encoding="utf-8")
+    monkeypatch.setattr(
+        "swing.monitoring.stoplights.research_health_artifact_path",
+        lambda cfg=None: artifact)
+    mod = _load_script_module()
+    rc = mod.main(["--db", str(db)])
+    assert rc == 0
+    assert artifact.read_text(encoding="utf-8") == sentinel  # untouched
+    assert "declined" in capsys.readouterr().err.lower()
+
+
+def test_script_writes_on_genuine_fresh(tmp_path, monkeypatch):
+    # Prior ABSENT + empty DB -> NOT suppressed -> writes an artifact carrying
+    # detection_count: 0 (never over-suppress a genuinely-fresh system).
+    db = tmp_path / "swing.db"
+    ensure_schema(db).close()
+    artifact = tmp_path / "health" / "latest.json"
+    monkeypatch.setattr(
+        "swing.monitoring.stoplights.research_health_artifact_path",
+        lambda cfg=None: artifact)
+    _fresh_manifest(tmp_path)  # exports_root = artifact.parent.parent = tmp_path
+    mod = _load_script_module()
+    mod.main(["--db", str(db)])
+    assert artifact.exists()
+    assert json.loads(artifact.read_text(encoding="utf-8"))["detection_count"] == 0
