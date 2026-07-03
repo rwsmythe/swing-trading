@@ -291,6 +291,16 @@ def _default_comms_root() -> Path:
     return Path(__file__).resolve().parents[2] / "comms"
 
 
+def _effective_comms_root(comms_root: Path | None) -> Path:
+    """The ONE comms-root seam EVERY push path consults (19-B Task 1, Codex R2
+    CRITICAL). An explicit `comms_root` wins; else `_default_comms_root()`. A
+    single monkeypatch of THIS function closes ALL push paths (the default
+    `comms_root=None` path AND an explicit `comms_root=`), so the autouse suite
+    fixture can guarantee no test ever resolves a push to the REAL comms/ tree.
+    Production is unchanged (explicit cfg-derived root, or the __file__ default)."""
+    return comms_root if comms_root is not None else _default_comms_root()
+
+
 def _read_prior_overall(out_path: Path | None = None) -> str | None:
     """Read the PRIOR latest.json's `overall` BEFORE it is overwritten.
 
@@ -373,7 +383,7 @@ def push_research_health_red_to_rd(
     if status.overall != "red" or prior_overall == "red":
         return False
     try:
-        root = comms_root if comms_root is not None else _default_comms_root()
+        root = _effective_comms_root(comms_root)
         # Path-resilient role_mail import (scripts/ is not on swing's import path;
         # the comms-hook precedent). Lazy + inside the try so a missing/edited
         # scripts tree degrades to a logged no-post, never an import-time crash.

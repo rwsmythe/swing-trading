@@ -49,6 +49,62 @@ def _redirect_home_away_from_real_swing_data(_suite_home, monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _guard_research_health_comms(tmp_path_factory, monkeypatch):
+    """19-B Task 1 (structural suite isolation -- PREVENTION): no test can resolve
+    a research-health RD push to the REAL repo comms/ tree.
+
+    Wrap the ONE seam ``research_health._effective_comms_root`` (every push path
+    consults it -- Codex R2 CRITICAL) so that any resolution landing UNDER
+    ``<repo>/comms`` is REDIRECTED to a per-test tmp dir; a resolution already
+    under tmp (a test's own ``comms_root=``, or a cfg-derived tmp root) passes
+    through unchanged. Covers the default ``comms_root=None`` path AND an explicit
+    ``comms_root=<repo>/comms``. Function-scoped -> undone per test."""
+    import swing.monitoring.research_health as _rh
+
+    repo_comms = (Path(_rh.__file__).resolve().parents[2] / "comms").resolve()
+    safe_tmp = tmp_path_factory.mktemp("comms_isolation")
+    real_resolver = _rh._effective_comms_root
+
+    def _guarded(comms_root):
+        root = real_resolver(comms_root)
+        try:
+            resolved = Path(root).resolve()
+        except Exception:
+            return root
+        if resolved == repo_comms or repo_comms in resolved.parents:
+            return safe_tmp  # redirect ANY real-repo-comms resolution to tmp
+        return root          # tmp roots (test tmp, cfg-derived tmp) pass through
+
+    monkeypatch.setattr(_rh, "_effective_comms_root", _guarded)
+    yield
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _fail_suite_on_real_comms_write():
+    """19-B Task 1 (structural suite isolation -- DETECTION backstop): snapshot the
+    FULL REAL repo comms/ file set at session start and assert it is UNCHANGED at
+    session end. Catches ANY add OR remove under the real comms tree (not just
+    inbox/*.md) -- a test that explicitly passes a real comms_root, or a future
+    push path that forgets the seam. Prevention is the function fixture above; this
+    is the belt that fails the suite if anything ever slips through."""
+    repo_comms = Path(__file__).resolve().parent.parent / "comms"  # tests/ -> repo
+
+    def _snapshot() -> set:
+        return (
+            {p for p in repo_comms.rglob("*") if p.is_file()}
+            if repo_comms.exists() else set()
+        )
+
+    before = _snapshot()
+    yield
+    after = _snapshot()
+    added, removed = after - before, before - after
+    assert not added and not removed, (
+        f"tests mutated the REAL comms tree; added={sorted(added)} "
+        f"removed={sorted(removed)}")
+
+
 @pytest.fixture
 def real_user_home(_redirect_home_away_from_real_swing_data, monkeypatch):
     """Opt back into the genuine ``swing.config._user_home`` (env-reading) for
