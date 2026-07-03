@@ -1266,6 +1266,34 @@ def test_coverage_calib_c_never_observed_fully_skip_explained_accepted(
     assert "accepted" in (check.detail or "")
 
 
+def test_coverage_calib_c_trailing_drumbeat_behind_still_counted(
+    tmp_path: Path,
+) -> None:
+    # 19-A T2 (the safety lock): a trailing drumbeat-behind FAILURE (the drumbeat
+    # fell behind: NO completed run for the trailing sessions, NO skip-warning)
+    # must STAY COUNTED (RED/YELLOW) -- the fix must not mask a real trailing
+    # failure. Same 2-session trailing shape as T1 but WITHOUT skip-warnings.
+    #
+    # Both pre- and post-fix: 06-11/06-12 have clause-1 false (trailing) AND no
+    # skip (2b false) -> not accepted -> counted -> total_missing 2 -> YELLOW.
+    # This proves the fix cannot false-green a real trailing lag. It also catches
+    # an "accept-all-trailing" mutant (which would accept both -> GREEN -> FAIL).
+    conn = _schema_conn(tmp_path)
+    lagg = _seed_detection(conn, ticker="LAGG", data_asof_date="2026-06-04")
+    for d in ("2026-06-05", "2026-06-08", "2026-06-09", "2026-06-10"):
+        _seed_observation(conn, lagg, observation_date=d, status="pending")
+    # Completed runs for the OBSERVED sessions ONLY -- NO runs for 06-11/06-12
+    # (the drumbeat fell behind) and NO skip-warnings anywhere.
+    _seed_all_sessions_runs(
+        conn, ("2026-06-05", "2026-06-08", "2026-06-09", "2026-06-10"), "tok-t2")
+    check = _only(_check_coverage_gaps(conn, now=_NOW), "coverage_gaps")
+    assert check.status == "yellow"
+    assert "2 observation-coverage gap(s)" in check.summary
+    # nothing accepted -> no accepted-historical note.
+    assert "accepted historical" not in check.summary
+    assert lagg  # silence unused
+
+
 def test_coverage_calib_c_unexplained_interior_hole_still_red(tmp_path: Path) -> None:
     # (b)-DISTINGUISHER (plan Task 4): an UNEXPLAINED interior hole (the run RAN,
     # the bar existed, the row was dropped with NO skip-warning) -> STILL RED.
