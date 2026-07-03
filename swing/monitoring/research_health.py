@@ -363,23 +363,38 @@ def push_research_health_red_to_rd(
     *,
     run_id: int | None,
     prior_overall: str | None,
+    lease_verified: bool = False,
     comms_root: Path | None = None,
 ) -> bool:
     """Edge-triggered RED notify to RD. Returns True iff a message was posted.
+
+    LEASE-OR-SILENT (19-B Task 2, RD's rule -- DEFAULT-DENY): posts NOTHING unless
+    the caller explicitly asserts `lease_verified=True` AND `run_id is not None`.
+    `lease_verified` defaults to False, so ANY caller (current, direct, or future)
+    that does not prove the run is a genuine leased `pipeline_runs` row posts
+    nothing + logs a WARNING. The ONLY opt-in caller is the runner, which computes
+    `lease_verified=pipeline_run_exists(conn, run_id)` while its ro conn is open.
+    This structurally kills the `run id: unknown` / suite-leak push class (the 3
+    leaked pushes were `run_id is None`; a forged int fails the runner's DB check).
 
     Edge = `status.overall == "red"` AND `prior_overall != "red"` (covers
     green/yellow->red AND the absent/corrupt(None)->red first-ever-RED case). On a
     non-edge -> return False, post nothing. On the edge -> compose + post ONE
     `status` message --from pipeline --to rd, return True.
 
-    `comms_root=None` -> `_default_comms_root()` (the repo comms/); tests pass a
-    tmp dir, OR monkeypatch `_default_comms_root` (the runner-wiring end-to-end
-    test), so they never touch the live comms.
+    `comms_root=None` -> `_effective_comms_root(None)` -> `_default_comms_root()`
+    (the repo comms/); tests pass a tmp dir, OR the autouse suite fixture wraps
+    `_effective_comms_root` so they never touch the live comms.
 
     BEST-EFFORT: any exception (import failure, MailError, IO) is swallowed +
     logged; returns False. The function owns its own try/except so a push failure
     never reaches the writer call that follows it in _step_research_health
     (write-latest.json must still happen)."""
+    if not lease_verified or run_id is None:
+        log.warning(
+            "research-health RD push skipped: unverified/unleased context "
+            "(lease_verified=%s, run_id=%s)", lease_verified, run_id)
+        return False
     if status.overall != "red" or prior_overall == "red":
         return False
     try:
@@ -410,6 +425,27 @@ def _schema_unavailable(exc: sqlite3.OperationalError) -> bool:
     OTHER OperationalError re-raises (do not mask real defects -- mirror 18-E)."""
     msg = str(exc)
     return "no such table" in msg or "no such column" in msg
+
+
+def pipeline_run_exists(conn: sqlite3.Connection, run_id: int | None) -> bool:
+    """True iff `run_id` is a real `pipeline_runs` row (a genuine leased run) --
+    the lease-or-silent PROOF (19-B Task 2). A forged/stale/nonexistent run_id is
+    not in the DB -> False -> the runner passes `lease_verified=False` -> no push.
+
+    NOTE the PK column is `pipeline_runs.id` (== `lease.run_id`), NOT a `run_id`
+    column. Degrade-gracefully: `run_id is None` -> False; a missing `pipeline_runs`
+    table (pre-schema DB) -> False. Any OTHER OperationalError re-raises."""
+    if run_id is None:
+        return False
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM pipeline_runs WHERE id = ? LIMIT 1", (run_id,)
+        ).fetchone()
+        return row is not None
+    except sqlite3.OperationalError as exc:
+        if _schema_unavailable(exc):
+            return False
+        raise
 
 
 # --------------------------------------------------------------------------

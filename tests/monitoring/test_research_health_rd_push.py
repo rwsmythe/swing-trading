@@ -54,7 +54,8 @@ def _rd_inbox(comms_root):
 def test_red_with_prior_not_red_posts_one_status_to_rd(tmp_path):
     comms = tmp_path / "comms"
     posted = push_research_health_red_to_rd(
-        _red_status(), run_id=104, prior_overall="green", comms_root=comms)
+        _red_status(), run_id=104, prior_overall="green",
+        lease_verified=True, comms_root=comms)
     assert posted is True
     files = _rd_inbox(comms)
     assert len(files) == 1
@@ -91,7 +92,8 @@ def test_green_does_not_post(tmp_path):
 def test_first_ever_red_absent_prior_posts(tmp_path):
     comms = tmp_path / "comms"
     posted = push_research_health_red_to_rd(
-        _red_status(), run_id=7, prior_overall=None, comms_root=comms)
+        _red_status(), run_id=7, prior_overall=None,
+        lease_verified=True, comms_root=comms)
     assert posted is True
     assert len(_rd_inbox(comms)) == 1
 
@@ -102,7 +104,7 @@ def test_posted_message_carries_keys_summary_detail_runid_pointer(tmp_path):
     comms = tmp_path / "comms"
     push_research_health_red_to_rd(
         _red_status(detail="ZZZ@2026-06-20 non-finite Close"),
-        run_id=104, prior_overall="green", comms_root=comms)
+        run_id=104, prior_overall="green", lease_verified=True, comms_root=comms)
     text = _rd_inbox(comms)[0].read_text(encoding="utf-8")
     assert "temporal_log_finiteness" in text          # the red check key
     assert "3 post-baseline non-finite" in text        # the summary substring
@@ -118,7 +120,8 @@ def test_detail_none_renders_placeholder_not_crash(tmp_path):
         key="structural_integrity", status="red",
         summary="1 orphan observation(s)", detail=None)])
     posted = push_research_health_red_to_rd(
-        status, run_id=5, prior_overall="green", comms_root=comms)
+        status, run_id=5, prior_overall="green",
+        lease_verified=True, comms_root=comms)
     assert posted is True
     text = _rd_inbox(comms)[0].read_text(encoding="utf-8")
     assert "(none)" in text
@@ -134,7 +137,8 @@ def test_non_ascii_detail_is_sanitized(tmp_path):
         key="temporal_log_finiteness", status="red",
         summary="non-finite", detail="café — → oops")])
     posted = push_research_health_red_to_rd(
-        status, run_id=1, prior_overall="green", comms_root=comms)
+        status, run_id=1, prior_overall="green",
+        lease_verified=True, comms_root=comms)
     assert posted is True
     raw = _rd_inbox(comms)[0].read_bytes()
     assert b"\xc3\xa9" not in raw  # the UTF-8 'e-acute' must not appear
@@ -146,7 +150,8 @@ def test_non_ascii_detail_is_sanitized(tmp_path):
 def test_subject_names_red_and_check_keys(tmp_path):
     comms = tmp_path / "comms"
     push_research_health_red_to_rd(
-        _red_status(), run_id=1, prior_overall="green", comms_root=comms)
+        _red_status(), run_id=1, prior_overall="green",
+        lease_verified=True, comms_root=comms)
     text = _rd_inbox(comms)[0].read_text(encoding="utf-8")
     # the subject frontmatter line names RED + the fired key
     subject_line = next(
@@ -229,7 +234,8 @@ def test_read_prior_overall_deeply_nested_returns_none(tmp_path):
 def test_push_targets_tmp_comms_root_not_live(tmp_path):
     comms = tmp_path / "comms"
     posted = push_research_health_red_to_rd(
-        _red_status(), run_id=1, prior_overall="green", comms_root=comms)
+        _red_status(), run_id=1, prior_overall="green",
+        lease_verified=True, comms_root=comms)
     assert posted is True
     # the message landed under tmp_path (never the live repo comms/)
     landed = list(comms.rglob("*.md"))
@@ -246,6 +252,70 @@ def test_push_swallows_post_failure_and_logs(tmp_path, caplog):
     bad.write_text("x", encoding="utf-8")
     with caplog.at_level(logging.WARNING):
         posted = push_research_health_red_to_rd(
-            _red_status(), run_id=1, prior_overall="green", comms_root=bad)
+            _red_status(), run_id=1, prior_overall="green",
+            lease_verified=True, comms_root=bad)
     assert posted is False
     assert any("push" in r.getMessage().lower() for r in caplog.records)
+
+
+# --- 19-B Task 2: lease-or-silent (default-deny) ----------------------------
+
+def test_unverified_lease_does_not_post(tmp_path, caplog):
+    # DEFAULT-DENY: a RED edge with lease_verified=False (default) + a real int
+    # run_id posts NOTHING + logs a WARNING. Pre-fix (no gate): the edge fires ->
+    # posts -> posted is True. Post-fix: default-deny returns False.
+    comms = tmp_path / "comms"
+    with caplog.at_level(logging.WARNING):
+        posted = push_research_health_red_to_rd(
+            _red_status(), run_id=104, prior_overall="green", comms_root=comms)
+    assert posted is False
+    assert _rd_inbox(comms) == []
+    assert any("unverified/unleased" in r.getMessage() for r in caplog.records)
+
+
+def test_run_id_none_does_not_post(tmp_path):
+    # The run_id-None belt: even lease_verified=True cannot post with run_id=None
+    # (the `run id: unknown` leak class).
+    comms = tmp_path / "comms"
+    posted = push_research_health_red_to_rd(
+        _red_status(), run_id=None, prior_overall="green",
+        lease_verified=True, comms_root=comms)
+    assert posted is False
+    assert _rd_inbox(comms) == []
+
+
+def test_verified_lease_posts(tmp_path):
+    # The gate is not over-tight: lease_verified=True + a real int run_id + a RED
+    # edge posts exactly one file.
+    comms = tmp_path / "comms"
+    posted = push_research_health_red_to_rd(
+        _red_status(), run_id=104, prior_overall="green",
+        lease_verified=True, comms_root=comms)
+    assert posted is True
+    assert len(_rd_inbox(comms)) == 1
+
+
+def test_pipeline_run_exists(tmp_path):
+    # pipeline_run_exists gates on a real pipeline_runs.id row; None / a
+    # nonexistent id / a missing table all -> False.
+    import sqlite3
+
+    from swing.data.db import ensure_schema
+    from swing.monitoring.research_health import pipeline_run_exists
+
+    db = tmp_path / "swing.db"
+    conn = ensure_schema(db)
+    conn.execute(
+        "INSERT INTO pipeline_runs (id, started_ts, trigger, data_asof_date,"
+        " action_session_date, state, lease_token) VALUES"
+        " (5, '2026-07-03T00:00:00', 'manual', '2026-07-02', '2026-07-03',"
+        " 'running', 'tok')")
+    conn.commit()
+    assert pipeline_run_exists(conn, 5) is True
+    assert pipeline_run_exists(conn, 999) is False
+    assert pipeline_run_exists(conn, None) is False
+    conn.close()
+
+    bare = sqlite3.connect(tmp_path / "bare.db")
+    assert pipeline_run_exists(bare, 1) is False  # missing table -> False
+    bare.close()
