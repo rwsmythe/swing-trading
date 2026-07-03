@@ -147,7 +147,7 @@ def artifact_path(tmp_path, monkeypatch):
     p = tmp_path / "latest.json"
     monkeypatch.setattr(
         "swing.monitoring.stoplights.research_health_artifact_path",
-        lambda: p,
+        lambda cfg=None: p,
     )
     return p
 

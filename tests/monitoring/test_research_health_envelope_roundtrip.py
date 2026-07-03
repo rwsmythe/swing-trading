@@ -85,7 +85,7 @@ def test_envelope_roundtrips_through_18f_reader(tmp_path, monkeypatch) -> None:
     assert not artifact.exists()  # fresh dir -- no stale file
     monkeypatch.setattr(
         "swing.monitoring.stoplights.research_health_artifact_path",
-        lambda: artifact)
+        lambda cfg=None: artifact)
     _fresh_manifest(tmp_path)
     status = _write_via_aggregator(db, artifact, tmp_path)
     written = artifact.read_text(encoding="utf-8")
@@ -104,7 +104,7 @@ def test_envelope_roundtrips_green_yellow_red(tmp_path, monkeypatch, color) -> N
     artifact = tmp_path / "health" / "latest.json"
     monkeypatch.setattr(
         "swing.monitoring.stoplights.research_health_artifact_path",
-        lambda: artifact)
+        lambda cfg=None: artifact)
     if color == "red":
         _seed_db(db, color="red")
         _fresh_manifest(tmp_path)
@@ -129,7 +129,7 @@ def test_written_envelope_roundtrips_for_manifest_absent_vs_corrupt(
     artifact = tmp_path / "health" / "latest.json"
     monkeypatch.setattr(
         "swing.monitoring.stoplights.research_health_artifact_path",
-        lambda: artifact)
+        lambda cfg=None: artifact)
 
     # (i) absent: no shadow-expectancy-* dir -> excluded green, but drumbeat RED
     # (never ran) -> overall RED -> reader validates RED.
@@ -160,7 +160,7 @@ def test_envelope_generated_ts_is_not_future_for_reader_on_any_host(
     artifact = tmp_path / "health" / "latest.json"
     monkeypatch.setattr(
         "swing.monitoring.stoplights.research_health_artifact_path",
-        lambda: artifact)
+        lambda cfg=None: artifact)
     _fresh_manifest(tmp_path)
     # FRESH aware-UTC stamp -> validates (neither future nor stale).
     _write_via_aggregator(db, artifact, tmp_path)

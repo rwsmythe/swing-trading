@@ -93,7 +93,7 @@ def test_write_research_health_artifact_default_path_uses_accessor(
     artifact = tmp_path / "health" / "latest.json"
     monkeypatch.setattr(
         "swing.monitoring.stoplights.research_health_artifact_path",
-        lambda: artifact)
+        lambda cfg=None: artifact)
     returned = write_research_health_artifact(_green_status())
     assert returned == artifact
     assert artifact.exists()
@@ -119,7 +119,7 @@ def test_script_invokes_shared_writer(tmp_path: Path, monkeypatch) -> None:
     artifact = tmp_path / "health" / "latest.json"
     monkeypatch.setattr(
         "swing.monitoring.stoplights.research_health_artifact_path",
-        lambda: artifact)
+        lambda cfg=None: artifact)
     _fresh_manifest(tmp_path)  # exports_root = artifact.parent.parent = tmp_path
 
     import swing.monitoring.research_health as rh

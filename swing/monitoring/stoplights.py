@@ -144,22 +144,30 @@ def _tool_stoplight(conn, cfg) -> Stoplight:
         return grey
 
 
-def _read_research_envelope() -> dict | None:
+def _read_research_envelope(cfg=None) -> dict | None:
     """Read + parse the raw research envelope JSON. Returns None when the file is
     absent (the expected pre-18-D state); lets JSON errors propagate to the
     validating caller's except. Identity/staleness validation lives in
-    `read_validated_research_envelope`."""
-    path = research_health_artifact_path()
+    `read_validated_research_envelope`.
+
+    19-B (LOCK #4 reader side): resolve the artifact via
+    `research_health_artifact_path(cfg)` so the 18-F reader stays co-anchored with
+    the 18-D writer per launch context. `cfg=None` -> the `__file__` fallback
+    (backward-compat for existing cfg-less callers)."""
+    path = research_health_artifact_path(cfg)
     if not path.exists():
         return None
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def read_validated_research_envelope() -> tuple[str, dict] | None:
+def read_validated_research_envelope(cfg=None) -> tuple[str, dict] | None:
     """The SINGLE identity+staleness-validating reader, shared by both
     `_research_stoplight` and the drill-down VM (so the false-green gates are
     defined ONCE — Codex R1 MAJOR #1). Returns `(overall, env)` for a valid,
     fresh, correctly-identified artifact, else None.
+
+    19-B: `cfg` is threaded to the artifact accessor (LOCK #4 co-anchor); `cfg=None`
+    keeps the `__file__` fallback so existing cfg-less test/callers are unaffected.
 
     None when: absent (expected pre-18-D — NO warning); malformed JSON; non-dict;
     wrong/missing `monitor` id (identity gate); missing/invalid `overall`;
@@ -167,7 +175,7 @@ def read_validated_research_envelope() -> tuple[str, dict] | None:
     artifacts log a WARNING. NEVER raises (LOCK #2) and NEVER false-greens.
     """
     try:
-        env = _read_research_envelope()
+        env = _read_research_envelope(cfg)
         if env is None:
             return None  # absent — expected pre-18-D; no warning
         # IDENTITY gate (Codex R1 MAJOR #1): a wrong JSON object at the shared
@@ -236,15 +244,18 @@ def read_validated_research_envelope() -> tuple[str, dict] | None:
         return None
 
 
-def _research_stoplight() -> Stoplight:
+def _research_stoplight(cfg=None) -> Stoplight:
     """The research-measurement provider: read 18-D's §3 envelope at the shared
     path via the validating reader; grey until 18-D writes a conformant fresh
-    artifact (then auto-lights, NO 18-F change — provider-driven, LOCK #3)."""
+    artifact (then auto-lights, NO 18-F change — provider-driven, LOCK #3).
+
+    19-B: `cfg` threads to the reader (LOCK #4 co-anchor); `cfg=None` keeps the
+    `__file__` fallback."""
     grey = Stoplight(
         id="research", label="Research monitor", color="grey",
         drilldown_path="/health/research",
     )
-    validated = read_validated_research_envelope()
+    validated = read_validated_research_envelope(cfg)
     if validated is None:
         return grey
     overall, _env = validated
@@ -279,7 +290,7 @@ def health_stoplights(conn, cfg) -> tuple[Stoplight, ...]:
         "tool", "Tool health", "/health/tool",
     )
     research = _safe(
-        lambda: _research_stoplight(),
+        lambda: _research_stoplight(cfg),
         "research", "Research monitor", "/health/research",
     )
     return (tool, research)

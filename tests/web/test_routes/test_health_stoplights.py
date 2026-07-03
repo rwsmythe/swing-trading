@@ -209,7 +209,7 @@ def test_health_research_drilldown_renders_status_dot_and_word_in_title(
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        "swing.monitoring.stoplights.research_health_artifact_path", lambda: p,
+        "swing.monitoring.stoplights.research_health_artifact_path", lambda cfg=None: p,
     )
     app = create_app(cfg, cfg_path)
     with TestClient(app) as client:
@@ -229,7 +229,7 @@ def test_health_research_route_not_deployed_message(seeded_db, monkeypatch, tmp_
     _stub_price_cache(monkeypatch)
     monkeypatch.setattr(
         "swing.monitoring.stoplights.research_health_artifact_path",
-        lambda: tmp_path / "absent.json",
+        lambda cfg=None: tmp_path / "absent.json",
     )
     app = create_app(cfg, cfg_path)
     with TestClient(app) as client:
@@ -259,7 +259,7 @@ def test_health_research_route_lists_checks_when_artifact_present(
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        "swing.monitoring.stoplights.research_health_artifact_path", lambda: p,
+        "swing.monitoring.stoplights.research_health_artifact_path", lambda cfg=None: p,
     )
     app = create_app(cfg, cfg_path)
     with TestClient(app) as client:
@@ -376,7 +376,7 @@ def test_provider_raise_degrades_to_grey_not_500(seeded_db, monkeypatch, tmp_pat
     malformed.write_text("{ not json", encoding="utf-8")
     monkeypatch.setattr(
         "swing.monitoring.stoplights.research_health_artifact_path",
-        lambda: malformed,
+        lambda cfg=None: malformed,
     )
     app = create_app(cfg, cfg_path)
     with TestClient(app) as client:

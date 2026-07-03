@@ -96,7 +96,7 @@ def test_script_all_clear_exit_zero(tmp_path, monkeypatch, capsys) -> None:
     artifact = tmp_path / "health" / "latest.json"
     monkeypatch.setattr(
         "swing.monitoring.stoplights.research_health_artifact_path",
-        lambda: artifact)
+        lambda cfg=None: artifact)
     _fresh_manifest(tmp_path)  # exports_root = artifact.parent.parent = tmp_path
     mod = _load_script_module()
     rc = mod.main(["--db", str(db)])
@@ -111,7 +111,7 @@ def test_script_attention_exit_one(tmp_path, monkeypatch, capsys) -> None:
     artifact = tmp_path / "health" / "latest.json"
     monkeypatch.setattr(
         "swing.monitoring.stoplights.research_health_artifact_path",
-        lambda: artifact)
+        lambda cfg=None: artifact)
     _fresh_manifest(tmp_path)
     mod = _load_script_module()
     rc = mod.main(["--db", str(db)])
@@ -127,7 +127,7 @@ def test_script_json_flag(tmp_path, monkeypatch, capsys) -> None:
     artifact = tmp_path / "health" / "latest.json"
     monkeypatch.setattr(
         "swing.monitoring.stoplights.research_health_artifact_path",
-        lambda: artifact)
+        lambda cfg=None: artifact)
     _fresh_manifest(tmp_path)
     mod = _load_script_module()
     rc = mod.main(["--db", str(db), "--json"])
@@ -148,7 +148,7 @@ def test_script_writes_latest_json_atomic_and_validates_through_reader(
     artifact = tmp_path / "health" / "latest.json"
     monkeypatch.setattr(
         "swing.monitoring.stoplights.research_health_artifact_path",
-        lambda: artifact)
+        lambda cfg=None: artifact)
     _fresh_manifest(tmp_path)
     mod = _load_script_module()
     from swing.monitoring import stoplights
@@ -175,7 +175,7 @@ def test_script_creates_health_dir_when_absent(tmp_path, monkeypatch) -> None:
     assert not artifact.parent.exists()
     monkeypatch.setattr(
         "swing.monitoring.stoplights.research_health_artifact_path",
-        lambda: artifact)
+        lambda cfg=None: artifact)
     _fresh_manifest(artifact.parent.parent)  # exports_root = .../nested
     mod = _load_script_module()
     mod.main(["--db", str(db)])
@@ -191,7 +191,7 @@ def test_script_unreadable_db_exits_one_without_write(tmp_path, monkeypatch, cap
     artifact = tmp_path / "health" / "latest.json"
     monkeypatch.setattr(
         "swing.monitoring.stoplights.research_health_artifact_path",
-        lambda: artifact)
+        lambda cfg=None: artifact)
     mod = _load_script_module()
     rc = mod.main(["--db", str(bad_db)])
     captured = capsys.readouterr()

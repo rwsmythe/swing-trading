@@ -98,7 +98,9 @@ def build_research_health_vm(conn, cfg: Config) -> ResearchHealthPageVM:
     not-available VM (the 18-D-pending page). DEFENSIVE: never 500."""
     banner = _base_banner_fields(conn, cfg)
     try:
-        validated = read_validated_research_envelope()
+        # 19-B (LOCK #4 co-anchor): resolve the artifact from the same launch-cfg
+        # the writer used, so the drill-down reads the run's own tree.
+        validated = read_validated_research_envelope(cfg)
         if validated is None:
             return ResearchHealthPageVM(
                 available=False, overall=None, checks=(), generated_ts=None,
