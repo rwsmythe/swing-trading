@@ -1,5 +1,7 @@
 # Drumbeat False-RED Root Fix (#5) — Commissioning Brief
 
+> **SUPERSEDED 2026-07-03 by [`drumbeat-anchor-consistency-19b-commissioning-brief.md`](drumbeat-anchor-consistency-19b-commissioning-brief.md) (Arc 19-B).** The §2.1 absolutize-`config_path` root fix is WITHDRAWN (wrong root — it would anchor a worktree run to MAIN's artifacts, masking worktree isolation). §1.5 (HOME-vector) + §2.2 (both-signals guard) carry forward and remain load-bearing — the 19-B brief incorporates them by reference. Do NOT dispatch from this brief.
+
 **Owner/author:** CHARC. **Date:** 2026-06-27. **Status:** COMMISSIONED.
 **Context:** **#5** — the recurring `drumbeat_liveness` false-RED + the poisoned production `research_health/latest.json` (the 18-F stoplight + 18-H.7 push source). RD-flagged (thread `drumbeat-liveness-false-red`); CHARC-diagnosed on disk 2026-06-27.
 **§3 verdict:** **SUB-TRIPWIRE** (edits existing `web/`/`config`/`runner` modules; no schema / new module / dependency / standing-process / `swing/trades`|`swing/data` carve-out). The DEFENSIVE GUARD is a research-health **monitor semantics** change → **RD reviews the guard semantics (merge-relevant, RD's measurement lane).** CHARC commissions; the operator §5.10-witnesses. GO.
