@@ -40,12 +40,22 @@ RESEARCH_ARTIFACT_MAX_AGE_DAYS = 7
 _SEVERITY_RANK = {"green": 0, "yellow": 1, "red": 2}
 
 
-def research_health_artifact_path() -> Path:
-    """Return the shared research health-artifact path.
+def research_health_artifact_path(cfg=None) -> Path:
+    """Return the shared research health-artifact path (LOCK #4 -- the ONE accessor
+    both the 18-F reader and the 18-D writer resolve through).
+
+    When `cfg` is supplied, resolve from the config-derived exports dir
+    (``cfg.paths.exports_dir/research/health/latest.json``) so a run is
+    launch-context-consistent: reader and writer stay co-anchored per launch
+    context (19-B anchor consistency). When `cfg is None`, fall back to the
+    ``__file__``-anchored RESEARCH_HEALTH_ARTIFACT_PATH constant (the pure-accessor
+    / test-monkeypatch / cfg-less-caller contract).
 
     An accessor (not a bare constant read) so tests can monkeypatch the function
     without rebinding a module constant; the providers call THIS.
     """
+    if cfg is not None:
+        return cfg.paths.exports_dir / "research" / "health" / "latest.json"
     return RESEARCH_HEALTH_ARTIFACT_PATH
 
 
