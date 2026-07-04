@@ -2921,12 +2921,14 @@ _TIER2_SERVICE_OWNED_RESOLUTION_VALUES = frozenset({
 @discrepancy_group.command("resolve-ambiguity")
 @click.argument("discrepancy_id", type=int)
 @click.option(
-    "--choice", "choice_code", required=True,
+    "--choice", "choice_code", required=False, default=None,
     help=(
         "Choice code from the per-ambiguity_kind menu surfaced by "
         "`swing journal discrepancy show-ambiguity <id>`. Must NOT be one "
         "of the 4 service-owned resolution values (those route through "
-        "canonical service entries, not this manual surface)."
+        "canonical service entries, not this manual surface). REQUIRED for "
+        "tier-2 rows; OPTIONAL (and ignored) for an FK-orphan whose "
+        "referenced subject row was raw-deleted -- only --reason is needed."
     ),
 )
 @click.option(
@@ -3043,6 +3045,57 @@ def discrepancy_resolve_ambiguity_cmd(
             raise click.ClickException(
                 f"discrepancy {discrepancy_id} not found"
             )
+
+        # Arc 19-F — FK-orphan short-circuit. A discrepancy whose referenced
+        # fill/cash_movement/trade row was RAW-DELETED (D19's interim doctrine;
+        # e.g. disc 73's cash_movement_id=5) cannot route through the
+        # FK-requiring tier-2 resolver -- it RAISES reading the gone row.
+        # Recognize the orphan + resolve it terminally to
+        # acknowledged_immaterial with an orphan-marked reason (symmetric with
+        # the web + the existing `discrepancy resolve` command). Placed BEFORE
+        # the `d.ambiguity_kind is None` guard so an UNRESOLVED FK-orphan (a
+        # raw-deleted fill/trade referenced by an ambiguity_kind-null
+        # discrepancy) is NOT wrongly rejected by that guard. --choice is moot
+        # for an orphan (mirrors the web, which shows no choice menu).
+        from swing.trades.schwab_reconciliation import (
+            compose_orphan_reason,
+            orphaned_affected_target,
+        )
+        orphan_target = orphaned_affected_target(conn, d)
+        if orphan_target is not None:
+            from swing.trades.reconciliation import (
+                DiscrepancyResolutionStateError,
+                resolve_discrepancy,
+            )
+            table, rid = orphan_target
+            # Clearable-resolution gate (symmetric with the web
+            # _FK_ORPHAN_CLEARABLE_RESOLUTIONS): a terminal orphan is NOT
+            # re-resolved -> idempotent error, no re-mutation.
+            if d.resolution not in ("unresolved", "pending_ambiguity_resolution"):
+                raise click.ClickException(
+                    f"discrepancy {discrepancy_id} (orphaned; referenced "
+                    f"{table} id={rid} no longer exists) is already resolved "
+                    f"(resolution={d.resolution!r})"
+                )
+            try:
+                resolve_discrepancy(
+                    conn,
+                    discrepancy_id=discrepancy_id,
+                    resolution="acknowledged_immaterial",
+                    resolution_reason=compose_orphan_reason(table, rid, reason),
+                    resolved_by="operator",
+                    require_current_resolution=d.resolution,
+                )
+            except DiscrepancyResolutionStateError as e:
+                raise click.ClickException(str(e)) from None
+            except ValueError as e:
+                raise click.UsageError(str(e)) from None
+            click.echo(
+                f"resolved orphan discrepancy {discrepancy_id} (referenced "
+                f"{table} id={rid} no longer exists) to acknowledged_immaterial"
+            )
+            return
+
         if d.ambiguity_kind is None:
             raise click.UsageError(
                 f"discrepancy {discrepancy_id} has no ambiguity_kind "
@@ -3051,6 +3104,16 @@ def discrepancy_resolve_ambiguity_cmd(
                 f"rows. Use `swing journal discrepancy resolve` for the "
                 f"manual resolution surface, or `swing journal "
                 f"discrepancy override-correction` for tier-3 overrides."
+            )
+
+        # Non-orphan tier-2 rows REQUIRE --choice (the menu-dispatch block
+        # below dereferences choice_code without a None-guard). Enforce it here
+        # so omitting --choice on a tier-2 row stays exit-2 (the preserved
+        # contract), while an orphan resolves with just --reason above.
+        if choice_code is None:
+            raise click.UsageError(
+                "--choice is required for a Tier-2 pending_ambiguity_resolution "
+                "discrepancy (only an FK-orphan may omit it)."
             )
 
         # Validate --choice against the per-ambiguity_kind menu BEFORE
