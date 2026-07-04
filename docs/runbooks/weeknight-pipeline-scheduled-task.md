@@ -204,12 +204,13 @@ blocking window and silently stops exercising the collision). Use the SAME
 heartbeat mechanism a real run uses. Run from the MAIN checkout:
 
 ```python
+from pathlib import Path
 from swing.config import load
 from swing.pipeline.lease import acquire_lease
 from swing.pipeline.heartbeat import Heartbeat
 import time
 
-cfg = load("swing.config.toml")
+cfg = load(Path("swing.config.toml"))   # F1 (witness 2026-07-04): load() requires a Path, not a str
 L = acquire_lease(db_path=cfg.paths.db_path, trigger="manual",
                   data_asof_date="2026-07-02", action_session_date="2026-07-03")
 hb = Heartbeat(lease=L, interval_seconds=cfg.pipeline.heartbeat_interval_seconds)
@@ -218,17 +219,27 @@ try:
     time.sleep(240)          # outlives block_if_running_within_seconds; stays FRESH via hb
 finally:
     hb.stop()
-    # DO NOT release as "complete" -- that would fabricate a false-green completed
-    # run in the production pipeline_runs ledger. Release to force_cleared with an
-    # explicit marker so the row is unambiguously a demo artifact, not a real run.
-    L.release(state="force_cleared",
+    # DO NOT release as "complete" -- that would fabricate a false-green completed run
+    # in the production pipeline_runs ledger. finalize_run's state allowlist is
+    # ('complete','failed') ONLY (repos/pipeline.py); 'force_cleared' is written ONLY by
+    # the CLI force-clear path -- so release with state="failed" + a demo marker (valid
+    # + unambiguous). (F2, witness 2026-07-04.)
+    L.release(state="failed",
               error_message="19-C collision-demo synthetic lease; no pipeline executed")
 ```
+
+**If the holder process crashes BEFORE that release** (leaving the run wedged `running`, as happened live 2026-07-04), recover with `swing pipeline force-clear <id> --bypass-staleness-check` — which also witnesses the stale-lease recovery path end-to-end.
 
 #### C3 no-hang check (reversible token-file backup — NOT logout/setup)
 
 Exercise the absent-token branch WITHOUT a destructive re-auth. The tokens DB is
-`~/swing-data/schwab-tokens.<env>.db` (+ `-wal`/`-shm` if present):
+`~/swing-data/schwab-tokens.<env>.db` (+ `-wal`/`-shm` if present).
+
+**PRECONDITION (F3, witness 2026-07-04):** stop any process holding the tokens-DB
+handle FIRST, or the `Rename-Item` fails WinError-32 (file in use). Stop the web
+server (`swing web` binds 127.0.0.1:8080 — find its PID via
+`Get-NetTCPConnection -LocalPort 8080`) and wait for any in-flight pipeline run to
+finish; **restart the web server AFTER the restore.**
 
 ```powershell
 $db = "$env:USERPROFILE\swing-data\schwab-tokens.production.db"   # or .sandbox.db
