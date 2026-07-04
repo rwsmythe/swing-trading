@@ -1050,3 +1050,44 @@ def test_partial_day_window_does_not_alter_trim_into_strength():
     rules = {x.rule for x in s}
     assert "trim_into_strength" in rules
     assert "partial_day_window" not in rules
+
+
+def test_partial_day_window_fires_where_plus1r_is_unreachable_vsts():
+    # THE ARC'S REASON TO EXIST (brief §1 / VSTS trade 17).
+    # Wide stop: entry 100, initial_stop 83 -> 1R = $17 (a +17% move).
+    # prev_close 108 -> r_so_far = (108-100)/17 = 0.47R < 1.0 -> +1R DEAD.
+    # Day 3 (as_of 2026-06-11), close 108 > entry 100 -> calendar partial FIRES.
+    from swing.trades.advisory import (
+        suggest_partial_day_window, suggest_trim_into_strength,
+    )
+    trade = _trade_pw(entry=100.0, initial_stop=83.0)
+    ctx = AdvisoryContext(
+        as_of_date="2026-06-11", current_price=108.0,
+        sma10=None, sma20=None, sma50=None, previous_close=108.0,
+        weather_status="Bullish", config=StopAdvisoryConfig(),
+    )
+    assert suggest_trim_into_strength(trade, ctx) is None      # +1R unreachable
+    partial = suggest_partial_day_window(trade, ctx)
+    assert partial is not None                                  # calendar fires
+    assert partial.rule == "partial_day_window"
+    # And through the aggregator the operator SEES the partial the old
+    # surface stayed silent on:
+    rules = {x.rule for x in compute_all_suggestions(trade, ctx)}
+    assert "partial_day_window" in rules
+    assert "trim_into_strength" not in rules
+
+
+def test_partial_day_window_coexists_with_plus1r_when_both_fire():
+    # RD DECISION C (folded 2026-07-04) = distinct labeled rules (both fire,
+    # NO suppression). entry 100 / stop 90 -> 1R = $10. prev_close 112 ->
+    # +1.2R (>= 1.0R). Day 3 (as_of 2026-06-11), close 112 > entry 100,
+    # not trimmed.
+    trade = _trade_pw(entry=100.0, initial_stop=90.0)
+    ctx = AdvisoryContext(
+        as_of_date="2026-06-11", current_price=112.0,
+        sma10=None, sma20=None, sma50=None, previous_close=112.0,
+        weather_status="Bullish", config=StopAdvisoryConfig(),
+    )
+    rules = {x.rule for x in compute_all_suggestions(trade, ctx)}
+    assert "trim_into_strength" in rules      # +1R fires (0.25 default)
+    assert "partial_day_window" in rules       # calendar fires (0.50 default)
