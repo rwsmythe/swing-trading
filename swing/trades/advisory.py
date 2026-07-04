@@ -11,6 +11,7 @@ from datetime import date
 
 from swing.config import StopAdvisoryConfig
 from swing.data.models import Trade
+from swing.evaluation.dates import sessions_behind
 from swing.trades.equity import r_so_far
 
 
@@ -156,6 +157,72 @@ def suggest_trim_into_strength(
         message=(
             f"Consider trimming {pct * 100:.0f}% of position — up "
             f"+{r:.2f}R; sell-into-strength discipline"
+        ),
+    )
+
+
+def suggest_partial_day_window(
+    trade: Trade, ctx: AdvisoryContext,
+) -> AdvisorySuggestion | None:
+    """19-E (§2 E2/E3) — Day-3-5 calendar partial-trim advisory (DST D.2).
+
+    Fires when the LAST COMPLETED session's day number (entry day = Day 1,
+    counted in NYSE sessions) is inside the [start, end] window (default
+    3..5 inclusive), that session's close (``ctx.previous_close``) is above
+    the entry price, and the trade has not yet been trimmed. Recommends a
+    50% (``partial_day_pct_default``) partial into strength — the mechanical
+    Day-3-5 trim the shadow-expectancy engine takes (constants
+    ``PARTIAL_SESSION_N`` / ``PARTIAL_PCT``), so a standard-cohort operator
+    can execute the ruleset H1 is measured under.
+
+    ADD-ALONGSIDE (operator decision 2026-07-04): this does NOT alter or
+    suppress ``suggest_trim_into_strength`` (+1R). Both are gated on
+    ``not ctx.has_been_trimmed`` and render as distinct labeled rules when
+    they co-fire (RD decision C, folded 2026-07-04: BOTH fire, no
+    suppression; the copy names the measured-ruleset window + keeps the 50%
+    doctrine pct visible alongside the +1R 25% operator-policy pct).
+
+    Day-number basis = NYSE sessions (RD decision A): ``sessions_behind``
+    over the forward-looking ``as_of_date`` (= action_session) lands on the
+    last COMPLETED session's day number, which is the session whose close
+    is ``ctx.previous_close``. Calendar days mis-count across weekends for a
+    tight window. Window CLOSES after ``partial_day_window_end`` (no stale
+    nag). Silently no-ops when ``previous_close`` is None (price/bundle
+    degraded — cannot evaluate the close condition).
+
+    ANCHOR CONTRACT: ``ctx.as_of_date`` MUST be the forward-looking
+    action-session date (every production caller passes
+    ``action_session_for_run(...)``; the same anchor ``suggest_time_stop``
+    depends on). When ``as_of_date == entry_date`` (or earlier),
+    ``sessions_behind`` returns 0 -> day 0 -> below the window -> no fire.
+    """
+    if ctx.previous_close is None:
+        return None
+    if ctx.has_been_trimmed:
+        return None
+    cfg = ctx.config
+    day_num = sessions_behind(
+        date.fromisoformat(ctx.as_of_date),
+        date.fromisoformat(trade.entry_date),
+    )
+    if not (cfg.partial_day_window_start <= day_num <= cfg.partial_day_window_end):
+        return None
+    if ctx.previous_close <= trade.entry_price:
+        return None
+    pct = cfg.partial_day_pct_default
+    return AdvisorySuggestion(
+        rule="partial_day_window",
+        # RD ruling C (folded 2026-07-04): the copy identifies this as the
+        # MEASURED-RULESET step and names Day 4 as the engine's exact-parity
+        # point; the 50% doctrine pct stays visible alongside the +1R 25%
+        # operator-policy pct when both fire. ASCII-only (cli.py stdout echo).
+        message=(
+            f"Day {day_num} of the {cfg.partial_day_window_start}-"
+            f"{cfg.partial_day_window_end} measured-ruleset partial window "
+            f"(Day 4 = the engine's exact-parity fire point) - consider trimming "
+            f"{pct * 100:.0f}% into strength "
+            f"(close ${ctx.previous_close:.2f} > entry ${trade.entry_price:.2f}); "
+            f"DST D.2 partial"
         ),
     )
 

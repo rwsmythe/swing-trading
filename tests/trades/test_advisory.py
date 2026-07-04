@@ -901,3 +901,118 @@ def test_stop_advisory_config_rejects_pct_out_of_range():
         StopAdvisoryConfig(partial_day_pct_default=1.5)
     with pytest.raises(ValueError, match="partial_day_pct_default"):
         StopAdvisoryConfig(partial_day_pct_default=float("nan"))
+
+
+# ----------------------------------------------------------------------
+# 19-E — suggest_partial_day_window (Day-3-5 calendar partial-trim)
+# Entry 2026-06-08 (Mon). day_num = sessions_behind(as_of, entry).
+# 06-11 action -> Day 3 (opens); 06-15 action -> Day 5 (closes);
+# 06-10 action -> Day 2; 06-16 action -> Day 6 (closed).
+# ----------------------------------------------------------------------
+
+def _trade_pw(entry: float = 100.0, initial_stop: float = 90.0) -> Trade:
+    return Trade(
+        id=1, ticker="AAPL", entry_date="2026-06-08", entry_price=entry,
+        initial_shares=10, initial_stop=initial_stop, current_stop=initial_stop,
+        state="entered", watchlist_entry_target=None,
+        watchlist_initial_stop=None, notes=None,
+    )
+
+
+def _ctx_pw(*, as_of: str, prev_close: float | None,
+            has_been_trimmed: bool = False) -> AdvisoryContext:
+    return AdvisoryContext(
+        as_of_date=as_of, current_price=(prev_close or 0.0),
+        sma10=None, sma20=None, sma50=None, previous_close=prev_close,
+        weather_status="Bullish", config=StopAdvisoryConfig(),
+        has_been_trimmed=has_been_trimmed,
+    )
+
+
+def test_partial_day_window_day3_close_above_entry_fires():
+    from swing.trades.advisory import suggest_partial_day_window
+    s = suggest_partial_day_window(
+        _trade_pw(), _ctx_pw(as_of="2026-06-11", prev_close=105.0))
+    assert s is not None
+    assert s.rule == "partial_day_window"
+    assert "50%" in s.message
+    assert "Day 3" in s.message
+
+
+def test_partial_day_window_message_names_measured_ruleset_and_pct():
+    # RD ruling C (folded 2026-07-04): the copy identifies this as the
+    # MEASURED-RULESET step and keeps the 50% doctrine pct visible so that,
+    # when it co-fires with the +1R 25% rule, the operator knows which rule
+    # the shadow cohort assumes and both percentages stay visible.
+    from swing.trades.advisory import suggest_partial_day_window
+    s = suggest_partial_day_window(
+        _trade_pw(), _ctx_pw(as_of="2026-06-11", prev_close=105.0))
+    assert s is not None
+    assert "measured-ruleset" in s.message
+    assert "50%" in s.message
+
+
+def test_partial_day_window_day2_does_not_fire():
+    from swing.trades.advisory import suggest_partial_day_window
+    # as_of 2026-06-10 -> day_num 2 -> below window start 3.
+    s = suggest_partial_day_window(
+        _trade_pw(), _ctx_pw(as_of="2026-06-10", prev_close=105.0))
+    assert s is None
+
+
+def test_partial_day_window_entry_day_does_not_fire():
+    from swing.trades.advisory import suggest_partial_day_window
+    # Anchor low-boundary (Codex R1-M2): as_of == entry_date -> sessions_behind
+    # returns 0 (candidate >= reference) -> day_num 0 -> below window start.
+    s = suggest_partial_day_window(
+        _trade_pw(), _ctx_pw(as_of="2026-06-08", prev_close=105.0))
+    assert s is None
+
+
+def test_partial_day_window_day5_still_fires():
+    from swing.trades.advisory import suggest_partial_day_window
+    # as_of 2026-06-15 (Mon after weekend) -> day_num 5 -> window inclusive end.
+    s = suggest_partial_day_window(
+        _trade_pw(), _ctx_pw(as_of="2026-06-15", prev_close=105.0))
+    assert s is not None
+    assert "Day 5" in s.message
+
+
+def test_partial_day_window_day6_window_closed():
+    from swing.trades.advisory import suggest_partial_day_window
+    # as_of 2026-06-16 -> day_num 6 -> past window end 5.
+    s = suggest_partial_day_window(
+        _trade_pw(), _ctx_pw(as_of="2026-06-16", prev_close=105.0))
+    assert s is None
+
+
+def test_partial_day_window_close_not_above_entry_does_not_fire():
+    from swing.trades.advisory import suggest_partial_day_window
+    # Day 3 but close == entry (100.0) -> strict > fails.
+    s = suggest_partial_day_window(
+        _trade_pw(), _ctx_pw(as_of="2026-06-11", prev_close=100.0))
+    assert s is None
+
+
+def test_partial_day_window_none_previous_close_does_not_fire():
+    from swing.trades.advisory import suggest_partial_day_window
+    s = suggest_partial_day_window(
+        _trade_pw(), _ctx_pw(as_of="2026-06-11", prev_close=None))
+    assert s is None
+
+
+def test_partial_day_window_already_trimmed_suppressed():
+    from swing.trades.advisory import suggest_partial_day_window
+    s = suggest_partial_day_window(
+        _trade_pw(),
+        _ctx_pw(as_of="2026-06-11", prev_close=105.0, has_been_trimmed=True))
+    assert s is None
+
+
+def test_partial_day_window_message_is_ascii():
+    from swing.trades.advisory import suggest_partial_day_window
+    s = suggest_partial_day_window(
+        _trade_pw(), _ctx_pw(as_of="2026-06-11", prev_close=105.0))
+    assert s is not None
+    # ASCII discipline: message is echoed to CLI stdout (cli.py:1024).
+    s.message.encode("ascii")  # raises UnicodeEncodeError if any non-ASCII glyph
