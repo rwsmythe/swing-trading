@@ -61,6 +61,10 @@ from swing.trades.reconciliation_auto_correct import (
     apply_source_direction_resolution,
     apply_tier2_resolution,
 )
+from swing.trades.schwab_reconciliation import (
+    compose_orphan_reason,
+    orphaned_affected_target,
+)
 from swing.web.view_models.reconcile import (
     ReconcileDiscrepancyErrorVM,
     ReconcileOrphanAcknowledgeVM,
@@ -313,6 +317,87 @@ def _render_orphan_acknowledge_form(
     )
 
 
+# ---------------------------------------------------------------------------
+# Arc 19-F — FK-orphan (raw-deleted subject row) branch.
+#
+# A discrepancy referencing a fill / cash_movement / trade row that was
+# RAW-DELETED (D19's interim doctrine) traps in ``pending_ambiguity_resolution``
+# because the tier-2 resolver RAISES reading the gone row (the live disc-73
+# ``cash_movement_id=5`` case). Recognize the FK-orphan via
+# ``orphaned_affected_target`` and route it to the SAME FK-null-safe manual
+# resolver the untracked/simple-ack branches use (resolve_discrepancy ->
+# ``acknowledged_immaterial``), carrying an orphan-marked reason. Distinct from
+# the untracked-broker orphan (all-FK-null) -- this one HAS an FK that no longer
+# resolves. Placed BEFORE the simple-ack branch so a genuinely-gone subject wins
+# the orphan-marked reason; cannot hijack a LIVE tier-2 row because
+# ``orphaned_affected_target`` returns None when the FK row exists.
+# ---------------------------------------------------------------------------
+
+# Resolutions the FK-orphan branch can clear (mirrors the orphan/simple-ack
+# widening; a terminal-state orphan gets the canonical 409).
+_FK_ORPHAN_CLEARABLE_RESOLUTIONS: frozenset[str] = frozenset(
+    {"unresolved", "pending_ambiguity_resolution"}
+)
+
+
+def _render_fk_orphan_acknowledge_form(
+    request: Request,
+    disc: object,
+    orphan_target: tuple[str, int],
+    *,
+    unresolved_count: int,
+    recent_multi_leg_count: int,
+    banner_resolve_link: str | None,
+    prior_resolution_reason: str = "",
+    error_band_message: str | None = None,
+    status_code: int = 200,
+) -> Response:
+    """Render the FK-orphan acknowledge form by REUSING the simple-acknowledge
+    VM + template (HTMX-correct + carries ``data-simple-acknowledge-form``),
+    with orphan-specific heading/explanation prose (ASCII-only). No new VM /
+    template / schema; the locked ``_render_simple_acknowledge_form`` +
+    ``_SIMPLE_ACK_PROSE`` are untouched."""
+    try:
+        session_date = topbar_session_date(
+            PageKind.HISTORY_ANALYSIS, datetime.now()
+        ).isoformat()
+    except Exception:  # pragma: no cover - defensive
+        session_date = "n/a"
+    discrepancy_id = int(disc.discrepancy_id)  # type: ignore[attr-defined]
+    disc_type = getattr(disc, "discrepancy_type", None) or ""
+    table, rid = orphan_target
+    heading = "Resolve orphaned discrepancy"
+    explanation = (
+        f"The referenced {table} row (id={rid}) no longer exists (it was "
+        "manually deleted, e.g. the D19 double-debit correction). The tier-2 "
+        "choices need that row, so acknowledge here to clear this finding to "
+        "acknowledged_immaterial."
+    )
+    vm = ReconcileSimpleAcknowledgeVM(
+        session_date=session_date,
+        unresolved_material_discrepancies_count=unresolved_count,
+        recent_multi_leg_auto_correction_count=recent_multi_leg_count,
+        banner_resolve_link=banner_resolve_link,
+        discrepancy_id=discrepancy_id,
+        form_action=f"/reconcile/discrepancy/{discrepancy_id}/resolve",
+        discrepancy_type=disc_type,
+        heading=heading,
+        explanation=explanation,
+        ticker=getattr(disc, "ticker", None) or "",
+        delta_text=getattr(disc, "delta_text", None) or "",
+        created_at=getattr(disc, "created_at", None) or "",
+        run_id=int(getattr(disc, "run_id", 0) or 0),
+        prior_resolution_reason=prior_resolution_reason,
+        error_band_message=error_band_message,
+    )
+    return request.app.state.templates.TemplateResponse(
+        request,
+        "reconcile_simple_acknowledge.html.j2",
+        {"vm": vm},
+        status_code=status_code,
+    )
+
+
 @router.get(
     "/reconcile/discrepancy/{discrepancy_id}/resolve",
     response_class=HTMLResponse,
@@ -434,6 +519,40 @@ def reconcile_discrepancy_resolve_form(
             return _render_orphan_acknowledge_form(
                 request,
                 disc,
+                unresolved_count=unresolved_count,
+                recent_multi_leg_count=recent_multi_leg_count,
+                banner_resolve_link=banner_resolve_link,
+            )
+        # Arc 19-F — FK-orphan branch (AFTER the untracked-orphan branch,
+        # BEFORE the simple-ack branch). A referenced fill/cash_movement/trade
+        # row that was raw-deleted -> the acknowledge form; a terminal-state
+        # orphan -> the canonical 409. A LIVE FK row returns None here and
+        # falls through unchanged (the no-regression lock).
+        fk_orphan_target = orphaned_affected_target(conn, disc)
+        if fk_orphan_target is not None:
+            if disc.resolution not in _FK_ORPHAN_CLEARABLE_RESOLUTIONS:
+                table, rid = fk_orphan_target
+                return _render_error(
+                    request,
+                    status_code=409,
+                    error_kind="already_resolved",
+                    error_message=(
+                        f"Discrepancy {discrepancy_id} (orphaned; referenced "
+                        f"{table} id={rid} no longer exists) is already "
+                        f"resolved."
+                    ),
+                    discrepancy_id=discrepancy_id,
+                    disc_resolution=disc.resolution,
+                    disc_resolved_by=disc.resolved_by,
+                    disc_created_at=disc.created_at,
+                    unresolved_count=unresolved_count,
+                    recent_multi_leg_count=recent_multi_leg_count,
+                    banner_resolve_link=banner_resolve_link,
+                )
+            return _render_fk_orphan_acknowledge_form(
+                request,
+                disc,
+                fk_orphan_target,
                 unresolved_count=unresolved_count,
                 recent_multi_leg_count=recent_multi_leg_count,
                 banner_resolve_link=banner_resolve_link,
