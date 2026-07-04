@@ -238,3 +238,16 @@ The registration script is verified **at the witness with a real scheduled fire*
 - **Principal identity resolution (§2 C1 / §3.3 Q3)** — resolved via the live logon token (`WindowsIdentity::GetCurrent().Name`), not `$env:USERDOMAIN\$env:USERNAME`, so it is correct on this non-domain/personal box; witness-verified at §5 stage a.2b against the operator's real profile + the run's data root.
 - **`$SwingExe` / python path drift** — the hardcoded default assumes `%APPDATA%\Python\Python314\Scripts\swing.exe`. If a Python upgrade moves it, the register/wrapper defaults need a one-line bump. The wrapper's pre-flight (Task 4) turns this into a clean ERROR line, not a silent failure. Flagged for the operator to confirm the exact path at the witness.
 - **C4 always-one-line vs only-the-never-logged-class** (§2 C4) — a minor design choice surfaced for CHARC; recommendation is always-one-line. One-line change if CHARC prefers the strict reading.
+
+---
+
+## §10 Plan-stage resolutions (CHARC C1–C6 CONFIRM + operator, 2026-07-03/04) — BINDING for executing
+
+> Folded per CHARC's "executing may proceed" (2026-07-04). These SUPERSEDE the "surfaced for confirmation" framing above (§4, §9).
+
+- **CHARC C1–C6: ALL CONFIRMED** (the plan exceeds the conditions). No re-adjudication.
+- **C4 timeout — CHARC condition:** set the wrapper process-tree-kill timeout GENEROUS — **>=10x the normal ~2–3 min runtime, i.e. 30–60 min** (`-RunTimeoutMinutes` default 45); on trip the wrapper kills the process TREE + writes the TIMEOUT line (the killed run's lease self-heals via heartbeat aging past `block_threshold`). The scheduler `ExecutionTimeLimit` stays the OUTER 2h backstop.
+- **C4 result line — RESOLVED ALWAYS-one-line** (CHARC steer): every outcome (OK/SKIP/FAIL/ERROR/TIMEOUT) writes the line; unbounded growth is a non-issue (~250 lines/year).
+- **Point 1 / logon type — OPERATOR RESOLVED: Interactive-only V1 ACCEPTED** (S4U hard-refusal ratified; the machine is logged-on/locked at fire time; S4U deferred behind future explicit-data-root work). Keep the register script's hard-refusal of `-LogonType S4U` (§3.3).
+- **Schedule defaults — OPERATOR CONFIRMED (supersedes §4's "operator's call" cells):** 17:30 HST · Mon–Fri · `-StartWhenAvailable` **ON** (off-window catch-up accepted as harmless same-asof re-prep) · **`-WakeToRun` OFF** (no-wake + catch-up-ON is the coherent pair) · battery conditions **permissive** (`-AllowStartIfOnBatteries` + `-DontStopIfGoingOnBatteries`) · scheduler `ExecutionTimeLimit` 2h.
+- **RUNBOOK data-quality sentence — REQUIRED (CHARC/RD, non-gating but LAND it):** under the schedule rationale, one sentence noting the 17:30 HST (23:30 ET, ~7.5h post-close) slot is LATER than typical manual evening runs and plausibly REDUCES the ragged-SHAPE yfinance bar inflow (RD's invalid_ohlc capture-timing correlation) — the run time is a DATA-QUALITY parameter, not just convenience; **do NOT move it earlier without noting the ragged-inflow consideration** (the 19-D capture-timing trace confirms/kills the correlation later).
