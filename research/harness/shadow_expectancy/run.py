@@ -22,7 +22,10 @@ from research.harness.shadow_expectancy.scorecard import (
     build_hypothesis_scorecard,
 )
 from research.harness.shadow_expectancy.simulator import SimParams, simulate
-from research.harness.shadow_expectancy.validate import validate_signal
+from research.harness.shadow_expectancy.validate import (
+    clamp_ragged_bars,
+    validate_signal,
+)
 from swing.data.repos.hypothesis import list_hypotheses
 
 
@@ -76,6 +79,8 @@ def run_harness(*, db_path, output_dir, source=c.SOURCE,
     shadow_trades: list[ShadowTrade] = []
     results_rows: list[dict] = []
     ledger_rows: list[dict] = []
+    clamped_bars: dict[tuple, float] = {}   # (ticker, session) -> clamp_pct (DISTINCT clamped bars)
+    clamped_events_total = 0                # every clamp operation (signal-weighted inflow)
 
     params = SimParams(
         initial_shares=c.INITIAL_SHARES, partial_session_n=partial_session_n,
@@ -141,6 +146,16 @@ def run_harness(*, db_path, output_dir, source=c.SOURCE,
             for h in hyps:
                 signal_outcomes.append(SignalOutcome(h, "excluded", "missing_observations"))
             continue
+
+        # 19-D reader-side epsilon clamp (brief 2b): widen sub-threshold OHLC shape violations
+        # BEFORE validation so a sub-cent ragged bar no longer excludes the whole signal. The
+        # immutable log is untouched -- this mutates only the in-memory canonical chain. Applied
+        # AFTER collapse (collapse compares verbatim log OHLC via _series_key), so dedup / canonical
+        # choice are unaffected.
+        all_bars, clamp_events = clamp_ragged_bars(all_bars, max_pct=c.OHLC_CLAMP_MAX_PCT)
+        clamped_events_total += len(clamp_events)          # signal-weighted (not deduped)
+        for ev in clamp_events:
+            clamped_bars.setdefault((ticker, ev.session), ev.clamp_pct)   # distinct bar
 
         # validate BEFORE the recompute (Codex M5 order): a null/<=0 pivot is caught as
         # no_candidate_pivot before the recompute dereferences it; bad frozen bars -> invalid_ohlc.

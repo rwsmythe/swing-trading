@@ -175,3 +175,49 @@ def test_mixed_first_trigger_not_excluded_and_longest_chain_is_bar_source(tmp_pa
     dl = f["detection_level"]
     assert dl["total_detections"] == 2 and dl["unique_signals"] == 1
     assert dl["collapsed_duplicate_detection"] == 1
+
+
+# --- 19-D epsilon-clamp end-to-end (T4 recovered, T5 held). Real ragged bars lifted verbatim. ---
+def _seed_signal_with_walk_bar(conn, *, ticker, pivot, adr, entry, walk, tail):
+    eval_id = insert_candidate(conn, ticker=ticker, bucket="watch", pivot=pivot,
+                               initial_stop=pivot - 5, close=pivot, adr_pct=adr,
+                               criteria=[("proximity_20ma", "trend_template", "fail")])
+    pr = insert_pipeline_run(conn, eval_id)
+    det = insert_detection(conn, ticker=ticker, pipeline_run_id=pr, pivot=pivot,
+                           data_asof_date="2026-06-16", detection_date="2026-06-17")
+    for (d, o, h, low, cl) in (entry, walk, tail):
+        insert_observation(conn, det, d, o=o, h=h, l=low, c=cl, status="triggered_open")
+    conn.commit()
+
+
+def test_t4_dino_class_ragged_walk_bar_recovered_end_to_end(tmp_path):
+    # entry clean (rps 2.0 clears the floor); walk = real DINO 06-18 ragged (0.42% <= 1.0%);
+    # tail clean. PRE-FIX: whole signal invalid_ohlc. POST-FIX: clamped -> priced (open at horizon).
+    conn = make_db(tmp_path)
+    _seed_signal_with_walk_bar(
+        conn, ticker="DINO", pivot=64.0, adr=3.0,
+        entry=("2026-06-17", 65.0, 66.0, 63.0, 65.5),
+        walk=("2026-06-18", 65.78, 65.51, 63.85, 64.50),     # real ragged bar
+        tail=("2026-06-19", 64.6, 66.0, 64.4, 65.8))
+    _assert_no_look_ahead(conn)
+    _, _, _, manifest = run_harness(db_path=tmp_path / "t.db", output_dir=tmp_path / "out",
+                                    source="pipeline", horizon_sessions=2)
+    f = json.loads(Path(manifest).read_text(encoding="utf-8"))["funnel"]
+    h = f["per_hypothesis"]["Near-A+ defensible: extension test"]
+    assert h["excluded"].get("invalid_ohlc", 0) == 0     # NOT lost to the ragged bar
+    assert h["open_at_horizon"] == 1                      # recovered + priced
+
+
+def test_t5_caly_class_above_threshold_still_invalid_end_to_end(tmp_path):
+    conn = make_db(tmp_path)
+    _seed_signal_with_walk_bar(
+        conn, ticker="CALY", pivot=18.0, adr=5.0,
+        entry=("2026-06-30", 18.0, 18.5, 17.5, 18.2),
+        walk=("2026-07-01", 18.09, 18.99, 18.4001, 18.64),   # real CALY ragged (1.66% > 1.0%)
+        tail=("2026-07-02", 18.6, 19.0, 18.4, 18.8))
+    _assert_no_look_ahead(conn)
+    _, _, _, manifest = run_harness(db_path=tmp_path / "t.db", output_dir=tmp_path / "out",
+                                    source="pipeline", horizon_sessions=2)
+    f = json.loads(Path(manifest).read_text(encoding="utf-8"))["funnel"]
+    h = f["per_hypothesis"]["Near-A+ defensible: extension test"]
+    assert h["excluded"].get("invalid_ohlc", 0) == 1     # above threshold -> still excluded
