@@ -3742,6 +3742,25 @@ def pipeline_run_cmd(ctx, manual, skip_if_running):
     # screen_query) propagate when the web layer spawns this CLI subprocess.
     # Discriminating test for the propagation contract lives in Task 7.
     cfg = apply_overrides(ctx.obj["config"])
+    # 19-C Task 2b: unattended fail-closed guard. In --skip-if-running (the
+    # scheduled/unattended mode ONLY -- interactive behaviour unchanged), refuse
+    # BEFORE acquiring a lease if the actually-imported code tree diverges from
+    # the config-derived project root (worktree drift / wrong --config). The
+    # editable install resolves the MAIN tree, so a scheduled task that somehow
+    # launches a worktree checkout, or is handed a foreign --config, is stopped
+    # deterministically (exit 78 = EX_CONFIG) rather than silently preparing the
+    # wrong data root (the #5 launch-context vector).
+    if skip_if_running:
+        import swing.config as _swing_config
+        running_root = Path(_swing_config.__file__).resolve().parent.parent
+        config_root = getattr(cfg, "project_root", None)
+        if config_root is not None and running_root != Path(config_root).resolve():
+            click.echo(
+                f"Refusing: running code tree {running_root} != config root "
+                f"{Path(config_root).resolve()} (worktree drift / wrong --config).",
+                err=True,
+            )
+            ctx.exit(78)
     # Pipeline observability (Arc-1/Arc-2): route through the install_logging
     # composition root (Belt A + Belt B + bounded rotation by construction).
     from swing.logging_setup import install_logging

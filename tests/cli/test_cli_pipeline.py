@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pandas as pd
+import pytest
 from click.testing import CliRunner
 
 from swing.cli import main
@@ -160,6 +161,110 @@ def test_skip_if_running_flag_absent_still_exits_2(tmp_path: Path):
         assert r.exit_code == 2, r.output
     finally:
         lease.release(state="complete")
+
+
+def test_skip_if_running_code_tree_mismatch_exits_78(tmp_path: Path, monkeypatch):
+    """Task 2b (19-C): under --skip-if-running, a running code tree that diverges
+    from cfg.project_root (worktree drift / wrong --config) fails closed with exit
+    78 (EX_CONFIG) BEFORE any lease is acquired. Pre-fix: no guard -> the run
+    proceeds (not 78); post-fix: deterministic 78. Distinguishes."""
+    import swing.config as _swing_config
+
+    runner, cfg_path, _ = _setup(tmp_path)
+    # Force running-root != cfg.project_root deterministically (independent of
+    # where pytest runs).
+    monkeypatch.setattr(
+        _swing_config, "__file__",
+        str(tmp_path / "elsewhere" / "swing" / "config.py"),
+    )
+    r = runner.invoke(main, [
+        "--config", str(cfg_path), "pipeline", "run", "--skip-if-running",
+    ])
+    assert r.exit_code == 78, r.output
+    assert "config root" in r.output.lower() or "code tree" in r.output.lower()
+
+
+def test_skip_if_running_code_tree_match_proceeds(tmp_path: Path, monkeypatch):
+    """Task 2b (19-C) companion fence: with running-root == cfg.project_root the
+    guard does NOT fire (it must not exit 78 on a legitimate MAIN-tree launch);
+    the run proceeds to the collision path (exit 75 here)."""
+    from swing.config import load
+    from swing.pipeline.lease import acquire_lease
+
+    runner, cfg_path, project = _setup(tmp_path)
+    _align_code_tree(monkeypatch, project)
+    cfg = load(cfg_path)
+    lease = acquire_lease(
+        db_path=cfg.paths.db_path, trigger="manual",
+        data_asof_date="2026-04-15", action_session_date="2026-04-16",
+    )
+    try:
+        r = runner.invoke(main, [
+            "--config", str(cfg_path), "pipeline", "run", "--skip-if-running",
+        ])
+        assert r.exit_code != 78, r.output
+        assert r.exit_code == 75, r.output
+    finally:
+        lease.release(state="complete")
+
+
+def test_unattended_schwab_construction_wired_non_interactive(monkeypatch):
+    """C3 (19-C) static wiring: the non-setup Schwab construction site
+    (_construct_v3_client_with_guard, the path construct_authenticated_client ->
+    the market-data ladder uses under the scheduled task) passes
+    open_browser_for_auth=False AND the raising call_on_auth=_raise_on_auth.
+    A regression flipping either param FAILS -- no interactive/browser auth is
+    reachable in the unattended launch context."""
+    import schwabdev
+
+    from swing.integrations.schwab import auth as schwab_auth
+
+    captured: dict = {}
+
+    class _FakeClient:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(schwabdev, "Client", _FakeClient)
+    schwab_auth._construct_v3_client_with_guard(
+        tokens_path="tok.db", app_key="k", app_secret="s",
+        callback_url="https://cb.example", encryption=None, timeout=5,
+    )
+    assert captured["open_browser_for_auth"] is False
+    assert captured["call_on_auth"] is schwab_auth._raise_on_auth
+
+
+def test_unattended_schwab_construction_never_prompts(monkeypatch):
+    """C3 (19-C) behavioral guard (broader than the wiring check): if schwabdev's
+    construction attempts to prompt (invokes the injected call_on_auth), the
+    unattended path raises SchwabAuthError and NEVER touches input()/webbrowser."""
+    import builtins
+    import webbrowser
+
+    import schwabdev
+
+    from swing.integrations.schwab import auth as schwab_auth
+    from swing.integrations.schwab.client import SchwabAuthError
+
+    class _PromptingClient:
+        def __init__(self, *, call_on_auth, open_browser_for_auth, **kwargs):
+            # mimic schwabdev's missing/stale-token construction path invoking
+            # the injected callback (v3 would otherwise prompt interactively).
+            call_on_auth("https://consent.example/auth")
+
+    monkeypatch.setattr(schwabdev, "Client", _PromptingClient)
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("interactive primitive reached in unattended path")
+
+    monkeypatch.setattr(builtins, "input", _boom)
+    monkeypatch.setattr(webbrowser, "open", _boom)
+
+    with pytest.raises(SchwabAuthError):
+        schwab_auth._construct_v3_client_with_guard(
+            tokens_path="tok.db", app_key="k", app_secret="s",
+            callback_url="https://cb.example", encryption=None, timeout=5,
+        )
 
 
 def test_force_clear_rejects_fresh_run(tmp_path: Path):
