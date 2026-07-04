@@ -2460,7 +2460,77 @@ def run_schwab_reconciliation(
     return out
 
 
+# ---------------------------------------------------------------------------
+# Arc 19-F — orphan-tolerant discrepancy resolution (the D19 raw-delete case).
+#
+# A discrepancy can reference an FK subject row (fill / cash_movement / trade)
+# that was RAW-DELETED out from under it (D19's interim doctrine keeps raw
+# DELETE as the only manual row removal, so recurrence across those three
+# tables is EXPECTED). The tier-2 resolver reads that row to snapshot its
+# pre-correction value and RAISES when it is gone, trapping the discrepancy
+# in ``pending_ambiguity_resolution`` with no supported clear path. These two
+# helpers let the web + CLI resolve surfaces recognize the FK-orphan state and
+# route it to a terminal ``acknowledged_immaterial`` resolution carrying an
+# orphan-marked reason -- the MECHANISM (F3), not a one-time patch.
+# ---------------------------------------------------------------------------
+
+
+def orphaned_affected_target(
+    conn: sqlite3.Connection, disc: Any,
+) -> tuple[str, int] | None:
+    """Return ``(table, row_id)`` of a discrepancy's referenced FK subject row
+    when that row NO LONGER EXISTS (a raw-delete orphan, e.g. D19's
+    ``cash_movement_id=5``), else ``None``.
+
+    Mirrors ``reconciliation_auto_correct._resolve_affected_target``'s FK
+    precedence (fill_id -> cash_movement_id -> trade_id) so it names the EXACT
+    row the tier-2 resolver would fail to read. Returns ``None`` when:
+
+      - no FK is set (all-NULL: equity_delta / snapshot_mismatch / the
+        source-direction ``missing_journal_row`` rows -> handled by their own
+        branches, NOT FK-orphans), OR
+      - the referenced FK row EXISTS (a live tier-2 row -> must reach the
+        tier-2 form unchanged; the no-regression lock).
+
+    The ``table`` / column values come from a CLOSED internal set (never
+    operator input) so the f-string interpolation is safe (same discipline as
+    ``_read_journal_value``).
+    """
+    if getattr(disc, "fill_id", None) is not None:
+        table, rid, col = "fills", int(disc.fill_id), "fill_id"
+    elif getattr(disc, "cash_movement_id", None) is not None:
+        table, rid, col = "cash_movements", int(disc.cash_movement_id), "id"
+    elif getattr(disc, "trade_id", None) is not None:
+        table, rid, col = "trades", int(disc.trade_id), "id"
+    else:
+        return None
+    exists = conn.execute(
+        f"SELECT 1 FROM {table} WHERE {col} = ?", (rid,)  # noqa: S608 (closed set)
+    ).fetchone()
+    return None if exists is not None else (table, rid)
+
+
+def compose_orphan_reason(
+    table: str, row_id: int, operator_reason: str | None = None,
+) -> str:
+    """Compose the orphan-marked ``resolution_reason`` (F1 audit discipline).
+
+    ALWAYS non-empty: the system marker names the exact missing subject row so
+    the audit trail explicitly says WHY the discrepancy was resolved
+    subject-less. An optional operator rationale is appended when supplied.
+    ASCII-only (the Windows cp1252 gotcha).
+    """
+    marker = (
+        f"orphan-resolved (subject row gone): {table} id={row_id} no longer "
+        f"exists (raw-deleted; e.g. D19 double-debit correction)."
+    )
+    extra = (operator_reason or "").strip()
+    return f"{marker} {extra}" if extra else marker
+
+
 __all__ = [
     "CallerHeldTransactionError",
+    "compose_orphan_reason",
+    "orphaned_affected_target",
     "run_schwab_reconciliation",
 ]
