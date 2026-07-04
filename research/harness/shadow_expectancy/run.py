@@ -255,28 +255,46 @@ def run_harness(*, db_path, output_dir, source=c.SOURCE,
         shadow_trades, sample_floor_mean=c.SAMPLE_FLOOR_MEAN,
         sample_floor_rate=c.SAMPLE_FLOOR_RATE, profit_factor_floor=c.PROFIT_FACTOR_FLOOR)
 
+    clamp_summary = {
+        "clamped_bar_count": len(clamped_bars),         # DISTINCT (ticker, session) bars
+        "clamped_bar_events": clamped_events_total,      # signal-weighted operations (not deduped)
+        "max_pct_threshold": c.OHLC_CLAMP_MAX_PCT,
+        "samples": [{"ticker": t, "session": s, "clamp_pct": round(p, 4)}
+                    for (t, s), p in sorted(clamped_bars.items())][:c.CLAMP_SAMPLE_LIMIT],
+    }
+
     results_path = run_dir / "results.csv"
     per_session_path = run_dir / "per_session.csv"
     summary_path = run_dir / "summary.md"
     manifest_path = run_dir / "manifest.json"
     output.write_results_csv(results_rows, results_path)
     output.write_per_session_csv(ledger_rows, per_session_path)
-    output.write_summary_md(_summary_lines(funnel, scorecard), summary_path)
+    output.write_summary_md(_summary_lines(funnel, scorecard, clamp_summary), summary_path)
     output.write_manifest_json({
         "harness_version": c.HARNESS_VERSION, "source": source,
         "params": {"partial_session_n": partial_session_n, "breakeven_r": breakeven_r,
                    "horizon_sessions": horizon_sessions,
                    "ma_staging": [c.MA_FAST_PERIOD, c.MA_SLOW_PERIOD]},
         "funnel": funnel, "scorecard": scorecard,
+        "ohlc_clamp": clamp_summary,
         "started_iso_utc": iso, "l2_lock_preserved": True,
     }, manifest_path)
     conn.close()
     return results_path, per_session_path, summary_path, manifest_path
 
 
-def _summary_lines(funnel, scorecard) -> list[str]:
+def _summary_lines(funnel, scorecard, clamp_summary) -> list[str]:
     lines = ["# Shadow-expectancy engine - summary", "",
              "Mechanical-ruleset SHADOW evidence (NOT live hand-traded counts; spec 1).", ""]
+    # 19-D reader-side epsilon clamp (brief 2b): surface the clamped-bar inflow so RD can watch it
+    # every run without re-probing the DB. Reader-side ONLY -- the immutable log is untouched.
+    lines.append("## OHLC epsilon-clamp (reader-side; log untouched; brief 2b)")
+    lines.append(f"  clamped_bar_count={clamp_summary['clamped_bar_count']} "
+                 f"clamped_bar_events={clamp_summary['clamped_bar_events']} "
+                 f"(<= {clamp_summary['max_pct_threshold']}% shape tolerance)")
+    for s in clamp_summary["samples"]:
+        lines.append(f"    {s['ticker']} {s['session']} clamp={s['clamp_pct']:.4f}%")
+    lines.append("")
     lines.append("## Denominator funnel (detection-level)")
     dl = funnel["detection_level"]
     lines.append(f"total_detections={dl['total_detections']} "

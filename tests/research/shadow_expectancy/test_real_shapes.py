@@ -221,3 +221,27 @@ def test_t5_caly_class_above_threshold_still_invalid_end_to_end(tmp_path):
     f = json.loads(Path(manifest).read_text(encoding="utf-8"))["funnel"]
     h = f["per_hypothesis"]["Near-A+ defensible: extension test"]
     assert h["excluded"].get("invalid_ohlc", 0) == 1     # above threshold -> still excluded
+
+
+def test_t6_clamp_counter_in_manifest_and_summary(tmp_path):
+    conn = make_db(tmp_path)
+    _seed_signal_with_walk_bar(
+        conn, ticker="DINO", pivot=64.0, adr=3.0,
+        entry=("2026-06-17", 65.0, 66.0, 63.0, 65.5),
+        walk=("2026-06-18", 65.78, 65.51, 63.85, 64.50),
+        tail=("2026-06-19", 64.6, 66.0, 64.4, 65.8))
+    _, _, summary, manifest = run_harness(db_path=tmp_path / "t.db",
+                                          output_dir=tmp_path / "out",
+                                          source="pipeline", horizon_sessions=2)
+    m = json.loads(Path(manifest).read_text(encoding="utf-8"))
+    oc = m["ohlc_clamp"]
+    assert oc["clamped_bar_count"] == 1      # one distinct (ticker, session) bar
+    assert oc["clamped_bar_events"] == 1     # one clamp operation (single signal here)
+    assert oc["max_pct_threshold"] == 1.0
+    assert oc["samples"][0]["ticker"] == "DINO"
+    assert oc["samples"][0]["session"] == "2026-06-18"
+    assert abs(oc["samples"][0]["clamp_pct"] - 0.4186) < 0.001
+    text = Path(summary).read_text(encoding="utf-8")
+    assert "OHLC epsilon-clamp" in text
+    assert "clamped_bar_count=1" in text
+    assert "clamped_bar_events=1" in text
