@@ -93,13 +93,31 @@ Idempotent: prints "already absent" and exits 0 if the task is gone.
 Expected (see above). A same-asof re-prep. Nothing to do.
 
 ### Collision (a manual run overlaps the scheduled fire)
-Expected and benign. The wrapper writes a `SKIP` line and exits 0 (the task
-stays green — no red icon). The collision maps `ConcurrentRunBlockedError` ->
-CLI exit 75 (EX_TEMPFAIL) -> wrapper SKIP -> exit 0. Nothing to do.
+Expected and benign when a LIVE manual run is in progress. The wrapper writes a
+`SKIP` line and exits 0 (the task stays green — no red icon). The collision maps
+`ConcurrentRunBlockedError` -> CLI exit 75 (EX_TEMPFAIL) -> wrapper SKIP ->
+exit 0. Nothing to do.
 
-### Stale lease (a crashed run left the lease held)
+**But a `SKIP` is NOT always benign.** The CLI returns `blocked` (-> exit 75 ->
+`SKIP`) for BOTH cases below, and the wrapper cannot tell them apart from the
+exit code alone:
+1. a live manual run holding a fresh-heartbeat lease (benign — the SKIP is
+   correct), OR
+2. an ORPHANED `running` row left by a previously crashed / wrapper-killed run
+   (a STALE lease — see below). This one does NOT self-heal: the
+   `ux_pipeline_one_running` partial-unique index rejects every new insert while
+   that row stays `running`, so EVERY later fire logs `SKIP` until the operator
+   force-clears it. **The real signal here is the tool-health stoplight going
+   RED** (`swing/monitoring/tool_health.py` pipeline-freshness: yellow at >=1
+   session behind the last COMPLETE run, RED at >=2 / no completed run) — a
+   string of `SKIP` lines with NO intervening `OK` while the stoplight is RED
+   means a stale lease, not a live manual run.
+
+### Stale lease (a crashed / killed run left the lease held)
 The task NEVER auto-force-clears (an unattended auto-clear could kill a live
-manual run). Recover manually:
+manual run — plan C2). A wrapper `TIMEOUT`/`TIMEOUT-KILL-FAILED` line, or
+persistent `SKIP` lines with the pipeline-freshness stoplight RED, is your cue.
+Recover manually:
 
 ```powershell
 swing pipeline list                         # find the stuck run id + state
@@ -108,9 +126,11 @@ swing pipeline force-clear <id> --bypass-staleness-check   # crashed-worker case
 ```
 
 `force-clear` requires BOTH staleness signals (heartbeat age AND step-progress
-age) unless `--bypass-staleness-check` is passed. A timed-out run killed by the
-wrapper's process-tree kill self-heals: its heartbeat ages past the block
-threshold, so the next fire is not blocked.
+age) unless `--bypass-staleness-check` is passed. **Note:** a run killed by the
+wrapper's process-tree kill leaves its `pipeline_runs` row `running` (the SIGKILL
+skips graceful lease release); it does NOT auto-clear. The pipeline-freshness
+stoplight is the backstop that surfaces the resulting stall; recovery is this
+`force-clear`.
 
 ### Token degrade (stale/absent Schwab token)
 A stale 7-day Schwab refresh-TTL is EXPECTED steady-state; the run completes via
