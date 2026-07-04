@@ -132,6 +132,8 @@ skips graceful lease release); it does NOT auto-clear. The pipeline-freshness
 stoplight is the backstop that surfaces the resulting stall; recovery is this
 `force-clear`.
 
+**Detection channels — the wedged-lease mode is PUSH-INVISIBLE (RD/CHARC, 2026-07-04).** The 18-H.7 research-health RD notify fires ONLY from a leased run; in the wedge NO run executes, so the RD inbox is structurally NEVER pinged — **do NOT wait for an inbox push that cannot come.** Detection rests on: (a) the tool-health pipeline-freshness stoplight going RED at the 18-F GUI (passive — requires looking); (b) the weekly-glance newest-artifact-age line (active, worst-case ~5 trading sessions to the Friday glance); (c) the result file's `TIMEOUT` -> `SKIP` -> `SKIP` morning pattern. The latency is acceptable — a wedged pipeline is pure staleness (no data corruption; CALIBRATION C accepts the missed sessions as historical once un-wedged, no monitor change) — but "the stall surfaces at the GUI" must NOT be read as "RD gets pinged": it does not.
+
 ### Token degrade (stale/absent Schwab token)
 A stale 7-day Schwab refresh-TTL is EXPECTED steady-state; the run completes via
 the yfinance ladder-fallthrough (no hang — the non-setup Schwab paths raise a
