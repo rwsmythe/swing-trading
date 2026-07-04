@@ -9,12 +9,18 @@ import math
 from dataclasses import dataclass
 from datetime import date
 
+import exchange_calendars as xcals
 from exchange_calendars.errors import NotSessionError
 
 from swing.config import StopAdvisoryConfig
 from swing.data.models import Trade
 from swing.evaluation.dates import sessions_behind
 from swing.trades.equity import r_so_far
+
+# Cached XNYS singleton (exchange_calendars.get_calendar returns the SAME
+# instance swing/evaluation/dates.py holds) — used to validate that a trade's
+# entry_date is an actual NYSE session before session-day-counting (Codex R3).
+_NYSE = xcals.get_calendar("XNYS")
 
 
 @dataclass(frozen=True)
@@ -221,11 +227,20 @@ def suggest_partial_day_window(
     # other date-parser, does NOT), so an unguarded parse is a fresh
     # whole-aggregator crash path on the degraded price path.
     try:
-        day_num = sessions_behind(
-            date.fromisoformat(ctx.as_of_date),
-            date.fromisoformat(trade.entry_date),
-        )
-    except (NotSessionError, ValueError):
+        as_of_d = date.fromisoformat(ctx.as_of_date)
+        entry_d = date.fromisoformat(trade.entry_date)
+    except ValueError:
+        return None
+    # Codex R3 MAJOR: sessions_behind only rejects a non-session REFERENCE
+    # (as_of); a non-session CANDIDATE (entry_date) is walked past and assigned
+    # a SYNTHETIC day number. record_entry validates entry_date's ISO shape but
+    # NOT session membership, so a weekend/holiday entry_date is persistable ->
+    # guard it so this rule cannot emit a false trim off an anomalous entry.
+    if not _NYSE.is_session(entry_d):
+        return None
+    try:
+        day_num = sessions_behind(as_of_d, entry_d)
+    except NotSessionError:
         return None
     if not (cfg.partial_day_window_start <= day_num <= cfg.partial_day_window_end):
         return None
@@ -438,9 +453,10 @@ def compute_price_independent_suggestions(
 
     Used by composition layers when no live price snapshot is available
     (PriceCache degraded; OHLCV fetch failed; etc.) so DB-sourced advisories
-    still fire. Currently V1: only §4.A.bis ``suggest_maturity_stage_trail_ma_hint``
-    is price-independent. Future price-independent rules should be appended
-    here.
+    still fire. Price-independent rules (Codex R3 MINOR — keep this list
+    current): §4.A.bis ``suggest_maturity_stage_trail_ma_hint`` and the 19-E
+    ``suggest_partial_day_window`` (reads ``previous_close`` + dates, never
+    ``current_price``). Future price-independent rules should be appended here.
 
     Codex R1 Major #2 closure (3e.8 Bundle 3): pre-fix, the 5 web/briefing
     composition sites gated ALL advisories on ``snap is not None``, which

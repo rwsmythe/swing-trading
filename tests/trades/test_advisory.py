@@ -1065,6 +1065,26 @@ def test_partial_day_window_non_session_as_of_does_not_crash():
     assert "partial_day_window" not in rules
 
 
+def test_partial_day_window_non_session_entry_date_does_not_fire():
+    from swing.trades.advisory import suggest_partial_day_window
+    # Codex R3 MAJOR: sessions_behind only rejects a non-session REFERENCE
+    # (as_of); a non-session CANDIDATE (entry_date) is walked past and gets a
+    # synthetic day number. record_entry validates ISO shape but NOT session
+    # membership, so a weekend entry_date is persistable. Entry Sat 2026-06-13,
+    # as_of Thu 2026-06-18 -> sessions_behind == 4 (in [3,5]) -> would FALSE
+    # fire; the is_session guard must suppress it.
+    trade = _trade_pw()
+    trade = Trade(
+        id=1, ticker="AAPL", entry_date="2026-06-13", entry_price=100.0,
+        initial_shares=10, initial_stop=90.0, current_stop=90.0,
+        state="entered", watchlist_entry_target=None,
+        watchlist_initial_stop=None, notes=None,
+    )
+    s = suggest_partial_day_window(
+        trade, _ctx_pw(as_of="2026-06-18", prev_close=105.0))
+    assert s is None
+
+
 def test_partial_day_window_malformed_date_does_not_crash():
     from swing.trades.advisory import suggest_partial_day_window
     # Codex R2 MAJOR: a malformed as_of_date/entry_date must no-fire, NOT
