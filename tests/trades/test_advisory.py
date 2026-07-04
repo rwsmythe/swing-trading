@@ -1016,3 +1016,37 @@ def test_partial_day_window_message_is_ascii():
     assert s is not None
     # ASCII discipline: message is echoed to CLI stdout (cli.py:1024).
     s.message.encode("ascii")  # raises UnicodeEncodeError if any non-ASCII glyph
+
+
+def test_compute_all_suggestions_includes_partial_day_window():
+    s = compute_all_suggestions(
+        _trade_pw(), _ctx_pw(as_of="2026-06-11", prev_close=105.0))
+    assert any(x.rule == "partial_day_window" for x in s)
+
+
+def test_compute_price_independent_includes_partial_day_window():
+    # Price-degraded path: sentinel current_price, previous_close still known.
+    ctx = AdvisoryContext(
+        as_of_date="2026-06-11", current_price=0.0,
+        sma10=None, sma20=None, sma50=None, previous_close=105.0,
+        weather_status="STALE", config=StopAdvisoryConfig(),
+        has_been_trimmed=False,
+    )
+    s = compute_price_independent_suggestions(_trade_pw(), ctx)
+    assert any(x.rule == "partial_day_window" for x in s)
+
+
+def test_partial_day_window_does_not_alter_trim_into_strength():
+    # ADD-ALONGSIDE guard (E1): a +1R trade OUTSIDE the day window still
+    # fires trim_into_strength and does NOT fire partial_day_window.
+    # entry 100 / stop 90 -> 1R = $10; current 110 -> +1.0R.
+    # as_of 2026-06-16 -> day_num 6 -> window closed.
+    ctx = AdvisoryContext(
+        as_of_date="2026-06-16", current_price=110.0,
+        sma10=None, sma20=None, sma50=None, previous_close=110.0,
+        weather_status="Bullish", config=StopAdvisoryConfig(),
+    )
+    s = compute_all_suggestions(_trade_pw(), ctx)
+    rules = {x.rule for x in s}
+    assert "trim_into_strength" in rules
+    assert "partial_day_window" not in rules

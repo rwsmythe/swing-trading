@@ -429,6 +429,11 @@ def compute_price_independent_suggestions(
     """
     sugs: list[AdvisorySuggestion | None] = []
     sugs.append(suggest_maturity_stage_trail_ma_hint(trade, ctx))
+    # 19-E — Day-3-5 partial is price-independent (reads previous_close +
+    # dates, not current_price); fire it even under PriceCache degradation
+    # (Bundle-3 R1 M#2 class). Callers use this aggregator XOR
+    # compute_all_suggestions, so no double-fire.
+    sugs.append(suggest_partial_day_window(trade, ctx))
     return [s for s in sugs if s is not None]
 
 
@@ -456,4 +461,7 @@ def compute_all_suggestions(trade: Trade, ctx: AdvisoryContext) -> list[Advisory
     # Both fire independently; no suppression interactions (brief §0.3 #5).
     sugs.append(suggest_maturity_stage_trail_ma_hint(trade, ctx))
     sugs.append(suggest_r_multiple_stop_tighten(trade, ctx))
+    # 19-E — Day-3-5 calendar partial advisory (ADD-ALONGSIDE; distinct
+    # labeled rule, no suppression of trim_into_strength). Appended last.
+    sugs.append(suggest_partial_day_window(trade, ctx))
     return [s for s in sugs if s is not None]
