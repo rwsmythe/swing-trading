@@ -26,6 +26,17 @@ Copied verbatim from the commissioning brief ([`docs/shadow-engine-hardening-19d
 
 ---
 
+## RD RULINGS (BINDING, folded 2026-07-04 -- all four params ACCEPTED at the recommended defaults)
+
+RD ruled at plan-stage (operator-authorized). The proposed defaults are now RD-LOCKED FINAL -- the executing implementer ships them as-is, NOT tentative:
+- **RISK_FLOOR_ADR_RATIO = 0.15** (the rps/ADR form ACCEPTED over rps/ATR -- frozen screening metadata beats forward-bar ATR's short-chain fragility; ~geometric mid-gap sqrt(0.0794x0.2564)=0.143, 1.9x above VSTS / 1.7x below TVTX).
+- **EXCLUDE as `degenerate_risk`**; **winsorize REJECTED** (winsorized VSTS still prices ~14.5R -- unpriceable under the mechanical ruleset -> exclude via the existing taxonomy, cohort means uncontaminated).
+- **OHLC_CLAMP_MAX_PCT = 1.0** (sits in the 0.771->1.664 gap; recovers the 15-bar cluster; conservative failure direction).
+- **CALY stays EXCLUDED** (1.66% is a materially wrong bar; clamping fabricates). DFTX/LTH nuance CONCURRED (real moves, sane denominators -- not the floor's target).
+- **Coverage claim CONFIRMED by RD** on the correct scope -- detection-joined candidate rows (JOIN evaluation_runs ON action_session_date=detection_date JOIN candidates ON ticker): **2755 rows / 355 signals, ZERO null / ZERO non-positive adr_pct**; the full-table 273 nulls are excluded-bucket/open-trade rows detections never join. The null-safe degrade (null/<=0 -> floor disabled -> old behavior) STAYS as belt.
+- The **calibration-guard test pinning the gap is REQUIRED** as planned.
+- **Terminal gate: RD's pre-committed T4 confirmatory re-read on the fresh full-corpus run.**
+
 ## Measurement-Policy Proposal (RD RULES at plan review)
 
 All evidence below was read from the live DB (`~/swing-data/swing.db`, `mode=ro`) on 2026-07-04, reconstructing the harness pipeline (source=`pipeline`), and from the artifacts under `exports/research/shadow-expectancy-20260630T010654Z`. Every proposed threshold is derived from this distribution, not intuition.
