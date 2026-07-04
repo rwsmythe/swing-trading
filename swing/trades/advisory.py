@@ -9,6 +9,8 @@ import math
 from dataclasses import dataclass
 from datetime import date
 
+from exchange_calendars.errors import NotSessionError
+
 from swing.config import StopAdvisoryConfig
 from swing.data.models import Trade
 from swing.evaluation.dates import sessions_behind
@@ -201,10 +203,20 @@ def suggest_partial_day_window(
     if ctx.has_been_trimmed:
         return None
     cfg = ctx.config
-    day_num = sessions_behind(
-        date.fromisoformat(ctx.as_of_date),
-        date.fromisoformat(trade.entry_date),
-    )
+    # ANCHOR CONTRACT (see docstring): production callers pass a forward
+    # action-session date, which IS an NYSE session. The CLI diagnostic
+    # (cli.py: `trade advisory`) defaults as_of_date to raw date.today(),
+    # which on a weekend/holiday is NOT a session -> sessions_behind's
+    # previous_session walk raises NotSessionError. Degrade to no-fire (the
+    # session day-number is undefined off a non-session anchor) rather than
+    # crash the whole compute_all_suggestions aggregation.
+    try:
+        day_num = sessions_behind(
+            date.fromisoformat(ctx.as_of_date),
+            date.fromisoformat(trade.entry_date),
+        )
+    except NotSessionError:
+        return None
     if not (cfg.partial_day_window_start <= day_num <= cfg.partial_day_window_end):
         return None
     if ctx.previous_close <= trade.entry_price:

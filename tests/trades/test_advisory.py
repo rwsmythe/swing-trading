@@ -1009,6 +1009,26 @@ def test_partial_day_window_already_trimmed_suppressed():
     assert s is None
 
 
+def test_partial_day_window_non_session_as_of_does_not_crash():
+    from swing.trades.advisory import suggest_partial_day_window
+    # 2026-07-04 is a Saturday (non-session). The CLI `trade advisory`
+    # command defaults as_of_date to raw date.today() (cli.py:1008), so a
+    # non-session anchor is reachable there. sessions_behind raises
+    # NotSessionError on a non-session reference; the rule MUST degrade to
+    # no-fire, NOT crash the whole compute_all_suggestions aggregation.
+    s = suggest_partial_day_window(
+        _trade_pw(), _ctx_pw(as_of="2026-07-04", prev_close=105.0))
+    assert s is None
+    # Through the aggregator, a non-session anchor must not raise either.
+    ctx = AdvisoryContext(
+        as_of_date="2026-07-04", current_price=105.0,
+        sma10=None, sma20=None, sma50=None, previous_close=105.0,
+        weather_status="Bullish", config=StopAdvisoryConfig(),
+    )
+    rules = {x.rule for x in compute_all_suggestions(_trade_pw(), ctx)}
+    assert "partial_day_window" not in rules
+
+
 def test_partial_day_window_message_is_ascii():
     from swing.trades.advisory import suggest_partial_day_window
     s = suggest_partial_day_window(
