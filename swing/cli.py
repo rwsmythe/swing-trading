@@ -3728,8 +3728,13 @@ def pipeline_group(ctx: click.Context) -> None:
 
 @pipeline_group.command("run")
 @click.option("--manual", is_flag=True, help="Mark as a manual (vs scheduled) run")
+@click.option(
+    "--skip-if-running", is_flag=True,
+    help="On a concurrent-run collision, exit with code 75 (EX_TEMPFAIL) "
+         "instead of the default 2 -- for unattended/scheduled invocation.",
+)
 @click.pass_context
-def pipeline_run_cmd(ctx, manual):
+def pipeline_run_cmd(ctx, manual, skip_if_running):
     """Run the nightly pipeline."""
     from swing.config_overrides import apply_overrides
     from swing.pipeline import run_pipeline
@@ -3746,6 +3751,13 @@ def pipeline_run_cmd(ctx, manual):
     if result.error_message:
         click.echo(f"Error: {result.error_message}", err=True)
     if result.state == "blocked":
+        # 19-C Task 2: unattended callers pass --skip-if-running so the wrapper
+        # can distinguish a benign collision (another run in progress) from a
+        # real failure via a dedicated exit code, without stdout string-matching.
+        if skip_if_running:
+            click.echo(
+                "Pipeline run skipped: another run is already in progress.")
+            ctx.exit(75)
         ctx.exit(2)
     if result.state == "failed":
         ctx.exit(1)
