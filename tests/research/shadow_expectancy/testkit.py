@@ -15,7 +15,7 @@ def make_db(tmp_path: Path) -> sqlite3.Connection:
 
 
 def insert_candidate(conn, *, ticker, bucket, pivot, initial_stop, close=None,
-                     criteria=()):
+                     criteria=(), adr_pct=None):
     cur = conn.execute(
         "INSERT INTO evaluation_runs (run_ts, data_asof_date, action_session_date,"
         " finviz_csv_path, tickers_evaluated, aplus_count, watch_count, skip_count,"
@@ -25,8 +25,8 @@ def insert_candidate(conn, *, ticker, bucket, pivot, initial_stop, close=None,
     eval_id = int(cur.lastrowid)
     cur = conn.execute(
         "INSERT INTO candidates (evaluation_run_id, ticker, bucket, close, pivot,"
-        " initial_stop, rs_method) VALUES (?,?,?,?,?,?,?)",
-        (eval_id, ticker, bucket, close, pivot, initial_stop, "fallback_spy"),
+        " initial_stop, adr_pct, rs_method) VALUES (?,?,?,?,?,?,?,?)",
+        (eval_id, ticker, bucket, close, pivot, initial_stop, adr_pct, "fallback_spy"),
     )
     cid = int(cur.lastrowid)
     for name, layer, result in criteria:

@@ -465,3 +465,48 @@ def test_entry_bar_weak_close_flagged_and_counted(tmp_path):
     assert card["entry_bar_weak_close_count"] == 1
     summary_text = Path(summary).read_text(encoding="utf-8")
     assert "entry_bar_weak_close" in summary_text
+
+
+def test_run_harness_applies_risk_floor_excludes_collapsed_signal(tmp_path):
+    # A real-VSTS-shaped collapsed signal through the full harness: rps 0.045 on adr 4.168%.
+    conn = make_db(tmp_path)
+    eval_id = insert_candidate(conn, ticker="VSTS", bucket="watch", pivot=13.56,
+                               initial_stop=11.62, close=13.49, adr_pct=4.16785698,
+                               criteria=[("proximity_20ma", "trend_template", "fail")])
+    pr = insert_pipeline_run(conn, eval_id)
+    det = insert_detection(conn, ticker="VSTS", pipeline_run_id=pr, pivot=13.56,
+                           data_asof_date="2026-06-24", detection_date="2026-06-25")
+    insert_observation(conn, det, "2026-06-25", o=13.60, h=14.02, l=13.555, c=13.74,
+                       status="triggered_open", event="entry_fired")
+    insert_observation(conn, det, "2026-06-26", o=13.71, h=14.42, l=13.68, c=14.42,
+                       status="triggered_open")
+    _, _, _, manifest = run_harness(db_path=tmp_path / "t.db", output_dir=tmp_path / "out",
+                                    source="pipeline")
+    f = json.loads(Path(manifest).read_text(encoding="utf-8"))["funnel"]
+    h = f["per_hypothesis"]["Near-A+ defensible: extension test"]
+    assert h["excluded"].get("degenerate_risk", 0) == 1   # collapsed -> excluded
+    assert h["open_at_horizon"] == 0 and h["closed"] == 0
+
+
+def test_run_harness_legacy_shape_stays_priced_null_adr_disables_floor(tmp_path):
+    # MECHANIZED null-adr blast-radius guard: the canonical legacy fixture shape (pivot 10, entry
+    # L=9.6 -> rps 0.4) carries adr_pct=None (omitted). Null adr DISABLES the floor (min_rps=0.0 ->
+    # old zero-floor), so the signal behaves EXACTLY as pre-19-D and MUST stay PRICED, never
+    # degenerate_risk. Any regression making a null-adr signal degenerate would flip this and FAIL.
+    conn = make_db(tmp_path)
+    eval_id = insert_candidate(conn, ticker="LEG", bucket="watch", pivot=10.0,
+                               initial_stop=9.0, close=10.2,   # adr_pct omitted -> None -> disabled
+                               criteria=[("proximity_20ma", "trend_template", "fail")])
+    pr = insert_pipeline_run(conn, eval_id)
+    det = insert_detection(conn, ticker="LEG", pipeline_run_id=pr, pivot=10.0,
+                           data_asof_date="2026-05-31", detection_date="2026-06-01")
+    insert_observation(conn, det, "2026-06-01", o=10.0, h=10.4, l=9.6, c=10.2,
+                       status="triggered_open")           # entry: rps = 10.0 - 9.6 = 0.4 (4%)
+    insert_observation(conn, det, "2026-06-02", o=10.3, h=10.6, l=10.1, c=10.5,
+                       status="triggered_open")           # no stop (low 10.1 > 9.6) -> priced
+    _, _, _, manifest = run_harness(db_path=tmp_path / "t.db", output_dir=tmp_path / "out",
+                                    source="pipeline", horizon_sessions=2)
+    f = json.loads(Path(manifest).read_text(encoding="utf-8"))["funnel"]
+    h = f["per_hypothesis"]["Near-A+ defensible: extension test"]
+    assert h["excluded"].get("degenerate_risk", 0) == 0   # a 4% stop is NOT caught
+    assert h["open_at_horizon"] + h["closed"] >= 1        # stays priced

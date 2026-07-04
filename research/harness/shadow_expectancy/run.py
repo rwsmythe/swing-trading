@@ -81,7 +81,8 @@ def run_harness(*, db_path, output_dir, source=c.SOURCE,
         initial_shares=c.INITIAL_SHARES, partial_session_n=partial_session_n,
         partial_pct=c.PARTIAL_PCT, breakeven_r_trigger=breakeven_r,
         maturity_fast_ma_r=c.MATURITY_FAST_MA_R, ma_fast_period=c.MA_FAST_PERIOD,
-        ma_slow_period=c.MA_SLOW_PERIOD, horizon_sessions=horizon_sessions)
+        ma_slow_period=c.MA_SLOW_PERIOD, horizon_sessions=horizon_sessions,
+        risk_floor_adr_ratio=c.RISK_FLOOR_ADR_RATIO)
 
     for (pipeline_run_id, ticker), dets in sorted(groups.items(),
                                                   key=lambda kv: (kv[0][0] or -1, kv[0][1])):
@@ -179,7 +180,8 @@ def run_harness(*, db_path, output_dir, source=c.SOURCE,
         entry_bar_weak_close = entry_bar.close < candidate.pivot   # 2.2 annotation only
 
         sim = simulate(pivot=candidate.pivot, entry_bar=entry_bar,
-                       forward_bars=forward_bars, params=params)
+                       forward_bars=forward_bars, params=params,
+                       adr_pct=candidate.adr_pct)
         if sim.degenerate:
             for h in hyps:
                 signal_outcomes.append(SignalOutcome(h, "excluded", "degenerate_risk"))
