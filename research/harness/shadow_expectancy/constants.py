@@ -12,6 +12,23 @@ HORIZON_SESSIONS = 126          # ~6 months (D5); bounded by available bars
 SOURCE = "pipeline"            # temporal-log detection source filter (6: A+ isolation)
 PRICE_TICK_DECIMALS = 4         # normalized pivot-match precision (6, Codex R5-m1)
 
+# --- 19-D measurement policy (RD-RULED at plan review; values ARE the RD-locked finals) ---
+# (a) Risk-unit floor: a mechanical risk-per-share below this fraction of the candidate's screening
+# ADR (adr_pct) is degenerate -- a near-zero denominator inflates R without bound. Excluded as
+# degenerate_risk. Discriminator: rps / (adr_pct/100 * entry_fill) < RISK_FLOOR_ADR_RATIO.
+# Live calibration (2026-07-04): VSTS(catch)=0.0794, TVTX(survive)=0.2564; safe gap (0.0794, 0.2564).
+# RD-locked 0.15: catches VSTS + the tight ARMK/PGNY cluster, well clear of TVTX 0.256.
+# When adr_pct is null/<=0 the floor is DISABLED (graceful degrade to the old zero-floor) -- NO
+# %-of-price fallback (that is the misclassifying form we reject; adr is 100%-populated in prod).
+RISK_FLOOR_ADR_RATIO = 0.15
+# (b) Epsilon-tolerant OHLC reader: a bar whose low sits above min(o,c) OR high below max(o,c) by
+# <= this % of close is clamped (low=min(l,o,c), high=max(h,o,c)); above it stays invalid_ohlc.
+# Reader-side ONLY -- the immutable log + archive are untouched. Live cluster 0.037%-0.771% (15
+# bars); CALY 1.664% is the lone outlier. RD-locked 1.0 leaves CALY excluded.
+OHLC_CLAMP_MAX_PCT = 1.0
+# Max per-ticker clamp samples surfaced in the artifact summary/manifest (observability cap).
+CLAMP_SAMPLE_LIMIT = 20
+
 # --- Honesty / suppression sample floors (7.2) ---
 SAMPLE_FLOOR_MEAN = 5           # mean-R suppression floor
 SAMPLE_FLOOR_RATE = 5           # win-rate Wilson floor (still reported, annotated)

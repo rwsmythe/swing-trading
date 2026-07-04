@@ -64,3 +64,18 @@ def test_reason_vocabularies_are_frozen_tuples():
         "closed_only", "mtm_at_horizon", "forced_exit_at_horizon_open",
         "stop_level_adverse",
     }
+
+
+def test_risk_floor_adr_ratio_inside_live_derived_safe_gap():
+    # Live 2026-07-04: VSTS(catch) rps/ADR = 0.0794; TVTX(survive) rps/ADR = 0.2564 (run101).
+    # A value in this gap catches VSTS and spares TVTX. RD ruled the exact value (0.15).
+    assert 0.0794 < c.RISK_FLOOR_ADR_RATIO < 0.2564
+
+
+def test_ohlc_clamp_threshold_inside_live_derived_gap():
+    # Live 2026-07-04: tight cluster tops out at TLYS 0.771%; CALY outlier 1.664%.
+    assert 0.771 < c.OHLC_CLAMP_MAX_PCT < 1.664
+
+
+def test_clamp_sample_limit_is_a_bounded_positive_int():
+    assert isinstance(c.CLAMP_SAMPLE_LIMIT, int) and 0 < c.CLAMP_SAMPLE_LIMIT <= 50
