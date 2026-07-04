@@ -22,6 +22,15 @@
 
 ---
 
+## RD RULINGS (folded 2026-07-04 -- these SUPERSEDE the proposals below; BINDING on measurement/parity)
+
+RD ruled all three decision points at plan-stage review (operator-authorized). Build to THESE, not the open proposals:
+- **(A) Day-counting = NYSE sessions** (ACCEPTED as proposed) -- engine parity + doctrine trading-days; the weekend-drift example is the failure mode.
+- **(B) close>entry = STRICT `ctx.previous_close > trade.entry_price`** (ACCEPTED) -- mirrors the engine `bar.close > entry_fill`; the backward-looking anchor is correct for a read-only advisory.
+- **(C) Coexistence = BOTH rules fire, NO suppression** (RULED) WITH ONE BINDING BOUND on the copy: the calendar rule's message MUST identify it as the **MEASURED-RULESET step** (name the Day 3-5 window) so that when both fire the operator knows which rule the shadow cohort assumes, and the **divergent percentages stay VISIBLE** (50% doctrine vs the +1R 25% operator-policy) rather than hidden behind precedence. Task 4's coexistence test SHIPS AS-IS (distinct-rules); NO precedence rewrite, NO Task-2 suppression logic.
+- **Window = Day 3-5 default CONFIRMED.**
+- **Engine off-by-one:** do NOT touch the engine constant in 19-E (measurement semantics; any comment-only clarification rides 19-D at CHARC's discretion). ADD the fact to the advisory copy (done in Task 2's message) / runbook: within the 3-5 window, **DAY 4 is the engine's actual fire point** = the exact-parity choice for the operator's plan-of-record.
+
 ## RD Decision Points (routed to RD at plan-stage review; do NOT self-decide)
 
 These are proposals WITH rationale. RD rules; the operator sees the outcome at the GUI witness (§4 gate 3).
@@ -392,11 +401,17 @@ def suggest_partial_day_window(
         rule="partial_day_window",
         message=(
             f"Day {day_num} of the {cfg.partial_day_window_start}-"
-            f"{cfg.partial_day_window_end} partial window - consider trimming "
+            f"{cfg.partial_day_window_end} measured-ruleset partial window "
+            f"(Day 4 = the engine's exact-parity fire point) - consider trimming "
             f"{pct * 100:.0f}% into strength "
             f"(close ${ctx.previous_close:.2f} > entry ${trade.entry_price:.2f}); "
             f"DST D.2 partial"
         ),
+        # RD ruling C (folded 2026-07-04): the copy identifies this as the
+        # MEASURED-RULESET step and names Day 4 as the engine's exact-parity
+        # point; the 50% doctrine pct stays visible alongside the +1R 25%
+        # operator-policy pct when both fire. Add a test asserting the message
+        # contains "measured-ruleset" (the label bound) + "50%" (pct visible).
     )
 ```
 
@@ -569,7 +584,7 @@ def test_partial_day_window_coexists_with_plus1r_when_both_fire():
     assert "partial_day_window" in rules       # calendar fires (0.50 default)
 ```
 
-> **RD-decision-dependent assertion (execution-time note):** `test_..._coexists_...` encodes RD Decision C = *distinct labeled rules*. If RD instead rules an explicit **precedence** at plan review, this test MUST be rewritten to assert the ruled behavior (e.g. only `partial_day_window` in-window, `trim_into_strength` suppressed) AND `suggest_partial_day_window` gains the suppression logic (an `and not (r_so_far(...) >= cfg.trim_first_r_trigger)` guard on the +1R rule, or vice-versa). Do NOT ship this test as-is if RD rules precedence.
+> **RD RULED (2026-07-04): distinct labeled rules, NO suppression -- this test SHIPS AS-IS; no precedence rewrite, no Task-2 suppression logic.** (Original contingency note retained for provenance:) `test_..._coexists_...` encodes RD Decision C = *distinct labeled rules*. If RD instead rules an explicit **precedence** at plan review, this test MUST be rewritten to assert the ruled behavior (e.g. only `partial_day_window` in-window, `trim_into_strength` suppressed) AND `suggest_partial_day_window` gains the suppression logic (an `and not (r_so_far(...) >= cfg.trim_first_r_trigger)` guard on the +1R rule, or vice-versa). Do NOT ship this test as-is if RD rules precedence.
 
 **Pre/post arithmetic:** `vsts` test: PRE-fix -> `suggest_partial_day_window` absent (`ImportError`); with the rule absent the operator surface is SILENT on this trade (the documented bug — +1R at 0.47R never fires). POST-fix -> `trim_into_strength` still `None` (0.47R < 1.0R, arithmetic exact), `partial_day_window` fires. Distinguishes the fix's whole purpose. `coexists` test: `r_so_far = (112-100)/10 = 1.2R >= 1.0` so `trim_into_strength` fires; Day 3 + close>entry so `partial_day_window` fires -> both present (distinguishes Decision-C distinct-rules from a suppression impl).
 
