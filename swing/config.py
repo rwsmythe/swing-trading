@@ -111,6 +111,15 @@ class StopAdvisoryConfig:
     # Fires when r_so_far(trade, current_price) >= tighten_at_r_multiple. Default
     # 2.0R is conservatively floored vs the 7%/20% example (=2.86R) per §0.3 #4.
     tighten_at_r_multiple: float = 2.0
+    # 19-E (§2 E2) — Day-3-5 calendar partial-trim advisory. Engine-parity
+    # defaults (research/harness/shadow_expectancy/constants.py:
+    # PARTIAL_SESSION_N-window / PARTIAL_PCT=0.5). Window is a doctrine day
+    # number (entry day = Day 1) measured in NYSE sessions; see
+    # swing/trades/advisory.py:suggest_partial_day_window. Fires day 3..5
+    # inclusive on close>entry, suppressed by any prior trim, closes after 5.
+    partial_day_window_start: int = 3
+    partial_day_window_end: int = 5
+    partial_day_pct_default: float = 0.5
 
     def __post_init__(self) -> None:
         # Codex R2 Major #1 + R3 Major #1 — validate Bundle 2 fields at
@@ -146,6 +155,29 @@ class StopAdvisoryConfig:
             raise ValueError(
                 f"stop_advisory.tighten_at_r_multiple must be a finite value > 0; got "
                 f"{self.tighten_at_r_multiple!r}"
+            )
+        # 19-E (§2 E2) — validate the Day-3-5 window fields. Window bounds are
+        # day numbers (entry = Day 1): start must be >= 1, end must not precede
+        # start. Percentage mirrors trim_first_pct_default: finite in (0, 1].
+        if self.partial_day_window_start < 1:
+            raise ValueError(
+                f"stop_advisory.partial_day_window_start must be >= 1 "
+                f"(entry day = Day 1); got {self.partial_day_window_start!r}"
+            )
+        if self.partial_day_window_end < self.partial_day_window_start:
+            raise ValueError(
+                f"stop_advisory.partial_day_window_end must be >= "
+                f"partial_day_window_start; got end="
+                f"{self.partial_day_window_end!r}, start="
+                f"{self.partial_day_window_start!r}"
+            )
+        if (
+            not _math.isfinite(self.partial_day_pct_default)
+            or not (0 < self.partial_day_pct_default <= 1)
+        ):
+            raise ValueError(
+                f"stop_advisory.partial_day_pct_default must be a finite value "
+                f"in (0, 1]; got {self.partial_day_pct_default!r}"
             )
 
 

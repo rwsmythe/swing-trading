@@ -864,3 +864,40 @@ def test_trail_ma_fires_when_stop_one_cent_below_ceiling_target():
     assert "10.31" in result.message, (
         "displayed target must be the ceiling-rounded cent, not the truncation"
     )
+
+
+# ----------------------------------------------------------------------
+# 19-E — StopAdvisoryConfig Day-3-5 partial-window fields + validation
+# ----------------------------------------------------------------------
+
+def test_stop_advisory_config_partial_day_defaults():
+    from swing.config import StopAdvisoryConfig
+    c = StopAdvisoryConfig()
+    assert c.partial_day_window_start == 3
+    assert c.partial_day_window_end == 5
+    assert c.partial_day_pct_default == 0.5
+
+
+def test_stop_advisory_config_rejects_window_start_below_one():
+    import pytest
+    from swing.config import StopAdvisoryConfig
+    with pytest.raises(ValueError, match="partial_day_window_start"):
+        StopAdvisoryConfig(partial_day_window_start=0)
+
+
+def test_stop_advisory_config_rejects_end_before_start():
+    import pytest
+    from swing.config import StopAdvisoryConfig
+    with pytest.raises(ValueError, match="partial_day_window_end"):
+        StopAdvisoryConfig(partial_day_window_start=5, partial_day_window_end=3)
+
+
+def test_stop_advisory_config_rejects_pct_out_of_range():
+    import pytest
+    from swing.config import StopAdvisoryConfig
+    with pytest.raises(ValueError, match="partial_day_pct_default"):
+        StopAdvisoryConfig(partial_day_pct_default=0.0)
+    with pytest.raises(ValueError, match="partial_day_pct_default"):
+        StopAdvisoryConfig(partial_day_pct_default=1.5)
+    with pytest.raises(ValueError, match="partial_day_pct_default"):
+        StopAdvisoryConfig(partial_day_pct_default=float("nan"))
