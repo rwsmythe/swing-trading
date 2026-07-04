@@ -16,7 +16,7 @@ PRICE_TICK_DECIMALS = 4         # normalized pivot-match precision (6, Codex R5-
 # (a) Risk-unit floor: a mechanical risk-per-share below this fraction of the candidate's screening
 # ADR (adr_pct) is degenerate -- a near-zero denominator inflates R without bound. Excluded as
 # degenerate_risk. Discriminator: rps / (adr_pct/100 * entry_fill) < RISK_FLOOR_ADR_RATIO.
-# Live calibration (2026-07-04): VSTS(catch)=0.0794, TVTX(survive)=0.2564; safe gap (0.0794, 0.2564).
+# Live calibration (2026-07-04): VSTS(catch)=0.0794, TVTX(survive)=0.2564; gap (0.0794, 0.2564).
 # RD-locked 0.15: catches VSTS + the tight ARMK/PGNY cluster, well clear of TVTX 0.256.
 # When adr_pct is null/<=0 the floor is DISABLED (graceful degrade to the old zero-floor) -- NO
 # %-of-price fallback (that is the misclassifying form we reject; adr is 100%-populated in prod).
