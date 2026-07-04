@@ -245,3 +245,38 @@ def test_t6_clamp_counter_in_manifest_and_summary(tmp_path):
     assert "OHLC epsilon-clamp" in text
     assert "clamped_bar_count=1" in text
     assert "clamped_bar_events=1" in text
+
+
+def test_binding_distinction_vsts_excluded_tvtx_priced_end_to_end(tmp_path):
+    conn = make_db(tmp_path)
+    # VSTS collapsed (watch bucket to attribute to H2), real geometry.
+    ev1 = insert_candidate(conn, ticker="VSTS", bucket="watch", pivot=13.56, initial_stop=11.62,
+                           close=13.49, adr_pct=4.16785698,
+                           criteria=[("proximity_20ma", "trend_template", "fail")])
+    pr1 = insert_pipeline_run(conn, ev1)
+    d1 = insert_detection(conn, ticker="VSTS", pipeline_run_id=pr1, pivot=13.56,
+                          data_asof_date="2026-06-24", detection_date="2026-06-25")
+    insert_observation(conn, d1, "2026-06-25", o=13.60, h=14.02, l=13.555, c=13.74,
+                       status="triggered_open")
+    insert_observation(conn, d1, "2026-06-26", o=13.71, h=14.42, l=13.68, c=14.42,
+                       status="triggered_open")
+    # TVTX tight-but-real, real geometry.
+    ev2 = insert_candidate(conn, ticker="TVTX", bucket="watch", pivot=49.68, initial_stop=41.32,
+                           close=48.91, adr_pct=4.74395635,
+                           criteria=[("proximity_20ma", "trend_template", "fail")])
+    pr2 = insert_pipeline_run(conn, ev2)
+    d2 = insert_detection(conn, ticker="TVTX", pipeline_run_id=pr2, pivot=49.68,
+                          data_asof_date="2026-06-11", detection_date="2026-06-12")
+    insert_observation(conn, d2, "2026-06-12", o=49.10, h=52.72, l=48.98, c=52.04,
+                       status="triggered_open")
+    insert_observation(conn, d2, "2026-06-15", o=52.44, h=53.88, l=52.06, c=53.8,
+                       status="triggered_open")
+    results, _, _, manifest = run_harness(db_path=tmp_path / "t.db",
+                                          output_dir=tmp_path / "out", source="pipeline")
+    f = json.loads(Path(manifest).read_text(encoding="utf-8"))["funnel"]
+    h = f["per_hypothesis"]["Near-A+ defensible: extension test"]
+    assert h["excluded"].get("degenerate_risk", 0) == 1   # VSTS collapsed -> excluded
+    rows = Path(results).read_text(encoding="utf-8").splitlines()[1:]
+    tvtx = [r for r in rows if r.startswith("TVTX,")]
+    assert len(tvtx) == 1                                  # TVTX priced (survives the floor)
+    assert "VSTS" not in Path(results).read_text(encoding="utf-8")  # excluded -> no result row
