@@ -482,10 +482,14 @@ def test_run_harness_applies_risk_floor_excludes_collapsed_signal(tmp_path):
                        status="triggered_open")
     _, _, _, manifest = run_harness(db_path=tmp_path / "t.db", output_dir=tmp_path / "out",
                                     source="pipeline")
-    f = json.loads(Path(manifest).read_text(encoding="utf-8"))["funnel"]
+    m = json.loads(Path(manifest).read_text(encoding="utf-8"))
+    f = m["funnel"]
     h = f["per_hypothesis"]["Near-A+ defensible: extension test"]
     assert h["excluded"].get("degenerate_risk", 0) == 1   # collapsed -> excluded
     assert h["open_at_horizon"] == 0 and h["closed"] == 0
+    # Codex R1 MINOR: the risk-floor policy value is recorded in the manifest (reproducibility,
+    # symmetric with ohlc_clamp.max_pct_threshold) so RD's confirmatory re-read is self-documenting.
+    assert m["params"]["risk_floor_adr_ratio"] == 0.15
 
 
 def test_run_harness_legacy_shape_stays_priced_null_adr_disables_floor(tmp_path):
