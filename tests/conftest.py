@@ -82,27 +82,58 @@ def _guard_research_health_comms(tmp_path_factory, monkeypatch):
 
 @pytest.fixture(scope="session", autouse=True)
 def _fail_suite_on_real_comms_write():
-    """19-B Task 1 (structural suite isolation -- DETECTION backstop): snapshot the
-    FULL REAL repo comms/ file set at session start and assert it is UNCHANGED at
-    session end. Catches ANY add OR remove under the real comms tree (not just
-    inbox/*.md) -- a test that explicitly passes a real comms_root, or a future
-    push path that forgets the seam. Prevention is the function fixture above; this
-    is the belt that fails the suite if anything ever slips through."""
+    """19-B Task 1 (structural suite isolation -- DETECTION backstop; NARROWED
+    2026-07-04 per RD+CHARC). Fail the suite only if a NEW file bearing the
+    research-health RD PUSH SIGNATURE appears under the real comms/*/inbox/ during
+    the session -- the exact leak class (a push path that bypasses the
+    ``_effective_comms_root`` seam the function fixture guards).
+
+    NARROWED from a whole-tree freeze: a detection belt over a SHARED MUTABLE
+    resource must key on the THREAT SIGNATURE, not on world-frozenness. In this
+    multi-agent repo comms/ legitimately churns during a suite run (director /
+    orchestrator mail, inbox->read acks); the old whole-tree assert tripped
+    once-per-xdist-worker on that churn (16 spurious per-worker errors, 2026-07-04).
+    The function-scoped ``_guard_research_health_comms`` is the real PREVENTION;
+    this belt only guards the forgot-the-seam class.
+
+    Signature = the production push-body constant ``_LATEST_JSON_POINTER`` (IMPORTED,
+    never hard-coded -- CHARC: a hard-coded signature silently rots on a rename;
+    the emitter's own ``artifact: <pointer>`` line is in every RED push). Scope =
+    ADDED inbox files only (RD: an inbox->read ack of an OLD push creates no new
+    inbox file; removals are legitimate churn, not a leak vector)."""
+    from swing.monitoring.research_health import _LATEST_JSON_POINTER
+
     repo_comms = Path(__file__).resolve().parent.parent / "comms"  # tests/ -> repo
 
-    def _snapshot() -> set:
-        return (
-            {p for p in repo_comms.rglob("*") if p.is_file()}
-            if repo_comms.exists() else set()
-        )
+    def _inbox_files() -> set:
+        if not repo_comms.exists():
+            return set()
+        return {
+            p for p in repo_comms.rglob("*")
+            if p.is_file() and p.parent.name == "inbox"
+        }
 
-    before = _snapshot()
+    before = _inbox_files()
     yield
-    after = _snapshot()
-    added, removed = after - before, before - after
-    assert not added and not removed, (
-        f"tests mutated the REAL comms tree; added={sorted(added)} "
-        f"removed={sorted(removed)}")
+    leaked: list[tuple[Path, list[str]]] = []
+    for p in sorted(_inbox_files() - before):
+        try:
+            text = p.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if _LATEST_JSON_POINTER in text:
+            leaked.append((p, text.splitlines()[:5]))
+    assert not leaked, (
+        "a research-health RD push landed in the REAL comms/*/inbox/ during the "
+        "suite. This is EITHER a leaked TEST push (the defect -- a push path "
+        "bypassing the _effective_comms_root seam) OR a genuine concurrent "
+        "production push / a mail merely referencing the artifact pointer -- "
+        "verify each file's 'run id:' against pipeline_runs before treating it as "
+        "a defect:\n"
+        + "\n".join(
+            f"  {p}:\n    " + "\n    ".join(lines) for p, lines in leaked
+        )
+    )
 
 
 @pytest.fixture
