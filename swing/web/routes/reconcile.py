@@ -1089,6 +1089,116 @@ async def reconcile_discrepancy_resolve_post(  # noqa: PLR0911, PLR0912, PLR0915
                 )
             return RedirectResponse(url=redirect_target, status_code=303)
 
+        # Arc 19-F — FK-orphan POST branch (AFTER the untracked-orphan branch,
+        # BEFORE the simple-ack branch). Mirrors the orphan POST block but the
+        # resolution_reason is the orphan marker naming the missing subject.
+        # A LIVE FK row returns None -> falls through to the tier-2 path
+        # unchanged (the no-regression lock).
+        fk_orphan_target = orphaned_affected_target(conn, disc)
+        if fk_orphan_target is not None:
+            table, rid = fk_orphan_target
+            if disc.resolution not in _FK_ORPHAN_CLEARABLE_RESOLUTIONS:
+                return _render_error(
+                    request,
+                    status_code=409,
+                    error_kind="already_resolved",
+                    error_message=(
+                        f"Discrepancy {discrepancy_id} (orphaned; referenced "
+                        f"{table} id={rid} no longer exists) is already "
+                        f"resolved."
+                    ),
+                    discrepancy_id=discrepancy_id,
+                    disc_resolution=disc.resolution,
+                    disc_resolved_by=disc.resolved_by,
+                    disc_created_at=disc.created_at,
+                    unresolved_count=unresolved_count,
+                    recent_multi_leg_count=recent_multi_leg_count,
+                    banner_resolve_link=banner_resolve_link,
+                )
+            from swing.trades.reconciliation import (
+                DiscrepancyResolutionStateError,
+                resolve_discrepancy,
+            )
+            try:
+                resolve_discrepancy(
+                    conn,
+                    discrepancy_id=discrepancy_id,
+                    resolution="acknowledged_immaterial",
+                    # F1 LOCK — the orphan marker is ALWAYS non-empty (names
+                    # the missing subject row); an optional operator note is
+                    # appended.
+                    resolution_reason=compose_orphan_reason(
+                        table, rid, resolution_reason
+                    ),
+                    resolved_by="operator_web",  # F2 LOCK — surface attribution
+                    # TOCTOU close (mirrors the orphan/simple-ack path).
+                    require_current_resolution=disc.resolution,
+                )
+            except sqlite3.OperationalError as exc:
+                if not _is_transient_lock_error(exc):
+                    raise
+                log.warning("sqlite3.OperationalError (fk orphan resolve): %s", exc)
+                return _render_error(
+                    request,
+                    status_code=503,
+                    error_kind="db_unavailable",
+                    error_message=(
+                        "Database is busy; please retry in a moment."
+                    ),
+                    discrepancy_id=discrepancy_id,
+                    unresolved_count=unresolved_count,
+                    recent_multi_leg_count=recent_multi_leg_count,
+                    banner_resolve_link=banner_resolve_link,
+                )
+            except DiscrepancyResolutionStateError:
+                # Concurrent resolver won the race; the row is already terminal.
+                log.warning(
+                    "fk orphan resolve race: discrepancy %d already resolved",
+                    discrepancy_id,
+                )
+                return _render_error(
+                    request,
+                    status_code=409,
+                    error_kind="already_resolved",
+                    error_message=(
+                        f"Discrepancy {discrepancy_id} (orphaned) was resolved "
+                        f"concurrently."
+                    ),
+                    discrepancy_id=discrepancy_id,
+                    disc_resolution="acknowledged_immaterial",
+                    disc_resolved_by=None,
+                    disc_created_at=disc.created_at,
+                    unresolved_count=unresolved_count,
+                    recent_multi_leg_count=recent_multi_leg_count,
+                    banner_resolve_link=banner_resolve_link,
+                )
+            except ValueError as exc:
+                # Defensive: a concurrent writer changed the row shape between
+                # the read and the resolve. Re-render the acknowledge form with
+                # the error band. (DiscrepancyResolutionStateError is a
+                # ValueError subclass but is caught ABOVE for the 409 race.)
+                log.warning("fk orphan resolve ValueError: %s", exc)
+                return _render_fk_orphan_acknowledge_form(
+                    request,
+                    disc,
+                    fk_orphan_target,
+                    unresolved_count=unresolved_count,
+                    recent_multi_leg_count=recent_multi_leg_count,
+                    banner_resolve_link=banner_resolve_link,
+                    prior_resolution_reason=prior_resolution_reason,
+                    error_band_message=str(exc),
+                    status_code=400,
+                )
+            redirect_target = (
+                f"/dashboard?reconcile_resolved=disc-{discrepancy_id}"
+            )
+            if request.headers.get("HX-Request") == "true":
+                return Response(
+                    status_code=204,
+                    headers={"HX-Redirect": redirect_target},
+                )
+            return RedirectResponse(url=redirect_target, status_code=303)
+
         # Simple-acknowledge branch (AFTER the orphan branch, BEFORE the
         # tier-2 pending gate). Same null-ambiguity + clearable-resolution
         # gate as the GET branch (the branch-ordering LOCK), reusing the exact
