@@ -65,3 +65,59 @@ def test_validate_signal_chains_levels_then_bars():
     assert validate_signal(pivot=0.0, bars=good) == "no_candidate_pivot"
     # bad bar -> bars reject with invalid_ohlc
     assert validate_signal(pivot=10.0, bars=bad_bar) == "invalid_ohlc"
+
+
+# --- 19-D epsilon-tolerant reader clamp. Ragged bars lifted verbatim from the live archive. ---
+from research.harness.shadow_expectancy.validate import (  # noqa: E402
+    clamp_ragged_bars,
+    _shape_violation_pct,
+)
+
+# Real DINO 06-18: high 65.51 < max(o,c)=65.78 -> hi_delta 0.27; 0.27/64.50 = 0.4186%.
+_DINO = Bar(session="2026-06-18", open=65.78, high=65.51, low=63.85, close=64.50)
+# Real CALY 07-01: low 18.4001 > min(o,c)=18.09 -> lo_delta 0.3101; /18.64 = 1.6636%.
+_CALY = Bar(session="2026-07-01", open=18.09, high=18.99, low=18.4001, close=18.64)
+_CLEAN = Bar(session="2026-06-19", open=64.6, high=66.0, low=64.4, close=65.8)
+
+
+def test_shape_violation_pct_matches_live_magnitudes():
+    assert abs(_shape_violation_pct(_DINO) - 0.4186) < 0.001
+    assert abs(_shape_violation_pct(_CALY) - 1.6636) < 0.001
+    assert _shape_violation_pct(_CLEAN) == 0.0
+
+
+def test_t4_math_dino_class_clamped_at_1pct_recovers_bar():
+    # PRE-FIX (max_pct 0.0): 0.4186 > 0 -> NOT clamped -> validate_bars rejects it.
+    off, ev_off = clamp_ragged_bars([_DINO], max_pct=0.0)
+    assert off == [_DINO] and ev_off == []
+    assert validate_bars(off) == "invalid_ohlc"
+    # POST-FIX (max_pct 1.0): clamped high -> 65.78; now valid.
+    on, ev_on = clamp_ragged_bars([_DINO], max_pct=1.0)
+    assert on[0].high == 65.78 and on[0].low == 63.85    # only high widened
+    assert validate_bars(on) is None
+    assert len(ev_on) == 1 and ev_on[0].session == "2026-06-18"
+
+
+def test_t5_math_caly_class_not_clamped_at_1pct_but_clamped_at_2pct():
+    # At the production 1.0% threshold CALY stays invalid under BOTH the clamp and validate.
+    on, ev = clamp_ragged_bars([_CALY], max_pct=1.0)
+    assert on == [_CALY] and ev == []
+    assert validate_bars(on) == "invalid_ohlc"
+    # The fixture is NOT trivially always-invalid: at 2.0% it clamps + recovers (boundary is real).
+    up, ev2 = clamp_ragged_bars([_CALY], max_pct=2.0)
+    assert up[0].low == 18.09 and up[0].high == 18.99    # only low widened
+    assert validate_bars(up) is None and len(ev2) == 1
+
+
+def test_clamp_leaves_non_finite_bar_untouched():
+    nan_bar = Bar(session="d", open=float("nan"), high=1.0, low=0.5, close=0.9)
+    out, ev = clamp_ragged_bars([nan_bar], max_pct=1.0)
+    assert out == [nan_bar] and ev == []                 # cannot widen a NaN -> passthrough
+    assert validate_bars(out) == "invalid_ohlc"
+
+
+def test_clamp_is_idempotent_and_never_creates_high_below_low():
+    once, _ = clamp_ragged_bars([_DINO], max_pct=1.0)
+    twice, ev2 = clamp_ragged_bars(once, max_pct=1.0)
+    assert twice == once and ev2 == []                   # already clamped -> no-op
+    assert twice[0].high >= twice[0].low
