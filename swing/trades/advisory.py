@@ -215,13 +215,17 @@ def suggest_partial_day_window(
     # which on a weekend/holiday is NOT a session -> sessions_behind's
     # previous_session walk raises NotSessionError. Degrade to no-fire (the
     # session day-number is undefined off a non-session anchor) rather than
-    # crash the whole compute_all_suggestions aggregation.
+    # crash the whole aggregation. Codex R2 MAJOR: also catch ValueError from
+    # date.fromisoformat on a malformed date string -- this rule runs in
+    # compute_price_independent_suggestions (where suggest_time_stop, the
+    # other date-parser, does NOT), so an unguarded parse is a fresh
+    # whole-aggregator crash path on the degraded price path.
     try:
         day_num = sessions_behind(
             date.fromisoformat(ctx.as_of_date),
             date.fromisoformat(trade.entry_date),
         )
-    except NotSessionError:
+    except (NotSessionError, ValueError):
         return None
     if not (cfg.partial_day_window_start <= day_num <= cfg.partial_day_window_end):
         return None

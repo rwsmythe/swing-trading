@@ -184,8 +184,13 @@ class StopAdvisoryConfig:
                 f"{self.partial_day_window_end!r}, start="
                 f"{self.partial_day_window_start!r}"
             )
+        # Codex R2 MAJOR: reject bool (an int subclass, numeric to isfinite ->
+        # 0 < True <= 1 would render a 100% trim) and non-numeric before the
+        # finite/range checks.
         if (
-            not _math.isfinite(self.partial_day_pct_default)
+            isinstance(self.partial_day_pct_default, bool)
+            or not isinstance(self.partial_day_pct_default, (int, float))
+            or not _math.isfinite(self.partial_day_pct_default)
             or not (0 < self.partial_day_pct_default <= 1)
         ):
             raise ValueError(

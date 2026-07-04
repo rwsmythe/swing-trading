@@ -920,6 +920,15 @@ def test_stop_advisory_config_rejects_non_int_window_bounds():
         StopAdvisoryConfig(partial_day_window_end=5.5)
 
 
+def test_stop_advisory_config_rejects_bool_pct():
+    # Codex R2 MAJOR: bool is numeric to math.isfinite and 0 < True <= 1, so a
+    # TOML boolean override would render a 100% trim advisory. Reject bool.
+    import pytest
+    from swing.config import StopAdvisoryConfig
+    with pytest.raises(ValueError, match="partial_day_pct_default"):
+        StopAdvisoryConfig(partial_day_pct_default=True)
+
+
 # ----------------------------------------------------------------------
 # 19-E — suggest_partial_day_window (Day-3-5 calendar partial-trim)
 # Entry 2026-06-08 (Mon). day_num = sessions_behind(as_of, entry).
@@ -1053,6 +1062,31 @@ def test_partial_day_window_non_session_as_of_does_not_crash():
         weather_status="Bullish", config=StopAdvisoryConfig(),
     )
     rules = {x.rule for x in compute_all_suggestions(_trade_pw(), ctx)}
+    assert "partial_day_window" not in rules
+
+
+def test_partial_day_window_malformed_date_does_not_crash():
+    from swing.trades.advisory import suggest_partial_day_window
+    # Codex R2 MAJOR: a malformed as_of_date/entry_date must no-fire, NOT
+    # crash. This rule is in compute_price_independent_suggestions (where
+    # suggest_time_stop is NOT), so an unguarded fromisoformat would be a fresh
+    # whole-aggregator crash path on the degraded price path.
+    s = suggest_partial_day_window(
+        _trade_pw(), _ctx_pw(as_of="not-a-date", prev_close=105.0))
+    assert s is None
+    ctx = AdvisoryContext(
+        as_of_date="2026-06-11", current_price=0.0,
+        sma10=None, sma20=None, sma50=None, previous_close=105.0,
+        weather_status="STALE", config=StopAdvisoryConfig(),
+    )
+    bad_trade = Trade(
+        id=1, ticker="AAPL", entry_date="garbage", entry_price=100.0,
+        initial_shares=10, initial_stop=90.0, current_stop=90.0,
+        state="entered", watchlist_entry_target=None,
+        watchlist_initial_stop=None, notes=None,
+    )
+    # Through the price-independent aggregator: must not raise.
+    rules = {x.rule for x in compute_price_independent_suggestions(bad_trade, ctx)}
     assert "partial_day_window" not in rules
 
 
