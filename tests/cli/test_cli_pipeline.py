@@ -53,6 +53,29 @@ def test_pipeline_list_shows_recent_runs(tmp_path: Path):
     assert "no runs" in r.output.lower() or "id" in r.output.lower()
 
 
+def test_pipeline_run_blocked_default_exits_2(tmp_path: Path):
+    """Task 1 (19-C) characterization fence: bare `pipeline run` maps a
+    concurrent-run collision (ConcurrentRunBlockedError -> RunResult
+    state='blocked') to exit code 2. This is the DEFAULT (no --skip-if-running)
+    path; Task 2 must leave it unchanged.
+    """
+    from swing.config import load
+    from swing.pipeline.lease import acquire_lease
+
+    runner, cfg_path, _ = _setup(tmp_path)
+    cfg = load(cfg_path)
+    lease = acquire_lease(
+        db_path=cfg.paths.db_path, trigger="manual",
+        data_asof_date="2026-04-15", action_session_date="2026-04-16",
+    )
+    try:
+        r = runner.invoke(main, ["--config", str(cfg_path), "pipeline", "run"])
+        assert r.exit_code == 2, r.output
+        assert "blocked" in r.output.lower(), r.output
+    finally:
+        lease.release(state="complete")
+
+
 def test_force_clear_rejects_fresh_run(tmp_path: Path):
     """Spec §5.6: force-clear must refuse when run is not two-signal-stale."""
     from swing.pipeline.lease import acquire_lease
