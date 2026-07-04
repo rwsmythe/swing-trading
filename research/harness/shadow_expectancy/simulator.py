@@ -22,6 +22,8 @@ class SimParams:
     ma_fast_period: int
     ma_slow_period: int
     horizon_sessions: int
+    # 19-D risk-unit floor (default 0.0 = DISABLED, so pre-19-D constructions are unaffected).
+    risk_floor_adr_ratio: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -61,6 +63,19 @@ def _entry_fill(pivot: float, entry_bar: Bar) -> float:
     return max(pivot, entry_bar.open)
 
 
+def _min_risk_per_share(entry_fill: float, adr_pct, params: SimParams) -> float:
+    """19-D: the minimum plausible risk-per-share. When the candidate's screening ADR is present,
+    the floor is a fraction of the ADR expressed in price (ratio * adr_pct/100 * entry_fill); a
+    near-zero rps below it is a degenerate denominator (R inflates without bound). When adr_pct is
+    null/<=0 (schema-nullable; 0% of the live corpus) the floor is DISABLED -> return 0.0 (graceful
+    degrade to the old zero-floor; NO %-of-price fallback -- that is the misclassifying form we
+    reject). Returns 0.0 when risk_floor_adr_ratio is 0.0 (floor disabled) too."""
+    if adr_pct is not None and adr_pct > 0:
+        adr_price = (adr_pct / 100.0) * entry_fill
+        return params.risk_floor_adr_ratio * adr_price
+    return 0.0
+
+
 def _r_for_legs(entry_fill, rps, initial_shares, legs_priced) -> float:
     """Multi-leg R on ONE FIXED denominator (spec 5.8 / Codex C2).
 
@@ -94,13 +109,16 @@ def _trail_ma_period(running_r: float, params: SimParams) -> int:
         else params.ma_slow_period
 
 
-def simulate(*, pivot, entry_bar: Bar, forward_bars, params: SimParams):
+def simulate(*, pivot, entry_bar: Bar, forward_bars, params: SimParams, adr_pct=None):
     # C1 / spec 5.2 / D6: mechanical stop = entry_bar.low (derived, not candidate-supplied).
     entry_fill = _entry_fill(pivot, entry_bar)
     initial_stop = entry_bar.low
     rps = initial_risk_per_share(entry_price=entry_fill, initial_stop=initial_stop)
     ambiguous = entry_bar.low < entry_fill
-    if entry_fill <= initial_stop:
+    # 19-D: the risk floor SUBSUMES the old zero-floor (min_rps >= 0, disabled -> 0.0). A rps at or
+    # below the floor is a degenerate denominator; rps <= 0 (entry_fill <= stop) stays caught too.
+    min_rps = _min_risk_per_share(entry_fill, adr_pct, params)
+    if rps <= 0 or rps < min_rps:
         return SimResult(entry_fill=entry_fill, initial_stop=initial_stop,
                          risk_per_share=rps, entry_bar_ambiguous=ambiguous,
                          degenerate=True, exit_reason="degenerate_risk",

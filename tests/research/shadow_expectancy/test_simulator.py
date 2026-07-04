@@ -218,3 +218,82 @@ def test_bracket_bound_favorable_ge_realistic_fixed_denominator(stop, fwd_open, 
     assert res.realized_r["favorable_reprice"] >= res.realized_r["realistic"]
     # identical denominator across arms: risk_per_share is single-entry-fill derived.
     assert res.risk_per_share == 10.0 - stop  # entry_fill == max(pivot, open) == 10.0
+
+
+# --- 19-D risk-unit floor (T1/T2/T3). Fixtures lifted verbatim from the live DB 2026-07-04.
+# Reuse the existing _params(**kw) helper (do NOT redefine it): pass risk_floor_adr_ratio=. ---
+
+# Real VSTS 06-25 A+ geometry: pivot 13.56; adr_pct 4.16785698; entry O/H/L/C below.
+# entry_fill = max(pivot, open) = 13.6000004; stop = low = 13.5550003; rps = 0.0450001.
+# min_rps @ ratio 0.15 = 0.15 * (4.16785698/100 * 13.6000004) = 0.08502.
+# PRE-FIX (ratio 0.0) -> min_rps 0.0 -> rps 0.045 > 0 -> NOT degenerate.
+# POST-FIX (ratio 0.15) -> rps 0.045 < 0.08502 -> degenerate_risk.
+_VSTS_ENTRY = Bar(session="2026-06-25", open=13.600000381469727, high=14.020000457763672,
+                  low=13.555000305175781, close=13.739999771118164)
+_VSTS_FWD = [Bar(session="2026-06-26", open=13.71, high=14.42, low=13.68, close=14.42),
+             Bar(session="2026-06-29", open=14.39, high=14.85, low=14.16, close=14.83)]
+_VSTS_ADR = 4.16785698182119
+
+
+def test_t1_vsts_collapse_survives_zero_floor_but_caught_by_risk_floor():
+    off = simulate(pivot=13.5600004, entry_bar=_VSTS_ENTRY, forward_bars=_VSTS_FWD,
+                   params=_params(risk_floor_adr_ratio=0.0), adr_pct=_VSTS_ADR)
+    assert off.degenerate is False              # pre-fix: the zero-floor lets it through
+    on = simulate(pivot=13.5600004, entry_bar=_VSTS_ENTRY, forward_bars=_VSTS_FWD,
+                  params=_params(risk_floor_adr_ratio=0.15), adr_pct=_VSTS_ADR)
+    assert on.degenerate is True                # post-fix: caught
+    assert on.exit_reason == "degenerate_risk"
+    assert on.realized_r is None
+
+
+# Real TVTX 06-12 geometry: pivot 49.68; adr_pct 4.74395635; entry O/H/L/C below.
+# entry_fill = max(pivot, open) = 49.6800003; stop = low = 48.9799995; rps = 0.7000008.
+# min_rps @ 0.15 = 0.15 * (4.74395635/100 * 49.6800003) = 0.35352. rps 0.70 > 0.35352 -> SURVIVES.
+_TVTX_ENTRY = Bar(session="2026-06-12", open=49.099998474121094, high=52.720001220703125,
+                  low=48.97999954223633, close=52.040000915527344)
+_TVTX_FWD = [Bar(session="2026-06-15", open=52.44, high=53.88, low=52.06, close=53.8),
+             Bar(session="2026-06-16", open=53.88, high=54.38, low=52.72, close=53.38)]
+_TVTX_ADR = 4.7439563469121495
+
+
+def test_t2_tvtx_tight_but_real_survives_with_r_unchanged():
+    off = simulate(pivot=49.6800003, entry_bar=_TVTX_ENTRY, forward_bars=_TVTX_FWD,
+                   params=_params(risk_floor_adr_ratio=0.0), adr_pct=_TVTX_ADR)
+    on = simulate(pivot=49.6800003, entry_bar=_TVTX_ENTRY, forward_bars=_TVTX_FWD,
+                  params=_params(risk_floor_adr_ratio=0.15), adr_pct=_TVTX_ADR)
+    assert on.degenerate is False                       # NOT over-caught
+    assert on.realized_r is not None
+    assert on.realized_r == off.realized_r              # R unchanged pre->post
+    assert on.risk_per_share == off.risk_per_share
+
+
+# Real GTX run-89 geometry: an ORDINARY healthy signal (NOT an artifact). pivot 34.34; adr 4.0236;
+# entry_fill=max(pivot,open)=34.34; stop=low=33.36; rps=0.98 (rps/ADR=0.709 -- well above floor).
+# min_rps @ 0.15 = 0.15 * (4.0236/100 * 34.34) = 0.207; rps 0.98 >> 0.207 -> SURVIVES both paths.
+_GTX_ENTRY = Bar(session="2026-06-12", open=33.83000183105469, high=34.41999816894531,
+                 low=33.36000061035156, close=33.560001373291016)
+_GTX_FWD = [Bar(session="2026-06-15", open=34.32, high=34.5, low=33.61, close=34.13),
+            Bar(session="2026-06-16", open=34.45, high=35.055, low=34.12, close=34.61)]
+_GTX_ADR = 4.0236
+
+
+def test_t3_normal_signal_r_identical_pre_post():
+    # Real ordinary signal: the floor must not move it. Non-vacuous -- a floor that (wrongly)
+    # excluded GTX would flip degenerate to True and realized_r to None, failing these asserts.
+    off = simulate(pivot=34.34, entry_bar=_GTX_ENTRY, forward_bars=_GTX_FWD,
+                   params=_params(risk_floor_adr_ratio=0.0), adr_pct=_GTX_ADR)
+    on = simulate(pivot=34.34, entry_bar=_GTX_ENTRY, forward_bars=_GTX_FWD,
+                  params=_params(risk_floor_adr_ratio=0.15), adr_pct=_GTX_ADR)
+    assert on.degenerate is False and on.realized_r is not None    # NOT excluded
+    assert on.realized_r == off.realized_r                         # R (both arms) unchanged
+    assert on.risk_per_share == off.risk_per_share
+
+
+def test_min_risk_per_share_zero_when_adr_missing_else_ratio_times_adr_price():
+    from research.harness.shadow_expectancy.simulator import _min_risk_per_share
+    p = _params(risk_floor_adr_ratio=0.15)
+    # adr null/<=0 -> floor DISABLED -> 0.0 (graceful degrade; no %-of-price fallback).
+    assert _min_risk_per_share(100.0, None, p) == 0.0
+    assert _min_risk_per_share(100.0, 0.0, p) == 0.0
+    # adr present -> ratio * adr_price. adr 4.0% of 100 = 4.0; * 0.15 = 0.6.
+    assert abs(_min_risk_per_share(100.0, 4.0, p) - 0.6) < 1e-9
