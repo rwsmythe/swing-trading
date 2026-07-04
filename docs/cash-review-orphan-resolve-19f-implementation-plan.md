@@ -7,6 +7,11 @@
 
 ---
 
+## RD + CHARC rulings (folded 2026-07-04)
+
+- **RD plan-stage (LIGHT): PASS.** Measurement confirmed -- resolving disc 73 changes NO ledger row (post-D19 `current_equity` already correct; pure bookkeeping legibility). Audit-trail semantics satisfy RD's stake (terminal `acknowledged_immaterial` via the pre-existing `resolve_discrepancy`; orphan-marked reason naming the missing `{table} id={rid}`). The live-heal GUI witness is binding as planned.
+- **CHARC: Task D CONFIRMED IN SCOPE** (F4's "the CLI tier-2 path") -- keep it. The premise nuance is accepted + owned on CHARC's record (correction-of-record: "no SUPPORTED tier-2 path handles an FK-orphan + the GUI is broken"). The ungated `discrepancy resolve` design gap landed as CHARC debt-register **D22** (candidate fix = a pending-state gate; adjudicate at a lull / Phase-19 close) -- correctly OUT of 19-F scope.
+
 ## §0. The demand + the one-line fix
 
 A dashboard **cash-review badge** (operator complaint 2026-07-02) is lit by **reconciliation discrepancy 73** and cannot be cleared through the GUI resolve form nor the CLI `resolve-ambiguity` (tier-2) surface. Discrepancy 73 references `cash_movement_id=5`, a row RD **raw-DELETED 2026-06-21** in the D19 double-debit correction. The tier-2 resolve path loads the referenced ledger row to snapshot its pre-correction value and **raises** when the row is gone. The fix: recognize the **FK-orphan** state (a discrepancy whose referenced subject row no longer exists) at both resolve surfaces and route it to a **terminal `acknowledged_immaterial` resolution** carrying an orphan-marked `resolution_reason`, instead of the FK-requiring tier-2 resolver.
