@@ -159,6 +159,19 @@ class StopAdvisoryConfig:
         # 19-E (§2 E2) — validate the Day-3-5 window fields. Window bounds are
         # day numbers (entry = Day 1): start must be >= 1, end must not precede
         # start. Percentage mirrors trim_first_pct_default: finite in (0, 1].
+        # Codex R1 MAJOR: reject non-int bounds (and bool, an int subclass)
+        # BEFORE the range comparisons — a pathological TOML override (3.5,
+        # NaN, True) would otherwise silently shift or disable the measured
+        # Day-3-5 rule while config still loads.
+        for _name, _val in (
+            ("partial_day_window_start", self.partial_day_window_start),
+            ("partial_day_window_end", self.partial_day_window_end),
+        ):
+            if not isinstance(_val, int) or isinstance(_val, bool):
+                raise ValueError(
+                    f"stop_advisory.{_name} must be an integer day number "
+                    f"(entry day = Day 1); got {_val!r}"
+                )
         if self.partial_day_window_start < 1:
             raise ValueError(
                 f"stop_advisory.partial_day_window_start must be >= 1 "

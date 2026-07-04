@@ -903,6 +903,23 @@ def test_stop_advisory_config_rejects_pct_out_of_range():
         StopAdvisoryConfig(partial_day_pct_default=float("nan"))
 
 
+def test_stop_advisory_config_rejects_non_int_window_bounds():
+    # Codex R1 MAJOR: the window bounds are day NUMBERS; a pathological TOML
+    # override with a float/NaN/bool must be rejected at construction, not
+    # silently shift (3.5) or disable (nan -> nan <= day_num always False) the
+    # measured Day-3-5 rule. bool is an int subclass so True==1 must also fail.
+    import pytest
+    from swing.config import StopAdvisoryConfig
+    with pytest.raises(ValueError, match="partial_day_window_start"):
+        StopAdvisoryConfig(partial_day_window_start=3.5)
+    with pytest.raises(ValueError, match="partial_day_window_start"):
+        StopAdvisoryConfig(partial_day_window_start=float("nan"))
+    with pytest.raises(ValueError, match="partial_day_window_start"):
+        StopAdvisoryConfig(partial_day_window_start=True)
+    with pytest.raises(ValueError, match="partial_day_window_end"):
+        StopAdvisoryConfig(partial_day_window_end=5.5)
+
+
 # ----------------------------------------------------------------------
 # 19-E — suggest_partial_day_window (Day-3-5 calendar partial-trim)
 # Entry 2026-06-08 (Mon). day_num = sessions_behind(as_of, entry).
@@ -998,6 +1015,16 @@ def test_partial_day_window_none_previous_close_does_not_fire():
     from swing.trades.advisory import suggest_partial_day_window
     s = suggest_partial_day_window(
         _trade_pw(), _ctx_pw(as_of="2026-06-11", prev_close=None))
+    assert s is None
+
+
+def test_partial_day_window_nan_previous_close_does_not_fire():
+    # Codex R1 MAJOR: a NaN previous_close must NOT fire. The inverse `<=`
+    # guard would let it through (nan <= entry is False -> fires a bogus "nan"
+    # advisory on a live-trader surface). Day 3, prev_close=NaN -> no fire.
+    from swing.trades.advisory import suggest_partial_day_window
+    s = suggest_partial_day_window(
+        _trade_pw(), _ctx_pw(as_of="2026-06-11", prev_close=float("nan")))
     assert s is None
 
 

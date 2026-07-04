@@ -202,6 +202,12 @@ def suggest_partial_day_window(
         return None
     if ctx.has_been_trimmed:
         return None
+    # Codex R1 MAJOR: require finite prices. The strict close test below uses
+    # the POSITIVE predicate `not (prev > entry)`; a NaN previous_close would
+    # otherwise slip through an inverse `<=` guard (nan <= entry is False) and
+    # emit a bogus "nan" advisory on a live-trader surface.
+    if not math.isfinite(ctx.previous_close) or not math.isfinite(trade.entry_price):
+        return None
     cfg = ctx.config
     # ANCHOR CONTRACT (see docstring): production callers pass a forward
     # action-session date, which IS an NYSE session. The CLI diagnostic
@@ -219,7 +225,9 @@ def suggest_partial_day_window(
         return None
     if not (cfg.partial_day_window_start <= day_num <= cfg.partial_day_window_end):
         return None
-    if ctx.previous_close <= trade.entry_price:
+    # Positive strict predicate (Codex R1 MAJOR) — mirrors the engine's
+    # `bar.close > entry_fill`; equal close = no fire. Finite guaranteed above.
+    if not (ctx.previous_close > trade.entry_price):
         return None
     pct = cfg.partial_day_pct_default
     return AdvisorySuggestion(
