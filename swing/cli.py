@@ -2988,6 +2988,15 @@ def discrepancy_resolve_ambiguity_cmd(
     validator-chain re-invocation defense-in-depth + the journal
     mutation + the audit row INSERT + the discrepancy resolution
     UPDATE.
+
+    Arc 19-F FK-orphan short-circuit: when the discrepancy's referenced
+    FK subject row (fill / cash_movement / trade) no longer exists (a
+    raw-delete orphan, e.g. D19's cash_movement_id=5), the tier-2 path
+    cannot run (it RAISES reading the gone row). Such a row is resolved
+    terminally to ``acknowledged_immaterial`` via ``resolve_discrepancy``
+    with an orphan-marked reason; ``--choice`` is omitted/ignored (only
+    ``--reason`` is used). This mirrors the web resolve form + the
+    ``discrepancy resolve`` command.
     """
     import json as _json
 
