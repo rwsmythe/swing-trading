@@ -138,6 +138,60 @@ def test_cash_fk_orphan_resolves_acknowledged_immaterial(cli_workspace) -> None:
     assert reason.endswith("subject row deleted in D19")
 
 
+def test_orphan_with_service_owned_choice_still_resolves(cli_workspace) -> None:
+    """R1M1: --choice is moot/ignored for an FK-orphan, so a supplied
+    service-owned value must NOT block the orphan resolve (the service-owned
+    precheck is relocated AFTER the orphan short-circuit). PRE-fix: the early
+    precheck exits 2 before orphan detection."""
+    runner, cfg, db_path = cli_workspace
+    conn = sqlite3.connect(db_path)
+    try:
+        run_id = _seed_reconciliation_run(conn)
+        did = _plant_fk_orphan(conn, run_id=run_id, cash_movement_id=5)
+        conn.commit()
+    finally:
+        conn.close()
+
+    r = runner.invoke(main, [
+        "--config", str(cfg),
+        "journal", "discrepancy", "resolve-ambiguity", str(did),
+        "--choice", "pending_ambiguity_resolution",  # a service-owned value
+        "--reason", "orphan; choice moot",
+    ])
+    assert r.exit_code == 0, r.output
+    assert f"resolved orphan discrepancy {did}" in r.output
+    resolution, _, _, _ = _read(db_path, did)
+    assert resolution == "acknowledged_immaterial"
+
+
+def test_non_orphan_service_owned_choice_still_rejected(cli_workspace) -> None:
+    """No-regression for R1M1: a NON-orphan tier-2 row with a service-owned
+    --choice still exits 2 with the routing hint (the precheck fires on the
+    non-orphan path)."""
+    runner, cfg, db_path = cli_workspace
+    conn = sqlite3.connect(db_path)
+    try:
+        run_id = _seed_reconciliation_run(conn)
+        trade_id, fill_id = _seed_trade_with_entry_fill(conn, ticker="DHC")
+        did = _plant_fk_orphan(
+            conn, run_id=run_id, fill_id=fill_id, trade_id=trade_id,
+            discrepancy_type="entry_price_mismatch", field_name="price",
+            ambiguity_kind="schwab_returned_no_match",
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    r = runner.invoke(main, [
+        "--config", str(cfg),
+        "journal", "discrepancy", "resolve-ambiguity", str(did),
+        "--choice", "operator_resolved_ambiguity",  # service-owned
+        "--reason", "should be rejected",
+    ])
+    assert r.exit_code == 2, r.output
+    assert "service-owned" in r.output.lower()
+
+
 def test_unresolved_fill_orphan_not_rejected_by_ambiguity_guard(
     cli_workspace,
 ) -> None:

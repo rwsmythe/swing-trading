@@ -23,6 +23,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from swing.config import Config
@@ -182,6 +183,30 @@ def test_get_fk_orphan_terminal_returns_409(
 # ---------------------------------------------------------------------------
 # NO-REGRESSION — a LIVE FK row still reaches the tier-2 form unchanged
 # ---------------------------------------------------------------------------
+
+
+def test_get_orphan_predicate_db_busy_returns_503(
+    seeded_db: tuple[Config, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """R1M2: a transient lock during the FK-orphan SELECT shares the canonical
+    503 ladder (not a bare 500). Monkeypatch the predicate to raise a transient
+    OperationalError; assert 503. PRE-fix (call outside the pre-flight try):
+    the OperationalError bubbles to a 500."""
+    cfg, cfg_path = seeded_db
+    cm_id = _seed_cash_movement(cfg.paths.db_path)
+    did = _seed_discrepancy(cfg.paths.db_path, cash_movement_id=cm_id)
+    app = create_app(cfg, cfg_path)
+
+    import swing.web.routes.reconcile as recon_route
+
+    def _busy(_conn, _disc):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(recon_route, "orphaned_affected_target", _busy)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        r = client.get(f"/reconcile/discrepancy/{did}/resolve")
+    assert r.status_code == 503, r.text[:400]
+    assert 'data-error-kind="db_unavailable"' in r.text
 
 
 def test_get_live_cash_fk_still_tier2_form(

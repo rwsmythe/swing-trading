@@ -460,6 +460,11 @@ def reconcile_discrepancy_resolve_form(
                 fetch_first_pending_ambiguity_resolve_link_path(conn)
             )
             disc = get_discrepancy(conn, discrepancy_id)
+            # 19-F R1M2 — compute the FK-orphan target INSIDE the pre-flight try
+            # so a busy-lock during its SELECT shares the canonical 503 ladder
+            # (not a bare 500 that would regress the live-FK tier-2 path).
+            # Safe on a None disc (returns None without executing a SELECT).
+            fk_orphan_target = orphaned_affected_target(conn, disc)
         except sqlite3.OperationalError as exc:
             # Codex R1 Major #2 — pre-flight OperationalError (DB locked /
             # busy during count_* helpers or get_discrepancy) routes to the
@@ -527,8 +532,8 @@ def reconcile_discrepancy_resolve_form(
         # BEFORE the simple-ack branch). A referenced fill/cash_movement/trade
         # row that was raw-deleted -> the acknowledge form; a terminal-state
         # orphan -> the canonical 409. A LIVE FK row returns None here and
-        # falls through unchanged (the no-regression lock).
-        fk_orphan_target = orphaned_affected_target(conn, disc)
+        # falls through unchanged (the no-regression lock). ``fk_orphan_target``
+        # was computed in the pre-flight try (503-ladder covered; R1M2).
         if fk_orphan_target is not None:
             if disc.resolution not in _FK_ORPHAN_CLEARABLE_RESOLUTIONS:
                 table, rid = fk_orphan_target
@@ -944,6 +949,11 @@ async def reconcile_discrepancy_resolve_post(  # noqa: PLR0911, PLR0912, PLR0915
 
             # Step 4a — discrepancy existence
             disc = get_discrepancy(conn, discrepancy_id)
+            # 19-F R1M2 — compute the FK-orphan target INSIDE the pre-flight try
+            # so a busy-lock during its SELECT shares the canonical 503 ladder
+            # (not a bare 500 that would regress the live-FK tier-2 path).
+            # Safe on a None disc (returns None without executing a SELECT).
+            fk_orphan_target = orphaned_affected_target(conn, disc)
         except sqlite3.OperationalError as exc:
             # Codex R1 Major #2 — pre-flight OperationalError (DB locked /
             # busy during count_* helpers or get_discrepancy) routes to the
@@ -1093,8 +1103,8 @@ async def reconcile_discrepancy_resolve_post(  # noqa: PLR0911, PLR0912, PLR0915
         # BEFORE the simple-ack branch). Mirrors the orphan POST block but the
         # resolution_reason is the orphan marker naming the missing subject.
         # A LIVE FK row returns None -> falls through to the tier-2 path
-        # unchanged (the no-regression lock).
-        fk_orphan_target = orphaned_affected_target(conn, disc)
+        # unchanged (the no-regression lock). ``fk_orphan_target`` was computed
+        # in the pre-flight try (503-ladder covered; R1M2).
         if fk_orphan_target is not None:
             table, rid = fk_orphan_target
             if disc.resolution not in _FK_ORPHAN_CLEARABLE_RESOLUTIONS:

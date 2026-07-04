@@ -3005,38 +3005,6 @@ def discrepancy_resolve_ambiguity_cmd(
     )
     from swing.trades.risk_policy import read_active_policy
 
-    # NEW C.C lesson #1 — service-owned-state rejection at the CLI
-    # boundary, BEFORE the DB is even opened. Routing-hint substring in
-    # the error message tells operator where to go next.
-    #
-    # Codex R1 Minor #1 fix — normalize the operator-supplied --choice
-    # value (strip surrounding whitespace + lowercase) BEFORE the
-    # membership check. Without normalization a copy/paste with stray
-    # whitespace or upper-case drift (' auto_corrected_from_schwab ' /
-    # 'AUTO_CORRECTED_FROM_SCHWAB') falls through to generic-incompatible
-    # handling, losing the routing-hint substring. The downstream
-    # ``apply_tier2_resolution`` dispatch table is case-sensitive so we
-    # only apply the normalization to THIS rejection check; the original
-    # `choice_code` is passed through verbatim to the service layer
-    # (which will then surface its own incompatible-choice error if the
-    # case-drift was genuinely a typo rather than a service-owned value).
-    if (
-        choice_code is not None
-        and choice_code.strip().lower()
-        in _TIER2_SERVICE_OWNED_RESOLUTION_VALUES
-    ):
-        raise click.UsageError(
-            f"--choice {choice_code!r} is a service-owned resolution "
-            "value and is NOT accepted on this manual surface; those "
-            "values route through canonical service entries (the pivot "
-            "dispatcher in `apply_tier1_correction` / "
-            "`apply_tier2_resolution` / `apply_tier3_override` — "
-            "operator-driven via `override-correction` for "
-            "tier-3 + this `resolve-ambiguity` for tier-2). Pick a "
-            "choice from the per-ambiguity_kind menu surfaced by "
-            "`swing journal discrepancy show-ambiguity <id>`."
-        )
-
     cfg = ctx.obj["config"]
     conn = connect(cfg.paths.db_path)
     try:
@@ -3095,6 +3063,46 @@ def discrepancy_resolve_ambiguity_cmd(
                 f"{table} id={rid} no longer exists) to acknowledged_immaterial"
             )
             return
+
+        # NEW C.C lesson #1 — service-owned-state rejection on the manual
+        # surface. Routing-hint substring in the error message tells operator
+        # where to go next.
+        #
+        # Arc 19-F R1M1 — RELOCATED to AFTER the orphan short-circuit (was a
+        # pre-DB-open boundary check). --choice is moot/ignored for an FK-orphan
+        # (mirrors the web, which shows no choice menu), so a supplied
+        # service-owned value must NOT block an orphan resolve; it only gates
+        # the NON-orphan tier-2 dispatch path below. Non-orphan behavior is
+        # byte-identical (this still fires before the ambiguity_kind guard +
+        # menu dispatch for a real tier-2 row).
+        #
+        # Codex R1 Minor #1 fix — normalize the operator-supplied --choice
+        # value (strip surrounding whitespace + lowercase) BEFORE the
+        # membership check. Without normalization a copy/paste with stray
+        # whitespace or upper-case drift (' auto_corrected_from_schwab ' /
+        # 'AUTO_CORRECTED_FROM_SCHWAB') falls through to generic-incompatible
+        # handling, losing the routing-hint substring. The downstream
+        # ``apply_tier2_resolution`` dispatch table is case-sensitive so we
+        # only apply the normalization to THIS rejection check; the original
+        # `choice_code` is passed through verbatim to the service layer
+        # (which will then surface its own incompatible-choice error if the
+        # case-drift was genuinely a typo rather than a service-owned value).
+        if (
+            choice_code is not None
+            and choice_code.strip().lower()
+            in _TIER2_SERVICE_OWNED_RESOLUTION_VALUES
+        ):
+            raise click.UsageError(
+                f"--choice {choice_code!r} is a service-owned resolution "
+                "value and is NOT accepted on this manual surface; those "
+                "values route through canonical service entries (the pivot "
+                "dispatcher in `apply_tier1_correction` / "
+                "`apply_tier2_resolution` / `apply_tier3_override` — "
+                "operator-driven via `override-correction` for "
+                "tier-3 + this `resolve-ambiguity` for tier-2). Pick a "
+                "choice from the per-ambiguity_kind menu surfaced by "
+                "`swing journal discrepancy show-ambiguity <id>`."
+            )
 
         if d.ambiguity_kind is None:
             raise click.UsageError(
