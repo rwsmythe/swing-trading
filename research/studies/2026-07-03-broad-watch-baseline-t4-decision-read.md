@@ -74,3 +74,22 @@ The Phase-19 shadow-engine fix (risk-unit floor / ambiguous-entry gating; CHARC-
 - Wilson LB: two-sided 95% (z=1.96) score interval, computed from per-signal rows in results.csv.
 - Bias/artifact chain: charter §7 entries 2026-06-30 (VSTS artifact), 2026-07-03 (AMN clean walk); CHARC thread `shadow-engine-risk-unit-artifact` `20260630T012011Z`.
 - Read executed by the RD role (monthly watch read #1, watch-standard v2 §3); logged in charter §7 in the §3.2 format.
+
+---
+
+## §8 CONFIRMATORY RE-READ — 2026-07-05 (the pre-committed §6 follow-up; VERDICT FINAL)
+
+**Artifact:** `exports/research/shadow-expectancy-20260704T223859Z/` — the first full-corpus run on the 19-D-hardened engine (merged `f1add34c`; risk-unit floor 0.15 ADR-ratio, epsilon reader-clamp 1.0%, RD-ruled constants verified shipped). Same frozen 0026 criteria, same method as §2.
+
+| Scenario | Read #1 (pre-fix, 07-03) | Read #2 (post-fix, 07-05) |
+|---|---|---|
+| closed_only | −0.648 (n=97/36 names; win 10.3%, LB 5.7%) | **−0.637 (n=100/39 names; win 11.0%, LB 6.3%)** |
+| mtm_at_horizon | +0.680 (n=165) | +0.551 (n=171/53 names; win 43.3%, LB 36.1%) |
+| forced_exit | +0.680 | +0.551 |
+| stop_level_adverse | +0.013 | **−0.057** |
+
+**VERDICT: CONFIRMED-NEGATIVE — the §4 banked result is now FINAL, not provisional.** The realized read is stable under the healed engine (−0.648 → −0.637; the small move is composition — 3 recovered closed signals entered, collapsed-risk names left). The adverse scenario flipped negative. The mtm dropped 0.680 → 0.551 exactly as the §3 bias-removal analysis predicted. The A+ headline healed to +1.124 (n=1) — **literally the hand-walked AMN value from the §3.5 verification: the measurement now equals the honest walk.** Every §3 artifact-class pathology is resolved: VSTS excluded as `degenerate_risk` (5 total incl. the ARMK cluster); `invalid_ohlc` 38 → 22 (16 ragged-walk signals recovered, +6 into the priced set, the rest honestly never-triggered/other); the 15-bar clamp census matches the §3 probe exactly (CALY excluded above-threshold).
+
+**Honest annotations:** (1) PGNY 06-26 (+18.88 mtm) SURVIVES at ratio 0.164 — legitimately above the 0.15 floor (13¢ risk / $0.79 ADR; a real +9% move, thin-but-lawful stop). Marks in the 0.15–0.2 ratio band still amplify; WATCH whether any close into the realized cohort at inflated R — that is realized evidence for a future calibration, NOT grounds to re-tune the frozen setup now. (2) DFTX/LTH large marks are real moves with sane denominators (by design, not artifacts). (3) H1 unchanged: A+ closed n=0; the money question stays open on market time.
+
+**Consequence:** the cohort-refinement branch remains untriggered; A+ gate selectivity validation is BANKED FINAL. Posture: stop-engineering + market time.
