@@ -29,17 +29,11 @@ Run the register/unregister scripts **from the MAIN checkout, as yourself**
 | Scheduler ExecutionTimeLimit | **2h** (the OUTER backstop) |
 | Wrapper `-RunTimeoutMinutes` | **45** (the INNER process-tree-kill bound) |
 
-### Schedule rationale (incl. the data-quality note)
+### Schedule rationale
 
 17:30 HST is well after the 10:00 HST market close (evening review window
-preserved). **The 17:30 HST slot (23:30 ET, ~7.5h post-close) is LATER than a
-typical manual evening run, and plausibly REDUCES the ragged-SHAPE yfinance bar
-inflow** (the invalid_ohlc capture-timing correlation): the later capture gives
-the provider more time to finalize the day's adjusted-close, so fewer trailing
-NaN-Close bars arrive. **The run time is a DATA-QUALITY parameter, not just
-convenience — do NOT move it earlier without weighing the ragged-inflow
-consideration** (the 19-D capture-timing trace will confirm or kill this
-correlation later).
+preserved). A capture-timing correlation was tested and not supported (19-D
+Task 8); the 17:30 default stands on operational grounds.
 
 ### Two logon-type / catch-up interactions to expect
 
