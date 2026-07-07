@@ -1,0 +1,163 @@
+{
+  "funnel": {
+    "detection_level": {
+      "collapsed_duplicate_detection": 1412,
+      "total_detections": 1765,
+      "unique_signals": 353
+    },
+    "per_hypothesis": {
+      "A+ baseline": {
+        "closed": 0,
+        "excluded": {},
+        "never_triggered": 1,
+        "open_at_horizon": 2
+      },
+      "Broad-watch baseline": {
+        "closed": 97,
+        "excluded": {
+          "insufficient_forward_depth": 12,
+          "invalid_ohlc": 38,
+          "missing_observations": 26
+        },
+        "never_triggered": 109,
+        "open_at_horizon": 68
+      }
+    },
+    "unattributed": {}
+  },
+  "harness_version": "0.1.0",
+  "l2_lock_preserved": true,
+  "params": {
+    "breakeven_r": 1.0,
+    "horizon_sessions": 126,
+    "ma_staging": [
+      10,
+      20
+    ],
+    "partial_session_n": 3
+  },
+  "scorecard": {
+    "A+ baseline": {
+      "ambiguous_count": 0,
+      "avg_loss_r": 0.0,
+      "avg_win_r": 0.0,
+      "entry_bar_weak_close_count": 1,
+      "headline_realistic_closed_only": 0.0,
+      "median_holding_sessions": 3.0,
+      "payoff_ratio": null,
+      "per_signal_expectancy": {
+        "favorable_reprice": 6.3005431136686925,
+        "realistic": 6.3005431136686925
+      },
+      "profit_factor": {
+        "suppressed": true,
+        "value": null
+      },
+      "same_bar_adverse_mean_r": {
+        "favorable_reprice": 0.0,
+        "realistic": 0.0
+      },
+      "scenarios": {
+        "closed_only": {
+          "favorable_reprice": 0.0,
+          "n": 0,
+          "realistic": 0.0,
+          "suppressed": true
+        },
+        "forced_exit_at_horizon_open": {
+          "favorable_reprice": 9.45081467050304,
+          "n": 2,
+          "realistic": 9.45081467050304,
+          "suppressed": true
+        },
+        "mtm_at_horizon": {
+          "favorable_reprice": 9.45081467050304,
+          "n": 2,
+          "realistic": 9.45081467050304,
+          "suppressed": true
+        },
+        "stop_level_adverse": {
+          "favorable_reprice": 5.111100326367988,
+          "n": 2,
+          "realistic": 5.111100326367988,
+          "suppressed": true
+        }
+      },
+      "trigger_rate": {
+        "rate": 0.6666666666666666,
+        "signals": 3,
+        "triggered": 2
+      },
+      "win_rate": {
+        "k": 0,
+        "n": 0,
+        "suppressed": true,
+        "wilson": null
+      }
+    },
+    "Broad-watch baseline": {
+      "ambiguous_count": 97,
+      "avg_loss_r": -0.9545991094725238,
+      "avg_win_r": 2.017544336968213,
+      "entry_bar_weak_close_count": 91,
+      "headline_realistic_closed_only": -0.6481925686023448,
+      "median_holding_sessions": 3,
+      "payoff_ratio": 2.1134990772021918,
+      "per_signal_expectancy": {
+        "favorable_reprice": 0.4314705063778382,
+        "realistic": 0.40926376068272263
+      },
+      "profit_factor": {
+        "suppressed": false,
+        "value": 0.242930928414045
+      },
+      "same_bar_adverse_mean_r": {
+        "favorable_reprice": -1.0,
+        "realistic": -1.0
+      },
+      "scenarios": {
+        "closed_only": {
+          "favorable_reprice": -0.5854642354017091,
+          "n": 97,
+          "realistic": -0.6481925686023448,
+          "suppressed": false
+        },
+        "forced_exit_at_horizon_open": {
+          "favorable_reprice": 0.716502537863804,
+          "n": 165,
+          "realistic": 0.6796258813761576,
+          "suppressed": false
+        },
+        "mtm_at_horizon": {
+          "favorable_reprice": 0.716502537863804,
+          "n": 165,
+          "realistic": 0.6796258813761576,
+          "suppressed": false
+        },
+        "stop_level_adverse": {
+          "favorable_reprice": 0.049863225999295054,
+          "n": 165,
+          "realistic": 0.012986569511648621,
+          "suppressed": false
+        }
+      },
+      "trigger_rate": {
+        "rate": 0.6021897810218978,
+        "signals": 274,
+        "triggered": 165
+      },
+      "win_rate": {
+        "k": 10,
+        "n": 97,
+        "suppressed": false,
+        "wilson": {
+          "lower": 0.05696749338581042,
+          "point": 0.10309278350515463,
+          "upper": 0.17945767439251917
+        }
+      }
+    }
+  },
+  "source": "pipeline",
+  "started_iso_utc": "20260703T020948Z"
+}

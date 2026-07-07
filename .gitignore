@@ -122,17 +122,15 @@ exports/research/primary-base-recall-*/*
 !exports/research/primary-base-recall-*/results.csv
 !exports/research/primary-base-recall-*/per_session.csv
 
-# Shadow-expectancy engine harness outputs: keep summary/manifest/results/per_session.
-# (Phase-19 close H4: a proposed full-ignore for the now-NIGHTLY engine artifact was
-# REVERTED 2026-07-06 -- it broke the study reproducibility contract asserted by
-# tests/research/shadow_expectancy/test_study_doc.py::test_gitignore_allowlists_artifact_dir;
-# the track-vs-ignore convention for the nightly engine is routed to CHARC + RD.)
-!exports/research/shadow-expectancy-*
-exports/research/shadow-expectancy-*/*
-!exports/research/shadow-expectancy-*/summary.md
-!exports/research/shadow-expectancy-*/manifest.json
-!exports/research/shadow-expectancy-*/results.csv
-!exports/research/shadow-expectancy-*/per_session.csv
+# Shadow-expectancy engine outputs: the dated dirs under exports/research/ are the
+# EPHEMERAL instrument path -- default-IGNORED (nightly under the 19-C scheduler;
+# pure-recompute supersedes them informationally; the keep-90 pruner rmtree's them).
+# The reproducibility contract binds on CITED artifacts: a study / decision-read that
+# cites an engine artifact COPIES its ledger files into the study's TRACKED location
+# (research/studies/<slug>/artifacts/<ts>/) and commits them WITH the read -- so
+# cited = committed = prune-proof. (Phase-19 close, Option C -- RD FINAL 2026-07-06,
+# CHARC co-sign; the study test now asserts the cited artifacts are git-tracked, NOT
+# this gitignore allowlist. runner.py pruner UNTOUCHED on the fully-ephemeral path.)
 
 # Broker statements (personal financial data)
 thinkorswim/

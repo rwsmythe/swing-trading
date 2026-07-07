@@ -1,0 +1,6 @@
+ticker,detection_date,run_id,hypothesis,bucket,realistic_r,favorable_r,exit_reason,open_at_horizon,entry_bar_ambiguous,entry_bar_weak_close
+WULF,2026-06-05,89,Broad-watch baseline,watch,-1.0000,-1.0000,initial_stop,False,True,True
+VECO,2026-06-08,90,Broad-watch baseline,watch,0.2871,0.2871,horizon_mtm,True,True,False
+WULF,2026-06-08,90,Broad-watch baseline,watch,-1.0000,-1.0000,initial_stop,False,True,True
+VECO,2026-06-09,97,Broad-watch baseline,watch,0.2871,0.2871,horizon_mtm,True,True,False
+WULF,2026-06-09,97,Broad-watch baseline,watch,-1.0000,-1.0000,initial_stop,False,True,True

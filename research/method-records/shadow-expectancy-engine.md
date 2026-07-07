@@ -69,6 +69,21 @@ re-runs over the same DB. Honesty floors suppress profit-factor / expectancy bel
 Output: `exports/research/shadow-expectancy-<ISO>/` (summary.md + manifest.json +
 results.csv + per_session.csv), all ASCII.
 
+**Artifact tracking (cited = committed; Option C, Phase-19 close, RD FINAL 2026-07-06 +
+CHARC co-sign).** The dated `exports/research/shadow-expectancy-<ISO>/` dirs are the
+EPHEMERAL instrument path -- default-gitignored (nightly under the 19-C scheduler;
+pure-recompute supersedes them informationally; the keep-90 pruner rmtree's them). The
+reproducibility contract binds on CITED artifacts: when a study or decision-read cites an
+engine artifact, its author COPIES the four ledger files into the citing study's TRACKED
+location (`research/studies/<slug>/artifacts/<ISO>/`) and commits them WITH the read -- so
+cited = committed = prune-proof, and the evidence lives with the study that cites it.
+`tests/research/shadow_expectancy/test_study_doc.py::test_cited_artifacts_are_git_tracked`
+asserts the T4-decision-read's cited artifacts are git-tracked (the REAL contract; the
+earlier blanket `.gitignore` allowlist was aspirational -- git ls-files showed zero
+shadow-expectancy files were ever tracked under it). The `runner.py` pruner is UNTOUCHED
+(it keeps its job on the fully-ephemeral path; a pruner exemption keyed to git state was
+rejected as coupling two independent systems).
+
 ## Locks
 
 L2-light: the only `swing/` change is the `swing diagnose shadow-expectancy` CLI

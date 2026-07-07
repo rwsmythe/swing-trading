@@ -1,0 +1,249 @@
+{
+  "funnel": {
+    "detection_level": {
+      "collapsed_duplicate_detection": 1420,
+      "total_detections": 1775,
+      "unique_signals": 355
+    },
+    "per_hypothesis": {
+      "A+ baseline": {
+        "closed": 0,
+        "excluded": {
+          "degenerate_risk": 1
+        },
+        "never_triggered": 1,
+        "open_at_horizon": 1
+      },
+      "Broad-watch baseline": {
+        "closed": 100,
+        "excluded": {
+          "degenerate_risk": 4,
+          "insufficient_forward_depth": 13,
+          "invalid_ohlc": 22,
+          "missing_observations": 28
+        },
+        "never_triggered": 114,
+        "open_at_horizon": 71
+      }
+    },
+    "unattributed": {}
+  },
+  "harness_version": "0.1.0",
+  "l2_lock_preserved": true,
+  "ohlc_clamp": {
+    "clamped_bar_count": 15,
+    "clamped_bar_events": 19,
+    "max_pct_threshold": 1.0,
+    "samples": [
+      {
+        "clamp_pct": 0.3392,
+        "session": "2026-06-10",
+        "ticker": "DINO"
+      },
+      {
+        "clamp_pct": 0.4186,
+        "session": "2026-06-18",
+        "ticker": "DINO"
+      },
+      {
+        "clamp_pct": 0.3377,
+        "session": "2026-07-01",
+        "ticker": "DINO"
+      },
+      {
+        "clamp_pct": 0.1014,
+        "session": "2026-06-18",
+        "ticker": "EVC"
+      },
+      {
+        "clamp_pct": 0.0389,
+        "session": "2026-06-26",
+        "ticker": "M"
+      },
+      {
+        "clamp_pct": 0.206,
+        "session": "2026-06-26",
+        "ticker": "MFG"
+      },
+      {
+        "clamp_pct": 0.3302,
+        "session": "2026-06-26",
+        "ticker": "NSA"
+      },
+      {
+        "clamp_pct": 0.5309,
+        "session": "2026-07-01",
+        "ticker": "NSA"
+      },
+      {
+        "clamp_pct": 0.037,
+        "session": "2026-07-01",
+        "ticker": "OGN"
+      },
+      {
+        "clamp_pct": 0.2534,
+        "session": "2026-06-29",
+        "ticker": "RLJ"
+      },
+      {
+        "clamp_pct": 0.064,
+        "session": "2026-07-01",
+        "ticker": "RSI"
+      },
+      {
+        "clamp_pct": 0.7712,
+        "session": "2026-06-29",
+        "ticker": "TLYS"
+      },
+      {
+        "clamp_pct": 0.4698,
+        "session": "2026-07-01",
+        "ticker": "VIRT"
+      },
+      {
+        "clamp_pct": 0.0836,
+        "session": "2026-07-01",
+        "ticker": "VOYA"
+      },
+      {
+        "clamp_pct": 0.144,
+        "session": "2026-06-12",
+        "ticker": "VSTS"
+      }
+    ]
+  },
+  "params": {
+    "breakeven_r": 1.0,
+    "horizon_sessions": 126,
+    "ma_staging": [
+      10,
+      20
+    ],
+    "partial_session_n": 3,
+    "risk_floor_adr_ratio": 0.15
+  },
+  "scorecard": {
+    "A+ baseline": {
+      "ambiguous_count": 0,
+      "avg_loss_r": 0.0,
+      "avg_win_r": 0.0,
+      "entry_bar_weak_close_count": 1,
+      "headline_realistic_closed_only": 0.0,
+      "median_holding_sessions": 1,
+      "payoff_ratio": null,
+      "per_signal_expectancy": {
+        "favorable_reprice": 0.5619465740337516,
+        "realistic": 0.5619465740337516
+      },
+      "profit_factor": {
+        "suppressed": true,
+        "value": null
+      },
+      "same_bar_adverse_mean_r": {
+        "favorable_reprice": 0.0,
+        "realistic": 0.0
+      },
+      "scenarios": {
+        "closed_only": {
+          "favorable_reprice": 0.0,
+          "n": 0,
+          "realistic": 0.0,
+          "suppressed": true
+        },
+        "forced_exit_at_horizon_open": {
+          "favorable_reprice": 1.1238931480675032,
+          "n": 1,
+          "realistic": 1.1238931480675032,
+          "suppressed": true
+        },
+        "mtm_at_horizon": {
+          "favorable_reprice": 1.1238931480675032,
+          "n": 1,
+          "realistic": 1.1238931480675032,
+          "suppressed": true
+        },
+        "stop_level_adverse": {
+          "favorable_reprice": 0.0,
+          "n": 1,
+          "realistic": 0.0,
+          "suppressed": true
+        }
+      },
+      "trigger_rate": {
+        "rate": 0.5,
+        "signals": 2,
+        "triggered": 1
+      },
+      "win_rate": {
+        "k": 0,
+        "n": 0,
+        "suppressed": true,
+        "wilson": null
+      }
+    },
+    "Broad-watch baseline": {
+      "ambiguous_count": 100,
+      "avg_loss_r": -0.9471394171149927,
+      "avg_win_r": 1.8694847165282686,
+      "entry_bar_weak_close_count": 95,
+      "headline_realistic_closed_only": -0.6373107624142339,
+      "median_holding_sessions": 2,
+      "payoff_ratio": 1.973822103426716,
+      "per_signal_expectancy": {
+        "favorable_reprice": 0.3564245203800303,
+        "realistic": 0.3307054539955165
+      },
+      "profit_factor": {
+        "suppressed": false,
+        "value": 0.2439555408729649
+      },
+      "same_bar_adverse_mean_r": {
+        "favorable_reprice": -1.0,
+        "realistic": -1.0
+      },
+      "scenarios": {
+        "closed_only": {
+          "favorable_reprice": -0.5640114232183696,
+          "n": 100,
+          "realistic": -0.6373107624142339,
+          "suppressed": false
+        },
+        "forced_exit_at_horizon_open": {
+          "favorable_reprice": 0.5940408673000505,
+          "n": 171,
+          "realistic": 0.5511757566591942,
+          "suppressed": false
+        },
+        "mtm_at_horizon": {
+          "favorable_reprice": 0.5940408673000505,
+          "n": 171,
+          "realistic": 0.5511757566591942,
+          "suppressed": false
+        },
+        "stop_level_adverse": {
+          "favorable_reprice": -0.014063378573723894,
+          "n": 171,
+          "realistic": -0.05692848921458026,
+          "suppressed": false
+        }
+      },
+      "trigger_rate": {
+        "rate": 0.6,
+        "signals": 285,
+        "triggered": 171
+      },
+      "win_rate": {
+        "k": 11,
+        "n": 100,
+        "suppressed": false,
+        "wilson": {
+          "lower": 0.06254196357064568,
+          "point": 0.11,
+          "upper": 0.18631296503080313
+        }
+      }
+    }
+  },
+  "source": "pipeline",
+  "started_iso_utc": "20260704T223859Z"
+}

@@ -1,0 +1,99 @@
+{
+  "funnel": {
+    "detection_level": {
+      "collapsed_duplicate_detection": 228,
+      "total_detections": 285,
+      "unique_signals": 57
+    },
+    "per_hypothesis": {
+      "Broad-watch baseline": {
+        "closed": 3,
+        "excluded": {
+          "insufficient_forward_depth": 1,
+          "invalid_ohlc": 22,
+          "missing_observations": 6
+        },
+        "never_triggered": 23,
+        "open_at_horizon": 2
+      }
+    },
+    "unattributed": {}
+  },
+  "harness_version": "0.1.0",
+  "l2_lock_preserved": true,
+  "params": {
+    "breakeven_r": 1.0,
+    "horizon_sessions": 126,
+    "ma_staging": [
+      10,
+      20
+    ],
+    "partial_session_n": 3
+  },
+  "scorecard": {
+    "Broad-watch baseline": {
+      "ambiguous_count": 3,
+      "avg_loss_r": -1.0,
+      "avg_win_r": 0.0,
+      "entry_bar_weak_close_count": 3,
+      "headline_realistic_closed_only": -1.0,
+      "median_holding_sessions": 1,
+      "payoff_ratio": 0.0,
+      "per_signal_expectancy": {
+        "favorable_reprice": -0.08663803486855377,
+        "realistic": -0.08663803486855377
+      },
+      "profit_factor": {
+        "suppressed": true,
+        "value": 0.0
+      },
+      "same_bar_adverse_mean_r": {
+        "favorable_reprice": -1.0,
+        "realistic": -1.0
+      },
+      "scenarios": {
+        "closed_only": {
+          "favorable_reprice": -1.0,
+          "n": 3,
+          "realistic": -1.0,
+          "suppressed": true
+        },
+        "forced_exit_at_horizon_open": {
+          "favorable_reprice": -0.4851729952639011,
+          "n": 5,
+          "realistic": -0.4851729952639011,
+          "suppressed": false
+        },
+        "mtm_at_horizon": {
+          "favorable_reprice": -0.4851729952639011,
+          "n": 5,
+          "realistic": -0.4851729952639011,
+          "suppressed": false
+        },
+        "stop_level_adverse": {
+          "favorable_reprice": -1.0,
+          "n": 5,
+          "realistic": -1.0,
+          "suppressed": false
+        }
+      },
+      "trigger_rate": {
+        "rate": 0.17857142857142858,
+        "signals": 28,
+        "triggered": 5
+      },
+      "win_rate": {
+        "k": 0,
+        "n": 3,
+        "suppressed": true,
+        "wilson": {
+          "lower": 0.0,
+          "point": 0.0,
+          "upper": 0.5614970317550455
+        }
+      }
+    }
+  },
+  "source": "pipeline",
+  "started_iso_utc": "20260611T041306Z"
+}

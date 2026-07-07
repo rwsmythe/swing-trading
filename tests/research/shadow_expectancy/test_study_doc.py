@@ -22,10 +22,28 @@ def test_method_record_exists():
     _METHOD.read_text(encoding="utf-8").encode("ascii")
 
 
-def test_gitignore_allowlists_artifact_dir():
-    gi = Path(".gitignore").read_text(encoding="utf-8")
-    assert "!exports/research/shadow-expectancy-*" in gi
-    assert "!exports/research/shadow-expectancy-*/summary.md" in gi
-    assert "!exports/research/shadow-expectancy-*/manifest.json" in gi
-    assert "!exports/research/shadow-expectancy-*/results.csv" in gi
-    assert "!exports/research/shadow-expectancy-*/per_session.csv" in gi
+def test_cited_artifacts_are_git_tracked():
+    """Option C (Phase-19 close, RD FINAL 2026-07-06; CHARC co-sign): the engine's dated
+    output dirs are the EPHEMERAL instrument path (default-ignored; the keep-90 pruner
+    rmtree's them). The reproducibility contract binds on CITED artifacts -- a
+    decision-read that cites an engine artifact COPIES its ledger files into the study's
+    TRACKED location and commits them with the read (cited = committed = prune-proof).
+    This asserts the T4-decision-read's cited artifacts are actually git-tracked -- a
+    REAL contract, replacing the earlier aspirational gitignore allowlist (git ls-files
+    showed zero shadow-expectancy files were ever tracked under it)."""
+    import subprocess
+
+    art = "research/studies/2026-07-03-broad-watch-baseline-t4-decision-read/artifacts"
+    cited = (
+        "20260630T010654Z",  # the VSTS risk-unit +27R flag (T4-cited)
+        "20260703T020948Z",  # T4 decision-read #1
+        "20260704T223859Z",  # T4 decision-read #2 (post-19-D-merge, FINAL)
+        "20260611T041306Z",  # T3 golden-gate first-priced evidence (watch-standard 2.2)
+    )
+    tracked = set(subprocess.run(
+        ["git", "ls-files", art], capture_output=True, text=True, check=True,
+    ).stdout.splitlines())
+    for ts in cited:
+        for name in ("summary.md", "manifest.json", "results.csv", "per_session.csv"):
+            rel = f"{art}/{ts}/{name}"
+            assert rel in tracked, f"cited artifact not git-tracked: {rel}"
