@@ -22,7 +22,7 @@
 
 - **Follow-ups:** F2 Accept-header media-range parser · F3 WSL-Codex CWD · F4 hook-file-absence blocks prompts · F5 orchestrator `newest_live` staleness (workaround: explicit `:<sid>`) · the hook bare-import hardening (new, Phase-20 seed).
 - **Register (§4):** OPEN D22 · WATCH D1/D5/D8/D9/D12/D15/D16/D17 · D11 WATCH (orchestrator-context ~109K vs ~100K target, under the 120K trigger).
-- **RD's Phase-19 ledger: FULLY DISCHARGED 2026-07-07** — watch-standard **v2.1** committed `a33c62f2` (the cite=commit read discipline codified; **pends the OPERATOR's ack** per the standard's amendment convention, requested by RD in-session) · the 4th-artifact location RULED keep-as-placed (codified in v2.1, durable). Next scheduled RD action: monthly read #2, first trading week of August.
+- **RD's Phase-19 ledger: FULLY DISCHARGED 2026-07-07** — watch-standard **v2.1** committed `a33c62f2` (the cite=commit read discipline codified; **operator-ACKNOWLEDGED 2026-07-07 → BINDING** — the durable trace is RD's 06:45Z mail) · the 4th-artifact location RULED keep-as-placed (codified in v2.1, durable). Next scheduled RD action: monthly read #2, first trading week of August.
 
 ## Behavioral load-bearing (full text in charter §5; harness model in [`harness-architecture.md`](harness-architecture.md))
 
