@@ -170,3 +170,13 @@ The monitor MECHANIZES the data-integrity dimension. The 7 checks: **#1** tempor
 
 ### Cadence + tripwire tie-in
 The nightly step refreshes `latest.json` every pipeline run; the 18-F staleness gate greys it if >7d stale (= a drumbeat-dead **T1** signal at the GUI). A **#1 RED** (post-baseline non-finite = a write-barrier regression) is a **T2-class HIGH** (substrate-integrity break) → same-session investigation; the structural prevention means it should never fire, so if it does, a barrier regressed.
+
+---
+
+## Version 2.1 — 2026-07-07 (evidence-artifact tracking: the cite=commit read discipline)
+
+**RD-authored 2026-07-07 at the Phase-19 close (the Option-C convention, thread `shadow-expectancy-track-vs-ignore`); operator-acknowledged in-session.** SUPPLEMENTS v2; nothing else changes.
+
+- **§3 read-discipline addition:** a decision-read / study / golden-gate verification that CITES a shadow-expectancy engine artifact **COPIES the cited ledger files** (`summary.md` / `manifest.json` / `results.csv` / `per_session.csv`) **into the citing study's tracked location** (`research/studies/<study-slug>/artifacts/<artifact-ts>/`) **and commits them with the read.** Rationale: `exports/research/shadow-expectancy-*/` is fully EPHEMERAL (gitignored + keep-90 pruned since `0d560822`) — cited = committed = prune-proof; an uncommitted citation is evidence with a ~2-month fuse.
+- **Contract enforcement:** `tests/research/shadow_expectancy/test_study_doc.py::test_cited_artifacts_are_git_tracked` asserts the cited set is git-tracked (the REAL contract; the old allowlist assertion was aspirational — zero artifacts had ever been committed).
+- **Location convention:** an artifact cited by a non-study doc (e.g. the §2.2 T3 golden gate, cited by THIS standard) lives in the artifacts dir of the study whose program it evidences (the T4 study dir) rather than a bespoke location — RD location-call 2026-07-07.
