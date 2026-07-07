@@ -122,13 +122,12 @@ exports/research/primary-base-recall-*/*
 !exports/research/primary-base-recall-*/results.csv
 !exports/research/primary-base-recall-*/per_session.csv
 
-# Shadow-expectancy engine harness outputs: keep summary/manifest/results/per_session.
-!exports/research/shadow-expectancy-*
-exports/research/shadow-expectancy-*/*
-!exports/research/shadow-expectancy-*/summary.md
-!exports/research/shadow-expectancy-*/manifest.json
-!exports/research/shadow-expectancy-*/results.csv
-!exports/research/shadow-expectancy-*/per_session.csv
+# Shadow-expectancy engine outputs are NOW a NIGHTLY operational artifact (the
+# 18-D pipeline step + post-merge measurement runs), not a hand-run research
+# smoke like the harnesses above -- so the dated dirs are FULLY IGNORED (they
+# fall under `exports/research/*` above), not tracked per-dir. (Phase-19 close H4,
+# 2026-07-06: replaces the earlier track-the-small-artifacts negations, set when
+# the engine was hand-run; RD reads a specific artifact from disk when needed.)
 
 # Broker statements (personal financial data)
 thinkorswim/
@@ -191,6 +190,8 @@ swing-pre-phase11-schwab-migration-*.db
 # catch-all for codex / codex-auto-review scratch files (subsumes the specific
 # .codex-prompt*/-diff/-review-*/-r*-/-autoreview-* patterns; does NOT match .codex/)
 .codex-*
+# The .codex/ local Codex CLI session/config dir (Phase-19 close H4, 2026-07-06).
+.codex/
 .codex-review-*
 .codex-r2-prompt.txt
 .live-db-query.py
