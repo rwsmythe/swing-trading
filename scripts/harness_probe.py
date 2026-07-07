@@ -2,10 +2,11 @@
 
 Read-only measurement of the team-harness artifacts: CLAUDE.md weight,
 live charter/context-doc weight, docs/ brief-corpus size, root session
-artifacts, exports/ dated dirs, and the auto-memory dir. Prints an ASCII
+artifacts, exports/ dated dirs, the auto-memory dir, and the research-output
+size ceilings (exports/research/ + research/harness/). Prints an ASCII
 report; exits 1 if any ATTENTION threshold fires, else 0.
 
-This probe REPORTS form (weight, age, count). It never deletes and it
+This probe REPORTS form (weight, age, count, size). It never deletes and it
 makes no content judgments -- disposal/compaction are phase-boundary
 proposals routed to the owning role per the charter's custodian-of-form
 boundary. Thresholds are calibrated in docs/tool-director-context.md
@@ -18,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -32,6 +34,12 @@ MEMORY_FILE_COUNT_MAX = 80
 # Comms mailbox (Stage 1): unread older than this many days -> ATTENTION.
 COMMS_UNREAD_AGE_DAYS_MAX = 7
 COMMS_ROLES = ("charc", "rd", "operator")
+# Research-output size ceilings (D18/H2, v1 -- a forward regrowth guard; both
+# dirs sit at ~MB-scale at calibration time so this is quiet at baseline).
+RESEARCH_SIZE_TARGETS_MB_MAX = (
+    ("exports/research", 500),
+    ("research/harness", 200),
+)
 
 CONTEXT_DOCS = (
     "docs/orchestrator-context.md",
@@ -99,6 +107,43 @@ def _scan_comms(comms_dir: Path, now: datetime) -> list[tuple[str, str]]:
                 f"comms operator inbox: {len(msgs)} message(s) awaiting the "
                 "operator's decision",
             ))
+    return rows
+
+
+def _dir_size_bytes(path: Path) -> int:
+    """Total byte size of path, recursing via stdlib os.walk (NO du subprocess
+    -- Windows-safe). Returns 0 for a missing/non-directory path (never
+    raises). A per-entry stat() failure (permission error, broken symlink,
+    a file removed mid-walk) is skipped, not fatal -- the probe stays
+    defensive per the report-never-raise contract.
+    """
+    if not path.is_dir():
+        return 0
+    total = 0
+    for dirpath, _dirnames, filenames in os.walk(path):
+        for name in filenames:
+            try:
+                total += (Path(dirpath) / name).stat().st_size
+            except OSError:
+                continue
+    return total
+
+
+def _research_size_checks(root: Path) -> list[tuple[str, str]]:
+    """Report rows (level, line) for the research-output size ceilings.
+
+    Pure + testable (root explicit). Each target is ALWAYS reported as an
+    INFO-or-ATTENTION line naming its measured size; ATTENTION fires only
+    when the measured size STRICTLY exceeds its v1 ceiling (a forward
+    regrowth guard -- quiet at the current ~MB-scale baseline). A missing
+    directory reports 0.0 MB, never raises (bounded to the two named dirs
+    only -- never the whole repo / reference/ / .git / .worktrees).
+    """
+    rows: list[tuple[str, str]] = []
+    for rel, max_mb in RESEARCH_SIZE_TARGETS_MB_MAX:
+        size_mb = _dir_size_bytes(root / rel) / 1_048_576
+        level = "ATTENTION" if size_mb > max_mb else "OK"
+        rows.append((level, f"{rel}/: {size_mb:.1f} MB (max {max_mb} MB)"))
     return rows
 
 
@@ -203,6 +248,10 @@ def main() -> int:
 
     # Comms mailbox (Stage 1) -- pure helper, UTC clock for the stamp ages.
     for level, line in _scan_comms(root / "comms", datetime.now(UTC)):
+        report(level, line)
+
+    # Research-output size ceilings (D18/H2) -- pure helper, forward regrowth guard.
+    for level, line in _research_size_checks(root):
         report(level, line)
 
     print("-" * 72)
