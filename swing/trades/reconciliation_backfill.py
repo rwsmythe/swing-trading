@@ -1144,6 +1144,7 @@ def _classify_and_apply(
     # Lazy-import C.B + C.C to avoid cyclical imports at module load.
     from swing.trades.reconciliation_auto_correct import (
         CallerHeldTransactionError,
+        ReCorrectionContradictionError,
         apply_tier1_correction,
         stamp_pending_ambiguity,
     )
@@ -1286,6 +1287,52 @@ def _classify_and_apply(
         except CallerHeldTransactionError:
             # Propagate — contract violation by the orchestrator.
             raise
+        except ReCorrectionContradictionError as exc:
+            # 20-A A-4 (backfill firing site) — the #34/override-clobber block
+            # routes to a material tier-2 stamp (multi_match_within_window),
+            # never an "errored" no-op. The public apply_tier1_correction
+            # already rolled back its own BEGIN IMMEDIATE, so stamp in its own
+            # tx here.
+            _check_pipeline_not_running(conn, partial_summary=partial_summary)
+            try:
+                stamp_pending_ambiguity(
+                    conn,
+                    discrepancy_id=disc_id,
+                    ambiguity_kind="multi_match_within_window",
+                    resolution_reason=str(exc),
+                )
+            except CallerHeldTransactionError:
+                raise
+            except Exception as stamp_exc:  # noqa: BLE001 — graceful degradation
+                logger.warning(
+                    "backfill Pass 1 re-correction-contradiction stamp failed "
+                    "on discrepancy %s: %s: %s",
+                    disc_id, type(stamp_exc).__name__, stamp_exc,
+                )
+                return BackfillOutcome(
+                    discrepancy_id=disc_id,
+                    ticker=disc.ticker,
+                    discrepancy_type=disc.discrepancy_type,
+                    tier=2,
+                    outcome="errored",
+                    reason=(
+                        f"re-correction contradiction stamp failed: "
+                        f"{type(stamp_exc).__name__}: {stamp_exc}"
+                    ),
+                    projection_outcome_label="tier-2 errored",
+                    projection_action_needed="investigate manually",
+                )
+            return BackfillOutcome(
+                discrepancy_id=disc_id,
+                ticker=disc.ticker,
+                discrepancy_type=disc.discrepancy_type,
+                tier=2,
+                outcome="tier2_stamped",
+                ambiguity_kind="multi_match_within_window",
+                reason=str(exc),
+                projection_outcome_label="tier-2 (re-correction blocked)",
+                projection_action_needed="operator disposition",
+            )
         except Exception as exc:  # noqa: BLE001 — graceful degradation
             logger.warning(
                 "backfill Pass 1 apply_tier1_correction failed on "

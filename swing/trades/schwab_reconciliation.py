@@ -61,6 +61,7 @@ from swing.trades.reconciliation import (
 )
 from swing.trades.reconciliation_auto_correct import (
     InvalidOverrideComboError,
+    ReCorrectionContradictionError,
     ValidatorRejectedError,
     _apply_tier1_correction_inner,
     _apply_tier2_resolution_inner,
@@ -966,11 +967,23 @@ def _pivot_classify_and_dispatch_for_run(
                     # naturally (no journal mutation occurred).
                     if result.correction_id is not None:
                         counters["tier1_applied_count"] += 1
-                except ValidatorRejectedError as e:
+                except (
+                    ValidatorRejectedError,
+                    ReCorrectionContradictionError,
+                ) as e:
                     # ROLLBACK TO undoes partial UPDATEs, but does NOT
-                    # release the savepoint (SQLite semantics).
+                    # release the savepoint (SQLite semantics). 20-A A-4:
+                    # ReCorrectionContradictionError (the #34/override-clobber
+                    # block) routes to the SAME material tier-2 fresh-savepoint
+                    # stamp as a validator rejection — a distinct ambiguity_
+                    # kind so the audit names the contradiction.
                     conn.execute(f"ROLLBACK TO SAVEPOINT {sp_name}")
                     conn.execute(f"RELEASE SAVEPOINT {sp_name}")
+                    kind = (
+                        "multi_match_within_window"
+                        if isinstance(e, ReCorrectionContradictionError)
+                        else "validator_rejected"
+                    )
                     # Fall through to tier-2 stamp in a FRESH savepoint
                     # so failures here don't try to ROLLBACK TO an
                     # already-released sp_name (Codex R2 Minor #1).
@@ -980,7 +993,7 @@ def _pivot_classify_and_dispatch_for_run(
                         _stamp_pending_ambiguity_inner(
                             conn,
                             discrepancy_id=disc.discrepancy_id,
-                            ambiguity_kind="validator_rejected",
+                            ambiguity_kind=kind,
                             resolution_reason=str(e),
                         )
                         conn.execute(f"RELEASE SAVEPOINT {fb_sp}")

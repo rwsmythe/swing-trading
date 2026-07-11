@@ -48,6 +48,7 @@ from swing.data.repos.fills import _recompute_aggregates, insert_fill_with_event
 from swing.data.repos.reconciliation_corrections import (
     get_correction,
     insert_correction,
+    list_corrections_by_affected_row,
     list_corrections_by_discrepancy,
     update_superseded_by,
 )
@@ -77,6 +78,22 @@ class ValidatorRejectedError(Exception):
     Inner functions raise this so the caller (flow pivot at T-C.5/T-C.6
     OR explicit tier-2/tier-3 caller) can disposition the discrepancy as
     ``validator_rejected`` or surface the rejection to the operator.
+    """
+
+
+class ReCorrectionContradictionError(Exception):
+    """20-A Task A-4 — a tier-1 auto-correction would CHANGE a fill's already-
+    effective canonical value to a DIFFERENT one.
+
+    The D25 forensic pinned #34: the corrector re-fired over its own correct
+    #33 fix (35.65 -> 32.06). A canonical value that already exists and
+    differs is a contradiction by definition, whatever tier set it — so this
+    blocks BOTH the auto-re-fire (#34) AND a tier-1 that would clobber an
+    OPERATOR OVERRIDE (the corrector can never again remove the human). The
+    pivot + the backfill catch it and route to a material tier-2 stamp.
+
+    Dedicated identity (plan §13 micro-lock) — NOT ``ValidatorRejectedError``:
+    a re-correction contradiction is a distinct alarm the audit must name.
     """
 
 
@@ -645,6 +662,92 @@ def stamp_pending_ambiguity(
 
 
 # ---------------------------------------------------------------------------
+# 20-A Task A-4 — the re-correction alarm (the #34 killer + operator-override
+# clobber guard). Keyed on the fill's EFFECTIVE correction chain head, not on
+# a single discrepancy's resolution.
+# ---------------------------------------------------------------------------
+
+# Display precision for the effective-value contradiction compare.
+_RECORRECTION_PRICE_TOLERANCE: float = 0.005
+
+
+def _effective_fill_correction_head(
+    conn: sqlite3.Connection, affected_row_id: int,
+) -> ReconciliationCorrection | None:
+    """Return the currently-EFFECTIVE correction chain head for a fill (the
+    row with ``superseded_by_correction_id IS NULL``). When the corrector
+    failed to chain and MULTIPLE heads exist (the live AMN #33/#34 anomaly),
+    the LATEST-applied head wins. ``None`` when the fill has no corrections.
+    """
+    corrections = list_corrections_by_affected_row(
+        conn, _AFFECTED_TABLE_FILLS, affected_row_id,
+    )
+    heads = [c for c in corrections if c.superseded_by_correction_id is None]
+    if not heads:
+        return None
+    return max(
+        heads, key=lambda c: (c.applied_at or "", c.correction_id or 0),
+    )
+
+
+def _effective_head_value(
+    head: ReconciliationCorrection, field_name: str,
+) -> float | None:
+    """Extract the effective canonical numeric value for ``field_name`` from a
+    chain head (``applied_value_json`` preferred, then
+    ``operator_truth_value_json``). ``None`` when absent/unparseable."""
+    for blob in (head.applied_value_json, head.operator_truth_value_json):
+        if not blob:
+            continue
+        try:
+            data = json.loads(blob)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(data, dict) and field_name in data:
+            try:
+                return float(data[field_name])
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def _check_recorrection_contradiction(
+    conn: sqlite3.Connection,
+    *,
+    affected_table: str,
+    affected_row_id: int,
+    field_name: str,
+    target_value: Any,
+    discrepancy_id: int,
+) -> None:
+    """20-A A-4 — raise :class:`ReCorrectionContradictionError` when a tier-1
+    fill correction would CHANGE the fill's already-effective canonical value
+    to a DIFFERENT one. No-op for non-fills tables, a first correction, or an
+    identical (idempotent) re-apply within display precision.
+    """
+    if affected_table != _AFFECTED_TABLE_FILLS:
+        return
+    head = _effective_fill_correction_head(conn, affected_row_id)
+    if head is None:
+        return
+    prior = _effective_head_value(head, field_name)
+    if prior is None:
+        return
+    try:
+        new_val = float(target_value)
+    except (TypeError, ValueError):
+        return
+    if abs(prior - new_val) <= _RECORRECTION_PRICE_TOLERANCE:
+        return  # identical canonical value -> not a contradiction
+    raise ReCorrectionContradictionError(
+        f"canonical value changed - contradiction: fill {affected_row_id} "
+        f"effective value {prior} (correction {head.correction_id}, "
+        f"{head.correction_action}), new tier-1 proposal {new_val} differs "
+        f"(discrepancy {discrepancy_id})"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Inner (caller-tx) skeletons — bodies populated in T-C.2 / T-C.3 / T-C.4 / T-C.3.1.
 # ---------------------------------------------------------------------------
 
@@ -721,6 +824,28 @@ def _apply_tier1_correction_inner(
     # Idempotency: terminal resolution → return existing (BEFORE
     # classification-payload validation per Codex R1 M#2 LOCK).
     if disc.resolution in _TERMINAL_RESOLUTIONS:
+        # 20-A A-4 (terminal-path belt) — before returning idempotently, if
+        # this tier-1 would change the fill's effective canonical value to a
+        # DIFFERENT one, raise the contradiction instead of a silent no-op
+        # (e.g. a re-apply against a B1 operator_overridden discrepancy). Only
+        # when the classification is usable (tier-1 + a correction_target);
+        # a stale/None replay stays idempotent.
+        if (
+            classification is not None
+            and classification.tier == 1
+            and classification.correction_target
+        ):
+            term_table, term_row_id = _resolve_affected_target(disc)
+            if term_table == _AFFECTED_TABLE_FILLS and term_row_id is not None:
+                term_field = next(iter(classification.correction_target.keys()))
+                _check_recorrection_contradiction(
+                    conn,
+                    affected_table=term_table,
+                    affected_row_id=term_row_id,
+                    field_name=term_field,
+                    target_value=classification.correction_target[term_field],
+                    discrepancy_id=discrepancy_id,
+                )
         return _idempotent_result_for(conn, discrepancy_id)
 
     # Classification-payload validation (post-SELECT, post-idempotency).
@@ -741,6 +866,20 @@ def _apply_tier1_correction_inner(
     # Step 2: resolve affected target.
     affected_table, affected_row_id = _resolve_affected_target(disc)
     field_name = next(iter(classification.correction_target.keys()))
+
+    # 20-A A-4 (primary) — the re-correction alarm, AFTER the sandbox
+    # short-circuit + BEFORE any journal UPDATE. Blocks the fresh-discrepancy
+    # #34 re-fire AND any tier-1 that would clobber an operator override
+    # (keyed on the fill's EFFECTIVE chain head, so it persists across
+    # discrepancies).
+    _check_recorrection_contradiction(
+        conn,
+        affected_table=affected_table,
+        affected_row_id=affected_row_id,
+        field_name=field_name,
+        target_value=classification.correction_target[field_name],
+        discrepancy_id=discrepancy_id,
+    )
 
     # Step 3: validator chain re-run.
     chain = functools.partial(
