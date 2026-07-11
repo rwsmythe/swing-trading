@@ -221,6 +221,142 @@ def _magnitude_band_demotion(
     )
 
 
+def _classify_shape_d_price(
+    *,
+    discrepancy: ReconciliationDiscrepancy,
+    source_payload: Mapping[str, Any],
+    journal_row: Mapping[str, Any] | None,
+    label: str,
+    id_text: str,
+) -> ClassificationResult:
+    """20-A Task A-3 — classify a Shape-D (single-candidate enriched) price
+    mismatch. FAIL-CLOSED: any missing / malformed / unexpected-extra key ->
+    tier-2 (never tier-1). On a valid payload it applies A1 (candidate_count
+    >= 2), A2-side, A2-date (pure int compare), A2-magnitude; only when ALL
+    pass does it emit tier-1. PURE.
+    """
+    def _contract_violation(detail: str) -> ClassificationResult:
+        return ClassificationResult(
+            tier=2,
+            ambiguity_kind="unsupported",
+            correction_target=None,
+            correction_reason=(
+                f"{label} on ({id_text}): Shape-D contract violation - "
+                f"{detail}; demoting to manual"
+            ),
+            candidate_choices=None,
+        )
+
+    # Exact-set equality (like Shape C) — a partial/extra key-set fails closed.
+    if frozenset(source_payload.keys()) != _SHAPE_D_EXPECTED_KEYS:
+        return _contract_violation(
+            f"unexpected key-set {sorted(source_payload.keys())}"
+        )
+    price = source_payload.get("price")
+    if not (
+        isinstance(price, (int, float))
+        and not isinstance(price, bool)
+        and math.isfinite(float(price))
+    ):
+        return _contract_violation(f"price {price!r} is not a finite number")
+    legs = source_payload.get("execution_legs")
+    if not (isinstance(legs, list) and len(legs) > 0):
+        return _contract_violation("execution_legs is not a non-empty list")
+    exec_side = source_payload.get("execution_side")
+    if not (isinstance(exec_side, str) and exec_side.strip()):
+        return _contract_violation("execution_side is not a non-empty string")
+    candidate_count = source_payload.get("candidate_count")
+    if (
+        isinstance(candidate_count, bool)
+        or not isinstance(candidate_count, int)
+        or candidate_count < 0
+    ):
+        return _contract_violation(
+            f"candidate_count {candidate_count!r} is not a non-negative int"
+        )
+    sessions = source_payload.get("execution_sessions_from_fill")
+    if not (
+        sessions is None
+        or (isinstance(sessions, int) and not isinstance(sessions, bool))
+    ):
+        return _contract_violation(
+            f"execution_sessions_from_fill {sessions!r} is not int-or-null"
+        )
+
+    # A1 — >= 2 candidates is an ambiguity (should have been LIST-emitted;
+    # a single-candidate Shape-D carrying count>=2 is defensive belt).
+    if candidate_count >= 2:
+        return ClassificationResult(
+            tier=2,
+            ambiguity_kind="multi_match_within_window",
+            correction_target=None,
+            correction_reason=(
+                f"{label} on ({id_text}): {candidate_count} same-qty "
+                f"candidates; ambiguous match -> tier-2 (20-A A1)"
+            ),
+            candidate_choices=None,
+        )
+
+    # journal_row is required to verify A2-side + A2-magnitude.
+    if journal_row is None:
+        return _contract_violation(
+            "journal_row missing - cannot verify A2 side/magnitude"
+        )
+
+    # A2-side — execution instruction must be in the expected side-set for
+    # the fill's action.
+    action = journal_row.get("action")
+    if exec_side not in _expected_execution_sides(action):
+        return ClassificationResult(
+            tier=2,
+            ambiguity_kind="multi_match_within_window",
+            correction_target=None,
+            correction_reason=(
+                f"{label} on ({id_text}): execution side {exec_side} does "
+                f"not match fill action {action!r} (20-A A2-side)"
+            ),
+            candidate_choices=None,
+        )
+
+    # A2-date — session-accurate int compare (null sentinel forces tier-2).
+    if sessions is None or sessions > _MAX_TIER1_SESSION_DISTANCE:
+        return ClassificationResult(
+            tier=2,
+            ambiguity_kind="multi_match_within_window",
+            correction_target=None,
+            correction_reason=(
+                f"{label} on ({id_text}): execution is "
+                f"{sessions} NYSE-session(s) from fill "
+                f"(> {_MAX_TIER1_SESSION_DISTANCE}) (20-A A2-date)"
+            ),
+            candidate_choices=None,
+        )
+
+    # A2-magnitude — the shared band (Task A-1).
+    demotion = _magnitude_band_demotion(
+        discrepancy=discrepancy,
+        label=label,
+        id_text=id_text,
+        source_price=float(price),
+        journal_price=journal_row.get("price"),
+    )
+    if demotion is not None:
+        return demotion
+
+    # All guards passed -> the legitimate single-candidate sub-cent fix.
+    return ClassificationResult(
+        tier=1,
+        ambiguity_kind=None,
+        correction_target={"price": float(price)},
+        correction_reason=(
+            f"{label} on ({id_text}): single-candidate Shape-D; side "
+            f"{exec_side}, {sessions} session(s) from fill, magnitude within "
+            f"band; tier-1 auto-correct (20-A)"
+        ),
+        candidate_choices=None,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Phase 12.5 #1 T-1.1 — multi-leg auto-redirect predicate + recipe synthesizer
 # ---------------------------------------------------------------------------
@@ -615,6 +751,21 @@ def _classify_entry_price_mismatch(
                 ),
                 candidate_choices=None,
             )
+
+    # 20-A Task A-3 — Shape-D branch (single-candidate enriched matcher emit).
+    # Any payload carrying Shape-D enrichment keys routes here (fail-closed:
+    # a malformed enrichment -> tier-2, never the unguarded tier-1 path).
+    if set(source_payload.keys()) & _SHAPE_D_EXTRA_KEYS:
+        return _classify_shape_d_price(
+            discrepancy=discrepancy,
+            source_payload=source_payload,
+            journal_row=journal_row,
+            label="entry_price_mismatch",
+            id_text=(
+                f"ticker={discrepancy.ticker!r}, "
+                f"fill_id={discrepancy.fill_id}"
+            ),
+        )
 
     source_price = source_payload.get("price")
     if source_price is None:
@@ -1657,6 +1808,39 @@ def _classify_close_price_mismatch(
     """
     ticker = discrepancy.ticker
     trade_id = discrepancy.trade_id
+
+    # 20-A Task A-3 — LIST-shape (>=2 same-qty candidates) emitted by the
+    # matcher's A1 ambiguity path -> multi_match_within_window tier-2
+    # (symmetric with entry_price_mismatch's list branch; AMN's trim fill
+    # routes to close). NEVER tier-1.
+    if isinstance(source_payload, list) and len(source_payload) > 1:
+        return ClassificationResult(
+            tier=2,
+            ambiguity_kind="multi_match_within_window",
+            correction_target=None,
+            correction_reason=(
+                f"close_price_mismatch on (ticker={ticker!r}, "
+                f"trade_id={trade_id}): {len(source_payload)} same-qty "
+                f"Schwab candidates within match window; ambiguous match -> "
+                f"operator picks the intended record (20-A A1)"
+            ),
+            candidate_choices=_candidate_choices_multi_match_within_window(
+                len(source_payload)
+            ),
+        )
+
+    # 20-A Task A-3 — Shape-D branch (single-candidate enriched matcher emit).
+    if (
+        isinstance(source_payload, Mapping)
+        and (set(source_payload.keys()) & _SHAPE_D_EXTRA_KEYS)
+    ):
+        return _classify_shape_d_price(
+            discrepancy=discrepancy,
+            source_payload=source_payload,
+            journal_row=journal_row,
+            label="close_price_mismatch",
+            id_text=f"ticker={ticker!r}, trade_id={trade_id}",
+        )
 
     # Sub-bundle 1 T-1.8 — Shape C branch (per plan §A.1.8 + spec §3.2 +
     # §10.6 OQ-D). Insert BEFORE existing tier-2-always V1 fall-through.

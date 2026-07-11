@@ -50,7 +50,7 @@ class _SchwabOrder:
 
 def _v2_leg(*, leg_id=1, price=5.30, quantity=100.0,
             mismarked_quantity=0.0, instrument_id=None,
-            time="2026-05-15T14:30:00.000Z"):
+            time="2026-04-27T14:30:00.000Z"):
     """Helper: build a SchwabExecutionLeg for V2 execution-grain fixtures.
 
     Sub-bundle 1 T-1.6 architectural shift — comparator reads leg.price

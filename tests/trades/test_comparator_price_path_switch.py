@@ -225,13 +225,18 @@ def test_spec_10_3_legitimate_typo_outside_tolerance_shape_c_emit(conn) -> None:
     assert len(price_emits) == 1
     emit = price_emits[0]
     actual = json.loads(emit["actual_value_json"])
-    # Shape C key-set EXACTLY.
+    # 20-A: single-candidate mismatch now emits Shape D (Shape-C keys PLUS
+    # the A2 evidence fields execution_side / candidate_count /
+    # execution_sessions_from_fill).
     assert set(actual.keys()) == {
         "price", "execution_legs", "schwab_order_id", "schwab_order_price",
+        "execution_side", "candidate_count", "execution_sessions_from_fill",
     }
     assert actual["price"] == 10.25
     assert actual["schwab_order_id"] == "ORD-DEF-1"
     assert actual["schwab_order_price"] == 10.30
+    assert actual["execution_side"] == "BUY"
+    assert actual["candidate_count"] == 1
     assert len(actual["execution_legs"]) == 1
     # delta_text 4-decimal precision.
     assert "+0.2500" in emit["delta_text"]
@@ -372,10 +377,14 @@ def test_close_price_mismatch_shape_c_emit(conn) -> None:
                    if d["discrepancy_type"] == "close_price_mismatch"]
     assert len(close_emits) == 1
     actual = json.loads(close_emits[0]["actual_value_json"])
+    # 20-A: single-candidate mismatch now emits Shape D (see 10.3).
     assert set(actual.keys()) == {
         "price", "execution_legs", "schwab_order_id", "schwab_order_price",
+        "execution_side", "candidate_count", "execution_sessions_from_fill",
     }
     assert actual["price"] == 4.85
+    assert actual["execution_side"] == "SELL"
+    assert actual["candidate_count"] == 1
     # delta_text 4dp precision.
     assert "-0.1500" in close_emits[0]["delta_text"]
 
