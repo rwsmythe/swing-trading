@@ -307,11 +307,16 @@ def record_entry(
             f"stop must be < entry; got entry={req.entry_price}, stop={req.initial_stop}"
         )
 
-    # 20-A B-2 (Codex R10) — a voided (phantom) open trade must not block a
-    # legitimate same-ticker entry nor inflate the soft/hard cap counts.
-    from swing.trades.voided_trades import voided_trade_ids
-    _voided = voided_trade_ids(conn)
-    open_trades = [t for t in list_open_trades(conn) if t.id not in _voided]
+    # 20-A B-2 (Codex R11 MAJOR): the entry write-gate does NOT exclude voided
+    # trades. The B-2 void is a disposition for CLOSED/reviewed phantom trades
+    # (SATL is reviewed); a voided-but-OPEN trade is out of V1 scope -- the
+    # note-void does not transition state, and the DB partial unique index
+    # `ux_trades_one_open_per_ticker` (migration 0014) still enforces one open
+    # position per ticker across ALL open states. Excluding voided here would
+    # be a FALSE PROMISE (the Python check would pass, then the INSERT would
+    # fail on the index and re-map to DuplicateOpenPositionError). The gate
+    # therefore treats all open trades uniformly, consistent with the DB.
+    open_trades = list_open_trades(conn)
     if any(t.ticker == req.ticker for t in open_trades):
         raise DuplicateOpenPositionError(
             f"Already an open position in {req.ticker}"

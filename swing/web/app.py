@@ -356,11 +356,16 @@ class _WebLadderState:
         # the hook degrades to yfinance rather than raising (Codex R1 Major #1).
         from swing.data.db import connect
         from swing.data.repos.trades import list_open_trades
+        from swing.trades.voided_trades import voided_trade_ids
         try:
             conn = connect(self._cfg.paths.db_path)
             try:
+                # 20-A B-2 (Codex R11) — don't build live-price scope from a
+                # voided (phantom) trade that never executed at the broker.
+                _voided = voided_trade_ids(conn)
                 tickers = frozenset(
                     t.ticker.upper() for t in list_open_trades(conn)
+                    if t.id not in _voided
                 )
             finally:
                 conn.close()

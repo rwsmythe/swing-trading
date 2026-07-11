@@ -326,7 +326,13 @@ def prices_refresh(request: Request):
     # an eval the dashboard does not render.
     conn = connect(cfg.paths.db_path)
     try:
-        open_trade_tickers = {t.ticker for t in list_open_trades(conn)}
+        # 20-A B-2 (Codex R11) — exclude voided (phantom) trades from the
+        # /prices/refresh live-price scope.
+        from swing.trades.voided_trades import voided_trade_ids
+        _voided = voided_trade_ids(conn)
+        open_trade_tickers = {
+            t.ticker for t in list_open_trades(conn) if t.id not in _voided
+        }
         watch_rows = list_active_watchlist(conn)
         # Phase 4 (Task 5): with-fallback contract via latest_evaluation_run_id.
         # Preserves Sunday-evening / fresh-install behavior where a standalone
