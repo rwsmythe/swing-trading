@@ -150,12 +150,15 @@ _MAX_TIER1_SESSION_DISTANCE: int = 1
 
 
 # 20-A A2-side — expected Schwab execution instruction set per journal fill
-# action. Long-only V1 vocabulary: entry -> BUY family; exit/trim/stop ->
-# SELL family. Single source of truth shared by the classifier's A2-side
-# check AND the matcher's `good_matches` side gate (imported there, so the
-# two cannot drift). PURE (a frozenset lookup; no I/O).
+# action. Long-only V1 vocabulary: entry OPENS a long (BUY / BUY_TO_OPEN
+# ONLY -- NOT BUY_TO_COVER, which CLOSES a short); exit/trim/stop CLOSES a
+# long (SELL / SELL_TO_CLOSE -- NOT SELL_SHORT / SELL_TO_OPEN, which OPEN a
+# short). Single source of truth shared by the classifier's A2-side check AND
+# the matcher's `good_matches` side gate (imported there, so the two cannot
+# drift). Restricting to long-opening/long-closing instructions closes the
+# side-family wrong-leg-acceptance vector (Codex R10 MAJOR). PURE.
 _ENTRY_EXECUTION_SIDES: frozenset[str] = frozenset(
-    {"BUY", "BUY_TO_OPEN", "BUY_TO_COVER"}
+    {"BUY", "BUY_TO_OPEN"}
 )
 _EXIT_EXECUTION_SIDES: frozenset[str] = frozenset(
     {"SELL", "SELL_TO_CLOSE"}

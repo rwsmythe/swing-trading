@@ -498,12 +498,14 @@ def get_period_mistake_tag_aggregate(
     compares against ``DATE(reviewed_at)`` so timezone-naive timestamps
     fall correctly on the date boundary.
     """
+    from swing.trades.voided_trades import voided_exclusion_sql
     rows = conn.execute(
         "SELECT mistake_tags FROM trades "
         "WHERE state = 'reviewed' "
         "  AND reviewed_at IS NOT NULL "
         "  AND DATE(reviewed_at) BETWEEN ? AND ? "
-        "  AND mistake_tags IS NOT NULL",
+        "  AND mistake_tags IS NOT NULL"
+        f"{voided_exclusion_sql()}",  # 20-A B-2 (Codex R10) — exclude voided
         (period_start.isoformat(), period_end.isoformat()),
     ).fetchall()
     agg: dict[str, int] = {}
@@ -546,6 +548,7 @@ def get_period_cohort_health_deltas(
     Surfacing as the starter "deltas vs prior period" text in the period
     review section per spec §6.3.
     """
+    from swing.trades.voided_trades import voided_exclusion_sql
     def _means(p_start: date, p_end: date) -> dict[str, float]:
         rows = conn.execute(
             "SELECT sector, AVG(realized_R_if_plan_followed) AS avg_r "
@@ -553,7 +556,8 @@ def get_period_cohort_health_deltas(
             "WHERE state = 'reviewed' "
             "  AND reviewed_at IS NOT NULL "
             "  AND DATE(reviewed_at) BETWEEN ? AND ? "
-            "  AND realized_R_if_plan_followed IS NOT NULL "
+            "  AND realized_R_if_plan_followed IS NOT NULL"
+            f"{voided_exclusion_sql()} "  # 20-A B-2 (Codex R10) — exclude voided
             "GROUP BY sector",
             (p_start.isoformat(), p_end.isoformat()),
         ).fetchall()

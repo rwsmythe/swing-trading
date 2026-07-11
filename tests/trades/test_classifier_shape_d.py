@@ -72,6 +72,20 @@ def test_shape_d_a1_candidate_count_two_demotes(monkeypatch=None) -> None:
     assert result.ambiguity_kind == "multi_match_within_window"
 
 
+def test_shape_d_buy_to_cover_is_not_a_long_entry_side() -> None:
+    """Codex R10 MAJOR — BUY_TO_COVER is a SHORT-CLOSE, not a long entry; an
+    entry fill must NOT tier-1 against a BUY_TO_COVER execution."""
+    result = classify_discrepancy(
+        _disc("entry_price_mismatch", ticker="PTEN", fill_id=17, trade_id=10),
+        # magnitude within band; ONLY the side family can demote.
+        source_payload=_shape_d(13.05, side="BUY_TO_COVER", count=1,
+                                sessions=0),
+        journal_row={"price": 13.00, "quantity": 15, "action": "entry"},
+    )
+    assert result.tier == 2
+    assert "side" in result.correction_reason.lower()
+
+
 def test_shape_d_a2_side_mismatch_demotes() -> None:
     """execution_side SELL vs action entry -> tier-2."""
     result = classify_discrepancy(

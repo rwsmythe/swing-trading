@@ -307,7 +307,11 @@ def record_entry(
             f"stop must be < entry; got entry={req.entry_price}, stop={req.initial_stop}"
         )
 
-    open_trades = list_open_trades(conn)
+    # 20-A B-2 (Codex R10) — a voided (phantom) open trade must not block a
+    # legitimate same-ticker entry nor inflate the soft/hard cap counts.
+    from swing.trades.voided_trades import voided_trade_ids
+    _voided = voided_trade_ids(conn)
+    open_trades = [t for t in list_open_trades(conn) if t.id not in _voided]
     if any(t.ticker == req.ticker for t in open_trades):
         raise DuplicateOpenPositionError(
             f"Already an open position in {req.ticker}"

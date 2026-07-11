@@ -229,6 +229,46 @@ def test_voided_trade_absent_from_needs_review_queue(conn) -> None:
     assert real in queue_ids
 
 
+def test_voided_trade_absent_from_period_activity_and_review_aggregates(
+    conn,
+) -> None:
+    """Codex R10 MAJOR — a voided reviewed trade is excluded from cadence
+    period-activity summaries + the period mistake-tag aggregate."""
+    from datetime import date as _date
+
+    def _reviewed(ticker, price, tags):
+        c = conn.execute(
+            "INSERT INTO trades (ticker, entry_date, entry_price, "
+            "initial_shares, initial_stop, current_stop, state, trade_origin, "
+            "pre_trade_locked_at, reviewed_at, mistake_tags, "
+            "realized_R_if_plan_followed, sector) VALUES "
+            "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (ticker, "2026-05-22", price, 1, price - 1, price - 1, "reviewed",
+             "manual_off_pipeline", "2026-05-22T16:00:00",
+             "2026-05-30T10:00:00", json.dumps(tags), 1.0, "Tech"),
+        ).lastrowid
+        return int(c)
+
+    real = _reviewed("REAL", 20.00, ["late_entry"])
+    satl = _reviewed("SATL", 10.31, ["chased"])
+    _void(conn, satl)
+
+    from swing.data.repos.trades import list_trades_with_activity_in_period
+    activity = list_trades_with_activity_in_period(
+        conn, period_start="2026-05-01", period_end="2026-05-31",
+    )
+    activity_ids = {s.trade_id for s in activity}
+    assert satl not in activity_ids
+    assert real in activity_ids
+
+    from swing.trades.review import get_period_mistake_tag_aggregate
+    agg = get_period_mistake_tag_aggregate(
+        conn, period_start=_date(2026, 5, 1), period_end=_date(2026, 5, 31),
+    )
+    assert "chased" not in agg  # the voided trade's tag is excluded
+    assert agg.get("late_entry") == 1
+
+
 def test_audit_exempt_base_repos_keep_the_void_visible(seeded) -> None:
     """D19 — the base repos + fills stay voided-visible for audit."""
     conn, voided_id, kept_id = seeded

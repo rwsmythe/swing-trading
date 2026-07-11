@@ -960,8 +960,16 @@ def list_trades_with_activity_in_period(
     if not candidate_rows:
         return []
 
+    # 20-A B-2 (Codex R10) — a voided (phantom) trade is especially likely to
+    # appear here (the void marker itself is a trade_events row); exclude it
+    # from cadence-period activity summaries.
+    from swing.trades.voided_trades import voided_trade_ids
+    _voided = voided_trade_ids(conn)
+
     summaries: list[TradeActivitySummary] = []
     for (trade_id,) in candidate_rows:
+        if trade_id in _voided:
+            continue
         trade = get_trade(conn, trade_id)
         if trade is None:
             # Orphan event/fill with no parent trade — defensive skip.
