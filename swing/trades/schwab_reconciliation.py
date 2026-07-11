@@ -699,10 +699,16 @@ def _emit_fills_trades_consistency(
     diagnostic where the entry-fill VWAP disagrees with `trades.entry_price`
     beyond display precision. The row is NEVER auto-corrected (the shared
     classify-skip fires at both firing sites)."""
+    # 20-A B-2 (Codex R9) — a voided (phantom) trade's fills-vs-trades
+    # divergence is irrelevant; skip it (the void is the disposition).
+    from swing.trades.voided_trades import voided_trade_ids
+    voided = voided_trade_ids(conn)
     all_trades = list(list_open_trades(conn)) + list(list_closed_trades(conn))
     for t in all_trades:
         entry_price = getattr(t, "entry_price", None)
         if entry_price is None or t.id is None:
+            continue
+        if t.id in voided:
             continue
         fills = list_fills_for_trade(conn, trade_id=t.id)
         vwap, fill_ids = _entry_fill_vwap(fills)
@@ -1769,7 +1775,16 @@ def run_schwab_reconciliation(
     # Pre-read open trades + their fills + journal cash_movements (read-side;
     # uses implicit auto-tx if any but won't conflict because we haven't
     # BEGIN-ed yet).
-    open_trades = list_open_trades(conn)
+    # 20-A B-2 (Codex R9) — a voided (phantom) trade never executed at the
+    # broker; exclude it from reconciliation entirely (no stop-mismatch tier-1
+    # mutation, no unmatched-fill noise, no journal_open_tickers masking of a
+    # real untracked broker position, no journal_flat / equity-delta skew). The
+    # base repos + trade-detail stay voided-visible (D19).
+    from swing.trades.voided_trades import voided_trade_ids
+    _voided_trade_ids = voided_trade_ids(conn)
+    open_trades = [
+        t for t in list_open_trades(conn) if t.id not in _voided_trade_ids
+    ]
     trade_fills: dict[int, list] = {
         t.id: list_fills_for_trade(conn, trade_id=t.id) for t in open_trades
     }

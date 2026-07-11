@@ -111,6 +111,30 @@ def _price_discrepancies(conn, run_id):
     return rows
 
 
+def test_voided_open_trade_is_excluded_from_reconciliation(conn) -> None:
+    """Codex R9 MAJOR — a voided (phantom) open trade is excluded from
+    reconciliation entirely: its fills produce NO discrepancy (no unmatched
+    noise / no stop-mismatch tier-1 mutation)."""
+    import json as _json
+    trade_id, fill_id = _seed_entry_only(
+        conn, ticker="PHNTM", fill_price=10.31, qty=1.0,
+    )
+    conn.execute(
+        "INSERT INTO trade_events (trade_id, ts, event_type, payload_json, "
+        "rationale) VALUES (?, ?, 'note', ?, ?)",
+        (trade_id, "2026-07-11T00:00:00",
+         _json.dumps({"voided": True}), "void"),
+    )
+    conn.commit()
+    # No Schwab orders -> a non-voided trade's fill would emit unmatched.
+    run = _run(conn, [])
+    n = conn.execute(
+        "SELECT COUNT(*) FROM reconciliation_discrepancies WHERE run_id = ? "
+        "AND trade_id = ?", (run.run_id, trade_id),
+    ).fetchone()[0]
+    assert n == 0  # the voided trade produced no discrepancy
+
+
 def test_normal_correct_single_candidate_is_suppressed(conn) -> None:
     """One fully-consistent candidate (price+side+session) -> NO emit."""
     _seed_entry_only(conn, ticker="AAA", fill_price=13.00, qty=15.0)
