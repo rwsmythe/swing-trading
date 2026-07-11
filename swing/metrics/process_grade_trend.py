@@ -253,6 +253,7 @@ def _list_closed_reviewed_trades_ordered(
     excluded — only fully-reviewed trades carry process_grade letters.
     """
     from swing.data.repos.trades import _trade_select_cols  # noqa: PLC2701
+    from swing.trades.voided_trades import voided_trade_ids
 
     cols = _trade_select_cols(conn)
     rows = conn.execute(
@@ -260,7 +261,10 @@ def _list_closed_reviewed_trades_ordered(
         "WHERE state = 'reviewed' AND reviewed_at IS NOT NULL "
         "ORDER BY reviewed_at, id"
     ).fetchall()
-    return [_row_to_trade(r) for r in rows]
+    # 20-A B-2 (Codex R5 MAJOR) — exclude voided (phantom) reviewed trades
+    # from the process-grade trend markers / rolling metrics.
+    voided = voided_trade_ids(conn)
+    return [t for t in (_row_to_trade(r) for r in rows) if t.id not in voided]
 
 
 def _per_trade_actual_realized_R(  # noqa: N802

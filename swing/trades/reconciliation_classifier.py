@@ -296,6 +296,15 @@ def _classify_shape_d_price(
             ),
             candidate_choices=None,
         )
+    # Shape-D is by definition a SINGLE-candidate enriched payload; a
+    # candidate_count of 0 is an IMPOSSIBLE (malformed) enrichment and MUST
+    # fail closed to tier-2 rather than auto-correct off a phantom (Codex R5
+    # MAJOR). Only candidate_count == 1 proceeds toward tier-1.
+    if candidate_count != 1:
+        return _contract_violation(
+            f"candidate_count {candidate_count!r} is not 1 for a Shape-D "
+            f"single-candidate payload"
+        )
 
     # journal_row is required to verify A2-side + A2-magnitude.
     if journal_row is None:

@@ -151,6 +151,32 @@ def test_named_stat_readers_exclude_the_void(seeded) -> None:
     assert total_h_alpha == 1  # only the KEPT trade counts
 
 
+def test_voided_trade_absent_from_process_grade_trend(conn) -> None:
+    """Codex R5 MAJOR — a voided reviewed trade is excluded from the
+    process-grade trend markers."""
+    def _reviewed(ticker, price):
+        c = conn.execute(
+            "INSERT INTO trades (ticker, entry_date, entry_price, "
+            "initial_shares, initial_stop, current_stop, state, trade_origin, "
+            "pre_trade_locked_at, reviewed_at, process_grade) VALUES "
+            "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (ticker, "2026-05-22", price, 1, price - 1, price - 1, "reviewed",
+             "manual_off_pipeline", "2026-05-22T16:00:00",
+             "2026-05-30T10:00:00", "A"),
+        ).lastrowid
+        return int(c)
+
+    real = _reviewed("REAL", 20.00)
+    satl = _reviewed("SATL", 10.31)
+    _void(conn, satl)
+    from swing.metrics.process_grade_trend import (
+        _list_closed_reviewed_trades_ordered,
+    )
+    ids = {t.id for t in _list_closed_reviewed_trades_ordered(conn)}
+    assert satl not in ids
+    assert real in ids
+
+
 def test_voided_trade_absent_from_needs_review_queue(conn) -> None:
     """Codex R4 MAJOR — a voided (phantom) trade never needs review; it is
     excluded from list_unreviewed_closed_trades."""

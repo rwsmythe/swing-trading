@@ -133,6 +133,20 @@ def test_shape_d_missing_field_fails_closed_to_tier2() -> None:
     assert "contract" in result.correction_reason.lower()
 
 
+def test_shape_d_candidate_count_zero_fails_closed() -> None:
+    """Codex R5 MAJOR — candidate_count=0 is an IMPOSSIBLE Shape-D enrichment
+    (single-candidate by definition) -> fail closed to tier-2, never tier-1."""
+    result = classify_discrepancy(
+        _disc("entry_price_mismatch", ticker="CVGI", fill_id=9, trade_id=1),
+        # side + session + magnitude all pass; ONLY the 0 count must demote.
+        source_payload=_shape_d(5.30, side="BUY", count=0, sessions=0,
+                                qty=100.0),
+        journal_row={"price": 5.23, "quantity": 100, "action": "entry"},
+    )
+    assert result.tier == 2
+    assert "contract" in result.correction_reason.lower()
+
+
 def test_shape_d_malformed_candidate_count_fails_closed() -> None:
     """candidate_count is a string -> contract violation -> tier-2."""
     result = classify_discrepancy(
