@@ -259,6 +259,63 @@ def test_single_wrong_side_candidate_emits_shape_d(conn) -> None:
     }
 
 
+def test_price_equal_wrong_side_sole_candidate_surfaces(conn) -> None:
+    """Codex R4 MAJOR — a sole same-qty candidate at the SAME price but WRONG
+    side must NOT be silently suppressed; it surfaces (Shape-D -> classifier
+    A2-side -> tier-2), not treated as reconciled."""
+    _seed_entry_only(conn, ticker="WSD", fill_price=13.00, qty=15.0)
+    orders = [
+        _SchwabOrder(status="FILLED", price=13.00, quantity=15.0,
+                     instrument_symbol="WSD", instruction="SELL",  # wrong side
+                     order_id="S1", executions=[_leg(price=13.00, quantity=15.0)]),
+    ]
+    run = _run(conn, orders)
+    rows = conn.execute(
+        "SELECT resolution FROM reconciliation_discrepancies WHERE run_id = ? "
+        "AND discrepancy_type = 'entry_price_mismatch' AND field_name = 'price'",
+        (run.run_id,),
+    ).fetchall()
+    assert len(rows) == 1  # surfaced, not suppressed
+    assert rows[0][0] == "pending_ambiguity_resolution"  # tier-2, not auto
+
+
+def test_claimed_sole_candidate_yields_unmatched_for_sibling(conn) -> None:
+    """Codex R4 MAJOR — when the ONLY same-qty broker execution is claimed by
+    fill #1, the second same-qty fill must emit unmatched (never match/suppress
+    against a claimed candidate)."""
+    cur = conn.execute(
+        "INSERT INTO trades (ticker, entry_date, entry_price, initial_shares, "
+        "initial_stop, current_stop, state, trade_origin, pre_trade_locked_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ("DUP", "2026-05-19", 5.00, 20, 4.0, 4.0, "managing",
+         "manual_off_pipeline", "2026-05-19T16:00:00"),
+    )
+    trade_id = int(cur.lastrowid)
+    for dt in ("2026-05-19T14:00:00", "2026-05-19T14:05:00"):
+        conn.execute(
+            "INSERT INTO fills (trade_id, fill_datetime, action, quantity, "
+            "price, reconciliation_status) VALUES (?, ?, ?, ?, ?, ?)",
+            (trade_id, dt, "entry", 10, 5.00, "unreconciled"),
+        )
+    from swing.data.repos.fills import _recompute_aggregates
+    _recompute_aggregates(conn, trade_id)
+    conn.commit()
+    orders = [  # ONE BUY execution for TWO 10-share entry fills
+        _SchwabOrder(status="FILLED", price=5.00, quantity=10.0,
+                     instrument_symbol="DUP", instruction="BUY",
+                     order_id="B1", executions=[_leg(price=5.00, quantity=10.0)]),
+    ]
+    run = _run(conn, orders)
+    # Fill #1 good-match-suppressed; fill #2 has no available candidate ->
+    # unmatched_open_fill (surfaces the duplicate/missing execution).
+    unmatched = conn.execute(
+        "SELECT COUNT(*) FROM reconciliation_discrepancies WHERE run_id = ? "
+        "AND discrepancy_type = 'unmatched_open_fill'", (run.run_id,),
+    ).fetchone()[0]
+    assert unmatched == 1
+    assert _price_discrepancies(conn, run.run_id) == []
+
+
 def test_amn_two_session_stop_leg_emits_list(conn) -> None:
     """AMN trim fill 07-07 (35.65) with trim-SELL 35.65 (07-07) + stop-SELL
     32.06 (07-09) candidates. The trim leg matches price+side but the fill's

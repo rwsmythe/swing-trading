@@ -41,7 +41,7 @@ def conn(tmp_path: Path) -> sqlite3.Connection:
 
 def _leg(*, leg_id=1, price=5.2244, quantity=100.0,
          mismarked_quantity=0.0, instrument_id=None,
-         time="2026-05-15T14:30:00.000Z"):
+         time="2026-04-27T14:30:00.000Z"):
     return SchwabExecutionLeg(
         leg_id=leg_id, price=price, quantity=quantity,
         mismarked_quantity=mismarked_quantity, instrument_id=instrument_id,

@@ -151,6 +151,37 @@ def test_named_stat_readers_exclude_the_void(seeded) -> None:
     assert total_h_alpha == 1  # only the KEPT trade counts
 
 
+def test_voided_trade_absent_from_needs_review_queue(conn) -> None:
+    """Codex R4 MAJOR — a voided (phantom) trade never needs review; it is
+    excluded from list_unreviewed_closed_trades."""
+    # A CLOSED (unreviewed) voided trade + a real unreviewed closed trade.
+    def _closed(ticker, price):
+        c = conn.execute(
+            "INSERT INTO trades (ticker, entry_date, entry_price, "
+            "initial_shares, initial_stop, current_stop, state, trade_origin, "
+            "pre_trade_locked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (ticker, "2026-05-22", price, 1, price - 1, price - 1, "closed",
+             "manual_off_pipeline", "2026-05-22T16:00:00"),
+        ).lastrowid
+        for action, p in (("entry", price), ("exit", price + 0.01)):
+            conn.execute(
+                "INSERT INTO fills (trade_id, fill_datetime, action, quantity, "
+                "price, reconciliation_status) VALUES (?, ?, ?, ?, ?, ?)",
+                (c, "2026-05-22T14:00:00", action, 1, p, "unreconciled"),
+            )
+        from swing.data.repos.fills import _recompute_aggregates
+        _recompute_aggregates(conn, c)
+        return int(c)
+
+    real = _closed("REAL", 20.00)
+    satl = _closed("SATL", 10.31)
+    _void(conn, satl)
+    from swing.data.repos.review_log import list_unreviewed_closed_trades
+    queue_ids = {t.id for t in list_unreviewed_closed_trades(conn, window_days=None, today_iso=None)}
+    assert satl not in queue_ids
+    assert real in queue_ids
+
+
 def test_audit_exempt_base_repos_keep_the_void_visible(seeded) -> None:
     """D19 — the base repos + fills stay voided-visible for audit."""
     conn, voided_id, kept_id = seeded

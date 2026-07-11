@@ -2151,8 +2151,41 @@ def run_schwab_reconciliation(
                     )
                     continue
 
-                # len(all_qty_candidates) == 1 and NOT a good match.
-                idx = all_qty_candidates[0]
+                # len(all_qty_candidates) == 1 and NOT a good AVAILABLE match.
+                if not available:
+                    # Codex R4 MAJOR — the sole same-qty candidate is CLAIMED
+                    # by another fill, so THIS fill has no available broker
+                    # execution -> unmatched (never match/suppress against a
+                    # claimed candidate; a duplicate journal fill / missing
+                    # execution must surface, not silently reconcile).
+                    dtype_u = (
+                        "unmatched_open_fill" if f.action == "entry"
+                        else "unmatched_close_fill"
+                    )
+                    _emit(
+                        conn,
+                        run_id=run_id,
+                        discrepancy_type=dtype_u,
+                        field_name="fill_match",
+                        counters=counters,
+                        dedup_seen=dedup_seen,
+                        ticker=t.ticker,
+                        trade_id=t.id,
+                        fill_id=f.fill_id,
+                        expected_value_json=json.dumps(
+                            {
+                                "qty": float(f.quantity),
+                                "price": float(f.price),
+                                "action": f.action,
+                            },
+                            sort_keys=True,
+                        ),
+                        actual_value_json=json.dumps(
+                            {"matched": None}, sort_keys=True,
+                        ),
+                    )
+                    continue
+                idx = available[0]
                 so = schwab_filled[idx]
                 execution_price = _compute_execution_price(so)
                 if execution_price is None:
@@ -2191,18 +2224,15 @@ def run_schwab_reconciliation(
                         ),
                     )
                     continue
-                if abs(execution_price - float(f.price)) <= price_tolerance:
-                    # Price matches within tolerance; the sole same-qty
-                    # candidate IS the fill (a side/session quirk on the ONLY
-                    # candidate is not a corruption vector — corruption needs
-                    # the WRONG leg, i.e. a 2nd candidate). Claim, no emit —
-                    # preserves today's behavior for a price-matching fill.
-                    matched_schwab_idx.add(idx)
-                    continue
-                # Single candidate, price MISMATCH -> emit Shape D (Shape-C
-                # keys + execution_side + candidate_count + the session int).
-                # The classifier applies A2-side / A2-date / A2-magnitude; a
-                # legitimate sub-2% single-candidate fix still resolves tier-1.
+                # The sole available candidate is NOT a good match (it failed
+                # price OR side OR session in good_matches above). Emit Shape-D
+                # so the classifier applies A2-side / A2-date / A2-magnitude ->
+                # tier-2, EXCEPT a legitimate sub-2% same-side same-session
+                # price fix which resolves tier-1. Codex R4 MAJOR — a
+                # price-EQUAL but wrong-side/stale sole candidate is NO LONGER
+                # silently suppressed (it reaches here and surfaces as tier-2
+                # via the classifier's side/session guards); only a
+                # price+side+session good match suppresses (above).
                 matched_schwab_idx.add(idx)
                 dist = _fill_execution_session_distance(f.fill_datetime, so)
                 shape_d = _shape_d_candidate_payload(

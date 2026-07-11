@@ -55,6 +55,11 @@ def _list_all_exitshape_via_fills(
         r_multiple,
         realized_pnl,
     )
+    from swing.trades.voided_trades import voided_trade_ids
+
+    # 20-A B-2 (Codex R4 MAJOR) — exclude voided trades from review-stat
+    # realized aggregation (net_R/expectancy/win_rate freeze).
+    voided = voided_trade_ids(conn)
 
     trades_by_id: dict[int, Trade] = {}
     for t in list_open_trades(conn):
@@ -68,6 +73,8 @@ def _list_all_exitshape_via_fills(
     for f in list_all_fills(conn):
         if f.action == "entry":
             continue
+        if f.trade_id in voided:
+            continue  # 20-A B-2 — voided trade excluded from review stats
         trade = trades_by_id.get(f.trade_id)
         if trade is None:
             continue  # orphan fill — skip (parent trade missing)
@@ -221,7 +228,13 @@ def complete_review_atomic(
         period_start, period_end = row[0], row[1]
 
         # Step 2: select closed trades whose final exit_date in [start, end]:
-        all_closed = list_closed_trades(conn)
+        # 20-A B-2 (Codex R4 MAJOR) — exclude voided trades from the review
+        # period selection + aggregate freeze.
+        from swing.trades.voided_trades import voided_trade_ids
+        _voided = voided_trade_ids(conn)
+        all_closed = [
+            t for t in list_closed_trades(conn) if t.id not in _voided
+        ]
         all_exits = _list_all_exitshape_via_fills(conn)
         ps = date.fromisoformat(period_start)
         pe = date.fromisoformat(period_end)
@@ -408,8 +421,12 @@ def list_unreviewed_closed_trades(
     trivially fast.
     """
     from swing.data.repos.trades import list_closed_trades
+    from swing.trades.voided_trades import voided_trade_ids
 
-    all_closed = list_closed_trades(conn)
+    # 20-A B-2 (Codex R4 MAJOR) — a voided (phantom) trade never needs review;
+    # exclude it from the needs-review queue + badge count.
+    _voided = voided_trade_ids(conn)
+    all_closed = [t for t in list_closed_trades(conn) if t.id not in _voided]
     all_exits = _list_all_exitshape_via_fills(conn)
 
     # Compute cutoff only when the window filter is active.
