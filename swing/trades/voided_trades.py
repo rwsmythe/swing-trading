@@ -23,8 +23,12 @@ def voided_trade_ids(conn: sqlite3.Connection) -> frozenset[int]:
     ``payload_json`` carries ``"voided": true`` (SQLite ``json_extract`` maps
     JSON ``true`` -> the integer ``1``). Pure read; caller owns no tx.
     """
+    # Guard json_extract with json_valid (Codex R3 MAJOR): a single malformed
+    # legacy/audit payload_json would otherwise raise sqlite3.OperationalError
+    # and take down every measurement surface now sitting under this predicate.
     rows = conn.execute(
         "SELECT DISTINCT trade_id FROM trade_events "
-        "WHERE json_extract(payload_json, '$.voided') IS 1"
+        "WHERE payload_json IS NOT NULL AND json_valid(payload_json) "
+        "  AND json_extract(payload_json, '$.voided') IS 1"
     ).fetchall()
     return frozenset(int(r[0]) for r in rows if r[0] is not None)

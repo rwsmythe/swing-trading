@@ -89,6 +89,20 @@ def test_predicate_returns_the_voided_id(seeded) -> None:
     assert voided == frozenset({voided_id})
 
 
+def test_predicate_tolerates_malformed_payload_json(seeded) -> None:
+    """Codex R3 MAJOR — a malformed payload_json trade_events row must NOT
+    raise (json_valid guard); the predicate still returns the real void."""
+    conn, voided_id, kept_id = seeded
+    conn.execute(
+        "INSERT INTO trade_events (trade_id, ts, event_type, payload_json, "
+        "rationale) VALUES (?, ?, 'note', ?, ?)",
+        (kept_id, "2026-07-11T00:00:00", "{not valid json", "legacy note"),
+    )
+    conn.commit()
+    voided = voided_trade_ids(conn)  # must not raise
+    assert voided == frozenset({voided_id})
+
+
 def test_named_stat_readers_exclude_the_void(seeded) -> None:
     """Every enumerated cohort/stat/equity reader excludes the voided trade."""
     conn, voided_id, kept_id = seeded

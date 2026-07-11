@@ -190,6 +190,50 @@ def test_corrupt_fill_two_candidates_emits_list_shape(conn) -> None:
         assert "execution_sessions_from_fill" in cand
 
 
+def test_ambiguity_count_is_claim_independent(conn) -> None:
+    """Codex R3 MAJOR — the A1 count basis is the FULL same-(ticker,qty)
+    candidate set, independent of prior claims: after fill #1 claims one of two
+    same-side candidates, the SECOND (same-side, same-qty) fill must still
+    LIST-demote (tier-2), NOT emit a Shape-D single that would tier-1 (the
+    remaining candidate passes side+session+magnitude)."""
+    # One XYZ trade, two 10-share ENTRY fills @5.00; two BUY executions 5.00
+    # + 5.05 (the 5.05 leg is within-2% + same side + same session).
+    cur = conn.execute(
+        "INSERT INTO trades (ticker, entry_date, entry_price, initial_shares, "
+        "initial_stop, current_stop, state, trade_origin, pre_trade_locked_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ("XYZ", "2026-05-19", 5.00, 20, 4.0, 4.0, "managing",
+         "manual_off_pipeline", "2026-05-19T16:00:00"),
+    )
+    trade_id = int(cur.lastrowid)
+    for dt in ("2026-05-19T14:00:00", "2026-05-19T14:05:00"):
+        conn.execute(
+            "INSERT INTO fills (trade_id, fill_datetime, action, quantity, "
+            "price, reconciliation_status) VALUES (?, ?, ?, ?, ?, ?)",
+            (trade_id, dt, "entry", 10, 5.00, "unreconciled"),
+        )
+    from swing.data.repos.fills import _recompute_aggregates
+    _recompute_aggregates(conn, trade_id)
+    conn.commit()
+    orders = [
+        _SchwabOrder(status="FILLED", price=5.00, quantity=10.0,
+                     instrument_symbol="XYZ", instruction="BUY",
+                     order_id="A", executions=[_leg(price=5.00, quantity=10.0)]),
+        _SchwabOrder(status="FILLED", price=5.05, quantity=10.0,
+                     instrument_symbol="XYZ", instruction="BUY",
+                     order_id="B", executions=[_leg(price=5.05, quantity=10.0)]),
+    ]
+    run = _run(conn, orders)
+    rows = _price_discrepancies(conn, run.run_id)
+    # Fill #1 suppressed (good match on exec 5.00); fill #2 must LIST (not
+    # Shape-D single) -> it still sees the 2-candidate ambiguity, so the 5.05
+    # leg is NOT auto-applied as a lone Shape-D tier-1.
+    assert len(rows) == 1
+    payload = json.loads(rows[0][1])
+    assert isinstance(payload, list)  # LIST-shape, NOT a Shape-D dict
+    assert len(payload) == 2
+
+
 def test_single_wrong_side_candidate_emits_shape_d(conn) -> None:
     """Single same-qty candidate, price mismatch + WRONG side -> Shape-D dict
     (candidate_count=1 + execution_side + execution_sessions_from_fill)."""

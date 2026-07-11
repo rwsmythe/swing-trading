@@ -2002,19 +2002,20 @@ def run_schwab_reconciliation(
         for t in open_trades:
             for f in trade_fills.get(t.id, []):
                 counters["fills_reconciled_count"] += 1
-                # 20-A A-2 — enumerate ALL same-(ticker,qty) candidates,
-                # SIDE-AGNOSTIC, over the full recon-period window (NOT a
-                # 1-session window — else AMN's 2-sessions-apart legs would
-                # each look single-candidate). This is the A1 count basis.
-                qty_candidates = [
+                # 20-A A-2 — the A1 ambiguity count basis is the FULL
+                # same-(ticker,qty) candidate set, SIDE-AGNOSTIC, over the full
+                # recon-period window, INDEPENDENT of prior claims (Codex R3
+                # MAJOR): a later same-qty fill must see the same multiplicity
+                # the broker evidence carried, so claim state can never shrink a
+                # 2-candidate ambiguity into a 1-candidate Shape-D that tier-1s.
+                all_qty_candidates = [
                     idx for idx, so in enumerate(schwab_filled)
-                    if idx not in matched_schwab_idx
-                    and so.instrument_symbol == t.ticker
+                    if so.instrument_symbol == t.ticker
                     and abs(
                         _resolve_match_quantity(so) - float(f.quantity)
                     ) <= price_tolerance
                 ]
-                if not qty_candidates:
+                if not all_qty_candidates:
                     # Unmatched journal fill (existing path, unchanged).
                     dtype = (
                         "unmatched_open_fill" if f.action == "entry"
@@ -2044,13 +2045,22 @@ def run_schwab_reconciliation(
                     )
                     continue
 
-                # good_matches: candidates FULLY consistent with the fill
-                # being correctly recorded (price AND side AND within-1-
+                # `available` = the UNCLAIMED subset, used ONLY for good-match
+                # suppression + claiming (a claimed execution belongs to
+                # another fill and cannot be THIS fill's match). The ambiguity
+                # DECISION below keys on `all_qty_candidates`, not `available`.
+                available = [
+                    idx for idx in all_qty_candidates
+                    if idx not in matched_schwab_idx
+                ]
+
+                # good_matches: AVAILABLE candidates FULLY consistent with the
+                # fill being correctly recorded (price AND side AND within-1-
                 # session, all three). Suppression requires ALL THREE — a
-                # STRICT subset of a classifier tier-1, so it can never
-                # bypass a demotion (plan §5.2).
+                # STRICT subset of a classifier tier-1, so it can never bypass
+                # a demotion (plan §5.2).
                 good_matches: list[int] = []
-                for idx in qty_candidates:
+                for idx in available:
                     so = schwab_filled[idx]
                     exec_price = _compute_execution_price(so)
                     if exec_price is None:
@@ -2072,29 +2082,28 @@ def run_schwab_reconciliation(
                 )
 
                 if len(good_matches) >= 1:
-                    # At least one FULLY-consistent candidate (price+side+
-                    # within-1-session) -> the fill is unambiguously correct
-                    # -> claim ONE good match, NO emit (no false pending). Codex
-                    # R1 MINOR: >=1 (not ==1) so DUPLICATE equally-good broker
-                    # executions for same-qty fills don't false-demote a correct
-                    # round-trip; the other good candidate stays available for a
-                    # sibling fill. A corruption still has good_matches == [].
+                    # At least one FULLY-consistent AVAILABLE candidate
+                    # (price+side+within-1-session) -> the fill is unambiguously
+                    # correct -> claim ONE good match, NO emit (no false
+                    # pending). Codex R1 MINOR: >=1 (not ==1) so DUPLICATE
+                    # equally-good executions don't false-demote a correct
+                    # round-trip. A corruption still has good_matches == [].
                     matched_schwab_idx.add(good_matches[0])
                     continue
 
-                if len(qty_candidates) >= 2:
-                    # A1 ambiguity: >=2 same-qty candidates and NOT exactly
-                    # one good match -> emit a LIST-shaped actual_value_json.
-                    # The classifier's existing `isinstance(list) and len>1`
-                    # branch -> tier-2 multi_match_within_window (NEVER
-                    # tier-1). Claim the single best-price-match candidate so
-                    # a sibling fill can still pair with its own leg; extra
-                    # tier-2 surfacing on a sibling is safe (operator
-                    # disposition), never an auto-corrupting apply.
+                if len(all_qty_candidates) >= 2:
+                    # A1 ambiguity: >=2 same-qty candidates (in the FULL broker
+                    # evidence) and NOT one good available match -> LIST-shaped
+                    # actual_value_json over ALL candidates -> the classifier's
+                    # `isinstance(list) and len>1` branch -> tier-2
+                    # multi_match_within_window (NEVER tier-1). Claim a
+                    # best-price AVAILABLE candidate so a sibling fill can still
+                    # pair with its own leg; extra tier-2 surfacing on a sibling
+                    # is safe (operator disposition), never an auto-apply.
                     list_payload: list[dict[str, Any]] = []
-                    best_idx = qty_candidates[0]
+                    best_idx: int | None = None
                     best_delta: float | None = None
-                    for idx in qty_candidates:
+                    for idx in all_qty_candidates:
                         so = schwab_filled[idx]
                         exec_price = _compute_execution_price(so)
                         dist = _fill_execution_session_distance(
@@ -2110,12 +2119,15 @@ def run_schwab_reconciliation(
                                 sessions_from_fill=dist,
                             )
                         )
-                        if exec_price is not None:
+                        if idx in available and exec_price is not None:
                             delta = abs(exec_price - float(f.price))
                             if best_delta is None or delta < best_delta:
                                 best_delta = delta
                                 best_idx = idx
-                    matched_schwab_idx.add(best_idx)
+                    if best_idx is None and available:
+                        best_idx = available[0]
+                    if best_idx is not None:
+                        matched_schwab_idx.add(best_idx)
                     _emit(
                         conn,
                         run_id=run_id,
@@ -2133,14 +2145,14 @@ def run_schwab_reconciliation(
                             list_payload, sort_keys=True,
                         ),
                         delta_text=(
-                            f"{len(qty_candidates)} same-qty candidates; "
+                            f"{len(all_qty_candidates)} same-qty candidates; "
                             f"ambiguous match -> tier-2 (20-A A1)"
                         ),
                     )
                     continue
 
-                # len(qty_candidates) == 1 and NOT a good match.
-                idx = qty_candidates[0]
+                # len(all_qty_candidates) == 1 and NOT a good match.
+                idx = all_qty_candidates[0]
                 so = schwab_filled[idx]
                 execution_price = _compute_execution_price(so)
                 if execution_price is None:
