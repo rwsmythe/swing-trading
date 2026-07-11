@@ -340,3 +340,34 @@ All fixtures are real live rows (read-only probe 2026-07-11). Every discriminato
 - [ ] RD plan-stage sign-off (§10) BEFORE executing; RD merge-blocking QA + RD-witnessed B-3 + operator badge-death witness AFTER.
 - [ ] Live-DB B-1 overrides + B-2 SATL annotation: operator/RD-run, post-merge, order-respecting.
 ```
+
+---
+
+## 13. Director rulings — LOCKED 2026-07-11 (plan-stage gate resolved; operator: proceed)
+
+All six plan-stage decisions were ruled by CHARC + RD (rulings reconciled, zero conflicts) and the operator authorized executing. **These are BINDING for the executing implementer — locked decisions, not options. Where §5-§11 offered a choice, the ruling below WINS.**
+
+**D#0 — SCOPE (CHARC ratified, RD supported): `swing/trades/schwab_reconciliation.py` IS in the 20-A A5 scope.** The brief's A5 file list was incomplete (the root-cause matcher + `_compute_execution_price` at `:440` live here, not the classifier). Same `swing/trades/` carve-out lane under the SAME binding conditions: matcher edits only for A1/A2/A4 (+ the A5 watchdog); the step-6 match loop's EXISTING semantics preserved except the new guards; append-only corrections; sandbox gating untouched; NO reach beyond `swing/trades`.
+
+**D-A4 — no-schema A4-i LOCKED (CHARC), with THREE binding conditions:**
+1. the `internal_consistency` discriminator is a SINGLE NAMED CONSTANT (a distinct greppable marker) so the future dedicated-type migration is mechanical;
+2. the consumer audit is REQUIRED (not optional): every existing `entry_price_mismatch` consumer (classifier branches, GUI render, counters, choice menus) verified to behave sanely on the internal-consistency variant, AND the both-firing-site classify-skip (pivot + backfill) proven by a discriminating test;
+3. the dedicated `discrepancy_type` (migration 0032 + the #11 one-commit multi-mirror discipline) is FLAGGED in the return report as a NAMED follow-up for a lull / the Phase-20 close (the orchestrator registers it with CHARC) — the taxonomy debt is acknowledged, not denied.
+Carve-back (RD-confirmed NOT invoked): if the consumer audit finds a type-keyed consumer that is unsafe on the overloaded type, STOP and route to CHARC for the migration (§11) — do NOT silently absorb.
+
+**D-B2 — narrowed-V1 void LOCKED (RD), with TWO binding bounds:**
+(a) the NAMED audited surface set MUST cover everything the August monthly read + weekly glance + journal stats consume — enumerate + wire the exclusion through: journal analyze/stats, trade-process/metrics surfaces, hypothesis progress counts, equity/realized aggregations. The B3 witness verifies SATL EXCLUDED from those AND voided-VISIBLE on the trade-detail surface (D19 audit-visibility).
+(b) the strict-ALL stats-only aggregation choke point is BANKED as a V2 candidate, NOT commissioned.
+Mechanism confirmed: `trade_events` `note` annotation + central `voided_trade_ids` predicate, no CHECK widen.
+
+**D-A2 — band = 2.0% LOCKED (RD; declines 3%; declines the absolute-$ belt for V1).** `_MAX_TIER1_OVERWRITE_RATIO = 0.02` is fixed, not a proposal. Date threshold LOCKED: `execution_sessions_from_fill > 1` demotes (session-accurate at the matcher, pure-int compare in the classifier — classifier purity preserved).
+
+**D-ORDER — CONFIRMED (RD).** The §8 commit sequence is binding: all A-half guards + the B2-predicate CODE merge (RD QA + suite + codex) BEFORE any live-DB B1/B2 data action. Never data-first.
+
+**D-#33 — STAMP THE CHAIN (RD).** Half B's B1 step ALSO sets `#33.superseded_by = #34` via the supported append-only `update_superseded_by` (the corrector never wrote the pointer; two chain heads on fill 37 break head-queries + poison forensics). This is a live-DB Half-B action (operator/RD-run post-merge); the executing implementer supplies the driver/verification, not the live mutation.
+
+**Micro-locks (RD):** A3's exception is the DEDICATED `ReCorrectionContradictionError` (distinct alarm identity — do NOT reuse `ValidatorRejectedError`). The A4 all-trades nightly VWAP pass cost is accepted.
+
+**Executing scope boundary (reaffirmed):** the executing implementer ships CODE only — Half-A guards A1-A4, the B2 `voided_trade_ids` predicate + reader wiring, and the B3 verification TESTS (commits 1-12 of §8). It does NOT touch the live DB: B1 overrides + the #33 stamp + the B2 SATL annotation row are operator/RD-run AFTER merge (§8's post-merge block). B3's live re-derivation + badge death are the RD/operator witness gate, not implementer self-certification.
+
+**Remaining gates (post-executing):** RD merge-blocking QA → orchestrator rebase + `--ff-only` + merged-head no-false-green → live-DB Half B (operator/RD-run: B1 overrides + #33 stamp, B2 SATL void) → RD-witnessed B3 (AMN -$9.60 -> +$1.17; equity_delta -> ~-$0.17, badge self-clears with zero tolerance change; H1 epoch re-derivation Sigma-to-the-cent) + operator badge-death witness.
