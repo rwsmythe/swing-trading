@@ -1520,6 +1520,31 @@ def run_backfill(
         # Codex R2 Major #3 — pass ``partial_summary=summary`` so the
         # exception carries the rows processed so far for CLI rendering.
         _check_pipeline_not_running(conn, partial_summary=summary)
+        # 20-A A-5 — never route the fills<->trades internal-consistency
+        # diagnostic into classify/apply (the SAME shared skip-predicate the
+        # pivot uses, so the two firing sites cannot drift). Structurally
+        # prevents any auto-correct of the diagnostic; it stays unresolved for
+        # the manual resolver.
+        from swing.trades.schwab_reconciliation import (
+            _is_internal_consistency_diagnostic,
+        )
+        if _is_internal_consistency_diagnostic(disc):
+            summary.per_discrepancy_outcomes.append(
+                BackfillOutcome(
+                    discrepancy_id=int(disc.discrepancy_id or 0),
+                    ticker=disc.ticker,
+                    discrepancy_type=disc.discrepancy_type,
+                    tier=2,
+                    outcome="skipped_internal_consistency",
+                    reason=(
+                        "20-A A-5 fills<->trades diagnostic; not classified "
+                        "(manual resolver only)"
+                    ),
+                    projection_outcome_label="skipped (internal consistency)",
+                    projection_action_needed="operator disposition",
+                )
+            )
+            continue
         outcome = _classify_and_apply(
             conn,
             disc,

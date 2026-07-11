@@ -50,7 +50,7 @@ from swing.data.datetime_helpers import now_ms
 from swing.data.repos import reconciliation as repo
 from swing.data.repos.cash import list_cash
 from swing.data.repos.fills import list_fills_for_trade
-from swing.data.repos.trades import list_open_trades
+from swing.data.repos.trades import list_closed_trades, list_open_trades
 from swing.evaluation.dates import sessions_behind
 from swing.trades.equity import current_equity, list_all_exitshape_via_fills
 from swing.trades.reconciliation import (
@@ -638,6 +638,119 @@ def _shape_d_candidate_payload(
     }
 
 
+# ===========================================================================
+# 20-A Task A-5 — fills<->trades consistency invariant (the watchdog the
+# corrector's own divergence needed for six weeks). CHARC-LOCKED no-schema
+# A4-i: an `entry_price_mismatch` row carrying a SINGLE NAMED discriminator so
+# a future dedicated `discrepancy_type` migration is mechanical, and a shared
+# classify-SKIP predicate consumed at BOTH firing sites so it can NEVER route
+# into `classify_discrepancy` / the tier-1 path (auto-correct is structurally
+# impossible, not merely tier-2-gated).
+# ===========================================================================
+
+# The single named discriminator (plan §13 D-A4 condition 1). The KEY marks an
+# internal diagnostic; the VALUE names this specific invariant.
+_INTERNAL_CONSISTENCY_KEY = "internal_consistency"
+_INTERNAL_CONSISTENCY_FILLS_VS_TRADES = "fills_vs_trades"
+
+# Display precision for the fills<->trades divergence (dollars).
+_FILLS_TRADES_DISPLAY_TOLERANCE = 0.005
+
+
+def _is_internal_consistency_diagnostic(disc: Any) -> bool:
+    """True when a discrepancy is an A-5 internal-consistency diagnostic (its
+    `actual_value_json` carries the named discriminator). Consumed at BOTH the
+    pivot AND the backfill classify-skip so the two paths cannot drift."""
+    raw = getattr(disc, "actual_value_json", None)
+    if not raw:
+        return False
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return False
+    return (
+        isinstance(payload, dict)
+        and payload.get(_INTERNAL_CONSISTENCY_KEY)
+        == _INTERNAL_CONSISTENCY_FILLS_VS_TRADES
+    )
+
+
+def _entry_fill_vwap(fills: list[Any]) -> tuple[float | None, list[int]]:
+    """VWAP of a trade's entry-action fills + the contributing fill ids.
+
+    Returns ``(None, [])`` when there are no entry fills / zero total qty."""
+    entry_fills = [f for f in fills if f.action == "entry"]
+    total_qty = sum(float(f.quantity) for f in entry_fills)
+    if not entry_fills or total_qty <= 0:
+        return None, []
+    vwap = sum(float(f.price) * float(f.quantity) for f in entry_fills) / total_qty
+    return vwap, [int(f.fill_id) for f in entry_fills if f.fill_id is not None]
+
+
+def _emit_fills_trades_consistency(
+    conn: sqlite3.Connection,
+    *,
+    run_id: int,
+    counters: dict,
+    dedup_seen: set,
+) -> None:
+    """20-A A-5 — iterate ALL trades with entry fills (open AND closed/reviewed
+    — the six-week divergence lived on CLOSED trades) and emit a MATERIAL
+    diagnostic where the entry-fill VWAP disagrees with `trades.entry_price`
+    beyond display precision. The row is NEVER auto-corrected (the shared
+    classify-skip fires at both firing sites)."""
+    all_trades = list(list_open_trades(conn)) + list(list_closed_trades(conn))
+    for t in all_trades:
+        entry_price = getattr(t, "entry_price", None)
+        if entry_price is None or t.id is None:
+            continue
+        fills = list_fills_for_trade(conn, trade_id=t.id)
+        vwap, fill_ids = _entry_fill_vwap(fills)
+        if vwap is None:
+            continue
+        if abs(vwap - float(entry_price)) <= _FILLS_TRADES_DISPLAY_TOLERANCE:
+            continue
+        _emit(
+            conn,
+            run_id=run_id,
+            discrepancy_type="entry_price_mismatch",
+            field_name=_INTERNAL_CONSISTENCY_KEY,
+            counters=counters,
+            dedup_seen=dedup_seen,
+            ticker=t.ticker,
+            trade_id=t.id,
+            # `price` mirrors the mismatch grain so the EXISTING
+            # entry_price_mismatch render consumers (reconciliation_render +
+            # the reconcile pre-resolution VM, which subscript expected/actual
+            # `price`) degrade gracefully — the consumer audit fix (D-A4
+            # condition 2). The `internal_consistency` discriminator drives the
+            # classify-SKIP so this row is never auto-corrected.
+            expected_value_json=json.dumps(
+                {
+                    "price": float(entry_price),
+                    "trades_entry_price": float(entry_price),
+                },
+                sort_keys=True,
+            ),
+            actual_value_json=json.dumps(
+                {
+                    _INTERNAL_CONSISTENCY_KEY: (
+                        _INTERNAL_CONSISTENCY_FILLS_VS_TRADES
+                    ),
+                    "price": vwap,
+                    "entry_fill_vwap": vwap,
+                    "trades_entry_price": float(entry_price),
+                    "entry_fill_ids": fill_ids,
+                },
+                sort_keys=True,
+            ),
+            delta_text=(
+                f"entry-fill VWAP ${vwap:.4f} vs trades.entry_price "
+                f"${float(entry_price):.4f} (20-A A5 fills<->trades)"
+            ),
+        )
+
+
 class CallerHeldTransactionError(RuntimeError):
     """Raised when a caller invokes `run_schwab_reconciliation` while holding
     an open transaction.
@@ -925,6 +1038,14 @@ def _pivot_classify_and_dispatch_for_run(
             "untracked_broker_position",
             "equity_delta",
         ):
+            continue
+
+        # 20-A A-5 — the fills<->trades diagnostic is an internal invariant,
+        # NOT a broker-vs-journal mismatch: skip classify/dispatch so it can
+        # never route into `classify_discrepancy` / the tier-1 path (auto-
+        # correct is structurally impossible). Stays `unresolved` + material;
+        # cleared via the manual resolver. Shared predicate with the backfill.
+        if _is_internal_consistency_diagnostic(disc):
             continue
 
         sp_name = f"correction_sp_{disc.discrepancy_id}"
@@ -1855,6 +1976,15 @@ def run_schwab_reconciliation(
                     f"not in journal"
                 ),
             )
+
+        # --- 5.5. A-5 fills<->trades consistency invariant (20-A) ---
+        # Runs over ALL trades with entry fills (open + closed/reviewed) —
+        # the corrector's own divergence sat six weeks on CLOSED trades. A
+        # material, never-auto-corrected diagnostic (the shared classify-skip
+        # fires at both firing sites).
+        _emit_fills_trades_consistency(
+            conn, run_id=run_id, counters=counters, dedup_seen=dedup_seen,
+        )
 
         # --- 6. Fill matching (price + unmatched) ---
         # Sub-bundle 1 T-1.6: candidate-pool widening via
