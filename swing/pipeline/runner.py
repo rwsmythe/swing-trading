@@ -1527,8 +1527,13 @@ def _step_evaluate(
     # screen would otherwise show a stale close on the dashboard).
     open_conn = connect(cfg.paths.db_path)
     try:
+        # 20-A B-2 (Codex R8) — a voided (phantom) trade never executed at the
+        # broker; don't fetch prices for it in held-ticker augmentation.
+        from swing.trades.voided_trades import voided_trade_ids
+        _voided_ht = voided_trade_ids(open_conn)
         held_tickers: list[str] = sorted({
             t.ticker.upper() for t in list_open_trades(open_conn)
+            if t.id not in _voided_ht
         })
     finally:
         open_conn.close()
@@ -3256,7 +3261,12 @@ def _step_charts(*, cfg, lease: Lease, eval_run_id: int, data_asof: str,
             # same snapshot block — must happen BEFORE conn.close() below so the
             # 3-tier composition sees a consistent view of candidates +
             # watchlist + trades.
-            open_trades = list_open_trades(conn)
+            # 20-A B-2 (Codex R8) — exclude voided (phantom) open trades.
+            from swing.trades.voided_trades import voided_trade_ids
+            _voided_ot = voided_trade_ids(conn)
+            open_trades = [
+                t for t in list_open_trades(conn) if t.id not in _voided_ot
+            ]
         finally:
             # Read-only transaction — ROLLBACK to release the read lock without
             # writing anything (COMMIT would be valid too; ROLLBACK is more
@@ -3951,7 +3961,11 @@ def _step_export(*, cfg, lease: Lease, eval_run_id: int, action_session,
         )
         watchlist = list_active_watchlist(conn)
         weather = get_latest_for_date(conn, data_asof, ticker=cfg.rs.benchmark_ticker)
-        trades = list_open_trades(conn)
+        # 20-A B-2 (Codex R8) — exclude voided (phantom) open trades from the
+        # briefing open-position + risk view.
+        from swing.trades.voided_trades import voided_trade_ids
+        _voided_bt = voided_trade_ids(conn)
+        trades = [t for t in list_open_trades(conn) if t.id not in _voided_bt]
         daily_mgmt_snapshots = list_open_position_active_snapshots(conn)
         equity = current_equity(
             starting_equity=cfg.account.starting_equity,
@@ -4211,7 +4225,13 @@ def _step_daily_management(
 
     asof_session = last_completed_session(run_now)
     with lease.fenced_write() as conn:
-        trades = list_open_trades(conn)
+        # 20-A B-2 (Codex R8) — don't run daily-management on a voided
+        # (phantom) position that never executed at the broker.
+        from swing.trades.voided_trades import voided_trade_ids
+        _voided_dm = voided_trade_ids(conn)
+        trades = [
+            t for t in list_open_trades(conn) if t.id not in _voided_dm
+        ]
     for trade in trades:
         try:
             # --- WARM, OUTSIDE the fence (yfinance I/O here, lock-free) ---

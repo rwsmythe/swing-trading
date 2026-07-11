@@ -234,6 +234,60 @@ def test_ambiguity_count_is_claim_independent(conn) -> None:
     assert len(payload) == 2
 
 
+def test_ambiguous_fill_does_not_steal_a_siblings_good_match(conn) -> None:
+    """Codex R8 MAJOR — the two-phase matcher reserves all good matches before
+    emitting ambiguities: an earlier-processed ambiguous fill must NOT claim a
+    later correct sibling's unique good execution (which would false-demote the
+    correct fill)."""
+    # One trade, two 5-share ENTRY fills: an EARLIER corrupt @11.00 + a LATER
+    # correct @13.00. Executions: BUY 13.00 (the correct fill's ONLY good
+    # match) + SELL 13.00 (wrong-side, same qty) -> both are same-qty
+    # candidates for BOTH fills.
+    cur = conn.execute(
+        "INSERT INTO trades (ticker, entry_date, entry_price, initial_shares, "
+        "initial_stop, current_stop, state, trade_origin, pre_trade_locked_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ("STL", "2026-05-19", 12.00, 10, 10.0, 10.0, "managing",
+         "manual_off_pipeline", "2026-05-19T16:00:00"),
+    )
+    trade_id = int(cur.lastrowid)
+    early = int(conn.execute(
+        "INSERT INTO fills (trade_id, fill_datetime, action, quantity, price, "
+        "reconciliation_status) VALUES (?, ?, ?, ?, ?, ?)",
+        (trade_id, "2026-05-19T14:00:00", "entry", 5, 11.00, "unreconciled"),
+    ).lastrowid)
+    late = int(conn.execute(
+        "INSERT INTO fills (trade_id, fill_datetime, action, quantity, price, "
+        "reconciliation_status) VALUES (?, ?, ?, ?, ?, ?)",
+        (trade_id, "2026-05-19T14:05:00", "entry", 5, 13.00, "unreconciled"),
+    ).lastrowid)
+    from swing.data.repos.fills import _recompute_aggregates
+    _recompute_aggregates(conn, trade_id)
+    conn.commit()
+    orders = [
+        _SchwabOrder(status="FILLED", price=13.00, quantity=5.0,
+                     instrument_symbol="STL", instruction="BUY",
+                     order_id="BUY", executions=[_leg(price=13.00, quantity=5.0)]),
+        _SchwabOrder(status="FILLED", price=13.00, quantity=5.0,
+                     instrument_symbol="STL", instruction="SELL",
+                     order_id="SELL", executions=[_leg(price=13.00, quantity=5.0)]),
+    ]
+    run = _run(conn, orders)
+    # The CORRECT fill (13.00) is suppressed via its reserved BUY good match —
+    # it has NO price discrepancy despite the earlier corrupt sibling.
+    late_disc = conn.execute(
+        "SELECT COUNT(*) FROM reconciliation_discrepancies WHERE run_id = ? "
+        "AND fill_id = ? AND field_name = 'price'", (run.run_id, late),
+    ).fetchone()[0]
+    assert late_disc == 0
+    # The corrupt fill surfaces (LIST tier-2), never auto-applied.
+    early_disc = conn.execute(
+        "SELECT COUNT(*) FROM reconciliation_discrepancies WHERE run_id = ? "
+        "AND fill_id = ?", (run.run_id, early),
+    ).fetchone()[0]
+    assert early_disc >= 1
+
+
 def test_single_wrong_side_candidate_emits_shape_d(conn) -> None:
     """Single same-qty candidate, price mismatch + WRONG side -> Shape-D dict
     (candidate_count=1 + execution_side + execution_sessions_from_fill)."""

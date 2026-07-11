@@ -1489,7 +1489,14 @@ def entry_post(
             # not the threshold — "5/4" when 5 are open with soft_warn=4.
             conn_count = connect(cfg.paths.db_path)
             try:
-                actual_open = len(list_open_trades(conn_count))
+                # 20-A B-2 (Codex R8) — a voided (phantom) open trade must not
+                # inflate the soft-warn "actual open" count.
+                from swing.trades.voided_trades import voided_trade_ids
+                _voided_oc = voided_trade_ids(conn_count)
+                actual_open = len([
+                    t for t in list_open_trades(conn_count)
+                    if t.id not in _voided_oc
+                ])
             finally:
                 conn_count.close()
             # Codex R1 Major 2 — soft-warn confirm must preserve the

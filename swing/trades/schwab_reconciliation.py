@@ -751,6 +751,31 @@ def _emit_fills_trades_consistency(
         )
 
 
+def _fill_good_matches(
+    fill: Any, available: list[int], schwab_filled: list[Any],
+    price_tolerance: float,
+) -> list[int]:
+    """Return the AVAILABLE candidate indices FULLY consistent with the fill
+    being correctly recorded (execution price within tol AND side AND within-1
+    NYSE-session). All three required -- a strict subset of a classifier tier-1
+    -- so a good match can never bypass a demotion (plan §5.2)."""
+    good: list[int] = []
+    for idx in available:
+        so = schwab_filled[idx]
+        exec_price = _compute_execution_price(so)
+        if exec_price is None:
+            continue
+        if abs(exec_price - float(fill.price)) > price_tolerance:
+            continue
+        if not _side_matches(so.instruction, fill.action):
+            continue
+        dist = _fill_execution_session_distance(fill.fill_datetime, so)
+        if dist is None or dist > _MAX_TIER1_SESSION_DISTANCE:
+            continue
+        good.append(idx)
+    return good
+
+
 class CallerHeldTransactionError(RuntimeError):
     """Raised when a caller invokes `run_schwab_reconciliation` while holding
     an open transaction.
@@ -1997,271 +2022,190 @@ def run_schwab_reconciliation(
             o for o in schwab_orders
             if _is_execution_bearing_candidate(o)
         ]
-        # Build a map of journal-fill identity -> matched Schwab order index.
+        # 20-A A-2 — TWO-PHASE fill<->execution matcher (Codex R8 MAJOR): a
+        # greedy single pass let an EARLIER ambiguous fill CLAIM an execution a
+        # LATER correct sibling fill needed -> false-demote. Phase 1 RESERVES
+        # every unequivocal good match (price+side+within-1-session) across ALL
+        # fills BEFORE Phase 2 emits/claims for the ambiguous/mismatch
+        # remainder, and Phase 2's LIST (ambiguity) emit claims NOTHING
+        # (evidence only), so an ambiguity can never steal a good match.
         matched_schwab_idx: set = set()
-        for t in open_trades:
-            for f in trade_fills.get(t.id, []):
-                counters["fills_reconciled_count"] += 1
-                # 20-A A-2 — the A1 ambiguity count basis is the FULL
-                # same-(ticker,qty) candidate set, SIDE-AGNOSTIC, over the full
-                # recon-period window, INDEPENDENT of prior claims (Codex R3
-                # MAJOR): a later same-qty fill must see the same multiplicity
-                # the broker evidence carried, so claim state can never shrink a
-                # 2-candidate ambiguity into a 1-candidate Shape-D that tier-1s.
-                all_qty_candidates = [
-                    idx for idx, so in enumerate(schwab_filled)
-                    if so.instrument_symbol == t.ticker
-                    and abs(
-                        _resolve_match_quantity(so) - float(f.quantity)
-                    ) <= price_tolerance
-                ]
-                if not all_qty_candidates:
-                    # Unmatched journal fill (existing path, unchanged).
-                    dtype = (
-                        "unmatched_open_fill" if f.action == "entry"
-                        else "unmatched_close_fill"
-                    )
-                    _emit(
-                        conn,
-                        run_id=run_id,
-                        discrepancy_type=dtype,
-                        field_name="fill_match",
-                        counters=counters,
-                        dedup_seen=dedup_seen,
-                        ticker=t.ticker,
-                        trade_id=t.id,
-                        fill_id=f.fill_id,
-                        expected_value_json=json.dumps(
-                            {
-                                "qty": float(f.quantity),
-                                "price": float(f.price),
-                                "action": f.action,
-                            },
-                            sort_keys=True,
-                        ),
-                        actual_value_json=json.dumps(
-                            {"matched": None}, sort_keys=True,
-                        ),
-                    )
-                    continue
+        all_fills = [
+            (t, f) for t in open_trades for f in trade_fills.get(t.id, [])
+        ]
 
-                # `available` = the UNCLAIMED subset, used ONLY for good-match
-                # suppression + claiming (a claimed execution belongs to
-                # another fill and cannot be THIS fill's match). The ambiguity
-                # DECISION below keys on `all_qty_candidates`, not `available`.
-                available = [
-                    idx for idx in all_qty_candidates
-                    if idx not in matched_schwab_idx
-                ]
+        # --- Phase 1: reserve every unequivocal good match. ---
+        suppressed_fill_ids: set = set()
+        for t, f in all_fills:
+            counters["fills_reconciled_count"] += 1
+            available = [
+                idx for idx, so in enumerate(schwab_filled)
+                if idx not in matched_schwab_idx
+                and so.instrument_symbol == t.ticker
+                and abs(
+                    _resolve_match_quantity(so) - float(f.quantity)
+                ) <= price_tolerance
+            ]
+            good = _fill_good_matches(
+                f, available, schwab_filled, price_tolerance,
+            )
+            if good:
+                matched_schwab_idx.add(good[0])
+                suppressed_fill_ids.add(f.fill_id)
 
-                # good_matches: AVAILABLE candidates FULLY consistent with the
-                # fill being correctly recorded (price AND side AND within-1-
-                # session, all three). Suppression requires ALL THREE — a
-                # STRICT subset of a classifier tier-1, so it can never bypass
-                # a demotion (plan §5.2).
-                good_matches: list[int] = []
-                for idx in available:
+        # --- Phase 2: emit for the NON-suppressed fills. ---
+        for t, f in all_fills:
+            if f.fill_id in suppressed_fill_ids:
+                continue
+            # The A1 ambiguity count basis is the FULL same-(ticker,qty) set,
+            # SIDE-AGNOSTIC, INDEPENDENT of prior claims (Codex R3 MAJOR).
+            all_qty_candidates = [
+                idx for idx, so in enumerate(schwab_filled)
+                if so.instrument_symbol == t.ticker
+                and abs(
+                    _resolve_match_quantity(so) - float(f.quantity)
+                ) <= price_tolerance
+            ]
+            dtype = (
+                "entry_price_mismatch" if f.action == "entry"
+                else "close_price_mismatch"
+            )
+            dtype_unmatched = (
+                "unmatched_open_fill" if f.action == "entry"
+                else "unmatched_close_fill"
+            )
+            if not all_qty_candidates:
+                # No same-qty broker execution at all -> unmatched.
+                _emit(
+                    conn, run_id=run_id, discrepancy_type=dtype_unmatched,
+                    field_name="fill_match", counters=counters,
+                    dedup_seen=dedup_seen, ticker=t.ticker, trade_id=t.id,
+                    fill_id=f.fill_id,
+                    expected_value_json=json.dumps(
+                        {"qty": float(f.quantity), "price": float(f.price),
+                         "action": f.action}, sort_keys=True,
+                    ),
+                    actual_value_json=json.dumps(
+                        {"matched": None}, sort_keys=True,
+                    ),
+                )
+                continue
+
+            available = [
+                idx for idx in all_qty_candidates
+                if idx not in matched_schwab_idx
+            ]
+
+            if len(all_qty_candidates) >= 2:
+                # A1 ambiguity: >=2 same-qty candidates and (by Phase 1) NO
+                # reserved good match for THIS fill -> LIST-shaped emit over
+                # ALL candidates -> classifier multi_match_within_window
+                # (NEVER tier-1). Claim NOTHING (Codex R8 MAJOR): the ambiguity
+                # is EVIDENCE only, so it can never steal a good match a sibling
+                # correct fill needed (Phase 1 already reserved all good ones).
+                list_payload: list[dict[str, Any]] = []
+                for idx in all_qty_candidates:
                     so = schwab_filled[idx]
                     exec_price = _compute_execution_price(so)
-                    if exec_price is None:
-                        continue
-                    if abs(exec_price - float(f.price)) > price_tolerance:
-                        continue
-                    if not _side_matches(so.instruction, f.action):
-                        continue
                     dist = _fill_execution_session_distance(
                         f.fill_datetime, so,
                     )
-                    if dist is None or dist > _MAX_TIER1_SESSION_DISTANCE:
-                        continue
-                    good_matches.append(idx)
-
-                dtype = (
-                    "entry_price_mismatch" if f.action == "entry"
-                    else "close_price_mismatch"
-                )
-
-                if len(good_matches) >= 1:
-                    # At least one FULLY-consistent AVAILABLE candidate
-                    # (price+side+within-1-session) -> the fill is unambiguously
-                    # correct -> claim ONE good match, NO emit (no false
-                    # pending). Codex R1 MINOR: >=1 (not ==1) so DUPLICATE
-                    # equally-good executions don't false-demote a correct
-                    # round-trip. A corruption still has good_matches == [].
-                    matched_schwab_idx.add(good_matches[0])
-                    continue
-
-                if len(all_qty_candidates) >= 2:
-                    # A1 ambiguity: >=2 same-qty candidates (in the FULL broker
-                    # evidence) and NOT one good available match -> LIST-shaped
-                    # actual_value_json over ALL candidates -> the classifier's
-                    # `isinstance(list) and len>1` branch -> tier-2
-                    # multi_match_within_window (NEVER tier-1). Claim a
-                    # best-price AVAILABLE candidate so a sibling fill can still
-                    # pair with its own leg; extra tier-2 surfacing on a sibling
-                    # is safe (operator disposition), never an auto-apply.
-                    list_payload: list[dict[str, Any]] = []
-                    best_idx: int | None = None
-                    best_delta: float | None = None
-                    for idx in all_qty_candidates:
-                        so = schwab_filled[idx]
-                        exec_price = _compute_execution_price(so)
-                        dist = _fill_execution_session_distance(
-                            f.fill_datetime, so,
+                    list_payload.append(
+                        _shape_d_candidate_payload(
+                            so,
+                            execution_price=(
+                                exec_price if exec_price is not None
+                                else so.price
+                            ),
+                            sessions_from_fill=dist,
                         )
-                        list_payload.append(
-                            _shape_d_candidate_payload(
-                                so,
-                                execution_price=(
-                                    exec_price if exec_price is not None
-                                    else so.price
-                                ),
-                                sessions_from_fill=dist,
-                            )
-                        )
-                        if idx in available and exec_price is not None:
-                            delta = abs(exec_price - float(f.price))
-                            if best_delta is None or delta < best_delta:
-                                best_delta = delta
-                                best_idx = idx
-                    if best_idx is None and available:
-                        best_idx = available[0]
-                    if best_idx is not None:
-                        matched_schwab_idx.add(best_idx)
-                    _emit(
-                        conn,
-                        run_id=run_id,
-                        discrepancy_type=dtype,
-                        field_name="price",
-                        counters=counters,
-                        dedup_seen=dedup_seen,
-                        ticker=t.ticker,
-                        trade_id=t.id,
-                        fill_id=f.fill_id,
-                        expected_value_json=json.dumps(
-                            {"price": float(f.price)}, sort_keys=True,
-                        ),
-                        actual_value_json=json.dumps(
-                            list_payload, sort_keys=True,
-                        ),
-                        delta_text=(
-                            f"{len(all_qty_candidates)} same-qty candidates; "
-                            f"ambiguous match -> tier-2 (20-A A1)"
-                        ),
                     )
-                    continue
-
-                # len(all_qty_candidates) == 1 and NOT a good AVAILABLE match.
-                if not available:
-                    # Codex R4 MAJOR — the sole same-qty candidate is CLAIMED
-                    # by another fill, so THIS fill has no available broker
-                    # execution -> unmatched (never match/suppress against a
-                    # claimed candidate; a duplicate journal fill / missing
-                    # execution must surface, not silently reconcile).
-                    dtype_u = (
-                        "unmatched_open_fill" if f.action == "entry"
-                        else "unmatched_close_fill"
-                    )
-                    _emit(
-                        conn,
-                        run_id=run_id,
-                        discrepancy_type=dtype_u,
-                        field_name="fill_match",
-                        counters=counters,
-                        dedup_seen=dedup_seen,
-                        ticker=t.ticker,
-                        trade_id=t.id,
-                        fill_id=f.fill_id,
-                        expected_value_json=json.dumps(
-                            {
-                                "qty": float(f.quantity),
-                                "price": float(f.price),
-                                "action": f.action,
-                            },
-                            sort_keys=True,
-                        ),
-                        actual_value_json=json.dumps(
-                            {"matched": None}, sort_keys=True,
-                        ),
-                    )
-                    continue
-                idx = available[0]
-                so = schwab_filled[idx]
-                execution_price = _compute_execution_price(so)
-                if execution_price is None:
-                    # OQ-A Path B sentinel emit (executions unavailable).
-                    matched_schwab_idx.add(idx)
-                    dtype_b = (
-                        "unmatched_open_fill" if f.action == "entry"
-                        else "unmatched_close_fill"
-                    )
-                    _emit(
-                        conn,
-                        run_id=run_id,
-                        discrepancy_type=dtype_b,
-                        field_name="fill_match",
-                        counters=counters,
-                        dedup_seen=dedup_seen,
-                        ticker=t.ticker,
-                        trade_id=t.id,
-                        fill_id=f.fill_id,
-                        expected_value_json=json.dumps(
-                            {
-                                "qty": float(f.quantity),
-                                "price": float(f.price),
-                                "action": f.action,
-                            },
-                            sort_keys=True,
-                        ),
-                        actual_value_json=json.dumps(
-                            {
-                                "matched": None,
-                                "execution_unavailable": True,
-                                "schwab_order_id": so.order_id,
-                                "schwab_order_price": so.price,
-                            },
-                            sort_keys=True,
-                        ),
-                    )
-                    continue
-                # The sole available candidate is NOT a good match (it failed
-                # price OR side OR session in good_matches above). Emit Shape-D
-                # so the classifier applies A2-side / A2-date / A2-magnitude ->
-                # tier-2, EXCEPT a legitimate sub-2% same-side same-session
-                # price fix which resolves tier-1. Codex R4 MAJOR — a
-                # price-EQUAL but wrong-side/stale sole candidate is NO LONGER
-                # silently suppressed (it reaches here and surfaces as tier-2
-                # via the classifier's side/session guards); only a
-                # price+side+session good match suppresses (above).
-                matched_schwab_idx.add(idx)
-                dist = _fill_execution_session_distance(f.fill_datetime, so)
-                shape_d = _shape_d_candidate_payload(
-                    so,
-                    execution_price=execution_price,
-                    sessions_from_fill=dist,
-                )
-                shape_d["candidate_count"] = 1
                 _emit(
-                    conn,
-                    run_id=run_id,
-                    discrepancy_type=dtype,
-                    field_name="price",
-                    counters=counters,
-                    dedup_seen=dedup_seen,
-                    ticker=t.ticker,
-                    trade_id=t.id,
+                    conn, run_id=run_id, discrepancy_type=dtype,
+                    field_name="price", counters=counters,
+                    dedup_seen=dedup_seen, ticker=t.ticker, trade_id=t.id,
                     fill_id=f.fill_id,
                     expected_value_json=json.dumps(
                         {"price": float(f.price)}, sort_keys=True,
                     ),
-                    actual_value_json=json.dumps(shape_d, sort_keys=True),
-                    # 4-decimal precision per plan §A.1.6: covers CVGI
-                    # $0.0056 + LION $0.0001 sub-cent debugging.
+                    actual_value_json=json.dumps(list_payload, sort_keys=True),
                     delta_text=(
-                        f"${execution_price - float(f.price):+.4f} "
-                        f"(schwab execution minus journal)"
+                        f"{len(all_qty_candidates)} same-qty candidates; "
+                        f"ambiguous match -> tier-2 (20-A A1)"
                     ),
                 )
+                continue
+
+            # len(all_qty_candidates) == 1 and NOT a reserved good match.
+            if not available:
+                # The sole same-qty candidate was reserved by another fill in
+                # Phase 1 -> THIS fill has no available execution -> unmatched
+                # (never match/suppress against a claimed candidate; a
+                # duplicate/missing execution must surface). Codex R4 MAJOR.
+                _emit(
+                    conn, run_id=run_id, discrepancy_type=dtype_unmatched,
+                    field_name="fill_match", counters=counters,
+                    dedup_seen=dedup_seen, ticker=t.ticker, trade_id=t.id,
+                    fill_id=f.fill_id,
+                    expected_value_json=json.dumps(
+                        {"qty": float(f.quantity), "price": float(f.price),
+                         "action": f.action}, sort_keys=True,
+                    ),
+                    actual_value_json=json.dumps(
+                        {"matched": None}, sort_keys=True,
+                    ),
+                )
+                continue
+
+            idx = available[0]
+            so = schwab_filled[idx]
+            execution_price = _compute_execution_price(so)
+            if execution_price is None:
+                # OQ-A Path B sentinel emit (executions unavailable).
+                matched_schwab_idx.add(idx)
+                _emit(
+                    conn, run_id=run_id, discrepancy_type=dtype_unmatched,
+                    field_name="fill_match", counters=counters,
+                    dedup_seen=dedup_seen, ticker=t.ticker, trade_id=t.id,
+                    fill_id=f.fill_id,
+                    expected_value_json=json.dumps(
+                        {"qty": float(f.quantity), "price": float(f.price),
+                         "action": f.action}, sort_keys=True,
+                    ),
+                    actual_value_json=json.dumps(
+                        {"matched": None, "execution_unavailable": True,
+                         "schwab_order_id": so.order_id,
+                         "schwab_order_price": so.price}, sort_keys=True,
+                    ),
+                )
+                continue
+            # The sole available candidate is NOT a good match (it failed price
+            # OR side OR session). Emit Shape-D -> classifier A2-side /
+            # A2-date / A2-magnitude -> tier-2, EXCEPT a legitimate sub-2%
+            # same-side same-session price fix which resolves tier-1. Claiming
+            # here is safe: by Phase 2 every good match is already reserved, so
+            # this candidate is good for no fill (Codex R4/R8).
+            matched_schwab_idx.add(idx)
+            dist = _fill_execution_session_distance(f.fill_datetime, so)
+            shape_d = _shape_d_candidate_payload(
+                so, execution_price=execution_price, sessions_from_fill=dist,
+            )
+            shape_d["candidate_count"] = 1
+            _emit(
+                conn, run_id=run_id, discrepancy_type=dtype,
+                field_name="price", counters=counters, dedup_seen=dedup_seen,
+                ticker=t.ticker, trade_id=t.id, fill_id=f.fill_id,
+                expected_value_json=json.dumps(
+                    {"price": float(f.price)}, sort_keys=True,
+                ),
+                actual_value_json=json.dumps(shape_d, sort_keys=True),
+                # 4-decimal precision per plan §A.1.6: covers CVGI $0.0056 +
+                # LION $0.0001 sub-cent debugging.
+                delta_text=(
+                    f"${execution_price - float(f.price):+.4f} "
+                    f"(schwab execution minus journal)"
+                ),
+            )
 
         # --- 6.5. Arc 4b auto-ingestion (runs INSIDE this BEGIN, BEFORE the
         # step-7 journal->source scan). Coverage-gap detection first, then the
