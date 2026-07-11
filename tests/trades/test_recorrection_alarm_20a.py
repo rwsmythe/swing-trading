@@ -206,6 +206,53 @@ def test_terminal_path_belt_raises_on_differing_value(conn) -> None:
         )
 
 
+def test_later_non_price_head_does_not_mask_price_head(conn) -> None:
+    """Codex R1 MAJOR — a LATER unsuperseded head touching a DIFFERENT field
+    must not mask the effective PRICE head: a fresh tier-1 proposing a value
+    that differs from the price head is still blocked."""
+    trade_id, fill_id, run_id = _seed_fill(conn, fill_price=13.00)
+    # Effective PRICE head 13.00 (operator override).
+    _plant_chain_head(conn, fill_id=fill_id, run_id=run_id,
+                      trade_id=trade_id, value=13.00,
+                      action="operator_overridden")
+    # A LATER unsuperseded head touching `quantity` (a non-price field).
+    prior_disc = conn.execute(
+        "INSERT INTO reconciliation_discrepancies (run_id, discrepancy_type, "
+        "trade_id, fill_id, ticker, field_name, expected_value_json, "
+        "actual_value_json, delta_text, material_to_review, resolution, "
+        "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (run_id, "position_qty_mismatch", trade_id, fill_id, "AMN",
+         "quantity", json.dumps({"quantity": 3}), json.dumps({"quantity": 3}),
+         "qty", 1, "auto_corrected_from_schwab", "2026-07-09T12:00:00"),
+    ).lastrowid
+    from swing.data.repos.reconciliation_corrections import insert_correction
+    insert_correction(conn, ReconciliationCorrection(
+        correction_id=0, discrepancy_id=int(prior_disc),
+        correction_action="auto_applied", correction_choice=None,
+        affected_table="fills", affected_row_id=fill_id, field_name="quantity",
+        pre_correction_value_json=json.dumps({"quantity": 0}),
+        source_canonical_value_json=json.dumps({"quantity": 3}),
+        applied_value_json=json.dumps({"quantity": 3}),
+        operator_truth_value_json=None, applied_at="2026-07-09T12:00:00",
+        applied_by="auto", correction_set_id=None,
+        superseded_by_correction_id=None, risk_policy_id_at_correction=None,
+        schwab_api_call_id=None, reconciliation_run_id=run_id,
+        correction_reason="qty head", notes=None,
+    ))
+    disc_id = _new_discrepancy(conn, run_id=run_id, trade_id=trade_id,
+                               fill_id=fill_id)
+    conn.commit()
+    with pytest.raises(ReCorrectionContradictionError):
+        apply_tier1_correction(
+            conn, discrepancy_id=disc_id, classification=_tier1(12.305),
+            environment="production",
+        )
+    price = conn.execute(
+        "SELECT price FROM fills WHERE fill_id = ?", (fill_id,),
+    ).fetchone()[0]
+    assert price == 13.00
+
+
 def test_first_correction_not_blocked(conn) -> None:
     """A fill with NO prior chain head applies its first tier-1 normally."""
     trade_id, fill_id, run_id = _seed_fill(conn, fill_price=35.65)

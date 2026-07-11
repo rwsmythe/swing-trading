@@ -648,9 +648,9 @@ def _classify_entry_price_mismatch(
             correction_reason=(
                 f"entry_price_mismatch on "
                 f"(ticker={discrepancy.ticker!r}, "
-                f"fill_id={discrepancy.fill_id}): {len(source_payload)} "
-                f"Schwab records within match window; operator picks the "
-                f"intended record"
+                f"fill_id={discrepancy.fill_id}): Schwab returned "
+                f"{len(source_payload)} orders within the match window; "
+                f"operator picks the intended record (20-A A1)"
             ),
             candidate_choices=(
                 [
@@ -1820,9 +1820,9 @@ def _classify_close_price_mismatch(
             correction_target=None,
             correction_reason=(
                 f"close_price_mismatch on (ticker={ticker!r}, "
-                f"trade_id={trade_id}): {len(source_payload)} same-qty "
-                f"Schwab candidates within match window; ambiguous match -> "
-                f"operator picks the intended record (20-A A1)"
+                f"trade_id={trade_id}): Schwab returned {len(source_payload)} "
+                f"orders within the match window; ambiguous match -> operator "
+                f"picks the intended record (20-A A1)"
             ),
             candidate_choices=_candidate_choices_multi_match_within_window(
                 len(source_payload)

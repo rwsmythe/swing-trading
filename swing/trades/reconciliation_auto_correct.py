@@ -672,17 +672,27 @@ _RECORRECTION_PRICE_TOLERANCE: float = 0.005
 
 
 def _effective_fill_correction_head(
-    conn: sqlite3.Connection, affected_row_id: int,
+    conn: sqlite3.Connection, affected_row_id: int, field_name: str,
 ) -> ReconciliationCorrection | None:
-    """Return the currently-EFFECTIVE correction chain head for a fill (the
-    row with ``superseded_by_correction_id IS NULL``). When the corrector
-    failed to chain and MULTIPLE heads exist (the live AMN #33/#34 anomaly),
-    the LATEST-applied head wins. ``None`` when the fill has no corrections.
+    """Return the currently-EFFECTIVE correction chain head for a fill that
+    carries an effective value for ``field_name`` (the row with
+    ``superseded_by_correction_id IS NULL`` whose ``applied_value_json`` /
+    ``operator_truth_value_json`` contains ``field_name``). When multiple such
+    heads exist (the live AMN #33/#34 double-head anomaly), the LATEST-applied
+    wins. ``None`` when no unsuperseded correction touches ``field_name``.
+
+    Codex R1 MAJOR — the lookup MUST be field-scoped: a later unsuperseded head
+    touching a DIFFERENT field (e.g. quantity) would otherwise mask an earlier
+    effective price head, letting a fresh tier-1 clobber a protected price.
     """
     corrections = list_corrections_by_affected_row(
         conn, _AFFECTED_TABLE_FILLS, affected_row_id,
     )
-    heads = [c for c in corrections if c.superseded_by_correction_id is None]
+    heads = [
+        c for c in corrections
+        if c.superseded_by_correction_id is None
+        and _effective_head_value(c, field_name) is not None
+    ]
     if not heads:
         return None
     return max(
@@ -727,7 +737,7 @@ def _check_recorrection_contradiction(
     """
     if affected_table != _AFFECTED_TABLE_FILLS:
         return
-    head = _effective_fill_correction_head(conn, affected_row_id)
+    head = _effective_fill_correction_head(conn, affected_row_id, field_name)
     if head is None:
         return
     prior = _effective_head_value(head, field_name)

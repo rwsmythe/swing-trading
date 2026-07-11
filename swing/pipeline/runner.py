@@ -150,6 +150,11 @@ def _exits_via_fills_for_equity(
     from swing.data.repos.fills import list_all_fills
     from swing.data.repos.trades import list_closed_trades
     from swing.trades.derived_metrics import realized_pnl
+    from swing.trades.voided_trades import voided_trade_ids
+
+    # 20-A B-2 — exclude voided (phantom/test) trades from the nightly
+    # sizing/equity + briefing-equity aggregation (Codex R1 MAJOR).
+    voided = voided_trade_ids(conn)
 
     trades_by_id: dict[int, object] = {}
     for t in list_open_trades(conn):
@@ -163,6 +168,8 @@ def _exits_via_fills_for_equity(
     for f in list_all_fills(conn):
         if f.action == "entry":
             continue
+        if f.trade_id in voided:
+            continue  # 20-A B-2 — voided trade excluded from nightly equity
         trade = trades_by_id.get(f.trade_id)
         if trade is None:
             continue

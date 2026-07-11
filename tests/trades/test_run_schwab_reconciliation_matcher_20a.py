@@ -145,6 +145,22 @@ def test_correct_entry_fill_two_candidates_is_suppressed(conn) -> None:
     assert _price_discrepancies(conn, run.run_id) == []
 
 
+def test_two_duplicate_good_candidates_are_suppressed(conn) -> None:
+    """Codex R1 MINOR — a fill with TWO equally-good (price+side+session)
+    candidates is NOT false-demoted (good_matches>=1 suppression)."""
+    _seed_entry_only(conn, ticker="AAA", fill_price=13.00, qty=15.0)
+    orders = [
+        _SchwabOrder(status="FILLED", price=13.00, quantity=15.0,
+                     instrument_symbol="AAA", instruction="BUY",
+                     order_id="B1", executions=[_leg(price=13.00, quantity=15.0)]),
+        _SchwabOrder(status="FILLED", price=13.00, quantity=15.0,
+                     instrument_symbol="AAA", instruction="BUY",
+                     order_id="B2", executions=[_leg(price=13.00, quantity=15.0)]),
+    ]
+    run = _run(conn, orders)
+    assert _price_discrepancies(conn, run.run_id) == []
+
+
 def test_corrupt_fill_two_candidates_emits_list_shape(conn) -> None:
     """Fill ALREADY corrupt (12.305): entry BUY 13.00 fails price, exit SELL
     12.305 fails side -> good_matches == [] with 2 candidates -> LIST emit."""

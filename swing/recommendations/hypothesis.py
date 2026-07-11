@@ -65,6 +65,11 @@ def _list_all_exitshape_via_fills(
         r_multiple,
         realized_pnl,
     )
+    from swing.trades.voided_trades import voided_trade_ids
+
+    # 20-A B-2 — exclude voided trades from hypothesis tripwire realized
+    # aggregation (Codex R1 MAJOR).
+    voided = voided_trade_ids(conn)
 
     trades_by_id: dict[int, Trade] = {}
     for t in list_open_trades(conn):
@@ -78,6 +83,8 @@ def _list_all_exitshape_via_fills(
     for f in list_all_fills(conn):
         if f.action == "entry":
             continue
+        if f.trade_id in voided:
+            continue  # 20-A B-2 — voided trade excluded from hypothesis stats
         trade = trades_by_id.get(f.trade_id)
         if trade is None:
             continue
@@ -488,12 +495,15 @@ def compute_tripwire_status(
     # matcher / prioritizer tests don't pull in repo modules.
     from swing.data.repos.hypothesis import get_hypothesis
     from swing.data.repos.trades import list_closed_trades
+    from swing.trades.voided_trades import voided_trade_ids
 
     h = get_hypothesis(conn, hypothesis_id)
     if h is None:
         raise ValueError(f"hypothesis {hypothesis_id} not found")
 
-    closed = list_closed_trades(conn)
+    # 20-A B-2 — exclude voided trades from the tripwire sample (Codex R1 MAJOR).
+    voided = voided_trade_ids(conn)
+    closed = [t for t in list_closed_trades(conn) if t.id not in voided]
     matched = [
         t for t in closed
         if _label_matches_hypothesis(t.hypothesis_label, h.name)

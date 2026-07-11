@@ -2071,10 +2071,14 @@ def run_schwab_reconciliation(
                     else "close_price_mismatch"
                 )
 
-                if len(good_matches) == 1:
-                    # Exactly one fully-consistent candidate -> the fill is
-                    # unambiguously correct -> claim it, NO emit (no false
-                    # pending). This is the NORMAL correct round-trip case.
+                if len(good_matches) >= 1:
+                    # At least one FULLY-consistent candidate (price+side+
+                    # within-1-session) -> the fill is unambiguously correct
+                    # -> claim ONE good match, NO emit (no false pending). Codex
+                    # R1 MINOR: >=1 (not ==1) so DUPLICATE equally-good broker
+                    # executions for same-qty fills don't false-demote a correct
+                    # round-trip; the other good candidate stays available for a
+                    # sibling fill. A corruption still has good_matches == [].
                     matched_schwab_idx.add(good_matches[0])
                     continue
 
