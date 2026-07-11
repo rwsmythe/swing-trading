@@ -347,8 +347,11 @@ _OPEN_STATES_SQL: str = "('entered', 'managing', 'partial_exited')"
 
 def _count_concurrent_open_positions(conn: sqlite3.Connection) -> int:
     """Spec §3.4: count of trades in state ∈ open-states."""
+    # 20-A B-2 — exclude voided (phantom) trades from the capital stat.
+    from swing.trades.voided_trades import voided_exclusion_sql
     row = conn.execute(
         f"SELECT COUNT(*) FROM trades WHERE state IN {_OPEN_STATES_SQL}"
+        f"{voided_exclusion_sql()}"
     ).fetchone()
     return int(row[0])
 
@@ -359,9 +362,11 @@ def _sum_open_position_exposure_dollars(
     """Spec §3.4 numerator: sum(current_avg_cost * current_size) over open
     trades. ``current_avg_cost`` may be NULL for entered-no-fill trades;
     fall back to entry_price."""
+    from swing.trades.voided_trades import voided_exclusion_sql
     rows = conn.execute(
         "SELECT COALESCE(current_avg_cost, entry_price), current_size "
         f"FROM trades WHERE state IN {_OPEN_STATES_SQL}"
+        f"{voided_exclusion_sql()}"  # 20-A B-2 — exclude voided
     ).fetchall()
     total = 0.0
     for avg_cost, size in rows:
@@ -375,10 +380,12 @@ def _sum_open_position_heat_dollars(conn: sqlite3.Connection) -> float:
     """Spec §3.4: sum of per-position heat contributions ``max(0,
     (current_avg_cost - current_stop) * current_size)`` over open trades.
     """
+    from swing.trades.voided_trades import voided_exclusion_sql
     rows = conn.execute(
         "SELECT COALESCE(current_avg_cost, entry_price), current_size, "
         "current_stop "
         f"FROM trades WHERE state IN {_OPEN_STATES_SQL}"
+        f"{voided_exclusion_sql()}"  # 20-A B-2 — exclude voided
     ).fetchall()
     total = 0.0
     for avg_cost, size, stop in rows:
@@ -394,12 +401,14 @@ def _sum_open_position_heat_dollars(conn: sqlite3.Connection) -> float:
 def _capital_cycle_time_days(conn: sqlite3.Connection) -> float | None:
     """Spec §3.4: mean(last_fill_at - pre_trade_locked_at) over closed
     cohort, in days. Returns None when no closed trades."""
+    from swing.trades.voided_trades import voided_exclusion_sql
     rows = conn.execute(
         "SELECT pre_trade_locked_at, last_fill_at FROM trades "
         "WHERE state IN ('closed', 'reviewed') "
         "AND pre_trade_locked_at IS NOT NULL "
         "AND last_fill_at IS NOT NULL AND pre_trade_locked_at <> '' "
         "AND last_fill_at <> ''"
+        f"{voided_exclusion_sql()}"  # 20-A B-2 — exclude voided
     ).fetchall()
     if not rows:
         return None
@@ -448,6 +457,7 @@ def _count_open_at_run(
     string comparison (no parse), so a malformed value degrades safely (the
     one row is mis-ordered, never an exception) — see test E11.
     """
+    from swing.trades.voided_trades import voided_exclusion_sql
     row = conn.execute(
         "SELECT COUNT(*) FROM trades "
         "WHERE pre_trade_locked_at IS NOT NULL "
@@ -455,7 +465,8 @@ def _count_open_at_run(
         "AND pre_trade_locked_at <= ? "
         "AND (state NOT IN ('closed', 'reviewed') "
         "     OR last_fill_at IS NULL OR last_fill_at = '' "
-        "     OR last_fill_at >= ?)",
+        "     OR last_fill_at >= ?)"
+        f"{voided_exclusion_sql()}",  # 20-A B-2 — exclude voided
         (started_ts, started_ts),
     ).fetchone()
     return int(row[0])

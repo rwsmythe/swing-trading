@@ -182,11 +182,14 @@ def _compute_per_run_aggregate(
         watch_id = 0
     # Plan §A.0.1: count CURRENT trades whose pre_trade_locked_at session
     # equals the run's session date.
+    # 20-A B-2 — exclude voided (phantom) trades from the "taken" funnel counts.
+    from swing.trades.voided_trades import voided_exclusion_sql
     a_taken_row = conn.execute(
         "SELECT COUNT(*) FROM trades "
         "WHERE trade_origin = ? "
         "AND pre_trade_locked_at IS NOT NULL "
-        "AND substr(pre_trade_locked_at, 1, 10) = ?",
+        "AND substr(pre_trade_locked_at, 1, 10) = ?"
+        f"{voided_exclusion_sql()}",
         (APLUS_TRADE_ORIGIN, run_session_date),
     ).fetchone()
     aplus_taken = int(a_taken_row[0])
@@ -196,7 +199,8 @@ def _compute_per_run_aggregate(
         f"SELECT COUNT(*) FROM trades "
         f"WHERE trade_origin IN ({placeholders}) "
         f"AND pre_trade_locked_at IS NOT NULL "
-        f"AND substr(pre_trade_locked_at, 1, 10) = ?",
+        f"AND substr(pre_trade_locked_at, 1, 10) = ?"
+        f"{voided_exclusion_sql()}",
         (*WATCH_TRADE_ORIGINS, run_session_date),
     ).fetchone()
     watch_taken = int(w_taken_row[0])

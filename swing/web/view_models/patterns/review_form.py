@@ -31,7 +31,12 @@ from swing.metrics.discrepancies import (
     fetch_first_pending_ambiguity_resolve_link_path,
 )
 from swing.patterns.foundation import current_stage
+from swing.trades.voided_trades import voided_exclusion_sql
 from swing.web.view_models.metrics.shared import BaseLayoutVM
+
+# 20-A B-2 — spliced into the trades LEFT JOIN so a voided (phantom) trade
+# never counts as has_trade / reached_1r / hit_stop in the pattern review form.
+_VOIDED_JOIN_EXCLUSION = voided_exclusion_sql("t.id")
 
 log = logging.getLogger(__name__)
 
@@ -369,6 +374,7 @@ def _build_outcome_distribution(
                SELECT evaluation_run_id FROM pipeline_runs
                WHERE id = cohort.pipeline_run_id)
         LEFT JOIN trades t ON t.candidate_id = c.id
+           {_VOIDED_JOIN_EXCLUSION}
         GROUP BY cohort.evaluation_id
         """,
         (

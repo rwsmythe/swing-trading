@@ -168,11 +168,13 @@ def compute_maturity_stage(
     # fallback matches capital.py's COALESCE(current_avg_cost,
     # entry_price) pattern (avoid mis-reporting 0% utilization when
     # current_avg_cost is NULL for entered-no-fill state).
+    from swing.trades.voided_trades import voided_exclusion_sql
     trade_rows = conn.execute(
         "SELECT id, ticker, current_stop, planned_target_R, current_size, "
         "current_avg_cost, entry_price FROM trades "
         "WHERE state IN ('entered', 'managing', 'partial_exited') "
-        "ORDER BY id ASC"
+        f"{voided_exclusion_sql()}"  # 20-A B-2 — exclude voided
+        " ORDER BY id ASC"
     ).fetchall()
 
     rows: list[MaturityStageRow] = []

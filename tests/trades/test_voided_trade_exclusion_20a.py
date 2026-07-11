@@ -151,6 +151,27 @@ def test_named_stat_readers_exclude_the_void(seeded) -> None:
     assert total_h_alpha == 1  # only the KEPT trade counts
 
 
+def test_voided_open_trade_absent_from_capital_metrics(conn) -> None:
+    """Codex R6 MAJOR — a voided OPEN trade is excluded from the raw-SQL
+    capital concurrent-open-position count (via voided_exclusion_sql)."""
+    def _open(ticker, price):
+        c = conn.execute(
+            "INSERT INTO trades (ticker, entry_date, entry_price, "
+            "initial_shares, initial_stop, current_stop, current_size, state, "
+            "trade_origin, pre_trade_locked_at) VALUES "
+            "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (ticker, "2026-05-22", price, 10, price - 1, price - 1, 10,
+             "managing", "manual_off_pipeline", "2026-05-22T16:00:00"),
+        ).lastrowid
+        return int(c)
+
+    real = _open("REAL", 20.00)
+    satl = _open("SATL", 10.31)
+    _void(conn, satl)
+    from swing.metrics.capital import _count_concurrent_open_positions
+    assert _count_concurrent_open_positions(conn) == 1  # only REAL
+
+
 def test_voided_trade_absent_from_process_grade_trend(conn) -> None:
     """Codex R5 MAJOR — a voided reviewed trade is excluded from the
     process-grade trend markers."""

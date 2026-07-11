@@ -34,6 +34,11 @@ from swing.metrics.honesty import (
     suppress_for_n,
     wilson_ci,
 )
+from swing.trades.voided_trades import voided_exclusion_sql
+
+# 20-A B-2 — spliced into the trades LEFT JOIN so a voided (phantom) trade
+# never counts as has_trade / reached_1r / hit_stop in pattern-outcome stats.
+_VOIDED_JOIN_EXCLUSION = voided_exclusion_sql("t.id")
 
 
 @dataclass(frozen=True)
@@ -122,6 +127,7 @@ def _count_reached_1r_hit_stop(
             ON t.candidate_id = c.id
            AND (t.pattern_evaluation_id IS NULL
                 OR t.pattern_evaluation_id = pe.id)
+           {_VOIDED_JOIN_EXCLUSION}
         WHERE pe.pattern_class = ?
           AND {PROVABLE_APLUS_PE_PREDICATE}
         """,

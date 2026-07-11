@@ -15,6 +15,27 @@ from __future__ import annotations
 
 import sqlite3
 
+# The canonical void predicate as a SQL SUBQUERY (no parameter binding — the
+# whole predicate is self-contained), for raw-SQL metric surfaces that do their
+# own ``FROM trades`` and cannot route through the Python readers. Mirrors
+# :func:`voided_trade_ids` EXACTLY (same json_valid guard) so the two cannot
+# drift.
+_VOIDED_TRADE_IDS_SUBQUERY = (
+    "SELECT DISTINCT trade_id FROM trade_events "
+    "WHERE payload_json IS NOT NULL AND json_valid(payload_json) "
+    "AND json_extract(payload_json, '$.voided') IS 1"
+)
+
+
+def voided_exclusion_sql(trade_id_col: str = "id") -> str:
+    """Return a SQL fragment ``AND <trade_id_col> NOT IN (<void subquery>)`` to
+    splice into a raw ``FROM trades`` query's WHERE clause (20-A B-2). The
+    fragment is self-contained (no bind params). ``trade_id_col`` is the
+    caller's column expression for the trade id (e.g. ``"id"``, ``"t.id"``,
+    ``"trades.id"``). Trusted caller-supplied identifier only (NOT user input).
+    """
+    return f" AND {trade_id_col} NOT IN ({_VOIDED_TRADE_IDS_SUBQUERY})"
+
 
 def voided_trade_ids(conn: sqlite3.Connection) -> frozenset[int]:
     """Return the set of trade ids annotated void via a ``trade_events`` note.
