@@ -118,6 +118,69 @@ _SHAPE_C_EXPECTED_KEYS: frozenset[str] = frozenset({"price"}) | _EXECUTION_AUDIT
 
 
 # ---------------------------------------------------------------------------
+# 20-A Task A-1 — tier-1 overwrite magnitude band (A2-magnitude guard)
+# ---------------------------------------------------------------------------
+#
+# The tier-1 corrector (D25 forensic 2026-07-10) overwrote CORRECT fill
+# prices with the trade's OTHER LEG's execution price. The three corruptions
+# (PTEN 5.35% / DFTX 9.66% / AMN 10.07%) all exceed a 2.0% overwrite band;
+# the legitimate fill-price corrections max at 1.34% (CVGI). RD-LOCKED at
+# 2.0% (declines 3%; declines the absolute-$ belt for V1) — plan §13 D-A2.
+#
+# PURE: the band consults ONLY the proposed source price + the journal price
+# already available on the classifier's inputs. No I/O, no calendar.
+_MAX_TIER1_OVERWRITE_RATIO: float = 0.02
+
+
+def _overwrite_ratio(source_price: float, journal_price: float) -> float:
+    """Fractional overwrite magnitude ``|source - journal| / |journal|``.
+
+    Caller guarantees ``journal_price`` is a finite non-zero float.
+    """
+    return abs(float(source_price) - float(journal_price)) / abs(
+        float(journal_price)
+    )
+
+
+def _magnitude_band_demotion(
+    *,
+    discrepancy: ReconciliationDiscrepancy,
+    label: str,
+    id_text: str,
+    source_price: float,
+    journal_price: Any | None,
+) -> ClassificationResult | None:
+    """Return a tier-2 ``ClassificationResult`` when the proposed tier-1
+    overwrite exceeds ``_MAX_TIER1_OVERWRITE_RATIO``; else ``None``.
+
+    ``journal_price`` falsy / None / zero / non-numeric -> ``None`` (nothing
+    to gate against; the write-boundary already guards finiteness). PURE.
+    """
+    if journal_price is None:
+        return None
+    try:
+        jp = float(journal_price)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(jp) or jp == 0.0:
+        return None
+    ratio = _overwrite_ratio(source_price, jp)
+    if ratio <= _MAX_TIER1_OVERWRITE_RATIO:
+        return None
+    return ClassificationResult(
+        tier=2,
+        ambiguity_kind="unsupported",
+        correction_target=None,
+        correction_reason=(
+            f"{label} on ({id_text}): overwrite magnitude {ratio:.2%} "
+            f"exceeds tier-1 band {_MAX_TIER1_OVERWRITE_RATIO:.0%}; "
+            f"requires operator disposition (20-A A2-magnitude guard)"
+        ),
+        candidate_choices=None,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Phase 12.5 #1 T-1.1 — multi-leg auto-redirect predicate + recipe synthesizer
 # ---------------------------------------------------------------------------
 #
@@ -481,6 +544,22 @@ def _classify_entry_price_mismatch(
             and not isinstance(price, bool)
             and math.isfinite(float(price))
         ):
+            # 20-A Task A-1 — A2-magnitude belt on the Shape-C tier-1 path.
+            demotion = _magnitude_band_demotion(
+                discrepancy=discrepancy,
+                label="entry_price_mismatch",
+                id_text=(
+                    f"ticker={discrepancy.ticker!r}, "
+                    f"fill_id={discrepancy.fill_id}"
+                ),
+                source_price=float(price),
+                journal_price=(
+                    journal_row.get("price") if journal_row is not None
+                    else None
+                ),
+            )
+            if demotion is not None:
+                return demotion
             return ClassificationResult(
                 tier=1,
                 ambiguity_kind=None,
@@ -1522,7 +1601,7 @@ def _classify_close_price_mismatch(
     *,
     discrepancy: ReconciliationDiscrepancy,
     source_payload: Any | None,
-    journal_row: Mapping[str, Any] | None,  # noqa: ARG001 — Shape C path doesn't consult journal_row
+    journal_row: Mapping[str, Any] | None,
 ) -> ClassificationResult:
     """Spec §4.3.6 + §3.2 + §10.6 OQ-D — close_price_mismatch.
 
@@ -1553,6 +1632,21 @@ def _classify_close_price_mismatch(
             and not isinstance(price, bool)
             and math.isfinite(float(price))
         ):
+            # 20-A Task A-1 — A2-magnitude belt on the Shape-C tier-1 path
+            # (symmetric with entry_price_mismatch; AMN's trim fill routes
+            # here).
+            demotion = _magnitude_band_demotion(
+                discrepancy=discrepancy,
+                label="close_price_mismatch",
+                id_text=f"ticker={ticker!r}, trade_id={trade_id}",
+                source_price=float(price),
+                journal_price=(
+                    journal_row.get("price") if journal_row is not None
+                    else None
+                ),
+            )
+            if demotion is not None:
+                return demotion
             return ClassificationResult(
                 tier=1,
                 ambiguity_kind=None,
