@@ -51,6 +51,7 @@ from swing.data.repos import reconciliation as repo
 from swing.data.repos.cash import list_cash
 from swing.data.repos.fills import list_fills_for_trade
 from swing.data.repos.trades import list_open_trades
+from swing.evaluation.dates import sessions_behind
 from swing.trades.equity import current_equity, list_all_exitshape_via_fills
 from swing.trades.reconciliation import (
     DISCREPANCY_TYPES,
@@ -67,7 +68,11 @@ from swing.trades.reconciliation_auto_correct import (
     _stamp_pending_ambiguity_inner,
     _validate_override_combo,
 )
-from swing.trades.reconciliation_classifier import classify_discrepancy
+from swing.trades.reconciliation_classifier import (
+    _MAX_TIER1_SESSION_DISTANCE,
+    _expected_execution_sides,
+    classify_discrepancy,
+)
 from swing.trades.reconciliation_validators import default_validator_chain
 
 log = logging.getLogger(__name__)
@@ -534,6 +539,102 @@ def _resolve_match_quantity(so: Any) -> float:
     if executions:
         return sum(leg.quantity for leg in executions)
     return so.quantity
+
+
+# ===========================================================================
+# 20-A Task A-2 — matcher candidate enumeration + Shape-D / LIST enrichment.
+# The fill<->execution matcher no longer break-picks the first same-qty order
+# (the D25 root cause: a BUY entry fill was "corrected" to a SELL exit leg's
+# price). It enumerates ALL same-(ticker,qty) candidates side-agnostically,
+# then suppresses ONLY when exactly one is FULLY consistent (price+side+
+# within-1-session). Otherwise it enriches the emit so the classifier's A1/A2
+# guards can disposition (tier-2), never a blind tier-1 auto-apply.
+# ===========================================================================
+
+
+def _session_distance(a: _date, b: _date) -> int:
+    """Absolute NYSE-session distance between two dates (order-agnostic).
+
+    ``sessions_behind(ref, cand)`` returns 0 when ``cand >= ref``; summing
+    both directions yields the count regardless of ordering (same session ->
+    0; adjacent session -> 1). PURE (calendar read only).
+    """
+    return sessions_behind(a, b) + sessions_behind(b, a)
+
+
+def _fill_execution_session_distance(
+    fill_datetime: Any, so: Any,
+) -> int | None:
+    """NYSE-session distance between the fill date and the execution's leg
+    date(s). Returns the MAX distance across legs, or ``None`` on ANY
+    resolution failure (unparseable/missing time, empty executions, helper
+    raise) — the fail-safe-toward-EMIT sentinel per plan §5.3(b): a ``None``
+    is treated as "not session-consistent" in ``good_matches`` (never
+    suppresses) AND propagated as the Shape-D ``execution_sessions_from_fill=
+    null`` sentinel (the classifier forces tier-2 on it).
+    """
+    try:
+        fill_date = _date.fromisoformat(str(fill_datetime)[:10])
+    except (TypeError, ValueError):
+        return None
+    executions = getattr(so, "executions", None)
+    if not executions:
+        return None
+    distances: list[int] = []
+    for leg in executions:
+        raw_time = getattr(leg, "time", None)
+        try:
+            leg_date = _date.fromisoformat(str(raw_time)[:10])
+        except (TypeError, ValueError):
+            return None
+        try:
+            distances.append(_session_distance(fill_date, leg_date))
+        except Exception:  # noqa: BLE001 — calendar defect must not crash recon
+            return None
+    if not distances:
+        return None
+    return max(distances)
+
+
+def _side_matches(instruction: Any, action: Any) -> bool:
+    """True when the Schwab execution ``instruction`` is in the expected
+    side-set for the journal fill ``action`` (shared map with the classifier
+    A2-side check). Empty/unknown instruction -> False (fail toward NOT a
+    good match, i.e. surface the fill)."""
+    if not instruction:
+        return False
+    return str(instruction) in _expected_execution_sides(action)
+
+
+def _execution_legs_payload(so: Any) -> list[dict[str, Any]]:
+    """The Shape-C/D ``execution_legs`` audit list for one Schwab order."""
+    return [
+        {
+            "leg_id": leg.leg_id,
+            "price": leg.price,
+            "quantity": leg.quantity,
+            "time": leg.time,
+        }
+        for leg in (getattr(so, "executions", None) or [])
+    ]
+
+
+def _shape_d_candidate_payload(
+    so: Any, *, execution_price: float, sessions_from_fill: int | None,
+) -> dict[str, Any]:
+    """Per-candidate enriched dict (LIST item + the Shape-D single body base).
+
+    ``execution_sessions_from_fill`` carries the explicit ``None`` sentinel on
+    a session-resolution failure (plan §5.3(b)). The Shape-D SINGLE emit adds
+    ``candidate_count`` on top of this (see step 6)."""
+    return {
+        "price": execution_price,
+        "execution_legs": _execution_legs_payload(so),
+        "schwab_order_id": so.order_id,
+        "schwab_order_price": so.price,
+        "execution_side": so.instruction,
+        "execution_sessions_from_fill": sessions_from_fill,
+    }
 
 
 class CallerHeldTransactionError(RuntimeError):
@@ -1758,28 +1859,20 @@ def run_schwab_reconciliation(
         for t in open_trades:
             for f in trade_fills.get(t.id, []):
                 counters["fills_reconciled_count"] += 1
-                # Find a Schwab order matching (ticker, qty within tolerance).
-                match_idx = None
-                for idx, so in enumerate(schwab_filled):
-                    if idx in matched_schwab_idx:
-                        continue
-                    if so.instrument_symbol != t.ticker:
-                        continue
-                    # Sub-bundle 1 T-1.7: execution-grain quantity-match per
-                    # Codex R1 M#2. _resolve_match_quantity returns
-                    # sum(legs.quantity) when executions populated; else
-                    # so.quantity (V1 backward compat). Closes the in-row
-                    # quantity comparison defect for partial fills where
-                    # order.quantity reflects the OPEN order size, not the
-                    # FILLED quantity.
-                    if abs(
+                # 20-A A-2 — enumerate ALL same-(ticker,qty) candidates,
+                # SIDE-AGNOSTIC, over the full recon-period window (NOT a
+                # 1-session window — else AMN's 2-sessions-apart legs would
+                # each look single-candidate). This is the A1 count basis.
+                qty_candidates = [
+                    idx for idx, so in enumerate(schwab_filled)
+                    if idx not in matched_schwab_idx
+                    and so.instrument_symbol == t.ticker
+                    and abs(
                         _resolve_match_quantity(so) - float(f.quantity)
-                    ) > price_tolerance:
-                        continue
-                    match_idx = idx
-                    break
-                if match_idx is None:
-                    # Unmatched journal fill.
+                    ) <= price_tolerance
+                ]
+                if not qty_candidates:
+                    # Unmatched journal fill (existing path, unchanged).
                     dtype = (
                         "unmatched_open_fill" if f.action == "entry"
                         else "unmatched_close_fill"
@@ -1807,17 +1900,105 @@ def run_schwab_reconciliation(
                         ),
                     )
                     continue
-                matched_schwab_idx.add(match_idx)
-                so = schwab_filled[match_idx]
-                # Sub-bundle 1 T-1.6: switch price comparison to
-                # execution-grain via `_compute_execution_price`. When
-                # `executions` is None / empty (V1 mapper / sandbox /
-                # mapper-coherence-check collapse), Path B emits
-                # unmatched_*_fill with `execution_unavailable=true`
-                # sentinel per spec §6.1 OQ-A LOCK.
+
+                # good_matches: candidates FULLY consistent with the fill
+                # being correctly recorded (price AND side AND within-1-
+                # session, all three). Suppression requires ALL THREE — a
+                # STRICT subset of a classifier tier-1, so it can never
+                # bypass a demotion (plan §5.2).
+                good_matches: list[int] = []
+                for idx in qty_candidates:
+                    so = schwab_filled[idx]
+                    exec_price = _compute_execution_price(so)
+                    if exec_price is None:
+                        continue
+                    if abs(exec_price - float(f.price)) > price_tolerance:
+                        continue
+                    if not _side_matches(so.instruction, f.action):
+                        continue
+                    dist = _fill_execution_session_distance(
+                        f.fill_datetime, so,
+                    )
+                    if dist is None or dist > _MAX_TIER1_SESSION_DISTANCE:
+                        continue
+                    good_matches.append(idx)
+
+                dtype = (
+                    "entry_price_mismatch" if f.action == "entry"
+                    else "close_price_mismatch"
+                )
+
+                if len(good_matches) == 1:
+                    # Exactly one fully-consistent candidate -> the fill is
+                    # unambiguously correct -> claim it, NO emit (no false
+                    # pending). This is the NORMAL correct round-trip case.
+                    matched_schwab_idx.add(good_matches[0])
+                    continue
+
+                if len(qty_candidates) >= 2:
+                    # A1 ambiguity: >=2 same-qty candidates and NOT exactly
+                    # one good match -> emit a LIST-shaped actual_value_json.
+                    # The classifier's existing `isinstance(list) and len>1`
+                    # branch -> tier-2 multi_match_within_window (NEVER
+                    # tier-1). Claim the single best-price-match candidate so
+                    # a sibling fill can still pair with its own leg; extra
+                    # tier-2 surfacing on a sibling is safe (operator
+                    # disposition), never an auto-corrupting apply.
+                    list_payload: list[dict[str, Any]] = []
+                    best_idx = qty_candidates[0]
+                    best_delta: float | None = None
+                    for idx in qty_candidates:
+                        so = schwab_filled[idx]
+                        exec_price = _compute_execution_price(so)
+                        dist = _fill_execution_session_distance(
+                            f.fill_datetime, so,
+                        )
+                        list_payload.append(
+                            _shape_d_candidate_payload(
+                                so,
+                                execution_price=(
+                                    exec_price if exec_price is not None
+                                    else so.price
+                                ),
+                                sessions_from_fill=dist,
+                            )
+                        )
+                        if exec_price is not None:
+                            delta = abs(exec_price - float(f.price))
+                            if best_delta is None or delta < best_delta:
+                                best_delta = delta
+                                best_idx = idx
+                    matched_schwab_idx.add(best_idx)
+                    _emit(
+                        conn,
+                        run_id=run_id,
+                        discrepancy_type=dtype,
+                        field_name="price",
+                        counters=counters,
+                        dedup_seen=dedup_seen,
+                        ticker=t.ticker,
+                        trade_id=t.id,
+                        fill_id=f.fill_id,
+                        expected_value_json=json.dumps(
+                            {"price": float(f.price)}, sort_keys=True,
+                        ),
+                        actual_value_json=json.dumps(
+                            list_payload, sort_keys=True,
+                        ),
+                        delta_text=(
+                            f"{len(qty_candidates)} same-qty candidates; "
+                            f"ambiguous match -> tier-2 (20-A A1)"
+                        ),
+                    )
+                    continue
+
+                # len(qty_candidates) == 1 and NOT a good match.
+                idx = qty_candidates[0]
+                so = schwab_filled[idx]
                 execution_price = _compute_execution_price(so)
                 if execution_price is None:
-                    # OQ-A Path B sentinel emit.
+                    # OQ-A Path B sentinel emit (executions unavailable).
+                    matched_schwab_idx.add(idx)
                     dtype_b = (
                         "unmatched_open_fill" if f.action == "entry"
                         else "unmatched_close_fill"
@@ -1851,55 +2032,47 @@ def run_schwab_reconciliation(
                         ),
                     )
                     continue
-                if abs(execution_price - float(f.price)) > price_tolerance:
-                    dtype = (
-                        "entry_price_mismatch" if f.action == "entry"
-                        else "close_price_mismatch"
-                    )
-                    # Sub-bundle 1 T-1.6 Shape C contract: actual_value_json
-                    # key-set EXACTLY {"price", "execution_legs",
-                    # "schwab_order_id", "schwab_order_price"} for the T-1.8
-                    # Pass-1 classifier predicate. Naming "schwab_order_price"
-                    # (NOT "schwab_limit_price") covers MKT (None) / STOP
-                    # (trigger) / LIMIT (limit) order_types gracefully per
-                    # plan §A.1.6 R3 m#2.
-                    _emit(
-                        conn,
-                        run_id=run_id,
-                        discrepancy_type=dtype,
-                        field_name="price",
-                        counters=counters,
-                        dedup_seen=dedup_seen,
-                        ticker=t.ticker,
-                        trade_id=t.id,
-                        fill_id=f.fill_id,
-                        expected_value_json=json.dumps(
-                            {"price": float(f.price)}, sort_keys=True,
-                        ),
-                        actual_value_json=json.dumps(
-                            {
-                                "price": execution_price,
-                                "execution_legs": [
-                                    {
-                                        "leg_id": leg.leg_id,
-                                        "price": leg.price,
-                                        "quantity": leg.quantity,
-                                        "time": leg.time,
-                                    }
-                                    for leg in so.executions
-                                ],
-                                "schwab_order_id": so.order_id,
-                                "schwab_order_price": so.price,
-                            },
-                            sort_keys=True,
-                        ),
-                        # 4-decimal precision per plan §A.1.6: covers
-                        # CVGI $0.0056 + LION $0.0001 sub-cent debugging.
-                        delta_text=(
-                            f"${execution_price - float(f.price):+.4f} "
-                            f"(schwab execution minus journal)"
-                        ),
-                    )
+                if abs(execution_price - float(f.price)) <= price_tolerance:
+                    # Price matches within tolerance; the sole same-qty
+                    # candidate IS the fill (a side/session quirk on the ONLY
+                    # candidate is not a corruption vector — corruption needs
+                    # the WRONG leg, i.e. a 2nd candidate). Claim, no emit —
+                    # preserves today's behavior for a price-matching fill.
+                    matched_schwab_idx.add(idx)
+                    continue
+                # Single candidate, price MISMATCH -> emit Shape D (Shape-C
+                # keys + execution_side + candidate_count + the session int).
+                # The classifier applies A2-side / A2-date / A2-magnitude; a
+                # legitimate sub-2% single-candidate fix still resolves tier-1.
+                matched_schwab_idx.add(idx)
+                dist = _fill_execution_session_distance(f.fill_datetime, so)
+                shape_d = _shape_d_candidate_payload(
+                    so,
+                    execution_price=execution_price,
+                    sessions_from_fill=dist,
+                )
+                shape_d["candidate_count"] = 1
+                _emit(
+                    conn,
+                    run_id=run_id,
+                    discrepancy_type=dtype,
+                    field_name="price",
+                    counters=counters,
+                    dedup_seen=dedup_seen,
+                    ticker=t.ticker,
+                    trade_id=t.id,
+                    fill_id=f.fill_id,
+                    expected_value_json=json.dumps(
+                        {"price": float(f.price)}, sort_keys=True,
+                    ),
+                    actual_value_json=json.dumps(shape_d, sort_keys=True),
+                    # 4-decimal precision per plan §A.1.6: covers CVGI
+                    # $0.0056 + LION $0.0001 sub-cent debugging.
+                    delta_text=(
+                        f"${execution_price - float(f.price):+.4f} "
+                        f"(schwab execution minus journal)"
+                    ),
+                )
 
         # --- 6.5. Arc 4b auto-ingestion (runs INSIDE this BEGIN, BEFORE the
         # step-7 journal->source scan). Coverage-gap detection first, then the

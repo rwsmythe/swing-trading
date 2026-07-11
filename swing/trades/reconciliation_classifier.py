@@ -116,6 +116,14 @@ _EXECUTION_AUDIT_KEYS: frozenset[str] = frozenset({
 })
 _SHAPE_C_EXPECTED_KEYS: frozenset[str] = frozenset({"price"}) | _EXECUTION_AUDIT_KEYS
 
+# 20-A Shape D — the enriched single-candidate matcher emit (plan §5.3). Shape
+# C keys PLUS the three A2 evidence fields. Exact-set-equality like Shape C
+# (a partial/malformed enrichment fails closed to tier-2 — never tier-1).
+_SHAPE_D_EXTRA_KEYS: frozenset[str] = frozenset(
+    {"execution_side", "candidate_count", "execution_sessions_from_fill"}
+)
+_SHAPE_D_EXPECTED_KEYS: frozenset[str] = _SHAPE_C_EXPECTED_KEYS | _SHAPE_D_EXTRA_KEYS
+
 
 # ---------------------------------------------------------------------------
 # 20-A Task A-1 — tier-1 overwrite magnitude band (A2-magnitude guard)
@@ -130,6 +138,39 @@ _SHAPE_C_EXPECTED_KEYS: frozenset[str] = frozenset({"price"}) | _EXECUTION_AUDIT
 # PURE: the band consults ONLY the proposed source price + the journal price
 # already available on the classifier's inputs. No I/O, no calendar.
 _MAX_TIER1_OVERWRITE_RATIO: float = 0.02
+
+
+# 20-A A2-date — max NYSE-session distance (fill<->execution) for a tier-1
+# fill-price auto-correct. RD-LOCKED (plan §13 D-A2): `> 1` demotes (same or
+# adjacent session is "within 1 session"). Session distance is computed
+# SESSION-ACCURATELY at the matcher (`schwab_reconciliation.py` via
+# `swing/evaluation/dates.py`) and passed into the payload as a pre-computed
+# int; the classifier does a PURE integer compare (purity lock preserved).
+_MAX_TIER1_SESSION_DISTANCE: int = 1
+
+
+# 20-A A2-side — expected Schwab execution instruction set per journal fill
+# action. Long-only V1 vocabulary: entry -> BUY family; exit/trim/stop ->
+# SELL family. Single source of truth shared by the classifier's A2-side
+# check AND the matcher's `good_matches` side gate (imported there, so the
+# two cannot drift). PURE (a frozenset lookup; no I/O).
+_ENTRY_EXECUTION_SIDES: frozenset[str] = frozenset(
+    {"BUY", "BUY_TO_OPEN", "BUY_TO_COVER"}
+)
+_EXIT_EXECUTION_SIDES: frozenset[str] = frozenset(
+    {"SELL", "SELL_TO_CLOSE"}
+)
+
+
+def _expected_execution_sides(action: Any | None) -> frozenset[str]:
+    """Map a journal ``fills.action`` to its expected execution-side set.
+
+    ``entry`` -> BUY family; ``exit`` / ``trim`` / ``stop`` (and any other
+    non-entry action) -> SELL family. PURE.
+    """
+    if action is not None and str(action).strip().lower() == "entry":
+        return _ENTRY_EXECUTION_SIDES
+    return _EXIT_EXECUTION_SIDES
 
 
 def _overwrite_ratio(source_price: float, journal_price: float) -> float:
