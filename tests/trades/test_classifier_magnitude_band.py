@@ -138,6 +138,54 @@ def test_close_shape_c_within_band_stays_tier1() -> None:
     assert result.correction_target == {"price": 5.30}
 
 
+def test_shape_a_legacy_over_band_demotes() -> None:
+    """Codex R2 MAJOR — a legacy bare {"price": 12.305} vs journal 13.00
+    (5.35%) must NOT auto-apply via the Shape-A path either."""
+    disc = _make_discrepancy(
+        "entry_price_mismatch", ticker="PTEN", fill_id=17, trade_id=10,
+    )
+    result = classify_discrepancy(
+        disc,
+        source_payload={"price": 12.305},
+        journal_row={"price": 13.00, "quantity": 15, "action": "entry"},
+    )
+    assert result.tier == 2
+    assert "magnitude" in result.correction_reason
+
+
+def test_shape_b_legacy_over_band_demotes() -> None:
+    """Full-tuple Shape B over-band overwrite also demotes."""
+    disc = _make_discrepancy(
+        "entry_price_mismatch", ticker="DFTX", fill_id=28, trade_id=16,
+    )
+    result = classify_discrepancy(
+        disc,
+        source_payload={
+            "price": 22.16, "ticker": "DFTX", "quantity": 7,
+            "fill_datetime": "2026-06-01T14:00:00",
+        },
+        journal_row={
+            "price": 24.53, "quantity": 7, "ticker": "DFTX",
+            "fill_datetime": "2026-06-01T14:00:00", "action": "entry",
+        },
+    )
+    assert result.tier == 2
+
+
+def test_shape_a_legacy_within_band_stays_tier1() -> None:
+    """CVGI legacy bare {"price": 5.30} vs journal 5.23 (1.34%) stays tier-1."""
+    disc = _make_discrepancy(
+        "entry_price_mismatch", ticker="CVGI", fill_id=9, trade_id=1,
+    )
+    result = classify_discrepancy(
+        disc,
+        source_payload={"price": 5.30},
+        journal_row={"price": 5.23, "quantity": 100, "action": "entry"},
+    )
+    assert result.tier == 1
+    assert result.correction_target == {"price": 5.30}
+
+
 def test_shape_c_missing_journal_price_keeps_tier1() -> None:
     """journal_price falsy/None -> nothing to gate against -> tier-1 kept."""
     disc = _make_discrepancy(

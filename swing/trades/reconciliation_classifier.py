@@ -1062,6 +1062,21 @@ def _classify_entry_price_mismatch(
             )
 
     journal_price = journal_row.get("price")
+    # 20-A Task A-1 (Codex R2 MAJOR) — the A2-magnitude belt ALSO gates the
+    # legacy Shape-A/B tier-1 path: a persisted / backfilled bare {"price": X}
+    # (or full-tuple Shape B) over-band overwrite must NOT auto-apply either
+    # (PTEN/DFTX legacy rows would otherwise bypass the guard on re-classify).
+    demotion = _magnitude_band_demotion(
+        discrepancy=discrepancy,
+        label="entry_price_mismatch",
+        id_text=(
+            f"ticker={discrepancy.ticker!r}, fill_id={discrepancy.fill_id}"
+        ),
+        source_price=source_price_float,
+        journal_price=journal_price,
+    )
+    if demotion is not None:
+        return demotion
     # Format prices to 2 decimals so the reason string carries a stable
     # numeric representation regardless of Python's float repr (e.g.,
     # 5.30 → 5.3 by default; we render 5.30 explicitly for observability).

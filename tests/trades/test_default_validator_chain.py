@@ -227,28 +227,33 @@ def test_chain_composes_with_classify_via_partial_rejection_downgrades(
     dispatcher downgrades to tier-2 validator_rejected."""
     conn = conn_with_planted_cvgi_for_chain_test
     chain = default_validator_chain(conn)
-    # Plant a bound chain for a fill that exists; the proposal carries a
-    # negative price which the fills validator rejects.
+    # Plant a bound chain for the trade that exists; the proposal carries a
+    # negative stop which the trades stop validator rejects. NOTE (20-A): this
+    # test now uses stop_mismatch (NOT entry_price_mismatch) because the A-1
+    # overwrite-magnitude band pre-empts a bad PRICE proposal at the
+    # sub-classifier (before the dispatcher validator step); stop_mismatch has
+    # no magnitude band, so the dispatcher validator-downgrade path stays
+    # exercised end-to-end.
     bound = functools.partial(
         chain,
-        affected_table="fills",
+        affected_table="trades",
         affected_row_id=1,
     )
 
     # Build a synthetic discrepancy whose sub-classifier emits tier-1 with
-    # a negative price (use entry_price_mismatch + source_payload).
+    # a negative stop (stop_mismatch + source_payload).
     discrepancy = ReconciliationDiscrepancy(
         discrepancy_id=999,
         run_id=1,
-        discrepancy_type="entry_price_mismatch",
+        discrepancy_type="stop_mismatch",
         trade_id=1,
-        fill_id=1,
+        fill_id=None,
         cash_movement_id=None,
         linked_daily_management_record_id=None,
         ticker="CVGI",
-        field_name="price",
-        expected_value_json='{"price": 5.23}',
-        actual_value_json='{"price": -1.0}',
+        field_name="current_stop",
+        expected_value_json='{"current_stop": 5.0}',
+        actual_value_json='{"stop_price": -1.0}',
         delta_text=None,
         material_to_review=1,
         resolution="unresolved",
@@ -261,8 +266,8 @@ def test_chain_composes_with_classify_via_partial_rejection_downgrades(
     )
     result = classify_discrepancy(
         discrepancy,
-        source_payload={"price": -1.0},
-        journal_row={"price": 5.23},
+        source_payload={"stop_price": -1.0},
+        journal_row={"current_stop": 5.0},
         validator_chain=bound,
     )
     # Sub-classifier emitted tier-1; chain rejects → downgrade.
