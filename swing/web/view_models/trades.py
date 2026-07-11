@@ -438,7 +438,13 @@ def build_entry_form_vm(
         with conn:
             wl = list_active_watchlist(conn)
             wl_entry = next((w for w in wl if w.ticker == ticker), None)
-            open_trades = list_open_trades(conn)
+            # 20-A B-2 (Codex R7) — exclude voided (phantom) open trades from
+            # the current_equity / total_current_risk stat inputs.
+            from swing.trades.voided_trades import voided_trade_ids
+            _voided = voided_trade_ids(conn)
+            open_trades = [
+                t for t in list_open_trades(conn) if t.id not in _voided
+            ]
             # C.10: migrated off ``list_all_exits`` shim. ``current_equity``
             # consumes ExitLike-shape duck-typed input; the local helper
             # adapts non-entry fills via the C.9/C.10 _ExitShape pattern.

@@ -172,7 +172,14 @@ def hyp_recs_refresh(request: Request):
     conn = connect(cfg.paths.db_path)
     try:
         with conn:
-            open_trade_tickers = {t.ticker for t in list_open_trades(conn)}
+            # 20-A B-2 (Codex R7) — a voided (phantom) trade must not suppress
+            # a same-ticker recommendation.
+            from swing.trades.voided_trades import voided_trade_ids
+            _voided = voided_trade_ids(conn)
+            open_trade_tickers = {
+                t.ticker for t in list_open_trades(conn)
+                if t.id not in _voided
+            }
     finally:
         conn.close()
     section_vm = build_hyp_recs_section(

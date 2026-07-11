@@ -845,7 +845,15 @@ def build_dashboard(
     conn = connect(cfg.paths.db_path)
     try:
         with conn:  # atomic read snapshot across all queries
-            open_trades = list_open_trades(conn)
+            # 20-A B-2 (Codex R7) — a voided (phantom) trade never executed at
+            # the broker; exclude it from the operational open-position VM
+            # (open_count / open-risk / price-fetch scope / same-ticker rec
+            # suppression). The trade-detail page stays voided-visible (D19).
+            from swing.trades.voided_trades import voided_trade_ids
+            _voided = voided_trade_ids(conn)
+            open_trades = [
+                t for t in list_open_trades(conn) if t.id not in _voided
+            ]
             # Phase 4 (Task 2): consume the shared latest_completed_pipeline_run
             # helper for today_decisions / last_pipeline_ts / stale_banner.
             # Pipeline-bound contract: when no completed pipeline_runs exist,
