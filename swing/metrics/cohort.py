@@ -89,7 +89,15 @@ def list_trades_for_cohort(
     sql += " ORDER BY entry_date, ticker, id"
 
     rows = conn.execute(sql, params).fetchall()
-    return [_row_to_trade(r) for r in rows]
+    trades = [_row_to_trade(r) for r in rows]
+    # 20-A B-2 — exclude voided (phantom/test) trades from cohort stats (the
+    # tuition 16->15 restatement). Audit/trade-detail surfaces use the base
+    # repos + get_trade, which stay voided-visible (D19).
+    from swing.trades.voided_trades import voided_trade_ids
+    voided = voided_trade_ids(conn)
+    if voided:
+        trades = [t for t in trades if t.id not in voided]
+    return trades
 
 
 def list_closed_trades_for_cohort(
@@ -135,6 +143,16 @@ def count_per_cohort(conn: sqlite3.Connection) -> dict[str, int]:
         registered_names.append(name)
         cohort_counts[name] = 0
 
+    # 20-A B-2 — exclude voided (phantom/test) trades from cohort counts. The
+    # ids are DB-sourced ints, so inlining an ``id NOT IN (...)`` fragment is
+    # injection-safe (no list-binding of a single placeholder).
+    from swing.trades.voided_trades import voided_trade_ids
+    voided = voided_trade_ids(conn)
+    voided_excl = (
+        f" AND id NOT IN ({','.join(str(int(v)) for v in sorted(voided))})"
+        if voided else ""
+    )
+
     # Per-cohort count via the shared SQL helper.
     for name in registered_names:
         fragment, params = label_matches_hypothesis_sql(name)
@@ -142,7 +160,7 @@ def count_per_cohort(conn: sqlite3.Connection) -> dict[str, int]:
             "SELECT COUNT(*) FROM trades "
             f"WHERE state IN {_CLOSED_STATES_SQL} "
             "  AND hypothesis_label IS NOT NULL "
-            f"  AND {fragment}"
+            f"  AND {fragment}{voided_excl}"
         )  # noqa: S608
         (count,) = conn.execute(sql, params).fetchone()
         cohort_counts[name] = int(count)
@@ -161,7 +179,7 @@ def count_per_cohort(conn: sqlite3.Connection) -> dict[str, int]:
             "SELECT hypothesis_label, COUNT(*) FROM trades "
             f"WHERE state IN {_CLOSED_STATES_SQL} "
             "  AND hypothesis_label IS NOT NULL "
-            f"  AND {' AND '.join(not_clauses)} "
+            f"  AND {' AND '.join(not_clauses)}{voided_excl} "
             "GROUP BY hypothesis_label"
         )  # noqa: S608
         for label, count in conn.execute(orphan_sql, not_params):
@@ -174,7 +192,7 @@ def count_per_cohort(conn: sqlite3.Connection) -> dict[str, int]:
         orphan_sql_empty = (
             "SELECT hypothesis_label, COUNT(*) FROM trades "
             f"WHERE state IN {_CLOSED_STATES_SQL} "
-            "  AND hypothesis_label IS NOT NULL "
+            f"  AND hypothesis_label IS NOT NULL{voided_excl} "
             "GROUP BY hypothesis_label"
         )  # noqa: S608
         for label, count in conn.execute(orphan_sql_empty):

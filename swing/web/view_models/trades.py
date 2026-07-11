@@ -143,6 +143,9 @@ def _list_all_exitshape_via_fills(conn) -> list[_ExitShape]:
     """
     from swing.data.repos.fills import list_all_fills
     from swing.data.repos.trades import list_closed_trades
+    from swing.trades.voided_trades import voided_trade_ids
+
+    voided = voided_trade_ids(conn)  # 20-A B-2 — exclude voided realized
 
     trades_by_id: dict[int, Trade] = {}
     for t in list_open_trades(conn):
@@ -156,6 +159,8 @@ def _list_all_exitshape_via_fills(conn) -> list[_ExitShape]:
     for f in list_all_fills(conn):
         if f.action == "entry":
             continue
+        if f.trade_id in voided:
+            continue  # 20-A B-2 — voided trade excluded from realized
         trade = trades_by_id.get(f.trade_id)
         if trade is None:
             continue  # orphan fill — skip (parent trade missing)

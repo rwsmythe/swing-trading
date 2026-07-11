@@ -133,6 +133,11 @@ def list_all_exitshape_via_fills(conn) -> list[_ExitShape]:
         r_multiple,
         realized_pnl,
     )
+    from swing.trades.voided_trades import voided_trade_ids
+
+    # 20-A B-2 — exclude voided (phantom/test) trades from the fills-derived
+    # realized/equity aggregation (the SATL -$0.01 must leave current_equity).
+    voided = voided_trade_ids(conn)
 
     trades_by_id: dict[int, Trade] = {}
     for t in list_open_trades(conn):
@@ -146,6 +151,8 @@ def list_all_exitshape_via_fills(conn) -> list[_ExitShape]:
     for f in list_all_fills(conn):
         if f.action == "entry":
             continue
+        if f.trade_id in voided:
+            continue  # 20-A B-2 — voided trade excluded from realized/equity
         trade = trades_by_id.get(f.trade_id)
         if trade is None:
             continue  # orphan fill — skip (parent trade missing)

@@ -102,6 +102,9 @@ def _list_all_exitshape_via_fills(conn) -> list[_ExitShape]:
         r_multiple,
         realized_pnl,
     )
+    from swing.trades.voided_trades import voided_trade_ids
+
+    voided = voided_trade_ids(conn)  # 20-A B-2 — exclude voided realized
 
     trades_by_id: dict[int, Trade] = {}
     for t in list_open_trades(conn):
@@ -115,6 +118,8 @@ def _list_all_exitshape_via_fills(conn) -> list[_ExitShape]:
     for f in list_all_fills(conn):
         if f.action == "entry":
             continue
+        if f.trade_id in voided:
+            continue  # 20-A B-2 — voided trade excluded from journal stats
         trade = trades_by_id.get(f.trade_id)
         if trade is None:
             continue
@@ -455,7 +460,12 @@ def build_journal(
     conn = connect(cfg.paths.db_path)
     try:
         with conn:
-            trades = list_open_trades(conn) + list_closed_trades(conn)
+            from swing.trades.voided_trades import voided_trade_ids
+            _voided = voided_trade_ids(conn)  # 20-A B-2 — exclude voided
+            trades = [
+                t for t in (list_open_trades(conn) + list_closed_trades(conn))
+                if t.id not in _voided
+            ]
             # C.9: sourced from fills (non-entry) via local adapter; C.10
             # refactors equity.py to consume Fill directly and these
             # adapters retire.

@@ -41,6 +41,11 @@ def _list_all_exitshape_via_fills(
         r_multiple,
         realized_pnl,
     )
+    from swing.trades.voided_trades import voided_trade_ids
+
+    # 20-A B-2 — exclude voided (phantom/test) trades from journal-stat
+    # realized aggregation.
+    voided = voided_trade_ids(conn)
 
     trades_by_id: dict[int, Trade] = {}
     for t in list_open_trades(conn):
@@ -54,6 +59,8 @@ def _list_all_exitshape_via_fills(
     for f in list_all_fills(conn):
         if f.action == "entry":
             continue
+        if f.trade_id in voided:
+            continue  # 20-A B-2 — voided trade excluded from journal stats
         trade = trades_by_id.get(f.trade_id)
         if trade is None:
             continue
@@ -345,10 +352,15 @@ def compute_hypothesis_progress_breakdown(
         _label_matches_hypothesis,
         compute_tripwire_status,
     )
+    from swing.trades.voided_trades import voided_trade_ids
+
+    # 20-A B-2 — exclude voided (phantom/test) trades from hypothesis progress
+    # (sample counts + realized aggregates).
+    voided = voided_trade_ids(conn)
 
     hypotheses = list_hypotheses(conn)
-    closed = list_closed_trades(conn)
-    open_trades = list_open_trades(conn)
+    closed = [t for t in list_closed_trades(conn) if t.id not in voided]
+    open_trades = [t for t in list_open_trades(conn) if t.id not in voided]
     exits_by_trade: dict[int, list[_ExitShape]] = {}
     for e in _list_all_exitshape_via_fills(conn):
         exits_by_trade.setdefault(e.trade_id, []).append(e)
