@@ -106,7 +106,14 @@ def _compute_cash_coherence_badge(conn) -> bool:
     EITHER (1) any cash_movement_mismatch pending exists (any run), OR (2) the
     most-recent completed schwab_api run has an unresolved equity_delta. Both
     clauses are mirrored (same order) by _first_pending_cash_resolve_link_path
-    so the badge and its link always agree (Arc 20-C D24)."""
+    so the badge and its link always agree (Arc 20-C D24).
+
+    NOTE: the dashboard render path (build_dashboard) no longer calls this
+    directly — it derives the badge as ``link is not None`` from a SINGLE
+    _first_pending_cash_resolve_link_path call so the two can never diverge
+    across reads (Codex R2 MAJOR). This predicate is retained as the canonical
+    badge definition for direct callers/tests and is equivalent by
+    construction (the link helper's two clauses match these two clauses)."""
     pending = conn.execute(
         "SELECT COUNT(*) FROM reconciliation_discrepancies "
         "WHERE discrepancy_type='cash_movement_mismatch' "
@@ -1126,13 +1133,17 @@ def build_dashboard(
             # at L1050 is scoped inside the `if hyp_recs_candidates:` block).
             from swing.data.repos.hypothesis import list_hypotheses
             _registry = list_hypotheses(conn)
-            # Arc 4b §6.2 — cash-coherence badge + the latest net_liq snapshot
-            # for the ACCOUNT-tile secondary line (computed under this snapshot).
-            cash_coherence_badge = _compute_cash_coherence_badge(conn)
-            cash_badge_link_path = (
-                _first_pending_cash_resolve_link_path(conn)
-                if cash_coherence_badge else None
-            )
+            # Arc 4b §6.2 + Arc 20-C (D24) — cash-coherence badge + its link.
+            # Derive BOTH from the SINGLE link-helper call so they can never
+            # diverge (Codex R2 MAJOR — the template now emits the link
+            # unconditionally when the badge is lit, so a lit badge with a None
+            # link would render an empty href). The link helper mirrors the
+            # badge predicate's two clauses EXACTLY, so
+            # `link is not None` == the badge predicate — one read, no
+            # cross-read TOCTOU window (sqlite3's default isolation does not
+            # snapshot the two separate SELECTs).
+            cash_badge_link_path = _first_pending_cash_resolve_link_path(conn)
+            cash_coherence_badge = cash_badge_link_path is not None
             _nlv_snap = get_latest_snapshot_on_or_before(
                 conn, asof_date=action_session, basis="net_liq")
             schwab_nlv = (
