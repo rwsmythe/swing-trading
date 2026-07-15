@@ -53,6 +53,7 @@ from swing.web.view_models.pipeline import PipelineVM, build_pipeline
 from swing.web.view_models.reconcile import (
     ReconcileDiscrepancyErrorVM,
     ReconcileDiscrepancyResolveVM,
+    ReconcileEquityDeltaDiagnosticVM,
     ReconcileOrphanAcknowledgeVM,
     ReconcileSimpleAcknowledgeVM,
 )
@@ -95,6 +96,7 @@ MANIFEST = {
     ReconcileDiscrepancyErrorVM: PageKind.HISTORY_ANALYSIS,
     ReconcileOrphanAcknowledgeVM: PageKind.HISTORY_ANALYSIS,
     ReconcileSimpleAcknowledgeVM: PageKind.HISTORY_ANALYSIS,
+    ReconcileEquityDeltaDiagnosticVM: PageKind.HISTORY_ANALYSIS,
     SchwabSetupVM: PageKind.HISTORY_ANALYSIS,
     SchwabStatusVM: PageKind.HISTORY_ANALYSIS,
     SchwabSetupErrorVM: PageKind.HISTORY_ANALYSIS,
