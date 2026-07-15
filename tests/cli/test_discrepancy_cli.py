@@ -393,6 +393,22 @@ def test_discrepancy_resolve_journal_corrected_requires_reason(
             "SELECT discrepancy_id FROM reconciliation_discrepancies "
             "ORDER BY discrepancy_id ASC LIMIT 1"
         ).fetchone()[0]
+        # Arc 20-B (D22 gate): the reconcile pivot stamps the row
+        # ``pending_ambiguity_resolution`` (with a LIVE trade/fill subject),
+        # which the general ``discrepancy resolve`` now GATES before any
+        # ``--resolution`` validation runs. This test exercises the
+        # reason-required validation of ``resolve_discrepancy`` itself, so
+        # reset the row to ``unresolved`` (mirroring the two sibling tests
+        # above, which reset for the schema cross-CHECK) to reach that
+        # validation path rather than the ambiguity gate.
+        conn.execute(
+            "UPDATE reconciliation_discrepancies SET "
+            "resolution='unresolved', ambiguity_kind=NULL, "
+            "resolution_reason=NULL, resolved_at=NULL, resolved_by=NULL "
+            "WHERE discrepancy_id=?",
+            (did,),
+        )
+        conn.commit()
     finally:
         conn.close()
     r = runner.invoke(main, [
