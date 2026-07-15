@@ -3606,21 +3606,26 @@ def discrepancy_override_correction_cmd(
 
 
 def _compose_forced_bypass_reason(
-    discrepancy_id: int, operator_reason: str | None,
+    discrepancy_id: int,
+    ambiguity_kind: str | None,
+    operator_reason: str | None,
 ) -> str:
     """Compose the ``resolution_reason`` for a ``--force`` override of the D22
     pending-ambiguity gate (Arc 20-B).
 
-    ALWAYS non-empty: the system marker names the exact discrepancy + records
-    that the tier-2 choice menu was consciously bypassed so a future reader
-    sees the override in the audit trail (never a silent identical outcome).
-    The operator rationale is appended when supplied. ASCII-only (the Windows
-    cp1252 gotcha).
+    ALWAYS non-empty: the system marker names the exact discrepancy + the
+    bypassed ``ambiguity_kind`` (which ``resolve_discrepancy`` clears from the
+    row on the transition, so recording it here preserves WHICH menu was
+    skipped) + records that the tier-2 choice menu was consciously bypassed so
+    a future reader sees the override in the audit trail (never a silent
+    identical outcome). The operator rationale is appended when supplied.
+    ASCII-only (the Windows cp1252 gotcha).
     """
     marker = (
         f"forced-resolve bypass of the ambiguity-choice gate: discrepancy "
-        f"{discrepancy_id} was pending_ambiguity_resolution; the tier-2 "
-        f"choice menu was skipped via `resolve --force`."
+        f"{discrepancy_id} was pending_ambiguity_resolution "
+        f"(ambiguity_kind={ambiguity_kind}); the tier-2 choice menu was "
+        f"skipped via `resolve --force`."
     )
     extra = (operator_reason or "").strip()
     return f"{marker} {extra}" if extra else marker
@@ -3666,7 +3671,10 @@ def discrepancy_resolve_cmd(
     """Resolve a discrepancy with an operator-supplied resolution + reason."""
     from swing.data.db import connect
     from swing.data.repos.reconciliation import get_discrepancy
-    from swing.trades.reconciliation import resolve_discrepancy
+    from swing.trades.reconciliation import (
+        DiscrepancyResolutionStateError,
+        resolve_discrepancy,
+    )
     from swing.trades.schwab_reconciliation import orphaned_affected_target
 
     cfg = ctx.obj["config"]
@@ -3675,34 +3683,51 @@ def discrepancy_resolve_cmd(
         # Arc 20-B (D22 gate). The general `discrepancy resolve` must NOT
         # silently bypass the tier-2 choice menu for a LIVE
         # pending_ambiguity_resolution row (its FK subject row(s) still
-        # exist). An FK-orphan (subject row raw-deleted) has NO choice-menu
-        # path -- the tier-2 resolver RAISES reading the gone row -- so it
-        # passes UNGATED exactly as today (REUSING the 19-F
-        # orphaned_affected_target predicate; no second orphan predicate).
-        # Non-pending rows are byte-identical to pre-20-B behavior: the gate
-        # fires ONLY on the pending+subject-exists case.
+        # exist). Two pending rows pass UNGATED exactly as today because
+        # neither has a viable resolve-ambiguity path:
+        #   * an FK-ORPHAN (subject row raw-deleted) -- the tier-2 resolver
+        #     RAISES reading the gone row (detected by REUSING the 19-F
+        #     orphaned_affected_target predicate; no second orphan predicate);
+        #   * a NO-FK pending row (no fill/cash_movement/trade FK set at all)
+        #     -- it has no subject rows, so `resolve-ambiguity`'s
+        #     _resolve_affected_target has nothing to read.
+        # The gate therefore fires ONLY on the pending + subject-FK-set +
+        # subject-EXISTS case (the brief's "subject row(s) EXIST"). Non-pending
+        # rows are byte-identical to pre-20-B behavior.
         d = get_discrepancy(conn, discrepancy_id)
-        if (
-            d is not None
-            and d.resolution == "pending_ambiguity_resolution"
-            and orphaned_affected_target(conn, d) is None
-        ):
-            # Live tier-2 row (subject rows exist) -> gated.
-            if not force:
-                raise click.ClickException(
-                    f"discrepancy {discrepancy_id} is "
-                    f"pending_ambiguity_resolution (a tier-2 ambiguity "
-                    f"awaiting an operator choice); `discrepancy resolve` "
-                    f"would bypass the choice menu. Resolve it via `swing "
-                    f"journal discrepancy resolve-ambiguity {discrepancy_id} "
-                    f"--choice <code> --reason ...` (run `swing journal "
-                    f"discrepancy show-ambiguity {discrepancy_id}` for the "
-                    f"menu), or pass --force to override the gate (the forced "
-                    f"bypass is recorded in the resolution reason)."
+        if d is not None and d.resolution == "pending_ambiguity_resolution":
+            has_subject_fk = (
+                d.fill_id is not None
+                or d.cash_movement_id is not None
+                or d.trade_id is not None
+            )
+            is_orphan = orphaned_affected_target(conn, d) is not None
+            if has_subject_fk and not is_orphan:
+                # Live tier-2 row (subject rows exist) -> gated.
+                if not force:
+                    raise click.ClickException(
+                        f"discrepancy {discrepancy_id} is "
+                        f"pending_ambiguity_resolution (a tier-2 ambiguity "
+                        f"awaiting an operator choice); `discrepancy resolve` "
+                        f"would bypass the choice menu. Resolve it via `swing "
+                        f"journal discrepancy resolve-ambiguity "
+                        f"{discrepancy_id} --choice <code> --reason ...` (run "
+                        f"`swing journal discrepancy show-ambiguity "
+                        f"{discrepancy_id}` for the menu), or pass --force to "
+                        f"override the gate (the forced bypass is recorded in "
+                        f"the resolution reason)."
+                    )
+                # --force: proceed AND record the conscious override on the
+                # audit surface (never a silent identical outcome).
+                reason = _compose_forced_bypass_reason(
+                    discrepancy_id, d.ambiguity_kind, reason,
                 )
-            # --force: proceed AND record the conscious override on the audit
-            # surface (never a silent identical outcome).
-            reason = _compose_forced_bypass_reason(discrepancy_id, reason)
+        # TOCTOU close (mirrors the web/orphan resolvers, 18-H.6.1 R1M2): the
+        # gate read `d` OUTSIDE resolve_discrepancy's BEGIN IMMEDIATE, so pin
+        # the resolution seen at gate-time -- a concurrent pivot that flips the
+        # row to pending_ambiguity_resolution between the gate read and the
+        # lock would otherwise let a non-force resolve slip past the gate.
+        require_current = d.resolution if d is not None else None
         try:
             resolve_discrepancy(
                 conn,
@@ -3711,7 +3736,10 @@ def discrepancy_resolve_cmd(
                 resolution_reason=reason,
                 mistake_tag_assigned=mistake_tag,
                 material_to_review=material,
+                require_current_resolution=require_current,
             )
+        except DiscrepancyResolutionStateError as e:
+            raise click.ClickException(str(e)) from None
         except ValueError as e:
             raise click.ClickException(str(e)) from None
     finally:

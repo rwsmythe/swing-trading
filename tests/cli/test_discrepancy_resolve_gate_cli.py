@@ -179,6 +179,9 @@ def test_pending_subject_exists_force_records_bypass(cli_workspace) -> None:
     # The forced bypass is recorded -- distinct from a silent identical outcome.
     assert "bypass" in reason.lower()
     assert str(did) in reason
+    # The bypassed ambiguity_kind is preserved in the marker even though
+    # resolve_discrepancy clears it from the row on the transition.
+    assert "schwab_returned_no_match" in reason
     # Operator rationale preserved alongside the marker.
     assert "deliberate override for audit" in reason
 
@@ -206,6 +209,62 @@ def test_force_on_ungated_row_adds_no_marker(cli_workspace) -> None:
     assert r.exit_code == 0, r.output
     _, _, _, reason = _read(db_path, did)
     assert reason == "orphan with force flag"
+    assert "bypass" not in reason.lower()
+
+
+def _plant_no_fk_pending(db_path: Path) -> int:
+    """Plant a pending_ambiguity_resolution row with ALL FK columns NULL. The
+    schema cross-CHECK ties ambiguity_kind to the pending resolution but does
+    NOT require an FK, so this state is reachable. Such a row has no subject
+    rows and no resolve-ambiguity path (_resolve_affected_target has nothing to
+    read), so the gate must NOT refuse it -- it passes ungated like an orphan.
+    """
+    conn = sqlite3.connect(db_path)
+    try:
+        run_id = _seed_reconciliation_run(conn)
+        cur = conn.execute(
+            """
+            INSERT INTO reconciliation_discrepancies (
+                run_id, discrepancy_type, trade_id, fill_id, cash_movement_id,
+                ticker, field_name, expected_value_json, actual_value_json,
+                material_to_review, resolution, ambiguity_kind,
+                resolution_reason, created_at
+            ) VALUES (?, ?, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run_id, "snapshot_mismatch", "SPY", "net_amount",
+                None, None, 1, "pending_ambiguity_resolution",
+                "unknown_schwab_subtype",
+                "classifier: unknown_schwab_subtype", "2026-05-16T12:05:00",
+            ),
+        )
+        did = int(cur.lastrowid)
+        conn.commit()
+    finally:
+        conn.close()
+    return did
+
+
+def test_no_fk_pending_passes_ungated(cli_workspace) -> None:
+    """A NO-FK pending row (all subject FKs NULL -> no subject rows, no
+    resolve-ambiguity path) is NOT refused -- it passes ungated exactly as
+    today (verbatim reason, no marker). PRE-this-fix the gate refused any
+    non-orphan pending row (including no-FK); POST-fix it fires only when a
+    subject FK is set AND the subject exists."""
+    runner, cfg, db_path = cli_workspace
+    did = _plant_no_fk_pending(db_path)
+
+    r = runner.invoke(main, [
+        "--config", str(cfg),
+        "journal", "discrepancy", "resolve", str(did),
+        "--resolution", "acknowledged_immaterial",
+        "--reason", "no-FK pending; direct ack",
+    ])
+    assert r.exit_code == 0, r.output
+    resolution, _, ambiguity_kind, reason = _read(db_path, did)
+    assert resolution == "acknowledged_immaterial"
+    assert ambiguity_kind is None  # cleared on the transition
+    assert reason == "no-FK pending; direct ack"
     assert "bypass" not in reason.lower()
 
 
