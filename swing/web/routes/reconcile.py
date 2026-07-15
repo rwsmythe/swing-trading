@@ -67,6 +67,7 @@ from swing.trades.schwab_reconciliation import (
 )
 from swing.web.view_models.reconcile import (
     ReconcileDiscrepancyErrorVM,
+    ReconcileEquityDeltaDiagnosticVM,
     ReconcileOrphanAcknowledgeVM,
     ReconcileSimpleAcknowledgeVM,
     _parse_parametric_pick_count,
@@ -1779,3 +1780,230 @@ async def reconcile_discrepancy_resolve_post(  # noqa: PLR0911, PLR0912, PLR0915
         )
     # Non-HTMX fallback (OriginGuard non-strict / direct form submit).
     return RedirectResponse(url=redirect_target, status_code=303)
+
+
+# ---------------------------------------------------------------------------
+# Arc 20-C (D24) — the read-only equity_delta DIAGNOSTIC view.
+#
+# THE PRINCIPLE: a coherence finding routes the operator to the DATA FIX, never
+# just an acknowledge. This is the destination the cash-coherence badge links
+# to when it lights on an unresolved equity_delta (replacing the dead
+# ``<span>`` at status_strip.html.j2). Read-only; NO writes; NO schema.
+# ---------------------------------------------------------------------------
+
+_EQUITY_DELTA_DIAGNOSTIC_PATH = "/reconcile/equity-delta"
+
+
+def _as_finite_float(value: object) -> float | None:
+    """Coerce a JSON-envelope value to a finite float, else None."""
+    if value is None:
+        return None
+    try:
+        out = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    import math
+
+    return out if math.isfinite(out) else None
+
+
+def _latest_unresolved_equity_delta(
+    conn: sqlite3.Connection,
+) -> tuple[int, int] | None:
+    """Return ``(run_id, discrepancy_id)`` for the most-recent completed
+    schwab_api run's unresolved equity_delta, else None.
+
+    Mirrors ``_compute_cash_coherence_badge``'s equity_delta clause
+    (``swing/web/view_models/dashboard.py``) so the badge link and this view
+    agree on which finding is 'active' — the count-and-link mirror contract.
+    """
+    latest = conn.execute(
+        "SELECT run_id FROM reconciliation_runs "
+        "WHERE source='schwab_api' AND state='completed' "
+        "ORDER BY finished_ts DESC LIMIT 1"
+    ).fetchone()
+    if latest is None:
+        return None
+    run_id = int(latest[0])
+    row = conn.execute(
+        "SELECT discrepancy_id FROM reconciliation_discrepancies "
+        "WHERE run_id = ? AND discrepancy_type='equity_delta' "
+        "AND resolution='unresolved' "
+        "ORDER BY discrepancy_id DESC LIMIT 1",
+        (run_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return run_id, int(row[0])
+
+
+def _equity_delta_breakdown(disc: object) -> dict[str, object]:
+    """Parse the OOF-NETTED breakdown from an equity_delta discrepancy's
+    persisted JSON envelopes (graceful degradation — values are None when a
+    key is absent / the payload is malformed).
+
+    Production emitter shapes (``swing/trades/schwab_reconciliation.py``):
+      expected_value_json = {"equity_dollars": <ledger>, "basis": "ledger"}
+      actual_value_json (swing-scoped) = {"equity_dollars": <swing_nlv>,
+          "swing_nlv": <swing_nlv>, "source_nlv": <broker NLV>,
+          "declared_oof_mv": <Sigma declared OOF MV>,
+          "basis": "net_liq_minus_declared_oof"}
+      actual_value_json (legacy) = {"equity_dollars": <broker NLV>,
+          "basis": "net_liq"}
+
+    On the legacy net_liq path nothing is declared, so ``swing_nlv`` equals the
+    broker NLV and ``declared_oof_mv`` is 0.0 — the netted delta reduces to the
+    raw delta. The DISPLAYED delta is ALWAYS ``ledger - swing_nlv`` (netted).
+    """
+    ledger = broker_nlv = declared_oof_mv = swing_nlv = None
+    basis: object = None
+    try:
+        expected = (
+            json.loads(disc.expected_value_json)  # type: ignore[attr-defined]
+            if getattr(disc, "expected_value_json", None) else {}
+        )
+        actual = (
+            json.loads(disc.actual_value_json)  # type: ignore[attr-defined]
+            if getattr(disc, "actual_value_json", None) else {}
+        )
+    except (json.JSONDecodeError, TypeError):
+        expected, actual = {}, {}
+    if isinstance(expected, dict):
+        ledger = _as_finite_float(expected.get("equity_dollars"))
+    if isinstance(actual, dict):
+        basis = actual.get("basis")
+        if basis == "net_liq_minus_declared_oof":
+            broker_nlv = _as_finite_float(actual.get("source_nlv"))
+            declared_oof_mv = _as_finite_float(actual.get("declared_oof_mv"))
+            swing_nlv = _as_finite_float(actual.get("swing_nlv"))
+            if swing_nlv is None:
+                swing_nlv = _as_finite_float(actual.get("equity_dollars"))
+        else:
+            # Legacy net_liq — nothing declared; swing_nlv == source_nlv.
+            broker_nlv = _as_finite_float(actual.get("equity_dollars"))
+            declared_oof_mv = 0.0
+            swing_nlv = broker_nlv
+    netted_delta = (
+        ledger - swing_nlv
+        if (ledger is not None and swing_nlv is not None) else None
+    )
+    return {
+        "basis": basis,
+        "ledger_equity": ledger,
+        "broker_nlv": broker_nlv,
+        "declared_oof_mv": declared_oof_mv,
+        "swing_nlv": swing_nlv,
+        "netted_delta": netted_delta,
+    }
+
+
+@router.get(_EQUITY_DELTA_DIAGNOSTIC_PATH, response_class=HTMLResponse)
+def reconcile_equity_delta_diagnostic(request: Request) -> Response:
+    """GET — the read-only equity_delta diagnostic view (Arc 20-C D24).
+
+    Shows the OOF-NETTED breakdown (ledger current_equity vs broker NLV vs
+    Sigma declared-OOF MV vs swing-NLV vs the netted delta) for the most-recent
+    completed schwab_api run's unresolved equity_delta, and routes the operator
+    to the DATA FIX. Renders a graceful empty state (200) when no such finding
+    exists. NO writes; read-only queries only.
+    """
+    cfg = apply_overrides(request.app.state.cfg)
+    try:
+        conn = open_connection(
+            cfg.paths.db_path, busy_timeout_ms=cfg.web.db_busy_timeout_ms,
+        )
+    except sqlite3.OperationalError as exc:
+        if not _is_transient_lock_error(exc):
+            raise
+        log.warning("sqlite3.OperationalError (connect): %s", exc)
+        return _render_error(
+            request,
+            status_code=503,
+            error_kind="db_unavailable",
+            error_message=(
+                "Database temporarily unavailable; retry the diagnostic."
+            ),
+            discrepancy_id=None,
+            unresolved_count=0,
+            recent_multi_leg_count=0,
+            banner_resolve_link=None,
+        )
+    try:
+        try:
+            unresolved_count = count_unresolved_material(conn)
+            recent_multi_leg_count = count_recent_multi_leg_auto_corrections(
+                conn,
+            )
+            banner_resolve_link = (
+                fetch_first_pending_ambiguity_resolve_link_path(conn)
+            )
+            found = _latest_unresolved_equity_delta(conn)
+            breakdown: dict[str, object] = {}
+            discrepancy_id: int | None = None
+            run_id: int | None = None
+            raw_delta: float | None = None
+            created_at = ""
+            delta_text = ""
+            if found is not None:
+                run_id, discrepancy_id = found
+                disc = get_discrepancy(conn, discrepancy_id)
+                if disc is not None:
+                    breakdown = _equity_delta_breakdown(disc)
+                    created_at = getattr(disc, "created_at", None) or ""
+                    delta_text = getattr(disc, "delta_text", None) or ""
+                # The RAW (OOF-INCLUSIVE) stored gap — labeled raw in the
+                # template; a future reader must never consume it un-netted.
+                raw_row = conn.execute(
+                    "SELECT equity_delta_dollars FROM reconciliation_runs "
+                    "WHERE run_id = ?",
+                    (run_id,),
+                ).fetchone()
+                if raw_row is not None:
+                    raw_delta = _as_finite_float(raw_row[0])
+        except sqlite3.OperationalError as exc:
+            if not _is_transient_lock_error(exc):
+                raise
+            log.warning("sqlite3.OperationalError (diagnostic reads): %s", exc)
+            return _render_error(
+                request,
+                status_code=503,
+                error_kind="db_unavailable",
+                error_message="Database is busy; please retry in a moment.",
+                discrepancy_id=None,
+                unresolved_count=0,
+                recent_multi_leg_count=0,
+                banner_resolve_link=None,
+            )
+    finally:
+        conn.close()
+
+    try:
+        session_date = topbar_session_date(
+            PageKind.HISTORY_ANALYSIS, datetime.now()
+        ).isoformat()
+    except Exception:  # pragma: no cover - defensive
+        session_date = "n/a"
+
+    vm = ReconcileEquityDeltaDiagnosticVM(
+        session_date=session_date,
+        unresolved_material_discrepancies_count=unresolved_count,
+        recent_multi_leg_auto_correction_count=recent_multi_leg_count,
+        banner_resolve_link=banner_resolve_link,
+        has_active_finding=found is not None,
+        discrepancy_id=discrepancy_id,
+        run_id=run_id,
+        basis=breakdown.get("basis"),  # type: ignore[arg-type]
+        ledger_equity=breakdown.get("ledger_equity"),  # type: ignore[arg-type]
+        broker_nlv=breakdown.get("broker_nlv"),  # type: ignore[arg-type]
+        declared_oof_mv=breakdown.get("declared_oof_mv"),  # type: ignore[arg-type]
+        swing_nlv=breakdown.get("swing_nlv"),  # type: ignore[arg-type]
+        netted_delta=breakdown.get("netted_delta"),  # type: ignore[arg-type]
+        raw_delta_oof_inclusive=raw_delta,
+        created_at=created_at,
+        delta_text=delta_text,
+    )
+    return request.app.state.templates.TemplateResponse(
+        request,
+        "reconcile_equity_delta_diagnostic.html.j2",
+        {"vm": vm},
+    )

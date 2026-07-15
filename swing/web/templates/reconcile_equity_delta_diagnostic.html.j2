@@ -1,0 +1,109 @@
+{% extends "base.html.j2" %}
+{% block title %}Equity-delta diagnostic{% endblock %}
+{% block content %}
+<section class="equity-delta-diagnostic" data-equity-delta-diagnostic="true">
+  <h1>Equity-delta diagnostic</h1>
+
+  {% if not vm.has_active_finding %}
+  <p class="muted" data-no-active-finding="true">
+    No active equity delta finding: the most recent completed Schwab
+    reconciliation run has no unresolved <code>equity_delta</code>. Nothing to
+    diagnose right now.
+  </p>
+  {% else %}
+
+  <p class="muted">
+    The cash-coherence badge lit because the ledger-derived equity and the
+    broker net-liquidating value disagree by more than the tolerance. This is a
+    DATA question, not a button to press: the breakdown below decomposes the
+    gap so you can route it to the correct fix.
+  </p>
+
+  {#- The OOF-NETTED breakdown. Each line is labeled with what it means. The
+      DISPLAYED headline delta is NETTED (ledger minus swing-NLV); the RAW
+      stored equity_delta_dollars is OOF-INCLUSIVE and shown ONLY under its raw
+      label so a future reader never consumes it un-netted (RD's banked
+      stored-vs-emit note). -#}
+  <dl class="context-pairs" data-netted-breakdown="true">
+    <dt>Ledger current_equity</dt>
+    <dd>
+      {%- if vm.ledger_equity is not none %}${{ '%.2f' | format(vm.ledger_equity) }}
+      {%- else %}(unavailable){%- endif %}
+      <span class="muted">&mdash; equity reconstructed from journaled fills + cash movements</span>
+    </dd>
+
+    <dt>Broker NLV (raw)</dt>
+    <dd>
+      {%- if vm.broker_nlv is not none %}${{ '%.2f' | format(vm.broker_nlv) }}
+      {%- else %}(unavailable){%- endif %}
+      <span class="muted">&mdash; the full Schwab net-liquidating value, includes out-of-framework holdings</span>
+    </dd>
+
+    <dt>Declared out-of-framework MV (&Sigma;)</dt>
+    <dd>
+      {%- if vm.declared_oof_mv is not none %}${{ '%.2f' | format(vm.declared_oof_mv) }}
+      {%- else %}(unavailable){%- endif %}
+      <span class="muted">&mdash; market value of tickers you declared out-of-framework (netted out of the swing scope)</span>
+    </dd>
+
+    <dt>Swing-NLV (netted)</dt>
+    <dd>
+      {%- if vm.swing_nlv is not none %}${{ '%.2f' | format(vm.swing_nlv) }}
+      {%- else %}(unavailable){%- endif %}
+      <span class="muted">&mdash; broker NLV minus declared out-of-framework MV; the value the ledger is compared against</span>
+    </dd>
+
+    <dt>Netted delta (ledger minus swing-NLV)</dt>
+    <dd>
+      {%- if vm.netted_delta is not none %}
+      <strong data-netted-delta="{{ '%.2f' | format(vm.netted_delta) }}">${{ '%.2f' | format(vm.netted_delta) }}</strong>
+      {%- else %}(unavailable){%- endif %}
+      <span class="muted">&mdash; THE headline residual; this is the number to explain</span>
+    </dd>
+
+    <dt>Raw stored gap (OOF-inclusive)</dt>
+    <dd>
+      {%- if vm.raw_delta_oof_inclusive is not none %}
+      <span data-raw-delta="{{ '%.2f' | format(vm.raw_delta_oof_inclusive) }}">${{ '%.2f' | format(vm.raw_delta_oof_inclusive) }}</span>
+      {%- else %}(unavailable){%- endif %}
+      <span class="muted">&mdash; <code>reconciliation_runs.equity_delta_dollars</code> = ledger minus broker NLV, NOT netted for out-of-framework holdings. Do NOT read this as the swing residual &mdash; it inflates by the declared MV. Shown for audit only.</span>
+    </dd>
+  </dl>
+
+  {% if vm.run_id is not none %}
+  <p class="muted">Reconciliation run #{{ vm.run_id }}
+    {%- if vm.created_at %} &middot; discrepancy created {{ vm.created_at }}{%- endif %}.</p>
+  {% endif %}
+
+  {% endif %}
+
+  <section class="data-fix-guidance" data-data-fix-guidance="true">
+    <h2>Route this to the data fix</h2>
+    <p>An equity-delta finding is a discrepancy to EXPLAIN, not to acknowledge
+      away. Pick the cause and apply the matching correction:</p>
+    <ul>
+      <li><strong>An unrecorded out-of-framework buy</strong> (you bought a
+        declared out-of-framework ticker and the cash left the account but was
+        never journaled): record it with
+        <code>swing journal oof-buy</code> so the ledger cash matches the
+        broker.</li>
+      <li><strong>An unrecorded deposit / withdrawal</strong> (e.g. the
+        recurring monthly deposit not yet on the ledger): record the cash
+        movement via <code>swing journal cash</code> (the cash paths) so
+        <code>current_equity</code> re-includes it.</li>
+      <li><strong>Unexplained</strong> (the gap does not tie to a known cash
+        event): run the forensic decomposition &mdash; transcribe the broker
+        transaction history and reconstruct the running cash to the cent,
+        following the worked example at
+        <code>docs/broker-ledger-forensic-reconciliation-2026-07-10.md</code>.
+        A residual there is usually a corrupted fill row, correctable through
+        the audited correction path.</li>
+    </ul>
+    <p class="muted">Acknowledging the finding without fixing the data leaves the
+      ledger wrong &mdash; only clear it once the breakdown above nets to within
+      tolerance.</p>
+  </section>
+
+  <p><a href="/">Back to the dashboard</a></p>
+</section>
+{% endblock %}

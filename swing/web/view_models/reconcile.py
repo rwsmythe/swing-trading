@@ -1139,3 +1139,93 @@ class ReconcileSimpleAcknowledgeVM:
                 f"{expected_form_action!r} (server-derived from "
                 f"discrepancy_id); got {self.form_action!r}",
             )
+
+
+# ---------------------------------------------------------------------------
+# Arc 20-C (D24) — the read-only equity_delta DIAGNOSTIC view VM.
+#
+# The cash-coherence badge, when lit on an unresolved equity_delta (as opposed
+# to a pending cash_movement_mismatch), used to render a DEAD ``<span>`` (a
+# call-to-action with no action). This standalone VM (mirrors the error VM /
+# SchwabSetupVM precedent: 8 base-layout-shaped fields, does NOT inherit
+# BaseLayoutVM — so the every-base-VM-or-500 gotcha is NOT triggered) powers a
+# read-only diagnostic page that shows the OOF-NETTED breakdown and routes the
+# operator to the DATA FIX.
+#
+# DISPLAY-BASIS LOCK (RD's banked stored-vs-emit note): the DISPLAYED delta is
+# OOF-NETTED (``netted_delta`` = ledger - swing_nlv). The RAW
+# ``reconciliation_runs.equity_delta_dollars`` (ledger - source_nlv,
+# OOF-INCLUSIVE) is carried in ``raw_delta_oof_inclusive`` and rendered ONLY
+# under an explicit raw/OOF-inclusive label — a future reader must never
+# consume the raw field un-netted.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ReconcileEquityDeltaDiagnosticVM:
+    """View-model for ``GET /reconcile/equity-delta`` (Arc 20-C D24).
+
+    Read-only. Carries the base-layout shape (8 standalone fields) + the
+    equity_delta breakdown. ``has_active_finding`` is False when the latest
+    completed schwab_api run has no unresolved equity_delta — the template
+    renders a graceful empty state (no 404/500).
+
+    The numeric breakdown fields are None when the finding is absent OR the
+    persisted JSON envelope could not be parsed (graceful degradation); the
+    template guards each line. ``basis`` is ``net_liq_minus_declared_oof``
+    (swing-scoped) or ``net_liq`` (legacy, nothing declared).
+    """
+
+    PAGE_KIND = PageKind.HISTORY_ANALYSIS  # Issue #5 topbar (backward)
+
+    # Base-layout fields (8 standalone, mirror BaseLayoutVM shape).
+    session_date: str
+    stale_banner: str | None = None
+    price_source_degraded: bool = False
+    price_source_degraded_until: str | None = None
+    ohlcv_source_degraded: bool = False
+    unresolved_material_discrepancies_count: int = 0
+    recent_multi_leg_auto_correction_count: int = 0
+    banner_resolve_link: str | None = None
+
+    # Page-specific fields.
+    has_active_finding: bool = False
+    discrepancy_id: int | None = None
+    run_id: int | None = None
+    basis: str | None = None
+    ledger_equity: float | None = None
+    broker_nlv: float | None = None
+    declared_oof_mv: float | None = None
+    swing_nlv: float | None = None
+    netted_delta: float | None = None           # DISPLAYED headline (netted)
+    raw_delta_oof_inclusive: float | None = None  # RAW stored; labeled raw only
+    created_at: str = ""
+    delta_text: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.session_date:
+            raise ValueError(
+                "ReconcileEquityDeltaDiagnosticVM.session_date must be "
+                "non-empty",
+            )
+        if self.unresolved_material_discrepancies_count < 0:
+            raise ValueError(
+                "ReconcileEquityDeltaDiagnosticVM."
+                "unresolved_material_discrepancies_count must >= 0; got "
+                f"{self.unresolved_material_discrepancies_count!r}",
+            )
+        if self.recent_multi_leg_auto_correction_count < 0:
+            raise ValueError(
+                "ReconcileEquityDeltaDiagnosticVM."
+                "recent_multi_leg_auto_correction_count must >= 0; got "
+                f"{self.recent_multi_leg_auto_correction_count!r}",
+            )
+        if self.banner_resolve_link is not None and (
+            not self.banner_resolve_link
+            or not self.banner_resolve_link.startswith("/")
+        ):
+            raise ValueError(
+                "ReconcileEquityDeltaDiagnosticVM.banner_resolve_link must be "
+                f"None or a non-empty string starting with '/'; got "
+                f"{self.banner_resolve_link!r}",
+            )
