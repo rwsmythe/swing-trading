@@ -186,6 +186,32 @@ def test_pending_subject_exists_force_records_bypass(cli_workspace) -> None:
     assert "deliberate override for audit" in reason
 
 
+def test_force_journal_corrected_without_reason_still_rejected(
+    cli_workspace,
+) -> None:
+    """`--force` must NOT bypass resolve_discrepancy's reason-required contract
+    for journal_corrected / source_treated_canonical / manual_override: the
+    system bypass marker would otherwise satisfy that validation and silently
+    drop the operator rationale. PRE this fix `--force --resolution
+    journal_corrected` (no --reason) resolved successfully; POST fix it is
+    rejected and the row stays pending."""
+    runner, cfg, db_path = cli_workspace
+    did = _seed_live_pending(db_path)
+
+    r = runner.invoke(main, [
+        "--config", str(cfg),
+        "journal", "discrepancy", "resolve", str(did),
+        "--resolution", "journal_corrected",
+        "--force",
+    ])
+    assert r.exit_code != 0, r.output
+    assert "reason" in r.output.lower()
+    # Row unchanged -- still pending, not resolved.
+    resolution, _, ambiguity_kind, _ = _read(db_path, did)
+    assert resolution == "pending_ambiguity_resolution"
+    assert ambiguity_kind == "schwab_returned_no_match"
+
+
 def test_force_on_ungated_row_adds_no_marker(cli_workspace) -> None:
     """`--force` is IGNORED for a non-gated (orphan) row -- the reason is passed
     through verbatim, no bypass marker. Confirms the marker rides ONLY the

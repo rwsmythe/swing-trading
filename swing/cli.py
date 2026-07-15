@@ -3725,17 +3725,37 @@ def discrepancy_resolve_cmd(
                         f"override the gate (the forced bypass is recorded in "
                         f"the resolution reason)."
                     )
+                # --force: preserve resolve_discrepancy's reason-required
+                # contract. Without this, our non-empty system marker would
+                # satisfy that validation and silently drop the operator
+                # rationale for a journal_corrected / source_treated_canonical
+                # / manual_override resolution (the audit row would record the
+                # bypass but not WHY the manual resolution is correct).
+                if resolution in (
+                    "journal_corrected", "source_treated_canonical",
+                    "manual_override",
+                ) and not (reason and reason.strip()):
+                    raise click.ClickException(
+                        f"--reason is required for --resolution {resolution} "
+                        f"(even with --force)."
+                    )
                 # --force: proceed AND record the conscious override on the
                 # audit surface (never a silent identical outcome).
                 reason = _compose_forced_bypass_reason(
                     discrepancy_id, d.ambiguity_kind, reason,
                 )
-        # TOCTOU close (mirrors the web/orphan resolvers, 18-H.6.1 R1M2): the
-        # gate read `d` OUTSIDE resolve_discrepancy's BEGIN IMMEDIATE, so pin
-        # the resolution seen at gate-time -- a concurrent pivot that flips the
-        # row to pending_ambiguity_resolution between the gate read and the
-        # lock would otherwise let a non-force resolve slip past the gate.
-        require_current = d.resolution if d is not None else None
+        # TOCTOU / idempotency pin (mirrors the resolve-ambiguity orphan branch
+        # at require_current_resolution=d.resolution): the gate read `d` OUTSIDE
+        # resolve_discrepancy's BEGIN IMMEDIATE. Pin ONLY for a pending-read row
+        # (the gated-state family) so a concurrent actor cannot terminally
+        # resolve the row between the gate read and the lock; NON-pending rows
+        # stay byte-identical to pre-20-B (no pin), per the brief.
+        require_current = (
+            d.resolution
+            if d is not None
+            and d.resolution == "pending_ambiguity_resolution"
+            else None
+        )
         try:
             resolve_discrepancy(
                 conn,
