@@ -17,12 +17,13 @@
     <div class="schwab-nlv muted">Schwab NLV: no snapshot</div>
   {% endif %}
   {% if vm.cash_coherence_badge %}
+    {#- Arc 20-C (D24): the badge links in BOTH lit states -- a pending
+        cash_movement_mismatch to its resolve form, an equity_delta to the
+        read-only diagnostic view. cash_badge_link_path is guaranteed non-None
+        whenever the badge is lit (the mirror contract in dashboard.py), so the
+        old dead <span> fallback is gone. #}
     <div class="cash-coherence-badge">
-      {%- if vm.cash_badge_link_path %}
       <a href="{{ vm.cash_badge_link_path }}">&#9888; cash review</a>
-      {%- else %}
-      <span>&#9888; cash review</span>
-      {%- endif %}
     </div>
   {% endif %}
   <div class="rationale">

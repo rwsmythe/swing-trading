@@ -55,6 +55,47 @@ def test_badge_link_target_renders_200_for_a_pending_cash_row(seeded_db):
         assert resp.status_code == 200, resp.text[:300]
 
 
+def _seed_equity_delta_only(cfg) -> None:
+    """Seed a completed schwab_api run with an unresolved equity_delta and NO
+    pending cash row -- the badge's clause-2 lit state (Arc 20-C D24)."""
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            cur = conn.execute(
+                "INSERT INTO reconciliation_runs (source, state, started_ts, "
+                "finished_ts, period_start, period_end, equity_delta_dollars) "
+                "VALUES ('schwab_api', 'completed', '1', '2', '2026-05-01', "
+                "'2026-05-31', -12.34)")
+            run_id = int(cur.lastrowid)
+            conn.execute(
+                "INSERT INTO reconciliation_discrepancies (run_id, "
+                "discrepancy_type, field_name, material_to_review, created_at, "
+                "resolution, expected_value_json, actual_value_json) VALUES (?, "
+                "'equity_delta', 'net_liquidating_value', 1, '1', 'unresolved', "
+                "'{\"basis\": \"ledger\", \"equity_dollars\": 1000.0}', "
+                "'{\"basis\": \"net_liq\", \"equity_dollars\": 1012.34}')",
+                (run_id,))
+    finally:
+        conn.close()
+
+
+def test_badge_link_target_renders_200_for_equity_delta_lit_state(seeded_db):
+    """Arc 20-C (D24): the equity_delta-lit badge links to the diagnostic view
+    -- a real, rendering route (the link-target-must-exist gotcha), NOT the old
+    dead <span>. Followed with a live GET, not just a path assertion."""
+    cfg, cfg_path = seeded_db
+    _seed_equity_delta_only(cfg)
+    conn = connect(cfg.paths.db_path)
+    try:
+        path = _first_pending_cash_resolve_link_path(conn)
+    finally:
+        conn.close()
+    assert path == "/reconcile/equity-delta"
+    with TestClient(create_app(cfg, cfg_path)) as client:
+        resp = client.get(path)
+        assert resp.status_code == 200, resp.text[:300]
+
+
 def test_bare_reconcile_path_is_not_a_registered_route(seeded_db):
     """Documents the 404 the operator hit: any hardcoded /reconcile href is a
     bug — the badge must thread the per-discrepancy path from the VM."""

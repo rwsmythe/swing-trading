@@ -78,9 +78,11 @@ def test_first_pending_cash_link_path_targets_oldest(tmp_path):
     assert path == f"/reconcile/discrepancy/{oldest}/resolve"
 
 
-def test_first_pending_cash_link_path_none_without_pending(tmp_path):
-    # An equity_delta-only badge (clause 2) has no pending row to link to:
-    # the badge may light, but the link helper returns None -> unlinked render.
+def test_first_pending_cash_link_path_equity_delta_targets_diagnostic(tmp_path):
+    # Arc 20-C (D24): an equity_delta-only badge (clause 2) has no pending row
+    # to link to, but it now routes to the read-only equity_delta diagnostic
+    # view (replacing the old dead <span>). The link + the badge agree in BOTH
+    # lit states -- the count-and-link mirror contract.
     conn = ensure_schema(tmp_path / "b.db")
     run_id = _seed_run(conn)
     conn.execute(
@@ -88,4 +90,30 @@ def test_first_pending_cash_link_path_none_without_pending(tmp_path):
         "field_name, material_to_review, created_at, resolution) VALUES (?, "
         "'equity_delta', 'net_liquidating_value', 1, '1', 'unresolved')", (run_id,))
     conn.commit()
+    assert _first_pending_cash_resolve_link_path(conn) == "/reconcile/equity-delta"
+
+
+def test_first_pending_cash_link_path_none_when_dark(tmp_path):
+    # No pending cash row AND no unresolved equity_delta -> the badge is dark
+    # and the link helper returns None (nothing to route to).
+    conn = ensure_schema(tmp_path / "b.db")
+    _seed_run(conn)
+    conn.commit()
     assert _first_pending_cash_resolve_link_path(conn) is None
+
+
+def test_first_pending_cash_link_discriminates_the_two_lit_states(tmp_path):
+    # Pending cash_movement_mismatch -> the per-discrepancy resolve form;
+    # equity_delta-only -> the diagnostic view. The href DISCRIMINATES.
+    conn = ensure_schema(tmp_path / "b.db")
+    run_id = _seed_run(conn)
+    _seed_pending_cash(conn, run_id, "T-DISC")
+    conn.execute(
+        "INSERT INTO reconciliation_discrepancies (run_id, discrepancy_type, "
+        "field_name, material_to_review, created_at, resolution) VALUES (?, "
+        "'equity_delta', 'net_liquidating_value', 1, '1', 'unresolved')", (run_id,))
+    conn.commit()
+    # With a pending row present, the pending clause wins (oldest-first).
+    pending_path = _first_pending_cash_resolve_link_path(conn)
+    assert pending_path.startswith("/reconcile/discrepancy/")
+    assert pending_path.endswith("/resolve")

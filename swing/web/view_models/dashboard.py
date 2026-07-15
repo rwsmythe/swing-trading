@@ -51,34 +51,18 @@ from swing.web.price_cache import PriceCache, PriceSnapshot
 _list_all_exitshape_via_fills = list_all_exitshape_via_fills
 
 
-def _first_pending_cash_resolve_link_path(conn) -> str | None:
-    """Gate-run #100 witness fix: the cash badge's link target. Mirrors
-    _compute_cash_coherence_badge's PENDING clause exactly (the count and the
-    link must agree); oldest-first per the banner-link precedent. None when
-    the badge lights on the equity_delta clause alone (nothing pending to
-    resolve -> the template renders the badge unlinked)."""
-    row = conn.execute(
-        "SELECT discrepancy_id FROM reconciliation_discrepancies "
-        "WHERE discrepancy_type='cash_movement_mismatch' "
-        "AND resolution='pending_ambiguity_resolution' "
-        "ORDER BY discrepancy_id ASC LIMIT 1"
-    ).fetchone()
-    if row is None:
-        return None
-    return f"/reconcile/discrepancy/{int(row[0])}/resolve"
+# Arc 20-C (D24) — the equity_delta diagnostic view path. The cash badge's
+# equity_delta-lit state links HERE (a read-only breakdown that routes the
+# operator to the DATA FIX) instead of the old dead <span>. Kept as a module
+# constant so the badge-link helper and the route agree on the exact path.
+_EQUITY_DELTA_DIAGNOSTIC_PATH = "/reconcile/equity-delta"
 
 
-def _compute_cash_coherence_badge(conn) -> bool:
-    """Arc 4b §6.2 — the ACCOUNT-tile cash-coherence badge predicate. True when
-    EITHER (1) any cash_movement_mismatch pending exists (any run), OR (2) the
-    most-recent completed schwab_api run has an unresolved equity_delta."""
-    pending = conn.execute(
-        "SELECT COUNT(*) FROM reconciliation_discrepancies "
-        "WHERE discrepancy_type='cash_movement_mismatch' "
-        "AND resolution='pending_ambiguity_resolution'"
-    ).fetchone()[0]
-    if pending and int(pending) > 0:
-        return True
+def _latest_run_has_unresolved_equity_delta(conn) -> bool:
+    """True when the most-recent completed schwab_api run has an unresolved
+    equity_delta. Single source of truth for BOTH the badge predicate's clause
+    (2) and the badge-link helper's equity_delta fallback (Arc 20-C D24) — so
+    the count and the link can never disagree on this clause."""
     latest = conn.execute(
         "SELECT run_id FROM reconciliation_runs "
         "WHERE source='schwab_api' AND state='completed' "
@@ -93,6 +77,44 @@ def _compute_cash_coherence_badge(conn) -> bool:
         (int(latest[0]),),
     ).fetchone()[0]
     return bool(delta and int(delta) > 0)
+
+
+def _first_pending_cash_resolve_link_path(conn) -> str | None:
+    """The cash badge's link target — resolves in BOTH lit states (Arc 20-C
+    D24). Clause (1): a pending cash_movement_mismatch links to its
+    per-discrepancy resolve form (oldest-first per the banner-link precedent).
+    Clause (2): with no pending row but the badge lit on the equity_delta
+    clause, links to the read-only equity_delta diagnostic view (replacing the
+    old dead <span>). Mirrors _compute_cash_coherence_badge's two clauses in
+    the same order so the count and the link always agree (the mirror
+    contract). None only when neither clause holds (badge dark)."""
+    row = conn.execute(
+        "SELECT discrepancy_id FROM reconciliation_discrepancies "
+        "WHERE discrepancy_type='cash_movement_mismatch' "
+        "AND resolution='pending_ambiguity_resolution' "
+        "ORDER BY discrepancy_id ASC LIMIT 1"
+    ).fetchone()
+    if row is not None:
+        return f"/reconcile/discrepancy/{int(row[0])}/resolve"
+    if _latest_run_has_unresolved_equity_delta(conn):
+        return _EQUITY_DELTA_DIAGNOSTIC_PATH
+    return None
+
+
+def _compute_cash_coherence_badge(conn) -> bool:
+    """Arc 4b §6.2 — the ACCOUNT-tile cash-coherence badge predicate. True when
+    EITHER (1) any cash_movement_mismatch pending exists (any run), OR (2) the
+    most-recent completed schwab_api run has an unresolved equity_delta. Both
+    clauses are mirrored (same order) by _first_pending_cash_resolve_link_path
+    so the badge and its link always agree (Arc 20-C D24)."""
+    pending = conn.execute(
+        "SELECT COUNT(*) FROM reconciliation_discrepancies "
+        "WHERE discrepancy_type='cash_movement_mismatch' "
+        "AND resolution='pending_ambiguity_resolution'"
+    ).fetchone()[0]
+    if pending and int(pending) > 0:
+        return True
+    return _latest_run_has_unresolved_equity_delta(conn)
 
 
 @dataclass(frozen=True)
