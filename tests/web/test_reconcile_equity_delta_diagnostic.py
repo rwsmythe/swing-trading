@@ -162,6 +162,63 @@ def test_diagnostic_graceful_when_no_active_finding(
     assert "no active equity delta" in r.text.lower()
 
 
+def _seed_raw_equity_delta_envelopes(
+    db_path: Path, *, expected_json: str, actual_json: str,
+) -> None:
+    """Seed a completed run + an unresolved equity_delta with ARBITRARY raw
+    envelope strings via raw INSERT (bypassing the dataclass validator — the
+    reachable malformed / legacy case; insert_discrepancy is a raw INSERT)."""
+    conn = sqlite3.connect(str(db_path))
+    try:
+        rcur = conn.execute(
+            "INSERT INTO reconciliation_runs (source, state, started_ts, "
+            "finished_ts, period_start, period_end, equity_delta_dollars) "
+            "VALUES ('schwab_api', 'completed', '1', '2', '2026-05-01', "
+            "'2026-05-31', -5.0)",
+        )
+        run_id = int(rcur.lastrowid)
+        conn.execute(
+            "INSERT INTO reconciliation_discrepancies (run_id, "
+            "discrepancy_type, field_name, expected_value_json, "
+            "actual_value_json, delta_text, material_to_review, created_at, "
+            "resolution) VALUES (?, 'equity_delta', 'net_liquidating_value', "
+            "?, ?, 'x', 1, '2026-05-31', 'unresolved')",
+            (run_id, expected_json, actual_json),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_diagnostic_degrades_on_malformed_json(seeded_db: tuple[Config, Path]):
+    """A malformed JSON envelope (reachable via raw INSERT / legacy row) must
+    render 200 (graceful), NOT 500 — the get_discrepancy dataclass validator
+    would have raised (Codex R1 MAJOR)."""
+    cfg, cfg_path = seeded_db
+    _seed_raw_equity_delta_envelopes(
+        cfg.paths.db_path, expected_json="{not json", actual_json="also broken",
+    )
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get(_DIAGNOSTIC_PATH)
+    assert r.status_code == 200, r.text[:400]
+
+
+def test_diagnostic_degrades_on_nan_constant(seeded_db: tuple[Config, Path]):
+    """A JSON NaN constant (which the dataclass validator rejects on read)
+    must render 200, not 500."""
+    cfg, cfg_path = seeded_db
+    _seed_raw_equity_delta_envelopes(
+        cfg.paths.db_path,
+        expected_json='{"equity_dollars": NaN, "basis": "ledger"}',
+        actual_json='{"equity_dollars": NaN, "basis": "net_liq"}',
+    )
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get(_DIAGNOSTIC_PATH)
+    assert r.status_code == 200, r.text[:400]
+
+
 def test_diagnostic_legacy_net_liq_basis(seeded_db: tuple[Config, Path]):
     """On the legacy (nothing-declared) net_liq basis, swing_nlv == source_nlv
     and declared_oof_mv is 0 — the netted delta equals the raw delta and the

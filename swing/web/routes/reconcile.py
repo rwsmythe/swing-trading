@@ -1837,10 +1837,19 @@ def _latest_unresolved_equity_delta(
     return run_id, int(row[0])
 
 
-def _equity_delta_breakdown(disc: object) -> dict[str, object]:
+def _equity_delta_breakdown(
+    expected_json: str | None, actual_json: str | None,
+) -> dict[str, object]:
     """Parse the OOF-NETTED breakdown from an equity_delta discrepancy's
-    persisted JSON envelopes (graceful degradation — values are None when a
-    key is absent / the payload is malformed).
+    persisted JSON envelope STRINGS (graceful degradation — values are None
+    when a key is absent / the payload is malformed).
+
+    Consumes the RAW column strings (NOT a hydrated ``ReconciliationDiscrepancy``
+    dataclass — Codex R1 MAJOR): ``insert_discrepancy`` is a raw INSERT, so the
+    dataclass's JSON-well-formedness / NaN-rejection ``__post_init__`` runs only
+    on READ (``get_discrepancy``) and would raise (500) on a malformed / legacy
+    row instead of letting this defensive parser degrade. Reading the raw
+    columns keeps the graceful-degradation path actually reachable.
 
     Production emitter shapes (``swing/trades/schwab_reconciliation.py``):
       expected_value_json = {"equity_dollars": <ledger>, "basis": "ledger"}
@@ -1858,15 +1867,9 @@ def _equity_delta_breakdown(disc: object) -> dict[str, object]:
     ledger = broker_nlv = declared_oof_mv = swing_nlv = None
     basis: object = None
     try:
-        expected = (
-            json.loads(disc.expected_value_json)  # type: ignore[attr-defined]
-            if getattr(disc, "expected_value_json", None) else {}
-        )
-        actual = (
-            json.loads(disc.actual_value_json)  # type: ignore[attr-defined]
-            if getattr(disc, "actual_value_json", None) else {}
-        )
-    except (json.JSONDecodeError, TypeError):
+        expected = json.loads(expected_json) if expected_json else {}
+        actual = json.loads(actual_json) if actual_json else {}
+    except (json.JSONDecodeError, TypeError, ValueError):
         expected, actual = {}, {}
     if isinstance(expected, dict):
         ledger = _as_finite_float(expected.get("equity_dollars"))
@@ -1946,11 +1949,22 @@ def reconcile_equity_delta_diagnostic(request: Request) -> Response:
             delta_text = ""
             if found is not None:
                 run_id, discrepancy_id = found
-                disc = get_discrepancy(conn, discrepancy_id)
-                if disc is not None:
-                    breakdown = _equity_delta_breakdown(disc)
-                    created_at = getattr(disc, "created_at", None) or ""
-                    delta_text = getattr(disc, "delta_text", None) or ""
+                # Read the RAW columns directly (NOT get_discrepancy, whose
+                # dataclass __post_init__ would 500 on a malformed / legacy
+                # envelope — Codex R1 MAJOR). The defensive parser degrades on
+                # malformed JSON so the view still renders 200.
+                disc_row = conn.execute(
+                    "SELECT expected_value_json, actual_value_json, "
+                    "delta_text, created_at FROM reconciliation_discrepancies "
+                    "WHERE discrepancy_id = ?",
+                    (discrepancy_id,),
+                ).fetchone()
+                if disc_row is not None:
+                    breakdown = _equity_delta_breakdown(
+                        disc_row[0], disc_row[1],
+                    )
+                    delta_text = disc_row[2] or ""
+                    created_at = disc_row[3] or ""
                 # The RAW (OOF-INCLUSIVE) stored gap — labeled raw in the
                 # template; a future reader must never consume it un-netted.
                 raw_row = conn.execute(
