@@ -20,6 +20,47 @@
       {{ vm.discrepancy_id }} --resolution acknowledged_immaterial</code></p>
   </section>
 
+  {#- Arc 20-C (D23): surface the DURABLE path ABOVE the one-shot acknowledge.
+      A recurring broker holding (e.g. a long-term IPO buy-and-hold like RKLB)
+      re-emits this finding every run until it is declared out-of-framework.
+      V1 is GUIDANCE ONLY -- a web write to user-config.toml would be a new
+      config-write surface (out of scope). #}
+  <section class="oof-guidance" data-oof-guidance="true">
+    <h2>Recurring holding? Declare it out-of-framework</h2>
+    <p>
+      If <strong>{{ vm.ticker }}</strong> is a position you hold OUTSIDE the
+      swing framework (e.g. a long-term buy-and-hold), acknowledging it here
+      clears the finding for THIS run only &mdash; it re-emits every
+      reconciliation run. The durable fix is to declare the ticker
+      out-of-framework so the orphan pass stops flagging it.
+    </p>
+    <ol>
+      <li>
+        Add the ticker to
+        <code>~/swing-data/user-config.toml</code> (NOT the tracked
+        <code>swing.config.toml</code>):
+<pre class="config-stanza">[reconciliation]
+out_of_framework_tickers = ["{{ vm.ticker }}"]</pre>
+        (append <code>{{ vm.ticker }}</code> to the list if the section already
+        exists).
+      </li>
+      <li>
+        Clear the existing orphan row(s) for the declared set:
+        <code>swing schwab resolve-out-of-framework</code>
+      </li>
+    </ol>
+    <p class="muted">
+      <strong>Which path?</strong>
+      Choose <em>declare out-of-framework</em> for a position you will keep
+      holding at the broker but never manage as a swing trade (stops the
+      recurring finding permanently).
+      Choose <em>journal the position</em> (open a trade for it) if it IS a
+      swing position the journal is simply missing.
+      Choose the <em>one-shot acknowledge</em> below only for a genuinely
+      one-off finding you do not expect to see again.
+    </p>
+  </section>
+
   {% if vm.error_band_message %}
   <section class="error-band">
     <p>{{ vm.error_band_message }}</p>
