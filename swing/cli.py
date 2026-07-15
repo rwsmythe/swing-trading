@@ -3681,19 +3681,23 @@ def discrepancy_resolve_cmd(
     conn = connect(cfg.paths.db_path)
     try:
         # Arc 20-B (D22 gate). The general `discrepancy resolve` must NOT
-        # silently bypass the tier-2 choice menu for a LIVE
-        # pending_ambiguity_resolution row (its FK subject row(s) still
-        # exist). Two pending rows pass UNGATED exactly as today because
-        # neither has a viable resolve-ambiguity path:
+        # silently bypass the operator choice menu for a
+        # pending_ambiguity_resolution row that HAS a viable resolve-ambiguity
+        # path. Two such paths exist (mirroring the resolve-ambiguity command's
+        # own dispatch):
+        #   * a LIVE FK subject (fill/cash_movement/trade set AND the row still
+        #     EXISTS) -> the tier-2 choice menu / apply_tier2_resolution;
+        #   * a SOURCE-DIRECTION row (field_name == 'missing_journal_row') --
+        #     all-FK-null BY DESIGN (the journal row is what's MISSING) but
+        #     resolvable via the source_without_journal menu /
+        #     apply_source_direction_resolution.
+        # Pending rows with NO viable menu path pass UNGATED exactly as today:
         #   * an FK-ORPHAN (subject row raw-deleted) -- the tier-2 resolver
         #     RAISES reading the gone row (detected by REUSING the 19-F
         #     orphaned_affected_target predicate; no second orphan predicate);
-        #   * a NO-FK pending row (no fill/cash_movement/trade FK set at all)
-        #     -- it has no subject rows, so `resolve-ambiguity`'s
-        #     _resolve_affected_target has nothing to read.
-        # The gate therefore fires ONLY on the pending + subject-FK-set +
-        # subject-EXISTS case (the brief's "subject row(s) EXIST"). Non-pending
-        # rows are byte-identical to pre-20-B behavior.
+        #   * a genuinely no-FK, non-source-direction pending row -- nothing
+        #     for _resolve_affected_target to read.
+        # Non-pending rows are byte-identical to pre-20-B behavior.
         d = get_discrepancy(conn, discrepancy_id)
         if d is not None and d.resolution == "pending_ambiguity_resolution":
             has_subject_fk = (
@@ -3702,8 +3706,12 @@ def discrepancy_resolve_cmd(
                 or d.trade_id is not None
             )
             is_orphan = orphaned_affected_target(conn, d) is not None
-            if has_subject_fk and not is_orphan:
-                # Live tier-2 row (subject rows exist) -> gated.
+            is_source_direction = d.field_name == "missing_journal_row"
+            has_menu_path = (
+                (has_subject_fk and not is_orphan) or is_source_direction
+            )
+            if has_menu_path:
+                # Row has a viable resolve-ambiguity path -> gated.
                 if not force:
                     raise click.ClickException(
                         f"discrepancy {discrepancy_id} is "

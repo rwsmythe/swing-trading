@@ -268,6 +268,77 @@ def test_no_fk_pending_passes_ungated(cli_workspace) -> None:
     assert "bypass" not in reason.lower()
 
 
+def _plant_source_direction_pending(db_path: Path) -> int:
+    """Plant a SOURCE-DIRECTION pending row (field_name='missing_journal_row',
+    all FK NULL BY DESIGN -- the journal row is what is MISSING). Despite having
+    no FK it HAS a supported resolve-ambiguity path (the source_without_journal
+    menu / apply_source_direction_resolution), so the gate MUST refuse it. Real
+    emitter shape per swing/trades/schwab_reconciliation.py:_emit_source_
+    direction_cash + tests/trades/test_source_direction_resolution.py."""
+    conn = sqlite3.connect(db_path)
+    try:
+        run_id = _seed_reconciliation_run(conn)
+        cur = conn.execute(
+            "INSERT INTO reconciliation_discrepancies (run_id, "
+            "discrepancy_type, field_name, material_to_review, created_at, "
+            "resolution, ambiguity_kind, expected_value_json, "
+            "actual_value_json) VALUES (?, 'cash_movement_mismatch', "
+            "'missing_journal_row', 1, '2026-05-16T12:05:00', "
+            "'pending_ambiguity_resolution', 'schwab_returned_no_match', "
+            "'{\"transactionId\": \"TX9\"}', '{\"matched\": null}')",
+            (run_id,),
+        )
+        did = int(cur.lastrowid)
+        conn.commit()
+    finally:
+        conn.close()
+    return did
+
+
+def test_source_direction_pending_refuses(cli_workspace) -> None:
+    """A SOURCE-DIRECTION pending row (all-FK-null but resolvable via the
+    source_without_journal menu) is REFUSED, naming both escape hatches.
+    PRE this fix the has_subject_fk-only gate let it silently bypass (exit 0);
+    POST fix the field_name=='missing_journal_row' path gates it."""
+    runner, cfg, db_path = cli_workspace
+    did = _plant_source_direction_pending(db_path)
+
+    r = runner.invoke(main, [
+        "--config", str(cfg),
+        "journal", "discrepancy", "resolve", str(did),
+        "--resolution", "acknowledged_immaterial",
+        "--reason", "trying to bypass source-direction menu",
+    ])
+    assert r.exit_code != 0, r.output
+    out = r.output.lower()
+    assert "resolve-ambiguity" in out
+    assert "--force" in out
+    resolution, _, ambiguity_kind, _ = _read(db_path, did)
+    assert resolution == "pending_ambiguity_resolution"
+    assert ambiguity_kind == "schwab_returned_no_match"
+
+
+def test_source_direction_pending_force_records_bypass(cli_workspace) -> None:
+    """`--force` on a source-direction pending row proceeds AND records the
+    bypass. PRE this fix --force was moot (the row was never gated)."""
+    runner, cfg, db_path = cli_workspace
+    did = _plant_source_direction_pending(db_path)
+
+    r = runner.invoke(main, [
+        "--config", str(cfg),
+        "journal", "discrepancy", "resolve", str(did),
+        "--resolution", "acknowledged_immaterial",
+        "--reason", "confirmed not a ledger event",
+        "--force",
+    ])
+    assert r.exit_code == 0, r.output
+    resolution, _, ambiguity_kind, reason = _read(db_path, did)
+    assert resolution == "acknowledged_immaterial"
+    assert ambiguity_kind is None
+    assert "bypass" in reason.lower()
+    assert "confirmed not a ledger event" in reason
+
+
 # ---------------------------------------------------------------------------
 # Non-pending row is byte-identical to today (the gate touches ONLY pending)
 # ---------------------------------------------------------------------------
