@@ -48,11 +48,20 @@ from pathlib import Path
 
 # Sibling import: when run as `python scripts/comms_stop_hook.py`, sys.path[0] is
 # this file's dir, so the shared role-gating + unread-notice logic resolves.
-from comms_unread_hook import (
-    DIRECTOR_ROLES,
-    comms_root_default,
-    unread_notice,
-)
+# GUARDED (Phase-20 rider R1): a missing/corrupt sibling must NEVER crash the
+# Stop hook at IMPORT time -- a bare top-level import outside main() fails
+# CLOSED (the opposite of the H1 fail-open hardening) and could trap the agent.
+# ANY import-time failure degrades to _IMPORT_OK=False -> main() allow-stops
+# (exit 0), the same fail-OPEN direction as every runtime error path below.
+try:
+    from comms_unread_hook import (
+        DIRECTOR_ROLES,
+        comms_root_default,
+        unread_notice,
+    )
+    _IMPORT_OK = True
+except Exception:  # noqa: BLE001 -- fail-open on ANY sibling import failure
+    _IMPORT_OK = False
 
 
 def _parse_stop_payload(raw: bytes) -> dict:
@@ -134,6 +143,8 @@ def handle_stop(payload: dict, env: dict, root: Path) -> str | None:
 
 
 def main() -> int:
+    if not _IMPORT_OK:
+        return 0  # R1: sibling import failed at load -> fail-open (allow stop)
     try:
         try:
             raw = sys.stdin.buffer.read()

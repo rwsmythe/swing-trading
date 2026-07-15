@@ -206,3 +206,24 @@ def test_subprocess_noop_exit_0_no_block_without_role():
         capture_output=True, env=env, timeout=30)
     assert proc.returncode == 0
     assert proc.stdout.strip() == b""
+
+
+def test_subprocess_exit_0_when_sibling_import_broken(tmp_path):
+    # Phase-20 rider R1: the sibling `comms_unread_hook` import must be GUARDED
+    # so a missing/corrupt sibling degrades to allow-stop (exit 0) -- the same
+    # fail-OPEN direction as every other path. A bare top-level import (outside
+    # main()'s try/except) crashes the hook at IMPORT time = fail-CLOSED, which
+    # could trap the agent. Copy the hook next to a BROKEN sibling so
+    # `python comms_stop_hook.py` resolves the broken one from sys.path[0].
+    (tmp_path / "comms_stop_hook.py").write_bytes(_HOOK_PATH.read_bytes())
+    (tmp_path / "comms_unread_hook.py").write_text(
+        "raise ImportError('simulated corrupt/missing sibling')\n", encoding="utf-8")
+    env = {**os.environ, "SWING_ROLE": "charc"}
+    proc = subprocess.run(
+        [sys.executable, str(tmp_path / "comms_stop_hook.py")],
+        input=b'{"stop_hook_active": false}',
+        capture_output=True, env=env, timeout=30)
+    assert proc.returncode == 0, (
+        "a broken sibling import must fail-OPEN (exit 0), got "
+        f"{proc.returncode}: {proc.stderr.decode('utf-8', 'replace')}")
+    assert proc.stdout.strip() == b""  # degraded hook emits no block
