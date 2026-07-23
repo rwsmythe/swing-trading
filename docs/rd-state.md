@@ -23,8 +23,8 @@
 - **Banked semantics:** `equity_delta_dollars` stores the RAW OOF-INCLUSIVE gap — never read it without OOF-netting (the badge/emit path nets).
 
 ## Pending RD
-- **T5 QUESTION OWED TO THE OPERATOR: FTRE (A+ 2026-07-20) was not taken.** Per T5 each A+ fire is precious to a starved H1 — ask the intent story (correctly skipped for extension/capital/away-from-screen, or a missed fire?). Verify before labeling; then be direct.
-- **CATCH-UP DISCIPLINE TRIGGERED** (watch-standard §1): 20 days since the last logged read (#1, 07-03) exceeds the ~2-week bar, so a §3 checklist run is owed by any RD instance spun up in between. Monthly read **#2 is due first trading week of August** (~9 days out) — operator sequences: run the catch-up now, or fold it into read #2.
+- **T5 FTRE: ANSWERED + VERIFIED 07-23** (vacation; order never fired — RIGHT through 07-21 incl. a ONE-CENT miss; but 07-22 CROSSED 18.34 with the order dead → no live entry while the SHADOW window will trigger it). **OPEN RECOMMENDATION TO OPERATOR: adopt the A+ order posture — GTC buy-stop-limit at the pivot on a fire, canceled only on SETUP INVALIDATION (not bucket flicker / expiry-by-forgetting)** — closes the contract's undefined entry-window and keeps live comparable to measured. **FTRE watch: failing only `tightness`, 10c under pivot 18.59 — may re-fire; decide the posture before it does.**
+- **Catch-up read: operator-sequenced 07-23 to FOLD INTO monthly read #2** (first trading week of August). Read-#2 agenda carries: the broad-watch mean drift (−0.637 → −0.224 @ n=267), the FTRE shadow-trigger once depth suffices, T9 operationalization, the §3.2 format.
 - Phase-21 scoping comes via the fresh CHARC generation (D5 suite-runtime = likely headline; my riders: the 0032 taxonomy type, the two V2 candidates — execution↔fill identity + the bound-b stats choke point).
 - A+ spot-check cadence continues to N=10 priced (currently 2 priced).
 
