@@ -327,6 +327,30 @@ def test_symlink_refusal_without_needing_symlink_privileges(comms, capsys,
     assert _snapshot(comms) == before  # refused BEFORE anything moved
 
 
+@pytest.mark.parametrize("reserved", ["_archive", "inbox", "read"])
+def test_symlinked_reserved_destination_dir_is_refused(comms, capsys,
+                                                       monkeypatch, reserved):
+    """A symlinked DESTINATION dir must be refused too (R5 MAJOR 1).
+
+    `_archive`, `inbox` and `read` are skipped as generations by NAME -- but
+    they are exactly where the migration WRITES. A symlinked one would send
+    archived history (or adopted live mail) through the pointer while the report
+    and the sha256 verification both read back through it: VERIFIED, over
+    content that is not where it says it is.
+    """
+    _seed_gen(comms, "live-gen", unread=("u.md",), read=("r.md",))
+    victim = comms / "orchestrator" / reserved
+    victim.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(mig, "_is_symlink", lambda p: p == victim)
+    before = _snapshot(comms)
+    rc = _run(comms, "--execute", "--live-session", "live-gen")
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "symlink" in err.lower()
+    assert reserved in err
+    assert _snapshot(comms) == before  # refused BEFORE anything moved
+
+
 def test_symlinked_generation_directory_is_refused(comms, tmp_path, capsys):
     elsewhere = tmp_path / "elsewhere" / "read"
     _write(elsewhere / "m.md", "x\n")

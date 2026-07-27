@@ -181,6 +181,13 @@ def _symlink_offenders(orchestrator_dir: Path) -> list[Path]:
     DIRECTORY is refused for the same reason (and because ``is_dir()`` follows
     links, it would otherwise be walked as if it were part of the tree).
 
+    The RESERVED names are checked FIRST, before the by-name skip: ``_archive``,
+    ``inbox`` and ``read`` are not generations, but they are exactly where this
+    migration WRITES, so a symlinked one would route archived history (or the
+    adopted live mail) through the pointer while the printed plan and the sha256
+    verification both read back through it -- VERIFIED, over content that is not
+    where the report says it is.
+
     This is an INTEGRITY guard, not an attacker defense: a symlinked comms tree
     is a setup choice, and the honest response for a one-shot operator-run
     migration is to stop and name the path rather than guess.
@@ -189,10 +196,12 @@ def _symlink_offenders(orchestrator_dir: Path) -> list[Path]:
         return []
     offenders: list[Path] = []
     for child in sorted(orchestrator_dir.iterdir()):
-        if child.name in RESERVED_NAMES:
-            continue
+        # symlink check BEFORE the by-name skip -- a reserved name is a WRITE
+        # TARGET, so a symlinked one is the more dangerous case, not an exempt one
         if _is_symlink(child):
             offenders.append(child)
+            continue
+        if child.name in RESERVED_NAMES:
             continue
         if not child.is_dir():
             continue
