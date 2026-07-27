@@ -33,7 +33,10 @@ SESSION_ARTIFACT_AGE_DAYS_MAX = 14
 MEMORY_FILE_COUNT_MAX = 80
 # Comms mailbox (Stage 1): unread older than this many days -> ATTENTION.
 COMMS_UNREAD_AGE_DAYS_MAX = 7
-COMMS_ROLES = ("charc", "rd", "operator")
+# Every singular-inbox role (21-D: the orchestrator became one, and its inbox
+# now SURVIVES a generation rollover -- precisely when an undrained message can
+# sit unnoticed, so the probe must cover it).
+COMMS_ROLES = ("charc", "rd", "operator", "orchestrator")
 # Research-output size ceilings (D18/H2, v1 -- a forward regrowth guard; both
 # dirs sit at ~MB-scale at calibration time so this is quiet at baseline).
 RESEARCH_SIZE_TARGETS_MB_MAX = (

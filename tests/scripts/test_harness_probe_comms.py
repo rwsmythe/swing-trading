@@ -99,6 +99,25 @@ def test_no_awaiting_operator_line_when_zero(comms):
     assert not any("await" in line.lower() for _, line in rows)
 
 
+def test_orchestrator_inbox_is_scanned(comms):
+    """21-D: the orchestrator is a singular-inbox role, so the probe sees it.
+
+    Its inbox now SURVIVES a generation rollover, which is exactly when an
+    undrained message can sit unnoticed -- so leaving it out of COMMS_ROLES
+    would make the probe blind to the failure mode the singular model creates.
+    """
+    _make_msg(comms, "orchestrator", NOW - timedelta(hours=1))
+    rows = harness_probe._scan_comms(comms, NOW)
+    assert any("orchestrator" in line for _, line in rows)
+
+
+def test_orchestrator_stale_unread_triggers_attention(comms):
+    _make_msg(comms, "orchestrator", NOW - timedelta(days=9))
+    rows = harness_probe._scan_comms(comms, NOW)
+    attn = [line for level, line in rows if level == "ATTENTION"]
+    assert any("orchestrator" in line for line in attn)
+
+
 def test_output_is_ascii(comms):
     _make_msg(comms, "charc", NOW - timedelta(days=9))
     _make_msg(comms, "operator", NOW - timedelta(hours=1))

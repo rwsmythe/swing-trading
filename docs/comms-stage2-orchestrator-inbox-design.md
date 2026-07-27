@@ -1,6 +1,8 @@
 # Comms Stage 2 — Orchestrator Inbox + Session Registry (settled design, DEFERRED)
 
-**Status:** SETTLED 2026-06-14 (operator + CHARC design dialogue) — **NOT built.** This is a deferred Stage-2 build-spec. Build only when the operator green-lights an orchestrator inbox, gated on the Stage-2 evidence bar (friction must demonstrably warrant it). CHARC-owned harness architecture (corrections route through CHARC).
+> **SUPERSEDED IN PART — read §2/§3 as HISTORY, not as the live convention (arc 21-D, 2026-07-27).** The orchestrator inbox WAS built (G6 Arcs A/B, 2026-06), and its **per-generation addressing half has since been RETIRED**: every role is now a SINGULAR inbox (`comms/orchestrator/{inbox,read}`), a `--to orchestrator:<session_id>` address and a `--session` read flag each FAIL with an actionable message, historical per-generation trees live read-only under `comms/orchestrator/_archive/<session_id>/`, and `comms/sessions/` survives ONLY as a role-presence / recovery store (no `newest_live`, no per-generation path builders). This document's own §6 alternative — "a single shared `comms/orchestrator/inbox` drained by the current generation is simpler and likely sufficient" — is what the harness runs today. Live convention: `docs/harness-architecture.md` §3.
+
+**Status:** SETTLED 2026-06-14 (operator + CHARC design dialogue), BUILT G6 Arcs A/B, **per-generation addressing retired 2026-07-27 (21-D)**. CHARC-owned harness architecture (corrections route through CHARC).
 **Companions:** `docs/comms-stage2-push-research.md` (the push-comms landscape) · `docs/harness-architecture.md` §3 (the comms taxonomy + staging + the transport-vs-tracker convention) · `tool-director-context.md` §2.5 (staging decision-of-record + friction ledger).
 **Why captured now:** the design lived only in a working conversation; per the transport-vs-tracker / durable-landing principle, settled design gets a durable home rather than being re-derived later.
 
@@ -45,7 +47,7 @@ Per-session env isolation is **impossible in the Claude Code extension panel** (
 Hooks run as **shell, not model invocations** — a SILENT refresh hook (stat + recreate + touch `last_seen`, no stdout) costs **zero model tokens** and sub-ms latency. Only hook STDOUT becomes injected context (that's how the unread-hook's `[comms] N unread` line is the lone token cost in the chain — unchanged). Therefore: keep registry maintenance in silent hooks; **never** do it in the prompt/model (a per-turn model check costs tokens every turn AND is unreliable).
 
 ## 6. The inbox itself
-- **Addressing:** the registry enables per-generation addressing (`orchestrator-<session_id>`) IF needed; a **single shared `comms/orchestrator/inbox`** drained by the current generation is simpler and likely sufficient (concurrent generations are rare handoff windows). Decide at build.
+- **Addressing:** the registry enables per-generation addressing (`orchestrator-<session_id>`) IF needed; a **single shared `comms/orchestrator/inbox`** drained by the current generation is simpler and likely sufficient (concurrent generations are rare handoff windows). Decide at build. **[SETTLED 2026-07-27 — the single shared inbox WON.** Per-generation addressing was built first (G6 Arc A) and retired at 21-D after producing only overhead; the singular inbox is the live convention.]
 - **Taxonomy LOCK (non-negotiable):** an orchestrator inbox is **info-only** (`fyi | status | query`) — it must NEVER become a back-channel for briefs / implementer prompts / approvals that bypass the operator-hand-carried dispatch authority. The `role_mail.py` L1 lock extends to enforce this for the orchestrator recipient.
 
 ## 7. Build gate
