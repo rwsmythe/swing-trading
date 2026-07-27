@@ -11,6 +11,20 @@ write a decision_request addressed to any other role (hard error, exit 1).
 That is the load-bearing protection: transport is automated, authority is
 not. Do not soften it.
 
+UNIFORM SINGULAR ADDRESSING (21-D, 2026-07-27): every role has ONE fixed
+inbox ``comms/<role>/inbox`` (+ ``comms/<role>/read``). ``--to charc`` /
+``--to rd`` / ``--to operator`` / ``--to orchestrator`` each deliver to the
+single named inbox -- there is no ambiguity and no per-generation resolution.
+The orchestrator inbox is drained by whichever generation is live (a handoff
+transfers the drain). The ``session_id`` survives ONLY as a role-presence /
+recovery key in ``comms_session_registry`` -- NEVER as an addressing key.
+
+The retired per-generation forms are REJECTED, never ignored: a
+``--to orchestrator:<session_id>`` address and a ``--session <id>`` read flag
+each fail with an actionable message naming the singular replacement. A stale
+caller LEARNS instead of silently misrouting -- that rejection is what made the
+convention change safe to land mid-flight.
+
 ASCII-only console output (Windows cp1252 stdout gotcha); message files
 are written/read as UTF-8.
 
@@ -19,10 +33,12 @@ Usage (from the repo root):
         --subject "Arc 1 shipped" --body "All green."
     python scripts/role_mail.py list --role charc
     python scripts/role_mail.py read --role charc --all
+    python scripts/role_mail.py read --role orchestrator --all
     python scripts/role_mail.py peek --role rd
 
 Layout (auto-created on first use):
-    comms/<role>/inbox/   comms/<role>/read/      for role in charc|rd|operator
+    comms/<role>/inbox/   comms/<role>/read/
+        for role in charc|rd|operator|orchestrator
 """
 
 from __future__ import annotations
@@ -38,14 +54,14 @@ from pathlib import Path
 
 # Valid senders include orchestrator + the automated pipeline emitter.
 VALID_FROM = ("charc", "rd", "operator", "orchestrator", "pipeline")
-# Valid recipients. orchestrator is a ROTATING per-generation recipient (G6 Arc
-# A): bare `--to orchestrator` resolves to the newest-live generation at send
-# time; `--to orchestrator:<session_id>` addresses a specific generation
-# (registry-independent). The other three are SINGULAR fixed-inbox roles.
+# Valid recipients. EVERY role is a singular fixed-inbox role (21-D): a bare
+# `--to <role>` is the ONLY address form; the per-generation
+# `--to orchestrator:<session_id>` form is retired and REJECTED.
 VALID_TO = ("charc", "rd", "operator", "orchestrator")
-# The fixed-inbox roles (comms/<role>/{inbox,read}); orchestrator is NOT here --
-# it has a per-generation inbox owned by the registry module, not a singular one.
-SINGULAR_INBOX_ROLES = ("charc", "rd", "operator")
+# The fixed-inbox roles (comms/<role>/{inbox,read}). Every role is singular, so
+# SINGULAR_INBOX_ROLES == VALID_TO; kept as its own name because the addressing
+# helpers read it as "the roles whose inbox is comms/<role>/inbox".
+SINGULAR_INBOX_ROLES = ("charc", "rd", "operator", "orchestrator")
 VALID_TYPES = ("fyi", "status", "query", "return_report", "decision_request")
 # AUTOMATED-EMITTER senders (non-human/agent) are constrained to a NARROW type
 # allowlist -- transport-automation, NEVER authority (an automated emitter must
@@ -65,55 +81,11 @@ class MailError(Exception):
     """A validation / governance error to surface as exit 1 with a message."""
 
 
-class NoLiveOrchestratorError(MailError):
-    """No live orchestrator generation to receive a bare `--to orchestrator`.
-
-    A CLEAR error (never a silent drop): the caller must address a specific
-    generation with `--to orchestrator:<session_id>` or bring one up.
-    """
-
-
-class NoLiveOrchestratorReadError(MailError):
-    """No live orchestrator generation to read a bare `--role orchestrator`.
-
-    The read-side twin of NoLiveOrchestratorError (a CLEAR error, NEVER the old
-    "requires --session"): a bare `read|list|peek --role orchestrator` resolves
-    to the newest-live generation, and when none is live the caller addresses a
-    specific generation with `--session <session_id>` or brings one up.
-    """
-
-
-# Lazy single-source registry loader (G6 Arc A). role_mail DELEGATES newest-live
-# resolution + session_id safety + the per-generation path shape to
-# comms_session_registry -- it NEVER re-implements them (lessons-learned guard
-# #4). Imported lazily + ONLY on an orchestrator-path operation, so a broken /
-# absent registry can never break singular (charc/rd/operator) mail.
-_REGISTRY_MOD = None
-
-
-def _registry():
-    """Import + cache comms_session_registry; MailError if unavailable.
-
-    Robust to BOTH the script-run path (scripts/ on sys.path) AND the test
-    loader (role_mail loaded via spec_from_file_location, scripts/ NOT on path).
-    """
-    global _REGISTRY_MOD
-    if _REGISTRY_MOD is not None:
-        return _REGISTRY_MOD
-    try:
-        import comms_session_registry as mod
-    except Exception:  # noqa: BLE001 -- fall back to a by-path load
-        try:
-            import importlib.util
-            path = _REPO_ROOT / "scripts" / "comms_session_registry.py"
-            spec = importlib.util.spec_from_file_location(
-                "comms_session_registry", path)
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-        except Exception as exc:  # noqa: BLE001
-            raise MailError(f"registry module unavailable: {exc}") from exc
-    _REGISTRY_MOD = mod
-    return mod
+# The one message every retired per-generation form points at (single-sourced so
+# the send side, the read side, and their tests can never drift apart).
+_RETIRED_PREFIX = "per-generation addressing was removed"
+_SINGULAR_HINT = ("Every role is a singular inbox -- address it by bare name "
+                  "(e.g. 'orchestrator').")
 
 
 class _AsciiArgumentParser(argparse.ArgumentParser):
@@ -181,9 +153,8 @@ def _comms_root(args: argparse.Namespace) -> Path:
 
 
 def _ensure_tree(root: Path) -> None:
-    # Iterate the SINGULAR roles only -- orchestrator's per-generation inboxes
-    # are bootstrapped lazily by _write_temp (send) / ensure_per_generation_inbox
-    # (the hook), so we must NOT auto-create a singular comms/orchestrator/inbox.
+    # Every role is singular now, so every role's {inbox,read} is bootstrapped
+    # here -- including comms/orchestrator/{inbox,read} (21-D).
     for role in SINGULAR_INBOX_ROLES:
         (root / role / "inbox").mkdir(parents=True, exist_ok=True)
         (root / role / "read").mkdir(parents=True, exist_ok=True)
@@ -217,33 +188,28 @@ def _parse_recipients(raw: str) -> list[str]:
     return _validate_recipients(raw.split(","))
 
 
-# --- orchestrator addressing (G6 Arc A) ------------------------------------
+# --- addressing: every role is a singular inbox (21-D) ---------------------
 
 def _split_target(token: str) -> tuple[str, str | None]:
     """Parse one recipient token into (role, session_id_or_None).
 
-    No ':' -> (role, None) if role is a valid recipient, else MailError. With a
-    ':' -> only `orchestrator` may carry a `:<session_id>` suffix; the session_id
-    must be non-empty and pass the registry's safety rule (fail-LOUD, never a
-    silent accept). The singular roles reject any suffix.
+    Every role is a singular inbox now, so the returned session_id is ALWAYS
+    None (the tuple shape is kept so the delivery helpers stay unchanged). A
+    ``:<session_id>`` suffix on ANY role is REJECTED with an actionable message
+    -- never silently ignored, never silently misrouted (D2). The rejection is
+    checked BEFORE the role-validity check so a stale `orchestrator:<sid>`
+    address gets the specific retirement message rather than a generic
+    "invalid recipient".
     """
-    if ":" not in token:
-        if token in VALID_TO:
-            return (token, None)
+    if ":" in token:
         raise MailError(
-            "invalid recipient " + repr(token)
-            + "; valid roles: " + "|".join(VALID_TO))
-    role, _, sid = token.partition(":")
-    if role != "orchestrator":
-        raise MailError(
-            "only 'orchestrator' may carry a :<session_id> suffix; the singular "
-            "roles are " + "|".join(SINGULAR_INBOX_ROLES) + " (got " + repr(token)
-            + ")")
-    if not sid:
-        raise MailError("empty session_id in recipient " + repr(token))
-    if not _registry().is_valid_session_id(sid):
-        raise MailError("refusing unsafe session_id " + repr(sid))
-    return ("orchestrator", sid)
+            f"{_RETIRED_PREFIX}; {token!r} carries a ':<session_id>' suffix. "
+            + _SINGULAR_HINT)
+    if token in VALID_TO:
+        return (token, None)
+    raise MailError(
+        "invalid recipient " + repr(token)
+        + "; valid roles: " + "|".join(VALID_TO))
 
 
 def _parse_recipient_pairs(recipients: list[str]) -> list[tuple[str, str | None]]:
@@ -260,104 +226,52 @@ def _parse_recipient_pairs(recipients: list[str]) -> list[tuple[str, str | None]
     return pairs
 
 
-def _recipient_label(role: str, sid: str | None) -> str:
-    """The `to:` frontmatter label: orchestrator:<sid> for a resolved gen."""
-    if role == "orchestrator" and sid:
-        return f"orchestrator:{sid}"
+def _recipient_label(role: str, sid: str | None = None) -> str:
+    """The `to:` frontmatter label -- always the bare role (21-D)."""
     return role
 
 
-def _inbox_for_target(root: Path, role: str, sid: str | None,
+def _inbox_for_target(root: Path, role: str, sid: str | None = None,
                       now: datetime | None = None) -> Path:
-    """The concrete inbox dir for (role, sid). DELEGATES the per-gen path shape.
+    """The concrete inbox dir for (role, sid).
 
-    Singular roles -> root/<role>/inbox (role_mail owns the singular shape only).
-    orchestrator -> resolve sid (bare = newest_live at send; None -> a CLEAR
-    NoLiveOrchestratorError, never a silent drop), re-validate the resolved sid
-    (belt -- never trust a resolved value into a path), then return the
-    registry's per_generation_inbox (the single owner of the per-gen path).
+    Every role is singular, so `sid` is ignored (kept in the signature so the
+    delivery loop and its callers stay unchanged). Raises on an unknown role.
     """
     if role in SINGULAR_INBOX_ROLES:
         return root / role / "inbox"
-    if role == "orchestrator":
-        eff = sid
-        if eff is None:
-            entry = _registry().newest_live(root, now if now is not None else _now())
-            if not entry:
-                raise NoLiveOrchestratorError(
-                    "no live orchestrator generation to receive a bare "
-                    "'--to orchestrator'. Address a specific generation with "
-                    "'--to orchestrator:<session_id>', or bring an orchestrator "
-                    "generation up first. Nothing was written.")
-            eff = entry.get("session_id")
-        if not _registry().is_valid_session_id(eff):
-            raise MailError("refusing unsafe session_id " + repr(eff))
-        return _registry().per_generation_inbox(root, eff)
     raise MailError(
         "invalid recipient " + repr(role) + "; valid roles: " + "|".join(VALID_TO))
 
 
-def _effective_read_session(root: Path, role: str, sid: str | None,
-                            now: datetime | None = None) -> str | None:
-    """The session_id a read/list/peek op should use (resolve newest-live ONCE).
+def _reject_retired_session_flag(sid: str | None) -> None:
+    """REJECT a stale `--session <id>` on a read/list/peek op (D2, read side).
 
-    The read side is TWO operations (list the inbox + ack each message) that
-    MUST agree on ONE generation, so resolution is hoisted ABOVE both (here, at
-    the cmd_* layer) and the resolved value is threaded into both -- read+ack
-    consistency by construction. Mirrors the SEND side's single resolution at
-    _inbox_for_target, delegating newest-live to the registry (single-source,
-    guard #4).
-
-    - Singular role (charc/rd/operator): returns sid unchanged (the singular
-      path ignores it) -> ZERO behavior change.
-    - orchestrator WITH an explicit sid: returns it unchanged (a specific,
-      possibly non-newest / pruned gen) -> ZERO behavior change (back-compat).
-    - orchestrator with NO sid (the self-read): resolve the newest-live
-      generation via the registry. No live gen -> a CLEAR read-side error
-      (NoLiveOrchestratorReadError), NOT the old "requires --session". The
-      resolved sid is re-validated via is_valid_session_id BEFORE it is returned
-      into any path (the same belt the send side uses).
+    The read-side twin of _split_target's `:<sid>` rejection: a caller carrying
+    the retired per-generation flag must LEARN, not be silently ignored (an
+    ignored --session would read the singular inbox while the caller believed it
+    was reading a specific generation). Nothing is listed, printed, or acked.
     """
-    if role != "orchestrator" or sid is not None:
-        return sid
-    entry = _registry().newest_live(root, now if now is not None else _now())
-    if not entry:
-        raise NoLiveOrchestratorReadError(
-            "no live orchestrator generation to read. Address a specific "
-            "generation with '--session <session_id>', or bring an orchestrator "
-            "generation up first.")
-    eff = entry.get("session_id")
-    if not _registry().is_valid_session_id(eff):
-        raise MailError("refusing unsafe session_id " + repr(eff))
-    return eff
+    if sid is None:
+        return
+    raise MailError(
+        f"{_RETIRED_PREFIX}; '--session {sid}' no longer selects an "
+        "orchestrator generation. Every role is a singular inbox -- read it "
+        "with '--role <role>' and no --session. Nothing was read or acked.")
 
 
-def _role_inbox_dir(root: Path, role: str, sid: str | None) -> Path:
-    """The inbox dir for a read/list/peek/ack op (singular or per-generation)."""
+def _role_inbox_dir(root: Path, role: str, sid: str | None = None) -> Path:
+    """The inbox dir for a read/list/peek/ack op (singular for every role)."""
     if role in SINGULAR_INBOX_ROLES:
         return root / role / "inbox"
-    if role == "orchestrator":
-        if not sid:
-            raise MailError(
-                "reading an orchestrator inbox requires --session <session_id>")
-        if not _registry().is_valid_session_id(sid):
-            raise MailError("refusing unsafe session_id " + repr(sid))
-        return _registry().per_generation_inbox(root, sid)
     raise MailError(
         "invalid role " + repr(role) + "; valid roles: " + "|".join(VALID_TO))
 
 
-def _role_read_dir(root: Path, role: str, sid: str | None) -> Path:
-    """The read (ack archive) dir for a role (singular or per-generation)."""
+def _role_read_dir(root: Path, role: str, sid: str | None = None) -> Path:
+    """The read (ack archive) dir for a role (singular for every role)."""
     if role in SINGULAR_INBOX_ROLES:
         return root / role / "read"
-    if role == "orchestrator":
-        if not sid:
-            raise MailError(
-                "an orchestrator ack requires --session <session_id>")
-        if not _registry().is_valid_session_id(sid):
-            raise MailError("refusing unsafe session_id " + repr(sid))
-        return _registry().per_generation_read(root, sid)
     raise MailError(
         "invalid role " + repr(role) + "; valid roles: " + "|".join(VALID_TO))
 
@@ -505,10 +419,9 @@ def post_message(
     posted = now.strftime("%Y-%m-%dT%H:%M:%SZ")
     slug = _slugify(subject)
 
-    # Resolve each pair to its concrete inbox (a NoLiveOrchestratorError fires
-    # HERE, before any temp is staged -> all-or-nothing). De-dupe by the RESOLVED
-    # inbox path so bare `orchestrator` + `orchestrator:<newest_sid>` collapse to
-    # one delivery. The orchestrator label records the concrete generation.
+    # Resolve each pair to its concrete inbox and de-dupe by the RESOLVED inbox
+    # path, so a repeated recipient collapses to ONE delivery. Every role is
+    # singular, so the label is always the bare role.
     resolved: list[tuple[Path, str]] = []
     seen_inboxes: set[str] = set()
     for role, sid in pairs:
@@ -517,9 +430,7 @@ def post_message(
         if key in seen_inboxes:
             continue
         seen_inboxes.add(key)
-        label = (_recipient_label(role, inbox.parent.name)
-                 if role == "orchestrator" else role)
-        resolved.append((inbox, label))
+        resolved.append((inbox, _recipient_label(role, sid)))
 
     # Precompute every (final path, content) BEFORE writing anything so a
     # multi-recipient post delivers all-or-nothing (atomicity): stage temps in
@@ -583,12 +494,11 @@ def ack_message(root: Path, role: str, filename: str,
     _unique_dest so an archived message of the same name is never overwritten
     (ack must never delete history). filename MUST be a bare basename --
     traversal attempts are rejected (L3 mail custody: the ack can never reach
-    outside the role's own inbox). `session_id` (default None, back-compat for
-    the GUI + singular reads) is REQUIRED for orchestrator and selects the
-    per-generation inbox/read dirs (delegated to the registry). The per-gen
-    read/ dir is created lazily here, so an explicit-:<sid> round-trip works even
-    for a generation that never ran session-start. Raises MailError on invalid
-    role, traversal, a missing session for orchestrator, or a missing file.
+    outside the role's own inbox). `session_id` is VESTIGIAL (21-D: every role
+    is a singular inbox) -- it is accepted and ignored so the GUI's existing
+    call shape keeps working; the retired `--session` CLI flag is rejected at
+    the cmd_* layer, not here. Raises MailError on an invalid role, a traversal
+    attempt, or a missing file.
     """
     if role not in VALID_TO:
         raise MailError(
@@ -639,7 +549,8 @@ def cmd_list(args: argparse.Namespace) -> int:
             "invalid --role " + repr(args.role)
             + "; valid roles: " + "|".join(VALID_TO)
         )
-    sid = _effective_read_session(root, args.role, getattr(args, "session", None))
+    _reject_retired_session_flag(getattr(args, "session", None))
+    sid = None
     inbox = _list_inbox(root, args.role, sid)
     read_count = len(_list_read(root, args.role, sid))
     print(f"inbox for {args.role}: {len(inbox)} unread, {read_count} read")
@@ -671,7 +582,8 @@ def cmd_read(args: argparse.Namespace) -> int:
             "invalid --role " + repr(args.role)
             + "; valid roles: " + "|".join(VALID_TO)
         )
-    sid = _effective_read_session(root, args.role, getattr(args, "session", None))
+    _reject_retired_session_flag(getattr(args, "session", None))
+    sid = None
     inbox = _list_inbox(root, args.role, sid)
     if args.id:
         targets = [p for p in inbox if p.name == args.id]
@@ -697,7 +609,8 @@ def cmd_peek(args: argparse.Namespace) -> int:
             "invalid --role " + repr(args.role)
             + "; valid roles: " + "|".join(VALID_TO)
         )
-    sid = _effective_read_session(root, args.role, getattr(args, "session", None))
+    _reject_retired_session_flag(getattr(args, "session", None))
+    sid = None
     inbox = _list_inbox(root, args.role, sid)
     if not inbox:
         print(f"inbox for {args.role} is empty.")
@@ -732,7 +645,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_post.add_argument(
         "--to", required=True,
         help="recipient(s), comma-separated: " + "|".join(VALID_TO)
-        + " (orchestrator = newest-live; orchestrator:<session_id> = a gen)")
+        + " (every role is a singular inbox; a :<session_id> suffix is retired"
+          " and refused)")
     p_post.add_argument("--type", required=True,
                         help="message type: " + "|".join(VALID_TYPES))
     p_post.add_argument("--subject", required=True)
@@ -742,8 +656,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_post.add_argument("--thread", default=None, help="optional thread slug")
     p_post.set_defaults(func=cmd_post)
 
-    session_help = ("orchestrator generation session_id; omit to target the "
-                    "newest-live generation (pass it for a specific/non-newest gen)")
+    # The flag is KEPT (not deleted) purely so a stale caller gets the actionable
+    # retirement message instead of argparse's bare "unrecognized arguments".
+    session_help = ("retired (21-D): per-generation orchestrator addressing is "
+                    "gone; every role is a singular inbox. Passing this fails "
+                    "with an actionable message instead of being ignored.")
 
     p_list = sub.add_parser("list", help="list a role's inbox")
     _add_comms_root(p_list)

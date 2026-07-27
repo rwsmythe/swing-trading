@@ -605,7 +605,11 @@ def test_human_role_keeps_full_type_set(comms):
     assert len(_inbox(comms, "rd")) == 1
 
 
-# --- G6 Arc A: orchestrator per-generation addressing ----------------------
+# --- 21-D: orchestrator SINGULAR inbox + :<sid> REJECTION -------------------
+# The per-generation model is RETIRED. Every role -- charc/rd/operator AND
+# orchestrator -- has ONE fixed inbox. A stale `:<session_id>` address (or a
+# stale `--session`) must FAIL LOUDLY with an actionable message, never be
+# silently ignored and never silently misroute (D2: reject, do not ignore).
 
 _FIXED = datetime(2026, 6, 25, 12, 0, 0, tzinfo=UTC)
 
@@ -615,221 +619,195 @@ def _per_gen_inbox(comms_root, sid):
     return sorted(d.glob("*.md")) if d.is_dir() else []
 
 
-def _per_gen_read(comms_root, sid):
-    d = Path(comms_root) / "orchestrator" / sid / "read"
-    return sorted(d.glob("*.md")) if d.is_dir() else []
-
-
-def _seed_live_orch(comms_root, sid, monkeypatch, *, last_seen=None):
-    """Seed a live orchestrator registry entry + freeze role_mail._now."""
-    reg = role_mail._registry()
-    seen = last_seen or _FIXED
-    reg.write_entry(Path(comms_root), sid, "orchestrator", "", _FIXED)
-    # stamp last_seen explicitly so staleness is deterministic
-    import json
-    path = reg.entry_path(Path(comms_root), sid)
-    data = json.loads(path.read_text(encoding="utf-8"))
-    data["last_seen"] = seen.isoformat()
-    path.write_text(json.dumps(data), encoding="utf-8")
-    monkeypatch.setattr(role_mail, "_now", lambda: _FIXED)
-
-
-# 4a -- bare --to orchestrator, live gen -> per-gen delivery
-def test_bare_orchestrator_live_gen_delivers_to_per_gen(comms, monkeypatch):
-    _seed_live_orch(comms, "g1", monkeypatch)
+# D1 -- a bare `--to orchestrator` routes to the SINGULAR inbox.
+def test_bare_orchestrator_delivers_to_singular_inbox(comms):
     paths = role_mail.post_message(comms, "charc", ["orchestrator"], "fyi",
-                                   "hi gen", "body")
+                                   "hi orch", "body")
     assert len(paths) == 1
-    assert len(_per_gen_inbox(comms, "g1")) == 1
-    text = _per_gen_inbox(comms, "g1")[0].read_text(encoding="utf-8")
-    assert "to: orchestrator:g1" in text
-    # the singular orchestrator inbox must NOT exist (guard #2)
-    assert not (Path(comms) / "orchestrator" / "inbox").exists()
+    files = _inbox(comms, "orchestrator")
+    assert len(files) == 1
+    assert files[0] == paths[0]
+    text = files[0].read_text(encoding="utf-8")
+    assert "to: orchestrator" in text
+    assert "to: orchestrator:" not in text  # no generation label survives
+    # NO per-generation directory is created anywhere under orchestrator/
+    base = Path(comms) / "orchestrator"
+    assert sorted(p.name for p in base.iterdir() if p.is_dir()) == [
+        "inbox", "read"]
 
 
-# 4b -- bare --to orchestrator, NO live gen -> CLEAR ERROR (no silent drop)
-def test_bare_orchestrator_no_live_gen_clear_error(comms, monkeypatch):
-    monkeypatch.setattr(role_mail, "_now", lambda: _FIXED)
-    with pytest.raises(role_mail.NoLiveOrchestratorError) as ei:
-        role_mail.post_message(comms, "charc", ["orchestrator"], "fyi", "s", "x")
-    msg = str(ei.value).lower()
-    assert "orchestrator" in msg and "session_id" in msg
-    assert list(Path(comms).rglob("*.md")) == []
-
-
-def test_bare_orchestrator_no_live_gen_cli_rc1_no_file(comms, monkeypatch):
-    monkeypatch.setattr(role_mail, "_now", lambda: _FIXED)
-    rc = _post(comms, **{"from": "charc", "to": "orchestrator", "type": "fyi",
-                         "subject": "s", "body": "x"})
-    assert rc == 1  # NOT a silent rc-0 drop
-    assert list(Path(comms).rglob("*.md")) == []
-
-
-# 4c -- explicit :<sid> reaches a NEVER-registered + a PRUNED gen, full round-trip
-def test_explicit_sid_never_registered_full_round_trip(comms, capsys):
-    # EMPTY registry, no pre-existing comms/orchestrator/ dir.
-    assert not (Path(comms) / "orchestrator").exists()
-    paths = role_mail.post_message(comms, "charc", ["orchestrator:g2"], "fyi",
-                                   "explicit", "body-g2")
-    assert len(paths) == 1
-    assert len(_per_gen_inbox(comms, "g2")) == 1  # send-path mkdir bootstrap
-    # read drains it -> moves to read/ (ack-path mkdir bootstraps read/)
-    capsys.readouterr()
-    rc = role_mail.main(["read", "--role", "orchestrator", "--session", "g2",
-                         "--all", "--comms-root", str(comms)])
+def test_bare_orchestrator_cli_round_trip_singular(comms, capsys):
+    rc = _post(comms, **{"from": "charc", "to": "orchestrator", "type": "status",
+                         "subject": "s", "body": "BODYTEXT"})
     assert rc == 0
-    out = capsys.readouterr().out
-    assert "body-g2" in out
-    assert len(_per_gen_inbox(comms, "g2")) == 0
-    assert len(_per_gen_read(comms, "g2")) == 1
+    assert len(_inbox(comms, "orchestrator")) == 1
+    capsys.readouterr()
+    rc = role_mail.main(["read", "--role", "orchestrator", "--all",
+                         "--comms-root", str(comms)])
+    assert rc == 0
+    assert "BODYTEXT" in capsys.readouterr().out
+    assert len(_inbox(comms, "orchestrator")) == 0
+    assert len(_read_dir(comms, "orchestrator")) == 1
 
 
-def test_explicit_sid_pruned_gen_still_delivers(comms, monkeypatch):
-    # register g3, then prune it -> registry-independent :<sid> still delivers
-    reg = role_mail._registry()
-    reg.write_entry(Path(comms), "g3", "orchestrator", "", _FIXED)
-    reg.prune_stale(Path(comms), _FIXED + timedelta(seconds=reg.STALE_SECONDS + 1))
-    assert reg.read_entry(Path(comms), "g3") is None  # pruned
-    paths = role_mail.post_message(comms, "charc", ["orchestrator:g3"], "fyi",
-                                   "still here", "x")
-    assert len(paths) == 1
-    assert len(_per_gen_inbox(comms, "g3")) == 1
+# D2 -- a `:<sid>`-suffixed address RAISES with an ACTIONABLE message.
+def test_sid_suffixed_recipient_raises_actionable_message(comms):
+    with pytest.raises(role_mail.MailError) as ei:
+        role_mail.post_message(comms, "charc", ["orchestrator:g1"], "fyi",
+                               "s", "x")
+    msg = str(ei.value)
+    # the actionable content, not merely "it failed"
+    assert "per-generation addressing was removed" in msg
+    assert "orchestrator:g1" in msg
+    assert "Every role is a singular inbox" in msg
+    assert "bare name" in msg
+    # nothing written anywhere, and no per-gen tree bootstrapped
+    assert list(Path(comms).rglob("*.md")) == []
+    assert _per_gen_inbox(comms, "g1") == []
 
 
-# 4d -- session_id path-safety in :<sid>
-def test_explicit_sid_path_safety(comms):
-    for bad in ("orchestrator:../evil", "orchestrator:/abs", "orchestrator:",
-                "orchestrator:a/b"):
-        with pytest.raises(role_mail.MailError):
-            role_mail.post_message(comms, "charc", [bad], "fyi", "s", "x")
-    # a suffix on a singular role is rejected
-    with pytest.raises(role_mail.MailError):
-        role_mail.post_message(comms, "charc", ["charc:foo"], "fyi", "s", "x")
-    # no .md escaped the per-gen tree
+def test_sid_suffixed_recipient_cli_rc1_and_actionable_stderr(comms, capsys):
+    rc = _post(comms, **{"from": "charc", "to": "orchestrator:g1",
+                         "type": "fyi", "subject": "s", "body": "x"})
+    assert rc == 1  # NOT a silent rc-0 delivery
+    err = capsys.readouterr().err
+    assert "per-generation addressing was removed" in err
+    assert "Every role is a singular inbox" in err
     assert list(Path(comms).rglob("*.md")) == []
 
 
-# 4e -- type x recipient matrix
-def test_decision_request_to_explicit_orchestrator_refused_L1(comms, capsys):
-    rc = _post(comms, **{"from": "charc", "to": "orchestrator:g1",
+def test_sid_suffix_on_a_singular_role_also_rejected(comms):
+    for bad in ("charc:foo", "rd:bar", "operator:baz", "orchestrator:",
+                "orchestrator:../evil", "orchestrator:a/b"):
+        with pytest.raises(role_mail.MailError) as ei:
+            role_mail.post_message(comms, "charc", [bad], "fyi", "s", "x")
+        assert "per-generation addressing was removed" in str(ei.value)
+    assert list(Path(comms).rglob("*.md")) == []
+
+
+# D2 (read side) -- the stale `--session` flag fails loudly too.
+def test_session_flag_rejected_with_actionable_message(comms, capsys):
+    role_mail.post_message(comms, "charc", ["orchestrator"], "fyi", "m", "B")
+    for cmd, extra in (("read", ["--all"]), ("list", []), ("peek", [])):
+        capsys.readouterr()
+        rc = role_mail.main([cmd, "--role", "orchestrator", "--session", "g1",
+                             "--comms-root", str(comms), *extra])
+        assert rc == 1, cmd
+        err = capsys.readouterr().err
+        assert "per-generation addressing was removed" in err, cmd
+        assert "--session" in err, cmd
+    # the refusal never acked / moved the message
+    assert len(_inbox(comms, "orchestrator")) == 1
+    assert len(_read_dir(comms, "orchestrator")) == 0
+
+
+def test_session_help_text_states_it_is_retired():
+    parser = role_mail.build_parser()
+    sub = [a for a in parser._actions
+           if isinstance(a, argparse._SubParsersAction)][0]
+    for name in ("read", "list", "peek"):
+        action = [a for a in sub.choices[name]._actions
+                  if "--session" in getattr(a, "option_strings", [])][0]
+        assert "retired" in action.help
+        assert "newest-live" not in action.help
+
+
+# read / list / peek round-trip on the singular orchestrator inbox
+def test_orchestrator_read_list_peek_round_trip(comms, capsys):
+    role_mail.post_message(comms, "charc", ["orchestrator"], "fyi", "m", "B")
+    capsys.readouterr()
+    rc = role_mail.main(["peek", "--role", "orchestrator",
+                         "--comms-root", str(comms)])
+    assert rc == 0
+    assert "B" in capsys.readouterr().out
+    assert len(_inbox(comms, "orchestrator")) == 1  # peek never acks
+    capsys.readouterr()
+    rc = role_mail.main(["list", "--role", "orchestrator",
+                         "--comms-root", str(comms)])
+    assert rc == 0
+    assert "1 unread" in capsys.readouterr().out
+    assert len(_inbox(comms, "orchestrator")) == 1
+    capsys.readouterr()
+    rc = role_mail.main(["read", "--role", "orchestrator", "--all",
+                         "--comms-root", str(comms)])
+    assert rc == 0
+    assert len(_inbox(comms, "orchestrator")) == 0
+    assert len(_read_dir(comms, "orchestrator")) == 1
+
+
+def test_orchestrator_empty_inbox_is_not_an_error(comms, capsys):
+    capsys.readouterr()
+    for argv in (["read", "--role", "orchestrator", "--all"],
+                 ["list", "--role", "orchestrator"],
+                 ["peek", "--role", "orchestrator"]):
+        rc = role_mail.main([*argv, "--comms-root", str(comms)])
+        assert rc == 0
+    out = capsys.readouterr().out
+    assert "empty" in out
+
+
+# type x recipient matrix, unchanged semantics on the singular address
+def test_decision_request_to_orchestrator_refused_L1(comms, capsys):
+    rc = _post(comms, **{"from": "charc", "to": "orchestrator",
                          "type": "decision_request", "subject": "x", "body": "y"})
     assert rc == 1
     err = capsys.readouterr().err
     assert "L1" in err
-    assert "invalid recipient" not in err
     assert list(Path(comms).rglob("*.md")) == []
 
 
-def test_decision_request_to_bare_orchestrator_refused_L1(comms, monkeypatch):
-    # L1 fires on the PARSED role BEFORE newest-live resolution -- even with a
-    # live gen, decision_request to orchestrator is refused at L1.
-    _seed_live_orch(comms, "g1", monkeypatch)
-    with pytest.raises(role_mail.MailError) as ei:
-        role_mail.post_message(comms, "charc", ["orchestrator"],
-                               "decision_request", "x", "y")
-    assert "L1" in str(ei.value)
-    assert list(Path(comms).rglob("*.md")) == []
-
-
-def test_fyi_status_query_return_report_to_orchestrator_delivered(comms, monkeypatch):
-    _seed_live_orch(comms, "g1", monkeypatch)
+def test_fyi_status_query_return_report_to_orchestrator_delivered(comms):
     for mtype in ("fyi", "status", "query", "return_report"):
-        role_mail.post_message(comms, "charc", ["orchestrator:g1"], mtype,
-                               "s", "x")
-    assert len(_per_gen_inbox(comms, "g1")) == 4
+        role_mail.post_message(comms, "charc", ["orchestrator"], mtype, "s", "x")
+    assert len(_inbox(comms, "orchestrator")) == 4
 
 
 def test_pipeline_decision_request_to_orchestrator_rejected(comms, capsys):
-    rc = _post(comms, **{"from": "pipeline", "to": "orchestrator:g1",
+    rc = _post(comms, **{"from": "pipeline", "to": "orchestrator",
                          "type": "decision_request", "subject": "x", "body": "y"})
     assert rc == 1
-    err = capsys.readouterr().err
-    assert "automated emitter" in err
+    assert "automated emitter" in capsys.readouterr().err
     assert list(Path(comms).rglob("*.md")) == []
 
 
-# 4f -- read/list/peek/ack with --session
-def test_orchestrator_read_list_peek_session_round_trip(comms, capsys):
-    role_mail.post_message(comms, "charc", ["orchestrator:g1"], "fyi", "m", "B")
-    # peek does NOT ack
-    capsys.readouterr()
-    rc = role_mail.main(["peek", "--role", "orchestrator", "--session", "g1",
-                         "--comms-root", str(comms)])
-    assert rc == 0
-    assert "B" in capsys.readouterr().out
-    assert len(_per_gen_inbox(comms, "g1")) == 1
-    # list counts it
-    rc = role_mail.main(["list", "--role", "orchestrator", "--session", "g1",
-                         "--comms-root", str(comms)])
-    assert rc == 0
-    # read drains it (proves cmd_read threaded --session into ack_message)
-    capsys.readouterr()
-    rc = role_mail.main(["read", "--role", "orchestrator", "--session", "g1",
-                         "--all", "--comms-root", str(comms)])
-    assert rc == 0
-    assert len(_per_gen_inbox(comms, "g1")) == 0
-    assert len(_per_gen_read(comms, "g1")) == 1
+def test_multi_recipient_including_orchestrator_all_singular(comms):
+    paths = role_mail.post_message(
+        comms, "charc", ["rd", "orchestrator", "operator"], "status", "s", "x")
+    assert len(paths) == 3
+    assert len(_inbox(comms, "rd")) == 1
+    assert len(_inbox(comms, "orchestrator")) == 1
+    assert len(_inbox(comms, "operator")) == 1
 
 
-# T1b -- read no-session with NO live gen -> the CLEAR read-side error (the FLIP
-# of the old Arc-A test_orchestrator_read_without_session_errors, which codified
-# the now-reversed "requires --session" contract). The OLD message is gone.
-def test_orchestrator_read_no_session_no_live_gen_clear_error(comms, monkeypatch,
-                                                              capsys):
-    monkeypatch.setattr(role_mail, "_now", lambda: _FIXED)  # empty registry
-    rc = role_mail.main(["read", "--role", "orchestrator", "--all",
-                         "--comms-root", str(comms)])
-    assert rc == 1
-    err = capsys.readouterr().err
-    assert "no live orchestrator" in err.lower()
-    assert "requires --session" not in err
-    assert list(Path(comms).rglob("*.md")) == []
+def test_repeated_orchestrator_recipient_dedupes_to_one_delivery(comms):
+    paths = role_mail.post_message(
+        comms, "charc", ["orchestrator", "orchestrator"], "fyi", "s", "x")
+    assert len(paths) == 1
+    assert len(_inbox(comms, "orchestrator")) == 1
 
 
-# 4g -- single-sourced reader: behavioral delegation + structural backstop
-def test_role_mail_delegates_resolution_to_registry(comms, monkeypatch):
-    sentinel_inbox = Path(comms) / "STUBBED" / "inbox"
-
-    class _Stub:
-        STALE_SECONDS = 2700
-
-        @staticmethod
-        def is_valid_session_id(sid):
-            return True
-
-        @staticmethod
-        def newest_live(root, now, stale_seconds=2700):
-            return {"session_id": "STUB"}
-
-        @staticmethod
-        def per_generation_inbox(root, sid):
-            return sentinel_inbox
-
-    monkeypatch.setattr(role_mail, "_registry", lambda: _Stub())
-    monkeypatch.setattr(role_mail, "_now", lambda: _FIXED)
-    role_mail.post_message(comms, "charc", ["orchestrator"], "fyi", "s", "x")
-    # delivered through the STUB's per_generation_inbox -> proves delegation
-    assert sorted(sentinel_inbox.glob("*.md"))
-
-
-def test_role_mail_has_no_private_resolver_copy():
-    src = role_mail.__file__ if hasattr(role_mail, "__file__") else None
-    text = (Path(role_mail.__file__).read_text(encoding="utf-8") if src
-            else _MODULE_PATH.read_text(encoding="utf-8"))
-    assert "def newest_live" not in text
-    assert "STALE_SECONDS =" not in text
-    reg_text = (Path(role_mail._registry().__file__).read_text(encoding="utf-8"))
-    assert "def newest_live" in reg_text
-    assert "STALE_SECONDS =" in reg_text
-
-
-# 4h -- backward-compat: _ensure_tree does NOT create comms/orchestrator/inbox
-def test_ensure_tree_excludes_orchestrator_singular(comms):
+# D1 -- _ensure_tree now bootstraps the orchestrator singular tree like the rest
+def test_ensure_tree_includes_orchestrator_singular(comms):
     role_mail._ensure_tree(comms)
-    assert (Path(comms) / "charc" / "inbox").is_dir()
-    assert (Path(comms) / "rd" / "inbox").is_dir()
-    assert (Path(comms) / "operator" / "inbox").is_dir()
-    assert not (Path(comms) / "orchestrator" / "inbox").exists()
+    for role in ("charc", "rd", "operator", "orchestrator"):
+        assert (Path(comms) / role / "inbox").is_dir()
+        assert (Path(comms) / role / "read").is_dir()
+
+
+def test_singular_inbox_roles_covers_every_valid_recipient():
+    assert set(role_mail.SINGULAR_INBOX_ROLES) == set(role_mail.VALID_TO)
+
+
+# D4 -- role_mail no longer depends on the session registry for addressing.
+def test_role_mail_carries_no_registry_or_per_generation_addressing():
+    text = _MODULE_PATH.read_text(encoding="utf-8")
+    # the prose docstring may POINT at the registry (it is where session_id
+    # survives as a recovery key); what must be gone is the CODE dependency.
+    for dead in ("import comms_session_registry", "newest_live",
+                 "per_generation_inbox", "per_generation_read",
+                 "NoLiveOrchestratorError", "_effective_read_session",
+                 "_registry("):
+        assert dead not in text, dead
 
 
 def test_ack_message_three_arg_still_works(comms):
@@ -840,167 +818,9 @@ def test_ack_message_three_arg_still_works(comms):
     assert len(_inbox(comms, "operator")) == 0
 
 
-# --- G6 B.1: orchestrator newest-live self-read (read/list/peek no-session) -
-
-def _set_started_ts(comms_root, sid, started):
-    """Rewrite a seeded gen's started_ts so multi-gen newest is deterministic."""
-    import json
-    reg = role_mail._registry()
-    path = reg.entry_path(Path(comms_root), sid)
-    data = json.loads(path.read_text(encoding="utf-8"))
-    data["started_ts"] = started.isoformat()
-    path.write_text(json.dumps(data), encoding="utf-8")
-
-
-# T1a -- read no-session resolves newest-live AND acks THAT gen (read+ack
-# consistency: the .md moves from the resolved gen's inbox/ -> read/).
-def test_orchestrator_read_no_session_resolves_newest_live_and_acks_that_gen(
-        comms, monkeypatch, capsys):
-    _seed_live_orch(comms, "g1", monkeypatch)
-    role_mail.post_message(comms, "charc", ["orchestrator:g1"], "fyi", "m", "BODY")
-    capsys.readouterr()
-    rc = role_mail.main(["read", "--role", "orchestrator", "--all",
-                         "--comms-root", str(comms)])
-    assert rc == 0
-    assert "BODY" in capsys.readouterr().out
-    assert len(_per_gen_inbox(comms, "g1")) == 0
-    assert len(_per_gen_read(comms, "g1")) == 1
-
-
-# T1c (GUARD) -- explicit --session targets a SPECIFIC, non-newest gen;
-# newest-live must NOT override an explicit --session. Passes pre- and post-fix.
-def test_orchestrator_read_explicit_session_targets_specific_non_newest_gen(
-        comms, monkeypatch, capsys):
-    _seed_live_orch(comms, "g1", monkeypatch)
-    _seed_live_orch(comms, "g2", monkeypatch)
-    _set_started_ts(comms, "g1", _FIXED - timedelta(hours=1))  # older
-    _set_started_ts(comms, "g2", _FIXED)                        # newest-live
-    role_mail.post_message(comms, "charc", ["orchestrator:g1"], "fyi", "m", "g1msg")
-    role_mail.post_message(comms, "charc", ["orchestrator:g2"], "fyi", "m", "g2msg")
-    capsys.readouterr()
-    rc = role_mail.main(["read", "--role", "orchestrator", "--session", "g1",
-                         "--all", "--comms-root", str(comms)])
-    assert rc == 0
-    assert len(_per_gen_inbox(comms, "g1")) == 0
-    assert len(_per_gen_read(comms, "g1")) == 1
-    assert len(_per_gen_inbox(comms, "g2")) == 1   # newer gen UNTOUCHED
-
-
-# T1d -- list no-session resolves newest-live, NO ack (observational).
-def test_orchestrator_list_no_session_resolves_newest_live_no_ack(
-        comms, monkeypatch, capsys):
-    _seed_live_orch(comms, "g1", monkeypatch)
-    role_mail.post_message(comms, "charc", ["orchestrator:g1"], "fyi", "m", "x")
-    capsys.readouterr()
-    rc = role_mail.main(["list", "--role", "orchestrator",
-                         "--comms-root", str(comms)])
-    assert rc == 0
-    assert "1 unread" in capsys.readouterr().out
-    assert len(_per_gen_inbox(comms, "g1")) == 1   # not acked
-
-
-# T1e -- peek no-session resolves newest-live, NO ack (peek never acks).
-def test_orchestrator_peek_no_session_resolves_newest_live_no_ack(
-        comms, monkeypatch, capsys):
-    _seed_live_orch(comms, "g1", monkeypatch)
-    role_mail.post_message(comms, "charc", ["orchestrator:g1"], "fyi", "m", "PEEKBODY")
-    capsys.readouterr()
-    rc = role_mail.main(["peek", "--role", "orchestrator",
-                         "--comms-root", str(comms)])
-    assert rc == 0
-    assert "PEEKBODY" in capsys.readouterr().out
-    assert len(_per_gen_inbox(comms, "g1")) == 1   # peek never acks
-
-
-# T1f -- read no-session, MULTIPLE live gens -> drains the NEWEST only
-# (the documented edge + read+ack consistency on the resolved gen).
-def test_orchestrator_read_no_session_multi_gen_drains_newest_only(
-        comms, monkeypatch, capsys):
-    _seed_live_orch(comms, "g1", monkeypatch)
-    _seed_live_orch(comms, "g2", monkeypatch)
-    _set_started_ts(comms, "g1", _FIXED - timedelta(hours=1))  # older
-    _set_started_ts(comms, "g2", _FIXED)                        # newest-live
-    role_mail.post_message(comms, "charc", ["orchestrator:g1"], "fyi", "m", "g1msg")
-    role_mail.post_message(comms, "charc", ["orchestrator:g2"], "fyi", "m", "g2msg")
-    capsys.readouterr()
-    rc = role_mail.main(["read", "--role", "orchestrator", "--all",
-                         "--comms-root", str(comms)])
-    assert rc == 0
-    assert len(_per_gen_read(comms, "g2")) == 1    # newest drained + acked
-    assert len(_per_gen_inbox(comms, "g2")) == 0
-    assert len(_per_gen_inbox(comms, "g1")) == 1   # older UNTOUCHED
-
-
-# T1g -- the --session help text is newest-live-aware, NOT "required".
-def test_session_help_is_newest_live_aware_not_required():
-    parser = role_mail.build_parser()
-    sub = [a for a in parser._actions
-           if isinstance(a, argparse._SubParsersAction)][0]
-    read_parser = sub.choices["read"]
-    session_action = [a for a in read_parser._actions
-                      if "--session" in getattr(a, "option_strings", [])][0]
-    help_text = session_action.help
-    assert "required" not in help_text
-    assert "newest-live" in help_text
-
-
-# T2a -- the READ path delegates newest-live resolution to the registry (it
-# does NOT hand-roll resolution off the filesystem). Read+ack route through the
-# stub's per-generation dirs.
-def test_role_mail_read_delegates_resolution_to_registry(comms, monkeypatch):
-    sentinel_inbox = Path(comms) / "STUBBED" / "inbox"
-    sentinel_read = Path(comms) / "STUBBED" / "read"
-    sentinel_inbox.mkdir(parents=True, exist_ok=True)
-    (sentinel_inbox / "20260625T120000Z-charc-m.md").write_text(
-        "---\nfrom: charc\nto: orchestrator:STUB\ntype: fyi\n---\n\nbody\n",
-        encoding="utf-8")
-
-    class _Stub:
-        STALE_SECONDS = 2700
-
-        @staticmethod
-        def is_valid_session_id(sid):
-            return True
-
-        @staticmethod
-        def newest_live(root, now, stale_seconds=2700):
-            return {"session_id": "STUB"}
-
-        @staticmethod
-        def per_generation_inbox(root, sid):
-            return sentinel_inbox
-
-        @staticmethod
-        def per_generation_read(root, sid):
-            return sentinel_read
-
-    monkeypatch.setattr(role_mail, "_registry", lambda: _Stub())
-    monkeypatch.setattr(role_mail, "_now", lambda: _FIXED)
-    rc = role_mail.main(["read", "--role", "orchestrator", "--all",
-                         "--comms-root", str(comms)])
-    assert rc == 0
-    # read + ack routed through the STUB's per-generation dirs -> delegation
-    assert sorted(sentinel_inbox.glob("*.md")) == []
-    assert len(sorted(sentinel_read.glob("*.md"))) == 1
-
-
-# T2c -- cmd_read/list/peek resolve EXACTLY ONCE through the single
-# _effective_read_session seam (the read+ack consistency guarantee depends on
-# it). A spy returns the raw sid unchanged so behavior is preserved.
-def test_read_commands_route_through_effective_read_session(comms, monkeypatch):
-    calls = []
-
-    def _spy(root, role, sid, now=None):
-        calls.append((root, role, sid))
-        return sid
-
-    monkeypatch.setattr(role_mail, "_effective_read_session", _spy)
-    for cmd in ("read", "list", "peek"):
-        calls.clear()
-        argv = [cmd, "--role", "charc", "--comms-root", str(comms)]
-        if cmd == "read":
-            argv.append("--all")
-        rc = role_mail.main(argv)
-        assert rc == 0
-        assert len(calls) == 1
-        assert calls[0] == (Path(comms), "charc", None)
+def test_ack_message_orchestrator_moves_inbox_to_read(comms):
+    role_mail.post_message(comms, "charc", ["orchestrator"], "fyi", "s", "b")
+    fname = _inbox(comms, "orchestrator")[0].name
+    dest = role_mail.ack_message(comms, "orchestrator", fname)
+    assert dest == Path(comms) / "orchestrator" / "read" / fname
+    assert dest.is_file()
