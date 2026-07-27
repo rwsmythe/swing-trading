@@ -59,6 +59,12 @@ HOST = "127.0.0.1"  # loopback ONLY (hardcoded; never bind a routable address)
 DEFAULT_PORT = 8765  # swing web owns 8080
 STALE_DAYS = 7  # matches harness_probe COMMS_UNREAD_AGE_DAYS_MAX
 BUS_ROLES = ("charc", "rd")  # the director bus (read-only)
+# The orchestrator is a SINGULAR-inbox role like the rest (21-D); it keeps its
+# own bus heading rather than joining BUS_ROLES, which is the DIRECTOR bus that
+# also keys the directors strip (per-role unread + recorded-session presence).
+ORCHESTRATOR_ROLE = "orchestrator"
+# Roles whose read/ archive feeds the history pane.
+HISTORY_ROLES = ("charc", "rd", "operator", "orchestrator")
 HISTORY_CAP = 50
 # compose type allowlist -- decision_request is DELIBERATELY ABSENT (L1 belt)
 COMPOSE_TYPES = ("fyi", "status", "query", "return_report")
@@ -190,80 +196,17 @@ def _recorded_sessions(root: Path) -> dict[str, bool]:
     return result
 
 
-# Lazy single-source registry loader (G6 Arc B reads the Arc-A seam). The bus
-# DELEGATES the per-generation path shape (per_generation_inbox) + the
-# session_id safety rule (is_valid_session_id) to comms_session_registry -- it
-# NEVER re-implements them (no reader/path-shape drift). Imported lazily and
-# returns the module or None on ANY import failure, so a broken/absent registry
-# degrades the bus to empty (the empty-state render) -- NEVER a 500 at app
-# construction. Mirrors role_mail._registry's by-path fallback (scripts/ is not
-# a package under the test loader), but returns None instead of raising.
-_REGISTRY_MOD = None
+def _orchestrator_messages(root: Path, now: datetime) -> list[Message]:
+    """The orchestrator's SINGULAR inbox, READ-ONLY (21-D).
 
-
-def _load_registry():
-    """Import + cache comms_session_registry; None on any failure (never raises)."""
-    global _REGISTRY_MOD
-    if _REGISTRY_MOD is not None:
-        return _REGISTRY_MOD
-    try:
-        spec = importlib.util.spec_from_file_location(
-            "comms_session_registry",
-            _SCRIPTS_DIR / "comms_session_registry.py")
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-    except Exception:  # noqa: BLE001 -- a broken/absent registry -> empty bus
-        return None
-    _REGISTRY_MOD = mod
-    return mod
-
-
-def _orchestrator_inbox_messages(root: Path, now: datetime) -> list[dict]:
-    """Per-generation orchestrator inboxes, grouped by session, newest-active first.
-
-    READ-ONLY; never acks/writes. Walks comms/orchestrator/<sid>/inbox ON DISK
-    across ALL generations -- registry-INDEPENDENT BY DESIGN: prune_stale unlinks
-    only comms/sessions/<id>.json (never the per-gen inbox tree), so a
-    pruned-but-resumable generation's queued mail PERSISTS on disk and MUST stay
-    visible. Defensive: any malformed/absent structure degrades to [] (or skips
-    the bad entry) -- NEVER raises.
-
-    Returns: [{"sid": <session_id>, "messages": [Message, ...]}, ...]
+    The orchestrator is an ordinary singular-inbox role now, so this is the same
+    read as any director's: ``comms/orchestrator/inbox/*.md``. It deliberately
+    does NOT look at ``comms/orchestrator/_archive/<sid>/`` -- archived
+    generations are HISTORY, preserved on disk and never deleted, but they are
+    not the live inbox and must not show up as unread. Never acks/writes; a
+    missing directory degrades to [] (the empty-state render), never a 500.
     """
-    registry = _load_registry()
-    if registry is None:
-        return []
-    base = root / "orchestrator"
-    if not base.is_dir():
-        return []
-    groups: list[dict] = []
-    try:
-        children = sorted(base.iterdir())
-    except (OSError, ValueError):
-        return []
-    for child in children:
-        try:
-            if not child.is_dir():
-                continue  # a stray file is not a generation
-            if not registry.is_valid_session_id(child.name):
-                continue  # guard BEFORE per_generation_inbox (it raises on unsafe)
-            inbox = registry.per_generation_inbox(root, child.name)
-            paths = sorted(inbox.glob("*.md")) if inbox.is_dir() else []
-            msgs = [_message_from_path(p, "orchestrator", now) for p in paths]
-            groups.append({"sid": child.name, "messages": msgs})
-        except (OSError, ValueError):
-            continue  # defense-in-depth: skip the bad entry, never a 500
-    # most-recently-MESSAGED generation first: the gen whose newest message has
-    # the greatest UTC-stamped filename floats to the top; empty gens (key "")
-    # sort last; sid is a deterministic tiebreaker (no sort-order flake). This is
-    # the ONLY recency signal uniformly available across disk-enumerated gens
-    # (incl. pruned ones with no registry entry), so it is NOT coupled to the
-    # registry's started_ts.
-    groups.sort(
-        key=lambda g: (max((m.filename for m in g["messages"]), default=""),
-                       g["sid"]),
-        reverse=True)
-    return groups
+    return _inbox_messages(root, "orchestrator", now)
 
 
 LOOPBACK_HOSTNAMES = ("127.0.0.1", "localhost", "::1")
@@ -604,15 +547,13 @@ _BUS_PANE = """<h2>Director bus (read-only)</h2>
 {% endfor %}
 {% endfor %}
 <h2>Orchestrator bus (read-only)</h2>
-{% if not orchestrator_generations %}<p class="empty">(no orchestrator generations)</p>{% endif %}
-{% for g in orchestrator_generations %}
-<h3 style="font-size:0.95rem;margin:0.5rem 0 0.2rem">generation {{ g.sid }}
-  -- {{ g.messages|length }} unread</h3>
-{% if not g.messages %}<p class="empty">(empty)</p>{% endif %}
-{% for m in g.messages %}
+<h3 style="font-size:0.95rem;margin:0.5rem 0 0.2rem">orchestrator inbox
+  -- {{ orchestrator_messages|length }} unread</h3>
+{% if not orchestrator_messages %}<p class="empty">(empty)</p>{% endif %}
+{% for m in orchestrator_messages %}
 <details class="msg
   {%- if m.is_decision_request %} decision-request{% endif %}
-  {%- if m.stale %} stale{% endif %}" data-key="orch:{{ g.sid }}:{{ m.filename }}">
+  {%- if m.stale %} stale{% endif %}" data-key="orch:{{ m.filename }}">
   <summary>
     <span class="posted">{{ m.posted }}</span>
     <span class="from">{{ m.frm }}</span>
@@ -622,7 +563,6 @@ _BUS_PANE = """<h2>Director bus (read-only)</h2>
   </summary>
   <pre class="body">{{ m.body }}</pre>
 </details>
-{% endfor %}
 {% endfor %}
 """
 
@@ -760,14 +700,15 @@ def create_app(comms_root: Path, allow_launch: bool = True) -> FastAPI:
         return {
             "bus": bus,
             "bus_roles": list(BUS_ROLES),
-            "orchestrator_generations": _orchestrator_inbox_messages(
-                comms_root, now),
+            "orchestrator_messages": _orchestrator_messages(comms_root, now),
         }
 
     def _history_ctx() -> dict:
         now = _now()
         msgs: list[Message] = []
-        for role in ("charc", "rd", "operator"):
+        # the orchestrator is a singular role now (21-D), so its read/ archive
+        # joins the same history surface as the directors' and the operator's.
+        for role in HISTORY_ROLES:
             msgs.extend(_read_messages(comms_root, role, now))
         # newest first by filename stamp (the filename leads with the UTC stamp)
         msgs.sort(key=lambda m: m.filename, reverse=True)

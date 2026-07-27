@@ -219,88 +219,96 @@ def test_bus_pane_styles_stale_over_7_days(client, comms):
     assert "stale" in body
 
 
-# --- orchestrator bus (per-generation, READ-ONLY) -------------------------
+# --- orchestrator bus (SINGULAR inbox, READ-ONLY) --------------------------
 
-def _seed_orch_msg(comms, sid, fname, frm="orchestrator", to=None,
+def _seed_orch_msg(comms, fname, frm="charc", to="orchestrator",
                    mtype="status", subject="s", body="b"):
-    # RAW per-gen inbox write (like test_bus_pane_styles_stale_over_7_days) --
-    # independent of role_mail's orchestrator :<sid> send path.
-    inbox = comms / "orchestrator" / sid / "inbox"
+    # RAW singular-inbox write (like test_bus_pane_styles_stale_over_7_days) --
+    # independent of role_mail's send path.
+    inbox = comms / "orchestrator" / "inbox"
     inbox.mkdir(parents=True, exist_ok=True)
-    to = to or f"orchestrator:{sid}"
     (inbox / fname).write_text(
         f"---\nfrom: {frm}\nto: {to}\ntype: {mtype}\nsubject: {subject}\n"
         f"posted: 2026-06-20T00:00:00Z\n---\n\n{body}\n", encoding="utf-8")
 
 
-def test_orchestrator_bus_aggregates_across_generations(client, comms):
-    _seed_orch_msg(comms, "gen-aaa", "20260619T010000Z-charc-a.md",
-                   subject="hello-aaa")
-    _seed_orch_msg(comms, "gen-bbb", "20260620T010000Z-rd-b.md",
-                   subject="hello-bbb")
-    _seed_orch_msg(comms, "gen-bbb", "20260620T020000Z-operator-c.md",
-                   subject="hello-bbb2")
+def test_orchestrator_bus_renders_the_singular_inbox(client, comms):
+    _seed_orch_msg(comms, "20260619T010000Z-charc-a.md", subject="hello-one")
+    _seed_orch_msg(comms, "20260620T010000Z-rd-b.md", frm="rd",
+                   subject="hello-two")
     body = client.get("/panes/bus").text
     assert "Orchestrator bus" in body
-    assert "hello-aaa" in body
-    assert "hello-bbb" in body
-    assert "hello-bbb2" in body
-    assert "gen-aaa" in body and "gen-bbb" in body  # grouped by generation
+    assert "hello-one" in body
+    assert "hello-two" in body
+    assert "2 unread" in body
 
 
-def test_orchestrator_bus_most_recently_messaged_generation_first(client, comms):
-    # THREE gens, recency NON-MONOTONIC in sid: the middle-sid gen carries the
-    # newest message -> distinguishes recency from BOTH name-sort directions.
-    _seed_orch_msg(comms, "gen-aaa", "20260301T010000Z-charc-a.md",
-                   subject="mid-gen")
-    _seed_orch_msg(comms, "gen-bbb", "20260620T010000Z-rd-b.md",
-                   subject="new-gen")
-    _seed_orch_msg(comms, "gen-ccc", "20260101T010000Z-charc-c.md",
-                   subject="old-gen")
+def test_orchestrator_bus_ignores_archived_generations(client, comms):
+    """_archive/ is history, NOT the live inbox -- it must never render here."""
+    _seed_orch_msg(comms, "20260620T010000Z-charc-a.md", subject="live-msg")
+    archived = comms / "orchestrator" / "_archive" / "gen-old" / "read"
+    archived.mkdir(parents=True, exist_ok=True)
+    (archived / "20260101T010000Z-charc-z.md").write_text(
+        "---\nfrom: charc\nto: orchestrator\ntype: fyi\n"
+        "subject: archived-msg\nposted: 2026-01-01T00:00:00Z\n---\n\nb\n",
+        encoding="utf-8")
     body = client.get("/panes/bus").text
-    # recency (newest msg first) = [bbb (Jun), aaa (Mar), ccc (Jan)] -- which
-    # equals NEITHER ascending-sid [aaa,bbb,ccc] NOR descending-sid [ccc,bbb,aaa]
-    assert body.index("gen-bbb") < body.index("gen-aaa") < body.index("gen-ccc")
+    assert "live-msg" in body
+    assert "archived-msg" not in body
 
 
 def test_orchestrator_bus_empty_state_when_absent(client, comms):
     # no comms/orchestrator/ at all -> the dedicated empty marker, never a 500
     r = client.get("/panes/bus")
     assert r.status_code == 200
-    assert "(no orchestrator generations)" in r.text
+    assert "(empty)" in r.text
+    assert "generation" not in r.text.lower()
 
 
 def test_orchestrator_bus_degrades_on_malformed(client, comms):
-    base = comms / "orchestrator"
-    base.mkdir(parents=True, exist_ok=True)
-    (base / "stray-file.md").write_text("not a generation dir\n",
-                                        encoding="utf-8")  # a FILE child
-    (base / "bad name").mkdir()              # invalid session_id (space) -> skip
-    _seed_orch_msg(comms, "gen-ok", "20260620T010000Z-charc-a.md",
-                   subject="good-msg")
-    # a malformed MESSAGE (no frontmatter) in the good gen -> filename fallback
-    (base / "gen-ok" / "inbox" / "20260620T020000Z-rd-broken.md").write_text(
+    _seed_orch_msg(comms, "20260620T010000Z-charc-a.md", subject="good-msg")
+    # a malformed MESSAGE (no frontmatter) -> filename fallback, never a 500
+    (comms / "orchestrator" / "inbox"
+     / "20260620T020000Z-rd-broken.md").write_text(
         "no frontmatter at all\n", encoding="utf-8")
     r = client.get("/panes/bus")
-    assert r.status_code == 200          # never a 500
-    assert "good-msg" in r.text          # the valid gen still renders
-    assert "broken" in r.text            # malformed message -> filename fallback
+    assert r.status_code == 200
+    assert "good-msg" in r.text
+    assert "broken" in r.text
 
 
 def test_orchestrator_bus_has_no_ack_affordance(client, comms):
-    _seed_orch_msg(comms, "gen-x", "20260620T010000Z-charc-a.md", subject="x")
+    _seed_orch_msg(comms, "20260620T010000Z-charc-a.md", subject="x")
     body = client.get("/panes/bus").text
-    assert "/ack" not in body            # L3: never acks any orchestrator gen
+    assert "/ack" not in body            # L3: never acks the orchestrator inbox
     assert "hx-post" not in body         # no write control in the bus pane
 
 
 def test_viewing_orchestrator_bus_never_mutates(client, comms):
-    _seed_orch_msg(comms, "gen-x", "20260620T010000Z-charc-a.md", subject="x")
+    _seed_orch_msg(comms, "20260620T010000Z-charc-a.md", subject="x")
     before = sorted((comms / "orchestrator").rglob("*.md"))
     client.get("/panes/bus")
     client.get("/panes/bus")
     after = sorted((comms / "orchestrator").rglob("*.md"))
     assert before == after               # read-only: no move/delete/create
+
+
+def test_comms_ui_carries_no_per_generation_reader(client, comms):
+    src = Path(comms_ui.__file__).read_text(encoding="utf-8")
+    for dead in ("per_generation_inbox", "_orchestrator_inbox_messages",
+                 "comms_session_registry", "orchestrator_generations"):
+        assert dead not in src, dead
+
+
+def test_history_pane_includes_orchestrator_read_archive(client, comms):
+    """The orchestrator is a singular role now -- its read/ joins history."""
+    rd = comms / "orchestrator" / "read"
+    rd.mkdir(parents=True, exist_ok=True)
+    (rd / "20260620T030000Z-charc-h.md").write_text(
+        "---\nfrom: charc\nto: orchestrator\ntype: fyi\n"
+        "subject: orch-history\nposted: 2026-06-20T03:00:00Z\n---\n\nb\n",
+        encoding="utf-8")
+    assert "orch-history" in client.get("/panes/history").text
 
 
 # --- history pane ----------------------------------------------------------
