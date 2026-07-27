@@ -179,9 +179,11 @@ def test_invalid_to_role_rejected(comms):
     assert list(Path(comms).rglob("*.md")) == []
 
 
-# NOTE: the OLD test_orchestrator_cannot_receive is REPLACED by the G6 Arc A
-# orchestrator-addressing tests below (orchestrator IS a valid --to now -- bare
-# = newest-live, :<sid> = explicit). The new tests assert the new contract.
+# NOTE: orchestrator IS a valid --to, and since 21-D it is a SINGULAR inbox like
+# every other role -- a bare `--to orchestrator` is the ONLY address form, and a
+# `:<session_id>` suffix is REJECTED. The 21-D section below asserts that
+# contract. (This replaced the original test_orchestrator_cannot_receive, and
+# then the G6 Arc-A newest-live / explicit-:<sid> pair.)
 
 
 def test_invalid_type_rejected(comms):

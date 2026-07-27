@@ -404,11 +404,12 @@ def post_message(
                 f"{label} may not contain newlines (frontmatter injection). "
                 "Nothing was written."
             )
-    # Parse recipients to (role, sid) pairs (orchestrator may carry :<sid>).
+    # Parse recipients to (role, None) pairs. A retired `:<session_id>` suffix
+    # is REJECTED here (21-D), before anything is written.
     pairs = _parse_recipient_pairs(recipients)
     # L1 governance lock: decision_request must address ONLY the operator. Fires
-    # on the PARSED role BEFORE any inbox resolution, so decision_request to
-    # orchestrator / orchestrator:<sid> is refused here regardless of liveness.
+    # on the PARSED role BEFORE any inbox resolution, so a decision_request to
+    # orchestrator is refused here regardless of anything downstream.
     if mtype == "decision_request" and any(role != "operator" for role, _ in pairs):
         raise MailError(
             "L1: type 'decision_request' may be addressed ONLY to operator "
