@@ -1,0 +1,39 @@
+{# Phase 21 Arc A: the lazy broker-order-awareness fragment.
+
+   Fragment root is a <section>, NOT a <tr>: an HTMX response leading with
+   <tr> triggers makeFragment's synthetic-table-wrap, which DROPS <table>
+   content inside OOB <section> chunks (browser-only; TestClient cannot see
+   it). ASCII only. #}
+<section class="latch-orders-block">
+  {% if not vm.available %}
+  <p class="latch-orders-degraded">
+    Broker order book UNKNOWN: {{ vm.resolution_detail }}
+  </p>
+  {% else %}
+  {% if vm.alarms %}
+  <div class="latch-alarms">
+    {% for alarm in vm.alarms %}
+    <p class="latch-alarm{% if alarm.severity != 'critical' %} latch-alarm-warning{% endif %}">
+      <strong>{{ alarm.kind }}</strong> ({{ alarm.severity }}) {{ alarm.ticker }}:
+      {{ alarm.detail }}
+    </p>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="muted">Broker orders agree with the live latches. No alarms.</p>
+  {% endif %}
+
+  {% if vm.order_lines %}
+  <details class="latch-order-list">
+    <summary>Resting BUY orders ({{ vm.order_lines | length }})</summary>
+    <ul>
+      {% for line in vm.order_lines %}
+      <li>{{ line }}</li>
+      {% endfor %}
+    </ul>
+  </details>
+  {% else %}
+  <p class="muted">No resting BUY orders at the broker.</p>
+  {% endif %}
+  {% endif %}
+</section>

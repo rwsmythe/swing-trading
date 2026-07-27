@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, fields
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from swing.evaluation.dates import PageKind, sessions_behind, topbar_session_date
 from swing.latches.constants import LATCH_PANEL_LOOKBACK_SESSIONS
@@ -385,6 +385,179 @@ def _load_views(conn, latches, horizon_session: date) -> dict[int, tuple]:
         out[latch.identity.candidate_id] = tuple(
             r for r in rows if r.view_session_date == session_iso)
     return out
+
+
+# ---------------------------------------------------------------------------
+# The lazy broker-order-awareness fragment (plan D.1 / Task 7).
+#
+# The ladder below REPRODUCES the shipped `swing/trades/entry_auto_fill.py`
+# sequence BY CONSTRUCTION, not by import -- this arc takes NO `swing/trades`
+# dependency and makes NO `swing/trades` edit.
+# ---------------------------------------------------------------------------
+
+# The Schwab order-read lookback. Bounded because a GTC entry order older than
+# this is not a plausible latch counterpart within a 30-session horizon.
+_ORDER_LOOKBACK_DAYS = 30
+
+
+@dataclass(frozen=True)
+class OrdersResolutionVM:
+    kind: str
+    detail: str
+
+
+@dataclass(frozen=True)
+class LatchOrdersFragmentVM:
+    """The order-awareness fragment. `available` False means the order book is
+    UNKNOWN, and an unknown order book fires NO alarm (a false all-clear and a
+    false alarm are both worse than an honest 'unknown')."""
+
+    available: bool
+    resolution_kind: str
+    resolution_detail: str
+    alarms: tuple[LatchAlarmVM, ...]
+    order_lines: tuple[str, ...]
+
+
+def _resolve_schwab_environment(cfg) -> str | None:
+    schwab_cfg = getattr(getattr(cfg, "integrations", None), "schwab", None)
+    return getattr(schwab_cfg, "environment", None)
+
+
+def _resolve_account_hash(cfg) -> str | None:
+    schwab_cfg = getattr(getattr(cfg, "integrations", None), "schwab", None)
+    value = getattr(schwab_cfg, "account_hash", None)
+    return value if isinstance(value, str) and value else None
+
+
+def _fetch_account_orders(client, conn, account_hash, from_dt, to_dt, **kwargs):
+    """The single audited seam, isolated so tests can stub it without stubbing
+    the whole Schwab package."""
+    from swing.integrations.schwab import trader
+    return trader.get_account_orders(
+        client, conn, account_hash, from_dt, to_dt, **kwargs)
+
+
+def resolve_open_orders(conn, cfg, app_state):
+    """Resolve the LIVE broker order book, or say honestly why we cannot.
+
+    Returns `(OrdersResolutionVM, orders)`. The sandbox short-circuit fires
+    FIRST -- BEFORE any client borrow -- so the sandbox path is provably
+    side-effect-free (the Schwab sandbox-gating gotcha).
+    """
+    from swing.latches.orders import to_resting_orders
+
+    environment = _resolve_schwab_environment(cfg)
+    if environment == "sandbox":
+        return OrdersResolutionVM(
+            kind="sandbox",
+            detail=("Schwab integration is in sandbox mode; the live order "
+                    "book was NOT read. Order alarms are suppressed."),
+        ), ()
+    if environment != "production":
+        return OrdersResolutionVM(
+            kind="not_configured",
+            detail=("Schwab integration is not configured "
+                    "(cfg.integrations.schwab.environment missing or invalid); "
+                    "the order book is unavailable. Alarms are suppressed."),
+        ), ()
+
+    holder = getattr(app_state, "schwab_client_holder", None)
+    if holder is None:
+        return OrdersResolutionVM(
+            kind="unavailable",
+            detail=("No Schwab client is installed on this web process; the "
+                    "order book is unavailable. Alarms are suppressed."),
+        ), ()
+
+    account_hash = _resolve_account_hash(cfg)
+    if account_hash is None:
+        return OrdersResolutionVM(
+            kind="unavailable",
+            detail=("Schwab account_hash is not set (run `swing schwab setup`); "
+                    "the order book is unavailable. Alarms are suppressed."),
+        ), ()
+
+    now = datetime.now()
+    try:
+        with holder.borrow() as client:
+            if client is None:
+                return OrdersResolutionVM(
+                    kind="unavailable",
+                    detail=("The Schwab client is being re-constructed; the "
+                            "order book is unavailable. Alarms are suppressed."),
+                ), ()
+            raw = _fetch_account_orders(
+                client, conn, account_hash,
+                now - timedelta(days=_ORDER_LOOKBACK_DAYS), now,
+                surface="trade_entry",
+                environment=environment,
+                pipeline_run_id=None,
+                status=None,
+                max_results=None,
+            )
+    except Exception as exc:  # noqa: BLE001 -- A6: the panel never 500s
+        # The exception TYPE only, NEVER the message (redaction discipline).
+        return OrdersResolutionVM(
+            kind="error",
+            detail=(f"The Schwab order read failed ({type(exc).__name__}); the "
+                    "order book is unavailable. Alarms are suppressed."),
+        ), ()
+    return OrdersResolutionVM(
+        kind="ok", detail="Live broker order book read."), to_resting_orders(raw)
+
+
+def build_latch_orders_vm(conn, cfg, app_state, *, now=None) -> LatchOrdersFragmentVM:
+    """Build the order-awareness fragment VM. NEVER raises (A6)."""
+    from swing.latches.orders import join_orders_to_latches
+
+    try:
+        resolution, orders = resolve_open_orders(conn, cfg, app_state)
+    except Exception as exc:  # noqa: BLE001 -- A6
+        _log.warning("latch order resolution degraded: %s", exc)
+        resolution, orders = OrdersResolutionVM(
+            kind="error",
+            detail=(f"The Schwab order read failed ({type(exc).__name__}); "
+                    "alarms are suppressed."),
+        ), ()
+
+    if resolution.kind != "ok":
+        # An UNKNOWN order book fires NOTHING.
+        return LatchOrdersFragmentVM(
+            available=False, resolution_kind=resolution.kind,
+            resolution_detail=resolution.detail, alarms=(), order_lines=())
+
+    try:
+        derivation = build_latch_derivation(conn, cfg, now=now or _now())
+        _joins, alarms = join_orders_to_latches(
+            latches=derivation.latches, orders=orders)
+    except Exception as exc:  # noqa: BLE001 -- A6
+        _log.warning("latch order join degraded: %s", exc)
+        return LatchOrdersFragmentVM(
+            available=False, resolution_kind="error",
+            resolution_detail=(
+                f"The latch/order join failed ({type(exc).__name__}); alarms "
+                "are suppressed."),
+            alarms=(), order_lines=())
+
+    order_lines = tuple(
+        f"{o.ticker} {o.instruction} {o.quantity:g} {o.order_type} "
+        f"stop {_fmt_price(o.stop_price)} limit {_fmt_price(o.limit_price)} "
+        f"[{o.status}]"
+        for o in orders
+    )
+    return LatchOrdersFragmentVM(
+        available=True,
+        resolution_kind="ok",
+        resolution_detail=resolution.detail,
+        alarms=tuple(
+            LatchAlarmVM(kind=a.kind, ticker=a.ticker,
+                         latch_candidate_id=a.latch_candidate_id,
+                         detail=a.detail, severity=a.severity)
+            for a in sorted(alarms, key=lambda a: (a.severity != "critical", a.kind))
+        ),
+        order_lines=order_lines,
+    )
 
 
 # Drift pin support: the base-banner field names declared on LatchPanelVM.

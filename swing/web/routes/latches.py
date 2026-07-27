@@ -13,7 +13,7 @@ from fastapi.responses import HTMLResponse
 
 from swing.config_overrides import apply_overrides
 from swing.data.db import connect
-from swing.web.view_models.latches import build_latch_panel_vm
+from swing.web.view_models.latches import build_latch_orders_vm, build_latch_panel_vm
 
 router = APIRouter()
 log = logging.getLogger(__name__)
@@ -34,4 +34,26 @@ def latches_panel(request: Request):
         conn.close()
     return request.app.state.templates.TemplateResponse(
         request, "latches.html.j2", {"vm": vm},
+    )
+
+
+@router.post("/latches/orders", response_class=HTMLResponse)
+def latches_orders_fragment(request: Request):
+    """The lazy broker-order-awareness fragment.
+
+    THIS ENDPOINT IS NOT A SAFE METHOD. It performs an AUDITED external Schwab
+    call that inserts a `schwab_api_calls` row -- that is a write. It writes NO
+    domain row (no `latch_view_events`, no `trades`, no `fills`). It is a POST
+    for exactly that reason: calling it GET would be a lie about the method's
+    safety, would contradict A4 inside the arc that asserts A4, and would
+    expose a real broker call to browser prefetch / preconnect / refresh.
+    """
+    cfg = apply_overrides(request.app.state.cfg)
+    conn = connect(cfg.paths.db_path)
+    try:
+        vm = build_latch_orders_vm(conn, cfg, request.app.state)
+    finally:
+        conn.close()
+    return request.app.state.templates.TemplateResponse(
+        request, "partials/latch_orders.html.j2", {"vm": vm},
     )
