@@ -58,7 +58,7 @@ Every number below was verified against the live DB (`~/swing-data/swing.db`, re
 A literal reading of RD constraint 3 ("per-fire identity, keyed `(evaluation_run_id, ticker)`") over-splits. The live evidence is stronger than "consecutive nights":
 
 - **SLDB runs 9 and 10 share `action_session_date = 2026-04-22`.** YOU 31/32 share `2026-05-04`. NVCR 94/95 share `2026-06-18`. All three "re-fire pairs" are **the same action session evaluated twice**, not two nights.
-- **Duplicate-`action_session_date` evaluation runs are endemic:** 30 distinct sessions have more than one run; **six** sessions have SIX runs each (`2026-05-15`, `2026-06-08`, `2026-07-06`). A literal per-row identity would create up to six latches for one fire.
+- **Duplicate-`action_session_date` evaluation runs are endemic:** 30 distinct sessions have more than one run — 15 with 2, 7 with 3, 5 with 4, and **three** with SIX (`2026-05-15`, `2026-06-08`, `2026-07-06`). A literal per-row identity would create up to six latches for one fire.
 - SLDB 12 (`2026-04-24`) IS a genuinely later session — a re-fire two sessions after the 04-22 fire, while that latch was still live.
 
 Constraints 1 and 3 then collide: if every re-fire opens a new latch, the pivot **RE-FREEZES** at the newer row. On SLDB/YOU/NVCR the prices are identical so the bug is invisible; on a ticker that drifts between A+ sessions it silently re-freezes — the FTRE failure mode reintroduced *inside the fix for FTRE*.
@@ -71,11 +71,13 @@ Constraints 1 and 3 then collide: if every re-fire opens a new latch, the pivot 
 > If either holds, the row is a **RE-CONFIRMATION**: recorded (its `candidate_id` joins the latch's candidate set), but the latch's identity, frozen pivot, frozen stop, and horizon anchor are **UNCHANGED**.
 > Within one `action_session_date`, the **EARLIEST** row by `(evaluation_runs.run_ts, candidates.id)` is the fire; later same-session rows are re-confirmations.
 
-**Why clause (i) is separate from clause (ii)** (Codex R1-1). The still-live clause ALONE is not enough: a fill (or an invalidation close) that lands DURING session S clears the latch *as of S*, so a second evaluation run for the SAME session S would then see "not live" and open a SECOND latch — one mandate becoming two, with the duplicate `armed` for a position the operator already holds and firing a false `LATCH_ARMED_NO_RESTING_ORDER`. This is reachable: 30 action sessions in the corpus have more than one evaluation run (six have SIX), and while the 17:30 scheduled run always rolls to the NEXT session, a manual mid-session re-run still carries `action_session_date = S`. Clause (i) makes the SESSION the atomic unit — **at most one latch per `(ticker, action_session_date)` can ever be opened** — which is also the semantically correct reading (a session has ONE verdict) and needs no intraday timestamp. It strengthens rather than weakens the SLDB 9/10, YOU 31/32 and NVCR 94/95 cases: all three ARE the same-session case.
+**Why clause (i) is separate from clause (ii)** (Codex R1-1). The still-live clause ALONE is not enough: a fill (or an invalidation close) that lands DURING session S clears the latch *as of S*, so a second evaluation run for the SAME session S would then see "not live" and open a SECOND latch — one mandate becoming two, with the duplicate `armed` for a position the operator already holds and firing a false `LATCH_ARMED_NO_RESTING_ORDER`. This is reachable: 30 action sessions in the corpus have more than one evaluation run (three of them have SIX), and while the 17:30 scheduled run always rolls to the NEXT session, a manual mid-session re-run still carries `action_session_date = S`. Clause (i) makes the SESSION the atomic unit — **at most one latch per `(ticker, action_session_date)` can ever be opened** — which is also the semantically correct reading (a session has ONE verdict) and needs no intraday timestamp. It strengthens rather than weakens the SLDB 9/10, YOU 31/32 and NVCR 94/95 cases: all three ARE the same-session case.
 
 **Justification against the settled latch semantics** (brief §0): the latch "clears ONLY on (a) FILL, (b) SETUP INVALIDATION, (c) HORIZON. **Bucket-label flicker NEVER clears it.**" A ticker that goes `aplus → watch → aplus` has flickered; treating the second `aplus` as a NEW latch would let flicker *reset* the latch, which is the same category of error the semantics forbid — it would move the frozen pivot and restart the horizon clock. A latch is a MANDATE; the mandate already exists; a second fire re-affirms it, it does not create a second mandate. Constraint 3's actual purpose ("concurrent/sequential latches on one ticker must never merge or overwrite") is fully preserved: VSTS @ 99 and VSTS @ 126 are separate latches because the first one CLEARED (filled by trade 17 on 2026-06-25) before the second fired. Constraint 1 is preserved exactly: the frozen values come from the OPENING fire's own row and are never rewritten.
 
 **Empirical note (honest):** on the current corpus the naive per-row rule produces the same *prices* (SLDB/YOU/NVCR re-fires are byte-identical), so this rule cannot be justified by a live price diff. It is justified structurally, and the SLDB 9/10/12 fixture fails a naive per-row implementation on **latch COUNT** (3 vs 1), which is a hard, discriminating assertion.
+
+**CONTESTED — do not execute Task 2 before this is settled.** RD is already on record taking the opposite position on clause (ii) for the FTRE geometry (`docs/rd-state.md:27`: *"a re-fire would open a NEW latch at the new pivot"*). See **§G.1.1** for the verbatim quote, the live numbers, and the zone-escape gap underneath it. Clause (i) is not contested.
 
 **Canonical surrogate key:** the OPENING fire's **`candidates.id`**. It is exact (`candidates` has `UNIQUE(evaluation_run_id, ticker)`), immutable (grep confirms zero `UPDATE candidates` / `DELETE FROM candidates` anywhere in `swing/`, `research/`, `scripts/`), and already an established FK target (`trades.candidate_id`, migration 0021). No `latches` registry table is needed now, and one remains cheaply backfillable later because the identity is stored EXACTLY, not by convention.
 
@@ -3086,12 +3088,45 @@ Both states are required (brief §4 Gate 4), browser not TestClient:
 ## G. Decisions routed to RD's plan-stage gate (brief §4 Gate 1)
 
 **G.1 — THE FIRE-IDENTITY RULE (not contemplated by the brief; the orchestrator surfaced it at dispatch QA).**
-A literal `(evaluation_run_id, ticker)` identity over-splits, and the live evidence is worse than "consecutive nights": **SLDB 9/10, YOU 31/32 and NVCR 94/95 are each the SAME action session evaluated twice**, and 30 sessions in the corpus have multiple runs (six of them have SIX). Constraints 1 and 3 then conflict — every re-fire would RE-FREEZE the pivot, which is the FTRE failure mode reintroduced inside the fix for FTRE. The plan adopts the OPEN-LATCH rule (§A.2), which has TWO clauses. Two sub-decisions inside it:
+A literal `(evaluation_run_id, ticker)` identity over-splits, and the live evidence is worse than "consecutive nights": **SLDB 9/10, YOU 31/32 and NVCR 94/95 are each the SAME action session evaluated twice**, and 30 sessions in the corpus have multiple runs (15/7/5/3 at 2/3/4/6 runs respectively). Constraints 1 and 3 then conflict — every re-fire would RE-FREEZE the pivot, which is the FTRE failure mode reintroduced inside the fix for FTRE. The plan adopts the OPEN-LATCH rule (§A.2), which has TWO clauses. Two sub-decisions inside it:
 
 - **(i) the SAME-SESSION clause** — at most ONE latch per `(ticker, action_session_date)`, unconditionally, even if the latch already cleared during that session. Without it a fill or invalidating close mid-session lets a second same-session evaluation run open a duplicate `armed` latch for a position already held (Codex R1-1). This makes a trading session the atomic unit of the mandate.
 - **within one action session, the EARLIEST row wins** — the operator's briefing is regenerated by later same-session runs, but the mandate came into existence at the first fire; empirically no A+ ticker ever has mixed buckets within a session, and within-session pivot divergence is confined to genesis week 04-20/04-21 plus two stragglers.
 
-**RD to confirm or overrule.**
+**RD to confirm or overrule** — and before doing so, please read §G.1.1, which shows that clause (ii) contradicts a position RD has already put on the record.
+
+### G.1.1 — RD IS ALREADY ON RECORD AGAINST CLAUSE (ii), ON THE FTRE CASE
+
+This plan cites `docs/rd-state.md:27` twice (for FTRE's 2026-08-17 horizon and for the 19.475 zone-cap refusal). The SAME line contains a third sentence, written by RD on 2026-07-23, that this plan's clause (ii) contradicts:
+
+> "FTRE's pivot has since risen 18.34 -> 18.59 -> **20.19** -- a re-fire would open a NEW latch at the new pivot; the old latch does not entitle entry at today's price."
+> — `docs/rd-state.md:27`
+
+**The conflict, stated plainly.** Clause (ii) says a fire arriving while a latch is still LIVE is a RE-CONFIRMATION: no new latch, no re-freeze, the frozen 18.34 pivot stands. RD wrote that a re-fire "would open a NEW latch at the new pivot." FTRE's latch is **still armed and unfilled**, so this is not a hypothetical about some other ticker — it is the exact geometry both statements are about, and they give opposite answers.
+
+**The live numbers (verified 2026-07-27, read-only).**
+
+| quantity | value |
+|---|---|
+| latched pivot (fire, evaluation_run 121) | **18.34** |
+| zone cap (pivot x 1.03) | **18.89** |
+| frozen invalidation level | 14.88 |
+| current price (2026-07-24 close) | **~19.52** |
+| latest FTRE `candidates.pivot` (run 125, `bucket='watch'`) | 20.19 |
+| horizon expiry | 2026-08-17 |
+| latch state | **armed, unfilled** |
+
+**Precision on the record:** no re-fire has actually occurred. Runs 122-125 are all `bucket='watch'`; FTRE has not printed a second `aplus` row. So the disagreement is not yet realized in data — it is a rule disagreement about what SHOULD happen if it does. Either rule can still be adopted without rewriting history.
+
+**The substantive gap underneath it — named, NOT resolved here.** FTRE's price has ESCAPED the buy zone: 19.52 sits above the 18.89 cap. Under this plan's rule the latch remains `armed` but **unenterable** until the 2026-08-17 horizon, and a re-fire would merely re-confirm a mandate the operator cannot act on. Under RD's stated position, a re-fire at 20.19 would open a fresh latch with a cap of 20.80 — which the current 19.52 is BELOW, i.e. an actionable mandate again. RD's instinct is pointing at something this plan's state machine does not have: the settled semantics give three clear conditions (fill / invalidation / horizon) and **none of them covers "the price left the zone and is not coming back before the horizon."**
+
+**The question for RD (this plan takes NO position):**
+
+1. Does a re-fire arriving while a latch is armed open a NEW latch at the new pivot (RD, 07-23), or re-confirm the existing latch without re-freezing (this plan, §A.2 clause ii)?
+2. If the answer is "new latch": is that a GENERAL re-fire rule — in which case clause (ii) is deleted and the re-freeze hazard §A.2 identifies must be accepted or otherwise mitigated — or is it specifically a consequence of ZONE ESCAPE, i.e. a missing FOURTH clear condition (`zone_escaped` / mandate-unreachable) whose absence is the real defect?
+3. If a fourth clear condition is wanted, its definition is RD's to make (what counts as escape, whether it is evaluated on closes like invalidation, whether it clears the latch or merely marks it unreachable). **This plan does not design it.**
+
+**Impact if RD rules for a new-latch-on-re-fire or a fourth clear condition:** §A.2 clause (ii), §A.7's clear-reason vocabulary, the `LATCH_CLEAR_REASONS` frozenset, the migration's `latch_state_at_*` CHECK enum, and Task 2/3's fire-grouping and terminal tests all change. Clause (i) (the same-session collapse) and everything in §A.3-§A.6, §A.8-§A.10 are unaffected either way. **This is the one open decision that can reshape the arc, so it should be settled before Task 2 is executed.**
 
 **G.2 — THE HORIZON VALUE + ANCHOR + BOUNDARY (a brief premise that does not match live code).**
 The brief calls 20 sessions "the shadow-parity bound". The pipeline's shadow ENTRY window is `cfg.pipeline.observe_max_pending_window_sessions = **30**`. The plan implements **20**, because RD's own recorded FTRE horizon (2026-08-17, `docs/rd-state.md:27`) is reproduced EXACTLY by 20 NYSE sessions forward from the fire's `action_session_date` — 30 sessions gives 2026-08-31 and 20 calendar days gives 2026-08-09. Three sub-decisions ride on it: the **anchor** is `action_session_date` (not `data_asof_date`, which would give 2026-08-14), the boundary is **inclusive-expire** (`>= 20`, matching `_advance_status`'s precedent, making 2026-08-17 the first DEAD session), and the value lives in ONE constant `LATCH_HORIZON_SESSIONS`. **RD to confirm the value and whether "shadow parity" should instead bind it to 30.**
