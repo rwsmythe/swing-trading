@@ -2,11 +2,17 @@
 
 > **OVERWRITE this file each session/handoff — do NOT append.** The one always-current state pointer for the CHARC (Tool Development Director) role. The dated §6 log in [`docs/tool-director-context.md`](tool-director-context.md) is APPEND-ONLY history; current state lives HERE. Bootstrap reads this FIRST. Convention: [`docs/harness-architecture.md`](harness-architecture.md) §6.
 
-**Last overwritten:** 2026-07-15 (**the GENERATIONAL-HANDOFF overwrite — the prior CHARC gen [bootstrapped 2026-07-02, ran Phases 19+20] signs off; you are the fresh generation.** PHASE 20 CLOSED, audit CLEAN at `e3b6570f`. **NEXT CHARC deliverable: the Phase-21 scope proposal (§2.3) — NOT drafted; await the operator.**)
+**Last overwritten:** 2026-07-27 (**CORRECTION to the 07-15 header: the generational handoff was PREPARED but NOT taken — the operator RESUMED this same generation on 07-27, so the "you are the fresh generation" framing was stale; the handoff artifacts [charter §6 tenure entry, this file's boot-surface content] remain valid for whenever a fresh gen does launch.** PHASE 20 CLOSED (audit CLEAN `e3b6570f`); **PHASE 21 SCOPE PROPOSAL DRAFTED 2026-07-27 → [`docs/phase21-scope-charc.md`](phase21-scope-charc.md) `81244576` — awaiting operator approval.**)
 
 ---
 
-## #1 — PHASE 20 CLOSED 2026-07-15 (audit CLEAN). The board is EMPTY. Phase-21 scoping is the next decision, at the operator's cadence.
+## #1 — PHASE 21 SCOPING IN PROGRESS (proposal drafted 2026-07-27, awaiting operator approval). Phase 20 CLOSED 2026-07-15 (audit CLEAN).
+
+**PHASE-21 PROPOSAL — [`phase21-scope-charc.md`](phase21-scope-charc.md) (`81244576`):** theme = *take memory and arithmetic out of the entry loop without taking the human out of it.* Driver: the FTRE entry-window miss, RD-quantified at **+1.22R shadow-vs-live**, and the A+ LATCH posture the operator adopted 07-23 (settled semantics: GTC at pivot, +3.0% zone cap; clears ONLY on fill / setup invalidation / ~20-session horizon; bucket flicker never clears it). **21-A** latch panel + tier-1 order-state awareness (read-only; the two alarms: armed-with-no-resting-order = the FTRE mode, and order-resting-with-latch-cleared) · **21-D** comms simplification (retire per-gen orchestrator tracking; port the coa-chess design — singular inbox, `:<sid>` REJECTED, registry retired, history ARCHIVED-never-deleted; retires F5 + the stray-spin-up class) · **21-B** the operator-designed prepared-order form in **LOG-ONLY** mode (buttons log intent, no Schwab call; the form shows its DERIVATION not just four numbers — the D25 lesson) · **21-C** execution (preview→live) **DEFERRED** behind stage-1 evidence + an **operator-signed L2 endpoint diff** (verified: schwabdev has place/cancel/preview/replace; swing has ZERO write endpoints today — a genuine second L2 event) · **21-E** D5 runtime. Riders: 0032 taxonomy type, the 2 residual docs, F2/F3/F4.
+
+**AWAITING:** (1) the operator's scope approval; (2) **RD's MEASUREMENT RULING** (posted 07-27, thread `phase21-latch-execution-design`): does the staged human-gated design preserve the operator-discipline half of H1? CHARC argues YES (only arithmetic + memory are mechanized; the decision signal survives) but named the honest counter (if clicking is trivial, live may converge to shadow anyway) — his answer may reshape 21-B/21-C; 21-A proceeds regardless on his settled semantics.
+
+**The board before this proposal was EMPTY** — Phase 20 closed clean; nothing else is in flight.
 
 **Fresh CHARC: read this lead, then the TWO close audits ([`phase20-close-audit-charc.md`](phase20-close-audit-charc.md) + [`phase19-close-audit-charc.md`](phase19-close-audit-charc.md) — verdicts, rosters, register motion, the self-critiques), then the charter §5 + §6 for the durable rules and how-we-got-here. Do NOT re-derive phase history — the audits + `docs/archive/phase19|20/` + git carry it.**
 
