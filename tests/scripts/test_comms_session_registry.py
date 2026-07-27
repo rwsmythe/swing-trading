@@ -52,32 +52,25 @@ def test_entry_path_under_sessions(root):
     assert p == root / "sessions" / "g1.json"
 
 
-def test_per_generation_paths(root):
-    assert reg.per_generation_inbox(root, "g1") == (
-        root / "orchestrator" / "g1" / "inbox")
-    assert reg.per_generation_read(root, "g1") == (
-        root / "orchestrator" / "g1" / "read")
-
-
 def test_path_helpers_raise_on_unsafe_sid(root):
-    for builder in (reg.entry_path, reg.per_generation_inbox,
-                    reg.per_generation_read):
-        with pytest.raises(ValueError):
-            builder(root, "../evil")
-
-
-def test_ensure_per_generation_inbox_idempotent(root):
-    inbox = reg.ensure_per_generation_inbox(root, "g1")
-    assert inbox.is_dir()
-    assert (root / "orchestrator" / "g1" / "read").is_dir()
-    # second call must not raise
-    reg.ensure_per_generation_inbox(root, "g1")
-    assert inbox.is_dir()
-
-
-def test_ensure_per_generation_inbox_raises_on_unsafe(root):
     with pytest.raises(ValueError):
-        reg.ensure_per_generation_inbox(root, "../evil")
+        reg.entry_path(root, "../evil")
+
+
+# 21-D -- the registry is a ROLE-PRESENCE / RECOVERY store ONLY. It no longer
+# owns any mailbox path shape: every role is a singular inbox, so the
+# per-generation builders (and the newest-live resolver they fed) are GONE.
+def test_registry_owns_no_mailbox_path_shape(root):
+    src = _MODULE_PATH.read_text(encoding="utf-8")
+    for dead in ("per_generation_inbox", "per_generation_read",
+                 "ensure_per_generation_inbox", "def newest_live",
+                 "NEWEST_LIVE_ROLE"):
+        assert dead not in src, dead
+    for dead in ("per_generation_inbox", "per_generation_read",
+                 "ensure_per_generation_inbox", "newest_live"):
+        assert not hasattr(reg, dead), dead
+    # the ONLY path the registry builds stays under comms/sessions/
+    assert reg.entry_path(root, "g1") == root / "sessions" / "g1.json"
 
 
 # --- sub-cycle 3: write_entry / read_entry [guard #3] ----------------------
@@ -191,52 +184,39 @@ def test_prune_stale_removes_malformed_last_seen(root):
     assert not path.exists()
 
 
-# --- sub-cycle 7: newest_live [guard #1 substrate] -------------------------
+# --- sub-cycle 7: live_entries [role presence -- the surviving purpose] ----
 
-def test_newest_live_none_when_empty(root):
-    assert reg.newest_live(root, _NOW) is None
-
-
-def test_newest_live_returns_max_started(root):
-    older = (_NOW - timedelta(minutes=5)).isoformat()
-    newer = (_NOW - timedelta(minutes=1)).isoformat()
-    reg.write_entry(root, "old", "orchestrator", "", _NOW, started_ts=older)
-    _force_last_seen(reg, root, "old", _NOW.isoformat())
-    reg.write_entry(root, "new", "orchestrator", "", _NOW, started_ts=newer)
-    _force_last_seen(reg, root, "new", _NOW.isoformat())
-    win = reg.newest_live(root, _NOW)
-    assert win["session_id"] == "new"
+def test_live_entries_empty_when_no_sessions(root):
+    assert reg.live_entries(root, _NOW) == []
 
 
-def test_newest_live_ignores_non_orchestrator_role(root):
-    reg.write_entry(root, "d1", "charc", "", _NOW)
-    _force_last_seen(reg, root, "d1", _NOW.isoformat())
-    assert reg.newest_live(root, _NOW) is None
-
-
-def test_newest_live_deprioritizes_malformed_started(root):
-    reg.write_entry(root, "good", "orchestrator", "", _NOW,
-                    started_ts=(_NOW - timedelta(minutes=5)).isoformat())
-    _force_last_seen(reg, root, "good", _NOW.isoformat())
-    # garbage started_ts -- must never win newest
-    bad = root / "sessions" / "bad.json"
-    bad.write_text(
-        json.dumps({"session_id": "bad", "role": "orchestrator",
-                    "started_ts": "zzz-not-a-date",
-                    "last_seen": _NOW.isoformat()}), encoding="utf-8")
-    win = reg.newest_live(root, _NOW)
-    assert win["session_id"] == "good"
-
-
-def test_newest_live_tie_breaks_on_lexically_greatest_sid(root):
-    # All-equal started_ts: the deterministic final tiebreaker is the lexically
-    # GREATEST session_id (pinned by this oracle; see plan 2.1).
-    same = (_NOW - timedelta(minutes=1)).isoformat()
-    for sid in ("aaa", "zzz", "mmm"):
-        reg.write_entry(root, sid, "orchestrator", "", _NOW, started_ts=same)
+def test_live_entries_returns_every_live_role(root):
+    for sid, role in (("o1", "orchestrator"), ("d1", "charc"), ("d2", "rd")):
+        reg.write_entry(root, sid, role, "", _NOW)
         _force_last_seen(reg, root, sid, _NOW.isoformat())
-    win = reg.newest_live(root, _NOW)
-    assert win["session_id"] == "zzz"
+    live = reg.live_entries(root, _NOW)
+    assert sorted(e["session_id"] for e in live) == ["d1", "d2", "o1"]
+
+
+def test_live_entries_role_filter(root):
+    for sid, role in (("o1", "orchestrator"), ("d1", "charc")):
+        reg.write_entry(root, sid, role, "", _NOW)
+        _force_last_seen(reg, root, sid, _NOW.isoformat())
+    assert [e["session_id"] for e in reg.live_entries(root, _NOW, role="charc")
+            ] == ["d1"]
+    assert [e["session_id"]
+            for e in reg.live_entries(root, _NOW, role="orchestrator")] == ["o1"]
+
+
+def test_live_entries_excludes_stale(root):
+    reg.write_entry(root, "old", "orchestrator", "", _NOW)
+    _force_last_seen(reg, root, "old",
+                     (_NOW - timedelta(seconds=reg.STALE_SECONDS + 1)).isoformat())
+    reg.write_entry(root, "new", "orchestrator", "", _NOW)
+    _force_last_seen(reg, root, "new", _NOW.isoformat())
+    assert [e["session_id"] for e in reg.live_entries(root, _NOW)] == ["new"]
+    # live_entries NEVER mutates (prune_stale is the only deleter)
+    assert reg.read_entry(root, "old") is not None
 
 
 # --- sub-cycle 8: dependency posture [lock: stdlib-only] -------------------

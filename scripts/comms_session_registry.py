@@ -1,17 +1,20 @@
-"""Single-sourced orchestrator session registry (G6 Arc A).
+"""Single-sourced session ROLE-PRESENCE / RECOVERY registry (G6 Arc A; 21-D).
 
 Pure, stdlib-only, clock-injected. The ONE owner of the registry read/write/
-prune + newest-live resolution + the per-generation path shape + the
-``session_id`` safety rule. Imported by the lifecycle hook
-(``comms_session_hook.py``) and by ``role_mail.py``; imports NOTHING from
-role_mail (one-way dependency -- no import cycle).
+prune + the ``session_id`` safety rule. Imported by the lifecycle hook
+(``comms_session_hook.py``); imports NOTHING from role_mail (one-way
+dependency -- no import cycle).
+
+**SCOPE (narrowed 2026-07-27, arc 21-D):** this registry answers "which
+session_id is running which role, and is it still live" -- role presence and
+role recovery. It owns NO mailbox path shape: every role is a SINGULAR inbox
+(``comms/<role>/{inbox,read}``, owned by ``role_mail``), so the per-generation
+inbox builders and the newest-live resolver they fed are GONE. The
+``session_id`` survives ONLY as a recovery key, NEVER as an addressing key.
 
 Registry layout (ONE FILE PER SESSION -- no shared-map write contention):
     comms/sessions/<session_id>.json   {session_id, role, transcript_path,
                                         started_ts, last_seen}
-Per-generation orchestrator inbox (the rotating role gets a per-gen box, never
-a singular one):
-    comms/orchestrator/<session_id>/{inbox,read}
 
 Liveness = the hook-written ``last_seen`` heartbeat (refreshed each
 UserPromptSubmit). Staleness = ``last_seen`` age past ``STALE_SECONDS``. NO pure
@@ -34,22 +37,17 @@ from pathlib import Path
 STALE_SECONDS = 45 * 60
 
 # Sessions whose SWING_ROLE is registered (brief section 4: register the
-# directors too so the future GUI bus + newest-live both work).
+# directors too so role presence covers the whole bus).
 REGISTRABLE_ROLES = ("charc", "rd", "orchestrator")
-
-# Only orchestrator entries are newest_live-eligible -- the orchestrator is the
-# SOLE rotating/per-gen role; charc/rd are singular and need no liveness target.
-NEWEST_LIVE_ROLE = "orchestrator"
 
 # The launch-time role env var (swing's existing name, used by the unread hook).
 ROLE_ENV = "SWING_ROLE"
 
-# A session_id becomes a directory name under comms/orchestrator/ AND a filename
-# under comms/sessions/, so it MUST be a safe single path segment. This is THE
-# shared validation rule for the whole registry layer; every path-building site
-# (entry_path, per_generation_inbox/read, the hook) and every consumer of a
-# registry-JSON session_id (read_entries, newest_live) AND role_mail's
-# :<session_id> form go through is_valid_session_id -- one rule, no second copy.
+# A session_id becomes a filename under comms/sessions/, so it MUST be a safe
+# single path segment. This is THE shared validation rule for the registry
+# layer; the one path-building site (entry_path) and every consumer of a
+# registry-JSON session_id (read_entries, live_entries) go through
+# is_valid_session_id -- one rule, no second copy.
 _SESSION_ID_RE = re.compile(r"[A-Za-z0-9._-]+")
 
 
@@ -85,28 +83,6 @@ def entry_path(root: Path, session_id: str) -> Path:
     if not is_valid_session_id(session_id):
         raise ValueError(f"unsafe session_id {session_id!r}")
     return sessions_dir(root) / f"{session_id}.json"
-
-
-def per_generation_inbox(root: Path, session_id: str) -> Path:
-    """The per-generation orchestrator inbox dir for a session_id."""
-    if not is_valid_session_id(session_id):
-        raise ValueError(f"unsafe session_id {session_id!r}")
-    return root / "orchestrator" / session_id / "inbox"
-
-
-def per_generation_read(root: Path, session_id: str) -> Path:
-    """The per-generation orchestrator read (ack archive) dir for a session_id."""
-    if not is_valid_session_id(session_id):
-        raise ValueError(f"unsafe session_id {session_id!r}")
-    return root / "orchestrator" / session_id / "read"
-
-
-def ensure_per_generation_inbox(root: Path, session_id: str) -> Path:
-    """Idempotently create comms/orchestrator/<session_id>/{inbox,read}."""
-    inbox = per_generation_inbox(root, session_id)
-    inbox.mkdir(parents=True, exist_ok=True)
-    per_generation_read(root, session_id).mkdir(parents=True, exist_ok=True)
-    return inbox
 
 
 def _atomic_write_text(path: Path, content: str) -> None:
@@ -181,8 +157,8 @@ def read_entries(root: Path) -> list[dict]:
     read -- it is skipped, and the good entries are returned. Enforces the
     registry identity invariant (filename == embedded-id): an entry is included
     ONLY if its embedded session_id is well-formed/safe AND equals the file stem
-    -- so a crafted / inconsistent file can never mis-route a bare
-    `--to orchestrator` to a wrong per-generation inbox.
+    -- so a crafted / inconsistent file can never be mistaken for a different
+    session's presence record.
     """
     sessions = sessions_dir(root)
     if not sessions.is_dir():
@@ -263,53 +239,21 @@ def prune_stale(root: Path, now: datetime,
 
 
 def live_entries(root: Path, now: datetime,
-                 stale_seconds: int = STALE_SECONDS) -> list[dict]:
-    """Non-stale newest_live-eligible (orchestrator) entries; does NOT mutate."""
+                 stale_seconds: int = STALE_SECONDS, *,
+                 role: str | None = None) -> list[dict]:
+    """Non-stale registry entries (the ROLE-PRESENCE read); does NOT mutate.
+
+    Role-AGNOSTIC by default (21-D: presence is the registry's whole remaining
+    purpose, and every registrable role is equally interesting) with an optional
+    ``role=`` filter for "is a <role> session live right now". Never deletes --
+    ``prune_stale`` is the only deleter, so a caller asking about liveness can
+    never destroy a session's recovery record as a side effect.
+    """
     out: list[dict] = []
     for entry in read_entries(root):
-        if entry.get("role") != NEWEST_LIVE_ROLE:
+        if role is not None and entry.get("role") != role:
             continue
         age = _age_seconds(entry, now)
         if age is not None and age <= stale_seconds:
             out.append(entry)
     return out
-
-
-def _started_sort_key(entry: dict) -> tuple[int, datetime, str]:
-    """Sort key for newest_live: (valid-flag, parsed started_ts, session_id).
-
-    A malformed/unparseable started_ts is DEPRIORITIZED (flag=0, datetime.min)
-    so a garbage string can never win "newest" by raw lexicographic comparison.
-    The trailing session_id is a DETERMINISTIC final tiebreaker: an exact
-    started_ts tie (or the all-malformed case) resolves to the lexically
-    GREATEST session_id -- a single stable entry, never a max()-order flake.
-    This lexical-greatest tie policy is pinned by the newest_live tie test; do
-    NOT change it without updating that oracle.
-    """
-    sid = entry.get("session_id")
-    sid = sid if isinstance(sid, str) else ""
-    raw = entry.get("started_ts")
-    if isinstance(raw, str) and raw:
-        try:
-            parsed = datetime.fromisoformat(raw)
-        except ValueError:
-            return (0, datetime.min.replace(tzinfo=UTC), sid)
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=UTC)
-        return (1, parsed, sid)
-    return (0, datetime.min.replace(tzinfo=UTC), sid)
-
-
-def newest_live(root: Path, now: datetime,
-                stale_seconds: int = STALE_SECONDS) -> dict | None:
-    """The newest-live orchestrator entry (max started_ts), or None.
-
-    "Newest" = the max started_ts among non-stale orchestrator entries (the
-    target a bare `--to orchestrator` resolves to). None when none are live. A
-    malformed started_ts is deprioritized (datetime-parsed, never raw-sorted),
-    so a single garbage entry cannot hijack the resolution.
-    """
-    live = live_entries(root, now, stale_seconds)
-    if not live:
-        return None
-    return max(live, key=_started_sort_key)

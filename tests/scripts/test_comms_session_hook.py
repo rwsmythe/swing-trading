@@ -40,7 +40,7 @@ def root(tmp_path):
     return tmp_path / "comms"
 
 
-# --- sub-cycle 1: session-start registers orchestrator + per-gen inbox -----
+# --- sub-cycle 1: session-start registers PRESENCE ONLY (21-D) -------------
 
 def test_session_start_registers_orchestrator(root):
     hook.handle_session_start(
@@ -49,8 +49,23 @@ def test_session_start_registers_orchestrator(root):
     entry = reg.read_entry(root, "g1")
     assert entry is not None
     assert entry["role"] == "orchestrator"
-    assert (root / "orchestrator" / "g1" / "inbox").is_dir()
-    assert (root / "orchestrator" / "g1" / "read").is_dir()
+
+
+def test_session_start_creates_no_mailbox_directory(root):
+    """21-D: registration is presence-only -- it builds NO per-gen mailbox.
+
+    Pre-21-D the hook created comms/orchestrator/<sid>/{inbox,read}; the
+    orchestrator inbox is now the singular comms/orchestrator/inbox that
+    role_mail bootstraps on first delivery, so the hook must touch nothing
+    under comms/orchestrator/ at all.
+    """
+    hook.handle_session_start(
+        {"session_id": "g1", "transcript_path": "/t.jsonl"},
+        {"SWING_ROLE": "orchestrator"}, root, _NOW)
+    assert not (root / "orchestrator").exists()
+    # the ONLY thing written is the presence record
+    assert [p.name for p in sorted(root.rglob("*")) if p.is_file()] == [
+        "g1.json"]
 
 
 # --- sub-cycle 2: session-start ALWAYS prunes ------------------------------
@@ -66,7 +81,7 @@ def test_session_start_always_prunes_even_for_director(root):
     assert reg.read_entry(root, "stale") is None
 
 
-# --- sub-cycle 3: director registers but gets NO per-gen inbox -------------
+# --- sub-cycle 3: director registers, no mailbox side effects --------------
 
 def test_session_start_director_no_per_gen_inbox(root):
     hook.handle_session_start(
@@ -109,7 +124,8 @@ def test_heartbeat_recreates_pruned_entry(root):
     assert entry is not None
     assert entry["role"] == "orchestrator"
     assert entry["last_seen"] == t1.isoformat()
-    assert (root / "orchestrator" / "g1" / "inbox").is_dir()
+    # 21-D: presence-only -- the heartbeat builds no mailbox directory either
+    assert not (root / "orchestrator").exists()
 
 
 # --- sub-cycle 6: degraded / unsafe sid ------------------------------------

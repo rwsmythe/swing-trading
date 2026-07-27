@@ -1,9 +1,8 @@
-"""Session lifecycle hook: register + heartbeat the orchestrator registry (G6 A).
+"""Session lifecycle hook: register + heartbeat the session registry (G6 A).
 
 Stdlib-only. Two modes via argv[1], wired in .claude/settings.json:
-  * ``session-start``  (SessionStart hook): register the session (idempotent
-    per-generation inbox for orchestrators) + opportunistically prune stale
-    registry entries.
+  * ``session-start``  (SessionStart hook): register the session (role presence
+    / recovery) + opportunistically prune stale registry entries.
   * ``heartbeat``      (a SECOND UserPromptSubmit hook, alongside the existing
     comms_unread_hook): refresh the live session's last_seen. GATE-FREE -- it
     runs for any REGISTRABLE role (so an orchestrator's last_seen DOES refresh;
@@ -90,7 +89,8 @@ def handle_session_start(payload: dict, env: dict, root: Path,
 
     ALWAYS prune (reader-as-cleaner / new-session-on-entry, regardless of role);
     then, for a REGISTRABLE role, write/refresh the entry (preserving started_ts
-    on resume) and -- for an orchestrator -- ensure the per-generation inbox.
+    on resume). NO mailbox directory is created here (21-D): every role is a
+    singular inbox owned by role_mail, so registration is presence-only.
     """
     _reg.prune_stale(root, now)  # ALWAYS, regardless of role
 
@@ -107,17 +107,14 @@ def handle_session_start(payload: dict, env: dict, root: Path,
     started = existing.get("started_ts") if existing else None
     _reg.write_entry(root, session_id, role, transcript, now,
                      started_ts=started)
-    if role == _reg.NEWEST_LIVE_ROLE:
-        _reg.ensure_per_generation_inbox(root, session_id)
 
 
 def handle_heartbeat(payload: dict, env: dict, root: Path,
                      now: datetime) -> None:
     """The UserPromptSubmit heartbeat (the SEAM -- gate-free).
 
-    Refresh last_seen for any REGISTRABLE role (recreate-if-missing self-heal),
-    and re-ensure an orchestrator's per-generation inbox (so a pruned-then-
-    resumed generation regains its box).
+    Refresh last_seen for any REGISTRABLE role (recreate-if-missing self-heal).
+    Presence-only: no mailbox directory is touched (21-D).
     """
     role = env.get(_reg.ROLE_ENV, "")
     if role not in _reg.REGISTRABLE_ROLES:
@@ -129,8 +126,6 @@ def handle_heartbeat(payload: dict, env: dict, root: Path,
 
     _reg.touch_last_seen(root, session_id, now, role=role,
                          transcript_path=payload.get("transcript_path", ""))
-    if role == _reg.NEWEST_LIVE_ROLE:
-        _reg.ensure_per_generation_inbox(root, session_id)
 
 
 def main(argv: list[str] | None = None) -> int:
