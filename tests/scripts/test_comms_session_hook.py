@@ -40,6 +40,24 @@ def root(tmp_path):
     return tmp_path / "comms"
 
 
+@pytest.fixture(autouse=True)
+def _never_the_real_comms_tree(tmp_path, monkeypatch):
+    """Redirect the hook's DEFAULT comms root away from the operator's tree.
+
+    Codex R3 MAJOR 1 (a PRE-EXISTING hole this arc inherited): `hook.main()`
+    resolves `comms_root_from_file()` -- the REAL `<repo>/comms` -- and
+    `handle_session_start` calls `prune_stale` BEFORE the role gate, so any
+    `main(["session-start"])` in the suite UNLINKS the operator's stale
+    `comms/sessions/*.json` role-recovery records. The pure handlers already
+    take an explicit root; this closes the `main()` seam the same way (the
+    function-scoped seam-redirect that CLAUDE.md names as the real prevention,
+    as opposed to a session-scoped world-frozen belt).
+    """
+    safe = tmp_path / "redirected-comms"
+    monkeypatch.setattr(hook._reg, "comms_root_from_file", lambda: safe)
+    return safe
+
+
 # --- sub-cycle 1: session-start registers PRESENCE ONLY (21-D) -------------
 
 def test_session_start_registers_orchestrator(root):
@@ -187,18 +205,51 @@ def test_main_internal_raise_exits_zero(monkeypatch):
     assert hook.main(["session-start"]) == 0
 
 
-def test_subprocess_no_swing_role_exits_zero_no_registration():
+def test_main_never_prunes_the_real_comms_tree(monkeypatch,
+                                               _never_the_real_comms_tree):
+    """main()'s DEFAULT root must never be the operator's live comms/ tree.
+
+    Discriminating: without the redirect fixture this sees the real
+    `<repo>/comms` and fails -- which is exactly the state in which the suite
+    was silently unlinking real `comms/sessions/*.json` entries.
+    """
+    seen: list[Path] = []
+    real_prune = hook._reg.prune_stale
+    monkeypatch.setattr(hook._reg, "prune_stale",
+                        lambda root, now, *a, **k: (seen.append(Path(root)),
+                                                    real_prune(root, now))[1])
+    monkeypatch.delenv("SWING_ROLE", raising=False)
+    assert hook.main(["session-start"]) == 0
+    assert seen == [_never_the_real_comms_tree]
+    real_comms = Path(_SCRIPTS).parent / "comms"
+    assert seen[0].resolve() != real_comms.resolve()
+
+
+def test_subprocess_no_swing_role_exits_zero_no_registration(tmp_path):
     # The quiet default (no SWING_ROLE) -- witness it, the seeded-gate-masks-
     # default discipline. Runs the hook as a real subprocess via stdin. Inherit
     # the real env (so the interpreter starts) but with SWING_ROLE removed.
+    #
+    # The hook resolves its comms root from __file__ (<script dir>/../comms), so
+    # a subprocess of the REAL script would prune the operator's live tree (a
+    # monkeypatch cannot cross the process boundary). Run a COPY staged under
+    # tmp_path instead: identical code, and its resolved root is tmp_path/comms.
     import os
+    import shutil
+    staged = tmp_path / "scripts"
+    staged.mkdir()
+    for src in (_HOOK_PATH, _REG_PATH):
+        shutil.copy2(src, staged / src.name)
     env = {k: v for k, v in os.environ.items() if k != "SWING_ROLE"}
     proc = subprocess.run(
-        [sys.executable, str(_HOOK_PATH), "session-start"],
+        [sys.executable, str(staged / _HOOK_PATH.name), "session-start"],
         input=b'{"session_id":"g1"}',
         capture_output=True, env=env, check=False,
     )
     assert proc.returncode == 0
+    # and it touched only the staged tree (never the real repo comms/)
+    assert not (Path(_SCRIPTS).parent / "comms" / "sessions"
+                / "g1.json").exists()
 
 
 def _force_last_seen(root, sid, value):

@@ -835,12 +835,18 @@ def test_ack_message_rejects_a_retired_session_id(comms):
     assert len(_read_dir(comms, "orchestrator")) == 0
 
 
-def test_no_read_side_helper_accepts_an_ignored_session_selector():
-    """No surviving read/ack helper may carry an ignored session parameter."""
+def test_no_helper_accepts_an_ignored_session_selector():
+    """NO surviving address/read/ack helper may carry an ignored session param.
+
+    An accept-and-ignore signature is a latent reject-not-ignore violation even
+    when today's public callers all reject upstream (Codex R3 Minor 1): the
+    next caller inherits silence instead of an error.
+    """
     import inspect
 
     for fn in (role_mail._role_inbox_dir, role_mail._role_read_dir,
-               role_mail._list_inbox, role_mail._list_read):
+               role_mail._list_inbox, role_mail._list_read,
+               role_mail._inbox_for_target, role_mail._recipient_label):
         params = list(inspect.signature(fn).parameters)
         assert not any(p in ("sid", "session_id") for p in params), fn.__name__
 

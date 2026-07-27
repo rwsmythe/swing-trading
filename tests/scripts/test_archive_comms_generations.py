@@ -206,6 +206,50 @@ def test_live_adoption_collision_never_overwrites(comms):
         encoding="utf-8") == "body of dup.md\n"
 
 
+# --- the move itself must not clobber (Codex R3 MAJOR 2) -------------------
+
+def test_destination_appearing_after_planning_is_not_overwritten(comms,
+                                                                 monkeypatch):
+    """A file that appears BETWEEN build_plan and the move must survive.
+
+    `_nonclobbering_dest` only consults disk at PLAN time, so a plain
+    `os.replace` would silently overwrite a destination created in the gap --
+    destroying archived history while the run still printed VERIFIED. The
+    reservation must therefore happen at MOVE time. Simulated here by handing
+    `run()` a stale plan whose destination already exists.
+    """
+    _seed_gen(comms, "gen-a", read=("m.md",))
+    real_build = mig.build_plan
+
+    def _stale_plan(root, live_session=None):
+        plan = real_build(root, live_session)
+        # the gap: something lands on the planned destination after planning
+        for _src, dest, _kind in plan.moves:
+            _write(dest, "APPEARED AFTER PLANNING\n")
+        return plan
+
+    monkeypatch.setattr(mig, "build_plan", _stale_plan)
+    rc = _run(comms, "--execute")
+    assert rc == 0
+    arch = comms / "orchestrator" / "_archive" / "gen-a" / "read"
+    # the interloper is INTACT ...
+    assert arch.joinpath("m.md").read_text(
+        encoding="utf-8") == "APPEARED AFTER PLANNING\n"
+    # ... and the migrated message landed beside it, not on top of it
+    assert arch.joinpath("m-2.md").read_text(
+        encoding="utf-8") == "body of m.md\n"
+
+
+def test_reserve_dest_never_returns_an_existing_path(comms):
+    target = _write(comms / "orchestrator" / "_archive" / "g" / "read" / "m.md",
+                    "taken\n")
+    reserved = mig._reserve_dest(target)
+    assert reserved != target
+    assert reserved.name == "m-2.md"
+    assert reserved.is_file()          # reserved by EXCLUSIVE create, not a guess
+    assert target.read_text(encoding="utf-8") == "taken\n"
+
+
 # --- idempotence: a second execute has nothing left to do ------------------
 
 def test_second_execute_is_a_noop(comms, capsys):

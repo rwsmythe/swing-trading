@@ -226,17 +226,18 @@ def _parse_recipient_pairs(recipients: list[str]) -> list[tuple[str, str | None]
     return pairs
 
 
-def _recipient_label(role: str, sid: str | None = None) -> str:
+def _recipient_label(role: str) -> str:
     """The `to:` frontmatter label -- always the bare role (21-D)."""
     return role
 
 
-def _inbox_for_target(root: Path, role: str, sid: str | None = None,
-                      now: datetime | None = None) -> Path:
-    """The concrete inbox dir for (role, sid).
+def _inbox_for_target(root: Path, role: str) -> Path:
+    """The concrete inbox dir for a role (singular for every role).
 
-    Every role is singular, so `sid` is ignored (kept in the signature so the
-    delivery loop and its callers stay unchanged). Raises on an unknown role.
+    Takes NO session parameter (Codex R3 Minor 1): an address-capable helper
+    that accepted a session selector and ignored it would be an accept-and-
+    ignore surface even though the public paths reject upstream -- and the one
+    rule this arc enforces everywhere is reject, never ignore.
     """
     if role in SINGULAR_INBOX_ROLES:
         return root / role / "inbox"
@@ -426,13 +427,13 @@ def post_message(
     # singular, so the label is always the bare role.
     resolved: list[tuple[Path, str]] = []
     seen_inboxes: set[str] = set()
-    for role, sid in pairs:
-        inbox = _inbox_for_target(root, role, sid, now=now)
+    for role, _sid in pairs:
+        inbox = _inbox_for_target(root, role)
         key = str(inbox)
         if key in seen_inboxes:
             continue
         seen_inboxes.add(key)
-        resolved.append((inbox, _recipient_label(role, sid)))
+        resolved.append((inbox, _recipient_label(role)))
 
     # Precompute every (final path, content) BEFORE writing anything so a
     # multi-recipient post delivers all-or-nothing (atomicity): stage temps in

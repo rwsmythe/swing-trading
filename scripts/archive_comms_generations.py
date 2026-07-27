@@ -90,22 +90,53 @@ class Plan:
         return not self.moves and not self.generations
 
 
-def _nonclobbering_dest(dest: Path, taken: set[Path]) -> Path:
-    """A destination path that collides with NOTHING (on disk or in this plan).
-
-    Suffixes ``-2``, ``-3``, ... before the extension. An existing archived file
-    of the same name is NEVER overwritten -- the same discipline role_mail's ack
-    uses (_unique_dest): relocating history must not destroy history.
-    """
-    if not dest.exists() and dest not in taken:
-        return dest
+def _candidate_names(dest: Path):
+    """dest, then dest with ``-2``, ``-3``, ... before the extension, forever."""
+    yield dest
     stem, ext = dest.stem, dest.suffix
     n = 2
     while True:
-        candidate = dest.with_name(f"{stem}-{n}{ext}")
+        yield dest.with_name(f"{stem}-{n}{ext}")
+        n += 1
+
+
+def _nonclobbering_dest(dest: Path, taken: set[Path]) -> Path:
+    """A destination that collides with nothing on disk OR in this plan.
+
+    PLAN-TIME only, and therefore ADVISORY: it makes the dry-run report honest,
+    but a file appearing between planning and the move would still be in the
+    way. The BINDING no-clobber guarantee is `_reserve_dest`, applied at move
+    time. An existing archived file of the same name is NEVER overwritten --
+    the same discipline role_mail's ack uses (_unique_dest): relocating history
+    must not destroy history.
+    """
+    for candidate in _candidate_names(dest):
         if not candidate.exists() and candidate not in taken:
             return candidate
-        n += 1
+    raise AssertionError("unreachable: _candidate_names is infinite")
+
+
+def _reserve_dest(dest: Path) -> Path:
+    """ATOMICALLY reserve a free destination name and return it.
+
+    The binding no-clobber guarantee, and the reason the move cannot destroy
+    history: `os.open(..., O_CREAT | O_EXCL)` fails if the name already exists,
+    so the winner of a race is whoever created it first -- unlike a
+    `exists()`-then-`os.replace` pair, whose gap silently overwrites anything
+    that landed in between (and `os.replace` overwrites SILENTLY on both
+    Windows and POSIX). The reserved file is an empty placeholder that the
+    caller's own `os.replace` then overwrites, which is safe precisely because
+    this process owns it.
+    """
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    for candidate in _candidate_names(dest):
+        try:
+            fd = os.open(str(candidate), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            continue
+        os.close(fd)
+        return candidate
+    raise AssertionError("unreachable: _candidate_names is infinite")
 
 
 def _generation_dirs(orchestrator_dir: Path) -> list[Path]:
@@ -237,14 +268,23 @@ def run(comms_root: Path, live_session: str | None, execute: bool,
         return 0
 
     before = _digests([src for src, _dest, _kind in plan.moves])
-    for src, dest, _kind in plan.moves:
-        dest.parent.mkdir(parents=True, exist_ok=True)
+    # Reserve each destination ATOMICALLY at move time (never trust the
+    # plan-time collision check across the gap), and record the name actually
+    # used so verification checks where the file REALLY went.
+    performed: list[tuple[Path, Path, str]] = []
+    for src, planned, kind in plan.moves:
+        dest = _reserve_dest(planned)
+        if dest != planned:
+            print(f"  note: {_rel(planned, comms_root)} was taken at move time; "
+                  f"used {_rel(dest, comms_root)} instead (nothing overwritten)",
+                  file=out)
         os.replace(str(src), str(dest))
+        performed.append((src, dest, kind))
 
     # D3 verification: every relocated file is present at its destination with
     # an UNCHANGED sha256 (intact), and readable. Reported, not assumed.
     problems: list[str] = []
-    for src, dest, _kind in plan.moves:
+    for src, dest, _kind in performed:
         if not dest.is_file():
             problems.append(f"missing after move: {_rel(dest, comms_root)}")
             continue
@@ -267,7 +307,7 @@ def run(comms_root: Path, live_session: str | None, execute: bool,
     if problems:
         print("  VERIFICATION FAILED -- " + "; ".join(problems), file=err)
         return 1
-    print(f"  VERIFIED: {len(plan.moves)} file(s) relocated intact "
+    print(f"  VERIFIED: {len(performed)} file(s) relocated intact "
           "(sha256-matched, readable); zero files deleted.", file=out)
     return 0
 
