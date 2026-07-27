@@ -52,7 +52,13 @@ from pathlib import Path
 #   reconciliation_discrepancies to widen discrepancy_type CHECK 10 -> 11
 #   (add 'untracked_broker_position'). 0019 table-rebuild pattern; all columns
 #   / indexes / FKs / cross-column CHECK preserved. Atomic BEGIN/COMMIT.
-EXPECTED_SCHEMA_VERSION = 31
+# phase 21 arc 21-A latch_view_events (migration 0032): ONE new table holding
+#   a single view-telemetry fact per (latch, action session), keyed on the
+#   shared latch identity block (candidate_id NOT NULL / ON DELETE RESTRICT --
+#   the immutable 21-A <-> 21-B bridge key -- plus evaluation_run_id / ticker /
+#   detection_date / pipeline_run_id nullable ON DELETE SET NULL). NO existing
+#   table touched. Atomic BEGIN/COMMIT.
+EXPECTED_SCHEMA_VERSION = 32
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 DEFAULT_BUSY_TIMEOUT_MS = 30000
@@ -275,6 +281,14 @@ PHASE18_ARC_C_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
 # deterministically for auditable provenance.
 PHASE18_ARC_H6_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
     PHASE18_ARC_C_PRE_MIGRATION_EXPECTED_TABLES | {"yfinance_calls"}
+)
+
+# Phase 21 Arc 21-A (0032) pre-migration table set. 0031 rebuilt
+# reconciliation_discrepancies in place -> added NO new table, so the v31 table
+# set EQUALS the 18-H.6 (pre-v31) set. Derived deterministically for auditable
+# provenance.
+PHASE21_ARC_A_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
+    PHASE18_ARC_H6_PRE_MIGRATION_EXPECTED_TABLES
 )
 
 
@@ -844,6 +858,27 @@ def _create_pre_phase18_arc_h6_migration_backup(
     dest_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     backup_path = dest_dir / f"swing-pre-phase18-arc-h6-migration-{timestamp}.db"
+    src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
+    try:
+        dest_conn = sqlite3.connect(backup_path)
+        try:
+            src_conn.backup(dest_conn)
+        finally:
+            dest_conn.close()
+    finally:
+        src_conn.close()
+    return backup_path
+
+
+def _create_pre_phase21_arc_a_migration_backup(
+    src_path: Path, *, dest_dir: Path,
+) -> Path:
+    """Phase 21 Arc 21-A (0032) mirror. SQLite-native Connection.backup()
+    before the 0032 migration. Backup file
+    ``swing-pre-phase21-arc-a-migration-<ISO>.db``."""
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    backup_path = dest_dir / f"swing-pre-phase21-arc-a-migration-{timestamp}.db"
     src_conn = open_connection(src_path, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
     try:
         dest_conn = sqlite3.connect(backup_path)
@@ -1537,6 +1572,46 @@ def _phase18_arc_h6_backup_gate(
         ) from exc
 
 
+def _phase21_arc_a_backup_gate(
+    conn: sqlite3.Connection,
+    *,
+    current_version: int,
+    target_version: int,
+    backup_dir: Path | None,
+) -> None:
+    """Phase 21 Arc 21-A (0032) backup-before-migrate gate.
+
+    Fires ONLY when ``current_version == 31 AND target_version >= 32`` -- a real
+    production v31 DB about to cross v32 (migration 0032, the latch_view_events
+    view-telemetry table). STRICT EQUALITY on pre_version per the
+    ``pre_version == (target - 1)`` gotcha (NOT ``<=``); multi-version jumps
+    from pre-v31 baselines bypass this gate by design.
+    """
+    if target_version < 32 or current_version != 31:
+        return
+    src_path = _resolve_main_db_path(conn)
+    if src_path is None:
+        raise MigrationBackupRequiredException(
+            "pre-phase21-arc-a backup gate requires a file-backed source DB; "
+            "in-memory connections cannot be snapshotted."
+        )
+    if backup_dir is None:
+        backup_dir = src_path.parent
+    try:
+        backup_path = _create_pre_phase21_arc_a_migration_backup(
+            src_path, dest_dir=backup_dir)
+        _verify_backup_integrity(
+            backup_path,
+            expected_tables=PHASE21_ARC_A_PRE_MIGRATION_EXPECTED_TABLES,
+        )
+    except MigrationBackupRequiredException:
+        raise
+    except (OSError, sqlite3.Error) as exc:
+        raise MigrationBackupRequiredException(
+            f"pre-phase21-arc-a backup failed: {exc}"
+        ) from exc
+
+
 def run_migrations(
     conn: sqlite3.Connection,
     *,
@@ -1652,6 +1727,12 @@ def run_migrations(
         backup_dir=backup_dir,
     )
     _phase18_arc_h6_backup_gate(
+        conn,
+        current_version=current,
+        target_version=target_version,
+        backup_dir=backup_dir,
+    )
+    _phase21_arc_a_backup_gate(
         conn,
         current_version=current,
         target_version=target_version,

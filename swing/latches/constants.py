@@ -1,0 +1,79 @@
+"""Locked latch-derivation constants (Phase 21 Arc A).
+
+Single source of truth for every value the latch derivation and the
+21-A/21-B schema CHECKs mirror (the #11 one-commit multi-mirror discipline).
+
+This module imports NOTHING from `swing` -- it is the domain owner of the
+latch state vocabulary, so `swing/data/models.py` can import the frozensets
+from here without a cycle.
+"""
+from __future__ import annotations
+
+
+# RD constraint 2, RULED at the plan-stage gate: the horizon is DERIVED from
+# the shadow engine's ENTRY window, never hard-coded. See plan section A.4.
+def latch_horizon_sessions(cfg) -> int:
+    """The latch entry-mandate horizon in NYSE sessions.
+
+    Bound at the SOURCE so a future change to the observe window cannot
+    silently break live-vs-shadow parity. The shadow's entry search runs over
+    the temporal log's forward bars, which are bounded by
+    observe_max_pending_window_sessions (30). At a shorter latch horizon,
+    sessions beyond it become a window where the shadow can enter and live has
+    no mandate -- a MANUFACTURED divergence, the FTRE-class defect this arc
+    exists to eliminate.
+
+    NOT research/harness/shadow_expectancy/constants.py HORIZON_SESSIONS
+    (126) -- that is the TRADE-walk horizon after entry, not the entry window.
+    """
+    return int(cfg.pipeline.observe_max_pending_window_sessions)
+
+
+# Mirror of the PipelineConfig default. Used ONLY as the pure derivation's
+# signature default; production always passes latch_horizon_sessions(cfg).
+# Drift-pinned against PipelineConfig() by a test (the #11 mirror discipline).
+DEFAULT_LATCH_HORIZON_SESSIONS = 30
+
+# The settled latch semantics: buy-zone limit cap = pivot x 1.03.
+LATCH_ZONE_CAP_PCT = 3.0
+
+# How far back the PANEL displays cleared latches (display filter only -- the
+# derivation always folds every fire so the re-confirmation chain is exact).
+LATCH_PANEL_LOOKBACK_SESSIONS = 40
+
+LATCH_STATES = frozenset({
+    "armed", "order_resting", "filled", "invalidated", "horizon_expired",
+    "superseded",
+})
+# `superseded`: a re-fire arrived while armed carrying a DIFFERENT frozen
+# pivot, so this latch terminated and a new one armed at the new values. It is
+# deliberately DISTINCT from `horizon` so 21-B can separate "unfilled because
+# the setup re-based" from "unfilled because it went stale"; both still count
+# in the ledger denominators. NOT produced by the bar walk -- stamped by the
+# section A.2 fold. There is NO zone-escape clear reason: zone escape is a
+# RENDER attribute of the armed state (plan section A.7.1).
+LATCH_CLEAR_REASONS = frozenset({
+    "fill", "invalidation", "horizon", "superseded",
+})
+LATCH_FILL_LINK_BASES = frozenset({"candidate_id", "windowed"})
+LATCH_DEGRADED_REASONS = frozenset({
+    "pivot_missing", "stop_missing", "stop_not_below_pivot", "bad_session_date",
+})
+
+# Schwab order-status partition (swing/integrations/schwab/models.py
+# _SCHWAB_ORDER_STATUSES, the 22-value set).
+RESTING_ORDER_STATUSES = frozenset({
+    "ACCEPTED", "AWAITING_CONDITION", "AWAITING_PARENT_ORDER",
+    "AWAITING_RELEASE_TIME", "AWAITING_STOP_CONDITION", "AWAITING_UR_OUT",
+    "NEW", "PENDING_ACKNOWLEDGEMENT", "PENDING_ACTIVATION", "QUEUED",
+    "WAIT_TRG", "WORKING",
+})
+INDETERMINATE_ORDER_STATUSES = frozenset({
+    "AWAITING_MANUAL_REVIEW", "PENDING_CANCEL", "PENDING_RECALL",
+    "PENDING_REPLACE", "UNKNOWN",
+})
+BUY_INSTRUCTIONS = frozenset({"BUY", "BUY_TO_OPEN", "BUY_TO_COVER"})
+
+LATCH_ORDER_ALARMS = frozenset({
+    "LATCH_ARMED_NO_RESTING_ORDER", "ORDER_RESTING_LATCH_CLEARED",
+})

@@ -5,6 +5,14 @@ import re
 from dataclasses import dataclass
 from datetime import date
 
+# ONE declaration, IMPORTED -- never a re-declared copy. `swing/latches/
+# constants.py` is a pure-constants module with ZERO swing imports and is the
+# domain owner of the latch state vocabulary, so this cannot cycle and cannot
+# drift. (The `_YFINANCE_VALID_SURFACES` shared-frozenset precedent, inverted
+# to put the home in the domain package.) A three-way test pins this against
+# the migration-0032 CHECK enum as well (the #11 multi-mirror discipline).
+from swing.latches.constants import LATCH_STATES as _LATCH_VIEW_STATES
+
 # ============================================================================
 # Phase 13 v20 — schema enum constants (per plan §A.14 constant placement LOCK).
 #
@@ -2407,3 +2415,66 @@ class YfinanceCall:
                 f"error_message must be None or str, "
                 f"got {type(self.error_message).__name__}"
             )
+
+
+@dataclass(frozen=True)
+class LatchViewEvent:
+    """One (latch, action-session) view-telemetry record (migration 0032).
+
+    Defense-in-depth mirroring the SQL CHECKs. `first_viewed_ts` and
+    `latch_state_at_first_view` are IMMUTABLE after insert; `last_viewed_ts`,
+    `latch_state_at_last_view` and `view_count` advance monotonically.
+    """
+
+    view_event_id: int | None
+    candidate_id: int          # NOT NULL in SQL: the immutable bridge key
+    evaluation_run_id: int
+    ticker: str
+    detection_date: str
+    pipeline_run_id: int | None
+    view_session_date: str
+    first_viewed_ts: str
+    last_viewed_ts: str
+    view_count: int
+    latch_state_at_first_view: str
+    latch_state_at_last_view: str
+
+    def __post_init__(self) -> None:
+        for fname in ("latch_state_at_first_view", "latch_state_at_last_view"):
+            val = getattr(self, fname)
+            if val not in _LATCH_VIEW_STATES:
+                raise ValueError(
+                    f"{fname} must be in {sorted(_LATCH_VIEW_STATES)}, got {val!r}")
+        for fname, fval in (
+            ("view_event_id", self.view_event_id),
+            ("candidate_id", self.candidate_id),
+            ("evaluation_run_id", self.evaluation_run_id),
+            ("pipeline_run_id", self.pipeline_run_id),
+            ("view_count", self.view_count),
+        ):
+            if fval is None:
+                continue
+            if isinstance(fval, bool) or not isinstance(fval, int):
+                raise ValueError(
+                    f"{fname} must be None or int (not bool), "
+                    f"got {type(fval).__name__}")
+        if self.evaluation_run_id <= 0:
+            raise ValueError("evaluation_run_id must be positive")
+        if self.candidate_id <= 0:
+            raise ValueError("candidate_id must be positive (the bridge key)")
+        if self.view_count < 1:
+            raise ValueError("view_count must be >= 1")
+        if not isinstance(self.ticker, str) or not self.ticker.strip():
+            raise ValueError("ticker must be non-blank")
+        for fname in ("detection_date", "view_session_date"):
+            val = getattr(self, fname)
+            if not isinstance(val, str) or len(val) != 10:
+                raise ValueError(
+                    f"{fname} must be an ISO YYYY-MM-DD str; got {val!r}")
+            try:
+                date.fromisoformat(val)
+            except ValueError as exc:
+                raise ValueError(
+                    f"{fname} is not a valid ISO date: {val!r}") from exc
+        if self.last_viewed_ts < self.first_viewed_ts:
+            raise ValueError("last_viewed_ts must be >= first_viewed_ts")

@@ -31,7 +31,7 @@ def _insert_run(conn: sqlite3.Connection) -> int:
 
 
 def test_expected_schema_version_is_30():
-    assert EXPECTED_SCHEMA_VERSION == 31
+    assert EXPECTED_SCHEMA_VERSION == 32
 
 
 def test_migrate_to_30_creates_yfinance_calls_table_and_indexes(tmp_path):
