@@ -220,8 +220,9 @@ def run(comms_root: Path, live_session: str | None, execute: bool,
           f"{', '.join(plan.generations)}", file=out)
     if live_session is not None:
         print(f"  live generation: {live_session} -- its inbox/ + read/ mail is "
-              "ADOPTED into the singular comms/orchestrator/{inbox,read} "
-              "(the live generation is not history).", file=out)
+              "ADOPTED into the singular comms/orchestrator/inbox and "
+              "comms/orchestrator/read (the live generation is not history).",
+              file=out)
     else:
         print("  no --live-session given: EVERY generation is treated as "
               "history.", file=out)

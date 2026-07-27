@@ -244,23 +244,25 @@ def _inbox_for_target(root: Path, role: str, sid: str | None = None,
         "invalid recipient " + repr(role) + "; valid roles: " + "|".join(VALID_TO))
 
 
-def _reject_retired_session_flag(sid: str | None) -> None:
-    """REJECT a stale `--session <id>` on a read/list/peek op (D2, read side).
+def _reject_retired_session_selector(sid: str | None, form: str) -> None:
+    """REJECT a stale session selector on ANY read/ack path (D2, read side).
 
-    The read-side twin of _split_target's `:<sid>` rejection: a caller carrying
-    the retired per-generation flag must LEARN, not be silently ignored (an
-    ignored --session would read the singular inbox while the caller believed it
-    was reading a specific generation). Nothing is listed, printed, or acked.
+    The read-side twin of _split_target's `:<sid>` rejection, shared by the CLI
+    flag AND the `ack_message` library argument: a caller carrying the retired
+    per-generation selector must LEARN, not be silently ignored. Accept-and-
+    ignore is the exact silent misroute D2 exists to prevent -- the caller would
+    believe it addressed one generation while the singular inbox was read or
+    acked. Nothing is listed, printed, moved, or acked before this fires.
     """
     if sid is None:
         return
     raise MailError(
-        f"{_RETIRED_PREFIX}; '--session {sid}' no longer selects an "
-        "orchestrator generation. Every role is a singular inbox -- read it "
-        "with '--role <role>' and no --session. Nothing was read or acked.")
+        f"{_RETIRED_PREFIX}; the session selector {sid!r} ({form}) no longer "
+        "selects an orchestrator generation. Every role is a singular inbox -- "
+        "address it by bare role with no session. Nothing was read or acked.")
 
 
-def _role_inbox_dir(root: Path, role: str, sid: str | None = None) -> Path:
+def _role_inbox_dir(root: Path, role: str) -> Path:
     """The inbox dir for a read/list/peek/ack op (singular for every role)."""
     if role in SINGULAR_INBOX_ROLES:
         return root / role / "inbox"
@@ -268,7 +270,7 @@ def _role_inbox_dir(root: Path, role: str, sid: str | None = None) -> Path:
         "invalid role " + repr(role) + "; valid roles: " + "|".join(VALID_TO))
 
 
-def _role_read_dir(root: Path, role: str, sid: str | None = None) -> Path:
+def _role_read_dir(root: Path, role: str) -> Path:
     """The read (ack archive) dir for a role (singular for every role)."""
     if role in SINGULAR_INBOX_ROLES:
         return root / role / "read"
@@ -494,19 +496,22 @@ def ack_message(root: Path, role: str, filename: str,
     _unique_dest so an archived message of the same name is never overwritten
     (ack must never delete history). filename MUST be a bare basename --
     traversal attempts are rejected (L3 mail custody: the ack can never reach
-    outside the role's own inbox). `session_id` is VESTIGIAL (21-D: every role
-    is a singular inbox) -- it is accepted and ignored so the GUI's existing
-    call shape keeps working; the retired `--session` CLI flag is rejected at
-    the cmd_* layer, not here. Raises MailError on an invalid role, a traversal
-    attempt, or a missing file.
+    outside the role's own inbox). `session_id` is RETIRED (21-D: every role is
+    a singular inbox): the parameter survives only so a stale in-process caller
+    gets the actionable MailError instead of a TypeError -- passing anything but
+    None is REFUSED before any move (D2 on the library entry point; an ignored
+    selector would silently ack the singular inbox while the caller believed it
+    addressed a generation). Raises MailError on an invalid role, a retired
+    session_id, a traversal attempt, or a missing file.
     """
     if role not in VALID_TO:
         raise MailError(
             "invalid role " + repr(role) + "; valid roles: " + "|".join(VALID_TO))
+    _reject_retired_session_selector(session_id, "ack_message session_id=")
     if filename != Path(filename).name or "/" in filename or "\\" in filename:
         raise MailError(f"refusing non-basename filename {filename!r}")
-    inbox_dir = _role_inbox_dir(root, role, session_id)
-    read_dir = _role_read_dir(root, role, session_id)
+    inbox_dir = _role_inbox_dir(root, role)
+    read_dir = _role_read_dir(root, role)
     src = inbox_dir / filename
     if not src.is_file():
         raise MailError(
@@ -532,13 +537,13 @@ def cmd_post(args: argparse.Namespace) -> int:
     return 0
 
 
-def _list_inbox(root: Path, role: str, sid: str | None = None) -> list[Path]:
-    inbox = _role_inbox_dir(root, role, sid)
+def _list_inbox(root: Path, role: str) -> list[Path]:
+    inbox = _role_inbox_dir(root, role)
     return sorted(inbox.glob("*.md")) if inbox.is_dir() else []
 
 
-def _list_read(root: Path, role: str, sid: str | None = None) -> list[Path]:
-    rd = _role_read_dir(root, role, sid)
+def _list_read(root: Path, role: str) -> list[Path]:
+    rd = _role_read_dir(root, role)
     return sorted(rd.glob("*.md")) if rd.is_dir() else []
 
 
@@ -549,10 +554,9 @@ def cmd_list(args: argparse.Namespace) -> int:
             "invalid --role " + repr(args.role)
             + "; valid roles: " + "|".join(VALID_TO)
         )
-    _reject_retired_session_flag(getattr(args, "session", None))
-    sid = None
-    inbox = _list_inbox(root, args.role, sid)
-    read_count = len(_list_read(root, args.role, sid))
+    _reject_retired_session_selector(getattr(args, "session", None), "--session")
+    inbox = _list_inbox(root, args.role)
+    read_count = len(_list_read(root, args.role))
     print(f"inbox for {args.role}: {len(inbox)} unread, {read_count} read")
     if not inbox:
         print("  (inbox empty)")
@@ -582,9 +586,8 @@ def cmd_read(args: argparse.Namespace) -> int:
             "invalid --role " + repr(args.role)
             + "; valid roles: " + "|".join(VALID_TO)
         )
-    _reject_retired_session_flag(getattr(args, "session", None))
-    sid = None
-    inbox = _list_inbox(root, args.role, sid)
+    _reject_retired_session_selector(getattr(args, "session", None), "--session")
+    inbox = _list_inbox(root, args.role)
     if args.id:
         targets = [p for p in inbox if p.name == args.id]
         if not targets:
@@ -597,7 +600,7 @@ def cmd_read(args: argparse.Namespace) -> int:
         return 0
     for path in targets:
         _print_message(path)
-        ack_message(root, args.role, path.name, session_id=sid)
+        ack_message(root, args.role, path.name)
     print(f"acked {len(targets)} message(s); moved inbox -> read.")
     return 0
 
@@ -609,9 +612,8 @@ def cmd_peek(args: argparse.Namespace) -> int:
             "invalid --role " + repr(args.role)
             + "; valid roles: " + "|".join(VALID_TO)
         )
-    _reject_retired_session_flag(getattr(args, "session", None))
-    sid = None
-    inbox = _list_inbox(root, args.role, sid)
+    _reject_retired_session_selector(getattr(args, "session", None), "--session")
+    inbox = _list_inbox(root, args.role)
     if not inbox:
         print(f"inbox for {args.role} is empty.")
         return 0

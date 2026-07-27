@@ -818,6 +818,33 @@ def test_ack_message_three_arg_still_works(comms):
     assert len(_inbox(comms, "operator")) == 0
 
 
+# D2 on the LIBRARY entry point (Codex R1 CRITICAL): ack_message must REJECT a
+# retired session_id, not accept-and-ignore it. An ignored selector lets a stale
+# in-process caller believe it acked a specific generation while it actually
+# acked the singular inbox -- the exact silent misroute D2 exists to prevent.
+def test_ack_message_rejects_a_retired_session_id(comms):
+    role_mail.post_message(comms, "charc", ["orchestrator"], "fyi", "s", "b")
+    fname = _inbox(comms, "orchestrator")[0].name
+    with pytest.raises(role_mail.MailError) as ei:
+        role_mail.ack_message(comms, "orchestrator", fname, session_id="g1")
+    msg = str(ei.value)
+    assert "per-generation addressing was removed" in msg
+    assert "g1" in msg
+    # NOTHING was moved -- the message is still unread
+    assert len(_inbox(comms, "orchestrator")) == 1
+    assert len(_read_dir(comms, "orchestrator")) == 0
+
+
+def test_no_read_side_helper_accepts_an_ignored_session_selector():
+    """No surviving read/ack helper may carry an ignored session parameter."""
+    import inspect
+
+    for fn in (role_mail._role_inbox_dir, role_mail._role_read_dir,
+               role_mail._list_inbox, role_mail._list_read):
+        params = list(inspect.signature(fn).parameters)
+        assert not any(p in ("sid", "session_id") for p in params), fn.__name__
+
+
 def test_ack_message_orchestrator_moves_inbox_to_read(comms):
     role_mail.post_message(comms, "charc", ["orchestrator"], "fyi", "s", "b")
     fname = _inbox(comms, "orchestrator")[0].name
