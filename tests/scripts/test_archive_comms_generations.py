@@ -1,0 +1,218 @@
+"""Tests for scripts/archive_comms_generations.py -- the 21-D one-shot
+per-generation comms migration helper.
+
+DRY-RUN FIRST is the whole safety property: the default run prints the plan and
+touches nothing. Every test runs over a tmp comms root; the real comms/ tree is
+never touched (and the helper is never executed against it by the suite).
+"""
+
+from __future__ import annotations
+
+import hashlib
+import importlib.util
+import sys
+from pathlib import Path
+
+import pytest
+
+_MODULE_PATH = (Path(__file__).resolve().parents[2] / "scripts"
+                / "archive_comms_generations.py")
+_spec = importlib.util.spec_from_file_location("archive_comms_generations",
+                                               _MODULE_PATH)
+mig = importlib.util.module_from_spec(_spec)
+# Register BEFORE exec: a @dataclass resolves its module via
+# sys.modules[cls.__module__] at class-creation time (Python 3.14).
+sys.modules["archive_comms_generations"] = mig
+_spec.loader.exec_module(mig)
+
+
+@pytest.fixture
+def comms(tmp_path):
+    return tmp_path / "comms"
+
+
+def _write(path: Path, text: str) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def _seed_gen(comms, sid, *, unread=(), read=()):
+    for name in unread:
+        _write(comms / "orchestrator" / sid / "inbox" / name, f"body of {name}\n")
+    for name in read:
+        _write(comms / "orchestrator" / sid / "read" / name, f"body of {name}\n")
+
+
+def _snapshot(root: Path) -> dict[str, str]:
+    """relpath -> sha256 for every file under root (the intactness oracle)."""
+    out = {}
+    for p in sorted(root.rglob("*")):
+        if p.is_file():
+            out[p.relative_to(root).as_posix()] = hashlib.sha256(
+                p.read_bytes()).hexdigest()
+    return out
+
+
+def _run(comms, *args):
+    return mig.main(["--comms-root", str(comms), *args])
+
+
+# --- dry run is the default and mutates NOTHING ----------------------------
+
+def test_dry_run_is_the_default_and_changes_nothing(comms, capsys):
+    _seed_gen(comms, "gen-a", unread=("20260101T010000Z-charc-a.md",))
+    _seed_gen(comms, "gen-b", read=("20260102T010000Z-rd-b.md",))
+    before = _snapshot(comms)
+    rc = _run(comms)
+    assert rc == 0
+    assert _snapshot(comms) == before  # byte-for-byte untouched
+    out = capsys.readouterr().out
+    assert "DRY RUN" in out
+    assert "--execute" in out  # tells the operator how to actually do it
+    # it printed exactly what it WOULD move
+    assert "gen-a" in out and "gen-b" in out
+    assert "_archive/gen-a/inbox/20260101T010000Z-charc-a.md" in out
+
+
+def test_dry_run_on_an_absent_tree_is_a_clean_noop(comms, capsys):
+    rc = _run(comms)
+    assert rc == 0
+    assert not comms.exists()
+    assert "nothing to migrate" in capsys.readouterr().out.lower()
+
+
+# --- enumeration is AT RUN TIME, never a hard-coded list -------------------
+
+def test_generations_enumerated_from_disk_not_a_hard_coded_list(comms):
+    for sid in ("aaaaaaaa-1111", "bbbbbbbb-2222", "cccccccc-3333"):
+        _seed_gen(comms, sid, unread=(f"20260101T010000Z-charc-{sid}.md",))
+    plan = mig.build_plan(comms, live_session=None)
+    assert sorted(plan.generations) == ["aaaaaaaa-1111", "bbbbbbbb-2222",
+                                        "cccccccc-3333"]
+
+
+def test_module_hard_codes_no_session_ids():
+    import re
+    src = _MODULE_PATH.read_text(encoding="utf-8")
+    # a hard-coded list would orphan every generation it forgot (the exact
+    # defect the brief corrected: 5 named, 8 on disk).
+    assert not re.search(r"[0-9a-f]{8}-[0-9a-f]{4}-", src)
+
+
+def test_reserved_names_are_never_treated_as_generations(comms):
+    _write(comms / "orchestrator" / "inbox" / "20260101T010000Z-charc-s.md", "x\n")
+    _write(comms / "orchestrator" / "read" / "20260101T020000Z-charc-r.md", "x\n")
+    _write(comms / "orchestrator" / "_archive" / "old" / "read" / "z.md", "x\n")
+    _write(comms / "orchestrator" / "stray.md", "not a generation\n")
+    plan = mig.build_plan(comms, live_session=None)
+    assert plan.generations == []
+    assert plan.moves == []
+
+
+# --- execute: non-live generations become _archive/<sid>/... ---------------
+
+def test_execute_archives_generations_intact(comms, capsys):
+    _seed_gen(comms, "gen-a", unread=("20260101T010000Z-charc-a.md",),
+              read=("20260101T000000Z-rd-old.md",))
+    _seed_gen(comms, "gen-b", read=("20260102T010000Z-rd-b.md",))
+    before = _snapshot(comms)
+    rc = _run(comms, "--execute")
+    assert rc == 0
+    arch = comms / "orchestrator" / "_archive"
+    assert (arch / "gen-a" / "inbox" / "20260101T010000Z-charc-a.md").is_file()
+    assert (arch / "gen-a" / "read" / "20260101T000000Z-rd-old.md").is_file()
+    assert (arch / "gen-b" / "read" / "20260102T010000Z-rd-b.md").is_file()
+    # D3 -- intact AND readable: same content, same count, nothing deleted
+    after = _snapshot(comms)
+    assert sorted(after.values()) == sorted(before.values())
+    assert len(after) == len(before)
+    assert (arch / "gen-a" / "inbox" / "20260101T010000Z-charc-a.md").read_text(
+        encoding="utf-8") == "body of 20260101T010000Z-charc-a.md\n"
+    # the old per-generation dirs are gone from the live tree (emptied, then
+    # their empty shells removed -- no FILE was ever deleted)
+    assert not (comms / "orchestrator" / "gen-a").exists()
+    assert not (comms / "orchestrator" / "gen-b").exists()
+    assert "VERIFIED" in capsys.readouterr().out
+
+
+def test_execute_preserves_unexpected_subpaths(comms):
+    _write(comms / "orchestrator" / "gen-a" / "notes" / "scratch.txt", "keep me\n")
+    rc = _run(comms, "--execute")
+    assert rc == 0
+    kept = (comms / "orchestrator" / "_archive" / "gen-a" / "notes"
+            / "scratch.txt")
+    assert kept.read_text(encoding="utf-8") == "keep me\n"
+
+
+# --- the LIVE generation is not history: its mail joins the singular inbox --
+
+def test_live_generation_mail_lands_in_the_singular_inbox(comms):
+    _seed_gen(comms, "live-gen", unread=("20260103T010000Z-charc-u.md",),
+              read=("20260103T000000Z-charc-r.md",))
+    _seed_gen(comms, "dead-gen", read=("20260101T010000Z-rd-d.md",))
+    rc = _run(comms, "--execute", "--live-session", "live-gen")
+    assert rc == 0
+    orch = comms / "orchestrator"
+    assert (orch / "inbox" / "20260103T010000Z-charc-u.md").is_file()
+    assert (orch / "read" / "20260103T000000Z-charc-r.md").is_file()
+    # ... and the live gen's mail is NOT filed away as history
+    assert not (orch / "_archive" / "live-gen" / "inbox").exists()
+    assert not (orch / "_archive" / "live-gen" / "read").exists()
+    # the dead generation still archives normally
+    assert (orch / "_archive" / "dead-gen" / "read"
+            / "20260101T010000Z-rd-d.md").is_file()
+
+
+def test_live_session_must_exist_on_disk(comms, capsys):
+    _seed_gen(comms, "gen-a", read=("20260101T010000Z-rd-a.md",))
+    rc = _run(comms, "--execute", "--live-session", "not-a-gen")
+    assert rc == 1
+    assert "not-a-gen" in capsys.readouterr().err
+    # refused BEFORE any move
+    assert (comms / "orchestrator" / "gen-a" / "read"
+            / "20260101T010000Z-rd-a.md").is_file()
+
+
+def test_unsafe_live_session_refused(comms, capsys):
+    _seed_gen(comms, "gen-a", read=("m.md",))
+    rc = _run(comms, "--execute", "--live-session", "../evil")
+    assert rc == 1
+    assert "session" in capsys.readouterr().err.lower()
+    assert (comms / "orchestrator" / "gen-a" / "read" / "m.md").is_file()
+
+
+# --- collisions never clobber (ack must never delete history) --------------
+
+def test_existing_destination_is_never_overwritten(comms):
+    _seed_gen(comms, "gen-a", read=("dup.md",))
+    _write(comms / "orchestrator" / "_archive" / "gen-a" / "read" / "dup.md",
+           "PRE-EXISTING\n")
+    rc = _run(comms, "--execute")
+    assert rc == 0
+    arch = comms / "orchestrator" / "_archive" / "gen-a" / "read"
+    assert arch.joinpath("dup.md").read_text(encoding="utf-8") == "PRE-EXISTING\n"
+    assert arch.joinpath("dup-2.md").read_text(encoding="utf-8") == "body of dup.md\n"
+
+
+def test_live_adoption_collision_never_overwrites(comms):
+    _seed_gen(comms, "live-gen", unread=("dup.md",))
+    _write(comms / "orchestrator" / "inbox" / "dup.md", "PRE-EXISTING\n")
+    rc = _run(comms, "--execute", "--live-session", "live-gen")
+    assert rc == 0
+    inbox = comms / "orchestrator" / "inbox"
+    assert inbox.joinpath("dup.md").read_text(encoding="utf-8") == "PRE-EXISTING\n"
+    assert inbox.joinpath("dup-2.md").read_text(
+        encoding="utf-8") == "body of dup.md\n"
+
+
+# --- idempotence: a second execute has nothing left to do ------------------
+
+def test_second_execute_is_a_noop(comms, capsys):
+    _seed_gen(comms, "gen-a", read=("m.md",))
+    assert _run(comms, "--execute") == 0
+    snap = _snapshot(comms)
+    capsys.readouterr()
+    assert _run(comms, "--execute") == 0
+    assert _snapshot(comms) == snap
+    assert "nothing to migrate" in capsys.readouterr().out.lower()
