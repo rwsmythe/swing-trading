@@ -63,6 +63,30 @@ def sessions_behind(reference: date, candidate: date) -> int:
     return count
 
 
+def session_offset(reference: date, n: int) -> date:
+    """Return the NYSE session exactly `n` sessions from `reference`.
+
+    SIGNED: positive walks forward (`next_session`), negative walks backward
+    (`previous_session`), `n == 0` returns `reference` unchanged. The
+    displacement twin of `sessions_behind`; pure, stdlib `date` in/out, and
+    the canonical session-arithmetic home owns `_NYSE`. NO calendar-day
+    fallback: a calendar walk false-counts across weekends and holidays (the
+    19-E ruling-A precedent).
+
+    Both directions are used by the Arc 21-A latch derivation:
+    `+horizon_sessions` computes a latch's horizon expiry, and `-1` computes
+    the derivation session (the last completed session) from an action-session
+    anchor.
+    """
+    if not isinstance(n, int) or isinstance(n, bool):
+        raise ValueError(f"n must be int (not bool); got {type(n).__name__}")
+    cursor = pd.Timestamp(reference)
+    step = _NYSE.next_session if n > 0 else _NYSE.previous_session
+    for _ in range(abs(n)):
+        cursor = step(cursor)
+    return cursor.date()
+
+
 def last_completed_session(now_local: datetime, *, tz: str = "Pacific/Honolulu") -> date:
     """Most recent NYSE session whose close has already happened at `now_local`.
 
