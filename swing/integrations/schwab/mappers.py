@@ -321,6 +321,14 @@ def map_orders_to_fill_candidates(response: Any) -> list[SchwabOrderResponse]:
         price: float | None = (
             float(price_raw) if price_raw is not None else None
         )
+        # Phase 21 Arc A — the STOP TRIGGER kept separate. Read from the RAW
+        # payload (NOT from `price_raw`, which may already have collapsed onto
+        # the stop by the fallback above), so a STOP_LIMIT order surfaces its
+        # trigger AND its limit. `price` semantics are untouched.
+        stop_raw = _opt(raw, "stopPrice")
+        stop_price: float | None = (
+            float(stop_raw) if stop_raw is not None else None
+        )
 
         # Sub-bundle 1 T-1.3 — extract orderActivityCollection[].executionLegs[]
         # per spec §4.3 + §5.3 mapper-coherence rule. Defensive parsing
@@ -340,6 +348,7 @@ def map_orders_to_fill_candidates(response: Any) -> list[SchwabOrderResponse]:
             order_type=order_type,
             price=price,
             executions=executions,
+            stop_price=stop_price,
         ))
     return out
 

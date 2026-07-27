@@ -282,6 +282,13 @@ class SchwabOrderResponse:
     # Field placed at TAIL to preserve 8-positional backward compat for
     # Phase 11 callsites that pass positional args.
     executions: list[SchwabExecutionLeg] | None = None
+    # Phase 21 Arc A: the STOP TRIGGER, kept SEPARATE from `price`.
+    # `price` semantics are UNCHANGED (limit when present, else the stop
+    # trigger) so every existing reconciliation consumer is untouched; the
+    # latch panel needs the stop/limit PAIR for a STOP_LIMIT order, which the
+    # collapsed `price` cannot express. Placed at TAIL, like `executions`, to
+    # preserve 8-positional backward compat.
+    stop_price: float | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.order_id, str) or not self.order_id:
@@ -338,6 +345,20 @@ class SchwabOrderResponse:
                 raise ValueError(
                     f"SchwabOrderResponse.price must be non-negative finite; "
                     f"got {self.price!r}"
+                )
+        # Phase 21 Arc A — stop_price mirrors the `price` validator exactly.
+        if self.stop_price is not None:
+            if not isinstance(self.stop_price, (int, float)) or isinstance(
+                self.stop_price, bool,
+            ):
+                raise ValueError(
+                    f"SchwabOrderResponse.stop_price must be number or None; "
+                    f"got {type(self.stop_price).__name__}"
+                )
+            if not math.isfinite(float(self.stop_price)) or self.stop_price < 0:
+                raise ValueError(
+                    f"SchwabOrderResponse.stop_price must be non-negative finite; "
+                    f"got {self.stop_price!r}"
                 )
         # Sub-bundle 1 T-1.2 — tri-valued executions validator.
         # ``None`` accepted (legacy V1 path); ``[]`` accepted (Schwab no-leg
