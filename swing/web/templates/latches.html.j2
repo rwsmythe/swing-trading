@@ -1,0 +1,116 @@
+{# Phase 21 Arc A: the read-only latch panel. Extends base.html.j2. ASCII only
+   (no glyphs / em-dash). NO logic here -- every value is display-ready on the
+   VM. #}
+{% extends "base.html.j2" %}
+{% block content %}
+  <h1>Entry latches</h1>
+
+  {% if not vm.available %}
+  <p class="latch-unavailable">{{ vm.unavailable_reason }}</p>
+  {% else %}
+  <p class="muted">
+    Mandate session {{ vm.horizon_session }};
+    closes judged through {{ vm.derivation_session }}.
+  </p>
+
+  {# The lazy broker-order fragment. POST, not GET: it makes an AUDITED Schwab
+     call that inserts a schwab_api_calls row (plan D.1). hx-target="this" is
+     REQUIRED -- an hx-target inherited from an ancestor would swap the response
+     into the wrong element. #}
+  <section id="latch-orders" hx-post="/latches/orders" hx-trigger="load"
+           hx-target="this" hx-swap="innerHTML"
+           hx-headers='{"HX-Request": "true"}'>
+    <p class="muted">Checking broker orders...</p>
+  </section>
+
+  {% if vm.rows %}
+  <div class="latch-cards">
+    {% for row in vm.rows %}
+    <section class="latch-card latch-state-{{ row.state }}
+                    latch-zone-{{ row.zone_position }}">
+      <h2>{{ row.ticker }} <span class="latch-state-label">{{ row.state_label }}</span></h2>
+      <dl class="latch-facts">
+        <dt>Fired</dt><dd>{{ row.fire_date }}</dd>
+        <dt>Latched pivot</dt><dd>{{ row.latched_pivot }}</dd>
+        <dt>Zone cap</dt><dd>{{ row.zone_cap }}</dd>
+        <dt>{{ row.invalidation_label }}</dt><dd>{{ row.invalidation_level }}</dd>
+        <dt>Current price</dt>
+        <dd>
+          {{ row.current_price }} ({{ row.zone_position_label }})
+          <span class="muted">
+            source {{ row.price_source }}, as of {{ row.price_asof }}{% if row.price_is_stale %} [STALE]{% endif %}
+          </span>
+        </dd>
+        <dt>Sessions to horizon</dt>
+        <dd>{{ row.sessions_to_horizon }} (expires {{ row.horizon_expiry }})</dd>
+        {% if row.clear_reason %}
+        <dt>Cleared</dt>
+        <dd>
+          {{ row.clear_reason }} on {{ row.clear_session }}
+          {%- if row.clear_trade_id %} (trade {{ row.clear_trade_id }}, matched by {{ row.fill_link_basis }}){% endif %}
+        </dd>
+        {% endif %}
+        {% if row.fill_link_anomaly %}
+        <dt class="latch-anomaly">Fill-link anomaly</dt>
+        <dd class="latch-anomaly">
+          a trade links to this latch's candidate but is dated BEFORE the fire
+        </dd>
+        {% endif %}
+        <dt>Bars</dt>
+        <dd>
+          {% if row.bars_available %}archive through {{ row.bars_through }}
+          {%- else %}invalidation NOT evaluated - no bars{% endif %}
+        </dd>
+        <dt>Identity</dt>
+        <dd class="muted">
+          evaluation_run {{ row.evaluation_run_id }} / candidate {{ row.candidate_id }}
+          / detection {{ row.detection_date }}
+          / pipeline_run {{ row.pipeline_run_id if row.pipeline_run_id else '-' }}
+          {%- if row.reconfirmation_count %} / re-confirmed {{ row.reconfirmation_count }}x{% endif %}
+        </dd>
+        {% if row.is_live %}
+        <dt>View telemetry</dt><dd class="muted">{{ row.telemetry_label }}</dd>
+        {% endif %}
+      </dl>
+    </section>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="latch-empty">No live latches.</p>
+  {% endif %}
+
+  {% if vm.degraded_rows %}
+  <section class="latch-degraded">
+    <h2>Degraded fires</h2>
+    <p class="muted">
+      These A+ fires exist but their own candidates row is unusable, so no
+      latch could be derived. They are shown rather than dropped.
+    </p>
+    <ul>
+      {% for d in vm.degraded_rows %}
+      <li>
+        {{ d.ticker }} ({{ d.fire_date }}, evaluation_run {{ d.evaluation_run_id }},
+        candidate {{ d.candidate_id }}): {{ d.reason_label }}
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+
+  {% if vm.live_candidate_ids %}
+  {# A4: the ONLY write path. An HTMX beacon POST carrying the RENDER-TIME
+     session anchor plus the exact live set this page rendered. hx-swap is
+     innerHTML on ITSELF so a 409 stale notice can actually render. #}
+  <div id="latch-view-beacon"
+       hx-post="/latches/view"
+       hx-trigger="load"
+       hx-target="this"
+       hx-swap="innerHTML"
+       hx-headers='{"HX-Request": "true"}'
+       hx-vals='{{ vm.beacon_payload_json }}'
+       aria-hidden="true"></div>
+  {% endif %}
+
+  <p class="latch-footnote">{{ vm.base_break_footnote }}</p>
+  {% endif %}
+{% endblock %}

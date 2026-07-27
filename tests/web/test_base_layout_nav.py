@@ -27,6 +27,7 @@ from swing.web.price_cache import PriceCache
 EXPECTED_NAV_HREFS = [
     "/",
     "/watchlist",
+    "/latches",
     "/journal",
     "/reviews/pending",
     "/pipeline",

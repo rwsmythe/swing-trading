@@ -827,6 +827,9 @@ def create_app(cfg: Config, cfg_path: Path | None = None) -> FastAPI:
         journal as journal_route,
     )
     from swing.web.routes import (
+        latches as latches_route,
+    )
+    from swing.web.routes import (
         metrics as metrics_route,
     )
 
@@ -865,5 +868,6 @@ def create_app(cfg: Config, cfg_path: Path | None = None) -> FastAPI:
     app.include_router(reconcile_route.router)
     app.include_router(patterns_route.router)
     app.include_router(health_route.router)
+    app.include_router(latches_route.router)
 
     return app

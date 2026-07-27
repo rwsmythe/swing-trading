@@ -95,6 +95,16 @@
   --stoplight-yellow: #f9a825;
   --stoplight-red: #c62828;
   --stoplight-grey: #9e9e9e;
+
+  /* Phase 21 Arc 21-A latch panel. */
+  --latch-armed-bg: #e8f5e9;
+  --latch-armed-fg: #1b5e20;
+  --latch-alarm-bg: #ffe6e6;
+  --latch-alarm-fg: #b71c1c;
+  --latch-cleared-bg: #eceff1;
+  --latch-cleared-fg: #455a64;
+  --latch-degraded-bg: #fff8e1;
+  --latch-degraded-fg: #8d6e00;
 }
 
 /* Dark theme override block.
@@ -185,6 +195,16 @@ body.dark {
   --stoplight-yellow: #fbc02d;
   --stoplight-red: #e53935;
   --stoplight-grey: #757575;
+
+  /* Latch panel — the alarm pair must stay legible on dark. */
+  --latch-armed-bg: #1b3320;
+  --latch-armed-fg: #a5d6a7;
+  --latch-alarm-bg: #4a1d1d;
+  --latch-alarm-fg: #ff8a80;
+  --latch-cleared-bg: #2a2f31;
+  --latch-cleared-fg: #b0bec5;
+  --latch-degraded-bg: #3d3520;
+  --latch-degraded-fg: #ffe082;
 }
 
 * { box-sizing: border-box; }
@@ -402,3 +422,69 @@ tr.tripwire-fired td:first-child { border-left: 4px solid var(--tripwire-border)
 .schwab-health-badge--ok { background: var(--badge-bullish-bg); color: var(--badge-bullish-fg); }
 .schwab-health-badge--info { background: var(--badge-caution-bg); color: var(--badge-caution-fg); }
 .schwab-health-badge--warn { background: var(--badge-bearish-bg); color: var(--badge-bearish-fg); }
+
+/* ---------------------------------------------------------------------------
+   Phase 21 Arc 21-A — the latch panel. var()-only per the A.3 no-raw-hex
+   contract (raw colors live in :root / body.dark above).
+   --------------------------------------------------------------------------- */
+.latch-card {
+  background: var(--latch-cleared-bg);
+  color: var(--latch-cleared-fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.75rem 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.latch-card.latch-state-armed,
+.latch-card.latch-state-order_resting {
+  background: var(--latch-armed-bg);
+  color: var(--latch-armed-fg);
+}
+
+.latch-state-label {
+  font-weight: 600;
+}
+
+.latch-alarm {
+  background: var(--latch-alarm-bg);
+  color: var(--latch-alarm-fg);
+  border: 1px solid var(--latch-alarm-fg);
+  border-radius: 4px;
+  padding: 0.5rem 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.latch-alarm-warning {
+  background: var(--latch-degraded-bg);
+  color: var(--latch-degraded-fg);
+  border-color: var(--latch-degraded-fg);
+}
+
+.latch-anomaly {
+  color: var(--latch-alarm-fg);
+  font-weight: 600;
+}
+
+.latch-degraded {
+  background: var(--latch-degraded-bg);
+  color: var(--latch-degraded-fg);
+  border: 1px solid var(--latch-degraded-fg);
+  border-radius: 4px;
+  padding: 0.5rem 0.75rem;
+}
+
+.latch-footnote {
+  color: var(--fg-muted);
+  font-size: 0.85rem;
+  border-top: 1px solid var(--border);
+  padding-top: 0.5rem;
+}
+
+.latch-beacon-stale,
+.latch-beacon-error {
+  background: var(--latch-alarm-bg);
+  color: var(--latch-alarm-fg);
+  padding: 0.5rem 0.75rem;
+  border-radius: 4px;
+}

@@ -26,6 +26,7 @@ from swing.web.view_models.dashboard import DashboardVM
 from swing.web.view_models.error import PageErrorVM
 from swing.web.view_models.health import ResearchHealthPageVM, ToolHealthPageVM
 from swing.web.view_models.journal import JournalVM, TradeDrilldownVM
+from swing.web.view_models.latches import LatchPanelVM
 from swing.web.view_models.metrics.capital_friction import (
     CapitalFrictionVM,
     build_capital_friction_vm,
@@ -83,6 +84,7 @@ _DISCOVERY_EXCLUDE = {"BaseLayoutVM"}
 MANIFEST = {
     DashboardVM: PageKind.FORWARD_PLANNING,
     WatchlistVM: PageKind.FORWARD_PLANNING,
+    LatchPanelVM: PageKind.FORWARD_PLANNING,
     JournalVM: PageKind.HISTORY_ANALYSIS,
     ConfigPageVM: PageKind.HISTORY_ANALYSIS,
     PipelineVM: PageKind.HISTORY_ANALYSIS,
@@ -182,12 +184,29 @@ class _FakeCache:
 _REPRESENTATIVES: dict = {
     WatchlistVM: lambda cfg: build_watchlist(
         cfg=cfg, cache=_FakeCache(), executor=MagicMock()),     # forward
+    # Phase 21 Arc 21-A: the latch panel declares FORWARD_PLANNING but
+    # `_base_banner_fields` hardcodes the HISTORY_ANALYSIS anchor, so the
+    # builder OVERRIDES the spread value. Wiring it here is what proves the
+    # override actually fires rather than the declaration merely claiming it.
+    LatchPanelVM: lambda cfg: _build_latch_panel(cfg),          # forward
     PipelineVM: lambda cfg: build_pipeline(cfg=cfg),            # backward (non-metrics)
     ConfigPageVM: lambda cfg: build_config_vm(cfg),            # backward (non-metrics)
     CapitalFrictionVM: lambda cfg: build_capital_friction_vm(cfg=cfg),     # backward metrics
     MaturityStageVM: lambda cfg: build_maturity_stage_vm(cfg=cfg),         # backward metrics
     IdentificationFunnelVM: lambda cfg: build_identification_funnel_vm(cfg=cfg),  # backward metrics
 }
+
+
+
+def _build_latch_panel(cfg):
+    """Representative builder for LatchPanelVM (needs a live connection)."""
+    from swing.data.db import connect
+    from swing.web.view_models.latches import build_latch_panel_vm
+    conn = connect(cfg.paths.db_path)
+    try:
+        return build_latch_panel_vm(conn, cfg)
+    finally:
+        conn.close()
 
 
 class _FrozenNow(datetime):

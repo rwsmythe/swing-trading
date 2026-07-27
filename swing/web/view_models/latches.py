@@ -1,0 +1,400 @@
+"""Phase 21 Arc A: the read-only latch panel view models.
+
+A5: the panel gets its OWN VM and route -- no new field on `base.html.j2` or on
+any existing base-layout VM (the every-base-VM-or-500 gotcha).
+
+A6: EVERY builder path degrades visibly. `build_latch_panel_vm` never raises,
+and that explicitly includes `_base_banner_fields`, which issues three DB reads
+BEFORE the derivation guard would be reached (Codex R5-1).
+"""
+from __future__ import annotations
+
+import json
+import logging
+from dataclasses import dataclass, fields
+from datetime import date, datetime
+
+from swing.evaluation.dates import PageKind, sessions_behind, topbar_session_date
+from swing.latches.constants import LATCH_PANEL_LOOKBACK_SESSIONS
+from swing.latches.models import Latch
+from swing.latches.reader import build_latch_derivation
+from swing.web.view_models.journal import _base_banner_fields
+
+_log = logging.getLogger(__name__)
+
+_ZONE_POSITIONS = ("below_pivot", "in_zone", "above_zone", "unknown")
+
+# Display precision on BOTH sides of the zone comparison, so a boundary price
+# cannot flip the verdict on a sub-cent difference (the price-precision-parity
+# gotcha).
+_PRICE_DP = 2
+
+# RD gate ruling G.5: V1 implements the close-below-the-fire-time-stop half of
+# invalidation ONLY. The panel must NOT present itself as implementing full
+# invalidation, so the qualifier travels WITH the number everywhere it is shown.
+INVALIDATION_LABEL = "invalidation (stop level only)"
+BASE_BREAK_FOOTNOTE = (
+    "Invalidation is evaluated on closes below the fire-time stop level ONLY. "
+    "Structural base-break is not implemented in V1."
+)
+
+# The all-fields-present fallback. Every key here is a base.html.j2 field: a
+# MISSING key is a Jinja UndefinedError 500 on an unrelated banner, which is
+# the very failure mode this is guarding against.
+_SAFE_BANNER: dict = {
+    "session_date": "", "stale_banner": None,
+    "price_source_degraded": False, "price_source_degraded_until": None,
+    "ohlcv_source_degraded": False,
+    "unresolved_material_discrepancies_count": 0,
+    "recent_multi_leg_auto_correction_count": 0,
+    "banner_resolve_link": None,
+}
+
+_ZONE_LABELS = {
+    "below_pivot": "below pivot - not triggered",
+    "in_zone": "IN ZONE",
+    "above_zone": "ABOVE ZONE - do not chase",
+    "unknown": "price unavailable",
+}
+
+_TERMINAL_STATE_LABELS = {
+    "filled": "FILLED",
+    "invalidated": "INVALIDATED",
+    "horizon_expired": "HORIZON EXPIRED",
+}
+
+_DEGRADED_REASON_LABELS = {
+    "pivot_missing": "pivot missing on the fire's candidates row",
+    "stop_missing": "initial stop missing on the fire's candidates row",
+    "stop_not_below_pivot": "initial stop is not below the pivot",
+    "bad_session_date": "the fire's action session date is malformed",
+}
+
+
+@dataclass(frozen=True)
+class LatchRowVM:
+    """One latch, rendered. Display-ready strings only -- NO logic in the
+    template."""
+
+    # identity + the FROZEN mandate (brief section 1.1)
+    ticker: str
+    fire_date: str
+    latched_pivot: str
+    zone_cap: str
+    invalidation_level: str
+    invalidation_label: str
+    # LIVE price vs the buy zone (brief section 1.1 "current price vs zone")
+    current_price: str
+    zone_position: str
+    zone_position_label: str
+    price_source: str
+    price_asof: str
+    price_is_stale: bool
+    # horizon + state
+    sessions_to_horizon: int
+    horizon_expiry: str
+    state: str
+    state_label: str
+    clear_reason: str | None
+    clear_session: str | None
+    clear_trade_id: int | None
+    fill_link_basis: str | None
+    fill_link_anomaly: bool
+    # provenance + honesty
+    evaluation_run_id: int
+    candidate_id: int
+    detection_date: str
+    pipeline_run_id: int | None
+    reconfirmation_count: int
+    bars_available: bool
+    bars_through: str
+    telemetry_label: str
+    is_live: bool
+
+
+@dataclass(frozen=True)
+class DegradedRowVM:
+    """Display shape for a DegradedFire (plan A.10): a fire whose own
+    candidates row is unusable. Rendered as a visibly-degraded row so the
+    operator sees that a fire EXISTED and why it produced no latch -- never
+    silently dropped."""
+
+    ticker: str
+    fire_date: str
+    evaluation_run_id: int
+    candidate_id: int
+    reason: str
+    reason_label: str
+
+
+@dataclass(frozen=True)
+class LatchAlarmVM:
+    kind: str
+    ticker: str
+    latch_candidate_id: int | None
+    detail: str
+    severity: str
+
+
+@dataclass(frozen=True)
+class LatchPanelVM:
+    rows: tuple[LatchRowVM, ...]
+    degraded_rows: tuple[DegradedRowVM, ...]
+    available: bool
+    unavailable_reason: str | None
+    live_candidate_ids: tuple[int, ...]
+    derivation_session: str
+    horizon_session: str
+    beacon_payload_json: str
+    base_break_footnote: str = BASE_BREAK_FOOTNOTE
+    PAGE_KIND = PageKind.FORWARD_PLANNING
+
+    # base-banner fields (populated via **_base_banner_fields):
+    session_date: str = ""
+    stale_banner: str | None = None
+    price_source_degraded: bool = False
+    price_source_degraded_until: str | None = None
+    ohlcv_source_degraded: bool = False
+    unresolved_material_discrepancies_count: int = 0
+    recent_multi_leg_auto_correction_count: int = 0
+    banner_resolve_link: str | None = None
+
+
+def _safe_base_banner_fields(conn, cfg) -> dict:
+    """A6: `_base_banner_fields` issues THREE DB reads; any one of them raising
+    would 500 `GET /latches` BEFORE the derivation guard is even reached."""
+    try:
+        return _base_banner_fields(conn, cfg)
+    except Exception as exc:      # noqa: BLE001 -- A6: never 500 the panel
+        _log.warning("latch panel base-banner degraded: %s", exc)
+        return dict(_SAFE_BANNER)
+
+
+def _fmt_price(value) -> str:
+    return "-" if value is None else f"{float(value):.2f}"
+
+
+def _zone_position(price, latch: Latch) -> str:
+    """The buy zone is the CLOSED interval [latched_pivot, zone_cap], compared
+    at display precision."""
+    if price is None:
+        return "unknown"
+    p = round(float(price), _PRICE_DP)
+    if p < round(latch.latched_pivot, _PRICE_DP):
+        return "below_pivot"
+    if p > round(latch.zone_cap, _PRICE_DP):
+        return "above_zone"
+    return "in_zone"
+
+
+def _state_label(latch: Latch, zone_position: str) -> str:
+    """Composes the state with the zone position (RD gate ruling, plan A.7.1).
+
+    ZONE ESCAPE IS AN ATTRIBUTE OF `armed`, NEVER A TERMINAL STATE. The
+    operator's resting order at the cap remains valid and fills on a pullback,
+    "price will not come back" is unknowable, and the horizon already bounds
+    the zombie case -- so the panel says "out of zone" WITHOUT the derivation
+    having cleared anything.
+    """
+    if latch.state == "superseded":
+        session = latch.clear_session.isoformat() if latch.clear_session else "-"
+        return f"SUPERSEDED - re-fired at a new pivot {session}"
+    if latch.state in _TERMINAL_STATE_LABELS:
+        return _TERMINAL_STATE_LABELS[latch.state]
+    base = "ORDER RESTING" if latch.state == "order_resting" else "ARMED"
+    if zone_position == "above_zone":
+        return (
+            f"{base} - OUT OF ZONE (current price above the cap; fills only on "
+            f"a pullback; expires {latch.horizon_expiry.isoformat()})")
+    if zone_position == "in_zone":
+        return f"{base} - IN ZONE"
+    return base
+
+
+def _telemetry_label(views) -> str:
+    """The self-revealing echo (plan section D): a silently-broken beacon shows
+    up as 'NOT YET RECORDED' on every visit."""
+    if not views:
+        return "view telemetry: NOT YET RECORDED THIS SESSION"
+    first = views[0]
+    total = sum(v.view_count for v in views)
+    return f"first viewed {first.first_viewed_ts} ({total} views)"
+
+
+def _build_row(latch: Latch, *, snapshot, views) -> LatchRowVM:
+    price = None if snapshot is None else snapshot.price
+    zone_position = _zone_position(price, latch)
+    return LatchRowVM(
+        ticker=latch.identity.ticker,
+        fire_date=latch.anchor.isoformat(),
+        latched_pivot=_fmt_price(latch.latched_pivot),
+        zone_cap=_fmt_price(latch.zone_cap),
+        invalidation_level=_fmt_price(latch.latched_initial_stop),
+        invalidation_label=INVALIDATION_LABEL,
+        current_price=_fmt_price(price),
+        zone_position=zone_position,
+        zone_position_label=_ZONE_LABELS[zone_position],
+        price_source="-" if snapshot is None else str(snapshot.source),
+        price_asof=(
+            "-" if snapshot is None or snapshot.asof is None
+            else snapshot.asof.isoformat(timespec="seconds")),
+        price_is_stale=bool(getattr(snapshot, "is_stale", False)),
+        sessions_to_horizon=latch.sessions_to_horizon,
+        horizon_expiry=latch.horizon_expiry.isoformat(),
+        state=latch.state,
+        state_label=_state_label(latch, zone_position),
+        clear_reason=latch.clear_reason,
+        clear_session=(
+            None if latch.clear_session is None else latch.clear_session.isoformat()),
+        clear_trade_id=latch.clear_trade_id,
+        fill_link_basis=latch.fill_link_basis,
+        fill_link_anomaly=latch.fill_link_anomaly,
+        evaluation_run_id=latch.identity.evaluation_run_id,
+        candidate_id=latch.identity.candidate_id,
+        detection_date=latch.identity.detection_date,
+        pipeline_run_id=latch.identity.pipeline_run_id,
+        reconfirmation_count=latch.reconfirmation_count,
+        bars_available=latch.bars_available,
+        bars_through=(
+            "-" if latch.bars_through is None else latch.bars_through.isoformat()),
+        telemetry_label=_telemetry_label(views),
+        is_live=latch.is_live,
+    )
+
+
+def _within_display_lookback(latch: Latch, horizon_session: date) -> bool:
+    """The DISPLAY filter only. The derivation always folds EVERY fire, so the
+    re-confirmation chain is never truncated -- only the render is bounded."""
+    if latch.is_live:
+        return True
+    reference = latch.clear_session or latch.anchor
+    return sessions_behind(horizon_session, reference) <= LATCH_PANEL_LOOKBACK_SESSIONS
+
+
+def _now() -> datetime:
+    """Indirection so tests can freeze the panel clock at ONE place."""
+    return datetime.now()
+
+
+def _empty_panel(banner: dict, *, reason: str | None, session_date: str) -> LatchPanelVM:
+    payload = json.dumps({"view_session_date": "", "candidate_ids": ""})
+    banner = dict(banner)
+    banner["session_date"] = session_date
+    return LatchPanelVM(
+        rows=(), degraded_rows=(), available=reason is None,
+        unavailable_reason=reason, live_candidate_ids=(),
+        derivation_session="-", horizon_session="-",
+        beacon_payload_json=payload, **banner)
+
+
+def build_latch_panel_vm(conn, cfg, cache=None, executor=None, *, now=None) -> LatchPanelVM:
+    """Build the panel VM. NEVER raises, NEVER writes (A4 + A6)."""
+    banner = _safe_base_banner_fields(conn, cfg)
+    clock = now or _now()
+    # PAGE_KIND is FORWARD_PLANNING but `_base_banner_fields` hardcodes the
+    # HISTORY_ANALYSIS anchor, so the spread value is OVERRIDDEN here to keep
+    # the rendered topbar honest.
+    session_date = topbar_session_date(PageKind.FORWARD_PLANNING, clock).isoformat()
+    try:
+        derivation = build_latch_derivation(conn, cfg, now=clock)
+        displayed = [
+            latch for latch in derivation.latches
+            if _within_display_lookback(latch, derivation.horizon_session)
+        ]
+        live = [latch for latch in displayed if latch.is_live]
+
+        snapshots: dict = {}
+        if live and cache is not None:
+            try:
+                snapshots = cache.get_many(
+                    sorted({latch.identity.ticker for latch in live}),
+                    deadline_seconds=cfg.web.price_fetch_deadline_seconds,
+                    executor=executor,
+                ) or {}
+            except Exception as exc:  # noqa: BLE001 -- A6: a price miss never blocks
+                _log.warning("latch panel price fetch degraded: %s", exc)
+                snapshots = {}
+
+        views_by_latch = _load_views(conn, displayed, derivation.horizon_session)
+
+        rows = [
+            _build_row(
+                latch,
+                snapshot=(
+                    snapshots.get(latch.identity.ticker) if latch.is_live else None),
+                views=views_by_latch.get(latch.identity.candidate_id, ()),
+            )
+            for latch in sorted(
+                displayed,
+                key=lambda x: (not x.is_live, -x.anchor.toordinal(),
+                               x.identity.ticker),
+            )
+        ]
+        degraded_rows = tuple(
+            DegradedRowVM(
+                ticker=d.ticker,
+                fire_date=d.action_session_date or "-",
+                evaluation_run_id=d.evaluation_run_id,
+                candidate_id=d.candidate_id,
+                reason=d.reason,
+                reason_label=_DEGRADED_REASON_LABELS.get(d.reason, d.reason),
+            )
+            for d in derivation.degraded
+        )
+        live_ids = tuple(latch.identity.candidate_id for latch in live)
+        payload = json.dumps({
+            "view_session_date": derivation.horizon_session.isoformat(),
+            "candidate_ids": ",".join(str(i) for i in live_ids),
+        })
+        banner = dict(banner)
+        banner["session_date"] = session_date
+        return LatchPanelVM(
+            rows=tuple(rows),
+            degraded_rows=degraded_rows,
+            available=True,
+            unavailable_reason=None,
+            live_candidate_ids=live_ids,
+            derivation_session=derivation.derivation_session.isoformat(),
+            horizon_session=derivation.horizon_session.isoformat(),
+            beacon_payload_json=payload,
+            **banner,
+        )
+    except Exception as exc:  # noqa: BLE001 -- A6: the panel degrades, never 500s
+        _log.warning("latch panel degraded: %s", exc)
+        return _empty_panel(
+            banner, reason="latch derivation unavailable", session_date=session_date)
+
+
+def _load_views(conn, latches, horizon_session: date) -> dict[int, tuple]:
+    """The persisted view telemetry for THIS session, per latch. Read-only."""
+    out: dict[int, tuple] = {}
+    try:
+        from swing.data.repos.latch_view_events import list_views_for_latch
+    except Exception as exc:  # noqa: BLE001 -- pre-0032 DB: no telemetry, no 500
+        _log.warning("latch panel telemetry read unavailable: %s", exc)
+        return out
+    session_iso = horizon_session.isoformat()
+    for latch in latches:
+        try:
+            rows = list_views_for_latch(
+                conn, evaluation_run_id=latch.identity.evaluation_run_id,
+                ticker=latch.identity.ticker)
+        except Exception as exc:  # noqa: BLE001 -- A6
+            _log.warning("latch panel telemetry read degraded: %s", exc)
+            continue
+        out[latch.identity.candidate_id] = tuple(
+            r for r in rows if r.view_session_date == session_iso)
+    return out
+
+
+# Drift pin support: the base-banner field names declared on LatchPanelVM.
+PANEL_SPECIFIC_FIELDS = frozenset({
+    "rows", "degraded_rows", "available", "unavailable_reason",
+    "live_candidate_ids", "derivation_session", "horizon_session",
+    "beacon_payload_json", "base_break_footnote",
+})
+
+
+def declared_banner_fields() -> frozenset[str]:
+    return frozenset(
+        f.name for f in fields(LatchPanelVM) if f.name not in PANEL_SPECIFIC_FIELDS)
