@@ -363,6 +363,101 @@ def test_symlinked_generation_directory_is_refused(comms, tmp_path, capsys):
     assert (elsewhere / "m.md").read_text(encoding="utf-8") == "x\n"
 
 
+# --- containment: a destination must RESOLVE inside the tree (R6 MAJOR) ----
+# Enumerating symlinks only catches the ones you thought to look at; the
+# structural guarantee is that every destination, once resolved, is still inside
+# comms/orchestrator/. These drive it through the _resolve seam so they run on a
+# box where creating real symlinks needs privileges.
+
+def test_destination_resolving_outside_the_tree_is_refused(comms, tmp_path,
+                                                           capsys):
+    """A symlinked ancestor INSIDE the archive write path must be refused.
+
+    e.g. `_archive/gen-a/read -> /somewhere/else`: no direct child of
+    comms/orchestrator/ is a link, so the symlink enumeration passes, yet the
+    message lands outside the tree and verification reads it back through the
+    link and prints VERIFIED.
+    """
+    _seed_gen(comms, "gen-a", read=("m.md",))
+    escaped = tmp_path / "escaped"
+    # the reparse point EXISTS (that is the shape of the real hazard: an
+    # already-present archive subdirectory that is really a link elsewhere)
+    inside = comms / "orchestrator" / "_archive" / "gen-a" / "read"
+    inside.mkdir(parents=True, exist_ok=True)
+    real_resolve = mig._resolve
+
+    def _fake(p):
+        p = Path(p)
+        if p == inside or inside in p.parents:
+            return escaped / p.name
+        return real_resolve(p)
+
+    mig._resolve = _fake
+    try:
+        before = _snapshot(comms)
+        rc = _run(comms, "--execute")
+    finally:
+        mig._resolve = real_resolve
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "outside" in err.lower()
+    # refused PRE-FLIGHT: nothing moved, and no placeholder was even reserved
+    assert _snapshot(comms) == before
+    assert not escaped.exists()
+
+
+def test_escape_appearing_after_preflight_is_caught_at_move_time(comms, tmp_path,
+                                                                 capsys):
+    """Defense in depth: the belt inside the move loop catches a late escape.
+
+    The pre-flight judges the nearest EXISTING ancestor, so a reparse point that
+    materialises afterwards (or deeper than anything that existed at check time)
+    must still be refused before the message is handed over.
+    """
+    _seed_gen(comms, "gen-a", read=("m.md",))
+    escaped = tmp_path / "escaped"
+    doomed = comms / "orchestrator" / "_archive" / "gen-a" / "read" / "m.md"
+    real_within = mig._within
+    mig._within = lambda parent, child: (False if Path(child) == doomed
+                                         else real_within(parent, child))
+    try:
+        rc = _run(comms, "--execute")
+    finally:
+        mig._within = real_within
+    assert rc == 1
+    assert "escaped the tree at move time" in capsys.readouterr().err
+    # the message stayed put and no empty placeholder survived
+    assert (comms / "orchestrator" / "gen-a" / "read" / "m.md").read_text(
+        encoding="utf-8") == "body of m.md\n"
+    assert not doomed.exists()
+    assert not escaped.exists()
+
+
+def test_symlinked_orchestrator_root_itself_is_refused(comms, tmp_path, capsys):
+    _seed_gen(comms, "gen-a", read=("m.md",))
+    orch = comms / "orchestrator"
+    real_resolve = mig._resolve
+    mig._resolve = lambda p: (tmp_path / "elsewhere"
+                              if Path(p) == orch else real_resolve(p))
+    try:
+        before = _snapshot(comms)
+        rc = _run(comms, "--execute")
+    finally:
+        mig._resolve = real_resolve
+    assert rc == 1
+    assert "outside" in capsys.readouterr().err.lower()
+    assert _snapshot(comms) == before
+
+
+def test_within_is_fail_closed_on_a_resolve_error(comms):
+    real_resolve = mig._resolve
+    mig._resolve = lambda p: (_ for _ in ()).throw(OSError("nope"))
+    try:
+        assert mig._within(comms, comms / "orchestrator") is False
+    finally:
+        mig._resolve = real_resolve
+
+
 # --- idempotence: a second execute has nothing left to do ------------------
 
 def test_second_execute_is_a_noop(comms, capsys):

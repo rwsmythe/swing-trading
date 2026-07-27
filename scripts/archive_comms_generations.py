@@ -140,6 +140,51 @@ def _reserve_dest(dest: Path) -> Path:
     raise AssertionError("unreachable: _candidate_names is infinite")
 
 
+def _resolve(path: Path) -> Path:
+    """Fully resolve path (following symlinks / junctions).
+
+    A module-level seam so containment can be exercised without the privileges
+    a real symlink needs on Windows.
+    """
+    return Path(path).resolve()
+
+
+def _within(parent: Path, child: Path) -> bool:
+    """True iff child RESOLVES to a path contained in parent (both resolved).
+
+    The structural containment guarantee, and the reason it exists ALONGSIDE
+    the symlink enumeration: enumerating links only catches the ones you thought
+    to look at. A link nested inside the archive write path (say
+    ``_archive/<sid>/read -> /elsewhere``) is not a direct child of
+    ``comms/orchestrator/``, so no enumeration of that directory sees it -- yet
+    the message lands outside the tree and the sha256 check reads it back
+    through the link and prints VERIFIED. Resolving both ends catches the whole
+    class by construction. Any resolve/comparison error is treated as NOT
+    contained (fail-closed).
+    """
+    try:
+        _resolve(child).relative_to(_resolve(parent))
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _nearest_existing(path: Path) -> Path:
+    """The closest ancestor of path that exists (path itself if it does).
+
+    Containment must be judged on something that is actually ON DISK: a
+    not-yet-created destination resolves to a lexical path, but its existing
+    ancestor is where a reparse point would actually live.
+    """
+    current = Path(path)
+    while not current.exists():
+        parent = current.parent
+        if parent == current:
+            return current
+        current = parent
+    return current
+
+
 def _is_symlink(path: Path) -> bool:
     """Whether path is a symlink / reparse point (indirected for testability).
 
@@ -289,7 +334,17 @@ def run(comms_root: Path, live_session: str | None, execute: bool,
               "be a plain session_id path segment. Nothing was moved.", file=err)
         return 1
 
-    offenders = _symlink_offenders(Path(comms_root) / "orchestrator")
+    orchestrator_dir = Path(comms_root) / "orchestrator"
+    if orchestrator_dir.exists() and (_is_symlink(orchestrator_dir)
+                                      or not _within(comms_root,
+                                                     orchestrator_dir)):
+        print(f"error: refusing to migrate -- {_rel(orchestrator_dir, comms_root)}"
+              " resolves OUTSIDE the mailbox root (symlink/junction); every "
+              "destination this migration writes would land outside the tree "
+              "it reports. Nothing was moved.", file=err)
+        return 1
+
+    offenders = _symlink_offenders(orchestrator_dir)
     if offenders:
         print("error: refusing to migrate -- symlink(s) under "
               "comms/orchestrator/ would be relocated as pointers, not as "
@@ -307,6 +362,21 @@ def run(comms_root: Path, live_session: str | None, execute: bool,
               f"directory under {_rel(plan.orchestrator_dir, comms_root)}/ "
               f"(found: {', '.join(plan.generations) or 'none'}). Nothing was "
               "moved.", file=err)
+        return 1
+
+    # Structural containment: every planned destination must resolve INSIDE
+    # comms/orchestrator/. Judged on the nearest EXISTING ancestor, because that
+    # is where a reparse point actually lives; catches a link nested anywhere in
+    # the archive write path, which no enumeration of the top level can see.
+    escaping = [dest for _src, dest, _kind in plan.moves
+                if not _within(orchestrator_dir, _nearest_existing(dest))]
+    if escaping:
+        print("error: refusing to migrate -- planned destination(s) resolve "
+              "OUTSIDE comms/orchestrator/ (a symlink/junction somewhere in the "
+              "write path): "
+              + ", ".join(_rel(p, comms_root) for p in sorted(set(escaping)))
+              + ". The archive would verify green while the history lived "
+                "elsewhere. Nothing was moved.", file=err)
         return 1
 
     header = "EXECUTE" if execute else "DRY RUN"
@@ -348,6 +418,15 @@ def run(comms_root: Path, live_session: str | None, execute: bool,
             print(f"  note: {_rel(planned, comms_root)} was taken at move time; "
                   f"used {_rel(dest, comms_root)} instead (nothing overwritten)",
                   file=out)
+        if not _within(orchestrator_dir, dest):
+            # Belt against a reparse point appearing after the pre-flight check.
+            with contextlib.suppress(OSError):
+                if dest.is_file() and dest.stat().st_size == 0:
+                    dest.unlink()
+            problems.append(f"destination escaped the tree at move time: "
+                            f"{_rel(dest, comms_root)}; the source was left in "
+                            "place")
+            break
         try:
             os.replace(str(src), str(dest))
         except OSError as exc:
