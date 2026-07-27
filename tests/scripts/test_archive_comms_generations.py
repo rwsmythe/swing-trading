@@ -449,6 +449,39 @@ def test_symlinked_orchestrator_root_itself_is_refused(comms, tmp_path, capsys):
     assert _snapshot(comms) == before
 
 
+def test_source_resolving_outside_the_tree_is_refused(comms, tmp_path, capsys):
+    """A generation dir that is really a junction elsewhere must be refused.
+
+    The destination guard only proves where output LANDS. Without a source
+    guard, a junction at `comms/orchestrator/gen-a` makes rglob plan OUTSIDE
+    files as sources and the run RELOCATES someone else's files into _archive.
+    Junctions matter specifically because `is_symlink()` does not report them on
+    Windows -- but `resolve()` follows them, so containment covers the case that
+    enumeration cannot.
+    """
+    _seed_gen(comms, "gen-a", read=("m.md",))
+    gen = comms / "orchestrator" / "gen-a"
+    real_resolve = mig._resolve
+
+    def _fake(p):
+        p = Path(p)
+        if p == gen or gen in p.parents:
+            return tmp_path / "outside" / p.name
+        return real_resolve(p)
+
+    mig._resolve = _fake
+    try:
+        before = _snapshot(comms)
+        rc = _run(comms, "--execute")
+    finally:
+        mig._resolve = real_resolve
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "outside" in err.lower()
+    assert "gen-a" in err
+    assert _snapshot(comms) == before  # refused BEFORE anything moved
+
+
 def test_within_is_fail_closed_on_a_resolve_error(comms):
     real_resolve = mig._resolve
     mig._resolve = lambda p: (_ for _ in ()).throw(OSError("nope"))

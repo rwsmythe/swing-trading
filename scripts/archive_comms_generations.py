@@ -22,6 +22,28 @@ The generation list is ENUMERATED FROM DISK at run time, never hard-coded: a
 hard-coded list orphans every generation it forgot (the brief named five; the
 live tree held eight) and rots further with each new session.
 
+CONTAINMENT BOUNDARY (what the guards are, and what they are NOT). Both ENDS of
+every move are containment-checked with resolved paths (``_within``): sources
+must resolve inside ``comms/orchestrator/`` (so a junction cannot make this tool
+relocate files that were never this mailbox's history) and destinations must too
+(so the archive cannot verify green while the history lives elsewhere). Resolve
+errors are FAIL-CLOSED, and ``resolve()`` follows Windows JUNCTIONS, which
+``is_symlink()`` does not report -- which is why containment, not link
+enumeration, is the guarantee here (the enumeration survives only as a more
+specific up-front message).
+
+It is deliberately NOT a defense against an ACTIVE CONCURRENT ADVERSARY. A
+process that swaps a validated directory for a junction BETWEEN the check and
+the move wins a TOCTOU race that no portable Python filesystem call can close
+(there is no atomic "move into a directory proven by handle"). That exclusion is
+the harness's ratified position on this exact race -- see the coa-chess
+role_mail CONTAINMENT BOUNDARY note: a junctioned comms tree is a SETUP
+MISCONFIGURATION, an actor able to create the junction ALREADY has the
+filesystem access any read would grant, the operator owns comms-tree setup, and
+the structural answer is an OS sandbox rather than another check in this tool.
+Context here is narrower still: a one-shot, operator-invoked, dry-run-first
+migration over a single-operator local tree.
+
 The LIVE generation (``--live-session <session_id>``) is NOT history. Its
 ``inbox/`` and ``read/`` messages are adopted into the singular
 ``comms/orchestrator/{inbox,read}`` so the current orchestrator keeps its own
@@ -364,10 +386,28 @@ def run(comms_root: Path, live_session: str | None, execute: bool,
               "moved.", file=err)
         return 1
 
-    # Structural containment: every planned destination must resolve INSIDE
-    # comms/orchestrator/. Judged on the nearest EXISTING ancestor, because that
-    # is where a reparse point actually lives; catches a link nested anywhere in
-    # the archive write path, which no enumeration of the top level can see.
+    # Structural containment, BOTH ENDS. Destinations must resolve INSIDE
+    # comms/orchestrator/ (judged on the nearest EXISTING ancestor, because that
+    # is where a reparse point actually lives) -- this catches a link nested
+    # anywhere in the archive write path, which no enumeration of the top level
+    # can see. SOURCES must resolve inside too: the destination guard only
+    # proves where output LANDS, so without this a junction at
+    # comms/orchestrator/<sid> would have rglob plan OUTSIDE files as sources
+    # and the run would RELOCATE files that were never ours. Sources also cover
+    # the case enumeration structurally cannot: `is_symlink()` does not report
+    # Windows JUNCTIONS, but `resolve()` follows them.
+    escaping_srcs = [gen for gen in (orchestrator_dir / sid
+                                     for sid in plan.generations)
+                     if not _within(orchestrator_dir, gen)]
+    escaping_srcs += [src for src, _dest, _kind in plan.moves
+                      if not _within(orchestrator_dir, src)]
+    if escaping_srcs:
+        print("error: refusing to migrate -- source path(s) resolve OUTSIDE "
+              "comms/orchestrator/ (a symlink/junction in the source tree): "
+              + ", ".join(_rel(p, comms_root) for p in sorted(set(escaping_srcs)))
+              + ". Those files are not this mailbox's history to relocate. "
+                "Nothing was moved.", file=err)
+        return 1
     escaping = [dest for _src, dest, _kind in plan.moves
                 if not _within(orchestrator_dir, _nearest_existing(dest))]
     if escaping:
