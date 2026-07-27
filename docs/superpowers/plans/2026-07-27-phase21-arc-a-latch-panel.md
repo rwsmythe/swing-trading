@@ -31,7 +31,7 @@ Every task's requirements implicitly include this section.
 
 ---
 
-## A. Derivation rulings (RD gates this section — brief §4 Gate 1)
+## A. Derivation rulings (RD-GATED and SETTLED — see §G for the gate record)
 
 Every number below was verified against the live DB (`~/swing-data/swing.db`, read-only) and the live archive on 2026-07-27.
 
@@ -65,19 +65,31 @@ Constraints 1 and 3 then collide: if every re-fire opens a new latch, the pivot 
 
 **The rule this plan adopts:**
 
-> A `bucket='aplus'` candidates row **OPENS a new latch only if** — processing that ticker's fires in `(action_session_date, run_ts, candidates.id)` order — **NEITHER** of the following holds for the ticker's most recent latch:
-> **(i) SAME-SESSION CLAUSE:** the latch's `anchor` equals this row's `action_session_date`; **or**
-> **(ii) STILL-LIVE CLAUSE:** the latch is still LIVE as of this row's `action_session_date`.
-> If either holds, the row is a **RE-CONFIRMATION**: recorded (its `candidate_id` joins the latch's candidate set), but the latch's identity, frozen pivot, frozen stop, and horizon anchor are **UNCHANGED**.
-> Within one `action_session_date`, the **EARLIEST** row by `(evaluation_runs.run_ts, candidates.id)` is the fire; later same-session rows are re-confirmations.
+Processing that ticker's fires in `(action_session_date, run_ts, candidates.id)` order, a `bucket='aplus'` row is dispositioned against the ticker's most recent latch:
+
+> **(i) SAME-SESSION CLAUSE — unconditional collapse.** If the latch's `anchor` equals this row's `action_session_date`, the row is a **RE-CONFIRMATION**, *even if that latch already cleared during that session*. A trading session is the atomic unit: it has ONE verdict.
+> **(ii) ARMED RE-FIRE — a TWO-BRANCH rule (RD gate ruling, §G.1 SETTLED).** Otherwise, if the latch is still LIVE as of this row's `action_session_date`:
+>   - **(a) SAME frozen pivot → RE-CONFIRMATION.** No new latch, no re-freeze; the re-confirmation count and session list grow. (SLDB run 12: identical 8.866 / 6.40.)
+>   - **(b) DIFFERENT pivot → SUPERSEDE.** The old latch **CLEARS with `clear_reason='superseded'`** (stamped at this row's `action_session_date`) and a **NEW latch ARMS** at the new frozen pivot / stop / horizon anchor.
+> **(iii)** Otherwise (the prior latch already cleared) the row opens a new latch normally.
+>
+> A **RE-CONFIRMATION** records its `candidate_id` and session into the latch's re-confirmation attributes; the latch's identity, frozen pivot, frozen stop, and horizon anchor are **UNCHANGED**. Within one `action_session_date`, the **EARLIEST** row by `(evaluation_runs.run_ts, candidates.id)` is the fire.
+
+**Pivot comparison for branch (a)/(b)** is at display precision — `round(new.pivot, 2) != round(latch.latched_pivot, 2)` — the price-precision-parity gotcha, so a sub-cent float artifact cannot fork a latch. The stop is NOT part of the branch test (the pivot is what the operator's resting order is keyed to); a same-pivot/different-stop re-fire is a re-confirmation, and the frozen stop stays the ORIGINAL one per constraint 1.
+
+**RD's reasoning, carried into the design (his ruling, §G.1):** the hazard constraint 1 guarded was never re-freezing *as such* — it was re-freezing **SILENTLY**, moving the operator's mandate under his resting order without telling him. A supersede is not silent: the old latch terminates with a **recorded** reason, the new one arms visibly, and **the panel must LOUDLY show that a resting order placed against the old level no longer matches the new mandate.** That last requirement is already structurally satisfied by §A.9's per-order attribution (Codex R1-2): an order matching a CLEARED latch fires `ORDER_RESTING_LATCH_CLEARED` *even when another latch on the same ticker is live* — which is exactly the post-supersede geometry. Severity for `superseded` is **`critical`**, alongside `invalidation`.
+
+**Ledger note (RD, to encode):** a superseded latch **still counts in the ledger denominators** — the operator did have a window in which to act — but its clear reason MUST stay distinguishable from a horizon expiry, so 21-B can separate *"unfilled because the setup re-based"* from *"unfilled because it went stale."* A distinct `clear_reason='superseded'` value delivers that by construction; it must not be collapsed into `horizon` at any layer.
+
+**Re-confirmations are SIGNAL, not noise (RD, to encode):** the count AND the session dates are recorded on the latch (`reconfirmation_candidate_ids`, `reconfirmation_sessions`, surfaced as `reconfirmation_count` on the row VM). A setup that re-confirms across sessions is plausibly stronger evidence, and that becomes testable once N grows. It must not fork the latch and it must not vanish.
 
 **Why clause (i) is separate from clause (ii)** (Codex R1-1). The still-live clause ALONE is not enough: a fill (or an invalidation close) that lands DURING session S clears the latch *as of S*, so a second evaluation run for the SAME session S would then see "not live" and open a SECOND latch — one mandate becoming two, with the duplicate `armed` for a position the operator already holds and firing a false `LATCH_ARMED_NO_RESTING_ORDER`. This is reachable: 30 action sessions in the corpus have more than one evaluation run (three of them have SIX), and while the 17:30 scheduled run always rolls to the NEXT session, a manual mid-session re-run still carries `action_session_date = S`. Clause (i) makes the SESSION the atomic unit — **at most one latch per `(ticker, action_session_date)` can ever be opened** — which is also the semantically correct reading (a session has ONE verdict) and needs no intraday timestamp. It strengthens rather than weakens the SLDB 9/10, YOU 31/32 and NVCR 94/95 cases: all three ARE the same-session case.
 
-**Justification against the settled latch semantics** (brief §0): the latch "clears ONLY on (a) FILL, (b) SETUP INVALIDATION, (c) HORIZON. **Bucket-label flicker NEVER clears it.**" A ticker that goes `aplus → watch → aplus` has flickered; treating the second `aplus` as a NEW latch would let flicker *reset* the latch, which is the same category of error the semantics forbid — it would move the frozen pivot and restart the horizon clock. A latch is a MANDATE; the mandate already exists; a second fire re-affirms it, it does not create a second mandate. Constraint 3's actual purpose ("concurrent/sequential latches on one ticker must never merge or overwrite") is fully preserved: VSTS @ 99 and VSTS @ 126 are separate latches because the first one CLEARED (filled by trade 17 on 2026-06-25) before the second fired. Constraint 1 is preserved exactly: the frozen values come from the OPENING fire's own row and are never rewritten.
+**Justification against the settled latch semantics** (brief §0): the latch "clears ONLY on (a) FILL, (b) SETUP INVALIDATION, (c) HORIZON. **Bucket-label flicker NEVER clears it.**" A ticker that goes `aplus → watch → aplus` has flickered; treating the second `aplus` as a NEW latch would let flicker *reset* the latch, which is the same category of error the semantics forbid — it would move the frozen pivot and restart the horizon clock. A latch is a MANDATE; the mandate already exists; a second fire re-affirms it, it does not create a second mandate. Constraint 3's actual purpose ("concurrent/sequential latches on one ticker must never merge or overwrite") is fully preserved: VSTS @ 99 and VSTS @ 126 are separate latches because the first one CLEARED (filled by trade 17 on 2026-06-25) before the second fired. Constraint 1 is preserved exactly under BOTH branches: a re-confirmation never rewrites the frozen values, and a supersede does not rewrite them either — it TERMINATES the old latch with a recorded reason and arms a new one carrying its own fire's values. No latch's frozen pivot ever changes.
 
 **Empirical note (honest):** on the current corpus the naive per-row rule produces the same *prices* (SLDB/YOU/NVCR re-fires are byte-identical), so this rule cannot be justified by a live price diff. It is justified structurally, and the SLDB 9/10/12 fixture fails a naive per-row implementation on **latch COUNT** (3 vs 1), which is a hard, discriminating assertion.
 
-**CONTESTED — do not execute Task 2 before this is settled.** RD is already on record taking the opposite position on clause (ii) for the FTRE geometry (`docs/rd-state.md:27`: *"a re-fire would open a NEW latch at the new pivot"*). See **§G.1.1** for the verbatim quote, the live numbers, and the zone-escape gap underneath it. Clause (i) is not contested.
+**SETTLED at RD's plan-stage gate** (§G.1). Clause (i) confirmed as written, including the Codex R1-1 refinement that it holds even if the latch cleared mid-session. Clause (ii) was replaced by the two-branch rule above: RD ruled that his 07-23 statement (*"a re-fire would open a NEW latch at the new pivot"*, `docs/rd-state.md:27`) was right about the OUTCOME for a re-based setup and wrong about the MECHANISM — re-firing is not the operative fact, a CHANGED PIVOT is.
 
 **Canonical surrogate key:** the OPENING fire's **`candidates.id`**. It is exact (`candidates` has `UNIQUE(evaluation_run_id, ticker)`), immutable (grep confirms zero `UPDATE candidates` / `DELETE FROM candidates` anywhere in `swing/`, `research/`, `scripts/`), and already an established FK target (`trades.candidate_id`, migration 0021). No `latches` registry table is needed now, and one remains cheaply backfillable later because the identity is stored EXACTLY, not by convention.
 
@@ -94,28 +106,60 @@ All prices come from the OPENING fire's own `candidates` row and NEVER a later r
 ### A.4 RULING 3 — horizon in SESSIONS (RD constraint 2) (**RD DECISION REQUIRED — see §G.2**)
 
 ```
-LATCH_HORIZON_SESSIONS = 20
+horizon_sessions    = latch_horizon_sessions(cfg)
 anchor              = fire_row.action_session_date          (the FIRE's evaluation_runs.action_session_date)
 sessions_elapsed(S) = sessions_behind(reference=S, candidate=anchor)   # swing/evaluation/dates.py:40
-horizon_expiry      = session_offset(anchor, LATCH_HORIZON_SESSIONS) # NEW additive helper, Task 2
-horizon_expired(S)  = sessions_elapsed(S) >= LATCH_HORIZON_SESSIONS    # inclusive-expire
-sessions_to_horizon = max(0, LATCH_HORIZON_SESSIONS - sessions_elapsed(S))
+horizon_sessions    = latch_horizon_sessions(cfg)   # == observe_max_pending_window_sessions == 30
+horizon_expiry      = session_offset(anchor, horizon_sessions)   # signed helper, Task 2
+horizon_expired(S)  = sessions_elapsed(S) >= horizon_sessions    # inclusive-expire
+sessions_to_horizon = max(0, horizon_sessions - sessions_elapsed(S))
 ```
 
-**Why 20, why this anchor, why inclusive-expire — reproduced from RD's own live arithmetic.** `docs/rd-state.md:27` states FTRE's horizon is **2026-08-17**. With `anchor = 2026-07-20` (FTRE's `action_session_date`):
+**THE VALUE IS 30, BOUND AT THE CONFIG SOURCE (RD gate ruling, §G.2 SETTLED).** It is NOT hard-coded:
+
+```python
+# swing/latches/constants.py
+def latch_horizon_sessions(cfg) -> int:
+    """The latch's entry-mandate horizon, in NYSE sessions.
+
+    DERIVED, never hard-coded: the latch window MUST equal the shadow
+    engine's ENTRY window or the two systems disagree about whether a fire
+    was actionable -- a MANUFACTURED live-vs-shadow divergence, which is the
+    exact FTRE-class defect this arc exists to eliminate. The shadow's entry
+    search runs over whatever forward bars the temporal log holds, and those
+    bars are bounded by observe_max_pending_window_sessions. Binding here at
+    the source means a future change to the observe window cannot silently
+    break parity.
+
+    (The shadow engine's own HORIZON_SESSIONS = 126, research/harness/
+    shadow_expectancy/constants.py:11, is the TRADE-walk horizon -- how long a
+    position is followed AFTER entry. It is NOT the entry window and must not
+    be used here.)
+    """
+    return int(cfg.pipeline.observe_max_pending_window_sessions)
+
+
+# Mirror of the PipelineConfig default, for the pure derivation's signature
+# default only. Drift-pinned by a test against PipelineConfig().
+DEFAULT_LATCH_HORIZON_SESSIONS = 30
+```
+
+The pure `derive_latches` takes `horizon_sessions: int` (defaulting to `DEFAULT_LATCH_HORIZON_SESSIONS`); the **reader always passes `latch_horizon_sessions(cfg)`** so production tracks the live config, never the mirror.
+
+**Why 30 and not 20.** At 20, sessions 21-30 become a window in which the SHADOW can still enter and LIVE has no mandate — a manufactured divergence of exactly the kind this arc exists to remove. Verified chain: `research/harness/shadow_expectancy/constants.py:11` `HORIZON_SESSIONS = 126` is the trade-walk horizon; the entry search (`run.py:170`) scans whatever forward bars exist; those bars are bounded by `cfg.pipeline.observe_max_pending_window_sessions = 30` (`swing/config.py:221`, and the observe state machine expires at `sessions_since_detection >= max_pending`, `runner.py:2960`). So the shadow's effective ENTRY window is **30** — neither 20 nor 126.
+
+**Anchor + boundary (both CONFIRMED at the gate).** With `anchor = 2026-07-20` (FTRE's `action_session_date`), horizon 30:
 
 | basis | result |
 |---|---|
-| **20 NYSE sessions forward from the action session** | **2026-08-17** — matches RD |
-| 20 NYSE sessions from `data_asof_date` (2026-07-17) | 2026-08-14 |
-| 30 NYSE sessions (`cfg.pipeline.observe_max_pending_window_sessions`) | 2026-08-31 |
-| 20 calendar days | 2026-08-09 |
+| **30 NYSE sessions forward from the action session** | **2026-08-31** — the ruled horizon |
+| 30 NYSE sessions from `data_asof_date` (2026-07-17) | 2026-08-28 |
+| 30 calendar days | 2026-08-19 |
+| *(superseded)* 20 NYSE sessions | *2026-08-17* |
 
-So the anchor is the **action session** (correct semantically: the first session on which the GTC order can work) and the value is **20**. `sessions_elapsed(2026-08-17) = 20`, so inclusive-expire makes 2026-08-17 the first DEAD session, i.e. "the horizon date" — RD's phrasing.
+The anchor is the **action session** (semantically: the first session on which the GTC order can work). `sessions_elapsed(2026-08-31) = 30`, so inclusive-expire makes 2026-08-31 the first DEAD session. Inclusive-expire matches the in-tree precedent it is now parity-bound to: `swing/pipeline/runner.py:2960` (`if sessions_since_detection >= max_pending: return "expired", "time_exit"` — "the boundary is inclusive (>=), so a non-triggering bar AT max_pending expires").
 
-Inclusive-expire also matches the in-tree precedent: `swing/pipeline/runner.py:2960` (`if sessions_since_detection >= max_pending: return "expired", "time_exit"` — "the boundary is inclusive (>=), so a non-triggering bar AT max_pending expires").
-
-**FLAGGED PREMISE MISMATCH:** the brief §0 calls 20 "the shadow-parity bound". The pipeline's shadow entry window is **`observe_max_pending_window_sessions = 30`** (`swing/config.py:221`), not 20. The "20" is corroborated instead by `docs/research-director-context.md:146` — *"longest window 20 sessions (engine horizon cap)"* — the OBSERVED maturity of the log, plus RD's own 08-17 arithmetic. This plan implements **20** as a single named constant `LATCH_HORIZON_SESSIONS` in `swing/latches/constants.py` (one place to change) and routes the value to RD's gate. See §G.2.
+**Provenance of the corrected value (RD, at the gate).** The brief's "~20 sessions, the shadow-parity bound" was RD's own untraced invention; he then recorded FTRE's horizon as 2026-08-17 *derived from that invention*. This plan's round-1 §A.4 back-solved 20 from that recorded date and cited his doc as evidence — which RD identified as a **CIRCULAR citation, his unverified assertion becoming the evidence for itself**. The live-code check (`observe_max_pending_window_sessions = 30`) is what broke the loop. **FTRE's horizon is 2026-08-31, not 2026-08-17.**
 
 ### A.5 RULING 4 — invalidation on CLOSES (RD constraint 6)
 
@@ -123,7 +167,14 @@ The latch invalidates on the **first completed daily bar at-or-after the anchor 
 
 Bars come from the **on-disk archive only** via `resolve_ohlcv_window(ticker, start=<anchor ISO>, end=<derivation_session ISO>, cache_dir=cfg.paths.prices_cache_dir)` (`swing/data/ohlcv_archive.py:971`) — a pure two-provider parquet read with **zero network I/O**, the same reader the pipeline observe step uses (`swing/pipeline/runner.py:3011`). Verified present for the live subjects: `FTRE.{yfinance,schwab_api}.parquet` (778/767 rows through 2026-07-24), `VSTS.*` (708/704 rows). Archives are warmed nightly for every screened ticker (`swing/pipeline/runner.py:1459` — `warm_set = [benchmark, *candidate_tickers, *universe_tickers]`).
 
-**"base break" is OUT OF V1 SCOPE.** The brief §0 says invalidation is "close below the fire-time initial-stop / base break". V1 implements the close-below-initial-stop half only; the structural base-break level is not carried on `candidates` (it lives in `pattern_detection_events.structural_anchors_json`, a different id space with no rows before mid-June). Banked in §H.
+**"base break" is OUT OF V1 SCOPE — and MUST BE LABELLED AS SUCH (RD gate ruling, §G.5 SETTLED with a labelling condition).** The brief §0 says invalidation is "close below the fire-time initial-stop / base break". V1 implements the close-below-initial-stop half only; the structural base-break level is not carried on `candidates` (it lives in `pattern_detection_events.structural_anchors_json`, a different id space whose rows begin 2026-06-05 — so base-break is UNCOMPUTABLE for the April/May fires regardless, see §A.8).
+
+RD confirmed the V1 narrowing **on the condition that the panel and the ledger do not present themselves as implementing full invalidation**, so that a future reader (including a future RD) cannot assume base-break coverage that is not there. Therefore:
+
+- `LatchRowVM.invalidation_label` renders **`invalidation (stop level only)`** wherever the frozen level is shown — never a bare "invalidation".
+- The panel carries a one-line footnote: `Invalidation is evaluated on closes below the fire-time stop level ONLY. Structural base-break is not implemented in V1.`
+- The migration header comment records the same narrowing, so the ledger's own schema documents it.
+- A test asserts the rendered page contains the stop-level-only qualifier — a bare "invalidation" label with no qualifier FAILS.
 
 ### A.6 RULING 5 — latch-specific fill detection (RD constraint 4)
 
@@ -151,11 +202,13 @@ Terminal states are resolved by a forward walk over that eligible set, session b
 
 1. **`fill`** — a mandate that was consummated is terminal in the strongest sense; it wins even if the same bar closed below the stop (that becomes the TRADE's problem, not the latch's).
 2. **`invalidation`** — close below the frozen stop.
-3. **`horizon`** — `sessions_elapsed >= 20`.
+3. **`horizon`** — `sessions_elapsed >= horizon_sessions`.
 
-(This deliberately differs from `_advance_status`'s invalidation-first precedence, which has no fill concept. Both orderings are tested.)
+(This deliberately differs from `_advance_status`'s invalidation-first precedence, which has no fill concept. Both orderings are tested. RD confirmed at the gate, §G.4: *facts beat signals beat deadlines* — if a fill and an invalidating close land in one session the position EXISTS, the latch's job ended at the fill, and what happens after is the trade's stop discipline.)
 
-Each latch records `clear_reason` ∈ `{fill, invalidation, horizon}` **and** `clear_session` (ISO date) **and**, for fills, `clear_trade_id` + `fill_link_basis`. State mapping:
+**`superseded` is the FOURTH clear reason** (RD gate ruling, §G.1 SETTLED). It is NOT produced by the bar walk — it is stamped by the §A.2 branch-(b) fold when a re-fire arrives with a DIFFERENT frozen pivot while the latch is armed. `clear_session` is that re-fire's `action_session_date`. It is deliberately DISTINGUISHABLE from `horizon` so 21-B can separate *"unfilled because the setup re-based"* from *"unfilled because it went stale"*, and a superseded latch still counts in the ledger denominators (the operator did have a window in which to act).
+
+Each latch records `clear_reason` in `{fill, invalidation, horizon, superseded}` **and** `clear_session` (ISO date) **and**, for fills, `clear_trade_id` + `fill_link_basis`. State mapping:
 
 | state | meaning |
 |---|---|
@@ -164,6 +217,21 @@ Each latch records `clear_reason` ∈ `{fill, invalidation, horizon}` **and** `c
 | `filled` | cleared, `clear_reason='fill'` |
 | `invalidated` | cleared, `clear_reason='invalidation'` |
 | `horizon_expired` | cleared, `clear_reason='horizon'` |
+| `superseded` | cleared, `clear_reason='superseded'` — a re-fire re-based the setup |
+
+### A.7.1 ZONE ESCAPE IS A STATE ATTRIBUTE, NOT A TERMINAL STATE (RD gate ruling, §G.1 SETTLED)
+
+There is **NO fifth clear condition.** A latch whose current price has risen above its frozen zone cap stays **`armed`**; the escape is rendered as an ATTRIBUTE of that armed state:
+
+> **ARMED — OUT OF ZONE** *(current price above the cap; fills only on a pullback; expires `<horizon_expiry>`)*
+
+RD's three reasons, recorded because they constrain any future change here:
+
+1. **The resting order remains VALID.** FTRE's 18.89 limit is live right now and fills on a pullback. Clearing the latch would desynchronize the panel from a real broker order — precisely what tier-1 order-awareness exists to PREVENT. (Under §A.9's per-order attribution, clearing would also flip that live, correct order into a false `ORDER_RESTING_LATCH_CLEARED` alarm.)
+2. **"Price will not come back" is unknowable**, and any rule that guesses it is wrong in the expensive direction.
+3. **The horizon already bounds the zombie case** — an out-of-zone latch dies at `horizon_expiry` like any other.
+
+Implementation: this is entirely a RENDER concern. `zone_position == "above_zone"` (§ Task 6) composes with `state == "armed"` into the label above. **No new clear reason, no new state, no change to the terminal walk.**
 
 ### A.8 RULING 7 — BOTH identities stored (RD finding 4)
 
@@ -174,7 +242,18 @@ Each latch records `clear_reason` ∈ `{fill, invalidation, horizon}` **and** `c
 
 Verified resolvable and 1:1: `SELECT evaluation_run_id, COUNT(*) FROM pipeline_runs GROUP BY 1 HAVING COUNT(*)>1` returns **zero rows**; runs 99→112, 103→116, 121→135, 126→140. Verified that the detection identity is the shadow artifact's real join key: `research/harness/shadow_expectancy/run.py:217` emits `{"ticker": ticker, "detection_date": detection_date, "run_id": pipeline_run_id, ...}` where `detection_date` comes from `pattern_detection_events.detection_date` (== the run's `action_session_date` for `source='pipeline'`, migration 0022 line 49). Verified the two id spaces genuinely collide on integers: `pipeline_runs.id = 126` has `action_session_date = 2026-07-08` while `evaluation_runs.id = 126` has `2026-07-27` — storing only one number is a live confusion trap.
 
-`pipeline_run_id` is **NULLABLE**: `SELECT COUNT(*) FROM pattern_detection_events WHERE ticker='SLDB'` returns **0** (the temporal log postdates the April fires), and `pipeline_runs.evaluation_run_id` is NULL for the early runs. Absent linkage degrades, never raises.
+**NULL-TWIN TOLERANCE IS THE NORMAL CASE, NOT AN EXCEPTION (RD gate addition).** The latch corpus is BROADER than the shadow corpus and always will be:
+
+| corpus | source | earliest | latest |
+|---|---|---|---|
+| latch fires | `candidates` / `evaluation_runs` | **2026-04-20** | 2026-07-27 |
+| shadow twins | `pattern_detection_events` | **2026-06-05** | 2026-07-27 |
+
+So the April/May fires — **SLDB (runs 9, 10, 12) and YOU (runs 31, 32), five of the eleven A+ fires ever** — have ZERO detection rows (verified per-ticker: SLDB 0, YOU 0; NVCR 10, VSTS 85, AMN 105, FTRE 80) and **never will**. A latch ledger row MUST therefore tolerate a NULL twin rather than assuming one exists: `pipeline_run_id` is NULLABLE, a missing twin renders `-`, and NO reader may treat twin-absence as an error or as a reason to drop the latch.
+
+This **compounds with §G.5**: those same fires have no `structural_anchors_json`, so base-break invalidation is uncomputable for them regardless of scope decisions. Both facts point the same way — the ledger must be honest about a partially-observed past rather than pretending uniform coverage.
+
+`pipeline_runs.evaluation_run_id` is likewise NULL for the early runs. Absent linkage degrades, never raises.
 
 ### A.9 RULING 8 — the two order alarms
 
@@ -205,7 +284,7 @@ match_latch(order) = the latch on order.ticker whose FROZEN prices the order mat
 ```
 
 - **`LATCH_ARMED_NO_RESTING_ORDER`** (the FTRE mode, severity `critical`): a LIVE latch whose ticker has **ZERO** resting BUY orders. Deliberately keyed on ticker-level absence, not on `match_latch`: an order placed at a slightly wrong price must surface through the agreement flags, not through a "no order" alarm that is factually false.
-- **`ORDER_RESTING_LATCH_CLEARED`** (the stale-order hazard): fires when a resting BUY order's `match_latch` is a **CLEARED** latch — **even when another latch on the same ticker is LIVE.** Attributed to that specific cleared latch. Severity `critical` when its `clear_reason == 'invalidation'` (the manual-cancel duty), `warning` otherwise.
+- **`ORDER_RESTING_LATCH_CLEARED`** (the stale-order hazard): fires when a resting BUY order's `match_latch` is a **CLEARED** latch — **even when another latch on the same ticker is LIVE.** Attributed to that specific cleared latch. Severity `critical` when its `clear_reason` is `invalidation` (the manual-cancel duty) **or `superseded`** (an order resting at a level the setup has re-based away from, while a NEW mandate exists at a different level — RD's "the panel must LOUDLY show that any resting order placed against the old level no longer matches the new mandate"); `warning` otherwise. **The post-supersede geometry is exactly the case the per-order rule was built for:** the ticker has a live latch AND a cleared one, and a ticker-level rule would have gone silent.
 - **Unmatched resting order:** `match_latch` is `None` (no latch's frozen prices match, or the order carries no usable price). If the ticker HAS a live latch, the order is reported against it with `order_stop_agrees=False` / `order_limit_agrees=False` and no alarm (it is a mispriced order for a live mandate, not a stale one). If the ticker has NO live latch, `ORDER_RESTING_LATCH_CLEARED` fires attributed to the ticker's most recently cleared latch, or `latch_candidate_id=None` when the ticker has no latch at all.
 - **Indeterminate short-circuit:** if any INDETERMINATE-status BUY order matches the ticker, neither alarm fires for that ticker; the panel shows `order status indeterminate - verify at the broker`. A false all-clear and a false alarm are both worse than an honest "unknown".
 - **Agreement check:** `order_stop_agrees = round(order.stop_price, 2) == round(latched_pivot, 2)`; `order_limit_agrees = round(order.limit_price, 2) == round(zone_cap, 2)`. Rounding to the DISPLAY precision, per the price-precision-parity gotcha. `None` on either side → `agrees = None` (unknown), never `False`.
@@ -237,7 +316,7 @@ The whole panel builder is additionally wrapped in the `build_tool_health_vm` de
 | `swing/data/migrations/0032_latch_view_telemetry.sql` | the ONE new table + indexes + `schema_version` 31→32 |
 | `swing/data/repos/latch_view_events.py` | `record_view` (SELECT-then-UPDATE-or-INSERT), `list_views_for_session`, `get_view` |
 | `swing/latches/__init__.py` | package marker + public re-exports |
-| `swing/latches/constants.py` | `LATCH_HORIZON_SESSIONS`, `LATCH_ZONE_CAP_PCT`, `LATCH_STATES`, `LATCH_CLEAR_REASONS`, `LATCH_DEGRADED_REASONS`, `RESTING_ORDER_STATUSES`, `INDETERMINATE_ORDER_STATUSES`, `LATCH_PANEL_LOOKBACK_SESSIONS`, `BUY_INSTRUCTIONS` |
+| `swing/latches/constants.py` | `latch_horizon_sessions(cfg)` + `DEFAULT_LATCH_HORIZON_SESSIONS`, `LATCH_ZONE_CAP_PCT`, `LATCH_STATES`, `LATCH_CLEAR_REASONS`, `LATCH_DEGRADED_REASONS`, `RESTING_ORDER_STATUSES`, `INDETERMINATE_ORDER_STATUSES`, `LATCH_PANEL_LOOKBACK_SESSIONS`, `BUY_INSTRUCTIONS` |
 | `swing/latches/identity.py` | `LatchIdentity` (frozen dataclass, both id spaces, validators) |
 | `swing/latches/models.py` | `FireRow`, `DailyBar`, `EntryRecord`, `RestingOrder`, `Latch`, `DegradedFire`, `LatchDerivation`, `LatchOrderJoin`, `OrderAlarm` |
 | `swing/latches/service.py` | `derive_latches(...)` — the PURE fold (open-latch rule + terminal resolution) |
@@ -256,7 +335,7 @@ The whole panel builder is additionally wrapped in the `build_tool_health_vm` de
 | path | change |
 |---|---|
 | `swing/data/db.py` | `EXPECTED_SCHEMA_VERSION` 31→32; `PHASE21_ARC_A_PRE_MIGRATION_EXPECTED_TABLES`; `_create_pre_phase21_arc_a_migration_backup`; `_phase21_arc_a_backup_gate`; wire the gate into `run_migrations` |
-| `swing/data/models.py` | `_LATCH_VIEW_STATES` frozenset + `LatchViewEvent` dataclass with `__post_init__` |
+| `swing/data/models.py` | `LatchViewEvent` dataclass + `__post_init__`; `_LATCH_VIEW_STATES` is an IMPORT of `swing.latches.constants.LATCH_STATES` (single declaration, no copy) |
 | `swing/evaluation/dates.py` | **ADD** `session_offset(reference, n)` (purely additive; no existing function touched — the ratified 18-E `sessions_behind` precedent) |
 | `swing/integrations/schwab/models.py` | **ADD** tail-appended optional `stop_price: float | None = None` on `SchwabOrderResponse` + its validator |
 | `swing/integrations/schwab/mappers.py` | populate `stop_price` from `stopPrice`; `price` semantics UNCHANGED |
@@ -304,9 +383,11 @@ CREATE TABLE latch_view_events (
     latch_state_at_last_view  TEXT NOT NULL,
 
     CHECK (latch_state_at_first_view IN
-        ('armed','order_resting','filled','invalidated','horizon_expired')),
+        ('armed','order_resting','filled','invalidated','horizon_expired',
+         'superseded')),
     CHECK (latch_state_at_last_view IN
-        ('armed','order_resting','filled','invalidated','horizon_expired')),
+        ('armed','order_resting','filled','invalidated','horizon_expired',
+         'superseded')),
     CHECK (view_count >= 1),
     CHECK (evaluation_run_id > 0),
     CHECK (length(trim(ticker)) > 0),
@@ -401,9 +482,9 @@ Returns an HTML fragment with `200` (the `POST /prices/refresh` + reconcile-frag
 **Interfaces:**
 - Consumes: nothing (first task).
 - Produces:
-  - `swing.latches.constants.LATCH_STATES: frozenset[str]`, `LATCH_CLEAR_REASONS: frozenset[str]`, `LATCH_HORIZON_SESSIONS: int`, `LATCH_ZONE_CAP_PCT: float`, `LATCH_PANEL_LOOKBACK_SESSIONS: int`, `LATCH_DEGRADED_REASONS: frozenset[str]`, `RESTING_ORDER_STATUSES`, `INDETERMINATE_ORDER_STATUSES`, `BUY_INSTRUCTIONS`
+  - `swing.latches.constants.LATCH_STATES: frozenset[str]`, `LATCH_CLEAR_REASONS: frozenset[str]`, `latch_horizon_sessions(cfg) -> int`, `DEFAULT_LATCH_HORIZON_SESSIONS: int`, `LATCH_ZONE_CAP_PCT: float`, `LATCH_PANEL_LOOKBACK_SESSIONS: int`, `LATCH_DEGRADED_REASONS: frozenset[str]`, `RESTING_ORDER_STATUSES`, `INDETERMINATE_ORDER_STATUSES`, `BUY_INSTRUCTIONS`
   - `swing.latches.identity.LatchIdentity(candidate_id: int, evaluation_run_id: int, ticker: str, detection_date: str, pipeline_run_id: int | None)`; `LATCH_IDENTITY_COLUMNS: tuple[str, ...]`
-  - `swing.data.models.LatchViewEvent(...)`
+  - `swing.data.models.LatchViewEvent(...)` + `_LATCH_VIEW_STATES` (an IMPORT of `swing.latches.constants.LATCH_STATES`, not a copy)
   - `swing.data.repos.latch_view_events.record_view(conn, *, identity, view_session_date, viewed_ts, latch_state) -> int`, `list_views_for_session(conn, *, view_session_date) -> list[LatchViewEvent]`, `get_view(conn, *, evaluation_run_id, ticker, view_session_date) -> LatchViewEvent | None`
 
 - [ ] **Step 1: Write the failing tests**
@@ -416,10 +497,11 @@ from __future__ import annotations
 import pytest
 
 from swing.latches.constants import (
+    DEFAULT_LATCH_HORIZON_SESSIONS,
     LATCH_CLEAR_REASONS,
-    LATCH_HORIZON_SESSIONS,
     LATCH_STATES,
     LATCH_ZONE_CAP_PCT,
+    latch_horizon_sessions,
 )
 from swing.latches.identity import LATCH_IDENTITY_COLUMNS, LatchIdentity
 
@@ -473,11 +555,39 @@ def test_identity_column_contract_is_the_five_shared_columns():
 
 
 def test_locked_constants():
-    assert LATCH_HORIZON_SESSIONS == 20
     assert LATCH_ZONE_CAP_PCT == 3.0
-    assert LATCH_STATES == frozenset(
-        {"armed", "order_resting", "filled", "invalidated", "horizon_expired"})
-    assert LATCH_CLEAR_REASONS == frozenset({"fill", "invalidation", "horizon"})
+    assert LATCH_STATES == frozenset({
+        "armed", "order_resting", "filled", "invalidated", "horizon_expired",
+        "superseded"})
+    assert LATCH_CLEAR_REASONS == frozenset({
+        "fill", "invalidation", "horizon", "superseded"})
+
+
+def test_horizon_is_derived_from_the_observe_window_not_hard_coded():
+    """RD gate ruling (section A.4): the latch horizon MUST track the shadow
+    engine's ENTRY window. Binding at the source is what stops a future change
+    to the observe window from silently manufacturing a live-vs-shadow
+    divergence."""
+    from types import SimpleNamespace
+    cfg = SimpleNamespace(
+        pipeline=SimpleNamespace(observe_max_pending_window_sessions=44))
+    assert latch_horizon_sessions(cfg) == 44          # tracks cfg, not a literal
+
+
+def test_default_horizon_mirrors_the_pipeline_config_default():
+    """#11 mirror drift-pin. The module default exists only for the pure
+    derivation's signature; if PipelineConfig's default moves and this does
+    not, production and the tests would silently disagree."""
+    from swing.config import PipelineConfig
+    assert (DEFAULT_LATCH_HORIZON_SESSIONS
+            == PipelineConfig().observe_max_pending_window_sessions == 30)
+
+
+def test_zone_escape_is_not_a_clear_reason():
+    """Section A.7.1: zone escape is a RENDER attribute of the armed state.
+    A future contributor adding it here would clear latches whose resting
+    orders are still valid and would desynchronize the panel from the broker."""
+    assert not {r for r in LATCH_CLEAR_REASONS if "zone" in r}
 ```
 
 `tests/data/test_migration_0032.py`:
@@ -558,6 +668,75 @@ def test_state_check_rejects_an_unknown_state(tmp_path):
     try:
         with pytest.raises(sqlite3.IntegrityError):
             conn.execute(_INSERT, (cid, "2026-06-25", "2026-06-25", "bogus"))
+    finally:
+        conn.close()
+
+
+def test_state_check_accepts_every_value_in_LATCH_STATES(tmp_path):
+    """#11 mirror: the SQL CHECK enum and the Python frozenset must not
+    drift. `superseded` (the RD gate ruling) is the newest member."""
+    from swing.latches.constants import LATCH_STATES
+    conn, cid = _fresh(tmp_path)
+    try:
+        for i, state in enumerate(sorted(LATCH_STATES)):
+            with conn:
+                conn.execute(
+                    _INSERT, (cid, "2026-06-25", f"2026-06-{25 - i:02d}", state))
+        assert "superseded" in LATCH_STATES
+    finally:
+        conn.close()
+
+
+def test_the_state_enum_agrees_across_ALL_THREE_mirrors():
+    """The #11 discipline made mechanical (Codex R8-1). The migration CHECK,
+    the domain frozenset and the dataclass validator's set must be the SAME
+    set -- parsed from the migration SQL so a future widening that touches only
+    one of the three FAILS here.
+
+    This is the dangerous asymmetry direction: a CHECK that ACCEPTS a value the
+    Python validator REJECTS means the DB holds rows the read path cannot
+    hydrate."""
+    import re
+    from pathlib import Path
+
+    from swing.data.models import _LATCH_VIEW_STATES
+    from swing.latches.constants import LATCH_STATES
+
+    sql = (Path("swing/data/migrations/0032_latch_view_telemetry.sql")
+           .read_text(encoding="utf-8"))
+    block = re.search(
+        r"CHECK \(latch_state_at_first_view IN\s*\((.*?)\)\)", sql, re.S)
+    assert block, "could not locate the latch_state_at_first_view CHECK"
+    sql_states = set(re.findall(r"'([a-z_]+)'", block.group(1)))
+
+    assert sql_states == LATCH_STATES == set(_LATCH_VIEW_STATES)
+    assert "superseded" in sql_states
+
+
+def test_the_model_validator_is_the_SAME_object_not_a_copy():
+    """Drift is impossible by construction, not merely detected after the
+    fact: models.py IMPORTS the frozenset rather than re-declaring it."""
+    from swing.data.models import _LATCH_VIEW_STATES
+    from swing.latches.constants import LATCH_STATES
+    assert _LATCH_VIEW_STATES is LATCH_STATES
+
+
+def test_a_view_event_round_trips_with_superseded_in_both_state_fields(tmp_path):
+    """Codex R8-1: the schema accepts `superseded`, so the model MUST too --
+    otherwise a persisted row cannot be hydrated by the read path."""
+    from swing.data.repos.latch_view_events import get_view
+    conn, cid = _fresh(tmp_path)
+    try:
+        with conn:
+            conn.execute(
+                _INSERT, (cid, "2026-06-25", "2026-06-25", "superseded"))
+            conn.execute(
+                "UPDATE latch_view_events SET latch_state_at_last_view "
+                "= 'superseded'")
+        row = get_view(conn, evaluation_run_id=99, ticker="VSTS",
+                       view_session_date="2026-06-25")
+        assert row.latch_state_at_first_view == "superseded"
+        assert row.latch_state_at_last_view == "superseded"
     finally:
         conn.close()
 
@@ -784,11 +963,29 @@ Single source of truth for every value the latch derivation and the
 """
 from __future__ import annotations
 
-# RD constraint 2. Reproduces RD's own live FTRE arithmetic: a fire anchored on
-# action_session_date 2026-07-20 + 20 NYSE sessions == 2026-08-17, the horizon
-# recorded in docs/rd-state.md. NOT 30 (cfg.pipeline.observe_max_pending_window
-# _sessions) and NOT 20 calendar days (2026-08-09). See the plan section A.4.
-LATCH_HORIZON_SESSIONS = 20
+# RD constraint 2, RULED at the plan-stage gate: the horizon is DERIVED from
+# the shadow engine's ENTRY window, never hard-coded. See plan section A.4.
+def latch_horizon_sessions(cfg) -> int:
+    """The latch entry-mandate horizon in NYSE sessions.
+
+    Bound at the SOURCE so a future change to the observe window cannot
+    silently break live-vs-shadow parity. The shadow's entry search runs over
+    the temporal log's forward bars, which are bounded by
+    observe_max_pending_window_sessions (30). At a shorter latch horizon,
+    sessions beyond it become a window where the shadow can enter and live has
+    no mandate -- a MANUFACTURED divergence, the FTRE-class defect this arc
+    exists to eliminate.
+
+    NOT research/harness/shadow_expectancy/constants.py:11 HORIZON_SESSIONS
+    (126) -- that is the TRADE-walk horizon after entry, not the entry window.
+    """
+    return int(cfg.pipeline.observe_max_pending_window_sessions)
+
+
+# Mirror of the PipelineConfig default. Used ONLY as the pure derivation's
+# signature default; production always passes latch_horizon_sessions(cfg).
+# Drift-pinned against PipelineConfig() by a test (the #11 mirror discipline).
+DEFAULT_LATCH_HORIZON_SESSIONS = 30
 
 # The settled latch semantics: buy-zone limit cap = pivot x 1.03.
 LATCH_ZONE_CAP_PCT = 3.0
@@ -799,8 +996,18 @@ LATCH_PANEL_LOOKBACK_SESSIONS = 40
 
 LATCH_STATES = frozenset({
     "armed", "order_resting", "filled", "invalidated", "horizon_expired",
+    "superseded",
 })
-LATCH_CLEAR_REASONS = frozenset({"fill", "invalidation", "horizon"})
+# `superseded`: a re-fire arrived while armed carrying a DIFFERENT frozen
+# pivot, so this latch terminated and a new one armed at the new values. It is
+# deliberately DISTINCT from `horizon` so 21-B can separate "unfilled because
+# the setup re-based" from "unfilled because it went stale"; both still count
+# in the ledger denominators. NOT produced by the bar walk -- stamped by the
+# section A.2 fold. There is NO zone-escape clear reason: zone escape is a
+# RENDER attribute of the armed state (plan section A.7.1).
+LATCH_CLEAR_REASONS = frozenset({
+    "fill", "invalidation", "horizon", "superseded",
+})
 LATCH_FILL_LINK_BASES = frozenset({"candidate_id", "windowed"})
 LATCH_DEGRADED_REASONS = frozenset({
     "pivot_missing", "stop_missing", "stop_not_below_pivot", "bad_session_date",
@@ -913,9 +1120,13 @@ __all__ = ["LATCH_IDENTITY_COLUMNS", "LatchIdentity"]
 
 In `swing/data/models.py`, next to the other audit models:
 ```python
-_LATCH_VIEW_STATES = frozenset({
-    "armed", "order_resting", "filled", "invalidated", "horizon_expired",
-})
+# ONE declaration, IMPORTED -- never a re-declared copy. `swing/latches/
+# constants.py` is a zero-import pure-constants module and is the domain owner
+# of the latch state vocabulary, so this cannot cycle and cannot drift. (The
+# `_YFINANCE_VALID_SURFACES` shared-frozenset precedent, inverted to put the
+# home in the domain package.) A three-way test pins this against the migration
+# CHECK enum as well.
+from swing.latches.constants import LATCH_STATES as _LATCH_VIEW_STATES
 
 
 @dataclass(frozen=True)
@@ -1123,7 +1334,7 @@ copies the strict pre_version == target-1 clause shape verbatim."
   - `swing.latches.models.DailyBar(session: date, open: float, high: float, low: float, close: float)`
   - `swing.latches.models.EntryRecord(trade_id, ticker, entry_date, candidate_id, entry_price, shares)`
   - `swing.latches.models.Latch` / `DegradedFire` / `LatchDerivation`
-  - `swing.latches.service.derive_latches(*, fires, bars_by_ticker, entries_by_ticker, horizon_session, derivation_session, horizon_sessions=LATCH_HORIZON_SESSIONS) -> LatchDerivation`
+  - `swing.latches.service.derive_latches(*, fires, bars_by_ticker, entries_by_ticker, horizon_session, derivation_session, horizon_sessions=DEFAULT_LATCH_HORIZON_SESSIONS) -> LatchDerivation`
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1143,23 +1354,25 @@ def test_zero_returns_the_reference():
     assert session_offset(date(2026, 7, 20), 0) == date(2026, 7, 20)
 
 
-def test_ftre_horizon_reproduces_rds_live_arithmetic():
-    """RD recorded FTRE's horizon as 2026-08-17 (docs/rd-state.md). The fire's
-    action_session_date is 2026-07-20; 20 NYSE sessions forward == 2026-08-17.
-    A calendar-day walk gives 2026-08-09; a 30-session walk gives 2026-08-31."""
-    assert session_offset(date(2026, 7, 20), 20) == date(2026, 8, 17)
+def test_ftre_horizon_at_the_ruled_30_session_window():
+    """RD gate ruling: the horizon is 30 sessions (parity with the shadow
+    entry window), so FTRE's fire on 2026-07-20 expires 2026-08-31 -- NOT the
+    2026-08-17 he had recorded from the untraced ~20. A calendar walk gives
+    2026-08-19."""
     assert session_offset(date(2026, 7, 20), 30) == date(2026, 8, 31)
+    assert session_offset(date(2026, 7, 20), 20) == date(2026, 8, 17)   # superseded
 
 
 def test_skips_the_july_3_2026_holiday():
-    """2026-07-01 + 20 sessions == 2026-07-30 (not 2026-07-29): the observed
-    July-4 holiday and two weekends are excluded."""
-    assert session_offset(date(2026, 7, 1), 20) == date(2026, 7, 30)
+    """2026-07-01 + 30 sessions == 2026-08-13: the observed July-4 holiday and
+    the intervening weekends are excluded (a 30-CALENDAR-day walk gives
+    2026-07-31)."""
+    assert session_offset(date(2026, 7, 1), 30) == date(2026, 8, 13)
 
 
 def test_round_trips_with_sessions_behind():
-    for anchor, n in ((date(2026, 7, 20), 20), (date(2026, 7, 1), 20),
-                      (date(2026, 6, 25), 20), (date(2026, 7, 27), 20)):
+    for anchor, n in ((date(2026, 7, 20), 30), (date(2026, 7, 1), 30),
+                      (date(2026, 6, 25), 30), (date(2026, 7, 27), 30)):
         assert sessions_behind(session_offset(anchor, n), anchor) == n
 
 
@@ -1245,9 +1458,16 @@ def test_sldb_three_aplus_rows_produce_exactly_one_latch():
     assert latch.reconfirmation_candidate_ids == (102, 103)
 
 
-def test_reconfirmation_never_refreezes_a_drifted_pivot():
-    """The invisible-on-live-data bug: identical SLDB prices hide it, so the
-    test DRIFTS the re-fire. A per-row implementation freezes 9.90/7.10."""
+def test_a_DIFFERENT_pivot_refire_SUPERSEDES_rather_than_refreezing():
+    """RD gate ruling, section A.2 branch (b). A drifted re-fire must NOT
+    silently move the frozen pivot under the operator's resting order (the
+    constraint-1 hazard) and must NOT leave him holding a mandate the setup has
+    left behind (RD's 07-23 point). It TERMINATES the old latch with a RECORDED
+    reason and arms a new one.
+
+    Three implementations FAIL here: a per-row identity (2 latches but the old
+    one never cleared), a blanket re-confirmation (1 latch), and a silent
+    re-freeze (1 latch at 9.90)."""
     fires = [
         _fire(201, 9, "DRFT", 10.00, 8.00, "2026-04-22", "2026-04-21T21:00:00"),
         _fire(202, 12, "DRFT", 9.90, 7.10, "2026-04-24", "2026-04-23T21:00:00"),
@@ -1255,9 +1475,88 @@ def test_reconfirmation_never_refreezes_a_drifted_pivot():
     d = derive_latches(
         fires=fires, bars_by_ticker={"DRFT": []}, entries_by_ticker={},
         horizon_session=date(2026, 4, 27), derivation_session=date(2026, 4, 24))
+    assert len(d.latches) == 2
+    old_latch, new_latch = d.latches
+    # the OLD latch keeps its own frozen values and terminates visibly
+    assert old_latch.latched_pivot == 10.00
+    assert old_latch.latched_initial_stop == 8.00
+    assert old_latch.state == "superseded"
+    assert old_latch.clear_reason == "superseded"
+    assert old_latch.clear_session == date(2026, 4, 24)   # the re-fire's session
+    assert old_latch.reconfirmation_candidate_ids == ()
+    # the NEW latch arms at its OWN fire's values
+    assert new_latch.latched_pivot == 9.90
+    assert new_latch.latched_initial_stop == 7.10
+    assert new_latch.anchor == date(2026, 4, 24)
+    assert new_latch.state == "armed"
+
+
+def test_a_SAME_pivot_refire_reconfirms_and_does_not_supersede():
+    """Branch (a). SLDB run 12 is the live instance: identical 8.866 / 6.40
+    two sessions after the 04-22 fire. Forking here would fabricate a second
+    mandate for a setup that merely held."""
+    d = derive_latches(
+        fires=SLDB_FIRES, bars_by_ticker={"SLDB": []}, entries_by_ticker={},
+        horizon_session=date(2026, 4, 27), derivation_session=date(2026, 4, 24))
+    assert len(d.latches) == 1
+    assert d.latches[0].clear_reason is None
+    assert d.latches[0].state == "armed"
+
+
+def test_the_pivot_branch_test_uses_display_precision():
+    """A sub-cent float artifact must NOT fork a latch (price-precision
+    parity). 10.001 rounds to 10.00 -> branch (a)."""
+    fires = [
+        _fire(211, 9, "EPS", 10.00, 8.00, "2026-04-22", "2026-04-21T21:00:00"),
+        _fire(212, 12, "EPS", 10.001, 8.00, "2026-04-24", "2026-04-23T21:00:00"),
+    ]
+    d = derive_latches(
+        fires=fires, bars_by_ticker={"EPS": []}, entries_by_ticker={},
+        horizon_session=date(2026, 4, 27), derivation_session=date(2026, 4, 24))
     assert len(d.latches) == 1
     assert d.latches[0].latched_pivot == 10.00
+
+
+def test_a_same_pivot_different_stop_refire_reconfirms_and_keeps_the_first_stop():
+    """The pivot is what the resting order is keyed to, so only the pivot
+    drives the branch. Constraint 1 then keeps the ORIGINAL frozen stop."""
+    fires = [
+        _fire(221, 9, "STOP", 10.00, 8.00, "2026-04-22", "2026-04-21T21:00:00"),
+        _fire(222, 12, "STOP", 10.00, 8.50, "2026-04-24", "2026-04-23T21:00:00"),
+    ]
+    d = derive_latches(
+        fires=fires, bars_by_ticker={"STOP": []}, entries_by_ticker={},
+        horizon_session=date(2026, 4, 27), derivation_session=date(2026, 4, 24))
+    assert len(d.latches) == 1
     assert d.latches[0].latched_initial_stop == 8.00
+
+
+def test_reconfirmations_are_recorded_as_signal_not_discarded():
+    """RD gate: a setup that re-confirms across sessions is plausibly stronger
+    evidence. The count AND the session dates must survive."""
+    d = derive_latches(
+        fires=SLDB_FIRES, bars_by_ticker={"SLDB": []}, entries_by_ticker={},
+        horizon_session=date(2026, 4, 27), derivation_session=date(2026, 4, 24))
+    latch = d.latches[0]
+    assert latch.reconfirmation_candidate_ids == (102, 103)
+    assert latch.reconfirmation_sessions == ("2026-04-22", "2026-04-24")
+
+
+def test_a_same_session_refire_with_a_DIFFERENT_pivot_still_collapses():
+    """Clause (i) outranks the two-branch rule: a session has ONE verdict, so
+    a same-session re-run cannot supersede. (Live evidence: no A+ ticker has
+    ever had mixed buckets within a session, and within-session pivot
+    divergence is confined to genesis week.)"""
+    fires = [
+        _fire(231, 9, "SS", 10.00, 8.00, "2026-04-22", "2026-04-21T21:00:00"),
+        _fire(232, 10, "SS", 9.90, 7.10, "2026-04-22", "2026-04-22T07:15:00"),
+    ]
+    d = derive_latches(
+        fires=fires, bars_by_ticker={"SS": []}, entries_by_ticker={},
+        horizon_session=date(2026, 4, 23), derivation_session=date(2026, 4, 22))
+    assert len(d.latches) == 1
+    assert d.latches[0].latched_pivot == 10.00
+    assert d.latches[0].clear_reason is None
 
 
 def test_vsts_two_fires_separated_by_a_fill_are_two_latches():
@@ -1410,7 +1709,7 @@ def session_offset(reference: date, n: int) -> date:
     fallback: a calendar walk false-counts across weekends and holidays (the
     19-E ruling-A precedent).
 
-    Both directions are used: `+LATCH_HORIZON_SESSIONS` computes a latch's
+    Both directions are used: `+horizon_sessions` computes a latch's
     horizon expiry, and `-1` computes the derivation session (the last
     completed session) from an action-session anchor.
     """
@@ -1436,7 +1735,7 @@ Frozen dataclasses, all with `__post_init__` validation of the fields the deriva
 ```python
 def derive_latches(*, fires, bars_by_ticker, entries_by_ticker,
                    horizon_session, derivation_session,
-                   horizon_sessions=LATCH_HORIZON_SESSIONS) -> LatchDerivation:
+                   horizon_sessions=DEFAULT_LATCH_HORIZON_SESSIONS) -> LatchDerivation:
     """PURE. No DB, no network, no transactions (the classifier convention).
 
     `horizon_session`   -- the FORWARD anchor (action_session_for_run): answers
@@ -1576,46 +1875,59 @@ AMN_FIRE = FireRow(
     run_ts="2026-07-01T06:30:23", pipeline_run_id=116)
 
 
-def test_amn_is_still_armed_15_sessions_out_where_a_calendar_horizon_would_expire():
-    """AMN's real fire geometry with the fill withheld. On 2026-07-23:
-      sessions elapsed = 15  -> ARMED under a 20-SESSION horizon
-      calendar days    = 22  -> EXPIRED under a 20-CALENDAR-DAY horizon
+def test_amn_is_still_armed_where_a_calendar_horizon_would_expire():
+    """AMN's real fire geometry (2026-07-01) with the fill withheld. On
+    2026-07-31:
+      sessions elapsed = 21  -> ARMED under the ruled 30-SESSION horizon
+      calendar days    = 30  -> EXPIRED under a 30-CALENDAR-DAY horizon
     A calendar-day implementation FAILS this test."""
     d = derive_latches(
         fires=[AMN_FIRE], bars_by_ticker={"AMN": []}, entries_by_ticker={},
-        horizon_session=date(2026, 7, 23), derivation_session=date(2026, 7, 23))
+        horizon_session=date(2026, 7, 31), derivation_session=date(2026, 7, 31))
     latch = d.latches[0]
     assert latch.state == "armed"
-    assert latch.sessions_elapsed == 15
-    assert latch.sessions_to_horizon == 5
-    assert latch.horizon_expiry == date(2026, 7, 30)
+    assert latch.sessions_elapsed == 21
+    assert latch.sessions_to_horizon == 9
+    assert latch.horizon_expiry == date(2026, 8, 13)
 
 
-def test_horizon_expires_inclusively_on_the_20th_session():
+def test_horizon_expires_inclusively_on_the_30th_session():
     d = derive_latches(
         fires=[AMN_FIRE], bars_by_ticker={"AMN": []}, entries_by_ticker={},
-        horizon_session=date(2026, 7, 30), derivation_session=date(2026, 7, 30))
+        horizon_session=date(2026, 8, 13), derivation_session=date(2026, 8, 13))
     latch = d.latches[0]
     assert latch.state == "horizon_expired"
     assert latch.clear_reason == "horizon"
-    assert latch.clear_session == date(2026, 7, 30)
+    assert latch.clear_session == date(2026, 8, 13)
     assert latch.sessions_to_horizon == 0
 
 
-def test_still_armed_on_the_19th_session():
+def test_still_armed_on_the_29th_session():
     d = derive_latches(
         fires=[AMN_FIRE], bars_by_ticker={"AMN": []}, entries_by_ticker={},
-        horizon_session=date(2026, 7, 29), derivation_session=date(2026, 7, 29))
+        horizon_session=date(2026, 8, 12), derivation_session=date(2026, 8, 12))
     assert d.latches[0].state == "armed"
-    assert d.latches[0].sessions_elapsed == 19
+    assert d.latches[0].sessions_elapsed == 29
 
 
-def test_ftre_horizon_expiry_matches_rds_recorded_2026_08_17():
+def test_ftre_horizon_expiry_is_the_ruled_2026_08_31():
+    """NOT the 2026-08-17 RD had recorded from the untraced ~20 (plan A.4).
+    A 20-session implementation FAILS here."""
     d = derive_latches(
         fires=[FTRE_FIRE], bars_by_ticker={"FTRE": []}, entries_by_ticker={},
         horizon_session=date(2026, 7, 27), derivation_session=date(2026, 7, 24))
-    assert d.latches[0].horizon_expiry == date(2026, 8, 17)
+    assert d.latches[0].horizon_expiry == date(2026, 8, 31)
     assert d.latches[0].sessions_elapsed == 5
+
+
+def test_the_horizon_tracks_an_injected_window_rather_than_a_literal():
+    """Parity binding: passing a different horizon_sessions must move the
+    expiry. An implementation that hard-codes 30 (or 20) FAILS."""
+    d = derive_latches(
+        fires=[FTRE_FIRE], bars_by_ticker={"FTRE": []}, entries_by_ticker={},
+        horizon_session=date(2026, 7, 27), derivation_session=date(2026, 7, 24),
+        horizon_sessions=20)
+    assert d.latches[0].horizon_expiry == date(2026, 8, 17)
 
 
 # --- Fill detection: LATCH-SPECIFIC (RD constraint 4) -----------------------
@@ -1854,26 +2166,67 @@ def test_the_same_bar_set_one_session_later_DOES_invalidate():
 
 
 def test_an_invalidating_close_ON_the_horizon_expiry_session_beats_horizon():
-    """AMN's expiry is 2026-07-30. A close below 28.81 on 07-30 must record
+    """AMN's expiry is 2026-08-13. A close below 28.81 on 08-13 must record
     `invalidation` (the more informative terminal), not `horizon`. An
     implementation that checks the horizon before walking the bars FAILS."""
-    bars = [_bar("2026-07-30", 29.0, 29.5, 27.5, 28.00)]
+    bars = [_bar("2026-08-13", 29.0, 29.5, 27.5, 28.00)]
     d = derive_latches(
         fires=[AMN_FIRE], bars_by_ticker={"AMN": bars}, entries_by_ticker={},
-        horizon_session=date(2026, 7, 30), derivation_session=date(2026, 7, 30))
+        horizon_session=date(2026, 8, 13), derivation_session=date(2026, 8, 13))
     assert d.latches[0].clear_reason == "invalidation"
-    assert d.latches[0].clear_session == date(2026, 7, 30)
+    assert d.latches[0].clear_session == date(2026, 8, 13)
 
 
 def test_the_horizon_anchors_on_action_session_not_data_asof():
-    """RD's recorded FTRE horizon is 2026-08-17 == action_session (2026-07-20)
-    + 20 sessions. Anchoring on data_asof_date (2026-07-17) gives 2026-08-14
-    and FAILS -- and would expire the mandate three sessions early."""
+    """FTRE's horizon is 2026-08-31 == action_session (2026-07-20) + 30
+    sessions. Anchoring on data_asof_date (2026-07-17) gives 2026-08-28 and
+    FAILS -- and would expire the mandate three sessions early."""
     d = derive_latches(
         fires=[FTRE_FIRE], bars_by_ticker={"FTRE": []}, entries_by_ticker={},
-        horizon_session=date(2026, 8, 14), derivation_session=date(2026, 8, 13))
-    assert d.latches[0].state == "armed"          # NOT expired on 08-14
-    assert d.latches[0].horizon_expiry == date(2026, 8, 17)
+        horizon_session=date(2026, 8, 28), derivation_session=date(2026, 8, 27))
+    assert d.latches[0].state == "armed"          # NOT expired on 08-28
+    assert d.latches[0].horizon_expiry == date(2026, 8, 31)
+
+
+def test_a_superseded_latch_is_terminal_and_distinguishable_from_horizon():
+    """RD ledger note: a superseded latch still counts in the denominators but
+    its reason must NOT collapse into `horizon`, so 21-B can separate
+    'unfilled because the setup re-based' from 'unfilled because it went
+    stale'."""
+    fires = [
+        FireRow(candidate_id=6001, evaluation_run_id=121, ticker="SUP",
+                pivot=18.34, initial_stop=14.88,
+                action_session_date="2026-07-20",
+                run_ts="2026-07-17T17:30:05", pipeline_run_id=135),
+        FireRow(candidate_id=6002, evaluation_run_id=125, ticker="SUP",
+                pivot=20.19, initial_stop=16.515,
+                action_session_date="2026-07-24",
+                run_ts="2026-07-23T17:30:05", pipeline_run_id=139),
+    ]
+    d = derive_latches(
+        fires=fires, bars_by_ticker={"SUP": []}, entries_by_ticker={},
+        horizon_session=date(2026, 7, 27), derivation_session=date(2026, 7, 24))
+    old_latch, new_latch = d.latches
+    assert old_latch.clear_reason == "superseded"
+    assert old_latch.clear_reason != "horizon"
+    assert old_latch.state == "superseded"
+    assert old_latch.clear_session == date(2026, 7, 24)
+    assert old_latch.latched_pivot == 18.34       # its OWN frozen values kept
+    assert new_latch.state == "armed"
+    assert new_latch.latched_pivot == 20.19
+
+
+def test_a_zone_escape_does_NOT_clear_the_latch():
+    """Section A.7.1 / RD gate: the resting order at the cap remains VALID and
+    fills on a pullback, so clearing would desynchronize the panel from a real
+    broker order. Price far above the zone cap, no invalidating close: the
+    latch stays ARMED."""
+    bars = [_bar("2026-07-24", 19.77, 20.09, 19.25, 19.52)]   # >> cap 18.89
+    d = derive_latches(
+        fires=[FTRE_FIRE], bars_by_ticker={"FTRE": bars}, entries_by_ticker={},
+        horizon_session=date(2026, 7, 27), derivation_session=date(2026, 7, 24))
+    assert d.latches[0].state == "armed"
+    assert d.latches[0].clear_reason is None
 ```
 
 - [ ] **Step 2: Run to verify they fail**
@@ -2080,6 +2433,32 @@ def test_order_resting_with_no_latch_at_all_also_fires_the_stale_alarm():
         latches=(), orders=(_order(ticker="ZZZZ"),))
     assert [a.kind for a in alarms] == ["ORDER_RESTING_LATCH_CLEARED"]
     assert alarms[0].latch_candidate_id is None
+
+
+def test_a_superseded_latch_with_a_resting_order_alarms_CRITICAL():
+    """RD gate: "the panel must LOUDLY show that any resting order placed
+    against the old level no longer matches the new mandate." Post-supersede
+    the ticker has a LIVE latch AND a cleared one, so a ticker-level rule would
+    have gone silent -- this is the geometry the per-order rule was built for."""
+    from swing.latches.models import FireRow as FR
+    fires = [
+        FR(candidate_id=6001, evaluation_run_id=121, ticker="FTRE", pivot=18.34,
+           initial_stop=14.88, action_session_date="2026-07-20",
+           run_ts="2026-07-17T17:30:05", pipeline_run_id=135),
+        FR(candidate_id=6002, evaluation_run_id=125, ticker="FTRE", pivot=20.19,
+           initial_stop=16.515, action_session_date="2026-07-24",
+           run_ts="2026-07-23T17:30:05", pipeline_run_id=139),
+    ]
+    latches = derive_latches(
+        fires=fires, bars_by_ticker={"FTRE": []}, entries_by_ticker={},
+        horizon_session=date(2026, 7, 27),
+        derivation_session=date(2026, 7, 24)).latches
+    stale = _order(stop_price=18.34, limit_price=18.89)   # the OLD mandate
+    _, alarms = join_orders_to_latches(latches=latches, orders=(stale,))
+    alarm = next(a for a in alarms if a.kind == "ORDER_RESTING_LATCH_CLEARED")
+    assert alarm.latch_candidate_id == 6001
+    assert alarm.severity == "critical"
+    assert "superseded" in alarm.detail
 
 
 def test_horizon_cleared_latch_with_a_resting_order_is_warning_not_critical():
@@ -2410,7 +2789,7 @@ def test_panel_renders_the_fire_time_stop_not_the_drifted_one(seeded_db, monkeyp
     assert "16.51" not in r.text
     assert "18.34" in r.text
     assert "18.89" in r.text            # zone cap 18.34 * 1.03 == 18.8902
-    assert "2026-08-17" in r.text       # RD's recorded horizon
+    assert "2026-08-31" in r.text       # the ruled 30-session horizon
 
 
 def test_two_vsts_fires_render_as_two_rows_that_do_not_merge(seeded_db, monkeypatch):
@@ -2538,6 +2917,39 @@ def test_a_last_close_fallback_price_is_labelled_stale(...):
 def test_an_absent_price_snapshot_does_not_block_the_row(...):
     """A6: current_price '-', zone_position 'unknown', row still rendered with
     its frozen pivot/stop/horizon."""
+
+
+def test_the_invalidation_level_is_labelled_stop_level_only(...):
+    """RD gate condition on section G.5: the panel must not present itself as
+    implementing FULL invalidation. A bare 'invalidation' label with no
+    qualifier FAILS."""
+    ...
+    assert "stop level only" in r.text.lower()
+
+
+def test_the_panel_carries_the_base_break_footnote(...):
+    """The same condition at page level: 'Structural base-break is not
+    implemented in V1.'"""
+
+
+def test_an_out_of_zone_armed_latch_renders_the_label_and_stays_armed(...):
+    """Section A.7.1: the FTRE live geometry (armed, 19.52 vs an 18.89 cap)
+    renders ARMED - OUT OF ZONE, and the derivation has cleared NOTHING. An
+    implementation that added a zone-escape clear condition FAILS both halves."""
+
+
+def test_an_out_of_zone_armed_latch_with_a_resting_order_does_NOT_alarm(...):
+    """The order-alarm interaction (section A.7.1 reason 1): the resting order
+    at the cap is VALID and fills on a pullback. Neither
+    LATCH_ARMED_NO_RESTING_ORDER nor ORDER_RESTING_LATCH_CLEARED may fire."""
+
+
+def test_a_superseded_latch_renders_as_a_normal_historical_terminal(...):
+    """Codex R8-2: `superseded` is a first-class terminal, so the row VM and
+    the template must materialize it like any other cleared latch -- no 500, no
+    silent drop, and a label naming the re-base."""
+    ...
+    assert "SUPERSEDED" in r.text
 ```
 
 - [ ] **Step 2: Run to verify they fail**
@@ -2561,6 +2973,7 @@ class LatchRowVM:
     latched_pivot: str                 # "18.34"  -- %.2f of the FIRE's row
     zone_cap: str                      # "18.89"  -- pivot x 1.03
     invalidation_level: str            # "14.88"  -- the FIRE's initial_stop
+    invalidation_label: str            # "invalidation (stop level only)" -- G.5
     # LIVE price vs the buy zone (brief section 1.1 "current price vs zone")
     current_price: str                 # "19.52", or "-" when unavailable
     zone_position: str                 # one of _ZONE_POSITIONS
@@ -2572,6 +2985,8 @@ class LatchRowVM:
     sessions_to_horizon: int
     horizon_expiry: str
     state: str                         # one of LATCH_STATES
+    state_label: str                   # composes state + zone_position; e.g.
+                                       # "ARMED - OUT OF ZONE"
     clear_reason: str | None
     clear_session: str | None
     clear_trade_id: int | None
@@ -2597,6 +3012,19 @@ class LatchRowVM:
 | `latched_pivot <= price <= zone_cap` | `in_zone` | `IN ZONE` |
 | `price > zone_cap` | `above_zone` | `ABOVE ZONE - do not chase` |
 | no price snapshot | `unknown` | `price unavailable` |
+
+**`state_label` composes state with zone position (RD gate ruling, §A.7.1).** Zone escape is an ATTRIBUTE of `armed`, never a terminal state:
+
+| `state` | `zone_position` | `state_label` |
+|---|---|---|
+| `armed` | `above_zone` | **`ARMED - OUT OF ZONE`** + `(current price above the cap; fills only on a pullback; expires <horizon_expiry>)` |
+| `armed` | `in_zone` | `ARMED - IN ZONE` |
+| `armed` | `below_pivot` / `unknown` | `ARMED` |
+| `order_resting` | any | `ORDER RESTING` (+ the zone qualifier) |
+| `superseded` | — | `SUPERSEDED - re-fired at a new pivot <clear_session>` |
+| `filled` / `invalidated` / `horizon_expired` | — | the plain past-tense label |
+
+A test asserts the FTRE live geometry (armed, price 19.52, cap 18.89) renders the OUT-OF-ZONE label AND that the latch's `clear_reason` is still `None` — i.e. the panel says "out of zone" without the derivation having cleared anything.
 
 Comparison is at DISPLAY precision (`round(x, 2)` on both sides, the price-precision-parity gotcha) so a boundary price does not flip on a sub-cent difference. `above_zone` is a first-class rendered state, not an afterthought: it is the FTRE 2026-07-23 situation in which the operator's refusal to chase at 19.475 was the zone cap working correctly (`docs/rd-state.md:27`), and the panel must make that legible rather than merely showing a number.
 
@@ -3037,7 +3465,7 @@ Expected: every commit shows EMPTY trailers. If a forbidden trailer slipped in, 
 - [ ] **Step 4: Record the operator-witness runbook in the return report**
 
 Both states are required (brief §4 Gate 4), browser not TestClient:
-1. **LIT:** `PYTHONPATH=. python -m swing.cli web` against the live DB → `http://127.0.0.1:8080/latches`. Expect FTRE (run 121) showing pivot **18.34**, invalidation **14.88** (NOT 16.51), zone cap **18.89**, horizon **2026-08-17**; VSTS (run 126) showing **16.90 / 13.40**; VSTS (run 99) and AMN (run 103) shown as `filled`; the order fragment resolving after the page paints; and, on a SECOND load, the telemetry echo showing a first-viewed timestamp.
+1. **LIT:** `PYTHONPATH=. python -m swing.cli web` against the live DB → `http://127.0.0.1:8080/latches`. Expect FTRE (run 121) showing pivot **18.34**, invalidation **14.88** (NOT 16.51), zone cap **18.89**, horizon **2026-08-31**, and — at the live price ~19.52 — the **ARMED - OUT OF ZONE** label with `invalidation (stop level only)`; VSTS (run 126) showing **16.90 / 13.40**; VSTS (run 99) and AMN (run 103) shown as `filled`; the order fragment resolving after the page paints; and, on a SECOND load, the telemetry echo showing a first-viewed timestamp.
 2. **CLEAN/EMPTY:** the seeded-gate memory — witness the panel with NO live latches too (point `swing.config.toml`'s `db_path` at a freshly migrated empty DB, or wait past every horizon). Expect `No live latches.` with no alarms and no beacon element.
 3. **Teardown:** the detached web server survives TaskStop — find the PID via `Get-NetTCPConnection -LocalPort 8080`, `Stop-Process -Force`, and VERIFY the port is free.
 
@@ -3064,7 +3492,12 @@ Both states are required (brief §4 Gate 4), browser not TestClient:
 | §2.3 RD 2 horizon in sessions | 2, 3 (§A.4) |
 | §2.3 RD 3 per-fire identity | 2 (§A.2) |
 | §2.3 RD 4 latch-specific fill | 3 (§A.6) |
-| §2.3 RD 5 clear reason recorded | 3 (§A.7) |
+| §2.3 RD 5 clear reason recorded (incl. `superseded`) | 3 (§A.7) |
+| RD gate G.1 — two-branch re-fire rule (re-confirm vs supersede) | 2 (§A.2) |
+| RD gate G.1 — zone escape is a RENDER attribute, not a terminal | 6 (§A.7.1) |
+| RD gate G.2 — horizon derived from the observe window (parity-bound) | 1, 2, 3 (§A.4) |
+| RD gate G.5 — invalidation labelled stop-level-only | 6 (§A.5) |
+| RD gate addition — null-twin tolerance | 5 (§A.8) |
 | §2.3 RD 6 invalidation on closes | 3 (§A.5) |
 | §2.4 one view-timestamp record; NO prompt | 1, 8 |
 | §2.5 A4 deliberate write seam, named | §D, 8 |
@@ -3085,19 +3518,21 @@ Both states are required (brief §4 Gate 4), browser not TestClient:
 
 ---
 
-## G. Decisions routed to RD's plan-stage gate (brief §4 Gate 1)
+## G. RD's plan-stage gate — ALL FIVE DECISIONS SETTLED (brief §4 Gate 1)
 
-**G.1 — THE FIRE-IDENTITY RULE (not contemplated by the brief; the orchestrator surfaced it at dispatch QA).**
+**Gate verdict: PASS.** RD ruled on all five. The sections below are kept as the GATE RECORD — each states the question as it was put, his ruling, and where the ruling is implemented. Two rulings (G.1, G.2) changed the design; three confirmed it.
+
+**G.1 — THE FIRE-IDENTITY RULE. RULED: TWO-BRANCH RE-FIRE; NO FOURTH CLEAR CONDITION. Design CHANGED.**
 A literal `(evaluation_run_id, ticker)` identity over-splits, and the live evidence is worse than "consecutive nights": **SLDB 9/10, YOU 31/32 and NVCR 94/95 are each the SAME action session evaluated twice**, and 30 sessions in the corpus have multiple runs (15/7/5/3 at 2/3/4/6 runs respectively). Constraints 1 and 3 then conflict — every re-fire would RE-FREEZE the pivot, which is the FTRE failure mode reintroduced inside the fix for FTRE. The plan adopts the OPEN-LATCH rule (§A.2), which has TWO clauses. Two sub-decisions inside it:
 
 - **(i) the SAME-SESSION clause** — at most ONE latch per `(ticker, action_session_date)`, unconditionally, even if the latch already cleared during that session. Without it a fill or invalidating close mid-session lets a second same-session evaluation run open a duplicate `armed` latch for a position already held (Codex R1-1). This makes a trading session the atomic unit of the mandate.
 - **within one action session, the EARLIEST row wins** — the operator's briefing is regenerated by later same-session runs, but the mandate came into existence at the first fire; empirically no A+ ticker ever has mixed buckets within a session, and within-session pivot divergence is confined to genesis week 04-20/04-21 plus two stragglers.
 
-**RD to confirm or overrule** — and before doing so, please read §G.1.1, which shows that clause (ii) contradicts a position RD has already put on the record.
+**RULING (implemented at §A.2, §A.7, §A.7.1):** clause (i) CONFIRMED as written, including the Codex R1-1 refinement that it holds even if the latch cleared mid-session — RD called making the trading session the atomic unit right, and the no-mixed-buckets-within-a-session evidence the correct kind of justification. Blanket clause (ii) REPLACED by the two-branch rule: same frozen pivot → RE-CONFIRMATION; different pivot → the old latch CLEARS with `superseded` and a new latch arms. **No fourth clear condition** — zone escape is a STATE ATTRIBUTE (§A.7.1). RD stated both of his own prior positions were partly wrong: right on 07-23 that FTRE's mandate had become unactionable and a higher-pivot re-fire would restore one, wrong about the MECHANISM (re-firing is not the operative fact — a CHANGED PIVOT is); right today that an identical-value re-fire must not fork, wrong to state it for ALL armed re-fires. His governing point: **the hazard constraint 1 guarded was never re-freezing as such, it was re-freezing SILENTLY.**
 
-### G.1.1 — RD IS ALREADY ON RECORD AGAINST CLAUSE (ii), ON THE FTRE CASE
+### G.1.1 — THE CONFLICT AS PUT TO RD (retained as the gate record; RESOLVED by the G.1 ruling)
 
-This plan cites `docs/rd-state.md:27` twice (for FTRE's 2026-08-17 horizon and for the 19.475 zone-cap refusal). The SAME line contains a third sentence, written by RD on 2026-07-23, that this plan's clause (ii) contradicts:
+At the time this question was put, the plan cited `docs/rd-state.md:27` twice — for FTRE's horizon (then believed 2026-08-17; the gate later corrected it to 2026-08-31, §G.2) and for the 19.475 zone-cap refusal. The SAME line contains a third sentence, written by RD on 2026-07-23, that this plan's clause (ii) contradicts:
 
 > "FTRE's pivot has since risen 18.34 -> 18.59 -> **20.19** -- a re-fire would open a NEW latch at the new pivot; the old latch does not entitle entry at today's price."
 > — `docs/rd-state.md:27`
@@ -3113,35 +3548,39 @@ This plan cites `docs/rd-state.md:27` twice (for FTRE's 2026-08-17 horizon and f
 | frozen invalidation level | 14.88 |
 | current price (2026-07-24 close) | **~19.52** |
 | latest FTRE `candidates.pivot` (run 125, `bucket='watch'`) | 20.19 |
-| horizon expiry | 2026-08-17 |
+| horizon expiry | **2026-08-31** (30 sessions; was 2026-08-17 under the superseded ~20) |
 | latch state | **armed, unfilled** |
 
 **Precision on the record:** no re-fire has actually occurred. Runs 122-125 are all `bucket='watch'`; FTRE has not printed a second `aplus` row. So the disagreement is not yet realized in data — it is a rule disagreement about what SHOULD happen if it does. Either rule can still be adopted without rewriting history.
 
-**The substantive gap underneath it — named, NOT resolved here.** FTRE's price has ESCAPED the buy zone: 19.52 sits above the 18.89 cap. Under this plan's rule the latch remains `armed` but **unenterable** until the 2026-08-17 horizon, and a re-fire would merely re-confirm a mandate the operator cannot act on. Under RD's stated position, a re-fire at 20.19 would open a fresh latch with a cap of 20.80 — which the current 19.52 is BELOW, i.e. an actionable mandate again. RD's instinct is pointing at something this plan's state machine does not have: the settled semantics give three clear conditions (fill / invalidation / horizon) and **none of them covers "the price left the zone and is not coming back before the horizon."**
+**The substantive gap underneath it — named, NOT resolved here.** FTRE's price has ESCAPED the buy zone: 19.52 sits above the 18.89 cap. Under the plan's then-current rule the latch remained `armed` but **unenterable** until its horizon, and a re-fire would merely re-confirm a mandate the operator cannot act on. Under RD's stated position, a re-fire at 20.19 would open a fresh latch with a cap of 20.80 — which the current 19.52 is BELOW, i.e. an actionable mandate again. RD's instinct is pointing at something this plan's state machine does not have: the settled semantics give three clear conditions (fill / invalidation / horizon) and **none of them covers "the price left the zone and is not coming back before the horizon."**
 
-**The question for RD (this plan takes NO position):**
+**The question as it was put to RD (this plan took NO position):**
 
 1. Does a re-fire arriving while a latch is armed open a NEW latch at the new pivot (RD, 07-23), or re-confirm the existing latch without re-freezing (this plan, §A.2 clause ii)?
 2. If the answer is "new latch": is that a GENERAL re-fire rule — in which case clause (ii) is deleted and the re-freeze hazard §A.2 identifies must be accepted or otherwise mitigated — or is it specifically a consequence of ZONE ESCAPE, i.e. a missing FOURTH clear condition (`zone_escaped` / mandate-unreachable) whose absence is the real defect?
 3. If a fourth clear condition is wanted, its definition is RD's to make (what counts as escape, whether it is evaluated on closes like invalidation, whether it clears the latch or merely marks it unreachable). **This plan does not design it.**
 
-**Impact if RD rules for a new-latch-on-re-fire or a fourth clear condition:** §A.2 clause (ii), §A.7's clear-reason vocabulary, the `LATCH_CLEAR_REASONS` frozenset, the migration's `latch_state_at_*` CHECK enum, and Task 2/3's fire-grouping and terminal tests all change. Clause (i) (the same-session collapse) and everything in §A.3-§A.6, §A.8-§A.10 are unaffected either way. **This is the one open decision that can reshape the arc, so it should be settled before Task 2 is executed.**
+**RESOLVED.** RD answered (1) with the two-branch rule and (2) with *zone escape is the real gap, but it is an ATTRIBUTE, not a clear condition*. The realised impact: §A.2 clause (ii), §A.7's clear-reason vocabulary, the `LATCH_CLEAR_REASONS` frozenset, the migration's `latch_state_at_*` CHECK enum, and Task 2/3's fire-grouping and terminal tests all change. Clause (i) (the same-session collapse) and everything in §A.3-§A.6, §A.8-§A.10 are unaffected either way. **Settled before Task 2, as required.** Executing is cleared for Task 1 and everything outside Task 2; Task 2 proceeds on this ruling.
 
-**G.2 — THE HORIZON VALUE + ANCHOR + BOUNDARY (a brief premise that does not match live code).**
-The brief calls 20 sessions "the shadow-parity bound". The pipeline's shadow ENTRY window is `cfg.pipeline.observe_max_pending_window_sessions = **30**`. The plan implements **20**, because RD's own recorded FTRE horizon (2026-08-17, `docs/rd-state.md:27`) is reproduced EXACTLY by 20 NYSE sessions forward from the fire's `action_session_date` — 30 sessions gives 2026-08-31 and 20 calendar days gives 2026-08-09. Three sub-decisions ride on it: the **anchor** is `action_session_date` (not `data_asof_date`, which would give 2026-08-14), the boundary is **inclusive-expire** (`>= 20`, matching `_advance_status`'s precedent, making 2026-08-17 the first DEAD session), and the value lives in ONE constant `LATCH_HORIZON_SESSIONS`. **RD to confirm the value and whether "shadow parity" should instead bind it to 30.**
+**G.2 — THE HORIZON VALUE + ANCHOR + BOUNDARY. RULED: 30 SESSIONS, BOUND AT THE CONFIG SOURCE. Design CHANGED.**
+**The question as it was put:** the brief called 20 sessions "the shadow-parity bound", but the pipeline's shadow ENTRY window is `cfg.pipeline.observe_max_pending_window_sessions = **30**`. The plan provisionally implemented **20**, because RD's own recorded FTRE horizon (2026-08-17, `docs/rd-state.md:27`) was reproduced EXACTLY by 20 NYSE sessions forward from the fire's `action_session_date`. Three sub-decisions rode on it: the anchor (`action_session_date` vs `data_asof_date`), the boundary (inclusive-expire), and the value. **RULING (implemented at §A.4):** **30**, and DERIVED from `cfg.pipeline.observe_max_pending_window_sessions` rather than hard-coded, so a future change to the observe window cannot silently break parity. Anchor `action_session_date` CONFIRMED; inclusive-expire matching `_advance_status` CONFIRMED. RD owns the error: he invented "~20 sessions", never traced it, then recorded FTRE's horizon from that invention — and identified this plan's round-1 citation of his own doc as a **CIRCULAR citation, his unverified assertion becoming the evidence for itself**. He credited the live-code check with breaking the loop. He verified the chain himself: shadow `HORIZON_SESSIONS` = 126 is the TRADE-walk horizon; the entry search runs over whatever forward bars exist; those bars are bounded by the observe window = 30. **At 20, sessions 21-30 become a window where the shadow can enter and live has no mandate — a manufactured divergence, the exact FTRE-class defect this arc exists to eliminate.** FTRE's horizon is now **2026-08-31**.
 
-**G.3 — THE DUAL SESSION ANCHOR, AND ITS SINGLE SOURCE.** Horizon is evaluated against the FORWARD anchor `horizon_session` ("is the mandate live for the session I am about to trade"); invalidation is evaluated against the BACKWARD anchor `derivation_session` (a close can only be judged on a completed bar). Both are rendered on the panel. **The two are NOT computed independently:** `derivation_session := session_offset(horizon_session, -1)`, which is provably equal to `last_completed_session(now)` for every clock shape (pinned by `test_prev_session_of_the_action_anchor_equals_last_completed_session`). One clock read (`action_session_for_run`) therefore determines the WHOLE derivation context — which is what lets the beacon POST rebuild the exact render-time context from the session anchor alone, consulting `now` for nothing that can change a latch's state (Codex R3-1). Sole known divergence: at the exact instant of a session close both helpers return that same session, so this formulation is one session MORE conservative for one instant — it excludes a bar the nightly warm has not written yet anyway. **RD to confirm.**
+**G.3 — THE DUAL SESSION ANCHOR. CONFIRMED (design unchanged).** RD called this the strongest piece of design in the plan: deriving both anchors from ONE clock read is *"what makes the telemetry trustworthy rather than merely present,"* and the one-instant conservatism is the correct direction. Horizon is evaluated against the FORWARD anchor `horizon_session` ("is the mandate live for the session I am about to trade"); invalidation is evaluated against the BACKWARD anchor `derivation_session` (a close can only be judged on a completed bar). Both are rendered on the panel. **The two are NOT computed independently:** `derivation_session := session_offset(horizon_session, -1)`, which is provably equal to `last_completed_session(now)` for every clock shape (pinned by `test_prev_session_of_the_action_anchor_equals_last_completed_session`). One clock read (`action_session_for_run`) therefore determines the WHOLE derivation context — which is what lets the beacon POST rebuild the exact render-time context from the session anchor alone, consulting `now` for nothing that can change a latch's state (Codex R3-1). Sole known divergence: at the exact instant of a session close both helpers return that same session, so this formulation is one session MORE conservative for one instant — it excludes a bar the nightly warm has not written yet anyway.
 
-**G.4 — SAME-SESSION TERMINAL PRECEDENCE.** `fill` > `invalidation` > `horizon`. This inverts `_advance_status`'s invalidation-first ordering, which has no fill concept. **RD to confirm.**
+**G.4 — SAME-SESSION TERMINAL PRECEDENCE. CONFIRMED (design unchanged).** `fill` > `invalidation` > `horizon`, inverting `_advance_status`'s invalidation-first ordering (which has no fill concept). RD: *facts beat signals beat deadlines* — if a fill and an invalidating close land in one session the position EXISTS, the latch's job ended at the fill, and what happens after is the trade's stop discipline.
 
-**G.5 — "BASE BREAK" DEFERRED.** The settled semantics say invalidation is "close below the fire-time initial-stop **/ base break**". V1 implements the initial-stop half only; the structural base-break level is not on `candidates` (it lives in `pattern_detection_events.structural_anchors_json`, a different id space with zero rows for the April fires). **RD to confirm the V1 narrowing.**
+**G.5 — "BASE BREAK" DEFERRED. CONFIRMED for V1 WITH A LABELLING CONDITION.** The settled semantics say invalidation is "close below the fire-time initial-stop **/ base break**". V1 implements the initial-stop half only; the structural base-break level is not on `candidates` (it lives in `pattern_detection_events.structural_anchors_json`, a different id space with zero rows for the April fires). **CONFIRMED FOR V1, WITH A LABELLING CONDITION (implemented at §A.5).** The panel and the ledger must NOT present themselves as implementing full invalidation: the frozen level renders as `invalidation (stop level only)`, the page carries a base-break footnote, and the migration header records the narrowing — so a future reader (including a future RD) cannot assume coverage that is not there. Compounds with the null-twin fact (§A.8): the April/May fires have no `pattern_detection_events` rows at all, so base-break is uncomputable for them regardless.
 
 ---
 
 ## H. V1 simplifications + banked items
 
-1. **Structural base-break invalidation** — deferred (§G.5). V2 dependency: reading `pattern_detection_events.structural_anchors_json` for the fire's session and carrying a second frozen invalidation level.
+1. **Structural base-break invalidation** — deferred (§G.5), and LABELLED as deferred on the panel, the footnote and the migration header per RD's gate condition. V2 dependency: reading `pattern_detection_events.structural_anchors_json` for the fire's session and carrying a second frozen invalidation level. **Uncomputable for the April/May fires regardless** — they predate the temporal log (§A.8).
+
+1b. **BANKED FOR 21-B — the away-rate MUST NOT be consumed without a telemetry-health check (RD gate addition).** A silently broken beacon makes EVERY fire look like an away-fire, inflating the very number that is supposed to justify or kill stage-3 auto-place. That is not merely a wrong statistic — it is a wrong statistic pointing at the biggest pending decision in the phase, and it fails optimistic (toward "the operator was away", i.e. toward automating). 21-B must gate any away-rate read on evidence that the telemetry path is alive — e.g. a view record existing for at least one latch on any session the panel was demonstrably reachable, or an explicit beacon-health check surfaced alongside the number. **Do not build it here** (21-A ships one view-timestamp record and nothing else, per RD's telemetry-scope discipline); this arc's contribution is the self-revealing echo in §D, which makes a dead beacon visible to the operator on the next page load.
+
+1c. **Null-twin tolerance is a CONTRACT, not a degradation** (§A.8, RD gate addition): the latch corpus (from 2026-04-20) is permanently broader than the shadow corpus (from 2026-06-05). Five of the eleven A+ fires ever — SLDB and YOU — have no twin and never will. No 21-B reader may treat twin-absence as an error or as grounds to drop a latch from a denominator.
 2. **Beacon requires JavaScript.** No JS → no view record → the fire reads as `away`, which biases the 21-B discipline signal OPTIMISTIC. Mitigated by rendering the persisted telemetry on every visit (a silently-broken beacon is visible on the second load), not eliminated. Named for 21-B.
 3. **`schwab_api_calls.surface='trade_entry'`** for the latch-panel order read. A dedicated `'latch_panel'` value needs a `schwab_api_calls` REBUILD which A3 keeps out of this arc's migration. Bank it for the next widening of that enum, under the #11 discipline.
 4. **No order-fetch cache.** One Schwab call per panel view (bounded by the lazy fragment). A short TTL is a V2 candidate if the operator's usage makes it matter.
