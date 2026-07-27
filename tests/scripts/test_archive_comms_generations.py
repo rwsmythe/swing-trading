@@ -250,6 +250,95 @@ def test_reserve_dest_never_returns_an_existing_path(comms):
     assert target.read_text(encoding="utf-8") == "taken\n"
 
 
+# --- a failed move must not leave a fake archived message (R4 MAJOR 2) -----
+
+def test_failed_move_leaves_no_empty_placeholder(comms, capsys, monkeypatch):
+    """If os.replace fails, the reserved placeholder must NOT survive.
+
+    An orphaned zero-byte file at an archive path is worse than no file: a later
+    run would treat it as an existing destination and file the REAL message
+    beside it under `-2`, leaving a convincing empty impostor in the history.
+    """
+    _seed_gen(comms, "gen-a", read=("m.md",))
+
+    def _boom(src, dest):
+        raise OSError(13, "simulated failure")
+
+    monkeypatch.setattr(mig.os, "replace", _boom)
+    rc = _run(comms, "--execute")
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "VERIFICATION FAILED" in err  # reported, not an escaped traceback
+    # the source is untouched and NO placeholder was left behind
+    assert (comms / "orchestrator" / "gen-a" / "read" / "m.md").read_text(
+        encoding="utf-8") == "body of m.md\n"
+    assert not (comms / "orchestrator" / "_archive" / "gen-a" / "read"
+                / "m.md").exists()
+
+
+# --- symlinks are refused, never silently mis-archived (R4 MAJOR 1) --------
+
+def _symlink_or_skip(link: Path, target: Path, *, target_is_dir=False):
+    link.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        link.symlink_to(target, target_is_directory=target_is_dir)
+    except (OSError, NotImplementedError):  # Windows without developer mode
+        pytest.skip("symlink creation not permitted in this environment")
+
+
+def test_symlinked_message_is_refused_not_archived(comms, tmp_path, capsys):
+    """A symlinked 'message' must not be archived as a link + reported VERIFIED.
+
+    os.replace moves the LINK; the digest is read through it both times, so the
+    run would print VERIFIED while the archive holds a pointer whose target can
+    later change or vanish -- history that is not actually preserved.
+    """
+    outside = _write(tmp_path / "outside" / "live.md", "lives elsewhere\n")
+    _symlink_or_skip(comms / "orchestrator" / "gen-a" / "read" / "m.md", outside)
+    rc = _run(comms, "--execute")
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "symlink" in err.lower()
+    assert "gen-a" in err
+    # nothing moved, and the external target is untouched
+    assert (comms / "orchestrator" / "gen-a" / "read" / "m.md").is_symlink()
+    assert outside.read_text(encoding="utf-8") == "lives elsewhere\n"
+    assert not (comms / "orchestrator" / "_archive").exists()
+
+
+def test_symlink_refusal_without_needing_symlink_privileges(comms, capsys,
+                                                            monkeypatch):
+    """The refusal itself, exercised through the _is_symlink seam.
+
+    The two tests above need real symlinks, which Windows refuses without
+    developer mode -- a skip there would leave the guard with ZERO coverage on
+    the production box. This drives the same refusal by making one planned
+    message report as a link.
+    """
+    _seed_gen(comms, "gen-a", read=("m.md",))
+    victim = comms / "orchestrator" / "gen-a" / "read" / "m.md"
+    monkeypatch.setattr(mig, "_is_symlink", lambda p: p == victim)
+    before = _snapshot(comms)
+    rc = _run(comms, "--execute")
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "symlink" in err.lower()
+    assert "gen-a/read/m.md" in err
+    assert _snapshot(comms) == before  # refused BEFORE anything moved
+
+
+def test_symlinked_generation_directory_is_refused(comms, tmp_path, capsys):
+    elsewhere = tmp_path / "elsewhere" / "read"
+    _write(elsewhere / "m.md", "x\n")
+    (comms / "orchestrator").mkdir(parents=True, exist_ok=True)
+    _symlink_or_skip(comms / "orchestrator" / "gen-link",
+                     elsewhere.parent, target_is_dir=True)
+    rc = _run(comms, "--execute")
+    assert rc == 1
+    assert "symlink" in capsys.readouterr().err.lower()
+    assert (elsewhere / "m.md").read_text(encoding="utf-8") == "x\n"
+
+
 # --- idempotence: a second execute has nothing left to do ------------------
 
 def test_second_execute_is_a_noop(comms, capsys):

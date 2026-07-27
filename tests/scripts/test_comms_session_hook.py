@@ -240,6 +240,15 @@ def test_subprocess_no_swing_role_exits_zero_no_registration(tmp_path):
     staged.mkdir()
     for src in (_HOOK_PATH, _REG_PATH):
         shutil.copy2(src, staged / src.name)
+    # Seed a STALE record in the staged tree. session-start prunes before the
+    # role gate, so its disappearance PROVES the subprocess resolved the staged
+    # root -- asserting only "no g1.json in the real tree" would pass vacuously
+    # (with SWING_ROLE unset the hook never registers anything anywhere).
+    staged_root = tmp_path / "comms"
+    stale = (_NOW - timedelta(seconds=reg.STALE_SECONDS * 100)).isoformat()
+    reg.write_entry(staged_root, "stalegen", "orchestrator", "", _NOW,
+                    started_ts=stale)
+    _force_last_seen(staged_root, "stalegen", stale)
     env = {k: v for k, v in os.environ.items() if k != "SWING_ROLE"}
     proc = subprocess.run(
         [sys.executable, str(staged / _HOOK_PATH.name), "session-start"],
@@ -247,7 +256,9 @@ def test_subprocess_no_swing_role_exits_zero_no_registration(tmp_path):
         capture_output=True, env=env, check=False,
     )
     assert proc.returncode == 0
-    # and it touched only the staged tree (never the real repo comms/)
+    assert reg.read_entry(staged_root, "stalegen") is None  # STAGED root pruned
+    # and it registered nothing anywhere (the quiet no-SWING_ROLE default)
+    assert not (staged_root / "sessions" / "g1.json").exists()
     assert not (Path(_SCRIPTS).parent / "comms" / "sessions"
                 / "g1.json").exists()
 

@@ -39,6 +39,7 @@ byte-for-byte and never rewritten.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import os
 import re
@@ -139,18 +140,66 @@ def _reserve_dest(dest: Path) -> Path:
     raise AssertionError("unreachable: _candidate_names is infinite")
 
 
+def _is_symlink(path: Path) -> bool:
+    """Whether path is a symlink / reparse point (indirected for testability).
+
+    A module-level seam so the refusal logic can be exercised on a box where
+    creating a real symlink needs privileges (Windows without developer mode),
+    without the test silently skipping into no coverage at all.
+    """
+    try:
+        return path.is_symlink()
+    except OSError:
+        return True  # unreadable link status -> treat as a link (fail-closed)
+
+
 def _generation_dirs(orchestrator_dir: Path) -> list[Path]:
     """Every per-generation directory ON DISK right now (sorted, run-time)."""
     if not orchestrator_dir.is_dir():
         return []
     out: list[Path] = []
     for child in sorted(orchestrator_dir.iterdir()):
+        if _is_symlink(child):
+            continue  # links are refused up-front by _symlink_offenders
         if not child.is_dir():
             continue  # a stray file is not a generation
         if child.name in RESERVED_NAMES:
             continue
         out.append(child)
     return out
+
+
+def _symlink_offenders(orchestrator_dir: Path) -> list[Path]:
+    """Every symlink under comms/orchestrator/ that the migration would touch.
+
+    Symlinks are REFUSED rather than migrated, because moving one preserves the
+    POINTER and not the message: ``os.replace`` relocates the link itself while
+    every integrity check (``is_file``, the sha256 before and after) reads
+    THROUGH it to the target, so the run would print VERIFIED over an "archive"
+    whose contents can still change or vanish underneath it. That is precisely
+    the history the D3 binding says must be preserved. A symlinked generation
+    DIRECTORY is refused for the same reason (and because ``is_dir()`` follows
+    links, it would otherwise be walked as if it were part of the tree).
+
+    This is an INTEGRITY guard, not an attacker defense: a symlinked comms tree
+    is a setup choice, and the honest response for a one-shot operator-run
+    migration is to stop and name the path rather than guess.
+    """
+    if not orchestrator_dir.is_dir():
+        return []
+    offenders: list[Path] = []
+    for child in sorted(orchestrator_dir.iterdir()):
+        if child.name in RESERVED_NAMES:
+            continue
+        if _is_symlink(child):
+            offenders.append(child)
+            continue
+        if not child.is_dir():
+            continue
+        # rglob does NOT descend into symlinked directories, so a link found
+        # here is a leaf of the walk the plan would otherwise have moved.
+        offenders.extend(sorted(p for p in child.rglob("*") if _is_symlink(p)))
+    return offenders
 
 
 def build_plan(comms_root: Path, live_session: str | None = None) -> Plan:
@@ -231,6 +280,17 @@ def run(comms_root: Path, live_session: str | None, execute: bool,
               "be a plain session_id path segment. Nothing was moved.", file=err)
         return 1
 
+    offenders = _symlink_offenders(Path(comms_root) / "orchestrator")
+    if offenders:
+        print("error: refusing to migrate -- symlink(s) under "
+              "comms/orchestrator/ would be relocated as pointers, not as "
+              "message bytes (the archive would verify green while its contents "
+              "still live elsewhere): "
+              + ", ".join(_rel(p, comms_root) for p in offenders)
+              + ". Resolve them by hand, then re-run. Nothing was moved.",
+              file=err)
+        return 1
+
     plan = build_plan(comms_root, live_session)
 
     if live_session is not None and live_session not in plan.generations:
@@ -272,18 +332,32 @@ def run(comms_root: Path, live_session: str | None, execute: bool,
     # plan-time collision check across the gap), and record the name actually
     # used so verification checks where the file REALLY went.
     performed: list[tuple[Path, Path, str]] = []
+    problems: list[str] = []
     for src, planned, kind in plan.moves:
         dest = _reserve_dest(planned)
         if dest != planned:
             print(f"  note: {_rel(planned, comms_root)} was taken at move time; "
                   f"used {_rel(dest, comms_root)} instead (nothing overwritten)",
                   file=out)
-        os.replace(str(src), str(dest))
+        try:
+            os.replace(str(src), str(dest))
+        except OSError as exc:
+            # The reservation is OURS and, since os.replace is atomic, it is
+            # still the empty placeholder. Drop it: an orphaned zero-byte file
+            # at an archive path is WORSE than no file -- a later run would
+            # treat it as an existing destination and file the real message
+            # beside it, leaving a convincing empty impostor in the history.
+            with contextlib.suppress(OSError):
+                if dest.is_file() and dest.stat().st_size == 0:
+                    dest.unlink()
+            problems.append(f"move failed: {_rel(src, comms_root)} -> "
+                            f"{_rel(dest, comms_root)} ({exc}); the source was "
+                            "left in place")
+            break  # stop at the first failure -- a one-shot must not limp on
         performed.append((src, dest, kind))
 
     # D3 verification: every relocated file is present at its destination with
     # an UNCHANGED sha256 (intact), and readable. Reported, not assumed.
-    problems: list[str] = []
     for src, dest, _kind in performed:
         if not dest.is_file():
             problems.append(f"missing after move: {_rel(dest, comms_root)}")
