@@ -458,3 +458,22 @@ def test_a_correct_order_does_not_mask_an_extra_stray_order(
     # ...and it must NOT invent a false "no resting order" alarm: the mandate
     # IS covered by the good order.
     assert "LATCH_ARMED_NO_RESTING_ORDER" not in r.text
+
+
+def test_an_indeterminate_order_is_rendered_not_silently_all_clear(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """Codex executing R4. An indeterminate broker status correctly SUPPRESSES
+    both alarms (a false all-clear and a false alarm are both worse than an
+    honest 'unknown') -- but the suppression itself then reads as an all-clear
+    unless the UNKNOWN is rendered."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    app = _app(cfg, cfg_path, monkeypatch,
+               orders=[_order(status="PENDING_CANCEL")])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert r.status_code == 200
+    assert "Broker orders agree" not in r.text
+    assert "ORDER STATUS INDETERMINATE" in r.text
+    assert "verify at the broker" in r.text
+    assert "LATCH_ARMED_NO_RESTING_ORDER" not in r.text

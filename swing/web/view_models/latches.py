@@ -449,6 +449,12 @@ class LatchOrdersFragmentVM:
     # named alarms (plan A.9 routes it through the agreement flags), but it MUST
     # be rendered: silence here reads as "covered" when it is not.
     disagreements: tuple[str, ...] = ()
+    # Tickers with a live latch whose broker order state is INDETERMINATE
+    # (PENDING_CANCEL / UNKNOWN / ...). Alarms are correctly suppressed for
+    # these -- a false all-clear and a false alarm are both worse than an
+    # honest "unknown" -- but the UNKNOWN must be RENDERED, or the suppression
+    # itself reads as an all-clear.
+    indeterminate_tickers: tuple[str, ...] = ()
 
 
 def _resolve_schwab_environment(cfg) -> str | None:
@@ -656,6 +662,13 @@ def build_latch_orders_vm(
                 f"ticker; the mandate is pivot {lat.latched_pivot:.2f} / cap "
                 f"{lat.zone_cap:.2f}")
     disagreements = tuple(dict.fromkeys(disagreement_lines))
+    indeterminate_tickers = tuple(sorted({
+        lat.identity.ticker
+        for lat in derivation.latches
+        if lat.is_live
+        and (joins.get(lat.identity.candidate_id) is not None)
+        and joins[lat.identity.candidate_id].indeterminate
+    }))
 
     order_lines = tuple(
         f"{o.ticker} {o.instruction} {o.quantity:g} {o.order_type} "
@@ -675,6 +688,7 @@ def build_latch_orders_vm(
         ),
         order_lines=order_lines,
         disagreements=disagreements,
+        indeterminate_tickers=indeterminate_tickers,
     )
 
 

@@ -616,3 +616,22 @@ def test_a_null_candidate_trade_inside_the_zone_still_fills():
         horizon_session=date(2026, 7, 27), derivation_session=date(2026, 7, 24))
     assert d.latches[0].state == "filled"
     assert d.latches[0].fill_link_basis == "windowed"
+
+
+def test_a_close_below_the_stop_AFTER_the_horizon_does_not_overwrite_expiry():
+    """Codex executing R4. Once the mandate is DEAD, a later close below the
+    stop is not an invalidation OF IT. Without a horizon cap on the bar walk the
+    latch renders `invalidated` at the later session instead of
+    `horizon_expired` at the expiry -- which also moves the clear date and
+    ESCALATES a stale resting order from `warning` to `critical` for a mandate
+    that had already lapsed.
+
+    AMN fires 2026-07-01 and expires 2026-08-13; the break lands 2026-08-14."""
+    bars = [_bar("2026-08-14", 29.0, 29.5, 27.5, 28.00)]   # below the 28.81 stop
+    d = derive_latches(
+        fires=[AMN_FIRE], bars_by_ticker={"AMN": bars}, entries_by_ticker={},
+        horizon_session=date(2026, 8, 14), derivation_session=date(2026, 8, 14))
+    latch = d.latches[0]
+    assert latch.state == "horizon_expired"
+    assert latch.clear_reason == "horizon"
+    assert latch.clear_session == date(2026, 8, 13)

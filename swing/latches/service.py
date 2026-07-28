@@ -256,7 +256,16 @@ def _resolve_terminal(
     the real resolution must see.
     """
     nonfill: _Terminal | None = None
-    for bar in _eligible_bars(bars, anchor=draft.anchor, upper=bar_bound):
+    # The walk stops at the HORIZON EXPIRY as well as at `bar_bound`: once the
+    # mandate is dead, a later close below the stop is not an invalidation OF
+    # IT. Without the cap a post-expiry break would overwrite `horizon_expired`
+    # with `invalidated`, move the clear session forward, and escalate a stale
+    # resting order from `warning` to `critical` -- all for a mandate that had
+    # already lapsed. The expiry session ITSELF is still walked, so same-session
+    # precedence (invalidation beats horizon) is preserved.
+    for bar in _eligible_bars(
+        bars, anchor=draft.anchor, upper=min(bar_bound, draft.horizon_expiry)
+    ):
         # RD constraint 6: CLOSES, not intraday touches. Strict `<` -- a close
         # exactly AT the frozen stop is not below it.
         if bar.close < draft.stop:

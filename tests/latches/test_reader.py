@@ -336,3 +336,30 @@ def test_an_unparseable_fire_session_is_kept_so_it_can_degrade_visibly(tmp_path)
         assert [x.reason for x in d.degraded] == ["bad_session_date"]
     finally:
         conn.close()
+
+
+def test_a_non_numeric_price_degrades_visibly_rather_than_vanishing(tmp_path):
+    """Codex executing R4. SQLite is dynamically typed: a REAL column happily
+    stores the TEXT 'bad' (verified: `typeof(p)` == 'text'). An eager `float()`
+    in the reader raised and DROPPED the whole fire, so the operator saw
+    NOTHING -- contradicting both the reader's own contract and A6. The raw
+    value must reach `derive_latches`, which reports it as a degraded fire."""
+    cfg = _cfg(tmp_path)
+    conn = ensure_schema(tmp_path / "t.db")
+    try:
+        with conn:
+            _run(conn, 70, "2026-04-30", "2026-05-01")
+            conn.execute(
+                "INSERT INTO candidates (evaluation_run_id, ticker, bucket, "
+                "close, pivot, initial_stop, rs_method) VALUES "
+                "(70, 'TXT', 'aplus', 5.0, 'bad', 4.0, 'universe')")
+        assert conn.execute(
+            "SELECT typeof(pivot) FROM candidates").fetchone()[0] == "text"
+        (fire,) = load_fire_rows(conn)
+        assert fire.pivot == "bad"          # carried RAW, not coerced
+        d = build_latch_derivation(
+            conn, cfg, horizon_session_override=date(2026, 5, 1))
+        assert d.latches == ()
+        assert [x.reason for x in d.degraded] == ["pivot_missing"]
+    finally:
+        conn.close()

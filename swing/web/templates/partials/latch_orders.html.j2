@@ -19,8 +19,22 @@
     </p>
     {% endfor %}
   </div>
-  {% elif not vm.disagreements %}
+  {% elif not vm.disagreements and not vm.indeterminate_tickers %}
   <p class="muted">Broker orders agree with the live latches. No alarms.</p>
+  {% endif %}
+
+  {# An INDETERMINATE broker status suppresses both alarms by design. That
+     suppression must be VISIBLE, or the silence reads as an all-clear. #}
+  {% if vm.indeterminate_tickers %}
+  <div class="latch-indeterminate">
+    {% for ticker in vm.indeterminate_tickers %}
+    <p class="latch-alarm latch-alarm-warning">
+      <strong>ORDER STATUS INDETERMINATE</strong> {{ ticker }}: order status
+      indeterminate - verify at the broker. Alarms are suppressed for this
+      ticker.
+    </p>
+    {% endfor %}
+  </div>
   {% endif %}
 
   {# A wrong-price resting order SILENCES the ticker-level "no order" alarm, so

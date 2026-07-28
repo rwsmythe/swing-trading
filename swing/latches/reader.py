@@ -55,8 +55,14 @@ def load_fire_rows(conn: sqlite3.Connection) -> tuple[FireRow, ...]:
                 candidate_id=int(row[0]),
                 evaluation_run_id=int(row[1]),
                 ticker=str(row[2]),
-                pivot=None if row[3] is None else float(row[3]),
-                initial_stop=None if row[4] is None else float(row[4]),
+                # RAW, NOT coerced. SQLite is dynamically typed: a REAL column
+                # happily holds the TEXT 'bad', and an eager float() here would
+                # raise and DROP the whole fire -- contradicting this function's
+                # contract and A6. `_validate_fire` rejects it as
+                # `pivot_missing` / `stop_missing`, so the operator SEES that a
+                # fire existed and why it produced no latch.
+                pivot=row[3],
+                initial_stop=row[4],
                 action_session_date="" if row[5] is None else str(row[5]),
                 run_ts="" if row[6] is None else str(row[6]),
                 pipeline_run_id=None if row[7] is None else int(row[7]),
