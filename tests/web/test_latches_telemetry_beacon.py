@@ -367,3 +367,43 @@ def test_panel_echoes_the_persisted_telemetry_for_a_live_latch(
         after = client.get("/latches").text
     assert "first viewed" in after
     assert "NOT YET RECORDED" not in after
+
+
+@pytest.mark.parametrize("bad_anchor", [
+    "2026-07-26",   # Sunday
+    "2026-07-25",   # Saturday
+])
+def test_a_non_session_anchor_is_rejected(seeded_db, frozen_clocks, bad_anchor):
+    """Codex executing R1. The proximity check ALONE does not imply the anchor
+    is a session: `sessions_behind(2026-07-27, 2026-07-26)` is 1 even though
+    2026-07-26 is a SUNDAY. A weekend/holiday date would therefore be written as
+    a `view_session_date`, corrupting the session keyspace 21-B's ledger joins
+    on."""
+    cfg, cfg_path = seeded_db
+    cid = _seed_ftre(cfg)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post("/latches/view", headers=_HX,
+                        data={"view_session_date": bad_anchor,
+                              "candidate_ids": str(cid)})
+    assert r.status_code == 400
+    assert "view_session_date" in r.text
+    assert "session" in r.text.lower()
+    assert _rows(cfg) == []
+
+
+def test_every_persisted_view_session_date_is_a_real_nyse_session(
+        seeded_db, frozen_clocks):
+    """The invariant the rejection above protects, asserted on the DATA."""
+    from swing.evaluation.dates import is_trading_session
+    cfg, cfg_path = seeded_db
+    cid = _seed_ftre(cfg)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        for anchor in (ANCHOR, "2026-07-26", "2026-07-24"):
+            client.post("/latches/view", headers=_HX,
+                        data={"view_session_date": anchor,
+                              "candidate_ids": str(cid)})
+    persisted = {r[5] for r in _rows(cfg)}
+    assert persisted
+    assert all(is_trading_session(date.fromisoformat(d)) for d in persisted)

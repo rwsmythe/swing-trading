@@ -7,28 +7,28 @@ import pytest
 
 from swing.data.db import connect
 from swing.evaluation.dates import PageKind
-from swing.web.price_cache import PriceSnapshot
 from swing.web.view_models.latches import LatchPanelVM, build_latch_panel_vm
 
 NOW = datetime(2026, 7, 25, 12, 0)     # Saturday -> action session 2026-07-27
 
 
-class _FakeCache:
-    """Serves ONE price for every requested ticker (or nothing)."""
-
-    def __init__(self, price=None, *, source="live", is_stale=False):
-        self._price = price
-        self._source = source
-        self._is_stale = is_stale
-
-    def get_many(self, tickers, deadline_seconds, *, executor=None):
-        if self._price is None:
-            return {}
-        return {
-            t: PriceSnapshot(ticker=t, price=self._price, asof=NOW,
-                             is_stale=self._is_stale, source=self._source)
-            for t in tickers
-        }
+def _set_last_close(cfg, ticker, price):
+    """The panel's price source is the most recent persisted `candidates.close`
+    -- a pure SELECT. Seeding a later `bucket='watch'` row is exactly how the
+    live corpus carries a newer close for a ticker whose latch is still armed
+    (FTRE runs 122-125 are precisely this shape)."""
+    conn = connect(cfg.paths.db_path)
+    with conn:
+        conn.execute(
+            "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, "
+            "action_session_date, tickers_evaluated, aplus_count, watch_count, "
+            "skip_count, excluded_count, error_count) VALUES "
+            "(900, '2026-07-24T17:30:05', '2026-07-24', '2026-07-27', 1, 0, 1, 0, 0, 0)")
+        conn.execute(
+            "INSERT INTO candidates (evaluation_run_id, ticker, bucket, close, "
+            "pivot, initial_stop, rs_method) VALUES "
+            "(900, ?, 'watch', ?, 18.34, 14.88, 'universe')", (ticker, price))
+    conn.close()
 
 
 def _seed(cfg, rows):
@@ -52,12 +52,23 @@ def _seed(cfg, rows):
 _FTRE = [(121, "2026-07-17", "2026-07-20", "FTRE", "aplus", 18.34, 14.88)]
 
 
-def _vm(cfg, *, price=None, source="live", is_stale=False):
+def _clear_closes(cfg):
+    """`candidates.close` is NULLABLE (migration 0001 puts no NOT NULL on it),
+    so 'no price at all' is a REACHABLE production shape, not a fiction."""
+    conn = connect(cfg.paths.db_path)
+    with conn:
+        conn.execute("UPDATE candidates SET close = NULL")
+    conn.close()
+
+
+def _vm(cfg, *, price=None, now=NOW):
+    if price is None:
+        _clear_closes(cfg)
+    else:
+        _set_last_close(cfg, "FTRE", price)
     conn = connect(cfg.paths.db_path)
     try:
-        return build_latch_panel_vm(
-            conn, cfg, _FakeCache(price, source=source, is_stale=is_stale),
-            None, now=NOW)
+        return build_latch_panel_vm(conn, cfg, now=now)
     finally:
         conn.close()
 
@@ -131,20 +142,23 @@ def test_an_in_zone_armed_latch_reads_armed_in_zone(seeded_db):
     assert _vm(cfg, price=18.60).rows[0].state_label == "ARMED - IN ZONE"
 
 
-def test_a_last_close_fallback_price_is_labelled_stale(seeded_db):
-    """`PriceCache` falls back to the most recent `candidates.close`, which for
-    a ticker that rotated out of the screen can be days old. It must not render
-    as a live quote."""
+def test_the_price_is_always_labelled_last_close_and_stale(seeded_db):
+    """The panel GET deliberately takes NO live quote (that would write an
+    audit row from a GET -- an A4 breach), so the price is the most recent
+    persisted `candidates.close`. It must never pass for a live quote: the
+    source, the as-of session and the stale flag are all rendered."""
     cfg, _ = seeded_db
     _seed(cfg, _FTRE)
-    row = _vm(cfg, price=17.76, source="last_close", is_stale=True).rows[0]
+    row = _vm(cfg, price=19.52).rows[0]
     assert row.price_source == "last_close"
     assert row.price_is_stale is True
+    assert row.price_asof == "2026-07-24"
 
 
-def test_an_absent_price_snapshot_does_not_block_the_row(seeded_db):
+def test_an_absent_price_does_not_block_the_row(seeded_db):
     """A6: current_price '-', zone_position 'unknown', row still rendered with
-    its frozen pivot/stop/horizon."""
+    its frozen pivot/stop/horizon. `candidates.close` is NULLABLE, so this is a
+    reachable shape."""
     cfg, _ = seeded_db
     _seed(cfg, _FTRE)
     row = _vm(cfg, price=None).rows[0]
@@ -155,24 +169,43 @@ def test_an_absent_price_snapshot_does_not_block_the_row(seeded_db):
     assert row.horizon_expiry == "2026-08-31"
 
 
-def test_a_price_cache_failure_degrades_without_losing_the_row(seeded_db):
-    """A6 again, one layer down: an exploding cache must not 500 or drop the
-    mandate."""
+def test_a_price_read_failure_degrades_without_losing_the_row(seeded_db, monkeypatch):
+    """A6 again, one layer down: an exploding price read must not 500 or drop
+    the mandate."""
     cfg, _ = seeded_db
     _seed(cfg, _FTRE)
 
-    class _Boom:
-        def get_many(self, *a, **k):
-            raise RuntimeError("price boom")
+    import swing.web.view_models.latches as vm_mod
 
+    def _boom(*_a, **_k):
+        raise RuntimeError("price boom")
+
+    monkeypatch.setattr(vm_mod, "load_last_closes", _boom)
     conn = connect(cfg.paths.db_path)
     try:
-        vm = build_latch_panel_vm(conn, cfg, _Boom(), None, now=NOW)
+        vm = build_latch_panel_vm(conn, cfg, now=NOW)
     finally:
         conn.close()
     assert vm.available is True
     assert len(vm.rows) == 1
     assert vm.rows[0].current_price == "-"
+
+
+def test_the_builder_takes_no_price_cache_so_a_get_cannot_fetch(seeded_db):
+    """THE A4 STRUCTURAL GUARANTEE (Codex executing R1). `PriceCache.get_many`
+    looks read-only, but a cache MISS submits `_fetch_with_fallback` to the
+    executor, which routes the Schwab -> yfinance ladder -- and BOTH legs write
+    audit rows. Passing the cache into the panel builder therefore made
+    `GET /latches` a WRITER during market hours on a cold cache.
+
+    The guarantee is now structural rather than behavioural: the builder has no
+    cache parameter at all, so there is nothing to fetch with. This test fails
+    the moment someone re-adds one."""
+    import inspect
+
+    params = set(inspect.signature(build_latch_panel_vm).parameters)
+    assert params == {"conn", "cfg", "now"}
+    assert "cache" not in params and "executor" not in params
 
 
 def test_the_invalidation_label_travels_with_the_number(seeded_db):
@@ -226,9 +259,9 @@ def test_the_display_lookback_keeps_a_recent_clear_and_drops_an_old_one(seeded_d
     ])
     conn = connect(cfg.paths.db_path)
     try:
-        near = build_latch_panel_vm(conn, cfg, _FakeCache(), None, now=NOW)
+        near = build_latch_panel_vm(conn, cfg, now=NOW)
         far = build_latch_panel_vm(
-            conn, cfg, _FakeCache(), None, now=datetime(2026, 8, 8, 12, 0))
+            conn, cfg, now=datetime(2026, 8, 8, 12, 0))
     finally:
         conn.close()
     assert sorted(r.ticker for r in near.rows) == ["FTRE", "SLDB"]

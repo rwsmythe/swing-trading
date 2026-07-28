@@ -17,7 +17,7 @@ from datetime import date, datetime, timedelta
 from swing.evaluation.dates import PageKind, sessions_behind, topbar_session_date
 from swing.latches.constants import LATCH_PANEL_LOOKBACK_SESSIONS
 from swing.latches.models import Latch
-from swing.latches.reader import build_latch_derivation
+from swing.latches.reader import build_latch_derivation, load_last_closes
 from swing.web.view_models.journal import _base_banner_fields
 
 _log = logging.getLogger(__name__)
@@ -146,6 +146,7 @@ class LatchPanelVM:
     derivation_session: str
     horizon_session: str
     beacon_payload_json: str
+    orders_payload_json: str
     base_break_footnote: str = BASE_BREAK_FOOTNOTE
     PAGE_KIND = PageKind.FORWARD_PLANNING
 
@@ -221,8 +222,10 @@ def _telemetry_label(views) -> str:
     return f"first viewed {first.first_viewed_ts} ({total} views)"
 
 
-def _build_row(latch: Latch, *, snapshot, views) -> LatchRowVM:
-    price = None if snapshot is None else snapshot.price
+def _build_row(latch: Latch, *, quote, views) -> LatchRowVM:
+    """`quote` is `(price, asof_iso)` from the READ-ONLY last-close source, or
+    `None`."""
+    price = None if quote is None else quote[0]
     zone_position = _zone_position(price, latch)
     return LatchRowVM(
         ticker=latch.identity.ticker,
@@ -234,11 +237,13 @@ def _build_row(latch: Latch, *, snapshot, views) -> LatchRowVM:
         current_price=_fmt_price(price),
         zone_position=zone_position,
         zone_position_label=_ZONE_LABELS[zone_position],
-        price_source="-" if snapshot is None else str(snapshot.source),
-        price_asof=(
-            "-" if snapshot is None or snapshot.asof is None
-            else snapshot.asof.isoformat(timespec="seconds")),
-        price_is_stale=bool(getattr(snapshot, "is_stale", False)),
+        # ALWAYS `last_close` + stale on the GET: the panel deliberately does
+        # NOT take a live quote, because fetching one would write an audit row
+        # from a GET (A4). Rendering the provenance keeps that honest rather
+        # than passing a possibly-days-old close off as a live quote.
+        price_source="-" if quote is None else "last_close",
+        price_asof="-" if quote is None or not quote[1] else quote[1],
+        price_is_stale=quote is not None,
         sessions_to_horizon=latch.sessions_to_horizon,
         horizon_expiry=latch.horizon_expiry.isoformat(),
         state=latch.state,
@@ -284,11 +289,23 @@ def _empty_panel(banner: dict, *, reason: str | None, session_date: str) -> Latc
         rows=(), degraded_rows=(), available=reason is None,
         unavailable_reason=reason, live_candidate_ids=(),
         derivation_session="-", horizon_session="-",
-        beacon_payload_json=payload, **banner)
+        beacon_payload_json=payload,
+        orders_payload_json=json.dumps({"view_session_date": ""}),
+        **banner)
 
 
-def build_latch_panel_vm(conn, cfg, cache=None, executor=None, *, now=None) -> LatchPanelVM:
-    """Build the panel VM. NEVER raises, NEVER writes (A4 + A6)."""
+def build_latch_panel_vm(conn, cfg, *, now=None) -> LatchPanelVM:
+    """Build the panel VM. NEVER raises, NEVER writes (A4 + A6).
+
+    THE NO-WRITE PROPERTY IS STRUCTURAL: this builder takes NO price cache and
+    NO executor, so there is nothing here that could dispatch a live fetch.
+    `PriceCache.get_many` looks read-only but a cache MISS submits
+    `_fetch_with_fallback` to the executor, which routes the Schwab ->
+    yfinance ladder and writes `schwab_api_calls` / `yfinance_calls` audit
+    rows -- i.e. a GET that writes. The current price is instead the most
+    recent persisted `candidates.close` (a pure SELECT), rendered with its
+    provenance so it can never be mistaken for a live quote.
+    """
     banner = _safe_base_banner_fields(conn, cfg)
     clock = now or _now()
     # PAGE_KIND is FORWARD_PLANNING but `_base_banner_fields` hardcodes the
@@ -303,25 +320,22 @@ def build_latch_panel_vm(conn, cfg, cache=None, executor=None, *, now=None) -> L
         ]
         live = [latch for latch in displayed if latch.is_live]
 
-        snapshots: dict = {}
-        if live and cache is not None:
+        quotes: dict = {}
+        if live:
             try:
-                snapshots = cache.get_many(
-                    sorted({latch.identity.ticker for latch in live}),
-                    deadline_seconds=cfg.web.price_fetch_deadline_seconds,
-                    executor=executor,
-                ) or {}
+                quotes = load_last_closes(
+                    conn, sorted({latch.identity.ticker for latch in live}))
             except Exception as exc:  # noqa: BLE001 -- A6: a price miss never blocks
-                _log.warning("latch panel price fetch degraded: %s", exc)
-                snapshots = {}
+                _log.warning("latch panel last-close read degraded: %s", exc)
+                quotes = {}
 
         views_by_latch = _load_views(conn, displayed, derivation.horizon_session)
 
         rows = [
             _build_row(
                 latch,
-                snapshot=(
-                    snapshots.get(latch.identity.ticker) if latch.is_live else None),
+                quote=(
+                    quotes.get(latch.identity.ticker) if latch.is_live else None),
                 views=views_by_latch.get(latch.identity.candidate_id, ()),
             )
             for latch in sorted(
@@ -357,6 +371,8 @@ def build_latch_panel_vm(conn, cfg, cache=None, executor=None, *, now=None) -> L
             derivation_session=derivation.derivation_session.isoformat(),
             horizon_session=derivation.horizon_session.isoformat(),
             beacon_payload_json=payload,
+            orders_payload_json=json.dumps({
+                "view_session_date": derivation.horizon_session.isoformat()}),
             **banner,
         )
     except Exception as exc:  # noqa: BLE001 -- A6: the panel degrades, never 500s
@@ -507,9 +523,29 @@ def resolve_open_orders(conn, cfg, app_state):
         kind="ok", detail="Live broker order book read."), to_resting_orders(raw)
 
 
-def build_latch_orders_vm(conn, cfg, app_state, *, now=None) -> LatchOrdersFragmentVM:
-    """Build the order-awareness fragment VM. NEVER raises (A6)."""
+def build_latch_orders_vm(
+    conn, cfg, app_state, *, horizon_session_override=None,
+) -> LatchOrdersFragmentVM:
+    """Build the order-awareness fragment VM. NEVER raises (A6).
+
+    `horizon_session_override` is the RENDER-TIME anchor the panel posted. It
+    is REQUIRED: without it the fragment would derive at its own `now`, so
+    after a session rollover (or a restored page) it could render alarms for
+    session S+1 while the visible latch cards still describe S -- the panel
+    contradicting itself about which mandates are live. When the anchor is
+    absent or unusable the fragment degrades and SUPPRESSES alarms, which is
+    the safe direction: a false all-clear is the failure mode this arc exists
+    to prevent.
+    """
     from swing.latches.orders import join_orders_to_latches
+
+    if horizon_session_override is None:
+        return LatchOrdersFragmentVM(
+            available=False, resolution_kind="stale_anchor",
+            resolution_detail=(
+                "This page's session anchor is missing or stale, so broker "
+                "orders were not joined to it. Reload to check your orders."),
+            alarms=(), order_lines=())
 
     try:
         resolution, orders = resolve_open_orders(conn, cfg, app_state)
@@ -528,7 +564,8 @@ def build_latch_orders_vm(conn, cfg, app_state, *, now=None) -> LatchOrdersFragm
             resolution_detail=resolution.detail, alarms=(), order_lines=())
 
     try:
-        derivation = build_latch_derivation(conn, cfg, now=now or _now())
+        derivation = build_latch_derivation(
+            conn, cfg, horizon_session_override=horizon_session_override)
         _joins, alarms = join_orders_to_latches(
             latches=derivation.latches, orders=orders)
     except Exception as exc:  # noqa: BLE001 -- A6
@@ -564,7 +601,7 @@ def build_latch_orders_vm(conn, cfg, app_state, *, now=None) -> LatchOrdersFragm
 PANEL_SPECIFIC_FIELDS = frozenset({
     "rows", "degraded_rows", "available", "unavailable_reason",
     "live_candidate_ids", "derivation_session", "horizon_session",
-    "beacon_payload_json", "base_break_footnote",
+    "beacon_payload_json", "orders_payload_json", "base_break_footnote",
 })
 
 

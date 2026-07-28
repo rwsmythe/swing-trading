@@ -302,8 +302,14 @@ def test_a_legacy_entry_after_latch1_invalidated_belongs_to_latch2_only():
 
 
 def test_one_trade_can_fill_at_most_one_latch():
-    """Rule (b): the consumed-trade_ids set. An entry inside BOTH latches'
-    bounds goes to the EARLIEST-anchor latch and is not re-used."""
+    """Rule (b): the consumed-trade_ids set. A trade appears as `clear_trade_id`
+    on AT MOST one latch, however many latches' nominal windows contain it.
+
+    It goes to the latch that actually held the mandate ON the entry date. Here
+    latch 1 (pivot 13.56) is superseded on 2026-07-01 by latch 2 (pivot 16.90),
+    and the entry lands 2026-07-02 -- i.e. AFTER latch 1 stopped being the live
+    mandate. Crediting latch 1 would attribute a fill to a mandate the setup had
+    already re-based away from."""
     legacy = EntryRecord(trade_id=91, ticker="OVL", entry_date=date(2026, 7, 2),
                          candidate_id=None, entry_price=17.0, shares=4)
     fires = _ovl_fires()
@@ -313,7 +319,40 @@ def test_one_trade_can_fill_at_most_one_latch():
         horizon_session=date(2026, 7, 10), derivation_session=date(2026, 7, 10))
     filled = [x for x in d.latches if x.clear_trade_id == 91]
     assert len(filled) == 1
-    assert filled[0].identity.candidate_id == 7001      # earliest anchor wins
+    assert filled[0].identity.candidate_id == 7002
+    first, second = d.latches
+    assert first.state == "superseded" and first.clear_trade_id is None
+
+
+def test_the_liveness_probe_cannot_see_a_fill_dated_after_the_refire():
+    """Codex executing R1. The probe asks "had this latch terminated by session
+    S?", so a fill dated AFTER S has not happened yet as of S. An unbounded
+    exact-rung match let the probe see a FUTURE fill, conclude the latch was
+    already dead at S, and open a SECOND latch where the correct answer is a
+    re-confirmation -- the probe and the final resolution disagreeing about the
+    same latch.
+
+    Geometry: fire 05-04, SAME-pivot re-fire 05-05, exact trade for the FIRST
+    candidate on 05-06. Correct: ONE latch (re-confirmed) that then fills."""
+    fires = [
+        FireRow(candidate_id=4001, evaluation_run_id=40, ticker="PROBE",
+                pivot=10.0, initial_stop=8.0, action_session_date="2026-05-04",
+                run_ts="2026-05-01T21:00:00", pipeline_run_id=None),
+        FireRow(candidate_id=4002, evaluation_run_id=41, ticker="PROBE",
+                pivot=10.0, initial_stop=8.0, action_session_date="2026-05-05",
+                run_ts="2026-05-04T17:30:00", pipeline_run_id=None),
+    ]
+    entries = {"PROBE": [EntryRecord(
+        trade_id=93, ticker="PROBE", entry_date=date(2026, 5, 6),
+        candidate_id=4001, entry_price=10.05, shares=5)]}
+    d = derive_latches(
+        fires=fires, bars_by_ticker={"PROBE": []}, entries_by_ticker=entries,
+        horizon_session=date(2026, 5, 7), derivation_session=date(2026, 5, 6))
+    assert len(d.latches) == 1
+    latch = d.latches[0]
+    assert latch.identity.candidate_id == 4001
+    assert latch.reconfirmation_candidate_ids == (4002,)
+    assert latch.state == "filled" and latch.clear_trade_id == 93
 
 
 def test_an_explicit_candidate_id_beats_a_windowed_claim_on_the_same_trade():

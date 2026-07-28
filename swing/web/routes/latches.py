@@ -15,7 +15,11 @@ from fastapi.responses import HTMLResponse
 from swing.config_overrides import apply_overrides
 from swing.data.db import connect
 from swing.data.repos.latch_view_events import record_view
-from swing.evaluation.dates import action_session_for_run, sessions_behind
+from swing.evaluation.dates import (
+    action_session_for_run,
+    is_trading_session,
+    sessions_behind,
+)
 from swing.latches.reader import build_latch_derivation
 from swing.web.view_models.latches import build_latch_orders_vm, build_latch_panel_vm
 
@@ -78,6 +82,34 @@ def _parse_beacon_anchor(form) -> tuple[date, list[int]]:
     return anchor, ids
 
 
+def _classify_anchor(anchor: date, current: date) -> str:
+    """`ok` | `future` | `not_a_session` | `stale`.
+
+    The session check is load-bearing and is NOT implied by the proximity
+    check: `sessions_behind(2026-07-27, 2026-07-26)` is 1 even though
+    2026-07-26 is a SUNDAY, so a weekend/holiday date would otherwise pass and
+    be written as a `view_session_date` -- corrupting the session keyspace that
+    21-B's ledger joins on.
+    """
+    if anchor > current:
+        return "future"
+    if not is_trading_session(anchor):
+        return "not_a_session"
+    if sessions_behind(current, anchor) > 1:
+        return "stale"
+    return "ok"
+
+
+def _stale_notice(anchor: date, current: date) -> HTMLResponse:
+    return HTMLResponse(
+        status_code=409,
+        content=(
+            "<p class='latch-beacon-stale'>This page is stale (rendered "
+            f"for {anchor.isoformat()}; current session is "
+            f"{current.isoformat()}). Reload to record your view.</p>"),
+    )
+
+
 def _reject(field: str, reason: str) -> HTMLResponse:
     return HTMLResponse(
         status_code=400,
@@ -93,11 +125,7 @@ def latches_panel(request: Request):
     cfg = apply_overrides(request.app.state.cfg)
     conn = connect(cfg.paths.db_path)
     try:
-        vm = build_latch_panel_vm(
-            conn, cfg,
-            getattr(request.app.state, "price_cache", None),
-            getattr(request.app.state, "price_fetch_executor", None),
-        )
+        vm = build_latch_panel_vm(conn, cfg)
     finally:
         conn.close()
     return request.app.state.templates.TemplateResponse(
@@ -106,7 +134,7 @@ def latches_panel(request: Request):
 
 
 @router.post("/latches/orders", response_class=HTMLResponse)
-def latches_orders_fragment(request: Request):
+async def latches_orders_fragment(request: Request):
     """The lazy broker-order-awareness fragment.
 
     THIS ENDPOINT IS NOT A SAFE METHOD. It performs an AUDITED external Schwab
@@ -115,11 +143,30 @@ def latches_orders_fragment(request: Request):
     for exactly that reason: calling it GET would be a lie about the method's
     safety, would contradict A4 inside the arc that asserts A4, and would
     expose a real broker call to browser prefetch / preconnect / refresh.
+
+    It carries the SAME render-time session anchor as the beacon, and for the
+    same reason: without it the fragment would derive at its own clock and
+    could render alarms for a DIFFERENT session than the latch cards the
+    operator is looking at.
     """
+    anchor: date | None = None
+    try:
+        form = await request.form()
+        raw = form.get("view_session_date")
+        if isinstance(raw, str) and len(raw) == 10:
+            parsed = date.fromisoformat(raw)
+            if _classify_anchor(parsed, action_session_for_run(_now())) == "ok":
+                anchor = parsed
+    except (ValueError, TypeError):
+        anchor = None
+    except Exception:  # noqa: BLE001 -- an unparseable body degrades, never 500s
+        anchor = None
+
     cfg = apply_overrides(request.app.state.cfg)
     conn = connect(cfg.paths.db_path)
     try:
-        vm = build_latch_orders_vm(conn, cfg, request.app.state)
+        vm = build_latch_orders_vm(
+            conn, cfg, request.app.state, horizon_session_override=anchor)
     finally:
         conn.close()
     return request.app.state.templates.TemplateResponse(
@@ -154,26 +201,21 @@ async def latches_view_beacon(request: Request) -> Response:
 
     now = _now()
     current = action_session_for_run(now)
-    if anchor > current:
+    verdict = _classify_anchor(anchor, current)
+    if verdict == "future":
         return _reject("view_session_date", "is in the future")
-    stale_by = sessions_behind(current, anchor)
-    if stale_by > 1:
+    if verdict == "not_a_session":
+        return _reject("view_session_date", "is not an NYSE trading session")
+    if verdict == "stale":
         # NOT a silent drop and NOT an acceptance (plan section D). Accepting
         # would WRITE A VIEW RECORD FOR A SESSION THE OPERATOR DID NOT VIEW --
         # manufacturing evidence in the flattering direction. Dropping silently
         # would bias the record toward a false `away`. So the rejection is made
         # VISIBLE and the operator is told to reload.
         log.warning(
-            "latch view beacon rejected as stale: anchor=%s current=%s "
-            "(%d sessions behind)", anchor.isoformat(), current.isoformat(),
-            stale_by)
-        return HTMLResponse(
-            status_code=409,
-            content=(
-                "<p class='latch-beacon-stale'>This page is stale (rendered "
-                f"for {anchor.isoformat()}; current session is "
-                f"{current.isoformat()}). Reload to record your view.</p>"),
-        )
+            "latch view beacon rejected as stale: anchor=%s current=%s",
+            anchor.isoformat(), current.isoformat())
+        return _stale_notice(anchor, current)
 
     cfg = apply_overrides(request.app.state.cfg)
     conn = connect(cfg.paths.db_path)

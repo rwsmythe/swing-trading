@@ -152,6 +152,47 @@ def load_bars(cfg, ticker: str, *, start: date, end: date) -> list[DailyBar]:
     return bars
 
 
+def _session_at_or_before(raw: str, bound: date) -> bool:
+    """True when `raw` parses to a date at-or-before `bound`, OR is unparseable
+    (an unplaceable fire is kept so it can degrade VISIBLY)."""
+    try:
+        return date.fromisoformat(str(raw)) <= bound
+    except (TypeError, ValueError):
+        return True
+
+
+def load_last_closes(conn: sqlite3.Connection, tickers) -> dict[str, tuple[float, str]]:
+    """The most recent `candidates.close` per ticker, with its session.
+
+    A PURE SELECT -- this is what lets `GET /latches` show a current price
+    WITHOUT writing anything (A4). `PriceCache.get_many` cannot be used on the
+    GET: a cache MISS dispatches the Schwab -> yfinance ladder, and both legs
+    write audit rows (`schwab_api_calls` / `yfinance_calls`), which would make
+    the panel GET a writer.
+    """
+    values = sorted({str(t) for t in (tickers or ())})
+    if not values:
+        return {}
+    placeholders = ",".join("?" * len(values))
+    rows = conn.execute(
+        "SELECT c.ticker, c.close, e.data_asof_date FROM candidates c "
+        "JOIN evaluation_runs e ON e.id = c.evaluation_run_id "
+        f"WHERE c.ticker IN ({placeholders}) AND c.close IS NOT NULL "
+        "ORDER BY e.data_asof_date, e.run_ts, c.id",
+        values,
+    ).fetchall()
+    out: dict[str, tuple[float, str]] = {}
+    for ticker, close, asof in rows:
+        try:
+            value = float(close)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(value):
+            continue
+        out[str(ticker)] = (value, "" if asof is None else str(asof))
+    return out
+
+
 def build_latch_derivation(
     conn: sqlite3.Connection,
     cfg,
@@ -176,7 +217,18 @@ def build_latch_derivation(
     derivation_session = session_offset(horizon_session, -1)
     horizon_sessions = latch_horizon_sessions(cfg)
 
-    fires = load_fire_rows(conn)
+    # AS-OF SCOPING. Only fires whose action session is at-or-before the
+    # horizon anchor existed in the world the anchor describes. Without this a
+    # beacon POST carrying yesterday's anchor would rebuild the derivation
+    # using TODAY's newer fire -- which can SUPERSEDE the very latch the
+    # operator was looking at, so the view he actually performed is never
+    # recorded. A fire whose session TEXT is unparseable is KEPT: it cannot be
+    # placed in time, and `derive_latches` must still surface it as a visibly
+    # degraded row (A6) rather than silently dropping it.
+    fires = tuple(
+        f for f in load_fire_rows(conn)
+        if _session_at_or_before(f.action_session_date, horizon_session)
+    )
     tickers = sorted({f.ticker for f in fires})
     entries_by_ticker = load_entry_records(conn, tickers)
 

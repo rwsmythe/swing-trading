@@ -125,15 +125,23 @@ def _match_fill(
     *,
     consumed: set[int],
     effective_end: date,
+    as_of: date,
 ) -> tuple[EntryRecord | None, str | None]:
     """The two-rung fill ladder, EXACT first (plan A.6).
 
     Rung 1 (``candidate_id``): an entry whose ``candidate_id`` is in this
-    latch's candidate set AND dated at-or-after the anchor.
+    latch's candidate set AND dated inside ``[anchor, as_of]``.
     Rung 2 (``windowed``): ONLY when ``entry.candidate_id IS NULL`` -- ticker
-    match inside ``[anchor, effective_end]``, where ``effective_end`` is the
-    ACTUAL live window (bounded by the non-fill terminal), not the nominal
-    horizon.
+    match inside ``[anchor, min(effective_end, as_of)]``, where
+    ``effective_end`` is the ACTUAL live window (bounded by the non-fill
+    terminal), not the nominal horizon.
+
+    ``as_of`` IS LOAD-BEARING ON BOTH RUNGS. The open-latch rule's liveness
+    PROBE asks "had this latch terminated by session S?", and a fill dated
+    AFTER S has not happened yet as of S. Without the bound the probe sees a
+    FUTURE fill, concludes the latch was already dead at S, and opens a second
+    latch where the correct answer is a re-confirmation -- i.e. the probe and
+    the final resolution disagree about the same latch.
     """
     cset = draft.candidate_set
     available = [e for e in entries if e.trade_id not in consumed]
@@ -141,14 +149,14 @@ def _match_fill(
         e for e in available
         if e.candidate_id is not None
         and e.candidate_id in cset
-        and e.entry_date >= draft.anchor
+        and draft.anchor <= e.entry_date <= as_of
     ]
     if exact:
         return min(exact, key=lambda e: (e.entry_date, e.trade_id)), "candidate_id"
     windowed = [
         e for e in available
         if e.candidate_id is None
-        and draft.anchor <= e.entry_date <= effective_end
+        and draft.anchor <= e.entry_date <= min(effective_end, as_of)
     ]
     if windowed:
         return min(windowed, key=lambda e: (e.entry_date, e.trade_id)), "windowed"
@@ -209,7 +217,8 @@ def _resolve_terminal(
         else min(draft.horizon_expiry, nonfill.session)
     )
     entry, basis = _match_fill(
-        draft, entries, consumed=consumed, effective_end=effective_end)
+        draft, entries, consumed=consumed, effective_end=effective_end,
+        as_of=horizon_ref)
 
     if entry is not None and not dry_run:
         # An accepted match is definitively THIS latch's trade, so it is

@@ -16,10 +16,12 @@
   {# The lazy broker-order fragment. POST, not GET: it makes an AUDITED Schwab
      call that inserts a schwab_api_calls row (plan D.1). hx-target="this" is
      REQUIRED -- an hx-target inherited from an ancestor would swap the response
-     into the wrong element. #}
+     into the wrong element. It carries the RENDER-TIME session anchor so the
+     alarms describe the SAME session as the latch cards below. #}
   <section id="latch-orders" hx-post="/latches/orders" hx-trigger="load"
            hx-target="this" hx-swap="innerHTML"
-           hx-headers='{"HX-Request": "true"}'>
+           hx-headers='{"HX-Request": "true"}'
+           hx-vals='{{ vm.orders_payload_json }}'>
     <p class="muted">Checking broker orders...</p>
   </section>
 

@@ -87,6 +87,17 @@ def session_offset(reference: date, n: int) -> date:
     return cursor.date()
 
 
+def is_trading_session(candidate: date) -> bool:
+    """True when `candidate` is an NYSE trading session.
+
+    Purely additive (the ratified 18-E precedent). Used to reject a
+    non-session date offered as a session ANCHOR by an external caller: a
+    weekend/holiday date can otherwise slip past a `sessions_behind` proximity
+    check and corrupt a session-keyed ledger.
+    """
+    return bool(_NYSE.is_session(pd.Timestamp(candidate)))
+
+
 def last_completed_session(now_local: datetime, *, tz: str = "Pacific/Honolulu") -> date:
     """Most recent NYSE session whose close has already happened at `now_local`.
 

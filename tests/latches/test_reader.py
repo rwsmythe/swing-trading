@@ -280,3 +280,59 @@ def test_build_latch_derivation_on_an_empty_db_returns_an_empty_derivation(tmp_p
         assert d.latches == () and d.degraded == ()
     finally:
         conn.close()
+
+
+def test_the_as_of_derivation_excludes_a_fire_newer_than_the_anchor(tmp_path):
+    """Codex executing R1. `load_fire_rows` returns EVERY A+ fire, so without
+    an as-of scope a beacon POST carrying yesterday's anchor would rebuild the
+    derivation using TODAY's newer fire. With a different pivot that newer fire
+    SUPERSEDES the latch the operator was actually looking at, so the view he
+    genuinely performed is never recorded -- the telemetry silently under-counts
+    in the flattering direction.
+
+    Geometry: fire A 2026-07-20 @ 18.34 (what the page showed); fire B
+    2026-07-28 @ 20.19 (landed after). As of 2026-07-27, only A exists."""
+    cfg = _cfg(tmp_path)
+    conn = ensure_schema(tmp_path / "t.db")
+    try:
+        with conn:
+            _run(conn, 121, "2026-07-17", "2026-07-20")
+            _candidate(conn, 121, "FTRE", "aplus", 18.34, 14.88)
+            _run(conn, 130, "2026-07-27", "2026-07-28")
+            _candidate(conn, 130, "FTRE", "aplus", 20.19, 16.515)
+
+        as_of = build_latch_derivation(
+            conn, cfg, horizon_session_override=date(2026, 7, 27))
+        assert len(as_of.latches) == 1
+        assert as_of.latches[0].state == "armed"          # NOT superseded
+        assert as_of.latches[0].latched_pivot == 18.34
+
+        later = build_latch_derivation(
+            conn, cfg, horizon_session_override=date(2026, 7, 28))
+        assert len(later.latches) == 2
+        assert later.latches[0].state == "superseded"
+    finally:
+        conn.close()
+
+
+def test_an_unparseable_fire_session_is_kept_so_it_can_degrade_visibly(tmp_path):
+    """The as-of filter must not become a silent drop: a fire whose session TEXT
+    is malformed cannot be placed in time, so it is KEPT and surfaces as a
+    degraded row (A6)."""
+    cfg = _cfg(tmp_path)
+    conn = ensure_schema(tmp_path / "t.db")
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, "
+                "action_session_date, tickers_evaluated, aplus_count, "
+                "watch_count, skip_count, excluded_count, error_count) VALUES "
+                "(60, '2026-05-01T17:30:05', '2026-04-30', '2026-5-01', "
+                "1, 1, 0, 0, 0, 0)")
+            _candidate(conn, 60, "BADD", "aplus", 10.0, 8.0)
+        d = build_latch_derivation(
+            conn, cfg, horizon_session_override=date(2026, 7, 27))
+        assert d.latches == ()
+        assert [x.reason for x in d.degraded] == ["bad_session_date"]
+    finally:
+        conn.close()
