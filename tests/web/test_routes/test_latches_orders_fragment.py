@@ -1092,10 +1092,10 @@ def test_an_undeterminable_regime_is_labelled_on_the_affected_latch(
     assert r.status_code == 200
     assert "MANDATE FORM CHECK NOT RUN" in r.text
     assert "FTRE: the mandate FORM check did not run" in r.text
-    assert "no close is recorded" in r.text
+    assert "no usable close is recorded" in r.text
     # The checks that DID run are named, so the label reduces the claim rather
     # than reading as a blanket failure.
-    assert "GOOD_TILL_CANCEL checks still apply" in r.text
+    assert "GOOD_TILL_CANCEL whenever the broker payload carries" in r.text
     assert "Broker orders agree" not in r.text
 
 
@@ -1122,7 +1122,7 @@ def test_a_latch_whose_ticker_left_the_screen_is_visibly_inert(
         r = _post_orders(client)
     assert r.status_code == 200
     assert "FTRE: the mandate FORM check did not run" in r.text
-    assert "the most recent close for this ticker is from 2026-07-17" in r.text
+    assert "the most recent usable close for this ticker is from 2026-07-17" in r.text
     assert "not the derivation session 2026-07-24" in r.text
     assert "Broker orders agree" not in r.text
     # It is a LABEL on the affected latch, NOT an alarm and NOT a suppression:
@@ -1148,7 +1148,7 @@ def test_the_skipped_shape_label_claims_no_check_it_did_not_perform(
     assert "FTRE: the mandate FORM check did not run" in r.text
     assert "no resting order was evaluated for this mandate" in r.text
     assert "either form is accepted" not in r.text
-    assert "GOOD_TILL_CANCEL checks still apply" not in r.text
+    assert "GOOD_TILL_CANCEL whenever the broker payload carries" not in r.text
 
 
 def test_the_label_does_not_contradict_a_shape_mismatch_it_still_reports(
@@ -1202,6 +1202,6 @@ def test_a_failed_close_read_is_not_reported_as_an_absent_close(
     assert r.status_code == 200
     assert "FTRE: the mandate FORM check did not run" in r.text
     assert "the close read failed" in r.text
-    assert "no close is recorded" not in r.text
+    assert "no usable close is recorded" not in r.text
     # ...and the failure must not become an alarm or a 500.
     assert "LATCH_ARMED_NO_RESTING_ORDER" not in r.text

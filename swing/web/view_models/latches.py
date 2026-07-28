@@ -776,15 +776,24 @@ def build_latch_orders_vm(
                 why = ("the close read failed, so no regime price is available "
                        f"for the derivation session {regime_session_iso}")
             elif quote is None:
-                why = ("no close is recorded for this ticker on the derivation "
-                       f"session {regime_session_iso}")
+                # USABLE, not merely present: `load_last_closes` skips a
+                # non-numeric / non-finite close, so "no close is recorded"
+                # would be a false statement about the operator's data when a
+                # malformed one exists (Codex R3 MINOR).
+                why = ("no usable close is recorded for this ticker on the "
+                       f"derivation session {regime_session_iso}")
             else:
-                why = (f"the most recent close for this ticker is from "
+                why = (f"the most recent usable close for this ticker is from "
                        f"{quote[1] or 'an unrecorded session'}, not the "
                        f"derivation session {regime_session_iso}")
             tail = (
-                "either form is accepted. The zone cap and GOOD_TILL_CANCEL "
-                "checks still apply." if join.orders
+                # GOOD_TILL_CANCEL is judged only when the payload CARRIES a
+                # duration -- `mandate_shape_mismatch` deliberately does not
+                # assert against an absent one, so an unconditional "GTC still
+                # applies" overclaims (Codex R3 MINOR).
+                "either form is accepted. The zone cap is still judged, and "
+                "GOOD_TILL_CANCEL whenever the broker payload carries a "
+                "duration." if join.orders
                 else "no resting order was evaluated for this mandate.")
             form_check_skipped_lines.append(
                 f"{lat.identity.ticker}: the mandate FORM check did not run - "
