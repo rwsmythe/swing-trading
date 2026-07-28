@@ -2,7 +2,9 @@
 
 Read-only by construction: SELECTs plus an on-disk parquet read. ZERO network
 I/O (`resolve_ohlcv_window` is a two-provider parquet read -- the same reader
-the pipeline observe step uses), ZERO writes, ZERO transaction management.
+the pipeline observe step uses), ZERO writes (the archive read opts OUT of the
+resolver's legacy migration via `migrate=False`; see `load_bars`), ZERO
+transaction management.
 
 Every boundary degrades rather than raises (condition A6): a missing archive,
 a malformed TEXT date, an absent `pipeline_runs` twin. In particular NULL-TWIN
@@ -154,17 +156,28 @@ def load_bars(cfg, ticker: str, *, start: date, end: date) -> list[DailyBar]:
     `bars_available=False` so the panel says "invalidation NOT evaluated - no
     bars" rather than a silent "not invalidated".
 
-    (Reviewer note: `resolve_ohlcv_window` performs a one-shot legacy
-    `{TICKER}.parquet` -> Shape-A rename on first read. That is pre-existing
-    production read-path behaviour shared with the pipeline observe step -- a
-    cache-file migration, not domain state, and explicitly NOT the A4 view
-    record.)
+    `migrate=False` IS THE A4 NO-WRITE PROPERTY, NOT AN OPTIMISATION.
+    `resolve_ohlcv_window`'s default path runs `_backward_compat_rename`, which
+    WRITES: V1 deliberately leaves the legacy `{TICKER}.parquet` in place (the
+    `read_or_fetch_archive` consumers read only that path), so the both-exist
+    MERGE branch is the STEADY state and rewrites `{TICKER}.yfinance.parquet`
+    on every read whose merge output differs from the stored Shape A -- 6 of a
+    60-ticker both-shapes sample on the live cache, plus a file CREATION for
+    every legacy-only ticker (SLDB is one). A `GET /latches` must write
+    NOTHING, so the panel opts out. The migration duty stays with the nightly
+    pipeline's observe step, which still calls the default `migrate=True`.
+
+    The accepted consequence: the panel reads Shape-A rows ONLY, so a ticker
+    whose archive is legacy-only yields no bars and the derivation reports
+    `bars_available=False` ("invalidation NOT evaluated - no bars") rather than
+    a silent "not invalidated". Refactoring the legacy consumers onto the Shape
+    A resolver is the banked V2 that removes the split entirely.
     """
     try:
         from swing.data.ohlcv_archive import resolve_ohlcv_window
         df, _provenance = resolve_ohlcv_window(
             ticker, start=start.isoformat(), end=end.isoformat(),
-            cache_dir=cfg.paths.prices_cache_dir,
+            cache_dir=cfg.paths.prices_cache_dir, migrate=False,
         )
     except Exception as exc:  # noqa: BLE001 -- A6: an unreadable archive is not a 500
         log.warning("latch reader: archive read failed for %s: %s", ticker, exc)

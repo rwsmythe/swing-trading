@@ -202,6 +202,132 @@ def test_load_bars_skips_rows_with_a_non_finite_close(tmp_path):
     assert [b.session for b in bars] == [date(2026, 7, 20)]
 
 
+def _write_legacy_archive(cache_dir, ticker, rows):
+    """The PRE-Shape-A `{TICKER}.parquet` file. 1168 of these exist on the
+    operator's box and V1 deliberately LEAVES them in place (the
+    `read_or_fetch_archive` consumers read only that path), so the
+    `_backward_compat_rename` both-exist MERGE branch is the STEADY state, not
+    a one-shot."""
+    pd.DataFrame(rows).to_parquet(cache_dir / f"{ticker}.parquet")
+
+
+def _dir_state(cache_dir):
+    """(name, size, mtime_ns) for every file -- the on-disk fingerprint."""
+    return sorted(
+        (p.name, p.stat().st_size, p.stat().st_mtime_ns)
+        for p in cache_dir.iterdir()
+    )
+
+
+def _freeze_mtimes(cache_dir, when_ns=1_600_000_000_000_000_000):
+    """Stamp every archive file far in the past so ANY rewrite is unambiguous
+    (immune to coarse filesystem timestamp resolution)."""
+    import os
+    for p in cache_dir.iterdir():
+        os.utime(p, ns=(when_ns, when_ns))
+
+
+def test_the_panel_bar_read_writes_NOTHING_to_the_archive_directory(tmp_path):
+    """A4 CARVE-OUT (CHARC-authorised): `GET /latches` must write NOTHING.
+
+    `resolve_ohlcv_window` migrates legacy `{TICKER}.parquet` -> Shape A on
+    every call, and because V1 leaves the legacy file in place the both-exist
+    MERGE branch re-writes `{TICKER}.yfinance.parquet` on EVERY read -- so the
+    panel's bar read fired a filesystem write per latched ticker per page load.
+    The panel path now passes `migrate=False`.
+
+    Discriminating: under the pre-fix code the yfinance parquet is rewritten,
+    so its mtime moves off the frozen 2020 stamp.
+
+    The fixture is DIVERGENT on purpose (the legacy file carries a bar Shape A
+    lacks). `_backward_compat_rename` skips the rewrite when the merge output
+    already equals the Shape-A content, so an identical-content fixture would
+    pass against the UNFIXED code and prove nothing. Divergence is the real
+    shape: on the operator's live cache 6 of a 60-ticker both-shapes sample
+    (AAPL, AESI, AMD, BLNK, COST, CRWD) rewrite on every single read."""
+    cfg = _cfg(tmp_path)
+    cache = cfg.paths.prices_cache_dir
+    shape_a_rows = [
+        {"asof_date": "2026-07-20", "open": 17.6, "high": 17.9, "low": 17.4,
+         "close": 17.76, "volume": 90.0},
+        {"asof_date": "2026-07-22", "open": 18.0, "high": 18.5, "low": 17.8,
+         "close": 18.20, "volume": 100.0},
+    ]
+    # BOTH shapes present -- the live FTRE/VSTS geometry and the steady state
+    # (V1 never removes the legacy file).
+    _write_legacy_archive(cache, "FTRE", shape_a_rows + [
+        {"asof_date": "2026-07-23", "open": 18.3, "high": 18.9, "low": 18.1,
+         "close": 18.55, "volume": 110.0},
+    ])
+    _write_archive(cache, "FTRE", shape_a_rows)
+    _freeze_mtimes(cache)
+    before = _dir_state(cache)
+
+    bars = load_bars(cfg, "FTRE", start=date(2026, 7, 20), end=date(2026, 7, 24))
+
+    assert _dir_state(cache) == before, (
+        "GET /latches wrote to the OHLCV archive: the panel bar read must pass "
+        "migrate=False to resolve_ohlcv_window")
+    # The accepted read consequence, stated rather than hidden: the panel now
+    # sees Shape-A rows ONLY, so a bar living only in the legacy file is not
+    # read. Refactoring the legacy consumers onto Shape A is the banked V2.
+    assert [b.session for b in bars] == [date(2026, 7, 20), date(2026, 7, 22)]
+
+
+def test_the_panel_leaves_a_legacy_only_archive_UNMIGRATED_and_reports_no_bars(
+        tmp_path):
+    """The accepted, SAFE-direction consequence of the carve-out.
+
+    A ticker whose archive is legacy-only is not migrated BY THE PANEL, so the
+    panel sees no Shape-A rows and the derivation reports `bars_available=False`
+    ("invalidation NOT evaluated - no bars") rather than a silent "not
+    invalidated". The migration duty stays with the nightly pipeline's observe
+    step, which still calls `resolve_ohlcv_window` at the default
+    `migrate=True`."""
+    cfg = _cfg(tmp_path)
+    cache = cfg.paths.prices_cache_dir
+    _write_legacy_archive(cache, "SLDB", [
+        {"asof_date": "2026-07-20", "open": 17.6, "high": 17.9, "low": 17.4,
+         "close": 17.76, "volume": 90.0},
+    ])
+    _freeze_mtimes(cache)
+    before = _dir_state(cache)
+
+    assert load_bars(cfg, "SLDB", start=date(2026, 7, 20),
+                     end=date(2026, 7, 24)) == []
+    assert _dir_state(cache) == before
+
+
+def test_an_existing_resolve_caller_STILL_migrates_the_legacy_archive(tmp_path):
+    """THE OTHER HALF OF THE CARVE-OUT, and the reason it is not a one-sided
+    test: `migrate` is opt-OUT with a `True` default, so every pre-existing
+    caller (the pipeline observe step, `swing/pipeline/runner.py`) keeps the
+    legacy -> Shape A migration duty. A future refactor cannot silently flip the
+    default and re-introduce the GET-time write without turning this red."""
+    import inspect
+
+    from swing.data.ohlcv_archive import resolve_ohlcv_window
+
+    signature = inspect.signature(resolve_ohlcv_window)
+    assert signature.parameters["migrate"].default is True
+    assert signature.parameters["migrate"].kind is inspect.Parameter.KEYWORD_ONLY
+
+    cache = tmp_path / "prices"
+    cache.mkdir(parents=True, exist_ok=True)
+    _write_legacy_archive(cache, "SLDB", [
+        {"asof_date": "2026-07-20", "open": 17.6, "high": 17.9, "low": 17.4,
+         "close": 17.76, "volume": 90.0},
+    ])
+
+    # NO migrate= argument: exactly how every pre-existing caller invokes it.
+    df, _prov = resolve_ohlcv_window(
+        "SLDB", start="2026-07-20", end="2026-07-24", cache_dir=cache)
+
+    assert (cache / "SLDB.yfinance.parquet").exists(), (
+        "the default path must STILL migrate the legacy archive")
+    assert list(df["asof_date"]) == ["2026-07-20"]
+
+
 def test_build_latch_derivation_uses_forward_and_backward_anchors(ftre_db, tmp_path):
     """horizon_session == action_session_for_run(now);
        derivation_session == session_offset(horizon_session, -1)

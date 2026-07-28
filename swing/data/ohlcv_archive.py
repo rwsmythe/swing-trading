@@ -974,6 +974,7 @@ def resolve_ohlcv_window(
     start: str,
     end: str,
     cache_dir: Path,
+    migrate: bool = True,
 ) -> tuple[pd.DataFrame, dict[str, str]]:
     """Resolve the OHLCV window for `ticker` across both provider parquets.
 
@@ -992,6 +993,16 @@ def resolve_ohlcv_window(
         start: ISO `YYYY-MM-DD` window start (inclusive).
         end: ISO `YYYY-MM-DD` window end (inclusive).
         cache_dir: archive directory; need not exist.
+        migrate: when True (the default, and what every pre-existing caller
+            gets), run the legacy `{TICKER}.parquet` -> Shape A migration
+            before reading. Pass False for a STRICTLY READ-ONLY caller that
+            must not touch the filesystem: `_backward_compat_rename` is a
+            WRITE path, and because V1 leaves the legacy file in place its
+            both-exist MERGE branch re-fires on every read (it rewrites
+            whenever the merge output differs from the current Shape A
+            content). A read-only web GET must not do that (Phase 21 Arc A,
+            the A4 no-write property; CHARC-authorised carve-out). Reading
+            with `migrate=False` sees Shape-A rows ONLY.
 
     Returns:
         Tuple of (DataFrame indexed 0..n-1 with `asof_date` column +
@@ -1006,7 +1017,7 @@ def resolve_ohlcv_window(
     # existing {TICKER}.parquet archives are automatically migrated to Shape
     # A on FIRST read. Idempotent — subsequent invocations no-op when the
     # legacy file is absent (case 3: new-only).
-    if cache_dir.exists():
+    if migrate and cache_dir.exists():
         _backward_compat_rename(ticker_u, cache_dir=cache_dir)
 
     # Read both providers' parquet files (if present), accumulate rows by
