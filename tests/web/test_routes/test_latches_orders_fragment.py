@@ -1097,7 +1097,7 @@ def test_an_undeterminable_regime_is_labelled_on_the_affected_latch(
         r = _post_orders(client)
     assert r.status_code == 200
     assert "Mandate form check pending" in r.text
-    assert "FTRE: waiting on the nightly screen" in r.text
+    assert "FTRE: waiting on the nightly data" in r.text
     assert "no usable close is recorded for this ticker" in r.text
     # The checks that DID run are named, so the label reduces the claim rather
     # than reading as a blanket failure.
@@ -1119,7 +1119,7 @@ def test_the_skipped_shape_label_claims_no_check_it_did_not_perform(
         r = _post_orders(client)
     assert r.status_code == 200
     assert "LATCH_ARMED_NO_RESTING_ORDER" in r.text
-    assert "FTRE: waiting on the nightly screen" in r.text
+    assert "FTRE: waiting on the nightly data" in r.text
     assert "No resting order was evaluated for this mandate" in r.text
     assert "form is accepted" not in r.text
     assert "GOOD_TILL_CANCEL whenever the broker payload carries" not in r.text
@@ -1165,10 +1165,11 @@ def test_the_label_does_not_contradict_a_shape_mismatch_it_still_reports(
 # not an edge case, and a warning-shaped label on the default state trains the
 # dismissal reflex on the one surface whose alarms have to survive being
 # believed (the Phase-19 drumbeat false-RED lesson).
-def _seed_a_screen_for_the_derivation_session(cfg, *, tickers=("AMN",)):
-    """The nightly HAS recorded 2026-07-24 (the fragment's derivation session) --
-    with `tickers` on it. FTRE's absence from that list is what makes its latch
-    PERMANENTLY inert rather than merely waiting."""
+def _seed_recorded_closes_for_the_derivation_session(cfg, *, tickers=("AMN",),
+                                                     close=12.0):
+    """The nightly HAS recorded 2026-07-24 (the fragment's derivation session),
+    carrying a usable close for `tickers`. FTRE's absence from that data is what
+    makes its latch PERMANENTLY inert rather than merely waiting."""
     conn = connect(cfg.paths.db_path)
     with conn:
         conn.execute(
@@ -1181,7 +1182,7 @@ def _seed_a_screen_for_the_derivation_session(cfg, *, tickers=("AMN",)):
             conn.execute(
                 "INSERT INTO candidates (evaluation_run_id, ticker, bucket, "
                 "close, pivot, initial_stop, rs_method) VALUES "
-                "(129, ?, 'watch', 12.0, 13.0, 11.0, 'universe')", (ticker,))
+                "(129, ?, 'watch', ?, 13.0, 11.0, 'universe')", (ticker, close))
     conn.close()
 
 
@@ -1201,8 +1202,9 @@ def test_the_pending_branch_is_neutral_status_with_a_stated_clear_time(
         r = _post_orders(client)
     assert r.status_code == 200
     assert "Mandate form check pending" in r.text
-    assert "waiting on the nightly screen for the derivation session 2026-07-24" \
+    assert "waiting on the nightly data for the derivation session 2026-07-24" \
         in r.text
+    assert "no closes have been recorded for it yet" in r.text
     assert "it clears when that run records the session" in r.text
     # Neutral tone, explicitly: no alarm prefix and no alarm/warning styling.
     assert "MANDATE FORM CHECK" not in r.text
@@ -1224,21 +1226,31 @@ def test_a_latch_whose_ticker_left_the_screen_is_visibly_inert(
     pending state. The operator's response differs -- there is nothing to wait
     for -- so the label says so and keeps the warning tone.
 
-    The discriminator against pending is the SCREEN, not the ticker: 2026-07-24
-    IS recorded here (carrying AMN), and FTRE is simply not on it."""
+    The discriminator against pending is whether that SESSION's closes exist at
+    all, not the ticker: 2026-07-24 IS recorded here (carrying AMN), and FTRE's
+    newest usable close is still the fire's own 2026-07-17 one.
+
+    The label states the COUNT it reasoned from (Codex y1 MAJOR 2) and states
+    the off-screen cause as the USUAL one rather than asserting it (MAJOR 1: an
+    `evaluation_runs` row is not the finviz screen -- held and pinned tickers are
+    appended to the same run -- so this read cannot prove screen membership)."""
     cfg, cfg_path = seeded_db
     _seed_ftre(cfg)                     # ...and NO fresher FTRE candidates row
-    _seed_a_screen_for_the_derivation_session(cfg)
+    _seed_recorded_closes_for_the_derivation_session(cfg)
     app = _app(cfg, cfg_path, monkeypatch,
                orders=[_order(duration="GOOD_TILL_CANCEL")])
     with TestClient(app) as client:
         r = _post_orders(client)
     assert r.status_code == 200
     assert "MANDATE FORM CHECK INERT FOR THIS LATCH" in r.text
-    assert "the screen for the derivation session 2026-07-24 was recorded and " \
-        "this ticker is NOT on it" in r.text
+    assert "closes for the derivation session 2026-07-24 HAVE been recorded " \
+        "(for 1 ticker)" in r.text
     assert "the most recent usable close for this ticker is from 2026-07-17" in r.text
-    assert "Waiting will NOT clear this one" in r.text
+    assert "The usual cause is the ticker having dropped off the screen" in r.text
+    assert "Waiting will NOT clear this one on its own" in r.text
+    # It must NOT assert finviz-screen membership from a read that cannot see it.
+    assert "is NOT on it" not in r.text
+    assert "WITH this ticker on it" not in r.text
     # It stays a WARNING, and it must not borrow the pending branch's promise.
     assert "latch-alarm-warning" in r.text
     assert "Mandate form check pending" not in r.text
@@ -1252,15 +1264,16 @@ def test_a_latch_whose_ticker_left_the_screen_is_visibly_inert(
 def test_the_pending_and_permanent_branches_cannot_collapse_into_one_string(
         seeded_db, monkeypatch, frozen_panel_clock):
     """The anti-collapse pin. ONE seeding difference -- whether the derivation
-    session was screened at all -- must flip the label between the two branches.
-    A future edit that folds them back into a single string fails here."""
+    session has any recorded close at all -- must flip the label between the two
+    branches. A future edit that folds them back into a single string fails
+    here."""
     cfg, cfg_path = seeded_db
     _seed_ftre(cfg)
     app = _app(cfg, cfg_path, monkeypatch,
                orders=[_order(duration="GOOD_TILL_CANCEL")])
     with TestClient(app) as client:
         pending = _post_orders(client).text
-    _seed_a_screen_for_the_derivation_session(cfg)
+    _seed_recorded_closes_for_the_derivation_session(cfg)
     with TestClient(app) as client:
         permanent = _post_orders(client).text
     assert "Mandate form check pending" in pending
@@ -1269,38 +1282,79 @@ def test_the_pending_and_permanent_branches_cannot_collapse_into_one_string(
     assert "MANDATE FORM CHECK INERT FOR THIS LATCH" not in pending
 
 
-def test_a_screened_ticker_with_no_usable_close_is_not_called_off_the_screen(
+def test_a_session_whose_rows_carry_no_usable_close_is_still_pending(
         seeded_db, monkeypatch, frozen_panel_clock):
-    """`load_last_closes` drops a NULL / non-finite close, so a ticker CAN be on
-    the derivation-session screen and still have no usable close. Reporting that
-    as 'this ticker is NOT on the screen' would be a false statement about the
-    operator's data -- and telling him to wait for it would be false too."""
+    """Codex y1 MAJOR 1. An `evaluation_runs` row for the derivation session is
+    NOT the same thing as a recorded close: `load_last_closes` drops NULL and
+    non-finite closes, so a run whose rows carry none has recorded nothing the
+    form check can use. Counting that run as 'recorded' would flip a calmly
+    waiting latch to a warning -- the exact dismissal-training failure the split
+    exists to prevent. Planted via RAW conn.execute."""
     cfg, cfg_path = seeded_db
     _seed_ftre(cfg)
-    _seed_a_screen_for_the_derivation_session(cfg, tickers=("AMN",))
     conn = connect(cfg.paths.db_path)
     with conn:
         conn.execute(
+            "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, "
+            "action_session_date, tickers_evaluated, aplus_count, watch_count, "
+            "skip_count, excluded_count, error_count) VALUES "
+            "(130, '2026-07-24T17:30:05', '2026-07-24', '2026-07-27', 1, 0, 1, "
+            "0, 0, 0)")
+        conn.execute(
             "INSERT INTO candidates (evaluation_run_id, ticker, bucket, close, "
             "pivot, initial_stop, rs_method) VALUES "
-            "(129, 'FTRE', 'watch', NULL, 18.34, 14.88, 'universe')")
+            "(130, 'AMN', 'watch', NULL, 13.0, 11.0, 'universe')")
     conn.close()
     app = _app(cfg, cfg_path, monkeypatch,
                orders=[_order(duration="GOOD_TILL_CANCEL")])
     with TestClient(app) as client:
         r = _post_orders(client)
     assert r.status_code == 200
-    assert "WITH this ticker on it, but it carries no usable close" in r.text
-    assert "this ticker is NOT on it" not in r.text
-    assert "Mandate form check pending" not in r.text
+    assert "Mandate form check pending" in r.text
+    assert "MANDATE FORM CHECK INERT FOR THIS LATCH" not in r.text
 
 
-def test_an_unreadable_screen_does_not_promise_that_waiting_will_clear_it(
+def test_a_held_position_row_is_never_described_as_finviz_screen_membership(
         seeded_db, monkeypatch, frozen_panel_clock):
-    """A6 at the new read's boundary. If the screen read itself fails the panel
-    genuinely cannot tell pending from permanent -- and guessing 'pending' would
-    tell the operator to wait for something that may never arrive. It says so
-    instead, and it still does not 500."""
+    """Codex y1 MAJOR 1. The evaluator appends HELD open positions
+    (`bucket='excluded'`, `notes='open position'`) and pinned tickers to the same
+    `evaluation_runs` row as the finviz screen, so a read over that row cannot
+    prove screen membership. The permanent label must therefore state the
+    off-screen cause as the USUAL one, never assert it."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    conn = connect(cfg.paths.db_path)
+    with conn:
+        conn.execute(
+            "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, "
+            "action_session_date, tickers_evaluated, aplus_count, watch_count, "
+            "skip_count, excluded_count, error_count) VALUES "
+            "(131, '2026-07-24T17:30:05', '2026-07-24', '2026-07-27', 1, 0, 0, "
+            "0, 1, 0)")
+        conn.execute(
+            "INSERT INTO candidates (evaluation_run_id, ticker, bucket, close, "
+            "pivot, initial_stop, rs_method, notes) VALUES "
+            "(131, 'HELD', 'excluded', 9.5, NULL, NULL, 'universe', "
+            "'open position')")
+    conn.close()
+    app = _app(cfg, cfg_path, monkeypatch,
+               orders=[_order(duration="GOOD_TILL_CANCEL")])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert r.status_code == 200
+    assert "MANDATE FORM CHECK INERT FOR THIS LATCH" in r.text
+    assert "The usual cause is the ticker having dropped off the screen" in r.text
+    # ...and NOT a claim about the finviz screen, which this read cannot see.
+    assert "the screen for the derivation session" not in r.text
+    assert "is NOT on it" not in r.text
+
+
+def test_an_unreadable_close_count_does_not_promise_that_waiting_will_clear_it(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """A6 at the new read's boundary. If the recorded-close count itself fails
+    the panel genuinely cannot tell pending from permanent -- and guessing
+    'pending' would tell the operator to wait for something that may never
+    arrive. It says so instead, and it still does not 500."""
     import swing.web.view_models.latches as vm_mod
     cfg, cfg_path = seeded_db
     _seed_ftre(cfg)
@@ -1308,14 +1362,15 @@ def test_an_unreadable_screen_does_not_promise_that_waiting_will_clear_it(
     def _boom(_conn, _session):
         raise sqlite3.OperationalError("no such table: candidates")
 
-    monkeypatch.setattr(vm_mod, "load_screened_tickers", _boom)
+    monkeypatch.setattr(vm_mod, "count_session_recorded_closes", _boom)
     app = _app(cfg, cfg_path, monkeypatch,
                orders=[_order(duration="GOOD_TILL_CANCEL")])
     with TestClient(app) as client:
         r = _post_orders(client)
     assert r.status_code == 200
     assert "MANDATE FORM CHECK NOT RUN" in r.text
-    assert "could not be determined" in r.text
+    assert "whether any closes have been recorded for the derivation session " \
+        "2026-07-24 could not be determined" in r.text
     assert "nor whether waiting will clear it" in r.text
     assert "Mandate form check pending" not in r.text
 

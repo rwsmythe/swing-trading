@@ -273,32 +273,53 @@ def load_last_closes(conn: sqlite3.Connection, tickers) -> dict[str, tuple[float
     return out
 
 
-def load_screened_tickers(conn: sqlite3.Connection, session: date) -> frozenset[str]:
-    """Every ticker on the screen recorded for `session`, whatever its bucket.
+def count_session_recorded_closes(conn: sqlite3.Connection, session: date) -> int:
+    """How many DISTINCT tickers carry a USABLE close recorded for `session`.
 
-    A PURE SELECT (A4), and the ONLY thing that tells the panel apart the two
-    reasons a latch can have no derivation-session close:
+    A PURE SELECT (A4), and the only thing that tells apart the two reasons a
+    latch can have no derivation-session close:
 
-      * an EMPTY set -- the nightly has not recorded that session at all, so
-        NOBODY has a close for it. Self-resolving: the run will record it. This
-        is the state of every trading day between the action-session rollover at
+      * ZERO -- nothing has been recorded for that session at all, so NOBODY has
+        a close for it. Self-resolving: the nightly run will record it. This is
+        the state of every trading day between the action-session rollover at
         the market close and the nightly pipeline run.
-      * a NON-EMPTY set NOT containing the ticker -- the session WAS screened
-        and this ticker was not on it, so no close for that session is coming.
-        NOT self-resolving: it stays that way until the ticker is back.
+      * NON-ZERO -- that session's closes exist, so a latch that still has none
+        is not merely waiting on the nightly.
 
-    Deliberately does NOT inherit `load_last_closes`'s `close IS NOT NULL`
-    filter: presence on the screen is a different question from carrying a
-    usable close, and conflating them would report a screened ticker with a NULL
-    close as having left the screen.
+    Two deliberate choices, both from the Codex y1 MAJORs:
+
+    1. It mirrors `load_last_closes`'s usability predicate EXACTLY (non-NULL,
+       numeric, finite). The two reads must agree on what "usable" means or the
+       panel's branch and its check disagree -- a session whose only rows carry
+       NULL closes has recorded NOTHING the form check can use, and calling that
+       "recorded" would flip every waiting latch to a warning.
+    2. It asks only WHETHER a close exists, never WHERE the row came from. An
+       `evaluation_runs` row is NOT the finviz screen: the evaluator appends
+       held open positions (`bucket='excluded'`) and pinned tickers to the same
+       run. A predicate phrased as screen membership would therefore make false
+       statements about the operator's data. What the form check actually needs
+       is a close, whatever produced it.
+
+    The COUNT rather than a bool is what the label renders, so an unusual value
+    (an ad-hoc `swing eval` for the same `data_asof_date` producing a handful of
+    rows, rather than the nightly producing hundreds) is visible to the operator
+    instead of silently deciding the branch behind his back.
     """
     rows = conn.execute(
-        "SELECT DISTINCT c.ticker FROM candidates c "
+        "SELECT DISTINCT c.ticker, c.close FROM candidates c "
         "JOIN evaluation_runs e ON e.id = c.evaluation_run_id "
-        "WHERE e.data_asof_date = ?",
+        "WHERE e.data_asof_date = ? AND c.close IS NOT NULL",
         (session.isoformat(),),
     ).fetchall()
-    return frozenset(str(row[0]) for row in rows if row[0] is not None)
+    tickers: set[str] = set()
+    for ticker, close in rows:
+        try:
+            value = float(close)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(value):
+            tickers.add(str(ticker))
+    return len(tickers)
 
 
 def build_latch_derivation(

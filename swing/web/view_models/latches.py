@@ -19,8 +19,8 @@ from swing.latches.constants import LATCH_PANEL_LOOKBACK_SESSIONS
 from swing.latches.models import Latch
 from swing.latches.reader import (
     build_latch_derivation,
+    count_session_recorded_closes,
     load_last_closes,
-    load_screened_tickers,
 )
 from swing.web.view_models.journal import _base_banner_fields
 
@@ -447,7 +447,8 @@ class MandateFormCheckVM:
     branch (the CHARC ruling-4 concurrence), but the operator's correct response
     differs per branch and so must the wording:
 
-      `pending`   -- no screen has been recorded for the derivation session yet.
+      `pending`   -- NO closes at all have been recorded for the derivation
+                     session yet, so nobody has a regime price.
                      The response is to WAIT, and the label says when it clears.
                      THIS IS THE DEFAULT STATE, not an exception: the action
                      session rolls over AT the market close (10:00-10:30 HST)
@@ -460,12 +461,15 @@ class MandateFormCheckVM:
                      became expensive, and this is the one surface whose alarms
                      have to survive being believed. So: neutral status, no alarm
                      prefix, no alarm styling.
-      `permanent` -- the session WAS screened and the ticker is not on it. There
-                     is nothing to wait for, so the label says so and keeps the
-                     warning tone.
-      `unknown`   -- the close read failed, the screen read failed, or the ticker
-                     is screened but carries no usable close. The panel cannot
-                     tell which of the two it is, so it promises neither.
+      `permanent` -- that session's closes HAVE been recorded and this ticker's
+                     most recent usable close is still older, so the nightly is
+                     not what it is waiting on. The label keeps the warning tone
+                     and states the count it is reasoning from, so an unusual
+                     number (an ad-hoc same-date `swing eval` rather than the
+                     nightly) is VISIBLE rather than silently deciding the
+                     branch -- the Codex y1 MAJOR-2 residue.
+      `unknown`   -- the close read failed, or the recorded-close count could
+                     not be read. The panel promises neither direction.
     """
 
     ticker: str
@@ -1030,15 +1034,15 @@ def _build_form_check_notes(
     """
     if not skipped:
         return ()
-    # A FAILED close read short-circuits: with no closes at all the screen
-    # cannot say anything useful about WHY this latch has none.
-    screened: frozenset[str] | None = None
+    # A FAILED close read short-circuits: with no closes read at all, the
+    # recorded-close count says nothing useful about WHY this latch has none.
+    recorded: int | None = None
     if not close_read_failed:
         try:
-            screened = load_screened_tickers(conn, derivation_session)
+            recorded = count_session_recorded_closes(conn, derivation_session)
         except Exception as exc:  # noqa: BLE001 -- A6: the panel never 500s
-            _log.warning("latch order screen read degraded: %s", exc)
-            screened = None
+            _log.warning("latch order recorded-close count degraded: %s", exc)
+            recorded = None
 
     notes: list[MandateFormCheckVM] = []
     for ticker, quote, tail in skipped:
@@ -1050,52 +1054,46 @@ def _build_form_check_notes(
                 f"failed, so no regime price is available for the derivation "
                 f"session {regime_session_iso} and the panel cannot say WHICH "
                 f"of the two mandate forms is correct at this price; {tail}")
-        elif screened is None:
-            # The screen read itself failed. Guessing "pending" would tell the
+        elif recorded is None:
+            # The count read itself failed. Guessing "pending" would tell the
             # operator to wait for something that may never arrive, so the panel
             # promises nothing in either direction.
             severity = "unknown"
             detail = (
                 f"{ticker}: the mandate FORM check did not run - {provenance}, "
-                f"and whether the screen for the derivation session "
-                f"{regime_session_iso} was recorded could not be determined, so "
-                f"the panel cannot say WHICH of the two mandate forms is "
-                f"correct at this price, nor whether waiting will clear it; "
-                f"{tail}")
-        elif not screened:
+                f"and whether any closes have been recorded for the derivation "
+                f"session {regime_session_iso} could not be determined, so the "
+                f"panel cannot say WHICH of the two mandate forms is correct at "
+                f"this price, nor whether waiting will clear it; {tail}")
+        elif recorded == 0:
             # NOBODY has a close for this session yet -- the default state for
             # ~7 hours of every trading day. Status, not a warning.
             severity = "pending"
             detail = (
-                f"{ticker}: waiting on the nightly screen for the derivation "
-                f"session {regime_session_iso} ({provenance}), so there is no "
-                f"regime price yet and the panel cannot yet say WHICH of the "
-                f"two mandate forms is correct at this price. This is the "
-                f"normal state between the market close and the nightly "
-                f"pipeline run; it clears when that run records the session. "
-                f"{_as_sentence(tail)}")
-        elif ticker not in screened:
-            # The screen ran WITHOUT this ticker: it has left the finviz screen
-            # (not held, not pinned). Waiting changes nothing.
-            severity = "permanent"
-            detail = (
-                f"{ticker}: the screen for the derivation session "
-                f"{regime_session_iso} was recorded and this ticker is NOT on "
-                f"it ({provenance}), so no regime price for that session is "
-                f"coming and the panel cannot say WHICH of the two mandate "
-                f"forms is correct at this price. Waiting will NOT clear this "
-                f"one: it stays inert until the ticker is back on the screen. "
-                f"{_as_sentence(tail)}")
+                f"{ticker}: waiting on the nightly data for the derivation "
+                f"session {regime_session_iso} - no closes have been recorded "
+                f"for it yet ({provenance}), so there is no regime price and "
+                f"the panel cannot yet say WHICH of the two mandate forms is "
+                f"correct at this price. This is the normal state between the "
+                f"market close and the nightly pipeline run; it clears when "
+                f"that run records the session. {_as_sentence(tail)}")
         else:
-            # Screened, but the recorded close is NULL / non-finite. Neither
-            # "wait" nor "it left the screen" is a true statement here.
-            severity = "unknown"
+            # That session's closes exist and this ticker's newest usable close
+            # is still older, so the nightly is not what this is waiting on.
+            # The COUNT is rendered so the operator can see the evidence rather
+            # than take the diagnosis on trust (Codex y1 MAJOR 2), and the cause
+            # is stated as the usual one rather than asserted.
+            severity = "permanent"
+            noun = "ticker" if recorded == 1 else "tickers"
             detail = (
-                f"{ticker}: the mandate FORM check did not run - the screen for "
-                f"the derivation session {regime_session_iso} was recorded "
-                f"WITH this ticker on it, but it carries no usable close, so "
-                f"there is no regime price and the panel cannot say WHICH of "
-                f"the two mandate forms is correct at this price; {tail}")
+                f"{ticker}: closes for the derivation session "
+                f"{regime_session_iso} HAVE been recorded (for {recorded} "
+                f"{noun}), but {provenance}, so there is no regime price for this "
+                f"mandate and the panel cannot say WHICH of the two mandate "
+                f"forms is correct at this price. The usual cause is the ticker "
+                f"having dropped off the screen (not held, not pinned). Waiting "
+                f"will NOT clear this one on its own: it clears when the ticker "
+                f"is evaluated again. {_as_sentence(tail)}")
         notes.append(MandateFormCheckVM(
             ticker=ticker, severity=severity,
             headline=_FORM_CHECK_HEADLINES[severity], detail=detail))

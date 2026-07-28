@@ -10,10 +10,10 @@ import pytest
 from swing.data.db import ensure_schema
 from swing.latches.reader import (
     build_latch_derivation,
+    count_session_recorded_closes,
     load_bars,
     load_entry_records,
     load_fire_rows,
-    load_screened_tickers,
 )
 
 
@@ -117,33 +117,34 @@ def test_load_fire_rows_returns_a_null_pivot_aplus_row_for_the_service_to_degrad
         conn.close()
 
 
-# --- the derivation-session SCREEN read (the PENDING vs PERMANENT split) ----
+# --- the derivation-session RECORDED-CLOSE count (PENDING vs PERMANENT) -----
 #
 # The panel's mandate-form check needs a close stamped on the derivation
-# session. When it has none, "the nightly has not recorded that session yet"
-# and "the session WAS recorded and this ticker is not on it" call for opposite
-# operator responses (wait / it will not clear on its own), and NOTHING already
-# read by the panel distinguishes them. This is the one read that does.
-def test_load_screened_tickers_returns_the_screen_recorded_for_that_session(
+# session. When it has none, "nothing has been recorded for that session yet"
+# and "that session's closes exist and this ticker has none of them" call for
+# opposite operator responses (wait / it will not clear on its own), and NOTHING
+# already read by the panel distinguishes them. This is the one read that does.
+def test_count_session_recorded_closes_counts_the_session_that_was_recorded(
         ftre_db):
-    assert load_screened_tickers(ftre_db, date(2026, 7, 23)) == frozenset({"FTRE"})
+    assert count_session_recorded_closes(ftre_db, date(2026, 7, 23)) == 1
 
 
-def test_load_screened_tickers_is_empty_when_that_session_was_never_screened(
+def test_count_session_recorded_closes_is_zero_for_an_unrecorded_session(
         ftre_db):
-    """The EMPTY set is the load-bearing signal. `ftre_db`'s newest run is
-    stamped `data_asof_date='2026-07-23'`, so 2026-07-24 has no screen at all --
-    which is exactly the state of every trading day between the market close and
-    the nightly pipeline run."""
-    assert load_screened_tickers(ftre_db, date(2026, 7, 24)) == frozenset()
+    """ZERO is the load-bearing signal. `ftre_db`'s newest run is stamped
+    `data_asof_date='2026-07-23'`, so 2026-07-24 has nothing recorded at all --
+    exactly the state of every trading day between the market close and the
+    nightly pipeline run."""
+    assert count_session_recorded_closes(ftre_db, date(2026, 7, 24)) == 0
 
 
-def test_load_screened_tickers_counts_a_ticker_whose_close_is_NULL(tmp_path):
-    """PRESENCE on the screen is a DIFFERENT question from having a usable
-    close. `load_last_closes` filters `close IS NOT NULL` and drops non-finite
-    values, so a screened ticker carrying a NULL close has no usable close --
-    and if this read inherited that filter the panel would tell the operator the
-    ticker had left the screen when it had not. Planted via RAW conn.execute."""
+def test_count_session_recorded_closes_mirrors_the_usable_close_predicate(
+        tmp_path):
+    """Codex y1 MAJOR 1. This read MUST agree with `load_last_closes` about what
+    "usable" means -- it filters `close IS NOT NULL` and drops non-finite values.
+    A session whose only rows carry a NULL or a NaN close has recorded NOTHING
+    the form check can use, so counting those rows would flip every waiting
+    latch from calm status to a warning. Planted via RAW conn.execute."""
     conn = ensure_schema(tmp_path / "t.db")
     try:
         with conn:
@@ -155,9 +156,54 @@ def test_load_screened_tickers_counts_a_ticker_whose_close_is_NULL(tmp_path):
             conn.execute(
                 "INSERT INTO candidates (evaluation_run_id, ticker, bucket, "
                 "close, pivot, initial_stop, rs_method) VALUES "
+                "(70, 'NANC', 'skip', 'nan', 13.0, 11.0, 'universe')")
+        assert count_session_recorded_closes(conn, date(2026, 7, 24)) == 0
+        with conn:
+            conn.execute(
+                "INSERT INTO candidates (evaluation_run_id, ticker, bucket, "
+                "close, pivot, initial_stop, rs_method) VALUES "
                 "(70, 'AMN', 'skip', 12.0, 13.0, 11.0, 'universe')")
-        assert load_screened_tickers(conn, date(2026, 7, 24)) == frozenset(
-            {"FTRE", "AMN"})
+        assert count_session_recorded_closes(conn, date(2026, 7, 24)) == 1
+    finally:
+        conn.close()
+
+
+def test_count_session_recorded_closes_does_not_ask_where_the_row_came_from(
+        tmp_path):
+    """Codex y1 MAJOR 1. An `evaluation_runs` row is NOT the finviz screen: the
+    evaluator appends HELD open positions (`bucket='excluded'`) and pinned
+    tickers to the same run. Those rows carry a close, and a close is exactly
+    what the form check needs -- so they count, and no label may claim screen
+    membership from this read."""
+    conn = ensure_schema(tmp_path / "t.db")
+    try:
+        with conn:
+            _run(conn, 71, "2026-07-24", "2026-07-27")
+            conn.execute(
+                "INSERT INTO candidates (evaluation_run_id, ticker, bucket, "
+                "close, pivot, initial_stop, rs_method, notes) VALUES "
+                "(71, 'HELD', 'excluded', 9.5, NULL, NULL, 'universe', "
+                "'open position')")
+        assert count_session_recorded_closes(conn, date(2026, 7, 24)) == 1
+    finally:
+        conn.close()
+
+
+def test_count_session_recorded_closes_counts_a_ticker_once_across_runs(
+        tmp_path):
+    """Codex y1 MAJOR 2. Several `evaluation_runs` can share one
+    `data_asof_date` (an ad-hoc `swing eval` alongside the nightly). The count is
+    rendered to the operator as evidence, so it counts DISTINCT tickers -- a
+    ticker present in two same-date runs is one ticker, not two."""
+    conn = ensure_schema(tmp_path / "t.db")
+    try:
+        with conn:
+            _run(conn, 72, "2026-07-24", "2026-07-27")
+            _run(conn, 73, "2026-07-24", "2026-07-27")
+            _candidate(conn, 72, "AMN", "watch", 13.0, 11.0)
+            _candidate(conn, 73, "AMN", "watch", 13.0, 11.0)
+            _candidate(conn, 73, "VSTS", "watch", 14.0, 12.0)
+        assert count_session_recorded_closes(conn, date(2026, 7, 24)) == 2
     finally:
         conn.close()
 
