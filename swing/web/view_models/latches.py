@@ -461,9 +461,12 @@ class MandateFormCheckVM:
                      became expensive, and this is the one surface whose alarms
                      have to survive being believed. So: neutral status, no alarm
                      prefix, no alarm styling.
-      `permanent` -- that session's closes HAVE been recorded and this ticker's
-                     most recent usable close is still older, so the nightly is
-                     not what it is waiting on. The label keeps the warning tone
+      `permanent` -- closes DATED that session have been recorded and this
+                     ticker's most recent usable close is still older, so it is
+                     a question about the TICKER, not about the clock. (DATED,
+                     not proven-from: `data_asof_date` is a run-level stamp --
+                     see `count_session_recorded_closes`.)
+                     The label keeps the warning tone
                      and states the count it is reasoning from, so an unusual
                      number (an ad-hoc same-date `swing eval` rather than the
                      nightly) is VISIBLE rather than silently deciding the
@@ -1107,11 +1110,11 @@ def _build_form_check_notes(
                 f"normally settles it - either the form check runs, or this "
                 f"becomes a warning. {_as_sentence(tail)}")
         else:
-            # That session's closes exist and this ticker's newest usable close
-            # is still older, so the nightly is not what this is waiting on.
-            # The COUNT is rendered so the operator can see the evidence rather
-            # than take the diagnosis on trust (Codex y1 MAJOR 2), and the cause
-            # is stated as the usual one rather than asserted.
+            # That session already has closes and this ticker's newest usable
+            # close is still older -- so this is a question about the TICKER,
+            # not about the clock. The COUNT is rendered so the operator can see
+            # the evidence rather than take the diagnosis on trust (Codex y1
+            # MAJOR 2), and the cause is stated as the usual one, not asserted.
             severity = "permanent"
             noun = "ticker" if recorded == 1 else "tickers"
             detail = (
