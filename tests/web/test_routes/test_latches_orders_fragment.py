@@ -1205,8 +1205,8 @@ def test_the_pending_branch_is_neutral_status_with_a_stated_clear_time(
     assert "waiting on the nightly data for the derivation session 2026-07-24" \
         in r.text
     assert "no usable closes are recorded for it yet" in r.text
-    assert "the next run settles it - either the form check runs, or this " \
-        "becomes a warning" in r.text
+    assert "the next run normally settles it - either the form check runs, " \
+        "or this becomes a warning" in r.text
     # Neutral tone, explicitly: no alarm prefix and no alarm/warning styling.
     assert "MANDATE FORM CHECK" not in r.text
     assert "latch-form-check-pending" in r.text
@@ -1249,11 +1249,14 @@ def test_a_latch_whose_ticker_left_the_screen_is_visibly_inert(
     assert "the most recent usable close for this ticker is from 2026-07-17" in r.text
     assert "The usual cause is the ticker no longer being evaluated at all" in r.text
     assert "a partial evaluation of that session looks the same from here" in r.text
-    assert "This one is NOT simply waiting on the nightly: it clears when this " \
-        "ticker again has a usable close on the derivation session" in r.text
-    # ...and NOT an absolute "waiting will never clear this": a later full run
-    # for the SAME session would clear it (Codex y4 MINOR 1).
+    assert "So this is a question about the TICKER rather than the clock: it " \
+        "clears when this ticker again has a usable close on the derivation " \
+        "session" in r.text
+    # ...and NOT a claim about waiting that the count cannot prove: under the
+    # partial-evaluation shape a later full run for the SAME session would
+    # clear it (Codex y4 MINOR 1 / y5 MINOR 1).
     assert "Waiting will NOT clear" not in r.text
+    assert "NOT simply waiting on the nightly" not in r.text
     # No apostrophe anywhere in these details -- Jinja autoescaping renders one
     # as `&#39;`, which is correct HTML but breaks plain-text search.
     assert "&#39;" not in r.text
@@ -1263,7 +1266,7 @@ def test_a_latch_whose_ticker_left_the_screen_is_visibly_inert(
     # It stays a WARNING, and it must not borrow the pending branch's promise.
     assert "latch-alarm-warning" in r.text
     assert "Mandate form check pending" not in r.text
-    assert "the next run settles it" not in r.text
+    assert "normally settles it" not in r.text
     # It is a LABEL on the affected latch, NOT an alarm and NOT a suppression:
     # the price legs were still judged and no false alarm was invented.
     assert "ORDER PRICE MISMATCH" not in r.text

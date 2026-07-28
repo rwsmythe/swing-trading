@@ -1092,10 +1092,14 @@ def _build_form_check_notes(
                 # check will then run, because a ticker that is still not
                 # evaluated lands in the permanent branch instead. Promising the
                 # check would be the same over-claim in the opposite direction.
+                # "NORMALLY settles" (Codex y5 MINOR 2): the count mirrors the
+                # usable-close filter, so a run that again records only
+                # unusable closes leaves this state exactly as it was. The
+                # ruling requires a stated clear time, not a guarantee.
                 f"correct at this price. This is the normal state between the "
                 f"market close and the nightly pipeline run; the next run "
-                f"settles it - either the form check runs, or this becomes a "
-                f"warning. {_as_sentence(tail)}")
+                f"normally settles it - either the form check runs, or this "
+                f"becomes a warning. {_as_sentence(tail)}")
         else:
             # That session's closes exist and this ticker's newest usable close
             # is still older, so the nightly is not what this is waiting on.
@@ -1116,20 +1120,22 @@ def _build_form_check_notes(
                 f"forms is correct at this price. The usual cause is the ticker "
                 f"no longer being evaluated at all; a partial evaluation of that "
                 f"session looks the same from here. "
-                # NOT "waiting will never clear this" (Codex y4 MINOR 1): under
-                # the partial-evaluation shape a later full run for the SAME
-                # session would clear it, so an absolute claim is a false
-                # warning. What IS true and what the operator needs is that this
-                # one is not merely waiting on tonight, plus the exact clearing
-                # condition -- which is a usable close, not being evaluated
-                # (Codex y3 MINOR 2): a row may be written carrying none.
+                # The response cue is stated WITHOUT any claim about the
+                # nightly. "Waiting will never clear this" was false under the
+                # partial-evaluation shape (Codex y4 MINOR 1) and so was "this
+                # is NOT simply waiting on the nightly" (y5 MINOR 1) -- both
+                # asserted something the count cannot prove. What the count DOES
+                # prove is that the session already has closes and this ticker
+                # has none of them, which makes it a question about the TICKER
+                # rather than the clock. The clearing condition is a usable
+                # close, not being evaluated (y3 MINOR 2): a row may carry none.
                 #
                 # NO APOSTROPHE anywhere in these details: Jinja autoescaping
                 # renders one as `&#39;`, which is correct HTML but silently
                 # breaks any assertion (or operator search) on the plain text.
-                f"This one is NOT simply waiting on the nightly: it clears when "
-                f"this ticker again has a usable close on the derivation "
-                f"session. {_as_sentence(tail)}")
+                f"So this is a question about the TICKER rather than the clock: "
+                f"it clears when this ticker again has a usable close on the "
+                f"derivation session. {_as_sentence(tail)}")
         notes.append(MandateFormCheckVM(
             ticker=ticker, severity=severity,
             headline=_FORM_CHECK_HEADLINES[severity], detail=detail))
