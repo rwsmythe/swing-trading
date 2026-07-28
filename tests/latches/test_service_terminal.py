@@ -656,3 +656,56 @@ def test_a_sub_cent_close_artifact_does_not_invalidate_a_live_mandate():
         fires=[FTRE_FIRE], bars_by_ticker={"FTRE": genuine}, entries_by_ticker={},
         horizon_session=date(2026, 7, 22), derivation_session=date(2026, 7, 21))
     assert d2.latches[0].state == "invalidated"
+
+
+def test_a_refire_on_the_expiry_session_does_not_arm_over_a_same_session_fill():
+    """Codex executing R11. An interaction between two EARLIER fixes.
+
+    The liveness probe deliberately cannot see the re-fire session's own fill
+    (R6), but the horizon stays inclusive at that session -- so a latch expiring
+    ON the re-fire session reads "dead", a new mandate arms, and the FINAL
+    resolution (which CAN see the fill, R2) then resolves the SAME latch to
+    `filled` on that very session. The operator would be holding the position
+    AND be told to place an order for it: a double-buy instruction.
+
+    Geometry: fire 2026-07-01 (expires 2026-08-13), re-fire 2026-08-13, and a
+    trade linked to the OLD candidate dated 2026-08-13."""
+    fires = [
+        FireRow(candidate_id=8001, evaluation_run_id=40, ticker="EXP",
+                pivot=33.48, initial_stop=28.81, action_session_date="2026-07-01",
+                run_ts="2026-06-30T21:00:00", pipeline_run_id=None),
+        FireRow(candidate_id=8002, evaluation_run_id=41, ticker="EXP",
+                pivot=40.00, initial_stop=35.00, action_session_date="2026-08-13",
+                run_ts="2026-08-12T17:30:00", pipeline_run_id=None),
+    ]
+    entries = {"EXP": [EntryRecord(
+        trade_id=96, ticker="EXP", entry_date=date(2026, 8, 13),
+        candidate_id=8001, entry_price=33.60, shares=5)]}
+    d = derive_latches(
+        fires=fires, bars_by_ticker={"EXP": []}, entries_by_ticker=entries,
+        horizon_session=date(2026, 8, 13), derivation_session=date(2026, 8, 13))
+    assert len(d.latches) == 1, "a second mandate must not arm over the fill"
+    latch = d.latches[0]
+    assert latch.state == "filled" and latch.clear_trade_id == 96
+    assert latch.reconfirmation_candidate_ids == (8002,)
+    assert not any(x.is_live for x in d.latches)
+
+
+def test_an_expiry_session_refire_WITHOUT_a_fill_still_opens_a_new_latch():
+    """The paired discriminator: the suppression is keyed on the FILL, not on
+    the expiry. Without a fill the re-fire opens a genuinely new mandate (the
+    R6 behaviour), or a real setup would be silently dropped."""
+    fires = [
+        FireRow(candidate_id=8101, evaluation_run_id=40, ticker="EXP2",
+                pivot=33.48, initial_stop=28.81, action_session_date="2026-07-01",
+                run_ts="2026-06-30T21:00:00", pipeline_run_id=None),
+        FireRow(candidate_id=8102, evaluation_run_id=41, ticker="EXP2",
+                pivot=40.00, initial_stop=35.00, action_session_date="2026-08-13",
+                run_ts="2026-08-12T17:30:00", pipeline_run_id=None),
+    ]
+    d = derive_latches(
+        fires=fires, bars_by_ticker={"EXP2": []}, entries_by_ticker={},
+        horizon_session=date(2026, 8, 13), derivation_session=date(2026, 8, 13))
+    assert len(d.latches) == 2
+    assert d.latches[0].state == "horizon_expired"
+    assert d.latches[1].state == "armed"

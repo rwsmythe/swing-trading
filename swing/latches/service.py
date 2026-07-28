@@ -20,7 +20,7 @@ They are not independent: production always passes
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 
 from swing.evaluation.dates import session_offset, sessions_behind
@@ -362,7 +362,7 @@ def _fold_ticker(
     consumed: set[int] = set()
     open_draft: _Draft | None = None
 
-    def _close(draft: _Draft, *, superseded_session: date | None = None) -> None:
+    def _close(draft: _Draft, *, superseded_session: date | None = None) -> Latch:
         if superseded_session is not None:
             terminal: _Terminal | None = _Terminal("superseded", superseded_session)
         else:
@@ -371,12 +371,14 @@ def _fold_ticker(
                 horizon_ref=horizon_session, bar_bound=derivation_session,
                 fill_bound=horizon_session,
                 horizon_sessions=horizon_sessions, dry_run=False)
-        latches.append(_finalize(
+        closed = _finalize(
             draft, terminal=terminal, bars=bars,
             horizon_session=horizon_session,
             derivation_session=derivation_session,
             horizon_sessions=horizon_sessions,
-            fill_link_anomaly=_has_fill_link_anomaly(draft, entries)))
+            fill_link_anomaly=_has_fill_link_anomaly(draft, entries))
+        latches.append(closed)
+        return closed
 
     for fire in sorted(ticker_fires, key=lambda f: f.sort_key):
         anchor, reason = _validate_fire(fire)
@@ -415,7 +417,31 @@ def _fold_ticker(
                     continue
                 _close(open_draft, superseded_session=anchor)     # branch (b)
             else:                                                 # clause (iii)
-                _close(open_draft)
+                closed = _close(open_draft)
+                # THE PROBE CAN BE REVERSED BY THE FINAL RESOLUTION. The probe
+                # deliberately cannot see the re-fire session's own fill, so a
+                # latch that expires ON that session reads "dead" and lets a new
+                # mandate arm -- but the final resolution, which CAN see it,
+                # may then resolve that same latch to a FILL on that very
+                # session. Arming a new mandate on top of that tells the
+                # operator to buy a position he has JUST BOUGHT. When the
+                # closed latch actually filled at-or-after the incoming fire's
+                # session, the fire is a RE-CONFIRMATION of it, not a new
+                # mandate.
+                if (closed.clear_reason == "fill"
+                        and closed.clear_session is not None
+                        and closed.clear_session >= anchor):
+                    latches[-1] = replace(
+                        closed,
+                        reconfirmation_candidate_ids=(
+                            *closed.reconfirmation_candidate_ids,
+                            fire.candidate_id),
+                        reconfirmation_sessions=(
+                            *closed.reconfirmation_sessions,
+                            fire.action_session_date),
+                    )
+                    open_draft = None
+                    continue
             open_draft = None
 
         open_draft = _Draft(
