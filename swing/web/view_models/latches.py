@@ -1070,8 +1070,13 @@ def _build_form_check_notes(
             # ~7 hours of every trading day. Status, not a warning.
             severity = "pending"
             detail = (
+                # "no USABLE closes are RECORDED" -- the count mirrors
+                # `load_last_closes`'s usability filter, so a run that recorded
+                # only NULL / non-finite closes also reads as zero, and "no
+                # closes have been recorded" would then overstate what the
+                # helper knows (Codex y3 MINOR 1).
                 f"{ticker}: waiting on the nightly data for the derivation "
-                f"session {regime_session_iso} - no closes have been recorded "
+                f"session {regime_session_iso} - no usable closes are recorded "
                 f"for it yet ({provenance}), so there is no regime price and "
                 f"the panel cannot yet say WHICH of the two mandate forms is "
                 # WHAT the nightly settles, not what it guarantees (Codex y2
@@ -1080,9 +1085,9 @@ def _build_form_check_notes(
                 # evaluated lands in the permanent branch instead. Promising the
                 # check would be the same over-claim in the opposite direction.
                 f"correct at this price. This is the normal state between the "
-                f"market close and the nightly pipeline run; that run settles "
-                f"it - either the form check runs, or this becomes a warning. "
-                f"{_as_sentence(tail)}")
+                f"market close and the nightly pipeline run; the next run "
+                f"settles it - either the form check runs, or this becomes a "
+                f"warning. {_as_sentence(tail)}")
         else:
             # That session's closes exist and this ticker's newest usable close
             # is still older, so the nightly is not what this is waiting on.
@@ -1103,8 +1108,16 @@ def _build_form_check_notes(
                 f"forms is correct at this price. The usual cause is the ticker "
                 f"no longer being evaluated at all; a partial evaluation of that "
                 f"session looks the same from here. Waiting will NOT clear this "
-                f"one on its own: it clears when the ticker is evaluated again. "
-                f"{_as_sentence(tail)}")
+                # The precise clearing condition, not the usual route to it
+                # (Codex y3 MINOR 2): being evaluated again is neither
+                # sufficient (the row may carry no usable close) nor the thing
+                # the check actually consumes.
+                #
+                # NO APOSTROPHE anywhere in these details: Jinja autoescaping
+                # renders one as `&#39;`, which is correct HTML but silently
+                # breaks any assertion (or operator search) on the plain text.
+                f"one on its own: it clears when this ticker again has a usable "
+                f"close on the derivation session. {_as_sentence(tail)}")
         notes.append(MandateFormCheckVM(
             ticker=ticker, severity=severity,
             headline=_FORM_CHECK_HEADLINES[severity], detail=detail))
