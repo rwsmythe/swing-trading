@@ -668,6 +668,18 @@ def build_latch_orders_vm(
     # PURE SELECT -- so the operator never sees the fragment judging his order
     # against a number the page does not show. A read failure leaves the regime
     # UNKNOWN, which accepts either form (A6: degrade, never false-alarm).
+    #
+    # IT IS SESSION-SCOPED (codex-auto-review MAJOR). `load_last_closes` returns
+    # the GLOBALLY latest close per ticker no matter how old it is, so without
+    # this gate a price from several sessions ago would decide which instrument
+    # the panel calls correct -- and on a stock that has since round-tripped
+    # through the pivot that blesses the wrong order or flags the right one. The
+    # fragment already insists every part of its picture describe ONE coherent
+    # moment (it is why a one-session-stale ANCHOR suppresses the alarms); the
+    # regime price is held to the same standard. Only a close stamped on the
+    # DERIVATION SESSION may pick a form; anything else leaves the regime
+    # unknown, where both forms are accepted and the cap leg and GTC still bind.
+    regime_session_iso = derivation.derivation_session.isoformat()
     regime_closes: dict = {}
     regime_tickers = sorted({
         lat.identity.ticker for lat in derivation.latches if lat.is_live})
@@ -684,7 +696,11 @@ def build_latch_orders_vm(
         if not lat.is_live or join is None or join.indeterminate:
             continue
         quote = regime_closes.get(lat.identity.ticker)
-        last_close = None if quote is None else quote[0]
+        # quote is (close, data_asof_date); a close from any other session is
+        # not evidence about THIS moment, so it does not get to pick the form.
+        last_close = (
+            quote[0] if quote is not None and quote[1] == regime_session_iso
+            else None)
         expected_type = expected_mandate_order_type(
             latched_pivot=lat.latched_pivot, last_close=last_close)
         # (a) an order matched to this mandate but priced wrong.

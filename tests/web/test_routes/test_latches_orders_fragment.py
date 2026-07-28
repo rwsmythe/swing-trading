@@ -792,12 +792,18 @@ def test_a_mispriced_pullback_limit_still_reports_the_price_disagreement(
 
 def test_the_breakout_regime_still_demands_both_legs(
         seeded_db, monkeypatch, frozen_panel_clock):
-    """The regression guard on the other side of the boundary: with the last
-    close BELOW the pivot (the default 17.76 seed) the mandate IS a stop-limit,
-    so a stop-only order with no cap must still read as a disagreement. The
-    pullback relaxation must not leak into the breakout regime."""
+    """The regression guard on the other side of the boundary: with a
+    derivation-session close BELOW the pivot the mandate IS a stop-limit, so a
+    stop-only order with no cap must still read as a disagreement. The pullback
+    relaxation must not leak into the breakout regime.
+
+    The close is seeded on the DERIVATION session (2026-07-24) on purpose -- the
+    `_seed_ftre` close is stamped 2026-07-17 and is therefore session-scoped OUT
+    of the regime selector, which would leave this UNKNOWN rather than
+    breakout."""
     cfg, cfg_path = seeded_db
     _seed_ftre(cfg)
+    _seed_close_at_the_derivation_session(cfg, 17.76)
     stop_only = _order(order_type="STOP", price=18.34, stop_price=18.34,
                        duration="GOOD_TILL_CANCEL")
     app = _app(cfg, cfg_path, monkeypatch, orders=[stop_only])
@@ -884,3 +890,89 @@ def test_an_unknown_regime_still_judges_a_stop_leg_the_order_actually_carries(
     assert r.status_code == 200
     assert "Broker orders agree" not in r.text
     assert "ORDER PRICE MISMATCH" in r.text
+
+
+# --- codex-auto-review MAJOR: the regime price must be SESSION-SCOPED --------
+def _seed_close_at_the_derivation_session(cfg, close):
+    """A close stamped on the fragment's OWN derivation session (2026-07-24 for
+    the frozen ANCHOR), so the regime selector will actually use it."""
+    conn = connect(cfg.paths.db_path)
+    with conn:
+        conn.execute(
+            "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, "
+            "action_session_date, tickers_evaluated, aplus_count, watch_count, "
+            "skip_count, excluded_count, error_count) VALUES "
+            "(127, '2026-07-24T17:30:05', '2026-07-24', '2026-07-27', 1, 0, 1, "
+            "0, 0, 0)")
+        conn.execute(
+            "INSERT INTO candidates (evaluation_run_id, ticker, bucket, close, "
+            "pivot, initial_stop, rs_method) VALUES "
+            "(127, 'FTRE', 'watch', ?, 18.34, 14.88, 'universe')", (close,))
+    conn.close()
+
+
+def _seed_stale_close_above_the_pivot(cfg):
+    """A close ABOVE the pivot but stamped on 2026-07-20 -- FOUR sessions before
+    the fragment's derivation session (2026-07-24). A missed pipeline night, or
+    simply an evening before tonight's run, produces exactly this."""
+    conn = connect(cfg.paths.db_path)
+    with conn:
+        conn.execute(
+            "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, "
+            "action_session_date, tickers_evaluated, aplus_count, watch_count, "
+            "skip_count, excluded_count, error_count) VALUES "
+            "(128, '2026-07-20T17:30:05', '2026-07-20', '2026-07-21', 1, 0, 1, "
+            "0, 0, 0)")
+        conn.execute(
+            "INSERT INTO candidates (evaluation_run_id, ticker, bucket, close, "
+            "pivot, initial_stop, rs_method) VALUES "
+            "(128, 'FTRE', 'watch', 19.52, 18.34, 14.88, 'universe')")
+    conn.close()
+
+
+def test_a_stale_close_does_not_get_to_choose_the_mandate_regime(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """codex-auto-review MAJOR (repo-access second eye). `load_last_closes`
+    returns the GLOBALLY latest `candidates.close` per ticker regardless of how
+    old it is, and the regime selector consumed `quote[0]` while ignoring the
+    `quote[1]` provenance date. A close from four sessions ago would then decide
+    which instrument the panel calls correct -- and a stock that has since
+    round-tripped back through the pivot gets the operator's correct order
+    flagged, or his wrong one blessed, off a price the market left behind.
+
+    The fragment insists every part of its picture describe ONE coherent moment
+    (it is why a one-session-stale ANCHOR suppresses the alarms). The regime
+    price is now held to the same standard: only a close stamped on the
+    derivation session may pick the form. Anything older leaves the regime
+    UNKNOWN -- which accepts either mandated form while still enforcing the cap
+    leg and GTC.
+
+    Here the stale close (19.52, 2026-07-20) is ABOVE the pivot, so an ungated
+    selector would call the GTC STOP_LIMIT a wrong-regime shape mismatch."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    _seed_stale_close_above_the_pivot(cfg)
+    app = _app(cfg, cfg_path, monkeypatch,
+               orders=[_order(duration="GOOD_TILL_CANCEL")])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert r.status_code == 200
+    assert "not the mandated order shape" not in r.text
+    assert "AT OR ABOVE" not in r.text
+    assert "Broker orders agree" in r.text
+
+
+def test_a_close_on_the_derivation_session_does_choose_the_regime(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """The paired discriminator: the freshness gate must not disable the regime
+    selector outright, or the whole two-form ruling becomes inert."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    _seed_close_at_the_derivation_session(cfg, 19.52)
+    app = _app(cfg, cfg_path, monkeypatch,
+               orders=[_order(duration="GOOD_TILL_CANCEL")])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert r.status_code == 200
+    assert "not the mandated order shape" in r.text
+    assert "AT OR ABOVE" in r.text
