@@ -449,3 +449,63 @@ def test_a_non_session_entry_date_is_logged_but_NOT_dropped(tmp_path, caplog):
         assert "non-session entry_date" in caplog.text        # but LOUD
     finally:
         conn.close()
+
+
+def test_a_malformed_entry_price_does_not_drop_an_authoritative_fill(tmp_path):
+    """Codex executing R10. `entry_price REAL NOT NULL` is an AFFINITY
+    declaration, not a type CHECK, so SQLite holds the TEXT 'bad'. Coercing it
+    as row-fatal DROPPED the whole trade -- leaving the mandate `armed` and
+    telling the operator to place an order for a position he ALREADY HOLDS,
+    which is a double-buy instruction.
+
+    Degrading to None composes correctly with the price-band rule: the EXACT
+    candidate_id rung still recognises the fill (an explicit link is
+    authoritative), while the WINDOWED rung would refuse an unverifiable
+    price."""
+    cfg = _cfg(tmp_path)
+    conn = ensure_schema(tmp_path / "t.db")
+    try:
+        with conn:
+            _run(conn, 121, "2026-07-17", "2026-07-20")
+            cid = _candidate(conn, 121, "FTRE", "aplus", 18.34, 14.88)
+            conn.execute(
+                "INSERT INTO trades (id, ticker, entry_date, entry_price, "
+                "initial_shares, initial_stop, current_stop, state, "
+                "trade_origin, pre_trade_locked_at, candidate_id) VALUES "
+                "(31, 'FTRE', '2026-07-21', 'bad', 'bad', 14.88, 14.88, "
+                "'entered', 'pipeline_aplus', '2026-07-17T17:30:05', ?)", (cid,))
+        assert conn.execute(
+            "SELECT typeof(entry_price) FROM trades").fetchone()[0] == "text"
+
+        (rec,) = load_entry_records(conn, ["FTRE"])["FTRE"]
+        assert rec.trade_id == 31
+        assert rec.entry_price is None and rec.shares is None
+
+        d = build_latch_derivation(
+            conn, cfg, horizon_session_override=date(2026, 7, 27))
+        assert d.latches[0].state == "filled"
+        assert d.latches[0].clear_trade_id == 31
+        assert d.latches[0].fill_link_basis == "candidate_id"
+    finally:
+        conn.close()
+
+
+def test_a_malformed_price_on_a_null_candidate_trade_still_refuses_to_fill(tmp_path):
+    """The composed half: unverifiable price + no explicit link = no fill."""
+    cfg = _cfg(tmp_path)
+    conn = ensure_schema(tmp_path / "t.db")
+    try:
+        with conn:
+            _run(conn, 121, "2026-07-17", "2026-07-20")
+            _candidate(conn, 121, "FTRE", "aplus", 18.34, 14.88)
+            conn.execute(
+                "INSERT INTO trades (id, ticker, entry_date, entry_price, "
+                "initial_shares, initial_stop, current_stop, state, "
+                "trade_origin, pre_trade_locked_at) VALUES "
+                "(32, 'FTRE', '2026-07-21', 'bad', 3, 14.88, 14.88, "
+                "'entered', 'pipeline_aplus', '2026-07-17T17:30:05')")
+        d = build_latch_derivation(
+            conn, cfg, horizon_session_override=date(2026, 7, 27))
+        assert d.latches[0].state == "armed"
+    finally:
+        conn.close()

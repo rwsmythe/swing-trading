@@ -127,8 +127,17 @@ def load_entry_records(conn: sqlite3.Connection, tickers) -> dict[str, list[Entr
                 ticker=str(row[1]),
                 entry_date=entry_date,
                 candidate_id=None if row[3] is None else int(row[3]),
-                entry_price=None if row[4] is None else float(row[4]),
-                shares=None if row[5] is None else float(row[5]),
+                # NON-FATAL. `entry_price REAL NOT NULL` / `initial_shares
+                # INTEGER NOT NULL` are AFFINITY declarations, not type CHECKs,
+                # so SQLite will hold the TEXT 'bad' in either. Coercing them
+                # as row-fatal would DROP an authoritative `candidate_id`-linked
+                # fill and leave the mandate `armed` -- telling the operator to
+                # place an order for a position he already holds. Degrading to
+                # None instead composes correctly: the EXACT rung still
+                # recognises the fill, and the WINDOWED rung refuses an
+                # unverifiable price by design.
+                entry_price=_optional_float(row[4], row[0], "entry_price"),
+                shares=_optional_float(row[5], row[0], "initial_shares"),
             )
         except (TypeError, ValueError) as exc:
             log.warning("latch reader: skipping trade %r with a malformed row: %s",
@@ -191,6 +200,23 @@ def load_bars(cfg, ticker: str, *, start: date, end: date) -> list[DailyBar]:
                         ticker, rec.get("asof_date"), exc)
     bars.sort(key=lambda b: b.session)
     return bars
+
+
+def _optional_float(value, trade_id, field: str) -> float | None:
+    """Coerce a non-load-bearing numeric, degrading a bad value to None."""
+    if value is None:
+        return None
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        log.warning("latch reader: trade %r has a malformed %s: %r",
+                    trade_id, field, value)
+        return None
+    if not math.isfinite(out):
+        log.warning("latch reader: trade %r has a non-finite %s: %r",
+                    trade_id, field, value)
+        return None
+    return out
 
 
 def _session_at_or_before(raw: str, bound: date) -> bool:
