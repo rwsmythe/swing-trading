@@ -689,24 +689,42 @@ def build_latch_orders_vm(
             latched_pivot=lat.latched_pivot, last_close=last_close)
         # (a) an order matched to this mandate but priced wrong.
         #
-        # WHICH LEGS THE MANDATE HAS IS REGIME-SELECTED. In the PULLBACK regime
-        # (last close at or above the latched pivot) the mandate is a plain GTC
-        # LIMIT at the zone cap -- it has NO stop leg at all, so an absent stop
-        # is the CORRECT shape and must not read as a disagreement. Demanding
-        # it produced a false "stop UNKNOWN (leg absent)" price mismatch against
-        # the operator's situationally-correct FTRE order (2026-07-23).
+        # WHICH LEGS THE MANDATE HAS IS REGIME-SELECTED:
+        #   PULLBACK (last close at or above the latched pivot) -- the mandate
+        #     is a plain GTC LIMIT at the zone cap and has NO stop leg, so an
+        #     absent stop is the CORRECT shape, not a disagreement. Demanding it
+        #     produced a false "stop UNKNOWN (leg absent)" price mismatch
+        #     against the operator's situationally-correct FTRE order.
+        #   BREAKOUT (last close below the pivot) -- both legs, as before.
+        #   UNKNOWN regime -- the SHAPE check accepts EITHER form here, so the
+        #     LEG check must too, or the fragment contradicts itself and the
+        #     same false alarm returns whenever the close read degrades (Codex
+        #     y1 MAJOR). The stop is then judged only when the order actually
+        #     CARRIES one: `order_stop_agrees` is None ONLY when the ORDER has
+        #     no `stop_price`, because the latch side of the comparison
+        #     (`latched_pivot`) is validated finite at construction -- so
+        #     `is not None` reads exactly as "this order claims a stop trigger",
+        #     and a claimed trigger is still judged against the frozen pivot.
         #
-        # The CAP leg is required in BOTH regimes: it is what stops the operator
-        # chasing. And where the regime is UNKNOWN the conservative both-legs
-        # rule stands -- relaxing only on an affirmative pullback reading, never
-        # on absence of evidence.
+        # The CAP leg is required in EVERY regime: it is what stops the operator
+        # chasing (the Codex R7 stop-only-order CRITICAL).
         if expected_type == MANDATE_ORDER_TYPE_PULLBACK:
-            legs_disagree = join.order_limit_agrees is not True
+            stop_leg_expected = False
+        elif expected_type == MANDATE_ORDER_TYPE_BREAKOUT:
+            stop_leg_expected = True
         else:
-            legs_disagree = (join.order_stop_agrees is not True
-                             or join.order_limit_agrees is not True)
+            stop_leg_expected = join.order_stop_agrees is not None
+        legs_disagree = join.order_limit_agrees is not True or (
+            stop_leg_expected and join.order_stop_agrees is not True)
         if join.orders and legs_disagree:
-            if expected_type == MANDATE_ORDER_TYPE_PULLBACK:
+            if stop_leg_expected:
+                disagreement_lines.append(
+                    f"{lat.identity.ticker}: resting order does not match the "
+                    f"latched mandate (pivot {lat.latched_pivot:.2f}, zone cap "
+                    f"{lat.zone_cap:.2f}); stop "
+                    f"{_agreement_word(join.order_stop_agrees)}, limit "
+                    f"{_agreement_word(join.order_limit_agrees)}")
+            elif expected_type == MANDATE_ORDER_TYPE_PULLBACK:
                 disagreement_lines.append(
                     f"{lat.identity.ticker}: resting order does not match the "
                     f"latched mandate (the last close is at or above the "
@@ -716,9 +734,9 @@ def build_latch_orders_vm(
             else:
                 disagreement_lines.append(
                     f"{lat.identity.ticker}: resting order does not match the "
-                    f"latched mandate (pivot {lat.latched_pivot:.2f}, zone cap "
-                    f"{lat.zone_cap:.2f}); stop "
-                    f"{_agreement_word(join.order_stop_agrees)}, limit "
+                    f"latched mandate (zone cap {lat.zone_cap:.2f}); this order "
+                    f"carries no stop leg and the last close is unavailable, so "
+                    f"only the cap is judged -- limit "
                     f"{_agreement_word(join.order_limit_agrees)}")
         # (a2) an order at the RIGHT PRICES but the WRONG SHAPE. Price
         # agreement alone is not coverage: a DAY order expires tonight and

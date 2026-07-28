@@ -807,3 +807,80 @@ def test_the_breakout_regime_still_demands_both_legs(
     assert "Broker orders agree" not in r.text
     assert "ORDER PRICE MISMATCH" in r.text
     assert "UNKNOWN (leg absent)" in r.text
+
+
+# --- Codex y1 MAJOR: an UNKNOWN regime must not re-create the false alarm ---
+def _seed_ftre_without_a_close(cfg):
+    """The same A+ fire, but with a NULL `candidates.close`.
+
+    `close REAL` is nullable (migration 0001) and `load_last_closes` explicitly
+    filters `c.close IS NOT NULL`, so 'no price at all' is a REACHABLE
+    production shape -- and it is exactly what a degraded close read looks like
+    to the regime selector."""
+    conn = connect(cfg.paths.db_path)
+    with conn:
+        conn.execute(
+            "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, "
+            "action_session_date, tickers_evaluated, aplus_count, watch_count, "
+            "skip_count, excluded_count, error_count) VALUES "
+            "(121, '2026-07-17T17:30:05', '2026-07-17', '2026-07-20', 1, 1, 0, "
+            "0, 0, 0)")
+        conn.execute(
+            "INSERT INTO candidates (evaluation_run_id, ticker, bucket, close, "
+            "pivot, initial_stop, rs_method) VALUES "
+            "(121, 'FTRE', 'aplus', NULL, 18.34, 14.88, 'universe')")
+    conn.close()
+
+
+def test_an_unknown_regime_does_not_flag_a_stopless_pullback_limit(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """Codex y1 MAJOR. With no usable close the regime is UNDETERMINABLE, and
+    the SHAPE check therefore accepts either form -- but the price-leg check
+    still demanded a stop leg unconditionally, so a GTC LIMIT at the cap
+    rendered ORDER PRICE MISMATCH ('stop UNKNOWN (leg absent)') anyway. The
+    fragment contradicted itself, and the false alarm this arc exists to kill
+    came straight back whenever the close read degraded."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre_without_a_close(cfg)
+    app = _app(cfg, cfg_path, monkeypatch, orders=[_pullback_order()])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert r.status_code == 200
+    assert "Broker orders agree" in r.text
+    assert "ORDER PRICE MISMATCH" not in r.text
+    assert "not the mandated order shape" not in r.text
+
+
+def test_an_unknown_regime_still_requires_the_cap_leg(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """The Codex R7 CRITICAL guarantee, preserved through the y1 relaxation: a
+    plain BUY STOP at the pivot carries NO cap, and it is the cap that stops the
+    operator chasing. The cap leg is required in EVERY regime."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre_without_a_close(cfg)
+    stop_only = _order(order_type="STOP", price=18.34, stop_price=18.34,
+                       duration="GOOD_TILL_CANCEL")
+    app = _app(cfg, cfg_path, monkeypatch, orders=[stop_only])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert r.status_code == 200
+    assert "Broker orders agree" not in r.text
+    assert "ORDER PRICE MISMATCH" in r.text
+
+
+def test_an_unknown_regime_still_judges_a_stop_leg_the_order_actually_carries(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """The relaxation is 'do not demand a leg the order does not have', NOT
+    'ignore the stop'. An order that DOES claim a stop trigger is still judged
+    against the frozen pivot -- otherwise a stop-limit triggering at the wrong
+    level would read as an all-clear."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre_without_a_close(cfg)
+    wrong_trigger = _order(price=18.89, stop_price=18.59,
+                           duration="GOOD_TILL_CANCEL")
+    app = _app(cfg, cfg_path, monkeypatch, orders=[wrong_trigger])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert r.status_code == 200
+    assert "Broker orders agree" not in r.text
+    assert "ORDER PRICE MISMATCH" in r.text
