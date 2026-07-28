@@ -289,6 +289,11 @@ class SchwabOrderResponse:
     # collapsed `price` cannot express. Placed at TAIL, like `executions`, to
     # preserve 8-positional backward compat.
     stop_price: float | None = None
+    # Phase 21 Arc A: the broker DURATION ('DAY' / 'GOOD_TILL_CANCEL' / ...).
+    # The settled latch semantics mandate a GTC order; a DAY order at the right
+    # prices expires tonight and leaves the operator uncovered tomorrow, which
+    # is the FTRE failure mode. Tail-appended, defaults None (unknown).
+    duration: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.order_id, str) or not self.order_id:
@@ -360,6 +365,10 @@ class SchwabOrderResponse:
                     f"SchwabOrderResponse.stop_price must be non-negative finite; "
                     f"got {self.stop_price!r}"
                 )
+        if self.duration is not None and not isinstance(self.duration, str):
+            raise ValueError(
+                f"SchwabOrderResponse.duration must be str or None; "
+                f"got {type(self.duration).__name__}")
         # Sub-bundle 1 T-1.2 — tri-valued executions validator.
         # ``None`` accepted (legacy V1 path); ``[]`` accepted (Schwab no-leg
         # response); ``[SchwabExecutionLeg, ...]`` accepted; anything else

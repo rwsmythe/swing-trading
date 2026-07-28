@@ -325,6 +325,8 @@ def map_orders_to_fill_candidates(response: Any) -> list[SchwabOrderResponse]:
         # payload (NOT from `price_raw`, which may already have collapsed onto
         # the stop by the fallback above), so a STOP_LIMIT order surfaces its
         # trigger AND its limit. `price` semantics are untouched.
+        duration_raw = _opt(raw, "duration")
+        duration = str(duration_raw) if isinstance(duration_raw, str) else None
         stop_raw = _opt(raw, "stopPrice")
         stop_price: float | None = (
             float(stop_raw) if stop_raw is not None else None
@@ -349,6 +351,7 @@ def map_orders_to_fill_candidates(response: Any) -> list[SchwabOrderResponse]:
             price=price,
             executions=executions,
             stop_price=stop_price,
+            duration=duration,
         ))
     return out
 

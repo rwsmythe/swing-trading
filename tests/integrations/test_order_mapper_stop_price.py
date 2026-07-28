@@ -58,3 +58,18 @@ def test_a_non_finite_stop_price_is_rejected_at_the_construction_barrier():
             SchwabOrderResponse(
                 "1", "WORKING", "", "FTRE", "BUY", 3.0, "STOP", 18.34,
                 stop_price=bad)
+
+
+def test_duration_is_mapped_from_the_raw_payload():
+    """The mandate is a GTC order, so the duration must survive the mapper --
+    otherwise the panel cannot tell a GTC order from a DAY order that expires
+    tonight."""
+    (o,) = map_orders_to_fill_candidates([_order(duration="GOOD_TILL_CANCEL")])
+    assert o.duration == "GOOD_TILL_CANCEL"
+    (d,) = map_orders_to_fill_candidates([_order(duration="DAY")])
+    assert d.duration == "DAY"
+
+
+def test_duration_is_none_when_absent():
+    (o,) = map_orders_to_fill_candidates([_order()])
+    assert o.duration is None

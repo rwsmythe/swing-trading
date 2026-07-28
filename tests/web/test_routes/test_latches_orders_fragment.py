@@ -615,3 +615,63 @@ def test_the_suppression_and_the_banner_share_one_predicate(seeded_db):
     )
     # BUY + indeterminate only; a SELL never gates an ENTRY mandate.
     assert indeterminate_order_tickers(orders) == ("AAA",)
+
+
+def test_a_day_order_at_the_right_prices_is_not_an_all_clear(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """Codex executing R15. Price agreement alone is NOT coverage. The settled
+    semantics mandate a GTC stop-limit; a DAY order at exactly the right prices
+    expires tonight and leaves the operator uncovered tomorrow -- which is the
+    FTRE failure mode wearing an all-clear."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    day_order = _order(duration="DAY")
+    app = _app(cfg, cfg_path, monkeypatch, orders=[day_order])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert r.status_code == 200
+    assert "Broker orders agree" not in r.text
+    assert "not the mandated order shape" in r.text
+    assert "GOOD_TILL_CANCEL" in r.text
+
+
+def test_a_trailing_stop_at_the_right_prices_is_not_an_all_clear(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """A trailing stop does not sit at the frozen pivot at all."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    trailing = _order(order_type="TRAILING_STOP_LIMIT",
+                      duration="GOOD_TILL_CANCEL")
+    app = _app(cfg, cfg_path, monkeypatch, orders=[trailing])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert "Broker orders agree" not in r.text
+    assert "not the mandated order shape" in r.text
+    assert "TRAILING_STOP_LIMIT" in r.text
+
+
+def test_a_gtc_stop_limit_at_the_right_prices_IS_an_all_clear(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """The paired discriminator: the mandated shape must still read clean, or
+    the check is just noise."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    mandated = _order(order_type="STOP_LIMIT", duration="GOOD_TILL_CANCEL")
+    app = _app(cfg, cfg_path, monkeypatch, orders=[mandated])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert "Broker orders agree" in r.text
+    assert "not the mandated order shape" not in r.text
+
+
+def test_an_absent_duration_is_not_asserted_against(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """Deliberate conservatism: a payload that simply does not carry a duration
+    is unknown-but-not-wrong, so the panel does not become permanently noisy on
+    shapes it cannot see. Real Schwab payloads DO carry it."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    app = _app(cfg, cfg_path, monkeypatch, orders=[_order()])   # duration None
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert "Broker orders agree" in r.text

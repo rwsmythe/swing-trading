@@ -583,6 +583,7 @@ def build_latch_orders_vm(
     from swing.latches.orders import (
         indeterminate_order_tickers,
         join_orders_to_latches,
+        mandate_shape_mismatch,
     )
 
     if horizon_session_override is None:
@@ -669,6 +670,17 @@ def build_latch_orders_vm(
                 f"{lat.zone_cap:.2f}); stop "
                 f"{_agreement_word(join.order_stop_agrees)}, limit "
                 f"{_agreement_word(join.order_limit_agrees)}")
+        # (a2) an order at the RIGHT PRICES but the WRONG SHAPE. Price
+        # agreement alone is not coverage: a DAY order expires tonight and
+        # leaves the operator uncovered tomorrow -- the FTRE failure mode.
+        for o in join.orders:
+            shape = mandate_shape_mismatch(o)
+            if shape is not None:
+                disagreement_lines.append(
+                    f"{lat.identity.ticker}: resting BUY order {o.order_id} "
+                    f"is not the mandated order shape ({shape}); the mandate is "
+                    "a GTC STOP_LIMIT at the latched pivot with the zone cap as "
+                    "its limit")
         # (b) a STRAY order on this ticker matching NO latch. Reported per
         # order, because a correctly-priced order would otherwise mask it and
         # the page would read as all-clear with an unexplained live order at

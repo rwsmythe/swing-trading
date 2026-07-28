@@ -233,6 +233,7 @@ class RestingOrder:
     limit_price: float | None
     stop_price: float | None
     status: str
+    duration: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.order_id, str) or not self.order_id:

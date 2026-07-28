@@ -14,7 +14,11 @@ be announced.
 """
 from __future__ import annotations
 
-from swing.latches.constants import BUY_INSTRUCTIONS
+from swing.latches.constants import (
+    BUY_INSTRUCTIONS,
+    MANDATE_ORDER_DURATIONS,
+    MANDATE_ORDER_TYPES,
+)
 from swing.latches.models import Latch, LatchOrderJoin, OrderAlarm, RestingOrder
 
 # Display precision on BOTH sides of every price comparison (the
@@ -66,6 +70,7 @@ def to_resting_orders(schwab_orders) -> tuple[RestingOrder, ...]:
             limit_price=limit_price,
             stop_price=stop_price,
             status=getattr(o, "status", "") or "",
+            duration=getattr(o, "duration", None),
         )
         if candidate.is_resting or candidate.is_indeterminate:
             out.append(candidate)
@@ -86,6 +91,29 @@ def indeterminate_order_tickers(orders) -> tuple[str, ...]:
         o.ticker for o in orders or ()
         if (o.instruction or "").upper() in BUY_INSTRUCTIONS and o.is_indeterminate
     }))
+
+
+def mandate_shape_mismatch(order: RestingOrder) -> str | None:
+    """Why this order is not the MANDATED order shape, or None.
+
+    Price agreement alone is not coverage. The settled semantics mandate a GTC
+    STOP_LIMIT; an order at the right prices but the wrong SHAPE does not
+    implement the mandate -- a DAY order expires tonight and leaves the operator
+    uncovered tomorrow (the FTRE failure mode), and a TRAILING stop does not sit
+    at the frozen pivot at all.
+
+    ABSENT values are NOT asserted against: an older payload that simply does
+    not carry a duration is reported as unknown-but-not-wrong, so the panel does
+    not become permanently noisy on shapes it cannot see. Real Schwab payloads
+    DO carry `duration` (the mapper now populates it).
+    """
+    order_type = (order.order_type or "").upper()
+    if order_type and order_type not in MANDATE_ORDER_TYPES:
+        return f"order type is {order_type}, not STOP_LIMIT"
+    duration = (order.duration or "").upper()
+    if duration and duration not in MANDATE_ORDER_DURATIONS:
+        return f"duration is {duration}, not GOOD_TILL_CANCEL"
+    return None
 
 
 def _agrees(order_price, latch_price) -> bool | None:

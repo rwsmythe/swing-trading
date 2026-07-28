@@ -74,6 +74,14 @@ INDETERMINATE_ORDER_STATUSES = frozenset({
 })
 BUY_INSTRUCTIONS = frozenset({"BUY", "BUY_TO_OPEN", "BUY_TO_COVER"})
 
+# The MANDATE SHAPE. The settled latch semantics are a GTC stop-limit: a stop
+# trigger at the frozen pivot with a limit cap at pivot x 1.03. An order at the
+# right PRICES but the wrong SHAPE does not implement the mandate -- a DAY order
+# expires tonight and leaves the operator uncovered tomorrow (the FTRE failure
+# mode), and a TRAILING stop does not sit at the frozen pivot at all.
+MANDATE_ORDER_TYPES = frozenset({"STOP_LIMIT"})
+MANDATE_ORDER_DURATIONS = frozenset({"GOOD_TILL_CANCEL"})
+
 LATCH_ORDER_ALARMS = frozenset({
     "LATCH_ARMED_NO_RESTING_ORDER", "ORDER_RESTING_LATCH_CLEARED",
 })
