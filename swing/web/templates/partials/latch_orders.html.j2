@@ -37,12 +37,15 @@
      unlabelled reduction is a quiet all-clear by omission.
 
      ONE rendering path, per-branch TONE (RD ruling 2026-07-28). `pending` means
-     the nightly has not recorded the derivation session yet: it is the DEFAULT
-     state for ~7 hours of every trading day, the operator's response is simply
-     to wait, and a warning-shaped label on a daily state trains the dismissal
-     reflex on the one surface whose alarms must survive being believed. So it
-     renders as neutral status. `permanent` (the ticker has left the screen)
-     and `unknown` keep the warning tone, because waiting does not fix them. #}
+     NO usable close has been recorded for the derivation session yet: it is the
+     DEFAULT state for ~7 hours of every trading day, the operator's response is
+     simply to wait, and a warning-shaped label on a daily state trains the
+     dismissal reflex on the one surface whose alarms must survive being
+     believed. So it renders as neutral status. `permanent` (that session's
+     closes exist and this latch has none of them -- usually because the ticker
+     is no longer evaluated, though nothing here can SEE finviz-screen
+     membership) and `unknown` keep the warning tone, because the nightly is not
+     what they are waiting on. #}
   {% if vm.mandate_form_check_skipped %}
   <div class="latch-form-check-skipped">
     {% for note in vm.mandate_form_check_skipped %}

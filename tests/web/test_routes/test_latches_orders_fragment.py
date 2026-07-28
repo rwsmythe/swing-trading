@@ -1249,8 +1249,11 @@ def test_a_latch_whose_ticker_left_the_screen_is_visibly_inert(
     assert "the most recent usable close for this ticker is from 2026-07-17" in r.text
     assert "The usual cause is the ticker no longer being evaluated at all" in r.text
     assert "a partial evaluation of that session looks the same from here" in r.text
-    assert "Waiting will NOT clear this one on its own: it clears when this " \
+    assert "This one is NOT simply waiting on the nightly: it clears when this " \
         "ticker again has a usable close on the derivation session" in r.text
+    # ...and NOT an absolute "waiting will never clear this": a later full run
+    # for the SAME session would clear it (Codex y4 MINOR 1).
+    assert "Waiting will NOT clear" not in r.text
     # No apostrophe anywhere in these details -- Jinja autoescaping renders one
     # as `&#39;`, which is correct HTML but breaks plain-text search.
     assert "&#39;" not in r.text

@@ -544,7 +544,10 @@ class LatchOrdersFragmentVM:
     # what the panel is asserting, and an UNLABELLED reduction is a quiet
     # all-clear by omission. It is also where a latched ticker that has dropped
     # off the screen lands (RD ruling 3): permanently inert, and therefore
-    # required to be VISIBLY inert rather than silently inert.
+    # required to be VISIBLY inert rather than silently inert. That is the
+    # MOTIVATING case, NOT a fact the code can establish -- nothing here can see
+    # finviz-screen membership (Codex y1 MAJOR 1), so the label names it as the
+    # usual cause and never asserts it.
     #
     # Carries a per-branch SEVERITY (RD ruling 2026-07-28): see
     # `MandateFormCheckVM`. Still ONE rendering path -- only the tone differs.
@@ -1028,9 +1031,14 @@ def _build_form_check_notes(
     """Classify each withheld FORM check as pending / permanent / unknown.
 
     `skipped` is `(ticker, quote, tail)` per affected latch. The classification
-    needs ONE fact nothing else on this page already knows -- whether a screen
-    was recorded for the derivation session at all -- so the read happens here,
-    once, and ONLY when something was actually withheld.
+    needs ONE fact nothing else on this page already knows -- whether ANY usable
+    close has been recorded for the derivation session -- so the read happens
+    here, once, and ONLY when something was actually withheld.
+
+    That fact is deliberately about CLOSES, never about screen MEMBERSHIP (the
+    Codex y1 MAJOR 1): an `evaluation_runs` row carries held open positions and
+    pins alongside the finviz screen, so no read over it can prove a ticker was
+    or was not screened. Do not re-derive this from a ticker set.
     """
     if not skipped:
         return ()
@@ -1107,17 +1115,21 @@ def _build_form_check_notes(
                 f"mandate and the panel cannot say WHICH of the two mandate "
                 f"forms is correct at this price. The usual cause is the ticker "
                 f"no longer being evaluated at all; a partial evaluation of that "
-                f"session looks the same from here. Waiting will NOT clear this "
-                # The precise clearing condition, not the usual route to it
-                # (Codex y3 MINOR 2): being evaluated again is neither
-                # sufficient (the row may carry no usable close) nor the thing
-                # the check actually consumes.
+                f"session looks the same from here. "
+                # NOT "waiting will never clear this" (Codex y4 MINOR 1): under
+                # the partial-evaluation shape a later full run for the SAME
+                # session would clear it, so an absolute claim is a false
+                # warning. What IS true and what the operator needs is that this
+                # one is not merely waiting on tonight, plus the exact clearing
+                # condition -- which is a usable close, not being evaluated
+                # (Codex y3 MINOR 2): a row may be written carrying none.
                 #
                 # NO APOSTROPHE anywhere in these details: Jinja autoescaping
                 # renders one as `&#39;`, which is correct HTML but silently
                 # breaks any assertion (or operator search) on the plain text.
-                f"one on its own: it clears when this ticker again has a usable "
-                f"close on the derivation session. {_as_sentence(tail)}")
+                f"This one is NOT simply waiting on the nightly: it clears when "
+                f"this ticker again has a usable close on the derivation "
+                f"session. {_as_sentence(tail)}")
         notes.append(MandateFormCheckVM(
             ticker=ticker, severity=severity,
             headline=_FORM_CHECK_HEADLINES[severity], detail=detail))
