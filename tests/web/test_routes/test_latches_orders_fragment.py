@@ -6,7 +6,7 @@ method's safety and would contradict A4 inside the arc that asserts A4.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 
 import pytest
 from fastapi.testclient import TestClient
@@ -337,3 +337,100 @@ def test_the_panel_emits_the_orders_anchor_so_the_fragment_agrees_with_the_cards
     # hx-vals attribute; the browser un-escapes them before HTMX parses it.
     import html
     assert f'"view_session_date": "{ANCHOR}"' in html.unescape(body)
+
+
+def test_a_mispriced_order_does_not_render_a_false_all_clear(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """Codex executing R2 CRITICAL. `LATCH_ARMED_NO_RESTING_ORDER` is keyed on
+    TICKER-LEVEL absence (plan A.9) so a mispriced order does not produce a
+    factually false "no order" alarm -- but that means a wrong-price order
+    SILENCES the alarm. If the disagreement is then discarded, the fragment
+    renders "orders agree" over a mandate that is NOT covered: a false
+    all-clear, the exact failure this arc exists to prevent.
+
+    FTRE is armed at pivot 18.34 / cap 18.89; the broker order is 18.59 / 19.15."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    app = _app(cfg, cfg_path, monkeypatch,
+               orders=[_order(price=19.15, stop_price=18.59)])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert r.status_code == 200
+    assert "Broker orders agree" not in r.text
+    assert "ORDER PRICE MISMATCH" in r.text
+    assert "18.34" in r.text and "18.89" in r.text
+
+
+def test_a_correctly_priced_order_still_reads_as_agreeing(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """The paired discriminator: the all-clear must still be reachable, or the
+    mismatch banner is just noise."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    app = _app(cfg, cfg_path, monkeypatch, orders=[_order()])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert "Broker orders agree" in r.text
+    assert "ORDER PRICE MISMATCH" not in r.text
+
+
+def test_the_order_query_window_reaches_back_to_the_oldest_latch_anchor(
+        seeded_db, monkeypatch):
+    """Codex executing R2 CRITICAL. `get_account_orders` filters on ENTERED
+    TIME and a GTC entry order is entered on the FIRE date, so a fixed
+    30-CALENDAR-day window is too short for a 30-SESSION mandate (30 sessions
+    is ~42 calendar days). Late in a mandate's life the very order that
+    satisfies it would drop out of the query -- firing a FALSE
+    LATCH_ARMED_NO_RESTING_ORDER and silencing a genuine stale-order alarm.
+
+    FTRE fires 2026-07-20; at a 2026-08-28 clock the window must still reach
+    back past the fire date."""
+    import swing.web.view_models.latches as vm_mod
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    seen: dict = {}
+
+    monkeypatch.setattr(vm_mod, "_resolve_schwab_environment", lambda _c: "production")
+    monkeypatch.setattr(vm_mod, "_resolve_account_hash", lambda _c: "HASH")
+    # Freeze BOTH clocks well past the fire so the anchor is CURRENT (a future
+    # anchor would be rejected before the fetch is ever reached).
+    import swing.web.routes.latches as route_mod
+    later = datetime(2026, 8, 28, 9, 0)
+    monkeypatch.setattr(vm_mod, "_now", lambda: later)
+    monkeypatch.setattr(route_mod, "_now", lambda: later)
+
+    def _fetch(client, conn, account_hash, from_dt, to_dt, **kwargs):
+        seen["from_dt"] = from_dt
+        return []
+
+    monkeypatch.setattr(vm_mod, "_fetch_account_orders", _fetch)
+    app = create_app(cfg, cfg_path)
+    app.state.schwab_client_holder = _Holder(object())
+    with TestClient(app) as client:
+        _post_orders(client, anchor="2026-08-28")
+
+    assert seen["from_dt"].date() < date(2026, 7, 20), (
+        "the entered-time window must reach back past the fire date; "
+        f"got {seen['from_dt']}")
+
+
+def test_the_order_query_window_is_bounded():
+    """The ceiling: a pathological anchor must not ask Schwab for years."""
+    from swing.latches.models import FireRow
+    from swing.latches.service import derive_latches
+    from swing.web.view_models.latches import (
+        _ORDER_LOOKBACK_MAX_DAYS,
+        _order_lookback_days,
+    )
+
+    ancient = FireRow(
+        candidate_id=1, evaluation_run_id=1, ticker="OLD", pivot=10.0,
+        initial_stop=8.0, action_session_date="2019-01-02",
+        run_ts="2019-01-01T21:00:00", pipeline_run_id=None)
+    latches = derive_latches(
+        fires=[ancient], bars_by_ticker={"OLD": []}, entries_by_ticker={},
+        horizon_session=date(2026, 7, 27),
+        derivation_session=date(2026, 7, 24)).latches
+    assert _order_lookback_days(
+        latches, now=datetime(2026, 7, 27, 9, 0)) == _ORDER_LOOKBACK_MAX_DAYS
+    assert _order_lookback_days((), now=datetime(2026, 7, 27, 9, 0)) == 30

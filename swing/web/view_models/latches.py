@@ -411,9 +411,21 @@ def _load_views(conn, latches, horizon_session: date) -> dict[int, tuple]:
 # dependency and makes NO `swing/trades` edit.
 # ---------------------------------------------------------------------------
 
-# The Schwab order-read lookback. Bounded because a GTC entry order older than
-# this is not a plausible latch counterpart within a 30-session horizon.
-_ORDER_LOOKBACK_DAYS = 30
+# The FLOOR for the Schwab order-read lookback, in CALENDAR days.
+#
+# The real lower bound is DERIVED from the oldest latch anchor on the page --
+# NOT a constant. `get_account_orders` filters on ENTERED TIME, and a GTC entry
+# order is entered on the FIRE date, so the window must reach back to the oldest
+# latch this page can display. A fixed 30 CALENDAR days is shorter than a
+# 30-SESSION horizon (30 sessions is ~42 calendar days: FTRE fires 2026-07-20
+# and expires 2026-08-31), so late in a mandate's life the order that satisfies
+# it would drop out of the query -- firing a FALSE
+# LATCH_ARMED_NO_RESTING_ORDER, and silencing a genuine stale-order alarm.
+_ORDER_LOOKBACK_FLOOR_DAYS = 30
+# A hard ceiling so a pathological anchor cannot ask Schwab for years of orders.
+_ORDER_LOOKBACK_MAX_DAYS = 400
+# Slack beyond the oldest anchor for an order entered just before the fire.
+_ORDER_LOOKBACK_BUFFER_DAYS = 7
 
 
 @dataclass(frozen=True)
@@ -433,6 +445,10 @@ class LatchOrdersFragmentVM:
     resolution_detail: str
     alarms: tuple[LatchAlarmVM, ...]
     order_lines: tuple[str, ...]
+    # A live latch whose only resting order is MISPRICED. Not one of the two
+    # named alarms (plan A.9 routes it through the agreement flags), but it MUST
+    # be rendered: silence here reads as "covered" when it is not.
+    disagreements: tuple[str, ...] = ()
 
 
 def _resolve_schwab_environment(cfg) -> str | None:
@@ -454,12 +470,24 @@ def _fetch_account_orders(client, conn, account_hash, from_dt, to_dt, **kwargs):
         client, conn, account_hash, from_dt, to_dt, **kwargs)
 
 
-def resolve_open_orders(conn, cfg, app_state):
+def _order_lookback_days(latches, *, now: datetime) -> int:
+    """Calendar days back to query, derived from the OLDEST latch anchor."""
+    anchors = [lat.anchor for lat in latches or ()]
+    if not anchors:
+        return _ORDER_LOOKBACK_FLOOR_DAYS
+    span = (now.date() - min(anchors)).days + _ORDER_LOOKBACK_BUFFER_DAYS
+    return max(_ORDER_LOOKBACK_FLOOR_DAYS, min(span, _ORDER_LOOKBACK_MAX_DAYS))
+
+
+def resolve_open_orders(conn, cfg, app_state, *, latches=()):
     """Resolve the LIVE broker order book, or say honestly why we cannot.
 
     Returns `(OrdersResolutionVM, orders)`. The sandbox short-circuit fires
     FIRST -- BEFORE any client borrow -- so the sandbox path is provably
     side-effect-free (the Schwab sandbox-gating gotcha).
+
+    `latches` only sizes the entered-time query window (see
+    `_order_lookback_days`); it is not otherwise consulted here.
     """
     from swing.latches.orders import to_resting_orders
 
@@ -505,7 +533,7 @@ def resolve_open_orders(conn, cfg, app_state):
                 ), ()
             raw = _fetch_account_orders(
                 client, conn, account_hash,
-                now - timedelta(days=_ORDER_LOOKBACK_DAYS), now,
+                now - timedelta(days=_order_lookback_days(latches, now=now)), now,
                 surface="trade_entry",
                 environment=environment,
                 pipeline_run_id=None,
@@ -547,8 +575,25 @@ def build_latch_orders_vm(
                 "orders were not joined to it. Reload to check your orders."),
             alarms=(), order_lines=())
 
+    # DERIVE FIRST. The latches size the broker query window: `get_account_orders`
+    # filters on ENTERED TIME, so the window must reach back to the OLDEST latch
+    # on the page or the very order that satisfies a long-running mandate falls
+    # out of the result and fires a FALSE "no resting order" alarm.
     try:
-        resolution, orders = resolve_open_orders(conn, cfg, app_state)
+        derivation = build_latch_derivation(
+            conn, cfg, horizon_session_override=horizon_session_override)
+    except Exception as exc:  # noqa: BLE001 -- A6
+        _log.warning("latch order derivation degraded: %s", exc)
+        return LatchOrdersFragmentVM(
+            available=False, resolution_kind="error",
+            resolution_detail=(
+                f"The latch derivation failed ({type(exc).__name__}); alarms "
+                "are suppressed."),
+            alarms=(), order_lines=())
+
+    try:
+        resolution, orders = resolve_open_orders(
+            conn, cfg, app_state, latches=derivation.latches)
     except Exception as exc:  # noqa: BLE001 -- A6
         _log.warning("latch order resolution degraded: %s", exc)
         resolution, orders = OrdersResolutionVM(
@@ -564,9 +609,7 @@ def build_latch_orders_vm(
             resolution_detail=resolution.detail, alarms=(), order_lines=())
 
     try:
-        derivation = build_latch_derivation(
-            conn, cfg, horizon_session_override=horizon_session_override)
-        _joins, alarms = join_orders_to_latches(
+        joins, alarms = join_orders_to_latches(
             latches=derivation.latches, orders=orders)
     except Exception as exc:  # noqa: BLE001 -- A6
         _log.warning("latch order join degraded: %s", exc)
@@ -576,6 +619,29 @@ def build_latch_orders_vm(
                 f"The latch/order join failed ({type(exc).__name__}); alarms "
                 "are suppressed."),
             alarms=(), order_lines=())
+
+    # PRICE DISAGREEMENTS ARE RENDERED, NOT SWALLOWED (Codex executing R2).
+    # `LATCH_ARMED_NO_RESTING_ORDER` is deliberately keyed on TICKER-LEVEL
+    # absence (plan A.9) so a mispriced order does not produce a factually
+    # false "no order" alarm -- but that means a wrong-price order SILENCES the
+    # alarm. If the disagreement is then discarded, the fragment renders "orders
+    # agree" over a mandate that is NOT actually covered: a false all-clear,
+    # which is the exact failure mode this arc exists to prevent.
+    disagreements = tuple(
+        f"{lat.identity.ticker}: resting order does not match the latched "
+        f"mandate (pivot {lat.latched_pivot:.2f}, zone cap "
+        f"{lat.zone_cap:.2f}); "
+        f"stop {'agrees' if joins[lat.identity.candidate_id].order_stop_agrees else 'DISAGREES'}"
+        f", limit "
+        f"{'agrees' if joins[lat.identity.candidate_id].order_limit_agrees else 'DISAGREES'}"
+        for lat in derivation.latches
+        if lat.is_live
+        and lat.identity.candidate_id in joins
+        and joins[lat.identity.candidate_id].orders
+        and not joins[lat.identity.candidate_id].indeterminate
+        and (joins[lat.identity.candidate_id].order_stop_agrees is False
+             or joins[lat.identity.candidate_id].order_limit_agrees is False)
+    )
 
     order_lines = tuple(
         f"{o.ticker} {o.instruction} {o.quantity:g} {o.order_type} "
@@ -594,6 +660,7 @@ def build_latch_orders_vm(
             for a in sorted(alarms, key=lambda a: (a.severity != "critical", a.kind))
         ),
         order_lines=order_lines,
+        disagreements=disagreements,
     )
 
 

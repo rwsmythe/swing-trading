@@ -184,6 +184,7 @@ def _resolve_terminal(
     consumed: set[int],
     horizon_ref: date,
     bar_bound: date,
+    fill_bound: date,
     horizon_sessions: int,
     dry_run: bool,
 ) -> _Terminal | None:
@@ -197,8 +198,20 @@ def _resolve_terminal(
     3. the precedence ``fill > invalidation > horizon`` (RD gate G.4: facts
        beat signals beat deadlines).
 
-    ``dry_run`` makes this a read-only probe (the open-latch rule's liveness
-    test), so a probe never consumes a trade the real resolution must see.
+    THREE SEPARATE BOUNDS, because they answer different questions:
+
+    * ``bar_bound``   -- the newest session whose CLOSE may be judged.
+    * ``fill_bound``  -- the newest session whose FILL may be counted.
+    * ``horizon_ref`` -- the session the horizon is measured against.
+
+    They diverge for the liveness PROBE. "Was this latch live when a fire for
+    session S arrived?" is asked at the moment that fire exists -- the evening
+    BEFORE S -- so S's own bar and S's own fill have not happened yet and must
+    NOT decide it. The HORIZON is different: a mandate whose window closes at S
+    is already dead for S, so the horizon stays INCLUSIVE at S.
+
+    ``dry_run`` makes this a read-only probe, so a probe never consumes a trade
+    the real resolution must see.
     """
     nonfill: _Terminal | None = None
     for bar in _eligible_bars(bars, anchor=draft.anchor, upper=bar_bound):
@@ -218,7 +231,7 @@ def _resolve_terminal(
     )
     entry, basis = _match_fill(
         draft, entries, consumed=consumed, effective_end=effective_end,
-        as_of=horizon_ref)
+        as_of=fill_bound)
 
     if entry is not None and not dry_run:
         # An accepted match is definitively THIS latch's trade, so it is
@@ -299,6 +312,7 @@ def _fold_ticker(
             terminal = _resolve_terminal(
                 draft, bars=bars, entries=entries, consumed=consumed,
                 horizon_ref=horizon_session, bar_bound=derivation_session,
+                fill_bound=horizon_session,
                 horizon_sessions=horizon_sessions, dry_run=False)
         latches.append(_finalize(
             draft, terminal=terminal, bars=bars,
@@ -323,9 +337,15 @@ def _fold_ticker(
                 open_draft.reconfirmation_candidate_ids.append(fire.candidate_id)
                 open_draft.reconfirmation_sessions.append(fire.action_session_date)
                 continue
+            # The facts that may decide liveness stop STRICTLY BEFORE the
+            # re-fire's own session (see `_resolve_terminal`); the horizon
+            # stays inclusive AT it.
+            prior = session_offset(anchor, -1)
             live_probe = _resolve_terminal(
                 open_draft, bars=bars, entries=entries, consumed=consumed,
-                horizon_ref=anchor, bar_bound=min(anchor, derivation_session),
+                horizon_ref=anchor,
+                bar_bound=min(prior, derivation_session),
+                fill_bound=prior,
                 horizon_sessions=horizon_sessions, dry_run=True)
             if live_probe is None:                                # clause (ii)
                 same_pivot = (

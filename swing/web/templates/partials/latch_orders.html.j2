@@ -19,8 +19,21 @@
     </p>
     {% endfor %}
   </div>
-  {% else %}
+  {% elif not vm.disagreements %}
   <p class="muted">Broker orders agree with the live latches. No alarms.</p>
+  {% endif %}
+
+  {# A wrong-price resting order SILENCES the ticker-level "no order" alarm, so
+     it must be rendered loudly or the page reads as an all-clear over a mandate
+     that is not actually covered. #}
+  {% if vm.disagreements %}
+  <div class="latch-disagreements">
+    {% for line in vm.disagreements %}
+    <p class="latch-alarm latch-alarm-warning">
+      <strong>ORDER PRICE MISMATCH</strong> {{ line }}
+    </p>
+    {% endfor %}
+  </div>
   {% endif %}
 
   {% if vm.order_lines %}

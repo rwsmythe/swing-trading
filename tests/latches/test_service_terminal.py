@@ -486,3 +486,56 @@ def test_a_zone_escape_does_not_clear_the_latch():
         horizon_session=date(2026, 7, 27), derivation_session=date(2026, 7, 24))
     assert d.latches[0].state == "armed"
     assert d.latches[0].clear_reason is None
+
+
+def test_the_probe_ignores_facts_from_the_refire_session_itself():
+    """Codex executing R2. The liveness question is asked at the moment the new
+    fire EXISTS -- the evening before its action session -- so that session's
+    own fill/close has not happened yet and must not decide that the old latch
+    was already dead.
+
+    Geometry: fire 05-04, SAME-pivot re-fire 05-05, invalidating close ON 05-05.
+    Correct: ONE re-confirmed latch that then invalidates. An implementation
+    that lets the re-fire session's own bar decide the probe produces TWO
+    latches -- a duplicate mandate for a setup that merely held then broke."""
+    fires = [
+        FireRow(candidate_id=5001, evaluation_run_id=40, ticker="SAMEDAY",
+                pivot=10.0, initial_stop=8.0, action_session_date="2026-05-04",
+                run_ts="2026-05-01T21:00:00", pipeline_run_id=None),
+        FireRow(candidate_id=5002, evaluation_run_id=41, ticker="SAMEDAY",
+                pivot=10.0, initial_stop=8.0, action_session_date="2026-05-05",
+                run_ts="2026-05-04T17:30:00", pipeline_run_id=None),
+    ]
+    bars = [_bar("2026-05-05", 9.0, 9.2, 7.5, 7.90)]     # closes below 8.0
+    d = derive_latches(
+        fires=fires, bars_by_ticker={"SAMEDAY": bars}, entries_by_ticker={},
+        horizon_session=date(2026, 5, 6), derivation_session=date(2026, 5, 5))
+    assert len(d.latches) == 1
+    latch = d.latches[0]
+    assert latch.identity.candidate_id == 5001
+    assert latch.reconfirmation_candidate_ids == (5002,)
+    assert latch.state == "invalidated"
+    assert latch.clear_session == date(2026, 5, 5)
+
+
+def test_a_horizon_that_closes_on_the_refire_session_still_opens_a_new_latch():
+    """The paired discriminator: the horizon stays INCLUSIVE at the re-fire
+    session even though bars and fills do not. A mandate whose window closes at
+    S is already dead for S, so a fire for S opens a genuinely new latch. An
+    implementation that pushed the horizon back a session too would re-confirm
+    here and keep a dead mandate alive."""
+    fires = [
+        FireRow(candidate_id=5101, evaluation_run_id=40, ticker="HZN",
+                pivot=10.0, initial_stop=8.0, action_session_date="2026-07-01",
+                run_ts="2026-06-30T21:00:00", pipeline_run_id=None),
+        # 2026-07-01 + 30 sessions == 2026-08-13 (the AMN geometry).
+        FireRow(candidate_id=5102, evaluation_run_id=41, ticker="HZN",
+                pivot=10.0, initial_stop=8.0, action_session_date="2026-08-13",
+                run_ts="2026-08-12T17:30:00", pipeline_run_id=None),
+    ]
+    d = derive_latches(
+        fires=fires, bars_by_ticker={"HZN": []}, entries_by_ticker={},
+        horizon_session=date(2026, 8, 13), derivation_session=date(2026, 8, 13))
+    assert len(d.latches) == 2
+    assert d.latches[0].state == "horizon_expired"
+    assert d.latches[1].state == "armed"
