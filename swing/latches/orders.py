@@ -14,9 +14,13 @@ be announced.
 """
 from __future__ import annotations
 
+import math
+
 from swing.latches.constants import (
     BUY_INSTRUCTIONS,
     MANDATE_ORDER_DURATIONS,
+    MANDATE_ORDER_TYPE_BREAKOUT,
+    MANDATE_ORDER_TYPE_PULLBACK,
     MANDATE_ORDER_TYPES,
 )
 from swing.latches.models import Latch, LatchOrderJoin, OrderAlarm, RestingOrder
@@ -93,23 +97,80 @@ def indeterminate_order_tickers(orders) -> tuple[str, ...]:
     }))
 
 
-def mandate_shape_mismatch(order: RestingOrder) -> str | None:
+def expected_mandate_order_type(*, latched_pivot, last_close) -> str | None:
+    """Which of the two mandate forms applies at this price, or ``None``.
+
+    The regime boundary is the LATCHED PIVOT (RD, 2026-07-27): below it the
+    mandate is a GTC STOP_LIMIT (the breakout entry); at or above it a buy stop
+    would sit BELOW the market and be rejected by the broker, so the mandate is
+    a GTC LIMIT at the zone cap (the pullback entry).
+
+    Returns ``None`` -- regime UNDETERMINABLE -- when either side is absent or
+    unusable. The caller must then accept EITHER form rather than assert a
+    mismatch it cannot support (an absent price is not evidence of a wrong
+    order shape).
+
+    Both sides are rounded to display precision before the comparison (the
+    price-precision-parity gotcha): a sub-cent float artifact must never flip
+    the regime and invert which instrument the panel calls correct.
+    """
+    values: list[float] = []
+    for raw in (latched_pivot, last_close):
+        if raw is None or isinstance(raw, bool):
+            return None
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(value):
+            return None
+        values.append(value)
+    pivot, close = values
+    if round(close, _PRICE_DP) < round(pivot, _PRICE_DP):
+        return MANDATE_ORDER_TYPE_BREAKOUT
+    return MANDATE_ORDER_TYPE_PULLBACK
+
+
+def mandate_shape_mismatch(
+    order: RestingOrder, *, latched_pivot=None, last_close=None,
+) -> str | None:
     """Why this order is not the MANDATED order shape, or None.
 
-    Price agreement alone is not coverage. The settled semantics mandate a GTC
-    STOP_LIMIT; an order at the right prices but the wrong SHAPE does not
-    implement the mandate -- a DAY order expires tonight and leaves the operator
-    uncovered tomorrow (the FTRE failure mode), and a TRAILING stop does not sit
-    at the frozen pivot at all.
+    Price agreement alone is not coverage: an order at the right prices but the
+    wrong SHAPE does not implement the mandate. The mandate has TWO forms and
+    the price regime selects between them (see `expected_mandate_order_type`),
+    so this reports against whichever form was expected in THAT regime -- a
+    hard-coded "not STOP_LIMIT" would be wrong half the time, and on this arc's
+    own live subject (FTRE) it produced a FALSE mismatch against the operator's
+    situationally-CORRECT order.
+
+    GTC-ness is required of BOTH forms and is checked independently of the
+    regime: a DAY order expires tonight and leaves the operator uncovered
+    tomorrow (the FTRE failure mode).
 
     ABSENT values are NOT asserted against: an older payload that simply does
     not carry a duration is reported as unknown-but-not-wrong, so the panel does
-    not become permanently noisy on shapes it cannot see. Real Schwab payloads
-    DO carry `duration` (the mapper now populates it).
+    not become permanently noisy on shapes it cannot see (real Schwab payloads
+    DO carry `duration`), and an absent/unusable price leaves the regime unknown
+    so BOTH forms are accepted.
     """
     order_type = (order.order_type or "").upper()
-    if order_type and order_type not in MANDATE_ORDER_TYPES:
-        return f"order type is {order_type}, not STOP_LIMIT"
+    expected = expected_mandate_order_type(
+        latched_pivot=latched_pivot, last_close=last_close)
+    if order_type:
+        if expected is None:
+            if order_type not in MANDATE_ORDER_TYPES:
+                return (
+                    f"order type is {order_type}, not "
+                    f"{MANDATE_ORDER_TYPE_BREAKOUT} (below the latched pivot) "
+                    f"or {MANDATE_ORDER_TYPE_PULLBACK} (at or above it)")
+        elif order_type != expected:
+            regime = (
+                "BELOW" if expected == MANDATE_ORDER_TYPE_BREAKOUT
+                else "AT OR ABOVE")
+            return (
+                f"order type is {order_type}, but the last close is {regime} "
+                f"the latched pivot, so the mandate is a {expected}")
     duration = (order.duration or "").upper()
     if duration and duration not in MANDATE_ORDER_DURATIONS:
         return f"duration is {duration}, not GOOD_TILL_CANCEL"

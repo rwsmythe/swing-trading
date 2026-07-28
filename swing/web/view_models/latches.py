@@ -580,7 +580,12 @@ def build_latch_orders_vm(
     the safe direction: a false all-clear is the failure mode this arc exists
     to prevent.
     """
+    from swing.latches.constants import (
+        MANDATE_ORDER_TYPE_BREAKOUT,
+        MANDATE_ORDER_TYPE_PULLBACK,
+    )
     from swing.latches.orders import (
+        expected_mandate_order_type,
         indeterminate_order_tickers,
         join_orders_to_latches,
         mandate_shape_mismatch,
@@ -656,11 +661,32 @@ def build_latch_orders_vm(
             return "agrees"
         return "DISAGREES" if flag is False else "UNKNOWN (leg absent)"
 
+    # THE MANDATE-SHAPE REGIME PRICE. Which of the two mandated instruments is
+    # correct depends on where price sits relative to the latched pivot, so the
+    # shape check needs a price. It is the SAME price the panel cards render --
+    # the most recent persisted `candidates.close` via `load_last_closes`, a
+    # PURE SELECT -- so the operator never sees the fragment judging his order
+    # against a number the page does not show. A read failure leaves the regime
+    # UNKNOWN, which accepts either form (A6: degrade, never false-alarm).
+    regime_closes: dict = {}
+    regime_tickers = sorted({
+        lat.identity.ticker for lat in derivation.latches if lat.is_live})
+    if regime_tickers:
+        try:
+            regime_closes = load_last_closes(conn, regime_tickers)
+        except Exception as exc:  # noqa: BLE001 -- A6: a price miss never blocks
+            _log.warning("latch order regime price read degraded: %s", exc)
+            regime_closes = {}
+
     disagreement_lines: list[str] = []
     for lat in derivation.latches:
         join = joins.get(lat.identity.candidate_id)
         if not lat.is_live or join is None or join.indeterminate:
             continue
+        quote = regime_closes.get(lat.identity.ticker)
+        last_close = None if quote is None else quote[0]
+        expected_type = expected_mandate_order_type(
+            latched_pivot=lat.latched_pivot, last_close=last_close)
         # (a) an order matched to this mandate but priced wrong.
         if join.orders and (join.order_stop_agrees is not True
                             or join.order_limit_agrees is not True):
@@ -673,14 +699,30 @@ def build_latch_orders_vm(
         # (a2) an order at the RIGHT PRICES but the WRONG SHAPE. Price
         # agreement alone is not coverage: a DAY order expires tonight and
         # leaves the operator uncovered tomorrow -- the FTRE failure mode.
+        # The mandated shape is REGIME-SELECTED, so the prose must name the
+        # form expected at THIS price, not a hard-coded stop-limit.
+        if expected_type == MANDATE_ORDER_TYPE_PULLBACK:
+            mandate_prose = (
+                "a GTC LIMIT at the zone cap (the last close is at or above "
+                "the latched pivot, so a buy stop-limit would sit below the "
+                "market and be rejected)")
+        elif expected_type == MANDATE_ORDER_TYPE_BREAKOUT:
+            mandate_prose = (
+                "a GTC STOP_LIMIT at the latched pivot with the zone cap as "
+                "its limit")
+        else:
+            mandate_prose = (
+                "a GTC STOP_LIMIT at the latched pivot with the zone cap as "
+                "its limit while price is below the pivot, or a GTC LIMIT at "
+                "the cap once price is at or above it")
         for o in join.orders:
-            shape = mandate_shape_mismatch(o)
+            shape = mandate_shape_mismatch(
+                o, latched_pivot=lat.latched_pivot, last_close=last_close)
             if shape is not None:
                 disagreement_lines.append(
                     f"{lat.identity.ticker}: resting BUY order {o.order_id} "
                     f"is not the mandated order shape ({shape}); the mandate is "
-                    "a GTC STOP_LIMIT at the latched pivot with the zone cap as "
-                    "its limit")
+                    f"{mandate_prose}")
         # (b) a STRAY order on this ticker matching NO latch. Reported per
         # order, because a correctly-priced order would otherwise mask it and
         # the page would read as all-clear with an unexplained live order at

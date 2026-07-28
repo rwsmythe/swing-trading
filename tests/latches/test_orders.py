@@ -3,8 +3,14 @@ from __future__ import annotations
 
 from datetime import date
 
+from swing.latches.constants import MANDATE_ORDER_DURATIONS, MANDATE_ORDER_TYPES
 from swing.latches.models import DailyBar, FireRow, RestingOrder
-from swing.latches.orders import join_orders_to_latches, to_resting_orders
+from swing.latches.orders import (
+    expected_mandate_order_type,
+    join_orders_to_latches,
+    mandate_shape_mismatch,
+    to_resting_orders,
+)
 from swing.latches.service import derive_latches
 
 FTRE_FIRE = FireRow(
@@ -351,3 +357,152 @@ def test_a_mispriced_order_still_counts_as_coverage_for_the_live_latch():
     joins, alarms = join_orders_to_latches(latches=latches, orders=(mispriced,))
     assert "LATCH_ARMED_NO_RESTING_ORDER" not in {a.kind for a in alarms}
     assert joins[9500].order_stop_agrees is False
+
+
+# --- RD ruling 2026-07-27: the mandate shape has TWO regime-selected forms ---
+#
+# The correct instrument depends on where price sits relative to the LATCHED
+# PIVOT, so the accepted set carries two forms:
+#   price BELOW the pivot  -> GTC STOP_LIMIT (stop = pivot, limit = zone cap)
+#   price AT OR ABOVE it   -> GTC LIMIT at the zone cap
+# This is LIVE, not hypothetical: on 2026-07-23 the operator's FTRE
+# buy-stop-limit was BROKER-REJECTED because a buy stop must sit ABOVE the
+# market and price had already crossed the pivot. The panel must not flag the
+# situationally-correct instrument as a shape mismatch.
+#
+# FTRE's real values: latched pivot 18.34, zone cap 18.89, last close 19.52.
+FTRE_PIVOT = 18.34
+FTRE_CAP = 18.89
+FTRE_CLOSE_ABOVE = 19.52       # the 2026-07-24 close, ABOVE the pivot
+FTRE_CLOSE_BELOW = 17.76       # the 2026-07-17 close, BELOW the pivot
+
+
+def _breakout_order(**over):
+    base = dict(order_id="b1", ticker="FTRE", instruction="BUY", quantity=3.0,
+                order_type="STOP_LIMIT", limit_price=FTRE_CAP,
+                stop_price=FTRE_PIVOT, status="WORKING",
+                duration="GOOD_TILL_CANCEL")
+    base.update(over)
+    return RestingOrder(**base)
+
+
+def _pullback_order(**over):
+    base = dict(order_id="p1", ticker="FTRE", instruction="BUY", quantity=3.0,
+                order_type="LIMIT", limit_price=FTRE_CAP, stop_price=None,
+                status="WORKING", duration="GOOD_TILL_CANCEL")
+    base.update(over)
+    return RestingOrder(**base)
+
+
+def test_below_the_pivot_a_gtc_stop_limit_is_the_mandated_shape():
+    assert mandate_shape_mismatch(
+        _breakout_order(), latched_pivot=FTRE_PIVOT,
+        last_close=FTRE_CLOSE_BELOW) is None
+
+
+def test_at_or_above_the_pivot_a_gtc_limit_at_the_cap_is_the_mandated_shape():
+    """THE LIVE FTRE SUBJECT. CHARC confirmed the live order is a GTC LIMIT at
+    18.89, not a stop-limit. Under the one-form set this read as a shape
+    mismatch -- a false alarm on the exact channel this arc exists to make
+    trustworthy."""
+    assert mandate_shape_mismatch(
+        _pullback_order(), latched_pivot=FTRE_PIVOT,
+        last_close=FTRE_CLOSE_ABOVE) is None
+
+
+def test_at_the_pivot_exactly_is_the_pullback_regime():
+    """The boundary is AT OR ABOVE: a buy stop AT the market is already
+    unplaceable, so the cap-limit is the correct instrument."""
+    assert mandate_shape_mismatch(
+        _pullback_order(), latched_pivot=FTRE_PIVOT,
+        last_close=FTRE_PIVOT) is None
+
+
+def test_a_non_gtc_stop_limit_below_the_pivot_is_still_a_mismatch():
+    """GTC-ness is required of BOTH forms. FTRE was lost precisely because the
+    order was not GTC."""
+    msg = mandate_shape_mismatch(
+        _breakout_order(duration="DAY"), latched_pivot=FTRE_PIVOT,
+        last_close=FTRE_CLOSE_BELOW)
+    assert msg is not None
+    assert "GOOD_TILL_CANCEL" in msg
+
+
+def test_a_non_gtc_limit_above_the_pivot_is_still_a_mismatch():
+    """The other half of the GTC requirement -- and the discriminator that
+    proves the widening did not swallow the duration check: under the one-form
+    set this reported the TYPE, never the duration."""
+    msg = mandate_shape_mismatch(
+        _pullback_order(duration="DAY"), latched_pivot=FTRE_PIVOT,
+        last_close=FTRE_CLOSE_ABOVE)
+    assert msg is not None
+    assert "GOOD_TILL_CANCEL" in msg
+
+
+def test_a_stop_limit_above_the_pivot_is_the_wrong_regime():
+    """The FTRE 2026-07-23 broker rejection, caught by the panel: a buy stop
+    below the market cannot rest."""
+    msg = mandate_shape_mismatch(
+        _breakout_order(), latched_pivot=FTRE_PIVOT,
+        last_close=FTRE_CLOSE_ABOVE)
+    assert msg is not None
+    assert "STOP_LIMIT" in msg and "LIMIT" in msg
+    assert "AT OR ABOVE" in msg
+
+
+def test_a_plain_limit_below_the_pivot_is_the_wrong_regime():
+    """A resting buy-limit at the cap while price is below the pivot fills
+    IMMEDIATELY at the market -- it never waits for the breakout."""
+    msg = mandate_shape_mismatch(
+        _pullback_order(), latched_pivot=FTRE_PIVOT,
+        last_close=FTRE_CLOSE_BELOW)
+    assert msg is not None
+    assert "STOP_LIMIT" in msg
+    assert "BELOW" in msg
+
+
+def test_an_absent_price_degrades_to_accepting_either_form():
+    """Degrade gracefully: with no price the regime is UNDETERMINABLE, so the
+    check must not assert a mismatch it cannot support."""
+    for order in (_breakout_order(), _pullback_order()):
+        assert mandate_shape_mismatch(
+            order, latched_pivot=FTRE_PIVOT, last_close=None) is None
+        assert mandate_shape_mismatch(order) is None
+
+
+def test_an_unusable_price_degrades_to_accepting_either_form():
+    for bad in (float("nan"), float("inf"), "n/a"):
+        assert mandate_shape_mismatch(
+            _pullback_order(), latched_pivot=FTRE_PIVOT, last_close=bad) is None
+
+
+def test_a_trailing_stop_is_neither_form_in_either_regime():
+    for close in (FTRE_CLOSE_BELOW, FTRE_CLOSE_ABOVE, None):
+        msg = mandate_shape_mismatch(
+            _breakout_order(order_type="TRAILING_STOP_LIMIT"),
+            latched_pivot=FTRE_PIVOT, last_close=close)
+        assert msg is not None, close
+        assert "TRAILING_STOP_LIMIT" in msg
+
+
+def test_expected_mandate_order_type_selects_by_regime():
+    assert expected_mandate_order_type(
+        latched_pivot=FTRE_PIVOT, last_close=FTRE_CLOSE_BELOW) == "STOP_LIMIT"
+    assert expected_mandate_order_type(
+        latched_pivot=FTRE_PIVOT, last_close=FTRE_CLOSE_ABOVE) == "LIMIT"
+    assert expected_mandate_order_type(
+        latched_pivot=FTRE_PIVOT, last_close=None) is None
+    assert expected_mandate_order_type(
+        latched_pivot=None, last_close=FTRE_CLOSE_ABOVE) is None
+
+
+def test_the_regime_boundary_uses_display_precision():
+    """The price-precision-parity gotcha on BOTH sides: a sub-cent float
+    artifact must not flip the regime and invert the mandated instrument."""
+    assert expected_mandate_order_type(
+        latched_pivot=FTRE_PIVOT, last_close=18.339999) == "LIMIT"
+
+
+def test_both_forms_are_in_the_mandate_set_and_gtc_is_still_the_only_duration():
+    assert MANDATE_ORDER_TYPES == {"STOP_LIMIT", "LIMIT"}
+    assert MANDATE_ORDER_DURATIONS == {"GOOD_TILL_CANCEL"}

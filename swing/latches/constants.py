@@ -74,12 +74,29 @@ INDETERMINATE_ORDER_STATUSES = frozenset({
 })
 BUY_INSTRUCTIONS = frozenset({"BUY", "BUY_TO_OPEN", "BUY_TO_COVER"})
 
-# The MANDATE SHAPE. The settled latch semantics are a GTC stop-limit: a stop
-# trigger at the frozen pivot with a limit cap at pivot x 1.03. An order at the
-# right PRICES but the wrong SHAPE does not implement the mandate -- a DAY order
-# expires tonight and leaves the operator uncovered tomorrow (the FTRE failure
-# mode), and a TRAILING stop does not sit at the frozen pivot at all.
-MANDATE_ORDER_TYPES = frozenset({"STOP_LIMIT"})
+# The MANDATE SHAPE. An order at the right PRICES but the wrong SHAPE does not
+# implement the mandate.
+#
+# RD RULING 2026-07-27: the mandate takes TWO forms, and WHICH one is correct
+# depends on where price sits relative to the LATCHED PIVOT.
+#
+#   price BELOW the latched pivot -> a GTC STOP_LIMIT: stop trigger at the
+#     frozen pivot, limit cap at pivot x 1.03. The breakout entry; the
+#     canonical form.
+#   price AT OR ABOVE the latched pivot -> a GTC LIMIT at the zone cap. The
+#     pullback entry. A buy STOP must sit ABOVE the market, so once price has
+#     crossed the pivot the broker REJECTS a buy-stop-limit at it -- which is
+#     exactly what happened to the operator's FTRE order on 2026-07-23. The
+#     correct instrument in that state is a plain resting buy-limit at the cap.
+#
+# GTC-ness is required of BOTH forms: a DAY order expires tonight and leaves
+# the operator uncovered tomorrow, which is how FTRE was lost. A TRAILING stop
+# is NEITHER form -- it does not sit at the frozen pivot at all.
+MANDATE_ORDER_TYPE_BREAKOUT = "STOP_LIMIT"     # price BELOW the latched pivot
+MANDATE_ORDER_TYPE_PULLBACK = "LIMIT"          # price AT OR ABOVE it
+MANDATE_ORDER_TYPES = frozenset({
+    MANDATE_ORDER_TYPE_BREAKOUT, MANDATE_ORDER_TYPE_PULLBACK,
+})
 MANDATE_ORDER_DURATIONS = frozenset({"GOOD_TILL_CANCEL"})
 
 LATCH_ORDER_ALARMS = frozenset({
