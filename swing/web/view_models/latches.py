@@ -455,6 +455,12 @@ class LatchOrdersFragmentVM:
     # honest "unknown" -- but the UNKNOWN must be RENDERED, or the suppression
     # itself reads as an all-clear.
     indeterminate_tickers: tuple[str, ...] = ()
+    # Latches carrying MORE THAN ONE matched resting order (RD ruling
+    # 2026-07-27). The agreement flags describe a SINGLE reference order, so
+    # over a matched set the affirmative agree is WITHHELD and the multiplicity
+    # is stated instead. Deliberately a COUNT plus a directive: 21-A does NOT
+    # report per-order legs, per-order agreement, or per-order alarms.
+    multiplicity_notes: tuple[str, ...] = ()
 
 
 def _resolve_schwab_environment(cfg) -> str | None:
@@ -691,10 +697,29 @@ def build_latch_orders_vm(
             regime_closes = {}
 
     disagreement_lines: list[str] = []
+    multiplicity_lines: list[str] = []
     for lat in derivation.latches:
         join = joins.get(lat.identity.candidate_id)
         if not lat.is_live or join is None or join.indeterminate:
             continue
+        # THE MULTIPLICITY GUARD (RD ruling 2026-07-27). The agreement flags
+        # below describe ONE reference order. Two GTC stop-limits sharing the
+        # correct stop trigger but carrying DIFFERENT caps both match the latch,
+        # so neither is a stray, the reference is the good one, and the page
+        # would print the affirmative all-clear over a real wrong-cap order
+        # resting at the broker. The panel may say only what the data supports:
+        # "one order agrees" is supportable, "orders agree" over an uninspected
+        # set is not. So the all-clear is WITHHELD and the multiplicity stated.
+        #
+        # WITHHOLDING ONLY. No per-order legs, no per-order agreement, no
+        # per-order alarms -- that is the single-reference -> per-order
+        # reporting-model change, and it is banked as V2, not 21-A.
+        if join.matched_order_count > 1:
+            multiplicity_lines.append(
+                f"{lat.identity.ticker}: {join.matched_order_count} resting BUY "
+                f"orders match this mandate (pivot {lat.latched_pivot:.2f} / cap "
+                f"{lat.zone_cap:.2f}); only 1 is reported here - verify the "
+                f"others at the broker")
         quote = regime_closes.get(lat.identity.ticker)
         # quote is (close, data_asof_date); a close from any other session is
         # not evidence about THIS moment, so it does not get to pick the form.
@@ -819,6 +844,7 @@ def build_latch_orders_vm(
         order_lines=order_lines,
         disagreements=disagreements,
         indeterminate_tickers=indeterminate_tickers,
+        multiplicity_notes=tuple(dict.fromkeys(multiplicity_lines)),
     )
 
 

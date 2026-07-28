@@ -268,6 +268,15 @@ class LatchOrderJoin:
     # able to hide a stray one: the agreement flags describe the MATCHED order,
     # so without this an extra mispriced order would render as all-clear.
     unmatched_orders: tuple[RestingOrder, ...] = ()
+    # How many resting BUY orders were attributed to THIS latch (RD ruling
+    # 2026-07-27, the multiplicity guard). The agreement flags above describe
+    # ONE reference order, so above 1 the consumer must WITHHOLD the affirmative
+    # all-clear: two stop-limits sharing the correct stop trigger but carrying
+    # different caps BOTH match, so neither is `unmatched_orders`, and the
+    # wrong-cap one rests at the broker completely uninspected. This is a COUNT,
+    # deliberately: reporting per-order legs/agreement/alarms is a different
+    # reporting model and is OUT of 21-A.
+    matched_order_count: int = 0
 
 
 @dataclass(frozen=True)

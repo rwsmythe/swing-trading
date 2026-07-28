@@ -976,3 +976,55 @@ def test_a_close_on_the_derivation_session_does_choose_the_regime(
     assert r.status_code == 200
     assert "not the mandated order shape" in r.text
     assert "AT OR ABOVE" in r.text
+
+
+# --- RD ruling 2026-07-27: the MULTIPLICITY guard ---------------------------
+def test_two_orders_on_one_mandate_withhold_the_all_clear(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """RD ruling 1 / CHARC ruling 1, MERGE-BLOCKING. TWO GTC stop-limits on the
+    one FTRE latch: the SAME correct stop trigger (18.34) and DIFFERENT caps
+    (18.89 and 19.75). Both match the latch on the stop leg, so NEITHER is
+    'unmatched'; `_pick_reference_order` prefers the order agreeing on both legs
+    and the fragment reports only that one. The page then prints the affirmative
+    all-clear over a real wrong-cap order resting at the broker -- a FALSE
+    ALL-CLEAR, this arc's dominant defect class.
+
+    The panel may say only what the data supports. It withholds the affirmative
+    agree and states the multiplicity instead. It does NOT begin reporting
+    per-order legs / per-order agreement / per-order alarms: that is the
+    single-reference -> per-order reporting-model change, banked as V2."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    # A derivation-session close BELOW the pivot, so the regime is determinable
+    # and the shape check runs -- this test is about multiplicity ONLY.
+    _seed_close_at_the_derivation_session(cfg, 17.76)
+    good = _order(order_id="good", price=18.89, stop_price=18.34,
+                  duration="GOOD_TILL_CANCEL")
+    wrong_cap = _order(order_id="wrong-cap", price=19.75, stop_price=18.34,
+                       duration="GOOD_TILL_CANCEL")
+    app = _app(cfg, cfg_path, monkeypatch, orders=[good, wrong_cap])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert r.status_code == 200
+    assert "Broker orders agree" not in r.text
+    assert "2 resting BUY orders match this mandate" in r.text
+    assert "verify the others at the broker" in r.text
+    # ...and NOT a false "no resting order" alarm: the mandate IS covered.
+    assert "LATCH_ARMED_NO_RESTING_ORDER" not in r.text
+
+
+def test_a_single_matched_order_still_reaches_the_all_clear(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """The paired discriminator for the multiplicity guard: with ONE matched
+    order the affirmative agree must still be reachable, or the guard is just a
+    permanent gag."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    _seed_close_at_the_derivation_session(cfg, 17.76)
+    app = _app(cfg, cfg_path, monkeypatch,
+               orders=[_order(duration="GOOD_TILL_CANCEL")])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert r.status_code == 200
+    assert "Broker orders agree" in r.text
+    assert "match this mandate" not in r.text

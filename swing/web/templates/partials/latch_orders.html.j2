@@ -19,8 +19,23 @@
     </p>
     {% endfor %}
   </div>
-  {% elif not vm.disagreements and not vm.indeterminate_tickers %}
+  {% elif not vm.disagreements and not vm.indeterminate_tickers
+          and not vm.multiplicity_notes %}
   <p class="muted">Broker orders agree with the live latches. No alarms.</p>
+  {% endif %}
+
+  {# MORE THAN ONE order matched a single mandate. The agreement flags describe
+     ONE reference order, so the affirmative agree is WITHHELD and the
+     multiplicity stated instead -- a fully-agreeing order must never be able to
+     print an all-clear over an uninspected sibling. #}
+  {% if vm.multiplicity_notes %}
+  <div class="latch-multiplicity">
+    {% for line in vm.multiplicity_notes %}
+    <p class="latch-alarm latch-alarm-warning">
+      <strong>MULTIPLE ORDERS MATCH THIS MANDATE</strong> {{ line }}
+    </p>
+    {% endfor %}
+  </div>
   {% endif %}
 
   {# An INDETERMINATE broker status suppresses both alarms by design. That

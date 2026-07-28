@@ -347,6 +347,37 @@ def test_a_cleared_latchs_order_is_not_coverage_for_the_live_latch():
     assert "20.19" in naked.detail
 
 
+def test_the_join_reports_how_many_orders_matched_the_latch():
+    """RD ruling 2026-07-27 (the multiplicity guard). TWO GTC stop-limits on one
+    latch, same CORRECT stop trigger, DIFFERENT caps: both match on the stop leg,
+    so NEITHER is unmatched, and `_pick_reference_order` reports the good one --
+    the wrong-cap order then rests at the broker completely uninspected.
+
+    The join already knows the size of the matched set (that is how it concludes
+    neither order is unmatched); it must EXPOSE it so the view model can withhold
+    the affirmative all-clear."""
+    latches = _armed()
+    good = _order(order_id="good", stop_price=18.34, limit_price=18.89)
+    wrong_cap = _order(order_id="wrong-cap", stop_price=18.34, limit_price=19.75)
+    joins, alarms = join_orders_to_latches(
+        latches=latches, orders=(good, wrong_cap))
+    j = joins[9500]
+    assert j.matched_order_count == 2
+    # The reference order is still the good one, and the flags still describe
+    # only it -- this arc does NOT introduce per-order reporting.
+    assert j.order_stop_agrees is True
+    assert j.order_limit_agrees is True
+    assert j.unmatched_orders == ()
+    assert alarms == ()
+
+
+def test_a_single_matched_order_reports_a_count_of_one():
+    """The paired discriminator: the count must distinguish, or the guard would
+    withhold the all-clear from every latch."""
+    joins, _ = join_orders_to_latches(latches=_armed(), orders=(_order(),))
+    assert joins[9500].matched_order_count == 1
+
+
 def test_a_mispriced_order_still_counts_as_coverage_for_the_live_latch():
     """The paired discriminator, preserving plan A.9's intent: an order matching
     NO latch is a plausibly-mispriced attempt at the live mandate, so it must

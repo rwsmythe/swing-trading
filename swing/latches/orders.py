@@ -279,6 +279,11 @@ def join_orders_to_latches(*, latches, orders):
                 None if reference is None
                 else _agrees(reference.limit_price, latch.zone_cap)),
             indeterminate=ticker in indeterminate_tickers,
+            # The size of the MATCHED set only (never the strays, which travel
+            # separately and are already reported one by one). It is what lets
+            # the panel notice that the agreement flags above describe one of
+            # several orders and withhold the affirmative all-clear.
+            matched_order_count=len(mine),
         )
 
     alarms: list[OrderAlarm] = []
