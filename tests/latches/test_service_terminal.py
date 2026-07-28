@@ -635,3 +635,24 @@ def test_a_close_below_the_stop_AFTER_the_horizon_does_not_overwrite_expiry():
     assert latch.state == "horizon_expired"
     assert latch.clear_reason == "horizon"
     assert latch.clear_session == date(2026, 8, 13)
+
+
+def test_a_sub_cent_close_artifact_does_not_invalidate_a_live_mandate():
+    """Codex executing R8. A parquet float artifact -- a close of 14.879999999
+    against a frozen 14.88 stop -- would CLEAR the mandate under a raw float
+    comparison while the panel renders BOTH numbers as 14.88, and clearing
+    silences the no-resting-order alarm. Every other price comparison in this
+    arc rounds to display precision; this one now does too, and it errs in the
+    SAFE direction (a marginal mandate stays armed rather than dying silently).
+    A genuinely-below close still invalidates."""
+    artifact = [_bar("2026-07-21", 15.0, 15.2, 14.10, 14.879999999)]
+    d = derive_latches(
+        fires=[FTRE_FIRE], bars_by_ticker={"FTRE": artifact}, entries_by_ticker={},
+        horizon_session=date(2026, 7, 22), derivation_session=date(2026, 7, 21))
+    assert d.latches[0].state == "armed"
+
+    genuine = [_bar("2026-07-21", 15.0, 15.2, 14.10, 14.8749)]   # rounds to 14.87
+    d2 = derive_latches(
+        fires=[FTRE_FIRE], bars_by_ticker={"FTRE": genuine}, entries_by_ticker={},
+        horizon_session=date(2026, 7, 22), derivation_session=date(2026, 7, 21))
+    assert d2.latches[0].state == "invalidated"

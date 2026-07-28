@@ -261,3 +261,46 @@ def test_to_resting_orders_preserves_a_genuine_stop_limit_pair():
     (o,) = to_resting_orders([_schwab_order()])
     assert (o.stop_price, o.limit_price) == (18.34, 18.89)
     assert o.ticker == "FTRE"
+
+
+def test_an_unmatched_order_is_not_attributed_to_an_unrelated_cleared_latch():
+    """Codex executing R8. When a ticker has no LIVE latch, an unmatched resting
+    order was attributed to the most recently cleared latch -- so the alarm said
+    it "matches a latch that CLEARED by invalidation" (a FALSE statement about a
+    real broker order) and inherited `critical` severity from a latch it has
+    nothing to do with. The alarm still fires -- an unexplained resting order
+    with no live mandate is worth surfacing -- but it now says only what is
+    true."""
+    from swing.latches.models import DailyBar
+    bars = [DailyBar(session=date(2026, 7, 21), open=15.0, high=15.2,
+                     low=14.1, close=14.0)]           # invalidates the latch
+    cleared = derive_latches(
+        fires=[FTRE_FIRE], bars_by_ticker={"FTRE": bars}, entries_by_ticker={},
+        horizon_session=date(2026, 7, 22),
+        derivation_session=date(2026, 7, 21)).latches
+    assert cleared[0].state == "invalidated"
+
+    unrelated = _order(stop_price=25.00, limit_price=25.75)
+    _, alarms = join_orders_to_latches(latches=cleared, orders=(unrelated,))
+    (alarm,) = alarms
+    assert alarm.kind == "ORDER_RESTING_LATCH_CLEARED"
+    assert alarm.latch_candidate_id is None       # NOT 9500
+    assert alarm.severity == "warning"            # NOT inherited `critical`
+    assert "matches NO latch" in alarm.detail
+    assert "invalidation" not in alarm.detail
+
+
+def test_an_order_that_does_match_a_cleared_latch_still_names_it():
+    """The paired discriminator: correct attribution must survive the fix, or
+    the operator loses the invalidation-cancel duty this alarm exists for."""
+    from swing.latches.models import DailyBar
+    bars = [DailyBar(session=date(2026, 7, 21), open=15.0, high=15.2,
+                     low=14.1, close=14.0)]
+    cleared = derive_latches(
+        fires=[FTRE_FIRE], bars_by_ticker={"FTRE": bars}, entries_by_ticker={},
+        horizon_session=date(2026, 7, 22),
+        derivation_session=date(2026, 7, 21)).latches
+    _, alarms = join_orders_to_latches(latches=cleared, orders=(_order(),))
+    assert alarms[0].latch_candidate_id == 9500
+    assert alarms[0].severity == "critical"
+    assert "invalidation" in alarms[0].detail

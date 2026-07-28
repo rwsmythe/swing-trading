@@ -267,8 +267,14 @@ def _resolve_terminal(
         bars, anchor=draft.anchor, upper=min(bar_bound, draft.horizon_expiry)
     ):
         # RD constraint 6: CLOSES, not intraday touches. Strict `<` -- a close
-        # exactly AT the frozen stop is not below it.
-        if bar.close < draft.stop:
+        # exactly AT the frozen stop is not below it -- and compared at DISPLAY
+        # precision on BOTH sides, like every other price comparison in this
+        # arc. A parquet float artifact (close 14.879999999 vs a 14.88 stop)
+        # would otherwise CLEAR a live mandate while the panel renders both
+        # numbers as 14.88, and clearing silences the no-resting-order alarm.
+        # Rounding is conservative in the SAFE direction: it keeps a marginal
+        # mandate armed rather than silently killing it.
+        if round(bar.close, _PRICE_DP) < round(draft.stop, _PRICE_DP):
             nonfill = _Terminal("invalidation", bar.session)
             break
     if nonfill is None and sessions_behind(horizon_ref, draft.anchor) >= horizon_sessions:

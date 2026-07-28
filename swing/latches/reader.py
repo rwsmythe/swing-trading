@@ -17,7 +17,11 @@ import math
 import sqlite3
 from datetime import date, datetime
 
-from swing.evaluation.dates import action_session_for_run, session_offset
+from swing.evaluation.dates import (
+    action_session_for_run,
+    is_trading_session,
+    session_offset,
+)
 from swing.latches.constants import latch_horizon_sessions
 from swing.latches.models import DailyBar, EntryRecord, FireRow, LatchDerivation
 from swing.latches.service import derive_latches
@@ -108,6 +112,16 @@ def load_entry_records(conn: sqlite3.Connection, tickers) -> dict[str, list[Entr
             # callsite. A malformed row is SKIPPED: it must never be allowed to
             # clear a latch, and it must never crash the panel.
             entry_date = date.fromisoformat(str(row[2]))
+            if not is_trading_session(entry_date):
+                # LOGGED, NOT DROPPED (a deliberate asymmetry with bars). A
+                # trade is ground truth about a REAL position; refusing to see
+                # it because its date is a non-session would leave the mandate
+                # armed for a position the operator actually holds and tell him
+                # to place an order he does not need. The anomaly is surfaced
+                # without discarding the fact.
+                log.warning(
+                    "latch reader: trade %r has a non-session entry_date %s",
+                    row[0], entry_date.isoformat())
             rec = EntryRecord(
                 trade_id=int(row[0]),
                 ticker=str(row[1]),
@@ -156,8 +170,19 @@ def load_bars(cfg, ticker: str, *, start: date, end: date) -> list[DailyBar]:
                 # A ragged archive row (the F6-addendum trailing-NaN shape)
                 # must never be read as an invalidation.
                 continue
+            session = date.fromisoformat(str(rec["asof_date"]))
+            if not is_trading_session(session):
+                # The whole derivation is session-based (the horizon counts
+                # sessions, the walk judges completed session closes), so a bar
+                # dated on a non-session is a category error, not a datum --
+                # letting one invalidate a mandate would clear it on a day the
+                # market never traded. Skipping loses NO real bar.
+                log.warning(
+                    "latch reader: skipping non-session %s bar %s",
+                    ticker, session.isoformat())
+                continue
             bars.append(DailyBar(
-                session=date.fromisoformat(str(rec["asof_date"])),
+                session=session,
                 open=float(rec["open"]), high=float(rec["high"]),
                 low=float(rec["low"]), close=close,
             ))

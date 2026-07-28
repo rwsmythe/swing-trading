@@ -405,3 +405,47 @@ def test_a_voided_phantom_trade_does_not_clear_a_latch(tmp_path):
         assert load_entry_records(conn, ["FTRE"]) == {}
     finally:
         conn.close()
+
+
+def test_a_non_session_bar_cannot_invalidate_a_mandate(tmp_path):
+    """Codex executing R8. The whole derivation is session-based, so a bar dated
+    on a NON-session is a category error rather than a datum -- letting one
+    through would clear a mandate on a day the market never traded, silencing
+    the no-resting-order alarm. Skipping loses no real bar.
+
+    2026-07-26 is a Sunday; 2026-07-24 is a Friday session."""
+    from swing.evaluation.dates import is_trading_session
+    cfg = _cfg(tmp_path)
+    assert not is_trading_session(date(2026, 7, 26))
+    _write_archive(cfg.paths.prices_cache_dir, "SUN", [
+        {"asof_date": "2026-07-24", "open": 17.9, "high": 18.3, "low": 17.6,
+         "close": 17.91, "volume": 90.0},
+        {"asof_date": "2026-07-26", "open": 15.0, "high": 15.2, "low": 14.0,
+         "close": 14.00, "volume": 95.0},      # a Sunday "close" below any stop
+    ])
+    bars = load_bars(cfg, "SUN", start=date(2026, 7, 20), end=date(2026, 7, 27))
+    assert [b.session for b in bars] == [date(2026, 7, 24)]
+
+
+def test_a_non_session_entry_date_is_logged_but_NOT_dropped(tmp_path, caplog):
+    """The deliberate ASYMMETRY with bars. A trade is ground truth about a REAL
+    position; refusing to see it because its date is a non-session would leave
+    the mandate armed for a position the operator actually holds and tell him to
+    place an order he does not need. The anomaly is surfaced without discarding
+    the fact."""
+    import logging
+    conn = ensure_schema(tmp_path / "t.db")
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO trades (id, ticker, entry_date, entry_price, "
+                "initial_shares, initial_stop, current_stop, state, "
+                "trade_origin, pre_trade_locked_at) VALUES "
+                "(21, 'SUN', '2026-07-26', 18.40, 3, 14.88, 14.88, 'entered', "
+                "'pipeline_aplus', '2026-07-17T17:30:05')")
+        with caplog.at_level(logging.WARNING):
+            out = load_entry_records(conn, ["SUN"])
+        assert [r.trade_id for r in out["SUN"]] == [21]      # NOT dropped
+        assert "non-session entry_date" in caplog.text        # but LOUD
+    finally:
+        conn.close()

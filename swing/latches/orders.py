@@ -208,7 +208,6 @@ def join_orders_to_latches(*, latches, orders):
             continue                      # an unknown order book fires nothing
         ticker_latches = by_ticker.get(ticker, [])
         live_present = any(x.is_live for x in ticker_latches)
-        cleared = [x for x in ticker_latches if not x.is_live]
         for order in ticker_orders:
             target = matched.get(order.order_id)
             if target is not None and target.is_live:
@@ -216,9 +215,15 @@ def join_orders_to_latches(*, latches, orders):
             if target is None:
                 if live_present:
                     continue              # a mispriced order for a live mandate
-                target = (
-                    max(cleared, key=lambda x: (x.anchor, x.identity.candidate_id))
-                    if cleared else None)
+                # DELIBERATELY NOT attributed to the most recently cleared latch
+                # (a deviation from plan A.9, recorded). Its prices match NO
+                # latch, so claiming it "matches a latch that CLEARED by
+                # invalidation" is a FALSE statement about a real broker order,
+                # and it would inherit `critical` severity from an unrelated
+                # latch's clear reason. The alarm still fires -- an unexplained
+                # resting order with no live mandate is worth surfacing -- but
+                # it says only what is true.
+                target = None
             reason = None if target is None else target.clear_reason
             session = (
                 None if target is None or target.clear_session is None
@@ -226,7 +231,8 @@ def join_orders_to_latches(*, latches, orders):
             if target is None:
                 detail = (
                     f"resting BUY order {order.order_id} on {ticker} matches NO "
-                    "latch on this ticker (no A+ fire is on record)")
+                    "latch's frozen prices, and no latch on this ticker is "
+                    "live; verify it at the broker")
             else:
                 detail = (
                     f"resting BUY order {order.order_id} matches a latch that "
