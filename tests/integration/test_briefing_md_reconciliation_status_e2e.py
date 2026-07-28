@@ -200,15 +200,35 @@ def _make_cfg(tmp_path: Path):
     return cfg
 
 
-def _run_step_export(cfg, *, run_id: int, token: str, eval_run_id: int) -> str:
+def _run_step_export(
+    cfg, *, run_id: int, token: str, eval_run_id: int, monkeypatch
+) -> str:
     """Invoke ``_step_export`` end-to-end + return the on-disk briefing.md
     contents.
+
+    FROZEN CLOCK (D9 convention, added 2026-07-28). ``_step_export`` calls
+    ``archive_old_exports(retention_days=cfg.export.retention_days)`` WITHOUT a
+    ``today=``, so the helper falls through to the live ``date.today()`` and
+    archives-then-DELETES any export dir older than the 90-day default. This
+    fixture's ``action_session`` is hard-coded at 2026-04-28, so on
+    2026-07-27 the dir was exactly 90 days old (retained, test passed) and on
+    2026-07-28 it turned 91 (zipped away before the assertion could read
+    briefing.md) -- the suite went red overnight on a date rollover, with no
+    code change. Freezing the clock the helper reads makes the arithmetic
+    deterministic forever instead of re-arming the same bomb 90 days out.
     """
     from swing.pipeline.lease import Lease
     from swing.pipeline.runner import _step_export
 
     lease = Lease(db_path=cfg.paths.db_path, run_id=run_id, token=token)
     action_session = _date(2026, 4, 28)
+
+    class _FrozenDate(_date):
+        @classmethod
+        def today(cls):  # noqa: D102
+            return action_session + timedelta(days=1)
+
+    monkeypatch.setattr("swing.rendering.retention.date", _FrozenDate)
     _step_export(
         cfg=cfg, lease=lease, eval_run_id=eval_run_id,
         action_session=action_session,
@@ -225,7 +245,7 @@ def _run_step_export(cfg, *, run_id: int, token: str, eval_run_id: int) -> str:
 
 
 def test_briefing_md_reconciliation_section_present_with_pending_and_tier1(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """BINDING acceptance criterion #1 (plan §E.14):
     plant 2 pending-ambiguity + 1 recent tier-1 → briefing.md contains the
@@ -256,6 +276,7 @@ def test_briefing_md_reconciliation_section_present_with_pending_and_tier1(
 
     md = _run_step_export(
         cfg, run_id=run_id, token=token, eval_run_id=eval_run_id,
+        monkeypatch=monkeypatch,
     )
 
     # Section heading present.
@@ -284,7 +305,7 @@ def test_briefing_md_reconciliation_section_present_with_pending_and_tier1(
 
 
 def test_briefing_md_reconciliation_section_absent_when_empty(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """BINDING acceptance criterion #2 (plan §E.14):
     no pending + no recent tier-1 → briefing.md does NOT include the
@@ -353,6 +374,7 @@ def test_briefing_md_reconciliation_section_absent_when_empty(
 
     md = _run_step_export(
         cfg, run_id=run_id, token=token, eval_run_id=eval_run_id,
+        monkeypatch=monkeypatch,
     )
 
     # Section heading MUST be absent per T-C.9 conditional rendering.
