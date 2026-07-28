@@ -566,3 +566,52 @@ def test_the_broker_order_window_is_sent_as_utc_aware_datetimes(
     # And the formatter must round-trip it without shifting the instant.
     from swing.integrations.schwab.trader import _schwab_iso
     assert _schwab_iso(seen["to_dt"]).endswith("Z")
+
+
+def test_an_indeterminate_order_on_a_cleared_only_ticker_is_still_rendered(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """Codex executing R14. The indeterminate SUPPRESSION is ticker-wide, but
+    the BANNER was derived from LIVE latches only -- so a ticker carrying ONLY a
+    cleared latch, a stale resting order, and an indeterminate order had its
+    CRITICAL stale-order alarm suppressed with NO banner, and the page printed
+    the all-clear. The suppression and the render now come from the SAME
+    predicate over the SAME order set, so they cannot diverge."""
+    import pandas as pd
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    # A close below the frozen 14.88 stop clears the ONLY latch on FTRE.
+    cfg.paths.prices_cache_dir.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame([
+        {"asof_date": "2026-07-21", "open": 15.0, "high": 15.2, "low": 14.0,
+         "close": 14.00, "volume": 100.0},
+    ]).to_parquet(cfg.paths.prices_cache_dir / "FTRE.yfinance.parquet")
+
+    stale = _order(order_id="stale", status="WORKING")
+    unknown = _order(order_id="unknown", status="PENDING_CANCEL")
+    app = _app(cfg, cfg_path, monkeypatch, orders=[stale, unknown])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert r.status_code == 200
+    assert "Broker orders agree" not in r.text
+    assert "ORDER STATUS INDETERMINATE" in r.text
+    assert "FTRE" in r.text
+
+
+def test_the_suppression_and_the_banner_share_one_predicate(seeded_db):
+    """The anti-drift pin: the fragment's banner set must be exactly the set the
+    join suppresses on."""
+    from swing.latches.models import RestingOrder
+    from swing.latches.orders import indeterminate_order_tickers
+    orders = (
+        RestingOrder(order_id="1", ticker="AAA", instruction="BUY", quantity=1.0,
+                     order_type="STOP_LIMIT", limit_price=1.0, stop_price=1.0,
+                     status="PENDING_CANCEL"),
+        RestingOrder(order_id="2", ticker="BBB", instruction="BUY", quantity=1.0,
+                     order_type="STOP_LIMIT", limit_price=1.0, stop_price=1.0,
+                     status="WORKING"),
+        RestingOrder(order_id="3", ticker="CCC", instruction="SELL", quantity=1.0,
+                     order_type="STOP_LIMIT", limit_price=1.0, stop_price=1.0,
+                     status="UNKNOWN"),
+    )
+    # BUY + indeterminate only; a SELL never gates an ENTRY mandate.
+    assert indeterminate_order_tickers(orders) == ("AAA",)

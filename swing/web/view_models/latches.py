@@ -580,7 +580,10 @@ def build_latch_orders_vm(
     the safe direction: a false all-clear is the failure mode this arc exists
     to prevent.
     """
-    from swing.latches.orders import join_orders_to_latches
+    from swing.latches.orders import (
+        indeterminate_order_tickers,
+        join_orders_to_latches,
+    )
 
     if horizon_session_override is None:
         return LatchOrdersFragmentVM(
@@ -678,13 +681,12 @@ def build_latch_orders_vm(
                 f"ticker; the mandate is pivot {lat.latched_pivot:.2f} / cap "
                 f"{lat.zone_cap:.2f}")
     disagreements = tuple(dict.fromkeys(disagreement_lines))
-    indeterminate_tickers = tuple(sorted({
-        lat.identity.ticker
-        for lat in derivation.latches
-        if lat.is_live
-        and (joins.get(lat.identity.candidate_id) is not None)
-        and joins[lat.identity.candidate_id].indeterminate
-    }))
+    # Computed from the ORDER SET via the SAME predicate the suppression uses,
+    # NOT from the latches. Deriving it from LIVE latches only left a hole: the
+    # suppression is ticker-wide, so a ticker with only a CLEARED latch plus a
+    # stale order plus an indeterminate order had its critical stale-order alarm
+    # suppressed with NO banner -- the page then printed the all-clear.
+    indeterminate_tickers = indeterminate_order_tickers(orders)
 
     order_lines = tuple(
         f"{o.ticker} {o.instruction} {o.quantity:g} {o.order_type} "

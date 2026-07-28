@@ -72,6 +72,22 @@ def to_resting_orders(schwab_orders) -> tuple[RestingOrder, ...]:
     return tuple(out)
 
 
+def indeterminate_order_tickers(orders) -> tuple[str, ...]:
+    """Tickers carrying a BUY order whose broker status is INDETERMINATE.
+
+    THE SINGLE SOURCE for both halves of the indeterminate rule: the SUPPRESSION
+    (here in `join_orders_to_latches`) and the RENDER (in the fragment VM). They
+    must be computed from the SAME predicate over the SAME order set -- deriving
+    the render half from anything else (e.g. only LIVE latches) lets the
+    suppression fire on a ticker the banner never mentions, which turns an
+    honest "unknown" into a silent all-clear.
+    """
+    return tuple(sorted({
+        o.ticker for o in orders or ()
+        if (o.instruction or "").upper() in BUY_INSTRUCTIONS and o.is_indeterminate
+    }))
+
+
 def _agrees(order_price, latch_price) -> bool | None:
     """`None` (UNKNOWN) when either side is absent -- never `False`."""
     if order_price is None or latch_price is None:
@@ -131,12 +147,11 @@ def join_orders_to_latches(*, latches, orders):
         by_ticker.setdefault(latch.identity.ticker, []).append(latch)
 
     resting_by_ticker: dict[str, list[RestingOrder]] = {}
-    indeterminate_tickers: set[str] = set()
+    indeterminate_tickers = set(indeterminate_order_tickers(orders))
     for order in orders or ():
         if (order.instruction or "").upper() not in BUY_INSTRUCTIONS:
             continue
         if order.is_indeterminate:
-            indeterminate_tickers.add(order.ticker)
             continue
         if not order.is_resting:
             continue
