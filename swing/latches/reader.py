@@ -273,6 +273,34 @@ def load_last_closes(conn: sqlite3.Connection, tickers) -> dict[str, tuple[float
     return out
 
 
+def load_screened_tickers(conn: sqlite3.Connection, session: date) -> frozenset[str]:
+    """Every ticker on the screen recorded for `session`, whatever its bucket.
+
+    A PURE SELECT (A4), and the ONLY thing that tells the panel apart the two
+    reasons a latch can have no derivation-session close:
+
+      * an EMPTY set -- the nightly has not recorded that session at all, so
+        NOBODY has a close for it. Self-resolving: the run will record it. This
+        is the state of every trading day between the action-session rollover at
+        the market close and the nightly pipeline run.
+      * a NON-EMPTY set NOT containing the ticker -- the session WAS screened
+        and this ticker was not on it, so no close for that session is coming.
+        NOT self-resolving: it stays that way until the ticker is back.
+
+    Deliberately does NOT inherit `load_last_closes`'s `close IS NOT NULL`
+    filter: presence on the screen is a different question from carrying a
+    usable close, and conflating them would report a screened ticker with a NULL
+    close as having left the screen.
+    """
+    rows = conn.execute(
+        "SELECT DISTINCT c.ticker FROM candidates c "
+        "JOIN evaluation_runs e ON e.id = c.evaluation_run_id "
+        "WHERE e.data_asof_date = ?",
+        (session.isoformat(),),
+    ).fetchall()
+    return frozenset(str(row[0]) for row in rows if row[0] is not None)
+
+
 def build_latch_derivation(
     conn: sqlite3.Connection,
     cfg,

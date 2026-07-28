@@ -13,6 +13,7 @@ from swing.latches.reader import (
     load_bars,
     load_entry_records,
     load_fire_rows,
+    load_screened_tickers,
 )
 
 
@@ -112,6 +113,51 @@ def test_load_fire_rows_returns_a_null_pivot_aplus_row_for_the_service_to_degrad
                 "(50, 'BAD', 'aplus', 5.0, NULL, 4.0, 'universe')")
         (fire,) = load_fire_rows(conn)
         assert fire.pivot is None
+    finally:
+        conn.close()
+
+
+# --- the derivation-session SCREEN read (the PENDING vs PERMANENT split) ----
+#
+# The panel's mandate-form check needs a close stamped on the derivation
+# session. When it has none, "the nightly has not recorded that session yet"
+# and "the session WAS recorded and this ticker is not on it" call for opposite
+# operator responses (wait / it will not clear on its own), and NOTHING already
+# read by the panel distinguishes them. This is the one read that does.
+def test_load_screened_tickers_returns_the_screen_recorded_for_that_session(
+        ftre_db):
+    assert load_screened_tickers(ftre_db, date(2026, 7, 23)) == frozenset({"FTRE"})
+
+
+def test_load_screened_tickers_is_empty_when_that_session_was_never_screened(
+        ftre_db):
+    """The EMPTY set is the load-bearing signal. `ftre_db`'s newest run is
+    stamped `data_asof_date='2026-07-23'`, so 2026-07-24 has no screen at all --
+    which is exactly the state of every trading day between the market close and
+    the nightly pipeline run."""
+    assert load_screened_tickers(ftre_db, date(2026, 7, 24)) == frozenset()
+
+
+def test_load_screened_tickers_counts_a_ticker_whose_close_is_NULL(tmp_path):
+    """PRESENCE on the screen is a DIFFERENT question from having a usable
+    close. `load_last_closes` filters `close IS NOT NULL` and drops non-finite
+    values, so a screened ticker carrying a NULL close has no usable close --
+    and if this read inherited that filter the panel would tell the operator the
+    ticker had left the screen when it had not. Planted via RAW conn.execute."""
+    conn = ensure_schema(tmp_path / "t.db")
+    try:
+        with conn:
+            _run(conn, 70, "2026-07-24", "2026-07-27")
+            conn.execute(
+                "INSERT INTO candidates (evaluation_run_id, ticker, bucket, "
+                "close, pivot, initial_stop, rs_method) VALUES "
+                "(70, 'FTRE', 'watch', NULL, 18.34, 14.88, 'universe')")
+            conn.execute(
+                "INSERT INTO candidates (evaluation_run_id, ticker, bucket, "
+                "close, pivot, initial_stop, rs_method) VALUES "
+                "(70, 'AMN', 'skip', 12.0, 13.0, 11.0, 'universe')")
+        assert load_screened_tickers(conn, date(2026, 7, 24)) == frozenset(
+            {"FTRE", "AMN"})
     finally:
         conn.close()
 
