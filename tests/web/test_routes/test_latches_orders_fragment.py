@@ -880,9 +880,11 @@ def test_an_unknown_regime_does_not_flag_a_stopless_pullback_limit(
     assert r.status_code == 200
     assert "ORDER PRICE MISMATCH" not in r.text
     assert "not the mandated order shape" not in r.text
-    # ...but the reduction is announced, not silent.
-    assert "Broker orders agree" not in r.text
-    assert "mandate FORM check did not run" in r.text
+    # ...but the reduction is announced, not silent. Every branch of the label
+    # carries this clause, so the assertion pins the LABEL, not the branch (the
+    # branch itself is pinned by the dedicated tests below).
+    assert "WHICH of the two mandate forms is correct at this price" in r.text
+    assert "Broker orders agree with the live latches" not in r.text
     assert "FTRE" in r.text
 
 
@@ -996,8 +998,8 @@ def test_a_stale_close_does_not_get_to_choose_the_mandate_regime(
     assert "not the mandated order shape" not in r.text
     assert "AT OR ABOVE" not in r.text
     # ...but the reduction is announced, not silent, and it names both dates.
-    assert "Broker orders agree" not in r.text
-    assert "mandate FORM check did not run" in r.text
+    assert "Broker orders agree with the live latches" not in r.text
+    assert "WHICH of the two mandate forms is correct at this price" in r.text
     assert "2026-07-20" in r.text and "2026-07-24" in r.text
 
 
@@ -1065,10 +1067,10 @@ def test_a_single_matched_order_still_reaches_the_all_clear(
     with TestClient(app) as client:
         r = _post_orders(client)
     assert r.status_code == 200
-    assert "Broker orders agree" in r.text
+    assert "Broker orders agree with the live latches" in r.text
     assert "match this mandate" not in r.text
-    # ...and the shape check RAN, so it is not labelled as skipped.
-    assert "mandate FORM check did not run" not in r.text
+    # ...and the shape check RAN, so it is not labelled as skipped in ANY branch.
+    assert "WHICH of the two mandate forms" not in r.text
 
 
 # --- RD ruling 2026-07-27: an UNDETERMINABLE regime must be LABELLED --------
@@ -1082,7 +1084,11 @@ def test_an_undeterminable_regime_is_labelled_on_the_affected_latch(
     same family as the multiplicity guard).
 
     A short INLINE label on the affected latch -- not a banner, not a new page
-    element -- so the operator can see the shape check did not run."""
+    element -- so the operator can see the shape check did not run.
+
+    No screen exists for 2026-07-24 here, so this is the PENDING branch (RD
+    ruling 2026-07-28) -- the label is present either way, which is the property
+    ruling 2 pinned."""
     cfg, cfg_path = seeded_db
     _seed_ftre_without_a_close(cfg)
     app = _app(cfg, cfg_path, monkeypatch,
@@ -1090,45 +1096,13 @@ def test_an_undeterminable_regime_is_labelled_on_the_affected_latch(
     with TestClient(app) as client:
         r = _post_orders(client)
     assert r.status_code == 200
-    assert "MANDATE FORM CHECK NOT RUN" in r.text
-    assert "FTRE: the mandate FORM check did not run" in r.text
-    assert "no usable close is recorded" in r.text
+    assert "Mandate form check pending" in r.text
+    assert "FTRE: waiting on the nightly screen" in r.text
+    assert "no usable close is recorded for this ticker" in r.text
     # The checks that DID run are named, so the label reduces the claim rather
     # than reading as a blanket failure.
     assert "GOOD_TILL_CANCEL whenever the broker payload carries" in r.text
-    assert "Broker orders agree" not in r.text
-
-
-def test_a_latch_whose_ticker_left_the_screen_is_visibly_inert(
-        seeded_db, monkeypatch, frozen_panel_clock):
-    """RD ruling 3, MERGE-BLOCKING. A latched ticker that has dropped off the
-    finviz screen (not held, not pinned) gets no new `candidates` row, so it
-    never gets a derivation-session close and the two-form shape check stays
-    PERMANENTLY inert for that latch. RD accepts that honest degrade -- the
-    live-quote fix is correctly V2 -- provided it is VISIBLY inert rather than
-    SILENTLY inert.
-
-    It collapses onto ruling 2's rendering path by construction: both are 'the
-    shape check did not run, here is why', and the why here is the stale
-    provenance date, which the label names alongside the session it needed.
-
-    FTRE's only close is the fire's own, stamped 2026-07-17; the fragment's
-    derivation session is 2026-07-24."""
-    cfg, cfg_path = seeded_db
-    _seed_ftre(cfg)                     # ...and NO fresher candidates row
-    app = _app(cfg, cfg_path, monkeypatch,
-               orders=[_order(duration="GOOD_TILL_CANCEL")])
-    with TestClient(app) as client:
-        r = _post_orders(client)
-    assert r.status_code == 200
-    assert "FTRE: the mandate FORM check did not run" in r.text
-    assert "the most recent usable close for this ticker is from 2026-07-17" in r.text
-    assert "not the derivation session 2026-07-24" in r.text
-    assert "Broker orders agree" not in r.text
-    # It is a LABEL on the affected latch, NOT an alarm and NOT a suppression:
-    # the price legs were still judged and no false alarm was invented.
-    assert "ORDER PRICE MISMATCH" not in r.text
-    assert "LATCH_ARMED_NO_RESTING_ORDER" not in r.text
+    assert "Broker orders agree with the live latches" not in r.text
 
 
 def test_the_skipped_shape_label_claims_no_check_it_did_not_perform(
@@ -1145,9 +1119,9 @@ def test_the_skipped_shape_label_claims_no_check_it_did_not_perform(
         r = _post_orders(client)
     assert r.status_code == 200
     assert "LATCH_ARMED_NO_RESTING_ORDER" in r.text
-    assert "FTRE: the mandate FORM check did not run" in r.text
-    assert "no resting order was evaluated for this mandate" in r.text
-    assert "either form is accepted" not in r.text
+    assert "FTRE: waiting on the nightly screen" in r.text
+    assert "No resting order was evaluated for this mandate" in r.text
+    assert "form is accepted" not in r.text
     assert "GOOD_TILL_CANCEL whenever the broker payload carries" not in r.text
 
 
@@ -1170,14 +1144,266 @@ def test_the_label_does_not_contradict_a_shape_mismatch_it_still_reports(
         r = _post_orders(client)
     assert r.status_code == 200
     # The form selection did not run...
-    assert "the mandate FORM check did not run" in r.text
+    assert "WHICH of the two mandate forms is correct at this price" in r.text
     # ...and the checks that DID run still reported this order.
     assert "not the mandated order shape" in r.text
     assert "TRAILING_STOP_LIMIT" in r.text
     # The label is scoped to the form, so it never claims the shape check as a
     # whole was skipped.
     assert "shape check did not run" not in r.text.lower()
-    assert "Broker orders agree" not in r.text
+    assert "shape check is pending" not in r.text.lower()
+    assert "Broker orders agree with the live latches" not in r.text
+
+
+# --- RD ruling 2026-07-28: PENDING is not PERMANENT, and neither is an alarm -
+#
+# The measured frequency is what forces the split. The action session rolls over
+# AT the US market close (10:00-10:30 HST) and the nightly pipeline writes the
+# new session at 17:30 HST, so for ~7 hours of EVERY trading day -- the
+# operator's whole post-close review window -- no latch has a derivation-session
+# close and the form check is inert for ALL of them. That is the DEFAULT state,
+# not an edge case, and a warning-shaped label on the default state trains the
+# dismissal reflex on the one surface whose alarms have to survive being
+# believed (the Phase-19 drumbeat false-RED lesson).
+def _seed_a_screen_for_the_derivation_session(cfg, *, tickers=("AMN",)):
+    """The nightly HAS recorded 2026-07-24 (the fragment's derivation session) --
+    with `tickers` on it. FTRE's absence from that list is what makes its latch
+    PERMANENTLY inert rather than merely waiting."""
+    conn = connect(cfg.paths.db_path)
+    with conn:
+        conn.execute(
+            "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, "
+            "action_session_date, tickers_evaluated, aplus_count, watch_count, "
+            "skip_count, excluded_count, error_count) VALUES "
+            "(129, '2026-07-24T17:30:05', '2026-07-24', '2026-07-27', 1, 0, 1, "
+            "0, 0, 0)")
+        for ticker in tickers:
+            conn.execute(
+                "INSERT INTO candidates (evaluation_run_id, ticker, bucket, "
+                "close, pivot, initial_stop, rs_method) VALUES "
+                "(129, ?, 'watch', 12.0, 13.0, 11.0, 'universe')", (ticker,))
+    conn.close()
+
+
+def test_the_pending_branch_is_neutral_status_with_a_stated_clear_time(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """RD ruling 2026-07-28. No screen exists yet for the derivation session, so
+    NOBODY has a regime price: the check is waiting on data, and the operator's
+    correct response is to wait. The label must therefore read as status, must
+    say WHEN it clears, and must NOT carry the alarm prefix or the warning
+    styling -- a warning that fires on every latch every evening is how an alarm
+    channel stops being believed."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)                     # ...and NO screen for 2026-07-24
+    app = _app(cfg, cfg_path, monkeypatch,
+               orders=[_order(duration="GOOD_TILL_CANCEL")])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert r.status_code == 200
+    assert "Mandate form check pending" in r.text
+    assert "waiting on the nightly screen for the derivation session 2026-07-24" \
+        in r.text
+    assert "it clears when that run records the session" in r.text
+    # Neutral tone, explicitly: no alarm prefix and no alarm/warning styling.
+    assert "MANDATE FORM CHECK" not in r.text
+    assert "latch-form-check-pending" in r.text
+    pending_para = r.text.split("Mandate form check pending")[0].rsplit("<p", 1)[-1]
+    assert "latch-alarm" not in pending_para
+
+
+def test_a_latch_whose_ticker_left_the_screen_is_visibly_inert(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """RD ruling 3 (2026-07-27), SPLIT by RD ruling 2026-07-28. A latched ticker
+    that has dropped off the finviz screen (not held, not pinned) gets no new
+    `candidates` row, so it never gets a derivation-session close and the
+    two-form shape check stays PERMANENTLY inert for that latch. RD accepts that
+    honest degrade -- the live-quote fix is correctly V2 -- provided it is
+    VISIBLY inert rather than SILENTLY inert.
+
+    What the 2026-07-28 ruling adds: this must NOT share a string with the
+    pending state. The operator's response differs -- there is nothing to wait
+    for -- so the label says so and keeps the warning tone.
+
+    The discriminator against pending is the SCREEN, not the ticker: 2026-07-24
+    IS recorded here (carrying AMN), and FTRE is simply not on it."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)                     # ...and NO fresher FTRE candidates row
+    _seed_a_screen_for_the_derivation_session(cfg)
+    app = _app(cfg, cfg_path, monkeypatch,
+               orders=[_order(duration="GOOD_TILL_CANCEL")])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert r.status_code == 200
+    assert "MANDATE FORM CHECK INERT FOR THIS LATCH" in r.text
+    assert "the screen for the derivation session 2026-07-24 was recorded and " \
+        "this ticker is NOT on it" in r.text
+    assert "the most recent usable close for this ticker is from 2026-07-17" in r.text
+    assert "Waiting will NOT clear this one" in r.text
+    # It stays a WARNING, and it must not borrow the pending branch's promise.
+    assert "latch-alarm-warning" in r.text
+    assert "Mandate form check pending" not in r.text
+    assert "it clears when that run records the session" not in r.text
+    # It is a LABEL on the affected latch, NOT an alarm and NOT a suppression:
+    # the price legs were still judged and no false alarm was invented.
+    assert "ORDER PRICE MISMATCH" not in r.text
+    assert "LATCH_ARMED_NO_RESTING_ORDER" not in r.text
+
+
+def test_the_pending_and_permanent_branches_cannot_collapse_into_one_string(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """The anti-collapse pin. ONE seeding difference -- whether the derivation
+    session was screened at all -- must flip the label between the two branches.
+    A future edit that folds them back into a single string fails here."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    app = _app(cfg, cfg_path, monkeypatch,
+               orders=[_order(duration="GOOD_TILL_CANCEL")])
+    with TestClient(app) as client:
+        pending = _post_orders(client).text
+    _seed_a_screen_for_the_derivation_session(cfg)
+    with TestClient(app) as client:
+        permanent = _post_orders(client).text
+    assert "Mandate form check pending" in pending
+    assert "Mandate form check pending" not in permanent
+    assert "MANDATE FORM CHECK INERT FOR THIS LATCH" in permanent
+    assert "MANDATE FORM CHECK INERT FOR THIS LATCH" not in pending
+
+
+def test_a_screened_ticker_with_no_usable_close_is_not_called_off_the_screen(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """`load_last_closes` drops a NULL / non-finite close, so a ticker CAN be on
+    the derivation-session screen and still have no usable close. Reporting that
+    as 'this ticker is NOT on the screen' would be a false statement about the
+    operator's data -- and telling him to wait for it would be false too."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    _seed_a_screen_for_the_derivation_session(cfg, tickers=("AMN",))
+    conn = connect(cfg.paths.db_path)
+    with conn:
+        conn.execute(
+            "INSERT INTO candidates (evaluation_run_id, ticker, bucket, close, "
+            "pivot, initial_stop, rs_method) VALUES "
+            "(129, 'FTRE', 'watch', NULL, 18.34, 14.88, 'universe')")
+    conn.close()
+    app = _app(cfg, cfg_path, monkeypatch,
+               orders=[_order(duration="GOOD_TILL_CANCEL")])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert r.status_code == 200
+    assert "WITH this ticker on it, but it carries no usable close" in r.text
+    assert "this ticker is NOT on it" not in r.text
+    assert "Mandate form check pending" not in r.text
+
+
+def test_an_unreadable_screen_does_not_promise_that_waiting_will_clear_it(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """A6 at the new read's boundary. If the screen read itself fails the panel
+    genuinely cannot tell pending from permanent -- and guessing 'pending' would
+    tell the operator to wait for something that may never arrive. It says so
+    instead, and it still does not 500."""
+    import swing.web.view_models.latches as vm_mod
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+
+    def _boom(_conn, _session):
+        raise sqlite3.OperationalError("no such table: candidates")
+
+    monkeypatch.setattr(vm_mod, "load_screened_tickers", _boom)
+    app = _app(cfg, cfg_path, monkeypatch,
+               orders=[_order(duration="GOOD_TILL_CANCEL")])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert r.status_code == 200
+    assert "MANDATE FORM CHECK NOT RUN" in r.text
+    assert "could not be determined" in r.text
+    assert "nor whether waiting will clear it" in r.text
+    assert "Mandate form check pending" not in r.text
+
+
+# --- RD ruling 2026-07-28: SCOPE the page-level all-clear, do not withhold it -
+def test_the_all_clear_is_scoped_by_counts_rather_than_withheld(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """RD ruling 2026-07-28 (reversing the 2026-07-27 blanket withholding). A
+    page-level completeness claim is not supportable when a per-latch check did
+    not run -- but blanket withholding overshoots, because the label is the
+    DEFAULT state for ~7 hours of every trading day. An all-clear that is almost
+    never rendered stops being informative by its absence.
+
+    So the supported claim is stated WITH its scope: the counts, explicitly."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    app = _app(cfg, cfg_path, monkeypatch,
+               orders=[_order(duration="GOOD_TILL_CANCEL")])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert r.status_code == 200
+    assert "No alarms among the 0 latches checked. 1 not checked - see the " \
+        "labels below." in r.text
+    # The UNSCOPED claim stays forbidden -- that is the half RD did NOT reverse.
+    assert "Broker orders agree with the live latches" not in r.text
+
+
+def test_the_scoped_all_clear_counts_the_latches_that_were_checked(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """The paired discriminator: a hard-coded '0 checked' would pass the test
+    above. Here FTRE's form check DOES run (a derivation-session close exists)
+    and a SECOND latched ticker is off the screen, so the counts must read 1
+    and 1."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    _seed_close_at_the_derivation_session(cfg, 17.76)
+    conn = connect(cfg.paths.db_path)
+    with conn:
+        conn.execute(
+            "INSERT INTO candidates (evaluation_run_id, ticker, bucket, close, "
+            "pivot, initial_stop, rs_method) VALUES "
+            "(121, 'AMN', 'aplus', 12.0, 13.0, 11.0, 'universe')")
+    conn.close()
+    good = _order(duration="GOOD_TILL_CANCEL")
+    # pivot 13.00 -> zone cap 13.39 (LATCH_ZONE_CAP_PCT), so this order AGREES
+    # and contributes no finding of its own -- the counts are what is under test.
+    amn = _order(order_id="2", instrument_symbol="AMN", price=13.39,
+                 stop_price=13.0, duration="GOOD_TILL_CANCEL")
+    app = _app(cfg, cfg_path, monkeypatch, orders=[good, amn])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert r.status_code == 200
+    assert "No alarms among the 1 latch checked. 1 not checked - see the " \
+        "labels below." in r.text
+
+
+def test_a_fully_checked_page_still_prints_the_unscoped_all_clear(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """The scoping must not become a permanent gag on the affirmative claim: with
+    every live latch checked and nothing to report, the panel still says so
+    plainly."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    _seed_close_at_the_derivation_session(cfg, 17.76)
+    app = _app(cfg, cfg_path, monkeypatch,
+               orders=[_order(duration="GOOD_TILL_CANCEL")])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert r.status_code == 200
+    assert "Broker orders agree with the live latches. No alarms." in r.text
+    assert "not checked - see the labels below" not in r.text
+
+
+def test_a_real_finding_still_withholds_every_form_of_all_clear(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """The scoped form covers the not-RUN case ONLY. A price disagreement is a
+    FINDING, not an absent check, and it must still suppress both the plain and
+    the scoped all-clear."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    mispriced = _order(price=25.00, duration="GOOD_TILL_CANCEL")
+    app = _app(cfg, cfg_path, monkeypatch, orders=[mispriced])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert r.status_code == 200
+    assert "ORDER PRICE MISMATCH" in r.text
+    assert "No alarms among the" not in r.text
+    assert "Broker orders agree with the live latches" not in r.text
 
 
 def test_a_failed_close_read_is_not_reported_as_an_absent_close(
@@ -1200,8 +1426,12 @@ def test_a_failed_close_read_is_not_reported_as_an_absent_close(
     with TestClient(app) as client:
         r = _post_orders(client)
     assert r.status_code == 200
+    assert "MANDATE FORM CHECK NOT RUN" in r.text
     assert "FTRE: the mandate FORM check did not run" in r.text
     assert "the close read failed" in r.text
     assert "no usable close is recorded" not in r.text
+    # A failed READ is not a pending SCREEN: it must not borrow the calm
+    # branch's promise that waiting clears it.
+    assert "Mandate form check pending" not in r.text
     # ...and the failure must not become an alarm or a 500.
     assert "LATCH_ARMED_NO_RESTING_ORDER" not in r.text

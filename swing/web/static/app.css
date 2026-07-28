@@ -461,6 +461,21 @@ tr.tripwire-fired td:first-child { border-left: 4px solid var(--tripwire-border)
   border-color: var(--latch-degraded-fg);
 }
 
+/* The PENDING mandate-form-check note (RD ruling 2026-07-28). Deliberately
+   NOT a .latch-alarm variant: this renders on every live latch for ~7 hours of
+   every trading day (market close -> nightly pipeline run), and a warning box
+   on a daily state teaches the operator to dismiss the whole channel. Muted
+   surface tokens only, so it reads as status next to the real alarms. */
+.latch-form-check-pending {
+  background: var(--bg-muted);
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.5rem 0.75rem;
+  margin-bottom: 0.5rem;
+  font-size: 0.9rem;
+}
+
 .latch-anomaly {
   color: var(--latch-alarm-fg);
   font-weight: 600;

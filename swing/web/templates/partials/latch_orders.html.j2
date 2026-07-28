@@ -20,21 +20,34 @@
     {% endfor %}
   </div>
   {% elif not vm.disagreements and not vm.indeterminate_tickers
-          and not vm.multiplicity_notes and not vm.mandate_form_check_skipped %}
-  <p class="muted">Broker orders agree with the live latches. No alarms.</p>
+          and not vm.multiplicity_notes %}
+  {# The page-level claim, SCOPED to what was actually checked (RD ruling
+     2026-07-28). A disagreement / indeterminate status / multiplicity is a
+     FINDING and still withholds it entirely; a check that did not RUN is not a
+     finding, so the claim is stated with its counts rather than suppressed --
+     the not-run label is the default state for ~7 hours of every trading day,
+     and an all-clear the operator essentially never sees stops being
+     informative by its absence. `vm.all_clear_note` is display-ready. #}
+  <p class="muted">{{ vm.all_clear_note }}</p>
   {% endif %}
 
   {# The mandate REGIME was undeterminable, so the two-form order-shape check
      did not run and BOTH forms were accepted. That is a real reduction in what
      the panel is asserting, so it is LABELLED on the affected latch -- an
-     unlabelled reduction is a quiet all-clear by omission. A latch whose ticker
-     has left the screen is permanently in this state, and this is what makes it
-     VISIBLY rather than silently inert. #}
+     unlabelled reduction is a quiet all-clear by omission.
+
+     ONE rendering path, per-branch TONE (RD ruling 2026-07-28). `pending` means
+     the nightly has not recorded the derivation session yet: it is the DEFAULT
+     state for ~7 hours of every trading day, the operator's response is simply
+     to wait, and a warning-shaped label on a daily state trains the dismissal
+     reflex on the one surface whose alarms must survive being believed. So it
+     renders as neutral status. `permanent` (the ticker has left the screen)
+     and `unknown` keep the warning tone, because waiting does not fix them. #}
   {% if vm.mandate_form_check_skipped %}
   <div class="latch-form-check-skipped">
-    {% for line in vm.mandate_form_check_skipped %}
-    <p class="latch-alarm latch-alarm-warning">
-      <strong>MANDATE FORM CHECK NOT RUN</strong> {{ line }}
+    {% for note in vm.mandate_form_check_skipped %}
+    <p class="{% if note.severity == 'pending' %}latch-form-check-pending{% else %}latch-alarm latch-alarm-warning{% endif %}">
+      <strong>{{ note.headline }}</strong> {{ note.detail }}
     </p>
     {% endfor %}
   </div>

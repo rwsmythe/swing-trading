@@ -17,7 +17,11 @@ from datetime import UTC, date, datetime, timedelta
 from swing.evaluation.dates import PageKind, sessions_behind, topbar_session_date
 from swing.latches.constants import LATCH_PANEL_LOOKBACK_SESSIONS
 from swing.latches.models import Latch
-from swing.latches.reader import build_latch_derivation, load_last_closes
+from swing.latches.reader import (
+    build_latch_derivation,
+    load_last_closes,
+    load_screened_tickers,
+)
 from swing.web.view_models.journal import _base_banner_fields
 
 _log = logging.getLogger(__name__)
@@ -435,6 +439,75 @@ class OrdersResolutionVM:
 
 
 @dataclass(frozen=True)
+class MandateFormCheckVM:
+    """One latch whose mandate-FORM check could not run, with the TONE its
+    reason earns (RD ruling 2026-07-28).
+
+    ONE rendering path, three severities -- the reduction stays visible in every
+    branch (the CHARC ruling-4 concurrence), but the operator's correct response
+    differs per branch and so must the wording:
+
+      `pending`   -- no screen has been recorded for the derivation session yet.
+                     The response is to WAIT, and the label says when it clears.
+                     THIS IS THE DEFAULT STATE, not an exception: the action
+                     session rolls over AT the market close (10:00-10:30 HST)
+                     and the nightly pipeline writes the new session at 17:30
+                     HST, so for ~7 hours of every trading day -- the operator's
+                     whole post-close review window -- NO latch has a
+                     derivation-session close. A warning-shaped label on a
+                     state that occurs daily on every latch trains the dismissal
+                     reflex, which is exactly how the Phase-19 drumbeat false-RED
+                     became expensive, and this is the one surface whose alarms
+                     have to survive being believed. So: neutral status, no alarm
+                     prefix, no alarm styling.
+      `permanent` -- the session WAS screened and the ticker is not on it. There
+                     is nothing to wait for, so the label says so and keeps the
+                     warning tone.
+      `unknown`   -- the close read failed, the screen read failed, or the ticker
+                     is screened but carries no usable close. The panel cannot
+                     tell which of the two it is, so it promises neither.
+    """
+
+    ticker: str
+    severity: str
+    headline: str
+    detail: str
+
+
+_FORM_CHECK_HEADLINES = {
+    # Sentence case + no box for `pending`: the prefix itself must not be
+    # alarm-shaped on the state that renders every evening.
+    "pending": "Mandate form check pending",
+    "permanent": "MANDATE FORM CHECK INERT FOR THIS LATCH",
+    "unknown": "MANDATE FORM CHECK NOT RUN",
+}
+
+
+def _as_sentence(text: str) -> str:
+    """Upper-case the FIRST character only.
+
+    NOT `str.capitalize()`, which lower-cases everything after it -- it would
+    turn `GOOD_TILL_CANCEL` into `good_till_cancel` and `STOP_LIMIT` into
+    `stop_limit` inside a label whose whole job is to name broker enum values
+    exactly as the broker does.
+    """
+    return text[:1].upper() + text[1:]
+
+
+def _close_provenance(quote) -> str:
+    """What the operator's data actually says about this ticker's last close.
+
+    `load_last_closes` skips a non-numeric / non-finite close, so "no close is
+    recorded" would be a false statement about his data when a malformed one
+    exists -- hence "no USABLE close" (Codex R3 MINOR).
+    """
+    if quote is None:
+        return "no usable close is recorded for this ticker"
+    return ("the most recent usable close for this ticker is from "
+            f"{quote[1] or 'an unrecorded session'}")
+
+
+@dataclass(frozen=True)
 class LatchOrdersFragmentVM:
     """The order-awareness fragment. `available` False means the order book is
     UNKNOWN, and an unknown order book fires NO alarm (a false all-clear and a
@@ -468,7 +541,34 @@ class LatchOrdersFragmentVM:
     # all-clear by omission. It is also where a latched ticker that has dropped
     # off the screen lands (RD ruling 3): permanently inert, and therefore
     # required to be VISIBLY inert rather than silently inert.
-    mandate_form_check_skipped: tuple[str, ...] = ()
+    #
+    # Carries a per-branch SEVERITY (RD ruling 2026-07-28): see
+    # `MandateFormCheckVM`. Still ONE rendering path -- only the tone differs.
+    mandate_form_check_skipped: tuple[MandateFormCheckVM, ...] = ()
+    # How many live latches the mandate-FORM check DID run on. Pairs with
+    # `len(mandate_form_check_skipped)` to state the page-level all-clear WITH
+    # its scope instead of withholding it outright (RD ruling 2026-07-28): the
+    # not-run label is the default state for ~7 hours of every trading day, so
+    # blanket withholding means the operator essentially never sees an
+    # all-clear, and a sentence that is usually absent stops being informative
+    # by its absence. The display-ready sentence is `all_clear_note`.
+    form_check_ran_count: int = 0
+
+    @property
+    def all_clear_note(self) -> str:
+        """The page-level claim, scoped to what was actually checked.
+
+        Display-ready (the template holds no logic). Reachable ONLY from the
+        template's no-findings branch: a disagreement / indeterminate status /
+        multiplicity is a FINDING, not an absent check, and still withholds
+        every form of all-clear.
+        """
+        skipped = len(self.mandate_form_check_skipped)
+        if not skipped:
+            return "Broker orders agree with the live latches. No alarms."
+        noun = "latch" if self.form_check_ran_count == 1 else "latches"
+        return (f"No alarms among the {self.form_check_ran_count} {noun} "
+                f"checked. {skipped} not checked - see the labels below.")
 
 
 def _resolve_schwab_environment(cfg) -> str | None:
@@ -712,7 +812,11 @@ def build_latch_orders_vm(
 
     disagreement_lines: list[str] = []
     multiplicity_lines: list[str] = []
-    form_check_skipped_lines: list[str] = []
+    # (ticker, quote, tail) per latch whose FORM check could not run. The
+    # pending-vs-permanent classification needs ONE more read, so it is deferred
+    # until after the loop and skipped entirely when nothing was withheld.
+    form_check_skipped: list[tuple[str, tuple | None, str]] = []
+    form_check_ran_count = 0
     for lat in derivation.latches:
         join = joins.get(lat.identity.candidate_id)
         if not lat.is_live or join is None or join.indeterminate:
@@ -754,7 +858,9 @@ def build_latch_orders_vm(
         # 3): it gets no new `candidates` row, so it never gets a
         # derivation-session close and the shape check is PERMANENTLY inert for
         # that latch. Both are "the check did not run, here is why", so they
-        # share one rendering path; only the reason clause differs. The V2
+        # share ONE rendering path -- but NOT one string (RD ruling 2026-07-28):
+        # waiting fixes the first and never fixes the second, so the reason and
+        # the TONE both differ. `_build_form_check_notes` classifies them; the V2
         # live-quote fix is what actually restores the check.
         #
         # `latched_pivot` is validated finite at construction, so an
@@ -766,26 +872,10 @@ def build_latch_orders_vm(
         # "the shape check": `mandate_shape_mismatch` still runs in an unknown
         # regime and can still report a TRAILING_STOP_LIMIT or a DAY order, so a
         # label claiming the whole shape check was skipped would contradict a
-        # mismatch rendered three lines below it. It also names the REAL reason
-        # -- an absent close, an off-session close and a FAILED close read are
-        # three different facts about the operator's data -- and its tail
-        # describes only checks that actually ran: with no resting order there
-        # is no form to accept and no leg or duration was judged.
+        # mismatch rendered three lines below it. Its tail describes only checks
+        # that actually ran: with no resting order there is no form to accept and
+        # no leg or duration was judged.
         if expected_type is None:
-            if regime_price_read_failed:
-                why = ("the close read failed, so no regime price is available "
-                       f"for the derivation session {regime_session_iso}")
-            elif quote is None:
-                # USABLE, not merely present: `load_last_closes` skips a
-                # non-numeric / non-finite close, so "no close is recorded"
-                # would be a false statement about the operator's data when a
-                # malformed one exists (Codex R3 MINOR).
-                why = ("no usable close is recorded for this ticker on the "
-                       f"derivation session {regime_session_iso}")
-            else:
-                why = (f"the most recent usable close for this ticker is from "
-                       f"{quote[1] or 'an unrecorded session'}, not the "
-                       f"derivation session {regime_session_iso}")
             tail = (
                 # GOOD_TILL_CANCEL is judged only when the payload CARRIES a
                 # duration -- `mandate_shape_mismatch` deliberately does not
@@ -795,10 +885,9 @@ def build_latch_orders_vm(
                 "GOOD_TILL_CANCEL whenever the broker payload carries a "
                 "duration." if join.orders
                 else "no resting order was evaluated for this mandate.")
-            form_check_skipped_lines.append(
-                f"{lat.identity.ticker}: the mandate FORM check did not run - "
-                f"{why}, so the panel cannot say WHICH of the two mandate forms "
-                f"is correct at this price; {tail}")
+            form_check_skipped.append((lat.identity.ticker, quote, tail))
+        else:
+            form_check_ran_count += 1
         # (a) an order matched to this mandate but priced wrong.
         #
         # WHICH LEGS THE MANDATE HAS IS REGIME-SELECTED:
@@ -896,6 +985,13 @@ def build_latch_orders_vm(
     # suppressed with NO banner -- the page then printed the all-clear.
     indeterminate_tickers = indeterminate_order_tickers(orders)
 
+    form_check_notes = _build_form_check_notes(
+        conn, form_check_skipped,
+        derivation_session=derivation.derivation_session,
+        regime_session_iso=regime_session_iso,
+        close_read_failed=regime_price_read_failed,
+    )
+
     order_lines = tuple(
         f"{o.ticker} {o.instruction} {o.quantity:g} {o.order_type} "
         f"stop {_fmt_price(o.stop_price)} limit {_fmt_price(o.limit_price)} "
@@ -916,8 +1012,94 @@ def build_latch_orders_vm(
         disagreements=disagreements,
         indeterminate_tickers=indeterminate_tickers,
         multiplicity_notes=tuple(dict.fromkeys(multiplicity_lines)),
-        mandate_form_check_skipped=tuple(dict.fromkeys(form_check_skipped_lines)),
+        mandate_form_check_skipped=form_check_notes,
+        form_check_ran_count=form_check_ran_count,
     )
+
+
+def _build_form_check_notes(
+    conn, skipped, *, derivation_session: date, regime_session_iso: str,
+    close_read_failed: bool,
+) -> tuple[MandateFormCheckVM, ...]:
+    """Classify each withheld FORM check as pending / permanent / unknown.
+
+    `skipped` is `(ticker, quote, tail)` per affected latch. The classification
+    needs ONE fact nothing else on this page already knows -- whether a screen
+    was recorded for the derivation session at all -- so the read happens here,
+    once, and ONLY when something was actually withheld.
+    """
+    if not skipped:
+        return ()
+    # A FAILED close read short-circuits: with no closes at all the screen
+    # cannot say anything useful about WHY this latch has none.
+    screened: frozenset[str] | None = None
+    if not close_read_failed:
+        try:
+            screened = load_screened_tickers(conn, derivation_session)
+        except Exception as exc:  # noqa: BLE001 -- A6: the panel never 500s
+            _log.warning("latch order screen read degraded: %s", exc)
+            screened = None
+
+    notes: list[MandateFormCheckVM] = []
+    for ticker, quote, tail in skipped:
+        provenance = _close_provenance(quote)
+        if close_read_failed:
+            severity = "unknown"
+            detail = (
+                f"{ticker}: the mandate FORM check did not run - the close read "
+                f"failed, so no regime price is available for the derivation "
+                f"session {regime_session_iso} and the panel cannot say WHICH "
+                f"of the two mandate forms is correct at this price; {tail}")
+        elif screened is None:
+            # The screen read itself failed. Guessing "pending" would tell the
+            # operator to wait for something that may never arrive, so the panel
+            # promises nothing in either direction.
+            severity = "unknown"
+            detail = (
+                f"{ticker}: the mandate FORM check did not run - {provenance}, "
+                f"and whether the screen for the derivation session "
+                f"{regime_session_iso} was recorded could not be determined, so "
+                f"the panel cannot say WHICH of the two mandate forms is "
+                f"correct at this price, nor whether waiting will clear it; "
+                f"{tail}")
+        elif not screened:
+            # NOBODY has a close for this session yet -- the default state for
+            # ~7 hours of every trading day. Status, not a warning.
+            severity = "pending"
+            detail = (
+                f"{ticker}: waiting on the nightly screen for the derivation "
+                f"session {regime_session_iso} ({provenance}), so there is no "
+                f"regime price yet and the panel cannot yet say WHICH of the "
+                f"two mandate forms is correct at this price. This is the "
+                f"normal state between the market close and the nightly "
+                f"pipeline run; it clears when that run records the session. "
+                f"{_as_sentence(tail)}")
+        elif ticker not in screened:
+            # The screen ran WITHOUT this ticker: it has left the finviz screen
+            # (not held, not pinned). Waiting changes nothing.
+            severity = "permanent"
+            detail = (
+                f"{ticker}: the screen for the derivation session "
+                f"{regime_session_iso} was recorded and this ticker is NOT on "
+                f"it ({provenance}), so no regime price for that session is "
+                f"coming and the panel cannot say WHICH of the two mandate "
+                f"forms is correct at this price. Waiting will NOT clear this "
+                f"one: it stays inert until the ticker is back on the screen. "
+                f"{_as_sentence(tail)}")
+        else:
+            # Screened, but the recorded close is NULL / non-finite. Neither
+            # "wait" nor "it left the screen" is a true statement here.
+            severity = "unknown"
+            detail = (
+                f"{ticker}: the mandate FORM check did not run - the screen for "
+                f"the derivation session {regime_session_iso} was recorded "
+                f"WITH this ticker on it, but it carries no usable close, so "
+                f"there is no regime price and the panel cannot say WHICH of "
+                f"the two mandate forms is correct at this price; {tail}")
+        notes.append(MandateFormCheckVM(
+            ticker=ticker, severity=severity,
+            headline=_FORM_CHECK_HEADLINES[severity], detail=detail))
+    return tuple(dict.fromkeys(notes))
 
 
 # Drift pin support: the base-banner field names declared on LatchPanelVM.
