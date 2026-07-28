@@ -1074,9 +1074,15 @@ def _build_form_check_notes(
                 f"session {regime_session_iso} - no closes have been recorded "
                 f"for it yet ({provenance}), so there is no regime price and "
                 f"the panel cannot yet say WHICH of the two mandate forms is "
+                # WHAT the nightly settles, not what it guarantees (Codex y2
+                # MINOR 1). The run ends the WAITING; it does not promise the
+                # check will then run, because a ticker that is still not
+                # evaluated lands in the permanent branch instead. Promising the
+                # check would be the same over-claim in the opposite direction.
                 f"correct at this price. This is the normal state between the "
-                f"market close and the nightly pipeline run; it clears when "
-                f"that run records the session. {_as_sentence(tail)}")
+                f"market close and the nightly pipeline run; that run settles "
+                f"it - either the form check runs, or this becomes a warning. "
+                f"{_as_sentence(tail)}")
         else:
             # That session's closes exist and this ticker's newest usable close
             # is still older, so the nightly is not what this is waiting on.
@@ -1089,11 +1095,16 @@ def _build_form_check_notes(
                 f"{ticker}: closes for the derivation session "
                 f"{regime_session_iso} HAVE been recorded (for {recorded} "
                 f"{noun}), but {provenance}, so there is no regime price for this "
+                # The cause is stated as the USUAL one and the look-alike is
+                # named (Codex y2 MINOR 2). "not held, not pinned" was dropped:
+                # this read cannot see WHY a ticker is absent, and a parenthetical
+                # that reads as a diagnosis is the same over-claim in miniature.
                 f"mandate and the panel cannot say WHICH of the two mandate "
                 f"forms is correct at this price. The usual cause is the ticker "
-                f"having dropped off the screen (not held, not pinned). Waiting "
-                f"will NOT clear this one on its own: it clears when the ticker "
-                f"is evaluated again. {_as_sentence(tail)}")
+                f"no longer being evaluated at all; a partial evaluation of that "
+                f"session looks the same from here. Waiting will NOT clear this "
+                f"one on its own: it clears when the ticker is evaluated again. "
+                f"{_as_sentence(tail)}")
         notes.append(MandateFormCheckVM(
             ticker=ticker, severity=severity,
             headline=_FORM_CHECK_HEADLINES[severity], detail=detail))

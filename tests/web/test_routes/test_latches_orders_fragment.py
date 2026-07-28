@@ -1205,7 +1205,8 @@ def test_the_pending_branch_is_neutral_status_with_a_stated_clear_time(
     assert "waiting on the nightly data for the derivation session 2026-07-24" \
         in r.text
     assert "no closes have been recorded for it yet" in r.text
-    assert "it clears when that run records the session" in r.text
+    assert "that run settles it - either the form check runs, or this " \
+        "becomes a warning" in r.text
     # Neutral tone, explicitly: no alarm prefix and no alarm/warning styling.
     assert "MANDATE FORM CHECK" not in r.text
     assert "latch-form-check-pending" in r.text
@@ -1246,7 +1247,8 @@ def test_a_latch_whose_ticker_left_the_screen_is_visibly_inert(
     assert "closes for the derivation session 2026-07-24 HAVE been recorded " \
         "(for 1 ticker)" in r.text
     assert "the most recent usable close for this ticker is from 2026-07-17" in r.text
-    assert "The usual cause is the ticker having dropped off the screen" in r.text
+    assert "The usual cause is the ticker no longer being evaluated at all" in r.text
+    assert "a partial evaluation of that session looks the same from here" in r.text
     assert "Waiting will NOT clear this one on its own" in r.text
     # It must NOT assert finviz-screen membership from a read that cannot see it.
     assert "is NOT on it" not in r.text
@@ -1254,7 +1256,7 @@ def test_a_latch_whose_ticker_left_the_screen_is_visibly_inert(
     # It stays a WARNING, and it must not borrow the pending branch's promise.
     assert "latch-alarm-warning" in r.text
     assert "Mandate form check pending" not in r.text
-    assert "it clears when that run records the session" not in r.text
+    assert "that run settles it" not in r.text
     # It is a LABEL on the affected latch, NOT an alarm and NOT a suppression:
     # the price legs were still judged and no false alarm was invented.
     assert "ORDER PRICE MISMATCH" not in r.text
@@ -1343,7 +1345,8 @@ def test_a_held_position_row_is_never_described_as_finviz_screen_membership(
         r = _post_orders(client)
     assert r.status_code == 200
     assert "MANDATE FORM CHECK INERT FOR THIS LATCH" in r.text
-    assert "The usual cause is the ticker having dropped off the screen" in r.text
+    assert "The usual cause is the ticker no longer being evaluated at all" in r.text
+    assert "a partial evaluation of that session looks the same from here" in r.text
     # ...and NOT a claim about the finviz screen, which this read cannot see.
     assert "the screen for the derivation session" not in r.text
     assert "is NOT on it" not in r.text
