@@ -406,6 +406,36 @@ def _fold_ticker(
                 bar_bound=min(prior, derivation_session),
                 fill_bound=prior,
                 horizon_sessions=horizon_sessions, dry_run=True)
+            # THE FINAL RESOLUTION CAN REVERSE THE PROBE, AND THAT REVERSAL
+            # OUTRANKS BOTH BRANCHES BELOW.
+            #
+            # The probe deliberately cannot see the re-fire session's own fill,
+            # so it can report the old latch dead-by-horizon (clause iii) OR
+            # still-live (clause ii) while the FINAL resolution -- which CAN see
+            # it -- resolves that same latch to a FILL at-or-after this fire's
+            # session. Arming a new mandate on top of that tells the operator to
+            # buy a position he has JUST BOUGHT: the worst output this surface
+            # can produce. Checked ONCE, ahead of both branches, so the horizon
+            # path and the supersede path cannot diverge on it.
+            final_probe = _resolve_terminal(
+                open_draft, bars=bars, entries=entries, consumed=consumed,
+                horizon_ref=horizon_session, bar_bound=derivation_session,
+                fill_bound=horizon_session,
+                horizon_sessions=horizon_sessions, dry_run=True)
+            if (final_probe is not None
+                    and final_probe.reason == "fill"
+                    and final_probe.session >= anchor):
+                closed = _close(open_draft)
+                latches[-1] = replace(
+                    closed,
+                    reconfirmation_candidate_ids=(
+                        *closed.reconfirmation_candidate_ids, fire.candidate_id),
+                    reconfirmation_sessions=(
+                        *closed.reconfirmation_sessions, fire.action_session_date),
+                )
+                open_draft = None
+                continue
+
             if live_probe is None:                                # clause (ii)
                 same_pivot = (
                     round(float(fire.pivot), _PRICE_DP)
@@ -417,31 +447,7 @@ def _fold_ticker(
                     continue
                 _close(open_draft, superseded_session=anchor)     # branch (b)
             else:                                                 # clause (iii)
-                closed = _close(open_draft)
-                # THE PROBE CAN BE REVERSED BY THE FINAL RESOLUTION. The probe
-                # deliberately cannot see the re-fire session's own fill, so a
-                # latch that expires ON that session reads "dead" and lets a new
-                # mandate arm -- but the final resolution, which CAN see it,
-                # may then resolve that same latch to a FILL on that very
-                # session. Arming a new mandate on top of that tells the
-                # operator to buy a position he has JUST BOUGHT. When the
-                # closed latch actually filled at-or-after the incoming fire's
-                # session, the fire is a RE-CONFIRMATION of it, not a new
-                # mandate.
-                if (closed.clear_reason == "fill"
-                        and closed.clear_session is not None
-                        and closed.clear_session >= anchor):
-                    latches[-1] = replace(
-                        closed,
-                        reconfirmation_candidate_ids=(
-                            *closed.reconfirmation_candidate_ids,
-                            fire.candidate_id),
-                        reconfirmation_sessions=(
-                            *closed.reconfirmation_sessions,
-                            fire.action_session_date),
-                    )
-                    open_draft = None
-                    continue
+                _close(open_draft)
             open_draft = None
 
         open_draft = _Draft(

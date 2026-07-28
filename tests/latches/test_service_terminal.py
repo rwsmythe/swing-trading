@@ -709,3 +709,50 @@ def test_an_expiry_session_refire_WITHOUT_a_fill_still_opens_a_new_latch():
     assert len(d.latches) == 2
     assert d.latches[0].state == "horizon_expired"
     assert d.latches[1].state == "armed"
+
+
+def test_a_different_pivot_refire_does_not_supersede_over_a_real_fill():
+    """Codex executing R12 CRITICAL. The R11 fix guarded the horizon path but
+    NOT the supersede path: branch (b) stamped `superseded` immediately and so
+    never ran the final resolution that can see the re-fire session's fill.
+
+    Old fire 2026-07-20, DIFFERENT-pivot re-fire 2026-07-21, and an exact
+    candidate_id fill for the OLD candidate dated 2026-07-21. Superseding there
+    leaves the old latch `superseded`, the new one `armed`, and the panel
+    telling the operator to buy despite an actual filled position."""
+    fires = [
+        FireRow(candidate_id=8201, evaluation_run_id=121, ticker="SUPF",
+                pivot=18.34, initial_stop=14.88, action_session_date="2026-07-20",
+                run_ts="2026-07-17T17:30:05", pipeline_run_id=None),
+        FireRow(candidate_id=8202, evaluation_run_id=122, ticker="SUPF",
+                pivot=20.19, initial_stop=16.515, action_session_date="2026-07-21",
+                run_ts="2026-07-20T17:30:05", pipeline_run_id=None),
+    ]
+    entries = {"SUPF": [EntryRecord(
+        trade_id=97, ticker="SUPF", entry_date=date(2026, 7, 21),
+        candidate_id=8201, entry_price=18.40, shares=3)]}
+    d = derive_latches(
+        fires=fires, bars_by_ticker={"SUPF": []}, entries_by_ticker=entries,
+        horizon_session=date(2026, 7, 22), derivation_session=date(2026, 7, 21))
+    assert len(d.latches) == 1, "a second mandate must not arm over the fill"
+    latch = d.latches[0]
+    assert latch.state == "filled" and latch.clear_trade_id == 97
+    assert latch.reconfirmation_candidate_ids == (8202,)
+    assert not any(x.is_live for x in d.latches)
+
+
+def test_a_different_pivot_refire_WITHOUT_a_fill_still_supersedes():
+    """The paired discriminator: the reversal is keyed on a REAL fill, so the
+    ordinary supersede path is untouched."""
+    fires = [
+        FireRow(candidate_id=8301, evaluation_run_id=121, ticker="SUPG",
+                pivot=18.34, initial_stop=14.88, action_session_date="2026-07-20",
+                run_ts="2026-07-17T17:30:05", pipeline_run_id=None),
+        FireRow(candidate_id=8302, evaluation_run_id=122, ticker="SUPG",
+                pivot=20.19, initial_stop=16.515, action_session_date="2026-07-21",
+                run_ts="2026-07-20T17:30:05", pipeline_run_id=None),
+    ]
+    d = derive_latches(
+        fires=fires, bars_by_ticker={"SUPG": []}, entries_by_ticker={},
+        horizon_session=date(2026, 7, 22), derivation_session=date(2026, 7, 21))
+    assert [x.state for x in d.latches] == ["superseded", "armed"]
