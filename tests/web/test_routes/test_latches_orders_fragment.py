@@ -52,8 +52,13 @@ def _seed_ftre(cfg):
 
 @pytest.fixture
 def frozen_panel_clock(monkeypatch):
+    """Freeze BOTH clocks. The order fragment requires the posted anchor to be
+    the CURRENT action session, so the ROUTE clock must be pinned too -- leaving
+    it on the wall clock makes these tests time-of-day dependent."""
+    import swing.web.routes.latches as route_mod
     import swing.web.view_models.latches as vm_mod
     monkeypatch.setattr(vm_mod, "_now", lambda: NOW)
+    monkeypatch.setattr(route_mod, "_now", lambda: NOW)
 
 
 def _counts(cfg):
@@ -477,3 +482,27 @@ def test_an_indeterminate_order_is_rendered_not_silently_all_clear(
     assert "ORDER STATUS INDETERMINATE" in r.text
     assert "verify at the broker" in r.text
     assert "LATCH_ARMED_NO_RESTING_ORDER" not in r.text
+
+
+def test_a_one_session_stale_anchor_suppresses_the_order_alarms(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """Codex executing R6. The BEACON tolerates a one-session-stale anchor --
+    correctly, because it records that a view HAPPENED, as of the session it
+    happened in. The ORDER FRAGMENT must NOT: it joins the anchor's latch set to
+    the LIVE broker book, so a stale anchor judges orders placed or cancelled
+    AFTER that session against the older mandates, manufacturing or silencing an
+    alarm. Alarms must describe ONE coherent moment.
+
+    The anchor here (2026-07-24) is exactly ONE session behind the frozen
+    current action session (2026-07-27) -- i.e. inside the beacon's tolerance
+    and outside the fragment's."""
+    from swing.evaluation.dates import sessions_behind
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    assert sessions_behind(date(2026, 7, 27), date(2026, 7, 24)) == 1
+    app = _app(cfg, cfg_path, monkeypatch, orders=[])
+    with TestClient(app) as client:
+        r = _post_orders(client, anchor="2026-07-24")
+    assert r.status_code == 200
+    assert "LATCH_ARMED_NO_RESTING_ORDER" not in r.text
+    assert "reload" in r.text.lower()

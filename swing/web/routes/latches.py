@@ -7,6 +7,7 @@ not a Schwab audit row (the broker join is the lazy `POST /latches/orders`).
 from __future__ import annotations
 
 import logging
+import sqlite3
 from datetime import date, datetime
 
 from fastapi import APIRouter, Request, Response
@@ -155,7 +156,15 @@ async def latches_orders_fragment(request: Request):
         raw = form.get("view_session_date")
         if isinstance(raw, str) and len(raw) == 10:
             parsed = date.fromisoformat(raw)
-            if _classify_anchor(parsed, action_session_for_run(_now())) == "ok":
+            # STRICTER THAN THE BEACON, deliberately. The beacon's
+            # one-session tolerance is sound for TELEMETRY (it records that a
+            # view happened, as of the session it happened in). It is NOT sound
+            # here: this fragment joins the anchor's latch set to the LIVE
+            # broker book, so a stale anchor would judge orders placed or
+            # cancelled AFTER that session against the older mandates --
+            # manufacturing or silencing an alarm. Alarms must describe one
+            # coherent moment.
+            if parsed == action_session_for_run(_now()):
                 anchor = parsed
     except (ValueError, TypeError):
         anchor = None
@@ -231,12 +240,22 @@ async def latches_view_beacon(request: Request) -> Response:
         matched = [live[cid] for cid in posted_ids if cid in live]
         if matched:
             viewed_ts = now.isoformat(timespec="seconds")
-            with conn:
-                for latch in matched:
-                    record_view(
-                        conn, identity=latch.identity,
-                        view_session_date=anchor.isoformat(),
-                        viewed_ts=viewed_ts, latch_state=latch.state)
+            try:
+                with conn:
+                    for latch in matched:
+                        record_view(
+                            conn, identity=latch.identity,
+                            view_session_date=anchor.isoformat(),
+                            viewed_ts=viewed_ts, latch_state=latch.state)
+            except sqlite3.Error as exc:
+                # A6: the telemetry beacon is an OBSERVER. A schema rejection
+                # (e.g. the identity-coherence trigger) must be logged loudly
+                # and degrade, never 500 the operator's page.
+                log.warning("latch view beacon write rejected: %s", exc)
+                return HTMLResponse(
+                    status_code=409,
+                    content=("<p class='latch-beacon-error'>view telemetry "
+                             "could not be recorded; see the log.</p>"))
     finally:
         conn.close()
     return Response(status_code=204)

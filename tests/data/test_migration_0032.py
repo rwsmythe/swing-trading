@@ -295,3 +295,58 @@ def test_the_identity_trigger_also_guards_updates(tmp_path):
             "SELECT view_count FROM latch_view_events").fetchone()[0] == 2
     finally:
         conn.close()
+
+
+def test_the_identity_trigger_requires_an_aplus_candidate(tmp_path):
+    """Codex executing R6. A latch only ever describes an A+ FIRE, so a
+    coherent-but-`watch` candidate must not be recordable as one."""
+    conn = ensure_schema(tmp_path / "t.db")
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, "
+                "action_session_date, tickers_evaluated, aplus_count, "
+                "watch_count, skip_count, excluded_count, error_count) VALUES "
+                "(99, '2026-06-24T20:06:25', '2026-06-24', '2026-06-25', "
+                "1, 0, 1, 0, 0, 0)")
+            cur = conn.execute(
+                "INSERT INTO candidates (evaluation_run_id, ticker, bucket, "
+                "close, pivot, initial_stop, rs_method) VALUES "
+                "(99, 'VSTS', 'watch', 13.49, 13.56, 11.62, 'universe')")
+            watch_id = int(cur.lastrowid)
+        with pytest.raises(sqlite3.IntegrityError, match="identity block"):
+            conn.execute(_INSERT, (watch_id, "2026-06-25", "2026-06-25", "armed"))
+    finally:
+        conn.close()
+
+
+def test_the_identity_trigger_requires_the_pipeline_twin_to_be_this_runs(tmp_path):
+    """The DETECTION half of RD finding 4: a non-NULL `pipeline_run_id` must be
+    THIS evaluation run's twin -- the exact linkage the reader derives it from.
+    The two id spaces collide on integers, so a wrong twin is a live confusion
+    trap rather than a theoretical one. A NULL twin stays legal (the normal case
+    for every pre-June-2026 fire)."""
+    conn, cid = _fresh(tmp_path)
+    try:
+        with conn:
+            # A pipeline run linked to a DIFFERENT evaluation run.
+            conn.execute(
+                "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, "
+                "action_session_date, tickers_evaluated, aplus_count, "
+                "watch_count, skip_count, excluded_count, error_count) VALUES "
+                "(77, '2026-06-01T20:06:25', '2026-06-01', '2026-06-02', "
+                "1, 0, 0, 0, 0, 0)")
+            conn.execute(
+                "INSERT INTO pipeline_runs (id, started_ts, trigger, state, "
+                "lease_token, data_asof_date, action_session_date, "
+                "evaluation_run_id) VALUES "
+                "(500, '2026-06-01T17:00:00', 'manual', 'complete', 'lease-500', "
+                "'2026-06-01', '2026-06-02', 77)")
+        bad_twin = _INSERT.replace("NULL, ?,", "500, ?,")
+        with pytest.raises(sqlite3.IntegrityError, match="twin"):
+            conn.execute(bad_twin, (cid, "2026-06-25", "2026-06-25", "armed"))
+        # NULL twin is fine.
+        with conn:
+            conn.execute(_INSERT, (cid, "2026-06-25", "2026-06-25", "armed"))
+    finally:
+        conn.close()

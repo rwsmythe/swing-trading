@@ -97,14 +97,32 @@ BEGIN
         SELECT 1 FROM candidates c
         JOIN evaluation_runs e ON e.id = c.evaluation_run_id
         WHERE c.id = NEW.candidate_id
+          -- A latch only ever describes an A+ FIRE.
+          AND c.bucket = 'aplus'
           AND c.evaluation_run_id = NEW.evaluation_run_id
           AND c.ticker = NEW.ticker
           AND e.action_session_date = NEW.detection_date
     );
+    -- The DETECTION twin, when present, must be THIS evaluation run's pipeline
+    -- run -- the exact linkage `swing/latches/reader.py` derives it from
+    -- (LEFT JOIN pipeline_runs ON evaluation_run_id). A NULL twin stays legal:
+    -- it is the NORMAL case for every pre-June-2026 fire, not an error.
+    -- Deliberately NOT also asserting pipeline_runs.action_session_date =
+    -- detection_date: it holds for all 111 linked pairs on the live DB today,
+    -- but it is not the linkage the reader uses, so enforcing it would add a
+    -- failure mode without adding safety.
+    SELECT RAISE(ABORT, 'latch_view_events pipeline_run_id is not this evaluation run''s twin')
+    WHERE NEW.pipeline_run_id IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM pipeline_runs p
+        WHERE p.id = NEW.pipeline_run_id
+          AND p.evaluation_run_id = NEW.evaluation_run_id
+    );
 END;
 
 CREATE TRIGGER trg_lve_identity_coherent_update
-BEFORE UPDATE OF candidate_id, evaluation_run_id, ticker, detection_date
+BEFORE UPDATE OF candidate_id, evaluation_run_id, ticker, detection_date,
+                 pipeline_run_id
 ON latch_view_events
 FOR EACH ROW
 BEGIN
@@ -113,9 +131,26 @@ BEGIN
         SELECT 1 FROM candidates c
         JOIN evaluation_runs e ON e.id = c.evaluation_run_id
         WHERE c.id = NEW.candidate_id
+          -- A latch only ever describes an A+ FIRE.
+          AND c.bucket = 'aplus'
           AND c.evaluation_run_id = NEW.evaluation_run_id
           AND c.ticker = NEW.ticker
           AND e.action_session_date = NEW.detection_date
+    );
+    -- The DETECTION twin, when present, must be THIS evaluation run's pipeline
+    -- run -- the exact linkage `swing/latches/reader.py` derives it from
+    -- (LEFT JOIN pipeline_runs ON evaluation_run_id). A NULL twin stays legal:
+    -- it is the NORMAL case for every pre-June-2026 fire, not an error.
+    -- Deliberately NOT also asserting pipeline_runs.action_session_date =
+    -- detection_date: it holds for all 111 linked pairs on the live DB today,
+    -- but it is not the linkage the reader uses, so enforcing it would add a
+    -- failure mode without adding safety.
+    SELECT RAISE(ABORT, 'latch_view_events pipeline_run_id is not this evaluation run''s twin')
+    WHERE NEW.pipeline_run_id IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM pipeline_runs p
+        WHERE p.id = NEW.pipeline_run_id
+          AND p.evaluation_run_id = NEW.evaluation_run_id
     );
 END;
 
