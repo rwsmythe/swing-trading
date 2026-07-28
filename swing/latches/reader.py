@@ -304,6 +304,18 @@ def count_session_recorded_closes(conn: sqlite3.Connection, session: date) -> in
     (an ad-hoc `swing eval` for the same `data_asof_date` producing a handful of
     rows, rather than the nightly producing hundreds) is visible to the operator
     instead of silently deciding the branch behind his back.
+
+    LIMIT OF THE PREDICATE, and the reason every caller says "closes DATED
+    <session>" rather than "closes FOR <session>" (codex-auto-review MAJOR):
+    `evaluation_runs.data_asof_date` is the MAX bar date across the WHOLE cohort
+    (`swing/evaluation/orchestration.py`, `max(max_dates)`), while each
+    `candidates.close` comes from that ticker's OWN last bar
+    (`swing/evaluation/evaluator.py`, `closes.iloc[-1]`). A ticker whose archive
+    is a bar behind therefore carries an older close under a fresher run stamp.
+    This read is a STAMP query, not proof of a session's bar, and no caller may
+    claim more than that. (The same stamp-vs-proof gap affects the regime price
+    itself, which predates this function -- flagged to the orchestrator, NOT
+    fixed here: it is a measurement-chain change, not a label change.)
     """
     rows = conn.execute(
         "SELECT DISTINCT c.ticker, c.close FROM candidates c "

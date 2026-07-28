@@ -1204,7 +1204,7 @@ def test_the_pending_branch_is_neutral_status_with_a_stated_clear_time(
     assert "Mandate form check pending" in r.text
     assert "waiting on the nightly data for the derivation session 2026-07-24" \
         in r.text
-    assert "no usable closes are recorded for it yet" in r.text
+    assert "no usable closes dated 2026-07-24 are recorded yet" in r.text
     assert "the next run normally settles it - either the form check runs, " \
         "or this becomes a warning" in r.text
     # Neutral tone, explicitly: no alarm prefix and no alarm/warning styling.
@@ -1244,7 +1244,7 @@ def test_a_latch_whose_ticker_left_the_screen_is_visibly_inert(
         r = _post_orders(client)
     assert r.status_code == 200
     assert "MANDATE FORM CHECK INERT FOR THIS LATCH" in r.text
-    assert "closes for the derivation session 2026-07-24 HAVE been recorded " \
+    assert "closes dated 2026-07-24 HAVE been recorded " \
         "(for 1 ticker)" in r.text
     assert "the most recent usable close for this ticker is from 2026-07-17" in r.text
     assert "The usual cause is the ticker no longer being evaluated at all" in r.text
@@ -1382,8 +1382,8 @@ def test_an_unreadable_close_count_does_not_promise_that_waiting_will_clear_it(
         r = _post_orders(client)
     assert r.status_code == 200
     assert "MANDATE FORM CHECK NOT RUN" in r.text
-    assert "whether any closes have been recorded for the derivation session " \
-        "2026-07-24 could not be determined" in r.text
+    assert "whether any closes dated 2026-07-24 have been recorded could not " \
+        "be determined" in r.text
     assert "nor whether waiting will clear it" in r.text
     assert "Mandate form check pending" not in r.text
 
@@ -1405,8 +1405,8 @@ def test_the_all_clear_is_scoped_by_counts_rather_than_withheld(
     with TestClient(app) as client:
         r = _post_orders(client)
     assert r.status_code == 200
-    assert "No alarms among the 0 latches checked. 1 not checked - see the " \
-        "labels below." in r.text
+    assert "No alarms among the 0 latches form-checked. 1 not form-checked - " \
+        "see the labels below." in r.text
     # The UNSCOPED claim stays forbidden -- that is the half RD did NOT reverse.
     assert "Broker orders agree with the live latches" not in r.text
 
@@ -1436,8 +1436,8 @@ def test_the_scoped_all_clear_counts_the_latches_that_were_checked(
     with TestClient(app) as client:
         r = _post_orders(client)
     assert r.status_code == 200
-    assert "No alarms among the 1 latch checked. 1 not checked - see the " \
-        "labels below." in r.text
+    assert "No alarms among the 1 latch form-checked. 1 not form-checked - " \
+        "see the labels below." in r.text
 
 
 def test_a_fully_checked_page_still_prints_the_unscoped_all_clear(
@@ -1454,7 +1454,7 @@ def test_a_fully_checked_page_still_prints_the_unscoped_all_clear(
         r = _post_orders(client)
     assert r.status_code == 200
     assert "Broker orders agree with the live latches. No alarms." in r.text
-    assert "not checked - see the labels below" not in r.text
+    assert "not form-checked - see the labels below" not in r.text
 
 
 def test_a_real_finding_still_withholds_every_form_of_all_clear(

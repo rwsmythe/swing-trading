@@ -573,9 +573,14 @@ class LatchOrdersFragmentVM:
         skipped = len(self.mandate_form_check_skipped)
         if not skipped:
             return "Broker orders agree with the live latches. No alarms."
+        # "FORM-checked", not "checked" (codex-auto-review MINOR). A bare
+        # "checked" reads as "nothing ran on the other M", which is false: the
+        # alarms, the cap leg, the GTC duration and the stray-order sweep all
+        # ran on every evaluated latch. Only the two-form SELECTION was skipped.
         noun = "latch" if self.form_check_ran_count == 1 else "latches"
         return (f"No alarms among the {self.form_check_ran_count} {noun} "
-                f"checked. {skipped} not checked - see the labels below.")
+                f"form-checked. {skipped} not form-checked - see the labels "
+                f"below.")
 
 
 def _resolve_schwab_environment(cfg) -> str | None:
@@ -1069,8 +1074,8 @@ def _build_form_check_notes(
             severity = "unknown"
             detail = (
                 f"{ticker}: the mandate FORM check did not run - {provenance}, "
-                f"and whether any closes have been recorded for the derivation "
-                f"session {regime_session_iso} could not be determined, so the "
+                f"and whether any closes dated {regime_session_iso} have been "
+                f"recorded could not be determined, so the "
                 f"panel cannot say WHICH of the two mandate forms is correct at "
                 f"this price, nor whether waiting will clear it; {tail}")
         elif recorded == 0:
@@ -1084,8 +1089,9 @@ def _build_form_check_notes(
                 # closes have been recorded" would then overstate what the
                 # helper knows (Codex y3 MINOR 1).
                 f"{ticker}: waiting on the nightly data for the derivation "
-                f"session {regime_session_iso} - no usable closes are recorded "
-                f"for it yet ({provenance}), so there is no regime price and "
+                f"session {regime_session_iso} - no usable closes dated "
+                f"{regime_session_iso} are recorded yet ({provenance}), "
+                f"so there is no regime price and "
                 f"the panel cannot yet say WHICH of the two mandate forms is "
                 # WHAT the nightly settles, not what it guarantees (Codex y2
                 # MINOR 1). The run ends the WAITING; it does not promise the
@@ -1109,8 +1115,14 @@ def _build_form_check_notes(
             severity = "permanent"
             noun = "ticker" if recorded == 1 else "tickers"
             detail = (
-                f"{ticker}: closes for the derivation session "
-                f"{regime_session_iso} HAVE been recorded (for {recorded} "
+                # "DATED", not "for" (codex-auto-review MAJOR). The evaluator
+                # stamps `evaluation_runs.data_asof_date` as the MAX bar date
+                # across the whole cohort while each `candidates.close` comes
+                # from that ticker's own last bar, so the date is a STAMP, not a
+                # proof that the bar is from that session. "Dated" is exactly
+                # what the read can support.
+                f"{ticker}: closes dated {regime_session_iso} HAVE been "
+                f"recorded (for {recorded} "
                 f"{noun}), but {provenance}, so there is no regime price for this "
                 # The cause is stated as the USUAL one and the look-alike is
                 # named (Codex y2 MINOR 2). "not held, not pinned" was dropped:
