@@ -224,3 +224,74 @@ def test_backup_gate_verifies_against_the_declared_table_set(tmp_path, monkeypat
         sqlite3.connect(":memory:"), current_version=31,
         target_version=32, backup_dir=tmp_path)
     assert seen["t"] == PHASE21_ARC_A_PRE_MIGRATION_EXPECTED_TABLES
+
+
+def test_a_sqlite_normalisable_but_python_invalid_date_is_rejected(tmp_path):
+    """Codex executing R5. `date('2026-02-30')` NORMALISES to '2026-03-02' --
+    non-NULL and length 10 -- so the weaker `date(x) IS NOT NULL` CHECK ACCEPTS
+    a value that `LatchViewEvent.__post_init__`'s `date.fromisoformat` REJECTS.
+    That is the dangerous asymmetry: the DB holding rows the read path cannot
+    hydrate. The CHECK requires ROUND-TRIP equality."""
+    import datetime
+    conn, cid = _fresh(tmp_path)
+    try:
+        # The premise, asserted inline so it cannot rot.
+        assert conn.execute("SELECT date('2026-02-30')").fetchone()[0] == "2026-03-02"
+        with pytest.raises(ValueError):
+            datetime.date.fromisoformat("2026-02-30")
+        # detection_date and view_session_date are both guarded.
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(_INSERT, (cid, "2026-02-30", "2026-06-25", "armed"))
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(_INSERT, (cid, "2026-06-25", "2026-02-30", "armed"))
+    finally:
+        conn.close()
+
+
+def test_the_identity_block_must_match_its_candidate_id(tmp_path):
+    """Codex executing R5. `candidate_id` is a real FK but `evaluation_run_id`,
+    `ticker` and `detection_date` are denormalised COPIES, so without a trigger
+    a row could point at FTRE's fire while carrying VSTS's evaluation identity
+    -- making the 21-A <-> 21-B join disagree with itself about which latch the
+    record describes. RD's finding 4 asks for the linkage to be EXACT rather
+    than by convention."""
+    conn, cid = _fresh(tmp_path)
+    try:
+        wrong_ticker = _INSERT.replace("'VSTS'", "'FTRE'")
+        with pytest.raises(sqlite3.IntegrityError, match="identity block"):
+            conn.execute(wrong_ticker, (cid, "2026-06-25", "2026-06-25", "armed"))
+        wrong_run = _INSERT.replace(", 99, ", ", 4242, ")
+        with pytest.raises(sqlite3.IntegrityError, match="identity block"):
+            conn.execute(wrong_run, (cid, "2026-06-25", "2026-06-25", "armed"))
+        # detection_date must be the FIRE's action_session_date (2026-06-25),
+        # not some other session.
+        with pytest.raises(sqlite3.IntegrityError, match="identity block"):
+            conn.execute(_INSERT, (cid, "2026-06-24", "2026-06-25", "armed"))
+        # ...and the coherent row still inserts.
+        with conn:
+            conn.execute(_INSERT, (cid, "2026-06-25", "2026-06-25", "armed"))
+        assert conn.execute(
+            "SELECT COUNT(*) FROM latch_view_events").fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
+def test_the_identity_trigger_also_guards_updates(tmp_path):
+    """An UPDATE that re-points the identity block must fail the same way."""
+    conn, cid = _fresh(tmp_path)
+    try:
+        with conn:
+            conn.execute(_INSERT, (cid, "2026-06-25", "2026-06-25", "armed"))
+        with pytest.raises(sqlite3.IntegrityError, match="identity block"):
+            with conn:
+                conn.execute("UPDATE latch_view_events SET ticker = 'FTRE'")
+        # The repo's own monotonic UPDATE (view_count/last_viewed_ts) must NOT
+        # be caught by the trigger -- it does not touch the identity columns.
+        with conn:
+            conn.execute(
+                "UPDATE latch_view_events SET view_count = view_count + 1, "
+                "last_viewed_ts = '2026-06-25T15:00:00'")
+        assert conn.execute(
+            "SELECT view_count FROM latch_view_events").fetchone()[0] == 2
+    finally:
+        conn.close()

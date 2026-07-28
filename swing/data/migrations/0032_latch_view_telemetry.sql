@@ -61,8 +61,15 @@ CREATE TABLE latch_view_events (
     CHECK (view_count >= 1),
     CHECK (evaluation_run_id > 0),
     CHECK (length(trim(ticker)) > 0),
-    CHECK (length(detection_date) = 10 AND date(detection_date) IS NOT NULL),
-    CHECK (length(view_session_date) = 10 AND date(view_session_date) IS NOT NULL),
+    -- ROUND-TRIP equality, NOT merely `date(...) IS NOT NULL`. SQLite's
+    -- date() NORMALISES an out-of-range day: date('2026-02-30') returns
+    -- '2026-03-02' (non-NULL, length 10), so the weaker form ACCEPTS a value
+    -- that `date.fromisoformat` in LatchViewEvent.__post_init__ REJECTS. That
+    -- is the dangerous asymmetry direction -- the DB holding rows the read path
+    -- cannot hydrate.
+    CHECK (length(detection_date) = 10 AND date(detection_date) = detection_date),
+    CHECK (length(view_session_date) = 10
+           AND date(view_session_date) = view_session_date),
     CHECK (last_viewed_ts >= first_viewed_ts),
 
     UNIQUE (evaluation_run_id, ticker, view_session_date)
@@ -71,6 +78,46 @@ CREATE TABLE latch_view_events (
 CREATE INDEX ix_lve_ticker_detection_date ON latch_view_events(ticker, detection_date);
 CREATE INDEX ix_lve_candidate_id          ON latch_view_events(candidate_id);
 CREATE INDEX ix_lve_view_session_date     ON latch_view_events(view_session_date);
+
+-- IDENTITY COHERENCE. `candidate_id` is a real FK, but `evaluation_run_id`,
+-- `ticker` and `detection_date` are denormalised COPIES, so nothing above stops
+-- a row pointing `candidate_id` at one fire while carrying another fire's
+-- evaluation identity -- which would make the 21-A <-> 21-B join disagree with
+-- itself about which latch a record describes. The production writer
+-- (`repos/latch_view_events.record_view`) cannot produce that shape (it takes a
+-- LatchIdentity built from ONE fire row), but RD's finding 4 asks for the
+-- linkage to be EXACT rather than by convention, so it is enforced here too.
+-- A trigger is required because a CHECK cannot reference another table.
+CREATE TRIGGER trg_lve_identity_coherent_insert
+BEFORE INSERT ON latch_view_events
+FOR EACH ROW
+BEGIN
+    SELECT RAISE(ABORT, 'latch_view_events identity block does not match its candidate_id')
+    WHERE NOT EXISTS (
+        SELECT 1 FROM candidates c
+        JOIN evaluation_runs e ON e.id = c.evaluation_run_id
+        WHERE c.id = NEW.candidate_id
+          AND c.evaluation_run_id = NEW.evaluation_run_id
+          AND c.ticker = NEW.ticker
+          AND e.action_session_date = NEW.detection_date
+    );
+END;
+
+CREATE TRIGGER trg_lve_identity_coherent_update
+BEFORE UPDATE OF candidate_id, evaluation_run_id, ticker, detection_date
+ON latch_view_events
+FOR EACH ROW
+BEGIN
+    SELECT RAISE(ABORT, 'latch_view_events identity block does not match its candidate_id')
+    WHERE NOT EXISTS (
+        SELECT 1 FROM candidates c
+        JOIN evaluation_runs e ON e.id = c.evaluation_run_id
+        WHERE c.id = NEW.candidate_id
+          AND c.evaluation_run_id = NEW.evaluation_run_id
+          AND c.ticker = NEW.ticker
+          AND e.action_session_date = NEW.detection_date
+    );
+END;
 
 UPDATE schema_version SET version = 32;
 
