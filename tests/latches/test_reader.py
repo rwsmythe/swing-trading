@@ -363,3 +363,45 @@ def test_a_non_numeric_price_degrades_visibly_rather_than_vanishing(tmp_path):
         assert [x.reason for x in d.degraded] == ["pivot_missing"]
     finally:
         conn.close()
+
+
+def test_a_voided_phantom_trade_does_not_clear_a_latch(tmp_path):
+    """Codex executing R7. A VOIDED trade is a PHANTOM that never executed at
+    the broker (the D25 SATL trade-11 case). It is never deleted -- only
+    annotated with a `trade_events` note carrying `"voided": true` -- so a naive
+    `FROM trades` read picks it up and marks the latch `filled`, SILENCING the
+    very no-resting-order alarm this arc exists to raise, for a fire the
+    operator never acted on. The reader routes through the single-source
+    exclusion predicate every other cohort/stat reader already uses."""
+    cfg = _cfg(tmp_path)
+    conn = ensure_schema(tmp_path / "t.db")
+    try:
+        with conn:
+            _run(conn, 121, "2026-07-17", "2026-07-20")
+            cid = _candidate(conn, 121, "FTRE", "aplus", 18.34, 14.88)
+            conn.execute(
+                "INSERT INTO trades (id, ticker, entry_date, entry_price, "
+                "initial_shares, initial_stop, current_stop, state, "
+                "trade_origin, pre_trade_locked_at, candidate_id) VALUES "
+                "(11, 'FTRE', '2026-07-21', 18.40, 3, 14.88, 14.88, 'entered', "
+                "'pipeline_aplus', '2026-07-17T17:30:05', ?)", (cid,))
+
+        # Before the void annotation it DOES clear the latch...
+        pre = build_latch_derivation(
+            conn, cfg, horizon_session_override=date(2026, 7, 27))
+        assert pre.latches[0].state == "filled"
+
+        with conn:
+            conn.execute(
+                "INSERT INTO trade_events (trade_id, ts, event_type, "
+                "payload_json) VALUES "
+                "(11, '2026-07-22T10:00:00', 'note', '{\"voided\": true}')")
+
+        # ...and after it, the mandate is correctly still ARMED.
+        post = build_latch_derivation(
+            conn, cfg, horizon_session_override=date(2026, 7, 27))
+        assert post.latches[0].state == "armed"
+        assert post.latches[0].clear_trade_id is None
+        assert load_entry_records(conn, ["FTRE"]) == {}
+    finally:
+        conn.close()

@@ -634,7 +634,14 @@ def build_latch_orders_vm(
     # agree" over a mandate that is NOT actually covered: a false all-clear,
     # which is the exact failure mode this arc exists to prevent.
     def _agreement_word(flag) -> str:
-        return "agrees" if flag else "DISAGREES"
+        # `None` is UNKNOWN, and unknown is NOT agreement. A plain BUY STOP at
+        # the pivot carries no limit leg, so `order_limit_agrees` is None -- but
+        # the mandate is a stop trigger AND a cap, and it is the cap that stops
+        # the operator chasing. Reading that silence as agreement is a false
+        # all-clear.
+        if flag is True:
+            return "agrees"
+        return "DISAGREES" if flag is False else "UNKNOWN (leg absent)"
 
     disagreement_lines: list[str] = []
     for lat in derivation.latches:
@@ -642,8 +649,8 @@ def build_latch_orders_vm(
         if not lat.is_live or join is None or join.indeterminate:
             continue
         # (a) an order matched to this mandate but priced wrong.
-        if join.orders and (join.order_stop_agrees is False
-                            or join.order_limit_agrees is False):
+        if join.orders and (join.order_stop_agrees is not True
+                            or join.order_limit_agrees is not True):
             disagreement_lines.append(
                 f"{lat.identity.ticker}: resting order does not match the "
                 f"latched mandate (pivot {lat.latched_pivot:.2f}, zone cap "

@@ -506,3 +506,23 @@ def test_a_one_session_stale_anchor_suppresses_the_order_alarms(
     assert r.status_code == 200
     assert "LATCH_ARMED_NO_RESTING_ORDER" not in r.text
     assert "reload" in r.text.lower()
+
+
+def test_a_stop_only_order_with_no_cap_is_not_read_as_agreement(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """Codex executing R7 CRITICAL. A plain BUY STOP at the pivot matches the
+    latch on the stop leg, but carries NO limit leg -- so `order_limit_agrees`
+    is None. `None` is UNKNOWN, and unknown is NOT agreement: the mandate is a
+    stop trigger AND a cap at pivot x 1.03, and it is the CAP that stops the
+    operator chasing. Reading that silence as agreement renders a false
+    all-clear over a mandate with no chase protection."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    stop_only = _order(order_type="STOP", price=18.34, stop_price=18.34)
+    app = _app(cfg, cfg_path, monkeypatch, orders=[stop_only])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert r.status_code == 200
+    assert "Broker orders agree" not in r.text
+    assert "ORDER PRICE MISMATCH" in r.text
+    assert "UNKNOWN (leg absent)" in r.text

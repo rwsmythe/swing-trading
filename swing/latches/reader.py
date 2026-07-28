@@ -86,9 +86,19 @@ def load_entry_records(conn: sqlite3.Connection, tickers) -> dict[str, list[Entr
     if not values:
         return {}
     placeholders = ",".join("?" * len(values))
+    # VOIDED trades are EXCLUDED via the single-source predicate
+    # (`swing/trades/voided_trades.py`, the 20-A B-2 canonical subquery, already
+    # consumed by every cohort/stat/equity reader). A voided trade is a PHANTOM
+    # that never executed at the broker -- the D25 SATL trade-11 case -- and it
+    # is never deleted, only annotated. Letting one through here would mark a
+    # latch `filled`, silencing the very no-resting-order alarm this arc exists
+    # to raise, for a fire the operator never actually acted on. This is a
+    # read-only IMPORT of a shared predicate, not a `swing/trades` edit.
+    from swing.trades.voided_trades import voided_exclusion_sql
     rows = conn.execute(
         "SELECT id, ticker, entry_date, candidate_id, entry_price, initial_shares "
-        f"FROM trades WHERE ticker IN ({placeholders}) ORDER BY entry_date, id",
+        f"FROM trades WHERE ticker IN ({placeholders})"
+        f"{voided_exclusion_sql('id')} ORDER BY entry_date, id",
         values,
     ).fetchall()
     out: dict[str, list[EntryRecord]] = {}
