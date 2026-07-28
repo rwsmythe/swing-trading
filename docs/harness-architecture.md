@@ -31,6 +31,16 @@ A document (e.g. `orchestrator-context.md`) can hold content of more than one ca
 
 **Custodian boundary (load-bearing):** for the hygiene category CHARC is *custodian of FORM, never owner of CONTENT* — weight/retention/staleness are CHARC's; the gotcha text / charter entries / todo content belong to their writing roles, and no role's writes route through CHARC for approval. The ARCHITECTURE category is the exception the operator clarified 2026-06-13: those rules ARE CHARC's to set and correct, because (see §4) a scope-limited role cannot author a rule whose justification sits outside its swimlane.
 
+**PREMISE-SOURCING: SOURCE EVERY PREMISE FROM THE ROLE (OR ARTIFACT) THAT OWNS IT** (adopted 2026-07-28 — orchestrator-diagnosed, RD-generalized, CHARC-authored). §2 says who owns which CONTENT; this says where a claim must be sourced FROM. Three instances produced in a single day, each the same rule against a different premise-owner:
+
+| Premise | Owned by | Failure when sourced elsewhere |
+|---|---|---|
+| A **FACT** about behavior | the CODE, not a doc | An untraced "~20 sessions" in a director doc became a plan input, then the plan cited that doc as evidence — a **circular citation**, broken only by reading `config.py`. (Also: a drifted stop quoted from a stale row.) |
+| A **POSITION** | the role that HOLDS it, re-checked at POST time | Three crossings in one thread; a closure landed **6 seconds** after the reversal that reopened it. A stale position decays far faster than a stale fact. |
+| **DISPATCH STATE** (what is in flight) | the ORCHESTRATOR, and ONLY it | Both directors inferred dispatch state from each other's messages; neither could observe it. The mailbox serialized nothing because the state change was in nobody's message. |
+
+**The structural half (orchestrator commitment, 2026-07-28):** whenever it countermands, narrows, or re-instructs a live dispatch, it posts that as its own short status IMMEDIATELY, before anything else — dispatch state becomes something directors READ, not something they INFER. **The reciprocal obligation on directors:** when a ruling depends on what is currently in flight, rule against the orchestrator's LAST STATE STATEMENT (naming it, so a stale premise is visible in your own text), never against another director's message; if the state is unclear, ask rather than infer.
+
 ## 3. The comms information-vs-authority taxonomy (canonical)
 
 The role mailbox (`scripts/role_mail.py`, `comms/<role>/{inbox,read}/`) enforces this in code:
