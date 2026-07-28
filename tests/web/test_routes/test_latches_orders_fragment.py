@@ -526,3 +526,43 @@ def test_a_stop_only_order_with_no_cap_is_not_read_as_agreement(
     assert "Broker orders agree" not in r.text
     assert "ORDER PRICE MISMATCH" in r.text
     assert "UNKNOWN (leg absent)" in r.text
+
+
+def test_the_broker_order_window_is_sent_as_utc_aware_datetimes(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """codex-auto-review (repo-access second eye). `trader._schwab_iso`
+    converts an AWARE datetime to UTC but passes a NAIVE one through UNCHANGED
+    and stamps 'Z' on it. A naive local `datetime.now()` is therefore
+    transmitted as if it were UTC -- a TEN-HOUR skew on this HST deployment, so
+    `to_entered_time` lands ten hours in the past and the query silently omits
+    orders entered earlier the same day. That fires a FALSE
+    LATCH_ARMED_NO_RESTING_ORDER for an order the operator actually placed that
+    morning: the exact alarm this arc exists to make trustworthy.
+
+    This is a defect the diff-only reviewer could not see -- it depends
+    entirely on the behaviour of an UN-CHANGED helper."""
+    import swing.web.view_models.latches as vm_mod
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    seen: dict = {}
+
+    monkeypatch.setattr(vm_mod, "_resolve_schwab_environment", lambda _c: "production")
+    monkeypatch.setattr(vm_mod, "_resolve_account_hash", lambda _c: "HASH")
+
+    def _fetch(client, conn, account_hash, from_dt, to_dt, **kwargs):
+        seen["from_dt"], seen["to_dt"] = from_dt, to_dt
+        return []
+
+    monkeypatch.setattr(vm_mod, "_fetch_account_orders", _fetch)
+    app = create_app(cfg, cfg_path)
+    app.state.schwab_client_holder = _Holder(object())
+    with TestClient(app) as client:
+        _post_orders(client)
+
+    for key in ("from_dt", "to_dt"):
+        assert seen[key].tzinfo is not None, f"{key} must be timezone-AWARE"
+        assert seen[key].utcoffset().total_seconds() == 0, f"{key} must be UTC"
+
+    # And the formatter must round-trip it without shifting the instant.
+    from swing.integrations.schwab.trader import _schwab_iso
+    assert _schwab_iso(seen["to_dt"]).endswith("Z")

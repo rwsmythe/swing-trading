@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, fields
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 from swing.evaluation.dates import PageKind, sessions_behind, topbar_session_date
 from swing.latches.constants import LATCH_PANEL_LOOKBACK_SESSIONS
@@ -528,7 +528,16 @@ def resolve_open_orders(conn, cfg, app_state, *, latches=()):
                     "the order book is unavailable. Alarms are suppressed."),
         ), ()
 
-    now = datetime.now()
+    # UTC-AWARE, deliberately. `trader._schwab_iso` converts an AWARE datetime
+    # to UTC but passes a NAIVE one through UNCHANGED and stamps 'Z' on it -- so
+    # a naive local `datetime.now()` is transmitted as if it were UTC. On this
+    # HST deployment that is a TEN-HOUR skew: `to_entered_time` lands ten hours
+    # in the past and the query silently omits orders entered earlier the same
+    # day, firing a FALSE LATCH_ARMED_NO_RESTING_ORDER for an order the operator
+    # actually placed that morning. Matches the convention every other Schwab
+    # caller already uses (entry_auto_fill / exit_auto_fill both use
+    # `datetime.now(UTC)`).
+    now = datetime.now(UTC)
     try:
         with holder.borrow() as client:
             if client is None:
