@@ -695,6 +695,11 @@ def build_latch_orders_vm(
     # unknown, where both forms are accepted and the cap leg and GTC still bind.
     regime_session_iso = derivation.derivation_session.isoformat()
     regime_closes: dict = {}
+    # A FAILED read is NOT an absent close (Codex R1 MINOR). Both collapse to an
+    # empty `regime_closes`, so without this flag the skipped-shape label would
+    # tell the operator "no close is recorded for this ticker" -- a claim about
+    # his DATA that is false when the read simply blew up.
+    regime_price_read_failed = False
     regime_tickers = sorted({
         lat.identity.ticker for lat in derivation.latches if lat.is_live})
     if regime_tickers:
@@ -703,6 +708,7 @@ def build_latch_orders_vm(
         except Exception as exc:  # noqa: BLE001 -- A6: a price miss never blocks
             _log.warning("latch order regime price read degraded: %s", exc)
             regime_closes = {}
+            regime_price_read_failed = True
 
     disagreement_lines: list[str] = []
     multiplicity_lines: list[str] = []
@@ -754,19 +760,31 @@ def build_latch_orders_vm(
         # `latched_pivot` is validated finite at construction, so an
         # undeterminable regime is ALWAYS the close side -- either absent or off
         # the derivation session.
+        #
+        # THE LABEL ITSELF MUST NOT OVER-CLAIM (Codex R1 MINORs). It names the
+        # REAL reason -- an absent close, an off-session close, and a FAILED
+        # close read are three different facts about the operator's data -- and
+        # its tail describes only checks that actually ran: with no resting
+        # order there is no form to accept and no leg or duration was judged.
         if expected_type is None:
-            if quote is None:
+            if regime_price_read_failed:
+                why = ("the close read failed, so no regime price is available "
+                       f"for the derivation session {regime_session_iso}")
+            elif quote is None:
                 why = ("no close is recorded for this ticker on the derivation "
                        f"session {regime_session_iso}")
             else:
                 why = (f"the most recent close for this ticker is from "
                        f"{quote[1] or 'an unrecorded session'}, not the "
                        f"derivation session {regime_session_iso}")
+            tail = (
+                "either form is accepted. The zone cap and GOOD_TILL_CANCEL "
+                "checks still apply." if join.orders
+                else "no resting order was evaluated for this mandate.")
             shape_check_skipped_lines.append(
                 f"{lat.identity.ticker}: order-shape check did NOT run - {why}, "
                 f"so the panel cannot say which mandate form is correct at this "
-                f"price; either form is accepted. The zone cap and "
-                f"GOOD_TILL_CANCEL checks still apply.")
+                f"price; {tail}")
         # (a) an order matched to this mandate but priced wrong.
         #
         # WHICH LEGS THE MANDATE HAS IS REGIME-SELECTED:

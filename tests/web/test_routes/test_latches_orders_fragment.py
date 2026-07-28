@@ -6,6 +6,7 @@ method's safety and would contradict A4 inside the arc that asserts A4.
 """
 from __future__ import annotations
 
+import sqlite3
 from datetime import date, datetime
 
 import pytest
@@ -1127,4 +1128,51 @@ def test_a_latch_whose_ticker_left_the_screen_is_visibly_inert(
     # It is a LABEL on the affected latch, NOT an alarm and NOT a suppression:
     # the price legs were still judged and no false alarm was invented.
     assert "ORDER PRICE MISMATCH" not in r.text
+    assert "LATCH_ARMED_NO_RESTING_ORDER" not in r.text
+
+
+def test_the_skipped_shape_label_claims_no_check_it_did_not_perform(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """Codex R1 MINOR. With a live latch, an undeterminable regime AND NO resting
+    orders, the label said 'either form is accepted' and 'the zone cap and
+    GOOD_TILL_CANCEL checks still apply' -- but there was no order to accept and
+    no leg or duration check ran on anything. A label written to stop the panel
+    over-claiming must not itself over-claim."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)                     # close stamped 2026-07-17 -> unknown
+    app = _app(cfg, cfg_path, monkeypatch, orders=[])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert r.status_code == 200
+    assert "LATCH_ARMED_NO_RESTING_ORDER" in r.text
+    assert "FTRE: order-shape check did NOT run" in r.text
+    assert "no resting order was evaluated for this mandate" in r.text
+    assert "either form is accepted" not in r.text
+    assert "GOOD_TILL_CANCEL checks still apply" not in r.text
+
+
+def test_a_failed_close_read_is_not_reported_as_an_absent_close(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """Codex R1 MINOR. A raising `load_last_closes` collapses the regime prices
+    to an empty dict, which is indistinguishable from 'this ticker has no close'
+    unless the failure is carried. Reporting a DB read failure as 'no close is
+    recorded' tells the operator a fact about his data that is not true."""
+    import swing.web.view_models.latches as vm_mod
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    _seed_close_at_the_derivation_session(cfg, 17.76)   # a close DOES exist
+
+    def _boom(_conn, _tickers):
+        raise sqlite3.OperationalError("no such table: candidates")
+
+    monkeypatch.setattr(vm_mod, "load_last_closes", _boom)
+    app = _app(cfg, cfg_path, monkeypatch,
+               orders=[_order(duration="GOOD_TILL_CANCEL")])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert r.status_code == 200
+    assert "FTRE: order-shape check did NOT run" in r.text
+    assert "the close read failed" in r.text
+    assert "no close is recorded" not in r.text
+    # ...and the failure must not become an alarm or a 500.
     assert "LATCH_ARMED_NO_RESTING_ORDER" not in r.text
