@@ -304,3 +304,50 @@ def test_an_order_that_does_match_a_cleared_latch_still_names_it():
     assert alarms[0].latch_candidate_id == 9500
     assert alarms[0].severity == "critical"
     assert "invalidation" in alarms[0].detail
+
+
+def test_a_cleared_latchs_order_is_not_coverage_for_the_live_latch():
+    """Codex executing R9. THE POST-SUPERSEDE GEOMETRY, and exactly what RD's
+    gate ruling demanded the panel show loudly.
+
+    FTRE's old latch is superseded at 18.34 with its GTC order still resting;
+    the NEW latch is armed at 20.19 with nothing behind it. A ticker-level
+    coverage rule sees "there is an order on FTRE" and goes SILENT -- so the
+    operator is never told the LIVE mandate is naked, which is the FTRE failure
+    mode this whole arc exists to eliminate. Coverage is per-LATCH: an order
+    matched to a DIFFERENT, CLEARED latch is not coverage."""
+    from swing.latches.models import FireRow as FR
+    fires = [
+        FR(candidate_id=6001, evaluation_run_id=121, ticker="FTRE", pivot=18.34,
+           initial_stop=14.88, action_session_date="2026-07-20",
+           run_ts="2026-07-17T17:30:05", pipeline_run_id=135),
+        FR(candidate_id=6002, evaluation_run_id=125, ticker="FTRE", pivot=20.19,
+           initial_stop=16.515, action_session_date="2026-07-24",
+           run_ts="2026-07-23T17:30:05", pipeline_run_id=139),
+    ]
+    latches = derive_latches(
+        fires=fires, bars_by_ticker={"FTRE": []}, entries_by_ticker={},
+        horizon_session=date(2026, 7, 27),
+        derivation_session=date(2026, 7, 24)).latches
+    assert [x.state for x in latches] == ["superseded", "armed"]
+
+    stale = _order(stop_price=18.34, limit_price=18.89)   # the OLD mandate
+    _, alarms = join_orders_to_latches(latches=latches, orders=(stale,))
+    kinds = {a.kind for a in alarms}
+    assert "ORDER_RESTING_LATCH_CLEARED" in kinds     # the stale order
+    assert "LATCH_ARMED_NO_RESTING_ORDER" in kinds    # the NAKED new mandate
+    naked = next(a for a in alarms if a.kind == "LATCH_ARMED_NO_RESTING_ORDER")
+    assert naked.latch_candidate_id == 6002
+    assert "20.19" in naked.detail
+
+
+def test_a_mispriced_order_still_counts_as_coverage_for_the_live_latch():
+    """The paired discriminator, preserving plan A.9's intent: an order matching
+    NO latch is a plausibly-mispriced attempt at the live mandate, so it must
+    surface through the agreement flags -- NOT through a 'no resting order'
+    alarm that would be factually false."""
+    latches = _armed()
+    mispriced = _order(stop_price=17.00, limit_price=17.51)
+    joins, alarms = join_orders_to_latches(latches=latches, orders=(mispriced,))
+    assert "LATCH_ARMED_NO_RESTING_ORDER" not in {a.kind for a in alarms}
+    assert joins[9500].order_stop_agrees is False

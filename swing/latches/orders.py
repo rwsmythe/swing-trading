@@ -179,17 +179,28 @@ def join_orders_to_latches(*, latches, orders):
 
     alarms: list[OrderAlarm] = []
 
-    # (a) LATCH_ARMED_NO_RESTING_ORDER -- the FTRE failure mode. Deliberately
-    #     keyed on TICKER-LEVEL absence: an order placed at a slightly wrong
-    #     price must surface through the agreement flags, not through a "no
-    #     order" alarm that is factually false.
+    # (a) LATCH_ARMED_NO_RESTING_ORDER -- the FTRE failure mode.
+    #
+    # COVERAGE IS PER-LATCH, NOT PER-TICKER. An order is treated as covering
+    # THIS mandate when it either matches this latch's frozen prices OR matches
+    # NO latch at all (a plausibly-mispriced attempt at it, which plan A.9 says
+    # must surface through the agreement flags rather than a factually false
+    # "no order" alarm). An order matched to a DIFFERENT, CLEARED latch is NOT
+    # coverage: that is the post-supersede geometry RD called out -- old latch
+    # superseded at 18.34 with its GTC order still resting, new latch armed at
+    # 20.19 with nothing behind it. A ticker-level rule goes silent there and
+    # the operator is never told the LIVE mandate is naked.
     for latch in latches:
         ticker = latch.identity.ticker
         if not latch.is_live:
             continue
         if ticker in indeterminate_tickers:
             continue
-        if resting_by_ticker.get(ticker):
+        covering = [
+            o for o in resting_by_ticker.get(ticker, [])
+            if matched.get(o.order_id) is latch or matched.get(o.order_id) is None
+        ]
+        if covering:
             continue
         alarms.append(OrderAlarm(
             kind="LATCH_ARMED_NO_RESTING_ORDER",
