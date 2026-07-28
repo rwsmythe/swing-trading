@@ -109,6 +109,10 @@ def _pick_reference_order(orders: list[RestingOrder], latch: Latch) -> RestingOr
     Multi-order agreement is ANY-ORDER-AGREES (plan H.6): prefer an order that
     agrees on BOTH legs, else fall back to the first, so a mispriced order is
     still reported rather than hidden.
+
+    NOTE this deliberately answers only "is the mandate COVERED". It cannot
+    also answer "is there a stray order" -- a fully-agreeing order would mask
+    one. Stray orders travel separately as `LatchOrderJoin.unmatched_orders`.
     """
     if not orders:
         return None
@@ -151,15 +155,19 @@ def join_orders_to_latches(*, latches, orders):
         cid = latch.identity.candidate_id
         ticker_orders = resting_by_ticker.get(ticker, [])
         mine = [o for o in ticker_orders if matched.get(o.order_id) is latch]
+        unmatched: list[RestingOrder] = []
         if latch.is_live:
             # An order at NEITHER latch's price is still reported against the
             # live mandate, so it surfaces as a DISAGREEMENT rather than as a
-            # factually false "no resting order" alarm.
-            mine += [o for o in ticker_orders if matched.get(o.order_id) is None]
-        reference = _pick_reference_order(mine, latch)
+            # factually false "no resting order" alarm. It is kept SEPARATE
+            # from the matched set so a correctly-priced order cannot mask it.
+            unmatched = [
+                o for o in ticker_orders if matched.get(o.order_id) is None]
+        reference = _pick_reference_order(mine or unmatched, latch)
         joins[cid] = LatchOrderJoin(
             latch_candidate_id=cid,
-            orders=tuple(mine),
+            orders=tuple(mine + unmatched),
+            unmatched_orders=tuple(unmatched),
             order_stop_agrees=(
                 None if reference is None
                 else _agrees(reference.stop_price, latch.latched_pivot)),

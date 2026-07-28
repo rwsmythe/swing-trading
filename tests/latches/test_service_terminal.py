@@ -539,3 +539,80 @@ def test_a_horizon_that_closes_on_the_refire_session_still_opens_a_new_latch():
     assert len(d.latches) == 2
     assert d.latches[0].state == "horizon_expired"
     assert d.latches[1].state == "armed"
+
+
+# --- Codex executing R3: the windowed rung must verify the PRICE ------------
+def test_a_null_candidate_trade_at_an_unrelated_price_does_not_fill_the_latch():
+    """Codex executing R3 CRITICAL. `trades.candidate_id` is nullable (migration
+    0021 backfilled every pre-v21 row to NULL), so an unrelated manual/legacy
+    buy in the SAME ticker within the window would clear the mandate on date
+    proximity alone -- marking it `filled` and silencing the order alarms for a
+    fire the operator never acted on. That is exactly what RD constraint 4
+    forbids: "a pre-existing position or unrelated order in the same ticker must
+    not read as this latch's fill".
+
+    FTRE's mandate is a BUY STOP at 18.34 with a cap at 18.89; a fill at 10.00
+    cannot have come from it."""
+    unrelated = EntryRecord(trade_id=91, ticker="FTRE", entry_date=date(2026, 7, 21),
+                            candidate_id=None, entry_price=10.00, shares=3)
+    d = derive_latches(
+        fires=[FTRE_FIRE], bars_by_ticker={"FTRE": []},
+        entries_by_ticker={"FTRE": [unrelated]},
+        horizon_session=date(2026, 7, 27), derivation_session=date(2026, 7, 24))
+    latch = d.latches[0]
+    assert latch.state == "armed"
+    assert latch.clear_reason is None and latch.clear_trade_id is None
+
+
+def test_a_null_candidate_trade_priced_above_the_cap_does_not_fill_the_latch():
+    """A gap THROUGH the cap is precisely what the cap exists to refuse, so a
+    fill above it did not come from this mandate."""
+    above = EntryRecord(trade_id=92, ticker="FTRE", entry_date=date(2026, 7, 21),
+                        candidate_id=None, entry_price=19.50, shares=3)
+    d = derive_latches(
+        fires=[FTRE_FIRE], bars_by_ticker={"FTRE": []},
+        entries_by_ticker={"FTRE": [above]},
+        horizon_session=date(2026, 7, 27), derivation_session=date(2026, 7, 24))
+    assert d.latches[0].state == "armed"
+
+
+def test_a_null_candidate_trade_with_no_price_does_not_fill_the_latch():
+    """An unverifiable price must not clear a live mandate: the windowed rung is
+    a heuristic for legacy rows, and a heuristic cannot clear on evidence it
+    cannot check."""
+    priceless = EntryRecord(trade_id=93, ticker="FTRE", entry_date=date(2026, 7, 21),
+                            candidate_id=None, entry_price=None, shares=3)
+    d = derive_latches(
+        fires=[FTRE_FIRE], bars_by_ticker={"FTRE": []},
+        entries_by_ticker={"FTRE": [priceless]},
+        horizon_session=date(2026, 7, 27), derivation_session=date(2026, 7, 24))
+    assert d.latches[0].state == "armed"
+
+
+def test_an_exact_candidate_id_link_fills_regardless_of_price():
+    """The paired discriminator: an EXPLICIT link is authoritative, so the price
+    band must NOT be applied to the exact rung. Over-tightening here would
+    silently stop recognising real fills that slipped or gapped."""
+    slipped = EntryRecord(trade_id=94, ticker="FTRE", entry_date=date(2026, 7, 21),
+                          candidate_id=9500, entry_price=25.00, shares=3)
+    d = derive_latches(
+        fires=[FTRE_FIRE], bars_by_ticker={"FTRE": []},
+        entries_by_ticker={"FTRE": [slipped]},
+        horizon_session=date(2026, 7, 27), derivation_session=date(2026, 7, 24))
+    latch = d.latches[0]
+    assert latch.state == "filled"
+    assert latch.clear_trade_id == 94
+    assert latch.fill_link_basis == "candidate_id"
+
+
+def test_a_null_candidate_trade_inside_the_zone_still_fills():
+    """And the in-band case must still work, or the windowed rung is dead code
+    and the legacy NULL-candidate_id rows it exists for are never matched."""
+    in_band = EntryRecord(trade_id=95, ticker="FTRE", entry_date=date(2026, 7, 21),
+                          candidate_id=None, entry_price=18.40, shares=3)
+    d = derive_latches(
+        fires=[FTRE_FIRE], bars_by_ticker={"FTRE": []},
+        entries_by_ticker={"FTRE": [in_band]},
+        horizon_session=date(2026, 7, 27), derivation_session=date(2026, 7, 24))
+    assert d.latches[0].state == "filled"
+    assert d.latches[0].fill_link_basis == "windowed"

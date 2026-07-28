@@ -627,21 +627,35 @@ def build_latch_orders_vm(
     # alarm. If the disagreement is then discarded, the fragment renders "orders
     # agree" over a mandate that is NOT actually covered: a false all-clear,
     # which is the exact failure mode this arc exists to prevent.
-    disagreements = tuple(
-        f"{lat.identity.ticker}: resting order does not match the latched "
-        f"mandate (pivot {lat.latched_pivot:.2f}, zone cap "
-        f"{lat.zone_cap:.2f}); "
-        f"stop {'agrees' if joins[lat.identity.candidate_id].order_stop_agrees else 'DISAGREES'}"
-        f", limit "
-        f"{'agrees' if joins[lat.identity.candidate_id].order_limit_agrees else 'DISAGREES'}"
-        for lat in derivation.latches
-        if lat.is_live
-        and lat.identity.candidate_id in joins
-        and joins[lat.identity.candidate_id].orders
-        and not joins[lat.identity.candidate_id].indeterminate
-        and (joins[lat.identity.candidate_id].order_stop_agrees is False
-             or joins[lat.identity.candidate_id].order_limit_agrees is False)
-    )
+    def _agreement_word(flag) -> str:
+        return "agrees" if flag else "DISAGREES"
+
+    disagreement_lines: list[str] = []
+    for lat in derivation.latches:
+        join = joins.get(lat.identity.candidate_id)
+        if not lat.is_live or join is None or join.indeterminate:
+            continue
+        # (a) an order matched to this mandate but priced wrong.
+        if join.orders and (join.order_stop_agrees is False
+                            or join.order_limit_agrees is False):
+            disagreement_lines.append(
+                f"{lat.identity.ticker}: resting order does not match the "
+                f"latched mandate (pivot {lat.latched_pivot:.2f}, zone cap "
+                f"{lat.zone_cap:.2f}); stop "
+                f"{_agreement_word(join.order_stop_agrees)}, limit "
+                f"{_agreement_word(join.order_limit_agrees)}")
+        # (b) a STRAY order on this ticker matching NO latch. Reported per
+        # order, because a correctly-priced order would otherwise mask it and
+        # the page would read as all-clear with an unexplained live order at
+        # the broker.
+        for stray in join.unmatched_orders:
+            disagreement_lines.append(
+                f"{lat.identity.ticker}: resting BUY order {stray.order_id} "
+                f"(stop {_fmt_price(stray.stop_price)}, limit "
+                f"{_fmt_price(stray.limit_price)}) matches NO latch on this "
+                f"ticker; the mandate is pivot {lat.latched_pivot:.2f} / cap "
+                f"{lat.zone_cap:.2f}")
+    disagreements = tuple(dict.fromkeys(disagreement_lines))
 
     order_lines = tuple(
         f"{o.ticker} {o.instruction} {o.quantity:g} {o.order_type} "

@@ -434,3 +434,27 @@ def test_the_order_query_window_is_bounded():
     assert _order_lookback_days(
         latches, now=datetime(2026, 7, 27, 9, 0)) == _ORDER_LOOKBACK_MAX_DAYS
     assert _order_lookback_days((), now=datetime(2026, 7, 27, 9, 0)) == 30
+
+
+def test_a_correct_order_does_not_mask_an_extra_stray_order(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """Codex executing R3 CRITICAL. With TWO resting BUY orders on the ticker --
+    one correct, one at an unrelated price -- the agreement flags describe the
+    CORRECT one (that is what 'is the mandate covered' means), so without
+    per-order reporting the stray order is invisible and the page renders a
+    clean all-clear while a real unexplained order sits at the broker."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    good = _order(order_id="good", price=18.89, stop_price=18.34)
+    stray = _order(order_id="stray", price=17.51, stop_price=17.00)
+    app = _app(cfg, cfg_path, monkeypatch, orders=[good, stray])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert r.status_code == 200
+    assert "Broker orders agree" not in r.text
+    assert "ORDER PRICE MISMATCH" in r.text
+    assert "stray" in r.text
+    assert "matches NO latch" in r.text
+    # ...and it must NOT invent a false "no resting order" alarm: the mandate
+    # IS covered by the good order.
+    assert "LATCH_ARMED_NO_RESTING_ORDER" not in r.text

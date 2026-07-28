@@ -262,6 +262,11 @@ class LatchOrderJoin:
     order_stop_agrees: bool | None = None
     order_limit_agrees: bool | None = None
     indeterminate: bool = False
+    # Resting BUY orders on this latch's ticker that match NO latch's frozen
+    # prices. Carried SEPARATELY because a correctly-priced order must not be
+    # able to hide a stray one: the agreement flags describe the MATCHED order,
+    # so without this an extra mispriced order would render as all-clear.
+    unmatched_orders: tuple[RestingOrder, ...] = ()
 
 
 @dataclass(frozen=True)

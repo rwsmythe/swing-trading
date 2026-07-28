@@ -64,6 +64,12 @@ class _Draft:
     def candidate_set(self) -> set[int]:
         return {self.fire.candidate_id, *self.reconfirmation_candidate_ids}
 
+    @property
+    def zone_cap(self) -> float:
+        """The frozen buy-zone limit cap. Single-sourced here so the fill
+        heuristic and the finalized `Latch` cannot drift apart."""
+        return round(self.pivot * (1.0 + LATCH_ZONE_CAP_PCT / 100.0), 4)
+
 
 @dataclass(frozen=True)
 class _Terminal:
@@ -136,6 +142,16 @@ def _match_fill(
     ``effective_end`` is the ACTUAL live window (bounded by the non-fill
     terminal), not the nominal horizon.
 
+    The windowed rung ADDITIONALLY requires the entry price to sit inside this
+    latch's own frozen executable zone (see `_price_in_executable_zone`). Date
+    proximity alone is not identity: RD constraint 4 says "a pre-existing
+    position or unrelated order in the same ticker must not read as this
+    latch's fill", and `trades.candidate_id` is nullable (migration 0021
+    backfilled every pre-v21 row to NULL), so an unrelated manual/legacy buy in
+    the same ticker at an unrelated price would otherwise CLEAR the mandate --
+    marking it `filled` and silencing the order alarms for a fire the operator
+    never acted on.
+
     ``as_of`` IS LOAD-BEARING ON BOTH RUNGS. The open-latch rule's liveness
     PROBE asks "had this latch terminated by session S?", and a fill dated
     AFTER S has not happened yet as of S. Without the bound the probe sees a
@@ -157,10 +173,36 @@ def _match_fill(
         e for e in available
         if e.candidate_id is None
         and draft.anchor <= e.entry_date <= min(effective_end, as_of)
+        and _price_in_executable_zone(e.entry_price, draft)
     ]
     if windowed:
         return min(windowed, key=lambda e: (e.entry_date, e.trade_id)), "windowed"
     return None, None
+
+
+def _price_in_executable_zone(entry_price, draft: _Draft) -> bool:
+    """Could a fill at `entry_price` have come from THIS latch's mandate?
+
+    The mandate is a BUY STOP at the frozen pivot with a limit cap at
+    pivot x 1.03, so an execution it produced lands in the CLOSED interval
+    [pivot, zone_cap] -- a gap through the cap is exactly what the cap exists to
+    refuse. Compared at display precision (the price-precision-parity gotcha).
+
+    An ABSENT or non-finite price is NOT verifiable, so it does NOT match: the
+    windowed rung is a heuristic for legacy rows, and a heuristic must not clear
+    a live mandate on evidence it cannot check. The EXACT `candidate_id` rung is
+    unaffected -- an explicit link is authoritative regardless of price.
+    """
+    if entry_price is None or isinstance(entry_price, bool):
+        return False
+    if not isinstance(entry_price, (int, float)):
+        return False
+    value = float(entry_price)
+    if not math.isfinite(value):
+        return False
+    return (round(draft.pivot, _PRICE_DP)
+            <= round(value, _PRICE_DP)
+            <= round(draft.zone_cap, _PRICE_DP))
 
 
 def _has_fill_link_anomaly(draft: _Draft, entries: list[EntryRecord]) -> bool:
@@ -266,7 +308,7 @@ def _finalize(
         ),
         latched_pivot=draft.pivot,
         latched_initial_stop=draft.stop,
-        zone_cap=round(draft.pivot * (1.0 + LATCH_ZONE_CAP_PCT / 100.0), 4),
+        zone_cap=draft.zone_cap,
         anchor=draft.anchor,
         horizon_expiry=draft.horizon_expiry,
         sessions_elapsed=sessions_elapsed,
