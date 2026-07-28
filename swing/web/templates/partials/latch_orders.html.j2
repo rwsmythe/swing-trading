@@ -20,8 +20,24 @@
     {% endfor %}
   </div>
   {% elif not vm.disagreements and not vm.indeterminate_tickers
-          and not vm.multiplicity_notes %}
+          and not vm.multiplicity_notes and not vm.shape_check_skipped %}
   <p class="muted">Broker orders agree with the live latches. No alarms.</p>
+  {% endif %}
+
+  {# The mandate REGIME was undeterminable, so the two-form order-shape check
+     did not run and BOTH forms were accepted. That is a real reduction in what
+     the panel is asserting, so it is LABELLED on the affected latch -- an
+     unlabelled reduction is a quiet all-clear by omission. A latch whose ticker
+     has left the screen is permanently in this state, and this is what makes it
+     VISIBLY rather than silently inert. #}
+  {% if vm.shape_check_skipped %}
+  <div class="latch-shape-check-skipped">
+    {% for line in vm.shape_check_skipped %}
+    <p class="latch-alarm latch-alarm-warning">
+      <strong>ORDER SHAPE CHECK NOT RUN</strong> {{ line }}
+    </p>
+    {% endfor %}
+  </div>
   {% endif %}
 
   {# MORE THAN ONE order matched a single mandate. The agreement flags describe

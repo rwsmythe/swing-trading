@@ -461,6 +461,14 @@ class LatchOrdersFragmentVM:
     # is stated instead. Deliberately a COUNT plus a directive: 21-A does NOT
     # report per-order legs, per-order agreement, or per-order alarms.
     multiplicity_notes: tuple[str, ...] = ()
+    # Live latches whose mandate REGIME could not be determined, so the two-form
+    # order-shape check did not run (RD ruling 2026-07-27). Accepting either
+    # form is the right conservative behaviour, but it is a real reduction in
+    # what the panel is asserting, and an UNLABELLED reduction is a quiet
+    # all-clear by omission. It is also where a latched ticker that has dropped
+    # off the screen lands (RD ruling 3): permanently inert, and therefore
+    # required to be VISIBLY inert rather than silently inert.
+    shape_check_skipped: tuple[str, ...] = ()
 
 
 def _resolve_schwab_environment(cfg) -> str | None:
@@ -698,6 +706,7 @@ def build_latch_orders_vm(
 
     disagreement_lines: list[str] = []
     multiplicity_lines: list[str] = []
+    shape_check_skipped_lines: list[str] = []
     for lat in derivation.latches:
         join = joins.get(lat.identity.candidate_id)
         if not lat.is_live or join is None or join.indeterminate:
@@ -728,6 +737,36 @@ def build_latch_orders_vm(
             else None)
         expected_type = expected_mandate_order_type(
             latched_pivot=lat.latched_pivot, last_close=last_close)
+        # THE UNDETERMINABLE-REGIME LABEL (RD ruling 2026-07-27). With no usable
+        # close the two-form shape check cannot run, so BOTH forms are accepted
+        # -- the right conservative behaviour, but a real reduction in what the
+        # panel is asserting, and an unlabelled reduction is a quiet all-clear by
+        # omission. The label states the reduction and names the checks that DID
+        # run, so it reads as a narrowed claim rather than a blanket failure.
+        #
+        # THIS IS ALSO WHERE A LATCHED TICKER THAT LEFT THE SCREEN LANDS (ruling
+        # 3): it gets no new `candidates` row, so it never gets a
+        # derivation-session close and the shape check is PERMANENTLY inert for
+        # that latch. Both are "the check did not run, here is why", so they
+        # share one rendering path; only the reason clause differs. The V2
+        # live-quote fix is what actually restores the check.
+        #
+        # `latched_pivot` is validated finite at construction, so an
+        # undeterminable regime is ALWAYS the close side -- either absent or off
+        # the derivation session.
+        if expected_type is None:
+            if quote is None:
+                why = ("no close is recorded for this ticker on the derivation "
+                       f"session {regime_session_iso}")
+            else:
+                why = (f"the most recent close for this ticker is from "
+                       f"{quote[1] or 'an unrecorded session'}, not the "
+                       f"derivation session {regime_session_iso}")
+            shape_check_skipped_lines.append(
+                f"{lat.identity.ticker}: order-shape check did NOT run - {why}, "
+                f"so the panel cannot say which mandate form is correct at this "
+                f"price; either form is accepted. The zone cap and "
+                f"GOOD_TILL_CANCEL checks still apply.")
         # (a) an order matched to this mandate but priced wrong.
         #
         # WHICH LEGS THE MANDATE HAS IS REGIME-SELECTED:
@@ -845,6 +884,7 @@ def build_latch_orders_vm(
         disagreements=disagreements,
         indeterminate_tickers=indeterminate_tickers,
         multiplicity_notes=tuple(dict.fromkeys(multiplicity_lines)),
+        shape_check_skipped=tuple(dict.fromkeys(shape_check_skipped_lines)),
     )
 
 

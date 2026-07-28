@@ -369,9 +369,16 @@ def test_a_mispriced_order_does_not_render_a_false_all_clear(
 def test_a_correctly_priced_order_still_reads_as_agreeing(
         seeded_db, monkeypatch, frozen_panel_clock):
     """The paired discriminator: the all-clear must still be reachable, or the
-    mismatch banner is just noise."""
+    mismatch banner is just noise.
+
+    The derivation-session close is seeded so the REGIME is determinable: after
+    the RD 2026-07-27 undeterminable-regime ruling an unrunnable shape check
+    withholds the all-clear, and `_seed_ftre`'s own close is stamped 2026-07-17
+    (four sessions before the 2026-07-24 derivation session), which would leave
+    this test asserting agreement in the very state the ruling labels."""
     cfg, cfg_path = seeded_db
     _seed_ftre(cfg)
+    _seed_close_at_the_derivation_session(cfg, 17.76)
     app = _app(cfg, cfg_path, monkeypatch, orders=[_order()])
     with TestClient(app) as client:
         r = _post_orders(client)
@@ -653,9 +660,14 @@ def test_a_trailing_stop_at_the_right_prices_is_not_an_all_clear(
 def test_a_gtc_stop_limit_at_the_right_prices_IS_an_all_clear(
         seeded_db, monkeypatch, frozen_panel_clock):
     """The paired discriminator: the mandated shape must still read clean, or
-    the check is just noise."""
+    the check is just noise.
+
+    Seeded with a derivation-session close BELOW the pivot so the shape check
+    actually RUNS (see `test_a_correctly_priced_order_still_reads_as_agreeing`):
+    an undeterminable regime now withholds the all-clear."""
     cfg, cfg_path = seeded_db
     _seed_ftre(cfg)
+    _seed_close_at_the_derivation_session(cfg, 17.76)
     mandated = _order(order_type="STOP_LIMIT", duration="GOOD_TILL_CANCEL")
     app = _app(cfg, cfg_path, monkeypatch, orders=[mandated])
     with TestClient(app) as client:
@@ -668,9 +680,13 @@ def test_an_absent_duration_is_not_asserted_against(
         seeded_db, monkeypatch, frozen_panel_clock):
     """Deliberate conservatism: a payload that simply does not carry a duration
     is unknown-but-not-wrong, so the panel does not become permanently noisy on
-    shapes it cannot see. Real Schwab payloads DO carry it."""
+    shapes it cannot see. Real Schwab payloads DO carry it.
+
+    Seeded with a derivation-session close so the regime is determinable (see
+    `test_a_correctly_priced_order_still_reads_as_agreeing`)."""
     cfg, cfg_path = seeded_db
     _seed_ftre(cfg)
+    _seed_close_at_the_derivation_session(cfg, 17.76)
     app = _app(cfg, cfg_path, monkeypatch, orders=[_order()])   # duration None
     with TestClient(app) as client:
         r = _post_orders(client)
@@ -845,16 +861,28 @@ def test_an_unknown_regime_does_not_flag_a_stopless_pullback_limit(
     still demanded a stop leg unconditionally, so a GTC LIMIT at the cap
     rendered ORDER PRICE MISMATCH ('stop UNKNOWN (leg absent)') anyway. The
     fragment contradicted itself, and the false alarm this arc exists to kill
-    came straight back whenever the close read degraded."""
+    came straight back whenever the close read degraded.
+
+    FLIPPED 2026-07-27 (RD ruling 2, MERGE-BLOCKING). The no-false-alarm half of
+    this test is UNCHANGED and still binding. What flipped is the all-clear: an
+    undeterminable regime means the panel cannot tell the operator whether his
+    order SHAPE is correct, which is a real reduction in what the panel is
+    asserting -- and an UNLABELLED reduction is a quiet all-clear by omission.
+    So the affirmative agree is withheld and the skipped check is labelled on the
+    affected latch instead. Accepting either form is still the right conservative
+    behaviour; announcing it is what was missing."""
     cfg, cfg_path = seeded_db
     _seed_ftre_without_a_close(cfg)
     app = _app(cfg, cfg_path, monkeypatch, orders=[_pullback_order()])
     with TestClient(app) as client:
         r = _post_orders(client)
     assert r.status_code == 200
-    assert "Broker orders agree" in r.text
     assert "ORDER PRICE MISMATCH" not in r.text
     assert "not the mandated order shape" not in r.text
+    # ...but the reduction is announced, not silent.
+    assert "Broker orders agree" not in r.text
+    assert "order-shape check did NOT run" in r.text
+    assert "FTRE" in r.text
 
 
 def test_an_unknown_regime_still_requires_the_cap_leg(
@@ -948,7 +976,14 @@ def test_a_stale_close_does_not_get_to_choose_the_mandate_regime(
     leg and GTC.
 
     Here the stale close (19.52, 2026-07-20) is ABOVE the pivot, so an ungated
-    selector would call the GTC STOP_LIMIT a wrong-regime shape mismatch."""
+    selector would call the GTC STOP_LIMIT a wrong-regime shape mismatch.
+
+    FLIPPED 2026-07-27 (RD ruling 2, MERGE-BLOCKING). The freshness gate is
+    UNCHANGED and still binding -- a stale close still does not get to choose the
+    regime. What flipped is the all-clear: leaving the regime UNKNOWN is a real
+    reduction in what the panel checked, and an unlabelled reduction is a quiet
+    all-clear by omission. The withheld shape check is now stated on the affected
+    latch, naming the stale session it would have needed."""
     cfg, cfg_path = seeded_db
     _seed_ftre(cfg)
     _seed_stale_close_above_the_pivot(cfg)
@@ -959,7 +994,10 @@ def test_a_stale_close_does_not_get_to_choose_the_mandate_regime(
     assert r.status_code == 200
     assert "not the mandated order shape" not in r.text
     assert "AT OR ABOVE" not in r.text
-    assert "Broker orders agree" in r.text
+    # ...but the reduction is announced, not silent, and it names both dates.
+    assert "Broker orders agree" not in r.text
+    assert "order-shape check did NOT run" in r.text
+    assert "2026-07-20" in r.text and "2026-07-24" in r.text
 
 
 def test_a_close_on_the_derivation_session_does_choose_the_regime(
@@ -1028,3 +1066,65 @@ def test_a_single_matched_order_still_reaches_the_all_clear(
     assert r.status_code == 200
     assert "Broker orders agree" in r.text
     assert "match this mandate" not in r.text
+    # ...and the shape check RAN, so it is not labelled as skipped.
+    assert "order-shape check did NOT run" not in r.text
+
+
+# --- RD ruling 2026-07-27: an UNDETERMINABLE regime must be LABELLED --------
+def test_an_undeterminable_regime_is_labelled_on_the_affected_latch(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """RD ruling 2, MERGE-BLOCKING. With no usable close the regime is
+    undeterminable, so the fragment accepts BOTH mandate forms -- correctly, but
+    it said NOTHING about having done so. The panel then cannot tell the operator
+    whether his order shape is right, which is a real reduction in what it is
+    asserting, and an unlabelled reduction is a quiet all-clear by omission (the
+    same family as the multiplicity guard).
+
+    A short INLINE label on the affected latch -- not a banner, not a new page
+    element -- so the operator can see the shape check did not run."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre_without_a_close(cfg)
+    app = _app(cfg, cfg_path, monkeypatch,
+               orders=[_order(duration="GOOD_TILL_CANCEL")])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert r.status_code == 200
+    assert "ORDER SHAPE CHECK NOT RUN" in r.text
+    assert "FTRE: order-shape check did NOT run" in r.text
+    assert "no close is recorded" in r.text
+    # The checks that DID run are named, so the label reduces the claim rather
+    # than reading as a blanket failure.
+    assert "GOOD_TILL_CANCEL checks still apply" in r.text
+    assert "Broker orders agree" not in r.text
+
+
+def test_a_latch_whose_ticker_left_the_screen_is_visibly_inert(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """RD ruling 3, MERGE-BLOCKING. A latched ticker that has dropped off the
+    finviz screen (not held, not pinned) gets no new `candidates` row, so it
+    never gets a derivation-session close and the two-form shape check stays
+    PERMANENTLY inert for that latch. RD accepts that honest degrade -- the
+    live-quote fix is correctly V2 -- provided it is VISIBLY inert rather than
+    SILENTLY inert.
+
+    It collapses onto ruling 2's rendering path by construction: both are 'the
+    shape check did not run, here is why', and the why here is the stale
+    provenance date, which the label names alongside the session it needed.
+
+    FTRE's only close is the fire's own, stamped 2026-07-17; the fragment's
+    derivation session is 2026-07-24."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)                     # ...and NO fresher candidates row
+    app = _app(cfg, cfg_path, monkeypatch,
+               orders=[_order(duration="GOOD_TILL_CANCEL")])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert r.status_code == 200
+    assert "FTRE: order-shape check did NOT run" in r.text
+    assert "the most recent close for this ticker is from 2026-07-17" in r.text
+    assert "not the derivation session 2026-07-24" in r.text
+    assert "Broker orders agree" not in r.text
+    # It is a LABEL on the affected latch, NOT an alarm and NOT a suppression:
+    # the price legs were still judged and no false alarm was invented.
+    assert "ORDER PRICE MISMATCH" not in r.text
+    assert "LATCH_ARMED_NO_RESTING_ORDER" not in r.text
