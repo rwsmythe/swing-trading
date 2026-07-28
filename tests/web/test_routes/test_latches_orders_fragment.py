@@ -675,3 +675,135 @@ def test_an_absent_duration_is_not_asserted_against(
     with TestClient(app) as client:
         r = _post_orders(client)
     assert "Broker orders agree" in r.text
+
+
+# --- RD ruling 2026-07-27: the pullback form, end to end -------------------
+def _seed_close_above_the_pivot(cfg):
+    """FTRE's real geometry after the 2026-07-23 broker rejection: the latch is
+    still frozen at pivot 18.34 / zone cap 18.89, but price has run ABOVE the
+    pivot (the 2026-07-24 close, 19.52).
+
+    A NON-aplus row, so it supplies the panel's rendered last close WITHOUT
+    adding a second fire to the derivation."""
+    conn = connect(cfg.paths.db_path)
+    with conn:
+        conn.execute(
+            "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, "
+            "action_session_date, tickers_evaluated, aplus_count, watch_count, "
+            "skip_count, excluded_count, error_count) VALUES "
+            "(126, '2026-07-24T17:30:05', '2026-07-24', '2026-07-27', 1, 0, 1, "
+            "0, 0, 0)")
+        conn.execute(
+            "INSERT INTO candidates (evaluation_run_id, ticker, bucket, close, "
+            "pivot, initial_stop, rs_method) VALUES "
+            "(126, 'FTRE', 'watch', 19.52, 18.34, 14.88, 'universe')")
+    conn.close()
+
+
+def _pullback_order(**over):
+    """A GTC buy-LIMIT at the zone cap and NO stop leg -- the instrument CHARC
+    confirmed is actually resting at the broker for FTRE."""
+    base = dict(order_type="LIMIT", price=18.89, stop_price=None,
+                duration="GOOD_TILL_CANCEL")
+    base.update(over)
+    return _order(**base)
+
+
+def test_the_live_ftre_pullback_order_reads_as_a_match(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """THE LIVE SUBJECT, from its real values. Latched pivot 18.34, zone cap
+    18.89, last close 19.52 -- price is ABOVE the pivot, so a buy stop-limit at
+    the pivot would sit BELOW the market and be REJECTED (it was, on
+    2026-07-23). The correct instrument is a GTC LIMIT at the cap, and the panel
+    must read it as a MATCH.
+
+    Under the one-form set this rendered TWO false alarms at once: a shape
+    mismatch ('order type is LIMIT, not STOP_LIMIT') and a price mismatch (the
+    pullback form has NO stop leg, so `order_stop_agrees` is None and the panel
+    called that silence a disagreement). A false alarm on the exact channel this
+    arc exists to make trustworthy."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    _seed_close_above_the_pivot(cfg)
+    app = _app(cfg, cfg_path, monkeypatch, orders=[_pullback_order()])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert r.status_code == 200
+    assert "Broker orders agree" in r.text
+    assert "ORDER PRICE MISMATCH" not in r.text
+    assert "not the mandated order shape" not in r.text
+    assert "LATCH_ARMED_NO_RESTING_ORDER" not in r.text
+
+
+def test_a_non_gtc_pullback_limit_is_still_not_an_all_clear(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """GTC-ness is required of BOTH forms -- FTRE was lost precisely because the
+    order was not GTC. This is also the discriminator proving the pullback
+    relaxation did not swallow the duration check: with the price legs now
+    satisfied, the duration is the ONLY thing standing between this order and a
+    false all-clear."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    _seed_close_above_the_pivot(cfg)
+    app = _app(cfg, cfg_path, monkeypatch,
+               orders=[_pullback_order(duration="DAY")])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert r.status_code == 200
+    assert "Broker orders agree" not in r.text
+    assert "not the mandated order shape" in r.text
+    assert "GOOD_TILL_CANCEL" in r.text
+
+
+def test_a_stop_limit_above_the_pivot_is_flagged_as_the_wrong_regime(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """The inverse: the operator's REJECTED instrument. A GTC stop-limit at the
+    right prices is no longer placeable once price crosses the pivot, so leaving
+    it up is not coverage -- the panel must say so."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    _seed_close_above_the_pivot(cfg)
+    app = _app(cfg, cfg_path, monkeypatch,
+               orders=[_order(duration="GOOD_TILL_CANCEL")])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert r.status_code == 200
+    assert "Broker orders agree" not in r.text
+    assert "not the mandated order shape" in r.text
+    assert "AT OR ABOVE" in r.text
+
+
+def test_a_mispriced_pullback_limit_still_reports_the_price_disagreement(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """The pullback regime drops the STOP leg from the expectation -- it must
+    NOT drop the CAP leg. The cap is what stops the operator chasing, so a
+    buy-limit above it is exactly the disagreement worth rendering."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    _seed_close_above_the_pivot(cfg)
+    app = _app(cfg, cfg_path, monkeypatch,
+               orders=[_pullback_order(price=19.75)])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert r.status_code == 200
+    assert "Broker orders agree" not in r.text
+    assert "ORDER PRICE MISMATCH" in r.text
+
+
+def test_the_breakout_regime_still_demands_both_legs(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """The regression guard on the other side of the boundary: with the last
+    close BELOW the pivot (the default 17.76 seed) the mandate IS a stop-limit,
+    so a stop-only order with no cap must still read as a disagreement. The
+    pullback relaxation must not leak into the breakout regime."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)
+    stop_only = _order(order_type="STOP", price=18.34, stop_price=18.34,
+                       duration="GOOD_TILL_CANCEL")
+    app = _app(cfg, cfg_path, monkeypatch, orders=[stop_only])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert r.status_code == 200
+    assert "Broker orders agree" not in r.text
+    assert "ORDER PRICE MISMATCH" in r.text
+    assert "UNKNOWN (leg absent)" in r.text

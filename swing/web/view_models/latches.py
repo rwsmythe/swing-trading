@@ -688,14 +688,38 @@ def build_latch_orders_vm(
         expected_type = expected_mandate_order_type(
             latched_pivot=lat.latched_pivot, last_close=last_close)
         # (a) an order matched to this mandate but priced wrong.
-        if join.orders and (join.order_stop_agrees is not True
-                            or join.order_limit_agrees is not True):
-            disagreement_lines.append(
-                f"{lat.identity.ticker}: resting order does not match the "
-                f"latched mandate (pivot {lat.latched_pivot:.2f}, zone cap "
-                f"{lat.zone_cap:.2f}); stop "
-                f"{_agreement_word(join.order_stop_agrees)}, limit "
-                f"{_agreement_word(join.order_limit_agrees)}")
+        #
+        # WHICH LEGS THE MANDATE HAS IS REGIME-SELECTED. In the PULLBACK regime
+        # (last close at or above the latched pivot) the mandate is a plain GTC
+        # LIMIT at the zone cap -- it has NO stop leg at all, so an absent stop
+        # is the CORRECT shape and must not read as a disagreement. Demanding
+        # it produced a false "stop UNKNOWN (leg absent)" price mismatch against
+        # the operator's situationally-correct FTRE order (2026-07-23).
+        #
+        # The CAP leg is required in BOTH regimes: it is what stops the operator
+        # chasing. And where the regime is UNKNOWN the conservative both-legs
+        # rule stands -- relaxing only on an affirmative pullback reading, never
+        # on absence of evidence.
+        if expected_type == MANDATE_ORDER_TYPE_PULLBACK:
+            legs_disagree = join.order_limit_agrees is not True
+        else:
+            legs_disagree = (join.order_stop_agrees is not True
+                             or join.order_limit_agrees is not True)
+        if join.orders and legs_disagree:
+            if expected_type == MANDATE_ORDER_TYPE_PULLBACK:
+                disagreement_lines.append(
+                    f"{lat.identity.ticker}: resting order does not match the "
+                    f"latched mandate (the last close is at or above the "
+                    f"latched pivot {lat.latched_pivot:.2f}, so the mandate is "
+                    f"a GTC LIMIT at the zone cap {lat.zone_cap:.2f}); limit "
+                    f"{_agreement_word(join.order_limit_agrees)}")
+            else:
+                disagreement_lines.append(
+                    f"{lat.identity.ticker}: resting order does not match the "
+                    f"latched mandate (pivot {lat.latched_pivot:.2f}, zone cap "
+                    f"{lat.zone_cap:.2f}); stop "
+                    f"{_agreement_word(join.order_stop_agrees)}, limit "
+                    f"{_agreement_word(join.order_limit_agrees)}")
         # (a2) an order at the RIGHT PRICES but the WRONG SHAPE. Price
         # agreement alone is not coverage: a DAY order expires tonight and
         # leaves the operator uncovered tomorrow -- the FTRE failure mode.
