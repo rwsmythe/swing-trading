@@ -882,7 +882,7 @@ def test_an_unknown_regime_does_not_flag_a_stopless_pullback_limit(
     assert "not the mandated order shape" not in r.text
     # ...but the reduction is announced, not silent.
     assert "Broker orders agree" not in r.text
-    assert "order-shape check did NOT run" in r.text
+    assert "mandate FORM check did not run" in r.text
     assert "FTRE" in r.text
 
 
@@ -997,7 +997,7 @@ def test_a_stale_close_does_not_get_to_choose_the_mandate_regime(
     assert "AT OR ABOVE" not in r.text
     # ...but the reduction is announced, not silent, and it names both dates.
     assert "Broker orders agree" not in r.text
-    assert "order-shape check did NOT run" in r.text
+    assert "mandate FORM check did not run" in r.text
     assert "2026-07-20" in r.text and "2026-07-24" in r.text
 
 
@@ -1068,7 +1068,7 @@ def test_a_single_matched_order_still_reaches_the_all_clear(
     assert "Broker orders agree" in r.text
     assert "match this mandate" not in r.text
     # ...and the shape check RAN, so it is not labelled as skipped.
-    assert "order-shape check did NOT run" not in r.text
+    assert "mandate FORM check did not run" not in r.text
 
 
 # --- RD ruling 2026-07-27: an UNDETERMINABLE regime must be LABELLED --------
@@ -1090,8 +1090,8 @@ def test_an_undeterminable_regime_is_labelled_on_the_affected_latch(
     with TestClient(app) as client:
         r = _post_orders(client)
     assert r.status_code == 200
-    assert "ORDER SHAPE CHECK NOT RUN" in r.text
-    assert "FTRE: order-shape check did NOT run" in r.text
+    assert "MANDATE FORM CHECK NOT RUN" in r.text
+    assert "FTRE: the mandate FORM check did not run" in r.text
     assert "no close is recorded" in r.text
     # The checks that DID run are named, so the label reduces the claim rather
     # than reading as a blanket failure.
@@ -1121,7 +1121,7 @@ def test_a_latch_whose_ticker_left_the_screen_is_visibly_inert(
     with TestClient(app) as client:
         r = _post_orders(client)
     assert r.status_code == 200
-    assert "FTRE: order-shape check did NOT run" in r.text
+    assert "FTRE: the mandate FORM check did not run" in r.text
     assert "the most recent close for this ticker is from 2026-07-17" in r.text
     assert "not the derivation session 2026-07-24" in r.text
     assert "Broker orders agree" not in r.text
@@ -1145,10 +1145,39 @@ def test_the_skipped_shape_label_claims_no_check_it_did_not_perform(
         r = _post_orders(client)
     assert r.status_code == 200
     assert "LATCH_ARMED_NO_RESTING_ORDER" in r.text
-    assert "FTRE: order-shape check did NOT run" in r.text
+    assert "FTRE: the mandate FORM check did not run" in r.text
     assert "no resting order was evaluated for this mandate" in r.text
     assert "either form is accepted" not in r.text
     assert "GOOD_TILL_CANCEL checks still apply" not in r.text
+
+
+def test_the_label_does_not_contradict_a_shape_mismatch_it_still_reports(
+        seeded_db, monkeypatch, frozen_panel_clock):
+    """codex-auto-review MINOR (the repo-access second eye). An unknown regime
+    stops only the FORM SELECTION between the two mandated instruments -- the
+    rest of the shape check still runs, so a TRAILING_STOP_LIMIT (neither form)
+    or a DAY order is still reported. A label claiming 'the order-shape check did
+    not run' therefore contradicted a mismatch rendered a few lines below it, on
+    the one channel this arc exists to make trustworthy.
+
+    Both statements must be able to stand on the page at once."""
+    cfg, cfg_path = seeded_db
+    _seed_ftre(cfg)                     # close stamped 2026-07-17 -> unknown
+    trailing = _order(order_type="TRAILING_STOP_LIMIT",
+                      duration="GOOD_TILL_CANCEL")
+    app = _app(cfg, cfg_path, monkeypatch, orders=[trailing])
+    with TestClient(app) as client:
+        r = _post_orders(client)
+    assert r.status_code == 200
+    # The form selection did not run...
+    assert "the mandate FORM check did not run" in r.text
+    # ...and the checks that DID run still reported this order.
+    assert "not the mandated order shape" in r.text
+    assert "TRAILING_STOP_LIMIT" in r.text
+    # The label is scoped to the form, so it never claims the shape check as a
+    # whole was skipped.
+    assert "shape check did not run" not in r.text.lower()
+    assert "Broker orders agree" not in r.text
 
 
 def test_a_failed_close_read_is_not_reported_as_an_absent_close(
@@ -1171,7 +1200,7 @@ def test_a_failed_close_read_is_not_reported_as_an_absent_close(
     with TestClient(app) as client:
         r = _post_orders(client)
     assert r.status_code == 200
-    assert "FTRE: order-shape check did NOT run" in r.text
+    assert "FTRE: the mandate FORM check did not run" in r.text
     assert "the close read failed" in r.text
     assert "no close is recorded" not in r.text
     # ...and the failure must not become an alarm or a 500.

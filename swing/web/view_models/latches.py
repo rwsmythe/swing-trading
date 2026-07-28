@@ -468,7 +468,7 @@ class LatchOrdersFragmentVM:
     # all-clear by omission. It is also where a latched ticker that has dropped
     # off the screen lands (RD ruling 3): permanently inert, and therefore
     # required to be VISIBLY inert rather than silently inert.
-    shape_check_skipped: tuple[str, ...] = ()
+    mandate_form_check_skipped: tuple[str, ...] = ()
 
 
 def _resolve_schwab_environment(cfg) -> str | None:
@@ -712,7 +712,7 @@ def build_latch_orders_vm(
 
     disagreement_lines: list[str] = []
     multiplicity_lines: list[str] = []
-    shape_check_skipped_lines: list[str] = []
+    form_check_skipped_lines: list[str] = []
     for lat in derivation.latches:
         join = joins.get(lat.identity.candidate_id)
         if not lat.is_live or join is None or join.indeterminate:
@@ -744,7 +744,7 @@ def build_latch_orders_vm(
         expected_type = expected_mandate_order_type(
             latched_pivot=lat.latched_pivot, last_close=last_close)
         # THE UNDETERMINABLE-REGIME LABEL (RD ruling 2026-07-27). With no usable
-        # close the two-form shape check cannot run, so BOTH forms are accepted
+        # close the FORM SELECTION cannot run, so BOTH forms are accepted
         # -- the right conservative behaviour, but a real reduction in what the
         # panel is asserting, and an unlabelled reduction is a quiet all-clear by
         # omission. The label states the reduction and names the checks that DID
@@ -761,11 +761,16 @@ def build_latch_orders_vm(
         # undeterminable regime is ALWAYS the close side -- either absent or off
         # the derivation session.
         #
-        # THE LABEL ITSELF MUST NOT OVER-CLAIM (Codex R1 MINORs). It names the
-        # REAL reason -- an absent close, an off-session close, and a FAILED
-        # close read are three different facts about the operator's data -- and
-        # its tail describes only checks that actually ran: with no resting
-        # order there is no form to accept and no leg or duration was judged.
+        # THE LABEL ITSELF MUST NOT OVER-CLAIM (Codex R1 MINORs + the
+        # codex-auto-review MINOR). It is scoped to the FORM SELECTION, not to
+        # "the shape check": `mandate_shape_mismatch` still runs in an unknown
+        # regime and can still report a TRAILING_STOP_LIMIT or a DAY order, so a
+        # label claiming the whole shape check was skipped would contradict a
+        # mismatch rendered three lines below it. It also names the REAL reason
+        # -- an absent close, an off-session close and a FAILED close read are
+        # three different facts about the operator's data -- and its tail
+        # describes only checks that actually ran: with no resting order there
+        # is no form to accept and no leg or duration was judged.
         if expected_type is None:
             if regime_price_read_failed:
                 why = ("the close read failed, so no regime price is available "
@@ -781,10 +786,10 @@ def build_latch_orders_vm(
                 "either form is accepted. The zone cap and GOOD_TILL_CANCEL "
                 "checks still apply." if join.orders
                 else "no resting order was evaluated for this mandate.")
-            shape_check_skipped_lines.append(
-                f"{lat.identity.ticker}: order-shape check did NOT run - {why}, "
-                f"so the panel cannot say which mandate form is correct at this "
-                f"price; {tail}")
+            form_check_skipped_lines.append(
+                f"{lat.identity.ticker}: the mandate FORM check did not run - "
+                f"{why}, so the panel cannot say WHICH of the two mandate forms "
+                f"is correct at this price; {tail}")
         # (a) an order matched to this mandate but priced wrong.
         #
         # WHICH LEGS THE MANDATE HAS IS REGIME-SELECTED:
@@ -902,7 +907,7 @@ def build_latch_orders_vm(
         disagreements=disagreements,
         indeterminate_tickers=indeterminate_tickers,
         multiplicity_notes=tuple(dict.fromkeys(multiplicity_lines)),
-        shape_check_skipped=tuple(dict.fromkeys(shape_check_skipped_lines)),
+        mandate_form_check_skipped=tuple(dict.fromkeys(form_check_skipped_lines)),
     )
 
 
