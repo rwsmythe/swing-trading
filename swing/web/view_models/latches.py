@@ -998,11 +998,18 @@ def build_latch_orders_vm(
 
     def _latest_stamp() -> str | None:
         if "value" not in _stamp_read:
+            _stamp_read["failed"] = False
             try:
                 _stamp_read["value"] = latest_recorded_close_stamp(conn)
             except Exception as exc:  # noqa: BLE001 -- A6: the panel never 500s
                 _log.warning("latch order latest-close-stamp read degraded: %s", exc)
                 _stamp_read["value"] = None
+                # A FAILED read is NOT "the system has no usable close" -- the
+                # same distinction the archive status makes, for the same
+                # reason. Carried so the withheld alarm can say WHY it was
+                # withheld (codex-auto-review MAJOR); without it the operator
+                # sees the routine waiting label over a real suppressed finding.
+                _stamp_read["failed"] = True
         return _stamp_read["value"]
 
     disagreement_lines: list[str] = []
@@ -1053,9 +1060,11 @@ def build_latch_orders_vm(
         # MAY ASSERT: rung A only.
         assertive = prov.may_assert and expected_mandate_order_type(
             latched_pivot=lat.latched_pivot, last_close=prov.price) is not None
-        # MAY ALARM: the two RD conditions, in the order that defers the DB
-        # read to last so it is issued only when everything else already holds.
-        alarm_authorized = (
+        # MAY ALARM: the two RD conditions. Everything EXCEPT the self-limiting
+        # check is computed first so the DB read is issued only when it can
+        # still change the outcome -- and so a FAILURE of that read can be
+        # distinguished from a genuine `D != L` (codex-auto-review MAJOR).
+        alarm_prerequisites = (
             prov.provenance == CLOSE_PROVENANCE_UNCORROBORATED
             # B-conflict: dated evidence CONTRADICTS this close. Alarming from
             # the contradicted number would be a false alarm made by our own
@@ -1076,11 +1085,27 @@ def build_latch_orders_vm(
             and prov.dated_at_stamp
             and prov.stamp_date is not None
             and prov.stamp_date < derivation.derivation_session
-            # (2) SELF-LIMITING -- the gap is the CLOCK's, not the TICKER's
-            # (Codex R5 MAJOR 1). `_latest_stamp()` may be None, in which case
-            # this comparison is False and authority is withdrawn.
-            and prov.stamp_session == _latest_stamp()
         )
+        # (2) SELF-LIMITING -- the gap is the CLOCK's, not the TICKER's (Codex
+        # R5 MAJOR 1). `_latest_stamp()` may be None, in which case the
+        # comparison is False and authority is WITHDRAWN (permission is not
+        # obligation).
+        latest_stamp = _latest_stamp() if alarm_prerequisites else None
+        alarm_authorized = (
+            alarm_prerequisites
+            and latest_stamp is not None
+            and prov.stamp_session == latest_stamp
+        )
+        # ...but a WITHDRAWAL caused by an unreadable read is not the same fact
+        # as `D != L`, and the operator must be able to tell them apart
+        # (codex-auto-review MAJOR). This is the state in which a genuine,
+        # dated, would-have-been-labelled mismatch was suppressed because the
+        # self-limiting check could not be evaluated at all. Left unstated it
+        # renders as the routine "waiting on the nightly" label over a real
+        # suppressed finding -- an unlabelled under-alarm, which is the exact
+        # shape the arc's coupling condition forbids.
+        alarm_withheld_unreadable = bool(
+            alarm_prerequisites and _stamp_read.get("failed"))
         # Every non-authorized state feeds `None` downstream, exactly as an
         # ABSENT close does today -- so `mandate_shape_mismatch` still runs in
         # its shipped unknown-regime mode (it catches a TRAILING_STOP_LIMIT or
@@ -1154,7 +1179,9 @@ def build_latch_orders_vm(
                 note_reason = "stale_regime"
             else:
                 note_reason = None
-            form_check_skipped.append((ticker, quote, tail, prov, note_reason))
+            form_check_skipped.append(
+                (ticker, quote, tail, prov, note_reason,
+                 alarm_withheld_unreadable))
         # EVERY line derived from a B-continuity regime carries its provenance,
         # so the operator can weigh it. An unlabelled stale-derived alarm would
         # be a claim the data does not support in the other direction.
@@ -1342,7 +1369,7 @@ def _build_form_check_notes(
             recorded = None
 
     notes: list[MandateFormCheckVM] = []
-    for ticker, quote, tail, prov, note_reason in skipped:
+    for ticker, quote, tail, prov, note_reason, alarm_read_failed in skipped:
         provenance = _close_provenance(quote)
         session_iso = regime_session_iso
         stamp = (prov.stamp_session or "") if prov is not None else ""
@@ -1520,6 +1547,23 @@ def _build_form_check_notes(
                 f"So this is a question about the TICKER rather than the clock: "
                 f"it clears when this ticker again has a usable close on the "
                 f"derivation session. {_as_sentence(tail)}")
+        if alarm_read_failed:
+            # THE WITHHELD ALARM STATES ITS OWN REASON (codex-auto-review
+            # MAJOR). This latch held a close whose date the archive PROVED and
+            # which is genuinely older than this page's session -- i.e. every
+            # condition for a labelled stale-derived mismatch EXCEPT the one
+            # read that failed. The shipped branch above stays exactly as ruled
+            # (an unreadable `L` withdraws alarm authority ONLY; it does not
+            # change the label, because the count-driven statement remains TRUE
+            # and telling him less than we know would be its own defect). This
+            # clause is purely ADDITIVE: it names the suppression so the
+            # routine wording cannot stand in for it.
+            detail = (
+                f"{detail} Separately: a stale-derived mismatch could not even "
+                f"be CONSIDERED for this latch, because the newest-recorded-"
+                f"close-stamp read failed and the panel could not tell whether "
+                f"this staleness is system-wide. Any such finding was withheld "
+                f"rather than risk one that repeats every day.")
         notes.append(MandateFormCheckVM(
             ticker=ticker, severity=severity,
             headline=_FORM_CHECK_HEADLINES[severity], detail=detail))

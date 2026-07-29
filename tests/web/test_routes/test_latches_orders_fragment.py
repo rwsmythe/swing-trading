@@ -2261,3 +2261,69 @@ def test_an_unplaceable_stamp_is_not_described_as_later_than_this_page(
     assert ("which is not a usable date, so it cannot be placed in time at all"
             in r.text)
     assert "LATER than the derivation session" not in r.text
+
+
+def test_an_unreadable_latest_stamp_says_the_alarm_was_withheld(
+        seeded_db, monkeypatch):
+    """codex-auto-review MAJOR -- A6 at the arc's OWN new read boundary.
+
+    The T4a geometry EXACTLY: a close whose date the archive PROVES at
+    2026-07-27, genuinely older than the derivation session 2026-07-28, and an
+    order whose type mismatches that dated stale regime. T4a alarms. Here the
+    self-limiting read RAISES, so alarm authority is correctly WITHDRAWN --
+    permission is not obligation.
+
+    But withdrawal without a stated reason is the coupling breach: the operator
+    would see the routine `waiting on the nightly data` label standing over a
+    real, dated, suppressed finding, with nothing saying an alarm had been
+    considered and dropped. The shipped branch is UNCHANGED (an unreadable `L`
+    withdraws alarm authority only; the count-driven statement is still TRUE
+    and replacing it would tell him less than we know) and the reason is
+    APPENDED to it.
+
+    Paired with T4a, which differs ONLY in that this read succeeds."""
+    import swing.web.view_models.latches as vm_mod
+    cfg, cfg_path = seeded_db
+    _freeze(monkeypatch, NOW_WINDOW)
+    _seed_ftre(cfg)
+    _seed_the_seven_hour_window(cfg)
+
+    def _boom(_conn):
+        raise sqlite3.OperationalError("no such table: candidates")
+
+    monkeypatch.setattr(vm_mod, "latest_recorded_close_stamp", _boom)
+    app = _app(cfg, cfg_path, monkeypatch,
+               orders=[_order(duration="GOOD_TILL_CANCEL")])
+    with TestClient(app) as client:
+        r = _post_orders(client, anchor=ANCHOR_WINDOW)
+    assert r.status_code == 200                              # A6
+    # The alarm is WITHHELD...
+    assert "not the mandated order shape" not in r.text
+    assert "AT OR ABOVE" not in r.text
+    assert "Broker orders agree with the live latches" not in r.text
+    # ...and it SAYS SO, rather than hiding behind the routine wording.
+    assert "a stale-derived mismatch could not even be CONSIDERED for this "         "latch" in r.text
+    assert "the newest-recorded-close-stamp read failed" in r.text
+    # The shipped branch is unchanged, exactly as ruled -- the count-driven
+    # statement is still true and still rendered.
+    assert "Mandate form check pending" in r.text
+    # ...and it was NOT counted or labelled as a check that ran.
+    assert "Mandate form check ran from an uncorroborated close" not in r.text
+    assert "1 latch checked from an uncorroborated close" not in r.text
+
+
+def test_a_readable_latest_stamp_adds_no_suppression_clause(
+        seeded_db, monkeypatch):
+    """The paired half: the clause must not leak into the ordinary states, or
+    it becomes noise on every latch that was simply never alarm-eligible."""
+    cfg, cfg_path = seeded_db
+    _freeze(monkeypatch, NOW_WINDOW)
+    _seed_ftre(cfg)
+    _seed_the_seven_hour_window(cfg)
+    app = _app(cfg, cfg_path, monkeypatch,
+               orders=[_order(duration="GOOD_TILL_CANCEL")])
+    with TestClient(app) as client:
+        r = _post_orders(client, anchor=ANCHOR_WINDOW)
+    assert r.status_code == 200
+    assert "not the mandated order shape" in r.text          # T4a alarms
+    assert "could not even be CONSIDERED" not in r.text
