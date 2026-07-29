@@ -72,7 +72,11 @@ A ticker whose archive lagged the cohort at evaluation time is persisted with an
 
 **THE NAMING COLLISION — the most consequential item in this arc for RD's lane (his assessment, 2026-07-28).** Two DIFFERENT quantities share one column name across two tables: `evaluation_runs.data_asof_date` is **bar-derived** (`max()` over per-ticker last bar dates), while `pipeline_runs.data_asof_date` is **clock-derived** (`last_completed_session(run_now)`, computed at `runner.py:610` BEFORE any bar is fetched). Measured: they agree in **25 of the last 25 paired runs** — but only because the nightlies are healthy. RD's framing, preserved because it is sharper than the plan's original:
 
-> *"worse than a latent hazard — a hazard that LOOKS CORRECT. A reader who conflates them is not being careless; the schema is telling them the two are the same thing. And they diverge precisely when the archive lags, which is the Route B condition, so the collision and the hazard fire together."*
+> *"worse than a latent hazard — a hazard that LOOKS CORRECT. A reader who conflates them is not being careless; the schema is telling them the two are the same thing."* — **tightened by RD himself 2026-07-29** after the fold-in review caught the original clause claiming more than the evidence supports, per the preserve-the-quote convention (the director tightens it, not a downstream editor):
+>
+> *"Archive lag is ONE condition under which the two quantities diverge, and it is the one that matters for Route B — but it is not the only one, since the `as_of_date` and `last_completed_session` branches can diverge for unrelated reasons. The correct claim is that the collision and the Route-B hazard CAN fire together, not that they always do."*
+>
+> **What survives the correction unchanged, and is why the finding still matters (RD):** *"A reader cannot tell which quantity they are holding."* That is true regardless of how often the two diverge, and it is what makes the naming defect worth fixing on its own merits rather than as a rider to the divergence frequency.
 
 That last clause is why the collision is not an independent tidiness problem sitting beside the provenance gap: an archive lag is exactly the condition that makes the two columns disagree, and nothing in the schema will warn a reader when they do. RD is taking this into the research-side hits himself (§S).
 

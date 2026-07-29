@@ -21,7 +21,11 @@ Before any individual hit, the structural fact RD called **the most consequentia
 
 They agreed in **25 of the last 25 paired runs**. That is a property of healthy nightlies, not an invariant — nothing enforces it, and the two are computed from different inputs at different times. RD's framing, preserved verbatim:
 
-> *"worse than a latent hazard — a hazard that LOOKS CORRECT. A reader who conflates them is not being careless; the schema is telling them the two are the same thing. And they diverge precisely when the archive lags, which is the Route B condition, so the collision and the hazard fire together."*
+> *"worse than a latent hazard — a hazard that LOOKS CORRECT. A reader who conflates them is not being careless; the schema is telling them the two are the same thing."* — **tightened by RD himself 2026-07-29** after the fold-in review caught the original clause claiming more than the evidence supports, per the preserve-the-quote convention (the director tightens it, not a downstream editor):
+>
+> *"Archive lag is ONE condition under which the two quantities diverge, and it is the one that matters for Route B — but it is not the only one, since the `as_of_date` and `last_completed_session` branches can diverge for unrelated reasons. The correct claim is that the collision and the Route-B hazard CAN fire together, not that they always do."*
+>
+> **What survives the correction unchanged, and is why the finding still matters (RD):** *"A reader cannot tell which quantity they are holding."* That is true regardless of how often the two diverge, and it is what makes the naming defect worth fixing on its own merits rather than as a rider to the divergence frequency.
 
 **An archive lag — the Route-B condition — is exactly the kind of thing that makes these two columns disagree, and the schema will not warn anyone when they do.** Any reader of hits 4, 5 or 7 should read this section first: those consumers each pick ONE of these two columns, and WHICH one they picked is part of what makes them a hit.
 
