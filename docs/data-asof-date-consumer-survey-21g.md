@@ -19,7 +19,7 @@ Before any individual hit, the structural fact RD called **the most consequentia
 | `evaluation_runs.data_asof_date` | **BAR-derived** — `max()` over per-ticker last bar dates | AFTER the fetch (`orchestration.py:229-231`) |
 | `pipeline_runs.data_asof_date` | **CLOCK-derived** — `last_completed_session(run_now)` | BEFORE any bar is fetched (`runner.py:610`) |
 
-They agreed in **25 of the last 25 paired runs**. That is a property of healthy nightlies, not an invariant — nothing enforces it, and the two are computed from different inputs at different times. RD's framing, preserved verbatim:
+They agreed in **113 of 113 paired runs across the full history** (RD, measured 2026-07-28 on the live DB), including **17 runs started during US market hours** — precisely where a partial-bar divergence would surface. **The agreement is STRUCTURAL in one direction and unenforced in the other, and RD corrected his own first statement of this (2026-07-29) — use this form:** both bar consumers cap at the clock session as read at **FETCH** time (`PriceFetcher.get` slices `<= _resolve_asof(None)`, `swing/prices.py:56-68`; the detector's separate source `OhlcvCache.get_or_fetch` strips bars `> end`, `swing/web/ohlcv_cache.py:293-310`), while the persisted `pipeline_runs` stamp read the clock at **LEASE** time. So bar-derived can never exceed the clock session *as read at fetch time*, and can exceed the **persisted** stamp only if the run **STRADDLES a session close** between lease acquisition and fetch. **That is not a second hazard — it is the SAME event as hit 7's look-ahead path, measured 0 of 140 completed runs.** D27's agreement and hit 7's safety therefore rest on ONE sufficient condition, not two. The reason to fix the naming is unchanged: a reader cannot tell which quantity they are holding. RD's framing, preserved verbatim:
 
 > *"worse than a latent hazard — a hazard that LOOKS CORRECT. A reader who conflates them is not being careless; the schema is telling them the two are the same thing."* — **tightened by RD himself 2026-07-29** after the fold-in review caught the original clause claiming more than the evidence supports, per the preserve-the-quote convention (the director tightens it, not a downstream editor):
 >
@@ -52,7 +52,7 @@ They agreed in **25 of the last 25 paired runs**. That is a property of healthy 
 
 Plus `chart_renders.data_asof_date` (per-ticker chart rows, migration 0020) and `watchlist.last_data_asof_date` (per-ticker streak key, `swing/watchlist/service.py:108-183`), both copies of a run-level value onto per-row records.
 
-**Two different quantities share one name.** Empirically they have never diverged: across the last 25 paired runs, `pipeline_runs.data_asof_date == evaluation_runs.data_asof_date` in **25/25**. That is a coincidence of a healthy nightly, not an invariant — nothing enforces it, and the two are computed from different inputs at different times.
+**Two different quantities share one name.** Empirically they have never diverged: **113 of 113 paired runs across the full history** (RD, 2026-07-28, live DB), including 17 started during market hours. The agreement is **structural in one direction** — both bar consumers cap at the fetch-time clock session — and unenforced in the other; the only way bar-derived can exceed the **persisted** stamp is a run that straddles a session close between lease acquisition and fetch, which is the same event as hit 7's look-ahead path and was measured at **0 of 140**.
 
 ## 3. Empirical incidence of the underlying gap
 
