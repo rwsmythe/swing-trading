@@ -390,3 +390,40 @@ def test_the_zone_label_is_not_re_gated_by_the_provenance_ladder(
     assert r.status_code == 200
     assert "ABOVE ZONE - do not chase" in r.text
     assert "close dated on or before 2026-07-24" in r.text
+
+
+def test_the_card_distinguishes_an_absent_stamp_from_an_unusable_one(
+        seeded_db, frozen_panel_clock):
+    """Codex R11 MINOR. `evaluation_runs.data_asof_date` is only `TEXT NOT
+    NULL` (migration 0001), so an EMPTY stamp is reachable and is a DIFFERENT
+    fact from an unparseable one. Rendering `the unusable session stamp an
+    unrecorded session` would name a stamp that does not exist -- a false
+    reason for a correct degradation, which is the same class the two earlier
+    label fixes closed. Planted via RAW conn.execute.
+
+    REACHABILITY, stated precisely because the first attempt at this fixture
+    could not reach the branch: `load_last_closes` orders by
+    `e.data_asof_date, e.run_ts, c.id` and keeps the LAST row, and an empty
+    string sorts BEFORE every ISO date -- so an empty-stamp run loses to any
+    dated one. The shape is reached when the empty-stamp run is the ticker's
+    only close-bearing row, which is what is seeded here."""
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    with conn:
+        conn.execute(
+            "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, "
+            "action_session_date, tickers_evaluated, aplus_count, watch_count, "
+            "skip_count, excluded_count, error_count) VALUES "
+            "(135, '2026-07-17T17:30:05', '', '2026-07-20', 1, 1, 0, 0, 0, 0)")
+        conn.execute(
+            "INSERT INTO candidates (evaluation_run_id, ticker, bucket, close, "
+            "pivot, initial_stop, rs_method) VALUES "
+            "(135, 'FTRE', 'aplus', 19.52, 18.34, 14.88, 'universe')")
+    conn.close()
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/latches")
+    assert r.status_code == 200
+    assert "close carries no session stamp, so it cannot be placed in time"         in r.text
+    assert "an unrecorded session" not in r.text
+    assert "later than the session this page describes" not in r.text

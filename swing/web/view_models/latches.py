@@ -271,6 +271,16 @@ def _price_asof_claim(quote, provenance) -> tuple[str, str]:
         # non-empty but UNPLACEABLE, and calling it "later than" would state a
         # false reason for a correct degradation.
         if provenance.stamp_date is None:
+            # THREE rung-F shapes, and the card must state the one it actually
+            # holds (Codex R11 MINOR). `evaluation_runs.data_asof_date` is only
+            # `TEXT NOT NULL` (migration 0001), so an EMPTY stamp is reachable
+            # and is a different fact from an unparseable one -- rendering
+            # "the unusable session stamp an unrecorded session" would name a
+            # stamp that does not exist. The fragment already split these; the
+            # card now matches it.
+            if not provenance.stamp_session:
+                return "-", ("close carries no session stamp, so it cannot be "
+                             "placed in time")
             return "-", (f"close carries the unusable session stamp {stamp}, so "
                          f"it cannot be placed in time")
         return "-", (f"close stamped {stamp}, later than the session this page "
